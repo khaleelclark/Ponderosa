@@ -2135,7 +2135,7 @@ export class BranchStore {
         const f=JSON.parse(fence.receipt_json),i=f.input;
         if(f.purpose==='final-resource'){
           if(f.schema!=='branch-generation-exit-fence.v1'||stableJson(f)!==fence.receipt_json||payloadHash(f)!==fence.receipt_sha256||stableJson(i)!==fence.input_json
-            ||i.executionId!==r.execution_id||i.stepExecutionId!==stepExecutionId||i.generation!==0||r.generation!==0||r.retry_draining!==0
+            ||i.executionId!==r.execution_id||i.stepExecutionId!==stepExecutionId||i.generation!==r.generation||!Number.isSafeInteger(i.generation)||i.generation<0||r.retry_draining!==0
             ||!r.chat_id||i.conversationId!==r.chat_id||f.resource.creation_key!==r.creation_key)throw Error('Final cleanup diagnostic fence differs');
           // Cleanup observations must not mutate the already fenced semantic frontier.
           this.run('INSERT INTO branch_retirement_errors VALUES(?,?,?) ON CONFLICT(resource_id) DO UPDATE SET error=excluded.error,updated_at=excluded.updated_at',r.chat_id,branchText(error),new Date().toISOString());
@@ -2196,9 +2196,9 @@ export class BranchStore {
     if(stableJson(selectBranchUnit(this.sqlite,executionId))!==stableJson(final.envelope.selected))throw Error('Final resource frontier changed before retirement');
   }
   retainedFinalResourceExit(stepId:string){
-    const resource=this.row('SELECT execution_id FROM branch_resources WHERE step_execution_id=?',stepId);
+    const resource=this.row('SELECT execution_id,generation FROM branch_resources WHERE step_execution_id=?',stepId);
     if(!resource)return;
-    const command=this.row('SELECT 1 FROM branch_commands WHERE execution_id=? AND command_key=?',resource.execution_id,`resource-final-exit:${stepId}:0`);
+    const command=this.row('SELECT 1 FROM branch_commands WHERE execution_id=? AND command_key=?',resource.execution_id,`resource-final-exit:${stepId}:${resource.generation}`);
     return command?readFinalResourceExit(this.sqlite,resource.execution_id,stepId):undefined;
   }
   finalResourceExitRequired(stepId:string):boolean {

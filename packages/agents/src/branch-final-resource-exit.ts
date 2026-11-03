@@ -8,11 +8,12 @@ import {encodeIssuedResourceContinuation,readIssuedResourceContinuation} from '.
 import {selectBranchUnit} from './branch-unit-selection.js';
 import {verifyBranchHostCut} from './branch-host-cut.js';
 import {verifyHostProvenance} from './branch-host-provenance.js';
+import {captureGenerationOneHost,generationOneEvidence} from './branch-resource-generation-one.js';
 type Row=Record<string,any>;
-export const finalResourceExitKey=(stepId:string)=>`resource-final-exit:${stepId}:0`;
+export const finalResourceExitKey=(stepId:string,generation=0)=>`resource-final-exit:${stepId}:${generation}`;
 function scope(db:Database.Database,stepId:string){
  const r=db.prepare('SELECT r.*,e.branch_id,e.version_id,e.binding_revision_id,e.configuration_json,e.parent_execution_id,e.parent_attempt_id,e.call_depth,e.admission_source,e.provenance_json FROM branch_resources r JOIN branch_executions e ON e.id=r.execution_id WHERE r.step_execution_id=?').get(stepId) as Row|undefined;
- if(!r||r.generation!==0||r.retry_draining!==0||!['active','draining'].includes(r.state)||r.parent_execution_id||r.parent_attempt_id||r.call_depth!==0||r.admission_source!=='manual'||JSON.parse(r.provenance_json).source!=='manual')throw Error('Original standalone manual final resource required');
+ if(!r||!Number.isSafeInteger(r.generation)||r.generation<0||r.retry_draining!==0||!['active','draining'].includes(r.state)||r.parent_execution_id||r.parent_attempt_id||r.call_depth!==0||r.admission_source!=='manual'||JSON.parse(r.provenance_json).source!=='manual')throw Error('Original standalone manual final resource required');
  const pins=db.prepare('SELECT v.definition_json,v.content_hash,b.bindings_json,b.content_hash binding_hash FROM branch_versions v JOIN branch_bindings b ON b.branch_id=v.branch_id WHERE v.id=? AND b.id=? AND v.branch_id=?').get(r.version_id,r.binding_revision_id,r.branch_id) as Row|undefined;
  if(!pins||JSON.parse(pins.definition_json).steps.some((s:Row)=>s.kind==='agent'&&s.target.kind!=='ephemeral_organization')||JSON.parse(pins.definition_json).trigger?.kind!=='manual'||payloadHash(JSON.parse(pins.definition_json))!==pins.content_hash||payloadHash(JSON.parse(pins.bindings_json))!==pins.binding_hash)throw Error('Final resource pins differ');
  const count=db.prepare('SELECT count(*) n FROM branch_resources WHERE execution_id=?').get(r.execution_id) as {n:number};
@@ -21,14 +22,19 @@ function scope(db:Database.Database,stepId:string){
  const ids=(db.prepare('SELECT agent_id FROM branch_resource_members WHERE step_execution_id=? ORDER BY agent_id').all(stepId) as Row[]).map(r=>r.agent_id);
  const live=(db.prepare('SELECT id FROM agents WHERE conversation_id=? AND deleted_at IS NULL ORDER BY id').all(r.chat_id) as Row[]).map(r=>r.id);
  if(!chat||chat.branch_id!==r.branch_id||chat.branch_execution_id!==r.execution_id||!ids.length||stableJson(ids)!==stableJson(live)||db.prepare('SELECT 1 FROM conversation_deletion_receipts WHERE conversation_id=?').get(r.chat_id))throw Error('Final resource complete precleanup identity required');
- const context=db.prepare('SELECT * FROM branch_ephemeral_contexts WHERE step_execution_id=? AND generation=0').get(stepId) as Row|undefined;
+ const context=db.prepare('SELECT * FROM branch_ephemeral_contexts WHERE step_execution_id=? AND generation=?').get(stepId,r.generation) as Row|undefined;
  if(!context||context.chat_id!==r.chat_id||stableJson(JSON.parse(context.agent_ids_json).sort())!==stableJson(ids))throw Error('Final resource context differs');
- return {executionId:r.execution_id,stepId,generation:0,projectId:chat.project_id,chatId:r.chat_id,agentIds:ids,creationKey:r.creation_key,branchId:r.branch_id,versionId:r.version_id,bindingRevisionId:r.binding_revision_id,configurationSha256:payloadHash(JSON.parse(r.configuration_json))};
+ if(r.generation>0){
+  // A permanent fence must never be installed for a frontier that cannot yet be replayed.
+  const current=captureGenerationOneHost(db,selectBranchUnit(db,r.execution_id));
+  encodeIssuedResourceContinuation(db,r.execution_id,current.selected,current.host,false,current.generationRetry);
+ }
+ return {executionId:r.execution_id,stepId,generation:r.generation,projectId:chat.project_id,chatId:r.chat_id,agentIds:ids,creationKey:r.creation_key,branchId:r.branch_id,versionId:r.version_id,bindingRevisionId:r.binding_revision_id,configurationSha256:payloadHash(JSON.parse(r.configuration_json))};
 }
 export function fenceFinalResourceExit(db:Database.Database,stepId:string){
  if(!db.inTransaction)throw Error('Final fence requires owner transaction');
  const identity=scope(db,stepId);
- const intakeFence=fenceBranchFinalResourceExit(db,{executionId:identity.executionId,stepExecutionId:stepId,generation:0,projectId:identity.projectId,conversationId:identity.chatId,agentIds:identity.agentIds});
+ const intakeFence=fenceBranchFinalResourceExit(db,{executionId:identity.executionId,stepExecutionId:stepId,generation:identity.generation,projectId:identity.projectId,conversationId:identity.chatId,agentIds:identity.agentIds});
  return {purpose:'final-resource' as const,identity,intakeFence};
 }
 export function captureFinalResourceExit(db:Database.Database,journal:ReturnType<typeof fenceFinalResourceExit>):void {
@@ -37,8 +43,9 @@ export function captureFinalResourceExit(db:Database.Database,journal:ReturnType
  // Recheck cleanup eligibility and immutable creation/fence bytes inside the commit.
  if(stableJson(fenceFinalResourceExit(db,journal.identity.stepId))!==stableJson(journal))throw Error('Final fence changed after drain');
  const envelope=captureFinalResourceExitEnvelope(db,journal),i=journal.identity;
- const latestContinuation=encodeIssuedResourceContinuation(db,i.executionId,envelope.selected,envelope.hostDependencies);
- const selectedRow=(db.prepare('SELECT id,snapshot_json,content_hash FROM branch_unit_snapshots WHERE execution_id=? ORDER BY id DESC').all(i.executionId) as Row[]).find(row=>JSON.parse(row.snapshot_json).captureKind==='issued_resource');
+ const continuationSelected=i.generation>0?generationOneEvidence(db,envelope.selected).selected:envelope.selected;
+ const latestContinuation=encodeIssuedResourceContinuation(db,i.executionId,continuationSelected,envelope.hostDependencies,false,envelope.generationRetry);
+ const selectedRow=(db.prepare('SELECT id,snapshot_json,content_hash FROM branch_unit_snapshots WHERE execution_id=? ORDER BY id DESC').all(i.executionId) as Row[]).find(row=>(()=>{const snapshot=JSON.parse(row.snapshot_json);return snapshot.captureKind==='issued_resource'&&snapshot.selected?.resources?.some((resource:Row)=>resource.step_execution_id===i.stepId);})());
  if(!selectedRow)throw Error('Actual committed issued-resource selected checkpoint required');
  readIssuedResourceContinuation(db,i.executionId,selectedRow.id,selectedRow.content_hash);
  const configuration=db.prepare('SELECT configuration_json FROM branch_executions WHERE id=?').get(i.executionId) as Row;
@@ -49,7 +56,7 @@ export function captureFinalResourceExit(db:Database.Database,journal:ReturnType
  const value={schema:'branch-final-resource-exit.v1',purpose:'final-resource',identity:i,intakeFence:journal.intakeFence,envelope,latestContinuation,
   selectedCheckpoint:selectedRow,configuration,definition,bindings,starts,exits};
  if(Buffer.byteLength(stableJson(value))>32*1024*1024)throw Error('Final resource exit envelope exceeds bound');
- const json=stableJson(value),hash=payloadHash(value),key=finalResourceExitKey(i.stepId);
+ const json=stableJson(value),hash=payloadHash(value),key=finalResourceExitKey(i.stepId,i.generation);
  const prior=db.prepare('SELECT input_hash,result_json FROM branch_commands WHERE execution_id=? AND command_key=?').get(i.executionId,key) as Row|undefined;
  if(prior){if(prior.input_hash!==hash||prior.result_json!==json)throw Error('Final resource exit command conflict');}
  else db.prepare('INSERT INTO branch_commands VALUES(?,?,?,?,?)').run(i.executionId,key,hash,json,new Date().toISOString());
@@ -60,9 +67,12 @@ export function captureFinalResourceExit(db:Database.Database,journal:ReturnType
 /** Native deletion readback; no final command can be replaced by a retry snapshot. */
 export function readFinalResourceExit(db:Database.Database,executionId:string,stepId:string){
  return db.transaction(()=>{
- const row=db.prepare('SELECT input_hash,result_json FROM branch_commands WHERE execution_id=? AND command_key=?').get(executionId,finalResourceExitKey(stepId)) as Row|undefined;
- if(!row)throw Error('Authentic final resource exit command unavailable');
+ const prefix=`resource-final-exit:${stepId}:`;
+ const rows=db.prepare('SELECT command_key,input_hash,result_json FROM branch_commands WHERE execution_id=? AND substr(command_key,1,?)=?').all(executionId,prefix.length,prefix) as Row[];
+ if(rows.length!==1)throw Error('Authentic final resource exit command unavailable or ambiguous');
+ const row=rows[0]!;
  const value=JSON.parse(row.result_json);
+ if(!Number.isSafeInteger(value.identity?.generation)||value.identity.generation<0||row.command_key!==finalResourceExitKey(stepId,value.identity.generation))throw Error('Final exit generation key differs');
  verifyFinalResourceExitBytes(value,row.input_hash);
  if(value.identity.executionId!==executionId||value.identity.stepId!==stepId)throw Error('Final exit owner differs');
  const f=db.prepare("SELECT input_json,receipt_json,receipt_sha256 FROM host_lifecycle_commits WHERE kind='branch-generation-exit-fence' AND identity=?").get(value.intakeFence.identity) as Row|undefined;
@@ -85,24 +95,24 @@ export function readFinalResourceExit(db:Database.Database,executionId:string,st
 function verifyFinalResourceExitBytes(v:Row,hash:string):void {
  if(v.schema!=='branch-final-resource-exit.v1'||v.purpose!=='final-resource'||payloadHash(v)!==hash||Buffer.byteLength(stableJson(v))>32*1024*1024)throw Error('Final exit command integrity differs');
  const i=v.identity,e=v.envelope;
- if(i.generation!==0||e.schema!=='branch-final-resource-exit-envelope.v1'||stableJson(e.identity)!==stableJson(i)||stableJson(e.intakeFence)!==stableJson(v.intakeFence)||!verifyBranchHostCut(e.hostDependencies,i.executionId))throw Error('Final exit envelope scope differs');
+ if(!Number.isSafeInteger(i.generation)||i.generation<0||e.schema!=='branch-final-resource-exit-envelope.v1'||stableJson(e.identity)!==stableJson(i)||stableJson(e.intakeFence)!==stableJson(v.intakeFence)||!verifyBranchHostCut(e.hostDependencies,i.executionId))throw Error('Final exit envelope scope differs');
  verifyHostProvenance(e.hostDependencies);
  const h=e.hostDependencies,selected=e.selected,r=selected.resources?.[0],execution=selected.execution?.[0];
  const terminal=['completed','failed','blocked','cancelled','expired','recipient_unavailable','superseded'];
  if(!h.coverage.complete||h.coverage.missingReferences.length||h.artifactRefs.length||h.bindingPin.requiredSecretRefs.length
-  ||selected.resources?.length!==1||!r||r.execution_id!==i.executionId||r.step_execution_id!==i.stepId||r.generation!==0||r.retry_draining!==0||r.chat_id!==i.chatId||r.creation_key!==i.creationKey
+  ||selected.resources?.length!==1||!r||r.execution_id!==i.executionId||r.step_execution_id!==i.stepId||r.generation!==i.generation||r.retry_draining!==0||r.chat_id!==i.chatId||r.creation_key!==i.creationKey
   ||!execution||execution.id!==i.executionId||execution.branch_id!==i.branchId||execution.version_id!==i.versionId||execution.binding_revision_id!==i.bindingRevisionId||execution.admission_source!=='manual'||execution.parent_execution_id||execution.parent_attempt_id||execution.call_depth
   ||h.bindingPin.revisionId!==i.bindingRevisionId||h.bindingPin.sha256!==v.bindings.content_hash
   ||h.requests.some(({row}:Row)=>!terminal.includes(row.state))||h.joins.some(({row}:Row)=>row.state==='open')||h.suspensions.some(({row}:Row)=>row.state==='open'||row.dependency_kind!=='join'))throw Error('Final complete host/resource closure differs');
  const closure=e.effectClosure;
- if(!closure||closure.requests.some((q:Row)=>!terminal.includes(q.state)||!h.requests.some(({row}:Row)=>stableJson(row)===stableJson(q)))
+ if(!closure||closure.requests.some((q:Row)=>{const {reply_authority_json: _authority,...hostRequest}=q;return !terminal.includes(q.state)||!h.requests.some(({row}:Row)=>stableJson(row)===stableJson(hostRequest));})
   ||closure.joins.some((q:Row)=>q.state==='open'||!h.joins.some(({row}:Row)=>stableJson(row)===stableJson(q)))
   ||closure.activations.some((a:Row)=>!i.agentIds.includes(a.agent_id)||['pending','attached','retry_pending','outcome_unknown'].includes(a.state))
   ||closure.imports.some((o:Row)=>!['completed','rolled_back'].includes(o.status)))throw Error('Final effect census remains unresolved');
  const imported=JSON.parse(r.import_operation_json);
  if(imported.state!=='completed'||imported.schema!=='branch-resource-operation.v1'||imported.phase!=='import'||!closure.imports.some((o:Row)=>o.id===imported.creationOperationId&&o.kind==='import'&&o.status==='completed'&&o.project_id===i.projectId&&o.conversation_id===i.chatId))throw Error('Final completed creation provenance differs');
  const context=h.resourceContexts.filter(({row}:Row)=>row.step_execution_id===i.stepId);
- if(context.length!==1||context[0].row.generation!==0||context[0].row.chat_id!==i.chatId||stableJson(JSON.parse(context[0].row.agent_ids_json).sort())!==stableJson(i.agentIds))throw Error('Final captured context differs');
+ if(context.length!==1||context[0].row.generation!==i.generation||context[0].row.chat_id!==i.chatId||stableJson(JSON.parse(context[0].row.agent_ids_json).sort())!==stableJson(i.agentIds))throw Error('Final captured context differs');
  const members=h.resourceMembers.filter(({row}:Row)=>row.step_execution_id===i.stepId).map(({row}:Row)=>row.agent_id).sort();
  if(stableJson(members)!==stableJson(i.agentIds))throw Error('Final captured membership differs');
  for(const attempt of selected.attempts??[])if(['prepared','leased','running','outcome_unknown'].includes(attempt.state)||attempt.state==='waiting'&&!attempt.request_id)throw Error('Final native/effect attempt remains unsettled');

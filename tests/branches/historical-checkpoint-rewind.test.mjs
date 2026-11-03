@@ -2620,3 +2620,163 @@ for(const valid of [true,false])test(`Agent shared-state Request ${valid?'commit
  }
  await f.reopen();assert.equal(f.branches.sharedState(f.source.id).values.count,valid?7:0);
 });
+
+// Later-generation local final exit uses the exact sealed history and a drained provider source.
+// The existing retry fixture uses inert process/package custody; this asserts only local exit authority.
+for(const mode of ['async','sync'])test(`serial later-generation final exit ${mode} requires complete history and drained effects`,async t=>{
+ const generation=2,parallel=false,budgetOverride=undefined;
+ const maxAttempts=budgetOverride??generation+1;
+ const f=await reservationHistoryFixture(t,mode,false,parallel,maxAttempts),prefix=await f.claim();f.settle(prefix);await f.advance(f.source.id);
+ const db=f.store.sqlite,coordination=new CoordinationV3Store(db),dir=f.branches.localConfiguration(f.branch.id).directories.root;
+ const {ProviderProcessAuthority}=await import('../../apps/server/dist/provider-process-authority.js');
+ const seals=[],requests=[],agents=[],chats=[];
+ for(let g=0;g<generation;g++){
+  const opened=await openCalledTreeResource(f.store,f.branches,dir,f.source.id,f.branch.id);requests.push(opened.requestId);agents.push(opened.agentId);chats.push(opened.chatId);
+  assert.equal(db.prepare('SELECT generation FROM branch_resources WHERE step_execution_id=?').get(opened.stepId).generation,g);
+  coordination.updateRequest({requestId:opened.requestId,updateId:`failed-chain-${g}`,kind:'failed',actor:{kind:'agent',id:opened.agentId},payload:{text:`known failed generation ${g}`}});
+  for(let n=0;n<20&&!db.prepare('SELECT retry_draining FROM branch_resources WHERE step_execution_id=?').get(opened.stepId).retry_draining;n++){f.branches.advance();await f.branches.unitSaver.drain();}
+  assert.equal(db.prepare('SELECT retry_draining FROM branch_resources WHERE step_execution_id=?').get(opened.stepId).retry_draining,1);
+  const fence=f.branches.fenceGenerationExit(opened.stepId);assert.equal(fence.identity.generation,g);
+  const agent=f.store.getAgent(opened.agentId),runId=randomUUID(),now=new Date().toISOString();
+  db.prepare("INSERT INTO scheduler_runs(id,project_id,agent_id,status,lease_owner,lease_expires_at,fencing_token,prompt_injection_state,heartbeat_at,created_at,updated_at,terminal_at) VALUES(?,?,?,'completed','fixture',?,1,'injected',?,?,?,?)").run(runId,agent.projectId,agent.id,now,now,now,now,now);
+  for(const activation of db.prepare("SELECT id FROM agent_activations WHERE agent_id=? AND state IN ('pending','retry_pending')").all(agent.id))coordination.cancelPendingActivation({activationId:activation.id,projectId:agent.projectId,idempotencyKey:`chain-exit:${activation.id}`});
+  let alive=true;const handle={processIdentity:{pid:525252+g,pgid:525252+g,birthMarker:`inert-chain-${g}`},isAlive:()=>alive,close:async()=>{alive=false;}};
+  const authority=new ProviderProcessAuthority(db,`inert-chain-provider-${g}`);authority.recover=()=>handle;authority.register(handle,{purpose:'provider Run',projectId:agent.projectId,agentId:agent.id,runId,runFence:1});await authority.terminateAgents(new Set([agent.id]),'inert complete chain');
+  const journal=f.branches.reserveGenerationExit(f.source.id,opened.stepId,g);
+  assert.deepEqual(journal.envelope.hostDependencies.roots.map(r=>r.requestId),[opened.requestId]);
+  assert.equal(journal.envelope.selected.attempts.filter(a=>a.step_execution_id===opened.stepId).length,g+2);
+  const receipt={...journal.source,version:1,custodyId:hash(journal.source.checkpointId),boundaryId:`inert-chain-seal-${g}`,sha256:hash(`private generation ${g}`),byteLength:1};
+  db.transaction(()=>f.branches.sealGenerationExit(f.source.id,opened.stepId,g,receipt))();seals.push(f.branches.generationExitCapture(f.source.id,opened.stepId,g));
+  const deletion=f.store.previewAgentDeletion([agent.id]);f.store.deleteAgentSubtrees([agent.id],deletion.previewHash,x=>coordination.handleAgentDeletion(x));
+  const chat=f.store.commitConversationDeletion(opened.chatId);f.store.finishConversationDeletionStorageCleanup(chat);f.store.markConversationDeletionServerCleanupComplete(opened.chatId);f.branches.resourceRetired(opened.stepId);await f.branches.unitSaver.drain();
+ }
+ const {enableProviderStartCoverage,sealProviderNeverStarted}=await import('../../packages/agents/dist/provider-start-journal.js');
+ enableProviderStartCoverage(db,'fixture-runtime');
+ const current=await openCalledTreeResource(f.store,f.branches,dir,f.source.id,f.branch.id),preview=f.branches.previewGenerationHistoryCapture(f.source.id);
+ assert.equal(preview.generation,generation);assert.equal(preview.consumedAttempts,generation+1);assert.equal(preview.maxAttempts,maxAttempts);
+ assert.deepEqual(preview.historicalPartition.map(v=>v.generation),Array.from({length:generation},(_,i)=>i));
+ assert.ok(preview.historicalPartition.every(v=>stableJson(v.discloseTo)===stableJson([current.agentId])));
+ if(generation>1)assert.throws(()=>f.branches.previewGenerationOneCapture(f.source.id),/requires current generation one/);else assert.equal(f.branches.previewGenerationOneCapture(f.source.id).generation,1);
+ assert.equal(preview.historyKind,parallel?'local_parallel':'serial');
+ // Every missing prior journal is refused independently, including the oldest retained generation.
+ for(let g=0;g<generation;g++)assert.throws(()=>db.transaction(()=>{db.prepare('DELETE FROM branch_commands WHERE execution_id=? AND command_key=?').run(f.source.id,`resource-generation-retired:${current.stepId}:${g}`);assert.throws(()=>f.branches.previewGenerationHistoryCapture(f.source.id),/retirement linkage/);throw Error('restore chain');})(),/restore chain/);
+ for(let g=0;g<generation;g++)assert.throws(()=>db.transaction(()=>{db.prepare('DELETE FROM branch_commands WHERE execution_id=? AND command_key=?').run(f.source.id,`resource-generation-exit:${current.stepId}:${g}`);assert.throws(()=>f.branches.previewGenerationHistoryCapture(f.source.id),/prior-generation seal/);throw Error('restore seal');})(),/restore seal/);
+ assert.throws(()=>f.branches.reserveIssuedResourceCapture(f.source.id,current.stepId,generation,'chain-cut','0'.repeat(64)),/preview/);
+ const journal=f.branches.reserveIssuedResourceCapture(f.source.id,current.stepId,generation,'chain-cut',preview.reviewHash);
+ assert.deepEqual(journal.snapshot.hostDependencies.roots.map(r=>r.requestId),[current.requestId]);assert.equal(journal.snapshot.selected.attempts.find(a=>a.step_execution_id===current.stepId).number,generation+1);
+ assert.equal((journal.snapshot.issuedContinuation.generationRetry.history??[journal.snapshot.issuedContinuation.generationRetry]).length,generation);
+ for(const tamper of [...(generation>1?[v=>v.history.pop(),v=>v.history.reverse(),v=>{v.history[1].selection={...v.history[0].selection};},v=>{v.history[0].retirementSha256='0'.repeat(64);}]:[v=>{v.retirementSha256='0'.repeat(64);}]),v=>{v.originalSelected.attempts=v.originalSelected.attempts.filter(a=>a.step_execution_id!==current.stepId||a.number!==1);},...(parallel?[v=>{v.originalSelected.steps.find(s=>s.id===current.stepId).path_id=v.originalSelected.paths.find(p=>p.parent_path_id===null).id;},v=>{v.originalSelected.steps.find(s=>s.id!==current.stepId).state='prepared';},v=>{v.originalSelected.paths.find(p=>p.parent_path_id===null).state='active';},v=>{v.originalSelected.attempts.find(a=>a.step_execution_id===current.stepId&&a.number===generation+1).request_id=v.originalSelected.attempts.find(a=>a.step_execution_id===current.stepId&&a.number===1).request_id;},v=>{v.originalSelected.attempts.find(a=>a.step_execution_id===current.stepId&&a.number===1).state='outcome_unknown';}]:[])]){
+  const changed=structuredClone(journal.snapshot.issuedContinuation);tamper(changed.generationRetry);
+  assert.equal(issuedResourceContinuationSupported(db,f.source.id,journal.snapshot.selected,journal.snapshot.hostDependencies,changed),false,'omitted/reordered/aliased/rehashed attempt history refuses');
+ }
+
+ const receipt={...journal.source,version:1,custodyId:hash(journal.source.checkpointId),boundaryId:'inert-current-chain',sha256:hash('current chain package'),byteLength:1};
+ assert.throws(()=>db.transaction(()=>{db.prepare('UPDATE branch_executions SET wait_reason=? WHERE id=?').run('changed chain during package capture',f.source.id);assert.throws(()=>f.branches.sealIssuedResourceCapture(f.source.id,current.stepId,'chain-cut',receipt),/frontier changed/);throw Error('restore current cut');})(),/restore current cut/);
+ db.transaction(()=>f.branches.sealIssuedResourceCapture(f.source.id,current.stepId,'chain-cut',receipt))();
+ const saved=f.branches.issuedResourceCapture(f.source.id,current.stepId,'chain-cut');
+ const {BranchResourceService}=await import('../../apps/server/dist/branch-resource-service.js');const resourceService=new BranchResourceService(f.branches,f.store,async()=>assert.fail('delete'),async()=>assert.fail('create'),async()=>assert.fail('delete Chat'));
+ assert.deepEqual(resourceService.listGenerationHistoryCaptures(f.source.id,current.stepId)[0].historicalPartition,preview.historicalPartition);
+ // Empty-client recovery uses only saved capture identity, never a new preview.
+ const status=resourceService.issuedResourceCaptureStatus(f.source.id,current.stepId,'chain-cut'),budget=status.retryBudget;
+ assert.equal(budget.state,'verified');assert.equal(status.consumedAttempts,generation+1);assert.equal(status.maxAttempts,maxAttempts);assert.match(budget.evidenceHash,/^[a-f0-9]{64}$/);
+ assert.deepEqual(resourceService.listGenerationHistoryCaptures(f.source.id,current.stepId)[0].retryBudget,budget);assert.equal(status.historyKind,preview.historyKind);
+ assert.throws(()=>db.transaction(()=>{db.prepare('UPDATE branches SET configuration_json=? WHERE id=?').run('{}',f.branch.id);assert.deepEqual(resourceService.issuedResourceCaptureStatus(f.source.id,current.stepId,'chain-cut').retryBudget,budget);throw Error('restore mutable policy');})(),/restore mutable policy/);
+
+ const {issuedCaptureRetryBudget}=await import('../../packages/agents/dist/index.js');
+ const corrupted=structuredClone(saved);corrupted.snapshot.issuedContinuation.generationRetry.originalSelected.attempts.find(a=>a.number===generation+1).number=1;
+ assert.throws(()=>issuedCaptureRetryBudget(db,f.source.id,corrupted),/budget proof/);
+ const legacy=structuredClone(saved);delete legacy.snapshot.issuedContinuation.generationRetry;
+ assert.deepEqual(issuedCaptureRetryBudget(db,f.source.id,legacy),{state:'unavailable',reason:'missing_saved_retry_proof'});
+
+ coordination.updateRequest({requestId:current.requestId,updateId:'current-chain-completed',kind:'completed',actor:{kind:'agent',id:current.agentId},payload:{text:'current chain result'}});
+ const suffix=await f.claim();f.settle(suffix);await f.branches.unitSaver.drain();
+ const pendingActivations=db.prepare("SELECT id FROM agent_activations WHERE agent_id=? AND state IN ('pending','retry_pending')").all(current.agentId);
+ assert.ok(pendingActivations.length);
+ assert.throws(()=>db.transaction(()=>{db.prepare('DELETE FROM branch_commands WHERE execution_id=? AND command_key=?').run(f.source.id,`resource-generation-retired:${current.stepId}:0`);assert.throws(()=>f.branches.finalResourceExitFence(current.stepId),/retirement linkage/);throw Error('restore history');})(),/restore history/);
+ const finalFence=f.branches.finalResourceExitFence(current.stepId);assert.equal(finalFence.identity.generation,generation);
+ assert.throws(()=>f.branches.captureFinalResourceExit(finalFence),/participant effects remain unresolved/);
+ for(const activation of pendingActivations)coordination.cancelPendingActivation({activationId:activation.id,projectId:f.store.getAgent(current.agentId).projectId,idempotencyKey:`final-exit:${activation.id}`});
+ sealProviderNeverStarted(db,'fixture-runtime',[current.agentId]);
+ f.branches.captureFinalResourceExit(finalFence);
+ assert.equal(f.branches.requireFinalResourceExit(f.source.id,current.stepId).identity.generation,generation);
+ assert.throws(()=>db.transaction(()=>{const row=db.prepare('SELECT * FROM branch_commands WHERE execution_id=? AND command_key=?').get(f.source.id,`resource-final-exit:${current.stepId}:${generation}`);db.prepare('INSERT INTO branch_commands VALUES(?,?,?,?,?)').run(row.execution_id,`resource-final-exit:${current.stepId}:999`,row.input_hash,row.result_json,row.created_at);assert.throws(()=>f.branches.requireFinalResourceExit(f.source.id,current.stepId),/ambiguous/);throw Error('restore duplicate');})(),/restore duplicate/);
+
+ const deletion=f.store.previewAgentDeletion([current.agentId]);f.store.deleteAgentSubtrees([current.agentId],deletion.previewHash,x=>coordination.handleAgentDeletion(x));
+ const chat=f.store.commitConversationDeletion(current.chatId);f.store.finishConversationDeletionStorageCleanup(chat);f.store.markConversationDeletionServerCleanupComplete(current.chatId);f.branches.resourceRetired(current.stepId);await f.branches.unitSaver.drain();
+ assert.equal(f.branches.requireFinalResourceExit(f.source.id,current.stepId).identity.generation,generation);
+});
+
+// Parallel cleanup is held before any irreversible intake fence until its terminal graph replay is supported.
+for(const parallel of [true,'map'])test(`parallel later-generation final exit ${parallel} holds before fencing unsupported cleanup replay`,async t=>{
+ const mode='async',generation=1,budgetOverride=undefined;
+ const maxAttempts=budgetOverride??generation+1;
+ const f=await reservationHistoryFixture(t,mode,false,parallel,maxAttempts),prefix=await f.claim();f.settle(prefix);await f.advance(f.source.id);
+ const db=f.store.sqlite,coordination=new CoordinationV3Store(db),dir=f.branches.localConfiguration(f.branch.id).directories.root;
+ const {ProviderProcessAuthority}=await import('../../apps/server/dist/provider-process-authority.js');
+ const seals=[],requests=[],agents=[],chats=[];
+ for(let g=0;g<generation;g++){
+  const opened=await openCalledTreeResource(f.store,f.branches,dir,f.source.id,f.branch.id);requests.push(opened.requestId);agents.push(opened.agentId);chats.push(opened.chatId);
+  assert.equal(db.prepare('SELECT generation FROM branch_resources WHERE step_execution_id=?').get(opened.stepId).generation,g);
+  coordination.updateRequest({requestId:opened.requestId,updateId:`failed-chain-${g}`,kind:'failed',actor:{kind:'agent',id:opened.agentId},payload:{text:`known failed generation ${g}`}});
+  for(let n=0;n<20&&!db.prepare('SELECT retry_draining FROM branch_resources WHERE step_execution_id=?').get(opened.stepId).retry_draining;n++){f.branches.advance();await f.branches.unitSaver.drain();}
+  assert.equal(db.prepare('SELECT retry_draining FROM branch_resources WHERE step_execution_id=?').get(opened.stepId).retry_draining,1);
+  const fence=f.branches.fenceGenerationExit(opened.stepId);assert.equal(fence.identity.generation,g);
+  const agent=f.store.getAgent(opened.agentId),runId=randomUUID(),now=new Date().toISOString();
+  db.prepare("INSERT INTO scheduler_runs(id,project_id,agent_id,status,lease_owner,lease_expires_at,fencing_token,prompt_injection_state,heartbeat_at,created_at,updated_at,terminal_at) VALUES(?,?,?,'completed','fixture',?,1,'injected',?,?,?,?)").run(runId,agent.projectId,agent.id,now,now,now,now,now);
+  for(const activation of db.prepare("SELECT id FROM agent_activations WHERE agent_id=? AND state IN ('pending','retry_pending')").all(agent.id))coordination.cancelPendingActivation({activationId:activation.id,projectId:agent.projectId,idempotencyKey:`chain-exit:${activation.id}`});
+  let alive=true;const handle={processIdentity:{pid:525252+g,pgid:525252+g,birthMarker:`inert-chain-${g}`},isAlive:()=>alive,close:async()=>{alive=false;}};
+  const authority=new ProviderProcessAuthority(db,`inert-chain-provider-${g}`);authority.recover=()=>handle;authority.register(handle,{purpose:'provider Run',projectId:agent.projectId,agentId:agent.id,runId,runFence:1});await authority.terminateAgents(new Set([agent.id]),'inert complete chain');
+  const journal=f.branches.reserveGenerationExit(f.source.id,opened.stepId,g);
+  assert.deepEqual(journal.envelope.hostDependencies.roots.map(r=>r.requestId),[opened.requestId]);
+  assert.equal(journal.envelope.selected.attempts.filter(a=>a.step_execution_id===opened.stepId).length,g+2);
+  const receipt={...journal.source,version:1,custodyId:hash(journal.source.checkpointId),boundaryId:`inert-chain-seal-${g}`,sha256:hash(`private generation ${g}`),byteLength:1};
+  db.transaction(()=>f.branches.sealGenerationExit(f.source.id,opened.stepId,g,receipt))();seals.push(f.branches.generationExitCapture(f.source.id,opened.stepId,g));
+  const deletion=f.store.previewAgentDeletion([agent.id]);f.store.deleteAgentSubtrees([agent.id],deletion.previewHash,x=>coordination.handleAgentDeletion(x));
+  const chat=f.store.commitConversationDeletion(opened.chatId);f.store.finishConversationDeletionStorageCleanup(chat);f.store.markConversationDeletionServerCleanupComplete(opened.chatId);f.branches.resourceRetired(opened.stepId);await f.branches.unitSaver.drain();
+ }
+ const {enableProviderStartCoverage,sealProviderNeverStarted}=await import('../../packages/agents/dist/provider-start-journal.js');
+ enableProviderStartCoverage(db,'fixture-runtime');
+ const current=await openCalledTreeResource(f.store,f.branches,dir,f.source.id,f.branch.id),preview=f.branches.previewGenerationHistoryCapture(f.source.id);
+ assert.equal(preview.generation,generation);assert.equal(preview.consumedAttempts,generation+1);assert.equal(preview.maxAttempts,maxAttempts);
+ assert.deepEqual(preview.historicalPartition.map(v=>v.generation),Array.from({length:generation},(_,i)=>i));
+ assert.ok(preview.historicalPartition.every(v=>stableJson(v.discloseTo)===stableJson([current.agentId])));
+ if(generation>1)assert.throws(()=>f.branches.previewGenerationOneCapture(f.source.id),/requires current generation one/);else assert.equal(f.branches.previewGenerationOneCapture(f.source.id).generation,1);
+ assert.equal(preview.historyKind,parallel?'local_parallel':'serial');
+ // Every missing prior journal is refused independently, including the oldest retained generation.
+ for(let g=0;g<generation;g++)assert.throws(()=>db.transaction(()=>{db.prepare('DELETE FROM branch_commands WHERE execution_id=? AND command_key=?').run(f.source.id,`resource-generation-retired:${current.stepId}:${g}`);assert.throws(()=>f.branches.previewGenerationHistoryCapture(f.source.id),/retirement linkage/);throw Error('restore chain');})(),/restore chain/);
+ for(let g=0;g<generation;g++)assert.throws(()=>db.transaction(()=>{db.prepare('DELETE FROM branch_commands WHERE execution_id=? AND command_key=?').run(f.source.id,`resource-generation-exit:${current.stepId}:${g}`);assert.throws(()=>f.branches.previewGenerationHistoryCapture(f.source.id),/prior-generation seal/);throw Error('restore seal');})(),/restore seal/);
+ assert.throws(()=>f.branches.reserveIssuedResourceCapture(f.source.id,current.stepId,generation,'chain-cut','0'.repeat(64)),/preview/);
+ const journal=f.branches.reserveIssuedResourceCapture(f.source.id,current.stepId,generation,'chain-cut',preview.reviewHash);
+ assert.deepEqual(journal.snapshot.hostDependencies.roots.map(r=>r.requestId),[current.requestId]);assert.equal(journal.snapshot.selected.attempts.find(a=>a.step_execution_id===current.stepId).number,generation+1);
+ assert.equal((journal.snapshot.issuedContinuation.generationRetry.history??[journal.snapshot.issuedContinuation.generationRetry]).length,generation);
+ for(const tamper of [...(generation>1?[v=>v.history.pop(),v=>v.history.reverse(),v=>{v.history[1].selection={...v.history[0].selection};},v=>{v.history[0].retirementSha256='0'.repeat(64);}]:[v=>{v.retirementSha256='0'.repeat(64);}]),v=>{v.originalSelected.attempts=v.originalSelected.attempts.filter(a=>a.step_execution_id!==current.stepId||a.number!==1);},...(parallel?[v=>{v.originalSelected.steps.find(s=>s.id===current.stepId).path_id=v.originalSelected.paths.find(p=>p.parent_path_id===null).id;},v=>{v.originalSelected.steps.find(s=>s.id!==current.stepId).state='prepared';},v=>{v.originalSelected.paths.find(p=>p.parent_path_id===null).state='active';},v=>{v.originalSelected.attempts.find(a=>a.step_execution_id===current.stepId&&a.number===generation+1).request_id=v.originalSelected.attempts.find(a=>a.step_execution_id===current.stepId&&a.number===1).request_id;},v=>{v.originalSelected.attempts.find(a=>a.step_execution_id===current.stepId&&a.number===1).state='outcome_unknown';}]:[])]){
+  const changed=structuredClone(journal.snapshot.issuedContinuation);tamper(changed.generationRetry);
+  assert.equal(issuedResourceContinuationSupported(db,f.source.id,journal.snapshot.selected,journal.snapshot.hostDependencies,changed),false,'omitted/reordered/aliased/rehashed attempt history refuses');
+ }
+
+ const receipt={...journal.source,version:1,custodyId:hash(journal.source.checkpointId),boundaryId:'inert-current-chain',sha256:hash('current chain package'),byteLength:1};
+ assert.throws(()=>db.transaction(()=>{db.prepare('UPDATE branch_executions SET wait_reason=? WHERE id=?').run('changed chain during package capture',f.source.id);assert.throws(()=>f.branches.sealIssuedResourceCapture(f.source.id,current.stepId,'chain-cut',receipt),/frontier changed/);throw Error('restore current cut');})(),/restore current cut/);
+ db.transaction(()=>f.branches.sealIssuedResourceCapture(f.source.id,current.stepId,'chain-cut',receipt))();
+ const saved=f.branches.issuedResourceCapture(f.source.id,current.stepId,'chain-cut');
+ const {BranchResourceService}=await import('../../apps/server/dist/branch-resource-service.js');const resourceService=new BranchResourceService(f.branches,f.store,async()=>assert.fail('delete'),async()=>assert.fail('create'),async()=>assert.fail('delete Chat'));
+ assert.deepEqual(resourceService.listGenerationHistoryCaptures(f.source.id,current.stepId)[0].historicalPartition,preview.historicalPartition);
+ // Empty-client recovery uses only saved capture identity, never a new preview.
+ const status=resourceService.issuedResourceCaptureStatus(f.source.id,current.stepId,'chain-cut'),budget=status.retryBudget;
+ assert.equal(budget.state,'verified');assert.equal(status.consumedAttempts,generation+1);assert.equal(status.maxAttempts,maxAttempts);assert.match(budget.evidenceHash,/^[a-f0-9]{64}$/);
+ assert.deepEqual(resourceService.listGenerationHistoryCaptures(f.source.id,current.stepId)[0].retryBudget,budget);assert.equal(status.historyKind,preview.historyKind);
+ assert.throws(()=>db.transaction(()=>{db.prepare('UPDATE branches SET configuration_json=? WHERE id=?').run('{}',f.branch.id);assert.deepEqual(resourceService.issuedResourceCaptureStatus(f.source.id,current.stepId,'chain-cut').retryBudget,budget);throw Error('restore mutable policy');})(),/restore mutable policy/);
+
+ const {issuedCaptureRetryBudget}=await import('../../packages/agents/dist/index.js');
+ const corrupted=structuredClone(saved);corrupted.snapshot.issuedContinuation.generationRetry.originalSelected.attempts.find(a=>a.number===generation+1).number=1;
+ assert.throws(()=>issuedCaptureRetryBudget(db,f.source.id,corrupted),/budget proof/);
+ const legacy=structuredClone(saved);delete legacy.snapshot.issuedContinuation.generationRetry;
+ assert.deepEqual(issuedCaptureRetryBudget(db,f.source.id,legacy),{state:'unavailable',reason:'missing_saved_retry_proof'});
+
+ coordination.updateRequest({requestId:current.requestId,updateId:'current-chain-completed',kind:'completed',actor:{kind:'agent',id:current.agentId},payload:{text:'current chain result'}});
+ const suffix=await f.claim();f.settle(suffix);await f.branches.unitSaver.drain();
+ const pendingActivations=db.prepare("SELECT id FROM agent_activations WHERE agent_id=? AND state IN ('pending','retry_pending')").all(current.agentId);
+ assert.ok(pendingActivations.length);
+ assert.throws(()=>db.transaction(()=>{db.prepare('DELETE FROM branch_commands WHERE execution_id=? AND command_key=?').run(f.source.id,`resource-generation-retired:${current.stepId}:0`);assert.throws(()=>f.branches.finalResourceExitFence(current.stepId),/retirement linkage/);throw Error('restore history');})(),/restore history/);
+ assert.throws(()=>f.branches.finalResourceExitFence(current.stepId),/Issued executable continuation replay unsupported/);
+ assert.equal(db.prepare("SELECT count(*) n FROM host_lifecycle_commits WHERE kind='branch-generation-exit-fence' AND json_extract(receipt_json,'$.input.conversationId')=?").get(current.chatId).n,0);
+});

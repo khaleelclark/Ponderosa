@@ -26,7 +26,7 @@ function fenceExit(db:Database.Database,input:BranchGenerationExitFenceInput,pur
   if(prior.input_json!==stableJson(normalized)||stableJson(retained)!==prior.receipt_json||payloadHash(retained)!==prior.receipt_sha256||stableJson(retained.input)!==prior.input_json)throw Error('Generation-exit fence replay differs');
   if(purpose==='retry')return {identity,sha256:prior.receipt_sha256};
  }
- const eligibility=purpose==='retry'?"r.retry_draining=1":`r.retry_draining=0 AND r.generation=0 AND r.state IN ('active','draining')
+ const eligibility=purpose==='retry'?"r.retry_draining=1":`r.retry_draining=0 AND r.state IN ('active','draining')
   AND e.parent_execution_id IS NULL AND e.parent_attempt_id IS NULL AND e.call_depth=0 AND e.admission_source='manual'
   AND b.enabled=1 AND b.deleting=0 AND b.active_version_id=e.version_id AND b.binding_revision_id=e.binding_revision_id
   AND EXISTS(SELECT 1 FROM branch_versions v WHERE v.id=e.version_id AND v.branch_id=e.branch_id AND json_extract(v.definition_json,'$.trigger.kind')='manual')

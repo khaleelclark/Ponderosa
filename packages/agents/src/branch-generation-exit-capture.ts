@@ -27,7 +27,7 @@ function verifyIntakeFence(db:Database.Database,journal:Row){
 }
 function identity(db:Database.Database,stepId:string,purpose:'retry'|'final-resource'='retry'){
  const r=db.prepare('SELECT r.*,e.branch_id,e.parent_execution_id,e.version_id,e.binding_revision_id,e.configuration_json FROM branch_resources r JOIN branch_executions e ON e.id=r.execution_id WHERE r.step_execution_id=?').get(stepId) as Row|undefined;
- if(!r||(purpose==='retry'?r.retry_draining!==1:r.retry_draining!==0||r.generation!==0)||!['active','draining'].includes(r.state)||!r.chat_id||r.parent_execution_id)throw Error('Current standalone retry-draining generation required before cleanup');
+ if(!r||(purpose==='retry'?r.retry_draining!==1:r.retry_draining!==0||!Number.isSafeInteger(r.generation)||r.generation<0)||!['active','draining'].includes(r.state)||!r.chat_id||r.parent_execution_id)throw Error('Current standalone retry-draining generation required before cleanup');
  const chat=db.prepare('SELECT project_id,branch_id,branch_execution_id AS execution_id FROM conversations WHERE id=?').get(r.chat_id) as Row|undefined;
  const members=db.prepare('SELECT agent_id FROM branch_resource_members WHERE step_execution_id=? ORDER BY agent_id').all(stepId) as Row[];
  const agentIds=members.map(m=>m.agent_id),live=db.prepare('SELECT id FROM agents WHERE conversation_id=? AND deleted_at IS NULL ORDER BY id').all(r.chat_id) as Row[];
@@ -71,7 +71,7 @@ function envelope(db:Database.Database,journal:Row,expectedRevision?:string,purp
  if(!branch?.enabled||branch.deleting||branch.active_version_id!==scope.versionId||branch.binding_revision_id!==scope.bindingRevisionId||payloadHash(JSON.parse(branch.configuration_json))!==scope.configurationSha256||Object.keys(JSON.parse(branch.configuration_json).secretBindings??{}).length)throw Error('Generation exit current owner pins changed');
  const selected=selectBranchUnit(db,scope.executionId);
  if(!selected.resources||selected.resources.length<1||selected.resources.length>32)throw Error('Bounded local resource owner required');
- const retry=scope.generation>0?captureGenerationOneHost(db,selected,true):undefined;
+ const retry=scope.generation>0?captureGenerationOneHost(db,selected,purpose==='retry'):undefined;
  const hostDependencies=retry?.host??captureBranchHostCut(db,scope.executionId,selected);
  if(!hostDependencies?.coverage.complete||hostDependencies.artifactRefs.length||hostDependencies.bindingPin.requiredSecretRefs.length||hostDependencies.requests.some(({row})=>!['completed','failed','blocked','cancelled','expired','recipient_unavailable','superseded'].includes(row.state))||hostDependencies.joins.some(({row})=>row.state==='open')||hostDependencies.suspensions.some(({row})=>row.state==='open'||row.dependency_kind!=='join'))throw Error('Complete settled historical Request/Join/effect closure required');
  if(db.prepare("SELECT 1 FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id WHERE s.execution_id=? AND (a.state IN ('leased','running','outcome_unknown') OR a.request_id IS NULL AND a.state='waiting') LIMIT 1").get(scope.executionId))throw Error('Owner native/attempt effects remain unsettled');

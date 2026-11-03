@@ -85,7 +85,7 @@ function exactFence(db:Database.Database,agentId:string,projectId:string,convers
  const f=JSON.parse(row.receipt_json),i=f.input;
  if(f.schema!=='branch-generation-exit-fence.v1'||stableJson(f)!==row.receipt_json||payloadHash(f)!==row.receipt_sha256||stableJson(i)!==row.input_json||i.projectId!==projectId||i.conversationId!==conversationId||!Array.isArray(i.agentIds)||!i.agentIds.includes(agentId)||new Set(i.agentIds).size!==i.agentIds.length||!i.agentIds.length||i.agentIds.length>256||!Number.isSafeInteger(i.generation)||i.generation<0||row.identity!==payloadHash({executionId:i.executionId,stepExecutionId:i.stepExecutionId,generation:i.generation})||stableJson(f.members.map((m:any)=>m.agent_id).sort())!==stableJson([...i.agentIds].sort()))throw Error('Exact permanent generation fence differs');
  if(f.purpose!==undefined&&f.purpose!=='final-resource')throw Error('Unknown generation fence purpose');
- if(f.purpose==='final-resource'&&(i.generation!==0||f.resource?.generation!==0||f.resource.retry_draining!==0||f.resource.execution_id!==i.executionId||f.resource.step_execution_id!==i.stepExecutionId||f.resource.chat_id!==i.conversationId))throw Error('Final generation fence resource differs');
+ if(f.purpose==='final-resource'&&(!Number.isSafeInteger(i.generation)||i.generation<0||f.resource?.generation!==i.generation||f.resource.retry_draining!==0||f.resource.execution_id!==i.executionId||f.resource.step_execution_id!==i.stepExecutionId||f.resource.chat_id!==i.conversationId))throw Error('Final generation fence resource differs');
  return {fence:{identity:row.identity,sha256:row.receipt_sha256},input:i};
 }
 /** Server invokes only after draining runtime producers AND tracked adapter operations. */
@@ -165,8 +165,8 @@ export function verifyFinalProviderStarts(source:FinalProviderStartInventory,sco
  const fences=source.rows.filter(r=>r.kind==='branch-generation-exit-fence');
  if(fences.length!==1)throw Error('Exact final provider fence required');
  const fenceRow=fences[0]!,f=values.get(`branch-generation-exit-fence:${fenceRow.identity}`),i=f.input;
- if(f.schema!=='branch-generation-exit-fence.v1'||f.purpose!=='final-resource'||i.projectId!==scope.projectId||i.conversationId!==scope.conversationId||i.generation!==0
-  ||f.resource?.generation!==0||f.resource.retry_draining!==0||f.resource.execution_id!==i.executionId||f.resource.step_execution_id!==i.stepExecutionId||f.resource.chat_id!==i.conversationId
+ if(f.schema!=='branch-generation-exit-fence.v1'||f.purpose!=='final-resource'||i.projectId!==scope.projectId||i.conversationId!==scope.conversationId||!Number.isSafeInteger(i.generation)||i.generation<0
+  ||f.resource?.generation!==i.generation||f.resource.retry_draining!==0||f.resource.execution_id!==i.executionId||f.resource.step_execution_id!==i.stepExecutionId||f.resource.chat_id!==i.conversationId
   ||fenceRow.identity!==payloadHash({executionId:i.executionId,stepExecutionId:i.stepExecutionId,generation:i.generation})
   ||stableJson(i.agentIds)!==stableJson([...scope.agentIds].sort())||stableJson(f.members.map((m:any)=>m.agent_id).sort())!==stableJson(i.agentIds))throw Error('Final provider fence differs');
  const fence={identity:fenceRow.identity,sha256:fenceRow.receipt_sha256};
