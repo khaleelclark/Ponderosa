@@ -4,7 +4,7 @@ import {assertReviewedProviderDestination,applyReviewedProviderData,createReview
 import {planFilesystemMetadata} from './portable-filesystem-metadata.js';
 import {createHash} from 'node:crypto';
 import {constants} from 'node:fs';
-import {importWorkingFiles,finalizeWorkingFolderMetadata} from './portable-working-files.js';
+import {importWorkingFiles,finalizeWorkingFolderMetadata,assertWorkingRootIdentity,type WorkingRootIdentity} from './portable-working-files.js';
 import { execFile, execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { lstat, mkdir, realpath, rmdir, readdir, open } from "@ponderosa/native-host/fs/promises";
@@ -310,13 +310,14 @@ export class AgentWorkingCopyService {
   }
 
   /** Fresh local ownership is checked before any imported file enters a live root. */
-  async populateImportedRoot(agent:AgentDto,project:ProjectDto,files:Parameters<typeof importWorkingFiles>[1],directories:Parameters<typeof importWorkingFiles>[2],metadata:Parameters<typeof importWorkingFiles>[3],backupRoot:string,links:Parameters<typeof importWorkingFiles>[5]=[],cyclicLinks:Parameters<typeof importWorkingFiles>[6]='refuse',activation?:import('@ponderosa/core').ReviewedUserDataActivation,metadataActivation?:import('@ponderosa/core').ReviewedMetadataActivation,rootDestinations?:Readonly<Record<string,string>>,deferFinalMetadata=false,deferLinks=false):Promise<void> {
+  async populateImportedRoot(agent:AgentDto,project:ProjectDto,files:Parameters<typeof importWorkingFiles>[1],directories:Parameters<typeof importWorkingFiles>[2],metadata:Parameters<typeof importWorkingFiles>[3],backupRoot:string,links:Parameters<typeof importWorkingFiles>[5]=[],cyclicLinks:Parameters<typeof importWorkingFiles>[6]='refuse',activation?:import('@ponderosa/core').ReviewedUserDataActivation,metadataActivation?:import('@ponderosa/core').ReviewedMetadataActivation,rootDestinations?:Readonly<Record<string,string>>,deferFinalMetadata=false,deferLinks=false):Promise<WorkingRootIdentity> {
     if(!this.modeChanges.has(agent.id))throw new Error('Live import was not fenced');
     const prepared=await this.inspectPreparedImportedRoot(agent,project),staged=prepared&&this.stagedImportedGitRoots.get(prepared.rootPath);
     if(staged){const stat=await lstat(agent.workingCopy.rootPath,{bigint:true});if(staged.phase!=='allocated'||stat.dev!==staged.device||stat.ino!==staged.inode||staged.agentId&&staged.agentId!==agent.id)throw new Error('Staged Git root changed or population was already attempted');staged.phase='populating';}
     const resolved=staged?{id:agent.workingCopy.id,mode:agent.workingCopy.mode,rootPath:agent.workingCopy.repositoryRoot?await this.repositoryRoot(agent.id,agent.workingCopy,project):agent.workingCopy.rootPath}:await this.resolve(agent,project);
     const locallyContained=agent.workingCopy.importedParent!==undefined&&await this.containedRootPath(agent.workingCopy.importedParent)===resolved.rootPath;
     const rootIdentity=await lstat(resolved.rootPath,{bigint:true});
+    if(staged&&(rootIdentity.dev!==staged.device||rootIdentity.ino!==staged.inode))throw new Error('Staged Git root changed before byte-phase identity handoff');
     this.importedRootCustody.set(resolved.rootPath,{device:rootIdentity.dev,inode:rootIdentity.ino,agentId:agent.id});
     const activationRoot=activation?rootIdentity:undefined;
     const original=activation||metadataActivation?files.find(file=>file.path===REVIEWED_USER_DATA_PATH):undefined;
@@ -332,7 +333,8 @@ export class AgentWorkingCopyService {
       if(activation.git&&!staged)await this.verifyImportedGitRoot(project,original!.sha256,resolved.rootPath);
       if(resolved.mode!=='separate_git'&&!locallyContained&&!this.store.isManagedProjectImportDestination(project.id))throw new Error('Native Shared activation requires the NEW managed import destination');
     }
-    await importWorkingFiles(resolved.rootPath,files,directories,activation||metadataActivation?undefined:metadata,{backupRoot},links,cyclicLinks,metadataActivation,deferFinalMetadata||!!activation||!!metadataActivation,rootDestinations,deferLinks);
+    const issuedIdentity=await importWorkingFiles(resolved.rootPath,files,directories,activation||metadataActivation?undefined:metadata,{backupRoot,identity:{device:rootIdentity.dev.toString(),inode:rootIdentity.ino.toString()}},links,cyclicLinks,metadataActivation,deferFinalMetadata||!!activation||!!metadataActivation,rootDestinations,deferLinks);
+    await assertWorkingRootIdentity(resolved.rootPath,issuedIdentity);
     if(activation&&original){
       const current=staged?resolved:await this.resolve(agent,project);
       if(current.rootPath!==resolved.rootPath||!this.modeChanges.has(agent.id))throw new Error('Native activation root membership changed');
@@ -360,16 +362,18 @@ export class AgentWorkingCopyService {
     if(metadataActivation&&!deferFinalMetadata&&!staged&&metadataPlan?.filesystemMetadata){
       const current=await this.resolve(agent,project);
       if(current.rootPath!==resolved.rootPath||!this.modeChanges.has(agent.id))throw new Error('Metadata root membership changed');
-      await finalizeWorkingFolderMetadata(current.rootPath,files,directories,metadata,links,metadataActivation);
+      await finalizeWorkingFolderMetadata(current.rootPath,files,directories,metadata,links,metadataActivation,undefined,issuedIdentity);
     }
+    await assertWorkingRootIdentity(resolved.rootPath,issuedIdentity);
     if(staged)staged.phase='populated';
+    return issuedIdentity;
   }
 
   async finalizeImportedRootMetadata(agent:AgentDto,project:ProjectDto,files:Parameters<typeof importWorkingFiles>[1],directories:Parameters<typeof importWorkingFiles>[2],metadata:Parameters<typeof importWorkingFiles>[3],links:Parameters<typeof importWorkingFiles>[5],activation?:import('@ponderosa/core').ReviewedMetadataActivation,counts?:ReadonlyMap<string,bigint>):Promise<void>{
     if(!this.modeChanges.has(agent.id))throw new Error('Final live metadata requires its fenced imported destination');
     const root=await this.resolve(agent,project),proof=this.importedRootCustody.get(root.rootPath),stat=await lstat(root.rootPath,{bigint:true});
     if(!proof||proof.agentId!==agent.id||proof.device!==stat.dev||proof.inode!==stat.ino||await realpath(root.rootPath)!==root.rootPath)throw new Error('Final metadata root lost its fresh local custody');
-    await finalizeWorkingFolderMetadata(root.rootPath,files,directories,metadata,links,activation,counts);
+    await finalizeWorkingFolderMetadata(root.rootPath,files,directories,metadata,links,activation,counts,{device:proof.device.toString(),inode:proof.inode.toString()});
   }
 
   /** Local storage authority; a source package never supplies this path. */

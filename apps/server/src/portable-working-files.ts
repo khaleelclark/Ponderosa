@@ -219,14 +219,29 @@ export async function exportWorkingFiles(rootPath:string,selected:readonly strin
   return {files,artifacts,bytes};
 }
 
+export interface WorkingRootIdentity {device:string;inode:string}
+async function observedWorkingRootIdentity(destination:string):Promise<WorkingRootIdentity>{
+  const stat=await fs.lstat(destination,{bigint:true});
+  if(!stat.isDirectory()||stat.isSymbolicLink()||await fs.realpath(destination)!==destination)throw new Error('Imported working root is not canonical');
+  return {device:stat.dev.toString(),inode:stat.ino.toString()};
+}
+/** Locally issued identity only. A later phase never upgrades a new observation into custody. */
+export async function assertWorkingRootIdentity(destination:string,expected:WorkingRootIdentity):Promise<void>{
+  if(!expected||typeof expected.device!=='string'||typeof expected.inode!=='string'||![expected.device,expected.inode].every(value=>/^(?:0|[1-9][0-9]{0,31})$/.test(value)))throw new Error('Invalid issued working-root identity');
+  const actual=await observedWorkingRootIdentity(destination);
+  if(actual.device!==expected.device||actual.inode!==expected.inode)throw Object.assign(new Error('Imported working-root identity changed; preserve original and replacement folders'),{code:'ERR_WORKING_ROOT_IDENTITY',expected,observed:actual});
+}
+
 /** Exclusively create a new user-selected folder. Failure retains every byte for recovery. */
 /** Shared link phase; global root imports call this only after every original exists. */
-async function placeWorkingLinks(destination:string,links:readonly PortableWorkingLinkDto[],rootDestinations:Readonly<Record<string,string>>|undefined,preserveBaseline:(relative:string)=>Promise<void>):Promise<void>{
+async function placeWorkingLinks(destination:string,links:readonly PortableWorkingLinkDto[],rootDestinations:Readonly<Record<string,string>>|undefined,preserveBaseline:(relative:string)=>Promise<void>,assertCurrent?:()=>Promise<void>):Promise<void>{
     for(const link of [...links].sort((a,b)=>(a.kind==='hardlink'?0:1)-(b.kind==='hardlink'?0:1))){
+      await assertCurrent?.();
       const target=path.join(destination,link.path),parent=path.dirname(target);
       let current=destination;
       for(const component of link.path.split('/').slice(0,-1)){
         current=path.join(current,component);
+        await assertCurrent?.();
         try{await fs.mkdir(current,{mode:0o700});}catch(error){if((error as NodeJS.ErrnoException).code!=='EEXIST')throw error;}
         if(!(await fs.lstat(current)).isDirectory()||await fs.realpath(current)!==current)throw new Error('Working-link destination parent changed');
       }
@@ -261,19 +276,19 @@ async function preserveWorkingBaseline(destination:string,relative:string,freshR
 }
 
 /** Existing imported root only. A collision preserves the observed entry and refuses, never overwrites it. */
-export async function importWorkingLinks(destination:string,links:readonly PortableWorkingLinkDto[],rootDestinations?:Readonly<Record<string,string>>,freshRoot?:{backupRoot:string}):Promise<void>{
+export async function importWorkingLinks(destination:string,links:readonly PortableWorkingLinkDto[],rootDestinations?:Readonly<Record<string,string>>,freshRoot?:{backupRoot:string},expectedIdentity?:WorkingRootIdentity):Promise<void>{
  if(await fs.realpath(destination)!==destination)throw new Error('Imported link root changed');
  for(const link of links){portableLinkTarget(link);if(link.targetRootRef&&!rootDestinations?.[link.targetRootRef])throw new Error('Mapped link target root is missing');}
- const identity=await fs.lstat(destination,{bigint:true});
- if(!identity.isDirectory()||identity.isSymbolicLink())throw new Error('Imported link root is not a directory');
+ const identity=expectedIdentity??await observedWorkingRootIdentity(destination);
+ await assertWorkingRootIdentity(destination,identity);
  if(freshRoot&&(freshRoot.backupRoot!==path.join(destination,'.ponderosa-import-backups')||await fs.realpath(freshRoot.backupRoot)!==freshRoot.backupRoot))throw new Error('Fresh link recovery folder changed');
- const check=async()=>{const current=await fs.lstat(destination,{bigint:true});if(!current.isDirectory()||current.dev!==identity.dev||current.ino!==identity.ino||await fs.realpath(destination)!==destination)throw new Error('Imported link root identity changed');};
+ const check=()=>assertWorkingRootIdentity(destination,identity);
  await check();
- await placeWorkingLinks(destination,links,rootDestinations,async relative=>{await check();await preserveWorkingBaseline(destination,relative,freshRoot);});
+ await placeWorkingLinks(destination,links,rootDestinations,async relative=>{await check();await preserveWorkingBaseline(destination,relative,freshRoot);},check);
  await check();
 }
 
-export async function importWorkingFiles(destination:string,files:readonly {path:string;data:Buffer;sha256:string;mode?:number;mtime?:string}[],directories:readonly {path:string;mode:number;mtime:string}[]=[],rootMetadata?:{mode:number;mtime:string},freshRoot?:{backupRoot:string},links:readonly PortableWorkingLinkDto[]=[],cyclicLinks:'refuse'|'passive_in_root'='refuse',metadataActivation?:ReviewedMetadataActivation,deferMetadataApplication=false,rootDestinations?:Readonly<Record<string,string>>,deferLinks=false):Promise<void>{
+export async function importWorkingFiles(destination:string,files:readonly {path:string;data:Buffer;sha256:string;mode?:number;mtime?:string}[],directories:readonly {path:string;mode:number;mtime:string}[]=[],rootMetadata?:{mode:number;mtime:string},freshRoot?:{backupRoot:string;identity?:WorkingRootIdentity},links:readonly PortableWorkingLinkDto[]=[],cyclicLinks:'refuse'|'passive_in_root'='refuse',metadataActivation?:ReviewedMetadataActivation,deferMetadataApplication=false,rootDestinations?:Readonly<Record<string,string>>,deferLinks=false):Promise<WorkingRootIdentity>{
   validateWorkingTopology(files,directories,links,cyclicLinks);
   for(const link of links)if(link.targetRootRef){
     const targetRoot=rootDestinations?.[link.targetRootRef];
@@ -296,21 +311,28 @@ export async function importWorkingFiles(destination:string,files:readonly {path
   if(!path.isAbsolute(destination)||path.resolve(destination)!==destination)throw new Error('Choose an absolute new working-files destination');
   const parent=await fs.realpath(path.dirname(destination));
   if(parent!==path.dirname(destination))throw new Error('Working-files destination parent must be canonical');
+  let issuedIdentity:WorkingRootIdentity;
   if(freshRoot){
     if(await fs.realpath(destination)!==destination)throw new Error('Fresh working root must be canonical');
     if(freshRoot.backupRoot!==path.join(destination,'.ponderosa-import-backups'))throw new Error('Invalid fresh-root recovery folder');
+    issuedIdentity=freshRoot.identity??await observedWorkingRootIdentity(destination);
+    await assertWorkingRootIdentity(destination,issuedIdentity);
     await fs.mkdir(freshRoot.backupRoot,{mode:0o700});
     if(await fs.realpath(freshRoot.backupRoot)!==freshRoot.backupRoot)throw new Error('Recovery folder changed');
-  }else await fs.mkdir(destination,{mode:0o700});
+  }else{await fs.mkdir(destination,{mode:0o700});issuedIdentity=await observedWorkingRootIdentity(destination);}
+  const checkRoot=()=>assertWorkingRootIdentity(destination,issuedIdentity);
   const preserveBaseline=(relative:string)=>preserveWorkingBaseline(destination,relative,freshRoot);
   try{
+    await checkRoot();
     for(const folder of [...directories].sort((a,b)=>a.path.split('/').length-b.path.split('/').length)){
+      await checkRoot();
       const relative=portableWorkingPath(folder.path);
       const target=path.join(destination,relative);
       try{await fs.mkdir(target,{mode:0o700});}catch(error){if(!freshRoot||(error as NodeJS.ErrnoException).code!=='EEXIST'||!(await fs.lstat(target)).isDirectory())throw error;}
       if(await fs.realpath(target)!==target)throw new Error('Destination directory changed');
     }
     for(const file of files){
+      await checkRoot();
       const relative=portableWorkingPath(file.path),parts=relative.split('/');let dir=destination;
       for(const component of parts.slice(0,-1)){
         dir=path.join(dir,component);
@@ -322,7 +344,7 @@ export async function importWorkingFiles(destination:string,files:readonly {path
       const handle=await fs.open(path.join(destination,relative),'wx',0o600);
       try{await handle.writeFile(file.data);await handle.sync();}finally{await handle.close();}
     }
-    if(!deferLinks)await placeWorkingLinks(destination,links,rootDestinations,preserveBaseline);
+    if(!deferLinks)await placeWorkingLinks(destination,links,rootDestinations,preserveBaseline,checkRoot);
     if(reviewedData){
       // Separate repository only: never overwrite this working root's native-owned .git or provider settings.
       if(reviewedData.git)await recreateReviewedGit(path.join(destination,'.ponderosa-portable-review','git-repository'),reviewedData.git);
@@ -337,20 +359,26 @@ export async function importWorkingFiles(destination:string,files:readonly {path
         await fs.writeFile(path.join(folder,'manifest.json'),JSON.stringify({activation:'inert_review_only',files:manifest,directories:reviewedData.providerDirectories},null,2),{flag:'wx',mode:0o600});
       }
     }
-    if(!deferMetadataApplication)await finalizeWorkingFolderMetadata(destination,files,directories,rootMetadata,links,metadataActivation);
+    if(!deferMetadataApplication)await finalizeWorkingFolderMetadata(destination,files,directories,rootMetadata,links,metadataActivation,undefined,issuedIdentity);
+    await checkRoot();
+    return issuedIdentity;
   }catch(error){throw Object.assign(new Error(`Working-files import incomplete; retained files at ${destination}: ${(error as Error).message}`,{cause:error}),{code:(error as {code?:string}).code??'ERR_WORKING_FILES_IMPORT_PARTIAL',partialStatePossible:true,observed:(error as {observed?:unknown}).observed??null});}
 }
 
 /** Final ordinary/native metadata, after all root contents and cross-root aliases exist. */
-export async function finalizeWorkingFolderMetadata(destination:string,files:Parameters<typeof importWorkingFiles>[1],directories:Parameters<typeof importWorkingFiles>[2],rootMetadata:Parameters<typeof importWorkingFiles>[3],links:readonly PortableWorkingLinkDto[]=[],activation?:ReviewedMetadataActivation,expectedLinkCounts?:ReadonlyMap<string,bigint>):Promise<void>{
+export async function finalizeWorkingFolderMetadata(destination:string,files:Parameters<typeof importWorkingFiles>[1],directories:Parameters<typeof importWorkingFiles>[2],rootMetadata:Parameters<typeof importWorkingFiles>[3],links:readonly PortableWorkingLinkDto[]=[],activation?:ReviewedMetadataActivation,expectedLinkCounts?:ReadonlyMap<string,bigint>,expectedIdentity?:WorkingRootIdentity):Promise<void>{
+  const identity=expectedIdentity??await observedWorkingRootIdentity(destination),checkRoot=()=>assertWorkingRootIdentity(destination,identity);
+  await checkRoot();
   const original=files.find(file=>file.path===REVIEWED_USER_DATA_PATH);
   const reviewed=original?parseReviewedUserData(original.data):undefined;
   if(activation){
     if(!original||createHash('sha256').update(original.data).digest('hex')!==original.sha256||!reviewed?.filesystemMetadata)throw new Error('Final metadata original changed or is absent');
+    await checkRoot();
     await applyFilesystemMetadata(destination,reviewed.filesystemMetadata,reviewed.selection,activation,links,expectedLinkCounts);
   }
   if(!activation||!reviewed?.selection.extendedMetadata){
     for(const file of files){
+      await checkRoot();
       const target=path.join(destination,portableWorkingPath(file.path));
       if(await fs.realpath(path.dirname(target))!==path.dirname(target))throw new Error('Final working-file parent changed');
       const handle=await openPortableRegular(target);
@@ -361,23 +389,27 @@ export async function finalizeWorkingFolderMetadata(destination:string,files:Par
         while(offset<file.data.length){const read=await handle.read(buffer,0,Math.min(buffer.length,file.data.length-offset),offset);if(!read.bytesRead)throw new Error('Final working file shortened');hash.update(buffer.subarray(0,read.bytesRead));offset+=read.bytesRead;}
         const after=await handle.stat({bigint:true});
         if(hash.digest('hex')!==file.sha256||before.dev!==after.dev||before.ino!==after.ino||before.size!==after.size||before.mtimeNs!==after.mtimeNs||before.ctimeNs!==after.ctimeNs)throw new Error('Final working-file content changed; preserve current bytes');
+        await checkRoot();
         if(file.mode!==undefined)await handle.chmod(file.mode&0o777);
         if(file.mtime)await handle.utimes(new Date(file.mtime),new Date(file.mtime));
         await handle.sync();
       }finally{await handle.close();}
     }
     for(const folder of [...(directories??[])].sort((a,b)=>b.path.split('/').length-a.path.split('/').length)){
+      await checkRoot();
       const target=path.join(destination,portableWorkingPath(folder.path));
       if(await fs.realpath(target)!==target)throw new Error('Destination directory changed');
       const handle=await fs.open(target,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);
       try{await handle.chmod(folder.mode&0o777);await handle.utimes(new Date(folder.mtime),new Date(folder.mtime));}finally{await handle.close();}
     }
     if(rootMetadata){
+      await checkRoot();
       if(await fs.realpath(destination)!==destination)throw new Error('Destination root changed');
       const handle=await fs.open(destination,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);
       try{await handle.chmod(rootMetadata.mode&0o777);await handle.utimes(new Date(rootMetadata.mtime),new Date(rootMetadata.mtime));}finally{await handle.close();}
     }
   }
+  await checkRoot();
 }
 export function workingLinkCounts(ref:string,roots:readonly {ref:string;links:readonly PortableWorkingLinkDto[]}[]):Map<string,bigint>{
   const counts=new Map<string,bigint>();

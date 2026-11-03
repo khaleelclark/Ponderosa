@@ -142,7 +142,9 @@ test('native Separate import owns a fresh independent repository, preserves stag
   const files=pkg.agents[0].workingFiles.map(file=>{const artifact=pkg.agents[0].artifacts.find(artifact=>artifact.ref===file.artifactRef),bytes=Buffer.from(artifact.dataBase64,'base64');return {path:file.path,data:bytes,sha256:createHash('sha256').update(bytes).digest('hex')};});
   release=service.beginModeChange(agent.id);
   try{
-   await service.populateImportedRoot(imported,project,files,[],undefined,path.join(imported.workingCopy.rootPath,'.ponderosa-import-backups'),[],'refuse',{git:true,harness:false});
+   const issued=await service.populateImportedRoot(imported,project,files,[],undefined,path.join(imported.workingCopy.rootPath,'.ponderosa-import-backups'),[],'refuse',{git:true,harness:false});
+   const {lstat}=await import('node:fs/promises'),copied=await lstat(imported.workingCopy.rootPath,{bigint:true});
+   assert.deepEqual(issued,{device:copied.dev.toString(),inode:copied.ino.toString()},'The working-copy service forwards the exact populated-root identity');
    const receipts=[];
    await service.completeImportedGitRoots(project,pkg,{work:imported.workingCopy.rootPath},{git:true,harness:false},receipt=>receipts.push(structuredClone(receipt)),[agent.id]);
    assert.equal(receipts.at(-1).state,'completed');

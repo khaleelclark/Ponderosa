@@ -95,3 +95,39 @@ test('two-phase restore preserves valid cyclic root dependencies and retained ba
   assert.equal(backups.length,1);assert.equal(await readFile(path.join(backupRoot,backups[0]),'utf8'),'baseline retained');
  }finally{await rm(root,{recursive:true,force:true});}
 });
+
+
+test('deferred links and final metadata reject a substituted root before any mutation',async()=>{
+ const {rename,readdir,lstat}=await import('node:fs/promises');
+ const root=await mkdtemp(path.join(tmpdir(),'portable-deferred-root-custody-'));
+ try{
+  const destination=path.join(root,'destination'),retained=path.join(root,'retained-original');
+  const links=[{kind:'symlink',path:'parent/alias',target:'missing'}];
+  const identity=await importWorkingFiles(destination,[],[],undefined,undefined,links,'refuse',undefined,true,undefined,true);
+  const original=await lstat(destination,{bigint:true});
+  assert.deepEqual(identity,{device:original.dev.toString(),inode:original.ino.toString()});
+  await rename(destination,retained);await mkdir(destination);await writeFile(path.join(destination,'sentinel'),'replacement bytes');
+  const replacement=await lstat(destination,{bigint:true});
+  await assert.rejects(importWorkingLinks(destination,links,undefined,undefined,identity),error=>error.code==='ERR_WORKING_ROOT_IDENTITY');
+  assert.deepEqual(await readdir(destination),['sentinel'],'A rejected deferred phase must not even create link parents');
+  await assert.rejects(finalizeWorkingFolderMetadata(destination,[],[],{mode:0o700,mtime:'2000-01-01T00:00:00.000Z'},links,undefined,undefined,identity),error=>error.code==='ERR_WORKING_ROOT_IDENTITY');
+  const after=await lstat(destination,{bigint:true});
+  assert.equal(after.mode,replacement.mode);assert.equal(after.mtimeNs,replacement.mtimeNs);
+  assert.equal(await readFile(path.join(destination,'sentinel'),'utf8'),'replacement bytes');
+  assert.deepEqual(await readdir(retained),[],'Original issued root remains preserved');
+ }finally{await rm(root,{recursive:true,force:true});}
+});
+
+test('fresh-root population retains its prior allocation identity before creating backups',async()=>{
+ const {rename,readdir,lstat}=await import('node:fs/promises');
+ const root=await mkdtemp(path.join(tmpdir(),'portable-fresh-root-custody-'));
+ try{
+  const destination=path.join(root,'destination'),retained=path.join(root,'retained-original');await mkdir(destination);
+  const original=await lstat(destination,{bigint:true}),identity={device:original.dev.toString(),inode:original.ino.toString()};
+  await rename(destination,retained);await mkdir(destination);
+  const data=Buffer.from('imported bytes');
+  await assert.rejects(importWorkingFiles(destination,[{path:'new.txt',data,sha256:createHash('sha256').update(data).digest('hex')}],[],undefined,{backupRoot:path.join(destination,'.ponderosa-import-backups'),identity}),error=>error.code==='ERR_WORKING_ROOT_IDENTITY');
+  assert.deepEqual(await readdir(destination),[],'No backup or imported file may be created in a substituted root');
+  assert.deepEqual(await readdir(retained),[]);
+ }finally{await rm(root,{recursive:true,force:true});}
+});

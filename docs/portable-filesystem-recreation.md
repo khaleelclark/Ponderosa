@@ -164,3 +164,23 @@ open/replacement boundary is still unqualified: no O_EVTONLY, Windows handle,
 or other platform semantics are guessed here. That remaining boundary is neither
 a True verdict nor an approved Bible exception. Native extended metadata remains
 explicitly Linux-only. This tranche does not claim an independent-writer snapshot.
+
+## Root identity across deferred phases
+
+The byte phase returns its locally issued device/inode strings and verifies them
+again at completion. A fresh live root carries its earlier allocation identity
+into population before a backup or file is created. Working-copy population
+forwards that exact identity.
+
+Deferred links accept that identity as the fifth argument (the fourth remains
+the optional baseline-backup folder). It is checked before parent/link mutation
+and during the phase; a replacement observation is never promoted to original
+custody. Final metadata accepts the same identity after link counts and checks it
+before mutation and at completion. Live finalization also forwards its original
+working-copy custody proof. Rejection preserves both folders and all baselines.
+These are observed identity checks, not an independent-writer snapshot contract.
+
+New regressions replace an issued root between byte and link/metadata phases and
+require refusal before parent creation or metadata changes. Another verifies that
+a prior fresh allocation identity refuses replacement before backup creation.
+Execution remains deferred until all implementation is integrated.
