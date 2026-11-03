@@ -895,7 +895,7 @@ retention remain. No dependency or runtime qualification is introduced.
 
 Harness selection means the listed project-root configuration families below;
 it never reads the host home profile. Unsupported global/native settings are
-outside that selection. Missing listed files are absent, not invented defaults.
+outside that selection. Initially absent fixed files or family roots are absent, not invented defaults; discovered entries disappearing fail.
 History can contain sensitive user data: the existing full-export warning still
 applies. Recognized credential data refuses or is explicitly removed from settings.
 
@@ -909,7 +909,7 @@ credential helper or Git command runs during recreation. Recovery originals and
 partial files remain if creation fails. This is a usable review repository, not
 automatic adoption into the destination's active Branch/worktree.
 
-Sanitized provider configuration also recreates as nonexecutable `N.review` files
+Sanitized settings and exact accepted non-settings provider text also recreate as nonexecutable `N.review` files
 under `.ponderosa-portable-review/provider-files`, with an original-path mapping in
 `manifest.json`. Humans can read the actual retained configuration without base64
 decoding. Original `.claude`/`.codex` paths are not installed; settings activation
@@ -927,7 +927,7 @@ still requires separate human review/action.
 | `git.packRetentionReview[]` | Required sorted source-pack retention records: pack identity and exact pack/v1-or-v2-index/keep/MTME originals plus independently checked index-ordered OIDs/mtimes. Empty keep differs from absence. Retained only as inactive evidence; see [supported layouts and limits](#pack-retention-originals-keep-mtimes). No active GC policy or destination pack layout. |
 | `git.configurationReview[].{key,value,implicitBoolean?,source?}` | Nonsecret local configuration is retained as ordered inert review entries, including repeated keys, valueless booleans and hook/fsmonitor command text. Optional `source:"config.worktree"` distinguishes exact local worktree settings; omitted source means local `config`. Local include/includeIf declarations now refuse before repository-aware plumbing, so external settings are neither resolved nor silently used. All credential-helper/username fields and password/token/authorization/extra-header fields and source core.worktree metadata are excluded. `extensions.worktreeConfig` and sparse booleans survive only as inactive review entries. URL userinfo is refused from the retained configuration. Source configuration is never installed as executable destination config. |
 | Git hook files | Excluded explicitly; no hook bytes or executable files are copied. The review repository disables hooks/fsmonitor. A nonsecret local hooksPath value remains inactive configuration review text, not a copied hook or a destination path choice. |
-| `providerFiles[].{path,dataBase64,removedSecretFields}` | Supported project-root Claude/Codex/MCP settings, instructions and custom commands/agents/skills/rules remain inactive review data. JSON known secret fields are removed structurally. Codex TOML uses the shared [bounded structured reader](#bounded-toml-syntax): recognized credential assignments, inline members/subtrees and table namespaces are removed after full original validation; accepted nonsecret sibling source spans survive. Import enforces the same grammar and rejects retained known-secret fields. Unsupported forms or remaining recognizable credentials refuse. No commands, hooks, permissions or servers are activated. |
+| `providerFiles[].{path,dataBase64,removedSecretFields}` | Supported project-root Claude/Codex/MCP settings, instructions and custom commands/agents/skills/rules remain inactive review data. Only `.mcp.json`, `.claude/settings.json` and `.claude/settings.local.json` receive structural JSON secret removal. All selected non-settings text preserves exact accepted UTF-8 bytes/BOM regardless of extension; recognizable secrets refuse rather than rewriting originals. Codex TOML uses the shared [bounded structured reader](#bounded-toml-syntax): recognized credential assignments, inline members/subtrees and table namespaces are removed after full original validation; accepted nonsecret sibling source spans survive. Import enforces the same grammar and rejects retained known-secret fields. Unsupported forms or remaining recognizable credentials refuse. No commands, hooks, permissions or servers are activated. |
 | `git.sparseReview.{patternsBase64,directories}` | Required explicit inactive data: exact local `info/sparse-checkout` bytes (or literal null when absent) and original collapsed directory path/mode/stage/OID/flag records. Import re-expands verified trees and requires exact equality with the covered full logical index; no pattern matching, settings installation or sparse activation. |
 | `exclusions` | Explicit format/credential/ownership limitations, without secret values. An exclusion is not evidence that the data is unnecessary. |
 | `recreationScope.absoluteLinks/crossRootLinks/specialNodes` | Required literal `refuse`; no external authority, dereference or conversion to regular bytes. |
@@ -938,7 +938,7 @@ Project-root `.mcp.json` and recursive regular custom `.claude/rules` files use
 only the explicit harness selection and the same bounded, canonical-parent,
 no-follow original reader and import whitelist as other provider review files.
 MCP JSON uses recursive known-secret field removal; remaining nonsecret server
-settings survive, and remaining recognizable credentials refuse. Rule text and
+settings survive, and remaining recognizable credentials refuse. Rule originals retain exact accepted UTF-8 bytes/BOM regardless of extension; support JSON is not settings. Rule text and
 accepted literal environment references remain uninterpreted: no expansion,
 rule-import traversal, home-profile reads, server connections or tool grants.
 Links and special nodes refuse. Import preserves original path mappings in
@@ -1325,3 +1325,47 @@ generated copies. Other provider families, including Claude memory/hooks/output
 styles and Codex/TOML/Git/settings, retain their behavior. Existing sensitive-data
 warning and independent-writer limits remain. Source review only: no tests,
 native equivalence, round-trip, atomicity or whole-portability acceptance.
+
+### Exact already-selected non-settings provider text
+
+The existing explicit harness selection now preserves exact accepted regular
+UTF-8 bytes, including BOM, for `.claude/CLAUDE.md`, `.codex/instructions.md` and
+recursive contained originals in `.claude/commands`, `.claude/agents`,
+`.claude/rules`, `.codex/skills` and `.codex/rules`. This fixes fidelity of existing
+selection; no additional native directories or discovery rules are introduced.
+Existing contained layouts remain accepted, including top-level files and
+noncredential dot-prefixed components in these recursive families. No named
+Agent/skill, `SKILL.md`, frontmatter or extension requirement is added to them.
+Previously completed Claude memory/skills/hooks retain their own path rules.
+
+One shared opaque classification now supplies live selection, parsed import,
+UTF-8/BOM preservation, known-secret refusal and file/ancestor collision checks.
+A support-file `.json` suffix never triggers settings parsing or rewriting.
+Only exact `.mcp.json`, `.claude/settings.json` and `.claude/settings.local.json`
+use structural secret removal; `.codex/config.toml` and `.codex/agents/*.toml`
+retain the existing bounded span-removal grammar. Other selected text is opaque:
+recognizable/embedded known secrets refuse instead of rewriting accepted bytes.
+Arbitrary concealed secrets and sensitive prose remain outside this guarantee.
+
+The existing canonical-parent, single-link no-follow bounded reader now applies
+selected-root ownership to these text originals and every traversed directory,
+including fixed instruction files when no opaque directory exists. This is the
+same contained-original protection as memory/hooks/skills, not native ownership
+adoption. Initial absence of a fixed file or family root is optional. Once an
+entry is observed, disappearance fails, including between a fixed-file absence
+probe and its read. Malformed/empty/dot-dot/null/backslash/escaping/credential
+paths, links/special nodes, foreign owners, invalid UTF-8, imported file/ancestor
+collisions, observed drift and exceeded bounds refuse with source bytes retained.
+Shared 1,000-entry / 1 MiB original / 32 MiB aggregate limits are unchanged.
+
+Shared working export validates the manifest; import parses it before numbered
+mode0600 nonexecutable `.review` copies with exact path/removal metadata.
+Retained-original re-export uses validated original manifest bytes, never generated
+copies. No caller, DTO/schema/version/dependency/cap change is needed. Binary
+resources, empty directories and original executable mode/mtime remain unsupported
+by this text/file DTO. There is no instruction/frontmatter/Markdown/JSON/script
+interpretation beyond known-secret inspection, reference chasing, environment/
+path/import expansion, native binding/install/activation/chmod/reload/grants/spawn,
+provider/script execution, source write or outside-root discovery. Existing
+sensitive-data warning and independent-writer limits remain. Source-only review:
+no tests, native equivalence, round-trip, atomicity or whole-portability acceptance.
