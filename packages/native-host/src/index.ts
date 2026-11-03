@@ -39,6 +39,9 @@ interface NativeJobBinding {
   closeWindowsJob(job: unknown): void;
   secureFileAuthoritySupported(): boolean;
   dataDirectoryAuthoritySupported(): boolean;
+  allocatedHeldFileBytes(fd:number):bigint;
+  availableHeldDirectoryBytes(input:{fd:number;expectedDevice:bigint;expectedInode:bigint}):bigint;
+  availablePortableStorageBytes(rootPath:string):bigint;
   acquirePortableDataDirectory(root: string, capabilityPath: string, readOnly?: boolean): unknown;
   adoptPortableDataDirectory(root: string, fd: number, lease?: WindowsDirectoryLeaseTransfer): unknown;
   portableDirectoryLeaseTransfer(value: unknown): WindowsDirectoryLeaseTransfer | null;
@@ -380,6 +383,25 @@ export class WindowsProcessJob {
     this.#closed = true;
     binding().closeWindowsJob(this.#authority);
   }
+}
+
+/** Observe allocation on a retained regular-file descriptor; not a reservation. */
+export function allocatedHeldFileBytes(fd:number):bigint {
+  if(!Number.isSafeInteger(fd)||fd<0)throw new Error("Invalid retained file descriptor");
+  return binding().allocatedHeldFileBytes(fd);
+}
+
+/** Read current usable capacity on the volume of an exact, still-held directory.
+ * This is an observation, not a reservation: callers must handle ENOSPC. */
+export function availableHeldDirectoryBytes(input:{fd:number;expectedDevice:bigint;expectedInode:bigint}):bigint {
+  if(!Number.isSafeInteger(input.fd)||input.fd<0||typeof input.expectedDevice!=="bigint"||typeof input.expectedInode!=="bigint")throw new Error("Invalid held directory capacity identity");
+  return binding().availableHeldDirectoryBytes(input);
+}
+
+/** Read current usable capacity from an exact live registered portable data root. */
+export function availablePortableStorageBytes(rootPath:string):bigint {
+  if(typeof rootPath!=="string"||!rootPath)throw new Error("Invalid retained data-root capacity authority");
+  return binding().availablePortableStorageBytes(rootPath);
 }
 
 export function dataDirectoryAuthoritySupported(

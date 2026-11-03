@@ -2560,6 +2560,14 @@
       "moduleBase": "apps/server/package.json",
       "requirements": "Node24 and built workspaces; isolated owned import roots and Git fixtures",
       "origin": "Generic imported root grouping and contained live placement"
+    },
+    {
+      "path": "tests/organizations/native-storage-capacity.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24 and built native-host; owned disposable directories; no provider or production state",
+      "origin": "Held-root exact usable capacity observation and replacement/closed-authority refusal"
     }
   ],
   "retainedReleasePayload": [

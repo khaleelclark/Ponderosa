@@ -39,6 +39,10 @@ SQLITE_EXTENSION_INIT1
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#ifdef __APPLE__
+#include <sys/param.h>
+#include <sys/mount.h>
+#endif
 #include <unistd.h>
 #ifdef __APPLE__
 #include <libproc.h>
@@ -2591,6 +2595,7 @@ napi_value ApplyExactFileMetadata(napi_env env, napi_callback_info info) {
 #include "portable-metadata.inc"
 
 #include "portable-storage.inc"
+#include "available-storage-space.inc"
 
 napi_value Initialize(napi_env env, napi_value exports) {
   napi_property_descriptor properties[] = {
@@ -2619,6 +2624,9 @@ napi_value Initialize(napi_env env, napi_value exports) {
       {"readStorageDirectory", nullptr, ReadStorageDirectory, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"storageOperation", nullptr, StorageOperation, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"storagePathRegistered", nullptr, StoragePathRegistered, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"allocatedHeldFileBytes", nullptr, AllocatedHeldFileBytes, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"availableHeldDirectoryBytes", nullptr, AvailableHeldDirectoryBytes, nullptr, nullptr, nullptr, napi_default, nullptr},
+      {"availablePortableStorageBytes", nullptr, AvailablePortableStorageBytes, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"syncStorageFile", nullptr, SyncStorageFile, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"closeStorageFile", nullptr, CloseStorageFile, nullptr, nullptr, nullptr, napi_default, nullptr},
       {"dataDirectoryAuthoritySupported", nullptr, DataDirectoryAuthoritySupported, nullptr, nullptr, nullptr, napi_default, nullptr},
