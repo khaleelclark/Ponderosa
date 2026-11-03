@@ -229,8 +229,8 @@ qualification.
 Manual standalone effect-free Script/ordinary-approval-gate graphs with existing
 Fork/Map/Join controls can now pass the portable consumer with canonical Script
 retry histories. The shared portable definition guard permits retry only on Script
-steps in that family; serial retries, automatic-source retries and human-gate retry
-policies remain refused. Call-tree eligibility is unchanged. No import, manifest,
+steps in that family; the serial successor below extends manual standalone
+Script retries. Automatic-source and human-gate retry policies remain refused. Call-tree eligibility is unchanged. No import, manifest,
 DTO, storage-version or scheduler format is added.
 
 Existing capture retains all attempt rows, failed results, retry transition bytes
@@ -269,3 +269,53 @@ receipt integrity comparison change. See the
 No tests, preparation, builds, types, Node/native/runtime execution or live database
 work was performed. This is source support, not timing/durability, notification,
 round-trip, scheduling, rollback or whole-Bible acceptance.
+
+
+## Manual standalone serial retry successor
+
+Manual standalone effect-free serial Node Script/ordinary-approval-gate workflows
+can now recreate their supported native frontier held and continue a genuine
+selected checkpoint with canonical Script retries. Definitions may omit controls
+or use the existing condition/route/loop family. The shared serial definition guard has
+an explicit retry opt-in; structural frontier/replay enables it only for actual
+parentless manual standalone owners or their exact terminal observation context.
+Existing automatic, Call-tree, issued/Agent/resource serial eligibility and manual
+parallel retry behavior are unchanged. Workflow and gate policies still stop.
+
+Capture already retains all original attempts, failed results, timestamps and
+retry audit events. The serial frontier now validates consecutive attempt numbers,
+original hashes/purpose/fences, failure-only intermediate results, final-attempt
+seals and a genuine prepared delayed-retry waiting path. Full serial causal replay
+separately proves each lease/authorization/process exit/settlement, consecutive
+retry event, max-attempt ceiling, unchanged delay and exact event-time/creation/
+absolute-deadline relationship. No intermediate failure contributes state; only
+the final successful immutable seal supplies a revision. Conditions/routes, loops,
+gates and budgets/counters retain their existing proof.
+
+Exact selected and independently replayed latest evidence, committed selected
+sync/async/default bytes/hash and actual closed EXIT invocation/drain proof remain
+mandatory. The existing EXIT interruption caller now recognizes the same portable
+manual standalone definition only without parent/Call depth/children, retaining
+all current pins/authority/saver/closure/hold checks. Missing or uncertain evidence
+stays held; source interruption never grants destination authority.
+
+Existing remap/insertion preserve consumed attempt numbers, result bytes and the
+absolute `available_at`, create new IDs/zero native fences, and read back inserted
+fields. Native timestamps describe insertion; original timing/process/fence proof
+remains private. Seeded serial replay checks immutable mapped deadlines and prefix
+results, then permits actual unfinished suffix progress. Destination claim still
+checks current time/readiness/capacity/policy; new retries use the next retained
+number. No delay restart, elapsed-time assertion or replay of failed prefix work
+occurs. Bounded held/admitted/re-export/local-rewind lineage, exact commands/maps,
+fresh human/manual acceptance/current review, pending-gate ownership and original-
+key receipt recovery are unchanged. Serial canceled source gates remain refused.
+
+Runtime-package/saver, parallel codec, typed remap/storage, server/SDK/DTO and UI
+need no changes: their existing paths carry all attempts and expose exact private
+checkpoint/current review evidence. Only the shared serial consumer, its necessary
+EXIT capture eligibility caller and both guides change. No schema, storage version
+or dependency changes. See the
+[serial retry proof](branch-foreign-checkpoint-continuation.md#manual-standalone-serial-script-retries).
+No tests/preparation/builds/typechecks/Node/parser/native/runtime/liveDB actions
+were performed. Source support does not qualify execution, timing/durability,
+notifications, round trips, scheduling, rollback or whole-Bible portability.

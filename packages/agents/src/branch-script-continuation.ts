@@ -21,15 +21,17 @@ type Row=Record<string,any>;
 export type Selected=Record<string,Row[]>;
 export const SCRIPT_CONTINUATION_COMPATIBILITY={format:'script-control-frontier.v1',nodeMajor:Number(process.versions.node.split('.')[0])};
 const hash=(text:string)=>createHash('sha256').update(text).digest('hex');
-export function scriptDefinitionSupported(definition:BranchDefinition,calls=false,resources=false,resourceGeneration=0):boolean {
+const manualScriptRetryFamily=(definition:BranchDefinition)=>definition.trigger.kind==='manual'&&definition.steps.every(s=>s.kind==='script'||s.kind==='human_gate')&&definition.steps.some(s=>s.kind==='script'&&s.failure?.action==='retry');
+export function scriptDefinitionSupported(definition:BranchDefinition,calls=false,resources=false,resourceGeneration=0,scriptRetries=false):boolean {
   if(hasParallelControls(definition))return parallelDefinitionSupported(definition,calls,resources);
-  return !definition.steps.some(s=>!(s.kind==='script'&&s.runtime==='node'||s.kind==='agent'&&'ref' in s.target||!resources&&s.kind==='human_gate'||calls&&s.kind==='branch_call'||resources&&s.kind==='agent'&&s.target.kind==='ephemeral_organization')||s.failure&&s.failure.action!=='stop'&&!(resourceGeneration&&s.kind==='agent'&&s.target.kind==='ephemeral_organization'&&s.failure.action==='retry'&&s.failure.freshContext===true&&Number.isSafeInteger(s.failure.maxAttempts)&&s.failure.maxAttempts>=resourceGeneration+1&&Number.isSafeInteger(s.failure.delayMs)&&s.failure.delayMs>=0))&&definition.policy.failure.action==='stop'
+  const retries=scriptRetries&&!calls&&!resources&&manualScriptRetryFamily(definition);
+  return !definition.steps.some(s=>!(s.kind==='script'&&s.runtime==='node'||s.kind==='agent'&&'ref' in s.target||!resources&&s.kind==='human_gate'||calls&&s.kind==='branch_call'||resources&&s.kind==='agent'&&s.target.kind==='ephemeral_organization')||s.failure&&s.failure.action!=='stop'&&!(retries&&s.kind==='script'&&s.failure.action==='retry')&&!(resourceGeneration&&s.kind==='agent'&&s.target.kind==='ephemeral_organization'&&s.failure.action==='retry'&&s.failure.freshContext===true&&Number.isSafeInteger(s.failure.maxAttempts)&&s.failure.maxAttempts>=resourceGeneration+1&&Number.isSafeInteger(s.failure.delayMs)&&s.failure.delayMs>=0))&&definition.policy.failure.action==='stop'
     &&!definition.controls.some(c=>!['condition','route'].includes(c.kind))&&!Object.values(definition.parameters??{}).some(p=>p.type==='secret');
 }
 /** Portable replay admits only the effect-free subset of the canonical graph codec. */
 export function portableScriptDefinitionSupported(definition:BranchDefinition):boolean {
-  // Retry histories belong to the existing parallel codec; serial and automatic families stay stop-only.
-  return (definition.trigger.kind==='manual'||automaticScriptDefinitionSupported(definition))&&definition.steps.every(step=>(step.kind==='script'||step.kind==='human_gate')&&(!step.failure||step.failure.action==='stop'||definition.trigger.kind==='manual'&&hasParallelControls(definition)&&step.kind==='script'&&step.failure.action==='retry'))&&scriptDefinitionSupported(definition);
+  // Manual standalone retry histories use their canonical serial or parallel codec.
+  return (definition.trigger.kind==='manual'||automaticScriptDefinitionSupported(definition))&&definition.steps.every(step=>(step.kind==='script'||step.kind==='human_gate')&&(!step.failure||step.failure.action==='stop'||definition.trigger.kind==='manual'&&step.kind==='script'&&step.failure.action==='retry'))&&scriptDefinitionSupported(definition,false,false,0,true);
 }
 /** Exact supported subset; all other dependency families remain ineligible. */
 export type ScriptOwnerContext={automaticRootTree?:boolean;workflowGates?:boolean;foreignTreePrefix?:boolean;resourceGeneration?:number;resourceRetry?:ReturnType<typeof generationOneReplay>;resourceFrontier?:boolean;issuedResource?:boolean;issuedOwnerTree?:boolean;issuedGroup?:boolean;resourceCleanup?:boolean;terminal:boolean;terminalState?:'completed'|'failed';waiting?:boolean;restoredTerminal?:boolean;parent?:{executionId:string;attemptId:string;input:string};descendantTraversals:number;descendantLoops:number;children:Record<string,{executionId:string;versionId:string;output:string|null;completed:boolean;failed?:boolean}>};
@@ -37,6 +39,8 @@ export type ScriptOwnerContext={automaticRootTree?:boolean;workflowGates?:boolea
 const standaloneGateContext=(context:ScriptOwnerContext|undefined)=>!context||context.terminal===true&&context.descendantTraversals===0&&context.descendantLoops===0&&Object.keys(context.children).length===0&&Object.keys(context).every(key=>['terminal','terminalState','descendantTraversals','descendantLoops','children'].includes(key));
 // Tree owners opt in separately from standalone eligibility and origin proof.
 const workflowGateContext=(context:ScriptOwnerContext|undefined)=>standaloneGateContext(context)||context?.workflowGates===true;
+// Explicit serial retry opt-in excludes automatic, called, issued and resource owner contexts.
+const standaloneSerialRetries=(definition:BranchDefinition,e:Row|undefined,context?:ScriptOwnerContext)=>manualScriptRetryFamily(definition)&&!hasParallelControls(definition)&&standaloneGateContext(context)&&e?.admission_source==='manual'&&!e.parent_execution_id&&!e.parent_attempt_id&&!e.call_depth;
 export function scriptFrontierSupported(selected:Selected,definition:BranchDefinition,context?:ScriptOwnerContext,hostCut?:BranchHostCut):boolean {
   try {
     branchSharedState(definition,selected.steps!,selected.sealedResults!);
@@ -50,12 +54,14 @@ export function scriptFrontierSupported(selected:Selected,definition:BranchDefin
     if(context?.resourceCleanup&&(!context.issuedResource||!context.resourceFrontier||!terminal
       ||!['active','draining'].includes(selected.resources![0]?.state)||e?.wait_reason!=='Waiting for ephemeral Agent work and runtime cleanup'))return false;
     const waitingGate=workflowGateContext(context)&&selected.gates!.some(g=>g.state==='waiting');
-    const waiting=context?.waiting||waitingGate;
+    const serialRetries=standaloneSerialRetries(definition,e,context);
+    const waitingRetry=serialRetries&&p?.state==='waiting'&&selected.steps!.some(s=>s.id===p.step_execution_id&&s.state==='prepared'&&selected.attempts!.filter(a=>a.step_execution_id===s.id).length>1&&definition.steps.some(node=>node.id===s.step_id&&node.kind==='script'&&node.failure?.action==='retry'&&node.failure.delayMs>0));
+    const waiting=context?.waiting||waitingGate||waitingRetry;
     if(selected.execution!.length!==1||selected.paths!.length!==1||!e||!p||e.state!==(terminal?(context?.resourceCleanup?'waiting':context?.terminalState??'completed'):waiting?'waiting':'running')||e.admission_source!==(context?.parent?'call':e.admission_source==='automatic'&&(standaloneGateContext(context)&&automaticScriptDefinitionSupported(definition)||context?.automaticRootTree===true&&!context.parent&&!e.parent_execution_id&&!e.parent_attempt_id&&!e.call_depth&&automaticScriptDefinitionSupported(definition,true))?'automatic':'manual')
       ||(!context&&(e.parent_execution_id||e.parent_attempt_id||e.call_depth))||e.cancel_requested||e.budget_exhausted||e.recovery_traversals
       ||(!terminal&&e.output_text!==null)||e.merged_into!==null||e.requested_outcome!=='canceled'||p.edge_id!==null||(!terminal&&p.result_json!==null)
       ||p.execution_id!==e.id||p.parent_path_id||p.fork_invocation_id||p.state!==(terminal?(context?.terminalState??'completed'):waiting&&!context?.issuedGroup?'waiting':'active')||p.handling_limit||p.traversals<1)return false;
-    if(!scriptDefinitionSupported(definition,!!context&&!standaloneGateContext(context),context?.resourceFrontier,context?.resourceGeneration))return false;
+    if(!scriptDefinitionSupported(definition,!!context&&!standaloneGateContext(context),context?.resourceFrontier,context?.resourceGeneration,serialRetries))return false;
     if(['forks','joins','maps','items','bundles',...(!workflowGateContext(context)?['gates']:[]),'actions',...(!context?.resourceFrontier?['resources']:[])].some(key=>selected[key]!.length))return false;
     if(context?.resourceFrontier&&!(context.issuedResource?issuedResourceFrontierSupported(selected,definition,hostCut,context?.issuedGroup,context?.issuedOwnerTree,context?.resourceGeneration):resourceReservationSupported(selected,definition)))return false;
     if(!definition.steps.some(s=>s.id===p.node_id)&&!definition.controls.some(c=>c.id===p.node_id))return false;
@@ -63,12 +69,21 @@ export function scriptFrontierSupported(selected:Selected,definition:BranchDefin
     for(const row of [p,...selected.steps!,...selected.attempts!,...selected.sealedResults!,...selected.gates!]){if(typeof row.id!=='string'||ids.has(row.id))return false;ids.add(row.id);}
     const prepared=selected.steps!.filter(s=>s.state==='prepared'||s.state==='waiting');
     if(prepared.length!==(!terminal&&p.step_execution_id?1:0)||!terminal&&p.step_execution_id&&prepared[0]?.id!==p.step_execution_id)return false;
-    if(selected.attempts!.length!==selected.steps!.length)return false;
+    if(!serialRetries&&selected.attempts!.length!==selected.steps!.length||serialRetries&&selected.attempts!.some(a=>!selected.steps!.some(s=>s.id===a.step_execution_id)))return false;
     for(const s of selected.steps!){
-      if(s.execution_id!==e.id||s.path_id!==p.id||!definition.steps.some(step=>step.id===s.step_id)||!['prepared','completed',...(context?['failed']:[]),...(waiting||issued.length?['waiting']:[])].includes(s.state)||!Number.isSafeInteger(s.invocation)||s.invocation<1)return false;
-      const attempts=selected.attempts!.filter(a=>a.step_execution_id===s.id),a=attempts[0];
+      if(s.execution_id!==e.id||s.path_id!==p.id||!definition.steps.some(step=>step.id===s.step_id)||!['prepared','completed',...(context||serialRetries?['failed']:[]),...(waiting||issued.length?['waiting']:[])].includes(s.state)||!Number.isSafeInteger(s.invocation)||s.invocation<1)return false;
+      const attempts=selected.attempts!.filter(a=>a.step_execution_id===s.id).sort((a,b)=>a.number-b.number),a=attempts.at(-1);
+      if(serialRetries){
+        const node=definition.steps.find(node=>node.id===s.step_id),policy=node?.failure??definition.policy.failure;
+        if(!attempts.length||attempts.length>1&&(node?.kind!=='script'||policy.action!=='retry'||attempts.length>policy.maxAttempts))return false;
+        for(const [index,prior] of attempts.entries()){
+          if(Object.keys(prior).some(key=>!['id','step_execution_id','number','state','request_id','fence','input_hash','result_json','available_at','purpose','recovery_of_request_id','cancel_requested','runtime_outcome_json','error','created_at','updated_at'].includes(key))
+            ||prior.number!==index+1||prior.purpose!=='step'||prior.request_id||prior.recovery_of_request_id||prior.runtime_outcome_json||prior.cancel_requested||prior.error||prior.input_hash!==hash(s.input_text)||!Number.isSafeInteger(prior.fence)||prior.fence<0)return false;
+          if(prior!==a){const result=JSON.parse(prior.result_json);if(prior.state!=='failed'||result.failed!==true||Object.keys(result).some(key=>!['failed','output'].includes(key))||stableJson(result)!==prior.result_json||result.output!==undefined&&branchText(result.output)!==result.output)return false;}
+        }
+      }
       if(definition.steps.find(step=>step.id===s.step_id)?.kind==='agent'&&(!a?.request_id&&s.state!=='prepared'||a?.fence!==0))return false;
-      if(attempts.length!==1||!a||a.error||a.number!==(context?.resourceGeneration&&selected.resources!.some(r=>r.step_execution_id===s.id)?context.resourceGeneration+1:1)||a.state!==s.state||a.purpose!=='step'||a.request_id&&!issued.includes(a)||a.recovery_of_request_id||a.cancel_requested||a.runtime_outcome_json||a.input_hash!==hash(s.input_text))return false;
+      if(!serialRetries&&attempts.length!==1||!a||a.error||a.number!==(serialRetries?attempts.length:context?.resourceGeneration&&selected.resources!.some(r=>r.step_execution_id===s.id)?context.resourceGeneration+1:1)||a.state!==s.state||a.purpose!=='step'||a.request_id&&!issued.includes(a)||a.recovery_of_request_id||a.cancel_requested||a.runtime_outcome_json||a.input_hash!==hash(s.input_text))return false;
       const sealed=selected.sealedResults!.filter(r=>r.step_execution_id===s.id);
       if(s.state==='prepared'||s.state==='waiting'){
         if(s.state==='waiting'&&!(a.request_id&&issued.includes(a)||waitingGate&&selected.gates!.some(g=>g.step_execution_id===s.id&&g.state==='waiting')||context?.waiting&&context.children[a.id]&&!context.children[a.id]!.completed&&definition.steps.find(step=>step.id===s.step_id)?.kind==='branch_call'))return false;
@@ -312,6 +327,8 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
     if(hasParallelControls(definition))return replayParallelCut(selected,definition,configuration,events,checkpoint,seed,context,hostCut);
     let node:string|undefined=definition.entry,input=e.input_text,traversals=0,last:string|null=null,current:Row|undefined,settled=false;
     let finished:Row|undefined,terminalObserved=false;
+    const serialRetries=standaloneSerialRetries(definition,e,context),scriptStates=new Map<string,string>();
+    let scriptAttempt:Row|undefined,scriptWaiting=false;
     const admitted=new Set<string>(),completedChildren=new Set<string>(),openedGates=new Set<string>(),resolvedGates=new Map<string,string>();
     let resourceReserved=!!seed?.selected.resources?.length,gateClosing:Row|undefined;
     const resourceOperations=new Map<string,Row>();
@@ -331,9 +348,10 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
       }
       for(const oldAttempt of old.attempts!){
         const attempt=selected.attempts!.find(row=>row.id===ids[oldAttempt.id]);
-        if(!attempt||attempt.step_execution_id!==ids[oldAttempt.step_execution_id]||['number','input_hash','purpose'].some(key=>attempt[key]!==oldAttempt[key])
+        if(!attempt||attempt.step_execution_id!==ids[oldAttempt.step_execution_id]||['number','input_hash','purpose',...(serialRetries?['available_at']:[])].some(key=>attempt[key]!==oldAttempt[key])
           ||(oldAttempt.request_id?attempt.request_id!==seed.requestMap?.[oldAttempt.request_id]:false)
           ||['completed','failed'].includes(oldAttempt.state)&&(attempt.state!==oldAttempt.state||attempt.fence!==0||attempt.result_json!==oldAttempt.result_json))return false;
+        if(serialRetries&&definition.steps.some(node=>node.id===selected.steps!.find(s=>s.id===attempt.step_execution_id)?.step_id&&node.kind==='script'))scriptStates.set(attempt.id,oldAttempt.state);
         fences.set(attempt.id,0);
         if(oldAttempt.request_id)boundRequests.add(attempt.id);
       }
@@ -352,6 +370,10 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
       }
       node=sp.node_id;input=sp.input_text;traversals=sp.traversals;last=sp.last_result_id?ids[sp.last_result_id]!:null;
       current=!['completed','failed'].includes(old.execution![0]!.state)&&sp.step_execution_id?selected.steps!.find(row=>row.id===ids[sp.step_execution_id]):undefined;
+      if(serialRetries&&current&&definition.steps.some(node=>node.id===current!.step_id&&node.kind==='script')){
+        const prior=old.attempts!.filter(a=>a.step_execution_id===sp.step_execution_id).sort((a,b)=>b.number-a.number)[0]!;
+        scriptAttempt=selected.attempts!.find(a=>a.id===ids[prior.id]);scriptWaiting=sp.state==='waiting';
+      }
       if(context?.restoredTerminal){finished={node:sp.node_id,input:sp.input_text,stepId:ids[sp.step_execution_id],result:JSON.parse(sp.result_json)};terminalObserved=true;}
       for(const attempt of old.attempts!){if(context?.children[ids[attempt.id]!]){if(!context.foreignTreePrefix)admitted.add(ids[attempt.id]!);if(['completed','failed'].includes(attempt.state))completedChildren.add(ids[attempt.id]!);}}
       for(const loop of old.loops!)loops.set(loop.edge_id,loop.iterations);
@@ -382,6 +404,11 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
           if(interruption||!started||current||v.stepId!==node||seen.has(v.stepExecutionId))return false;
           const s=selected.steps!.find(s=>s.id===v.stepExecutionId);
           if(!s||s.step_id!==node||s.input_text!==input||s.invocation!==(invocations.get(node!)??0)+1)return false;
+          if(serialRetries&&definition.steps.some(node=>node.id===s.step_id&&node.kind==='script')){
+            scriptAttempt=selected.attempts!.find(a=>a.step_execution_id===s.id&&a.number===1);
+            if(!scriptAttempt||scriptStates.has(scriptAttempt.id)||event.transition_key!==`prepared:${s.id}`)return false;
+            scriptStates.set(scriptAttempt.id,'prepared');scriptWaiting=false;
+          }
           invocations.set(node!,s.invocation);seen.add(s.id);current=s;settled=false;traversals++;break;
         }
         case 'resource_created':{
@@ -405,28 +432,32 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
           const a=selected.attempts!.find(a=>a.id===attemptId);
           const step=selected.steps!.find(s=>s.id===a?.step_execution_id);
           if(definition.steps.find(node=>node.id===step?.step_id)?.kind!=='script')return false;
-          if(!a||!step||!seen.has(step.id)||!['completed',...(context?['failed']:[])].includes(step.state))return false;
+          if(!a||!step||!seen.has(step.id)||!serialRetries&&!['completed',...(context?['failed']:[])].includes(step.state))return false;
           if(!['script_cleanup_observed','script_process_exit'].includes(event.kind)&&current?.id!==step.id)return false;
           if(interruption&&['script_leased','script_authorized'].includes(event.kind))return false;
+          if(serialRetries&&(!started||!['script_cleanup_observed','script_process_exit'].includes(event.kind)&&scriptAttempt?.id!==a.id))return false;
           if(event.kind==='script_authorized'){
             const fence=fences.get(a.id);
-            if(!fence||fence!==a.fence||event.transition_key!==`launched:${a.id}:${fence}`)return false;
-            authorized.set(a.id,fence);
+            if(!fence||fence!==a.fence||event.transition_key!==`launched:${a.id}:${fence}`||serialRetries&&(scriptStates.get(a.id)!=='leased'||authorized.has(a.id)))return false;
+            authorized.set(a.id,fence);if(serialRetries)scriptStates.set(a.id,'running');
           }
           if(event.kind==='script_process_exit'){
             // Other-generation observations remain evidence, never proof of this cut's exit.
             if(event.transition_key===`process-exit:${a.id}:${a.fence}`&&authorized.get(a.id)===a.fence&&fences.get(a.id)===a.fence){
-              const result=JSON.parse(step.result_json),failure=branchScriptFailureSummary(v.code,v.error);
-              if((configuration.checkpointMode==='exit'||context)&&((!Number.isInteger(v.code)&&v.code!==null)||typeof v.stdout!=='string'||v.error!==undefined&&typeof v.error!=='string'||result.failed!==(failure!==undefined)||result.output!==(failure??v.stdout)||v.outputHash!==hash(v.stdout)))return false;
+              if(serialRetries&&(scriptStates.get(a.id)!=='running'||exited.has(a.id)))return false;
+              const result=JSON.parse(serialRetries?a.result_json:step.result_json),failure=branchScriptFailureSummary(v.code,v.error);
+              if((configuration.checkpointMode==='exit'||context||serialRetries)&&((!Number.isInteger(v.code)&&v.code!==null)||typeof v.stdout!=='string'||v.error!==undefined&&typeof v.error!=='string'||result.failed!==(failure!==undefined)||result.output!==(failure??v.stdout)||v.outputHash!==hash(v.stdout)))return false;
               exited.add(a.id);
-            }
+            }else if(serialRetries)return false;
           }
           if(event.kind==='script_leased'){
-            if(event.transition_key!==`leased:${a.id}:${v.fence}`||v.fence!==(fences.get(a.id)??0)+1||v.sourceHash!==hash((definition.steps.find(s=>s.id===step.step_id) as Extract<BranchDefinition['steps'][number],{kind:'script'}>).source))return false;
+            if(event.transition_key!==`leased:${a.id}:${v.fence}`||v.fence!==(fences.get(a.id)??0)+1||v.sourceHash!==hash((definition.steps.find(s=>s.id===step.step_id) as Extract<BranchDefinition['steps'][number],{kind:'script'}>).source)
+              ||serialRetries&&(scriptStates.get(a.id)!=='prepared'||a.available_at&&event.created_at<a.available_at))return false;
             const state=definition.state?branchSharedState(definition,selected.steps!,stateSeals):undefined;
             if(v.stateHash!==state?.evidenceHash||v.stateRevision!==state?.revision)return false;
-            fences.set(a.id,v.fence);
+            fences.set(a.id,v.fence);if(serialRetries){scriptStates.set(a.id,'leased');scriptWaiting=false;}
           }
+          if(serialRetries&&event.kind==='script_cleanup_observed'&&(!exited.has(a.id)||event.transition_key!==`cleaned:${a.id}:${a.fence}`))return false;
           break;
         }
         case 'gate_opened':{
@@ -453,6 +484,14 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
           resolvedGates.set(gate.id,response.decision);break;
         }
         case 'retry_scheduled':{
+          if(serialRetries){
+            const step=definition.steps.find(s=>s.id===current?.step_id),policy=step?.failure,next=selected.attempts!.find(a=>a.id===v.attemptId);
+            if(!started||interruption||!current||!settled||step?.kind!=='script'||policy?.action!=='retry'||!scriptAttempt||scriptStates.get(scriptAttempt.id)!=='failed'||!exited.has(scriptAttempt.id)
+              ||!next||scriptStates.has(next.id)||next.step_execution_id!==current.id||next.number!==scriptAttempt.number+1||next.number>policy.maxAttempts||v.delayMs!==policy.delayMs||event.transition_key!==`retry:${next.id}`
+              ||definition.edges.some(edge=>edge.from===step.id&&edge.on==='failure')||stateSeals.some(r=>r.step_execution_id===current!.id)
+              ||next.created_at!==event.created_at||next.available_at!==new Date(Date.parse(event.created_at)+policy.delayMs).toISOString())return false;
+            scriptStates.set(next.id,'prepared');scriptAttempt=next;scriptWaiting=policy.delayMs>0;settled=false;break;
+          }
           const policy=definition.steps.find(s=>s.id===current?.step_id)?.failure;
           if(!retry||retryIndex>=retry.generations.length||retryScheduled||!retrySettled||!current||current.id!==retry.current.step_execution_id
             ||policy?.action!=='retry'||!policy.freshContext||policy.maxAttempts<retry.current.number||v.attemptId!==retry.generations[retryIndex]!.next.id||v.delayMs!==policy.delayMs||event.transition_key!==`retry:${retry.generations[retryIndex]!.next.id}`)return false;
@@ -506,6 +545,10 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
             if(retrySettled||retryScheduled||!current||current.id!==a.step_execution_id||!boundRequests.has(a.id)||stableJson(v.result)!==a.result_json)return false;
             retrySettled=true;break;
           }
+          if(serialRetries&&definition.steps.some(node=>node.id===current?.step_id&&node.kind==='script')){
+            if(!current||settled||!a||scriptAttempt?.id!==a.id||scriptStates.get(a.id)!=='running'||!authorized.has(a.id)||!exited.has(a.id)||event.transition_key!==`settled:${a.id}`||stableJson(v.result)!==a.result_json)return false;
+            scriptStates.set(a.id,v.result.failed?'failed':'completed');settled=true;break;
+          }
           if(!current||settled||!a||a.step_execution_id!==current.id||stableJson(v.result)!==current.result_json)return false;
           if(definition.steps.find(row=>row.id===current!.step_id)?.kind==='branch_call'&&(!completedChildren.has(a.id)||stableJson(v.result)!==stableJson({failed:context!.children[a.id]!.failed===true,...(context!.children[a.id]!.output!==null?{output:context!.children[a.id]!.output}:{})})))return false;
           const node=definition.steps.find(row=>row.id===current!.step_id);
@@ -525,6 +568,12 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
         case 'result_sealed':{
           const r=selected.sealedResults!.find(r=>r.id===v.resultId);
           if(!current||!settled||!r||r.step_execution_id!==current.id||v.stepExecutionId!==current.id||v.terminalAttemptId!==r.terminal_attempt_id||v.contentHash!==r.content_hash)return false;
+          if(serialRetries&&definition.steps.some(node=>node.id===current!.step_id&&node.kind==='script')){
+            const policy=definition.steps.find(node=>node.id===current!.step_id)!.failure??definition.policy.failure;
+            if(!scriptAttempt||r.terminal_attempt_id!==scriptAttempt.id||scriptStates.get(scriptAttempt.id)!==scriptAttempt.state||scriptAttempt.result_json!==current.result_json||event.transition_key!==`sealed:${r.id}`
+              ||scriptAttempt.state==='failed'&&policy.action==='retry'&&!definition.edges.some(edge=>edge.from===current!.step_id&&edge.on==='failure')&&scriptAttempt.number<policy.maxAttempts)return false;
+            scriptAttempt=undefined;scriptWaiting=false;
+          }
           validateBranchStateSeal(definition,selected.steps!,stateSeals,r);stateSeals.push(r);
           last=r.id;const result=JSON.parse(current.result_json),gate=selected.gates!.find(g=>g.step_execution_id===current!.id),on=gate?(resolvedGates.get(gate.id)==='approve'?'approved':'rejected'):result.failed?'failure':'success',edge=definition.edges.find(edge=>edge.from===node&&edge.on===on);
           if(!edge)finished={node,input,stepId:current.id,result};
@@ -571,7 +620,9 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
       ||!selected.gates!.some(g=>g.id===gateClosing!.gateId&&g.state==='waiting')))return false;
     if(configuration.checkpointMode==='exit'&&!context?.terminal&&(!waitingGate||closing?.interruptionId!==undefined)&&(!interruption||interruption.interruptionId!==closing.interruptionId
       ||interruption.invocationId!==closing.id||interruption.ordinal!==closing.ordinal||[...authorized.keys()].some(id=>!exited.has(id))))return false;
-    if((context||waitingGate)&&[...authorized.keys()].some(id=>!exited.has(id)))return false;
+    if(serialRetries&&(selected.attempts!.some(a=>definition.steps.some(node=>node.id===selected.steps!.find(s=>s.id===a.step_execution_id)?.step_id&&node.kind==='script')&&scriptStates.get(a.id)!==a.state)
+      ||!context?.terminal&&p.state!==(waitingGate||scriptWaiting?'waiting':'active')))return false;
+    if((context||waitingGate||serialRetries)&&[...authorized.keys()].some(id=>!exited.has(id)))return false;
     if(retry&&(retryIndex!==retry.generations.length||retrySettled||retryScheduled))return false;
     if(context?.resourceFrontier&&(!resourceReserved||context.issuedGroup&&reservedResources.size!==selected.resources!.length))return false;
     if(context?.resourceFrontier&&(retainedResourceCapture(selected)||context.issuedResource)&&!seed&&['chat','import'].some(phase=>resourceOperations.get(phase)?.state!=='completed'))return false;

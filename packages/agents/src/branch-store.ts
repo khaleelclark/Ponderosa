@@ -252,7 +252,9 @@ export class BranchStore {
   }
   private checkpointDefinitionSupported(executionId:string):boolean {
     const execution=this.execution(executionId)!,definition=this.definition(execution);
-    return scriptDefinitionSupported(definition,true)||scriptDefinitionSupported(definition,false,true)&&resourceReservationSupported(selectBranchUnit(this.sqlite,executionId),definition);
+    const owner=this.row('SELECT admission_source,parent_execution_id,parent_attempt_id,call_depth FROM branch_executions WHERE id=?',executionId)!;
+    return scriptDefinitionSupported(definition,true)||owner.admission_source==='manual'&&!owner.parent_execution_id&&!owner.parent_attempt_id&&!owner.call_depth&&!this.row('SELECT 1 FROM branch_executions WHERE parent_execution_id=?',executionId)&&portableScriptDefinitionSupported(definition)
+      ||scriptDefinitionSupported(definition,false,true)&&resourceReservationSupported(selectBranchUnit(this.sqlite,executionId),definition);
   }
   private checkpointOwnerChainSupported(executionId:string):boolean {
     const chain=this.ancestors(executionId);

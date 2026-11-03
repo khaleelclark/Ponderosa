@@ -18,7 +18,7 @@ Current choices are established through the existing destination configuration/b
 
 ## Authority and atomicity
 
-Standalone manual, sync/async or proven committed closed EXIT-mode, effect-free Script/human-gate definitions with declared JSON state (`sum`, `append`, `replace`) and existing `condition`/`route` and canonical fork/Map/Join controls are accepted, along with the proven automatic-source standalone Script/approval-gate subset described below. Workflow failure policy must stop. Per-step policies also stop, except canonical Script retries in manual standalone parallel graphs as described below; serial and automatic-source retries, secrets and other control families remain excluded. Selected and latest exported source cuts must have no issued Requests, resources, custody facts, actions, bundles, recovery-purpose gates, pending process outcomes or execution-owned Chats. The selected and latest source cuts must each pass the existing Script frontier and full audit replay, including exact original definition/binding pins, input, state-seal settlement order, condition/route choices, fork and Join selections, Map inventory/order/bounds and traversal/loop counters. The selected cut must be resumable: running, or canonically waiting for supported parallel work or a workflow gate. For sync/async the latest cut may be running, canonically waiting or canonically completed/failed; EXIT additionally requires an exact committed closed latest frontier as described below; both cuts must remain effect-free and pass full replay. Missing or corrupted evidence refuses before fresh acceptance. The only shared replay extension supplies retained immutable owner/audit evidence instead of querying nonexistent foreign database owners. It is restricted to effect-free Script cuts with independently validated retained generation links and returns only a validation result, never authority. No foreign rows or fake Requests are inserted to satisfy validation.
+Standalone manual, sync/async or proven committed closed EXIT-mode, effect-free Script/human-gate definitions with declared JSON state (`sum`, `append`, `replace`) and existing `condition`/`route` and canonical fork/Map/Join controls are accepted, along with the proven automatic-source standalone Script/approval-gate subset described below. Workflow failure policy must stop. Per-step policies also stop, except canonical Script retries in manual standalone serial or parallel graphs as described below; automatic-source retries, secrets and other control families remain excluded. Selected and latest exported source cuts must have no issued Requests, resources, custody facts, actions, bundles, recovery-purpose gates, pending process outcomes or execution-owned Chats. The selected and latest source cuts must each pass the existing Script frontier and full audit replay, including exact original definition/binding pins, input, state-seal settlement order, condition/route choices, fork and Join selections, Map inventory/order/bounds and traversal/loop counters. The selected cut must be resumable: running, or canonically waiting for supported parallel work, a proven prepared retry or a workflow gate. For sync/async the latest cut may be running, canonically waiting or canonically completed/failed; EXIT additionally requires an exact committed closed latest frontier as described below; both cuts must remain effect-free and pass full replay. Missing or corrupted evidence refuses before fresh acceptance. The only shared replay extension supplies retained immutable owner/audit evidence instead of querying nonexistent foreign database owners. It is restricted to effect-free Script cuts with independently validated retained generation links and returns only a validation result, never authority. No foreign rows or fake Requests are inserted to satisfy validation.
 
 The preview independently verifies the actual recreated-held imported native frontier/maps/participant ownership through existing runtime-data readback. It checks the imported owner remains waiting/unaccepted, current destination availability/pins/configuration/policy and accessible directories. Any unknown custody or native authority on the held owner refuses. `not_applicable` means no selected/latest source or native resource exists; it never means an unavailable receipt was treated as released.
 
@@ -111,7 +111,7 @@ Empty Maps are supported only when canonical audit proves their item seal and
 Join resolution. Selected owners must remain resumable (running or canonically waiting); latest
 owners may be running, canonically waiting or canonically completed/failed. Cuts between required arrival, item-seal,
 item-settlement or loop observations are refused by canonical replay. Active
-Script processes, unknown outcomes, serial or automatic-source retries, recovery-purpose gates, issued work, resources,
+Script processes, unknown outcomes, automatic-source retries, recovery-purpose gates, issued work, resources,
 bundles and other excluded families remain unsupported.
 
 Fork/path ownership, ordered selected Join arrivals, Map identities, item indices,
@@ -788,9 +788,9 @@ rollback or whole-Bible acceptance is claimed.
 ## Manual standalone parallel Script retries
 
 The shared portable definition guard now accepts per-Script `retry` policies only
-for manual standalone graphs with existing fork or Map controls. Workflow policy
-and human-gate policies still stop. Serial retries and automatic-source retries
-remain unsupported; Call-tree eligibility and the automatic origin validator are
+for manual standalone graphs with existing fork or Map controls. The serial
+successor below extends the same portable guard. Workflow policy and human-gate
+policies still stop. Automatic-source retries remain unsupported; Call-tree eligibility and the automatic origin validator are
 unchanged. This uses the existing local parallel frontier and causal replay codec,
 not a new retry codec or a broader effect family.
 
@@ -839,3 +839,72 @@ is the only store change. No schema, storage version or dependency changes.
 Source inspection only: no tests, test preparation, builds, types, runtime or native
 execution were performed. Timing, durability, notifications, round trips,
 scheduling, rollback and whole-portability qualification remain unverified.
+
+
+## Manual standalone serial Script retries
+
+The existing serial continuation codec now admits canonical per-Script retry
+histories for manual standalone effect-free Node Script/ordinary-approval-gate
+workflows, with no controls or existing condition/route and loop edges. Workflow
+and gate failure policies still stop. Serial definition eligibility uses an
+explicit retry opt-in; the frontier enables it only for genuine parentless manual
+owners and the exact standalone or standalone-terminal context. Automatic, Call,
+issued/Agent and resource contexts retain their prior serial eligibility. The
+parallel codec and its supported manual retry family are unchanged.
+
+The serial frontier retains every attempt, sorts consecutive numbers per Step,
+checks original purpose/input/hash/fence, validates canonical failed prior results
+without state updates, and enforces the original per-Script attempt ceiling. It
+rejects orphaned, leased/running/unknown, request/recovery/native or uncertain
+attempts. Only the final attempt can own the Step's terminal seal. A selected
+prepared delayed retry keeps the genuine waiting path; an arbitrary waiting
+Script without that supported retry evidence does not qualify.
+
+Serial replay tracks each Script attempt from preparation through exact lease,
+authorization, actual process exit and settlement. Process output/failure/hash and
+fence proof refer to that attempt's result, not the final Step result. Each retry
+requires the preceding failed settlement and drain, no overriding failure edge or
+terminal seal, the next consecutive number within unchanged `maxAttempts`, exact
+`delayMs`, original event/creation timestamp equality and the resulting absolute
+`available_at`. A terminal failed attempt cannot seal before the retry ceiling
+unless its genuine failure edge takes precedence. Successful state revisions are
+validated only at the final immutable seal; failed attempts never write state.
+Existing routing, conditions, loops, ordinary gate decisions and counters remain
+in the same causal replay, not a parallel-codec bypass.
+
+Exact selected and independently replayed latest cuts must both qualify, including
+terminal latest observations and actual closed EXIT invocation/process-drain proof.
+Incomplete events, unobserved process exits, unsupported recovery observations,
+unknown effects or missing original retry evidence stay held. The existing saver
+now reaches this serial codec; exact committed sync/async/default selected bytes
+and hash remain required, and pending saves supply no acknowledgement.
+
+Prepared retries retain their original absolute deadline through typed remap and
+insertion. Destination claim checks current time/readiness/capacity/policy; no
+elapsed-time claim, delay restart or consumed-attempt reset occurs. Seeded replay
+checks mapped attempt numbers, purpose, input and deadline, preserves settled
+results and zero destination fences under new IDs, then replays only actual new
+suffix observations. Original timestamp/fence/process evidence remains private.
+Later retries use the existing `MAX(number)+1` and policy ceiling. Existing bounded
+held/admitted/re-export/local-rewind composition and exact original commands/maps
+remain in use.
+
+The only new store caller change lets the existing explicit EXIT interruption
+path recognize the same portable definition for an actual manual standalone owner
+without parent, Call depth or children. Existing current pins, authority, saver,
+closure/drain and hold-identity checks still govern interruption/resume. This
+makes genuine closed selected retry cuts capturable; it does not supply imported
+source interruption authority to a destination. Ordinary gate closure and fresh
+manual destination invocation lifecycle remain unchanged.
+
+Fresh human review/current configuration/budgets/directories/no-secrets,
+acceptance/admission, pending-gate destination notifications, original-key receipt
+purpose/deadline checks and legitimate suffix recovery remain existing paths.
+Serial canceled source gates remain refused; no new gate-cancellation family is
+claimed. Runtime-package capture/held recreation/readback, remap/insertion, saver,
+server, SDK, DTO and UI need no format changes because their existing paths carry
+and expose all attempts and private selected/latest proof. Both shared portable
+callers use the updated guard. No schema/storage-version/dependency changes.
+Source only: no tests, preparation, builds, types, Node/parser/native/runtime or
+live database work. Execution, timing/durability, notifications, round trips,
+scheduling, rollback and whole-Bible/portability acceptance remain unverified.
