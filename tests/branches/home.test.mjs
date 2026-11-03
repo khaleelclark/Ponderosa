@@ -75,6 +75,8 @@ test('focused actions page exact Agent Decisions beyond newer history for both p
  const url=`/api/branch-executions/${codex.execution.id}/actions`,read=async(cursor)=>{
   const response=await f.app.inject({url:url+(cursor?'?cursor='+encodeURIComponent(cursor):'')});assert.equal(response.statusCode,200,response.body);return response.json();
  };
+ // Wait for the two intentionally started Runs' background checkpoint writes before measuring reads.
+ await f.branches.unitSaver.drain();
  const before=f.store.sqlite.prepare('SELECT total_changes() n').get().n,first=await read(),second=await read(first.nextCursor);
  assert.equal(first.items.length,100);assert.equal(second.items.length,25);assert.equal(second.nextCursor,undefined);
  const all=[...first.items,...second.items];assert.ok(all.every(item=>item.kind==='decision'));
