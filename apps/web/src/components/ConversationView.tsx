@@ -1180,7 +1180,7 @@ export function ConversationView({
         ) : null}
       </Box>
 
-      {auditOnly?<Alert severity="info" sx={{m:1}}>This temporary Chat belongs to a workflow execution. Inspect its messages and results here.</Alert>:<ChatComposerDock
+      {auditOnly?<Alert severity="info" sx={{m:1}}>Temporary workflow Chat · messages and results</Alert>:<ChatComposerDock
         visible={!agentWorkOpen && activeView === "main"}
       >
         {activeView === "main" && queuedMessageNotice ? (

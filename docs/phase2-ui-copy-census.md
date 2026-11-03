@@ -132,3 +132,13 @@ reserved frontier identifiers remain visible during review.
 This source-only census is not exhaustive or a visual verification. Errors and
 user-authored content retain their causes and context. Desktop/mobile rendering,
 accessibility and the full copy audit still require qualification.
+
+
+A second static text scan surfaced additional candidates beyond the earlier
+inventory. Whole-folder export and import activation, differing Chat
+instructions, temporary workflow surfaces and native stop are now shorter
+labels. Bulk Chat deletion still shows each permanent deletion, cancellation,
+retained file and active-Agent outcome beside the confirmation. The scan also
+found remaining multi-sentence errors, status messages and previews. Those
+require individual review and rendered checking; this scan does not establish
+zero informational blocks.

@@ -448,7 +448,7 @@ function MainConversationTimeline({
     <Stack spacing={0} sx={{ mb: 2 }}>
       {mainTimeline.length === 0 ? (
         <Typography variant="body2" color="text.secondary">
-          No messages yet. Send a message or mention an Agent to start this Chat.
+          No messages yet · send a message or mention an Agent
         </Typography>
       ) : null}
       {mainTimeline.map(entry => {

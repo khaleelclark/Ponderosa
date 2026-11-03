@@ -14,7 +14,7 @@ export function ChatInstructionsImportChoice({ source, destination, value, onCha
   if (!destination) return <Alert severity="info">This full copy will restore the source Chat instructions.</Alert>;
   return <Alert severity="warning">
     <Stack spacing={1}>
-      <Typography variant="body2">This Chat has different instructions. Choose which instructions it should use after importing.</Typography>
+      <Typography variant="body2">Chat instructions differ · choose which to use after import</Typography>
       <TextField label="Existing Chat instructions" value={destination} multiline maxRows={3} fullWidth InputProps={{ readOnly: true }} />
       <TextField label="Imported Chat instructions" value={source} multiline maxRows={3} fullWidth InputProps={{ readOnly: true }} />
       <FormControl fullWidth>

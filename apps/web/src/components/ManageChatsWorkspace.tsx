@@ -343,12 +343,13 @@ export function ManageChatsWorkspace({
       }}
     >
       <Alert severity="warning">
-        This permanently deletes the selected Chats and their history, plus all
-        assigned Agents. Their runs, work logs, private attachments, and in-app
-        artifact views will no longer be available. Pending work is cancelled.
-        Files actually saved in a machine working folder and Project-level
-        artifacts are not deleted. A Chat with an
-        active Agent will remain and report what must be stopped or reassigned.
+        <Stack spacing={0.5}>
+          <Typography>Selected Chats, history and assigned Agents: permanently deleted</Typography>
+          <Typography>Runs, work logs, private attachments and in-app artifact views: unavailable</Typography>
+          <Typography>Pending work: cancelled</Typography>
+          <Typography>Working-folder files and Project-level artifacts: retained</Typography>
+          <Typography>Chats with active Agents: retained with stop or reassignment instructions</Typography>
+        </Stack>
       </Alert>
       {previewQuery.isFetching ? (
         <Stack direction="row" spacing={1} sx={{ alignItems: "center", mt: 1.5 }}>

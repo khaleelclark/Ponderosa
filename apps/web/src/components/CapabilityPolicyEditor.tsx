@@ -76,7 +76,7 @@ function CapabilityPolicyEditorContent({endpoint,scopeKind,title="Capabilities",
     <Accordion expanded={historyOpen} onChange={(_,expanded)=>setHistoryOpen(expanded)}>
       <AccordionSummary>Permission change history</AccordionSummary>
       <AccordionDetails><Stack spacing={2}>
-        <Typography variant="body2">Recorded since upgrade. Operator changes come from Settings or the operator API.</Typography>
+        <Typography variant="body2">History starts at upgrade · operator changes use Settings or the operator API</Typography>
         {history.isPending&&<Typography role="status">Loading history…</Typography>}
         {history.error&&<Alert severity="error">Permission history could not be loaded. {history.error.message}<Button onClick={()=>void history.refetch()}>Retry</Button></Alert>}
         {history.data?.pages.flatMap(page=>page.changes).map(change=><Box key={change.revision} sx={{overflowWrap:"anywhere"}}>

@@ -1039,7 +1039,7 @@ export function AgentDetail({
       {tab!=="chat"&&!auditOnly&&<ContextRecoveryPanel key={`recovery:${detail.agent.id}`} agentId={detail.agent.id}/>}
       {tab!=="chat"&&<ImportedCommunications key={detail.agent.id} agentId={detail.agent.id}/>}
 
-      {auditOnly?<Alert severity="info" sx={{m:1}}>This Agent belongs to a workflow execution. Control its work from the execution view.</Alert>:<AgentDetailComposer
+      {auditOnly?<Alert severity="info" sx={{m:1}}>Workflow Agent · control work from its execution view</Alert>:<AgentDetailComposer
         visible={tab === "chat"}
         queuedMessageNotice={queuedMessageNotice}
         queuedMessageFailure={queuedMessageFailure}
