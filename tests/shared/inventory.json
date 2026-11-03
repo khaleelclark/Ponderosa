@@ -2491,6 +2491,14 @@
       "moduleBase": "apps/server/package.json",
       "requirements": "Node24, built native workspaces; isolated private stores and locally owned folders only",
       "origin": "Generic contained Project canonical binding: exact preparing members, stale inode refusal, restart metadata repair and no-rollback/no-dispatch recovery hold"
+    },
+    {
+      "path": "tests/organizations/portable-symlink-metadata.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native-host addon; Linux owned symlink O_PATH descriptors and exact nanosecond filesystem; other OS explicit unsupported branch; no provider or live data",
+      "origin": "Bible8/12/15 descriptor-only exact symlink timestamps, inode/type/link-count preflight, signed nanoseconds, target preservation and pathname replacement"
     }
   ],
   "retainedReleasePayload": [

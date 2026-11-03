@@ -524,3 +524,63 @@ napi_value CreatePersistentNode(napi_env env,napi_callback_info info) {
   return portable_metadata::Failure(env,"ERR_PERSISTENT_NODE_UNSUPPORTED","FIFO creation requires Linux O_PATH, fchmodat2 and AT_EMPTY_PATH; no node created");
 #endif
 }
+
+
+// Linux do_utimes() uses the held fd for empty paths and LOOKUP_FOLLOW only
+// without AT_SYMLINK_NOFOLLOW: https://github.com/torvalds/linux/blob/v7.0/fs/utimes.c
+// No mutable pathname, target open, ownership change or xattr authority is used.
+napi_value ApplyExactSymlinkMetadata(napi_env env,napi_callback_info info) {
+#if defined(__linux__) && defined(O_PATH) && defined(AT_EMPTY_PATH) && defined(AT_SYMLINK_NOFOLLOW)
+  using namespace portable_metadata;
+  int fd=-1;bool attempted=false;
+  auto evidence=[&](const struct stat& value){
+    auto out=ExactMetadataEvidence(env,value);
+    if(S_ISLNK(value.st_mode))Set(env,out,"kind",Text(env,"symlink"));
+    Set(env,out,"linkCount",Big(env,value.st_nlink));
+    Set(env,out,"ownerId",Number(env,value.st_uid));Set(env,out,"groupId",Number(env,value.st_gid));
+    return out;
+  };
+  try{
+    size_t argc=1;napi_value args[1];napi_get_cb_info(env,info,&argc,args,nullptr,nullptr);
+    if(argc!=1)throw std::runtime_error("one exact symlink metadata input required");
+    const auto input=args[0];fd=Integer(env,Property(env,input,"fd"),INT_MAX);
+    const auto device=Identity(env,Property(env,input,"expectedDevice")),inode=Identity(env,Property(env,input,"expectedInode"));
+    const auto modified=Time(env,Property(env,input,"mtimeNs"));
+    const int flags=fcntl(fd,F_GETFL);
+    struct stat before{};
+    if(flags<0||(flags&O_PATH)!=O_PATH||(flags&O_NOFOLLOW)!=O_NOFOLLOW||
+       fstat(fd,&before)!=0||!S_ISLNK(before.st_mode)||before.st_nlink!=1||
+       uint64_t(before.st_dev)!=device||uint64_t(before.st_ino)!=inode)
+      throw std::runtime_error("held no-follow symlink identity/kind/link count differs; no metadata changed");
+    // Older kernels reject the empty-path flags. Probe only an invalid fd, so
+    // availability checks cannot modify any node or follow a link target.
+    const struct timespec probe[2]={{0,UTIME_OMIT},{0,0}};
+    errno=0;
+    if(utimensat(-1,"",probe,AT_EMPTY_PATH|AT_SYMLINK_NOFOLLOW)!=-1||errno!=EBADF)
+      return Failure(env,"ERR_EXACT_SYMLINK_METADATA_UNSUPPORTED","descriptor-only no-follow symlink timestamps unavailable; no metadata changed");
+    struct stat current{};
+    if(fstat(fd,&current)!=0||!SameObservation(before,current))
+      throw std::runtime_error("held symlink changed before timestamp application");
+    const struct timespec times[2]={{0,UTIME_OMIT},modified};
+    attempted=true;
+    if(utimensat(fd,"",times,AT_EMPTY_PATH|AT_SYMLINK_NOFOLLOW)!=0)
+      throw std::runtime_error(std::string("descriptor-only symlink timestamp application failed: ")+std::strerror(errno));
+    struct stat after{};
+    if(fstat(fd,&after)!=0||!S_ISLNK(after.st_mode)||after.st_nlink!=1||
+       before.st_dev!=after.st_dev||before.st_ino!=after.st_ino||before.st_mode!=after.st_mode||
+       before.st_uid!=after.st_uid||before.st_gid!=after.st_gid||
+       before.st_atim.tv_sec!=after.st_atim.tv_sec||before.st_atim.tv_nsec!=after.st_atim.tv_nsec||
+       after.st_mtim.tv_sec!=modified.tv_sec||after.st_mtim.tv_nsec!=modified.tv_nsec)
+      throw std::runtime_error("exact symlink timestamp/identity/unchanged ownership readback differs");
+    return evidence(after);
+  }catch(const std::exception& error){
+    if(!attempted)return Failure(env,"ERR_EXACT_SYMLINK_METADATA_PREFLIGHT",error.what());
+    napi_value message=Text(env,error.what()),failure;napi_create_error(env,nullptr,message,&failure);
+    Set(env,failure,"code",Text(env,"ERR_EXACT_SYMLINK_METADATA_PARTIAL"));Set(env,failure,"partialStatePossible",Boolean(env,true));
+    struct stat observed{};Set(env,failure,"observed",fstat(fd,&observed)==0?evidence(observed):Null(env));
+    napi_throw(env,failure);return nullptr;
+  }
+#else
+  return portable_metadata::Failure(env,"ERR_EXACT_SYMLINK_METADATA_UNSUPPORTED","Exact symlink timestamps require Linux O_PATH and utimensat AT_EMPTY_PATH|AT_SYMLINK_NOFOLLOW; no metadata changed");
+#endif
+}

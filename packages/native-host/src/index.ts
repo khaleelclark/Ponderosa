@@ -14,6 +14,7 @@ interface NativeJobBinding {
   applyPersistentNodeMetadata(input: PersistentNodeMetadataRestore): ExtendedMetadataEvidence;
   createPersistentNode(input: PersistentNodeParent & { kind: "fifo"; mode: number; mtimeNs: bigint;restoreExtendedMetadata?:boolean }): PersistentNodeEvidence;
   applyExactFileMetadata(input: ExactFileMetadataInput): ExactFileMetadataEvidence;
+  applyExactSymlinkMetadata(input: Omit<ExactSymlinkMetadataInput,"mtimeNs"> & {mtimeNs:bigint}): ExactSymlinkMetadataEvidence;
   offlineMetadata(sourceDescriptor: number, targetDescriptor?: number): boolean;
   offlineWorkspaceMetadata(sourceDescriptor: number, targetDescriptor?: number): boolean;
   offlineDirectoryBatch(descriptor: number, cookie: bigint): { names: Buffer[]; next: bigint; done: boolean };
@@ -211,6 +212,40 @@ export interface ExactFileMetadataPartialError extends Error {
  */
 export function applyExactFileMetadata(input: ExactFileMetadataInput): ExactFileMetadataEvidence {
   return binding().applyExactFileMetadata(input);
+}
+
+
+export interface ExactSymlinkMetadataInput {
+  /** Caller-held Linux O_PATH|O_NOFOLLOW descriptor; caller retains and closes it. */
+  fd: number;
+  expectedDevice: bigint;
+  expectedInode: bigint;
+  /** Canonical signed decimal nanoseconds; no Date or double conversion. */
+  mtimeNs: string;
+}
+export interface ExactSymlinkMetadataEvidence extends Omit<ExactFileMetadataEvidence,"kind"> {
+  kind: "symlink";
+  linkCount: bigint;
+  ownerId: number;
+  groupId: number;
+}
+export interface ExactSymlinkMetadataPartialError extends Error {
+  code: "ERR_EXACT_SYMLINK_METADATA_PARTIAL";
+  partialStatePossible: true;
+  observed: (Omit<ExactSymlinkMetadataEvidence,"kind"> & {kind:"symlink"|"file"|"directory"|"other"}) | null;
+}
+/** Linux only. Update this exact held, single-name symlink inode without following
+ * its target. Preserve uid/gid/mode and atime; require exact signed-ns readback.
+ * Caller independently proves fresh destination and held parent/name membership.
+ * No owner/ACL/xattr changes, rollback, durability or independent-writer snapshot
+ * are implied. Other OSes or unavailable descriptor syscalls refuse explicitly.
+ * https://man7.org/linux/man-pages/man2/utimensat.2.html
+ */
+export function applyExactSymlinkMetadata(input:ExactSymlinkMetadataInput):ExactSymlinkMetadataEvidence {
+  if(typeof input.mtimeNs!=="string"||!/^(?:0|-?[1-9][0-9]{0,38})$/.test(input.mtimeNs)){
+    throw Object.assign(new Error("Exact symlink timestamp requires bounded canonical signed decimal nanoseconds"),{code:"ERR_EXACT_SYMLINK_METADATA_INPUT"});
+  }
+  return binding().applyExactSymlinkMetadata({...input,mtimeNs:BigInt(input.mtimeNs)});
 }
 
 export interface SecureDirectoryEntry {
