@@ -7,7 +7,7 @@ import {mkdirSync,renameSync} from 'node:fs';
 import path from 'node:path';
 import {promisify} from 'node:util';
 import {execFile} from 'node:child_process';
-import {exportReviewedUserData,createGitExportCapture} from '../../apps/server/dist/portable-reviewed-user-data.js';
+import {exportReviewedUserData,createGitExportCapture,createReviewedNativeGit} from '../../apps/server/dist/portable-reviewed-user-data.js';
 import {planReviewedRecoveryRoots,applyReviewedRecoveryRoots} from '../../apps/server/dist/portable-git-recreation.js';
 import {AgentStore} from '@ponderosa/agents';
 import {AgentWorkingCopyService} from '../../apps/server/dist/agent-working-copy-service.js';
@@ -240,4 +240,98 @@ test('typed contained roots get local parent-child inode receipts before Shared 
   assert.equal(store.getAgent(parent.id).workingCopy.containedRootPreparations.find(item=>item.id===raced.id).phase,'binding','Replacement cannot silently issue new root authority');
 
  }finally{for(const release of releases)release();store?.close();await rm(base,{recursive:true,force:true});}
+});
+
+
+test('native sharing matches installed Git modes for group, world, exact octal and umask while retaining hook metadata',{skip:process.platform!=='linux'},async()=>{
+  const root=await mkdtemp(path.join(tmpdir(),'portable-git-shared-modes-'));
+  try{
+    for(const setting of ['group','all','0660','0640','false','true','1','2']){
+      const source=path.join(root,'source-'+setting),destination=path.join(root,'new-'+setting),control=path.join(root,'native-'+setting);
+      await initialize(source);await git(source,'config','core.sharedRepository',setting);
+      const hook=path.join(source,'.git','hooks','pre-commit');await mkdir(path.dirname(hook));
+      await writeFile(hook,'#!/bin/sh\necho unexpected > '+JSON.stringify(path.join(root,'hook-ran'))+'\n');await chmod(hook,0o751);
+      const manifest=await exportReviewedUserData(source,{git:true,harness:false}),wire=Buffer.from(JSON.stringify(manifest));
+      await mkdir(destination);await chmod(destination,0o750);
+      await createReviewedNativeGit(destination,wire,createHash('sha256').update(wire).digest('hex'),{git:true,harness:false});
+      await mkdir(control);await git(control,'init','--template=','--initial-branch=main','--shared='+setting);
+      await git(control,'config','user.name','Portable Test');await git(control,'config','user.email','portable@example.invalid');
+      await writeFile(path.join(control,'file.txt'),'committed\n');await git(control,'add','file.txt');await git(control,'commit','--no-gpg-sign','-m','Initial');
+      const controlOid=await git(control,'rev-parse','HEAD'),destinationOid=await git(destination,'rev-parse','HEAD');
+      for(const name of ['', 'objects','refs','refs/heads','logs','logs/HEAD','HEAD','config','index','refs/heads/main']){
+        const actual=await lstat(path.join(destination,'.git',name)),expected=await lstat(path.join(control,'.git',name));
+        assert.equal(actual.mode&0o7777,expected.mode&0o7777,setting+' native mode for '+name);
+        assert.equal(actual.gid,(await lstat(path.join(destination,'.git'))).gid,'fresh destination group is inherited, never source-adopted');
+      }
+      assert.equal((await lstat(path.join(destination,'.git','objects',destinationOid.slice(0,2),destinationOid.slice(2)))).mode&0o7777,
+        (await lstat(path.join(control,'.git','objects',controlOid.slice(0,2),controlOid.slice(2)))).mode&0o7777,setting+' immutable object mode');
+      assert.equal((await lstat(path.join(destination,'.git','hooks','pre-commit'))).mode&0o7777,0o751,'explicit original executable hook mode wins');
+      assert.equal((await lstat(destination)).mode&0o7777,0o750,'working-root metadata is left for its separate finalizer');
+      await assert.rejects(lstat(path.join(root,'hook-ran')),{code:'ENOENT'});
+    }
+  }finally{await rm(root,{recursive:true,force:true});}
+});
+
+test('native sharing follows active worktree configuration rather than only the common declaration',{skip:process.platform!=='linux'},async()=>{
+  const root=await mkdtemp(path.join(tmpdir(),'portable-git-worktree-sharing-'));
+  try{
+    const source=path.join(root,'source'),destination=path.join(root,'new');await initialize(source);
+    await git(source,'config','core.sharedRepository','all');await git(source,'config','extensions.worktreeConfig','true');
+    await git(source,'config','--worktree','core.sharedRepository','0640');
+    const manifest=await exportReviewedUserData(source,{git:true,harness:false}),wire=Buffer.from(JSON.stringify(manifest));await mkdir(destination);
+    await createReviewedNativeGit(destination,wire,createHash('sha256').update(wire).digest('hex'),{git:true,harness:false});
+    assert.equal(await git(destination,'config','--get','core.sharedRepository'),'0640');
+    assert.equal((await lstat(path.join(destination,'.git','config'))).mode&0o7777,0o640);
+    assert.equal((await lstat(path.join(destination,'.git'))).mode&0o7777,0o2750);
+  }finally{await rm(root,{recursive:true,force:true});}
+});
+
+test('native sharing evaluates relocated conditional includes in the fresh native context',{skip:process.platform!=='linux'},async()=>{
+  const root=await mkdtemp(path.join(tmpdir(),'portable-git-conditional-sharing-'));
+  try{
+    const source=path.join(root,'source'),destination=path.join(root,'new'),external=path.join(root,'external'),support=path.join(root,'support');
+    await initialize(source);await mkdir(external);await git(source,'config','core.sharedRepository','all');
+    const conditional='[core]\n sharedRepository = 0640\n';await writeFile(path.join(external,'conditional.conf'),conditional);
+    await git(source,'config','includeIf.onbranch:main.path',path.join(external,'conditional.conf'));
+    const manifest=await exportReviewedUserData(source,{git:true,harness:false}),pkg=packageFor(manifest,{'file.txt':'committed\n'});
+    pkg.agents.push({ref:'support-agent',title:'Conditional configuration',engine:'codex',managerRef:'agent',workingRootRef:'support',managementPermissions:{allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false},workingFolder:{directories:[],excludedPaths:[]},workingFiles:[{path:'conditional.conf',artifactRef:'conditional'}],artifacts:[{ref:'conditional',kind:'generated_file',path:'conditional.conf',createdAt:new Date().toISOString(),dataBase64:Buffer.from(conditional).toString('base64')}]});
+    await mkdir(destination);await mkdir(support);await writeFile(path.join(support,'conditional.conf'),conditional);await writeFile(path.join(destination,'file.txt'),'committed\n');
+    const activation={git:true,harness:false,gitPathMappings:[{source,destination},{source:external,destination:support}]};
+    await applyReviewedRecoveryRoots(planReviewedRecoveryRoots(pkg,{work:destination,support},activation),activation,()=>{});
+    assert.equal(await git(destination,'config','--get','core.sharedRepository'),'0640');
+    assert.equal((await lstat(path.join(destination,'.git','config'))).mode&0o7777,0o640);
+    assert.equal((await lstat(path.join(destination,'.git'))).mode&0o7777,0o2750);
+  }finally{await rm(root,{recursive:true,force:true});}
+});
+
+
+test('native sharing retains kernel default-ACL creation modes rather than reconstructing them from umask',{skip:process.platform!=='linux'},async t=>{
+  const root=await mkdtemp(path.join(tmpdir(),'portable-git-shared-acl-'));
+  try{
+    try{await exec('setfacl',['-m','d:u::rwx,d:g::rwx,d:o::---',root]);}
+    catch(error){if(error.code==='ENOENT'||/Operation not supported/.test(String(error.stderr))){t.skip('setfacl/default ACL capability is absent');return;}throw error;}
+    const source=path.join(root,'source'),destination=path.join(root,'new'),control=path.join(root,'native');
+    await initialize(source);await git(source,'config','core.sharedRepository','group');
+    const manifest=await exportReviewedUserData(source,{git:true,harness:false}),wire=Buffer.from(JSON.stringify(manifest));await mkdir(destination);
+    await createReviewedNativeGit(destination,wire,createHash('sha256').update(wire).digest('hex'),{git:true,harness:false});
+    await mkdir(control);await git(control,'init','--template=','--initial-branch=main','--shared=group');
+    for(const name of ['', 'objects','refs','HEAD','config'])assert.equal((await lstat(path.join(destination,'.git',name))).mode&0o7777,
+      (await lstat(path.join(control,'.git',name))).mode&0o7777,'kernel ACL-aware native mode for '+name);
+  }finally{await rm(root,{recursive:true,force:true});}
+});
+
+test('native sharing preflights every inode before changing any mode',{skip:process.platform!=='linux'},async()=>{
+  const {applyNativeGitPermissions}=await import('../../apps/server/dist/portable-git-permissions.js');
+  const root=await mkdtemp(path.join(tmpdir(),'portable-git-permission-custody-'));
+  try{
+    const source=path.join(root,'source');await initialize(source);await git(source,'config','core.sharedRepository','group');
+    const gitDir=path.join(source,'.git'),config=path.join(gitDir,'config'),head=path.join(gitDir,'HEAD');
+    const configStat=await lstat(config,{bigint:true}),headStat=await lstat(head,{bigint:true});
+    await assert.rejects(applyNativeGitPermissions({gitDir,worktreePath:source},[],[
+      {path:config,device:configStat.dev,inode:configStat.ino,creationMode:0o600},
+      {path:head,device:headStat.dev,inode:headStat.ino+1n,creationMode:0o600},
+    ]),/identity or owner changed/);
+    assert.equal((await lstat(config,{bigint:true})).mode,configStat.mode,'earlier valid node was not changed before the later mismatch');
+    assert.equal((await lstat(head,{bigint:true})).mode,headStat.mode,'mismatched node was not changed');
+  }finally{await rm(root,{recursive:true,force:true});}
 });

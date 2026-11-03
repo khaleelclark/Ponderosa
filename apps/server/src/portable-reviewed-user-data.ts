@@ -11,6 +11,7 @@ import {assertPortableSecretsAbsent,isPortableSecretField,redactPortableDiagnost
 
 import {captureFilesystemMetadata,validateFilesystemMetadata} from './portable-filesystem-metadata.js';
 import {openPortableRegular} from './portable-held-regular.js';
+import {applyNativeGitPermissions,type NativeGitPermissionNode} from './portable-git-permissions.js';
 
 const sourceFs=fs;
 type GitSourceFs=Pick<typeof sourceFs,'lstat'|'realpath'|'open'|'readdir'>;
@@ -2453,32 +2454,46 @@ async function writeReviewedGit(destination:string,value:ReviewedGitUserData,nat
   validateReviewedGit(value);
   if(native&&!configuration)throw new Error('Native Git requires its validated configuration plan');
   if(!path.isAbsolute(destination)||path.resolve(destination)!==destination||await fs.realpath(path.dirname(destination))!==path.dirname(destination))throw new Error('Choose a new canonical Git review destination');
+  const posixPermissions=!!native&&process.platform==='linux'&&['x64','arm64','ppc64','s390x','loong64'].includes(process.arch);
+  const permissionFiles:NativeGitPermissionNode[]=[],permissionDirectories=new Map<string,number>();
+  const createDirectory=async(target:string)=>{
+    // Observe the kernel's normal creation mode (including default ACL effects)
+    // before restricting the empty owned directory for the copy phase.
+    await fs.mkdir(target,{mode:posixPermissions?0o777:0o700});
+    if(posixPermissions){
+      const handle=await fs.open(target,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);
+      try{const stat=await handle.stat({bigint:true});if(!stat.isDirectory()||stat.uid!==BigInt(process.geteuid!()))throw new Error('New Git permission directory is not currently owned');permissionDirectories.set(target,Number(stat.mode)&0o7777);const mode=(Number(stat.mode)&0o7000)|0o700,observed=applyExactFileMetadata({fd:handle.fd,expectedDevice:stat.dev,expectedInode:stat.ino,kind:'directory',mode,mtimeNs:stat.mtimeNs});if(observed.mode!==mode||observed.mtimeNs!==stat.mtimeNs)throw new Error('Git copy directory permissions differ after exact application');}finally{await handle.close();}
+    }
+  };
   if(native||recovery){if(await fs.realpath(destination)!==destination||!recovery&&(await fs.readdir(destination)).length)throw new Error('Git recreation requires its freshly owned canonical destination');}else await fs.mkdir(destination,{mode:0o700});
   const gitDir=layout?.commonDir??storage?.gitDir??path.join(destination,'.git');
   if(layout){
     if(!recovery||!native&&(!selectedWorktreeReftable(value)||gitDir!==path.join(destination,'.ponderosa-review-git')||layout.privateDir!==path.join(gitDir,'worktrees','selected')||!layout.writeCommon)||!path.isAbsolute(gitDir)||path.resolve(gitDir)!==gitDir||path.dirname(layout.privateDir)!==path.join(gitDir,'worktrees')||await fs.realpath(gitDir)!==gitDir)throw new Error('Mapped Git requires its freshly owned canonical common directory and private worktree slot');
-  }else if(!storage?.existingRoot)await fs.mkdir(gitDir,{mode:0o700});
+  }else if(!storage?.existingRoot)await createDirectory(gitDir);
   else if(!recovery||await fs.realpath(gitDir)!==gitDir||!(await fs.lstat(gitDir)).isDirectory())throw new Error('Mapped module storage requires its exact fresh selected destination root');
-  if(!layout||layout.writeCommon){await fs.mkdir(path.join(gitDir,'objects'),{mode:0o700});await fs.mkdir(path.join(gitDir,'refs'),{mode:0o700});}
+  if(posixPermissions&&(await fs.lstat(gitDir,{bigint:true})).uid!==BigInt(process.geteuid!()))throw new Error('Native Git storage must be currently owned before creation');
+  if(!layout||layout.writeCommon){await createDirectory(path.join(gitDir,'objects'));await createDirectory(path.join(gitDir,'refs'));}
   if(layout){
-    if(layout.writeCommon)await fs.mkdir(path.join(gitDir,'worktrees'),{mode:0o700});
-    await fs.mkdir(layout.privateDir,{mode:0o700});
+    if(layout.writeCommon)await createDirectory(path.join(gitDir,'worktrees'));
+    await createDirectory(layout.privateDir);
   }
   const created:Array<{path:string;sha256:string;device:bigint;inode:bigint}>=[];
+  const initialPermissionTargets=new Set<string>([...(!layout||layout.writeCommon?[gitDir,path.join(gitDir,'objects'),path.join(gitDir,'refs')]:[]),...(layout?[...(layout.writeCommon?[path.join(gitDir,'worktrees')]:[]),layout.privateDir]:[])]);
   const directories=new Map<string,{device:bigint;inode:bigint}>();
-  for(const target of [destination,gitDir,path.join(gitDir,'objects'),path.join(gitDir,'refs'),...(layout?[path.join(gitDir,'worktrees'),layout.privateDir]:[])]){const stat=await fs.lstat(target,{bigint:true});directories.set(target,{device:stat.dev,inode:stat.ino});}
+  for(const target of [destination,gitDir,path.join(gitDir,'objects'),path.join(gitDir,'refs'),...(layout?[path.join(gitDir,'worktrees'),layout.privateDir]:[])]){const stat=await fs.lstat(target,{bigint:true});directories.set(target,{device:stat.dev,inode:stat.ino});if(posixPermissions&&initialPermissionTargets.has(target)&&!permissionDirectories.has(target))permissionDirectories.set(target,Number(stat.mode)&0o7777);}
   const checkDirectories=async()=>{for(const [target,identity] of directories){const stat=await fs.lstat(target,{bigint:true});if(!stat.isDirectory()||stat.dev!==identity.device||stat.ino!==identity.inode||await fs.realpath(target)!==target)throw new Error('Git destination directory identity changed');}};
   const write=async(relative:string,data:Buffer|string,metadata?:{mode:number;mtimeNs:string},common=false,forcePrivate=false)=>{
+    const readOnly=/^objects\/(?:[a-f0-9]{2}\/[a-f0-9]+|pack\/pack-[a-f0-9]+\.(?:pack|idx|mtimes))$/.test(relative);
     const privateName=forcePrivate||!common&&(relative==='HEAD'||relative==='index'||relative==='commondir'||relative==='gitdir'||relative==='config.worktree'||relative==='info/sparse-checkout'||relative==='ORIG_HEAD'||relative==='FETCH_HEAD'||relative==='logs/HEAD'||relative==='logs/ORIG_HEAD'||gitSelectedOriginalNames.includes(relative)||privateRef(relative.startsWith('logs/')?relative.slice(5):relative));
     if(layout){if(!privateName&&!layout.writeCommon)return;if(privateName)relative=path.relative(gitDir,layout.privateDir).split(path.sep).join('/')+'/'+relative;}
     await checkDirectories();const target=path.join(gitDir,relative);let parent=gitDir;
     for(const part of relative.split('/').slice(0,-1)){
       parent=path.join(parent,part);if(directories.has(parent))continue;
-      await fs.mkdir(parent,{mode:0o700});const stat=await fs.lstat(parent,{bigint:true});
+      await createDirectory(parent);const stat=await fs.lstat(parent,{bigint:true});
       if(!stat.isDirectory()||await fs.realpath(parent)!==parent)throw new Error('Git destination parent changed');directories.set(parent,{device:stat.dev,inode:stat.ino});
     }
-    await checkDirectories();const handle=await fs.open(target,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);
-    try{const stat=await handle.stat({bigint:true});if(!stat.isFile()||stat.nlink!==1n)throw new Error('Git destination file is not exclusive');await handle.writeFile(data);if(metadata){const observed=applyExactFileMetadata({fd:handle.fd,expectedDevice:stat.dev,expectedInode:stat.ino,kind:'file',mode:metadata.mode,mtimeNs:BigInt(metadata.mtimeNs)});if(observed.mode!==metadata.mode||observed.mtimeNs!==BigInt(metadata.mtimeNs))throw new Error('Git original metadata differs after application');}await handle.sync();created.push({path:relative,sha256:createHash('sha256').update(data).digest('hex'),device:stat.dev,inode:stat.ino});}finally{await handle.close();}
+    await checkDirectories();const handle=await fs.open(target,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,posixPermissions?(readOnly?0o444:0o666):0o600);
+    try{const stat=await handle.stat({bigint:true});if(!stat.isFile()||stat.nlink!==1n)throw new Error('Git destination file is not exclusive');if(posixPermissions){if(stat.uid!==BigInt(process.geteuid!()))throw new Error('New Git permission file is not currently owned');const observed=applyExactFileMetadata({fd:handle.fd,expectedDevice:stat.dev,expectedInode:stat.ino,kind:'file',mode:0o600,mtimeNs:stat.mtimeNs});if(observed.mode!==0o600||observed.mtimeNs!==stat.mtimeNs)throw new Error('Git copy file permissions differ after exact application');}await handle.writeFile(data);if(metadata){const observed=applyExactFileMetadata({fd:handle.fd,expectedDevice:stat.dev,expectedInode:stat.ino,kind:'file',mode:metadata.mode,mtimeNs:BigInt(metadata.mtimeNs)});if(observed.mode!==metadata.mode||observed.mtimeNs!==BigInt(metadata.mtimeNs))throw new Error('Git original metadata differs after application');}await handle.sync();created.push({path:relative,sha256:createHash('sha256').update(data).digest('hex'),device:stat.dev,inode:stat.ino});permissionFiles.push({path:target,device:stat.dev,inode:stat.ino,creationMode:Number(stat.mode)&0o7777,...(metadata?{originalMode:metadata.mode}:{})});}finally{await handle.close();}
   };
   try{
     for(const object of value.objects){const data=Buffer.from(object.dataBase64,'base64');await write(`objects/${object.oid.slice(0,2)}/${object.oid.slice(2)}`,deflateSync(Buffer.concat([Buffer.from(`${object.type} ${data.length}\0`),data])));}
@@ -2536,8 +2551,8 @@ async function writeReviewedGit(destination:string,value:ReviewedGitUserData,nat
       await write('commondir',path.relative(layout.privateDir,gitDir).split(path.sep).join('/')+'\n');
       await write('gitdir',path.relative(layout.privateDir,path.join(destination,'.git')).split(path.sep).join('/')+'\n');
       const pointer=path.join(destination,'.git'),pointerData=Buffer.from('gitdir: '+path.relative(destination,layout.privateDir).split(path.sep).join('/')+'\n');
-      const handle=await fs.open(pointer,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);
-      try{const before=await handle.stat({bigint:true});await handle.writeFile(pointerData);await handle.sync();const current=await fs.lstat(pointer,{bigint:true});if(!current.isFile()||current.nlink!==1n||current.dev!==before.dev||current.ino!==before.ino)throw new Error('Mapped Git worktree pointer changed');}finally{await handle.close();}
+      const handle=await fs.open(pointer,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,posixPermissions?0o666:0o600);
+      try{const before=await handle.stat({bigint:true});await handle.writeFile(pointerData);await handle.sync();const current=await fs.lstat(pointer,{bigint:true});if(!current.isFile()||current.nlink!==1n||current.dev!==before.dev||current.ino!==before.ino)throw new Error('Mapped Git worktree pointer changed');permissionFiles.push({path:pointer,device:before.dev,inode:before.ino,creationMode:Number(before.mode)&0o7777,unshared:true});}finally{await handle.close();}
     }
     if(native&&(!layout||layout.writeCommon))for(const module of configuration!.modules??[]){
       const relative=path.relative(gitDir,module.gitDir);
@@ -2545,7 +2560,7 @@ async function writeReviewedGit(destination:string,value:ReviewedGitUserData,nat
       let parent=gitDir;
       for(const component of relative.split(path.sep).slice(0,-1)){
         parent=path.join(parent,component);
-        if(!directories.has(parent)){await fs.mkdir(parent,{mode:0o700});const stat=await fs.lstat(parent,{bigint:true});if(!stat.isDirectory()||await fs.realpath(parent)!==parent)throw new Error('Native module storage parent changed');directories.set(parent,{device:stat.dev,inode:stat.ino});}
+        if(!directories.has(parent)){await createDirectory(parent);const stat=await fs.lstat(parent,{bigint:true});if(!stat.isDirectory()||await fs.realpath(parent)!==parent)throw new Error('Native module storage parent changed');directories.set(parent,{device:stat.dev,inode:stat.ino});}
       }
       await checkDirectories();
       validateNativeGitSelection(module.value);
@@ -2557,8 +2572,8 @@ async function writeReviewedGit(destination:string,value:ReviewedGitUserData,nat
         const root=await fs.open(storage.worktreePath,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_DIRECTORY);
         try{
           const before=await root.stat({bigint:true});if(!before.isDirectory()||await fs.realpath(storage.worktreePath)!==storage.worktreePath)throw new Error('Initialized module worktree destination changed');
-          const pointer=path.join(storage.worktreePath,'.git'),handle=await fs.open(pointer,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);
-          try{await handle.writeFile('gitdir: '+path.relative(storage.worktreePath,gitDir).split(path.sep).join('/')+'\n');await handle.sync();}finally{await handle.close();}
+          const pointer=path.join(storage.worktreePath,'.git'),handle=await fs.open(pointer,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,posixPermissions?0o666:0o600);
+          try{const stat=await handle.stat({bigint:true});await handle.writeFile('gitdir: '+path.relative(storage.worktreePath,gitDir).split(path.sep).join('/')+'\n');await handle.sync();permissionFiles.push({path:pointer,device:stat.dev,inode:stat.ino,creationMode:Number(stat.mode)&0o7777,unshared:true});}finally{await handle.close();}
           const current=await fs.lstat(storage.worktreePath,{bigint:true});if(current.dev!==before.dev||current.ino!==before.ino)throw new Error('Initialized module worktree membership changed');await root.sync();
         }finally{await root.close();}
     }
@@ -2573,6 +2588,7 @@ async function writeReviewedGit(destination:string,value:ReviewedGitUserData,nat
     if(!native)await fs.writeFile(path.join(destination,'CONFIGURATION-REVIEW.json'),JSON.stringify({activation:'inert_review_only',reftableReview:value.reftableReview,configuration:value.configurationReview,configurationOriginalReview:value.configurationOriginalReview,reflogMissingObjects:value.reflogMissingObjects,indexOptionalReview:value.indexOptionalReview,sparseReview:value.sparseReview,infoReview:value.infoReview,shallowReview:value.shallowReview,origHeadReview:value.origHeadReview,fetchHeadReview:value.fetchHeadReview,packRetentionReview:value.packRetentionReview,modules:value.modules??[],exclusions:value.exclusions},null,2),{flag:'wx',mode:0o600});
     await checkDirectories();
     for(const file of created){const target=path.join(gitDir,file.path),{data}=await regularOriginal(target,limit),stat=await fs.lstat(target,{bigint:true});if(stat.dev!==file.device||stat.ino!==file.inode||createHash('sha256').update(data).digest('hex')!==file.sha256)throw new Error('Created Git data changed; preserve partial state');}
+    if(native){await applyNativeGitPermissions({gitDir,privateDir:layout?.privateDir,worktreePath:storage?.worktreePath??destination},[...permissionDirectories].map(([target,creationMode])=>({path:target,creationMode,...directories.get(target)!})),permissionFiles);await checkDirectories();}
     for(const target of directories.keys()){const handle=await fs.open(target,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_DIRECTORY);try{await handle.sync();}finally{await handle.close();}}
     return created;
   }catch(error){throw Object.assign(new Error(`Git recreation incomplete; preserve all bytes at ${destination}: ${redactPortableDiagnostic((error as Error).message??String(error))}`,{cause:error}),{code:(error as {code?:string}).code??'ERR_GIT_RECREATION_PARTIAL',partialStatePossible:true,observed:(error as {observed?:unknown}).observed??null});}
