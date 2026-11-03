@@ -7,7 +7,7 @@ import {retainedResourceCapture} from './branch-resource-capture.js';
 import {hostRequestPayload,coordinationLineageSupported} from './branch-host-provenance.js';
 import {branchScriptFailureSummary} from '@ponderosa/core';
 import {branchContinuationIds} from './branch-continuation-remap.js';
-import {hasParallelControls,rootCallBundleTreeSupported,manualLeafBundleTreeSupported,type ManualRootBundleOwner,portableScriptBundlesSupported,standaloneBundleTreeOwnerSupported,parallelDefinitionSupported,parallelFrontierSupported,replayParallelCut} from './branch-parallel-continuation.js';
+import {hasParallelControls,rootCallBundleTreeSupported,callLeafBundleTreeSupported,type ManualRootBundleOwner,portableScriptBundlesSupported,standaloneBundleTreeOwnerSupported,parallelDefinitionSupported,parallelFrontierSupported,replayParallelCut} from './branch-parallel-continuation.js';
 import {createHash} from 'node:crypto';
 import type Database from 'better-sqlite3';
 import type {BranchConfiguration,BranchDefinition} from '@ponderosa/core';
@@ -298,7 +298,7 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
     const rootCallBundles=!!foreign?.tree&&!context?.parent&&!!foreign.bundleTreeOwners&&foreign.bundleTreeOwners.some(o=>o.selected.execution![0]!.id===executionId&&stableJson(o.selected)===stableJson(selected)&&payloadHash(o.definition)===payloadHash(definition)&&stableJson(o.bindings)===foreign.runtimeOwner?.facts.find(f=>f.kind==='bindings')?.json)&&rootCallBundleTreeSupported(foreign.bundleTreeOwners,executionId);
     const leafBundles=!!foreign?.tree&&!!foreign.treeRootId&&!!context?.parent&&!!foreign.bundleTreeOwners
       &&foreign.bundleTreeOwners.some(o=>{const e=o.selected.execution![0]!;return e.id===executionId&&e.parent_execution_id===context.parent!.executionId&&e.parent_attempt_id===context.parent!.attemptId&&e.input_text===context.parent!.input&&stableJson(o.selected)===stableJson(selected)&&payloadHash(o.definition)===payloadHash(definition)&&stableJson(o.bindings)===foreign.runtimeOwner?.facts.find(f=>f.kind==='bindings')?.json;})
-      &&manualLeafBundleTreeSupported(foreign.bundleTreeOwners,foreign.treeRootId);
+      &&callLeafBundleTreeSupported(foreign.bundleTreeOwners,foreign.treeRootId);
     if(foreign&&(seed&&!foreign.validatedSeed||context&&!foreignTerminal&&!foreign.tree||!['sync','async','exit'].includes(configuration.checkpointMode??'async')||definition.steps.some(s=>s.kind!=='script'&&s.kind!=='human_gate'&&!(foreign.tree&&s.kind==='branch_call'))||selected.attempts!.some(a=>a.request_id)||selected.resources!.length||selected.actions!.length||!portableScriptBundlesSupported(selected,definition)&&!rootCallBundles&&!leafBundles||foreign.tree&&selected.bundles!.length&&!rootCallBundles&&!leafBundles&&(!context||context.parent||Object.keys(context.children).length||!standaloneBundleTreeOwnerSupported(selected,definition,JSON.parse(foreign.runtimeOwner!.facts.find(f=>f.kind==='bindings')!.json)))||(audit as Row[]).some(e=>['historical_rewind','restored_prefix','foreign_selected_prefix','foreign_tree_selected_prefix'].includes(e.kind)&&!foreign.validatedSeed||['tree_historical_rewind','tree_restored_prefix'].includes(e.kind)&&(!foreign.validatedSeed||!foreign.tree))))return false;
     if(!scriptFrontierSupported(selected,definition,context,hostCut)||!scriptAuditSupported(audit,context?.restoredTerminal))return false;
     const events=audit as Row[],e=selected.execution![0]!,p=selected.paths![0]!;

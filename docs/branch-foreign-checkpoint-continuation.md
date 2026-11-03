@@ -32,7 +32,7 @@ The original held owner row, frontier, import command, original manifest and pri
 
 `tests/branches/foreign-checkpoint-continuation.test.mjs` uses actual full export/import/review/continuation/status HTTP callers and canonical inert source APIs. It covers different destination directories, persisted private checkpoints, restart between review and confirmation, fresh manual admission/current budget revision, exact held-owner preservation, remapped completed prefix, only suffix leasing, lost response/replay/restart, stale budget/policy/directory refusal, unknown latest source/native custody, command conflict, and final-receipt rollback. SQL observes rows or injects corruption/failure only; it does not fabricate source acceptance/frontier or destination admission. The state/control extension adds no fixture or test preparation under the source-only instruction; no runtime qualification of that extension is claimed.
 
-Remaining beyond the supported Call-tree family described below: unproven automatic frontiers and automatic Call trees outside the proven root-only family below; issued/unknown/resource/bundle/Agent frontiers; EXIT trees without the closed saved proof described below; secret choices; recovery-purpose gates; changed historical definitions/configuration; execution-owned Chat continuation; external file/artifact restoration proofs. These paths refuse explicitly before fresh acceptance. Existing tree DATA recreation, standalone held import, composer, deletion/retention/precleanup and Git/config transport remain unchanged. This is no whole-portability, all-family or runtime qualification claim.
+Remaining beyond the supported Call-tree family described below: unproven automatic frontiers and automatic Call trees outside the proven root-only and separate manual-leaf families below; issued/unknown/resource/bundle/Agent frontiers; EXIT trees without the closed saved proof described below; secret choices; recovery-purpose gates; changed historical definitions/configuration; execution-owned Chat continuation; external file/artifact restoration proofs. These paths refuse explicitly before fresh acceptance. Existing tree DATA recreation, standalone held import, composer, deletion/retention/precleanup and Git/config transport remain unchanged. This is no whole-portability, all-family or runtime qualification claim.
 
 ## Saved continuation recovery in the UI
 
@@ -583,7 +583,7 @@ An original automatic execution can supply an independently supported selected
 checkpoint and latest cut for standalone effect-free serial or parallel Node Scripts, ordinary
 `human_gate` approval steps, declared JSON state, conditions/routes, fork/Map/Join
 controls and their existing loop counters. Schedule, webhook and filesystem definitions keep their actual trigger kind/configRef and exact
-pinned configuration; no trigger is rewritten to manual. Automatic Call trees beyond the proven root-only tree family below,
+pinned configuration; no trigger is rewritten to manual. Automatic Call trees beyond the proven root-only and separate manual-leaf tree families below,
 issued/effectful/native/resource/Agent work, retries and secrets
 remain outside this origin-proof subset. Manual graph behavior is unchanged.
 
@@ -652,7 +652,7 @@ Later cancellation of a copied pending gate additionally requires complete quies
 current causal replay with attempt fences; cancellation without that proof refuses.
 Held import/re-export itself emits no notification or response authority. Recovery-
 purpose gates, leased/inflight/unknown work and operator-manual-marker hash mismatches
-remain refused. Automatic Call trees have the separate root-only proof below.
+remain refused. Automatic Call trees have the separate root-only and manual-leaf proofs below.
 
 Existing snapshot listing and foreign picker use codec eligibility; server/SDK/UI
 review and confirmation carry full private checkpoint/manifests and current choices,
@@ -1696,3 +1696,53 @@ Source implementation only: no tests, preparation, builds, typechecks or runtime
 execution. Timing, durability, scheduling, notifications, round trips, rollback,
 native equivalence, atomicity and whole-Bible/full-portability acceptance remain
 unqualified. No module, codec, schema, DTO, format, cap or dependency was added.
+
+
+### Original automatic root with manual Call leaf bundles
+
+A separate complete family extends the manual leaf-local bundle proof to an
+original schedule, webhook or filesystem root. The root and every nonleaf remain
+bundle/reference-free; only independently qualified manual-definition parallel
+Call leaves may own local Join bundles. Each such leaf has no Branch Call anywhere
+in its definition, no Branch/Agent bindings and no actual descendants. Multiple
+qualified leaves are supported. All actual/prepared Call inputs, results and
+attempt results, child inputs and terminal outputs remain inline. Root-plus-leaf,
+automatic-child, nonleaf-child, returned, forwarded, adopted and cross-owner
+bundles remain unsupported. Public all-manual, root-only and standalone defaults
+retain their boundaries; a tree/Call flag does not grant this family.
+
+Canonical replay still requires the original parentless automatic root's exact
+activated occurrence, payload/media type, provenance, pins, trigger snapshot,
+input/hash and accepted/started admission evidence. Retained occurrence data is
+historical evidence with no current authority. Missing or unavailable-held bytes
+remain held; no source-SQL fallback, fabricated occurrence or trigger redispatch
+is introduced. The destination keeps the same definition but needs fresh human
+confirmation and manual root acceptance, ordinary Call child admission and current
+Script/Call policy, directories, readiness, budget and capacity.
+
+Original selected, independent latest and current retained generations each derive
+the complete family from their own cuts. Selected requires genuine committed TREE
+bytes/hash/invocation/membership and each required child's own save, including sync
+children under the automatic-tree rule. Earlier selected cuts may precede later
+children/bundles; latest cannot lend proof or supply an executable cut. Exact
+closed EXIT saver evidence and observed process exit/drain remain mandatory.
+Every related planner owner resolves original ROOT lineage and requires canonical
+original latest replay before held recreation; publication rechecks that proof.
+Foreign leaf replay independently matches current selected bytes, definition,
+bindings and exact parent execution/attempt/input context.
+
+Existing same-owner typed remapping, immutable bytes/hash, UTF-8/8 MB/beyond-inline
+bounds, unique closed Join producer, authored-literal exclusions, deterministic
+Join labels/order/partial output and Script inputBundle ID/hash remain required.
+Leases/fences, authorization, process exit and group/pipe drain, settlement,
+failure edges, retry delay/availability and state seals are unchanged. Calls and
+gates gain no retries. Original-key receipts, prefix validation and full retained
+suffix replay remain separate through held/admitted/re-export/local-rewind paths.
+No Agent/resource/effect/secret/host/custody/execution-Chat or unknown/in-flight
+family is added, and native resolver ancestry does not widen portable authority.
+
+Source implementation only; tests, preparation, builds, typechecks and runtime
+execution were not performed. Timing, durability, scheduling, notifications,
+round trips, rollback, native equivalence, atomicity and whole-Bible/full-portability
+acceptance remain unqualified. No module, schema, codec, DTO, storage version,
+format, cap or dependency was added.

@@ -74,6 +74,10 @@ export function rootCallBundleTreeSupported(owners:ManualRootBundleOwner[],rootI
 export function manualLeafBundleTreeSupported(owners:ManualRootBundleOwner[],rootId:string):boolean {
  return rootBundleTreeSupported(owners,rootId,false,true);
 }
+/** Complete leaf family; automatic roots still require independent original occurrence replay. */
+export function callLeafBundleTreeSupported(owners:ManualRootBundleOwner[],rootId:string):boolean {
+ return manualLeafBundleTreeSupported(owners,rootId)||rootBundleTreeSupported(owners,rootId,true,true);
+}
 function rootBundleTreeSupported(owners:ManualRootBundleOwner[],rootId:string,automaticRoot=false,leafBundles=false):boolean {
  try {
   const byId=new Map(owners.map(o=>[o.selected.execution![0]!.id,o])),root=byId.get(rootId);
