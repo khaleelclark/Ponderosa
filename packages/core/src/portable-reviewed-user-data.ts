@@ -98,6 +98,7 @@ export interface ReviewedUserData {
 
 export interface ReviewedGitExternalDependencies {
   version:1;
+  sourceWorkingRoot:string;
   files:Array<{sourcePath:string;dataBase64:string;mode:number;mtimeNs:string;config?:true;removedSecretFields?:true}>;
   directories:Array<{sourcePath:string;mode:number;mtimeNs:string;root?:true}>;
   links:Array<{sourcePath:string;targetSourcePath:string;kind:'symlink'|'hardlink';mtimeNs?:string}>;
