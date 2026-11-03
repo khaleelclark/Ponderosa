@@ -174,7 +174,7 @@ export async function applyReviewedRecoveryRoots(tasks:ReturnType<typeof planRev
   const callerScopes=new Set(configurations.map(config=>config.nativeMetadataScope).filter((scope):scope is object=>scope!==undefined));
   if(callerDeferred&&(configurations.some(config=>config.deferNativeMetadata!==true||!config.nativeMetadataScope)||callerScopes.size!==1))throw new Error('Native caller must supply one deferred scope for every selected Git root');
   const scope=callerDeferred?[...callerScopes][0]!:{},proofFor=(target:string):WorkingRootIdentity|undefined=>{
-    const root=Object.keys(expectedRoots??{}).filter(root=>target===root||target.startsWith(root+path.sep)).sort((a,b)=>b.length-a.length)[0];return root?workingDirectoryIdentity(root,expectedRoots![root]!,target):undefined;
+    const root=Object.keys(expectedRoots??{}).filter(root=>target===root||target.startsWith(root+path.sep)).sort((a,b)=>b.length-a.length)[0];if(!root)return;const issued=expectedRoots![root]!,relative=path.relative(root,target).split(path.sep).join('/');if(relative&&!Object.hasOwn(issued.directories??{},relative))return;return workingDirectoryIdentity(root,issued,target);
   };
   const configure=(config:NonNullable<RecoveryTask['configuration']>,worktree:string)=>{
     config.nativeMetadataScope=scope;config.deferNativeMetadata=true;config.nativeMetadata=nativeMetadata;config.fileProofs=nativeMetadata.files;config.directoryMetadataProofs=nativeMetadata.directories;
