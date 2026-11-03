@@ -2544,6 +2544,14 @@
       "requirements": "Built server workspace; pure owned-path planner and closed graph; no filesystem, provider account or source-host reads",
       "testBodiesSha256": "48dd84cfb49718bb58370b0427323209f883272ca5af3e45ea572c928b827dd2",
       "afterSha256": "48dd84cfb49718bb58370b0427323209f883272ca5af3e45ea572c928b827dd2"
+    },
+    {
+      "path": "tests/organizations/generated-hook-canonical-store.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native agents; disposable canonical SQLite/owned folders; no provider account",
+      "origin": "Generated hook canonical issuance, immutable durable result preservation, restart and exact current owner/original lookup"
     }
   ],
   "retainedReleasePayload": [

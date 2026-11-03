@@ -1,3 +1,5 @@
+import type {CanonicalGeneratedHooksProof} from '@ponderosa/core';
+import {validateGeneratedHookNamespaceProof} from './generated-hook-namespace-proof.js';
 import {destinationAdmissionHeld} from './coordination-v3-destination-staging.js';
 // AgentStore — the library that apps/server consumes. Authored communication and
 // execution telemetry remain event-log-owned and their SQLite views are
@@ -1211,6 +1213,67 @@ export class AgentStore extends AgentEventSessionFacade {
     `).run(operationId, agentId, position);
   }
 
+  /** Only the fenced native importer calls this after final graph/metadata
+   * verification. No incoming package or root-local receipt can issue it. */
+  recordGeneratedHookNamespace(agentId:string,rootPath:string,sourceOriginalSha256:string,local:Omit<CanonicalGeneratedHooksProof,'operationId'|'sourceOriginalSha256'>):CanonicalGeneratedHooksProof {
+    return this.client.transaction(()=>{
+      const agent=this.getAgent(agentId);
+      if(!agent||!path.isAbsolute(rootPath)||path.resolve(rootPath)!==rootPath||path.resolve(agent.workingCopy.rootPath)!==rootPath||agent.workingCopy.repositoryRoot&&path.resolve(agent.workingCopy.repositoryRoot)!==rootPath)throw new Error('Generated hook proof requires the exact current Agent working root');
+      const candidates=(this.client.prepare(`SELECT o.id FROM agent_creation_operations o
+        JOIN agent_creation_operation_members m ON m.operation_id=o.id
+        WHERE m.agent_id=? AND o.kind='import' AND
+        (o.status IN ('preparing','canonical_committed') OR (o.status='completed' AND EXISTS(
+          SELECT 1 FROM branch_installation_resources r WHERE r.local_id=m.agent_id AND r.creation_operation_id=o.id AND r.state='staging')))`).all(agentId) as Array<{id:string}>).map(({id})=>this.getAgentCreationOperation(id)!);
+      if(candidates.length!==1)throw new Error('Generated hook issuance requires one fenced canonical import owner');
+      const operation=candidates[0]!;
+      if(operation.projectId!==agent.projectId||operation.conversationId&&operation.conversationId!==agent.conversationId)throw new Error('Generated hook canonical owner scope changed');
+      const ownsRoot=(id:string)=>{const owner=this.getAgent(id);return !!owner&&owner.projectId===agent.projectId&&path.resolve(owner.workingCopy.rootPath)===rootPath;};
+      const declared=operation.artifactIdentities.some(item=>item.sha256===sourceOriginalSha256&&(!item.generated||ownsRoot(item.generated.originAgentId)));
+      const published=!declared&&this.getProjectArtifacts(agent.projectId).some(item=>item.sha256===sourceOriginalSha256&&ownsRoot(item.originAgentId??item.agentId));
+      if(!declared&&!published)throw new Error('Generated hook proof lacks its canonical retained original');
+      const proof:CanonicalGeneratedHooksProof={...structuredClone(local),operationId:operation.id,sourceOriginalSha256};
+      validateGeneratedHookNamespaceProof(proof);
+      const result=operation.result&&typeof operation.result==='object'&&!Array.isArray(operation.result)?operation.result as Record<string,unknown>:{};
+      const rows=(result.canonicalGeneratedHooks??[]) as Array<{agentIds:string[];rootPath:string;proof:CanonicalGeneratedHooksProof}>;
+      if(!Array.isArray(rows)||rows.length>10000)throw new Error('Canonical generated hook records are malformed');
+      const existing=rows.find(row=>row.rootPath===rootPath&&row.proof.sourceOriginalSha256===sourceOriginalSha256);
+      if(existing){
+        if(JSON.stringify(existing.proof)!==JSON.stringify(proof))throw new Error('Generated hook namespace was already issued with another physical identity');
+        if(existing.agentIds.includes(agentId))return structuredClone(existing.proof);
+        if(existing.agentIds.length>=10000)throw new Error('Canonical generated hook member bound exceeded');
+        existing.agentIds.push(agentId);
+      }else{
+        if(rows.length>=10000)throw new Error('Canonical generated hook record bound exceeded');
+        rows.push({agentIds:[agentId],rootPath,proof});
+      }
+      this.client.prepare('UPDATE agent_creation_operations SET result_json=?,updated_at=? WHERE id=?').run(JSON.stringify({...result,canonicalGeneratedHooks:rows}),new Date().toISOString(),operation.id);
+      return structuredClone(proof);
+    })();
+  }
+
+  /** Discover the completed local issuer through exact current ownership, never
+   * an imported operation ID or a mutable working-root receipt. */
+  findGeneratedHookNamespace(input:{agentId:string;rootPath:string;root:{device:string;inode:string};sourceOriginalSha256:string}):CanonicalGeneratedHooksProof|undefined {
+    const agent=this.getAgent(input.agentId);
+    if(!agent||agent.workingCopy.state!=='ready'||path.resolve(agent.workingCopy.rootPath)!==input.rootPath||agent.workingCopy.repositoryRoot&&path.resolve(agent.workingCopy.repositoryRoot)!==input.rootPath||!path.isAbsolute(input.rootPath)||path.resolve(input.rootPath)!==input.rootPath||!/^([a-f0-9]{64})$/.test(input.sourceOriginalSha256))return undefined;
+    const rows=this.client.prepare(`SELECT o.id FROM agent_creation_operations o JOIN agent_creation_operation_members m ON m.operation_id=o.id WHERE m.agent_id=? AND o.kind='import' AND o.status='completed'`).all(input.agentId) as Array<{id:string}>;
+    let found:CanonicalGeneratedHooksProof|undefined;
+    for(const {id} of rows){
+      const operation=this.getAgentCreationOperation(id)!;
+      if(operation.projectId!==agent.projectId||operation.conversationId&&operation.conversationId!==agent.conversationId)continue;
+      const entries=(operation.result as {canonicalGeneratedHooks?:Array<{agentIds:string[];rootPath:string;proof:CanonicalGeneratedHooksProof}>}|undefined)?.canonicalGeneratedHooks;
+      if(!Array.isArray(entries))continue;
+      for(const entry of entries){
+        if(!entry.agentIds.includes(input.agentId)||entry.rootPath!==input.rootPath||entry.proof.sourceOriginalSha256!==input.sourceOriginalSha256||entry.proof.root.device!==input.root.device||entry.proof.root.inode!==input.root.inode)continue;
+        validateGeneratedHookNamespaceProof(entry.proof);
+        if(entry.proof.operationId!==operation.id)throw new Error('Canonical generated hook proof lost its import owner');
+        if(found&&JSON.stringify(found)!==JSON.stringify(entry.proof))throw new Error('Generated hook proof is ambiguous');
+        found=entry.proof;
+      }
+    }
+    return found?structuredClone(found):undefined;
+  }
+
   updateAgentCreationOperation(
     id: string,
     patch: {
@@ -1225,6 +1288,12 @@ export class AgentStore extends AgentEventSessionFacade {
     const current = this.getAgentCreationOperation(id);
     if (!current) throw new Error("Agent creation operation not found");
     const nextStatus = patch.status ?? current.status;
+    const retainedHooks=(current.result as {canonicalGeneratedHooks?:unknown}|undefined)?.canonicalGeneratedHooks;
+    if(patch.result!==undefined){
+      const proposed=patch.result&&typeof patch.result==='object'&&!Array.isArray(patch.result)?patch.result as Record<string,unknown>:undefined;
+      if(proposed&&Object.hasOwn(proposed,'canonicalGeneratedHooks')&&JSON.stringify(proposed.canonicalGeneratedHooks)!==JSON.stringify(retainedHooks))throw new Error('Generated hook proof may only be issued by the fenced native import');
+      if(retainedHooks!==undefined){if(!proposed)throw new Error('Canonical generated hook proof must survive result updates');patch={...patch,result:{...proposed,canonicalGeneratedHooks:retainedHooks}};}
+    }
     const retainedBindings=(current.result as {importedProjectRootBindings?:Record<string,{state?:string}>}|undefined)?.importedProjectRootBindings;
     if(retainedBindings&&Object.keys(retainedBindings).length){
       let bindings=retainedBindings;

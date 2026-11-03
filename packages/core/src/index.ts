@@ -47,3 +47,5 @@ export * from "./native-tasks.js";
 
 export * from "./portable-reviewed-user-data.js";
 export { AgentPackageJsonParser } from "./agent-package-json-parser.js";
+
+export * from './portable-generated-hooks.js';
