@@ -1,6 +1,6 @@
 # Codex Phase 2 requirement reconciliation — 3 November 2026
 
-Starting source: `7a7504b0b25a79f72ab00cbc991a043606526467`; implementation checkpoint is tracked in `codex-phase2-build-20261103.md`. Authoritative Library
+Starting source: `7a7504b0b25a79f72ab00cbc991a043606526467`; source checkpoint: `a787e9e9793da7549dc083adad2c04bdbf263141`. The implementation checkpoint is tracked in `codex-phase2-build-20261103.md`. Authoritative Library
 Bible: 530 lines, SHA-256
 `ac314d93732e631bb042b8d3d2dc802ba08446812f99ba931023d2e02b14ab58`.
 The complete Bible was read. Later human direction changes execution ownership to
@@ -22,7 +22,7 @@ present implementation absence or current execution success.
 | 5 | server-request-hooks.ts; branch-finite-contract-dispositions.md | Capacity admission is separate from access and origin checks; no mandatory Tailscale dependency found. Complete cap/purpose/dependency scan remains evidence; orphan/custody clipping fix below is concrete. | Integration |
 | 6 | runtime-capability-policy.ts; capability-policy-store.ts; local-memory.ts | Human policy enforcement and unrestricted default global writes exist. Final grant-change trace remains evidence; destination imports must not infer foreign authority. | Integration + Portability |
 | 7 | server-request-hooks.ts; optional operator-auth-proxy.ts | Operator requests have no operator-token requirement; Agent capabilities retain domain scope. Optional proxy is transport, not login. Final auth search remains evidence. | Integration |
-| 8 | compose-agent-packages.ts; portable-working-files.ts; portable-reviewed-user-data.ts; branch runtime packages | Metadata/FIFO choices and restoration, mapped live Git recreation, cross-Chat physical closure, absolute/cross-root links and exact phase custody are integrated. External configured dependency capture/application and Windows source provenance remain in progress. Unsupported native/snapshot semantics and foreign continuation combinations retain exact qualification boundaries. | Portability + Git recreation + Runtime |
+| 8 | compose-agent-packages.ts; portable-working-files.ts; portable-reviewed-user-data.ts; branch runtime packages | Metadata/FIFO choices and restoration, mapped live Git recreation, cross-Chat physical closure, absolute/cross-root links and exact phase custody are integrated. External configured dependency capture/application and Windows source provenance are integrated within recorded authority boundaries. Durable export pool custody is Linux-only; macOS and Windows fail closed before pool issuance. Unsupported native/snapshot semantics and foreign continuation combinations retain exact qualification boundaries. | Portability + Git recreation + Runtime |
 | 9 | Shared package composer; shared chat/settings; canonical writers | Shared mechanisms exist. Dead-code and duplicate-code scans plus near-duplicate review still required. No speculative refactor inferred. | Integration |
 | 10 | core branches-client.ts / branch-group-client.ts; examples/branches-client | Public HTTP/SDK surfaces and external sample source exist. Actual outside-app execution remains evidence. | Runtime |
 | 11 | Scheduler protocol and canonical publication/reply authority | Independent real sample proves communication bulk, not duplicate corruption. Concise instruction scope and objective/batch separation are integrated. Token/log blind judging remains evidence. | Continuation |
@@ -31,7 +31,7 @@ present implementation absence or current execution success.
 | 14 | Native provider errors; operational notifications; queued recovery presentation | Visible failure and retry state source exists. Provider outage/rate-limit/stuck-task injection and plain-language judging remain evidence. | Runtime + Interface |
 | 15 | Empty tombstone cleanup; project/Agent deletion; portable-working-files.ts | User-folder preservation and retained import bytes exist; device/socket/snapshot gaps cannot be solved by destructive cleanup. Byte-identical deletion and race trials remain evidence. | Portability + Integration |
 | 16 | branch-trigger-service.ts; branch-trigger-store.ts | Durable occurrence identity and bounded catch-up exist. Clock-jump/no-double-fire, timing and reason tracing remain evidence. | Runtime |
-| 17 | state-admission.ts; db.ts; coordination recovery; existing regressions | Current-schema and additive state handling exist. Consolidated tests, 20 core repetitions and populated upgrade remain evidence. Historical results qualify only their old source. | Integration |
+| 17 | state-admission.ts; db.ts; coordination recovery; existing regressions | Current-schema and additive state handling exist. The older diagnostic full run has recorded failures and does not qualify this checkpoint; a pinned final full run, 20 core repetitions and populated upgrade remain evidence. Historical results qualify only their old source. | Integration |
 | 18 | notification-routing.ts; workspace-store.ts; Assistant report cursor | Default directResponses/broadcasts false; unread and chosen notification separation exist. Thirty-message bursts/settings combinations remain evidence. | Interface |
 | 19 | Audit/Activity projections; lifecycle receipts; group-journal-audit.ts | Trace surfaces exist; recovery pagination removes one confirmed hidden omission. Ten random UI action trails, exact diagnostic visibility/redaction and log judging remain evidence. | Discovery + Interface + Integration |
 | 20 | server-request-hooks.ts | Ordinary operator admission has no network token/identity gate; origin checks remain. Source search is not whole-product runtime qualification. | Integration |
@@ -45,7 +45,7 @@ present implementation absence or current execution success.
 | 28 | Every row applied to Branches | Aggregate requirement; no single additional magic feature closes it. Each Branches criterion remains open until its evidence exists. | Integration |
 | 29 | Folder navigation; shared Output/chat UI; concise-copy census | Folder system and shared visual source exist. Pinned comparative blind panel, no-paragraph census and flicker/overlap recordings remain evidence. | Interface + Integration |
 | 30 | local-memory-catalog.ts; local-memory.ts | One default search covers both authorized scopes; global writes follow human policy. Seeded recall, first-use tool subjects and real-log misuse review remain evidence. | Integration |
-| 31 | reply-stream-publication.ts; voice-reply-stream.ts; BranchLiveOutput; shared chat/voice | Streaming and early voice acknowledgment source exist. Cross-surface identity/reconnect/steering must be exercised; voice mean under 1s and maximum at most 2s are unqualified. | Interface + Runtime |
+| 31 | reply-stream-publication.ts; voice-reply-stream.ts; BranchLiveOutput; shared chat/voice | Streaming and early voice acknowledgment source exist; direct Agent dispatch stream lookup and capability classification are corrected. Controlled browser direct-stream flows passed; full cross-surface identity/reconnect/steering and voice mean under 1s and maximum at most 2s remain unqualified. | Interface + Runtime |
 | 32 | branches-framework-capabilities.md; examples/branches-capabilities; shared state/replay code | Nine named capabilities have concrete source; comparator pins LangGraph1.0.5/LangChain1.0.8. Unsupported finer semantics are explicit gaps, not covered claims. Representative matched execution and final-resource proof consumers remain open. | Runtime |
 
 ## All 24 Build behaviors
@@ -57,8 +57,8 @@ The source anchors are `output-agent-apps.ts`, `OutputAgentApp.tsx`, canonical
 mounted qualification; Runtime owns provider/voice behavior; Integration aggregates.
 
 - O1–O3: output designations, stable `/apps/<agent-id>` URL and direct designated-Agent chat have source. It is a standalone chat, not a generated report site.
-- O4–O6: attachments, voice messages and calls reuse normal chat/voice source. They still need mounted/reload/audio qualification.
-- O7–O9: automatic schedule, model editing and More options link write/read the owning workflow. Concurrent settings updates and stale/uncertain receipts require qualification.
+- O4–O6: attachments, voice messages and calls reuse normal chat/voice source. Direct Agent streaming passed a limited controlled browser flow; complete attachment/reload/audio qualification remains.
+- O7–O9: automatic schedule, model editing and More options link write/read the owning workflow. Controlled desktop and emulated-phone browser settings flows passed in Core and Branches with both themes; concurrent settings updates and stale/uncertain receipts still require qualification.
 - O10: iOS Messages quality and streaming require actual recordings and blind judges.
 - A1–A3: Assistant bootstrap/default preferred model, create Chat and cross-Project start-work actions exist through canonical policy-aware routes.
 - A4–A7: actual default ten-minute trigger, configurable interval, durable report cursor/notification policy and shared output UI exist. Planted completion/issue and no-flood trials remain evidence.
@@ -70,12 +70,18 @@ mounted qualification; Runtime owns provider/voice behavior; Integration aggrega
 
 Pinned native contracts do not supply no-identity compaction result lookup or
 pre-start host-fenced active-goal continuation admission. Original unreceipted
-external effects cannot be settled from stable reads or process exit. Device
+external effects cannot be settled from stable reads or process exit. The portable
+final-resource exit verifier still rejects proof without an independently authenticated,
+complete original start/provider/effect census. Device
 identity/ownership, live socket services and independent-writer atomic snapshots
 need their real native participation/authority; inode copying, another host journal,
 an advisory lock or guessed foreign receipts do not establish them. These remain
 precise blockers where current implementations cannot supply the Bible criterion.
-They do not excuse dropping other implementation.
+The durable export pool has focused Linux evidence only and fails closed before issuance
+on macOS and Windows. Unknown export claims and reader leases retain charged
+capacity; no uncertain operation is replayed merely to reclaim it. Same-user
+interference can be detected before a changed chunk is emitted, but is not an
+atomic snapshot guarantee. These limitations do not excuse dropping other implementation.
 
 ## Consolidated acceptance scope
 
@@ -86,6 +92,10 @@ data comparison; triggers/clock behavior; notification bursts; seeded combined
 memory and misuse trials; public-client/comparator runs; complete stream recordings;
 call latency measurements; keyboard/reader/axe/theme/text-size; eight fresh sessions
 per product/device at the exact active-load/Event Timing profile; and at least
-three independent blind judge agents using pinned comparator apps and
-written rubrics. Human-only account/device actions are the only handoff exceptions;
-emulators qualify. No such execution was performed by this reconciliation lane.
+three independent blind judge agents using pinned comparator apps, the same tasks
+and a written 1–10 rubric with descriptions for 3, 6 and 9. Judges must run on a
+different model from feature builders, independently and without seeing each
+other's scores; the majority verdict stands. Human-only account/device actions go
+on the handoff checklist and never block independent work; emulators qualify.
+The diagnostic run and focused browser/transport checks are partial evidence,
+not final acceptance of the combined checkpoint.
