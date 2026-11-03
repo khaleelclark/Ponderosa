@@ -1,3 +1,4 @@
+import {nativeImportChoiceError} from '../nativeDataPreview';
 import type {BranchImportFileSelections,InstalledBranchPackage} from '@ponderosa/core';
 import {validWorkingRootDestinations} from '../workingRootDestinations';
 export const branchPackageTarget=(chatRef:string,agentRef:string)=>JSON.stringify([chatRef,agentRef]);
@@ -19,6 +20,7 @@ export function branchPackageFileError(pkg:InstalledBranchPackage,files:BranchIm
   if(grouped&&inventory[target.key]&&(selection?.workingFilesDestination!==undefined||Object.keys(selection?.workingRootDestinations??{}).some(ref=>!roots.includes(ref))))return 'Review canonical grouped roots again; discard previous root mappings.';
   if(roots.length){for(const ref of roots)destinations[JSON.stringify([target.key,ref])]=selection?.workingRootDestinations?.[ref]??'';}
   else destinations[target.key]=selection?.workingFilesDestination??'';
+  const nativeError=selection&&nativeImportChoiceError(selection);if(nativeError)return nativeError;
   if(selection?.newManagedChatFolderName!==undefined){
    if(!selection.workingFilesActivation||selection.workingFilesActivation.sharedRoot!==undefined)return 'Confirm the actual new working root only after managed Chat creation.';
    if(!/^[\p{L}\p{N}][\p{L}\p{N}._ -]{0,79}$/u.test(selection.newManagedChatFolderName))return 'Choose a safe new managed folder name.';
@@ -31,11 +33,13 @@ export function branchPackageFileError(pkg:InstalledBranchPackage,files:BranchIm
 
 export function mergeBranchImportResults(results:Record<string,import('../PostImportAccessReview').ImportSettingsResult>):import('../PostImportAccessReview').ImportSettingsResult {
  const suggestions=new Map<string,NonNullable<import('../PostImportAccessReview').ImportSettingsResult['accessSettingsToReview']>[number]>();
+ const metadataApplications:NonNullable<import('../PostImportAccessReview').ImportSettingsResult['reviewedMetadataApplications']>=[],nativeApplications:NonNullable<import('../PostImportAccessReview').ImportSettingsResult['reviewedUserDataApplications']>=[];
  const roots=new Map<string,NonNullable<import('../PostImportAccessReview').ImportSettingsResult['workingRoots']>[number]>(),live=new Map<string,NonNullable<import('../PostImportAccessReview').ImportSettingsResult['liveWorkingRoots']>[number]>();
  for(const result of Object.values(results)){
+  metadataApplications.push(...result.reviewedMetadataApplications??[]);nativeApplications.push(...result.reviewedUserDataApplications??[]);
   for(const suggestion of result.accessSettingsToReview??[]){const prior=suggestions.get(suggestion.agentId);if(prior&&JSON.stringify(prior)!==JSON.stringify(suggestion))throw new Error('Conflicting imported Settings receipts. Reload workflow installation status.');suggestions.set(suggestion.agentId,suggestion);}
   for(const root of result.workingRoots??[])roots.set(JSON.stringify(root),root);
   for(const root of result.liveWorkingRoots??[])live.set(JSON.stringify(root),root);
  }
- return {accessSettingsToReview:[...suggestions.values()],workingRoots:[...roots.values()],liveWorkingRoots:[...live.values()]};
+ return {reviewedMetadataApplications:metadataApplications,reviewedUserDataApplications:nativeApplications,accessSettingsToReview:[...suggestions.values()],workingRoots:[...roots.values()],liveWorkingRoots:[...live.values()]};
 }

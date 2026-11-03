@@ -1,3 +1,6 @@
+import {useEffect,useState} from 'react';
+import {NativePortableImportChoices,type NativeImportChoices} from '../NativePortableDataChoices';
+import {nativeDataPreview,type NativeDataPreview} from '../nativeDataPreview';
 import {Alert,MenuItem,Stack,TextField,Typography} from '@mui/material';
 import type {BranchImportFileSelection,BranchImportFileSelections,InstalledBranchPackage} from '@ponderosa/core';
 import {branchPackageTarget,type BranchRootInventory,branchPackageFileTargets} from './branchPackageFiles';
@@ -19,8 +22,17 @@ export function BranchImportFiles({pkg,value,onChange,retained,disabled,inventor
     <TextField select disabled={disabled} label="Restored working files" value={mode} onChange={event=>{const {workingFilesActivation,newManagedChatFolderName,...priorRecovery}=selection;const recovery=event.target.value==='new'||grouped?{}:priorRecovery;update({...recovery,...(event.target.value==='content'?{}:{workingFilesActivation:{}}),...(event.target.value==='new'?{newManagedChatFolderName:''}:{})});}}><MenuItem value="content">Recovery copies only</MenuItem><MenuItem value="existing">Activate fresh Separate Git copies in destination Git workspace</MenuItem><MenuItem value="new" disabled={rootKey!==target.key||target.chat.agents.some(agent=>retained.has(branchPackageTarget(target.chat.ref,agent.ref)))}>Create new managed Chat and activate files</MenuItem></TextField>
     {grouped&&!inventory[target.key]&&<Alert severity="info">Grouped roots · enter new recovery folder → review changes → assign every root folder → review again</Alert>}
     {mode==='new'&&<TextField disabled={disabled} label="New managed Chat folder name" value={selection.newManagedChatFolderName??''} onChange={event=>update({...selection,newManagedChatFolderName:event.target.value})} helperText="The installer creates the folder, then asks you to confirm its actual path before import."/>}
+    <BranchNativeData key={target.key+(grouped?':group':'')} packages={grouped?target.chat.agents.map(agent=>agent.definition):[target.agent.definition]} groupedRoots={grouped?inventory[target.key]??[]:undefined} value={selection} onChange={next=>update({...selection,...next})} disabled={disabled} destinations={selection.workingRootDestinations}/>
     {mode==='existing'&&target.agent.definition.agents.some(node=>node.workingCopyMode!=='separate_git')&&<Alert severity="warning">Shared files · live activation requires a new managed Chat</Alert>}
    </Stack>;
   })}
  </Stack>;
+}
+
+function BranchNativeData({packages,groupedRoots,value,onChange,disabled,destinations}:{packages:import('@ponderosa/core').AgentPortablePackageDto[];groupedRoots?:string[];value:NativeImportChoices;onChange(value:NativeImportChoices):void;disabled:boolean;destinations?:Record<string,string>}):JSX.Element {
+ const [summary,setSummary]=useState<NativeDataPreview>();
+ const signature=packages.map(pkg=>pkg.exportedAt+':'+pkg.sourceLabel+':'+pkg.rootRef).join('|');
+ useEffect(()=>{let active=true;setSummary(undefined);void nativeDataPreview(packages.flatMap(pkg=>pkg.agents)).then(result=>{if(active)setSummary(result)});return()=>{active=false};},[signature]);
+ const actual=summary?.metadata&&groupedRoots?{...summary,sourceRoots:[],metadata:{...summary.metadata,rootRefs:groupedRoots}}:summary;
+ return <NativePortableImportChoices summary={actual} value={value} onChange={onChange} disabled={disabled} destinations={destinations}/>;
 }

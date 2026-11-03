@@ -6,7 +6,7 @@ import {chatBrowserOwnerId,type ImportAgentPackageResponse} from '@ponderosa/cor
 import {api} from '../api';
 import {requestJson} from '../api/real';
 import {useUnsavedForm} from '../reloadSafety';
-export type ImportSettingsResult=Pick<ImportAgentPackageResponse,'workingFilesDestination'|'workingRoots'|'accessSettingsToReview'|'liveWorkingRoots'>;
+export type ImportSettingsResult=Pick<ImportAgentPackageResponse,'workingFilesDestination'|'workingRoots'|'accessSettingsToReview'|'liveWorkingRoots'|'reviewedMetadataApplications'|'reviewedUserDataApplications'>;
 type StateChange=(key:string,dirty:boolean,busy:boolean)=>void;
 type Suggestion=NonNullable<ImportAgentPackageResponse['accessSettingsToReview']>[number];
 
@@ -62,6 +62,7 @@ export function PostImportAccessReview({result,onDone,projectId}:{result:ImportS
  for(const item of suggestions)if(item.source.readGlobalMemory!==undefined)memory.set(item.conversationId,[...(memory.get(item.conversationId)??[]),item]);
  return <Stack spacing={2}><Typography variant="h6">Import complete</Typography>
   {(mappedAgents.error||mappedChats.error)&&<Alert severity="error">{mappedAgents.error?.message||mappedChats.error?.message}</Alert>}
+  <NativeApplications result={result}/>
   {result.workingFilesDestination&&<Typography>Restored folder: {result.workingFilesDestination}</Typography>}
   {result.workingRoots?.map(root=><Typography key={JSON.stringify([root.ref,root.destination])}>Restored folder: {root.destination} · {root.agentIds.length} Agents</Typography>)}
   {result.liveWorkingRoots?.map(root=><Typography key={JSON.stringify([root.ref,root.path])}>Live working folder: {root.path} · {root.agentIds.map(agentTitle).join(', ')}</Typography>)}
@@ -70,4 +71,9 @@ export function PostImportAccessReview({result,onDone,projectId}:{result:ImportS
   <Button variant="contained" disabled={busy} onClick={()=>dirty?setDiscard(true):onDone()}>Done</Button>
   <ConfirmDialog open={discard} title="Unapplied settings" confirmLabel="Discard choices" cancelLabel="Keep editing" onCancel={()=>setDiscard(false)} onConfirm={onDone}>Discard unapplied choices?</ConfirmDialog>
  </Stack>;
+}
+
+/** A partial native write is evidence to inspect, never permission to repeat it. */
+export function NativeApplications({result}:{result:Pick<ImportAgentPackageResponse,'reviewedMetadataApplications'|'reviewedUserDataApplications'>}):JSX.Element {
+ return <Stack spacing={1}>{[...(result.reviewedMetadataApplications??[]).map(item=>({...item,family:'File metadata'})),...(result.reviewedUserDataApplications??[]).map(item=>({...item,family:'Git and provider settings'}))].map(item=><Alert key={item.family+':'+item.ref+':'+item.path} severity={item.state==='completed'?'success':'warning'}><Typography variant="body2" sx={{overflowWrap:'anywhere'}}>{item.family}: {item.state==='completed'?'restored':item.state==='applying'?'completion unconfirmed':'incomplete'} · {item.path}</Typography>{item.error&&<><Typography variant="body2">{item.error.code??'Native application failed'}{item.error.partialStatePossible?' · partial files retained · do not repeat automatically':''}</Typography><details><summary>Observed result</summary><Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{JSON.stringify(item.error.observed,null,2)}</Typography></details></>}</Alert>)}</Stack>;
 }

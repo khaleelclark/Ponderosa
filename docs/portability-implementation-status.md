@@ -165,3 +165,27 @@ external original-effect proof still requires an actual matching backend receipt
 Deferred fixture source covers link/parser/refusal/source preservation and memory
 preserve-unknown/reopen/exact command/hash/held semantics. No execution or runner
 preparation, types, build, native/browser action, install, push or deployment.
+
+## Native-data import and export controls
+
+Agent and Branch full exports share explicit choices for Git, harness settings,
+combined user attributes/POSIX ACLs, named pipes, and device/socket evidence.
+These choices require whole selected working folders; templates stay setup-only.
+Import defaults to inactive originals. Separate checkboxes authorize Git/hooks,
+harness settings, and filesystem metadata. Metadata review shows source owners
+and named ACL principals and asks for distinct destination IDs; current-user/group
+buttons are explicit shortcuts. No IDs are guessed into equivalent identities.
+Named-pipe creation needs a separate choice. Devices and sockets remain evidence,
+with a visible service-recreation limitation.
+
+The browser summary reads only the canonical user-data artifact (including gzip),
+with the same 48 MiB manifest bound as the server, and reports unsupported review
+formats or mixed owner namespaces. The original package, server parser and
+hash-bound access review remain authoritative. Git path mapping controls select
+old paths and included destination folders/files; selected captured root mappings
+can be copied deliberately. Existing external host paths are never adopted.
+
+Agent and Branch result views preserve native-application receipts and distinguish
+completed, applying/unconfirmed and incomplete results. Observed partial failures
+remain inspectable; no automatic retry is introduced. All these controls and
+regressions await consolidated final validation.

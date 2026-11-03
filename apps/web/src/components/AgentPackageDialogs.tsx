@@ -1,3 +1,4 @@
+import {NativePortableExportChoices} from './NativePortableDataChoices';
 import ContentCopyOutlinedIcon from "@mui/icons-material/ContentCopyOutlined";
 import DownloadOutlinedIcon from "@mui/icons-material/DownloadOutlined";
 import {
@@ -113,16 +114,14 @@ export function AgentPackageExportDialog({
   const [workingFiles,setWorkingFiles]=useState('');
   const [wholeWorkingFolder,setWholeWorkingFolder]=useState(false);
   const [organizationWorkingFolders,setOrganizationWorkingFolders]=useState(false);
-  const [includeGit,setIncludeGit]=useState(false);
-  const [includeHarness,setIncludeHarness]=useState(false);
-  const [reviewSource,setReviewSource]=useState<'live'|'retained_originals'>('live');
+  const [nativeSelection,setNativeSelection]=useState<ReviewedUserDataSelection>({git:false,harness:false,source:'live'});
   const allFolders=mode==='full'&&organization&&organizationWorkingFolders;
   const reviewAvailable=mode==='full'&&(wholeWorkingFolder||allFolders);
-  const reviewedUserData=reviewAvailable&&(includeGit||includeHarness)?{git:includeGit,harness:includeHarness,source:reviewSource}:undefined;
+  const reviewedUserData=reviewAvailable&&(nativeSelection.git||nativeSelection.harness||nativeSelection.extendedMetadata||nativeSelection.persistentNodes?.fifo||nativeSelection.persistentNodes?.evidenceOnly)?nativeSelection:undefined;
   const selectedPaths=mode==='full'&&!wholeWorkingFolder&&!allFolders?workingFiles.split(/\r?\n/).map(path=>path.trim()).filter(Boolean):[];
   const invalidPaths=selectedPaths.some(path=>path.startsWith('/')||path.split(/[\\/]/).includes('..'));
   useEffect(() => {
-    if (open) { setOrganization(initialOrganization); setMode("template"); setWorkingFiles('');setWholeWorkingFolder(false);setOrganizationWorkingFolders(false);setIncludeGit(false);setIncludeHarness(false);setReviewSource('live'); }
+    if (open) { setOrganization(initialOrganization); setMode("template"); setWorkingFiles('');setWholeWorkingFolder(false);setOrganizationWorkingFolders(false);setNativeSelection({git:false,harness:false,source:'live'}); }
   }, [open, source.id, initialOrganization]);
   const agentCount = selectedAgents(source, agents, organization).length;
   return <Dialog open={open} onClose={copying ? undefined : onClose} fullWidth maxWidth="sm" aria-busy={copying || undefined}>
@@ -133,12 +132,7 @@ export function AgentPackageExportDialog({
         onOrganizationChange={setOrganization} onModeChange={setMode} />
       {mode==='full'&&organization&&<FormControlLabel control={<Checkbox checked={organizationWorkingFolders} onChange={event=>setOrganizationWorkingFolders(event.target.checked)}/>} label="Include every distinct organization working folder"/>}
       {mode==='full'&&!allFolders&&<FormControlLabel control={<Checkbox checked={wholeWorkingFolder} onChange={event=>setWholeWorkingFolder(event.target.checked)}/>} label="Include the whole root Agent working folder"/>}
-      {mode==='full'&&<Stack spacing={1}>
-        <TextField select label="Review data source" disabled={!reviewAvailable||copying} value={reviewSource} onChange={event=>setReviewSource(event.target.value as 'live'|'retained_originals')}><MenuItem value="live">Current Git and settings</MenuItem><MenuItem value="retained_originals">Imported inactive originals</MenuItem></TextField>
-        <FormControlLabel control={<Checkbox disabled={!reviewAvailable||copying} checked={reviewAvailable&&includeGit} onChange={event=>setIncludeGit(event.target.checked)}/>} label="Include Git history, refs and staged files for review"/>
-        <FormControlLabel control={<Checkbox disabled={!reviewAvailable||copying} checked={reviewAvailable&&includeHarness} onChange={event=>setIncludeHarness(event.target.checked)}/>} label="Include supported Claude/Codex project settings for review"/>
-        <Typography variant="caption" color="text.secondary">Requires whole working folders. Import creates separate inactive review copies. Settings and hooks are not activated. Unsupported or unsafe data stops export; review the package before importing.</Typography>
-      </Stack>}
+      {mode==='full'&&<NativePortableExportChoices available={reviewAvailable} disabled={copying} value={nativeSelection} onChange={setNativeSelection}/>}
       {mode==='full'&&!wholeWorkingFolder&&!allFolders&&<TextField fullWidth multiline minRows={2} label="Working files to include" value={workingFiles} onChange={event=>setWorkingFiles(event.target.value)} error={invalidPaths} helperText="Optional: one path relative to the Agent working folder per line. Selected files may contain sensitive information." sx={{mt:2}}/>}
     </DialogContent>
     <DialogActions sx={{ flexWrap: "wrap", p: 2 }}>

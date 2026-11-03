@@ -37,3 +37,10 @@ test('group discovery accepts only root-owned choices then requires canonical co
  const forest=structuredClone(pkg);delete forest.chats[0].agents[1].managerRef;
  assert.equal(branchPackageFileError(forest,grouped,new Set(),inventory),undefined);
 });
+
+test('native application receipts survive combined Settings review with partial evidence',()=>{
+ const metadata={ref:'shared',path:'/recovery/shared',originalSha256:'original',state:'incomplete',error:{code:'ERR_PORTABLE_METADATA_PARTIAL',partialStatePossible:true,observed:{path:'/recovery/shared/file'}}};
+ const native={ref:'shared',path:'/recovery/shared',originalSha256:'original',selection:{git:true,harness:false},state:'completed'};
+ const merged=mergeBranchImportResults({root:{reviewedMetadataApplications:[metadata],reviewedUserDataApplications:[native]}});
+ assert.deepEqual(merged.reviewedMetadataApplications,[metadata]);assert.deepEqual(merged.reviewedUserDataApplications,[native]);
+});

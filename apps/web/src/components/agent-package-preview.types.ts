@@ -1,4 +1,5 @@
 export interface PortableAgentPreview {
+  nativeData?: import('./nativeDataPreview').NativeDataPreview;
   sourceLabel: string;
   hasOutputRoles: boolean;
   hasWorkingFiles: boolean;
