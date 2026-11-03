@@ -981,7 +981,7 @@ async function openCalledTreeResource(store,branches,dir,executionId,branchId){
  branches.bindResource(r.step_execution_id,result);await branches.unitSaver.drain();
  return {requestId:store.sqlite.prepare('SELECT request_id FROM branch_attempts WHERE step_execution_id=? ORDER BY number DESC LIMIT 1').get(r.step_execution_id).request_id,agentId:id,chatId:chat.id,stepId:r.step_execution_id};
 }
-async function reservationHistoryFixture(t,mode='async',childOwner=false,parallel=false,freshRetry=false,twoResources=false,calledResources=false,stateful=false){
+async function reservationHistoryFixture(t,mode='async',childOwner=false,parallel=false,freshRetry=false,twoResources=false,calledResources=false,stateful=false,proofFinal=false){
  const dir=mkdtempSync(join(tmpdir(),'resource-history-'));let store,branches,coordination;
  const open=()=>{store=new AgentStore(dir);coordination=new CoordinationV3Store(store.sqlite);branches=new BranchStore(store.sqlite,coordination);};open();
  t.after(async()=>{await branches.unitSaver.drain().catch(()=>{});store.close();rmSync(dir,{recursive:true,force:true});});
@@ -1019,6 +1019,7 @@ async function reservationHistoryFixture(t,mode='async',childOwner=false,paralle
   const token=branches.beginResourceOperation(r.step_execution_id,r.creation_key,'import');assert.ok(token);await branches.unitSaver.drain();
   const operation=store.beginAgentCreationOperation({projectId:p.id,conversationId:temporary.id,actorScope:'resource-history-inert',kind:'import',idempotencyKey:r.creation_key,payloadHash:'inert'}).operation,agentId=randomUUID();store.addAgentCreationOperationMember(operation.id,agentId,0);
   branches.observeResourceImportPlan(r.step_execution_id,token,operation.id);await branches.unitSaver.drain();branches.planResource(r.step_execution_id,[agentId],token);
+  if(proofFinal){const {enableProviderStartCoverage}=await import('../../packages/agents/dist/provider-start-journal.js');enableProviderStartCoverage(store.sqlite,'fixture-lifecycle-runtime');}
   const agent=store.createAgent(p.id,{title:'Inert fixture identity',engine:'codex',conversationId:temporary.id},undefined,agentId),result={rootAgentId:agent.id,agentIds:[agent.id]};
   branches.unitTransaction(()=>{branches.completeResourceOperation(r.step_execution_id,'import',token,result);store.updateAgentCreationOperation(operation.id,{status:'completed',result});})();await branches.unitSaver.drain();
   if(!parallel){
@@ -1033,6 +1034,11 @@ async function reservationHistoryFixture(t,mode='async',childOwner=false,paralle
   coordination.updateRequest({requestId:request,updateId:`result-${id}`,kind:'completed',actor:{kind:'agent',id:agent.id},payload:{text:'known resource result'}});
   const suffix=await claim();assert.equal(suffix.executionId,id);assert.ok(suffix.source.includes('suffix'));assert.equal(suffix.fence,1);settle(suffix);await branches.unitSaver.drain();
   if(onIssued)await onIssued({stepId:r.step_execution_id,generation:r.generation,agentId:agent.id,chatId:temporary.id});
+  // The local exit proof is real; this fixture's package custody adapter remains inert.
+  if(proofFinal&&branches.finalResourceExitRequired(r.step_execution_id)){
+   const {sealProviderNeverStarted}=await import('../../packages/agents/dist/provider-start-journal.js');
+   const fence=branches.finalResourceExitFence(r.step_execution_id);sealProviderNeverStarted(store.sqlite,'fixture-lifecycle-runtime',[agent.id]);branches.captureFinalResourceExit(fence);
+  }
   const preview=store.previewAgentDeletion([agent.id]);store.deleteAgentSubtrees([agent.id],preview.previewHash,x=>coordination.handleAgentDeletion(x));
   const receipt=store.commitConversationDeletion(temporary.id);store.finishConversationDeletionStorageCleanup(receipt);store.markConversationDeletionServerCleanupComplete(temporary.id);branches.resourceRetired(r.step_execution_id);await branches.unitSaver.drain();assert.equal(branches.execution(id).state,'completed');
   return {chatId:temporary.id,agentId,chatToken,token,deletionPreviewHash:preview.previewHash};
@@ -1560,8 +1566,8 @@ test('disclosure API exposes exact human confirmation and rejects fabricated ide
 
 // Deferred composer regression: actual SQLite owner/runtime paths, inert package
 // and managed-folder adapters; no provider, Script or browser process is started.
-async function issuedDestinationFixture(t,mode='async',parallel=false,existing){
- const f=existing?.f??await reservationHistoryFixture(t,mode,false,parallel);
+async function issuedDestinationFixture(t,mode='async',parallel=false,existing,proofFinal=false){
+ const f=existing?.f??await reservationHistoryFixture(t,mode,false,parallel,false,false,false,false,proofFinal);
  if(!existing){const prefix=await f.claim();f.settle(prefix);await f.advance(f.source.id);}
  let saved=existing?.saved;
  if(!existing)await f.finish(f.source.id,undefined,undefined,async({stepId,generation})=>{
@@ -1569,6 +1575,12 @@ async function issuedDestinationFixture(t,mode='async',parallel=false,existing){
   const receipt={...intent.source,version:1,custodyId:hash(intent.source.checkpointId),boundaryId:'inert-composer-boundary',sha256:hash('inert-composer-package'),byteLength:1};
   f.store.sqlite.transaction(()=>f.branches.sealIssuedResourceCapture(f.source.id,stepId,'composer-cut',receipt))();
   saved=f.branches.issuedResourceCapture(f.source.id,stepId,'composer-cut');
+  if(proofFinal){
+   // Final exit pins the newest custody; the earlier independent checkpoint can be retired.
+   const newer=f.branches.reserveIssuedResourceCapture(f.source.id,stepId,generation,'lifecycle-newer');
+   const newerReceipt={...newer.source,version:1,custodyId:hash(newer.source.checkpointId),boundaryId:'inert-lifecycle-newer',sha256:hash('inert-newer-package'),byteLength:1};
+   f.store.sqlite.transaction(()=>f.branches.sealIssuedResourceCapture(f.source.id,stepId,'lifecycle-newer',newerReceipt))();
+  }
  });
  const {BranchIssuedDestinationService}=await import('../../apps/server/dist/branch-issued-destination.js');
  const {BranchDisclosureReviewService}=await import('../../apps/server/dist/branch-disclosure-review.js');
@@ -1732,7 +1744,7 @@ test('Branch custody inventory pins exact checkpoint and staged admission withou
  assert.ok(f.store.sqlite.prepare('SELECT 1 FROM branch_unit_snapshots WHERE id=?').get(x.saved.checkpointId));
 });
 test('Branch explicit checkpoint retirement preserves disposition and fences old issued identity',async t=>{
- const x=await issuedDestinationFixture(t),f=x.f,source=x.saved.source,api=f.branches.custodyLifecycle;
+ const x=await issuedDestinationFixture(t,'async',false,undefined,true),f=x.f,source=x.saved.source,api=f.branches.custodyLifecycle;
  const review=api.inspect(source),input={commandKey:'retire-exact-issued-cut',expectedRevision:review.revision,checkpoints:[{id:x.saved.checkpointId,sha256:x.saved.checkpointHash}]};
  const originalSnapshot=f.store.sqlite.prepare('SELECT * FROM branch_unit_snapshots WHERE id=?').get(x.saved.checkpointId);
  const receipt=api.retireCheckpoints(source,input);
@@ -1743,10 +1755,11 @@ test('Branch explicit checkpoint retirement preserves disposition and fences old
  assert.throws(()=>f.branches.issuedResourceCapture(f.source.id,source.intent.resourceStepId,'composer-cut'),/abandoned/);
  const current=api.inspect(source);assert.equal(current.references.length,0);
  f.branches.unitTransaction(()=>assert.equal(api.assertRelease(source,current.revision).releaseAllowed,true))();
+ assert.equal(f.branches.finalResourceExitRequired(source.intent.resourceStepId),true);
 });
 
 test('Branch abandoned capture needs synchronous package retirement and cannot resume or seal',async t=>{
- const x=await issuedDestinationFixture(t),f=x.f,db=f.store.sqlite,api=f.branches.custodyLifecycle;
+ const x=await issuedDestinationFixture(t,'async',false,undefined,true),f=x.f,db=f.store.sqlite,api=f.branches.custodyLifecycle;
  const source={...x.saved.source,checkpointId:randomUUID()},commandKey='fixture-pending',captureKey=`issued-resource-capture:${commandKey}`;
  const capture={schema:'branch-issued-resource-capture.v1',state:'capturing',source,snapshot:x.saved.snapshot};
  db.prepare('INSERT INTO branch_commands VALUES(?,?,?,?,?)').run(f.source.id,captureKey,hash(stableJson({stepId:source.intent.resourceStepId,generation:0,commandKey})),stableJson(capture),new Date().toISOString());
@@ -1761,6 +1774,7 @@ test('Branch abandoned capture needs synchronous package retirement and cannot r
  assert.throws(()=>f.branches.reserveIssuedResourceCapture(f.source.id,source.intent.resourceStepId,0,commandKey),/abandoned/);
  assert.throws(()=>db.transaction(()=>f.branches.sealIssuedResourceCapture(f.source.id,source.intent.resourceStepId,commandKey,{...x.saved.receipt,...source}))(),/abandoned/);
  assert.equal(api.inspect(source).references.length,0);
+ assert.equal(f.branches.finalResourceExitRequired(source.intent.resourceStepId),true);
 });
 
 
