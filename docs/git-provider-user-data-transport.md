@@ -807,8 +807,8 @@ were run for this source change.
 
 ### Bounded TOML syntax
 
-The shared `scrubReviewToml` reader handles selected `.codex/config.toml` live
-export and imported-manifest validation. Accepted nonsecret source spans stay
+The shared `scrubReviewToml` reader handles selected `.codex/config.toml` and top-level
+project `.codex/agents/*.toml` live export and imported-manifest validation. Accepted nonsecret source spans stay
 byte-for-byte unchanged. Recognized secret-key assignments are removed as
 whole spans, including multiline payload, trailing comment and terminating newline;
 `removedSecretFields` records removals, including nested members and credential
@@ -1128,3 +1128,38 @@ not generated repositories inside generated repositories. Old cycle refusal and
 new passive-cycle contracts remain intact. Sources and partial imports remain.
 No tests, builds, typechecks or runtime/platform qualification were performed for
 this source-only batch. Independent writers can still race observed checks.
+
+### Inactive project Codex agent originals
+
+Explicit `harness: true` selection includes only regular top-level
+`.codex/agents/*.toml` originals. The canonical directory inventory refuses
+subdirectories, unknown file formats, links/special nodes and credential names;
+it never recurses into this directory or follows a TOML path. Existing 1,000-entry
+inventory, 1 MiB per-original/TOML and 32 MiB aggregate bounds remain, with the
+same canonical parent, single-link no-follow original reads and inventory/read
+drift checks. Invalid or unsupported TOML refuses with source bytes preserved.
+UTF-8 and BOM handling match `.codex/config.toml`.
+
+One shared classification applies the existing bounded TOML scrubber to both
+config and agent originals at live export and parsed-manifest validation. Full
+original syntax/namespace validation precedes secret-span removal; accepted
+nonsecret sibling spans and `removedSecretFields` are retained. Import rejects
+retained known-secret fields regardless of that flag. This covers shared
+import/recreation and retained-original re-export validation without another
+parser, DTO, schema, storage version or caller change.
+
+The [pinned Codex config-layer declaration](https://raw.githubusercontent.com/openai/codex/cb1bc0ae4ed996c67a6e118bf79a7435f0d3f0d2/codex-rs/config/src/config_toml.rs)
+(`AgentsToml.roles` and `AgentRoleToml.config_file`) resolves role config paths
+relative to the declaring config. Separately, the
+[official custom-agent documentation](https://learn.chatgpt.com/docs/agent-configuration/subagents#custom-agents)
+describes standalone project `.codex/agents/` files and personal home files.
+These native formats differ; transport accepts supported opaque TOML, without
+validating a native agent schema, resolving `config_file`/includes, reading home
+files, or qualifying native discovery. Prompts, commands and paths stay text.
+
+The existing shared importer writes numbered nonexecutable `.review` copies with
+original path metadata; it never installs settings, reloads configuration, grants
+tools or spawns agents. Re-export uses only the original validated manifest, never
+generated review copies. Other provider families are unchanged. This is a
+source-only change; no tests, native configuration, runtime, round-trip or
+atomicity qualification was performed.

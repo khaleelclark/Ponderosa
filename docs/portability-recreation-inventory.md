@@ -240,3 +240,21 @@ conversion, timezone normalization or truncation. Leap seconds, greater fraction
 precision and overflowing decimal floats explicitly refuse. All original bytes,
 secret-path removal/refusal, raw/decoded checks and source retention remain; no
 parser certification or runtime qualification is claimed. See the exact contract.
+
+### Project Codex agent review files
+
+Explicit harness selection now includes regular top-level project
+`.codex/agents/*.toml` originals through the existing inactive provider-file flow.
+The shared config/agent TOML classification scrubs live originals and rejects
+unsanitized imported originals, preserving accepted nonsecret spans and removal
+metadata. Existing canonical no-follow reads, inventory drift checks and
+1,000-entry / 1 MiB TOML / 32 MiB aggregate bounds apply. Nested directories,
+unknown formats, links/special nodes, credential names and unsupported syntax
+refuse; originals remain untouched. No arbitrary config reference, home/profile,
+session or auth path is followed. Standalone agents and referenced config layers
+are different native formats; neither is interpreted or activated. Existing
+numbered nonexecutable review copies retain original path mappings; only the
+validated original manifest controls re-export. See the
+[scope, primary references and limits](git-provider-user-data-transport.md#inactive-project-codex-agent-originals).
+No schema/DTO/dependency change or native configuration, runtime, round-trip or
+atomicity acceptance is claimed.

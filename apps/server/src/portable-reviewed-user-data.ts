@@ -21,8 +21,11 @@ export function validateReviewedUserDataSelection(value:unknown):asserts value i
   if(selection.source!==undefined&&!['live','retained_originals'].includes(selection.source))throw new Error('Choose live or retained-original review data');
   if(typeof selection.git!=='boolean'||typeof selection.harness!=='boolean'||!selection.git&&!selection.harness)throw new Error('Select Git data, harness settings, or both');
 }
+function codexReviewToml(value:string):boolean {
+  return value==='.codex/config.toml'||/^\.codex\/agents\/[^/]+\.toml$/.test(value);
+}
 function providerPath(value:string):boolean {
-  return ['.mcp.json','.claude/settings.json','.claude/settings.local.json','.claude/CLAUDE.md','.codex/config.toml','.codex/instructions.md'].includes(value)||/^\.(?:claude\/(?:commands|agents|skills|rules)|codex\/(?:skills|rules))\//.test(value);
+  return codexReviewToml(value)||['.mcp.json','.claude/settings.json','.claude/settings.local.json','.claude/CLAUDE.md','.codex/instructions.md'].includes(value)||/^\.(?:claude\/(?:commands|agents|skills|rules)|codex\/(?:skills|rules))\//.test(value);
 }
 function credentialPath(value:string):boolean {
   return value.split('/').some(part=>['.ssh','.aws','.gnupg','browser-profiles'].includes(part.toLowerCase())||/^\.env(?:\.|$)/i.test(part)||/^(?:credentials(?:\.json)?|auth\.json|.*\.(?:pem|key|p12))$/i.test(part));
@@ -286,7 +289,7 @@ export function parseReviewedUserData(data:Buffer):ReviewedUserData {
     if(typeof file.path!=='string'||!providerPath(file.path)||file.path.split('/').some(part=>!part||part==='.'||part==='..')||credentialPath(file.path)||file.path.includes('\\')||file.path.includes('\0')||typeof file.dataBase64!=='string'||typeof file.removedSecretFields!=='boolean'||paths.has(file.path))throw new Error('Invalid reviewed provider original');
     const data=Buffer.from(file.dataBase64,'base64');bytes+=data.length;
     if(data.length>1024*1024||bytes>limit||data.toString('base64')!==file.dataBase64)throw new Error('Reviewed provider original exceeds its bound');
-    if(file.path==='.codex/config.toml'&&scrubReviewToml(new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(data)).removedSecretFields)throw new Error('Reviewed TOML retains known credential assignments');
+    if(codexReviewToml(file.path)&&scrubReviewToml(new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(data)).removedSecretFields)throw new Error('Reviewed TOML retains known credential assignments');
     safeText(text(data),'Reviewed provider configuration');
     if(file.path.endsWith('.json'))assertPortableSecretsAbsent(JSON.parse(text(data)),'Reviewed provider configuration');
     paths.add(file.path);
@@ -1314,19 +1317,20 @@ export async function exportReviewedUserData(root:string,selection:ReviewedUserD
     for(const entry of (await fs.readdir(target,{withFileTypes:true})).sort((a,b)=>a.name.localeCompare(b.name))){
       if(++entries>1000)throw new Error('Custom provider configuration inventory exceeds 1000 entries');
       const name=`${relative}/${entry.name}`;
+      if(relative==='.codex/agents'&&(!entry.isFile()||!codexReviewToml(name)||name.includes('\\')||credentialPath(name)))throw new Error('Custom Codex agents require top-level regular noncredential TOML originals');
       if(entry.isDirectory())await walk(name);else if(entry.isFile())selected.push(name);else throw new Error('Custom provider configuration links/special nodes require separate recreation');
     }
     const after=await fs.lstat(target,{bigint:true});if(stat.ino!==after.ino||stat.mtimeNs!==after.mtimeNs||stat.ctimeNs!==after.ctimeNs)throw new Error('Custom provider configuration inventory changed');
   };
-  for(const directory of (selection.harness?['.claude/commands','.claude/agents','.claude/skills','.claude/rules','.codex/skills','.codex/rules']:[]))await walk(directory);
+  for(const directory of (selection.harness?['.claude/commands','.claude/agents','.claude/skills','.claude/rules','.codex/skills','.codex/rules','.codex/agents']:[]))await walk(directory);
   for(const relative of selection.harness?selected:[]){
     const target=path.join(root,relative);
-    let originalFile;try{originalFile=await regularOriginal(target);}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')continue;throw error;}
+    let originalFile;try{originalFile=await regularOriginal(target);}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT'&&!relative.startsWith('.codex/agents/'))continue;throw error;}
     {
       const {data}=originalFile;
-      const original=relative==='.codex/config.toml'?new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(data):text(data);let safe=original,removedSecretFields=false;
+      const original=codexReviewToml(relative)?new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(data):text(data);let safe=original,removedSecretFields=false;
       if(relative.endsWith('.json')){const parsed=JSON.parse(original),scrubbed=withoutPortableSecrets(parsed);removedSecretFields=JSON.stringify(parsed)!==JSON.stringify(scrubbed);safe=JSON.stringify(scrubbed,null,2);}
-      else if(relative==='.codex/config.toml'){
+      else if(codexReviewToml(relative)){
         ({safe,removedSecretFields}=scrubReviewToml(original));
       }
       safeText(safe,'Provider configuration');bytes+=Buffer.byteLength(safe);if(bytes>limit)throw new Error('Provider configuration bound exceeded');
