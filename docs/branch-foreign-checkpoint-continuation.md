@@ -193,7 +193,7 @@ This tree family supports serial and parallel human workflow gates and excludes 
 custody, actions, bundles, Agents, execution-owned Chats, secrets, automatic,
 async/EXIT, changed historical definitions/configuration and external restoration.
 Supported held re-exports and admitted continuation generations retain exact proof
-as described below. Supported nongate local tree rewinds retain portable proof as described below; gate/rewind combinations remain refused. Standalone gate/parallel and repeated
+as described below. Supported local tree rewinds, including ordinary approval gates, retain portable proof as described below. Standalone gate/parallel and repeated
 Script continuation retain their existing supported families; these are not a
 promise of every combination with Call trees.
 
@@ -308,7 +308,7 @@ This proof requires a supported quiescent frontier; an in-flight Script process 
 unknown outcome does not qualify, and never authorizes a replacement command.
 
 Canceled serial gates, recovery-purpose gates,
-local rewinds with gates, issued/resource/unknown/effectful work, automatic and
+unproven local rewinds, issued/resource/unknown/effectful work, automatic and
 async/EXIT trees remain refused. Standalone serial/parallel gate behavior is
 unchanged. Source review does not qualify live gate notifications, round trips,
 suffix scheduling or rollback.
@@ -317,7 +317,7 @@ suffix scheduling or rollback.
 ### Portable local tree rewind lineage
 
 Successful local historical rewinds of supported manual synchronous effect-free
-nongate Script/Call trees can use the existing foreign review/confirm/source and
+Script/Call trees, including ordinary serial and parallel approval gates, can use the existing foreign review/confirm/source and
 original-key recovery flow. The shared canonical tree composer reads either local
 private rows or their exact retained portable checkpoint/command facts. No foreign
 rows, synthetic Requests, replacement commands or admission system are introduced.
@@ -342,7 +342,19 @@ stays separate from fresh admission, and current all-destination review and atom
 acceptance/remapping remain mandatory for each destination generation. Existing
 review evidence includes the exact checkpoint and its lineage provenance.
 
-Gate/rewind, issued/resource/native/unknown/effectful, automatic and async/EXIT
+Gate-bearing local links require the same exact root/child rewind seeds, original
+command and acceptance proof; gate metadata alone cannot establish a rewind.
+Selected and latest source gate/owner cuts replay independently. A selected pending
+gate remains pending despite later source resolution; resolved prefix decisions
+are historical data copied once. Both the successful local writer and fresh foreign
+acceptance map waiting gates to new identities and create destination-owned pending
+notifications atomically. Only normal responses to those new gates can resolve them.
+Later gates and genuine suffix children follow the ordinary workflow path.
+Parallel canceled gates still require canonical Join/path/item cancellation proof.
+Original-key recovery after later destination cancellation retains the complete
+current-tree replay and supported quiescent-frontier requirement described above.
+
+Recovery-purpose gates, unproven coordination lineage, issued/resource/native/unknown/effectful, automatic and async/EXIT
 combinations remain refused. Original data, partial/failure evidence and existing
 standalone gate/parallel/rewind behavior are preserved. This is source support;
 round trips, suffix scheduling and rollback remain execution-unqualified.

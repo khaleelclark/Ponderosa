@@ -158,7 +158,7 @@ held-only generations are validated separately and never treated as admission.
 Re-export checks immutable held evidence even after current enablement and fresh
 continuation owners; the ordinary disabled DATA readback contract is unchanged.
 Tree proof is bounded to 16 nested links, 32 MiB manifests and 128 uncached
-manifest/replay frames per traversal. Gate/local-rewind and issued/EXIT/resource/
+manifest/replay frames per traversal. Unproven local rewind and issued/EXIT/resource/
 unknown combinations remain outside this consumer. This change has source review only, with no runtime
 round-trip or rollback qualification.
 
@@ -174,13 +174,16 @@ tree and requires a supported quiescent frontier.
 Canceled serial and recovery-purpose gates remain unsupported. See the foreign continuation guide for
 the exact scope. Live notification delivery and rollback remain unqualified.
 
-Supported nongate manual synchronous Script/Call trees may also migrate after a
+Supported manual synchronous Script/Call trees, including ordinary approval gates, may also migrate after a
 local historical rewind. Existing private snapshot/command/acceptance facts retain
 the original source checkpoint and authentic root/child lineage. The same canonical
 composer uses bounded retained readers, independently replays selected/latest source
 trees, verifies complete maps, pins and ancestry, and refuses erased or changed
 proof. Held and admitted migration generations can retain these links without
 converting held data into authority. Terminal prefix children do not acquire
-invented admission; genuine suffix children keep normal Call provenance. Gate
-rewinds and effectful/issued/resource/automatic/async/EXIT combinations remain
+invented admission; genuine suffix children keep normal Call provenance. Selected
+pending gates stay pending, prefix decisions remain historical, and fresh mapped
+notifications belong to fresh owners. Gate-bearing links require exact rewind seeds
+and independently replayed selected/latest proof. Recovery gates, unproven lineage
+and effectful/issued/resource/automatic/async/EXIT combinations remain
 unsupported. See the foreign continuation guide; no runtime qualification is claimed.

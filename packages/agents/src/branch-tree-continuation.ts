@@ -98,7 +98,7 @@ function validateOwners(db:Database.Database,c:Row,seeds?:Map<string,{selected:S
     const definition=JSON.parse(v.definition_json) as BranchDefinition;
     const issuedResource=c.issuedResources===true;
     const workflowGates=definition.steps.some(s=>s.kind==='human_gate');
-    if(workflowGates&&(c.provenance.some((p:Row)=>p.lineageId)||o.audit.some((a:Row)=>['tree_historical_rewind','tree_restored_prefix'].includes(a.kind))||issuedResource||o.configuration.checkpointMode!=='sync'||definition.trigger.kind!=='manual'||definition.steps.some(s=>!['script','branch_call','human_gate'].includes(s.kind))||o.hostDependencies||o.selected.resources.length||o.selected.actions.length||o.selected.bundles.length||o.selected.attempts.some((a:Row)=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json)))return false;
+    if(workflowGates&&(o.audit.some((a:Row)=>['tree_historical_rewind','tree_restored_prefix'].includes(a.kind))&&!seeds?.has(o.executionId)||issuedResource||o.configuration.checkpointMode!=='sync'||definition.trigger.kind!=='manual'||definition.steps.some(s=>!['script','branch_call','human_gate'].includes(s.kind))||o.hostDependencies||o.selected.resources.length||o.selected.actions.length||o.selected.bundles.length||o.selected.attempts.some((a:Row)=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json)))return false;
     if(issuedResource&&(hasParallelControls(definition)||o.selected.resources.length!==1||o.configuration.checkpointMode==='exit'))return false;
     const resourceFrontier=issuedResource?issuedResourceFrontierSupported(o.selected,definition,o.hostDependencies,false,true):resourceReservationSupported(o.selected,definition);
     if(issuedResource&&!resourceFrontier)return false;
@@ -185,7 +185,7 @@ function compose(db:Database.Database,c:Row,encoding=false,data?:BranchPortableE
         ||line.commandHash!==payloadHash({executionId:line.sourceExecutionId,checkpointId:line.checkpointId,expectedHash:line.checkpointHash})||typeof line.commandKey!=='string')return;
       const snapshot=source.value,old=snapshot.continuation;
       if(snapshot.schema!=='branch-unit-selected.v2'||snapshot.restore_supported!==true||old?.schema!==TREE_SCHEMA||!treeSnapshotMetadata(snapshot,old)||old.rootExecutionId!==line.sourceExecutionId)return;
-      if(data&&(line.coordination||line.graphReviewHash||old.owners.some((o:Row)=>o.selected.gates.length||!evidence!.get(o.executionId)?.facts.some(f=>f.kind==='acceptance'))))return;
+      if(data&&(line.coordination||line.graphReviewHash||old.owners.some((o:Row)=>o.selected.gates.some((g:Row)=>g.purpose!=='approval')||!evidence!.get(o.executionId)?.facts.some(f=>f.kind==='acceptance'))))return;
       if(!treeCoordinationLineageSupported(db,line,snapshot))return;
       if(data&&(!portableScriptTreeSupported(db,data,line.sourceExecutionId,snapshot,work,depth+1)||!portableScriptTreeSupported(db,data,line.sourceExecutionId,undefined,work,depth+1)))return;
       const commandKey=`tree-historical-rewind:${payloadHash(line.commandKey)}`,commandFact=evidence?.get(line.sourceExecutionId)?.facts.find(f=>f.kind==='command'&&f.key===commandKey);
