@@ -3,6 +3,7 @@ import {createHash} from 'node:crypto';
 import assert from 'node:assert/strict';
 import {mkdtemp,mkdir,writeFile,readFile,chmod,lstat,realpath,open,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
+import {mkdirSync,renameSync} from 'node:fs';
 import path from 'node:path';
 import {promisify} from 'node:util';
 import {execFile} from 'node:child_process';
@@ -134,6 +135,10 @@ test('native Separate import owns a fresh independent repository, preserves stag
   let imported;let release=service.beginModeChange(agent.id);
   try{imported=await service.allocateImportedSeparateGit(agent,project);}finally{release();}
   assert.equal(imported.workingCopy.state,'unavailable');assert.equal(imported.workingCopy.repositoryRoot,imported.workingCopy.rootPath);
+  release=service.beginModeChange(agent.id);
+  try{await assert.rejects(service.setMode(imported,project,'separate_git'),/exact import operation/);}
+  finally{release();}
+  assert.equal(store.getAgent(agent.id).workingCopy.repositoryRoot,imported.workingCopy.rootPath,'Generic Retry cannot replace independent ownership with Shared authority');
   const files=pkg.agents[0].workingFiles.map(file=>{const artifact=pkg.agents[0].artifacts.find(artifact=>artifact.ref===file.artifactRef),bytes=Buffer.from(artifact.dataBase64,'base64');return {path:file.path,data:bytes,sha256:createHash('sha256').update(bytes).digest('hex')};});
   release=service.beginModeChange(agent.id);
   try{
@@ -161,4 +166,78 @@ test('native Separate import owns a fresh independent repository, preserves stag
   assert.equal(await git(source,'branch','--show-current'),'main');
   await assert.rejects(service.resolve({...ready,workingCopy:{...ready.workingCopy,repositoryRoot:shared}},project),/identity|ownership/);
  }finally{store?.close();await rm(base,{recursive:true,force:true});}
+});
+
+test('adoption preserves its primary failure and attempts every incomplete receipt when storage also fails',async()=>{
+ const base=await realpath(await mkdtemp(path.join(tmpdir(),'portable-adoption-failure-')));let store;
+ const releases=[];
+ try{
+  const source=path.join(base,'source'),shared=path.join(base,'shared'),data=path.join(base,'data');await initialize(source);await initialize(shared);await mkdir(data);
+  const manifest=await exportReviewedUserData(source,{git:true,harness:false}),pkg=packageFor(manifest,{'file.txt':'committed\n'});
+  const sibling=structuredClone(pkg.agents[0]);sibling.ref='second';sibling.managerRef='agent';sibling.workingRootRef='second-root';pkg.agents.push(sibling);
+  store=new AgentStore(data);const project=store.createProject({label:'Unchanged Shared',hostPath:shared,defaultEngine:'codex'}),chat=store.createConversation(project.id,{title:'Failed physical adoption'}),service=new AgentWorkingCopyService(data,store);
+  const ids=[],destinations={};
+  for(const node of pkg.agents){
+   const agent=store.createAgent(project.id,{title:node.title,engine:'codex',conversationId:chat.id});ids.push(agent.id);releases.push(service.beginModeChange(agent.id));
+   const allocated=await service.allocateImportedSeparateGit(agent,project);destinations[node.workingRootRef]=allocated.workingCopy.rootPath;
+   const files=node.workingFiles.map(file=>{const data=Buffer.from(node.artifacts.find(artifact=>artifact.ref===file.artifactRef).dataBase64,'base64');return {path:file.path,data,sha256:createHash('sha256').update(data).digest('hex')};});
+   await service.populateImportedRoot(allocated,project,files,[],undefined,path.join(allocated.workingCopy.rootPath,'.ponderosa-import-backups'),[],'refuse',{git:true,harness:false});
+  }
+  const primary=new Error('Exact branch ownership readback failed'),attempted=[];
+  service.resolve=async()=>{throw primary;};
+  await assert.rejects(service.completeImportedGitRoots(project,pkg,destinations,{git:true,harness:false},receipt=>{
+   if(receipt.state==='incomplete'){attempted.push(receipt.ref);throw new Error('Receipt storage offline: '+receipt.ref);}
+  },ids),error=>{
+   assert.equal(error.code,'ERR_IMPORTED_GIT_ADOPTION_PARTIAL');assert.equal(error.cause,primary);
+   assert.equal(error.receiptErrors.length,2);assert.ok(error.receiptErrors.every(failure=>/Receipt storage offline/.test(failure.message)));
+   return true;
+  });
+  assert.deepEqual(attempted.sort(),['second-root','work']);
+  for(const root of Object.values(destinations))assert.equal((await lstat(path.join(root,'.git'))).isDirectory(),true,'Native data remains after failed receipt storage');
+  await assert.rejects(service.completeImportedGitRoots(project,pkg,destinations,{git:true,harness:false},()=>{throw Error('No replay is authorized');},ids),/exact populated phase/);
+ }finally{for(const release of releases)release();store?.close();await rm(base,{recursive:true,force:true});}
+});
+
+test('typed contained roots get local parent-child inode receipts before Shared or Separate binding',async()=>{
+ const base=await realpath(await mkdtemp(path.join(tmpdir(),'portable-contained-live-')));let store;
+ const releases=[];
+ try{
+  const shared=path.join(base,'shared'),data=path.join(base,'data');await initialize(shared);await mkdir(data);
+  store=new AgentStore(data);const project=store.createProject({label:'Parent',hostPath:shared,defaultEngine:'codex'}),chat=store.createConversation(project.id,{title:'Parent'}),service=new AgentWorkingCopyService(data,store);
+  const parent=store.createAgent(project.id,{title:'Parent owner',engine:'codex',conversationId:chat.id});releases.push(service.beginModeChange(parent.id));
+  const allocated=await service.allocateImportedSeparateGit(parent,project);
+  await assert.rejects(service.reserveImportedContainedRoot(allocated,project,'../escape'),/exact canonical/);
+  const reservation=await service.reserveImportedContainedRoot(allocated,project,'modules/shared-child');
+  const childProject=store.createProject({label:'Contained Shared',hostPath:reservation.rootPath,defaultEngine:'codex'}),childChat=store.createConversation(childProject.id,{title:'Shared child'}),child=store.createAgent(childProject.id,{title:'Shared child owner',engine:'codex',conversationId:childChat.id});releases.push(service.beginModeChange(child.id));
+  const bound=await service.bindImportedContainedRoot(child,childProject,structuredClone(reservation),'shared');
+  assert.equal((await service.resolve(bound,childProject)).rootPath,reservation.rootPath);
+  assert.equal(bound.workingCopy.importedParent.parentAgentId,parent.id);
+  assert.deepEqual(await service.inspectPreparedImportedRoot(bound,childProject),{rootPath:reservation.rootPath,phase:'allocated'});
+  await service.populateImportedRoot(bound,childProject,[],[],undefined,path.join(base,'backups'),[],'refuse',{git:false,harness:false},undefined,undefined,true);
+  assert.equal((await service.inspectPreparedImportedRoot(bound,childProject)).phase,'populated');
+  assert.equal(store.getAgent(parent.id).workingCopy.containedRootPreparations[0].phase,'bound');
+  const next=await service.reserveImportedContainedRoot(store.getAgent(parent.id),project,'modules/separate-child'),separate=store.createAgent(project.id,{title:'Separate child owner',engine:'codex',conversationId:chat.id});releases.push(service.beginModeChange(separate.id));
+  const forged=structuredClone(next);forged.rootPath=shared;
+  await assert.rejects(service.bindImportedContainedRoot(separate,project,forged,'separate_git'),/exact local reservation/);
+  const separateBound=await service.bindImportedContainedRoot(separate,project,next,'separate_git');
+  assert.equal(separateBound.workingCopy.repositoryRoot,next.rootPath);assert.equal(separateBound.workingCopy.importedParent.parentInode,(await lstat(allocated.workingCopy.rootPath,{bigint:true})).ino.toString());
+  await service.populateImportedRoot(separateBound,project,[],[],undefined,path.join(base,'separate-backups'),[],'refuse',undefined,undefined,undefined,true);
+  await service.completeImportedGitRoots(project,packageFor({}),{child:next.rootPath},undefined,()=>{throw new Error('No native selection should apply source data');},[separate.id]);
+  assert.equal((await service.resolve(store.getAgent(separate.id),project)).rootPath,next.rootPath);
+  await assert.rejects(lstat(path.join(reservation.rootPath,'.git')),{code:'ENOENT'},'Contained Shared remains an ordinary folder without selected native Git');
+  const newService=new AgentWorkingCopyService(data,store),newParentRelease=newService.beginModeChange(parent.id);releases.push(newParentRelease);
+  const confirmed=await service.reserveImportedContainedRoot(store.getAgent(parent.id),project,'modules/confirmed-child'),confirmedChild=store.createAgent(project.id,{title:'Confirmed child',engine:'codex',conversationId:chat.id}),confirmedRelease=newService.beginModeChange(confirmedChild.id);
+  try{const rebound=await newService.bindImportedContainedRoot(confirmedChild,project,confirmed,'separate_git');assert.equal(rebound.workingCopy.rootPath,confirmed.rootPath);}finally{confirmedRelease();}
+  const orphan=await service.reserveImportedContainedRoot(store.getAgent(parent.id),project,'modules/held-child'),held=store.createAgent(project.id,{title:'Held child',engine:'codex',conversationId:chat.id}),heldRelease=newService.beginModeChange(held.id);
+  const beforeUnknown=store.getAgent(parent.id);store.updateAgentWorkingCopy(parent.id,{...beforeUnknown.workingCopy,containedRootPreparations:beforeUnknown.workingCopy.containedRootPreparations.map(item=>item.id===orphan.id?{...item,phase:'creating'}:item)});
+  try{await assert.rejects(newService.bindImportedContainedRoot(held,project,orphan,'separate_git'),/exact local reservation/);}finally{heldRelease();}
+  assert.equal((await lstat(orphan.rootPath)).isDirectory(),true,'Restart uncertainty preserves the allocated directory');
+  const raced=await service.reserveImportedContainedRoot(store.getAgent(parent.id),project,'modules/raced-child'),racedChild=store.createAgent(project.id,{title:'Raced child',engine:'codex',conversationId:chat.id});releases.push(service.beginModeChange(racedChild.id));
+  const originalUpdate=store.updateAgentWorkingCopy.bind(store);
+  store.updateAgentWorkingCopy=(id,copy)=>{const value=originalUpdate(id,copy);if(id===racedChild.id&&copy.importedParent){renameSync(raced.rootPath,raced.rootPath+'-retained');mkdirSync(raced.rootPath);}return value;};
+  try{await assert.rejects(service.bindImportedContainedRoot(racedChild,project,raced,'separate_git'),/binding root changed/);}finally{store.updateAgentWorkingCopy=originalUpdate;}
+  await assert.rejects(service.resolve(store.getAgent(racedChild.id),project),/unavailable|custody|ownership|changed/i);
+  assert.equal(store.getAgent(parent.id).workingCopy.containedRootPreparations.find(item=>item.id===raced.id).phase,'binding','Replacement cannot silently issue new root authority');
+
+ }finally{for(const release of releases)release();store?.close();await rm(base,{recursive:true,force:true});}
 });

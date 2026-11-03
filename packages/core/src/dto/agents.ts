@@ -58,6 +58,10 @@ export interface AgentWorkingCopyDto {
   /** Locally issued independent imported repository, always this managed root.
    * Never transported in an Agent package or accepted as a user path setting. */
   repositoryRoot?: string;
+  /** Locally issued contained-root custody. Never imported from source data. */
+  importedParent?: {parentAgentId:string;parentProjectId:string;parentPath:string;parentDevice:string;parentInode:string;relativePath:string;device:string;inode:string};
+  /** Durable allocation evidence for fresh contained roots; not replay authority. */
+  containedRootPreparations?:Array<{id:string;relativePath:string;rootPath:string;phase:'creating'|'created'|'binding'|'bound';parentDevice:string;parentInode:string;device?:string;inode?:string;childAgentId?:string}>;
   /** Separate Git copies have one stable branch owned by this Agent. */
   branch?: string;
   /** Commit used when the Separate Git copy was first created. */

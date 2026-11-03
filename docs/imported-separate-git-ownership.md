@@ -38,6 +38,35 @@ staged phases are not treated as authorization for an automatic replay after a
 restart. Fresh metadata application requires current local root inode custody
 and a working-folder fence, including Separate copies in existing Projects.
 
+If storing an incomplete receipt also fails, adoption still attempts every
+receipt. The original adoption error remains the wrapper's cause and secondary
+storage errors are attached separately. An unavailable or released independent
+copy refuses generic working-copy Retry; only its exact import operation can
+establish recovery. Its `repositoryRoot` ownership discriminator is preserved.
+
+Typed parent/child working-root relations use the existing working-copy service.
+The caller first stages the fresh parent and holds its working-folder fence.
+`reserveImportedContainedRoot` receives only a relative path and a canonical
+parent Agent, records `creating` before allocating, then records the observed
+child inode as `created`. A contained Shared destination must register its
+Project at that exact reserved root. A contained Separate destination gets a new
+local copy/branch identity at the reserved path. Binding records one exact child
+identity as `binding` before changing it and `bound` afterward; it cannot assign
+the root to another Agent after an uncertain write.
+
+The child stores locally issued parent/child inode custody in `importedParent`.
+Neither absolute source paths nor source identity receipts authorize it. Exact
+`created` receipts can be checked and rebound after a restart without repeating
+directory creation. Unconfirmed `creating` or `binding` outcomes stay held with
+their paths intact. Parent intermediate directories may be reused only when
+this service itself created and retained their exact identities. Contained roots
+retain the same data-preserving cleanup behavior as independent imported roots.
+`inspectPreparedImportedRoot` verifies canonical Agent, fence and allocated inode
+before the carrier can skip reallocation. Shared contained population validates
+that same issued custody before native activation. Without native activation,
+completion initializes only staged Separate repositories after regular files;
+staged Shared destinations stay ordinary folders and no source Git is adopted.
+
 Removing the Agent releases its working-copy authority and records `removed`
 with the retained repository path. It preserves the imported repository and all
 its user data, including dirty or staged originals. Project cleanup also leaves
