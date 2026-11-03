@@ -251,7 +251,7 @@ export async function decodePortableArtifactData(artifact: ArtifactData): Promis
  * its separately bounded original; hashing/parsing must never use gzip bytes. */
 export function decodePortableMetadataArtifact(artifact: ArtifactData, maximumBytes = 48 * 1024 * 1024): Buffer {
   const expected = portableArtifactByteLength(artifact);
-  if (expected > maximumBytes) throw new Error(\`Reviewed user-data original exceeds \${maximumBytes / (1024 * 1024)} MiB\`);
+  if (expected > maximumBytes) throw new Error("Reviewed user-data original exceeds " + maximumBytes / (1024 * 1024) + " MiB");
   let data = Buffer.from(artifact.dataBase64, "base64");
   if (artifact.dataEncoding === "gzip") {
     try { data = gunzipSync(data, { maxOutputLength: Math.max(1, expected) }); }
