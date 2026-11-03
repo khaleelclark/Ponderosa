@@ -926,12 +926,13 @@ still requires separate human review/action.
 | `git.infoReview[].{path,source,dataBase64}` | Required path-ordered `info/attributes`, `info/exclude` records from `common_repository`, with exact bounded original bytes or explicit null absence. Shared validation refuses unknown paths/provenance, malformed encoding, known secrets or missing evidence. Recreated only as inactive records in `CONFIGURATION-REVIEW.json`, never active Git info files; generated review copies are not re-export authority. |
 | `git.packRetentionReview[]` | Required sorted source-pack retention records: pack identity and exact pack/v1-or-v2-index/keep/MTME originals plus independently checked index-ordered OIDs/mtimes. Empty keep differs from absence. Retained only as inactive evidence; see [supported layouts and limits](#pack-retention-originals-keep-mtimes). No active GC policy or destination pack layout. |
 | `git.configurationReview[].{key,value,implicitBoolean?,source?}` | Nonsecret local configuration is retained as ordered inert review entries, including repeated keys, valueless booleans and hook/fsmonitor command text. Optional `source:"config.worktree"` distinguishes exact local worktree settings; omitted source means local `config`. Local include/includeIf declarations survive as ordered inactive literals from exact common config or selected config.worktree, with target resolution disabled; external contents are uncollected and never supply effective settings. All credential-helper/username fields and password/token/authorization/extra-header fields and source core.worktree metadata are excluded. `extensions.worktreeConfig` and sparse booleans survive only as inactive review entries. URL userinfo is refused from the retained configuration. Source configuration is never installed as executable destination config. |
+| Git selected squash-message draft | Explicit Git selection carries optional exact selected-gitdir `SQUASH_MSG` through inactive `.git/SQUASH_MSG`, alongside `COMMIT_EDITMSG`. No message interpretation, operation continuation or active installation. See [contract](#inactive-selected-git-squash-message-draft). |
 | Git common recovery originals | Explicit Git selection carries optional common `lost-found/` UTF-8 files through inactive `.git/lost-found/...` records, including existing `commit/`, `other/` and supported custom descendants. No regeneration or active installation. See [contract](#inactive-common-git-lost-found-originals). |
 | Git dormant resolution cache and commit draft originals | Explicit Git selection carries optional common `rr-cache/` UTF-8 originals and only the exact selected-gitdir `COMMIT_EDITMSG` through inactive `.git/rr-cache/...` and `.git/COMMIT_EDITMSG` records. No replay, editor, operation recovery or active installation. See [contract](#inactive-common-rerere-and-selected-commit-draft-originals). |
 | Git legacy common remote shorthand originals | Explicit Git selection carries optional common `branches/` and `remotes/` regular UTF-8 originals through inactive `.git/branches/...` and `.git/remotes/...` records. No native remote installation or syntax/version compatibility claim. See [contract](#inactive-common-legacy-git-remote-originals). |
 | Git fixed common Gitweb metadata originals | Explicit Git selection carries only optional common `description`, `category`, `cloneurl` and `README.html` as exact inactive `.git/{name}` originals. Empty present files survive; no HTML rendering, URL fetching or native Gitweb recreation. See [contract](#inactive-fixed-common-gitweb-metadata-originals). |
 | Git default common hook/support originals | Explicit Git selection carries bounded regular UTF-8 originals from the validated common repository `hooks/` through `providerFiles` as virtual `.git/hooks/...` paths, never active hooks. Configured `core.hooksPath` targets are not followed; their nonsecret setting remains inactive configuration text. See [scope and limits](#inactive-default-common-git-hook-originals). |
-| `providerFiles[].{path,dataBase64,removedSecretFields}` | Existing inert-original carrier: `.git/hooks/...`, `.git/branches/...`, `.git/remotes/...`, `.git/rr-cache/...`, `.git/lost-found/...`, exact selected-worktree `.git/COMMIT_EDITMSG` and the four fixed common Gitweb metadata records (`.git/description`, `.git/category`, `.git/cloneurl`, `.git/README.html`) require explicit Git selection and its required Git manifest; other provider records require harness selection. Git hook/support, legacy remote, dormant resolution/draft, lost-found recovery and Gitweb metadata originals preserve exact accepted UTF-8 bytes/BOM with `removedSecretFields: false`. Supported project-root Claude/Codex/MCP settings, instructions (including optional selected-root `.claude/AGENTS.md`) and custom commands/agents/skills/rules remain inactive review data. Only `.mcp.json`, `.claude/settings.json` and `.claude/settings.local.json` receive structural JSON secret removal. All selected non-settings text preserves exact accepted UTF-8 bytes/BOM regardless of extension; recognizable secrets refuse rather than rewriting originals. Codex TOML uses the shared [bounded structured reader](#bounded-toml-syntax): recognized credential assignments, inline members/subtrees and table namespaces are removed after full original validation; accepted nonsecret sibling source spans survive. Import enforces the same grammar and rejects retained known-secret fields. Unsupported forms or remaining recognizable credentials refuse. No commands, hooks, permissions or servers are activated. |
+| `providerFiles[].{path,dataBase64,removedSecretFields}` | Existing inert-original carrier: `.git/hooks/...`, `.git/branches/...`, `.git/remotes/...`, `.git/rr-cache/...`, `.git/lost-found/...`, exact selected-worktree `.git/COMMIT_EDITMSG`/`.git/SQUASH_MSG` and the four fixed common Gitweb metadata records (`.git/description`, `.git/category`, `.git/cloneurl`, `.git/README.html`) require explicit Git selection and its required Git manifest; other provider records require harness selection. Git hook/support, legacy remote, dormant resolution/draft, lost-found recovery and Gitweb metadata originals preserve exact accepted UTF-8 bytes/BOM with `removedSecretFields: false`. Supported project-root Claude/Codex/MCP settings, instructions (including optional selected-root `.claude/AGENTS.md`) and custom commands/agents/skills/rules remain inactive review data. Only `.mcp.json`, `.claude/settings.json` and `.claude/settings.local.json` receive structural JSON secret removal. All selected non-settings text preserves exact accepted UTF-8 bytes/BOM regardless of extension; recognizable secrets refuse rather than rewriting originals. Codex TOML uses the shared [bounded structured reader](#bounded-toml-syntax): recognized credential assignments, inline members/subtrees and table namespaces are removed after full original validation; accepted nonsecret sibling source spans survive. Import enforces the same grammar and rejects retained known-secret fields. Unsupported forms or remaining recognizable credentials refuse. No commands, hooks, permissions or servers are activated. |
 | `git.sparseReview.{patternsBase64,directories}` | Required explicit inactive data: exact local `info/sparse-checkout` bytes (or literal null when absent) and original collapsed directory path/mode/stage/OID/flag records. Import re-expands verified trees and requires exact equality with the covered full logical index; no pattern matching, settings installation or sparse activation. |
 | `exclusions` | Explicit format/credential/ownership limitations, without secret values. An exclusion is not evidence that the data is unnecessary. |
 | `recreationScope.absoluteLinks/crossRootLinks/specialNodes` | Required literal `refuse`; no external authority, dereference or conversion to regular bytes. |
@@ -1034,7 +1035,7 @@ to 1 MiB each and 1,000 entries. Whole artifact limits still apply. Refusal pres
 the source instead of truncating data.
 
 The existing source fence and before/after checks do not drain independent native
-writers or prove an arbitrary-writer atomic snapshot. The bounded binary v2/v3/v4 index reader refuses unknown layouts and extensions. Known credential paths in Git trees/index refuse the whole selection, preserving Git object identity instead of dropping files. Git control paths must be ordinary local originals, with no external symlinks or hardlinks; the allowlisted common hook/support, Gitweb, legacy remote, rr-cache and lost-found originals plus the exact selected-gitdir COMMIT_EDITMSG are read as inactive review data; configured hook targets are not followed. Known-secret inspection detects recognized fields/syntax,
+writers or prove an arbitrary-writer atomic snapshot. The bounded binary v2/v3/v4 index reader refuses unknown layouts and extensions. Known credential paths in Git trees/index refuse the whole selection, preserving Git object identity instead of dropping files. Git control paths must be ordinary local originals, with no external symlinks or hardlinks; the allowlisted common hook/support, Gitweb, legacy remote, rr-cache and lost-found originals plus the exact selected-gitdir COMMIT_EDITMSG and SQUASH_MSG are read as inactive review data; configured hook targets are not followed. Known-secret inspection detects recognized fields/syntax,
 not arbitrary unidentified credentials disguised as ordinary user bytes. Objects
 whose inspection text exceeds 4 MiB refuse; the JSON review manifest is limited
 to 48 MiB. Provider settings are never made active by inspection alone.
@@ -1730,3 +1731,46 @@ No DTO/schema/storage-version/format/cap/dependency or codec changes. Original
 mode/mtime, empty directories, binary data and independent-writer atomicity remain
 unrepresented. Source-only: no capture execution, native equivalence, round-trip,
 atomicity or whole-Bible acceptance claim.
+
+
+### Inactive selected Git squash-message draft
+
+Explicit `git: true` includes optional exact SELECTED-gitdir `SQUASH_MSG` as inactive
+`.git/SQUASH_MSG`, alongside COMMIT_EDITMSG through the same shared selected-original
+name list and `providerFiles` carrier with `removedSecretFields: false`. This slot
+remains selected when gitDir equals commonDir. Already reciprocal linked associations
+never substitute or read common/main/other-worktree drafts. Common lost-found and
+unsupported private-storage guards remain unchanged.
+
+The official [merge --squash contract](https://git-scm.com/docs/git-merge#Documentation/git-merge.txt---squash)
+describes prepared working/index state without a commit, HEAD move or MERGE_HEAD.
+Pinned Git v2.56.0 [merge.c420–452](https://github.com/git/git/blob/v2.56.0/builtin/merge.c#L420-L452)
+writes the message; [commit.c797–821](https://github.com/git/git/blob/v2.56.0/builtin/commit.c#L797-L821)
+reads it as a message input. [path.c1563](https://github.com/git/git/blob/v2.56.0/path.c#L1563)
+names SQUASH_MSG; the same file's common-list/path resolver leaves it selected-private.
+These references identify data/provenance for that release, not all-version native
+compatibility. Exact edited drafts cannot be replaced by objects/index or ordinary
+working-file transport, which refuses `.git` components.
+
+Message/OID/template contents stay opaque, without interpretation/reconstruction,
+reference chasing, merge/squash/commit/editor/hook continuation or active installation.
+Exact accepted UTF-8/BOM/empty-present bytes survive; optional absence creates no
+original. Recognized secrets refuse without redaction; sensitive prose/concealed
+secrets remain limits, with no general draft-body URL-userinfo refusal claim.
+NUL/binary/invalid UTF-8, unsafe paths/topology, symlinks/hardlinks/special nodes and
+foreign ownership refuse. Existing canonical same-owner regular single-link no-follow
+bounded reads and complete before/after identity/hash/absence/raw-inventory/reciprocal
+association checks cover this slot; observed appearance/disappearance/drift refuses.
+The narrow linked allowlist adds only this exact draft; all operation holds remain.
+
+Shared classification, selected capture/provenance/export predicate and first native
+skip cover the slot before copy/parse/pack pairing. Working export validates the full
+manifest; shared import binds Git selection/required valid manifest/false removal and
+parses before numbered mode0600 nonexecutable `.review` originals and exact maps.
+Retained re-export uses only the authoritative original manifest. No active SQUASH_MSG
+or config installation/source writes. Existing 1 MiB/original, 1,000 combined review
+files/32 MiB, 20,000 raw nodes/32 MiB and hook bounds, graph/config/format/sparse/index/
+log/shallow checks and harness selection remain. No DTO/schema/storage-version/format/
+cap/dependency or codec changes. Mode/mtime/empty directories/binary and independent-
+writer atomicity remain limits. Source-only: no capture execution, native equivalence,
+round-trip, atomicity or whole-Bible acceptance claim.
