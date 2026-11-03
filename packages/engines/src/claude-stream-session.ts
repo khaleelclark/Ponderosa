@@ -79,6 +79,8 @@ export class ClaudeStreamSession implements RuntimeSession {
   private nativeUsage?: RuntimeContextUsage;
   private usageInvalidated = false;
   private sessionInitialization?: unknown;
+  private sessionInitializationReady!: () => void;
+  private sessionInitializationWait = new Promise<void>(resolve => { this.sessionInitializationReady = resolve; });
   private initialized = false;
   private nativeCompactAdvertised = false;
   private initializationReady!: () => void;
@@ -220,6 +222,7 @@ export class ClaudeStreamSession implements RuntimeSession {
       this.controls.close();
       this.cancelApprovals();
       this.initializationReady();
+      this.sessionInitializationReady();
     }
   }
 
@@ -353,6 +356,18 @@ export class ClaudeStreamSession implements RuntimeSession {
       message: "Native compaction or fresh occupancy is unconfirmed. Do not repeat the command; source work remains held." });
     const perform = async (): Promise<RuntimeCommandResult> => {
       await this.initialization;
+      // The initialization control response and the session's init event are
+      // independent frames. Do not fail or send input while the latter is in
+      // flight; it is the proof binding this command to the retained session.
+      if (!this.sessionInitialization && !this.closed && !command.cancelled) {
+        let readyTimer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          await Promise.race([this.sessionInitializationWait, new Promise<void>(resolve => {
+            readyTimer = setTimeout(resolve, 5_000);
+          })]);
+        } finally { if (readyTimer) clearTimeout(readyTimer); }
+      }
+      if (this.sessionInitialization) command.observe(this.sessionInitialization);
       if (this.closed || command.cancelled || !this.initialized || !this.nativeCompactAdvertised ||
           !this.sessionInitialization ||
           this.capabilitiesSnapshot?.commands.some(candidate => candidate.name === "compact" && candidate.invocation !== "runtime")) {
@@ -428,6 +443,7 @@ export class ClaudeStreamSession implements RuntimeSession {
       this.nativeUsage = undefined;
       // Require a fresh provider init before compaction; do not fabricate model evidence.
       this.sessionInitialization = undefined;
+      this.sessionInitializationWait = new Promise<void>(resolve => { this.sessionInitializationReady = resolve; });
       if (this.capabilitiesSnapshot) this.capabilitiesSnapshot = { ...this.capabilitiesSnapshot, selectedModel: model, model: undefined };
       this.opts.onCapabilitiesChanged?.();
     } finally { this.liveControlActive = false; }
@@ -498,6 +514,7 @@ export class ClaudeStreamSession implements RuntimeSession {
     this.taskStop.close();
     this.nativeCommand?.fail();
     this.initializationReady();
+    this.sessionInitializationReady();
     this.child.stdin?.end();
     const attempt = terminateProcessGroup(this.child, {
       label: "Claude runtime",
@@ -567,7 +584,10 @@ export class ClaudeStreamSession implements RuntimeSession {
         this.captureModelInitialization(raw);
         const capabilities = normalizeClaudeInitCapabilities(raw, this.selectedModel);
         if (capabilities && capabilities.sessionId !== this.engineAgentId) throw new Error("Claude session changed");
-        if (capabilities?.sessionId === this.engineAgentId) this.sessionInitialization = raw;
+        if (capabilities?.sessionId === this.engineAgentId) {
+          this.sessionInitialization = raw;
+          this.sessionInitializationReady();
+        }
         if (capabilities) {
           this.claudeCodeVersion = raw && typeof raw === "object" &&
             typeof (raw as { claude_code_version?: unknown }).claude_code_version === "string"

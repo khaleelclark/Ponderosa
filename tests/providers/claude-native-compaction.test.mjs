@@ -125,14 +125,16 @@ test('idle stream transport consumes native receipts without an event reader and
 import { createInterface } from 'node:readline';
 const session = ${JSON.stringify(sessionId)};
 const emit = value => process.stdout.write(JSON.stringify(value)+'\\n');
+let sessionInitialized=false;
 for await (const line of createInterface({input:process.stdin})) {
  const frame=JSON.parse(line);
  if(frame.type==='control_request' && frame.request.subtype==='initialize') {
   emit({type:'control_response',response:{subtype:'success',request_id:frame.request_id,response:{commands:[{name:'compact'}]}}});
-  emit({type:'system',subtype:'init',session_id:session,model:'claude-exact',slash_commands:['compact']});
+  setTimeout(()=>{sessionInitialized=true;emit({type:'system',subtype:'init',session_id:session,model:'claude-exact',slash_commands:['compact']});},50);
  } else if(frame.type==='control_request' && frame.request.subtype==='get_context_usage') {
   emit({type:'control_response',response:{subtype:'success',request_id:frame.request_id,response:{totalTokens:10000,rawMaxTokens:200000,model:'claude-exact'}}});
  } else if(frame.type==='user') {
+  if(!sessionInitialized)throw Error('input sent before retained session proof');
   emit({...frame,isReplay:true,parent_tool_use_id:null});
   if(frame.message.content[0].text==='/compact') {
    emit({type:'system',subtype:'compact_boundary',session_id:session,uuid:'native-boundary',compact_metadata:{trigger:'manual',pre_tokens:190000}});
@@ -172,4 +174,31 @@ for await (const line of createInterface({input:process.stdin})) {
     for (const handle of handles) await handle.close();
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test('native compact never sends input without a matching retained-session init', {timeout:10000}, async () => {
+  const { mkdtemp, writeFile, access, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const path = await import('node:path');
+  const root = await mkdtemp(path.join(tmpdir(), 'claude-no-init-'));
+  const bin = path.join(root, 'inert-claude.mjs'), marker = path.join(root, 'input-sent');
+  await writeFile(bin, `#!${process.execPath}
+import {createInterface} from 'node:readline';
+import {writeFileSync} from 'node:fs';
+for await (const line of createInterface({input:process.stdin})) {
+ const frame=JSON.parse(line);
+ if(frame.type==='control_request' && frame.request.subtype==='initialize')
+  process.stdout.write(JSON.stringify({type:'control_response',response:{subtype:'success',request_id:frame.request_id,response:{commands:[{name:'compact'}]}}})+'\\n');
+ else if(frame.type==='user')writeFileSync(${JSON.stringify(marker)},'sent');
+}
+`, {mode:0o700});
+  let session;
+  try {
+    session=new ClaudeStreamSession({bin,permissionMode:'bypassPermissions',killGraceMs:100,agentId:'fixture-owner',cwd:root,resumeSessionId:sessionId,history:[],signal:new AbortController().signal,onRuntimeSpawned() {},onRuntimeRootExit() {}});
+    const result=await session.invokeCommand('compact');
+    assert.equal(result.outcome,'outcome_unknown');
+    assert.equal(session.isAlive(),true,'the missing init must be tested with a live provider');
+    assert.equal(session.initialized,true,'the control initialization response must have arrived');
+    await assert.rejects(access(marker), {code:'ENOENT'});
+  } finally {await session?.close();await rm(root,{recursive:true,force:true});}
 });

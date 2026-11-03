@@ -799,7 +799,13 @@ test('recorded recovery completion survives phase loss without repeating native 
   authority.advanceOperation(agent.id,r.id,'drained','native_started');
   assert.equal(authority.reconcileRecordedCompletion(agent.id,r.id),false,'missing native result cannot be reconstructed');
   const before=f.commands.length,original=store.sqlite.prepare('SELECT * FROM scheduler_runs WHERE id=?').get(boundary.sourceRunId);
-  await until(()=>!store.sqlite.prepare('SELECT 1 FROM provider_process_authority WHERE agent_id=?').get(agent.id),'original process drain');
+  await until(()=>f.sessions.get(agent.id) && !f.sessions.get(agent.id).isAlive(),'original process exit');
+  // This test drives recovery phases directly, so explicitly invoke the same
+  // OS-backed reconciliation that the normal recovery service performs.
+  const {ProviderProcessAuthority}=await import('../../apps/server/dist/provider-process-authority.js');
+  const processRow=store.sqlite.prepare('SELECT worker_id FROM provider_process_authority WHERE agent_id=?').get(agent.id);
+  if(processRow)new ProviderProcessAuthority(store.sqlite,processRow.worker_id).pruneExited();
+  assert.equal(store.sqlite.prepare('SELECT 1 FROM provider_process_authority WHERE agent_id=?').get(agent.id),undefined);
   const event=store.recordProviderRecoveryContextUsage(agent.id,r.id,{usedTokens:1234,windowTokens:100000});assert.ok(event);
   assert.throws(()=>store.sqlite.transaction(()=>{
    store.sqlite.prepare('UPDATE scheduler_runs SET fencing_token=fencing_token+1 WHERE id=?').run(boundary.sourceRunId);
