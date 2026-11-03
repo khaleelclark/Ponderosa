@@ -2475,6 +2475,14 @@
       "moduleBase": "apps/server/package.json",
       "requirements": "Node24 and built workspaces; pure cross-platform source path and inert carrier checks; no Windows host/provider account/native Git execution",
       "origin": "Phase2 preserve Windows drive/UNC source provenance across POSIX imports"
+    },
+    {
+      "path": "tests/chats/mounted-regression-inventory.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24 and existing web TypeScript dependency; source inventory only, no browser or provider",
+      "origin": "Consolidated mounted regression entry coverage: every exported fixture module is included exactly once; browser execution runs explicitly in pnpm test:mounted and pnpm verify"
     }
   ],
   "retainedReleasePayload": [
