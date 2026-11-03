@@ -75,7 +75,7 @@ test('an answered Request keeps its exact provider retry visible without claimin
 });
 
 test('large Branch status materializes at most one bounded Agent page, retains exact counts, and sees provider attention beyond that page',async t=>{
- const f=fixture(t,120);for(let i=0;i<12;i++)f.branches.advance();
+ const f=fixture(t,120);for(let i=0;i<12;i++){f.branches.advance();await f.branches.unitSaver.drain();}
  f.store.sqlite.prepare("UPDATE coordination_requests SET created_at='9999-01-01T00:00:00.000Z' WHERE recipient_agent_id=?").run(f.other.id);
  const queryRows=[],db={prepare(sql){const statement=f.store.sqlite.prepare(sql);return {get:(...args)=>statement.get(...args),all(...args){const rows=statement.all(...args);queryRows.push(rows.length);return rows}}}};
  const probes=[];const summary=await branchOperationalSummary(db,f.branches.execution(f.execution.id),async id=>{probes.push(id);return id==='claude'?{authentication:'unauthenticated',intakeReady:false}:healthy});
@@ -101,10 +101,10 @@ test('focused Run actions retain old pending gates beyond newer resolved history
  const branch=f.branches.deploy({chatId:f.chat.id,idempotencyKey:'gate-pages',definition,bindings:{agents:{worker:f.agent.id},directories:{}}});
  f.branches.configure(branch.id,{...f.branches.configuration(branch.id),limits:{...f.branches.configuration(branch.id).limits,maxTraversals:1000}},0);
  const execution=f.branches.accept(branch.id,'many-gates',JSON.stringify(values));
- for(let i=0;i<10;i++)f.branches.advance();
+ for(let i=0;i<10;i++){f.branches.advance();await f.branches.unitSaver.drain();}
  const requests=f.store.sqlite.prepare('SELECT a.request_id FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id WHERE s.execution_id=? ORDER BY a.rowid').all(execution.id);
  assert.equal(requests.length,width);for(const [index,{request_id:requestId}] of requests.entries())f.coordination.updateRequest({requestId,updateId:`failed_${index}`,kind:'failed',actor:{kind:'agent',id:f.agent.id},payload:{text:values[index]}});
- f.branches.advance();
+ for(let i=0;i<10;i++){f.branches.advance();await f.branches.unitSaver.drain();}
  const gates=f.store.sqlite.prepare('SELECT g.* FROM branch_gates g JOIN branch_step_executions s ON s.id=g.step_execution_id WHERE s.execution_id=? ORDER BY g.rowid').all(execution.id);
  assert.equal(gates.length,width);
  const first=f.branches.currentActions(execution.id);assert.equal(first.items.length,100);assert.ok(first.nextCursor);assert.ok(first.items.every(item=>item.kind==='gate'));
@@ -113,6 +113,7 @@ test('focused Run actions retain old pending gates beyond newer resolved history
  assert.ok(first.items[0].gate.openedAt);assert.equal(first.items[0].step.executionId,execution.id);
  assert.throws(()=>f.branches.currentActions(f.execution.id,first.nextCursor),/cursor/i);
  for(const gate of gates.slice(2))f.branches.resolveGate(gate.id,{commandKey:`reject_${gate.id}`,expectedRevision:gate.revision,decision:'reject'});
+ await f.branches.unitSaver.drain();
  assert.throws(()=>f.branches.currentActions(execution.id,first.nextCursor),/changed/i);
  const app=Fastify();registerBranchRoutes(app,{store:f.store,workspace:{decisionsForRuns:()=>[],getDecision:()=>undefined},branches:f.branches,installations:{setPublisher(){}},sources:{},createChat:()=>{throw Error('Read-only actions must not create Chats')},notify:()=>{throw Error('Read-only actions must not publish work')}});
  try{const stale=await app.inject({url:`/api/branch-executions/${execution.id}/actions?cursor=${encodeURIComponent(first.nextCursor)}`});assert.equal(stale.statusCode,409,stale.body);assert.match(stale.json().error,/changed/);}finally{await app.close()}
@@ -142,18 +143,19 @@ test('focused Run actions preserve exact uncertain Request ownership and existin
  assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM scheduler_runs').get().n,0);f.pass();
 });
 
-test('focused Run failure evidence survives the latest-history window, uses bounded previews and retains exact full evidence',t=>{
+test('focused Run failure evidence survives the latest-history window, uses bounded previews and retains exact full evidence',async t=>{
  const f=fixture(t),values=Array.from({length:112},(_,i)=>`Full input ${i} `+(i===0?'🌲'.repeat(500):''));
  const definition={schema:'ponderosa.branch.v1',name:'Older failure',trigger:{kind:'manual'},entry:'map',steps:[{id:'script',kind:'script',label:'Transform item',runtime:'node',source:'process.stdout.write("unused")',cwdRef:'workspace',timeoutMs:1000}],
   controls:[{id:'map',kind:'map',joinId:'join',workerId:'script',source:'list',maxItems:200,maxConcurrentItems:200},{id:'join',kind:'join',forkId:'map',mode:'all',remainder:'finish',inputOrder:[]}],
   edges:[{id:'item',from:'map',to:'script',on:'selected'},{id:'return',from:'script',to:'join',on:'success'}],policy:{maxConcurrentExecutions:1,maxPathInstances:1000,maxStepInvocations:1000,failure:{action:'stop'}}};
  const branch=f.branches.deploy({chatId:f.chat.id,idempotencyKey:'old-failure',definition,bindings:{agents:{},directories:{workspace:f.project.hostPath}}});
  f.branches.configure(branch.id,{...f.branches.configuration(branch.id),limits:{...f.branches.configuration(branch.id).limits,maxTraversals:1000}},0);
- const execution=f.branches.accept(branch.id,'old-failure',JSON.stringify(values));f.branches.advance();
+ const execution=f.branches.accept(branch.id,'old-failure',JSON.stringify(values));for(let i=0;i<8;i++){f.branches.advance();await f.branches.unitSaver.drain();}
  const output='Failure evidence '+ '🌲'.repeat(500);let oldStep;
  for(let i=0;i<values.length;i++){
   const lease=f.branches.claimScript('controlled-no-process');assert.ok(lease,`Prepared script ${i}`);if(i===0)oldStep=f.store.sqlite.prepare('SELECT step_execution_id id FROM branch_attempts WHERE id=?').get(lease.attemptId).id;
   f.branches.settleScript(lease,{failed:i===0,output:i===0?output:'Done'});
+  if(i%10===9)await f.branches.unitSaver.drain();
  }
  assert.ok(!f.branches.detail(execution.id).steps.some(step=>step.id===oldStep));
  const page=f.branches.currentActions(execution.id);assert.equal(page.items.length,1);assert.equal(page.items[0].kind,'attempt');assert.equal(page.items[0].current,false);assert.match(page.items[0].attempt.retryBlockedReason,/no longer accepts|already advanced|join has already closed/);
@@ -163,14 +165,13 @@ test('focused Run failure evidence survives the latest-history window, uses boun
  assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM scheduler_runs').get().n,0);f.pass();
 });
 
-test('another parallel Script becoming uncertain changes the focused generation while unrelated work keeps the Run running',t=>{
+test('another parallel Script becoming uncertain changes the focused generation while unrelated work keeps the Run running',async t=>{
  const f=fixture(t),steps=['one','two','three'].map(id=>({id,kind:'script',runtime:'node',source:'process.stdout.write("unused")',cwdRef:'workspace',timeoutMs:1000}));
- steps.push({id:'gate',kind:'human_gate',prompt:'Wait for a decision',editable:false});
  const definition={schema:'ponderosa.branch.v1',name:'Parallel uncertainty',trigger:{kind:'manual'},entry:'fork',steps,
-  controls:[{id:'fork',kind:'fork',joinId:'join'},{id:'join',kind:'join',forkId:'fork',mode:'all',remainder:'finish',inputOrder:['one-path','two-path','three-path','gate-path']}],
-  edges:steps.flatMap(step=>[{id:`${step.id}-path`,from:'fork',to:step.id,on:'selected'},{id:`${step.id}-return`,from:step.id,to:'join',on:step.kind==='human_gate'?'approved':'success'}]),policy:{maxConcurrentExecutions:1,failure:{action:'stop'}}};
+  controls:[{id:'fork',kind:'fork',joinId:'join'},{id:'join',kind:'join',forkId:'fork',mode:'all',remainder:'finish',inputOrder:['one-path','two-path','three-path']}],
+  edges:steps.flatMap(step=>[{id:`${step.id}-path`,from:'fork',to:step.id,on:'selected'},{id:`${step.id}-return`,from:step.id,to:'join',on:'success'}]),policy:{maxConcurrentExecutions:1,failure:{action:'stop'}}};
  const branch=f.branches.deploy({chatId:f.chat.id,idempotencyKey:'parallel-uncertain',definition,bindings:{agents:{},directories:{workspace:f.project.hostPath}}}),execution=f.branches.accept(branch.id,'uncertain','');
- f.branches.advance();const first=f.branches.claimScript('controlled-no-process'),second=f.branches.claimScript('controlled-no-process'),third=f.branches.claimScript('controlled-no-process');assert.ok(first);assert.ok(second);assert.ok(third);
+ f.branches.advance();await f.branches.unitSaver.drain();const first=f.branches.claimScript('controlled-no-process'),second=f.branches.claimScript('controlled-no-process'),third=f.branches.claimScript('controlled-no-process');assert.ok(first);assert.ok(second);assert.ok(third);
  f.branches.scriptCleanupFailed(first.attemptId,'Controlled uncertain effect');const before=f.branches.currentActions(execution.id);
  f.branches.scriptCleanupFailed(second.attemptId,'Controlled uncertain effect');const after=f.branches.currentActions(execution.id);
  assert.equal(after.revision,before.revision,'The operational Run state did not change');assert.notEqual(after.generation,before.generation,'Existing process fences must invalidate a newly uncertain action page');
