@@ -86,6 +86,8 @@ test('shared export captures all selected source roots once across separate Chat
   const choices={[a.id]:{wholeWorkingFolder:true,reviewedUserData:{git:true,harness:false},gitStorageBindings:[{id:'same',worktreeAgentId:a.id,storageAgentId:b.id,relativePath:'.',role:'common'}]},[b.id]:{wholeWorkingFolder:true,gitStorageBindings:[{id:'same',worktreeAgentId:a.id,storageAgentId:b.id,relativePath:'other',role:'common'}]}};
   await assert.rejects(packageEngine.exportAgentSet([a.id,b.id],'full',choices),/Conflicting global/);
   await assert.rejects(packageEngine.exportAgentSet([a.id],'full',{[a.id]:choices[a.id]}),/every source\/storage root/);
+  const retainedBinding={id:'retained',worktreeAgentId:a.id,storageAgentId:b.id,relativePath:'.',role:'common'};
+  await assert.rejects(packageEngine.exportAgentSet([b.id,a.id],'full',{[b.id]:{wholeWorkingFolder:true},[a.id]:{wholeWorkingFolder:true,reviewedUserData:{git:true,harness:false,source:'retained_originals'},gitStorageBindings:[retainedBinding]}}),/explicitly selected live whole-folder Git roots/);
   complete=true;
  }finally{await app.close();store.close();if(complete)await rm(root,{recursive:true,force:true});else t.diagnostic('Retained failed Branch closure fixture: '+root);}
 });

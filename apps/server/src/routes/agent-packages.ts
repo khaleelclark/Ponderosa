@@ -799,7 +799,8 @@ export function registerAgentPackageRoutes(
     await verifySelectedRoots();
     if(gitStorageBindings!==undefined){
       validateGitStorageSelections(gitStorageBindings);
-      if(mode!=='full'||!organization||!organizationWorkingFolders||!(workingSet?gitStorageBindings.every(binding=>workingSet.selections[binding.worktreeAgentId]?.reviewedUserData?.git):reviewedUserData?.git)||reviewedUserData?.source==='retained_originals')throw new Error('Git storage bindings require one full organization with explicitly selected live whole-folder Git roots');
+      const liveGitSelected=workingSet?gitStorageBindings.every(binding=>{const choice=workingSet.selections[binding.worktreeAgentId]?.reviewedUserData;return choice?.git&&choice.source!=='retained_originals';}):reviewedUserData?.git&&reviewedUserData.source!=='retained_originals';
+      if(mode!=='full'||!organization||!organizationWorkingFolders||!liveGitSelected)throw new Error('Git storage bindings require one full organization with explicitly selected live whole-folder Git roots');
       const selected=new Map(nodes.map(agent=>[agent.id,agent]));
       const bindings:SelectedGitBinding[]=[];
       for(const binding of gitStorageBindings){
