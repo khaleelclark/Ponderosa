@@ -164,10 +164,10 @@ export async function fixture({ diagnosticProvider = false, beforeRuntimeClose, 
   const options = { dataDir, logger: false, allowedBrowseRoots: [root], ...(authToken ? { authToken } : {}),
     // Controlled inert providers use a fixed sample, independent of CI host pressure.
     resourceAdmissionObservation: resourceAdmissionObservation ?? { sample: async () => ({ availableBytes: 8 * 1024 ** 3, memoryFullPercent: 0, ioFullPercent: 0, source: 'linux_host' }) },
-    engines: [{ adapter, isInstalled: () => providerInstalled?.(adapter.id) !== false, authStatus: async () => providerAuthStatus ? providerAuthStatus(adapter.id) : ({ authenticated: true, source: 'subscription_presence', detail: 'Controlled fixture; no provider account' }), availabilityProbe: async () => { providerProbes.push({ engineId: adapter.id }); return { available: true }; } },
+    engines: [{ adapter, isInstalled: () => providerInstalled?.(adapter.id) !== false, authStatus: async () => providerAuthStatus ? providerAuthStatus(adapter.id) : ({ authenticated: true, billingMode: 'subscription', source: 'cli_status', detail: 'Controlled native mode observation; no provider account' }), availabilityProbe: async () => { providerProbes.push({ engineId: adapter.id }); return { available: true }; } },
       ...(diagnosticProvider ? [{ adapter: { ...adapter, id: 'claude', displayName: 'Controlled diagnostic provider' },
         isInstalled: () => providerInstalled?.('claude') !== false,
-        authStatus: async () => ({ authenticated: true, source: 'subscription_presence', detail: 'Controlled diagnostic; no provider account' }),
+        authStatus: async () => ({ authenticated: true, billingMode: 'subscription', source: 'cli_status', detail: 'Controlled diagnostic native mode; no provider account' }),
         availabilityProbe: async () => { providerProbes.push({ engineId: 'claude' }); return { available: true }; },
       }] : [])],
     communicationV3: { pollMs: 10, maxConcurrentRuns: schedulerMaxConcurrentRuns } };

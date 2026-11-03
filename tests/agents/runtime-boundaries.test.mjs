@@ -43,7 +43,8 @@ test('check 52: cancelling one delegated Request preserves its identity and leav
   assert.equal((await f.detail(manager.id)).coordinationV3.joins.find(x => x.id === coordinated.joinId).state, 'satisfied');
 }));
 
-test('checks 26, 27: structured command invokes only the selected idle runtime; unavailable commands and active work are refused', options, t => withFixture(t, async f => {
+for (const billingMode of ['subscription', 'api']) test('checks 26, 27: structured command invokes only the selected idle runtime; unavailable commands and active work are refused (' + billingMode + ')', options, t => withFixture(t, async f => {
+  await until(async () => f.ok(await f.api('GET', '/api/engines')).some(engine => engine.id === 'codex' && engine.authentication === 'authenticated' && engine.billingMode === billingMode), 'controlled observed native authentication mode');
   const chat = await f.createChat('Command scope'), a = await f.createAgent(chat, 'Idle command owner'), b = await f.createIdleAgent(chat, 'Busy unrelated owner');
   const command = { name: 'fixture-inspect', description: 'Harmless controlled command', source: 'provider-advertised', acceptsArguments: true, insertText: '/fixture-inspect', status: 'available', invocation: 'runtime' };
   f.capabilities.commands = [command, { ...command, name: 'unavailable-fixture', status: 'unavailable', unavailableReason: 'Declared unavailable' }];
@@ -56,7 +57,18 @@ test('checks 26, 27: structured command invokes only the selected idle runtime; 
   assert.equal((await f.api('POST', `/api/agents/${a.id}/provider-commands`, { name: 'unavailable-fixture' })).status, 409);
   assert.equal(f.commands.length, 1); assert.deepEqual((await f.detail(a.id)).runs.map(x => x.id), before);
   assert.equal((await f.detail(b.id)).runs.find(x => x.status === 'running').id, active.id); assert.equal(session.isAlive(), true);
-}));
+}, { providerAuthStatus: () => ({ authenticated: true, billingMode, source: 'cli_status', detail: 'Controlled native authentication observation' }) }));
+
+test('retained native commands refuse missing observed authentication mode without replaying work', options, t => withFixture(t, async f => {
+  await until(async () => f.ok(await f.api('GET', '/api/engines')).some(engine => engine.id === 'codex' && engine.authentication === 'authenticated'), 'controlled authentication without a mode');
+  const chat = await f.createChat('Unknown command authentication'), agent = await f.createAgent(chat, 'Retained owner');
+  f.capabilities.commands = [{ name: 'fixture-inspect', description: 'Harmless controlled command', source: 'provider-advertised', acceptsArguments: true, insertText: '/fixture-inspect', status: 'available', invocation: 'runtime' }];
+  const before = await f.detail(agent.id), sessionId = f.sessions.get(agent.id).engineAgentId;
+  const refused = await f.api('POST', '/api/agents/' + agent.id + '/provider-commands', { name: 'fixture-inspect' });
+  assert.equal(refused.status, 409); assert.match(refused.body.error, /authentication|mode/i);
+  assert.equal(f.commands.length, 0); assert.equal(f.sessions.get(agent.id).engineAgentId, sessionId);
+  assert.deepEqual((await f.detail(agent.id)).runs.map(run => run.id), before.runs.map(run => run.id));
+}, { providerAuthStatus: () => ({ authenticated: true, source: 'subscription_presence', detail: 'Controlled authenticated observation without a native mode' }) }));
 
 test('check 34: replaying active steering injects once into the selected Run without starting duplicate work', options, t => withFixture(t, async f => {
   const chat = await f.createChat('Exact steering'), a = await f.createIdleAgent(chat, 'Steered owner'), b = await f.createIdleAgent(chat, 'Unrelated active owner');
