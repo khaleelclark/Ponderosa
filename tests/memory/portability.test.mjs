@@ -284,3 +284,48 @@ test('fresh memory installation refuses an existing same-name collection without
   assert.deepEqual(store.sqlite.prepare("SELECT memory_state,log_state FROM local_memory_scope_provisioning WHERE chat_id='global'").get(),{memory_state:'planned',log_state:'planned'});
  }finally{raw.client.getCollection=originalGet;raw.client.createCollection=originalCreate;await memory.close();store.close();await rm(root,{recursive:true,force:true});}
 });
+
+test('policy initialized before its first binding seeds durable scopes after restart',async t=>{
+ const f=await instance(t),root=await mkdtemp(path.join(tmpdir(),'memory-policy-before-bind-'));
+ const {AgentStore}=await import('@ponderosa/agents'),{LocalMemoryService}=await import('../../apps/server/dist/local-memory.js');
+ const store=new AgentStore(path.join(root,'data'));
+ const project=store.createProject({label:'Existing before first memory',hostPath:root,defaultEngine:'fixture'});
+ const inference={signature:'policy-before-bind-fixture',async embed(){return Array.from({length:384},(_,i)=>i?0:1);},async rerank(pairs){return pairs.map(()=>1);},async close(){}};
+ const options={dataDir:path.join(root,'data'),localMemory:{...f.options.localMemory,collectionPrefix:'beforebind_'+randomUUID().replaceAll('-',''),stateDirectory:path.join(root,'policy'),provision:true}};
+ const open=()=>new LocalMemoryService({opts:options,store,capabilities:new Map(),activeRuns:new Map(),ownsRun:()=>false},inference);
+ let memory=open();
+ try{
+  // Model interruption after the external policy transaction and before the
+  // canonical binding/intents transaction; no remote create was dispatched.
+  store.sqlite.transaction(()=>{
+   store.sqlite.prepare('DELETE FROM local_memory_scope_provisioning').run();
+   store.sqlite.prepare("UPDATE local_memory_host_binding SET state='never_configured',principal_id=NULL,storage_binding=NULL WHERE singleton=1").run();
+  })();
+  await memory.close();memory=open();
+  const planned=store.sqlite.prepare('SELECT chat_id,memory_state,log_state FROM local_memory_scope_provisioning ORDER BY chat_id').all();
+  assert.deepEqual(new Set(planned.map(row=>row.chat_id)),new Set(['global',project.lastConversationId]));
+  assert.ok(planned.every(row=>row.memory_state==='planned'&&row.log_state==='planned'));
+  await memory.ready();
+  assert.ok(store.sqlite.prepare("SELECT COUNT(*) n FROM local_memory_scope_provisioning WHERE memory_state='confirmed' AND log_state='confirmed'").get().n===2);
+ }finally{await memory.close();store.close();await rm(root,{recursive:true,force:true});}
+});
+
+test('first installation retains an inactive Chat plan until its owner is active',async t=>{
+ const f=await instance(t),root=await mkdtemp(path.join(tmpdir(),'memory-inactive-first-'));
+ const {AgentStore,BranchStore,CoordinationV3Store}=await import('@ponderosa/agents'),{LocalMemoryService}=await import('../../apps/server/dist/local-memory.js');
+ const store=new AgentStore(path.join(root,'data')),branches=new BranchStore(store.sqlite,new CoordinationV3Store(store.sqlite));
+ const project=store.createProject({label:'Staged before first memory',hostPath:root,defaultEngine:'fixture'}),chatId=project.lastConversationId;
+ const branch=branches.create('Staged fixture','staged-fixture');
+ store.sqlite.prepare("INSERT INTO branch_installation_resources(branch_id,package_id,chat_ref,agent_ref,local_id,state) VALUES(?,?,?,?,?,'staging')").run(branch.id,'staged-package','staged-chat','',chatId);
+ const inference={signature:'inactive-first-fixture',async embed(){return Array.from({length:384},(_,i)=>i?0:1);},async rerank(pairs){return pairs.map(()=>1);},async close(){}};
+ const options={dataDir:path.join(root,'data'),localMemory:{...f.options.localMemory,collectionPrefix:'inactive_'+randomUUID().replaceAll('-',''),stateDirectory:path.join(root,'policy'),provision:true}};
+ const memory=new LocalMemoryService({opts:options,store,capabilities:new Map(),activeRuns:new Map(),ownsRun:()=>false},inference);
+ try{
+  await memory.ready();
+  assert.deepEqual(store.sqlite.prepare('SELECT memory_state,log_state FROM local_memory_scope_provisioning WHERE chat_id=?').get(chatId),{memory_state:'planned',log_state:'planned'});
+  await assert.rejects(memory.verifyChat(chatId),/Canonical durable Chat unavailable/);
+  store.sqlite.prepare("UPDATE branch_installation_resources SET state='active' WHERE local_id=?").run(chatId);
+  await memory.verifyChat(chatId);
+  assert.deepEqual(store.sqlite.prepare('SELECT memory_state,log_state FROM local_memory_scope_provisioning WHERE chat_id=?').get(chatId),{memory_state:'confirmed',log_state:'confirmed'});
+ }finally{await memory.close();await branches.unitSaver.drain().catch(()=>{});store.close();await rm(root,{recursive:true,force:true});}
+});

@@ -73,10 +73,11 @@ export class LocalMemoryService{
       else if(existing.state==='never_configured'&&existing.principal_id===null&&existing.storage_binding===null)canonical.prepare("UPDATE local_memory_host_binding SET state='bound',principal_id=?,storage_binding=? WHERE singleton=1 AND state='never_configured'").run(principal.principal_id,binding);
       else throw Error('Local memory host binding differs');
      }else canonical.prepare("INSERT INTO local_memory_host_binding VALUES(1,?,'bound',?,?)").run(generation,principal.principal_id,binding);
-     if(fresh){
-      // Initial scopes are planned atomically with the binding before any
-      // remote create; existing names are never adopted under a new principal.
-      const scopes=[{id:'global',project:'global'},...(canonical.prepare('SELECT id,project_id FROM conversations WHERE branch_execution_id IS NULL').all() as {id:string;project_id:string}[]).filter(row=>Boolean(activeChatResourceOwner(ports.store,'chat',row.id))).map(row=>({id:row.id,project:row.project_id}))];
+     if(fresh||existing?.state==='never_configured'){
+      // Initial scopes are planned atomically with the first binding before
+      // any remote create. Inactive durable Chats retain their plan until
+      // their exact active owner is available; existing names are never adopted.
+      const scopes=[{id:'global',project:'global'},...(canonical.prepare('SELECT id,project_id FROM conversations WHERE branch_execution_id IS NULL').all() as {id:string;project_id:string}[]).map(row=>({id:row.id,project:row.project_id}))];
       const insert=canonical.prepare("INSERT INTO local_memory_scope_provisioning VALUES(?,?,?,?,?,?,'planned','planned',?)");
       for(const scope of scopes)insert.run(scope.id,scope.project,generation,principal.principal_id,binding,randomUUID(),new Date().toISOString());
      }
@@ -240,6 +241,7 @@ export class LocalMemoryService{
  }
  async provisionNewChat(chatId:string){await this.ready();return this.core.database.raw.exclusive(()=>this.provisionIntent(chatId));}
  async verifyChat(chatId:string){await this.ready();return this.core.database.raw.exclusive(async()=>{if(this.memoryIntent(chatId))await this.provisionIntent(chatId);else await this.provisionScope('chat:'+chatId,false);});}
+ private async ensurePlannedChat(chatId:string){const intent=this.memoryIntent(chatId);if(intent&&(intent.memory_state!=='confirmed'||intent.log_state!=='confirmed'))await this.verifyChat(chatId);}
  private scopeGuard(scope:string){return async()=>{this.live();if(scope!=='global'){const owner=activeChatResourceOwner(this.ports.store,'chat',scope.slice(5));if(!owner||owner.executionId)throw Error('Canonical durable Chat unavailable during provisioning');}};}
  private memoryIntent(chatId:string){
   const db=this.ports.store.sqlite;
@@ -310,7 +312,7 @@ export class LocalMemoryService{
   return {chatId:agent.conversationId,actor:{kind:'agent',id:agent.id},runId:capability.v3SchedulerRunId,fenceToken:String(capability.v3FencingToken),active:true,grants:{readChat:!denied.has(CAPABILITY_IDS.memoryRead),readGlobal:!denied.has(CAPABILITY_IDS.memoryRead)&&grant.readGlobal,writeChat:!denied.has(CAPABILITY_IDS.memoryWrite),writeGlobal:!denied.has(CAPABILITY_IDS.memoryWrite)},sourceType:'ai_inference'};
  }
  async executeAgent(token:string,operation:string,args:unknown){
-  const parsed=validateMemoryCall(operation,args),tool='ponderosa_local_memory_'+operation,write=['save','update','forget'].includes(operation);this.agentContext(token,tool,write);await this.ready();const initial=this.agentContext(token,tool,write);
+  const parsed=validateMemoryCall(operation,args),tool='ponderosa_local_memory_'+operation,write=['save','update','forget'].includes(operation);this.agentContext(token,tool,write);await this.ready();const before=this.agentContext(token,tool,write);await this.ensurePlannedChat(before.chatId);const initial=this.agentContext(token,tool,write);
   const globalWrite=write&&parsed.destination==='global';const usesGlobal=(globalWrite||!write&&parsed.source!=='chat')&&initial.grants.readGlobal;if(globalWrite&&parsed.visibility==='private')throw new MemoryDenied('Global private audience unsupported',400);if(globalWrite&&operation!=='save'&&!initial.grants.readGlobal)throw new MemoryDenied('Existing global source mutation requires read authority');const needsRead=!write||initial.grants.readChat;if(write&&operation!=='save'&&!initial.grants.readChat)throw new MemoryDenied('Existing source mutation requires read authority');const identity=JSON.stringify([initial.chatId,initial.actor,initial.runId,initial.fenceToken]);const guard=async()=>{const c=this.agentContext(token,tool,write);if(JSON.stringify([c.chatId,c.actor,c.runId,c.fenceToken])!==identity)throw new MemoryDenied('Canonical memory binding changed');if((needsRead&&!c.grants.readChat)||(usesGlobal&&!c.grants.readGlobal)||(write&&!(globalWrite?c.grants.writeGlobal:c.grants.writeChat)))throw new MemoryDenied('Live memory grant revoked');};
   if(write&&!(globalWrite?initial.grants.writeGlobal:initial.grants.writeChat))throw new MemoryDenied('Memory write denied');if(!write&&parsed.source==='global'&&!initial.grants.readGlobal)throw new MemoryDenied('Global read denied');
   const authority:MemoryAuthority={...initial,readChat:initial.grants.readChat,readGlobal:usesGlobal,writeScope:write?(globalWrite?'global':'chat:'+initial.chatId):undefined,targetId:write&&operation!=='save'?parsed.chunk_id:undefined,visibility:parsed.visibility??'team',guard};
@@ -380,11 +382,11 @@ export class LocalMemoryService{
  /** Host package inventory only. Callers must complete their human import/export admission first. */
  async exportPackageMemory(chatId:string,agentIds:string[]){
   const guard=async()=>{this.chat(chatId);for(const id of agentIds){const agent=this.ports.store.getAgent(id);if(!agent||agent.conversationId!==chatId||!activeChatResourceOwner(this.ports.store,'agent',id))throw new MemoryDenied('Package Agent ownership changed');}};
-  await guard();await this.ready();const pending=this.core.database.exportPackageMemory(chatId,agentIds,guard);this.calls.add(pending);try{return await pending;}finally{this.calls.delete(pending);}
+  await guard();await this.ready();await this.ensurePlannedChat(chatId);await guard();const pending=this.core.database.exportPackageMemory(chatId,agentIds,guard);this.calls.add(pending);try{return await pending;}finally{this.calls.delete(pending);}
  }
  async restorePackageMemory(snapshot:unknown,chatId:string,agents:Readonly<Record<string,string>>,operationId:string){
   const guard=async()=>{this.chat(chatId);for(const id of Object.values(agents)){const agent=this.ports.store.getAgent(id);if(!agent||agent.conversationId!==chatId||!activeChatResourceOwner(this.ports.store,'agent',id))throw new MemoryDenied('Package destination Agent ownership changed');}};
-  await guard();await this.ready();const pending=this.core.database.restorePackageMemory(snapshot,chatId,agents,operationId,guard);this.calls.add(pending);try{return await pending;}finally{this.calls.delete(pending);}
+  await guard();await this.ready();await this.ensurePlannedChat(chatId);await guard();const pending=this.core.database.restorePackageMemory(snapshot,chatId,agents,operationId,guard);this.calls.add(pending);try{return await pending;}finally{this.calls.delete(pending);}
  }
 
  private importMemoryGuard(operationId:string,agents?:Readonly<Record<string,string>>,signal?:AbortSignal,stagedReceipt=false){
