@@ -144,7 +144,7 @@ dispositions. Current source APIs/SDK are usable code contracts, not executed pr
 
 ## Explicit checkpoint continuation after DATA import
 
-A separate reviewed consumer now supports effect-free sync/async
+A separate reviewed consumer now supports effect-free sync/async and proven closed EXIT
 Script/Call selected owner trees. See `branch-foreign-checkpoint-continuation.md`
 for its exact family and refusals. DATA publication/readback remains held and
 requires disabled unchanged destinations. Explicit enablement does not admit any
@@ -158,11 +158,11 @@ held-only generations are validated separately and never treated as admission.
 Re-export checks immutable held evidence even after current enablement and fresh
 continuation owners; the ordinary disabled DATA readback contract is unchanged.
 Tree proof is bounded to 16 nested links, 32 MiB manifests and 128 uncached
-manifest/replay frames per traversal. Unproven local rewind and issued/EXIT/resource/
+manifest/replay frames per traversal. Unproven local rewind and issued/unproven-EXIT/resource/
 unknown combinations remain outside this consumer. This change has source review only, with no runtime
 round-trip or rollback qualification.
 
-Serial and parallel workflow approval gates are supported in the manual sync/async effect-free
+Serial and parallel workflow approval gates are supported in the manual sync/async or proven closed EXIT effect-free
 foreign Script/Call consumer, including root gates before the first Call, completed
 selected decisions, newly mapped pending decisions and later suffix gates. Each
 owner review separates selected/latest gate evidence; fresh pending notifications
@@ -174,7 +174,7 @@ tree and requires a supported quiescent frontier.
 Canceled serial and recovery-purpose gates remain unsupported. See the foreign continuation guide for
 the exact scope. Live notification delivery and rollback remain unqualified.
 
-Supported manual sync/async Script/Call trees, including ordinary approval gates, may also migrate after a
+Supported manual sync/async or proven closed EXIT Script/Call trees, including ordinary approval gates, may also migrate after a
 local historical rewind. Existing private snapshot/command/acceptance facts retain
 the original source checkpoint and authentic root/child lineage. The same canonical
 composer uses bounded retained readers, independently replays selected/latest source
@@ -185,7 +185,7 @@ invented admission; genuine suffix children keep normal Call provenance. Selecte
 pending gates stay pending, prefix decisions remain historical, and fresh mapped
 notifications belong to fresh owners. Gate-bearing links require exact rewind seeds
 and independently replayed selected/latest proof. Recovery gates, unproven lineage
-and effectful/issued/resource/automatic/EXIT combinations remain
+and effectful/issued/resource/automatic/unproven-EXIT combinations remain
 unsupported. See the foreign continuation guide; no runtime qualification is claimed.
 
 
@@ -207,3 +207,36 @@ Original-key cancellation recovery still requires complete causal tree replay at
 a supported quiescent frontier. Missing matching child bytes and recorded async
 save failures refuse; no mode conversion or pending-write acknowledgement is
 invented. Async timing, durability, round trips and scheduling remain unvalidated.
+
+
+## Saved closed EXIT tree cuts
+
+The shared consumer accepts closed EXIT owners in heterogeneous manual effect-free
+Script/Call/ordinary-gate trees without mode conversion. Every selected EXIT owner,
+including the root and terminal historical children, needs its own exact committed
+closing saver bytes/hash, selected inventory and invocation identity/mode. Complete
+root tree bytes retain original invocation ordinal/outcome and interruption or
+gate-close evidence, with normal canonical state/control/Call/process-exit replay.
+An ancestor save cannot acknowledge a missing or pending child save. Nonrestorable
+child saver observations prove only saved inventory; the complete root proves
+context and ancestry.
+
+Latest replay independently reconstructs the actual whole current tree. Every EXIT
+owner's exact current inventory, audit, pins/configuration and original invocation
+must occur in a retained committed complete root tree checkpoint, and must match
+its own closed saver snapshot. It cannot be inferred from an older different cut
+or process absence. Terminal children can qualify; a terminal latest EXIT root
+with only a nonrestorable observation and no matching complete tree codec refuses.
+Sync/async latest ancestors retain normal terminal support when every EXIT child
+has the required evidence. Original local rewind and held/admitted links use this
+same proof and existing bounds; missing latest codec evidence remains a refusal.
+
+Fresh current all-destination review/admission and per-owner saver/readiness remain
+in place. Destination invocations and gate notifications are fresh; imported
+interruption identities remain evidence. Local historical terminal children keep
+actual nonadmission, and genuine unfinished/suffix Calls require admission. Later
+copied-gate cancellation recovery requires complete current causal tree replay;
+each current EXIT owner must match its actual saved closed invocation and saver
+snapshot. Active, pending, failed, unknown and unsupported cases refuse. See the
+foreign continuation guide for exact limitations. No timing/durability, notification,
+round-trip, scheduling or rollback execution was performed.

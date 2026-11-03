@@ -677,7 +677,7 @@ export class BranchStore {
     const fact=sourceOwner?.facts.find(f=>f.kind==='checkpoint'&&f.key===selection.checkpointKey&&f.sha256===selection.checkpointSha256);
     if(!owner||!fact||owner.sourceBranchId!==saved.data.rootSourceBranchId)throw Error('Select an original root checkpoint');
     const snapshot=JSON.parse(fact.json),c=portableScriptTreeSupported(this.sqlite,resolved.data,resolved.rootId,snapshot);
-    if(!c||!portableScriptTreeSupported(this.sqlite,resolved.data,resolved.rootId))throw Error('Selected/latest original Call tree failed canonical replay; unsupported generations remain held');
+    if(!c||!portableScriptTreeSupported(this.sqlite,resolved.data,resolved.rootId))throw Error('Selected/latest original Call tree failed canonical replay or lacks exact committed closed EXIT tree evidence; unsupported generations remain held');
     for(const o of c.owners)if(saved.receipt.frontiers[resolved.aliases[o.executionId]!]?.disposition!=='recreated_held')throw Error('Tree owner lacks an immutable recreated held frontier');
     return {saved,owner,snapshot,c,resolved,sourceOwners,importedId:saved.receipt.executionMap[owner.sourceExecutionId]!};
   }
@@ -695,7 +695,7 @@ export class BranchStore {
       const branch=this.getBranch(id);if(!branch?.enabled||!branch.versionId||!branch.bindingRevisionId||this.row('SELECT deleting FROM branches WHERE id=?',id)?.deleting)throw Error('Enable every current Call destination before review');
       if(branch.chatId)this.chat(branch.chatId);
       const definition=this.version(id,branch.versionId)!.definition,bindings=this.localConfiguration(id)!,configuration=this.configuration(id),{secretBindings,...nonsecret}=configuration;
-      if(definition.trigger.kind!=='manual'||!['sync','async'].includes(configuration.checkpointMode??'async')||!scriptDefinitionSupported(definition,true)||definition.steps.some(s=>!['script','branch_call','human_gate'].includes(s.kind))||Object.keys(secretBindings??{}).length||Object.keys(bindings.agents).length||Object.values(bindings.branches??{}).some(target=>!Object.values(r.branchMap).includes(target)))throw Error('Current Call graph is outside the nonsecret sync/async Script/Call family');
+      if(definition.trigger.kind!=='manual'||!['sync','async','exit'].includes(configuration.checkpointMode??'async')||!scriptDefinitionSupported(definition,true)||definition.steps.some(s=>!['script','branch_call','human_gate'].includes(s.kind))||Object.keys(secretBindings??{}).length||Object.keys(bindings.agents).length||Object.values(bindings.branches??{}).some(target=>!Object.values(r.branchMap).includes(target)))throw Error('Current Call graph is outside the nonsecret sync/async or proven closed EXIT Script/Call family');
       for(const o of all.filter(o=>destination(o.sourceBranchId)===id)){
         const get=(kind:string)=>JSON.parse(o.facts.find(f=>f.kind===kind)!.json);
         if(payloadHash(definition)!==payloadHash(get('definition'))||stableJson(nonsecret)!==stableJson(get('configuration').configuration))throw Error('Current tree definition/configuration differs from source');
