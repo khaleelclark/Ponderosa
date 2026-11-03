@@ -2777,6 +2777,14 @@ for(const state of ['completed-opening','human','unknown','extra-source','retrie
  }else{
   assert.equal(deleted,0);assert.equal(fence,0);assert.equal(final,false);
   assert.equal(db.prepare('SELECT state FROM agent_activations WHERE id=?').get(opening.id).state,state==='unknown'?'outcome_unknown':'pending');
-  if(human)assert.equal(db.prepare('SELECT state FROM agent_activations WHERE id=?').get(human).state,'pending');
+  if(human){
+   assert.equal(db.prepare('SELECT state FROM agent_activations WHERE id=?').get(human).state,'pending');
+   assert.equal(db.prepare('SELECT error FROM branch_resources WHERE step_execution_id=?').get(opened.stepId).error,null);
+   // Explicit operator resolution happens outside cleanup; the next pass can finish.
+   coordination.cancelPendingActivation({activationId:human,projectId:opening.project_id,idempotencyKey:'operator-resolves-human'});
+   await service.tick(false);
+   assert.equal(db.prepare('SELECT state FROM branch_resources WHERE step_execution_id=?').get(opened.stepId).state,'retired');
+   assert.equal(deleted,1);
+  }
  }
 });
