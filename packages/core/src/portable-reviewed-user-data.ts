@@ -6,6 +6,8 @@ export interface ReviewedUserDataActivation {git:boolean;harness:boolean;
 /** Human-selected export families; native import activation is a separate choice. */
 export interface ReviewedUserDataSelection {
   git:boolean;harness:boolean;source?:'live'|'retained_originals';
+  /** Explicit capture of configured nonsecret Git files/hooks outside the selected working roots. */
+  externalGitDependencies?:true;
   /** Explicit complete nonsecret user.* names AND values; absence never grants capture. */
   extendedMetadata?:{userXattrs:boolean;posixAcl:boolean};
   /** Metadata only. Evidence for devices/sockets never grants recreation or adoption. */
@@ -84,6 +86,7 @@ export interface ReviewedUserData {
   version:1;activation:'inert_review_only';
   /** Retained verbatim with the canonical original; never activates or recaptures source paths. */
   associationReview?:PortableGitStorageBinding[];
+  gitExternalDependencies?:ReviewedGitExternalDependencies;
   selection:Omit<ReviewedUserDataSelection,'source'>;git?:ReviewedGitUserData;
   filesystemMetadata?:PortableFilesystemMetadata;
   recreationScope:{absoluteLinks:'refuse';crossRootLinks:'refuse';cyclicLinks:'refuse'|'passive_in_root';specialNodes:'refuse';acl:'not_inspected_preserve_source';xattrs:'not_inspected_preserve_source'};
@@ -91,4 +94,14 @@ export interface ReviewedUserData {
   providerDirectories:Array<{path:string;mode:number;mtimeNs:string}>;
   providerFiles:Array<{path:string;dataBase64:string;removedSecretFields:boolean;metadata?:{mode:number;mtimeNs:string}}>;
   exclusions:string[];
+}
+
+export interface ReviewedGitExternalDependencies {
+  version:1;
+  files:Array<{sourcePath:string;dataBase64:string;mode:number;mtimeNs:string;config?:true;removedSecretFields?:true}>;
+  directories:Array<{sourcePath:string;mode:number;mtimeNs:string;root?:true}>;
+  links:Array<{sourcePath:string;targetSourcePath:string;kind:'symlink'|'hardlink';mtimeNs?:string}>;
+  absentPaths:string[];
+  omittedPaths:string[];
+  bindings:Array<{kind:'include'|'hooks'|'attributes'|'excludes';sourceConfigPath:string;rawValue:string;resolvedPath:string;context:'config'|'worktree'|'gitdir'}>;
 }

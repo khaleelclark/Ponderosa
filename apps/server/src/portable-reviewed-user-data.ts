@@ -24,10 +24,11 @@ function fields(value:unknown,required:readonly string[],optional:readonly strin
   if(!value||typeof value!=='object'||Array.isArray(value)||required.some(key=>!Object.hasOwn(value,key))||Object.keys(value).some(key=>![...required,...optional].includes(key)))throw new Error('Unexpected or missing reviewed user-data fields');
 }
 export function validateReviewedUserDataSelection(value:unknown):asserts value is ReviewedUserDataSelection {
-  fields(value,['git','harness'],['source','extendedMetadata','persistentNodes']);
+  fields(value,['git','harness'],['source','extendedMetadata','persistentNodes','externalGitDependencies']);
   const selection=value as ReviewedUserDataSelection;
   if(selection.source!==undefined&&!['live','retained_originals'].includes(selection.source))throw new Error('Choose live or retained-original review data');
   if(typeof selection.git!=='boolean'||typeof selection.harness!=='boolean')throw new Error('Git and harness selections must be explicit booleans');
+  if(selection.externalGitDependencies!==undefined&&(selection.externalGitDependencies!==true||!selection.git))throw new Error('Configured Git dependency capture requires explicit Git selection');
   for(const [family,keys] of [['extendedMetadata',['userXattrs','posixAcl']],['persistentNodes',['fifo','evidenceOnly']]] as const){
     const choice=selection[family];
     if(choice!==undefined){
@@ -770,7 +771,7 @@ export function parseReviewedUserData(data:Buffer):ReviewedUserData {
     if(!((value.associationReview.length===1&&value.associationReview[0]!.role==='module')||(value.associationReview.length===2&&value.associationReview.every(binding=>binding.role!=='module')))||value.associationReview.some(binding=>!binding.capture||binding.capture.reviewSha256!==undefined)||new Set(value.associationReview.map(binding=>binding.worktreeRootRef)).size!==1)throw new Error('Retained association evidence requires one unhashed original common/private proof pair');
   }
   if(!value||value.version!==1||value.activation!=='inert_review_only'||!Array.isArray(value.providerFiles)||value.providerFiles.length>1000||!Array.isArray(value.exclusions)||value.exclusions.some(item=>typeof item!=='string'))throw new Error('Invalid reviewed user-data manifest');
-  fields(value.selection,['git','harness'],['extendedMetadata','persistentNodes']);
+  fields(value.selection,['git','harness'],['extendedMetadata','persistentNodes','externalGitDependencies']);
   validateReviewedUserDataSelection(value.selection);
   if(value.selection.extendedMetadata||value.selection.persistentNodes){
     if(!value.filesystemMetadata)throw new Error('Selected metadata requires authoritative per-node evidence; omitted evidence is not absence');
@@ -2698,7 +2699,7 @@ export async function captureRetainedReviewOriginal(root:string,selection:Review
   validateReviewedUserDataSelection(selection);
   if(selection.source!=='retained_originals')throw new Error('Retained originals require explicit source selection');
   const manifest=parseReviewedUserData(original);
-  if(manifest.selection.git!==selection.git||manifest.selection.harness!==selection.harness||JSON.stringify(manifest.selection.extendedMetadata)!==JSON.stringify(selection.extendedMetadata)||JSON.stringify(manifest.selection.persistentNodes)!==JSON.stringify(selection.persistentNodes))throw new Error('Select exactly the retained original families; partial, expanded or mixed source export is unsupported');
+  if(manifest.selection.git!==selection.git||manifest.selection.harness!==selection.harness||manifest.selection.externalGitDependencies!==selection.externalGitDependencies||JSON.stringify(manifest.selection.extendedMetadata)!==JSON.stringify(selection.extendedMetadata)||JSON.stringify(manifest.selection.persistentNodes)!==JSON.stringify(selection.persistentNodes))throw new Error('Select exactly the retained original families; partial, expanded or mixed source export is unsupported');
   const folder=path.join(root,'.ponderosa-portable-review'),target=path.join(root,REVIEWED_USER_DATA_PATH);
   const directory=await fs.lstat(folder,{bigint:true});
   if(!directory.isDirectory()||await fs.realpath(folder)!==folder)throw new Error('Retained review directory must be canonical');
