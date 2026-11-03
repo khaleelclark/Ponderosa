@@ -20,7 +20,7 @@ Both booleans are required; either may be false, but at least one must be true.
 Omitting the query preserves existing working-folder export behavior and exclusions.
 Each distinct selected organization root is captured independently. Selecting Git
 on a root with no supported local repository refuses, rather than returning an
-apparently complete Git export. Supported reciprocally associated linked worktrees use the explicit Git authority described below. External alternates/includes, unsupported shared layouts, combined split/sparse index storage, shallow history and unfinished selected-worktree Git operations refuse.
+apparently complete Git export. Supported reciprocally associated linked worktrees use the explicit Git authority described below. External alternates/includes, unsupported shared layouts, combined split/sparse index storage, unsupported shallow/partial-clone forms and unfinished selected-worktree Git operations refuse.
 
 Inspect the resulting ordinary artifact `.ponderosa-portable-review/user-data.json`
 before importing. Its `selection`, Git refs/index/configuration review, provider
@@ -137,7 +137,7 @@ exact index-linked sharedindex original is read. Unknown names, unsupported
 pseudorefs and operation metadata refuse; administrative ownership is not copied.
 
 Private refs are review data, not migration of an active bisect/rebase operation.
-Main-worktree private logs are excluded, not read. Unsupported selected operation metadata, shallow history, grafts,
+Main-worktree private logs are excluded, not read. Unsupported selected operation metadata, unsupported shallow/partial-clone forms, grafts,
 combined split/sparse storage and the existing index/sparse limits remain.
 Supported split/v4/sparse originals use the selected private gitdir and verified
 captured shared objects; full inactive standalone recreation is unchanged.
@@ -186,6 +186,49 @@ were run for this source change.
 Source references: [Git index format](https://git-scm.com/docs/gitformat-index),
 [Git cache flag definitions](https://github.com/git/git/blob/master/read-cache-ll.h)
 and the binary storage references below.
+
+### Ordinary shallow history
+
+Explicit Include Git preserves the exact common-repository `shallow` original,
+including its ordering, or explicit absence. Required `git.shallowReview` has
+exactly `path:"shallow"`, `source:"common_repository"` and `dataBase64`.
+`null` means absent; `""` means a present empty file. No working-copy, private
+worktree or global substitute is read. The existing canonical same-owner
+association and regular single-link no-follow reader apply. File identity,
+content hash and absence join the raw before/after evidence: observed changes,
+appearance or disappearance refuse while source and partial originals remain.
+
+The shared export/import/recreation/retained-original validator accepts at most
+1 MiB and 10,000 unique nonzero lowercase object IDs, one per LF-terminated
+ASCII line, at the declared SHA-1/SHA-256 width. Empty-present is allowed.
+Unknown fields/provenance, missing evidence, duplicate IDs, noncanonical base64,
+invalid syntax, unsupported line endings/encoding and known secrets refuse.
+Original bytes are never sorted, normalized or rewritten. Each declared ID must
+name a captured, hash-verified commit. Only those commits may have missing
+parents; parent IDs must still be well formed and any captured parent must be
+a commit. Undeclared missing parents still refuse. Tree/tag/ref/reflog/index,
+resolve-undo and sparse closure, object hashes and secret checks remain required.
+No boundary is inferred from missing objects and no commit graph is rewritten.
+
+This follows [Git shallow semantics](https://git-scm.com/docs/shallow): listed
+commits become traversal roots while their original parent headers stay intact.
+[Git repository layout](https://git-scm.com/docs/gitrepository-layout) places
+`shallow` in the common repository for linked worktrees. Native capture plumbing
+only enumerates captured objects and refs in its exclusive generated-config
+view; it does not install shallow or graft files or consult live repository
+state. No fetch, deepening, replacement or user-graft behavior is invoked.
+
+Recreation writes the validated exact boundary exclusively at `.git/shallow`
+inside the newly owned **separate review repository**. This supplies history
+semantics there, never in the destination working root's native-owned `.git`.
+The byte/absence record is also retained in `CONFIGURATION-REVIEW.json`; the
+original manifest alone remains re-export authority, not these generated files.
+Settings/hooks/filters remain inactive. Existing files refuse and failed
+recreation preserves partial bytes. Ordinary bounded shallow history is covered
+by source implementation; partial/promisor clones, alternates, grafts,
+unsupported shallow encodings and other existing topology/storage refusals
+remain unsupported. No runtime, round-trip, native-equivalence or independent
+writer atomicity acceptance is claimed.
 
 ### Repository-local ignore and attribute originals
 
@@ -522,9 +565,10 @@ still requires separate human review/action.
 
 | Field | Implemented disposition |
 | --- | --- |
-| `git.format`, `objects[].{oid,type,dataBase64}` | SHA-1/SHA-256 exact decoded object bytes. Hash includes Git type/length header; commit/tree/tag edges and staged blob originals must exist. Supported normal local `.git` and the explicit reciprocally validated selected-worktree/common-directory association above only. Associated shared objects are explicitly authorized by Include Git; unassociated external/common directories and alternate object stores refuse. All objects, including unreachable objects, receive known-credential inspection; a recognizable credential refuses the selection instead of rewriting Git identity. |
+| `git.format`, `objects[].{oid,type,dataBase64}` | SHA-1/SHA-256 exact decoded object bytes. Hash includes Git type/length header; commit/tree/tag edges and staged blob originals must exist, except missing parents of explicitly validated shallow commits. Supported normal local `.git` and the explicit reciprocally validated selected-worktree/common-directory association above only. Associated shared objects are explicitly authorized by Include Git; unassociated external/common directories and alternate object stores refuse. All objects, including unreachable objects, receive known-credential inspection; a recognizable credential refuses the selection instead of rewriting Git identity. |
 | `git.refs[].{name,oid,symbolic}`, `head` | Original branch/tag/other ref names, object IDs and symbolic/detached HEAD preserved. Fresh loose refs in the review repository. Source worktree pointers, branch ownership, lock and lifecycle receipts never travel. |
 | `git.index[].{mode,oid,stage,path,intentToAdd,assumeUnchanged,skipWorktree}` | Fresh v2/v3 review index retains exact original stage 0–3 identities, paths and file/executable/symlink/gitlink modes plus the three explicit flag booleans. Intent-to-add remains intent, not staged content. Original stat caches, uid/gid/inodes and filesystem monitor data are not copied. Ordinary staged/unmerged content is retained. Supported local v2/v3/v4 split storage normalizes to this full index; unknown flags/extensions and unsupported sparse forms refuse; supported sparse-directory trees expand from verified captured objects only. |
+| `git.shallowReview.{path,source,dataBase64}` | Required exact common-repository `shallow` bytes or explicit null absence (empty-present stays distinct). Bounded canonical ASCII/OID validation requires captured verified commits; only those commit parents may be missing. Recreated exclusively as `.git/shallow` inside the new separate review repository, with original bytes retained for re-export. No native working-root adoption, fetch/deepening, grafts or partial/promisor support; source-only, runtime unverified. |
 | `git.infoReview[].{path,source,dataBase64}` | Required path-ordered `info/attributes`, `info/exclude` records from `common_repository`, with exact bounded original bytes or explicit null absence. Shared validation refuses unknown paths/provenance, malformed encoding, known secrets or missing evidence. Recreated only as inactive records in `CONFIGURATION-REVIEW.json`, never active Git info files; generated review copies are not re-export authority. |
 | `git.configurationReview[].{key,value,implicitBoolean?,source?}` | Nonsecret local configuration is retained as ordered inert review entries, including repeated keys, valueless booleans and hook/fsmonitor command text. Optional `source:"config.worktree"` distinguishes exact local worktree settings; omitted source means local `config`. Local include/includeIf declarations now refuse before repository-aware plumbing, so external settings are neither resolved nor silently used. All credential-helper/username fields and password/token/authorization/extra-header fields and source core.worktree metadata are excluded. `extensions.worktreeConfig` and sparse booleans survive only as inactive review entries. URL userinfo is refused from the retained configuration. Source configuration is never installed as executable destination config. |
 | Git hook files | Excluded explicitly; no hook bytes or executable files are copied. The review repository disables hooks/fsmonitor. A nonsecret local hooksPath value remains inactive configuration review text, not a copied hook or a destination path choice. |

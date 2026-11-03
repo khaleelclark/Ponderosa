@@ -15,6 +15,8 @@ export interface ReviewedGitUserData {
   sparseReview:{patternsBase64:string|null;directories:ReviewedGitUserData['index']};
   /** Exact common-repository originals or explicit absence, in path order; never active Git settings. */
   infoReview:Array<{path:'info/attributes'|'info/exclude';source:'common_repository';dataBase64:string|null}>;
+  /** Exact common shallow boundary bytes or absence; applies only to the separate review graph. */
+  shallowReview:{path:'shallow';source:'common_repository';dataBase64:string|null};
   configurationReview:Array<{key:string;value:string;implicitBoolean?:true;source?:'config.worktree'}>;
   exclusions:string[];
 }
