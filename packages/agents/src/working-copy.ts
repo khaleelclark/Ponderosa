@@ -57,6 +57,7 @@ export function resolveAgentWorkingCopy(
     if (
       workingCopy.id !== `shared:${project.id}` ||
       workingCopy.rootPath !== project.hostPath ||
+      workingCopy.repositoryRoot !== undefined ||
       workingCopy.branch !== undefined ||
       workingCopy.baseHead !== undefined ||
       workingCopy.branchOwned !== undefined ||
@@ -76,6 +77,7 @@ export function resolveAgentWorkingCopy(
     };
   }
   if (!workingCopy.id.startsWith("copy:") || !workingCopy.rootPath || !workingCopy.branch ||
+      (workingCopy.repositoryRoot !== undefined && workingCopy.repositoryRoot !== workingCopy.rootPath) ||
       workingCopy.branchOwned !== true || workingCopy.branchCreationIntent !== undefined ||
       workingCopy.branchCreationReceipt !== undefined ||
       workingCopy.cleanupReceipt !== undefined) {

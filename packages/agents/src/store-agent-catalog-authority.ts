@@ -114,6 +114,7 @@ function validateWorkingCopy(
   if (workingCopy.mode === "shared" && (
     workingCopy.id !== `shared:${project.id}` ||
     workingCopy.rootPath !== project.hostPath ||
+    workingCopy.repositoryRoot !== undefined ||
     workingCopy.state !== "ready" ||
     workingCopy.branch !== undefined ||
     workingCopy.baseHead !== undefined ||
@@ -140,6 +141,7 @@ function validateWorkingCopy(
   if (workingCopy.mode === "separate_git" && (
     !workingCopy.id.startsWith("copy:") ||
     !workingCopy.rootPath ||
+    (workingCopy.repositoryRoot !== undefined && workingCopy.repositoryRoot !== workingCopy.rootPath) ||
     !workingCopy.branch ||
     (workingCopy.state === "ready" && workingCopy.branchOwned !== true) ||
     (workingCopy.state === "ready" && workingCopy.branchCreationIntent !== undefined) ||

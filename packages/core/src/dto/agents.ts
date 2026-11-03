@@ -55,6 +55,9 @@ export interface AgentWorkingCopyDto {
   state: AgentWorkingCopyState;
   /** Exact authoritative host root. This is not a security sandbox boundary. */
   rootPath: string;
+  /** Locally issued independent imported repository, always this managed root.
+   * Never transported in an Agent package or accepted as a user path setting. */
+  repositoryRoot?: string;
   /** Separate Git copies have one stable branch owned by this Agent. */
   branch?: string;
   /** Commit used when the Separate Git copy was first created. */

@@ -1,6 +1,6 @@
-import {assertReviewedProviderDestination,applyReviewedProviderData,createReviewedNativeGit,planReviewedUserDataActivation,REVIEWED_USER_DATA_PATH,type NativeReviewedGitConfiguration} from './portable-reviewed-user-data.js';
+import {applyReviewedRecoveryRoots,planReviewedRecoveryRoots} from './portable-git-recreation.js';
+import {assertReviewedProviderDestination,applyReviewedProviderData,createReviewedNativeGit,parseReviewedUserData,planReviewedUserDataActivation,REVIEWED_USER_DATA_PATH,type NativeReviewedGitConfiguration} from './portable-reviewed-user-data.js';
 import {planFilesystemMetadata} from './portable-filesystem-metadata.js';
-import {parseReviewedUserData} from './portable-reviewed-user-data.js';
 import {createHash} from 'node:crypto';
 import {constants} from 'node:fs';
 import {importWorkingFiles,finalizeWorkingFolderMetadata} from './portable-working-files.js';
@@ -44,7 +44,7 @@ function gitEnvironment(): NodeJS.ProcessEnv {
 }
 
 async function runGit(cwd: string, args: string[]): Promise<string> {
-  const result = await execFileAsync("git", ["--no-optional-locks", ...args], {
+  const result = await execFileAsync("git", ["--no-optional-locks", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", ...args], {
     cwd,
     encoding: "utf8",
     env: gitEnvironment(),
@@ -98,7 +98,7 @@ function deleteOwnedBranchReferences(
   ownershipRef: string,
   branchHead: string,
 ): void {
-  execFileSync("git", ["--no-optional-locks", "update-ref", "--stdin"], {
+  execFileSync("git", ["--no-optional-locks", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "update-ref", "--stdin"], {
     cwd: projectRoot,
     encoding: "utf8",
     env: gitEnvironment(),
@@ -160,7 +160,7 @@ function createOwnedBranchReferences(
   ownershipRef: string,
   branchHead: string,
 ): void {
-  execFileSync("git", ["--no-optional-locks", "update-ref", "--stdin"], {
+  execFileSync("git", ["--no-optional-locks", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "update-ref", "--stdin"], {
     cwd: projectRoot,
     encoding: "utf8",
     env: gitEnvironment(),
@@ -217,7 +217,9 @@ async function gitWorktreeRootRegistered(
 }
 
 export class AgentWorkingCopyService {
-  private readonly importedGitRoots=new Map<string,{rootDevice:bigint;rootInode:bigint;gitDevice:bigint;gitInode:bigint;sha256:string;files:Array<{path:string;sha256:string;device:bigint;inode:bigint}>}>();
+  private readonly importedGitRoots=new Map<string,{sha256:string;snapshot:string;allowedRoots:string[]}>();
+  private readonly importedRootCustody=new Map<string,{device:bigint;inode:bigint;agentId:string}>();
+  private readonly stagedImportedGitRoots=new Map<string,{device:bigint;inode:bigint;phase:'allocated'|'populating'|'populated'|'adopting';agentId?:string}>();
   private readonly managedRoot: string;
   private readonly modeChanges = new Map<string, {
     completion: Promise<void>;
@@ -234,7 +236,7 @@ export class AgentWorkingCopyService {
     private readonly store: Pick<
       AgentStore,
       "getAgent" | "listProjectWorkingCopies" | "updateAgentWorkingCopy" |
-      "updateDeletedAgentWorkingCopy"
+      "updateDeletedAgentWorkingCopy" | "isManagedProjectImportDestination" | "listAgents"
     >,
   ) {
     this.managedRoot = path.join(realpathSync(dataDir), "working-copies");
@@ -258,7 +260,7 @@ export class AgentWorkingCopyService {
         if (!inside(this.managedRoot, canonical)) {
           throw new Error("the configured Separate Git copy is outside managed storage");
         }
-        const projectRoot = await realpath(project.hostPath);
+        const projectRoot = await this.repositoryRoot(agent.id, agent.workingCopy, project);
         const projectTopLevel = await realpath(await runGit(projectRoot, ["rev-parse", "--show-toplevel"]));
         if (!samePath(projectRoot, projectTopLevel)) {
           throw new Error("the Project Shared folder is not the root of its Git repository");
@@ -289,11 +291,8 @@ export class AgentWorkingCopyService {
     if(await realpath(project.hostPath)!==project.hostPath||(await readdir(project.hostPath)).length)throw new Error('Live Shared import requires the empty NEW managed Chat folder');
     if(original){
       if(!this.store.isManagedProjectImportDestination(project.id)||this.store.listAgents(project.id).length)throw new Error('Native Git requires the unused NEW managed Project');
-      const root=await lstat(project.hostPath,{bigint:true});
-      const files=await createReviewedNativeGit(project.hostPath,original.data,original.sha256,original.activation,original.configuration);
-      const after=await lstat(project.hostPath,{bigint:true}),git=await lstat(path.join(project.hostPath,'.git'),{bigint:true});
-      if(root.dev!==after.dev||root.ino!==after.ino||!git.isDirectory()||await realpath(path.join(project.hostPath,'.git'))!==path.join(project.hostPath,'.git'))throw new Error('Native Git destination ownership changed');
-      this.importedGitRoots.set(project.id,{rootDevice:after.dev,rootInode:after.ino,gitDevice:git.dev,gitInode:git.ino,sha256:original.sha256,files});return;
+      await createReviewedNativeGit(project.hostPath,original.data,original.sha256,original.activation,original.configuration);
+      this.importedGitRoots.set(project.hostPath,{sha256:original.sha256,snapshot:await this.importedGitSnapshot(project.hostPath),allowedRoots:[project.hostPath]});return;
     }
     await runGit(project.hostPath,['init','--template=','--initial-branch=main']);
     await runGit(project.hostPath,['-c','core.hooksPath=/dev/null','-c','user.name=Ponderosa Import','-c','user.email=import@localhost','commit','--allow-empty','--no-gpg-sign','-m','Initialize imported working roots']);
@@ -302,28 +301,32 @@ export class AgentWorkingCopyService {
   /** Fresh local ownership is checked before any imported file enters a live root. */
   async populateImportedRoot(agent:AgentDto,project:ProjectDto,files:Parameters<typeof importWorkingFiles>[1],directories:Parameters<typeof importWorkingFiles>[2],metadata:Parameters<typeof importWorkingFiles>[3],backupRoot:string,links:Parameters<typeof importWorkingFiles>[5]=[],cyclicLinks:Parameters<typeof importWorkingFiles>[6]='refuse',activation?:import('@ponderosa/core').ReviewedUserDataActivation,metadataActivation?:import('@ponderosa/core').ReviewedMetadataActivation,rootDestinations?:Readonly<Record<string,string>>,deferFinalMetadata=false):Promise<void> {
     if(!this.modeChanges.has(agent.id))throw new Error('Live import was not fenced');
-    const resolved=await this.resolve(agent,project);
-    const activationRoot=activation?await lstat(resolved.rootPath,{bigint:true}):undefined;
+    const staged=this.stagedImportedGitRoots.get(agent.workingCopy.rootPath);
+    if(staged){const stat=await lstat(agent.workingCopy.rootPath,{bigint:true});if(staged.phase!=='allocated'||stat.dev!==staged.device||stat.ino!==staged.inode||staged.agentId&&staged.agentId!==agent.id)throw new Error('Staged Git root changed or population was already attempted');staged.phase='populating';}
+    const resolved=staged?{id:agent.workingCopy.id,mode:agent.workingCopy.mode,rootPath:agent.workingCopy.repositoryRoot?await this.repositoryRoot(agent.id,agent.workingCopy,project):agent.workingCopy.rootPath}:await this.resolve(agent,project);
+    const rootIdentity=await lstat(resolved.rootPath,{bigint:true});
+    this.importedRootCustody.set(resolved.rootPath,{device:rootIdentity.dev,inode:rootIdentity.ino,agentId:agent.id});
+    const activationRoot=activation?rootIdentity:undefined;
     const original=activation||metadataActivation?files.find(file=>file.path===REVIEWED_USER_DATA_PATH):undefined;
     const metadataPlan=metadataActivation&&original?parseReviewedUserData(original.data):undefined;
     if(metadataActivation){
-      if(!this.store.isManagedProjectImportDestination(project.id)||!original||!metadataPlan?.filesystemMetadata||createHash('sha256').update(original.data).digest('hex')!==original.sha256)throw new Error('Native metadata requires the original and a NEW managed destination');
+      if((resolved.mode!=='separate_git'&&!this.store.isManagedProjectImportDestination(project.id))||!original||!metadataPlan?.filesystemMetadata||createHash('sha256').update(original.data).digest('hex')!==original.sha256)throw new Error('Native metadata requires the original and a NEW managed destination');
       planFilesystemMetadata(metadataPlan.filesystemMetadata,metadataPlan.selection,metadataActivation);
     }
     if(activation){
       if(!original||createHash('sha256').update(original.data).digest('hex')!==original.sha256)throw new Error('Native activation original is unavailable or changed');
-      const plan=planReviewedUserDataActivation(original.data,original.sha256,activation);
+      const plan=staged?parseReviewedUserData(original.data):planReviewedUserDataActivation(original.data,original.sha256,activation);
       if(activation.harness)await assertReviewedProviderDestination(resolved.rootPath,plan);
-      if(activation.git)await this.verifyImportedGitRoot(project,original.sha256,resolved.rootPath);
-      if(!this.store.isManagedProjectImportDestination(project.id))throw new Error('Native activation requires the NEW managed import destination');
+      if(activation.git&&!staged)await this.verifyImportedGitRoot(project,original.sha256,resolved.rootPath);
+      if(resolved.mode!=='separate_git'&&!this.store.isManagedProjectImportDestination(project.id))throw new Error('Native Shared activation requires the NEW managed import destination');
     }
-    await importWorkingFiles(resolved.rootPath,files,directories,activation||metadataActivation?undefined:metadata,{backupRoot},links,cyclicLinks,metadataActivation,!!metadataActivation,rootDestinations);
+    await importWorkingFiles(resolved.rootPath,files,directories,activation||metadataActivation?undefined:metadata,{backupRoot},links,cyclicLinks,metadataActivation,deferFinalMetadata||!!activation||!!metadataActivation,rootDestinations);
     if(activation&&original){
-      const current=await this.resolve(agent,project);
+      const current=staged?resolved:await this.resolve(agent,project);
       if(current.rootPath!==resolved.rootPath||!this.modeChanges.has(agent.id))throw new Error('Native activation root membership changed');
-      if(activation.git)await this.verifyImportedGitRoot(project,original.sha256,current.rootPath);
-      if(activation.harness)await applyReviewedProviderData(resolved.rootPath,original.data,original.sha256,activation);
-      if(metadata&&!metadataActivation){
+      if(activation.git&&!staged)await this.verifyImportedGitRoot(project,original.sha256,current.rootPath);
+      if(activation.harness)await applyReviewedProviderData(resolved.rootPath,original.data,original.sha256,staged?{git:false,harness:true}:activation);
+      if(metadata&&!metadataActivation&&!staged&&!deferFinalMetadata){
         const root=await open(current.rootPath,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_DIRECTORY);
         let finalizationError:Error|undefined;
         try{
@@ -342,45 +345,135 @@ export class AgentWorkingCopyService {
         if(finalizationError)throw finalizationError;
       }
     }
-    if(metadataActivation&&!deferFinalMetadata&&metadataPlan?.filesystemMetadata){
+    if(metadataActivation&&!deferFinalMetadata&&!staged&&metadataPlan?.filesystemMetadata){
       const current=await this.resolve(agent,project);
       if(current.rootPath!==resolved.rootPath||!this.modeChanges.has(agent.id))throw new Error('Metadata root membership changed');
       await finalizeWorkingFolderMetadata(current.rootPath,files,directories,metadata,links,metadataActivation);
     }
+    if(staged)staged.phase='populated';
   }
 
-  async finalizeImportedRootMetadata(agent:AgentDto,project:ProjectDto,files:Parameters<typeof importWorkingFiles>[1],directories:Parameters<typeof importWorkingFiles>[2],metadata:Parameters<typeof importWorkingFiles>[3],links:Parameters<typeof importWorkingFiles>[5],activation:import('@ponderosa/core').ReviewedMetadataActivation,counts?:ReadonlyMap<string,bigint>):Promise<void>{
-    if(!this.modeChanges.has(agent.id)||!this.store.isManagedProjectImportDestination(project.id))throw new Error('Final live metadata requires its fenced NEW managed destination');
-    const root=await this.resolve(agent,project);
+  async finalizeImportedRootMetadata(agent:AgentDto,project:ProjectDto,files:Parameters<typeof importWorkingFiles>[1],directories:Parameters<typeof importWorkingFiles>[2],metadata:Parameters<typeof importWorkingFiles>[3],links:Parameters<typeof importWorkingFiles>[5],activation?:import('@ponderosa/core').ReviewedMetadataActivation,counts?:ReadonlyMap<string,bigint>):Promise<void>{
+    if(!this.modeChanges.has(agent.id))throw new Error('Final live metadata requires its fenced imported destination');
+    const root=await this.resolve(agent,project),proof=this.importedRootCustody.get(root.rootPath),stat=await lstat(root.rootPath,{bigint:true});
+    if(!proof||proof.agentId!==agent.id||proof.device!==stat.dev||proof.inode!==stat.ino||await realpath(root.rootPath)!==root.rootPath)throw new Error('Final metadata root lost its fresh local custody');
     await finalizeWorkingFolderMetadata(root.rootPath,files,directories,metadata,links,activation,counts);
   }
 
-  private async verifyImportedGitRoot(project:ProjectDto,sha256:string,rootPath:string):Promise<void> {
-    const proof=this.importedGitRoots.get(project.id);
-    if(!proof||proof.sha256!==sha256||rootPath!==project.hostPath)throw new Error('Native Git has no matching before-initialization ownership proof');
-    const root=await lstat(rootPath,{bigint:true}),gitPath=path.join(rootPath,'.git'),git=await lstat(gitPath,{bigint:true});
-    if(!root.isDirectory()||root.dev!==proof.rootDevice||root.ino!==proof.rootInode||!git.isDirectory()||git.dev!==proof.gitDevice||git.ino!==proof.gitInode||await realpath(rootPath)!==rootPath||await realpath(gitPath)!==gitPath)throw new Error('Native Git root identity changed; preserve partial application');
-    const expectedFiles=new Set(proof.files.map(file=>file.path)),expectedDirectories=new Set(['objects','refs']);
-    for(const file of proof.files){const parts=file.path.split('/');for(let i=1;i<parts.length;i++)expectedDirectories.add(parts.slice(0,i).join('/'));}
-    let entries=0;
-    const inventory=async(relative:string):Promise<void>=>{
-      const parent=relative?path.join(gitPath,relative):gitPath;
-      if(await realpath(parent)!==parent)throw new Error('Native Git inventory parent changed');
-      for(const name of await readdir(parent)){
-        if(++entries>30000)throw new Error('Native Git inventory exceeds its bound');
-        const child=relative?relative+'/'+name:name,stat=await lstat(path.join(gitPath,child));
-        if(stat.isDirectory()&&expectedDirectories.has(child))await inventory(child);
-        else if(!stat.isFile()||!expectedFiles.has(child))throw new Error('Native Git acquired unexpected state before adoption');
+  /** Local storage authority; a source package never supplies this path. */
+  private async repositoryRoot(agentId:string,workingCopy:AgentWorkingCopyDto,project:Pick<ProjectDto,'id'|'hostPath'>):Promise<string> {
+    if(workingCopy.repositoryRoot===undefined)return realpath(project.hostPath);
+    const expected=path.join(this.managedRoot,project.id,agentId,'root');
+    if(workingCopy.repositoryRoot!==expected||workingCopy.rootPath!==expected||!inside(this.managedRoot,expected))throw new Error('Independent imported Git repository has no local managed ownership');
+    const stat=await lstat(expected);if(!stat.isDirectory()||stat.isSymbolicLink()||await realpath(expected)!==expected)throw new Error('Independent imported Git root changed; preserve its data');
+    return expected;
+  }
+
+  /** Capture directory or locally recreated pointer layouts without assuming
+   * source Git paths are destination authority. No hooks or filters execute. */
+  private async importedGitSnapshot(rootPath:string,allowedRoots:string[]=[rootPath]):Promise<string> {
+    const root=await lstat(rootPath,{bigint:true});
+    if(!root.isDirectory()||await realpath(rootPath)!==rootPath)throw new Error('Imported Git root changed');
+    const gitDir=path.resolve(rootPath,await runGit(rootPath,['rev-parse','--absolute-git-dir']));
+    const commonDir=path.resolve(rootPath,await runGit(rootPath,['rev-parse','--git-common-dir']));
+    if(![gitDir,commonDir].every(target=>allowedRoots.some(root=>target===root||inside(root,target))))throw new Error('Imported Git storage is outside its locally owned root');
+    const entries:unknown[]=[{path:rootPath,device:root.dev,inode:root.ino}],seen=new Set<string>();let count=0;
+    const inspect=async(target:string):Promise<void>=>{
+      if(seen.has(target))return;seen.add(target);if(++count>30000)throw new Error('Imported Git inventory exceeds its bound');
+      const stat=await lstat(target,{bigint:true});
+      if(stat.isDirectory()){
+        if(await realpath(target)!==target)throw new Error('Imported Git directory changed');
+        entries.push({path:target,device:stat.dev,inode:stat.ino});
+        for(const name of (await readdir(target)).sort())await inspect(path.join(target,name));
+      }else{
+        if(!stat.isFile()||stat.nlink!==1n||stat.size>33554432n||await realpath(path.dirname(target))!==path.dirname(target))throw new Error('Imported Git file is not exclusive');
+        const handle=await open(target,constants.O_RDONLY|constants.O_NOFOLLOW);
+        try{
+          const before=await handle.stat({bigint:true});if(before.dev!==stat.dev||before.ino!==stat.ino)throw new Error('Imported Git file replaced');
+          const data=await handle.readFile(),after=await handle.stat({bigint:true}),current=await lstat(target,{bigint:true});
+          if(before.size!==after.size||before.mtimeNs!==after.mtimeNs||before.ctimeNs!==after.ctimeNs||current.dev!==before.dev||current.ino!==before.ino)throw new Error('Imported Git file changed');
+          entries.push({path:target,device:stat.dev,inode:stat.ino,sha256:createHash('sha256').update(data).digest('hex')});
+        }finally{await handle.close();}
       }
     };
-    await inventory('');
-    for(const file of proof.files){
-      const target=path.join(gitPath,file.path),handle=await open(target,constants.O_RDONLY|constants.O_NOFOLLOW);
-      try{const stat=await handle.stat({bigint:true});if(!stat.isFile()||stat.nlink!==1n||stat.dev!==file.device||stat.ino!==file.inode||stat.size>33554432n||await realpath(path.dirname(target))!==path.dirname(target))throw new Error('Native Git content identity changed before adoption');
-        const data=Buffer.alloc(Number(stat.size));let offset=0;while(offset<data.length){const read=await handle.read(data,offset,data.length-offset,offset);if(!read.bytesRead)throw new Error('Native Git content shortened before adoption');offset+=read.bytesRead;}
-        const after=await handle.stat({bigint:true}),current=await lstat(target,{bigint:true});
-        if(stat.size!==after.size||stat.mtimeNs!==after.mtimeNs||stat.ctimeNs!==after.ctimeNs||current.dev!==file.device||current.ino!==file.inode||createHash('sha256').update(data).digest('hex')!==file.sha256)throw new Error('Native Git content changed before adoption');}finally{await handle.close();}
+    await inspect(path.join(rootPath,'.git'));await inspect(commonDir);await inspect(gitDir);
+    const after=await lstat(rootPath,{bigint:true});if(root.dev!==after.dev||root.ino!==after.ino)throw new Error('Imported Git root replaced');
+    return JSON.stringify(entries,(_key,value)=>typeof value==='bigint'?value.toString():value);
+  }
+
+  private async verifyImportedGitRoot(_project:ProjectDto,sha256:string,rootPath:string):Promise<void> {
+    const proof=this.importedGitRoots.get(rootPath);
+    if(!proof||proof.sha256!==sha256||proof.snapshot!==await this.importedGitSnapshot(rootPath,proof.allowedRoots))throw new Error('Native Git differs from its exact local before-population ownership proof; preserve partial application');
+  }
+
+  private async stageImportedGitRoot(rootPath:string,agentId?:string):Promise<void> {
+    const stat=await lstat(rootPath,{bigint:true});
+    if(!stat.isDirectory()||await realpath(rootPath)!==rootPath||(await readdir(rootPath)).length||this.stagedImportedGitRoots.has(rootPath))throw new Error('Native import root must be freshly allocated and empty');
+    this.stagedImportedGitRoots.set(rootPath,{device:stat.dev,inode:stat.ino,phase:'allocated',...(agentId?{agentId}:{})});
+  }
+
+  async stageImportedSharedGit(project:ProjectDto):Promise<void> {
+    if(!this.store.isManagedProjectImportDestination(project.id)||this.store.listAgents(project.id).length)throw new Error('Native Shared Git requires the unused NEW managed Chat');
+    await this.stageImportedGitRoot(project.hostPath);
+  }
+
+  /** Allocate local ownership before mutation; never copy this path from source. */
+  async allocateImportedSeparateGit(agent:AgentDto,project:ProjectDto):Promise<AgentDto> {
+    if(!this.modeChanges.has(agent.id)||this.activeUses.has(agent.id))throw new Error('Independent Git import requires exclusive working-copy custody');
+    const current=this.store.getAgent(agent.id);
+    if(!current||current.projectId!==project.id||current.workingCopy.mode!=='shared')throw new Error('Independent Git import requires the fresh destination Agent');
+    const rootPath=path.join(this.managedRoot,project.id,agent.id,'root'),branch=separateBranch(agent),id='copy:'+randomUUID();
+    const workingCopy:AgentWorkingCopyDto={id,mode:'separate_git',state:'unavailable',rootPath,repositoryRoot:rootPath,branch,failure:'Native Git import is in progress; preserve partial data and inspect its import receipt.',updatedAt:new Date().toISOString()};
+    this.requireUpdated(agent.id,workingCopy);
+    try{
+      for(const parent of [this.managedRoot,path.join(this.managedRoot,project.id),path.dirname(rootPath)]){
+        try{await mkdir(parent,{mode:0o700});}catch(error){if((error as NodeJS.ErrnoException).code!=='EEXIST')throw error;}
+        const stat=await lstat(parent);if(!stat.isDirectory()||stat.isSymbolicLink()||await realpath(parent)!==parent)throw new Error('Managed import parent changed');
+      }
+      await mkdir(rootPath,{mode:0o700});await this.stageImportedGitRoot(rootPath,agent.id);
+      return this.store.getAgent(agent.id)!;
+    }catch(error){throw Object.assign(new Error('Native Separate Git allocation incomplete; preserve its managed path',{cause:error}),{code:'ERR_IMPORTED_GIT_PARTIAL',partialStatePossible:true,observed:{path:rootPath}});}
+  }
+
+  /** Files first, one complete Git closure next, and final ACLs/times last. */
+  async completeImportedGitRoots(project:ProjectDto,pkg:import('@ponderosa/core').AgentPortablePackageDto,destinations:Record<string,string>,activation:import('@ponderosa/core').ReviewedUserDataActivation,onReceipt:Parameters<typeof applyReviewedRecoveryRoots>[2]):Promise<void> {
+    const roots=Object.values(destinations),tasks=planReviewedRecoveryRoots(pkg,destinations,activation);
+    for(const root of roots){
+      const staged=this.stagedImportedGitRoots.get(root),stat=await lstat(root,{bigint:true});
+      if(!staged||staged.phase!=='populated'||stat.dev!==staged.device||stat.ino!==staged.inode||await realpath(root)!==root)throw new Error('Native import root is not in its exact populated phase');
+      staged.phase='adopting';
     }
+    // The shared recreation engine validates included target/config closure and
+    // records each applying/incomplete outcome. Harness files are already placed.
+    await applyReviewedRecoveryRoots(tasks,{...activation,harness:false},receipt=>onReceipt({...receipt,selection:activation}));
+    for(const root of roots){
+      const staged=this.stagedImportedGitRoots.get(root)!;if(!staged.agentId)continue;
+      const agent=this.store.getAgent(staged.agentId);if(!agent||agent.workingCopy.repositoryRoot!==root||agent.workingCopy.state!=='unavailable')throw new Error('Imported Separate Git ownership changed before activation');
+      const workingCopy=agent.workingCopy,branch=workingCopy.branch!;
+      if(!tasks.some(task=>task.destination===root))await runGit(root,['init','--template=','--initial-branch=main']);
+      // An unborn source needs only a local empty ownership commit. The selected
+      // source index and every imported branch/ref are retained unchanged.
+      let baseHead:string;
+      try{baseHead=await runGit(root,['rev-parse','--verify','HEAD^{commit}']);}
+      catch(error){
+        const task=tasks.find(task=>task.destination===root),git=task?.value.git;
+        if(git&&(!('symbolic' in git.head)||git.refs.some(ref=>ref.name===('symbolic' in git.head?git.head.symbolic:''))))throw error;
+        const emptyTree=execFileSync('git',['-c','core.hooksPath=/dev/null','hash-object','-t','tree','-w','--stdin'],{cwd:root,env:gitEnvironment(),input:'',encoding:'utf8',timeout:GIT_TIMEOUT_MS}).trim();
+        baseHead=execFileSync('git',['-c','core.hooksPath=/dev/null','-c','user.name=Ponderosa Import','-c','user.email=import@localhost','commit-tree',emptyTree,'-m','Initialize imported Separate ownership'],{cwd:root,env:gitEnvironment(),encoding:'utf8',timeout:GIT_TIMEOUT_MS}).trim();
+      }
+      if(await gitBranchExists(root,branch))throw new Error('The newly allocated managed branch collides with imported user refs');
+      const receipt={ownershipRef:creationOwnershipRef(),branchHead:baseHead};
+      this.requireUpdated(agent.id,{...workingCopy,baseHead,branchCreationIntent:true,branchCreationReceipt:receipt});
+      createOwnedBranchReferences(root,branch,receipt.ownershipRef,baseHead);
+      await runGit(root,['symbolic-ref','HEAD','refs/heads/'+branch]);
+      await runGit(root,['update-ref','-d',receipt.ownershipRef,baseHead]);
+      const ready=this.requireUpdated(agent.id,{...workingCopy,state:'ready',baseHead,branchOwned:true,failure:undefined,updatedAt:new Date().toISOString()});
+      await this.resolve(ready,project);
+    }
+    // Seal after every local branch is established: common Git storage can be
+    // shared by multiple selected roots, so earlier snapshots would be obsolete.
+    for(const task of tasks)this.importedGitRoots.set(task.destination,{sha256:task.sha256,snapshot:await this.importedGitSnapshot(task.destination,roots),allowedRoots:roots});
+    for(const root of roots)this.stagedImportedGitRoots.delete(root);
   }
 
   async setMode(
@@ -500,6 +593,13 @@ export class AgentWorkingCopyService {
     if (!samePath(path.resolve(workingCopy.rootPath), expectedRoot) ||
         !inside(this.managedRoot, expectedRoot)) {
       throw new Error("The retained Separate Git copy is outside its managed location");
+    }
+    if(workingCopy.repositoryRoot!==undefined){
+      if(workingCopy.repositoryRoot!==expectedRoot)throw new Error('Imported repository ownership path changed; preserve its data');
+      try{await this.repositoryRoot(agentId,workingCopy,project);}catch(error){if(!missingPath(error))throw error;}
+      // This repository contains imported user refs, history, config and bytes.
+      // Releasing Agent authority never deletes those originals, even if clean.
+      return this.persistCleanupState(agentId,{...workingCopy,state:'removed',branchCreationIntent:undefined,branchCreationReceipt:undefined,cleanupReceipt:undefined,failure:undefined,updatedAt:new Date().toISOString()},options.deleted===true);
     }
     if (workingCopy.state === "removed") {
       // Recover old terminal metadata that left its empty container behind.
@@ -823,6 +923,7 @@ export class AgentWorkingCopyService {
         deleted: record.deleted,
       });
     }
+    if(this.store.listProjectWorkingCopies(project.id).some(record=>record.workingCopy.repositoryRoot!==undefined))return;
     try {
       await rmdir(path.join(this.managedRoot, project.id));
     } catch (error) {
