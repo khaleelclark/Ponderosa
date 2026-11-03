@@ -1558,15 +1558,28 @@ unvalidated. No new execution engine, codec, module, schema/storage-version, DTO
 format, size cap or dependency.
 
 
-### Manual Call trees with root-owned Join bundles
+### Manual and original automatic Call roots with owned Join bundles
 
-Runtime-tree packages can recreate and continue the existing effect-free manual
-Call-tree family when only the related root owns authentic Join result bundles.
-The root has no Call parent or ancestor. Every definition in that related tree
-uses a manual trigger and the existing Node Script, Branch Call, ordinary approval
-gate and graph-control codecs. Existing declared JSON state, conditions, routes,
-loops and qualified Script retries keep their normal replay rules. Calls and gates
-do not gain retry policies.
+Runtime-tree packages can recreate and continue the effect-free Call-tree family
+when only the related root owns authentic Join result bundles. The root has no
+Call parent or ancestor. The existing all-manual family remains supported; a
+separately scoped family also accepts an original automatic root using a schedule,
+webhook or filesystem definition. Every descendant still has a manual definition
+and ordinary Call admission. Both families use the existing Node Script, Branch
+Call, ordinary approval gate and graph-control codecs. Existing declared JSON
+state, conditions, routes, loops and qualified Script retries keep their normal
+replay rules. Automatic roots use the existing parallel/mixed-tree Script-retry
+qualification, including serial descendants; Calls and gates gain no retries.
+
+An original automatic root must independently prove its immutable activated
+occurrence, trigger snapshot, canonical payload/provenance/input/hash and exact
+accepted/started/admission evidence. Missing or unavailable-held occurrence data
+refuses continuation. This proof is historical data with currentAuthority:false,
+never scheduler or trigger authority. After confirmation, the same automatic
+root definition runs under fresh manual destination admission; descendants retain
+Call admission. Current-generation family validation accepts this distinction
+while original selected/latest replay independently verifies occurrence evidence.
+No missed occurrence, timer, trigger, source dispatch or lease is recreated.
 
 A shared root-family validator checks the actual selected owner cuts, definitions
 and bindings. It checks complete parent reachability and Call binding/input/hash
@@ -1618,9 +1631,12 @@ source selection, maps, prefix and admission checks.
 Continuation requires fresh human confirmation, a fresh manual destination root
 and ordinary Call child admission, current matching configuration and bindings,
 Script/Branch Call permissions, directories, budget, capacity and readiness.
-Historical source acceptance confers no destination authority. This adds no
-automatic-root Call-tree bundle support, scheduler/trigger replay, native/effectful,
-issued/Agent/resource, secret/custody/execution-Chat or unknown/in-flight family.
+Historical source acceptance confers no destination authority. The public
+standalone bundle validator and all-manual family boundary keep their defaults;
+shared tree consumers independently derive the additional automatic-root family
+from actual owner cuts, definitions and bindings. A tree or Call flag alone grants
+no bundle support. Scheduler/trigger replay, native/effectful, issued/Agent/resource,
+secret/custody/execution-Chat and unknown/in-flight families remain excluded.
 
 This is source implementation, not executed qualification. Saver timing,
 durability, scheduling, notifications, round trips, rollback, native equivalence,

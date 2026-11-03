@@ -7,7 +7,7 @@ import {retainedResourceCapture} from './branch-resource-capture.js';
 import {coordinationLineageSupported} from './branch-host-provenance.js';
 import {captureBranchHostCut,verifyBranchHostCut} from './branch-host-cut.js';
 import {retainedBranchHostGraph} from './branch-tree-host-cut.js';
-import {hasParallelControls,standaloneBundleTreeOwnerSupported,manualRootBundleTreeSupported} from './branch-parallel-continuation.js';
+import {hasParallelControls,standaloneBundleTreeOwnerSupported,rootCallBundleTreeSupported} from './branch-parallel-continuation.js';
 import {branchContinuationIds,remapBranchOutput} from './branch-continuation-remap.js';
 import type Database from 'better-sqlite3';
 import type {BranchPortableExecutionTree,BranchPortableRuntimeOwner,BranchDefinition} from '@ponderosa/core';
@@ -92,7 +92,7 @@ function validateOwners(db:Database.Database,c:Row,seeds?:Map<string,{selected:S
   const rootBindings=evidence?treeFact(evidence.get(c.rootExecutionId)!,'bindings'):JSON.parse((db.prepare('SELECT bindings_json FROM branch_bindings WHERE id=?').get(root.bindingRevisionId) as Row).bindings_json);
   const standalone=c.issuedResources!==true&&owners.length===1&&!root.hostDependencies&&standaloneBundleTreeOwnerSupported(root.selected,rootDefinition,rootBindings);
   const bundleTreeOwners=owners.map(o=>({selected:o.selected,definition:evidence?treeFact(evidence.get(o.executionId)!,'definition'):JSON.parse((db.prepare('SELECT definition_json FROM branch_versions WHERE id=?').get(o.versionId) as Row).definition_json),bindings:evidence?treeFact(evidence.get(o.executionId)!,'bindings'):JSON.parse((db.prepare('SELECT bindings_json FROM branch_bindings WHERE id=?').get(o.bindingRevisionId) as Row).bindings_json)}));
-  const rootCallBundles=c.issuedResources!==true&&owners.every(o=>!o.hostDependencies)&&manualRootBundleTreeSupported(bundleTreeOwners,c.rootExecutionId);
+  const rootCallBundles=c.issuedResources!==true&&owners.every(o=>!o.hostDependencies)&&rootCallBundleTreeSupported(bundleTreeOwners,c.rootExecutionId);
   const serialTreeRetries=c.issuedResources!==true&&owners.every(o=>{
     const definition=evidence?treeFact(evidence.get(o.executionId)!,'definition'):JSON.parse((db.prepare('SELECT definition_json FROM branch_versions WHERE id=?').get(o.versionId) as Row).definition_json);
     return (manualSerialTreeDefinitionSupported(definition)||o.executionId===c.rootExecutionId&&automaticSerialTreeDefinitionSupported(definition))&&!o.hostDependencies&&!o.selected.resources.length&&!o.selected.actions.length&&(!o.selected.bundles.length||rootCallBundles&&o.executionId===c.rootExecutionId)&&!o.selected.attempts.some((a:Row)=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json);
@@ -133,7 +133,7 @@ function validateOwners(db:Database.Database,c:Row,seeds?:Map<string,{selected:S
     const definition=JSON.parse(v.definition_json) as BranchDefinition;
     const ownerSerialRetries=serialTreeRetries||(parallelTreeRetries||manualMixedTreeRetries)&&!hasParallelControls(definition);
     if(automaticTree&&(o.executionId!==c.rootExecutionId&&definition.trigger.kind!=='manual'||definition.steps.some(s=>!['script','branch_call','human_gate'].includes(s.kind)||s.failure&&s.failure.action!=='stop'&&!((serialTreeRetries||parallelTreeRetries)&&s.kind==='script'&&s.failure.action==='retry')))return false;
-    const automaticRootTree=o.executionId===c.rootExecutionId&&automaticScriptDefinitionSupported(definition,true,false,false,serialTreeRetries,parallelTreeRetries)&&c.issuedResources!==true&&!o.hostDependencies&&!o.selected.resources.length&&!o.selected.actions.length&&(!o.selected.bundles.length||standalone)&&!o.selected.attempts.some((a:Row)=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json);
+    const automaticRootTree=o.executionId===c.rootExecutionId&&automaticScriptDefinitionSupported(definition,true,false,false,serialTreeRetries,parallelTreeRetries)&&c.issuedResources!==true&&!o.hostDependencies&&!o.selected.resources.length&&!o.selected.actions.length&&(!o.selected.bundles.length||standalone||rootCallBundles)&&!o.selected.attempts.some((a:Row)=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json);
     if(observing&&(definition.trigger.kind!=='manual'&&!automaticRootTree||definition.steps.some(s=>!['script','branch_call','human_gate'].includes(s.kind))||!['sync','async','exit'].includes(o.configuration.checkpointMode??'async')||o.hostDependencies||o.selected.resources.length||o.selected.actions.length||o.selected.bundles.length&&!(standalone||rootCallBundles&&o.executionId===c.rootExecutionId)||o.selected.attempts.some((a:Row)=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json)))return false;
     const issuedResource=c.issuedResources===true;
     const workflowGates=definition.steps.some(s=>s.kind==='human_gate');
@@ -296,7 +296,7 @@ export function portableScriptTreeSupported(db:Database.Database,data:BranchPort
   const root=byId.get(rootId);if(!root||fact(root,'frontier').execution[0].parent_execution_id)return;
   const related=all.filter(o=>{let e=fact(o,'frontier').execution[0];const seen=new Set<string>();for(;;){if(e.id===rootId)return true;if(!e.parent_execution_id||seen.has(e.id))return false;seen.add(e.id);const p=byId.get(e.parent_execution_id);if(!p)return false;e=fact(p,'frontier').execution[0];}});
   const standalone=related.length===1&&!root.chatRefs.length&&!root.facts.some(f=>['host','custody','import','tree-import'].includes(f.kind))&&standaloneBundleTreeOwnerSupported(fact(root,'frontier'),fact(root,'definition'),fact(root,'bindings'));
-  const rootCallBundles=manualRootBundleTreeSupported(related.map(o=>({selected:fact(o,'frontier'),definition:fact(o,'definition'),bindings:fact(o,'bindings')})),rootId);
+  const rootCallBundles=rootCallBundleTreeSupported(related.map(o=>({selected:fact(o,'frontier'),definition:fact(o,'definition'),bindings:fact(o,'bindings')})),rootId);
   const treeHistory=root.facts.some(f=>f.kind==='transition'&&['foreign_tree_selected_prefix','tree_historical_rewind','tree_restored_prefix'].includes(JSON.parse(f.json).kind));
   // The saver prefers standalone Script bytes. Verify that codec, then expose an unsaved one-owner view.
   if(standalone&&!treeHistory&&(!snapshot||snapshot.continuation?.schema==='ponderosa.branch.script-continuation.v1')){
@@ -324,7 +324,7 @@ export function portableScriptTreeSupported(db:Database.Database,data:BranchPort
   }
   const c=snapshot?.continuation??{schema:TREE_SCHEMA,compatibility:TREE_COMPATIBILITY,rootExecutionId:rootId,owners:latestOwners,provenance:[]};
   if(c.schema!==TREE_SCHEMA||c.rootExecutionId!==rootId||c.issuedResources||snapshot&&(snapshot.schema!=='branch-unit-selected.v2'||snapshot.restore_supported!==true||!['sync','async','exit'].includes(snapshot.mode)||!treeSnapshotMetadata(snapshot,c)||!root.facts.some(f=>f.kind==='checkpoint'&&f.json===stableJson(snapshot)&&f.sha256===payloadHash(snapshot))))return;
-  const selectedRootCallBundles=manualRootBundleTreeSupported(c.owners.map((o:Row)=>({selected:o.selected,definition:fact(byId.get(o.executionId)!,'definition'),bindings:fact(byId.get(o.executionId)!,'bindings')})),rootId);
+  const selectedRootCallBundles=rootCallBundleTreeSupported(c.owners.map((o:Row)=>({selected:o.selected,definition:fact(byId.get(o.executionId)!,'definition'),bindings:fact(byId.get(o.executionId)!,'bindings')})),rootId);
   if(c.owners.some((o:Row)=>!related.some(p=>p.sourceExecutionId===o.executionId)||o.hostDependencies||o.selected.resources.length||o.selected.actions.length||o.selected.bundles.length&&!(standalone||selectedRootCallBundles&&o.executionId===rootId)||o.selected.attempts.some((a:Row)=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json||['leased','running','outcome_unknown'].includes(a.state))))return;
   const provenance=compose(db,c,!snapshot,data,work,depth,!snapshot);if(!provenance)return;
   if(!snapshot)c.provenance=provenance;
@@ -376,7 +376,7 @@ function foreignTreeSeeds(db:Database.Database,c:Row,data?:BranchPortableExecuti
    if(stableJson(pins.bindings.branches??{})!==stableJson(Object.fromEntries(Object.entries(originalBindings).map(([ref,b])=>[ref,held.receipt.branchMap[resolved.branches[b as string]!]]))))return;
    seeds.set(e.id,{selected:previous.selected,idMap:r.idMap});
   }
-  const rootCallBundles=manualRootBundleTreeSupported(c.owners.map((o:Row)=>{const pins=review.tree.branches.find((b:Row)=>b.branchId===execution(o.executionId)?.branch_id);return {selected:o.selected,definition:pins?.definition,bindings:pins?.bindings};}),c.rootExecutionId);
+  const rootCallBundles=rootCallBundleTreeSupported(c.owners.map((o:Row)=>{const pins=review.tree.branches.find((b:Row)=>b.branchId===execution(o.executionId)?.branch_id);return {selected:o.selected,definition:pins?.definition,bindings:pins?.bindings};}),c.rootExecutionId);
   const rootPins=review.tree.branches.find((b:Row)=>b.branchId===execution(c.rootExecutionId)?.branch_id);
   const standalone=!!rootPins&&c.owners.length===1&&old.owners.length===1&&standaloneBundleTreeOwnerSupported(c.owners[0].selected,rootPins.definition,rootPins.bindings);
   for(const o of c.owners){

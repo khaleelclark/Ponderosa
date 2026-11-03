@@ -34,7 +34,7 @@ function ownedScriptBundlesSupported(s:Selected,d:BranchDefinition,calls=false):
   const references=texts.filter(t=>typeof t==='string'&&t.startsWith('branch-result-bundle:'));
   if(!s.bundles!.length&&!references.length)return true;
   // Automatic origins need separate occurrence replay; their admitted descendants are fresh manual owners.
-  const automatic=automaticScriptDefinitionSupported(d,false,false,true);
+  const automatic=calls?automaticScriptDefinitionSupported(d,true,false,false,false,true):automaticScriptDefinitionSupported(d,false,false,true);
   if(d.trigger.kind!=='manual'&&!automatic||!parallelDefinitionSupported(d,calls)||d.steps.some(step=>!['script','human_gate',...(calls?['branch_call']:[])].includes(step.kind))||e.admission_source!=='manual'&&!(automatic&&e.admission_source==='automatic')||e.parent_execution_id||e.parent_attempt_id||e.call_depth||e.input_text.startsWith('branch-result-bundle:')||s.resources!.length||s.actions!.length||s.attempts!.some(a=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json))return false;
   if(branchContinuationIds(s).includes(e.id))return false;
   const producers=new Set<string>();
@@ -62,20 +62,29 @@ export function standaloneBundleTreeOwnerSupported(s:Selected,d:BranchDefinition
   &&portableScriptBundlesSupported(s,d);
 }
 export type ManualRootBundleOwner={selected:Selected;definition:BranchDefinition;bindings:Row};
-/** Complete related cuts only; canonical replay still proves children, saves and bundle production. */
+/** The original all-manual family keeps its narrow public boundary. */
 export function manualRootBundleTreeSupported(owners:ManualRootBundleOwner[],rootId:string):boolean {
+ return rootBundleTreeSupported(owners,rootId);
+}
+/** Complete related cuts only; original occurrence, children, saves and production need replay. */
+export function rootCallBundleTreeSupported(owners:ManualRootBundleOwner[],rootId:string):boolean {
+ return manualRootBundleTreeSupported(owners,rootId)||rootBundleTreeSupported(owners,rootId,true);
+}
+function rootBundleTreeSupported(owners:ManualRootBundleOwner[],rootId:string,automaticRoot=false):boolean {
  try {
   const byId=new Map(owners.map(o=>[o.selected.execution![0]!.id,o])),root=byId.get(rootId);
   const inline=(value:unknown)=>value===null||value===undefined||typeof value==='string'&&!value.startsWith('branch-result-bundle:')&&branchText(value)===value;
   if(!root||byId.size!==owners.length||!root.definition.steps.some(s=>s.kind==='branch_call')||!parallelDefinitionSupported(root.definition,true))return false;
+  const automatic=automaticRoot&&automaticScriptDefinitionSupported(root.definition,true,false,false,false,true);
+  if(automaticRoot&&!automatic)return false;
   for(const o of owners){
    const s=o.selected,d=o.definition,e=s.execution![0]!;
-   if(d.trigger.kind!=='manual'||d.policy.failure.action!=='stop'||Object.values(d.parameters??{}).some(p=>p.type==='secret')
+   if(d.trigger.kind!=='manual'&&!(automatic&&e.id===rootId)||d.policy.failure.action!=='stop'||Object.values(d.parameters??{}).some(p=>p.type==='secret')
     ||d.steps.some(step=>!(step.kind==='script'&&step.runtime==='node'||step.kind==='branch_call'||step.kind==='human_gate')||step.failure&&step.failure.action!=='stop'&&!(step.kind==='script'&&step.failure.action==='retry'))
     ||d.controls.some(c=>!['condition','route','fork','map','join'].includes(c.kind))||Object.keys(o.bindings.agents??{}).length
     ||s.resources!.length||s.actions!.length||s.gates!.some(g=>g.purpose!=='approval')||s.attempts!.some(a=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json||['leased','running','outcome_unknown'].includes(a.state)))return false;
    if(e.id===rootId){
-    if(e.parent_execution_id||e.parent_attempt_id||e.call_depth||e.admission_source!=='manual'||!inline(e.input_text)||!ownedScriptBundlesSupported(s,d,true))return false;
+    if(e.parent_execution_id||e.parent_attempt_id||e.call_depth||e.admission_source!=='manual'&&!(automatic&&e.admission_source==='automatic')||!inline(e.input_text)||!ownedScriptBundlesSupported(s,d,true))return false;
    }else{
     if(e.admission_source!=='call'||!e.parent_execution_id||!e.parent_attempt_id||s.bundles!.length||!portableScriptBundlesSupported(s,d)||!inline(e.input_text)||!inline(e.output_text))return false;
     const seen=new Set<string>();let current=o;
