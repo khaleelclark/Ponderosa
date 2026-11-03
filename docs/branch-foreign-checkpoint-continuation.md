@@ -18,7 +18,7 @@ Current choices are established through the existing destination configuration/b
 
 ## Authority and atomicity
 
-Only standalone manual, sync- or async-mode, effect-free Script/human-gate definitions with declared JSON state (`sum`, `append`, `replace`) and existing `condition`/`route` and canonical fork/Map/Join controls are accepted. Workflow and per-step failure policies must stop; retries, secrets and other control families remain excluded. Selected and latest exported source cuts must have no issued Requests, resources, custody facts, actions, bundles, recovery-purpose gates, pending process outcomes or execution-owned Chats. The selected and latest source cuts must each pass the existing Script frontier and full audit replay, including exact original definition/binding pins, input, state-seal settlement order, condition/route choices, fork and Join selections, Map inventory/order/bounds and traversal/loop counters. The selected cut must be resumable: running, or canonically waiting for supported parallel work or a workflow gate. The latest cut may be running, canonically waiting or canonically completed/failed; both cuts must remain effect-free and pass full replay. Missing or corrupted evidence refuses before fresh acceptance. The only shared replay extension supplies retained immutable owner/audit evidence instead of querying nonexistent foreign database owners. It is restricted to effect-free Script cuts with independently validated retained generation links and returns only a validation result, never authority. No foreign rows or fake Requests are inserted to satisfy validation.
+Only standalone manual, sync/async or proven committed closed EXIT-mode, effect-free Script/human-gate definitions with declared JSON state (`sum`, `append`, `replace`) and existing `condition`/`route` and canonical fork/Map/Join controls are accepted. Workflow and per-step failure policies must stop; retries, secrets and other control families remain excluded. Selected and latest exported source cuts must have no issued Requests, resources, custody facts, actions, bundles, recovery-purpose gates, pending process outcomes or execution-owned Chats. The selected and latest source cuts must each pass the existing Script frontier and full audit replay, including exact original definition/binding pins, input, state-seal settlement order, condition/route choices, fork and Join selections, Map inventory/order/bounds and traversal/loop counters. The selected cut must be resumable: running, or canonically waiting for supported parallel work or a workflow gate. For sync/async the latest cut may be running, canonically waiting or canonically completed/failed; EXIT additionally requires an exact committed closed latest frontier as described below; both cuts must remain effect-free and pass full replay. Missing or corrupted evidence refuses before fresh acceptance. The only shared replay extension supplies retained immutable owner/audit evidence instead of querying nonexistent foreign database owners. It is restricted to effect-free Script cuts with independently validated retained generation links and returns only a validation result, never authority. No foreign rows or fake Requests are inserted to satisfy validation.
 
 The preview independently verifies the actual recreated-held imported native frontier/maps/participant ownership through existing runtime-data readback. It checks the imported owner remains waiting/unaccepted, current destination availability/pins/configuration/policy and accessible directories. Any unknown custody or native authority on the held owner refuses. `not_applicable` means no selected/latest source or native resource exists; it never means an unavailable receipt was treated as released.
 
@@ -32,7 +32,7 @@ The original held owner row, frontier, import command, original manifest and pri
 
 `tests/branches/foreign-checkpoint-continuation.test.mjs` uses actual full export/import/review/continuation/status HTTP callers and canonical inert source APIs. It covers different destination directories, persisted private checkpoints, restart between review and confirmation, fresh manual admission/current budget revision, exact held-owner preservation, remapped completed prefix, only suffix leasing, lost response/replay/restart, stale budget/policy/directory refusal, unknown latest source/native custody, command conflict, and final-receipt rollback. SQL observes rows or injects corruption/failure only; it does not fabricate source acceptance/frontier or destination admission. The state/control extension adds no fixture or test preparation under the source-only instruction; no runtime qualification of that extension is claimed.
 
-Remaining beyond the supported Call-tree family described below: automatic/issued/unknown/resource/bundle/Agent frontiers; EXIT mode; secret choices; recovery-purpose gates; changed historical definitions/configuration; execution-owned Chat continuation; external file/artifact restoration proofs. These paths refuse explicitly before fresh acceptance. Existing tree DATA recreation, standalone held import, composer, deletion/retention/precleanup and Git/config transport remain unchanged. This is no whole-portability, all-family or runtime qualification claim.
+Remaining beyond the supported Call-tree family described below: automatic/issued/unknown/resource/bundle/Agent frontiers; EXIT trees; secret choices; recovery-purpose gates; changed historical definitions/configuration; execution-owned Chat continuation; external file/artifact restoration proofs. These paths refuse explicitly before fresh acceptance. Existing tree DATA recreation, standalone held import, composer, deletion/retention/precleanup and Git/config transport remain unchanged. This is no whole-portability, all-family or runtime qualification claim.
 
 ## Saved continuation recovery in the UI
 
@@ -354,7 +354,7 @@ Parallel canceled gates still require canonical Join/path/item cancellation proo
 Original-key recovery after later destination cancellation retains the complete
 current-tree replay and supported quiescent-frontier requirement described above.
 
-Recovery-purpose gates, unproven coordination lineage, issued/resource/native/unknown/effectful, automatic and EXIT
+Recovery-purpose gates, unproven coordination lineage, issued/resource/native/unknown/effectful, automatic and EXIT-tree
 combinations remain refused. Original data, partial/failure evidence and existing
 standalone gate/parallel/rewind behavior are preserved. This is source support;
 round trips, suffix scheduling and rollback remain execution-unqualified.
@@ -393,7 +393,7 @@ command. A copied pending gate later canceled in the destination additionally
 requires complete current Script replay, including causal Join/path/item/gate
 events and exact attempt fences. Recovery refuses a running/leased Script attempt
 or unknown outcome; it requires a supported quiescent current frontier. Serial
-canceled gates without supported canonical replay remain refused. EXIT, automatic and effectful work remain excluded.
+canceled gates without supported canonical replay remain refused. Closed standalone EXIT support is described below; automatic and effectful work remain excluded.
 
 This extension changes source support only. No async timing, durability, runtime,
 notification delivery, round-trip or rollback validation was performed.
@@ -437,3 +437,53 @@ command, codec, storage format or execution authority is introduced. EXIT,
 automatic, issued, resource, secret and unknown/in-flight cuts remain refused.
 This is source support only; async timing, durability, round trips and scheduling
 were not executed or qualified.
+
+
+## Committed closed standalone EXIT checkpoints
+
+The standalone consumer also accepts manual effect-free Script/ordinary human-gate
+selections in explicit `exit` mode. Exact original configuration and invocation
+metadata remain unchanged. The selected checkpoint must be an actual committed
+complete saver snapshot, byte-identical to its retained fact and SHA-256, marked
+restorable and closing, with the same nonempty invocation identity and EXIT mode
+in its continuation. Existing local replay verifies the complete canonical
+interruption or waiting-gate closure, invocation ordinal/outcome, selected state
+and audit, including observed Script process exits. Process absence, an interrupt
+request alone, a pending/coalesced saver candidate or a failed write is not proof.
+Export refuses recorded async or EXIT durability failure.
+
+Latest source replay is independent. EXIT requires a committed closed snapshot
+whose entire selected inventory equals the latest retained frontier. A nonterminal
+latest cut must itself have the supported restorable EXIT continuation; both that
+codec and the full latest audit replay. A completed/failed latest frontier may use
+its exact committed closing observation even when the saver marks it nonrestorable:
+it is not selected for continuation, and terminal audit/state and process-drain
+proof still replay. A newer active invocation, changed frontier without matching
+closed saved bytes, unsupported failure/terminal shape or missing drain evidence
+refuses. This deliberately does not claim that an old closed selection proves a
+newer invocation closed or that an in-memory closure is already durable.
+
+Held imports and re-exports preserve private evidence without admission. Accepted
+generations and supported local historical rewinds use the same bounded lineage
+walker, original command and snapshot proof, selected/latest replay and ID maps.
+No source interruption identity becomes destination authority. Fresh acceptance
+uses the existing transaction, current human review/configuration/enablement,
+capacity/admission and mode-aware saver/readiness. The fresh destination starts
+its own EXIT invocation; unfinished suffix work follows that lifecycle. Copied
+completed work remains historical once, and pending gates receive new destination
+identities and notifications. Destination gate closure and any later explicit
+interrupt/resume are established by destination events and saved bytes.
+
+Original-key receipt recovery retains immutable acceptance/prefix proof after
+legitimate suffix progress. A copied gate later canceled additionally requires
+complete causal current Script replay, including Join/path/item/gate events and
+attempt fences. For EXIT this requires the exact saved closed current frontier;
+active, pending, leased/running/unknown or unsupported cancellation shapes refuse.
+No lookup creates a replacement command. Existing review/receipt DTOs, SDK and UI
+already expose exact checkpoint, configuration and original-key data; no separate
+codec, storage version or authority system is added.
+
+EXIT Call trees, automatic/effectful/issued/native/resource/custody/Agent/bundle,
+secrets and execution-owned Chat continuation remain excluded. This is source
+support only. No tests, typechecks, builds, execution, timing/durability,
+notifications, round trips, scheduling or rollback validation was performed.

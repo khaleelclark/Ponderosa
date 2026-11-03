@@ -169,7 +169,7 @@ function composeScriptCut(db:Database.Database,executionId:string,selected:Selec
       const foreignPrefixes=cut.audit.filter(row=>row.kind==='foreign_selected_prefix');
       if(foreignPrefixes.length){
         const prefix=foreignPrefixes[0],v=JSON.parse(prefix!.evidence_json);
-        if(foreignPrefixes.length!==1||cut.audit[0]?.kind!=='trigger_accepted'||cut.audit[1]!==prefix||prefix!.transition_key!=='foreign-prefix'||!['sync','async'].includes(configuration.checkpointMode??'async'))return;
+        if(foreignPrefixes.length!==1||cut.audit[0]?.kind!=='trigger_accepted'||cut.audit[1]!==prefix||prefix!.transition_key!=='foreign-prefix'||!['sync','async','exit'].includes(configuration.checkpointMode??'async'))return;
         const origin=evidence?fact(cut.executionId,'provenance'):JSON.parse((db.prepare('SELECT provenance_json FROM branch_executions WHERE id=?').get(cut.executionId) as Row).provenance_json);
         if(origin.source!=='foreign_checkpoint_continuation'||origin.importedExecutionId!==v.importedExecutionId||origin.reviewSha256!==v.reviewSha256)return;
         let retained:Row|undefined;
@@ -226,7 +226,7 @@ function composeScriptCut(db:Database.Database,executionId:string,selected:Selec
       const receipt=evidence?fact(line.sourceExecutionId,'command',`historical-rewind:${payloadHash(line.commandKey)}`):db.prepare('SELECT input_hash,result_json FROM branch_commands WHERE execution_id=? AND command_key=?').get(line.sourceExecutionId,`historical-rewind:${payloadHash(line.commandKey)}`) as Row|undefined;
       if(!receipt||receipt.input_hash!==line.commandHash||receipt.result_json!==stableJson({executionId:cut.executionId,lineageId:origin.lineageId}))return;
       const snapshot=source.value,c=snapshot.continuation,se=snapshot.selected?.execution?.[0];
-      if(evidence&&(configuration.checkpointMode??'async')==='async'&&!portableScriptSnapshotSupported(evidenceOwner(line.sourceExecutionId)!,snapshot,configuration))return;
+      if(evidence&&['async','exit'].includes(configuration.checkpointMode??'async')&&!portableScriptSnapshotSupported(evidenceOwner(line.sourceExecutionId)!,snapshot,configuration))return;
       if(snapshot.schema!=='branch-unit-selected.v2'||snapshot.restore_supported!==true||c?.schema!=='ponderosa.branch.script-continuation.v1'
         ||stableJson(c.compatibility)!==stableJson(SCRIPT_CONTINUATION_COMPATIBILITY)||!se||se.id!==line.sourceExecutionId||se.version_id!==c.versionId||se.binding_revision_id!==c.bindingRevisionId
         ||c.checkpoint&&(snapshot.invocationId!==c.checkpoint.invocationId||snapshot.mode!==c.checkpoint.mode||snapshot.closing!==c.checkpoint.closing)
@@ -266,7 +266,7 @@ export function replayScriptCut(db:Database.Database,executionId:string,selected
   try {
     // Only the lineage walker may seed effect-free foreign replay; no source authority is adopted.
     const foreignTerminal=context?.terminal===true&&standaloneGateContext(context);
-    if(foreign&&(seed&&!foreign.validatedSeed||context&&!foreignTerminal&&!foreign.tree||!['sync','async'].includes(configuration.checkpointMode??'async')||definition.steps.some(s=>s.kind!=='script'&&s.kind!=='human_gate'&&!(foreign.tree&&s.kind==='branch_call'))||selected.attempts!.some(a=>a.request_id)||selected.resources!.length||selected.actions!.length||selected.bundles!.length||(audit as Row[]).some(e=>['historical_rewind','restored_prefix','foreign_selected_prefix','foreign_tree_selected_prefix'].includes(e.kind)&&!foreign.validatedSeed||['tree_historical_rewind','tree_restored_prefix'].includes(e.kind)&&(!foreign.validatedSeed||!foreign.tree))))return false;
+    if(foreign&&(seed&&!foreign.validatedSeed||context&&!foreignTerminal&&!foreign.tree||!['sync','async',...(!foreign.tree?['exit']:[])].includes(configuration.checkpointMode??'async')||definition.steps.some(s=>s.kind!=='script'&&s.kind!=='human_gate'&&!(foreign.tree&&s.kind==='branch_call'))||selected.attempts!.some(a=>a.request_id)||selected.resources!.length||selected.actions!.length||selected.bundles!.length||(audit as Row[]).some(e=>['historical_rewind','restored_prefix','foreign_selected_prefix','foreign_tree_selected_prefix'].includes(e.kind)&&!foreign.validatedSeed||['tree_historical_rewind','tree_restored_prefix'].includes(e.kind)&&(!foreign.validatedSeed||!foreign.tree))))return false;
     if(!scriptFrontierSupported(selected,definition,context,hostCut)||!scriptAuditSupported(audit,context?.restoredTerminal))return false;
     const events=audit as Row[],e=selected.execution![0]!,p=selected.paths![0]!;
     const waitingGate=(workflowGateContext(context)||hasParallelControls(definition))&&selected.gates!.some(g=>g.state==='waiting');
@@ -595,15 +595,27 @@ export function scriptLatestSupported(db:Database.Database,executionId:string):b
   if(!e||selected.attempts!.some(a=>a.request_id||a.runtime_outcome_json||['leased','running','outcome_unknown'].includes(a.state)))return false;
   const audit=db.prepare('SELECT id,transition_key,kind,evidence_json,created_at FROM branch_checkpoints WHERE execution_id=? ORDER BY id').all(executionId);
   const context=['completed','failed'].includes(e.state)?{terminal:true,terminalState:e.state,descendantTraversals:0,descendantLoops:0,children:{}} as ScriptOwnerContext:undefined;
-  return composeScriptCut(db,executionId,selected,JSON.parse(version.definition_json),configuration,audit,undefined,undefined,true,undefined,undefined,0,context)!==undefined;
+  const snapshot=configuration.checkpointMode==='exit'?closedExitSnapshot(db.prepare('SELECT snapshot_json,content_hash FROM branch_unit_snapshots WHERE execution_id=?').all(executionId).filter((row:any)=>hash(row.snapshot_json)===row.content_hash).map((row:any)=>JSON.parse(row.snapshot_json)),selected):undefined;
+  if(configuration.checkpointMode==='exit'){
+    const invocation=JSON.parse(owner.checkpoint_invocation_json);
+    if(!snapshot||invocation.id!==snapshot.invocationId||invocation.mode!=='exit'||!['interrupted','terminal'].includes(invocation.state)||invocation.durability!=='saved')return false;
+  }
+  return composeScriptCut(db,executionId,selected,JSON.parse(version.definition_json),configuration,audit,snapshot?.continuation?.checkpoint,undefined,true,undefined,undefined,0,context)!==undefined;
  }catch{return false;}
 }
 
-/** Only committed saver bytes attest an async selection; pending process tickets never do. */
+/** EXIT latest proof must describe an actual saved closed frontier, never process absence. */
+function closedExitSnapshot(snapshots:Row[],selected:Selected):Row|undefined {
+  return snapshots.find(snapshot=>snapshot.schema==='branch-unit-selected.v2'&&snapshot.mode==='exit'&&snapshot.closing===true
+    &&typeof snapshot.invocationId==='string'&&!!snapshot.invocationId&&stableJson(snapshot.selected)===stableJson(selected)
+    &&(['completed','failed'].includes(selected.execution![0]!.state)||snapshot.restore_supported===true&&snapshot.continuation?.checkpoint?.invocationId===snapshot.invocationId));
+}
+
+/** Only committed saver bytes attest a selection; pending process tickets never do. */
 export function portableScriptSnapshotSupported(owner:import("@ponderosa/core").BranchPortableRuntimeOwner,snapshot:Row,configuration:BranchConfiguration):boolean {
  try {
   const mode=configuration.checkpointMode??'async';
-  if(!['sync','async'].includes(mode)||snapshot.schema!=='branch-unit-selected.v2'||snapshot.restore_supported!==true||snapshot.mode!==mode||typeof snapshot.invocationId!=='string'||!snapshot.invocationId||typeof snapshot.closing!=='boolean'||snapshot.continuation?.checkpoint)return false;
+  if(!['sync','async','exit'].includes(mode)||snapshot.schema!=='branch-unit-selected.v2'||snapshot.restore_supported!==true||snapshot.mode!==mode||typeof snapshot.invocationId!=='string'||!snapshot.invocationId||typeof snapshot.closing!=='boolean'||(mode==='exit'?(snapshot.closing!==true||snapshot.continuation?.checkpoint?.invocationId!==snapshot.invocationId||snapshot.continuation?.checkpoint?.mode!==mode||snapshot.continuation?.checkpoint?.closing!==true):!!snapshot.continuation?.checkpoint))return false;
   const json=stableJson(snapshot);
   return owner.facts.some(f=>f.kind==='checkpoint'&&f.json===json&&f.sha256===hash(json));
  }catch{return false;}
@@ -617,18 +629,20 @@ export function portableScriptCutSupported(db:Database.Database,data:import("@po
   budget.cache.set(cacheKey,false);
   const read=(kind:string)=>JSON.parse(owner.facts.find(f=>f.kind===kind)!.json);
   const definition=read('definition'),configuration=read('configuration'),e=selected.execution?.[0];
-  if(!e||e.id!==owner.sourceExecutionId||e.branch_id!==owner.sourceBranchId||e.parent_execution_id||e.parent_attempt_id||e.call_depth||e.admission_source!=='manual'||!portableScriptDefinitionSupported(definition)||configuration.requiredSecretRefs.length||!['sync','async'].includes(configuration.configuration.checkpointMode??'async')||
+  if(!e||e.id!==owner.sourceExecutionId||e.branch_id!==owner.sourceBranchId||e.parent_execution_id||e.parent_attempt_id||e.call_depth||e.admission_source!=='manual'||!portableScriptDefinitionSupported(definition)||configuration.requiredSecretRefs.length||!['sync','async','exit'].includes(configuration.configuration.checkpointMode??'async')||
     owner.chatRefs.length||owner.facts.some(f=>f.kind==='custody'||f.kind==='tree-import')||
     [selected,read('frontier')].some(cut=>!cut.execution?.[0]||cut.resources.length||cut.actions.length||cut.bundles.length||cut.gates.some((g:Row)=>g.purpose!=='approval')||cut.attempts.some((a:Row)=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json||['leased','running','outcome_unknown'].includes(a.state))))return false;
-  if(continuation&&(configuration.configuration.checkpointMode??'async')==='async'&&!owner.facts.some(f=>{
+  if(continuation&&['async','exit'].includes(configuration.configuration.checkpointMode??'async')&&!owner.facts.some(f=>{
     if(f.kind!=='checkpoint')return false;const snapshot=JSON.parse(f.json);
     return stableJson(snapshot.selected)===stableJson(selected)&&stableJson(snapshot.continuation)===stableJson(continuation)&&portableScriptSnapshotSupported(owner,snapshot,configuration.configuration);
   }))return false;
-  if(continuation&&(continuation.schema!=='ponderosa.branch.script-continuation.v1'||continuation.checkpoint||stableJson(continuation.compatibility)!==stableJson(SCRIPT_CONTINUATION_COMPATIBILITY)||
+  if(continuation&&(continuation.schema!=='ponderosa.branch.script-continuation.v1'||configuration.configuration.checkpointMode!=='exit'&&continuation.checkpoint||stableJson(continuation.compatibility)!==stableJson(SCRIPT_CONTINUATION_COMPATIBILITY)||
     continuation.versionId!==e.version_id||continuation.bindingRevisionId!==e.binding_revision_id||continuation.versionHash!==payloadHash(definition)||continuation.bindingHash!==payloadHash(read('bindings'))||stableJson(continuation.configuration)!==stableJson(configuration.configuration)))return false;
   const context=['completed','failed'].includes(e.state)?{terminal:true,terminalState:e.state,descendantTraversals:0,descendantLoops:0,children:{}} as ScriptOwnerContext:undefined;
   if(continuation&&context)return false;
-  const supported=composeScriptCut(db,e.id,selected,definition,configuration.configuration,continuation?.audit??owner.facts.filter(f=>f.kind==='transition').map(f=>JSON.parse(f.json)),undefined,continuation?.provenance,!continuation,undefined,{data,owner},depth,context,budget)!==undefined;
+  const latestExit=!continuation&&configuration.configuration.checkpointMode==='exit'?closedExitSnapshot(owner.facts.filter(f=>f.kind==='checkpoint'&&f.sha256===hash(f.json)).map(f=>JSON.parse(f.json)),selected):undefined;
+  if(!continuation&&configuration.configuration.checkpointMode==='exit'&&(!latestExit||!context&&(!portableScriptSnapshotSupported(owner,latestExit,configuration.configuration)||!portableScriptCutSupported(db,data,owner,selected,latestExit.continuation,depth+1,budget))))return false;
+  const supported=composeScriptCut(db,e.id,selected,definition,configuration.configuration,continuation?.audit??owner.facts.filter(f=>f.kind==='transition').map(f=>JSON.parse(f.json)),continuation?.checkpoint??latestExit?.continuation?.checkpoint,continuation?.provenance,!continuation,undefined,{data,owner},depth,context,budget)!==undefined;
   budget.cache.set(cacheKey,supported);return supported;
  }catch{return false;}
 }

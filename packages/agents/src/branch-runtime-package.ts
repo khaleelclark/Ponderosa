@@ -103,7 +103,7 @@ export function captureBranchRuntimeData(db:Database.Database,branchId:string,ch
   if(rows.length>1000)throw Error('Portable runtime owner bound exceeded');
   const owners:BranchPortableRuntimeOwner[]=rows.map(e=>{
    if(!called&&(e.parent_execution_id||!['manual','automatic'].includes(e.admission_source)||db.prepare('SELECT 1 FROM branch_executions WHERE parent_execution_id=?').get(e.id)))throw Error('Full runtime export currently requires standalone execution owners; called trees cannot be omitted');
-   if((JSON.parse(e.configuration_json).checkpointMode??'async')==='async'&&JSON.parse(e.checkpoint_invocation_json??'null')?.durability==='failed')throw Error('Async checkpoint durability failed; reconcile the source before export');
+   if(['async','exit'].includes(JSON.parse(e.configuration_json).checkpointMode??'async')&&JSON.parse(e.checkpoint_invocation_json??'null')?.durability==='failed')throw Error('Async/EXIT checkpoint durability failed; reconcile the source before export');
    const facts:BranchPortableRuntimeFact[]=[],add=(kind:BranchPortableRuntimeFact['kind'],key:string,json:string)=>{const fact={kind,key,json,sha256:sha(json)};parseFact(fact);facts.push(fact);};
    if(called)add('acceptance','original',stableJson({admittedAt:e.admitted_at,admissionJson:e.admission_json}));
    const selected=selectBranchUnit(db,e.id);add('frontier','current',stableJson(selected));

@@ -781,10 +781,10 @@ export class BranchStore {
     const definition=validateBranchDefinition(JSON.parse(sourceOwner.facts.find(f=>f.kind==='definition')!.json));
     const bindingFact=sourceOwner.facts.find(f=>f.kind==='bindings')!,configuration=JSON.parse(sourceOwner.facts.find(f=>f.kind==='configuration')!.json),current=JSON.parse(sourceOwner.facts.find(f=>f.kind==='frontier')!.json) as Selected;
     if(snapshot.schema!=='branch-unit-selected.v2'||snapshot.restore_supported!==true||!portableScriptSnapshotSupported(sourceOwner,snapshot,configuration.configuration)||c?.schema!=='ponderosa.branch.script-continuation.v1'
-      ||stableJson(c.compatibility)!==stableJson(SCRIPT_CONTINUATION_COMPATIBILITY)||c.checkpoint
+      ||stableJson(c.compatibility)!==stableJson(SCRIPT_CONTINUATION_COMPATIBILITY)
       ||!e||e.id!==sourceOwner.sourceExecutionId||e.branch_id!==resolved.data.sourceBranchId||e.parent_execution_id||e.parent_attempt_id||e.admission_source!=='manual'
       ||!portableScriptDefinitionSupported(definition)
-      ||!['sync','async'].includes(configuration.configuration.checkpointMode??'async')||configuration.requiredSecretRefs.length||Object.keys(configuration.configuration.secretBindings??{}).length)throw Error('Only supported standalone manual sync/async effect-free Script/human-gate cuts with JSON state and condition/route/fork/Map/Join controls, without secrets, are supported');
+      ||!['sync','async','exit'].includes(configuration.configuration.checkpointMode??'async')||configuration.requiredSecretRefs.length||Object.keys(configuration.configuration.secretBindings??{}).length)throw Error('Only supported standalone manual sync/async or committed closed EXIT effect-free Script/human-gate cuts with JSON state and condition/route/fork/Map/Join controls, without secrets, are supported');
     const effectFree=(cut:Selected)=>!!cut.execution?.[0]&&!cut.resources!.length&&!cut.actions!.length&&!cut.bundles!.length&&!cut.gates!.some(g=>g.purpose!=='approval')
       &&!cut.attempts!.some(a=>a.request_id||a.recovery_of_request_id||a.runtime_outcome_json||['leased','running','outcome_unknown'].includes(a.state));
     if(!effectFree(selected)||!effectFree(current)||sourceOwner.facts.some(f=>f.kind==='custody')||sourceOwner.chatRefs.length)throw Error('Issued, unknown, bundle, resource custody or execution-Chat dependency cannot be continued; data stays held');
