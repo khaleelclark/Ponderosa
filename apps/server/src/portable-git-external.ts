@@ -106,9 +106,8 @@ export async function captureGitExternalDependencies(root:string,git:ReviewedGit
     const source=serializeSourcePath(path.resolve(native));
     if(Buffer.byteLength(source)>4096||/[\x00-\x1f\x7f]/.test(source))throw new Error('Configured Git dependency path exceeds its portable provenance bound');
     if(privatePath(source)){result.omittedPaths.push(source);return undefined;}
-    if(!allowed(source)){result.omittedPaths.push(source);return undefined;}
     await observeParentAliases(native);
-    let parent;try{parent=await pin(path.dirname(native));}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT'){result.absentPaths.push(source);return source;}throw error;}
+    let parent;try{parent=await pin(path.dirname(native));}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT'){if(!allowed(source)){result.omittedPaths.push(source);return undefined;}result.absentPaths.push(source);return source;}throw error;}
     const target=path.join(parent.path,path.basename(native)),canonical=serializeSourcePath(path.join(parent.native,path.basename(native)));
     if(privatePath(canonical)||!allowed(canonical)){result.omittedPaths.push(canonical);return undefined;}
     let before;try{before=await fs.lstat(target,{bigint:true});}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT'){result.absentPaths.push(canonical);return canonical;}throw error;}
