@@ -171,3 +171,24 @@ test('Claude native question callback writes answers only while the original tur
   session.handleNativeRequest(callback);
   assert.equal(frames.length,2,'A duplicate original question cannot be replayed');
 });
+
+test('native question IDs and question text retain own data for prototype-shaped names',async()=>{
+  const names=['__proto__','constructor','toString'];
+  const opts={signal:new AbortController().signal,handleElicitation:async()=>({
+    action:'accept',content:{answer0:'Brief',answer1:'Detailed',answer2:'Custom'},
+  })};
+  const codex=await answerCodexNativeQuestions(opts,'session',()=> 'turn','rpc',{
+    ...nativeQuestionParams,questions:names.map(id=>({...nativeQuestion,id})),
+  });
+  assert.deepEqual(Object.keys(codex.answers),names);
+  for (const [index,name] of names.entries()) {
+    assert.equal(Object.hasOwn(codex.answers,name),true);
+    assert.deepEqual(codex.answers[name],{answers:[['Brief','Detailed','Custom'][index]]});
+  }
+  assert.deepEqual(JSON.parse(JSON.stringify(codex)),codex);
+  const claude=await answerClaudeNativeQuestions(opts,{
+    requestId:'rpc',sessionId:'session',turnId:'turn',kind:'question',
+  },{questions:names.map(question=>({header:'Format',question,multiSelect:false,options:nativeQuestion.options}))});
+  assert.deepEqual(Object.keys(claude.answers),names);
+  assert.deepEqual(JSON.parse(JSON.stringify(claude.answers)),Object.fromEntries(names.map((name,index)=>[name,['Brief','Detailed','Custom'][index]])));
+});

@@ -886,3 +886,12 @@ test('direct Codex availability passes cancellation and exact spawned-process ow
     assert.equal(spawned, 1); assert.equal(modelRequests, 0);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+
+test('runtime question guidance permits the native bridge without duplicating questions or granting permissions',async()=>{
+  const { communicationV3SessionPrompt }=await import('../../apps/server/dist/runtime-selection.js');
+  const prompt=communicationV3SessionPrompt().join('\n');
+  assert.match(prompt,/Supported provider-native AskUserQuestion\/request_user_input callbacks also reach the human/);
+  assert.match(prompt,/do not ask the same question twice/);
+  assert.match(prompt,/Questions never grant permissions/);
+  assert.doesNotMatch(prompt,/only user-question path|never call a provider-native AskUserQuestion/);
+});

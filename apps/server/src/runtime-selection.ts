@@ -38,7 +38,7 @@ function communicationV3Instructions(): string[] {
     "Common correlated result: ponderosa_update_request({text}). It completes the sole attached Request with a canonical handoff.",
     `Request kind values: ${REQUEST_UPDATE_TOOL_KINDS.join(", ")}. Use waiting_dependency, not waiting.`,
     "Common correlated question: ponderosa_update_request({question}). It asks the original requester and preserves the update identity for its answer.",
-    "Common user question: ponderosa_decision({question}); add options for a choice or mode approval for permission. This is the only user-question path in Ponderosa: never call a provider-native AskUserQuestion/request_user_input tool, which cannot reach the user's Ponderosa Chat.",
+    "Common user question: ponderosa_decision({question}); add options for a choice or mode approval for permission. Supported provider-native AskUserQuestion/request_user_input callbacks also reach the human through the native question form; do not ask the same question twice. Questions never grant permissions.",
     "Use explicit message intent, request IDs, lifetimes, join modes, update kinds, and idempotency keys only for advanced or ambiguous cases.",
     "A terminal Request result is the final handoff. Do not send a duplicate message or acknowledgment afterward.",
     "Do not poll or sleep while waiting for another Agent, Request, Join, or background state. A short, bounded delay explicitly requested by the operator is allowed when the delay is itself part of the task. End the turn after creating a Join when no independent work remains.",

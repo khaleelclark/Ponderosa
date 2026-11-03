@@ -55,7 +55,7 @@ async function ask(opts: Options, identity: RuntimeNativeApprovalIdentity, quest
   if (opts.signal.aborted || response.action !== "accept") return undefined;
   const values = record(response.content);
   if (Object.keys(values).some(key => !Object.hasOwn(properties, key))) throw Error("Unrequested native answer field");
-  const answers: Record<string, string[]> = {};
+  const answers = new Map<string, string[]>();
   for (const [index, question] of questions.entries()) {
     const key = "answer" + index;
     if (question.multiple) {
@@ -68,15 +68,15 @@ async function ask(opts: Options, identity: RuntimeNativeApprovalIdentity, quest
       const other = values[key + "_other"];
       if (other !== undefined && typeof other !== "string") throw Error("Invalid native free-text answer");
       if (typeof other === "string" && other.trim()) selected.push(text(other));
-      answers[question.id] = selected;
+      answers.set(question.id, selected);
     } else {
       const answer = text(values[key]);
       if (question.options.length && !question.other && !question.options.some(option => option.label === answer))
         throw Error("Native answer is outside the requested choices");
-      answers[question.id] = [answer];
+      answers.set(question.id, [answer]);
     }
   }
-  return answers;
+  return Object.fromEntries(answers);
 }
 
 export async function answerCodexNativeQuestions(opts: Options, sessionId: string, currentTurnId: () => string | undefined,

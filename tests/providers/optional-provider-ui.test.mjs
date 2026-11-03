@@ -113,3 +113,35 @@ test('model hook refreshes late old-client data once, scopes queries, and ignore
   render('project', { ...current, installed: false }); assert.equal(query.enabled, false);
   assert.equal(invalidations.length, 1, 'Absent providers must not be refreshed');
 });
+
+test('native multi-select renders each choice explanation in the shared human form',()=>{
+  const action={mode:'form',message:'Choose sections',nativeApproval:{kind:'question'},
+    requestedSchema:{type:'object',properties:{
+      answer0_0:{type:'boolean',title:'Sections: Intro',description:'Explain the context before the findings'},
+      answer0_1:{type:'boolean',title:'Sections: Conclusion',description:'Summarize the resulting decision'},
+    }}};
+  const exports={};
+  const jsx=(type,props)=>({type,props});
+  vm.runInNewContext(ts.transpileModule(readFileSync(new URL('../../apps/web/src/components/decisions/RuntimeElicitationActions.tsx',import.meta.url),'utf8'),{
+    compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX},
+  }).outputText,{exports,require:name=>{
+    if(name==='react/jsx-runtime')return {jsx,jsxs:jsx};
+    if(name==='react')return {useState:value=>[value,()=>{}],useMemo:callback=>callback()};
+    if(name==='@mui/material')return new Proxy({},{get:(_target,key)=>String(key)});
+    if(name==='@tanstack/react-query')return {useQuery:()=>({data:action,isPending:false,isError:false})};
+    if(name==='@ponderosa/core')return {safeProviderConnectionUrl:value=>value};
+    if(name==='../../api')return {api:{}};
+    return {default:'Icon'};
+  }});
+  const tree=exports.RuntimeElicitationActions({decision:{id:'decision',options:[]},pending:false,onRespond:async()=>{}});
+  const rendered=[];
+  const visit=node=>{
+    if(typeof node==='string')rendered.push(node);
+    else if(Array.isArray(node))node.forEach(visit);
+    else if(node&&typeof node==='object')visit(node.props?.children);
+  };
+  visit(tree);
+  assert.ok(rendered.includes('Explain the context before the findings'));
+  assert.ok(rendered.includes('Summarize the resulting decision'));
+  assert.ok(rendered.includes('Send answers'));
+});

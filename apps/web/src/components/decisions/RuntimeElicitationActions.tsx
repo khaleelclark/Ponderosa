@@ -226,7 +226,8 @@ export function RuntimeElicitationActions({
             }} />}
             label={`${field.label}${field.required ? " *" : ""}`}
           />
-          {fieldErrors[field.name] ? <Typography variant="caption" color="error">{fieldErrors[field.name]}</Typography> : null}
+          {fieldErrors[field.name] || field.description ? <Typography variant="caption"
+            color={fieldErrors[field.name] ? "error" : "text.secondary"}>{fieldErrors[field.name] ?? field.description}</Typography> : null}
         </Stack>
       ) : field.options?.length && field.allowOther ? (
         <Autocomplete

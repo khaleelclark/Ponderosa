@@ -59,3 +59,14 @@ input, cancellation/stale turn/duplicate/foreign refusal, known control cause
 redaction, status truthfulness, cleanup holds and probe cancellation/ownership.
 No deployment, restart, live database mutation or external effect replay occurred.
 
+
+## Independent source review corrections
+
+The successor preserves prototype-shaped native question IDs/text (including
+__proto__) as own answer fields through Map/fromEntries, rather than assigning
+into an ordinary object's prototype setter. Both provider regressions round-trip
+those exact keys. Shared runtime guidance now permits the implemented native
+question callback and forbids asking the same question twice. Boolean choice
+fields render their original option descriptions in the shared form; a rendered
+component regression checks both descriptions. These review corrections have no
+execution verdict; tests/builds remain deferred to the integrated pass.
