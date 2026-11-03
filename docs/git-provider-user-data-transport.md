@@ -316,6 +316,20 @@ remain mandatory, including a stored zero CRC. A recognized index signature with
 an unsupported version refuses without falling back to v1. Malformed/mixed
 layouts, duplicate offsets and out-of-pack offsets refuse.
 
+V2 supports mixed direct 31-bit offsets and high-bit references into its trailing
+8-byte network-order offset table, including small offsets encoded indirectly.
+[Git's index options](https://git-scm.com/docs/git-index-pack#Documentation/git-index-pack.txt---index-versionltversiongtltoffsetgt)
+can force that encoding; [the pinned writer](https://github.com/git/git/blob/v2.54.0/pack-write.c#L37-L47)
+also preserves such anomalies. Exact table framing permits at most one slot per
+object; every slot must be referenced exactly once, with no required reference
+order. Missing, repeated, out-of-range or unused slots and partial/extra table
+bytes refuse. Each 64-bit value is checked as an exact integer before conversion:
+it must be safely representable and remain within the existing offset bounds
+(at least 12 and below 32 MiB). Complete packed-entry checks still require an
+actual entry at that offset. The table is counted once in retained evidence;
+neither pack nor index size limits increase. Object-ID order and MTME mapping
+remain unchanged.
+
 Supported [MTME v1](https://git-scm.com/docs/pack-format#_pack_mtimes_files_have_the_format)
 requires exact magic/version/declared hash ID, network-order length/count, index
 order, corresponding pack trailer and self-checksum. The original bytes and
@@ -324,8 +338,9 @@ deltas and REF deltas to earlier or later entries in the same complete pack are
 supported, including mixed delta chains. An iterative dependency walk checks each
 complete indexed base before its dependent entry, without repeated expansion;
 self-references, cycles and external or missing bases refuse even when a matching
-canonical object exists outside the pack. V2 large-offset index forms and unsupported
-MTME forms refuse; this is not universal pack/cruft support. Delta instructions
+canonical object exists outside the pack. Actual offsets beyond the existing
+bounded pack range and unsupported MTME forms refuse; this is not universal
+pack/cruft support. Delta instructions
 validate original/target sizes, copy/insert ranges, reserved opcodes and complete
 output. No external base lookup or native index command is used for this check.
 

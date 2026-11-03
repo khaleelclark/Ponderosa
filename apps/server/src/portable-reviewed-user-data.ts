@@ -308,18 +308,29 @@ function decodeRetentionPackIndex(idx:Buffer,format:'sha1'|'sha256',packChecksum
   const v2=idx.readUInt32BE(0)===0xff744f63;
   if(v2&&idx.readUInt32BE(4)!==2)fail();
   const fanoutStart=v2?8:0,names=fanoutStart+1024,count=idx.readUInt32BE(fanoutStart+1020);
-  if(count>10000||idx.length!==names+count*(width+(v2?8:4))+2*width||!idx.subarray(-2*width,-width).equals(packChecksum)||!createHash(format).update(idx.subarray(0,-width)).digest().equals(idx.subarray(-width)))fail();
+  const fixedLength=names+count*(width+(v2?8:4))+2*width,largeBytes=idx.length-fixedLength;
+  if(count>10000||largeBytes<0||(v2?largeBytes%8!==0||largeBytes/8>count:largeBytes!==0)||!idx.subarray(-2*width,-width).equals(packChecksum)||!createHash(format).update(idx.subarray(0,-width)).digest().equals(idx.subarray(-width)))fail();
+  const largeCount=largeBytes/8,largeStart=fixedLength-2*width,largeReferences=new Set<number>();
   safeText(idx.toString('latin1'),'Git retention pack index');
   const entries:Array<{oid:string;offset:number;crc:number|null}>=[],fanout=Array<number>(256).fill(0);let last='';
   for(let i=0;i<count;i++){
     const name=v2?names+i*width:names+i*(width+4)+4,oid=idx.subarray(name,name+width).toString('hex');
     if(oid<=last)fail();last=oid;
     const bucket=parseInt(oid.slice(0,2),16);fanout[bucket]=fanout[bucket]!+1;
-    const offset=idx.readUInt32BE(v2?names+count*(width+4)+i*4:names+i*(width+4));
-    // All retained packs fit below 32 MiB; v2 large-offset encodings stay refused.
+    let offset=idx.readUInt32BE(v2?names+count*(width+4)+i*4:names+i*(width+4));
+    if(v2&&(offset&0x80000000)){
+      const reference=offset&0x7fffffff;
+      if(reference>=largeCount||largeReferences.has(reference))fail();
+      largeReferences.add(reference);
+      // Native Git can encode small offsets indirectly; bound the exact integer before conversion.
+      const actual=idx.readBigUInt64BE(largeStart+reference*8);
+      if(actual>BigInt(Number.MAX_SAFE_INTEGER)||actual<12n||actual>=BigInt(limit))fail();
+      offset=Number(actual);
+    }
     if(offset<12||offset>=limit)fail();
     entries.push({oid,offset,crc:v2?idx.readUInt32BE(names+count*width+i*4):null});
   }
+  if(largeReferences.size!==largeCount)fail();
   let cumulative=0;for(let i=0;i<256;i++){cumulative+=fanout[i]!;if(idx.readUInt32BE(fanoutStart+i*4)!==cumulative)fail();}
   return entries;
 }
