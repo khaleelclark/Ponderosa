@@ -252,7 +252,7 @@ export function registerAgentPackageRoutes(
         if(!manifest.filesystemMetadata)throw new Error('Per-node metadata evidence is absent');
         planFilesystemMetadata(manifest.filesystemMetadata,manifest.selection,metadataActivation);
       }
-      if(selection.workingFilesActivation&&!store.isManagedProjectImportDestination(projectId))throw new Error('Live metadata application requires a NEW managed destination');
+      if(selection.workingFilesActivation&&pkg.agents.some(node=>metadataActivation.rootRefs.includes(node.workingRootRef??node.ref)&&(selection.workingCopyMode??node.workingCopyMode??'shared')==='shared')&&!store.isManagedProjectImportDestination(projectId))throw new Error('Live metadata application requires a NEW managed destination');
     }
     const activation=selection.reviewedUserDataActivation;if(!activation)return;
     validateReviewedUserDataActivation(activation);
@@ -2065,9 +2065,9 @@ export function registerAgentPackageRoutes(
       }
 
       for(const pending of pendingLiveMetadata){
-        try{await pending.apply();pending.receipt.state='completed';}
+        try{await pending.apply();if(pending.receipt)pending.receipt.state='completed';}
         catch(error){metadataPrimaryError=error;for(const receipt of metadataApplications)if(receipt.state==='applying'){receipt.state='incomplete';receipt.error=metadataFailure(error);}throw error;}
-        finally{saveMetadataApplications();}
+        finally{if(pending.receipt)saveMetadataApplications();}
       }
 
       const catalogArtifacts: Array<{

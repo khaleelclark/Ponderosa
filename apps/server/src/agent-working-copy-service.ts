@@ -412,8 +412,9 @@ export class AgentWorkingCopyService {
     this.stagedImportedGitRoots.set(rootPath,{device:stat.dev,inode:stat.ino,phase:'allocated',...(agentId?{agentId}:{})});
   }
 
-  async stageImportedSharedGit(project:ProjectDto):Promise<void> {
-    if(!this.store.isManagedProjectImportDestination(project.id)||this.store.listAgents(project.id).length)throw new Error('Native Shared Git requires the unused NEW managed Chat');
+  async stageImportedSharedGit(project:ProjectDto,exactOwnedAgentIds:readonly string[]=[]):Promise<void> {
+    const current=this.store.listAgents(project.id).map(agent=>agent.id);
+    if(!this.store.isManagedProjectImportDestination(project.id)||current.length!==exactOwnedAgentIds.length||new Set(exactOwnedAgentIds).size!==exactOwnedAgentIds.length||current.some(id=>!exactOwnedAgentIds.includes(id)))throw new Error('Native Shared Git requires the unused NEW managed Chat');
     await this.stageImportedGitRoot(project.hostPath);
   }
 
@@ -436,7 +437,7 @@ export class AgentWorkingCopyService {
   }
 
   /** Files first, one complete Git closure next, and final ACLs/times last. */
-  async completeImportedGitRoots(project:ProjectDto,pkg:import('@ponderosa/core').AgentPortablePackageDto,destinations:Record<string,string>,activation:import('@ponderosa/core').ReviewedUserDataActivation,onReceipt:Parameters<typeof applyReviewedRecoveryRoots>[2],agentIds:readonly string[]=[]):Promise<void> {
+  async completeImportedGitRoots(_project:ProjectDto,pkg:import('@ponderosa/core').AgentPortablePackageDto,destinations:Record<string,string>,activation:import('@ponderosa/core').ReviewedUserDataActivation,onReceipt:Parameters<typeof applyReviewedRecoveryRoots>[2],agentIds:readonly string[]=[]):Promise<void> {
     const roots=[...new Set([...Object.values(destinations),...[...this.stagedImportedGitRoots.entries()].filter(([root,staged])=>staged.agentId&&agentIds.includes(staged.agentId)&&root.startsWith(this.managedRoot+path.sep)).map(([root])=>root)])],tasks=planReviewedRecoveryRoots(pkg,destinations,activation);
     for(const root of roots){
       const staged=this.stagedImportedGitRoots.get(root),stat=await lstat(root,{bigint:true});
@@ -462,7 +463,7 @@ export class AgentWorkingCopyService {
         const task=tasks.find(task=>task.destination===root),git=task?.value.git;
         if(git&&(!('symbolic' in git.head)||git.refs.some(ref=>ref.name===('symbolic' in git.head?git.head.symbolic:''))))throw error;
         const emptyTree=execFileSync('git',['-c','core.hooksPath=/dev/null','hash-object','-t','tree','-w','--stdin'],{cwd:root,env:gitEnvironment(),input:'',encoding:'utf8',timeout:GIT_TIMEOUT_MS}).trim();
-        baseHead=execFileSync('git',['-c','core.hooksPath=/dev/null','-c','user.name=Ponderosa Import','-c','user.email=import@localhost','commit-tree',emptyTree,'-m','Initialize imported Separate ownership'],{cwd:root,env:gitEnvironment(),encoding:'utf8',timeout:GIT_TIMEOUT_MS}).trim();
+        baseHead=execFileSync('git',['-c','core.hooksPath=/dev/null','-c','user.name=Ponderosa Import','-c','user.email=import@localhost','commit-tree','--no-gpg-sign',emptyTree,'-m','Initialize imported Separate ownership'],{cwd:root,env:gitEnvironment(),encoding:'utf8',timeout:GIT_TIMEOUT_MS}).trim();
       }
       if(await gitBranchExists(root,branch))throw new Error('The newly allocated managed branch collides with imported user refs');
       const receipt={ownershipRef:creationOwnershipRef(),branchHead:baseHead};
@@ -480,7 +481,7 @@ export class AgentWorkingCopyService {
     for(const root of roots)this.stagedImportedGitRoots.delete(root);
     for(const receipt of receipts.values())onReceipt({...receipt,state:'completed'});
     }catch(error){
-      for(const receipt of receipts.values())onReceipt({...receipt,state:'incomplete',error:{code:(error as {code?:string}).code??'ERR_IMPORTED_GIT_ADOPTION_PARTIAL',partialStatePossible:true,observed:{paths:roots}}});
+      for(const receipt of receipts.values())onReceipt({...receipt,state:'incomplete',error:{code:typeof (error as {code?:unknown}).code==='string'?(error as {code:string}).code:'ERR_IMPORTED_GIT_ADOPTION_PARTIAL',partialStatePossible:true,observed:{paths:roots,cause:safeFailure(error)}}});
       throw Object.assign(new Error('Imported Git adoption incomplete; preserve all local roots and exact import receipt',{cause:error}),{code:'ERR_IMPORTED_GIT_ADOPTION_PARTIAL',partialStatePossible:true,observed:{paths:roots}});
     }
   }
