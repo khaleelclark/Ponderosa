@@ -7,14 +7,15 @@ Later human directions move execution from Ponderosa production to Codex subagen
 
 | Owner | Changes | Source state |
 | --- | --- | --- |
-| Continuation | Reject unsupported blocked closure; preserve genuine Decision waits, full objectives and later human steering; clarify batch versus task; concise agent communication | Integrated |
-| Runtime | Native human questions; provider diagnostic cancellation/cleanup and truthful auth; exact redacted native-control causes | Integrated; independent review follow-up in progress |
-| Discovery | Revision-bound custody/orphan pagination and UI Load more; no hidden 1000-record cutoff | Integrated |
-| Integration | Recover paused large-package codec/compression; complete clipboard/download; correct metadata-original decoding and package POST deadlines; durable IndexedDB command recovery; register all maintained Phase 2 tests | Integrated |
-| Portability | Selected filesystem metadata/FIFO, explicit principal maps, ordinary metadata, cross-root links and receipts | Implementation in progress |
-| Git recreation | Fresh mapped common/private Git roots; relocated configuration/hooks/paths and external includes | Implementation in progress |
-| Interface | Output concurrency and verified recovery keys; shared explicit native-data export/import controls and partial-result presentation | Output integrated; native-data controls in progress |
+| Continuation | Reject unsupported blocked closure; retain true Decision waits, broad objectives and steering; distinguish batches; concise agent communication | Integrated |
+| Runtime | Native human questions; truthful auth cancellation/cleanup and exact redacted diagnostics; linked/reftable/module layouts; Git shared permissions | Integrated; Windows source-path normalization remains in progress |
+| Discovery | Revision-bound custody/orphan pagination and Load more; remove hidden 1000-record cutoff | Integrated |
+| Integration | Preserve paused large-package work; compressed originals, bounded transport, IndexedDB commands; durable exact export tickets and lost-response recovery; phase ordering and original root custody | Integrated |
+| Portability | Explicit metadata/principal/FIFO restoration; held regular reads; absolute/cross-root symlinks and hardlinks, including valid root cycles; deferred final metadata | Integrated |
+| Git recreation | Mapped common/private/module roots; selected refs/index/sparse state; hooks/configuration compilation and permissions | Integrated; configured external dependency capture/application remains in progress |
+| Interface | Output settings concurrency; native-data choices and partial receipts; cross-Chat Branch physical closure; exact Project binding recovery and isolation | Integrated |
+| Independent review | Source review of export ticket custody, phased restoration and isolated recovery | Final follow-ups in progress; runtime evidence deferred |
 
 All 32 commandments and all 24 Build behaviors remain accounted for in [the reconciliation](codex-phase2-reconciliation-20261103.md). Source presence is distinct from tested behavior. Its provider, platform and historical-effect boundaries remain exact limitations, not passing verdicts or permission to replay uncertain effects.
 
-Consolidated validation has not started. Tests, builds and typechecks are deferred until remaining implementations are combined. Independent reviews checked source and found defects that were corrected; source review does not establish runtime, UX, performance or comparison criteria.
+Checkpoint: integrated through the import recovery isolation change, before the final external-dependency and Windows-provenance commits. Consolidated validation has not started. Tests, builds and typechecks are deferred until remaining implementations are combined. Independent reviews checked source and found defects that were corrected; source review does not establish runtime, UX, performance or comparison criteria.
