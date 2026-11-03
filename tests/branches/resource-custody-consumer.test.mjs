@@ -20,7 +20,7 @@ test('lost capture response recovers the retained receipt without recapture or p
 
 test('cleanup cannot destroy source Agents when required retained package bytes fail verification',async()=>{
  let deleted=0,errors=0;
- const branches={issuedResourceCapturePending:()=>false,resourceCleanupCandidates:()=>[{stepExecutionId:'step',agentIds:['agent']}],resourceContextCleanupCandidates:()=>[],resourceCaptureJournal:()=>({state:'retained',receipt:{custodyId:'retained'}}),resourceError:(_step,message)=>{assert.match(message,/changed/);errors++;}};
+ const branches={issuedResourceCapturePending:()=>false,resourceCleanupCandidates:()=>[{stepExecutionId:'step',agentIds:['agent']}],resourceContextCleanupCandidates:()=>[],resourceCaptureJournal:()=>({state:'retained',receipt:{custodyId:'retained'}}),resourceCleanupError:(_step,message)=>{assert.match(message,/changed/);errors++;}};
  const service=new BranchResourceService(branches,{},async()=>deleted++,async()=>assert.fail('create'),async()=>deleted++);
  service.setPackageEngine({readCheckpoint:async()=>{throw Error('retained package changed');}});
  await service.tick(false);assert.equal(deleted,0);assert.equal(errors,1);await service.stop();

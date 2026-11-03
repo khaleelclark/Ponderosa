@@ -16,6 +16,10 @@ function fixture(count = 60) {
     CREATE TABLE conversation_deletion_receipts (conversation_id TEXT PRIMARY KEY, project_id TEXT, branch_id TEXT, canonical_deletion_completed INTEGER);
     CREATE TABLE project_deletion_pending (project_id TEXT);
     CREATE TABLE agent_deletion_pending (agent_id TEXT);
+    CREATE TABLE coordination_destination_admissions (id TEXT PRIMARY KEY, conversation_id TEXT, state TEXT);
+    CREATE TABLE coordination_destination_group_chats (admission_id TEXT, conversation_id TEXT);
+    CREATE TABLE coordination_destination_retirements (conversation_id TEXT, receipt_json TEXT, members_json TEXT);
+    CREATE TABLE coordination_destination_members (admission_id TEXT, agent_id TEXT);
     CREATE TABLE branch_installation_resources (local_id TEXT, state TEXT);
     CREATE TABLE branches (id TEXT, deleting INTEGER);
     CREATE TABLE collection_generations (name TEXT PRIMARY KEY, generation INTEGER NOT NULL);

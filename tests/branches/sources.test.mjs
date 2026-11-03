@@ -160,6 +160,24 @@ test('failed schedule acceptance stays due, reports a stable sanitized episode, 
  assert.equal(f.triggers.listTriggerOccurrences(f.branch.triggerId).length,2);assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM branch_executions').get().n,2);f.noProviderWork();f.pass();
 });
 
+test('schedule polling classifies failures without exposing raw exception text',async t=>{
+ const at=new Date(Date.now()-60000).toISOString(),f=await fixture(t,'schedule',{scheduleKind:'interval',everyMs:60000,startsAt:at},{nextFireAt:at});
+ let code='SQLITE_BUSY';
+ t.mock.method(f.triggers,'listDueScheduleTriggers',()=>{throw Object.assign(new Error('SQL private-secret /private/path'),{code});});
+ await f.sources.processDueSchedules();
+ assert.equal(f.failures.length,1);assert.equal(f.failures[0].kind,'schedule_polling');
+ assert.match(f.failures[0].error,/local database is busy/);
+ assert.match(f.failures[0].error,/No scheduled work was accepted/);
+ assert.doesNotMatch(f.failures[0].error,/private-secret|\/private\/path|SQL private/);
+ code='SQLITE_UNRECOGNIZED';
+ await f.sources.processDueSchedules();
+ assert.equal(f.failures.length,2);assert.match(f.failures[1].error,/internal scheduler error/);
+ assert.doesNotMatch(f.failures[1].error,/private-secret|\/private\/path|SQL private/);
+ assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM branch_executions').get().n,0);
+ assert.equal(f.triggers.getTriggerDefinition(f.branch.triggerId).nextFireAt,at);
+ f.noProviderWork();f.pass();
+});
+
 test('an idle schedule scan advances its cutoff when a future tick becomes due',async t=>{
  const now=Date.now(),at=new Date(now+5000).toISOString(),f=await fixture(t,'schedule',{scheduleKind:'once',at},{nextFireAt:at});
  t.mock.timers.enable({apis:['Date'],now});await f.sources.processDueSchedules();assert.equal(f.triggers.listTriggerOccurrences(f.branch.triggerId).length,0);
