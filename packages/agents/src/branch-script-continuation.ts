@@ -576,7 +576,7 @@ function replayScriptCutCore(source:ScriptReplaySource,executionId:string,select
         }
         case 'result_bundle_forwarded':{
           const child=context?.children[v.attemptId],a=selected.attempts!.find(a=>a.id===v.attemptId),step=selected.steps!.find(s=>s.id===a?.step_execution_id),bundle=selected.bundles!.find(b=>b.id===v.forwardedBundleId);
-          if(!context?.bundleOwners||!current||step?.id!==current.id||!definition.steps.some(node=>node.id===step.step_id&&node.kind==='branch_call')||!admitted.has(v.attemptId)||child?.executionId!==v.childExecutionId||event.transition_key!==`bundle-forwarded:${v.attemptId}`||!bundle||replayedBundles.has(bundle.id)||!treeBundle(context.bundleOwners,e.id,bundle.id)||bundleValue(context.bundleOwners,e.id,step.input_text,event.id)?.id!==v.sourceBundleId)return false;
+          if(!context?.bundleOwners||!current||!step||step.id!==current.id||!definition.steps.some(node=>node.id===step.step_id&&node.kind==='branch_call')||!admitted.has(v.attemptId)||child?.executionId!==v.childExecutionId||event.transition_key!==`bundle-forwarded:${v.attemptId}`||!bundle||replayedBundles.has(bundle.id)||!treeBundle(context.bundleOwners,e.id,bundle.id)||bundleValue(context.bundleOwners,e.id,step.input_text,event.id)?.id!==v.sourceBundleId)return false;
           replayedBundles.add(bundle.id);break;
         }
         case 'child_admitted':case 'child_completed':{

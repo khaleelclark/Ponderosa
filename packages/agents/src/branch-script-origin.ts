@@ -37,9 +37,10 @@ export function automaticScriptOriginSupported(db:Database.Database|null,e:Row,d
   if(row.input_hash!==inputHash||e.input_hash!==inputHash||e.input_text!==branchTriggerInput(payload,row.id,provenance,row.payload_media_type)||stableJson(origin)!==stableJson({...provenance,source:'trigger',occurrenceId:row.id,contentInjected:false}))return false;
   const events:Row[]=source?source.facts.filter(f=>f.kind==='transition').map(f=>JSON.parse(f.json)):db!.prepare('SELECT kind,transition_key,evidence_json FROM branch_checkpoints WHERE execution_id=? ORDER BY id').all(e.id) as Row[];
   const accepted=events.filter(a=>a.kind==='trigger_accepted'),started=events.filter(a=>a.kind==='workflow_started');
-  if(accepted.length!==1||accepted[0].transition_key!=='accepted'||accepted[0].evidence_json!==stableJson({versionId:e.version_id,bindingRevisionId:e.binding_revision_id,inputHash})||started.length!==1||started[0].transition_key!=='workflow-started')return false;
-  const start=JSON.parse(started[0].evidence_json);
-  if(stableJson(start)!==started[0].evidence_json||!['charged','unlimited'].includes(start.admission?.kind)||start.admission.budget?.branchId!==e.branch_id)return false;
+  const acceptedEvent=accepted[0],startedEvent=started[0];
+  if(accepted.length!==1||!acceptedEvent||acceptedEvent.transition_key!=='accepted'||acceptedEvent.evidence_json!==stableJson({versionId:e.version_id,bindingRevisionId:e.binding_revision_id,inputHash})||started.length!==1||!startedEvent||startedEvent.transition_key!=='workflow-started')return false;
+  const start=JSON.parse(startedEvent.evidence_json);
+  if(stableJson(start)!==startedEvent.evidence_json||!['charged','unlimited'].includes(start.admission?.kind)||start.admission.budget?.branchId!==e.branch_id)return false;
   return !!source||typeof original.admitted_at==='string'&&!!original.admitted_at&&original.admission_json===stableJson(start.admission);
  }catch{return false;}
 }
