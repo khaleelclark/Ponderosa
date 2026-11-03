@@ -103,17 +103,21 @@ export class PackageExportDownloads{
   const directory=await this.directory!,before=await fs.lstat(directory,{bigint:true});
   const names=(await fs.readdir(directory)).sort();
   if(names.length>64||JSON.stringify(names)!==JSON.stringify(this.legacyNames??[]))throw this.capacityError();
-  const observed:Array<{name:string;dev:bigint;ino:bigint;size:bigint;mtimeNs:bigint;ctimeNs:bigint}>=[];
+  const observed:Array<{name:string;dev:bigint;ino:bigint;size:bigint;blocks:bigint;mtimeNs:bigint;ctimeNs:bigint}>=[];
   let bytes=0;
   for(const name of names){
    const st=await fs.lstat(path.join(directory,name),{bigint:true});
-   if(!st.isFile()||st.isSymbolicLink()||st.nlink!==1n||st.size<0n||st.size>BigInt(AGENT_PACKAGE_STAGING_MAX_BYTES))throw this.capacityError();
-   bytes+=Number(st.size);if(!Number.isSafeInteger(bytes)||bytes>AGENT_PACKAGE_STAGING_MAX_BYTES)throw this.capacityError();
-   observed.push({name,dev:st.dev,ino:st.ino,size:st.size,mtimeNs:st.mtimeNs,ctimeNs:st.ctimeNs});
+   if(process.platform!=='linux'||!st.isFile()||st.isSymbolicLink()||st.nlink!==1n||st.size<0n||st.blocks<0n)throw this.capacityError();
+   // Linux st_blocks includes allocated extents beyond EOF, including
+   // KEEP_SIZE preallocation. Charge the greater of logical and physical size.
+   const allocated=st.blocks*512n,charge=allocated>st.size?allocated:st.size;
+   if(charge>BigInt(AGENT_PACKAGE_STAGING_MAX_BYTES))throw this.capacityError();
+   bytes+=Number(charge);if(!Number.isSafeInteger(bytes)||bytes>AGENT_PACKAGE_STAGING_MAX_BYTES)throw this.capacityError();
+   observed.push({name,dev:st.dev,ino:st.ino,size:st.size,blocks:st.blocks,mtimeNs:st.mtimeNs,ctimeNs:st.ctimeNs});
   }
   for(const item of observed){
    const st=await fs.lstat(path.join(directory,item.name),{bigint:true});
-   if(!st.isFile()||st.nlink!==1n||st.dev!==item.dev||st.ino!==item.ino||st.size!==item.size||st.mtimeNs!==item.mtimeNs||st.ctimeNs!==item.ctimeNs)throw this.capacityError();
+   if(!st.isFile()||st.nlink!==1n||st.dev!==item.dev||st.ino!==item.ino||st.size!==item.size||st.blocks!==item.blocks||st.mtimeNs!==item.mtimeNs||st.ctimeNs!==item.ctimeNs)throw this.capacityError();
   }
   const after=await fs.lstat(directory,{bigint:true}),again=(await fs.readdir(directory)).sort();
   if(before.dev!==after.dev||before.ino!==after.ino||before.mtimeNs!==after.mtimeNs||before.ctimeNs!==after.ctimeNs||JSON.stringify(names)!==JSON.stringify(again))throw this.capacityError();

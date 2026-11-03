@@ -11,7 +11,7 @@ held; no automatic recovery replays uncertain work or deletes a filesystem name.
 
 The pool is limited to 4 GiB logical size. Capacity charges the largest of its
 durable full-slot high-water, observed file size and observed allocated blocks,
-plus retained legacy staging. Free-space headroom is also checked. Legacy
+plus the larger of each retained legacy file’s logical size or allocated blocks. Free-space headroom is also checked. Legacy
 staging is reobserved with bounded metadata reads; changed or unaccountable
 records cause a refusal. Legacy downloads are verified against their original
 manifest and checked chunk by chunk during delivery.

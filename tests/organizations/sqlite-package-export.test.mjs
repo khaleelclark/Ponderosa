@@ -1,12 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdtemp,rm,readFile} from 'node:fs/promises';
-import {openSync,closeSync,readSync,writeSync,fdatasyncSync,fstatSync} from 'node:fs';
+import {openSync,closeSync,readSync,writeSync,fdatasyncSync,fstatSync,mkdirSync,writeFileSync,statSync} from 'node:fs';
+import {spawnSync} from 'node:child_process';
 import path from 'node:path';
 import {tmpdir} from 'node:os';
 import Fastify from 'fastify';
 import {AgentStore} from '@ponderosa/agents';
-import {packageExportDownloads} from '../../apps/server/dist/package-export-downloads.js';
+import {packageExportDownloads,PackageExportDownloads} from '../../apps/server/dist/package-export-downloads.js';
 import {packageExportPoolCallbacks} from '../../apps/server/dist/package-export-pool-receipt.js';
 
 // This fixture exercises slot and receipt protocol only, not production file authority.
@@ -123,4 +124,17 @@ test('unexplained pool growth and changed legacy inventory refuse new exports',a
   await import('node:fs/promises').then(fs=>fs.writeFile(foreign,'preserve'));
   const refusal=await request(g,'legacy-after',{value:2});assert.equal(refusal.statusCode,503,refusal.body);assert.equal(await readFile(foreign,'utf8'),'preserve');
  }finally{await g.dispose();}
+});
+
+test('preallocated legacy blocks beyond EOF count toward retained capacity',{skip:process.platform!=='linux'},async t=>{
+ const root=await mkdtemp(path.join(tmpdir(),'legacy-preallocation-')),app=Fastify();
+ try{
+  const folder=path.join(root,'package-export-downloads');mkdirSync(folder,{mode:0o700});
+  const file=path.join(folder,'retained-user-file');writeFileSync(file,'');
+  const result=spawnSync('fallocate',['--keep-size','--length','1048576',file]);
+  if(result.status!==0){t.skip('KEEP_SIZE preallocation unavailable in the fixture filesystem');return;}
+  assert.equal(statSync(file).size,0);assert.ok(statSync(file).blocks*512>=1048576);
+  const service=new PackageExportDownloads(app,root,false);
+  const retained=await service.retainedUsage();assert.ok(retained.bytes>=1048576);
+ }finally{await app.close();await rm(root,{recursive:true,force:true});}
 });
