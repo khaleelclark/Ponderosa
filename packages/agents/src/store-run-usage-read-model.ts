@@ -495,17 +495,21 @@ export class AgentRunUsageReadModel {
         break;
       }
     }
-    const durationMs = rows.reduce((total, row) => {
-      if (!row.completedAt) return total;
-      return (
-        total +
-        Math.max(
-          0,
-          new Date(row.completedAt).getTime() -
-            new Date(row.startedAt).getTime(),
-        )
-      );
-    }, 0);
+    // These are recorded wall-clock intervals. Missing/reversed timestamps
+    // cannot establish elapsed time and must not become a partial or zero total.
+    let durationMs: number | undefined = 0;
+    for (const row of rows) {
+      const start = Date.parse(row.startedAt);
+      const end = row.completedAt === undefined ? NaN : Date.parse(row.completedAt);
+      const interval = end - start;
+      if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) ||
+          !Number.isSafeInteger(interval) || interval < 0 ||
+          !Number.isSafeInteger(durationMs + interval)) {
+        durationMs = undefined;
+        break;
+      }
+      durationMs += interval;
+    }
     const totals: TokenUsage = {};
     const metricAvailability = Object.fromEntries(
       keys.map(key => [
@@ -561,7 +565,7 @@ export class AgentRunUsageReadModel {
       reportedRuns,
       unreportedRuns: finalizedRuns - reportedRuns,
       ...(providerRequests !== undefined ? { providerRequests } : {}),
-      durationMs,
+      ...(durationMs !== undefined ? { durationMs } : {}),
       coverage: finalizedRuns ? reportedRuns / finalizedRuns : null,
       ...(range.from || range.to ? { range } : {}),
       metricAvailability,

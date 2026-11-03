@@ -120,6 +120,26 @@ test('check 90: provider request counts require exact receipt coverage instead o
  },{storeFactory:dir=>(store=new AgentStore(dir))});
 });
 
+test('check 90: aggregate Run time stays unavailable for incomplete or reversed wall-clock observations', options, t => {
+ let store;
+ return withFixture(t,async f=>{
+  const chat=await f.createChat('Wall-clock telemetry');
+  const create=title=>f.createIdleAgent(chat,title);
+  const append=(agent,start,end)=>{const executionId=randomUUID();store.appendEvent(agent.id,{type:'agent_lifecycle',status:'running',reason:'active_run',executionId,engine:'codex'},start);store.appendEvent(agent.id,{type:'agent_lifecycle',status:'completed',reason:'turn_completed',executionId},end);return executionId;};
+  const usage=async agent=>f.ok(await f.api('GET','/api/agents/'+agent.id+'/usage'));
+  const zero=await create('Known zero interval');append(zero,'2026-11-03T10:00:00.000Z','2026-11-03T10:00:00.000Z');assert.equal((await usage(zero)).durationMs,0);
+  append(zero,'2026-11-03T11:00:00.000Z','2026-11-03T11:00:01.250Z');assert.equal((await usage(zero)).durationMs,1250);
+  const backwards=await create('Backwards clock');append(backwards,'2026-11-03T10:00:00.000Z','2026-11-03T10:00:01.000Z');append(backwards,'2026-11-03T11:00:00.000Z','2026-11-03T10:59:59.000Z');assert.equal(Object.hasOwn(await usage(backwards),'durationMs'),false,'One real reversed canonical lifecycle interval makes the aggregate unknown');
+  const incomplete=await create('Incomplete time projection'),id=append(incomplete,'2026-11-03T10:00:00.000Z','2026-11-03T10:00:01.000Z');
+  for(const [start,end] of [['2026-11-03T10:00:00.000Z',null],['invalid','2026-11-03T10:00:01.000Z'],['2026-11-03T10:00:00.000Z','invalid'],['-271821-04-20T00:00:00.000Z','+275760-09-13T00:00:00.000Z']]){
+   store.sqlite.prepare('UPDATE runs SET started_at=?,completed_at=? WHERE agent_id=? AND id=?').run(start,end,incomplete.id,id);assert.equal(Object.hasOwn(await usage(incomplete),'durationMs'),false);
+  }
+  const overflow=await create('Unsafe duration aggregate');for(let index=0;index<2;index++)append(overflow,'-100000-01-01T00:00:00.000Z','+100000-01-01T00:00:00.000Z');
+  assert.equal(Object.hasOwn(await usage(overflow),'durationMs'),false,'Individually safe intervals cannot create an unsafe aggregate');
+  const empty=f.ok(await f.api('GET','/api/agents/'+zero.id+'/usage?from=2099-01-01T00:00:00.000Z'));assert.equal(empty.finalizedRuns,0);assert.equal(empty.durationMs,0);
+ },{storeFactory:dir=>(store=new AgentStore(dir))});
+});
+
 test('checks 59, 89: acknowledgement does not answer a Decision; resolution and category clearing affect the intended notification', options, t => withFixture(t, async f => {
   const chat = await f.createChat('Needs attention'), a = await f.createIdleAgent(chat, 'Question A'), b = await f.createIdleAgent(chat, 'Question B');
   const sA = await f.hold(a.id), sB = await f.hold(b.id);

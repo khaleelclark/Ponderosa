@@ -204,7 +204,8 @@ export interface TokenUsageSummaryDto extends TokenUsage {
   unreportedRuns: number;
   /** Provider requests represented by retained per-request telemetry. */
   providerRequests?: number;
-  /** Aggregate wall-clock duration of finalized Runs in this scope. */
+  /** Sum of recorded finalized Run wall-clock intervals. Omitted if any interval
+   * is missing, invalid or reversed, or the aggregate exceeds safe milliseconds. */
   durationMs?: number;
   /** 0..1; null when the scope has no finalized runs. */
   coverage: number | null;

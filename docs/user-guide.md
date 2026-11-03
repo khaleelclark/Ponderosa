@@ -227,6 +227,13 @@ Browser voice uses the browser's read-aloud voice and the device's speech recogn
 availability varies by browser and device. Speaking speed is adjustable in settings.
 Token Usage shows provider-reported counts, with cached input separate where available;
 provider account limits appear in Provider usage. These counts are not cost estimates.
+Provider Requests is available only when every finalized Run in the selected range
+has valid per-request receipts; explicit empty receipts establish zero. Aggregate Run
+Time sums recorded start-to-completion wall-clock intervals, including time between
+those observations. It displays Unavailable if any finalized Run has missing,
+invalid or reversed timestamps, or the sum cannot be represented safely. Equal
+timestamps establish a zero interval. These records cannot reconstruct elapsed
+time across a clock adjustment.
 The Engine's truncated log label reports the size of the returned tail, not the full log.
 
 ### Attachments and saved results
