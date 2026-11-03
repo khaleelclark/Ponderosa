@@ -103,6 +103,6 @@ export interface ReviewedGitExternalDependencies {
   links:Array<{sourcePath:string;targetSourcePath:string;kind:'symlink'|'hardlink';mtimeNs?:string}>;
   absentPaths:string[];
   omittedPaths:string[];
-  bindings:Array<{kind:'include'|'hooks'|'attributes'|'excludes';sourceConfigPath:string;rawValue:string;resolvedPath:string;context:'config'|'worktree'|'gitdir';default?:true}>;
+  bindings:Array<{kind:'include'|'hooks'|'attributes'|'excludes';sourceConfigPath:string;rawValue:string;resolvedPath:string;contextSourcePath:string;context:'config'|'worktree'|'gitdir';default?:true}>;
   repositories?:Array<{sourcePath:string;git:ReviewedGitUserData;originals:ReviewedUserData['providerFiles']}>;
 }
