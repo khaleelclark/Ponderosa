@@ -2,7 +2,8 @@ import test from 'node:test';
 import {createHash} from 'node:crypto';
 import {execFileSync} from 'node:child_process';
 import assert from 'node:assert/strict';
-import {readFile,writeFile,mkdtemp,rm,unlink,realpath,readdir,rename,open,mkdir,symlink} from 'node:fs/promises';
+import {readFile,writeFile,mkdtemp,rm,unlink,realpath,readdir,rename,open,mkdir,symlink,lstat} from 'node:fs/promises';
+import {promises as hostFs} from '@ponderosa/native-host/fs';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import vm from 'node:vm';
@@ -180,4 +181,106 @@ test('descriptor-backed data root retains private staging and refuses a replaced
   assert.equal(await readFile(path.join(outside,'sentinel'),'utf8'),'unrelated');
   assert.ok((await readdir(retained)).some(name=>name.endsWith('.bytes')),'Original package remains retained');
  }finally{await app.close();await rootHandle.close();await rm(root,{recursive:true,force:true});}
+});
+
+
+test('ordinary data root is pinned before staging creation and a replacement is untouched',{skip:process.platform!=='linux'},async()=>{
+ const base=await realpath(await mkdtemp(path.join(tmpdir(),'package-export-root-race-'))),root=path.join(base,'root'),original=path.join(base,'original'),outside=path.join(base,'outside');
+ await mkdir(root);await mkdir(outside);await writeFile(path.join(outside,'sentinel'),'outside original');
+ const app=Fastify(),downloads=packageExportDownloads(app,root),previous=hostFs.lstat;let swapped=false;
+ app.post('/prepare',async(request,reply)=>downloads.send(request.body,'original.json',reply,true));await app.ready();
+ hostFs.lstat=async function(name,...args){const result=await previous.call(this,name,...args);if(name===root&&!swapped){swapped=true;await rename(root,original);await symlink(outside,root);}return result;};
+ try{
+  const response=await app.inject({method:'POST',url:'/prepare',payload:{text:'never written outside'}});assert.equal(response.statusCode,500);assert.equal(swapped,true);
+  await assert.rejects(lstat(path.join(outside,'package-export-downloads')),error=>error.code==='ENOENT');
+  assert.equal(await readFile(path.join(outside,'sentinel'),'utf8'),'outside original');
+  await assert.rejects(lstat(path.join(original,'package-export-downloads')),error=>error.code==='ENOENT');
+ }finally{hostFs.lstat=previous;await app.close();await rm(base,{recursive:true,force:true});}
+});
+
+test('expired package files stay intact, fully charged and visible across restart while direct exports remain available',{skip:process.platform!=='linux'},async()=>{
+ const root=await realpath(await mkdtemp(path.join(tmpdir(),'package-export-retained-capacity-')));let app,downloads;const realNow=Date.now;
+ const openApp=async()=>{app=Fastify();downloads=packageExportDownloads(app,root);app.post('/prepare',async(request,reply)=>downloads.send(request.body,'original.json',reply,true));app.post('/direct',async(request,reply)=>downloads.send(request.body,'direct.json',reply));await app.ready();};
+ try{
+  await openApp();const first=await app.inject({method:'POST',url:'/prepare',payload:{text:'original retained bytes'}});assert.equal(first.statusCode,200,first.body);
+  const token=first.json().downloadUrl.split('/').at(-1),ticket=downloads.tickets.get(token),stage=path.join(root,'package-export-downloads');
+  const before=await readdir(stage),firstBytes=downloads.bytes;Date.now=()=>realNow()+16*60_000;
+  await downloads.remove(token,ticket);assert.deepEqual((await readdir(stage)).sort(),before.sort());assert.equal(downloads.bytes,firstBytes);
+  assert.equal((await app.inject(first.json().downloadUrl)).statusCode,410);
+  for(let i=0;i<15;i++){const response=await app.inject({method:'POST',url:'/prepare',payload:{text:'other '+i}});assert.equal(response.statusCode,200,response.body);}
+  const full=await app.inject({method:'POST',url:'/prepare',payload:{text:'capacity'}});assert.equal(full.statusCode,503);assert.match(full.json().message??full.json().error,/Review retained files.*no automatic deletion/i);
+  const names=await readdir(stage),direct=await app.inject({method:'POST',url:'/direct',payload:{text:'direct remains usable'}});assert.equal(direct.statusCode,200);assert.deepEqual(direct.json(),{text:'direct remains usable'});assert.deepEqual((await readdir(stage)).sort(),names.sort());
+  await app.close();await openApp();
+  assert.equal((await app.inject(first.json().downloadUrl)).statusCode,410);
+  const after=await readdir(stage);assert.deepEqual(after.sort(),names.sort());
+  let actual=0;for(const name of after)actual+=(await lstat(path.join(stage,name))).size;
+  assert.equal(downloads.bytes,actual,'All retained payload and manifest bytes remain charged after restart');assert.equal(downloads.tickets.size,16);
+  assert.equal((await app.inject({method:'POST',url:'/prepare',payload:{text:'still full'}})).statusCode,503);
+ }finally{Date.now=realNow;await app?.close();await rm(root,{recursive:true,force:true});}
+});
+
+test('a replaced staging name is never unlinked and keeps its retained originals',{skip:process.platform!=='linux'},async()=>{
+ const root=await realpath(await mkdtemp(path.join(tmpdir(),'package-export-no-unlink-'))),app=Fastify(),downloads=packageExportDownloads(app,root);
+ app.post('/prepare',async(request,reply)=>downloads.send(request.body,'original.json',reply,true));await app.ready();
+ try{
+  const result=await app.inject({method:'POST',url:'/prepare',payload:{text:'original'}});assert.equal(result.statusCode,200,result.body);
+  const token=result.json().downloadUrl.split('/').at(-1),ticket=downloads.tickets.get(token),stage=path.join(root,'package-export-downloads'),name=path.join(stage,token+'.bytes'),retained=path.join(stage,'retained-original');
+  await rename(name,retained);await writeFile(name,'foreign replacement');ticket.expiresAt=0;
+  const charged=downloads.bytes;await downloads.remove(token,ticket);
+  assert.equal(await readFile(name,'utf8'),'foreign replacement');assert.match(await readFile(retained,'utf8'),/original/);assert.equal(downloads.bytes,charged);assert.ok(downloads.tickets.has(token));
+ }finally{await app.close();await rm(root,{recursive:true,force:true});}
+});
+
+for(const altered of ['manifest','request']){
+ test('changed '+altered+' during bounded read is held rather than adopted',{skip:process.platform!=='linux'},async()=>{
+  const root=await realpath(await mkdtemp(path.join(tmpdir(),'package-export-read-race-')));let app,downloads,captures=0;
+  const key='stable-request-identity',openApp=async()=>{app=Fastify();downloads=packageExportDownloads(app,root);app.post('/prepare',async(request,reply)=>downloads.prepare(request.headers['x-ponderosa-export-request'],{input:request.body},reply,async()=>{captures++;return downloads.send({text:'original'},'original.json',reply,true);}));await app.ready();};
+  try{
+   await openApp();const result=await app.inject({method:'POST',url:'/prepare',headers:{'x-ponderosa-export-request':key},payload:{mode:'full'}});assert.equal(result.statusCode,200,result.body);
+   const ticket=result.json();await app.close();await openApp();
+   const originalRead=downloads.readManifest.bind(downloads);let changed=false;
+   downloads.readManifest=async(handle,pathname,before)=>{
+    if(!changed&&(altered==='request'?path.basename(pathname).startsWith('request-'):!path.basename(pathname).startsWith('request-'))){
+     const read=handle.read.bind(handle);handle.read=async(...args)=>{const value=await read(...args);if(!changed&&value.bytesRead){changed=true;const bytes=await readFile(pathname);bytes[bytes.length-2]^=1;await new Promise(resolve=>setTimeout(resolve,10));await writeFile(pathname,bytes);}return value;};
+    }
+    return originalRead(handle,pathname,before);
+   };
+   if(altered==='manifest'){assert.equal((await app.inject(ticket.downloadUrl)).statusCode,410);}
+   else {const status=await app.inject('/api/package-export-requests/'+key);assert.equal(status.statusCode,200);assert.equal(status.json().state,'unconfirmed');assert.equal((await app.inject({method:'POST',url:'/prepare',headers:{'x-ponderosa-export-request':key},payload:{mode:'full'}})).statusCode,409);}
+   assert.equal(changed,true);assert.equal(captures,1,'A changed record cannot trigger source recapture');
+   assert.ok((await readdir(path.join(root,'package-export-downloads'))).some(name=>name.endsWith('.bytes')),'Original bytes remain retained');
+  }finally{await app?.close();await rm(root,{recursive:true,force:true});}
+ });
+}
+
+
+test('an unregistered non-Linux root is refused before staging effects',{skip:process.platform!=='linux'},async()=>{
+ // This simulates the admission branch only; it does not qualify a non-Linux backend.
+ const root=await realpath(await mkdtemp(path.join(tmpdir(),'package-export-unqualified-'))),app=Fastify(),downloads=packageExportDownloads(app,root),platform=Object.getOwnPropertyDescriptor(process,'platform');
+ app.post('/prepare',async(request,reply)=>downloads.send(request.body,'original.json',reply,true));await app.ready();
+ try{
+  Object.defineProperty(process,'platform',{...platform,value:'darwin'});
+  const result=await app.inject({method:'POST',url:'/prepare',payload:{text:'source'}});
+  assert.equal(result.statusCode,503);assert.match(result.json().message??result.json().error,/native data-directory authority/);
+  await assert.rejects(lstat(path.join(root,'package-export-downloads')),error=>error.code==='ENOENT');
+ }finally{Object.defineProperty(process,'platform',platform);await app.close();await rm(root,{recursive:true,force:true});}
+});
+
+test('a payload changed during staging readback is held and never published',{skip:process.platform!=='linux'},async()=>{
+ const root=await realpath(await mkdtemp(path.join(tmpdir(),'package-export-payload-race-'))),app=Fastify(),downloads=packageExportDownloads(app,root),previous=hostFs.open;let changed=false;
+ app.post('/prepare',async(request,reply)=>downloads.send(request.body,'original.json',reply,true));await app.ready();
+ hostFs.open=async function(name,flags,...args){
+  const handle=await previous.call(this,name,flags,...args);
+  if(flags==='wx+'&&String(name).endsWith('.bytes')){
+   const read=handle.read.bind(handle);
+   handle.read=async(...readArgs)=>{const result=await read(...readArgs);if(result.bytesRead&&!changed){changed=true;const bytes=await readFile(name);bytes[0]^=1;await new Promise(resolve=>setTimeout(resolve,10));await writeFile(name,bytes);}return result;};
+  }
+  return handle;
+ };
+ try{
+  const response=await app.inject({method:'POST',url:'/prepare',payload:{text:'original'}});
+  assert.equal(response.statusCode,500);assert.equal(changed,true);assert.match(response.body,/retained/);
+  const names=await readdir(path.join(root,'package-export-downloads'));assert.equal(names.filter(name=>name.endsWith('.bytes')).length,1);assert.equal(names.filter(name=>name.endsWith('.json')).length,0);
+  assert.equal(downloads.tickets.size,0);assert.equal((await app.inject({method:'POST',url:'/prepare',payload:{text:'next'}})).statusCode,503);
+ }finally{hostFs.open=previous;await app.close();await rm(root,{recursive:true,force:true});}
 });

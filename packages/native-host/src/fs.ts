@@ -18,6 +18,11 @@ function retained(value: unknown): string | undefined {
   const name = filename(value);
   return name && storageBinding().storagePathRegistered(name) ? name : undefined;
 }
+/** True only for a path already bound to a live native portable storage root.
+ * A spelling alone is not authority; the native registry owns this decision. */
+export function hasRetainedStorageAuthority(name: string): boolean {
+  return process.platform !== 'linux' && storageBinding().storagePathRegistered(path.resolve(name));
+}
 function operation(op: string, name: string, second = "", flags = 0, mode = 0o600): unknown {
   return storageBinding().storageOperation(op, name, second, flags, mode);
 }
