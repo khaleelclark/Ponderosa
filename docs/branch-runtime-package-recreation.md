@@ -327,7 +327,7 @@ notifications, round trips, scheduling, rollback or whole-Bible portability.
 The existing serial retry continuation now includes original schedule/webhook/
 filesystem standalone effect-free Node Script/ordinary approval-gate owners, with
 JSON state, condition/route/loop paths, workflow/gate stop policy and per-Script
-retry. The parallel successor below separately extends its existing codec; automatic parallel tree retries and issued/Agent/resource/native/
+retry. The parallel successor below separately extends its existing codec; the separately described automatic parallel tree retries remain outside that standalone codec, as do issued/Agent/resource/native/
 effectful/unknown work remain outside this extension; manual behavior is unchanged.
 
 Automatic definition/origin validators require an explicit serial retry opt-in,
@@ -375,7 +375,7 @@ The existing parallel retry consumer also accepts proven original schedule/webho
 filesystem standalone effect-free Node Script/ordinary approval-gate graphs with
 fork/Map/Join, condition/route/loop and JSON state/reducers. Workflow/gate failure
 policy stays stop; only per-Script retries opt in. Manual serial/parallel and
-automatic serial behavior stays unchanged. Automatic parallel tree/Call and issued/Agent/resource/
+automatic serial behavior stays unchanged. The automatic parallel tree successor below is separate. Issued/Agent/resource/
 native/effectful/unknown retry families remain excluded.
 
 Automatic definition/origin validators add a separate parallel retry flag defaulting
@@ -488,7 +488,7 @@ root with manual-definition, actually Call-admitted descendants. Every owner mus
 qualify as an effect-free serial Node Script/ordinary approval-gate/branch_call
 owner, with no controls or existing condition/route controls, loop counters and
 JSON state. Workflow, gate and Call failure policies stay stop; only Script steps
-may retry. Automatic parallel Call trees retain their prior stop-only boundary.
+may retry. The parallel/mixed-tree successor below separately extends this initial serial scope.
 Manual trees and standalone manual/automatic serial/parallel families retain
 their separate eligibility. Issued, Agent, resource, native, effectful, unknown,
 bundle, secret and execution-owned Chat families gain no retry support.
@@ -546,3 +546,64 @@ builds, typechecks or runtime qualification were performed. Execution, timing,
 durability, notification delivery, round trips, scheduling, rollback, atomicity
 and whole-Bible/full-portability acceptance remain unvalidated. No schema,
 storage-version, DTO, format or dependency changes are introduced.
+
+
+## Proven automatic-root parallel and mixed Call-tree Script retries
+
+Runtime-tree recreation now recognizes the separately opted-in automatic-root
+parallel/mixed tree family. A schedule/webhook/filesystem root may be serial or
+parallel; at least one retained owner uses existing fork/Map/Join controls.
+Every owner must qualify as effect-free Node Script/ordinary gate/Call with
+existing condition/route/loop/JSON state, workflow/gate/Call stop policies and
+retry only for Script. Only parentless roots may retain automatic definitions;
+descendants have manual definitions and actual native Call ancestry/admission.
+
+The complete inventory must qualify before the new default-off parallel-tree
+retry flag is supplied. Recreation rejects host/custody, execution-owned Chats,
+required secrets, resource/action/bundle and issued/recovery/runtime-outcome
+evidence for this opt-in. It validates original automatic root occurrence facts
+through the existing retained-source origin validator with no database handle.
+For each owner, validated parent ancestry determines whether that owner's tree
+has an automatic root; unrelated manual histories gain no mixed retry context.
+Serial owners then use the existing explicit serial-tree context and serial
+retry codec; parallel owners use the established parallel frontier/replay codec.
+No new scheduler, retry algorithm, manifest or dispatch authority is introduced.
+
+Existing native parent/attempt/input/hash/Call occurrence, exact mapped bindings,
+acceptance/admission, depth/ceiling/counters and complete owner inventory proofs
+remain. Held/admitted/re-export/local-rewind generations retain their original
+manifests/maps/commands. The continuation consumer independently proves selected
+and latest whole trees, with original automatic occurrence proof before causal
+replay and no foreign-owner SQL fallback. Fresh destination roots are genuinely
+human/manual admitted despite retaining automatic definitions; children are
+Call-admitted. Source trigger history never becomes current scheduler, lease,
+response, trigger-advancement or missed-trigger-replay authority.
+
+Both codecs retain per-attempt input/purpose/hash/fences/leases/authorization,
+actual exit/settlement/results, consumed numbers/ceilings/delay/event time and
+absolute deadlines; intermediate retry failures cannot seal or write state.
+Parallel fork/Map inventory/order/bounds/Join/reducers/state/loop/gate/cancellation
+proof is unchanged. Supported cancellation needs full causal drain proof;
+admitted Call child cancellation remains refused. Serial canceled source gates
+are unchanged. Delayed retries and waiting Calls remain distinct; prefixes and
+terminal children restore once, legitimate suffix work can progress, and future
+`MAX(number)+1` attempts obey current destination readiness/time/capacity/policy.
+
+Committed selected sync/async/default or proven closed EXIT bytes/hash/invocation,
+independent latest whole-tree proof and every required child save remain mandatory,
+including sync children of automatic roots. No missing/pending child bytes or
+latest-only terminal observations can be promoted by a root save. Authentic EXIT
+interruption/gate closure, actual process-group/pipe drain and current authority
+remain required. Necessary producer/ancestor/origin/current graph review callers
+use the explicit family while separate current pins/configuration/authority/saver
+checks remain unchanged. Review/confirm/receipt/original-key recovery, current
+choices/directories/no-secrets/permissions/per-owner budgets/capacity and pending
+gate destination ownership/notifications stay in their existing paths.
+
+Manual parallel Call trees, all-serial trees and standalone manual/automatic
+serial/parallel families retain their existing behavior. Issued/Agent/resource/
+native/effectful/unknown/secret/bundle/execution-owned Chat families gain no support.
+No schema/storage-version/DTO/format/dependencies changed. No tests/builds/types
+or execution were run; timing/durability, notifications, round trips, scheduling,
+rollback, native equivalence, atomicity and whole-Bible/full-portability acceptance
+remain unvalidated. See the [parallel/mixed-tree continuation proof](branch-foreign-checkpoint-continuation.md#proven-automatic-root-parallel-and-mixed-call-tree-script-retries).
