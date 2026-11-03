@@ -244,3 +244,26 @@ test('canonical review metadata always hashes and parses decoded originals',asyn
  assert.throws(()=>decodePortableMetadataArtifact({...encoded,decodedSize:original.length-1}),/gzip|size/);
  assert.throws(()=>decodePortableMetadataArtifact({...encoded,decodedSize:49*1024*1024}),/48 MiB/);
 });
+
+
+test('short canonical strings preserve portable bytes, streaming, hashes and budget refusals',()=>{
+ const controls=Array.from({length:32},(_,i)=>String.fromCharCode(i)).join('');
+ const samples=['',controls,'"\\\\/','こんにちは🌲','\ud800','\udfff','x\ud800y','\ud800\udc00','x'.repeat(32767)+'🌲z','a'.repeat(32768),'a'.repeat(32769),'\u0000'.repeat(32768)];
+ let seed=0x12345678;const random=()=>seed=(Math.imul(seed,1664525)+1013904223)>>>0;
+ for(let sample=0;sample<1024;sample++){
+  const length=random()%70;let value='';
+  for(let i=0;i<length;i++){const group=random()%10;value+=String.fromCharCode(group===0?random()%32:group===1?0xd800+random()%2048:random()%65536);}
+  samples.push(value);
+ }
+ for(const value of samples){
+  const expected=JSON.stringify(value),pieces=[...stableJsonParts(value)];
+  assert.equal(pieces.join(''),expected);
+  assert.equal([...agentPackageJsonPieces(value)].join(''),expected);
+  assert.equal(Buffer.byteLength(pieces.join('')),Buffer.byteLength(expected));
+  assert.equal(payloadHash(value),createHash('sha256').update(expected).digest('hex'));
+  assert.equal(stableJson({value}),'{"value":'+expected+'}');
+ }
+ assert.throws(()=>stableJson({a:{b:1}},{maxDepth:1,maxNodes:100}),/maximum depth/);
+ assert.throws(()=>stableJson([1,2,3],{maxDepth:10,maxNodes:3}),/nodes/);
+ assert.throws(()=>stableJson('x'.repeat(448*1024*1024+1)),error=>error.statusCode===413&&/448 Mi/.test(error.message));
+});

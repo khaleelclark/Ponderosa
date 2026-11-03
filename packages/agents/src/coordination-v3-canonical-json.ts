@@ -57,7 +57,9 @@ function* stableJsonParts(
       continue;
     }
     // The portable codec already owns bounded, surrogate-safe JSON strings.
-    if (typeof task.value === "string") yield* agentPackageJsonPieces(task.value);
+    // Ordinary strings fit in one portable chunk, so native escaping yields the exact same canonical bytes without per-string generator allocation.
+    if (typeof task.value === "string" && task.value.length <= 32 * 1024) yield JSON.stringify(task.value);
+    else if (typeof task.value === "string") yield* agentPackageJsonPieces(task.value);
     else yield JSON.stringify(task.value) ?? "null";
   }
 }
