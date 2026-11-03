@@ -115,13 +115,14 @@ export function AgentPackageExportDialog({
   const [organizationWorkingFolders,setOrganizationWorkingFolders]=useState(false);
   const [includeGit,setIncludeGit]=useState(false);
   const [includeHarness,setIncludeHarness]=useState(false);
+  const [reviewSource,setReviewSource]=useState<'live'|'retained_originals'>('live');
   const allFolders=mode==='full'&&organization&&organizationWorkingFolders;
   const reviewAvailable=mode==='full'&&(wholeWorkingFolder||allFolders);
-  const reviewedUserData=reviewAvailable&&(includeGit||includeHarness)?{git:includeGit,harness:includeHarness}:undefined;
+  const reviewedUserData=reviewAvailable&&(includeGit||includeHarness)?{git:includeGit,harness:includeHarness,source:reviewSource}:undefined;
   const selectedPaths=mode==='full'&&!wholeWorkingFolder&&!allFolders?workingFiles.split(/\r?\n/).map(path=>path.trim()).filter(Boolean):[];
   const invalidPaths=selectedPaths.some(path=>path.startsWith('/')||path.split(/[\\/]/).includes('..'));
   useEffect(() => {
-    if (open) { setOrganization(initialOrganization); setMode("template"); setWorkingFiles('');setWholeWorkingFolder(false);setOrganizationWorkingFolders(false);setIncludeGit(false);setIncludeHarness(false); }
+    if (open) { setOrganization(initialOrganization); setMode("template"); setWorkingFiles('');setWholeWorkingFolder(false);setOrganizationWorkingFolders(false);setIncludeGit(false);setIncludeHarness(false);setReviewSource('live'); }
   }, [open, source.id, initialOrganization]);
   const agentCount = selectedAgents(source, agents, organization).length;
   return <Dialog open={open} onClose={copying ? undefined : onClose} fullWidth maxWidth="sm" aria-busy={copying || undefined}>
@@ -133,6 +134,7 @@ export function AgentPackageExportDialog({
       {mode==='full'&&organization&&<FormControlLabel control={<Checkbox checked={organizationWorkingFolders} onChange={event=>setOrganizationWorkingFolders(event.target.checked)}/>} label="Include every distinct organization working folder"/>}
       {mode==='full'&&!allFolders&&<FormControlLabel control={<Checkbox checked={wholeWorkingFolder} onChange={event=>setWholeWorkingFolder(event.target.checked)}/>} label="Include the whole root Agent working folder"/>}
       {mode==='full'&&<Stack spacing={1}>
+        <TextField select label="Review data source" disabled={!reviewAvailable||copying} value={reviewSource} onChange={event=>setReviewSource(event.target.value as 'live'|'retained_originals')}><MenuItem value="live">Current Git and settings</MenuItem><MenuItem value="retained_originals">Imported inactive originals</MenuItem></TextField>
         <FormControlLabel control={<Checkbox disabled={!reviewAvailable||copying} checked={reviewAvailable&&includeGit} onChange={event=>setIncludeGit(event.target.checked)}/>} label="Include Git history, refs and staged files for review"/>
         <FormControlLabel control={<Checkbox disabled={!reviewAvailable||copying} checked={reviewAvailable&&includeHarness} onChange={event=>setIncludeHarness(event.target.checked)}/>} label="Include supported Claude/Codex project settings for review"/>
         <Typography variant="caption" color="text.secondary">Requires whole working folders. Import creates separate inactive review copies. Settings and hooks are not activated. Unsupported or unsafe data stops export; review the package before importing.</Typography>

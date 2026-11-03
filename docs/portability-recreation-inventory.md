@@ -151,3 +151,18 @@ refuses different policies. Resolution bounds are 10,000 steps/expansions, 10,00
 serialized-state characters and 10,000 target characters per link; bound excess
 refuses, never truncates. Links cannot be installed parent directories. No tests,
 fixtures, builds or runtime qualification were performed for this source-only batch.
+
+
+Whole-folder retained review-original re-export is implemented through the existing
+Agent/org/full-Branch consumer. Explicit family selection plus
+`reviewedUserData.source: retained_originals` requires one canonical imported
+artifact binding and exact original on-disk manifest bytes. Missing/ambiguous,
+changed/corrupt, unselected-family or unknown namespace contents refuse. Current
+live capture remains separate (`source: live` or omitted); an existing imported
+review namespace refuses live whole-folder capture. Generated Git/provider review
+copies are skipped and never become originals. The source-free original manifest
+and working-file metadata survive existing artifacts, Shared hash/metadata conflict
+checks and import; no activation, source adoption, nested namespaces or lineage
+flattening. Agent and full Branch dialogs expose the source choice; API/SDK use the
+shared request DTO. Selected-file/package-history behavior and cycle policies stay
+unchanged. No runtime or platform qualification is claimed.

@@ -16,8 +16,9 @@ function fields(value:unknown,required:readonly string[],optional:readonly strin
   if(!value||typeof value!=='object'||Array.isArray(value)||required.some(key=>!Object.hasOwn(value,key))||Object.keys(value).some(key=>![...required,...optional].includes(key)))throw new Error('Unexpected or missing reviewed user-data fields');
 }
 export function validateReviewedUserDataSelection(value:unknown):asserts value is ReviewedUserDataSelection {
-  fields(value,['git','harness']);
+  fields(value,['git','harness'],['source']);
   const selection=value as ReviewedUserDataSelection;
+  if(selection.source!==undefined&&!['live','retained_originals'].includes(selection.source))throw new Error('Choose live or retained-original review data');
   if(typeof selection.git!=='boolean'||typeof selection.harness!=='boolean'||!selection.git&&!selection.harness)throw new Error('Select Git data, harness settings, or both');
 }
 function providerPath(value:string):boolean {
@@ -93,6 +94,7 @@ export function parseReviewedUserData(data:Buffer):ReviewedUserData {
   const value=JSON.parse(text(data)) as ReviewedUserData;
   fields(value,['version','activation','selection','recreationScope','providerFiles','exclusions'],['git']);
   if(!value||value.version!==1||value.activation!=='inert_review_only'||!Array.isArray(value.providerFiles)||value.providerFiles.length>1000||!Array.isArray(value.exclusions)||value.exclusions.some(item=>typeof item!=='string'))throw new Error('Invalid reviewed user-data manifest');
+  fields(value.selection,['git','harness']);
   validateReviewedUserDataSelection(value.selection);
   if(Object.hasOwn(value,'git')&&!value.git)throw new Error('Invalid selected Git data');
   if(!value.selection.git&&value.git||!value.selection.harness&&value.providerFiles.length||value.selection.git&&!value.git)throw new Error('Reviewed data differs from its explicit family selection');
@@ -710,7 +712,8 @@ export async function recreateReviewedGit(destination:string,value:ReviewedGitUs
 /** Only configuration families, never provider sessions, login databases, caches or ownership receipts. */
 export async function exportReviewedUserData(root:string,selection:ReviewedUserDataSelection):Promise<ReviewedUserData> {
   validateReviewedUserDataSelection(selection);
-  const result:ReviewedUserData={version:1,activation:'inert_review_only',selection:{...selection},recreationScope:{...recreationScope},providerFiles:[],exclusions:[]};let bytes=0;
+  if(selection.source==='retained_originals')throw new Error('Retained originals require their canonical artifact binding');
+  const result:ReviewedUserData={version:1,activation:'inert_review_only',selection:{git:selection.git,harness:selection.harness},recreationScope:{...recreationScope},providerFiles:[],exclusions:[]};let bytes=0;
   const selected=['.mcp.json','.claude/settings.json','.claude/settings.local.json','.claude/CLAUDE.md','.codex/config.toml','.codex/instructions.md'];
   let entries=0;
   const walk=async(relative:string):Promise<void>=>{
@@ -751,4 +754,27 @@ export async function exportReviewedUserData(root:string,selection:ReviewedUserD
   if(selection.git&&!result.git)throw new Error('Selected Git data is unavailable in this working root');
   result.exclusions.push('Provider settings are inert review data: commands, hooks, MCP servers and permissions are never installed or executed','Other provider files and custom formats require explicit inventory; sessions/auth/profile ownership remain excluded');
   return result;
+}
+
+
+/** Only the original manifest is authoritative; generated review repositories are never read. */
+export async function captureRetainedReviewOriginal(root:string,selection:ReviewedUserDataSelection,original:Buffer):Promise<{data:Buffer;verify:()=>Promise<void>}> {
+  validateReviewedUserDataSelection(selection);
+  if(selection.source!=='retained_originals')throw new Error('Retained originals require explicit source selection');
+  const manifest=parseReviewedUserData(original);
+  if(manifest.selection.git!==selection.git||manifest.selection.harness!==selection.harness)throw new Error('Select exactly the retained original families; partial or mixed source export is unsupported');
+  const folder=path.join(root,'.ponderosa-portable-review'),target=path.join(root,REVIEWED_USER_DATA_PATH);
+  const directory=await fs.lstat(folder,{bigint:true});
+  if(!directory.isDirectory()||await fs.realpath(folder)!==folder)throw new Error('Retained review directory must be canonical');
+  const names=await fs.readdir(folder);
+  if(names.length>3||names.some(name=>!['user-data.json','git-repository','provider-files'].includes(name)))throw new Error('Unknown retained review namespace contents require separate preservation');
+  const before=await fs.lstat(target,{bigint:true}),captured=await regularOriginal(target,48*1024*1024);
+  const verify=async()=>{
+    const currentDirectory=await fs.lstat(folder,{bigint:true}),current=await fs.lstat(target,{bigint:true});
+    if(originalIdentity(directory)!==originalIdentity(currentDirectory)||originalIdentity(before)!==originalIdentity(current)||await fs.realpath(folder)!==folder)throw new Error('Retained review original changed');
+    const reread=await regularOriginal(target,48*1024*1024);
+    if(!reread.data.equals(original))throw new Error('Retained review original differs from its canonical artifact');
+  };
+  if(!captured.data.equals(original))throw new Error('Retained review original differs from its canonical artifact');
+  await verify();return {data:captured.data,verify};
 }

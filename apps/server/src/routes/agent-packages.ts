@@ -905,10 +905,32 @@ export function registerAgentPackageRoutes(
       const sourceRoot=path.resolve(agent.workingCopy.rootPath);
       const firstRoot=organizationWorkingFolders&&!workingRoots.has(sourceRoot);
       if(firstRoot)workingRoots.set(sourceRoot,randomUUID());
-      const folderInventory=firstRoot||agent.id===root.id&&wholeWorkingFolder?await inventoryWorkingFolder(sourceRoot):undefined;
+      const folderInventory=firstRoot||agent.id===root.id&&wholeWorkingFolder?await inventoryWorkingFolder(sourceRoot,reviewedUserData):undefined;
+      let retainedOriginal:{data:Buffer;mode?:number;mtime?:string}|undefined;
+      if(folderInventory&&reviewedUserData?.source==='retained_originals'){
+        // Shared-root originals may belong to a peer excluded from this Agent export.
+        const owners=store.listAgents(agent.projectId).filter(node=>node.conversationId===agent.conversationId&&path.resolve(node.workingCopy.rootPath)===sourceRoot);
+        if(owners.length>AGENT_PACKAGE_MAX_AGENTS)throw new AssetError(413,'Retained original owner inventory exceeds the package bound');
+        const bindings:NonNullable<AgentPortablePackageDto['agents'][number]['workingFiles']>=[];
+        for(const owner of owners){
+          let imported=importedHistories.get(owner.id);
+          if(!imported){
+            const pathname=importedAgentHistoryPath(context.dataDir,owner.projectId,owner.id);
+            try{const parsed=await parsePortablePackageFile(pathname,{packageOnly:true});imported=parsed.portable as unknown as ImportedHistory;}
+            catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')continue;throw error;}
+          }
+          bindings.push(...(imported.portableState?.workingFiles?.filter(file=>file.path==='.ponderosa-portable-review/user-data.json')??[]));
+        }
+        if(bindings.length!==1)throw new AssetError(409,'Retained review data needs one unambiguous imported original binding for this working root');
+        const binding=bindings[0]!,original=projectArtifacts.find(artifact=>artifact.id===binding.artifactRef);
+        if(!original?.size||!original.sha256)throw new AssetError(409,'Retained review original artifact identity is unavailable');
+        const [data]=await readManagedArtifactContentsAsync(context.dataDir,agent.projectId,[{artifactId:original.id,expectedSize:original.size,expectedSha256:original.sha256}]);
+        if(!data)throw new AssetError(409,'Retained review original artifact is missing or changed');
+        retainedOriginal={data,mode:binding.mode,mtime:binding.mtime};
+      }
       const selectedPaths=folderInventory?.paths??selectedWorkingFiles;
       const workingFiles=(firstRoot||agent.id===root.id)&&(selectedPaths.length||folderInventory)
-        ? await exportWorkingFiles(agent.workingCopy.rootPath,selectedPaths,AGENT_PACKAGE_ARTIFACT_MAX_BYTES-reservedArtifactBytes,folderInventory?.links,folderInventory?reviewedUserData:undefined):undefined;
+        ? await exportWorkingFiles(agent.workingCopy.rootPath,selectedPaths,AGENT_PACKAGE_ARTIFACT_MAX_BYTES-reservedArtifactBytes,folderInventory?.links,folderInventory?reviewedUserData:undefined,retainedOriginal):undefined;
       if(workingFiles){if(mode!=='full')throw new AssetError(400,'Selected working files require a full export');artifacts.push(...workingFiles.artifacts);reservedArtifactBytes+=workingFiles.bytes;}
       portableArtifactBytes = reservedArtifactBytes;
       const initialInstructions = agent.role ?? agent.spawnPrompt ?? agent.presetSnapshot?.guidance

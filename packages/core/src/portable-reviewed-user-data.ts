@@ -1,5 +1,5 @@
 /** Human-selected families; settings remain inactive after import. */
-export interface ReviewedUserDataSelection {git:boolean;harness:boolean}
+export interface ReviewedUserDataSelection {git:boolean;harness:boolean;source?:'live'|'retained_originals'}
 /** Inert user-data transport. No source runtime, credential or worktree authority. */
 export interface ReviewedGitUserData {
   version:1;format:'sha1'|'sha256';
@@ -15,7 +15,7 @@ export interface ReviewedGitUserData {
   exclusions:string[];
 }
 export interface ReviewedUserData {
-  version:1;activation:'inert_review_only';selection:ReviewedUserDataSelection;git?:ReviewedGitUserData;
+  version:1;activation:'inert_review_only';selection:Pick<ReviewedUserDataSelection,'git'|'harness'>;git?:ReviewedGitUserData;
   recreationScope:{absoluteLinks:'refuse';crossRootLinks:'refuse';cyclicLinks:'refuse'|'passive_in_root';specialNodes:'refuse';acl:'not_inspected_preserve_source';xattrs:'not_inspected_preserve_source'};
   providerFiles:Array<{path:string;dataBase64:string;removedSecretFields:boolean}>;
   exclusions:string[];

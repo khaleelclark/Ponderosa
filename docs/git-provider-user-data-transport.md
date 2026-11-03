@@ -485,3 +485,44 @@ hardlink inventories and source/partial destination retention remain.
 
 This batch has source review only. Runtime and platform link timestamp behavior
 remain unqualified; no tests, builds or native link-tree inspection were performed.
+
+
+### Re-exporting imported inactive originals
+
+Agent, organization and full Branch whole-folder exports offer **Review data
+source**: current Git/settings (`source: live`, also the historical omitted-source
+behavior), or imported inactive originals (`source: retained_originals`). This
+optional source field extends the existing `ReviewedUserDataSelection` request
+DTO carried by Agent API and Branch SDK `fileSelections`; both Git/harness booleans
+remain required. The original manifest's family selection remains source-free.
+Selected-file and package-history exports retain their existing paths.
+
+Retained selection requires exactly the original manifest's families. Partial
+families, mixed retained/live capture and multiple original bindings refuse rather
+than merging or dropping data. Shared-root lookup uses retained imported-history
+bindings belonging to current Agents of the same Chat and working root, including
+a peer not selected for export. Exactly one original binding and authoritative
+artifact size/hash are required. Managed artifact reading checks that identity;
+the bounded original parser checks secret/family/Git-object contracts again.
+
+Only `.ponderosa-portable-review/user-data.json` is captured. Its original bytes
+must equal the bound managed artifact. Canonical directory parents, a bounded
+single-link regular file, no-follow open, inode/size/timestamp checks and a final
+reread detect observed changes. Namespace entries are limited to the original
+manifest and the two generated review-copy names; unknown entries refuse. Generated
+`git-repository` and `provider-files` contents are never read, flattened, nested or
+substituted for originals. Their manual edits are outside original re-export.
+An existing namespace without retained selection refuses whole-folder export,
+including a live-source request; it is never silently replaced. Missing retained
+originals or bindings refuse even when live Git/settings exist.
+
+Original manifest bytes, Git/ref/reflog/index/sparse/config/provider payloads and
+original working-file metadata travel through existing artifacts and composition.
+Shared composition already requires equal content hashes and metadata for each
+working path; conflicting snapshots refuse. Existing import stores the original
+manifest and generates fresh separate inactive copies without activating Git or
+provider settings. Repeated re-export keeps one namespace and original manifest,
+not generated repositories inside generated repositories. Old cycle refusal and
+new passive-cycle contracts remain intact. Sources and partial imports remain.
+No tests, builds, typechecks or runtime/platform qualification were performed for
+this source-only batch. Independent writers can still race observed checks.
