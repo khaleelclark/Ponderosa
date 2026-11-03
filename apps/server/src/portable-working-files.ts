@@ -255,7 +255,7 @@ export async function materializeGitExternalReview(folder:string,data:ReviewedGi
   const parent=path.dirname(folder);
   await assertWorkingRootIdentity(parent,parentIdentity);
   const parentHandle=await fs.open(parent,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);
-  let folderHandle:Awaited<ReturnType<typeof fs.open>>|undefined;
+  let folderHandle:Awaited<ReturnType<typeof fs.open>>|undefined,primary:unknown;
   try{
   const held=await parentHandle.stat({bigint:true});
   if(held.dev.toString()!==parentIdentity.device||held.ino.toString()!==parentIdentity.inode)throw new Error('Git review parent identity changed');
@@ -293,7 +293,13 @@ export async function materializeGitExternalReview(folder:string,data:ReviewedGi
   const handle=await fs.open(path.join(heldFolder,'manifest.json'),'wx',0o600);
   try{await handle.writeFile(JSON.stringify(manifest,null,2));await handle.sync();}finally{await handle.close();}
   await check();
-  }finally{try{await folderHandle?.close();}finally{await parentHandle.close();}}
+  }catch(error){primary=error;throw error;}
+  finally{
+    const cleanup:unknown[]=[];
+    if(folderHandle)try{await folderHandle.close();}catch(error){cleanup.push(error);}
+    try{await parentHandle.close();}catch(error){cleanup.push(error);}
+    if(cleanup.length)throw Object.assign(new Error('Git review handle cleanup failed; preserve all created files',{cause:primary??cleanup[0]}),{code:(primary as {code?:string}|undefined)?.code??'ERR_GIT_REVIEW_CLEANUP',partialStatePossible:true,cleanupErrors:cleanup});
+  }
 }
 
 /** Exclusively create a new user-selected folder. Failure retains every byte for recovery. */
