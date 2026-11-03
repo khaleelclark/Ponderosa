@@ -568,8 +568,12 @@ test('real global hooks retain slow owned intake and queued package processing b
  const intake=new Promise((resolve,reject)=>{const req=httpRequest(address+`/api/projects/${f.project.id}/import-agent-package`,{method:'POST',headers:{'content-type':'application/vnd.ponderosa.agent-import','content-length':wire.length,'idempotency-key':key}},response=>{const chunks=[];response.on('data',chunk=>chunks.push(chunk));response.on('end',()=>resolve({status:response.statusCode,body:Buffer.concat(chunks).toString()}));});req.on('error',reject);req.write(wire.subarray(0,32));setTimeout(()=>req.end(wire.subarray(32)),100);});
  const response=await intake;assert.equal(response.status,201,response.body);
  let release;const holding=withAgentImportAdmission(()=>new Promise(resolve=>{release=resolve;}));await delay(0);
- const pending=f.request(f.copyRequest(f.a.id,randomUUID()));await delay(100);release();await holding;
- const copied=f.ok(await pending);assert.ok(f.store.getAgent(copied.rootAgentId));
+ f.app.server.requestTimeout=25;
+ const copyInput=f.copyRequest(f.a.id,randomUUID());
+ const pending=fetch(address+copyInput.url,{method:'POST',headers:{'content-type':'application/json',...copyInput.headers},body:JSON.stringify(copyInput.payload)});
+ await delay(100);release();await holding;
+ const copiedResponse=await pending;assert.equal(copiedResponse.status,201);
+ const copied=await copiedResponse.json();assert.ok(f.store.getAgent(copied.rootAgentId));
 }));
 
 test('bounded package deadline reports unknown outcome and resolves the exact durable key without duplicating copy',{timeout:30000},t=>withPortability(t,async f=>{

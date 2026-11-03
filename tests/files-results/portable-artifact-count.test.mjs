@@ -5,7 +5,7 @@ import {createHash} from 'node:crypto';
 import {mkdtemp,writeFile,open,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
-import {portableBase64ByteLength,assertAgentPackageMemoryAvailable,decodePortableArtifact,portableArtifactByteLength,encodePortableArtifactData,decodePortableArtifactData,portablePackageJsonChunks,parsePortablePackageFile,portableImportPayloadHash} from '../../apps/server/dist/agent-package-codec.js';
+import {decodePortableMetadataArtifact,portableBase64ByteLength,assertAgentPackageMemoryAvailable,decodePortableArtifact,portableArtifactByteLength,encodePortableArtifactData,decodePortableArtifactData,portablePackageJsonChunks,parsePortablePackageFile,portableImportPayloadHash} from '../../apps/server/dist/agent-package-codec.js';
 import {MANAGED_ARTIFACT_MAX_BYTES,stableJson} from '@ponderosa/agents';
 import {stableJsonParts} from '@ponderosa/agents/canonical-json';
 import {payloadHash} from '../../packages/agents/dist/coordination-v3-canonical-json.js';
@@ -234,4 +234,13 @@ test('incremental JSON refuses truncation, grammar errors, excess depth and over
  for(const source of invalid)for(const step of [1,3,65536])assert.throws(()=>{const parser=new AgentPackageJsonParser();for(let i=0;i<source.length;i+=step)parser.write(source.slice(i,i+step));parser.end();},undefined,source);
  assert.throws(()=>{const parser=new AgentPackageJsonParser();parser.write('['.repeat(66)+'0'+']'.repeat(66));parser.end();},/64 levels/);
  assert.throws(()=>{const parser=new AgentPackageJsonParser(3);parser.write('"four"');parser.end();},/string exceeds/);
+});
+
+test('canonical review metadata always hashes and parses decoded originals',async()=>{
+ const original=Buffer.from(JSON.stringify({version:1,entries:'exact-original-'.repeat(10000)}));
+ const encoded=await encodePortableArtifactData(original);
+ assert.equal(encoded.dataEncoding,'gzip');
+ assert.deepEqual(decodePortableMetadataArtifact(encoded),original);
+ assert.throws(()=>decodePortableMetadataArtifact({...encoded,decodedSize:original.length-1}),/gzip|size/);
+ assert.throws(()=>decodePortableMetadataArtifact({...encoded,decodedSize:49*1024*1024}),/48 MiB/);
 });

@@ -1858,6 +1858,524 @@
       "moduleBase": "apps/server/package.json",
       "requirements": "Node24, built native server workspaces; temporary metadata-only evidence directories; no providers or production state",
       "origin": "Bible12/19 recovery discovery: no silent thousand-entry omission; revision-bound pages, stale cursor refusal and preserved evidence bytes"
+    },
+    {
+      "path": "tests/agents/claude-file-history.test.mjs",
+      "feature": "agents",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/agents/codex-native-actions.test.mjs",
+      "feature": "agents",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/agents/codex-native-command-selection.test.mjs",
+      "feature": "agents",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/agents/codex-transcript-fork.test.mjs",
+      "feature": "agents",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/agents/codex-typed-input-wiring.test.mjs",
+      "feature": "agents",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/agents/native-history-authority.test.mjs",
+      "feature": "agents",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/agents/native-history-projection.test.mjs",
+      "feature": "agents",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/branches/context-recovery-storage.test.mjs",
+      "feature": "branches",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/branches/continuation-remap.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/branches/definition-tree-publication.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/branches/destination-admission.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/branches/destination-group-admission.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/branches/destination-group-reconciliation.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/branches/destination-owner-tree-evidence.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/branches/destination-reconciliation.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/branches/execution-tree-publication.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/branches/generation-exit-fence.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/branches/group-capture-disposition.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/branches/host-cut.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/branches/package-group.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/branches/parallel-continuation.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/branches/resource-custody-consumer.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/branches/runtime-package-recreation.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/browser/operator-chat-recording.test.mjs",
+      "feature": "browser",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/chats/branch-disclosure-review.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/chats/branch-foreign-continuation-ui.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/chats/branch-generation-history.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/chats/branch-generation-one.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/chats/branch-group-review.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/chats/branch-history-review.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/chats/branch-owner-tree-group.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/chats/branch-package-files.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/chats/branch-resource-review.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/chats/branch-runtime-package-ui.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/chats/browser-observation.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/chats/group-capture-abandonment.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/chats/group-journal-audit.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/chats/lifecycle-command.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/chats/lifecycle-discovery.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/chats/live-run-text.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/chats/memory-preserve-unknown.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/chats/native-history-ui.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/chats/native-tasks-ui.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/chats/phase2-ui-copy.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/chats/request-reply-route.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/chats/text-reply-route.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/chats/text-size.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/chats/working-root-destinations.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/checkpoints/source-capture-boundary.test.mjs",
+      "feature": "checkpoints",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/context-recovery/source-effects.test.mjs",
+      "feature": "context-recovery",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/files-results/audio-attachments.test.mjs",
+      "feature": "files-results",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/files-results/audio-container.test.mjs",
+      "feature": "files-results",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/installation-release/additive-upgrade.test.mjs",
+      "feature": "installation-release",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/memory/explicit-reconciliation.test.mjs",
+      "feature": "memory",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/memory/source-mutations.test.mjs",
+      "feature": "memory",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/organizations/checkpoint-agent-packages.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/organizations/checkpoint-package-membership.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/organizations/compose-agent-packages.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/organizations/custody-lifecycle.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/organizations/group-journal-audit.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/organizations/import-lifecycle.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/organizations/lifecycle-discovery.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/organizations/lifecycle-protocols.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/organizations/portable-working-files.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/organizations/portable-working-roots.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/providers/claude-native-compaction.test.mjs",
+      "feature": "providers",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/providers/native-approval-controls.test.mjs",
+      "feature": "providers",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/providers/native-control-routes.test.mjs",
+      "feature": "providers",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/providers/typed-session-wiring.test.mjs",
+      "feature": "providers",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/speech/explicit-publication.test.mjs",
+      "feature": "speech",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/speech/request-memory-exposure.test.mjs",
+      "feature": "speech",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/speech/voice-acknowledgement-consumer.test.mjs",
+      "feature": "speech",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/speech/voice-recording.test.mjs",
+      "feature": "speech",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/workspace-navigation/empty-tombstone.test.mjs",
+      "feature": "workspace-navigation",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
     }
   ],
   "retainedReleasePayload": [
