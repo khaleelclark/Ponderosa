@@ -136,3 +136,28 @@ preserve the matching validated audio media type for playback after reload.
 These implementation changes have not been built, typechecked, browser exercised,
 or qualified under the implement-first direction. Previous qualification evidence
 is historical and does not qualify these changes.
+
+## Shared text and save feedback
+
+The text-size preference also scales the shared body text, chat authors, live
+progress, composer text and mention tokens. The iOS composer keeps a minimum
+one-rem text size at the default setting to avoid focus zoom; increasing the
+preference scales its text and line height together. The input remains scrollable
+within its existing height bound. Navigation labels and sidebar search follow
+the same preference; the search control can grow with its text.
+
+Output and Assistant Settings announce **Saving…**, then **Schedule saved** or
+**Model saved** only after the corresponding request succeeds. Changing a draft
+clears the earlier acknowledgement. Schedule and model remain independent saves;
+errors retain the draft and never become a saved acknowledgement. The status row
+reserves its line height so that feedback does not move the controls.
+
+Live Agent response prose and completed Markdown use shared responsive font sizes
+and line heights, including compact Work output. Completion still promotes literal
+stream text into Markdown; formatting can change its structure. This removes the
+font-size switch, not every possible layout change from authored Markdown.
+
+These source changes have not been tested, built, typechecked or browser exercised
+under the current implementation-first direction. Reader/keyboard behavior,
+font layout, visual comparison, streaming recordings and call latency remain
+combined-product validation work; no whole-commandment acceptance is implied.

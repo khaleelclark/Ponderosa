@@ -164,8 +164,8 @@ export function createPonderosaTheme(mode: ColorMode) {
       h5: { letterSpacing: "-0.014em" },
       h6: { letterSpacing: "-0.01em" },
       button: { textTransform: "none", fontWeight: 650, letterSpacing: 0 },
-      body1: { fontSize: 14, lineHeight: 1.55 },
-      body2: { fontSize: 13, lineHeight: 1.5 },
+      body1: { fontSize: "0.875rem", lineHeight: 1.55 },
+      body2: { fontSize: "0.8125rem", lineHeight: 1.5 },
     },
     components: {
       MuiCssBaseline: {

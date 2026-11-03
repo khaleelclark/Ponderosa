@@ -128,7 +128,7 @@ export function SidebarHeader({title='Ponderosa',drawer=false,homeLabel=`${title
  return <Stack component="nav" aria-label="Workspace navigation" data-workspace-sidebar-header direction="row" alignItems="center" gap={.25} sx={{gridRow:1,px:1.25,py:.75,minWidth:0,borderBottom:1,borderColor:'divider','& > .MuiIconButton-root':{flexShrink:0}}}>
   <ButtonBase aria-label={homeLabel} aria-current={selected?'page':undefined} onClick={onHome} sx={{flex:hideTitle?'0 0 44px':1,minWidth:0,minHeight:44,justifyContent:hideTitle?'center':'flex-start',gap:.75,borderRadius:1.5,px:.5,py:.25,bgcolor:selected?'action.selected':'transparent','&:hover':{bgcolor:'action.hover'}}}>
    <Box component="img" src="/icons/app-icon.png" alt="" sx={{width:32,height:32,flex:'0 0 32px',borderRadius:1,objectFit:'cover'}}/>
-   {!hideTitle&&<Typography noWrap sx={{minWidth:0,fontSize:16,fontWeight:750}}>{title}</Typography>}
+   {!hideTitle&&<Typography noWrap sx={{minWidth:0,fontSize:"1rem",fontWeight:750}}>{title}</Typography>}
   </ButtonBase>
   {actions}
   {onCollapse&&<Tooltip title={drawer?'Close navigation':'Collapse sidebar'}><IconButton aria-label={drawer?'Close workspace navigation':'Collapse sidebar'} onClick={onCollapse}>{drawer?<CloseIcon fontSize="small"/>:<MenuIcon/>}</IconButton></Tooltip>}
@@ -166,7 +166,7 @@ export function SidebarOperatorFooter({profile,onSettings,drawer=false}:{profile
         >
           <OperatorAvatar profile={profile} size={34} />
           <Box sx={{ minWidth: 0, flex: 1 }}>
-            <Typography noWrap sx={{ fontSize: 14, fontWeight: 700 }}>
+            <Typography noWrap sx={{ fontSize: "0.875rem", fontWeight: 700 }}>
               {profile.displayName || "Operator"}
             </Typography>
             {profile.handle ? (

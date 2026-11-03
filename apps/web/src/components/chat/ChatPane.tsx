@@ -75,7 +75,7 @@ function CommunicationSourceLink({
         p: 0,
         color: "text.secondary",
         borderRadius: 0.5,
-        fontSize: 11.5,
+        fontSize: "0.71875rem",
         fontWeight: 500,
         lineHeight: 1.35,
         whiteSpace: "nowrap",

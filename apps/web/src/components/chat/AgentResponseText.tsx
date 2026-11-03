@@ -1,6 +1,6 @@
 import {Box} from '@mui/material';
 import type {WorkspaceFileOwnerDto} from '@ponderosa/core';
-import {ChatMessageBody} from './ChatMessages';
+import {ChatMessageBody,messageProseTypography} from './ChatMessages';
 
 /** Keep incomplete Markdown literal; promote once the canonical segment closes. */
 export function AgentResponseText({text,completed,projectId,fileScope,compact=false}:{
@@ -8,6 +8,6 @@ export function AgentResponseText({text,completed,projectId,fileScope,compact=fa
 }):JSX.Element {
  return <Box aria-busy={!completed} sx={{minWidth:0,overflowWrap:'anywhere'}}>
   {completed?<ChatMessageBody text={text} collapseLongMessage={false} projectId={projectId} fileScope={fileScope} compactMarkdown={compact} smallText={compact}/>:
-   <Box sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere',fontSize:compact?'0.9375rem':'1rem',lineHeight:1.48}}>{text}</Box>}
+   <Box sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere',...messageProseTypography[compact?'small':'normal']}}>{text}</Box>}
  </Box>;
 }

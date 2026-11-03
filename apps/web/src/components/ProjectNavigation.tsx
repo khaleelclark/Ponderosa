@@ -153,7 +153,7 @@ export function ProjectRail({
           }}
         >
           <ForumOutlinedIcon sx={{ fontSize: 18, flex: "0 0 auto" }} />
-          <Typography component="span" noWrap sx={{ minWidth: 0, fontSize: 12, fontWeight: 700 }}>
+          <Typography component="span" noWrap sx={{ minWidth: 0, fontSize: "0.75rem", fontWeight: 700 }}>
             Inbox
           </Typography>
         </ButtonBase> : null}
@@ -206,7 +206,7 @@ export function ProjectRail({
             }}
           >
             {mode.icon}
-            <Typography component="span" noWrap sx={{ minWidth: 0, fontSize: 12, fontWeight: 700 }}>
+            <Typography component="span" noWrap sx={{ minWidth: 0, fontSize: "0.75rem", fontWeight: 700 }}>
               {mode.label}
             </Typography>
             {mode.id === "agents" ? <SidebarActivityBadge activity={sections.agentsActivity} fresh={sections.agentsActivityFresh} /> : null}

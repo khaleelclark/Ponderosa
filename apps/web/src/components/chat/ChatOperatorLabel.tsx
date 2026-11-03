@@ -9,7 +9,7 @@ export function ChatOperatorLabel({ profile, createdAt }: { profile?: OperatorPr
   return (
     <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ minHeight: { xs: 32, sm: 36 }, mb: 0.25, alignItems: "center", justifyContent: "flex-end", minWidth: 0 }}>
       {createdAt ? <Box sx={{ color: "text.secondary" }}><MessageTimestamp value={createdAt} align="end" desktopOnly /></Box> : null}
-      <Box sx={{ "& [data-message-sender]": { mb: 0, fontSize: { xs: 13, sm: 14 } } }}><MessageSenderLabel name={name} /></Box>
+      <Box sx={{ "& [data-message-sender]": { mb: 0, fontSize: { xs: "0.8125rem", sm: "0.875rem" } } }}><MessageSenderLabel name={name} /></Box>
       <Box sx={{ display: "flex", flex: "0 0 auto" }}><OperatorAvatar profile={profile} compactOnMobile /></Box>
     </Stack>
   );

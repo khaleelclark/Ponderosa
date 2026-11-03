@@ -447,7 +447,7 @@ export function ComposerCapabilityPicker({
                 onChange={event => onFilterChange(event.target.value)}
                 placeholder={mobile ? "Search skills & connectors" : "Find a skill, plugin, or connector"}
                 inputProps={{ "aria-label": "Filter runtime capabilities" }}
-                sx={isIOSDevice() ? { "& input": { fontSize: 16 } } : undefined}
+                sx={isIOSDevice() ? { "& input": { fontSize: "1rem" } } : undefined}
               />
             </Box>}
             <MenuList

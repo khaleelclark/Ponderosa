@@ -606,7 +606,7 @@ function ComposerMentionToken({
         pl: 0,
         pr: 0,
         py: 0,
-        height: 22,
+        height: "1.375rem",
         borderRadius: "8px",
         bgcolor: valid ? "action.selected" : "error.dark",
         color: valid ? "primary.main" : "error.contrastText",
@@ -615,7 +615,7 @@ function ComposerMentionToken({
           : undefined,
         fontSize: "inherit",
         fontWeight: 700,
-        lineHeight: "22px",
+        lineHeight: "1.375rem",
         verticalAlign: "top",
         whiteSpace: "nowrap",
       }}
@@ -1601,7 +1601,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
           position: "relative",
           minWidth: 0,
           "& .composer-editor-input": {
-            minHeight: 22,
+            minHeight: "1.375rem",
             maxHeight: 110,
             overflowY: "auto",
             px: 0.25,
@@ -1611,8 +1611,8 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
             color: "text.primary",
             fontFamily: "inherit",
             // Avoid iOS focus zoom without disabling user-controlled pinch zoom.
-            fontSize: isIOSComposer ? 16 : 15,
-            lineHeight: "22px",
+            fontSize: isIOSComposer ? "1rem" : "0.9375rem",
+            lineHeight: "1.375rem",
             whiteSpace: "pre-wrap",
             overflowWrap: "anywhere",
             WebkitUserSelect: "text",
@@ -1658,8 +1658,8 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
                 top: 6,
                 left: 2,
                 color: "text.secondary",
-                fontSize: isIOSComposer ? 16 : 15,
-                lineHeight: "22px",
+                fontSize: isIOSComposer ? "1rem" : "0.9375rem",
+                lineHeight: "1.375rem",
                 pointerEvents: "none",
               }}
             >

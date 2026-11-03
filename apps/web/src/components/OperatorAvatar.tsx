@@ -33,7 +33,7 @@ export function OperatorAvatar({ profile, size = 36, compactOnMobile = false, fa
       flex: "0 0 auto",
       bgcolor: (theme) => theme.palette.mode === "dark" ? "#25302F" : "#F0F1EC",
       color: "text.primary",
-      fontSize: compactOnMobile ? { xs: 13, sm: size <= 36 ? 15 : 16 } : size <= 36 ? 15 : 16,
+      fontSize: compactOnMobile ? { xs: "0.8125rem", sm: size <= 36 ? "0.9375rem" : "1rem" } : size <= 36 ? "0.9375rem" : "1rem",
       fontWeight: 750,
     }}
   >{GENERATED_AVATAR_GLYPHS[profile?.avatarId ?? "default-user"] ?? fallback ?? "●"}</Avatar>;

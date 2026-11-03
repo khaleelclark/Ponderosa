@@ -25,7 +25,7 @@ export function OutputAgentApp({colorMode,onToggleColorMode}:{colorMode:ColorMod
  const preferences=useWorkspacePreferences();
  useWorkspaceFont(preferences.data?.fontFamily);
  const [discardSettings,setDiscardSettings]=useState(false);
- const [settings,setSettings]=useState(false),[error,setError]=useState(''),[busy,setBusy]=useState(false);
+ const [settings,setSettings]=useState(false),[error,setError]=useState(''),[busy,setBusy]=useState(false),[saved,setSaved]=useState('');
  const inFlight=useRef(false);
  const [automatic,setAutomatic]=useState(true),[minutes,setMinutes]=useState('10'),[model,setModel]=useState(''),[engine,setEngine]=useState('');
  const [route,setRoute]=useState<BranchRoute>();
@@ -43,10 +43,10 @@ export function OutputAgentApp({colorMode,onToggleColorMode}:{colorMode:ColorMod
  // Refresh the draft when settings opens; background refreshes must not erase edits.
  useEffect(()=>{if(settings&&app){setAutomatic(app.automatic);setMinutes(String((app.everyMs??600000)/60000));setModel(app.model??'');setEngine(app.engine);}},[settings,ownerKey]);
  const refresh=async()=>{if(assistant)await status.refetch();else await output.refetch();};
- const act=async(work:()=>Promise<unknown>)=>{
+ const act=async(work:()=>Promise<unknown>,savedLabel='')=>{
   if(inFlight.current)return;
-  inFlight.current=true;setBusy(true);setError('');
-  try{await work();await refresh();}catch(cause){setError(cause instanceof Error?cause.message:String(cause));}
+  inFlight.current=true;setBusy(true);setError('');setSaved('');
+  try{await work();setSaved(savedLabel);await refresh();}catch(cause){setSaved('');setError(cause instanceof Error?cause.message:String(cause));}
   finally{inFlight.current=false;setBusy(false);}
  };
  const configure=(enabled:boolean)=>act(()=>requestJson('/api/branches/assistant',{method:'POST',body:JSON.stringify({enabled})}));
@@ -59,13 +59,13 @@ export function OutputAgentApp({colorMode,onToggleColorMode}:{colorMode:ColorMod
  const closeSettings=()=>{if(busy)return;if(settingsDirty)setDiscardSettings(true);else setSettings(false);};
  const saveSchedule=()=>{
   if(!app||!validInterval)return;
-  void act(()=>requestJson(`/api/branches/output-apps/${encodeURIComponent(app.agentId)}/schedule`,{method:'PUT',body:JSON.stringify({expectedVersionId:app.versionId,expectedSettingsRevision:app.settingsRevision,automatic,...(intervalChanged||(app.triggerKind==='manual'&&automatic)?{everyMs:interval*60000}:{})})}));
+  void act(()=>requestJson(`/api/branches/output-apps/${encodeURIComponent(app.agentId)}/schedule`,{method:'PUT',body:JSON.stringify({expectedVersionId:app.versionId,expectedSettingsRevision:app.settingsRevision,automatic,...(intervalChanged||(app.triggerKind==='manual'&&automatic)?{everyMs:interval*60000}:{})})}),'Schedule saved');
  };
  return <WorkspaceConnectionProvider value={connection}><Box component="main" sx={{height:'var(--ponderosa-app-viewport-block-size, 100dvh)',display:'flex',flexDirection:'column',minHeight:0,minWidth:0,pb:'env(safe-area-inset-bottom)'}}>
   <Stack direction="row" alignItems="center" spacing={1} useFlexGap flexWrap="wrap" sx={{p:1,pt:'max(8px, env(safe-area-inset-top))',borderBottom:1,borderColor:'divider',flexShrink:0}}>
    <Typography component="h1" variant="h6" sx={{flex:'1 1 8rem',minWidth:0,overflowWrap:'anywhere'}}>{app?.title??(assistant?'Assistant':'Chat')}</Typography>
    {app&&route&&(route.workspace?.kind!=='agent'||route.workspace.agentId!==app.agentId)&&<Button onClick={()=>setRoute({branchId:app.branchId,tab:'chats',chatId:app.chatId,workspace:{kind:'agent',projectId:app.projectId,agentId:app.agentId,view:'chat'}})}>Back to chat</Button>}
-   <Button href="/home">Ponderosa</Button><Button onClick={()=>{setError('');setSettings(true);}}>Settings</Button>
+   <Button href="/home">Ponderosa</Button><Button onClick={()=>{setError('');setSaved('');setSettings(true);}}>Settings</Button>
   </Stack>
   {error&&!settings&&<Alert severity="error">{error}</Alert>}
   {(status.isError||output.isError)&&<Alert severity="error" action={<Button onClick={()=>void refresh()}>Retry</Button>}>{((status.error??output.error) as Error)?.message??'Chat unavailable'}</Alert>}
@@ -78,19 +78,20 @@ export function OutputAgentApp({colorMode,onToggleColorMode}:{colorMode:ColorMod
   <Dialog open={settings} onClose={closeSettings} aria-labelledby="output-app-settings-title" fullWidth maxWidth="xs">
    <DialogTitle id="output-app-settings-title">Settings</DialogTitle><DialogContent><Stack spacing={2} sx={{pt:1}}>
     {error&&<Alert severity="error">{error}</Alert>}
+    <Typography role="status" variant="body2" sx={{minHeight:"1.5em"}}>{busy?'Saving…':saved}</Typography>
     <Button onClick={onToggleColorMode}>Use {colorMode==='dark'?'Light':'Dark'} Mode</Button><TextSizeSetting/>
-    {app&&<><FormControlLabel control={<Switch disabled={busy} checked={automatic} onChange={(_,value)=>setAutomatic(value)}/>} label="Run automatically"/>
-     {editableInterval?<TextField disabled={busy} label="Check every (minutes)" type="number" value={minutes} onChange={event=>setMinutes(event.target.value)} error={!validInterval} helperText={!validInterval?'Enter at least 1 minute.':undefined} inputProps={{min:1,step:'any'}}/>:<Typography>{app.schedule?.scheduleKind==='cron'?`Cron schedule: ${app.schedule.expression} (${app.schedule.timezone})`:app.schedule?.scheduleKind==='once'?`Once at ${app.schedule.at}`:app.triggerKind==='filesystem'?'When files change':'When a webhook event arrives'}</Typography>}
+    {app&&<><FormControlLabel control={<Switch disabled={busy} checked={automatic} onChange={(_,value)=>{setSaved('');setAutomatic(value);}}/>} label="Run automatically"/>
+     {editableInterval?<TextField disabled={busy} label="Check every (minutes)" type="number" value={minutes} onChange={event=>{setSaved('');setMinutes(event.target.value);}} error={!validInterval} helperText={!validInterval?'Enter at least 1 minute.':undefined} inputProps={{min:1,step:'any'}}/>:<Typography>{app.schedule?.scheduleKind==='cron'?`Cron schedule: ${app.schedule.expression} (${app.schedule.timezone})`:app.schedule?.scheduleKind==='once'?`Once at ${app.schedule.at}`:app.triggerKind==='filesystem'?'When files change':'When a webhook event arrives'}</Typography>}
      <Button disabled={busy||!validInterval} onClick={saveSchedule}>Save schedule</Button>
      {engines.isError&&<Alert severity="error" action={<Button onClick={()=>void engines.refetch()}>Retry</Button>}>{engines.error.message}</Alert>}
-     <TextField disabled={busy||engines.isPending} select label="Provider" value={engine} onChange={event=>{setEngine(event.target.value);setModel(engines.data?.find(item=>item.id===event.target.value)?.defaultModel??'');}}>
+     <TextField disabled={busy||engines.isPending} select label="Provider" value={engine} onChange={event=>{setSaved('');setEngine(event.target.value);setModel(engines.data?.find(item=>item.id===event.target.value)?.defaultModel??'');}}>
       {engine&&!engines.data?.some(item=>item.id===engine)&&<MenuItem value={engine}>{engine}</MenuItem>}
       {engines.data?.map(item=><MenuItem key={item.id} value={item.id}>{item.displayName}</MenuItem>)}
      </TextField>
-     <TextField disabled={busy||engines.isPending} select label="Model" SelectProps={{displayEmpty:true}} InputLabelProps={{shrink:true}} value={model} onChange={event=>setModel(event.target.value)}>
+     <TextField disabled={busy||engines.isPending} select label="Model" SelectProps={{displayEmpty:true}} InputLabelProps={{shrink:true}} value={model} onChange={event=>{setSaved('');setModel(event.target.value);}}>
       <MenuItem value="">Provider default</MenuItem>{model&&!engines.data?.find(item=>item.id===engine)?.models.some(item=>item.id===model)&&<MenuItem value={model}>{model}</MenuItem>}{engines.data?.find(item=>item.id===engine)?.models.filter(item=>item.id).map(item=><MenuItem key={item.id} value={item.id}>{item.label}</MenuItem>)}
      </TextField>
-     <Button disabled={busy||!engine} onClick={()=>void act(()=>realApi.updateAgent(app.agentId,{activeEngine:engine,model:model.trim()||null}))}>Save model</Button>
+     <Button disabled={busy||!engine} onClick={()=>void act(()=>realApi.updateAgent(app.agentId,{activeEngine:engine,model:model.trim()||null}),'Model saved')}>Save model</Button>
      <Button href={`/branches?branch=${encodeURIComponent(app.branchId)}&tab=workflow`}>More options</Button>
     </>}
     {assistant&&<Button disabled={busy||status.isPending} onClick={()=>void configure(!status.data?.enabled)}>{status.data?.enabled?'Disable Assistant':'Enable Assistant'}</Button>}

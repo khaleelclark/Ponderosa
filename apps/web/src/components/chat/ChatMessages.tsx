@@ -27,6 +27,12 @@ import {
 export { resolveMessageMentionText } from "./messageMentionPresentation";
 import { messageProseTagTokens, resolveMessageMentionText } from "./messageMentionPresentation";
 
+/** Live and completed prose keep the same responsive geometry. */
+export const messageProseTypography = {
+  normal: { fontSize: { xs: "0.875rem", sm: "1rem", md: "0.9375rem" }, lineHeight: 1.48 },
+  small: { fontSize: { xs: "0.9375rem", md: "0.82rem" }, lineHeight: 1.42 },
+} as const;
+
 function isLoopbackLink(url: URL): boolean {
   return url.protocol === "http:" && Boolean(url.port) && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname.toLowerCase());
 }
@@ -473,10 +479,7 @@ const ChatMarkdown = memo(function ChatMarkdown({
         whiteSpace: "normal",
         "& > :first-of-type": { mt: 0 },
         "& > :last-child": { mb: 0 },
-        fontSize: small
-          ? { xs: "0.9375rem", md: "0.82rem" }
-          : { xs: "0.875rem", sm: "1rem", md: "0.9375rem" },
-        lineHeight: small ? 1.42 : 1.48,
+        ...messageProseTypography[small ? "small" : "normal"],
         "& p": { my: compact ? 0.15 : 0.35, maxWidth: "100%", whiteSpace: "normal", overflowWrap: "anywhere", wordBreak: "break-word" },
         "& h1, & h2, & h3, & h4": { mt: 1.05, mb: 0.4, lineHeight: 1.22 },
         "& h1": { fontSize: { xs: "1.22rem", sm: "1.35rem" } },

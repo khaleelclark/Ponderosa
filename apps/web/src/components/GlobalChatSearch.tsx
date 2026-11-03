@@ -447,7 +447,7 @@ export function GlobalChatSearch({ open, onClose, onExited, onSelect, initialSea
         </List>
       </Box> : null}
       </Box>
-      {filesEnabled && (files.truncated || files.unavailableRoots) ? <Typography variant="caption" color="text.secondary" component="p">File search covered a limited set of accessible folders. Some files may not be listed. Narrow the search to find more files.</Typography> : null}
+      {filesEnabled && (files.truncated || files.unavailableRoots) ? <Typography variant="caption" color="text.secondary" component="p">Some folders or files are omitted · narrow your search</Typography> : null}
       {agentTitleSearchEnabled && matchingAgents.hasNextPage ? <Button color="inherit" disabled={matchingAgents.isFetching} onClick={() => void matchingAgents.fetchNextPage()}>{matchingAgents.isFetchingNextPage ? "Loading…" : "Load more Agents"}</Button> : null}
       {filesEnabled && files.hasNextPage ? <Button color="inherit" disabled={files.isFetching} onClick={() => void files.fetchNextPage()}>{files.isFetchingNextPage ? "Loading…" : "Load more files"}</Button> : null}
       {scope === "files" && !searchFailed && !debouncedQuery && !isSearching && fileResults.length === 0 ? <Typography color="text.secondary" sx={{ p: 1 }}>No recent files are available. Search files by name or path.</Typography> : null}

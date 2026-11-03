@@ -396,7 +396,7 @@ export function WorkspaceSidebar({
     ? activeWorkspaceAgentQuery.isError ? "Agents · count unavailable" : "Agents · loading count…"
     : `Agents · ${runningAgentCount} working`;
   const panelHeader = <Stack direction="row" sx={{ alignItems: "center", pl: 2, pr: .25, pt: drawer ? .75 : 1.5, pb: 1 }}>
-    <Typography component="div" sx={{ minWidth: 0, flex: 1, fontSize: 15, fontWeight: 700 }}>{showingAgents ? agentsHeading : "Chats"}</Typography>
+    <Typography component="div" sx={{ minWidth: 0, flex: 1, fontSize: "0.9375rem", fontWeight: 700 }}>{showingAgents ? agentsHeading : "Chats"}</Typography>
     {panelCreate ? <Tooltip title={panelCreate.label}><IconButton size="small" aria-label={panelCreate.label} onClick={panelCreate.run}><AddIcon fontSize="small" /></IconButton></Tooltip> : null}
   </Stack>;
   const inboxRows = chatItems;

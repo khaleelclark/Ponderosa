@@ -140,3 +140,9 @@ Filled notices select black or white text to keep at least 4.5:1 contrast for th
 - Scheduled, webhook and filesystem executions, and incoming Branch Calls count when workflow work first starts. Direct manual runs and trigger Run once are exempt. Steps and retries within an execution do not count again.
 
 Scripts read installation parameters using `JSON.parse(process.env.PONDEROSA_PARAMETERS ?? '{}')`. Script source is not text-interpolated. Trigger Events lists schedule, webhook and file events. Route names come from the preceding Agent, Script or Decision. Notifications send the step input through Ponderosa browser notifications, never email. Package updates preview every change before confirmation and preserve matching logical Agents’ local identities and histories.
+
+## Limited file search coverage
+
+File search can omit unavailable folders or matches beyond its bounded result
+window. The interface shows a short coverage hint; narrow the query and load
+additional pages when available. Missing search results do not imply deletion.

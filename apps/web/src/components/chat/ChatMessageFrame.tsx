@@ -73,7 +73,7 @@ export function ChatMessageFrame({
         height: { xs: 32, sm: 36 },
         bgcolor: (theme) => theme.palette.mode === "dark" ? "#25302F" : "#F0F1EC",
         color: "text.primary",
-        fontSize: { xs: 13, sm: 15 },
+        fontSize: { xs: "0.8125rem", sm: "0.9375rem" },
         fontWeight: 750,
       }}
     >
@@ -130,9 +130,9 @@ export function ChatMessageFrame({
               {openAuthor ? <ButtonBase
                 aria-label={`Open agent ${senderName} from name`}
                 onClick={(event) => { event.stopPropagation(); openAuthor(); }}
-                sx={{ minHeight: 28, borderRadius: 0.75, textAlign: "left", "& [data-message-sender]": { mb: 0, fontSize: 14 } }}
+                sx={{ minHeight: 28, borderRadius: 0.75, textAlign: "left", "& [data-message-sender]": { mb: 0, fontSize: "0.875rem" } }}
               ><MessageSenderLabel name={senderName} /></ButtonBase>
-                : <Box sx={{ "& [data-message-sender]": { mb: 0, fontSize: 14 } }}><MessageSenderLabel name={senderName} /></Box>}
+                : <Box sx={{ "& [data-message-sender]": { mb: 0, fontSize: "0.875rem" } }}><MessageSenderLabel name={senderName} /></Box>}
               {message.source}
               <Box sx={{ color: "text.secondary" }}><MessageTimestamp value={message.createdAt} align="start" desktopOnly /></Box>
             </Stack>
@@ -175,7 +175,7 @@ export function ChatMessageFrame({
                     minHeight: 28,
                     borderRadius: 0.75,
                     textAlign: "right",
-                    "& [data-message-sender]": { mb: 0, fontSize: 14 },
+                    "& [data-message-sender]": { mb: 0, fontSize: "0.875rem" },
                   }}
                 >
                   <MessageSenderLabel name={senderName} />
@@ -183,7 +183,7 @@ export function ChatMessageFrame({
               ) : (
                 <Box
                   sx={{
-                    "& [data-message-sender]": { mb: 0, fontSize: 14 },
+                    "& [data-message-sender]": { mb: 0, fontSize: "0.875rem" },
                   }}
                 >
                   <MessageSenderLabel name={senderName} />
