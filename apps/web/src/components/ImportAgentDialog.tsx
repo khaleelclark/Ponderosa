@@ -94,6 +94,7 @@ export function ImportAgentForm({
   const [packageBlob, setPackageBlob] = useState<Blob>();
   const [importResult,setImportResult]=useState<import('@ponderosa/core').ImportAgentPackageResponse>();
   const [completedImport,setCompletedImport]=useState<PendingAgentImport>();
+  const [failedImport,setFailedImport]=useState<PendingAgentImport>();
   const [partialResult,setPartialResult]=useState<import('@ponderosa/core').ImportAgentPackageResponse>();
   const [roleOperation,setRoleOperation]=useState<import('@ponderosa/core').AgentImportOperationDto>();
   const [operationProjectId,setOperationProjectId]=useState<string>();
@@ -168,10 +169,9 @@ export function ImportAgentForm({
       if(!operation.result)throw Error('Import completed without a result receipt. Its saved request is retained so you can check again.');
       setRoleOperation(undefined);setCompletedImport(entry);setImportResult(operation.result);return;
     }
-    try{releasePendingAgentImport(entry);}catch{throw Error('Import found, but its saved record could not be updated. Keep browser data and check the status again.');}
-    if(savedIntentRef.current?.requestId===entry.requestId)savedIntentRef.current=undefined;
-    refreshSaved();setRoleOperation(undefined);
-    setError(operation.error??'Import failed');
+    // A failed import may include partial writes. Keep its identity across
+    // reloads until the user has reviewed the result and explicitly dismisses it.
+    setRoleOperation(undefined);setFailedImport(entry);setError(operation.error??'Import failed');
   };
   useEffect(()=>{
     const current=operationQuery.data;if(!current)return;
@@ -388,6 +388,19 @@ export function ImportAgentForm({
     if(savedIntentRef.current?.requestId===completedImport?.requestId)savedIntentRef.current=undefined;
     setCompletedImport(undefined);setImportResult(undefined);clearPackageDraft();(onSubmitted??onCancel)();
   }}/></Stack>;
+  if(failedImport)return <Stack spacing={2}>
+    <Alert severity="warning">The import stopped. Partial files or other changes may remain. Review the result before dismissing it; dismissing does not remove or repeat any changes.</Alert>
+    {error&&<Alert severity="error">{error}</Alert>}
+    {partialResult&&<NativeApplications result={partialResult}/>}
+    {lifecycleOperationId&&<LifecycleReview key={lifecycleOperationId} kind="import" id={lifecycleOperationId}/>}
+    <Button onClick={()=>{
+      try{releasePendingAgentImport(failedImport);}catch{setError('The import result was found, but its saved record could not be updated. Keep browser data and try again.');return;}
+      if(savedIntentRef.current?.requestId===failedImport.requestId)savedIntentRef.current=undefined;
+      setFailedImport(undefined);setPartialResult(undefined);setLifecycleOperationId(undefined);setError(undefined);
+      importRequestId.current=createClientId();refreshSaved();clearPackageDraft();
+    }}>Finish reviewing</Button>
+    <Button onClick={closeForm}>Close</Button>
+  </Stack>;
   if(savedImports.error)return <Stack spacing={2}><Alert severity="error">{savedImports.error}</Alert><Button onClick={closeForm}>Close</Button></Stack>;
   const untrackedImports=savedImports.items.filter(entry=>!roleOperation||!agentImportOperationMatches(roleOperation,entry));
   if(untrackedImports.length)return <Stack spacing={2}>

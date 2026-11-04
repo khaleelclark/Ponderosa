@@ -20,7 +20,7 @@ export async function importRequestRecoveryRegression():Promise<void>{
  const cryptoDescriptor=Object.getOwnPropertyDescriptor(globalThis,'crypto');
  const engine:EngineDto={id:'codex',displayName:'Codex',models:[],efforts:[],configured:true,authentication:'authenticated',intakeReady:true,reachability:'reachable',servingBuildRevision:'fixture',servingInstanceId:'fixture'};
  const chat={id:'import-recovery-chat',projectId:'import-recovery-project',title:'Recovery Chat',createdAt:'now',updatedAt:'now'} as ConversationDto;
- const calls:Array<{requestId:string;metadata:string;fingerprint:string;body:string}>=[];let statusChecks=0,operation:any;
+ const calls:Array<{requestId:string;metadata:string;fingerprint:string;body:string}>=[];let statusChecks=0,lookupFound=false,operation:any;
  window.Worker=class {
   onmessage?: (event:MessageEvent)=>void;
   postMessage({id}:{id:number}){queueMicrotask(()=>this.onmessage?.({data:{id,preview:{sourceLabel:'fixture',hasOutputRoles:false,hasWorkingFiles:false,mode:'template',kind:'agent',agentCount:1,artifactCount:0,historyMessageCount:0,agentTitles:['Imported'],sourceEngines:['codex'],elevatedAgentRefs:[],invalidPermissionShape:false}}} as MessageEvent));}
@@ -39,6 +39,7 @@ export async function importRequestRecoveryRegression():Promise<void>{
  };
  api.getAgentImportOperationByRequest=async(projectId,conversationId,requestId)=>{
   statusChecks++;assert(projectId===chat.projectId&&conversationId===chat.id&&requestId===calls[0].requestId,'lookup uses the exact saved owner and request');
+  if(lookupFound)return operation;
   throw new ApiRequestError(404,'Not found');
  };
  api.getAgentImportOperation=async()=>operation;
@@ -85,6 +86,15 @@ export async function importRequestRecoveryRegression():Promise<void>{
   operation={...operation,status:'completed'};
   await until(()=>Boolean(host.textContent?.includes('Import awaiting confirmation')),'missing result was not retained for recovery');
   assert(listPendingAgentImports(product).length===1,'completed status without a result does not discard the saved identity');
+  operation={...operation,status:'failed',error:'Import stopped after partial work',result:{reviewedMetadataApplications:[]}};lookupFound=true;
+  button('Check import status').click();await until(()=>Boolean(host.textContent?.includes('Finish reviewing')),'failed result not shown');
+  assert(listPendingAgentImports(product).length===1&&calls.length===2,'failed result stays saved without retry');
+  root.render(null);await settle();render('failed-reload');await settle();
+  assert(host.textContent?.includes('Import awaiting confirmation'),'failed result remains recoverable after reload');
+  button('Check import status').click();await until(()=>Boolean(host.textContent?.includes('Finish reviewing')),'failed result not recovered');
+  assert(host.textContent?.includes('Partial files')&&listPendingAgentImports(product).length===1,'partial effects and saved identity remain visible until review');
+  button('Finish reviewing').click();await settle();
+  assert(listPendingAgentImports(product).length===0&&calls.length===2,'explicit review dismisses the receipt without another import');
  }finally{
   for(const entry of listPendingAgentImports(product))if(entry.projectId===chat.projectId)for(let i=localStorage.length-1;i>=0;i--){const k=localStorage.key(i);if(k?.startsWith('ponderosa-agent-import-v1:')&&k.endsWith(':'+entry.requestId))localStorage.removeItem(k);}
   root.unmount();client.clear();host.remove();window.Worker=OriginalWorker;Object.assign(api,original);
