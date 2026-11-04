@@ -104,7 +104,7 @@ export function ReviewedContinuationDialog({projectId,receipt,onClose,onOpenAgen
   const timer=window.setInterval(()=>{if(!lock.current)void load(saved).catch(()=>{});},3000);
   return()=>window.clearInterval(timer);
  },[saved,status?.status,name]);
- const refresh=async()=>{if(lock.current)return;lock.current=true;setBusy(true);setError('');try{const original=readSaved(name,product,projectId,receipt);setSaved(original);await load(original);}catch(cause){setError(cause instanceof Error?cause.message:'Could not read continuation status.');}finally{lock.current=false;setBusy(false);}};
+ const refresh=async()=>{if(lock.current)return;lock.current=true;setBusy(true);setError('');try{const original=readSaved(name,product,projectId,receipt);setSaved(original);await load(original);}catch(cause){if(mounted.current)setError(cause instanceof Error?cause.message:'Could not read continuation status.');}finally{lock.current=false;if(mounted.current)setBusy(false);}};
  const submit=async()=>{
   if(lock.current||status?.status!=='review_required'||missingAttachments)return;
   const review=status.review;
@@ -120,6 +120,7 @@ export function ReviewedContinuationDialog({projectId,receipt,onClose,onOpenAgen
     if(!original||JSON.stringify(original)!==JSON.stringify(command))throw Error('Saved continuation changed. Preserve the original request.');
    }
    const current=await load(command);
+   if(!mounted.current)return;
    if(current.status==='continuation_recorded')return;
    if(current.review.reviewSha256!==review.reviewSha256){setChecked(false);throw Error('The review changed. Read the current task and effects again.');}
    if(!command){
@@ -128,12 +129,14 @@ export function ReviewedContinuationDialog({projectId,receipt,onClose,onOpenAgen
    }
    const payload={reviewSha256:command.reviewSha256,effectsReviewed:true,idempotencyKey:command.idempotencyKey,...(command.reviewNote!==undefined?{reviewNote:command.reviewNote}:{})};
    const result=await requestJson<Status>(endpoint,{method:'POST',body:JSON.stringify(payload)});
+   if(!mounted.current)return;
    if(result?.status!=='continuation_recorded'||!validReceipt(result.receipt,receipt,command))throw Error('Continuation response could not be verified. Check status before retrying.');
    const matches=result.receipt.reviewSha256===command.reviewSha256&&result.receipt.commandSha256===await reviewedContinuationCommandSha256(command);
    statusGeneration.current++;setSameCommand(matches);setStatus(result);
    setNotice(matches?'Continuation authorized. The earlier outcome and effects remain unknown.':'A different continuation was authorized. Your saved request was not confirmed.');
    await Promise.all([client.invalidateQueries({queryKey:queryKeys.agents.detailPrefix(receipt.targetAgentId)}),client.invalidateQueries({queryKey:queryKeys.conversations.detailAll}),client.invalidateQueries({queryKey:queryKeys.inboxAll})]);
   }catch(cause){
+   if(!mounted.current)return;
    if(command){try{const result=await load(command);if(result.status==='continuation_recorded')return;}catch{/* Preserve the exact command until status is readable. */}}
    setError(command?`${cause instanceof Error?cause.message:'Continuation status is unavailable.'} Check status or retry the same request; the original work was not replayed.`:cause instanceof Error?cause.message:'Continuation could not be saved.');
   }finally{lock.current=false;if(mounted.current)setBusy(false);}
@@ -141,7 +144,7 @@ export function ReviewedContinuationDialog({projectId,receipt,onClose,onOpenAgen
  const review=status?.status==='review_required'?status.review:undefined;
  const unknown=review?.effectInventory.effects.filter(effect=>effect.outcome==='unknown')??[];
  const missingAttachments=Boolean(review&&[...(review.originalTask.communication.attachments??[]),...(review.originalSteer.communication.attachments??[])].some(file=>file.unavailable));
- return <Dialog open onClose={busy?undefined:onClose} fullWidth maxWidth="sm" aria-busy={busy||undefined}>
+ return <Dialog open onClose={onClose} fullWidth maxWidth="sm" aria-busy={busy||undefined}>
   <DialogTitle>Review interrupted work</DialogTitle><DialogContent><Stack spacing={2} sx={{pt:1}}>
    {error&&<Alert severity="error">{error}</Alert>}{notice&&<Alert severity="info">{notice}</Alert>}
    {!status&&!error&&<Typography role="status">Loading original work…</Typography>}
@@ -156,7 +159,7 @@ export function ReviewedContinuationDialog({projectId,receipt,onClose,onOpenAgen
     {!saved&&<FormControlLabel control={<Checkbox checked={checked} onChange={event=>setChecked(event.target.checked)}/>} label="I reviewed the uncertainty and want the Agent to continue the original task."/>}
     {saved&&<Typography variant="body2" sx={{whiteSpace:"pre-wrap",overflowWrap:"anywhere"}}>A continuation request is saved. Check its status or retry the same request.{saved.reviewNote?" Notes: "+saved.reviewNote:""}</Typography>}
    </>}
-  </Stack></DialogContent><DialogActions><Button disabled={busy} onClick={onClose}>Close</Button>{onOpenAgent&&<Button disabled={busy} onClick={()=>onOpenAgent(receipt.targetAgentId)}>Open Agent chat</Button>}<Button disabled={busy} onClick={()=>void refresh()}>Check status</Button>
+  </Stack></DialogContent><DialogActions><Button onClick={onClose}>Close</Button>{onOpenAgent&&<Button disabled={busy} onClick={()=>onOpenAgent(receipt.targetAgentId)}>Open Agent chat</Button>}<Button disabled={busy} onClick={()=>void refresh()}>Check status</Button>
    {review&&<Button variant="contained" disabled={busy||missingAttachments||(!saved&&!checked)||(!saved&&new TextEncoder().encode(note).length>16000)} onClick={()=>void submit()}>{saved?'Retry same request':'Continue task'}</Button>}
   </DialogActions>
  </Dialog>;

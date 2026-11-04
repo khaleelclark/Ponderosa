@@ -14,7 +14,7 @@ export async function reviewedContinuationRegression():Promise<void>{
   originalTask:{communication:{projectId:'project-one',conversationId:'chat-one',sender:{kind:'user',userId:'user'},text:'Finish the complete original task',attachments:[{id:'task-file',name:'task-notes.txt'}]}},
   originalSteer:{communication:{projectId:'project-one',conversationId:'chat-one',sender:{kind:'user',userId:'user'},text:'Also include the correction',attachments:[{id:'steer-file',name:'correction.pdf'}]}},
   effectInventory:{effects:[{kind:'communication',outcome:'host_committed',detail:'already settled'},{kind:'tool_call',outcome:'unknown',detail:'Tool effect is unconfirmed'}],nativeTail:'unknown',sourceWork:'held_unknown',replayAuthorized:false}};
- let recorded=false,loseResponse=true,commitOnLoss=true,badReceipt=false,otherCommand=false,unavailable=false,posts:Array<Record<string,unknown>>=[],gets=0;
+ let recorded=false,loseResponse=true,commitOnLoss=true,badReceipt=false,otherCommand=false,unavailable=false,holdRead=false,holdPost=false,releaseRead:()=>void=()=>{},releasePost:()=>void=()=>{},posts:Array<Record<string,unknown>>=[],gets=0;
  const result=async()=>{
   const saved=JSON.parse(localStorage.getItem(statusKey)??'null');
   const input=saved?{activationId:saved.activationId,effectsReviewed:true,idempotencyKey:saved.idempotencyKey,projectId:saved.projectId,...(saved.reviewNote!==undefined?{reviewNote:saved.reviewNote}:{}),reviewSha256:saved.reviewSha256}:{};
@@ -24,7 +24,8 @@ export async function reviewedContinuationRegression():Promise<void>{
  };
  window.fetch=async(input,init)=>{
   assert(String(input).includes('/api/projects/project-one/message-deliveries/steer-one/reviewed-continuation'),'Exact scoped endpoint required');
-  if(init?.method==='POST'){posts.push(JSON.parse(String(init.body)));if(loseResponse){recorded=commitOnLoss;throw Error('Controlled lost response');}recorded=true;return new Response(JSON.stringify(await result()),{status:200,headers:{'content-type':'application/json'}});}
+  if(init?.method==='POST'){posts.push(JSON.parse(String(init.body)));if(holdPost)await new Promise<void>(resolve=>{releasePost=resolve;});if(loseResponse){recorded=commitOnLoss;throw Error('Controlled lost response');}recorded=true;return new Response(JSON.stringify(await result()),{status:200,headers:{'content-type':'application/json'}});}
+  if(holdRead)await new Promise<void>(resolve=>{releaseRead=resolve;});
   gets++;if(unavailable)return new Response(JSON.stringify({error:'The original Run is still active.'}),{status:409,headers:{'content-type':'application/json'}});
   const data=recorded?await result():{status:'review_required',review};if(badReceipt&&data.status==='continuation_recorded')data.receipt.sourceActivationId='other-steer';
   return new Response(JSON.stringify(data),{status:200,headers:{'content-type':'application/json'}});
@@ -71,6 +72,16 @@ export async function reviewedContinuationRegression():Promise<void>{
   assert(posts.length===1&&localStorage.getItem(statusKey)!==null,'Unconfirmed command remains saved');
   recorded=true;await new Promise(resolve=>setTimeout(resolve,3200));await flush();
   assert(posts.length===1&&document.body.textContent?.includes('Continuation authorized')&&!document.body.textContent?.includes('Controlled lost response'),'Later conclusive receipt clears the stale error without resubmitting');
+  root.unmount();host.replaceChildren();root=createRoot(host);recorded=false;posts=[];localStorage.removeItem(statusKey);loseResponse=false;
+  await render();button('Review interrupted work')!.click();await flush();document.querySelector<HTMLInputElement>('input[type=checkbox]')!.click();await flush();
+  holdRead=true;button('Continue task')!.click();await flush();assert(!button('Close')?.disabled,'A stalled read does not trap the dialog');
+  button('Close')!.click();await flush();holdRead=false;releaseRead();await flush();
+  assert(posts.length===0&&localStorage.getItem(statusKey)===null,'Closing during a pre-submit read prevents later dispatch');
+  button('Review interrupted work')!.click();await flush();document.querySelector<HTMLInputElement>('input[type=checkbox]')!.click();await flush();
+  holdPost=true;button('Continue task')!.click();await flush();assert(posts.length===1&&!button('Close')?.disabled&&localStorage.getItem(statusKey)!==null,'In-flight command is saved and dialog can close');
+  button('Close')!.click();await flush();holdPost=false;releasePost();await flush();
+  button('Review interrupted work')!.click();await flush();
+  assert(posts.length===1&&document.body.textContent?.includes('Continuation authorized'),'Reopening checks the in-flight result without another submission');
   root.unmount();host.replaceChildren();root=createRoot(host);recorded=false;posts=[];localStorage.removeItem(statusKey);
   Object.assign(review.originalTask.communication.attachments[0],{unavailable:true});
   await render();button('Review interrupted work')!.click();await flush();document.querySelector<HTMLInputElement>('input[type=checkbox]')!.click();await flush();
