@@ -568,7 +568,9 @@ Session rollover requests a short Agent handoff when either configured limit is
 reached, then starts a fresh provider session at the next safe boundary. The
 provider's own compaction remains the fallback. Provider Activity's input figures
 include instructions, tool definitions, context and cached reuse; they are
-reported tokens, not subscription quota, remaining context or cost estimates.
+reported tokens, not subscription quota, remaining context or cost estimates. A
+scope-wide token metric is unavailable when any finalized Run did not report it;
+provider and Agent breakdowns include only Runs with a reported token total.
 
 Your profile identity controls how Agents address you throughout Ponderosa.
 Pictures are stored in managed workspace data. Use PNG, JPEG, WebP, GIF or AVIF

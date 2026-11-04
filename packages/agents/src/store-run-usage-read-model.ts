@@ -514,7 +514,7 @@ export class AgentRunUsageReadModel {
     const metricAvailability = Object.fromEntries(
       keys.map(key => [
         key,
-        rows.some(row => row.usage[key] !== undefined)
+        rows.length > 0 && rows.every(row => row.usage[key] !== undefined)
           ? "available"
           : "unavailable",
       ]),

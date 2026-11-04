@@ -102,6 +102,36 @@ test('check 90: usage ranges and owner filters report known totals and unavailab
   assert.equal((await f.api('GET', `/api/agents/${agent.id}/usage?from=2026-01-02&to=2026-01-01`)).status, 400);
 }));
 
+test('check 90: scope token totals require every finalized Run to report each metric', options, t => {
+ let store;
+ return withFixture(t,async f=>{
+  const chat=await f.createChat('Mixed token coverage'),first=await f.createAgent(chat,'First reporter'),second=await f.createAgent(chat,'Partial reporter');
+  store.sqlite.prepare('UPDATE runs SET cached_input_tokens=0 WHERE agent_id=?').run(first.id);
+  store.sqlite.prepare('UPDATE runs SET input_tokens=NULL, cached_input_tokens=NULL WHERE agent_id=?').run(second.id);
+  const usage=f.ok(await f.api('GET',`/api/conversations/${chat.id}/usage`));
+  assert.equal(usage.finalizedRuns,2); assert.equal(usage.reportedRuns,2); assert.equal(usage.coverage,1);
+  assert.equal(usage.inputTokens,20,'Known partial input is retained for callers');
+  assert.equal(usage.metricAvailability.inputTokens,'unavailable','A partial sum is not a complete scope total');
+  assert.equal(usage.metricAvailability.cachedInputTokens,'unavailable','One explicit zero does not cover a missing Run');
+  assert.equal(usage.outputTokens,16); assert.equal(usage.metricAvailability.outputTokens,'available');
+  assert.equal(usage.totalTokens,56); assert.equal(usage.metricAvailability.totalTokens,'available');
+  await import('../shared/web-typescript-loader.mjs');
+  const {createRequire}=await import('node:module');
+  const requireWeb=createRequire(new URL('../../apps/web/package.json',import.meta.url));
+  const React=requireWeb('react'),{renderToStaticMarkup}=requireWeb('react-dom/server');
+  const {TokenUsageDetails}=await import('../../apps/web/src/components/TokenUsageButton.tsx');
+  const markup=renderToStaticMarkup(React.createElement(TokenUsageDetails,{data:usage})).replace(/<style[^>]*>[\s\S]*?<\/style>/g,'').replace(/<[^>]+>/g,' ').replace(/\s+/g,' ');
+  assert.match(markup,/Input Unavailable/,'The real usage view must not show a partial input as a total');
+  assert.match(markup,/Output 16/,'The complete metric stays visible');
+  assert.match(markup,/Reported Usage by Provider/);
+  assert.match(markup,/Total-token Coverage 100%/);
+  const single=f.ok(await f.api('GET',`/api/agents/${first.id}/usage`));
+  assert.equal(single.cachedInputTokens,0); assert.equal(single.metricAvailability.cachedInputTokens,'available','Reported zero is valid');
+  const empty=f.ok(await f.api('GET',`/api/conversations/${chat.id}/usage?from=2099-01-01T00:00:00.000Z`));
+  assert.equal(empty.metricAvailability.inputTokens,'unavailable');
+ },{storeFactory:dir=>(store=new AgentStore(dir))});
+});
+
 test('check 90: provider request counts require exact receipt coverage instead of invented zeros', options, t => {
  let store;
  return withFixture(t,async f=>{

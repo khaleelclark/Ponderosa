@@ -213,7 +213,7 @@ export interface TokenUsageSummaryDto extends TokenUsage {
   /** 0..1; null when the scope has no finalized runs. */
   coverage: number | null;
   range?: TokenUsageRangeDto;
-  /** Metrics absent from every reported run are explicitly unavailable. */
+  /** A metric is available only when every finalized Run reported it. Numeric fields may retain partial reported sums. */
   metricAvailability: Record<TokenUsageMetric, TokenUsageMetricAvailability>;
   /** Aggregated by project chat, agent, and engine/model. */
   breakdown: TokenUsageBreakdownDto[];
