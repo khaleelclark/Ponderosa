@@ -11,6 +11,45 @@ import type { CreateActivationV3Input } from "./coordination-v3-runtime-communic
 export class ReviewedSteeringAuthority {
   constructor(private readonly db: Database.Database, private readonly create: (i: CreateActivationV3Input) => string) {}
 
+  /** Later failed preparations do not own provider work. Keep every Run and
+   * activation intact, and fail closed if any provider boundary was crossed. */
+  private laterUnsubmittedRuns(agentId:string, sourceRowId:number, ownRunId = "") {
+    if(this.db.prepare("SELECT 1 FROM scheduler_runs WHERE agent_id=? AND id<>? AND status IN ('leased','running') LIMIT 1").get(agentId,ownRunId))
+      throw Error("The original provider, a later Run, or context refresh remains active or unconfirmed.");
+    const rows=this.db.prepare(`SELECT id,project_id,status,prompt_injection_state,provider_session_id,fencing_token,started_at,terminal_at
+      FROM scheduler_runs WHERE agent_id=? AND id<>? AND rowid>? ORDER BY rowid LIMIT 4097`)
+      .all(agentId,ownRunId,sourceRowId) as Array<{id:string;project_id:string;status:string;prompt_injection_state:string;provider_session_id:string|null;fencing_token:number;started_at:string|null;terminal_at:string|null}>;
+    if(rows.length>4096)throw Error("Later Run evidence exceeds the supported review bound.");
+    for(const run of rows){
+      if(run.status!=='failed' || run.prompt_injection_state!=='not_injected' || run.provider_session_id!==null ||
+         run.started_at!==null || !run.terminal_at ||
+         this.db.prepare("SELECT 1 FROM provider_inputs WHERE scheduler_run_id=? OR execution_id=? LIMIT 1").get(run.id,run.id) ||
+         this.db.prepare("SELECT 1 FROM provider_operation_outbox WHERE run_id=? UNION ALL SELECT 1 FROM provider_process_authority WHERE run_id=? LIMIT 1").get(run.id,run.id) ||
+         this.db.prepare(`SELECT 1 FROM runtime_communications WHERE project_id=? AND json_extract(sender_json,'$.agentId')=?
+             AND json_extract(sender_json,'$.executionId')=?
+           UNION ALL SELECT 1 FROM coordination_request_updates u JOIN coordination_requests r ON r.id=u.request_id
+             WHERE r.project_id=? AND u.actor_kind='agent' AND u.actor_id=? AND json_extract(u.payload_json,'$.executionId')=?
+           UNION ALL SELECT 1 FROM coordination_idempotency WHERE project_id=? AND actor_scope=? AND operation='coordinate'
+           UNION ALL SELECT 1 FROM generated_artifact_import_receipts r JOIN generated_artifact_authority a
+             ON a.project_id=r.project_id AND a.id=r.artifact_id WHERE r.project_id=? AND r.run_id=?
+               AND a.origin_agent_id=? AND a.execution_id=?
+           UNION ALL SELECT 1 FROM communication_v4_next_run_deliveries WHERE project_id=? AND publisher_kind='agent'
+             AND publisher_agent_id=? AND source_run_id=?
+           UNION ALL SELECT 1 FROM events e JOIN activity_projection p ON p.agent_id=e.agent_id AND p.seq=e.seq
+             WHERE e.agent_id=? AND p.execution_id=? AND e.type IN ('tool_call','tool_result','command','file_change','work_start','text','reasoning')
+           UNION ALL SELECT 1 FROM run_output_segments WHERE agent_id=? AND execution_id=?
+           LIMIT 1`).get(run.project_id,agentId,run.id,run.project_id,agentId,run.id,
+             run.project_id,`agent:${agentId}:run:${run.id}`,run.project_id,run.id,agentId,run.id,
+             run.project_id,agentId,run.id,agentId,run.id,agentId,run.id) ||
+         this.db.prepare(`SELECT 1 FROM scheduler_prompt_injections WHERE run_id=? AND
+           (state NOT IN ('pending','cancelled') OR submitted_at IS NOT NULL OR acknowledged_at IS NOT NULL OR provider_turn_id IS NOT NULL) LIMIT 1`).get(run.id) ||
+         this.db.prepare(`SELECT 1 FROM host_lifecycle_commits WHERE kind IN ('provider-start-admission','provider-process-registration')
+           AND json_extract(receipt_json,'$.runId')=? LIMIT 1`).get(run.id))
+        throw Error("A later Run has provider work or uncertain submission and remains held.");
+    }
+    return rows;
+  }
+
   private evidence(kind:string, identity:string):any {
     const row=this.db.prepare("SELECT input_json,receipt_json,receipt_sha256 FROM host_lifecycle_commits WHERE kind=? AND identity=?")
       .get(kind,identity) as {input_json:string;receipt_json:string;receipt_sha256:string}|undefined;
@@ -48,8 +87,8 @@ export class ReviewedSteeringAuthority {
       throw Error("The reviewed continuation no longer owns its exact Run.");
     if(owner && !owner.runId && !this.db.prepare("SELECT 1 FROM agent_activations WHERE id=? AND project_id=? AND agent_id=? AND scope_key=? AND state IN ('pending','retry_pending')")
       .get(owner.activationId,projectId,a.agent_id,a.scope_key)) throw Error("The reviewed continuation is no longer pending.");
-    if(this.db.prepare("SELECT 1 FROM scheduler_runs WHERE agent_id=? AND id<>? AND (status IN ('leased','running') OR rowid>?) LIMIT 1").get(a.agent_id,owner?.runId ?? "",a.run_rowid) ||
-       this.db.prepare("SELECT 1 FROM provider_process_authority WHERE agent_id=? AND id<>? LIMIT 1").get(a.agent_id,owner?.ownStart?.authorityId ?? "") ||
+    const laterUnsubmittedRuns=this.laterUnsubmittedRuns(a.agent_id,a.run_rowid,owner?.runId);
+    if(this.db.prepare("SELECT 1 FROM provider_process_authority WHERE agent_id=? AND id<>? LIMIT 1").get(a.agent_id,owner?.ownStart?.authorityId ?? "") ||
        this.db.prepare("SELECT 1 FROM context_rollovers WHERE agent_id=? AND state IN ('requested','handoff_committed','session_retiring','continuation_ready','outcome_unknown') LIMIT 1").get(a.agent_id))
       throw Error("The original provider, a later Run, or context refresh remains active or unconfirmed.");
     const roots=this.db.prepare(`SELECT source_activation_id,reply_authority_json,attempt_count,delivery_phase,interim_communication_id,blocking_decision_id
@@ -123,7 +162,7 @@ export class ReviewedSteeringAuthority {
     if (a.status==="completed" && !effectInventory.unknownSteeringInjectionIds?.includes(a.injection_id))
       throw Error("The exact unconfirmed interruption is unavailable.");
     const facts={projectId,activationId,agentId:a.agent_id,conversationId:a.conversation_id,runId:a.run_id,
-      sourceFence:a.fencing_token,injectionId:a.injection_id,root,originalTask:originalPayload,originalSteer:payload,baselineStartClaims,baselineRegistrations:exitRefs.sort(),baselineExits:baselineExits.sort((a,b)=>a.identity.localeCompare(b.identity)),effectInventory};
+      sourceFence:a.fencing_token,injectionId:a.injection_id,root,originalTask:originalPayload,originalSteer:payload,...(laterUnsubmittedRuns.length?{laterUnsubmittedRuns}:{}),baselineStartClaims,baselineRegistrations:exitRefs.sort(),baselineExits:baselineExits.sort((a,b)=>a.identity.localeCompare(b.identity)),effectInventory};
     return {...facts,reviewSha256:payloadHash(facts),originalOutcome:"unknown" as const,replayAuthorized:false as const};
   }
 
@@ -142,8 +181,8 @@ export class ReviewedSteeringAuthority {
         .all(activationId,projectId) as Array<{agent_id:string;scope_key:string;run_id:string;fencing_token:number;run_rowid:number;conversation_id:string}>;
       if(rows.length!==1)throw Error("The exact finished interruption is unavailable.");
       const a=rows[0]!;
+      this.laterUnsubmittedRuns(a.agent_id,a.run_rowid,a.run_id);
       if(a.scope_key!=="conversation:"+a.conversation_id || !Number.isSafeInteger(a.fencing_token) || a.fencing_token<1 ||
-         this.db.prepare("SELECT 1 FROM scheduler_runs WHERE agent_id=? AND id<>? AND (status IN ('leased','running') OR rowid>?) LIMIT 1").get(a.agent_id,a.run_id,a.run_rowid) ||
          this.db.prepare("SELECT 1 FROM context_rollovers WHERE agent_id=? AND state IN ('requested','handoff_committed','session_retiring','continuation_ready','outcome_unknown') LIMIT 1").get(a.agent_id))
         throw Error("The original Run no longer has exclusive recovery custody.");
       return {agentId:a.agent_id,runId:a.run_id,fence:a.fencing_token};

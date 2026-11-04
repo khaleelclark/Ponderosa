@@ -93,7 +93,7 @@ test('opening review can retire only the exact idle source and leaves its uncert
  },{storeFactory:p=>(store=new AgentStore(p)),steeringResponse:async()=>{throw Error('Controlled unknown delivery');}});
 });
 
-test('qualified Codex continues the saved task and instruction with both files and the original reply root',{timeout:30000},async t=>{
+for(const laterFailure of [false,true]) test(`qualified Codex continues the saved task and instruction with both files and the original reply root (later failed preparation=${laterFailure})`,{timeout:30000},async t=>{
  let store, useNative=false, native;
  await withFixture(t,async f=>{
   native=await inertCodex(f.root);
@@ -109,9 +109,46 @@ test('qualified Codex continues the saved task and instruction with both files a
   const injection=await until(()=>store.sqlite.prepare("SELECT id,activation_ids_json FROM scheduler_prompt_injections WHERE run_id=? AND kind='steer' AND state='outcome_unknown'").get(run),'unknown steer');
   const [sourceActivation]=JSON.parse(injection.activation_ids_json),path=`/api/projects/${chat.projectId}/message-deliveries/${sourceActivation}/reviewed-continuation`;
   old.finish();await until(()=>store.sqlite.prepare("SELECT 1 FROM scheduler_runs WHERE id=? AND status='completed'").get(run),'source complete');
+  let failed,failedActivations;
+  if(laterFailure){
+   const priorTurns=f.turns.length;
+   await f.send(agent.id,'A later separate instruction');
+   failed=await until(()=>store.sqlite.prepare("SELECT * FROM scheduler_runs WHERE agent_id=? AND id<>? AND status='failed' AND prompt_injection_state='not_injected' ORDER BY fencing_token DESC LIMIT 1").get(agent.id,run),'later unsubmitted failure');
+   assert.equal(failed.started_at,null);assert.equal(failed.provider_session_id,null);assert.ok(failed.terminal_at);
+   failedActivations=store.sqlite.prepare('SELECT a.id,a.state,a.payload_json FROM agent_activations a JOIN scheduler_run_activations attached ON attached.activation_id=a.id WHERE attached.run_id=? ORDER BY a.id').all(failed.id);
+   assert.ok(JSON.stringify(failedActivations).includes('A later separate instruction'));
+   assert.equal(f.turns.length,priorTurns,'The later failed preparation did not submit a task');
+  }
   const first=f.ok(await f.api('GET',path));
   if(first.status==='source_retirement_required') f.ok(await f.api('POST',path+'/retire-source'));
   const review=f.ok(await f.api('GET',path));assert.equal(review.status,'review_required');
+  if(failed){
+   assert.deepEqual(review.review.laterUnsubmittedRuns.map(row=>row.id),[failed.id]);
+   const authority=new ReviewedSteeringAuthority(store.sqlite,()=>{throw Error('Unexpected creation');});
+   for(const mutate of [
+    ()=>store.sqlite.prepare("UPDATE scheduler_runs SET prompt_injection_state='injecting' WHERE id=?").run(failed.id),
+    ()=>store.sqlite.prepare("UPDATE scheduler_runs SET status='outcome_unknown' WHERE id=?").run(failed.id),
+    ()=>store.sqlite.prepare("UPDATE scheduler_runs SET started_at='2000-01-01T00:00:00.000Z' WHERE id=?").run(failed.id),
+    ()=>store.sqlite.prepare("UPDATE scheduler_runs SET provider_session_id='unexpected' WHERE id=?").run(failed.id),
+    ()=>store.sqlite.prepare("INSERT INTO scheduler_prompt_injections(id,run_id,kind,sequence,state,prompt_hash,activation_ids_json,created_at,updated_at,submitted_at) VALUES(?,?,'turn',99,'submitted','hash','[]','2000','2000','2000')").run(randomUUID(),failed.id),
+    ()=>store.sqlite.prepare("INSERT INTO scheduler_prompt_injections(id,run_id,kind,sequence,state,prompt_hash,activation_ids_json,created_at,updated_at,provider_turn_id) VALUES(?,?,'turn',99,'cancelled','hash','[]','2000','2000','provider-turn')").run(randomUUID(),failed.id),
+    ()=>store.sqlite.prepare("INSERT INTO provider_inputs(execution_id,scheduler_run_id,agent_id,project_id,provider_prompt,prompt_hash,source_manifest_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,'2000','2000')").run(randomUUID(),failed.id,agent.id,chat.projectId,'input','hash','{}'),
+    ()=>store.sqlite.prepare("INSERT INTO provider_inputs(execution_id,scheduler_run_id,agent_id,project_id,provider_prompt,prompt_hash,source_manifest_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,'2000','2000')").run(failed.id,randomUUID(),agent.id,chat.projectId,'input','hash','{}'),
+    ...['provider-start-admission','provider-process-registration'].map(kind=>()=>store.sqlite.prepare("INSERT INTO host_lifecycle_commits(kind,identity,input_json,receipt_json,receipt_sha256) VALUES(?,?,?,?,?)").run(kind,randomUUID(),'{}',JSON.stringify({runId:failed.id}),'fixture')),
+    ()=>store.sqlite.prepare("INSERT INTO provider_operation_outbox(run_id,operation,idempotency_key,payload_json,state,available_at,created_at,updated_at) VALUES(?,'interrupt',?,'{}','pending','2000','2000','2000')").run(failed.id,randomUUID()),
+    ()=>store.sqlite.prepare("INSERT INTO coordination_idempotency(project_id,actor_scope,operation,idempotency_key,payload_hash,result_json,created_at) VALUES(?,?,'coordinate',?,'hash','{}','2000')").run(chat.projectId,`agent:${agent.id}:run:${failed.id}`,randomUUID()),
+   ])assert.throws(()=>store.sqlite.transaction(()=>{
+    mutate();assert.throws(()=>authority.preview(chat.projectId,sourceActivation),/later Run/);
+    assert.throws(()=>authority.drainTarget(chat.projectId,sourceActivation),/later Run/);
+    throw Error('restore later Run');
+   })(),/restore later Run/);
+   assert.throws(()=>store.sqlite.transaction(()=>{
+    store.sqlite.prepare("UPDATE scheduler_runs SET terminal_at='2000-01-01T00:00:00.000Z' WHERE id=?").run(failed.id);
+    assert.notEqual(authority.preview(chat.projectId,sourceActivation).reviewSha256,review.review.reviewSha256);
+    assert.throws(()=>authority.continue({projectId:chat.projectId,activationId:sourceActivation,reviewSha256:review.review.reviewSha256,effectsReviewed:true,idempotencyKey:randomUUID()}),/changed/);
+    throw Error('restore exact review');
+   })(),/restore exact review/);
+  }
   let handoffReads=0;
   store.pendingContinuationHandoff=()=>{handoffReads++;return {id:'unrelated',executionId:'other-run',text:'unrelated stale handoff'};};
   useNative=true;
@@ -129,6 +166,10 @@ test('qualified Codex continues the saved task and instruction with both files a
   const all=store.sqlite.prepare('SELECT source_activation_id,state FROM required_reply_obligations WHERE run_id=?').all(current.run_id);
   assert.deepEqual(all,[{source_activation_id:root,state:'satisfied'}]);
   assert.equal(store.sqlite.prepare('SELECT state FROM scheduler_prompt_injections WHERE id=?').get(injection.id).state,'outcome_unknown');
+  if(failed){
+   assert.deepEqual(store.sqlite.prepare('SELECT * FROM scheduler_runs WHERE id=?').get(failed.id),failed,'The later failed Run remains untouched');
+   assert.deepEqual(store.sqlite.prepare('SELECT a.id,a.state,a.payload_json FROM agent_activations a JOIN scheduler_run_activations attached ON attached.activation_id=a.id WHERE attached.run_id=? ORDER BY a.id').all(failed.id),failedActivations,'The later separate instruction remains untouched');
+  }
   assert.ok(receipt.commandSha256);
  },{storeFactory:p=>(store=new AgentStore(p)),steeringResponse:async()=>{throw Error('Controlled unknown delivery');},nativeAdapterForOpen:()=>useNative?native?.adapter:undefined});
 });
