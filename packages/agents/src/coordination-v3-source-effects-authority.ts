@@ -23,7 +23,17 @@ export class CoordinationV3SourceEffectsAuthority {
     }
     const source = this.sqlite.prepare(`SELECT project_id,scope_key,provider_session_id,status,fencing_token
       FROM scheduler_runs WHERE id=? AND agent_id=?`).get(boundary.sourceRunId,boundary.agentId) as SourceRun | undefined;
-    if (!source || source.fencing_token !== boundary.sourceFence || source.status !== "outcome_unknown") {
+    if (!source || source.fencing_token !== boundary.sourceFence) {
+      throw new SourceEffectConflictError("Exact original uncertain Run/fence changed or unavailable");
+    }
+    // A Run may finish while a submitted steer remains unknown. This admits
+    // inspection of that exact held boundary without treating it as replayable.
+    const unknownSteeringInjectionIds = source.status === "completed" ?
+      (this.sqlite.prepare(`SELECT id FROM scheduler_prompt_injections
+        WHERE run_id=? AND kind='steer' AND state='outcome_unknown' ORDER BY id`)
+        .all(boundary.sourceRunId) as Array<{id:string}>).map(row=>row.id) : [];
+    if (source.status !== "outcome_unknown" &&
+        !(source.status === "completed" && unknownSteeringInjectionIds.length > 0)) {
       throw new SourceEffectConflictError("Exact original uncertain Run/fence changed or unavailable");
     }
     if (this.sqlite.prepare("SELECT 1 FROM provider_process_authority WHERE run_id=? LIMIT 1").get(boundary.sourceRunId)) {
@@ -78,7 +88,8 @@ export class CoordinationV3SourceEffectsAuthority {
     }
     effects.sort((a,b)=>a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
     const facts = {...boundary,projectId:source.project_id,scopeKey:source.scope_key,providerSessionId:source.provider_session_id,
-      sourceStatus:"outcome_unknown" as const,effects,nativeTail:"unknown" as const,sourceWork:"held_unknown" as const,replayAuthorized:false as const};
+      sourceStatus:source.status as "outcome_unknown" | "completed",
+      ...(unknownSteeringInjectionIds.length ? {unknownSteeringInjectionIds} : {}),effects,nativeTail:"unknown" as const,sourceWork:"held_unknown" as const,replayAuthorized:false as const};
     return {...facts,inventoryHash:payloadHash(facts)};
   }
 

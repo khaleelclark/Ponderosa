@@ -22,7 +22,9 @@ export interface SourceEffectInventory extends SourceEffectBoundary {
   projectId: string;
   scopeKey: string;
   providerSessionId: string | null;
-  sourceStatus: "outcome_unknown";
+  sourceStatus: "outcome_unknown" | "completed";
+  /** Exact unconfirmed steering submissions on a completed Run, if any. */
+  unknownSteeringInjectionIds?: string[];
   inventoryHash: string;
   effects: SourceEffectEvidence[];
   /** The provider can have acted without leaving host telemetry. */

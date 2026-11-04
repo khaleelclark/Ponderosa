@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { AgentStore } from '../../packages/agents/dist/index.js';
-import { withFixture, fixtureTestOptions as options } from '../shared/fixture.mjs';
+import { withFixture, until, fixtureTestOptions as options } from '../shared/fixture.mjs';
 
 async function originalSource(f, store) {
   const chat = await f.createChat('Original effect receipts');
@@ -113,4 +113,53 @@ test('canonical Request update and coordinate receipts prove only their committe
     assert.equal(inventory.sourceWork,'held_unknown');
     assert.ok(!JSON.stringify(inventory).includes('private result'));
   }, {storeFactory:p=>(store=new AgentStore(p))});
+});
+
+test('completed Run with exact unknown human steering permits inspection only after custody drains', {timeout:30000}, async t => {
+ let store;
+ return withFixture(t,async f=>{
+  const chat=await f.createChat('Completed with unconfirmed steer'),agent=await f.createIdleAgent(chat,'Worker');
+  const session=await f.hold(agent.id),runId=(await f.detail(agent.id)).runs[0].id;
+  await f.send(agent.id,'A correction whose delivery is unknown',{activeRunDelivery:'steer'});
+  const injection=await until(()=>store.sqlite.prepare("SELECT id FROM scheduler_prompt_injections WHERE run_id=? AND kind='steer' AND state='outcome_unknown'").get(runId),'unconfirmed steer');
+  session.finish();
+  await until(()=>store.sqlite.prepare("SELECT 1 FROM scheduler_runs WHERE id=? AND status='completed'").get(runId),'source Run completes');
+  await f.reopen();
+  const db=store.sqlite,run=db.prepare('SELECT status,fencing_token FROM scheduler_runs WHERE id=?').get(runId);
+  const path='/api/agents/'+agent.id+'/source-runs/'+runId+'/effects',target=path+'?sourceFence='+run.fencing_token;
+  const before=db.prepare("SELECT state FROM required_reply_obligations WHERE run_id=?").get(runId);
+  assert.equal(before.state,'pending');
+  assert.equal((await f.api('GET',path+'?sourceFence='+(run.fencing_token+1))).status,409);
+  const inventory=f.ok(await f.api('GET',target));
+  assert.equal(inventory.sourceStatus,'completed');
+  assert.deepEqual(inventory.unknownSteeringInjectionIds,[injection.id]);
+  assert.equal(inventory.nativeTail,'unknown');assert.equal(inventory.sourceWork,'held_unknown');assert.equal(inventory.replayAuthorized,false);
+  const saved=f.ok(await f.api('POST',path+'/reconcile',{sourceFence:run.fencing_token,expectedInventoryHash:inventory.inventoryHash,idempotencyKey:'inspect-held-steer'}));
+  assert.equal(saved.receipt.replayAuthorized,false);
+  assert.equal(saved.receipt.disposition,'host_receipts_reconciled_external_unknown');
+  assert.equal(db.prepare('SELECT state FROM scheduler_prompt_injections WHERE id=?').get(injection.id).state,'outcome_unknown');
+  assert.equal(db.prepare('SELECT state FROM required_reply_obligations WHERE run_id=?').get(runId).state,'pending');
+  assert.equal(db.prepare('SELECT status FROM scheduler_runs WHERE id=?').get(runId).status,'completed');
+  assert.equal(f.turns.filter(turn=>turn.agentId===agent.id).length,1);
+ },{storeFactory:p=>(store=new AgentStore(p)),steeringResponse:async()=>{throw Error('Controlled unknown delivery');}});
+});
+
+test('completed Run inspection requires an unknown steer on that exact Run', options, t=>{
+ let store;
+ return withFixture(t,async f=>{
+  const s=await originalSource(f,store),db=store.sqlite;
+  db.prepare("UPDATE scheduler_runs SET status='completed' WHERE id=?").run(s.runId);
+  const target=s.path+'?sourceFence='+s.fence;
+  assert.equal((await f.api('GET',target)).status,409,'Ordinary completed Runs are outside this API');
+  const now=new Date().toISOString();
+  db.prepare("INSERT INTO scheduler_prompt_injections(id,run_id,kind,sequence,state,prompt_hash,activation_ids_json,created_at,updated_at) VALUES (?,?,\'steer\',1,\'pending\',\'\',\'[]\',?,?)").run('not-unknown',s.runId,now,now);
+  assert.equal((await f.api('GET',target)).status,409,'Pending does not establish an unknown terminal steer');
+  db.prepare("UPDATE scheduler_prompt_injections SET state='outcome_unknown' WHERE id='not-unknown'").run();
+  const first=f.ok(await f.api('GET',target));
+  assert.deepEqual(first.unknownSteeringInjectionIds,['not-unknown']);
+  db.prepare("INSERT INTO scheduler_prompt_injections(id,run_id,kind,sequence,state,prompt_hash,activation_ids_json,created_at,updated_at) VALUES (?,?,\'steer\',2,\'outcome_unknown\',\'\',\'[]\',?,?)").run('another-unknown',s.runId,now,now);
+  assert.equal((await f.api('POST',s.path+'/reconcile',{sourceFence:s.fence,expectedInventoryHash:first.inventoryHash,idempotencyKey:'stale-exact-set'})).status,409,'A changed injection set invalidates the reviewed inventory');
+  db.prepare("INSERT INTO provider_process_authority(id,worker_id,purpose,project_id,agent_id,run_id,pid,pgid,birth_marker,created_at) VALUES ('undrained-completed','prior-worker','provider',?,?,?,124,124,'original-birth',?)").run(s.agent.projectId,s.agent.id,s.runId,now);
+  assert.equal((await f.api('GET',target)).status,409,'Live original custody remains unavailable');
+ },{storeFactory:p=>(store=new AgentStore(p))});
 });
