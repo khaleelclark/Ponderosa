@@ -735,6 +735,11 @@ export class BranchInstallationService {
    await this.deleteChat(r.local_id);this.run("UPDATE branch_installation_resources SET state='deleted' WHERE branch_id=? AND package_id=? AND chat_ref=?",r.branch_id,r.package_id,r.chat_ref);this.run('DELETE FROM branch_retirement_errors WHERE resource_id=?',r.local_id);
   }catch(error){this.retirementError(r.local_id,error)}
   for(const plan of this.rows("SELECT * FROM branch_installation_plans WHERE state='canceling' ORDER BY updated_at,created_at"))if(!this.journal(plan.id)&&this.cancelReady(plan)){
+   const state=this.rolePlan(plan);
+   if(state.published&&state.review){
+    if(!this.outputApps||!state.binding||!state.mapping)continue;
+    try{this.outputApps.finishCanceledBranchImport(state.review.id,state.binding,plan.id,state.mapping);}catch(error){this.run('UPDATE branch_installation_plans SET error=?,updated_at=? WHERE id=?','Canceled Output role cleanup remains pending: '+(error as Error).message,new Date().toISOString(),plan.id);continue;}
+   }
    const removeEmptyImport=Boolean(plan.branch_id&&plan.expected_version_id==null);
    if(removeEmptyImport&&plan.branch_id)this.branches.beginDeletion(plan.branch_id);
    this.compactPlan(plan.id,'canceled',plan.error?.startsWith('Stopping update')?undefined:plan.error??undefined);

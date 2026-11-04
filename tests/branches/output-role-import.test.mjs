@@ -98,6 +98,37 @@ test('published Branch outcome stays hidden until completion and supports later 
  },{storeFactory:dir=>(store=new AgentStore(dir))});
 });
 
+test('deleting a published held Branch retires its exact roles and review without changing another Output',async t=>{
+ let store,workspace;await withFixture(t,async f=>{
+  const update=WorkspaceStore.prototype.updatePreferences;
+  WorkspaceStore.prototype.updatePreferences=function(patch){workspace=this;return update.call(this,patch);};
+  try{
+   const unrelated=installation();unrelated.outputRoles=unrelated.outputRoles.map(role=>({...role,speaker:false}));
+   const first=await installed(f,f.ok(await preview(f,unrelated)));
+   const other=store.sqlite.prepare("SELECT local_id FROM branch_installation_resources WHERE branch_id=? AND agent_ref='root' AND state='active'").get(first.branchId).local_id;
+   const p=installation(),plan=f.ok(await preview(f,p));
+   store.sqlite.exec("CREATE TEMP TRIGGER refuse_deleted_role_completion BEFORE UPDATE OF state ON branch_installation_plans WHEN NEW.state='completed' AND json_extract(OLD.preview_json,'$.published')=1 BEGIN SELECT RAISE(ABORT,'controlled completion hold'); END");
+   const pending=f.ok(await f.api('POST',`/api/branches/installations/${plan.id}/confirm`,{}));assert.equal(pending.state,'applying');
+   const snapshot=JSON.parse(store.sqlite.prepare('SELECT preview_json FROM branch_installation_plans WHERE id=?').get(plan.id).preview_json);
+   const removed=snapshot.mapping[JSON.stringify(['chat','root'])],reviewId=snapshot.review.id;
+   assert.ok(workspace.getPreferences().outputApps.importReviews[reviewId].applied);
+   store.sqlite.exec('DROP TRIGGER refuse_deleted_role_completion');
+   await until(async()=>{
+    const result=await f.api('DELETE',`/api/branches/${pending.branchId}`);
+    assert.ok([200,202,404].includes(result.status),JSON.stringify(result.body));
+    return !store.getAgent(removed)&&!workspace.getPreferences().outputApps.importReviews?.[reviewId];
+   },'deleted Branch Output marker cleanup');
+   assert.ok(store.getAgent(other));
+   assert.ok(workspace.getPreferences().outputApps.agentIds.includes(other));
+   assert.equal(workspace.getPreferences().outputApps.agentIds.includes(removed),false);
+   await f.reopen();
+   assert.ok(store.getAgent(other));
+   const roles=f.ok(await f.api('GET','/api/branches/engine/workspace/preferences')).outputApps;
+   assert.ok(roles.agentIds.includes(other));assert.equal(roles.agentIds.includes(removed),false);
+  }finally{WorkspaceStore.prototype.updatePreferences=update;}
+ },{storeFactory:dir=>(store=new AgentStore(dir))});
+});
+
 test('deferred Branch role completion publishes visibility to an already connected workspace stream',async t=>{
  let store;await withFixture(t,async f=>{
   const p=installation(),plan=f.ok(await preview(f,p));

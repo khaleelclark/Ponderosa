@@ -94,6 +94,24 @@ export class OutputAgentApps {
       if(operation?.status==='completed'&&intent?.done===true&&intent.reviewId===id)this.finishImport(id);
     }
   }
+  /** Remove only role effects of exact plan-owned Agents already deleted by
+   * an explicitly canceled Branch deletion. Later role edits win. */
+  finishCanceledBranchImport(id:string,binding:string,planId:string,mapping:Record<string,string>){
+    const entry=this.roles().importReviews?.[id];if(!entry)return;
+    const plan=this.store.sqlite.prepare("SELECT preview_json FROM branch_installation_plans p JOIN branches b ON b.id=p.branch_id WHERE p.id=? AND p.state='canceling' AND b.deleting=1").get(planId) as {preview_json:string}|undefined;
+    if(!plan||entry.operationId!==planId||entry.binding!==binding)throw new Error('Canceled Output review ownership changed');
+    const saved=JSON.parse(plan.preview_json) as {published?:boolean;binding?:string;review?:{id:string};mapping?:Record<string,string>};
+    if(!saved.published||saved.binding!==binding||saved.review?.id!==id||stableJson(saved.mapping)!==stableJson(mapping))throw new Error('Canceled Output plan evidence changed');
+    const roles=this.roles(),deleted=new Set<string>();
+    if(entry.applied&&entry.eligible)for(const target of entry.review.targets){
+      const agent=mapping[target.ref];
+      if(agent&&(roles.agentEpochs?.[agent]??0)===(entry.targetEpochs[target.ref]??0)+1&&
+        this.store.sqlite.prepare("SELECT 1 FROM branch_installation_resources WHERE staging_plan_id=? AND local_id=? AND agent_ref!='' AND state='deleted'").get(planId,agent))deleted.add(agent);
+    }
+    const reviews={...roles.importReviews};delete reviews[id];
+    this.write({importReviews:reviews,...(deleted.size?{agentIds:roles.agentIds.filter(agent=>!deleted.has(agent)),
+      speakerAgentId:roles.speakerAgentId&&deleted.has(roles.speakerAgentId)?null:roles.speakerAgentId}:{})});
+  }
   private initializeReportScan(id:string|null){if(id)this.store.sqlite.prepare('INSERT OR IGNORE INTO assistant_report_scan(speaker_agent_id,after_sequence) SELECT ?,COALESCE(MAX(sequence),0) FROM assistant_status_sources').run(id);}
   private owner(id:string,finalizingPlanId?:string){
     const agent=this.store.getAgent(id),chat=agent&&this.store.getConversation(agent.conversationId??'');
