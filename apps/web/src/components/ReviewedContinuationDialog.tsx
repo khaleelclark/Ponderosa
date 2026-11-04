@@ -90,8 +90,8 @@ export function ReviewedContinuationDialog({projectId,receipt,onClose,onOpenAgen
   if(result?.status==='review_required'&&!validReview(result.review,projectId,receipt))throw Error('The original task or instruction could not be verified. No continuation was requested.');
   if(result?.status==='continuation_recorded'&&!validReceipt(result.receipt,receipt,existing))throw Error('The continuation receipt could not be verified. Preserve browser data and check again.');
   if(result?.status!=='review_required'&&result?.status!=='continuation_recorded')throw Error('Continuation status is unavailable. No new request was sent.');
-  const matches=result.status==='continuation_recorded'&&existing?result.receipt.commandSha256===await reviewedContinuationCommandSha256(existing):undefined;
-  if(mounted.current&&generation===statusGeneration.current){setSameCommand(matches);setStatus(result);}return result;
+  const matches=result.status==='continuation_recorded'&&existing?result.receipt.reviewSha256===existing.reviewSha256&&result.receipt.commandSha256===await reviewedContinuationCommandSha256(existing):undefined;
+  if(mounted.current&&generation===statusGeneration.current){setSameCommand(matches);setStatus(result);if(result.status==='continuation_recorded')setError('');}return result;
  };
  useEffect(()=>{
   mounted.current=true;
@@ -129,7 +129,7 @@ export function ReviewedContinuationDialog({projectId,receipt,onClose,onOpenAgen
    const payload={reviewSha256:command.reviewSha256,effectsReviewed:true,idempotencyKey:command.idempotencyKey,...(command.reviewNote!==undefined?{reviewNote:command.reviewNote}:{})};
    const result=await requestJson<Status>(endpoint,{method:'POST',body:JSON.stringify(payload)});
    if(result?.status!=='continuation_recorded'||!validReceipt(result.receipt,receipt,command))throw Error('Continuation response could not be verified. Check status before retrying.');
-   const matches=result.receipt.commandSha256===await reviewedContinuationCommandSha256(command);
+   const matches=result.receipt.reviewSha256===command.reviewSha256&&result.receipt.commandSha256===await reviewedContinuationCommandSha256(command);
    statusGeneration.current++;setSameCommand(matches);setStatus(result);
    setNotice(matches?'Continuation authorized. The earlier outcome and effects remain unknown.':'A different continuation was authorized. Your saved request was not confirmed.');
    await Promise.all([client.invalidateQueries({queryKey:queryKeys.agents.detailPrefix(receipt.targetAgentId)}),client.invalidateQueries({queryKey:queryKeys.conversations.detailAll}),client.invalidateQueries({queryKey:queryKeys.inboxAll})]);

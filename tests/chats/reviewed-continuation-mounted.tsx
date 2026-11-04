@@ -70,7 +70,7 @@ export async function reviewedContinuationRegression():Promise<void>{
   await render();button('Review interrupted work')!.click();await flush();document.querySelector<HTMLInputElement>('input[type=checkbox]')!.click();await flush();button('Continue task')!.click();await flush();
   assert(posts.length===1&&localStorage.getItem(statusKey)!==null,'Unconfirmed command remains saved');
   recorded=true;await new Promise(resolve=>setTimeout(resolve,3200));await flush();
-  assert(posts.length===1&&document.body.textContent?.includes('Continuation authorized'),'Later conclusive receipt is read automatically without resubmitting');
+  assert(posts.length===1&&document.body.textContent?.includes('Continuation authorized')&&!document.body.textContent?.includes('Controlled lost response'),'Later conclusive receipt clears the stale error without resubmitting');
   root.unmount();host.replaceChildren();root=createRoot(host);recorded=false;posts=[];localStorage.removeItem(statusKey);
   Object.assign(review.originalTask.communication.attachments[0],{unavailable:true});
   await render();button('Review interrupted work')!.click();await flush();document.querySelector<HTMLInputElement>('input[type=checkbox]')!.click();await flush();
