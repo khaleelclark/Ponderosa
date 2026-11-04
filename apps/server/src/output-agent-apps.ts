@@ -25,11 +25,12 @@ export class OutputAgentApps {
   }
   private roleState(){return stableJson({epoch:this.roles().roleEpoch??0,speaker:this.status().app?.agentId??null,setup:this.roles().setup?.key??null});}
   reviewImport(targets:PortableOutputRoleDto[],binding:string,eligible:boolean,mapping:Record<string,string>={},keepInactive=false):OutputRoleImportReviewDto {
+    this.reconcileCompletedImports();
     const reviews={...this.roles().importReviews};
     for(const [key,value]of Object.entries(reviews)){
       const creation=value.operationId?this.store.getAgentCreationOperation(value.operationId):undefined;
       const plan=value.operationId?this.store.sqlite.prepare('SELECT state FROM branch_installation_plans WHERE id=?').get(value.operationId) as {state:string}|undefined:undefined;
-      if((!value.operationId&&Date.parse(value.createdAt)<Date.now()-86400000)||creation?.status==='rolled_back'||(creation?.status==='completed'&&(creation.result as {outputRoleFinalization?:{done?:boolean}}|undefined)?.outputRoleFinalization?.done)||(plan&&(['canceled','expired','review_required'].includes(plan.state)||(plan.state==='completed'&&value.applied))))delete reviews[key];
+      if((!value.operationId&&Date.parse(value.createdAt)<Date.now()-86400000)||creation?.status==='rolled_back'||(creation?.status==='completed'&&(creation.result as {outputRoleFinalization?:{done?:boolean}}|undefined)?.outputRoleFinalization?.done)||(plan&&['canceled','expired','review_required'].includes(plan.state)&&!value.applied))delete reviews[key];
     }
     if(Object.keys(reviews).length>=64)throw new Error('Too many pending output-role reviews; finish existing imports');
     const current=this.status().app?.agentId,proposed=targets.find(t=>t.speaker),same=proposed&&mapping[proposed.ref]===current;
@@ -59,7 +60,7 @@ export class OutputAgentApps {
     }
     const agentEpochs={...roles.agentEpochs};
     if(entry.eligible)for(const target of entry.review.targets){
-      const local=mapping[target.ref];if(!local)throw new Error('Imported output role mapping is incomplete');this.owner(local);
+      const local=mapping[target.ref];if(!local)throw new Error('Imported output role mapping is incomplete');this.owner(local,operationId);
       agentEpochs[local]=(agentEpochs[local]??0)+1;
       if(target.output)ids.add(local);else ids.delete(local);
       if(speaker===local&&!target.speaker){this.pause(this.get(local));speaker=null;}
@@ -72,15 +73,35 @@ export class OutputAgentApps {
     // Role effects and applied marker share ONE journal append, never a SQLite callback.
     this.write({agentIds:[...ids],agentEpochs,speakerAgentId:speaker,initialized:speaker?true:roles.initialized,importReviews:{...roles.importReviews,[id]:{...entry,applied:true}}});
   }
-  finishImport(id:string){const entry=this.roles().importReviews?.[id];if(!entry?.applied)return;const reviews={...this.roles().importReviews};delete reviews[id];this.write({importReviews:reviews});}
+  finishImport(id:string){
+    let entry=this.roles().importReviews?.[id];if(!entry?.applied)return;
+    if(entry.completionNotificationAfter===undefined){
+      const cursor=this.workspace.cursor(),reviews={...this.roles().importReviews,[id]:{...entry,completionNotificationAfter:cursor}};
+      this.workspace.updatePreferences({outputApps:{...this.roles(),importReviews:reviews}});
+      entry=this.roles().importReviews?.[id];if(!entry?.applied)throw new Error('Output completion marker unavailable');
+    }
+    const cursor=entry.completionNotificationAfter;
+    if(!Number.isSafeInteger(cursor)||cursor!<0)throw new Error('Output completion notification cursor invalid');
+    this.publishSince?.(cursor!);
+    const reviews={...this.roles().importReviews};delete reviews[id];this.write({importReviews:reviews});
+  }
+  reconcileCompletedImports():void{
+    for(const [id,entry] of Object.entries(this.roles().importReviews??{})){
+      if(!entry.applied||!entry.operationId)continue;
+      const plan=this.store.sqlite.prepare('SELECT state FROM branch_installation_plans WHERE id=?').get(entry.operationId) as {state:string}|undefined;
+      if(plan){if(plan.state==='completed')this.finishImport(id);continue;}
+      const operation=this.store.getAgentCreationOperation(entry.operationId),intent=(operation?.result as {outputRoleFinalization?:{reviewId?:string;done?:boolean}}|undefined)?.outputRoleFinalization;
+      if(operation?.status==='completed'&&intent?.done===true&&intent.reviewId===id)this.finishImport(id);
+    }
+  }
   private initializeReportScan(id:string|null){if(id)this.store.sqlite.prepare('INSERT OR IGNORE INTO assistant_report_scan(speaker_agent_id,after_sequence) SELECT ?,COALESCE(MAX(sequence),0) FROM assistant_status_sources').run(id);}
-  private owner(id:string){
+  private owner(id:string,finalizingPlanId?:string){
     const agent=this.store.getAgent(id),chat=agent&&this.store.getConversation(agent.conversationId??'');
     if(!agent||!chat?.branchId||chat.executionId||!this.store.sqlite.prepare('SELECT 1 FROM branches WHERE id=? AND deleting=0').get(chat.branchId)||
       this.store.sqlite.prepare('SELECT 1 FROM project_deletion_pending WHERE project_id=?').get(chat.projectId)||
       this.store.sqlite.prepare(`SELECT 1 FROM agent_deletion_pending WHERE agent_id=?`).get(id)||
       this.store.sqlite.prepare(`SELECT 1 FROM conversation_deletion_receipts WHERE conversation_id=?`).get(chat.id)||
-      this.store.sqlite.prepare(`SELECT 1 FROM branch_installation_resources WHERE local_id IN (?,?) AND state!='active'`).get(id,chat.id))throw new OutputAppUnavailableError('Output Agent is unavailable');
+      this.store.sqlite.prepare(`SELECT 1 FROM branch_installation_resources r WHERE r.local_id IN (?,?) AND (r.state!='active' OR (r.staging_plan_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM branch_installation_plans p WHERE p.id=r.staging_plan_id AND (p.state='completed' OR (p.id=? AND p.state='applying' AND json_extract(p.preview_json,'$.published')=1)))))`).get(id,chat.id,finalizingPlanId??null))throw new OutputAppUnavailableError('Output Agent is unavailable');
     return {agent,chat};
   }
   get(id:string):OutputAgentAppDto{

@@ -333,8 +333,33 @@ export class BranchStore {
     // No await between this current owner/ancestor check and fresh effect release.
     return this.functionalReady(lease.executionId)?'ready':'waiting';
   }
+  /** An accepted execution waits while its exact Branch installation remains
+   * unfinished. Tree maps cover script-only descendant Branches that have no
+   * staged Chat/Agent resource row. Invalid in-flight maps fail closed. */
+  private installationHeld(branchId:unknown):boolean {
+    if(typeof branchId!=='string'||!branchId)return true;
+    try{
+      if(this.row(`SELECT 1 FROM branch_installation_resources r
+        WHERE r.branch_id=? AND r.staging_plan_id IS NOT NULL AND NOT EXISTS(
+          SELECT 1 FROM branch_installation_plans owner WHERE owner.id=r.staging_plan_id AND owner.state='completed') LIMIT 1`,branchId))return true;
+      return Boolean(this.row(`SELECT 1 FROM branch_installation_plans p
+        WHERE p.state!='completed' AND (
+          p.state IN ('applying','canceling') OR
+          CASE WHEN json_valid(p.preview_json) THEN json_extract(p.preview_json,'$.published')=1 ELSE 0 END
+        ) AND (
+          p.branch_id=? OR NOT json_valid(p.preview_json) OR NOT json_valid(p.package_json) OR
+          (CASE WHEN json_valid(p.package_json) THEN json_type(p.package_json,'$.definitionTree') IS NOT NULL ELSE 1 END
+            AND json_type(p.preview_json,'$.tree.branchMap') IS NOT 'object') OR
+          (json_type(p.preview_json,'$.tree') IS NOT NULL AND json_type(p.preview_json,'$.tree.branchMap') IS NOT 'object') OR
+          (json_type(p.preview_json,'$.treeReceipt') IS NOT NULL AND json_type(p.preview_json,'$.treeReceipt.branchMap') IS NOT 'object') OR
+          EXISTS(SELECT 1 FROM json_each(CASE WHEN json_valid(p.preview_json) THEN p.preview_json ELSE '{}' END,'$.tree.branchMap') map WHERE map.value=?) OR
+          EXISTS(SELECT 1 FROM json_each(CASE WHEN json_valid(p.preview_json) THEN p.preview_json ELSE '{}' END,'$.treeReceipt.branchMap') map WHERE map.value=?)
+        ) LIMIT 1`,branchId,branchId,branchId));
+    }catch{return true;}
+  }
   private functionalReady(executionId: string): boolean {
     return this.ancestors(executionId).every(owner => {
+      if(this.installationHeld(owner.branch_id))return false;
       if(this.row("SELECT 1 FROM branch_commands WHERE execution_id=? AND command_key='portable-runtime-data'",owner.id))return false;
       if(this.row("SELECT 1 FROM branch_commands WHERE execution_id=? AND command_key LIKE 'resource-generation-exit:%' AND json_extract(result_json,'$.state') IN ('fencing','capturing') LIMIT 1",owner.id))return false;
       if(this.row(`SELECT 1 FROM coordination_destination_admissions admission WHERE admission.state!='admitted'

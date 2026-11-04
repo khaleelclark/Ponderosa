@@ -56,7 +56,7 @@ export interface WorkspacePreferencesDto {
     setupError?: {message:string;at:string};
     roleEpoch?: number;
     agentEpochs?: Record<string,number>;
-    importReviews?: Record<string, { binding: string; state: string; targetEpochs: Record<string,number>; eligible: boolean; createdAt: string; operationId?: string; applied?: boolean; review: import("./agents.js").OutputRoleImportReviewDto }>;
+    importReviews?: Record<string, { binding: string; state: string; targetEpochs: Record<string,number>; eligible: boolean; createdAt: string; operationId?: string; applied?: boolean; completionNotificationAfter?: number; review: import("./agents.js").OutputRoleImportReviewDto }>;
     setup?: { key: string; branchId: string; engine: string; model?: string; effort?: string; createdAt: string } };
   /** Canonical monotonic preference mutation sequence. */
   revision: number;

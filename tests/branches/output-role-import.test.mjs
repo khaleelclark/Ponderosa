@@ -76,15 +76,23 @@ for(const boundary of ['before-role-journal','after-role-journal','completion-re
  },{storeFactory:dir=>(store=new AgentStore(dir))});
 });
 
-test('published Branch outcome survives completion receipt failure and later explicit role removal',async t=>{
+test('published Branch outcome stays hidden until completion and supports later role removal',async t=>{
  let store;await withFixture(t,async f=>{
   const p=installation(),plan=f.ok(await preview(f,p));
   store.sqlite.exec("CREATE TEMP TRIGGER refuse_branch_role_completion BEFORE UPDATE OF state ON branch_installation_plans WHEN NEW.state='completed' AND json_extract(OLD.preview_json,'$.published')=1 BEGIN SELECT RAISE(ABORT,'Controlled Branch completion failure'); END");
   const response=f.ok(await f.api('POST',`/api/branches/installations/${plan.id}/confirm`,{}));assert.equal(response.state,'applying');assert.match(response.error,/completion failure/);
-  const current=f.ok(await f.api('GET','/api/branches/assistant'));assert.equal(current.enabled,true);
-  f.ok(await f.api('PUT',`/api/branches/output-apps/${current.app.agentId}`,{enabled:false}));
+  const resources=store.sqlite.prepare("SELECT local_id,agent_ref,state,staging_plan_id FROM branch_installation_resources WHERE staging_plan_id=? ORDER BY agent_ref").all(plan.id);
+  assert.ok(resources.some(row=>row.agent_ref&&row.state==='active'));
+  assert.ok(resources.every(row=>row.staging_plan_id===plan.id));
+  const agent=resources.find(row=>row.agent_ref==='root').local_id;
+  assert.equal(f.ok(await f.api('GET','/api/branches/assistant')).enabled,false);
+  assert.equal((await f.api('GET',`/api/branches/output-apps/${agent}`)).status,404);
+  assert.equal(f.ok(await f.api('GET','/api/branches/engine/workspace/preferences')).outputApps.agentIds.includes(agent),false);
   store.sqlite.exec('DROP TRIGGER refuse_branch_role_completion');await f.reopen();
   await until(async()=>f.ok(await f.api('GET',`/api/branches/installations/${plan.id}`)).state==='completed','recovered Branch finalization');
+  const current=f.ok(await f.api('GET','/api/branches/assistant'));assert.equal(current.app.agentId,agent);
+  assert.equal(store.sqlite.prepare("SELECT count(*) n FROM branch_installation_resources WHERE staging_plan_id=? AND state='active'").get(plan.id).n,0);
+  f.ok(await f.api('PUT',`/api/branches/output-apps/${agent}`,{enabled:false}));
   assert.equal(f.ok(await f.api('GET','/api/branches/assistant')).enabled,false);
   assert.equal(f.ok(await f.api('POST',`/api/branches/installations/${plan.id}/confirm`,{})).branchId,response.branchId);
  },{storeFactory:dir=>(store=new AgentStore(dir))});

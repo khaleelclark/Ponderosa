@@ -47,7 +47,12 @@ export class BranchInstallationService {
  private rolePlan(plan:Row):{workingDataPreparations?:Record<string,BranchWorkingDataPreparation>;workingDataApplication?:BranchWorkingDataApplication;tree?:TreePlan;treeReceipt?:import('@ponderosa/core').BranchDefinitionTreeReceipt;runtimeTreeReceipt?:import('@ponderosa/core').BranchRuntimeTreeReceipt;review?:import('@ponderosa/core').OutputRoleImportReviewDto;binding?:string;published?:boolean;mapping?:Record<string,string>;accessChoices?:Record<string,AccessChoice>;pendingAccess?:PendingAccess;pendingWorkingRoot?:PendingWorkingRoot;fileSelections?:import('@ponderosa/core').BranchImportFileSelections;importResults?:Record<string,Pick<ImportAgentPackageResponse,'workingFilesDestination'|'workingRoots'|'accessSettingsToReview'|'liveWorkingRoots'|'reviewedUserDataApplications'|'reviewedMetadataApplications'>>;operations?:BranchInstallationOperationDto[];memoryUpdate?:{review:import('@ponderosa/core').BranchMemoryUpdateReviewDto;hash:string}} {const value=JSON.parse(plan.preview_json);return Array.isArray(value)?{operations:value}:value;}
  private finishRoles(plan:Row){
   const state=this.rolePlan(plan);if(state.review){if(!this.outputApps)throw new Error('Output role service unavailable');this.outputApps.finalizeImport(state.review.id,state.binding!,plan.id,state.mapping!);}
-  this.compactPlan(plan.id,'completed');
+  this.store.sqlite.transaction(()=>{
+   this.ensureApplying(plan.id,plan.branch_id);
+   const current=this.row('SELECT package_json,preview_json FROM branch_installation_plans WHERE id=?',plan.id);
+   if(!current||current.package_json!==plan.package_json||current.preview_json!==plan.preview_json||!this.rolePlan(current).published)throw new Error('Branch publication source changed');
+   this.completePlan(plan.id);
+  }).immediate();
   if(state.review)this.outputApps!.finishImport(state.review.id);
   this.runtimeRefreshPending=true;
  }
@@ -84,6 +89,11 @@ export class BranchInstallationService {
   const retained={...(saved.workingDataPreparations?{workingDataPreparations:saved.workingDataPreparations}:{}),...(saved.workingDataApplication?{workingDataApplication:saved.workingDataApplication}:{}),...(results?{importResults:results}:{}),...(state==='completed'&&saved.treeReceipt?{treeReceipt:saved.treeReceipt}:{}),...(state==='completed'&&saved.runtimeTreeReceipt?{runtimeTreeReceipt:saved.runtimeTreeReceipt}:{})};
   this.run("UPDATE branch_installation_plans SET state=?,error=?,package_json='{}',bindings_json='{}',preview_json=?,journal_json='{}',owned_resources_json='[]',expected_version_id=NULL,expected_configuration_revision=NULL,expected_resources_hash=NULL,next_attempt_at=NULL,updated_at=? WHERE id=?",state,error??null,Object.keys(retained).length?stableJson(retained):'[]',new Date().toISOString(),id);
  }
+ private completePlan(id:string):void{
+  if(!this.store.sqlite.inTransaction)throw new Error('Branch publication requires its canonical transaction');
+  this.compactPlan(id,'completed');
+  this.run("UPDATE branch_installation_resources SET staging_plan_id=NULL WHERE staging_plan_id=? AND state='active'",id);
+ }
  private maintainPlans(now=new Date()):void{
   const cutoff=new Date(now.getTime()-PREVIEW_TTL_MS).toISOString();
   for(const plan of this.rows("SELECT id FROM branch_installation_plans WHERE state='preview' AND created_at<? AND NOT EXISTS(SELECT 1 FROM coordination_destination_retained_sources s WHERE s.installation_plan_id=branch_installation_plans.id)",cutoff))this.compactPlan(plan.id,'expired','Installation preview expired; review the package again');
@@ -99,7 +109,12 @@ export class BranchInstallationService {
   if(retained+incomingBytes>MAX_RETAINED_PLAN_BYTES)throw new Error('Outstanding Branch installation previews exceed the retained payload limit');
   if(branchId){const local=this.row("SELECT COUNT(*) n FROM branch_installation_plans WHERE branch_id=? AND state IN ('preview','applying','canceling')",branchId)!.n as number;if(local>=MAX_OUTSTANDING_PLANS_PER_BRANCH)throw new Error('Too many outstanding installation plans for this Branch');}
  }
- private stopStaging(branchId:string):void{this.run("UPDATE branch_installation_resources SET state='retiring' WHERE branch_id=? AND state='staging'",branchId);}
+ private stopStaging(branchId:string):void{
+  this.run("UPDATE branch_installation_resources SET state='retiring' WHERE branch_id=? AND state='staging'",branchId);
+  // Only explicit Branch deletion can cancel a published plan. Its resources
+  // may already be mapped to descendants, so retain exact plan ownership.
+  this.run("UPDATE branch_installation_resources SET state='retiring' WHERE state='active' AND staging_plan_id IN (SELECT p.id FROM branch_installation_plans p JOIN branches b ON b.id=p.branch_id WHERE p.branch_id=? AND b.deleting=1 AND p.state='canceling' AND json_extract(p.preview_json,'$.published')=1)",branchId);
+ }
  private ensureApplying(id:string,branchId:string):void{
   if(this.stopped)throw new Error('Branch installation paused by server shutdown');
   if(this.planState(id)==='applying')return;
@@ -670,7 +685,10 @@ export class BranchInstallationService {
   if(this.pending)await this.pending;
  }
  private async work():Promise<void>{
-  const now=new Date();this.maintainPlans(now);
+  // Recover the visibility notification before completed plan receipts can be pruned.
+  let canPrunePlans=Boolean(this.outputApps);
+  try{this.outputApps?.reconcileCompletedImports();}catch{canPrunePlans=false;}
+  const now=new Date();if(canPrunePlans)this.maintainPlans(now);
   // Deletion fences request cancellation first so external canonical writes are compensated before receipts compact.
   for(const b of this.rows('SELECT id FROM branches WHERE deleting=1'))this.store.sqlite.transaction(()=>{
    for(const plan of this.rows("SELECT id FROM branch_installation_plans WHERE branch_id=? AND state='applying'",b.id))this.run("UPDATE branch_installation_plans SET state='canceling',error=?,next_attempt_at=NULL,updated_at=? WHERE id=?",'Branch deletion stopped this update',now.toISOString(),plan.id);
@@ -693,19 +711,27 @@ export class BranchInstallationService {
    if(error instanceof BranchWorkingDataHeldError){this.run('UPDATE branch_installation_plans SET error=?,next_attempt_at=?,updated_at=? WHERE id=?',error.message,'9999-12-31T23:59:59.999Z',new Date().toISOString(),plan.id);continue;}
 
    if((error as import('./routes/agent-packages.js').BranchPackageImportError).accessSettingsReview){const current=this.row('SELECT * FROM branch_installation_plans WHERE id=?',plan.id)!;const state=this.rolePlan(current);this.run('UPDATE branch_installation_plans SET preview_json=? WHERE id=?',stableJson({...state,accessChoices:{}}),plan.id);}
+   const current=this.row('SELECT * FROM branch_installation_plans WHERE id=?',plan.id);
+   if(current&&this.rolePlan(current).published&&(error instanceof InstallationConflictError||(error as {statusCode?:number}).statusCode===409)){
+    this.run('UPDATE branch_installation_plans SET error=?,next_attempt_at=?,updated_at=? WHERE id=?',(error as Error).message,'9999-12-31T23:59:59.999Z',new Date().toISOString(),plan.id);continue;
+   }
    if(error instanceof InstallationConflictError){if(plan.branch_id)this.stopStaging(plan.branch_id);this.compactPlan(plan.id,'review_required',error.message);continue;}
    const attempt=(plan.attempt_count??0)+1,delay=Math.min(60_000,1000*2**Math.min(attempt-1,6));
    this.run('UPDATE branch_installation_plans SET error=?,attempt_count=?,next_attempt_at=?,updated_at=? WHERE id=?',(error as Error).message,attempt,new Date(now.getTime()+delay).toISOString(),now.toISOString(),plan.id);
   }
-  for(const r of this.rows("SELECT r.rowid position,r.*,chat.local_id chat_id FROM branch_installation_resources r JOIN branch_installation_resources chat ON chat.branch_id=r.branch_id AND chat.package_id=r.package_id AND chat.chat_ref=r.chat_ref AND chat.agent_ref='' WHERE r.state='retiring' AND r.agent_ref!='' AND chat.state='active' AND NOT EXISTS(SELECT 1 FROM branch_retirement_errors held WHERE held.resource_id=r.local_id AND held.error=?) AND NOT EXISTS(SELECT 1 FROM branch_retirement_references ref JOIN branch_executions e ON e.id=ref.execution_id WHERE ref.resource_id=r.local_id AND e.state IN ('queued','running','waiting')) ORDER BY CASE WHEN r.rowid>? THEN 0 ELSE 1 END,r.rowid LIMIT 5",MEMORY_CLEANUP_HOLD,this.agentCleanupCursor))try{
+  for(const r of this.rows("SELECT r.rowid position,r.*,chat.local_id chat_id FROM branch_installation_resources r JOIN branch_installation_resources chat ON chat.branch_id=r.branch_id AND chat.package_id=r.package_id AND chat.chat_ref=r.chat_ref AND chat.agent_ref='' WHERE r.state='retiring' AND r.agent_ref!='' AND chat.state IN ('active','retiring') AND NOT EXISTS(SELECT 1 FROM branch_retirement_errors held WHERE held.resource_id=r.local_id AND held.error=?) AND NOT EXISTS(SELECT 1 FROM branch_retirement_references ref JOIN branch_executions e ON e.id=ref.execution_id WHERE ref.resource_id=r.local_id AND e.state IN ('queued','running','waiting')) ORDER BY CASE WHEN r.rowid>? THEN 0 ELSE 1 END,r.rowid LIMIT 5",MEMORY_CLEANUP_HOLD,this.agentCleanupCursor))try{
    this.agentCleanupCursor=r.position;
    if(this.row('SELECT deleting FROM branches WHERE id=?',r.branch_id)?.deleting)this.branches.requireDeletionReady(r.branch_id);
-   if(r.staging_plan_id&&r.creation_operation_id&&this.engine)await this.engine.rollbackStagedMemory(r.creation_operation_id);
+   const root=r.staging_plan_id&&this.row('SELECT b.id FROM branch_installation_plans p JOIN branches b ON b.id=p.branch_id WHERE p.id=? AND b.deleting=1',r.staging_plan_id);
+   if(root&&root.id!==r.branch_id)this.branches.requireDeletionReady(root.id);
+   if(r.staging_plan_id&&r.creation_operation_id&&this.engine&&!this.row("SELECT 1 FROM branch_installation_plans WHERE id=? AND json_extract(preview_json,'$.published')=1",r.staging_plan_id))await this.engine.rollbackStagedMemory(r.creation_operation_id);
    await this.deleteAgent(r.local_id);this.run("UPDATE branch_installation_resources SET state='deleted' WHERE branch_id=? AND package_id=? AND chat_ref=? AND agent_ref=?",r.branch_id,r.package_id,r.chat_ref,r.agent_ref);
   }catch(error){this.retirementError(r.local_id,error)}
-  for(const r of this.rows("SELECT r.rowid position,r.* FROM branch_installation_resources r WHERE r.state='retiring' AND r.agent_ref='' AND NOT EXISTS(SELECT 1 FROM branch_retirement_errors held WHERE held.resource_id=r.local_id AND held.error=?) AND NOT EXISTS(SELECT 1 FROM branch_resource_references ref JOIN branch_executions e ON e.id=ref.execution_id WHERE ref.chat_id=r.local_id AND e.state IN ('queued','running','waiting')) ORDER BY CASE WHEN r.rowid>? THEN 0 ELSE 1 END,r.rowid LIMIT 5",MEMORY_CLEANUP_HOLD,this.chatCleanupCursor))try{
+  for(const r of this.rows("SELECT r.rowid position,r.* FROM branch_installation_resources r WHERE r.state='retiring' AND r.agent_ref='' AND NOT EXISTS(SELECT 1 FROM branch_installation_resources child WHERE child.branch_id=r.branch_id AND child.package_id=r.package_id AND child.chat_ref=r.chat_ref AND child.agent_ref!='' AND child.state!='deleted') AND NOT EXISTS(SELECT 1 FROM branch_retirement_errors held WHERE held.resource_id=r.local_id AND held.error=?) AND NOT EXISTS(SELECT 1 FROM branch_resource_references ref JOIN branch_executions e ON e.id=ref.execution_id WHERE ref.chat_id=r.local_id AND e.state IN ('queued','running','waiting')) ORDER BY CASE WHEN r.rowid>? THEN 0 ELSE 1 END,r.rowid LIMIT 5",MEMORY_CLEANUP_HOLD,this.chatCleanupCursor))try{
    this.chatCleanupCursor=r.position;
    if(this.row('SELECT deleting FROM branches WHERE id=?',r.branch_id)?.deleting)this.branches.requireDeletionReady(r.branch_id);
+   const root=r.staging_plan_id&&this.row('SELECT b.id FROM branch_installation_plans p JOIN branches b ON b.id=p.branch_id WHERE p.id=? AND b.deleting=1',r.staging_plan_id);
+   if(root&&root.id!==r.branch_id)this.branches.requireDeletionReady(root.id);
    await this.deleteChat(r.local_id);this.run("UPDATE branch_installation_resources SET state='deleted' WHERE branch_id=? AND package_id=? AND chat_ref=?",r.branch_id,r.package_id,r.chat_ref);this.run('DELETE FROM branch_retirement_errors WHERE resource_id=?',r.local_id);
   }catch(error){this.retirementError(r.local_id,error)}
   for(const plan of this.rows("SELECT * FROM branch_installation_plans WHERE state='canceling' ORDER BY updated_at,created_at"))if(!this.journal(plan.id)&&this.cancelReady(plan)){
@@ -934,7 +960,7 @@ export class BranchInstallationService {
       // Resource keys stay under the root until every asynchronous import has settled.
       for(const n of pkg.definitionTree.nodes)for(const ref of n.chatRefs){
        const final=tree.branchMap[n.sourceBranchId]!;this.run('UPDATE conversations SET branch_id=? WHERE id=? AND branch_execution_id IS NULL',final,local(ref,''));
-       this.run("UPDATE branch_installation_resources SET branch_id=?,package_id=?,state='active',staging_plan_id=NULL WHERE branch_id=? AND package_id=? AND chat_ref=? AND staging_plan_id=?",final,n.packageId,branchId,pkg.packageId,ref,plan.id);
+       this.run("UPDATE branch_installation_resources SET branch_id=?,package_id=?,state='active' WHERE branch_id=? AND package_id=? AND chat_ref=? AND staging_plan_id=?",final,n.packageId,branchId,pkg.packageId,ref,plan.id);
       }
       const nodes:import('@ponderosa/core').BranchDefinitionTreeReceipt['nodes']=Object.create(null);
       for(const n of pkg.definitionTree.nodes){const final=tree.branchMap[n.sourceBranchId]!,destination=tree.bindings[n.sourceBranchId]!;
@@ -952,14 +978,14 @@ export class BranchInstallationService {
       this.verifyTreeReceipt(treeReceipt,runtimeTreeReceipt?this.branches.runtimeTreeData(plan.id,branchId):undefined);
       const mapping=treeReceipt.agentMap;
       this.run("UPDATE branch_installation_plans SET preview_json=?,journal_json='{}' WHERE id=?",stableJson({...roleState,treeReceipt,...(runtimeTreeReceipt?{runtimeTreeReceipt}:{}),published:true,mapping}),plan.id);
-      if(!roleState.review)this.compactPlan(plan.id,'completed');
+      if(!roleState.review)this.completePlan(plan.id);
       return;
      }
      const targetKeys=new Set(pkg.chats.flatMap(c=>['',...c.agents.map(a=>a.ref)].map(a=>stableJson([pkg.packageId,c.ref,a]))));
      for(const r of this.rows("SELECT * FROM branch_installation_resources WHERE branch_id=? AND state IN ('active','staging')",branchId)){
       const state=targetKeys.has(stableJson([r.package_id,r.chat_ref,r.agent_ref]))?'active':'retiring';
       if(state==='retiring'&&r.agent_ref){const chat=this.row("SELECT local_id FROM branch_installation_resources WHERE branch_id=? AND package_id=? AND chat_ref=? AND agent_ref=''",branchId,r.package_id,r.chat_ref);this.run("INSERT OR IGNORE INTO branch_retirement_references SELECT ?,ref.execution_id FROM branch_resource_references ref JOIN branch_executions e ON e.id=ref.execution_id WHERE ref.chat_id=? AND e.state IN ('queued','running','waiting')",r.local_id,chat?.local_id??'');}
-      this.run("UPDATE branch_installation_resources SET state=?,staging_plan_id=CASE WHEN ?='active' THEN NULL ELSE staging_plan_id END WHERE branch_id=? AND package_id=? AND chat_ref=? AND agent_ref=?",state,state,branchId,r.package_id,r.chat_ref,r.agent_ref);
+      this.run("UPDATE branch_installation_resources SET state=? WHERE branch_id=? AND package_id=? AND chat_ref=? AND agent_ref=?",state,branchId,r.package_id,r.chat_ref,r.agent_ref);
      }
      // Publication validates Agent availability. Promote only inside this same
      // transaction so failed validation rolls back every resource transition.
@@ -973,7 +999,7 @@ export class BranchInstallationService {
      }
      if(roleState.review){const mapping=Object.fromEntries(pkg.chats.flatMap(c=>c.agents.map(a=>[JSON.stringify([c.ref,a.ref]),get(c.ref,a.ref)!.local_id])));
       this.run("UPDATE branch_installation_plans SET preview_json=?,journal_json='{}' WHERE id=?",stableJson({...roleState,published:true,mapping}),plan.id);
-     }else this.compactPlan(plan.id,'completed');
+     }else this.completePlan(plan.id);
     })();
     if(roleState.review)this.finishRoles(this.row('SELECT * FROM branch_installation_plans WHERE id=?',plan.id)!);
     this.runtimeRefreshPending=true;
