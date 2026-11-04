@@ -274,7 +274,7 @@ This does not establish exclusive writer authority or resolve Chroma cleanup.
 ## Reviewed interruption and HTTP follow-up — 4 November
 
 The source-and-test candidate `70ce427f7761e6c10847493223132d26ae53662d`
-adds four bounded improvements after `84832d60`:
+adds the following bounded improvements after `84832d60`:
 
 - Instruction-conflict confirmation and optimistic Chat message identity use
   the existing SHA-256 fallback when Web Crypto is unavailable. A previously
@@ -294,8 +294,11 @@ adds four bounded improvements after `84832d60`:
   contract and are not newly qualified.
 
 Offline install, build and recursive typecheck passed at that candidate.
-Affected web tests passed 22/22 and affected server tests 14/14; logs are under
-`evidence/combined-70ce-*`. These focused checks do not replace the full suite.
+Affected web tests passed 22/22, affected server tests 14/14, and the full
+mounted matrix 98/98 (49 desktop, 49 phone). Logs are under
+`evidence/final-combined-70ce-*`. Fixtures and providers were controlled; a
+process-level loopback guard was used instead of a kernel network namespace.
+These focused checks do not replace the full suite.
 
 The reviewed-continuation design is not implemented. The preserved unwired
 uncommitted draft is under `/tmp/ponderosa-codex-phase2-20261103/reviewed-steering`.
