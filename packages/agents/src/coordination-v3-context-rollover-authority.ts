@@ -28,6 +28,16 @@ function boundedInternalRolloverFailure(error: string): string {
   return value.slice(0, MAX_INTERNAL_ROLLOVER_FAILURE_CHARACTERS);
 }
 
+/** The old tuple owns the isolated handoff; the target tuple owns the
+ * replacement and the still-pending user work. */
+export interface SettingsTransition {
+  activationId:string; sourceRunId:string; sourceFence:number;
+  oldSessionId:string; oldContractHash:string;
+  engineId:string; model:string; effort?:string; speed?:string;
+  targetModel:string; targetEffort?:string; targetSpeed?:string;
+  authorizationSignatureHash?:string; authorizationOriginRunId?:string;
+}
+
 interface RolloverRow {
   id: string; project_id: string; agent_id: string; state: ContextRolloverState;
   old_provider_session_id: string; provider_session_generation: string;
@@ -64,11 +74,29 @@ export class CoordinationV3ContextRolloverAuthority {
     private readonly createActivation: (input: CreateActivationV3Input) => string,
   ) {}
 
+  /** The original handoff Activation is retained as durable transition
+   * evidence even after consumption; retries must carry the identical marker. */
+  private settingsTransition(id:string):SettingsTransition|undefined {
+    const rows=this.sqlite.prepare(`SELECT activation.payload_json FROM agent_activations activation
+      JOIN activation_sources source ON source.activation_id=activation.id
+      WHERE source.source_kind='context_rollover' AND source.source_id=? AND activation.kind='context_rollover_handoff'
+      ORDER BY activation.created_at,activation.id`).all(id) as Array<{payload_json:string}>;
+    let marker:SettingsTransition|undefined;
+    for(const row of rows){
+      const candidate=JSON.parse(row.payload_json)?.settingsTransition as SettingsTransition|undefined;
+      if(!candidate)continue;
+      if(marker && stableJson(marker)!==stableJson(candidate))throw new Error("Settings transition evidence is ambiguous");
+      marker=candidate;
+    }
+    return marker;
+  }
+
   request(input: {
     projectId: string; agentId: string; oldProviderSessionId: string;
     providerSessionGeneration: string; detectedOccupancy?: number; aggregateTokens?: number;
     threshold: number; contextWindow?: number; lowWaterMark: number;
     triggerKind?: "automatic" | "human";
+    settingsTransition?: SettingsTransition;
     /** Explicit idle recovery with no provider-held unfinished work. */
     canonicalOnlyRefresh?: { fencingToken: number };
     sourceRunId: string;
@@ -79,7 +107,7 @@ export class CoordinationV3ContextRolloverAuthority {
   }): { rollover: ContextRolloverV3; created: boolean } {
     const now = input.now ?? new Date().toISOString();
     if (input.detectedOccupancy !== undefined && (!Number.isSafeInteger(input.detectedOccupancy) ||
-        input.detectedOccupancy < 0) || input.triggerKind !== "human" && input.detectedOccupancy === undefined) {
+        input.detectedOccupancy < 0) || input.triggerKind !== "human" && !input.settingsTransition && input.detectedOccupancy === undefined) {
       throw new Error("context rollover requires valid measured occupancy or an explicit human refresh");
     }
     if (!Number.isSafeInteger(input.compactionCutoffOrdinal) || input.compactionCutoffOrdinal <= 0 ||
@@ -93,6 +121,39 @@ export class CoordinationV3ContextRolloverAuthority {
       throw new Error("context rollover requires a bounded unique content-hash-bound recent tail");
     }
     return this.sqlite.transaction(() => {
+      if(input.settingsTransition){
+        const t=input.settingsTransition;
+        if(input.triggerKind==='human' || input.canonicalOnlyRefresh || t.sourceRunId!==input.sourceRunId ||
+           !Number.isSafeInteger(t.sourceFence) || t.sourceFence<1 || t.engineId!=='codex' ||
+           !t.activationId || input.sourceActivationIds.includes(t.activationId) || !t.model?.trim() || !t.targetModel?.trim() ||
+           !/^[a-f0-9]{64}$/u.test(t.oldContractHash) ||
+           ((t.authorizationSignatureHash===undefined)!==(t.authorizationOriginRunId===undefined)) ||
+           (t.authorizationSignatureHash!==undefined && (!/^[a-f0-9]{64}$/u.test(t.authorizationSignatureHash) || !t.authorizationOriginRunId?.trim())) || t.oldSessionId!==input.oldProviderSessionId ||
+           t.oldSessionId!==input.providerSessionGeneration ||
+           (t.model===t.targetModel && (t.effort??null)===(t.targetEffort??null) && (t.speed??null)===(t.targetSpeed??null)))
+          throw new Error("Invalid exact settings transition");
+        const pending=this.sqlite.prepare(`SELECT 1 FROM agent_activations a JOIN agents ag ON ag.id=a.agent_id
+          WHERE a.id=? AND a.project_id=? AND a.agent_id=? AND a.scope_key=? AND a.state='pending'
+            AND ag.project_id=a.project_id AND ag.deleted_at IS NULL AND ag.active_engine=?
+            AND ag.active_session_id=? AND ag.active_session_contract_hash=?
+            AND NOT EXISTS (SELECT 1 FROM scheduler_run_activations attached WHERE attached.activation_id=a.id)`)
+          .get(t.activationId,input.projectId,input.agentId,input.scopeKey,t.engineId,t.oldSessionId,t.oldContractHash);
+        const source=this.sqlite.prepare(`SELECT 1 FROM scheduler_runs r WHERE r.id=? AND r.project_id=? AND r.agent_id=? AND r.scope_key=?
+          AND r.status='completed' AND r.terminal_at IS NOT NULL AND r.prompt_injection_state='injected'
+          AND r.provider_session_id=? AND r.fencing_token=?
+          AND EXISTS (SELECT 1 FROM scheduler_prompt_injections turn WHERE turn.run_id=r.id AND turn.kind='turn' AND turn.state='acknowledged')
+          AND NOT EXISTS (SELECT 1 FROM scheduler_prompt_injections unresolved WHERE unresolved.run_id=r.id AND unresolved.state IN ('pending','submitted','outcome_unknown'))
+          AND NOT EXISTS (SELECT 1 FROM scheduler_runs later WHERE later.agent_id=r.agent_id AND later.id<>r.id
+            AND (later.status IN ('leased','running') OR later.fencing_token>r.fencing_token AND later.prompt_injection_state<>'not_injected'))`)
+          .get(input.sourceRunId,input.projectId,input.agentId,input.scopeKey,t.oldSessionId,t.sourceFence);
+        const packet=this.sqlite.prepare("SELECT source_manifest_json FROM provider_inputs WHERE execution_id=? AND scheduler_run_id=? AND agent_id=? AND project_id=?")
+          .get(input.sourceRunId,input.sourceRunId,input.agentId,input.projectId) as {source_manifest_json:string}|undefined;
+        let contract:any;
+        try{const manifest=JSON.parse(packet?.source_manifest_json??'null');if(manifest?.schemaVersion===3)contract=manifest.normalRuntimeContract;}catch{/* hold */}
+        if(!pending || !source || !contract || contract.contractHash!==t.oldContractHash || contract.engineId!==t.engineId ||
+           (contract.model??null)!==t.model || (contract.effort??null)!==(t.effort??null) || (contract.speed??null)!==(t.speed??null))
+          throw new Error("Settings transition source or pending work changed; original work remains queued");
+      }
       let sourceActivationIds = input.sourceActivationIds;
       if (input.canonicalOnlyRefresh) {
         const latest = this.sqlite.prepare(`SELECT id, status, provider_session_id, fencing_token, prompt_injection_state
@@ -164,7 +225,7 @@ export class CoordinationV3ContextRolloverAuthority {
         ORDER BY cycle_number DESC LIMIT 1
       `).get(input.agentId, input.providerSessionGeneration,
         input.compactionCutoffOrdinal, input.compactionCutoffEventId) as RolloverRow | undefined;
-      const existing = matchingBoundary ?? latest;
+      const existing = input.settingsTransition ? latest : matchingBoundary ?? latest;
       // Automatic pressure owns at most one attempt per durable cycle. A
       // restored headroom can start a later cycle in a later Run.
       // Failed handoffs cannot manufacture a rollover loop. A human may retry only
@@ -172,7 +233,22 @@ export class CoordinationV3ContextRolloverAuthority {
       // became durable. That retry receives a new rollover ID and fresh frozen
       // boundary; recovery of a committed handoff remains bound to the original
       // record and can never be mistaken for a manual retry.
-      if (existing) {
+      if (existing && input.settingsTransition) {
+        const prior=this.settingsTransition(existing.id);
+        if(prior && stableJson(prior)===stableJson(input.settingsTransition)) {
+          if(existing.project_id!==input.projectId || existing.source_run_id!==input.sourceRunId ||
+             existing.scope_key!==input.scopeKey || existing.compaction_cutoff_ordinal!==input.compactionCutoffOrdinal ||
+             existing.compaction_cutoff_event_id!==input.compactionCutoffEventId ||
+             existing.recent_tail_event_ids_json!==JSON.stringify(input.recentTail.map(binding=>binding.communicationEventId)) ||
+             existing.recent_tail_hashes_json!==JSON.stringify(input.recentTail.map(binding=>binding.contentSha256)))
+            throw new Error("Settings transition replay conflicts with its durable boundary");
+          return {rollover:this.view(existing),created:false};
+        }
+        if(existing.state!=='completed' || existing.project_id!==input.projectId ||
+           existing.old_provider_session_id!==input.oldProviderSessionId)
+          throw new Error("A prior context transition remains active or uncertain");
+      }
+      if (existing && !input.settingsTransition) {
         const terminalFailure = ["failed", "outcome_unknown"].includes(existing.state);
         const explicitSafeRetry = input.triggerKind === "human" &&
           terminalFailure &&
@@ -260,9 +336,14 @@ export class CoordinationV3ContextRolloverAuthority {
         dedupeKey: `context-rollover-handoff:${id}`,
         payload: {
           rolloverId: id,
+          ...(input.settingsTransition?{settingsTransition:input.settingsTransition,dispatch:{
+            engine:input.settingsTransition.engineId,model:input.settingsTransition.model,
+            ...(input.settingsTransition.effort?{effort:input.settingsTransition.effort}:{}),
+            ...(input.settingsTransition.speed?{speed:input.settingsTransition.speed}:{}),
+          }}:{}),
           ...(input.detectedOccupancy === undefined ? {} : { detectedOccupancy: input.detectedOccupancy }),
           threshold: input.threshold,
-          instruction: `The pressure source Run has ended. ${CONTEXT_ROLLOVER_HANDOFF_GUIDANCE}`,
+          instruction: `${input.settingsTransition?'The settings transition source Run has ended.':'The pressure source Run has ended.'} ${CONTEXT_ROLLOVER_HANDOFF_GUIDANCE}`,
         },
         sourceKind: "context_rollover",
         sourceId: id,
@@ -399,6 +480,7 @@ export class CoordinationV3ContextRolloverAuthority {
       `).get(id) as { count: number }).count;
       if (handoffAttempts >= 2) return { rollover: current, scheduled: false };
       const diagnostic = boundedInternalRolloverFailure(validationError);
+      const transition=this.settingsTransition(id);
       this.sqlite.prepare(`
         UPDATE context_rollovers SET last_error = ?, updated_at = ?
         WHERE id = ? AND state = 'requested' AND handoff_event_id IS NULL
@@ -415,6 +497,8 @@ export class CoordinationV3ContextRolloverAuthority {
         payload: {
           rolloverId: id,
           retryAttempt: 1,
+          ...(transition?{settingsTransition:transition,dispatch:{engine:transition.engineId,model:transition.model,
+            ...(transition.effort?{effort:transition.effort}:{}),...(transition.speed?{speed:transition.speed}:{})}}:{}),
           instruction: `The previous continuation handoff could not be used because ${diagnostic}. Retry once. ${CONTEXT_ROLLOVER_HANDOFF_GUIDANCE}`,
         },
         sourceKind: "context_rollover",
@@ -665,7 +749,9 @@ export class CoordinationV3ContextRolloverAuthority {
       if (current.state === "completed" || current.state === "continuation_ready") return current;
       if (current.state !== "session_retiring") throw new Error("context rollover session is not retiring");
       if (hasUnresolvedHumanSteering(this.sqlite, current.sourceRunId)) return current;
-      if (current.triggerKind === "automatic" && (this.hasOwnedDelegation(current) || this.hasOutstandingDecisionWait(current))) {
+      const transition=this.settingsTransition(input.id);
+      if (transition && (this.hasOwnedDelegation(current) || this.hasOutstandingDecisionWait(current))) return current;
+      if (!transition && current.triggerKind === "automatic" && (this.hasOwnedDelegation(current) || this.hasOutstandingDecisionWait(current))) {
         const wake = pendingTaskWakeIds(this.sqlite, { projectId: current.projectId, agentId: current.agentId,
           scopeKey: current.scopeKey, originRunIds: taskOriginRunIds(this.sqlite, current.sourceRunId) })
           .find(id => this.wakeBelongsToTask(current, id));
@@ -678,7 +764,7 @@ export class CoordinationV3ContextRolloverAuthority {
           return this.get(current.id)!;
         }
       }
-      if (current.triggerKind !== "human" && (
+      if (!transition && current.triggerKind !== "human" && (
         current.visibleResponseCommitted && !this.hasPendingSourceReply(current) ||
         !this.continuationObligationRemains(current)
       )) {
@@ -703,9 +789,12 @@ export class CoordinationV3ContextRolloverAuthority {
         payload: {
           rolloverId: current.id,
           sourceRunId: current.sourceRunId,
-          sourceActivationIds: current.sourceActivationIds,
-          ...(current.replyAuthority ? { replyAuthority: current.replyAuthority } : {}),
-          instruction: current.triggerKind === "human"
+          sourceActivationIds: transition ? [] : current.sourceActivationIds,
+          ...(!transition && current.replyAuthority ? { replyAuthority: current.replyAuthority } : {}),
+          ...(transition?{settingsTransition:transition}:{}),
+          instruction: transition
+            ? "Verify this settings-transition rollover in the fresh provider session. Use the bounded handoff only as non-authoritative continuity context. Do not publish Communication or resume queued work; provide one concise Work-log confirmation after reconstruction."
+            : current.triggerKind === "human"
             ? "Verify this human-requested safe rollover in the fresh provider session. Use the bounded handoff only as non-authoritative continuity context. Do not publish Communication or resume unrelated work; provide one concise Work-log confirmation after reconstruction."
             : "Continue the unfinished task from the bounded continuation handoff in this fresh provider session. Preserve the original reply route and do not duplicate already committed communication.",
         },
@@ -713,7 +802,7 @@ export class CoordinationV3ContextRolloverAuthority {
         sourceId: current.id,
         now,
       });
-      if (current.sourceActivationIds.length > 0) {
+      if (!transition && current.sourceActivationIds.length > 0) {
         const placeholders = current.sourceActivationIds.map(() => "?").join(", ");
         // The continuation executes only its bounded handoff Activation, but
         // inherits the source Run's canonical lineage. Request capability,
@@ -1284,7 +1373,7 @@ export class CoordinationV3ContextRolloverAuthority {
           AND state IN ('requested','handoff_committed','session_retiring')
         ORDER BY updated_at DESC, id DESC LIMIT 1
       `).get(input.agentId, input.providerSessionGeneration, input.providerSessionId) as RolloverRow | undefined;
-      if (!row || row.trigger_kind !== "automatic" || row.detected_occupancy === null ||
+      if (!row || row.trigger_kind !== "automatic" || this.settingsTransition(row.id) || row.detected_occupancy === null ||
           input.usedTokens >= row.low_water_mark || input.usedTokens >= row.detected_occupancy) return undefined;
       this.sqlite.prepare(`
         UPDATE context_rollovers SET state = 'completed', completion_reason = 'headroom_restored',

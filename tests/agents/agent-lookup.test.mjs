@@ -215,3 +215,70 @@ test('rollover allowance and frozen-tail transport guards preserve private scope
     sourceActivationIds: [], scopeKey: `agent:${agent.id}` }), /bounded unique/);
   assert.equal(store.sqlite.prepare('SELECT count(*) n FROM context_rollovers').get().n, 0);
 }));
+
+test('settings transition preserves pending work and isolates replacement confirmation', t => withStores(t, async f => {
+  const store = f.open('settings-transition'), agent = f.seed(store), db = store.sqlite;
+  const scope = `agent:${agent.id}`, now = new Date().toISOString(), session = 'old-session';
+  const contractHash = 'a'.repeat(64), run = randomUUID(), pending = randomUUID(), competing = randomUUID();
+  db.prepare('UPDATE agents SET active_session_id=?, active_session_contract_hash=? WHERE id=?').run(session, contractHash, agent.id);
+  db.prepare(`INSERT INTO scheduler_runs(id,project_id,agent_id,status,lease_owner,lease_expires_at,fencing_token,prompt_injection_state,provider_session_id,heartbeat_at,created_at,updated_at,terminal_at,scope_key)
+    VALUES(?,?,?,'completed','fixture',?,1,'injected',?,?,?,?,?,?)`).run(run,agent.projectId,agent.id,now,session,now,now,now,now,scope);
+  db.prepare(`INSERT INTO scheduler_prompt_injections(id,run_id,kind,sequence,state,prompt_hash,activation_ids_json,created_at,updated_at)
+    VALUES(?,?,'turn',1,'acknowledged','hash','[]',?,?)`).run(randomUUID(),run,now,now);
+  db.prepare(`INSERT INTO provider_inputs(execution_id,scheduler_run_id,agent_id,project_id,provider_prompt,prompt_hash,source_manifest_json,created_at,updated_at)
+    VALUES(?,?,?,?, 'old input','hash',?,?,?)`).run(run,run,agent.id,agent.projectId,JSON.stringify({schemaVersion:3,normalRuntimeContract:{contractHash,engineId:'codex',model:'old',effort:'medium'}}),now,now);
+  const insert = db.prepare(`INSERT INTO agent_activations(id,project_id,agent_id,kind,priority,dispatch_policy,prompt_class,state,dedupe_key,payload_json,available_at,created_at,updated_at,scope_key)
+    VALUES(?,?,?,'human_message',?,'next_run','human','pending',?,'{}',?,?,?,?)`);
+  for (const [id, priority] of [[pending,20],[competing,1000]]) insert.run(id,agent.projectId,agent.id,priority,id,now,now,now,scope);
+  const event={schemaVersion:2,eventId:randomUUID(),projectId:agent.projectId,conversationId:agent.conversationId,
+    sender:{kind:'user',userId:'operator'},intent:'user_dm',audience:{kind:'user_agent',userId:'operator',agentId:agent.id},text:'Original objective',createdAt:now};
+  store.appendCommunicationEvent(event);
+  const bound=store.bindContextRolloverBoundary({agentId:agent.id,currentConversationId:agent.conversationId,submittedCommunicationEventIds:[event.eventId]});
+  const transition={activationId:pending,sourceRunId:run,sourceFence:1,oldSessionId:session,oldContractHash:contractHash,engineId:'codex',model:'old',effort:'medium',targetModel:'new',authorizationSignatureHash:'b'.repeat(64),authorizationOriginRunId:run};
+  const request={projectId:agent.projectId,agentId:agent.id,oldProviderSessionId:session,providerSessionGeneration:session,
+    threshold:150000,lowWaterMark:90000,sourceRunId:run,sourceActivationIds:[],scopeKey:scope,conversationId:agent.conversationId,
+    compactionCutoffOrdinal:bound.canonicalOrdinal,compactionCutoffEventId:bound.communicationEventId,recentTail:bound.recentTail,settingsTransition:transition};
+  const coordination=new CoordinationV3Store(db);
+  assert.throws(()=>coordination.requestContextRollover({...request,settingsTransition:{...transition,sourceFence:2}}),/source or pending work changed/);
+  assert.throws(()=>coordination.requestContextRollover({...request,settingsTransition:{...transition,authorizationOriginRunId:undefined}}),/Invalid exact/);
+  for (const mutation of [
+    () => db.prepare("UPDATE scheduler_runs SET prompt_injection_state='injecting' WHERE id=?").run(run),
+    () => db.prepare("UPDATE agent_activations SET state='attached' WHERE id=?").run(pending),
+    () => db.prepare("UPDATE agents SET active_session_contract_hash=? WHERE id=?").run('c'.repeat(64),agent.id),
+    () => db.prepare("INSERT INTO scheduler_prompt_injections(id,run_id,kind,sequence,state,prompt_hash,activation_ids_json,created_at,updated_at) VALUES(?,?,'steer',2,'outcome_unknown','hash','[]',?,?)").run(randomUUID(),run,now,now),
+  ]) {
+    db.exec('SAVEPOINT transition_negative');
+    try { mutation(); assert.throws(() => coordination.requestContextRollover(request), /source or pending work changed/); }
+    finally { db.exec('ROLLBACK TO transition_negative; RELEASE transition_negative'); }
+  }
+  const first=coordination.requestContextRollover(request);
+  assert.equal(first.created,true);
+  assert.equal(coordination.requestContextRollover(request).rollover.id,first.rollover.id);
+  assert.equal(db.prepare('SELECT detected_occupancy FROM context_rollovers WHERE id=?').get(first.rollover.id).detected_occupancy,null);
+  const handoff=db.prepare(`SELECT a.* FROM agent_activations a JOIN activation_sources s ON s.activation_id=a.id WHERE s.source_id=? AND a.kind='context_rollover_handoff'`).get(first.rollover.id);
+  const handoffPayload=JSON.parse(handoff.payload_json);
+  assert.deepEqual(handoffPayload.settingsTransition,transition);
+  assert.deepEqual(handoffPayload.dispatch,{engine:'codex',model:'old',effort:'medium'});
+  assert.throws(() => coordination.requestContextRollover({...request,compactionCutoffOrdinal:request.compactionCutoffOrdinal+1}),/replay conflicts/);
+  db.prepare('UPDATE context_rollovers SET detected_occupancy=? WHERE id=?').run(160000,first.rollover.id);
+  assert.equal(coordination.retireContextRolloverAfterHeadroomRecovery({agentId:agent.id,providerSessionGeneration:session,providerSessionId:session,usedTokens:1}),undefined);
+  assert.equal(coordination.retryContextRolloverHandoff(first.rollover.id,'synthetic validation failure').scheduled,true);
+  const attempts=db.prepare("SELECT a.payload_json FROM agent_activations a JOIN activation_sources s ON s.activation_id=a.id WHERE s.source_id=? AND a.kind='context_rollover_handoff'").all(first.rollover.id);
+  assert.equal(attempts.length,2);
+  for (const attempt of attempts) assert.deepEqual(JSON.parse(attempt.payload_json).settingsTransition,transition);
+
+  assert.equal(db.prepare('SELECT state FROM agent_activations WHERE id=?').get(pending).state,'pending');
+  db.prepare("UPDATE context_rollovers SET state='session_retiring', handoff_event_id='synthetic-handoff' WHERE id=?").run(first.rollover.id);
+  const ready=coordination.prepareContextRolloverContinuation({id:first.rollover.id});
+  assert.equal(ready.state,'continuation_ready');
+  const confirm=db.prepare('SELECT payload_json FROM agent_activations WHERE id=?').get(ready.continuationActivationId);
+  assert.deepEqual(JSON.parse(confirm.payload_json).settingsTransition,transition);
+  assert.deepEqual(JSON.parse(confirm.payload_json).sourceActivationIds,[]);
+  assert.equal(db.prepare('SELECT state FROM agent_activations WHERE id=?').get(pending).state,'pending');
+  assert.equal(db.prepare('SELECT state FROM agent_activations WHERE id=?').get(competing).state,'pending');
+  db.prepare("UPDATE context_rollovers SET state='completed',completion_reason='headroom_restored',terminal_at=? WHERE id=?").run(now,first.rollover.id);
+  const second=coordination.requestContextRollover({...request,settingsTransition:{...transition,activationId:competing,targetModel:'other'}});
+  assert.equal(second.created,true);
+  assert.notEqual(second.rollover.id,first.rollover.id);
+
+}));
