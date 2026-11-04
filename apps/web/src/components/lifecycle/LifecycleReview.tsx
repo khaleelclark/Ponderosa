@@ -51,11 +51,16 @@ export function LifecycleReview({kind,id,enabled=true}:{kind:LifecycleKind;id:st
   }
  },onError:error=>setNotice(`Receipt unconfirmed · no mutation retry · ${error.message}`)});
  const value=review.data,busy=send.isPending||lookup.isPending;
+ // Validate the exact trimmed value sent to the server before retaining a
+ // command. Once sent, an uncertain command remains locked for exact retry.
+ const noteLength=note.trim().length;
+ const noteMinimum=kind==='memory'?16:kind==='import'?8:0;
+ const noteValid=noteMinimum===0||noteLength>=noteMinimum&&noteLength<=4096;
  const valid=Boolean(value&&!review.isError&&!review.isFetching&&!readOnly&&!(receipt&&!pending));
  const reviewHash=value?('reviewHash' in value?value.reviewHash:value.reviewSha256):'';
  const eligible=Boolean(value&&('hold' in value?value.canReconcile:'custodyId' in value?value.state!=='reconciled'&&!value.references.length&&!value.blockers.length:true));
  const command=(action:string):LifecycleCommand|undefined=>{
-  if(!value||!valid||!ack||pending)return;
+  if(!value||!valid||!ack||pending||!noteValid)return;
   const commandKey=createClientId();
   const body=destination?{commandKey,expectedReviewHash:reviewHash,releaseSourcePins:pins,authorizeDeletedOwner:true as const}:
    kind==='memory'?{commandKey,reviewSha256:reviewHash,backendDrainEvidence:note.trim(),preserveCurrentBackend:true as const}:
@@ -79,14 +84,14 @@ export function LifecycleReview({kind,id,enabled=true}:{kind:LifecycleKind;id:st
     {'blockers' in value&&value.blockers.map((text,index)=><Alert severity="warning" key={index}>{text}</Alert>)}
     {'references' in value&&value.references.length>0&&<Alert severity="warning">Retained source references · pinned throughout review</Alert>}
     {kind==='custody'&&<Typography variant="body2">Preserve every original byte · reconcile active namespace only</Typography>}
-    {kind==='memory'&&<><Alert severity="warning">Stop/reconcile remote work first · your drain testimony required · stable readback supplies no drain proof</Alert><TextField multiline minRows={2} label="Observed external backend drain" value={note} disabled={busy||Boolean(pending)} onChange={event=>{setNote(event.target.value);setAck(false);setConfirm(undefined);}}/>{'hold' in value&&!value.canReconcile&&<Alert severity="warning">{value.reason??'This hold cannot be reconciled; unresolved effects remain held.'}</Alert>}</>}
-    {kind==='import'&&<><Typography variant="body2">Unknown effects held without replay · retirement requires mutation-free import proof</Typography><TextField multiline label="Reconciliation note" value={note} disabled={busy||Boolean(pending)} onChange={event=>{setNote(event.target.value);setAck(false);setConfirm(undefined);}}/></>}
+    {kind==='memory'&&<><Alert severity="warning">Stop/reconcile remote work first · your drain testimony required · stable readback supplies no drain proof</Alert><TextField multiline minRows={2} label="Observed external backend drain" value={note} disabled={busy||Boolean(pending)} error={noteLength>0&&!noteValid} helperText="Use 16 to 4,096 characters." onChange={event=>{setNote(event.target.value);setAck(false);setConfirm(undefined);}}/>{'hold' in value&&!value.canReconcile&&<Alert severity="warning">{value.reason??'This hold cannot be reconciled; unresolved effects remain held.'}</Alert>}</>}
+    {kind==='import'&&<><Typography variant="body2">Unknown effects held without replay · retirement requires mutation-free import proof</Typography><TextField multiline label="Reconciliation note" value={note} disabled={busy||Boolean(pending)} error={noteLength>0&&!noteValid} helperText="Use 8 to 4,096 characters." onChange={event=>{setNote(event.target.value);setAck(false);setConfirm(undefined);}}/></>}
     {kind==='destination'&&'reservation' in value&&<BranchLifecycleReview key={value.reservation.custody.custodyId} source={value.reservation.custody} enabled={enabled}/>}
     {destination&&<>{kind==='group'&&<Alert severity="warning">Whole-group decision · any failed member proof blocks all · policy/native-exit changes invalidate approval · no singular retirement/abandonment loop</Alert>}<Alert severity="warning">Retirement requires completed deletion + global runtime quiescence; preserve-only retirement permanently retains source pins</Alert><FormControlLabel control={<Checkbox checked={pins} disabled={busy||Boolean(pending)||!('canReleaseSourcePins' in value&&value.canReleaseSourcePins)} onChange={(_,checked)=>{setPins(checked);setAck(false);setConfirm(undefined);}}/>} label="Release source pins after all other references retire"/></>}
     <FormControlLabel control={<Checkbox checked={ack} disabled={busy||Boolean(pending)||!valid} onChange={(_,checked)=>setAck(checked)}/>} label="I reviewed this exact scope and evidence"/>
     {!pending&&destination&&<Button disabled={!valid||!ack||busy} onClick={()=>stage('approve')}>Approve retirement choice</Button>}
-    {!pending&&!destination&&<Button disabled={!valid||!eligible||!ack||busy||((kind==='memory'||kind==='import')&&note.trim().length<8)} onClick={()=>stage(kind==='import'?'preserve_unresolved':'reconcile')}>{kind==='import'?'Preserve unresolved operation':'Reconcile and preserve evidence'}</Button>}
-    {!pending&&kind==='import'&&<Button color="error" disabled={!valid||!ack||busy||note.trim().length<8||!('canRetireMutationFree' in value&&value.canRetireMutationFree)} onClick={()=>stage('retire_mutation_free')}>Retire mutation-free import</Button>}
+    {!pending&&!destination&&<Button disabled={!valid||!eligible||!ack||busy||!noteValid} onClick={()=>stage(kind==='import'?'preserve_unresolved':'reconcile')}>{kind==='import'?'Preserve unresolved operation':'Reconcile and preserve evidence'}</Button>}
+    {!pending&&kind==='import'&&<Button color="error" disabled={!valid||!ack||busy||!noteValid||!('canRetireMutationFree' in value&&value.canRetireMutationFree)} onClick={()=>stage('retire_mutation_free')}>Retire mutation-free import</Button>}
    </>}
    {receipt!==undefined&&<details><summary>Canonical lifecycle receipt</summary><Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere',fontSize:12}}>{JSON.stringify(receipt,null,2)}</Typography></details>}
    {pending&&<><Alert severity="warning">Exact command retained · new input locked · no automatic replay</Alert><Typography variant="caption" sx={{overflowWrap:'anywhere'}}>{pending.body.commandKey}</Typography>
