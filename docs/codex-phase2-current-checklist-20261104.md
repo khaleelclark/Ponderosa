@@ -69,9 +69,12 @@ for end-to-end and acceptance evidence.
 
 ## Blockers and next work
 
-- Physical Chroma cleanup/rollback remains held. The user is considering the
-  sole-writer tradeoff; do not assume it or deploy. Logical retirement and a
-  pending-cleanup notice do not mean physical deletion.
+- Physical Chroma cleanup/rollback remains under implementation. Patrick
+  clarified that Local Memory is internal Ponderosa memory and that Ponderosa
+  should coordinate its own concurrent operations without a user assurance
+  checkbox. Unknown direct external access is deployment qualification, not
+  a reason to stop candidate implementation. Do not touch live memory or
+  deploy; logical retirement alone does not mean physical deletion.
 - Finish implementation gaps above and re-evaluate reviewed continuation on
   one-shot/Windows/legacy evidence and multiple uncertain roots without blindly
   replaying effects. Do not treat provider prompt fences as proof a model

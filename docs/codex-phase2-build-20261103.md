@@ -22,6 +22,16 @@ and keeps human-only checks from blocking independent work. Original worktrees,
 paused package work, live services, data and credentials were preserved.
 This is source work only: no deployment or production restart was performed.
 
+## Patrick's internal-memory clarification
+
+Local Memory MCP is internal Ponderosa memory. Patrick directed Ponderosa to
+coordinate its own agents and operations itself, without asking the user for a
+sole-writer assurance. Unknown direct external access is a deployment
+qualification, not a reason to stop implementing internal coordination. The
+existing cleanup/rollback implementation is being completed in isolated source;
+no live memory or production service may be changed in this work. Earlier
+checkpoints below preserve the historical state before this clarification.
+
 ## Patrick's browser-safeguard clarification
 
 Patrick clarified that the Bible's network-security rule concerns someone on
