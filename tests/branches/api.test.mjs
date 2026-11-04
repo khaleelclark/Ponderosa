@@ -478,3 +478,27 @@ test('malformed workflow import diagnostic does not reveal file contents', async
   assert.equal(oversized.status,413,'oversized requests keep their existing status');
  });
 });
+
+
+test('Output schedule response remains bound to its own commit across another edit during source refresh',async t=>{
+ const {BranchTriggerSourceService}=await import('../../apps/server/dist/branch-trigger-service.js');
+ await withFixture(t,async f=>{
+  const app=f.ok(await f.api('POST','/api/branches/assistant',{initialize:true})).app,url='/api/branches/output-apps/'+app.agentId;
+  let release,reached,paused=false;const gate=new Promise(resolve=>release=resolve),entered=new Promise(resolve=>reached=resolve);
+  const original=BranchTriggerSourceService.prototype.applyDefinitionChange;
+  t.mock.method(BranchTriggerSourceService.prototype,'applyDefinitionChange',async function(previous,next){
+   if(!paused&&next?.branchId===app.branchId){paused=true;reached();await gate;}
+   return original.call(this,previous,next);
+  });
+  const first=f.api('PUT',url+'/schedule',{expectedVersionId:app.versionId,expectedSettingsRevision:app.settingsRevision,automatic:false});
+  try{
+   await entered;
+   const own=f.ok(await f.api('GET',url));assert.equal(own.automatic,false);
+   const other=f.ok(await f.api('PUT',url+'/schedule',{expectedVersionId:own.versionId,expectedSettingsRevision:own.settingsRevision,automatic:true}));
+   assert.equal(other.automatic,true);release();
+   const response=f.ok(await first);assert.equal(response.automatic,false);assert.equal(response.settingsRevision,own.settingsRevision);
+   const current=f.ok(await f.api('GET',url));assert.equal(current.automatic,true);assert.equal(current.settingsRevision,other.settingsRevision);
+   assert.equal((await f.api('PUT',url+'/schedule',{expectedVersionId:response.versionId,expectedSettingsRevision:response.settingsRevision,automatic:false})).status,409,'The first editor cannot overwrite the second editor with its committed baseline');
+  }finally{release();await first;}
+ });
+});

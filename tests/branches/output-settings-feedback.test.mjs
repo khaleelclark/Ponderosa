@@ -6,12 +6,12 @@ import {createRequire} from 'node:module';
 const require=createRequire(new URL('../../apps/web/package.json',import.meta.url));
 const ts=require('typescript');
 const source=readFileSync(new URL('../../apps/web/src/components/OutputAgentApp.tsx',import.meta.url),'utf8');
-function fixture(pathname='/assistant',overrides={}){
+function fixture(pathname='/assistant',overrides={},behavior={}){
  const state=[],deps=[],pending=[];let index=0,tree,changed=false;const requests=[],modelRequests=[];
  const app={agentId:'speaker',branchId:'branch',chatId:'chat',projectId:'project',title:'VeryLongOutputTitle'.repeat(20),engine:'codex',versionId:'version',automatic:true,triggerKind:'schedule',schedule:{scheduleKind:'interval',everyMs:600000,startsAt:'2099-01-01T00:00:00.000Z'},everyMs:600000,settingsRevision:'revision',runtimeSettings:{activeEngine:'codex',model:null,effort:null,speed:null},...overrides};
  const imports={react:{useState(initial){const i=index++;if(!(i in state))state[i]=initial;return [state[i],value=>{if(state[i]!==value){state[i]=value;changed=true;}}];},useRef(value){const i=index++;return state[i]??=( {current:value});},useEffect(effect,next){const i=index++;if(!deps[i]||next.some((value,j)=>value!==deps[i][j])){deps[i]=next;pending.push(effect);}}},
   '@tanstack/react-query':{useQuery(options){const snapshot={...app};return {data:options.queryKey[0]==='assistant-status'?{initialized:true,enabled:true,app:snapshot}:options.queryKey[0]==='output-app'?snapshot:[],refetch:async()=>({data:options.queryKey[0]==='assistant-status'?{initialized:true,enabled:true,app}:app})};}},
-  '../api/real':{realApi:{updateAgent:async(id,patch)=>{modelRequests.push({id,patch});throw Error('Model update refused');}},requestJson:async(url,options)=>{requests.push({url,options});throw Error('Workflow version changed');}},
+  '../api/real':{realApi:{updateAgent:async(id,patch)=>{modelRequests.push({id,patch});if(behavior.model)return behavior.model(patch,app,modelRequests.length);throw Error('Model update refused');}},requestJson:async(url,options)=>{requests.push({url,options});if(behavior.schedule)return behavior.schedule(JSON.parse(options.body),app,requests.length);throw Error('Workflow version changed');}},
   '../hooks/queries':{useWorkspacePreferences:()=>({data:{}})},
   '../api/productScope':{setStandaloneWorkspaceOwner(){}},'../hooks/useWorkspaceStream':{useWorkspaceStream:()=>({})}};
  imports.react.useLayoutEffect=imports.react.useEffect;
@@ -72,4 +72,36 @@ for(const pathname of ['/assistant','/apps/speaker'])test(pathname+': background
  assert.equal(schedule.expectedVersionId,'version');assert.equal(schedule.expectedSettingsRevision,'revision');
  f.button('Save model').props.onClick();await new Promise(setImmediate);
  assert.deepEqual(JSON.parse(JSON.stringify(f.modelRequests[0].patch.expectedRuntimeSettings)),{activeEngine:'codex',model:null,effort:null,speed:null});
+});
+
+for(const pathname of ['/assistant','/apps/speaker'])for(const section of ['model','schedule'])test(`${pathname}: ${section} save never adopts an intervening edit as its draft baseline`,async()=>{
+ let committed;
+ const behavior={
+  model(patch,app,count){
+   if(JSON.stringify(patch.expectedRuntimeSettings)!==JSON.stringify(app.runtimeSettings))throw Error('Model settings changed. Reload settings before saving.');
+   const saved={id:app.agentId,activeEngine:patch.activeEngine,model:patch.model,effort:'medium',speed:null};
+   if(count===1){committed={activeEngine:saved.activeEngine,model:saved.model,effort:saved.effort,speed:saved.speed};app.model='external-model';app.runtimeSettings={...committed,model:app.model};}
+   else {app.model=patch.model;app.runtimeSettings={...committed,model:patch.model};}
+   return saved;
+  },
+  schedule(patch,app,count){
+   if(patch.expectedSettingsRevision!==app.settingsRevision)throw Error('Workflow changed. Reload settings.');
+   const saved={...app,automatic:patch.automatic,settingsRevision:'committed-revision'};
+   if(count===1){committed=saved;Object.assign(app,{automatic:true,settingsRevision:'external-revision'});}
+   else Object.assign(app,saved);
+   return saved;
+  },
+ };
+ const f=fixture(pathname,{},behavior);f.button('Settings').props.onClick();
+ if(section==='model')f.nodes().find(n=>n.type==='TextField'&&n.props.label==='Model').props.onChange({target:{value:'saved-model'}});
+ else f.nodes().find(n=>n.type==='Switch').props.onChange(null,false);
+ const label=section==='model'?'Save model':'Save schedule';f.button(label).props.onClick();await new Promise(setImmediate);f.nodes();
+ f.button(label).props.onClick();await new Promise(setImmediate);f.nodes();
+ if(section==='model'){
+  assert.deepEqual(JSON.parse(JSON.stringify(f.modelRequests[1].patch.expectedRuntimeSettings)),committed);
+  assert.equal(f.app.model,'external-model');
+ }else{
+  assert.equal(JSON.parse(f.requests[1].options.body).expectedSettingsRevision,'committed-revision');assert.equal(f.app.automatic,true);assert.equal(f.app.settingsRevision,'external-revision');
+ }
+ assert.ok(f.nodes().some(n=>n.type==='Alert'&&/changed/.test(n.props.children)),'The later edit remains protected by the original successful mutation result');
 });

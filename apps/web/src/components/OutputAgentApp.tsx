@@ -66,14 +66,16 @@ export function OutputAgentApp({colorMode,onToggleColorMode}:{colorMode:ColorMod
   inFlight.current=false;if(mounted.current)setBusy(false);
   if(mounted.current&&generation===ownerGeneration.current){setSaved('');setError(cause?`Could not refresh settings: ${cause.message}`:'');}
  };
- const act=async(work:()=>Promise<unknown>,savedLabel='',section?:'schedule'|'model')=>{
+ const act=async<T,>(work:()=>Promise<T>,savedLabel='',onCommitted?:(value:T)=>void)=>{
   if(inFlight.current)return;
   const generation=ownerGeneration.current;
   const current=()=>mounted.current&&generation===ownerGeneration.current;
   inFlight.current=true;setBusy(true);setError('');setSaved('');
   try{
-   await work();
-   const cause=await refresh(value=>{if(current()){if(section==='schedule')setScheduleBase(value);if(section==='model')setRuntimeBase(value);}});
+   const committed=await work();
+   // Only this mutation can advance its draft baseline; a later read may contain another editor's work.
+   if(current())onCommitted?.(committed);
+   const cause=await refresh();
    if(current()){
     setSaved(cause?'':savedLabel);
     setError(cause?`Changes saved, but settings could not be refreshed: ${cause.message}`:'');
@@ -92,7 +94,7 @@ export function OutputAgentApp({colorMode,onToggleColorMode}:{colorMode:ColorMod
  const closeSettings=()=>{if(busy)return;if(settingsDirty)setDiscardSettings(true);else setSettings(false);};
  const saveSchedule=()=>{
   if(!app||!scheduleBase||!validInterval)return;
-  void act(()=>requestJson(`/api/branches/output-apps/${encodeURIComponent(app.agentId)}/schedule`,{method:'PUT',body:JSON.stringify({expectedVersionId:scheduleBase.versionId,expectedSettingsRevision:scheduleBase.settingsRevision,automatic,...(intervalChanged||(scheduleBase.triggerKind==='manual'&&automatic)?{everyMs:interval*60000}:{})})}),'Schedule saved','schedule');
+  void act(()=>requestJson<OutputAgentAppDto>(`/api/branches/output-apps/${encodeURIComponent(app.agentId)}/schedule`,{method:'PUT',body:JSON.stringify({expectedVersionId:scheduleBase.versionId,expectedSettingsRevision:scheduleBase.settingsRevision,automatic,...(intervalChanged||(scheduleBase.triggerKind==='manual'&&automatic)?{everyMs:interval*60000}:{})})}),'Schedule saved',value=>setScheduleBase(value));
  };
  return <WorkspaceConnectionProvider value={connection}><Box component="main" sx={{height:'var(--ponderosa-app-viewport-block-size, 100dvh)',display:'flex',flexDirection:'column',minHeight:0,minWidth:0,pb:'env(safe-area-inset-bottom)'}}>
   <Stack direction="row" alignItems="center" spacing={1} useFlexGap flexWrap="wrap" sx={{p:1,pt:'max(8px, env(safe-area-inset-top))',borderBottom:1,borderColor:'divider',flexShrink:0}}>
@@ -124,7 +126,7 @@ export function OutputAgentApp({colorMode,onToggleColorMode}:{colorMode:ColorMod
      <TextField disabled={busy||engines.isPending} select label="Model" SelectProps={{displayEmpty:true}} InputLabelProps={{shrink:true}} value={model} onChange={event=>{setSaved('');setModel(event.target.value);}}>
       <MenuItem value="">Provider default</MenuItem>{model&&!engines.data?.find(item=>item.id===engine)?.models.some(item=>item.id===model)&&<MenuItem value={model}>{model}</MenuItem>}{engines.data?.find(item=>item.id===engine)?.models.filter(item=>item.id).map(item=><MenuItem key={item.id} value={item.id}>{item.label}</MenuItem>)}
      </TextField>
-     <Button disabled={busy||!engine||!runtimeBase?.runtimeSettings} onClick={()=>void act(()=>realApi.updateAgent(app.agentId,{activeEngine:engine,model:model.trim()||null,expectedRuntimeSettings:runtimeBase!.runtimeSettings}),'Model saved','model')}>Save model</Button>
+     <Button disabled={busy||!engine||!runtimeBase?.runtimeSettings} onClick={()=>void act(()=>realApi.updateAgent(app.agentId,{activeEngine:engine,model:model.trim()||null,expectedRuntimeSettings:runtimeBase!.runtimeSettings}),'Model saved',value=>setRuntimeBase({...runtimeBase!,engine:value.activeEngine,model:value.model??undefined,runtimeSettings:{activeEngine:value.activeEngine,model:value.model??null,effort:value.effort??null,speed:value.speed??null}}))}>Save model</Button>
      <Button href={`/branches?branch=${encodeURIComponent(app.branchId)}&tab=workflow`}>More options</Button>
      <Button disabled={busy} onClick={()=>void retryRefresh(true)}>Discard draft and reload</Button>
     </>}

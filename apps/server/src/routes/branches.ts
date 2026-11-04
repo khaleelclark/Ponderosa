@@ -247,7 +247,9 @@ export function registerBranchRoutes(app: FastifyInstance, context: { dataDir?:s
         }else if(automatic)throw new Error('Choose how often this workflow should run automatically');
         if(automatic&&!branch.enabled)branches.setEnabled(branch.id,true);
       })();
-      await sources.applyDefinitionChange(previous,branches.trigger(branch.id));await sources.refresh();notify();return context.outputApps.get(request.params.id);
+      // Return this committed edit, even if another editor changes settings during source refresh.
+      const committed=context.outputApps.get(request.params.id);
+      await sources.applyDefinitionChange(previous,branches.trigger(branch.id));await sources.refresh();notify();return committed;
     }catch(error){return reply.code(409).send({error:(error as Error).message});}
   });
   app.post<{Body:{package:unknown;bindings:import('@ponderosa/core').BranchBindings;branchId?:string;memorySelection?:import('@ponderosa/core').BranchMemoryUpdateSelectionDto;fileSelections?:import('@ponderosa/core').BranchImportFileSelections;treeBindings?:Record<string,import('@ponderosa/core').BranchBindings>}}>('/api/branches/install-preview',{bodyLimit:AGENT_PACKAGE_MAX_BYTES+AGENT_PACKAGE_METADATA_MAX_BYTES+1},async(request,reply)=>{
