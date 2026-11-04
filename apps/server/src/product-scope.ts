@@ -250,9 +250,18 @@ export function registerProductScope(app:FastifyInstance,store:AgentStore,worksp
     const receiptId=(request.params as {id?:string}).id;
     const chatRemoval=request.method==='DELETE'&&request.routeOptions.url==='/api/conversations/:id'&&receiptId?store.getConversationDeletionReceipt(receiptId):undefined;
     const projectRemoval=request.method==='DELETE'&&request.routeOptions.url==='/api/projects/:id'&&receiptId?store.getProjectDeletionReceipt(receiptId):undefined;
+    // Quarantine hides ordinary Project resources, but the exact Core deletion
+    // retry must still reach its drain and memory-uncertainty checks.
+    const pendingCoreProjectRemoval=request.method==='DELETE'&&request.routeOptions.url==='/api/projects/:id'&&receiptId&&Boolean(store.sqlite.prepare(`
+      SELECT 1 FROM project_deletion_pending pending JOIN projects p ON p.id=pending.project_id
+      WHERE pending.project_id=?
+      AND NOT EXISTS(SELECT 1 FROM conversations c WHERE c.project_id=p.id AND c.branch_id IS NOT NULL)
+      AND NOT EXISTS(SELECT 1 FROM conversation_deletion_receipts r WHERE r.project_id=p.id AND r.branch_id IS NOT NULL)
+    `).get(receiptId));
     const belongs=(id:string,kind:string,product:ProductScope):boolean=>
       (chatRemoval&&id===chatRemoval.conversationId&&['conversation','chat'].includes(kind)?(chatRemoval.branchId?'branches':'dev')===product:false)||
       (projectRemoval&&id===projectRemoval.projectId&&kind==='project'?projectRemoval.productScope===product:false)||
+      (pendingCoreProjectRemoval&&id===receiptId&&kind==='project'&&product==='dev')||
       (product==='branches'&&['agent','conversation','chat','project'].includes(kind)&&retained.has(id))||(kind==='project'&&browserHandleInProduct(store,request,id,product))||ordinaryBelongs(id,kind,product);
     if(runtimeChat){(request.raw as ProductRequest).ponderosaProduct=store.getConversation(runtimeChat)?.branchId?'branches':'dev';}
     const product=requestProduct(request);

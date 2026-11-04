@@ -51,6 +51,26 @@ test('completed deletion receipts replay only in their canonical product without
  await f.reopen();assert.equal(f.ok(await f.api('DELETE',`/api/projects/${chat.projectId}`)).replayed,true);assert.equal((await f.api('GET',`/api/projects/${chat.projectId}`)).status,404);
 }));
 
+test('pending Project deletion retry does not reopen Branch or mixed ownership',async t=>{
+ let store;await withFixture(t,async f=>{
+  const branch=f.ok(await f.api('POST','/api/branches',{name:'Pending ownership',idempotencyKey:randomUUID()}));
+  const chat=f.ok(await f.api('POST',`/api/branches/${branch.id}/chats`,{label:'Branch owner',defaultEngine:'codex'},{'idempotency-key':randomUUID()}));
+  const check=async target=>{
+   store.markProjectDeletionPending(target.projectId);
+   assert.equal((await f.api('DELETE',`/api/projects/${target.projectId}`)).status,409,'Core cannot delete a Branch-owned Project');
+   assert.equal((await f.api('DELETE',`/api/branches/engine/projects/${target.projectId}`)).status,409,'Branch lifecycle remains the only deletion authority');
+   assert.ok(store.getProject(target.projectId));assert.ok(store.getConversation(target.id,{includeDeleting:true}));
+  };
+  await check(chat);
+  const mixed=store.createProject({label:'Mixed restored Project',hostPath:f.root,defaultEngine:'codex'});
+  const branchChat=store.createConversation(mixed.id,{title:'Restored Branch sibling'});
+  // Match the existing offline-restored current-format mixed Project fixture.
+  const filename=conversationJsonPath(f.dataDir,mixed.id,branchChat.id),record=JSON.parse(await readFile(filename,'utf8'));
+  record.branchId=branch.id;await writeFile(filename,JSON.stringify(record));store.rebuildProjections();
+  await check(branchChat);
+ },{storeFactory:dir=>(store=new AgentStore(dir))});
+});
+
 test('product-scoped DMs preserve honest missing-recipient diagnostics and reject a known foreign recipient before delivery',async t=>withFixture(t,async f=>{
  const {products}=await setup(f);
  for(const product of ['dev','branches']){

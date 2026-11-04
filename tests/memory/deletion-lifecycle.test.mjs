@@ -376,17 +376,65 @@ test('Project cleanup resumes after an earlier Chat was fully acknowledged',()=>
  await f.memory.provisionNewChat(second.id);
  const firstScope='chat:'+first.id,secondScope='chat:'+second.id;
  await f.seed(firstScope,firstScope+':team');await f.seed(secondScope,secondScope+':team');
- const original=f.raw.client.getCollection.bind(f.raw.client);let blocked=false;
+ const otherScope='chat:'+f.otherChat.id,otherId=await f.seed(otherScope,otherScope+':team'),globalId=await f.seed('global','installation-global',f.memory.principalId);
+ const scopes=[firstScope,secondScope],acknowledged=new Set(),deletes=[];
+ const originalGet=f.raw.client.getCollection.bind(f.raw.client),originalDelete=f.raw.client.deleteCollection.bind(f.raw.client);
+ let completedScope,blockedScope;
  f.raw.client.getCollection=async input=>{
-  if(input.name===f.raw.names(secondScope).memory&&!blocked){blocked=true;throw Error('Controlled failure before second Chat cleanup');}
-  return original(input);
+  // Project Chat iteration order is unspecified. Block only after another
+  // Chat has acknowledged deletion of both of its collections.
+  if(completedScope&&!blockedScope){
+   const next=scopes.find(scope=>scope!==completedScope&&input.name===f.raw.names(scope).memory);
+   if(next){blockedScope=next;throw Error('Controlled failure before second Chat cleanup');}
+  }
+  return originalGet(input);
  };
- const result=await f.api('DELETE','/api/projects/'+project.id);f.raw.client.getCollection=original;
- assert.equal(result.body.cleanupPending,true,JSON.stringify(result));assert.equal(blocked,true);
- assert.equal(await f.rows(firstScope),null);assert.equal(await f.rows(firstScope,true),null);assert.notEqual(await f.rows(secondScope),null);
- assert.equal(f.memory.core.database.scopeHasUnsettledMutation(secondScope),false);
+ f.raw.client.deleteCollection=async input=>{
+  deletes.push(input.name);const result=await originalDelete(input);acknowledged.add(input.name);
+  completedScope??=scopes.find(scope=>acknowledged.has(f.raw.names(scope).memory)&&acknowledged.has(f.raw.names(scope).log));
+  return result;
+ };
+ let result;
+ try{result=await f.api('DELETE','/api/projects/'+project.id);}
+ finally{f.raw.client.getCollection=originalGet;f.raw.client.deleteCollection=originalDelete;}
+ assert.equal(result.body.cleanupPending,true,JSON.stringify(result));assert.ok(completedScope);assert.ok(blockedScope);assert.notEqual(completedScope,blockedScope);
+ assert.equal(await f.rows(completedScope),null);assert.equal(await f.rows(completedScope,true),null);assert.notEqual(await f.rows(blockedScope),null);assert.notEqual(await f.rows(blockedScope,true),null);
+ assert.ok(!deletes.includes(f.raw.names(blockedScope).memory)&&!deletes.includes(f.raw.names(blockedScope).log),'No delete was dispatched for the blocked Chat');
+ assert.equal(f.memory.core.database.scopeHasUnsettledMutation(blockedScope),false);
+ assert.deepEqual(await f.rows(otherScope),[otherId]);assert.deepEqual(await f.rows('global'),[globalId]);
+ assert.equal((await f.api('DELETE','/api/branches/engine/projects/'+project.id)).status,404,'The pending Core deletion is not available through Branches');
+ const checkQuarantine=async()=>{
+  assert.equal((await f.api('GET','/api/projects/'+project.id)).status,404,'Ordinary Project access stays quarantined');
+  assert.equal((await f.api('PATCH','/api/projects/'+project.id,{label:'Must stay quarantined'})).status,404,'The exception does not permit ordinary mutations');
+  assert.equal(f.store.getProject(project.id).label,'Multi Chat project');
+ };
+ await checkQuarantine();await f.reopen();await checkQuarantine();
  const retry=await f.api('DELETE','/api/projects/'+project.id);
- assert.equal(retry.status,200,JSON.stringify(retry));assert.equal(await f.rows(secondScope),null);assert.equal(await f.rows(secondScope,true),null);
+ assert.equal(retry.status,200,JSON.stringify(retry));assert.equal(await f.rows(blockedScope),null);assert.equal(await f.rows(blockedScope,true),null);
+ assert.equal(retry.body.cleanupPending,false,JSON.stringify(retry));
+ assert.deepEqual(await f.rows(otherScope),[otherId]);assert.deepEqual(await f.rows('global'),[globalId]);
+}));
+
+test('pending Project deletion retries preserve an unknown remote delete across restart',()=>fixture(async f=>{
+ const scope='chat:'+f.chat.id,other='chat:'+f.otherChat.id;
+ await f.seed(scope,scope+':team');const logId=await f.seed(scope,scope+':team',f.a.id,true),otherId=await f.seed(other,other+':team');
+ const original=f.raw.client.deleteCollection.bind(f.raw.client);let attempts=0;
+ f.raw.client.deleteCollection=async input=>{
+  attempts++;const result=await original(input);
+  if(input.name===f.raw.names(scope).memory)throw Error('Controlled lost Project delete response');
+  return result;
+ };
+ let result;try{result=await f.api('DELETE','/api/projects/'+f.first.id);}finally{f.raw.client.deleteCollection=original;}
+ assert.equal(result.status,503,JSON.stringify(result));assert.equal(result.body.retryable,false);assert.equal(attempts,1);
+ assert.equal(f.memory.core.database.scopeHasUnsettledMutation(scope),true);
+ await f.reopen();const raw=f.liveMemory.core.database.raw,remove=raw.client.deleteCollection.bind(raw.client);let replayed=0;
+ raw.client.deleteCollection=async input=>{replayed++;return remove(input);};
+ try{
+  const retry=await f.api('DELETE','/api/projects/'+f.first.id);
+  assert.equal(retry.status,503,JSON.stringify(retry));assert.equal(retry.body.retryable,false);assert.equal(replayed,0);
+  assert.equal(f.liveMemory.core.database.scopeHasUnsettledMutation(scope),true);
+  assert.equal(await f.rows(scope),null);assert.deepEqual(await f.rows(scope,true),[logId]);assert.deepEqual(await f.rows(other),[otherId]);
+ }finally{raw.client.deleteCollection=remove;}
 }));
 
 test('legacy and unknown-result memory holds share stable classification',()=>{
