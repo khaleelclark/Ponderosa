@@ -276,3 +276,18 @@ test('worker holds its Chat lease and preserves journal and payload if owner is 
   }finally{release();hostFs.open=original;}
  },{storeFactory:dataDir=>(store=new AgentStore(dataDir))});
 });
+
+test('committed Project deletion exposes only exact content-free import status',{timeout:30000},async t=>{
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Deleted project import'),requestId=randomUUID(),endpoint='/api/projects/'+chat.projectId+'/agent-import-operations';
+  const wire=Buffer.from(JSON.stringify({conversationId:chat.id,engineMapping:{codex:'codex'}})+'\n{}'),fingerprint=importRequestFingerprint(wire);
+  const op=f.ok(await f.api('POST',endpoint,wire,{'content-type':'application/vnd.ponderosa.agent-import','idempotency-key':requestId,'x-ponderosa-agent-package-fingerprint':fingerprint}));
+  await until(async()=>{const response=await f.api('GET',endpoint+'/'+op.id);return response.status===200&&response.body.status==='failed';},'terminal import before Project deletion');
+  assert.equal(f.ok(await f.api('DELETE','/api/projects/'+chat.projectId)).deleted,true);
+  await f.reopen();
+  const lookup=endpoint+'/by-request/'+requestId+'?conversationId='+chat.id,response=await f.api('GET',lookup);
+  assert.equal(response.status,409);assert.equal(response.body.state,'destination_deleted');assert.equal(response.body.operationId,op.id);assert.equal(response.body.requestFingerprint,fingerprint);
+  assert.equal('result' in response.body,false);assert.equal('payloadHash' in response.body,false);
+  assert.equal((await f.api('GET',lookup.replace('/api/','/api/branches/engine/'))).status,404);
+ });
+});
