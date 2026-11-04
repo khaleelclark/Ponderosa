@@ -171,10 +171,16 @@ test('real root hook reference preserves original root identity and metadata',op
  await mkdir(source);await mkdir(destination);
  await git(source,'init','--template=','--initial-branch=main');
  await mkdir(path.join(source,'support'));await writeFile(path.join(source,'support','script'),data);await chmod(path.join(source,'support','script'),0o751);
- await mkdir(path.join(source,'.git','hooks'));await symlink(source,path.join(source,'.git','hooks','root'));
+ await mkdir(path.join(source,'.git','hooks'));
+ // Capture the selected working file first, then its Git-owned hardlink. This
+ // is a real cross-scope inode, not an injected native-plan node.
+ await symlink(path.join(source,'support','script'),path.join(source,'.git','hooks','a-source'));
+ await link(path.join(source,'support','script'),path.join(source,'.git','hooks','from-working-root'));
+ await symlink(source,path.join(source,'.git','hooks','root'));
  await git(source,'config','core.hooksPath',source);
+ await utimes(path.join(source,'support','script'),1700000000.123456,1700000000.123456);
  await chmod(source,0o700);await utimes(source,1700000000.123456,1700000000.123456);
- const capturedRoot=await lstat(source,{bigint:true});
+ const capturedRoot=await lstat(source,{bigint:true}),capturedFile=await lstat(path.join(source,'support','script'),{bigint:true});
  await mkdir(path.join(destination,'support'));await writeFile(path.join(destination,'support','script'),data);
  const originalFile=await lstat(path.join(destination,'support','script'),{bigint:true}),originalRoot=await lstat(destination,{bigint:true}),originalSupport=await lstat(path.join(destination,'support'),{bigint:true});
  const manifest=await exportReviewedUserData(source,{git:true,harness:false,externalGitDependencies:true});
@@ -184,12 +190,16 @@ test('real root hook reference preserves original root identity and metadata',op
  assert.ok(graph.rootMetadata.some(node=>node.path===destination),'root metadata originates in the reviewed selected worktree');
  const rootView=graph.links.find(node=>node.kind==='symlink'&&node.target===destination);
  assert.ok(rootView,'the production planner issues a reference to the selected root');
+ const crossLink=graph.links.find(node=>node.kind==='hardlink'&&node.path===path.join(destination,'.git','hooks','from-working-root')&&node.target===path.join(destination,'support','script'));
+ assert.ok(crossLink,'the captured Git-owned hardlink targets the selected working original');
  const issued={...identity(originalRoot),directories:{support:identity(originalSupport)}};
  await applyReviewedRecoveryRoots(tasks,activation,()=>{},{[destination]:issued});
  const afterRoot=await lstat(destination,{bigint:true}),afterFile=await lstat(path.join(destination,'support','script'),{bigint:true});
  assert.equal(afterRoot.dev,originalRoot.dev);assert.equal(afterRoot.ino,originalRoot.ino);
  assert.equal(afterRoot.mode&0o7777n,capturedRoot.mode&0o7777n);assert.equal(afterRoot.mtimeNs,capturedRoot.mtimeNs);
  assert.equal(afterFile.dev,originalFile.dev);assert.equal(afterFile.ino,originalFile.ino);assert.deepEqual(await readFile(path.join(destination,'support','script')),data);
+ const cross=await lstat(crossLink.path,{bigint:true});assert.equal(cross.dev,afterFile.dev);assert.equal(cross.ino,afterFile.ino);assert.equal(afterFile.nlink,2n);
+ assert.equal(afterFile.mode&0o7777n,capturedFile.mode&0o7777n);assert.equal(afterFile.mtimeNs,capturedFile.mtimeNs);
  assert.equal(await realpath(rootView.path),destination);
 });
 
