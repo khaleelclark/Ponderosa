@@ -2584,6 +2584,14 @@
       "moduleBase": "apps/server/package.json",
       "requirements": "Node24, built workspaces, owned disposable local SQLite stores; no provider account or production state",
       "origin": "Bounded durable SQLite export cache, exact retry/restart, repeated expiry reclaim and unknown reader hold"
+    },
+    {
+      "path": "tests/organizations/native-git-real-graph.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, Linux native held-file custody, Git; disposable repositories and roots",
+      "origin": "Real captured Git dependency plan: hook alias metadata, original worktree identity and refusal of changed bytes, undeclared links or replaced directories"
     }
   ],
   "retainedReleasePayload": [
