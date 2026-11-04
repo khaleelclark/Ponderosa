@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { readFile, unlink } from 'node:fs/promises';
 import { AgentStore } from '../../packages/agents/dist/index.js';
 import { ReviewedSteeringAuthority } from '../../packages/agents/dist/coordination-v3-reviewed-steering.js';
+import { payloadHash } from '../../packages/agents/dist/coordination-v3-canonical-json.js';
 import { withFixture, until, runtimeAttachmentPaths } from '../shared/fixture.mjs';
 import { inertCodex } from '../shared/inert-codex.mjs';
 
@@ -32,12 +33,18 @@ test('unqualified provider holds a reviewed continuation without retry or relabe
   assert.equal(view.review.replayAuthorized,false);
   assert.ok(JSON.stringify(view.review.originalTask).includes('Controlled held task'));
   assert.ok(JSON.stringify(view.review.originalSteer).includes('Apply this specific correction'));
+  for(const [event,asset] of [[view.review.originalTask.communication,originalAsset],[view.review.originalSteer.communication,steerAsset]]) {
+   assert.equal(event.projectId,chat.projectId);assert.equal(event.conversationId,chat.id);
+   assert.equal(event.sender.kind,'user');assert.equal(event.sender.userId,'local-operator');
+   assert.ok(event.attachments.some(item=>item.id===asset.id && item.name===asset.name));
+  }
   assert.equal((await f.api('GET',`/api/projects/foreign/message-deliveries/${activationId}/reviewed-continuation`)).status,404);
   const body={reviewSha256:view.review.reviewSha256,effectsReviewed:true,reviewNote:'Checked the visible receipts',idempotencyKey:randomUUID()};
   f.plans.set(agent.id,[{hold:true}]);
   const result=f.ok(await f.api('POST',path,body));
   assert.equal(result.status,'continuation_recorded');
   assert.equal(result.receipt.originalOutcome,'unknown');assert.equal(result.receipt.replayAuthorized,false);
+  assert.equal(result.receipt.commandSha256,payloadHash({projectId:chat.projectId,activationId,...body}));
   const replay=f.ok(await f.api('POST',path,body));assert.equal(replay.receipt.activationId,result.receipt.activationId);
   assert.equal((await f.api('POST',path,{...body,reviewNote:'changed'})).status,409);
   const failed=await until(()=>store.sqlite.prepare("SELECT state,last_delivery_error FROM agent_activations WHERE id=? AND state='failed'").get(result.receipt.activationId),'unqualified provider held');
