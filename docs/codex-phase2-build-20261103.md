@@ -24,7 +24,7 @@ This is source work only: no deployment or production restart was performed.
 
 ## Current integrated checkpoint — 4 November, later
 
-Product-and-test candidate: `fc8e031c701923d3088378801a177a410ff6c0f5`.
+Product-and-test candidate: `5c4f4bcd8b3eff72547493254578036a6acf038c`.
 This section supersedes older current-state claims in the historical checkpoints
 below; their exact-commit results remain useful evidence for those revisions.
 
@@ -47,17 +47,27 @@ below; their exact-commit results remain useful evidence for those revisions.
   steer, and available attachments into a fresh session after the human reviews
   unresolved effects. The original delivery outcome remains unknown; the
   successor is not an automatic replay. The currently qualified path is the
-  built-in persistent Codex provider on POSIX with exact start/exit evidence,
-  a single reviewable root and interruption, and available original files.
-  Other providers, Windows, historical or mixed/multiple uncertain cases,
+  built-in persistent Codex and Claude providers on POSIX with exact start/exit
+  evidence, a single reviewable root and interruption, and available original
+  files. The source Run may be completed or outcome-unknown after worker loss.
+  Other providers, one-shot, Windows, historical or mixed/multiple uncertain cases,
   changed evidence and uncertain source retirement stay held. An inert local
-  Codex app-server fixture verified the original task, both attachment bytes,
-  and reply on the original root; this is not a live provider qualification.
+  Codex and Claude fixtures verified the original task, both attachment bytes,
+  and reply on the original root. Worker-loss recovery was simulated and the
+  fixture reopened; no physical crash was tested. Claude reply uses the host
+  callback rather than its MCP wire. Neither is a live provider qualification.
 - Chat and Agent removal now report when logical removal succeeded but cleanup
   remains pending, distinct from a deletion that did not finish. This is not
   physical Chroma deletion. The 12 historical cleanup/rollback cases remain
   unresolved; one tests a foreign-data diagnostic and the others include
   physical cleanup or compensation expectations.
+
+Affected validation on `5c4f4bcd`: fresh offline install, full build and
+recursive typecheck passed; server tests 47/47, usage 4/4, web 28/28, and the
+focused review UI on desktop and emulated phone passed. Logs and exit codes are
+under `evidence/final-5c4f-*`. Inert Codex/Claude fixtures and a process-level
+loopback guard were used; that guard was not kernel network isolation. The full
+server suite was not rerun.
 
 Combined validation on `cbda39e3`: offline install, full build and recursive
 typecheck passed; affected server tests 55/55 and web tests 45/45 passed; the
