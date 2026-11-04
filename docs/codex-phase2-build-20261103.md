@@ -52,8 +52,7 @@ file mutation. A user can explicitly retire a proven unqueued intent while
 its evidence remains preserved. A lookup with no durable record is still
 inconclusive: an earlier upload can remain in flight. The import change adds
 schema migration 0045; it is distinct from the unselected experimental memory
-draft that previously used that number. These source changes and their
-regressions have not yet been run on this combined source.
+draft that previously used that number. These source changes were included in the later validation recorded below.
 
 The twelve Chroma failures remain unresolved. The recorded cases comprise eight
 Chat, Agent or Project cleanup cases and four staged import rollback or
@@ -62,11 +61,11 @@ identity-and-content-atomic deletion or enforced independent-writer barrier.
 A never-dispatched Chat creation can finish without a backend mutation, but
 that narrower path does not address the populated-memory failures.
 
-The current deletion tests contain incompatible expectations for the same
-Chroma fixture: positive cleanup cases expect physical deletion, while the
-unsupported-backend cases expect the same class of owned memory to be held.
-Retain the preservation tests and exercise successful cleanup against a
-genuinely qualified backend; changing expectations alone would not fix
+The positive deletion and preservation cases use distinct seeded records and
+some different wrappers, while assuming different outcomes from the same
+backend class. The backend has no established atomic deletion capability or
+writer-exclusion guarantee to justify the positive cases. Retain both safety
+and successful-cleanup coverage; changing expectations alone would not fix
 existing installations.
 
 Remaining implementation and qualification:
@@ -87,6 +86,43 @@ Remaining implementation and qualification:
   failures; then complete the Bible's reliability, native-provider,
   portability, performance, accessibility and blind-review qualifications.
   Actual production migration requires separate approval.
+
+## Later integrated validation — 4 November
+
+Product source candidate: `2f9bbf8f1967b8479ec3724ac455fc2594b36c45`.
+Its full build and workspace typecheck passed; evidence is in
+`evidence/final-2f9-{build,typecheck}.{log,exit}` under the isolated Phase 2
+work area. The complete import-ownership file passed 13/13 and folder-directory
+file passed 12/12 on that candidate; their logs use `final-2f9-import` and
+`final-2f9-folder`. Three Branch files passed 42/42 (`final-2f9-branch`),
+including three of the four earlier Branch failures. The earlier tree-deletion
+case was replaced by two preservation cases; its successful deletion is not
+proven. An independent audit found the replacement omits terminal assertions,
+so its apparent pass does not establish the deletion completes. These runs
+use disposable fixtures.
+
+The most recent complete server lane ran on earlier source
+`e1fb54865da1d65a6e62a4634be154305ebc6b13`: 2,582 passed, 32 failed, one
+canceled and 19 skipped. It contains twelve existing Chroma cleanup and
+rollback failures, four Branch failures, seven import failures and nine folder
+fixture failures; the canceled case was import-related. Later focused tests
+are evidence for their specific cases, not a complete current-source server
+pass. See `evidence/final-e1fb-server.{log,exit}`.
+
+Other completed controlled lanes are pinned separately: engines 60/60 at
+`e54a1498`; web 802 passed and one skipped and tooling 77 passed and 23
+skipped at `e1fb54865`; desktop and emulated-phone mounted checks 94/94 at
+`5ef682942`. These do not establish a full current-source qualification. The
+native Chrome test could not start inside the isolated sandbox because its
+setuid helper was unavailable there; native-browser behavior remains unverified.
+
+Production Ponderosa and observed local Chroma services share a host network
+namespace. Loopback binding alone does not exclude other local writers, and
+which backend production uses was not established. No live production service
+or data was changed. The independent-writer barrier required for safe deletion
+has therefore not been established; an in-process lock alone is insufficient.
+For a published unfinished multi-Branch tree, root deletion is held before
+mutation until Output recovery; whole-tree cancellation remains unsupported.
 
 ## Recorded validation and open checks
 
