@@ -2476,3 +2476,14 @@ retention files and derived cache files continue to be refused.
 The reads and before/after identity checks do not create an atomic snapshot
 against an independent filesystem writer. Detectable drift is refused and the
 source is preserved; callers must not treat this as writer exclusion.
+
+### Exact absolute private hook directory
+
+When the user explicitly includes configured external Git dependencies, a
+linked worktree may name its already captured canonical private Git directory
+as an absolute `core.hooksPath`. Capture accepts only the exact directory
+spelling and only recognized hook names; the external dependency graph carries
+the selected hook bytes and metadata into a separate owned destination view.
+It does not grant imported hooks ownership of native Git control files. Hook
+targets using symlink aliases, noncanonical spellings, or unrecognized private
+storage entries continue to be refused. Source paths and files remain in place.

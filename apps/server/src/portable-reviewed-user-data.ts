@@ -2553,7 +2553,11 @@ async function captureReviewedGit(root:string,association:GitAssociation,capture
       await absentGitPath(path.join(gitDir,'packed-refs'),fs);
       // Unknown private storage/pseudorefs must not silently disappear from the review copy.
       const names=await fs.readdir(gitDir);if(names.length>20000)throw new Error('Selected Git storage inventory exceeds its bound');
-      const capturesPrivateHooks=configuration.some(item=>item.key.toLowerCase()==='core.hookspath'&&!item.implicitBoolean&&!path.isAbsolute(item.value)&&path.resolve(gitDir,item.value)===path.resolve(gitDir));
+      // The exact canonical absolute spelling is safe only when configured
+      // external dependencies are selected: their separate graph captures the
+      // hook bytes and maps them into a fresh owned view. Do not normalize an
+      // absolute spelling through symlinks or grant unknown private entries.
+      const capturesPrivateHooks=configuration.some(item=>item.key.toLowerCase()==='core.hookspath'&&!item.implicitBoolean&&(!path.isAbsolute(item.value)&&path.resolve(gitDir,item.value)===path.resolve(gitDir)||allowConfiguredExternalSource&&item.value===gitDir));
       for(const name of names)if(!['gitdir','commondir','HEAD','ORIG_HEAD','FETCH_HEAD',...gitSelectedOriginalNames,'index','config.worktree','info','refs','logs','locked','reftable'].includes(name)&&!/^sharedindex\.[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(name)&&!(capturesPrivateHooks&&gitPrivateHookNames.has(name)))throw new Error('Unsupported selected Git storage or operation metadata; preserve source');
     }
   };

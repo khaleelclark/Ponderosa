@@ -276,7 +276,32 @@ for(const aliased of [false,true])test('real reftable capsule keeps native custo
  assert.equal(await git(capsule.worktreePath,'rev-parse','refs/worktree/selected-private'),await git(linked,'rev-parse','HEAD'));
 });
 
-for(const aliased of [false,true])test('real '+(aliased?'aliased':'absolute')+' private hook source with a hook is refused before recovery writes',options,async t=>{
+test('real exact absolute private hook source is captured and mapped only with explicit dependency selection',options,async t=>{
+ const root=await realpath(await mkdtemp(path.join(tmpdir(),'real-private-hook-absolute-'))),source=path.join(root,'source'),destination=path.join(root,'destination'),dependencies=path.join(root,'dependencies'),other=path.join(root,'other'),linked=path.join(dependencies,'capsule');
+ t.after(()=>rm(root,{recursive:true,force:true}));
+ await initialize(source);await initialize(other,true);await mkdir(destination);await mkdir(dependencies);
+ await git(other,'worktree','add','-b','linked',linked);await git(linked,'update-ref','refs/worktree/selected-private',await git(linked,'rev-parse','HEAD'));
+ const privateSource=await git(linked,'rev-parse','--absolute-git-dir'),hook=path.join(privateSource,'pre-commit'),bytes=Buffer.from('#!/bin/sh\nexit 0\n');
+ await git(source,'config','core.hooksPath',dependencies);await git(linked,'config','core.hooksPath',privateSource);
+ await writeFile(hook,bytes);await chmod(hook,0o751);await utimes(hook,1700000001.456,1700000001.456);const before=await lstat(hook,{bigint:true});
+ await assert.rejects(exportReviewedUserData(linked,{git:true,harness:false}),/Unsupported selected Git storage or operation metadata/);
+ const manifest=await exportReviewedUserData(source,{git:true,harness:false,externalGitDependencies:true});
+ const captured=manifest.gitExternalDependencies.files.find(file=>file.sourcePath===hook);
+ assert.ok(captured);assert.deepEqual(Buffer.from(captured.dataBase64,'base64'),bytes);
+ const activation={git:true,harness:false};await writeFile(path.join(destination,'file.txt'),'committed\n');
+ const tasks=planReviewedRecoveryRoots(packageFor(manifest,{'file.txt':Buffer.from('committed\n')}),{work:destination},activation);
+ const capsule=tasks[0].externalPlan.repositories.find(row=>row.sourceWorkingRoot===linked);assert.ok(capsule);
+ await applyReviewedRecoveryRoots(tasks,activation,()=>{});
+ const view=await git(capsule.worktreePath,'config','--get','core.hooksPath');
+ assert.ok(path.isAbsolute(view));assert.notEqual(await realpath(view),capsule.privateDir);
+ assert.ok((await realpath(view)).startsWith(path.join(destination,'.git')+path.sep));
+ const restored=path.join(view,'pre-commit'),stat=await lstat(restored,{bigint:true});
+ assert.deepEqual(await readFile(restored),bytes);assert.equal(stat.mode&0o7777n,before.mode&0o7777n);assert.equal(stat.mtimeNs,before.mtimeNs);
+ assert.equal(await git(capsule.worktreePath,'rev-parse','refs/worktree/selected-private'),await git(linked,'rev-parse','HEAD'));
+ const after=await lstat(hook,{bigint:true});assert.equal(after.ino,before.ino);assert.equal(after.mode,before.mode);assert.equal(after.mtimeNs,before.mtimeNs);assert.deepEqual(await readFile(hook),bytes);
+});
+
+for(const aliased of [true])test('real '+(aliased?'aliased':'absolute')+' private hook source with a hook is refused before recovery writes',options,async t=>{
  const root=await realpath(await mkdtemp(path.join(tmpdir(),'real-private-hook-refusal-'))),source=path.join(root,'source'),destination=path.join(root,'destination'),dependencies=path.join(root,'dependencies'),other=path.join(root,'other'),linked=path.join(dependencies,'capsule');
  t.after(()=>rm(root,{recursive:true,force:true}));
  await initialize(source);await initialize(other,true);await mkdir(destination);await mkdir(dependencies);
