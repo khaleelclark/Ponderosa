@@ -6,6 +6,7 @@ import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {instance,seed,read,vector} from './portability-fixture.mjs';
 import {validateMemorySnapshot,MEMORY_SNAPSHOT_MAX_BYTES} from '../../apps/server/dist/portable-memory-snapshot.js';
+import {MEMORY_CLEANUP_PROVISION_HOLD,MEMORY_CLEANUP_UNKNOWN_HOLD,isMemoryCleanupHold} from '../../apps/server/dist/local-memory-authority.js';
 
 for(const branch of [false,true])test(`fresh ${branch?'Branches':'Core'} private memory services restore lineage, vectors, conflicts and audiences; reopen/re-export keeps denied scope denied`,async t=>{
  const source=await instance(t,branch),destination=await instance(t,branch);await seed(source);
@@ -345,7 +346,7 @@ test('Chat cleanup waits for in-flight provisioning before deciding there was no
  assert.match(f.store.getConversationDeletionReceipt(chatId).lastError,/Memory cleanup held/);
 });
 
-for(const invalid of ['generation','principal','storage','unknown-effect'])test(`never-provisioned Chat cleanup holds when ${invalid} proof is uncertain`,async t=>{
+for(const invalid of ['generation','principal','storage','witness-generation','witness-principal','witness-storage','empty-confirmed-id','unknown-effect'])test(`never-provisioned Chat cleanup holds when ${invalid} proof is uncertain`,async t=>{
  const f=await instance(t),memory=f.memory,raw=memory.core.database.raw,original=memory.provisionNewChat.bind(memory);
  memory.provisionNewChat=async()=>{throw Error('synthetic pre-dispatch interruption');};
  let created;
@@ -356,18 +357,29 @@ for(const invalid of ['generation','principal','storage','unknown-effect'])test(
  if(invalid==='unknown-effect'){
   evidence=path.join(f.options.localMemory.stateDirectory,'source-mutation-holds',randomUUID()+'.json');
   await writeFile(evidence,JSON.stringify({version:1,id:path.basename(evidence,'.json'),state:'remote_write_unsettled'}),{mode:0o600});
+ }else if(invalid==='empty-confirmed-id'){
+  f.store.sqlite.prepare("UPDATE local_memory_scope_provisioning SET memory_state='confirmed',log_state='confirmed',memory_collection_id='',log_collection_id='retained' WHERE chat_id=?").run(chatId);
  }else{
-  const column={generation:'data_generation',principal:'principal_id',storage:'storage_binding'}[invalid];
-  f.store.sqlite.prepare(`UPDATE local_memory_scope_provisioning SET ${column}=? WHERE chat_id=?`).run(randomUUID(),chatId);
+  const witness=invalid.startsWith('witness-'),kind=invalid.replace('witness-','');
+  const column={generation:'data_generation',principal:'principal_id',storage:'storage_binding'}[kind];
+  if(witness){
+   f.store.sqlite.prepare("UPDATE local_memory_scope_provisioning SET memory_state='confirmed',log_state='confirmed',memory_collection_id='memory-id',log_collection_id='log-id' WHERE chat_id=?").run(chatId);
+   f.store.sqlite.prepare(`UPDATE local_memory_host_binding SET ${column}=? WHERE singleton=1`).run(randomUUID());
+  }else f.store.sqlite.prepare(`UPDATE local_memory_scope_provisioning SET ${column}=? WHERE chat_id=?`).run(randomUUID(),chatId);
  }
- const originalDelete=raw.client.deleteCollection.bind(raw.client);let deletes=0;
+ const originalDelete=raw.client.deleteCollection.bind(raw.client),originalGet=raw.client.getCollection.bind(raw.client);let deletes=0,scopeReads=0;
  raw.client.deleteCollection=async args=>{deletes++;return originalDelete(args);};
+ raw.client.getCollection=async args=>{if(Object.values(raw.names('chat:'+chatId)).includes(args.name))scopeReads++;return originalGet(args);};
  try{
   const result=await f.app.inject({method:'DELETE',url:'/api/conversations/'+chatId,headers:f.headers});
   assert.equal(result.statusCode,200,result.body);assert.equal(result.json().cleanupPending,true,result.body);
-  assert.match(f.store.getConversationDeletionReceipt(chatId).lastError,/Memory cleanup held/);assert.equal(deletes,0);
+  const reason=f.store.getConversationDeletionReceipt(chatId).lastError;
+  assert.equal(reason,invalid==='unknown-effect'?MEMORY_CLEANUP_UNKNOWN_HOLD:MEMORY_CLEANUP_PROVISION_HOLD);
+  assert.equal(isMemoryCleanupHold(reason),true,'Periodic cleanup must leave the unverified state held');
+  assert.equal(deletes,0);
+  assert.equal(scopeReads,0,'Unverified ownership must hold before any Chat collection lookup');
   if(evidence)assert.match(await readFile(evidence,'utf8'),/remote_write_unsettled/);
- }finally{raw.client.deleteCollection=originalDelete;}
+ }finally{raw.client.deleteCollection=originalDelete;raw.client.getCollection=originalGet;}
 });
 
 test('a submitted but missing Chat collection remains held without another create',async t=>{
@@ -656,4 +668,18 @@ test('unidentified or malformed source hold evidence fences all scopes without r
  assert.throws(()=>f.memory.core.database.assertScopeSettled('global'),/unsettled remote write/);
  assert.throws(()=>f.memory.core.database.assertScopeSettled('chat:'+f.chat.id),/unsettled remote write/);
  assert.equal(await readFile(malformed,'utf8'),malformedBytes);assert.equal(await readFile(unknown,'utf8'),unknownBytes);
+});
+
+test('legacy Chat without a provisioning intent still cleans its own memory and preserves global records',async t=>{
+ const f=await instance(t);await seed(f);
+ const raw=f.memory.core.database.raw,scope='chat:'+f.chat.id;
+ const global=await raw.client.getCollection({name:raw.names('global').memory});
+ const before=await global.get({include:['documents','metadatas']});
+ assert.ok(before.ids.length>0);
+ f.store.sqlite.prepare('DELETE FROM local_memory_scope_provisioning WHERE chat_id=?').run(f.chat.id);
+ const result=await f.app.inject({method:'DELETE',url:'/api/conversations/'+f.chat.id,headers:f.headers});
+ assert.equal(result.statusCode,200,result.body);assert.equal(result.json().cleanupPending,false,result.body);
+ for(const name of Object.values(raw.names(scope)))await assert.rejects(raw.client.getCollection({name}),{name:'ChromaNotFoundError'});
+ const after=await global.get({include:['documents','metadatas']});
+ assert.deepEqual(after.ids,before.ids);assert.deepEqual(after.documents,before.documents);assert.deepEqual(after.metadatas,before.metadatas);
 });

@@ -15,9 +15,10 @@ const context=new AsyncLocalStorage<Frame>();const key=(scope:string,id:string)=
 const denied=()=>new Error('Memory source unavailable or unauthorized');
 export const MEMORY_CLEANUP_HOLD='Memory cleanup held: backend lacks atomic identity and content checks; staged and existing data was preserved';
 export const MEMORY_CLEANUP_UNKNOWN_HOLD='Memory cleanup held: a backend write has an unknown outcome. It was not repeated; review memory health.';
+export const MEMORY_CLEANUP_PROVISION_HOLD='Memory cleanup held: Chat memory provisioning or ownership is unverified; no memory was deleted.';
 export const MEMORY_CLEANUP_FOREIGN_HOLD='Foreign or unclassified memory preserved; cleanup held';
 export const MEMORY_CLEANUP_HOLD_REASONS=[
- MEMORY_CLEANUP_HOLD, MEMORY_CLEANUP_UNKNOWN_HOLD, MEMORY_CLEANUP_FOREIGN_HOLD,
+ MEMORY_CLEANUP_HOLD, MEMORY_CLEANUP_UNKNOWN_HOLD, MEMORY_CLEANUP_PROVISION_HOLD, MEMORY_CLEANUP_FOREIGN_HOLD,
  'Unclassified memory conflict preserved; cleanup held',
  'Foreign or unclassified memory conflict preserved; cleanup held',
  'Memory collection bindings overlap; cleanup held',

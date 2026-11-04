@@ -77,8 +77,12 @@ For a whole Chat, a collection-deletion acknowledgement is recorded durably
 before its in-flight mutation hold is retired. A retry can skip only an exact
 previously acknowledged collection; an unexplained absence or lost response
 does not become success. Unknown remote outcomes remain held and are never
-blindly replayed. Selected Agent conflict records are removed before their
-source rows, so a confirmed partial deletion remains re-checkable. A deleted
+blindly replayed. If the retained Chat provisioning states, collection IDs or
+installation binding cannot be verified, cleanup reports a stable provisioning
+hold before looking up either collection. A nonempty but incorrect collection
+ID or token is detected by the subsequent checked lookup, before deletion.
+Selected Agent conflict records are removed before their source rows, so a
+confirmed partial deletion remains re-checkable. A deleted
 Chat whose exact installation-bound creation intent remains planned for both
 collections can still finish as a no-effect operation without touching Chroma.
 

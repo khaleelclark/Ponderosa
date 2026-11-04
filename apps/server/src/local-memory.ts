@@ -9,7 +9,7 @@ import type {FastifyInstance,FastifyRequest} from 'fastify';
 import {CapabilityPolicyStore,hasRetainedTemporaryChatScope,type AgentStore,type AgentDeletionReceipt} from '@ponderosa/agents';
 import {CAPABILITY_IDS} from '@ponderosa/core';
 import {type Chunk,type Inference} from '@local-memory/mcp-node-private';
-import {HostMemoryRuntime,checkedCollection,createPlannedCollection,MemoryCollectionHold,MEMORY_CLEANUP_HOLD_REASONS,MEMORY_CLEANUP_UNKNOWN_HOLD,type MemoryAuthority} from './local-memory-authority.js';
+import {HostMemoryRuntime,checkedCollection,createPlannedCollection,MemoryCollectionHold,MEMORY_CLEANUP_HOLD_REASONS,MEMORY_CLEANUP_UNKNOWN_HOLD,MEMORY_CLEANUP_PROVISION_HOLD,type MemoryAuthority} from './local-memory-authority.js';
 import {PonderosaMemory} from '@local-memory/mcp-node-private/ponderosa';
 import {MemoryArgumentError,validateMemoryCall} from './local-memory-catalog.js';
 type HostContext={chatId:string;actor:{kind:'agent'|'user';id:string;operator?:boolean};runId:string;fenceToken:string;active:boolean;sourceType:'user_statement'|'ai_inference';grants:{readChat:boolean;readGlobal:boolean;writeChat:boolean;writeGlobal:boolean}};
@@ -226,7 +226,22 @@ export class LocalMemoryService{
    if(!this.isProvenTemporaryChat(chatId,receipt.projectId,receipt.branchId)){
     // Serialize this no-effect proof with provisioning.
     const neverProvisioned=await this.core.database.raw.exclusive(async()=>{
-     await guard();return this.isProvenUnprovisionedChat(chatId,receipt.projectId);
+     await guard();
+     if(this.isProvenUnprovisionedChat(chatId,receipt.projectId))return true;
+     const scope='chat:'+chatId;
+     // A submitted remote mutation may still complete. Never turn that
+     // uncertainty into an unverified delete or a repeated cleanup.
+     if(this.core.database.scopeHasUnsettledMutation(scope))throw Error(MEMORY_CLEANUP_UNKNOWN_HOLD);
+     const retained=this.ports.store.sqlite.prepare('SELECT 1 FROM local_memory_scope_provisioning WHERE chat_id=?').get(chatId);
+     if(retained){
+      let intent;try{intent=this.memoryIntent(chatId,true);}catch(error){throw new Error(MEMORY_CLEANUP_PROVISION_HOLD,{cause:error});}
+      const binding=this.ports.store.sqlite.prepare('SELECT state,data_generation,principal_id,storage_binding FROM local_memory_host_binding WHERE singleton=1').get() as {state:string;data_generation:string;principal_id:string;storage_binding:string}|undefined;
+      if(!intent||intent.memory_state!=='confirmed'||intent.log_state!=='confirmed'||!intent.memory_collection_id||!intent.log_collection_id||!binding||binding.state!=='bound'||
+         binding.data_generation!==intent.data_generation||binding.principal_id!==intent.principal_id||binding.storage_binding!==intent.storage_binding)throw Error(MEMORY_CLEANUP_PROVISION_HOLD);
+     }
+     // Pre-0044 scopes have no intent. They retain the existing configured
+     // internal namespace behavior and are checked by the collection authority.
+     return false;
     });
     if(!neverProvisioned)await this.core.database.purge('chat:'+chatId,guard);
     await guard();
