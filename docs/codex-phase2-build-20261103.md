@@ -325,6 +325,52 @@ failures remain unresolved. Source comparison is not a fresh full-suite result.
 See `evidence/chroma-safety-assessment-84832.md`. No production data, service,
 or provider account was changed.
 
+## Provider attribution and reviewed-continuation follow-up — 4 November
+
+Product candidate `5a5e4e0544b72ae847aded10faa5383fb48dfce1` records the exact
+scheduler Run and fence on new provider-start admissions and tracked process
+registrations, and checks that binding at settlement. Existing unbound starts
+remain unbound. This is attribution, not authority to replay work or proof that
+input was not sent. The stored conversation field is the Agent owner Chat; the
+Run's own scope must be checked separately when it served another Chat.
+
+The candidate passed fresh offline install, build and recursive typecheck; a
+combined provider/process/scheduler/context run passed 171, failed 0, skipped 1
+(native Windows Job on Linux). Evidence: `evidence/final-5a5e-*`. Two later
+test-only commits add a real retained-session case; the complete provider-start
+file passed 16/16 at `67451f195f67b8b06b0d957c205184742275ad11`, reusing the
+unchanged product build. It checks the same live POSIX lifetime and session ID
+across two Runs, each with exact Run/fence registration, and one start admission.
+Windows Job coverage remains simulated. Tests used disposable fixtures and a
+process-level loopback guard, not kernel network isolation.
+
+The requested reviewed continuation remains disabled. Current adapters and
+scheduler do not enforce a qualified boundary from the final process/source
+check through provider submission; one-shot inputs can reach the process before
+registration callbacks, and delayed starts cannot be excluded merely by an
+attribution receipt. Existing evidence does not establish that external effects
+were absent. The isolated, uncommitted authority draft remains in
+`/tmp/ponderosa-codex-phase2-20261103/reviewed-steering-current`; its removed
+experimental route is preserved at `evidence/reviewed-steering-disabled-http.patch`.
+The isolated mocked UI draft is commit `5d77e3c89a5ed9297e656fa9a1577a07a8c22c7d`;
+it is not integrated or enabled. Any usable path must preserve the original task,
+steer and attachments, reconcile conclusive cases, and request a decision only
+on unresolved effects, without automatic replay.
+
+Busy tracked Requests still queue, contrary to Bible section 13. A controlled
+old-call probe with an explicitly caller-selected Request ID showed that an
+ID/acknowledgement-only policy change can complete a new Request from an old
+call. The current provider tool-call contract supplies no qualified causal
+parent for the injected instruction. No test-only dispatch flip was integrated.
+Evidence: `evidence/busy-request-explicit-after-ack-probe.{mjs,log}`.
+
+Nonsecret service definitions identify three separate Chroma listeners at
+`127.0.0.1:19788`, `:18810`, and `:18809`; no service was linked to production
+and no all-writer gate was established. Point-in-time process/socket observations
+do not exclude other past or future writers. The existing memory hold and the
+12 historical cleanup/rollback failures remain unresolved. No production
+services, data, or private configuration were changed.
+
 ## Recorded validation and open checks
 
 - Earlier diagnostic builds and suites exposed failures and prompted fixes.
