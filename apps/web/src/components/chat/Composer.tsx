@@ -2289,8 +2289,8 @@ export function Composer({
     writeChain: DraftWriteChain,
     selectedFiles: File[] = [],
   ) => {
-    const previouslyDispatched = item.dispatchStarted === true;
-    let dispatchInvoked = false;
+    let previouslyDispatched = item.dispatchStarted === true;
+    let loadedUnderLock = false;
     let outgoingId: string | undefined;
     const persist = async (pending: DraftPendingSubmissionDto, retire = false) => {
       item = { ...item, pending };
@@ -2324,7 +2324,10 @@ export function Composer({
       await write;
       return alreadyRetired;
     };
-    void runCapturedSubmission(item, async () => {
+    void runCapturedSubmission(item, async current => {
+      item = current;
+      previouslyDispatched = current.dispatchStarted === true;
+      loadedUnderLock = true;
       if (item.status === "accepted") {
         await persist(item.pending, true);
         if (item.scope.startsWith("local:")) removeCapturedSubmission(item.pending.idempotencyKey);
@@ -2350,8 +2353,6 @@ export function Composer({
           return api.downloadDraftAttachment(metadata);
         }));
       }
-      item = { ...item, dispatchStarted: true };
-      saveCapturedSubmission(item);
       if (outgoingId && !item.newAgentRequested) {
         const conversationId = item.pending.request?.conversationId;
         const key = item.pending.idempotencyKey;
@@ -2362,7 +2363,8 @@ export function Composer({
           await outgoing?.identify(outgoingId, "user-message", `${item.projectId}\0${item.scope.slice(6)}\0${key}`);
         }
       }
-      dispatchInvoked = true;
+      item = { ...item, dispatchStarted: true };
+      saveCapturedSubmission(item);
       const result = await handler(
         item.text, exactFiles, item.pending.draftAttachmentIds ?? [], item.ownerId,
         {
@@ -2386,15 +2388,22 @@ export function Composer({
       await persist(item.pending, true);
       if (item.scope.startsWith("local:")) removeCapturedSubmission(item.pending.idempotencyKey);
       return result;
-    }).catch(error => {
+    }, (error, current) => {
+      if (!loadedUnderLock) {
+        item = current;
+        previouslyDispatched = current.dispatchStarted === true;
+      }
       const accepted = item.status === "accepted";
-      const definitive = !accepted && (dispatchInvoked || !previouslyDispatched) &&
+      // A later rejection cannot prove that an earlier uncertain send had no effect.
+      const definitive = !accepted && !previouslyDispatched &&
         (error instanceof CapturedSubmissionOrderError || (error instanceof ApiRequestError &&
         durableSubmissionMayBeReleased(item.pending, error.status, error.message)));
       item = { ...item, status: accepted ? "accepted" : definitive ? "failed" : "unknown", error: accepted
         ? "This message was saved. Retry to finish clearing its recovery record."
         : error instanceof Error ? error.message : "Acceptance could not be confirmed. Retry this captured message." };
       try { saveCapturedSubmission(item); } catch { /* Existing captured bytes remain recoverable. */ }
+    }).catch(error => {
+      setSendError(error instanceof Error ? error.message : "Captured message recovery is unavailable.");
     }).finally(() => { if (outgoingId) outgoing?.finish(outgoingId); });
     // Register transport before optimistic rendering can expose the captured send in the recovery tray.
     outgoingId = item.action === "send" && item.status !== "accepted" ? outgoing?.begin(item.text, item.attachmentNames) : undefined;

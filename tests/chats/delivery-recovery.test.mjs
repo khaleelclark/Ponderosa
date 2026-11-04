@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { createHash } from 'node:crypto';
 import vm from 'node:vm';
 import '../shared/web-typescript-loader.mjs';
 import { runQueuedMessageCommand } from '../../apps/web/src/components/queuedMessageCommandAttempts.ts';
@@ -11,6 +12,7 @@ import { projectMessageDeliveryReceipts } from '../../apps/web/src/components/me
 import * as tracker from '../../apps/web/src/components/activeOperationTracker.ts';
 import { ApiRequestError } from '../../apps/web/src/api/types.ts';
 import { queryKeys } from '../../apps/web/src/queryKeys.ts';
+import { sha256Bytes } from '../../apps/web/src/components/idempotentAttempt.ts';
 const require = createRequire(new URL('../../apps/web/package.json', import.meta.url));
 const ts = require('typescript'), React = require('react');
 const widget = name => Object.assign(() => null, { displayName: name });
@@ -287,4 +289,67 @@ test('unconfirmed steer says it is held instead of promising an automatic interr
  assert.match(text(announcement),/held for review/);
  assert.doesNotMatch(text(announcement),/Interrupting|recovering now/);
  assert.ok(nodes.some(node=>node.type===mui.Button&&text(node)==='Let Current Run Finish'));
+});
+
+test('ordinary outgoing Chat identity works without Web Crypto and matches server IDs', async t => {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'crypto');
+  Object.defineProperty(globalThis, 'crypto', { configurable: true, value: {} });
+  t.after(() => descriptor ? Object.defineProperty(globalThis, 'crypto', descriptor) : delete globalThis.crypto);
+  const h = hooks();
+  h.react.useCallback = fn => fn;
+  const module = load('components/chat/OutgoingMessage.tsx', {
+    react: h.react,
+    '../../clientId': { createClientId: () => 'sending-fixture' },
+    '../idempotentAttempt': { sha256Bytes },
+    './ChatMessageFrame': { ChatMessageFrame: widget('Frame') },
+    './ChatMessages': { ChatMessageBody: widget('Body') },
+  }, { crypto: {}, TextEncoder });
+  const render = () => h.render(() => module.OutgoingMessageProvider({ children: null, scope: 'chat-a' })).props.value;
+  const cases = [
+    ['broadcast', 'chat-a\0send-key'],
+    ['user-dm', 'multi-direct:chat-a:send-key'],
+    ['user-message', 'project-a\0agent-a\0send-key'],
+    ['broadcast', 'chat-λ😀\0' + 'x'.repeat(100)],
+  ];
+  for (const [prefix, seed] of cases) {
+    const id = render().begin('synthetic message', []);
+    await render().identify(id, prefix, seed);
+    const expected = prefix + '-' + createHash('sha256').update(seed, 'utf8').digest('hex');
+    assert.equal(render().messages[0].communicationId, expected);
+    render().accepted(id);
+    render().reconcile([expected]);
+    assert.equal(render().messages.length, 0, 'the canonical row replaces the optimistic message');
+  }
+});
+
+test('captured send acquires the latest durable marker after another tab releases the lock', async t => {
+  const previousWindow = globalThis.window;
+  const window = Object.assign(new EventTarget(), { localStorage: new Storage() });
+  globalThis.window = window;
+  t.after(() => { if (previousWindow === undefined) delete globalThis.window; else globalThis.window = previousWindow; });
+  let tail = Promise.resolve();
+  const navigator = { locks: { request: async (_name, run) => {
+    const previous = tail; let release;
+    tail = new Promise(resolve => { release = resolve; });
+    await previous; try { return await run(); } finally { release(); }
+  } } };
+  const open = () => load('components/chat/submissionOutbox.ts', { '../../chatState.js': chatState }, { window, navigator });
+  const first = open(), second = open();
+  const item = { version: 1, scope: 'chat-a', storageKey: 'draft-a', ownerId: 'owner', clientId: 'tab-a', createdAt: 1, action: 'send', text: 'Exact message', editorText: 'Exact message', attachmentNames: [], mentionedAgents: [], newAgentRequested: false, pending: { fingerprint: 'a'.repeat(64), idempotencyKey: 'same-key' }, status: 'pending', dispatchStarted: false };
+  first.saveCapturedSubmission(item);
+  let proceed, entered; const gate = new Promise(resolve => { proceed = resolve; });
+  const locked = new Promise(resolve => { entered = resolve; });
+  const tabA = first.runCapturedSubmission(item, async () => {
+    first.saveCapturedSubmission({ ...item, dispatchStarted: true });
+    entered(); await gate;
+    throw Error('Acknowledgement lost');
+  }, error => {
+    first.saveCapturedSubmission({ ...item, dispatchStarted: true, status: 'unknown', error: error.message });
+  });
+  await locked;
+  let observed;
+  const tabB = second.runCapturedSubmission(item, async current => { observed = current; });
+  proceed(); await Promise.all([tabA, tabB]);
+  assert.equal(observed?.dispatchStarted, true, 'the second tab must use the current durable dispatch marker');
+  assert.equal(observed?.status, 'unknown');
 });

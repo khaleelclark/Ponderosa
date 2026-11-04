@@ -2,6 +2,7 @@ import { Box, Typography } from "@mui/material";
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import type { AgentDto, OperatorProfileDto } from "@ponderosa/core";
 import { createClientId } from "../../clientId";
+import { sha256Bytes } from "../idempotentAttempt";
 import { ChatMessageFrame } from "./ChatMessageFrame";
 import { ChatMessageBody } from "./ChatMessages";
 
@@ -35,8 +36,8 @@ export function OutgoingMessageProvider({ children, profile, scope = "new-chat",
   const identify = useCallback(async (id: string, prefix: string, seed: string) => {
     // Mirror the existing transport identity solely to match an observed
     // canonical row, including SSE that arrives before the HTTP receipt.
-    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(seed));
-    const communicationId = `${prefix}-${Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("")}`;
+    const digest = await sha256Bytes(new TextEncoder().encode(seed));
+    const communicationId = `${prefix}-${digest}`;
     setMessages(current => current.map(message => message.id === id ? { ...message, communicationId } : message));
   }, []);
   const accepted = useCallback((id: string, communicationId?: string) => {

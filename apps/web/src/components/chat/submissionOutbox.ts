@@ -71,7 +71,7 @@ export async function withCapturedSubmissionLock<T>(item: CapturedSubmission, ru
 const transports = new Map<string, Promise<unknown>>();
 const running = new Map<string, Promise<unknown>>();
 export function capturedSubmissionRunning(id: string): boolean { return running.has(id); }
-export function runCapturedSubmission(item: CapturedSubmission, execute: () => Promise<unknown>): Promise<unknown> {
+export function runCapturedSubmission(item: CapturedSubmission, execute: (current: CapturedSubmission) => Promise<unknown>, onError?: (error: unknown, current: CapturedSubmission) => void): Promise<unknown> {
   const id = item.pending.idempotencyKey;
   const existing = running.get(id);
   if (existing) return existing;
@@ -82,11 +82,19 @@ export function runCapturedSubmission(item: CapturedSubmission, execute: () => P
     // earlier record while this tab waited to acquire the same owner scope.
     const run = async () => {
       if (!capturedSubmissionExists(id)) return;
-      const ordered = readCapturedSubmissions(item.scope, item.ownerId).filter(value => value.status !== "accepted");
-      if (item.status !== "accepted" && ordered[0]?.pending.idempotencyKey !== id) {
-        throw new CapturedSubmissionOrderError("Resolve the earlier captured message before retrying this item.");
+      const currentItems = readCapturedSubmissions(item.scope, item.ownerId);
+      const current = currentItems.find(value => value.pending.idempotencyKey === id);
+      if (!current) throw new Error("Captured message is unavailable or changed. Preserve its recovery record.");
+      try {
+        const ordered = currentItems.filter(value => value.status !== "accepted");
+        if (current.status !== "accepted" && ordered[0]?.pending.idempotencyKey !== id) {
+          throw new CapturedSubmissionOrderError("Resolve the earlier captured message before retrying this item.");
+        }
+        return await execute(current);
+      } catch (error) {
+        if (!onError) throw error;
+        onError(error, current);
       }
-      return execute();
     };
     return withCapturedSubmissionLock(item, run);
   });
