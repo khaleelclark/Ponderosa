@@ -1,5 +1,9 @@
 # Private unified Branches and memory candidate
 
+> This describes an earlier candidate. Current memory cleanup and rollback
+> limitations supersede the unconditional deletion paragraph below; see
+> [the current Phase 2 checkpoint](codex-phase2-build-20261103.md).
+
 The normal server entry now loads PONDEROSA_LOCAL_MEMORY_CONFIG and registers the same six ponderosa_local_memory_* tools for authorized native Branches Chat/Run agents. This is one server/full-web build with the immutable private.6 dependency; no Pinecone-specific wrapper is required for Branches memory.
 
 Set PONDEROSA_DATA_DIR explicitly and point PONDEROSA_LOCAL_MEMORY_CONFIG at an operator-owned regular JSON file (no group/other write access) containing chromaUrl, collectionPrefix, modelDir, stateDirectory and optional boolean provision. Paths for models and independent policy state must be absolute. First use needs an explicitly fresh stateDirectory outside canonical data and provision:true. Existing journal-bound policy/state is refused and preserved. No automatic migration, memory recall or semantic-index generation is supplied.
@@ -10,7 +14,7 @@ Memory sources are canonical Chat and installation-global, never Project/folder 
 
 Deletion uses the existing durable Chat/Agent cleanup receipts and Project deletion quarantine. Chat deletion removes its owned memory/conflict collections and global-read grant; Agent deletion removes only its private audience, preserving published team memory, other Agents and global memory. Failed or foreign-bound cleanup remains pending and retryable rather than claiming success. No memory operation journal is added.
 
-With Local Memory enabled, a sole canonical voice Direct Message starts a fresh provider context through the existing context rollover boundary. Bounded canonical Chat history remains available; opaque tool results retained by an earlier provider session cannot silently authorize current speech after a source or grant changes. This can add provider startup/prompt work to each voice turn. Ordinary text Runs and memory-disabled calls retain their existing session reuse.
+With Local Memory enabled, an eligible sole voice Direct Message starts a fresh provider context. This is a direct session reset and bounded reconstruction, not the managed handoff described by the context-rollover authority. Canonical history is retained, but the new provider input may omit older content and directs the Agent to history retrieval when available. The reset protects voice-memory exposure after a source or grant changes and can add startup work to each voice turn. Scope and session-contract changes can also require a fresh context. The open Bible #1 conflict and exact implementation boundaries are recorded in [context reconstruction boundaries](context-reconstruction-boundaries.md).
 
 The archive includes the full Branches web UI, server/agents/engines/core builds, all six memory tools and the private.6 archive. Preview applications and their UI/routes are excluded. Shared streaming/call authorization and generic standalone speech layout remain available; generic Branches speaker UI remains deferred. Migration 0025 contains only current Branches storage. Its unused preview profile/admission tables were removed; existing candidates require a backed-up offline schema conversion before this build can open their data. This candidate does not modify the separate private assistant deployment.
 
