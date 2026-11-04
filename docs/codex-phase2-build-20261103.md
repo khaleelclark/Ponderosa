@@ -24,7 +24,7 @@ This is source work only: no deployment or production restart was performed.
 
 ## Current integrated checkpoint — 4 November, later
 
-Product-and-test candidate: `791ef5c375ca86a9d5d3aa8a16e187d466c443fd`.
+Product-and-test candidate: `fc8e031c701923d3088378801a177a410ff6c0f5`.
 This section supersedes older current-state claims in the historical checkpoints
 below; their exact-commit results remain useful evidence for those revisions.
 
@@ -33,8 +33,14 @@ below; their exact-commit results remain useful evidence for those revisions.
   after acknowledgement are rejected, the original task remains pending, a
   known unsupported delivery can queue for the next Run, and an uncertain
   delivery stays held. Human interruptions and tracked Requests are not batched
-  together. Explicit next-Run FYIs remain noninterrupting. Ordinary non-urgent
-  collaboration messages still use the next-Run path. Provider acknowledgement
+  together. Immediate peer instructions and questions steer by default;
+  `messagePurpose:progress` and `messagePurpose:fyi` stay visible and do not
+  interrupt, and explicit next-Run delivery remains separate. The provider tool
+  description now reflects the actual Request behavior. Legacy unmarked progress
+  or acknowledgements also steer; prompt guidance asks agents to classify them,
+  but uncontrolled provider-driven conversational loops are not ruled out.
+  A definitive unsupported peer steer queues once; a sole urgent peer message
+  retains its urgency in the next provider's context. Provider acknowledgement
   and the fence are practical freshness checks, not proof of model comprehension
   or provider-supplied causal parentage; live-provider qualification is open.
 - An explicit reviewed-continuation flow can carry the saved original task,
@@ -52,6 +58,16 @@ below; their exact-commit results remain useful evidence for those revisions.
   physical Chroma deletion. The 12 historical cleanup/rollback cases remain
   unresolved; one tests a foreign-data diagnostic and the others include
   physical cleanup or compensation expectations.
+
+Combined validation on `cbda39e3`: offline install, full build and recursive
+typecheck passed; affected server tests 55/55 and web tests 45/45 passed; the
+full mounted matrix passed 100/100. On successor `9baab3f8`, updated agents and
+server builds and 35/35 affected server tests passed. On successor `fc8e031c`,
+updated server build and 31/31 peer and Chat workflow tests passed. The later
+successors changed only the relevant server/agents code and tests; full typecheck
+and the mounted matrix were not repeated on them. Evidence is under
+`evidence/final-cbda-*`, `evidence/final-9baab-*`, and `evidence/final-fc8e-*`.
+The controlled unsupported-provider case is not a live-provider qualification.
 
 Combined validation on `791ef5c3`: offline install, full build and recursive
 typecheck passed; affected server tests 48/48 and web tests 27/27 passed;
