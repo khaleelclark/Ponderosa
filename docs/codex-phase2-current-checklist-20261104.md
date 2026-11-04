@@ -47,7 +47,20 @@ not True. The older reconciliation and exact historical results remain in
 | 29 | Interface | Folders and shared Output/chat UI exist. Full copy census, screenshots, recordings and blind comparison remain open; consequential safety disclosures remain visible. |
 | 30 | Memory | Authorized combined Chat/global search exists. Internal populated cleanup and staged rollback source changes are integrated through `e0a9414e9` but remain behaviorally unqualified; unknown effects and uncertain scopes remain held. Real-provider seeded recall and misuse review remain open. |
 | 31 | Interface + Runtime | Shared streaming/voice primitives exist. A voice draft is isolated and is not integrated. Full surface coverage, clean-render recordings and required call latency remain open. |
-| 32 | Runtime | The pinned finite framework-capability inventory exists. Source integrated at `af9eb06c9` captures post-drain generation-zero state before cleanup for resources with issued checkpoints. The focused test supplies synthetic package contents; the product package engine remains unqualified. **Missing/held:** portable executable final-resource continuation lacks independently verifiable original completeness/effect evidence. Matched example execution and framework qualification remain open. |
+| 32 | Runtime | The pinned finite framework-capability inventory and final-resource capture source exist. A controlled real package-engine fixture has verified later Chat history and supported working-file bytes, subject to the scope below. **Missing/held:** portable executable final-resource continuation lacks independently verifiable original completeness/effect evidence. Matched example execution and framework qualification remain open. |
+
+## Final-resource capture evidence
+
+Source at `af9eb06c9` captures post-drain generation-zero state before cleanup
+for resources with issued checkpoints; its focused tests passed using synthetic
+package contents. The subsequent real package-engine fixture verifies later Chat
+history and exact bytes for a supported working file, while the earlier ordinary
+checkpoint retains its existing file selection. The portable folder inventory
+explicitly excludes `.git` and other unsupported content; this is not proof of a
+complete working-folder copy. Multi-Agent capture and Local Memory remain
+unqualified. Working-folder capture is integrated at `1d90cca3e`; targeted
+follow-up on that candidate is underway. Portable executable continuation remains
+held pending independently verifiable completeness and effect evidence.
 
 ## Build list
 
