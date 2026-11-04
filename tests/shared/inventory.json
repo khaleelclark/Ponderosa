@@ -2592,6 +2592,14 @@
       "moduleBase": "apps/server/package.json",
       "requirements": "Node24, Linux native held-file custody, Git; disposable repositories and roots",
       "origin": "Real captured Git dependency plan: hook alias metadata, original worktree identity and refusal of changed bytes, undeclared links or replaced directories"
+    },
+    {
+      "path": "tests/organizations/native-git-negative-validation.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Linux, Node24, built native/server workspaces, local Git; private inert roots only",
+      "origin": "Owned external Git graph application: post-sharing source modes and nanosecond link/directory times, context-root identity, equal-only existing byte preservation and complete hardlink custody"
     }
   ],
   "retainedReleasePayload": [
