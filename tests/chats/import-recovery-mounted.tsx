@@ -158,13 +158,14 @@ export async function lostImportPollingRegression():Promise<void>{
  const entry={version:1,requestId:'test-poll-request',projectId:'test-poll-project',conversationId:'test-poll-chat',product,metadata:{conversationId:'test-poll-chat',engineMapping:{}},fingerprint:{algorithm:'sha256-4m-v1',bytes:5,digest:'e'.repeat(64)}} as unknown as PendingAgentImport;
  const original={getAgentImportOperationByRequest:api.getAgentImportOperationByRequest,getAgentImportOperation:api.getAgentImportOperation};
  const operation={id:'poll-operation',requestId:entry.requestId,payloadHash:'a'.repeat(64),requestFingerprint:agentImportFingerprintHeader(entry.fingerprint),projectId:entry.projectId,conversationId:entry.conversationId,product,sourceLabel:'fixture',phase:'queued',status:'pending',createdAt:'now',updatedAt:'now'} as any;
+ let polls=0;
  api.getAgentImportOperationByRequest=async()=>operation;
- api.getAgentImportOperation=async()=>{throw new ApiRequestError(404,'Owner unavailable');};
+ api.getAgentImportOperation=async()=>{polls++;throw new ApiRequestError(404,'Owner unavailable');};
  const button=(name:string)=>Array.from(host.querySelectorAll('button')).find(item=>item.textContent===name)!;
  try{
   retainPendingAgentImport(entry);
   root.render(<QueryClientProvider client={client}><MutationNotificationProvider><ImportAgentForm projectId={entry.projectId} engines={[]} conversations={[]} onCancel={()=>{}}/></MutationNotificationProvider></QueryClientProvider>);await settle();
-  button('Check import status').click();await until(()=>Boolean(host.textContent?.includes('Import awaiting confirmation')),'poll error did not return to saved request');
+  button('Check import status').click();await until(()=>polls>0&&Boolean(host.textContent?.includes('Import awaiting confirmation')),'poll error did not return to saved request');
   assert(listPendingAgentImports(product).some(item=>item.requestId===entry.requestId),'polling failure retains request for scoped check');
  }finally{try{releasePendingAgentImport(entry);}catch{}root.unmount();client.clear();host.remove();Object.assign(api,original);}
 }
