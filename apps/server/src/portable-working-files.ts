@@ -282,7 +282,8 @@ async function captureRetainedGitCurrent(root:string,original:Buffer,maxBytes:nu
   for(const name of CURRENT_GIT_NAMES){
     const target=path.join(review,name);let stat;
     try{stat=await fs.lstat(target,{bigint:true});}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')continue;throw new Error('Current retained Git evidence cannot be inspected; source remains unchanged');}
-    if(!stat.isDirectory()||stat.isSymbolicLink()||await fs.realpath(target)!==target)throw new Error('Current retained Git evidence must be a canonical directory');
+    try{if(!stat.isDirectory()||stat.isSymbolicLink()||await fs.realpath(target)!==target)throw new Error();}
+    catch{throw new Error('Current retained Git evidence cannot be inspected; source remains unchanged');}
     present.push(name);
   }
   let generated:Awaited<ReturnType<typeof captureGeneratedOriginalProof>>;

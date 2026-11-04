@@ -713,6 +713,11 @@ test('retained Git current evidence preserves edits and originals across two ine
   await unlink(path.join(review,'external-git','credential.review'));
   const opaque=path.join(review,'native-git-common','table');await writeFile(opaque,Buffer.from([0,1,2,3,255]));
   await assert.rejects(capture(root),/opaque binary data/);assert.deepEqual(await readFile(opaque),Buffer.from([0,1,2,3,255]));
+  const nativeFs=(await import('@ponderosa/native-host/fs')).promises,originalRealpath=nativeFs.realpath;
+  const inspectInventory=await inventoryWorkingFolder(root,selection),namespace=path.join(review,'external-git');
+  nativeFs.realpath=async (...args)=>{if(args[0]===namespace)throw new Error('EACCES synthetic-private-source-path');return originalRealpath(...args);};
+  try{await assert.rejects(exportWorkingFiles(root,inspectInventory.paths,64*1024*1024,inspectInventory.links,selection,{data:original},undefined,undefined,inspectInventory),error=>{assert.match(error.message,/cannot be inspected/);assert.doesNotMatch(error.message,/synthetic-private-source-path/);return true;});}
+  finally{nativeFs.realpath=originalRealpath;}
   await writeFile(path.join(review,'external-git','private-name.json'),'{invalid');
   await assert.rejects(capture(root),error=>{assert.match(error.message,/cannot be safely captured/);assert.doesNotMatch(error.message,/private-name/);return true;});
  }finally{await rm(base,{recursive:true,force:true});}
