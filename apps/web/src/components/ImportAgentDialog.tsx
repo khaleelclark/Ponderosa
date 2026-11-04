@@ -395,7 +395,7 @@ export function ImportAgentForm({
     setCompletedImport(undefined);setImportResult(undefined);clearPackageDraft();(onSubmitted??onCancel)();
   }}/></Stack>;
   if(failedImport)return <Stack spacing={2}>
-    <Alert severity="warning">The import stopped. Partial files or other changes may remain. Review the result before dismissing it; dismissing does not remove or repeat any changes.</Alert>
+    <Alert severity="warning">Import stopped; partial files or changes may remain; review before dismissing, which does not remove or repeat changes.</Alert>
     {error&&<Alert severity="error">{error}</Alert>}
     {partialResult&&<NativeApplications result={partialResult}/>}
     {lifecycleOperationId&&<LifecycleReview key={lifecycleOperationId} kind="import" id={lifecycleOperationId}/>}
@@ -419,7 +419,7 @@ export function ImportAgentForm({
     <Button disabled={pendingRef.current} onClick={closeForm}>Close</Button>
   </Stack>;
   return <Stack spacing={2}>
-    {roleOperation&&<Alert severity="info" role="status">Import in progress. You can close this view and return to check it later.</Alert>}
+    {roleOperation&&<Alert severity="info" role="status">Import in progress; you can close this view and check later.</Alert>}
     {partialResult&&<NativeApplications result={partialResult}/>}
     {lifecycleOperationId&&<LifecycleReview key={lifecycleOperationId} kind="import" id={lifecycleOperationId}/>}
       <Alert severity="info">History stays private; credentials are excluded.</Alert>
