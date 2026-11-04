@@ -39,6 +39,47 @@ Per-chunk verification detects changed bytes before delivery but does not make
 an independently mutable source an atomic snapshot. macOS and Windows fail
 before durable-pool issuance pending safe writable-handle custody.
 
+## Current implementation and remaining work — 4 November
+
+The isolated integration branch now also includes source changes for pending
+Branch resources, scheduler waiting, Output preference projection and deferred
+publication. Branch plan ownership remains linked until completion; canceled
+role cleanup checks exact ownership and role epochs. These changes and their
+regressions have not yet been run on this combined source.
+
+The twelve Chroma failures remain unresolved. The recorded cases comprise eight
+Chat, Agent or Project cleanup cases and four staged import rollback or
+compensation cases. The existing Chroma configuration has no established
+identity-and-content-atomic deletion or enforced independent-writer barrier.
+A never-dispatched Chat creation can finish without a backend mutation, but
+that narrower path does not address the populated-memory failures.
+
+The current deletion tests contain incompatible expectations for the same
+Chroma fixture: positive cleanup cases expect physical deletion, while the
+unsupported-backend cases expect the same class of owned memory to be held.
+Retain the preservation tests and exercise successful cleanup against a
+genuinely qualified backend; changing expectations alone would not fix
+existing installations.
+
+Remaining implementation and qualification:
+
+- A safe cleanup/rollback capability or enforceable writer barrier for
+  existing Chroma, with complete ownership and effect receipts, or a
+  lossless, reviewed transition to a qualified transactional backend. The
+  unselected SQLite prototype does not yet provide this transition. Its
+  source is isolated and is not part of this candidate.
+- Complete cleanup and package rollback for populated memory, including
+  inventories beyond 10,000 records, foreign data, interrupted writes and
+  restart. Preserve the original data on uncertainty.
+- Resolve independently authenticated portable final-resource continuation,
+  cross-platform durable export custody and the other boundaries in the
+  requirement reconciliation. Do not infer replay authority from a package
+  whose effect census cannot be authenticated.
+- After all implementation is assembled, run the combined suite and address
+  failures; then complete the Bible's reliability, native-provider,
+  portability, performance, accessibility and blind-review qualifications.
+  Actual production migration requires separate approval.
+
 ## Recorded validation and open checks
 
 - Earlier diagnostic builds and suites exposed failures and prompted fixes.
