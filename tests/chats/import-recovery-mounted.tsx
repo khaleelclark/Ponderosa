@@ -165,7 +165,8 @@ export async function lostImportPollingRegression():Promise<void>{
  try{
   retainPendingAgentImport(entry);
   root.render(<QueryClientProvider client={client}><MutationNotificationProvider><ImportAgentForm projectId={entry.projectId} engines={[]} conversations={[]} onCancel={()=>{}}/></MutationNotificationProvider></QueryClientProvider>);await settle();
-  button('Check import status').click();await until(()=>polls>0&&Boolean(host.textContent?.includes('Import awaiting confirmation')),'poll error did not return to saved request');
+  button('Check import status').click();await until(()=>polls>0&&Boolean(host.textContent?.includes('Import awaiting confirmation')),'poll error did not return to saved request');await settle();
+  assert(host.textContent?.includes('Import awaiting confirmation'),'saved request remains accessible after the failed poll');
   assert(listPendingAgentImports(product).some(item=>item.requestId===entry.requestId),'polling failure retains request for scoped check');
  }finally{try{releasePendingAgentImport(entry);}catch{}root.unmount();client.clear();host.remove();Object.assign(api,original);}
 }
