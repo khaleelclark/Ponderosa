@@ -6,6 +6,7 @@ const serverRequire = createRequire(new URL('../../apps/server/package.json', im
 const agentsRequire = createRequire(new URL('../../packages/agents/package.json', import.meta.url));
 const Fastify = serverRequire('fastify'), Database = agentsRequire('better-sqlite3');
 const { registerWorkspaceDirectoryRoutes } = await import('../../apps/server/dist/routes/workspace-directory.js');
+const { sidebarChatItems } = await import("../../apps/web/src/resourcePreferences.ts");
 
 function fixture(count = 60) {
   const sqlite = new Database(':memory:');
@@ -94,8 +95,13 @@ test('UI001 complete saved folder supplement precedes general continuation and p
   }
   assert.equal(all.length,59,'General pages omit only the one star, not folder members');
   assert.equal(all.length,new Set(all).size,'General cursor rows never duplicate');
-  const sidebar=new Map([...page.folderItems,...page.starredItems,...page.items].map(item=>[item.conversation.id,item]));
-  assert.equal([...sidebar.values()].filter(item=>item.conversation.id===f.rows[31].id).length,1,'Shared star/page/folder rows dedup by exact ID');
+  // The sidebar feeds these same directory projections into its real merge function.
+  const sidebar = sidebarChatItems([...page.starredItems, ...page.items], page.folderItems, f.preferences().chatFolders);
+  const starred = page.starredItems.find(item => item.conversation.id === f.rows[31].id);
+  assert.ok(starred, "The overlapping folder member is present in the starred projection");
+  assert.equal(sidebar.filter(item => item.conversation.id === f.rows[31].id).length, 1, "Overlapping directory projections produce one sidebar input record");
+  assert.equal(sidebar.find(item => item.conversation.id === f.rows[31].id), starred, "The current starred projection wins over its folder supplement");
+  assert.ok(sidebar.some(item => item.conversation.id === f.rows[50].id), "An off-page saved folder member reaches the sidebar");
 });
 
 test('folder directory hides unfinished or missing installation plans', async t => {
