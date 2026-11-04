@@ -308,6 +308,25 @@ test('settings transition preserves pending work and isolates replacement confir
   assert.equal(db.prepare("SELECT state FROM agent_activations WHERE id=?").get(priorTask).state,'consumed');
   assert.equal(db.prepare('SELECT state FROM agent_activations WHERE id=?').get(pending).state,'pending');
   assert.equal(db.prepare('SELECT state FROM agent_activations WHERE id=?').get(competing).state,'pending');
+  // Exercise the actual lease selector, including both candidate and coalesced
+  // queue selection, with higher priority unrelated work in the same scope.
+  db.prepare('INSERT INTO scheduler_agent_fences(agent_id,next_fencing_token) VALUES(?,2)').run(agent.id);
+  db.exec('SAVEPOINT priority_barrier');
+  try {
+    const lease=coordination.leaseNextRun({workerId:'settings-transition-fixture',coalesceLimit:8});
+    assert.ok(lease,'the replacement confirmation must be schedulable');
+    assert.deepEqual(lease.activationIds,[ready.continuationActivationId]);
+    assert.equal(db.prepare('SELECT priority FROM agent_activations WHERE id=?').get(competing).priority,1000);
+    for (const id of [pending,competing]) {
+      assert.equal(db.prepare('SELECT state FROM agent_activations WHERE id=?').get(id).state,'pending');
+      assert.equal(db.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(id).n,0);
+    }
+    const submission=db.prepare('SELECT state,activation_ids_json FROM scheduler_prompt_injections WHERE id=?').get(lease.injectionId);
+    assert.equal(submission.state,'pending');
+    assert.deepEqual(JSON.parse(submission.activation_ids_json),[ready.continuationActivationId]);
+    assert.equal(coordination.leaseNextRun({workerId:'second-worker'}),undefined);
+    assert.equal(db.prepare('SELECT count(*) n FROM provider_inputs WHERE scheduler_run_id=?').get(lease.runId).n,0);
+  } finally { db.exec('ROLLBACK TO priority_barrier; RELEASE priority_barrier'); }
   db.prepare("UPDATE context_rollovers SET state='completed',completion_reason='headroom_restored',terminal_at=? WHERE id=?").run(now,first.rollover.id);
   const second=coordination.requestContextRollover({...request,settingsTransition:{...transition,activationId:competing,targetModel:'other'}});
   assert.equal(second.created,true);
