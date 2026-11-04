@@ -293,14 +293,27 @@ test('same-process Ponderosa memory storages for one Chroma origin serialize wit
 
 test('acknowledged first collection deletion resumes after a pre-dispatch failure and restart',()=>fixture(async f=>{
  const scope='chat:'+f.chat.id;await f.seed(scope,scope+':team');await f.seed(scope,scope+':team',f.a.id,true);
- const original=f.raw.client.getCollection.bind(f.raw.client);let logReads=0;
+ const originalGet=f.raw.client.getCollection.bind(f.raw.client),originalDelete=f.raw.client.deleteCollection.bind(f.raw.client);
+ let acknowledgedMemory=false,blockedLogReads=0,logDeletes=0;
  f.raw.client.getCollection=async input=>{
-  if(input.name===f.raw.names(scope).log&&++logReads===2)throw Error('Controlled failure before log delete');
-  return original(input);
+  // Linked-Agent cleanup reads the same log before the Chat is deleted.
+  // Fail only after the Chat's first collection delete was acknowledged.
+  if(input.name===f.raw.names(scope).log&&acknowledgedMemory){blockedLogReads++;throw Error('Controlled failure before log delete');}
+  return originalGet(input);
  };
- const result=await f.api('DELETE','/api/conversations/'+f.chat.id);
- f.raw.client.getCollection=original;
+ f.raw.client.deleteCollection=async input=>{
+  if(input.name===f.raw.names(scope).log)logDeletes++;
+  const result=await originalDelete(input);
+  if(input.name===f.raw.names(scope).memory)acknowledgedMemory=true;
+  return result;
+ };
+ let result;
+ try{result=await f.api('DELETE','/api/conversations/'+f.chat.id);}
+ finally{f.raw.client.getCollection=originalGet;f.raw.client.deleteCollection=originalDelete;}
  assert.equal(result.body.cleanupPending,true,JSON.stringify(result));
+ assert.equal(acknowledgedMemory,true,'The first collection delete actually returned');
+ assert.ok(blockedLogReads>0,'The intended log read was blocked after that acknowledgement');
+ assert.equal(logDeletes,0,'The failed step never dispatched a log delete');
  assert.equal(await f.rows(scope),null);assert.notEqual(await f.rows(scope,true),null);
  assert.equal(f.memory.core.database.scopeHasUnsettledMutation(scope),false,'No log mutation was dispatched');
  await f.reopen();
