@@ -5,22 +5,22 @@ export type AgentImportMetadata=Omit<ImportAgentPackageRequest,'package'>;
 export type PendingAgentImport={version:1;requestId:string;projectId:string;conversationId:string;product:Product;metadata:AgentImportMetadata;fingerprint:AgentImportFingerprint};
 const id=(v:unknown,max:number):v is string=>typeof v==='string'&&v.length>0&&v.length<=max&&v.trim()===v;
 const object=(v:unknown):v is Record<string,unknown>=>Boolean(v&&typeof v==='object'&&!Array.isArray(v));
-const prefix=(product:Product,projectId:string)=>`ponderosa-agent-import-v1:${product}:${encodeURIComponent(projectId)}:`;
-const key=(value:PendingAgentImport)=>prefix(value.product,value.projectId)+value.requestId;
+const prefix=(product:Product)=>`ponderosa-agent-import-v1:${product}:`;
+const key=(value:PendingAgentImport)=>prefix(value.product)+encodeURIComponent(value.projectId)+':'+value.requestId;
 /** Invalid original evidence remains held; it never authorizes a new request. */
 export function pendingAgentImportValid(value:unknown,product:Product,projectId:string):value is PendingAgentImport{
  if(!object(value)||Object.keys(value).sort().join(',')!=='conversationId,fingerprint,metadata,product,projectId,requestId,version'||value.version!==1||value.product!==product||value.projectId!==projectId||!id(value.requestId,128)||! /^[A-Za-z0-9_-]{8,128}$/.test(value.requestId)||!id(value.conversationId,200)||!object(value.metadata)||value.metadata.conversationId!==value.conversationId||!object(value.fingerprint))return false;
  const f=value.fingerprint;
- if(Object.keys(f).sort().join(',')!=='algorithm,bytes,digest'||f.algorithm!==AGENT_IMPORT_FINGERPRINT_ALGORITHM||!Number.isSafeInteger(f.bytes)||Number(f.bytes)<0||Number(f.bytes)>AGENT_PACKAGE_MAX_BYTES||typeof f.digest!=='string'||! /^[0-9a-f]{64}$/.test(f.digest))return false;
+ if(Object.keys(f).sort().join(',')!=='algorithm,bytes,digest'||f.algorithm!==AGENT_IMPORT_FINGERPRINT_ALGORITHM||!Number.isSafeInteger(f.bytes)||Number(f.bytes)<0||Number(f.bytes)>AGENT_PACKAGE_MAX_BYTES+AGENT_PACKAGE_METADATA_MAX_BYTES+1||typeof f.digest!=='string'||! /^[0-9a-f]{64}$/.test(f.digest))return false;
  try{return new TextEncoder().encode(JSON.stringify(value.metadata)).byteLength<=AGENT_PACKAGE_METADATA_MAX_BYTES;}catch{return false;}
 }
-export function listPendingAgentImports(product:Product,projectId:string):PendingAgentImport[]{
- const start=prefix(product,projectId),found:PendingAgentImport[]=[];
+export function listPendingAgentImports(product:Product):PendingAgentImport[]{
+ const start=prefix(product),found:PendingAgentImport[]=[];
  for(let i=0;i<localStorage.length;i++){
   const name=localStorage.key(i);if(!name?.startsWith(start))continue;
   const bytes=localStorage.getItem(name);if(bytes===null)throw Error('Saved import changed while being read.');
   let value:unknown;try{value=JSON.parse(bytes);}catch{throw Error('Saved import information cannot be read.');}
-  if(!pendingAgentImportValid(value,product,projectId)||name!==key(value))throw Error('Saved import information is invalid.');
+  if(!object(value)||!id(value.projectId,200)||!pendingAgentImportValid(value,product,value.projectId)||name!==key(value))throw Error('Saved import information is invalid.');
   found.push(value);
  }
  return found.sort((a,b)=>a.requestId.localeCompare(b.requestId));
@@ -37,4 +37,12 @@ export function releasePendingAgentImport(value:PendingAgentImport):void{
  if(bytes===null)return;
  if(bytes!==JSON.stringify(value))throw Error('Saved import changed; the original request is retained.');
  localStorage.removeItem(name);
+}
+
+export function agentImportFingerprintHeader(value:AgentImportFingerprint):string{
+ return `${value.algorithm}:${value.bytes}:${value.digest}`;
+}
+export function agentImportOperationMatches(value:unknown,pending:PendingAgentImport):value is import('@ponderosa/core').AgentImportOperationDto{
+ if(!object(value))return false;
+ return value.requestId===pending.requestId&&value.projectId===pending.projectId&&value.conversationId===pending.conversationId&&value.product===pending.product&&value.requestFingerprint===agentImportFingerprintHeader(pending.fingerprint)&&id(value.id,200)&&typeof value.payloadHash==='string'&&/^[0-9a-f]{64}$/.test(value.payloadHash)&&['pending','completed','failed'].includes(String(value.status));
 }

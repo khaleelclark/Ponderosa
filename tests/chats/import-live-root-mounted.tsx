@@ -25,8 +25,8 @@ export async function importLiveRootRegression():Promise<void>{
  api.listAgents=async()=>[];
  api.createChat=async(request,key)=>{creates.push({request,key});return {id:'new-chat',projectId:'new-project',title:'Restored',workingDirectory:'/managed/restored',createdAt:'now',updatedAt:'now'};};
  api.previewAgentAccess=async(projectId,_blob,metadata)=>{reviews.push({projectId,metadata});return {reviewSha256:'fixture-review',source:[],destination:{restrictedCapabilityIds:[],restrictionSources:{},layers:[]}};};
- api.startAgentPackageImport=async(projectId,_blob,metadata)=>{imports.push({projectId,metadata});return {
-  id:'failed-direct-import',requestId:'original-import',payloadHash:'f'.repeat(64),projectId,conversationId:'new-chat',product:'dev',sourceLabel:'fixture',phase:'failed',status:'failed',createdAt:'2026-11-03T00:00:00.000Z',updatedAt:'2026-11-03T00:00:00.000Z',error:'Fixture native apply failed',
+ api.startAgentPackageImport=async(projectId,_blob,metadata,requestId,fingerprint)=>{imports.push({projectId,metadata});return {
+  id:'failed-direct-import',requestId,payloadHash:'f'.repeat(64),requestFingerprint:fingerprint,projectId,conversationId:'new-chat',product:'dev',sourceLabel:'fixture',phase:'failed',status:'failed',createdAt:'2026-11-03T00:00:00.000Z',updatedAt:'2026-11-03T00:00:00.000Z',error:'Fixture native apply failed',
   result:{rootAgentId:'imported-root',agentIds:['imported-root'],reviewedUserDataApplications:[{ref:'root',path:'/recovery/restored',originalSha256:'f'.repeat(64),selection:{git:true,harness:false},state:'incomplete',error:{code:'ERR_NATIVE_PARTIAL_FIXTURE',partialStatePossible:true,observed:{path:'/recovery/restored/.git'}}}]}
  } as Awaited<ReturnType<typeof api.startAgentPackageImport>>;};
  const button=(text:string)=>Array.from(host.querySelectorAll('button')).find(item=>item.textContent===text)!;

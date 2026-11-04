@@ -1,4 +1,9 @@
 import {NativePortableImportChoices,nativeImportChoiceError,type NativeImportChoices} from './NativePortableDataChoices';
+import {PendingAgentImportRecovery} from './PendingAgentImportRecovery';
+import {fingerprintAgentImport} from './agentImportFingerprint';
+import {agentImportFingerprintHeader,agentImportOperationMatches,listPendingAgentImports,releasePendingAgentImport,retainPendingAgentImport,type AgentImportMetadata,type PendingAgentImport} from './agentImportRecovery';
+import {currentProductScope} from '../api/productScope';
+
 import {LifecycleReview} from './lifecycle/LifecycleReview';
 import {NativeApplications,PostImportAccessReview} from './PostImportAccessReview';
 import {validWorkingRootDestinations} from './workingRootDestinations';
@@ -88,12 +93,13 @@ export function ImportAgentForm({
 
   const [packageBlob, setPackageBlob] = useState<Blob>();
   const [importResult,setImportResult]=useState<import('@ponderosa/core').ImportAgentPackageResponse>();
+  const [completedImport,setCompletedImport]=useState<PendingAgentImport>();
   const [partialResult,setPartialResult]=useState<import('@ponderosa/core').ImportAgentPackageResponse>();
   const [roleOperation,setRoleOperation]=useState<import('@ponderosa/core').AgentImportOperationDto>();
+  const [operationProjectId,setOperationProjectId]=useState<string>();
   const [recoveryReview,setRecoveryReview]=useState<import('@ponderosa/core').OutputRoleImportReviewDto>();
   const [lifecycleOperationId,setLifecycleOperationId]=useState<string>();
-  const operationQuery=useQuery({queryKey:['role-import-operation',projectId,roleOperation?.id],queryFn:()=>api.getAgentImportOperation(projectId,roleOperation!.id),enabled:Boolean(roleOperation),refetchInterval:q=>q.state.data?.status==='completed'||q.state.data?.status==='failed'?false:500});
-  useEffect(()=>{const current=operationQuery.data;if(!current)return;setLifecycleOperationId(current.id);setRoleOperation(current);if(current.result)setPartialResult(current.result);if(current.status==='completed'){setRoleOperation(undefined);if(current.result)setImportResult(current.result);else setError('Import completed without a result receipt.');}else if(current.status==='failed'){setRoleOperation(undefined);importRequestId.current=createClientId();setError(current.error??'Import failed');}else if(current.error)setError(current.error);},[operationQuery.dataUpdatedAt]);
+  const operationQuery=useQuery({queryKey:['role-import-operation',operationProjectId??projectId,roleOperation?.id],queryFn:()=>api.getAgentImportOperation(operationProjectId??projectId,roleOperation!.id),enabled:Boolean(roleOperation),refetchInterval:q=>q.state.data?.status==='completed'||q.state.data?.status==='failed'?false:500});
   const [roleReview,setRoleReview]=useState<import('@ponderosa/core').OutputRoleImportReviewDto>();
   const [accessReview,setAccessReview]=useState<import('@ponderosa/core').AgentAccessImportReviewDto>();
   const [accessAction,setAccessAction]=useState<''|'keep_destination'|'use_source'>('');
@@ -141,6 +147,42 @@ export function ImportAgentForm({
   const previewRequestId = useRef(0);
   const importRequestId = useRef(createClientId());
   const pendingRef = useRef(false);
+  const savedIntentRef=useRef<PendingAgentImport>();
+  const submittedBlobRef=useRef<{requestId:string;blob:Blob}>();
+  const product=currentProductScope();
+  const readSaved=useCallback(()=>{
+    try{return {items:listPendingAgentImports(product)} as {items:PendingAgentImport[];error?:string};}
+    catch{return {items:[],error:'Saved import information is unavailable. Preserve browser data and reload before starting another import.'};}
+  },[product]);
+  const [savedImports,setSavedImports]=useState(readSaved);
+  const refreshSaved=useCallback(()=>setSavedImports(readSaved()),[readSaved]);
+  useEffect(()=>{refreshSaved();const changed=()=>refreshSaved();window.addEventListener('storage',changed);return()=>window.removeEventListener('storage',changed);},[refreshSaved]);
+  const acceptSaved=(entry:PendingAgentImport,operation:import('@ponderosa/core').AgentImportOperationDto)=>{
+    if(!agentImportOperationMatches(operation,entry))throw Error('The import status does not match the saved request.');
+    setOperationProjectId(entry.projectId);setLifecycleOperationId(operation.id);
+    if(operation.result)setPartialResult(operation.result);
+    // Keep the small request record while work is pending, so a reload can
+    // reconnect and recover a final or partial result without submitting again.
+    if(operation.status==='pending'){setRoleOperation(operation);return;}
+    if(operation.status==='completed'){
+      if(!operation.result)throw Error('Import completed without a result receipt. Its saved request is retained so you can check again.');
+      setRoleOperation(undefined);setCompletedImport(entry);setImportResult(operation.result);return;
+    }
+    try{releasePendingAgentImport(entry);}catch{throw Error('Import found, but its saved record could not be updated. Keep browser data and check the status again.');}
+    if(savedIntentRef.current?.requestId===entry.requestId)savedIntentRef.current=undefined;
+    refreshSaved();setRoleOperation(undefined);
+    setError(operation.error??'Import failed');
+  };
+  useEffect(()=>{
+    const current=operationQuery.data;if(!current)return;
+    const saved=savedImports.items.find(entry=>entry.requestId===current.requestId&&entry.projectId===current.projectId);
+    if(!saved||!agentImportOperationMatches(current,saved)){
+      setRoleOperation(undefined);setError('The import status does not match its saved request.');return;
+    }
+    if(current.status==='pending'){setRoleOperation(current);if(current.result)setPartialResult(current.result);if(current.error)setError(current.error);return;}
+    try{acceptSaved(saved,current);}
+    catch(error){setRoleOperation(undefined);setError(error instanceof Error?error.message:'Import status could not be saved.');refreshSaved();}
+  },[operationQuery.dataUpdatedAt]);
 
   const cancelInspection = useCallback(() => {
     previewWorker.current?.terminate();
@@ -214,10 +256,8 @@ export function ImportAgentForm({
       if(!accessReview){const review=await api.previewAgentAccess(projectId,packageBlob!,{conversationId,engineMapping,...nativeChoices,...(workingFilesActivation?{workingFilesActivation}:{}),...(workingRoots.length?{workingRootDestinations:rootDestinations}:workingFilesDestination.trim()?{workingFilesDestination:workingFilesDestination.trim()}:{}),...(workingCopyMode?{workingCopyMode}:{})});if(importRequestId.current===reviewedRequestId)setAccessReview(review);return;}
       if(!accessAction)throw new Error('Choose which capability restrictions to use.');
       if(packagePreview?.hasOutputRoles&&!roleReview){const review=await api.previewAgentOutputRoles(projectId,packageBlob!,{conversationId,engineMapping});if(importRequestId.current===reviewedRequestId)setRoleReview(review);return;}
-      return api.startAgentPackageImport(
-      projectId,
-      packageBlob!,
-      {
+      const requestId=importRequestId.current,blob=packageBlob!;
+      const metadata=JSON.parse(JSON.stringify({
         conversationId, engineMapping,...nativeChoices,
         ...(workingFilesActivation?{workingFilesActivation}:{}),
         accessSettingsResolution:{action:accessAction,reviewSha256:accessReview.reviewSha256},
@@ -226,27 +266,21 @@ export function ImportAgentForm({
         ...(roleReview?{outputRoleReviewId:roleReview.id}:{}),
         chatInstructionsResolution: await chatInstructionsResolution(instructionsAction, destinationInstructions),
         ...(elevatedAgents.length > 0 ? { acknowledgeElevatedManagementPermissions: acknowledgeElevatedPermissions } : {}),
-      },
-      importRequestId.current,
-    );},
-    onSuccess: (operation) => {
-      if(!operation)return;
-      setLifecycleOperationId(operation.id);
-      if(operation.result)setPartialResult(operation.result);
-      if(operation.status==='pending'){setRoleOperation(operation);return;}
-      if(operation.status==='completed'){if(!operation.result)throw new Error('Import completed without a result receipt.');setImportResult(operation.result);return;}
-      if(operation.status==='failed')throw new Error(operation.error??'Import failed');
-      clearPackageDraft();
-      notify({
-        key: `agent-import:${operation.id}`,
-        message: "Agent import started and will continue in the background.",
-        severity: "info",
-      });
-      pendingRef.current = false;
-      onPendingChange?.(false);
-      (onSubmitted ?? onCancel)();
+      })) as AgentImportMetadata;
+      const body=new Blob([JSON.stringify(metadata)+'\n',blob],{type:'application/vnd.ponderosa.agent-import'});
+      const fingerprint=await fingerprintAgentImport(body);
+      if(requestId!==importRequestId.current)throw Error('Import settings changed. Review them again; no import was sent.');
+      const entry:PendingAgentImport={version:1,requestId,projectId,conversationId,product,metadata,fingerprint};
+      try{retainPendingAgentImport(entry);}catch{throw Error('Could not save the import request in this browser. No import was sent.');}
+      savedIntentRef.current=entry;submittedBlobRef.current={requestId,blob};refreshSaved();
+      const operation=await api.startAgentPackageImport(projectId,blob,metadata,requestId,agentImportFingerprintHeader(fingerprint));
+      acceptSaved(entry,operation);
+      return undefined;
     },
-    onError: (reason) => {setAccessReview(undefined);setAccessAction('');importRequestId.current=createClientId();setError(reason instanceof Error ? reason.message : "Import failed");},
+    onError: (reason) => {
+      if(savedIntentRef.current){refreshSaved();setError('The original import is unconfirmed. Check its status or retry the exact same package.');return;}
+      setAccessReview(undefined);setAccessAction('');importRequestId.current=createClientId();refreshSaved();setError(reason instanceof Error ? reason.message : "Import failed");
+    },
     onSettled: () => {
       pendingRef.current = false;
       onPendingChange?.(false);
@@ -349,8 +383,19 @@ export function ImportAgentForm({
     }
   };
 
-  if(importResult)return <PostImportAccessReview result={importResult} projectId={projectId} onDone={()=>{setImportResult(undefined);clearPackageDraft();(onSubmitted??onCancel)();}}/>;
+  if(importResult)return <Stack spacing={2}>{error&&<Alert severity="error">{error}</Alert>}<PostImportAccessReview result={importResult} projectId={operationProjectId??projectId} onDone={()=>{
+    try{if(completedImport)releasePendingAgentImport(completedImport);}catch{setError('The import completed, but its saved record could not be updated. Keep browser data and try again.');return;}
+    if(savedIntentRef.current?.requestId===completedImport?.requestId)savedIntentRef.current=undefined;
+    setCompletedImport(undefined);setImportResult(undefined);clearPackageDraft();(onSubmitted??onCancel)();
+  }}/></Stack>;
+  if(savedImports.error)return <Stack spacing={2}><Alert severity="error">{savedImports.error}</Alert><Button onClick={closeForm}>Close</Button></Stack>;
+  const untrackedImports=savedImports.items.filter(entry=>!roleOperation||!agentImportOperationMatches(roleOperation,entry));
+  if(untrackedImports.length)return <Stack spacing={2}>
+    {untrackedImports.map(entry=><PendingAgentImportRecovery key={entry.requestId} entry={entry} initialBlob={submittedBlobRef.current?.requestId===entry.requestId?submittedBlobRef.current.blob:undefined} disabled={importAgents.isPending} onAccepted={acceptSaved}/>)}
+    <Button disabled={pendingRef.current} onClick={closeForm}>Close</Button>
+  </Stack>;
   return <Stack spacing={2}>
+    {roleOperation&&<Alert severity="info" role="status">Import in progress. You can close this view and return to check it later.</Alert>}
     {partialResult&&<NativeApplications result={partialResult}/>}
     {lifecycleOperationId&&<LifecycleReview key={lifecycleOperationId} kind="import" id={lifecycleOperationId}/>}
       <Alert severity="info">History stays private; credentials are excluded.</Alert>
@@ -450,16 +495,16 @@ export function ImportAgentForm({
         Destination chat: {conversations.find(conversation => conversation.id === fixedConversationId)?.title ?? conversations[0]!.title}
       </Typography> : <FormControl fullWidth>
         <InputLabel id="import-chat-label">Destination chat</InputLabel>
-        <Select labelId="import-chat-label" label="Destination chat" value={conversationId} onChange={(event: SelectChangeEvent) => setConversationId(event.target.value)}>
+        <Select labelId="import-chat-label" label="Destination chat" value={conversationId} onChange={(event: SelectChangeEvent) => {importRequestId.current=createClientId();setConversationId(event.target.value);}}>
           {conversations.map((conversation) => <MenuItem key={conversation.id} value={conversation.id}>{conversation.title}</MenuItem>)}
         </Select>
       </FormControl>}
-      {workingRoots.length>0?<><Typography>Recovery · one new folder per shared source root · live population: explicit activation required</Typography>{workingRoots.map(root=><TextField key={root.ref} label={`New folder: ${root.agents.join(', ')}`} value={workingRootDestinations[root.ref]??''} onChange={event=>setWorkingRootDestinations(current=>({...current,[root.ref]:event.target.value}))} helperText="New absolute host path; distinct from and outside every other destination."/>)}</>:<TextField label="New folder for included working files" value={workingFilesDestination} onChange={event=>{setWorkingFilesDestination(event.target.value);importRequestId.current=createClientId();}} helperText="Included files: new absolute host folder · no existing-folder overwrite"/>}
+      {workingRoots.length>0?<><Typography>Recovery · one new folder per shared source root · live population: explicit activation required</Typography>{workingRoots.map(root=><TextField key={root.ref} label={`New folder: ${root.agents.join(', ')}`} value={workingRootDestinations[root.ref]??''} onChange={event=>{importRequestId.current=createClientId();setWorkingRootDestinations(current=>({...current,[root.ref]:event.target.value}));}} helperText="New absolute host path; distinct from and outside every other destination."/>)}</>:<TextField label="New folder for included working files" value={workingFilesDestination} onChange={event=>{setWorkingFilesDestination(event.target.value);importRequestId.current=createClientId();}} helperText="Included files: new absolute host folder · no existing-folder overwrite"/>}
       <TextField select label="Working folder mode" value={workingCopyMode} onChange={event=>{setWorkingCopyMode(event.target.value as typeof workingCopyMode);importRequestId.current=createClientId();}}><MenuItem value="">Keep source mode</MenuItem><MenuItem value="shared">Shared folder</MenuItem><MenuItem value="separate_git">Separate Git copy</MenuItem></TextField>
-      <FormControlLabel control={<Checkbox checked={activateWorkingFiles} disabled={packagePreview?.mode!=='full'||!packagePreview.hasWorkingFiles||importAgents.isPending||Boolean(roleOperation)} onChange={event=>setActivateWorkingFiles(event.target.checked)}/>} label="Use restored files in live Agent working folders"/>
-      {activateWorkingFiles&&(createdChat?<FormControlLabel control={<Checkbox checked={confirmSharedRoot} onChange={event=>setConfirmSharedRoot(event.target.checked)}/>} label={`Confirm new workspace folder: ${createdChat.workingDirectory??'unavailable'}`}/>:<Alert severity="info"><Stack spacing={0.5}><Typography>Existing workspace · Separate Git copy only · existing Git repository required</Typography><Typography>Shared activation · new managed destination required</Typography></Stack></Alert>)}
+      <FormControlLabel control={<Checkbox checked={activateWorkingFiles} disabled={packagePreview?.mode!=='full'||!packagePreview.hasWorkingFiles||importAgents.isPending||Boolean(roleOperation)} onChange={event=>{importRequestId.current=createClientId();setActivateWorkingFiles(event.target.checked);}}/>} label="Use restored files in live Agent working folders"/>
+      {activateWorkingFiles&&(createdChat?<FormControlLabel control={<Checkbox checked={confirmSharedRoot} onChange={event=>{importRequestId.current=createClientId();setConfirmSharedRoot(event.target.checked);}}/>} label={`Confirm new workspace folder: ${createdChat.workingDirectory??'unavailable'}`}/>:<Alert severity="info"><Stack spacing={0.5}><Typography>Existing workspace · Separate Git copy only · existing Git repository required</Typography><Typography>Shared activation · new managed destination required</Typography></Stack></Alert>)}
       {activateWorkingFiles&&<Stack spacing={0.5}><Typography>Recovery folders · required + separate from live folder · retained on failure</Typography><Typography>Credentials and source runtime ownership remain excluded</Typography><Typography>Root membership · server validation required</Typography></Stack>}
-      <NativePortableImportChoices summary={packagePreview?.nativeData} value={nativeChoices} onChange={setNativeChoices} disabled={importAgents.isPending||Boolean(roleOperation)} destinations={rootDestinations}/>
+      <NativePortableImportChoices summary={packagePreview?.nativeData} value={nativeChoices} onChange={value=>{importRequestId.current=createClientId();setNativeChoices(value);}} disabled={importAgents.isPending||Boolean(roleOperation)} destinations={rootDestinations}/>
       <ChatInstructionsImportChoice source={sourceInstructions} destination={destinationInstructions}
         value={instructionsAction} onChange={value => { setInstructionsAction(value); importRequestId.current = createClientId(); }} />
       {packagePreview && repeatedTitles.length ? <Alert severity="warning">
@@ -479,7 +524,7 @@ export function ImportAgentForm({
           : `Engine for ${source}`;
         return <FormControl key={source} fullWidth>
           <InputLabel id={`engine-map-${source}`}>{label}</InputLabel>
-          <Select labelId={`engine-map-${source}`} label={label} value={engineMapping[source] ?? ""} onChange={(event: SelectChangeEvent) => setEngineMapping((current) => ({ ...current, [source]: event.target.value }))}>
+          <Select labelId={`engine-map-${source}`} label={label} value={engineMapping[source] ?? ""} onChange={(event: SelectChangeEvent) => {importRequestId.current=createClientId();setEngineMapping((current) => ({ ...current, [source]: event.target.value }));}}>
             {engines.map((engine) => <MenuItem key={engine.id} value={engine.id} disabled={!engineIsAvailable(engine)}>{engine.displayName}{engineIsAvailable(engine) ? "" : ` — ${engineUnavailableReason(engine)}`}</MenuItem>)}
           </Select>
         </FormControl>;
@@ -492,7 +537,7 @@ export function ImportAgentForm({
           {elevatedAgents.length} imported Agent{elevatedAgents.length === 1 ? "" : "s"} will be allowed to autonomously delete descendants or rearrange their organization.
         </Typography>
         <FormControlLabel
-          control={<Checkbox checked={acknowledgeElevatedPermissions} onChange={(event) => setAcknowledgeElevatedPermissions(event.target.checked)} />}
+          control={<Checkbox checked={acknowledgeElevatedPermissions} onChange={(event) => {importRequestId.current=createClientId();setAcknowledgeElevatedPermissions(event.target.checked);}} />}
           label="Import these elevated management permissions"
         />
       </Alert> : null}
@@ -520,7 +565,7 @@ export function ImportAgentForm({
           borderColor: "divider",
         } : {}),
       }}>
-      {roleOperation?.outputRoleRecoveryId&&<><Button onClick={async()=>{try{const result=await api.recoverAgentOutputRoles(projectId,roleOperation.outputRoleRecoveryId!);if('id'in result)setRecoveryReview(result);void operationQuery.refetch();}catch(cause){setError((cause as Error).message);}}}>Review output roles again</Button>{recoveryReview&&<><Alert severity="warning">{recoveryReview.warning??'Apply the reviewed output roles.'}</Alert><Button onClick={async()=>{try{await api.recoverAgentOutputRoles(projectId,roleOperation.outputRoleRecoveryId!,recoveryReview.id);setRecoveryReview(undefined);void operationQuery.refetch();}catch(cause){setError((cause as Error).message);}}}>Confirm output roles</Button></>}</>}
+      {roleOperation?.outputRoleRecoveryId&&<><Button onClick={async()=>{try{const result=await api.recoverAgentOutputRoles(operationProjectId??projectId,roleOperation.outputRoleRecoveryId!);if('id'in result)setRecoveryReview(result);void operationQuery.refetch();}catch(cause){setError((cause as Error).message);}}}>Review output roles again</Button>{recoveryReview&&<><Alert severity="warning">{recoveryReview.warning??'Apply the reviewed output roles.'}</Alert><Button onClick={async()=>{try{await api.recoverAgentOutputRoles(operationProjectId??projectId,roleOperation.outputRoleRecoveryId!,recoveryReview.id);setRecoveryReview(undefined);void operationQuery.refetch();}catch(cause){setError((cause as Error).message);}}}>Confirm output roles</Button></>}</>}
 
       <Button disabled={createDestination.isPending||importAgents.isPending} onClick={closeForm}>Cancel</Button>
       <Button variant="contained" disabled={Boolean(nativeImportChoiceError(nativeChoices,packagePreview?.nativeData))||!activationAllowed||createDestination.isPending||!validRootDestinations||Boolean(accessReview&&!accessAction)||Boolean(roleOperation)||!packageBlob || !packagePreview || inspecting || destinationAgentsQuery.isFetching || (instructionsConflict && !instructionsAction) || invalidPermissionShape || !conversationId || sourceEngines.some((source) => {
