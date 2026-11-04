@@ -11,7 +11,7 @@ import {CAPABILITY_IDS} from '@ponderosa/core';
 import {type Chunk,type Inference} from '@local-memory/mcp-node-private';
 import {HostMemoryRuntime,checkedCollection,createPlannedCollection,MemoryCollectionHold,MEMORY_CLEANUP_HOLD,type MemoryAuthority} from './local-memory-authority.js';
 import {PonderosaMemory} from '@local-memory/mcp-node-private/ponderosa';
-import {validateMemoryCall} from './local-memory-catalog.js';
+import {MemoryArgumentError,validateMemoryCall} from './local-memory-catalog.js';
 type HostContext={chatId:string;actor:{kind:'agent'|'user';id:string;operator?:boolean};runId:string;fenceToken:string;active:boolean;sourceType:'user_statement'|'ai_inference';grants:{readChat:boolean;readGlobal:boolean;writeChat:boolean;writeGlobal:boolean}};
 import type {CreateServerOptions,AgentMessageCapability,ActiveRun} from './app-contracts.js';
 import {activeChatResourceOwner} from './branch-resource-owner.js';
@@ -547,7 +547,7 @@ export function registerLocalMemory(app:FastifyInstance,ports:Ports){
  const memory=new LocalMemoryService(ports);services.set(app,memory);
  app.addHook('onReady',()=>memory.ready());app.addHook('preClose',async()=>memory.fence());app.addHook('onClose',()=>memory.close());
  app.addHook('onSend',async(request,reply)=>{if(!['GET','HEAD'].includes(request.method)&&reply.statusCode<300)memory.checkSpeechAuthorities();});
- const error=(reply:any,e:unknown)=>reply.code(e instanceof MemoryDenied?e.statusCode:500).send({error:e instanceof Error?e.message:String(e)});
+ const error=(reply:any,e:unknown)=>reply.code(e instanceof MemoryDenied?e.statusCode:e instanceof MemoryArgumentError?400:500).send({error:e instanceof Error?e.message:String(e)});
  app.get('/api/local-memory/provisioning-holds',async(request,reply)=>{try{memory.operator(request);await memory.ready();return memory.provisioningHolds();}catch(e){return error(reply,e);}});
  app.get('/api/local-memory/mutation-holds',async(request,reply)=>{try{return await memory.mutationReconciliation(request);}catch(e){return error(reply,e);}});
  app.get<{Params:{id:string}}>('/api/local-memory/mutation-holds/:id',async(request,reply)=>{try{return await memory.mutationReconciliation(request,request.params.id);}catch(e){return reply.code(409).send({error:(e as Error).message});}});

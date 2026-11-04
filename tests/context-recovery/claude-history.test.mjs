@@ -19,6 +19,7 @@ import { ClaudeStreamSession } from '../../packages/engines/dist/claude-stream-s
 import { createProviderDynamicToolHandler } from '../../apps/server/dist/routes/provider-dynamic-tool-handler.js';
 import { registerAgentRuntimeToolRoutes } from '../../apps/server/dist/routes/agent-runtime-tools.js';
 import { providerDynamicTools } from '../../apps/server/dist/runtime-selection.js';
+import { validateMemoryCall } from '../../apps/server/dist/local-memory-catalog.js';
 import { withFixture, until } from '../shared/fixture.mjs';
 const bridge = fileURLToPath(new URL('../../packages/engines/dist/ponderosa-mcp.js', import.meta.url));
 const ts = createRequire(new URL('../../apps/web/package.json', import.meta.url))('typescript');
@@ -385,16 +386,19 @@ test('bundled Claude Local Memory bridge forwards selected search and refuses un
   let revoked = false;
   app.post('/api/agent-local-memory', async (request, reply) => {
     requests.push({authorization:request.headers.authorization, body:request.body});
-    return revoked ? reply.code(401).send({error:'not authorized'}) : {matches:[]};
+    if(revoked)return reply.code(401).send({error:'not authorized'});
+    try{const {operation,...args}=request.body;validateMemoryCall(operation,args);}
+    catch{return reply.code(400).send({error:'invalid arguments'});}
+    return {matches:[]};
   });
   const base = await app.listen({host:'127.0.0.1',port:0});
-  const call = async name => {
+  const call = async (name, args={query:'owned query',source:'chat',top_k:5}) => {
     const child = spawn(process.execPath,[bridge],{env:{PATH:process.env.PATH,PONDEROSA_AGENT_MESSAGE_URL:base+'/api/agent-messages',PONDEROSA_AGENT_MESSAGE_TOKEN:'owned-memory-test',PONDEROSA_AGENT_TOOL_DEFINITIONS:encodeSessionTools(selected)},stdio:['pipe','pipe','pipe']});
     const completion = once(child,'close');let stdout='',stderr='';
     child.stdout.setEncoding('utf8').on('data',v=>stdout+=v);child.stderr.setEncoding('utf8').on('data',v=>stderr+=v);
     const timer=setTimeout(()=>child.kill(),10000);
     try {
-      child.stdin.end([JSON.stringify({id:1,method:'tools/list'}),JSON.stringify({id:2,method:'tools/call',params:{name,arguments:{query:'owned query',source:'chat',top_k:5}}})].join('\n')+'\n');
+      child.stdin.end([JSON.stringify({id:1,method:'tools/list'}),JSON.stringify({id:2,method:'tools/call',params:{name,arguments:args}})].join('\n')+'\n');
       const [code,signal]=await completion;assert.equal(code,0,stderr);assert.equal(signal,null);
       return Object.fromEntries(stdout.trim().split('\n').map(line=>JSON.parse(line)).map(row=>[row.id,row.result]));
     } finally {clearTimeout(timer);if(child.exitCode===null&&child.signalCode===null){child.kill();await completion;}}
@@ -403,8 +407,17 @@ test('bundled Claude Local Memory bridge forwards selected search and refuses un
     const ok=await call('local_memory_search');
     assert.deepEqual(ok[1].tools.map(tool=>tool.name),['local_memory_search']);assert.equal(ok[2].isError,false);
     assert.deepEqual(requests,[{authorization:'Bearer owned-memory-test',body:{query:'owned query',source:'chat',top_k:5,operation:'search'}}]);
-    assert.equal((await call('local_memory_save'))[2].isError,true);assert.equal(requests.length,1);
-    revoked=true;assert.equal((await call('local_memory_search'))[2].isError,true);assert.equal(requests.length,2);
+    const normalized=await call('local_memory_search',{query:'owned query',top_k:'20',include_history:'false'});
+    assert.equal(normalized[2].isError,false);
+    assert.deepEqual(requests[1].body,{query:'owned query',top_k:20,include_history:false,operation:'search'});
+    for(const args of [[],null,{query:'x',top_k:[]},{query:'x',top_k:{}},{query:'x',top_k:null},{query:'x',top_k:'01'},{query:'x',top_k:' 5 '},{query:'x',top_k:'21'},{query:'x',top_k:'1.0'},{query:'x',include_history:'False'},{query:'x',include_history:1}]){
+      assert.equal((await call('local_memory_search',args))[2].isError,true,JSON.stringify(args));
+    }
+    assert.equal(requests.length,2,'invalid scalar inputs must not reach the host');
+    assert.equal((await call('local_memory_save'))[2].isError,true);assert.equal(requests.length,2);
+    assert.equal((await call('local_memory_search',{query:'x',unexpected:'value'}))[2].isError,true,'host rejects unrecognized arguments');
+    assert.equal(requests.length,3);
+    revoked=true;assert.equal((await call('local_memory_search'))[2].isError,true);assert.equal(requests.length,4);
   } finally {await app.close();}
 });
 

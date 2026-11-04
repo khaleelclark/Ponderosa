@@ -27,3 +27,13 @@ test('guidance preserves physical lineage, explicit destinations and host-only p
   assert.throws(() => validateMemoryCall('search', {query:'fact',source:'all'}));
   assert.deepEqual(validateMemoryCall('save', {text:'fact',destination:'global'}), {text:'fact',destination:'global'});
 });
+
+test('invalid memory arguments identify fixed parameters without echoing authored values', () => {
+  assert.throws(()=>validateMemoryCall('save',{text:'private authored text'}),/Missing required memory parameter: destination/);
+  assert.throws(()=>validateMemoryCall('search',{query:'private authored text',top_k:21}),/top_k must be an integer from 1 to 20/);
+  assert.throws(()=>validateMemoryCall('search',{query:'private authored text',include_history:'False'}),/include_history must be boolean/);
+  assert.throws(()=>validateMemoryCall('search',{query:'private authored text',source:'everywhere'}),/source must be chat or global/);
+  const extra={query:'private authored text',['private unknown field']:'private value'};
+  assert.throws(()=>validateMemoryCall('search',extra),error=>error.name==='MemoryArgumentError'&&!/private/.test(error.message));
+  assert.throws(()=>validateMemoryCall('search',{query:'   '}),error=>error.name==='MemoryArgumentError'&&/query/.test(error.message)&&!/  /.test(error.message));
+});

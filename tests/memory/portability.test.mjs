@@ -130,6 +130,50 @@ test('an uncertain package write retains staged rows and blocks cleanup until re
  }finally{raw.client.getCollection=original;}
 });
 
+test('memory HTTP errors identify invalid fields and keep revoked capabilities denied',async t=>{
+ const f=await instance(t),ports=f.memory.ports,at=new Date().toISOString(),lease=new Date(Date.now()+60000).toISOString(),run='memory-validation-'+randomUUID(),token='owned-memory-validation-'+randomUUID();
+ f.store.sqlite.prepare("INSERT INTO scheduler_runs(id,project_id,agent_id,status,lease_owner,lease_expires_at,fencing_token,prompt_injection_state,heartbeat_at,created_at,updated_at,scope_key) VALUES(?,?,?,'running','owned',?,1,'injected',?,?,?,?)").run(run,f.project.id,f.a.id,lease,at,at,at,'conversation:'+f.chat.id);
+ const originalOwnsRun=ports.ownsRun,controller=new AbortController();
+ ports.capabilities.set(token,{agentId:f.a.id,conversationId:f.chat.id,runId:run,v3SchedulerRunId:run,v3FencingToken:1,availableToolNames:['ponderosa_local_memory_search']});
+ ports.activeRuns.set(f.a.id,{messageCapability:token,conversationId:f.chat.id,controller});ports.ownsRun=()=>true;
+ try{
+ assert.ok(f.memory.agentContext(token,'ponderosa_local_memory_search',false),'the test capability is actually authorized');
+ const bad=await f.app.inject({method:'POST',url:'/api/agent-local-memory',headers:{authorization:'Bearer '+token},payload:{operation:'search',query:'private authored text',top_k:21}});
+ assert.equal(bad.statusCode,400,bad.body);assert.match(bad.json().error,/top_k must be an integer from 1 to 20/);assert.doesNotMatch(bad.body,/private authored text/);
+ const extra=await f.app.inject({method:'POST',url:'/api/agent-local-memory',headers:{authorization:'Bearer '+token},payload:{operation:'search',query:'private authored text',['private unknown field']:'private value'}});
+ assert.equal(extra.statusCode,400,extra.body);assert.doesNotMatch(extra.body,/private/);
+ ports.capabilities.delete(token);
+ const denied=await f.app.inject({method:'POST',url:'/api/agent-local-memory',headers:{authorization:'Bearer '+token},payload:{operation:'search',query:'safe query'}});
+ assert.equal(denied.statusCode,401,denied.body);
+ }finally{controller.abort();ports.capabilities.delete(token);ports.activeRuns.delete(f.a.id);ports.ownsRun=originalOwnsRun;}
+});
+
+test('authorized legacy zero vectors remain readable while new zero writes stay refused',async t=>{
+ const f=await instance(t),ids=await seed(f),scope='chat:'+f.chat.id,raw=f.memory.core.database.raw;
+ const collection=await raw.client.getCollection({name:raw.names(scope).memory});
+ const zero=Array(384).fill(0);
+ await collection.update({ids:[ids.privateId],embeddings:[zero]});
+ const own=await read(f,f.a.id),legacy=own.find(row=>row.id===ids.privateId);
+ assert.ok(legacy);assert.equal(legacy.text,'Included private fact');assert.deepEqual(legacy.embedding,zero);
+ assert.equal((await read(f,f.b.id)).some(row=>row.id===ids.privateId),false,'legacy reads retain private audience');
+ const reader={chatId:f.chat.id,actor:{kind:'agent',id:f.a.id},runId:'zero-read-check',fenceToken:'1',sourceType:'ai_inference',readChat:true,readGlobal:false,observeExposure:false,guard:async()=>{}};
+ const found=await f.memory.perform('get',{chunk_id:ids.privateId},reader);
+ assert.equal(found.structuredContent.result.text,'Included private fact');
+ const searched=await f.memory.perform('search',{query:'Included private fact',top_k:20,include_history:true},reader);
+ assert.ok(searched.structuredContent.result.some(row=>row.chunk_id===ids.privateId),'authorized search returns the legacy record');
+ const originalGetCollection=raw.client.getCollection.bind(raw.client);
+ try{
+  for(const invalid of [Array(383).fill(1),Array.from({length:384},(_,i)=>i===0?NaN:1),Array.from({length:384},(_,i)=>i===0?Infinity:1)]){
+   raw.client.getCollection=async args=>{const c=await originalGetCollection(args);if(args.name===raw.names(scope).memory){const get=c.get.bind(c);c.get=async options=>{const page=await get(options);if(options.include?.includes('embeddings')&&page.ids.includes(ids.privateId))page.embeddings[page.ids.indexOf(ids.privateId)]=invalid;return page;};}return c;};
+   await assert.rejects(f.memory.core.database.run(reader,()=>f.memory.core.database.get(ids.privateId,[scope])),/Invalid memory vector/);
+  }
+ }finally{raw.client.getCollection=originalGetCollection;}
+ const authority={...reader,runId:'zero-write-check',writeScope:scope,targetId:ids.privateId,visibility:'private'};
+ await assert.rejects(f.memory.core.database.run(authority,async()=>{const row=await f.memory.core.database.get(ids.privateId,[scope]);await f.memory.core.database.put(row);}),/Invalid memory vector/);
+ const unchanged=await collection.get({ids:[ids.privateId],include:['embeddings']});
+ assert.deepEqual(Array.from(unchanged.embeddings[0]),zero,'the refused write does not modify stored bytes');
+});
+
 for(const kind of ['chunks','conflicts'])test(`float32-underflow ${kind} refuse restore before writes while stored nonzero vectors roundtrip`,async t=>{
  const source=await instance(t),destination=await instance(t);await seed(source);await seed(destination);
  const snapshot=await source.memory.exportPackageMemory(source.chat.id,[source.a.id]),before=await destination.memory.exportPackageMemory(destination.chat.id,[destination.a.id]),mapping={[source.a.id]:destination.a.id};

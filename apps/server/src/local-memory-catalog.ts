@@ -16,11 +16,27 @@ const definitions=[
  ['history',{chunk_id:str,source:destination},['chunk_id']],
 ] as const;
 export const localMemoryTools=definitions.map(([operation,properties,required])=>({name:`ponderosa_local_memory_${operation}`,description:`${guidance[operation]} Host stamps actor/Run/source provenance; never supply or invent it. Never capture hidden DM/provider context. Chat and global writes follow human capability settings. Use physical chunk_id/version lineage, not logical IDs, expectedRevision, commandKey or exactly-once receipts.`,inputSchema:{type:'object',properties,required:[...required],additionalProperties:false}}));
+/** Fixed, value-free input errors keep model retries actionable without echoing
+ * authored text, unknown field names or potentially sensitive arguments. */
+export class MemoryArgumentError extends Error{
+ constructor(message:string){super(message);this.name='MemoryArgumentError';}
+}
 export function validateMemoryCall(operation:string,args:unknown):Record<string,any>{
- const d=definitions.find(x=>x[0]===operation);if(!d||!args||typeof args!=='object'||Array.isArray(args))throw Error('Unsupported memory operation or arguments');
- const a=args as Record<string,any>;if(['memoryId','expectedRevision','commandKey'].some(k=>k in a))throw Error('Removed reliable-memory logical ID/revision/idempotency arguments; use physical chunk_id');
- if(Object.keys(a).some(k=>!(k in d[1]))||d[2].some(k=>!(k in a)))throw Error('Invalid memory arguments');
- for(const k of ['text','chunk_id','query'])if(k in a&&(typeof a[k]!=='string'||!a[k].trim()||a[k].length>(k==='text'?32000:8000)))throw Error('Invalid bounded memory input');
- for(const k of ['destination','source'])if(k in a&&!['chat','global'].includes(a[k]))throw Error('Invalid memory destination/source');
- if('visibility'in a&&!['team','private'].includes(a.visibility))throw Error('Invalid memory visibility');if('include_history'in a&&typeof a.include_history!=='boolean')throw Error('Invalid history flag');if('top_k'in a&&(!Number.isInteger(a.top_k)||a.top_k<1||a.top_k>20))throw Error('Invalid result bound');return structuredClone(a);
+ const d=definitions.find(x=>x[0]===operation);
+ if(!d)throw new MemoryArgumentError('Unsupported memory operation');
+ if(!args||typeof args!=='object'||Array.isArray(args))throw new MemoryArgumentError('Memory arguments must be an object');
+ const a=args as Record<string,any>;
+ if(['memoryId','expectedRevision','commandKey'].some(k=>Object.hasOwn(a,k)))throw new MemoryArgumentError('Removed logical ID/revision/idempotency arguments; use physical chunk_id');
+ if(Object.keys(a).some(k=>!Object.hasOwn(d[1],k)))throw new MemoryArgumentError('Memory arguments contain an unsupported parameter');
+ const missing=d[2].find(k=>!Object.hasOwn(a,k));
+ if(missing)throw new MemoryArgumentError(`Missing required memory parameter: ${missing}`);
+ for(const k of ['text','chunk_id','query']){
+  const max=k==='text'?32000:8000;
+  if(Object.hasOwn(a,k)&&(typeof a[k]!=='string'||!a[k].trim()||a[k].length>max))throw new MemoryArgumentError(`${k} must be a nonempty string of at most ${max} characters`);
+ }
+ for(const k of ['destination','source'])if(Object.hasOwn(a,k)&&!['chat','global'].includes(a[k]))throw new MemoryArgumentError(`${k} must be chat or global`);
+ if(Object.hasOwn(a,'visibility')&&!['team','private'].includes(a.visibility))throw new MemoryArgumentError('visibility must be team or private');
+ if(Object.hasOwn(a,'include_history')&&typeof a.include_history!=='boolean')throw new MemoryArgumentError('include_history must be boolean');
+ if(Object.hasOwn(a,'top_k')&&(!Number.isInteger(a.top_k)||a.top_k<1||a.top_k>20))throw new MemoryArgumentError('top_k must be an integer from 1 to 20');
+ return structuredClone(a);
 }
