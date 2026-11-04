@@ -1,3 +1,4 @@
+import {fenceBranchFinalResourceExit} from './branch-generation-exit-fence.js';
 import {fenceFinalResourceExit,captureFinalResourceExit,readFinalResourceExit,finalResourceIssuedCheckpointRequired} from './branch-final-resource-exit.js';
 import {bundleParentInput,bundleCallInput,inheritedBundleCallInput,remapBundleValue,type BundleValueMap} from './branch-bundle-values.js';
 import {readRetainedDestinationSource} from './coordination-v3-retained-destination-source.js';
@@ -2256,6 +2257,53 @@ export class BranchStore {
       if(!this.resourceCanRetire(journal.identity.stepId,journal.identity.agentIds))throw Error('Final resource cleanup changed after drain');
       captureFinalResourceExit(this.sqlite,journal);
     }).immediate();
+  }
+  /** Only an existing exact final fence may authorize the automatic capture journal. */
+  private verifyFinalPackageCapture(executionId:string,stepId:string,commandKey:string,requireMarker:boolean):void {
+    if(!this.sqlite.inTransaction)throw Error('Final package fence check requires the owner transaction');
+    if(commandKey!==`final-resource-package:${stepId}:0`)throw Error('Exact internal final package key required');
+    const journal=issuedResourceCapture(this.sqlite,executionId,stepId,commandKey),source=journal?.source;
+    const resource=this.row('SELECT generation,chat_id,retry_draining FROM branch_resources WHERE execution_id=? AND step_execution_id=?',executionId,stepId);
+    const chat=resource&&this.row('SELECT project_id FROM conversations WHERE id=?',resource.chat_id);
+    const ids=this.rows('SELECT agent_id FROM branch_resource_members WHERE step_execution_id=? ORDER BY agent_id',stepId).map(row=>row.agent_id);
+    if(!resource||resource.generation!==0||resource.retry_draining!==0||!chat)throw Error('Final package capture owner differs');
+    const fenceInput={executionId,stepExecutionId:stepId,generation:0,projectId:chat.project_id,conversationId:resource.chat_id,agentIds:ids};
+    const identity=payloadHash({executionId,stepExecutionId:stepId,generation:0});
+    const fence=this.row("SELECT input_json,receipt_json,receipt_sha256 FROM host_lifecycle_commits WHERE kind='branch-generation-exit-fence' AND identity=?",identity);
+    const f=fence&&JSON.parse(fence.receipt_json);
+    if(!fence||!f||f.purpose!=='final-resource'||f.schema!=='branch-generation-exit-fence.v1'||stableJson(f)!==fence.receipt_json
+      ||payloadHash(f)!==fence.receipt_sha256||stableJson(f.input)!==fence.input_json||stableJson(fenceInput)!==fence.input_json)
+      throw Error('Existing exact final package fence required');
+    // This checks current resource membership and the original receipt without creating a new fence.
+    fenceBranchFinalResourceExit(this.sqlite,fenceInput);
+    const marker=this.row('SELECT input_hash,result_json FROM branch_commands WHERE execution_id=? AND command_key=?',executionId,`final-package-intent:${stepId}:0`);
+    if(!journal){if(requireMarker||marker)throw Error('Final package capture journal unavailable');return;}
+    if(!source||source.sourceChatId!==resource.chat_id||source.intent.executionId!==executionId||source.intent.resourceStepId!==stepId
+      ||source.intent.resourceGeneration!==0||stableJson([...source.agentIds].sort())!==stableJson(ids))throw Error('Final package capture source differs');
+    const intent={schema:'branch-final-package-intent.v1',commandKey,sourceSha256:payloadHash(source),fenceSha256:fence.receipt_sha256};
+    if(!marker||marker.input_hash!==payloadHash(intent)||marker.result_json!==stableJson(intent))throw Error('Internal final package capture marker unavailable or differs');
+    const selected=selectBranchUnit(this.sqlite,executionId),host=captureBranchHostCut(this.sqlite,executionId,selected);
+    if(!host||stableJson(selected)!==stableJson(journal.snapshot.selected)||stableJson(host)!==stableJson(journal.snapshot.hostDependencies)
+      ||stableJson(encodeIssuedResourceContinuation(this.sqlite,executionId,selected,host))!==stableJson(journal.snapshot.issuedContinuation))
+      throw Error('Final package frontier or effects changed; capture held');
+  }
+  reserveFinalResourceCapture(executionId:string,stepId:string):ReturnType<typeof reserveIssuedResourceCapture> {
+    return this.unitTransaction(()=>{
+      const commandKey=`final-resource-package:${stepId}:0`;
+      this.verifyFinalPackageCapture(executionId,stepId,commandKey,false);
+      const prior=issuedResourceCapture(this.sqlite,executionId,stepId,commandKey);
+      if(prior)return prior;
+      const journal=reserveIssuedResourceCapture(this.sqlite,executionId,stepId,0,commandKey);
+      const identity=payloadHash({executionId,stepExecutionId:stepId,generation:0});
+      const fence=this.row("SELECT receipt_sha256 FROM host_lifecycle_commits WHERE kind='branch-generation-exit-fence' AND identity=?",identity)!;
+      const intent={schema:'branch-final-package-intent.v1',commandKey,sourceSha256:payloadHash(journal.source),fenceSha256:fence.receipt_sha256};
+      this.run('INSERT INTO branch_commands VALUES(?,?,?,?,?)',executionId,`final-package-intent:${stepId}:0`,payloadHash(intent),stableJson(intent),new Date().toISOString());
+      this.verifyFinalPackageCapture(executionId,stepId,commandKey,true);
+      return journal;
+    }).immediate();
+  }
+  requireFinalResourceCaptureFence(executionId:string,stepId:string,commandKey:string):void {
+    this.unitTransaction(()=>this.verifyFinalPackageCapture(executionId,stepId,commandKey,true)).immediate();
   }
   requireFinalResourceExit(executionId:string,stepId:string){return readFinalResourceExit(this.sqlite,executionId,stepId);}
   requireFinalResourceFrontier(executionId:string,stepId:string){

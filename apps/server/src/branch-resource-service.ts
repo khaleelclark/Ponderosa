@@ -32,11 +32,41 @@ export class BranchResourceService {
     await this.packages.captureCheckpoint(journal.source,receipt=>this.branches.sealGenerationExit(resource.execution_id,stepId,generation,receipt));
     if(this.branches.generationExitCapture(resource.execution_id,stepId,generation)?.state!=='sealed')throw Error('Generation exit seal unavailable; cleanup held');
   }
+  private finalPackageKey(stepId:string):string {return `final-resource-package:${stepId}:0`;}
+  /** Resume only the exact already-fenced automatic final package capture. */
+  private async captureFinalPackage(executionId:string,stepId:string,create:boolean):Promise<void> {
+    const key=this.finalPackageKey(stepId);
+    let journal=this.branches.issuedResourceCapture(executionId,stepId,key);
+    if(!create&&(!journal||journal.state!=='capturing'))return;
+    if(!this.packages)throw Error('Final resource checkpoint package service unavailable; cleanup held');
+    if(!journal)journal=this.branches.reserveFinalResourceCapture(executionId,stepId);
+    this.branches.requireFinalResourceCaptureFence(executionId,stepId,key);
+    if(journal.state==='retained'){await this.packages.readCheckpoint(journal.receipt);return;}
+    const status=await this.packages.inspectCheckpoint(journal.source);
+    if(status.state!=='missing')throw Error(`Final resource package custody is ${status.state}; review the retained capture before cleanup`);
+    await this.packages.captureCheckpoint(journal.source,receipt=>this.branches.sealIssuedResourceCapture(executionId,stepId,key,receipt));
+    if(this.branches.issuedResourceCapture(executionId,stepId,key)?.state!=='retained')throw Error('Final resource package receipt unavailable; cleanup held');
+  }
+  /** Read the final receipt even after a previous cleanup pass deleted Agents. */
+  private async verifyFinalPackage(executionId:string,stepId:string):Promise<void> {
+    const marker=this.store.sqlite.prepare('SELECT input_hash,result_json FROM branch_commands WHERE execution_id=? AND command_key=?').get(executionId,`final-package-intent:${stepId}:0`) as {input_hash:string;result_json:string}|undefined;
+    if(!marker)return; // Older final exits did not have an automatic final package.
+    const journal=this.branches.issuedResourceCapture(executionId,stepId,this.finalPackageKey(stepId)),exit=this.branches.requireFinalResourceExit(executionId,stepId);
+    if(!journal||journal.state!=='retained'||!journal.receipt||exit.identity.generation!==0
+      ||exit.selectedCheckpoint.id!==journal.checkpointId||exit.selectedCheckpoint.content_hash!==journal.checkpointHash)throw Error('Final resource package receipt unavailable; cleanup held');
+    const digest=(value:unknown)=>createHash('sha256').update(stableJson(value)).digest('hex');
+    const intent={schema:'branch-final-package-intent.v1',commandKey:this.finalPackageKey(stepId),sourceSha256:digest(journal.source),fenceSha256:exit.intakeFence.sha256};
+    if(marker.input_hash!==digest(intent)||marker.result_json!==stableJson(intent))throw Error('Final resource package intent differs; cleanup held');
+    if(!this.packages)throw Error('Final resource checkpoint package service unavailable; cleanup held');
+    await this.packages.readCheckpoint(journal.receipt);
+    if(stableJson(this.branches.requireFinalResourceExit(executionId,stepId))!==stableJson(exit))throw Error('Final resource exit changed during package verification');
+    this.branches.requireFinalResourceFrontier(executionId,stepId);
+  }
   private async captureFinalExitBeforeCleanup(stepId:string):Promise<void>{
     if(!this.branches.finalResourceExitRequired(stepId))return;
-    const resource=this.store.sqlite.prepare('SELECT execution_id,state FROM branch_resources WHERE step_execution_id=?').get(stepId) as {execution_id:string;state:string};
+    const resource=this.store.sqlite.prepare('SELECT execution_id,state,generation FROM branch_resources WHERE step_execution_id=?').get(stepId) as {execution_id:string;state:string;generation:number};
     const retained=this.branches.retainedFinalResourceExit(stepId);
-    if(retained){if(resource.state!=='retired')this.branches.requireFinalResourceFrontier(resource.execution_id,stepId);return;}
+    if(retained){if(resource.state!=='retired'){await this.verifyFinalPackage(resource.execution_id,stepId);this.branches.requireFinalResourceFrontier(resource.execution_id,stepId);}return;}
     if(resource.state==='retired'){
       this.branches.requireFinalResourceExit(resource.execution_id,stepId);return;
     }
@@ -45,6 +75,8 @@ export class BranchResourceService {
     this.branches.cancelResourceWork(stepId);
     await this.generationExitDrain(journal.identity.agentIds);
     if(!this.branches.resourceCanRetire(stepId,journal.identity.agentIds)||!this.idle(journal.identity.agentIds))throw Error('Final resource cleanup changed after drain');
+    if(resource.generation===0)await this.captureFinalPackage(resource.execution_id,stepId,true);
+    if(!this.branches.resourceCanRetire(stepId,journal.identity.agentIds)||!this.idle(journal.identity.agentIds))throw Error('Final resource cleanup changed after package capture');
     this.branches.captureFinalResourceExit(journal);
   }
   setPackageEngine(engine:BranchPackageEngine):void {this.packages=engine;}
@@ -108,6 +140,7 @@ export class BranchResourceService {
     return journal?{...(retryBudget?.state==='verified'?{historyKind:journal.snapshot.selected.forks.length?'local_parallel' as const:'serial' as const}:{}),retryBudget,...(retryBudget?.state==='verified'?{consumedAttempts:retryBudget.consumedAttempts,maxAttempts:retryBudget.maxAttempts}:{}),commandKey,generation:journal.source.intent.resourceGeneration,state:journal.state,...(journal.reviewHash?{reviewHash:journal.reviewHash}:{}),...(selection?{historicalPartition:selection,historicalReviewHash:createHash('sha256').update(stableJson(selection)).digest('hex')}:{}),...(journal.state==='retained'?{checkpointId:journal.checkpointId,checkpointHash:journal.checkpointHash,receipt:journal.receipt}:{}),restoreSupported:false}:{commandKey,state:'not_found',restoreSupported:false};
   }
   async captureIssuedResource(executionId:string,stepId:string,generation:number,commandKey:string,expectedReviewHash?:string):Promise<import('@ponderosa/core').BranchIssuedResourceCaptureDto> {
+    if(commandKey.startsWith('final-resource-package:'))throw Error('This capture key is reserved for final resource cleanup');
     const previous=this.branches.issuedResourceCapture(executionId,stepId,commandKey);
     if(previous&&generation>0&&expectedReviewHash!==previous.reviewHash)throw Error('Issued capture preview conflict');
     if(previous&&previous.source.intent.resourceGeneration!==generation)throw Error('Issued capture command conflict');
@@ -259,6 +292,7 @@ export class BranchResourceService {
       if(isMemoryCleanupHold(held?.error)||isMemoryCleanupHold(held?.retirement_error))continue;
       try {
         const capture=this.branches.resourceCaptureJournal(resource.stepExecutionId);
+        await this.captureFinalPackage(resource.executionId,resource.stepExecutionId,false);
         if(capture?.state==='capturing'&&!this.branches.resourceCaptureAbandoned(resource.stepExecutionId)||this.branches.issuedResourceCapturePending(resource.stepExecutionId))continue;
         if(capture?.state==='retained'){if(!this.packages||!capture.receipt)throw Error('Required checkpoint custody unavailable');await this.packages.readCheckpoint(capture.receipt);}
         this.branches.cancelResourceWork(resource.stepExecutionId);
@@ -266,7 +300,7 @@ export class BranchResourceService {
         await this.captureFinalExitBeforeCleanup(resource.stepExecutionId);
         if (!this.branches.resourceCanRetire(resource.stepExecutionId,resource.agentIds) || !this.idle(resource.agentIds)) continue;
         await this.deleteAgents(resource.agentIds);
-        if(this.branches.finalResourceExitRequired(resource.stepExecutionId))this.branches.requireFinalResourceFrontier(resource.executionId,resource.stepExecutionId);
+        if(this.branches.finalResourceExitRequired(resource.stepExecutionId)){await this.verifyFinalPackage(resource.executionId,resource.stepExecutionId);this.branches.requireFinalResourceFrontier(resource.executionId,resource.stepExecutionId);}
         if (!this.branches.resourceCanRetire(resource.stepExecutionId,resource.agentIds) || !this.idle(resource.agentIds)) continue;
         for (const id of resource.agentIds) {
           if (this.store.sqlite.prepare('SELECT 1 FROM provider_process_authority WHERE agent_id=?').get(id)) throw new Error('Provider process cleanup remains pending');

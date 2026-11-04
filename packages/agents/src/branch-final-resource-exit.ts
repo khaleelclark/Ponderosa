@@ -108,6 +108,15 @@ export function captureFinalResourceExit(db:Database.Database,journal:ReturnType
  const latestContinuation=encodeIssuedResourceContinuation(db,i.executionId,continuationSelected,envelope.hostDependencies,false,envelope.generationRetry);
  const selectedRow=issuedCheckpoint(db,i.executionId,i.stepId);
  if(!selectedRow)throw Error('Actual committed issued-resource selected checkpoint required');
+ // If the host reserved a final package, never substitute another checkpoint
+ // just because it sorts later. Older final exits without this marker remain readable.
+ const finalMarker=db.prepare('SELECT 1 FROM branch_commands WHERE execution_id=? AND command_key=?').get(i.executionId,`final-package-intent:${i.stepId}:0`);
+ if(finalMarker){
+  const journal=issuedResourceCapture(db,i.executionId,i.stepId,`final-resource-package:${i.stepId}:0`);
+  if(i.generation!==0||!journal||journal.state!=='retained'||selectedRow.id!==journal.checkpointId||selectedRow.content_hash!==journal.checkpointHash)
+   throw Error('Final package checkpoint differs from the selected final exit');
+ }
+
  readIssuedResourceContinuation(db,i.executionId,selectedRow.id,selectedRow.content_hash);
  const configuration=db.prepare('SELECT configuration_json FROM branch_executions WHERE id=?').get(i.executionId) as Row;
  const definition=db.prepare('SELECT definition_json,content_hash FROM branch_versions WHERE id=? AND branch_id=?').get(i.versionId,i.branchId) as Row;
