@@ -618,7 +618,9 @@ export class CoordinationV3RuntimeCommunicationReadModel {
         else if (activation.state === "outcome_unknown") {
           if (!recovery) state = injection?.kind === "steer" && injection.state === "outcome_unknown"
             ? "unconfirmed" : injection?.state === "acknowledged" ? "run_unconfirmed" : "undelivered";
-          else if (recovery.state === "grace_period") state = "unconfirmed";
+          else if (recovery.state === "grace_period" ||
+            (injection?.kind === "steer" && injection.state === "outcome_unknown" &&
+             ["pending","retry_pending"].includes(recovery.recovery_activation_state ?? ""))) state = "unconfirmed";
           else if (recovery.recovery_activation_state === "consumed") state = "recovered";
           else if (
             ["failed", "outcome_unknown", "cancelled"]

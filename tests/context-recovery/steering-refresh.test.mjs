@@ -267,7 +267,7 @@ test('legacy mixed-source uncertain recoveries stay held while unrelated work re
   const chat=await f.createChat('Legacy steering recovery'),agent=await f.createIdleAgent(chat,'Worker');
   await f.hold(agent.id);
   const run=(await f.detail(agent.id)).runs[0].id;
-  await f.send(agent.id,'Unconfirmed human steer',{activeRunDelivery:'steer'});
+  const correction=await f.send(agent.id,'Unconfirmed human steer',{activeRunDelivery:'steer'});
   const injection=await until(()=>store.sqlite.prepare("SELECT id,activation_ids_json FROM scheduler_prompt_injections WHERE run_id=? AND kind='steer' AND state='outcome_unknown'").get(run),'unknown steer');
   const human=JSON.parse(injection.activation_ids_json)[0],coordination=new CoordinationV3Store(store.sqlite);
   const now=new Date().toISOString(),scopeKey=`conversation:${chat.id}`;
@@ -279,6 +279,9 @@ test('legacy mixed-source uncertain recoveries stay held while unrelated work re
   store.sqlite.prepare("UPDATE scheduler_steering_recoveries SET state='recovery_queued' WHERE injection_id=?").run(injection.id);
   const mapping=store.sqlite.prepare('INSERT INTO scheduler_steering_recovery_activations(injection_id,source_activation_id,recovery_activation_id) VALUES(?,?,?)');
   mapping.run(injection.id,human,humanRetry);mapping.run(injection.id,peer,peerRetry);
+  const receipt=(await f.detail(agent.id)).messages.find(m=>m.communicationEventId===correction.communicationEventId).deliveryReceipts[0];
+  assert.equal(receipt.state,'unconfirmed','A held legacy recovery must not promise a queued retry');
+  assert.notEqual(receipt.canRetry,true);
   // Simulate a peer member that was already attached to the old injection.
   store.sqlite.prepare("UPDATE agent_activations SET state='outcome_unknown' WHERE id=?").run(peer);
   const unrelated=add('independent-future-work','human');
