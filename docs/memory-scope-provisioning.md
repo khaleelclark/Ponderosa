@@ -63,8 +63,13 @@ original backend and restart to recheck the scope. Package
 restore and cleanup cannot treat unexplained absence as a successful create or
 deletion; a partial cleanup without an exact receipt may therefore need review.
 
-Automatic Chat, Project and Agent memory cleanup, package rollback and
-post-write compensation remain held before any destructive request. The
+Automatic cleanup of created Chat, Project and Agent memory, package rollback
+and post-write compensation remain held before any destructive request. A
+deleted Chat whose exact installation-bound creation intent remains planned
+for both collections and has no unresolved mutation can finish cleanup as a
+no-effect operation. It never touches an independently created same-name
+collection. This check waits for memory readiness; if inference or inventory
+is unavailable, cleanup remains pending. The
 current Chroma API deletes collections by name and records by ID without an
 atomic identity-and-content precondition; another writer can replace the target
 between inspection and deletion. Local receipts or advisory locks do not close

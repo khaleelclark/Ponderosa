@@ -297,6 +297,72 @@ test('a planned new Chat scope survives a lost pre-dispatch response and can saf
  await f.reopen();
 });
 
+test('deleting a never-provisioned Chat preserves unrelated same-name collections',async t=>{
+ const f=await instance(t),memory=f.memory,raw=memory.core.database.raw,original=memory.provisionNewChat.bind(memory);
+ memory.provisionNewChat=async()=>{throw Error('synthetic pre-dispatch interruption');};
+ let created;
+ try{created=await f.app.inject({method:'POST',url:'/api/chats',headers:{...f.headers,'idempotency-key':randomUUID()},payload:{label:'Never provisioned',hostPath:f.root,defaultEngine:'fixture'}});}
+ finally{memory.provisionNewChat=original;}
+ assert.equal(created.statusCode,409,created.body);const chatId=created.json().chatId,scope='chat:'+chatId;
+ assert.deepEqual(f.store.sqlite.prepare('SELECT memory_state,log_state FROM local_memory_scope_provisioning WHERE chat_id=?').get(chatId),{memory_state:'planned',log_state:'planned'});
+ const foreign=await raw.client.createCollection({name:raw.names(scope).memory,metadata:{ownership:'independent'}});
+ await foreign.add({ids:['foreign'],documents:['Keep this unrelated data'],embeddings:[vector]});
+ const originalDelete=raw.client.deleteCollection.bind(raw.client);let deletes=0;
+ raw.client.deleteCollection=async args=>{deletes++;return originalDelete(args);};
+ try{
+  const result=await f.app.inject({method:'DELETE',url:'/api/conversations/'+chatId,headers:f.headers});
+  assert.equal(result.statusCode,200,result.body);assert.equal(result.json().cleanupPending,false,result.body);
+  assert.equal(deletes,0);assert.deepEqual((await foreign.get()).ids,['foreign']);
+  assert.equal(f.store.getConversationDeletionReceipt(chatId).serverCleanupCompleted,true);
+ }finally{raw.client.deleteCollection=originalDelete;}
+ await f.reopen();
+ assert.equal(f.store.getConversationDeletionReceipt(chatId).serverCleanupCompleted,true);
+ const preserved=await f.memory.core.database.raw.client.getCollection({name:raw.names(scope).memory});
+ assert.deepEqual((await preserved.get()).ids,['foreign']);
+});
+
+test('Chat cleanup waits for in-flight provisioning before deciding there was no effect',async t=>{
+ const f=await instance(t),memory=f.memory,raw=memory.core.database.raw,original=memory.provisionNewChat.bind(memory);
+ memory.provisionNewChat=async()=>{throw Error('synthetic pre-dispatch interruption');};
+ let created;
+ try{created=await f.app.inject({method:'POST',url:'/api/chats',headers:{...f.headers,'idempotency-key':randomUUID()},payload:{label:'Queued provisioning',hostPath:f.root,defaultEngine:'fixture'}});}
+ finally{memory.provisionNewChat=original;}
+ assert.equal(created.statusCode,409,created.body);const chatId=created.json().chatId;
+ let release,entered;const gate=new Promise(resolve=>{release=resolve;}),started=new Promise(resolve=>{entered=resolve;});
+ const provisioning=raw.exclusive(async()=>{entered();await gate;f.store.sqlite.prepare("UPDATE local_memory_scope_provisioning SET memory_state='submitted' WHERE chat_id=?").run(chatId);});
+ await started;
+ const deleting=f.app.inject({method:'DELETE',url:'/api/conversations/'+chatId,headers:f.headers});
+ const deadline=Date.now()+5000;while(!f.store.getConversationDeletionReceipt(chatId)&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,10));
+ assert.ok(f.store.getConversationDeletionReceipt(chatId));release();await provisioning;
+ const result=await deleting;assert.equal(result.statusCode,200,result.body);assert.equal(result.json().cleanupPending,true,result.body);
+ assert.match(f.store.getConversationDeletionReceipt(chatId).lastError,/Memory cleanup held/);
+});
+
+for(const invalid of ['generation','principal','storage','unknown-effect'])test(`never-provisioned Chat cleanup holds when ${invalid} proof is uncertain`,async t=>{
+ const f=await instance(t),memory=f.memory,raw=memory.core.database.raw,original=memory.provisionNewChat.bind(memory);
+ memory.provisionNewChat=async()=>{throw Error('synthetic pre-dispatch interruption');};
+ let created;
+ try{created=await f.app.inject({method:'POST',url:'/api/chats',headers:{...f.headers,'idempotency-key':randomUUID()},payload:{label:'Uncertain proof',hostPath:f.root,defaultEngine:'fixture'}});}
+ finally{memory.provisionNewChat=original;}
+ assert.equal(created.statusCode,409,created.body);const chatId=created.json().chatId;
+ let evidence;
+ if(invalid==='unknown-effect'){
+  evidence=path.join(f.options.localMemory.stateDirectory,'source-mutation-holds',randomUUID()+'.json');
+  await writeFile(evidence,JSON.stringify({version:1,id:path.basename(evidence,'.json'),state:'remote_write_unsettled'}),{mode:0o600});
+ }else{
+  const column={generation:'data_generation',principal:'principal_id',storage:'storage_binding'}[invalid];
+  f.store.sqlite.prepare(`UPDATE local_memory_scope_provisioning SET ${column}=? WHERE chat_id=?`).run(randomUUID(),chatId);
+ }
+ const originalDelete=raw.client.deleteCollection.bind(raw.client);let deletes=0;
+ raw.client.deleteCollection=async args=>{deletes++;return originalDelete(args);};
+ try{
+  const result=await f.app.inject({method:'DELETE',url:'/api/conversations/'+chatId,headers:f.headers});
+  assert.equal(result.statusCode,200,result.body);assert.equal(result.json().cleanupPending,true,result.body);
+  assert.match(f.store.getConversationDeletionReceipt(chatId).lastError,/Memory cleanup held/);assert.equal(deletes,0);
+  if(evidence)assert.match(await readFile(evidence,'utf8'),/remote_write_unsettled/);
+ }finally{raw.client.deleteCollection=originalDelete;}
+});
+
 test('a submitted but missing Chat collection remains held without another create',async t=>{
  const f=await instance(t),memory=f.memory,client=memory.core.database.raw.client,key=randomUUID(),original=client.createCollection.bind(client);let calls=0;
  client.createCollection=async()=>{calls++;throw Error('synthetic unknown create outcome');};

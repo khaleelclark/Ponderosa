@@ -223,8 +223,14 @@ export class LocalMemoryService{
    await this.ready();
    const guard=async()=>{this.live();const receipt=this.ports.store.getConversationDeletionReceipt(chatId);if(!receipt?.canonicalDeletionCompleted||this.ports.store.getConversation(chatId,{includeDeleting:true}))throw new MemoryDenied('Exact committed Chat deletion required');};
    await guard();const receipt=this.ports.store.getConversationDeletionReceipt(chatId)!;
-   if(!this.isProvenTemporaryChat(chatId,receipt.projectId,receipt.branchId)){await this.core.database.purge('chat:'+chatId,guard);await guard();}
-   else if(this.core.database.scopeHasUnsettledMutation('chat:'+chatId))throw Error(MEMORY_CLEANUP_HOLD);
+   if(!this.isProvenTemporaryChat(chatId,receipt.projectId,receipt.branchId)){
+    // Serialize this no-effect proof with provisioning.
+    const neverProvisioned=await this.core.database.raw.exclusive(async()=>{
+     await guard();return this.isProvenUnprovisionedChat(chatId,receipt.projectId);
+    });
+    if(!neverProvisioned)await this.core.database.purge('chat:'+chatId,guard);
+    await guard();
+   }else if(this.core.database.scopeHasUnsettledMutation('chat:'+chatId))throw Error(MEMORY_CLEANUP_HOLD);
    this.policy.prepare('DELETE FROM local_memory_chat_grants WHERE chat_id=? AND principal_id=?').run(chatId,this.principalId);this.knownScopes.delete('chat:'+chatId);
   });
  }
@@ -251,6 +257,18 @@ export class LocalMemoryService{
    await guard();const chats=store.sqlite.prepare('SELECT id FROM conversations WHERE project_id=?').all(projectId) as {id:string}[];
    for(const {id}of chats){const chat=store.getConversation(id,{includeDeleting:true});await guard();if(chat&&this.isProvenTemporaryChat(id,projectId,chat.branchId)){if(this.core.database.scopeHasUnsettledMutation('chat:'+id))throw Error(MEMORY_CLEANUP_HOLD);}else await this.core.database.purge('chat:'+id,guard);await guard();this.policy.prepare('DELETE FROM local_memory_chat_grants WHERE chat_id=? AND principal_id=?').run(id,this.principalId);this.knownScopes.delete('chat:'+id);}
   });
+ }
+ // An exact, still-planned first-creation intent proves neither remote
+ // collection create was submitted by this installation. Do not access any
+ // independently created same-name collection. Caller holds the memory lock.
+ private isProvenUnprovisionedChat(chatId:string,projectId:string):boolean{
+  this.live();const db=this.ports.store.sqlite,scope='chat:'+chatId;
+  if(this.core.database.scopeHasUnsettledMutation(scope))return false;
+  const row=db.prepare('SELECT * FROM local_memory_scope_provisioning WHERE chat_id=?').get(chatId) as {project_id:string;data_generation:string;principal_id:string;storage_binding:string;intent_id:string;memory_state:string;log_state:string;memory_collection_id:string|null;log_collection_id:string|null}|undefined;
+  const generation=(db.prepare('SELECT generation_id FROM _state_generation WHERE singleton=1').get() as {generation_id:string}).generation_id;
+  const policy=this.policy.prepare('SELECT principal_id,data_generation,storage_binding FROM local_memory_installation WHERE id=1').get() as {principal_id:string;data_generation:string;storage_binding:string};
+  const binding=db.prepare('SELECT state,data_generation,principal_id,storage_binding FROM local_memory_host_binding WHERE singleton=1').get() as {state:string;data_generation:string;principal_id:string;storage_binding:string}|undefined;
+  return Boolean(row&&binding&&row.project_id===projectId&&row.data_generation===generation&&policy.data_generation===generation&&binding.data_generation===generation&&binding.state==='bound'&&row.principal_id===this.principalId&&row.principal_id===policy.principal_id&&row.principal_id===binding.principal_id&&row.storage_binding===policy.storage_binding&&row.storage_binding===binding.storage_binding&&/^[0-9a-f-]{36}$/.test(row.intent_id)&&row.memory_state==='planned'&&row.log_state==='planned'&&row.memory_collection_id===null&&row.log_collection_id===null);
  }
  // A retained resource generation proves this was an execution-only Chat. This
  // permits skipping backend cleanup, never accessing or deleting any collection.
