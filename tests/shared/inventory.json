@@ -1670,6 +1670,14 @@
       "requirements": "Node24, built workspaces, inert provider fixture and private state"
     },
     {
+      "path": "tests/context-recovery/reviewed-steering.test.mjs",
+      "feature": "context-recovery",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built workspaces; inert local Codex fixture, no provider account",
+      "origin": "Reviewed continuation preserves task, attachments and uncertain outcome"
+    },
+    {
       "path": "tests/context-recovery/steering-refresh.test.mjs",
       "feature": "context-recovery",
       "lane": "server",
