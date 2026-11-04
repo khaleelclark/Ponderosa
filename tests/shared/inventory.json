@@ -864,6 +864,14 @@
       "origin": "Pending physical memory cleanup must remain visible after logical deletion"
     },
     {
+      "path": "tests/chats/reviewed-continuation-hash.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, built workspace packages; no provider account",
+      "origin": "Exact reviewed continuation command hash across browser and server"
+    },
+    {
       "path": "tests/chats/delivery-recovery.test.mjs",
       "feature": "chats",
       "lane": "web",
@@ -2833,6 +2841,11 @@
       "path": "tests/shared/fixture.mjs",
       "moduleBase": "apps/server/package.json",
       "classification": "shared-fixture-or-loader"
+    },
+    {
+      "path": "tests/shared/inert-codex.mjs",
+      "moduleBase": "apps/server/package.json",
+      "classification": "shared-controlled-fixture"
     },
     {
       "oldPath": "apps/server/test/ui-qualification.mjs",

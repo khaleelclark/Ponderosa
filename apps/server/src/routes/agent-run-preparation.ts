@@ -484,7 +484,10 @@ export async function prepareAgentRun(
       }),
     });
   }
-  const runtimeAttachmentsFollowSession = Boolean(engine.adapter.openSession);
+  // The reviewed turn forces retirement of the old session after this point.
+  // Keep its copies Run-scoped so retirement cannot remove the new input.
+  const runtimeAttachmentsFollowSession = Boolean(engine.adapter.openSession) &&
+    !(v3SchedulerRunId && coordinationV3.isReviewedSteeringRun(v3SchedulerRunId));
   let runtimeAttachmentDirectory: string | undefined;
   const runtimeAttachmentCopies = new Map<
     string,
@@ -526,6 +529,10 @@ export async function prepareAgentRun(
       ...(await materializeRuntimeAttachment(item)),
     })),
   );
+  if (v3SchedulerRunId && coordinationV3.isReviewedSteeringRun(v3SchedulerRunId) &&
+      currentRuntimeAttachments.some(attachment => !attachment.available)) {
+    throw contextRecoveryRequired("A saved task or instruction attachment is unavailable. Restore it before continuing this reviewed task.");
+  }
   const controller = new AbortController();
   // Opaque retained tool results cannot be revalidated as this voice Run's memory
   // exposure. Reuse the existing fresh canonical boundary instead of an exposure journal.
@@ -553,6 +560,9 @@ export async function prepareAgentRun(
     throw new Error("durable context rollover continuation handoff is unavailable");
   }
   const rolloverRecovery = preflightRecoveryRollover;
+  const reviewedSteeringRun = Boolean(v3SchedulerRunId && coordinationV3.isReviewedSteeringRun(v3SchedulerRunId));
+  if (reviewedSteeringRun && (rolloverOwnsThisContinuation || rolloverRecovery))
+    throw new Error("A reviewed steering continuation cannot adopt a separate context rollover");
   const rolloverRecoveryHandoff = rolloverRecovery?.handoffEventId
     ? store.continuationHandoffForRollover(
         agent.id,
@@ -562,7 +572,9 @@ export async function prepareAgentRun(
   if (rolloverRecovery && !rolloverRecoveryHandoff) {
     throw new Error("authorized context rollover recovery handoff is unavailable");
   }
-  const genericHandoff = store.pendingContinuationHandoff(agent.id, schedulerRunScopeKey);
+  // A generic handoff may contain the uncertain old provider's own account of
+  // its work. The reviewed continuation instead reconstructs canonical context.
+  const genericHandoff = reviewedSteeringRun ? undefined : store.pendingContinuationHandoff(agent.id, schedulerRunScopeKey);
   const eligibleContinuationHandoff = rolloverContinuationHandoff
     ?? rolloverRecoveryHandoff
     ?? (genericHandoff && !coordinationV3.rolloverOwnsContinuationHandoff(agent.id, genericHandoff.id)

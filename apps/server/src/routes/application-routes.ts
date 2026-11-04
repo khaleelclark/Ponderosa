@@ -72,6 +72,7 @@ import { ProjectFileAuthority, registerProjectFileRoutes } from "./project-files
 import { registerProjectRoutes } from "./projects.js";
 import { registerProviderCommandRoutes } from "./provider-commands.js";
 import { registerQueuedMessageRoutes } from "./queued-messages.js";
+import { registerReviewedSteeringDrain } from "./reviewed-steering-drain.js";
 import { registerSearchRoutes } from "./search.js";
 import { registerStreamRoutes } from "./streams.js";
 import { registerWorkspaceDirectoryRoutes } from "./workspace-directory.js";
@@ -448,6 +449,12 @@ registerQueuedMessageRoutes(app, {
   publishCoordinationV3Changed,
   publishMessageDeliveryChanged,
   notifyScheduler: notifyScheduler,
+});
+registerReviewedSteeringDrain(app, {
+  store, coordinationV3, providerProcessAuthority, activeRuns,
+  persistentRuntimeForTermination, teardownPersistentRuntime,
+  projectDeletionInProgress: projectId => deletingProjectIds.has(projectId),
+  agentDeletionInProgress: agentId => deletingAgentIds.has(agentId),
 });
 registerCollaborationRoutes(app, {
   store,

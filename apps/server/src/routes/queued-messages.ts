@@ -605,6 +605,43 @@ export function registerQueuedMessageRoutes(
     } satisfies LetCurrentRunFinishResponse);
   });
 
+  // Explicit human review of an unconfirmed interruption. The previous
+  // delivery and its external effects stay unknown; this is a new authorized
+  // continuation of the same task, not an automatic delivery retry.
+  app.get<{Params:{projectId:string;activationId:string}}>(
+    "/api/projects/:projectId/message-deliveries/:activationId/reviewed-continuation", async (request,reply) => {
+      const {projectId,activationId}=request.params;
+      try {
+        const receipt=coordinationV3.recordedReviewedSteering(projectId,activationId);
+        return receipt ? {status:"continuation_recorded",receipt}
+          : {status:"review_required",review:coordinationV3.previewReviewedSteering(projectId,activationId)};
+      } catch (error) {
+        try {
+          if (coordinationV3.reviewedSteeringSourceRetirementNeeded(projectId,activationId))
+            return {status:"source_retirement_required",originalOutcome:"unknown"};
+        } catch { /* Preserve the original eligibility failure. */ }
+        return reply.code(409).send({error:error instanceof Error ? error.message : "The original task cannot yet be reviewed."});
+      }
+    });
+
+  app.post<{Params:{projectId:string;activationId:string};Body:{reviewSha256:string;effectsReviewed:boolean;reviewNote?:string;idempotencyKey:string}}>(
+    "/api/projects/:projectId/message-deliveries/:activationId/reviewed-continuation", async (request,reply) => {
+      const body=request.body;
+      if(!body || typeof body!=="object" || Array.isArray(body) ||
+        Object.keys(body).some(key=>!["reviewSha256","effectsReviewed","reviewNote","idempotencyKey"].includes(key)) ||
+        typeof body.reviewSha256!=="string" || typeof body.idempotencyKey!=="string" ||
+        body.effectsReviewed!==true || (body.reviewNote!==undefined && typeof body.reviewNote!=="string"))
+        return reply.code(400).send({error:"Review the original task and uncertain effects before continuing."});
+      try {
+        const receipt=coordinationV3.continueReviewedSteering({...request.params,...body});
+        bestEffort(notifyScheduler);
+        bestEffort(()=>publishMessageDeliveryChanged(receipt.agentId));
+        return reply.code(202).send({status:"continuation_recorded",receipt});
+      } catch(error) {
+        return reply.code(409).send({error:error instanceof Error ? error.message : "The reviewed continuation remains held."});
+      }
+    });
+
   app.post<{
     Params: { projectId: string; activationId: string };
     Body: RetryMessageDeliveryRequest;

@@ -43,6 +43,7 @@ import { CoordinationV3CoordinateAuthority } from "./coordination-v3-coordinate-
 import { CoordinationV3RequestRecoveryAuthority } from "./coordination-v3-request-recovery-authority.js";
 import { CoordinationV3QuestionAuthority } from "./coordination-v3-question-authority.js";
 import { CoordinationV3SteeringAuthority } from "./coordination-v3-steering-authority.js";
+import { ReviewedSteeringAuthority } from "./coordination-v3-reviewed-steering.js";
 import { CoordinationV3SchedulerLeaseAuthority } from "./coordination-v3-scheduler-lease-authority.js";
 import { CoordinationV3RequestAuthority } from "./coordination-v3-request-authority.js";
 import { CoordinationV3RunLifecycleAuthority } from "./coordination-v3-run-lifecycle-authority.js";
@@ -1135,6 +1136,67 @@ export class CoordinationV3Store {
     error?: string;
   }): void {
     this.steeringAuthority.markSteeringOutcomeUnknown(input);
+  }
+
+  recordedReviewedSteering(projectId:string, activationId:string) {
+    return new ReviewedSteeringAuthority(this.sqlite,input=>this.createActivation(input)).recorded(projectId,activationId);
+  }
+  assertReviewedSteeringClaim(projectId:string, activationId:string) {
+    return new ReviewedSteeringAuthority(this.sqlite,input=>this.createActivation(input)).assertClaim(projectId,activationId);
+  }
+  isReviewedSteeringRun(runId:string):boolean {
+    return Boolean(this.sqlite.prepare(`SELECT 1 FROM scheduler_run_activations attached
+      JOIN activation_sources source ON source.activation_id=attached.activation_id
+      WHERE attached.run_id=? AND source.source_kind='reviewed_steering' LIMIT 1`).get(runId));
+  }
+
+  assertRunReviewedSteeringLease(projectId:string,runId:string,fence:number) {
+    return this.sqlite.transaction(() => {
+      const rows=this.sqlite.prepare(`SELECT attached.activation_id FROM scheduler_run_activations attached
+        JOIN activation_sources source ON source.activation_id=attached.activation_id
+        JOIN scheduler_runs run ON run.id=attached.run_id
+        WHERE run.id=? AND run.project_id=? AND run.fencing_token=?
+          AND run.status IN ('leased','running') AND run.side_effects_fenced_at IS NULL
+          AND source.source_kind='reviewed_steering'`).all(runId,projectId,fence) as Array<{activation_id:string}>;
+      if (!rows.length) {
+        if (this.isReviewedSteeringRun(runId)) throw new Error("Reviewed continuation lost its Run fence.");
+        return;
+      }
+      const count=(this.sqlite.prepare("SELECT COUNT(*) AS n FROM scheduler_run_activations WHERE run_id=?").get(runId) as {n:number}).n;
+      if(rows.length!==1 || count!==1) throw new Error("Reviewed continuation is not isolated.");
+      new ReviewedSteeringAuthority(this.sqlite, () => { throw new Error("Unexpected activation creation"); })
+        .assertLease(projectId,rows[0]!.activation_id,runId);
+    })();
+  }
+
+  assertRunReviewedSteeringSubmission(projectId:string,runId:string,fence:number):void {
+    this.sqlite.transaction(()=>{
+      const rows=this.sqlite.prepare(`SELECT attached.activation_id FROM scheduler_run_activations attached
+        JOIN activation_sources source ON source.activation_id=attached.activation_id
+        WHERE attached.run_id=? AND source.source_kind='reviewed_steering'`).all(runId) as Array<{activation_id:string}>;
+      if(!rows.length)return;
+      const n=(this.sqlite.prepare("SELECT COUNT(*) n FROM scheduler_run_activations WHERE run_id=?").get(runId) as {n:number}).n;
+      if(rows.length!==1 || n!==1)throw Error("Reviewed continuation is not isolated.");
+      new ReviewedSteeringAuthority(this.sqlite,()=>{throw new Error("Unexpected activation creation");})
+        .assertSubmission(projectId,rows[0]!.activation_id,runId,fence);
+    })();
+  }
+
+  reviewedSteeringDrainTarget(projectId:string,activationId:string) {
+    return new ReviewedSteeringAuthority(this.sqlite,input=>this.createActivation(input)).drainTarget(projectId,activationId);
+  }
+
+  reviewedSteeringSourceRetirementNeeded(projectId:string,activationId:string):boolean {
+    const target=this.reviewedSteeringDrainTarget(projectId,activationId);
+    return Boolean(this.sqlite.prepare("SELECT 1 FROM provider_process_authority WHERE agent_id=? AND project_id=? AND run_id=? LIMIT 1")
+      .get(target.agentId,projectId,target.runId));
+  }
+
+  previewReviewedSteering(projectId:string, activationId:string) {
+    return new ReviewedSteeringAuthority(this.sqlite,input=>this.createActivation(input)).preview(projectId,activationId);
+  }
+  continueReviewedSteering(input:{projectId:string;activationId:string;reviewSha256:string;effectsReviewed:boolean;reviewNote?:string;idempotencyKey:string}) {
+    return new ReviewedSteeringAuthority(this.sqlite,value=>this.createActivation(value)).continue(input);
   }
 
   letCurrentRunFinish(input: {

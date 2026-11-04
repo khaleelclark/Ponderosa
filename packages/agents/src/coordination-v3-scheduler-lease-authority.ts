@@ -1,3 +1,4 @@
+import { ReviewedSteeringAuthority } from "./coordination-v3-reviewed-steering.js";
 import {branchInstallationHoldSql,branchInstallationTables} from './branch-installation-hold.js';
 import {generationExitHoldSql} from './branch-generation-exit-fence.js';
 import { randomUUID } from "node:crypto";
@@ -310,12 +311,17 @@ export class CoordinationV3SchedulerLeaseAuthority {
       const candidateIsContextRollover = isContextRolloverCandidate(
         queuedActivations[0]!,
       );
-      const activations = candidateIsExplicitQueuedTurn || candidateIsContextRollover
+      const isReviewedSteering = (activation: ActivationRow) => Boolean(this.sqlite.prepare(
+        "SELECT 1 FROM activation_sources WHERE activation_id=? AND source_kind='reviewed_steering'"
+      ).get(activation.id));
+      const candidateIsReviewedSteering = isReviewedSteering(queuedActivations[0]!);
+      const activations = candidateIsExplicitQueuedTurn || candidateIsContextRollover || candidateIsReviewedSteering
         ? [queuedActivations[0]!]
         : queuedActivations
           .filter((activation) =>
             !isExplicitQueuedTurn(activation) &&
             !isContextRolloverCandidate(activation) &&
+            !isReviewedSteering(activation) &&
             startsFreshTask(activation) === candidateStartsFreshTask)
           .slice(0, limit);
       if (activations.length === 0) return undefined;
@@ -326,6 +332,17 @@ export class CoordinationV3SchedulerLeaseAuthority {
       )) {
         this.activationLifecycle.settleUnauthorizedPendingActivations(now);
         return undefined;
+      }
+      if (candidateIsReviewedSteering) {
+        try {
+          new ReviewedSteeringAuthority(this.sqlite, () => { throw new Error("Unexpected activation creation"); })
+            .assertClaim(candidate.project_id, activations[0]!.id);
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : "Reviewed continuation evidence changed.";
+          this.sqlite.prepare("UPDATE agent_activations SET state='failed',terminal_outcome='permanent_failure',last_delivery_error=?,terminal_at=?,updated_at=? WHERE id=? AND state IN ('pending','retry_pending')")
+            .run(reason, now, now, activations[0]!.id);
+          return undefined;
+        }
       }
       const fencingToken = this.support.nextFence(candidate.agent_id);
       const runId = randomUUID();
