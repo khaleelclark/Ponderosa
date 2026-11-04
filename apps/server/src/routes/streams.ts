@@ -215,7 +215,12 @@ export function registerStreamRoutes(
         closeStream();
         return;
       }
+      const projectionFailed = (error: unknown): void => {
+        request.log.warn({err:error}, "workspace stream projection failed; reconnect to replay");
+        closeStream();
+      };
       const writeEvent = (event: WorkspaceEventEnvelope, replayed = false) => {
+        try {
         if (event.id <= cursor) return;
         if (encodedBytes(event) > MAX_SSE_EVENT_BYTES) {
           // Advance explicitly through canonical reconciliation, never loop
@@ -242,8 +247,10 @@ export function registerStreamRoutes(
           serverMetrics.sseBackpressure();
           closeStream();
         }
+        } catch(error) { projectionFailed(error); }
       };
       subscriber = (event: WorkspaceEventEnvelope) => {
+        try {
         if (replaying) {
           const eventBytes = encodedBytes(event);
           if (queued.length >= MAX_SSE_QUEUED_EVENTS ||
@@ -255,6 +262,7 @@ export function registerStreamRoutes(
           queuedBytes += eventBytes;
         }
         else writeEvent(event);
+        } catch(error) { projectionFailed(error); }
       };
       workspaceSubscribers.add(subscriber);
       liveSseClosures.add(closeStream);

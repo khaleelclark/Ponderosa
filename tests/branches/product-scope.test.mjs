@@ -222,18 +222,23 @@ test('pending Branch Output roles stay private in snapshots, live events and rep
   const projected=async()=>f.ok(await f.api('GET','/api/branches/engine/workspace/preferences')).outputApps;
   const hidden=roles=>{assert.deepEqual(roles.agentIds,[stable.id]);assert.equal(roles.speakerAgentId,null);assert.deepEqual(roles.agentEpochs,{[stable.id]:1});assert.equal(JSON.stringify(roles).includes(reviewMarker),false);};
   hidden(await projected());
-  const core=f.ok(await f.api('GET','/api/workspace/preferences')).outputApps;assert.deepEqual(core.agentIds,[]);assert.equal(core.speakerAgentId,null);assert.equal(JSON.stringify(core).includes(foreign.id),false);
+  assert.equal((await f.api('GET',`/api/branches/engine/conversations/${encodeURIComponent('agent:'+pending.agent.id)}/draft?ownerId=scope-test`)).status,404);
+  const core=f.ok(await f.api('GET','/api/workspace/preferences')).outputApps;assert.deepEqual(core.agentIds,[stable.id]);assert.equal(core.speakerAgentId,null);assert.equal(JSON.stringify(core).includes(foreign.id),false);
+  assert.equal((await f.api('PUT',`/api/branches/output-apps/${foreign.id}`,{enabled:true})).status,409,'Core-owned Agents are not currently valid Output owners');
   const origin=await f.listen(),abort=new AbortController(),record={text:''};
   const response=await fetch(origin+'/api/branches/engine/workspace/stream',{signal:abort.signal});assert.equal(response.status,200);
   const reading=(async()=>{try{for await(const bytes of response.body)record.text+=Buffer.from(bytes).toString('utf8');}catch(error){if(!abort.signal.aborted)throw error;}})();
+  const coreAbort=new AbortController(),coreResponse=await fetch(origin+'/api/workspace/stream',{signal:coreAbort.signal}),coreRecord={text:''};assert.equal(coreResponse.status,200);
+  const coreReading=(async()=>{try{for await(const bytes of coreResponse.body)coreRecord.text+=Buffer.from(bytes).toString('utf8');}catch(error){if(!coreAbort.signal.aborted)throw error;}})();
   let replayAbort,replayReading;
   try{
-   await until(()=>record.text.includes('workspace_status'),'Output projection live stream');
+   await until(()=>record.text.includes('workspace_status')&&coreRecord.text.includes('workspace_status'),'Output projection live streams');
    const cursor=workspace.cursor(),marker='output-projection-'+randomUUID();
    f.ok(await f.api('PATCH','/api/branches/engine/workspace/preferences',{globalInstructions:marker}));
    await until(()=>record.text.includes(marker),'projected Output live event');
    const events=text=>text.split('\n').filter(line=>line.startsWith('data: ')).map(line=>{try{return JSON.parse(line.slice(6));}catch{return null;}}).filter(x=>x?.event?.type==='preferences_updated'&&x.event.preferences.globalInstructions===marker);
    const live=events(record.text);assert.equal(live.length,1);hidden(live[0].event.preferences.outputApps);assert.equal(JSON.stringify(live[0]).includes(pending.agent.id),false);
+   await until(()=>coreRecord.text.includes(marker),'Core Output live event');const coreLive=events(coreRecord.text);assert.equal(coreLive.length,1);hidden(coreLive[0].event.preferences.outputApps);
    replayAbort=new AbortController();const replay=await fetch(origin+'/api/branches/engine/workspace/stream?lastEventId='+cursor,{signal:replayAbort.signal});assert.equal(replay.status,200);
    const replayRecord={text:''};replayReading=(async()=>{try{for await(const bytes of replay.body)replayRecord.text+=Buffer.from(bytes).toString('utf8');}catch(error){if(!replayAbort.signal.aborted)throw error;}})();
    await until(()=>replayRecord.text.includes(marker),'projected Output replay event');
@@ -244,8 +249,40 @@ test('pending Branch Output roles stay private in snapshots, live events and rep
    store.sqlite.prepare('UPDATE branch_installation_resources SET staging_plan_id=? WHERE branch_id=? AND package_id=?').run(plan,branch.id,plan);
    store.sqlite.prepare("UPDATE branch_installation_plans SET state='completed' WHERE id=?").run(plan);
    const published=await projected();assert.deepEqual(published.agentIds,[stable.id,pending.agent.id]);assert.equal(published.speakerAgentId,pending.agent.id);assert.equal(JSON.stringify(published).includes(reviewMarker),false);
+   const corePublished=f.ok(await f.api('GET','/api/workspace/preferences')).outputApps;assert.deepEqual(corePublished.agentIds,[stable.id,pending.agent.id]);assert.equal(corePublished.speakerAgentId,pending.agent.id);
+   assert.equal((await f.api('GET',`/api/branches/engine/conversations/${encodeURIComponent('agent:'+pending.agent.id)}/draft?ownerId=scope-test`)).status,200);
    assert.ok(workspace.getPreferences().outputApps.importReviews[reviewMarker],'public projection must not mutate canonical review state');
-  }finally{abort.abort();replayAbort?.abort();await reading;await replayReading;}
+  }finally{abort.abort();coreAbort.abort();replayAbort?.abort();await reading;await coreReading;await replayReading;}
+ },{storeFactory:dataDir=>(store=new AgentStore(dataDir))});
+});
+
+test('workspace projection failure closes the subscriber so reconnect replays the missed event',async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const {products}=await setup(f),agent=products.branches[0].agent;
+  let workspace;const update=WorkspaceStore.prototype.updatePreferences;
+  WorkspaceStore.prototype.updatePreferences=function(patch){workspace=this;return update.call(this,patch);};
+  try{f.ok(await f.api('PATCH','/api/branches/engine/workspace/preferences',{globalInstructions:'capture workspace'}));}
+  finally{WorkspaceStore.prototype.updatePreferences=update;}
+  workspace.updatePreferences({outputApps:{agentIds:[agent.id],speakerAgentId:null,initialized:true}});
+  const origin=await f.listen(),abort=new AbortController(),record={text:'',closed:false};
+  const response=await fetch(origin+'/api/branches/engine/workspace/stream',{signal:abort.signal});assert.equal(response.status,200);
+  const reading=(async()=>{try{for await(const bytes of response.body)record.text+=Buffer.from(bytes).toString('utf8');}catch(error){if(!abort.signal.aborted&&!(error instanceof TypeError))throw error;}finally{record.closed=true;}})();
+  let replayAbort,replayReading;const prepare=store.sqlite.prepare;
+  try{
+   await until(()=>record.text.includes('workspace_status'),'projection failure live stream');
+   const cursor=workspace.cursor(),marker='projection-replay-'+randomUUID();let injected=false;
+   store.sqlite.prepare=function(sql,...args){if(!injected&&typeof sql==='string'&&sql.includes('SELECT 1 FROM agents a JOIN conversations c ON')){injected=true;throw Error('controlled workspace projection failure');}return prepare.call(this,sql,...args);};
+   try{f.ok(await f.api('PATCH','/api/branches/engine/workspace/preferences',{globalInstructions:marker}));}
+   finally{store.sqlite.prepare=prepare;}
+   assert.equal(injected,true);await until(()=>record.closed,'failed workspace subscriber closed');
+   assert.equal(record.text.includes(marker),false);
+   replayAbort=new AbortController();const replay=await fetch(origin+'/api/branches/engine/workspace/stream?lastEventId='+cursor,{signal:replayAbort.signal});assert.equal(replay.status,200);
+   const replayRecord={text:''};replayReading=(async()=>{try{for await(const bytes of replay.body)replayRecord.text+=Buffer.from(bytes).toString('utf8');}catch(error){if(!replayAbort.signal.aborted)throw error;}})();
+   await until(()=>replayRecord.text.includes(marker),'replayed event after projection failure');
+   const event=replayRecord.text.split('\n').filter(line=>line.startsWith('data: ')).map(line=>{try{return JSON.parse(line.slice(6));}catch{return null;}}).find(value=>value?.event?.preferences?.globalInstructions===marker);
+   assert.equal(event.replayed,true);assert.deepEqual(event.event.preferences.outputApps.agentIds,[agent.id]);
+  }finally{store.sqlite.prepare=prepare;abort.abort();replayAbort?.abort();await reading;await replayReading;}
  },{storeFactory:dataDir=>(store=new AgentStore(dataDir))});
 });
 

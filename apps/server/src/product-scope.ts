@@ -112,8 +112,10 @@ function preferenceMember(store:Pick<AgentStore,'sqlite'>,kind:string,id:string,
 /** Project role references against current ownership, including an active
  * resource whose installation is not yet committed. Workspace events carry
  * historical preference snapshots, so perform this check at delivery time. */
-function visibleOutputAgent(store:Pick<AgentStore,'sqlite'>,id:string,product:ProductScope):boolean {
- if(product!=='branches'||!resourceInProduct(store,'agent',id,product))return false;
+function visibleOutputAgent(store:Pick<AgentStore,'sqlite'>,id:string):boolean {
+ // Assistant and Output roles are global, and are shown from Core as well as
+ // Branches. Their owning Chat remains a Branches resource in either view.
+ if(!resourceInProduct(store,'agent',id,'branches'))return false;
  return Boolean(store.sqlite.prepare(`SELECT 1 FROM agents a JOIN conversations c ON c.id=a.conversation_id AND c.project_id=a.project_id
   JOIN branches b ON b.id=c.branch_id AND b.deleting=0
   WHERE a.id=? AND a.deleted_at IS NULL AND c.branch_execution_id IS NULL
@@ -125,7 +127,7 @@ export function productPreferences(store:Pick<AgentStore,'sqlite'>,preferences:W
  const result={...preferences} as WorkspacePreferencesDto & Record<string,unknown>;
  if(preferences.outputApps){
   const roles=preferences.outputApps,visible=new Map<string,boolean>();
-  const permits=(id:string)=>{if(!visible.has(id))visible.set(id,visibleOutputAgent(store,id,product));return visible.get(id)!;};
+  const permits=(id:string)=>{if(!visible.has(id))visible.set(id,visibleOutputAgent(store,id));return visible.get(id)!;};
   // Import reviews and setup are internal journal state. Reviews are returned
   // by their dedicated preview endpoints, not by workspace preferences.
   const {importReviews:_reviews,setup:_setup,agentEpochs,...publicRoles}=roles;
@@ -188,7 +190,8 @@ function agentDraftOwner(store:AgentStore,request:FastifyRequest):{surfaceId:str
       AND NOT EXISTS(SELECT 1 FROM project_deletion_pending WHERE project_id=p.id)
       AND NOT EXISTS(SELECT 1 FROM conversation_deletion_receipts WHERE conversation_id=c.id)
       AND NOT EXISTS(SELECT 1 FROM branch_installation_resources inactive
-        WHERE inactive.local_id IN (a.id,c.id) AND inactive.state!='active')`).get(agentId) as {conversation_id:string}|undefined;
+        WHERE inactive.local_id IN (a.id,c.id) AND (inactive.state!='active' OR
+          (inactive.staging_plan_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM branch_installation_plans plan WHERE plan.id=inactive.staging_plan_id AND plan.state='completed'))))`).get(agentId) as {conversation_id:string}|undefined;
   if(!row||store.agentCreationPending(agentId))return undefined;
   return {surfaceId:surfaceId!,agentId,conversationId:row.conversation_id};
 }
@@ -212,7 +215,9 @@ export function retainedRuntimeResources(store:Pick<AgentStore,'sqlite'>,owner:s
       AND request.state IN ('open','in_progress','waiting_dependency','awaiting_answer')
       AND execution.state IN ('running','waiting') AND execution.cancel_requested=0 AND attempt.cancel_requested=0
       AND NOT EXISTS(SELECT 1 FROM branch_installation_resources inactive
-        WHERE inactive.local_id IN (agent.id,chat.id) AND inactive.state NOT IN ('active','retiring'))
+        WHERE inactive.local_id IN (agent.id,chat.id) AND (inactive.state NOT IN ('active','retiring') OR
+          (inactive.state='active' AND inactive.staging_plan_id IS NOT NULL AND NOT EXISTS(
+            SELECT 1 FROM branch_installation_plans plan WHERE plan.id=inactive.staging_plan_id AND plan.state='completed'))))
       AND EXISTS(SELECT 1 FROM branch_installation_resources retired
         WHERE retired.local_id IN (agent.id,chat.id) AND retired.state='retiring')
     LIMIT 1`).get(owner.conversationId,owner.runId,owner.agentId,owner.fencingToken,new Date().toISOString()) as {project_id:string}|undefined;
