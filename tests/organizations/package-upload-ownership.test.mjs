@@ -235,7 +235,8 @@ test('an exact deleted-owner status never returns a stale full import receipt',{
   };
   try{
    const lookup=f.api('GET',endpoint+'/by-request/'+requestId+'?conversationId='+chat.id);await reached;
-   assert.equal(f.ok(await f.api('DELETE','/api/conversations/'+chat.id)).deleted,true);
+   const deletion=await until(async()=>{const result=await f.api('DELETE','/api/conversations/'+chat.id);return result.status===409?undefined:result;},'worker lease release before Chat deletion');
+   assert.equal(f.ok(deletion).deleted,true);
    release();const response=await lookup;assert.equal(response.status,409);assert.equal(response.body.state,'destination_deleted');
    assert.equal(response.body.operationId,op.id);assert.equal(response.body.requestFingerprint,fingerprint);
    assert.equal('result' in response.body,false);assert.equal('payloadHash' in response.body,false);
@@ -283,7 +284,8 @@ test('committed Project deletion exposes only exact content-free import status',
   const wire=Buffer.from(JSON.stringify({conversationId:chat.id,engineMapping:{codex:'codex'}})+'\n{}'),fingerprint=importRequestFingerprint(wire);
   const op=f.ok(await f.api('POST',endpoint,wire,{'content-type':'application/vnd.ponderosa.agent-import','idempotency-key':requestId,'x-ponderosa-agent-package-fingerprint':fingerprint}));
   await until(async()=>{const response=await f.api('GET',endpoint+'/'+op.id);return response.status===200&&response.body.status==='failed';},'terminal import before Project deletion');
-  assert.equal(f.ok(await f.api('DELETE','/api/projects/'+chat.projectId)).deleted,true);
+  const deletion=await until(async()=>{const result=await f.api('DELETE','/api/projects/'+chat.projectId);return result.status===409?undefined:result;},'worker lease release before Project deletion');
+  assert.equal(f.ok(deletion).deleted,true);
   await f.reopen();
   const lookup=endpoint+'/by-request/'+requestId+'?conversationId='+chat.id,response=await f.api('GET',lookup);
   assert.equal(response.status,409);assert.equal(response.body.state,'destination_deleted');assert.equal(response.body.operationId,op.id);assert.equal(response.body.requestFingerprint,fingerprint);
