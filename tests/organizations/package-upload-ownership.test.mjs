@@ -107,20 +107,42 @@ test('same Project Chat cannot recover another Chat import',{timeout:30000},asyn
  },{storeFactory:dataDir=>(store=new AgentStore(dataDir))});
 });
 
-test('concurrent exact imports retain one request identity and reject changed input',{timeout:30000},async t=>{
+test('concurrent exact imports create one organization and replay it after restart',{timeout:30000},async t=>{
+ let store;
  await withFixture(t,async f=>{
   const chat=await f.createChat('Concurrent import'),requestId=randomUUID();
   const endpoint=`/api/projects/${chat.projectId}/agent-import-operations`;
-  const wire=Buffer.from(JSON.stringify({conversationId:chat.id,engineMapping:{codex:'codex'}})+'\n{}');
+  const pkg={schema:'ponderosa.agent-package.v1',mode:'template',kind:'organization',exportedAt:new Date().toISOString(),sourceLabel:'Concurrent organization',rootRef:'root',agents:[
+   {ref:'root',title:'Concurrent coordinator',engine:'codex',managementPermissions:{allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false}},
+   {ref:'child',managerRef:'root',title:'Concurrent specialist',engine:'codex',managementPermissions:{allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false}}
+  ]};
+  const wire=Buffer.from(JSON.stringify({conversationId:chat.id,engineMapping:{codex:'codex'}})+'\n'+JSON.stringify(pkg));
   const headers={'content-type':'application/vnd.ponderosa.agent-import','idempotency-key':requestId,'x-ponderosa-agent-package-fingerprint':importRequestFingerprint(wire)};
   const results=await Promise.all([f.api('POST',endpoint,wire,headers),f.api('POST',endpoint,wire,headers)]);
   assert.ok(results.every(result=>result.status===202||result.status===200),JSON.stringify(results));
-  assert.equal(results[0].body.id,results[1].body.id);
+  assert.equal(results[0].body.id,results[1].body.id,'both submissions return one operation');
   const changed=Buffer.concat([wire,Buffer.from(' ')]);
   assert.equal((await f.api('POST',endpoint,changed,{...headers,'x-ponderosa-agent-package-fingerprint':importRequestFingerprint(changed)})).status,409);
-  await until(async()=>{const result=await f.api('GET',`${endpoint}/${results[0].body.id}`);return result.status===200&&result.body.status!=='pending';},'concurrent import worker completion');
-  await drainImports();
- });
+  const completed=await until(async()=>{const result=f.ok(await f.api('GET',`${endpoint}/${results[0].body.id}`));return result.status!=='pending'&&result;},'concurrent import worker completion');
+  assert.equal(completed.status,'completed',JSON.stringify(completed));
+  assert.equal(completed.result.agentIds.length,2);assert.equal(new Set(completed.result.agentIds).size,2);
+  const verifyOrganization=()=>{
+   const agents=store.listAgents(chat.projectId).filter(agent=>agent.conversationId===chat.id);
+   assert.equal(agents.length,2,'exactly one two-Agent organization exists');
+   assert.deepEqual(agents.map(agent=>agent.id).sort(),[...completed.result.agentIds].sort());
+   const root=agents.find(agent=>agent.id===completed.result.rootAgentId),child=agents.find(agent=>agent.id!==completed.result.rootAgentId);
+   assert.equal(root?.title,'Concurrent coordinator');assert.equal(root?.activeEngine,'codex');
+   assert.equal(child?.title,'Concurrent specialist');assert.equal(child?.activeEngine,'codex');
+   assert.equal(child?.managerAgentId,root.id);
+  };
+  await drainImports();verifyOrganization();
+  await f.reopen();
+  const recovered=f.ok(await f.api('GET',`${endpoint}/${completed.id}`));
+  assert.equal(recovered.status,'completed');assert.deepEqual(recovered.result,completed.result);
+  const replay=f.ok(await f.api('POST',endpoint,wire,headers));
+  assert.equal(replay.id,completed.id);assert.equal(replay.status,'completed');assert.deepEqual(replay.result,completed.result);
+  await drainImports();verifyOrganization();assert.equal(f.turns.length,0);
+ },{storeFactory:dataDir=>(store=new AgentStore(dataDir))});
 });
 
 test('journal sync and rollback failure holds the exact import across restart',{timeout:30000,skip:process.platform==='win32'},async t=>{
