@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {randomUUID} from 'node:crypto';
 import {AgentStore} from '@ponderosa/agents';
-import {CAPABILITY_IDS} from '@ponderosa/core';
+import {CAPABILITY_IDS,AGENT_PACKAGE_MAX_BYTES,AGENT_PACKAGE_METADATA_MAX_BYTES} from '@ponderosa/core';
 import {pushPayload} from '../../apps/server/dist/web-push-delivery.js';
 import {withFixture,until} from '../shared/fixture.mjs';
 
@@ -474,5 +474,7 @@ test('malformed workflow import diagnostic does not reveal file contents', async
   assert.equal(unsupported.status,400);assert.match(unsupported.body.error,/unsupported object keys/);assert.doesNotMatch(JSON.stringify(unsupported.body),/SYNTHETIC_SECRET_NOT_FOR_OUTPUT/);
   const media=await f.api('POST','/api/branches/import-preview','data',{'content-type':'application/x-unknown'});
   assert.equal(media.status,415,'unrelated Fastify errors keep their existing status');
+  const oversized=await f.api('POST','/api/branches/import-preview','{}',{'content-type':'application/json','content-length':String(AGENT_PACKAGE_MAX_BYTES+AGENT_PACKAGE_METADATA_MAX_BYTES+2)});
+  assert.equal(oversized.status,413,'oversized requests keep their existing status');
  });
 });
