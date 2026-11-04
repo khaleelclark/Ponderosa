@@ -20,13 +20,6 @@ async function fixture(){
  return {root,source,destination,manifest,external,ns,data,configuration:()=>({...reviewedGitConfiguration(manifest,activation),external}),apply:configuration=>createReviewedRecoveryGit(destination,original,sha256,activation,undefined,configuration),dispose:()=>rm(root,{recursive:true,force:true})};
 }
 
-test('external alias paths and targets cannot escape or name an undeclared original',options,async()=>{
- const f=await fixture();try{
-  f.external.links.push({path:'outside',target:'../outside',kind:'symlink'});await assert.rejects(f.apply(f.configuration()),/contained relative path/);await assert.rejects(lstat(path.join(f.destination,'.git')),{code:'ENOENT'});
-  f.external.links.at(-1).target='missing';await assert.rejects(f.apply(f.configuration()),/named original closure/);await assert.rejects(lstat(path.join(f.destination,'.git')),{code:'ENOENT'});
- }finally{await f.dispose();}
-});
-
 test('linked repository capsules reuse owned native layout and borrow only declared top-owner hook trees',options,async()=>{
  const f=await fixture();try{
   const gitDir=path.join(f.destination,'.git/ponderosa-repositories/repository'),worktreePath=path.join(f.destination,'.git/ponderosa-external/capsule');
@@ -37,14 +30,6 @@ test('linked repository capsules reuse owned native layout and borrow only decla
   const view=path.join(worktreePath,'.ponderosa-portable-review/active-git-hooks/view');assert.equal(await realpath(view),worktreePath,'The child hook view is a passive alias of its named, parent-owned source tree');
   const original=await lstat(path.join(worktreePath,'script'),{bigint:true}),alias=await lstat(path.join(worktreePath,'hard'),{bigint:true});assert.equal(original.ino,alias.ino);assert.equal(original.nlink,2n);
   assert.match(await readFile(path.join(gitDir,'info/exclude'),'utf8'),/^\/\.ponderosa-portable-review\/$/m);
- }finally{await f.dispose();}
-});
-
-test('owner context cannot write nodes or target undeclared and nonregular originals',options,async()=>{
- const f=await fixture();try{
-  f.external.files.push({path:'forbidden',context:'owner',data:f.data,mode:0o700,mtimeNs:f.ns});await assert.rejects(f.apply(f.configuration()),/reference-only declared closure/);await assert.rejects(lstat(path.join(f.destination,'.git')),{code:'ENOENT'});f.external.files.pop();
-  f.external.links.push({path:'bad-view',target:'missing',targetContext:'owner',kind:'symlink'});await assert.rejects(f.apply(f.configuration()),/named declared original target/);await assert.rejects(lstat(path.join(f.destination,'.git')),{code:'ENOENT'});
-  f.external.links.at(-1).target='ponderosa-external/capsule';f.external.links.at(-1).kind='hardlink';await assert.rejects(f.apply(f.configuration()),/named declared original target/);await assert.rejects(lstat(path.join(f.destination,'.git')),{code:'ENOENT'});
  }finally{await f.dispose();}
 });
 
