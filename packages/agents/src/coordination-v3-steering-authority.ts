@@ -1,3 +1,4 @@
+import { settingsTransitionActivationHoldSql } from "./coordination-v3-settings-transition-hold.js";
 import {branchInstallationHoldSql,branchInstallationTables} from './branch-installation-hold.js';
 import { branchScheduleTarget, branchScheduleActivationEligible, type BranchScheduleUpdateTarget } from "./coordination-v3-branch-schedule.js";
 import { randomUUID } from "node:crypto";
@@ -150,6 +151,7 @@ export class CoordinationV3SteeringAuthority {
           AND a.available_at <= ?
           AND a.dispatch_policy = 'steer_or_run'
           AND NOT EXISTS (SELECT 1 FROM activation_sources held WHERE held.activation_id=a.id AND held.source_kind IN ('task_decision_repair_wait','task_reply_repair_wait'))
+          AND NOT ${settingsTransitionActivationHoldSql('a')}
           AND ${decisionSteeringAuthority('a', 'r.id')}
           AND (a.kind = 'context_rollover_handoff' OR NOT EXISTS (
             SELECT 1 FROM context_rollovers rollover
@@ -192,6 +194,7 @@ export class CoordinationV3SteeringAuthority {
           AND available_at <= ?
           AND dispatch_policy = 'steer_or_run'
           AND NOT EXISTS (SELECT 1 FROM activation_sources held WHERE held.activation_id=agent_activations.id AND held.source_kind IN ('task_decision_repair_wait','task_reply_repair_wait'))
+          AND NOT ${settingsTransitionActivationHoldSql('agent_activations')}
           AND ${decisionSteeringAuthority('agent_activations', '?')}
           AND EXISTS(SELECT 1 FROM activation_sources source WHERE source.activation_id=agent_activations.id AND source.source_kind='branch_schedule_update')=?
           AND (kind = 'context_rollover_handoff' OR NOT EXISTS (

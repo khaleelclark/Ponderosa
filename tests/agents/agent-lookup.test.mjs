@@ -331,5 +331,55 @@ test('settings transition preserves pending work and isolates replacement confir
   const second=coordination.requestContextRollover({...request,settingsTransition:{...transition,activationId:competing,targetModel:'other'}});
   assert.equal(second.created,true);
   assert.notEqual(second.rollover.id,first.rollover.id);
+  db.prepare("UPDATE agent_activations SET state='consumed' WHERE id=?").run(ready.continuationActivationId);
+  // A failed reservation fences only the exact unsubmitted work and is
+  // re-evaluated when its observed settings/session fingerprint changes.
+  const base={projectId:agent.projectId,agentId:agent.id,activationId:pending}, fingerprint='d'.repeat(64);
+  assert.equal(coordination.holdSettingsTransitionReservation({...base,fingerprint}),true);
+  assert.equal(coordination.settingsTransitionReservationHeld({...base,fingerprint}),true);
+  assert.equal(coordination.settingsTransitionReservationHeld({...base,fingerprint:'e'.repeat(64)}),false);
+  assert.equal(coordination.holdSettingsTransitionReservation({...base,fingerprint}),true);
+  assert.equal(coordination.failContextRollover(second.rollover.id,'outcome_unknown','synthetic uncertain submission','internal').state,'outcome_unknown');
+  const other=store.createAgent(agent.projectId,{title:'Other independent Agent',engine:'codex',conversationId:agent.conversationId});
+  const otherId=randomUUID();
+  db.prepare("INSERT INTO agent_activations(id,project_id,agent_id,kind,priority,dispatch_policy,prompt_class,state,dedupe_key,payload_json,available_at,created_at,updated_at,scope_key) VALUES(?,?,?,'human_message',50,'next_run','human','pending',?,'{}',?,?,?,?)")
+    .run(otherId,agent.projectId,other.id,otherId,now,now,now,`agent:${other.id}`);
+  // Reopen to exercise the durable database, not an in-memory hold.
+  f.close(store);
+  const reopened=f.open('settings-transition'), resumed=new CoordinationV3Store(reopened.sqlite), db2=reopened.sqlite;
+  assert.equal(resumed.settingsTransitionReservationHeld({...base,fingerprint}),true);
+  assert.equal(resumed.releaseUnstartedFailedSettingsTransition({projectId:agent.projectId,agentId:agent.id,activationId:competing,
+    rolloverId:second.rollover.id,targetModel:'changed-again'}),false,'unknown provider outcome cannot be released by changing settings');
+  const otherLease=resumed.leaseNextRun({workerId:'independent-agent'});
+  assert.deepEqual(otherLease.activationIds,[otherId]);
+  assert.equal(db2.prepare('SELECT state FROM agent_activations WHERE id=?').get(pending).state,'pending');
+  assert.equal(db2.prepare('SELECT state FROM agent_activations WHERE id=?').get(competing).state,'pending');
+  assert.equal(db2.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id IN (?,?)').get(pending,competing).n,0);
+  // A changed target may release a known failed transition only if no
+  // handoff/replacement Run attached and the original session remains active.
+  db2.exec('SAVEPOINT safe_release');
+  try {
+    db2.prepare("UPDATE context_rollovers SET state='failed' WHERE id=?").run(second.rollover.id);
+    assert.equal(resumed.releaseUnstartedFailedSettingsTransition({projectId:agent.projectId,agentId:agent.id,activationId:competing,
+      rolloverId:second.rollover.id,targetModel:'changed-again'}),false,'the source session must still be active');
+    // Projection rebuild correctly dropped the synthetic session; restore it
+    // within this savepoint to model an exact, still-active source session.
+    db2.prepare('UPDATE agents SET active_session_id=?,active_session_contract_hash=? WHERE id=?').run(session,contractHash,agent.id);
+    assert.equal(resumed.releaseUnstartedFailedSettingsTransition({projectId:agent.projectId,agentId:agent.id,activationId:competing,
+      rolloverId:second.rollover.id,targetModel:'other'}),false);
+    db2.exec('SAVEPOINT attached_handoff');
+    try {
+      const handoff2=db2.prepare("SELECT activation_id FROM activation_sources WHERE source_kind='context_rollover' AND source_id=?").get(second.rollover.id).activation_id;
+      db2.prepare('INSERT INTO scheduler_run_activations(run_id,activation_id,attached_at) VALUES(?,?,?)').run(otherLease.runId,handoff2,now);
+      assert.equal(resumed.releaseUnstartedFailedSettingsTransition({projectId:agent.projectId,agentId:agent.id,activationId:competing,
+        rolloverId:second.rollover.id,targetModel:'changed-again'}),false,'any attached handoff must remain held');
+    } finally { db2.exec('ROLLBACK TO attached_handoff; RELEASE attached_handoff'); }
+    assert.equal(resumed.releaseUnstartedFailedSettingsTransition({projectId:agent.projectId,agentId:agent.id,activationId:competing,
+      rolloverId:second.rollover.id,targetModel:'changed-again'}),true);
+    const lease=resumed.leaseNextRun({workerId:'after-safe-change'});
+    assert.deepEqual(lease.activationIds,[competing]);
+    assert.equal(db2.prepare('SELECT state FROM agent_activations WHERE id=?').get(pending).state,'pending');
+  } finally { db2.exec('ROLLBACK TO safe_release; RELEASE safe_release'); }
+
 
 }));

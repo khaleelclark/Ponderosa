@@ -92,6 +92,71 @@ export class CoordinationV3ContextRolloverAuthority {
     return marker;
   }
 
+  /** Record only an exact, still-unattached activation. The fingerprint is
+   * caller-computed from the observed source session and effective settings;
+   * it is not a credential or a provider payload. */
+  holdSettingsTransitionReservation(input: { projectId:string; agentId:string; activationId:string; fingerprint:string }): boolean {
+    if (!/^[a-f0-9]{64}$/u.test(input.fingerprint)) throw new Error("Invalid transition reservation fingerprint");
+    return this.sqlite.transaction(() => {
+      const pending=this.sqlite.prepare(`SELECT 1 FROM agent_activations a
+        WHERE a.id=? AND a.agent_id=? AND a.project_id=? AND a.state='pending'
+          AND NOT EXISTS (SELECT 1 FROM scheduler_run_activations attached WHERE attached.activation_id=a.id)`)
+        .get(input.activationId,input.agentId,input.projectId);
+      if (!pending) return false;
+      this.sqlite.prepare(`INSERT OR IGNORE INTO activation_sources(activation_id,source_kind,source_id)
+        VALUES(?,'settings_transition_reservation_wait',?)`).run(input.activationId,input.fingerprint);
+      return true;
+    })();
+  }
+
+  /** Re-evaluate only after the observed identity/settings fingerprint changes.
+   * Uncertain rollover holds are independent and cannot be released here. */
+  settingsTransitionReservationHeld(input: { projectId:string; agentId:string; activationId:string; fingerprint:string }): boolean {
+    if (!/^[a-f0-9]{64}$/u.test(input.fingerprint)) throw new Error("Invalid transition reservation fingerprint");
+    return this.sqlite.transaction(() => {
+      const pending=this.sqlite.prepare(`SELECT 1 FROM agent_activations a
+        WHERE a.id=? AND a.agent_id=? AND a.project_id=? AND a.state='pending'
+          AND NOT EXISTS (SELECT 1 FROM scheduler_run_activations attached WHERE attached.activation_id=a.id)`)
+        .get(input.activationId,input.agentId,input.projectId);
+      if (!pending) return false;
+      this.sqlite.prepare(`DELETE FROM activation_sources WHERE activation_id=?
+        AND source_kind='settings_transition_reservation_wait' AND source_id<>?`).run(input.activationId,input.fingerprint);
+      return Boolean(this.sqlite.prepare(`SELECT 1 FROM activation_sources WHERE activation_id=?
+        AND source_kind='settings_transition_reservation_wait' AND source_id=?`).get(input.activationId,input.fingerprint));
+    })();
+  }
+
+  /** A changed effective target can release only a failure before any handoff
+   * Run attached, with the exact original session still active. Anything that
+   * might have reached a provider stays held for explicit recovery. */
+  releaseUnstartedFailedSettingsTransition(input: {
+    projectId:string; agentId:string; activationId:string; rolloverId:string;
+    targetModel:string; targetEffort?:string; targetSpeed?:string;
+  }): boolean {
+    return this.sqlite.transaction(() => {
+      const rollover=this.get(input.rolloverId);
+      const marker=this.settingsTransition(input.rolloverId);
+      if (!rollover || !marker || rollover.state!=='failed' ||
+          rollover.projectId!==input.projectId || rollover.agentId!==input.agentId ||
+          marker.activationId!==input.activationId || !input.targetModel?.trim() ||
+          (marker.targetModel===input.targetModel && (marker.targetEffort??null)===(input.targetEffort??null) &&
+           (marker.targetSpeed??null)===(input.targetSpeed??null))) return false;
+      const safe=this.sqlite.prepare(`SELECT 1 FROM agent_activations original JOIN agents ag ON ag.id=original.agent_id
+        WHERE original.id=? AND original.project_id=? AND original.agent_id=? AND original.state='pending'
+          AND ag.project_id=original.project_id AND ag.deleted_at IS NULL AND ag.active_session_id=?
+          AND ag.active_session_contract_hash=?
+          AND NOT EXISTS(SELECT 1 FROM scheduler_run_activations attached WHERE attached.activation_id=original.id)
+          AND NOT EXISTS(SELECT 1 FROM activation_sources src JOIN scheduler_run_activations attached
+            ON attached.activation_id=src.activation_id
+            WHERE src.source_kind='context_rollover' AND src.source_id=?)`)
+        .get(input.activationId,input.projectId,input.agentId,marker.oldSessionId,marker.oldContractHash,input.rolloverId);
+      if (!safe || rollover.handoffEventId || rollover.replacementRunId) return false;
+      this.sqlite.prepare(`INSERT OR IGNORE INTO activation_sources(activation_id,source_kind,source_id)
+        VALUES(?,'settings_transition_release',?)`).run(input.activationId,input.rolloverId);
+      return true;
+    })();
+  }
+
   request(input: {
     projectId: string; agentId: string; oldProviderSessionId: string;
     providerSessionGeneration: string; detectedOccupancy?: number; aggregateTokens?: number;
