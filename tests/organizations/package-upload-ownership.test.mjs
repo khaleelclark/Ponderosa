@@ -118,7 +118,37 @@ test('concurrent exact imports create one organization and replay it after resta
   ]};
   const wire=Buffer.from(JSON.stringify({conversationId:chat.id,engineMapping:{codex:'codex'}})+'\n'+JSON.stringify(pkg));
   const headers={'content-type':'application/vnd.ponderosa.agent-import','idempotency-key':requestId,'x-ponderosa-agent-package-fingerprint':importRequestFingerprint(wire)};
-  const results=await Promise.all([f.api('POST',endpoint,wire,headers),f.api('POST',endpoint,wire,headers)]);
+  const {promises:hostFs}=await import('@ponderosa/native-host/fs');
+  const directory=await realpath(path.join(f.dataDir,'agent-import-operations')),originalRename=hostFs.rename,originalOpen=hostFs.open;
+  let release,entered,secondStaged,held=false;
+  const gate=new Promise(resolve=>{release=resolve;}),reached=new Promise(resolve=>{entered=resolve;}),staged=new Promise(resolve=>{secondStaged=resolve;});
+  hostFs.rename=async function(from,to,...args){
+   const result=await originalRename.call(this,from,to,...args);
+   if(!held&&typeof from==='string'&&typeof to==='string'&&path.basename(from).startsWith('.incoming-')&&to.endsWith('.payload')&&await realpath(path.dirname(to))===directory){
+    held=true;entered();await gate;
+   }
+   return result;
+  };
+  hostFs.open=async function(name,...args){
+   const handle=await originalOpen.call(this,name,...args);
+   if(held&&typeof name==='string'&&path.basename(name).startsWith('.incoming-')&&await realpath(path.dirname(name))===directory){
+    return new Proxy(handle,{get(target,key){
+     if(key==='close')return async(...closeArgs)=>{const value=await target.close(...closeArgs);secondStaged();return value;};
+     const value=Reflect.get(target,key,target);return typeof value==='function'?value.bind(target):value;
+    }});
+   }
+   return handle;
+  };
+  let results;
+  try{
+   const first=f.api('POST',endpoint,wire,headers);
+   await reached;
+   const second=f.api('POST',endpoint,wire,headers);
+   await staged; // Both complete uploads overlapped while the first held admission.
+   const intent=store.sqlite.prepare('SELECT state FROM agent_import_submission_intents WHERE project_id=? AND request_id=?').get(chat.projectId,requestId);
+   assert.equal(intent?.state,'reserved');
+   release();results=await Promise.all([first,second]);
+  }finally{release();hostFs.rename=originalRename;hostFs.open=originalOpen;}
   assert.ok(results.every(result=>result.status===202||result.status===200),JSON.stringify(results));
   assert.equal(results[0].body.id,results[1].body.id,'both submissions return one operation');
   const changed=Buffer.concat([wire,Buffer.from(' ')]);
