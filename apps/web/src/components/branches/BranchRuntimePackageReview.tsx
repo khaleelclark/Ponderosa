@@ -17,7 +17,7 @@ function retainedResourceSummary(data:RuntimePackageData,depth=0):{finalResource
   if(fact.kind==='command'&&fact.key.startsWith('resource-final-exit:'))finalResource=true;
   if(fact.kind==='custody')try{if(JSON.parse(fact.json)?.disposition==='unavailable_held')unavailable=true;}catch{unavailable=true;}
   if(['import','tree-import','continuation','tree-continuation'].includes(fact.kind))try{
-   const nested=JSON.parse(fact.json)?.data;
+   const saved=JSON.parse(fact.json),nested=fact.kind==='tree-continuation'?saved?.held?.data:saved?.data;
    if(nested?.schema==='ponderosa.branch-runtime-data.v1'||nested?.schema==='ponderosa.branch-runtime-tree.v1'){
     const child=retainedResourceSummary(nested as RuntimePackageData,depth+1);finalResource||=child.finalResource;unavailable||=child.unavailable;
    }

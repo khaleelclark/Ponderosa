@@ -18,6 +18,9 @@ export async function branchRuntimeReadbackRegression(){
   nested.owners[0].facts.push({kind:'custody',key:'missing',json:'{"disposition":"unavailable_held"}',sha256:'f'.repeat(64)});
   root.render(<RuntimePrivateFacts data={nested}/>);await settle();
   assert(document.body.textContent?.includes('retired resource exit record is included')&&document.body.textContent?.includes('Some checkpoint data was unavailable at export'),'Nested re-export must retain the held and unavailable warnings');
+  nested.owners[0].facts=[{kind:'tree-continuation',key:'original',json:JSON.stringify({held:{data:original}}),sha256:'e'.repeat(64)}];
+  root.render(<RuntimePrivateFacts data={nested}/>);await settle();
+  assert(document.body.textContent?.includes('retired resource exit record is included'),'Nested tree continuation must retain the held-resource warning');
   root.render(<><RuntimePrivateFacts data={data}/><BranchRuntimeReadback planId="plan" branchId="destination" manifestSha256={sha} expected={data} onVerified={()=>acknowledged++}/></>);await settle();
 
   const click=async(text:string)=>{const b=Array.from(document.querySelectorAll('button')).find(b=>b.textContent===text);assert(b,text);b!.click();await settle();};
