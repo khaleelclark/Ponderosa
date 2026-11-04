@@ -81,3 +81,22 @@ test('failure at the final child publication rolls back every version/dependency
  const resources=f.store.sqlite.prepare('SELECT branch_id,state FROM branch_installation_resources WHERE staging_plan_id=?').all(p.id);assert.ok(resources.every(r=>r.branch_id===done.branchId&&r.state==='staging'));
  f.store.sqlite.exec('DROP TRIGGER definition_tree_last_failure');
 });
+
+test('deleting a published held tree retires exact descendant Agents before Chats',async t=>{
+ const f=await fixture(t),p=await f.preview(),done=await f.confirm(p);assert.equal(done.state,'completed',done.error);
+ const receipt=done.definitionTreeReceipt,agentIds=Object.values(receipt.agentMap),chatIds=Object.values(receipt.chatMap);
+ const plan=f.store.sqlite.prepare('SELECT preview_json FROM branch_installation_plans WHERE id=?').get(p.id);
+ const state=JSON.parse(plan.preview_json);state.published=true;
+ f.store.sqlite.prepare("UPDATE branch_installation_plans SET state='applying',preview_json=?,next_attempt_at=NULL WHERE id=?").run(stableJson(state),p.id);
+ for(const id of [...agentIds,...chatIds])assert.equal(f.store.sqlite.prepare("UPDATE branch_installation_resources SET staging_plan_id=? WHERE local_id=? AND state='active'").run(p.id,id).changes,1);
+ const unrelated=f.store.sqlite.prepare('SELECT id FROM agents WHERE conversation_id IN (SELECT id FROM conversations WHERE branch_id IN (?,?))').all(f.parent.branch.id,f.child.branch.id).map(row=>row.id);
+ assert.ok(unrelated.length);assert.ok(unrelated.every(id=>!agentIds.includes(id)));
+ for(let i=0;i<16;i++){
+  const response=await f.app.inject({method:'DELETE',url:`/api/branches/${done.branchId}`});
+  assert.ok([200,202,404].includes(response.statusCode),response.body);
+  if(agentIds.every(id=>!f.store.getAgent(id))&&chatIds.every(id=>!f.store.getConversation(id)))break;
+ }
+ assert.ok(agentIds.every(id=>!f.store.getAgent(id)),'exact imported descendant Agents retired');
+ assert.ok(chatIds.every(id=>!f.store.getConversation(id)),'owned Chats retired after Agents');
+ assert.ok(unrelated.every(id=>f.store.getAgent(id)),'source and unrelated Agents remain');
+});
