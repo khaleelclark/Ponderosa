@@ -241,6 +241,9 @@ export function registerProductScope(app:FastifyInstance,store:AgentStore,worksp
     if(request.routeOptions.url==='/api/trigger-webhooks/:id')return;
     // Workspace tools validate source Run and destination human policy across products.
     if(request.routeOptions.url==='/api/agent-workspace')return;
+    // Exact import recovery validates Chat, Project, product and deletion receipts.
+    // The live-resource gate would hide deleted destinations before those checks.
+    if(request.method==='GET'&&request.routeOptions.url==='/api/projects/:id/agent-import-operations/by-request/:requestId')return;
     const owner=runtimeOwner(request);
     const runtimeChat=typeof owner==='string'?owner:owner?.conversationId;
     const retained=retainedRuntimeResources(store,owner);
@@ -393,6 +396,8 @@ export function registerProductScope(app:FastifyInstance,store:AgentStore,worksp
   });
   // Defense in depth for global projections; primary collections filter before pagination.
   app.addHook('preSerialization',async(request,_reply,payload)=>{
+    // The exact recovery handler has already authorized this content-free deletion status.
+    if(request.method==='GET'&&request.routeOptions.url==='/api/projects/:id/agent-import-operations/by-request/:requestId'&&_reply.statusCode===409&&payload&&typeof payload==='object'&&'state' in payload&&payload.state==='destination_deleted')return payload;
     if(request.routeOptions.url==='/api/agent-workspace')return payload;
     if(!request.url.startsWith('/api/')||/^\/api\/branch(?:es|\-executions|\-gates)(?:\/|$)/.test(request.url))return payload;
     const product=requestProduct(request);

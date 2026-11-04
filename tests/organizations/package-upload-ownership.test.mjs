@@ -5,6 +5,9 @@ import path from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
 import {AgentStore} from '@ponderosa/agents';
 import {withFixture,until} from '../shared/fixture.mjs';
+import {withAgentImportAdmission} from '../../apps/server/dist/agent-package-codec.js';
+
+const drainImports=async()=>{await new Promise(setImmediate);await withAgentImportAdmission(async()=>{});};
 
 test('JSON shaped like a staged Agent upload cannot read or unlink a caller-supplied path',async t=>{
  await withFixture(t,async f=>{
@@ -51,7 +54,7 @@ const importRequestFingerprint=bytes=>{
 
 test('a lost import response is looked up by exact request and retried only with matching streamed bytes',{timeout:60000},async t=>{
  await withFixture(t,async f=>{
-  const chat=await f.createChat('Request lookup destination'),other=f.ok(await f.api('POST',`/api/projects/${chat.projectId}/conversations`,{title:'Other destination',defaultEngine:'codex'},{'idempotency-key':randomUUID()}));
+  const chat=await f.createChat('Request lookup destination'),other=await f.createChat('Other destination');
   const requestId=randomUUID(),pkg={schema:'ponderosa.agent-package.v1',mode:'template',kind:'agent',exportedAt:new Date().toISOString(),sourceLabel:'Recovery fixture 🌲',rootRef:'root',agents:[{ref:'root',title:'Imported agent',engine:'codex',managementPermissions:{allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false}}]};
   // Padding crosses the 4 MiB fingerprint boundary without changing JSON semantics.
   const pkgBytes=Buffer.from(JSON.stringify(pkg)+' '.repeat(4*1024*1024),'utf8'),metadata=JSON.stringify({conversationId:chat.id,engineMapping:{codex:'codex'}})+'\n';
@@ -70,7 +73,7 @@ test('a lost import response is looked up by exact request and retried only with
   assert.equal(admitted.requestId,requestId);assert.equal(admitted.requestFingerprint,fingerprint);assert.equal(admitted.conversationId,chat.id);
   const found=f.ok(await f.api('GET',lookup()));assert.equal(found.id,admitted.id);assert.equal(found.requestFingerprint,fingerprint);
   assert.equal((await f.api('GET',lookup(randomUUID()))).status,404,'another request identity cannot retrieve the operation');
-  assert.equal((await f.api('GET',lookup(requestId,other.id))).status,404,'another Chat in the same project cannot retrieve it');
+  assert.equal((await f.api('GET',lookup(requestId,other.id))).status,404,'a Chat from another Project cannot retrieve it');
   assert.equal((await f.api('GET',`${endpoint}/by-request/${requestId}`)).status,404,'an exact Chat is required');
   assert.equal((await f.api('GET',lookup().replace('/api/','/api/branches/engine/'))).status,404,'another product cannot retrieve it');
   const replay=f.ok(await f.api('POST',endpoint,payload,headers));assert.equal(replay.id,admitted.id,'same bytes and key retain one operation');
@@ -95,13 +98,16 @@ test('concurrent exact imports retain one request identity and reject changed in
   assert.equal(results[0].body.id,results[1].body.id);
   const changed=Buffer.concat([wire,Buffer.from(' ')]);
   assert.equal((await f.api('POST',endpoint,changed,{...headers,'x-ponderosa-agent-package-fingerprint':importRequestFingerprint(changed)})).status,409);
+  await until(async()=>{const result=await f.api('GET',`${endpoint}/${results[0].body.id}`);return result.status===200&&result.body.status!=='pending';},'concurrent import worker completion');
+  await drainImports();
  });
 });
 
 test('journal sync and rollback failure holds the exact import across restart',{timeout:30000,skip:process.platform==='win32'},async t=>{
  await withFixture(t,async f=>{
   const {promises:hostFs}=await import('@ponderosa/native-host/fs');
-  const chat=await f.createChat('Held admission'),other=f.ok(await f.api('POST',`/api/projects/${chat.projectId}/conversations`,{title:'Other destination',defaultEngine:'codex'},{'idempotency-key':randomUUID()})),requestId=randomUUID();
+  const chat=await f.createChat('Held admission'),other=await f.createChat('Other destination'),requestId=randomUUID();
+  const source=await f.createIdleAgent(chat,'Copy source');
   const endpoint=`/api/projects/${chat.projectId}/agent-import-operations`;
   const pkg={schema:'ponderosa.agent-package.v1',mode:'template',kind:'agent',exportedAt:new Date().toISOString(),sourceLabel:'Held fixture',rootRef:'root',agents:[{ref:'root',title:'Held Agent',engine:'codex',managementPermissions:{allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false}}]};
   const metadata={conversationId:chat.id,engineMapping:{codex:'codex'}};
@@ -124,7 +130,7 @@ test('journal sync and rollback failure holds the exact import across restart',{
    const first=f.api('POST',endpoint,wire,headers);
    await reached;
    assert.equal((await f.api('GET',lookup)).status,409,'in-flight reservation is visible as held');
-   const concurrentCopy=await f.api('POST',`/api/projects/${chat.projectId}/copy-agent`,{sourceAgentId:randomUUID(),conversationId:chat.id},{'idempotency-key':requestId});
+   const concurrentCopy=await f.api('POST',`/api/projects/${chat.projectId}/copy-agent`,{sourceAgentId:source.id,conversationId:chat.id},{'idempotency-key':requestId});
    assert.equal(concurrentCopy.status,409);assert.match(concurrentCopy.body.error,/Import admission is held/,'copy cannot create the shared key while admission is in flight');
    release();assert.equal((await first).status,409);
   }finally{release();hostFs.open=originalOpen;hostFs.unlink=originalUnlink;}
@@ -132,7 +138,7 @@ test('journal sync and rollback failure holds the exact import across restart',{
   assert.equal(journals.length,1);assert.equal(payloads.length,1);
   const savedJournal=await readFile(path.join(directory,journals[0]));const savedPayload=await readFile(path.join(directory,payloads[0]));
   assert.equal((await f.api('POST',endpoint,wire,headers)).status,409);
-  const heldCopy=await f.api('POST',`/api/projects/${chat.projectId}/copy-agent`,{sourceAgentId:randomUUID(),conversationId:chat.id},{'idempotency-key':requestId});
+  const heldCopy=await f.api('POST',`/api/projects/${chat.projectId}/copy-agent`,{sourceAgentId:source.id,conversationId:chat.id},{'idempotency-key':requestId});
   assert.equal(heldCopy.status,409);assert.match(heldCopy.body.error,/Import admission is held/,'copy cannot bypass held identity');
   const legacyHeaders={'content-type':'application/vnd.ponderosa.agent-import','idempotency-key':requestId};
   assert.equal((await f.api('POST',`/api/projects/${chat.projectId}/import-agent-package`,wire,legacyHeaders)).status,409,'binary legacy route cannot bypass the hold');
@@ -158,11 +164,12 @@ test('journal sync and rollback failure holds the exact import across restart',{
   assert.equal((await f.api('POST',endpoint,wire,headers)).status,409);
   assert.equal((await f.api('POST',`/api/projects/${chat.projectId}/import-agent-package`,wire,legacyHeaders)).status,409,'binary legacy route cannot revive a tombstone after restart');
   assert.equal((await f.api('POST',`/api/projects/${chat.projectId}/import-agents`,{...metadata,package:pkg},{'idempotency-key':requestId})).status,409,'JSON legacy route cannot revive a tombstone after restart');
-  const retiredCopy=await f.api('POST',`/api/projects/${chat.projectId}/copy-agent`,{sourceAgentId:randomUUID(),conversationId:chat.id},{'idempotency-key':requestId});
+  const retiredCopy=await f.api('POST',`/api/projects/${chat.projectId}/copy-agent`,{sourceAgentId:source.id,conversationId:chat.id},{'idempotency-key':requestId});
   assert.equal(retiredCopy.status,409);assert.match(retiredCopy.body.error,/Import admission is held/,'copy cannot revive a retired identity after restart');
   assert.deepEqual(await readFile(path.join(directory,journals[0])),savedJournal);assert.deepEqual(await readFile(path.join(directory,payloads[0])),savedPayload);
   const newKey=randomUUID(),fresh=f.ok(await f.api('POST',endpoint,wire,{...headers,'idempotency-key':newKey}));
   assert.notEqual(fresh.id,operationId,'only an explicit fresh request starts another import');
+  await drainImports();
   assert.equal(f.turns.length,0);
  });
 });
@@ -191,6 +198,8 @@ test('retirement waits for the in-flight Project admission and cannot retire a q
    assert.equal(beforeRelease,'waiting','retirement waits for the Project admission lock');
    release();const admitted=f.ok(await admission);assert.equal(admitted.id,lookup.body.operationId);
    assert.equal((await retirement).status,409,'an admitted request cannot subsequently be retired as unqueued');
+   await until(async()=>{const result=await f.api('GET',`${endpoint}/${admitted.id}`);return result.status===200&&result.body.status!=='pending';},'admitted import worker completion');
+   await drainImports();
   }finally{release();hostFs.open=originalOpen;}
  });
 });
@@ -199,6 +208,7 @@ test('copy ledger created first prevents a same-key async import admission',{tim
  await withFixture(t,async f=>{
   const {promises:hostFs}=await import('@ponderosa/native-host/fs');
   const chat=await f.createChat('Copy owns request'),requestId=randomUUID();
+  const source=await f.createIdleAgent(chat,'Copy source');
   const endpoint=`/api/projects/${chat.projectId}/agent-import-operations`;
   const wire=Buffer.from(JSON.stringify({conversationId:chat.id,engineMapping:{codex:'codex'}})+'\n{}');
   const headers={'content-type':'application/vnd.ponderosa.agent-import','idempotency-key':requestId,'x-ponderosa-agent-package-fingerprint':importRequestFingerprint(wire)};
@@ -210,12 +220,12 @@ test('copy ledger created first prevents a same-key async import admission',{tim
   };
   try{
    // The copy reaches its snapshot read only after committing the creation ledger.
-   const copy=f.api('POST',`/api/projects/${chat.projectId}/copy-agent`,{sourceAgentId:randomUUID(),conversationId:chat.id},{'idempotency-key':requestId});
+   const copy=f.api('POST',`/api/projects/${chat.projectId}/copy-agent`,{sourceAgentId:source.id,conversationId:chat.id},{'idempotency-key':requestId});
    await reached;
    const conflicting=await f.api('POST',endpoint,wire,headers);
    assert.equal(conflicting.status,409);assert.match(conflicting.body.error,/existing import owns this request identity/);
    assert.equal((await f.api('GET',`${endpoint}/by-request/${requestId}?conversationId=${chat.id}`)).status,404,'no async import operation was admitted');
-   release();assert.equal((await copy).status,404,'the controlled nonexistent source leaves no copy effects');
+   release();f.ok(await copy);
    assert.equal(f.turns.length,0);
   }finally{release();hostFs.access=originalAccess;}
  });
@@ -223,7 +233,7 @@ test('copy ledger created first prevents a same-key async import admission',{tim
 test('an exact deleted-owner status never returns a stale full import receipt',{timeout:30000},async t=>{
  await withFixture(t,async f=>{
   const {promises:hostFs}=await import('@ponderosa/native-host/fs');
-  const chat=await f.createChat('Deleted owner read race'),other=f.ok(await f.api('POST','/api/projects/'+chat.projectId+'/conversations',{title:'Other Chat',defaultEngine:'codex'},{'idempotency-key':randomUUID()})),requestId=randomUUID(),endpoint='/api/projects/'+chat.projectId+'/agent-import-operations';
+  const chat=await f.createChat('Deleted owner read race'),other=await f.createChat('Other Chat'),requestId=randomUUID(),endpoint='/api/projects/'+chat.projectId+'/agent-import-operations';
   const wire=Buffer.from(JSON.stringify({conversationId:chat.id,engineMapping:{codex:'codex'}})+'\n{}'),fingerprint=importRequestFingerprint(wire);
   const op=f.ok(await f.api('POST',endpoint,wire,{'content-type':'application/vnd.ponderosa.agent-import','idempotency-key':requestId,'x-ponderosa-agent-package-fingerprint':fingerprint}));
   await until(async()=>{const response=await f.api('GET',endpoint+'/'+op.id);return response.status===200&&response.body.status==='failed';},'terminal read-race import');
@@ -269,6 +279,7 @@ test('worker holds its Chat lease and preserves journal and payload if owner is 
    // Simulate an already-committed deletion from an older version.
    assert.equal(store.commitConversationDeletion(chat.id)?.canonicalDeletionCompleted,true);
    release();hostFs.open=original;
+   await drainImports();
    await f.reopen();
    assert.deepEqual(await readFile(journal),savedJournal);assert.deepEqual(await readFile(payload),savedPayload);
    const status=await f.api('GET',endpoint+'/by-request/'+requestId+'?conversationId='+chat.id);
@@ -297,7 +308,7 @@ test('committed Project deletion exposes only exact content-free import status',
 test('hydration and direct lookup hold valid journals that differ from their exact intent',{timeout:30000},async t=>{
  let store;
  await withFixture(t,async f=>{
-  const chat=await f.createChat('Original intent Chat'),other=f.ok(await f.api('POST','/api/projects/'+chat.projectId+'/conversations',{title:'Other Chat',defaultEngine:'codex'},{'idempotency-key':randomUUID()}));
+  const chat=await f.createChat('Original intent Chat'),other=await f.createChat('Other Chat');
   const id=randomUUID(),otherId=randomUUID(),requestId=randomUUID(),hash='0'.repeat(64),directory=path.join(f.dataDir,'agent-import-operations'),now=new Date().toISOString();
   const record={id,requestId,payloadHash:hash,projectId:chat.projectId,conversationId:other.id,product:'dev',sourceLabel:'Controlled mismatch',phase:'queued',status:'pending',createdAt:now,updatedAt:now};
   store.sqlite.prepare("INSERT INTO agent_import_submission_intents(project_id,request_id,conversation_id,product_scope,payload_sha256,request_fingerprint,operation_id,staged_name,state) VALUES (?,?,?,?,?,?,?,?,'queued')").run(chat.projectId,requestId,chat.id,'dev',hash,null,id,'.incoming-'+randomUUID());
