@@ -312,11 +312,12 @@ export function registerAgentPackageRoutes(
       try { await directory.sync(); } finally { await directory.close(); }
     }
   };
-  type ImportSubmissionIntent = {project_id:string;request_id:string;conversation_id:string;product_scope:string;payload_sha256:string;request_fingerprint:string|null;operation_id:string;staged_name:string;state:'reserved'|'queued'};
+  type ImportSubmissionIntent = {project_id:string;request_id:string;conversation_id:string;product_scope:string;payload_sha256:string;request_fingerprint:string|null;operation_id:string;staged_name:string;state:'reserved'|'queued'|'retired'};
   const getImportIntent=(projectId:string,requestId:string):ImportSubmissionIntent|undefined=>store.sqlite.prepare('SELECT * FROM agent_import_submission_intents WHERE project_id=? AND request_id=?').get(projectId,requestId) as ImportSubmissionIntent|undefined;
   const importIntentForOperation=(id:string):ImportSubmissionIntent|undefined=>store.sqlite.prepare('SELECT * FROM agent_import_submission_intents WHERE operation_id=?').get(id) as ImportSubmissionIntent|undefined;
-  const importAdmissionHeld=(id:string)=>importIntentForOperation(id)?.state==='reserved';
+  const importAdmissionHeld=(id:string)=>{const intent=importIntentForOperation(id);return !!intent&&intent.state!=='queued';};
   const heldImportMessage='Import admission is held for recovery; the original request and upload have been preserved.';
+  const heldImportIdentity=(intent:ImportSubmissionIntent)=>({state:intent.state,operationId:intent.operation_id,requestId:intent.request_id,projectId:intent.project_id,conversationId:intent.conversation_id,product:intent.product_scope,requestFingerprint:intent.request_fingerprint});
   const operationByRequest = new Map<string, string>();
   const operationCache = new Map<string, AgentImportOperationDto>();
   const quarantinedOperationIds = new Set<string>();
@@ -642,7 +643,7 @@ export function registerAgentPackageRoutes(
         const copyMatch = /^(agent-create-[0-9a-f]{64})\.copy\.payload$/u.exec(name);
         const temporary = name.endsWith(".tmp");
         const abandonedUpload = name.startsWith(".incoming-");
-        if(abandonedUpload && store.sqlite.prepare("SELECT 1 FROM agent_import_submission_intents WHERE state='reserved' AND staged_name=?").get(name)) continue;
+        if(abandonedUpload && store.sqlite.prepare("SELECT 1 FROM agent_import_submission_intents WHERE state IN ('reserved','retired') AND staged_name=?").get(name)) continue;
         if(payloadMatch && importAdmissionHeld(payloadMatch[1]!)) continue;
         const liveCopy = copyMatch
           ? store.getAgentCreationOperation(copyMatch[1]!)
@@ -2705,7 +2706,7 @@ export function registerAgentPackageRoutes(
       if(priorIntent){
         if(priorIntent.conversation_id!==destination.id||priorIntent.product_scope!==product)return reply.code(404).send({error:'import operation not found'});
         if(priorIntent.payload_sha256!==requestPayloadHash||priorIntent.request_fingerprint!==(staged.requestFingerprint??null))return reply.code(409).send({error:'Import idempotency key was reused with different input'});
-        if(priorIntent.state==='reserved')return reply.code(409).send({error:heldImportMessage});
+        if(priorIntent.state!=='queued')return reply.code(409).send({error:heldImportMessage,...heldImportIdentity(priorIntent)});
         const prior=await readQueuedIntentOperation(priorIntent);
         if(!prior)return reply.code(409).send({error:heldImportMessage});
         return reply.code(prior.status==='pending'?202:200).send(prior);
@@ -2767,7 +2768,7 @@ export function registerAgentPackageRoutes(
         if(!competing)return reply.code(409).send({error:'An existing import owns this request identity; no second import was started.'});
         if(competing.conversation_id!==destination.id||competing.product_scope!==product)return reply.code(404).send({error:'import operation not found'});
         if(competing.payload_sha256!==requestPayloadHash||competing.request_fingerprint!==(staged.requestFingerprint??null))return reply.code(409).send({error:'Import idempotency key was reused with different input'});
-        if(competing.state==='reserved')return reply.code(409).send({error:heldImportMessage});
+        if(competing.state!=='queued')return reply.code(409).send({error:heldImportMessage,...heldImportIdentity(competing)});
         const prior=await readQueuedIntentOperation(competing);
         if(!prior)return reply.code(409).send({error:heldImportMessage});
         return reply.code(prior.status==='pending'?202:200).send(prior);
@@ -2825,7 +2826,7 @@ export function registerAgentPackageRoutes(
       const intent=getImportIntent(request.params.id,requestId);
       if(intent){
         if(intent.conversation_id!==chatId||intent.product_scope!==product)return reply.code(404).send({error:'import operation not found'});
-        if(intent.state==='reserved')return reply.code(409).send({error:heldImportMessage});
+        if(intent.state!=='queued')return reply.code(409).send({error:heldImportMessage,...heldImportIdentity(intent)});
         const operation=await readQueuedIntentOperation(intent);
         if(!operation)return reply.code(409).send({error:heldImportMessage});
         return reply.send(operation);
@@ -2845,12 +2846,44 @@ export function registerAgentPackageRoutes(
     },
   );
 
+  // A deliberate, exact retirement never replays an upload or frees its old key.
+  // The Project lock excludes a still-running admission; the state transition and
+  // absence of a creation ledger are checked under one immediate transaction.
+  app.post<{Params:{id:string;requestId:string};Body:{conversationId?:string;operationId?:string}}>(
+    '/api/projects/:id/agent-import-operations/by-request/:requestId/retire',
+    (request,reply)=>withProjectImportLock(request.params.id,async()=>{
+      await operationHydration;
+      const requestId=validIdempotencyKey(request.params.requestId),body=request.body;
+      if(!requestId||requestId!==request.params.requestId||!body||typeof body!=='object'||Array.isArray(body)||Object.keys(body).sort().join(',')!=='conversationId,operationId'||typeof body.conversationId!=='string'||typeof body.operationId!=='string')
+        return reply.code(400).send({error:'The exact held request and destination are required'});
+      const chat=store.getConversation(body.conversationId),product=requestProduct(request);
+      if(!chat||chat.projectId!==request.params.id||!resourceInProduct(store,'conversation',chat.id,product))return reply.code(404).send({error:'import operation not found'});
+      try{
+        const result=store.sqlite.transaction(()=>{
+          const intent=getImportIntent(request.params.id,requestId);
+          if(!intent||intent.conversation_id!==chat.id||intent.product_scope!==product||intent.operation_id!==body.operationId)return 'missing' as const;
+          if(intent.state==='retired')return 'retired' as const;
+          if(intent.state!=='reserved')return 'changed' as const;
+          const creation=store.findAgentCreationOperation({projectId:request.params.id,actorScope:'user:local-operator',kind:'import',idempotencyKey:requestId});
+          if(creation)return 'changed' as const;
+          const updated=store.sqlite.prepare("UPDATE agent_import_submission_intents SET state='retired' WHERE project_id=? AND request_id=? AND operation_id=? AND state='reserved'").run(request.params.id,requestId,intent.operation_id);
+          return updated.changes===1?'retired' as const:'changed' as const;
+        }).immediate();
+        if(result==='missing')return reply.code(404).send({error:'import operation not found'});
+        if(result==='changed')return reply.code(409).send({error:'Import state changed or may have effects; it remains held for review.'});
+        const retired=getImportIntent(request.params.id,requestId);
+        if(!retired||retired.state!=='retired'||retired.operation_id!==body.operationId||retired.conversation_id!==chat.id||retired.product_scope!==product)throw Error('Retired import receipt is unavailable');
+        return reply.send(heldImportIdentity(retired));
+      }catch{return reply.code(409).send({error:'Import admission could not be proved safe to retire; its evidence remains held.'});}
+    }),
+  );
+
   app.get<{ Params: { id: string; operationId: string } }>(
     "/api/projects/:id/agent-import-operations/:operationId",
     async (request, reply) => {
       await operationHydration;
       const intent=importIntentForOperation(request.params.operationId);
-      if(intent?.state==='reserved'){
+      if(intent && intent.state!=='queued'){
         if(intent.project_id!==request.params.id||intent.product_scope!==requestProduct(request)||!resourceInProduct(store,'conversation',intent.conversation_id,requestProduct(request)))return reply.code(404).send({error:'import operation not found'});
         return reply.code(409).send({error:heldImportMessage});
       }

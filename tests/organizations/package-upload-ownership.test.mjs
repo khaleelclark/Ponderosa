@@ -65,6 +65,7 @@ test('a lost import response is looked up by exact request and retried only with
   const changedMetadata=Buffer.concat([Buffer.from(JSON.stringify({conversationId:chat.id,engineMapping:{codex:'other'}})+'\n'),pkgBytes]);
   assert.equal((await f.api('POST',endpoint,changedMetadata,headers)).status,400,'changed metadata cannot enter under the saved fingerprint');
   const admitted=f.ok(await f.api('POST',endpoint,payload,headers));
+  assert.equal((await f.api('POST',`${endpoint}/by-request/${requestId}/retire`,{conversationId:chat.id,operationId:admitted.id})).status,409,'an admitted operation cannot be retired as unqueued');
   assert.equal(admitted.requestId,requestId);assert.equal(admitted.requestFingerprint,fingerprint);assert.equal(admitted.conversationId,chat.id);
   const found=f.ok(await f.api('GET',lookup()));assert.equal(found.id,admitted.id);assert.equal(found.requestFingerprint,fingerprint);
   assert.equal((await f.api('GET',lookup(randomUUID()))).status,404,'another request identity cannot retrieve the operation');
@@ -138,6 +139,19 @@ test('journal sync and rollback failure holds the exact import across restart',{
   assert.equal((await f.api('POST',endpoint,wire,headers)).status,409);
   names=await readdir(directory);assert.deepEqual(names.filter(name=>/^[0-9a-f-]{36}\.json$/.test(name)),journals);assert.deepEqual(names.filter(name=>name.endsWith('.payload')),payloads);
   assert.deepEqual(await readFile(path.join(directory,journals[0])),savedJournal);assert.deepEqual(await readFile(path.join(directory,payloads[0])),savedPayload);
+  const retire=`${endpoint}/by-request/${requestId}/retire`;
+  assert.equal((await f.api('POST',retire,{conversationId:chat.id,operationId:randomUUID()})).status,404,'retirement requires the exact held operation');
+  const receipt=f.ok(await f.api('POST',retire,{conversationId:chat.id,operationId}));
+  assert.deepEqual(receipt,{state:'retired',operationId,requestId,projectId:chat.projectId,conversationId:chat.id,product:'dev',requestFingerprint:headers['x-ponderosa-agent-package-fingerprint']});
+  assert.deepEqual(f.ok(await f.api('POST',retire,{conversationId:chat.id,operationId})),receipt,'retirement receipt is idempotent');
+  assert.equal((await f.api('POST',endpoint,wire,headers)).status,409,'old request identity is permanently denied');
+  assert.equal((await f.api('POST',`/api/projects/${chat.projectId}/import-agent-package`,wire,legacyHeaders)).status,409,'legacy routes cannot revive a retired identity');
+  await f.reopen();
+  const retired=await f.api('GET',lookup);assert.equal(retired.status,409);assert.equal(retired.body.state,'retired');
+  assert.equal((await f.api('POST',endpoint,wire,headers)).status,409);
+  assert.deepEqual(await readFile(path.join(directory,journals[0])),savedJournal);assert.deepEqual(await readFile(path.join(directory,payloads[0])),savedPayload);
+  const newKey=randomUUID(),fresh=f.ok(await f.api('POST',endpoint,wire,{...headers,'idempotency-key':newKey}));
+  assert.notEqual(fresh.id,operationId,'only an explicit fresh request starts another import');
   assert.equal(f.turns.length,0);
  });
 });
