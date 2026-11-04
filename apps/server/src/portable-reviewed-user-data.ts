@@ -445,6 +445,12 @@ function providerJsonSettings(value:string):boolean {
   return ['.mcp.json','.claude/settings.json','.claude/settings.local.json'].includes(value);
 }
 const gitSelectedOriginalNames=['COMMIT_EDITMSG','SQUASH_MSG','TAG_EDITMSG','MERGE_MSG','EDIT_DESCRIPTION'];
+
+// Standard hook names in a selected private Git directory may be transported
+// only when a captured relative core.hooksPath resolves to that directory as a
+// hook context. Unknown private metadata remains a hard refusal.
+const gitPrivateHookNames=new Set(['applypatch-msg','pre-applypatch','post-applypatch','pre-commit','pre-merge-commit','prepare-commit-msg','commit-msg','post-commit','pre-rebase','post-checkout','post-merge','pre-push','pre-receive','update','proc-receive','post-receive','post-update','reference-transaction','push-to-checkout','pre-auto-gc','post-rewrite','sendemail-validate','p4-changelist','p4-prepare-changelist','p4-post-changelist','p4-pre-submit','post-index-change','fsmonitor-watchman']);
+
 const gitDirectoryOriginalNames=['hooks','branches','remotes','rr-cache','lost-found'];
 const gitWebOriginalNames=['description','category','cloneurl','README.html'];
 function gitReviewOriginal(value:string):boolean {
@@ -2537,7 +2543,7 @@ async function captureReviewedGit(root:string,association:GitAssociation,capture
   if(depth>16)throw new Error('Native Git module nesting exceeds the capture bound');
   const fs=source?.io??capture?.io??sourceFs;
   const {gitDir,commonDir,linked}=association;
-  const assertTopology=async()=>{
+  const assertTopology=async(configuration:ReviewedGitUserData['configurationReview'])=>{
     for(const name of ['MERGE_HEAD','REBASE_HEAD','CHERRY_PICK_HEAD','REVERT_HEAD','BISECT_LOG','rebase-merge','rebase-apply','index.lock'])await absentGitPath(path.join(gitDir,name),fs);
     for(const name of ['info/grafts','objects/info/alternates','objects/info/http-alternates'])await absentGitPath(path.join(commonDir,name),fs);
     if(linked){
@@ -2545,13 +2551,14 @@ async function captureReviewedGit(root:string,association:GitAssociation,capture
       await absentGitPath(path.join(gitDir,'packed-refs'),fs);
       // Unknown private storage/pseudorefs must not silently disappear from the review copy.
       const names=await fs.readdir(gitDir);if(names.length>20000)throw new Error('Selected Git storage inventory exceeds its bound');
-      for(const name of names)if(!['gitdir','commondir','HEAD','ORIG_HEAD','FETCH_HEAD',...gitSelectedOriginalNames,'index','config.worktree','info','refs','logs','locked','reftable'].includes(name)&&!/^sharedindex\.[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(name))throw new Error('Unsupported selected Git storage or operation metadata; preserve source');
+      const capturesPrivateHooks=configuration.some(item=>item.key.toLowerCase()==='core.hookspath'&&!item.implicitBoolean&&!path.isAbsolute(item.value)&&path.resolve(gitDir,item.value)===path.resolve(gitDir));
+      for(const name of names)if(!['gitdir','commondir','HEAD','ORIG_HEAD','FETCH_HEAD',...gitSelectedOriginalNames,'index','config.worktree','info','refs','logs','locked','reftable'].includes(name)&&!/^sharedindex\.[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(name)&&!(capturesPrivateHooks&&gitPrivateHookNames.has(name)))throw new Error('Unsupported selected Git storage or operation metadata; preserve source');
     }
   };
   const snapshot=async()=>{
     const current=association.moduleData?association:await gitAssociation(root,capture);if(!current||current.evidence!==association.evidence)throw new Error('Git association changed during capture');
-    await assertTopology();
     const sparse=await captureSparseConfiguration(gitDir,commonDir,fs);
+    await assertTopology(sparse.configuration);
     if(association.bare&&(gitConfigurationBoolean(sparse.configuration,'core.bare')!==true||sparse.configuration.some(item=>item.key.toLowerCase()==='core.worktree')))throw new Error('Bare Git source configuration cannot override bare storage with working-tree authority');
     const storage=sparse.configuration.filter(item=>!item.source&&item.key.toLowerCase()==='extensions.refstorage');
     if(storage.length>1||storage.some(item=>!['files','reftable'].includes(item.value)))throw new Error('Unsupported Git reference storage declaration');

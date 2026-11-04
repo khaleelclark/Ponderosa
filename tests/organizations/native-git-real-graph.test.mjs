@@ -1,12 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtemp,mkdir,writeFile,readFile,link,symlink,readlink,lstat,realpath,rename,chmod,rm} from 'node:fs/promises';
+import {mkdtemp,mkdir,writeFile,readFile,link,symlink,readlink,lstat,realpath,rename,chmod,rm,open,unlink} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {execFile} from 'node:child_process';
 import {fstatSync} from 'node:fs';
 import {promisify} from 'node:util';
-import {exportReviewedUserData} from '../../apps/server/dist/portable-reviewed-user-data.js';
+import {exportReviewedUserData,createGitExportCapture} from '../../apps/server/dist/portable-reviewed-user-data.js';
 import {planReviewedRecoveryRoots,applyReviewedRecoveryRoots} from '../../apps/server/dist/portable-git-recreation.js';
 import {getNativeGitExternalGraph} from '../../apps/server/dist/portable-git-external-application.js';
 import {inventoryWorkingFolder,createWorkingNativeMetadataEvidence} from '../../apps/server/dist/portable-working-files.js';
@@ -19,9 +19,9 @@ const exactNs=1700000000123456789n;
 const setExactMtime=async(target,symlink=false)=>exec('touch',[...(symlink?['-h']:[]),'-m','-d','@1700000000.123456789','--',target]);
 const identity=stat=>({device:stat.dev.toString(),inode:stat.ino.toString()});
 const destinationIdentity=async destination=>({...identity(await lstat(destination,{bigint:true})),directories:{hooks:identity(await lstat(path.join(destination,'hooks'),{bigint:true}))}});
-const packageFor=(manifest,working={})=>{
+const packageFor=(manifest,working={},bindings)=>{
  const files={'.ponderosa-portable-review/user-data.json':Buffer.from(JSON.stringify(manifest)),...working};
- return {schema:'ponderosa.agent-package.v1',mode:'full',kind:'organization',exportedAt:new Date().toISOString(),sourceLabel:'Real Git graph custody regression',rootRef:'agent',agents:[{ref:'agent',title:'Agent',engine:'codex',workingRootRef:'work',managementPermissions:{allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false},workingFolder:{directories:[],excludedPaths:['.git']},workingFiles:Object.keys(files).map((name,index)=>({path:name,artifactRef:'file-'+index})),artifacts:Object.entries(files).map(([name,bytes],index)=>({ref:'file-'+index,kind:'generated_file',path:name,createdAt:new Date().toISOString(),dataBase64:Buffer.from(bytes).toString('base64')}))}]};
+ return {schema:'ponderosa.agent-package.v1',mode:'full',kind:'organization',exportedAt:new Date().toISOString(),sourceLabel:'Real Git graph custody regression',rootRef:'agent',agents:[{ref:'agent',title:'Agent',engine:'codex',workingRootRef:'work',managementPermissions:{allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false},workingFolder:{directories:[],excludedPaths:['.git']},workingFiles:Object.keys(files).map((name,index)=>({path:name,artifactRef:'file-'+index})),artifacts:Object.entries(files).map(([name,bytes],index)=>({ref:'file-'+index,kind:'generated_file',path:name,createdAt:new Date().toISOString(),dataBase64:Buffer.from(bytes).toString('base64')}))},...(bindings?[{ref:'storage-agent',title:'Storage',engine:'codex',workingRootRef:'storage',managerRef:'agent',managementPermissions:{allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false},workingFolder:{directories:[],excludedPaths:['.']},workingFiles:[]}]:[])],...(bindings?{gitStorageBindings:bindings}:{})};
 };
 async function fixture(t,worktree=false,selectedWorktree=false,extensions={}){
  const root=await realpath(await mkdtemp(path.join(tmpdir(),'native-real-graph-'))),source=path.join(root,'source'),destination=path.join(root,'destination');
@@ -178,8 +178,8 @@ test('real root hook reference preserves original root identity and metadata',op
  await link(path.join(source,'support','script'),path.join(source,'.git','hooks','from-working-root'));
  await symlink(source,path.join(source,'.git','hooks','root'));
  await git(source,'config','core.hooksPath',source);
- await utimes(path.join(source,'support','script'),1700000000.123456,1700000000.123456);
- await chmod(source,0o700);await utimes(source,1700000000.123456,1700000000.123456);
+ await setExactMtime(path.join(source,'support','script'));
+ await chmod(source,0o700);await setExactMtime(source);
  const capturedRoot=await lstat(source,{bigint:true}),capturedFile=await lstat(path.join(source,'support','script'),{bigint:true});
  await mkdir(path.join(destination,'support'));await writeFile(path.join(destination,'support','script'),data);
  const originalFile=await lstat(path.join(destination,'support','script'),{bigint:true}),originalRoot=await lstat(destination,{bigint:true}),originalSupport=await lstat(path.join(destination,'support'),{bigint:true});
@@ -240,4 +240,179 @@ test('real reviewed repositories defer shared native metadata until every task i
    await chmod(path.join(f.destination,'.git','hooks'),0o700).catch(()=>{});
   }
  }
+});
+
+test('relative-dot hook capture keeps exact owner Git storage and relocates both contexts safely',options,async t=>{
+ const root=await realpath(await mkdtemp(path.join(tmpdir(),'native-dot-hook-'))),source=path.join(root,'source'),destination=path.join(root,'destination');
+ t.after(()=>rm(root,{recursive:true,force:true}));
+ await mkdir(source);await mkdir(destination);await git(source,'init','--template=','--initial-branch=main');
+ const workHook=Buffer.from('#!/bin/sh\n# worktree hook\n'),gitHook=Buffer.from('#!/bin/sh\n# gitdir hook\n');
+ await writeFile(path.join(source,'pre-commit'),workHook);await writeFile(path.join(source,'.git','pre-commit'),gitHook);
+ await git(source,'config','core.hooksPath','.');await git(source,'config','credential.helper','fixture-secret-helper');
+ const configAlias=path.join(source,'.git','prepare-commit-msg');
+ await link(path.join(source,'.git','config'),configAlias);
+ await assert.rejects(exportReviewedUserData(source,{git:true,harness:false,externalGitDependencies:true}),/bounded regular original/);
+ await unlink(configAlias);
+ const manifest=await exportReviewedUserData(source,{git:true,harness:false,externalGitDependencies:true});
+ const family=manifest.gitExternalDependencies,ownerGit=path.join(source,'.git');
+ assert.ok(family.bindings.some(row=>row.kind==='hooks'&&row.rawValue==='.'&&row.context==='worktree'&&row.resolvedPath===source));
+ assert.ok(family.bindings.some(row=>row.kind==='hooks'&&row.rawValue==='.'&&row.context==='gitdir'&&row.resolvedPath===ownerGit));
+ assert.ok(!family.repositories?.some(row=>row.sourcePath===ownerGit),'owner Git storage is not recaptured as a bare repository');
+ assert.ok(!family.files.some(row=>row.sourcePath===path.join(ownerGit,'config')),'Git config remains in the sanitized Git capsule');
+ assert.doesNotMatch(JSON.stringify(manifest),/fixture-secret-helper/);
+ await writeFile(path.join(destination,'pre-commit'),workHook);
+ const activation={git:true,harness:false},tasks=planReviewedRecoveryRoots(packageFor(manifest,{'pre-commit':workHook}),{work:destination},activation);
+ const context={gitDir:path.join(destination,'.git'),privateDir:path.join(destination,'.git'),worktreePath:destination};
+ const graph=getNativeGitExternalGraph(tasks[0].configuration,context),gitFile=graph.files.find(row=>row.data.equals(gitHook));
+ assert.ok(gitFile,'the exact Git-directory hook has a planner-issued destination');
+ const before=await lstat(path.join(destination,'pre-commit'),{bigint:true});
+ const rootIdentity=identity(await lstat(destination,{bigint:true}));
+ await applyReviewedRecoveryRoots(tasks,activation,()=>{},{[destination]:rootIdentity});
+ const after=await lstat(path.join(destination,'pre-commit'),{bigint:true});
+ assert.equal(after.dev,before.dev);assert.equal(after.ino,before.ino);assert.deepEqual(await readFile(path.join(destination,'pre-commit')),workHook);
+ assert.deepEqual(await readFile(gitFile.path),gitHook);
+ // Inspect the restored configuration without running hooks: relative values
+ // must resolve to the captured original in each native Git execution context.
+ const hookSetting=(await git(destination,'config','--get','core.hooksPath')).stdout.trim();
+ const workContext=await realpath(path.resolve(destination,hookSetting));
+ const gitContext=await realpath(path.resolve(destination,'.git',hookSetting));
+ assert.deepEqual(await readFile(path.join(workContext,'pre-commit')),workHook);
+ assert.deepEqual(await readFile(path.join(gitContext,'pre-commit')),gitHook);
+ await assert.rejects(lstat(path.join(gitContext,'config')),{code:'ENOENT'});
+});
+
+test('relative-dot hooks retain initialized and dormant module storage without recapturing native controls',options,async t=>{
+ const root=await realpath(await mkdtemp(path.join(tmpdir(),'native-dot-modules-'))),source=path.join(root,'source'),child=path.join(root,'child');
+ t.after(()=>rm(root,{recursive:true,force:true}));
+ const initialize=async dir=>{await mkdir(dir);await git(dir,'init','--template=','--initial-branch=main');await git(dir,'config','user.name','Fixture');await git(dir,'config','user.email','fixture@example.invalid');await writeFile(path.join(dir,'file.txt'),'committed\n');await git(dir,'add','file.txt');await git(dir,'commit','--no-gpg-sign','-m','Initial');};
+ await initialize(child);await initialize(source);
+ await git(source,'-c','protocol.file.allow=always','submodule','add',child,'module');
+ await git(source,'config','-f','.gitmodules','submodule.module.url','https://example.invalid/module');
+ await git(source,'config','submodule.module.url','https://example.invalid/module');
+ await git(path.join(source,'module'),'remote','set-url','origin','https://example.invalid/module');
+ await git(source,'add','.gitmodules','module');await git(source,'commit','--no-gpg-sign','-m','Add module');
+ const gitmodules=await readFile(path.join(source,'.gitmodules')),childHead=(await git(path.join(source,'module'),'rev-parse','HEAD')).stdout.trim();
+ const workHook=Buffer.from('worktree hook\n'),gitHook=Buffer.from('gitdir hook\n');
+ await writeFile(path.join(source,'pre-commit'),workHook);await writeFile(path.join(source,'.git','pre-commit'),gitHook);
+ await git(source,'config','core.hooksPath','.');
+ for(const initialized of [true,false]){
+  if(!initialized)await git(source,'submodule','deinit','-f','module');
+  const manifest=await exportReviewedUserData(source,{git:true,harness:false,externalGitDependencies:true});
+  assert.equal(manifest.git.modules.length,1);assert.equal(manifest.git.modules[0].source.initialized,initialized);
+  const ownerGit=path.join(source,'.git'),moduleStorage=path.join(ownerGit,'modules');
+  assert.ok(!manifest.gitExternalDependencies.repositories?.some(row=>row.sourcePath===ownerGit||row.sourcePath.startsWith(moduleStorage+path.sep)));
+  assert.ok(manifest.gitExternalDependencies.files.filter(row=>row.sourcePath.startsWith(moduleStorage+path.sep)).every(row=>row.sourcePath.startsWith(path.join(moduleStorage,'module','hooks')+path.sep)),'only the separately declared child hook tree is captured');
+  const destination=path.join(root,initialized?'active':'dormant');await mkdir(destination);await mkdir(path.join(destination,'module'));
+  await writeFile(path.join(destination,'file.txt'),'committed\n');await writeFile(path.join(destination,'.gitmodules'),gitmodules);await writeFile(path.join(destination,'pre-commit'),workHook);
+  const working={'file.txt':Buffer.from('committed\n'),'.gitmodules':gitmodules,'pre-commit':workHook};
+  if(initialized){await writeFile(path.join(destination,'module','file.txt'),'committed\n');working['module/file.txt']=Buffer.from('committed\n');}
+  const activation={git:true,harness:false},tasks=planReviewedRecoveryRoots(packageFor(manifest,working),{work:destination},activation);
+  const issued={...identity(await lstat(destination,{bigint:true})),directories:{module:identity(await lstat(path.join(destination,'module'),{bigint:true}))}};
+  await applyReviewedRecoveryRoots(tasks,activation,()=>{},{[destination]:issued});
+  assert.deepEqual(await readFile(path.join(destination,'pre-commit')),workHook);
+  if(initialized)assert.equal((await git(path.join(destination,'module'),'rev-parse','HEAD')).stdout.trim(),childHead);
+  else {
+   await assert.rejects(lstat(path.join(destination,'module','.git')),{code:'ENOENT'});
+   assert.equal((await git(destination,'--git-dir='+path.join(destination,'.git','modules','module'),'rev-parse','HEAD')).stdout.trim(),childHead);
+  }
+ }
+});
+
+test('relative-dot hooks in linked worktrees retain private controls and relocate both contexts',options,async t=>{
+ const root=await realpath(await mkdtemp(path.join(tmpdir(),'native-dot-linked-'))),source=path.join(root,'source'),linked=path.join(root,'linked'),work=path.join(root,'new-work'),storage=path.join(root,'new-storage'),handles=[];
+ let capture;
+ t.after(async()=>{await capture?.close();for(const handle of handles)await handle.close();await rm(root,{recursive:true,force:true});});
+ await mkdir(source);await git(source,'init','--template=','--initial-branch=main');await git(source,'config','user.name','Fixture');await git(source,'config','user.email','fixture@example.invalid');
+ await writeFile(path.join(source,'file.txt'),'committed\n');await git(source,'add','file.txt');await git(source,'commit','--no-gpg-sign','-m','Initial');await git(source,'worktree','add','-b','linked',linked);
+ const common=path.join(source,'.git'),privateDir=path.join(common,'worktrees','linked');
+ const workHook=Buffer.from('linked worktree hook\n'),gitHook=Buffer.from('linked private hook\n');
+ await writeFile(path.join(linked,'pre-commit'),workHook);await writeFile(path.join(privateDir,'pre-commit'),gitHook);await git(source,'config','core.hooksPath','.');
+ const roots=[];for(const [pathname,ref] of [[linked,'work'],[common,'storage']]){const handle=await open(pathname,'r');handles.push(handle);roots.push({pathname,ref,handle,owner:(await handle.stat({bigint:true})).uid});}
+ const bindings=[{id:'common',worktreeRootRef:'work',storageRootRef:'storage',relativePath:'.',role:'common',worktreePath:linked,storagePath:common},{id:'private',worktreeRootRef:'work',storageRootRef:'storage',relativePath:'worktrees/linked',role:'private',worktreePath:linked,storagePath:common}];
+ await git(source,'config','--unset','core.hooksPath');capture=createGitExportCapture(roots,bindings);
+ await assert.rejects(exportReviewedUserData(linked,{git:true,harness:false,externalGitDependencies:true},capture),/Unsupported selected Git storage/);
+ await capture.close();await git(source,'config','core.hooksPath','.');
+ const configAlias=path.join(privateDir,'prepare-commit-msg');await link(path.join(common,'config'),configAlias);capture=createGitExportCapture(roots,bindings);
+ await assert.rejects(exportReviewedUserData(linked,{git:true,harness:false,externalGitDependencies:true},capture),/bounded regular original/);
+ await capture.close();await unlink(configAlias);
+ const unknown=path.join(privateDir,'sequencer');await writeFile(unknown,'unrecognized operation state');capture=createGitExportCapture(roots,bindings);
+ await assert.rejects(exportReviewedUserData(linked,{git:true,harness:false,externalGitDependencies:true},capture),/Unsupported selected Git storage/);
+ await capture.close();await unlink(unknown);
+ for(const value of ['./','./.']){
+  await git(source,'config','core.hooksPath',value);capture=createGitExportCapture(roots,bindings);
+  const alternate=await exportReviewedUserData(linked,{git:true,harness:false,externalGitDependencies:true},capture);
+  assert.ok(alternate.gitExternalDependencies.files.some(row=>row.sourcePath===path.join(privateDir,'pre-commit')));
+  await capture.close();
+ }
+ await git(source,'config','core.hooksPath','.');capture=createGitExportCapture(roots,bindings);
+ const manifest=await exportReviewedUserData(linked,{git:true,harness:false,externalGitDependencies:true},capture),review=Buffer.from(JSON.stringify(manifest));capture.bindReview(linked,review);
+ const family=manifest.gitExternalDependencies;
+ assert.ok(family.bindings.some(row=>row.kind==='hooks'&&row.rawValue==='.'&&row.context==='worktree'&&row.resolvedPath===linked));
+ assert.ok(family.bindings.some(row=>row.kind==='hooks'&&row.rawValue==='.'&&row.context==='gitdir'&&row.resolvedPath===privateDir));
+ assert.ok(!family.repositories?.some(row=>row.sourcePath===privateDir||row.sourcePath===common));
+ for(const name of ['commondir','gitdir','locked','HEAD','index'])assert.ok(!family.files.some(row=>row.sourcePath===path.join(privateDir,name)),'native private control must not be a hook payload: '+name);
+ await mkdir(work);await mkdir(storage);await writeFile(path.join(work,'file.txt'),'committed\n');await writeFile(path.join(work,'pre-commit'),workHook);
+ const portable=capture.portableBindings(),activation={git:true,harness:false},pkg=packageFor(manifest,{'file.txt':Buffer.from('committed\n'),'pre-commit':workHook},portable);
+ const tasks=planReviewedRecoveryRoots(pkg,{work,storage},activation),rootIdentity=identity(await lstat(work,{bigint:true})),storageIdentity=identity(await lstat(storage,{bigint:true}));
+ await applyReviewedRecoveryRoots(tasks,activation,()=>{},{[work]:rootIdentity,[storage]:storageIdentity});
+ const hookSetting=(await git(work,'config','--get','core.hooksPath')).stdout.trim(),privateDest=path.join(storage,'worktrees','linked');
+ const workContext=await realpath(path.resolve(work,hookSetting)),gitContext=await realpath(path.resolve(privateDest,hookSetting));
+ assert.deepEqual(await readFile(path.join(workContext,'pre-commit')),workHook);
+ assert.deepEqual(await readFile(path.join(gitContext,'pre-commit')),gitHook);
+ await assert.rejects(lstat(path.join(gitContext,'gitdir')),{code:'ENOENT'});
+ assert.equal(await realpath((await git(work,'rev-parse','--absolute-git-dir')).stdout.trim()),privateDest);
+});
+
+test('native Git hook paths cannot expose an unselected included config through a hardlink',options,async t=>{
+ const root=await realpath(await mkdtemp(path.join(tmpdir(),'native-dot-include-alias-'))),source=path.join(root,'source'),config=path.join(root,'external.conf');
+ t.after(()=>rm(root,{recursive:true,force:true}));
+ await mkdir(source);await git(source,'init','--template=','--initial-branch=main');
+ await writeFile(config,'[credential]\n helper = fixture-hidden-secret\n');
+ await mkdir(path.join(source,'.git','hooks'));
+ for(const value of ['.','./','./.','hooks']){
+  await git(source,'config','core.hooksPath',value);
+  await git(source,'config','--replace-all','include.path',config);
+  const hookPath=path.join(source,'.git',value==='hooks'?'hooks':'','pre-commit');
+  await link(config,hookPath);
+  await assert.rejects(exportReviewedUserData(source,{git:true,harness:false}),/hardlinks require every original alias|bounded regular original/);
+  const selected=await exportReviewedUserData(source,{git:true,harness:false,externalGitDependencies:true});
+  assert.doesNotMatch(JSON.stringify(selected),/fixture-hidden-secret/);
+  const configFile=selected.gitExternalDependencies.files.find(row=>row.sourcePath===hookPath);
+  assert.ok(configFile?.config&&configFile.removedSecretFields,'the shared original must be sanitized as configuration: '+value);
+  assert.ok(selected.gitExternalDependencies.links.some(row=>row.sourcePath===config&&row.targetSourcePath===hookPath&&row.kind==='hardlink'));
+  await unlink(hookPath);
+ }
+});
+
+test('working hook paths cannot expose an unselected included config through a hardlink',options,async t=>{
+ const root=await realpath(await mkdtemp(path.join(tmpdir(),'working-hook-include-alias-'))),source=path.join(root,'source'),config=path.join(root,'external.conf'),hooks=path.join(source,'hooks');
+ t.after(()=>rm(root,{recursive:true,force:true}));
+ await mkdir(source);await git(source,'init','--template=','--initial-branch=main');await mkdir(hooks);
+ await git(source,'config','core.hooksPath','hooks');
+ await writeFile(config,'[credential]\n helper = fixture-hidden-secret\n');await link(config,path.join(hooks,'pre-commit'));
+ await git(source,'config','--add','include.path',config);
+ await assert.rejects(exportReviewedUserData(source,{git:true,harness:false}),/hardlinks require every original alias/);
+ const selected=await exportReviewedUserData(source,{git:true,harness:false,externalGitDependencies:true});
+ assert.doesNotMatch(JSON.stringify(selected),/fixture-hidden-secret/);
+ assert.ok(selected.gitExternalDependencies.files.some(row=>row.config&&row.removedSecretFields));
+});
+
+test('external hook paths cannot expose an excluded config through a hardlink',options,async t=>{
+ const root=await realpath(await mkdtemp(path.join(tmpdir(),'external-hook-include-alias-'))),source=path.join(root,'source'),privateDir=path.join(root,'.ssh'),config=path.join(privateDir,'external.conf'),hooks=path.join(root,'external-hooks');
+ t.after(()=>rm(root,{recursive:true,force:true}));
+ await mkdir(source);await mkdir(privateDir);await mkdir(hooks);await git(source,'init','--template=','--initial-branch=main');
+ await git(source,'config','core.hooksPath',hooks);
+ await writeFile(config,'[credential]\n helper = fixture-hidden-secret\n');await link(config,path.join(hooks,'pre-commit'));
+ await git(source,'config','--add','include.path',config);
+ await assert.rejects(exportReviewedUserData(source,{git:true,harness:false,externalGitDependencies:true}),/hardlinks require every original alias/);
+});
+
+test('an unvisited selected-working hardlink is held until its alias has dependency custody',options,async t=>{
+ const root=await realpath(await mkdtemp(path.join(tmpdir(),'unvisited-selected-alias-'))),source=path.join(root,'source');
+ t.after(()=>rm(root,{recursive:true,force:true}));
+ await mkdir(source);await git(source,'init','--template=','--initial-branch=main');await mkdir(path.join(source,'.git','hooks'));
+ const working=path.join(source,'working-original');await writeFile(working,'selected working content\n');
+ await link(working,path.join(source,'.git','hooks','pre-commit'));
+ await assert.rejects(exportReviewedUserData(source,{git:true,harness:false,externalGitDependencies:true}),/hardlinks require every original alias/);
+ assert.equal(await readFile(working,'utf8'),'selected working content\n');
 });

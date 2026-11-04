@@ -215,7 +215,9 @@ export function planReviewedGitExternalApplication(value:ReviewedUserData,activa
     }
   };
   moduleScopes(rootScope);
-  const sourceStorage=(source:string)=>scopes.some(scope=>sourcePathWithin(scope.sourceCommon,source)||sourcePathWithin(scope.sourcePrivate,source))||(family.repositories??[]).some(capsule=>[capsule.git.configurationSourceDirectories?.common,capsule.git.configurationSourceDirectories?.private].some(root=>root&&sourcePathWithin(root,source)));
+  const storageRoots=()=>[...scopes.flatMap(scope=>[scope.sourceCommon,scope.sourcePrivate]),...(family.repositories??[]).flatMap(capsule=>[capsule.git.configurationSourceDirectories?.common,capsule.git.configurationSourceDirectories?.private].filter((root):root is string=>!!root))];
+  const sourceStorageOwner=(source:string)=>storageRoots().filter(root=>sourcePathWithin(root,source)).sort((a,b)=>b.length-a.length).map(sourcePathKey)[0];
+  const sourceStorage=(source:string)=>sourceStorageOwner(source)!==undefined;
   // Bare repositories can appear inside a captured dependency tree. Their
   // canonical native control originals may then be represented both by the
   // Git capsule and by the enclosing external tree. Reuse is safe only when
@@ -268,7 +270,10 @@ export function planReviewedGitExternalApplication(value:ReviewedUserData,activa
   const place=(scope:NativeExternalScope,base:'gitdir'|'private'|'worktree',target:string):Placement=>{const root=base==='worktree'?scope.worktreePath:base==='private'?scope.privateDir:scope.gitDir;const relative=path.relative(root,target).split(path.sep).join('/');if(relative)relativeName(relative);return {scope,context:base,path:relative,absolute:target};};
   for(const folder of [...family.directories].filter(folder=>folder.root).sort((a,b)=>a.sourcePath.length-b.sourcePath.length)){
     const isDefault=family.bindings.some(binding=>binding.default&&sourcePathsEqual(binding.resolvedPath,folder.sourcePath));
-    if(!isDefault&&dataRoots.some(root=>sourcePathWithin(root.source,folder.sourcePath)))continue;
+    // A selected worktree root can contain its native Git storage. A hook
+    // rooted at that storage must not inherit the worktree's byte-phase
+    // directory authority or collide with the Git directory being created.
+    if(!isDefault&&dataRoots.some(root=>sourcePathWithin(root.source,folder.sourcePath)&&sourceStorageOwner(root.source)===sourceStorageOwner(folder.sourcePath)))continue;
     const choice=treeDestination(folder.sourcePath),target=choice.target,placement=place(choice.scope,choice.context,target);
     dataRoots.push({source:folder.sourcePath,placement});sourceMappings.set(sourcePathKey(folder.sourcePath),{source:folder.sourcePath,destination:target});
   }
