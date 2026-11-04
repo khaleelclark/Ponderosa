@@ -106,7 +106,7 @@ export function ReviewedContinuationDialog({projectId,receipt,onClose,onOpenAgen
  },[saved,status?.status,name]);
  const refresh=async()=>{if(lock.current)return;lock.current=true;setBusy(true);setError('');try{const original=readSaved(name,product,projectId,receipt);setSaved(original);await load(original);}catch(cause){setError(cause instanceof Error?cause.message:'Could not read continuation status.');}finally{lock.current=false;setBusy(false);}};
  const submit=async()=>{
-  if(lock.current||status?.status!=='review_required')return;
+  if(lock.current||status?.status!=='review_required'||missingAttachments)return;
   const review=status.review;
   if(!saved&&!checked)return;
   if(saved&&(saved.reviewSha256!==review.reviewSha256||saved.runId!==review.runId||saved.injectionId!==review.injectionId)){
@@ -140,6 +140,7 @@ export function ReviewedContinuationDialog({projectId,receipt,onClose,onOpenAgen
  };
  const review=status?.status==='review_required'?status.review:undefined;
  const unknown=review?.effectInventory.effects.filter(effect=>effect.outcome==='unknown')??[];
+ const missingAttachments=Boolean(review&&[...(review.originalTask.communication.attachments??[]),...(review.originalSteer.communication.attachments??[])].some(file=>file.unavailable));
  return <Dialog open onClose={busy?undefined:onClose} fullWidth maxWidth="sm" aria-busy={busy||undefined}>
   <DialogTitle>Review interrupted work</DialogTitle><DialogContent><Stack spacing={2} sx={{pt:1}}>
    {error&&<Alert severity="error">{error}</Alert>}{notice&&<Alert severity="info">{notice}</Alert>}
@@ -149,13 +150,14 @@ export function ReviewedContinuationDialog({projectId,receipt,onClose,onOpenAgen
     <Communication label="Original task" value={review.originalTask.communication}/>
     <Communication label="Unconfirmed instruction" value={review.originalSteer.communication}/>
     <Alert severity="warning">The instruction and earlier external effects may or may not have happened. Continuing does not repeat the earlier instruction or authorize replay of uncertain actions.</Alert>
+    {missingAttachments&&<Alert severity="error">An original attachment is unavailable. Continuation is held until it can be recovered.</Alert>}
     {unknown.length>0&&<Stack spacing={0.5}><Typography fontWeight={650}>Effects needing review</Typography>{unknown.map((effect,index)=><Typography key={index} variant="body2">{effect.kind.replaceAll('_',' ')} · {effect.detail}{effect.id?' · Reference: '+effect.id:''}</Typography>)}</Stack>}
     {!saved&&<TextField label="Notes about uncertain effects (optional)" multiline minRows={2} value={note} onChange={event=>setNote(event.target.value)} helperText="Add anything the Agent needs to know before continuing." error={new TextEncoder().encode(note).length>16000}/>}
     {!saved&&<FormControlLabel control={<Checkbox checked={checked} onChange={event=>setChecked(event.target.checked)}/>} label="I reviewed the uncertainty and want the Agent to continue the original task."/>}
     {saved&&<Typography variant="body2" sx={{whiteSpace:"pre-wrap",overflowWrap:"anywhere"}}>A continuation request is saved. Check its status or retry the same request.{saved.reviewNote?" Notes: "+saved.reviewNote:""}</Typography>}
    </>}
   </Stack></DialogContent><DialogActions><Button disabled={busy} onClick={onClose}>Close</Button>{onOpenAgent&&<Button disabled={busy} onClick={()=>onOpenAgent(receipt.targetAgentId)}>Open Agent chat</Button>}<Button disabled={busy} onClick={()=>void refresh()}>Check status</Button>
-   {review&&<Button variant="contained" disabled={busy||(!saved&&!checked)||(!saved&&new TextEncoder().encode(note).length>16000)} onClick={()=>void submit()}>{saved?'Retry same request':'Continue task'}</Button>}
+   {review&&<Button variant="contained" disabled={busy||missingAttachments||(!saved&&!checked)||(!saved&&new TextEncoder().encode(note).length>16000)} onClick={()=>void submit()}>{saved?'Retry same request':'Continue task'}</Button>}
   </DialogActions>
  </Dialog>;
 }

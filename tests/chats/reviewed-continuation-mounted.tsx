@@ -72,6 +72,11 @@ export async function reviewedContinuationRegression():Promise<void>{
   recorded=true;await new Promise(resolve=>setTimeout(resolve,3200));await flush();
   assert(posts.length===1&&document.body.textContent?.includes('Continuation authorized'),'Later conclusive receipt is read automatically without resubmitting');
   root.unmount();host.replaceChildren();root=createRoot(host);recorded=false;posts=[];localStorage.removeItem(statusKey);
+  Object.assign(review.originalTask.communication.attachments[0],{unavailable:true});
+  await render();button('Review interrupted work')!.click();await flush();document.querySelector<HTMLInputElement>('input[type=checkbox]')!.click();await flush();
+  assert(button('Continue task')?.disabled&&document.body.textContent?.includes('original attachment is unavailable')&&posts.length===0,'An explicitly unavailable original attachment holds continuation');
+  delete (review.originalTask.communication.attachments[0] as {unavailable?:boolean}).unavailable;
+  root.unmount();host.replaceChildren();root=createRoot(host);
   review.originalSteer.communication.projectId='other-project';
   await render();button('Review interrupted work')!.click();await flush();
   assert(posts.length===0&&document.body.textContent?.includes('original task or instruction could not be verified')&&!button('Continue task'),'Wrong-project instruction cannot authorize continuation');
