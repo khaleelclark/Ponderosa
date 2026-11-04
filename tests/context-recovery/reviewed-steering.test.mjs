@@ -316,3 +316,35 @@ test('Claude checks the stop fence after async model selection before writing in
   assert.equal((await native.frames()).filter(frame=>frame.type==='user').length,0);
  } finally {await session?.close();await rm(root,{recursive:true,force:true});}
 });
+
+
+test('Stop after Claude provider admission prevents reviewed user input',{timeout:30000},async t=>{
+ let store,useNative=false,native;
+ await withFixture(t,async f=>{
+  native=await inertClaude(f.root,{holdModel:true});
+  const chat=await f.createChat('Stop reviewed Claude'),agent=await f.createIdleAgent(chat,'Worker');
+  const old=await f.hold(agent.id),source=(await f.detail(agent.id)).runs[0].id;
+  await f.send(agent.id,'Unconfirmed Claude correction',{activeRunDelivery:'steer'});
+  const injection=await until(()=>store.sqlite.prepare("SELECT id,activation_ids_json FROM scheduler_prompt_injections WHERE run_id=? AND kind='steer' AND state='outcome_unknown'").get(source),'unknown steering');
+  const [activation]=JSON.parse(injection.activation_ids_json),url=`/api/projects/${chat.projectId}/message-deliveries/${activation}/reviewed-continuation`;
+  old.finish();await until(()=>store.sqlite.prepare("SELECT 1 FROM scheduler_runs WHERE id=? AND status='completed'").get(source),'source completed');
+  if(f.ok(await f.api('GET',url)).status==='source_retirement_required')f.ok(await f.api('POST',url+'/retire-source'));
+  const review=f.ok(await f.api('GET',url)).review;
+  useNative=true;
+  const result=f.ok(await f.api('POST',url,{reviewSha256:review.reviewSha256,effectsReviewed:true,idempotencyKey:randomUUID()})).receipt;
+  const successor=await until(()=>store.sqlite.prepare("SELECT r.id,r.fencing_token FROM scheduler_runs r JOIN scheduler_run_activations a ON a.run_id=r.id WHERE a.activation_id=? AND r.status='running'").get(result.activationId),'reviewed successor Run');
+  await until(async()=>(await native.frames()).some(frame=>frame.type==='control_request'&&frame.request?.subtype==='set_model'),'registered Claude provider paused before input');
+  const admission=store.sqlite.prepare("SELECT receipt_json FROM host_lifecycle_commits WHERE kind='provider-start-admission' AND json_extract(receipt_json,'$.runId')=?").get(successor.id);
+  assert.ok(admission);
+  const bound=JSON.parse(admission.receipt_json);assert.equal(bound.runFence,successor.fencing_token);
+  assert.ok(store.sqlite.prepare("SELECT 1 FROM host_lifecycle_commits WHERE kind='provider-start-settlement' AND identity=?").get(bound.identity),'Claude provider start must be settled');
+  assert.ok(store.sqlite.prepare('SELECT 1 FROM provider_process_authority WHERE run_id=?').get(successor.id));
+  f.ok(await f.api('POST',`/api/agents/${agent.id}/cancel`,{targetRunId:successor.id,idempotencyKey:randomUUID()}));
+  await until(()=>store.sqlite.prepare("SELECT 1 FROM scheduler_runs WHERE id=? AND status='cancelled'").get(successor.id),'Claude successor stopped');
+  await until(()=>!store.sqlite.prepare('SELECT 1 FROM provider_process_authority WHERE run_id=?').get(successor.id),'Claude process exited');
+  await native.releaseModel();await new Promise(resolve=>setTimeout(resolve,250));
+  assert.equal((await native.frames()).filter(frame=>frame.type==='user').length,0,'no reviewed task may be written after Stop');
+  assert.equal(store.sqlite.prepare('SELECT state FROM scheduler_prompt_injections WHERE id=?').get(injection.id).state,'outcome_unknown');
+  assert.equal(store.sqlite.prepare("SELECT COUNT(*) n FROM scheduler_run_activations WHERE activation_id=?").get(result.activationId).n,1,'Stop must not replay the reviewed activation');
+ },{storeFactory:p=>(store=new AgentStore(p)),steeringResponse:async()=>{throw Error('Controlled unknown delivery');},nativeAdapterForOpen:()=>useNative?{openSession:opts=>native.adapter.openSession({...opts,model:'initial-model'})}:undefined});
+});
