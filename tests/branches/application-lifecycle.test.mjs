@@ -7,6 +7,7 @@ import path from 'node:path';
 import {AgentStore,BranchStore,CoordinationV3Store} from '@ponderosa/agents';
 import {recoveredRuntimeProcessHandle} from '@ponderosa/engines';
 import {createServer} from '../../apps/server/dist/app.js';
+import {describeBranchDeletionFailure} from '../../apps/server/dist/branch-installation-service.js';
 import {until} from '../shared/fixture.mjs';
 
 const options={timeout:30000,skip:process.platform==='win32'?'Recoverable Branch Scripts currently require POSIX containment':false};
@@ -68,6 +69,27 @@ test('deployment drain closes Branch filesystem watchers, preserves accepted bur
 });
 
 
+test('Branch deletion explains known failure classes without exposing arbitrary diagnostics',()=>{
+ const secret='fixture-bare-credential-value';
+ for(const [code,phrase] of [
+  ['SQLITE_CONSTRAINT_TRIGGER','A database trigger rejected the operation.'],
+  ['SQLITE_CONSTRAINT_FOREIGNKEY','A related database record prevented the operation.'],
+  ['SQLITE_CONSTRAINT_NOTNULL','A required database value was missing.'],
+  ['SQLITE_CONSTRAINT_UNIQUE','A database uniqueness constraint was violated.'],
+  ['SQLITE_CONSTRAINT_CHECK','A database check constraint was violated.'],
+  ['SQLITE_FULL','The database could not write because storage was full.'],
+  ['EACCES','The operating system denied access.'],
+  ['ENOSPC','The operating system reported no space left.'],
+ ]){
+  const diagnostic=describeBranchDeletionFailure(Object.assign(new Error(`SQL API_KEY=labeled-secret ${secret}`),{code}));
+  assert.ok(diagnostic.includes(code));assert.ok(diagnostic.includes(phrase));
+  assert.ok(!diagnostic.includes(secret));assert.ok(!diagnostic.includes('labeled-secret'));
+ }
+ const unknown=describeBranchDeletionFailure(Object.assign(new Error(`unknown failure ${secret}`),{code:secret}));
+ assert.match(unknown,/Workflow cleanup failed/);assert.ok(!unknown.includes(secret));
+ assert.equal(describeBranchDeletionFailure(new Error('Other Branches depend on this Branch')),'Other Branches depend on this Branch');
+});
+
 test('final Branch deletion reports and retains a safe cleanup diagnostic until completion',options,async t=>{
  const f=await fixture(t),branch=f.deploy('Deletion diagnostic',[{id:'script',kind:'script',runtime:'node',cwdRef:'workspace',timeoutMs:5000,source:"process.stdout.write('never runs')"}]);
  const fakeSecret='fixture-private-token-value',key='branch-finalize:'+branch.id;
@@ -78,7 +100,7 @@ test('final Branch deletion reports and retains a safe cleanup diagnostic until 
  const pending=await f.api('DELETE',`/api/branches/${branch.id}`,undefined,202);
  assert.equal(pending.pending,true);assert.equal(pending.deleted,false);
  let lifecycle=await f.api('GET',`/api/branches/${branch.id}/lifecycle`);
- assert.equal(lifecycle.deleting,true);assert.match(lifecycle.deletionError,/SQLITE_CONSTRAINT_TRIGGER/);assert.match(lifecycle.deletionError,/Details withheld/);assert.ok(!JSON.stringify(lifecycle).includes(fakeSecret));assert.ok(!JSON.stringify(lifecycle).includes('fixture-labeled-value'));
+ assert.equal(lifecycle.deleting,true);assert.match(lifecycle.deletionError,/SQLITE_CONSTRAINT_TRIGGER/);assert.match(lifecycle.deletionError,/database trigger rejected/);assert.match(lifecycle.deletionError,/Details withheld/);assert.ok(!JSON.stringify(lifecycle).includes(fakeSecret));assert.ok(!JSON.stringify(lifecycle).includes('fixture-labeled-value'));
  const saved=f.store.sqlite.prepare('SELECT error FROM branch_retirement_errors WHERE resource_id=?').get(key);
  assert.equal(saved.error,lifecycle.deletionError);assert.ok(!saved.error.includes(fakeSecret));
  await f.close();
@@ -107,7 +129,7 @@ test('an immediate Branch deletion failure does not expose an unlabeled syntheti
  f.store.sqlite.exec(`CREATE TEMP TRIGGER fail_branch_deletion_start BEFORE UPDATE OF deleting ON branches WHEN OLD.id='${branch.id}' AND NEW.deleting=1 BEGIN SELECT RAISE(ABORT,'controlled start failure fixture-unlabeled-private-value'); END`);
  await f.open();
  const response=await f.api('DELETE',`/api/branches/${branch.id}`,undefined,409);
- assert.match(response.error,/SQLITE_CONSTRAINT_TRIGGER/);assert.match(response.error,/Details withheld/);assert.ok(!JSON.stringify(response).includes(fakeSecret));
+ assert.match(response.error,/SQLITE_CONSTRAINT_TRIGGER/);assert.match(response.error,/database trigger rejected/);assert.match(response.error,/Details withheld/);assert.ok(!JSON.stringify(response).includes(fakeSecret));
  assert.equal(f.store.sqlite.prepare('SELECT deleting FROM branches WHERE id=?').get(branch.id).deleting,0);
  f.store.sqlite.exec('DROP TRIGGER fail_branch_deletion_start');
  const done=await f.api('DELETE',`/api/branches/${branch.id}`);assert.equal(done.deleted,true);

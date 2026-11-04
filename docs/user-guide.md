@@ -672,7 +672,7 @@ budgets not supplied by the current tree contract are labeled unavailable. See t
 
 Workflow and Settings show the saved package update state, its error, and any required review action. A scheduled retry is labeled as such; a held update remains held for review and is not described as retrying. A stopping update remains visible until cleanup finishes.
 
-When workflow deletion cannot finish, Workflow and Settings show the last cleanup error while the workflow remains pending. Known blockers and recognized database error codes are shown; other details are withheld because they may contain credentials. The diagnostic is cleared when deletion completes; connected working folders stay untouched.
+When workflow deletion cannot finish, Workflow and Settings show the last cleanup error while the workflow remains pending. Known blockers and recognized database or operating-system error codes are shown with a plain-language description. Unclassified details are withheld because they may contain credentials. The diagnostic is cleared when deletion completes; connected working folders stay untouched.
 
 ### Unconfirmed steering
 

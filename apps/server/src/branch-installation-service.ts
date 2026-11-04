@@ -48,12 +48,35 @@ const BRANCH_DELETION_PUBLIC_BLOCKERS=new Set([
  'Branch budget audit publication is still pending',
  'Finish Output role recovery before deleting a published Branch tree',
 ]);
-const BRANCH_DELETION_SQLITE_CODES=new Set(['SQLITE_CONSTRAINT_TRIGGER','SQLITE_BUSY','SQLITE_LOCKED','SQLITE_FULL','SQLITE_READONLY','SQLITE_IOERR','SQLITE_CORRUPT']);
+// Fixed descriptions explain verified error classes without copying arbitrary
+// SQL, paths, trigger messages, or unlabeled credential values.
+const BRANCH_DELETION_ERROR_DESCRIPTIONS:Readonly<Record<string,string>>=Object.freeze({
+ SQLITE_CONSTRAINT_TRIGGER:'A database trigger rejected the operation.',
+ SQLITE_CONSTRAINT_FOREIGNKEY:'A related database record prevented the operation.',
+ SQLITE_CONSTRAINT_NOTNULL:'A required database value was missing.',
+ SQLITE_CONSTRAINT_UNIQUE:'A database uniqueness constraint was violated.',
+ SQLITE_CONSTRAINT_PRIMARYKEY:'A database primary-key constraint was violated.',
+ SQLITE_CONSTRAINT_CHECK:'A database check constraint was violated.',
+ SQLITE_BUSY:'The database was busy.',
+ SQLITE_LOCKED:'The database or table was locked.',
+ SQLITE_FULL:'The database could not write because storage was full.',
+ SQLITE_READONLY:'The database was read-only.',
+ SQLITE_IOERR:'The database reported an input/output error.',
+ SQLITE_CORRUPT:'The database reported corruption.',
+ SQLITE_CANTOPEN:'The database could not open a required file.',
+ EACCES:'The operating system denied access.',
+ EPERM:'The operating system denied the operation.',
+ ENOSPC:'The operating system reported no space left.',
+ EROFS:'The operating system reported a read-only filesystem.',
+});
 export function describeBranchDeletionFailure(error:unknown):string{
  const message=error instanceof Error?error.message:'';
  if(BRANCH_DELETION_PUBLIC_BLOCKERS.has(message))return message;
  const code=(typeof error==='object'&&error!==null&&'code' in error)?(error as {code?:unknown}).code:undefined;
- return `Workflow cleanup failed${typeof code==='string'&&BRANCH_DELETION_SQLITE_CODES.has(code)?` (${code})`:''}. Details withheld because they may contain credentials.`;
+ const description=typeof code==='string'&&Object.hasOwn(BRANCH_DELETION_ERROR_DESCRIPTIONS,code)?BRANCH_DELETION_ERROR_DESCRIPTIONS[code]:undefined;
+ return description
+  ? `Workflow cleanup failed (${code}): ${description} Details withheld because they may contain credentials.`
+  : 'Workflow cleanup failed. Details withheld because they may contain credentials.';
 }
 class InstallationStoppedError extends Error{}
 class InstallationConflictError extends Error{}
