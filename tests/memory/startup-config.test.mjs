@@ -137,7 +137,7 @@ test('global writes use live human policy, correct scope and provenance without 
 test('agent-authored global records remain readable across authority calls with genuine AI provenance',async()=>{
  const rows=new Map(),vector=Array.from({length:384},(_,i)=>i?0:1);
  const collection={metadata:{'hnsw:space':'cosine',embedding_signature:'owned',dimensions:384},async get({ids}={}){const chosen=[...rows].filter(([id])=>!ids||ids.includes(id));return {ids:chosen.map(([id])=>id),metadatas:chosen.map(([,r])=>r.metadata),documents:chosen.map(([,r])=>r.text),embeddings:chosen.map(([,r])=>r.embedding)};},async upsert({ids,metadatas,documents,embeddings}){ids.forEach((id,i)=>rows.set(id,{metadata:metadatas[i],text:documents[i],embedding:embeddings[i]}));}};
- const raw={signature:'owned',exclusive:fn=>fn(),names:()=>({memory:'owned-memory',log:'owned-log'}),client:{getCollection:async()=>collection}};
+ const raw={options:{url:'http://127.0.0.1:1'},signature:'owned',exclusive:fn=>fn(),names:()=>({memory:'owned-memory',log:'owned-log'}),client:{getCollection:async()=>collection}};
  const holdRoot=await mkdtemp(path.join(tmpdir(),'memory-authority-holds-'));
  const storage=new AuthorityStorage(raw,'owned-principal',{},holdRoot),authority={chatId:'owned-chat',actor:{kind:'agent',id:'writer'},runId:'owned-run',fenceToken:'1',sourceType:'ai_inference',readGlobal:true,readChat:true,writeScope:'global',guard:async()=>{}};
  await storage.run(authority,()=>storage.put({id:'fact',scope:'global',text:'Retained global fact',embedding:vector,metadata:{source_type:'ai_inference',confidence:1,deprecated:false,timestamp:new Date().toISOString()}}));
