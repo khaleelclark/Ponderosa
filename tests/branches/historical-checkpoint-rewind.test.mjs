@@ -5,7 +5,7 @@ import {encodeScriptContinuation} from '../../packages/agents/dist/branch-script
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {CAPABILITY_IDS} from '../../packages/core/dist/index.js';
-import {mkdtempSync,rmSync,mkdirSync,writeFileSync,readFileSync} from 'node:fs';
+import {mkdtempSync,rmSync,mkdirSync,writeFileSync,readFileSync,existsSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
@@ -2984,8 +2984,9 @@ test('final resource actual package engine captures later history and working fi
  const {BranchResourceService}=await import('../../apps/server/dist/branch-resource-service.js');
  const {enableProviderStartCoverage,sealProviderNeverStarted}=await import('../../packages/agents/dist/provider-start-journal.js');
  const f=await reservationHistoryFixture(t,'async',false,false,false),db=f.store.sqlite,coordination=new CoordinationV3Store(db);
+ const {AgentWorkingCopyService}=await import('../../apps/server/dist/agent-working-copy-service.js');
  const app=Fastify(),assets=new AssetStore(f.dir);
- const {packageEngine}=registerAgentPackageRoutes(app,{dataDir:f.dir,store:f.store,coordination,assets,engines:new Map([['codex',{adapter:{id:'codex',listModels:()=>[],listEfforts:()=>[]}}]]),deletingProjectIds:new Set(),deletingConversationIds:new Set(),deletingAgentIds:new Set(),agentCreationConversationLeases:new Map(),cachedModelOptions:()=>[],appendWorkspace(){},agentMessages:id=>f.store.getProjectedAgentMessages(id),createOperationalNotification(){}});
+ const {packageEngine}=registerAgentPackageRoutes(app,{dataDir:f.dir,store:f.store,coordination,assets,workingCopies:new AgentWorkingCopyService(f.dir,f.store),engines:new Map([['codex',{adapter:{id:'codex',listModels:()=>[],listEfforts:()=>[]}}]]),deletingProjectIds:new Set(),deletingConversationIds:new Set(),deletingAgentIds:new Set(),agentCreationConversationLeases:new Map(),cachedModelOptions:()=>[],appendWorkspace(){},agentMessages:id=>f.store.getProjectedAgentMessages(id),createOperationalNotification(){}});
  await app.ready();let service;
  try{
   const workspace=join(f.dir,'resource-workspace');mkdirSync(workspace);
@@ -3028,6 +3029,160 @@ test('final resource actual package engine captures later history and working fi
   const exit=f.branches.requireFinalResourceExit(f.source.id,opened.stepId);
   assert.equal(exit.selectedCheckpoint.id,final.checkpointId);assert.equal(exit.selectedCheckpoint.content_hash,final.checkpointHash);
   assert.equal(deleted,1);assert.equal(db.prepare('SELECT state FROM branch_resources WHERE step_execution_id=?').get(opened.stepId).state,'retired');
+  const {BranchInstallationService}=await import('../../apps/server/dist/branch-installation-service.js');
+  const {reconcileRetainedFinalResourceRequests}=await import('../../packages/agents/dist/branch-final-resource-reconciliation.js');
+  const installation=new BranchInstallationService(f.store,f.branches,async()=>assert.fail('unexpected delete'),async()=>assert.fail('unexpected delete'),
+   async(input,key,owner)=>{const project=f.store.createProject({label:input.label,hostPath:input.hostPath,defaultEngine:input.defaultEngine}),chat=f.store.getConversation(project.lastConversationId);
+    db.prepare('UPDATE conversations SET branch_id=? WHERE id=?').run(owner.branchId,chat.id);return f.store.getConversation(chat.id);});
+  installation.setEngine(packageEngine);
+  installation.setPublisher((input,configuration)=>f.branches.deploy(input,undefined,undefined,configuration));
+  const portable=await installation.export(f.branch.id,'full');
+  const owner=portable.runtimeData.owners.find(o=>o.sourceExecutionId===f.source.id);
+  const reconciled=reconcileRetainedFinalResourceRequests(owner,String(final.checkpointId),final.checkpointHash);
+  const finalSnapshot=JSON.parse(exit.selectedCheckpoint.snapshot_json);
+  assert.deepEqual(finalSnapshot.selected,exit.envelope.selected);
+  assert.deepEqual(finalSnapshot.hostDependencies,exit.envelope.hostDependencies);
+  assert.deepEqual(finalSnapshot.issuedContinuation,exit.latestContinuation);
+
+  assert.ok(reconciled.outcomes.length);
+  assert.ok(reconciled.outcomes.every(o=>o.state==='completed'));
+  const custody=owner.facts.filter(f=>f.kind==='custody').map(f=>JSON.parse(f.json)).find(c=>c.receipt.custodyId===final.receipt.custodyId);
+  assert.equal(custody.wireJson,bytes);
+  const preview=await installation.preview(portable,{agents:{},directories:{root:f.dir,workspace:f.dir},engines:{codex:'codex'}});
+  const imported=await installation.confirm(preview.id,true,undefined,false,preview.runtimeDataReview.manifestSha256);
+  assert.equal(imported.state,'completed',imported.error);
+  const retained=installation.runtimeData(preview.id,imported.branchId);
+  assert.deepEqual(retained.data,portable.runtimeData);
+  const importedOwner=retained.receipt.executionMap[f.source.id];
+  assert.throws(()=>f.branches.issuedDestinationSource(imported.branchId,importedOwner,final.checkpointId,final.checkpointHash),/excluded or non-working/);
+  assert.equal(retained.receipt.dispatched,false);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM agents a JOIN conversations c ON c.id=a.conversation_id WHERE c.branch_id=?').get(imported.branchId).n,0);
+  assert.equal(readFileSync(file,'utf8'),'after checkpoint exact content 😀\n');
+  const {BranchIssuedDestinationService}=await import('../../apps/server/dist/branch-issued-destination.js');
+  const destinations=new BranchIssuedDestinationService(f.store,f.branches,coordination,undefined,()=>packageEngine,async()=>assert.fail('must refuse before creating destination'));
+  await assert.rejects(destinations.prepare(f.branch.id,f.source.id,{commandKey:'native-final-folder-probe',checkpointId:final.checkpointId,expectedHash:final.checkpointHash,reconcileEffects:true}),/artifact-free.*native working copies/);
+  const freshRoot=join(f.dir,'fresh-final-live-root');mkdirSync(freshRoot);
+  const freshProject=f.store.createProject({label:'Final package restore probe',hostPath:freshRoot,creationHostPath:freshRoot,managedWorkspaceName:'fresh-final-live-root',chatOwned:true,defaultEngine:'codex'},{idempotencyKey:'final-live-root',payloadHash:'a'.repeat(64)});
+  const recovery=join(f.dir,'fresh-final-recovery');
+  const restored=await packageEngine.importAgent(freshProject.id,freshProject.lastConversationId,pkg,{codex:'codex'},'final-package-data-probe',{workingRootDestinations:{[node.workingRootRef]:recovery},workingFilesActivation:{sharedRoot:freshRoot}});
+  assert.equal(readFileSync(join(freshRoot,'final-work.txt'),'utf8'),'after checkpoint exact content 😀\n');
+  assert.equal(readFileSync(join(recovery,'final-work.txt'),'utf8'),'after checkpoint exact content 😀\n');
+  assert.ok(!existsSync(join(freshRoot,'.git','config')),'excluded Git data is not restored');
+  assert.equal(readFileSync(file,'utf8'),'after checkpoint exact content 😀\n');
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM scheduler_runs WHERE agent_id=?').get(restored.rootAgentId).n,0);
+  console.log('FINAL_GENERIC_FOLDER_RESTORE',JSON.stringify({recoveredFile:true,liveFile:true,sourcePreserved:true,excludedGitRestored:false,branchContinuation:false}));
+  console.log('FINAL_TRUSTED_ROUTE_PROBE',JSON.stringify({exportedFinalBytes:true,retainedImport:true,settledRequests:reconciled.outcomes,restoredWorkingFolders:0,continuation:'held'}));
+  console.log('ACTUAL_FINAL_CAPTURE_OK',JSON.stringify({history:true,workingFile:true,bytes:final.receipt.byteLength,deleted}));
+ }finally{if(service)await service.stop();await app.close();assets.close();}
+});
+
+test('complete final source adapter binds real portable checkpoint without source authority',async t=>{
+ const Fastify=(await import('fastify')).default;
+ const {AssetStore}=await import('../../apps/server/dist/assets.js');
+ const {registerAgentPackageRoutes}=await import('../../apps/server/dist/routes/agent-packages.js');
+ const {BranchResourceService}=await import('../../apps/server/dist/branch-resource-service.js');
+ const {enableProviderStartCoverage,sealProviderNeverStarted}=await import('../../packages/agents/dist/provider-start-journal.js');
+ const f=await reservationHistoryFixture(t,'async',false,false,false),db=f.store.sqlite,coordination=new CoordinationV3Store(db);
+ const {AgentWorkingCopyService}=await import('../../apps/server/dist/agent-working-copy-service.js');
+ const app=Fastify(),assets=new AssetStore(f.dir);
+ const {packageEngine}=registerAgentPackageRoutes(app,{dataDir:f.dir,store:f.store,coordination,assets,workingCopies:new AgentWorkingCopyService(f.dir,f.store),engines:new Map([['codex',{adapter:{id:'codex',listModels:()=>[],listEfforts:()=>[]}}]]),deletingProjectIds:new Set(),deletingConversationIds:new Set(),deletingAgentIds:new Set(),agentCreationConversationLeases:new Map(),cachedModelOptions:()=>[],appendWorkspace(){},agentMessages:id=>f.store.getProjectedAgentMessages(id),createOperationalNotification(){}});
+ await app.ready();let service;
+ try{
+  const workspace=join(f.dir,'resource-workspace');mkdirSync(workspace);
+  const prefix=await f.claim();f.settle(prefix);await f.advance(f.source.id);
+  enableProviderStartCoverage(db,'fixture-runtime');
+  const opened=await openCalledTreeResource(f.store,f.branches,workspace,f.source.id,f.branch.id,packageEngine);
+  const agent=f.store.getAgent(opened.agentId),root=agent.workingCopy.rootPath;
+  assert.equal(root,workspace,'the fixture captures only its disposable working directory');
+  const file=join(root,'final-work.txt');writeFileSync(file,'before checkpoint\n');
+
+  const message=text=>f.store.appendCommunicationEvent({schemaVersion:2,eventId:randomUUID(),projectId:agent.projectId,conversationId:opened.chatId,sender:{kind:'user',userId:'local-operator'},intent:'broadcast',audience:{kind:'organization',organizationId:agent.projectId},text,createdAt:new Date().toISOString()});
+  message('before checkpoint history');
+  const initial=f.branches.reserveIssuedResourceCapture(f.source.id,opened.stepId,0,'product-engine-initial');
+  await packageEngine.captureCheckpoint(initial.source,receipt=>f.branches.sealIssuedResourceCapture(f.source.id,opened.stepId,'product-engine-initial',receipt));
+  const earlier=f.branches.issuedResourceCapture(f.source.id,opened.stepId,'product-engine-initial');
+  assert.equal(earlier.state,'retained');
+  const earlierPackage=await packageEngine.readCheckpoint(earlier.receipt);
+  assert.ok(earlierPackage.agents[0].history.some(message=>message.text==='before checkpoint history'));
+  assert.equal(earlierPackage.agents[0].workingFiles?.some(entry=>entry.path==='final-work.txt')??false,false,'ordinary issued checkpoint keeps its original file selection');
+  writeFileSync(file,'after checkpoint exact content 😀\n');
+  message('after checkpoint history 😀');
+  coordination.updateRequest({requestId:opened.requestId,updateId:'actual-engine-result',kind:'completed',actor:{kind:'agent',id:opened.agentId},payload:{text:'known result'}});
+  const suffix=await f.claim();f.settle(suffix);await f.branches.unitSaver.drain();
+  let deleted=0;
+  service=new BranchResourceService(f.branches,f.store,async ids=>{deleted++;const p=f.store.previewAgentDeletion(ids);f.store.deleteAgentSubtrees(ids,p.previewHash,id=>coordination.handleAgentDeletion(id));},async()=>assert.fail('unexpected Chat creation'),async id=>{const c=f.store.commitConversationDeletion(id);f.store.finishConversationDeletionStorageCleanup(c);f.store.markConversationDeletionServerCleanupComplete(id);});
+  service.setPackageEngine(packageEngine);service.setGenerationExitDrain(async ids=>sealProviderNeverStarted(db,'fixture-runtime',ids));
+  await service.tick(false);
+  const final=f.branches.issuedResourceCapture(f.source.id,opened.stepId,`final-resource-package:${opened.stepId}:0`);
+  assert.ok(final,JSON.stringify(f.branches.resourceErrors().map(e=>e.message)));assert.equal(final.state,'retained',JSON.stringify(f.branches.resourceErrors().map(e=>e.message)));
+  const bytes=await packageEngine.readCheckpointBytes(final.receipt),pkg=await packageEngine.readCheckpoint(final.receipt),node=pkg.agents.find(a=>a.ref===opened.agentId);
+  assert.ok(node.history.some(message=>message.text==='after checkpoint history 😀'),'real projected Agent history after the checkpoint survives');
+  const workingFile=node.workingFiles?.find(entry=>entry.path==='final-work.txt');assert.ok(workingFile,'actual working folder is included');
+  const artifact=node.artifacts.find(a=>a.ref===workingFile.artifactRef);assert.ok(artifact);
+  assert.equal(Buffer.from(artifact.dataBase64,'base64').toString(),'after checkpoint exact content 😀\n');
+  assert.deepEqual(node.workingFolder.excludedPaths,[]);
+
+  assert.equal(readFileSync(file,'utf8'),'after checkpoint exact content 😀\n');
+  assert.equal(hash(bytes),final.receipt.sha256);assert.equal(Buffer.byteLength(bytes),final.receipt.byteLength);
+  const exit=f.branches.requireFinalResourceExit(f.source.id,opened.stepId);
+  assert.equal(exit.selectedCheckpoint.id,final.checkpointId);assert.equal(exit.selectedCheckpoint.content_hash,final.checkpointHash);
+  assert.equal(deleted,1);assert.equal(db.prepare('SELECT state FROM branch_resources WHERE step_execution_id=?').get(opened.stepId).state,'retired');
+  const {BranchInstallationService}=await import('../../apps/server/dist/branch-installation-service.js');
+  const {reconcileRetainedFinalResourceRequests}=await import('../../packages/agents/dist/branch-final-resource-reconciliation.js');
+  const installation=new BranchInstallationService(f.store,f.branches,async()=>assert.fail('unexpected delete'),async()=>assert.fail('unexpected delete'),
+   async(input,key,owner)=>{const project=f.store.createProject({label:input.label,hostPath:input.hostPath,defaultEngine:input.defaultEngine}),chat=f.store.getConversation(project.lastConversationId);
+    db.prepare('UPDATE conversations SET branch_id=? WHERE id=?').run(owner.branchId,chat.id);return f.store.getConversation(chat.id);});
+  installation.setEngine(packageEngine);
+  installation.setPublisher((input,configuration)=>f.branches.deploy(input,undefined,undefined,configuration));
+  const portable=await installation.export(f.branch.id,'full');
+  const owner=portable.runtimeData.owners.find(o=>o.sourceExecutionId===f.source.id);
+  const reconciled=reconcileRetainedFinalResourceRequests(owner,String(final.checkpointId),final.checkpointHash);
+  const finalSnapshot=JSON.parse(exit.selectedCheckpoint.snapshot_json);
+  assert.deepEqual(finalSnapshot.selected,exit.envelope.selected);
+  assert.deepEqual(finalSnapshot.hostDependencies,exit.envelope.hostDependencies);
+  assert.deepEqual(finalSnapshot.issuedContinuation,exit.latestContinuation);
+
+  assert.ok(reconciled.outcomes.length);
+  assert.ok(reconciled.outcomes.every(o=>o.state==='completed'));
+  const custody=owner.facts.filter(f=>f.kind==='custody').map(f=>JSON.parse(f.json)).find(c=>c.receipt.custodyId===final.receipt.custodyId);
+  assert.equal(custody.wireJson,bytes);
+  const preview=await installation.preview(portable,{agents:{},directories:{root:f.dir,workspace:f.dir},engines:{codex:'codex'}});
+  const imported=await installation.confirm(preview.id,true,undefined,false,preview.runtimeDataReview.manifestSha256);
+  assert.equal(imported.state,'completed',imported.error);
+  const retained=installation.runtimeData(preview.id,imported.branchId);
+  assert.deepEqual(retained.data,portable.runtimeData);
+  const importedOwner=retained.receipt.executionMap[f.source.id];
+  const proof=f.branches.issuedDestinationSource(imported.branchId,importedOwner,final.checkpointId,final.checkpointHash);
+  assert.equal(proof.kind,'retained-issued-resource');
+  assert.equal(proof.proof.finalExit.identity.executionId,f.source.id);
+  assert.equal(proof.proof.selectedCustody.wireJson,bytes);
+  const {retainedCompletedFinalResourceSource}=await import('../../packages/agents/dist/branch-final-resource-reconciliation.js');
+  for(const mutation of ['extra-audit','missing-intent','excluded-file','unavailable-custody']){
+   const changed=structuredClone(owner);
+   if(mutation==='extra-audit'){const fact=changed.facts.find(f=>f.kind==='transition');changed.facts.push({...fact,key:'extra',json:stableJson({...JSON.parse(fact.json),id:99999,kind:'script_started'})});}
+   if(mutation==='missing-intent')changed.facts=changed.facts.filter(f=>!f.key.startsWith('final-package-intent:'));
+   if(mutation==='excluded-file'){const fact=changed.facts.find(f=>f.kind==='custody'&&JSON.parse(f.json).receipt.custodyId===final.receipt.custodyId),value=JSON.parse(fact.json);value.package.agents[0].workingFolder.excludedPaths=['missing-user-data'];fact.json=stableJson(value);}
+   if(mutation==='unavailable-custody'){const fact=changed.facts.find(f=>f.kind==='custody'&&JSON.parse(f.json).receipt.custodyId===final.receipt.custodyId),value=JSON.parse(fact.json);value.disposition='unavailable_held';fact.json=stableJson(value);}
+   assert.throws(()=>retainedCompletedFinalResourceSource(changed,String(final.checkpointId),final.checkpointHash));
+  }
+
+  assert.equal(retained.receipt.dispatched,false);
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM agents a JOIN conversations c ON c.id=a.conversation_id WHERE c.branch_id=?').get(imported.branchId).n,0);
+  assert.equal(readFileSync(file,'utf8'),'after checkpoint exact content 😀\n');
+  const {BranchIssuedDestinationService}=await import('../../apps/server/dist/branch-issued-destination.js');
+  const destinations=new BranchIssuedDestinationService(f.store,f.branches,coordination,undefined,()=>packageEngine,async()=>assert.fail('must refuse before creating destination'));
+  await assert.rejects(destinations.prepare(f.branch.id,f.source.id,{commandKey:'native-final-folder-probe',checkpointId:final.checkpointId,expectedHash:final.checkpointHash,reconcileEffects:true}),/artifact-free.*native working copies/);
+  const freshRoot=join(f.dir,'fresh-final-live-root');mkdirSync(freshRoot);
+  const freshProject=f.store.createProject({label:'Final package restore probe',hostPath:freshRoot,creationHostPath:freshRoot,managedWorkspaceName:'fresh-final-live-root',chatOwned:true,defaultEngine:'codex'},{idempotencyKey:'final-live-root',payloadHash:'a'.repeat(64)});
+  const recovery=join(f.dir,'fresh-final-recovery');
+  const restored=await packageEngine.importAgent(freshProject.id,freshProject.lastConversationId,pkg,{codex:'codex'},'final-package-data-probe',{workingRootDestinations:{[node.workingRootRef]:recovery},workingFilesActivation:{sharedRoot:freshRoot}});
+  assert.equal(readFileSync(join(freshRoot,'final-work.txt'),'utf8'),'after checkpoint exact content 😀\n');
+  assert.equal(readFileSync(join(recovery,'final-work.txt'),'utf8'),'after checkpoint exact content 😀\n');
+  assert.ok(!existsSync(join(freshRoot,'.git','config')),'excluded Git data is not restored');
+  assert.equal(readFileSync(file,'utf8'),'after checkpoint exact content 😀\n');
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM scheduler_runs WHERE agent_id=?').get(restored.rootAgentId).n,0);
+  console.log('FINAL_GENERIC_FOLDER_RESTORE',JSON.stringify({recoveredFile:true,liveFile:true,sourcePreserved:true,excludedGitRestored:false,branchContinuation:false}));
+  console.log('FINAL_TRUSTED_ROUTE_PROBE',JSON.stringify({exportedFinalBytes:true,retainedImport:true,settledRequests:reconciled.outcomes,restoredWorkingFolders:0,continuation:'held'}));
   console.log('ACTUAL_FINAL_CAPTURE_OK',JSON.stringify({history:true,workingFile:true,bytes:final.receipt.byteLength,deleted}));
  }finally{if(service)await service.stop();await app.close();assets.close();}
 });
