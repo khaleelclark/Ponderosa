@@ -120,8 +120,9 @@ test('selected import uses the installed nonreentrant Chroma queue once for comp
  const {ChromaStorage}=await import('@local-memory/mcp-node-private');
  const source=await instance(t),destination=await instance(t),ids=await globalSeed(source),snapshot=selectGlobalMemory((await inventory(source)).snapshot,ids.selection),review=await prepare(destination,snapshot);
  const raw=destination.memory.core.database.raw;
- assert.ok(raw instanceof ChromaStorage);assert.equal(raw.exclusive,ChromaStorage.prototype.exclusive,'exercise the installed queue, not a reentrant test double');
- const realExclusive=raw.exclusive.bind(raw),events=[];let release,entered,inner;
+ assert.ok(raw instanceof ChromaStorage);
+ // Exercise the installed host origin-queue wrapper and the underlying Chroma queue.
+ const installedExclusive=raw.exclusive,realExclusive=installedExclusive.bind(raw),events=[];let release,entered,inner;
  const gate=new Promise(resolve=>{release=resolve;}),started=new Promise(resolve=>{entered=resolve;});
  const outer=realExclusive(async()=>{events.push('outer');inner=realExclusive(async()=>{events.push('inner');});entered();await gate;events.push('release');});
  await started;
@@ -132,7 +133,7 @@ test('selected import uses the installed nonreentrant Chroma queue once for comp
  // Every permitted acquisition still delegates to the unchanged installed nonreentrant queue.
  raw.exclusive=fn=>{assert.equal(++acquisitions,1,'import must not reacquire raw.exclusive while holding it');return realExclusive(fn);};
  let receipt;
- try{receipt=await destination.memory.core.database.importGlobalMemory(snapshot,review.reviewHash,async()=>{guards++;});}finally{raw.exclusive=ChromaStorage.prototype.exclusive;}
+ try{receipt=await destination.memory.core.database.importGlobalMemory(snapshot,review.reviewHash,async()=>{guards++;});}finally{raw.exclusive=installedExclusive;}
  assert.equal(acquisitions,1);assert.ok(guards>0);assert.equal(receipt.added,3);
  const after=(await inventory(destination)).snapshot;assert.equal(after.chunks.length,2);assert.equal(after.conflicts.length,1);noWork(destination);
  const retry=await commit(destination,await prepare(destination,snapshot));assert.equal(retry.status,200,retry.raw);assert.equal(retry.body.added,0);assert.deepEqual((await inventory(destination)).snapshot,after);
