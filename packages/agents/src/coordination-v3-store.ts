@@ -346,6 +346,8 @@ export class CoordinationV3Store {
       this.runtimeScopeAuthority,
       this.questionAuthority,
       (runId, agentId) => this.requestIdsAttachedToRun(runId, agentId),
+      (runId, agentId, requestId) => this.requestSteeringAdmission(runId, agentId, requestId),
+      (authorization, injectionId) => this.steeringAuthority.requireCurrentPromptInjection(authorization, injectionId),
       input => this.createActivation(input),
     );
     this.runLifecycleAuthority = new CoordinationV3RunLifecycleAuthority(
@@ -720,6 +722,14 @@ export class CoordinationV3Store {
 
   requestIdsAttachedToRun(runId: string, agentId: string): string[] {
     return this.runContextReadModel.requestIdsAttachedToRun(runId, agentId);
+  }
+
+  requestSteeringAdmission(runId: string, agentId: string, requestId: string) {
+    return this.runContextReadModel.requestSteeringAdmission(runId, agentId, requestId);
+  }
+
+  runHasSteeredRequest(runId: string): boolean {
+    return this.runContextReadModel.runHasSteeredRequest(runId);
   }
 
   outboundAwaitingQuestionRequestIdsAttachedToRun(runId: string, agentId: string): string[] {

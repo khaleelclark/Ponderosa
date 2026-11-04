@@ -100,7 +100,15 @@ export class CoordinationV3RequestReadModel {
   requestDelivery(requestId: string): CoordinationRequestDeliveryView | undefined {
     const row = this.sqlite.prepare(`
       SELECT request.state AS request_state, request.recipient_agent_id,
-        activation.state AS activation_state
+        activation.state AS activation_state, activation.dispatch_policy, activation.steering_wait_reason,
+        EXISTS (SELECT 1 FROM scheduler_runs run WHERE run.agent_id=request.recipient_agent_id
+          AND run.status IN ('leased','running')) AS recipient_busy,
+        EXISTS (SELECT 1 FROM scheduler_runs run JOIN scheduler_run_activations attached ON attached.run_id=run.id
+          JOIN scheduler_prompt_injections injection ON injection.run_id=run.id
+          JOIN json_each(injection.activation_ids_json) member ON member.value=attached.activation_id
+          WHERE run.agent_id=request.recipient_agent_id AND run.status IN ('leased','running')
+            AND attached.activation_id=activation.id AND injection.kind='steer'
+            AND injection.state IN ('pending','submitted','acknowledged')) AS active_steer
       FROM coordination_requests request
       LEFT JOIN agent_activations activation
         ON activation.id = (
@@ -121,6 +129,10 @@ export class CoordinationV3RequestReadModel {
       request_state: CoordinationRequestState;
       recipient_agent_id: string;
       activation_state: string | null;
+      dispatch_policy: string | null;
+      steering_wait_reason: string | null;
+      recipient_busy: number;
+      active_steer: number;
     } | undefined;
     if (!row) return undefined;
     let deliveryState: CoordinationRequestDeliveryView["deliveryState"];
@@ -149,7 +161,9 @@ export class CoordinationV3RequestReadModel {
       recipientAgentId: row.recipient_agent_id,
       requestState: row.request_state,
       deliveryState,
-      interruptsActiveRun: false,
+      interruptsActiveRun: !TERMINAL_REQUEST_STATES.has(row.request_state) && Boolean(row.active_steer || (row.recipient_busy &&
+        row.dispatch_policy === "steer_or_run" && ["pending", "retry_pending"].includes(row.activation_state ?? ""))),
+      ...(row.steering_wait_reason === "provider_unsupported" ? { steeringWaitReason: "provider_unsupported" as const } : {}),
     };
   }
 

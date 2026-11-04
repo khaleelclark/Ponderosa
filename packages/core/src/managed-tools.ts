@@ -181,15 +181,16 @@ export const PONDEROSA_HISTORY_TOOL: RuntimeDynamicToolSpec = {
 
 export const PONDEROSA_UPDATE_REQUEST_TOOL: RuntimeDynamicToolSpec = {
   name: "ponderosa_update_request",
-  description: "Report a correlated Request result with {text}, or ask its requester a blocking follow-up with {question}. The sole attached Request and stable idempotency are inferred; text defaults to completed. Kinds: progress, waiting_dependency, dependency_resolved, question, answer, completed, blocked, failed, cancelled, superseded; not waiting. To stop requested work cancel its exact outbound Request with {requestId,kind:\"cancelled\"}; cancellation is urgent control. Supply requestId for multiple attached Requests or an authorized historical outbound Request.",
+  description: "Report a correlated Request result with {text}, or ask its requester a blocking follow-up with {question}. The sole attached Request and stable idempotency are inferred; text defaults to completed. Kinds: progress, waiting_dependency, dependency_resolved, question, answer, completed, blocked, failed, cancelled, superseded; not waiting. To stop requested work cancel its exact outbound Request with {requestId,kind:\"cancelled\"}; cancellation is urgent control. Supply exact requestId and steeringInjectionId for a steered Request; also supply requestId for multiple attached Requests or an authorized historical outbound Request.",
   inputSchema: {
     type: "object",
     additionalProperties: false,
     anyOf: [{ required: ["text"] }, { required: ["question"] }, { required: ["kind"] }],
     properties: {
+      steeringInjectionId: { type: "string", description: "After a steer, copy the exact latest prompt injection fence shown in that prompt." },
       requestId: {
         type: "string", minLength: 1, maxLength: 200,
-        description: "Optional when exactly one correlated request is attached to this run. Required, and matched exactly, when multiple requests are attached.",
+        description: "Required for a Request steered into this Run and when multiple Requests are attached; otherwise optional when exactly one correlated Request is attached.",
       },
       updateId: { type: "string", minLength: 1, maxLength: 200, description: "Advanced override. The server derives a stable update ID for the common report form." },
       kind: {

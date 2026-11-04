@@ -259,6 +259,7 @@ export class CoordinationV3CoordinateAuthority {
           ),
           kind: "coordination_request",
           priority: PRIORITY.request,
+          dispatchPolicy: "steer_or_run",
           dedupeKey: `request:${requestId}:created`,
           payload: {
             requestId,

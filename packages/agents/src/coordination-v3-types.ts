@@ -71,6 +71,7 @@ export interface UpdateRequestV3Input {
   actor: Actor;
   /** Provider-authored updates may only target requests attached to this Run. */
   runAuthorization?: RunAuthorizationV3;
+  steeringInjectionId?: string;
   inReplyToUpdateId?: string;
   payload?: unknown;
   /** Durable structured classification for a provider-derived system update. */
@@ -111,7 +112,8 @@ export interface CoordinationRequestDeliveryView {
     | "delivery_failed"
     | "delivery_uncertain"
     | "delivery_cancelled";
-  interruptsActiveRun: false;
+  interruptsActiveRun: boolean;
+  steeringWaitReason?: "provider_unsupported";
 }
 
 export interface SchedulerLease {

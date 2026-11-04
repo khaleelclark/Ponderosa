@@ -90,7 +90,7 @@ export function registerAgentRequestCommandRoutes(
   } = context;
 
   app.post<{
-    Body: { requestId?: string; updateId?: string; kind?: CoordinationRequestUpdateKind; text?: string; question?: string; inReplyToUpdateId?: string };
+    Body: { steeringInjectionId?: string; requestId?: string; updateId?: string; kind?: CoordinationRequestUpdateKind; text?: string; question?: string; inReplyToUpdateId?: string };
   }>("/api/agent-request-updates", async (request, reply) => {
     if (!coordinationV3) return reply.code(404).send({ error: "Communication V3 is not enabled" });
     const token = request.headers.authorization?.replace(/^Bearer\s+/i, "");
@@ -108,11 +108,11 @@ export function registerAgentRequestCommandRoutes(
     }
     const candidate = body as Record<string, unknown>;
     const unknownFields = Object.keys(candidate).filter((key) =>
-      !["requestId", "updateId", "kind", "text", "question", "inReplyToUpdateId"].includes(key));
+      !["steeringInjectionId", "requestId", "updateId", "kind", "text", "question", "inReplyToUpdateId"].includes(key));
     if (unknownFields.length) {
       return reply.code(400).send({ error: `unknown request update field(s): ${unknownFields.join(", ")}` });
     }
-    for (const key of ["requestId", "updateId", "text", "question", "inReplyToUpdateId"] as const) {
+    for (const key of ["steeringInjectionId", "requestId", "updateId", "text", "question", "inReplyToUpdateId"] as const) {
       if (candidate[key] !== undefined && typeof candidate[key] !== "string") {
         return reply.code(400).send({ error: `${key} must be a string` });
       }
@@ -128,7 +128,11 @@ export function registerAgentRequestCommandRoutes(
       capability.v3SchedulerRunId,
       capability.agentId,
     );
-    const requestId = suppliedRequestId ?? (attachedRequestIds.length === 1 ? attachedRequestIds[0] : undefined);
+    const inferableRequestIds = attachedRequestIds.filter(id => {
+      const admission = coordinationV3.requestSteeringAdmission(capability.v3SchedulerRunId, capability.agentId, id);
+      return admission !== "steer" && admission !== "unconfirmed";
+    });
+    const requestId = suppliedRequestId ?? (inferableRequestIds.length === 1 ? inferableRequestIds[0] : undefined);
     const question = request.body?.question === undefined
       ? undefined
       : canonicalizeProviderText(request.body.question, steeringInjectionIds).trim();
@@ -148,8 +152,10 @@ export function registerAgentRequestCommandRoutes(
     if (!requestId) return reply.code(400).send({
       error: attachedRequestIds.length === 0
         ? "requestId is required because the current run has no attached correlated request"
-        : "requestId is required because the current run has multiple attached correlated requests",
-      currentRequestIds: attachedRequestIds,
+        : attachedRequestIds.length === 1 && inferableRequestIds.length === 0
+          ? "Use the exact requestId and prompt fence from the steered instruction"
+          : "requestId is required because the current run has multiple attached correlated requests",
+      currentRequestIds: inferableRequestIds,
     });
     const handoffText = question ?? canonicalText ?? "";
     if (Buffer.byteLength(handoffText, "utf8") > LONG_TEXT_MAX_UTF8_BYTES) {
@@ -160,10 +166,10 @@ export function registerAgentRequestCommandRoutes(
     }
     if (suppliedRequestId && !coordinationV3.getRequest(suppliedRequestId)) return reply.code(409).send({
       error: "request not found",
-      currentRequestIds: attachedRequestIds,
-      hint: attachedRequestIds.length === 1
+      currentRequestIds: inferableRequestIds,
+      hint: inferableRequestIds.length === 1
         ? "Retry without requestId to target the current run's attached request"
-        : "Retry with one exact currentRequestId",
+        : "Use the exact requestId from the relevant instruction",
     });
     const currentRequest = coordinationV3.getRequest(requestId);
     if (!currentRequest) return reply.code(409).send({ error: "request not found" });
@@ -191,6 +197,7 @@ export function registerAgentRequestCommandRoutes(
       kind,
       actor: { kind: "agent" as const, id: capability.agentId },
       runAuthorization: runAuthorization(capability),
+      ...(request.body.steeringInjectionId?.trim() ? { steeringInjectionId: request.body.steeringInjectionId.trim() } : {}),
       ...(request.body.inReplyToUpdateId?.trim() ? { inReplyToUpdateId: request.body.inReplyToUpdateId.trim() } : {}),
       payload: {
         text: backingArtifact

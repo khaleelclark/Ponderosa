@@ -70,7 +70,7 @@ export function replyStreamSource(store:AgentStore,coordination:CoordinationV3St
 
 /** Completion invokes existing public authority, including artifact staging and idempotency. */
 export function replyStreamCommit(publication:ReplyStreamPublication,text:string,steeringInjectionId?:string){
-  if(publication.kind==="request_update")return {url:"/api/agent-request-updates",payload:{requestId:publication.requestId,kind:publication.updateKind,text}};
+  if(publication.kind==="request_update")return {url:"/api/agent-request-updates",payload:{requestId:publication.requestId,kind:publication.updateKind,text,...(steeringInjectionId?{steeringInjectionId}:{})}};
   return {url:"/api/agent-messages",payload:{text:publication.documentTitle?publication.documentTitle:text,
     intent:publication.intent,...(publication.recipientAgentIds?{recipientAgentIds:publication.recipientAgentIds}:{}),
     ...(publication.taskDelivery?{taskDelivery:publication.taskDelivery}:{}),

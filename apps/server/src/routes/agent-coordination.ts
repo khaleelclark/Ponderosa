@@ -787,7 +787,7 @@ export function registerAgentCoordinationRoutes(
     });
     const queueDirective = normalized.length === 0
       ? "No new Requests were created; this operation only grouped existing Requests."
-      : "See requestDeliveries for each new Request's current delivery state. Ordinary Requests never interrupt active work; queued_behind_active_run means the recipient has not received that Request yet.";
+      : "See requestDeliveries for each Request’s delivery state. Actionable Requests steer a busy agent when supported; otherwise they wait for a following Run. Delivery uncertainty is held for review.";
     return {
       ...result,
       requestDeliveries,

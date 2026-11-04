@@ -22,6 +22,14 @@
       "afterSha256": "502e0c9824a9282ac2e2b8ab51f8f1909b8036a7e55ee711894e6f950a2cc12f"
     },
     {
+      "path": "tests/agents/busy-request-steering.test.mjs",
+      "feature": "agents",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server, controlled providers and disposable private stores",
+      "origin": "Busy Request prompt fencing, unsupported-provider fallback, and uncertain delivery"
+    },
+    {
       "path": "tests/agents/request-update-projection-recovery.test.mjs",
       "feature": "agents",
       "lane": "server",

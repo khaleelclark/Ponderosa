@@ -210,6 +210,8 @@ export function registerAgentCommunicationRoutes(
     const steeringInjectionIds = coordinationV3.steeringInjectionIds(capability.runId);
     const latestPrompt = coordinationV3.latestAcknowledgedPromptInjection(capability.runId);
     const requiredSteeringFence = latestPrompt?.kind === "steer" ? latestPrompt.id : undefined;
+    const discloseSteeringFence = requiredSteeringFence &&
+      !coordinationV3.runHasSteeredRequest(capability.runId);
     const inferredReply = request.body?.intent === undefined;
     const candidateIntent = request.body?.intent ?? capability.defaultReply?.intent;
     const text = request.body?.text === undefined
@@ -298,7 +300,7 @@ export function registerAgentCommunicationRoutes(
       } catch (error) {
         return reply.code(409).send({
           error: error instanceof Error ? error.message : "output prompt authority is invalid",
-          ...(requiredSteeringFence ? { requiredSteeringInjectionId: requiredSteeringFence } : {}),
+          ...(discloseSteeringFence ? { requiredSteeringInjectionId: requiredSteeringFence } : {}),
         });
       }
       if (!currentAuthor) {
@@ -564,7 +566,7 @@ export function registerAgentCommunicationRoutes(
     } catch (error) {
       return reply.code(409).send({
         error: error instanceof Error ? error.message : "output prompt authority is invalid",
-        ...(requiredSteeringFence ? { requiredSteeringInjectionId: requiredSteeringFence } : {}),
+        ...(discloseSteeringFence ? { requiredSteeringInjectionId: requiredSteeringFence } : {}),
       });
     }
     const pendingRequiredReplyAuthorities = coordinationV3.requiredReplyAuthoritiesForRun(capability.runId);
@@ -624,7 +626,7 @@ export function registerAgentCommunicationRoutes(
       } catch (error) {
         return reply.code(409).send({
           error: error instanceof Error ? error.message : "output prompt authority is invalid",
-          ...(requiredSteeringFence ? { requiredSteeringInjectionId: requiredSteeringFence } : {}),
+          ...(discloseSteeringFence ? { requiredSteeringInjectionId: requiredSteeringFence } : {}),
         });
       }
     }

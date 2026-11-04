@@ -39,6 +39,37 @@ export class CoordinationV3RunContextReadModel {
     return rows.map((row) => row.id);
   }
 
+  /** Exact original Request prompt on this run. Other lineage remains unchanged. */
+  requestSteeringAdmission(runId: string, agentId: string, requestId: string): "turn" | "steer" | "unconfirmed" | "unattached" {
+    const rows = this.sqlite.prepare(`
+      SELECT injection.kind, injection.state
+      FROM scheduler_runs run
+      JOIN scheduler_run_activations attached ON attached.run_id = run.id
+      JOIN agent_activations activation ON activation.id = attached.activation_id
+      JOIN activation_sources source ON source.activation_id = activation.id
+      JOIN coordination_requests request ON request.id = source.source_id
+      LEFT JOIN scheduler_prompt_injections injection ON injection.run_id = run.id
+        AND EXISTS (SELECT 1 FROM json_each(injection.activation_ids_json) member
+          WHERE member.value = activation.id)
+      WHERE run.id = ? AND run.agent_id = ? AND request.project_id = run.project_id
+        AND request.id = ? AND activation.kind = 'coordination_request'
+        AND source.source_kind = 'request' AND ${currentRequestAttachmentSql("attached")}
+    `).all(runId, agentId, requestId) as Array<{kind: string | null; state: string | null}>;
+    if (rows.some(row => row.kind === null || row.kind === "turn")) return "turn";
+    if (rows.some(row => row.kind === "steer" && row.state === "acknowledged")) return "steer";
+    return rows.length ? "unconfirmed" : "unattached";
+  }
+
+  runHasSteeredRequest(runId: string): boolean {
+    return Boolean(this.sqlite.prepare(`
+      SELECT 1 FROM scheduler_prompt_injections injection, json_each(injection.activation_ids_json) member
+      JOIN agent_activations activation ON activation.id = member.value
+      WHERE injection.run_id = ? AND injection.kind = 'steer' AND injection.state = 'acknowledged'
+        AND activation.kind = 'coordination_request'
+      LIMIT 1
+    `).get(runId));
+  }
+
   outboundAwaitingQuestionRequestIdsAttachedToRun(
     runId: string,
     agentId: string,
