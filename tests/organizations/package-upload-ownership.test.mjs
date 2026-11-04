@@ -3,6 +3,7 @@ import test from 'node:test';
 import {writeFile,readFile,readdir,realpath} from 'node:fs/promises';
 import path from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
+import {AgentStore} from '@ponderosa/agents';
 import {withFixture,until} from '../shared/fixture.mjs';
 
 test('JSON shaped like a staged Agent upload cannot read or unlink a caller-supplied path',async t=>{
@@ -218,4 +219,60 @@ test('copy ledger created first prevents a same-key async import admission',{tim
    assert.equal(f.turns.length,0);
   }finally{release();hostFs.access=originalAccess;}
  });
+});
+test('an exact deleted-owner status never returns a stale full import receipt',{timeout:30000},async t=>{
+ await withFixture(t,async f=>{
+  const {promises:hostFs}=await import('@ponderosa/native-host/fs');
+  const chat=await f.createChat('Deleted owner read race'),other=f.ok(await f.api('POST','/api/projects/'+chat.projectId+'/conversations',{title:'Other Chat',defaultEngine:'codex'},{'idempotency-key':randomUUID()})),requestId=randomUUID(),endpoint='/api/projects/'+chat.projectId+'/agent-import-operations';
+  const wire=Buffer.from(JSON.stringify({conversationId:chat.id,engineMapping:{codex:'codex'}})+'\n{}'),fingerprint=importRequestFingerprint(wire);
+  const op=f.ok(await f.api('POST',endpoint,wire,{'content-type':'application/vnd.ponderosa.agent-import','idempotency-key':requestId,'x-ponderosa-agent-package-fingerprint':fingerprint}));
+  await until(async()=>{const response=await f.api('GET',endpoint+'/'+op.id);return response.status===200&&response.body.status==='failed';},'terminal read-race import');
+  const directory=await realpath(path.join(f.dataDir,'agent-import-operations')),original=hostFs.readFile;
+  let release,entered;const reached=new Promise(resolve=>{entered=resolve;}),gate=new Promise(resolve=>{release=resolve;});
+  hostFs.readFile=async function(name,...args){
+   if(typeof name==='string'&&path.basename(name)===op.id+'.json'&&await realpath(path.dirname(name))===directory){entered();await gate;}
+   return original.call(this,name,...args);
+  };
+  try{
+   const lookup=f.api('GET',endpoint+'/by-request/'+requestId+'?conversationId='+chat.id);await reached;
+   assert.equal(f.ok(await f.api('DELETE','/api/conversations/'+chat.id)).deleted,true);
+   release();const response=await lookup;assert.equal(response.status,409);assert.equal(response.body.state,'destination_deleted');
+   assert.equal(response.body.operationId,op.id);assert.equal(response.body.requestFingerprint,fingerprint);
+   assert.equal('result' in response.body,false);assert.equal('payloadHash' in response.body,false);
+   assert.equal((await f.api('GET',endpoint+'/by-request/'+requestId+'?conversationId='+other.id)).status,404);
+   assert.equal((await f.api('GET',(endpoint+'/by-request/'+requestId+'?conversationId='+chat.id).replace('/api/','/api/branches/engine/'))).status,404);
+  }finally{release();hostFs.readFile=original;}
+ });
+});
+
+test('worker holds its Chat lease and preserves journal and payload if owner is deleted',{timeout:30000},async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const {promises:hostFs}=await import('@ponderosa/native-host/fs');
+  const chat=await f.createChat('Deleted owner worker'),requestId=randomUUID(),endpoint='/api/projects/'+chat.projectId+'/agent-import-operations';
+  const pkg={schema:'ponderosa.agent-package.v1',mode:'template',kind:'agent',exportedAt:new Date().toISOString(),sourceLabel:'Original',rootRef:'root',agents:[{ref:'root',title:'Import target',engine:'codex',managementPermissions:{allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false}}]};
+  const wire=Buffer.from(JSON.stringify({conversationId:chat.id,engineMapping:{codex:'codex'}})+'\n'+JSON.stringify(pkg)),fingerprint=importRequestFingerprint(wire);
+  const directory=await realpath(path.join(f.dataDir,'agent-import-operations')),original=hostFs.open;
+  let release,entered;const reached=new Promise(resolve=>{entered=resolve;}),gate=new Promise(resolve=>{release=resolve;});
+  hostFs.open=async function(name,...args){
+   if(typeof name==='string'&&name.endsWith('.payload')&&await realpath(path.dirname(name))===directory){entered();await gate;}
+   return original.call(this,name,...args);
+  };
+  try{
+   const op=f.ok(await f.api('POST',endpoint,wire,{'content-type':'application/vnd.ponderosa.agent-import','idempotency-key':requestId,'x-ponderosa-agent-package-fingerprint':fingerprint}));
+   await reached;
+   assert.equal((await f.api('DELETE','/api/conversations/'+chat.id)).status,409,'worker lease blocks ordinary Chat deletion');
+   assert.equal((await f.api('DELETE','/api/projects/'+chat.projectId)).status,409,'worker lease blocks ordinary Project deletion');
+   const journal=path.join(directory,op.id+'.json'),payload=path.join(directory,op.id+'.payload');
+   const savedJournal=await readFile(journal),savedPayload=await readFile(payload);
+   // Simulate an already-committed deletion from an older version.
+   assert.equal(store.commitConversationDeletion(chat.id)?.canonicalDeletionCompleted,true);
+   release();hostFs.open=original;
+   await f.reopen();
+   assert.deepEqual(await readFile(journal),savedJournal);assert.deepEqual(await readFile(payload),savedPayload);
+   const status=await f.api('GET',endpoint+'/by-request/'+requestId+'?conversationId='+chat.id);
+   assert.equal(status.status,409);assert.equal(status.body.state,'destination_deleted');assert.equal(status.body.operationId,op.id);
+   assert.equal(status.body.requestFingerprint,fingerprint);assert.equal(f.turns.length,0);
+  }finally{release();hostFs.open=original;}
+ },{storeFactory:dataDir=>(store=new AgentStore(dataDir))});
 });

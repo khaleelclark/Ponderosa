@@ -318,6 +318,24 @@ export function registerAgentPackageRoutes(
   const importAdmissionHeld=(id:string)=>{const intent=importIntentForOperation(id);return !!intent&&intent.state!=='queued';};
   const heldImportMessage='Import admission is held for recovery; the original request and upload have been preserved.';
   const heldImportIdentity=(intent:ImportSubmissionIntent)=>({state:intent.state,operationId:intent.operation_id,requestId:intent.request_id,projectId:intent.project_id,conversationId:intent.conversation_id,product:intent.product_scope,requestFingerprint:intent.request_fingerprint});
+  // A deletion receipt only authorizes a content-free status when the exact
+  // locally issued Chat/Project/product identity matches and the Chat is gone.
+  const deletedImportDestination=(intent:ImportSubmissionIntent):boolean=>{
+    if(store.getConversation(intent.conversation_id,{includeDeleting:true}))return false;
+    if(store.getProjectDeletionReceipt(intent.project_id))return true;
+    const deletion=store.getConversationDeletionReceipt(intent.conversation_id);
+    return !!deletion&&deletion.canonicalDeletionCompleted&&deletion.projectId===intent.project_id&&
+      (deletion.branchId?'branches':'dev')===intent.product_scope;
+  };
+  const importOwnerAvailable=(intent:ImportSubmissionIntent):boolean=>{
+    if(intent.product_scope!=='dev'&&intent.product_scope!=='branches')return false;
+    const chat=store.getConversation(intent.conversation_id);
+    return !!chat&&chat.projectId===intent.project_id&&!deletingConversationIds.has(chat.id)&&
+      !deletingProjectIds.has(intent.project_id)&&resourceInProduct(store,'conversation',chat.id,intent.product_scope);
+  };
+  const importOwnerUnavailable=(id:string):boolean=>{
+    const intent=importIntentForOperation(id);return !!intent&&!importOwnerAvailable(intent);
+  };
   const operationByRequest = new Map<string, string>();
   const operationCache = new Map<string, AgentImportOperationDto>();
   const quarantinedOperationIds = new Set<string>();
@@ -463,15 +481,19 @@ export function registerAgentPackageRoutes(
     return operation as AgentImportOperationDto;
   };
   const quarantineOperation = async (id: string, error: unknown): Promise<void> => {
-    quarantinedOperationIds.add(id);
+    if(importOwnerUnavailable(id))return;
     const source = operationPath(id);
     let destination = `${source}.corrupt`;
     try {
       await fs.access(destination);
       destination = `${source}.corrupt.${randomUUID()}`;
     } catch { /* the stable quarantine name is available */ }
+    if(importOwnerUnavailable(id))return;
+    quarantinedOperationIds.add(id);
     try {
-      await fs.rename(source, destination);
+      // The owner recheck and rename share one synchronous turn; deletion
+      // cannot interleave between the final check and this quarantine move.
+      syncFs.renameSync(source, destination);
       if (process.platform !== "win32") {
         const directory = await fs.open(importOperationDirectory, "r");
         try { await directory.sync(); } finally { await directory.close(); }
@@ -550,11 +572,12 @@ export function registerAgentPackageRoutes(
     );
   };
   const readOperation = async (id: string): Promise<AgentImportOperationDto | undefined> => {
-    if (!operationIdPattern.test(id)) return undefined;
+    if (!operationIdPattern.test(id) || importOwnerUnavailable(id)) return undefined;
     try {
-      return validatedOperation(JSON.parse(await fs.readFile(operationPath(id), "utf8")), id);
+      const operation=validatedOperation(JSON.parse(await fs.readFile(operationPath(id), "utf8")), id);
+      return importOwnerUnavailable(id)?undefined:operation;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      if ((error as NodeJS.ErrnoException).code === "ENOENT" || importOwnerUnavailable(id)) return undefined;
       await quarantineOperation(id, error);
       return undefined;
     }
@@ -627,9 +650,9 @@ export function registerAgentPackageRoutes(
       }
       for (const name of names.filter((candidate) => candidate.endsWith(".json"))) {
         // An uncertain admission is evidence, even if its journal is malformed.
-        if(importAdmissionHeld(name.slice(0,-5)))continue;
+        if(importAdmissionHeld(name.slice(0,-5))||importOwnerUnavailable(name.slice(0,-5)))continue;
         const operation = await readOperation(name.slice(0, -5));
-        if (!operation) continue;
+        if (!operation||importOwnerUnavailable(operation.id)) continue;
         operationCache.set(operation.id, operation);
         operationByRequest.set(
           requestOperationKey(operation.projectId, operation.requestId),
@@ -643,8 +666,9 @@ export function registerAgentPackageRoutes(
         const copyMatch = /^(agent-create-[0-9a-f]{64})\.copy\.payload$/u.exec(name);
         const temporary = name.endsWith(".tmp");
         const abandonedUpload = name.startsWith(".incoming-");
-        if(abandonedUpload && store.sqlite.prepare("SELECT 1 FROM agent_import_submission_intents WHERE state IN ('reserved','retired') AND staged_name=?").get(name)) continue;
-        if(payloadMatch && importAdmissionHeld(payloadMatch[1]!)) continue;
+        if(abandonedUpload && store.sqlite.prepare("SELECT 1 FROM agent_import_submission_intents WHERE staged_name=?").get(name)) continue;
+        // Any locally issued intent keeps its exact original payload in place.
+        if(payloadMatch && importIntentForOperation(payloadMatch[1]!)) continue;
         const liveCopy = copyMatch
           ? store.getAgentCreationOperation(copyMatch[1]!)
           : undefined;
@@ -2491,9 +2515,21 @@ export function registerAgentPackageRoutes(
     withAgentImportAdmission(async () => {
     await operationHydration;
     if(importAdmissionHeld(operationId))return;
+    const intent=importIntentForOperation(operationId);
+    if(intent&&!importOwnerAvailable(intent))return;
     if(syncFs.existsSync(importLifecyclePath(operationId)))return;
+    // Acquire the existing Chat creation lease before any worker await. Chat
+    // and Project deletion consult this same lease through the entire import.
+    if(intent)agentCreationConversationLeases.set(intent.conversation_id,(agentCreationConversationLeases.get(intent.conversation_id)??0)+1);
+    try{
     let operation = await readOperation(operationId);
     if (!operation || operation.status !== "pending") return;
+    // A valid journal for another scope is not authority for this leased Chat.
+    // Leave both journal and payload untouched if any exact identity differs.
+    if(intent&&(operation.id!==intent.operation_id||operation.projectId!==intent.project_id||
+      operation.requestId!==intent.request_id||operation.conversationId!==intent.conversation_id||
+      operation.product!==intent.product_scope||operation.payloadHash!==intent.payload_sha256||
+      (operation.requestFingerprint??null)!==intent.request_fingerprint))return;
     const update = async (patch: Partial<AgentImportOperationDto>) => {
       operation = { ...operation!, ...patch, updatedAt: new Date().toISOString() };
       await writeOperation(operation);
@@ -2587,6 +2623,7 @@ export function registerAgentPackageRoutes(
         });
       } catch { /* completion remains authoritative */ }
     } catch (error) {
+      if(intent&&!importOwnerAvailable(intent)){retainPayloadForRecovery=true;return;}
       const message = error instanceof Error ? error.message : "Import failed";
       if(committedCreationId&&store.getAgentCreationOperation(committedCreationId)?.status==='completed'&&!committedResult){
         retainPayloadForRecovery=true;
@@ -2625,7 +2662,7 @@ export function registerAgentPackageRoutes(
         });
       } catch { /* failure state is durable */ }
     } finally {
-      if (!retainPayloadForRecovery) {
+      if (!retainPayloadForRecovery && (!intent||importOwnerAvailable(intent))) {
         const removed = await fs.unlink(payloadPath(operationId))
           .then(() => true)
           .catch(() => false);
@@ -2633,6 +2670,13 @@ export function registerAgentPackageRoutes(
           releaseStagedReservation(operationReservations.get(operationId));
           operationReservations.delete(operationId);
         }
+      }
+    }
+    }finally{
+      if(intent){
+        const remaining=(agentCreationConversationLeases.get(intent.conversation_id)??1)-1;
+        if(remaining>0)agentCreationConversationLeases.set(intent.conversation_id,remaining);
+        else agentCreationConversationLeases.delete(intent.conversation_id);
       }
     }
   });
@@ -2820,14 +2864,20 @@ export function registerAgentPackageRoutes(
       const requestId=validIdempotencyKey(request.params.requestId),chatId=request.query?.conversationId,product=requestProduct(request);
       if(!requestId||requestId!==request.params.requestId||typeof chatId!=='string'||!chatId||chatId.length>200)
         return reply.code(404).send({error:'import operation not found'});
+      const intent=getImportIntent(request.params.id,requestId);
+      if(intent&&intent.conversation_id===chatId&&intent.product_scope===product&&deletedImportDestination(intent))
+        return reply.code(409).send({...heldImportIdentity(intent),state:'destination_deleted',error:'The destination was deleted. The import outcome remains unknown; any retained evidence remains on the server.'});
       const chat=store.getConversation(chatId);
       if(!chat||chat.projectId!==request.params.id||!resourceInProduct(store,'conversation',chatId,product))
         return reply.code(404).send({error:'import operation not found'});
-      const intent=getImportIntent(request.params.id,requestId);
       if(intent){
         if(intent.conversation_id!==chatId||intent.product_scope!==product)return reply.code(404).send({error:'import operation not found'});
         if(intent.state!=='queued')return reply.code(409).send({error:heldImportMessage,...heldImportIdentity(intent)});
         const operation=await readQueuedIntentOperation(intent);
+        const current=getImportIntent(request.params.id,requestId);
+        if(!current||stableJson(current)!==stableJson(intent))return reply.code(404).send({error:'import operation not found'});
+        if(deletedImportDestination(current))return reply.code(409).send({...heldImportIdentity(current),state:'destination_deleted',error:'The destination was deleted. The import outcome remains unknown; any retained evidence remains on the server.'});
+        if(!importOwnerAvailable(current))return reply.code(404).send({error:'import operation not found'});
         if(!operation)return reply.code(409).send({error:heldImportMessage});
         return reply.send(operation);
       }
