@@ -46,8 +46,8 @@ not True. The older reconciliation and exact historical results remain in
 | 28 | Integration | Branches uses shared Core paths, but every Bible requirement must separately be qualified for Branches; aggregate parity remains open. |
 | 29 | Interface | Folders and shared Output/chat UI exist. Full copy census, screenshots, recordings and blind comparison remain open; consequential safety disclosures remain visible. |
 | 30 | Memory | Authorized combined Chat/global search exists. Internal populated cleanup and staged rollback source changes are integrated through `e0a9414e9` but remain behaviorally unqualified; unknown effects and uncertain scopes remain held. Real-provider seeded recall and misuse review remain open. |
-| 31 | Interface + Runtime | Shared streaming/voice primitives exist. Full surface coverage, clean-render recordings and required call latency remain open. |
-| 32 | Runtime | The pinned finite framework-capability inventory exists. **Missing/held:** portable final-resource continuation lacks independently verifiable original completeness/effect evidence. Matched example execution and framework qualification remain open. |
+| 31 | Interface + Runtime | Shared streaming/voice primitives exist. A voice draft is isolated and is not integrated. Full surface coverage, clean-render recordings and required call latency remain open. |
+| 32 | Runtime | The pinned finite framework-capability inventory exists. Source integrated at `af9eb06c9` captures post-drain generation-zero state before cleanup for resources with issued checkpoints. The focused test supplies synthetic package contents; the product package engine remains unqualified. **Missing/held:** portable executable final-resource continuation lacks independently verifiable original completeness/effect evidence. Matched example execution and framework qualification remain open. |
 
 ## Build list
 
