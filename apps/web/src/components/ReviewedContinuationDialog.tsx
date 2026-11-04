@@ -125,9 +125,9 @@ export function ReviewedContinuationDialog({projectId,receipt,onClose,onOpenAgen
     if(!mounted.current)return;
     try{
      const current=await load(original);
-     if(current.status==='source_retirement_required')setError(releaseError instanceof Error?releaseError.message:'The earlier session release is not yet confirmed. Close and reopen review to check again.');
+     if(current.status==='source_retirement_required')setError(releaseError instanceof Error?releaseError.message+' Session release remains unconfirmed; no second release was sent.':'The earlier session release is not yet confirmed. Check status; no second release was sent.');
      else {setError('');setNotice('');}
-    }catch(cause){setError(releaseError instanceof Error?releaseError.message:cause instanceof Error?cause.message:'The earlier session release is unconfirmed.');}
+    }catch(cause){setError((releaseError instanceof Error?releaseError.message:cause instanceof Error?cause.message:'Could not read session status.')+' Session release remains unconfirmed; no second release was sent.');}
     finally{lock.current=false;if(mounted.current)setBusy(false);}
    }catch(cause){if(mounted.current)setError(cause instanceof Error?cause.message:'Could not read continuation status.');}
   })();
