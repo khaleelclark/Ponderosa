@@ -8,6 +8,7 @@ import {AgentStore,BranchStore,CoordinationV3Store} from '@ponderosa/agents';
 import {recoveredRuntimeProcessHandle} from '@ponderosa/engines';
 import {createServer} from '../../apps/server/dist/app.js';
 import {describeBranchDeletionFailure} from '../../apps/server/dist/branch-installation-service.js';
+import {MEMORY_CLEANUP_HOLD_REASONS} from '../../apps/server/dist/local-memory-authority.js';
 import {until} from '../shared/fixture.mjs';
 
 const options={timeout:30000,skip:process.platform==='win32'?'Recoverable Branch Scripts currently require POSIX containment':false};
@@ -88,6 +89,11 @@ test('Branch deletion explains known failure classes without exposing arbitrary 
  const unknown=describeBranchDeletionFailure(Object.assign(new Error(`unknown failure ${secret}`),{code:secret}));
  assert.match(unknown,/Workflow cleanup failed/);assert.ok(!unknown.includes(secret));
  assert.equal(describeBranchDeletionFailure(new Error('Other Branches depend on this Branch')),'Other Branches depend on this Branch');
+ for(const [step,label] of [['pending','checking pending installation'],['receipts','compacting installation receipts'],['notifications','settling notifications'],['records','removing Workflow records']]){
+  const diagnostic=describeBranchDeletionFailure(Object.assign(new Error('fixture-unlabeled-secret API_KEY=fixture-labeled-secret'),{code:'SQLITE_CONSTRAINT_TRIGGER'}),step);
+  assert.ok(diagnostic.includes('Cleanup step: '+label+'.'));assert.ok(!diagnostic.includes('fixture-unlabeled-secret'));assert.ok(!diagnostic.includes('fixture-labeled-secret'));
+ }
+ for(const hold of MEMORY_CLEANUP_HOLD_REASONS)assert.equal(describeBranchDeletionFailure(new Error(hold),'records'),hold,'exact hold classification must not change');
 });
 
 test('final Branch deletion reports and retains a safe cleanup diagnostic until completion',options,async t=>{
@@ -100,7 +106,7 @@ test('final Branch deletion reports and retains a safe cleanup diagnostic until 
  const pending=await f.api('DELETE',`/api/branches/${branch.id}`,undefined,202);
  assert.equal(pending.pending,true);assert.equal(pending.deleted,false);
  let lifecycle=await f.api('GET',`/api/branches/${branch.id}/lifecycle`);
- assert.equal(lifecycle.deleting,true);assert.match(lifecycle.deletionError,/SQLITE_CONSTRAINT_TRIGGER/);assert.match(lifecycle.deletionError,/database trigger rejected/);assert.match(lifecycle.deletionError,/Details withheld/);assert.ok(!JSON.stringify(lifecycle).includes(fakeSecret));assert.ok(!JSON.stringify(lifecycle).includes('fixture-labeled-value'));
+ assert.equal(lifecycle.deleting,true);assert.match(lifecycle.deletionError,/SQLITE_CONSTRAINT_TRIGGER/);assert.match(lifecycle.deletionError,/database trigger rejected/);assert.match(lifecycle.deletionError,/Cleanup step: removing Workflow records/);assert.match(lifecycle.deletionError,/Details withheld/);assert.ok(!JSON.stringify(lifecycle).includes(fakeSecret));assert.ok(!JSON.stringify(lifecycle).includes('fixture-labeled-value'));
  const saved=f.store.sqlite.prepare('SELECT error FROM branch_retirement_errors WHERE resource_id=?').get(key);
  assert.equal(saved.error,lifecycle.deletionError);assert.ok(!saved.error.includes(fakeSecret));
  await f.close();

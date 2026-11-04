@@ -69,14 +69,23 @@ const BRANCH_DELETION_ERROR_DESCRIPTIONS:Readonly<Record<string,string>>=Object.
  ENOSPC:'The operating system reported no space left.',
  EROFS:'The operating system reported a read-only filesystem.',
 });
-export function describeBranchDeletionFailure(error:unknown):string{
+const BRANCH_DELETION_STEPS={
+ pending:'checking pending installation',
+ receipts:'compacting installation receipts',
+ notifications:'settling notifications',
+ records:'removing Workflow records',
+} as const;
+type BranchDeletionStep=keyof typeof BRANCH_DELETION_STEPS;
+export function describeBranchDeletionFailure(error:unknown,step?:BranchDeletionStep):string{
  const message=error instanceof Error?error.message:'';
  if(BRANCH_DELETION_PUBLIC_BLOCKERS.has(message)||isMemoryCleanupHold(message))return message;
  const code=(typeof error==='object'&&error!==null&&'code' in error)?(error as {code?:unknown}).code:undefined;
  const description=typeof code==='string'&&Object.hasOwn(BRANCH_DELETION_ERROR_DESCRIPTIONS,code)?BRANCH_DELETION_ERROR_DESCRIPTIONS[code]:undefined;
- return description
+ const safe=description
   ? `Workflow cleanup failed (${code}): ${description} Details withheld because they may contain credentials.`
   : 'Workflow cleanup failed. Details withheld because they may contain credentials.';
+ const label=step&&Object.hasOwn(BRANCH_DELETION_STEPS,step)?BRANCH_DELETION_STEPS[step]:undefined;
+ return label?`${safe} Cleanup step: ${label}.`:safe;
 }
 class InstallationStoppedError extends Error{}
 class InstallationConflictError extends Error{}
@@ -842,15 +851,20 @@ export class BranchInstallationService {
    if(removeEmptyImport&&plan.branch_id)this.branches.beginDeletion(plan.branch_id);
    this.compactPlan(plan.id,'canceled',plan.error?.startsWith('Stopping update')?undefined:plan.error??undefined);
   }
-  for(const b of this.rows(`SELECT id FROM branches WHERE deleting=1 AND NOT EXISTS(SELECT 1 FROM branch_installation_resources r JOIN branch_retirement_errors held ON held.resource_id=r.local_id WHERE r.branch_id=branches.id AND held.error IN (${MEMORY_CLEANUP_HOLD_REASONS.map(()=>'?').join(',')})) ORDER BY updated_at,id LIMIT 5`,...MEMORY_CLEANUP_HOLD_REASONS))try{
-   if(this.row("SELECT 1 FROM branch_installation_plans WHERE branch_id=? AND state='canceling'",b.id))continue;
-   for(const plan of this.rows("SELECT id,state,error FROM branch_installation_plans WHERE branch_id=?",b.id))this.compactPlan(plan.id,plan.state==='preview'?'expired':plan.state,plan.state==='preview'?'Branch deletion invalidated this preview':plan.error??undefined);
-   this.settleNotifications?.(b.id);
-   this.branches.deleteBranch(b.id);
-  }catch(error){
-   // Keep the deletion fence and retain a safe last diagnostic for the operator.
-   this.retirementError(branchDeletionErrorResourceId(b.id),new Error(describeBranchDeletionFailure(error)));
-   this.run('UPDATE branches SET updated_at=? WHERE id=?',now.toISOString(),b.id);
+  for(const b of this.rows(`SELECT id FROM branches WHERE deleting=1 AND NOT EXISTS(SELECT 1 FROM branch_installation_resources r JOIN branch_retirement_errors held ON held.resource_id=r.local_id WHERE r.branch_id=branches.id AND held.error IN (${MEMORY_CLEANUP_HOLD_REASONS.map(()=>'?').join(',')})) ORDER BY updated_at,id LIMIT 5`,...MEMORY_CLEANUP_HOLD_REASONS)){
+   let step:BranchDeletionStep='pending';
+   try{
+    if(this.row("SELECT 1 FROM branch_installation_plans WHERE branch_id=? AND state='canceling'",b.id))continue;
+    step='receipts';
+    for(const plan of this.rows("SELECT id,state,error FROM branch_installation_plans WHERE branch_id=?",b.id))this.compactPlan(plan.id,plan.state==='preview'?'expired':plan.state,plan.state==='preview'?'Branch deletion invalidated this preview':plan.error??undefined);
+    step='notifications';this.settleNotifications?.(b.id);
+    step='records';this.branches.deleteBranch(b.id);
+   }catch(error){
+    // Preserve exact known hold messages: cleanup retries classify them by
+    // equality. Other causes get only the fixed local step and safe code.
+    this.retirementError(branchDeletionErrorResourceId(b.id),new Error(describeBranchDeletionFailure(error,step)));
+    this.run('UPDATE branches SET updated_at=? WHERE id=?',now.toISOString(),b.id);
+   }
   }
   if(this.runtimeRefreshPending&&this.refreshRuntime)try{await this.refreshRuntime();this.runtimeRefreshPending=false;}catch{/* The next scheduler tick retries. Startup also reconciles every source. */}
  }
