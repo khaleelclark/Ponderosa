@@ -628,14 +628,17 @@ export class BranchInstallationService {
  async delete(branchId:string):Promise<{deleted:boolean;pending:boolean}>{
   if(!this.branches.getBranch(branchId))return {deleted:true,pending:false};
   this.store.sqlite.transaction(()=>{
-   // A published tree can include independently addressable descendant
-   // Branches. Deleting only the root must not retire their Chats or Agents.
-   // Complete the held publication before ordinary dependency-checked deletion.
+   // A root deletion must not retire resources owned by another Branch,
+   // even when the saved tree metadata is incomplete.
    for(const plan of this.rows("SELECT * FROM branch_installation_plans WHERE branch_id=? AND state IN ('applying','canceling')",branchId)){
-    const state=this.rolePlan(plan);
-    if(state.published&&state.tree){
-     const map=state.tree.branchMap,ids=map&&typeof map==='object'&&!Array.isArray(map)?Object.values(map):[];
-     if(ids.length!==1||ids[0]!==branchId)throw new Error('Finish Output role recovery before deleting a published Branch tree');
+    const state=this.rolePlan(plan),otherOwner=this.row("SELECT 1 FROM branch_installation_resources WHERE staging_plan_id=? AND branch_id!=? AND state IN ('staging','active','retiring') LIMIT 1",plan.id,branchId);
+    if(otherOwner)throw new Error('Finish Output role recovery before deleting a published Branch tree');
+    if(state.published){
+     const pkg=JSON.parse(plan.package_json),tree=state.tree,receipt=state.treeReceipt;
+     if(pkg.definitionTree||tree||receipt){
+      const map=tree?.branchMap,ids=map&&typeof map==='object'&&!Array.isArray(map)?Object.values(map):[];
+      if(!receipt||!map||stableJson(map)!==stableJson(receipt.branchMap)||ids.length!==1||ids[0]!==branchId)throw new Error('Finish Output role recovery before deleting a published Branch tree');
+     }
     }
    }
    this.branches.beginDeletion(branchId);

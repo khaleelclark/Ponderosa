@@ -102,6 +102,18 @@ for(const cyclic of [false,true])test(`published held ${cyclic?'cyclic':'acyclic
  assert.ok(unrelated.length);assert.ok(unrelated.every(id=>!agentIds.includes(id)));
  const stop=await f.app.inject({method:'POST',url:`/api/branches/installations/${p.id}/cancel`,payload:{}});
  assert.equal(stop.statusCode,409,stop.body);assert.match(stop.json().error,/already committed/);
+ const ownedBefore=f.store.sqlite.prepare('SELECT branch_id,local_id,state FROM branch_installation_resources WHERE staging_plan_id=? ORDER BY branch_id,local_id').all(p.id);
+ // Damaged tree metadata must not hide actual plan-linked descendant owners.
+ for(const corrupt of [v=>{delete v.tree;},v=>{delete v.tree;delete v.treeReceipt;},v=>{v.tree.branchMap={[f.parent.branch.id]:done.branchId};}]){
+  const damaged=structuredClone(state);corrupt(damaged);
+  f.store.sqlite.prepare('UPDATE branch_installation_plans SET preview_json=? WHERE id=?').run(JSON.stringify(damaged),p.id);
+  const denied=await f.app.inject({method:'DELETE',url:`/api/branches/${done.branchId}`});
+  assert.equal(denied.statusCode,409,denied.body);assert.match(denied.json().error,/Finish Output role recovery/);
+  assert.ok(agentIds.every(id=>f.store.getAgent(id)));assert.ok(chatIds.every(id=>f.store.getConversation(id)));
+  assert.ok(branchIds.every(id=>f.store.sqlite.prepare('SELECT 1 FROM branches WHERE id=? AND deleting=0').get(id)));
+  assert.deepEqual(f.store.sqlite.prepare('SELECT branch_id,local_id,state FROM branch_installation_resources WHERE staging_plan_id=? ORDER BY branch_id,local_id').all(p.id),ownedBefore);
+ }
+ f.store.sqlite.prepare('UPDATE branch_installation_plans SET preview_json=? WHERE id=?').run(plan.preview_json,p.id);
  const deletion=await f.app.inject({method:'DELETE',url:`/api/branches/${done.branchId}`});
  assert.equal(deletion.statusCode,409,deletion.body);assert.match(deletion.json().error,/Finish Output role recovery/);
  assert.ok(agentIds.every(id=>f.store.getAgent(id)),'plan-owned Agents remain before recovery');
