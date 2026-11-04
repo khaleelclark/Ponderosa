@@ -96,6 +96,8 @@ import {
 } from "../agent-package-codec.js";
 
 import {validatePortableAgentPackage} from "../portable-agent-package-validation.js";
+
+import {withProjectImportLock} from '../project-import-lock.js';
 export interface BranchPackageExportOptions {
   organization?:boolean;
   selectedWorkingFiles?:readonly string[];
@@ -343,7 +345,6 @@ export function registerAgentPackageRoutes(
   const operationByRequest = new Map<string, string>();
   const operationCache = new Map<string, AgentImportOperationDto>();
   const quarantinedOperationIds = new Set<string>();
-  const projectImportTails = new Map<string, Promise<void>>();
   const activeCopyOperations = new Set<string>();
   type StagedImportUpload = {
     pathname: string;
@@ -424,18 +425,6 @@ export function registerAgentPackageRoutes(
       await handle.close();
     }
     return hash.digest("hex");
-  };
-  const withProjectImportLock = async <T>(projectId: string, work: () => Promise<T>): Promise<T> => {
-    const previous = projectImportTails.get(projectId) ?? Promise.resolve();
-    let release!: () => void;
-    const current = new Promise<void>((resolve) => { release = resolve; });
-    const tail = previous.catch(() => undefined).then(() => current);
-    projectImportTails.set(projectId, tail);
-    await previous.catch(() => undefined);
-    try { return await work(); } finally {
-      release();
-      if (projectImportTails.get(projectId) === tail) projectImportTails.delete(projectId);
-    }
   };
   const requestOperationKey = (projectId: string, requestId: string) =>
     `${projectId}:${requestId}`;

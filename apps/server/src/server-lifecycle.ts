@@ -1,3 +1,4 @@
+import {withProjectImportLock} from './project-import-lock.js';
 import {MEMORY_CLEANUP_HOLD} from './local-memory-authority.js';
 import {localMemoryFor} from './local-memory.js';
 import WebSocket from "ws";
@@ -59,11 +60,12 @@ export async function recoverCanonicalAgentCreations(input: {
     allowQuarantinedAgentIds: ReadonlySet<string>;
   }): Promise<number>;
   limit?: number;
+  projectId?: string;
 }): Promise<{ recovered: number; failures: Array<{ operationId: string; error: unknown }> }> {
   const failures: Array<{ operationId: string; error: unknown }> = [];
   let recovered = 0;
   const operations = input.store.listRecoverableAgentCreationOperations()
-    .filter((operation) => operation.status === "canonical_committed" && operation.communicationEventId)
+    .filter((operation) => (!input.projectId || operation.projectId === input.projectId) && operation.status === "canonical_committed" && operation.communicationEventId)
     .slice(0, input.limit ?? 32);
   for (const operation of operations) {
     try {
@@ -96,10 +98,12 @@ export function recoverFailedAgentCreations(input: {
   dataDir: string;
   deletingAgentIds: Set<string>;
   handleAgentDeletion(agentId: string): void;
+  projectId?: string;
 }): { recovered: number; failures: Array<{ operationId: string; error: unknown }> } {
   let recovered = 0;
   const failures: Array<{ operationId: string; error: unknown }> = [];
   for (const operation of input.store.listRecoverableAgentCreationOperations()) {
+    if (input.projectId && operation.projectId !== input.projectId) continue;
     if (operation.status === "canonical_committed") continue;
     if((operation.result as {memoryPlan?:unknown[]}|undefined)?.memoryPlan?.length){failures.push({operationId:operation.id,error:new Error(operation.lastError===MEMORY_CLEANUP_HOLD?MEMORY_CLEANUP_HOLD:'Package memory cleanup remains pending')});continue;}
     input.store.updateAgentCreationOperation(operation.id, { status: "rolling_back" });
@@ -517,31 +521,44 @@ export function registerServerLifecycle(
     // any crash gap in the workspace log before the listener becomes ready.
     reconcileCommittedProjectDeletions();
     completeLifecyclePhase("project_deletion_workspace_recovery");
-    await runAgentCreationRecovery(Number.POSITIVE_INFINITY);
-    for(const operation of store.listRecoverableAgentCreationOperations()){
-      if((operation.result as {memoryPlan?:unknown[]}|undefined)?.memoryPlan?.length&&operation.lastError!==MEMORY_CLEANUP_HOLD){
-        store.updateAgentCreationOperation(operation.id,{status:'rolling_back'});
-        try{const memory=localMemoryFor(app);if(!memory)throw new Error('Local memory configuration required for package cleanup');await memory.rollbackImportMemory(operation.id);}
-        catch(error){store.updateAgentCreationOperation(operation.id,{lastError:error instanceof Error?error.message:String(error)});}
-      }
-    }
-    const failedCreationRecovery = recoverFailedAgentCreations({
-      store,
-      assets,
-      dataDir: opts.dataDir,
-      deletingAgentIds,
-      handleAgentDeletion: (id) => coordinationV3.handleAgentDeletion(id),
-    });
-    for (const failure of failedCreationRecovery.failures) {
-      store.updateAgentCreationOperation(failure.operationId, {
-        lastError: failure.error instanceof Error
-          ? failure.error.message
-          : "Agent creation rollback remains quarantined",
+    // A second app may start while another app owns an import in this same
+    // process. Wait for that Project's active import before inspecting recovery.
+    const startupCreations = store.listRecoverableAgentCreationOperations();
+    for (const projectId of new Set(startupCreations.map(operation=>operation.projectId))) {
+      await withProjectImportLock(projectId, async()=>{
+        const canonical = await recoverCanonicalAgentCreations({
+          store, appendWorkspace, deletingAgentIds, reconcileRuntimeCommunicationProjections,
+          limit:Number.POSITIVE_INFINITY, projectId,
+        });
+        for(const failure of canonical.failures)app.log.error({err:failure.error,operationId:failure.operationId},'Agent creation projection recovery remains pending');
+        for(const operation of store.listRecoverableAgentCreationOperations().filter(row=>row.projectId===projectId)){
+          if((operation.status==='preparing'||operation.status==='rolling_back')&&(operation.result as {memoryPlan?:unknown[]}|undefined)?.memoryPlan?.length){
+            try{
+              const memory=localMemoryFor(app);
+              if(!memory)throw new Error('Local memory configuration required for package cleanup');
+              // Unknown effects require reconciliation; cleanup checks again under the shared queue.
+              if(!operation.conversationId||memory.core.database.scopeHasUnsettledMutation('chat:'+operation.conversationId))continue;
+              store.updateAgentCreationOperation(operation.id,{status:'rolling_back'});
+              await memory.rollbackImportMemory(operation.id);
+            }catch(error){store.updateAgentCreationOperation(operation.id,{lastError:error instanceof Error?error.message:String(error)});}
+          }
+        }
+        const recovery = recoverFailedAgentCreations({
+          store, assets, dataDir:opts.dataDir, deletingAgentIds, projectId,
+          handleAgentDeletion:(id)=>coordinationV3.handleAgentDeletion(id),
+        });
+        for(const failure of recovery.failures){
+          store.updateAgentCreationOperation(failure.operationId,{lastError:failure.error instanceof Error?failure.error.message:'Agent creation rollback remains quarantined'});
+          app.log.error({err:failure.error,operationId:failure.operationId},'Agent creation rollback remains quarantined');
+        }
+        // Startup may have inventoried an import that finished while it waited.
+        for(const initial of startupCreations.filter(row=>row.projectId===projectId)){
+          const current=store.getAgentCreationOperation(initial.id);
+          if(current && (current.status==='completed'||current.status==='rolled_back')){
+            for(const id of initial.agentIds)deletingAgentIds.delete(id);
+          }
+        }
       });
-      app.log.error(
-        { err: failure.error, operationId: failure.operationId },
-        "Agent creation rollback remains quarantined",
-      );
     }
     completeLifecyclePhase("agent_creation_recovery");
     const orphanGraceBoundary = Date.now() - 60 * 60 * 1_000;

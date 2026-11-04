@@ -240,7 +240,21 @@ export class AuthorityStorage implements MemoryStorage{
     const sorted=(v:any)=>JSON.stringify(Object.entries(v).sort(([a],[b])=>a.localeCompare(b)));
     if(actual.ids.length!==1||actual.ids[0]!==item.row.id||actual.documents[0]!==item.row.text||sorted(actual.metadatas[0])!==sorted(item.row.metadata)||JSON.stringify(this.vector(actual.embeddings?.[0]).map(Math.fround))!==JSON.stringify(item.row.embedding))throw Error('Memory snapshot: destination ID collision; existing data preserved');
    }}
-   catch(error){if(attempted.length)throw new AggregateError([error],MEMORY_CLEANUP_HOLD);throw error;}
+   catch(error){
+    if(!attempted.length)throw error;
+    // The queue is already held here. Only compensate a staged operation when
+    // every dispatched write is settled and its source ownership remains live.
+    // A rejected/lost remote write retains its mutation hold and is never replayed.
+    if(!packageOperationId)throw new AggregateError([error],MEMORY_CLEANUP_HOLD);
+    try {
+     await this.rollbackPackageMemoryLocked({
+      chatId,namespace:operationId,
+      chunkIds:attempted.filter(item=>item.c===collections[0]).map(item=>item.row.id),
+      conflictIds:attempted.filter(item=>item.c===collections[1]).map(item=>item.row.id),
+     },packageOperationId,guard);
+    } catch(cleanup) {throw new AggregateError([error,cleanup],MEMORY_CLEANUP_HOLD);}
+    throw error;
+   }
    return {chunkIds:prepared[0]!.map(r=>r.id),conflictIds:prepared[1]!.map(r=>r.id),excludedScopes:source.excludedScopes};
   });
  }
@@ -249,8 +263,53 @@ export class AuthorityStorage implements MemoryStorage{
   const id=(kind:string,sourceId:string)=>createHash('sha256').update(JSON.stringify([this.principal,chatId,namespace,snapshot.sourceChatId,kind,sourceId])).digest('hex');
   return {chatId,chunkIds:snapshot.chunks.map(r=>id('chunk',r.id)),conflictIds:snapshot.conflicts.map(r=>id('conflict',r.id))};
  }
- async rollbackPackageMemory(plan:{chatId:string;chunkIds:string[];conflictIds:string[]},_operationId:string,guard:()=>Promise<void>){
-  await guard();if(plan.chunkIds.length||plan.conflictIds.length)throw Error(MEMORY_CLEANUP_HOLD);
+ /** Caller owns raw.exclusive; the package plan predates any remote writes.
+  * Staged rows are invisible to ordinary memory callers until publication. */
+ private async rollbackPackageMemoryLocked(plan:{chatId:string;namespace?:string;chunkIds:string[];conflictIds:string[]},operationId:string,guard:()=>Promise<void>){
+  await guard();
+  if(!plan.chatId||!operationId||!Array.isArray(plan.chunkIds)||!Array.isArray(plan.conflictIds))throw Error(MEMORY_CLEANUP_HOLD);
+  if(!plan.chunkIds.length&&!plan.conflictIds.length)return;
+  if(typeof plan.namespace!=='string'||!plan.namespace.startsWith(operationId+':m:')||
+     !/^(0|[1-9][0-9]*)$/.test(plan.namespace.slice((operationId+':m:').length))||
+     [...plan.chunkIds,...plan.conflictIds].some(id=>typeof id!=='string'||!/^[a-f0-9]{64}$/.test(id))||
+     new Set(plan.chunkIds).size!==plan.chunkIds.length||new Set(plan.conflictIds).size!==plan.conflictIds.length||
+     plan.chunkIds.length+plan.conflictIds.length>10000||typeof this.packageVisible!=='function'||this.packageVisible(operationId))throw Error(MEMORY_CLEANUP_HOLD);
+  const scope='chat:'+plan.chatId;
+  if(this.scopeHasUnsettledMutation(scope))throw Error(MEMORY_CLEANUP_HOLD);
+  const owned:Array<{c:Awaited<ReturnType<typeof checkedCollection>>;id:string;log:boolean}>=[];
+  for(const [log,ids] of [[false,plan.chunkIds],[true,plan.conflictIds]] as const){
+   if(!ids.length)continue;
+   const c=await checkedCollection(this.raw,scope,log,guard);
+   for(let offset=0;offset<ids.length;offset+=500){
+    const requested=ids.slice(offset,offset+500);
+    await guard();const found=await c.get({ids:requested,include:['metadatas'] as any});await guard();
+    if(found.ids.length!==found.metadatas.length||new Set(found.ids).size!==found.ids.length||found.ids.some(id=>!requested.includes(id)))throw Error(MEMORY_CLEANUP_HOLD);
+    for(let i=0;i<found.ids.length;i++){
+     const id=found.ids[i]!,metadata:any=found.metadatas[i];
+     // Another owner's row at the deterministic ID is not ours to remove.
+     if(metadata?.host_package_operation!==operationId)continue;
+     const stamp=this.parse(id,scope,log?{...metadata,host_source_authority:metadata?.host_conflict_authority}:metadata,true);
+     if(!stamp||stamp.ownerChat!==plan.chatId||stamp.provenance.actor.kind!=='user'||
+        stamp.provenance.actor.id!==this.principal||stamp.provenance.runId!=='package-import:'+plan.namespace||
+        stamp.provenance.fenceToken!=='historical')throw Error(MEMORY_CLEANUP_HOLD);
+     owned.push({c,id,log});
+    }
+   }
+  }
+  // The shared queue excludes concurrent Ponderosa writers between the
+  // ownership inventory and the journaled, bounded deletes.
+  for(const item of owned){
+   await guard();
+   if(this.scopeHasUnsettledMutation(scope))throw Error(MEMORY_CLEANUP_HOLD);
+   if(!item.log)this.onMutation?.(scope,item.id);
+   try{await item.c.delete({ids:[item.id]});}
+   catch(error){throw new AggregateError([error],MEMORY_CLEANUP_HOLD);}
+   await guard();const remaining=await item.c.get({ids:[item.id],include:['metadatas'] as any});await guard();
+   if(remaining.ids.length)throw Error(MEMORY_CLEANUP_HOLD);
+  }
+ }
+ async rollbackPackageMemory(plan:{chatId:string;namespace?:string;chunkIds:string[];conflictIds:string[]},operationId:string,guard:()=>Promise<void>){
+  return this.raw.exclusive(()=>this.rollbackPackageMemoryLocked(plan,operationId,guard));
  }
  /** No name-based collection or unconditional record delete is safe without
   * backend exclusion or an atomic identity-and-content precondition. */

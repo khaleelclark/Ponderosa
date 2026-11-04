@@ -3,7 +3,9 @@ import test from 'node:test';
 import {randomUUID} from 'node:crypto';
 import {fork} from 'node:child_process';
 import {once} from 'node:events';
-import {instance,seed,read} from './portability-fixture.mjs';
+import {instance,seed,read,vector} from './portability-fixture.mjs';
+import {AgentStore} from '@ponderosa/agents';
+import {createServer} from '../../apps/server/dist/app.js';
 
 async function api(f,method,url,payload,extra={}){const res=await f.app.inject({method,url,headers:f.headers,...(payload===undefined?{}:{payload}),...extra});return {status:res.statusCode,body:res.json(),raw:res.body};}
 async function exported(f,organization=true){const res=await api(f,'GET',`/api/agents/${f.a.id}/export?mode=full&organization=${organization}`);assert.equal(res.status,200,res.raw);return res.body;}
@@ -41,6 +43,29 @@ test('actual organization HTTP package roundtrip restores scoped queries and ded
  const semantic=s=>s.chunks.map(r=>[r.text,r.embedding,r.metadata.deprecated,Boolean(r.metadata.supersedes)]).sort((a,b)=>a[0].localeCompare(b[0]));assert.deepEqual(semantic(next.body.memory[0].snapshot),semantic(pkg.memory[0].snapshot));noRuns(destination);
 });
 
+for(const startDuringImport of [false,true])test('two app instances serialize the same import and retain its receipt (startup '+(startDuringImport?'during':'before')+' import)',async t=>{
+ const source=await instance(t),destination=await instance(t);await seed(source);
+ const pkg=await exported(source,false),key=randomUUID();let otherStore,otherApp,other;
+ const openOther=()=>{otherStore=new AgentStore(destination.dataDir);otherApp=createServer({...destination.options,store:otherStore});other={app:otherApp,project:destination.project,chat:destination.chat,headers:destination.headers};};
+ if(!startDuringImport){openOther();await otherApp.ready();}
+ t.after(async()=>{if(otherApp){otherApp.prepareForShutdown();await otherApp.close();otherStore.close();}});
+ const raw=destination.memory.core.database.raw,original=raw.client.getCollection.bind(raw.client);
+ let entered,release;const started=new Promise(r=>entered=r),gate=new Promise(r=>release=r);let blocked=false;
+ raw.client.getCollection=async args=>{const c=await original(args),add=c.add.bind(c);c.add=async input=>{if(!blocked&&input.metadatas?.some(m=>m.host_package_operation)){blocked=true;entered();await gate;}return add(input);};return c;};
+ t.after(()=>{release();raw.client.getCollection=original;});
+ const first=imported(destination,pkg,key);await started;
+ if(startDuringImport)openOther();
+ let secondDone=false;
+ const second=(async()=>{if(startDuringImport)await otherApp.ready();return imported(other,pkg,key);})().finally(()=>{secondDone=true;});
+ await new Promise(r=>setTimeout(r,150));assert.equal(secondDone,false,'second app must wait for the active import');
+ release();const [a,b]=await Promise.all([first,second]);raw.client.getCollection=original;
+ assert.equal(a.status,201,a.raw);assert.equal(b.status,200,b.raw);assert.equal(a.body.rootAgentId,b.body.rootAgentId);
+ const op=destination.store.findAgentCreationOperation({projectId:destination.project.id,actorScope:'user:local-operator',kind:'import',idempotencyKey:key});
+ assert.equal(op.status,'completed');assert.equal(op.result.rootAgentId,a.body.rootAgentId);assert.deepEqual(op.agentIds,a.body.agentIds);
+ const visible=await api(other,'GET',`/api/agents/${a.body.rootAgentId}`);assert.equal(visible.status,200,visible.raw);
+ assert.equal((await read(destination,a.body.rootAgentId)).length,3);noRuns(destination);
+});
+
 test('product parser refuses encoded metadata credentials, malformed bindings/signatures and oversize before Agent or memory mutation',async t=>{
  const source=await instance(t),destination=await instance(t);await seed(source);const pkg=await exported(source,false),before=destination.store.listAgents(destination.project.id).length;
  for(const mutate of [p=>p.memory.push(structuredClone(p.memory[0])),p=>p.memory[0].snapshot.schema='unsupported',p=>p.memory[0].snapshot.signature='wrong-model',p=>p.memory[0].snapshot.chunks[0].text='\ud800',p=>p.memory[0].agentRefs[source.a.id]='missing',p=>p.memory[0].snapshot.chunks[0].metadata.env=JSON.stringify(JSON.stringify({OPENAI_API_KEY:'SYNTHETIC_ONLY'})),p=>p.memory[0].snapshot.chunks[0].text='x'.repeat(16*1024*1024)]){
@@ -63,9 +88,8 @@ test('SIGKILL during package memory write holds cleanup until an explicit draine
  // The synthetic worker awaited its only upsert response before killing itself;
  // this controlled evidence is not inferred for real interrupted operations.
  await reconcileControlled(destination,'chat:'+destination.chat.id,'Controlled fixture worker awaited its only backend upsert response before exiting');
- await destination.reopen();op=destination.store.findAgentCreationOperation({projectId:destination.project.id,actorScope:'user:local-operator',kind:'import',idempotencyKey:key});assert.equal(op.status,'rolling_back',op.lastError);assert.match(op.lastError,/Memory cleanup held/);
- const retained=await destination.memory.core.database.raw.client.getCollection({name:destination.memory.core.database.raw.names('chat:'+destination.chat.id).memory});assert.deepEqual(await retained.get({include:['metadatas']}),held,'staged rows remain preserved without backend compare-and-delete');
- const retry=await imported(destination,pkg,key);assert.notEqual(retry.status,201,retry.raw);assert.deepEqual(await retained.get({include:['metadatas']}),held);noRuns(destination);
+ await destination.reopen();op=destination.store.findAgentCreationOperation({projectId:destination.project.id,actorScope:'user:local-operator',kind:'import',idempotencyKey:key});assert.equal(op.status,'rolled_back',op.lastError);
+ const retained=await destination.memory.core.database.raw.client.getCollection({name:destination.memory.core.database.raw.names('chat:'+destination.chat.id).memory});assert.deepEqual((await retained.get({include:['metadatas']})).ids,[],'reconciled staged rows are cleaned once at startup');noRuns(destination);
 });
 
 test('immediate uncertain package write preserves staged ownership and both failure reasons across restart',async t=>{
@@ -112,8 +136,8 @@ test('exact pending import membership allows restoration but denies visibility; 
  const raw=destination.memory.core.database.raw,original=raw.client.getCollection.bind(raw.client);let refuse=true;
  raw.client.getCollection=async args=>{const c=await original(args),remove=c.delete.bind(c);c.delete=async input=>{if(refuse)throw Error('Controlled memory cleanup unavailable');return remove(input);};return c;};
  destination.store.updateAgentCreationOperation(operation.id,{status:'rolling_back'});await assert.rejects(destination.memory.rollbackImportMemory(operation.id),/Memory cleanup held/);assert.ok(destination.store.getAgentCreationOperation(operation.id).result.memoryPlan.length);
- assert.deepEqual(await read(destination,destination.a.id),[],'uncommitted team rows remain hidden');refuse=false;raw.client.getCollection=original;
- await destination.reopen();const held=destination.store.getAgentCreationOperation(operation.id);assert.equal(held.status,'rolling_back');assert.match(held.lastError,/Memory cleanup held/);assert.ok(destination.store.getAgent(id),'staged owner is retained');assert.deepEqual(await read(destination,destination.a.id),[]);noRuns(destination);
+ await assert.rejects(read(destination,destination.a.id),/unsettled remote write/,'an unconfirmed delete holds the scope');refuse=false;raw.client.getCollection=original;
+ await destination.reopen();const held=destination.store.getAgentCreationOperation(operation.id);assert.equal(held.status,'rolling_back');assert.match(held.lastError,/Memory cleanup held/);assert.ok(destination.store.getAgent(id),'staged owner is retained');await assert.rejects(read(destination,destination.a.id),/unsettled remote write/);noRuns(destination);
 });
 
 test('unconfigured memory destination explicitly refuses a memory-bearing package before creating Agents',async t=>{
@@ -152,4 +176,89 @@ test('combined organization migration keeps memory and historical execution toge
  await assertDestinationAuthority();assert.equal((await reviewedImport(pkg,key)).status,200);await destination.reopen();await assertDestinationAuthority();
  const next=await api(destination,'GET',`/api/agents/${root}/export?mode=full&organization=true`);assert.equal(next.status,200,next.raw);assert.ok(archives(next.body).some(a=>a.dataBase64===archive.dataBase64),'execution log bytes survive combined restore/reopen/re-export');assert.ok(next.body.memory[0].snapshot.chunks.some(r=>r.text==='Included private fact'));
  const invalid=structuredClone(pkg);invalid.memory[0].snapshot.grants={readGlobal:true};const before=destination.store.listAgents(destination.project.id).length;const invalidResult=await reviewedImport(invalid);assert.ok(invalidResult.status>=400,invalidResult.raw);assert.match(invalidResult.body.error,/Memory snapshot: unsupported schema or fields/);assert.equal(destination.store.listAgents(destination.project.id).length,before);await assertDestinationAuthority();
+});
+
+
+async function stagedMemoryImport(source,destination){
+ const pkg=await exported(source,false),{operation}=destination.store.beginAgentCreationOperation({projectId:destination.project.id,conversationId:destination.chat.id,actorScope:'user:local-operator',kind:'import',idempotencyKey:randomUUID(),payloadHash:'staged-owned-memory'});
+ const id=randomUUID();destination.store.addAgentCreationOperationMember(operation.id,id,0);
+ destination.store.createAgent(destination.project.id,{title:'Staged owner',engine:'fixture',conversationId:destination.chat.id},undefined,id);
+ const plan=destination.memory.prepareImportMemory(operation.id,pkg.memory);destination.store.updateAgentCreationOperation(operation.id,{result:{phase:'prepared_memory',memoryPlan:plan}});
+ await destination.memory.restoreImportMemory(operation.id,pkg.memory[0],{[source.a.id]:id},plan[0].namespace);
+ destination.store.updateAgentCreationOperation(operation.id,{status:'rolling_back'});
+ return {operation,plan:plan[0],id};
+}
+async function stagedRows(f,plan,log=false){
+ const raw=f.memory.core.database.raw,c=await raw.client.getCollection({name:raw.names('chat:'+plan.chatId)[log?'log':'memory']});
+ const ids=log?plan.conflictIds:plan.chunkIds;
+ return ids.length?await c.get({ids,include:['documents','metadatas']}):{ids:[],documents:[],metadatas:[]};
+}
+
+test('startup preserves memory for a canonical import awaiting projection recovery',async t=>{
+ const source=await instance(t),destination=await instance(t);await seed(source);
+ const {operation,plan}=await stagedMemoryImport(source,destination);
+ const before=await stagedRows(destination,plan),beforeLog=await stagedRows(destination,plan,true);
+ destination.store.updateAgentCreationOperation(operation.id,{status:'canonical_committed'});
+ await destination.reopen();
+ const retained=destination.store.getAgentCreationOperation(operation.id);
+ assert.equal(retained.status,'canonical_committed');assert.deepEqual(retained.result.memoryPlan,[plan]);
+ assert.deepEqual(await stagedRows(destination,plan),before);assert.deepEqual(await stagedRows(destination,plan,true),beforeLog);
+});
+
+test('settled staged memory rollback removes owned rows while a concurrent host write survives',async t=>{
+ const source=await instance(t),destination=await instance(t);await seed(source);await seed(destination);
+ const before=(await read(destination,destination.a.id)).map(r=>r.id).sort();
+ const {operation,plan}=await stagedMemoryImport(source,destination);
+ assert.ok((await stagedRows(destination,plan)).ids.length);assert.ok((await stagedRows(destination,plan,true)).ids.length);
+ const database=destination.memory.core.database,raw=database.raw,scope='chat:'+destination.chat.id,concurrentId=randomUUID();
+ let release,entered;const started=new Promise(r=>entered=r),gate=new Promise(r=>release=r);
+ const held=raw.exclusive(async()=>{entered();await gate;});await started;
+ const rollback=destination.memory.rollbackImportMemory(operation.id);
+ const authority={chatId:destination.chat.id,actor:{kind:'agent',id:destination.a.id},runId:'concurrent-trusted-writer',fenceToken:'1',sourceType:'ai_inference',readChat:true,readGlobal:false,writeScope:scope,visibility:'team',guard:async()=>{}};
+ const write=database.run(authority,()=>database.put({id:concurrentId,scope,text:'Concurrent legitimate fact',embedding:vector,metadata:{source_type:'ai_inference',confidence:0.9,deprecated:false,timestamp:new Date().toISOString()}}));
+ release();await Promise.all([held,rollback,write]);
+ assert.deepEqual((await stagedRows(destination,plan)).ids,[]);assert.deepEqual((await stagedRows(destination,plan,true)).ids,[]);
+ const after=(await read(destination,destination.a.id)).map(r=>r.id).sort();assert.deepEqual(after,[...before,concurrentId].sort());
+ assert.equal(destination.store.getAgentCreationOperation(operation.id).result.phase,'memory_rolled_back');
+ await destination.memory.rollbackImportMemory(operation.id);await destination.reopen();
+ assert.ok((await read(destination,destination.a.id)).some(row=>row.id===concurrentId));
+});
+
+test('staged rollback preserves a foreign row at a planned ID while removing its own rows',async t=>{
+ const source=await instance(t),destination=await instance(t);await seed(source);
+ const {operation,plan}=await stagedMemoryImport(source,destination),raw=destination.memory.core.database.raw;
+ const c=await raw.client.getCollection({name:raw.names('chat:'+plan.chatId).memory}),id=plan.chunkIds[0];
+ const row=await c.get({ids:[id],include:['documents','metadatas']});
+ await c.update({ids:[id],metadatas:[{...row.metadatas[0],host_package_operation:'independent-owner'}]});
+ await destination.memory.rollbackImportMemory(operation.id);
+ const preserved=await c.get({ids:[id],include:['documents','metadatas']});
+ assert.deepEqual(preserved.ids,[id]);assert.equal(preserved.documents[0],row.documents[0]);assert.equal(preserved.metadatas[0].host_package_operation,'independent-owner');
+ assert.deepEqual((await stagedRows(destination,{...plan,chunkIds:plan.chunkIds.slice(1)})).ids,[]);
+ assert.deepEqual((await stagedRows(destination,plan,true)).ids,[]);
+});
+
+test('unconfirmed staged delete retains its mutation hold and is not retried blindly',async t=>{
+ const source=await instance(t),destination=await instance(t);await seed(source);
+ const {operation,plan}=await stagedMemoryImport(source,destination),raw=destination.memory.core.database.raw,original=raw.client.getCollection.bind(raw.client);let attempts=0;
+ raw.client.getCollection=async args=>{const c=await original(args),remove=c.delete.bind(c);c.delete=async input=>{attempts++;await remove(input);throw Error('Controlled lost deletion acknowledgement');};return c;};
+ try {
+  await assert.rejects(destination.memory.rollbackImportMemory(operation.id),/Memory cleanup held/);
+  assert.equal(attempts,1);assert.ok(destination.memory.core.database.listMutationHolds().some(hold=>hold.effect?.scope==='chat:'+plan.chatId&&hold.effect?.operation==='delete'));
+  assert.ok(destination.store.getAgentCreationOperation(operation.id).result.memoryPlan.length);
+  await assert.rejects(destination.memory.rollbackImportMemory(operation.id),/Memory cleanup held/);assert.equal(attempts,1,'unknown delete must not be replayed');
+ } finally {raw.client.getCollection=original;}
+});
+
+test('a known successful staged prefix is compensated after a later read failure without reentering the queue',async t=>{
+ const source=await instance(t),destination=await instance(t);await seed(source);const pkg=await exported(source,false);
+ const {operation}=destination.store.beginAgentCreationOperation({projectId:destination.project.id,conversationId:destination.chat.id,actorScope:'user:local-operator',kind:'import',idempotencyKey:randomUUID(),payloadHash:'known-prefix-fixture'}),id=randomUUID();
+ destination.store.addAgentCreationOperationMember(operation.id,id,0);destination.store.createAgent(destination.project.id,{title:'Staged owner',engine:'fixture',conversationId:destination.chat.id},undefined,id);
+ const plan=destination.memory.prepareImportMemory(operation.id,pkg.memory);destination.store.updateAgentCreationOperation(operation.id,{result:{phase:'prepared_memory',memoryPlan:plan}});
+ const raw=destination.memory.core.database.raw,original=raw.client.getCollection.bind(raw.client);let wrote=false,failRead=true;
+ raw.client.getCollection=async args=>{const c=await original(args),add=c.add.bind(c),get=c.get.bind(c);c.add=async input=>{const result=await add(input);wrote=true;return result;};c.get=async input=>{if(wrote&&failRead){failRead=false;throw Error('Controlled post-write read failure');}return get(input);};return c;};
+ try {
+  await assert.rejects(destination.memory.restoreImportMemory(operation.id,pkg.memory[0],{[source.a.id]:id},plan[0].namespace),/Controlled post-write read failure/);
+ } finally {raw.client.getCollection=original;}
+ assert.equal(wrote,true);assert.deepEqual((await stagedRows(destination,plan[0])).ids,[]);
+ assert.equal(destination.memory.core.database.scopeHasUnsettledMutation('chat:'+destination.chat.id),false);
 });
