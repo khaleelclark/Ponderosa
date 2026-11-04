@@ -7,6 +7,10 @@ import { ReviewedSteeringAuthority } from '../../packages/agents/dist/coordinati
 import { payloadHash } from '../../packages/agents/dist/coordination-v3-canonical-json.js';
 import { withFixture, until, runtimeAttachmentPaths } from '../shared/fixture.mjs';
 import { inertCodex } from '../shared/inert-codex.mjs';
+import { inertClaude } from '../shared/inert-claude.mjs';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import pathModule from 'node:path';
 
 test('unqualified provider holds a reviewed continuation without retry or relabeling the original outcome',{timeout:30000},async t=>{
  let store;
@@ -257,4 +261,58 @@ test('a reused source provider is retired only with its latest exact Run and fen
    assert.equal(f.ok(await f.api('GET',path)).status,'review_required');
   },{storeFactory:p=>(store=new AgentStore(p)),steeringResponse:async()=>{throw Error('Controlled unknown delivery');}});
  } finally {if(previous===undefined)delete process.env.PONDEROSA_MAX_IDLE_RUNTIME_SESSIONS;else process.env.PONDEROSA_MAX_IDLE_RUNTIME_SESSIONS=previous;}
+});
+
+
+test('qualified Claude continues the original task and correction without replaying uncertain delivery',{timeout:30000},async t=>{
+ let store,useNative=false,native,invokeTool;
+ await withFixture(t,async f=>{
+  native=await inertClaude(f.root);
+  const chat=await f.createChat('Reviewed Claude transport'),agent=await f.createIdleAgent(chat,'Worker');
+  const upload=async(name,content)=>f.ok(await f.api('POST',`/api/agents/${agent.id}/attachments`,Buffer.from(content),
+    {'content-type':'application/octet-stream','x-ponderosa-filename':name,'x-ponderosa-media-type':'text/plain'}));
+  const taskFile=await upload('task.txt','original Claude fixture bytes'),steerFile=await upload('steer.txt','correction Claude fixture bytes');
+  f.plans.set(agent.id,[{hold:true}]);await f.send(agent.id,'The full original Claude task',{attachmentIds:[taskFile.id]});
+  await until(()=>f.turns.some(x=>x.agentId===agent.id),'source input');
+  const old=f.sessions.get(agent.id),source=(await f.detail(agent.id)).runs[0].id;
+  const root=store.sqlite.prepare("SELECT source_activation_id FROM required_reply_obligations WHERE run_id=?").get(source).source_activation_id;
+  await f.send(agent.id,'Apply the Claude correction',{activeRunDelivery:'steer',attachmentIds:[steerFile.id]});
+  const injection=await until(()=>store.sqlite.prepare("SELECT id,activation_ids_json FROM scheduler_prompt_injections WHERE run_id=? AND kind='steer' AND state='outcome_unknown'").get(source),'unknown steering');
+  const [activation]=JSON.parse(injection.activation_ids_json),url=`/api/projects/${chat.projectId}/message-deliveries/${activation}/reviewed-continuation`;
+  old.finish();await until(()=>store.sqlite.prepare("SELECT 1 FROM scheduler_runs WHERE id=? AND status='completed'").get(source),'source complete');
+  if(f.ok(await f.api('GET',url)).status==='source_retirement_required')f.ok(await f.api('POST',url+'/retire-source'));
+  const review=f.ok(await f.api('GET',url)).review;
+  useNative=true;
+  const receipt=f.ok(await f.api('POST',url,{reviewSha256:review.reviewSha256,effectsReviewed:true,reviewNote:'Inspected known effects',idempotencyKey:randomUUID()})).receipt;
+  const input=await until(async()=>(await native.frames()).find(frame=>frame.type==='user'),'Claude user input');
+  assert.match(JSON.stringify(input),/The full original Claude task/);
+  assert.match(JSON.stringify(input),/Apply the Claude correction/);
+  assert.match(JSON.stringify(input),/external effects occurred remain unknown/);
+  const bytes=await Promise.all(runtimeAttachmentPaths(input).map(p=>readFile(p,'utf8')));
+  assert.ok(bytes.includes('original Claude fixture bytes'));assert.ok(bytes.includes('correction Claude fixture bytes'));
+  await until(()=>store.sqlite.prepare("SELECT 1 FROM scheduler_run_activations a JOIN scheduler_runs r ON r.id=a.run_id WHERE a.activation_id=? AND r.prompt_injection_state='injected'").get(receipt.activationId),'Claude input acknowledged');
+  // This uses the actual host tool handler supplied to the provider. It does
+  // not simulate a Claude MCP protocol exchange.
+  const reply=await invokeTool({id:'fixture-claude-reply',name:'ponderosa_message',arguments:{text:'Completed reviewed Claude task'}});
+  assert.equal(reply.success,true);
+  await native.finish();
+  const next=await until(()=>store.sqlite.prepare("SELECT run_id FROM required_reply_obligations WHERE source_activation_id=? AND run_id<>? AND state='satisfied'").get(root,source),'original task reply satisfied');
+  assert.deepEqual(store.sqlite.prepare('SELECT source_activation_id,state FROM required_reply_obligations WHERE run_id=?').all(next.run_id),[{source_activation_id:root,state:'satisfied'}]);
+  assert.equal(store.sqlite.prepare('SELECT state FROM scheduler_prompt_injections WHERE id=?').get(injection.id).state,'outcome_unknown');
+ },{storeFactory:p=>(store=new AgentStore(p)),steeringResponse:async()=>{throw Error('Controlled unknown delivery');},nativeAdapterForOpen:()=>useNative?{openSession:opts=>{invokeTool=opts.handleDynamicToolCall;return native.adapter.openSession(opts);}}:undefined});
+});
+
+test('Claude checks the stop fence after async model selection before writing input',{timeout:15000},async t=>{
+ const root=await mkdtemp(pathModule.join(tmpdir(),'inert-claude-stop-')),native=await inertClaude(root,{holdModel:true});
+ const controller=new AbortController();let session,stopped=false,handle;
+ try {
+  session=await native.adapter.openSession({agentId:'fixture',cwd:root,history:[],model:'first',signal:controller.signal,onRuntimeSpawned:h=>{handle=h},onRuntimeRootExit:()=>{}});
+  const input=session.startTurn({prompt:'MUST NOT BE WRITTEN',model:'second',assertCurrent:()=>{if(stopped)throw Error('controlled Stop fence');}});
+  const captured=input.then(()=>({accepted:true}),error=>({error}));
+  await until(async()=>(await native.frames()).some(frame=>frame.type==='control_request'&&frame.request?.subtype==='set_model'),'model change paused');
+  assert.equal(handle.isAlive(),true);
+  stopped=true;await native.releaseModel();
+  const outcome=await captured;assert.match(outcome.error?.message??'',/controlled Stop fence/);
+  assert.equal((await native.frames()).filter(frame=>frame.type==='user').length,0);
+ } finally {await session?.close();await rm(root,{recursive:true,force:true});}
 });

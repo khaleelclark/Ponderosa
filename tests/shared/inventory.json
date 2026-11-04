@@ -2864,6 +2864,11 @@
       "classification": "shared-controlled-fixture"
     },
     {
+      "path": "tests/shared/inert-claude.mjs",
+      "moduleBase": "apps/server/package.json",
+      "classification": "shared-controlled-fixture"
+    },
+    {
       "oldPath": "apps/server/test/ui-qualification.mjs",
       "path": "tests/workspace-navigation/ui-qualification.mjs",
       "moduleBase": "apps/server/package.json",

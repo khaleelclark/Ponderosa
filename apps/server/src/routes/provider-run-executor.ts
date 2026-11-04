@@ -32,6 +32,7 @@ import {
   classifyProviderFailure,
   shouldRolloverEngineSession,
   CodexAppServerSession,
+  ClaudeStreamSession,
 } from "@ponderosa/engines";
 import type { FastifyInstance } from "fastify";
 import type {
@@ -539,11 +540,14 @@ export function startProviderRunExecution(
           signal: controller.signal,
         }));
         const session = providerSessionFacade(rawSession);
-        // Only the built-in Codex persistent transport has been qualified for
-        // this continuation: it registers before input and calls the host
-        // fence immediately before its synchronous turn/start write.
-        if (reviewedSteeringRun && (Object.getPrototypeOf(rawSession)!==CodexAppServerSession.prototype ||
-            rawSession.startTurn!==CodexAppServerSession.prototype.startTurn)) {
+        // These built-in persistent transports register before user input
+        // and check the host fence immediately before their synchronous write.
+        const qualifiedReviewedTransport =
+          (Object.getPrototypeOf(rawSession)===CodexAppServerSession.prototype &&
+            rawSession.startTurn===CodexAppServerSession.prototype.startTurn) ||
+          (Object.getPrototypeOf(rawSession)===ClaudeStreamSession.prototype &&
+            rawSession.startTurn===ClaudeStreamSession.prototype.startTurn);
+        if (reviewedSteeringRun && !qualifiedReviewedTransport) {
           await session.close();
           throw new Error("This provider cannot safely start a reviewed continuation; the original delivery remains unknown.");
         }
