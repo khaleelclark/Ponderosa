@@ -10,6 +10,7 @@ import {randomUUID} from 'node:crypto';
 import {AgentStore,BranchStore,CoordinationV3Store} from '@ponderosa/agents';
 import {createServer} from '../../apps/server/dist/app.js';
 import {localMemoryFor} from '../../apps/server/dist/local-memory.js';
+import {checkedCollection,MEMORY_CLEANUP_HOLD} from '../../apps/server/dist/local-memory-authority.js';
 
 let chroma;
 async function isolatedChroma(){
@@ -88,12 +89,21 @@ test('Chat cleanup refuses foreign metadata and never erases it as host-owned da
  assert.deepEqual(await f.rows(scope),[id]);assert.match(f.store.getConversationDeletionReceipt(f.chat.id).lastError,/Foreign|unclassified/);
 }));
 
-test('unowned cleanup and incompatible collection bindings fail closed',()=>fixture(async f=>{
+test('unowned cleanup is rejected, incompatible binding is detected, and deletion remains held',()=>fixture(async f=>{
  const scope='chat:'+f.chat.id,id=await f.seed(scope,scope+':team');
  await assert.rejects(f.memory.purgeChat(f.chat.id),/Exact committed Chat deletion/);assert.deepEqual(await f.rows(scope),[id]);
  const collection=await f.raw.client.getCollection({name:f.raw.names(scope).memory});
  await collection.modify({metadata:{...collection.metadata,embedding_signature:'foreign-model'}});
- const result=await f.api('DELETE','/api/conversations/'+f.chat.id);assert.equal(result.body.cleanupPending,true);assert.deepEqual(await f.rows(scope),[id]);
+ // The binding checker identifies the mismatch; the deletion path separately
+ // remains held because this backend cannot guarantee safe physical cleanup.
+ await assert.rejects(checkedCollection(f.raw,scope,false,async()=>{}),{name:'MemoryCollectionHold',message:'Incompatible memory collection binding'});
+ const original=f.raw.client.deleteCollection.bind(f.raw.client);let deletes=0;
+ f.raw.client.deleteCollection=async input=>{deletes++;return original(input);};
+ try{
+  const result=await f.api('DELETE','/api/conversations/'+f.chat.id);assert.equal(result.body.cleanupPending,true);
+  assert.equal(f.store.getConversationDeletionReceipt(f.chat.id).lastError,MEMORY_CLEANUP_HOLD);
+  assert.equal(deletes,0);assert.deepEqual(await f.rows(scope),[id]);
+ }finally{f.raw.client.deleteCollection=original;}
 }));
 test('Agent cleanup failure retains its durable receipt and retry preserves team data',()=>fixture(async f=>{
  const scope='chat:'+f.chat.id,own=await f.seed(scope,scope+':agent:'+f.a.id),team=await f.seed(scope,scope+':team');
