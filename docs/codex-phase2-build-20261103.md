@@ -188,6 +188,19 @@ and `evidence/notification-qualification-8db.md`. The latter also records
 controlled direct/broadcast settings matrices and Assistant checks, with their
 limits; these do not establish all of Bible section 18.
 
+Final combined validation on `fe16d4c7f8a505437bcec0a5a31855da73646c10`:
+offline install, full build and recursive typecheck passed; affected server and
+UI files passed 154/154; the mounted desktop and phone matrix passed 96/96.
+A disposable Chromium service-worker burst settled to one grouped browser
+notification, `renotify=false`, and 30 distinct receipts. Its first immediate
+snapshot saw the prior reply while the last receipt was still pending; by the
+250 ms sample the final reply and receipt were present and remained stable.
+Two immediate-snapshot assertions failed and their logs are retained; they do
+not by themselves establish a lasting defect. These results do not qualify OS
+banner/sound behavior. Evidence: `evidence/combined-fe16-*`. The mounted runner
+blocked unmocked external requests, while the other lanes used a process-level
+loopback guard rather than a kernel-enforced network namespace.
+
 Bible 13 remains open: canonical tracked peer Requests currently queue behind a
 busy Run. Changing them directly to steering could associate an older in-flight
 result with a Request not yet seen. Current Claude acceptance proves a pipe
