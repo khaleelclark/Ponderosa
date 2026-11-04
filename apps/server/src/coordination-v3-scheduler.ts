@@ -132,7 +132,6 @@ export class CoordinationV3Scheduler {
       leaseMs?: number;
       coalesceLimit?: number;
       maxDeliveryFailures?: number;
-      steeringRecoveryGraceMs?: number;
       dispatchSteering?: (
         lease: SteeringLease,
         prompt: string,
@@ -240,9 +239,6 @@ export class CoordinationV3Scheduler {
       // admission limit. Otherwise one stale injected Run can permanently fill
       // a saturated budget and prevent leaseNextRun's transactional recovery.
       this.store.recoverExpiredRuns(now);
-      for (const agentId of this.store.processDueSteeringRecoveries(now)) {
-        this.options.onMessageDeliveryChanged?.(agentId);
-      }
       for (const item of this.store.claimOutbox(this.options.workerId, 500, now)) {
         try {
           await this.options.processOutbox?.({
@@ -425,7 +421,6 @@ export class CoordinationV3Scheduler {
           injectionId: steering.injectionId,
           runId: steering.runId,
           fencingToken: steering.fencingToken,
-          recoveryGraceMs: this.options.steeringRecoveryGraceMs,
           error: result.error,
         });
         else this.store.deferSteering({

@@ -11,7 +11,7 @@ import type { CreateActivationV3Input } from "./coordination-v3-runtime-communic
 import { REQUEST_SOURCE_LINEAGE_CTE } from "./coordination-v3-request-lineage.js";
 import type { ContextRolloverState, ContextRolloverV3 } from "./coordination-v3-types.js";
 import { stableJson } from "./coordination-v3-canonical-json.js";
-import { unfinishedHumanSourceActivationIds } from "./coordination-v3-required-reply-authority.js";
+import { hasUnresolvedHumanSteering, unfinishedHumanSourceActivationIds } from "./coordination-v3-required-reply-authority.js";
 import { renderUnfinishedHumanTaskContext } from "./coordination-v3-task-objective.js";
 import { delegationOriginsForActivation, hasOutstandingDelegation, pendingTaskWakeIds, runOwnsAwaitedDelegation, taskOriginRunIds } from "./coordination-v3-task-lineage.js";
 
@@ -664,6 +664,7 @@ export class CoordinationV3ContextRolloverAuthority {
       if (!current) throw new Error("context rollover not found");
       if (current.state === "completed" || current.state === "continuation_ready") return current;
       if (current.state !== "session_retiring") throw new Error("context rollover session is not retiring");
+      if (hasUnresolvedHumanSteering(this.sqlite, current.sourceRunId)) return current;
       if (current.triggerKind === "automatic" && (this.hasOwnedDelegation(current) || this.hasOutstandingDecisionWait(current))) {
         const wake = pendingTaskWakeIds(this.sqlite, { projectId: current.projectId, agentId: current.agentId,
           scopeKey: current.scopeKey, originRunIds: taskOriginRunIds(this.sqlite, current.sourceRunId) })

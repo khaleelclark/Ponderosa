@@ -279,3 +279,12 @@ test('UI004 exact reads keep historical scopes, bound batches, poll stopping, an
   const rejected = assert.rejects(first, { name: 'AbortError' }); controller.abort(); await rejected;
   await second; assert.equal(calls, 2);
 });
+
+test('unconfirmed steer says it is held instead of promising an automatic interruption',()=>{
+ const nodes=status({state:'unconfirmed',canLetCurrentRunFinish:true,injectionId:'held'})();
+ const announcement=nodes.find(node=>node.props.role==='status');
+ assert.match(text(announcement),/unconfirmed/);
+ assert.match(text(announcement),/held for review/);
+ assert.doesNotMatch(text(announcement),/Interrupting|recovering now/);
+ assert.ok(nodes.some(node=>node.type===mui.Button&&text(node)==='Let Current Run Finish'));
+});

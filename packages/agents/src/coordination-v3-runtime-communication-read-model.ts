@@ -616,7 +616,8 @@ export class CoordinationV3RuntimeCommunicationReadModel {
         if (heldRollover) state = "run_unconfirmed";
         else if (requiredReplyExhausted) state = "retry_exhausted";
         else if (activation.state === "outcome_unknown") {
-          if (!recovery) state = injection?.state === "acknowledged" ? "run_unconfirmed" : "undelivered";
+          if (!recovery) state = injection?.kind === "steer" && injection.state === "outcome_unknown"
+            ? "unconfirmed" : injection?.state === "acknowledged" ? "run_unconfirmed" : "undelivered";
           else if (recovery.state === "grace_period") state = "unconfirmed";
           else if (recovery.recovery_activation_state === "consumed") state = "recovered";
           else if (

@@ -14,6 +14,16 @@ import {
   providerSafeActivationPayload,
 } from "./coordination-v3-provider-failure-projection.js";
 
+// Preserve recovery rows created by older versions, but do not run or coalesce
+// one while its original human steering outcome remains unknown.
+const heldSteeringRecovery = `NOT EXISTS (
+ SELECT 1 FROM scheduler_steering_recovery_activations mapping
+ JOIN scheduler_prompt_injections source ON source.id=mapping.injection_id
+ WHERE mapping.recovery_activation_id=a.id AND source.state='outcome_unknown'
+   AND EXISTS(SELECT 1 FROM json_each(source.activation_ids_json) member
+     JOIN agent_activations original ON original.id=member.value WHERE original.prompt_class='human')
+)`;
+
 /** Recovers abandoned scheduler work and exclusively creates new Runs. */
 export class CoordinationV3SchedulerLeaseAuthority {
   constructor(
@@ -174,6 +184,7 @@ export class CoordinationV3SchedulerLeaseAuthority {
         SELECT a.agent_id, a.project_id, a.scope_key
         FROM agent_activations a
         WHERE a.state IN ('pending', 'retry_pending')
+          AND ${heldSteeringRecovery}
           ${installationFence}
           AND NOT ${generationExitHoldSql('a.agent_id',"CASE WHEN a.scope_key LIKE 'conversation:%' THEN substr(a.scope_key,14) END")}
           AND NOT EXISTS(SELECT 1 FROM coordination_destination_admissions d LEFT JOIN agents staged_agent ON staged_agent.id=a.agent_id WHERE d.state!='admitted' AND (d.conversation_id=staged_agent.conversation_id OR a.scope_key='conversation:'||d.conversation_id OR EXISTS(SELECT 1 FROM coordination_destination_members m WHERE m.admission_id=d.id AND m.agent_id=a.agent_id)))
@@ -223,6 +234,7 @@ export class CoordinationV3SchedulerLeaseAuthority {
         SELECT a.* FROM agent_activations a
         WHERE agent_id = ? AND scope_key = ?
           AND state IN ('pending', 'retry_pending') AND available_at <= ?
+          AND ${heldSteeringRecovery}
           AND NOT EXISTS(SELECT 1 FROM provider_context_recovery_requests recovery WHERE recovery.agent_id=a.agent_id AND recovery.state='unsupported_fenced')
           AND NOT EXISTS(SELECT 1 FROM agent_run_pauses pause WHERE pause.agent_id=a.agent_id
             AND pause.state IN ('paused','resume_requested') AND NOT (pause.state='resume_requested'

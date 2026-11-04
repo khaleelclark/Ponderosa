@@ -127,7 +127,6 @@ export interface CreateServerOptions {
     /** Terminalize a repeatedly rejected Activation after this many dispatch attempts. */
     maxDeliveryFailures?: number;
     /** Provider steer acknowledgement grace before exact-Run interruption. */
-    steeringRecoveryGraceMs?: number;
   };
 }
 

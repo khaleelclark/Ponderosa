@@ -196,6 +196,11 @@ export class CoordinationV3ActivationCommandAuthority {
       let retryable = original.state === "failed";
       if (original.state === "outcome_unknown") {
         retryMayDuplicate = true;
+        if (this.sqlite.prepare(`SELECT 1 FROM scheduler_prompt_injections injection,
+          json_each(injection.activation_ids_json) member
+          WHERE member.value=? AND injection.kind='steer' AND injection.state='outcome_unknown' LIMIT 1`).get(original.id)) return {
+          accepted:false,replayed:false,state:"not_retryable",rejectionReason:"not_terminal",
+        };
         const recovery = this.sqlite.prepare(`
           SELECT recovery.state, recovery_activation.state AS activation_state,
             injection.state AS injection_state
@@ -322,6 +327,10 @@ export class CoordinationV3ActivationCommandAuthority {
       const changed = this.sqlite.prepare(`
         UPDATE agent_activations SET state = 'cancelled', updated_at = ?
         WHERE id = ? AND project_id = ? AND state IN ('failed', 'outcome_unknown')
+          AND NOT EXISTS (SELECT 1 FROM scheduler_prompt_injections injection,
+            json_each(injection.activation_ids_json) member
+            WHERE member.value=agent_activations.id AND injection.kind='steer'
+              AND injection.state='outcome_unknown' AND agent_activations.prompt_class='human')
       `).run(now, input.activationId, input.projectId).changes;
       const result = changed === 1
         ? { cancelled: true, state: "cancelled" as const, ...(activation ? { targetAgentId: activation.agent_id } : {}) }

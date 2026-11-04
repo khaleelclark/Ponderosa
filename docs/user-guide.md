@@ -671,3 +671,7 @@ budgets not supplied by the current tree contract are labeled unavailable. See t
 Workflow and Settings show the saved package update state, its error, and any required review action. A scheduled retry is labeled as such; a held update remains held for review and is not described as retrying. A stopping update remains visible until cleanup finishes.
 
 When workflow deletion cannot finish, Workflow and Settings show the last cleanup error while the workflow remains pending. Known blockers and recognized database error codes are shown; other details are withheld because they may contain credentials. The diagnostic is cleared when deletion completes; connected working folders stay untouched.
+
+### Unconfirmed steering
+
+If delivery of an instruction to a working Agent cannot be confirmed, the message is marked unconfirmed. The current Run is not automatically interrupted and the uncertain instruction is held rather than sent again. **Let Current Run Finish** preserves that hold; it does not queue a retry. Review the Agent's activity and any effects before deciding what to do. A safe automatic retry is unavailable while the outcome remains unknown.

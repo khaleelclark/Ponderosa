@@ -413,7 +413,6 @@ export class CoordinationV3Store {
       this.activationLifecycle,
       this.questionAuthority,
       input => this.createActivation(input),
-      input => this.cancelAgentRun(input),
       options.canonicalTaskDecisions,
     );
     this.schedulerLeaseAuthority = new CoordinationV3SchedulerLeaseAuthority(
@@ -1123,7 +1122,7 @@ export class CoordinationV3Store {
 
   markSteeringOutcomeUnknown(input: {
     injectionId: string; runId: string; fencingToken: number; now?: string;
-    recoveryGraceMs?: number; error?: string;
+    error?: string;
   }): void {
     this.steeringAuthority.markSteeringOutcomeUnknown(input);
   }
@@ -1148,10 +1147,6 @@ export class CoordinationV3Store {
 
   steeringInjectionIds(runId: string): string[] {
     return this.steeringAuthority.steeringInjectionIds(runId);
-  }
-
-  processDueSteeringRecoveries(now = new Date().toISOString(), limit = 100): string[] {
-    return this.steeringAuthority.processDueSteeringRecoveries(now, limit);
   }
 
   markRunStarted(runId: string, fence: number, now = new Date().toISOString()): void {

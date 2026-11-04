@@ -7,7 +7,7 @@ import { Alert, Box, Button, ButtonBase, Dialog, DialogActions, DialogContent, D
 import { alpha } from "@mui/material/styles";
 import type { MessageDeliveryReceiptDto } from "@ponderosa/core";
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { api } from "../api";
 import { createClientId } from "../clientId";
 import { queryKeys } from "../queryKeys";
@@ -51,12 +51,9 @@ function deliveryLabel(
     case "run_unconfirmed": return `Message delivered to ${recipientName}, but Ponderosa lost contact before confirming whether the work finished. Check ${recipientName}'s activity before asking it to try again.`;
     case "processed": return `Processed by ${recipientName}.`;
     case "unconfirmed": {
-      const remaining = receipt.recoveryAt
-        ? Math.max(0, Math.ceil((Date.parse(receipt.recoveryAt) - now) / 1_000))
-        : 0;
-      return `${receipt.providerAcknowledged ? `Message delivered to ${recipientName}, but whether the work finished is unconfirmed` : `Delivery to ${recipientName} is unconfirmed`}. Interrupting the current Run and recovering ${remaining > 0 ? `in ${remaining}s` : "now"}.`;
+      return `${receipt.providerAcknowledged ? `Message delivered to ${recipientName}, but whether the work finished is unconfirmed` : `Delivery to ${recipientName} is unconfirmed`}. Review the Agent's activity; the current Run is not automatically interrupted and this instruction is held for review.`;
     }
-    case "waiting_for_run": return `${receipt.providerAcknowledged ? `Message delivered to ${recipientName}, but whether the work finished is unconfirmed` : `Delivery to ${recipientName} was unconfirmed`}. Recovery will audit current state after the current Run finishes.`;
+    case "waiting_for_run": return `${receipt.providerAcknowledged ? `Message delivered to ${recipientName}, but whether the work finished is unconfirmed` : `Delivery to ${recipientName} was unconfirmed`}. The instruction remains unconfirmed and held for review; no retry is scheduled.`;
     case "recovery_queued": return `${receipt.providerAcknowledged ? `Message delivered to ${recipientName}, but whether the work finished is unconfirmed` : `Delivery to ${recipientName} was unconfirmed`}. Recovery is queued and will audit current state first.`;
     case "recovering": return `${receipt.providerAcknowledged ? `Message delivered to ${recipientName}, but whether the work finished is unconfirmed` : `Delivery to ${recipientName} was unconfirmed`}. Recovery is running and auditing current state first.`;
     case "recovered": return `Recovered and processed by ${recipientName}.`;
@@ -151,18 +148,12 @@ export function MessageDeliveryStatus({
 }): JSX.Element | null {
   const readOnly=useWorkspaceReadOnly();
   const queryClient = useQueryClient();
-  const [now, setNow] = useState(Date.now());
+  const now = Date.now();
   const [pendingInjectionId, setPendingInjectionId] = useState<string>();
   const [pendingRetryId, setPendingRetryId] = useState<string>();
   const [pendingCancelId, setPendingCancelId] = useState<string>();
   const [confirmRetry, setConfirmRetry] = useState<MessageDeliveryReceiptDto>();
   const [error, setError] = useState<string>();
-  const hasCountdown = receipts?.some((receipt) => receipt.state === "unconfirmed" && receipt.recoveryAt) ?? false;
-  useEffect(() => {
-    if (!hasCountdown) return;
-    const timer = window.setInterval(() => setNow(Date.now()), 250);
-    return () => window.clearInterval(timer);
-  }, [hasCountdown]);
   if (!receipts?.length) return null;
   const allSuccessful = receipts.every(receipt => severity(receipt) === "success");
   const showSteeringDelivery = receipts.some(receipt => receipt.injectionKind === "steer" &&

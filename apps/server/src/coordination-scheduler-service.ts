@@ -432,7 +432,6 @@ return new CoordinationV3Scheduler(
     pollMs: opts.communicationV3?.pollMs,
     leaseMs: coordinationV3LeaseMs,
     maxDeliveryFailures: opts.communicationV3?.maxDeliveryFailures,
-    steeringRecoveryGraceMs: opts.communicationV3?.steeringRecoveryGraceMs,
     dispatchSteering: async (lease, prompt, compilation) => {
       const run = activeRuns.get(lease.agentId);
       if (!run || run.v3SchedulerRunId !== lease.runId || run.v3FencingToken !== lease.fencingToken || !run.runtimeSession) {

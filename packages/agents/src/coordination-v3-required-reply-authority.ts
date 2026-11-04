@@ -12,6 +12,29 @@ import { delegationOriginsForActivation, hasOutstandingDelegation, taskOriginRun
 import type { CreateActivationV3Input } from "./coordination-v3-runtime-communication-authority.js";
 import { providerRecoveryAttempts } from "./coordination-v3-provider-recovery.js";
 
+/** Exact human steer whose provider submission could have taken effect. */
+export function hasUnresolvedHumanSteering(sqlite: Database.Database, runId: string): boolean {
+  return Boolean(sqlite.prepare(`SELECT 1 FROM scheduler_prompt_injections injection,
+    json_each(injection.activation_ids_json) member
+    JOIN agent_activations activation ON activation.id=member.value
+    WHERE injection.run_id=? AND injection.kind='steer' AND injection.state IN ('pending','submitted','outcome_unknown')
+      AND activation.prompt_class='human' LIMIT 1`).get(runId));
+}
+
+/** Restore only initial responses when this exact Run's human steer became unknown. */
+export function preserveInitialRepliesForUnknownSteering(sqlite: Database.Database, runId: string, now: string): void {
+  const unknown=sqlite.prepare(`SELECT 1 FROM scheduler_prompt_injections injection,
+    json_each(injection.activation_ids_json) member
+    JOIN agent_activations activation ON activation.id=member.value
+    WHERE injection.run_id=? AND injection.kind='steer' AND injection.state='outcome_unknown'
+      AND activation.prompt_class='human' LIMIT 1`).get(runId);
+  if (!unknown) return;
+  sqlite.prepare(`UPDATE required_reply_obligations SET delivery_phase='final',state='pending',
+    interim_communication_id=COALESCE(interim_communication_id,satisfied_communication_id),
+    satisfied_communication_id=NULL,terminal_at=NULL,updated_at=?
+    WHERE run_id=? AND delivery_phase='initial' AND state='satisfied'`).run(now,runId);
+}
+
 const MAX_REQUIRED_REPLY_ATTEMPTS = MAX_PROVIDER_RECOVERY_ATTEMPTS - 1;
 const REQUIRED_REPLY_EXHAUSTED_ERROR =
   `Required Chat reply was not published after ${MAX_REQUIRED_REPLY_ATTEMPTS + 1} provider Runs. Automatic recovery stopped; use Try Delivery Again to start an explicit bounded retry.`;
@@ -963,6 +986,10 @@ export class CoordinationV3RequiredReplyAuthority {
       WHERE run_id = ? AND source_activation_id = ? AND state = 'pending'
     `);
     let satisfied = 0;
+    const uncertainSteering = hasUnresolvedHumanSteering(this.sqlite, input.runId);
+    if (uncertainSteering && input.taskDelivery === "final") {
+      throw new Error("steering_delivery_unconfirmed: review the uncertain instruction before marking the whole task complete");
+    }
     const obligations = this.forRun(input.runId);
     if (input.sourceActivationIds) for (const id of input.sourceActivationIds) {
       const obligation = obligations.find(o => o.sourceActivationId === id);
@@ -985,7 +1012,7 @@ export class CoordinationV3RequiredReplyAuthority {
       }
       // A blocked status can accompany an actionable Decision, but must not
       // sever the exact answer's continuation from its unfinished task.
-      if (obligation.blockingDecisionId || (obligation.deliveryPhase === "final" && !input.taskDelivery)) {
+      if (uncertainSteering || obligation.blockingDecisionId || (obligation.deliveryPhase === "final" && !input.taskDelivery)) {
         this.sqlite.prepare(`UPDATE required_reply_obligations SET interim_communication_id = ?, updated_at = ?
           WHERE run_id = ? AND source_activation_id = ? AND state = 'pending'`)
           .run(input.communicationId, input.now, input.runId, obligation.sourceActivationId);
@@ -1003,6 +1030,11 @@ export class CoordinationV3RequiredReplyAuthority {
   }
 
   recoverPending(runId: string, now: string): RequiredReplyObligation[] {
+    // Do not restart an objective while the exact human steer may already have acted.
+    if (hasUnresolvedHumanSteering(this.sqlite, runId)) {
+      preserveInitialRepliesForUnknownSteering(this.sqlite, runId, now);
+      return this.forRun(runId);
+    }
     // A failed or uncertain, unverified rollover owns its original handoff and
     // task obligations. Ordinary reply recovery must not silently resume the
     // old provider session or replay potentially uncertain effects.

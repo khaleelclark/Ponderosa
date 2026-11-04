@@ -159,3 +159,136 @@ test('a known rejected steer remains queued and cannot enter the handoff snapsho
   assert.equal(store.sqlite.prepare('SELECT state FROM agent_activations WHERE id=?').get(receipt.activationId).state,'retry_pending');
  },{storeFactory:dataDir=>(store=new AgentStore(dataDir)),steeringResponse:async()=>({status:'unsupported'})});
 });
+
+test('uncertain human steering holds recovery without canceling the original task or replaying it',{timeout:20000},async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Uncertain steering hold'),agent=await f.createIdleAgent(chat,'Controlled worker');
+  const session=await f.hold(agent.id),sourceRun=(await f.detail(agent.id)).runs[0].id;
+  const sent=await f.send(agent.id,'Inspect the exact harmless fixture state',{activeRunDelivery:'steer'});
+  const injection=await until(()=>store.sqlite.prepare("SELECT id FROM scheduler_prompt_injections WHERE run_id=? AND kind='steer' AND state='outcome_unknown'").get(sourceRun),'unknown steering');
+  const receipt=()=>f.detail(agent.id).then(d=>d.messages.find(m=>m.communicationEventId===sent.communicationEventId)?.deliveryReceipts?.[0]);
+  const initial=await until(async()=>{const r=await receipt();return r?.state==='unconfirmed'&&r;},'visible unconfirmed delivery');
+  assert.equal(initial.canLetCurrentRunFinish,true);
+  const dismiss=await f.api('POST',`/api/projects/${chat.projectId}/message-deliveries/${initial.activationId}/cancel`,{idempotencyKey:randomUUID()});
+  assert.equal(dismiss.status,409,'Uncertain human delivery cannot be dismissed as settled');
+  const before=store.sqlite.prepare('SELECT state FROM required_reply_obligations WHERE run_id=?').get(sourceRun);
+  assert.equal(before.state,'pending');
+  store.sqlite.prepare("UPDATE scheduler_steering_recoveries SET recover_at='2000-01-01T00:00:00.000Z' WHERE injection_id=?").run(injection.id);
+  await new Promise(resolve=>setTimeout(resolve,500));
+  assert.equal(store.sqlite.prepare('SELECT status FROM scheduler_runs WHERE id=?').get(sourceRun).status,'running');
+  assert.equal(store.sqlite.prepare('SELECT state FROM required_reply_obligations WHERE run_id=?').get(sourceRun).state,'pending');
+  assert.equal(store.sqlite.prepare("SELECT count(*) n FROM agent_activations WHERE kind='steering_recovery'").get().n,0);
+  const finish=f.ok(await f.api('POST',`/api/message-deliveries/${injection.id}/let-current-run-finish`,{idempotencyKey:randomUUID()}));
+  assert.equal(finish.state,'waiting_for_run');
+  assert.equal(store.sqlite.prepare("SELECT count(*) n FROM agent_activations WHERE kind='steering_recovery'").get().n,0);
+  session.finish();
+  await until(()=>store.sqlite.prepare("SELECT 1 FROM scheduler_runs WHERE id=? AND status='completed'").get(sourceRun),'original Run finishes');
+  await new Promise(resolve=>setTimeout(resolve,500));
+  assert.equal(store.sqlite.prepare('SELECT state FROM required_reply_obligations WHERE run_id=?').get(sourceRun).state,'pending');
+  assert.equal(store.sqlite.prepare("SELECT count(*) n FROM agent_activations WHERE kind IN ('steering_recovery','required_reply_recovery')").get().n,0);
+  assert.equal(f.turns.filter(turn=>turn.agentId===agent.id).length,1);
+  await f.reopen();
+  assert.equal(store.sqlite.prepare('SELECT state FROM required_reply_obligations WHERE run_id=?').get(sourceRun).state,'pending');
+  assert.equal(store.sqlite.prepare("SELECT count(*) n FROM agent_activations WHERE kind IN ('steering_recovery','required_reply_recovery')").get().n,0);
+  const held=await receipt();assert.equal(held.state,'waiting_for_run');
+ },{storeFactory:dataDir=>(store=new AgentStore(dataDir)),steeringResponse:async()=>{throw Error('Controlled unconfirmed steering');}});
+});
+
+test('an initial reply remains interim when later human steering is unconfirmed',{timeout:15000},async t=>{
+ let store,release;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Steer during prior reply'),agent=await f.createIdleAgent(chat,'Worker'),session=await f.hold(agent.id);
+  const run=(await f.detail(agent.id)).runs[0].id;
+  const sent=await f.tool(session,'ponderosa_message',{text:'The initial work is underway'});
+  assert.equal(sent.status,200,JSON.stringify(sent));
+  const initial=store.sqlite.prepare('SELECT state,delivery_phase,satisfied_communication_id FROM required_reply_obligations WHERE run_id=?').get(run);
+  assert.equal(initial.state,'satisfied');assert.equal(initial.delivery_phase,'initial');
+  f.plans.set(agent.id,[]);
+  await f.send(agent.id,'Later instruction with uncertain delivery',{activeRunDelivery:'steer'});
+  await until(()=>store.sqlite.prepare("SELECT 1 FROM scheduler_prompt_injections WHERE run_id=? AND kind='steer' AND state='submitted'").get(run),'steer submitted');
+  assert.equal(store.sqlite.prepare('SELECT state FROM required_reply_obligations WHERE run_id=?').get(run).state,'satisfied');
+  release();
+  await until(()=>store.sqlite.prepare("SELECT 1 FROM scheduler_prompt_injections WHERE run_id=? AND kind='steer' AND state='outcome_unknown'").get(run),'steer outcome unknown');
+  const held=store.sqlite.prepare('SELECT state,delivery_phase,interim_communication_id FROM required_reply_obligations WHERE run_id=?').get(run);
+  assert.equal(held.state,'pending');assert.equal(held.delivery_phase,'final');assert.equal(held.interim_communication_id,initial.satisfied_communication_id);
+ },{storeFactory:dataDir=>(store=new AgentStore(dataDir)),steeringResponse:async()=>{await new Promise(resolve=>{release=resolve});throw Error('Controlled unconfirmed steer');}});
+});
+
+test('a stale reply during submitted human steering cannot complete the original objective',{timeout:15000},async t=>{
+ let store,release;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Steer reply race'),agent=await f.createIdleAgent(chat,'Worker'),session=await f.hold(agent.id);
+  const run=(await f.detail(agent.id)).runs[0].id;
+  await f.send(agent.id,'A later human correction',{activeRunDelivery:'steer'});
+  await until(()=>store.sqlite.prepare("SELECT 1 FROM scheduler_prompt_injections WHERE run_id=? AND kind='steer' AND state='submitted'").get(run),'steer submitted');
+  const old=await f.tool(session,'ponderosa_message',{text:'A prior work update'});
+  assert.equal(old.status,200,JSON.stringify(old));
+  assert.equal(store.sqlite.prepare('SELECT state FROM required_reply_obligations WHERE run_id=?').get(run).state,'pending');
+  release();
+  await until(()=>store.sqlite.prepare("SELECT 1 FROM scheduler_prompt_injections WHERE run_id=? AND kind='steer' AND state='outcome_unknown'").get(run),'steer unknown');
+  assert.equal(store.sqlite.prepare('SELECT state FROM required_reply_obligations WHERE run_id=?').get(run).state,'pending');
+ },{storeFactory:dataDir=>(store=new AgentStore(dataDir)),steeringResponse:async()=>{await new Promise(resolve=>{release=resolve});throw Error('Controlled ambiguous steer');}});
+});
+
+test('restart with a submitted human steer holds the original reply and refuses replay',{timeout:15000},async t=>{
+ let store,release;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Orphaned steer'),agent=await f.createIdleAgent(chat,'Worker'),session=await f.hold(agent.id);
+  const run=(await f.detail(agent.id)).runs[0].id;
+  const initial=await f.tool(session,'ponderosa_message',{text:'Initial progress'});
+  assert.equal(initial.status,200,JSON.stringify(initial));
+  const correction=await f.send(agent.id,'Correction whose acceptance is uncertain',{activeRunDelivery:'steer'});
+  const injection=await until(()=>store.sqlite.prepare("SELECT id FROM scheduler_prompt_injections WHERE run_id=? AND kind='steer' AND state='submitted'").get(run),'steer submitted');
+  const coordination=new CoordinationV3Store(store.sqlite);
+  assert.equal(coordination.recoverOrphanedRuns('fixture-new-owner').outcomeUnknown,1);
+  const root=store.sqlite.prepare('SELECT state,delivery_phase,interim_communication_id FROM required_reply_obligations WHERE run_id=?').get(run);
+  assert.equal(root.state,'pending');assert.equal(root.delivery_phase,'final');assert.ok(root.interim_communication_id);
+  assert.equal(store.sqlite.prepare("SELECT state FROM scheduler_prompt_injections WHERE id=?").get(injection.id).state,'outcome_unknown');
+  assert.equal(store.sqlite.prepare("SELECT count(*) n FROM scheduler_steering_recoveries WHERE injection_id=?").get(injection.id).n,0);
+  const view=(await f.detail(agent.id)).messages.find(m=>m.communicationEventId===correction.communicationEventId).deliveryReceipts[0];
+  assert.equal(view.state,'unconfirmed');assert.notEqual(view.canRetry,true);
+  // A newer acknowledgement for the same source must not hide an older
+  // unresolved steering submission from the replay admission guard.
+  store.sqlite.prepare(`INSERT INTO scheduler_prompt_injections
+    (id,run_id,kind,sequence,state,prompt_hash,activation_ids_json,created_at,updated_at,acknowledged_at)
+    VALUES (?,?,'turn',999,'acknowledged','fixture',?,?,?,?)`)
+    .run(randomUUID(),run,JSON.stringify([view.activationId]),'9999-01-01T00:00:00.000Z','9999-01-01T00:00:00.000Z','9999-01-01T00:00:00.000Z');
+  const retry=await f.api('POST',`/api/projects/${chat.projectId}/message-deliveries/${view.activationId}/retry`,{idempotencyKey:randomUUID()});
+  assert.equal(retry.status,409);
+  assert.equal(store.sqlite.prepare("SELECT count(*) n FROM agent_activations WHERE kind IN ('steering_recovery','required_reply_recovery')").get().n,0);
+  release();
+ },{storeFactory:dataDir=>(store=new AgentStore(dataDir)),steeringResponse:async()=>{await new Promise(resolve=>{release=resolve});throw Error('Controlled ambiguous steer');}});
+});
+
+test('legacy mixed-source uncertain recoveries stay held while unrelated work remains leasable',{timeout:15000},async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Legacy steering recovery'),agent=await f.createIdleAgent(chat,'Worker');
+  await f.hold(agent.id);
+  const run=(await f.detail(agent.id)).runs[0].id;
+  await f.send(agent.id,'Unconfirmed human steer',{activeRunDelivery:'steer'});
+  const injection=await until(()=>store.sqlite.prepare("SELECT id,activation_ids_json FROM scheduler_prompt_injections WHERE run_id=? AND kind='steer' AND state='outcome_unknown'").get(run),'unknown steer');
+  const human=JSON.parse(injection.activation_ids_json)[0],coordination=new CoordinationV3Store(store.sqlite);
+  const now=new Date().toISOString(),scopeKey=`conversation:${chat.id}`;
+  const add=(id,kind)=>coordination.enqueueMessageActivation({projectId:chat.projectId,agentId:agent.id,scopeKey,messageId:id,kind,payload:{text:id},now});
+  const peer=add('legacy-peer-source','ordinary');
+  const humanRetry=add('legacy-human-recovery','human'),peerRetry=add('legacy-peer-recovery','ordinary');
+  for(const id of [humanRetry,peerRetry])store.sqlite.prepare("UPDATE agent_activations SET kind='steering_recovery' WHERE id=?").run(id);
+  store.sqlite.prepare('UPDATE scheduler_prompt_injections SET activation_ids_json=? WHERE id=?').run(JSON.stringify([human,peer]),injection.id);
+  store.sqlite.prepare("UPDATE scheduler_steering_recoveries SET state='recovery_queued' WHERE injection_id=?").run(injection.id);
+  const mapping=store.sqlite.prepare('INSERT INTO scheduler_steering_recovery_activations(injection_id,source_activation_id,recovery_activation_id) VALUES(?,?,?)');
+  mapping.run(injection.id,human,humanRetry);mapping.run(injection.id,peer,peerRetry);
+  // Simulate a peer member that was already attached to the old injection.
+  store.sqlite.prepare("UPDATE agent_activations SET state='outcome_unknown' WHERE id=?").run(peer);
+  const unrelated=add('independent-future-work','human');
+  const fence=store.sqlite.prepare('SELECT fencing_token FROM scheduler_runs WHERE id=?').get(run).fencing_token;
+  coordination.completeRun(run,fence,now);
+  const lease=coordination.leaseNextRun({workerId:'controlled-review',now});
+  assert.ok(lease,'An unrelated eligible activation must not be starved');
+  assert.ok(lease.activationIds.includes(unrelated));
+  assert.ok(!lease.activationIds.includes(humanRetry)&&!lease.activationIds.includes(peerRetry));
+  assert.equal(store.sqlite.prepare('SELECT state FROM agent_activations WHERE id=?').get(humanRetry).state,'pending');
+  assert.equal(store.sqlite.prepare('SELECT state FROM agent_activations WHERE id=?').get(peerRetry).state,'pending');
+ },{storeFactory:dataDir=>(store=new AgentStore(dataDir)),steeringResponse:async()=>{throw Error('Controlled ambiguous steer');}});
+});
