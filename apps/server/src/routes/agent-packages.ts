@@ -3009,14 +3009,19 @@ export function registerAgentPackageRoutes(
       })).digest("hex");
       let creationOperation;
       try {
-        creationOperation = store.beginAgentCreationOperation({
-          projectId: request.params.id,
-          actorScope: "user:local-operator",
-          kind: "import",
-          idempotencyKey,
-          payloadHash,
-          conversationId,
-        }).operation;
+        creationOperation = store.sqlite.transaction(()=>{
+          // Copy and package import share the same canonical import identity.
+          // Serialize the fence and creation with async admission reservation.
+          if(getImportIntent(request.params.id,idempotencyKey))throw Error(heldImportMessage);
+          return store.beginAgentCreationOperation({
+            projectId: request.params.id,
+            actorScope: "user:local-operator",
+            kind: "import",
+            idempotencyKey,
+            payloadHash,
+            conversationId,
+          }).operation;
+        }).immediate();
       } catch (error) {
         return reply.code(409).send({
           error: error instanceof Error ? error.message : "Agent copy replay conflict",

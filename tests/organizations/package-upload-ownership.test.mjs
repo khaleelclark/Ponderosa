@@ -123,12 +123,16 @@ test('journal sync and rollback failure holds the exact import across restart',{
    const first=f.api('POST',endpoint,wire,headers);
    await reached;
    assert.equal((await f.api('GET',lookup)).status,409,'in-flight reservation is visible as held');
+   const concurrentCopy=await f.api('POST',`/api/projects/${chat.projectId}/copy-agent`,{sourceAgentId:randomUUID(),conversationId:chat.id},{'idempotency-key':requestId});
+   assert.equal(concurrentCopy.status,409);assert.match(concurrentCopy.body.error,/Import admission is held/,'copy cannot create the shared key while admission is in flight');
    release();assert.equal((await first).status,409);
   }finally{release();hostFs.open=originalOpen;hostFs.unlink=originalUnlink;}
   let names=await readdir(directory);const journals=names.filter(name=>/^[0-9a-f-]{36}\.json$/.test(name)),payloads=names.filter(name=>name.endsWith('.payload'));
   assert.equal(journals.length,1);assert.equal(payloads.length,1);
   const savedJournal=await readFile(path.join(directory,journals[0]));const savedPayload=await readFile(path.join(directory,payloads[0]));
   assert.equal((await f.api('POST',endpoint,wire,headers)).status,409);
+  const heldCopy=await f.api('POST',`/api/projects/${chat.projectId}/copy-agent`,{sourceAgentId:randomUUID(),conversationId:chat.id},{'idempotency-key':requestId});
+  assert.equal(heldCopy.status,409);assert.match(heldCopy.body.error,/Import admission is held/,'copy cannot bypass held identity');
   const legacyHeaders={'content-type':'application/vnd.ponderosa.agent-import','idempotency-key':requestId};
   assert.equal((await f.api('POST',`/api/projects/${chat.projectId}/import-agent-package`,wire,legacyHeaders)).status,409,'binary legacy route cannot bypass the hold');
   assert.equal((await f.api('POST',`/api/projects/${chat.projectId}/import-agents`,{...metadata,package:pkg},{'idempotency-key':requestId})).status,409,'JSON legacy route cannot bypass the hold');
@@ -153,6 +157,8 @@ test('journal sync and rollback failure holds the exact import across restart',{
   assert.equal((await f.api('POST',endpoint,wire,headers)).status,409);
   assert.equal((await f.api('POST',`/api/projects/${chat.projectId}/import-agent-package`,wire,legacyHeaders)).status,409,'binary legacy route cannot revive a tombstone after restart');
   assert.equal((await f.api('POST',`/api/projects/${chat.projectId}/import-agents`,{...metadata,package:pkg},{'idempotency-key':requestId})).status,409,'JSON legacy route cannot revive a tombstone after restart');
+  const retiredCopy=await f.api('POST',`/api/projects/${chat.projectId}/copy-agent`,{sourceAgentId:randomUUID(),conversationId:chat.id},{'idempotency-key':requestId});
+  assert.equal(retiredCopy.status,409);assert.match(retiredCopy.body.error,/Import admission is held/,'copy cannot revive a retired identity after restart');
   assert.deepEqual(await readFile(path.join(directory,journals[0])),savedJournal);assert.deepEqual(await readFile(path.join(directory,payloads[0])),savedPayload);
   const newKey=randomUUID(),fresh=f.ok(await f.api('POST',endpoint,wire,{...headers,'idempotency-key':newKey}));
   assert.notEqual(fresh.id,operationId,'only an explicit fresh request starts another import');
