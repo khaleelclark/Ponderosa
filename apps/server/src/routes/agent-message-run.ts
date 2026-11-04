@@ -1,3 +1,4 @@
+import {localMemoryFor} from "../local-memory.js";
 import { selectNativeCommand } from "../native-command-selection.js";
 import { parseNativeTurnCommand } from "@ponderosa/core";
 import { AgentEventPersistenceError } from "@ponderosa/agents";
@@ -992,6 +993,7 @@ export function registerAgentMessageRunRoute(
         project,
         runtimeEngineId,
         engine,
+        memory:localMemoryFor(app),
         text,
         internalV3Dispatch,
         v3SchedulerRunId,

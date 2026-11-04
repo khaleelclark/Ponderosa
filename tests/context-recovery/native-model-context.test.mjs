@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {AgentStore,CapabilityPolicyStore} from '../../packages/agents/dist/index.js';
+import {AgentStore,CapabilityPolicyStore,CoordinationV3Store} from '../../packages/agents/dist/index.js';
 import {CAPABILITY_IDS} from '../../packages/core/dist/index.js';
 import {withFixture,until} from '../shared/fixture.mjs';
 import {inertCodex} from '../shared/inert-codex.mjs';
 import {ownedChroma} from '../memory/portability-fixture.mjs';
+import {localMemoryFor} from '../../apps/server/dist/local-memory.js';
 import {randomUUID} from 'node:crypto';
 import path from 'node:path';
 
@@ -115,7 +116,7 @@ test('a rejected changed-model turn preserves the prior accepted thread without 
  },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,rejectChangedModelTurn:true})).adapter});
 });
 
-test('Local Memory configured prevents the model-only continuation',{timeout:30000},async t=>{
+test('unused Local Memory permits the verified model-only continuation',{timeout:30000},async t=>{
  let store,native;
  await withFixture(t,async f=>{
   const chat=await f.createChat('Memory enabled'),agent=await f.createIdleAgent(chat,'Worker');
@@ -128,8 +129,8 @@ test('Local Memory configured prevents the model-only continuation',{timeout:300
   await f.send(agent.id,'Continue with memory enabled.');
   await until(async()=>(await native.requests()).filter(x=>x.method==='turn/start').length===2,'second native turn');
   const requests=await native.requests();
-  assert.equal(requests.filter(x=>x.method==='thread/start').length,2,'memory-enabled history must not qualify for the model-only exception');
-  assert.equal(requests.filter(x=>x.method==='thread/resume').length,0);
+  assert.equal(requests.filter(x=>x.method==='thread/start').length,1,'unused memory must preserve the first thread');
+  assert.equal(requests.filter(x=>x.method==='thread/resume').length,1);
   await native.sendTool('ponderosa_message',{text:'Second task complete.'});
  },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true})).adapter,
    localMemoryForRoot:async root=>({chromaUrl:await ownedChroma(),collectionPrefix:'context_'+randomUUID().replaceAll('-',''),
@@ -188,15 +189,15 @@ for(const change of ['role','capability','chat','title'])test(`${change} changed
  },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,holdResume:true})).adapter});
 });
 
-for(const mode of ['model','voice'])test(`memory-restricted ${mode} retains the verified first Codex thread`,{timeout:30000},async t=>{
+for(const access of ['restricted','unused'])for(const mode of ['model','voice'])test(`memory-${access} ${mode} retains the verified first Codex thread`,{timeout:30000},async t=>{
  let store,native;
  await withFixture(t,async f=>{
   const chat=await f.createChat('Memory restricted continuation'),agent=await f.createIdleAgent(chat,'Worker');
-  new CapabilityPolicyStore(store.sqlite).put({scopeKind:'agent',scopeId:agent.id,expectedRevision:0,restrictedCapabilityIds:[CAPABILITY_IDS.memoryRead,CAPABILITY_IDS.memoryWrite]});
+  if(access==='restricted')new CapabilityPolicyStore(store.sqlite).put({scopeKind:'agent',scopeId:agent.id,expectedRevision:0,restrictedCapabilityIds:[CAPABILITY_IDS.memoryRead,CAPABILITY_IDS.memoryWrite]});
   await f.send(agent.id,'Preserve the complete initial objective.');
   await until(async()=>(await native.requests()).some(x=>x.method==='turn/start'),'first native turn');
   const initial=(await native.requests()).find(x=>x.method==='thread/start');
-  assert.ok(!initial.params.dynamicTools.some(tool=>tool.name.startsWith('ponderosa_local_memory_')));
+  assert.equal(initial.params.dynamicTools.some(tool=>tool.name.startsWith('ponderosa_local_memory_')),access==='unused');
   await native.sendTool('ponderosa_message',{text:'First task complete.'});
   await f.settled(agent.id);
   const old=store.resumeSessionState(agent.id),prior=(await f.detail(agent.id)).runs.map(run=>run.id);
@@ -332,4 +333,159 @@ for(const scenario of ['mismatched','stop'])test(`voice ${scenario} during threa
  },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,mismatchedResume:scenario==='mismatched',holdResume:scenario==='stop'})).adapter,
    localMemoryForRoot:async root=>({chromaUrl:await ownedChroma(),collectionPrefix:'context_'+randomUUID().replaceAll('-',''),
      modelDir:process.env.PONDEROSA_TEST_MEMORY_MODEL_DIR,stateDirectory:path.join(root,'memory-policy'),provision:true})});
+});
+
+test('two ordinary memory-enabled no-call Runs preserve context into a voice turn',{timeout:30000},async t=>{
+ let store,native;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Multiple untouched memory turns'),agent=await f.createIdleAgent(chat,'Worker');
+  for(let index=0;index<2;index++){
+   const before=(await f.detail(agent.id)).runs.map(run=>run.id);
+   await f.send(agent.id,'Original objective turn '+index);
+   await until(async()=>(await native.requests()).filter(x=>x.method==='turn/start').length===index+1,'ordinary turn');
+   await native.sendTool('ponderosa_message',{text:'Ordinary task complete '+index});
+   await f.settled(agent.id,before);
+  }
+  const prior=(await f.detail(agent.id)).runs.map(run=>run.id);
+  const voice=f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text:'Continue aloud.',idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'queue',voiceReply:true}));
+  await until(async()=>(await native.requests()).filter(x=>x.method==='turn/start').length===3,'voice turn');
+  const calls=await native.requests();assert.equal(calls.filter(x=>x.method==='thread/start').length,1);assert.equal(calls.filter(x=>x.method==='thread/resume').length,2);
+  await native.sendTool('ponderosa_voice_reply',{});await f.settled(agent.id,prior);
+  const status=f.ok(await f.api('GET',`/api/conversations/${chat.id}/voice-replies/${voice.message.communicationEventId}/${agent.id}`));
+  assert.equal(status.memoryExposure.state,'valid');assert.equal(status.reply.state,'completed');
+ },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,emitVoiceReply:true})).adapter,
+   localMemoryForRoot:async root=>({chromaUrl:await ownedChroma(),collectionPrefix:'context_'+randomUUID().replaceAll('-',''),modelDir:process.env.PONDEROSA_TEST_MEMORY_MODEL_DIR,stateDirectory:path.join(root,'memory-policy'),provision:true})});
+});
+
+for(const operation of ['search','save','invalid'])test(`a prior ${operation} memory attempt excludes no-call voice continuity`,{timeout:30000},async t=>{
+ let store,native;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Memory attempt'),agent=await f.createIdleAgent(chat,'Worker');
+  await f.send(agent.id,'Original objective.');
+  await until(async()=>(await native.requests()).some(x=>x.method==='turn/start'),'first native turn');
+  const tool=operation==='save'?'ponderosa_local_memory_save':'ponderosa_local_memory_search';
+  const args=operation==='save'?{text:'Synthetic fact.',destination:'chat'}:operation==='search'?{query:'Synthetic search'}:{};
+  await native.sendTool(tool,args);
+  const response=await until(async()=>(await native.requests()).find(x=>x.toolResponse)?.toolResponse,'memory result');
+  if(operation==='invalid')assert.equal(response.result.success,false);else assert.equal(response.result.success,true);
+  await native.sendTool('ponderosa_message',{text:'First task complete.'});await f.settled(agent.id);
+  const prior=(await f.detail(agent.id)).runs.map(run=>run.id);
+  f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text:'Continue aloud.',idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'queue',voiceReply:true}));
+  await until(async()=>(await native.requests()).filter(x=>x.method==='turn/start').length===2,'fresh voice turn');
+  const calls=await native.requests();
+  assert.equal(calls.filter(x=>x.method==='thread/start').length,2,'a memory attempt must not authorize no-call continuity');
+  assert.equal(calls.filter(x=>x.method==='thread/resume').length,0);
+  await native.sendTool('ponderosa_voice_reply',{});await f.settled(agent.id,prior);
+ },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,emitVoiceReply:true,holdMemoryCompletion:true})).adapter,
+   localMemoryForRoot:async root=>({chromaUrl:await ownedChroma(),collectionPrefix:'context_'+randomUUID().replaceAll('-',''),modelDir:process.env.PONDEROSA_TEST_MEMORY_MODEL_DIR,stateDirectory:path.join(root,'memory-policy'),provision:true})});
+});
+
+test('re-registering the same Run cannot erase a memory attempt',{timeout:30000},async t=>{
+ let store,native;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Reentered memory witness'),agent=await f.createIdleAgent(chat,'Worker');
+  await f.send(agent.id,'Original objective.');
+  await until(async()=>(await native.requests()).some(x=>x.method==='turn/start'),'first native turn');
+  await native.sendTool('ponderosa_local_memory_search',{query:'Synthetic search'});
+  const response=await until(async()=>(await native.requests()).find(x=>x.toolResponse)?.toolResponse,'memory response');
+  assert.equal(response.result.success,true);
+  const memory=localMemoryFor(f.app),active=memory.ports.activeRuns.get(agent.id);
+  assert.ok(active?.messageCapability);memory.beginUnusedMemoryWitness(active.messageCapability);
+  await native.sendTool('ponderosa_message',{text:'First task complete.'});await f.settled(agent.id);
+  const prior=(await f.detail(agent.id)).runs.map(run=>run.id);
+  f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text:'Continue aloud.',idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'queue',voiceReply:true}));
+  await until(async()=>(await native.requests()).filter(x=>x.method==='turn/start').length===2,'fresh voice turn');
+  const calls=await native.requests();assert.equal(calls.filter(x=>x.method==='thread/start').length,2);assert.equal(calls.filter(x=>x.method==='thread/resume').length,0);
+  await native.sendTool('ponderosa_voice_reply',{});await f.settled(agent.id,prior);
+ },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,emitVoiceReply:true,holdMemoryCompletion:true})).adapter,
+   localMemoryForRoot:async root=>({chromaUrl:await ownedChroma(),collectionPrefix:'context_'+randomUUID().replaceAll('-',''),modelDir:process.env.PONDEROSA_TEST_MEMORY_MODEL_DIR,stateDirectory:path.join(root,'memory-policy'),provision:true})});
+});
+
+for(const change of ['grant','restart'])test(`${change} after a no-call Run excludes voice thread reuse`,{timeout:30000},async t=>{
+ let store,native;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Changed memory authority'),agent=await f.createIdleAgent(chat,'Worker');
+  await f.send(agent.id,'Original objective.');
+  await until(async()=>(await native.requests()).some(x=>x.method==='turn/start'),'first native turn');
+  await native.sendTool('ponderosa_message',{text:'First task complete.'});await f.settled(agent.id);
+  if(change==='grant')f.ok(await f.api('PUT',`/api/local-memory/grants/${chat.id}`,{readGlobal:true,expectedRevision:0}));
+  else await f.reopen();
+  const prior=(await f.detail(agent.id)).runs.map(run=>run.id);
+  f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text:'Continue aloud.',idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'queue',voiceReply:true}));
+  await until(async()=>(await native.requests()).filter(x=>x.method==='turn/start').length===2,'fresh voice turn');
+  const calls=await native.requests();assert.equal(calls.filter(x=>x.method==='thread/start').length,2);assert.equal(calls.filter(x=>x.method==='thread/resume').length,0);
+  await native.sendTool('ponderosa_voice_reply',{});await f.settled(agent.id,prior);
+ },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,emitVoiceReply:true})).adapter,
+   localMemoryForRoot:async root=>({chromaUrl:await ownedChroma(),collectionPrefix:'context_'+randomUUID().replaceAll('-',''),modelDir:process.env.PONDEROSA_TEST_MEMORY_MODEL_DIR,stateDirectory:path.join(root,'memory-policy'),provision:true})});
+});
+
+test('grant change while no-call voice resume is paused prevents provider submission',{timeout:30000},async t=>{
+ let store,native;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Grant changed during resume'),agent=await f.createIdleAgent(chat,'Worker');
+  await f.send(agent.id,'Original objective.');
+  await until(async()=>(await native.requests()).some(x=>x.method==='turn/start'),'first native turn');
+  await native.sendTool('ponderosa_message',{text:'First task complete.'});await f.settled(agent.id);
+  const old=store.resumeSessionState(agent.id),prior=(await f.detail(agent.id)).runs.map(run=>run.id);
+  f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text:'Continue aloud.',idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'queue',voiceReply:true}));
+  await until(async()=>(await native.requests()).some(x=>x.method==='thread/resume'),'paused voice resume');
+  f.ok(await f.api('PUT',`/api/local-memory/grants/${chat.id}`,{readGlobal:true,expectedRevision:0}));
+  await native.releaseThread();
+  await until(()=>store.sqlite.prepare("SELECT 1 FROM scheduler_runs WHERE agent_id=? AND id NOT IN (SELECT value FROM json_each(?)) AND status IN ('failed','outcome_unknown')").get(agent.id,JSON.stringify(prior)),'grant change rejected');
+  const calls=await native.requests();assert.equal(calls.filter(x=>x.method==='turn/start').length,1);assert.equal(calls.filter(x=>x.method==='thread/start').length,1);
+  assert.equal(store.resumeSessionState(agent.id)?.sessionId,old.sessionId);
+  assert.ok(!store.readEvents(agent.id).some(row=>row.event.type==='voice_reply'&&row.event.reply.state==='completed'));
+ },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,holdResume:true})).adapter,
+   localMemoryForRoot:async root=>({chromaUrl:await ownedChroma(),collectionPrefix:'context_'+randomUUID().replaceAll('-',''),modelDir:process.env.PONDEROSA_TEST_MEMORY_MODEL_DIR,stateDirectory:path.join(root,'memory-policy'),provision:true})});
+});
+
+test('a newly discovered prior unknown Run blocks no-call voice submission',{timeout:30000},async t=>{
+ let store,native;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Prior unknown Run'),agent=await f.createIdleAgent(chat,'Worker');
+  store.sqlite.prepare("INSERT INTO scheduler_agent_fences(agent_id,next_fencing_token) VALUES (?,2) ON CONFLICT(agent_id) DO UPDATE SET next_fencing_token=2").run(agent.id);
+  await f.send(agent.id,'Original objective.');
+  await until(async()=>(await native.requests()).some(x=>x.method==='turn/start'),'first native turn');
+  await native.sendTool('ponderosa_message',{text:'First task complete.'});await f.settled(agent.id);
+  const old=store.resumeSessionState(agent.id),prior=(await f.detail(agent.id)).runs.map(run=>run.id);
+  const first=store.sqlite.prepare('SELECT fencing_token,scope_key FROM scheduler_runs WHERE id=?').get(prior[0]);assert.equal(first.fencing_token,2);
+  f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text:'Continue aloud.',idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'queue',voiceReply:true}));
+  await until(async()=>(await native.requests()).some(x=>x.method==='thread/resume'),'paused voice resume');
+  const now=new Date().toISOString();
+  store.sqlite.prepare("INSERT INTO scheduler_runs(id,project_id,agent_id,status,lease_owner,lease_expires_at,fencing_token,prompt_injection_state,heartbeat_at,created_at,updated_at,scope_key) VALUES (?,?,?,'outcome_unknown','synthetic',?,1,'injecting',?,?,?,?)").run(randomUUID(),chat.projectId,agent.id,now,now,now,now,first.scope_key);
+  await native.releaseThread();
+  await until(()=>store.sqlite.prepare("SELECT 1 FROM scheduler_runs WHERE agent_id=? AND fencing_token>2 AND status IN ('failed','outcome_unknown')").get(agent.id),'unknown history rejected');
+  const calls=await native.requests();assert.equal(calls.filter(x=>x.method==='turn/start').length,1);assert.equal(calls.filter(x=>x.method==='thread/start').length,1);
+  assert.equal(store.resumeSessionState(agent.id)?.sessionId,old.sessionId);
+ },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,holdResume:true})).adapter,
+   localMemoryForRoot:async root=>({chromaUrl:await ownedChroma(),collectionPrefix:'context_'+randomUUID().replaceAll('-',''),modelDir:process.env.PONDEROSA_TEST_MEMORY_MODEL_DIR,stateDirectory:path.join(root,'memory-policy'),provision:true})});
+});
+
+test('memory revoked after a retained voice turn begins invalidates the live stream',{timeout:30000},async t=>{
+ let store,native;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Revoked during retained voice'),agent=await f.createIdleAgent(chat,'Worker');
+  await f.send(agent.id,'Original objective.');
+  await until(async()=>(await native.requests()).some(x=>x.method==='turn/start'),'first native turn');
+  await native.sendTool('ponderosa_message',{text:'First task complete.'});await f.settled(agent.id);
+  const prior=(await f.detail(agent.id)).runs.map(run=>run.id);
+  f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text:'Continue aloud.',idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'queue',voiceReply:true}));
+  await until(async()=>(await native.requests()).filter(x=>x.method==='turn/start').length===2,'retained voice turn');
+  const run=await until(()=>store.sqlite.prepare("SELECT id FROM scheduler_runs WHERE agent_id=? AND id NOT IN (SELECT value FROM json_each(?)) AND status='running'").get(agent.id,JSON.stringify(prior)),'voice Run');
+  assert.equal((await native.requests()).filter(x=>x.method==='thread/resume').length,1);
+  await native.sendTool('ponderosa_local_memory_search',{query:'Synthetic search'});
+  const search=await until(async()=>{const calls=(await native.requests()).filter(x=>x.toolResponse);return calls.length>=2?calls.at(-1).toolResponse:undefined;},'memory search response');
+  assert.equal(search.result.success,true);
+  await native.sendTool('ponderosa_voice_reply',{});
+  const streaming=await until(()=>store.readEvents(agent.id).find(row=>row.event.type==='voice_reply'&&row.event.reply.state==='streaming'),'voice streaming');
+  assert.match(streaming.event.reply.text,/objective continues safely/);
+  new CapabilityPolicyStore(store.sqlite).put({scopeKind:'agent',scopeId:agent.id,expectedRevision:0,restrictedCapabilityIds:[CAPABILITY_IDS.memoryRead]});
+  const invalid=await until(()=>store.readEvents(agent.id).find(row=>row.event.type==='voice_reply'&&row.event.reply.failureReason==='context_changed'),'voice invalidation');
+  assert.equal(invalid.event.reply.state,'failed');
+  await native.releaseVoice();await f.settled(agent.id,prior);
+  assert.ok(!store.readEvents(agent.id).some(row=>row.event.type==='voice_reply'&&row.event.reply.state==='completed'));
+  const communications=new CoordinationV3Store(store.sqlite).runtimeCommunications(chat.projectId).filter(row=>row.payload.communication?.sender.kind==='agent'&&row.payload.communication.sender.executionId===run.id);
+  assert.equal(communications.length,0,'stale voice context must not publish a canonical reply');
+ },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,emitVoiceReply:true,holdMemoryCompletion:true,holdVoiceCompletion:true})).adapter,
+   localMemoryForRoot:async root=>({chromaUrl:await ownedChroma(),collectionPrefix:'context_'+randomUUID().replaceAll('-',''),modelDir:process.env.PONDEROSA_TEST_MEMORY_MODEL_DIR,stateDirectory:path.join(root,'memory-policy'),provision:true})});
 });

@@ -31,6 +31,9 @@ export class LocalMemoryService{
  private knownScopes=new Set<string>();
  private missingExistingScopes=new Set<string>();
  private initialized?:Promise<void>;
+ // One process-local aggregate per Agent; missing evidence never blocks
+ // ordinary use and cannot authorize retained memory context.
+ private readonly unusedMemoryRuns=new Map<string,{originRunId:string;lastRunId:string;previousRunId?:string;lastFence:number;count:number;projectId:string;chatId:string;signature:string;attempted:boolean}>();
  private deniedSpeech=new WeakSet<ActiveRun>();
  private speech=new Map<string,{authority:MemoryAuthority;signature:string;refs:Map<string,{id:string;scope:string;hash:string}>;invalid:boolean;expires:number;started:boolean}>();
  constructor(readonly ports:Ports,inference?:Inference){
@@ -267,6 +270,7 @@ export class LocalMemoryService{
     if(this.isProvenTemporaryChat(target.conversation_id,target.project_id,branchId,target.id)){if(this.core.database.scopeHasUnsettledMutation('chat:'+target.conversation_id))throw Error(MEMORY_CLEANUP_UNKNOWN_HOLD);}
     else await this.core.database.purge('chat:'+target.conversation_id,guard,target.id);
    }
+   for(const target of targets)this.unusedMemoryRuns.delete(target.id);
   });
  }
  async purgeProject(projectId:string){
@@ -275,6 +279,7 @@ export class LocalMemoryService{
    const guard=async()=>{this.live();if(!store.sqlite.prepare('SELECT 1 FROM project_deletion_pending WHERE project_id=?').get(projectId))throw new MemoryDenied('Exact pending Project deletion required');};
    await guard();const chats=store.sqlite.prepare('SELECT id FROM conversations WHERE project_id=?').all(projectId) as {id:string}[];
    for(const {id}of chats){const chat=store.getConversation(id,{includeDeleting:true});await guard();if(chat&&this.isProvenTemporaryChat(id,projectId,chat.branchId)){if(this.core.database.scopeHasUnsettledMutation('chat:'+id))throw Error(MEMORY_CLEANUP_UNKNOWN_HOLD);}else await this.core.database.purge('chat:'+id,guard);await guard();this.policy.prepare('DELETE FROM local_memory_chat_grants WHERE chat_id=? AND principal_id=?').run(id,this.principalId);this.knownScopes.delete('chat:'+id);}
+   for(const [id,entry]of this.unusedMemoryRuns)if(entry.projectId===projectId)this.unusedMemoryRuns.delete(id);
   });
  }
  // An exact, still-planned first-creation intent proves neither remote
@@ -434,6 +439,57 @@ export class LocalMemoryService{
   this.missingExistingScopes.delete(scope);this.knownScopes.add(scope);
  }
 
+ private unusedMemorySignature(agentId:string,chatId:string,runId:string):string{
+  this.live();const store=this.ports.store,agent=store.getAgent(agentId),owner=activeChatResourceOwner(store,'agent',agentId);
+  if(!agent||!owner||owner.executionId||agent.conversationId!==chatId)throw Error('Memory witness owner changed');
+  const policies=new CapabilityPolicyStore(store.sqlite),policy=policies.resolveForAgent(agentId,runId);
+  const grant=this.getGrant(chatId,owner.branchId?'branches':'dev');
+  const reset=(store.sqlite.prepare("SELECT COALESCE(MAX(seq),0) seq FROM events WHERE agent_id=? AND type='session_reset'").get(agentId) as {seq:number}).seq;
+  return JSON.stringify([agentId,agent.projectId,chatId,owner.branchId,reset,grant,
+   policy.layers.flatMap(layer=>{const saved=policies.get(layer.scopeKind,layer.scopeId);return saved?[[layer.scopeKind,layer.scopeId,saved]]:[];})]);
+ }
+ beginUnusedMemoryWitness(token:string):void{
+  try{
+   const cap=this.ports.capabilities.get(token),active=cap&&this.ports.activeRuns.get(cap.agentId);
+   if(!cap||!active||!cap.conversationId||active.messageCapability!==token||!this.ports.ownsRun(cap,active))return;
+   const agent=this.ports.store.getAgent(cap.agentId);if(!agent)return;
+   const signature=this.unusedMemorySignature(cap.agentId,cap.conversationId,cap.v3SchedulerRunId);
+   const prior=this.unusedMemoryRuns.get(cap.agentId);
+   if(!prior){this.unusedMemoryRuns.set(cap.agentId,{originRunId:cap.v3SchedulerRunId,lastRunId:cap.v3SchedulerRunId,lastFence:cap.v3FencingToken,count:1,projectId:agent.projectId,chatId:cap.conversationId,signature,attempted:false});return;}
+   // Re-entry must never erase an observed attempt or manufacture coverage.
+   if(prior.lastRunId===cap.v3SchedulerRunId){if(prior.lastFence!==cap.v3FencingToken||prior.signature!==signature||prior.chatId!==cap.conversationId)prior.attempted=true;return;}
+   if(cap.v3FencingToken<=prior.lastFence||prior.signature!==signature||prior.chatId!==cap.conversationId)prior.attempted=true;
+   prior.previousRunId=prior.lastRunId;prior.lastRunId=cap.v3SchedulerRunId;prior.lastFence=cap.v3FencingToken;prior.count++;
+  }catch{/* No complete witness means no retained-memory optimization. */}
+ }
+ private noteMemoryAttempt(token:string):void{
+  const cap=this.ports.capabilities.get(token),entry=cap&&this.unusedMemoryRuns.get(cap.agentId);
+  if(cap&&entry)entry.attempted=true;
+ }
+ canRetainUnusedMemory(agentId:string,chatId:string,sessionId:string,originRunId:string,currentRunId:string):boolean{
+  try{
+   const db=this.ports.store.sqlite,entry=this.unusedMemoryRuns.get(agentId);
+   if(!entry||entry.attempted||entry.chatId!==chatId||entry.originRunId!==originRunId||
+      entry.signature!==this.unusedMemorySignature(agentId,chatId,currentRunId))return false;
+   const origin=db.prepare('SELECT fencing_token,scope_key FROM scheduler_runs WHERE id=? AND agent_id=?').get(originRunId,agentId) as {fencing_token:number;scope_key:string}|undefined;
+   const current=db.prepare("SELECT fencing_token,scope_key FROM scheduler_runs WHERE id=? AND agent_id=? AND status IN ('leased','running')").get(currentRunId,agentId) as {fencing_token:number;scope_key:string}|undefined;
+   if(!origin||!current||origin.fencing_token>=current.fencing_token||origin.scope_key!==current.scope_key)return false;
+   const currentRegistered=entry.lastRunId===currentRunId;
+   const expectedCount=entry.count-(currentRegistered?1:0),expectedLast=currentRegistered?entry.previousRunId:entry.lastRunId;
+   let count=0,lastId:string|undefined;
+   const rows=db.prepare('SELECT id,fencing_token,scope_key,status,provider_session_id,prompt_injection_state FROM scheduler_runs WHERE agent_id=? AND fencing_token>=? AND fencing_token<? ORDER BY fencing_token,id').iterate(agentId,origin.fencing_token,current.fencing_token) as Iterable<{id:string;fencing_token:number;scope_key:string;status:string;provider_session_id:string|null;prompt_injection_state:string}>;
+   for(const row of rows){
+    if(count===0&&row.id!==originRunId)return false;
+    const packet=this.ports.store.getProviderInput(row.id,true),m=packet?.sourceManifest;
+    if(row.status!=='completed'||row.prompt_injection_state!=='injected'||row.provider_session_id!==sessionId||row.scope_key!==current.scope_key||
+       !packet||packet.schedulerRunId!==row.id||typeof packet.exactPrompt!=='string'||createHash('sha256').update(packet.exactPrompt).digest('hex')!==packet.promptHash||
+       m?.schemaVersion!==3||m.conversationId!==chatId||!Array.isArray(m.sources)||m.sources.some(source=>source.kind==='continuation_handoff'||source.kind==='pause_checkpoint')||
+       m.providerSessionDisposition!==(row.id===originRunId?'fresh_task':'continued_session'))return false;
+    count++;lastId=row.id;
+   }
+   return count>0&&count===expectedCount&&lastId===expectedLast;
+  }catch{return false;}
+ }
  private grant(chatId:string){return this.policy.prepare('SELECT * FROM local_memory_chat_grants WHERE chat_id=?').get(chatId) as {principal_id:string;read_global:number;revision:number;updated_at:string}|undefined;}
  getGrant(chatId:string,product:ProductScope){this.chat(chatId,product);const g=this.grant(chatId);if(g&&g.principal_id!==this.principalId)throw new MemoryDenied('Foreign memory grant principal');return {chatId,readGlobal:g?.read_global===1,revision:g?.revision??0};}
  setGrant(chatId:string,readGlobal:boolean,expectedRevision:number,product:ProductScope){
@@ -463,6 +519,7 @@ export class LocalMemoryService{
   return {chatId:agent.conversationId,actor:{kind:'agent',id:agent.id},runId:capability.v3SchedulerRunId,fenceToken:String(capability.v3FencingToken),active:true,grants:{readChat:!denied.has(CAPABILITY_IDS.memoryRead),readGlobal:!denied.has(CAPABILITY_IDS.memoryRead)&&grant.readGlobal,writeChat:!denied.has(CAPABILITY_IDS.memoryWrite),writeGlobal:!denied.has(CAPABILITY_IDS.memoryWrite)},sourceType:'ai_inference'};
  }
  async executeAgent(token:string,operation:string,args:unknown){
+  this.noteMemoryAttempt(token);
   const parsed=validateMemoryCall(operation,args),tool='ponderosa_local_memory_'+operation,write=['save','update','forget'].includes(operation);this.agentContext(token,tool,write);await this.ready();const before=this.agentContext(token,tool,write);await this.ensurePlannedChat(before.chatId);const initial=this.agentContext(token,tool,write);
   const globalWrite=write&&parsed.destination==='global';const usesGlobal=(globalWrite||!write&&parsed.source!=='chat')&&initial.grants.readGlobal;if(globalWrite&&parsed.visibility==='private')throw new MemoryDenied('Global private audience unsupported',400);if(globalWrite&&operation!=='save'&&!initial.grants.readGlobal)throw new MemoryDenied('Existing global source mutation requires read authority');const needsRead=!write||initial.grants.readChat;if(write&&operation!=='save'&&!initial.grants.readChat)throw new MemoryDenied('Existing source mutation requires read authority');const identity=JSON.stringify([initial.chatId,initial.actor,initial.runId,initial.fenceToken]);const guard=async()=>{const c=this.agentContext(token,tool,write);if(JSON.stringify([c.chatId,c.actor,c.runId,c.fenceToken])!==identity)throw new MemoryDenied('Canonical memory binding changed');if((needsRead&&!c.grants.readChat)||(usesGlobal&&!c.grants.readGlobal)||(write&&!(globalWrite?c.grants.writeGlobal:c.grants.writeChat)))throw new MemoryDenied('Live memory grant revoked');};
   if(write&&!(globalWrite?initial.grants.writeGlobal:initial.grants.writeChat))throw new MemoryDenied('Memory write denied');if(!write&&parsed.source==='global'&&!initial.grants.readGlobal)throw new MemoryDenied('Global read denied');
@@ -583,7 +640,7 @@ export class LocalMemoryService{
   this.calls.add(pending);try{await pending;}finally{this.calls.delete(pending);}
  }
 
- fence(){this.closed=true;for(const e of this.speech.values())e.invalid=true;}
+ fence(){this.closed=true;this.unusedMemoryRuns.clear();for(const e of this.speech.values())e.invalid=true;}
  async close(){this.fence();await Promise.allSettled([...this.calls]);try{await this.core.close();}finally{if(this.policy.open)this.policy.close();}}
 }
 const services=new WeakMap<FastifyInstance,LocalMemoryService>();

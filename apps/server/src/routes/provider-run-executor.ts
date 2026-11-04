@@ -341,6 +341,7 @@ export function startProviderRunExecution(
       // Fallback speech needs the same live authority even when this engine
       // cannot stream or never calls the voice tool. Never rebuild it after completion.
       const memory = localMemoryFor(app);
+      memory?.beginUnusedMemoryWitness(messageCapability);
       if (memory && canonicalVoiceReplyInput(store, coordinationV3, runCapability)) {
         try { memory.beginSpeech(messageCapability); }
         catch (error) {

@@ -3,6 +3,7 @@ import type { RuntimeAttachmentCopy } from "../runtime-attachments.js";
 import {canonicalDefaultReplyRoute} from "../required-reply-route.js";
 import {memorySessionResetSeq} from "../voice-memory-exposure.js";
 import {canonicalVoiceReplyInput} from "../voice-reply-input.js";
+import type {LocalMemoryService} from "../local-memory.js";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { providerInputBudget, estimateProviderInput, contextRecoveryRequired } from "../context-rollover-pressure.js";
@@ -72,6 +73,7 @@ interface PrepareAgentRunInput {
   project: ProjectDto;
   runtimeEngineId: string;
   engine: EngineRegistration;
+  memory?: LocalMemoryService;
   text: string;
   internalV3Dispatch: boolean;
   v3SchedulerRunId: string | undefined;
@@ -226,6 +228,7 @@ export async function prepareAgentRun(
     project: storageProject,
     runtimeEngineId,
     engine,
+    memory,
     text,
     internalV3Dispatch,
     v3SchedulerRunId,
@@ -583,10 +586,9 @@ export async function prepareAgentRun(
   // offered Ponderosa Local Memory tools. Voice may reuse an unchanged contract; ordinary
   // turns may also change only the explicit model. Other cases keep their
   // existing scope and voice boundaries.
-  let retainedVerifiedContext=false;
+  let retainedVerifiedContext=false,retainedMemoryProof:(()=>boolean)|undefined;
   const canRetainVerifiedContext=(kind:'voice'|'model')=>{
-    if(availableRuntimeTools.some(tool=>tool.name.startsWith('ponderosa_local_memory_')) ||
-       runtimeEngineId!=='codex' || Object.getPrototypeOf(engine.adapter)!==CodexAdapter.prototype ||
+    if(runtimeEngineId!=='codex' || Object.getPrototypeOf(engine.adapter)!==CodexAdapter.prototype ||
        Object.hasOwn(engine.adapter,'openSession') || !resumeSessionState?.toolContractHash ||
        !effectiveModel?.trim())return false;
     const runtime=reusableRuntime(agent.id),packet=store.acceptedProviderSessionInput(agent.id);
@@ -611,8 +613,46 @@ export async function prepareAgentRun(
     if(!seedManifest || seedManifest.providerSessionDisposition!=='fresh_task' ||
        !seedManifest.normalRuntimeContract || seedManifest.normalRuntimeContract.contractHash!==originContractHash ||
        !Array.isArray(seedManifest.sources) || !Array.isArray(seedManifest.normalRuntimeContract.dynamicTools) ||
-       seedManifest.sources.some(source=>source.kind==='continuation_handoff') ||
-       seedManifest.normalRuntimeContract.dynamicTools.some(tool=>tool.name.startsWith('ponderosa_local_memory_')) || fork)return false;
+       seedManifest.sources.some(source=>source.kind==='continuation_handoff') || fork)return false;
+    const chatId=routingConversationId,sessionId=resumeSessionState.sessionId,originId=originExecutionId;
+    if(!chatId||!originId)return false;
+    // The first/current contracts alone do not exclude a memory-capable
+    // intervening Run. Inspect the entire accepted generation.
+    const priorMemoryToolState=():0|1|2=>{
+      try{
+        const db=store.sqlite,first=db.prepare('SELECT fencing_token,scope_key FROM scheduler_runs WHERE id=? AND agent_id=?').get(originId,agent.id) as {fencing_token:number;scope_key:string}|undefined;
+        const current=db.prepare("SELECT fencing_token,scope_key FROM scheduler_runs WHERE id=? AND agent_id=? AND status IN ('leased','running')").get(runId,agent.id) as {fencing_token:number;scope_key:string}|undefined;
+        if(!first||!current||first.fencing_token>=current.fencing_token||first.scope_key!==current.scope_key)return 0;
+        const outside=db.prepare(`SELECT 1 FROM scheduler_runs WHERE agent_id=? AND id<>? AND
+          ((fencing_token<? AND (prompt_injection_state<>'not_injected' OR provider_session_id IS NOT NULL OR status IN ('leased','running','outcome_unknown'))) OR
+           (provider_session_id=? AND (fencing_token<? OR fencing_token>=?))) LIMIT 1`).get(agent.id,runId,first.fencing_token,sessionId,first.fencing_token,current.fencing_token);
+        if(outside)return 0;
+        let count=0,offered=false;
+        const rows=db.prepare('SELECT id,scope_key,status,provider_session_id,prompt_injection_state FROM scheduler_runs WHERE agent_id=? AND fencing_token>=? AND fencing_token<? ORDER BY fencing_token,id').iterate(agent.id,first.fencing_token,current.fencing_token) as Iterable<{id:string;scope_key:string;status:string;provider_session_id:string|null;prompt_injection_state:string}>;
+        for(const row of rows){
+          if(count===0&&row.id!==originId)return 0;
+          const packet=store.getProviderInput(row.id,true),manifest=packet?.sourceManifest;
+          if(row.status!=='completed'||row.prompt_injection_state!=='injected'||row.provider_session_id!==sessionId||row.scope_key!==current.scope_key||
+            !packet||packet.schedulerRunId!==row.id||typeof packet.exactPrompt!=='string'||createHash('sha256').update(packet.exactPrompt).digest('hex')!==packet.promptHash||
+            manifest?.schemaVersion!==3||manifest.conversationId!==chatId||!Array.isArray(manifest.sources)||
+            !Array.isArray(manifest.memoryScopes)||manifest.memoryScopes.length!==0||
+            manifest.sources.some(source=>source.kind==='continuation_handoff'||source.kind==='pause_checkpoint'||(source as {kind:string}).kind==='memory')||
+            !Array.isArray(manifest.normalRuntimeContract?.dynamicTools)||
+            manifest.providerSessionDisposition!==(row.id===originId?'fresh_task':'continued_session'))return 0;
+          offered ||= manifest.normalRuntimeContract.dynamicTools.some(tool=>tool.name.startsWith('ponderosa_local_memory_'));
+          count++;
+        }
+        return count>0?(offered?2:1):0;
+      }catch{return 0;}
+    };
+    const priorTools=priorMemoryToolState();
+    if(priorTools===0)return false;
+    if(priorTools===2){
+      if(!memory)return false;
+      const proof=()=>priorMemoryToolState()===2&&memory.canRetainUnusedMemory(agent.id,chatId,sessionId,originId,runId);
+      if(!proof())return false;
+      retainedMemoryProof=proof;
+    }else retainedMemoryProof=()=>priorMemoryToolState()===1;
     if((runtime && (!runtime.nativeCodexModelChange || !runtime.session.isAlive() ||
        readProviderSessionIdentifier(runtime.session)!==resumeSessionState.sessionId)) ||
        !packet || !contract || contract.version!==1 || contract.engineId!==runtimeEngineId ||
@@ -674,6 +714,7 @@ export async function prepareAgentRun(
     const currentTools=filterRuntimeToolsForCapabilities([...providerDynamicTools(Boolean(opts.localMemory)),PONDEROSA_HISTORY_TOOL],currentPolicy);
     const currentRestrictions=runtimeRestrictions(currentPolicy,runtimeEngineId);
     const auth=runContext.engineAuthStatuses.snapshot(runtimeEngineId),saved=store.resumeSessionState(agent.id);
+    if(retainedMemoryProof&&!retainedMemoryProof())throw new Error('Memory access changed before the saved Codex thread could continue.');
     if(!current || !currentProject || current.projectId!==agent.projectId || current.conversationId!==agent.conversationId ||
        currentProject.id!==project.id || currentProject.hostPath!==project.hostPath || current.activeEngine!==agent.activeEngine ||
        current.model!==agent.model || current.effort!==agent.effort || current.speed!==agent.speed ||

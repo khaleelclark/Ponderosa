@@ -223,7 +223,7 @@ export async function fixture({ diagnosticProvider = false, beforeRuntimeClose, 
     plans.set(id, [{ hold: true }]); await send(id, 'Controlled held task');
     await until(() => turns.filter(t => t.agentId === id).length > count, 'held provider input'); return sessions.get(id);
   };
-  return { root, dataDir, api, ok, detail, settled, createChat, createAgent, createIdleAgent, send, tool, hold, plans, sessions, turns, capabilities, commands, steers, providerProbes, capabilityDiscoveries,
+  return { root, dataDir, get app(){return app;}, api, ok, detail, settled, createChat, createAgent, createIdleAgent, send, tool, hold, plans, sessions, turns, capabilities, commands, steers, providerProbes, capabilityDiscoveries,
     listen: () => app.listen({ host: '127.0.0.1', port: 0 }),
     // Exercise product shutdown before fixture-owned child cleanup.
     async shutdownProduct() { app.prepareForShutdown(); await app.close(); productShutdownComplete = true; },
