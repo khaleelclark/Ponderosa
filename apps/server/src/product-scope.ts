@@ -216,7 +216,7 @@ export function retainedRuntimeResources(store:Pick<AgentStore,'sqlite'>,owner:s
       AND execution.state IN ('running','waiting') AND execution.cancel_requested=0 AND attempt.cancel_requested=0
       AND NOT EXISTS(SELECT 1 FROM branch_installation_resources inactive
         WHERE inactive.local_id IN (agent.id,chat.id) AND (inactive.state NOT IN ('active','retiring') OR
-          (inactive.state='active' AND inactive.staging_plan_id IS NOT NULL AND NOT EXISTS(
+          (inactive.staging_plan_id IS NOT NULL AND NOT EXISTS(
             SELECT 1 FROM branch_installation_plans plan WHERE plan.id=inactive.staging_plan_id AND plan.state='completed'))))
       AND EXISTS(SELECT 1 FROM branch_installation_resources retired
         WHERE retired.local_id IN (agent.id,chat.id) AND retired.state='retiring')
