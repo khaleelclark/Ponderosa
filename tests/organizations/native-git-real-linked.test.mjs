@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtemp,mkdir,writeFile,readFile,lstat,realpath,rm,chmod,utimes} from 'node:fs/promises';
+import {mkdtemp,mkdir,writeFile,readFile,lstat,realpath,rm,chmod,utimes,link} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {execFile} from 'node:child_process';
@@ -78,4 +78,31 @@ for(const includeExclude of [true,false])test('real captured bare dependency pre
  assert.equal(await readFile(path.join(capsule.gitDir,'info','sparse-checkout'),'utf8'),'/*.txt\n');
  assert.equal(restoredSparse.mode&0o7777n,sourceSparse.mode&0o7777n);assert.equal(restoredSparse.mtimeNs,sourceSparse.mtimeNs);
  assert.equal(await realpath(capsule.gitDir),capsule.gitDir);
+});
+
+test('real linked repository dependency recreates its worktree and shared owned hook view',options,async t=>{
+ const root=await realpath(await mkdtemp(path.join(tmpdir(),'real-linked-restore-'))),source=path.join(root,'source'),destination=path.join(root,'destination'),dependencies=path.join(root,'dependencies'),other=path.join(root,'other'),linked=path.join(dependencies,'capsule');
+ t.after(()=>rm(root,{recursive:true,force:true}));
+ await initialize(source);await initialize(other);await mkdir(destination);await mkdir(dependencies);
+ await git(other,'worktree','add','-b','linked',linked);
+ await writeFile(path.join(dependencies,'shared-hook'),'#!/bin/sh\necho linked\n');await link(path.join(dependencies,'shared-hook'),path.join(dependencies,'shared-alias'));
+ await git(source,'config','core.hooksPath',dependencies);
+ await git(linked,'config','core.hooksPath',dependencies);
+ const sourceHead=await git(linked,'rev-parse','HEAD');
+ const manifest=await exportReviewedUserData(source,{git:true,harness:false,externalGitDependencies:true});
+ assert.ok(manifest.gitExternalDependencies.repositories.some(repository=>repository.sourcePath===linked));
+ const activation={git:true,harness:false},pkg=packageFor(manifest,{'file.txt':Buffer.from('committed\n')});
+ await writeFile(path.join(destination,'file.txt'),'committed\n');
+ const tasks=planReviewedRecoveryRoots(pkg,{work:destination},activation),capsule=tasks[0].externalPlan.repositories.find(row=>row.sourceWorkingRoot===linked);
+ assert.ok(capsule);
+ await applyReviewedRecoveryRoots(tasks,activation,()=>{});
+ assert.equal(await git(capsule.worktreePath,'rev-parse','HEAD'),sourceHead);
+ const pointer=(await readFile(path.join(capsule.worktreePath,'.git'),'utf8')).trim();assert.match(pointer,/^gitdir: /);
+ assert.equal(await realpath(path.resolve(capsule.worktreePath,pointer.slice(8))),await realpath(capsule.privateDir));
+ const hookView=await git(capsule.worktreePath,'config','--path','--get','core.hooksPath');
+ assert.equal(await realpath(path.resolve(capsule.worktreePath,hookView)),path.dirname(capsule.worktreePath));
+ const shared=path.join(path.dirname(capsule.worktreePath),'shared-hook'),alias=path.join(path.dirname(capsule.worktreePath),'shared-alias');
+ const before=await lstat(shared,{bigint:true}),after=await lstat(alias,{bigint:true});
+ assert.equal(before.dev,after.dev);assert.equal(before.ino,after.ino);assert.equal(await readFile(shared,'utf8'),'#!/bin/sh\necho linked\n');
+ assert.equal(await git(linked,'rev-parse','HEAD'),sourceHead);
 });
