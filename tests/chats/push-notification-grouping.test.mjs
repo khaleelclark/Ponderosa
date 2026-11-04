@@ -6,7 +6,7 @@ import {pushPayload} from '../../apps/server/dist/web-push-delivery.js';
 
 const workerSource=await readFile(new URL('../../apps/web/public/push-handler.js',import.meta.url),'utf8');
 function device(view,visibilityState='visible') {
-  const handlers={},calls=[],visible=new Map(),receipts=new Map();
+  const handlers={},calls=[],visible=new Map(),receipts=new Map(),opened=[];
   const cache={
     match:async request=>receipts.get(request.url),
     put:async(request,response)=>{receipts.set(request.url,response);},
@@ -16,12 +16,15 @@ function device(view,visibilityState='visible') {
   const self={
     addEventListener:(type,handler)=>{handlers[type]=handler;},
     location:{origin:'https://fixture.invalid'}, caches:{},
-    clients:{matchAll:async()=>[{id:'window',visibilityState,url:'https://fixture.invalid/'}]},
+    clients:{matchAll:async()=>[{postMessage:message=>opened.push(message),focus:async()=>{},id:'window',visibilityState,url:'https://fixture.invalid/'}]},
     registration:{showNotification:async(title,options)=>{calls.push({title,...options});visible.set(options.tag,{title,...options});}},
   };
   vm.runInNewContext(workerSource,{self,caches:{open:async()=>cache},Request,Response,URL});
   if(view)handlers.message({data:{type:'ponderosa:active-notification-view',view},source:{id:'window'}});
-  return {calls,visible,receipts,async push(payload){
+  return {calls,visible,receipts,opened,async click(item){
+    let completion;handlers.notificationclick({notification:{...item,close(){}},waitUntil:promise=>{completion=promise;}});
+    assert.ok(completion);await completion;
+  },async push(payload){
     let completion;handlers.push({data:{json:()=>payload},waitUntil:promise=>{completion=promise;}});
     assert.ok(completion);await completion;
   }};
@@ -47,14 +50,25 @@ test('repeated ordinary Chat activity replaces one visible notification while re
   assert.equal(reversed.visible.values().next().value.data.notificationId,"notice-0","Arrival order can replace a newer message preview with an older one");
   assert.equal(reversed.receipts.size,2);
 });
-test('different Chats and activity kinds remain distinct; active Chat stays quiet',async()=>{
+test('different Chats share a kind while activity kinds remain distinct and active Chats stay quiet',async()=>{
   const outside=device({kind:'conversation',projectId:'elsewhere',conversationId:'other'});
   const items=[
     notification('one'),notification('two',{conversationId:'other-chat'}),
     notification('three',{kind:'broadcasts'}),notification('four',{kind:'everyone'}),
   ];
   for(const item of items)await outside.push(pushPayload(item));
-  assert.equal(outside.visible.size,4);
+  assert.equal(outside.visible.size,3);
+  const direct=outside.visible.get(pushPayload(items[0]).displayTag);
+  assert.equal(direct.data.notificationId,items[1].id);
+  assert.equal(direct.data.url,pushPayload(items[1]).url,"The displayed item opens its own exact Chat and message");
+  assert.notEqual(direct.data.url,pushPayload(items[0]).url);
+  await outside.click(direct);
+  assert.equal(outside.opened[0].url,new URL(direct.data.url,"https://fixture.invalid").href,"Click opens the retained notification destination");
+  const firstTag=pushPayload(items[0]).displayTag;
+  outside.visible.delete(firstTag);
+  await outside.push(pushPayload(items[0]));
+  assert.equal(outside.visible.has(firstTag),false,"A retry of an older receipt cannot reopen a dismissed alert");
+  assert.equal(outside.receipts.size,4);
   const active=device({kind:'conversation',projectId:'project',conversationId:'chat'});
   await active.push(pushPayload(items[0]));assert.equal(active.calls.length,0);
   const hidden=device({kind:'conversation',projectId:'project',conversationId:'chat'},'hidden');

@@ -137,13 +137,13 @@ export function pushPayload(notification: WorkspaceNotificationDto, owners?: Pic
     :notification.projectId&&notification.agentId?`/projects/${encodeURIComponent(notification.projectId)}/agents/${encodeURIComponent(notification.agentId)}${message}`:undefined;
   const branchQuery=branchId?new URLSearchParams({branch:branchId,tab:workspace?'chats':'executions',...(executionId?{execution:executionId}:{}),...(chatId?{chat:chatId}:{}),...(workspace?{workspace}:{})}):undefined;
   // Preserve individual receipts and inbox entries, but replace the visible OS
-  // notification for repeated ordinary activity of the same kind in a Chat.
+  // notification for ordinary activity of the same kind across Chats.
   // Assistant reports, decisions, and operational notices remain distinct.
   const activityTag = notification.projectId && notification.conversationId &&
     notification.communicationEventId &&
     !notification.communicationEventId.startsWith("assistant-report:") &&
     ["direct_responses", "broadcasts", "everyone"].includes(notification.kind)
-      ? `ponderosa-chat-activity:${JSON.stringify([notification.projectId, notification.conversationId, notification.kind])}`
+      ? `ponderosa-chat-activity:${notification.kind}`
       : undefined;
   return {
     notificationId: notification.id,
