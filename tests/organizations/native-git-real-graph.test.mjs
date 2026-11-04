@@ -64,6 +64,14 @@ async function fixture(t,worktree=false,selectedWorktree=false,extensions={}){
  const selection={git:true,harness:false,externalGitDependencies:true};
  const inventory=extensions.crossAlias?await inventoryWorkingFolder(source,selection):undefined;
  const manifest=await exportReviewedUserData(source,selection);
+ if(extensions.importedZero){
+  // A valid imported package may describe unreadable source modes even when
+  // this unprivileged exporter cannot read such a live source. Change only
+  // reviewed metadata before the production planner issues its capability.
+  const folder=manifest.gitExternalDependencies.directories.find(row=>row.sourcePath===sourceHooks);
+  const original=manifest.gitExternalDependencies.files.find(row=>path.dirname(row.sourcePath)===sourceHooks);
+  assert.ok(folder&&original);folder.mode=0;original.mode=0;
+ }
  const working=worktree?{'hooks/script':data}:selectedWorktree?(extensions.crossAlias?{'.hooks/run':data}:{'.hooks/run':data,'.hooks/hard':data}):{};
  const activation={git:true,harness:false},pkg=packageFor(manifest,working);
  if(inventory)pkg.agents[0].workingFolder.links=inventory.links;
@@ -240,6 +248,78 @@ test('real reviewed repositories defer shared native metadata until every task i
    await chmod(path.join(f.destination,'.git','hooks'),0o700).catch(()=>{});
   }
  }
+});
+
+test('imported zero-mode Git metadata waits for all shared tasks and final proof',options,async t=>{
+ const first=await fixture(t,false,false,{restrictive:true,importedZero:true}),second=await fixture(t,false,false,{restrictive:true,importedZero:true});
+ const scope={},metadata=createWorkingNativeMetadataEvidence(),firstConfig=first.tasks[0].configuration,secondConfig=second.tasks[0].configuration;
+ for(const config of [firstConfig,secondConfig]){config.nativeMetadataScope=scope;config.deferNativeMetadata=true;}
+ const node=first.graph.files.find(row=>row.path.endsWith('/hooks/script')||row.path.endsWith('/hooks/hard'));
+ assert.ok(node);const firstFile=node.path,firstDir=path.dirname(firstFile),secondDir=path.join(second.destination,'.git','hooks');
+ try{
+  await applyReviewedRecoveryRoots(first.tasks,first.activation,()=>{},undefined,metadata);
+  assert.notEqual((await lstat(firstFile,{bigint:true})).mode&0o400n,0n,'the first original remains readable while another task is pending');
+  await applyReviewedRecoveryRoots(second.tasks,second.activation,()=>{},undefined,metadata);
+  assert.equal(firstConfig.prepareNativeMetadata,secondConfig.prepareNativeMetadata);
+  assert.equal(firstConfig.finalizeNativeMetadata,secondConfig.finalizeNativeMetadata);
+  await firstConfig.prepareNativeMetadata();let invoked=0;
+  metadata.deferredMetadata.set(firstFile,{kind:'file',mode:0,mtimeNs:exactNs.toString(),apply:held=>{
+   const observed=fstatSync(held.fd,{bigint:true});assert.equal(observed.dev,held.expectedDevice);assert.equal(observed.ino,held.expectedInode);
+   assert.equal(observed.nlink,2n);assert.equal(held.expectedLinkCount,2n);assert.notEqual(observed.mode&0o400n,0n);invoked++;
+  }});
+  await firstConfig.finalizeNativeMetadata();assert.equal(invoked,1);
+  const proof=firstConfig.fileProofs.get(firstFile);
+  assert.equal(proof.mode,0);assert.equal(proof.mtimeNs,exactNs.toString());assert.match(proof.ctimeNs,/^[0-9]+$/);
+  assert.equal((await lstat(firstDir,{bigint:true})).mode&0o7777n,0n);
+  assert.equal((await lstat(secondDir,{bigint:true})).mode&0o7777n,0n);
+  await assert.rejects(firstConfig.finalizeNativeMetadata(),/cannot be replayed/);
+  await assert.rejects(firstConfig.prepareNativeMetadata(),/cannot be replayed/);
+  await chmod(firstDir,0o700);await chmod(secondDir,0o700);
+  const file=await lstat(firstFile,{bigint:true});assert.equal(file.mode&0o7777n,0n);assert.equal(file.mtimeNs,exactNs);
+ }finally{
+  await chmod(firstDir,0o700).catch(()=>{});await chmod(secondDir,0o700).catch(()=>{});
+  await chmod(first.sourceHooks,0o700).catch(()=>{});await chmod(second.sourceHooks,0o700).catch(()=>{});
+ }
+});
+
+test('imported zero-mode child hooks finalize after cross-scope hardlinks and shared directory proof',options,async t=>{
+ const root=await realpath(await mkdtemp(path.join(tmpdir(),'native-child-zero-import-'))),source=path.join(root,'source'),child=path.join(root,'child'),destination=path.join(root,'destination');
+ t.after(()=>rm(root,{recursive:true,force:true}));
+ const initialize=async dir=>{await mkdir(dir);await git(dir,'init','--template=','--initial-branch=main');await git(dir,'config','user.name','Fixture');await git(dir,'config','user.email','fixture@example.invalid');await writeFile(path.join(dir,'file.txt'),'committed\n');await git(dir,'add','file.txt');await git(dir,'commit','--no-gpg-sign','-m','Initial');};
+ await initialize(child);await initialize(source);
+ await git(source,'-c','protocol.file.allow=always','submodule','add',child,'module');
+ await git(source,'config','-f','.gitmodules','submodule.module.url','https://example.invalid/module');
+ await git(source,'config','submodule.module.url','https://example.invalid/module');
+ await git(path.join(source,'module'),'remote','set-url','origin','https://example.invalid/module');
+ await git(source,'add','.gitmodules','module');await git(source,'commit','--no-gpg-sign','-m','Add module');
+ const parentHooks=path.join(source,'.git','hooks'),childHooks=path.join(source,'.git','modules','module','hooks');
+ await mkdir(parentHooks,{recursive:true});await mkdir(childHooks,{recursive:true});
+ const original=path.join(parentHooks,'script'),parentAlias=path.join(parentHooks,'hard'),crossAlias=path.join(childHooks,'captured-parent-alias'),unreadable=path.join(childHooks,'unreadable');
+ await writeFile(original,data);await link(original,parentAlias);await link(original,crossAlias);await writeFile(unreadable,'child original\n');
+ await setExactMtime(unreadable);await setExactMtime(childHooks);
+ const manifest=await exportReviewedUserData(source,{git:true,harness:false,externalGitDependencies:true});
+ const family=manifest.gitExternalDependencies,childDirectory=family.directories.find(row=>row.sourcePath===childHooks),childOriginal=family.files.find(row=>row.sourcePath===unreadable);
+ assert.ok(childDirectory&&childOriginal,'the actual selected module hook tree and file were captured');
+ assert.ok(family.links.some(row=>row.sourcePath===crossAlias&&row.kind==='hardlink'),'the parent-child hardlink was captured');
+ // Model a valid reviewed import carrying mode 000; issue the actual plan only
+ // after this package metadata is complete. The live source stays readable.
+ childDirectory.mode=0;childOriginal.mode=0;
+ await mkdir(destination);await mkdir(path.join(destination,'module'));
+ const gitmodules=await readFile(path.join(source,'.gitmodules'));
+ await writeFile(path.join(destination,'file.txt'),'committed\n');await writeFile(path.join(destination,'.gitmodules'),gitmodules);await writeFile(path.join(destination,'module','file.txt'),'committed\n');
+ const working={'file.txt':Buffer.from('committed\n'),'.gitmodules':gitmodules,'module/file.txt':Buffer.from('committed\n')},activation={git:true,harness:false};
+ const tasks=planReviewedRecoveryRoots(packageFor(manifest,working),{work:destination},activation),config=tasks[0].configuration,childConfig=config.modules[0].configuration;
+ const issued={...identity(await lstat(destination,{bigint:true})),directories:{module:identity(await lstat(path.join(destination,'module'),{bigint:true}))}};
+ const locked=path.join(destination,'.git','modules','module','hooks');
+ try{
+  await applyReviewedRecoveryRoots(tasks,activation,()=>{},{[destination]:issued});
+  assert.equal((await lstat(locked,{bigint:true})).mode&0o7777n,0n);
+  assert.ok(config.directoryProofs.has(locked));assert.equal(config.directoryProofs,childConfig.directoryProofs);
+  await chmod(locked,0o700);
+  const file=await lstat(path.join(locked,'unreadable'),{bigint:true});assert.equal(file.mode&0o7777n,0n);assert.equal(file.mtimeNs,exactNs);
+  const owner=await lstat(path.join(destination,'.git','hooks','script'),{bigint:true}),alias=await lstat(path.join(locked,'captured-parent-alias'),{bigint:true});
+  assert.equal(owner.dev,alias.dev);assert.equal(owner.ino,alias.ino);assert.equal(owner.nlink,3n);
+ }finally{await chmod(locked,0o700).catch(()=>{});}
 });
 
 test('relative-dot hook capture keeps exact owner Git storage and relocates both contexts safely',options,async t=>{
