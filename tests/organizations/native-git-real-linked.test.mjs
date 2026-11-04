@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtemp,mkdir,writeFile,readFile,lstat,realpath,rm,chmod,utimes,link} from 'node:fs/promises';
+import {mkdtemp,mkdir,writeFile,readFile,lstat,realpath,rm,chmod,utimes,link,open} from 'node:fs/promises';
+import {lstatSync,readFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
-import {exportReviewedUserData} from '../../apps/server/dist/portable-reviewed-user-data.js';
+import {exportReviewedUserData,createGitExportCapture,verifyGitExportAssociations} from '../../apps/server/dist/portable-reviewed-user-data.js';
 import {planReviewedRecoveryRoots,applyReviewedRecoveryRoots} from '../../apps/server/dist/portable-git-recreation.js';
 import {planReviewedGitExternalApplication} from '../../apps/server/dist/portable-git-external-application.js';
 
@@ -107,4 +108,29 @@ test('real linked repository dependency recreates its worktree and shared owned 
  assert.equal(before.dev,after.dev);assert.equal(before.ino,after.ino);assert.equal(await readFile(shared,'utf8'),'#!/bin/sh\necho linked\n');
  assert.equal(before.mode&0o7777n,0o400n);assert.equal((await lstat(path.dirname(capsule.worktreePath),{bigint:true})).mode&0o7777n,0o500n);
  assert.equal(await git(linked,'rev-parse','HEAD'),sourceHead);
+});
+
+test('real mapped linked worktrees share common originals without private recreation rewriting them',options,async t=>{
+ const root=await realpath(await mkdtemp(path.join(tmpdir(),'real-shared-common-'))),source=path.join(root,'source'),first=path.join(root,'first'),second=path.join(root,'second'),common=path.join(source,'.git'),hooks=path.join(root,'hooks');
+ const one=path.join(root,'one'),two=path.join(root,'two'),storage=path.join(root,'storage');const handles=[],captures=[];
+ t.after(async()=>{for(const capture of captures)await capture.close();for(const handle of handles)await handle.close();await rm(root,{recursive:true,force:true});});
+ await initialize(source);await git(source,'worktree','add','-b','first',first);await git(source,'worktree','add','-b','second',second);
+ await mkdir(hooks);await writeFile(path.join(hooks,'pre-commit'),'#!/bin/sh\nexit 0\n');await git(source,'config','core.hooksPath',hooks);
+ const roots=[];for(const [pathname,ref] of [[first,'one'],[second,'two'],[common,'storage']]){const handle=await open(pathname,'r');handles.push(handle);roots.push({pathname,ref,handle,owner:(await handle.stat({bigint:true})).uid});}
+ const bindings=[...[[first,'one','first'],[second,'two','second']].flatMap(([worktreePath,worktreeRootRef,name])=>[
+  {id:name+'-common',worktreeRootRef,storageRootRef:'storage',relativePath:'.',role:'common',worktreePath,storagePath:common},
+  {id:name+'-private',worktreeRootRef,storageRootRef:'storage',relativePath:'worktrees/'+name,role:'private',worktreePath,storagePath:common}
+ ])];
+ const capture=createGitExportCapture(roots,bindings);captures.push(capture);await verifyGitExportAssociations(capture);
+ const activation={git:true,harness:false},firstManifest=await exportReviewedUserData(first,{...activation,externalGitDependencies:true},capture),secondManifest=await exportReviewedUserData(second,{...activation,externalGitDependencies:true},capture);
+ capture.bindReview(first,Buffer.from(JSON.stringify(firstManifest)));capture.bindReview(second,Buffer.from(JSON.stringify(secondManifest)));
+ const pkg=packageFor(firstManifest,{'file.txt':Buffer.from('committed\n')}),other=packageFor(secondManifest,{'file.txt':Buffer.from('committed\n')}).agents[0];
+ pkg.agents[0].workingRootRef='one';other.ref='second-agent';other.workingRootRef='two';other.managerRef='agent';pkg.agents.push(other,{ref:'storage-agent',title:'Storage',engine:'codex',workingRootRef:'storage',managerRef:'agent',managementPermissions:{allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false},workingFolder:{directories:[],excludedPaths:['.']},workingFiles:[]});pkg.gitStorageBindings=capture.portableBindings();
+ for(const dir of [one,two,storage])await mkdir(dir);for(const dir of [one,two])await writeFile(path.join(dir,'file.txt'),'committed\n');
+ const tasks=planReviewedRecoveryRoots(pkg,{one,two,storage},activation);assert.equal(tasks.length,2);
+ const hookOriginal=tasks[0].externalPlan.activation.gitPathMappings.find(row=>row.source===path.join(hooks,'pre-commit'))?.destination;assert.ok(hookOriginal);
+ let commonBefore,commonBytes,hookBefore,hookBytes;await applyReviewedRecoveryRoots(tasks,activation,receipt=>{if(receipt.state==='applying'&&receipt.path===two){commonBefore=lstatSync(path.join(storage,'config'),{bigint:true});commonBytes=readFileSync(path.join(storage,'config'));hookBefore=lstatSync(hookOriginal,{bigint:true});hookBytes=readFileSync(hookOriginal);}});
+ assert.ok(commonBefore);const after=await lstat(path.join(storage,'config'),{bigint:true});assert.equal(after.ino,commonBefore.ino);assert.equal(after.mtimeNs,commonBefore.mtimeNs);assert.equal(after.ctimeNs,commonBefore.ctimeNs);assert.deepEqual(await readFile(path.join(storage,'config')),commonBytes);
+ assert.equal((await lstat(hookOriginal,{bigint:true})).ino,hookBefore.ino);assert.deepEqual(await readFile(hookOriginal),hookBytes);
+ for(const [work,branch] of [[one,'first'],[two,'second']]){assert.equal(await git(work,'branch','--show-current'),branch);const view=await git(work,'config','--path','--get','core.hooksPath');assert.equal(await realpath(path.resolve(work,view)),path.dirname(hookOriginal));}
 });
