@@ -628,6 +628,16 @@ export class BranchInstallationService {
  async delete(branchId:string):Promise<{deleted:boolean;pending:boolean}>{
   if(!this.branches.getBranch(branchId))return {deleted:true,pending:false};
   this.store.sqlite.transaction(()=>{
+   // A published tree can include independently addressable descendant
+   // Branches. Deleting only the root must not retire their Chats or Agents.
+   // Complete the held publication before ordinary dependency-checked deletion.
+   for(const plan of this.rows("SELECT * FROM branch_installation_plans WHERE branch_id=? AND state IN ('applying','canceling')",branchId)){
+    const state=this.rolePlan(plan);
+    if(state.published&&state.tree){
+     const map=state.tree.branchMap,ids=map&&typeof map==='object'&&!Array.isArray(map)?Object.values(map):[];
+     if(ids.length!==1||ids[0]!==branchId)throw new Error('Finish Output role recovery before deleting a published Branch tree');
+    }
+   }
    this.branches.beginDeletion(branchId);
    for(const plan of this.rows("SELECT id FROM branch_installation_plans WHERE branch_id=? AND state='applying'",branchId))this.run("UPDATE branch_installation_plans SET state='canceling',error=?,next_attempt_at=NULL,updated_at=? WHERE id=?",'Branch deletion stopped this update',new Date().toISOString(),plan.id);
    for(const plan of this.rows("SELECT id,state,error FROM branch_installation_plans WHERE branch_id=? AND state NOT IN ('applying','canceling')",branchId))this.compactPlan(plan.id,plan.state==='preview'?'expired':plan.state,plan.state==='preview'?'Branch deletion invalidated this preview':plan.error??undefined);

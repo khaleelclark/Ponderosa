@@ -8,7 +8,7 @@ import {AgentStore,stableJson} from '@ponderosa/agents';
 import {createHash} from 'node:crypto';
 import {createServer} from '../../apps/server/dist/app.js';
 const hash=v=>createHash('sha256').update(stableJson(v)).digest('hex');
-async function fixture(t){
+async function fixture(t,{cyclic=true,withOutput=false}={}){
  const root=mkdtempSync(path.join(tmpdir(),'branch-definition-tree-')),childDirectory=path.join(root,'child');mkdirSync(childDirectory);
  let store,app;
  const inert=async function*(){throw Error('No provider execution belongs to definition publication')};
@@ -26,9 +26,15 @@ async function fixture(t){
   owner.branch=await api('POST','/api/branches/deploy',{chatId:'',branchId:owner.branch.id,expectedVersionId:owner.branch.versionId,idempotencyKey:'graph-'+name,definition,bindings:{...owner.config,branches:targets}});
  };
  await update(parent,'Parent',[{id:'call',kind:'branch_call',branchRef:'child'},{id:'shared',kind:'branch_call',branchRef:'shared'}],[{id:'a',from:'agent',to:'call',on:'success'},{id:'b',from:'call',to:'shared',on:'success'}],{child:child.branch.id,shared:child.branch.id});
- await update(child,'Child',[{id:'script',kind:'script',runtime:'node',source:'// never executed',cwdRef:'work',timeoutMs:5000},{id:'back',kind:'branch_call',branchRef:'parent'}],[{id:'a',from:'agent',to:'script',on:'success'},{id:'b',from:'script',to:'back',on:'success'}],{parent:parent.branch.id});
+ if(cyclic)await update(child,'Child',[{id:'script',kind:'script',runtime:'node',source:'// never executed',cwdRef:'work',timeoutMs:5000},{id:'back',kind:'branch_call',branchRef:'parent'}],[{id:'a',from:'agent',to:'script',on:'success'},{id:'b',from:'script',to:'back',on:'success'}],{parent:parent.branch.id});
+ else await update(child,'Child',[{id:'script',kind:'script',runtime:'node',source:'// never executed',cwdRef:'work',timeoutMs:5000}],[{id:'a',from:'agent',to:'script',on:'success'}],{});
+ if(withOutput){
+  const source=store.sqlite.prepare("SELECT local_id FROM branch_installation_resources WHERE branch_id=? AND agent_ref!='' AND state='active' LIMIT 1").get(parent.branch.id);
+  assert.ok(source);
+  await api('PUT',`/api/branches/output-apps/${source.local_id}`,{enabled:true});
+ }
  const exported=await api('GET',`/api/branches/${parent.branch.id}/package?mode=full&includeValues=true`);
- assert.equal(exported.definitionTree.nodes.length,2,'shared and cyclic traversal visits each Branch once');assert.equal(exported.chats.length,2);assert.equal(exported.runtimeData,undefined);
+ assert.equal(exported.definitionTree.nodes.length,2,'shared tree traversal visits each Branch once');assert.equal(exported.chats.length,2);assert.equal(exported.runtimeData,undefined);
  const treeBindings={[parent.branch.id]:bindings(root),[child.branch.id]:bindings(childDirectory)};
  const preview=()=>api('POST','/api/branches/install-preview',{package:exported,bindings:bindings(root),treeBindings});
  const confirm=async(p)=>{
@@ -82,21 +88,40 @@ test('failure at the final child publication rolls back every version/dependency
  f.store.sqlite.exec('DROP TRIGGER definition_tree_last_failure');
 });
 
-test('deleting a published held tree retires exact descendant Agents before Chats',async t=>{
- const f=await fixture(t),p=await f.preview(),done=await f.confirm(p);assert.equal(done.state,'completed',done.error);
- const receipt=done.definitionTreeReceipt,agentIds=Object.values(receipt.agentMap),chatIds=Object.values(receipt.chatMap);
- const plan=f.store.sqlite.prepare('SELECT preview_json FROM branch_installation_plans WHERE id=?').get(p.id);
- const state=JSON.parse(plan.preview_json);state.published=true;
- f.store.sqlite.prepare("UPDATE branch_installation_plans SET state='applying',preview_json=?,next_attempt_at=NULL WHERE id=?").run(stableJson(state),p.id);
- for(const id of [...agentIds,...chatIds])assert.equal(f.store.sqlite.prepare("UPDATE branch_installation_resources SET staging_plan_id=? WHERE local_id=? AND state='active'").run(p.id,id).changes,1);
+for(const cyclic of [false,true])test(`published held ${cyclic?'cyclic':'acyclic'} tree preserves all Branches until recovery`,async t=>{
+ const f=await fixture(t,{cyclic,withOutput:true}),p=await f.preview();
+ f.store.sqlite.exec("CREATE TEMP TRIGGER held_tree_completion BEFORE UPDATE OF state ON branch_installation_plans WHEN NEW.state='completed' AND json_extract(OLD.preview_json,'$.published')=1 BEGIN SELECT RAISE(ABORT,'controlled held tree'); END");
+ const done=await f.confirm(p);assert.equal(done.state,'applying',done.error);
+ const plan=f.store.sqlite.prepare('SELECT package_json,preview_json FROM branch_installation_plans WHERE id=?').get(p.id),state=JSON.parse(plan.preview_json);
+ assert.notEqual(plan.package_json,'{}');assert.equal(state.published,true);assert.ok(state.review);
+ const receipt=state.treeReceipt,agentIds=Object.values(receipt.agentMap),chatIds=Object.values(receipt.chatMap),branchIds=Object.values(receipt.branchMap);
+ const childId=receipt.branchMap[f.child.branch.id],childChats=chatIds.filter(id=>f.store.getConversation(id)?.branchId===childId);
+ const childAgents=agentIds.filter(id=>childChats.includes(f.store.getAgent(id)?.conversationId));
+ assert.ok(childChats.length&&childAgents.length);
  const unrelated=f.store.sqlite.prepare('SELECT id FROM agents WHERE conversation_id IN (SELECT id FROM conversations WHERE branch_id IN (?,?))').all(f.parent.branch.id,f.child.branch.id).map(row=>row.id);
  assert.ok(unrelated.length);assert.ok(unrelated.every(id=>!agentIds.includes(id)));
- for(let i=0;i<16;i++){
-  const response=await f.app.inject({method:'DELETE',url:`/api/branches/${done.branchId}`});
-  assert.ok([200,202,404].includes(response.statusCode),response.body);
-  if(agentIds.every(id=>!f.store.getAgent(id))&&chatIds.every(id=>!f.store.getConversation(id)))break;
+ const stop=await f.app.inject({method:'POST',url:`/api/branches/installations/${p.id}/cancel`,payload:{}});
+ assert.equal(stop.statusCode,409,stop.body);assert.match(stop.json().error,/already committed/);
+ const deletion=await f.app.inject({method:'DELETE',url:`/api/branches/${done.branchId}`});
+ assert.equal(deletion.statusCode,409,deletion.body);assert.match(deletion.json().error,/Finish Output role recovery/);
+ assert.ok(agentIds.every(id=>f.store.getAgent(id)),'plan-owned Agents remain before recovery');
+ assert.ok(chatIds.every(id=>f.store.getConversation(id)),'plan-owned Chats remain before recovery');
+ assert.ok(branchIds.every(id=>f.store.sqlite.prepare('SELECT 1 FROM branches WHERE id=?').get(id)),'all mapped Branches remain');
+ assert.equal(f.store.sqlite.prepare('SELECT state FROM branch_installation_plans WHERE id=?').get(p.id).state,'applying');
+ f.store.sqlite.exec('DROP TRIGGER held_tree_completion');
+ let finished;
+ for(let i=0;i<30;i++){finished=await f.api('POST',`/api/branches/installations/${p.id}/confirm`,{});if(finished.state==='completed')break;await new Promise(resolve=>setTimeout(resolve,150));}
+ assert.equal(finished.state,'completed',finished.error);
+ const after=await f.app.inject({method:'DELETE',url:`/api/branches/${done.branchId}`});
+ if(cyclic){
+  assert.equal(after.statusCode,409,after.body);assert.match(after.json().error,/Other Branches depend/);
+  assert.ok(agentIds.every(id=>f.store.getAgent(id)));assert.ok(chatIds.every(id=>f.store.getConversation(id)));
+ }else{
+  assert.ok([200,202].includes(after.statusCode),after.body);
+  for(let i=0;i<16&&f.store.sqlite.prepare('SELECT 1 FROM branches WHERE id=?').get(done.branchId);i++)await f.app.inject({method:'DELETE',url:`/api/branches/${done.branchId}`});
+  assert.ok(f.store.sqlite.prepare('SELECT 1 FROM branches WHERE id=?').get(childId),'child Branch remains independently owned');
+  assert.ok(childChats.every(id=>f.store.getConversation(id)),'child Chats are preserved');
+  assert.ok(childAgents.every(id=>f.store.getAgent(id)),'child Agents are preserved');
  }
- assert.ok(agentIds.every(id=>!f.store.getAgent(id)),'exact imported descendant Agents retired');
- assert.ok(chatIds.every(id=>!f.store.getConversation(id)),'owned Chats retired after Agents');
  assert.ok(unrelated.every(id=>f.store.getAgent(id)),'source and unrelated Agents remain');
 });
