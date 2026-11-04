@@ -19,7 +19,7 @@ function fixture({actions=[],state='waiting',output='Result with the complete or
  const detail={execution,steps:[step],attempts:[],gates:[],paths:[],resources:[],decisions:[],waits:[]};
  const operations={executionId:execution.id,state:operationsState,label:'Needs Your Review',observedAt:execution.updatedAt,counts:{completed:1,running:0,retrying:0,failed:0,waitingAgent:0,waitingHuman:1,needsReconciliation:0,mapItems:0,mapSettled:0},agentWaits:[],additionalAgentWaits:0};
  const actionPage={executionId:execution.id,revision:7,generation:'checkpoint-7',items:actions};
- const effects=[],slots=[],queries=new Map(),buttons=[],disclosures=[],fields=[],mutations=[],requests=[],focused=[],refetches=[],viewStates=new Map(savedView?[[execution.id,savedView]]:[]),invalidations=[];
+ const effects=[],slots=[],queries=new Map(),buttons=[],disclosures=[],fields=[],mutations=[],requests=[],focused=[],refetches=[],reviewChildren=[],viewStates=new Map(savedView?[[execution.id,savedView]]:[]),invalidations=[];
  let slot=0,transport=async()=>({}),queryPatch={};
  const hooks={...React,useState(initial){const index=slot++;if(!(index in slots))slots[index]=typeof initial==='function'?initial():initial;return[slots[index],next=>slots[index]=typeof next==='function'?next(slots[index]):next]},useRef(initial){const index=slot++;return slots[index]??=( {current:initial} )},useEffect(fn,deps){const index=slot++,previous=slots[index];if(!previous||!deps||deps.some((value,i)=>value!==previous[i])){slots[index]=deps;effects.push(fn)}},useLayoutEffect(){}};
  const primitive=name=>props=>{
@@ -46,6 +46,8 @@ function fixture({actions=[],state='waiting',output='Result with the complete or
   if(name==='../../branchesRouting')return {branchRoutePath:route=>'/branches?'+new URLSearchParams(Object.entries(route))};
   if(name==='../../api/types')return {ApiRequestError};
   if(name==='../../api/real')return {requestJson:async(path,options)=>{requests.push({path,options});return transport(path,options)}};
+  const reviews={'./BranchRuntimePackageReview':'BranchRuntimeOwnerReadback','./BranchHistoryReview':'BranchHistoryReview','./BranchDisclosureReview':'BranchDisclosureReview','./BranchGroupReview':'BranchGroupReview','./BranchResourceReview':'BranchResourceReview'};
+  if(name in reviews)return {[reviews[name]]:props=>{reviewChildren.push({name:reviews[name],props});return null;}};
   if(name==='./BranchLiveOutput')return {BranchLiveOutputs:()=>null};
   if(name==='./BranchGraph')return {BranchGraph:()=>React.createElement('div',null,'Pinned Run Graph And Accessible Outline')};
   if(name==='../chat/ChatMessages')return {ChatMessageBody};
@@ -58,8 +60,8 @@ function fixture({actions=[],state='waiting',output='Result with the complete or
  }};
  vm.runInNewContext(ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX}}).outputText,{...scope,require:name=>name==='react/jsx-runtime'?require('react/jsx-runtime'):scope.require(name)});
  const props={detail,definition:{name:'Published workflow',entry:'review',steps:[{id:'review',label:'Review Document',kind:'agent'},{id:'older',label:'Earlier Important Step',kind:'script'}],controls:[],edges:[],trigger:{kind:'manual'}},executions:[execution],viewStates,evidenceControls:React.createElement('div',null,'Load Older Evidence'),onBudgetSettings:id=>focused.push('budget:'+id)};
- const render=()=>{slot=0;buttons.length=0;disclosures.length=0;fields.length=0;queries.clear();effects.length=0;return renderToStaticMarkup(React.createElement(scope.exports.ExecutionPanel,props));};
- return {execution,detail,operations,actionPage,queries,buttons,disclosures,fields,requests,focused,refetches,invalidations,render,props,flushEffects:()=>effects.splice(0).forEach(fn=>fn()),setTransport:fn=>transport=fn,setQuery:(key,value)=>queryPatch[key]=value,button:label=>buttons.find(button=>button.children===label)};
+ const render=()=>{slot=0;buttons.length=0;disclosures.length=0;fields.length=0;reviewChildren.length=0;queries.clear();effects.length=0;return renderToStaticMarkup(React.createElement(scope.exports.ExecutionPanel,props));};
+ return {execution,detail,operations,actionPage,queries,buttons,disclosures,fields,requests,focused,refetches,invalidations,reviewChildren,render,props,flushEffects:()=>effects.splice(0).forEach(fn=>fn()),setTransport:fn=>transport=fn,setQuery:(key,value)=>queryPatch[key]=value,button:label=>buttons.find(button=>button.children===label)};
 }
 function olderAttempt({unknown=false,current=true,blocked=false}={}){
  const step={id:'older-step',executionId:'run-a',stepId:'older',pathId:'old-path',invocation:3,state:unknown?'outcome_unknown':'failed',input:'Earlier original input'};
@@ -75,6 +77,8 @@ test('selected run keeps canonical status, results and all focused decisions out
  assert.doesNotMatch(html,/Pinned Run Graph|Load Older Evidence|Run ID:|For Each items/);
  assert.equal(f.queries.get('branch-step-evidence').enabled,false);assert.equal(f.queries.get('branch-map-item-search').enabled,false);assert.equal(f.queries.get('branch-execution-input').enabled,false);
  assert.ok(f.queries.get('branch-execution-actions'));assert.ok(f.queries.get('branch-execution-operations'));
+ assert.deepEqual(f.reviewChildren.map(child=>child.name),['BranchHistoryReview','BranchGroupReview','BranchDisclosureReview']);
+ assert.ok(f.reviewChildren.every(child=>child.props.enabled===true),'Fresh live Run passes authority to each review surface');
  assert.ok(f.button('Retry Anyway'));assert.ok(f.button('Mark Observed Result'));
 });
 
@@ -152,6 +156,9 @@ test('opening diagnostics preserves raw Script evidence, receipts, resolved deci
  const action=olderAttempt({unknown:true}),f=fixture({actions:[action]});f.detail.resources=[{stepExecutionId:'older-step',agentIds:['agent-a'],state:'cleanup_pending',error:'Cleanup must finish'}];f.detail.gates=[{id:'resolved',state:'resolved',prompt:'Recorded approval',resolution:{decision:'approve',output:'Accepted exact result'}}];
  f.render();f.button('Inspect Details').onClick();f.setQuery('branch-step-evidence',{data:{stepExecutionId:'older-step',input:'Exact input Ω',attempts:[{...action.attempt,scriptEvidence:{runtime:'Node.js',code:7,stderr:'Exact stderr Ω',stdout:'Exact stdout 🙂',cwd:'/owned-fixture',finishedAt:f.execution.updatedAt}}],sealedResult:{id:'seal',terminalAttemptId:'old-attempt',contentHash:'sealed-hash'}},isPending:false});
  const html=f.render();for(const value of ['Exact input Ω','Exact stderr Ω','Exact stdout 🙂','Exit code: 7','Accepted exact result','Cleanup must finish','Published version: saved-version'])assert.ok(html.includes(value),value);
+ const resourceReview=f.reviewChildren.find(child=>child.name==='BranchResourceReview');
+ assert.ok(resourceReview);assert.equal(resourceReview.props.branchId,'branch-a');assert.equal(resourceReview.props.executionId,'run-a');assert.equal(resourceReview.props.stepId,'older-step');assert.equal(resourceReview.props.enabled,true);
+ f.props.authorityFresh=false;f.render();assert.equal(f.reviewChildren.find(child=>child.name==='BranchResourceReview').props.enabled,false,'Stale run data cannot authorize resource review');
  const link=f.button('Open Full Evidence (JSON)');assert.equal(link.href,'/api/branch-executions/run-a/full-detail');assert.equal(link.target,'_blank');
 });
 
@@ -265,7 +272,7 @@ test('known intervention rejection permits review against the current revision w
 test('an uncertain scheduled update remains actionable without opening Technical Details or inventing completion',()=>{
  const update={kind:'schedule_update',occurrenceId:'own-occurrence',injectionId:'uncertain-injection',eventCount:3,lastScheduledAt:'2026-10-27T12:00:00.000Z'};
  const f=fixture({actions:[update]}),html=f.render();assert.match(html,/Scheduled Update Needs Reconciliation/);assert.match(html,/3 scheduled events/);assert.ok(html.indexOf('Reconcile Scheduled Update')<html.indexOf('<details'));assert.equal(f.disclosures[0].open,false);
- assert.equal(f.queries.get('branch-step-evidence').enabled,false);assert.equal(f.requests.length,0);f.button('Reconcile Scheduled Update').onClick();const dialog=f.render();assert.match(dialog,/Neither choice cancels or restarts the Agent/);assert.match(dialog,/retains one latest check for delivery/);
+ assert.equal(f.queries.get('branch-step-evidence').enabled,false);assert.equal(f.requests.length,0);f.button('Reconcile Scheduled Update').onClick();const dialog=f.render();assert.match(dialog,/Both choices · no Agent cancellation\/restart/);assert.match(dialog,/retains one latest delivery while schedule active/);
  const selector=f.fields.find(field=>field.label==='Observed scheduled update outcome');assert.equal(selector.value,'');assert.equal(selector.disabled,true,'No outcome can be selected before inspecting actual effects');selector.onChange({target:{value:'applied'}});f.render();assert.equal(f.fields.find(field=>field.label===selector.label).value,'');assert.equal(f.requests.length,0);
  f.props.authorityFresh=false;f.render();assert.equal(f.button('Reconcile Scheduled Update').disabled,true,'Stale run data cannot authorize reconciliation');
  const page={executionId:f.execution.id,revision:f.execution.revision,generation:'current',items:[update]};assert.equal(presentation.currentExecutionActions(f.execution,[page,page]).length,1);
@@ -288,17 +295,19 @@ test('scheduled update reconciliation requires an observed outcome, checked effe
 
 const liveOutputSource=await readFile(new URL('../../apps/web/src/components/branches/BranchLiveOutput.tsx',import.meta.url),'utf8');
 function liveOutputFixture(){
- const target={attemptId:'attempt-a',stepId:'work',agentId:'agent-a',projectId:'project-a',runId:'scheduler-a'},data={runOutput:[]},connection={connectionStatus:'live'},calls=[];
+ const target={attemptId:'attempt-a',stepId:'work',agentId:'agent-a',projectId:'project-a',runId:'scheduler-a'},data={runOutput:[]},connection={connectionStatus:'live'},calls=[],responseProps=[];
  const mui=Object.fromEntries(['Alert','Paper','Stack','Typography'].map(name=>[name,props=>React.createElement(props.component??'div',props.role?{role:props.role}:{},props.children)]));
  const scope={exports:{},require:name=>{
   if(name==='react/jsx-runtime')return require(name);
   if(name==='@mui/material')return mui;
+  if(name==='../chat/AgentResponseText')return {AgentResponseText:props=>{responseProps.push(props);return React.createElement('span',null,props.text)}};
+  if(name==='../activity/ActivityOutput')return {RunOutputFullText:props=>props.render(props.segment.text)};
   if(name==='../../hooks/queries')return {useAgent:id=>{calls.push(['query',id]);return {data,error:data.error}}};
   if(name==='../../hooks/useAgentStream')return {useAgentStream:(agentId,projectId)=>{calls.push(['stream',agentId,projectId]);return connection}};
   throw Error('Unexpected live output dependency '+name);
  }};
  vm.runInNewContext(ts.transpileModule(liveOutputSource,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX}}).outputText,scope);
- return {target,data,connection,calls,render:()=>renderToStaticMarkup(React.createElement(scope.exports.BranchLiveOutput,{targets:[target],labels:{work:'Document review'}}))};
+ return {target,data,connection,calls,responseProps,render:()=>{responseProps.length=0;return renderToStaticMarkup(React.createElement(scope.exports.BranchLiveOutput,{targets:[target],labels:{work:'Document review'}}))}};
 }
 
 test('real Branch live-output view renders incremental exact-Run response telemetry before a final Step result',()=>{
@@ -307,6 +316,7 @@ test('real Branch live-output view renders incremental exact-Run response teleme
  let html=f.render();assert.match(html,/First phrase/);assert.doesNotMatch(html,/DO_NOT_SHOW/);
  f.data.runOutput[2]={...f.data.runOutput[2],text:'First phrase and next phrase'};html=f.render();assert.match(html,/First phrase and next phrase/);assert.equal((html.match(/First phrase/g)??[]).length,1);
  assert.deepEqual(f.calls.at(-1),['stream','agent-a','project-a']);assert.deepEqual(f.calls.at(-2),['query','agent-a']);
+ assert.equal(f.responseProps[0].projectId,'project-a');assert.equal(f.responseProps[0].fileScope.agentId,'agent-a');assert.equal(f.responseProps[0].text,'First phrase and next phrase');
  assert.match(html,/Document review.*Live work/);
 });
 

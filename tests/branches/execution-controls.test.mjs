@@ -82,7 +82,7 @@ test('budget saves preserve exact revision, period and command identity after an
 
 test('allowance retains period limits, queue warning and exact safe retry while pending actions stay locked',async()=>{
  const f=budgetOwner();f.render();f.button('Allow more executions').onClick();f.field('Additional executions').onChange({target:{value:'3'}});
- assert.match(text(f.render()),/Eligible waiting work may start immediately/);assert.match(text(f.render()),/expires at rollover/);assert.match(text(f.render()),/Resulting effective limit: 15 executions/);
+ assert.match(text(f.render()),/Confirming may start eligible waiting work immediately/);assert.match(text(f.render()),/expires at rollover/);assert.match(text(f.render()),/Resulting effective limit: 15 executions/);
  f.scope.query={...f.scope.query,isFetching:true};assert.equal(f.button('Allow executions').disabled,false);
  f.scope.failure=new Error('Controlled allowance response loss');f.find('Stack',props=>props.component==='form').onSubmit({preventDefault(){}});
  assert.equal(f.button('Allowing…').disabled,true);assert.equal(f.button('Back').disabled,true);await assert.rejects(f.mutation(1).promise,/response loss/);
