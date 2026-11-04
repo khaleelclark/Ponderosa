@@ -7,6 +7,7 @@ import {AgentStore,BranchStore,CoordinationV3Store,verifyRetainedProviderExitEvi
 import {captureBranchHostCut,verifyBranchHostCut} from '../../packages/agents/dist/branch-host-cut.js';
 import {selectBranchUnit} from '../../packages/agents/dist/branch-unit-selection.js';
 import {BranchResourceService} from '../../apps/server/dist/branch-resource-service.js';
+import {retainedRuntimeResources} from '../../apps/server/dist/product-scope.js';
 import {MEMORY_CLEANUP_HOLD} from '../../apps/server/dist/local-memory-authority.js';
 import {withFixture,until} from '../shared/fixture.mjs';
 
@@ -15,6 +16,43 @@ function deployTemplate(branches,root,key,failure={action:'stop'}){
  const template={schema:'ponderosa.agent-package.v1',mode:'template',kind:'organization',exportedAt:new Date().toISOString(),sourceLabel:'Worker',rootRef:'worker',agents:[{ref:'worker',title:'Temporary worker',engine:'codex',managementPermissions:permissions},{ref:'child',title:'Temporary child',managerRef:'worker',engine:'codex',managementPermissions:permissions}]};
  return branches.deploy({chatId:'',branchId:owner.id,expectedVersionId:'',idempotencyKey:key+'-deploy',definition:{schema:'ponderosa.branch.v1',name:'Temporary work',trigger:{kind:'manual'},entry:'team',templates:{team:template},steps:[{id:'team',kind:'agent',target:{kind:'ephemeral_organization',templateRef:'team'},instructions:'Complete the canonical Request'}],controls:[],edges:[],policy:{maxConcurrentExecutions:1,maxEphemeralAgents:2,failure}},bindings:{agents:{},directories:{workspace:root},engines:{codex:'codex'}}});
 }
+
+test('retiring Branch runtime cannot retain resources linked to unfinished plans',{timeout:30000},async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const update=store.updateAgentCreationOperation.bind(store);let worker;
+  store.updateAgentCreationOperation=(id,patch)=>{
+   const operation=update(id,patch);
+   if(!worker&&patch.status==='completed'&&operation.kind==='import'&&operation.agentIds?.length){
+    worker=operation.agentIds[0];f.plans.set(worker,[{hold:true}]);
+   }
+   return operation;
+  };
+  const branches=new BranchStore(store.sqlite,new CoordinationV3Store(store.sqlite));
+  const branch=deployTemplate(branches,f.root,'retained-pending-plan'),execution=branches.accept(branch.id,'held-input','Wait for controlled release');
+  await until(()=>worker&&f.sessions.get(worker),'controlled retained-runtime provider');
+  const resource=await until(()=>store.sqlite.prepare('SELECT * FROM branch_resources WHERE execution_id=? AND chat_id IS NOT NULL').get(execution.id),'controlled retained Chat');
+  const run=await until(()=>store.sqlite.prepare("SELECT id,fencing_token FROM scheduler_runs WHERE agent_id=? AND status IN ('leased','running') AND side_effects_fenced_at IS NULL").get(worker),'controlled fenced Run');
+  const plan='retained-pending-plan',now=new Date().toISOString();
+  store.sqlite.prepare("INSERT INTO branch_installation_plans(id,branch_id,package_json,bindings_json,preview_json,state,created_at) VALUES(?,?,'{}','{}','{}','completed',?)").run(plan,branch.id,now);
+  store.sqlite.prepare("INSERT INTO branch_installation_resources(branch_id,package_id,chat_ref,agent_ref,local_id,state) VALUES(?,?,'chat','',?,'retiring')").run(branch.id,plan,resource.chat_id);
+  store.sqlite.prepare("INSERT INTO branch_installation_resources(branch_id,package_id,chat_ref,agent_ref,local_id,state,staging_plan_id) VALUES(?,?,'chat','worker',?,'active',?)").run(branch.id,plan,worker,plan);
+  const owner={conversationId:resource.chat_id,agentId:worker,runId:run.id,fencingToken:run.fencing_token};
+  const retained=()=>retainedRuntimeResources(store,owner);
+  assert.ok(retained().has(worker),'completed plan retains exact live runtime access');
+  store.sqlite.prepare("UPDATE branch_installation_plans SET state='applying' WHERE id=?").run(plan);
+  assert.equal(retained().size,0,'active resource in unfinished plan is not retained');
+  store.sqlite.prepare("UPDATE branch_installation_resources SET state='retiring' WHERE branch_id=? AND package_id=? AND agent_ref='worker'").run(branch.id,plan);
+  assert.equal(retained().size,0,'retiring resource in unfinished plan is not retained');
+  store.sqlite.prepare("UPDATE branch_installation_resources SET staging_plan_id='missing-plan' WHERE branch_id=? AND package_id=? AND agent_ref='worker'").run(branch.id,plan);
+  assert.equal(retained().size,0,'missing plan is not publication proof');
+  store.sqlite.prepare("UPDATE branch_installation_resources SET staging_plan_id=? WHERE branch_id=? AND package_id=? AND agent_ref='worker'").run(plan,branch.id,plan);
+  store.sqlite.prepare("UPDATE branch_installation_plans SET state='completed' WHERE id=?").run(plan);
+  assert.ok(retained().has(worker),'retiring resource from completed plan remains available to its exact live Run');
+  store.sqlite.prepare("UPDATE branch_installation_resources SET staging_plan_id=NULL WHERE branch_id=? AND package_id=? AND agent_ref='worker'").run(branch.id,plan);
+  assert.ok(retained().has(worker),'ordinary retirement without a pending plan remains available');
+ },{storeFactory:dataDir=>(store=new AgentStore(dataDir))});
+});
 
 test('historical retry context cleanup survives reopen without deleting the current generation or user folders',{timeout:15000},async t=>{
  const root=mkdtempSync(path.join(tmpdir(),'branch-historical-context-'));let store,branches,resources,fail=true,passed=false;const seen=[];
