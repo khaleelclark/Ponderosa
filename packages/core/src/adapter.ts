@@ -131,6 +131,8 @@ export interface ServiceTierOption {
 
 /** Options shared by both `seed()` and `continue()`. */
 export interface RunOptionsBase {
+  /** Host-only exact scheduler ownership; never inferred from a later Run. */
+  providerRun?: { runId: string; fence: number };
   agentId: string;
   /** The project's on-disk path; the agent's cwd, where it reads md files/git. */
   cwd: string;
@@ -360,6 +362,8 @@ export interface ProviderRootExitDetail {
 }
 
 export interface OpenRuntimeSessionOptions {
+  /** Host-only exact scheduler ownership of the process start. */
+  providerRun?: { runId: string; fence: number };
   fileCheckpointTracking?: boolean;
   /** Host-reserved fresh transcript context; never an adopted source lease. */
   transcriptFork?: NativeTranscriptSeed;

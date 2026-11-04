@@ -13,11 +13,13 @@ import {ProviderProcessAuthority} from '../../apps/server/dist/provider-process-
 import {enableProviderStartCoverage,recordProviderStartCoverage,admitProviderStart,sealProviderNeverStarted} from '../../packages/agents/dist/provider-start-journal.js';
 import {readProviderExitEvidence,verifyRetainedProviderExitEvidence} from '../../packages/agents/dist/provider-exit-evidence.js';
 import {payloadHash,stableJson} from '../../packages/agents/dist/coordination-v3-canonical-json.js';
+import {AgentStore} from '../../packages/agents/dist/index.js';
+import {withFixture} from '../shared/fixture.mjs';
 const Database=createRequire(new URL('../../apps/server/package.json',import.meta.url))('better-sqlite3');
 function fixture(t,{legacy=false}={}){
  const root=mkdtempSync(path.join(tmpdir(),'provider-start-contract-')),file=path.join(root,'test.db');let db=new Database(file);
  for(const name of ['0002_provider_process_authority.sql','0022_provider_scope_authority.sql','0040_lifecycle_reconciliation.sql'])db.exec(readFileSync(new URL(`../../packages/agents/src/schema/${name}`,import.meta.url),'utf8'));
- db.exec(`CREATE TABLE conversations(id TEXT PRIMARY KEY,project_id TEXT);CREATE TABLE agents(id TEXT PRIMARY KEY,project_id TEXT,conversation_id TEXT,deleted_at TEXT);CREATE TABLE scheduler_runs(id TEXT PRIMARY KEY,project_id TEXT,agent_id TEXT,status TEXT,fencing_token INTEGER);CREATE TABLE branch_resources(execution_id TEXT,step_execution_id TEXT,generation INTEGER,chat_id TEXT);INSERT INTO branch_resources VALUES('execution','step',0,'chat');INSERT INTO conversations VALUES('chat','project');`);
+ db.exec(`CREATE TABLE conversations(id TEXT PRIMARY KEY,project_id TEXT);CREATE TABLE agents(id TEXT PRIMARY KEY,project_id TEXT,conversation_id TEXT,deleted_at TEXT);CREATE TABLE scheduler_runs(id TEXT PRIMARY KEY,project_id TEXT,agent_id TEXT,status TEXT,fencing_token INTEGER,lease_owner TEXT,side_effects_fenced_at TEXT);CREATE TABLE branch_resources(execution_id TEXT,step_execution_id TEXT,generation INTEGER,chat_id TEXT);INSERT INTO branch_resources VALUES('execution','step',0,'chat');INSERT INTO conversations VALUES('chat','project');`);
  enableProviderStartCoverage(db,'worker');
  db.transaction(()=>{for(const agentId of ['agent','unused']){db.prepare('INSERT INTO agents VALUES(?,?,?,NULL)').run(agentId,'project','chat');if(!legacy)recordProviderStartCoverage(db,{agentId,projectId:'project',conversationId:'chat'});}}).immediate();
  const processes=new ProviderProcessAuthority(db,'worker'),starts=new ProviderStartAuthority(db,'worker',processes);
@@ -29,7 +31,7 @@ function fixture(t,{legacy=false}={}){
  function fence(){const input={executionId:'execution',stepExecutionId:'step',generation:0,projectId:'project',conversationId:'chat',agentIds:['agent','unused']},identity=payloadHash({executionId:'execution',stepExecutionId:'step',generation:0}),v={schema:'branch-generation-exit-fence.v1',input,resource:{},members:input.agentIds.map(agent_id=>({agent_id}))},bytes=stableJson(v);db.transaction(()=>db.prepare('INSERT INTO host_lifecycle_commits VALUES(?,?,?,?,?)').run('branch-generation-exit-fence',identity,stableJson(input),bytes,payloadHash(v))).immediate();}
  const input={projectId:'project',conversationId:'chat',participants:[{agentId:'agent',runIds:[]},{agentId:'unused',runIds:[]}]};
  const options={agentId:'agent',onRuntimeSpawned:()=>{if(input.participants[0].runIds.length)processes.register(handle,{purpose:'fixture Run',agentId:'agent',projectId:'project',runId:'run',runFence:1});}};
- return {get db(){return db;},processes,starts,handle,fence,input,options,put,failClose:v=>{failClose=v;},startedRun:()=>{db.exec("INSERT INTO scheduler_runs VALUES('run','project','agent','completed',1)");input.participants[0].runIds=['run'];},seal:()=>sealProviderNeverStarted(db,'worker',['agent','unused']),reopen:()=>{db.close();db=new Database(file);return db;}};
+ return {get db(){return db;},processes,starts,handle,fence,input,options,put,failClose:v=>{failClose=v;},startedRun:()=>{db.exec("INSERT INTO scheduler_runs(id,project_id,agent_id,status,fencing_token) VALUES('run','project','agent','completed',1)");input.participants[0].runIds=['run'];},seal:()=>sealProviderNeverStarted(db,'worker',['agent','unused']),reopen:()=>{db.close();db=new Database(file);return db;}};
 }
 test('all-never-started v2 is immutable, exact, retained through cleanup/reopen and rejects later activity',async t=>{
  const f=fixture(t);assert.throws(f.seal,/fence/);f.fence();await f.starts.drain(['agent','unused']);f.seal();
@@ -40,7 +42,7 @@ test('all-never-started v2 is immutable, exact, retained through cleanup/reopen 
  for(const mutate of [v=>v.neverStarted[0].receipt.generation++,v=>v.neverStarted[0].receipt.agentId='foreign',v=>v.neverStarted[0].receipt.fence.sha256='tampered',v=>v.neverStarted.push(v.neverStarted[0])]){
   const bad=structuredClone(e);mutate(bad);const {revision,...body}=bad;bad.revision=payloadHash(body);assert.throws(()=>verifyRetainedProviderExitEvidence(f.db,bad));
  }
- f.db.exec("INSERT INTO scheduler_runs VALUES('later','project','unused','completed',1)");assert.throws(()=>verifyRetainedProviderExitEvidence(f.db,e),/activity/);f.db.exec("DELETE FROM scheduler_runs WHERE id='later'");
+ f.db.exec("INSERT INTO scheduler_runs(id,project_id,agent_id,status,fencing_token) VALUES('later','project','unused','completed',1)");assert.throws(()=>verifyRetainedProviderExitEvidence(f.db,e),/activity/);f.db.exec("DELETE FROM scheduler_runs WHERE id='later'");
  f.db.exec('DELETE FROM agents;DELETE FROM conversations;');verifyRetainedProviderExitEvidence(f.reopen(),e);
 });
 test('legacy missing creation coverage refuses; no retrospective certification',async t=>{
@@ -92,4 +94,91 @@ test('pre-fence admission whose inert OS process opens after the fence is draine
  t.after(async()=>{if(handle)await handle.close();});
  await ready;f.fence();const draining=f.starts.drain(['agent','unused']);release();await opening;await draining;f.seal();
  assert.equal(handle.isAlive(),false);const e=readProviderExitEvidence(f.db,f.input);assert.equal(e.runs.length,1);assert.equal(e.neverStarted.length,1);assert.equal(e.receipts.length,1);assert.equal(e.receipts[0].receipt.result,'observed_exited');
+});
+
+test('Run-bound starts record exact admission and tracked lifetime for persistent and one-shot calls',async t=>{
+ for(const method of ['openSession','seed','continue']){
+  const f=fixture(t);f.startedRun();f.db.exec("UPDATE scheduler_runs SET status='running',lease_owner='worker' WHERE id='run'");
+  let seen;
+  const register=f.processes.register.bind(f.processes);
+  f.processes.register=(handle,scope,owner)=>{if(scope.purpose==='admitted provider start')seen={scope,owner};return register(handle,scope,owner);};
+  const fake=method==='openSession'
+   ? {async openSession(o){o.onRuntimeSpawned(f.handle);return f.handle;}}
+   : {[method]:async function*(o){o.onRuntimeSpawned(f.handle);yield {type:'turn_done'};}};
+  const wrapped=f.starts.wrap(fake),opts={...f.options,providerRun:{runId:'run',fence:1}};
+  if(method==='openSession')await wrapped.openSession(opts);else for await(const ignored of wrapped[method](opts)){}
+  assert.equal(seen.scope.runId,'run');assert.equal(seen.scope.runFence,1);assert.equal(seen.owner,f.handle);
+  const admission=JSON.parse(f.db.prepare("SELECT receipt_json FROM host_lifecycle_commits WHERE kind='provider-start-admission'").get().receipt_json);
+  const reg=JSON.parse(f.db.prepare("SELECT receipt_json FROM host_lifecycle_commits WHERE kind='provider-process-registration' AND json_extract(receipt_json,'$.purpose')='admitted provider start'").get().receipt_json);
+  const settlement=JSON.parse(f.db.prepare("SELECT receipt_json FROM host_lifecycle_commits WHERE kind='provider-start-settlement'").get().receipt_json);
+  assert.equal(admission.runId,'run');assert.equal(admission.runFence,1);
+  assert.equal(reg.runId,'run');assert.equal(reg.runFence,1);assert.deepEqual(settlement.registrations,[reg.authorityId]);
+ }
+});
+test('stale, foreign, fenced or completed Run cannot start a provider',async t=>{
+ for(const mutation of [
+  "UPDATE scheduler_runs SET fencing_token=2",
+  "UPDATE scheduler_runs SET lease_owner='other-worker'",
+  "UPDATE scheduler_runs SET side_effects_fenced_at='fenced'",
+  "UPDATE scheduler_runs SET status='completed'",
+  "UPDATE scheduler_runs SET project_id='other-project'",
+  "UPDATE scheduler_runs SET agent_id='unused'"
+ ]){
+  const f=fixture(t);f.startedRun();f.db.exec("UPDATE scheduler_runs SET status='running',lease_owner='worker' WHERE id='run'");f.db.exec(mutation);let calls=0;
+  const wrapped=f.starts.wrap({async openSession(){calls++;}});
+  await assert.rejects(wrapped.openSession({...f.options,providerRun:{runId:'run',fence:1}}),/Run ownership differs/);
+  assert.equal(calls,0);assert.equal(f.db.prepare("SELECT COUNT(*) n FROM host_lifecycle_commits WHERE kind='provider-start-admission'").get().n,0);
+ }
+});
+test('unbound legacy starts remain supported and cannot be misattributed to a Run',async t=>{
+ const f=fixture(t);await f.starts.wrap({async openSession(o){o.onRuntimeSpawned(f.handle);return f.handle;}}).openSession(f.options);
+ const row=JSON.parse(f.db.prepare("SELECT receipt_json FROM host_lifecycle_commits WHERE kind='provider-start-admission'").get().receipt_json);
+ assert.equal(row.runId,undefined);assert.equal(row.runFence,undefined);
+});
+test('native Job-style tracked registration settles against its own exact Run scope',async t=>{
+ const f=fixture(t);f.startedRun();f.db.exec("UPDATE scheduler_runs SET status='running',lease_owner='worker' WHERE id='run'");
+ let captured;
+ f.processes.register=(handle,scope,owner)=>{
+  captured={handle,scope,owner};const value={schema:'provider-process-registration.v1',authorityId:'native-lifetime',workerId:'worker',process:{kind:'native-job',lifetimeId:'native-lifetime'},purpose:scope.purpose,projectId:'project',agentId:'agent',conversationId:'chat',runId:scope.runId,runFence:scope.runFence};
+  f.put('provider-process-registration','native-lifetime:'+payloadHash(value),value);return 'native-lifetime';
+ };
+ await f.starts.wrap({async openSession(o){o.onRuntimeSpawned(f.handle);return f.handle;}}).openSession({...f.options,onRuntimeSpawned:()=>{},providerRun:{runId:'run',fence:1}});
+ assert.equal(captured.owner,f.handle);assert.equal(captured.scope.runId,'run');assert.equal(captured.scope.runFence,1);
+ assert.deepEqual(JSON.parse(f.db.prepare("SELECT receipt_json FROM host_lifecycle_commits WHERE kind='provider-start-settlement'").get().receipt_json).registrations,['native-lifetime']);
+});
+
+test('Run-bound settlement rejects a mismatched tracked registration',async t=>{
+ const f=fixture(t);f.startedRun();f.db.exec("UPDATE scheduler_runs SET status='running',lease_owner='worker' WHERE id='run'");
+ f.processes.register=(handle,scope,owner)=>{
+  const v={schema:'provider-process-registration.v1',authorityId:'different-fence',workerId:'worker',process:{kind:'native-job',lifetimeId:'different-fence'},purpose:scope.purpose,projectId:'project',agentId:'agent',conversationId:'chat',runId:'run',runFence:2};
+  f.put('provider-process-registration','different-fence:'+payloadHash(v),v);return 'different-fence';
+ };
+ await assert.rejects(f.starts.wrap({async openSession(o){o.onRuntimeSpawned(f.handle);return f.handle;}}).openSession({...f.options,onRuntimeSpawned:()=>{},providerRun:{runId:'run',fence:1}}),/registration missing or Run differs/);
+ assert.equal(f.db.prepare("SELECT COUNT(*) n FROM host_lifecycle_commits WHERE kind='provider-start-settlement'").get().n,0);
+});
+
+test('real scheduler passes each Run fence to its tracked provider', {timeout:30000}, async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Attribution fixture'),agent=await f.createAgent(chat,'Attribution agent');
+  const rows=store.sqlite.prepare("SELECT receipt_json FROM host_lifecycle_commits WHERE kind='provider-start-admission' AND json_extract(receipt_json,'$.agentId')=?").all(agent.id);
+  assert.equal(rows.length,1);
+  const admission=JSON.parse(rows[0].receipt_json);
+  const run=store.sqlite.prepare("SELECT id,fencing_token,lease_owner FROM scheduler_runs WHERE id=?").get(admission.runId);
+  assert.ok(run);assert.equal(admission.runFence,run.fencing_token);assert.equal(admission.workerId,run.lease_owner);
+  const settlement=JSON.parse(store.sqlite.prepare("SELECT receipt_json FROM host_lifecycle_commits WHERE kind='provider-start-settlement' AND identity=?").get(admission.identity).receipt_json);
+  const lifetime=settlement.registrations[0];
+  const regs=store.sqlite.prepare("SELECT receipt_json FROM host_lifecycle_commits WHERE kind='provider-process-registration' AND json_extract(receipt_json,'$.authorityId')=?").all(lifetime).map(r=>JSON.parse(r.receipt_json));
+  assert.ok(regs.some(r=>r.runId===run.id&&r.runFence===run.fencing_token&&r.workerId===run.lease_owner));
+  const before=(await f.detail(agent.id)).runs.map(r=>r.id);await f.send(agent.id,'Second task in the same session');await f.settled(agent.id,before);
+  const all=store.sqlite.prepare("SELECT receipt_json FROM host_lifecycle_commits WHERE kind='provider-start-admission' AND json_extract(receipt_json,'$.agentId')=?").all(agent.id).map(r=>JSON.parse(r.receipt_json));
+  assert.ok(all.length>=1);
+  for(const start of all) {
+   const owner=store.sqlite.prepare("SELECT fencing_token,lease_owner FROM scheduler_runs WHERE id=?").get(start.runId);
+   assert.ok(owner);assert.equal(start.runFence,owner.fencing_token);assert.equal(start.workerId,owner.lease_owner);
+   const settled=JSON.parse(store.sqlite.prepare("SELECT receipt_json FROM host_lifecycle_commits WHERE kind='provider-start-settlement' AND identity=?").get(start.identity).receipt_json);
+   const registered=store.sqlite.prepare("SELECT receipt_json FROM host_lifecycle_commits WHERE kind='provider-process-registration' AND json_extract(receipt_json,'$.authorityId')=?").all(settled.registrations[0]).map(r=>JSON.parse(r.receipt_json));
+   assert.ok(registered.some(r=>r.runId===start.runId&&r.runFence===start.runFence&&r.workerId===start.workerId));
+  }
+ },{storeFactory:dir=>(store=new AgentStore(dir))});
 });

@@ -20,7 +20,7 @@ export class ProviderStartAuthority {
    if(key==='seed'||key==='continue')return (options:Parameters<Adapter['seed']>[0])=>({
     // Async generators can launch on the first next(), not on method invocation.
     async *[Symbol.asyncIterator](){
-     const claim=admitProviderStart(start.db,start.workerId,options.agentId,String(key));
+     const claim=admitProviderStart(start.db,start.workerId,options.agentId,String(key),options.providerRun);
      const tracked=start.track(options.agentId,claim,options);
      try{yield* (method as Adapter['seed']).call(target,tracked.options);}
      finally{tracked.finish();}
@@ -29,7 +29,7 @@ export class ProviderStartAuthority {
    return method.bind(target);
   }});
  }
- private track<T extends {onRuntimeSpawned:(h:RuntimeProcessHandle)=>void}>(agentId:string,claim:string,options:T){
+ private track<T extends {providerRun?:{runId:string;fence:number};onRuntimeSpawned:(h:RuntimeProcessHandle)=>void}>(agentId:string,claim:string,options:T){
   const registrations=new Set<string>(),owned=new Set<RuntimeProcessHandle>(),durable=new Set<RuntimeProcessHandle>();let finished=false;
   let resolve!:()=>void;
   const operation=new Promise<void>(r=>{resolve=r;});
@@ -41,7 +41,7 @@ export class ProviderStartAuthority {
    try{
     handle=providerProcessHandleFacade(raw);handles.add(handle);owned.add(handle);this.handles.set(agentId,handles);
     const agent=this.db.prepare('SELECT project_id FROM agents WHERE id=?').get(agentId) as {project_id:string}|undefined;
-    const id=this.processes.register(handle,{purpose:'admitted provider start',agentId,projectId:agent?.project_id},raw);
+    const id=this.processes.register(handle,{purpose:'admitted provider start',agentId,projectId:agent?.project_id,runId:options.providerRun?.runId,runFence:options.providerRun?.fence},raw);
     if(!id)throw Error('Provider start did not retain a process lifetime');
     registrations.add(id);durable.add(handle);
    }catch(error){holdProviderStart(this.db,claim);throw error;}
@@ -54,8 +54,8 @@ export class ProviderStartAuthority {
    finally{for(const h of owned)if(durable.has(h))handles.delete(h);if(!handles.size)this.handles.delete(agentId);operations.delete(operation);if(!operations.size)this.operations.delete(agentId);resolve();}
   }};
  }
- private async open<T extends {onRuntimeSpawned:(h:RuntimeProcessHandle)=>void},R>(agentId:string,operation:string,options:T,invoke:(o:T)=>Promise<R>):Promise<R>{
-  const claim=admitProviderStart(this.db,this.workerId,agentId,operation),tracked=this.track(agentId,claim,options);
+ private async open<T extends {providerRun?:{runId:string;fence:number};onRuntimeSpawned:(h:RuntimeProcessHandle)=>void},R>(agentId:string,operation:string,options:T,invoke:(o:T)=>Promise<R>):Promise<R>{
+  const claim=admitProviderStart(this.db,this.workerId,agentId,operation,options.providerRun),tracked=this.track(agentId,claim,options);
   try{return await invoke(tracked.options);}
   finally{tracked.finish();}
  }

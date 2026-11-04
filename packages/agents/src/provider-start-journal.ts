@@ -32,14 +32,15 @@ export function recordProviderStartCoverage(db:Database.Database,scope:{agentId:
  if(!db.inTransaction)throw Error('Provider start coverage requires creation transaction');
  commit(db,'provider-start-coverage',scope.agentId,{schema:'provider-start-coverage.v1',contract:CONTRACT,...scope,workerId});
 }
-export function admitProviderStart(db:Database.Database,workerId:string,agentId:string,operation:string):string {
+export function admitProviderStart(db:Database.Database,workerId:string,agentId:string,operation:string,run?:{runId:string;fence:number}):string {
  return db.transaction(()=>{
   const a=db.prepare('SELECT project_id,conversation_id FROM agents WHERE id=? AND deleted_at IS NULL').get(agentId) as {project_id:string;conversation_id:string}|undefined;
   if(!a?.conversation_id||!db.prepare('SELECT 1 FROM conversations WHERE id=? AND project_id=?').get(a.conversation_id,a.project_id))throw Error('Live provider start owner required');
+  if(run && (!run.runId || !Number.isSafeInteger(run.fence) || run.fence<1 || !db.prepare("SELECT 1 FROM scheduler_runs WHERE id=? AND agent_id=? AND project_id=? AND fencing_token=? AND lease_owner=? AND status IN ('leased','running') AND side_effects_fenced_at IS NULL").get(run.runId,agentId,a.project_id,run.fence,workerId))) throw Error('Provider start Run ownership differs');
   requireGenerationExitOpen(db,agentId,a.conversation_id);
   const generation=db.prepare('SELECT execution_id AS executionId,step_execution_id AS stepExecutionId,generation FROM branch_resources WHERE chat_id=?').get(a.conversation_id)??null;
   const identity=randomUUID();
-  commit(db,'provider-start-admission',identity,{schema:CONTRACT,identity,workerId,agentId,projectId:a.project_id,conversationId:a.conversation_id,generation,operation});
+  commit(db,'provider-start-admission',identity,{schema:CONTRACT,identity,workerId,agentId,projectId:a.project_id,conversationId:a.conversation_id,generation,operation,...(run?{runId:run.runId,runFence:run.fence}:{})});
   return identity;
  }).immediate();
 }
@@ -51,7 +52,9 @@ export function settleProviderStart(db:Database.Database,identity:string,workerI
   const claim=retained(db,'provider-start-admission',{identity,sha256:row.sha256});
   if(claim.workerId!==workerId||!registrations.length||new Set(registrations).size!==registrations.length||registrations.length>4096)throw Error('Provider start settlement requires exact opened lifetimes');
   for(const authorityId of registrations){
-   if(!db.prepare("SELECT 1 FROM host_lifecycle_commits WHERE kind='provider-process-registration' AND json_extract(receipt_json,'$.authorityId')=? AND json_extract(receipt_json,'$.agentId')=? AND json_extract(receipt_json,'$.conversationId')=? AND json_extract(receipt_json,'$.workerId')=?").get(authorityId,claim.agentId,claim.conversationId,workerId))throw Error('Provider start lifetime registration missing');
+   const registered=db.prepare("SELECT identity,receipt_sha256 AS sha256 FROM host_lifecycle_commits WHERE kind='provider-process-registration' AND json_extract(receipt_json,'$.authorityId')=? AND json_extract(receipt_json,'$.agentId')=? AND json_extract(receipt_json,'$.conversationId')=? AND json_extract(receipt_json,'$.workerId')=? LIMIT 4097").all(authorityId,claim.agentId,claim.conversationId,workerId) as Array<{identity:string;sha256:string}>;
+   if(registered.length>4096)throw Error('Provider start lifetime registration inventory exceeds bound');
+   if(!registered.some(ref=>{const r=retained(db,'provider-process-registration',ref);return r.schema==='provider-process-registration.v1' && ref.identity===authorityId+':'+ref.sha256 && r.authorityId===authorityId && r.projectId===claim.projectId && (!claim.runId || r.runId===claim.runId && r.runFence===claim.runFence);}))throw Error('Provider start lifetime registration missing or Run differs');
   }
   commit(db,'provider-start-settlement',identity,{schema:'provider-start-settlement.v1',claim:{identity,sha256:row.sha256},workerId,registrations:[...registrations].sort()});
  }).immediate();

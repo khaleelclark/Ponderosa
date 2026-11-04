@@ -371,6 +371,7 @@ export function startProviderRunExecution(
       ): Promise<PersistentRuntime> => {
         const rawSession = await providerRuntimeOperation("open provider session", () => engine.adapter.openSession!({
           agentId: agent.id,
+          ...(v3FencingToken !== undefined ? {providerRun:{runId,fence:v3FencingToken}} : {}),
           cwd: workingCopy.rootPath,
           resumeSessionId: sessionResumeId,
           fileCheckpointTracking: nativeHistory.tracking(agent.id).enabled,
@@ -746,6 +747,7 @@ export function startProviderRunExecution(
               "continue provider session",
               () => engine.adapter.continue({
               agentId: agent.id,
+              ...(v3FencingToken !== undefined ? {providerRun:{runId,fence:v3FencingToken}} : {}),
               cwd: workingCopy.rootPath,
               prompt,
               systemPrompt,
@@ -816,6 +818,7 @@ export function startProviderRunExecution(
               "seed provider session",
               () => engine.adapter.seed({
               agentId: agent.id,
+              ...(v3FencingToken !== undefined ? {providerRun:{runId,fence:v3FencingToken}} : {}),
               cwd: workingCopy.rootPath,
               prompt: freshPrompt,
               history: seedHistory,
