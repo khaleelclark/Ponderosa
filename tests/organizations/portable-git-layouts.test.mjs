@@ -493,6 +493,20 @@ test('new linked reftable recovery emits canonical structural config for recaptu
   assert.equal(recaptured.git.configurationSourceDirectories.common,common);
   assert.ok(recaptured.git.reftableReview?.selectedWorktree);
   assert.equal(native(destination,'rev-parse','HEAD'),selectedOid);
+  const handle=await open(destination,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);
+  const descriptorRoot={pathname:destination,ref:'work',handle,owner:(await handle.stat({bigint:true})).uid};
+  const commonRelative='.ponderosa-portable-review/native-git-common';
+  const bindings=[
+    {id:'common',worktreeRootRef:'work',storageRootRef:'work',relativePath:commonRelative,role:'common',worktreePath:destination,storagePath:destination},
+    {id:'private',worktreeRootRef:'work',storageRootRef:'work',relativePath:commonRelative+'/worktrees/imported',role:'private',worktreePath:destination,storagePath:destination},
+  ];
+  const held=createGitExportCapture([descriptorRoot],bindings);
+  try{
+    await verifyGitExportAssociations(held);
+    const exact=await exportReviewedGit(destination,held);
+    assert.deepEqual(exact.git.refs,recaptured.git.refs);assert.ok(exact.git.reftableReview?.selectedWorktree);
+    await held.verify();
+  }finally{await held.close();await handle.close();}
   await assert.rejects(reexport(),/opaque binary data/,'native binary evidence stays held until independently validated');
   assert.deepEqual(await readFile(path.join(destination,originalPath)),wire,'held binary export preserves source original');
 });
