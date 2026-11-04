@@ -98,6 +98,27 @@ test('published Branch outcome stays hidden until completion and supports later 
  },{storeFactory:dir=>(store=new AgentStore(dir))});
 });
 
+test('deferred Branch role completion publishes visibility to an already connected workspace stream',async t=>{
+ let store;await withFixture(t,async f=>{
+  const p=installation(),plan=f.ok(await preview(f,p));
+  store.sqlite.exec("CREATE TEMP TRIGGER refuse_deferred_completion BEFORE UPDATE OF state ON branch_installation_plans WHEN NEW.state='completed' AND json_extract(OLD.preview_json,'$.published')=1 BEGIN SELECT RAISE(ABORT,'controlled completion hold'); END");
+  const pending=f.ok(await f.api('POST',`/api/branches/installations/${plan.id}/confirm`,{}));assert.equal(pending.state,'applying');
+  const agent=store.sqlite.prepare("SELECT local_id FROM branch_installation_resources WHERE staging_plan_id=? AND agent_ref='root'").get(plan.id).local_id;
+  const origin=await f.listen(),abort=new AbortController(),record={text:''};
+  const response=await fetch(origin+'/api/branches/engine/workspace/stream',{signal:abort.signal});assert.equal(response.status,200);
+  const reading=(async()=>{try{for await(const bytes of response.body)record.text+=Buffer.from(bytes).toString('utf8');}catch(error){if(!abort.signal.aborted)throw error;}})();
+  try{
+   await until(()=>record.text.includes('workspace_status'),'workspace stream ready');
+   assert.equal(f.ok(await f.api('GET','/api/branches/engine/workspace/preferences')).outputApps.agentIds.includes(agent),false);
+   store.sqlite.exec('DROP TRIGGER refuse_deferred_completion');
+   const completed=f.ok(await f.api('POST',`/api/branches/installations/${plan.id}/confirm`,{}));assert.equal(completed.state,'completed',completed.error);
+   await until(()=>record.text.includes(agent),'post-completion Output visibility event');
+   const events=record.text.split('\n').filter(line=>line.startsWith('data: ')).map(line=>{try{return JSON.parse(line.slice(6));}catch{return null;}}).filter(value=>value?.event?.type==='preferences_updated');
+   assert.ok(events.some(value=>value.event.preferences.outputApps?.agentIds.includes(agent)));
+  }finally{abort.abort();await reading;}
+ },{storeFactory:dir=>(store=new AgentStore(dir))});
+});
+
 test('Branch updates retain omitted roles and explicitly preview additions/removals without touching unrelated outputs',async t=>withFixture(t,async f=>{
  const p=installation(),first=await installed(f,f.ok(await preview(f,p))),before=f.ok(await f.api('GET','/api/branches/assistant'));
  const omitted=structuredClone(p);delete omitted.outputRoles;let review=f.ok(await preview(f,omitted,first.branchId));assert.equal(review.outputRoleReview,undefined);await installed(f,review);assert.equal(f.ok(await f.api('GET','/api/branches/assistant')).app.agentId,before.app.agentId);
