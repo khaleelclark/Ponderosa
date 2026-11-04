@@ -2755,7 +2755,20 @@ async function writeReviewedGit(destination:string,value:ReviewedGitUserData,nat
   const createDirectory=async(target:string)=>{
     // Observe the kernel's normal creation mode (including default ACL effects)
     // before restricting the empty owned directory for the copy phase.
-    await fs.mkdir(target,{mode:posixPermissions?0o777:0o700});
+    try{await fs.mkdir(target,{mode:posixPermissions?0o777:0o700});}
+    catch(error){
+      // A bare dependency is both an external tree and a native Git
+      // repository. Reuse only a directory whose exact identity was created
+      // and retained by the parent writer.
+      const relative=ownerExternal&&path.relative(ownerExternal.root,target).split(path.sep).join('/');
+      const proof=ownerExternal?.directories.get(target);
+      if((error as NodeJS.ErrnoException).code!=='EEXIST'||!storage?.bare||!ownerExternal||!relative||
+        path.relative(storage.gitDir,target)!=='info'||relative.startsWith('../')||path.isAbsolute(relative)||ownerExternal.nodes.get(relative)!=='directory'||!proof)throw error;
+      const observed=await fs.lstat(target,{bigint:true});
+      if(!observed.isDirectory()||observed.isSymbolicLink()||observed.dev!==proof.device||observed.ino!==proof.inode||
+        await fs.realpath(target)!==target)throw new Error('Bare Git control directory lost its parent-issued identity');
+      return proof;
+    }
     if(posixPermissions){
       const handle=await fs.open(target,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);
       try{const stat=await handle.stat({bigint:true});if(!stat.isDirectory()||stat.uid!==BigInt(process.geteuid!()))throw new Error('New Git permission directory is not currently owned');permissionDirectories.set(target,Number(stat.mode)&0o7777);const mode=(Number(stat.mode)&0o7000)|0o700,observed=applyExactFileMetadata({fd:handle.fd,expectedDevice:stat.dev,expectedInode:stat.ino,kind:'directory',mode,mtimeNs:stat.mtimeNs});if(observed.mode!==mode||observed.mtimeNs!==stat.mtimeNs)throw new Error('Git copy directory permissions differ after exact application');}finally{await handle.close();}
@@ -2801,7 +2814,7 @@ async function writeReviewedGit(destination:string,value:ReviewedGitUserData,nat
       target=path.join(target,component);
       const worktree=externalContext(context)==='worktree';
       let stat=await fs.lstat(target,{bigint:true}).catch(error=>{if((error as NodeJS.ErrnoException).code==='ENOENT')return undefined;throw error;});
-      if(!stat){await createDirectory(target);if(worktree){permissionDirectories.delete(target);createdExternalWorktreeDirectories.add(target);}stat=await fs.lstat(target,{bigint:true});}
+      if(!stat){const issued=await createDirectory(target);if(worktree){permissionDirectories.delete(target);createdExternalWorktreeDirectories.add(target);}stat=await fs.lstat(target,{bigint:true});if(issued&&(stat.dev!==issued.device||stat.ino!==issued.inode))throw new Error('External Git parent lost its parent-issued identity');}
       else if(worktree&&!createdExternalWorktreeDirectories.has(target)){
         const relative=path.relative(externalRoot('worktree'),target).split(path.sep).join('/'),issued=external?.worktreeIdentity?.directories;
         if(!issued||!Object.hasOwn(issued,relative))throw new Error('Existing external worktree directory has no original byte-phase custody');
@@ -2819,11 +2832,41 @@ async function writeReviewedGit(destination:string,value:ReviewedGitUserData,nat
     await checkDirectories();const target=path.join(gitDir,relative);let parent=gitDir;
     for(const part of relative.split('/').slice(0,-1)){
       parent=path.join(parent,part);if(directories.has(parent))continue;
-      await createDirectory(parent);const stat=await fs.lstat(parent,{bigint:true});
-      if(!stat.isDirectory()||await fs.realpath(parent)!==parent)throw new Error('Git destination parent changed');directories.set(parent,{device:stat.dev,inode:stat.ino});
+      const issued=await createDirectory(parent);const stat=await fs.lstat(parent,{bigint:true});
+      if(!stat.isDirectory()||await fs.realpath(parent)!==parent||issued&&(stat.dev!==issued.device||stat.ino!==issued.inode))throw new Error('Git destination parent changed');directories.set(parent,{device:stat.dev,inode:stat.ino});
     }
     await checkDirectories();const handle=await fs.open(target,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,posixPermissions?(readOnly?0o444:0o666):0o600);
     try{const stat=await handle.stat({bigint:true});if(!stat.isFile()||stat.nlink!==1n)throw new Error('Git destination file is not exclusive');if(posixPermissions){if(stat.uid!==BigInt(process.geteuid!()))throw new Error('New Git permission file is not currently owned');const observed=applyExactFileMetadata({fd:handle.fd,expectedDevice:stat.dev,expectedInode:stat.ino,kind:'file',mode:0o600,mtimeNs:stat.mtimeNs});if(observed.mode!==0o600||observed.mtimeNs!==stat.mtimeNs)throw new Error('Git copy file permissions differ after exact application');}await handle.writeFile(data);if(metadata){const bytes=Buffer.isBuffer(data)?data:Buffer.from(data);state.files.set(target,{device:stat.dev,inode:stat.ino,data:bytes,sha256:createHash('sha256').update(bytes).digest('hex'),mode:metadata.mode,mtimeNs:metadata.mtimeNs,mutate:true});}await handle.sync();const receipt={sha256:createHash('sha256').update(data).digest('hex'),device:stat.dev,inode:stat.ino};created.push({path:relative,...receipt});state.receipts.set(target,receipt);permissionFiles.push({path:target,device:stat.dev,inode:stat.ino,creationMode:Number(stat.mode)&0o7777});}finally{await handle.close();}
+  };
+  // The same bare control original may also be present in the enclosing
+  // external graph. Reuse its already-issued bytes exactly once; never
+  // grant a pre-existing or merely equal file native ownership.
+  const reuseBareControl=async(relative:string,expected:Buffer):Promise<boolean>=>{
+    if(!storage?.bare||!ownerExternal)return false;
+    const target=path.join(gitDir,relative),ownerRelative=path.relative(ownerExternal.root,target).split(path.sep).join('/');
+    if(!ownerRelative||ownerRelative.startsWith('../')||path.isAbsolute(ownerRelative)||ownerExternal.nodes.get(ownerRelative)!=='file')return false;
+    const receipt=state.receipts.get(target),parent=path.dirname(target),parentProof=ownerExternal.directories.get(parent);
+    if(!receipt||!parentProof)throw new Error('Bare Git control original lacks parent-issued custody');
+    const parentStat=await fs.lstat(parent,{bigint:true});
+    if(!parentStat.isDirectory()||parentStat.isSymbolicLink()||parentStat.dev!==parentProof.device||parentStat.ino!==parentProof.inode||
+      await fs.realpath(parent)!==parent)throw new Error('Bare Git control parent lost its issued identity');
+    const handle=await fs.open(target,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
+    try{
+      const before=await handle.stat({bigint:true});
+      if(!before.isFile()||before.dev!==receipt.device||before.ino!==receipt.inode||before.size!==BigInt(expected.length)||
+        before.size>BigInt(limit))throw new Error('Bare Git control original changed before reuse');
+      const bytes=Buffer.alloc(expected.length);let position=0;
+      while(position<bytes.length){const read=await handle.read(bytes,position,bytes.length-position,position);if(!read.bytesRead)throw new Error('Bare Git control original shortened');position+=read.bytesRead;}
+      const extra=Buffer.alloc(1),overflow=await handle.read(extra,0,1,position);
+      const after=await handle.stat({bigint:true}),named=await fs.lstat(target,{bigint:true}),parentAfter=await fs.lstat(parent,{bigint:true});
+      if(overflow.bytesRead||!bytes.equals(expected)||createHash('sha256').update(bytes).digest('hex')!==receipt.sha256||
+        before.dev!==after.dev||before.ino!==after.ino||before.size!==after.size||before.nlink!==after.nlink||
+        before.mtimeNs!==after.mtimeNs||before.ctimeNs!==after.ctimeNs||named.dev!==after.dev||named.ino!==after.ino||
+        named.size!==after.size||named.nlink!==after.nlink||named.mtimeNs!==after.mtimeNs||named.ctimeNs!==after.ctimeNs||
+        parentAfter.dev!==parentProof.device||parentAfter.ino!==parentProof.inode||!parentAfter.isDirectory()||await fs.realpath(parent)!==parent)
+        throw new Error('Bare Git control original changed during reuse');
+      return true;
+    }finally{await handle.close();}
   };
   const verifyCreated=async()=>{
     for(const file of created){
@@ -2862,9 +2905,16 @@ async function writeReviewedGit(destination:string,value:ReviewedGitUserData,nat
     if(native){
       const worktreeConfig=configuration!.private;
       if(layout||worktreeConfig!==null)await write('config.worktree',Buffer.concat([worktreeConfig??Buffer.alloc(0),Buffer.from(layout?`\n[core]\n\tbare = false\n\tworktree = ${JSON.stringify(destination)}\n`:'')]));
-      if(value.sparseReview.patternsBase64!==null)await write('info/sparse-checkout',Buffer.from(value.sparseReview.patternsBase64,'base64'));
+      if(value.sparseReview.patternsBase64!==null){
+        const bytes=Buffer.from(value.sparseReview.patternsBase64,'base64');
+        if(!await reuseBareControl('info/sparse-checkout',bytes))await write('info/sparse-checkout',bytes);
+      }
       for(const info of value.infoReview){
-        if(info.path==='info/exclude'){
+        if(storage?.bare){
+          // A bare repository has no worktree to ignore. Keep any selected
+          // original byte-identical and do not invent a new exclude file.
+          if(info.dataBase64!==null){const original=Buffer.from(info.dataBase64,'base64');if(!await reuseBareControl(info.path,original))await write(info.path,original);}
+        }else if(info.path==='info/exclude'){
           const original=info.dataBase64===null?Buffer.alloc(0):Buffer.from(info.dataBase64,'base64'),line='/.ponderosa-portable-review/';
           const bytes=original.toString('utf8').split(/\r?\n/).includes(line)?original:Buffer.concat([original,Buffer.from((original.length&&original.at(-1)!==10?'\n':'')+line+'\n')]);
           await write(info.path,bytes);
@@ -2943,7 +2993,7 @@ async function writeReviewedGit(destination:string,value:ReviewedGitUserData,nat
     }
     if(native&&(!layout||layout.writeCommon))for(const module of configuration!.modules??[]){
       const relative=path.relative(gitDir,module.gitDir);if(!relative||path.isAbsolute(relative)||relative==='..'||relative.startsWith('..'+path.sep))throw new Error('Native module storage escapes its selected parent repository');
-      let target=gitDir;for(const component of relative.split(path.sep).slice(0,-1)){target=path.join(target,component);if(!directories.has(target)){await createDirectory(target);const stat=await fs.lstat(target,{bigint:true});directories.set(target,{device:stat.dev,inode:stat.ino});}}
+      let target=gitDir;for(const component of relative.split(path.sep).slice(0,-1)){target=path.join(target,component);if(!directories.has(target)){const issued=await createDirectory(target);const stat=await fs.lstat(target,{bigint:true});if(issued&&(stat.dev!==issued.device||stat.ino!==issued.inode))throw new Error('Native module parent lost its issued identity');directories.set(target,{device:stat.dev,inode:stat.ino});}}
     }
     await checkDirectories();await verifyCreated();
     if(native){await applyNativeGitPermissions({gitDir,privateDir:layout?.privateDir,worktreePath:storage?.worktreePath??destination},[...permissionDirectories].map(([target,creationMode])=>({path:target,creationMode,...directories.get(target)!})),permissionFiles);await checkDirectories();}
@@ -2953,7 +3003,7 @@ async function writeReviewedGit(destination:string,value:ReviewedGitUserData,nat
       let parent=gitDir;
       for(const component of relative.split(path.sep).slice(0,-1)){
         parent=path.join(parent,component);
-        if(!directories.has(parent)){await createDirectory(parent);const stat=await fs.lstat(parent,{bigint:true});if(!stat.isDirectory()||await fs.realpath(parent)!==parent)throw new Error('Native module storage parent changed');directories.set(parent,{device:stat.dev,inode:stat.ino});}
+        if(!directories.has(parent)){const issued=await createDirectory(parent);const stat=await fs.lstat(parent,{bigint:true});if(!stat.isDirectory()||await fs.realpath(parent)!==parent||issued&&(stat.dev!==issued.device||stat.ino!==issued.inode))throw new Error('Native module storage parent changed');directories.set(parent,{device:stat.dev,inode:stat.ino});}
       }
       await checkDirectories();
       validateNativeGitSelection(module.value,false,module.bare===true);

@@ -216,6 +216,35 @@ export function planReviewedGitExternalApplication(value:ReviewedUserData,activa
   };
   moduleScopes(rootScope);
   const sourceStorage=(source:string)=>scopes.some(scope=>sourcePathWithin(scope.sourceCommon,source)||sourcePathWithin(scope.sourcePrivate,source))||(family.repositories??[]).some(capsule=>[capsule.git.configurationSourceDirectories?.common,capsule.git.configurationSourceDirectories?.private].some(root=>root&&sourcePathWithin(root,source)));
+  // Bare repositories can appear inside a captured dependency tree. Their
+  // canonical native control originals may then be represented both by the
+  // Git capsule and by the enclosing external tree. Reuse is safe only when
+  // both retained views are exactly the same file; never decide after writes.
+  for(const capsule of family.repositories??[]){
+    if(!capsule.bare)continue;
+    const controls:Array<{path:string;dataBase64:string|null}>=[
+      ...capsule.git.infoReview,
+      {path:'info/sparse-checkout',dataBase64:capsule.git.sparseReview.patternsBase64},
+    ];
+    const info=joinSourcePath(capsule.sourcePath,'info');
+    if(family.files.some(file=>sourcePathsEqual(file.sourcePath,info))||
+      family.links.some(link=>sourcePathsEqual(link.sourcePath,info))||
+      controls.some(control=>control.dataBase64!==null)&&
+        [...family.absentPaths,...family.omittedPaths].some(absent=>sourcePathsEqual(absent,info)))
+      throw new Error('Bare Git control parent differs between its reviewed capsule and external graph');
+    for(const control of controls){
+      const source=joinSourcePath(capsule.sourcePath,control.path);
+      if(family.links.some(link=>sourcePathsEqual(link.sourcePath,source)||sourcePathsEqual(link.targetSourcePath,source)))
+        throw new Error('Bare Git control original with an external alias requires separate reviewed custody');
+      if(family.directories.some(directory=>sourcePathsEqual(directory.sourcePath,source))||
+        control.dataBase64!==null&&[...family.absentPaths,...family.omittedPaths].some(absent=>sourcePathsEqual(absent,source)))
+        throw new Error('Bare Git control original differs between its reviewed capsule and external graph');
+      const duplicate=family.files.find(file=>sourcePathsEqual(file.sourcePath,source));
+      if(control.dataBase64!==null&&!duplicate||
+        duplicate&&(control.dataBase64===null||!Buffer.from(duplicate.dataBase64,'base64').equals(Buffer.from(control.dataBase64,'base64'))))
+        throw new Error('Bare Git control original differs between its reviewed capsule and external graph');
+    }
+  }
   const treeDestination=(source:string)=>{
     const nativeDefault=family.bindings.find(binding=>binding.default&&sourcePathsEqual(binding.resolvedPath,source));
     const defaultScope=nativeDefault?scopes.find(scope=>sourcePathsEqual(joinSourcePath(scope.sourceCommon,'config'),nativeDefault.sourceConfigPath)):undefined;

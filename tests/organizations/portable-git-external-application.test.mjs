@@ -54,7 +54,7 @@ test('cross-scope source aliases use an explicit top-worktree reference',()=>{
 });
 
 test('bare capsule placement is explicit and raw config originals cannot replace generated native config',()=>{
- const bareGit={configurationSourceDirectories:{common:'/hooks/cache',private:'/hooks/cache'},modules:[]};
+ const bareGit={configurationSourceDirectories:{common:'/hooks/cache',private:'/hooks/cache'},modules:[],infoReview:[],sparseReview:{patternsBase64:null}};
  const data=value(family({directories:[folder('/hooks'),folder('/hooks/cache')],files:[file('/hooks/cache/config','[core]\nbare=true\n')],repositories:[{sourcePath:'/hooks/cache',bare:true,git:bareGit,originals:[]}],bindings:[binding('hooks','/hooks','/hooks')]}));
  const planned=plan(data),capsule=planned.repositories[0];
  assert.equal(capsule.bare,true);assert.equal(capsule.initialized,false);assert.equal(capsule.gitDir,capsule.worktreePath);
