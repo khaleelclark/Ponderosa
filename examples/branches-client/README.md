@@ -25,6 +25,6 @@ Decision in Branches. The result endpoint returns the retained final output;
 The public interface also provides workflow deployment, trigger settings,
 checkpoints, execution actions and Step evidence in
 `apps/server/src/routes/branches.ts`. This sample intentionally uses only start,
-status and result. It is a usable integration example, not evidence of framework
-parity or a passing implementation check. It has not been executed during the
-implementation-first phase.
+status and result. A controlled local check exercised start, status, result, and same-key retry
+against a synthetic Script-only workflow. It does not establish provider-backed
+behavior or framework parity.
