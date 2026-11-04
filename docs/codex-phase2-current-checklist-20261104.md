@@ -74,15 +74,21 @@ an application feature or panel UI. Run this acceptance after implementation
 is assembled; passing browser tests or improving over an earlier Ponderosa
 build does not substitute for the comparison.
 
-1. Pin the actual Ponderosa, Branches and competitor versions and assign the
-   same representative tasks on desktop and iOS; an iOS emulator qualifies.
-   Capture screenshots and core-flow recordings for the same flows in each app.
+1. Inventory every Ponderosa and Branches screen, including all settings
+   screens, transient surfaces and interactive states. Pin the actual
+   Ponderosa, Branches and competitor versions. On desktop and iOS, walk the
+   actual interactions, including clicks, transitions and animations; an iOS
+   emulator qualifies. Assign the same representative tasks and capture
+   screenshots and comparable recordings against the pinned competitors for
+   the corresponding flows. Record coverage
+   and any unavailable comparison explicitly.
 2. Prepare one shared written 1–10 rubric covering clarity, polish, layout and
    ease of use, with descriptions for scores 3, 6 and 9. Have at least three
-   independent judge agents use a model different from the feature builders.
-   Judges score blind, independently, without seeing one another's scores;
-   the majority verdict stands. Ease of use is assessed by agents walking the
-   tasks as nontechnical users.
+   independent judge agents use available Codex models (Astra, Luna, Terra or
+   Sol) different from the feature builders. Each judge may use subagents of
+   the same model as that judge. Judges score blind and independently, without
+   seeing the other judges’ scores; the majority verdict stands. Ease of use is
+   assessed by agents walking the tasks as nontechnical users.
 3. For Bible §3, Ponderosa must score equal to or better than Codex, Claude,
    WhatsApp and iMessage. For §29, both Ponderosa and Branches must score equal
    to or better than Codex, Claude and iMessage and better than LangGraph and
