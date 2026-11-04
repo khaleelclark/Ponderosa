@@ -590,6 +590,9 @@ test('bounded package deadline reports unknown outcome and resolves the exact du
 
 test('oversized clipboard packages are cancelled and require the complete download path',async()=>{
  const {readAgentPackageClipboard,AgentPackageDownloadRequired}=await import('../../apps/web/src/agent-package-clipboard.ts');
+ const prepared={downloadUrl:'/api/agent-exports/test',expiresAt:'2030-01-01T00:00:00.000Z',byteLength:64},cause=new Error('network interrupted');
+ const preparedError=new AgentPackageDownloadRequired(prepared,{cause});
+ assert.equal(preparedError.preparedExport,prepared);assert.equal(preparedError.cause,cause);
  const original='雪🌲 exact package',bytes=new TextEncoder().encode(original);
  assert.equal(await readAgentPackageClipboard(new Response(bytes),bytes.length),original);
  let cancelled=false;const response=new Response(new ReadableStream({start(controller){controller.enqueue(new Uint8Array(64));},cancel(){cancelled=true;}}));

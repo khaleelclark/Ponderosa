@@ -1,7 +1,11 @@
 /** Large full exports use the existing download path without constructing one
  * browser string or placing a partial document on the clipboard. */
 export class AgentPackageDownloadRequired extends Error {
- constructor(readonly preparedExport?:{downloadUrl:string;expiresAt:string;byteLength:number},options?:ErrorOptions){super('Use Download for the complete Agent package; clipboard transfer could not complete.',options);}
+ readonly preparedExport?:{downloadUrl:string;expiresAt:string;byteLength:number};
+ constructor(preparedExport?:{downloadUrl:string;expiresAt:string;byteLength:number},options?:ErrorOptions){
+  super('Use Download for the complete Agent package; clipboard transfer could not complete.',options);
+  this.preparedExport=preparedExport;
+ }
 }
 export async function readAgentPackageClipboard(response:Response,maximum=8*1024*1024):Promise<string>{
  if(Number(response.headers.get('Content-Length'))>maximum){await response.body?.cancel();throw new AgentPackageDownloadRequired();}
