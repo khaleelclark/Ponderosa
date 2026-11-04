@@ -177,7 +177,8 @@ test('deferred Branch role completion publishes visibility to an already connect
    await until(()=>record.text.includes('workspace_status'),'workspace stream ready');
    assert.equal(f.ok(await f.api('GET','/api/branches/engine/workspace/preferences')).outputApps.agentIds.includes(agent),false);
    store.sqlite.exec('DROP TRIGGER refuse_deferred_completion');
-   const completed=f.ok(await f.api('POST',`/api/branches/installations/${plan.id}/confirm`,{}));assert.equal(completed.state,'completed',completed.error);
+   const first=f.ok(await f.api('POST',`/api/branches/installations/${plan.id}/confirm`,{}));
+   if(first.state!=='completed')await until(async()=>f.ok(await f.api('GET',`/api/branches/installations/${plan.id}`)).state==='completed','deferred Branch role completion');
    await until(()=>record.text.includes(agent),'post-completion Output visibility event');
    const events=record.text.split('\n').filter(line=>line.startsWith('data: ')).map(line=>{try{return JSON.parse(line.slice(6));}catch{return null;}}).filter(value=>value?.event?.type==='preferences_updated');
    assert.ok(events.some(value=>value.event.preferences.outputApps?.agentIds.includes(agent)));
