@@ -33,6 +33,7 @@ function deliveryLabel(
   receipt: MessageDeliveryReceiptDto,
   recipientName: string,
 ): string {
+  if (receipt.taskDecisionRepairHold) return `Ponderosa could not verify the Decision status for ${recipientName}'s work. Task recovery is held until it can be checked.${receipt.contextRolloverHold ? ' Context refresh also could not safely continue.' : ''}`;
   if (receipt.contextRolloverHold === "retry_available") return `Context refresh stopped before the replacement started. ${recipientName}'s unfinished work is held; review activity before trying again.`;
   if (receipt.contextRolloverHold === "review_required") return `Context refresh could not safely continue. ${recipientName}'s unfinished work is held; review activity before recovery.`;
   const waiting = deliveryWaitLabel(receipt);
@@ -69,6 +70,7 @@ function deliveryLabel(
 }
 
 function compactDeliveryLabel(receipt: MessageDeliveryReceiptDto): string {
+  if (receipt.taskDecisionRepairHold) return "Task check held";
   const waiting = deliveryWaitLabel(receipt);
   if (waiting) return waiting.compact;
   const phase = messageDeliveryPhase(receipt);
@@ -341,11 +343,11 @@ export function MessageDeliveryStatus({
             </ButtonBase>
           </Box>
         </Tooltip>
-        {!readOnly && projectId && !receipt.contextRolloverHold && receipt.injectionKind === "steer" && receipt.injectionId && (receipt.state === "unconfirmed" || receipt.state === "waiting_for_run") ? <>
+        {!readOnly && projectId && !receipt.contextRolloverHold && !receipt.taskDecisionRepairHold && receipt.injectionKind === "steer" && receipt.injectionId && (receipt.state === "unconfirmed" || receipt.state === "waiting_for_run") ? <>
           <Button color="warning" variant="text" size="small" onClick={() => setReviewContinuation(receipt)} sx={{ minHeight: 28, py: 0.25 }}>Review interrupted work</Button>
           <Typography variant="caption" color="text.secondary">Review may close the earlier Run’s idle session.</Typography>
         </> : null}
-        {!readOnly && receipt.canLetCurrentRunFinish && receipt.injectionId ? <Button
+        {!readOnly && !receipt.taskDecisionRepairHold && receipt.canLetCurrentRunFinish && receipt.injectionId ? <Button
           color="warning"
           variant="text"
           size="small"
@@ -353,7 +355,7 @@ export function MessageDeliveryStatus({
           onClick={() => void letRunFinish(receipt)}
           sx={{ minHeight: 28, py: 0.25 }}
         >Let Current Run Finish</Button> : null}
-        {!readOnly && receipt.canRetry && projectId ? <Button
+        {!readOnly && !receipt.taskDecisionRepairHold && receipt.canRetry && projectId ? <Button
           color="error"
           variant="text"
           size="small"
@@ -361,7 +363,7 @@ export function MessageDeliveryStatus({
           onClick={() => receipt.retryMayDuplicate ? setConfirmRetry(receipt) : void retryDelivery(receipt)}
           sx={{ minHeight: 28, py: 0.25 }}
         >{pendingRetryId === receipt.activationId ? "Trying Again…" : receipt.providerAcknowledged ? "Try Work Again" : "Try Delivery Again"}</Button> : null}
-        {!readOnly && !hideCancelAction && !receipt.contextRolloverHold && receipt.canRetry && projectId ? <Button
+        {!readOnly && !hideCancelAction && !receipt.contextRolloverHold && !receipt.taskDecisionRepairHold && receipt.canRetry && projectId ? <Button
           color="inherit"
           variant="text"
           size="small"

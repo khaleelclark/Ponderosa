@@ -64,3 +64,45 @@ test('receipt injection batches preserve latest rows, recovery, missing IDs and 
   for (const id of messages.slice(1, 65)) assert.equal(receipts.get(id)[0].state, 'processed');
   assert.ok([...v3.deliveryReceiptsForCommunications(randomUUID(), messages).values()].every(value => value.length === 0));
 });
+
+test('an exact unresolved Decision accounting hold is visible only on its original human task', t => {
+ const db=openCurrentMemoryDatabase();t.after(()=>db.close());
+ const project=randomUUID(),chat=randomUUID(),agent=randomUUID(),now=new Date().toISOString(),scope='conversation:'+chat;
+ db.prepare('INSERT INTO projects(id,label,host_path,created_at) VALUES(?,?,?,?)').run(project,'Task','/unused',now);
+ db.prepare('INSERT INTO conversations(id,project_id,title,created_at,updated_at) VALUES(?,?,?,?,?)').run(chat,project,'Task',now,now);
+ db.prepare('INSERT INTO agents(id,project_id,conversation_id,title,handle,active_engine,created_at,updated_at,working_copy_json) VALUES(?,?,?,?,?,?,?,?,?)').run(agent,project,chat,'Worker','worker','codex',now,now,'{}');
+ db.prepare('INSERT INTO agent_conversation_memberships(agent_id,conversation_id,position) VALUES(?,?,0)').run(agent,chat);
+ const failed=new CoordinationV3Store(db,{canonicalTaskDecisions:()=>{throw Error('controlled Decision read failure');}});
+ const message=text=>{const id=randomUUID(),sender={kind:'user',userId:'local-operator'},audience={kind:'organization',organizationId:project};
+  const communication={schemaVersion:2,eventId:id,projectId:project,conversationId:chat,sender,intent:'broadcast',audience,text,createdAt:now};
+  const saved=failed.recordRuntimeCommunication({id,projectId:project,scopeKey:scope,sender,intent:'broadcast',audience,payload:{communication},now,
+   activation:{agentId:agent,kind:'human_message',priority:100,dispatchPolicy:'next_run',promptClass:'human'}});
+  db.prepare("UPDATE agent_activations SET state='consumed' WHERE id=?").run(saved.activationId);return {id,activationId:saved.activationId};};
+ const root=message('Complete the original task'),other=message('A different task');
+ const run=randomUUID();db.prepare("INSERT INTO scheduler_runs(id,project_id,agent_id,status,lease_owner,lease_expires_at,fencing_token,prompt_injection_state,heartbeat_at,created_at,updated_at,scope_key) VALUES(?,?,?,'completed','fixture',?,1,'injected',?,?,?,?)").run(run,project,agent,now,now,now,now,scope);
+ db.prepare(`INSERT INTO required_reply_obligations(run_id,source_activation_id,project_id,agent_id,scope_key,reply_authority_json,attempt_count,state,created_at,updated_at,delivery_phase)
+ VALUES(?,?,?,?,?,? ,0,'pending',?,?,'final')`).run(run,root.activationId,project,agent,scope,JSON.stringify({intent:'broadcast'}),now,now);
+ assert.equal(failed.repairCanonicalTaskDecisionWait(run,now),false,'the real authority records an accounting hold on read failure');
+ const held=failed.deliveryReceiptsForCommunication(project,root.id)[0];
+ assert.equal(held.taskDecisionRepairHold,true);assert.equal(held.state,'unconfirmed');assert.equal(held.canRetry,undefined);
+ db.prepare("UPDATE agent_activations SET state='outcome_unknown' WHERE id=?").run(root.activationId);
+ assert.equal(failed.deliveryReceiptsForCommunication(project,root.id)[0].canRetry,undefined,'the hold cannot offer blind replay');
+ const count=db.prepare('SELECT count(*) n FROM agent_activations').get().n;
+ const stale=failed.retryMessageDelivery({projectId:project,activationId:root.activationId,idempotencyKey:'stale-before-hold'});
+ assert.equal(stale.accepted,false);assert.equal(stale.rejectionReason,'not_terminal');
+ assert.equal(db.prepare('SELECT count(*) n FROM agent_activations').get().n,count,'a stale retry cannot create work');
+
+ db.prepare("UPDATE agent_activations SET state='consumed' WHERE id=?").run(root.activationId);
+ const newer=randomUUID();db.prepare("INSERT INTO scheduler_runs(id,project_id,agent_id,status,lease_owner,lease_expires_at,fencing_token,prompt_injection_state,heartbeat_at,created_at,updated_at,scope_key) VALUES(?,?,?,'running','fixture',?,2,'injected',?,?,?,?)").run(newer,project,agent,now,now,now,now,scope);
+ db.prepare(`INSERT INTO required_reply_obligations(run_id,source_activation_id,project_id,agent_id,scope_key,reply_authority_json,attempt_count,state,created_at,updated_at,delivery_phase) VALUES(?,?,?,?,?,?,0,'pending',?,?,'final')`).run(newer,root.activationId,project,agent,scope,JSON.stringify({intent:'broadcast'}),now,now);
+ assert.equal(failed.deliveryReceiptsForCommunication(project,root.id)[0].taskDecisionRepairHold,undefined,'an older marker cannot override a newer task owner');
+ db.prepare('DELETE FROM required_reply_obligations WHERE run_id=?').run(newer);db.prepare('DELETE FROM scheduler_runs WHERE id=?').run(newer);
+
+ assert.equal(failed.deliveryReceiptsForCommunication(project,other.id)[0].taskDecisionRepairHold,undefined);
+ assert.deepEqual(failed.deliveryReceiptsForCommunication(randomUUID(),root.id),[]);
+ const restored=new CoordinationV3Store(db,{canonicalTaskDecisions:()=>[]});
+ assert.equal(restored.repairCanonicalTaskDecisionWait(run,now),true);
+ assert.equal(restored.deliveryReceiptsForCommunication(project,root.id)[0].taskDecisionRepairHold,undefined,'the receipt clears when canonical repair succeeds');
+ db.prepare("UPDATE required_reply_obligations SET blocking_decision_id='real-pending-decision' WHERE run_id=? AND source_activation_id=?").run(run,root.activationId);
+ assert.equal(restored.deliveryReceiptsForCommunication(project,root.id)[0].taskDecisionRepairHold,undefined,'a normal Decision wait alone is not a repair failure');
+});

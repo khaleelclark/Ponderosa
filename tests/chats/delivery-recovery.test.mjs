@@ -52,6 +52,7 @@ function status(extra, api = {}) {
   return () => [...walk(h.render(() => module.MessageDeliveryStatus({ projectId: 'project', receipts: [receipt(extra)], recipientName: () => 'Reader' })))];
 }
 for (const [extra, expected, compact] of [
+  [{ state: 'unconfirmed', taskDecisionRepairHold: true }, /could not verify the Decision status for Reader.s work/u, 'Task check held'],
   [{ state: 'run_unconfirmed', providerAcknowledged: true }, /lost contact before confirming whether the work finished/u, 'Work unconfirmed'],
   [{ state: 'retry_exhausted', providerAcknowledged: true }, /after 6 attempts; automatic recovery stopped/u, 'Reply exhausted'],
   [{ state: 'cancelled', providerAcknowledged: false }, /cancelled/u, 'Cancelled'],
@@ -61,6 +62,16 @@ for (const [extra, expected, compact] of [
   const nodes = status(extra)(), announcement = nodes.find(node => node.props.role === 'status');
   assert.equal(announcement.props['aria-live'], 'polite'); assert.match(text(announcement), expected);
   assert.ok(nodes.some(node => node.type === mui.Typography && text(node) === compact));
+});
+test('a Decision-accounting hold and context-refresh hold are both disclosed', () => {
+ const nodes=status({state:'unconfirmed',taskDecisionRepairHold:true,contextRolloverHold:'retry_available',contextRolloverAttemptId:'held'})();
+ const announcement=nodes.find(node=>node.props.role==='status');assert.match(text(announcement),/Task recovery is held until it can be checked/);assert.match(text(announcement),/Context refresh also could not safely continue/);
+ assert.ok(!nodes.some(node=>node.type===mui.Button&&['Try Work Again','Try Delivery Again'].includes(text(node))));
+});
+test('Decision-accounting hold does not expose a steering recovery action', () => {
+ const nodes=status({state:'unconfirmed',taskDecisionRepairHold:true,injectionKind:'steer',injectionId:'old-injection',canRetry:true,canLetCurrentRunFinish:true})();
+ assert.ok(nodes.some(node=>node.props.role==='status'&&text(node).includes('could not verify')));
+ assert.ok(!nodes.some(node=>node.type===mui.Button&&['Review interrupted work','Try Work Again','Try Delivery Again','Let Current Run Finish'].includes(text(node))));
 });
 test('Q01 uncertain-work retry requires explicit confirmation and retains its identity after a lost response', async () => {
   const calls = []; let fail = true;

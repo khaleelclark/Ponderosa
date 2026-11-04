@@ -188,6 +188,8 @@ export interface MessageDeliveryReceiptDto {
   /** Exact provider execution reached by a recovery activation, when distinct. */
   recoveryExecutionId?: string;
   state: MessageDeliveryReceiptState;
+  /** Exact task whose Decision accounting cannot currently be verified. */
+  taskDecisionRepairHold?: true;
   /** Exact unfinished task held by an unverified context rollover. */
   contextRolloverHold?: "retry_available" | "review_required";
   /** Stable exact continuation attempt for idempotent operator retry. */

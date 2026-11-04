@@ -239,6 +239,27 @@ test('rollover continuation compilation failure holds original task and handoff'
       assertGuard(()=>proofWriter.prepare("UPDATE agent_activations SET payload_json=json_set(payload_json,'$.rolloverId',?) WHERE id=?").run('wrong-rollover',rollover.continuation_activation_id));
       assertGuard(()=>proofWriter.prepare('INSERT INTO scheduler_run_activations(run_id,activation_id,attached_at) VALUES(?,?,?)').run(candidate.id,receipt.activationId,new Date().toISOString()));
     }finally{proofWriter.close();}
+    // The old retryable receipt can race a newly recorded task-accounting hold.
+    // Pause lease polling so the canonical repair does not clear our controlled
+    // marker before the stale request reaches the actual command authority.
+    blockLease=true;
+    const holdWriter=new Database(path.join(f.dataDir,'ponderosa.db'),{fileMustExist:true});
+    try{
+      assert.ok(holdWriter.prepare("SELECT 1 FROM required_reply_obligations WHERE run_id=? AND source_activation_id=? AND state='pending'").get(candidate.id,receipt.activationId));
+      holdWriter.prepare("INSERT INTO activation_sources(activation_id,source_kind,source_id) VALUES(?,'task_decision_repair',?)").run(receipt.activationId,candidate.id);
+      const heldItems=f.ok(await f.api('POST',`/api/conversations/${chat.id}/message-delivery-receipts`,{communicationEventIds:[message.communicationEventId,correction.communicationEventId],activationIds:[]})).items;
+      assert.equal(heldItems.length,2);
+      for(const item of heldItems){const held=item.deliveryReceipts.find(row=>row.targetAgentId===agent.id);assert.equal(held.taskDecisionRepairHold,true);assert.equal(held.contextRolloverHold,'review_required');assert.equal(held.canRetry,undefined);}
+      const correctionReceipt=receiptItems.find(item=>item.communicationEventId===correction.communicationEventId).deliveryReceipts.find(row=>row.targetAgentId===agent.id);
+      const siblingStale=await f.api('POST',`/api/projects/${chat.projectId}/message-deliveries/${correctionReceipt.activationId}/retry`,{idempotencyKey:randomUUID(),expectedRolloverAttemptId:correctionReceipt.contextRolloverAttemptId});
+      assert.equal(siblingStale.status,409,'another task in the same held rollover cannot bypass the hold');
+      const direct=await f.api('POST',`/api/projects/${chat.projectId}/message-deliveries/${rollover.continuation_activation_id}/retry`,{idempotencyKey:randomUUID(),expectedRolloverAttemptId:receipt.contextRolloverAttemptId});
+      assert.equal(direct.status,409,'a direct continuation activation cannot bypass the hold');
+      const before=holdWriter.prepare("SELECT COUNT(*) n FROM agent_activations WHERE kind='context_rollover_continuation'").get().n;
+      const stale=await f.api('POST',`/api/projects/${chat.projectId}/message-deliveries/${receipt.activationId}/retry`,{idempotencyKey:randomUUID(),expectedRolloverAttemptId:receipt.contextRolloverAttemptId});
+      assert.equal(stale.status,409);assert.equal(holdWriter.prepare("SELECT COUNT(*) n FROM agent_activations WHERE kind='context_rollover_continuation'").get().n,before);
+      holdWriter.prepare("DELETE FROM activation_sources WHERE activation_id=? AND source_kind='task_decision_repair' AND source_id=?").run(receipt.activationId,candidate.id);
+    }finally{holdWriter.close();}
     let replacement;
     f.plans.set(agent.id,[{run:async(s,input)=>{
       replacement=s.engineAgentId;assert.notEqual(replacement,session.engineAgentId);

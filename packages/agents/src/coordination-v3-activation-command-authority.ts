@@ -1,3 +1,4 @@
+import {heldTaskDecisionRepairs,heldTaskDecisionRepairRuns} from './coordination-v3-task-decision-repair-hold.js';
 import type Database from "better-sqlite3";
 import type { RetryMessageDeliveryResponse } from "@ponderosa/core";
 import { PRIORITY } from "./coordination-v3-activation.js";
@@ -138,7 +139,13 @@ export class CoordinationV3ActivationCommandAuthority {
         accepted: false, replayed: false, state: "not_retryable", rejectionReason: "recipient_unavailable",
       };
 
+      // A stale receipt cannot authorize another Run after task accounting was held.
+      // Replay above only returns the already committed receipt and creates no work.
       const held = heldHumanRollover(this.sqlite,input.projectId,original.id);
+      if (heldTaskDecisionRepairs(this.sqlite,input.projectId,[{activationId:original.id}]).has(original.id)
+        || (held && heldTaskDecisionRepairRuns(this.sqlite,input.projectId,[held.candidate_run_id]).has(held.candidate_run_id))) return {
+        accepted:false,replayed:false,state:"not_retryable",rejectionReason:"not_terminal",
+      };
       if (held) {
         if (!canRetryHeldHumanRollover(held) || input.expectedRolloverAttemptId !== held.continuation_activation_id) return {
           accepted:false,replayed:false,state:"not_retryable",rejectionReason:"not_terminal",

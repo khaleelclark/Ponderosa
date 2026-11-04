@@ -1,3 +1,4 @@
+import {heldTaskDecisionRepairs,heldTaskDecisionRepairRuns} from './coordination-v3-task-decision-repair-hold.js';
 import {heldHumanRollovers,heldHumanRolloverKey,canRetryHeldHumanRollover} from './coordination-v3-rollover-held-task.js';
 import { providerResetAt, PROVIDER_QUOTA_LIMITS, type ProviderQuotaLimit, PONDEROSA_BROWSER_TOOLS, type MessageDeliveryReceiptDto } from "@ponderosa/core";
 import type Database from "better-sqlite3";
@@ -575,6 +576,11 @@ export class CoordinationV3RuntimeCommunicationReadModel {
     const heldRollovers = heldHumanRollovers(this.sqlite,projectId,selected.map(activation=>({
       activationId:activation.id,communicationEventId:activation.communication_event_id,
     })));
+    const decisionRepairs = heldTaskDecisionRepairs(this.sqlite,projectId,selected.map(activation=>({
+      activationId:heldRollovers.get(heldHumanRolloverKey(activation.id,activation.communication_event_id))?.root_activation_id ?? activation.id,
+      communicationEventId:activation.communication_event_id,
+    })));
+    const decisionRepairRuns = heldTaskDecisionRepairRuns(this.sqlite,projectId,[...new Set([...heldRollovers.values()].map(held=>held.candidate_run_id))]);
     const injections = latestInjections(selected.map(activation => activation.id));
     const failures = this.deliveryProviderFailures(projectId, selected.map(activation => activation.id));
     const recoveries = new Map(selected.map(activation => {
@@ -614,8 +620,10 @@ export class CoordinationV3RuntimeCommunicationReadModel {
         const recoveryInjection = recovery?.recovery_activation_id
           ? recoveryInjections.get(recovery.recovery_activation_id) : undefined;
         const heldRollover = heldRollovers.get(heldHumanRolloverKey(activation.id,activation.communication_event_id));
+        const decisionRepair = decisionRepairs.has(heldRollover?.root_activation_id ?? activation.id) || Boolean(heldRollover && decisionRepairRuns.has(heldRollover.candidate_run_id));
         let state: MessageDeliveryReceiptDto["state"];
-        if (heldRollover) state = "run_unconfirmed";
+        if (decisionRepair) state = "unconfirmed";
+        else if (heldRollover) state = "run_unconfirmed";
         else if (requiredReplyExhausted) state = "retry_exhausted";
         else if (activation.state === "outcome_unknown") {
           if (!recovery) state = injection?.kind === "steer" && injection.state === "outcome_unknown"
@@ -659,7 +667,8 @@ export class CoordinationV3RuntimeCommunicationReadModel {
             ? { recoveryExecutionId: recoveryInjection.execution_id }
             : {}),
           state,
-          ...(heldRollover ? {contextRolloverHold:canRetryHeldHumanRollover(heldRollover)
+          ...(decisionRepair ? {taskDecisionRepairHold:true as const} : {}),
+          ...(heldRollover ? {contextRolloverHold:!decisionRepair && canRetryHeldHumanRollover(heldRollover)
             ? "retry_available" as const : "review_required" as const,
             contextRolloverAttemptId:heldRollover.continuation_activation_id} : {}),
           ...(activation.dispatch_policy === "next_run" && ["pending", "retry_pending"].includes(activation.state)
@@ -683,7 +692,7 @@ export class CoordinationV3RuntimeCommunicationReadModel {
           } : {}),
           ...(
             (state === "undelivered" || state === "run_unconfirmed" || state === "retry_exhausted" || state === "failed")
-            && (!heldRollover || canRetryHeldHumanRollover(heldRollover))
+            && !decisionRepair && (!heldRollover || canRetryHeldHumanRollover(heldRollover))
             && recipientCurrentlyAuthorized
             && this.runtimeScopeAuthority.recipientAuthorizedForActivationScope(
               activation.project_id,
@@ -701,7 +710,7 @@ export class CoordinationV3RuntimeCommunicationReadModel {
           ...(injection ? { injectionId: injection.id, injectionKind: injection.kind } : {}),
           ...(liveProgress ? { liveProgress } : {}),
           ...(recovery ? { recoveryAt: recovery.recover_at } : {}),
-          ...(recovery?.state === "grace_period" ? { canLetCurrentRunFinish: true } : {}),
+          ...(!decisionRepair && recovery?.state === "grace_period" ? { canLetCurrentRunFinish: true } : {}),
           ...(recovery?.recovery_activation_id
             ? { recoveryActivationId: recovery.recovery_activation_id }
             : {}),
