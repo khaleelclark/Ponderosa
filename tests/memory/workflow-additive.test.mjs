@@ -42,10 +42,31 @@ test('cancel compensates completed staged team/private memory on a preserved Cha
  const result=ok(await api(x.f,'POST',`/api/branches/installations/${plan.id}/cancel`,{}));assert.equal(result.state,'canceled',result.error);assert.equal(x.f.store.getAgent(staged.local_id),undefined);await x.unchanged();assert.equal(x.f.store.getAgentCreationOperation(staged.creation_operation_id)?.result?.memoryPlan,undefined);
 });
 
-test('partial physical memory write fails visibly, rolls back its rows, and same-plan retry adds no duplicate facts',async t=>{
- const x=await setup(t),plan=ok(await x.preview()),raw=x.f.memory.core.database.raw,get=raw.client.getCollection.bind(raw.client);let writes=0;
- raw.client.getCollection=async args=>{const c=await get(args),add=c.add.bind(c);c.add=async input=>{if(input.metadatas?.some(m=>m.host_package_operation)&&++writes===2)throw Error('Controlled second additive write failure');return add(input);};return c;};let state;try{state=ok(await confirm(x.f,plan.id));}finally{raw.client.getCollection=get;}
- assert.equal(state.state,'applying');assert.match(state.error,/Controlled second additive write failure/);await x.unchanged();const done=await retry(x.f,plan.id);assert.equal(done.state,'completed',done.error);const after=await rows(x.f,x.chat.id);assert.equal(after[0].ids.length,x.before[0].ids.length+3);assert.equal(after[1].ids.length,x.before[1].ids.length+1);assert.equal((await retry(x.f,plan.id)).state,'completed');assert.deepEqual(await rows(x.f,x.chat.id),after);noRuns(x.f);
+test("acknowledged staged write is compensated after a known read failure and same-plan retry is idempotent",async t=>{
+ const x=await setup(t),plan=ok(await x.preview()),raw=x.f.memory.core.database.raw,get=raw.client.getCollection.bind(raw.client);let writes=0,failedRead=false;
+ raw.client.getCollection=async args=>{const c=await get(args),add=c.add.bind(c),read=c.get.bind(c);
+  c.add=async input=>{const result=await add(input);if(input.metadatas?.some(m=>m.host_package_operation))writes++;return result;};
+  c.get=async input=>{if(writes===1&&!failedRead){failedRead=true;throw Error("Controlled post-write read failure");}return read(input);};return c;};
+ let state;try{state=ok(await confirm(x.f,plan.id));}finally{raw.client.getCollection=get;}
+ assert.equal(writes,1);assert.equal(failedRead,true);assert.equal(state.state,"applying");assert.match(state.error,/Controlled post-write read failure/);
+ assert.equal(x.f.memory.core.database.scopeHasUnsettledMutation("chat:"+x.chat.id),false);await x.unchanged();
+ const done=await retry(x.f,plan.id);assert.equal(done.state,"completed",done.error);const after=await rows(x.f,x.chat.id);
+ assert.equal(after[0].ids.length,x.before[0].ids.length+3);assert.equal(after[1].ids.length,x.before[1].ids.length+1);
+ assert.equal((await retry(x.f,plan.id)).state,"completed");assert.deepEqual(await rows(x.f,x.chat.id),after);noRuns(x.f);
+});
+
+test("lost staged write acknowledgement holds the workflow without retrying or deleting",async t=>{
+ const x=await setup(t),plan=ok(await x.preview()),raw=x.f.memory.core.database.raw,get=raw.client.getCollection.bind(raw.client);let writes=0,deletes=0;
+ raw.client.getCollection=async args=>{const c=await get(args),add=c.add.bind(c),remove=c.delete.bind(c);
+  c.add=async input=>{if(input.metadatas?.some(m=>m.host_package_operation)){writes++;const result=await add(input);if(writes===2)throw Error("Controlled lost staged write acknowledgement");return result;}return add(input);};
+  c.delete=async input=>{deletes++;return remove(input);};return c;};
+ try{
+  const state=ok(await confirm(x.f,plan.id));assert.equal(state.state,"applying");assert.match(state.error,/unknown outcome/);
+  assert.equal(writes,2);assert.equal(deletes,0);assert.equal(x.f.memory.core.database.scopeHasUnsettledMutation("chat:"+x.chat.id),true);
+  const held=ok(await confirm(x.f,plan.id));assert.match(held.error,/unknown outcome/);
+  assert.equal(writes,2,"a repeated confirmation does not resend an uncertain write");assert.equal(deletes,0,"a repeated confirmation does not compensate an uncertain write");
+  assert.equal(x.f.memory.core.database.scopeHasUnsettledMutation("chat:"+x.chat.id),true);noRuns(x.f);
+ }finally{raw.client.getCollection=get;}
 });
 
 test('destination edits during staged recovery require a new review and compensate only hidden additions',async t=>{
