@@ -97,7 +97,10 @@ for(const cyclic of [false,true])test(`published held ${cyclic?'cyclic':'acyclic
  const receipt=state.treeReceipt,agentIds=Object.values(receipt.agentMap),chatIds=Object.values(receipt.chatMap),branchIds=Object.values(receipt.branchMap);
  const childId=receipt.branchMap[f.child.branch.id],childChats=chatIds.filter(id=>f.store.getConversation(id)?.branchId===childId);
  const childAgents=agentIds.filter(id=>childChats.includes(f.store.getAgent(id)?.conversationId));
+ const rootChats=chatIds.filter(id=>f.store.getConversation(id)?.branchId===done.branchId);
+ const rootAgents=agentIds.filter(id=>rootChats.includes(f.store.getAgent(id)?.conversationId));
  assert.ok(childChats.length&&childAgents.length);
+ assert.ok(rootChats.length&&rootAgents.length,'root Branch owns a Chat and Agent to verify cleanup');
  const unrelated=f.store.sqlite.prepare('SELECT id FROM agents WHERE conversation_id IN (SELECT id FROM conversations WHERE branch_id IN (?,?))').all(f.parent.branch.id,f.child.branch.id).map(row=>row.id);
  assert.ok(unrelated.length);assert.ok(unrelated.every(id=>!agentIds.includes(id)));
  const stop=await f.app.inject({method:'POST',url:`/api/branches/installations/${p.id}/cancel`,payload:{}});
@@ -130,7 +133,14 @@ for(const cyclic of [false,true])test(`published held ${cyclic?'cyclic':'acyclic
   assert.ok(agentIds.every(id=>f.store.getAgent(id)));assert.ok(chatIds.every(id=>f.store.getConversation(id)));
  }else{
   assert.ok([200,202].includes(after.statusCode),after.body);
-  for(let i=0;i<16&&f.store.sqlite.prepare('SELECT 1 FROM branches WHERE id=?').get(done.branchId);i++)await f.app.inject({method:'DELETE',url:`/api/branches/${done.branchId}`});
+  for(let i=0;i<30&&f.store.sqlite.prepare('SELECT 1 FROM branches WHERE id=?').get(done.branchId);i++){
+   await new Promise(resolve=>setTimeout(resolve,150));
+   const retry=await f.app.inject({method:'DELETE',url:`/api/branches/${done.branchId}`});
+   assert.ok([200,202].includes(retry.statusCode),retry.body);
+  }
+  assert.equal(f.store.sqlite.prepare('SELECT 1 FROM branches WHERE id=?').get(done.branchId),undefined,'recovered root Branch is deleted');
+  assert.ok(rootChats.every(id=>!f.store.getConversation(id)),'root-owned Chats are deleted');
+  assert.ok(rootAgents.every(id=>!f.store.getAgent(id)),'root-owned Agents are deleted');
   assert.ok(f.store.sqlite.prepare('SELECT 1 FROM branches WHERE id=?').get(childId),'child Branch remains independently owned');
   assert.ok(childChats.every(id=>f.store.getConversation(id)),'child Chats are preserved');
   assert.ok(childAgents.every(id=>f.store.getAgent(id)),'child Agents are preserved');

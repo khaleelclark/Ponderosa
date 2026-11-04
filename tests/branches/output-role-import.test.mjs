@@ -116,7 +116,7 @@ test('deleting a published held Branch retires its exact roles and review withou
    store.sqlite.exec("CREATE TEMP TRIGGER refuse_canceled_compaction BEFORE UPDATE OF state ON branch_installation_plans WHEN NEW.state='canceled' BEGIN SELECT RAISE(ABORT,'controlled cancellation receipt failure'); END");
    await until(async()=>{
     const result=await f.api('DELETE',`/api/branches/${pending.branchId}`);
-    assert.ok([200,202,404,500].includes(result.status)||(result.status===409&&result.body.error==='controlled cancellation receipt failure'),JSON.stringify(result.body));
+    assert.ok([200,202,404].includes(result.status)||(result.status===409&&result.body.error==='controlled cancellation receipt failure'),JSON.stringify(result.body));
     return !store.getAgent(removed)&&!workspace.getPreferences().outputApps.importReviews?.[reviewId];
    },'deleted Branch Output marker cleanup');
    assert.equal(store.sqlite.prepare('SELECT state FROM branch_installation_plans WHERE id=?').get(plan.id).state,'canceling');
