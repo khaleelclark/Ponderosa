@@ -4,6 +4,17 @@ import type { ProviderContextRecoveryProgress, ProviderContextRecoveryRequest } 
 
 export class ContextRecoveryConflictError extends Error {}
 
+/** A completed turn can still contain an unconfirmed interruption. The
+ * acknowledged turn binds the session; the steer remains unknown work. */
+export const uncertainContextRecoverySourceSql = (run: string): string => `(
+  ${run}.status='outcome_unknown' OR (
+    ${run}.status='completed' AND ${run}.prompt_injection_state='injecting'
+    AND EXISTS (SELECT 1 FROM scheduler_prompt_injections turn
+      WHERE turn.run_id=${run}.id AND turn.kind='turn' AND turn.state='acknowledged')
+    AND EXISTS (SELECT 1 FROM scheduler_prompt_injections steer
+      WHERE steer.run_id=${run}.id AND steer.kind='steer' AND steer.state='outcome_unknown')
+  ))`;
+
 interface Row {
   id: string; agent_id: string; project_id: string; source_run_id: string; scope_key: string;
   provider_session_id: string; tool_contract_hash: string; source_fence: number;
@@ -47,12 +58,13 @@ export class CoordinationV3ContextRecoveryAuthority {
       if (this.active(input.agentId)) throw new ContextRecoveryConflictError("An explicit recovery hold already exists");
       if (!this.sqlite.prepare("SELECT 1 FROM agents WHERE id=? AND project_id=? AND active_session_id=? AND active_session_contract_hash=?")
           .get(input.agentId,input.projectId,input.providerSessionId,input.toolContractHash)) throw new ContextRecoveryConflictError("Accepted normal contract changed");
-      const source = this.sqlite.prepare(`SELECT id, status, provider_session_id, fencing_token, scope_key, project_id
-        FROM scheduler_runs WHERE agent_id=? AND prompt_injection_state<>'not_injected'
+      const source = this.sqlite.prepare(`SELECT r.id, r.status, r.provider_session_id, r.fencing_token, r.scope_key, r.project_id,
+        ${uncertainContextRecoverySourceSql('r')} AS eligible
+        FROM scheduler_runs r WHERE r.agent_id=? AND r.prompt_injection_state<>'not_injected'
         ORDER BY fencing_token DESC LIMIT 1`).get(input.agentId) as {
-          id:string;status:string;provider_session_id:string;fencing_token:number;scope_key:string;project_id:string;
+          id:string;status:string;provider_session_id:string;fencing_token:number;scope_key:string;project_id:string;eligible:number;
         } | undefined;
-      if (source?.id !== input.sourceRunId || source.status !== 'outcome_unknown' ||
+      if (source?.id !== input.sourceRunId || !source.eligible ||
           source.provider_session_id !== input.providerSessionId || source.project_id !== input.projectId ||
           source.fencing_token !== input.sourceFence || source.scope_key !== input.scopeKey) throw new ContextRecoveryConflictError("Recovery requires the exact idle uncertain source boundary");
       if (this.sqlite.prepare(`SELECT 1 FROM scheduler_runs WHERE agent_id=? AND status IN ('leased','running')
@@ -130,7 +142,7 @@ export class CoordinationV3ContextRecoveryAuthority {
   private assertSource(row: Row): void {
     if (!this.sqlite.prepare(`SELECT 1 FROM agents a JOIN scheduler_runs r ON r.id=? AND r.agent_id=a.id
       WHERE a.id=? AND a.active_session_id=? AND a.active_session_contract_hash=? AND a.project_id=? AND a.deleted_at IS NULL
-        AND r.scope_key=? AND r.project_id=a.project_id AND r.status='outcome_unknown' AND r.fencing_token=? AND r.provider_session_id=?
+        AND r.scope_key=? AND r.project_id=a.project_id AND ${uncertainContextRecoverySourceSql('r')} AND r.fencing_token=? AND r.provider_session_id=?
         AND NOT EXISTS (SELECT 1 FROM scheduler_runs newer WHERE newer.agent_id=a.id
           AND (newer.status IN ('leased','running') OR newer.fencing_token>r.fencing_token AND newer.prompt_injection_state<>'not_injected'))`)
       .get(row.source_run_id,row.agent_id,row.provider_session_id,row.tool_contract_hash,row.project_id,row.scope_key,row.source_fence,row.provider_session_id)) {

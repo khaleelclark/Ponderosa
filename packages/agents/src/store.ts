@@ -1,3 +1,4 @@
+import { uncertainContextRecoverySourceSql } from './coordination-v3-context-recovery-authority.js';
 import type {CanonicalGeneratedHooksProof} from '@ponderosa/core';
 import {validateGeneratedHookNamespaceProof} from './generated-hook-namespace-proof.js';
 import {destinationAdmissionHeld} from './coordination-v3-destination-staging.js';
@@ -502,7 +503,7 @@ export class AgentStore extends AgentEventSessionFacade {
    * candidates therefore cannot contaminate the old accepted session merely by
    * appearing later in the Agent event log. Legacy snapshots without a creating
    * execution ID return undefined so rollover fails closed. */
-  private acceptedProviderSessionBoundary(agentId: string): {
+  private acceptedProviderSessionBoundary(agentId: string, allowCompletedUnknownSteer = false): {
     sessionId: string; executionId: string; rolloverId?: string;
   } | undefined {
     const accepted = this.resumeSessionState(agentId);
@@ -523,40 +524,41 @@ export class AgentStore extends AgentEventSessionFacade {
     const rolloverId = snapshot?.type === "context_rollover_session_accepted" ? snapshot.rolloverId : undefined;
     if (!boundaryExecutionId) return undefined;
     const boundaryRun = this.client.prepare(`
-      SELECT provider_session_id, prompt_injection_state FROM scheduler_runs
-      WHERE id = ? AND agent_id = ?
+      SELECT r.provider_session_id, r.prompt_injection_state, (r.status='completed' AND ${uncertainContextRecoverySourceSql('r')}) AS recovery_eligible FROM scheduler_runs r
+      WHERE r.id = ? AND r.agent_id = ?
     `).get(boundaryExecutionId, agentId) as {
       provider_session_id: string | null;
-      prompt_injection_state: string;
+      prompt_injection_state: string; recovery_eligible: number;
     } | undefined;
     // Imported legacy logs may predate scheduler session binding.
     // They are not safe evidence for a new rollover boundary.
     if (!boundaryRun || boundaryRun.provider_session_id !== accepted.sessionId ||
-        boundaryRun.prompt_injection_state !== "injected") return undefined;
+        (boundaryRun.prompt_injection_state !== "injected" && !(allowCompletedUnknownSteer && boundaryRun.recovery_eligible))) return undefined;
     return { sessionId: accepted.sessionId, executionId: boundaryExecutionId, ...(rolloverId ? { rolloverId } : {}) };
   }
 
   /** Narrow recovery eligibility, independent of a completed boundary. This
    * observes uncertainty; it never certifies occupancy or authorizes input. */
   uncertainProviderContextRecoveryBoundary(agentId: string) {
-    const boundary = this.acceptedProviderSessionBoundary(agentId);
+    const boundary = this.acceptedProviderSessionBoundary(agentId, true);
     const accepted = this.resumeSessionState(agentId);
     if (!boundary || !accepted?.toolContractHash || this.acceptedProviderSessionContextUsage(agentId) ||
         this.acceptedProviderSessionInputEstimate(agentId)) return undefined;
-    const source = this.client.prepare(`SELECT id, status, provider_session_id, fencing_token, scope_key, project_id
-      FROM scheduler_runs WHERE agent_id=? AND prompt_injection_state<>'not_injected'
+    const source = this.client.prepare(`SELECT r.id, r.status, r.provider_session_id, r.fencing_token, r.scope_key, r.project_id,
+      ${uncertainContextRecoverySourceSql('r')} AS eligible
+      FROM scheduler_runs r WHERE r.agent_id=? AND r.prompt_injection_state<>'not_injected'
       ORDER BY fencing_token DESC LIMIT 1`).get(agentId) as {
-        id:string;status:string;provider_session_id:string;fencing_token:number;scope_key:string;project_id:string;
+        id:string;status:string;provider_session_id:string;fencing_token:number;scope_key:string;project_id:string;eligible:number;
       } | undefined;
-    if (source?.status !== "outcome_unknown" || source.provider_session_id !== boundary.sessionId) return undefined;
+    if (!source?.eligible || source.provider_session_id !== boundary.sessionId) return undefined;
     return { agentId, projectId:source.project_id, providerSessionId:boundary.sessionId,
       toolContractHash:accepted.toolContractHash, sourceRunId:source.id, sourceFence:source.fencing_token, scopeKey:source.scope_key };
   }
 
   /** Exact policy packet attributed to the currently accepted session, never
    * a later, unverified replacement candidate. */
-  acceptedProviderSessionInput(agentId: string): ProviderInputDto | undefined {
-    const boundary = this.acceptedProviderSessionBoundary(agentId);
+  acceptedProviderSessionInput(agentId: string, allowCompletedUnknownSteer = false): ProviderInputDto | undefined {
+    const boundary = this.acceptedProviderSessionBoundary(agentId, allowCompletedUnknownSteer);
     return boundary ? this.getProviderInput(boundary.executionId, true) : undefined;
   }
 
@@ -669,7 +671,7 @@ export class AgentStore extends AgentEventSessionFacade {
         AND event.seq=json_extract(recovery.progress_json,'$.contextUsageEventSequence')
       JOIN scheduler_runs source ON source.id=recovery.source_run_id
       WHERE recovery.agent_id=? AND recovery.provider_session_id=? AND recovery.tool_contract_hash=?
-        AND json_extract(recovery.progress_json,'$.phase')='context_accepted' AND source.status='outcome_unknown'
+        AND json_extract(recovery.progress_json,'$.phase')='context_accepted' AND ${uncertainContextRecoverySourceSql('source')}
         AND source.provider_session_id=recovery.provider_session_id AND source.fencing_token=recovery.source_fence
         AND NOT EXISTS(SELECT 1 FROM scheduler_runs newer WHERE newer.agent_id=recovery.agent_id
           AND newer.fencing_token>source.fencing_token AND newer.prompt_injection_state<>'not_injected')
@@ -692,8 +694,10 @@ export class AgentStore extends AgentEventSessionFacade {
     usage: Extract<LogEvent, { type: "context_usage" }>;
     observedAt: string; executionId: string; postObservationUtf8Bytes: number;
   } | undefined {
+    const recovered = this.acceptedProviderRecoveryContextUsage(agentId);
+    if (recovered) return recovered;
     const proof = this.acceptedProviderSessionCompletedRun(agentId);
-    if (!proof) return this.acceptedProviderRecoveryContextUsage(agentId);
+    if (!proof) return undefined;
     const { sessionId, run, start, terminal } = proof;
     const row = this.client.prepare(`SELECT substr(payload_json,1,4096) AS payload_json,
         length(CAST(payload_json AS BLOB)) AS bytes, created_at, seq

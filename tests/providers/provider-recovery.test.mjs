@@ -606,6 +606,73 @@ test('explicit unsupported recovery holds exact unknown context durably without 
  },{storeFactory:root=>store=new AgentStore(root),providerValidatesResumeBeforeTurn:true});
 });
 
+for (const reused of [false,true]) test(`completed Run with unknown steer requires explicit same-session context recovery (reused=${reused})`,{timeout:30000},async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Completed uncertain interruption');
+  const agent=reused?await f.createAgent(chat,'Existing session'):await f.createIdleAgent(chat,'First session');
+  f.plans.set(agent.id,[{hold:true}]);
+  await f.send(agent.id,'Original objective must be preserved');
+  await until(()=>f.turns.some(turn=>turn.agentId===agent.id && /Original objective/.test(turn.input.prompt)),'original input');
+  const session=f.sessions.get(agent.id);
+  const run=store.sqlite.prepare("SELECT * FROM scheduler_runs WHERE agent_id=? AND status='running' ORDER BY fencing_token DESC LIMIT 1").get(agent.id);
+  const sessionState=store.resumeSessionState(agent.id);
+  await f.send(agent.id,'Unconfirmed memory update',{activeRunDelivery:'steer'});
+  const injection=await until(()=>store.sqlite.prepare("SELECT * FROM scheduler_prompt_injections WHERE run_id=? AND kind='steer' AND state='outcome_unknown'").get(run.id),'uncertain steer');
+  session.finish();
+  const completed=await until(()=>store.sqlite.prepare("SELECT * FROM scheduler_runs WHERE id=? AND status='completed' AND prompt_injection_state='injecting'").get(run.id),'completed Run with uncertain steer');
+  const turnCount=f.turns.length, commandCount=f.commands.length;
+  const obligations=store.sqlite.prepare('SELECT * FROM required_reply_obligations WHERE run_id=? ORDER BY source_activation_id').all(run.id);
+  const originalInputs=store.sqlite.prepare('SELECT a.id,a.payload_json FROM agent_activations a JOIN scheduler_run_activations attached ON attached.activation_id=a.id WHERE attached.run_id=? ORDER BY a.id').all(run.id);
+  assert.ok(JSON.stringify(originalInputs).includes('Original objective must be preserved'));
+  assert.ok(JSON.stringify(originalInputs).includes('Unconfirmed memory update'));
+  await f.send(agent.id,'Later independent request');
+  await until(()=>store.sqlite.prepare("SELECT 1 FROM scheduler_runs WHERE agent_id=? AND id<>? AND fencing_token>? AND status='failed' AND prompt_injection_state='not_injected'").get(agent.id,run.id,run.fencing_token),'later refused start');
+  assert.equal(f.turns.length,turnCount,'Unmeasurable session receives no new provider input');
+  const boundary=store.uncertainProviderContextRecoveryBoundary(agent.id);
+  assert.ok(boundary,'The exact completed Run and unknown steer must expose explicit recovery');
+  assert.equal(boundary.sourceRunId,run.id);assert.equal(boundary.providerSessionId,sessionState.sessionId);
+  assert.equal(store.acceptedProviderSessionContextUsage(agent.id),undefined);
+  for(const mutate of [
+   () => store.sqlite.prepare("UPDATE scheduler_prompt_injections SET state='submitted' WHERE id=?").run(injection.id),
+   () => store.sqlite.prepare("UPDATE scheduler_prompt_injections SET state='submitted' WHERE run_id=? AND kind='turn'").run(run.id),
+  ]) assert.throws(()=>store.sqlite.transaction(()=>{
+   mutate();assert.equal(store.uncertainProviderContextRecoveryBoundary(agent.id),undefined,'Recovery requires both exact unknown steer and acknowledged turn');
+   throw Error('restore held evidence');
+  })(),/restore held evidence/);
+  const body={idempotencyKey:'completed-steer-recovery',expectedSessionId:boundary.providerSessionId,expectedSourceRunId:run.id,
+   expectedToolContractHash:boundary.toolContractHash,acknowledgeUnknownEffects:true};
+  const result=await f.api('POST',`/api/agents/${agent.id}/context-recoveries`,body);
+  assert.equal(result.status,200,JSON.stringify(result.body));
+  assert.equal(result.body.request.progress.phase,'context_accepted');assert.equal(result.body.sourceWork,'held_unknown');
+  assert.equal(f.commands.length,commandCount+1);assert.equal(f.commands.at(-1).sessionId,sessionState.sessionId);
+  assert.equal(f.turns.length,turnCount,'Context repair must not replay either task');
+  assert.equal(store.acceptedProviderSessionContextUsage(agent.id)?.usage.usedTokens,1000);
+  assert.deepEqual(store.sqlite.prepare('SELECT * FROM scheduler_runs WHERE id=?').get(run.id),completed);
+  assert.deepEqual(store.sqlite.prepare('SELECT * FROM scheduler_prompt_injections WHERE id=?').get(injection.id),injection);
+  assert.deepEqual(store.sqlite.prepare('SELECT * FROM required_reply_obligations WHERE run_id=? ORDER BY source_activation_id').all(run.id),obligations);
+  assert.deepEqual(store.sqlite.prepare('SELECT a.id,a.payload_json FROM agent_activations a JOIN scheduler_run_activations attached ON attached.activation_id=a.id WHERE attached.run_id=? ORDER BY a.id').all(run.id),originalInputs);
+  assert.equal(store.resumeSessionState(agent.id).sessionId,sessionState.sessionId);
+  const replay=await f.api('POST',`/api/agents/${agent.id}/context-recoveries`,body);
+  assert.equal(replay.body.replayed,true);assert.equal(f.commands.length,commandCount+1);
+  await f.reopen();
+  assert.equal(store.acceptedProviderSessionContextUsage(agent.id)?.usage.usedTokens,1000);
+  assert.equal(store.sqlite.prepare('SELECT state FROM scheduler_prompt_injections WHERE id=?').get(injection.id).state,'outcome_unknown');
+  const reopenedReplay=await f.api('POST',`/api/agents/${agent.id}/context-recoveries`,body);
+  assert.equal(reopenedReplay.body.replayed,true);assert.equal(f.commands.length,commandCount+1);
+  assert.equal(f.turns.length,turnCount);
+  f.ok(await f.api('POST',`/api/agents/${agent.id}/context-recoveries/${result.body.request.id}/dismiss`,{acknowledgeStillBlocked:true}));
+  await f.send(agent.id,'Separate new task after context repair');
+  const next=await until(()=>f.turns.find(turn=>turn.agentId===agent.id && /Separate new task after context repair/.test(turn.input.prompt)),'new task following explicit recovery');
+  assert.equal(next.sessionId,sessionState.sessionId,'The original provider context is retained');
+  assert.equal(f.turns.length,turnCount+1,'Only the explicit separate task may start');
+  assert.equal(store.sqlite.prepare('SELECT state FROM scheduler_prompt_injections WHERE id=?').get(injection.id).state,'outcome_unknown');
+ },{storeFactory:root=>store=new AgentStore(root),providerValidatesResumeBeforeTurn:true,
+  steeringResponse:async()=>{throw Error('Controlled unknown delivery');},
+  providerContextRecoverySupport:{status:'managed_compaction',crashReconciliation:'hold_without_native_query'},
+  providerCommandResult:({sessionId})=>({outcome:'completed',contextUsage:{usedTokens:1000,windowTokens:200000,providerSessionGeneration:sessionId}})});
+});
+
 test('recovery refuses a completed or busy source rather than opening a proof turn',{timeout:30000},async t=>{
  let store;
  await withFixture(t,async f=>{

@@ -233,7 +233,7 @@ registerContextRecoveryRoutes(app, {store,coordinationV3,notifyScheduler,
     const agent = store.getAgent(recovery.agentId);
     if (!agent) throw new Error("Recovery Agent no longer exists");
     const engine = engines.get(agent.activeEngine);
-    const packet = store.acceptedProviderSessionInput(agent.id);
+    const packet = store.acceptedProviderSessionInput(agent.id, true);
     const contract = packet?.sourceManifest.schemaVersion === 3 ? packet.sourceManifest.normalRuntimeContract : undefined;
     // Legacy unknown sessions cannot be reconstructed from hashes or authored Chat.
     if (!engine?.adapter.openSession || !contract || packet?.exactSystemPrompt === undefined ||
@@ -242,7 +242,7 @@ registerContextRecoveryRoutes(app, {store,coordinationV3,notifyScheduler,
     const project = store.getChatContext(agent.conversationId);
     if (!project || project.id !== recovery.projectId) return;
     const assertRecoveryAuthentication = () => {
-      const current = store.acceptedProviderSessionInput(agent.id);
+      const current = store.acceptedProviderSessionInput(agent.id, true);
       if (current?.executionId !== packet.executionId ||
           store.getAgent(agent.id)?.activeEngine !== contract.engineId ||
           !retainedPermissionsMatch(agent.id, agent.activeEngine, contract, recovery.sourceRunId)) {
