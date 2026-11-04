@@ -30,7 +30,11 @@ export function summarizeTimings(sessions){
   const namespace=session.namespace??`diagnostic-${index}`;if(namespaces.has(namespace))throw Error('Duplicate document namespace');namespaces.add(namespace);
   if(session.documentId){if(documents.has(session.documentId))throw Error('Duplicate document identity');documents.add(session.documentId);}
   if(Number.isFinite(session.window?.timeOrigin)){if(origins.has(session.window.timeOrigin))throw Error('Duplicate document time origin');origins.add(session.window.timeOrigin);}
-  const grouped=new Map();for(const entry of session.events)if(entry.interactionId&&Number.isFinite(entry.duration)&&entry.duration>=0)grouped.set(entry.interactionId,Math.max(grouped.get(entry.interactionId)??0,entry.duration));
+  // Chrome can increment interactionCount yet expose an entry with interactionId
+  // zero (for example, selection autoscroll). An observed zero-ID entry may be
+  // slow and cannot safely be classified as a fast censored interaction.
+  const ambiguousInteractionId=session.events.some(entry=>!Number.isSafeInteger(entry.interactionId)||entry.interactionId<=0);
+  const grouped=new Map();for(const entry of session.events)if(Number.isSafeInteger(entry.interactionId)&&entry.interactionId>0&&Number.isFinite(entry.duration)&&entry.duration>=0)grouped.set(entry.interactionId,Math.max(grouped.get(entry.interactionId)??0,entry.duration));
   const eligible=session.lcp.filter(e=>!session.cutoff||e.startTime<=session.cutoff.time);
   if(!eligible.length)throw Error('Missing eligible LCP, never substitute zero');
   const values=[...grouped.values()];durations.push(...values);
@@ -49,10 +53,10 @@ export function summarizeTimings(sessions){
   const terminal=session.health?.terminalDelivery;
   // The installed collector intentionally supplies supported:false until this browser contract is independently established.
   const terminalCoverage=terminal?.supported===true&&terminal.basis==='independently-reviewed-browser-delivery-contract'&&Number.isFinite(terminal.coversThrough)&&terminal.coversThrough>=window?.end&&Number.isFinite(terminal.observedAt)&&terminal.observedAt>=terminal.coversThrough;
-  const supported=Boolean(occurrenceMatches&&eventWindow&&taskLedger&&terminalCoverage&&identity&&bounded&&lifecycle&&health&&session.finalized===true&&session.visibility==='visible'&&session.countSupport==='performance.interactionCount'&&Number.isInteger(session.totalInteractions)&&session.totalInteractions>=values.length);
+  const supported=Boolean(!ambiguousInteractionId&&occurrenceMatches&&eventWindow&&taskLedger&&terminalCoverage&&identity&&bounded&&lifecycle&&health&&session.finalized===true&&session.visibility==='visible'&&session.countSupport==='performance.interactionCount'&&Number.isInteger(session.totalInteractions)&&session.totalInteractions>=values.length);
   if(!grouped.size&&!(Number.isInteger(session.totalInteractions)&&session.totalInteractions>0))throw Error('Missing qualified discrete interactions, never substitute zero');
   complete&&=supported;if(supported){total+=session.totalInteractions;censored+=session.totalInteractions-values.length;}
-  return {namespace,terminalCoverage,taskLedger:Boolean(taskLedger),eventWindow,quantizationToleranceMs,observedInteractions:values.length,totalInteractions:session.totalInteractions??null,censored:supported?session.totalInteractions-values.length:null,lcp:eligible.at(-1).startTime,lcpCutoff:session.cutoff??null,complete:supported,zeroIdEntries:session.events.filter(e=>!e.interactionId).length};
+  return {namespace,terminalCoverage,taskLedger:Boolean(taskLedger),eventWindow,ambiguousInteractionId,quantizationToleranceMs,observedInteractions:values.length,totalInteractions:session.totalInteractions??null,censored:supported?session.totalInteractions-values.length:null,lcp:eligible.at(-1).startTime,lcpCutoff:session.cutoff??null,complete:supported,zeroIdEntries:session.events.filter(e=>!e.interactionId).length};
  });
  durations.sort((a,b)=>a-b);const observedP75=durations.length?durations[Math.ceil(.75*durations.length)-1]:null,rank=Math.ceil(.75*total);
  // Mixed thresholds cannot establish one subfloor population.
