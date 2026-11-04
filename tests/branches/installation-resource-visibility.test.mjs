@@ -6,6 +6,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {AgentStore,BranchStore,CoordinationV3Store,activeChatOwnerSql,activeAgentOwnerSql} from '../../packages/agents/dist/index.js';
 import {CoordinationV3RuntimeScopeAuthority} from '../../packages/agents/dist/coordination-v3-runtime-scope-authority.js';
+import {branchInstallationHeld} from '../../packages/agents/dist/branch-installation-hold.js';
 import {withFixture} from '../shared/fixture.mjs';
 
 function addPlan(db,id,branchId,state='applying'){
@@ -29,6 +30,13 @@ test('unfinished and missing Branch plans hold queued work without failing it or
  const request=coordination.coordinate({projectId:project.id,conversationId:chat.id,actorScope:'user:fixture',idempotencyKey:'before-plan',requests:[{recipientAgentId:agent.id,lifetime:{kind:'indefinite'},payload:{text:'Preserve this request'}}]}).requestIds[0];
  const before=db.prepare('SELECT id,state FROM agent_activations WHERE agent_id=?').get(agent.id);assert.ok(before);
  const plan=randomUUID();addPlan(db,plan,owner.id);link(db,owner.id,plan,chat.id,agent.id);
+ // Verify both named parameters, including the repeated Agent expression,
+ // with Agent-only, Chat-only, paired and unrelated inputs.
+ assert.equal(branchInstallationHeld(db,agent.id,undefined),true);
+ assert.equal(branchInstallationHeld(db,undefined,chat.id),true);
+ assert.equal(branchInstallationHeld(db,agent.id,chat.id),true);
+ assert.equal(branchInstallationHeld(db,other.id,otherChat.id),false);
+ assert.equal(branchInstallationHeld(db,undefined,undefined),false);
  // Tree publication moves the Chat away from the plan's original Branch.
  db.prepare('UPDATE conversations SET branch_id=? WHERE id=?').run(descendant.id,chat.id);
  const scope=new CoordinationV3RuntimeScopeAuthority(db);
@@ -50,6 +58,7 @@ test('unfinished and missing Branch plans hold queued work without failing it or
  assert.equal(coordination.leaseNextRun({workerId:'missing'}),undefined);
  assert.equal(db.prepare('SELECT state FROM agent_activations WHERE id=?').get(before.id).state,before.state);
  addPlan(db,plan,owner.id,'completed');
+ assert.equal(branchInstallationHeld(db,agent.id,chat.id),false);
  assert.deepEqual(visible(),[true,true]);
  const released=coordination.leaseNextRun({workerId:'released'});assert.equal(released.agentId,agent.id);
  coordination.markRunStarted(released.runId,released.fencingToken);

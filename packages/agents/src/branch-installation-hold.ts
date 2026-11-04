@@ -24,5 +24,5 @@ export function branchInstallationHeld(db:Database.Database,agentId?:string,conv
  const tables=branchInstallationTables(db);
  if(tables==='none')return false;
  if(tables==='partial')return true;
- return Boolean(db.prepare(`SELECT 1 WHERE ${branchInstallationHoldSql('?1','?2')}`).get(agentId??null,conversationId??null));
+ return Boolean(db.prepare(`SELECT 1 WHERE ${branchInstallationHoldSql('@agentId','@conversationId')}`).get({agentId:agentId??null,conversationId:conversationId??null}));
 }
