@@ -6,7 +6,7 @@ import { ApiRequestError } from "../api/types";
 import { definitiveSubmissionStatus } from "./idempotentAttempt";
 import { resolveConversationEngine } from "../conversationEngine";
 import { queryKeys } from "../queryKeys";
-import { ensureCreationAttemptPersisted, readCreationAttempts, saveCreationAttempts, sameCreationOwner, sameCreationAttempt, submitCreationAttempt, type ChatCreationAttempt, type ChatCreationOwner } from "./chatCreationAttempts";
+import { ensureCreationAttemptPersisted, mayRecordCreationReceipt, mayRetryCreationAttempt, readDurableChatAttempts, saveCreationAttempts, sameCreationOwner, sameCreationAttempt, submitCreationAttempt, type ChatCreationAttempt, type ChatCreationOwner } from "./chatCreationAttempts";
 
 /** A transient entry, not a setup screen: persist an empty Chat, then open its
  * normal workspace. The route identity survives refresh and exact retries. */
@@ -30,10 +30,12 @@ export function NewChatComposer({ creationKey, engines, enginesLoaded = true, on
     return () => { mounted.current = false; };
   }, []);
   useEffect(() => { onPendingChange?.(busy); }, [busy, onPendingChange]);
-  const retire = (key: string) => {
-    // A late response must not overwrite another + click's newer journal entry.
-    const next = readCreationAttempts().filter(item => !(item.key === key && sameCreationOwner(item.owner, owner)));
-    saveCreationAttempts(next);
+  const retire = (attempt:ChatCreationAttempt):boolean => {
+    try {
+      const journal=readDurableChatAttempts();
+      if(!mayRetryCreationAttempt(journal,attempt))return false;
+      return saveCreationAttempts(journal.filter(item=>!sameCreationAttempt(item,attempt)));
+    }catch{return false;}
   };
   const open = (chat: Pick<ConversationDto, "id" | "projectId">) => {
     void queryClient.invalidateQueries({ queryKey: queryKeys.projects.all }).catch(() => {});
@@ -42,7 +44,10 @@ export function NewChatComposer({ creationKey, engines, enginesLoaded = true, on
   };
   const create = async (retry?: ChatCreationAttempt) => {
     if (locked.current || !creationKey) return;
-    const saved = retry ?? readCreationAttempts().find(item => item.key === creationKey && sameCreationOwner(item.owner, owner));
+    let journal:ChatCreationAttempt[];
+    try { journal=readDurableChatAttempts(); }
+    catch { setError("Chat creation storage is unavailable or unreadable. Preserve browser data and recover the earlier request."); return; }
+    const saved = retry ?? journal.find(item => item.key === creationKey && sameCreationOwner(item.owner, owner));
     const engineId = resolveConversationEngine(undefined, engines);
     if (!saved && !engineId) {
       setError("No provider is configured. Configure a provider, then open a new Chat.");
@@ -54,6 +59,10 @@ export function NewChatComposer({ creationKey, engines, enginesLoaded = true, on
       key: creationKey, ...(owner ? {owner} : {}),
       input: { label: "New Chat", defaultEngine: engineId as CreateProjectRequest["defaultEngine"] },
     };
+    if (current.origin === "import_destination") {
+      setError("Use Recover import destination to review this saved request.");
+      return;
+    }
     if (!ensureCreationAttemptPersisted(current)) {
       setError("Browser storage is unavailable. Enable it so an unconfirmed Chat creation can be retried safely.");
       return;
@@ -65,7 +74,12 @@ export function NewChatComposer({ creationKey, engines, enginesLoaded = true, on
       if (owner) void queryClient.invalidateQueries({ queryKey: ["branch-chats", owner.branchId] }).catch(() => {});
       // History/settings can revisit a committed key even after navigation.
       // Keep its exact original input and a completion receipt, not a new tuple.
-      const journal = readCreationAttempts();
+      let journal:ChatCreationAttempt[];
+      try { journal=readDurableChatAttempts(); }
+      catch { if (mounted.current) setError("Chat was saved, but its local receipt could not be saved. The original request is retained."); return; }
+      if (!mayRecordCreationReceipt(journal, current, chat)) {
+        throw new Error("Destination receipt conflicts with saved information. The original evidence is retained.");
+      }
       const completed = { ...current, chat: { id: chat.id, projectId: chat.projectId } };
       if (!saveCreationAttempts([...journal.filter(item => !sameCreationAttempt(item, current)), completed])) {
         // The already-persisted original attempt remains safe for exact replay.
@@ -74,10 +88,10 @@ export function NewChatComposer({ creationKey, engines, enginesLoaded = true, on
       }
       open(chat);
     } catch (failure) {
-      const definite = failure instanceof ApiRequestError && definitiveSubmissionStatus(failure.status, failure.message) &&
+      const definite = current.origin !== "import_destination" && failure instanceof ApiRequestError && definitiveSubmissionStatus(failure.status, failure.message) &&
         !(failure.status === 409 && /reused|replay conflict/iu.test(failure.message));
-      if (definite && !current.chat) retire(current.key);
-      if (mounted.current) setError(`${failure instanceof Error ? failure.message : String(failure)}${definite
+      const retired=definite && !current.chat && retire(current);
+      if (mounted.current) setError(`${failure instanceof Error ? failure.message : String(failure)}${retired
         ? " Correct the provider settings and retry."
         : " Creation is unconfirmed. Retry to open the same Chat if it was created."}`);
     } finally {

@@ -3,7 +3,8 @@ import {markWorkspaceResourceUsed} from "../../workspaceRecency";
 import {normalizeResetPages,uniqueBy} from "../../collections";
 import AddIcon from "@mui/icons-material/Add";
 import {NewChatComposer} from "../NewChatComposer";
-import {readCreationAttempts, sameCreationOwner} from "../chatCreationAttempts";
+import {ChatCreationRecovery} from "../ChatCreationRecovery";
+import {readCreationAttempts, sameCreationOwner, isOrdinaryPendingChatAttempt} from "../chatCreationAttempts";
 import {PrimaryHeaderActionsScope} from '../PrimaryHeaderActions';
 import {BranchNotifications} from "./BranchNotifications";
 import {useWorkspacePreferences,useWorkspacePreferencesWriter} from '../../hooks/queries';
@@ -57,7 +58,9 @@ export function BranchChats({branchId,engines,executionId,branchRoute,onNavigate
  useEffect(()=>{if(!branchRoute.creationKey&&!routeAgentId&&!chatId&&chats.data?.length===1){const c=chats.data[0]!;openChat(c.id,c.projectId,true)}},[chatId,chats.data,branchRoute.creationKey,routeAgentId]);
  useEffect(()=>{const context=owner.data,targetExecution=context?.executionId??undefined;if(!branchRoute.creationKey&&chatId&&context?.branchId&&(context.branchId!==branchId||targetExecution!==(executionId??undefined)||branchRoute.chatId!==context.id))onNavigate({branchId:context.branchId,tab:'chats',executionId:targetExecution,chatId:context.id,workspace:route?.projectId===context.projectId?route:{kind:'conversation',projectId:context.projectId,conversationId:context.id}},true)},[branchId,chatId,executionId,owner.data,branchRoute.chatId,branchRoute.creationKey,route]);
  const creationOwner={product:'branches' as const,branchId};
- const pendingAttempt=readCreationAttempts().find(item=>sameCreationOwner(item.owner,creationOwner)&&!item.chat);
+ const creationAttempts=readCreationAttempts();
+ const pendingAttempt=creationAttempts.find(item=>isOrdinaryPendingChatAttempt(item,creationOwner));
+ const pendingImportAttempts=creationAttempts.filter(item=>sameCreationOwner(item.owner,creationOwner)&&!item.chat&&item.origin==='import_destination');
  const creationAllowed=!standalone&&branchRoute.branchId===branchId&&branchRoute.tab==='chats'&&!branchRoute.global&&!executionId;
  const creationKey=creationAllowed?branchRoute.creationKey:undefined;
  const starting=useRef(false),currentRoute=useRef(branchRoute);currentRoute.current=branchRoute;
@@ -103,6 +106,7 @@ export function BranchChats({branchId,engines,executionId,branchRoute,onNavigate
   {searchText&&searches.error&&<Alert severity="error" action={<Button onClick={()=>void searches.refetch()}>Retry search</Button>}>Chats could not be searched. {searches.error.message}</Alert>}
   {creationKey&&<NewChatComposer key={creationKey} creationKey={creationKey} owner={creationOwner} inline engines={engines} enginesLoaded={enginesLoaded} onCreated={created} onCancel={()=>onNavigate({...branchRoute,creationKey:undefined},true)} onConfigureProvider={()=>onNavigate({...branchRoute,global:'providers'})}/>}
   {!creationKey&&creationAllowed&&pendingAttempt&&<Button onClick={startChat}>Retry opening Chat</Button>}
+  {!creationKey&&creationAllowed&&pendingImportAttempts.length>0&&<ChatCreationRecovery key={pendingImportAttempts.map(item=>item.key).join(':')} owner={creationOwner} importOnly onCreated={(projectId,conversationId)=>{void client.invalidateQueries({queryKey:['branch-chats',branchId]});openChat(conversationId,projectId);}}/>}
   {routedAgent.error&&<Alert severity="error" action={<Button onClick={()=>void routedAgent.refetch()}>Retry Agent</Button>}>The linked Agent is unavailable in Branches.</Alert>}
   {error&&<Alert severity="error" onClose={()=>setError('')}>{error}</Alert>}
   {chats.error&&<Alert severity="error" action={<Button onClick={()=>void chats.refetch()}>Retry Chats</Button>}>Chats could not be loaded. {chats.error.message}</Alert>}

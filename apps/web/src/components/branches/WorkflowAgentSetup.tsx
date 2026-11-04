@@ -11,13 +11,13 @@ import {AgentsTab} from '../AgentsTab';
 import {NewChatComposer} from '../NewChatComposer';
 import {createClientId} from '../../clientId';
 import {realApi,requestJson} from '../../api/real';
-import {readCreationAttempts,sameCreationOwner} from '../chatCreationAttempts';
+import {readCreationAttempts,isOrdinaryPendingChatAttempt} from '../chatCreationAttempts';
 import type {AgentSetupRequest} from './AgentStepFields';
 /** Real-resource creation composes the shared Chat, Agent and team owners; it never publishes a workflow. */
 export function WorkflowAgentSetup({branchId,chatId,request,engines,onComplete,onClose,onPendingChange}:{branchId:string;chatId:string;request:AgentSetupRequest;engines:EngineDto[];onComplete(agent:AgentDto):void;onClose():void;onPendingChange(pending:boolean):void}):JSX.Element {
  const client=useQueryClient(),[selectedChat,setSelectedChat]=useState(chatId),[root,setRoot]=useState<AgentDto|undefined>(request.kind==='organization'?request.agent:undefined),[memberManager,setMemberManager]=useState<string>(),[editing,setEditing]=useState(request.kind==='edit'?request.agent:undefined),[pending,setPending]=useState(false),locked=useRef(false);
  const owner={product:'branches' as const,branchId};
- const [creationKey]=useState(()=>readCreationAttempts().find(attempt=>sameCreationOwner(attempt.owner,owner)&&!attempt.chat)?.key??createClientId());
+ const [creationKey]=useState(()=>readCreationAttempts().find(attempt=>isOrdinaryPendingChatAttempt(attempt,owner))?.key??createClientId());
  const context=useQuery({queryKey:['branch-context',selectedChat],queryFn:()=>requestJson<BranchContextDto>(`/api/branches/contexts/${selectedChat}`),enabled:Boolean(selectedChat)});
  const chat=context.data,eligible=chat?.branchId===branchId&&!chat.executionId;
  const project=useQuery({queryKey:['project',chat?.projectId],queryFn:()=>realApi.getProject(chat!.projectId),enabled:eligible});

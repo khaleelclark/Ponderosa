@@ -565,7 +565,7 @@ test('creation journal scopes Branch identities, retains ordinary legacy attempt
  const original=globalThis.window,storage=creationStorage();globalThis.window={sessionStorage:storage};
  try{const input={label:'New Chat',defaultEngine:'codex'},legacy={key:'ordinary',input},branch={key:'branch',owner:{product:'branches',branchId:'one'},input};
   storage.value=JSON.stringify([legacy,branch,{...branch,key:'invalid',owner:{product:'other',branchId:'one'}},{...branch,key:'invalid2',owner:{product:'branches'}}]);assert.deepEqual(creationJournal.readCreationAttempts(),[legacy,branch]);assert.equal(creationJournal.sameCreationAttempt(branch,{...branch,owner:undefined}),false);assert.equal(creationJournal.sameCreationOwner(branch.owner,{product:'branches',branchId:'two'}),false);
-  storage.blocked=true;assert.equal(creationJournal.ensureCreationAttemptPersisted(branch),false,'Memory fallback cannot authorize dispatch');storage.blocked=false;assert.equal(creationJournal.ensureCreationAttemptPersisted(branch),true);
+  storage.blocked=true;assert.equal(creationJournal.ensureCreationAttemptPersisted(branch),false,'Memory fallback cannot authorize dispatch');storage.blocked=false;const originalBytes=storage.value;assert.equal(creationJournal.ensureCreationAttemptPersisted(branch),false,'Malformed unrelated entries prevent dispatch');assert.equal(storage.value,originalBytes,'Unreadable evidence must not be overwritten');
  }finally{globalThis.window=original;}
 });
 

@@ -3,6 +3,7 @@ import {PendingAgentImportRecovery} from './PendingAgentImportRecovery';
 import {fingerprintAgentImport} from './agentImportFingerprint';
 import {agentImportFingerprintHeader,agentImportOperationMatches,listPendingAgentImports,releasePendingAgentImport,retainPendingAgentImport,type AgentImportMetadata,type PendingAgentImport} from './agentImportRecovery';
 import {currentProductScope} from '../api/productScope';
+import {ensureCreationAttemptPersisted,mayRecordCreationReceipt,mayRetryCreationAttempt,readDurableChatAttempts,saveCreationAttempts,sameCreationAttempt,sameCreationOwner,submitCreationAttempt,type ChatCreationAttempt} from './chatCreationAttempts';
 
 import {LifecycleReview} from './lifecycle/LifecycleReview';
 import {NativeApplications,PostImportAccessReview} from './PostImportAccessReview';
@@ -50,8 +51,6 @@ import { ChatInstructionsImportChoice, chatInstructionsResolution, type ChatInst
 const MAX_IMPORT_FILE_BYTES = AGENT_PACKAGE_MAX_BYTES;
 const LARGE_PASTE_CHARACTERS = 256 * 1024;
 
-
-
 export function ImportAgentForm({
   projectId: sourceProjectId,
   engines,
@@ -83,13 +82,57 @@ export function ImportAgentForm({
   const [newFolderName,setNewFolderName]=useState('');
   const [newChatEngine,setNewChatEngine]=useState('');
   const createChatRequestId=useRef(createClientId());
+  const [creationAttempt,setCreationAttempt]=useState<ChatCreationAttempt>();
+  const creationAttemptRef=useRef<ChatCreationAttempt>();
+  const product=currentProductScope();
   const [activateWorkingFiles,setActivateWorkingFiles]=useState(false);
   const [confirmSharedRoot,setConfirmSharedRoot]=useState(false);
   const createDestination=useMutation({mutationFn:async()=>{
-    const engine=engines.find(item=>item.id===newChatEngine&&engineIsAvailable(item));
-    if(!engine||!newChatLabel.trim()||!newFolderName.trim())throw new Error('Choose a name, new managed folder name and available engine.');
-    return api.createChat({label:newChatLabel.trim(),createFolderName:newFolderName.trim(),defaultEngine:engine.id},createChatRequestId.current);
-  },onSuccess:chat=>{setError(undefined);setCreatedChat(chat);setConversationId(chat.id);setConfirmSharedRoot(false);},onError:cause=>setError((cause as Error).message),onSettled:()=>{pendingRef.current=false;onPendingChange?.(false);}});
+    let attempt=creationAttemptRef.current;
+    if(!attempt){
+      const engine=engines.find(item=>item.id===newChatEngine&&engineIsAvailable(item));
+      if(!engine||!newChatLabel.trim()||!newFolderName.trim())throw new Error('Choose a name, new managed folder name and available engine.');
+      const selected=conversations.find(chat=>chat.id===conversationId);
+      if(product==='branches'&&(!selected?.branchId||selected.executionId))throw new Error('Choose a persistent Branch Chat to identify the destination workflow.');
+      if(product==='dev'&&selected?.branchId)throw new Error('Choose a Chat in this product.');
+      const owner=product==='branches'?{product:'branches' as const,branchId:selected!.branchId!}:undefined;
+      const input={label:newChatLabel.trim(),createFolderName:newFolderName.trim(),defaultEngine:engine.id};
+      // On a reopened form, the same explicit request retries its durable key.
+      const journal=readDurableChatAttempts();
+      const previous=journal.filter(item=>item.origin==='import_destination'&&!item.chat&&sameCreationOwner(item.owner,owner)&&JSON.stringify(item.input)===JSON.stringify(input));
+      if(previous.length>1)throw Error('Multiple earlier destination requests have these details. Recover the original request before continuing.');
+      attempt=previous[0]??{key:createChatRequestId.current,origin:'import_destination',...(owner?{owner}:{}),input};
+      if(previous.length ? !mayRetryCreationAttempt(journal,attempt) : journal.some(item=>sameCreationAttempt(item,attempt!)))
+        throw Error('Saved destination request changed or has a receipt; it remains preserved.');
+      if(!ensureCreationAttemptPersisted(attempt))throw new Error('Browser storage is unavailable. No destination was created.');
+      creationAttemptRef.current=attempt;setCreationAttempt(attempt);
+    }else {
+      if(!mayRetryCreationAttempt(readDurableChatAttempts(),attempt))throw new Error('Saved destination request changed or has a receipt; it remains preserved.');
+      if(!ensureCreationAttemptPersisted(attempt))throw new Error('Browser storage is unavailable. The original destination request is retained.');
+    }
+    const chat=await submitCreationAttempt(attempt);
+    if(!chat.id||!chat.projectId||(attempt.owner ? chat.branchId!==attempt.owner.branchId||Boolean(chat.executionId) : Boolean(chat.branchId)))
+      throw new Error('Destination receipt does not match the requested product and workflow.');
+    return {chat,attempt};
+  },onSuccess:({chat,attempt})=>{
+    let saved=false,matchingEvidence=false;
+    try{
+      const journal=readDurableChatAttempts();
+      if(mayRecordCreationReceipt(journal,attempt,chat)){
+        matchingEvidence=true;
+        saved=saveCreationAttempts([...journal.filter(item=>!sameCreationAttempt(item,attempt)),{...attempt,chat:{id:chat.id,projectId:chat.projectId}}]);
+      }
+    }catch{/* Keep the original evidence when the journal cannot be read. */}
+    if(!matchingEvidence){setError('Destination receipt conflicts with saved information, or the saved information is unavailable. The original evidence is retained.');return;}
+    setError(saved?undefined:'Destination was created, but its local receipt could not be saved. The original request is retained for recovery.');
+    creationAttemptRef.current=undefined;setCreationAttempt(undefined);setCreatedChat(chat);setConversationId(chat.id);setConfirmSharedRoot(false);
+  },onError:cause=>{
+    // Even a 4xx can follow a committed Chat or an earlier lost response.
+    // Retain its exact identity; only an explicit retry may submit it again.
+    const attempt=creationAttemptRef.current;
+    const message=cause instanceof Error?cause.message:'Destination creation failed.';
+    setError(attempt?`${message} Destination creation is unconfirmed. Retry the same request, or close to correct the details. The original request is retained.`:message);
+  },onSettled:()=>{pendingRef.current=false;onPendingChange?.(false);}});
 
   const [packageBlob, setPackageBlob] = useState<Blob>();
   const [importResult,setImportResult]=useState<import('@ponderosa/core').ImportAgentPackageResponse>();
@@ -150,7 +193,6 @@ export function ImportAgentForm({
   const pendingRef = useRef(false);
   const savedIntentRef=useRef<PendingAgentImport>();
   const submittedBlobRef=useRef<{requestId:string;blob:Blob}>();
-  const product=currentProductScope();
   const readSaved=useCallback(()=>{
     try{return {items:listPendingAgentImports(product)} as {items:PendingAgentImport[];error?:string};}
     catch{return {items:[],error:'Saved import information is unavailable. Preserve browser data and reload before starting another import.'};}
@@ -509,17 +551,17 @@ export function ImportAgentForm({
       {!fixedConversationId&&!createdChat&&<Paper variant="outlined" sx={{p:2}}><Stack spacing={1}>
         <Typography variant="subtitle1">Import into a new Chat and workspace</Typography>
         <Typography variant="body2">Create new empty managed folder · retained if import canceled</Typography>
-        <TextField disabled={createDestination.isPending} label="New Chat name" value={newChatLabel} onChange={event=>{setNewChatLabel(event.target.value);createChatRequestId.current=createClientId();}}/>
-        <TextField disabled={createDestination.isPending} label="New managed folder name" value={newFolderName} onChange={event=>{setNewFolderName(event.target.value);createChatRequestId.current=createClientId();}}/>
-        <TextField select disabled={createDestination.isPending} label="New Chat engine" value={newChatEngine} onChange={event=>{setNewChatEngine(event.target.value);createChatRequestId.current=createClientId();}}>{engines.map(engine=><MenuItem key={engine.id} value={engine.id} disabled={!engineIsAvailable(engine)}>{engine.displayName}</MenuItem>)}</TextField>
-        <Button disabled={createDestination.isPending||importAgents.isPending||Boolean(roleOperation)||!newChatLabel.trim()||!newFolderName.trim()||!newChatEngine} onClick={()=>{if(pendingRef.current)return;pendingRef.current=true;onPendingChange?.(true);createDestination.mutate();}}>Create new destination</Button>
+        <TextField disabled={createDestination.isPending||Boolean(creationAttempt)} label="New Chat name" value={newChatLabel} onChange={event=>{setNewChatLabel(event.target.value);createChatRequestId.current=createClientId();}}/>
+        <TextField disabled={createDestination.isPending||Boolean(creationAttempt)} label="New managed folder name" value={newFolderName} onChange={event=>{setNewFolderName(event.target.value);createChatRequestId.current=createClientId();}}/>
+        <TextField select disabled={createDestination.isPending||Boolean(creationAttempt)} label="New Chat engine" value={newChatEngine} onChange={event=>{setNewChatEngine(event.target.value);createChatRequestId.current=createClientId();}}>{engines.map(engine=><MenuItem key={engine.id} value={engine.id} disabled={!engineIsAvailable(engine)}>{engine.displayName}</MenuItem>)}</TextField>
+        <Button disabled={createDestination.isPending||importAgents.isPending||Boolean(roleOperation)||!newChatLabel.trim()||!newFolderName.trim()||!newChatEngine} onClick={()=>{if(pendingRef.current)return;pendingRef.current=true;onPendingChange?.(true);createDestination.mutate();}}>{creationAttempt?"Retry destination creation":"Create new destination"}</Button>
       </Stack></Paper>}
       {createdChat&&<Alert severity="info">New destination created: {createdChat.title} · {createdChat.workingDirectory} · Chat/workspace retained if import canceled</Alert>}
       {conversations.length === 0 ? <Alert severity="warning">No destination Chats · create above or choose another workspace</Alert> : fixedConversationId || conversations.length === 1 ? <Typography variant="body2" color="text.secondary">
         Destination chat: {conversations.find(conversation => conversation.id === fixedConversationId)?.title ?? conversations[0]!.title}
       </Typography> : <FormControl fullWidth>
         <InputLabel id="import-chat-label">Destination chat</InputLabel>
-        <Select labelId="import-chat-label" label="Destination chat" value={conversationId} onChange={(event: SelectChangeEvent) => {importRequestId.current=createClientId();setConversationId(event.target.value);}}>
+        <Select labelId="import-chat-label" label="Destination chat" value={conversationId} disabled={Boolean(creationAttempt)||createDestination.isPending} onChange={(event: SelectChangeEvent) => {importRequestId.current=createClientId();setConversationId(event.target.value);}}>
           {conversations.map((conversation) => <MenuItem key={conversation.id} value={conversation.id}>{conversation.title}</MenuItem>)}
         </Select>
       </FormControl>}
