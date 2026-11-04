@@ -31,7 +31,6 @@ function runtimeLabel(receipt: MessageDeliveryReceiptDto): string | undefined {
 function deliveryLabel(
   receipt: MessageDeliveryReceiptDto,
   recipientName: string,
-  now: number,
 ): string {
   if (receipt.contextRolloverHold === "retry_available") return `Context refresh stopped before the replacement started. ${recipientName}'s unfinished work is held; review activity before trying again.`;
   if (receipt.contextRolloverHold === "review_required") return `Context refresh could not safely continue. ${recipientName}'s unfinished work is held; review activity before recovery.`;
@@ -148,7 +147,6 @@ export function MessageDeliveryStatus({
 }): JSX.Element | null {
   const readOnly=useWorkspaceReadOnly();
   const queryClient = useQueryClient();
-  const now = Date.now();
   const [pendingInjectionId, setPendingInjectionId] = useState<string>();
   const [pendingRetryId, setPendingRetryId] = useState<string>();
   const [pendingCancelId, setPendingCancelId] = useState<string>();
@@ -185,7 +183,6 @@ export function MessageDeliveryStatus({
         const delivery = deliveryLabel(
           receipt,
           recipientName(receipt.targetAgentId),
-          now,
         );
         const runtime = receipt.state === "started" ? runtimeLabel(receipt) : undefined;
         return runtime ? `${delivery} ${runtime}.` : delivery;
@@ -286,12 +283,12 @@ export function MessageDeliveryStatus({
   };
   return <Stack spacing={0.5} sx={{ alignItems: "flex-end", maxWidth: "100%" }} aria-label="Message delivery status">
     <Box component="span" role="status" aria-live="polite" sx={{ position: "absolute", width: "1px", height: "1px", overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap" }}>
-      {receipts.map(receipt => deliveryLabel(receipt, recipientName(receipt.targetAgentId), now)).join(" ")}
+      {receipts.map(receipt => deliveryLabel(receipt, recipientName(receipt.targetAgentId))).join(" ")}
     </Box>
     {receipts.map((receipt) => {
       const tone = severity(receipt);
       const name = recipientName(receipt.targetAgentId);
-      const label = deliveryLabel(receipt, name, now);
+      const label = deliveryLabel(receipt, name);
       const runtime = receipt.state === "started" ? runtimeLabel(receipt) : undefined;
       const detailedLabel = runtime ? `${label} ${runtime}.` : label;
       const StatusIcon = tone === "success"
