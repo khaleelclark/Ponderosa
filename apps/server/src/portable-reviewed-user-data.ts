@@ -2173,7 +2173,7 @@ function verifyCapturedLooseObject(name:string,compressed:Buffer,remainingBytes:
   return body.length;
 }
 
-type CapturedGitFile={name:string;source:'selected'|'shared';data:Buffer;metadata?:{mode:number;mtimeNs:string}};
+type CapturedGitFile={name:string;source:'selected'|'shared';data:Buffer;metadata?:{mode:number;mtimeNs:string};aliasedPack?:true};
 /** Derived local caches are observed for drift, never parsed or supplied to native Git. */
 function derivedGitCache(name:string,format?:'sha1'|'sha256'):boolean {
   const width=format==='sha1'?'{40}':format==='sha256'?'{64}':'{40}(?:[a-f0-9]{24})?';
@@ -2197,11 +2197,13 @@ async function captureGitRaw(association:GitAssociation,reftable=false,fsSource?
     if(linked&&source==='shared'&&privateRef(refPath))return;
     if(linked&&source==='selected'&&(name.startsWith('refs/')||name.startsWith('logs/refs/'))&&!privateRef(refPath))throw new Error('Unsupported selected private Git ref storage');
     let before;try{before=await fs.lstat(target,{bigint:true});}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT'&&(!originalDirectory||optional)){inventory.push({name,source,identity:'',absent:true});return;}throw error;}
-    // Ordinary local Git clones may hardlink content-addressed object files.
-    // This grants a held read of that exact object only, never metadata/write authority
-    // over its other names. Control files, hooks and cache records remain singly linked.
+    // Local Git clones may hardlink content-addressed loose objects and pack
+    // pairs. Grant only a held read; never mutate metadata or any other alias.
+    // Pack/index originals also receive independent full verification below.
+    // Control, retention, hook, and derived cache files remain singly linked.
     const objectData=objects&&before.isFile()&&/^objects\/[a-f0-9]{2}\/[a-f0-9]{38}(?:[a-f0-9]{24})?$/.test(name);
-    if(objectData)fsSource?.permitGitObjectRead?.(target);
+    const packData=objects&&before.isFile()&&/^objects\/pack\/pack-[a-f0-9]{40}(?:[a-f0-9]{24})?\.(?:pack|idx)$/.test(name);
+    if(objectData||packData)fsSource?.permitGitObjectRead?.(target);
     if(++nodes>20000||before.uid!==owner||await fs.realpath(target)!==target)throw new Error('Git raw inventory is foreign, external or exceeds its bound');
     if(before.isDirectory()){
       if(!objects&&!originalDirectory&&!['refs','logs/refs'].some(prefix=>name===prefix||name.startsWith(prefix+'/')))throw new Error('Git control original must be a regular file');
@@ -2221,12 +2223,12 @@ async function captureGitRaw(association:GitAssociation,reftable=false,fsSource?
       if(objects&&!cache&&!/^objects\/(?:[a-f0-9]{2}\/[a-f0-9]{38}(?:[a-f0-9]{24})?|pack\/pack-[a-f0-9]{40}(?:[a-f0-9]{24})?\.(?:pack|idx|rev|bitmap|keep|mtimes))$/.test(name))throw new Error('Unsupported Git object storage, alternates or promisor metadata');
       if(name.startsWith('refs/'))refName(name);else if(name.startsWith('logs/')&&!(source==='selected'&&name==='logs/ORIG_HEAD'))reflogPath(name.slice(5));
       if(names.has(name))throw new Error('Selected and shared Git originals shadow each other');names.add(name);
-      const {data}=await regularOriginal(target,name==='ORIG_HEAD'?4096:/^(?:selected-)?reftable\//.test(name)?4*1024*1024:cache?4*1024*1024:retention?1024*1024:objects?limit:1024*1024,owner,fs,objectData),after=await fs.lstat(target,{bigint:true});
+      const {data}=await regularOriginal(target,name==='ORIG_HEAD'?4096:/^(?:selected-)?reftable\//.test(name)?4*1024*1024:cache?4*1024*1024:retention?1024*1024:objects?limit:1024*1024,owner,fs,objectData||packData),after=await fs.lstat(target,{bigint:true});
       if((bytes+=data.length)>limit||originalIdentity(before)!==originalIdentity(after))throw new Error('Git raw originals changed or exceed their bound');
       if(objectData)inflatedObjectBytes+=verifyCapturedLooseObject(name,data,limit-inflatedObjectBytes);
       if(gitOriginal)inspectGitReviewOriginal(data,'.git/'+name);
       if(cache||retention)safeText(data.toString('latin1'),cache?'Git derived cache':'Git pack retention original');
-      inventory.push({name,source,identity:originalIdentity(after),digest:createHash('sha256').update(data).digest('hex')});files.push({name,source,data,...(gitOriginal?{metadata:{mode:Number(after.mode&0o777n),mtimeNs:after.mtimeNs.toString()}}:{})});
+      inventory.push({name,source,identity:originalIdentity(after),digest:createHash('sha256').update(data).digest('hex')});files.push({name,source,data,...(gitOriginal?{metadata:{mode:Number(after.mode&0o777n),mtimeNs:after.mtimeNs.toString()}}:{}),...(packData&&after.nlink>1n?{aliasedPack:true as const}:{})});
     }
   };
   // Inspect only the exact common info parent and three allowlisted files, never its other contents.
@@ -2635,6 +2637,20 @@ async function captureReviewedGit(root:string,association:GitAssociation,capture
   }
   packRetentionReview.sort((a,b)=>a.packOid<b.packOid?-1:a.packOid>b.packOid?1:0);
   const reflogEvidence={bytes:0,entries:0,missing:new Set<string>()},objectInventory=new Map(objects.map(object=>[object.oid,object]));
+  // A pack alias is read-only even when another repository owns another name.
+  // Verify every byte of the paired pack/index and each expanded object's OID,
+  // without carrying the synthetic keep record into the export.
+  const aliasedStems=new Set(before.raw.files.filter(file=>file.aliasedPack).map(file=>file.name.replace(/\.[^.]+$/,'')));
+  const aliasedPacks:ReviewedGitUserData['packRetentionReview']=[];
+  for(const stem of aliasedStems){
+    const pack=before.raw.files.find(file=>file.name===stem+'.pack')?.data,idx=before.raw.files.find(file=>file.name===stem+'.idx')?.data;
+    const packOid=stem.slice('objects/pack/pack-'.length),width=format==='sha1'?20:32;
+    if(!pack||!idx||pack.length<12+width)throw new Error('Aliased Git pack requires its complete pack/index pair');
+    const entries=decodeRetentionPackIndex(idx,format,pack.subarray(-width));
+    aliasedPacks.push({packOid,packDataBase64:pack.toString('base64'),indexDataBase64:idx.toString('base64'),keepDataBase64:'',mtimesDataBase64:null,objects:entries.map(entry=>({oid:entry.oid,mtime:null}))});
+  }
+  aliasedPacks.sort((a,b)=>a.packOid<b.packOid?-1:a.packOid>b.packOid?1:0);
+  validatePackRetention(aliasedPacks,format,objectInventory,limit);
   for(const file of before.raw.files.filter(file=>file.name.startsWith('logs/')))validateGitReflogData(file.data.toString('base64'),format,objectInventory,reflogEvidence);
   if(reftable)for(const log of reftable.logs)for(const oid of [log.old,log.next])if(oid&&!/^0+$/.test(oid)&&!objectInventory.has(oid))reflogEvidence.missing.add(oid);
   const result:ReviewedGitUserData={version:1,format,configurationSourceDirectories:{common:serializeSourcePath(commonDir),private:serializeSourcePath(gitDir),home:serializeSourcePath(homedir())},reftableReview,objects,reflogMissingObjects:[...reflogEvidence.missing].sort(),indexOptionalReview:before.storage.indexOptionalReview,packRetentionReview,reflogs:before.raw.files.filter(file=>file.name.startsWith('logs/')&&file.name!=='logs/ORIG_HEAD').map(file=>({path:file.name.slice(5),dataBase64:file.data.toString('base64')})),refs:reftable?reftable.refs:text(captured.refs).split('\n').filter(Boolean).map(row=>{const [name,oid,symbolic]=row.split('\0');return {name:name!,oid:oid!,...(symbolic?{symbolic}:{})};}),head,index:originalIndex.filter(entry=>entry.mode!=='40000'),resolveUndo:before.storage.resolveUndo,sparseReview,infoReview:before.raw.infoReview,shallowReview:before.raw.shallowReview,origHeadReview:before.raw.origHeadReview,fetchHeadReview:before.raw.fetchHeadReview,configurationReview,configurationOriginalReview,exclusions};

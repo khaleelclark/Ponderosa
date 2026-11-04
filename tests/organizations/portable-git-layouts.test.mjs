@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
-import {mkdtemp,mkdir,writeFile,readFile,open,rm,realpath,rename,link,lstat,chmod} from 'node:fs/promises';
+import {mkdtemp,mkdir,writeFile,readFile,readdir,open,rm,realpath,rename,link,lstat,chmod} from 'node:fs/promises';
 import {constants} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {deflateSync} from 'node:zlib';
@@ -332,6 +332,45 @@ test('held export reads content-verified hardlinked loose objects without alteri
   const forged=deflateSync(Buffer.from('blob 4\0fake'));await chmod(object,0o600);await writeFile(object,forged);
   await assert.rejects(exportReviewedGit(repo),/loose Git object identity mismatch/i);
   assert.deepEqual(await readFile(foreign),forged);assert.equal((await lstat(foreign)).nlink,2);
+});
+
+test('held Git export verifies read-only hardlinked pack and index pairs',{skip:process.platform!=='linux',timeout:30000},async t=>{
+  const root=await fixture(t),repo=path.join(root,'repo'),oid=await repository(repo);
+  native(repo,'repack','-a','-d');
+  const dir=path.join(repo,'.git','objects','pack'),names=await readdir(dir);
+  const packName=names.find(name=>/^pack-[a-f0-9]+\.pack$/.test(name));
+  assert.ok(packName);
+  const stem=packName.slice(0,-5),pack=path.join(dir,packName),index=path.join(dir,stem+'.idx');
+  const packAlias=path.join(root,'foreign.pack'),indexAlias=path.join(root,'foreign.idx');
+  await link(pack,packAlias);await link(index,indexAlias);
+  const originalPack=await readFile(packAlias),originalIndex=await readFile(indexAlias);
+  const before=await Promise.all([packAlias,indexAlias].map(name=>lstat(name,{bigint:true})));
+  const storage=path.join(repo,'.git');
+  const held=await heldCapture({work:repo,storage},[{id:'common',worktreeRootRef:'work',storageRootRef:'storage',relativePath:'.',role:'common',worktreePath:repo,storagePath:storage}]);
+  try{
+    const exported=await exportReviewedUserData(repo,{git:true,harness:false},held.capture);
+    assert.ok(exported.git.objects.some(item=>item.oid===oid));
+    validateReviewedGit(exported.git);
+    const copy=path.join(root,'recreated');
+    await recreateReviewedGit(copy,exported.git);
+    assert.equal(native(copy,'rev-parse','HEAD'),oid);
+    assert.deepEqual(await readFile(packAlias),originalPack);assert.deepEqual(await readFile(indexAlias),originalIndex);
+    const after=await Promise.all([packAlias,indexAlias].map(name=>lstat(name,{bigint:true})));
+    for(let i=0;i<before.length;i++){
+      assert.equal(after[i].ino,before[i].ino);assert.equal(after[i].nlink,before[i].nlink);
+      assert.equal(after[i].mtimeNs,before[i].mtimeNs);assert.equal(after[i].mode,before[i].mode);
+    }
+  }finally{await held.close();}
+  // Corruption in the synthetic fixture must be rejected, preserving both
+  // names; linked retention/control files are outside this read-only grant.
+  const bad=Buffer.from(originalPack);bad[12]^=1;await chmod(pack,0o600);await writeFile(pack,bad);
+  await assert.rejects(exportReviewedGit(repo));
+  assert.deepEqual(await readFile(packAlias),bad);assert.equal((await lstat(packAlias)).nlink,2);
+  await writeFile(pack,originalPack);
+  const keep=path.join(dir,stem+'.keep'),keepAlias=path.join(root,'foreign.keep');
+  await writeFile(keep,'keep\n');await link(keep,keepAlias);
+  await assert.rejects(exportReviewedGit(repo),/bounded regular original|singly linked regular/i);
+  assert.deepEqual(await readFile(keepAlias),Buffer.from('keep\n'));assert.equal((await lstat(keepAlias)).nlink,2);
 });
 
 test('Git export bounds aggregate loose-object inflation and refuses hardlinked control files',{skip:process.platform==='win32',timeout:30000},async t=>{

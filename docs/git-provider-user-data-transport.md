@@ -2459,3 +2459,20 @@ No UI or Runtime custody/staging source was edited.
 
 This bounded source candidate makes no native parity, roundtrip, durability,
 atomicity, review, release, integration or whole-Bible acceptance claim.
+
+### Read-only hardlinked Git pack originals
+
+A selected ordinary Git repository can have content-addressed `.pack` or
+`.idx` files hardlinked to another local repository. Capture may read those
+exact regular originals through the existing selected-root custody, without
+changing the inode, its metadata, or any other name. It independently checks
+the pack and index checksum, pairing, indexed entries, delta expansion and
+object IDs before returning reviewed data. The existing verification bounds
+apply, including the 1 MiB retained-index limit for a linked pair. The
+ordinary object/history recreation behavior is unchanged: this is not a grant
+to recreate or mutate the source hardlink topology. Linked Git control files,
+retention files and derived cache files continue to be refused.
+
+The reads and before/after identity checks do not create an atomic snapshot
+against an independent filesystem writer. Detectable drift is refused and the
+source is preserved; callers must not treat this as writer exclusion.
