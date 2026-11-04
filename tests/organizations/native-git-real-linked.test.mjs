@@ -301,6 +301,47 @@ test('real exact absolute private hook source is captured and mapped only with e
  const after=await lstat(hook,{bigint:true});assert.equal(after.ino,before.ino);assert.equal(after.mode,before.mode);assert.equal(after.mtimeNs,before.mtimeNs);assert.deepEqual(await readFile(hook),bytes);
 });
 
+for(const scenario of ['single','multiple','unknown'])test('held selected linked worktree captures absolute private hooks: '+scenario,options,async t=>{
+ const root=await realpath(await mkdtemp(path.join(tmpdir(),'held-private-hook-absolute-'))),source=path.join(root,'source'),linked=path.join(root,'linked'),common=path.join(source,'.git'),otherHooks=path.join(root,'other-hooks');
+ const handles=[];let capture;
+ t.after(async()=>{await capture?.close();for(const handle of handles)await handle.close();await rm(root,{recursive:true,force:true});});
+ await initialize(source);await git(source,'worktree','add','-b','linked',linked);
+ const privateSource=await git(linked,'rev-parse','--absolute-git-dir'),hook=path.join(privateSource,'pre-commit'),bytes=Buffer.from('#!/bin/sh\nexit 0\n');
+ await git(linked,'config','--add','core.hooksPath',privateSource);
+ await writeFile(hook,bytes);await chmod(hook,0o751);await utimes(hook,1700000001.456,1700000001.456);
+ if(scenario==='multiple'){
+  await mkdir(otherHooks);await writeFile(path.join(otherHooks,'pre-push'),'#!/bin/sh\nexit 0\n');
+  await git(linked,'config','--add','core.hooksPath',otherHooks);
+ }
+ const unknown=path.join(privateSource,'unknown-private-entry');
+ if(scenario==='unknown')await writeFile(unknown,'unknown original\n');
+ const before=await lstat(hook,{bigint:true}),roots=[];
+ for(const [pathname,ref] of [[linked,'work'],[common,'storage']]){const handle=await open(pathname,'r');handles.push(handle);roots.push({pathname,ref,handle,owner:(await handle.stat({bigint:true})).uid});}
+ const relative=path.relative(common,privateSource).split(path.sep).join('/');
+ const bindings=[
+  {id:'common',worktreeRootRef:'work',storageRootRef:'storage',relativePath:'.',role:'common',worktreePath:linked,storagePath:common},
+  {id:'private',worktreeRootRef:'work',storageRootRef:'storage',relativePath:relative,role:'private',worktreePath:linked,storagePath:common}
+ ];
+ capture=createGitExportCapture(roots,bindings);await verifyGitExportAssociations(capture);
+ if(scenario==='unknown'){
+  await assert.rejects(exportReviewedUserData(linked,{git:true,harness:false,externalGitDependencies:true},capture),/Unsupported selected Git storage or operation metadata/);
+  assert.equal(await readFile(unknown,'utf8'),'unknown original\n');
+ }else{
+  const manifest=await exportReviewedUserData(linked,{git:true,harness:false,externalGitDependencies:true},capture);
+  const file=manifest.gitExternalDependencies.files.find(item=>item.sourcePath===hook);
+  assert.ok(file);assert.deepEqual(Buffer.from(file.dataBase64,'base64'),bytes);
+  assert.equal(file.mode,Number(before.mode&0o7777n));assert.equal(file.mtimeNs,before.mtimeNs.toString());
+  const bindings=manifest.gitExternalDependencies.bindings.filter(item=>item.kind==='hooks'&&!item.default).map(item=>item.rawValue);
+  assert.ok(bindings.includes(privateSource));
+  if(scenario==='multiple'){
+   assert.ok(bindings.includes(otherHooks));
+   assert.ok(manifest.gitExternalDependencies.files.some(item=>item.sourcePath===path.join(otherHooks,'pre-push')));
+  }
+  await capture.verify();
+ }
+ const after=await lstat(hook,{bigint:true});assert.equal(after.ino,before.ino);assert.equal(after.mode,before.mode);assert.equal(after.mtimeNs,before.mtimeNs);assert.deepEqual(await readFile(hook),bytes);
+});
+
 for(const aliased of [true])test('real '+(aliased?'aliased':'absolute')+' private hook source with a hook is refused before recovery writes',options,async t=>{
  const root=await realpath(await mkdtemp(path.join(tmpdir(),'real-private-hook-refusal-'))),source=path.join(root,'source'),destination=path.join(root,'destination'),dependencies=path.join(root,'dependencies'),other=path.join(root,'other'),linked=path.join(dependencies,'capsule');
  t.after(()=>rm(root,{recursive:true,force:true}));
