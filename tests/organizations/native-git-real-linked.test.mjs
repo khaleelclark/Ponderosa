@@ -99,6 +99,7 @@ test('real linked repository dependency recreates its worktree and shared owned 
  assert.ok(capsule);restoredTree=path.dirname(capsule.worktreePath);
  await applyReviewedRecoveryRoots(tasks,activation,()=>{});
  assert.equal(await git(capsule.worktreePath,'rev-parse','HEAD'),sourceHead);
+ assert.match(await readFile(path.join(capsule.gitDir,'info','exclude'),'utf8'),/^\/\.ponderosa-portable-review\/$/m);
  const pointer=(await readFile(path.join(capsule.worktreePath,'.git'),'utf8')).trim();assert.match(pointer,/^gitdir: /);
  assert.equal(await realpath(path.resolve(capsule.worktreePath,pointer.slice(8))),await realpath(capsule.privateDir));
  const hookView=await git(capsule.worktreePath,'config','--path','--get','core.hooksPath');
