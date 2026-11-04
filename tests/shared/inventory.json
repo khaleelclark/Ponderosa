@@ -848,6 +848,14 @@
       "origin": "F11 clipboard error handling and support report feedback"
     },
     {
+      "path": "tests/chats/reviewed-continuation-hash.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, built workspace packages; no provider account",
+      "origin": "Exact reviewed continuation command hash across browser and server"
+    },
+    {
       "path": "tests/chats/delivery-recovery.test.mjs",
       "feature": "chats",
       "lane": "web",
