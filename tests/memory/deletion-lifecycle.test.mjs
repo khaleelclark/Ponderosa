@@ -10,7 +10,7 @@ import {randomUUID} from 'node:crypto';
 import {AgentStore,BranchStore,CoordinationV3Store} from '@ponderosa/agents';
 import {createServer} from '../../apps/server/dist/app.js';
 import {localMemoryFor} from '../../apps/server/dist/local-memory.js';
-import {checkedCollection,MEMORY_CLEANUP_HOLD,MEMORY_CLEANUP_UNKNOWN_HOLD,isMemoryCleanupHold} from '../../apps/server/dist/local-memory-authority.js';
+import {checkedCollection,MEMORY_CLEANUP_HOLD,MEMORY_CLEANUP_UNKNOWN_HOLD,MEMORY_CLEANUP_RECEIPT_HOLD,isMemoryCleanupHold} from '../../apps/server/dist/local-memory-authority.js';
 
 let chroma;
 async function isolatedChroma(){
@@ -458,7 +458,10 @@ test('retired Chat collection proof requires the exact committed matching deleti
  f.raw.client.deleteCollection=async input=>{deletes++;return original(input);};
  try{
   f.store.sqlite.prepare('UPDATE local_memory_scope_provisioning SET project_id=? WHERE chat_id=?').run(randomUUID(),f.chat.id);
-  await assert.rejects(f.memory.purgeChat(f.chat.id),/scope creation receipt/);
+  await assert.rejects(f.memory.purgeChat(f.chat.id),error=>{
+   assert.equal(error.message,MEMORY_CLEANUP_RECEIPT_HOLD);assert.equal(isMemoryCleanupHold(error),true);
+   assert.match(error.cause?.message??'',/scope creation receipt does not match/);return true;
+  });
   assert.equal(deletes,0);assert.deepEqual(await f.rows(scope),[id]);
  }finally{f.raw.client.deleteCollection=original;}
 }));

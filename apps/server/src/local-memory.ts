@@ -9,9 +9,10 @@ import type {FastifyInstance,FastifyRequest} from 'fastify';
 import {CapabilityPolicyStore,hasRetainedTemporaryChatScope,type AgentStore,type AgentDeletionReceipt} from '@ponderosa/agents';
 import {CAPABILITY_IDS} from '@ponderosa/core';
 import {type Chunk,type Inference} from '@local-memory/mcp-node-private';
-import {HostMemoryRuntime,checkedCollection,createPlannedCollection,MemoryCollectionHold,MEMORY_CLEANUP_HOLD_REASONS,MEMORY_CLEANUP_UNKNOWN_HOLD,MEMORY_CLEANUP_PROVISION_HOLD,type MemoryAuthority} from './local-memory-authority.js';
+import {HostMemoryRuntime,checkedCollection,createPlannedCollection,MemoryCollectionHold,MEMORY_CLEANUP_HOLD_REASONS,MEMORY_CLEANUP_UNKNOWN_HOLD,MEMORY_CLEANUP_PROVISION_HOLD,MEMORY_CLEANUP_RECEIPT_HOLD,type MemoryAuthority} from './local-memory-authority.js';
 import {PonderosaMemory} from '@local-memory/mcp-node-private/ponderosa';
 import {MemoryArgumentError,validateMemoryCall} from './local-memory-catalog.js';
+const MEMORY_SCOPE_RECEIPT_MISMATCH='Memory scope creation receipt does not match current scope and installation';
 type HostContext={chatId:string;actor:{kind:'agent'|'user';id:string;operator?:boolean};runId:string;fenceToken:string;active:boolean;sourceType:'user_statement'|'ai_inference';grants:{readChat:boolean;readGlobal:boolean;writeChat:boolean;writeGlobal:boolean}};
 import type {CreateServerOptions,AgentMessageCapability,ActiveRun} from './app-contracts.js';
 import {activeChatResourceOwner} from './branch-resource-owner.js';
@@ -234,7 +235,10 @@ export class LocalMemoryService{
      if(this.core.database.scopeHasUnsettledMutation(scope))throw Error(MEMORY_CLEANUP_UNKNOWN_HOLD);
      const retained=this.ports.store.sqlite.prepare('SELECT 1 FROM local_memory_scope_provisioning WHERE chat_id=?').get(chatId);
      if(retained){
-      let intent;try{intent=this.memoryIntent(chatId,true);}catch(error){throw new Error(MEMORY_CLEANUP_PROVISION_HOLD,{cause:error});}
+      let intent;try{intent=this.memoryIntent(chatId,true);}catch(error){
+       const reason=error instanceof Error&&error.message===MEMORY_SCOPE_RECEIPT_MISMATCH?MEMORY_CLEANUP_RECEIPT_HOLD:MEMORY_CLEANUP_PROVISION_HOLD;
+       throw new Error(reason,{cause:error});
+      }
       const binding=this.ports.store.sqlite.prepare('SELECT state,data_generation,principal_id,storage_binding FROM local_memory_host_binding WHERE singleton=1').get() as {state:string;data_generation:string;principal_id:string;storage_binding:string}|undefined;
       if(!intent||intent.memory_state!=='confirmed'||intent.log_state!=='confirmed'||!intent.memory_collection_id||!intent.log_collection_id||!binding||binding.state!=='bound'||
          binding.data_generation!==intent.data_generation||binding.principal_id!==intent.principal_id||binding.storage_binding!==intent.storage_binding)throw Error(MEMORY_CLEANUP_PROVISION_HOLD);
@@ -322,12 +326,14 @@ export class LocalMemoryService{
   for(const scope of this.missingExistingScopes){const chatId=scope==='global'?undefined:scope.slice(5),chat=chatId?this.ports.store.getConversation(chatId):undefined,active=chatId&&chat&&activeChatResourceOwner(this.ports.store,'chat',chatId);holds.push({scope:scope==='global'?'global':active?'chat':'unknown',...(active?{chatId,projectId:chat.projectId}:{}),memoryState:'unknown',logState:'unknown',reason:'Memory collection unavailable or conflicts with its retained creation record. No collection was recreated or adopted. Review the backend; restart after resolving.'});}
   // Once a Chat is gone, product filtering cannot safely expose its identity.
   // Retain a non-identifying operator-global warning instead of hiding the hold.
-  const deleted=this.ports.store.sqlite.prepare(`SELECT 1 FROM conversation_deletion_receipts WHERE canonical_deletion_completed=1 AND server_cleanup_completed=0 AND last_error IN (${MEMORY_CLEANUP_HOLD_REASONS.map(()=>'?').join(',')}) LIMIT 1`).get(...MEMORY_CLEANUP_HOLD_REASONS);
+  const receiptMismatch=this.ports.store.sqlite.prepare('SELECT 1 FROM conversation_deletion_receipts WHERE canonical_deletion_completed=1 AND server_cleanup_completed=0 AND last_error=? LIMIT 1').get(MEMORY_CLEANUP_RECEIPT_HOLD);
+  const deleted=this.ports.store.sqlite.prepare(`SELECT 1 FROM conversation_deletion_receipts WHERE canonical_deletion_completed=1 AND server_cleanup_completed=0 AND last_error IN (${MEMORY_CLEANUP_HOLD_REASONS.map(()=>'?').join(',')}) AND last_error<>? LIMIT 1`).get(...MEMORY_CLEANUP_HOLD_REASONS,MEMORY_CLEANUP_RECEIPT_HOLD);
   const deletedAgent=this.ports.store.sqlite.prepare(`SELECT 1 FROM agent_deletion_receipts WHERE server_cleanup_completed=0 AND last_error IN (${MEMORY_CLEANUP_HOLD_REASONS.map(()=>'?').join(',')}) LIMIT 1`).get(...MEMORY_CLEANUP_HOLD_REASONS);
   const pendingProject=this.ports.store.sqlite.prepare(`SELECT 1 FROM project_deletion_pending WHERE last_error IN (${MEMORY_CLEANUP_HOLD_REASONS.map(()=>'?').join(',')}) LIMIT 1`).get(...MEMORY_CLEANUP_HOLD_REASONS);
   const pendingImport=this.ports.store.sqlite.prepare(`SELECT 1 FROM agent_creation_operations WHERE status='rolling_back' AND last_error IN (${MEMORY_CLEANUP_HOLD_REASONS.map(()=>'?').join(',')}) LIMIT 1`).get(...MEMORY_CLEANUP_HOLD_REASONS);
   const branchHold=this.ports.store.sqlite.prepare(`SELECT 1 FROM branch_retirement_errors WHERE error IN (${MEMORY_CLEANUP_HOLD_REASONS.map(()=>'?').join(',')}) UNION ALL SELECT 1 FROM branch_installation_plans WHERE error IN (${MEMORY_CLEANUP_HOLD_REASONS.map(()=>'?').join(',')}) UNION ALL SELECT 1 FROM branch_resources WHERE error IN (${MEMORY_CLEANUP_HOLD_REASONS.map(()=>'?').join(',')}) LIMIT 1`).get(...MEMORY_CLEANUP_HOLD_REASONS,...MEMORY_CLEANUP_HOLD_REASONS,...MEMORY_CLEANUP_HOLD_REASONS);
   const orphanEffect=!this.core.database.hasUnidentifiedMutationHold()&&this.core.database.listMutationHolds().some(hold=>{const scope=hold.effect?.scope;return typeof scope==='string'&&scope.startsWith('chat:')&&!activeChatResourceOwner(this.ports.store,'chat',scope.slice(5));});
+  if(receiptMismatch)holds.push({scope:'unknown',memoryState:'unknown',logState:'unknown',reason:MEMORY_CLEANUP_RECEIPT_HOLD});
   if(deleted||deletedAgent||pendingProject||pendingImport||branchHold||orphanEffect)holds.push({scope:'unknown',memoryState:'unknown',logState:'unknown',reason:'Memory cleanup remains held for review; saved data may remain.'});
   if(this.core.database.hasUnidentifiedMutationHold())holds.push({scope:'unknown',memoryState:'submitted',logState:'submitted',reason:'Unidentified memory hold evidence is preserved and blocks all memory scopes. Operator review is required.'});
   return holds;
@@ -379,7 +385,7 @@ export class LocalMemoryService{
   const ownerMatches=chatId==='global'?intent.project_id==='global':chat
    ? !chat.branch_execution_id&&chat.project_id===intent.project_id
    : Boolean(receipt?.canonicalDeletionCompleted&&receipt.conversationId===chatId&&receipt.projectId===intent.project_id);
-  if(!ownerMatches||intent.data_generation!==generation||policy.data_generation!==generation||intent.principal_id!==this.principalId||intent.principal_id!==policy.principal_id||intent.storage_binding!==policy.storage_binding||!/^[0-9a-f-]{36}$/.test(intent.intent_id))throw Error('Memory scope creation receipt does not match current scope and installation');
+  if(!ownerMatches||intent.data_generation!==generation||policy.data_generation!==generation||intent.principal_id!==this.principalId||intent.principal_id!==policy.principal_id||intent.storage_binding!==policy.storage_binding||!/^[0-9a-f-]{36}$/.test(intent.intent_id))throw Error(MEMORY_SCOPE_RECEIPT_MISMATCH);
   return intent;
  }
  private async provisionIntent(chatId:string,ownerCheck?:()=>void,allowHeld=false){

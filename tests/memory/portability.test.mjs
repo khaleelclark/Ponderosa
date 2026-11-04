@@ -6,7 +6,7 @@ import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {instance,seed,read,vector} from './portability-fixture.mjs';
 import {validateMemorySnapshot,MEMORY_SNAPSHOT_MAX_BYTES} from '../../apps/server/dist/portable-memory-snapshot.js';
-import {MEMORY_CLEANUP_PROVISION_HOLD,MEMORY_CLEANUP_UNKNOWN_HOLD,isMemoryCleanupHold} from '../../apps/server/dist/local-memory-authority.js';
+import {MEMORY_CLEANUP_PROVISION_HOLD,MEMORY_CLEANUP_UNKNOWN_HOLD,MEMORY_CLEANUP_RECEIPT_HOLD,isMemoryCleanupHold} from '../../apps/server/dist/local-memory-authority.js';
 
 for(const branch of [false,true])test(`fresh ${branch?'Branches':'Core'} private memory services restore lineage, vectors, conflicts and audiences; reopen/re-export keeps denied scope denied`,async t=>{
  const source=await instance(t,branch),destination=await instance(t,branch);await seed(source);
@@ -353,6 +353,7 @@ for(const invalid of ['generation','principal','storage','witness-generation','w
  try{created=await f.app.inject({method:'POST',url:'/api/chats',headers:{...f.headers,'idempotency-key':randomUUID()},payload:{label:'Uncertain proof',hostPath:f.root,defaultEngine:'fixture'}});}
  finally{memory.provisionNewChat=original;}
  assert.equal(created.statusCode,409,created.body);const chatId=created.json().chatId;
+ const untrustedReceiptValue='synthetic-private-receipt-value-'+randomUUID();
  let evidence;
  if(invalid==='unknown-effect'){
   evidence=path.join(f.options.localMemory.stateDirectory,'source-mutation-holds',randomUUID()+'.json');
@@ -365,7 +366,7 @@ for(const invalid of ['generation','principal','storage','witness-generation','w
   if(witness){
    f.store.sqlite.prepare("UPDATE local_memory_scope_provisioning SET memory_state='confirmed',log_state='confirmed',memory_collection_id='memory-id',log_collection_id='log-id' WHERE chat_id=?").run(chatId);
    f.store.sqlite.prepare(`UPDATE local_memory_host_binding SET ${column}=? WHERE singleton=1`).run(randomUUID());
-  }else f.store.sqlite.prepare(`UPDATE local_memory_scope_provisioning SET ${column}=? WHERE chat_id=?`).run(randomUUID(),chatId);
+  }else f.store.sqlite.prepare(`UPDATE local_memory_scope_provisioning SET ${column}=? WHERE chat_id=?`).run(untrustedReceiptValue,chatId);
  }
  const originalDelete=raw.client.deleteCollection.bind(raw.client),originalGet=raw.client.getCollection.bind(raw.client);let deletes=0,scopeReads=0;
  raw.client.deleteCollection=async args=>{deletes++;return originalDelete(args);};
@@ -374,8 +375,17 @@ for(const invalid of ['generation','principal','storage','witness-generation','w
   const result=await f.app.inject({method:'DELETE',url:'/api/conversations/'+chatId,headers:f.headers});
   assert.equal(result.statusCode,200,result.body);assert.equal(result.json().cleanupPending,true,result.body);
   const reason=f.store.getConversationDeletionReceipt(chatId).lastError;
-  assert.equal(reason,invalid==='unknown-effect'?MEMORY_CLEANUP_UNKNOWN_HOLD:MEMORY_CLEANUP_PROVISION_HOLD);
+  const expected=invalid==='unknown-effect'?MEMORY_CLEANUP_UNKNOWN_HOLD:['generation','principal','storage'].includes(invalid)?MEMORY_CLEANUP_RECEIPT_HOLD:MEMORY_CLEANUP_PROVISION_HOLD;
+  assert.equal(reason,expected);
   assert.equal(isMemoryCleanupHold(reason),true,'Periodic cleanup must leave the unverified state held');
+  if(invalid==='generation'){
+   const health=await f.app.inject({method:'GET',url:'/api/local-memory/provisioning-holds',headers:f.headers});
+   assert.equal(health.statusCode,200,health.body);
+   const hold=health.json().find(item=>item.reason===MEMORY_CLEANUP_RECEIPT_HOLD);
+   assert.ok(hold,'The existing health endpoint must show the precise saved hold');
+   assert.equal(hold.scope,'unknown');assert.equal(hold.chatId,undefined);assert.equal(hold.projectId,undefined);
+   assert.doesNotMatch(health.body,new RegExp(chatId));assert.doesNotMatch(health.body,new RegExp(untrustedReceiptValue));
+  }
   assert.equal(deletes,0);
   assert.equal(scopeReads,0,'Unverified ownership must hold before any Chat collection lookup');
   if(evidence)assert.match(await readFile(evidence,'utf8'),/remote_write_unsettled/);
