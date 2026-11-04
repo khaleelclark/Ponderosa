@@ -94,3 +94,14 @@ export function retainIssuedDestinationSource(db:Database.Database,input:{planId
  return readRetainedIssuedDestinationSource(db,id,readInstallation);
  }).immediate();
 }
+
+/** Read an already pinned installation association without requiring source-host
+ * Project/Agent rows. The immutable manifest anchor is rechecked by the reader. */
+export function readPinnedRetainedIssuedSource(db:Database.Database,id:string) {
+ const row=db.prepare('SELECT proof_json FROM coordination_destination_retained_sources WHERE id=?').get(id) as Row|undefined;
+ if(!row)throw Error('Pinned retained source unavailable');
+ const saved=JSON.parse(row.proof_json) as Installation;
+ const retained=readRetainedIssuedDestinationSource(db,id,()=>saved);
+ if(!('finalExit' in retained.proof))throw Error('Only exact completed final retained sources may be admitted');
+ return retained;
+}

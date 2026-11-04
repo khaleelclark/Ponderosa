@@ -4,6 +4,8 @@ import type {BranchHostGraphRestoreDto, CheckpointPackageReceipt} from './branch
 export interface CoordinationDestinationReservation {
   branchId:string; sourceExecutionId:string; checkpointId:number; checkpointHash:string;
   commandKey:string; operatorId:string; reconcileEffects:true;
+  /** Exact installed historical source; local sourceExecutionId remains the held owner. */
+  retainedSourceId?:string;
   custody:CheckpointPackageReceipt;
   /** Retired evidence only; never included in executable participant maps. */
   historicalPartition?:CoordinationHistoricalGenerationSelection[];
@@ -74,7 +76,7 @@ export interface BranchIssuedDestinationDto {
  commandKey:string; admissionId:string; checkpointId:number; checkpointHash:string;
  destination:CoordinationDestinationReservation['destination'];
  disclosure:{revision:number;state:'unreviewed'|'approved'|'revoked';reviewHash?:string};
- state:'reserved'|'import_unknown'|'awaiting_disclosure'|'admitted';
+ state:'reserved'|'import_unknown'|'awaiting_disclosure'|'capture_pending'|'admitted';
  restoreSupported:boolean; receipt?:CoordinationDestinationReceipt;
 }
 

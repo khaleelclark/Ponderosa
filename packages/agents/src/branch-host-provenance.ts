@@ -1,3 +1,4 @@
+import {readPinnedRetainedIssuedSource} from './coordination-v3-retained-destination-source.js';
 import type Database from 'better-sqlite3';
 import type {BranchHostCut} from './branch-host-cut.js';
 import {retainedBranchHostGraph} from './branch-tree-host-cut.js';
@@ -18,12 +19,33 @@ export function restoredScopeValue(map:Row,key:string,value:unknown):unknown {
  return value;
 }
 export function retainedRestorationSnapshot(db:Database.Database,receipt:Row):Row|undefined {
+ if(receipt.source_kind==='retained_foreign'){
+  const retained=readPinnedRetainedIssuedSource(db,receipt.retained_source_id);
+  if(retained.source.local_execution_id!==receipt.source_execution_id||retained.source.branch_id!==receipt.branch_id
+   ||retained.source.original_checkpoint_sha256!==receipt.cut_hash||receipt.checkpoint_id!==null)throw Error('Retained restoration source differs');
+  return {snapshot_json:retained.source.original_snapshot_json,content_hash:retained.source.original_checkpoint_sha256};
+ }
  const saved=db.prepare('SELECT snapshot_json,content_hash FROM branch_unit_snapshots WHERE id=? AND execution_id=?').get(receipt.checkpoint_id,receipt.source_execution_id) as Row|undefined;
  if(saved)return saved;
  const destination=JSON.parse(receipt.receipt_json).destination;
  if(!destination)return;
  const row=db.prepare("SELECT snapshot_json,reservation_json FROM coordination_destination_admissions WHERE id=? AND state='admitted'").get(destination.admissionId) as Row|undefined;
  if(row)return {snapshot_json:row.snapshot_json,content_hash:JSON.parse(row.reservation_json).checkpointHash};
+}
+
+export function restorationOriginalIdentity(receipt:Row,retained?:{source:Row;owners:Row[]}):{executionId:string;branchId:string;checkpointId:number} {
+ if(receipt.source_kind!=='retained_foreign')return {executionId:receipt.source_execution_id,branchId:receipt.branch_id,checkpointId:receipt.checkpoint_id};
+ if(!retained)throw Error('Retained restoration association missing');
+ const {source,owners}=retained,{id,...identity}=source;
+ const map=JSON.parse(receipt.receipt_json);
+ const original=owners.find(o=>o.original_execution_id===source.original_execution_id),owner=original&&JSON.parse(original.owner_json);
+ if(id!==receipt.retained_source_id||id!==map.destination?.retainedSourceId
+  ||source.local_execution_id!==receipt.source_execution_id||source.branch_id!==receipt.branch_id||receipt.checkpoint_id!==null
+  ||source.original_checkpoint_sha256!==receipt.cut_hash||source.original_checkpoint_key!==String(map.checkpointId)
+  ||payloadHash({...identity,owners:owners.map(({source_id,...row})=>row)})!==id
+  ||!owner||owner.sourceExecutionId!==source.original_execution_id||payloadHash(owner)!==original.owner_sha256)
+  throw Error('Retained restoration identity differs');
+ return {executionId:source.original_execution_id,branchId:owner.sourceBranchId,checkpointId:map.checkpointId};
 }
 
 const imported=(u:Row)=>u.kind==='historical_question'||u.kind==='historical_answer'||u.actor_kind==='system'&&u.actor_id==='host-cut-restoration';
@@ -49,7 +71,8 @@ export function captureHostProvenance(db:Database.Database,requests:Row[],update
   const destination=JSON.parse(receipt.receipt_json).destination;
   const admission=destination?db.prepare("SELECT * FROM coordination_destination_admissions WHERE id=? AND state='admitted'").get(destination.admissionId):undefined;
   if(destination&&!admission)throw Error('Historical destination admission receipt unavailable');
-  return evidence({id,receipt,snapshot,...(admission?{admission}:{})});
+  const retained=receipt.source_kind==='retained_foreign'?readPinnedRetainedIssuedSource(db,receipt.retained_source_id):undefined;
+  return evidence({id,receipt,snapshot,...(admission?{admission}:{}),...(retained?{retainedSource:{source:retained.source,owners:retained.owners}}:{})});
  });
  return {restorations,origins};
 }
@@ -77,18 +100,18 @@ class HostFacts {
   const prior=this.sourceProofs.get(id);
   if(prior&&prior!==proof.sha256)throw Error('Historical provenance source conflicts');
   this.sourceProofs.set(id,proof.sha256);
-  const {receipt,snapshot}=proof.row,map=JSON.parse(receipt.receipt_json);
-  if(receipt.id!==id||snapshot.selected?.execution?.[0]?.id!==receipt.source_execution_id||snapshot.selected?.execution?.[0]?.branch_id!==receipt.branch_id
-   ||payloadHash(snapshot)!==receipt.cut_hash||map.replayed!==false||map.restorationId!==id||map.checkpointId!==receipt.checkpoint_id||map.checkpointHash!==receipt.cut_hash)throw Error('Historical provenance receipt differs');
+  const {receipt,snapshot}=proof.row,map=JSON.parse(receipt.receipt_json),original=restorationOriginalIdentity(receipt,proof.row.retainedSource);
+  if(receipt.id!==id||snapshot.selected?.execution?.[0]?.id!==original.executionId||snapshot.selected?.execution?.[0]?.branch_id!==original.branchId
+   ||payloadHash(snapshot)!==receipt.cut_hash||map.replayed!==false||map.restorationId!==id||map.checkpointId!==original.checkpointId||map.checkpointHash!==receipt.cut_hash)throw Error('Historical provenance receipt differs');
   let source=this.sources.get(id);
-  if(!source){source=retainedBranchHostGraph(snapshot,receipt.source_execution_id,false,Boolean(map.destination)).cut;this.sources.set(id,source);}
+  if(!source){source=retainedBranchHostGraph(snapshot,original.executionId,false,Boolean(map.destination)).cut;this.sources.set(id,source);}
   for(const [field,records] of [['requestMap',source.requests],['updateMap',source.updates],['joinMap',source.joins]] as const){
    const mapping=map[field],ids=records.map(e=>e.row.id).sort();
    if(!mapping||stableJson(Object.keys(mapping).sort())!==stableJson(ids)||new Set(Object.values(mapping)).size!==ids.length||Object.values(mapping).some(value=>typeof value!=='string'||!value||ids.includes(value)))throw Error('Historical provenance canonical map differs');
   }
   if(map.destination){
    const admission=proof.row.admission,final=admission?.receipt_json&&JSON.parse(admission.receipt_json),reservation=admission?.reservation_json&&JSON.parse(admission.reservation_json),stage=admission?.stage_json&&JSON.parse(admission.stage_json);
-   if(!admission||admission.id!==map.destination.admissionId||admission.state!=='admitted'||!final||final.restorationId!==id
+   if(!admission||(admission.retained_source_id??null)!==(receipt.retained_source_id??null)||admission.id!==map.destination.admissionId||admission.state!=='admitted'||!final||final.restorationId!==id
     ||final.reservationHash!==admission.reservation_hash||payloadHash(reservation)!==admission.reservation_hash
     ||final.stageHash!==payloadHash(stage)||final.checkpointHash!==receipt.cut_hash
     ||(reservation.resources&&stableJson(final.resources)!==stableJson(reservation.resources))

@@ -1,8 +1,9 @@
+import {readPinnedRetainedIssuedSource} from './coordination-v3-retained-destination-source.js';
 import {destinationResourceEvidence} from './coordination-v3-destination-resource-evidence.js';
 import {branchContinuationIds} from './branch-continuation-remap.js';
 import {CoordinationV3DestinationReconciliation} from './coordination-v3-destination-reconciliation.js';
 import {readDestinationHistoricalPartition,destinationHistoricalFacts,commitDestinationHistoricalPartition,verifyDestinationHistoricalPartition} from './coordination-v3-historical-partition.js';
-import {randomUUID} from 'node:crypto';
+import {randomUUID,createHash} from 'node:crypto';
 import type Database from 'better-sqlite3';
 import type {
  CoordinationDestinationReservation,CoordinationDestinationStage,CoordinationDestinationReview,
@@ -89,8 +90,13 @@ export class CoordinationV3DestinationAdmissionAuthority {
   const reservation=JSON.parse(row.reservation_json) as CoordinationDestinationReservation,snapshot=JSON.parse(row.snapshot_json);
   if(stableJson(reservation)!==row.reservation_json||payloadHash(reservation)!==row.reservation_hash
     ||stableJson(snapshot)!==row.snapshot_json||payloadHash(snapshot)!==reservation.checkpointHash)throw Error('Destination retained evidence differs');
-  const {cut}=this.group?destinationResourceEvidence(snapshot,reservation):retainedBranchHostGraph(snapshot,reservation.sourceExecutionId,true,true);
-  if(!verifyBranchHostCut(cut,reservation.sourceExecutionId)||!cut.coverage.complete)throw Error('Destination retained cut is incomplete');
+  const retained=reservation.retainedSourceId?readPinnedRetainedIssuedSource(this.db,reservation.retainedSourceId):undefined;
+  if(retained&&(this.group||retained.source.branch_id!==reservation.branchId||retained.source.local_execution_id!==reservation.sourceExecutionId
+   ||retained.source.original_checkpoint_key!==String(reservation.checkpointId)||retained.source.original_checkpoint_sha256!==reservation.checkpointHash
+   ||retained.source.original_snapshot_json!==row.snapshot_json))throw Error('Retained destination source binding differs');
+  const originalExecutionId=retained?.source.original_execution_id??reservation.sourceExecutionId;
+  const {cut}=this.group?destinationResourceEvidence(snapshot,reservation):retainedBranchHostGraph(snapshot,originalExecutionId,true,true);
+  if(!verifyBranchHostCut(cut,originalExecutionId)||!cut.coverage.complete)throw Error('Destination retained cut is incomplete');
   if(this.group&&row.id&&context==='current'){
    const chats=this.db.prepare('SELECT source_chat_id,source_execution_id,conversation_id FROM coordination_destination_group_chats WHERE admission_id=? ORDER BY source_chat_id').all(row.id);
    const expected=resourcesOf(reservation).map(r=>({source_chat_id:r.custody.sourceChatId,source_execution_id:r.custody.intent.executionId,conversation_id:r.destination.conversationId})).sort((a,b)=>a.source_chat_id<b.source_chat_id?-1:a.source_chat_id>b.source_chat_id?1:0);
@@ -124,9 +130,10 @@ export class CoordinationV3DestinationAdmissionAuthority {
   const prior=this.db.prepare('SELECT * FROM coordination_destination_admissions WHERE branch_id=? AND command_key=?').get(input.branchId,input.commandKey) as Row|undefined;
   if(prior){if(prior.reservation_hash!==payloadHash(input)||prior.reservation_json!==stableJson(input))throw Error('Destination command input conflict');return {admissionId:prior.id,state:prior.state};}
   if(!nonempty(synchronous(authority.requireCustodyAndOwner(input))))throw Error('Current custody/owner authority revision required');
-  const saved=this.db.prepare('SELECT snapshot_json,content_hash FROM branch_unit_snapshots WHERE id=? AND execution_id=?').get(input.checkpointId,input.sourceExecutionId) as Row|undefined;
+  const retained=input.retainedSourceId?readPinnedRetainedIssuedSource(this.db,input.retainedSourceId):undefined;
+  const saved=retained?{snapshot_json:retained.source.original_snapshot_json,content_hash:retained.source.original_checkpoint_sha256}:this.db.prepare('SELECT snapshot_json,content_hash FROM branch_unit_snapshots WHERE id=? AND execution_id=?').get(input.checkpointId,input.sourceExecutionId) as Row|undefined;
   const execution=this.db.prepare('SELECT branch_id,state FROM branch_executions WHERE id=?').get(input.sourceExecutionId) as Row|undefined;
-  if(!saved||saved.content_hash!==input.checkpointHash||execution?.branch_id!==input.branchId||!['completed','failed','canceled'].includes(execution.state))throw Error('Source owner must settle before destination reservation');
+  if(!saved||saved.content_hash!==input.checkpointHash||execution?.branch_id!==input.branchId||!(retained?execution.state==='waiting':['completed','failed','canceled'].includes(execution.state)))throw Error('Source owner must settle before destination reservation');
   // All prospective identities are reserved before any destination creation effects.
   for(const r of resources){
    const c=r.custody,d=r.destination;
@@ -168,8 +175,8 @@ export class CoordinationV3DestinationAdmissionAuthority {
    for(const id of [r.requester_agent_id,r.recipient_agent_id].filter(Boolean))if(this.db.prepare("SELECT 1 FROM scheduler_runs WHERE agent_id=? AND status IN ('leased','running','outcome_unknown') UNION ALL SELECT 1 FROM provider_process_authority WHERE agent_id=? LIMIT 1").get(id,id))throw Error('Original participant runtime must drain');
   }
   const admissionId=randomUUID();
-  this.db.prepare(`INSERT INTO coordination_destination_admissions(id,branch_id,source_execution_id,checkpoint_id,command_key,reservation_hash,reservation_json,snapshot_json,project_id,conversation_id,state,created_at,updated_at)
-   VALUES(?,?,?,?,?,?,?,?,?,?,'reserved',?,?)`).run(admissionId,input.branchId,input.sourceExecutionId,input.checkpointId,input.commandKey,row.reservation_hash,row.reservation_json,row.snapshot_json,input.destination.projectId,input.destination.conversationId,now,now);
+  this.db.prepare(`INSERT INTO coordination_destination_admissions(id,branch_id,source_execution_id,checkpoint_id,source_kind,retained_source_id,command_key,reservation_hash,reservation_json,snapshot_json,project_id,conversation_id,state,created_at,updated_at)
+   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'reserved',?,?)`).run(admissionId,input.branchId,input.sourceExecutionId,retained?null:input.checkpointId,retained?'retained_foreign':'native',input.retainedSourceId??null,input.commandKey,row.reservation_hash,row.reservation_json,row.snapshot_json,input.destination.projectId,input.destination.conversationId,now,now);
   if(this.group)for(const r of resources)this.db.prepare('INSERT INTO coordination_destination_group_chats(admission_id,source_chat_id,source_execution_id,conversation_id) VALUES(?,?,?,?)').run(admissionId,r.custody.sourceChatId,r.custody.intent.executionId,r.destination.conversationId);
   return {admissionId,state:'reserved'};
  }
@@ -268,6 +275,13 @@ export class CoordinationV3DestinationAdmissionAuthority {
   if(!row)throw Error('Destination reservation missing');return row;
  }
  private checkResourceDestination(reservation:CoordinationDestinationReservation,stage:CoordinationDestinationStage):unknown {
+  if(reservation.retainedSourceId){
+   const proof=readPinnedRetainedIssuedSource(this.db,reservation.retainedSourceId).proof;
+   const artifacts=proof.selectedCustody.package.agents.flatMap((a:Row)=>a.artifacts??[]);
+   const expected=artifacts.map((a:Row)=>({sourceRef:a.ref,sha256:createHash('sha256').update(Buffer.from(a.dataBase64,'base64')).digest('hex'),byteLength:Buffer.from(a.dataBase64,'base64').length})).sort((a:Row,b:Row)=>a.sourceRef.localeCompare(b.sourceRef));
+   const actual=stage.importPlan.artifacts.map(({destinationId,...a})=>a).sort((a,b)=>a.sourceRef.localeCompare(b.sourceRef));
+   if(stableJson(actual)!==stableJson(expected)||Object.keys(stage.artifactMap).length)throw Error('Final working artifact receipt differs');
+  }
   const d=reservation.destination,chat=this.db.prepare(`SELECT c.project_id FROM conversations c WHERE c.id=?
    AND NOT EXISTS(SELECT 1 FROM conversation_deletion_receipts r WHERE r.conversation_id=c.id)
    AND NOT EXISTS(SELECT 1 FROM project_deletion_pending r WHERE r.project_id=c.project_id)`).get(d.conversationId) as Row|undefined;
@@ -314,7 +328,7 @@ export class CoordinationV3DestinationAdmissionAuthority {
   const {reservation,cut}=this.source(row),stage=JSON.parse(row.stage_json) as CoordinationDestinationStage;
   if(!nonempty(synchronous(requireCustodyAndOwner(reservation))))throw Error('Current custody/owner authority required');
   validateRetainedCoordinationGraph(cut,now);
-  if(cut.artifactRefs.length||(stage.imports?Object.values(stage.imports).some(p=>p.artifacts.length):stage.importPlan.artifacts.length)||Object.keys(stage.artifactMap).length)throw Error('Disclosure preview supports no runtime artifacts');
+  if(cut.artifactRefs.length||!reservation.retainedSourceId&&(stage.imports?Object.values(stage.imports).some(p=>p.artifacts.length):stage.importPlan.artifacts.length)||Object.keys(stage.artifactMap).length)throw Error('Disclosure preview supports no runtime artifacts');
   const policy=this.checkDestination(reservation,stage);
   return {review:{admissionId,reservation,stage,facts:[...this.facts(cut,stage),...destinationHistoricalFacts(readDestinationHistoricalPartition(this.db,reservation,stage,cut))]},policy};
  }
@@ -356,7 +370,7 @@ export class CoordinationV3DestinationAdmissionAuthority {
   const review=this.reviewed(row,authority,now);
   if(!hashPattern.test(reviewHash)||reviewHash!==review.reviewHash)throw Error('Destination disclosure/policy changed; review again');
   const {reservation,cut}=this.source(row),stage=review.stage,pending:CreateActivationV3Input[]=[];
-  const mapping={admissionId,projectId:reservation.destination.projectId,conversationId:reservation.destination.conversationId,agentMap:stage.agentMap,artifactMap:stage.artifactMap,...(this.group?{conversationMap:Object.fromEntries(resourcesOf(reservation).map(r=>[r.custody.sourceChatId,r.destination.conversationId]))}:{})};
+  const mapping={admissionId,...(reservation.retainedSourceId?{retainedSourceId:reservation.retainedSourceId}:{}),projectId:reservation.destination.projectId,conversationId:reservation.destination.conversationId,agentMap:stage.agentMap,artifactMap:stage.artifactMap,...(this.group?{conversationMap:Object.fromEntries(resourcesOf(reservation).map(r=>[r.custody.sourceChatId,r.destination.conversationId]))}:{})};
   const artifacts=this.artifacts(cut,stage,reservation,authority);
   const policySnapshot=()=>this.group?resourcesOf(reservation).map(r=>({sourceChatId:r.custody.sourceChatId,policy:destinationDisclosurePolicy(this.db,{...reservation,custody:r.custody,destination:r.destination},resourceStage(r,stage,cut))})):destinationDisclosurePolicy(this.db,reservation,stage);
   const beforePolicy=payloadHash(policySnapshot());
@@ -477,6 +491,20 @@ export class CoordinationV3DestinationAdmissionAuthority {
  readGroupAudit(admissionId:string,reservationHash:string):import('@ponderosa/core').CoordinationDestinationGroupReceipt {
   if(!this.group)throw Error('Group audit reader required');
   return this.db.transaction(()=>this.readInTransaction(admissionId,reservationHash,undefined,undefined,true))() as import('@ponderosa/core').CoordinationDestinationGroupReceipt;
+ }
+ /** Exact terminal retained receipt only; operator audit access grants no live admission. */
+ readRetainedFinalAudit(admissionId:string,reservationHash:string,authorize:(reservation:CoordinationDestinationReservation)=>string):CoordinationDestinationReceipt {
+  return this.db.transaction(()=>{
+   const row=this.row(admissionId),{reservation}=this.source(row,'audit'),d=reservation.destination;
+   const owner=this.db.prepare('SELECT branch_id,state FROM branch_executions WHERE id=?').get(d.executionId) as Row|undefined;
+   const resource=this.db.prepare('SELECT execution_id,chat_id,state,generation FROM branch_resources WHERE step_execution_id=?').get(d.resourceStepId) as Row|undefined;
+   if(this.group||!reservation.retainedSourceId||owner?.branch_id!==reservation.branchId||owner.state!=='completed'
+    ||resource?.execution_id!==d.executionId||resource.chat_id!==d.conversationId||resource.generation!==0||resource.state!=='retired'
+    ||!nonempty(synchronous(authorize(reservation))))throw Error('Terminal retained destination operator audit unavailable');
+   const receipt=this.readInTransaction(admissionId,reservationHash,undefined,undefined,true);
+   if(receipt.activationIds.length)throw Error('Terminal retained audit cannot represent replayed work');
+   return {...receipt,replayed:true};
+  })();
  }
  read(admissionId:string,reservationHash:string,authority:CoordinationDestinationAuthority,expectedReviewHash?:string):CoordinationDestinationReceipt {
   return this.db.transaction(()=>this.readInTransaction(admissionId,reservationHash,authority,expectedReviewHash))();

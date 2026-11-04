@@ -150,6 +150,8 @@ export interface BranchImportHooks {
   assertImportReady?():void;
   /** Persist idle canonical members for a later explicit human admission command. */
   holdForDisclosure?(result:ImportAgentPackageResponse):void;
+  /** Host-only exact final-checkpoint working-data authority; never a portable grant. */
+  retainFinalWorkingData?(pkg:AgentPortablePackageDto,result:ImportAgentPackageResponse):void;
   /** Called inside import reservation, before async effects and Agent creation. */
   stage?(plan:import('@ponderosa/core').CoordinationDestinationImportPlan):void;
   /** May wait for durable human disclosure review, outside any SQLite transaction. */
@@ -2322,7 +2324,12 @@ export function registerAgentPackageRoutes(
           });
           if(branchHooks?.holdForDisclosure){
             if(!branchHooks.stage||operationAgentIds.some(id=>!destinationAdmissionHeld(store.sqlite,id)))throw new Error('Disclosure hold requires exact staged identities');
-            if(roleIntent||packageMemory.length||plannedArtifacts.length||liveWorkingRoots.length||retainedWorkingFiles)throw new Error('Deferred admission supports only artifact-free private organization state');
+            if(roleIntent||packageMemory.length)throw new Error('Deferred admission excludes roles and memory');
+            if(plannedArtifacts.length||liveWorkingRoots.length||retainedWorkingFiles){
+              if(!branchHooks.retainFinalWorkingData)throw new Error('Deferred admission supports only artifact-free private organization state');
+              const checked:unknown=branchHooks.retainFinalWorkingData(portablePackage,response);
+              if(checked&&typeof checked==='object'&&'then' in checked)throw new Error('Final working data authority must be synchronous');
+            }
             store.updateAgentCreationOperation(creationOperationId!,{status:'canonical_committed',result:{...response,branchDestinationPrepared:true},lastError:null});
             const held:unknown=branchHooks.holdForDisclosure(response);
             if(held&&typeof held==='object'&&'then' in held)throw new Error('Disclosure hold must be synchronous');

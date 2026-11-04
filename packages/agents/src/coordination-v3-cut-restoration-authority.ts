@@ -1,4 +1,5 @@
-import {hostUpdateHashMatches,hostUpdateFact,hostRequestPayload,retainedRestorationSnapshot} from './branch-host-provenance.js';
+import {readPinnedRetainedIssuedSource} from './coordination-v3-retained-destination-source.js';
+import {hostUpdateHashMatches,hostUpdateFact,hostRequestPayload,retainedRestorationSnapshot,restorationOriginalIdentity} from './branch-host-provenance.js';
 import type {BranchHostCut} from './branch-host-cut.js';
 import {retainedBranchHostGraph} from './branch-tree-host-cut.js';
 import {randomUUID} from 'node:crypto';
@@ -23,13 +24,15 @@ export function restoredRequestUpdatePayload(db:Database.Database,update:Row):un
  const receipt=db.prepare('SELECT * FROM coordination_cut_restorations WHERE id=?').get(origin.restoration_id) as Row|undefined;
  const saved=receipt&&retainedRestorationSnapshot(db,receipt) as Row|undefined;
  if(!receipt||!saved||saved.content_hash!==receipt.cut_hash||payloadHash(JSON.parse(saved.snapshot_json))!==receipt.cut_hash)throw Error('Historical result retained cut unavailable');
- const {cut}=retainedBranchHostGraph(JSON.parse(saved.snapshot_json),receipt.source_execution_id,true,Boolean(JSON.parse(receipt.receipt_json).destination));
- if(!verifyBranchHostCut(cut,receipt.source_execution_id)||!cut.coverage.complete)throw Error('Historical result retained cut integrity failure');
+ const retained=receipt.source_kind==='retained_foreign'?readPinnedRetainedIssuedSource(db,receipt.retained_source_id):undefined;
+ const original=restorationOriginalIdentity(receipt,retained);
+ const {cut}=retainedBranchHostGraph(JSON.parse(saved.snapshot_json),original.executionId,true,Boolean(JSON.parse(receipt.receipt_json).destination));
+ if(!verifyBranchHostCut(cut,original.executionId)||!cut.coverage.complete)throw Error('Historical result retained cut integrity failure');
  const source=cut.updates.find(({row})=>row.id===origin.source_update_id)?.row,map=JSON.parse(receipt.receipt_json);
  if(!source||source.request_id!==origin.source_request_id||source.kind!==origin.source_kind||source.payload_hash!==origin.source_payload_hash
   ||source.resulting_version!==origin.source_resulting_version||!hostUpdateHashMatches(cut,source)
   ||stableJson({kind:source.actor_kind,id:source.actor_id})!==origin.source_actor_json
-  ||map.restorationId!==receipt.id||map.checkpointId!==receipt.checkpoint_id||map.checkpointHash!==receipt.cut_hash
+  ||map.restorationId!==receipt.id||map.checkpointId!==original.checkpointId||map.checkpointHash!==receipt.cut_hash
   ||map.updateMap[source.id]!==update.id||map.requestMap[source.request_id]!==update.request_id
   ||(source.in_reply_to_update_id&&!map.updateMap[source.in_reply_to_update_id])
   ||(update.in_reply_to_update_id??null)!==(source.in_reply_to_update_id?map.updateMap[source.in_reply_to_update_id]:null)
@@ -155,7 +158,7 @@ export class CoordinationV3CutRestorationAuthority {
 }
 
 export interface RetainedGraphDestination {
- admissionId:string;projectId:string;conversationId:string;conversationMap?:Record<string,string>;agentMap:Record<string,string>;artifactMap:Record<string,string>;
+ admissionId:string;retainedSourceId?:string;projectId:string;conversationId:string;conversationMap?:Record<string,string>;agentMap:Record<string,string>;artifactMap:Record<string,string>;
 }
 /** Shared final-projection writer; callers must validate cut, disclosure and destination first. */
 export function writeRetainedCoordinationGraph(db:Database.Database,deliver:(input:CreateActivationV3Input)=>string,branchId:string,executionId:string,input:BranchHostGraphRestoreInput,cut:BranchHostCut,now:string,destination?:RetainedGraphDestination):BranchHostGraphRestoreDto {
@@ -165,7 +168,9 @@ export function writeRetainedCoordinationGraph(db:Database.Database,deliver:(inp
  const agent=(id:string|null):string|null=>{if(!id)return null;if(!destination)return id;const mapped=destination.agentMap[id];if(!mapped)throw Error('Historical participant map is incomplete');return mapped;};
   const restorationId=randomUUID(),requestMap=Object.fromEntries(requests.map(r=>[r.id,randomUUID()])),updateMap=Object.fromEntries(updates.map(u=>[u.id,randomUUID()])),joinMap=Object.fromEntries(joins.map(j=>[j.id,randomUUID()]));
   const receipt:BranchHostGraphRestoreDto={restorationId,checkpointId:input.checkpointId,checkpointHash:input.expectedHash,requestMap,updateMap,joinMap,replayed:false,...(destination?{destination}: {})};
-  db.prepare('INSERT INTO coordination_cut_restorations VALUES(?,?,?,?,?,?,?,?,?)').run(restorationId,branchId,executionId,input.checkpointId,input.expectedHash,input.commandKey,payloadHash(input),stableJson(receipt),now);
+  const retained=destination?.retainedSourceId?readPinnedRetainedIssuedSource(db,destination.retainedSourceId):undefined;
+  if(retained&&(retained.source.branch_id!==branchId||retained.source.local_execution_id!==executionId||retained.source.original_checkpoint_key!==String(input.checkpointId)||retained.source.original_checkpoint_sha256!==input.expectedHash||stableJson(retained.proof.selected.hostDependencies)!==stableJson(cut)))throw Error('Restored graph retained source differs');
+  db.prepare('INSERT INTO coordination_cut_restorations(id,branch_id,source_execution_id,checkpoint_id,source_kind,retained_source_id,cut_hash,command_key,command_hash,receipt_json,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(restorationId,branchId,executionId,retained?null:input.checkpointId,retained?'retained_foreign':'native',destination?.retainedSourceId??null,input.expectedHash,input.commandKey,payloadHash(input),stableJson(receipt),now);
   const origin=(r:Row,u?:Row)=>({restorationId,sourceRequestId:r.id,...(u?{sourceUpdateId:u.id,sourceKind:u.kind,sourcePayloadHash:u.payload_hash,sourceVersion:u.resulting_version}:{}),historical:true});
   const evidence=(payload:string,r:Row,u?:Row)=>{const historicalPayload=JSON.parse(payload),original=u?hostUpdateFact(cut,u).payload:hostRequestPayload(cut,r);return {text:`[Imported historical ${u?.kind??'Request'}]\n${instruction}${typeof (original as Row)?.text==='string'?`\n\n${(original as Row).text}`:''}`,historicalOrigin:origin(r,u),historicalPayload,...(destination?{destinationAdmissionId:destination.admissionId,artifactBindings:Object.fromEntries(cut.artifactRefs.filter(e=>cut.updates.some(v=>v.row.request_id===r.id&&v.row.id===e.row.owner_id)).map(e=>[e.row.id,destination.artifactMap[e.row.id]]))}:{})};};
   // Insert final projections directly. No intermediate live intake/update hooks run.

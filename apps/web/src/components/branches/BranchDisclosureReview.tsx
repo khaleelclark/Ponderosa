@@ -110,6 +110,14 @@ export function BranchDisclosureReview({branchId,executionId,enabled,onChanged,r
     {target&&<>
      <Typography sx={{overflowWrap:'anywhere'}}>Admission {target.admissionId} · Project {target.destination.projectId} · Chat {target.destination.conversationId} · Run {target.destination.executionId} · Step {target.destination.resourceStepId} · generation {target.destination.resourceGeneration}</Typography>
      <Typography variant="body2">Persisted disclosure: {target.disclosure.state} · revision {target.disclosure.revision} · current eligibility: fresh preview required</Typography>
+     {target.state==='capture_pending'&&<Alert severity="warning">Final capture held. A retry starts capture only if it never began; an uncertain capture remains held.
+      <Button disabled={busy||Boolean(pending&&pending.kind!=='admit')||!target.disclosure.reviewHash} onClick={()=>{
+       if(fence.current)return;
+       const command:Command=pending?.kind==='admit'?pending:{kind:'admit',admissionId:target.admissionId,body:{commandKey:target.commandKey,reviewHash:target.disclosure.reviewHash!}};
+       if(command.body.commandKey!==target.commandKey||command.admissionId!==target.admissionId)return;
+       fence.current=true;submit.mutate(command);
+      }}>Retry final capture</Button>
+     </Alert>}
      {target.state==='import_unknown'&&<Alert severity="warning">Import unknown · destination held · no import retry</Alert>}
      <Stack direction="row" gap={1}><Button disabled={!fresh||!['awaiting_disclosure','admitted'].includes(target.state)} onClick={()=>{discardReview();preview.mutate();}}>Preview disclosure</Button><Button disabled={locked||list.isFetching} onClick={()=>readDestination.mutate()}>Read destination receipt</Button><Button color="error" disabled={!revokeReady} onClick={()=>setConfirm('revoke')}>Revoke disclosure</Button></Stack>
     </>}

@@ -9,7 +9,7 @@ import {AgentStore} from '@ponderosa/agents';
 import {initializePredecessorSchema} from '../../packages/agents/dist/db.js';
 const require=createRequire(new URL('../../packages/agents/package.json',import.meta.url));
 const Database=require('better-sqlite3');
-const versions=['0027_schedule_work_lookup.sql','0028_capability_policy_history.sql','0029_assistant_workspace.sql','0030_agent_run_pauses.sql','0031_branch_initial_checkpoints.sql','0032_branch_unit_snapshots.sql','0033_branch_checkpoint_invocations.sql','0042_destination_retained_sources.sql','0043_package_export_cache.sql','0044_memory_scope_provisioning.sql'];
+const versions=['0027_schedule_work_lookup.sql','0028_capability_policy_history.sql','0029_assistant_workspace.sql','0030_agent_run_pauses.sql','0031_branch_initial_checkpoints.sql','0032_branch_unit_snapshots.sql','0033_branch_checkpoint_invocations.sql','0042_destination_retained_sources.sql','0043_package_export_cache.sql','0044_memory_scope_provisioning.sql','0045_agent_import_submission_intents.sql'];
 const quote=name=>'"'+name.replaceAll('"','""')+'"';
 
 const cases=[...versions.map(version=>({version,shape:'current-prefix'})),

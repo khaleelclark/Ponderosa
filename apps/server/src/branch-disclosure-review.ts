@@ -39,6 +39,12 @@ export class BranchDisclosureReviewService {
   // Keep this explicit; an Agent relationship or artifact recipient grant is unrelated.
   const snapshot=JSON.parse(row.snapshot_json),host=this.group?issuedGroupHost(snapshot):snapshot.hostDependencies;
   if(!host?.coverage?.complete||host.artifactRefs?.length||!Array.isArray(host.requests)||!host.requests.length)throw Error('Disclosure requires complete artifact-free issued facts');
+  const reservation=JSON.parse(row.reservation_json);
+  if(reservation.retainedSourceId){
+   const source=this.branches.retainedDestinationInstallationEvidence(reservation.retainedSourceId);
+   if(source.source.branch_id!==row.branch_id||source.source.local_execution_id!==row.source_execution_id||source.source.original_snapshot_json!==row.snapshot_json)throw Error('Imported operator audit source differs');
+   return;
+  }
   const projects=new Set<string>(host.requests.map((e:Row)=>e.row.project_id));
   for(const projectId of projects)if(!this.store.getProject(projectId)||this.db.prepare('SELECT 1 FROM project_deletion_pending WHERE project_id=?').get(projectId))throw Error('Original Project operator audit-read unavailable');
  }
@@ -78,7 +84,15 @@ export class BranchDisclosureReviewService {
  requireCurrentOwner(reservation:CoordinationDestinationReservation):string {
   if(!this.db.inTransaction)throw Error('Disclosure custody proof requires owner transaction');
   const saved=this.branches.issuedDestinationSource(reservation.branchId,reservation.sourceExecutionId,reservation.checkpointId,reservation.checkpointHash);
-  if(saved.kind==='retained-issued-resource')throw Error('This imported checkpoint remains held until source shutdown and destination custody are verified');
+  if(saved.kind==='retained-issued-resource'){
+   if(!reservation.retainedSourceId)throw Error('Pinned imported source required');
+   const source=this.branches.retainedDestinationInstallationEvidence(reservation.retainedSourceId),branch=this.branches.getBranch(reservation.branchId);
+   if(source.source.local_execution_id!==reservation.sourceExecutionId||source.source.original_snapshot_json!==stableJson(saved.proof.selected)
+    ||!branch?.enabled||!branch.versionId||!branch.bindingRevisionId||hash(this.branches.version(branch.id,branch.versionId)!.definition)!==saved.continuation.versionHash
+    ||stableJson(this.branches.configuration(branch.id))!==stableJson(saved.continuation.configuration)
+    ||stableJson(saved.custody)!==stableJson(reservation.custody))throw Error('Current imported destination owner differs');
+   return hash({source:source.source,branch,pins:this.branches.localConfiguration(branch.id),custody:saved.proof.selectedCustody});
+  }
   if(stableJson(saved.custody)!==stableJson(reservation.custody)||saved.custody.intent.hostCutSha256!==hash(saved.hostDependencies))throw Error('Disclosure issued custody differs');
   const e=this.db.prepare(`SELECT e.*,b.deleting,b.enabled,b.active_version_id,b.binding_revision_id current_binding,b.configuration_json current_configuration
    FROM branch_executions e JOIN branches b ON b.id=e.branch_id WHERE e.id=? AND b.id=?`).get(reservation.sourceExecutionId,reservation.branchId) as Row|undefined;
@@ -106,6 +120,15 @@ export class BranchDisclosureReviewService {
   if(stableJson(value)!==current.result_json||hash(value)!==current.input_hash||value.admissionId!==row.id||!Number.isSafeInteger(value.revision)||value.revision<1||!['approved','revoked'].includes(value.state))throw Error('Disclosure choice integrity failure');
   return value;
  }
+ /** The current local operator may inspect committed imported history after cleanup.
+  * This does not approve disclosure to new Agents or revive an old approval. */
+ authorizeRetainedReceipt(id:string,reservation:CoordinationDestinationReservation):string {
+  const row=this.admission(reservation.branchId,reservation.sourceExecutionId,id);
+  const branch=this.db.prepare('SELECT deleting FROM branches WHERE id=?').get(reservation.branchId) as Row|undefined;
+  if(!reservation.retainedSourceId||!branch||branch.deleting||row.state!=='admitted'||row.reservation_json!==stableJson(reservation))
+   throw Error('Current retained destination operator audit unavailable');
+  return hash({operatorId:BRANCH_DISCLOSURE_OPERATOR,admissionId:id,reservationHash:row.reservation_hash});
+ }
  readChoice(branchId:string,executionId:string,id:string):{revision:number;state:'unreviewed'|'approved'|'revoked';reviewHash?:string} {
   const current=this.state(this.admission(branchId,executionId,id));
   return {revision:current.revision,state:current.state,reviewHash:current.reviewHash};
@@ -132,7 +155,8 @@ export class BranchDisclosureReviewService {
  }
  async prepare(branchId:string,executionId:string,id:string):Promise<BranchDisclosureReviewDto> {
   const row=this.admission(branchId,executionId,id),r=JSON.parse(row.reservation_json);
-  await this.verifyCustody(executionId,r.checkpointId,r.checkpointHash);
+  if(r.retainedSourceId)this.db.transaction(()=>this.requireCurrentOwner(r))();
+  else await this.verifyCustody(executionId,r.checkpointId,r.checkpointHash);
   const historical=this.db.transaction(()=>readDestinationHistoricalPartition(this.db,r,JSON.parse(row.stage_json)))();
   this.historicalAuditRead(historical);
   for(const p of historical){

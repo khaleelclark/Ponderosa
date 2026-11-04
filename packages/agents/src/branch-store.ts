@@ -1,7 +1,7 @@
 import {fenceBranchFinalResourceExit} from './branch-generation-exit-fence.js';
 import {fenceFinalResourceExit,captureFinalResourceExit,readFinalResourceExit,finalResourceIssuedCheckpointRequired} from './branch-final-resource-exit.js';
 import {bundleParentInput,bundleCallInput,inheritedBundleCallInput,remapBundleValue,type BundleValueMap} from './branch-bundle-values.js';
-import {readRetainedDestinationSource} from './coordination-v3-retained-destination-source.js';
+import {readRetainedDestinationSource,retainIssuedDestinationSource} from './coordination-v3-retained-destination-source.js';
 import {portableScriptBundlesSupported} from './branch-parallel-continuation.js';
 import {automaticScriptDefinitionSupported,automaticScriptOriginSupported,branchTriggerInput} from './branch-script-origin.js';
 import {heldTreeSource,portableRootTreeOwners} from './branch-tree-generation.js';
@@ -18,7 +18,7 @@ import {generationExitKey,requireGenerationExitIntakeFence,readGenerationExitCap
 import {readGroupCaptureDisposition} from './branch-group-custody-disposition.js';
 import {issuedGroupOwners,issuedGroupResources,readIssuedGroup,readIssuedGroupCapture,previewIssuedGroupCapture,reserveIssuedGroupCapture,sealIssuedGroupMember} from './branch-issued-group-capture.js';
 import {BranchCustodyLifecycle} from './branch-custody-lifecycle.js';
-import {encodeIssuedResourceContinuation,readIssuedResourceContinuation,reconstructIssuedResourceContinuation,retainedIssuedResourceSource} from './branch-issued-resource-continuation.js';
+import {encodeIssuedResourceContinuation,readIssuedResourceContinuation,reconstructVerifiedIssuedResourceContinuation,retainedIssuedResourceSource} from './branch-issued-resource-continuation.js';
 import type {CoordinationDestinationAuthority} from './coordination-v3-destination-admission-authority.js';
 import {issuedResourceCapture,reserveIssuedResourceCapture,sealIssuedResourceCapture} from './branch-issued-resource-capture.js';
 import {resourceCapture,retainedResourceCapture,resourceCaptureFrontierHash,receiptMatchesSource,type BranchResourceCapture} from './branch-resource-capture.js';
@@ -1380,18 +1380,22 @@ export class BranchStore {
       const key=`issued-destination:${payloadHash(input.commandKey)}`,inputHash=payloadHash(input);
       const prior=this.row('SELECT input_hash,result_json FROM branch_commands WHERE execution_id=? AND command_key=?',executionId,key);
       if(prior){if(prior.input_hash!==inputHash)throw Error('Issued destination command input conflict');return this.issuedDestinationPlan(branchId,executionId,input.commandKey);}
-      const saved=readIssuedResourceContinuation(this.sqlite,executionId,input.checkpointId,input.expectedHash),source=this.execution(executionId),branch=this.getBranch(branchId),c=saved.continuation;
-      if(!source||source.branchId!==branchId||source.parentExecutionId||!['completed','failed','canceled'].includes(source.state)
-        ||!branch||branch.versionId!==c.versionId||branch.bindingRevisionId!==c.bindingRevisionId||stableJson(this.configuration(branchId))!==stableJson(c.configuration))throw Error('Current issued destination pins/owner unavailable');
+      const saved=this.issuedDestinationSource(branchId,executionId,input.checkpointId,input.expectedHash),source=this.execution(executionId),branch=this.getBranch(branchId),c=saved.continuation;
+      const retained=saved.kind==='retained-issued-resource';
+      if(!source||source.branchId!==branchId||source.parentExecutionId||!(retained?source.state==='waiting':['completed','failed','canceled'].includes(source.state))
+        ||!branch||!retained&&(branch.versionId!==c.versionId||branch.bindingRevisionId!==c.bindingRevisionId)||stableJson(this.configuration(branchId))!==stableJson(c.configuration))throw Error('Current issued destination pins/owner unavailable');
       if(c.generationRetry?input.historicalReviewHash!==payloadHash(generationHistoricalSelections(c.generationRetry)):input.historicalReviewHash!==undefined)throw Error('Exact server historical selection review required');
-      const definition=this.version(branchId,c.versionId)!.definition;
+      const definition=this.version(branchId,branch.versionId!)!.definition;
+      if(retained&&payloadHash(definition)!==c.versionHash)throw Error('Current retained destination definition differs');
       if(this.restricted(branchId,CAPABILITY_IDS.managedAgentCreate)||definition.steps.some(s=>s.kind==='script')&&this.restricted(branchId,CAPABILITY_IDS.scripts))throw Error('Current Branch destination capabilities restricted');
       if(saved.custody.agentIds.length>(definition.policy.maxEphemeralAgents??100))throw Error('Destination ephemeral Agent budget unavailable');
       const next=this.accept(branchId,`issued-destination:${randomUUID()}`,saved.selected.execution![0]!.input_text,now);
       if(!this.hasRunnableCapacity(next.id)||!this.executionBudgets.admit(next.id,now))throw Error('Destination execution budget/capacity unavailable');
       const idMap:Record<string,string>=Object.fromEntries(branchContinuationIds(saved.selected).map(id=>[id,randomUUID()]));
       for(const item of saved.selected.items!)idMap[item.id]=`${idMap[item.map_invocation_id]}:${item.item_index}`;
+      const association=retained?retainIssuedDestinationSource(this.sqlite,{planId:JSON.parse(this.row('SELECT provenance_json FROM branch_executions WHERE id=?',executionId)!.provenance_json).planId,branchId,originalExecutionId:saved.proof.owner.sourceExecutionId,checkpointKey:String(input.checkpointId),checkpointSha256:input.expectedHash},(planId,id)=>this.foreignContinuationSource(id,planId)):undefined;
       const reservation:import('@ponderosa/core').CoordinationDestinationReservation={branchId,sourceExecutionId:executionId,checkpointId:input.checkpointId,checkpointHash:input.expectedHash,
+        ...(association?{retainedSourceId:association.source.id}:{}),
         commandKey:input.commandKey,operatorId:chat.operatorId,reconcileEffects:true,custody:saved.custody,
         ...(c.generationRetry?{historicalPartition:generationHistoricalSelections(c.generationRetry)}:{}),
         destination:{projectId:chat.projectId,conversationId:chat.conversationId,executionId:next.id,resourceStepId:idMap[saved.selected.resources![0]!.step_execution_id]!,resourceGeneration:0}};
@@ -1417,14 +1421,14 @@ export class BranchStore {
     const r=plan.reservation,d=r.destination,canonical=this.issuedDestinationPlan(r.branchId,r.sourceExecutionId,plan.input.commandKey);
     if(stableJson(canonical)!==stableJson(plan))throw Error('Destination plan changed');
     const admission=this.row('SELECT * FROM coordination_destination_admissions WHERE id=?',plan.admissionId)!,stage=JSON.parse(admission.stage_json);
-    const e=this.execution(d.executionId),branch=this.getBranch(r.branchId),saved=readIssuedResourceContinuation(this.sqlite,r.sourceExecutionId,r.checkpointId,r.checkpointHash);
+    const e=this.execution(d.executionId),branch=this.getBranch(r.branchId),saved=this.issuedDestinationSource(r.branchId,r.sourceExecutionId,r.checkpointId,r.checkpointHash);
     if(!e||this.row('SELECT cancel_requested FROM branch_executions WHERE id=?',e.id)?.cancel_requested||e.state!=='waiting'
       ||!branch?.enabled||branch.versionId!==e.versionId||branch.bindingRevisionId!==e.bindingRevisionId||stableJson(this.configuration(branch.id))!==stableJson(e.configuration)
       ||this.restricted(branch.id,CAPABILITY_IDS.managedAgentCreate)||this.definition(e).steps.some(s=>s.kind==='script')&&this.restricted(branch.id,CAPABILITY_IDS.scripts)
       ||!this.hasRunnableCapacity(e.id)||!this.executionBudgets.admit(e.id,now))throw Error('Current Branch destination acceptance/budget unavailable');
     if(stableJson(result.agentRefs)!==stableJson(stage.agentMap)||stableJson([...result.agentIds].sort())!==stableJson(Object.values(stage.agentMap).sort())
       ||result.rootAgentId!==stage.agentMap[saved.selected.resources![0]!.root_agent_id])throw Error('Actual import receipt differs from staged source map');
-    const restored=reconstructIssuedResourceContinuation(this.sqlite,r.sourceExecutionId,r.checkpointId,r.checkpointHash,
+    const restored=reconstructVerifiedIssuedResourceContinuation(saved,saved.kind==='retained-issued-resource'?saved.proof.owner.sourceExecutionId:r.sourceExecutionId,r.checkpointId,r.checkpointHash,
       {executionId:d.executionId,conversationId:d.conversationId,resourceGeneration:0},{idMap:plan.idMap,requestMap:graph.requestMap,agentMap:stage.agentMap});
     if(restored.resource.step_execution_id!==d.resourceStepId)throw Error('Destination resource identity differs');
     insertBranchFrontier(this.sqlite,e.id,restored.frontier,now,new Set(Object.values(graph.requestMap)));
@@ -1441,7 +1445,9 @@ export class BranchStore {
     this.checkpoint(e.id,'issued-restored-prefix','issued_restored_prefix',{sourceCheckpoint:restored.sourceCheckpoint,admissionId:plan.admissionId,idMap:plan.idMap},now);
     this.checkpoint(e.id,'workflow-started','workflow_started',{admission:JSON.parse(this.row('SELECT admission_json FROM branch_executions WHERE id=?',e.id)!.admission_json)},now);
     this.checkpoint(e.id,`resource-bound:${d.resourceStepId}:0`,'resource_created',{...result,requestId:restored.requestBindings.find(b=>b.stepExecutionId===d.resourceStepId)?.requestId,creationKey:resource.creation_key},now);
-    this.state(e.id,'running',now);this.selectedWrite(e.id);completeImport();
+    if(r.retainedSourceId)this.state(e.id,'waiting',now,'Waiting for ephemeral Agent work and runtime cleanup');
+    else this.state(e.id,'running',now);
+    this.selectedWrite(e.id);completeImport();
     return {executionId:e.id,resourceStepId:d.resourceStepId,resourceGeneration:0,creationOperationId:stage.importPlan.creationOperationId,requestBindings:restored.requestBindings,receiptId};
   }
   checkpointIssuedDestination(plan:Row):void {

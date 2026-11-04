@@ -100,16 +100,18 @@ export function retainedCompletedFinalResourceSource(owner:BranchPortableRuntime
   ||stableJson(JSON.parse(custody.wireJson))!==stableJson(custody.package))
   throw Error('Final source package custody bytes unavailable');
  const pkg=custody.package;
- if(pkg.mode!=='full'||pkg.memory?.length||!Array.isArray(pkg.agents)
+ if(pkg.mode!=='full'||pkg.memory?.length||pkg.outputRoles?.length||pkg.gitStorageBindings?.length||pkg.workingRootNesting?.length||!Array.isArray(pkg.agents)
   ||stableJson(pkg.agents.map((a:any)=>a.ref))!==stableJson(custody.receipt.agentIds)
   ||pkg.agents.some((a:any)=>a.sourceChat?.ref!==i.chatId||!a.workingRootRef
-   ||a.workingCopyMode==='separate_git'||a.reviewedUserData||a.nativeMetadata))
+   ||a.workingCopyMode==='separate_git'||a.accessSettings?.restrictedCapabilityIds?.length
+   ||a.managementPermissions?.allowAutomaticDescendantDeletion||a.managementPermissions?.allowAutomaticDescendantReorganization))
   throw Error('Final source complete Shared folder package required');
  const roots=[...new Set(pkg.agents.map((a:any)=>a.workingRootRef))];
  if(roots.length!==1)throw Error('One complete final Shared root is required');
  const owners=pkg.agents.filter((a:any)=>a.workingFolder);
- if(owners.length!==1||owners[0].workingFolder.excludedPaths?.length
-  ||pkg.agents.some((a:any)=>(a.artifacts??[]).some((artifact:any)=>!(a.workingFiles??[]).some((file:any)=>file.artifactRef===artifact.ref))))
+ if(owners.length!==1||owners[0].workingFolder.excludedPaths?.length||owners[0].workingFolder.links?.length
+  ||pkg.agents.some((a:any)=>(a.artifacts??[]).some((artifact:any)=>artifact.dataEncoding!==undefined||!(a.workingFiles??[]).some((file:any)=>file.artifactRef===artifact.ref))))
   throw Error('Final source has excluded or non-working file data');
+ // latest denotes the independently recorded equal final boundary, not a post-cleanup checkpoint.
  return {selected,latest:selected,selectedCustody:custody,latestCustody:custody,finalExit:exit,currentAuthority:false as const};
 }

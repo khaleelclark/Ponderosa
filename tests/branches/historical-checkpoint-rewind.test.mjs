@@ -5,7 +5,7 @@ import {encodeScriptContinuation} from '../../packages/agents/dist/branch-script
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {CAPABILITY_IDS} from '../../packages/core/dist/index.js';
-import {mkdtempSync,rmSync,mkdirSync,writeFileSync,readFileSync,existsSync} from 'node:fs';
+import {mkdtempSync,rmSync,mkdirSync,writeFileSync,readFileSync,existsSync,symlinkSync,readlinkSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
@@ -3076,7 +3076,7 @@ test('final resource actual package engine captures later history and working fi
  }finally{if(service)await service.stop();await app.close();assets.close();}
 });
 
-test('complete final source adapter binds real portable checkpoint without source authority',async t=>{
+for(const linkedFinal of [false,true])test(linkedFinal?'linked portable final resource stays held with original bytes':'completed portable final resource restores a fresh destination without replay',async t=>{
  const Fastify=(await import('fastify')).default;
  const {AssetStore}=await import('../../apps/server/dist/assets.js');
  const {registerAgentPackageRoutes}=await import('../../apps/server/dist/routes/agent-packages.js');
@@ -3106,6 +3106,7 @@ test('complete final source adapter binds real portable checkpoint without sourc
   assert.ok(earlierPackage.agents[0].history.some(message=>message.text==='before checkpoint history'));
   assert.equal(earlierPackage.agents[0].workingFiles?.some(entry=>entry.path==='final-work.txt')??false,false,'ordinary issued checkpoint keeps its original file selection');
   writeFileSync(file,'after checkpoint exact content 😀\n');
+  if(linkedFinal)symlinkSync('final-work.txt',join(file,'..','captured-link'));
   message('after checkpoint history 😀');
   coordination.updateRequest({requestId:opened.requestId,updateId:'actual-engine-result',kind:'completed',actor:{kind:'agent',id:opened.agentId},payload:{text:'known result'}});
   const suffix=await f.claim();f.settle(suffix);await f.branches.unitSaver.drain();
@@ -3152,6 +3153,17 @@ test('complete final source adapter binds real portable checkpoint without sourc
   const retained=installation.runtimeData(preview.id,imported.branchId);
   assert.deepEqual(retained.data,portable.runtimeData);
   const importedOwner=retained.receipt.executionMap[f.source.id];
+  if(linkedFinal){
+   assert.ok(node.workingFolder.links.length);
+   const before=db.prepare('SELECT COUNT(*) n FROM coordination_destination_admissions').get().n;
+   const {BranchIssuedDestinationService}=await import('../../apps/server/dist/branch-issued-destination.js');
+   const destinations=new BranchIssuedDestinationService(f.store,f.branches,coordination,undefined,()=>packageEngine,async()=>assert.fail('linked source must hold before allocation'));
+   await assert.rejects(destinations.prepare(imported.branchId,importedOwner,{commandKey:'linked-final-held',checkpointId:final.checkpointId,expectedHash:final.checkpointHash,reconcileEffects:true}),/excluded|non-working|working.folder|complete/i);
+   assert.equal(db.prepare('SELECT COUNT(*) n FROM coordination_destination_admissions').get().n,before);
+   assert.equal(readlinkSync(join(file,'..','captured-link')),'final-work.txt');
+   assert.equal(readFileSync(file,'utf8'),'after checkpoint exact content 😀\n');
+   return;
+  }
   const proof=f.branches.issuedDestinationSource(imported.branchId,importedOwner,final.checkpointId,final.checkpointHash);
   assert.equal(proof.kind,'retained-issued-resource');
   assert.equal(proof.proof.finalExit.identity.executionId,f.source.id);
@@ -3169,6 +3181,8 @@ test('complete final source adapter binds real portable checkpoint without sourc
   assert.equal(retained.receipt.dispatched,false);
   assert.equal(db.prepare('SELECT COUNT(*) n FROM agents a JOIN conversations c ON c.id=a.conversation_id WHERE c.branch_id=?').get(imported.branchId).n,0);
   assert.equal(readFileSync(file,'utf8'),'after checkpoint exact content 😀\n');
+  await exerciseForeignFinalDestination(t,portable,f.source.id,final,exit.identity);
+  await exerciseForeignFinalDestination(t,portable,f.source.id,final,exit.identity,'failed');
   const {BranchIssuedDestinationService}=await import('../../apps/server/dist/branch-issued-destination.js');
   const destinations=new BranchIssuedDestinationService(f.store,f.branches,coordination,undefined,()=>packageEngine,async()=>assert.fail('must refuse before creating destination'));
   await assert.rejects(destinations.prepare(f.branch.id,f.source.id,{commandKey:'native-final-folder-probe',checkpointId:final.checkpointId,expectedHash:final.checkpointHash,reconcileEffects:true}),/artifact-free.*native working copies/);
@@ -3182,7 +3196,223 @@ test('complete final source adapter binds real portable checkpoint without sourc
   assert.equal(readFileSync(file,'utf8'),'after checkpoint exact content 😀\n');
   assert.equal(db.prepare('SELECT COUNT(*) n FROM scheduler_runs WHERE agent_id=?').get(restored.rootAgentId).n,0);
   console.log('FINAL_GENERIC_FOLDER_RESTORE',JSON.stringify({recoveredFile:true,liveFile:true,sourcePreserved:true,excludedGitRestored:false,branchContinuation:false}));
-  console.log('FINAL_TRUSTED_ROUTE_PROBE',JSON.stringify({exportedFinalBytes:true,retainedImport:true,settledRequests:reconciled.outcomes,restoredWorkingFolders:0,continuation:'held'}));
   console.log('ACTUAL_FINAL_CAPTURE_OK',JSON.stringify({history:true,workingFile:true,bytes:final.receipt.byteLength,deleted}));
  }finally{if(service)await service.stop();await app.close();assets.close();}
+});
+
+async function exerciseForeignFinalDestination(t,portable,originalExecutionId,final,originalIdentity,captureMode='prewrite'){
+ const g=await reservationHistoryFixture(t,'async',false,false,false);
+ let coordination,app,assets,packageEngine;
+ const Fastify=(await import('fastify')).default,{AssetStore}=await import('../../apps/server/dist/assets.js');
+ const {AgentWorkingCopyService}=await import('../../apps/server/dist/agent-working-copy-service.js');
+ const {registerAgentPackageRoutes}=await import('../../apps/server/dist/routes/agent-packages.js');
+ const {BranchInstallationService}=await import('../../apps/server/dist/branch-installation-service.js');
+ const {BranchIssuedDestinationService}=await import('../../apps/server/dist/branch-issued-destination.js');
+ const {BranchDisclosureReviewService}=await import('../../apps/server/dist/branch-disclosure-review.js');
+ const {BranchResourceService}=await import('../../apps/server/dist/branch-resource-service.js');
+ const {enableProviderStartCoverage,sealProviderNeverStarted}=await import('../../packages/agents/dist/provider-start-journal.js');
+ const {restoredRequestUpdatePayload}=await import('../../packages/agents/dist/coordination-v3-cut-restoration-authority.js');
+ const openPackages=async()=>{
+ coordination=new CoordinationV3Store(g.store.sqlite);app=Fastify();assets=new AssetStore(g.dir);
+ ({packageEngine}=registerAgentPackageRoutes(app,{dataDir:g.dir,store:g.store,coordination,assets,workingCopies:new AgentWorkingCopyService(g.dir,g.store),engines:new Map([['codex',{adapter:{id:'codex',listModels:()=>[],listEfforts:()=>[]}}]]),deletingProjectIds:new Set(),deletingConversationIds:new Set(),deletingAgentIds:new Set(),agentCreationConversationLeases:new Map(),cachedModelOptions:()=>[],appendWorkspace(){},agentMessages:id=>g.store.getProjectedAgentMessages(id),createOperationalNotification(){}}));
+ await app.ready();};
+ await openPackages();let cleanup;
+ try{
+  assert.equal(g.store.sqlite.prepare('SELECT 1 FROM projects WHERE id=?').get(originalIdentity.projectId),undefined);
+  assert.equal(g.store.sqlite.prepare('SELECT 1 FROM conversations WHERE id=?').get(originalIdentity.chatId),undefined);
+  for(const id of originalIdentity.agentIds)assert.equal(g.store.sqlite.prepare('SELECT 1 FROM agents WHERE id=?').get(id),undefined);
+  let created=0;
+  const createChat=async(input,key,owner)=>{
+   created++;const name='final-destination-'+hash(key).slice(0,32),root=join(g.dir,'workspaces',name);mkdirSync(root,{recursive:true});
+   const project=g.store.createProject({...input,hostPath:root,creationHostPath:root,managedWorkspaceName:name,chatOwned:true,...owner},{idempotencyKey:key,payloadHash:hash(stableJson({input,owner}))});
+   return g.store.getConversation(project.lastConversationId);
+  };
+  let installation=new BranchInstallationService(g.store,g.branches,async()=>assert.fail('delete'),async()=>assert.fail('delete'),createChat);
+  installation.setEngine(packageEngine);installation.setPublisher((input,configuration)=>g.branches.deploy(input,undefined,undefined,configuration));
+  const preview=await installation.preview(portable,{agents:{},directories:{root:g.dir,workspace:g.dir},engines:{codex:'codex'}});
+  const imported=await installation.confirm(preview.id,true,undefined,false,preview.runtimeDataReview.manifestSha256);
+  assert.equal(imported.state,'completed',imported.error);
+  const held=installation.runtimeData(preview.id,imported.branchId),sourceId=held.receipt.executionMap[originalExecutionId];
+  g.branches.setEnabled(imported.branchId,true);
+  enableProviderStartCoverage(g.store.sqlite,'destination-fixture');
+  let disclosures=new BranchDisclosureReviewService(g.store,g.branches,coordination,async()=>assert.fail('foreign source must never ask local native custody'));
+  let beforeCapture=captureMode==='prewrite',captureCalls=0,captureSeals=0;
+  const captureEngine=()=>({...packageEngine,
+   inspectCheckpoint:async source=>{if(beforeCapture){beforeCapture=false;throw Error('controlled interruption before custody claim');}return packageEngine.inspectCheckpoint(source);},
+   captureCheckpoint:async(source,seal,options)=>{captureCalls++;return packageEngine.captureCheckpoint(source,receipt=>{captureSeals++;if(captureMode==='failed')throw Error('controlled interruption after payload write');seal(receipt);},options);},
+  });
+  let composer=new BranchIssuedDestinationService(g.store,g.branches,coordination,disclosures,captureEngine,createChat);
+  const input={commandKey:'foreign-final-continue',checkpointId:final.checkpointId,expectedHash:final.checkpointHash,reconcileEffects:true};
+  const prepared=await composer.prepare(imported.branchId,sourceId,input);
+  assert.equal(prepared.state,'awaiting_disclosure');
+  const destination=prepared.destination;
+  assert.equal(g.store.sqlite.prepare('SELECT COUNT(*) n FROM agent_activations WHERE scope_key=?').get('conversation:'+destination.conversationId).n,0);
+  const review=await disclosures.prepare(imported.branchId,sourceId,prepared.admissionId);
+  await disclosures.choose(imported.branchId,sourceId,prepared.admissionId,{commandKey:'approve-final',action:'approve',reviewHash:review.reviewHash,expectedRevision:0});
+  const staged=g.store.sqlite.prepare('SELECT stage_json FROM coordination_destination_admissions WHERE id=?').get(prepared.admissionId);
+  const stage=JSON.parse(staged.stage_json),operation=g.store.getAgentCreationOperation(stage.importPlan.creationOperationId);
+  const recoveryRoot=operation.result.workingRoots[0].destination,recoveryFile=join(recoveryRoot,'final-work.txt');
+  const exactContent=readFileSync(recoveryFile);
+  writeFileSync(recoveryFile,'operator edited recovered data');
+  await assert.rejects(composer.admit(imported.branchId,sourceId,input.commandKey,review.reviewHash),/Final imported file changed/);
+  assert.equal(readFileSync(recoveryFile,'utf8'),'operator edited recovered data');
+  assert.equal(g.store.sqlite.prepare('SELECT state FROM coordination_destination_admissions WHERE id=?').get(prepared.admissionId).state,'staged');
+  writeFileSync(recoveryFile,exactContent);
+  await assert.rejects(composer.admit(imported.branchId,sourceId,input.commandKey,review.reviewHash),captureMode==='failed'?/controlled interruption after payload write/:/controlled interruption before custody claim/);
+  const pending=composer.inspect(imported.branchId,sourceId,input.commandKey);
+  assert.equal(pending.state,'capture_pending');assert.equal(pending.restoreSupported,false);
+  const listed=composer.list(imported.branchId,sourceId).find(item=>item.commandKey===input.commandKey);assert.equal(listed.state,'capture_pending');assert.equal(listed.restoreSupported,false);
+  const captureKey='retained-final-destination:'+prepared.admissionId;
+  const heldCapture=g.branches.issuedResourceCapture(destination.executionId,destination.resourceStepId,captureKey);
+  const observed=await packageEngine.inspectCheckpoint(heldCapture.source);
+  assert.equal(observed.state,captureMode==='failed'?'failed':'missing');
+  assert.equal(captureCalls,captureMode==='failed'?1:0);
+  await app.close();assets.close();await g.reopen();await openPackages();
+  disclosures=new BranchDisclosureReviewService(g.store,g.branches,coordination,async()=>assert.fail('foreign source must never ask local native custody'));
+  installation=new BranchInstallationService(g.store,g.branches,async()=>assert.fail('delete'),async()=>assert.fail('delete'),createChat);
+  installation.setEngine(packageEngine);installation.setPublisher((input,configuration)=>g.branches.deploy(input,undefined,undefined,configuration));
+  composer=new BranchIssuedDestinationService(g.store,g.branches,coordination,disclosures,captureEngine,createChat);
+  if(captureMode==='failed'){
+   const partialPath=join(g.dir,'checkpoint-package-custody',hash(heldCapture.source.checkpointId)+'.payload'),partialBytes=readFileSync(partialPath);
+   assert.ok(partialBytes.length);
+   await assert.rejects(composer.admit(imported.branchId,sourceId,input.commandKey,review.reviewHash),/custody is failed; destination held/);
+   assert.equal(captureCalls,1,'uncertain capture is never repeated');
+   assert.deepEqual(readFileSync(partialPath),partialBytes,'partial payload remains byte-identical after refused retry');
+   assert.equal(composer.inspect(imported.branchId,sourceId,input.commandKey).state,'capture_pending');
+   assert.equal(readFileSync(recoveryFile,'utf8'),exactContent.toString());
+   const heldAgent=g.store.getAgent(Object.values(pending.receipt.agentMap)[0]);
+   assert.equal(readFileSync(join(heldAgent.workingCopy.rootPath,'final-work.txt'),'utf8'),exactContent.toString());
+   assert.equal(g.branches.resourceCanRetire(destination.resourceStepId,Object.values(pending.receipt.agentMap)),false);
+   assert.equal(g.store.sqlite.prepare('SELECT COUNT(*) n FROM scheduler_runs WHERE agent_id=?').get(heldAgent.id).n,0);
+   return;
+  }
+  const [admitted,overlap]=await Promise.all([composer.admit(imported.branchId,sourceId,input.commandKey,review.reviewHash),composer.admit(imported.branchId,sourceId,input.commandKey,review.reviewHash)]);
+  assert.equal(captureSeals,1,'exclusive custody serializes overlapping missing observations to one actual capture');
+  assert.deepEqual(overlap.receipt,admitted.receipt);
+  assert.equal(admitted.state,'admitted');assert.deepEqual(admitted.receipt.activationIds,[]);
+  const mappedAgent=Object.values(admitted.receipt.agentMap)[0],agent=g.store.getAgent(mappedAgent),liveRoot=agent.workingCopy.rootPath;
+  assert.equal(readFileSync(join(liveRoot,'final-work.txt'),'utf8'),'after checkpoint exact content 😀\n');
+  const updates=g.store.sqlite.prepare('SELECT u.* FROM coordination_request_updates u JOIN coordination_requests r ON r.id=u.request_id WHERE r.conversation_id=?').all(destination.conversationId);
+  assert.ok(updates.length);
+  for(const update of updates)assert.deepEqual(restoredRequestUpdatePayload(g.store.sqlite,update),{text:'known result'});
+  assert.equal(g.store.sqlite.prepare('SELECT COUNT(*) n FROM scheduler_runs WHERE agent_id=?').get(mappedAgent).n,0);
+  const duplicate=await composer.admit(imported.branchId,sourceId,input.commandKey,review.reviewHash);
+  assert.equal(duplicate.receipt.admissionId,admitted.receipt.admissionId);
+  g.branches.advance();await g.branches.unitSaver.drain();
+  cleanup=new BranchResourceService(g.branches,g.store,async ids=>{const plan=g.store.previewAgentDeletion(ids);g.store.deleteAgentSubtrees(ids,plan.previewHash,id=>coordination.handleAgentDeletion(id));},async()=>assert.fail('unexpected create'),async id=>{const chat=g.store.commitConversationDeletion(id);g.store.finishConversationDeletionStorageCleanup(chat);g.store.markConversationDeletionServerCleanupComplete(id);});
+  cleanup.setPackageEngine(packageEngine);cleanup.setGenerationExitDrain(async ids=>sealProviderNeverStarted(g.store.sqlite,'destination-fixture',ids));
+  await cleanup.tick(false);
+  assert.equal(readFileSync(join(liveRoot,'final-work.txt'),'utf8'),'after checkpoint exact content 😀\n');
+  assert.equal(g.branches.execution(destination.executionId).state,'completed');
+  assert.equal(g.store.sqlite.prepare('SELECT state FROM branch_resources WHERE step_execution_id=?').get(destination.resourceStepId).state,'retired');
+  assert.deepEqual(g.branches.resourceErrors(),[]);
+  assert.equal(readFileSync(recoveryFile,'utf8'),exactContent.toString());
+  const finalKey='final-resource-package:'+destination.resourceStepId+':0';
+  const captured=g.branches.issuedResourceCapture(destination.executionId,destination.resourceStepId,finalKey);
+  assert.equal(captured.state,'retained');
+  const currentExit=g.branches.requireFinalResourceExit(destination.executionId,destination.resourceStepId);
+  assert.equal(currentExit.selectedCheckpoint.id,captured.checkpointId);
+  const finalPackage=await packageEngine.readCheckpoint(captured.receipt);
+  const finalNode=finalPackage.agents.find(a=>a.ref===mappedAgent),finalFile=finalNode.workingFiles.find(a=>a.path==='final-work.txt');
+  assert.ok(finalNode.history.some(message=>message.text==='after checkpoint history 😀'));
+
+  assert.equal(Buffer.from(finalNode.artifacts.find(a=>a.ref===finalFile.artifactRef).dataBase64,'base64').toString(),exactContent.toString());
+  const sourceWire=g.branches.issuedDestinationSource(imported.branchId,sourceId,final.checkpointId,final.checkpointHash).proof.selectedCustody.wireJson;
+  assert.equal(hash(sourceWire),final.receipt.sha256);
+  const secondPackage=await installation.export(imported.branchId,'full');
+  const secondPreview=await installation.preview(secondPackage,{agents:{},directories:{root:g.dir,workspace:g.dir},engines:{codex:'codex'}});
+  const secondImport=await installation.confirm(secondPreview.id,true,undefined,false,secondPreview.runtimeDataReview.manifestSha256);
+  assert.equal(secondImport.state,'completed',secondImport.error);
+  const secondHeld=installation.runtimeData(secondPreview.id,secondImport.branchId),secondSource=secondHeld.receipt.executionMap[destination.executionId];
+  assert.throws(()=>g.branches.issuedDestinationSource(secondImport.branchId,secondSource,captured.checkpointId,captured.checkpointHash),/Final-resource selected or final frontier replay unsupported/);
+  assert.equal(secondHeld.receipt.dispatched,false,'second generation travels as held evidence; executable repeat portability is not qualified');
+  const commandCount=g.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_commands').get().n;
+  await cleanup.stop();cleanup=undefined;
+  await g.reopen();
+  const restartedCoordination=new CoordinationV3Store(g.store.sqlite);
+  const restartedDisclosures=new BranchDisclosureReviewService(g.store,g.branches,restartedCoordination,async()=>assert.fail('restart must not resolve native source custody'));
+  const restartedComposer=new BranchIssuedDestinationService(g.store,g.branches,restartedCoordination,restartedDisclosures,()=>assert.fail('restart must not import or capture'),async()=>assert.fail('restart must not create'));
+  assert.deepEqual(g.branches.requireFinalResourceExit(destination.executionId,destination.resourceStepId),currentExit);
+  assert.equal(g.branches.issuedDestinationSource(imported.branchId,sourceId,final.checkpointId,final.checkpointHash).proof.selectedCustody.wireJson,sourceWire);
+  for(const update of updates)assert.deepEqual(restoredRequestUpdatePayload(g.store.sqlite,update),{text:'known result'});
+  // Exact terminal command readback returns historical evidence, never new authority.
+  const terminalRead=await restartedComposer.admit(imported.branchId,sourceId,input.commandKey,review.reviewHash);
+  assert.equal(terminalRead.restoreSupported,false);
+  assert.deepEqual(terminalRead.receipt,duplicate.receipt);
+  await assert.rejects(restartedComposer.admit(imported.branchId,sourceId,input.commandKey,'0'.repeat(64)),/input conflict/);
+  assert.equal(g.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_commands').get().n,commandCount);
+  assert.equal(g.store.sqlite.prepare('SELECT COUNT(*) n FROM scheduler_runs WHERE agent_id=?').get(mappedAgent).n,0);
+  assert.equal(readFileSync(join(liveRoot,'final-work.txt'),'utf8'),exactContent.toString());
+  assert.equal(readFileSync(recoveryFile,'utf8'),exactContent.toString());
+  console.log('FOREIGN_FINAL_ACTIVE',JSON.stringify({completed:true,retired:true,freshFinalCustody:true,restartHistory:true,workingFilesPreserved:true,requestsReplayed:0}));
+ }finally{if(cleanup)await cleanup.stop();await app.close();assets.close();}
+}
+
+test('0045 populated native restoration receipts migrate losslessly and keep result provenance',async t=>{
+ const f=await reservationHistoryFixture(t),prefix=await f.claim();f.settle(prefix);await f.advance(f.source.id);
+ let saved;
+ await f.finish(f.source.id,undefined,async({stepId,generation})=>{
+  const capture=f.branches.reserveIssuedResourceCapture(f.source.id,stepId,generation,'migration-completed-cut');
+  const receipt={...capture.source,version:1,custodyId:hash(capture.source.checkpointId),boundaryId:'migration-completed-boundary',sha256:hash('migration-completed-package'),byteLength:1};
+  f.store.sqlite.transaction(()=>f.branches.sealIssuedResourceCapture(f.source.id,stepId,'migration-completed-cut',receipt))();
+  saved=f.branches.issuedResourceCapture(f.source.id,stepId,'migration-completed-cut');
+ });
+ const x=await issuedDestinationFixture(t,'async',false,{f,saved}),{input}=x;
+ let {composer,disclosure}=x.services();
+ const prepared=await composer.prepare(f.branch.id,f.source.id,input);
+ const review=await disclosure.prepare(f.branch.id,f.source.id,prepared.admissionId);
+ await disclosure.choose(f.branch.id,f.source.id,prepared.admissionId,{commandKey:'migration-approve',action:'approve',reviewHash:review.reviewHash,expectedRevision:0});
+ const admitted=await composer.admit(f.branch.id,f.source.id,input.commandKey,review.reviewHash);
+ const before=f.store.sqlite.prepare('SELECT id,branch_id,source_execution_id,checkpoint_id,cut_hash,command_key,command_hash,receipt_json,created_at FROM coordination_cut_restorations ORDER BY id').all();
+ const origins=f.store.sqlite.prepare('SELECT * FROM coordination_restored_update_origins ORDER BY update_id').all();
+ assert.ok(before.length);assert.ok(origins.length);
+ const {captureBranchHostCut}=await import('../../packages/agents/dist/branch-host-cut.js');
+ const {selectBranchUnit}=await import('../../packages/agents/dist/branch-unit-selection.js');
+ const {verifyHostProvenance}=await import('../../packages/agents/dist/branch-host-provenance.js');
+ const oldShape=f.store.sqlite.transaction(()=>captureBranchHostCut(f.store.sqlite,admitted.destination.executionId,selectBranchUnit(f.store.sqlite,admitted.destination.executionId)))();
+ for(const proof of oldShape.provenance.restorations){
+  delete proof.row.admission.retained_source_id;delete proof.row.admission.source_kind;
+  delete proof.row.receipt.retained_source_id;delete proof.row.receipt.source_kind;
+  proof.sha256=hash(stableJson(proof.row));
+ }
+ assert.doesNotThrow(()=>verifyHostProvenance(oldShape),'pre-0042 missing native source fields remain native historical evidence');
+
+ await f.branches.unitSaver.drain();f.store.close();
+ const {createRequire}=await import('node:module'),require=createRequire(new URL('../../packages/agents/package.json',import.meta.url)),Database=require('better-sqlite3');
+ const {initializePredecessorSchema}=await import('../../packages/agents/dist/db.js');
+ const {renameSync}=await import('node:fs');
+ const filename=join(f.dir,'ponderosa.db'),source=new Database(filename),older=new Database(':memory:');
+ const quote=name=>'"'+name.replaceAll('"','""')+'"';
+ try{
+  initializePredecessorSchema(older,'0045_agent_import_submission_intents.sql');
+  older.exec(source.prepare("SELECT sql FROM sqlite_master WHERE name='_state_generation'").get().sql);
+  older.pragma('foreign_keys=OFF');older.prepare('DELETE FROM collection_generations').run();
+  const types=new Map(older.pragma('table_list').filter(row=>row.schema==='main').map(row=>[row.name,row.type]));
+  const tables=older.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name!='_schema_version'").all().sort((a,b)=>Number(a.name==='collection_generations')-Number(b.name==='collection_generations'));
+  older.transaction(()=>{
+   for(const {name} of tables){
+    const type=types.get(name);if(type==='shadow')continue;
+    if(name==='collection_generations')older.prepare('DELETE FROM collection_generations').run();
+    const columns=older.pragma('table_info('+quote(name)+')').map(row=>row.name);
+    const rows=source.prepare('SELECT '+(type==='virtual'||name==='compaction_history_messages'?'rowid AS __fixture_rowid,':'')+columns.map(quote).join(',')+' FROM '+quote(name)).all();
+    for(const row of rows){const keys=Object.keys(row);older.prepare('INSERT INTO '+quote(name)+'('+keys.map(k=>quote(k==='__fixture_rowid'?'rowid':k)).join(',')+') VALUES('+keys.map(()=>'?').join(',')+')').run(...keys.map(k=>row[k]));}
+   }
+  })();
+  assert.deepEqual(older.prepare('SELECT * FROM coordination_cut_restorations ORDER BY id').all(),before);
+  assert.deepEqual(older.prepare('SELECT * FROM coordination_restored_update_origins ORDER BY update_id').all(),origins);
+  await older.backup(join(f.dir,'before-0046.db'));
+ }finally{older.close();source.close();}
+ renameSync(join(f.dir,'before-0046.db'),filename);
+ await f.reopen();
+ assert.deepEqual(f.store.sqlite.prepare('SELECT id,branch_id,source_execution_id,checkpoint_id,cut_hash,command_key,command_hash,receipt_json,created_at FROM coordination_cut_restorations ORDER BY id').all(),before);
+ assert.deepEqual(f.store.sqlite.prepare('SELECT * FROM coordination_restored_update_origins ORDER BY update_id').all(),origins);
+ assert.ok(f.store.sqlite.prepare("SELECT 1 FROM coordination_cut_restorations WHERE source_kind='native' AND retained_source_id IS NULL").get());
+ assert.throws(()=>f.store.sqlite.prepare('UPDATE coordination_cut_restorations SET cut_hash=? WHERE id=?').run('0'.repeat(64),before[0].id),/immutable/);
+ assert.throws(()=>f.store.sqlite.prepare('UPDATE coordination_restored_update_origins SET source_payload_hash=? WHERE update_id=?').run('0'.repeat(64),origins[0].update_id),/immutable/);
+
+ ({composer,disclosure}=x.services());
+ const reread=await composer.admit(f.branch.id,f.source.id,input.commandKey,review.reviewHash);
+ assert.equal(reread.receipt.restorationId,admitted.receipt.restorationId);
+ const {restoredRequestUpdatePayload}=await import('../../packages/agents/dist/coordination-v3-cut-restoration-authority.js');
+ for(const origin of origins){const update=f.store.sqlite.prepare('SELECT * FROM coordination_request_updates WHERE id=?').get(origin.update_id);assert.doesNotThrow(()=>restoredRequestUpdatePayload(f.store.sqlite,update));}
 });

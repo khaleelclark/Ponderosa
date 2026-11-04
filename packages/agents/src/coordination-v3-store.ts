@@ -171,6 +171,9 @@ export class CoordinationV3Store {
   admitCoordinationDestination(id:string,reviewHash:string,authority:CoordinationDestinationAuthority,compose:(graph:import('@ponderosa/core').BranchHostGraphRestoreDto)=>import('@ponderosa/core').CoordinationDestinationOwnerReceipt,now=new Date().toISOString()) {
     return new CoordinationV3DestinationAdmissionAuthority(this.sqlite,input=>this.createActivation(input)).admit(id,reviewHash,authority,compose,now);
   }
+  readRetainedFinalDestinationAudit(id:string,reservationHash:string,authorize:(reservation:import('@ponderosa/core').CoordinationDestinationReservation)=>string) {
+    return new CoordinationV3DestinationAdmissionAuthority(this.sqlite,()=>{throw Error('Audit read cannot deliver');}).readRetainedFinalAudit(id,reservationHash,authorize);
+  }
   readCoordinationDestination(id:string,reservationHash:string,authority:CoordinationDestinationAuthority) {
     return new CoordinationV3DestinationAdmissionAuthority(this.sqlite,input=>this.createActivation(input)).read(id,reservationHash,authority);
   }

@@ -112,7 +112,7 @@ const predecessorVersions = [
   "0027_schedule_work_lookup.sql", "0028_capability_policy_history.sql",
   "0029_assistant_workspace.sql", "0030_agent_run_pauses.sql",
   "0031_branch_initial_checkpoints.sql", "0032_branch_unit_snapshots.sql",
-  "0033_branch_checkpoint_invocations.sql", "0042_destination_retained_sources.sql", "0043_package_export_cache.sql", "0044_memory_scope_provisioning.sql",
+  "0033_branch_checkpoint_invocations.sql", "0042_destination_retained_sources.sql", "0043_package_export_cache.sql", "0044_memory_scope_provisioning.sql", "0045_agent_import_submission_intents.sql",
 ] as const;
 // ui096 published 0027 before the native task-stop table was later added to
 // the launch baseline. Both signatures are exact finite schema shapes; no
