@@ -275,3 +275,32 @@ for(const aliased of [false,true])test('real reftable capsule keeps native custo
  assert.ok(actual.startsWith(path.join(destination,'.git')+path.sep));assert.deepEqual(await readdir(actual),[]);
  assert.equal(await git(capsule.worktreePath,'rev-parse','refs/worktree/selected-private'),await git(linked,'rev-parse','HEAD'));
 });
+
+for(const aliased of [false,true])test('real '+(aliased?'aliased':'absolute')+' private hook source with a hook is refused before recovery writes',options,async t=>{
+ const root=await realpath(await mkdtemp(path.join(tmpdir(),'real-private-hook-refusal-'))),source=path.join(root,'source'),destination=path.join(root,'destination'),dependencies=path.join(root,'dependencies'),other=path.join(root,'other'),linked=path.join(dependencies,'capsule');
+ t.after(()=>rm(root,{recursive:true,force:true}));
+ await initialize(source);await initialize(other,true);await mkdir(destination);await mkdir(dependencies);
+ await git(other,'worktree','add','-b','linked',linked);
+ await git(linked,'update-ref','refs/worktree/selected-private',await git(linked,'rev-parse','HEAD'));
+ const privateSource=await git(linked,'rev-parse','--absolute-git-dir'),hook=path.join(privateSource,'pre-commit'),bytes=Buffer.from('#!/bin/sh\nexit 0\n');
+ const hookSource=aliased?path.join(root,'hook-alias'):privateSource;if(aliased)await symlink(privateSource,hookSource);
+ await git(source,'config','core.hooksPath',dependencies);await git(linked,'config','core.hooksPath',hookSource);
+ await writeFile(hook,bytes);await chmod(hook,0o751);const before=await lstat(hook,{bigint:true});
+ await assert.rejects(exportReviewedUserData(source,{git:true,harness:false,externalGitDependencies:true}),/Unsupported selected Git storage or operation metadata/);
+ const after=await lstat(hook,{bigint:true});assert.equal(after.ino,before.ino);assert.equal(after.mode,before.mode);assert.equal(after.mtimeNs,before.mtimeNs);assert.deepEqual(await readFile(hook),bytes);
+ await assert.rejects(lstat(path.join(destination,'.git')),{code:'ENOENT'});
+});
+
+
+for(const nested of [false,true])test('excluded private hook '+(nested?'descendant':'target')+' is held before recovery writes',options,async t=>{
+ const root=await realpath(await mkdtemp(path.join(tmpdir(),'real-private-hook-omission-'))),source=path.join(root,'source'),destination=path.join(root,'destination'),dependencies=path.join(root,'dependencies'),other=path.join(root,'other'),linked=path.join(dependencies,'capsule'),support=path.join(root,'support'),excluded=path.join(nested?support:root,'.ssh'),target=path.join(excluded,'pre-commit');
+ t.after(()=>rm(root,{recursive:true,force:true}));
+ await initialize(source);await initialize(other,true);await mkdir(destination);await mkdir(dependencies);if(nested)await mkdir(support);await mkdir(excluded);
+ await git(other,'worktree','add','-b','linked',linked);await git(linked,'update-ref','refs/worktree/selected-private',await git(linked,'rev-parse','HEAD'));
+ const privateSource=await git(linked,'rev-parse','--absolute-git-dir');await git(source,'config','core.hooksPath',dependencies);await git(linked,'config','core.hooksPath','.');
+ await writeFile(target,'excluded private fixture\n');await symlink(nested?support:target,path.join(privateSource,'pre-commit'));const before=await lstat(target,{bigint:true});
+ const manifest=await exportReviewedUserData(source,{git:true,harness:false,externalGitDependencies:true});assert.ok(manifest.gitExternalDependencies.omittedPaths.includes(nested?excluded:target));
+ await writeFile(path.join(destination,'file.txt'),'committed\n');const activation={git:true,harness:false};
+ assert.throws(()=>planReviewedRecoveryRoots(packageFor(manifest,{'file.txt':Buffer.from('committed\n')}),{work:destination},activation),/omitted/);
+ await assert.rejects(lstat(path.join(destination,'.git')),{code:'ENOENT'});assert.deepEqual(await readdir(destination),['file.txt']);assert.equal(await readFile(path.join(destination,'file.txt'),'utf8'),'committed\n');const after=await lstat(target,{bigint:true});assert.equal(after.ino,before.ino);assert.equal(after.mtimeNs,before.mtimeNs);assert.equal(await readFile(target,'utf8'),'excluded private fixture\n');
+});
