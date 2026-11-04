@@ -166,6 +166,52 @@ These are focused evidence for their stated cases, not a full regression or
 Behavior Bible qualification. The twelve populated Chroma failures and other
 boundaries described here remain open.
 
+## Independent follow-up — 4 November
+
+Source candidate `fe16d4c7f8a505437bcec0a5a31855da73646c10` adds three bounded
+corrections after `8dbcc2b0b`: the open-Chat Add Agents copy flow routes to
+its explicit destination while preserving instruction review and product
+scope; Branch update screens distinguish actual retry, hold and stopping states
+and display both a retained error and a needed review action; repeated ordinary
+push activity of one kind in one Chat shares a browser display tag while
+retaining individual inbox notices and delivery receipts. Assistant reports,
+Decisions and operational alerts remain separate.
+
+The respective isolated checks passed before integration: cross-Chat server
+authorization and instruction-conflict checks plus mounted desktop and phone;
+Branch API/UI checks 150/150; push grouping and fake-device checks 4/4, with
+headless Chromium retaining one same-Chat notification for 30 synthetic push
+events. Push grouping does not reduce send attempts or establish a bound across
+many Chats, and a late older message can replace the newer preview. Actual OS
+banner and sound behavior remains unverified. See `evidence/notification-group-*`
+and `evidence/notification-qualification-8db.md`. The latter also records
+controlled direct/broadcast settings matrices and Assistant checks, with their
+limits; these do not establish all of Bible section 18.
+
+Bible 13 remains open: canonical tracked peer Requests currently queue behind a
+busy Run. Changing them directly to steering could associate an older in-flight
+result with a Request not yet seen. Current Claude acceptance proves a pipe
+write rather than matching input delivery, and shared provider receipts do not
+bind later tool calls to a specific injected message. This is a source-permitted
+race, not a reproduced production incident. Delivery and call-order authority
+must be established without replay before changing the current contract.
+
+Read-only deployment inspection identified development Chroma at
+`127.0.0.1:19788` and separate private-apps and Pinecone listeners at `:18810`
+and `:18809`. Production's memory endpoint was not identified; these listeners
+must not be assumed to be its backend. Loopback and a process-local queue do not
+exclude other same-host writers. The JavaScript client reports 3.5.0; the dev
+Python package reports 1.4.1, its launcher 1.3.1, and a disposable server's
+version endpoint reported 1.0.0. These conflicting component reports do not
+establish a live server version. No unauthorized writer was observed.
+
+A proposed read-only parse of private provider configuration was denied by
+automatic approval review because the files can contain credentials; it did not
+run. The current hold and the narrow proven no-effect cleanup preserve data.
+A broader maintenance cleanup or migration needs an enforceable all-writer
+gate, drain, review, verification and separate production approval. No production
+service was contacted or changed during this deployment check.
+
 ## Recorded validation and open checks
 
 - Earlier diagnostic builds and suites exposed failures and prompted fixes.
