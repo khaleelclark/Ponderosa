@@ -25,6 +25,7 @@ function load(relative, imports = {}, globals = {}) {
     if (name in imports) return imports[name];
     if (name === './WorkspaceReadOnlyContext') return { useWorkspaceReadOnly: () => false };
     if (name === './messageDeliveryPhase') return { messageDeliveryPhase };
+    if (name === './ReviewedContinuationDialog') return { ReviewedContinuationDialog: widget('ReviewedContinuationDialog') };
     if (name === '@mui/material') return mui;
     if (name === '@mui/material/styles') return { alpha: value => value };
     if (name.startsWith('@mui/icons-material/')) return { __esModule: true, default: widget('Icon') };

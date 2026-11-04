@@ -1,4 +1,5 @@
 import {useWorkspaceReadOnly} from "./WorkspaceReadOnlyContext";
+import {ReviewedContinuationDialog} from "./ReviewedContinuationDialog";
 import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutline";
 import ErrorOutlineIcon from "@mui/icons-material/ErrorOutline";
 import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
@@ -151,6 +152,7 @@ export function MessageDeliveryStatus({
   const [pendingRetryId, setPendingRetryId] = useState<string>();
   const [pendingCancelId, setPendingCancelId] = useState<string>();
   const [confirmRetry, setConfirmRetry] = useState<MessageDeliveryReceiptDto>();
+  const [reviewContinuation, setReviewContinuation] = useState<MessageDeliveryReceiptDto>();
   const [error, setError] = useState<string>();
   if (!receipts?.length) return null;
   const allSuccessful = receipts.every(receipt => severity(receipt) === "success");
@@ -339,6 +341,9 @@ export function MessageDeliveryStatus({
             </ButtonBase>
           </Box>
         </Tooltip>
+        {!readOnly && projectId && !receipt.contextRolloverHold && receipt.injectionKind === "steer" && receipt.injectionId && (receipt.state === "unconfirmed" || receipt.state === "waiting_for_run") ? <Button
+          color="warning" variant="text" size="small" onClick={() => setReviewContinuation(receipt)} sx={{ minHeight: 28, py: 0.25 }}
+        >Review interrupted work</Button> : null}
         {!readOnly && receipt.canLetCurrentRunFinish && receipt.injectionId ? <Button
           color="warning"
           variant="text"
@@ -366,6 +371,7 @@ export function MessageDeliveryStatus({
       </Stack>;
     })}
     {error ? <Alert severity="error">{error}</Alert> : null}
+    {projectId&&reviewContinuation&&<ReviewedContinuationDialog key={reviewContinuation.activationId} projectId={projectId} receipt={reviewContinuation} onClose={()=>setReviewContinuation(undefined)} onOpenAgent={onOpenAgent}/>}
     <Dialog
       open={Boolean(confirmRetry)}
       onClose={() => pendingRetryId ? undefined : setConfirmRetry(undefined)}
