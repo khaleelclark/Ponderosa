@@ -197,9 +197,17 @@ test('temporary resource cleanup retains a memory hold without retrying after re
  const branch=deployTemplate(branches,root,'memory-held'),execution=branches.accept(branch.id,'input','Review');branches.advance();const provision=branches.resourceProvisions()[0];
  const project=store.createProject({label:'Temporary',hostPath:root,defaultEngine:'codex',chatOwned:true,branchId:branch.id,executionId:execution.id});
  const chat=store.getConversation(project.lastConversationId);branches.bindResourceChat(provision.stepExecutionId,chat.id);
- branches.resourceRetired(provision.stepExecutionId);
- await resources.tick(false);assert.equal(calls,1);
- await resources.tick(false);assert.equal(calls,1);
+ // A live reserved resource cannot be retired directly. Cancel the owning
+ // execution so the real resource cleanup path becomes eligible.
+ branches.cancel(execution.id);
+ await branches.waitResourceCheckpoint(provision.stepExecutionId);
+ const recordedHold=()=>{
+  const resource=store.sqlite.prepare('SELECT error FROM branch_resources WHERE step_execution_id=?').get(provision.stepExecutionId);
+  const retirement=store.sqlite.prepare('SELECT error FROM branch_retirement_errors WHERE resource_id=?').get(chat.id);
+  return retirement?.error??resource?.error;
+ };
+ await resources.tick(false);assert.equal(calls,1);assert.equal(recordedHold(),MEMORY_CLEANUP_HOLD);
+ await resources.tick(false);assert.equal(calls,1);assert.equal(recordedHold(),MEMORY_CLEANUP_HOLD);
  await resources.stop();store.close();open();await resources.tick(false);
- assert.equal(calls,1);assert.ok(store.getConversation(chat.id));passed=true;
+ assert.equal(calls,1);assert.equal(recordedHold(),MEMORY_CLEANUP_HOLD);assert.ok(store.getConversation(chat.id));passed=true;
 });
