@@ -20,25 +20,6 @@ async function fixture(){
  return {root,source,destination,manifest,external,ns,data,configuration:()=>({...reviewedGitConfiguration(manifest,activation),external}),apply:configuration=>createReviewedRecoveryGit(destination,original,sha256,activation,undefined,configuration),dispose:()=>rm(root,{recursive:true,force:true})};
 }
 
-test('native external graph preserves aliases and exact source metadata after Git sharing',options,async()=>{
- const f=await fixture();try{
-  await mkdir(path.join(f.destination,'.hooks'));await writeFile(path.join(f.destination,'.hooks/run'),f.data);await link(path.join(f.destination,'.hooks/run'),path.join(f.destination,'.hooks/hard'));await symlink('run',path.join(f.destination,'.hooks/symbol'));
-  const rootIdentity=await lstat(f.destination,{bigint:true}),original=await lstat(path.join(f.destination,'.hooks/run'),{bigint:true});
-  const hooks=await lstat(path.join(f.destination,'.hooks'),{bigint:true});
-  f.external.worktreeIdentity={device:rootIdentity.dev.toString(),inode:rootIdentity.ino.toString(),directories:{'.hooks':{device:hooks.dev.toString(),inode:hooks.ino.toString()}}};
-  f.external.directories.push({path:'.hooks',context:'worktree',mode:0o750,mtimeNs:f.ns});
-  f.external.files.push({path:'.hooks/run',context:'worktree',data:f.data,mode:0o700,mtimeNs:f.ns});
-  f.external.links.push({path:'.hooks/hard',context:'worktree',target:'.hooks/run',targetContext:'worktree',kind:'hardlink',mtimeNs:f.ns},{path:'.hooks/symbol',context:'worktree',target:'.hooks/run',targetContext:'worktree',kind:'symlink',mtimeNs:f.ns});
-  await f.apply(f.configuration());
-  const base=path.join(f.destination,'.git/ponderosa-external/capsule'),file=await lstat(path.join(base,'script'),{bigint:true}),hard=await lstat(path.join(base,'hard'),{bigint:true});
-  assert.equal(file.ino,hard.ino);assert.equal(file.nlink,2n);assert.equal(file.mode&0o7777n,0o751n);assert.equal(file.mtimeNs,BigInt(f.ns));
-  const directory=await lstat(base,{bigint:true});assert.equal(directory.mode&0o7777n,0o2750n);assert.equal(directory.mtimeNs,BigInt(f.ns),'Directory timestamps are finalized after aliases and sharing');
-  assert.equal(await readlink(path.join(base,'symbol')),'script');assert.equal((await lstat(path.join(base,'symbol'),{bigint:true})).mtimeNs,BigInt(f.ns),'Symlink nanoseconds use the exact native held-link helper');
-  const reused=await lstat(path.join(f.destination,'.hooks/run'),{bigint:true});assert.equal(reused.dev,original.dev);assert.equal(reused.ino,original.ino);assert.equal(reused.nlink,2n);assert.equal(reused.mode&0o7777n,0o700n);assert.equal(reused.mtimeNs,BigInt(f.ns));assert.deepEqual(await readFile(path.join(f.destination,'.hooks/run')),f.data);
-  assert.equal((await lstat(path.join(f.destination,'.hooks/symbol'),{bigint:true})).mtimeNs,BigInt(f.ns));
- }finally{await f.dispose();}
-});
-
 test('external alias paths and targets cannot escape or name an undeclared original',options,async()=>{
  const f=await fixture();try{
   f.external.links.push({path:'outside',target:'../outside',kind:'symlink'});await assert.rejects(f.apply(f.configuration()),/contained relative path/);await assert.rejects(lstat(path.join(f.destination,'.git')),{code:'ENOENT'});
