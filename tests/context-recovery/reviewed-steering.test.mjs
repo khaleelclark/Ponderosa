@@ -168,3 +168,93 @@ test(`reviewed continuation holds when ${fault} invalidates saved evidence`,{tim
   assert.equal(store.sqlite.prepare('SELECT state FROM scheduler_prompt_injections WHERE id=?').get(injection.id).state,'outcome_unknown');
  },{storeFactory:p=>(store=new AgentStore(p)),steeringResponse:async()=>{throw Error('Controlled unknown delivery');},nativeAdapterForOpen:()=>useNative?native?.adapter:undefined});
 });
+
+
+test('Stop after reviewed provider admission prevents any successor turn input',{timeout:30000},async t=>{
+ let store,useNative=false,native;
+ await withFixture(t,async f=>{
+  native=await inertCodex(f.root,{holdSecondAccountRead:true});
+  const chat=await f.createChat('Stop before reviewed input'),agent=await f.createIdleAgent(chat,'Worker');
+  const old=await f.hold(agent.id),source=(await f.detail(agent.id)).runs[0].id;
+  await f.send(agent.id,'Unconfirmed correction',{activeRunDelivery:'steer'});
+  const injection=await until(()=>store.sqlite.prepare("SELECT id,activation_ids_json FROM scheduler_prompt_injections WHERE run_id=? AND kind='steer' AND state='outcome_unknown'").get(source),'unknown steering');
+  const [activation]=JSON.parse(injection.activation_ids_json),path=`/api/projects/${chat.projectId}/message-deliveries/${activation}/reviewed-continuation`;
+  old.finish();await until(()=>store.sqlite.prepare("SELECT 1 FROM scheduler_runs WHERE id=? AND status='completed'").get(source),'source completed');
+  if(f.ok(await f.api('GET',path)).status==='source_retirement_required')f.ok(await f.api('POST',path+'/retire-source'));
+  const review=f.ok(await f.api('GET',path)).review;
+  useNative=true;
+  const result=f.ok(await f.api('POST',path,{reviewSha256:review.reviewSha256,effectsReviewed:true,idempotencyKey:randomUUID()})).receipt;
+  const successor=await until(()=>store.sqlite.prepare("SELECT r.id,r.fencing_token FROM scheduler_runs r JOIN scheduler_run_activations a ON a.run_id=r.id WHERE a.activation_id=? AND r.status='running'").get(result.activationId),'reviewed successor Run');
+  await until(async()=>(await native.requests()).filter(r=>r.method==='account/read').length===2,'provider admitted and paused immediately before turn input');
+  const admission=store.sqlite.prepare("SELECT receipt_json FROM host_lifecycle_commits WHERE kind='provider-start-admission' AND json_extract(receipt_json,'$.runId')=?").get(successor.id);
+  assert.ok(admission,'exact successor admission must already be durable');
+  const bound=JSON.parse(admission.receipt_json);
+  assert.equal(bound.runFence,successor.fencing_token);
+  assert.ok(store.sqlite.prepare("SELECT 1 FROM host_lifecycle_commits WHERE kind='provider-start-settlement' AND identity=?").get(bound.identity),'successor start must already be settled');
+  assert.ok(store.sqlite.prepare('SELECT 1 FROM provider_process_authority WHERE run_id=?').get(successor.id),'successor process must already be registered');
+  f.ok(await f.api('POST',`/api/agents/${agent.id}/cancel`,{targetRunId:successor.id,idempotencyKey:randomUUID()}));
+  await until(()=>store.sqlite.prepare("SELECT 1 FROM scheduler_runs WHERE id=? AND status='cancelled'").get(successor.id),'exact successor stopped');
+  await until(()=>!store.sqlite.prepare('SELECT 1 FROM provider_process_authority WHERE run_id=?').get(successor.id),'stopped successor process exited');
+  await native.releaseThread();
+  await new Promise(resolve=>setTimeout(resolve,300));
+  assert.equal((await native.requests()).filter(r=>r.method==='turn/start').length,0,'no reviewed prompt may be written after Stop');
+  assert.equal(store.sqlite.prepare('SELECT state FROM scheduler_prompt_injections WHERE id=?').get(injection.id).state,'outcome_unknown');
+  assert.equal(store.sqlite.prepare("SELECT COUNT(*) n FROM scheduler_run_activations WHERE activation_id=?").get(result.activationId).n,1,'Stop must not replay the reviewed activation');
+ },{storeFactory:p=>(store=new AgentStore(p)),steeringResponse:async()=>{throw Error('Controlled unknown delivery');},nativeAdapterForOpen:()=>useNative?{openSession:opts=>native.adapter.openSession({...opts,expectedBillingMode:'subscription'})}:undefined});
+});
+
+test('source retirement refuses foreign or mismatched process ownership and leaves both providers running',{timeout:30000},async t=>{
+ const previous=process.env.PONDEROSA_MAX_IDLE_RUNTIME_SESSIONS;process.env.PONDEROSA_MAX_IDLE_RUNTIME_SESSIONS='4';let store;
+ try { await withFixture(t,async f=>{
+  const chat=await f.createChat('Foreign source owner'),agent=await f.createIdleAgent(chat,'Reviewed worker');
+  const foreign=await f.createIdleAgent(chat,'Other worker'),other=await f.hold(foreign.id);
+  const old=await f.hold(agent.id),source=(await f.detail(agent.id)).runs[0].id;
+  await f.send(agent.id,'Unconfirmed correction',{activeRunDelivery:'steer'});
+  const injection=await until(()=>store.sqlite.prepare("SELECT activation_ids_json FROM scheduler_prompt_injections WHERE run_id=? AND kind='steer' AND state='outcome_unknown'").get(source),'unknown steering');
+  const [activation]=JSON.parse(injection.activation_ids_json),path=`/api/projects/${chat.projectId}/message-deliveries/${activation}/reviewed-continuation`;
+  old.finish();await until(()=>store.sqlite.prepare("SELECT 1 FROM scheduler_runs WHERE id=? AND status='completed'").get(source),'source completed');
+  assert.equal(f.ok(await f.api('GET',path)).status,'source_retirement_required');
+  assert.equal(old.isAlive(),true,'source must remain live before the mismatch test');
+  const row=store.sqlite.prepare('SELECT id,worker_id,agent_id,run_id,birth_marker FROM provider_process_authority WHERE agent_id=?').get(agent.id);
+  assert.ok(row);
+  for(const [column,value] of [['worker_id','foreign-worker'],['agent_id',foreign.id],['run_id','foreign-run'],['birth_marker','different-birth']]){
+   store.sqlite.prepare(`UPDATE provider_process_authority SET ${column}=? WHERE id=?`).run(value,row.id);
+   try {
+    const response=await f.api('POST',path+'/retire-source');
+    assert.equal(response.status,409,column+' mismatch must be held');
+    assert.equal(old.isAlive(),true,'source must not be terminated for '+column);
+    assert.equal(other.isAlive(),true,'foreign Agent must not be terminated for '+column);
+   } finally {store.sqlite.prepare(`UPDATE provider_process_authority SET ${column}=? WHERE id=?`).run(row[column],row.id);}
+  }
+  assert.equal(store.sqlite.prepare('SELECT state FROM scheduler_prompt_injections WHERE id IN (SELECT id FROM scheduler_prompt_injections WHERE run_id=? AND kind=?)').get(source,'steer').state,'outcome_unknown');
+ },{storeFactory:p=>(store=new AgentStore(p)),steeringResponse:async()=>{throw Error('Controlled unknown delivery');}});
+ } finally {if(previous===undefined)delete process.env.PONDEROSA_MAX_IDLE_RUNTIME_SESSIONS;else process.env.PONDEROSA_MAX_IDLE_RUNTIME_SESSIONS=previous;}
+});
+
+test('a reused source provider is retired only with its latest exact Run and fence',{timeout:30000},async t=>{
+ const previous=process.env.PONDEROSA_MAX_IDLE_RUNTIME_SESSIONS;process.env.PONDEROSA_MAX_IDLE_RUNTIME_SESSIONS='1';let store;
+ try {
+  await withFixture(t,async f=>{
+   const chat=await f.createChat('Reused reviewed source'),agent=await f.createIdleAgent(chat,'Worker');
+   await f.send(agent.id,'First completed task');await f.settled(agent.id);
+   const retained=f.sessions.get(agent.id),before=(await f.detail(agent.id)).runs.map(x=>x.id);
+   f.plans.set(agent.id,[{hold:true}]);await f.send(agent.id,'Second objective');
+   await until(()=>f.turns.filter(x=>x.agentId===agent.id).length===2,'second source input');
+   assert.equal(f.sessions.get(agent.id),retained,'fixture must reuse the same provider');
+   const runs=(await f.detail(agent.id)).runs,source=runs.find(r=>!before.includes(r.id)).id;
+   await f.send(agent.id,'Unconfirmed correction',{activeRunDelivery:'steer'});
+   const injection=await until(()=>store.sqlite.prepare("SELECT activation_ids_json FROM scheduler_prompt_injections WHERE run_id=? AND kind='steer' AND state='outcome_unknown'").get(source),'unknown steering');
+   const [activation]=JSON.parse(injection.activation_ids_json),path=`/api/projects/${chat.projectId}/message-deliveries/${activation}/reviewed-continuation`;
+   retained.finish();await until(()=>store.sqlite.prepare("SELECT 1 FROM scheduler_runs WHERE id=? AND status='completed'").get(source),'reused source completed');
+   const authority=store.sqlite.prepare("SELECT id,run_id FROM provider_process_authority WHERE agent_id=?").get(agent.id);
+   assert.equal(authority.run_id,source);
+   const registrations=store.sqlite.prepare("SELECT receipt_json FROM host_lifecycle_commits WHERE kind='provider-process-registration' AND json_extract(receipt_json,'$.authorityId')=?").all(authority.id).map(x=>JSON.parse(x.receipt_json));
+   assert.ok(registrations.some(r=>before.includes(r.runId)),'same lifetime must retain earlier Run evidence');
+   const current=store.sqlite.prepare('SELECT fencing_token FROM scheduler_runs WHERE id=?').get(source);
+   assert.ok(registrations.some(r=>r.runId===source&&r.runFence===current.fencing_token),'same lifetime must have exact source Run/fence evidence');
+   const first=f.ok(await f.api('GET',path));assert.equal(first.status,'source_retirement_required');
+   f.ok(await f.api('POST',path+'/retire-source'));assert.equal(retained.isAlive(),false);
+   assert.equal(f.ok(await f.api('GET',path)).status,'review_required');
+  },{storeFactory:p=>(store=new AgentStore(p)),steeringResponse:async()=>{throw Error('Controlled unknown delivery');}});
+ } finally {if(previous===undefined)delete process.env.PONDEROSA_MAX_IDLE_RUNTIME_SESSIONS;else process.env.PONDEROSA_MAX_IDLE_RUNTIME_SESSIONS=previous;}
+});
