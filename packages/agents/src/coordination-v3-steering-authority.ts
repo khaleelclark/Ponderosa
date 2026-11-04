@@ -185,7 +185,7 @@ export class CoordinationV3SteeringAuthority {
       // Human steering recovery may retry its sources on a fresh Run. Schedule
       // updates must never share that recovery boundary or acquire that fallback.
       const scheduled=Boolean(candidate.scheduled);
-      const activations = (this.sqlite.prepare(`
+      const eligibleActivations = (this.sqlite.prepare(`
         SELECT * FROM agent_activations
         WHERE agent_id = ? AND scope_key = ?
           AND state IN ('pending', 'retry_pending')
@@ -215,7 +215,22 @@ export class CoordinationV3SteeringAuthority {
         scheduled?1:0,
         candidate.run_id,
         scheduled?64:limit,
-      ) as ActivationRow[]).filter(activation=>!scheduled||branchScheduleActivationEligible(this.sqlite,activation.id,candidate.run_id,now,this.canonicalTaskDecisions)).slice(0,limit);
+      ) as ActivationRow[]).filter(activation=>!scheduled||branchScheduleActivationEligible(this.sqlite,activation.id,candidate.run_id,now,this.canonicalTaskDecisions));
+      // A human interruption and a peer Request have different recovery
+      // obligations. Keep each kind in a separate provider submission so a
+      // single uncertain submission cannot combine human and peer work.
+      let hasHuman = false;
+      let hasRequest = false;
+      const activations = eligibleActivations.filter(activation => {
+        if (activation.prompt_class === "human") {
+          if (hasRequest) return false;
+          hasHuman = true;
+        } else if (activation.kind === "coordination_request") {
+          if (hasHuman) return false;
+          hasRequest = true;
+        }
+        return true;
+      }).slice(0,limit);
       if (activations.length === 0) return undefined;
       if (!this.runtimeScopeAuthority.recipientAuthorizedForActivationScope(
         candidate.project_id,

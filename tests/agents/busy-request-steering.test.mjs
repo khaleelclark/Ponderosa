@@ -128,3 +128,72 @@ test('uncertain steering stays visible and is not retried', {timeout:30000}, asy
     session.finish();
   },{storeFactory:dataDir=>(store=new AgentStore(dataDir)),steeringResponse:async()=>{calls++;throw Error('uncertain provider response');}});
 });
+
+test('human interruptions and tracked Requests use separate steer submissions while retaining same-kind batching', {timeout:30000}, async t=>{
+  let store,release,calls=0;
+  try {await withFixture(t,async f=>{
+    const chat=await f.createChat('Separated steer batches');
+    const target=await f.createIdleAgent(chat,'Worker'),sender=await f.createIdleAgent(chat,'Manager');
+    const session=await f.hold(target.id),run=(await f.detail(target.id)).runs[0].id;
+    const coordination=new CoordinationV3Store(store.sqlite);
+    await f.send(target.id,'First held steering delivery');
+    await until(()=>calls===1,'first steering submission held');
+    // Queue both kinds while the first provider call is in flight, so the
+    // next scheduler selection genuinely has all four candidates at once.
+    await f.send(target.id,'Second human interruption');
+    await f.send(target.id,'Third human interruption');
+    const first=createRequest(coordination,chat,sender,target);
+    const second=createRequest(coordination,chat,sender,target);
+    release();
+    const injections=await until(()=>{
+      const rows=store.sqlite.prepare("SELECT activation_ids_json FROM scheduler_prompt_injections WHERE run_id=? AND kind='steer' AND state='acknowledged' ORDER BY sequence").all(run);
+      return rows.length===3?rows:false;
+    },'three separate steering submissions');
+    const contents=injections.map(row=>JSON.parse(row.activation_ids_json).map(id=>
+      store.sqlite.prepare('SELECT kind,prompt_class FROM agent_activations WHERE id=?').get(id)));
+    assert.deepEqual(contents.map(items=>items.length),[1,2,2]);
+    assert.ok(contents[1].every(item=>item.prompt_class==='human'));
+    assert.ok(contents[2].every(item=>item.kind==='coordination_request'));
+    assert.ok(contents.every(items=>!(items.some(item=>item.prompt_class==='human') && items.some(item=>item.kind==='coordination_request'))));
+    assert.equal(coordination.getRequest(first).state,'open');
+    assert.equal(coordination.getRequest(second).state,'open');
+    assert.ok(coordination.requiredReplyObligationsForRun(run).some(item=>item.state==='pending'));
+    assert.equal((await f.detail(target.id)).runs.length,1);
+    session.finish();
+  },{storeFactory:dataDir=>(store=new AgentStore(dataDir)),steeringResponse:async()=>{
+    if(++calls===1)await new Promise(resolve=>{release=resolve});
+    return {status:'accepted'};
+  }});} finally {release?.();}
+});
+
+test('an uncertain human steer remains held separately from a queued peer Request', {timeout:30000}, async t=>{
+  let store,release,calls=0;
+  try {await withFixture(t,async f=>{
+    const chat=await f.createChat('Separate uncertain interruption');
+    const target=await f.createIdleAgent(chat,'Worker'),sender=await f.createIdleAgent(chat,'Manager');
+    const session=await f.hold(target.id),run=(await f.detail(target.id)).runs[0].id;
+    const coordination=new CoordinationV3Store(store.sqlite);
+    await f.send(target.id,'First held steering delivery');
+    await until(()=>calls===1,'first submission held');
+    await f.send(target.id,'Uncertain human interruption');
+    const requestId=createRequest(coordination,chat,sender,target);
+    release();
+    const rows=await until(()=>{
+      const all=store.sqlite.prepare("SELECT state,activation_ids_json FROM scheduler_prompt_injections WHERE run_id=? AND kind='steer' ORDER BY sequence").all(run);
+      return all.length===3 && all[1].state==='outcome_unknown' && all[2].state==='acknowledged' ? all : false;
+    },'uncertain human held and separate peer delivered');
+    const humanIds=JSON.parse(rows[1].activation_ids_json),peerIds=JSON.parse(rows[2].activation_ids_json);
+    assert.equal(humanIds.length,1);assert.equal(peerIds.length,1);
+    assert.equal(store.sqlite.prepare('SELECT prompt_class FROM agent_activations WHERE id=?').get(humanIds[0]).prompt_class,'human');
+    assert.equal(store.sqlite.prepare('SELECT kind FROM agent_activations WHERE id=?').get(peerIds[0]).kind,'coordination_request');
+    assert.equal(store.sqlite.prepare('SELECT state FROM agent_activations WHERE id=?').get(humanIds[0]).state,'outcome_unknown');
+    assert.equal(coordination.getRequest(requestId).state,'open');
+    assert.ok(coordination.requiredReplyObligationsForRun(run).some(item=>item.state==='pending'));
+    assert.equal(calls,3);
+    session.finish();
+  },{storeFactory:dataDir=>(store=new AgentStore(dataDir)),steeringResponse:async()=>{
+    const n=++calls;if(n===1)await new Promise(resolve=>{release=resolve});
+    if(n===2)throw Error('uncertain human delivery');
+    return {status:'accepted'};
+  }});} finally {release?.();}
+});
