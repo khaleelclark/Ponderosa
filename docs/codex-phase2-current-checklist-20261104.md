@@ -67,6 +67,36 @@ for end-to-end and acceptance evidence.
 | A11–A13: disable/removal, re-enable only when absent, import collision | Source mechanisms exist; complete mounted and concurrent flows remain open. |
 | I1: Inbox rename | No user-facing old label found in the scoped search; full code/docs census remains open. |
 
+## UI/UX judging plan
+
+Patrick clarified that the panel is a group of independent judging agents, not
+an application feature or panel UI. Run this acceptance after implementation
+is assembled; passing browser tests or improving over an earlier Ponderosa
+build does not substitute for the comparison.
+
+1. Pin the actual Ponderosa, Branches and competitor versions and assign the
+   same representative tasks on desktop and iOS; an iOS emulator qualifies.
+   Capture screenshots and core-flow recordings for the same flows in each app.
+2. Prepare one shared written 1–10 rubric covering clarity, polish, layout and
+   ease of use, with descriptions for scores 3, 6 and 9. Have at least three
+   independent judge agents use a model different from the feature builders.
+   Judges score blind, independently, without seeing one another's scores;
+   the majority verdict stands. Ease of use is assessed by agents walking the
+   tasks as nontechnical users.
+3. For Bible §3, Ponderosa must score equal to or better than Codex, Claude,
+   WhatsApp and iMessage. For §29, both Ponderosa and Branches must score equal
+   to or better than Codex, Claude and iMessage and better than LangGraph and
+   LangChain. The Output app also needs its required iOS Messages comparison.
+4. Check recordings for zero flicker, overlap or blocking text, retain the
+   folder system, and audit explanatory paragraphs/informational blocks under
+   §29. Short labels and one-line hints are allowed. Preserve the actual
+   security and recovery disclosures required by the user and report any
+   conflict rather than silently changing the criterion.
+
+No qualifying blind panel, full pinned competitor comparison, recordings or
+majority verdict has been completed. The mounted desktop/phone checks are
+functional evidence only, not the panel result. No panel UI is to be built.
+
 ## Blockers and next work
 
 - Physical Chroma cleanup/rollback remains under implementation. Patrick
