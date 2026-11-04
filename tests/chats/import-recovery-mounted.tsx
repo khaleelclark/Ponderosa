@@ -4,7 +4,8 @@ import {QueryClient,QueryClientProvider} from '@tanstack/react-query';
 import type {ConversationDto,EngineDto} from '@ponderosa/core';
 import {ImportAgentForm} from '../../apps/web/src/components/ImportAgentDialog';
 import {fingerprintAgentImport} from '../../apps/web/src/components/agentImportFingerprint';
-import {agentImportFingerprintHeader,listPendingAgentImports} from '../../apps/web/src/components/agentImportRecovery';
+import {agentImportFingerprintHeader,listPendingAgentImports,retainPendingAgentImport,releasePendingAgentImport,type PendingAgentImport} from '../../apps/web/src/components/agentImportRecovery';
+import {PendingAgentImportRecovery} from '../../apps/web/src/components/PendingAgentImportRecovery';
 import {MutationNotificationProvider} from '../../apps/web/src/components/MutationNotifications';
 import {ApiRequestError} from '../../apps/web/src/api/types';
 import {api} from '../../apps/web/src/api';
@@ -99,4 +100,32 @@ export async function importRequestRecoveryRegression():Promise<void>{
   for(const entry of listPendingAgentImports(product))if(entry.projectId===chat.projectId)for(let i=localStorage.length-1;i>=0;i--){const k=localStorage.key(i);if(k?.startsWith('ponderosa-agent-import-v1:')&&k.endsWith(':'+entry.requestId))localStorage.removeItem(k);}
   root.unmount();client.clear();host.remove();window.Worker=OriginalWorker;Object.assign(api,original);
  }
+}
+
+export async function heldImportRetirementRegression():Promise<void>{
+ const host=document.createElement('div');document.body.append(host);const root=createRoot(host);
+ const original={getAgentImportOperationByRequest:api.getAgentImportOperationByRequest,retireHeldAgentImport:api.retireHeldAgentImport};
+ const product=currentProductScope(),entry={version:1,requestId:'test-retire-request',projectId:'test-retire-project',conversationId:'test-retire-chat',product,metadata:{conversationId:'test-retire-chat',engineMapping:{}},fingerprint:{algorithm:'sha256-4m-v1',bytes:5,digest:'a'.repeat(64)}} as unknown as PendingAgentImport;
+ const status={state:'reserved',operationId:'operation-retire',requestId:entry.requestId,projectId:entry.projectId,conversationId:entry.conversationId,product,requestFingerprint:agentImportFingerprintHeader(entry.fingerprint)};
+ let current={...status,requestFingerprint:'sha256-4m-v1:5:'+('b'.repeat(64))},sent=0,dismissed=0;
+ api.getAgentImportOperationByRequest=async()=>{throw new ApiRequestError(409,'Held',current);};
+ api.retireHeldAgentImport=async(projectId,conversationId,requestId,operationId)=>{
+  assert(projectId===entry.projectId&&conversationId===entry.conversationId&&requestId===entry.requestId&&operationId===status.operationId,'retirement uses the exact reviewed scope');
+  sent++;current={...status,state:'retired'};throw new TypeError('Synthetic retirement response lost');
+ };
+ const button=(name:string)=>Array.from(host.querySelectorAll('button')).find(item=>item.textContent===name)!;
+ try{
+  retainPendingAgentImport(entry);
+  root.render(<PendingAgentImportRecovery entry={entry} onAccepted={()=>{throw Error('unexpected import');}} onRetired={value=>{releasePendingAgentImport(value);dismissed++;}}/>);await settle();
+  button('Check import status').click();await settle();
+  assert(!button('Retire held request')&&listPendingAgentImports(product).some(item=>item.requestId===entry.requestId),'mismatched status cannot authorize retirement');
+  current={...status};button('Check import status').click();await settle();
+  assert(Boolean(button('Retire held request')),'exact held request offers an explicit retirement choice');
+  button('Retire held request').click();await settle();
+  assert(sent===1&&dismissed===0&&listPendingAgentImports(product).some(item=>item.requestId===entry.requestId)&&host.textContent?.includes('Retirement is unconfirmed'),'lost retirement reply retains identity and does not start another import');
+  button('Check import status').click();await settle();
+  assert(Boolean(button('Dismiss retired request'))&&dismissed===0,'exact retired status is recovered before dismissal');
+  button('Dismiss retired request').click();await settle();
+  assert(dismissed===1&&!listPendingAgentImports(product).some(item=>item.requestId===entry.requestId)&&sent===1,'confirmed retirement is dismissed without a new upload');
+ }finally{try{releasePendingAgentImport(entry);}catch{}root.unmount();host.remove();Object.assign(api,original);}
 }

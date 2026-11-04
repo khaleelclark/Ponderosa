@@ -954,6 +954,11 @@ export const realApi = {
   getAgentImportOperationByRequest(projectId:string,conversationId:string,requestId:string):Promise<AgentImportOperationDto>{
     return requestJson(`/api/projects/${encodeURIComponent(projectId)}/agent-import-operations/by-request/${encodeURIComponent(requestId)}?conversationId=${encodeURIComponent(conversationId)}`);
   },
+  retireHeldAgentImport(projectId:string,conversationId:string,requestId:string,operationId:string):Promise<unknown>{
+    return requestJson(`/api/projects/${encodeURIComponent(projectId)}/agent-import-operations/by-request/${encodeURIComponent(requestId)}/retire`,{
+      method:'POST',body:JSON.stringify({conversationId,operationId}),
+    });
+  },
   getAgentImportOperation(projectId: string, operationId: string): Promise<AgentImportOperationDto> {
     return requestJson<AgentImportOperationDto>(
       `/api/projects/${encodeURIComponent(projectId)}/agent-import-operations/${encodeURIComponent(operationId)}`,

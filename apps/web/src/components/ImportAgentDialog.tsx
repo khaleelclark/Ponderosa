@@ -404,7 +404,11 @@ export function ImportAgentForm({
   if(savedImports.error)return <Stack spacing={2}><Alert severity="error">{savedImports.error}</Alert><Button onClick={closeForm}>Close</Button></Stack>;
   const untrackedImports=savedImports.items.filter(entry=>!roleOperation||!agentImportOperationMatches(roleOperation,entry));
   if(untrackedImports.length)return <Stack spacing={2}>
-    {untrackedImports.map(entry=><PendingAgentImportRecovery key={entry.requestId} entry={entry} initialBlob={submittedBlobRef.current?.requestId===entry.requestId?submittedBlobRef.current.blob:undefined} disabled={importAgents.isPending} onAccepted={acceptSaved}/>)}
+    {untrackedImports.map(entry=><PendingAgentImportRecovery key={entry.requestId} entry={entry} initialBlob={submittedBlobRef.current?.requestId===entry.requestId?submittedBlobRef.current.blob:undefined} disabled={importAgents.isPending} onAccepted={acceptSaved} onRetired={retired=>{
+      releasePendingAgentImport(retired);
+      if(savedIntentRef.current?.requestId===retired.requestId)savedIntentRef.current=undefined;
+      importRequestId.current=createClientId();setError(undefined);refreshSaved();clearPackageDraft();
+    }}/>)}
     <Button disabled={pendingRef.current} onClick={closeForm}>Close</Button>
   </Stack>;
   return <Stack spacing={2}>
