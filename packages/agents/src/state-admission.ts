@@ -114,22 +114,34 @@ const predecessorVersions = [
   "0031_branch_initial_checkpoints.sql", "0032_branch_unit_snapshots.sql",
   "0033_branch_checkpoint_invocations.sql", "0042_destination_retained_sources.sql", "0043_package_export_cache.sql",
 ] as const;
-const predecessorContracts = new Map<string, string>();
+// ui096 published 0027 before the native task-stop table was later added to
+// the launch baseline. Both signatures are exact finite schema shapes; no
+// existing database is altered while reconstructing either contract.
+const predecessorContracts = new Map<string, readonly string[]>();
 function isPredecessorContract(actual: string, budget: StateReadBudget): boolean {
   for (const version of predecessorVersions) {
-    let signature = predecessorContracts.get(version);
-    if (!signature) {
+    let signatures = predecessorContracts.get(version);
+    if (!signatures) {
       budget.allocate(8192 * 1024 + 16 * 1024 ** 2); budget.reserve(512);
       const sqlite = new Database(":memory:");
       try {
         bindStateReadBudget(sqlite, budget);
         sqlite.pragma("cache_size=-8192"); sqlite.pragma("mmap_size=0");
         initializePredecessorSchema(sqlite, version); declareGeneration(sqlite);
-        signature = schemaSignature(sqlite);
-        predecessorContracts.set(version, signature);
+        const exact = [schemaSignature(sqlite)];
+        if (version === "0027_schedule_work_lookup.sql") {
+          // Only the audited ui096 0027 shape lacked this later table. Drop it
+          // solely from our private in-memory schema reconstruction; 0041 adds
+          // the table normally when a genuine predecessor is upgraded.
+          const sql = "DROP TABLE native_task_stops";
+          budget.statement(sql, []); budget.reserve(1); sqlite.exec(sql);
+          exact.push(schemaSignature(sqlite));
+        }
+        signatures = exact;
+        predecessorContracts.set(version, signatures);
       } finally { sqlite.close(); }
     }
-    if (signature === actual) return true;
+    if (signatures.includes(actual)) return true;
   }
   return false;
 }

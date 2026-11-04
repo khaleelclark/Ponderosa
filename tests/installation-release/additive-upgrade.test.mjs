@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {randomUUID} from 'node:crypto';
+import {randomUUID,createHash} from 'node:crypto';
 import test from 'node:test';
 import {mkdtempSync,mkdirSync,readFileSync,renameSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
@@ -12,7 +12,9 @@ const Database=require('better-sqlite3');
 const versions=['0027_schedule_work_lookup.sql','0028_capability_policy_history.sql','0029_assistant_workspace.sql','0030_agent_run_pauses.sql','0031_branch_initial_checkpoints.sql','0032_branch_unit_snapshots.sql','0033_branch_checkpoint_invocations.sql','0042_destination_retained_sources.sql','0043_package_export_cache.sql','0044_memory_scope_provisioning.sql'];
 const quote=name=>'"'+name.replaceAll('"','""')+'"';
 
-for(const version of versions)test(`populated exact additive predecessor ${version} upgrades without changing Agent data`,async t=>{
+const cases=[...versions.map(version=>({version,shape:'current-prefix'})),
+ ...['ui096','ui096-foreign','ui096-partial'].map(shape=>({version:'0027_schedule_work_lookup.sql',shape}))];
+for(const {version,shape} of cases)test(`populated exact additive predecessor ${version} ${shape} admission preserves Agent data`,async t=>{
  const root=mkdtempSync(path.join(tmpdir(),'additive-upgrade-')),data=path.join(root,'data'),work=path.join(root,'work');mkdirSync(work);
  let passed=false;t.after(()=>{if(passed)rmSync(root,{recursive:true,force:true});else t.diagnostic(`Retained: ${root}`);});
  let store=new AgentStore(data);const project=store.createProject({label:'Preserved',hostPath:work,defaultEngine:'codex'}),chat=store.createConversation(project.id,{title:'Preserved Chat'}),agent=store.createAgent(project.id,{title:'Preserved Agent',role:'Keep role',speed:'standard',engine:'codex',conversationId:chat.id});
@@ -23,6 +25,10 @@ for(const version of versions)test(`populated exact additive predecessor ${versi
  const filename=path.join(data,'ponderosa.db'),marker=readFileSync(path.join(data,'.ponderosa-layout-version'),'utf8'),source=new Database(filename),older=new Database(':memory:');
  try{
   initializePredecessorSchema(older,version);
+  // The published ui096 0027 schema predates native_task_stops; the baseline
+  // later gained it even for reconstructed historical prefixes.
+  if(shape.startsWith('ui096'))older.exec('DROP TABLE native_task_stops');
+  if(shape==='ui096-partial')older.exec('DROP TABLE coordination_requests');
   older.exec(source.prepare("SELECT sql FROM sqlite_master WHERE name='_state_generation'").get().sql);
   older.pragma('foreign_keys=OFF');
   // The predecessor initializer seeds this bookkeeping row. Replace that
@@ -45,9 +51,16 @@ for(const version of versions)test(`populated exact additive predecessor ${versi
    }
   })();
   assert.equal(older.prepare("SELECT communication_event_id FROM compaction_history_fts WHERE compaction_history_fts MATCH 'evergreen'").get().communication_event_id,eventId,'The nonempty source index was copied through its virtual table');
+  if(shape==='ui096-foreign')older.exec('CREATE TABLE foreign_authority (id TEXT PRIMARY KEY)');
   await older.backup(path.join(root,'predecessor.db'));
  }finally{older.close();source.close();}
  renameSync(path.join(root,'predecessor.db'),filename);
+ if(shape==='ui096-foreign'||shape==='ui096-partial'){
+  const hash=()=>createHash('sha256').update(readFileSync(filename)).digest('hex'),before=hash();
+  assert.throws(()=>new AgentStore(data),/unsupported or incomplete current state/);
+  assert.equal(hash(),before,'refused predecessor bytes remain unchanged');
+  passed=true;return;
+ }
  store=new AgentStore(data);
  try{
   assert.equal(store.getAgent(agent.id).role,'Keep role');assert.equal(store.getAgent(agent.id).speed,'standard');assert.equal(store.getProject(project.id).label,'Preserved');
