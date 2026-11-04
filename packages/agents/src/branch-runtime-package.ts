@@ -1,4 +1,4 @@
-import {verifyRetainedFinalExitCommand} from './branch-final-resource-exit.js';
+import {verifyRetainedFinalExitCommand,readFinalResourceExit} from './branch-final-resource-exit.js';
 import {captureForeignTreeGeneration} from './branch-tree-generation.js';
 import {createHash} from 'node:crypto';
 import type Database from 'better-sqlite3';
@@ -39,7 +39,10 @@ export function validateBranchRuntimeData(value:unknown,called=false,depth=0):Br
   if(!exact(o,['sourceExecutionId','sourceBranchId','chatRefs','facts','sha256'])||typeof o.sourceExecutionId!=='string'||!o.sourceExecutionId||owners.has(o.sourceExecutionId)||o.sourceBranchId!==d.sourceBranchId||!Array.isArray(o.chatRefs)||!Array.isArray(o.facts)||o.facts.length>100000||payloadHash({sourceExecutionId:o.sourceExecutionId,sourceBranchId:o.sourceBranchId,chatRefs:o.chatRefs,facts:o.facts})!==o.sha256)throw Error('Runtime owner inventory differs');
   owners.add(o.sourceExecutionId);
   for(const ref of o.chatRefs){if(typeof ref!=='string'||!allChats.has(ref)||chats.has(ref))throw Error('Runtime Chat ownership aliases');chats.add(ref);}
-  for(const fact of o.facts.filter(f=>f.kind==='command'&&f.key.startsWith('resource-final-exit:')))verifyRetainedFinalExitCommand(o,parseFact(fact));
+  for(const fact of o.facts.filter(f=>f.kind==='command'&&f.key.startsWith('resource-final-exit:'))){
+   const command=parseFact(fact);if(command.command_key!==fact.key)throw Error('Retained final resource command key differs');
+   verifyRetainedFinalExitCommand(o,command);
+  }
   const seen=new Set<string>();
   for(const f of o.facts){const key=f.kind+':'+f.key;if(seen.has(key))throw Error('Duplicate runtime evidence');seen.add(key);parseFact(f);}
   for(const kind of ['frontier','definition','bindings','configuration','provenance'])if(o.facts.filter(f=>f.kind===kind).length!==1)throw Error('Incomplete runtime owner pins');
@@ -151,7 +154,14 @@ export function captureBranchRuntimeData(db:Database.Database,branchId:string,ch
     for(const cp of db.prepare(`SELECT id,snapshot_json,content_hash FROM ${table} WHERE execution_id=? ORDER BY id`).all(e.id) as Row[]){if(sha(cp.snapshot_json)!==cp.content_hash)throw Error('Runtime checkpoint integrity failure');add(kind,String(cp.id),cp.snapshot_json);}
    }
    for(const cp of db.prepare('SELECT id,transition_key,kind,evidence_json,created_at FROM branch_checkpoints WHERE execution_id=? ORDER BY id').all(e.id) as Row[])add('transition',String(cp.id),stableJson(cp));
-   for(const c of db.prepare('SELECT command_key,input_hash,result_json,created_at FROM branch_commands WHERE execution_id=? ORDER BY command_key').all(e.id) as Row[])add('command',c.command_key,stableJson(c));
+   for(const c of db.prepare('SELECT command_key,input_hash,result_json,created_at FROM branch_commands WHERE execution_id=? ORDER BY command_key').all(e.id) as Row[]){
+    if(c.command_key.startsWith('resource-final-exit:')){
+     const retained=JSON.parse(c.result_json);
+     if(retained.identity?.executionId!==e.id || !retained.identity?.stepId)throw Error('Original final resource owner differs');
+     readFinalResourceExit(db,e.id,retained.identity.stepId);
+    }
+    add('command',c.command_key,stableJson(c));
+   }
    const refs=(db.prepare('SELECT id FROM conversations WHERE branch_execution_id=? ORDER BY id').all(e.id) as Row[]).map(c=>{if(!chatRefs[c.id])throw Error('Execution-owned Chat is absent from the package');return chatRefs[c.id]!;});
    const owner={sourceExecutionId:e.id,sourceBranchId:branchId,chatRefs:refs,facts};return {...owner,sha256:payloadHash(owner)};
   });

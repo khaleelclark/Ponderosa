@@ -94,6 +94,10 @@ function issuedCheckpointCustodySupported(snapshot:Row,executionId:string):boole
 export function retainedIssuedResourceSource(value:BranchPortableRuntimeData,executionId:string,checkpointKey:string,checkpointSha256:string) {
  const data=validateBranchRuntimeData(value),owner=data.owners.find(o=>o.sourceExecutionId===executionId);
  if(!owner)throw Error('Retained issued owner unavailable');
+ // A portable final exit is preserved for review, not adopted as source
+ // shutdown or permission to redispatch a previously issued Request.
+ if(owner.facts.some(f=>f.kind==='command'&&f.key.startsWith('resource-final-exit:')))
+  throw Error('Retired resource evidence is retained, but portable continuation remains held pending effect reconciliation and destination custody');
  const fact=(kind:string)=>{const facts=owner.facts.filter(f=>f.kind===kind);if(facts.length!==1)throw Error('Retained issued owner evidence is missing or ambiguous');return JSON.parse(facts[0]!.json);};
  const selectedFact=owner.facts.find(f=>f.kind==='checkpoint'&&f.key===checkpointKey&&f.sha256===checkpointSha256);
  if(!selectedFact)throw Error('Retained issued selected checkpoint unavailable');

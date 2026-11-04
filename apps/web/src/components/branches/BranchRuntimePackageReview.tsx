@@ -10,7 +10,22 @@ export function PrivateJson({label,value}:{label:string;value:unknown}){return <
 function BranchFacts({data}:{data:BranchPortableRuntimeData}){
  return <Stack spacing={1}><Typography sx={{overflowWrap:'anywhere'}}>Source Branch {data.sourceBranchId} · manifest {data.sha256} · {data.owners.length} owners</Typography><PrivateJson label="Private source identity inventory" value={data.identities}/>{data.owners.map(owner=><Accordion key={owner.sourceExecutionId}><AccordionSummary>{owner.sourceExecutionId} · {owner.facts.length} private facts</AccordionSummary><AccordionDetails><Stack spacing={1}><Typography sx={{overflowWrap:'anywhere'}}>Source workflow {owner.sourceBranchId} · owner hash {owner.sha256} · execution Chats {owner.chatRefs.join(', ')||'none'}</Typography>{owner.facts.map(fact=><Stack key={`${fact.kind}:${fact.key}`}><Typography sx={{overflowWrap:'anywhere'}}>SHA-256 {fact.sha256}</Typography><PrivateJson label={`${fact.kind} · ${fact.key}`} value={fact.json}/></Stack>)}</Stack></AccordionDetails></Accordion>)}</Stack>;
 }
-export function RuntimePrivateFacts({data}:{data:RuntimePackageData}){return <Stack spacing={1}><PrivateJson label="Complete original runtime manifest" value={data}/>{runtimeBranches(data).map(branch=><BranchFacts key={branch.sourceBranchId} data={branch}/>)}</Stack>;}
+function retainedResourceSummary(data:RuntimePackageData,depth=0):{finalResource:boolean;unavailable:boolean}{
+ if(depth>16)return {finalResource:false,unavailable:true};
+ let finalResource=false,unavailable=false;
+ for(const branch of runtimeBranches(data))for(const owner of branch.owners)for(const fact of owner.facts){
+  if(fact.kind==='command'&&fact.key.startsWith('resource-final-exit:'))finalResource=true;
+  if(fact.kind==='custody')try{if(JSON.parse(fact.json)?.disposition==='unavailable_held')unavailable=true;}catch{unavailable=true;}
+  if(['import','tree-import','continuation','tree-continuation'].includes(fact.kind))try{
+   const nested=JSON.parse(fact.json)?.data;
+   if(nested?.schema==='ponderosa.branch-runtime-data.v1'||nested?.schema==='ponderosa.branch-runtime-tree.v1'){
+    const child=retainedResourceSummary(nested as RuntimePackageData,depth+1);finalResource||=child.finalResource;unavailable||=child.unavailable;
+   }
+  }catch{unavailable=true;}
+ }
+ return {finalResource,unavailable};
+}
+export function RuntimePrivateFacts({data}:{data:RuntimePackageData}){const branches=runtimeBranches(data),summary=retainedResourceSummary(data);return <Stack spacing={1}>{summary.finalResource&&<Alert severity="warning">The retired resource exit record is included. Its execution remains held; portable continuation is not yet available.</Alert>}{summary.unavailable&&<Alert severity="warning">Some checkpoint data was unavailable at export and is not included in this package.</Alert>}<PrivateJson label="Complete original runtime manifest" value={data}/>{branches.map(branch=><BranchFacts key={branch.sourceBranchId} data={branch}/>)}</Stack>;}
 export function BranchRuntimeReadback({planId,branchId,manifestSha256,expected,expectedReceipt,onVerified,continuationOwner}:{planId:string;branchId:string;manifestSha256:string;expected?:RuntimePackageData;expectedReceipt?:BranchRuntimeDataReceipt|BranchRuntimeTreeReceipt;onVerified?():void;continuationOwner?:{executionId:string;sourceExecutionId:string}}){
  const [saved,setSaved]=useState<RuntimePackageReadback>(),[busy,setBusy]=useState(false),[error,setError]=useState('');
  const live=useRef(''),mounted=useRef(true),scope=JSON.stringify([planId,branchId,manifestSha256,expected,expectedReceipt]);live.current=scope;

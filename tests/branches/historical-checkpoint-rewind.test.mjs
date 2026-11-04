@@ -2790,7 +2790,10 @@ for(const [kind,parallel] of [['serial',false],['fork',true],['map','map']])test
  const {enableProviderStartCoverage,sealProviderNeverStarted}=await import('../../packages/agents/dist/provider-start-journal.js');
  enableProviderStartCoverage(db,'fixture-runtime');
  const opened=await openCalledTreeResource(f.store,f.branches,f.branches.localConfiguration(f.branch.id).directories.root,f.source.id,f.branch.id);
- const j=f.branches.reserveIssuedResourceCapture(f.source.id,opened.stepId,0,'settled-zero'),receipt={...j.source,version:1,custodyId:hash(j.source.checkpointId),boundaryId:'inert-settled-zero',sha256:hash('inert'),byteLength:1};
+ const j=f.branches.reserveIssuedResourceCapture(f.source.id,opened.stepId,0,'settled-zero');
+ const checkpointPackage={schema:'ponderosa.agent-package.v1',mode:'full',kind:'agent',exportedAt:new Date().toISOString(),sourceLabel:'Retained test organization',
+  rootRef:opened.agentId,agents:[{ref:opened.agentId,title:'Worker',engine:'codex',sourceChat:{ref:opened.chatId,title:'Retained Chat'},managementPermissions:{allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false}}]};
+ const checkpointWire=stableJson(checkpointPackage),receipt={...j.source,version:1,custodyId:hash(j.source.checkpointId),boundaryId:'inert-settled-zero',sha256:hash(checkpointWire),byteLength:Buffer.byteLength(checkpointWire)};
  db.transaction(()=>f.branches.sealIssuedResourceCapture(f.source.id,opened.stepId,'settled-zero',receipt))();
  coordination.updateRequest({requestId:opened.requestId,updateId:'settled-zero-result',kind:'completed',actor:{kind:'agent',id:opened.agentId},payload:{text:'known result'}});
  const suffix=await f.claim();f.settle(suffix);await f.branches.unitSaver.drain();
@@ -2808,6 +2811,76 @@ for(const [kind,parallel] of [['serial',false],['fork',true],['map','map']])test
  const deletion=f.store.previewAgentDeletion([opened.agentId]);f.store.deleteAgentSubtrees([opened.agentId],deletion.previewHash,id=>coordination.handleAgentDeletion(id));
  const chat=f.store.commitConversationDeletion(opened.chatId);f.store.finishConversationDeletionStorageCleanup(chat);f.store.markConversationDeletionServerCleanupComplete(opened.chatId);
  f.branches.resourceRetired(opened.stepId);assert.equal(f.branches.requireFinalResourceExit(f.source.id,opened.stepId).identity.generation,0);
+ // The real native final command can travel as private evidence, but cannot
+ // acquire destination execution authority or silently replay its old work.
+ const {captureBranchRuntimeData,validateBranchRuntimeData}=await import('../../packages/agents/dist/index.js');
+ const data=captureBranchRuntimeData(db,f.branch.id,{},{}),owner=data.owners.find(o=>o.sourceExecutionId===f.source.id);
+ const finalFact=owner.facts.find(v=>v.kind==='command'&&v.key===`resource-final-exit:${opened.stepId}:0`);
+ assert.ok(finalFact);const originalCommand=JSON.parse(finalFact.json);
+ assert.deepEqual(JSON.parse(originalCommand.result_json),f.branches.requireFinalResourceExit(f.source.id,opened.stepId));
+ assert.throws(()=>db.transaction(()=>{
+  db.exec('DROP TRIGGER host_lifecycle_commit_immutable_delete');
+  db.prepare("DELETE FROM host_lifecycle_commits WHERE kind='provider-start-coverage' AND identity=?").run(opened.agentId);
+  assert.throws(()=>captureBranchRuntimeData(db,f.branch.id,{},{}),/coverage|start|receipt/i);
+  throw Error('restore original source evidence');
+ })(),/restore original source evidence/);
+ const malformed=structuredClone(data),badOwner=malformed.owners.find(o=>o.sourceExecutionId===f.source.id);
+ const badFact=badOwner.facts.find(v=>v.kind==='command'&&v.key===finalFact.key),badCommand=JSON.parse(badFact.json),badFinal=JSON.parse(badCommand.result_json);
+ badFinal.identity.executionId='foreign-owner';badCommand.result_json=stableJson(badFinal);badCommand.input_hash=hash(badCommand.result_json);
+ badFact.json=stableJson(badCommand);badFact.sha256=hash(badFact.json);
+ const {sha256:_ownerSha,...ownerFields}=badOwner;badOwner.sha256=hash(stableJson(ownerFields));
+ const {sha256:_dataSha,...dataFields}=malformed;malformed.sha256=hash(stableJson(dataFields));
+ assert.throws(()=>validateBranchRuntimeData(malformed),/owner|scope|integrity/i);
+ const newProject=f.store.createProject({label:'Held runtime destination',hostPath:f.dir,defaultEngine:'codex'});
+ const newChat=f.store.getConversation(newProject.lastConversationId),definition=f.branches.version(f.branch.id,f.branch.versionId).definition;
+ const destination=f.branches.deploy({chatId:newChat.id,idempotencyKey:`held-final-${kind}`,definition,bindings:f.branches.localConfiguration(f.branch.id)});
+ f.branches.setEnabled(destination.id,false);
+ const imported=f.branches.importRuntimeData(`held-final-plan-${kind}`,destination.id,data,{},{});
+ assert.equal(imported.disposition,'held');assert.equal(imported.currentAuthority,false);assert.equal(imported.dispatched,false);
+ assert.equal(imported.frontiers[f.source.id].disposition,'evidence_only');
+ const target=imported.executionMap[f.source.id],saved=f.branches.runtimeData(`held-final-plan-${kind}`,destination.id);
+ assert.deepEqual(saved.data,data);assert.equal(f.branches.execution(target).runtimeData.held,true);
+ assert.equal(db.prepare('SELECT admitted_at FROM branch_executions WHERE id=?').get(target).admitted_at,null);
+ assert.equal(db.prepare('SELECT COUNT(*) n FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id WHERE s.execution_id=?').get(target).n,0);
+ const issued=f.branches.issuedResourceCapture(f.source.id,opened.stepId,'settled-zero');
+ assert.throws(()=>f.branches.issuedDestinationSource(destination.id,target,Number(issued.checkpointId),issued.checkpointHash),/portable continuation remains held/i);
+ if(kind==='serial'){
+  const {BranchInstallationService}=await import('../../apps/server/dist/branch-installation-service.js');
+  const service=new BranchInstallationService(f.store,f.branches,async()=>assert.fail('unexpected delete'),async()=>assert.fail('unexpected delete'),
+   async(input,key,owner)=>{const project=f.store.createProject({label:input.label,hostPath:input.hostPath,defaultEngine:input.defaultEngine}),chat=f.store.getConversation(project.lastConversationId);
+    db.prepare('UPDATE conversations SET branch_id=? WHERE id=?').run(owner.branchId,chat.id);return f.store.getConversation(chat.id);});
+  let unavailable=false;
+  service.setEngine({exportAgent:async()=>assert.fail('unexpected Agent export'),readCheckpointBytes:async()=>{if(unavailable)throw Error('fixture checkpoint bytes unavailable');return checkpointWire;},
+   readCheckpoint:async()=>{if(unavailable)throw Error('fixture checkpoint bytes unavailable');return checkpointPackage;},validateAgent(){}});
+  service.setPublisher((input,configuration)=>f.branches.deploy(input,undefined,undefined,configuration));
+  const pkg=await service.export(f.branch.id,'full');
+  const packaged=pkg.runtimeData.owners.find(o=>o.sourceExecutionId===f.source.id);
+  assert.ok(packaged.facts.some(v=>v.kind==='command'&&v.key===finalFact.key));
+  const preserved=packaged.facts.filter(v=>v.kind==='custody').map(v=>JSON.parse(v.json)).find(v=>v.receipt.custodyId===receipt.custodyId);
+  assert.equal(preserved.disposition,'retained_data',JSON.stringify(preserved));assert.equal(preserved.wireJson,checkpointWire);assert.deepEqual(preserved.package,checkpointPackage);
+  unavailable=true;
+  const unavailablePkg=await service.export(f.branch.id,'full'),unavailableOwner=unavailablePkg.runtimeData.owners.find(o=>o.sourceExecutionId===f.source.id);
+  assert.ok(unavailableOwner.facts.some(v=>v.kind==='custody'&&JSON.parse(v.json).disposition==='unavailable_held'),'unavailable checkpoint data must be explicit');
+  const preview=await service.preview(pkg,{agents:{},directories:{root:f.dir,workspace:f.dir},engines:{codex:'codex'}});
+  assert.equal(preview.runtimeDataReview.manifestSha256,pkg.runtimeData.sha256);
+  const done=await service.confirm(preview.id,true,undefined,false,preview.runtimeDataReview.manifestSha256);
+  assert.equal(done.state,'completed',done.error);
+  const readback=service.runtimeData(preview.id,done.branchId);
+  assert.equal(readback.receipt.currentAuthority,false);assert.equal(readback.receipt.dispatched,false);
+  assert.equal(readback.receipt.frontiers[f.source.id].disposition,'evidence_only');
+  assert.deepEqual(readback.data,pkg.runtimeData,'original retained data is not rewritten');
+  // Re-export and import the already-held owner; its entire original manifest
+  // and checkpoint bytes remain nested data without acquiring authority.
+  const reexport=await service.export(done.branchId,'full'),nestedOwner=reexport.runtimeData.owners.find(o=>o.sourceExecutionId===readback.receipt.executionMap[f.source.id]);
+  const nested=JSON.parse(nestedOwner.facts.find(v=>v.kind==='import').json);
+  assert.deepEqual(nested.data,pkg.runtimeData);assert.equal(nested.receipt.currentAuthority,false);assert.equal(nested.receipt.dispatched,false);
+  const preview2=await service.preview(reexport,{agents:{},directories:{root:f.dir,workspace:f.dir},engines:{codex:'codex'}});
+  const done2=await service.confirm(preview2.id,true,undefined,false,preview2.runtimeDataReview.manifestSha256);
+  assert.equal(done2.state,'completed',done2.error);
+  const heldAgain=service.runtimeData(preview2.id,done2.branchId);
+  assert.deepEqual(heldAgain.data,reexport.runtimeData);assert.equal(heldAgain.receipt.currentAuthority,false);assert.equal(heldAgain.receipt.dispatched,false);
+  assert.equal(heldAgain.receipt.frontiers[nestedOwner.sourceExecutionId].disposition,'evidence_only');
+ }
 });
 
 

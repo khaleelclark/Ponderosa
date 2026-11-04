@@ -199,8 +199,22 @@ function verifyFinalResourceExitBytes(v:Row,hash:string):void {
 }
 
 
-/** No current portable fact carrier independently commits complete start/provider/effect absence. */
-export function verifyRetainedFinalExitCommand(_owner:import('@ponderosa/core').BranchPortableRuntimeOwner,_command:Row):never {
- // Self-consistent nested command/fact/owner hashes cannot authenticate omitted original activity.
- throw Error('Retained final resource exit proof unsupported: independent complete original start/provider/effect census commitment unavailable');
+/** Validate portable bytes as retained evidence only. This is not a claim
+ * that a source outside this installation has stopped or that omitted external
+ * effects did not occur; portable restoration remains explicitly held. */
+export function verifyRetainedFinalExitCommand(owner:import('@ponderosa/core').BranchPortableRuntimeOwner,command:Row):void {
+ if(!command || typeof command.result_json!=='string' || typeof command.input_hash!=='string' || typeof command.command_key!=='string')
+  throw Error('Retained final resource exit command is malformed');
+ const value=JSON.parse(command.result_json),identity=value.identity;
+ if(stableJson(value)!==command.result_json || !identity || command.command_key!==finalResourceExitKey(identity.stepId,identity.generation)
+  ||identity.executionId!==owner.sourceExecutionId || identity.branchId!==owner.sourceBranchId)
+  throw Error('Retained final resource exit owner or bytes differ');
+ verifyFinalResourceExitBytes(value,command.input_hash);
+ const checkpoint=owner.facts.filter(f=>f.kind==='checkpoint'&&f.key===String(value.selectedCheckpoint.id));
+ const definition=owner.facts.filter(f=>f.kind==='definition'&&f.key===identity.versionId);
+ const bindings=owner.facts.filter(f=>f.kind==='bindings'&&f.key===identity.bindingRevisionId);
+ if(checkpoint.length!==1 || checkpoint[0]!.json!==value.selectedCheckpoint.snapshot_json || checkpoint[0]!.sha256!==value.selectedCheckpoint.content_hash
+  ||definition.length!==1 || definition[0]!.json!==value.definition.definition_json || definition[0]!.sha256!==value.definition.content_hash
+  ||bindings.length!==1 || bindings[0]!.json!==value.bindings.bindings_json || bindings[0]!.sha256!==value.bindings.content_hash)
+  throw Error('Retained final resource checkpoint or pins differ');
 }

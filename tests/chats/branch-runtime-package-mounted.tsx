@@ -11,6 +11,15 @@ export async function branchRuntimeReadbackRegression(){
  globalThis.fetch=async(input,init)=>{assert(!init?.method||init.method==='GET','read-only GET; no installation replay');assert(String(input).includes('/installations/plan/runtime-data?branchId=destination'),'exact saved installation and destination');requests++;return new Response(JSON.stringify({receipt:{...receipt,branchId:wrong?'foreign':'destination'},data}),{headers:{'content-type':'application/json'}});};
  try{
   root.render(<><RuntimePrivateFacts data={data}/><BranchRuntimeReadback planId="plan" branchId="destination" manifestSha256={sha} expected={data} onVerified={()=>acknowledged++}/></>);await settle();assert(requests===0,'explicit private data read');
+  data.owners[0].facts.push({kind:'command',key:'resource-final-exit:step:0',json:'{"retained":"original"}',sha256:'d'.repeat(64)});
+  root.render(<><RuntimePrivateFacts data={data}/><BranchRuntimeReadback planId="plan" branchId="destination" manifestSha256={sha} expected={data} onVerified={()=>acknowledged++}/></>);await settle();
+  assert(document.body.textContent?.includes('retired resource exit record is included')&&document.body.textContent?.includes('portable continuation is not yet available'),'Import must clearly identify held final-resource data');
+  const original=structuredClone(data),nested:any={...data,owners:[{...data.owners[0],facts:[{kind:'import',key:'original',json:JSON.stringify({data:original}),sha256:'e'.repeat(64)}]}]};
+  nested.owners[0].facts.push({kind:'custody',key:'missing',json:'{"disposition":"unavailable_held"}',sha256:'f'.repeat(64)});
+  root.render(<RuntimePrivateFacts data={nested}/>);await settle();
+  assert(document.body.textContent?.includes('retired resource exit record is included')&&document.body.textContent?.includes('Some checkpoint data was unavailable at export'),'Nested re-export must retain the held and unavailable warnings');
+  root.render(<><RuntimePrivateFacts data={data}/><BranchRuntimeReadback planId="plan" branchId="destination" manifestSha256={sha} expected={data} onVerified={()=>acknowledged++}/></>);await settle();
+
   const click=async(text:string)=>{const b=Array.from(document.querySelectorAll('button')).find(b=>b.textContent===text);assert(b,text);b!.click();await settle();};
   await click('Read saved runtime data');assert(document.body.textContent?.includes('differs'),'foreign receipt held');assert(acknowledged===0,'cannot acknowledge wrong receipt');
   wrong=false;await click('Read saved runtime data');assert(document.body.textContent?.includes('Unknown native effects')&&document.body.textContent?.includes('source-chat')&&document.body.textContent?.includes('fresh-chat'),'exact maps and evidence-only reason');assert(document.body.textContent?.includes('All retained bytes')&&document.body.textContent?.includes('traversals'),'every private fact byte retained in reveal');
