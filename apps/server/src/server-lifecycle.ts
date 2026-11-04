@@ -241,6 +241,7 @@ type ServerLifecycleContext =
     agentMessageCapabilities: Map<string, AgentMessageCapability>;
     agentDeliveryLeases: ReadonlyMap<string, number>;
     deletingAgentIds: Set<string>;
+    initialAgentCreations: Array<{id:string; projectId:string; agentIds:string[]}>;
     attachmentDeletionInProgress(agentId: string): boolean;
     reconcilingAssetAgentIds: Set<string>;
     projectBrowserGrants: Map<string, unknown>;
@@ -305,6 +306,7 @@ export function registerServerLifecycle(
     agentMessageCapabilities,
     agentDeliveryLeases,
     deletingAgentIds,
+    initialAgentCreations,
     attachmentDeletionInProgress,
     reconcilingAssetAgentIds,
     projectBrowserGrants,
@@ -523,7 +525,7 @@ export function registerServerLifecycle(
     completeLifecyclePhase("project_deletion_workspace_recovery");
     // A second app may start while another app owns an import in this same
     // process. Wait for that Project's active import before inspecting recovery.
-    const startupCreations = store.listRecoverableAgentCreationOperations();
+    const startupCreations = [...new Map([...initialAgentCreations,...store.listRecoverableAgentCreationOperations()].map(operation=>[operation.id,operation])).values()];
     for (const projectId of new Set(startupCreations.map(operation=>operation.projectId))) {
       await withProjectImportLock(projectId, async()=>{
         const canonical = await recoverCanonicalAgentCreations({
@@ -554,8 +556,10 @@ export function registerServerLifecycle(
         // Startup may have inventoried an import that finished while it waited.
         for(const initial of startupCreations.filter(row=>row.projectId===projectId)){
           const current=store.getAgentCreationOperation(initial.id);
-          if(current && (current.status==='completed'||current.status==='rolled_back')){
-            for(const id of initial.agentIds)deletingAgentIds.delete(id);
+          if(current && (current.status==='completed'||current.status==='rolled_back') &&
+             !store.listPendingProjectDeletions().some(row=>row.projectId===projectId)){
+            const deleting=new Set(store.listPendingAgentDeletionReceipts().flatMap(row=>row.deletedAgentIds));
+            for(const id of initial.agentIds)if(!deleting.has(id))deletingAgentIds.delete(id);
           }
         }
       });

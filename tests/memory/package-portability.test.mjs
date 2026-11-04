@@ -43,26 +43,31 @@ test('actual organization HTTP package roundtrip restores scoped queries and ded
  const semantic=s=>s.chunks.map(r=>[r.text,r.embedding,r.metadata.deprecated,Boolean(r.metadata.supersedes)]).sort((a,b)=>a[0].localeCompare(b[0]));assert.deepEqual(semantic(next.body.memory[0].snapshot),semantic(pkg.memory[0].snapshot));noRuns(destination);
 });
 
-for(const startDuringImport of [false,true])test('two app instances serialize the same import and retain its receipt (startup '+(startDuringImport?'during':'before')+' import)',async t=>{
+for(const startup of ['before','during','after'])test('two app instances serialize the same import and retain its receipt (startup '+startup+')',async t=>{
  const source=await instance(t),destination=await instance(t);await seed(source);
  const pkg=await exported(source,false),key=randomUUID();let otherStore,otherApp,other;
  const openOther=()=>{otherStore=new AgentStore(destination.dataDir);otherApp=createServer({...destination.options,store:otherStore});other={app:otherApp,project:destination.project,chat:destination.chat,headers:destination.headers};};
- if(!startDuringImport){openOther();await otherApp.ready();}
+ if(startup==='before'){openOther();await otherApp.ready();}
  t.after(async()=>{if(otherApp){otherApp.prepareForShutdown();await otherApp.close();otherStore.close();}});
  const raw=destination.memory.core.database.raw,original=raw.client.getCollection.bind(raw.client);
  let entered,release;const started=new Promise(r=>entered=r),gate=new Promise(r=>release=r);let blocked=false;
  raw.client.getCollection=async args=>{const c=await original(args),add=c.add.bind(c);c.add=async input=>{if(!blocked&&input.metadatas?.some(m=>m.host_package_operation)){blocked=true;entered();await gate;}return add(input);};return c;};
  t.after(()=>{release();raw.client.getCollection=original;});
  const first=imported(destination,pkg,key);await started;
- if(startDuringImport)openOther();
- let secondDone=false;
- const second=(async()=>{if(startDuringImport)await otherApp.ready();return imported(other,pkg,key);})().finally(()=>{secondDone=true;});
- await new Promise(r=>setTimeout(r,150));assert.equal(secondDone,false,'second app must wait for the active import');
- release();const [a,b]=await Promise.all([first,second]);raw.client.getCollection=original;
- assert.equal(a.status,201,a.raw);assert.equal(b.status,200,b.raw);assert.equal(a.body.rootAgentId,b.body.rootAgentId);
+ if(startup!=='before')openOther();
+ let waitedDone=false;
+ const waiter=startup==='before'?imported(other,pkg,key):startup==='during'?otherApp.ready():undefined;
+ if(waiter){waiter.finally(()=>{waitedDone=true;});await new Promise(r=>setTimeout(r,150));assert.equal(waitedDone,false,'second app must wait for the active import');}
+ release();const a=await first;raw.client.getCollection=original;
+ if(startup==='during')await waiter;
+ if(startup==='after')await otherApp.ready();
+ assert.equal(a.status,201,a.raw);
+ // This operation checks the app-local quarantine before any idempotent retry.
+ const usable=await api(other,'GET',`/api/agents/${a.body.rootAgentId}/export?mode=full&organization=false`);assert.equal(usable.status,200,usable.raw);
+ const b=startup==='before'?await waiter:await imported(other,pkg,key);
+ assert.equal(b.status,200,b.raw);assert.equal(a.body.rootAgentId,b.body.rootAgentId);
  const op=destination.store.findAgentCreationOperation({projectId:destination.project.id,actorScope:'user:local-operator',kind:'import',idempotencyKey:key});
  assert.equal(op.status,'completed');assert.equal(op.result.rootAgentId,a.body.rootAgentId);assert.deepEqual(op.agentIds,a.body.agentIds);
- const visible=await api(other,'GET',`/api/agents/${a.body.rootAgentId}`);assert.equal(visible.status,200,visible.raw);
  assert.equal((await read(destination,a.body.rootAgentId)).length,3);noRuns(destination);
 });
 
@@ -224,17 +229,18 @@ test('settled staged memory rollback removes owned rows while a concurrent host 
  assert.ok((await read(destination,destination.a.id)).some(row=>row.id===concurrentId));
 });
 
-test('staged rollback preserves a foreign row at a planned ID while removing its own rows',async t=>{
+test('staged rollback holds a foreign row at a planned ID and preserves all rows',async t=>{
  const source=await instance(t),destination=await instance(t);await seed(source);
  const {operation,plan}=await stagedMemoryImport(source,destination),raw=destination.memory.core.database.raw;
  const c=await raw.client.getCollection({name:raw.names('chat:'+plan.chatId).memory}),id=plan.chunkIds[0];
  const row=await c.get({ids:[id],include:['documents','metadatas']});
  await c.update({ids:[id],metadatas:[{...row.metadatas[0],host_package_operation:'independent-owner'}]});
- await destination.memory.rollbackImportMemory(operation.id);
+ const before=await stagedRows(destination,plan),beforeLog=await stagedRows(destination,plan,true);
+ await assert.rejects(destination.memory.rollbackImportMemory(operation.id),/Foreign or unclassified memory preserved; cleanup held/);
  const preserved=await c.get({ids:[id],include:['documents','metadatas']});
  assert.deepEqual(preserved.ids,[id]);assert.equal(preserved.documents[0],row.documents[0]);assert.equal(preserved.metadatas[0].host_package_operation,'independent-owner');
- assert.deepEqual((await stagedRows(destination,{...plan,chunkIds:plan.chunkIds.slice(1)})).ids,[]);
- assert.deepEqual((await stagedRows(destination,plan,true)).ids,[]);
+ assert.deepEqual(await stagedRows(destination,plan),before);assert.deepEqual(await stagedRows(destination,plan,true),beforeLog);
+ assert.equal(destination.store.getAgentCreationOperation(operation.id).status,'rolling_back');
 });
 
 test('unconfirmed staged delete retains its mutation hold and is not retried blindly',async t=>{

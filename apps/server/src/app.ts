@@ -472,7 +472,8 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   const deletingProjectIds = new Set(store.listPendingProjectDeletions().map((entry) => entry.projectId));
   const deletingAgentIds = new Set<string>([...deletingProjectIds].flatMap((projectId) =>
     store.listAgents(projectId, { includePendingCreation: true }).map((agent) => agent.id)));
-  for (const operation of store.listRecoverableAgentCreationOperations()) {
+  const initialAgentCreations = store.listRecoverableAgentCreationOperations();
+  for (const operation of initialAgentCreations) {
     for (const agentId of operation.agentIds) deletingAgentIds.add(agentId);
   }
   const deletingConversationIds = new Set(
@@ -1063,6 +1064,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     agentMessageCapabilities,
     agentDeliveryLeases,
     deletingAgentIds,
+    initialAgentCreations,
     attachmentDeletionInProgress: agentId => [...deletingAttachmentKeys]
       .some((key) => key.startsWith(`${agentId}\0`)),
     reconcilingAssetAgentIds,

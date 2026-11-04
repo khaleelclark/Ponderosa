@@ -15,9 +15,18 @@ const context=new AsyncLocalStorage<Frame>();const key=(scope:string,id:string)=
 const denied=()=>new Error('Memory source unavailable or unauthorized');
 export const MEMORY_CLEANUP_HOLD='Memory cleanup held: backend lacks atomic identity and content checks; staged and existing data was preserved';
 export const MEMORY_CLEANUP_UNKNOWN_HOLD='Memory cleanup held: a backend write has an unknown outcome. It was not repeated; review memory health.';
+export const MEMORY_CLEANUP_FOREIGN_HOLD='Foreign or unclassified memory preserved; cleanup held';
+const memoryCleanupIdentityHolds=new Set([
+ MEMORY_CLEANUP_FOREIGN_HOLD,
+ 'Unclassified memory conflict preserved; cleanup held',
+ 'Foreign or unclassified memory conflict preserved; cleanup held',
+ 'Memory collection bindings overlap; cleanup held',
+ 'Previously deleted memory collection exists again; cleanup held',
+ 'Memory collection identity changed; cleanup held',
+]);
 export function isMemoryCleanupHold(value:unknown):boolean{
  const message=value instanceof Error?value.message:value;
- return message===MEMORY_CLEANUP_HOLD||message===MEMORY_CLEANUP_UNKNOWN_HOLD;
+ return message===MEMORY_CLEANUP_HOLD||message===MEMORY_CLEANUP_UNKNOWN_HOLD||(typeof message==='string'&&memoryCleanupIdentityHolds.has(message));
 }
 export class MemoryCollectionHold extends Error{constructor(message:string){super(message);this.name='MemoryCollectionHold';}}
 const noGeneration={name:'local-memory-precomputed',generate:async():Promise<number[][]>=>{throw Error('Explicit embeddings required');}};
@@ -305,8 +314,8 @@ export class AuthorityStorage implements MemoryStorage{
     if(found.ids.length!==found.metadatas.length||new Set(found.ids).size!==found.ids.length||found.ids.some(id=>!requested.includes(id)))throw Error(MEMORY_CLEANUP_HOLD);
     for(let i=0;i<found.ids.length;i++){
      const id=found.ids[i]!,metadata:any=found.metadatas[i];
-     // Another owner's row at the deterministic ID is not ours to remove.
-     if(metadata?.host_package_operation!==operationId)continue;
+     // A foreign or unclassified planned row requires review, not a successful cleanup.
+     if(metadata?.host_package_operation!==operationId)throw Error(MEMORY_CLEANUP_FOREIGN_HOLD);
      const stamp=this.parse(id,scope,log?{...metadata,host_source_authority:metadata?.host_conflict_authority}:metadata,true);
      if(!stamp||stamp.ownerChat!==plan.chatId||stamp.provenance.actor.kind!=='user'||
         stamp.provenance.actor.id!==this.principal||stamp.provenance.runId!=='package-import:'+plan.namespace||
@@ -361,7 +370,7 @@ export class AuthorityStorage implements MemoryStorage{
       if(seen.has(id))throw Error('Memory cleanup inventory changed');seen.add(id);
       const stamp=this.parse(id,scope,log?{...metadata,host_source_authority:metadata?.host_conflict_authority}:metadata,true);
       if(!stamp||stamp.ownerChat!==chatId||!(stamp.audience===scope+':team'||stamp.audience.startsWith(scope+':agent:')&&stamp.audience.length>(scope+':agent:').length))
-       throw Error('Foreign or unclassified memory preserved; cleanup held');
+       throw Error(MEMORY_CLEANUP_FOREIGN_HOLD);
       rows.set(id,{audience:stamp.audience,metadata});
       if(!agentId||stamp.audience===scope+':agent:'+agentId)selected.push(id);
      }
