@@ -113,18 +113,53 @@ test('deleting a published held Branch retires its exact roles and review withou
    const removed=snapshot.mapping[JSON.stringify(['chat','root'])],reviewId=snapshot.review.id;
    assert.ok(workspace.getPreferences().outputApps.importReviews[reviewId].applied);
    store.sqlite.exec('DROP TRIGGER refuse_deleted_role_completion');
+   store.sqlite.exec("CREATE TEMP TRIGGER refuse_canceled_compaction BEFORE UPDATE OF state ON branch_installation_plans WHEN NEW.state='canceled' BEGIN SELECT RAISE(ABORT,'controlled cancellation receipt failure'); END");
    await until(async()=>{
     const result=await f.api('DELETE',`/api/branches/${pending.branchId}`);
-    assert.ok([200,202,404].includes(result.status),JSON.stringify(result.body));
+    assert.ok([200,202,404,500].includes(result.status),JSON.stringify(result.body));
     return !store.getAgent(removed)&&!workspace.getPreferences().outputApps.importReviews?.[reviewId];
    },'deleted Branch Output marker cleanup');
+   assert.equal(store.sqlite.prepare('SELECT state FROM branch_installation_plans WHERE id=?').get(plan.id).state,'canceling');
    assert.ok(store.getAgent(other));
    assert.ok(workspace.getPreferences().outputApps.agentIds.includes(other));
    assert.equal(workspace.getPreferences().outputApps.agentIds.includes(removed),false);
+   // Reopening drops the injected TEMP trigger. Cleanup must tolerate that
+   // the role journal committed while the cancellation receipt did not.
    await f.reopen();
+   await until(async()=>{
+    const result=await f.api('DELETE',`/api/branches/${pending.branchId}`);
+    assert.ok([200,202,404].includes(result.status),JSON.stringify(result.body));
+    return !store.sqlite.prepare('SELECT 1 FROM branch_installation_plans WHERE id=? AND state='canceling'').get(plan.id);
+   },'cancellation receipt recovery');
    assert.ok(store.getAgent(other));
    const roles=f.ok(await f.api('GET','/api/branches/engine/workspace/preferences')).outputApps;
    assert.ok(roles.agentIds.includes(other));assert.equal(roles.agentIds.includes(removed),false);
+  }finally{WorkspaceStore.prototype.updatePreferences=update;}
+ },{storeFactory:dir=>(store=new AgentStore(dir))});
+});
+
+test('deleting a held Branch preserves a later Output role epoch',async t=>{
+ let store,workspace;await withFixture(t,async f=>{
+  const update=WorkspaceStore.prototype.updatePreferences;
+  WorkspaceStore.prototype.updatePreferences=function(patch){workspace=this;return update.call(this,patch);};
+  try{
+   const p=installation(),plan=f.ok(await preview(f,p));
+   store.sqlite.exec("CREATE TEMP TRIGGER refuse_epoch_completion BEFORE UPDATE OF state ON branch_installation_plans WHEN NEW.state='completed' AND json_extract(OLD.preview_json,'$.published')=1 BEGIN SELECT RAISE(ABORT,'controlled completion hold'); END");
+   const pending=f.ok(await f.api('POST',`/api/branches/installations/${plan.id}/confirm`,{}));assert.equal(pending.state,'applying');
+   const saved=JSON.parse(store.sqlite.prepare('SELECT preview_json FROM branch_installation_plans WHERE id=?').get(plan.id).preview_json);
+   const agent=saved.mapping[JSON.stringify(['chat','root'])],reviewId=saved.review.id,roles=workspace.getPreferences().outputApps;
+   const newer=(roles.agentEpochs?.[agent]??0)+1;
+   // Simulate a later canonical role edit while the import awaits completion.
+   workspace.updatePreferences({outputApps:{...roles,agentEpochs:{...roles.agentEpochs,[agent]:newer}}});
+   store.sqlite.exec('DROP TRIGGER refuse_epoch_completion');
+   await until(async()=>{
+    const result=await f.api('DELETE',`/api/branches/${pending.branchId}`);
+    assert.ok([200,202,404].includes(result.status),JSON.stringify(result.body));
+    return !store.getAgent(agent)&&!workspace.getPreferences().outputApps.importReviews?.[reviewId];
+   },'later role edit survives cleanup');
+   assert.equal(workspace.getPreferences().outputApps.agentEpochs[agent],newer);
+   assert.ok(workspace.getPreferences().outputApps.agentIds.includes(agent),'cleanup did not overwrite the later role edit');
+   assert.equal(f.ok(await f.api('GET','/api/branches/engine/workspace/preferences')).outputApps.agentIds.includes(agent),false,'deleted Agent stays hidden');
   }finally{WorkspaceStore.prototype.updatePreferences=update;}
  },{storeFactory:dir=>(store=new AgentStore(dir))});
 });
