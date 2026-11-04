@@ -64,7 +64,7 @@ Ordinary runtime output must not silently become Communication or future context
 - A visible managed Agent is not a provider-native helper.
 - Create managed Agents only through Ponderosa’s tracked capability.
 - Managed creation must atomically establish the Agent, opening Request, and optional Join.
-- Terminal Request updates are canonical handoffs. Ordinary follow-up messages are passive copies.
+- Terminal Request updates are canonical handoffs. Mark progress and FYIs explicitly as noninterrupting; immediate instructions and questions steer, and unmarked immediate collaboration defaults to steering.
 - Use one aggregate Join for common fan-out.
 - Preserve parent continuations until the final Join outcome is handled.
 - Reporting relationships define accountability, not permitted communication paths. Agents may communicate directly across branches when another Agent owns, needs, or can resolve the work.
