@@ -134,6 +134,9 @@ for(const urgency of ['ordinary','urgent']) for(const result of ['unsupported','
    await until(()=>f.turns.filter(turn=>turn.agentId===b.id).length>=2,'following Run starts');
    const prompt=f.turns.filter(turn=>turn.agentId===b.id).at(-1).input.prompt;
    assert.equal(prompt.split('Preserve this instruction').length-1,1,'one exact authored instruction reaches the next Run');
+   assert.equal(prompt.includes('[CURRENT INPUT · URGENT PEER MESSAGE]'),urgency==='urgent','provider input preserves only the urgent peer classification');
+   const humanInput=f.turns.find(turn=>turn.agentId===a.id).input.prompt;
+   assert.equal(humanInput.includes('[CURRENT INPUT · URGENT PEER MESSAGE]'),false,'human input is unchanged');
    f.sessions.get(b.id).finish();
   }else{
    await until(()=>messageActivation(store,peer.body.eventId)?.state==='outcome_unknown','uncertain peer delivery held');
@@ -142,4 +145,21 @@ for(const urgency of ['ordinary','urgent']) for(const result of ['unsupported','
   }
   sender.finish();
  },{storeFactory:dataDir=>(store=new AgentStore(dataDir)),steeringResponse:async()=>{calls++;if(result==='unknown')throw Error('uncertain provider result');return {status:'unsupported'};}});
+});
+
+test('a sole urgent peer message starting an idle agent retains its urgency in the provider input',{timeout:30000},async t=>{
+ let store;await withFixture(t,async f=>{
+  const chat=await f.createChat('Urgent peer input'),a=await f.createIdleAgent(chat,'Sender'),b=await f.createIdleAgent(chat,'Recipient');
+  const sender=await f.hold(a.id);f.plans.set(b.id,[{hold:true}]);
+  const sent=await sendPeer(f,sender,b.id,'Urgent original text',{messagePurpose:'instruction',urgency:'urgent'});
+  assert.equal(sent.status,200,JSON.stringify(sent));
+  await until(()=>f.turns.some(turn=>turn.agentId===b.id),'urgent peer Run starts');
+  const input=f.turns.find(turn=>turn.agentId===b.id).input.prompt;
+  assert.ok(input.includes('[CURRENT INPUT · URGENT PEER MESSAGE]'));
+  assert.equal(input.split('Urgent original text').length-1,1);
+  const activation=messageActivation(store,sent.body.eventId);
+  assert.equal(activation.priority,90);assert.equal(activation.kind,'urgent_message');
+  assert.equal(f.turns.find(turn=>turn.agentId===a.id).input.prompt.includes('[CURRENT INPUT · URGENT PEER MESSAGE]'),false);
+  f.sessions.get(b.id).finish();sender.finish();
+ },{storeFactory:dataDir=>(store=new AgentStore(dataDir))});
 });

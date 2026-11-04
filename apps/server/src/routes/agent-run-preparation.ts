@@ -922,7 +922,17 @@ export async function prepareAgentRun(
   const restoredInputRoute = internalV3Dispatch && text !== v3ActivationPrompt &&
       manifestActivationPayloads.length === 1
     ? communicationV3Prompt(canonicalDefaultReplyRoute(coordinationV3, runId, agent.id)).join("\n") : "";
-  const turnGuidance = [restoredInputRoute, currentVoiceInput, taskDeliveryContext].filter(Boolean).join("\n\n");
+  // Restoring a sole authored peer message also removes the scheduler's
+  // activation header. Preserve its urgency without duplicating its text.
+  const soleActivation = manifestActivationPayloads.length === 1 ? manifestActivationPayloads[0] : undefined;
+  const soleCommunication = soleActivation?.payload && typeof soleActivation.payload === "object"
+    ? (soleActivation.payload as { communication?: CommunicationEvent }).communication : undefined;
+  const urgentPeerContext = internalV3Dispatch && text !== v3ActivationPrompt &&
+    soleActivation?.kind === "urgent_message" && soleActivation.promptClass !== "human" &&
+    soleCommunication?.sender.kind === "agent"
+      ? "[CURRENT INPUT · URGENT PEER MESSAGE] This peer message was marked urgent. Integrate it with existing work; it does not cancel other obligations."
+      : "";
+  const turnGuidance = [restoredInputRoute, currentVoiceInput, taskDeliveryContext, urgentPeerContext].filter(Boolean).join("\n\n");
 
   const currentCommunications = [...new Map([
     ...(communication ? [communication] : []), ...(sharedCommunication ? [sharedCommunication] : []),
