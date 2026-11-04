@@ -21,8 +21,8 @@ protocol fixes do not automatically change Ponderosa's Claude behavior.
 
 - The Claude MCP bridge accepts canonical decimal strings `1`–`20` for
   `top_k` and lowercase `true`/`false` for `include_history`, while
-  rejecting ambiguous values, non-scalars and out-of-range counts before host
-  dispatch. The host still independently checks the exact selected tool,
+  rejecting ambiguous values, non-scalars and out-of-range values for those
+  fields before host dispatch. The host still independently checks the exact selected tool,
   capability, scope, argument fields and limits; direct HTTP inputs stay strict.
 - Invalid host arguments identify a fixed parameter or allowed range without
   echoing authored values or unrecognized keys. They return HTTP 400, rather
