@@ -452,9 +452,9 @@ test('new linked reftable recovery emits canonical structural config for recaptu
   const {parseReviewedGitConfiguration}=await import('../../apps/server/dist/portable-reviewed-user-data.js');
   const root=await fixture(t),main=path.join(root,'main'),selected=path.join(root,'selected'),destination=path.join(root,'destination');
   await repository(main,'reftable');native(main,'worktree','add','-b','selected',selected);
-  native(main,'config','extensions.worktreeConfig','true');native(main,'config','credential.helper','SYNTHETIC_CREDENTIAL_EXCLUDED');native(selected,'config','--worktree','portable.probe','private-kept');
+  native(main,'config','extensions.worktreeConfig','true');native(main,'config','credential.helper','SYNTHETIC_CREDENTIAL_EXCLUDED');native(selected,'config','--worktree','portable.probe','private-kept');native(selected,'config','--worktree','core.bare','false');
   await writeFile(path.join(selected,'file.txt'),'selected worktree\n');native(selected,'add','file.txt');native(selected,'commit','-m','selected worktree');
-  const selectedOid=native(selected,'rev-parse','HEAD'),sourceConfig=await readFile(path.join(main,'.git','config')),originalValue=await exportReviewedUserData(selected,{git:true,harness:false});
+  const selectedOid=native(selected,'rev-parse','HEAD'),sourceConfig=await readFile(path.join(main,'.git','config')),sourcePrivatePath=path.join(native(selected,'rev-parse','--absolute-git-dir'),'config.worktree'),sourcePrivate=await readFile(sourcePrivatePath),originalValue=await exportReviewedUserData(selected,{git:true,harness:false});
   const wire=Buffer.from(JSON.stringify(originalValue)),originalPath='.ponderosa-portable-review/user-data.json';assert.doesNotMatch(wire.toString(),/SYNTHETIC_CREDENTIAL_EXCLUDED/);
   await importWorkingFiles(destination,[{path:originalPath,data:wire,sha256:createHash('sha256').update(wire).digest('hex')}]);
   await writeFile(path.join(destination,'file.txt'),'selected worktree\n');
@@ -472,6 +472,7 @@ test('new linked reftable recovery emits canonical structural config for recaptu
   }
   assert.equal(native(destination,'config','--get','user.name'),'Fixture User','unrelated source setting remains usable');
   assert.deepEqual(await readFile(path.join(main,'.git','config')),sourceConfig,'source repository configuration is unchanged');
+  assert.deepEqual(await readFile(sourcePrivatePath),sourcePrivate,'source private configuration is unchanged');
   assert.deepEqual(await readFile(path.join(destination,originalPath)),wire,'captured original config remains immutable evidence');
   assert.equal(native(destination,'rev-parse','HEAD'),selectedOid);
   const recaptured=await exportReviewedGit(destination);validateReviewedGit(recaptured.git);
