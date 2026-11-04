@@ -195,16 +195,21 @@ test('warm retained provider lifetime remains bound to each exact Run without fa
    await f.send(agent.id,'Second task');await f.settled(agent.id,before);
    const turns=f.turns.filter(turn=>turn.agentId===agent.id);
    assert.equal(turns.length,2);
+   assert.ok(typeof turns[0].sessionId==="string" && turns[0].sessionId.length>0);
+   assert.equal(turns[1].sessionId,turns[0].sessionId,"Both turns report the same provider session");
    const runs=(await f.detail(agent.id)).runs;
    const registrations=store.sqlite.prepare("SELECT receipt_json FROM host_lifecycle_commits WHERE kind='provider-process-registration' AND json_extract(receipt_json,'$.agentId')=?").all(agent.id).map(row=>JSON.parse(row.receipt_json));
    const bound=runs.map(run=>{
     const canonical=store.sqlite.prepare('SELECT id,fencing_token,lease_owner FROM scheduler_runs WHERE id=?').get(run.id);
-    const matches=registrations.filter(row=>row.runId===run.id&&row.runFence===canonical.fencing_token&&row.workerId===canonical.lease_owner);
-    assert.ok(matches.length,'Exact process registration missing for Run '+run.id);
-    return {runId:run.id,ids:[...new Set(matches.map(row=>row.authorityId))]};
+    const matches=registrations.filter(row=>row.runId===run.id);
+    assert.ok(matches.length,"Exact process registration missing for Run "+run.id);
+    assert.ok(matches.every(row=>row.runFence===canonical.fencing_token&&row.workerId===canonical.lease_owner),"Every registration has the exact Run fence and worker");
+    const ids=[...new Set(matches.map(row=>row.authorityId))];
+    assert.equal(ids.length,1,"Each Run has exactly one provider lifetime");
+    return {runId:run.id,ids};
    });
    assert.equal(bound.length,2);
-   assert.ok(bound[0].ids.some(id=>bound[1].ids.includes(id)),'Both Runs must use one observed retained lifetime');
+   assert.equal(bound[0].ids[0],bound[1].ids[0],"Both Runs use the same observed retained lifetime");
    const starts=store.sqlite.prepare("SELECT receipt_json FROM host_lifecycle_commits WHERE kind='provider-start-admission' AND json_extract(receipt_json,'$.agentId')=?").all(agent.id).map(row=>JSON.parse(row.receipt_json));
    assert.equal(starts.length,1,'Reusing the live lifetime does not create a new start admission');
    assert.ok(bound.some(row=>row.runId===starts[0].runId));
