@@ -305,17 +305,24 @@ test('deleting a never-provisioned Chat preserves unrelated same-name collection
  finally{memory.provisionNewChat=original;}
  assert.equal(created.statusCode,409,created.body);const chatId=created.json().chatId,scope='chat:'+chatId;
  assert.deepEqual(f.store.sqlite.prepare('SELECT memory_state,log_state FROM local_memory_scope_provisioning WHERE chat_id=?').get(chatId),{memory_state:'planned',log_state:'planned'});
+ memory.setGrant(chatId,true,0,'dev');
  const foreign=await raw.client.createCollection({name:raw.names(scope).memory,metadata:{ownership:'independent'}});
  await foreign.add({ids:['foreign'],documents:['Keep this unrelated data'],embeddings:[vector]});
- const originalDelete=raw.client.deleteCollection.bind(raw.client);let deletes=0;
+ const originalDelete=raw.client.deleteCollection.bind(raw.client),originalComplete=f.store.markConversationDeletionServerCleanupComplete.bind(f.store);let deletes=0;
  raw.client.deleteCollection=async args=>{deletes++;return originalDelete(args);};
+ // Inject a failure at the receipt boundary, after the Chat grant is removed.
+ f.store.markConversationDeletionServerCleanupComplete=()=>{throw Error('synthetic receipt interruption');};
  try{
   const result=await f.app.inject({method:'DELETE',url:'/api/conversations/'+chatId,headers:f.headers});
-  assert.equal(result.statusCode,200,result.body);assert.equal(result.json().cleanupPending,false,result.body);
+  assert.equal(result.statusCode,200,result.body);assert.equal(result.json().cleanupPending,true,result.body);
   assert.equal(deletes,0);assert.deepEqual((await foreign.get()).ids,['foreign']);
-  assert.equal(f.store.getConversationDeletionReceipt(chatId).serverCleanupCompleted,true);
- }finally{raw.client.deleteCollection=originalDelete;}
+  const receipt=f.store.getConversationDeletionReceipt(chatId);
+  assert.equal(receipt.serverCleanupCompleted,false);assert.match(receipt.lastError,/synthetic receipt interruption/);
+  assert.equal(memory.policy.prepare('SELECT 1 FROM local_memory_chat_grants WHERE chat_id=?').get(chatId),undefined);
+ }finally{raw.client.deleteCollection=originalDelete;f.store.markConversationDeletionServerCleanupComplete=originalComplete;}
+ // Restart must safely replay the exact no-effect cleanup and finish its receipt.
  await f.reopen();
+ const deadline=Date.now()+5000;while(!f.store.getConversationDeletionReceipt(chatId).serverCleanupCompleted&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,10));
  assert.equal(f.store.getConversationDeletionReceipt(chatId).serverCleanupCompleted,true);
  const preserved=await f.memory.core.database.raw.client.getCollection({name:raw.names(scope).memory});
  assert.deepEqual((await preserved.get()).ids,['foreign']);
