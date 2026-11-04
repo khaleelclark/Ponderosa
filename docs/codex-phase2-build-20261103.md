@@ -153,6 +153,15 @@ findings resulted in test-only changes after product source `2f9bbf8f`:
   error and the generic no-deletion hold. It does not claim deletion diagnosed
   that binding or that populated cleanup is supported.
 
+The integrated test-only successor `1cfe2e932d3223e09a5bbb5152c5c1d47a6c35be`
+passed a fresh build and a combined run of the five affected Branch, Output,
+import, folder and provider-shutdown files: 59 passed, zero failed, canceled or
+skipped. Evidence: `evidence/combined-1cfe-{install.log,build.log,test.log,test.exit,hash}`.
+A separate strengthened memory-binding case passed 1/1 on the same commit with
+a disposable Chroma (`evidence/memory-binding-final-test.log`). The combined
+run used inert providers and a process-level loopback-only socket guard; it was
+not a kernel network namespace and cannot block code that bypasses libc.
+
 These are focused evidence for their stated cases, not a full regression or
 Behavior Bible qualification. The twelve populated Chroma failures and other
 boundaries described here remain open.
