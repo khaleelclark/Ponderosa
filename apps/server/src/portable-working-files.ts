@@ -7,10 +7,10 @@ import {promises as fs} from '@ponderosa/native-host/fs';
 import path from 'node:path';
 import {tmpdir} from 'node:os';
 import {createHash,randomUUID} from 'node:crypto';
-import type {AgentPortablePackageDto,PortableArtifactDto,PortableWorkingLinkDto,ReviewedUserDataSelection,ReviewedMetadataActivation,ReviewedGitExternalDependencies,CanonicalGeneratedHooksProof} from '@ponderosa/core';
+import type {AgentPortablePackageDto,PortableArtifactDto,PortableWorkingLinkDto,ReviewedUserDataSelection,ReviewedMetadataActivation,ReviewedGitExternalDependencies,CanonicalGeneratedHooksProof,ReviewedGitUserData} from '@ponderosa/core';
 import {applyFilesystemMetadata,planFilesystemMetadata} from './portable-filesystem-metadata.js';
 import {assertPortableSecretsAbsent} from './portable-secrets.js';
-import {assertRetainedReviewNamespace,assertSafeCurrentGitEvidence,parseReviewedGitConfiguration,captureRetainedReviewOriginal,selectedReviewedGitStorage,exportReviewedUserData,parseReviewedUserData,recreateReviewedGit,REVIEWED_USER_DATA_PATH,type GitExportCapture} from './portable-reviewed-user-data.js';
+import {assertRetainedReviewNamespace,assertSafeCurrentGitEvidence,parseReviewedGitConfiguration,captureRetainedReviewOriginal,selectedReviewedGitStorage,exportReviewedUserData,parseReviewedUserData,recreateReviewedGit,REVIEWED_USER_DATA_PATH,createGitExportCapture,verifyGitExportAssociations,exportReviewedGit,validateRetainedNativeGitBinary,type GitExportCapture} from './portable-reviewed-user-data.js';
 
 export interface WorkingHardlinkCapture {
   originals:Map<string,{root:string;ref?:string;path:string;nlink:bigint;count:number;identity:string;paths:string[]}>;
@@ -273,7 +273,9 @@ const CURRENT_GIT_MANIFEST=CURRENT_GIT_EVIDENCE+'/manifest.json';
 const CURRENT_GIT_NAMES=['external-git','native-git-common','current-git-evidence'] as const;
 type CurrentGitName=typeof CURRENT_GIT_NAMES[number];
 type CurrentGitNamespace={name:CurrentGitName;rootMode:number;rootMtime:string;directories:Array<{path:string;mode:number;mtime:string}>;links:PortableWorkingLinkDto[];files:Array<{path:string;sha256:string;mode:number;mtime:string}>};
-type CurrentGitManifest={version:1;originalSha256:string;namespaces:CurrentGitNamespace[];generatedObservations:GeneratedObservation[]};
+type CurrentGitManifest={version:1;originalSha256:string;namespaces:CurrentGitNamespace[];generatedObservations:GeneratedObservation[];nativeGit?:ReviewedGitUserData};
+function opaqueGitBytes(data:Buffer):boolean{if(data.includes(0))return true;try{new TextDecoder('utf-8',{fatal:true}).decode(data);return false;}catch{return true;}}
+function nestedNativeConfig(name:string):boolean{return /^(?:current-git-evidence\/)*native-git-common\/worktrees\/imported\/config\.worktree$/.test(name);}
 function inspectCurrentGitFile(name:string,data:Buffer):void {
   try{if(data.includes(0))throw new Error();new TextDecoder('utf-8',{fatal:true}).decode(data);}
   catch{throw new Error('Current retained Git evidence includes opaque binary data that cannot be inspected; export is held and source files remain in place');}
@@ -284,6 +286,25 @@ function inspectCurrentGitFile(name:string,data:Buffer):void {
       if(!safe.equals(data))throw new Error('excluded');
     }
   }catch{throw new Error('Current retained Git evidence contains unsupported or recognizable credential data; source remains unchanged');}
+}
+async function captureExactRetainedNativeGit(root:string):Promise<ReviewedGitUserData>{
+  if(process.platform!=='linux')throw new Error('Retained native Git binary capture requires held Linux roots');
+  const common='.ponderosa-portable-review/native-git-common',privatePath=common+'/worktrees/imported';
+  const handle=await fs.open(root,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);
+  try{
+    const owner=(await handle.stat({bigint:true})).uid;
+    const bindings=[
+      {id:'common',worktreeRootRef:'work',storageRootRef:'work',relativePath:common,role:'common' as const,worktreePath:root,storagePath:root},
+      {id:'private',worktreeRootRef:'work',storageRootRef:'work',relativePath:privatePath,role:'private' as const,worktreePath:root,storagePath:root},
+    ];
+    const capture=createGitExportCapture([{pathname:root,ref:'work',handle,owner}],bindings);
+    try{
+      await verifyGitExportAssociations(capture);
+      const result=await exportReviewedGit(root,capture);
+      if(!result||result.git.configurationSourceDirectories?.common!==path.join(root,common)||result.git.configurationSourceDirectories?.private!==path.join(root,privatePath))throw new Error('Retained native Git association differs');
+      await capture.verify();return result.git;
+    }finally{await capture.close();}
+  }finally{await handle.close();}
 }
 async function captureRetainedGitCurrent(root:string,original:Buffer,maxBytes:number):Promise<{files:Array<{path:string;artifactRef:string;mode:number;mtime?:string}>;artifacts:PortableArtifactDto[];bytes:number;verify:()=>Promise<void>}|undefined>{
   const review=path.join(root,'.ponderosa-portable-review');
@@ -300,7 +321,7 @@ async function captureRetainedGitCurrent(root:string,original:Buffer,maxBytes:nu
   const originalSha256=createHash('sha256').update(original).digest('hex');
   const collect=async()=>{
     const namespaces:CurrentGitNamespace[]=[],outFiles:Array<{path:string;artifactRef:string;mode:number;mtime?:string}>=[],artifacts:PortableArtifactDto[]=[];
-    let bytes=0;
+    let bytes=0;const nativeFiles:Array<{path:string;data:Buffer}>=[],nestedFiles:Array<{path:string;data:Buffer;sha256:string;mode?:number}>=[];let hasNativeBinary=false;
     for(const name of present){
       const target=path.join(review,name);let inventory:WorkingFolderInventory,captured:Awaited<ReturnType<typeof exportWorkingFiles>>;
       try{inventory=await inventoryWorkingFolder(target);if(inventory.excludedPaths.length||inventory.persistentPaths.length)throw new Error('excluded');captured=await exportWorkingFiles(target,inventory.paths,maxBytes-bytes,inventory.links,undefined,undefined,undefined,undefined,inventory);}
@@ -311,7 +332,11 @@ async function captureRetainedGitCurrent(root:string,original:Buffer,maxBytes:nu
       for(const file of captured.files){
         const artifact=byRef.get(file.artifactRef);if(!artifact)throw new Error('Current retained Git artifact is missing');
         const decoded=await decodePortableArtifactData(artifact);
-        inspectCurrentGitFile(file.path,decoded.data);
+        const opaque=opaqueGitBytes(decoded.data);
+        if(name==='native-git-common'){nativeFiles.push({path:file.path,data:decoded.data});if(opaque||file.path==='worktrees/imported/config.worktree')hasNativeBinary=true;}
+        if(name==='current-git-evidence')nestedFiles.push({path:CURRENT_GIT_EVIDENCE+'/'+file.path,data:decoded.data,sha256:decoded.sha256,mode:file.mode});
+        if(opaque&&name!=='native-git-common'&&name!=='current-git-evidence')throw new Error('Current retained Git evidence includes opaque binary data that cannot be inspected; export is held and source files remain in place');
+        if(!opaque&&!(name==='native-git-common'&&file.path==='worktrees/imported/config.worktree')&&!(name==='current-git-evidence'&&nestedNativeConfig(file.path)))inspectCurrentGitFile(file.path,decoded.data);
         entries.push({path:file.path,sha256:decoded.sha256,mode:file.mode??0o600,mtime:file.mtime??inventory.mtime});
         const output=CURRENT_GIT_EVIDENCE+'/'+name+'/'+file.path;
         outFiles.push({path:output,artifactRef:file.artifactRef,mode:0o600});
@@ -319,19 +344,31 @@ async function captureRetainedGitCurrent(root:string,original:Buffer,maxBytes:nu
       }
       namespaces.push({name,rootMode:inventory.mode,rootMtime:inventory.mtime,directories:inventory.directories,links:inventory.links,files:entries});
     }
-    return {namespaces,outFiles,artifacts,bytes};
+    return {namespaces,outFiles,artifacts,bytes,nativeFiles,hasNativeBinary,nestedFiles,hasNestedEvidence:present.includes('current-git-evidence')};
   };
   const captured=await collect();
+  const qualify=async(snapshot:typeof captured)=>{
+    if(snapshot.hasNestedEvidence){try{validateRetainedGitCurrent(snapshot.nestedFiles,original);}catch(error){if(error instanceof RetainedGitEvidenceWorkLimit)throw error;throw new Error('Prior retained Git evidence cannot be validated; export is held and source files remain in place');}}
+    if(!snapshot.hasNativeBinary)return undefined;
+    try{const git=await captureExactRetainedNativeGit(root);validateRetainedNativeGitBinary(git,snapshot.nativeFiles);return git;}
+    catch{throw new Error('Current retained Git binary data cannot be validated; export is held and source files remain in place');}
+  };
+  const nativeGit=await qualify(captured);
   const verifyGenerated=async()=>{try{await generated.verify();}catch{throw new Error('Generated review contents changed or could not be verified; source remains unchanged');}};
-  const verify=async()=>{await verifyGenerated();const check=await collect();if(JSON.stringify(captured.namespaces)!==JSON.stringify(check.namespaces))throw new Error('Current retained Git evidence changed during capture; source remains unchanged');await verifyGenerated();};
+  const verify=async()=>{await verifyGenerated();const check=await collect();if(JSON.stringify(captured.namespaces)!==JSON.stringify(check.namespaces)||JSON.stringify(nativeGit)!==JSON.stringify(await qualify(check)))throw new Error('Current retained Git evidence changed during capture; source remains unchanged');await verifyGenerated();};
   await verify();
-  const manifest:CurrentGitManifest={version:1,originalSha256,namespaces:captured.namespaces,generatedObservations:generated.observations};
+  const manifest:CurrentGitManifest={version:1,originalSha256,namespaces:captured.namespaces,generatedObservations:generated.observations,...(nativeGit?{nativeGit}:{})};
   const data=Buffer.from(JSON.stringify(manifest));if(captured.bytes+data.length>maxBytes)throw new Error('Current retained Git evidence exceeds the portable artifact limit');
   const ref=randomUUID();captured.outFiles.push({path:CURRENT_GIT_MANIFEST,artifactRef:ref,mode:0o600});
   captured.artifacts.push({ref,kind:'document',path:CURRENT_GIT_MANIFEST,summary:'Inert retained Git current evidence manifest',createdAt:new Date().toISOString(),mediaType:'application/json',...await encodePortableArtifactData(data)});
   return {files:captured.outFiles,artifacts:captured.artifacts,bytes:captured.bytes+data.length,verify};
 }
-function validateRetainedGitCurrent(files:readonly {path:string;data:Buffer;sha256:string;mode?:number}[],original?:Buffer):Array<{path:string;mode:number;mtime:string}>{
+class RetainedGitEvidenceWorkLimit extends Error {
+  constructor(){super('Retained Git evidence exceeds existing package validation work bounds; source data remains unchanged');}
+}
+function validateRetainedGitCurrent(files:readonly {path:string;data:Buffer;sha256:string;mode?:number}[],original?:Buffer,budget={entries:0,bytes:0}):Array<{path:string;mode:number;mtime:string}>{
+  budget.entries+=files.length;for(const file of files)budget.bytes+=file.data.length;
+  if(budget.entries>10000||budget.bytes>AGENT_PACKAGE_MAX_BYTES)throw new RetainedGitEvidenceWorkLimit();
   const evidence=files.filter(file=>file.path===CURRENT_GIT_EVIDENCE||file.path.startsWith(CURRENT_GIT_EVIDENCE+'/'));
   if(!evidence.length)return [];
   const manifestFile=evidence.find(file=>file.path===CURRENT_GIT_MANIFEST);
@@ -339,24 +376,31 @@ function validateRetainedGitCurrent(files:readonly {path:string;data:Buffer;sha2
   let value:unknown;try{value=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(manifestFile.data));}catch{throw new Error('Current retained Git evidence manifest is invalid');}
   if(!value||typeof value!=='object'||Array.isArray(value))throw new Error('Current retained Git evidence manifest is invalid');
   const manifest=value as CurrentGitManifest;
-  if(JSON.stringify(Object.keys(manifest).sort())!==JSON.stringify(['generatedObservations','namespaces','originalSha256','version'])||manifest.version!==1||manifest.originalSha256!==createHash('sha256').update(original).digest('hex')||!Array.isArray(manifest.namespaces)||manifest.namespaces.length>3)throw new Error('Current retained Git evidence association differs');
+  if(JSON.stringify(Object.keys(manifest).sort())!==JSON.stringify(manifest.nativeGit?['generatedObservations','namespaces','nativeGit','originalSha256','version']:['generatedObservations','namespaces','originalSha256','version'])||manifest.version!==1||manifest.originalSha256!==createHash('sha256').update(original).digest('hex')||!Array.isArray(manifest.namespaces)||manifest.namespaces.length>3)throw new Error('Current retained Git evidence association differs');
   if(!Array.isArray(manifest.generatedObservations)||manifest.generatedObservations.length!==2||manifest.generatedObservations.some((item,index)=>!item||item.name!==['git-repository','provider-files'][index]||!['absent','matches-original'].includes(item.state)||!Array.isArray(item.nodes)||item.nodes.length>10000||item.state==='absent'&&item.nodes.length!==0))throw new Error('Generated review evidence is invalid');
   assertPortableSecretsAbsent(manifest.generatedObservations,'Generated review evidence');
-  const expected=new Set([CURRENT_GIT_MANIFEST]),names=new Set<string>(),dirs:Array<{path:string;mode:number;mtime:string}>=[];
+  const expected=new Set([CURRENT_GIT_MANIFEST]),names=new Set<string>(),dirs:Array<{path:string;mode:number;mtime:string}>=[],nativeFiles:Array<{path:string;data:Buffer}>=[],nestedFiles:Array<{path:string;data:Buffer;sha256:string;mode?:number}>=[];let hasNativeBinary=false,hasNestedEvidence=false;
   const epoch=new Date(0).toISOString();dirs.push({path:'.ponderosa-portable-review',mode:0o700,mtime:epoch},{path:CURRENT_GIT_EVIDENCE,mode:0o700,mtime:epoch});
   for(const ns of manifest.namespaces){
     if(!ns||!CURRENT_GIT_NAMES.includes(ns.name)||names.has(ns.name)||!Array.isArray(ns.files)||!Array.isArray(ns.directories)||!Array.isArray(ns.links)||!Number.isInteger(ns.rootMode)||typeof ns.rootMtime!=='string'||!Number.isFinite(Date.parse(ns.rootMtime)))throw new Error('Current retained Git evidence namespace is invalid');
-    names.add(ns.name);const base=CURRENT_GIT_EVIDENCE+'/'+ns.name;dirs.push({path:base,mode:0o700,mtime:epoch});
+    names.add(ns.name);if(ns.name==='current-git-evidence')hasNestedEvidence=true;const base=CURRENT_GIT_EVIDENCE+'/'+ns.name;dirs.push({path:base,mode:0o700,mtime:epoch});
     validateWorkingTopology(ns.files,ns.directories,ns.links,'passive_in_root');
     for(const directory of ns.directories){if(!Number.isInteger(directory.mode)||directory.mode<0||directory.mode>0o7777||typeof directory.mtime!=='string'||!Number.isFinite(Date.parse(directory.mtime)))throw new Error('Current retained Git directory evidence is invalid');dirs.push({path:base+'/'+portableWorkingPath(directory.path),mode:0o700,mtime:epoch});}
     for(const item of ns.files){
       if(!item||typeof item.sha256!=='string'||!/^[a-f0-9]{64}$/.test(item.sha256)||!Number.isInteger(item.mode)||item.mode<0||item.mode>0o7777||typeof item.mtime!=='string'||!Number.isFinite(Date.parse(item.mtime)))throw new Error('Current retained Git file evidence is invalid');
       const full=base+'/'+portableWorkingPath(item.path),file=evidence.find(candidate=>candidate.path===full);
       if(expected.has(full)||!file||file.mode!==0o600||file.sha256!==item.sha256||createHash('sha256').update(file.data).digest('hex')!==item.sha256)throw new Error('Current retained Git evidence bytes differ');
-      inspectCurrentGitFile(item.path,file.data);expected.add(full);
+      const opaque=opaqueGitBytes(file.data);
+      if(ns.name==='native-git-common'){nativeFiles.push({path:item.path,data:file.data});if(opaque||item.path==='worktrees/imported/config.worktree')hasNativeBinary=true;}
+      if(ns.name==='current-git-evidence')nestedFiles.push({path:CURRENT_GIT_EVIDENCE+'/'+item.path,data:file.data,sha256:file.sha256,mode:file.mode});
+      if(opaque&&ns.name!=='native-git-common'&&ns.name!=='current-git-evidence')throw new Error('Unsupported opaque retained Git evidence');
+      if(!opaque&&!(ns.name==='native-git-common'&&item.path==='worktrees/imported/config.worktree')&&!(ns.name==='current-git-evidence'&&nestedNativeConfig(item.path)))inspectCurrentGitFile(item.path,file.data);expected.add(full);
     }
   }
   if(evidence.length!==expected.size||evidence.some(file=>!expected.has(file.path)))throw new Error('Current retained Git evidence inventory differs');
+  if(Boolean(manifest.nativeGit)!==hasNativeBinary)throw new Error('Retained native Git binary proof differs');
+  if(manifest.nativeGit)validateRetainedNativeGitBinary(manifest.nativeGit,nativeFiles);
+  if(hasNestedEvidence)validateRetainedGitCurrent(nestedFiles,original,budget);
   return dirs;
 }
 

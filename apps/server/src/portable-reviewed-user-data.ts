@@ -729,7 +729,7 @@ function excludedGitKey(key:string):boolean {
 }
 
 /** Pinned config.c lexical grammar; spans reference the original UTF-8 source, never include targets. */
-function configSource(data:Buffer,source?:'config.worktree',omitKeys?:ReadonlySet<string>):{items:ReviewedGitUserData['configurationReview'];safe:Buffer;removedFields:boolean} {
+function configSource(data:Buffer,source?:'config.worktree',omitKeys?:ReadonlySet<string>,retainedWorktree?:string):{items:ReviewedGitUserData['configurationReview'];safe:Buffer;removedFields:boolean} {
   const original=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(data);
   if(original.includes('\0')||!Buffer.from(original).equals(data))throw new Error('Git configuration requires exact UTF-8 source');
   let input='';const positions:number[]=[];
@@ -787,7 +787,8 @@ function configSource(data:Buffer,source?:'config.worktree',omitKeys?:ReadonlySe
     }
     if(items.length>=10000)fail();
     const item={key:section+'.'+variable,value,...(implicitBoolean?{implicitBoolean:true as const}:{}),...(source?{source}:{})};items.push(item);
-    let excluded=sectionExcluded||excludedGitKey(item.key)||Boolean(omitKeys?.has(item.key.toLowerCase()));
+    const allowedRetainedWorktree=item.key.toLowerCase()==='core.worktree'&&retainedWorktree!==undefined&&item.value===retainedWorktree;
+    let excluded=sectionExcluded||excludedGitKey(item.key)&&!allowedRetainedWorktree||Boolean(omitKeys?.has(item.key.toLowerCase()));
     try{safeText(`${item.key}=${value}`,'Git configuration');if(/:\/\/[^/]*@/.test(value))excluded=true;}catch{excluded=true;}
     if(excluded)strip(start,offset);
   }
@@ -1799,6 +1800,74 @@ async function captureIndexStorage(gitDir:string,format:'sha1'|'sha256',fsSource
   const additions=decoded.entries.slice(replacement);ordered(additions);logical.push(...additions);logical.sort(indexOrder);ordered(logical);
   if(logical.length>10000)throw new Error('Logical split index exceeds its bound');
   return {originals:Buffer.from(JSON.stringify(originals)),logical,resolveUndo,indexOptionalReview};
+}
+
+/** Validate opaque retained native files against a complete reviewed Git graph.
+ * Unknown binary families remain held. This grants no native activation.
+ */
+export function validateRetainedNativeGitBinary(git:ReviewedGitUserData,files:ReadonlyArray<{path:string;data:Buffer}>):void {
+  validateReviewedGit(git);
+  const paths=new Map(files.map(file=>[file.path,file.data]));
+  if(paths.size!==files.length)throw new Error('Duplicate retained native Git file');
+  // Inspect the decoded objects too: compressed raw bytes cannot reveal a
+  // recognizable credential, and embedded NULs must not defeat screening.
+  for(const object of git.objects)assertSafeCurrentGitEvidence(Buffer.from(object.dataBase64,'base64'));
+  const verified=new Set<string>(),objects=new Map(git.objects.map(object=>[object.oid,object]));
+  const common=git.configurationSourceDirectories?.common,privatePath=git.configurationSourceDirectories?.private,suffix='/.ponderosa-portable-review/native-git-common';
+  if(!common||!common.endsWith(suffix)||privatePath!==common+'/worktrees/imported')throw new Error('Retained Git proof lacks exact native association');
+  const sourceRoot=common.slice(0,-suffix.length),config=paths.get('worktrees/imported/config.worktree');
+  if(!sourceRoot.startsWith('/')||!config)throw new Error('Retained Git proof lacks native configuration');
+  const parsed=configSource(config,undefined,undefined,sourceRoot),worktrees=parsed.items.filter(item=>item.key.toLowerCase()==='core.worktree');
+  if(!parsed.safe.equals(config)||worktrees.length!==1||worktrees[0]!.implicitBoolean||worktrees[0]!.value!==sourceRoot)throw new Error('Retained Git worktree configuration differs');
+  const reftable=git.reftableReview;
+  if(reftable){
+    for(const [prefix,stack] of [['reftable',reftable],['worktrees/imported/reftable',reftable.selectedWorktree]] as const){
+      if(!stack)continue;
+      const list=paths.get(prefix+'/tables.list');
+      if(!list||list.toString('base64')!==stack.tablesListBase64)throw new Error('Retained Git reftable list differs');
+      for(const table of stack.tables){
+        const file=prefix+'/'+table.name,data=paths.get(file);
+        if(!data||data.toString('base64')!==table.dataBase64)throw new Error('Retained Git reftable differs');
+        verified.add(file);
+      }
+    }
+  }
+  const index=paths.get('worktrees/imported/index');
+  if(index){
+    assertSafeCurrentGitEvidence(index);const decoded=decodeIndex(index,git.format);
+    if(decoded.link||decoded.sparse||JSON.stringify(decoded.entries)!==JSON.stringify(git.index)||JSON.stringify(decoded.resolveUndo??[])!==JSON.stringify(git.resolveUndo)||JSON.stringify(decoded.optional.map(item=>({source:'index',...item})))!==JSON.stringify(git.indexOptionalReview))throw new Error('Retained Git index differs from its reviewed graph');
+    verified.add('worktrees/imported/index');
+  }
+  for(const [name,data] of paths){
+    const match=/^objects\/([a-f0-9]{2})\/([a-f0-9]{38}(?:[a-f0-9]{24})?)$/.exec(name);
+    if(!match)continue;
+    const oid=match[1]!+match[2]!,object=objects.get(oid);
+    if(!object||oid.length!==(git.format==='sha1'?40:64))throw new Error('Retained Git object is outside the reviewed graph');
+    verifyCapturedLooseObject(name,data,limit);verified.add(name);
+  }
+  const packNames=[...paths.keys()].filter(name=>/^objects\/pack\/pack-[a-f0-9]+\.pack$/.test(name)).sort();
+  const packs:ReviewedGitUserData['packRetentionReview']=[];
+  for(const name of packNames){
+    const pack=paths.get(name)!,idxName=name.slice(0,-5)+'.idx',idx=paths.get(idxName),width=git.format==='sha1'?20:32;
+    if(!idx||pack.length<12+width)throw new Error('Retained Git pack lacks its exact index');
+    const entries=decodeRetentionPackIndex(idx,git.format,pack.subarray(-width)),oid=name.slice('objects/pack/pack-'.length,-5);
+    const reverseName=name.slice(0,-5)+'.rev',reverse=paths.get(reverseName);
+    if(reverse){
+      // Git pack-*.rev v1: index positions in pack-offset order, then the
+      // pack checksum and a checksum of all preceding reverse-index bytes.
+      if(reverse.length!==12+entries.length*4+2*width||reverse.toString('ascii',0,4)!=='RIDX'||reverse.readUInt32BE(4)!==1||reverse.readUInt32BE(8)!==(git.format==='sha1'?1:2)||!reverse.subarray(-2*width,-width).equals(pack.subarray(-width))||!createHash(git.format).update(reverse.subarray(0,-width)).digest().equals(reverse.subarray(-width)))throw new Error('Retained Git reverse index differs');
+      const order=entries.map((entry,index)=>({offset:entry.offset,index})).sort((a,b)=>a.offset-b.offset);
+      if(order.some((entry,index)=>reverse.readUInt32BE(12+index*4)!==entry.index))throw new Error('Retained Git reverse index order differs');
+      verified.add(reverseName);
+    }
+    packs.push({packOid:oid,packDataBase64:pack.toString('base64'),indexDataBase64:idx.toString('base64'),keepDataBase64:'',mtimesDataBase64:null,objects:entries.map(entry=>({oid:entry.oid,mtime:null}))});
+    verified.add(name);verified.add(idxName);
+  }
+  validatePackRetention(packs,git.format,objects,limit);
+  for(const [name,data] of paths){
+    let opaque=data.includes(0);try{new TextDecoder('utf-8',{fatal:true}).decode(data);}catch{opaque=true;}
+    if(opaque&&!verified.has(name))throw new Error('Unsupported opaque retained native Git file');
+  }
 }
 
 /** Source-only custody for one explicitly selected export. Never serialized as authority. */

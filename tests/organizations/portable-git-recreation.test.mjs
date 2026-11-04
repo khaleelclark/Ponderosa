@@ -728,7 +728,7 @@ test('retained Git current evidence preserves edits and originals across two ine
   }
   await unlink(path.join(review,'external-git','credential.review'));
   const opaque=path.join(review,'native-git-common','table');await writeFile(opaque,Buffer.from([0,1,2,3,255]));
-  await assert.rejects(capture(root),/opaque binary data/);assert.deepEqual(await readFile(opaque),Buffer.from([0,1,2,3,255]));
+  await assert.rejects(capture(root),/opaque binary data|binary data cannot be validated/);assert.deepEqual(await readFile(opaque),Buffer.from([0,1,2,3,255]));
   const nativeFs=(await import('@ponderosa/native-host/fs')).promises,originalRealpath=nativeFs.realpath;
   const inspectInventory=await inventoryWorkingFolder(root,selection),namespace=path.join(review,'external-git');
   nativeFs.realpath=async (...args)=>{if(args[0]===namespace)throw new Error('EACCES synthetic-private-source-path');return originalRealpath(...args);};

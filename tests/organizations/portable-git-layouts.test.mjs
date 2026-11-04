@@ -13,9 +13,9 @@ import {
 
 const native=(cwd,...args)=>execFileSync('git',['-c','core.hooksPath=/dev/null','-c','core.fsmonitor=false','-c','protocol.file.allow=always','-C',cwd,...args],
   {encoding:'utf8',env:{PATH:process.env.PATH,HOME:process.env.HOME,LANG:'C',LC_ALL:'C',GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null',GIT_CONFIG_SYSTEM:'/dev/null',GIT_TERMINAL_PROMPT:'0'}}).trim();
-async function repository(root,refFormat='files'){
+async function repository(root,refFormat='files',objectFormat='sha1'){
   await mkdir(root);
-  native(root,'init','--initial-branch=main','--ref-format='+refFormat);
+  native(root,'init','--initial-branch=main','--ref-format='+refFormat,'--object-format='+objectFormat);
   native(root,'config','user.name','Fixture User');native(root,'config','user.email','fixture@example.invalid');
   await writeFile(path.join(root,'file.txt'),'original\n');
   native(root,'add','file.txt');native(root,'commit','-m','original');
@@ -445,13 +445,13 @@ test('Git export bounds aggregate loose-object inflation and refuses hardlinked 
   assert.deepEqual(await readFile(alias),original);assert.equal((await lstat(alias)).nlink,2);
 });
 
-test('new linked reftable recovery emits canonical structural config for recapture',async t=>{
+for(const objectFormat of ['sha1','sha256'])test('new linked reftable recovery emits canonical structural config for recapture ('+objectFormat+')',async t=>{
   const {createHash}=await import('node:crypto');
   const {importWorkingFiles,inventoryWorkingFolder,exportWorkingFiles}=await import('../../apps/server/dist/portable-working-files.js');
   const {planReviewedRecoveryRoots,applyReviewedRecoveryRoots}=await import('../../apps/server/dist/portable-git-recreation.js');
   const {parseReviewedGitConfiguration}=await import('../../apps/server/dist/portable-reviewed-user-data.js');
   const root=await fixture(t),main=path.join(root,'main'),selected=path.join(root,'selected'),destination=path.join(root,'destination');
-  await repository(main,'reftable');native(main,'worktree','add','-b','selected',selected);
+  await repository(main,'reftable',objectFormat);native(main,'worktree','add','-b','selected',selected);
   native(main,'config','extensions.worktreeConfig','true');native(main,'config','credential.helper','SYNTHETIC_CREDENTIAL_EXCLUDED');native(selected,'config','--worktree','portable.probe','private-kept');native(selected,'config','--worktree','core.bare','false');
   await writeFile(path.join(selected,'file.txt'),'selected worktree\n');native(selected,'add','file.txt');native(selected,'commit','-m','selected worktree');
   const selectedOid=native(selected,'rev-parse','HEAD'),sourceConfig=await readFile(path.join(main,'.git','config')),sourcePrivatePath=path.join(native(selected,'rev-parse','--absolute-git-dir'),'config.worktree'),sourcePrivate=await readFile(sourcePrivatePath),originalValue=await exportReviewedUserData(selected,{git:true,harness:false});
@@ -507,6 +507,75 @@ test('new linked reftable recovery emits canonical structural config for recaptu
     assert.deepEqual(exact.git.refs,recaptured.git.refs);assert.ok(exact.git.reftableReview?.selectedWorktree);
     await held.verify();
   }finally{await held.close();await handle.close();}
-  await assert.rejects(reexport(),/opaque binary data/,'native binary evidence stays held until independently validated');
-  assert.deepEqual(await readFile(path.join(destination,originalPath)),wire,'held binary export preserves source original');
+  const exported=await reexport(),artifactByRef=new Map(exported.artifacts.map(item=>[item.ref,item]));
+  const {decodePortableArtifactData}=await import('../../apps/server/dist/agent-package-codec.js');
+  const entries=await Promise.all(exported.files.map(async file=>{const decoded=await decodePortableArtifactData(artifactByRef.get(file.artifactRef));return {...file,data:decoded.data,sha256:decoded.sha256};}));
+  const proofFile=entries.find(file=>file.path==='.ponderosa-portable-review/current-git-evidence/manifest.json'),proof=JSON.parse(proofFile.data);
+  assert.ok(proof.nativeGit?.reftableReview?.selectedWorktree);
+  const nativeNamespace=proof.namespaces.find(item=>item.name==='native-git-common'),table=nativeNamespace.files.find(file=>file.path.startsWith('reftable/')&&file.path.endsWith('.ref'));
+  assert.ok(table,'real shared reftable captured');
+  const evidencePath='.ponderosa-portable-review/current-git-evidence/native-git-common/'+table.path;
+  const binary=entries.find(file=>file.path===evidencePath),sourceBytes=await readFile(path.join(common,table.path));
+  assert.deepEqual(binary.data,sourceBytes);
+  const imported=path.join(root,'binary-evidence-import');await importWorkingFiles(imported,entries);
+  assert.deepEqual(await readFile(path.join(imported,evidencePath)),sourceBytes,'binary is restored inertly as exact evidence');
+  const inventoryAgain=await inventoryWorkingFolder(imported,choice),second=await exportWorkingFiles(imported,inventoryAgain.paths,64*1024*1024,inventoryAgain.links,choice,{data:wire},undefined,undefined,inventoryAgain);
+  const againByRef=new Map(second.artifacts.map(item=>[item.ref,item])),againEntries=await Promise.all(second.files.map(async file=>{const decoded=await decodePortableArtifactData(againByRef.get(file.artifactRef));return {...file,data:decoded.data,sha256:decoded.sha256};}));
+  const secondDestination=path.join(root,'binary-evidence-second');await importWorkingFiles(secondDestination,againEntries);
+  const nested='.ponderosa-portable-review/current-git-evidence/current-git-evidence/native-git-common/'+table.path;
+  assert.deepEqual(await readFile(path.join(secondDestination,nested)),sourceBytes,'validated binary survives a second inert generation');
+  const nestedForged=againEntries.map(file=>({...file,data:Buffer.from(file.data)})),nestedTable=nestedForged.find(file=>file.path===nested),outerManifest=nestedForged.find(file=>file.path===proofFile.path);
+  nestedTable.data[20]^=1;nestedTable.sha256=createHash('sha256').update(nestedTable.data).digest('hex');
+  const outer=JSON.parse(outerManifest.data),outerRow=outer.namespaces.find(item=>item.name==='current-git-evidence').files.find(item=>item.path==='native-git-common/'+table.path);
+  outerRow.sha256=nestedTable.sha256;outerManifest.data=Buffer.from(JSON.stringify(outer));outerManifest.sha256=createHash('sha256').update(outerManifest.data).digest('hex');
+  await assert.rejects(importWorkingFiles(path.join(root,'forged-nested-binary'),nestedForged),/Git|evidence/i,'outer rehash cannot bypass prior generation proof');
+  const forged=entries.map(file=>({...file,data:Buffer.from(file.data)})),forgedTable=forged.find(file=>file.path===evidencePath),forgedManifest=forged.find(file=>file.path===proofFile.path);
+  forgedTable.data[20]^=1;forgedTable.sha256=createHash('sha256').update(forgedTable.data).digest('hex');
+  const altered=JSON.parse(forgedManifest.data),row=altered.namespaces.find(item=>item.name==='native-git-common').files.find(item=>item.path===table.path);
+  row.sha256=forgedTable.sha256;forgedManifest.data=Buffer.from(JSON.stringify(altered));forgedManifest.sha256=createHash('sha256').update(forgedManifest.data).digest('hex');
+  await assert.rejects(importWorkingFiles(path.join(root,'forged-binary'),forged),/reftable|Git/i,'rehashed binary cannot bypass graph proof');
+  await assert.rejects(lstat(path.join(root,'forged-binary')),{code:'ENOENT'},'invalid binary causes no destination creation');
+  const wrongOriginal=entries.map(file=>({...file,data:Buffer.from(file.data)})),wrongProof=wrongOriginal.find(file=>file.path===proofFile.path),wrong=JSON.parse(wrongProof.data);
+  wrong.originalSha256='0'.repeat(64);wrongProof.data=Buffer.from(JSON.stringify(wrong));wrongProof.sha256=createHash('sha256').update(wrongProof.data).digest('hex');
+  await assert.rejects(importWorkingFiles(path.join(root,'wrong-original-binary'),wrongOriginal),/association/i);
+  native(destination,'repack','-a','-d');
+  const packed=await reexport(),packedByRef=new Map(packed.artifacts.map(item=>[item.ref,item]));
+  const packedEntries=await Promise.all(packed.files.map(async file=>{const decoded=await decodePortableArtifactData(packedByRef.get(file.artifactRef));return {...file,data:decoded.data,sha256:decoded.sha256};}));
+  const pack=packedEntries.find(file=>/native-git-common\/objects\/pack\/pack-[a-f0-9]+\.pack$/.test(file.path));assert.ok(pack,'actual packed objects are carried');
+  const packedDestination=path.join(root,'packed-evidence-import');await importWorkingFiles(packedDestination,packedEntries);
+  assert.deepEqual(await readFile(path.join(packedDestination,pack.path)),pack.data,'exact validated pack bytes survive inert import');
+  const forgedPack=packedEntries.map(file=>({...file,data:Buffer.from(file.data)})),badPack=forgedPack.find(file=>file.path===pack.path),packManifest=forgedPack.find(file=>file.path===proofFile.path);
+  badPack.data[20]^=1;badPack.sha256=createHash('sha256').update(badPack.data).digest('hex');
+  const packProof=JSON.parse(packManifest.data),packRelative=pack.path.split('/native-git-common/')[1],packRow=packProof.namespaces.find(item=>item.name==='native-git-common').files.find(item=>item.path===packRelative);
+  packRow.sha256=badPack.sha256;packManifest.data=Buffer.from(JSON.stringify(packProof));packManifest.sha256=createHash('sha256').update(packManifest.data).digest('hex');
+  await assert.rejects(importWorkingFiles(path.join(root,'forged-pack'),forgedPack),/pack|Git/i,'rehashed pack cannot bypass decoded-object proof');
+  const indexPath=pack.path.slice(0,-5)+'.idx',missingIndex=packedEntries.filter(file=>file.path!==indexPath).map(file=>({...file,data:Buffer.from(file.data)})),missingManifest=missingIndex.find(file=>file.path===proofFile.path);
+  const missingProof=JSON.parse(missingManifest.data),missingRelative=indexPath.split('/native-git-common/')[1],missingNamespace=missingProof.namespaces.find(item=>item.name==='native-git-common');
+  missingNamespace.files=missingNamespace.files.filter(item=>item.path!==missingRelative);missingManifest.data=Buffer.from(JSON.stringify(missingProof));missingManifest.sha256=createHash('sha256').update(missingManifest.data).digest('hex');
+  await assert.rejects(importWorkingFiles(path.join(root,'missing-pack-index'),missingIndex),/pack|Git/i);
+  await assert.rejects(lstat(path.join(root,'missing-pack-index')),{code:'ENOENT'});
+  const rev=packedEntries.find(file=>file.path===pack.path.slice(0,-5)+'.rev');assert.ok(rev,'real Git generated a reverse index');
+  assert.deepEqual(await readFile(path.join(packedDestination,rev.path)),rev.data,'exact validated reverse index survives inert import');
+  const forgedRev=packedEntries.map(file=>({...file,data:Buffer.from(file.data)})),badRev=forgedRev.find(file=>file.path===rev.path),revManifest=forgedRev.find(file=>file.path===proofFile.path);
+  badRev.data.writeUInt32BE(0xffffffff,12);const hashWidth=proof.nativeGit.format==='sha1'?20:32;
+  createHash(proof.nativeGit.format).update(badRev.data.subarray(0,-hashWidth)).digest().copy(badRev.data,badRev.data.length-hashWidth);
+  badRev.sha256=createHash('sha256').update(badRev.data).digest('hex');
+  const revProof=JSON.parse(revManifest.data),revRelative=rev.path.split('/native-git-common/')[1],revRow=revProof.namespaces.find(item=>item.name==='native-git-common').files.find(item=>item.path===revRelative);
+  revRow.sha256=badRev.sha256;revManifest.data=Buffer.from(JSON.stringify(revProof));revManifest.sha256=createHash('sha256').update(revManifest.data).digest('hex');
+  await assert.rejects(importWorkingFiles(path.join(root,'forged-reverse-index'),forgedRev),/reverse index|Git/i,'rehashed reverse-index corruption remains held');
+  const swapped=packedEntries.map(file=>({...file,data:Buffer.from(file.data)})),swappedRev=swapped.find(file=>file.path===rev.path),swappedManifest=swapped.find(file=>file.path===proofFile.path);
+  const firstPosition=swappedRev.data.readUInt32BE(12),secondPosition=swappedRev.data.readUInt32BE(16);assert.notEqual(firstPosition,secondPosition);
+  swappedRev.data.writeUInt32BE(secondPosition,12);swappedRev.data.writeUInt32BE(firstPosition,16);
+  createHash(proof.nativeGit.format).update(swappedRev.data.subarray(0,-hashWidth)).digest().copy(swappedRev.data,swappedRev.data.length-hashWidth);
+  swappedRev.sha256=createHash('sha256').update(swappedRev.data).digest('hex');
+  const swappedProof=JSON.parse(swappedManifest.data);swappedProof.namespaces.find(item=>item.name==='native-git-common').files.find(item=>item.path===revRelative).sha256=swappedRev.sha256;
+  swappedManifest.data=Buffer.from(JSON.stringify(swappedProof));swappedManifest.sha256=createHash('sha256').update(swappedManifest.data).digest('hex');
+  await assert.rejects(importWorkingFiles(path.join(root,'swapped-reverse-index'),swapped),/reverse index|Git/i,'rehashed in-range permutation is rejected');
+  const unknown=path.join(common,'unclassified.bin'),opaque=Buffer.from([0,255,1]);await writeFile(unknown,opaque);
+  await assert.rejects(reexport(),/binary data cannot be validated/);assert.deepEqual(await readFile(unknown),opaque,'unclassified binary remains at source');await rm(unknown);
+  assert.deepEqual(await readFile(path.join(destination,originalPath)),wire,'source original remains unchanged');
+  const secret=Buffer.from('A\0P\0I\0_\0K\0E\0Y\0=\0S\0Y\0N\0T\0H\0E\0T\0I\0C');
+  await writeFile(path.join(destination,'file.txt'),secret);native(destination,'add','file.txt');native(destination,'commit','-m','synthetic credential test');
+  await assert.rejects(reexport(),/binary data cannot be validated/,'decoded NUL-interleaved credential must hold export');
+  assert.deepEqual(await readFile(path.join(destination,'file.txt')),secret,'rejected source content remains intact');
 });
