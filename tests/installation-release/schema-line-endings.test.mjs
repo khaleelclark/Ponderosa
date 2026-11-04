@@ -107,7 +107,7 @@ test('current-state admission accepts a CRLF-created real database without rewri
   };
   try {
     const before = read();
-    assert.equal(before.length, 600, 'the complete current schema, including generation and all receipt extensions, fits the fixed 605-object ceiling');
+    assert.equal(before.length, 603, 'the complete current schema, including generation and all receipt extensions, fits the fixed 605-object ceiling');
     assert.ok(before.some(row => row.sql?.includes('\r\n')), 'fixture stores real CRLF declarations');
     assert.ok(before.every(row => !row.sql?.includes('\r\r\n')), 'fixture does not double existing CRLF');
     admission = admitDataDirectory(fixture.data);
@@ -140,7 +140,7 @@ test('clean AgentStore bootstrap admits the complete canonical schema and reopen
   try {
     store = new AgentStore(root);
     const original = stateSchemaSignature(store.sqlite);
-    assert.equal(JSON.parse(original).objects.length, 600);
+    assert.equal(JSON.parse(original).objects.length, 603);
     store.close(); store = undefined;
     store = new AgentStore(root);
     assert.equal(stateSchemaSignature(store.sqlite), original);

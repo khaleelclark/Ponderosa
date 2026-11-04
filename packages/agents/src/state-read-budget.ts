@@ -2,7 +2,7 @@ import type Database from "better-sqlite3";
 
 // Shared ordinary/offline read accounting. No converter, native host, new
 // database, profile cache, or caller admission witness belongs in this module.
-// Canonical initialization has 599 objects (600 with generation), including
+// Canonical initialization has 602 objects (603 with generation), including
 // restoration, destination, lifecycle and native portability receipts.
 // A fixed 605-object envelope admits this schema and retains a hard excess guard.
 // Ordinary row, byte, column and work limits are unchanged.
