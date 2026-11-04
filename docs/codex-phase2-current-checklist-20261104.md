@@ -23,18 +23,18 @@ not True. The older reconciliation and exact historical results remain in
 | 5 | Integration | Existing limits and optional integrations have identified purposes; complete dependency and rule census remains open. No mandatory Tailscale dependency was found in the scoped review. |
 | 6 | Runtime + memory | Human capability policy and reviewed imports exist. Full grant-change trace remains open; uncertain memory scopes and cleanup are held rather than silently recreated. |
 | 7 | Integration | No operator-token requirement was found in inspected core admission; browser Origin checks and Agent capability scope remain. Complete authentication census remains open. |
-| 8 | Portability | **Missing/held:** reviewed export/import and substantial native/Git restoration exist, but some cross-root links, ownership layouts, native platforms and portable final-resource continuation remain held or unqualified. A complete fresh-install identical round trip remains open. |
+| 8 | Portability | **Missing/held:** reviewed export/import and substantial native/Git restoration exist. Interrupted imports with retained working files are held to their exact plan; cancellation preserves files, but verified adoption of those files remains open. Some cross-root links, ownership layouts, native platforms and portable final-resource continuation remain held or unqualified. A complete fresh-install identical round trip remains open. |
 | 9 | Integration | Shared canonical mechanisms exist; exhaustive dead-code, duplication and near-duplicate review remains open. |
 | 10 | Runtime | Public Branches client exists. A separate sample process passed Script workflow start, idempotent replay, status and result against an earlier synthetic server; current-server and broader outside-app qualification remain open. |
 | 11 | Coordination | Concise agent communication and artifact references are instructed. Real-log blind judging, overhead comparison and reliable avoidance of provider-generated loops remain open. |
 | 12 | Continuation | Durable recovery and visible holds exist; crash/restart and all truncation paths need full qualification. Unknown effects are not silently replayed. |
 | 13 | Coordination | Tracked Requests and actionable peer messages steer; marked progress/FYI remains visible and noninterrupting. A practical host prompt fence rejects controlled stale calls, not proof of provider comprehension. Reviewed continuation covers qualified persistent Codex and Claude paths with exact evidence; unsupported/multiple/unknown cases remain held. Live-provider, full Stop/pause/redirect and no-loop verification remain open. |
 | 14 | Runtime | Visible failure/hold reporting exists. **Missing/held:** general stuck-work detection and complete exact-cause visibility are not established; provider-outage/rate-limit/stuck-work qualification remains open. |
-| 15 | Portability + memory | User-folder custody protections and pending-cleanup reporting exist. Internal populated Chroma cleanup and staged rollback source changes are integrated through `e0a9414e9`; behavioral validation remains open, including the 12 historical server cases. Unknown effects remain held. |
+| 15 | Portability + memory | User-folder custody protections and pending-cleanup reporting exist. Internal populated Chroma cleanup and staged rollback source changes are integrated. The pending Core Project cleanup retry fix is integrated at `fc49cf4f6`; a receipt ownership mismatch now has a specific safe visible hold at `988c00fe0`. The affected `fc49` batch and later focused checks are recorded below; whole-suite qualification remains open. Unknown effects remain held. |
 | 16 | Runtime | Trigger occurrence identity, catch-up and logging exist; all timing, clock-change and reason-trail acceptance remains open. |
 | 17 | Integration | A controlled populated upgrade and focused regressions passed; the final whole suite, crash qualification and 20 consecutive controlled core-path runs remain open. |
 | 18 | Interface | Notification settings and grouped browser displays exist; controlled bursts were checked. Actual push/OS behavior, all settings and mention semantics remain unqualified. |
-| 19 | Integration | Activity and audit records exist. **Missing/held:** unexpected Branch deletion errors can be withheld rather than giving the complete real cause because a general exact-secret-value redactor is unavailable. Ten UI trails and plain-language judging remain open. |
+| 19 | Integration | Activity and audit records exist. **Missing/held:** Branch deletion now reports a fixed cleanup-stage attribution at `2519d25a0`; arbitrary unexpected error text is still withheld because a general exact-secret-value redactor is unavailable. Complete real-cause visibility is not established. Ten UI trails and plain-language judging remain open. |
 | 20 | Integration | Origin checks and normal browser safeguards remain. Patrick clarified that the network-security rule concerns attacks by someone on the same network, not ordinary browser, internet-facing or malicious-web-content protections; the generic-header-removal draft must not be integrated. No operator-token gate was found in inspected core admission. Complete network-specific and authentication census remains open. |
 | 21 | Interface | Streaming and bounded rendering exist; the Bible's 10,000-message/20-active-Agent, desktop/mobile Event Timing measurements remain open. |
 | 22 | Integration | Installer, bootstrap and docs exist; the fresh docs-only install-to-first-reply timing remains open. |
@@ -45,7 +45,7 @@ not True. The older reconciliation and exact historical results remain in
 | 27 | Interface | Theme and text-size controls exist; keyboard, screen reader, contrast, zoom and automated accessibility qualification remain open. |
 | 28 | Integration | Branches uses shared Core paths, but every Bible requirement must separately be qualified for Branches; aggregate parity remains open. |
 | 29 | Interface | Folders and shared Output/chat UI exist. Full copy census, screenshots, recordings and blind comparison remain open; consequential safety disclosures remain visible. |
-| 30 | Memory | Authorized combined Chat/global search exists. Internal populated cleanup and staged rollback source changes are integrated through `e0a9414e9` but remain behaviorally unqualified; unknown effects and uncertain scopes remain held. Real-provider seeded recall and misuse review remain open. |
+| 30 | Memory | Authorized combined Chat/global search exists. Internal populated cleanup and staged rollback source changes, Project retry and a specific receipt-mismatch hold are integrated; the affected batch and focused checks below are partial evidence, while whole-suite qualification remains open. Unknown effects and uncertain scopes remain held. Real-provider seeded recall and misuse review remain open. |
 | 31 | Interface + Runtime | Shared streaming/voice primitives exist. A voice draft is isolated and is not integrated. Full surface coverage, clean-render recordings and required call latency remain open. |
 | 32 | Runtime | The pinned finite framework-capability inventory and final-resource capture source exist. A controlled real package-engine fixture has verified later Chat history and supported working-file bytes, subject to the scope below. **Missing/held:** portable executable final-resource continuation lacks independently verifiable original completeness/effect evidence. Matched example execution and framework qualification remain open. |
 
@@ -61,6 +61,28 @@ complete working-folder copy. Multi-Agent capture and Local Memory remain
 unqualified. Working-folder capture is integrated at `1d90cca3e`; targeted
 follow-up on that candidate is underway. Portable executable continuation remains
 held pending independently verifiable completeness and effect evidence.
+
+## Current validation evidence
+
+- On exact `fc49cf4f6`, the affected server batch finished 177/178, with no
+  skips. The sole failure was the retired Chat collection proof expecting the
+  specific receipt-mismatch diagnostic while the code returned a generic
+  provisioning hold; it was not evidence that cleanup deleted data. The later
+  integrated `988c00fe0` emits a fixed specific safe hold, and its focused
+  receipt/hold checks passed 11/11. This does not retroactively turn the
+  `fc49` batch green. Logs: `evidence/followup-fc49-affected.log` and
+  `evidence/receipt-hold-visible-final.log` under the Phase 2 evidence root.
+- The exact `988c00fe0` candidate passed build and repository typecheck; web
+  tests passed 819 with one opt-in skip, which passed 1/1 when enabled; tooling
+  passed 77 with 23 skips; mounted desktop and emulated-phone checks passed
+  100/100. Evidence is in `/tmp/terra-988c-*.log` and
+  `/tmp/terra-988c-mounted-evidence/results.json`. These checks precede the
+  Branch diagnostic change at `2519d25a0` and do not qualify that later tree.
+- The full server run on `988c00fe0` is in progress at
+  `/tmp/ponderosa-codex-phase2-20261103/evidence/final-988c-server.log`.
+  Do not treat partial output as a final result. The later Branch cleanup-stage
+  change passed its focused seven-test file; whole-product validation of the
+  final integrated source remains open.
 
 ## Build list
 
@@ -112,15 +134,21 @@ build does not substitute for the comparison.
    security and recovery disclosures required by the user and report any
    conflict rather than silently changing the criterion.
 
-No qualifying blind panel, full pinned competitor comparison, recordings or
-majority verdict has been completed. The mounted desktop/phone checks are
+Current-build desktop and emulated-phone recordings cover selected Branches
+execution, editor and held-receipt states with disposable fixtures. The hold
+receipt was synthetic. Two earlier provisional blind clips were of the same
+product, not matched competitor tasks; judge/builder model separation was not
+verified. No qualifying blind panel, full pinned competitor comparison or
+majority verdict has been completed. Mounted desktop/phone checks are
 functional evidence only, not the panel result. No panel UI is to be built.
 
 ## Blockers and next work
 
-- Internal physical Chroma cleanup and staged rollback source changes are
-  integrated through `e0a9414e9`; their behavior and the 12 historical server
-  cases still require consolidated validation. Unknown effects remain held;
+- Internal physical Chroma cleanup, staged rollback, pending Core Project retry
+  and the specific receipt-mismatch hold are integrated. The `fc49` affected
+  batch and later focused checks below are partial evidence; the whole server
+  run remains open, and the 12 historical cases must not be claimed as all
+  passing on that evidence alone. Unknown effects remain held;
   do not blindly replay them. Patrick clarified that Local Memory is internal
   Ponderosa memory and that Ponderosa should coordinate its own concurrent
   operations without a user assurance checkbox. Unknown direct external access
