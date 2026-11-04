@@ -129,7 +129,7 @@ test('deleting a published held Branch retires its exact roles and review withou
    await until(async()=>{
     const result=await f.api('DELETE',`/api/branches/${pending.branchId}`);
     assert.ok([200,202,404].includes(result.status),JSON.stringify(result.body));
-    return !store.sqlite.prepare('SELECT 1 FROM branch_installation_plans WHERE id=? AND state='canceling'').get(plan.id);
+    return !store.sqlite.prepare("SELECT 1 FROM branch_installation_plans WHERE id=? AND state='canceling'").get(plan.id);
    },'cancellation receipt recovery');
    assert.ok(store.getAgent(other));
    const roles=f.ok(await f.api('GET','/api/branches/engine/workspace/preferences')).outputApps;
