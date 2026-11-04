@@ -1,3 +1,4 @@
+import {branchInstallationHoldSql,branchInstallationTables} from './branch-installation-hold.js';
 import type Database from "better-sqlite3";
 import type {
   CoordinationRequestUpdateKind,
@@ -24,10 +25,15 @@ export class CoordinationV3ActivationLifecycleAuthority {
   ) {}
 
   settleUnauthorizedPendingActivations(now: string): number {
+    const branchTables=branchInstallationTables(this.sqlite);
+    const installationFence=branchTables==='ready'
+      ? `AND NOT ${branchInstallationHoldSql('agent_id',"CASE WHEN scope_key LIKE 'conversation:%' THEN substr(scope_key,14) END")}`
+      : branchTables==='partial'?'AND 0':'';
     const pending = this.sqlite.prepare(`
       SELECT id, project_id, agent_id, scope_key
       FROM agent_activations
       WHERE state IN ('pending', 'retry_pending')
+        ${installationFence}
       ORDER BY rowid
     `).all() as Array<{
       id: string;

@@ -1,3 +1,4 @@
+import {branchInstallationHoldSql,branchInstallationTables} from './branch-installation-hold.js';
 import {generationExitHoldSql} from './branch-generation-exit-fence.js';
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
@@ -165,10 +166,15 @@ export class CoordinationV3SchedulerLeaseAuthority {
     return this.sqlite.transaction(() => {
       this.recoverExpiredRunsInTransaction(now);
       this.activationLifecycle.settleUnauthorizedPendingActivations(now);
+      const branchTables=branchInstallationTables(this.sqlite);
+      const installationFence=branchTables==='ready'
+        ? `AND NOT ${branchInstallationHoldSql('a.agent_id',"CASE WHEN a.scope_key LIKE 'conversation:%' THEN substr(a.scope_key,14) END")}`
+        : branchTables==='partial'?'AND 0':'';
       const candidate = this.sqlite.prepare(`
         SELECT a.agent_id, a.project_id, a.scope_key
         FROM agent_activations a
         WHERE a.state IN ('pending', 'retry_pending')
+          ${installationFence}
           AND NOT ${generationExitHoldSql('a.agent_id',"CASE WHEN a.scope_key LIKE 'conversation:%' THEN substr(a.scope_key,14) END")}
           AND NOT EXISTS(SELECT 1 FROM coordination_destination_admissions d LEFT JOIN agents staged_agent ON staged_agent.id=a.agent_id WHERE d.state!='admitted' AND (d.conversation_id=staged_agent.conversation_id OR a.scope_key='conversation:'||d.conversation_id OR EXISTS(SELECT 1 FROM coordination_destination_members m WHERE m.admission_id=d.id AND m.agent_id=a.agent_id)))
           AND NOT EXISTS(SELECT 1 FROM coordination_destination_group_chats g JOIN coordination_destination_admissions d ON d.id=g.admission_id LEFT JOIN agents staged_agent ON staged_agent.id=a.agent_id WHERE d.state!='admitted' AND (g.conversation_id=staged_agent.conversation_id OR a.scope_key='conversation:'||g.conversation_id))

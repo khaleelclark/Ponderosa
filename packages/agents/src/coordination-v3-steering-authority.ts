@@ -1,3 +1,4 @@
+import {branchInstallationHoldSql,branchInstallationTables} from './branch-installation-hold.js';
 import { branchScheduleTarget, branchScheduleActivationEligible, type BranchScheduleUpdateTarget } from "./coordination-v3-branch-schedule.js";
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
@@ -140,6 +141,10 @@ export class CoordinationV3SteeringAuthority {
     const limit = Math.max(1, Math.min(input.coalesceLimit ?? 4, 16));
     return this.sqlite.transaction(() => {
       this.activationLifecycle.settleUnauthorizedPendingActivations(now);
+      const branchTables=branchInstallationTables(this.sqlite);
+      const installationFence=branchTables==='ready'
+        ? `AND NOT ${branchInstallationHoldSql('a.agent_id',"CASE WHEN a.scope_key LIKE 'conversation:%' THEN substr(a.scope_key,14) END")}`
+        : branchTables==='partial'?'AND 0':'';
       const candidates = this.sqlite.prepare(`
         SELECT a.id AS activation_id,EXISTS(SELECT 1 FROM activation_sources source WHERE source.activation_id=a.id AND source.source_kind='branch_schedule_update') AS scheduled,a.agent_id, a.project_id, a.scope_key, r.id AS run_id,
           r.fencing_token, r.provider_session_id
@@ -148,6 +153,7 @@ export class CoordinationV3SteeringAuthority {
           ON r.agent_id = a.agent_id AND r.scope_key = a.scope_key
           AND r.status = 'running'
         WHERE a.state IN ('pending', 'retry_pending')
+          ${installationFence}
           AND a.available_at <= ?
           AND a.dispatch_policy = 'steer_or_run'
           AND NOT EXISTS (SELECT 1 FROM activation_sources held WHERE held.activation_id=a.id AND held.source_kind IN ('task_decision_repair_wait','task_reply_repair_wait'))
