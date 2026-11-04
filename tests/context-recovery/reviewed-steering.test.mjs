@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { readFile, unlink } from 'node:fs/promises';
-import { AgentStore } from '../../packages/agents/dist/index.js';
+import { AgentStore, CoordinationV3Store } from '../../packages/agents/dist/index.js';
 import { ReviewedSteeringAuthority } from '../../packages/agents/dist/coordination-v3-reviewed-steering.js';
 import { payloadHash } from '../../packages/agents/dist/coordination-v3-canonical-json.js';
 import { withFixture, until, runtimeAttachmentPaths } from '../shared/fixture.mjs';
@@ -347,4 +347,53 @@ test('Stop after Claude provider admission prevents reviewed user input',{timeou
   assert.equal(store.sqlite.prepare('SELECT state FROM scheduler_prompt_injections WHERE id=?').get(injection.id).state,'outcome_unknown');
   assert.equal(store.sqlite.prepare("SELECT COUNT(*) n FROM scheduler_run_activations WHERE activation_id=?").get(result.activationId).n,1,'Stop must not replay the reviewed activation');
  },{storeFactory:p=>(store=new AgentStore(p)),steeringResponse:async()=>{throw Error('Controlled unknown delivery');},nativeAdapterForOpen:()=>useNative?{openSession:opts=>native.adapter.openSession({...opts,model:'initial-model'})}:undefined});
+});
+
+for(const initialReply of [false,true]) test(`reviewed continuation preserves ${initialReply?'final':'initial'} root after an orphaned uncertain Run`,{timeout:30000},async t=>{
+ let store,useNative=false,native;
+ await withFixture(t,async f=>{
+  native=await inertCodex(f.root);
+  const chat=await f.createChat('Orphaned reviewed continuation'),agent=await f.createIdleAgent(chat,'Worker');
+  const upload=async(name,content)=>f.ok(await f.api('POST',`/api/agents/${agent.id}/attachments`,Buffer.from(content),
+   {'content-type':'application/octet-stream','x-ponderosa-filename':name,'x-ponderosa-media-type':'text/plain'}));
+  const taskFile=await upload('task.txt','orphan task bytes'),steerFile=await upload('steer.txt','orphan steer bytes');
+  f.plans.set(agent.id,[{hold:true}]);await f.send(agent.id,'Finish the complete original task',{attachmentIds:[taskFile.id]});
+  await until(()=>f.turns.some(x=>x.agentId===agent.id),'source input');
+  const source=f.sessions.get(agent.id),run=(await f.detail(agent.id)).runs[0].id;
+  const root=store.sqlite.prepare('SELECT source_activation_id FROM required_reply_obligations WHERE run_id=?').get(run).source_activation_id;
+  if(initialReply){const reply=await f.tool(source,'ponderosa_message',{text:'Interim progress'});assert.equal(reply.status,200,JSON.stringify(reply));}
+  await f.send(agent.id,'Apply the saved correction',{activeRunDelivery:'steer',attachmentIds:[steerFile.id]});
+  const injection=await until(()=>store.sqlite.prepare("SELECT id,activation_ids_json FROM scheduler_prompt_injections WHERE run_id=? AND kind='steer' AND state='outcome_unknown'").get(run),'uncertain steering');
+  const [activationId]=JSON.parse(injection.activation_ids_json);
+  assert.equal(new CoordinationV3Store(store.sqlite).recoverOrphanedRuns('other-fixture-worker').outcomeUnknown,1);
+  assert.equal(store.sqlite.prepare('SELECT status FROM scheduler_runs WHERE id=?').get(run).status,'outcome_unknown');
+  assert.equal(store.sqlite.prepare('SELECT state FROM required_reply_obligations WHERE run_id=? AND source_activation_id=?').get(run,root).state,'pending');
+  const livePath=`/api/projects/${chat.projectId}/message-deliveries/${activationId}/reviewed-continuation`;
+  assert.equal((await f.api('POST',livePath+'/retire-source')).status,409,'a locally active source must not be retired');
+  assert.equal(source.isAlive(),true);
+  await f.reopen();
+  assert.equal(store.sqlite.prepare('SELECT status FROM scheduler_runs WHERE id=?').get(run).status,'outcome_unknown');
+  const path=`/api/projects/${chat.projectId}/message-deliveries/${activationId}/reviewed-continuation`;
+  const view=f.ok(await f.api('GET',path));
+  assert.equal(view.status,'review_required');assert.equal(view.review.effectInventory.sourceStatus,'outcome_unknown');
+  assert.equal(view.review.effectInventory.nativeTail,'unknown');assert.equal(view.review.replayAuthorized,false);
+  assert.equal((await native.requests()).filter(x=>x.method==='turn/start').length,0,'worker loss must not restart work automatically');
+  useNative=true;
+  const body={reviewSha256:view.review.reviewSha256,effectsReviewed:true,reviewNote:'Reviewed uncertain work',idempotencyKey:randomUUID()};
+  const receipt=f.ok(await f.api('POST',path,body)).receipt;
+  assert.equal(f.ok(await f.api('POST',path,body)).receipt.activationId,receipt.activationId);
+  const call=await until(async()=> (await native.requests()).find(x=>x.method==='turn/start'),'reviewed successor turn');
+  assert.match(JSON.stringify(call),/Finish the complete original task/);
+  assert.match(JSON.stringify(call),/Apply the saved correction/);
+  assert.match(JSON.stringify(call),/external effects occurred remain unknown/);
+  const files=await Promise.all(runtimeAttachmentPaths(call).map(file=>readFile(file,'utf8')));
+  assert.ok(files.includes('orphan task bytes'));assert.ok(files.includes('orphan steer bytes'));
+  await native.sendTool('ponderosa_message',{text:'Reviewed task complete',...(initialReply?{taskDelivery:'final'}:{})});
+  const reply=await until(async()=> (await native.requests()).find(x=>x.toolResponse),'successor tool response');
+  assert.equal(reply.toolResponse.result.success,true,JSON.stringify(reply));
+  const successor=await until(()=>store.sqlite.prepare("SELECT run_id FROM required_reply_obligations WHERE source_activation_id=? AND run_id<>? AND state='satisfied'").get(root,run),'original task reply');
+  assert.equal(store.sqlite.prepare("SELECT COUNT(*) n FROM required_reply_obligations WHERE run_id=?").get(successor.run_id).n,1);
+  assert.equal(store.sqlite.prepare('SELECT state FROM scheduler_prompt_injections WHERE id=?').get(injection.id).state,'outcome_unknown');
+  assert.equal(store.sqlite.prepare('SELECT status FROM scheduler_runs WHERE id=?').get(run).status,'outcome_unknown');
+ },{storeFactory:p=>(store=new AgentStore(p)),steeringResponse:async()=>{throw Error('Controlled unknown steer');},nativeAdapterForOpen:()=>useNative?native?.adapter:undefined});
 });

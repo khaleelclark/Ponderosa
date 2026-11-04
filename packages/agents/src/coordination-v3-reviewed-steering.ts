@@ -36,7 +36,7 @@ export class ReviewedSteeringAuthority {
     const chat=this.db.prepare(`SELECT project_id FROM conversations chat WHERE chat.id=? AND ${activeChatOwnerSql('chat')}`).get(a.conversation_id) as any;
     if(!chat || chat.project_id!==projectId || a.scope_key!=="conversation:"+a.conversation_id)
       throw Error("The original Chat is unavailable.");
-    if(a.status!=="completed" || !Number.isSafeInteger(a.fencing_token) || a.fencing_token<1)
+    if(!["completed","outcome_unknown"].includes(a.status) || !Number.isSafeInteger(a.fencing_token) || a.fencing_token<1)
       throw Error("The original Run must finish before continuation.");
     if(!Array.isArray(members)||members.length!==1||members[0]!==activationId ||
       (this.db.prepare("SELECT COUNT(*) n FROM scheduler_prompt_injections WHERE run_id=? AND kind='steer' AND state IN ('pending','submitted','outcome_unknown')").get(a.run_id) as any).n!==1)
@@ -120,7 +120,8 @@ export class ReviewedSteeringAuthority {
     }
     if(!covered)throw Error("The original Run lacks exact observed provider exit evidence.");
     const effectInventory=new CoordinationV3SourceEffectsAuthority(this.db).inspect({agentId:a.agent_id,sourceRunId:a.run_id,sourceFence:a.fencing_token});
-    if (!effectInventory.unknownSteeringInjectionIds?.includes(a.injection_id)) throw Error("The exact unconfirmed interruption is unavailable.");
+    if (a.status==="completed" && !effectInventory.unknownSteeringInjectionIds?.includes(a.injection_id))
+      throw Error("The exact unconfirmed interruption is unavailable.");
     const facts={projectId,activationId,agentId:a.agent_id,conversationId:a.conversation_id,runId:a.run_id,
       sourceFence:a.fencing_token,injectionId:a.injection_id,root,originalTask:originalPayload,originalSteer:payload,baselineStartClaims,baselineRegistrations:exitRefs.sort(),baselineExits:baselineExits.sort((a,b)=>a.identity.localeCompare(b.identity)),effectInventory};
     return {...facts,reviewSha256:payloadHash(facts),originalOutcome:"unknown" as const,replayAuthorized:false as const};
@@ -135,11 +136,11 @@ export class ReviewedSteeringAuthority {
         JOIN agents ag ON ag.id=a.agent_id AND ag.project_id=a.project_id
         JOIN conversations chat ON chat.id=ag.conversation_id AND chat.project_id=ag.project_id
         WHERE a.id=? AND a.project_id=? AND a.kind='human_message' AND a.prompt_class='human'
-          AND r.status='completed' AND json_extract(a.payload_json,'$.communication.sender.kind')='user'
+          AND r.status IN ('completed','outcome_unknown') AND json_extract(a.payload_json,'$.communication.sender.kind')='user'
           AND json_extract(a.payload_json,'$.communication.sender.userId')='local-operator'
           AND json_array_length(i.activation_ids_json)=1 AND ${activeAgentOwnerSql('ag')} AND ${activeChatOwnerSql('chat')}`)
         .all(activationId,projectId) as Array<{agent_id:string;scope_key:string;run_id:string;fencing_token:number;run_rowid:number;conversation_id:string}>;
-      if(rows.length!==1)throw Error("The exact completed interruption is unavailable.");
+      if(rows.length!==1)throw Error("The exact finished interruption is unavailable.");
       const a=rows[0]!;
       if(a.scope_key!=="conversation:"+a.conversation_id || !Number.isSafeInteger(a.fencing_token) || a.fencing_token<1 ||
          this.db.prepare("SELECT 1 FROM scheduler_runs WHERE agent_id=? AND id<>? AND (status IN ('leased','running') OR rowid>?) LIMIT 1").get(a.agent_id,a.run_id,a.run_rowid) ||

@@ -48,7 +48,7 @@ export async function reviewedContinuationRegression():Promise<void>{
   localStorage.removeItem(statusKey);localStorage.removeItem(releaseKey);await render();button('Review interrupted work')!.click();await flush();
   assert(document.body.textContent?.includes('Finish the complete original task')&&document.body.textContent?.includes('Also include the correction'),'Original task and instruction must be shown');
   assert(document.body.textContent?.includes('task-notes.txt')&&document.body.textContent?.includes('correction.pdf'),'Original attachment names must remain visible');
-  assert(document.body.textContent?.includes('Tool effect is unconfirmed')&&!document.body.textContent?.includes('already settled'),'Only unresolved effects request review');
+  assert(document.body.textContent?.includes('Tool effect is unconfirmed')&&document.body.textContent?.includes('already settled')&&document.body.textContent?.includes('Recorded by Ponderosa')&&document.body.textContent?.includes('Unconfirmed'),'Show recorded host activity and unconfirmed effects without implying external completion');
   const check=document.querySelector<HTMLInputElement>('input[type=checkbox]')!;check.click();await flush();
   const note=document.querySelector<HTMLTextAreaElement>('textarea')!;Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value')!.set!.call(note,'Already checked the deployment');note.dispatchEvent(new Event('input',{bubbles:true}));await flush();
   button('Continue task')!.click();await flush();
@@ -95,7 +95,7 @@ export async function reviewedContinuationRegression():Promise<void>{
   button('Review interrupted work')!.click();await flush();
   assert(posts.length===1&&document.body.textContent?.includes('Continuation authorized'),'Reopening checks the in-flight result without another submission');
   root.unmount();host.replaceChildren();root=createRoot(host);recorded=false;posts=[];localStorage.removeItem(statusKey);retirementNeeded=true;retirementLost=true;retirePosts=0;
-  await render();assert(document.body.textContent?.includes('Review may close the completed Run’s idle session.'),'Session release is disclosed before opening review');
+  await render();assert(document.body.textContent?.includes('Review may close the earlier Run’s idle session.'),'Session release is disclosed before opening review');
   button('Review interrupted work')!.click();await flush();
   assert(retirePosts===1&&posts.length===0&&document.body.textContent?.includes('Finish the complete original task'),'A lost release response is read back once without authorizing continuation');
   root.unmount();host.replaceChildren();root=createRoot(host);retirementNeeded=true;retirementLost=false;retirementFails=true;retirePosts=0;localStorage.removeItem(releaseKey);
