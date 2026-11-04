@@ -193,3 +193,29 @@ test('retirement waits for the in-flight Project admission and cannot retire a q
   }finally{release();hostFs.open=originalOpen;}
  });
 });
+
+test('copy ledger created first prevents a same-key async import admission',{timeout:30000},async t=>{
+ await withFixture(t,async f=>{
+  const {promises:hostFs}=await import('@ponderosa/native-host/fs');
+  const chat=await f.createChat('Copy owns request'),requestId=randomUUID();
+  const endpoint=`/api/projects/${chat.projectId}/agent-import-operations`;
+  const wire=Buffer.from(JSON.stringify({conversationId:chat.id,engineMapping:{codex:'codex'}})+'\n{}');
+  const headers={'content-type':'application/vnd.ponderosa.agent-import','idempotency-key':requestId,'x-ponderosa-agent-package-fingerprint':importRequestFingerprint(wire)};
+  const directory=await realpath(path.join(f.dataDir,'agent-import-operations')),originalAccess=hostFs.access;
+  let release,entered;const reached=new Promise(resolve=>{entered=resolve;}),gate=new Promise(resolve=>{release=resolve;});
+  hostFs.access=async function(name,...args){
+   if(typeof name==='string'&&path.basename(name).endsWith('.copy.payload')&&await realpath(path.dirname(name))===directory){entered();await gate;}
+   return originalAccess.call(this,name,...args);
+  };
+  try{
+   // The copy reaches its snapshot read only after committing the creation ledger.
+   const copy=f.api('POST',`/api/projects/${chat.projectId}/copy-agent`,{sourceAgentId:randomUUID(),conversationId:chat.id},{'idempotency-key':requestId});
+   await reached;
+   const conflicting=await f.api('POST',endpoint,wire,headers);
+   assert.equal(conflicting.status,409);assert.match(conflicting.body.error,/existing import owns this request identity/);
+   assert.equal((await f.api('GET',`${endpoint}/by-request/${requestId}?conversationId=${chat.id}`)).status,404,'no async import operation was admitted');
+   release();assert.equal((await copy).status,404,'the controlled nonexistent source leaves no copy effects');
+   assert.equal(f.turns.length,0);
+  }finally{release();hostFs.access=originalAccess;}
+ });
+});
