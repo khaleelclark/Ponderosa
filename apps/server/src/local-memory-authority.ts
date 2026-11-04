@@ -16,17 +16,18 @@ const denied=()=>new Error('Memory source unavailable or unauthorized');
 export const MEMORY_CLEANUP_HOLD='Memory cleanup held: backend lacks atomic identity and content checks; staged and existing data was preserved';
 export const MEMORY_CLEANUP_UNKNOWN_HOLD='Memory cleanup held: a backend write has an unknown outcome. It was not repeated; review memory health.';
 export const MEMORY_CLEANUP_FOREIGN_HOLD='Foreign or unclassified memory preserved; cleanup held';
-const memoryCleanupIdentityHolds=new Set([
- MEMORY_CLEANUP_FOREIGN_HOLD,
+export const MEMORY_CLEANUP_HOLD_REASONS=[
+ MEMORY_CLEANUP_HOLD, MEMORY_CLEANUP_UNKNOWN_HOLD, MEMORY_CLEANUP_FOREIGN_HOLD,
  'Unclassified memory conflict preserved; cleanup held',
  'Foreign or unclassified memory conflict preserved; cleanup held',
  'Memory collection bindings overlap; cleanup held',
  'Previously deleted memory collection exists again; cleanup held',
  'Memory collection identity changed; cleanup held',
-]);
+] as const;
+const memoryCleanupHolds=new Set<string>(MEMORY_CLEANUP_HOLD_REASONS);
 export function isMemoryCleanupHold(value:unknown):boolean{
  const message=value instanceof Error?value.message:value;
- return message===MEMORY_CLEANUP_HOLD||message===MEMORY_CLEANUP_UNKNOWN_HOLD||(typeof message==='string'&&memoryCleanupIdentityHolds.has(message));
+ return typeof message==='string'&&memoryCleanupHolds.has(message);
 }
 export class MemoryCollectionHold extends Error{constructor(message:string){super(message);this.name='MemoryCollectionHold';}}
 const noGeneration={name:'local-memory-precomputed',generate:async():Promise<number[][]>=>{throw Error('Explicit embeddings required');}};

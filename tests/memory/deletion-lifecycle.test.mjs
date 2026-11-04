@@ -273,6 +273,7 @@ test('Agent cleanup holds a private conflict that references team memory',()=>fi
  assert.deepEqual(await f.rows(scope,true),[conflict]);
  const receipt=f.store.listPendingAgentDeletionReceipts().find(row=>row.deletedAgentIds.includes(f.a.id));
  assert.match(receipt.lastError,/Foreign or unclassified memory conflict/);assert.equal(isMemoryCleanupHold(receipt.lastError),true);
+ assert.ok(f.memory.provisioningHolds().some(hold=>/cleanup remains held/.test(hold.reason)),'held Agent cleanup remains visible in memory health');
 }));
 
 test('same-process Ponderosa memory storages for one Chroma origin serialize without nested wrapping',()=>fixture(async f=>{

@@ -8,7 +8,7 @@ import {captureBranchHostCut,verifyBranchHostCut} from '../../packages/agents/di
 import {selectBranchUnit} from '../../packages/agents/dist/branch-unit-selection.js';
 import {BranchResourceService} from '../../apps/server/dist/branch-resource-service.js';
 import {retainedRuntimeResources} from '../../apps/server/dist/product-scope.js';
-import {MEMORY_CLEANUP_HOLD} from '../../apps/server/dist/local-memory-authority.js';
+import {MEMORY_CLEANUP_HOLD,MEMORY_CLEANUP_FOREIGN_HOLD} from '../../apps/server/dist/local-memory-authority.js';
 import {withFixture,until} from '../shared/fixture.mjs';
 
 function deployTemplate(branches,root,key,failure={action:'stop'}){
@@ -224,11 +224,11 @@ test('completed template workflows retire their exact Chats through tracked dele
 });
 
 
-test('temporary resource cleanup retains a memory hold without retrying after restart',{timeout:15000},async t=>{
+for(const holdReason of [MEMORY_CLEANUP_HOLD,MEMORY_CLEANUP_FOREIGN_HOLD])test('temporary resource cleanup retains a memory hold without retrying after restart: '+holdReason,{timeout:15000},async t=>{
  const root=mkdtempSync(path.join(tmpdir(),'branch-memory-held-'));let store,branches,resources,passed=false,calls=0;
  const open=()=>{
   store=new AgentStore(root);branches=new BranchStore(store.sqlite,new CoordinationV3Store(store.sqlite));
-  resources=new BranchResourceService(branches,store,async()=>{},async()=>{throw Error('Unexpected creation')},async()=>{calls++;throw Error(MEMORY_CLEANUP_HOLD)});
+  resources=new BranchResourceService(branches,store,async()=>{},async()=>{throw Error('Unexpected creation')},async()=>{calls++;throw Error(holdReason)});
  };open();
  t.after(async()=>{await resources.stop();store.close();if(passed)rmSync(root,{recursive:true,force:true});else t.diagnostic('Retained fixture: '+root)});
  const branch=deployTemplate(branches,root,'memory-held'),execution=branches.accept(branch.id,'input','Review');branches.advance();const provision=branches.resourceProvisions()[0];
@@ -243,8 +243,8 @@ test('temporary resource cleanup retains a memory hold without retrying after re
   const retirement=store.sqlite.prepare('SELECT error FROM branch_retirement_errors WHERE resource_id=?').get(chat.id);
   return retirement?.error??resource?.error;
  };
- await resources.tick(false);assert.equal(calls,1);assert.equal(recordedHold(),MEMORY_CLEANUP_HOLD);
- await resources.tick(false);assert.equal(calls,1);assert.equal(recordedHold(),MEMORY_CLEANUP_HOLD);
+ await resources.tick(false);assert.equal(calls,1);assert.equal(recordedHold(),holdReason);
+ await resources.tick(false);assert.equal(calls,1);assert.equal(recordedHold(),holdReason);
  await resources.stop();store.close();open();await resources.tick(false);
- assert.equal(calls,1);assert.equal(recordedHold(),MEMORY_CLEANUP_HOLD);assert.ok(store.getConversation(chat.id));passed=true;
+ assert.equal(calls,1);assert.equal(recordedHold(),holdReason);assert.ok(store.getConversation(chat.id));passed=true;
 });

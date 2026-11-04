@@ -50,7 +50,7 @@ for(const intent of ['confirmed','legacy'])test(`package restore never recreates
  try{
   await assert.rejects(destination.memory.restorePackageMemory(snapshot,destination.chat.id,mapping,randomUUID()),error=>error===missing);
   await assert.rejects(destination.memory.core.database.rollbackPackageMemory({chatId:destination.chat.id,chunkIds:['synthetic-owned-row'],conflictIds:[]},randomUUID(),async()=>{}),/Memory cleanup held/);
-  await assert.rejects(destination.memory.core.database.purge(scope,async()=>{}),/Memory cleanup held/);
+  await assert.rejects(destination.memory.core.database.purge(scope,async()=>{}),error=>error===missing);
   assert.equal(creates,0,'existing missing data must never be recreated');
  }
  finally{raw.client.getCollection=originalGet;raw.client.createCollection=originalCreate;}
