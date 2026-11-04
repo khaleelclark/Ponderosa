@@ -6,6 +6,7 @@ import type {
 import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { api } from "../api";
+import { providerCommandResultText } from "../providerCommandResult";
 import { refreshLatestAgentProviderUsage } from "../providerUsageQuery";
 import { queryKeys } from "../queryKeys";
 import { useMutationNotification } from "./MutationNotifications";
@@ -65,7 +66,8 @@ export function useAgentProviderCommands({
       ...(argumentsText ? { argumentsText } : {}),
     });
     if (result.outcome && result.outcome !== "completed") throw new Error(result.message ?? "Provider command completion is unconfirmed. Do not repeat the command.");
-    if (result.message) onNotice(result.message);
+    const message = providerCommandResultText(result);
+    if (message) onNotice(message);
     else notify({ key: "provider-command", message: `/${command.name} Invoked` });
   };
   return {

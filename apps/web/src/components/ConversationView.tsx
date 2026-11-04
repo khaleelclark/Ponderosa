@@ -29,6 +29,7 @@ import {
   useState,
 } from "react";
 import { api } from "../api";
+import { providerCommandResultSx, providerCommandResultText } from "../providerCommandResult";
 import type { AgentStatus } from "../agents";
 import {
   useAgents,
@@ -1194,15 +1195,8 @@ export function ConversationView({
         {activeView === "main" && queuedMessageNotice ? (
           <Alert
             severity="info"
-            sx={{
-              mx: 1.5,
-              mt: 1,
-              minWidth: 0,
-              "& .MuiAlert-message": {
-                minWidth: 0,
-                overflowWrap: "anywhere",
-              },
-            }}
+            tabIndex={0}
+            sx={providerCommandResultSx}
           >
             {queuedMessageNotice}
           </Alert>
@@ -1315,7 +1309,8 @@ export function ConversationView({
                   );
                   return invocation.then(result => {
                     if (result.outcome && result.outcome !== "completed") throw new Error(result.message ?? "Provider command completion is unconfirmed. Do not repeat the command.");
-                    if (result.message) setQueuedMessageNotice(result.message);
+                    const message = providerCommandResultText(result);
+                    if (message) setQueuedMessageNotice(message);
                     else notify({ key: "provider-command", message: `/${command.name} Invoked` });
                   });
                 }

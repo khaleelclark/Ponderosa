@@ -1,4 +1,5 @@
 import { Alert, Button } from "@mui/material";
+import { providerCommandResultSx } from "../providerCommandResult";
 import type {
   ProviderUsageStateDto,
   QueuedConversationMessageDto,
@@ -47,7 +48,7 @@ export function AgentDetailComposer({
 }: AgentDetailComposerProps): JSX.Element {
   return (
     <ChatComposerDock visible={visible}>
-      {queuedMessageNotice ? <Alert severity="info" role="status" aria-live="polite" sx={{ mx: 1.5, mt: 1 }}>{queuedMessageNotice}</Alert> : null}
+      {queuedMessageNotice ? <Alert severity="info" role="status" aria-live="polite" tabIndex={0} sx={providerCommandResultSx}>{queuedMessageNotice}</Alert> : null}
       {cancellationError ? (
         <Alert severity="error" sx={{ mx: 1.5, mt: 1 }}>
           {cancellationError}

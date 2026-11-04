@@ -33,6 +33,7 @@ import {
   useState,
 } from "react";
 import { api } from "../api";
+import { providerCommandResultSx, providerCommandResultText } from "../providerCommandResult";
 import { ApiRequestError } from "../api/types";
 import { AGENT_DETAIL_PAGE_SIZE } from "../agentHistoryPagination";
 import {
@@ -725,8 +726,9 @@ export function InboxView({
       ...(argumentsText ? { argumentsText } : {}),
     });
     if (result.outcome && result.outcome !== "completed") throw new Error(result.message ?? "Provider command completion is unconfirmed. Do not repeat the command.");
-    setCommandResult(result.message);
-    if (!result.message) notify({ key: "provider-command", message: `/${command.name} Completed` });
+    const message = providerCommandResultText(result);
+    setCommandResult(message);
+    if (!message) notify({ key: "provider-command", message: `/${command.name} Completed` });
   };
   const send = useMutation({
     mutationFn: async ({
@@ -1660,7 +1662,7 @@ export function InboxView({
           </Box>
         ) : null}
         {commandResult ? (
-          <Alert severity="info" onClose={() => setCommandResult(undefined)} sx={{ mx: 1.5, mt: 1 }}>
+          <Alert severity="info" tabIndex={0} onClose={() => setCommandResult(undefined)} sx={providerCommandResultSx}>
             {commandResult}
           </Alert>
         ) : null}

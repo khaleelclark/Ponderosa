@@ -8,6 +8,8 @@ import { communicationMentionBindings } from '../../packages/agents/src/store-me
 import { resolveMessageMentionText } from '../../apps/web/src/components/chat/messageMentionPresentation.ts';
 const { ChatMessageBody, communicationVisibleText, authoredAgentMentionForHandle } = await import('../../apps/web/src/components/chat/ChatMessages.tsx');
 const { MutationNotificationProvider } = await import('../../apps/web/src/components/MutationNotifications.tsx');
+const { providerCommandResultText } = await import('../../apps/web/src/providerCommandResult.ts');
+const fullNativeGoal = { threadId:'native-thread', objective:'Start of objective\n'+'x'.repeat(2200)+'\nEND OF OBJECTIVE', status:'paused', tokenBudget:10000, tokensUsed:42, timeUsedSeconds:7, createdAt:1, updatedAt:2 };
 
 const projectId = 'fbe0e9a6-8af1-55c3-9805-9d3daa984a1b';
 const agentId = 'a6cc0309-455b-4e2f-88f3-d630ca060b1c';
@@ -229,7 +231,7 @@ test('Inbox keeps provider command output visible and uses shared feedback only 
   assert.ok(command, 'the command callback exists');
   const output = [], notices = [], requests = [];
   let result = { message: 'Model: GPT-6.1\nContext: 20%\nUsage resets at 8 PM' };
-  const scope = { selectedAgentId: 'agent-1', setCommandResult: value => output.push(value), notify: value => notices.push(value),
+  const scope = { providerCommandResultText, selectedAgentId: 'agent-1', setCommandResult: value => output.push(value), notify: value => notices.push(value),
     api: { invokeProviderCommand: async (...args) => { requests.push(args); return result; } } };
   vm.createContext(scope);
   vm.runInContext(ts.transpileModule(`globalThis.command = (${command.slice(command.indexOf('=') + 1)});`, {
@@ -251,10 +253,14 @@ test('Inbox keeps provider command output visible and uses shared feedback only 
   await assert.rejects(scope.command({ name: 'compact' }), /Provider unavailable/);
   assert.equal(notices.length, 1, 'failures propagate to the existing command error owner');
   for (const outcome of ['failed', 'outcome_unknown']) {
-    scope.api.invokeProviderCommand = async () => ({ outcome, message: 'Native completion is unconfirmed. Do not repeat.' });
+    scope.api.invokeProviderCommand = async () => ({ outcome, message: 'Native completion is unconfirmed. Do not repeat.', goal: fullNativeGoal });
     await assert.rejects(scope.command({ name: 'compact' }), /unconfirmed.*Do not repeat/);
     assert.equal(notices.length, 1, 'Uncertain native work cannot become timed success feedback');
   }
+  scope.api.invokeProviderCommand = async () => ({message:'truncated preview…',goal:fullNativeGoal});
+  await scope.command({name:'goal'});
+  assert.equal(output.at(-1), providerCommandResultText({goal:fullNativeGoal}));
+  assert.ok(output.at(-1).startsWith(fullNativeGoal.objective+'\n'),'Inbox exposes the exact full native objective');
 });
 
 // Exercise the real remaining copy owners with a controlled clipboard/notifier.
@@ -330,7 +336,7 @@ test('Agent provider commands keep meaningful output and errors in their existin
   let result = { message: 'Model: GPT-6.1\nUsage: 25%\nReset: tomorrow' };
   const api = { invokeProviderCommand: async (...args) => { requests.push(args); return result; } };
   const imports = { react: { useState: () => [undefined, () => {}] }, '@tanstack/react-query': { useQueryClient: () => ({}) },
-    '../api': { api }, '../providerUsageQuery': {}, '../queryKeys': {},
+    '../api': { api }, '../providerUsageQuery': {}, '../queryKeys': {}, '../providerCommandResult': { providerCommandResultText },
     './MutationNotifications': { useMutationNotification: () => notice => notices.push(notice) } };
   vm.runInNewContext(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText,
     { module, exports: module.exports, require: name => imports[name] });
@@ -345,10 +351,14 @@ test('Agent provider commands keep meaningful output and errors in their existin
   assert.equal(notices.length, 1, 'failures propagate to the existing command error owner');
   assert.deepEqual(requests.map(([agentId, input]) => [agentId, { ...input }]), [['agent-a', { name: 'status' }], ['agent-a', { name: 'compact' }]]);
   for (const outcome of ['failed', 'outcome_unknown']) {
-    api.invokeProviderCommand = async () => ({ outcome, message: 'Native completion is unconfirmed. Do not repeat.' });
+    api.invokeProviderCommand = async () => ({ outcome, message: 'Native completion is unconfirmed. Do not repeat.', goal: fullNativeGoal });
     await assert.rejects(commands.invokeAgentCommand({ name: 'compact' }, ''), /unconfirmed.*Do not repeat/);
     assert.equal(notices.length, 1); assert.equal(output.length, 1);
   }
+  api.invokeProviderCommand = async () => ({message:'truncated preview…',goal:fullNativeGoal});
+  await commands.invokeAgentCommand({name:'goal'},'');
+  assert.equal(output.at(-1),providerCommandResultText({goal:fullNativeGoal}));
+  assert.ok(output.at(-1).startsWith(fullNativeGoal.objective+'\n'),'Agent detail exposes the exact full native objective');
 });
 
 test('Chat provider command acknowledgment does not overwrite retained provider output', async () => {
@@ -367,7 +377,7 @@ test('Chat provider command acknowledgment does not overwrite retained provider 
   const output = [], notices = [], requests = [];
   let result = { message: 'Provider status: usage resets tomorrow' };
   const api = { invokeProviderCommand: async (...args) => { requests.push(args); return result; } };
-  const scope = { api, commandTargetAgent: { id: 'agent-a', title: 'Original' },
+  const scope = { api, providerCommandResultText, commandTargetAgent: { id: 'agent-a', title: 'Original' },
     setQueuedMessageNotice: value => output.push(value), notify: notice => notices.push(notice) };
   const command = vm.runInNewContext(ts.transpile(`(${callback})`, { target: ts.ScriptTarget.ES2022 }), scope);
   await command({ name: 'status' }, ''); assert.equal(output[0], result.message); assert.equal(notices.length, 0);
@@ -377,8 +387,53 @@ test('Chat provider command acknowledgment does not overwrite retained provider 
   await assert.rejects(command({ name: 'compact' }, ''), /Provider unavailable/);
   assert.equal(notices.length, 1); assert.deepEqual(requests.map(([id, input]) => [id, { ...input }]), [['agent-a', { name: 'status' }], ['agent-a', { name: 'compact' }]]);
   for (const outcome of ['failed', 'outcome_unknown']) {
-    api.invokeProviderCommand = async () => ({ outcome, message: 'Native completion is unconfirmed. Do not repeat.' });
+    api.invokeProviderCommand = async () => ({ outcome, message: 'Native completion is unconfirmed. Do not repeat.', goal: fullNativeGoal });
     await assert.rejects(command({ name: 'compact' }, ''), /unconfirmed.*Do not repeat/);
     assert.equal(notices.length, 1); assert.equal(output.length, 1);
   }
+  api.invokeProviderCommand = async () => ({message:'truncated preview…',goal:fullNativeGoal});
+  await command({name:'goal'},'');
+  assert.equal(output.at(-1),providerCommandResultText({goal:fullNativeGoal}));
+  assert.ok(output.at(-1).startsWith(fullNativeGoal.objective+'\n'),'Chat exposes the exact full native objective');
+});
+
+test('a long native goal survives adapter, server projection and web result formatting', async () => {
+  const {invokeCodexGoal} = await import('../../packages/engines/dist/codex-native-actions.js');
+  const {projectProviderCommandResult} = await import('../../apps/server/dist/provider-success-projection.js');
+  const objective = 'Original goal\n' + 'x'.repeat(30_000) + '\nFinal goal line';
+  const goal = {...fullNativeGoal, objective};
+  let calls = 0;
+  const result = await invokeCodexGoal({async request(method, params) {
+    calls++;assert.equal(method,'thread/goal/get');assert.equal(params.threadId,goal.threadId);return {goal};
+  }}, goal.threadId, 'goal');
+  assert.equal(calls,1);assert.ok(result.message.length < objective.length,'adapter preview is bounded');
+  const projected = projectProviderCommandResult(result);
+  assert.equal(projected.goal.objective,objective,'authorized structured response retains the complete goal');
+  const visible = providerCommandResultText(projected);
+  assert.ok(visible.startsWith(objective+'\n'),'web presents the full exact objective once');
+  assert.equal(visible.split('Final goal line').length-1,1);
+});
+
+test('all native command result owners use a focusable bounded line-preserving view', async () => {
+  const {readFile} = await import('node:fs/promises');
+  const ts = await import('typescript');
+  const {providerCommandResultSx} = await import('../../apps/web/src/providerCommandResult.ts');
+  for (const [file, child] of [['InboxView.tsx','commandResult'],['ConversationView.tsx','queuedMessageNotice'],['AgentDetail.composer.tsx','queuedMessageNotice']]) {
+    const source = await readFile(new URL(`../../apps/web/src/components/${file}`,import.meta.url),'utf8');
+    const ast = ts.createSourceFile(file,source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);
+    let found;
+    const visit=node=>{
+      if(ts.isJsxElement(node)&&node.openingElement.tagName.getText(ast)==='Alert' &&
+        node.children.some(item=>ts.isJsxExpression(item)&&item.expression?.getText(ast)===child)) found=node.openingElement;
+      ts.forEachChild(node,visit);
+    };
+    visit(ast);assert.ok(found,`${file} owns its command result`);
+    const attrs=found.attributes.properties;
+    assert.ok(attrs.some(item=>ts.isJsxAttribute(item)&&item.name.getText(ast)==='tabIndex'&&item.initializer?.getText(ast)==='{0}'),`${file} is keyboard focusable`);
+    assert.ok(attrs.some(item=>ts.isJsxAttribute(item)&&item.name.getText(ast)==='sx'&&item.initializer?.getText(ast)==='{providerCommandResultSx}'),`${file} uses shared result presentation`);
+  }
+  assert.equal(providerCommandResultSx.overflow,'auto');
+  assert.equal(providerCommandResultSx.maxHeight,'min(40vh, 320px)');
+  assert.equal(providerCommandResultSx['& .MuiAlert-message'].whiteSpace,'pre-wrap');
+  assert.equal(providerCommandResultSx['& .MuiAlert-message'].overflowWrap,'anywhere');
 });
