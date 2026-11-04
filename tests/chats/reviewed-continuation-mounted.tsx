@@ -1,4 +1,5 @@
 import {createRoot} from 'react-dom/client';
+import {StrictMode} from 'react';
 import {QueryClient,QueryClientProvider} from '@tanstack/react-query';
 import type {MessageDeliveryReceiptDto} from '@ponderosa/core';
 import {MessageDeliveryStatus} from '../../apps/web/src/components/MessageDeliveryStatus';
@@ -15,7 +16,7 @@ export async function reviewedContinuationRegression():Promise<void>{
   originalTask:{communication:{projectId:'project-one',conversationId:'chat-one',sender:{kind:'user',userId:'user'},text:'Finish the complete original task',attachments:[{id:'task-file',name:'task-notes.txt'}]}},
   originalSteer:{communication:{projectId:'project-one',conversationId:'chat-one',sender:{kind:'user',userId:'user'},text:'Also include the correction',attachments:[{id:'steer-file',name:'correction.pdf'}]}},
   effectInventory:{effects:[{kind:'communication',outcome:'host_committed',detail:'already settled'},{kind:'tool_call',outcome:'unknown',detail:'Tool effect is unconfirmed'}],nativeTail:'unknown',sourceWork:'held_unknown',replayAuthorized:false}};
- let recorded=false,loseResponse=true,commitOnLoss=true,badReceipt=false,otherCommand=false,unavailable=false,holdRead=false,holdPost=false,retirementNeeded=false,retirementLost=false,retirementFails=false,holdRetire=false,retirePosts=0,releaseRetire:()=>void=()=>{},releaseRead:()=>void=()=>{},releasePost:()=>void=()=>{},posts:Array<Record<string,unknown>>=[],gets=0;
+ let strict=false,recorded=false,loseResponse=true,commitOnLoss=true,badReceipt=false,otherCommand=false,unavailable=false,holdRead=false,holdPost=false,retirementNeeded=false,retirementLost=false,retirementFails=false,holdRetire=false,retirePosts=0,releaseRetire:()=>void=()=>{},releaseRead:()=>void=()=>{},releasePost:()=>void=()=>{},posts:Array<Record<string,unknown>>=[],gets=0;
  const result=async()=>{
   const saved=JSON.parse(localStorage.getItem(statusKey)??'null');
   const input=saved?{activationId:saved.activationId,effectsReviewed:true,idempotencyKey:saved.idempotencyKey,projectId:saved.projectId,...(saved.reviewNote!==undefined?{reviewNote:saved.reviewNote}:{}),reviewSha256:saved.reviewSha256}:{};
@@ -41,7 +42,7 @@ export async function reviewedContinuationRegression():Promise<void>{
   const data=recorded?await result():{status:'review_required',review};if(badReceipt&&data.status==='continuation_recorded')data.receipt.sourceActivationId='other-steer';
   return new Response(JSON.stringify(data),{status:200,headers:{'content-type':'application/json'}});
  };
- const render=async()=>{root.render(<QueryClientProvider client={client}><MessageDeliveryStatus projectId="project-one" receipts={[receipt]} recipientName={()=> 'Worker'}/></QueryClientProvider>);await flush();};
+ const render=async()=>{const view=<QueryClientProvider client={client}><MessageDeliveryStatus projectId="project-one" receipts={[receipt]} recipientName={()=> 'Worker'}/></QueryClientProvider>;root.render(strict?<StrictMode>{view}</StrictMode>:view);await flush();};
  const button=(label:string)=>Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find(item=>item.textContent?.trim()===label);
  try{
   localStorage.removeItem(statusKey);localStorage.removeItem(releaseKey);await render();button('Review interrupted work')!.click();await flush();
@@ -114,7 +115,11 @@ export async function reviewedContinuationRegression():Promise<void>{
   await render();button('Review interrupted work')!.click();await flush();
   assert(retirePosts===0&&document.body.textContent?.includes('No release was sent'),'No session release occurs without durable intent');
   Storage.prototype.setItem=oldSetItem;
-  root.unmount();host.replaceChildren();root=createRoot(host);retirementNeeded=false;retirementFails=false;
+  root.unmount();host.replaceChildren();root=createRoot(host);retirementNeeded=true;holdRetire=true;retirePosts=0;strict=true;localStorage.removeItem(releaseKey);
+  await render();button('Review interrupted work')!.click();await flush();
+  assert(retirePosts===1,'Repeated effect setup cannot submit source release twice');
+  holdRetire=false;releaseRetire();await flush();
+  root.unmount();host.replaceChildren();root=createRoot(host);retirementNeeded=false;retirementFails=false;strict=false;
   Object.assign(review.originalTask.communication.attachments[0],{unavailable:true});
   await render();button('Review interrupted work')!.click();await flush();document.querySelector<HTMLInputElement>('input[type=checkbox]')!.click();await flush();
   assert(button('Continue task')?.disabled&&document.body.textContent?.includes('original attachment is unavailable')&&posts.length===0,'An explicitly unavailable original attachment holds continuation');
