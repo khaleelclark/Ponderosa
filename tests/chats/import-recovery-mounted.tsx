@@ -17,6 +17,7 @@ export async function importRequestRecoveryRegression():Promise<void>{
  const client=new QueryClient({defaultOptions:{queries:{retry:false},mutations:{retry:false}}});
  const original={listAgents:api.listAgents,previewAgentAccess:api.previewAgentAccess,startAgentPackageImport:api.startAgentPackageImport,getAgentImportOperation:api.getAgentImportOperation,getAgentImportOperationByRequest:api.getAgentImportOperationByRequest};
  const OriginalWorker=window.Worker,product=currentProductScope();
+ const cryptoDescriptor=Object.getOwnPropertyDescriptor(globalThis,'crypto');
  const engine:EngineDto={id:'codex',displayName:'Codex',models:[],efforts:[],configured:true,authentication:'authenticated',intakeReady:true,reachability:'reachable',servingBuildRevision:'fixture',servingInstanceId:'fixture'};
  const chat={id:'import-recovery-chat',projectId:'import-recovery-project',title:'Recovery Chat',createdAt:'now',updatedAt:'now'} as ConversationDto;
  const calls:Array<{requestId:string;metadata:string;fingerprint:string;body:string}>=[];let statusChecks=0,operation:any;
@@ -51,6 +52,14 @@ export async function importRequestRecoveryRegression():Promise<void>{
  try{
   const vector=await fingerprintAgentImport(new Blob(['example-body\n']));
   assert(agentImportFingerprintHeader(vector)==='sha256-4m-v1:13:65d50099f3e2c881631fb432966279d6b61380c6fa551815b4e69690100138b1','browser fingerprint matches the fixed server algorithm vector');
+  try{
+   Object.defineProperty(globalThis,'crypto',{configurable:true,value:{}});
+   const httpVector=await fingerprintAgentImport(new Blob(['example-body\n']));
+   assert(agentImportFingerprintHeader(httpVector)===agentImportFingerprintHeader(vector),'HTTP fallback matches native SHA and the server fingerprint');
+  }finally{
+   if(cryptoDescriptor)Object.defineProperty(globalThis,'crypto',cryptoDescriptor);
+   else Reflect.deleteProperty(globalThis,'crypto');
+  }
   assert(listPendingAgentImports(product).length===0,'fresh browser context has no retained import');
   render('first');await settle();choose(packageText,'original.json');await settle();
   button('Review access settings').click();await settle();
@@ -73,6 +82,9 @@ export async function importRequestRecoveryRegression():Promise<void>{
   assert(calls.length===2&&calls[1].requestId===calls[0].requestId&&calls[1].metadata===calls[0].metadata&&calls[1].fingerprint===calls[0].fingerprint&&calls[1].body===calls[0].body,'explicit retry sends the exact original request and identity');
   saved=listPendingAgentImports(product);assert(saved.length===1&&saved[0].requestId===calls[0].requestId,'pending 202 keeps recovery identity through reload');
   assert(host.textContent?.includes('Import in progress'),'accepted pending import is visible');
+  operation={...operation,status:'completed'};
+  await until(()=>Boolean(host.textContent?.includes('Import awaiting confirmation')),'missing result was not retained for recovery');
+  assert(listPendingAgentImports(product).length===1,'completed status without a result does not discard the saved identity');
  }finally{
   for(const entry of listPendingAgentImports(product))if(entry.projectId===chat.projectId)for(let i=localStorage.length-1;i>=0;i--){const k=localStorage.key(i);if(k?.startsWith('ponderosa-agent-import-v1:')&&k.endsWith(':'+entry.requestId))localStorage.removeItem(k);}
   root.unmount();client.clear();host.remove();window.Worker=OriginalWorker;Object.assign(api,original);
