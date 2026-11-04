@@ -373,6 +373,66 @@ test('held Git export verifies read-only hardlinked pack and index pairs',{skip:
   assert.deepEqual(await readFile(keepAlias),Buffer.from('keep\n'));assert.equal((await lstat(keepAlias)).nlink,2);
 });
 
+test('held Git export supports either single hardlinked pack half',{skip:process.platform!=='linux',timeout:30000},async t=>{
+  const root=await fixture(t);
+  for(const extension of ['pack','idx']){
+    const repo=path.join(root,'repo-'+extension),oid=await repository(repo);native(repo,'repack','-a','-d');
+    const dir=path.join(repo,'.git','objects','pack'),name=(await readdir(dir)).find(item=>new RegExp('^pack-[a-f0-9]+\\.'+extension+'$').test(item));
+    assert.ok(name);
+    const original=path.join(dir,name),alias=path.join(root,'foreign-'+extension);
+    await link(original,alias);
+    const bytes=await readFile(alias),before=await lstat(alias,{bigint:true}),storage=path.join(repo,'.git');
+    const held=await heldCapture({work:repo,storage},[{id:'common',worktreeRootRef:'work',storageRootRef:'storage',relativePath:'.',role:'common',worktreePath:repo,storagePath:storage}]);
+    try{
+      const result=await exportReviewedGit(repo,held.capture);
+      assert.ok(result.git.objects.some(item=>item.oid===oid));validateReviewedGit(result.git);
+      const after=await lstat(alias,{bigint:true});
+      assert.deepEqual(await readFile(alias),bytes);
+      assert.equal(after.ino,before.ino);assert.equal(after.nlink,before.nlink);assert.equal(after.mtimeNs,before.mtimeNs);
+    }finally{await held.close();}
+  }
+});
+
+test('held Git export rejects a malformed linked pack index without modifying aliases',{skip:process.platform!=='linux',timeout:30000},async t=>{
+  const root=await fixture(t),repo=path.join(root,'repo');await repository(repo);native(repo,'repack','-a','-d');
+  const dir=path.join(repo,'.git','objects','pack'),name=(await readdir(dir)).find(item=>/^pack-[a-f0-9]+\.idx$/.test(item));
+  assert.ok(name);
+  const index=path.join(dir,name),alias=path.join(root,'foreign.idx');
+  await link(index,alias);
+  const bad=Buffer.from(await readFile(index));bad[8]^=1;await chmod(index,0o600);await writeFile(index,bad);
+  const before=await lstat(alias,{bigint:true}),storage=path.join(repo,'.git');
+  const held=await heldCapture({work:repo,storage},[{id:'common',worktreeRootRef:'work',storageRootRef:'storage',relativePath:'.',role:'common',worktreePath:repo,storagePath:storage}]);
+  try{
+    await assert.rejects(exportReviewedGit(repo,held.capture));
+    const after=await lstat(alias,{bigint:true});
+    assert.deepEqual(await readFile(alias),bad);
+    assert.equal(after.ino,before.ino);assert.equal(after.nlink,before.nlink);assert.equal(after.mtimeNs,before.mtimeNs);
+  }finally{await held.close();}
+});
+
+test('held Git export detects an aliased pack change at final custody verification',{skip:process.platform!=='linux',timeout:30000},async t=>{
+  const root=await fixture(t),repo=path.join(root,'repo');await repository(repo);native(repo,'repack','-a','-d');
+  const dir=path.join(repo,'.git','objects','pack'),name=(await readdir(dir)).find(item=>/^pack-[a-f0-9]+\.pack$/.test(item));
+  assert.ok(name);
+  const pack=path.join(dir,name),alias=path.join(root,'foreign.pack');
+  await link(pack,alias);
+  const initial=await readFile(alias),changed=Buffer.from(initial);changed[12]^=1;
+  await chmod(alias,0o600);
+  const storage=path.join(repo,'.git');
+  const held=await heldCapture({work:repo,storage},[{id:'common',worktreeRootRef:'work',storageRootRef:'storage',relativePath:'.',role:'common',worktreePath:repo,storagePath:storage}]);
+  const verify=held.capture.verify.bind(held.capture);
+  let injected=false;
+  held.capture.verify=async()=>{
+    // Model a separate writer after both source inventories have been read,
+    // immediately before the retained-descriptor custody check.
+    injected=true;await writeFile(alias,changed);await verify();
+  };
+  try{
+    await assert.rejects(exportReviewedGit(repo,held.capture),/changed|custody/i);
+    assert.equal(injected,true);assert.deepEqual(await readFile(alias),changed);assert.equal((await lstat(alias)).nlink,2);
+  }finally{await held.close();}
+});
+
 test('Git export bounds aggregate loose-object inflation and refuses hardlinked control files',{skip:process.platform==='win32',timeout:30000},async t=>{
   const root=await fixture(t),repo=path.join(root,'repo');await repository(repo);
   for(const [index,byte] of [[1,65],[2,66]]){
