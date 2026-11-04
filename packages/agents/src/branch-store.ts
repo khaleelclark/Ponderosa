@@ -2280,7 +2280,7 @@ export class BranchStore {
     if(!journal){if(requireMarker||marker)throw Error('Final package capture journal unavailable');return;}
     if(!source||source.sourceChatId!==resource.chat_id||source.intent.executionId!==executionId||source.intent.resourceStepId!==stepId
       ||source.intent.resourceGeneration!==0||stableJson([...source.agentIds].sort())!==stableJson(ids))throw Error('Final package capture source differs');
-    const intent={schema:'branch-final-package-intent.v1',commandKey,sourceSha256:payloadHash(source),fenceSha256:fence.receipt_sha256};
+    const intent={schema:'branch-final-package-intent.v2',wholeWorkingFolder:true,commandKey,sourceSha256:payloadHash(source),fenceSha256:fence.receipt_sha256};
     if(!marker||marker.input_hash!==payloadHash(intent)||marker.result_json!==stableJson(intent))throw Error('Internal final package capture marker unavailable or differs');
     const selected=selectBranchUnit(this.sqlite,executionId),host=captureBranchHostCut(this.sqlite,executionId,selected);
     if(!host||stableJson(selected)!==stableJson(journal.snapshot.selected)||stableJson(host)!==stableJson(journal.snapshot.hostDependencies)
@@ -2296,7 +2296,7 @@ export class BranchStore {
       const journal=reserveIssuedResourceCapture(this.sqlite,executionId,stepId,0,commandKey);
       const identity=payloadHash({executionId,stepExecutionId:stepId,generation:0});
       const fence=this.row("SELECT receipt_sha256 FROM host_lifecycle_commits WHERE kind='branch-generation-exit-fence' AND identity=?",identity)!;
-      const intent={schema:'branch-final-package-intent.v1',commandKey,sourceSha256:payloadHash(journal.source),fenceSha256:fence.receipt_sha256};
+      const intent={schema:'branch-final-package-intent.v2',wholeWorkingFolder:true,commandKey,sourceSha256:payloadHash(journal.source),fenceSha256:fence.receipt_sha256};
       this.run('INSERT INTO branch_commands VALUES(?,?,?,?,?)',executionId,`final-package-intent:${stepId}:0`,payloadHash(intent),stableJson(intent),new Date().toISOString());
       this.verifyFinalPackageCapture(executionId,stepId,commandKey,true);
       return journal;

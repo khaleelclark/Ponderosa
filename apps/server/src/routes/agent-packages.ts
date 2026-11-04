@@ -123,7 +123,7 @@ export interface BranchPackageEngine {
   prepareWorkingDataChild(input:PrepareBranchWorkingDataChildInput,onReceipt:(receipt:BranchWorkingDataPreparation)=>void):Promise<NonNullable<BranchWorkingDataPreparation['reservation']>>;
   applyWorkingData(input:ApplyBranchWorkingDataInput,onReceipt:(receipt:BranchWorkingDataApplication)=>void,signal?:AbortSignal):Promise<BranchWorkingDataApplication>;
   inspectCheckpoint(source:CheckpointPackageSource):Promise<CheckpointPackageStatus>;
-  captureCheckpoint(source:CheckpointPackageSource,seal?:(receipt:CheckpointPackageReceipt)=>void):Promise<CheckpointPackageReceipt>;
+  captureCheckpoint(source:CheckpointPackageSource,seal?:(receipt:CheckpointPackageReceipt)=>void,options?:{wholeWorkingFolder?:boolean}):Promise<CheckpointPackageReceipt>;
   readCheckpoint(receipt:CheckpointPackageReceipt):Promise<AgentPortablePackageDto>;
   readCheckpointBytes(receipt:CheckpointPackageReceipt):Promise<string>;
   verifyCheckpointNow(receipt:CheckpointPackageReceipt):string;
@@ -3203,7 +3203,7 @@ export function registerAgentPackageRoutes(
     prepareWorkingDataChild:(input,onReceipt)=>prepareBranchWorkingDataChild(store,context.workingCopies!,input,onReceipt),
     applyWorkingData:(input,onReceipt,signal)=>withAgentImportAdmission(()=>applyBranchWorkingData(context.dataDir,store,context.workingCopies!,input,onReceipt,signal)),
     inspectCheckpoint:source=>checkpointCustody.inspect(source),
-    captureCheckpoint:(source,seal)=>withAgentImportAdmission(async()=>{
+    captureCheckpoint:(source,seal,options)=>withAgentImportAdmission(async()=>{
       const frozen={...source,agentIds:[...source.agentIds],intent:{...source.intent}};
       const status=await checkpointCustody.inspect(frozen);
       if(status.state==='retained'){if(seal)throw new Error('Issued capture needs its committed Branch receipt; retained bytes alone cannot reseal a later cut');return status.receipt;}
@@ -3225,7 +3225,7 @@ export function registerAgentPackageRoutes(
         for(const id of frozen.agentIds){
           const agent=store.getAgent(id);
           if(!agent||agent.conversationId!==frozen.sourceChatId||store.agentCreationPending(id)||deletingAgentIds.has(id)||deletingConversationIds.has(agent.conversationId)||deletingProjectIds.has(agent.projectId))throw new Error('Checkpoint source membership unavailable');
-          const portable=await buildPortablePackage(id,'full',false);
+          const portable=await buildPortablePackage(id,'full',false,[],options?.wholeWorkingFolder===true);
           capturedBytes+=agentPackageJsonUtf8Bytes(portable);
           if(capturedBytes>AGENT_PACKAGE_MAX_BYTES)throw new Error('Checkpoint source packages exceed package byte limit');
           inputs.push({ref:id,...(agent.managerAgentId&&frozen.agentIds.includes(agent.managerAgentId)?{managerRef:agent.managerAgentId}:{}),package:portable});

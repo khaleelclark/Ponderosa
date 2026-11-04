@@ -33,6 +33,12 @@ export class BranchResourceService {
     if(this.branches.generationExitCapture(resource.execution_id,stepId,generation)?.state!=='sealed')throw Error('Generation exit seal unavailable; cleanup held');
   }
   private finalPackageKey(stepId:string):string {return `final-resource-package:${stepId}:0`;}
+  private requireFinalWorkingFolders(pkg:import('@ponderosa/core').AgentPortablePackageDto):void {
+    if(!pkg||!Array.isArray(pkg.agents)||!pkg.agents.length)throw Error('Final resource package has no working-folder inventory');
+    const roots=new Set(pkg.agents.filter(a=>a.workingFolder).map(a=>a.workingRootRef??a.ref));
+    if(pkg.agents.some(a=>!a.workingRootRef||!roots.has(a.workingRootRef)))throw Error('Final resource working-folder inventory is incomplete; cleanup held');
+  }
+
   /** Resume only the exact already-fenced automatic final package capture. */
   private async captureFinalPackage(executionId:string,stepId:string,create:boolean):Promise<void> {
     const key=this.finalPackageKey(stepId);
@@ -41,11 +47,14 @@ export class BranchResourceService {
     if(!this.packages)throw Error('Final resource checkpoint package service unavailable; cleanup held');
     if(!journal)journal=this.branches.reserveFinalResourceCapture(executionId,stepId);
     this.branches.requireFinalResourceCaptureFence(executionId,stepId,key);
-    if(journal.state==='retained'){await this.packages.readCheckpoint(journal.receipt);return;}
+    if(journal.state==='retained'){this.requireFinalWorkingFolders(await this.packages.readCheckpoint(journal.receipt));this.branches.requireFinalResourceCaptureFence(executionId,stepId,key);return;}
     const status=await this.packages.inspectCheckpoint(journal.source);
     if(status.state!=='missing')throw Error(`Final resource package custody is ${status.state}; review the retained capture before cleanup`);
-    await this.packages.captureCheckpoint(journal.source,receipt=>this.branches.sealIssuedResourceCapture(executionId,stepId,key,receipt));
-    if(this.branches.issuedResourceCapture(executionId,stepId,key)?.state!=='retained')throw Error('Final resource package receipt unavailable; cleanup held');
+    await this.packages.captureCheckpoint(journal.source,receipt=>this.branches.sealIssuedResourceCapture(executionId,stepId,key,receipt),{wholeWorkingFolder:true});
+    const retained=this.branches.issuedResourceCapture(executionId,stepId,key);
+    if(retained?.state!=='retained')throw Error('Final resource package receipt unavailable; cleanup held');
+    this.requireFinalWorkingFolders(await this.packages.readCheckpoint(retained.receipt));
+    this.branches.requireFinalResourceCaptureFence(executionId,stepId,key);
   }
   /** Read the final receipt even after a previous cleanup pass deleted Agents. */
   private async verifyFinalPackage(executionId:string,stepId:string):Promise<void> {
@@ -55,10 +64,12 @@ export class BranchResourceService {
     if(!journal||journal.state!=='retained'||!journal.receipt||exit.identity.generation!==0
       ||exit.selectedCheckpoint.id!==journal.checkpointId||exit.selectedCheckpoint.content_hash!==journal.checkpointHash)throw Error('Final resource package receipt unavailable; cleanup held');
     const digest=(value:unknown)=>createHash('sha256').update(stableJson(value)).digest('hex');
-    const intent={schema:'branch-final-package-intent.v1',commandKey:this.finalPackageKey(stepId),sourceSha256:digest(journal.source),fenceSha256:exit.intakeFence.sha256};
+    const saved=JSON.parse(marker.result_json);
+    if(saved.schema!=='branch-final-package-intent.v2')throw Error('Final resource package predates working-folder capture; cleanup held');
+    const intent={schema:'branch-final-package-intent.v2',wholeWorkingFolder:true,commandKey:this.finalPackageKey(stepId),sourceSha256:digest(journal.source),fenceSha256:exit.intakeFence.sha256};
     if(marker.input_hash!==digest(intent)||marker.result_json!==stableJson(intent))throw Error('Final resource package intent differs; cleanup held');
     if(!this.packages)throw Error('Final resource checkpoint package service unavailable; cleanup held');
-    await this.packages.readCheckpoint(journal.receipt);
+    const retained=await this.packages.readCheckpoint(journal.receipt);this.requireFinalWorkingFolders(retained);
     if(stableJson(this.branches.requireFinalResourceExit(executionId,stepId))!==stableJson(exit))throw Error('Final resource exit changed during package verification');
     this.branches.requireFinalResourceFrontier(executionId,stepId);
   }

@@ -975,7 +975,7 @@ for(const mode of ['async','sync'])test(`current EXIT hold ${mode} missing mutab
 
 // Resource replay stops before any external Chat/import release; suffix work uses fresh custody.
 // Deferred real Branch/call/resource/import/Request source; custody and Script authority remain inert.
-async function openCalledTreeResource(store,branches,dir,executionId,branchId){
+async function openCalledTreeResource(store,branches,dir,executionId,branchId,actualPackages){
  let r;for(let n=0;n<40;n++){branches.advance();await branches.unitSaver.drain();r=store.sqlite.prepare("SELECT * FROM branch_resources WHERE execution_id=? AND state='reserved'").get(executionId);if(r)break;}assert.ok(r);
  for(let n=0;n<6&&branches.resourceRelease(r.step_execution_id)!=='ready';n++){await branches.unitSaver.drain();branches.advance();}
  const chatToken=branches.beginResourceOperation(r.step_execution_id,r.creation_key,'chat');await branches.unitSaver.drain();assert.equal(branches.releaseResourceChat(r.step_execution_id,r.creation_key,chatToken),true);
@@ -987,7 +987,7 @@ async function openCalledTreeResource(store,branches,dir,executionId,branchId){
  store.createAgent(p.id,{title:'Called source',engine:'codex',conversationId:chat.id},undefined,id);
  const result={rootAgentId:id,agentIds:[id],agentRefs:{worker:id}};
  branches.unitTransaction(()=>{store.updateAgentCreationOperation(op.id,{status:'completed',result});branches.completeResourceOperation(r.step_execution_id,'import',token,result);})();await branches.unitSaver.drain();
- if(branches.resourceCaptureEligible(r.step_execution_id)){const source=branches.reserveResourceCapture(r.step_execution_id),receipt={...source,version:1,custodyId:hash(source.checkpointId),boundaryId:'inert-called-opening',sha256:hash('opening'),byteLength:1};branches.finishResourceCapture(source,receipt);await branches.unitSaver.drain();}
+ if(branches.resourceCaptureEligible(r.step_execution_id)){const source=branches.reserveResourceCapture(r.step_execution_id);if(actualPackages){const receipt=await actualPackages.captureCheckpoint(source);branches.finishResourceCapture(source,receipt);}else{const receipt={...source,version:1,custodyId:hash(source.checkpointId),boundaryId:'inert-called-opening',sha256:hash('opening'),byteLength:1};branches.finishResourceCapture(source,receipt);}await branches.unitSaver.drain();}
  branches.bindResource(r.step_execution_id,result);await branches.unitSaver.drain();
  return {requestId:store.sqlite.prepare('SELECT request_id FROM branch_attempts WHERE step_execution_id=? ORDER BY number DESC LIMIT 1').get(r.step_execution_id).request_id,agentId:id,chatId:chat.id,stepId:r.step_execution_id};
 }
@@ -2885,7 +2885,7 @@ for(const [kind,parallel] of [['serial',false],['fork',true],['map','map']])test
 
 
 // Exercise the actual service: only a never-dispatched completed opening may be canceled.
-for(const state of ['completed-opening','capture-retry','real-custody','capture-uncertain','custody-lost-before-delete','custody-lost-after-delete','collision','no-fence','human','unknown','extra-source','retried','payload-mismatch','extra-payload','wrong-requester'])test(`final cleanup service protects ${state} activation work`,async t=>{
+for(const state of ['completed-opening','capture-retry','real-custody','capture-uncertain','legacy-marker','legacy-final','custody-lost-before-delete','custody-lost-after-delete','collision','no-fence','human','unknown','extra-source','retried','payload-mismatch','extra-payload','wrong-requester'])test(`final cleanup service protects ${state} activation work`,async t=>{
  const f=await reservationHistoryFixture(t,'async',false,false,false),prefix=await f.claim();f.settle(prefix);await f.advance(f.source.id);
  const db=f.store.sqlite,coordination=new CoordinationV3Store(db);
  const {enableProviderStartCoverage,sealProviderNeverStarted}=await import('../../packages/agents/dist/provider-start-journal.js');
@@ -2910,20 +2910,20 @@ for(const state of ['completed-opening','capture-retry','real-custody','capture-
  if(state==='extra-payload')db.prepare("UPDATE agent_activations SET payload_json=json_set(payload_json,'$.independentContext','human follow-up') WHERE id=?").run(opening.id);
  if(state==='wrong-requester')db.prepare("UPDATE agent_activations SET payload_json=json_set(payload_json,'$.requesterAgentId','other-agent') WHERE id=?").run(opening.id);
  let deleted=0,custodyUnavailable=false;
- const service=new BranchResourceService(f.branches,f.store,async ids=>{deleted++;if(state==='custody-lost-before-delete'){custodyUnavailable=true;throw Error('controlled deletion interruption');}const preview=f.store.previewAgentDeletion(ids);f.store.deleteAgentSubtrees(ids,preview.previewHash,id=>coordination.handleAgentDeletion(id));if(state==='custody-lost-after-delete')custodyUnavailable=true;},async()=>assert.fail('unexpected create'),async id=>{const chat=f.store.commitConversationDeletion(id);f.store.finishConversationDeletionStorageCleanup(chat);f.store.markConversationDeletionServerCleanupComplete(id);});
+ const service=new BranchResourceService(f.branches,f.store,async ids=>{deleted++;if(state==='custody-lost-before-delete'||state==='legacy-final'){custodyUnavailable=state==='custody-lost-before-delete';if(state==='legacy-final'){const key=`final-package-intent:${opened.stepId}:0`,r=db.prepare('SELECT result_json FROM branch_commands WHERE execution_id=? AND command_key=?').get(f.source.id,key),v=JSON.parse(r.result_json);v.schema='branch-final-package-intent.v1';delete v.wholeWorkingFolder;db.prepare('UPDATE branch_commands SET input_hash=?,result_json=? WHERE execution_id=? AND command_key=?').run(hash(stableJson(v)),stableJson(v),f.source.id,key);}throw Error('controlled deletion interruption');}const preview=f.store.previewAgentDeletion(ids);f.store.deleteAgentSubtrees(ids,preview.previewHash,id=>coordination.handleAgentDeletion(id));if(state==='custody-lost-after-delete')custodyUnavailable=true;},async()=>assert.fail('unexpected create'),async id=>{const chat=f.store.commitConversationDeletion(id);f.store.finishConversationDeletionStorageCleanup(chat);f.store.markConversationDeletionServerCleanupComplete(id);});
  let captureCalls=0,firstSource,physicalCaptures=0;
  const {checkpointPackageCustody}=await import('../../apps/server/dist/checkpoint-agent-packages.js');
  const custody=checkpointPackageCustody(f.dir);
- service.setPackageEngine({inspectCheckpoint:async source=>(state==='real-custody'||state==='capture-uncertain')?custody.inspect(source):{state:'missing'},readCheckpoint:async receipt=>{if(custodyUnavailable&&receipt.boundaryId==='final-capture-fixture')throw Error('controlled unavailable final custody');return state==='real-custody'&&receipt.boundaryId==='final-custody-fixture'?custody.read(receipt):undefined;},captureCheckpoint:async(source,seal)=>{
+ service.setPackageEngine({inspectCheckpoint:async source=>(state==='real-custody'||state==='capture-uncertain')?custody.inspect(source):{state:'missing'},readCheckpoint:async receipt=>{if(custodyUnavailable&&receipt.boundaryId==='final-capture-fixture')throw Error('controlled unavailable final custody');return state==='real-custody'&&receipt.boundaryId==='final-custody-fixture'?custody.read(receipt):receipt.boundaryId==='final-capture-fixture'?{agents:receipt.agentIds.map((ref,i)=>({ref,workingRootRef:'fixture-root',...(i===0?{workingFolder:{directories:[],excludedPaths:[]}}:{})}))}:undefined;},captureCheckpoint:async(source,seal)=>{
   captureCalls++;if(!firstSource)firstSource=structuredClone(source);else assert.deepEqual(source,firstSource,'retry retains its exact source');
-  if(state==='capture-retry'&&captureCalls===1)throw Error('controlled capture interruption before package publish');
+  if((state==='capture-retry'||state==='legacy-marker')&&captureCalls===1)throw Error('controlled capture interruption before package publish');
   if(state==='real-custody'||state==='capture-uncertain'){
    const status=await custody.inspect(source);if(status.state!=='missing')throw Error(`Checkpoint custody ${status.state}; cannot recapture this intent`);
    physicalCaptures++;
    return custody.capture(source,'final-custody-fixture',async()=>{
     if(state==='capture-uncertain')throw Error('controlled uncertain capture');
     assert.equal(db.prepare('SELECT state FROM coordination_requests WHERE id=?').get(opened.requestId).state,'completed');
-    return {schema:'ponderosa.agent-package.v1',mode:'full',kind:'agent',exportedAt:new Date().toISOString(),sourceLabel:'Final state',rootRef:source.agentIds[0],agents:source.agentIds.map(ref=>({ref,title:'After the completed Request',engine:'codex',sourceChat:{ref:source.sourceChatId,title:'Final Chat'},managementPermissions:{allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false}}))};
+    return {schema:'ponderosa.agent-package.v1',mode:'full',kind:'agent',exportedAt:new Date().toISOString(),sourceLabel:'Final state',rootRef:source.agentIds[0],agents:source.agentIds.map(ref=>({ref,title:'After the completed Request',engine:'codex',sourceChat:{ref:source.sourceChatId,title:'Final Chat'},workingRootRef:'fixture-root',workingFolder:{directories:[],excludedPaths:[]},managementPermissions:{allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false}}))};
    },(publish,receipt)=>db.transaction(()=>{seal(receipt);publish();})());
   }
   const later={...source,version:1,custodyId:hash(source.checkpointId),boundaryId:'final-capture-fixture',sha256:hash('final-bytes'),byteLength:11};
@@ -2932,14 +2932,17 @@ for(const state of ['completed-opening','capture-retry','real-custody','capture-
  service.setGenerationExitDrain(async ids=>sealProviderNeverStarted(db,'fixture-runtime',ids));
  await assert.rejects(()=>service.captureIssuedResource(f.source.id,opened.stepId,0,`final-resource-package:${opened.stepId}:0`),/reserved/);
  await service.tick(false);
- if(state==='capture-retry'||state==='capture-uncertain'){
+ if(state==='capture-retry'||state==='capture-uncertain'||state==='legacy-marker'){
   const intent=f.branches.issuedResourceCapture(f.source.id,opened.stepId,`final-resource-package:${opened.stepId}:0`);
   assert.equal(intent.state,'capturing');assert.equal(deleted,0);assert.equal(f.store.getConversation(opened.chatId).id,opened.chatId);
+  if(state==='legacy-marker'){const key=`final-package-intent:${opened.stepId}:0`,r=db.prepare('SELECT result_json FROM branch_commands WHERE execution_id=? AND command_key=?').get(f.source.id,key),v=JSON.parse(r.result_json);v.schema='branch-final-package-intent.v1';delete v.wholeWorkingFolder;db.prepare('UPDATE branch_commands SET input_hash=?,result_json=? WHERE execution_id=? AND command_key=?').run(hash(stableJson(v)),stableJson(v),f.source.id,key);}
  }
  await service.tick(false);
  const fence=db.prepare("SELECT count(*) n FROM host_lifecycle_commits WHERE kind='branch-generation-exit-fence' AND json_extract(receipt_json,'$.input.conversationId')=?").get(opened.chatId).n;
  const final=!!db.prepare('SELECT 1 FROM branch_commands WHERE execution_id=? AND command_key=?').get(f.source.id,`resource-final-exit:${opened.stepId}:0`);
- if(state==='custody-lost-before-delete'||state==='custody-lost-after-delete'){
+ if(state==='legacy-marker'||state==='legacy-final'){
+  assert.equal(deleted,state==='legacy-final'?1:0);assert.equal(final,state==='legacy-final');assert.equal(captureCalls,1);assert.ok(f.store.getAgent(opened.agentId));assert.ok(f.store.getConversation(opened.chatId));
+ }else if(state==='custody-lost-before-delete'||state==='custody-lost-after-delete'){
   assert.equal(deleted,1);assert.equal(final,true);assert.ok(f.store.getConversation(opened.chatId),'Chat must survive missing final custody');
   if(state==='custody-lost-before-delete')assert.ok(f.store.getAgent(opened.agentId));
   else assert.equal(f.store.getAgent(opened.agentId),undefined);
@@ -2971,4 +2974,60 @@ for(const state of ['completed-opening','capture-retry','real-custody','capture-
    assert.equal(deleted,1);
   }
  }
+});
+
+
+test('final resource actual package engine captures later history and working file',async t=>{
+ const Fastify=(await import('fastify')).default;
+ const {AssetStore}=await import('../../apps/server/dist/assets.js');
+ const {registerAgentPackageRoutes}=await import('../../apps/server/dist/routes/agent-packages.js');
+ const {BranchResourceService}=await import('../../apps/server/dist/branch-resource-service.js');
+ const {enableProviderStartCoverage,sealProviderNeverStarted}=await import('../../packages/agents/dist/provider-start-journal.js');
+ const f=await reservationHistoryFixture(t,'async',false,false,false),db=f.store.sqlite,coordination=new CoordinationV3Store(db);
+ const app=Fastify(),assets=new AssetStore(f.dir);
+ const {packageEngine}=registerAgentPackageRoutes(app,{dataDir:f.dir,store:f.store,coordination,assets,engines:new Map([['codex',{adapter:{id:'codex',listModels:()=>[],listEfforts:()=>[]}}]]),deletingProjectIds:new Set(),deletingConversationIds:new Set(),deletingAgentIds:new Set(),agentCreationConversationLeases:new Map(),cachedModelOptions:()=>[],appendWorkspace(){},agentMessages:id=>f.store.getProjectedAgentMessages(id),createOperationalNotification(){}});
+ await app.ready();let service;
+ try{
+  const workspace=join(f.dir,'resource-workspace');mkdirSync(workspace);
+  const prefix=await f.claim();f.settle(prefix);await f.advance(f.source.id);
+  enableProviderStartCoverage(db,'fixture-runtime');
+  const opened=await openCalledTreeResource(f.store,f.branches,workspace,f.source.id,f.branch.id,packageEngine);
+  const agent=f.store.getAgent(opened.agentId),root=agent.workingCopy.rootPath;
+  assert.equal(root,workspace,'the fixture captures only its disposable working directory');
+  const file=join(root,'final-work.txt');writeFileSync(file,'before checkpoint\n');
+  mkdirSync(join(root,'.git'));writeFileSync(join(root,'.git','config'),'excluded local fixture');
+  const message=text=>f.store.appendCommunicationEvent({schemaVersion:2,eventId:randomUUID(),projectId:agent.projectId,conversationId:opened.chatId,sender:{kind:'user',userId:'local-operator'},intent:'broadcast',audience:{kind:'organization',organizationId:agent.projectId},text,createdAt:new Date().toISOString()});
+  message('before checkpoint history');
+  const initial=f.branches.reserveIssuedResourceCapture(f.source.id,opened.stepId,0,'product-engine-initial');
+  await packageEngine.captureCheckpoint(initial.source,receipt=>f.branches.sealIssuedResourceCapture(f.source.id,opened.stepId,'product-engine-initial',receipt));
+  const earlier=f.branches.issuedResourceCapture(f.source.id,opened.stepId,'product-engine-initial');
+  assert.equal(earlier.state,'retained');
+  const earlierPackage=await packageEngine.readCheckpoint(earlier.receipt);
+  assert.ok(earlierPackage.agents[0].history.some(message=>message.text==='before checkpoint history'));
+  assert.equal(earlierPackage.agents[0].workingFiles?.some(entry=>entry.path==='final-work.txt')??false,false,'ordinary issued checkpoint keeps its original file selection');
+  writeFileSync(file,'after checkpoint exact content 😀\n');
+  message('after checkpoint history 😀');
+  f.store.appendEvent(opened.agentId,{type:'command',command:'inert final history command',cwd:root});
+  coordination.updateRequest({requestId:opened.requestId,updateId:'actual-engine-result',kind:'completed',actor:{kind:'agent',id:opened.agentId},payload:{text:'known result'}});
+  const suffix=await f.claim();f.settle(suffix);await f.branches.unitSaver.drain();
+  let deleted=0;
+  service=new BranchResourceService(f.branches,f.store,async ids=>{deleted++;const p=f.store.previewAgentDeletion(ids);f.store.deleteAgentSubtrees(ids,p.previewHash,id=>coordination.handleAgentDeletion(id));},async()=>assert.fail('unexpected Chat creation'),async id=>{const c=f.store.commitConversationDeletion(id);f.store.finishConversationDeletionStorageCleanup(c);f.store.markConversationDeletionServerCleanupComplete(id);});
+  service.setPackageEngine(packageEngine);service.setGenerationExitDrain(async ids=>sealProviderNeverStarted(db,'fixture-runtime',ids));
+  await service.tick(false);
+  const final=f.branches.issuedResourceCapture(f.source.id,opened.stepId,`final-resource-package:${opened.stepId}:0`);
+  assert.ok(final,JSON.stringify(f.branches.resourceErrors().map(e=>e.message)));assert.equal(final.state,'retained',JSON.stringify(f.branches.resourceErrors().map(e=>e.message)));
+  const bytes=await packageEngine.readCheckpointBytes(final.receipt),pkg=await packageEngine.readCheckpoint(final.receipt),node=pkg.agents.find(a=>a.ref===opened.agentId);
+  assert.ok(node.history.some(message=>message.text==='after checkpoint history 😀'),'real projected Agent history after the checkpoint survives');
+  const workingFile=node.workingFiles?.find(entry=>entry.path==='final-work.txt');assert.ok(workingFile,'actual working folder is included');
+  const artifact=node.artifacts.find(a=>a.ref===workingFile.artifactRef);assert.ok(artifact);
+  assert.equal(Buffer.from(artifact.dataBase64,'base64').toString(),'after checkpoint exact content 😀\n');
+  assert.ok(node.workingFolder.excludedPaths.includes('.git'),'Git data is explicitly excluded by the standard portable folder inventory');
+  assert.equal(readFileSync(join(root,'.git','config'),'utf8'),'excluded local fixture','source excluded files remain on disk in this fixture');
+  assert.equal(readFileSync(file,'utf8'),'after checkpoint exact content 😀\n');
+  assert.equal(hash(bytes),final.receipt.sha256);assert.equal(Buffer.byteLength(bytes),final.receipt.byteLength);
+  const exit=f.branches.requireFinalResourceExit(f.source.id,opened.stepId);
+  assert.equal(exit.selectedCheckpoint.id,final.checkpointId);assert.equal(exit.selectedCheckpoint.content_hash,final.checkpointHash);
+  assert.equal(deleted,1);assert.equal(db.prepare('SELECT state FROM branch_resources WHERE step_execution_id=?').get(opened.stepId).state,'retired');
+  console.log('ACTUAL_FINAL_CAPTURE_OK',JSON.stringify({history:true,workingFile:true,bytes:final.receipt.byteLength,deleted}));
+ }finally{if(service)await service.stop();await app.close();assets.close();}
 });
