@@ -354,3 +354,23 @@ test('legacy and unknown-result memory holds share stable classification',()=>{
  assert.equal(isMemoryCleanupHold(new Error(MEMORY_CLEANUP_UNKNOWN_HOLD)),true);
  assert.equal(isMemoryCleanupHold('Controlled ordinary error'),false);
 });
+
+test('retired Chat collection proof requires the exact committed matching deletion receipt',()=>fixture(async f=>{
+ const scope='chat:'+f.chat.id,id=await f.seed(scope,scope+':team');
+ const collection=await f.raw.client.getCollection({name:f.raw.names(scope).memory});
+ const row=await collection.get({ids:[id],include:['metadatas']});
+ const metadata=row.metadatas[0],stamp=JSON.parse(metadata.host_source_authority);stamp.principal=randomUUID();
+ await collection.update({ids:[id],metadatas:[{...metadata,host_source_authority:JSON.stringify(stamp)}]});
+ const result=await f.api('DELETE','/api/conversations/'+f.chat.id);
+ assert.equal(result.body.cleanupPending,true);assert.ok(f.store.getConversationDeletionReceipt(f.chat.id).canonicalDeletionCompleted);
+ await assert.rejects(checkedCollection(f.raw,scope,false,async()=>{}),/scope creation receipt/,
+  'ordinary validation still requires a live Chat');
+ await checkedCollection(f.raw,scope,false,async()=>{},true);
+ const original=f.raw.client.deleteCollection.bind(f.raw.client);let deletes=0;
+ f.raw.client.deleteCollection=async input=>{deletes++;return original(input);};
+ try{
+  f.store.sqlite.prepare('UPDATE local_memory_scope_provisioning SET project_id=? WHERE chat_id=?').run(randomUUID(),f.chat.id);
+  await assert.rejects(f.memory.purgeChat(f.chat.id),/scope creation receipt/);
+  assert.equal(deletes,0);assert.deepEqual(await f.rows(scope),[id]);
+ }finally{f.raw.client.deleteCollection=original;}
+}));

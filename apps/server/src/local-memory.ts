@@ -109,10 +109,10 @@ export class LocalMemoryService{
    }catch(e){policy.close();throw e;}
   },path.join(directory,'source-mutation-holds'));this.principalId=this.core.database.principal;
    this.core.database.setCollectionProof({
-    check:(scope,log,metadata,collectionId)=>{
+    check:(scope,log,metadata,collectionId,retiring)=>{
      const id=scope==='global'?'global':scope.startsWith('chat:')?scope.slice(5):'';
      if(!id)throw Error('Memory scope identity invalid');
-     const intent=this.memoryIntent(id);if(!intent)return;
+     const intent=this.memoryIntent(id,retiring);if(!intent)return;
      const kind=log?'log':'memory',state=log?intent.log_state:intent.memory_state;
      const expectedId=log?intent.log_collection_id:intent.memory_collection_id;
      if(state!=='confirmed')throw new MemoryCollectionHold('Memory collection creation is unverified; review its provisioning hold');
@@ -121,10 +121,10 @@ export class LocalMemoryService{
       throw new MemoryCollectionHold('Memory collection does not match its retained creation identity');
      }
     },
-    missing:(scope,log)=>{
+    missing:(scope,log,retiring)=>{
      const id=scope==='global'?'global':scope.startsWith('chat:')?scope.slice(5):'';
      if(!id)return;
-     const intent=this.memoryIntent(id),state=intent&&(log?intent.log_state:intent.memory_state);
+     const intent=this.memoryIntent(id,retiring),state=intent&&(log?intent.log_state:intent.memory_state);
      if(!intent||state==='confirmed')this.missingExistingScopes.add(scope);
     },
    });
@@ -350,14 +350,21 @@ export class LocalMemoryService{
  private async ensureGlobalScope(){if(this.missingExistingScopes.has('global'))throw Error('Existing global memory is missing or changed; restore its original backend and restart to recheck it');const intent=this.memoryIntent('global');if(intent&&(intent.memory_state!=='confirmed'||intent.log_state!=='confirmed'))await this.core.database.raw.exclusive(()=>this.provisionIntent('global'));}
  private async ensurePlannedChat(chatId:string,ownerCheck?:()=>void){const scope='chat:'+chatId;if(this.missingExistingScopes.has(scope))throw Error('Existing Chat memory is missing or changed; restore its original backend and restart to recheck it');const intent=this.memoryIntent(chatId);if(intent&&(intent.memory_state!=='confirmed'||intent.log_state!=='confirmed')){if(ownerCheck)await this.core.database.raw.exclusive(()=>this.provisionIntent(chatId,ownerCheck));else await this.verifyChat(chatId);}else if(!intent&&!this.knownScopes.has(scope)&&!ownerCheck){try{await this.verifyChat(chatId);}catch(error){if(error instanceof Error&&error.name==='ChromaNotFoundError')this.missingExistingScopes.add(scope);throw error;}}}
  private scopeGuard(scope:string){return async()=>{this.live();if(scope!=='global'){const owner=activeChatResourceOwner(this.ports.store,'chat',scope.slice(5));if(!owner||owner.executionId)throw Error('Canonical durable Chat unavailable during provisioning');}};}
- private memoryIntent(chatId:string){
+ private memoryIntent(chatId:string,retiring=false){
   this.live();const db=this.ports.store.sqlite;
   const intent=db.prepare('SELECT * FROM local_memory_scope_provisioning WHERE chat_id=?').get(chatId) as {chat_id:string;project_id:string;data_generation:string;principal_id:string;storage_binding:string;intent_id:string;memory_state:string;log_state:string;memory_collection_id:string|null;log_collection_id:string|null}|undefined;
   if(!intent)return;
   const chat=chatId==='global'?undefined:db.prepare('SELECT project_id,branch_execution_id FROM conversations WHERE id=?').get(chatId) as {project_id:string;branch_execution_id:string|null}|undefined;
   const generation=(db.prepare('SELECT generation_id FROM _state_generation WHERE singleton=1').get() as {generation_id:string}).generation_id;
   const policy=this.policy.prepare('SELECT principal_id,data_generation,storage_binding FROM local_memory_installation WHERE id=1').get() as {principal_id:string;data_generation:string;storage_binding:string};
-  if((chatId==='global'?intent.project_id!=='global':!chat||Boolean(chat.branch_execution_id)||chat.project_id!==intent.project_id)||intent.data_generation!==generation||policy.data_generation!==generation||intent.principal_id!==this.principalId||intent.principal_id!==policy.principal_id||intent.storage_binding!==policy.storage_binding||!/^[0-9a-f-]{36}$/.test(intent.intent_id))throw Error('Memory scope creation receipt does not match current scope and installation');
+  // Canonical Chat deletion precedes memory cleanup. Only that cleanup may
+  // use the committed receipt in place of the removed Chat row; ordinary
+  // provisioning and reads continue to require the live owner.
+  const receipt=!chat&&retiring&&chatId!=='global'?this.ports.store.getConversationDeletionReceipt(chatId):undefined;
+  const ownerMatches=chatId==='global'?intent.project_id==='global':chat
+   ? !chat.branch_execution_id&&chat.project_id===intent.project_id
+   : Boolean(receipt?.canonicalDeletionCompleted&&receipt.conversationId===chatId&&receipt.projectId===intent.project_id);
+  if(!ownerMatches||intent.data_generation!==generation||policy.data_generation!==generation||intent.principal_id!==this.principalId||intent.principal_id!==policy.principal_id||intent.storage_binding!==policy.storage_binding||!/^[0-9a-f-]{36}$/.test(intent.intent_id))throw Error('Memory scope creation receipt does not match current scope and installation');
   return intent;
  }
  private async provisionIntent(chatId:string,ownerCheck?:()=>void,allowHeld=false){

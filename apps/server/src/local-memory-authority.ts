@@ -46,15 +46,15 @@ function shareOriginQueue(raw:ChromaStorage){
  };
 }
 const mutationBoundaries=new WeakMap<ChromaStorage,ReturnType<typeof memorySourceMutations>>();
-type CollectionProof={check:(scope:string,log:boolean,metadata:Record<string,unknown>|null|undefined,collectionId:string)=>void;missing:(scope:string,log:boolean)=>void};
+type CollectionProof={check:(scope:string,log:boolean,metadata:Record<string,unknown>|null|undefined,collectionId:string,retiring:boolean)=>void;missing:(scope:string,log:boolean,retiring:boolean)=>void};
 const collectionProofs=new WeakMap<ChromaStorage,CollectionProof>();
 const mutate=<T>(raw:ChromaStorage,work:()=>Promise<T>,effect?:MemoryMutationEffect,acknowledged?:()=>void)=>{const boundary=mutationBoundaries.get(raw);if(!boundary&&acknowledged)throw Error('Memory mutation journal unavailable');return boundary?.run(work,effect,acknowledged)??withSourceMutation(work);};
 function trackedCollection<T extends object>(raw:ChromaStorage,collection:T,scope:string,log:boolean):T{
  return new Proxy(collection,{get(target,key){const value=Reflect.get(target,key);if(typeof value!=='function')return value;return (...args:unknown[])=>['upsert','add','update','delete','modify'].includes(String(key))?mutate(raw,()=>Reflect.apply(value,target,args),{scope,log,operation:String(key) as MemoryMutationEffect['operation']}):Reflect.apply(value,target,args);}});
 }
-export async function checkedCollection(raw:ChromaStorage,scope:string,log:boolean,guard:()=>Promise<void>):Promise<Awaited<ReturnType<ChromaStorage["client"]["getCollection"]>>>{
- await guard();let c;try{c=await raw.client.getCollection({name:raw.names(scope)[log?'log':'memory'],embeddingFunction:noGeneration});}catch(e){if(e instanceof Error&&e.name==='ChromaNotFoundError')collectionProofs.get(raw)?.missing(scope,log);throw e;}await guard();
- if((c.configuration?.hnsw?.space??c.metadata?.['hnsw:space'])!=='cosine'||c.metadata?.embedding_signature!==raw.signature||(c.metadata?.dimensions!==undefined&&c.metadata.dimensions!==384)){collectionProofs.get(raw)?.missing(scope,log);throw new MemoryCollectionHold('Incompatible memory collection binding');}collectionProofs.get(raw)?.check(scope,log,c.metadata,c.id);return trackedCollection(raw,c,scope,log);
+export async function checkedCollection(raw:ChromaStorage,scope:string,log:boolean,guard:()=>Promise<void>,retiring=false):Promise<Awaited<ReturnType<ChromaStorage["client"]["getCollection"]>>>{
+ await guard();let c;try{c=await raw.client.getCollection({name:raw.names(scope)[log?'log':'memory'],embeddingFunction:noGeneration});}catch(e){if(e instanceof Error&&e.name==='ChromaNotFoundError')collectionProofs.get(raw)?.missing(scope,log,retiring);throw e;}await guard();
+ if((c.configuration?.hnsw?.space??c.metadata?.['hnsw:space'])!=='cosine'||c.metadata?.embedding_signature!==raw.signature||(c.metadata?.dimensions!==undefined&&c.metadata.dimensions!==384)){collectionProofs.get(raw)?.missing(scope,log,retiring);throw new MemoryCollectionHold('Incompatible memory collection binding');}collectionProofs.get(raw)?.check(scope,log,c.metadata,c.id,retiring);return trackedCollection(raw,c,scope,log);
 }
 /** Issue one durably planned collection creation. An existing name is never
  * adopted as a fresh result; a lost response is resolved separately by token. */
@@ -359,7 +359,7 @@ export class AuthorityStorage implements MemoryStorage{
      catch(error){if(error instanceof Error&&error.name==='ChromaNotFoundError')return {log,removed:true as const};throw error;}
      throw Error('Previously deleted memory collection exists again; cleanup held');
     }
-    const collection=await checkedCollection(this.raw,scope,log,guard);
+    const collection=await checkedCollection(this.raw,scope,log,guard,true);
     await guard();const count=await collection.count();await guard();
     if(!Number.isSafeInteger(count)||count<0)throw Error('Memory cleanup inventory is unavailable');
     const seen=new Set<string>(),selected:string[]=[],rows=new Map<string,{audience:string;metadata:any}>();
@@ -393,7 +393,7 @@ export class AuthorityStorage implements MemoryStorage{
    for(const entry of agentId?[...collections].reverse():collections){
     if(entry.removed)continue;
     await guard();this.assertScopeSettled(scope);
-    const current=await checkedCollection(this.raw,scope,entry.log,guard);
+    const current=await checkedCollection(this.raw,scope,entry.log,guard,true);
     if(current.id!==entry.id)throw Error('Memory collection identity changed; cleanup held');
     if(agentId){
      for(let offset=0;offset<entry.selected.length;offset+=500){
