@@ -44,7 +44,15 @@ before durable-pool issuance pending safe writable-handle custody.
 The isolated integration branch now also includes source changes for pending
 Branch resources, scheduler waiting, Output preference projection and deferred
 publication. Branch plan ownership remains linked until completion; canceled
-role cleanup checks exact ownership and role epochs. These changes and their
+role cleanup checks exact ownership and role epochs. Recovery forms validate
+notes before retaining commands and distinguish a failed local save from an
+uncertain request. Agent import now retains an exact request fingerprint,
+supports scoped lookup, and records a durable admission intent before queue
+file mutation. A user can explicitly retire a proven unqueued intent while
+its evidence remains preserved. A lookup with no durable record is still
+inconclusive: an earlier upload can remain in flight. The import change adds
+schema migration 0045; it is distinct from the unselected experimental memory
+draft that previously used that number. These source changes and their
 regressions have not yet been run on this combined source.
 
 The twelve Chroma failures remain unresolved. The recorded cases comprise eight
