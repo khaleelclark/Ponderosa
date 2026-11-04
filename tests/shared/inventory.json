@@ -1204,6 +1204,14 @@
       "origin": "Current-master Branch API ownership, Chat lifecycle reuse and favorite/folder persistence"
     },
     {
+      "path": "tests/organizations/cross-chat-copy.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native server workspaces; disposable Core and Branch fixtures; no provider account",
+      "origin": "Cross-Chat copy destination, product boundary, and instruction-conflict review"
+    },
+    {
       "path": "tests/organizations/package-upload-ownership.test.mjs",
       "feature": "organizations",
       "lane": "server",
