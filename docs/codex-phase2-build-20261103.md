@@ -2,7 +2,7 @@
 
 Owner: Codex integration. Starting reviewed candidate:
 `7a7504b0b25a79f72ab00cbc991a043606526467`. Source reviewed for this
-checkpoint: `4e376a809efab7874578d2308c336da3285a9633`.
+checkpoint: `c6745885aa69a59ec9eade73431cc8744afe725b`.
 
 The authoritative Ponderosa Behavior Bible 2 is Library file
 `libfile_d5c0d1c163d88191be429a72ee3e95a5`, 530 lines, SHA-256
@@ -52,10 +52,18 @@ before durable-pool issuance pending safe writable-handle custody.
   `/tmp/ponderosa-codex-phase2-20261103/evidence/q0044-build.log`,
   `q0044-typecheck.log` and `q0044-build.exit`. Its repository suite was
   still running at this checkpoint and had no final result.
-- Remaining acceptance includes completion of the current pinned whole suite,
-  all resulting corrections, populated Core and Branches upgrades and
-  crash trials, then 20 consecutive complete controlled core-path runs on a
-  fixed commit and environment. The 10k-message/20-Agent performance profile,
+- The exact published ui096 0027 predecessor schema now has an independently
+  reviewed admission fix. Its **22/22** focused checks passed, including
+  unchanged-byte refusal of foreign and partial schemas. Disposable populated
+  Core and Branches stores passed direct-server migration and restart; controlled
+  messaging, idempotent retry and simulated canonical handoff passed. A combined
+  Branches workflow, Chat and memory fixture passed authority-filtered reads
+  with local ONNX and an owned loopback Chroma. The preserved evidence roots and
+  precise scope are in [the upgrade reconciliation](codex-phase2-reconciliation-20261103.md#populated-ui096-upgrade-evidence).
+- Remaining acceptance includes completion of the pinned `4e376a809` whole
+  suite, all resulting corrections, further crash/recovery qualification, then
+  20 consecutive complete controlled core-path runs on a fixed commit and
+  environment. The 10k-message/20-Agent performance profile,
   streaming and voice recordings, phone latency, memory recall/misuse, trigger
   and notification matrices, installation and accessibility checks, public
   client/framework comparisons and subjective judging remain unqualified.

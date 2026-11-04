@@ -1,6 +1,6 @@
 # Codex Phase 2 requirement reconciliation — 3 November 2026
 
-Starting source: `7a7504b0b25a79f72ab00cbc991a043606526467`; source checkpoint: `4e376a809efab7874578d2308c336da3285a9633`. The implementation checkpoint is tracked in `codex-phase2-build-20261103.md`. Authoritative Library
+Starting source: `7a7504b0b25a79f72ab00cbc991a043606526467`; source checkpoint: `c6745885aa69a59ec9eade73431cc8744afe725b`. The implementation checkpoint is tracked in `codex-phase2-build-20261103.md`. Authoritative Library
 Bible: 530 lines, SHA-256
 `ac314d93732e631bb042b8d3d2dc802ba08446812f99ba931023d2e02b14ab58`.
 The complete Bible was read. Later human direction changes execution ownership to
@@ -31,7 +31,7 @@ present implementation absence or current execution success.
 | 14 | Native provider errors; operational notifications; queued recovery presentation | Visible failure and retry state source exists. Provider outage/rate-limit/stuck-task injection and plain-language judging remain evidence. | Runtime + Interface |
 | 15 | Empty tombstone cleanup; project/Agent deletion; portable-working-files.ts; local-memory.ts | User-folder custody has source mechanisms. Automatic Chat, Project and Agent memory cleanup, package rollback and post-write compensation are held because Chroma lacks proven atomic identity/content deletion or independent-writer exclusion. Byte-identical deletion and race trials remain evidence. | Portability + Integration |
 | 16 | branch-trigger-service.ts; branch-trigger-store.ts | Durable occurrence identity and bounded catch-up exist. Clock-jump/no-double-fire, timing and reason tracing remain evidence. | Runtime |
-| 17 | state-admission.ts; db.ts; coordination recovery; existing regressions | 0044 adds scope-intent schema and exact predecessor admission. Earlier full diagnostics exited with failures and mixed source/build outputs; they do not qualify this checkpoint. A pinned integrated pass, populated upgrades and 20 consecutive controlled core runs remain. | Integration |
+| 17 | state-admission.ts; db.ts; coordination recovery; existing regressions | 0044 adds scope-intent schema; exact ui096 0027 predecessor admission and controlled populated Core/Branches direct-server migration and restart passed. Earlier full diagnostics failed or mixed outputs; the pinned suite, further crash/recovery qualification and 20 consecutive controlled core runs remain. | Integration |
 | 18 | notification-routing.ts; workspace-store.ts; Assistant report cursor | Default directResponses/broadcasts false; unread and chosen notification separation exist. Thirty-message bursts/settings combinations remain evidence. | Interface |
 | 19 | Audit/Activity projections; lifecycle receipts; group-journal-audit.ts | Source includes recovery pagination and controlled schedule-error classification. Ten random UI action trails, exact diagnostic visibility/redaction and log judging remain evidence. | Discovery + Interface + Integration |
 | 20 | server-request-hooks.ts | Ordinary operator admission has no network token/identity gate; origin checks remain. Source search is not whole-product runtime qualification. | Integration |
@@ -65,6 +65,41 @@ mounted qualification; Runtime owns provider/voice behavior; Integration aggrega
 - A8–A10: singleton speaker, move designation, editable workflow and model/prompt edits retaining role have source. Concurrency and unavailable-model ordinary-switch behavior remain evidence.
 - A11–A13: remove/delete disables; explicit re-enable only when absent; imported speaker collision review disables incoming designation have source. Mounted and concurrent import/enable trials remain evidence.
 - I1: scoped current web/source search found no user-facing “Messages across Ponderosa” label; Inbox source exists. Persisted `/messages` identity is not an obsolete visible label.
+
+## Populated ui096 upgrade evidence
+
+The audited predecessor was `7f3d0b4b6e0bb4c5d699142e5b038a8ad545ad5b`.
+Source commit `c6745885a` admits one additional exact published 0027 schema
+shape; independent review confirmed both saved predecessor schemas match it.
+The focused schema suite passed **22/22**, including foreign and partial-schema
+refusal with database bytes unchanged.
+
+Separate disposable ui096-created Core and Branches stores passed direct-server
+startup migration and restart. Checks covered Agent settings and organization,
+Chat instructions and messages, imported history, artifact bytes, pending
+Requests, completed handoffs, and Branch definitions, bindings and triggers.
+A controlled post-upgrade HTTP message and idempotent retry passed; the handoff
+used simulated canonical coordination, with no provider call.
+
+A combined Branches-owned workflow, Chat, artifact, coordination and memory
+fixture also passed direct-server migration and restart with pinned local ONNX
+models and an owned loopback Chroma. Authority-filtered reads retained synthetic
+global and Chat memories, vectors and ownership metadata.
+
+Preserved evidence and predecessor/upgraded copies:
+
+- Core and Branches store, startup and messaging:
+  `/tmp/ponderosa-codex-phase2-20261103/populated-upgrade-9OIr1S`
+- Combined Branches workflow and memory:
+  `/tmp/ponderosa-codex-phase2-20261103/populated-branches-complete-RP9YOY`
+- Core full-server memory:
+  `/tmp/ponderosa-codex-phase2-20261103/memory-server-upgrade-bqqEgS`
+- Schema regression:
+  `/tmp/ponderosa-codex-phase2-20261103/evidence/ui096-fix-tests-2.log`
+
+These controlled checks do not qualify real providers, independent-writer
+memory safety, the 20-run reliability streak or the full product. Further
+crash/recovery and combined-suite qualification remain open.
 
 ## Genuine boundaries that must not be converted into fake success
 
@@ -103,8 +138,8 @@ user data or delete foreign files.
 ## Consolidated acceptance scope
 
 Do not substitute one unit-suite pass for these requirements: full core and
-Branches verification; 20 consecutive core runs; populated upgrade/crash trials;
-real installed native mode/capability checks where accounts permit; fresh round-trip
+Branches verification; 20 consecutive core runs; further populated
+upgrade/crash trials where needed; real installed native mode/capability checks where accounts permit; fresh round-trip
 data comparison; triggers/clock behavior; notification bursts; seeded combined
 memory and misuse trials; public-client/comparator runs; complete stream recordings;
 call latency measurements; keyboard/reader/axe/theme/text-size; eight fresh sessions
@@ -118,5 +153,6 @@ The earlier repository diagnostics exited with failures and mixed source/build
 outputs; they are partial evidence only. The earlier mounted matrix recorded 54
 passes and 24 failures. After fixture fixes, the mounted matrix at
 `4e376a809` passed 78/78, and that candidate's build and typecheck passed.
-The pinned repository suite was still running at this checkpoint; it must report
-its final failures and skips before any final verdict.
+The repository suite pinned to `4e376a809` was still running at this
+checkpoint; it must report its final failures and skips before any final
+verdict, and it does not include the later ui096 admission fix.
