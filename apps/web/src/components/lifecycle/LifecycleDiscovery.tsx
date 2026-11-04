@@ -30,7 +30,7 @@ function Inventory({kind}:{kind:Kind}):JSX.Element {
   {query.isFetching&&<Typography role="status">Reading canonical inventory…</Typography>}
   {query.error&&<Alert severity="warning">{query.error.message} · selections + confirmations cleared · explicitly restart inventory</Alert>}
   {!query.isError&&<>
-   <Typography variant="caption" sx={{overflowWrap:'anywhere'}}>Loaded {items.length} · revision {revision??'pending'} · {query.isPending?'reading first page':query.hasNextPage?'more entries available':'end of inventory'}</Typography>
+   <Typography variant="caption">Loaded {items.length} · {query.isPending?'reading first page':query.hasNextPage?'more entries available':'end of inventory'}</Typography><details><summary>Inventory revision</summary><Typography variant="caption" sx={{overflowWrap:'anywhere'}}>{revision??'pending'}</Typography></details>
    {Boolean(pages[0]?.unverifiedEvidenceCount)&&<Alert severity="warning">{pages[0]?.unverifiedEvidenceCount} unverified evidence files · quarantined/unrecognized · no selectable operation IDs</Alert>}
    <TextField select label={titles[kind]} value={target?selected:''} disabled={query.isFetching} onChange={event=>setSelected(event.target.value)}><MenuItem value="">Choose canonical identity</MenuItem>{items.map(item=><MenuItem key={identity(item)} value={identity(item)}>{label(item)}</MenuItem>)}</TextField>
    {query.hasNextPage&&<Button disabled={query.isFetching} onClick={()=>void query.fetchNextPage()}>Load more {titles[kind].toLowerCase()}</Button>}
@@ -59,7 +59,7 @@ function Inventory({kind}:{kind:Kind}):JSX.Element {
 }
 export function LifecycleDiscovery():JSX.Element {
  return <Stack spacing={2}>
-  <Typography>Discovery · current / deleted-owner / retained identities + hashes · load all pages · eligibility requires current review</Typography>
+  <Typography>Review saved records · load all pages · current review required</Typography>
   <Inventory kind="imports"/>
   <Inventory kind="destinations"/>
   <Inventory kind="captures"/>
