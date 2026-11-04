@@ -4,10 +4,12 @@ import {mkdtemp,mkdir,writeFile,readFile,link,symlink,readlink,lstat,realpath,re
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {execFile} from 'node:child_process';
+import {fstatSync} from 'node:fs';
 import {promisify} from 'node:util';
 import {exportReviewedUserData} from '../../apps/server/dist/portable-reviewed-user-data.js';
 import {planReviewedRecoveryRoots,applyReviewedRecoveryRoots} from '../../apps/server/dist/portable-git-recreation.js';
 import {getNativeGitExternalGraph} from '../../apps/server/dist/portable-git-external-application.js';
+import {inventoryWorkingFolder,createWorkingNativeMetadataEvidence} from '../../apps/server/dist/portable-working-files.js';
 
 const exec=promisify(execFile);
 const git=async(cwd,...args)=>exec('git',['--no-optional-locks',...args],{cwd,env:{...Object.fromEntries(Object.entries(process.env).filter(([key])=>!key.startsWith('GIT_'))),GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null',GIT_TERMINAL_PROMPT:'0'}});
@@ -21,7 +23,7 @@ const packageFor=(manifest,working={})=>{
  const files={'.ponderosa-portable-review/user-data.json':Buffer.from(JSON.stringify(manifest)),...working};
  return {schema:'ponderosa.agent-package.v1',mode:'full',kind:'organization',exportedAt:new Date().toISOString(),sourceLabel:'Real Git graph custody regression',rootRef:'agent',agents:[{ref:'agent',title:'Agent',engine:'codex',workingRootRef:'work',managementPermissions:{allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false},workingFolder:{directories:[],excludedPaths:['.git']},workingFiles:Object.keys(files).map((name,index)=>({path:name,artifactRef:'file-'+index})),artifacts:Object.entries(files).map(([name,bytes],index)=>({ref:'file-'+index,kind:'generated_file',path:name,createdAt:new Date().toISOString(),dataBase64:Buffer.from(bytes).toString('base64')}))}]};
 };
-async function fixture(t,worktree=false,selectedWorktree=false){
+async function fixture(t,worktree=false,selectedWorktree=false,extensions={}){
  const root=await realpath(await mkdtemp(path.join(tmpdir(),'native-real-graph-'))),source=path.join(root,'source'),destination=path.join(root,'destination');
  t.after(()=>rm(root,{recursive:true,force:true}));
  await mkdir(source);await mkdir(destination);
@@ -31,9 +33,11 @@ async function fixture(t,worktree=false,selectedWorktree=false){
  if(!worktree){
   await link(path.join(sourceHooks,'script'),path.join(sourceHooks,'hard'));
   await symlink('script',path.join(sourceHooks,'symbol'));
+  if(extensions.dangling)await symlink('missing',path.join(sourceHooks,'dangling'));
   await chmod(sourceHooks,0o2750);
   await setExactMtime(path.join(sourceHooks,'script'));
   await setExactMtime(path.join(sourceHooks,'symbol'),true);
+  if(extensions.restrictive){await chmod(path.join(sourceHooks,'script'),0o400);await chmod(sourceHooks,0o500);}
   await setExactMtime(sourceHooks);
  } else {
   await git(source,'config','core.hooksPath','hooks');
@@ -43,23 +47,26 @@ async function fixture(t,worktree=false,selectedWorktree=false){
  if(selectedWorktree){
   const sourceSelected=path.join(source,'.hooks'),destinationSelected=path.join(destination,'.hooks');
   await mkdir(sourceSelected);await writeFile(path.join(sourceSelected,'run'),data);
-  await chmod(path.join(sourceSelected,'run'),0o700);await link(path.join(sourceSelected,'run'),path.join(sourceSelected,'hard'));
+  await chmod(path.join(sourceSelected,'run'),0o700);await link(path.join(sourceSelected,'run'),extensions.crossAlias?path.join(source,'shared-script'):path.join(sourceSelected,'hard'));
   await symlink('run',path.join(sourceSelected,'symbol'));await chmod(sourceSelected,0o750);
   await setExactMtime(path.join(sourceSelected,'run'));
   await setExactMtime(path.join(sourceSelected,'symbol'),true);
   await setExactMtime(sourceSelected);
   await git(source,'config','core.hooksPath','.hooks');
   await mkdir(destinationSelected);await writeFile(path.join(destinationSelected,'run'),data);
-  await link(path.join(destinationSelected,'run'),path.join(destinationSelected,'hard'));
+  await link(path.join(destinationSelected,'run'),extensions.crossAlias?path.join(destination,'shared-script'):path.join(destinationSelected,'hard'));
   await symlink('run',path.join(destinationSelected,'symbol'));
   selected={sourceFile:await lstat(path.join(sourceSelected,'run'),{bigint:true}),sourceDir:await lstat(sourceSelected,{bigint:true}),sourceLink:await lstat(path.join(sourceSelected,'symbol'),{bigint:true}),destinationFile:await lstat(path.join(destinationSelected,'run'),{bigint:true}),destinationDir:await lstat(destinationSelected,{bigint:true})};
  }
  const sourceFile=await lstat(path.join(sourceHooks,'script'),{bigint:true});
  const sourceDir=await lstat(sourceHooks,{bigint:true});
  const sourceLink=worktree?undefined:await lstat(path.join(sourceHooks,'symbol'),{bigint:true});
- const manifest=await exportReviewedUserData(source,{git:true,harness:false,externalGitDependencies:true});
- const working=worktree?{'hooks/script':data}:selectedWorktree?{'.hooks/run':data,'.hooks/hard':data}:{};
+ const selection={git:true,harness:false,externalGitDependencies:true};
+ const inventory=extensions.crossAlias?await inventoryWorkingFolder(source,selection):undefined;
+ const manifest=await exportReviewedUserData(source,selection);
+ const working=worktree?{'hooks/script':data}:selectedWorktree?(extensions.crossAlias?{'.hooks/run':data}:{'.hooks/run':data,'.hooks/hard':data}):{};
  const activation={git:true,harness:false},pkg=packageFor(manifest,working);
+ if(inventory)pkg.agents[0].workingFolder.links=inventory.links;
  const tasks=planReviewedRecoveryRoots(pkg,{work:destination},activation);
  assert.equal(tasks.length,1);
  const graph=getNativeGitExternalGraph(tasks[0].configuration,{gitDir:path.join(destination,'.git'),privateDir:path.join(destination,'.git'),worktreePath:destination});
@@ -130,4 +137,97 @@ test('real reviewed worktree hook refuses a replaced byte-phase directory',optio
  assert.equal(after.ino,before.ino);assert.equal(after.mode,before.mode);assert.equal(after.mtimeNs,before.mtimeNs);
  assert.equal(fileAfter.mode,fileBefore.mode);assert.equal(fileAfter.mtimeNs,fileBefore.mtimeNs);
  assert.deepEqual(await readFile(path.join(retained,'script')),data);assert.deepEqual(await readFile(path.join(target,'script')),data);
+});
+
+test('real reviewed dangling hook retains only its captured absent target',options,async t=>{
+ const f=await fixture(t,false,false,{dangling:true});
+ const dangling=path.join(f.destination,'.git','hooks','dangling'),missing=path.join(f.destination,'.git','hooks','missing');
+ assert.ok(f.manifest.gitExternalDependencies.absentPaths.includes(path.join(f.sourceHooks,'missing')),'source absence is captured');
+ assert.ok(f.graph.absentPaths.some(node=>node.path===missing),'issued plan names the same owned absent destination');
+ assert.ok(f.graph.links.some(node=>node.path===dangling&&node.target===missing),'issued plan binds the passive alias to that absence');
+ await f.apply();
+ assert.equal(await readlink(dangling),'missing');
+ await assert.rejects(lstat(missing),{code:'ENOENT'});
+});
+
+test('real reviewed working alias receives one exact native file proof',options,async t=>{
+ const f=await fixture(t,false,true,{crossAlias:true});
+ const target=path.join(f.destination,'.hooks','run'),alias=path.join(f.destination,'shared-script');
+ const issued={...identity(await lstat(f.destination,{bigint:true})),directories:{'.hooks':identity(f.selected.destinationDir)}};
+ assert.ok(f.tasks[0].workingAliases.some(row=>row.path===alias&&row.target===target),'the selected working alias is part of the issued task');
+ await f.apply({[f.destination]:issued});
+ const actual=await lstat(alias,{bigint:true}),original=await lstat(target,{bigint:true});
+ assert.equal(actual.dev,original.dev);assert.equal(actual.ino,original.ino);assert.equal(actual.ino,f.selected.destinationFile.ino);
+ assert.equal(actual.nlink,2n);assert.equal(actual.mtimeNs,f.selected.sourceFile.mtimeNs);assert.equal(actual.mode&0o7777n,f.selected.sourceFile.mode&0o7777n);
+ const proof=f.tasks[0].configuration.fileProofs.get(alias);
+ assert.equal(proof.inode,actual.ino.toString());assert.equal(proof.expectedLinkCount,'2');assert.equal(proof.mtimeNs,f.selected.sourceFile.mtimeNs.toString());
+ assert.equal(f.tasks[0].configuration.nativeMetadata.protectedFiles.get(alias).mtimeNs,f.selected.sourceFile.mtimeNs.toString());
+ assert.deepEqual(await readFile(alias),data);
+});
+
+test('real root hook reference preserves original root identity and metadata',options,async t=>{
+ const root=await realpath(await mkdtemp(path.join(tmpdir(),'native-real-root-hook-'))),source=path.join(root,'source'),destination=path.join(root,'destination');
+ t.after(()=>rm(root,{recursive:true,force:true}));
+ await mkdir(source);await mkdir(destination);
+ await git(source,'init','--template=','--initial-branch=main');
+ await mkdir(path.join(source,'support'));await writeFile(path.join(source,'support','script'),data);await chmod(path.join(source,'support','script'),0o751);
+ await mkdir(path.join(source,'.git','hooks'));await symlink(source,path.join(source,'.git','hooks','root'));
+ await git(source,'config','core.hooksPath',source);
+ await chmod(source,0o700);await utimes(source,1700000000.123456,1700000000.123456);
+ const capturedRoot=await lstat(source,{bigint:true});
+ await mkdir(path.join(destination,'support'));await writeFile(path.join(destination,'support','script'),data);
+ const originalFile=await lstat(path.join(destination,'support','script'),{bigint:true}),originalRoot=await lstat(destination,{bigint:true}),originalSupport=await lstat(path.join(destination,'support'),{bigint:true});
+ const manifest=await exportReviewedUserData(source,{git:true,harness:false,externalGitDependencies:true});
+ const activation={git:true,harness:false},pkg=packageFor(manifest,{'support/script':data});
+ const tasks=planReviewedRecoveryRoots(pkg,{work:destination},activation);
+ const graph=getNativeGitExternalGraph(tasks[0].configuration,{gitDir:path.join(destination,'.git'),privateDir:path.join(destination,'.git'),worktreePath:destination});
+ assert.ok(graph.rootMetadata.some(node=>node.path===destination),'root metadata originates in the reviewed selected worktree');
+ const rootView=graph.links.find(node=>node.kind==='symlink'&&node.target===destination);
+ assert.ok(rootView,'the production planner issues a reference to the selected root');
+ const issued={...identity(originalRoot),directories:{support:identity(originalSupport)}};
+ await applyReviewedRecoveryRoots(tasks,activation,()=>{},{[destination]:issued});
+ const afterRoot=await lstat(destination,{bigint:true}),afterFile=await lstat(path.join(destination,'support','script'),{bigint:true});
+ assert.equal(afterRoot.dev,originalRoot.dev);assert.equal(afterRoot.ino,originalRoot.ino);
+ assert.equal(afterRoot.mode&0o7777n,capturedRoot.mode&0o7777n);assert.equal(afterRoot.mtimeNs,capturedRoot.mtimeNs);
+ assert.equal(afterFile.dev,originalFile.dev);assert.equal(afterFile.ino,originalFile.ino);assert.deepEqual(await readFile(path.join(destination,'support','script')),data);
+ assert.equal(await realpath(rootView.path),destination);
+});
+
+test('real reviewed repositories defer shared native metadata until every task is ready',options,async t=>{
+ const first=await fixture(t,false,false,{restrictive:true}),second=await fixture(t,false,false,{restrictive:true});
+ try{
+ const scope={},metadata=createWorkingNativeMetadataEvidence(),firstConfig=first.tasks[0].configuration,secondConfig=second.tasks[0].configuration;
+ for(const config of [firstConfig,secondConfig]){config.nativeMetadataScope=scope;config.deferNativeMetadata=true;}
+ const firstNode=first.graph.files.find(node=>node.path.endsWith('/hooks/script')||node.path.endsWith('/hooks/hard'));
+ assert.ok(firstNode,'the real first plan contains a default hook original');
+ await applyReviewedRecoveryRoots(first.tasks,first.activation,()=>{},undefined,metadata);
+ const firstFile=firstNode.path;
+ assert.notEqual((await lstat(firstFile,{bigint:true})).mode&0o400n,0n,'the first held original remains readable while another task is pending');
+ await applyReviewedRecoveryRoots(second.tasks,second.activation,()=>{},undefined,metadata);
+ assert.equal(firstConfig.prepareNativeMetadata,secondConfig.prepareNativeMetadata);
+ assert.equal(firstConfig.finalizeNativeMetadata,secondConfig.finalizeNativeMetadata);
+ await firstConfig.prepareNativeMetadata();
+ // A later ordinary-working metadata consumer attaches a callback to the
+ // already-issued shared scope; the native graph itself is never changed.
+ let invoked=0;
+ metadata.deferredMetadata.set(firstFile,{kind:'file',mode:Number(first.sourceFile.mode&0o7777n),mtimeNs:first.sourceFile.mtimeNs.toString(),apply:held=>{
+  const observed=fstatSync(held.fd,{bigint:true});assert.equal(observed.dev,held.expectedDevice);assert.equal(observed.ino,held.expectedInode);
+  assert.equal(observed.nlink,2n);assert.equal(held.expectedLinkCount,2n);invoked++;
+ }});
+ await firstConfig.finalizeNativeMetadata();
+ assert.equal(invoked,1);
+ for(const f of [first,second]){
+  const node=f.graph.files.find(item=>item.path.endsWith('/hooks/script')||item.path.endsWith('/hooks/hard'));
+  const file=await lstat(node.path,{bigint:true}),directory=await lstat(path.dirname(node.path),{bigint:true});
+  assert.equal(file.mode&0o7777n,f.sourceFile.mode&0o7777n);assert.equal(file.mtimeNs,f.sourceFile.mtimeNs);
+  assert.equal(directory.mode&0o7777n,f.sourceDir.mode&0o7777n);assert.equal(directory.mtimeNs,f.sourceDir.mtimeNs);
+ }
+ await assert.rejects(firstConfig.finalizeNativeMetadata(),/cannot be replayed/);
+ await assert.rejects(firstConfig.prepareNativeMetadata(),/cannot be replayed/);
+ }finally{
+  for(const f of [first,second]){
+   await chmod(f.sourceHooks,0o700).catch(()=>{});
+   await chmod(path.join(f.destination,'.git','hooks'),0o700).catch(()=>{});
+  }
+ }
 });
