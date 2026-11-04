@@ -1,3 +1,4 @@
+import { SteeringAuthorityChangedError } from "@ponderosa/engines";
 import { activationInputAttachmentSource, currentArtifactInputFiles, requireCurrentRuntimeInputAccess, runtimeInputAttachment, runtimeInputFilesContext } from "./runtime-input-files.js";
 import type { AssetDto, CommunicationEvent, RuntimeInputFile } from "@ponderosa/core";
 import { CommunicationRevisionValidationError } from "@ponderosa/agents";
@@ -452,7 +453,7 @@ return new CoordinationV3Scheduler(
             run.controller.signal.aborted || deletingAgentIds.has(lease.agentId) ||
             run.v3SchedulerRunId !== lease.runId || run.v3FencingToken !== lease.fencingToken ||
             readProviderSessionIdentifier(session) !== providerSessionId || !session.isAlive())
-          throw new Error("Steering lost the current Run or native session");
+          throw new SteeringAuthorityChangedError("Steering lost the current Run or native session");
         const owned = store.sqlite.prepare(`SELECT 1 FROM scheduler_runs r
           JOIN scheduler_prompt_injections i ON i.run_id=r.id
           WHERE r.id=? AND r.agent_id=? AND r.fencing_token=? AND r.status='running'
@@ -461,7 +462,7 @@ return new CoordinationV3Scheduler(
           AND NOT EXISTS (SELECT 1 FROM agent_run_pauses p WHERE p.agent_id=r.agent_id
             AND p.state IN ('paused','resume_requested'))`)
           .get(lease.runId, lease.agentId, lease.fencingToken, providerSessionId, new Date().toISOString(), lease.injectionId);
-        if (!owned || !renewExecutionLease(lease.agentId, run)) throw new Error("Steering lost current leased authority");
+        if (!owned || !renewExecutionLease(lease.agentId, run)) throw new SteeringAuthorityChangedError("Steering lost current leased authority");
         requireCurrentRuntimeInputAccess({ files: inputFiles, projectId: lease.projectId, agentId: lease.agentId, store, assets });
       };
       try {

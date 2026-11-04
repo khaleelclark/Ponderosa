@@ -1,3 +1,4 @@
+import { steeringPreflight } from "./steering-preflight.js";
 import { answerCodexNativeQuestions } from "./native-questions.js";
 import { codexTurnContent } from "./typed-input.js";
 import { codexNativeObservation, invokeCodexGoal, setCodexPlanMode, startCodexReview } from "./codex-native-actions.js";
@@ -1048,13 +1049,13 @@ export class CodexAppServerSession implements RuntimeSession {
   }
 
   async steer(input: RuntimeTurnInput): Promise<RuntimeSteerResult> {
-    input.assertCurrent?.();
+    if (!steeringPreflight(input)) return { status: "not_active", reason: "Run authority changed before steering submission" };
     await this.validateBillingMode();
-    input.assertCurrent?.();
+    if (!steeringPreflight(input)) return { status: "not_active", reason: "Run authority changed before steering submission" };
     if (input.nativeAction) return { status: "not_steerable", reason: "Native actions require a new scheduler-owned turn" };
     if (!this.activeTurnId) return { status: "not_active" };
     const content = codexTurnContent(input);
-    input.assertCurrent?.();
+    if (!steeringPreflight(input)) return { status: "not_active", reason: "Run authority changed before steering submission" };
     try {
       const response = await this.rpc.request<SteerResponse>("turn/steer", {
         threadId: this.engineAgentId,

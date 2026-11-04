@@ -1,3 +1,4 @@
+import { steeringPreflight } from "./steering-preflight.js";
 import { answerClaudeNativeQuestions } from "./native-questions.js";
 import { ClaudeReplayFraming } from "./claude-replay-framing.js";
 import { claudeTurnContent } from "./typed-input.js";
@@ -416,7 +417,7 @@ export class ClaudeStreamSession implements RuntimeSession {
   }
 
   async steer(input: RuntimeTurnInput): Promise<RuntimeSteerResult> {
-    input.assertCurrent?.();
+    if (!steeringPreflight(input)) return { status: "not_active", reason: "Run authority changed before steering submission" };
     if (input.nativeAction) return { status: "not_steerable", reason: "Native actions require a supported scheduler-owned turn" };
     if (this.liveControlActive || this.controls.uncertain) throw new Error("Claude native control is active or uncertain");
     if (input.model && input.model !== this.selectedModel) throw new Error("Change model at a turn boundary");
@@ -424,7 +425,7 @@ export class ClaudeStreamSession implements RuntimeSession {
     if (this.closed || this.historyActive || this.fileHistory.uncertain || this.nativeCommand || !this.active) return { status: "not_active" };
     const turnId = input.clientMessageId ?? randomUUID();
     const frame = this.inputFrame(input.prompt, turnId, input.inputFiles);
-    input.assertCurrent?.();
+    if (!steeringPreflight(input)) return { status: "not_active", reason: "Run authority changed before steering submission" };
     this.contextObservations.submit(turnId);
     await this.writeInputFrame(frame);
     return { status: "accepted", turnId };
