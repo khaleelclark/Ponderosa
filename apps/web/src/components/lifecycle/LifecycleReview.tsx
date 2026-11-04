@@ -13,6 +13,8 @@ import {lifecycleReceiptMatches,restoreLifecycleCommand,type LifecycleCommand} f
 export type LifecycleKind='custody'|'memory'|'import'|'destination'|'group';
 type Review=AgentImportLifecycleReview|CheckpointCustodyLifecycleEntry|DestinationRetirementReviewDto|DestinationGroupRetirementReviewDto|MemoryMutationReviewDto;
 class LifecycleCommandNotSaved extends Error {}
+class LifecycleReceiptStorageFailed extends Error {}
+const receiptStorageMessage='The decision was confirmed, but your browser could not update its saved record. Free browser storage and check the result before another change.';
 export function LifecycleReview({kind,id,enabled=true}:{kind:LifecycleKind;id:string;enabled?:boolean}):JSX.Element {
  const destination=kind==='destination'||kind==='group';
  const path=kind==='memory'?`/api/local-memory/mutation-holds/${encodeURIComponent(id)}`:`/api/lifecycle/${kind==='custody'?'checkpoint-custody':kind==='import'?'agent-imports':kind==='group'?'destination-groups':'destinations'}/${encodeURIComponent(id)}`;
@@ -35,8 +37,12 @@ export function LifecycleReview({kind,id,enabled=true}:{kind:LifecycleKind;id:st
  const accept=(command:LifecycleCommand,value:unknown)=>{
   if(!lifecycleReceiptMatches(command,value))throw Error('Receipt differs from retained command · keep original input');
   setReceipt(value);
-  if(command.action==='approve'){keep({...command,approved:true});setNotice('Approval recorded · retirement requires separate confirmation');}
-  else {clear();setNotice('Canonical lifecycle receipt confirmed · original evidence retained');}
+  // The receipt was verified before this point. A local persistence failure
+  // must not be described as an unknown server outcome or release the command.
+  try{
+   if(command.action==='approve'){keep({...command,approved:true});setNotice('Approval recorded · retirement requires separate confirmation');}
+   else {clear();setNotice('Canonical lifecycle receipt confirmed · original evidence retained');}
+  }catch{throw new LifecycleReceiptStorageFailed();}
  };
  const send=useMutation({retry:false,mutationFn:async(command:LifecycleCommand)=>{
   if(command.id!==id||command.path!==path||readOnly||!(destination?['approve','retire'].includes(command.action):command.action==='reconcile'))throw Error('Lifecycle scope unavailable.');
@@ -46,6 +52,7 @@ export function LifecycleReview({kind,id,enabled=true}:{kind:LifecycleKind;id:st
   const value=await requestJson(`${path}/${command.action}`,{method:'POST',body:JSON.stringify(command.body)});accept(command,value);
  },onError:error=>{
   if(error instanceof LifecycleCommandNotSaved)setNotice('Could not save this decision in your browser. No request was sent this time. Free browser storage and try again; any earlier attempt may still be unresolved.');
+  else if(error instanceof LifecycleReceiptStorageFailed)setNotice(receiptStorageMessage);
   else {setNotice(`Outcome unconfirmed · retain exact command · unknown effects held · ${error.message}`);if(error instanceof ApiRequestError&&error.status===409)void refresh();}
  },onSettled:()=>{fence.current=false;setConfirm(undefined);setAck(false);}});
  const lookup=useMutation({retry:false,mutationFn:async()=>{
@@ -56,7 +63,7 @@ export function LifecycleReview({kind,id,enabled=true}:{kind:LifecycleKind;id:st
    if(value.admissionId!==id||typeof value.commandKey!=='string'||typeof value.retiredAt!=='string'||kind==='group'&&(!Array.isArray(value.resources)||value.resources.length<2||value.resources.length>32||!Array.isArray(value.groupChats)||typeof value.evidenceSha256!=='string'||!/^[a-f0-9]{64}$/.test(value.evidenceSha256)))throw Error('Retirement receipt identity or group evidence differs.');
    setReceipt(value);setNotice('Historical retirement receipt · no new-choice authority');
   }
- },onError:error=>setNotice(`Receipt unconfirmed · no mutation retry · ${error.message}`)});
+ },onError:error=>setNotice(error instanceof LifecycleReceiptStorageFailed?receiptStorageMessage:`Receipt unconfirmed · no mutation retry · ${error.message}`)});
  const value=review.data,busy=send.isPending||lookup.isPending;
  // Validate the exact trimmed value sent to the server before retaining a
  // command. Once sent, an uncertain command remains locked for exact retry.

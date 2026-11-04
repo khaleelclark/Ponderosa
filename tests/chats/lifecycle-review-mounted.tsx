@@ -122,7 +122,7 @@ export async function lifecycleStorageFailureRegression():Promise<void>{
  const key=(path:string)=>JSON.stringify(['lifecycle-command',origin,scope,path]);
  const keys=[key(memoryPath),key(destinationPath)],saved=keys.map(k=>localStorage.getItem(k));
  keys.forEach(k=>localStorage.removeItem(k));
- let failBefore=false,failApprovalSave=false;
+ let failBefore=false,failApprovalSave=false,mismatchedApproval=true;
  const posts:Array<{url:string;body:any}>=[],json=(value:unknown)=>new Response(JSON.stringify(value),{status:200,headers:{'content-type':'application/json'}});
  Storage.prototype.setItem=function(k:string,value:string){
   if(k===key(memoryPath)&&failBefore)throw new DOMException('Synthetic quota exceeded','QuotaExceededError');
@@ -133,7 +133,7 @@ export async function lifecycleStorageFailureRegression():Promise<void>{
   const url=String(input);
   if(init?.method==='POST'){
    const body=JSON.parse(String(init.body));posts.push({url,body});
-   if(url.endsWith('/approve'))return json({admissionId:'storage-failure',reviewHash:'review-1',operatorId:'local-operator',choice:body});
+   if(url.endsWith('/approve'))return json({admissionId:'storage-failure',reviewHash:'review-1',operatorId:'local-operator',choice:mismatchedApproval?{...body,commandKey:'different'}:body});
    throw new TypeError('Synthetic lost response');
   }
   if(url.includes('/api/local-memory/mutation-holds/'))return json({hold:{id:'storage-failure',legacy:false,state:'unsettled',sha256:'a'.repeat(64)},reviewSha256:'b'.repeat(64),canReconcile:true,backendDrainEvidenceRequired:true});
@@ -161,13 +161,15 @@ export async function lifecycleStorageFailureRegression():Promise<void>{
   assert(!document.body.textContent?.includes('No request was sent this time'),'post-dispatch failure is never described as unsent');
 
   render('destination','destination');await settle();button('Review destination retirement').click();await settle();
-  check();await settle();button('Approve retirement choice').click();await settle();
-  failApprovalSave=true;button('Confirm exact command').click();await settle();
-  assert(posts.length===2&&posts[1].url.endsWith('/approve'),'approval reached the server before the later storage failure');
+  check();await settle();button('Approve retirement choice').click();await settle();button('Confirm exact command').click();await settle();
+  assert(posts.length===2&&posts[1].url.endsWith('/approve'),'approval reached the server');
+  assert(document.body.textContent?.includes('Outcome unconfirmed')&&!document.body.textContent?.includes('The decision was confirmed'),'a mismatched receipt remains uncertain');
+  mismatchedApproval=false;failApprovalSave=true;button('Retry exact command').click();await settle();button('Confirm exact command').click();await settle();
+  assert(posts.length===3&&JSON.stringify(posts[1].body)===JSON.stringify(posts[2].body),'only the exact approval was retried');
   const stored=JSON.parse(localStorage.getItem(key(destinationPath))!);
   assert(stored.body.commandKey===posts[1].body.commandKey&&!stored.approved,'original command survives failed post-response save');
-  assert(document.body.textContent?.includes('Outcome unconfirmed')&&document.body.textContent?.includes('Exact command retained'),'post-response storage failure keeps the original uncertain');
-  assert(!document.body.textContent?.includes('No request was sent this time'),'post-response failure is not called unsent');
+  assert(document.body.textContent?.includes('The decision was confirmed')&&document.body.textContent?.includes('Exact command retained'),'verified receipt and local persistence failure are both visible');
+  assert(!document.body.textContent?.includes('No request was sent this time')&&!document.body.textContent?.includes('Outcome unconfirmed'),'verified post-response failure is distinguished from both earlier cases');
  }finally{
   Storage.prototype.setItem=originalSetItem;root.unmount();client.clear();host.remove();globalThis.fetch=originalFetch;
   keys.forEach((k,i)=>{if(saved[i]===null)localStorage.removeItem(k);else localStorage.setItem(k,saved[i]!);});
