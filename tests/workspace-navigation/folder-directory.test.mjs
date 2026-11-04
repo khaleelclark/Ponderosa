@@ -20,7 +20,8 @@ function fixture(count = 60) {
     CREATE TABLE coordination_destination_group_chats (admission_id TEXT, conversation_id TEXT);
     CREATE TABLE coordination_destination_retirements (conversation_id TEXT, receipt_json TEXT, members_json TEXT);
     CREATE TABLE coordination_destination_members (admission_id TEXT, agent_id TEXT);
-    CREATE TABLE branch_installation_resources (local_id TEXT, state TEXT);
+    CREATE TABLE branch_installation_plans (id TEXT PRIMARY KEY, state TEXT);
+    CREATE TABLE branch_installation_resources (local_id TEXT, state TEXT, staging_plan_id TEXT);
     CREATE TABLE branches (id TEXT, deleting INTEGER);
     CREATE TABLE collection_generations (name TEXT PRIMARY KEY, generation INTEGER NOT NULL);
     CREATE TABLE agent_conversation_memberships (agent_id TEXT, conversation_id TEXT);
@@ -95,6 +96,21 @@ test('UI001 complete saved folder supplement precedes general continuation and p
   assert.equal(all.length,new Set(all).size,'General cursor rows never duplicate');
   const sidebar=new Map([...page.folderItems,...page.starredItems,...page.items].map(item=>[item.conversation.id,item]));
   assert.equal([...sidebar.values()].filter(item=>item.conversation.id===f.rows[31].id).length,1,'Shared star/page/folder rows dedup by exact ID');
+});
+
+test('folder directory hides unfinished or missing installation plans', async t => {
+  const f=fixture(); t.after(f.close);
+  f.sqlite.prepare('INSERT INTO branch_installation_plans(id,state) VALUES (?,?)').run('pending-plan','applying');
+  f.sqlite.prepare('INSERT INTO branch_installation_plans(id,state) VALUES (?,?)').run('complete-plan','completed');
+  const link=f.sqlite.prepare('INSERT INTO branch_installation_resources(local_id,state,staging_plan_id) VALUES (?,?,?)');
+  link.run(f.rows[30].id,'active','pending-plan');
+  link.run(f.rows[31].id,'active','missing-plan');
+  link.run(f.rows[32].id,'active','complete-plan');
+  const page=await f.read({limit:'100'});
+  const visible=new Set([...ids(page.items),...ids(page.starredItems),...folderIds(page)]);
+  assert.equal(visible.has(f.rows[30].id),false,'An unfinished plan must remain hidden');
+  assert.equal(visible.has(f.rows[31].id),false,'A missing plan must remain hidden');
+  assert.equal(visible.has(f.rows[32].id),true,'A completed plan may be displayed');
 });
 
 test('UI001 supplemental rows obey same project/conversation/literal search filters and summary omission', async t => {
