@@ -193,8 +193,9 @@ export function planReviewedGitExternalApplication(value:ReviewedUserData,activa
   const read=(name:string)=>typeof transported==='function'?transported(name):transported.get(name);
   const rootScope:NativeExternalScope={value,sourceWorkingRoot:family.sourceWorkingRoot,sourceCommon:value.git.configurationSourceDirectories?.common??dirnameSourcePath(family.bindings.find(binding=>binding.default)?.sourceConfigPath??family.sourceWorkingRoot),sourcePrivate:value.git.configurationSourceDirectories?.private??value.git.configurationSourceDirectories?.common??family.sourceWorkingRoot,gitDir:context.common,privateDir:context.private,worktreePath:context.worktree,initialized:true,external:emptyApplication()};
   const scopes:NativeExternalScope[]=[rootScope],repositories:NativeExternalScope[]=[],sourceMappings=new Map<string,{source:string;destination:string}>(),originals=new Map<string,Buffer>(),absentSources=new Set(family.absentPaths.map(sourcePathKey));
+  const requiredMappings=new Set<string>();
   const allowed=(target:string)=>[...selectedDestinations,context.common,context.private,context.worktree].some(root=>target===root||target.startsWith(root+path.sep));
-  const bind=(source:string,target:string,required=false)=>{if(!allowed(target))throw new Error('External Git destination leaves the selected fresh import roots');const key=sourcePathKey(source),prior=sourceMappings.get(key);if(prior&&prior.destination!==target){if(required)throw new Error('External Git source mapping conflicts with its native destination context');return;}sourceMappings.set(key,{source,destination:target});};
+  const bind=(source:string,target:string,required=false)=>{if(!allowed(target))throw new Error('External Git destination leaves the selected fresh import roots');const key=sourcePathKey(source),prior=sourceMappings.get(key);if(prior&&prior.destination!==target){if(required)throw new Error('External Git source mapping conflicts with its native destination context');return;}if(required)requiredMappings.add(key);sourceMappings.set(key,{source,destination:target});};
   for(const mapping of activation.gitPathMappings??[])bind(mapping.source,mapping.destination);
   bind(rootScope.sourceWorkingRoot,context.worktree,true);bind(rootScope.sourceCommon,context.common,true);bind(rootScope.sourcePrivate,context.private,true);
   const mapped=(source:string):string|undefined=>{const match=[...sourceMappings.values()].sort((a,b)=>b.source.length-a.source.length).find(mapping=>sourcePathWithin(mapping.source,source));return match?path.join(match.destination,...relativeSourcePath(match.source,source).split('/')):undefined;};
@@ -273,6 +274,11 @@ export function planReviewedGitExternalApplication(value:ReviewedUserData,activa
     const scope:NativeExternalScope={value:capsuleValue,sourceWorkingRoot:capsule.sourcePath,sourceCommon:capsule.git.configurationSourceDirectories?.common??joinSourcePath(capsule.sourcePath,'.git'),sourcePrivate:capsule.git.configurationSourceDirectories?.private??joinSourcePath(capsule.sourcePath,'.git'),gitDir,privateDir:capsule.git.reftableReview?.selectedWorktree?path.join(gitDir,'worktrees','imported'):gitDir,worktreePath,initialized:!bare,...(bare?{bare}:{}),external:emptyApplication()};
     bind(scope.sourceCommon,scope.gitDir,true);bind(scope.sourcePrivate,scope.privateDir,true);scopes.push(scope);repositories.push(scope);moduleScopes(scope);
   }
+  // A configured hook directory may also be the source native Git storage root.
+  // Its captured hook payload gets a separate owned destination, while source
+  // configuration provenance must remain bound to the issued native directory.
+  const hasRequiredMapping=(source:string)=>requiredMappings.has(sourcePathKey(source));
+  const mapPayload=(source:string,destination:string)=>{if(!hasRequiredMapping(source))sourceMappings.set(sourcePathKey(source),{source,destination});};
   type Placement={scope:NativeExternalScope;context:'gitdir'|'private'|'worktree';path:string;absolute:string};
   const dataRoots:Array<{source:string;placement:Placement}>=[];
   const place=(scope:NativeExternalScope,base:'gitdir'|'private'|'worktree',target:string):Placement=>{const root=base==='worktree'?scope.worktreePath:base==='private'?scope.privateDir:scope.gitDir;const relative=path.relative(root,target).split(path.sep).join('/');if(relative)relativeName(relative);return {scope,context:base,path:relative,absolute:target};};
@@ -287,7 +293,7 @@ export function planReviewedGitExternalApplication(value:ReviewedUserData,activa
     const nestedBareInOwnedTree=dataRoots.some(root=>sourcePathWithin(root.source,folder.sourcePath)&&repositories.some(scope=>scope.bare&&sourcePathsEqual(scope.sourceCommon,scope.sourceWorkingRoot)&&sourcePathsEqual(scope.sourcePrivate,scope.sourceWorkingRoot)&&sourcePathWithin(scope.sourceWorkingRoot,folder.sourcePath)&&sourceStorageOwner(folder.sourcePath)===sourcePathKey(scope.sourceWorkingRoot)&&sourcePathWithin(root.source,scope.sourceWorkingRoot)&&scope.gitDir===path.join(root.placement.absolute,...relativeSourcePath(root.source,scope.sourceWorkingRoot).split('/'))));
     if(!isDefault&&(nestedBareInOwnedTree||dataRoots.some(root=>sourcePathWithin(root.source,folder.sourcePath)&&sourceStorageOwner(root.source)===sourceStorageOwner(folder.sourcePath))))continue;
     const choice=treeDestination(folder.sourcePath),target=choice.target,placement=place(choice.scope,choice.context,target);
-    dataRoots.push({source:folder.sourcePath,placement});sourceMappings.set(sourcePathKey(folder.sourcePath),{source:folder.sourcePath,destination:target});
+    dataRoots.push({source:folder.sourcePath,placement});mapPayload(folder.sourcePath,target);
   }
   const placements=new Map<string,Placement>();
   const placement=(source:string):Placement=>{
@@ -295,7 +301,7 @@ export function planReviewedGitExternalApplication(value:ReviewedUserData,activa
     const nativeConfiguration=scopes.some(scope=>sourcePathsEqual(source,joinSourcePath(scope.sourceCommon,'config'))||sourcePathsEqual(source,joinSourcePath(scope.sourcePrivate,'config.worktree')));
     const root=nativeConfiguration?undefined:dataRoots.filter(root=>sourcePathWithin(root.source,source)).sort((a,b)=>b.source.length-a.source.length)[0];
     const result=root?place(root.placement.scope,root.placement.context,path.join(root.placement.absolute,...relativeSourcePath(root.source,source).split('/'))):place(rootScope,'gitdir',path.join(context.common,'ponderosa-external',digest(key),'original'));
-    placements.set(key,result);sourceMappings.set(key,{source,destination:result.absolute});return result;
+    placements.set(key,result);mapPayload(source,result.absolute);return result;
   };
   const payloadLinks=new Set(family.links.filter(link=>dataRoots.some(root=>sourcePathWithin(root.source,link.sourcePath))||family.bindings.some(binding=>sourcePathsEqual(binding.resolvedPath,link.sourcePath))).map(link=>sourcePathKey(link.sourcePath)));
   for(let pass=0;pass<=family.links.length;pass++){let changed=false;for(const link of family.links)if(payloadLinks.has(sourcePathKey(link.sourcePath))&&family.links.some(next=>sourcePathsEqual(next.sourcePath,link.targetSourcePath))&&!payloadLinks.has(sourcePathKey(link.targetSourcePath))){payloadLinks.add(sourcePathKey(link.targetSourcePath));changed=true;}if(!changed)break;}
@@ -331,7 +337,7 @@ export function planReviewedGitExternalApplication(value:ReviewedUserData,activa
     if(!candidates.length)return;
     const bindings=candidates.filter(binding=>binding.context==='config'||binding.context==='worktree'&&sourcePathsEqual(binding.contextSourcePath,scope.sourceWorkingRoot)||binding.context==='gitdir'&&[scope.sourceCommon,scope.sourcePrivate].some(root=>sourcePathsEqual(binding.contextSourcePath,root)));
     if(!bindings.length)throw new Error('Configured Git dependency has no exact destination repository context');
-    const first=bindings[0]!,target=mapped(first.resolvedPath)??absentDestination(first.resolvedPath);
+    const first=bindings[0]!,target=kind==='hooks'&&hasRequiredMapping(first.resolvedPath)&&!absentSources.has(sourcePathKey(first.resolvedPath))?placement(first.resolvedPath).absolute:mapped(first.resolvedPath)??absentDestination(first.resolvedPath);
     if(kind==='hooks'&&!sourcePathAbsolute(rawValue,first.contextSourcePath)&&!rawValue.startsWith('~')&&!rawValue.startsWith('%(')){
       const relative='.ponderosa-portable-review/active-git-hooks/'+digest(JSON.stringify([sourcePathKey(sourceConfigPath),rawValue]));
       for(const binding of bindings){

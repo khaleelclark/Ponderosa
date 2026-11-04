@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtemp,mkdir,writeFile,readFile,lstat,realpath,rm,chmod,utimes,link,open} from 'node:fs/promises';
+import {mkdtemp,mkdir,writeFile,readFile,lstat,realpath,rm,chmod,utimes,link,open,readdir} from 'node:fs/promises';
 import {lstatSync,readFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
@@ -222,4 +222,38 @@ test('real mapped private hook views retain the shared common originals',options
  }
  const sourceFile=await lstat(path.join(hooks,'pre-commit'),{bigint:true}),sourceDir=await lstat(hooks,{bigint:true}),restoredFile=await lstat(hookOriginal,{bigint:true}),restoredDir=await lstat(path.dirname(hookOriginal),{bigint:true});
  assert.equal(restoredFile.mode&0o7777n,sourceFile.mode&0o7777n);assert.equal(restoredFile.mtimeNs,sourceFile.mtimeNs);assert.equal(restoredDir.mode&0o7777n,sourceDir.mode&0o7777n);assert.equal(restoredDir.mtimeNs,sourceDir.mtimeNs);
+});
+
+test('real reftable capsule retains native private mapping when relative hooks point to storage',options,async t=>{
+ const root=await realpath(await mkdtemp(path.join(tmpdir(),'real-linked-reftable-'))),source=path.join(root,'source'),destination=path.join(root,'destination'),dependencies=path.join(root,'dependencies'),other=path.join(root,'other'),linked=path.join(dependencies,'capsule');
+ t.after(()=>rm(root,{recursive:true,force:true}));
+ await initialize(source);await initialize(other,true);await mkdir(destination);await mkdir(dependencies);
+ await git(other,'worktree','add','-b','linked',linked);
+ await git(linked,'update-ref','refs/worktree/selected-private',await git(linked,'rev-parse','HEAD'));
+ await writeFile(path.join(linked,'script'),'#!/bin/sh\nexit 0\n');await link(path.join(linked,'script'),path.join(linked,'hard'));
+ await git(source,'config','core.hooksPath',dependencies);await git(linked,'config','core.hooksPath','.');
+ const privateSource=await git(linked,'rev-parse','--absolute-git-dir'),hook=path.join(privateSource,'pre-commit');
+ await writeFile(hook,'#!/bin/sh\nexit 0\n');await chmod(hook,0o751);await utimes(hook,1700000001.456,1700000001.456);
+ const sourceHook=await lstat(hook,{bigint:true});
+ const manifest=await exportReviewedUserData(source,{git:true,harness:false,externalGitDependencies:true});
+ const captured=manifest.gitExternalDependencies.repositories.find(repository=>repository.sourcePath===linked);assert.ok(captured?.git.reftableReview?.selectedWorktree);
+ const activation={git:true,harness:false},pkg=packageFor(manifest,{'file.txt':Buffer.from('committed\n')});await writeFile(path.join(destination,'file.txt'),'committed\n');
+ const tasks=planReviewedRecoveryRoots(pkg,{work:destination},activation),capsule=tasks[0].externalPlan.repositories.find(row=>row.sourceWorkingRoot===linked);assert.ok(capsule);
+ assert.equal(capsule.privateDir,path.join(capsule.gitDir,'worktrees','imported'));
+ for(const [role,target] of [['common',capsule.gitDir],['private',capsule.privateDir]])assert.equal(tasks[0].externalPlan.activation.gitPathMappings.find(row=>row.source===captured.git.configurationSourceDirectories[role])?.destination,target);
+ const child=tasks[0].configuration.modules.find(row=>row.gitDir===capsule.gitDir);
+ assert.ok(child?.configuration.external.links.some(row=>row.context==='worktree'&&row.targetContext==='owner'&&row.kind==='symlink'));
+ await applyReviewedRecoveryRoots(tasks,activation,()=>{});
+ const sourceHead=await git(linked,'rev-parse','HEAD');assert.equal(await git(capsule.worktreePath,'rev-parse','HEAD'),sourceHead);assert.equal(await git(capsule.worktreePath,'rev-parse','refs/worktree/selected-private'),sourceHead);
+ assert.equal(await git(capsule.worktreePath,'rev-parse','--absolute-git-dir'),capsule.privateDir);
+ assert.equal(await readFile(path.join(capsule.worktreePath,'.git'),'utf8'),'gitdir: '+path.relative(capsule.worktreePath,capsule.privateDir).split(path.sep).join('/')+'\n');
+ const view=await git(capsule.worktreePath,'config','--get','core.hooksPath');
+ assert.match(view,/^\.ponderosa-portable-review\/active-git-hooks\//);assert.equal(await realpath(path.resolve(capsule.worktreePath,view)),capsule.worktreePath);
+ const original=await lstat(path.join(capsule.worktreePath,'script'),{bigint:true}),alias=await lstat(path.join(capsule.worktreePath,'hard'),{bigint:true});assert.equal(original.ino,alias.ino);assert.equal(original.nlink,2n);
+ await assert.rejects(lstat(path.join(capsule.privateDir,'pre-commit')),{code:'ENOENT'});assert.equal(await readFile(hook,'utf8'),'#!/bin/sh\nexit 0\n');
+ const privateView=await realpath(path.resolve(capsule.privateDir,view));assert.notEqual(privateView,capsule.privateDir);
+ assert.ok(privateView.startsWith(path.join(destination,'.git')+path.sep));assert.deepEqual(await readdir(privateView),['pre-commit']);
+ const restoredHook=await lstat(path.join(privateView,'pre-commit'),{bigint:true});assert.equal(restoredHook.mode&0o7777n,sourceHook.mode&0o7777n);assert.equal(restoredHook.mtimeNs,sourceHook.mtimeNs);
+ assert.equal(await readFile(path.join(privateView,'pre-commit'),'utf8'),'#!/bin/sh\nexit 0\n');
+ assert.match(await readFile(path.join(capsule.gitDir,'info','exclude'),'utf8'),/^\/\.ponderosa-portable-review\/$/m);
 });
