@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {writeFile,readFile,readdir} from 'node:fs/promises';
+import {writeFile,readFile,readdir,realpath} from 'node:fs/promises';
 import path from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
 import {withFixture,until} from '../shared/fixture.mjs';
@@ -105,17 +105,17 @@ test('journal sync and rollback failure holds the exact import across restart',{
   const metadata={conversationId:chat.id,engineMapping:{codex:'codex'}};
   const wire=Buffer.from(JSON.stringify(metadata)+'\n'+JSON.stringify(pkg));
   const headers={'content-type':'application/vnd.ponderosa.agent-import','idempotency-key':requestId,'x-ponderosa-agent-package-fingerprint':importRequestFingerprint(wire)};
-  const directory=path.join(f.dataDir,'agent-import-operations');
+  const directory=path.join(f.dataDir,'agent-import-operations'),physicalDirectory=await realpath(directory);
   const lookup=`${endpoint}/by-request/${requestId}?conversationId=${chat.id}`;
   const originalOpen=hostFs.open,originalUnlink=hostFs.unlink;
   let count=0,release,entered;const reached=new Promise(resolve=>{entered=resolve;}),gate=new Promise(resolve=>{release=resolve;});
   hostFs.open=async function(name,...args){
    const handle=await originalOpen.call(this,name,...args);
-   if(name===directory && ++count===2) return {sync:async()=>{entered();await gate;throw Error('injected journal directory sync failure');},close:()=>handle.close()};
+   if(typeof name==='string' && path.basename(name)==='agent-import-operations' && await realpath(name)===physicalDirectory && ++count===2) return {sync:async()=>{entered();await gate;throw Error('injected journal directory sync failure');},close:()=>handle.close()};
    return handle;
   };
   hostFs.unlink=async function(name,...args){
-   if(typeof name==='string'&&path.dirname(name)===directory&&/^[0-9a-f-]{36}\.json$/.test(path.basename(name)))throw Error('injected journal rollback failure');
+   if(typeof name==='string'&&/^[0-9a-f-]{36}\.json$/.test(path.basename(name))&&await realpath(path.dirname(name))===physicalDirectory)throw Error('injected journal rollback failure');
    return originalUnlink.call(this,name,...args);
   };
   try{
