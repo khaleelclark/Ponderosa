@@ -31,6 +31,7 @@ function boundedInternalRolloverFailure(error: string): string {
 /** The old tuple owns the isolated handoff; the target tuple owns the
  * replacement and the still-pending user work. */
 export interface SettingsTransition {
+  reason:"settings"|"voice";
   activationId:string; sourceRunId:string; sourceFence:number;
   oldSessionId:string; oldContractHash:string;
   engineId:string; model:string; effort?:string; speed?:string;
@@ -130,7 +131,8 @@ export class CoordinationV3ContextRolloverAuthority {
            ((t.authorizationSignatureHash===undefined)!==(t.authorizationOriginRunId===undefined)) ||
            (t.authorizationSignatureHash!==undefined && (!/^[a-f0-9]{64}$/u.test(t.authorizationSignatureHash) || !t.authorizationOriginRunId?.trim())) || t.oldSessionId!==input.oldProviderSessionId ||
            t.oldSessionId!==input.providerSessionGeneration ||
-           (t.model===t.targetModel && (t.effort??null)===(t.targetEffort??null) && (t.speed??null)===(t.targetSpeed??null)))
+           (t.reason!=='settings' && t.reason!=='voice') ||
+           (t.reason==='settings' && t.model===t.targetModel && (t.effort??null)===(t.targetEffort??null) && (t.speed??null)===(t.targetSpeed??null)))
           throw new Error("Invalid exact settings transition");
         const pending=this.sqlite.prepare(`SELECT 1 FROM agent_activations a JOIN agents ag ON ag.id=a.agent_id
           WHERE a.id=? AND a.project_id=? AND a.agent_id=? AND a.scope_key=? AND a.state='pending'
@@ -138,6 +140,31 @@ export class CoordinationV3ContextRolloverAuthority {
             AND ag.active_session_id=? AND ag.active_session_contract_hash=?
             AND NOT EXISTS (SELECT 1 FROM scheduler_run_activations attached WHERE attached.activation_id=a.id)`)
           .get(t.activationId,input.projectId,input.agentId,input.scopeKey,t.engineId,t.oldSessionId,t.oldContractHash);
+        if (t.reason === "voice") {
+          const row = this.sqlite.prepare(`SELECT a.kind,a.prompt_class,a.payload_json,r.id AS runtime_id,r.payload_json AS runtime_payload
+            FROM agent_activations a JOIN activation_sources s ON s.activation_id=a.id AND s.source_kind='communication'
+            JOIN runtime_communications r ON r.id=s.source_id AND r.project_id=a.project_id
+            JOIN agents ag ON ag.id=a.agent_id AND ag.project_id=a.project_id
+            JOIN conversations c ON c.id=ag.conversation_id AND c.project_id=a.project_id
+            WHERE a.id=? AND a.agent_id=? AND a.project_id=? AND c.id=?`)
+            .get(t.activationId,input.agentId,input.projectId,input.conversationId ?? '') as
+              {kind:string;prompt_class:string;payload_json:string;runtime_id:string;runtime_payload:string}|undefined;
+          let activation:any, accepted:any;
+          try { activation=JSON.parse(row?.payload_json??'null'); accepted=JSON.parse(row?.runtime_payload??'null'); } catch { /* hold */ }
+          const eventId=activation?.communication?.eventId, event=accepted?.communication, dispatch=accepted?.dispatch;
+          const canonicalId=typeof eventId==='string' && this.sqlite.prepare("SELECT 1 FROM runtime_communications WHERE id=?").get(eventId)
+            ? eventId : `dispatch:${eventId}:${input.agentId}`;
+          if (!row || row.kind!=='human_message' || row.prompt_class!=='human' || typeof eventId!=='string' ||
+              row.runtime_id!==canonicalId || activation?.dispatch?.voiceReply!==true ||
+              event?.eventId!==eventId || event?.projectId!==input.projectId || event?.conversationId!==input.conversationId ||
+              event?.intent!=='user_dm' || event?.sender?.kind!=='user' || event?.sender?.userId!=='local-operator' ||
+              event?.audience?.kind!=='user_agents' || event?.audience?.userId!=='local-operator' ||
+              !Array.isArray(event?.audience?.agentIds) || event.audience.agentIds.length!==1 ||
+              event.audience.agentIds[0]!==input.agentId || event.document!==undefined ||
+              dispatch?.voiceReply!==true || dispatch.activeRunDelivery!=='queue' || dispatch.conversationId!==input.conversationId ||
+              !Array.isArray(dispatch.recipients) || dispatch.recipients.length!==1 || dispatch.recipients[0]?.agentId!==input.agentId)
+            throw new Error("Settings transition requires exact canonical queued voice work");
+        }
         const source=this.sqlite.prepare(`SELECT 1 FROM scheduler_runs r WHERE r.id=? AND r.project_id=? AND r.agent_id=? AND r.scope_key=?
           AND r.status='completed' AND r.terminal_at IS NOT NULL AND r.prompt_injection_state='injected'
           AND r.provider_session_id=? AND r.fencing_token=?
@@ -791,7 +818,11 @@ export class CoordinationV3ContextRolloverAuthority {
           sourceRunId: current.sourceRunId,
           sourceActivationIds: transition ? [] : current.sourceActivationIds,
           ...(!transition && current.replyAuthority ? { replyAuthority: current.replyAuthority } : {}),
-          ...(transition?{settingsTransition:transition}:{}),
+          ...(transition?{settingsTransition:transition,dispatch:{
+            engine:transition.engineId,model:transition.targetModel,
+            ...(transition.targetEffort?{effort:transition.targetEffort}:{}),
+            ...(transition.targetSpeed?{speed:transition.targetSpeed}:{}),
+          }}:{}),
           instruction: transition
             ? "Verify this settings-transition rollover in the fresh provider session. Use the bounded handoff only as non-authoritative continuity context. Do not publish Communication or resume queued work; provide one concise Work-log confirmation after reconstruction."
             : current.triggerKind === "human"

@@ -219,7 +219,7 @@ test('rollover allowance and frozen-tail transport guards preserve private scope
 test('settings transition preserves pending work and isolates replacement confirmation', t => withStores(t, async f => {
   const store = f.open('settings-transition'), agent = f.seed(store), db = store.sqlite;
   const scope = `agent:${agent.id}`, now = new Date().toISOString(), session = 'old-session';
-  const contractHash = 'a'.repeat(64), run = randomUUID(), pending = randomUUID(), competing = randomUUID();
+  const contractHash = 'a'.repeat(64), run = randomUUID(), pending = randomUUID(), competing = randomUUID(), priorTask = randomUUID();
   db.prepare('UPDATE agents SET active_session_id=?, active_session_contract_hash=? WHERE id=?').run(session, contractHash, agent.id);
   db.prepare(`INSERT INTO scheduler_runs(id,project_id,agent_id,status,lease_owner,lease_expires_at,fencing_token,prompt_injection_state,provider_session_id,heartbeat_at,created_at,updated_at,terminal_at,scope_key)
     VALUES(?,?,?,'completed','fixture',?,1,'injected',?,?,?,?,?,?)`).run(run,agent.projectId,agent.id,now,session,now,now,now,now,scope);
@@ -229,14 +229,17 @@ test('settings transition preserves pending work and isolates replacement confir
     VALUES(?,?,?,?, 'old input','hash',?,?,?)`).run(run,run,agent.id,agent.projectId,JSON.stringify({schemaVersion:3,normalRuntimeContract:{contractHash,engineId:'codex',model:'old',effort:'medium'}}),now,now);
   const insert = db.prepare(`INSERT INTO agent_activations(id,project_id,agent_id,kind,priority,dispatch_policy,prompt_class,state,dedupe_key,payload_json,available_at,created_at,updated_at,scope_key)
     VALUES(?,?,?,'human_message',?,'next_run','human','pending',?,'{}',?,?,?,?)`);
-  for (const [id, priority] of [[pending,20],[competing,1000]]) insert.run(id,agent.projectId,agent.id,priority,id,now,now,now,scope);
+  for (const [id, priority] of [[pending,20],[competing,1000],[priorTask,10]]) insert.run(id,agent.projectId,agent.id,priority,id,now,now,now,scope);
+  db.prepare("UPDATE agent_activations SET state='consumed' WHERE id=?").run(priorTask);
+  db.prepare("INSERT INTO scheduler_run_activations(run_id,activation_id,attached_at,consumed_at) VALUES(?,?,?,?)").run(run,priorTask,now,now);
+  db.prepare("INSERT INTO activation_sources(activation_id,source_kind,source_id) VALUES(?,'request','prior-task-request')").run(priorTask);
   const event={schemaVersion:2,eventId:randomUUID(),projectId:agent.projectId,conversationId:agent.conversationId,
     sender:{kind:'user',userId:'operator'},intent:'user_dm',audience:{kind:'user_agent',userId:'operator',agentId:agent.id},text:'Original objective',createdAt:now};
   store.appendCommunicationEvent(event);
   const bound=store.bindContextRolloverBoundary({agentId:agent.id,currentConversationId:agent.conversationId,submittedCommunicationEventIds:[event.eventId]});
-  const transition={activationId:pending,sourceRunId:run,sourceFence:1,oldSessionId:session,oldContractHash:contractHash,engineId:'codex',model:'old',effort:'medium',targetModel:'new',authorizationSignatureHash:'b'.repeat(64),authorizationOriginRunId:run};
+  const transition={reason:'settings',activationId:pending,sourceRunId:run,sourceFence:1,oldSessionId:session,oldContractHash:contractHash,engineId:'codex',model:'old',effort:'medium',targetModel:'new',authorizationSignatureHash:'b'.repeat(64),authorizationOriginRunId:run};
   const request={projectId:agent.projectId,agentId:agent.id,oldProviderSessionId:session,providerSessionGeneration:session,
-    threshold:150000,lowWaterMark:90000,sourceRunId:run,sourceActivationIds:[],scopeKey:scope,conversationId:agent.conversationId,
+    threshold:150000,lowWaterMark:90000,sourceRunId:run,sourceActivationIds:[priorTask],scopeKey:scope,conversationId:agent.conversationId,
     compactionCutoffOrdinal:bound.canonicalOrdinal,compactionCutoffEventId:bound.communicationEventId,recentTail:bound.recentTail,settingsTransition:transition};
   const coordination=new CoordinationV3Store(db);
   assert.throws(()=>coordination.requestContextRollover({...request,settingsTransition:{...transition,sourceFence:2}}),/source or pending work changed/);
@@ -251,6 +254,32 @@ test('settings transition preserves pending work and isolates replacement confir
     try { mutation(); assert.throws(() => coordination.requestContextRollover(request), /source or pending work changed/); }
     finally { db.exec('ROLLBACK TO transition_negative; RELEASE transition_negative'); }
   }
+  assert.throws(() => coordination.requestContextRollover({...request,settingsTransition:{...transition,targetModel:'old',targetEffort:'medium'}}),/Invalid exact/);
+  assert.throws(() => coordination.requestContextRollover({...request,settingsTransition:{...transition,reason:'voice',targetModel:'old',targetEffort:'medium'}}),/canonical queued voice/);
+  db.exec('SAVEPOINT canonical_voice');
+  try {
+    const voiceEvent={eventId:randomUUID(),projectId:agent.projectId,conversationId:agent.conversationId,intent:'user_dm',
+      sender:{kind:'user',userId:'local-operator'},audience:{kind:'user_agents',userId:'local-operator',agentIds:[agent.id]}};
+    const dispatch={voiceReply:true,activeRunDelivery:'queue',conversationId:agent.conversationId,recipients:[{agentId:agent.id}]};
+    const payload={communication:voiceEvent,dispatch};
+    db.prepare('UPDATE agent_activations SET payload_json=? WHERE id=?').run(JSON.stringify(payload),pending);
+    db.prepare("INSERT INTO runtime_communications(id,project_id,sender_json,intent,audience_json,payload_json,payload_hash,actionable,created_at) VALUES(?,?,?,?,?,?,?,1,?)")
+      .run(voiceEvent.eventId,agent.projectId,JSON.stringify(voiceEvent.sender),'user_dm',JSON.stringify(voiceEvent.audience),JSON.stringify(payload),'hash',now);
+    db.prepare("INSERT INTO activation_sources(activation_id,source_kind,source_id) VALUES(?,'communication',?)").run(pending,voiceEvent.eventId);
+    for(const mutate of [
+      value=>{value.communication.sender.userId='other';},
+      value=>{value.communication.audience.agentIds.push('other');},
+      value=>{value.dispatch.activeRunDelivery='steer';},
+      value=>{value.communication.document={id:'foreign'};},
+    ]) {
+      db.exec('SAVEPOINT malformed_voice');
+      try { const bad=structuredClone(payload);mutate(bad);db.prepare('UPDATE runtime_communications SET payload_json=? WHERE id=?').run(JSON.stringify(bad),voiceEvent.eventId);
+        assert.throws(()=>coordination.requestContextRollover({...request,settingsTransition:{...transition,reason:'voice',targetModel:'old',targetEffort:'medium'}}),/canonical queued voice/);
+      } finally { db.exec('ROLLBACK TO malformed_voice; RELEASE malformed_voice'); }
+    }
+    const voice=coordination.requestContextRollover({...request,settingsTransition:{...transition,reason:'voice',targetModel:'old',targetEffort:'medium'}});
+    assert.equal(voice.created,true);
+  } finally { db.exec('ROLLBACK TO canonical_voice; RELEASE canonical_voice'); }
   const first=coordination.requestContextRollover(request);
   assert.equal(first.created,true);
   assert.equal(coordination.requestContextRollover(request).rollover.id,first.rollover.id);
@@ -274,6 +303,9 @@ test('settings transition preserves pending work and isolates replacement confir
   const confirm=db.prepare('SELECT payload_json FROM agent_activations WHERE id=?').get(ready.continuationActivationId);
   assert.deepEqual(JSON.parse(confirm.payload_json).settingsTransition,transition);
   assert.deepEqual(JSON.parse(confirm.payload_json).sourceActivationIds,[]);
+  assert.deepEqual(JSON.parse(confirm.payload_json).dispatch,{engine:'codex',model:'new'});
+  assert.equal(db.prepare("SELECT count(*) n FROM activation_sources WHERE activation_id=? AND source_kind='request'").get(ready.continuationActivationId).n,0);
+  assert.equal(db.prepare("SELECT state FROM agent_activations WHERE id=?").get(priorTask).state,'consumed');
   assert.equal(db.prepare('SELECT state FROM agent_activations WHERE id=?').get(pending).state,'pending');
   assert.equal(db.prepare('SELECT state FROM agent_activations WHERE id=?').get(competing).state,'pending');
   db.prepare("UPDATE context_rollovers SET state='completed',completion_reason='headroom_restored',terminal_at=? WHERE id=?").run(now,first.rollover.id);
