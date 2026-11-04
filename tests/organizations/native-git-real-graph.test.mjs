@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtemp,mkdir,writeFile,readFile,link,symlink,readlink,lstat,realpath,rename,chmod,rm,utimes,lutimes} from 'node:fs/promises';
+import {mkdtemp,mkdir,writeFile,readFile,link,symlink,readlink,lstat,realpath,rename,chmod,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {execFile} from 'node:child_process';
@@ -13,6 +13,8 @@ const exec=promisify(execFile);
 const git=async(cwd,...args)=>exec('git',['--no-optional-locks',...args],{cwd,env:{...Object.fromEntries(Object.entries(process.env).filter(([key])=>!key.startsWith('GIT_'))),GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null',GIT_TERMINAL_PROMPT:'0'}});
 const options={skip:process.platform!=='linux'};
 const data=Buffer.from('#!/bin/sh\nexit 0\n');
+const exactNs=1700000000123456789n;
+const setExactMtime=async(target,symlink=false)=>exec('touch',[...(symlink?['-h']:[]),'-m','-d','@1700000000.123456789','--',target]);
 const identity=stat=>({device:stat.dev.toString(),inode:stat.ino.toString()});
 const destinationIdentity=async destination=>({...identity(await lstat(destination,{bigint:true})),directories:{hooks:identity(await lstat(path.join(destination,'hooks'),{bigint:true}))}});
 const packageFor=(manifest,working={})=>{
@@ -30,9 +32,9 @@ async function fixture(t,worktree=false,selectedWorktree=false){
   await link(path.join(sourceHooks,'script'),path.join(sourceHooks,'hard'));
   await symlink('script',path.join(sourceHooks,'symbol'));
   await chmod(sourceHooks,0o2750);
-  await utimes(path.join(sourceHooks,'script'),1700000000.123456,1700000000.123456);
-  await lutimes(path.join(sourceHooks,'symbol'),1700000000.123456,1700000000.123456);
-  await utimes(sourceHooks,1700000000.123456,1700000000.123456);
+  await setExactMtime(path.join(sourceHooks,'script'));
+  await setExactMtime(path.join(sourceHooks,'symbol'),true);
+  await setExactMtime(sourceHooks);
  } else {
   await git(source,'config','core.hooksPath','hooks');
   await mkdir(path.join(destination,'hooks'));await writeFile(path.join(destination,'hooks','script'),data);
@@ -43,9 +45,9 @@ async function fixture(t,worktree=false,selectedWorktree=false){
   await mkdir(sourceSelected);await writeFile(path.join(sourceSelected,'run'),data);
   await chmod(path.join(sourceSelected,'run'),0o700);await link(path.join(sourceSelected,'run'),path.join(sourceSelected,'hard'));
   await symlink('run',path.join(sourceSelected,'symbol'));await chmod(sourceSelected,0o750);
-  await utimes(path.join(sourceSelected,'run'),1700000000.123456,1700000000.123456);
-  await lutimes(path.join(sourceSelected,'symbol'),1700000000.123456,1700000000.123456);
-  await utimes(sourceSelected,1700000000.123456,1700000000.123456);
+  await setExactMtime(path.join(sourceSelected,'run'));
+  await setExactMtime(path.join(sourceSelected,'symbol'),true);
+  await setExactMtime(sourceSelected);
   await git(source,'config','core.hooksPath','.hooks');
   await mkdir(destinationSelected);await writeFile(path.join(destinationSelected,'run'),data);
   await link(path.join(destinationSelected,'run'),path.join(destinationSelected,'hard'));
@@ -66,6 +68,8 @@ async function fixture(t,worktree=false,selectedWorktree=false){
 
 test('real reviewed default hook graph restores exact alias and metadata evidence',options,async t=>{
  const f=await fixture(t,false,true);
+ assert.equal(f.sourceFile.mtimeNs,exactNs);assert.equal(f.sourceLink.mtimeNs,exactNs);assert.equal(f.sourceDir.mtimeNs,exactNs);
+ assert.equal(f.selected.sourceFile.mtimeNs,exactNs);assert.equal(f.selected.sourceLink.mtimeNs,exactNs);assert.equal(f.selected.sourceDir.mtimeNs,exactNs);
  const original=f.graph.files.find(node=>node.path.endsWith('/hooks/hard')||node.path.endsWith('/hooks/script'));
  assert.ok(original,'the real planner issues an owned original');
  const selectedPath=path.join(f.destination,'.hooks');
