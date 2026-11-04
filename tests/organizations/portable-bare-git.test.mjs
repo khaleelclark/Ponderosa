@@ -56,9 +56,12 @@ test('bare source refuses working-tree authority and preserves the rejected orig
   await assert.rejects(exportReviewedBareGit(bare),/cannot claim a working tree/);
   assert.deepEqual(await readFile(path.join(bare,'config')),original);
   native(bare,'config','--unset','core.worktree');
-  await writeFile(path.join(bare,'config'),(await readFile(path.join(bare,'config'),'utf8'))+'\n[core]\n worktree\n');
+  const validConfig=await readFile(path.join(bare,'config'));
+  await writeFile(path.join(bare,'config'),Buffer.concat([validConfig,Buffer.from('\n[core]\n worktree\n')]));
   await assert.rejects(exportReviewedBareGit(bare),/cannot claim a working tree/);
-  native(bare,'config','--unset-all','core.worktree');
+  // Git cannot edit a syntactically invalid config. Restore the exact owned
+  // fixture bytes before the following independent bare-storage assertions.
+  await writeFile(path.join(bare,'config'),validConfig);
   await writeFile(path.join(bare,'config.worktree'),'[core]\n bare = false\n');
   await assert.rejects(exportReviewedBareGit(bare),/cannot override bare storage/);
   await rm(path.join(bare,'config.worktree'));native(bare,'config','core.bare','false');
