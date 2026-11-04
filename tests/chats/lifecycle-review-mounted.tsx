@@ -175,3 +175,61 @@ export async function lifecycleStorageFailureRegression():Promise<void>{
   keys.forEach((k,i)=>{if(saved[i]===null)localStorage.removeItem(k);else localStorage.setItem(k,saved[i]!);});
  }
 }
+
+// A verified receipt remains authoritative when clearing browser storage fails,
+// while the original command stays available for a deliberate retry or lookup.
+export async function lifecycleReceiptRemovalFailureRegression():Promise<void>{
+ const host=document.createElement('div');document.body.append(host);
+ const root=createRoot(host),client=new QueryClient({defaultOptions:{queries:{retry:false},mutations:{retry:false}}});
+ const originalFetch=globalThis.fetch,originalRemoveItem=Storage.prototype.removeItem;
+ const origin=window.location.origin,scope=currentProductScope();
+ const memoryPath='/api/local-memory/mutation-holds/removal-failure',destinationPath='/api/lifecycle/destinations/removal-failure';
+ const key=(path:string)=>JSON.stringify(['lifecycle-command',origin,scope,path]);
+ const keys=[key(memoryPath),key(destinationPath)],saved=keys.map(k=>localStorage.getItem(k));
+ keys.forEach(k=>localStorage.removeItem(k));
+ let failClear=false;
+ const posts:Array<{url:string;body:any}>=[],json=(value:unknown)=>new Response(JSON.stringify(value),{status:200,headers:{'content-type':'application/json'}});
+ Storage.prototype.removeItem=function(k:string){
+  if(failClear&&keys.includes(k))throw new DOMException('Synthetic storage failure','SecurityError');
+  return originalRemoveItem.call(this,k);
+ };
+ globalThis.fetch=async(input,init)=>{
+  const url=String(input);
+  if(init?.method==='POST'){
+   const body=JSON.parse(String(init.body));posts.push({url,body});
+   return json({id:'removal-failure',commandKey:body.commandKey,reviewSha256:body.reviewSha256,backendDrainEvidence:body.backendDrainEvidence,backendSha256:'d'.repeat(64),state:'reconciled'});
+  }
+  if(url.includes('/api/local-memory/mutation-holds/'))return json({hold:{id:'removal-failure',legacy:false,state:'unsettled',sha256:'a'.repeat(64)},reviewSha256:'b'.repeat(64),canReconcile:true,backendDrainEvidenceRequired:true});
+  if(url.endsWith('/receipt'))return json({admissionId:'removal-failure',commandKey:'retire-key',reviewHash:'review-1',releasedSourcePins:false,retiredAt:'now'});
+  if(url.includes('/api/lifecycle/destinations/'))return json({admissionId:'removal-failure',reviewHash:'review-1',state:'staged',stage:null,evidenceRevision:'evidence',references:['pin'],canReleaseSourcePins:false,preserveOnlyPermanent:true,globalRuntimeQuiescenceRequired:true,reservation:{custody:{checkpointId:'cut',sourceChatId:'chat',agentIds:['agent'],custodyId:'custody',intent:{executionId:'run',resourceStepId:'step',resourceGeneration:0}}}});
+  throw Error('Unexpected request: '+url);
+ };
+ const render=(kind:'memory'|'destination',mount:string)=>root.render(<QueryClientProvider client={client}><LifecycleReview key={mount} kind={kind} id="removal-failure"/></QueryClientProvider>);
+ try{
+  render('memory','memory');await settle();button('Review memory hold').click();await settle();
+  const field=document.querySelector('textarea:not([aria-hidden="true"])') as HTMLTextAreaElement;
+  assert(field,'memory note field exists');
+  Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value')!.set!.call(field,'Provider requests have stopped');
+  field.dispatchEvent(new Event('input',{bubbles:true}));await settle();check();await settle();
+  button('Reconcile and preserve evidence').click();await settle();failClear=true;button('Confirm exact command').click();await settle();
+  const retained=localStorage.getItem(key(memoryPath));
+  assert(posts.length===1&&retained,'verified result with failed removal retains original command');
+  assert(document.body.textContent?.includes('The decision was confirmed')&&document.body.textContent?.includes('Exact command retained'),'confirmed result and local failure are visible');
+  failClear=false;button('Retry exact command').click();await settle();button('Confirm exact command').click();await settle();
+  assert(posts.length===2&&JSON.stringify(posts[0].body)===JSON.stringify(posts[1].body),'explicit retry uses identical original command');
+  assert(!localStorage.getItem(key(memoryPath)),'matching receipt clears retained command after storage recovers');
+
+  const pending={path:destinationPath,id:'removal-failure',action:'retire',body:{commandKey:'retire-key',expectedReviewHash:'review-1',releaseSourcePins:false,authorizeDeletedOwner:true}};
+  localStorage.setItem(key(destinationPath),JSON.stringify(pending));
+  render('destination','destination');await settle();button('Review destination retirement').click();await settle();
+  failClear=true;button('Inspect retirement receipt').click();await settle();
+  assert(localStorage.getItem(key(destinationPath))===JSON.stringify(pending),'failed receipt lookup cleanup preserves original command');
+  assert(document.body.textContent?.includes('The decision was confirmed')&&document.body.textContent?.includes('Exact command retained'),'verified lookup distinguishes the local storage error');
+  assert(posts.length===2,'receipt lookup sends no mutation');
+  failClear=false;button('Inspect retirement receipt').click();await settle();
+  assert(!localStorage.getItem(key(destinationPath))&&posts.length===2,'matching receipt lookup clears without replay after storage recovers');
+ }finally{
+  Storage.prototype.removeItem=originalRemoveItem;root.unmount();client.clear();host.remove();globalThis.fetch=originalFetch;
+  keys.forEach((k,i)=>{if(saved[i]===null)localStorage.removeItem(k);else localStorage.setItem(k,saved[i]!);});
+ }
+}
