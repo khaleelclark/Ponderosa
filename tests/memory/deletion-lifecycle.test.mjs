@@ -292,7 +292,12 @@ test('same-process Ponderosa memory storages for one Chroma origin serialize wit
 }));
 
 test('acknowledged first collection deletion resumes after a pre-dispatch failure and restart',()=>fixture(async f=>{
- const scope='chat:'+f.chat.id;await f.seed(scope,scope+':team');await f.seed(scope,scope+':team',f.a.id,true);
+ const scope='chat:'+f.chat.id,other='chat:'+f.otherChat.id;
+ await f.seed(scope,scope+':team');const logId=await f.seed(scope,scope+':team',f.a.id,true);
+ const otherId=await f.seed(other,other+':team'),globalId=await f.seed('global','installation-global',f.memory.principalId);
+ const logCollection=await f.raw.client.getCollection({name:f.raw.names(scope).log});
+ const beforeLog=await logCollection.get({ids:[logId],include:['documents','metadatas']});
+ assert.deepEqual(beforeLog.ids,[logId]);
  const originalGet=f.raw.client.getCollection.bind(f.raw.client),originalDelete=f.raw.client.deleteCollection.bind(f.raw.client);
  let acknowledgedMemory=false,blockedLogReads=0,logDeletes=0;
  f.raw.client.getCollection=async input=>{
@@ -314,12 +319,16 @@ test('acknowledged first collection deletion resumes after a pre-dispatch failur
  assert.equal(acknowledgedMemory,true,'The first collection delete actually returned');
  assert.ok(blockedLogReads>0,'The intended log read was blocked after that acknowledgement');
  assert.equal(logDeletes,0,'The failed step never dispatched a log delete');
- assert.equal(await f.rows(scope),null);assert.notEqual(await f.rows(scope,true),null);
+ assert.equal(await f.rows(scope),null);
+ const retainedLog=await logCollection.get({ids:[logId],include:['documents','metadatas']});
+ assert.deepEqual(retainedLog.ids,beforeLog.ids);assert.deepEqual(retainedLog.documents,beforeLog.documents);assert.deepEqual(retainedLog.metadatas,beforeLog.metadatas);
+ assert.deepEqual(await f.rows(other),[otherId]);assert.deepEqual(await f.rows('global'),[globalId]);
  assert.equal(f.memory.core.database.scopeHasUnsettledMutation(scope),false,'No log mutation was dispatched');
  await f.reopen();
  const deadline=Date.now()+5000;while(!f.store.getConversationDeletionReceipt(f.chat.id).serverCleanupCompleted&&Date.now()<deadline)await new Promise(r=>setTimeout(r,10));
  assert.equal(f.store.getConversationDeletionReceipt(f.chat.id).serverCleanupCompleted,true);
  assert.equal(await f.rows(scope,true),null);
+ assert.deepEqual(await f.rows(other),[otherId]);assert.deepEqual(await f.rows('global'),[globalId]);
 }));
 
 test('Agent cleanup resumes after known pre-dispatch failure following conflict deletion',()=>fixture(async f=>{
