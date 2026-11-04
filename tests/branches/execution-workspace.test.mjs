@@ -213,7 +213,7 @@ test('canonical Agent decisions use the existing shared DecisionCard before Tech
 test('a pending Decision remains in the same render position across revision refresh and failed refresh',()=>{
  const decision={id:'decision-b',projectId:'owned-project',agentId:'reviewer',question:'Preserve this open answer',mode:'text',options:[],allowOther:true,status:'pending'};
  const f=fixture({actions:[{kind:'decision',decision},olderAttempt()]});f.render();const key=[...f.queries.get('branch-execution-actions').queryKey];
- f.execution.revision++;const refreshing=f.render();assert.match(refreshing,/Preserve this open answer/);assert.match(refreshing,/Your open decisions are kept/);assert.equal(f.button('Retry Step').disabled,true);assert.deepEqual([...f.queries.get('branch-execution-actions').queryKey],key);f.flushEffects();
+ f.execution.revision++;const refreshing=f.render();assert.match(refreshing,/Preserve this open answer/);assert.match(refreshing,/open decisions are kept/);assert.equal(f.button('Retry Step').disabled,true);assert.deepEqual([...f.queries.get('branch-execution-actions').queryKey],key);f.flushEffects();
  f.setQuery('branch-execution-actions',{error:new ApiRequestError(409,'Actions changed')});const failed=f.render();assert.match(failed,/Preserve this open answer/);assert.match(failed,/could not refresh/);assert.equal(f.button('Retry Step').disabled,true);
 });
 
