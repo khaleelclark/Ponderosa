@@ -114,21 +114,26 @@ test('human and actionable peer input do not share an uncertain steering submiss
  } finally {release?.();}
 });
 
-for(const result of ['unsupported','unknown']) test(`${result} peer steering is not repeatedly sent`,{timeout:30000},async t=>{
+for(const urgency of ['ordinary','urgent']) for(const result of ['unsupported','unknown']) test(`${result} ${urgency} peer steering is not repeatedly sent`,{timeout:30000},async t=>{
  let store,calls=0;await withFixture(t,async f=>{
   const chat=await f.createChat('Peer steering failure'),a=await f.createIdleAgent(chat,'Sender'),b=await f.createIdleAgent(chat,'Recipient');
   const sender=await f.hold(a.id),target=await f.hold(b.id),run=(await f.detail(b.id)).runs[0].id;
-  const peer=await sendPeer(f,sender,b.id,'Preserve this instruction',{messagePurpose:'instruction'});
+  const peer=await sendPeer(f,sender,b.id,'Preserve this instruction',{messagePurpose:'instruction',urgency});
   assert.equal(peer.status,200,JSON.stringify(peer));
   if(result==='unsupported'){
    await until(()=>messageActivation(store,peer.body.eventId)?.steering_wait_reason==='provider_unsupported','unsupported provider recorded');
-   assert.equal(messageActivation(store,peer.body.eventId).dispatch_policy,'next_run');
+   await new Promise(resolve=>setTimeout(resolve,1100));assert.equal(calls,1);
+   const activation=messageActivation(store,peer.body.eventId);
+   assert.equal(activation.dispatch_policy,'next_run');
+   if(urgency==='urgent'){
+    assert.equal(activation.kind,'urgent_message');assert.equal(activation.priority,90);assert.equal(activation.prompt_class,'blocker');
+   }
    const receipts=f.ok(await f.api('POST',`/api/conversations/${chat.id}/message-delivery-receipts`,{communicationEventIds:[peer.body.eventId],activationIds:[]}));
    assert.equal(receipts.items[0].deliveryReceipts[0].steeringWaitReason,'provider_unsupported');
-   await new Promise(resolve=>setTimeout(resolve,1100));assert.equal(calls,1);
    f.plans.set(b.id,[{hold:true}]);target.finish();
    await until(()=>f.turns.filter(turn=>turn.agentId===b.id).length>=2,'following Run starts');
-   assert.ok(f.turns.filter(turn=>turn.agentId===b.id).at(-1).input.prompt.includes('Preserve this instruction'));
+   const prompt=f.turns.filter(turn=>turn.agentId===b.id).at(-1).input.prompt;
+   assert.equal(prompt.split('Preserve this instruction').length-1,1,'one exact authored instruction reaches the next Run');
    f.sessions.get(b.id).finish();
   }else{
    await until(()=>messageActivation(store,peer.body.eventId)?.state==='outcome_unknown','uncertain peer delivery held');

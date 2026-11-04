@@ -382,7 +382,8 @@ export class CoordinationV3SteeringAuthority {
           SET state = 'retry_pending',
             dispatch_policy = CASE
               WHEN EXISTS(SELECT 1 FROM activation_sources source WHERE source.activation_id=agent_activations.id AND source.source_kind='branch_schedule_update') THEN 'next_run'
-              WHEN ? = 'provider_unsupported' AND kind IN ('coordination_request','ordinary_message') THEN 'next_run'
+              WHEN ? = 'provider_unsupported' AND (kind IN ('coordination_request','ordinary_message')
+                OR (kind = 'urgent_message' AND prompt_class <> 'human')) THEN 'next_run'
               WHEN ? = 1 THEN dispatch_policy
               ELSE 'next_run'
             END,
@@ -399,7 +400,8 @@ export class CoordinationV3SteeringAuthority {
               AND activation_id IN (${placeholders})
               AND EXISTS (SELECT 1 FROM agent_activations activation
                 WHERE activation.id = scheduler_run_activations.activation_id
-                  AND activation.kind IN ('coordination_request','ordinary_message')
+                  AND (activation.kind IN ('coordination_request','ordinary_message')
+                    OR (activation.kind = 'urgent_message' AND activation.prompt_class <> 'human'))
                   AND activation.state = 'retry_pending'
                   AND activation.steering_wait_reason = 'provider_unsupported')
               AND NOT EXISTS (SELECT 1 FROM scheduler_prompt_injections prior,
