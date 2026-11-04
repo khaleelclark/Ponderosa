@@ -629,7 +629,23 @@ test('retained-original export ignores only exact generated hook links backed by
   await assert.rejects(reexport(),/canonical local creation-operation proof/,'Inventory admission cannot bypass canonical hook authority');
   const exported=await reexport(proof),retained=exported.artifacts.find(item=>item.path==='.ponderosa-portable-review/user-data.json');
   assert.deepEqual(Buffer.from(retained.dataBase64,'base64'),original,'Re-export carries canonical originals, never generated Git state');
-  assert.equal(exported.files.length,1);assert.equal(await readlink(pathname),text);
+  assert.deepEqual(exported.files.map(file=>file.path).sort(),[
+   '.ponderosa-portable-review/current-git-evidence/manifest.json',
+   '.ponderosa-portable-review/user-data.json',
+  ],'Only the canonical original and its inert evidence manifest are exported');
+  const evidenceFile=exported.files.find(file=>file.path==='.ponderosa-portable-review/current-git-evidence/manifest.json');
+  const evidenceArtifact=exported.artifacts.find(item=>item.ref===evidenceFile.artifactRef);
+  const evidence=JSON.parse((await decodePortableArtifactData(evidenceArtifact)).data);
+  assert.deepEqual(evidence,{
+   version:1,
+   originalSha256:createHash('sha256').update(original).digest('hex'),
+   namespaces:[],
+   generatedObservations:[
+    {name:'git-repository',state:'absent',nodes:[]},
+    {name:'provider-files',state:'absent',nodes:[]},
+   ],
+  });
+  await exported.verify();assert.equal(await readlink(pathname),text);
   await writeFile(path.join(review,'unrecognized-user-file'),'preserve unknown bytes');
   await assert.rejects(inventoryWorkingFolder(destination,selection),/Unknown retained review namespace/);
   assert.equal(await readFile(path.join(review,'unrecognized-user-file'),'utf8'),'preserve unknown bytes');
