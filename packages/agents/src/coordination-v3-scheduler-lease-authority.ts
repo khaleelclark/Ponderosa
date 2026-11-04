@@ -1,3 +1,4 @@
+import {settingsTransitionActivationHoldSql} from './coordination-v3-settings-transition-hold.js';
 import { ReviewedSteeringAuthority } from "./coordination-v3-reviewed-steering.js";
 import {branchInstallationHoldSql,branchInstallationTables} from './branch-installation-hold.js';
 import {generationExitHoldSql} from './branch-generation-exit-fence.js';
@@ -160,32 +161,24 @@ export class CoordinationV3SchedulerLeaseAuthority {
     return this.sqlite.transaction(() => this.recoverExpiredRunsInTransaction(now))();
   }
 
-  leaseNextRun(input: {
-    workerId: string;
-    now?: string;
-    leaseMs?: number;
-    coalesceLimit?: number;
-    excludedAgentIds?: readonly string[];
-  }): SchedulerLease | undefined {
-    const now = input.now ?? new Date().toISOString();
-    const leaseMs = input.leaseMs ?? 30_000;
-    const limit = Math.max(1, Math.min(input.coalesceLimit ?? 8, 64));
-    const excludedAgentIds = [...new Set(input.excludedAgentIds ?? [])];
-    const excludedClause = excludedAgentIds.length
-      ? `AND a.agent_id NOT IN (${excludedAgentIds.map(() => "?").join(", ")})`
-      : "";
-    return this.sqlite.transaction(() => {
-      this.recoverExpiredRunsInTransaction(now);
-      this.activationLifecycle.settleUnauthorizedPendingActivations(now);
-      const branchTables=branchInstallationTables(this.sqlite);
+  /** Read-only preview of the same eligibility query used by leaseNextRun.
+   * A later lease may differ after asynchronous work or expiry recovery. */
+  peekNextRunnable(input: { now?: string; excludedAgentIds?: readonly string[] } = {}):
+    { activationId:string; agentId:string; projectId:string; scopeKey:string } | undefined {
+    const now=input.now ?? new Date().toISOString();
+    const excludedAgentIds=[...new Set(input.excludedAgentIds ?? [])];
+    const excludedClause=excludedAgentIds.length
+      ? `AND a.agent_id NOT IN (${excludedAgentIds.map(()=>'?').join(', ')})` : '';
+    const branchTables=branchInstallationTables(this.sqlite);
       const installationFence=branchTables==='ready'
         ? `AND NOT ${branchInstallationHoldSql('a.agent_id',"CASE WHEN a.scope_key LIKE 'conversation:%' THEN substr(a.scope_key,14) END")}`
         : branchTables==='partial'?'AND 0':'';
-      const candidate = this.sqlite.prepare(`
-        SELECT a.agent_id, a.project_id, a.scope_key
+    const candidate = this.sqlite.prepare(`
+        SELECT a.id activation_id, a.agent_id, a.project_id, a.scope_key
         FROM agent_activations a
         WHERE a.state IN ('pending', 'retry_pending')
           AND ${heldSteeringRecovery}
+          AND NOT ${settingsTransitionActivationHoldSql('a')}
           ${installationFence}
           AND NOT ${generationExitHoldSql('a.agent_id',"CASE WHEN a.scope_key LIKE 'conversation:%' THEN substr(a.scope_key,14) END")}
           AND NOT EXISTS(SELECT 1 FROM coordination_destination_admissions d LEFT JOIN agents staged_agent ON staged_agent.id=a.agent_id WHERE d.state!='admitted' AND (d.conversation_id=staged_agent.conversation_id OR a.scope_key='conversation:'||d.conversation_id OR EXISTS(SELECT 1 FROM coordination_destination_members m WHERE m.admission_id=d.id AND m.agent_id=a.agent_id)))
@@ -240,16 +233,40 @@ export class CoordinationV3SchedulerLeaseAuthority {
         ORDER BY a.priority DESC, a.created_at, a.rowid
         LIMIT 1
       `).get(now, ...excludedAgentIds) as {
+        activation_id: string;
         agent_id: string;
         project_id: string;
         scope_key: string;
       } | undefined;
+    return candidate ? {activationId:candidate.activation_id, agentId:candidate.agent_id,
+      projectId:candidate.project_id, scopeKey:candidate.scope_key} : undefined;
+  }
+
+  leaseNextRun(input: {
+    workerId: string;
+    now?: string;
+    leaseMs?: number;
+    coalesceLimit?: number;
+    excludedAgentIds?: readonly string[];
+    expectedActivationId?: string | null;
+  }): SchedulerLease | undefined {
+    const now = input.now ?? new Date().toISOString();
+    const leaseMs = input.leaseMs ?? 30_000;
+    const limit = Math.max(1, Math.min(input.coalesceLimit ?? 8, 64));
+    const excludedAgentIds = [...new Set(input.excludedAgentIds ?? [])];
+    return this.sqlite.transaction(() => {
+      this.recoverExpiredRunsInTransaction(now);
+      this.activationLifecycle.settleUnauthorizedPendingActivations(now);
+      const candidate = this.peekNextRunnable({now, excludedAgentIds});
+      if (candidate && input.expectedActivationId !== undefined &&
+          candidate.activationId !== input.expectedActivationId) return undefined;
       if (!candidate) return undefined;
       const queuedActivations = this.sqlite.prepare(`
         SELECT a.* FROM agent_activations a
         WHERE agent_id = ? AND scope_key = ?
           AND state IN ('pending', 'retry_pending') AND available_at <= ?
           AND ${heldSteeringRecovery}
+          AND NOT ${settingsTransitionActivationHoldSql('a')}
           AND NOT EXISTS(SELECT 1 FROM provider_context_recovery_requests recovery WHERE recovery.agent_id=a.agent_id AND recovery.state='unsupported_fenced')
           AND NOT EXISTS(SELECT 1 FROM agent_run_pauses pause WHERE pause.agent_id=a.agent_id
             AND pause.state IN ('paused','resume_requested') AND NOT (pause.state='resume_requested'
@@ -291,8 +308,8 @@ export class CoordinationV3SchedulerLeaseAuthority {
           )
         ORDER BY priority DESC, created_at, rowid LIMIT 64
       `).all(
-        candidate.agent_id,
-        candidate.scope_key,
+        candidate.agentId,
+        candidate.scopeKey,
         now,
       ) as ActivationRow[];
       const startsFreshTask = (activation: ActivationRow) =>
@@ -331,8 +348,8 @@ export class CoordinationV3SchedulerLeaseAuthority {
           LIMIT 1
         `).get(
           activation.id,
-          candidate.agent_id,
-          candidate.project_id,
+          candidate.agentId,
+          candidate.projectId,
           activation.id,
           activation.id,
         ));
@@ -354,9 +371,9 @@ export class CoordinationV3SchedulerLeaseAuthority {
           .slice(0, limit);
       if (activations.length === 0) return undefined;
       if (!this.runtimeScopeAuthority.recipientAuthorizedForActivationScope(
-        candidate.project_id,
-        candidate.agent_id,
-        candidate.scope_key,
+        candidate.projectId,
+        candidate.agentId,
+        candidate.scopeKey,
       )) {
         this.activationLifecycle.settleUnauthorizedPendingActivations(now);
         return undefined;
@@ -364,7 +381,7 @@ export class CoordinationV3SchedulerLeaseAuthority {
       if (candidateIsReviewedSteering) {
         try {
           new ReviewedSteeringAuthority(this.sqlite, () => { throw new Error("Unexpected activation creation"); })
-            .assertClaim(candidate.project_id, activations[0]!.id);
+            .assertClaim(candidate.projectId, activations[0]!.id);
         } catch (error) {
           const reason = error instanceof Error ? error.message : "Reviewed continuation evidence changed.";
           this.sqlite.prepare("UPDATE agent_activations SET state='failed',terminal_outcome='permanent_failure',last_delivery_error=?,terminal_at=?,updated_at=? WHERE id=? AND state IN ('pending','retry_pending')")
@@ -372,7 +389,7 @@ export class CoordinationV3SchedulerLeaseAuthority {
           return undefined;
         }
       }
-      const fencingToken = this.support.nextFence(candidate.agent_id);
+      const fencingToken = this.support.nextFence(candidate.agentId);
       const runId = randomUUID();
       const injectionId = randomUUID();
       const leaseExpiresAt = new Date(
@@ -388,9 +405,9 @@ export class CoordinationV3SchedulerLeaseAuthority {
         )
       `).run(
         runId,
-        candidate.project_id,
-        candidate.agent_id,
-        candidate.scope_key,
+        candidate.projectId,
+        candidate.agentId,
+        candidate.scopeKey,
         input.workerId,
         leaseExpiresAt,
         fencingToken,
@@ -429,9 +446,9 @@ export class CoordinationV3SchedulerLeaseAuthority {
         .run(runId,activations[0]!.id);
       this.registerRequiredReply({
         runId,
-        projectId: candidate.project_id,
-        agentId: candidate.agent_id,
-        scopeKey: candidate.scope_key,
+        projectId: candidate.projectId,
+        agentId: candidate.agentId,
+        scopeKey: candidate.scopeKey,
         activations: activations.map((activation) => ({
           id: activation.id,
           kind: activation.kind,
@@ -445,9 +462,9 @@ export class CoordinationV3SchedulerLeaseAuthority {
       });
       return {
         runId,
-        projectId: candidate.project_id,
-        agentId: candidate.agent_id,
-        scopeKey: candidate.scope_key,
+        projectId: candidate.projectId,
+        agentId: candidate.agentId,
+        scopeKey: candidate.scopeKey,
         fencingToken,
         leaseOwner: input.workerId,
         leaseExpiresAt,

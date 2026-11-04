@@ -383,3 +383,25 @@ test('settings transition preserves pending work and isolates replacement confir
 
 
 }));
+
+
+test('scheduler preview uses exact runnable priority, exclusions and transactional expected activation', t => withStores(t, async f => {
+ const store=f.open('scheduler-peek'),agent=f.seed(store),other=f.seed(store),db=store.sqlite,coordination=new CoordinationV3Store(db);
+ const now=new Date().toISOString(),future=new Date(Date.now()+60_000).toISOString();
+ const first='00000000-0000-4000-8000-000000000002',second='00000000-0000-4000-8000-000000000001',delayed=randomUUID(),higher=randomUUID();
+ const insert=db.prepare(`INSERT INTO agent_activations(id,project_id,agent_id,kind,priority,dispatch_policy,prompt_class,state,dedupe_key,payload_json,available_at,created_at,updated_at,scope_key)
+  VALUES(?,?,?,'human_message',?,'next_run','human',?,?, '{}',?,?,?,?)`);
+ insert.run(delayed,agent.projectId,agent.id,1000,'retry_pending',delayed,future,now,now,`agent:${agent.id}`);
+ for(const id of [first,second])insert.run(id,agent.projectId,agent.id,10,'pending',id,now,now,now,`agent:${agent.id}`);
+ insert.run(higher,other.projectId,other.id,50,'pending',higher,now,now,now,`agent:${other.id}`);
+ assert.deepEqual(coordination.peekNextRunnable({now}),{activationId:higher,agentId:other.id,projectId:other.projectId,scopeKey:`agent:${other.id}`});
+ assert.deepEqual(coordination.peekNextRunnable({now,excludedAgentIds:[other.id]}),{activationId:first,agentId:agent.id,projectId:agent.projectId,scopeKey:`agent:${agent.id}`},'future retry is excluded and rowid breaks equal timestamps');
+ assert.equal(db.prepare('SELECT count(*) n FROM scheduler_runs').get().n,0,'preview is read-only');
+ assert.equal(coordination.leaseNextRun({workerId:'expected-fence',now,expectedActivationId:first}),undefined,'a changed higher-priority candidate cannot bypass preflight');
+ assert.equal(coordination.leaseNextRun({workerId:'expected-fence',now,expectedActivationId:null}),undefined,'no-preview sentinel cannot claim new work');
+ assert.equal(db.prepare('SELECT count(*) n FROM scheduler_runs').get().n,0);
+ const winner=coordination.leaseNextRun({workerId:'expected-fence',now,expectedActivationId:higher});
+ assert.deepEqual(winner.activationIds,[higher]);
+ const next=coordination.leaseNextRun({workerId:'expected-fence',now,excludedAgentIds:[other.id],expectedActivationId:first});
+ assert.ok(next.activationIds.includes(first));assert.ok(next.activationIds.includes(second));assert.ok(!next.activationIds.includes(delayed));
+}));

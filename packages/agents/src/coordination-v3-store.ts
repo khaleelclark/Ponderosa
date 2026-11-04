@@ -1099,12 +1099,17 @@ export class CoordinationV3Store {
     this.deletionAuthority.purgeCommunicationV4Conversation(conversationId);
   }
 
+  peekNextRunnable(input: { now?:string; excludedAgentIds?:readonly string[] } = {}) {
+    return this.schedulerLeaseAuthority.peekNextRunnable(input);
+  }
+
   leaseNextRun(input: {
     workerId: string;
     now?: string;
     leaseMs?: number;
     coalesceLimit?: number;
     excludedAgentIds?: readonly string[];
+    expectedActivationId?: string | null;
   }): SchedulerLease | undefined {
     this.sqlite.transaction(() => {
       const now = input.now ?? new Date().toISOString();
