@@ -56,14 +56,22 @@ export function AddAgentsFlow({
   const [step, setStep] = useState<AddStep>("choose");
   const [selectedProjectId, setSelectedProjectId] = useState(initialProjectId ?? "");
   const [sourceId, setSourceId] = useState("");
-  const sourceProjectId = fixedProjectId ?? selectedProjectId;
+  const sourceProjectId = selectedProjectId || fixedProjectId || "";
   useEffect(() => {
     if (!open) return;
     setStep("choose");
-    setSelectedProjectId(initialProjectId ?? (projects.length === 1 ? projects[0]!.id : ""));
+    setSelectedProjectId(initialProjectId ?? fixedProjectId ?? (projects.length === 1 ? projects[0]!.id : ""));
     setSourceId("");
-  }, [open, initialProjectId, projects.length]);
+  }, [open, initialProjectId, fixedProjectId, projects.length]);
   const pickingSource = open && (step === "pick-source" || step === "duplicate");
+  // A Chat-owned Project contains only that Chat. Discover other source Chats
+  // when this flow is opened from a destination Chat.
+  const sourceProjectsQuery = useQuery({
+    queryKey: queryKeys.projects.all,
+    queryFn: () => api.listProjects(),
+    enabled: pickingSource && Boolean(fixedProjectId && initialConversation) && projects.length === 0,
+  });
+  const sourceProjects = projects.length ? projects : sourceProjectsQuery.data ?? [];
   const agentsQuery = useQuery({
     queryKey: queryKeys.agents.project(sourceProjectId),
     queryFn: () => api.listAgents(sourceProjectId),
@@ -120,11 +128,11 @@ export function AddAgentsFlow({
       <DialogTitle>Duplicate existing Agent</DialogTitle>
       <DialogContent>
         <Stack spacing={2} sx={{ pt: 1 }}>
-          {!fixedProjectId ? <FormControl fullWidth size="small">
+          {sourceProjects.length > 0 ? <FormControl fullWidth size="small">
             <InputLabel id="duplicate-source-project-label">Source workspace</InputLabel>
             <Select labelId="duplicate-source-project-label" label="Source workspace" value={selectedProjectId}
               onChange={event => { setSelectedProjectId(event.target.value); setSourceId(""); }}>
-              {projects.map(project => <MenuItem key={project.id} value={project.id}>{project.label}</MenuItem>)}
+              {sourceProjects.map(project => <MenuItem key={project.id} value={project.id}>{project.label}</MenuItem>)}
             </Select>
           </FormControl> : null}
           {sourceProjectId ? <Autocomplete<AgentDto>
@@ -136,6 +144,9 @@ export function AddAgentsFlow({
             onChange={(_event, value) => setSourceId(value?.id ?? "")}
             renderInput={params => <TextField {...params} label="Source Agent" size="small" />}
           /> : <Typography variant="body2" color="text.secondary">Choose a source workspace first.</Typography>}
+          {sourceProjectsQuery.isError ? <Alert severity="warning">
+            Could not load other source Chats. <Button size="small" onClick={() => { void sourceProjectsQuery.refetch(); }}>Retry</Button>
+          </Alert> : null}
           {agentsQuery.isError || chatsQuery.isError ? <Alert severity="error">
             Could not load Agents or chats from this workspace. <Button size="small" onClick={() => { void agentsQuery.refetch(); void chatsQuery.refetch(); }}>Retry</Button>
           </Alert> : null}
@@ -156,13 +167,14 @@ export function AddAgentsFlow({
       open={open && step === "duplicate"}
       source={source}
       agents={agents}
-      conversations={chats}
-      initialConversationId={initialConversation?.projectId === source.projectId ? initialConversation.id : undefined}
+      conversations={initialConversation ? [initialConversation] : chats}
+      sourceConversation={chats.find(chat => chat.id === source.conversationId)}
+      initialConversationId={initialConversation?.id}
       onClose={() => setStep("pick-source")}
-      onCreated={agentId => {
+      onCreated={(agentId, destinationProjectId) => {
         notify({ message: "Agent duplicated.", severity: "success" });
         onClose();
-        onCreated?.(source.projectId, agentId);
+        onCreated?.(destinationProjectId, agentId);
       }}
     /> : null}
   </>;

@@ -25,7 +25,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { createClientId } from "../clientId";
 import { queryKeys } from "../queryKeys";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ConfirmDialog } from "./ConfirmationDialogs";
 import { agentBelongsToConversation } from "../agents";
 
@@ -162,6 +162,7 @@ export function AgentDuplicateDialog({
   agents,
   conversations,
   initialConversationId,
+  sourceConversation,
   onClose,
   onCreated,
 }: {
@@ -170,8 +171,9 @@ export function AgentDuplicateDialog({
   agents: AgentDto[];
   conversations: ConversationDto[];
   initialConversationId?: string;
+  sourceConversation?: ConversationDto;
   onClose(): void;
-  onCreated(agentId: string): void;
+  onCreated(agentId: string, destinationProjectId: string): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
   const availableChats = conversations.filter(chat => !chat.deletedAt);
@@ -180,8 +182,9 @@ export function AgentDuplicateDialog({
   const [conversationId, setConversationId] = useState("");
   const [rootTitle, setRootTitle] = useState("");
   const [instructionsAction, setInstructionsAction] = useState<ChatInstructionsAction>("");
-  const sourceInstructions = mode === "full" ? conversations.find(chat => chat.id === source.conversationId)?.instructions : undefined;
-  const destinationInstructions = conversations.find(chat => chat.id === conversationId)?.instructions ?? "";
+  const sourceInstructions = mode === "full" ? (sourceConversation ?? conversations.find(chat => chat.id === source.conversationId))?.instructions : undefined;
+  const destinationChat = availableChats.find(chat => chat.id === conversationId);
+  const destinationInstructions = destinationChat?.instructions ?? "";
   const instructionsConflict = Boolean(sourceInstructions && destinationInstructions && sourceInstructions !== destinationInstructions);
   useEffect(() => { setInstructionsAction(""); }, [mode, sourceInstructions, destinationInstructions, conversationId]);
   const [acknowledged, setAcknowledged] = useState(false);
@@ -205,17 +208,24 @@ export function AgentDuplicateDialog({
     || agent.managementPermissions.allowAutomaticDescendantReorganization,
   );
   const normalizedTitle = rootTitle.trim().toLocaleLowerCase();
-  const nameCollision = normalizedTitle && agents.some(agent =>
+  const destinationAgents = useQuery({
+    queryKey: queryKeys.agents.project(destinationChat?.projectId),
+    queryFn: () => api.listAgents(destinationChat!.projectId),
+    enabled: open && Boolean(destinationChat && destinationChat.projectId !== source.projectId),
+  });
+  const possibleCollisions = destinationChat?.projectId === source.projectId ? agents : destinationAgents.data ?? [];
+  const nameCollision = normalizedTitle && possibleCollisions.some(agent =>
     agentBelongsToConversation(agent, conversationId)
     && agent.title.trim().toLocaleLowerCase() === normalizedTitle,
   );
   const duplicate = async () => {
-    const signature = JSON.stringify([source.id, conversationId, rootTitle.trim(), mode, organization, acknowledged, instructionsAction, destinationInstructions]);
+    if (!destinationChat) return;
+    const signature = JSON.stringify([source.id, destinationChat.projectId, conversationId, rootTitle.trim(), mode, organization, acknowledged, instructionsAction, destinationInstructions]);
     if (attempt.current?.signature !== signature) attempt.current = { signature, id: createClientId() };
     setPending(true);
     setError(undefined);
     try {
-      const result = await api.copyAgent(source.projectId, {
+      const result = await api.copyAgent(destinationChat.projectId, {
         sourceAgentId: source.id,
         conversationId,
         rootTitle: rootTitle.trim(),
@@ -224,10 +234,10 @@ export function AgentDuplicateDialog({
         chatInstructionsResolution: await chatInstructionsResolution(instructionsAction, destinationInstructions),
         ...(elevated ? { acknowledgeElevatedManagementPermissions: acknowledged } : {}),
       }, attempt.current.id);
-      await queryClient.invalidateQueries({ queryKey: queryKeys.agents.project(source.projectId) });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.agents.project(destinationChat.projectId) });
       await queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.kind("agent") });
       onClose();
-      onCreated(result.rootAgentId);
+      onCreated(result.rootAgentId, destinationChat.projectId);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "The Agent could not be duplicated.");
     } finally {
@@ -237,7 +247,7 @@ export function AgentDuplicateDialog({
   return <ConfirmDialog open={open} title={organization ? "Duplicate organization" : "Duplicate Agent"}
     confirmLabel={organization ? "Duplicate organization" : "Duplicate Agent"}
     pendingLabel="Duplicating…" pending={pending} error={error}
-    confirmDisabled={(instructionsConflict && !instructionsAction) || !conversationId || !rootTitle.trim() || rootTitle.trim().length > 80 || (elevated && !acknowledged)} onCancel={onClose}
+    confirmDisabled={(instructionsConflict && !instructionsAction) || !destinationChat || !rootTitle.trim() || rootTitle.trim().length > 80 || (elevated && !acknowledged)} onCancel={onClose}
     onConfirm={() => void duplicate()}>
     <Stack spacing={2} sx={{ pt: 1 }}>
       <Typography variant="body2" color="text.secondary">Source: {source.title}</Typography>
@@ -257,6 +267,7 @@ export function AgentDuplicateDialog({
         inputProps={{ maxLength: 80 }} fullWidth size="small"
         error={Boolean(rootTitle && !rootTitle.trim())}
         helperText="Descendant names stay the same." />
+      {destinationAgents.isError ? <Alert severity="warning">Agent name check unavailable for the destination Chat.</Alert> : null}
       {nameCollision ? <Alert severity="warning">
         An Agent named “{rootTitle.trim()}” already exists in this chat. The duplicate will be separate; no existing Agent is replaced.
       </Alert> : null}

@@ -22,10 +22,11 @@ import * as fixture19 from '../chats/post-import-access-mounted.tsx';
 import * as fixture20 from '../chats/request-reply-preview-mounted.tsx';
 import * as fixture21 from '../speech/voice-message-recording-mounted.tsx';
 import * as fixture22 from '../chats/import-recovery-mounted.tsx';
+import * as fixture23 from '../chats/duplicate-destination-mounted.tsx';
 
 type Regression=()=>void|Promise<void>;
 const cases=new Map<string,Regression>();
-for(const fixture of [fixture0,fixture1,fixture2,fixture3,fixture4,fixture5,fixture6,fixture7,fixture8,fixture9,fixture10,fixture11,fixture12,fixture13,fixture14,fixture15,fixture16,fixture17,fixture18,fixture19,fixture20,fixture21,fixture22]){
+for(const fixture of [fixture0,fixture1,fixture2,fixture3,fixture4,fixture5,fixture6,fixture7,fixture8,fixture9,fixture10,fixture11,fixture12,fixture13,fixture14,fixture15,fixture16,fixture17,fixture18,fixture19,fixture20,fixture21,fixture22,fixture23]){
  for(const [name,value] of Object.entries(fixture)){
   if(typeof value!=='function')continue;
   if(cases.has(name))throw new Error('Duplicate mounted regression: '+name);
