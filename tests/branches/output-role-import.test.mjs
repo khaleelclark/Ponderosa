@@ -113,12 +113,20 @@ test('deleting a published held Branch retires its exact roles and review withou
    const removed=snapshot.mapping[JSON.stringify(['chat','root'])],reviewId=snapshot.review.id;
    assert.ok(workspace.getPreferences().outputApps.importReviews[reviewId].applied);
    store.sqlite.exec('DROP TRIGGER refuse_deleted_role_completion');
-   store.sqlite.exec("CREATE TEMP TRIGGER refuse_canceled_compaction BEFORE UPDATE OF state ON branch_installation_plans WHEN NEW.state='canceled' BEGIN SELECT RAISE(ABORT,'controlled cancellation receipt failure'); END");
+   const canceledReceiptAttempts=[];
+   store.sqlite.function('observe_canceled_receipt',id=>{canceledReceiptAttempts.push(id);return 1;});
+   store.sqlite.exec("CREATE TEMP TRIGGER refuse_canceled_compaction BEFORE UPDATE OF state ON branch_installation_plans WHEN NEW.state='canceled' BEGIN SELECT observe_canceled_receipt(OLD.id); SELECT RAISE(ABORT,'controlled cancellation receipt failure'); END");
+   let sawCancellationHold=false;
    await until(async()=>{
     const result=await f.api('DELETE',`/api/branches/${pending.branchId}`);
-    assert.ok([200,202,404].includes(result.status)||(result.status===409&&result.body.error==='controlled cancellation receipt failure'),JSON.stringify(result.body));
+    if(result.status===409){
+     assert.equal(result.body.error,'Workflow cleanup failed (SQLITE_CONSTRAINT_TRIGGER): A database trigger rejected the operation. Details withheld because they may contain credentials.');
+     sawCancellationHold=true;
+    }else assert.ok([200,202,404].includes(result.status),JSON.stringify(result.body));
     return !store.getAgent(removed)&&!workspace.getPreferences().outputApps.importReviews?.[reviewId];
    },'deleted Branch Output marker cleanup');
+   assert.equal(sawCancellationHold,true,'controlled trigger must hold cancellation receipt');
+   assert.ok(canceledReceiptAttempts.includes(plan.id),'the injected trigger rejected this exact cancellation receipt');
    assert.equal(store.sqlite.prepare('SELECT state FROM branch_installation_plans WHERE id=?').get(plan.id).state,'canceling');
    assert.ok(store.getAgent(other));
    assert.ok(workspace.getPreferences().outputApps.agentIds.includes(other));
