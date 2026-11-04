@@ -14,12 +14,31 @@ type Frame={owner:AuthorityStorage;authority:MemoryAuthority;all:Map<string,Sour
 const context=new AsyncLocalStorage<Frame>();const key=(scope:string,id:string)=>JSON.stringify([scope,id]);
 const denied=()=>new Error('Memory source unavailable or unauthorized');
 export const MEMORY_CLEANUP_HOLD='Memory cleanup held: backend lacks atomic identity and content checks; staged and existing data was preserved';
+export const MEMORY_CLEANUP_UNKNOWN_HOLD='Memory cleanup held: a backend write has an unknown outcome. It was not repeated; review memory health.';
+export function isMemoryCleanupHold(value:unknown):boolean{
+ const message=value instanceof Error?value.message:value;
+ return message===MEMORY_CLEANUP_HOLD||message===MEMORY_CLEANUP_UNKNOWN_HOLD;
+}
 export class MemoryCollectionHold extends Error{constructor(message:string){super(message);this.name='MemoryCollectionHold';}}
 const noGeneration={name:'local-memory-precomputed',generate:async():Promise<number[][]>=>{throw Error('Explicit embeddings required');}};
+// Separate app instances in one process can share an admitted store. Serialize
+// all their memory work for a Chroma origin; each raw storage retains its own
+// close/queue behavior. Same-directory processes use the existing state lease.
+const originQueues=new Map<string,Promise<void>>(),sharedQueueStorages=new WeakSet<ChromaStorage>();
+function shareOriginQueue(raw:ChromaStorage){
+ if(sharedQueueStorages.has(raw))return;sharedQueueStorages.add(raw);
+ const origin=new URL(raw.options.url).origin,exclusive=raw.exclusive.bind(raw);
+ raw.exclusive=<T>(fn:()=>Promise<T>):Promise<T>=>{
+  const pending=(originQueues.get(origin)??Promise.resolve()).then(()=>exclusive(fn));
+  const tail=pending.then(()=>undefined,()=>undefined);originQueues.set(origin,tail);
+  void tail.then(()=>{if(originQueues.get(origin)===tail)originQueues.delete(origin);});
+  return pending;
+ };
+}
 const mutationBoundaries=new WeakMap<ChromaStorage,ReturnType<typeof memorySourceMutations>>();
 type CollectionProof={check:(scope:string,log:boolean,metadata:Record<string,unknown>|null|undefined,collectionId:string)=>void;missing:(scope:string,log:boolean)=>void};
 const collectionProofs=new WeakMap<ChromaStorage,CollectionProof>();
-const mutate=<T>(raw:ChromaStorage,work:()=>Promise<T>,effect?:MemoryMutationEffect)=>mutationBoundaries.get(raw)?.run(work,effect)??withSourceMutation(work);
+const mutate=<T>(raw:ChromaStorage,work:()=>Promise<T>,effect?:MemoryMutationEffect,acknowledged?:()=>void)=>{const boundary=mutationBoundaries.get(raw);if(!boundary&&acknowledged)throw Error('Memory mutation journal unavailable');return boundary?.run(work,effect,acknowledged)??withSourceMutation(work);};
 function trackedCollection<T extends object>(raw:ChromaStorage,collection:T,scope:string,log:boolean):T{
  return new Proxy(collection,{get(target,key){const value=Reflect.get(target,key);if(typeof value!=='function')return value;return (...args:unknown[])=>['upsert','add','update','delete','modify'].includes(String(key))?mutate(raw,()=>Reflect.apply(value,target,args),{scope,log,operation:String(key) as MemoryMutationEffect['operation']}):Reflect.apply(value,target,args);}});
 }
@@ -45,7 +64,7 @@ export async function createPlannedCollection(raw:ChromaStorage,scope:string,log
 }
 /** A per-call storage view, not persistence, a journal, a transaction or a recovery coordinator. */
 export class AuthorityStorage implements MemoryStorage{
- constructor(readonly raw:ChromaStorage,readonly principal:string,readonly inference:Inference,mutationDirectory?:string){if(mutationDirectory)mutationBoundaries.set(raw,memorySourceMutations(mutationDirectory));}
+ constructor(readonly raw:ChromaStorage,readonly principal:string,readonly inference:Inference,mutationDirectory?:string){shareOriginQueue(raw);if(mutationDirectory)mutationBoundaries.set(raw,memorySourceMutations(mutationDirectory));}
  assertSourceSettled(){const boundary=mutationBoundaries.get(this.raw);if(!boundary)throw Error('Checkpoint memory source boundary unavailable');boundary.assertSettled();}
  private mutationBoundary(){const boundary=mutationBoundaries.get(this.raw);if(!boundary)throw Error('Memory reconciliation unavailable');return boundary;}
  setCollectionProof(proof:CollectionProof){collectionProofs.set(this.raw,proof);}
@@ -245,14 +264,14 @@ export class AuthorityStorage implements MemoryStorage{
     // The queue is already held here. Only compensate a staged operation when
     // every dispatched write is settled and its source ownership remains live.
     // A rejected/lost remote write retains its mutation hold and is never replayed.
-    if(!packageOperationId)throw new AggregateError([error],MEMORY_CLEANUP_HOLD);
+    if(!packageOperationId)throw new AggregateError([error],this.scopeHasUnsettledMutation(scope)?MEMORY_CLEANUP_UNKNOWN_HOLD:MEMORY_CLEANUP_HOLD);
     try {
      await this.rollbackPackageMemoryLocked({
       chatId,namespace:operationId,
       chunkIds:attempted.filter(item=>item.c===collections[0]).map(item=>item.row.id),
       conflictIds:attempted.filter(item=>item.c===collections[1]).map(item=>item.row.id),
      },packageOperationId,guard);
-    } catch(cleanup) {throw new AggregateError([error,cleanup],MEMORY_CLEANUP_HOLD);}
+    } catch(cleanup) {throw new AggregateError([error,cleanup],isMemoryCleanupHold(cleanup)&&cleanup instanceof Error?cleanup.message:MEMORY_CLEANUP_HOLD);}
     throw error;
    }
    return {chunkIds:prepared[0]!.map(r=>r.id),conflictIds:prepared[1]!.map(r=>r.id),excludedScopes:source.excludedScopes};
@@ -275,7 +294,7 @@ export class AuthorityStorage implements MemoryStorage{
      new Set(plan.chunkIds).size!==plan.chunkIds.length||new Set(plan.conflictIds).size!==plan.conflictIds.length||
      plan.chunkIds.length+plan.conflictIds.length>10000||typeof this.packageVisible!=='function'||this.packageVisible(operationId))throw Error(MEMORY_CLEANUP_HOLD);
   const scope='chat:'+plan.chatId;
-  if(this.scopeHasUnsettledMutation(scope))throw Error(MEMORY_CLEANUP_HOLD);
+  if(this.scopeHasUnsettledMutation(scope))throw Error(MEMORY_CLEANUP_UNKNOWN_HOLD);
   const owned:Array<{c:Awaited<ReturnType<typeof checkedCollection>>;id:string;log:boolean}>=[];
   for(const [log,ids] of [[false,plan.chunkIds],[true,plan.conflictIds]] as const){
    if(!ids.length)continue;
@@ -300,10 +319,10 @@ export class AuthorityStorage implements MemoryStorage{
   // ownership inventory and the journaled, bounded deletes.
   for(const item of owned){
    await guard();
-   if(this.scopeHasUnsettledMutation(scope))throw Error(MEMORY_CLEANUP_HOLD);
+   if(this.scopeHasUnsettledMutation(scope))throw Error(MEMORY_CLEANUP_UNKNOWN_HOLD);
    if(!item.log)this.onMutation?.(scope,item.id);
    try{await item.c.delete({ids:[item.id]});}
-   catch(error){throw new AggregateError([error],MEMORY_CLEANUP_HOLD);}
+   catch(error){if(this.scopeHasUnsettledMutation(scope))throw new AggregateError([error],MEMORY_CLEANUP_UNKNOWN_HOLD);throw error;}
    await guard();const remaining=await item.c.get({ids:[item.id],include:['metadatas'] as any});await guard();
    if(remaining.ids.length)throw Error(MEMORY_CLEANUP_HOLD);
   }
@@ -311,11 +330,79 @@ export class AuthorityStorage implements MemoryStorage{
  async rollbackPackageMemory(plan:{chatId:string;namespace?:string;chunkIds:string[];conflictIds:string[]},operationId:string,guard:()=>Promise<void>){
   return this.raw.exclusive(()=>this.rollbackPackageMemoryLocked(plan,operationId,guard));
  }
- /** No name-based collection or unconditional record delete is safe without
-  * backend exclusion or an atomic identity-and-content precondition. */
- async purge(scope:string,guard:()=>Promise<void>,_agentId?:string){
+ /** Retire only the exact owned Chat scope, serialized with all memory calls
+  * through this host. Any prior uncertain remote mutation remains held. */
+ async purge(scope:string,guard:()=>Promise<void>,agentId?:string){
   await guard();if(!scope.startsWith('chat:')||!scope.slice(5))throw denied();
-  throw Error(MEMORY_CLEANUP_HOLD);
+  return this.raw.exclusive(async()=>{
+   await guard();this.assertScopeSettled(scope);
+   const chatId=scope.slice(5),names=this.raw.names(scope),boundary=this.mutationBoundary();
+   if(names.memory===names.log)throw Error('Memory collection bindings overlap; cleanup held');
+   const identity=(log:boolean)=>({principal:this.principal,origin:new URL(this.raw.options.url).origin,scope,log,name:names[log?'log':'memory']});
+   // Validate both collections and the full inventory before dispatching any
+   // delete. A foreign or unclassified row is never treated as owned data.
+   const collections=await Promise.all([false,true].map(async log=>{
+    const prior=boundary.readCollectionDeletion(identity(log));
+    if(prior){
+     await guard();
+     try{await this.raw.client.getCollection({name:names[log?'log':'memory'],embeddingFunction:noGeneration});}
+     catch(error){if(error instanceof Error&&error.name==='ChromaNotFoundError')return {log,removed:true as const};throw error;}
+     throw Error('Previously deleted memory collection exists again; cleanup held');
+    }
+    const collection=await checkedCollection(this.raw,scope,log,guard);
+    await guard();const count=await collection.count();await guard();
+    if(!Number.isSafeInteger(count)||count<0)throw Error('Memory cleanup inventory is unavailable');
+    const seen=new Set<string>(),selected:string[]=[],rows=new Map<string,{audience:string;metadata:any}>();
+    for(let offset=0;offset<count;offset+=500){
+     await guard();const page=await collection.get({offset,limit:Math.min(500,count-offset),include:['metadatas'] as any});await guard();
+     if(page.ids.length!==page.metadatas.length||!page.ids.length)throw Error('Memory cleanup inventory changed');
+     for(let i=0;i<page.ids.length;i++){
+      const id=page.ids[i]!,metadata:any=page.metadatas[i];
+      if(seen.has(id))throw Error('Memory cleanup inventory changed');seen.add(id);
+      const stamp=this.parse(id,scope,log?{...metadata,host_source_authority:metadata?.host_conflict_authority}:metadata,true);
+      if(!stamp||stamp.ownerChat!==chatId||!(stamp.audience===scope+':team'||stamp.audience.startsWith(scope+':agent:')&&stamp.audience.length>(scope+':agent:').length))
+       throw Error('Foreign or unclassified memory preserved; cleanup held');
+      rows.set(id,{audience:stamp.audience,metadata});
+      if(!agentId||stamp.audience===scope+':agent:'+agentId)selected.push(id);
+     }
+    }
+    await guard();if(seen.size!==count||await collection.count()!==count)throw Error('Memory cleanup inventory changed');
+    return {log,removed:false as const,collection,id:collection.id,selected,rows};
+   }));
+   if(agentId){
+    const memory=collections.find(entry=>!entry.log)!,conflicts=collections.find(entry=>entry.log)!;
+    if(!conflicts.removed)for(const id of conflicts.selected){
+     const row=conflicts.rows.get(id)!;let affected:unknown;
+     try{affected=JSON.parse(row.metadata?.chunk_ids_affected??row.metadata?.chunk_ids);}catch{throw Error('Unclassified memory conflict preserved; cleanup held');}
+     if(!Array.isArray(affected)||!affected.length||affected.some(source=>typeof source!=='string'||memory.removed||memory.rows.get(source)?.audience!==row.audience))
+      throw Error('Foreign or unclassified memory conflict preserved; cleanup held');
+    }
+   }
+   // Retire conflict records before their source rows so a partial success
+   // leaves a re-checkable inventory.
+   for(const entry of agentId?[...collections].reverse():collections){
+    if(entry.removed)continue;
+    await guard();this.assertScopeSettled(scope);
+    const current=await checkedCollection(this.raw,scope,entry.log,guard);
+    if(current.id!==entry.id)throw Error('Memory collection identity changed; cleanup held');
+    if(agentId){
+     for(let offset=0;offset<entry.selected.length;offset+=500){
+      await guard();const ids=entry.selected.slice(offset,offset+500);
+      if(!entry.log)for(const id of ids)this.onMutation?.(scope,id);
+      await current.delete({ids});await guard();
+     }
+    }else{
+     if(!entry.log)for(const id of entry.selected)this.onMutation?.(scope,id);
+     await mutate(this.raw,()=>this.raw.client.deleteCollection({name:names[entry.log?'log':'memory']}),{scope,log:entry.log,operation:'delete_collection'},()=>boundary.recordCollectionDeletion(identity(entry.log),entry.id));
+     await guard();
+    }
+   }
+  }).catch(error=>{
+   // Keep the original error as a cause while using the existing stable hold
+   // classification so periodic cleanup does not repeatedly retry uncertainty.
+   if(this.scopeHasUnsettledMutation(scope))throw new AggregateError([error],MEMORY_CLEANUP_UNKNOWN_HOLD);
+   throw error;
+  });
  }
  async clear(_scope:string){throw Error('Host-wide replacement/backup restore is unavailable');}
  readIndex(_key:string):never{throw Error('Host semantic index is unavailable');}writeIndex(_key:string,_value:unknown):never{throw Error('Host semantic index is unavailable');}

@@ -1,4 +1,4 @@
-import {MEMORY_CLEANUP_HOLD} from './local-memory-authority.js';
+import {MEMORY_CLEANUP_HOLD,MEMORY_CLEANUP_UNKNOWN_HOLD,isMemoryCleanupHold} from './local-memory-authority.js';
 import {BranchWorkingDataHeldError,branchWorkingDataInputHash,branchWorkingRootDestinations,type BranchWorkingDataApplication,type BranchWorkingDataPreparation} from './apply-branch-working-data.js';
 import {createBranchWorkingData,validateBranchWorkingData} from './branch-working-data.js';
 import {validateReviewedUserDataActivation,requireReviewedMetadataApplication,parseReviewedUserData} from './portable-reviewed-user-data.js';
@@ -71,7 +71,7 @@ const BRANCH_DELETION_ERROR_DESCRIPTIONS:Readonly<Record<string,string>>=Object.
 });
 export function describeBranchDeletionFailure(error:unknown):string{
  const message=error instanceof Error?error.message:'';
- if(BRANCH_DELETION_PUBLIC_BLOCKERS.has(message))return message;
+ if(BRANCH_DELETION_PUBLIC_BLOCKERS.has(message)||isMemoryCleanupHold(message))return message;
  const code=(typeof error==='object'&&error!==null&&'code' in error)?(error as {code?:unknown}).code:undefined;
  const description=typeof code==='string'&&Object.hasOwn(BRANCH_DELETION_ERROR_DESCRIPTIONS,code)?BRANCH_DELETION_ERROR_DESCRIPTIONS[code]:undefined;
  return description
@@ -770,7 +770,7 @@ export class BranchInstallationService {
   }
   if(this.engine)for(const plan of this.rows(`SELECT * FROM branch_installation_plans WHERE state='applying' AND ${BRANCH_INSTALLATION_RETRY_READY_SQL} AND (next_attempt_at IS NULL OR next_attempt_at<=?) ORDER BY COALESCE(next_attempt_at,created_at),created_at LIMIT 1`,now.toISOString()))try{await this.apply(plan);}catch(error){
    if(error instanceof InstallationStoppedError||this.planState(plan.id)!=='applying')continue;
-   if(error instanceof Error&&error.message===MEMORY_CLEANUP_HOLD){this.run('UPDATE branch_installation_plans SET error=?,next_attempt_at=?,updated_at=? WHERE id=?',MEMORY_CLEANUP_HOLD,BRANCH_INSTALLATION_HOLD_UNTIL,new Date().toISOString(),plan.id);continue;}
+   if(error instanceof Error&&isMemoryCleanupHold(error)){this.run('UPDATE branch_installation_plans SET error=?,next_attempt_at=?,updated_at=? WHERE id=?',error.message,BRANCH_INSTALLATION_HOLD_UNTIL,new Date().toISOString(),plan.id);continue;}
    if(error instanceof BranchWorkingDataHeldError){this.run('UPDATE branch_installation_plans SET error=?,next_attempt_at=?,updated_at=? WHERE id=?',error.message,BRANCH_INSTALLATION_HOLD_UNTIL,new Date().toISOString(),plan.id);continue;}
 
    if((error as import('./routes/agent-packages.js').BranchPackageImportError).accessSettingsReview){const current=this.row('SELECT * FROM branch_installation_plans WHERE id=?',plan.id)!;const state=this.rolePlan(current);this.run('UPDATE branch_installation_plans SET preview_json=? WHERE id=?',stableJson({...state,accessChoices:{}}),plan.id);}
@@ -782,7 +782,7 @@ export class BranchInstallationService {
    const attempt=(plan.attempt_count??0)+1,delay=Math.min(60_000,1000*2**Math.min(attempt-1,6));
    this.run('UPDATE branch_installation_plans SET error=?,attempt_count=?,next_attempt_at=?,updated_at=? WHERE id=?',(error as Error).message,attempt,new Date(now.getTime()+delay).toISOString(),now.toISOString(),plan.id);
   }
-  for(const r of this.rows("SELECT r.rowid position,r.*,chat.local_id chat_id FROM branch_installation_resources r JOIN branch_installation_resources chat ON chat.branch_id=r.branch_id AND chat.package_id=r.package_id AND chat.chat_ref=r.chat_ref AND chat.agent_ref='' WHERE r.state='retiring' AND r.agent_ref!='' AND chat.state IN ('active','retiring') AND NOT EXISTS(SELECT 1 FROM branch_retirement_errors held WHERE held.resource_id=r.local_id AND held.error=?) AND NOT EXISTS(SELECT 1 FROM branch_retirement_references ref JOIN branch_executions e ON e.id=ref.execution_id WHERE ref.resource_id=r.local_id AND e.state IN ('queued','running','waiting')) ORDER BY CASE WHEN r.rowid>? THEN 0 ELSE 1 END,r.rowid LIMIT 5",MEMORY_CLEANUP_HOLD,this.agentCleanupCursor))try{
+  for(const r of this.rows("SELECT r.rowid position,r.*,chat.local_id chat_id FROM branch_installation_resources r JOIN branch_installation_resources chat ON chat.branch_id=r.branch_id AND chat.package_id=r.package_id AND chat.chat_ref=r.chat_ref AND chat.agent_ref='' WHERE r.state='retiring' AND r.agent_ref!='' AND chat.state IN ('active','retiring') AND NOT EXISTS(SELECT 1 FROM branch_retirement_errors held WHERE held.resource_id=r.local_id AND held.error IN (?,?)) AND NOT EXISTS(SELECT 1 FROM branch_retirement_references ref JOIN branch_executions e ON e.id=ref.execution_id WHERE ref.resource_id=r.local_id AND e.state IN ('queued','running','waiting')) ORDER BY CASE WHEN r.rowid>? THEN 0 ELSE 1 END,r.rowid LIMIT 5",MEMORY_CLEANUP_HOLD,MEMORY_CLEANUP_UNKNOWN_HOLD,this.agentCleanupCursor))try{
    this.agentCleanupCursor=r.position;
    if(this.row('SELECT deleting FROM branches WHERE id=?',r.branch_id)?.deleting)this.branches.requireDeletionReady(r.branch_id);
    const root=r.staging_plan_id&&this.row('SELECT b.id FROM branch_installation_plans p JOIN branches b ON b.id=p.branch_id WHERE p.id=? AND b.deleting=1',r.staging_plan_id);
@@ -790,7 +790,7 @@ export class BranchInstallationService {
    if(r.staging_plan_id&&r.creation_operation_id&&this.engine&&!this.row("SELECT 1 FROM branch_installation_plans WHERE id=? AND json_extract(preview_json,'$.published')=1",r.staging_plan_id))await this.engine.rollbackStagedMemory(r.creation_operation_id);
    await this.deleteAgent(r.local_id);this.run("UPDATE branch_installation_resources SET state='deleted' WHERE branch_id=? AND package_id=? AND chat_ref=? AND agent_ref=?",r.branch_id,r.package_id,r.chat_ref,r.agent_ref);
   }catch(error){this.retirementError(r.local_id,error)}
-  for(const r of this.rows("SELECT r.rowid position,r.* FROM branch_installation_resources r WHERE r.state='retiring' AND r.agent_ref='' AND NOT EXISTS(SELECT 1 FROM branch_installation_resources child WHERE child.branch_id=r.branch_id AND child.package_id=r.package_id AND child.chat_ref=r.chat_ref AND child.agent_ref!='' AND child.state!='deleted') AND NOT EXISTS(SELECT 1 FROM branch_retirement_errors held WHERE held.resource_id=r.local_id AND held.error=?) AND NOT EXISTS(SELECT 1 FROM branch_resource_references ref JOIN branch_executions e ON e.id=ref.execution_id WHERE ref.chat_id=r.local_id AND e.state IN ('queued','running','waiting')) ORDER BY CASE WHEN r.rowid>? THEN 0 ELSE 1 END,r.rowid LIMIT 5",MEMORY_CLEANUP_HOLD,this.chatCleanupCursor))try{
+  for(const r of this.rows("SELECT r.rowid position,r.* FROM branch_installation_resources r WHERE r.state='retiring' AND r.agent_ref='' AND NOT EXISTS(SELECT 1 FROM branch_installation_resources child WHERE child.branch_id=r.branch_id AND child.package_id=r.package_id AND child.chat_ref=r.chat_ref AND child.agent_ref!='' AND child.state!='deleted') AND NOT EXISTS(SELECT 1 FROM branch_retirement_errors held WHERE held.resource_id=r.local_id AND held.error IN (?,?)) AND NOT EXISTS(SELECT 1 FROM branch_resource_references ref JOIN branch_executions e ON e.id=ref.execution_id WHERE ref.chat_id=r.local_id AND e.state IN ('queued','running','waiting')) ORDER BY CASE WHEN r.rowid>? THEN 0 ELSE 1 END,r.rowid LIMIT 5",MEMORY_CLEANUP_HOLD,MEMORY_CLEANUP_UNKNOWN_HOLD,this.chatCleanupCursor))try{
    this.chatCleanupCursor=r.position;
    if(this.row('SELECT deleting FROM branches WHERE id=?',r.branch_id)?.deleting)this.branches.requireDeletionReady(r.branch_id);
    const root=r.staging_plan_id&&this.row('SELECT b.id FROM branch_installation_plans p JOIN branches b ON b.id=p.branch_id WHERE p.id=? AND b.deleting=1',r.staging_plan_id);
@@ -807,7 +807,7 @@ export class BranchInstallationService {
    if(removeEmptyImport&&plan.branch_id)this.branches.beginDeletion(plan.branch_id);
    this.compactPlan(plan.id,'canceled',plan.error?.startsWith('Stopping update')?undefined:plan.error??undefined);
   }
-  for(const b of this.rows("SELECT id FROM branches WHERE deleting=1 AND NOT EXISTS(SELECT 1 FROM branch_installation_resources r JOIN branch_retirement_errors held ON held.resource_id=r.local_id WHERE r.branch_id=branches.id AND held.error=?) ORDER BY updated_at,id LIMIT 5",MEMORY_CLEANUP_HOLD))try{
+  for(const b of this.rows("SELECT id FROM branches WHERE deleting=1 AND NOT EXISTS(SELECT 1 FROM branch_installation_resources r JOIN branch_retirement_errors held ON held.resource_id=r.local_id WHERE r.branch_id=branches.id AND held.error IN (?,?)) ORDER BY updated_at,id LIMIT 5",MEMORY_CLEANUP_HOLD,MEMORY_CLEANUP_UNKNOWN_HOLD))try{
    if(this.row("SELECT 1 FROM branch_installation_plans WHERE branch_id=? AND state='canceling'",b.id))continue;
    for(const plan of this.rows("SELECT id,state,error FROM branch_installation_plans WHERE branch_id=?",b.id))this.compactPlan(plan.id,plan.state==='preview'?'expired':plan.state,plan.state==='preview'?'Branch deletion invalidated this preview':plan.error??undefined);
    this.settleNotifications?.(b.id);

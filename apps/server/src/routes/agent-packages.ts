@@ -1,4 +1,4 @@
-import {MEMORY_CLEANUP_HOLD} from '../local-memory-authority.js';
+import {isMemoryCleanupHold} from '../local-memory-authority.js';
 import type {CanonicalGeneratedHooksProof} from '@ponderosa/core';
 import {packageExportDownloads} from '../package-export-downloads.js';
 import {applyBranchWorkingData,prepareBranchWorkingDataChild,type ApplyBranchWorkingDataInput,type BranchWorkingDataApplication,type PrepareBranchWorkingDataChildInput,type BranchWorkingDataPreparation} from '../apply-branch-working-data.js';
@@ -2372,10 +2372,10 @@ export function registerAgentPackageRoutes(
             }
             const original=redactPortableDiagnostic(originalError instanceof Error?originalError.message:String(originalError)).slice(0,4096);
             const cause=redactPortableDiagnostic(memoryError instanceof Error?memoryError.message:String(memoryError)).slice(0,4096);
-            const held=memoryError instanceof Error&&memoryError.message===MEMORY_CLEANUP_HOLD;
+            const held=isMemoryCleanupHold(memoryError);
             const previous=store.getAgentCreationOperation(creationOperationId);
-            store.updateAgentCreationOperation(creationOperationId,{status:'rolling_back',result:{...(previous?.result as object??{}),memoryCleanupOriginalError:original,...(!held?{memoryCleanupFailure:cause}:{})},lastError:held?MEMORY_CLEANUP_HOLD:cause});
-            throw Object.assign(new Error(held?MEMORY_CLEANUP_HOLD:cause,{cause:error}),{statusCode:409,code:'ERR_IMPORT_MEMORY_CLEANUP_HELD',partialStatePossible:true,operationId:creationOperationId});
+            store.updateAgentCreationOperation(creationOperationId,{status:'rolling_back',result:{...(previous?.result as object??{}),memoryCleanupOriginalError:original,...(!held?{memoryCleanupFailure:cause}:{})},lastError:held&&memoryError instanceof Error?memoryError.message:cause});
+            throw Object.assign(new Error(held&&memoryError instanceof Error?memoryError.message:cause,{cause:error}),{statusCode:409,code:'ERR_IMPORT_MEMORY_CLEANUP_HELD',partialStatePossible:true,operationId:creationOperationId});
           }
         }
         if (appliedChatInstructions !== undefined) {

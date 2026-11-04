@@ -63,21 +63,30 @@ original backend and restart to recheck the scope. Package
 restore and cleanup cannot treat unexplained absence as a successful create or
 deletion; a partial cleanup without an exact receipt may therefore need review.
 
-Automatic cleanup of created Chat, Project and Agent memory, package rollback
-and post-write compensation remain held before any destructive request. A
-deleted Chat whose exact installation-bound creation intent remains planned
-for both collections and has no unresolved mutation can finish cleanup as a
-no-effect operation. It never touches an independently created same-name
-collection. This check waits for memory readiness; if inference or inventory
-is unavailable, cleanup remains pending. The
-current Chroma API deletes collections by name and records by ID without an
-atomic identity-and-content precondition; another writer can replace the target
-between inspection and deletion. Local receipts or advisory locks do not close
-that race. The user sees a cleanup hold; periodic cleanup sweeps do not retry
-the same stable hold. A supported backend authority, atomic compare/delete, or
-separately reviewed resolution is required to finish cleanup. Package/global
-imports use insert-only writes and verify the saved record, but independent
-backend mutation still prevents an atomic multi-record snapshot.
+Chat, Project and Agent memory cleanup runs under the same Ponderosa memory
+queue as ordinary reads and writes. Separate memory runtimes in one process
+share that queue for a Chroma origin; the existing physical data-directory
+lease prevents another normal process opening the same data directory. The
+configured internal namespace and compatible binding are treated as belonging
+to the installation, including pre-0044 scopes that lack a historical UUID.
+Every collection is checked and all rows are classified before deletion;
+foreign or unclassified records and mismatched bindings are retained. Agent
+deletion removes only its private sources and matching conflict records.
+
+For a whole Chat, a collection-deletion acknowledgement is recorded durably
+before its in-flight mutation hold is retired. A retry can skip only an exact
+previously acknowledged collection; an unexplained absence or lost response
+does not become success. Unknown remote outcomes remain held and are never
+blindly replayed. Selected Agent conflict records are removed before their
+source rows, so a confirmed partial deletion remains re-checkable. A deleted
+Chat whose exact installation-bound creation intent remains planned for both
+collections can still finish as a no-effect operation without touching Chroma.
+
+This coordination does not provide Chroma-side compare-and-delete or serialize
+separately configured Ponderosa data directories using the same backend, URL
+aliases, or direct independent clients. Those deployments need separate
+qualification. Package rollback and post-write compensation are tracked
+separately; this lifecycle change alone does not implement them.
 
 Ordinary memory saves, updates, forgets and conflict operations still use
 pre-read followed by non-atomic record upsert or delete. An independent backend

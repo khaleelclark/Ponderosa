@@ -1,5 +1,5 @@
 import {withProjectImportLock} from './project-import-lock.js';
-import {MEMORY_CLEANUP_HOLD} from './local-memory-authority.js';
+import {isMemoryCleanupHold} from './local-memory-authority.js';
 import {localMemoryFor} from './local-memory.js';
 import WebSocket from "ws";
 import type {
@@ -105,7 +105,7 @@ export function recoverFailedAgentCreations(input: {
   for (const operation of input.store.listRecoverableAgentCreationOperations()) {
     if (input.projectId && operation.projectId !== input.projectId) continue;
     if (operation.status === "canonical_committed") continue;
-    if((operation.result as {memoryPlan?:unknown[]}|undefined)?.memoryPlan?.length){failures.push({operationId:operation.id,error:new Error(operation.lastError===MEMORY_CLEANUP_HOLD?MEMORY_CLEANUP_HOLD:'Package memory cleanup remains pending')});continue;}
+    if((operation.result as {memoryPlan?:unknown[]}|undefined)?.memoryPlan?.length){failures.push({operationId:operation.id,error:new Error(isMemoryCleanupHold(operation.lastError)?operation.lastError!:'Package memory cleanup remains pending')});continue;}
     input.store.updateAgentCreationOperation(operation.id, { status: "rolling_back" });
     let rolledBack = true;
     const authorityBlockedArtifactIds = new Set<string>();
@@ -412,7 +412,7 @@ export function registerServerLifecycle(
           }
           receipt = store.getAgentDeletionReceiptByPreviewHash(receipt.previewHash)!;
         }
-        if (!receipt.serverCleanupCompleted&&receipt.lastError!==MEMORY_CLEANUP_HOLD) await processAgentDeletionCleanup(receipt);
+        if (!receipt.serverCleanupCompleted&&!isMemoryCleanupHold(receipt.lastError)) await processAgentDeletionCleanup(receipt);
       }
     } catch (error) {
       if (!isClosed()) app.log.error({ err: error }, "Agent deletion cleanup retry failed");
@@ -435,7 +435,7 @@ export function registerServerLifecycle(
     const operation = (async () => {
       for (const receipt of store.listPendingConversationDeletionReceipts()) {
         if (isClosed()) break;
-        if(receipt.lastError!==MEMORY_CLEANUP_HOLD)await processConversationDeletionCleanup(receipt);
+        if(!isMemoryCleanupHold(receipt.lastError))await processConversationDeletionCleanup(receipt);
       }
     })().catch((error) => {
       if (!isClosed()) app.log.error({ err: error }, "Chat deletion cleanup retry failed");

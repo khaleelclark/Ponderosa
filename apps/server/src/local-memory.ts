@@ -9,7 +9,7 @@ import type {FastifyInstance,FastifyRequest} from 'fastify';
 import {CapabilityPolicyStore,hasRetainedTemporaryChatScope,type AgentStore,type AgentDeletionReceipt} from '@ponderosa/agents';
 import {CAPABILITY_IDS} from '@ponderosa/core';
 import {type Chunk,type Inference} from '@local-memory/mcp-node-private';
-import {HostMemoryRuntime,checkedCollection,createPlannedCollection,MemoryCollectionHold,MEMORY_CLEANUP_HOLD,type MemoryAuthority} from './local-memory-authority.js';
+import {HostMemoryRuntime,checkedCollection,createPlannedCollection,MemoryCollectionHold,MEMORY_CLEANUP_HOLD,MEMORY_CLEANUP_UNKNOWN_HOLD,type MemoryAuthority} from './local-memory-authority.js';
 import {PonderosaMemory} from '@local-memory/mcp-node-private/ponderosa';
 import {MemoryArgumentError,validateMemoryCall} from './local-memory-catalog.js';
 type HostContext={chatId:string;actor:{kind:'agent'|'user';id:string;operator?:boolean};runId:string;fenceToken:string;active:boolean;sourceType:'user_statement'|'ai_inference';grants:{readChat:boolean;readGlobal:boolean;writeChat:boolean;writeGlobal:boolean}};
@@ -230,7 +230,7 @@ export class LocalMemoryService{
     });
     if(!neverProvisioned)await this.core.database.purge('chat:'+chatId,guard);
     await guard();
-   }else if(this.core.database.scopeHasUnsettledMutation('chat:'+chatId))throw Error(MEMORY_CLEANUP_HOLD);
+   }else if(this.core.database.scopeHasUnsettledMutation('chat:'+chatId))throw Error(MEMORY_CLEANUP_UNKNOWN_HOLD);
    this.policy.prepare('DELETE FROM local_memory_chat_grants WHERE chat_id=? AND principal_id=?').run(chatId,this.principalId);this.knownScopes.delete('chat:'+chatId);
   });
  }
@@ -245,7 +245,7 @@ export class LocalMemoryService{
    for(const target of targets)if(target.conversation_id){
     await guard();const chat=store.getConversation(target.conversation_id,{includeDeleting:true});
     const branchId=chat?.branchId??store.getConversationDeletionReceipt(target.conversation_id)?.branchId;
-    if(this.isProvenTemporaryChat(target.conversation_id,target.project_id,branchId,target.id)){if(this.core.database.scopeHasUnsettledMutation('chat:'+target.conversation_id))throw Error(MEMORY_CLEANUP_HOLD);}
+    if(this.isProvenTemporaryChat(target.conversation_id,target.project_id,branchId,target.id)){if(this.core.database.scopeHasUnsettledMutation('chat:'+target.conversation_id))throw Error(MEMORY_CLEANUP_UNKNOWN_HOLD);}
     else await this.core.database.purge('chat:'+target.conversation_id,guard,target.id);
    }
   });
@@ -255,7 +255,7 @@ export class LocalMemoryService{
    await this.ready();const store=this.ports.store;
    const guard=async()=>{this.live();if(!store.sqlite.prepare('SELECT 1 FROM project_deletion_pending WHERE project_id=?').get(projectId))throw new MemoryDenied('Exact pending Project deletion required');};
    await guard();const chats=store.sqlite.prepare('SELECT id FROM conversations WHERE project_id=?').all(projectId) as {id:string}[];
-   for(const {id}of chats){const chat=store.getConversation(id,{includeDeleting:true});await guard();if(chat&&this.isProvenTemporaryChat(id,projectId,chat.branchId)){if(this.core.database.scopeHasUnsettledMutation('chat:'+id))throw Error(MEMORY_CLEANUP_HOLD);}else await this.core.database.purge('chat:'+id,guard);await guard();this.policy.prepare('DELETE FROM local_memory_chat_grants WHERE chat_id=? AND principal_id=?').run(id,this.principalId);this.knownScopes.delete('chat:'+id);}
+   for(const {id}of chats){const chat=store.getConversation(id,{includeDeleting:true});await guard();if(chat&&this.isProvenTemporaryChat(id,projectId,chat.branchId)){if(this.core.database.scopeHasUnsettledMutation('chat:'+id))throw Error(MEMORY_CLEANUP_UNKNOWN_HOLD);}else await this.core.database.purge('chat:'+id,guard);await guard();this.policy.prepare('DELETE FROM local_memory_chat_grants WHERE chat_id=? AND principal_id=?').run(id,this.principalId);this.knownScopes.delete('chat:'+id);}
   });
  }
  // An exact, still-planned first-creation intent proves neither remote
@@ -307,13 +307,13 @@ export class LocalMemoryService{
   for(const scope of this.missingExistingScopes){const chatId=scope==='global'?undefined:scope.slice(5),chat=chatId?this.ports.store.getConversation(chatId):undefined,active=chatId&&chat&&activeChatResourceOwner(this.ports.store,'chat',chatId);holds.push({scope:scope==='global'?'global':active?'chat':'unknown',...(active?{chatId,projectId:chat.projectId}:{}),memoryState:'unknown',logState:'unknown',reason:'Memory collection unavailable or conflicts with its retained creation record. No collection was recreated or adopted. Review the backend; restart after resolving.'});}
   // Once a Chat is gone, product filtering cannot safely expose its identity.
   // Retain a non-identifying operator-global warning instead of hiding the hold.
-  const deleted=this.ports.store.sqlite.prepare("SELECT 1 FROM conversation_deletion_receipts WHERE canonical_deletion_completed=1 AND server_cleanup_completed=0 AND last_error=? LIMIT 1").get(MEMORY_CLEANUP_HOLD);
-  const deletedAgent=this.ports.store.sqlite.prepare("SELECT 1 FROM agent_deletion_receipts WHERE server_cleanup_completed=0 AND last_error=? LIMIT 1").get(MEMORY_CLEANUP_HOLD);
-  const pendingProject=this.ports.store.sqlite.prepare("SELECT 1 FROM project_deletion_pending WHERE last_error=? LIMIT 1").get(MEMORY_CLEANUP_HOLD);
-  const pendingImport=this.ports.store.sqlite.prepare("SELECT 1 FROM agent_creation_operations WHERE status='rolling_back' AND last_error=? LIMIT 1").get(MEMORY_CLEANUP_HOLD);
-  const branchHold=this.ports.store.sqlite.prepare("SELECT 1 FROM branch_retirement_errors WHERE error=? UNION ALL SELECT 1 FROM branch_installation_plans WHERE error=? UNION ALL SELECT 1 FROM branch_resources WHERE error=? LIMIT 1").get(MEMORY_CLEANUP_HOLD,MEMORY_CLEANUP_HOLD,MEMORY_CLEANUP_HOLD);
+  const deleted=this.ports.store.sqlite.prepare("SELECT 1 FROM conversation_deletion_receipts WHERE canonical_deletion_completed=1 AND server_cleanup_completed=0 AND last_error IN (?,?) LIMIT 1").get(MEMORY_CLEANUP_HOLD,MEMORY_CLEANUP_UNKNOWN_HOLD);
+  const deletedAgent=this.ports.store.sqlite.prepare("SELECT 1 FROM agent_deletion_receipts WHERE server_cleanup_completed=0 AND last_error IN (?,?) LIMIT 1").get(MEMORY_CLEANUP_HOLD,MEMORY_CLEANUP_UNKNOWN_HOLD);
+  const pendingProject=this.ports.store.sqlite.prepare("SELECT 1 FROM project_deletion_pending WHERE last_error IN (?,?) LIMIT 1").get(MEMORY_CLEANUP_HOLD,MEMORY_CLEANUP_UNKNOWN_HOLD);
+  const pendingImport=this.ports.store.sqlite.prepare("SELECT 1 FROM agent_creation_operations WHERE status='rolling_back' AND last_error IN (?,?) LIMIT 1").get(MEMORY_CLEANUP_HOLD,MEMORY_CLEANUP_UNKNOWN_HOLD);
+  const branchHold=this.ports.store.sqlite.prepare("SELECT 1 FROM branch_retirement_errors WHERE error IN (?,?) UNION ALL SELECT 1 FROM branch_installation_plans WHERE error IN (?,?) UNION ALL SELECT 1 FROM branch_resources WHERE error IN (?,?) LIMIT 1").get(MEMORY_CLEANUP_HOLD,MEMORY_CLEANUP_UNKNOWN_HOLD,MEMORY_CLEANUP_HOLD,MEMORY_CLEANUP_UNKNOWN_HOLD,MEMORY_CLEANUP_HOLD,MEMORY_CLEANUP_UNKNOWN_HOLD);
   const orphanEffect=!this.core.database.hasUnidentifiedMutationHold()&&this.core.database.listMutationHolds().some(hold=>{const scope=hold.effect?.scope;return typeof scope==='string'&&scope.startsWith('chat:')&&!activeChatResourceOwner(this.ports.store,'chat',scope.slice(5));});
-  if(deleted||deletedAgent||pendingProject||pendingImport||branchHold||orphanEffect)holds.push({scope:'unknown',memoryState:'unknown',logState:'unknown',reason:MEMORY_CLEANUP_HOLD});
+  if(deleted||deletedAgent||pendingProject||pendingImport||branchHold||orphanEffect)holds.push({scope:'unknown',memoryState:'unknown',logState:'unknown',reason:'Memory cleanup remains held for review; saved data may remain.'});
   if(this.core.database.hasUnidentifiedMutationHold())holds.push({scope:'unknown',memoryState:'submitted',logState:'submitted',reason:'Unidentified memory hold evidence is preserved and blocks all memory scopes. Operator review is required.'});
   return holds;
  }

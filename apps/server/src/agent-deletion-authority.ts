@@ -1,4 +1,4 @@
-import {MEMORY_CLEANUP_HOLD} from './local-memory-authority.js';
+import {isMemoryCleanupHold} from './local-memory-authority.js';
 import { withSourceMutation } from "@ponderosa/agents";
 import {
   AgentDeletionConflictError,
@@ -272,7 +272,7 @@ export function createAgentDeletionAuthority(
           category: "system",
           severity: "attention",
           title: "Agent deletion cleanup needs attention",
-          body: `The Agents were deleted, but runtime or background cleanup ${errors.includes(MEMORY_CLEANUP_HOLD)?"is held for review":"is still retrying"}. ${errors.join("; ").slice(0, 1_000)}`,
+          body: `The Agents were deleted, but runtime or background cleanup ${errors.some(isMemoryCleanupHold)?"is held for review":"is still retrying"}. ${errors.join("; ").slice(0, 1_000)}`,
           projectId: receipt.projectId,
         });
       } catch { /* the durable receipt remains the authoritative retry signal */ }

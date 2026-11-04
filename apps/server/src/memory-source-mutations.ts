@@ -13,6 +13,27 @@ export function memorySourceMutations(directory:string){
   const syncAudit=(audit:string)=>{if(process.platform!=='win32'){const fd=fs.openSync(audit,'r');try{fs.fsyncSync(fd);}finally{fs.closeSync(fd);}}};
   const digest=(value:unknown)=>createHash('sha256').update(stableJson(value)).digest('hex');
   const filename=(id:string)=>{if(!/^[a-f0-9-]{36}$/.test(id))throw Error('Invalid memory hold identity');return path.join(directory,`${id}.json`);};
+  type CollectionDeletion={principal:string;origin:string;scope:string;log:boolean;name:string};
+  const deletionKey=(value:CollectionDeletion)=>digest(value);
+  const deletionDirectory=path.join(directory,'completed-collection-deletions');
+  const readDeletion=(identity:CollectionDeletion):{collectionId:string}|undefined=>{
+    const file=path.join(deletionDirectory,deletionKey(identity)+'.json');
+    try{
+      const stat=fs.lstatSync(file);if(!stat.isFile()||stat.isSymbolicLink()||stat.size>16384)throw Error('Memory deletion receipt unavailable');
+      const receipt=JSON.parse(fs.readFileSync(file,'utf8')) as {version:number;identity:CollectionDeletion;collectionId:string};
+      if(receipt.version!==1||stableJson(receipt.identity)!==stableJson(identity)||typeof receipt.collectionId!=='string'||!receipt.collectionId)throw Error('Memory deletion receipt differs');
+      return {collectionId:receipt.collectionId};
+    }catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return;throw error;}
+  };
+  const recordDeletion=(identity:CollectionDeletion,collectionId:string)=>{
+    if(!collectionId)throw Error('Memory collection deletion identity required');
+    const previous=readDeletion(identity);
+    if(previous){if(previous.collectionId!==collectionId)throw Error('Memory deletion receipt conflicts');return;}
+    fs.mkdirSync(deletionDirectory,{recursive:true,mode:0o700});
+    const file=path.join(deletionDirectory,deletionKey(identity)+'.json'),temporary=file+'.'+randomUUID()+'.tmp',fd=fs.openSync(temporary,'wx',0o600);
+    try{fs.writeFileSync(fd,stableJson({version:1,identity,collectionId}));fs.fsyncSync(fd);}finally{fs.closeSync(fd);}
+    fs.linkSync(temporary,file);fs.unlinkSync(temporary);syncAudit(deletionDirectory);sync();
+  };
   const read=(id:string)=>{
     const file=filename(id),stat=fs.lstatSync(file);if(!stat.isFile()||stat.isSymbolicLink()||stat.size>65536)throw Error('Memory hold evidence unavailable');
     const hold=JSON.parse(fs.readFileSync(file,'utf8')) as {version:number;id:string;effect?:MemoryMutationEffect};
@@ -104,13 +125,16 @@ export function memorySourceMutations(directory:string){
       if(this.hasUnidentifiedHold())return true;
       return this.list().some(hold=>hold.effect?.scope===scope);
     },
-    async run<T>(work:()=>Promise<T>,effect?:MemoryMutationEffect):Promise<T>{
+    readCollectionDeletion:readDeletion,
+    recordCollectionDeletion:recordDeletion,
+    async run<T>(work:()=>Promise<T>,effect?:MemoryMutationEffect,acknowledged?:()=>void):Promise<T>{
       const finish=beginSourceMutation(),id=randomUUID(),file=path.join(directory,`${id}.json`);let settled=false;
       try{
         fs.mkdirSync(directory,{recursive:true,mode:0o700});
         const fd=fs.openSync(file,'wx',0o600);
         try{fs.writeFileSync(fd,JSON.stringify({version:1,id,state:'remote_write_unsettled',...(effect?{effect}:{} )}));fs.fsyncSync(fd);}finally{fs.closeSync(fd);}sync();
         const result=await work();
+        acknowledged?.();
         fs.unlinkSync(file);sync();settled=true;return result;
       }finally{finish(settled?undefined:`memory-source-mutation:${id}`);}
     },
