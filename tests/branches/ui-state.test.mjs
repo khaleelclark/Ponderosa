@@ -158,13 +158,14 @@ test('the shared browser panel only offers new tabs when its session supports th
  const {projectBrowserAdapter}=await import('../../apps/web/src/components/browser/browserAdapters.ts');
  const {chatBrowserOwnerId}=await import('@ponderosa/core');
  const client=new QueryClient({defaultOptions:{queries:{retry:false,staleTime:Infinity,gcTime:Infinity}}});
+ const previousWindow=globalThis.window;globalThis.window={location:{origin:'https://example.test',pathname:'/branches',search:''}};
  try{
   const session={id:'session',projectId:'p',status:'ready',controlOwner:'operator',controlEpoch:1,pages:[{id:'one',url:'about:blank',title:'Existing tab',active:true,closable:false}],activePageId:'one',capabilities:{multiPage:false,fileUpload:false},location:'hosted'};
   const key=projectBrowserAdapter(chatBrowserOwnerId('c')).queryKey;
   const render=multiPage=>{client.setQueryData(key,{...session,capabilities:{...session.capabilities,multiPage}});return renderToStaticMarkup(React.createElement(QueryClientProvider,{client},React.createElement(ProjectBrowserDialog,{projectId:'p',conversationId:'c',open:true,embedded:true,onClose(){}})));};
   assert.match(render(true),/aria-label="New browser tab"/);
   assert.doesNotMatch(render(false),/aria-label="New browser tab"/);
- }finally{client.clear();}
+ }finally{client.clear();globalThis.window=previousWindow;}
 });
 
 test('standalone voice prefixes native API and stream routes without leaking to the shared legacy backend',()=>{
@@ -234,6 +235,7 @@ test('provider-attention Settings link stays in Branches and retains its executi
  const React=await import('react'),{renderToStaticMarkup}=await import('react-dom/server'),{QueryClient,QueryClientProvider}=await import('@tanstack/react-query');
  const {ExecutionPanel}=await import('../../apps/web/src/components/branches/ExecutionPanel.tsx');
  const client=new QueryClient({defaultOptions:{queries:{retry:false,staleTime:Infinity,gcTime:Infinity}}});
+ const previousWindow=globalThis.window;globalThis.window={location:{origin:'https://example.test',pathname:'/branches',search:''}};
  try {
   const execution={id:'execution',branchId:'branch',versionId:'version',state:'waiting',createdAt:new Date().toISOString()};
   client.setQueryData(['branch-execution-operations',execution.id],{state:'provider_attention',label:'Provider needs attention',observedAt:execution.createdAt,counts:{completed:0,running:0,retrying:0,waitingHuman:0,needsReconciliation:0},agentWaits:[],additionalAgentWaits:0});
@@ -243,7 +245,7 @@ test('provider-attention Settings link stays in Branches and retains its executi
   assert.ok(href);
   const url=new URL(href,'https://example.test');assert.equal(url.pathname,'/branches');
   assert.deepEqual(parseBranchRoute(url.search),{branchId:'branch',tab:'executions',executionId:'execution',global:'providers'});
- } finally {client.clear();}
+ } finally {client.clear();globalThis.window=previousWindow;}
 });
 
 
@@ -287,7 +289,7 @@ test('workflow Settings sections load without parameter configuration and keep l
  client.setQueryData(['branch-lifecycle-summary',branch.id],{deleting:false,activeExecutions:0,chats:0,callers:[{id:'billing-workflow',name:'Billing workflow'}],updates:[],pendingRemoval:[]});
  const named=render();assert.ok(named.includes('Billing workflow')&&!named.includes('reports-alias'),'Called by must show the calling workflow name, never its alias for this target');
  const lifecycle=client.getQueryCache().find({queryKey:['branch-lifecycle-summary',branch.id]});lifecycle.setState({status:'error',error:new Error('Controlled lifecycle failure'),fetchStatus:'idle'});
- const failed=render();assert.ok(failed.includes('Deletion is unavailable'),'Unknown lifecycle must not allow deletion');
+ const failed=render();assert.ok(failed.includes('Lifecycle refresh unavailable · deletion blocked'),'Unknown lifecycle must not allow deletion');
  assert.ok(/<button[^>]*disabled=""[^>]*>Delete workflow/.test(failed),'Deletion remains disabled after failed lifecycle loading');
  assert.ok(render({definition:{parameters:{note:{type:'text'}}}}).includes('Loading configuration'),'Published variables retain their independent configuration load');
  assert.ok(!html.includes('Workflow variables')&&!html.includes('Save variables'),'Zero variables creates no empty form or Save action');
@@ -591,9 +593,9 @@ test('declined navigation retains a completed receipt and an actionable exact re
 test('a stale Branch panel cannot start creation for a new selection or temporary inspection',async()=>{
  const fs=await import('node:fs/promises'),vm=await import('node:vm'),ts=await import('typescript'),source=await fs.readFile(new URL('../../apps/web/src/components/branches/BranchChats.tsx',import.meta.url),'utf8');
  const allowed=source.split('\n').find(line=>line.trim().startsWith('const creationAllowed=')),start=source.split('\n').find(line=>line.trim().startsWith('const startChat='));assert.ok(allowed&&start);
- for(const route of [{branchId:'other',tab:'chats'},{branchId:'owner',tab:'workflow'},{branchId:'owner',tab:'chats',global:'providers'},{branchId:'owner',tab:'chats',executionId:'temporary'},{branchId:'owner',tab:'chats'}]){
-  const writes=[],scope={branchRoute:route,branchId:'owner',executionId:route.executionId,creationKey:undefined,pendingAttempt:undefined,starting:{current:false},createClientId:()=> 'intent',onNavigate:next=>{writes.push(next);return true}};
-  vm.runInNewContext(ts.transpileModule(allowed+'\n'+start.replace('const startChat=','globalThis.startChat='),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,scope);scope.startChat();scope.startChat();assert.equal(writes.length,route.branchId==='owner'&&route.tab==='chats'&&!route.global&&!route.executionId?1:0);
+ for(const standalone of [false,true])for(const route of [{branchId:'other',tab:'chats'},{branchId:'owner',tab:'workflow'},{branchId:'owner',tab:'chats',global:'providers'},{branchId:'owner',tab:'chats',executionId:'temporary'},{branchId:'owner',tab:'chats'}]){
+  const writes=[],scope={standalone,branchRoute:route,branchId:'owner',executionId:route.executionId,creationKey:undefined,pendingAttempt:undefined,starting:{current:false},createClientId:()=> 'intent',onNavigate:next=>{writes.push(next);return true}};
+  vm.runInNewContext(ts.transpileModule(allowed+'\n'+start.replace('const startChat=','globalThis.startChat='),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,scope);scope.startChat();scope.startChat();assert.equal(writes.length,!standalone&&route.branchId==='owner'&&route.tab==='chats'&&!route.global&&!route.executionId?1:0);
  }
 });
 
@@ -1451,7 +1453,7 @@ async function workflowRunFixture(t,submit=async()=>({id:'accepted-run',branchId
 
 test('header Run uses the published workflow without changing its schedule, fences duplicate clicks and opens the accepted run',async t=>{
  let finish;const f=await workflowRunFixture(t,()=>new Promise(resolve=>{finish=resolve})),s=f.scope;s.draft.definition.trigger={kind:'schedule',configRef:'schedule'};const trigger=JSON.stringify(s.draft.definition.trigger),key=s.occurrenceKey;
- f.render();s.openRun();f.render();assert.equal(f.dialogs[0].maxWidth,'sm');assert.equal(f.button('Run Published Workflow').disabled,false);assert.match(f.render(),/unpublished edits are not included/);
+ f.render();s.openRun();f.render();assert.equal(f.dialogs[0].maxWidth,'sm');assert.equal(f.button('Run Published Workflow').disabled,false);assert.match(f.render(),/unpublished edits excluded/);
  const click=f.button('Run Published Workflow').onClick,pending=click();assert.equal(click(),undefined);f.dialogs[0].onClose({},'escapeKeyDown');assert.equal(s.runOpen,true,'The shared shell fences immediate dismissal before mutation pending renders');
  await new Promise(resolve=>setImmediate(resolve));f.render();assert.equal(f.button('Submitting…').disabled,true);assert.equal(f.button('Cancel').disabled,true);assert.equal(f.field().disabled,true);assert.equal(f.requests.length,1);
  assert.deepEqual(JSON.parse(JSON.stringify(f.requests[0])),{path:'/api/branches/owner/executions',body:{occurrenceKey:key,input:'  First line\r\nSecond line 😀  '}});assert.equal(JSON.stringify(s.draft.definition.trigger),trigger,'Run never changes the saved trigger or publishes the draft');
@@ -1461,13 +1463,13 @@ test('header Run uses the published workflow without changing its schedule, fenc
 
 test('accepted Runs retain filters and remain reachable when a settings guard refuses navigation',async t=>{
  const f=await workflowRunFixture(t),s=f.scope;s.routeOwner.current={...s.routeOwner.current,executionFilter:'failed'};f.render();s.openRun();f.render();let accepted=false;const destinations=[];s.navigate=next=>{destinations.push(next);return accepted};
- await f.button('Run Published Workflow').onClick();f.render();assert.equal(s.runOpen,true);assert.equal(f.field().disabled,true);assert.match(f.render(),/Run Accepted/);assert.equal(f.button('View Run').disabled,false);assert.equal(destinations[0].executionFilter,'failed');
+ await f.button('Run Published Workflow').onClick();f.render();assert.equal(s.runOpen,true);assert.equal(f.field().disabled,true);assert.match(f.render(),/Run accepted · unsaved settings retained/);assert.equal(f.button('View Run').disabled,false);assert.equal(destinations[0].executionFilter,'failed');
  const calls=f.requests.length;f.button('View Run').onClick();assert.equal(s.runOpen,true);assert.equal(f.requests.length,calls,'Opening an accepted Run cannot create a second execution');accepted=true;f.button('View Run').onClick();assert.equal(s.runOpen,false);assert.equal(destinations.at(-1).executionId,'accepted-run');
 });
 
 test('uncertain Run submissions freeze raw input and retry the exact wire intent even after disable or publication reload',async t=>{
  let count=0;const f=await workflowRunFixture(t,async()=>{if(++count===1)throw Error('Controlled response loss');return {id:'accepted-run',branchId:'owner'}}),s=f.scope;
- f.render();s.openRun();f.render();await assert.rejects(f.button('Run Published Workflow').onClick(),/response loss/);f.render();assert.equal(f.field().disabled,true);assert.match(f.render(),/submission outcome is not confirmed/);assert.equal(f.button('Retry Run Submission').disabled,false);
+ f.render();s.openRun();f.render();await assert.rejects(f.button('Run Published Workflow').onClick(),/response loss/);f.render();assert.equal(f.field().disabled,true);assert.match(f.render(),/Submission unconfirmed · retry: same Run Input \+ key · no separate Run/);assert.equal(f.button('Retry Run Submission').disabled,false);
  const key=s.occurrenceKey,input=s.input;s.current={...s.current,enabled:false,versionId:undefined};s.selection.current++;s.routeOwner.current={branchId:'owner',tab:'settings',settingsSection:'execution-controls'};f.render();s.openRun();f.render();assert.equal(s.occurrenceKey,key);assert.equal(s.input,input);assert.equal(f.button('Retry Run Submission').disabled,false,'An exact replay may recover an already accepted run after availability changes');
  await f.button('Retry Run Submission').onClick();assert.deepEqual(f.requests[1],f.requests[0]);assert.deepEqual(JSON.parse(JSON.stringify(f.navigations)),[{branchId:'owner',tab:'executions',executionId:'accepted-run'}]);
 });

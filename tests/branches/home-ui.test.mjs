@@ -26,14 +26,14 @@ test('workflow Home uses exact cross-workflow totals and distinct execution card
  for(const state of ['Completed','Failed','Canceled','Skipped','Merged'])assert.match(html,new RegExp(`>${state}<`));
  assert.doesNotMatch(html,/No executions are active|loaded workflow directory|Start Your First Workflow|No Agents/);
  assert.match(html,/Load more active executions/);assert.match(html,/Load more outcomes/);assert.match(html,/View all/);
- assert.match(html,/Script-only workflows can still run/);
+ assert.match(html,/Script-only workflows available/);
 });
 
 test('Home distinguishes loading and initial failure from valid zero and preserves cached cards on refresh failure',t=>{
  const f=fixture();t.after(()=>f.client.clear());let html=f.render();assert.match(html,/Loading Home summary/);assert.doesNotMatch(html,/Nothing currently needs your attention|No executions are active/);
  f.fail('active');f.fail('outcomes');html=f.render();assert.match(html,/Workflow Home could not be loaded/);assert.match(html,/Unavailable/);assert.doesNotMatch(html,/Nothing currently needs your attention|No executions are active/);
  f.set('active',home());f.set('outcomes',home());f.fail('active');html=f.render();assert.match(html,/Last loaded counts and cards are still available/);assert.match(html,/Execution run-one/);assert.match(html,/>120</);assert.match(html,/Retry workflow Home/);
- f.set('active',home());f.fail('outcomes',{fetchMeta:{fetchMore:{direction:'forward'}}});html=f.render();assert.match(html,/next page could not be loaded/);assert.doesNotMatch(html,/Home could not refresh/);assert.match(html,/Execution run-one/);assert.match(html,/Retry next page/);
+ f.set('active',home());f.fail('outcomes',{fetchMeta:{fetchMore:{direction:'forward'}}});html=f.render();assert.match(html,/Next page unavailable · current results retained/);assert.doesNotMatch(html,/Home could not refresh/);assert.match(html,/Execution run-one/);assert.match(html,/Retry next page/);
  const empty=home();empty.workflowCount=0;empty.activeExecutionCount=0;empty.openActionCount=0;empty.activeExecutions={items:[]};empty.recentOutcomes={items:[]};empty.attention={items:[]};f.set('active',empty);f.set('outcomes',empty);html=f.render();assert.match(html,/Start Your First Workflow/);assert.match(html,/New workflow/);assert.match(html,/Import workflow/);assert.match(html,/Nothing currently needs your attention/);assert.match(html,/No executions are active right now/);assert.doesNotMatch(html,/could not|Retry next page|Load more/);
 });
 
