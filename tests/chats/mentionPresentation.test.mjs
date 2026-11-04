@@ -318,7 +318,7 @@ test('Agent package copy retains deferred clipboard transfer and downloads have 
   await actions.downloadAgentPackage('full', true);
   assert.deepEqual(links, [{ download: 'Original-true-full.json' }]);
   assert.equal(notices[2].message, 'Download started'); assert.equal(notices[2].persistent, undefined);
-  assert.deepEqual(requests.map(args => [...args]), [['agent-a', 'full', true, [], false, false, undefined, undefined], ['agent-a', 'template', false, [], false, false, undefined, undefined], ['agent-a', 'Original-true-full.json', 'full', true, [], false, false, undefined, undefined]]);
+  assert.deepEqual(requests.map(args => args.map(value => Array.isArray(value) ? Array.from(value) : value)), [['agent-a', 'full', true, [], false, false, undefined, undefined], ['agent-a', 'template', false, [], false, false, undefined, undefined], ['agent-a', 'Original-true-full.json', 'full', true, [], false, false, undefined, undefined]]);
 });
 
 test('Agent provider commands keep meaningful output and errors in their existing owner', async () => {
