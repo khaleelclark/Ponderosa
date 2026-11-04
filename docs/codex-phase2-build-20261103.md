@@ -2,7 +2,7 @@
 
 Owner: Codex integration. Starting reviewed candidate:
 `7a7504b0b25a79f72ab00cbc991a043606526467`. Source reviewed for this
-checkpoint: `c6745885aa69a59ec9eade73431cc8744afe725b`.
+checkpoint: `7fc0819ab5667aaf50c24b37eb9efec8a920c11b`.
 
 The authoritative Ponderosa Behavior Bible 2 is Library file
 `libfile_d5c0d1c163d88191be429a72ee3e95a5`, 530 lines, SHA-256
@@ -18,10 +18,10 @@ This is source work only: no deployment or production restart was performed.
 | Owner | Integrated source at checkpoint | Remaining work or boundary |
 | --- | --- | --- |
 | Continuation | Reject unsupported blocked task closure; preserve original objective and steering, validate their exact lineage and canonical prompt block, hold unverified rollover failures, and offer a fenced human retry only for a proven never-started replacement. | Submitted or unknown outcomes remain held without automatic replay. Complete product and real-provider qualification remains. |
-| Runtime | Native question bridge and safer cold-session command proof; Claude initialization/ownership checks; direct-Agent stream lookup; schedule-error redaction. | Native no-identity compaction lookup, host-fenced pre-start goal admission and external-effect settlement remain proof gaps. After a live Claude model change, Compact requires a reopened verified session. Real provider modes, switching and capabilities remain unqualified. |
+| Runtime | Native question bridge and safer cold-session command proof; Claude initialization/ownership checks; direct-Agent stream lookup; schedule-error redaction; bounded scalar compatibility and value-free argument errors in Ponderosa’s Local Memory bridge. | Native no-identity compaction lookup, host-fenced pre-start goal admission and external-effect settlement remain proof gaps. After a live Claude model change, Compact requires a reopened verified session. The user’s specific Claude symptom and real provider modes, switching and capabilities remain unverified. |
 | Discovery and interface | Revision-bound recovery pagination; standalone direct-Agent Output chat; settings concurrency and streaming corrections; stored-audio single-range support; concise coordination and reviewed UI copy. | Full desktop/mobile flows, actual audio/voice behavior, accessibility, visual comparisons and an exhaustive UI-copy census remain unqualified. |
-| Portability | Large-package recovery and reviewed import/export choices; Linux native metadata and mapped roots, links and Git layouts; exact nested-root ownership; reviewed mode forwarding; locally issued hook plan and duplicate-key JSON refusal; selected verified Git loose-object hardlinks; a bounded dormant-module proof. | Durable export-pool custody is Linux-only. Native metadata dialects outside Linux and macOS/Windows pool custody are unqualified. Live mixed-mode or multiple Separate owners sharing one physical root are refused before mutation. Dormant modules currently require a contained standalone parent with an unchanged indexed declaration, matching gitlink and selected bytes; ambiguous, modified, external or linked-parent cases remain held. Hardlinked pack/index objects, device mapping, live socket restoration and an atomic snapshot against an independent writer remain unqualified. |
-| Memory | 0044 adds durable scope-creation intents, exact binding and UUID/token checks for newly confirmed scopes, and visible holds for missing or uncertain data. Package/global import uses insert-only writes with verification. | Automatic Chat, Project and Agent memory cleanup, package rollback and post-write compensation are held before destructive dispatch: the configured Chroma API has no proven atomic target identity/content precondition or enforceable exclusion. Ordinary saves, updates, forgets and conflict operations still have pre-read/upsert or delete races with independent writers. Earlier scopes lack retrospective UUID proof. Submitted creates without acknowledged identity, ambiguous legacy first provisioning, deliberate rebind and unsupported filesystem identity remain held. See [memory scope provisioning](memory-scope-provisioning.md). |
+| Portability | Large-package recovery and reviewed import/export choices; Linux native metadata and mapped roots, links and Git layouts; exact nested-root ownership; reviewed mode forwarding; locally issued hook plan and duplicate-key JSON refusal; selected verified Git loose-object hardlinks; bounded dormant-module proof; bare-control custody and relative Git hook ownership checks. | Durable export-pool custody is Linux-only. Native metadata dialects outside Linux and macOS/Windows pool custody are unqualified. Live mixed-mode or multiple Separate owners sharing one physical root are refused before mutation. Nested bare capsules are held before destination writes pending descriptor-bound child custody. Nonempty absolute or symlink-aliased private hook paths are refused during export. Unvisited hardlink aliases fail closed, and live unreadable mode-000 originals remain unsupported. Dormant modules require a contained standalone parent with an unchanged indexed declaration, matching gitlink and selected bytes; ambiguous, modified, external or linked-parent cases remain held. Hardlinked pack/index objects, device mapping, live socket restoration and an atomic snapshot against an independent writer remain unqualified. |
+| Memory | 0044 adds durable scope-creation intents, exact binding and UUID/token checks for newly confirmed scopes, and visible holds for missing or uncertain data. Package/global import uses insert-only writes with verification. The host bridge ports bounded private.10-compatible scalar handling and permits authorized read-only access to existing finite zero vectors. | Automatic Chat, Project and Agent memory cleanup, package rollback and post-write compensation are held before destructive dispatch: the configured Chroma API has no proven atomic target identity/content precondition or enforceable exclusion. Ordinary saves, updates, forgets and conflict operations still have pre-read/upsert or delete races with independent writers. Earlier scopes lack retrospective UUID proof. Submitted creates without acknowledged identity, ambiguous legacy first provisioning, deliberate rebind and unsupported filesystem identity remain held. See [memory scope provisioning](memory-scope-provisioning.md). |
 | Integration and verification | Retained old work was combined; Linux export tickets use held sparse-pool custody with small SQLite receipts; mounted cases are in the maintained runner. | A passing integrated repository suite and the remaining Bible acceptance evidence are outstanding. The current mounted matrix passed; the full product is not qualified or complete. |
 
 For the export pool, completed expired slots can be reused. Unknown claims,
@@ -38,9 +38,9 @@ before durable-pool issuance pending safe writable-handle custody.
   Their logs remain under
   `/tmp/ponderosa-codex-phase2-20261103/evidence/`.
 - The earlier mounted run recorded **54 passed and 24 failed** across desktop
-  and emulated-phone cells. After fixture fixes, the `4e376a809` mounted matrix
-  passed **78/78**, exit 0; evidence:
-  `/tmp/ponderosa-codex-phase2-20261103/evidence/q0044-mounted.log`.
+  and emulated-phone cells. After fixture fixes, both the `4e376a809` and
+  `7fc0819ab` mounted matrices passed **78/78**, exit 0. Latest evidence:
+  `/tmp/ponderosa-codex-phase2-20261103/evidence/final-combined-mounted.log`.
   These controlled mounted cases do not establish the full mobile, visual or
   voice criteria.
 - Supporting focused checks include **34/34** controlled pause and rollover
@@ -48,10 +48,26 @@ before durable-pool issuance pending safe writable-handle custody.
   **50/50** schedule/ownership fixture checks; and targeted Linux Git, native
   command and controlled browser checks. These use disposable fixtures or
   controlled adapters and are not a whole-product or real-provider verdict.
-- The isolated `4e376a809` build and workspace typecheck passed; evidence:
-  `/tmp/ponderosa-codex-phase2-20261103/evidence/q0044-build.log`,
-  `q0044-typecheck.log` and `q0044-build.exit`. Its repository suite was
-  still running at this checkpoint and had no final result.
+- The isolated `7fc0819ab` build and workspace typecheck passed; evidence:
+  `/tmp/ponderosa-codex-phase2-20261103/evidence/final-combined-build.log`,
+  `final-combined-typecheck.log` and `final-combined-build.exit`. Its
+  server lane is still running at this checkpoint. The independent lanes at
+  this same source passed as follows: web **802 passed, 0 failed, 1 skipped**;
+  engines **60 passed, 0 failed**; tooling **77 passed, 0 failed, 23 skipped**;
+  mounted **78 passed, 0 failed**. These lane results and all skips remain in
+  `final-combined-{web,engines,tooling,mounted}.log` in the evidence folder.
+- The earlier `4e376a809` server lane finished with **2,517 passed, 34 failed,
+  27 skipped** of 2,578 tests. It stopped the normal runner before later lanes.
+  Subsequent fixture and Git changes address identified failures, but memory
+  cleanup/rollback cases remain genuine unmet requirements. This older result
+  is not a verdict for `7fc0819ab`.
+- The private.10 archive is experimental and Linux-only; the bundled package
+  remains private.6. Ponderosa’s Claude uses its own per-Run bridge. Applicable
+  bounded scalar normalization, value-free parameter diagnostics and authorized
+  legacy zero-vector reads were ported without replacing the archive. Controlled
+  bridge/host and disposable-memory checks passed, but no real Claude provider
+  turn verified the user’s specific symptom. See
+  [the exact comparison](local-memory-private10-reconciliation.md).
 - The exact published ui096 0027 predecessor schema now has an independently
   reviewed admission fix. Its **22/22** focused checks passed, including
   unchanged-byte refusal of foreign and partial schemas. Disposable populated
@@ -60,13 +76,17 @@ before durable-pool issuance pending safe writable-handle custody.
   Branches workflow, Chat and memory fixture passed authority-filtered reads
   with local ONNX and an owned loopback Chroma. The preserved evidence roots and
   precise scope are in [the upgrade reconciliation](codex-phase2-reconciliation-20261103.md#populated-ui096-upgrade-evidence).
-- Remaining acceptance includes completion of the pinned `4e376a809` whole
-  suite, all resulting corrections, further crash/recovery qualification, then
+- Remaining acceptance includes completion of the pinned `7fc0819ab` server
+  lane, all resulting corrections and a full current-source pass, further crash/recovery qualification, then
   20 consecutive complete controlled core-path runs on a fixed commit and
   environment. The 10k-message/20-Agent performance profile,
   streaming and voice recordings, phone latency, memory recall/misuse, trigger
   and notification matrices, installation and accessibility checks, public
   client/framework comparisons and subjective judging remain unqualified.
+  The active-load collector cannot establish a complete interaction population:
+  terminal-delivery evidence is unsupported and ambiguous interaction IDs fail
+  closed. No axe-core asset or screen reader was found in the bounded installed
+  locations checked; those checks were not run.
 - For each subjective test, use the Bible's written 1–10 rubric and descriptions
   of scores 3, 6 and 9. At least three independent blind judges use the same
   tasks and rubric, do not see one another's scores, and run on a different

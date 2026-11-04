@@ -1,6 +1,6 @@
 # Codex Phase 2 requirement reconciliation — 3 November 2026
 
-Starting source: `7a7504b0b25a79f72ab00cbc991a043606526467`; source checkpoint: `c6745885aa69a59ec9eade73431cc8744afe725b`. The implementation checkpoint is tracked in `codex-phase2-build-20261103.md`. Authoritative Library
+Starting source: `7a7504b0b25a79f72ab00cbc991a043606526467`; source checkpoint: `7fc0819ab5667aaf50c24b37eb9efec8a920c11b`. The implementation checkpoint is tracked in `codex-phase2-build-20261103.md`. Authoritative Library
 Bible: 530 lines, SHA-256
 `ac314d93732e631bb042b8d3d2dc802ba08446812f99ba931023d2e02b14ab58`.
 The complete Bible was read. Later human direction changes execution ownership to
@@ -22,7 +22,7 @@ present implementation absence or current execution success.
 | 5 | server-request-hooks.ts; branch-finite-contract-dispositions.md | Capacity admission is separate from access and origin checks; no mandatory Tailscale dependency found. Complete cap/purpose/dependency scan remains evidence; orphan/custody clipping fix below is concrete. | Integration |
 | 6 | runtime-capability-policy.ts; capability-policy-store.ts; local-memory.ts | Human policy controls remain. Memory scopes can be held for missing or uncertain data, and ordinary Chroma mutations lack atomic protection against independent writers. Final grant-change traces and memory qualification remain open. | Integration + Portability |
 | 7 | server-request-hooks.ts; optional operator-auth-proxy.ts | Operator requests have no operator-token requirement; Agent capabilities retain domain scope. Optional proxy is transport, not login. Final auth search remains evidence. | Integration |
-| 8 | compose-agent-packages.ts; portable-working-files.ts; portable-reviewed-user-data.ts; branch runtime packages | Metadata/FIFO restoration, mapped Git layouts, held links, reviewed hook plans and a bounded dormant-module proof have source. Durable export-pool custody is Linux-only; non-Linux native metadata remains unqualified. Mixed-mode or multiple Separate live owners on one physical root are refused. Hardlinked packs, independent-writer snapshots, devices, live sockets and unsupported dormant layouts remain boundaries. | Portability + Git recreation + Runtime |
+| 8 | compose-agent-packages.ts; portable-working-files.ts; portable-reviewed-user-data.ts; branch runtime packages | Metadata/FIFO restoration, mapped Git layouts, held links, reviewed hook plans and a bounded dormant-module proof have source. Durable export-pool custody is Linux-only; non-Linux native metadata remains unqualified. Mixed-mode or multiple Separate live owners on one physical root are refused. Nested bare capsules are held before destination writes; nonempty absolute or symlink-aliased private hooks are refused at export; unvisited hardlink aliases fail closed. Live unreadable mode-000 originals, hardlinked packs, independent-writer snapshots, devices, live sockets and unsupported dormant layouts remain boundaries. | Portability + Git recreation + Runtime |
 | 9 | Shared package composer; shared chat/settings; canonical writers | Shared mechanisms exist. Dead-code and duplicate-code scans plus near-duplicate review still required. No speculative refactor inferred. | Integration |
 | 10 | core branches-client.ts / branch-group-client.ts; examples/branches-client | Public HTTP/SDK surfaces and external sample source exist. Actual outside-app execution remains evidence. | Runtime |
 | 11 | Scheduler protocol and canonical publication/reply authority | Real sample establishes excessive communication bulk, not duplicate-message corruption. Concise host instructions, durable objective preservation and objective/batch separation have source. Token/log judging remains evidence. | Continuation |
@@ -44,7 +44,7 @@ present implementation absence or current execution success.
 | 27 | TextSizeSetting.tsx; textSize.ts; shared themes/labels | Device text sizes 100–200%, themes and labelled controls exist. Axe, keyboard, reader, contrast and zoom/layout trials remain evidence. | Interface |
 | 28 | Every row applied to Branches | Aggregate requirement; no single additional magic feature closes it. Each Branches criterion remains open until its evidence exists. | Integration |
 | 29 | Folder navigation; shared Output/chat UI; concise-copy census | Folder system and reviewed concise-copy corrections have source. The source census is not exhaustive; pinned blind comparisons and flicker/overlap recordings remain evidence. | Interface + Integration |
-| 30 | local-memory-catalog.ts; local-memory.ts; memory-scope-provisioning.md | Combined authorized search has source. New scope intents and holds reduce silent recreation risk, but cleanup/rollback is held, ordinary mutations lack backend CAS against independent writers, old scopes lack retrospective UUID proof, and first-provision/rebind and submitted-unknown recovery need explicit authority. Seeded recall and misuse review remain unqualified. | Integration |
+| 30 | local-memory-catalog.ts; local-memory.ts; memory-scope-provisioning.md | Combined authorized search has source. New scope intents and holds reduce silent recreation risk, but cleanup/rollback is held, ordinary mutations lack backend CAS against independent writers, old scopes lack retrospective UUID proof, and first-provision/rebind and submitted-unknown recovery need explicit authority. Bounded scalar compatibility and read-only legacy zero-vector handling from the experimental private.10 comparison have source; the bundled package remains private.6 and the specific real-Claude symptom is unverified. Seeded recall and misuse review remain unqualified. | Integration |
 | 31 | reply-stream-publication.ts; voice-reply-stream.ts; BranchLiveOutput; shared chat/voice | Direct Agent stream lookup/capability corrections and bounded single-range stored-audio delivery have source; limited controlled browser direct-stream flows passed. Full cross-surface reconnect/steering, actual audio playback and voice timing remain unqualified. | Interface + Runtime |
 | 32 | branches-framework-capabilities.md; examples/branches-capabilities; shared state/replay code | Nine named capabilities have concrete source; comparator pins LangGraph1.0.5/LangChain1.0.8. Local serial/fork/Map final-exit proof has focused checks; portable final-resource continuation still lacks independently authenticated complete start/provider/effect provenance. Matched execution and full framework qualification remain open. | Runtime |
 
@@ -124,6 +124,10 @@ crash/recovery and combined-suite qualification remain open.
   and changing an established policy/storage binding lack a reviewed human
   decision and recovery flow. Stable nonzero filesystem identity is required
   for the policy witness and remains platform-dependent.
+- The active-load Event Timing collector cannot establish complete interaction
+  delivery; terminal-delivery proof and the independent method gate remain
+  unqualified. No axe-core asset or screen reader was found in the bounded
+  installed locations checked, so accessibility acceptance remains open.
 - Device ownership/mapping, live socket services and independent-writer
   filesystem snapshots require their actual native authority. Live mixed-mode
   or multiple Separate owners of one root are refused; recovery-only copies
@@ -151,8 +155,13 @@ other's scores; the majority verdict stands. Human-only account/device actions g
 on the handoff checklist and never block independent work; emulators qualify.
 The earlier repository diagnostics exited with failures and mixed source/build
 outputs; they are partial evidence only. The earlier mounted matrix recorded 54
-passes and 24 failures. After fixture fixes, the mounted matrix at
-`4e376a809` passed 78/78, and that candidate's build and typecheck passed.
-The repository suite pinned to `4e376a809` was still running at this
-checkpoint; it must report its final failures and skips before any final
-verdict, and it does not include the later ui096 admission fix.
+passes and 24 failures. The server lane pinned to `4e376a809` finished with
+2,517 passed, 34 failed and 27 skipped; it stopped the normal runner before
+other lanes, and subsequent fixes are not included.
+
+At `7fc0819ab`, the isolated build and typecheck passed. Independent lanes
+report web 802 passed / 1 skipped, engines 60 passed, tooling 77 passed /
+23 skipped, and mounted desktop/phone 78 passed. The server lane remains
+running at this checkpoint. See the evidence folder and build checklist for
+logs. None of these results qualifies the entire Bible or proves real-provider
+behavior.
