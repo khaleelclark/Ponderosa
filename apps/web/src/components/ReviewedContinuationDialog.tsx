@@ -199,7 +199,7 @@ export function ReviewedContinuationDialog({projectId,receipt,onClose,onOpenAgen
    {review&&<>
     <Communication label="Original task" value={review.originalTask.communication}/>
     <Communication label="Unconfirmed instruction" value={review.originalSteer.communication}/>
-    <Alert severity="warning">The instruction and earlier external effects may or may not have happened. Continuing does not repeat the earlier instruction or authorize replay of uncertain actions.</Alert>
+    <Alert severity="warning">The instruction and earlier external effects may or may not have happened. Continuing does not resend the earlier interruption or automatically replay uncertain actions.</Alert>
     {missingAttachments&&<Alert severity="error">An original attachment is unavailable. Continuation is held until it can be recovered.</Alert>}
     {effects.length>0&&<Stack spacing={0.5}><Typography fontWeight={650}>Recorded activity and uncertainty</Typography>{effects.map((effect,index)=><Typography key={index} variant="body2">{effect.outcome==='host_committed'?'Recorded by Ponderosa':effect.outcome==='unknown'?'Unconfirmed':'Status unavailable'} · {effect.kind.replaceAll('_',' ')} · {effect.detail}{effect.id?' · Reference: '+effect.id:''}</Typography>)}</Stack>}
     {!saved&&<TextField label="Notes about uncertain effects (optional)" multiline minRows={2} value={note} onChange={event=>setNote(event.target.value)} helperText="Add anything the Agent needs to know before continuing." error={new TextEncoder().encode(note).length>16000}/>}
