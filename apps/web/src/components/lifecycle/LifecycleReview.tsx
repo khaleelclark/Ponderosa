@@ -12,6 +12,7 @@ import {useWorkspaceReadOnly} from '../WorkspaceReadOnlyContext';
 import {lifecycleReceiptMatches,restoreLifecycleCommand,type LifecycleCommand} from './lifecycleCommand';
 export type LifecycleKind='custody'|'memory'|'import'|'destination'|'group';
 type Review=AgentImportLifecycleReview|CheckpointCustodyLifecycleEntry|DestinationRetirementReviewDto|DestinationGroupRetirementReviewDto|MemoryMutationReviewDto;
+class LifecycleCommandNotSaved extends Error {}
 export function LifecycleReview({kind,id,enabled=true}:{kind:LifecycleKind;id:string;enabled?:boolean}):JSX.Element {
  const destination=kind==='destination'||kind==='group';
  const path=kind==='memory'?`/api/local-memory/mutation-holds/${encodeURIComponent(id)}`:`/api/lifecycle/${kind==='custody'?'checkpoint-custody':kind==='import'?'agent-imports':kind==='group'?'destination-groups':'destinations'}/${encodeURIComponent(id)}`;
@@ -39,8 +40,14 @@ export function LifecycleReview({kind,id,enabled=true}:{kind:LifecycleKind;id:st
  };
  const send=useMutation({retry:false,mutationFn:async(command:LifecycleCommand)=>{
   if(command.id!==id||command.path!==path||readOnly||!(destination?['approve','retire'].includes(command.action):command.action==='reconcile'))throw Error('Lifecycle scope unavailable.');
-  keep(command);const value=await requestJson(`${path}/${command.action}`,{method:'POST',body:JSON.stringify(command.body)});accept(command,value);
- },onError:error=>{setNotice(`Outcome unconfirmed · retain exact command · unknown effects held · ${error.message}`);if(error instanceof ApiRequestError&&error.status===409)void refresh();},onSettled:()=>{fence.current=false;setConfirm(undefined);setAck(false);}});
+  // Saving happens before dispatch. A storage error here proves only that
+  // this attempt was not sent; an earlier retained attempt may be uncertain.
+  try{keep(command);}catch{throw new LifecycleCommandNotSaved();}
+  const value=await requestJson(`${path}/${command.action}`,{method:'POST',body:JSON.stringify(command.body)});accept(command,value);
+ },onError:error=>{
+  if(error instanceof LifecycleCommandNotSaved)setNotice('Could not save this decision in your browser. No request was sent this time. Free browser storage and try again; any earlier attempt may still be unresolved.');
+  else {setNotice(`Outcome unconfirmed · retain exact command · unknown effects held · ${error.message}`);if(error instanceof ApiRequestError&&error.status===409)void refresh();}
+ },onSettled:()=>{fence.current=false;setConfirm(undefined);setAck(false);}});
  const lookup=useMutation({retry:false,mutationFn:async()=>{
   if(!destination||pending&&(pending.id!==id||pending.path!==path))throw Error('Retirement scope unavailable.');
   const value=await requestJson<Record<string,unknown>>(`${path}/receipt`,{cache:'no-store'});

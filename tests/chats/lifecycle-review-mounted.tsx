@@ -110,3 +110,66 @@ export async function lifecycleNoteValidationRegression():Promise<void>{
   keys.forEach((k,i)=>{if(saved[i]===null)localStorage.removeItem(k);else localStorage.setItem(k,saved[i]!);});
  }
 }
+
+// Storage may fail before a POST or after an approval response; these are
+// different outcomes and neither may silently discard an uncertain command.
+export async function lifecycleStorageFailureRegression():Promise<void>{
+ const host=document.createElement('div');document.body.append(host);
+ const root=createRoot(host),client=new QueryClient({defaultOptions:{queries:{retry:false},mutations:{retry:false}}});
+ const originalFetch=globalThis.fetch,originalSetItem=Storage.prototype.setItem;
+ const scope=currentProductScope(),origin=window.location.origin;
+ const memoryPath='/api/local-memory/mutation-holds/storage-failure',destinationPath='/api/lifecycle/destinations/storage-failure';
+ const key=(path:string)=>JSON.stringify(['lifecycle-command',origin,scope,path]);
+ const keys=[key(memoryPath),key(destinationPath)],saved=keys.map(k=>localStorage.getItem(k));
+ keys.forEach(k=>localStorage.removeItem(k));
+ let failBefore=false,failApprovalSave=false;
+ const posts:Array<{url:string;body:any}>=[],json=(value:unknown)=>new Response(JSON.stringify(value),{status:200,headers:{'content-type':'application/json'}});
+ Storage.prototype.setItem=function(k:string,value:string){
+  if(k===key(memoryPath)&&failBefore)throw new DOMException('Synthetic quota exceeded','QuotaExceededError');
+  if(k===key(destinationPath)&&failApprovalSave&&JSON.parse(value).approved===true)throw new DOMException('Synthetic quota exceeded','QuotaExceededError');
+  return originalSetItem.call(this,k,value);
+ };
+ globalThis.fetch=async(input,init)=>{
+  const url=String(input);
+  if(init?.method==='POST'){
+   const body=JSON.parse(String(init.body));posts.push({url,body});
+   if(url.endsWith('/approve'))return json({admissionId:'storage-failure',reviewHash:'review-1',operatorId:'local-operator',choice:body});
+   throw new TypeError('Synthetic lost response');
+  }
+  if(url.includes('/api/local-memory/mutation-holds/'))return json({hold:{id:'storage-failure',legacy:false,state:'unsettled',sha256:'a'.repeat(64)},reviewSha256:'b'.repeat(64),canReconcile:true,backendDrainEvidenceRequired:true});
+  if(url.includes('/api/lifecycle/destinations/'))return json({admissionId:'storage-failure',reviewHash:'review-1',state:'staged',stage:null,evidenceRevision:'evidence',references:['pin'],canReleaseSourcePins:false,preserveOnlyPermanent:true,globalRuntimeQuiescenceRequired:true,reservation:{custody:{checkpointId:'cut',sourceChatId:'chat',agentIds:['agent'],custodyId:'custody',intent:{executionId:'run',resourceStepId:'step',resourceGeneration:0}}}});
+  throw Error('Unexpected request: '+url);
+ };
+ const render=(kind:'memory'|'destination',mount:string)=>root.render(<QueryClientProvider client={client}><LifecycleReview key={mount} kind={kind} id="storage-failure"/></QueryClientProvider>);
+ const note=async()=>{
+  const field=document.querySelector('textarea:not([aria-hidden="true"])') as HTMLTextAreaElement;
+  assert(field,'memory note field exists');
+  Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value')!.set!.call(field,'Provider requests have stopped');
+  field.dispatchEvent(new Event('input',{bubbles:true}));await settle();
+ };
+ try{
+  render('memory','memory');await settle();button('Review memory hold').click();await settle();
+  await note();check();await settle();button('Reconcile and preserve evidence').click();await settle();
+  failBefore=true;button('Confirm exact command').click();await settle();
+  assert(posts.length===0&&!localStorage.getItem(key(memoryPath)),'storage failure before dispatch sends and retains nothing');
+  assert(document.body.textContent?.includes('No request was sent this time'),'pre-dispatch failure is explained accurately');
+  assert(!document.body.textContent?.includes('Outcome unconfirmed'),'pre-dispatch failure is not called an unknown outcome');
+  failBefore=false;check();await settle();button('Reconcile and preserve evidence').click();await settle();button('Confirm exact command').click();await settle();
+  const retained=localStorage.getItem(key(memoryPath));
+  assert(posts.length===1&&retained,'successful storage precedes the attempted POST');
+  assert(document.body.textContent?.includes('Outcome unconfirmed')&&document.body.textContent?.includes('Exact command retained'),'lost response stays uncertain and locked');
+  assert(!document.body.textContent?.includes('No request was sent this time'),'post-dispatch failure is never described as unsent');
+
+  render('destination','destination');await settle();button('Review destination retirement').click();await settle();
+  check();await settle();button('Approve retirement choice').click();await settle();
+  failApprovalSave=true;button('Confirm exact command').click();await settle();
+  assert(posts.length===2&&posts[1].url.endsWith('/approve'),'approval reached the server before the later storage failure');
+  const stored=JSON.parse(localStorage.getItem(key(destinationPath))!);
+  assert(stored.body.commandKey===posts[1].body.commandKey&&!stored.approved,'original command survives failed post-response save');
+  assert(document.body.textContent?.includes('Outcome unconfirmed')&&document.body.textContent?.includes('Exact command retained'),'post-response storage failure keeps the original uncertain');
+  assert(!document.body.textContent?.includes('No request was sent this time'),'post-response failure is not called unsent');
+ }finally{
+  Storage.prototype.setItem=originalSetItem;root.unmount();client.clear();host.remove();globalThis.fetch=originalFetch;
+  keys.forEach((k,i)=>{if(saved[i]===null)localStorage.removeItem(k);else localStorage.setItem(k,saved[i]!);});
+ }
+}
