@@ -723,7 +723,7 @@ test('retained Git current evidence preserves edits and originals across two ine
   assert.equal(await readFile(path.join(review,'external-git','credential.review'),'utf8'),'API_KEY=SYNTHETIC_SECRET_DONT_EXPORT');
   for(const value of [Buffer.from('prefix\0Authorization: Bearer SYNTHETIC_BINARY_SECRET'),Buffer.concat([Buffer.from([255,254]),Buffer.from('\nextraheader=Basic SYNTHETIC_BINARY_SECRET')]),Buffer.from('A\0P\0I\0_\0K\0E\0Y\0=\0S\0Y\0N\0T\0H\0E\0T\0I\0C')]){
    await writeFile(path.join(review,'external-git','credential.review'),value);
-   await assert.rejects(capture(root),error=>{assert.match(error.message,/credential|opaque binary/i);assert.doesNotMatch(error.message,/SYNTHETIC|credential.review/);return true;});
+   await assert.rejects(capture(root),error=>{assert.match(error.message,/credential|opaque binary|binary evidence cannot be validated/i);assert.doesNotMatch(error.message,/SYNTHETIC|credential.review/);return true;});
    assert.deepEqual(await readFile(path.join(review,'external-git','credential.review')),value);
   }
   await unlink(path.join(review,'external-git','credential.review'));
