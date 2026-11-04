@@ -225,6 +225,52 @@ A broader maintenance cleanup or migration needs an enforceable all-writer
 gate, drain, review, verification and separate production approval. No production
 service was contacted or changed during this deployment check.
 
+## Later continuity and recovery follow-up — 4 November
+
+Product and test candidate `d83bee2abb029805624cbc3f5654751e28bd33bf`
+contains three further changes:
+
+- Ordinary browser push displays group by communication kind across Chats;
+  individual inbox notices, settings and delivery receipts remain distinct.
+  Important Assistant, Decision and operational notices remain separate. A
+  controlled Chromium probe retained one ordinary display for a 30-Chat burst;
+  earlier previews are replaced, out-of-order delivery can leave an older
+  preview, and physical device banner and sound behavior was not tested.
+- Branch deletion records and shows a safe diagnostic when final cleanup fails,
+  retaining the deletion fence. Known blockers and safe SQLite codes are shown;
+  arbitrary exception text is withheld because no general exact-value secret
+  redactor was found. A database unable to write the diagnostic can prevent
+  durable capture. Full readable real-cause coverage remains open.
+- Import destination creation retains its exact durable request for explicit
+  recovery, uses the owning Branch route, preserves malformed/conflicting
+  journal entries, and prevents ordinary Branch Chat creation from silently
+  adopting import-origin attempts. Cross-tab journal writes are not atomic.
+- An unconfirmed human steer no longer causes an automatic interruption and
+  reintroduction of the instruction. The exact original reply obligation stays
+  pending, legacy queued recoveries remain held, and the user sees the hold.
+  No reviewed safe retry or resolution for unknown effects is implemented;
+  automatic agent-to-agent Request steering still does not meet Bible 13.
+  The restart test invokes startup recovery directly, not a physical kill.
+
+On predecessor `2469eca3ff5c561659f0ac43816319f9eb9eacbd`, the full build
+passed and the affected mixed test command reported 173 passes and one test
+file that failed to start because the web-lane loader was omitted. The mounted
+matrix passed 98/98 (49 desktop, 49 emulated phone). Typecheck failed on an
+unused parameter. The successor `d83bee2a` only removes that unused parameter
+and its call arguments; its fresh full build and recursive typecheck passed,
+and the previously unstarted delivery test passed 19/19 using the correct web
+loader. The mounted matrix and other focused files were not rerun on that
+successor. Evidence is under `evidence/combined-2469-*` and
+`evidence/successor-d83-*`. Controlled fixtures and a process-level loopback
+guard were used; that guard was not a kernel network namespace.
+
+After explicit user approval, the previously denied, narrow provider MCP
+configuration inspection ran once. It found no entries matching `local-memory`,
+`local_memory`, or `chroma` in the inspected Codex and Claude maps. No endpoint
+was identified; other names or configuration sources remain possible. No
+credentials or config contents were printed and no live service was contacted.
+This does not establish exclusive writer authority or resolve Chroma cleanup.
+
 ## Recorded validation and open checks
 
 - Earlier diagnostic builds and suites exposed failures and prompted fixes.
