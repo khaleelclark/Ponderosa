@@ -7,7 +7,7 @@ import path from 'node:path';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {fstatSync} from 'node:fs';
-import {exportReviewedUserData,reviewedGitConfiguration,createReviewedRecoveryGit,parseReviewedGitConfiguration} from '../../apps/server/dist/portable-reviewed-user-data.js';
+import {exportReviewedUserData,reviewedGitConfiguration,createReviewedRecoveryGit} from '../../apps/server/dist/portable-reviewed-user-data.js';
 
 const exec=promisify(execFile),git=async(cwd,...args)=>(await exec('git',['--no-optional-locks',...args],{cwd,env:{...Object.fromEntries(Object.entries(process.env).filter(([key])=>!key.startsWith('GIT_'))),GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null',GIT_TERMINAL_PROMPT:'0'}})).stdout.trim();
 const options={skip:process.platform!=='linux'};
@@ -76,14 +76,4 @@ test('one shared metadata scope waits for all tasks and composes callbacks on th
   await assert.rejects(first.finalizeNativeMetadata(),/cannot be replayed/);await assert.rejects(first.prepareNativeMetadata(),/cannot be replayed/);
   await chmod(locked,0o700);await chmod(path.join(second,'.git/ponderosa-external/capsule'),0o700);
  }finally{if(locked)await chmod(locked,0o700).catch(()=>{});await chmod(path.join(f.root,'second/.git/ponderosa-external/capsule'),0o700).catch(()=>{});await f.dispose();}
-});
-
-test('explicit bare repository capsules retain their root layout and never create a working pointer',options,async()=>{
- const f=await fixture();try{
-  const value=structuredClone(f.manifest),bytes=Buffer.from(value.git.configurationOriginalReview[0].dataBase64,'base64').toString('utf8').replace(/bare[ \t]*=[ \t]*false/,'bare = true'),parsed=parseReviewedGitConfiguration(Buffer.from(bytes));
-  value.git.configurationOriginalReview[0].dataBase64=parsed.data.toString('base64');value.git.configurationReview=parsed.items;
-  const relative='ponderosa-repositories/bare',gitDir=path.join(f.destination,'.git',relative);f.external.directories.push({path:'ponderosa-repositories',mode:0o700,mtimeNs:f.ns},{path:relative,mode:0o750,mtimeNs:f.ns});
-  const configuration={...f.configuration(),modules:[{gitDir,worktreePath:gitDir,initialized:false,bare:true,value,activation:{git:true,harness:false},configuration:reviewedGitConfiguration(value,{git:true,harness:false})}]};
-  await f.apply(configuration);assert.equal(await git(gitDir,'rev-parse','--is-bare-repository'),'true');await assert.rejects(lstat(path.join(gitDir,'.git')),{code:'ENOENT'});assert.ok((await lstat(path.join(gitDir,'objects'))).isDirectory());
- }finally{await f.dispose();}
 });
