@@ -395,7 +395,7 @@ export function ImportAgentForm({
     setCompletedImport(undefined);setImportResult(undefined);clearPackageDraft();(onSubmitted??onCancel)();
   }}/></Stack>;
   if(failedImport)return <Stack spacing={2}>
-    <Alert severity="warning">Import stopped. Partial files or changes may remain. Dismissing will not remove or repeat changes.</Alert>
+    <Alert severity="warning">Partial files or changes may remain after the import stopped; review before dismissing, which does not remove or repeat changes.</Alert>
     {error&&<Alert severity="error">{error}</Alert>}
     {partialResult&&<NativeApplications result={partialResult}/>}
     {lifecycleOperationId&&<LifecycleReview key={lifecycleOperationId} kind="import" id={lifecycleOperationId}/>}
