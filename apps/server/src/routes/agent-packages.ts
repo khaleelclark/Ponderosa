@@ -146,6 +146,8 @@ export interface BranchPackageImportError extends Error {
   accessSettingsReview?:AgentAccessImportReviewDto;
 }
 export interface BranchImportHooks {
+  /** Called under the Project import lock, before a Branch import is admitted. */
+  assertImportReady?():void;
   /** Persist idle canonical members for a later explicit human admission command. */
   holdForDisclosure?(result:ImportAgentPackageResponse):void;
   /** Called inside import reservation, before async effects and Agent creation. */
@@ -1397,6 +1399,7 @@ export function registerAgentPackageRoutes(
     signal?: AbortSignal,
   ): Promise<unknown> => withProjectImportLock(projectId, async () => {
       signal?.throwIfAborted();
+      branchHooks?.assertImportReady?.();
       let importBody: Record<string, unknown>;
       try {
         importBody = validatedObject(body, "Agent import request");

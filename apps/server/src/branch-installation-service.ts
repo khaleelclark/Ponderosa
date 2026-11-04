@@ -16,7 +16,7 @@ import {randomUUID,createHash} from 'node:crypto';
 import type {AgentStore,BranchStore} from '@ponderosa/agents';
 import {stableJson,validateBranchDefinition,validateBranchConfiguration,interpolateBranchText,branchDeletionErrorResourceId} from '@ponderosa/agents';
 import type {AgentPortablePackageDto,BranchBindings,ImportAgentPackageResponse,DeployBranchRequest,BranchDto,BranchPackageChat,InstalledBranchPackage,BranchInstallationPreviewDto,BranchInstallationOperationDto} from '@ponderosa/core';
-import {realpathSync,statSync} from 'node:fs';
+import {lstatSync,realpathSync,statSync} from 'node:fs';
 import {portableArtifactByteLength} from './agent-package-codec.js';
 import {validatePortableAgentPackage} from './portable-agent-package-validation.js';
 
@@ -93,6 +93,36 @@ export class BranchInstallationService {
  private engine?:BranchPackageEngine;
  private outputApps?:OutputAgentApps;
  setOutputApps(owner:OutputAgentApps){this.outputApps=owner;}
+ // Import records each selected recovery destination before writing it. If a
+ // prior attempt left any destination behind, its bytes are not a receipt of a
+ // complete copy and must not be replayed or adopted without review.
+ private retainedImportWorkingFiles(planId:string):string|undefined{
+  const prefix=`branch-install:${planId}:`;
+  const operations=this.rows("SELECT result_json FROM agent_creation_operations WHERE kind='import' AND actor_scope='user:local-operator' AND status IN ('preparing','rolling_back','rolled_back') AND substr(idempotency_key,1,?)=? AND result_json IS NOT NULL",prefix.length,prefix);
+  const retained=new Set<string>();
+  for(const operation of operations){
+   let result:unknown;try{result=JSON.parse(operation.result_json);}catch{return 'A prior import receipt cannot be read; automatic retry is held. Inspect its retained working files.';}
+   if(!result||typeof result!=='object'||Array.isArray(result))return 'A prior import receipt cannot be read; automatic retry is held. Inspect its retained working files.';
+   const saved=result as Record<string,unknown>,paths:unknown[]=[];
+   if(saved.workingFilesDestination!==undefined)paths.push(saved.workingFilesDestination);
+   if(saved.liveWorkingRoots!==undefined){
+    if(!Array.isArray(saved.liveWorkingRoots))return 'A prior live working-root receipt is invalid; automatic retry is held.';
+    for(const root of saved.liveWorkingRoots){
+     if(!root||typeof root!=='object'||Array.isArray(root))return 'A prior live working-root receipt is invalid; automatic retry is held.';
+     paths.push((root as Record<string,unknown>).path);
+    }
+   }
+   if(saved.workingRootDestinations!==undefined){
+    if(!saved.workingRootDestinations||typeof saved.workingRootDestinations!=='object'||Array.isArray(saved.workingRootDestinations))return 'A prior import destination receipt is invalid; automatic retry is held.';
+    paths.push(...Object.values(saved.workingRootDestinations));
+   }
+   for(const path of paths){
+    if(typeof path!=='string'||!isAbsolute(path))return 'A prior import destination receipt is invalid; automatic retry is held.';
+    try{lstatSync(path);retained.add(path);}catch(error){if(!['ENOENT','ENOTDIR'].includes((error as NodeJS.ErrnoException).code??''))retained.add(path);}
+   }
+  }
+  return retained.size?`Imported working files may remain at ${JSON.stringify([...retained].sort())}. Automatic retry is held; inspect the retained copies before continuing.`:undefined;
+ }
  private roleBinding(pkg:InstalledBranchPackage,bindings:BranchBindings,branchId?:string){return createHash('sha256').update(stableJson({package:pkg,bindings,destination:branchId??'new'})).digest('hex');}
  private rolePlan(plan:Row):{workingDataPreparations?:Record<string,BranchWorkingDataPreparation>;workingDataApplication?:BranchWorkingDataApplication;tree?:TreePlan;treeReceipt?:import('@ponderosa/core').BranchDefinitionTreeReceipt;runtimeTreeReceipt?:import('@ponderosa/core').BranchRuntimeTreeReceipt;review?:import('@ponderosa/core').OutputRoleImportReviewDto;binding?:string;published?:boolean;mapping?:Record<string,string>;accessChoices?:Record<string,AccessChoice>;pendingAccess?:PendingAccess;pendingWorkingRoot?:PendingWorkingRoot;fileSelections?:import('@ponderosa/core').BranchImportFileSelections;importResults?:Record<string,Pick<ImportAgentPackageResponse,'workingFilesDestination'|'workingRoots'|'accessSettingsToReview'|'liveWorkingRoots'|'reviewedUserDataApplications'|'reviewedMetadataApplications'>>;operations?:BranchInstallationOperationDto[];memoryUpdate?:{review:import('@ponderosa/core').BranchMemoryUpdateReviewDto;hash:string}} {const value=JSON.parse(plan.preview_json);return Array.isArray(value)?{operations:value}:value;}
  private finishRoles(plan:Row){
@@ -768,8 +798,13 @@ export class BranchInstallationService {
    const message='A prior working-folder restoration stopped before a completion receipt. Partial folders and original artifacts are retained; inspect the exact receipt without replay.';
    this.run('UPDATE branch_installation_plans SET preview_json=?,error=?,next_attempt_at=NULL WHERE id=?',stableJson({...state,workingDataApplication:{...receipt,state:'incomplete',error:{message,code:'ERR_INTERRUPTED_WORKING_DATA',partialStatePossible:true}}}),message,prior.id);
   }
-  if(this.engine)for(const plan of this.rows(`SELECT * FROM branch_installation_plans WHERE state='applying' AND ${BRANCH_INSTALLATION_RETRY_READY_SQL} AND (next_attempt_at IS NULL OR next_attempt_at<=?) ORDER BY COALESCE(next_attempt_at,created_at),created_at LIMIT 1`,now.toISOString()))try{await this.apply(plan);}catch(error){
+  if(this.engine)for(const plan of this.rows(`SELECT * FROM branch_installation_plans WHERE state='applying' AND ${BRANCH_INSTALLATION_RETRY_READY_SQL} AND (next_attempt_at IS NULL OR next_attempt_at<=?) ORDER BY COALESCE(next_attempt_at,created_at),created_at LIMIT 1`,now.toISOString()))try{
+   const retained=this.retainedImportWorkingFiles(plan.id);if(retained)throw new BranchWorkingDataHeldError(retained);
+   await this.apply(plan);
+  }catch(error){
    if(error instanceof InstallationStoppedError||this.planState(plan.id)!=='applying')continue;
+   const retained=this.retainedImportWorkingFiles(plan.id);
+   if(retained){this.run('UPDATE branch_installation_plans SET error=?,next_attempt_at=?,updated_at=? WHERE id=?',retained,BRANCH_INSTALLATION_HOLD_UNTIL,new Date().toISOString(),plan.id);continue;}
    if(error instanceof Error&&isMemoryCleanupHold(error)){this.run('UPDATE branch_installation_plans SET error=?,next_attempt_at=?,updated_at=? WHERE id=?',error.message,BRANCH_INSTALLATION_HOLD_UNTIL,new Date().toISOString(),plan.id);continue;}
    if(error instanceof BranchWorkingDataHeldError){this.run('UPDATE branch_installation_plans SET error=?,next_attempt_at=?,updated_at=? WHERE id=?',error.message,BRANCH_INSTALLATION_HOLD_UNTIL,new Date().toISOString(),plan.id);continue;}
 
@@ -856,6 +891,9 @@ export class BranchInstallationService {
    pendingChats.delete(chat.ref);seenChats.add(chat.ref);orderedChats.push(chat);
   };
   for(const chat of pkg.chats)orderChat(chat);
+  // The first check precedes project-lock acquisition. Recheck after the
+  // package engine has acquired that same lock, before any import admission.
+  const assertImportReady=()=>{this.ensureApplying(plan.id,branchId);const retained=this.retainedImportWorkingFiles(plan.id);if(retained)throw new BranchWorkingDataHeldError(retained);};
   const controller=new AbortController();this.activeImports.set(plan.id,controller);
   const timer=setTimeout(()=>controller.abort(new Error('Branch package Agent import exceeded its deadline')),IMPORT_DEADLINE_MS);
   try{
@@ -925,7 +963,7 @@ export class BranchInstallationService {
      if(!resources.length||resources.every(r=>!r)){
       const accessSettingsResolution=await this.importAccess(plan,c.ref,combined.rootRef,chatId,combined);
       this.ensureApplying(plan.id,branchId);
-      const result=await this.engine!.importAgent(chat.projectId,chatId,combined,bindings.engines??pkg.engines??{},'branch-install:'+plan.id+':'+(plan.attempt_count??0)+':'+c.ref+':group',{signal:controller.signal,accessSettingsResolution,...(!pkg.workingData?{workingFilesDestination:groupChoice!.workingFilesDestination,workingRootDestinations:groupChoice!.workingRootDestinations,workingFilesActivation:groupChoice!.workingFilesActivation,reviewedUserDataActivation:groupChoice!.reviewedUserDataActivation,reviewedMetadataActivation:groupChoice!.reviewedMetadataActivation}:{}),branchHooks:{
+      const result=await this.engine!.importAgent(chat.projectId,chatId,combined,bindings.engines??pkg.engines??{},'branch-install:'+plan.id+':'+(plan.attempt_count??0)+':'+c.ref+':group',{signal:controller.signal,accessSettingsResolution,...(!pkg.workingData?{workingFilesDestination:groupChoice!.workingFilesDestination,workingRootDestinations:groupChoice!.workingRootDestinations,workingFilesActivation:groupChoice!.workingFilesActivation,reviewedUserDataActivation:groupChoice!.reviewedUserDataActivation,reviewedMetadataActivation:groupChoice!.reviewedMetadataActivation}:{}),branchHooks:{assertImportReady,
        plan:(ids,receiptId)=>{if(!receiptId||ids.length!==refs.length||new Set(ids).size!==ids.length)throw new Error('Grouped import identity plan mismatch');this.store.sqlite.transaction(()=>{refs.forEach((ref,i)=>bind(c.ref,ref,ids[i]!,receiptId));})();},
        commit:result=>{if(refs.some((ref,i)=>result.agentRefs?.[ref]!==result.agentIds[i])||result.agentIds.length!==refs.length||refs.some((ref,i)=>get(c.ref,ref)?.local_id!==result.agentIds[i])||get(c.ref,combined.rootRef)?.local_id!==result.rootAgentId)throw new Error('Grouped import commit identity mismatch');}
       }});
@@ -956,7 +994,7 @@ export class BranchInstallationService {
       this.retainImportResult(plan.id,JSON.stringify([c.ref,a.ref]),result);
       await this.engine!.verifyStagedMemory(resource.creation_operation_id,a.definition);
      }
-     if(!id){this.ensureApplying(plan.id,branchId);const accessSettingsResolution=await this.importAccess(plan,c.ref,a.ref,chatId,a.definition);const result=await this.engine!.importAgent(chat.projectId,chatId,a.definition,bindings.engines??pkg.engines??{},'branch-install:'+plan.id+':'+(plan.attempt_count??0)+':'+c.ref+':'+a.ref,{signal:controller.signal,accessSettingsResolution,...(fileChoice&&!pkg.workingData?{workingFilesDestination:fileChoice.workingFilesDestination,workingRootDestinations:fileChoice.workingRootDestinations,workingFilesActivation:fileChoice.workingFilesActivation,reviewedUserDataActivation:fileChoice.reviewedUserDataActivation,reviewedMetadataActivation:fileChoice.reviewedMetadataActivation}:{}),branchHooks:{plan:(ids,creationOperationId)=>{if(ids.length!==1)throw new Error('Expected one planned Agent identity');if(!creationOperationId)throw new Error('Expected a durable Agent import receipt');bind(c.ref,a.ref,ids[0]!,creationOperationId);},commit:result=>{const bound=get(c.ref,a.ref)?.local_id;if(bound!==result.rootAgentId||result.agentIds.length!==1||result.agentIds[0]!==bound)throw new Error('Imported Agent identity did not match its durable Branch binding');}}});this.ensureApplying(plan.id,branchId);this.retainImportResult(plan.id,JSON.stringify([c.ref,a.ref]),result);id=result.rootAgentId;resource=get(c.ref,a.ref);this.ensureApplying(plan.id,branchId);}
+     if(!id){this.ensureApplying(plan.id,branchId);const accessSettingsResolution=await this.importAccess(plan,c.ref,a.ref,chatId,a.definition);const result=await this.engine!.importAgent(chat.projectId,chatId,a.definition,bindings.engines??pkg.engines??{},'branch-install:'+plan.id+':'+(plan.attempt_count??0)+':'+c.ref+':'+a.ref,{signal:controller.signal,accessSettingsResolution,...(fileChoice&&!pkg.workingData?{workingFilesDestination:fileChoice.workingFilesDestination,workingRootDestinations:fileChoice.workingRootDestinations,workingFilesActivation:fileChoice.workingFilesActivation,reviewedUserDataActivation:fileChoice.reviewedUserDataActivation,reviewedMetadataActivation:fileChoice.reviewedMetadataActivation}:{}),branchHooks:{assertImportReady,plan:(ids,creationOperationId)=>{if(ids.length!==1)throw new Error('Expected one planned Agent identity');if(!creationOperationId)throw new Error('Expected a durable Agent import receipt');bind(c.ref,a.ref,ids[0]!,creationOperationId);},commit:result=>{const bound=get(c.ref,a.ref)?.local_id;if(bound!==result.rootAgentId||result.agentIds.length!==1||result.agentIds[0]!==bound)throw new Error('Imported Agent identity did not match its durable Branch binding');}}});this.ensureApplying(plan.id,branchId);this.retainImportResult(plan.id,JSON.stringify([c.ref,a.ref]),result);id=result.rootAgentId;resource=get(c.ref,a.ref);this.ensureApplying(plan.id,branchId);}
      const node=a.definition.agents[0]!;
      if(resource?.state!=='active')this.store.updateAgent(id,{title:node.title,activeEngine:bindings.engines?.[node.engine]??pkg.engines?.[node.engine]??node.engine,model:node.model??null,effort:node.effort??null,managementPermissions:node.managementPermissions});
     }
