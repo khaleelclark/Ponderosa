@@ -98,10 +98,18 @@ export function ReviewedContinuationDialog({projectId,receipt,onClose,onOpenAgen
   void (async()=>{try{const original=readSaved(name,product,projectId,receipt);if(mounted.current)setSaved(original);await load(original);}catch(cause){if(mounted.current)setError(cause instanceof Error?cause.message:'Could not read continuation status.');}})();
   return()=>{mounted.current=false;};
  },[name]);
- // A lost response can settle later. Read status again; never resubmit on a timer.
+ // A lost response can settle later. Read status for a bounded period;
+ // never resubmit on a timer. A person can request another check afterward.
  useEffect(()=>{
   if(!saved||status?.status!=='review_required')return;
-  const timer=window.setInterval(()=>{if(!lock.current)void load(saved).catch(()=>{});},3000);
+  let checks=0;
+  const timer=window.setInterval(()=>{
+   if(lock.current)return;
+   checks++;
+   const pending=load(saved),generation=statusGeneration.current;
+   void pending.catch(cause=>{if(mounted.current&&generation===statusGeneration.current)setError(cause instanceof Error?cause.message:'Could not read continuation status.');});
+   if(checks>=10)window.clearInterval(timer);
+  },3000);
   return()=>window.clearInterval(timer);
  },[saved,status?.status,name]);
  const refresh=async()=>{if(lock.current)return;lock.current=true;setBusy(true);setError('');try{const original=readSaved(name,product,projectId,receipt);setSaved(original);await load(original);}catch(cause){if(mounted.current)setError(cause instanceof Error?cause.message:'Could not read continuation status.');}finally{lock.current=false;if(mounted.current)setBusy(false);}};
