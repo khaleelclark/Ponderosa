@@ -72,7 +72,13 @@ function fallbackSha256(bytes: Uint8Array): string {
 
 export async function sha256Bytes(bytes: Uint8Array): Promise<string> {
   if (!globalThis.crypto?.subtle) return fallbackSha256(bytes);
-  const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
+  // WebCrypto requires an ArrayBuffer-backed view, while callers may supply
+  // a SharedArrayBuffer-backed Uint8Array. Preserve the exact slice and only
+  // copy in that uncommon case.
+  const input = bytes.buffer instanceof ArrayBuffer
+    ? new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+    : new Uint8Array(bytes);
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", input);
   return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
 }
 
