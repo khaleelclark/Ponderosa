@@ -590,8 +590,10 @@ export async function inventoryWorkingFolder(rootPath:string,reviewedSelection?:
         if(reviewedSelection?.source!=='retained_originals')throw new Error('Existing imported review data requires explicit retained-original selection');
         const folder=path.join(root,name),stat=await fs.lstat(folder);
         if(!stat.isDirectory()||await fs.realpath(folder)!==folder)throw new Error('Retained review directory must be canonical');
+        // Hook aliases are excluded only after export verifies their complete canonical local proof.
+        // Other generated native namespaces still refuse; they can contain changed user data.
         for(const child of await fs.readdir(folder)){
-          if(!['user-data.json','git-repository','provider-files'].includes(child))throw new Error('Unknown retained review namespace contents require separate preservation');
+          if(!['user-data.json','git-repository','provider-files','active-git-hooks'].includes(child))throw new Error('Unknown retained review namespace contents require separate preservation');
           if(child!=='user-data.json')excludedPaths.push(`${name}/${child}`);
         }
         continue;

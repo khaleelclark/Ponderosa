@@ -1,3 +1,4 @@
+import {inventoryWorkingFolder,exportWorkingFiles} from '../../apps/server/dist/portable-working-files.js';
 import {captureRetainedReviewOriginal} from '../../apps/server/dist/portable-reviewed-user-data.js';
 import {generatedHookName,generatedHookIdentity} from '../../apps/server/dist/portable-generated-hook-proof.js';
 import test from 'node:test';
@@ -621,11 +622,28 @@ test('retained-original export ignores only exact generated hook links backed by
   const observedRoot=await lstat(destination,{bigint:true}),proof={schema:'ponderosa.generated-hook-namespace.v1',operationId:'fixture-local-completed-import',sourceOriginalSha256:createHash('sha256').update(original).digest('hex'),root:{device:observedRoot.dev.toString(),inode:observedRoot.ino.toString()},namespace:generatedHookIdentity(await lstat(namespace,{bigint:true})),links:[{name,text,identity:generatedHookIdentity(await lstat(pathname,{bigint:true}))}]};
   // Reorder stored keys as a canonical serializer may do; identity comparison is by value.
   proof.namespace=Object.fromEntries(Object.entries(proof.namespace).sort());proof.links[0].identity=Object.fromEntries(Object.entries(proof.links[0].identity).sort());
+  const inventory=await inventoryWorkingFolder(destination,selection);
+  assert.ok(inventory.excludedPaths.includes('.ponderosa-portable-review/active-git-hooks'));
+  const reexport=proof=>exportWorkingFiles(destination,inventory.paths,64*1024*1024,inventory.links,selection,{data:original,canonicalGeneratedHooksProof:proof},undefined,undefined,inventory);
+  await assert.rejects(reexport(),/canonical local creation-operation proof/,'Inventory admission cannot bypass canonical hook authority');
+  const exported=await reexport(proof),retained=exported.artifacts.find(item=>item.path==='.ponderosa-portable-review/user-data.json');
+  assert.deepEqual(Buffer.from(retained.dataBase64,'base64'),original,'Re-export carries canonical originals, never generated Git state');
+  assert.equal(exported.files.length,1);assert.equal(await readlink(pathname),text);
+  for(const name of ['external-git','native-git-common']){
+   const generated=path.join(review,name);await mkdir(generated);await writeFile(path.join(generated,'user-file'),'preserve changed user data');
+   await assert.rejects(inventoryWorkingFolder(destination,selection),/Unknown retained review namespace/,'Unverified generated namespaces cannot silently omit current user data');
+   assert.equal(await readFile(path.join(generated,'user-file'),'utf8'),'preserve changed user data');await rm(generated,{recursive:true});
+  }
+  await writeFile(path.join(review,'unrecognized-user-file'),'preserve unknown bytes');
+  await assert.rejects(inventoryWorkingFolder(destination,selection),/Unknown retained review namespace/);
+  assert.equal(await readFile(path.join(review,'unrecognized-user-file'),'utf8'),'preserve unknown bytes');
+  await unlink(path.join(review,'unrecognized-user-file'));
   const captured=await captureRetainedReviewOriginal(destination,selection,original,proof);assert.deepEqual(captured.data,original);await captured.verify();
   await assert.rejects(captureRetainedReviewOriginal(destination,selection,original),/canonical local creation-operation proof/,'Editable working-root state cannot authorize its own exclusion');
   const foreign=structuredClone(proof);foreign.root.inode=(BigInt(foreign.root.inode)+1n).toString();await assert.rejects(captureRetainedReviewOriginal(destination,selection,original,foreign),/root differs/);
   const otherOriginal=structuredClone(proof);otherOriginal.sourceOriginalSha256='0'.repeat(64);await assert.rejects(captureRetainedReviewOriginal(destination,selection,original,otherOriginal),/canonical original/);
   await writeFile(path.join(namespace,'manifest.json'),JSON.stringify(proof));
+  await assert.rejects(reexport(proof),/identity|contents/,'Whole-folder re-export must refuse unexported additions inside the generated namespace');
   await assert.rejects(captureRetainedReviewOriginal(destination,selection,original),/canonical local creation-operation proof/,'A forged receipt file is never used as authority');
   await assert.rejects(captureRetainedReviewOriginal(destination,selection,original,proof),/identity|contents/,'Unknown files remain visible and preserved');assert.equal(await readFile(path.join(namespace,'manifest.json'),'utf8'),JSON.stringify(proof));
   await unlink(path.join(namespace,'manifest.json'));
@@ -634,6 +652,7 @@ test('retained-original export ignores only exact generated hook links backed by
   const refreshed={...proof,namespace:generatedHookIdentity(await lstat(namespace,{bigint:true}))};
   const next=await captureRetainedReviewOriginal(destination,selection,original,refreshed);
   await unlink(pathname);await symlink('../../../outside-ignored-target',pathname);
+  await assert.rejects(reexport(refreshed),/identity|changed/,'Whole-folder re-export must refuse changed generated aliases');
   await assert.rejects(next.verify(),/identity|changed/);assert.equal(await readlink(pathname),'../../../outside-ignored-target','Verifier preserves unknown replacement links');
   assert.deepEqual(await readFile(path.join(review,'user-data.json')),original,'Canonical source bytes are never mutated');
  }finally{await rm(base,{recursive:true,force:true});}
