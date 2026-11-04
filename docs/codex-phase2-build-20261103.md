@@ -228,7 +228,7 @@ service was contacted or changed during this deployment check.
 ## Later continuity and recovery follow-up — 4 November
 
 Product and test candidate `d83bee2abb029805624cbc3f5654751e28bd33bf`
-contains three further changes:
+contains four further changes:
 
 - Ordinary browser push displays group by communication kind across Chats;
   individual inbox notices, settings and delivery receipts remain distinct.
