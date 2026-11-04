@@ -31,6 +31,7 @@ import {
 import {
   classifyProviderFailure,
   shouldRolloverEngineSession,
+  CodexAppServerSession,
 } from "@ponderosa/engines";
 import type { FastifyInstance } from "fastify";
 import type {
@@ -323,7 +324,10 @@ export function startProviderRunExecution(
         }, 250) : undefined;
     try {
       const nativeHistory = new NativeHistoryAuthority(store);
-      const nativeSeed = nativeHistory.takeSeed(agent.id,runId,v3FencingToken!,resumeSessionId,Boolean(communicationEventId && store.getCommunicationEvent(agent.projectId,communicationEventId)?.sender.kind==='user'));
+      // Do not consume a pending transcript-fork reservation for the reviewed
+      // continuation. takeSeed still checks and reports conflicting holds.
+      const reviewedSteeringRun = Boolean(activeRun.v3SchedulerRunId && coordinationV3?.isReviewedSteeringRun(activeRun.v3SchedulerRunId));
+      const nativeSeed = nativeHistory.takeSeed(agent.id,runId,v3FencingToken!,resumeSessionId,!reviewedSteeringRun && Boolean(communicationEventId && store.getCommunicationEvent(agent.projectId,communicationEventId)?.sender.kind==='user'));
       let nativeForkOpened=false;
       const runCapability = agentMessageCapabilities.get(messageCapability);
       if (!runCapability || runCapability.agentId !== agent.id || runCapability.runId !== runId) {
@@ -369,6 +373,7 @@ export function startProviderRunExecution(
         onRuntimeSpawned: (handle: RuntimeProcessHandle) => void,
         identity: object,
       ): Promise<PersistentRuntime> => {
+        if (v3FencingToken !== undefined) coordinationV3.assertRunReviewedSteeringLease(agent.projectId,runId,v3FencingToken);
         const rawSession = await providerRuntimeOperation("open provider session", () => engine.adapter.openSession!({
           agentId: agent.id,
           ...(v3FencingToken !== undefined ? {providerRun:{runId,fence:v3FencingToken}} : {}),
@@ -534,6 +539,14 @@ export function startProviderRunExecution(
           signal: controller.signal,
         }));
         const session = providerSessionFacade(rawSession);
+        // Only the built-in Codex persistent transport has been qualified for
+        // this continuation: it registers before input and calls the host
+        // fence immediately before its synchronous turn/start write.
+        if (reviewedSteeringRun && (Object.getPrototypeOf(rawSession)!==CodexAppServerSession.prototype ||
+            rawSession.startTurn!==CodexAppServerSession.prototype.startTurn)) {
+          await session.close();
+          throw new Error("This provider cannot safely start a reviewed continuation; the original delivery remains unknown.");
+        }
         return {
           identity,
           session,
@@ -620,6 +633,7 @@ export function startProviderRunExecution(
         return operation;
       };
       let persistentRuntime = reusablePersistentRuntime;
+      if(reviewedSteeringRun && persistentRuntime)throw new Error("A reviewed continuation requires a fresh provider process.");
       if(nativeSeed && persistentRuntime)throw new Error("Fresh transcript context cannot adopt an existing runtime");
       if (persistentRuntime) {
         let alive = false;
@@ -629,6 +643,8 @@ export function startProviderRunExecution(
           persistentRuntime = undefined;
         }
       }
+      if (reviewedSteeringRun && !engine.adapter.openSession)
+        throw new Error("This provider cannot safely start a reviewed continuation; the original delivery remains unknown.");
       if (engine.adapter.openSession && !persistentRuntime) {
         persistentRuntime = await openRegisteredPersistentRuntime(resumeSessionId);
       }
@@ -706,6 +722,12 @@ export function startProviderRunExecution(
                       nativeAction: input.nativeAction,
                       assertCurrent: () => {
                         if (controller.signal.aborted || isClosed() || deletingAgentIds.has(agent.id) || deletingProjectIds.has(project.id) || !ownsActiveRun(agent.id, activeRun) || !renewExecutionLease(agent.id, activeRun)) throw new Error("Native turn lost current Run authority");
+                        if (reviewedSteeringRun) {
+                          if (!persistentRuntime || reusableRuntime(agent.id)!==persistentRuntime ||
+                              activeRun.persistentRuntimeIdentity!==persistentRuntime.identity || !persistentRuntime.session.isAlive())
+                            throw new Error("Reviewed continuation provider is no longer the exact live runtime.");
+                          coordinationV3!.assertRunReviewedSteeringSubmission(agent.projectId,runId,v3FencingToken!);
+                        }
                       },
                     });
                   } catch (error) {
@@ -745,7 +767,9 @@ export function startProviderRunExecution(
             }
           : projectProviderStream(providerEventStream(providerRuntimeValue(
               "continue provider session",
-              () => engine.adapter.continue({
+              () => {
+                if (v3FencingToken !== undefined) coordinationV3.assertRunReviewedSteeringLease(agent.projectId,runId,v3FencingToken);
+                return engine.adapter.continue({
               agentId: agent.id,
               ...(v3FencingToken !== undefined ? {providerRun:{runId,fence:v3FencingToken}} : {}),
               cwd: workingCopy.rootPath,
@@ -759,7 +783,7 @@ export function startProviderRunExecution(
               signal: controller.signal,
               onRuntimeRootExit: () => agentMessageCapabilities.delete(messageCapability),
               onRuntimeSpawned: registerOneShotRuntime,
-              }),
+              }); },
             ), "read continued provider event stream"))
         : persistentRuntime
           ? {
@@ -777,6 +801,12 @@ export function startProviderRunExecution(
                       nativeAction: input.nativeAction,
                       assertCurrent: () => {
                         if (controller.signal.aborted || isClosed() || deletingAgentIds.has(agent.id) || deletingProjectIds.has(project.id) || !ownsActiveRun(agent.id, activeRun) || !renewExecutionLease(agent.id, activeRun)) throw new Error("Native turn lost current Run authority");
+                        if (reviewedSteeringRun) {
+                          if (!persistentRuntime || reusableRuntime(agent.id)!==persistentRuntime ||
+                              activeRun.persistentRuntimeIdentity!==persistentRuntime.identity || !persistentRuntime.session.isAlive())
+                            throw new Error("Reviewed continuation provider is no longer the exact live runtime.");
+                          coordinationV3!.assertRunReviewedSteeringSubmission(agent.projectId,runId,v3FencingToken!);
+                        }
                       },
                     });
                   } catch (error) {
@@ -816,7 +846,9 @@ export function startProviderRunExecution(
             }
           : projectProviderStream(providerEventStream(providerRuntimeValue(
               "seed provider session",
-              () => engine.adapter.seed({
+              () => {
+                if (v3FencingToken !== undefined) coordinationV3.assertRunReviewedSteeringLease(agent.projectId,runId,v3FencingToken);
+                return engine.adapter.seed({
               agentId: agent.id,
               ...(v3FencingToken !== undefined ? {providerRun:{runId,fence:v3FencingToken}} : {}),
               cwd: workingCopy.rootPath,
@@ -830,7 +862,7 @@ export function startProviderRunExecution(
               signal: controller.signal,
               onRuntimeRootExit: () => agentMessageCapabilities.delete(messageCapability),
               onRuntimeSpawned: registerOneShotRuntime,
-              }),
+              }); },
             ), "read seeded provider event stream"));
 
       const persistAcceptedSessionSnapshot = (acceptedSessionId: string): void => {

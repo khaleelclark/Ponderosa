@@ -509,6 +509,13 @@ export class CoordinationV3RequiredReplyAuthority {
     });
     this.transferFromOrigins(input,pausedOrigins,false,true);
     this.transferContextRolloverObligations(input,pausedOrigins.length>0);
+    // A reviewed interruption continues the exact existing root even when the
+    // original Run had not yet sent its initial reply.
+    const reviewedActivations = input.activations.filter(a => Boolean(this.sqlite.prepare(
+      "SELECT 1 FROM activation_sources WHERE activation_id=? AND source_kind='reviewed_steering'"
+    ).get(a.id)));
+    this.transferFromOrigins(input, reviewedActivations.flatMap(a =>
+      delegationOriginsForActivation(this.sqlite, a.id)), false);
     this.transferFromOrigins(input, input.activations.flatMap(a =>
       delegationOriginsForActivation(this.sqlite, a.id)), true);
     const inheritedFinalRoutes = new Set(input.activations.flatMap(a => delegationOriginsForActivation(this.sqlite, a.id))
@@ -528,6 +535,13 @@ export class CoordinationV3RequiredReplyAuthority {
       // obligation even when its route happens to match that root.
       if (source && ['coordination_outcome', 'coordination_join_satisfied', 'coordination_join_impossible'].includes(source.kind) &&
           inheritedFinalRoutes.has(stableJson(obligation.replyAuthority))) continue;
+      // Reviewed recovery already transferred its original reply root above.
+      if (reviewedActivations.some(a => a.id === obligation.activationId) &&
+          this.sqlite.prepare(`SELECT 1 FROM required_reply_obligations prior
+            JOIN required_reply_obligations current ON current.source_activation_id=prior.source_activation_id
+            WHERE prior.recovery_activation_id=? AND current.run_id=?
+              AND prior.project_id=? AND prior.agent_id=? AND prior.scope_key=?`)
+            .get(obligation.activationId,input.runId,input.projectId,input.agentId,input.scopeKey)) continue;
       // Final-delivery recovery retains one root and increments its existing
       // generation. Do not also create a second initial-response obligation.
       if (input.activations.some(a => a.id === obligation.activationId && a.kind === 'required_reply_recovery') &&
@@ -1030,6 +1044,12 @@ export class CoordinationV3RequiredReplyAuthority {
   }
 
   recoverPending(runId: string, now: string): RequiredReplyObligation[] {
+    // An operator-reviewed continuation must never acquire an automatic
+    // successor after its outcome becomes uncertain.
+    if (this.sqlite.prepare(`SELECT 1 FROM scheduler_run_activations attached
+      JOIN activation_sources source ON source.activation_id=attached.activation_id
+      WHERE attached.run_id=? AND source.source_kind='reviewed_steering' LIMIT 1`).get(runId))
+      return this.forRun(runId);
     // Do not restart an objective while the exact human steer may already have acted.
     if (hasUnresolvedHumanSteering(this.sqlite, runId)) {
       preserveInitialRepliesForUnknownSteering(this.sqlite, runId, now);

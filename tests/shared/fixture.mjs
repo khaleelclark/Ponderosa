@@ -48,7 +48,7 @@ export function runtimeAttachmentPaths(value) {
 // The child is real but inert: no shell, network, provider account or user data.
 // Inert Windows roots cannot spawn descendants and are assigned to an exact
 // kill-on-close Job before publication; POSIX roots keep their detached group.
-export async function fixture({ diagnosticProvider = false, beforeRuntimeClose, providerAuthStatus, providerInstalled, steeringResponse, modelCatalog, modelValidator, capabilityCatalog, socketIdleTimeoutMs, storeFactory, authToken, resourceAdmissionObservation, providerContextUsage, providerCommandResult, providerContextRecoverySupport, providerValidatesResumeBeforeTurn = false, schedulerMaxConcurrentRuns = 4 } = {}) {
+export async function fixture({ diagnosticProvider = false, beforeRuntimeClose, providerAuthStatus, providerInstalled, steeringResponse, modelCatalog, modelValidator, capabilityCatalog, socketIdleTimeoutMs, storeFactory, authToken, resourceAdmissionObservation, providerContextUsage, providerCommandResult, providerContextRecoverySupport, providerValidatesResumeBeforeTurn = false, schedulerMaxConcurrentRuns = 4, nativeAdapterForOpen } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), 'ponderosa-regression-'));
   const dataDir = path.join(root, 'data');
   const plans = new Map(), sessions = new Map(), turns = [], children = [], failures = [], openingSessions = new Set(), commands = [], steers = [];
@@ -65,6 +65,12 @@ export async function fixture({ diagnosticProvider = false, beforeRuntimeClose, 
     async *seed() { throw Error('Persistent fixture unexpectedly used one-shot seed'); },
     async *continue() { throw Error('Persistent fixture unexpectedly used one-shot continuation'); },
     async openSession(options) {
+      const nativeAdapter = nativeAdapterForOpen?.(options);
+      if (nativeAdapter) {
+        const session = await nativeAdapter.openSession(options);
+        sessions.set(options.agentId, session);
+        return session;
+      }
       const known = knownProviderSessions.get(options.agentId) ?? new Set();
       if (providerValidatesResumeBeforeTurn && options.resumeSessionId) {
         assert.ok(known.has(options.resumeSessionId), 'Verified fixture resume refused an unknown or foreign Agent generation');

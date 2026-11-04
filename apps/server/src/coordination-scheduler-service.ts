@@ -406,9 +406,10 @@ return new CoordinationV3Scheduler(
         v3SchedulerRunId: lease.runId,
         v3FencingToken: lease.fencingToken,
         v3InjectionId: lease.injectionId,
-        // New work alone does not invalidate a compatible provider context.
-        // Scope and immutable runtime/policy contracts still fence reuse.
-        v3FreshProviderSession: coordinationV3.runChangesScope(lease.runId, lease.agentId),
+        // A human-reviewed continuation starts from canonical history, not
+        // the prior provider's opaque session or unconfirmed steering input.
+        v3FreshProviderSession: coordinationV3.isReviewedSteeringRun(lease.runId)
+          || coordinationV3.runChangesScope(lease.runId, lease.agentId),
         v3ActivationPrompt: prompt,
         ...(communication?.eventId ? { v3CommunicationEventId: communication.eventId } : {}),
       },

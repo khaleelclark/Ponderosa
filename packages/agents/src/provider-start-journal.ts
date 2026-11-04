@@ -62,12 +62,16 @@ export function settleProviderStart(db:Database.Database,identity:string,workerI
 export function holdProviderStart(db:Database.Database,identity:string):void {
  commit(db,'provider-start-unknown',identity,{schema:'provider-start-unknown.v1',identity});
 }
-export function requireProviderStartsDrained(db:Database.Database,agentId:string):void {
+export function requireProviderStartsDrained(db:Database.Database,agentId:string,except?:{identity:string;runId:string;fence:number}):void {
  const claims=db.prepare("SELECT identity,receipt_sha256 AS sha256 FROM host_lifecycle_commits WHERE kind='provider-start-admission' AND json_extract(receipt_json,'$.agentId')=? LIMIT 4097").all(agentId) as Array<{identity:string;sha256:string}>;
  if(claims.length>4096)throw Error('Provider start inventory exceeds bound');
  for(const ref of claims){
   const claim=retained(db,'provider-start-admission',ref);
   if(claim.schema!==CONTRACT||claim.identity!==ref.identity||claim.agentId!==agentId||!claim.workerId||!claim.projectId||!claim.conversationId)throw Error('Provider start claim scope differs');
+  if(except?.identity===ref.identity) {
+   if(claim.runId!==except.runId||claim.runFence!==except.fence)throw Error('Excepted provider start differs');
+   continue;
+  }
   if(claim.generation){const f=exactFence(db,agentId,claim.projectId,claim.conversationId);if(stableJson(claim.generation)!==stableJson({executionId:f.input.executionId,stepExecutionId:f.input.stepExecutionId,generation:f.input.generation}))throw Error('Provider start original generation differs');}
   if(db.prepare("SELECT 1 FROM host_lifecycle_commits WHERE kind='provider-start-unknown' AND identity=?").get(ref.identity))throw Error('Provider start remains unknown');
   const row=db.prepare("SELECT receipt_sha256 AS sha256 FROM host_lifecycle_commits WHERE kind='provider-start-settlement' AND identity=?").get(ref.identity) as {sha256:string}|undefined;

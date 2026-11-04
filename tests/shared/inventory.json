@@ -2827,6 +2827,11 @@
       "classification": "shared-fixture-or-loader"
     },
     {
+      "path": "tests/shared/inert-codex.mjs",
+      "moduleBase": "apps/server/package.json",
+      "classification": "shared-controlled-fixture"
+    },
+    {
       "oldPath": "apps/server/test/ui-qualification.mjs",
       "path": "tests/workspace-navigation/ui-qualification.mjs",
       "moduleBase": "apps/server/package.json",
