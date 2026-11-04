@@ -52,7 +52,7 @@ export async function fixture({ diagnosticProvider = false, beforeRuntimeClose, 
   const root = await mkdtemp(path.join(tmpdir(), 'ponderosa-regression-'));
   const dataDir = path.join(root, 'data');
   const plans = new Map(), sessions = new Map(), turns = [], children = [], failures = [], openingSessions = new Set(), commands = [], steers = [];
-  let closingFixture = false;
+  let closingFixture = false, productShutdownComplete = false;
   const capabilities = { steering: true, persistentSessions: true, commands: [], mcpServers: [], composerCapabilities: [] };
   const providerProbes = [], capabilityDiscoveries = [], knownProviderSessions = new Map();
   const adapter = {
@@ -217,6 +217,12 @@ export async function fixture({ diagnosticProvider = false, beforeRuntimeClose, 
   };
   return { root, dataDir, api, ok, detail, settled, createChat, createAgent, createIdleAgent, send, tool, hold, plans, sessions, turns, capabilities, commands, steers, providerProbes, capabilityDiscoveries,
     listen: () => app.listen({ host: '127.0.0.1', port: 0 }),
+    // Exercise product shutdown before fixture-owned child cleanup.
+    async shutdownProduct() { app.prepareForShutdown(); await app.close(); productShutdownComplete = true; },
+    async restartAfterProductShutdown() {
+      assert.equal(productShutdownComplete, true, 'Product shutdown has not completed');
+      app = undefined; productShutdownComplete = false; await open();
+    },
     async reopen() { await close(); await open(); },
     async dispose(remove = true) {
       await close();

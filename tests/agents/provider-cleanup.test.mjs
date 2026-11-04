@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {AgentStore,CoordinationV3Store} from '@ponderosa/agents';
-import { withFixture, until, fixtureTestOptions as options } from '../shared/fixture.mjs';
+import { fixture, withFixture, until, fixtureTestOptions as options } from '../shared/fixture.mjs';
 
 // This file runs in its own Node test process. Retain owned idle sessions so
 // failure injection targets a reusable root rather than normal zero-idle eviction.
@@ -88,4 +88,65 @@ test('coalescing an authored message after another activation preserves every so
     await f.settled(agent.id);
     assert.equal(f.turns.filter(turn=>turn.agentId===agent.id).length,1);
   },{storeFactory:dataDir=>(store=new AgentStore(dataDir))});
+});
+
+test('product shutdown drains a live provider before fixture cleanup and retains the uncertain Run',options,async t=>{
+ let store, reopened, succeeded=false, timeout;
+ const closeCalls=[];
+ const f=await fixture({
+  storeFactory:dataDir=>(store=new AgentStore(dataDir)),
+  beforeRuntimeClose:owner=>{closeCalls.push(owner);},
+ });
+ try {
+  const chat=await f.createChat('Controlled shutdown');
+  const agent=await f.createIdleAgent(chat,'Shutdown worker');
+  const session=await f.hold(agent.id);
+  const run=await until(()=>store.sqlite.prepare(
+   "SELECT id,fencing_token,prompt_injection_state FROM scheduler_runs WHERE agent_id=? AND status='running' AND prompt_injection_state='injected'"
+  ).get(agent.id),'held injected Run');
+  assert.equal(session.isAlive(),true,'controlled provider must be live before product shutdown');
+  assert.equal(closeCalls.length,0,'fixture must not close the provider before product shutdown');
+  const turns=f.turns.length;
+  let owned;
+  if(session.processIdentity){
+   owned=store.sqlite.prepare('SELECT pid,pgid,birth_marker FROM provider_process_authority WHERE agent_id=? AND run_id=?').get(agent.id,run.id);
+   assert.deepEqual(owned,{pid:session.processIdentity.pid,pgid:session.processIdentity.pgid,birth_marker:session.processIdentity.birthMarker},'the durable authority matches the exact controlled provider');
+  }
+  await Promise.race([
+   f.shutdownProduct(),
+   new Promise((_,reject)=>{timeout=setTimeout(()=>reject(Error('Product shutdown did not complete within 10 seconds')),10_000);}),
+  ]);
+  clearTimeout(timeout); timeout=undefined;
+  assert.ok(closeCalls.some(owner=>owner.agentId===agent.id&&owner.sessionId===session.engineAgentId),'product shutdown invoked the exact session close');
+  assert.equal(session.isAlive(),false,'product shutdown returned before observed provider exit');
+  assert.equal(f.turns.length,turns,'product shutdown replayed provider input');
+  reopened=new AgentStore(f.dataDir);
+  const persisted=reopened.sqlite.prepare('SELECT status,prompt_injection_state,terminal_at FROM scheduler_runs WHERE id=? AND agent_id=?').get(run.id,agent.id);
+  assert.equal(persisted?.status,'outcome_unknown','the submitted Run remains durably uncertain');
+  assert.equal(persisted?.prompt_injection_state,'injected');
+  assert.ok(persisted?.terminal_at,'the uncertain outcome is durably recorded');
+  assert.equal(reopened.sqlite.prepare("SELECT count(*) n FROM scheduler_runs WHERE agent_id=? AND status IN ('leased','running')").get(agent.id).n,0,'shutdown left a live Run');
+  // An exited POSIX row may remain for the existing startup exit reconciliation.
+  // If retained, it must be the exact root whose exit was observed above.
+  const retained=reopened.sqlite.prepare('SELECT pid,pgid,birth_marker FROM provider_process_authority WHERE agent_id=?').all(agent.id);
+  assert.ok(retained.length===0||owned&&retained.length===1&&retained[0].pid===owned.pid&&retained[0].pgid===owned.pgid&&retained[0].birth_marker===owned.birth_marker,'shutdown retained unrelated provider authority');
+  reopened.close();reopened=undefined;
+  // Restart directly after product close; no fixture child cleanup runs here.
+  await f.restartAfterProductShutdown();
+  const afterRestart=store.sqlite.prepare('SELECT status,prompt_injection_state,terminal_at FROM scheduler_runs WHERE id=? AND agent_id=?').get(run.id,agent.id);
+  assert.equal(afterRestart?.status,'outcome_unknown','restart changed the uncertain outcome');
+  assert.equal(afterRestart?.prompt_injection_state,'injected');
+  assert.ok(afterRestart?.terminal_at);
+  assert.equal(store.sqlite.prepare('SELECT count(*) n FROM provider_process_authority WHERE agent_id=?').get(agent.id).n,0,'startup did not reconcile the exited provider identity');
+  await new Promise(resolve=>setTimeout(resolve,250));
+  assert.equal(f.turns.length,turns,'startup replayed the uncertain provider input');
+  assert.equal(store.sqlite.prepare("SELECT count(*) n FROM scheduler_runs WHERE agent_id=? AND status IN ('leased','running')").get(agent.id).n,0,'restart leased a replacement for the uncertain Run');
+  succeeded=true;
+ } finally {
+  if(timeout)clearTimeout(timeout);
+  reopened?.close();
+  if(!succeeded)t.diagnostic(`Failed disposable fixture retained: ${f.root}`);
+  // Only after the product shutdown assertion, use fixture cleanup as a fallback.
+  await f.dispose(succeeded);
+ }
 });
