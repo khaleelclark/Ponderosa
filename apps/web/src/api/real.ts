@@ -932,6 +932,7 @@ export const realApi = {
     packageBlob: Blob,
     metadata: Omit<ImportAgentPackageRequest, "package">,
     requestId: string,
+    fingerprint?: string,
   ): Promise<AgentImportOperationDto> {
     const body = new Blob(
       [`${JSON.stringify(metadata)}\n`, packageBlob],
@@ -944,10 +945,14 @@ export const realApi = {
         headers: {
           "content-type": body.type,
           "idempotency-key": requestId,
+          ...(fingerprint?{"x-ponderosa-agent-package-fingerprint":fingerprint}:{}),
         },
         body,
       },
     );
+  },
+  getAgentImportOperationByRequest(projectId:string,conversationId:string,requestId:string):Promise<AgentImportOperationDto>{
+    return requestJson(`/api/projects/${encodeURIComponent(projectId)}/agent-import-operations/by-request/${encodeURIComponent(requestId)}?conversationId=${encodeURIComponent(conversationId)}`);
   },
   getAgentImportOperation(projectId: string, operationId: string): Promise<AgentImportOperationDto> {
     return requestJson<AgentImportOperationDto>(
