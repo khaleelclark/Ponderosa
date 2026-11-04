@@ -60,7 +60,7 @@ export function PendingAgentImportRecovery({entry,initialBlob,disabled=false,onA
   {held?.state==='reserved'&&<><Alert severity="warning">If the server can prove this request never began an import, you can retire it. The old request cannot be used again; its files stay preserved. A new import would require your separate choice.</Alert>
    <Button disabled={busy||disabled} onClick={()=>void retire()}>Retire held request</Button></>}
   {held?.state==='retired'&&<Button disabled={busy||disabled} onClick={dismissRetired}>Dismiss retired request</Button>}
-  {held?.state==='destination_deleted'&&<><Alert severity="warning">The import outcome and any effects remain unknown. Its retained evidence stays on the server. Review any existing files before starting another import.</Alert>
+  {held?.state==='destination_deleted'&&<><Alert severity="warning">The import outcome and any effects remain unknown. Any retained evidence stays on the server. Review any existing files before starting another import.</Alert>
    <Typography variant="body2">Request reference: {entry.requestId}</Typography>
    <Button disabled={busy||disabled} onClick={()=>{try{onDeleted(entry);}catch{setNotice('Could not update the saved browser notice. Keep browser data and try again.');}}}>Dismiss saved notice</Button></>}
 
