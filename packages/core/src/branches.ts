@@ -300,6 +300,7 @@ export interface BranchRuntimeDataReadback {receipt:BranchRuntimeDataReceipt;dat
 export interface BranchLifecycleDto {
  sourceDiagnostics?:Array<{id:string;title:string;body:string;createdAt:string}>;
  deleting:boolean;
+ deletionError?:string;
  chats:number;
  activeExecutions:number;
  runCounts?:BranchRunCountsDto;

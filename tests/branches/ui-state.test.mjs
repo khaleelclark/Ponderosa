@@ -4,9 +4,16 @@ import '../shared/web-typescript-loader.mjs';
 import React from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 const {BranchWorkspaceHeader}=await import('../../apps/web/src/components/branches/BranchWorkspaceHeader.tsx');
-const {BranchInstallationUpdateStatus}=await import('../../apps/web/src/components/branches/BranchOperations.tsx');
+const {BranchInstallationUpdateStatus,BranchDeletionStatus}=await import('../../apps/web/src/components/branches/BranchOperations.tsx');
 const {MutationNotificationProvider}=await import('../../apps/web/src/components/MutationNotifications.tsx');
 const renderBranchHeader=props=>renderToStaticMarkup(React.createElement(MutationNotificationProvider,null,React.createElement(BranchWorkspaceHeader,props)));
+
+test('Branch deletion status exposes the saved cleanup cause without implying completion',()=>{
+ const pending=renderToStaticMarkup(React.createElement(BranchDeletionStatus,{}));
+ assert.match(pending,/Workflow deletion pending/);assert.doesNotMatch(pending,/Last cleanup error/);
+ const failed=renderToStaticMarkup(React.createElement(BranchDeletionStatus,{error:'controlled final cleanup failure'}));
+ assert.match(failed,/Workflow deletion pending/);assert.match(failed,/Last cleanup error: controlled final cleanup failure/);
+});
 
 test('Branch package status distinguishes an actual retry, a held error, and stopping',()=>{
  const render=update=>renderToStaticMarkup(React.createElement(BranchInstallationUpdateStatus,{update,onCancelUpdate(){}}));

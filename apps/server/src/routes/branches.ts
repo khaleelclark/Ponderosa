@@ -5,7 +5,7 @@ import {BranchIssuedDestinationService} from '../branch-issued-destination.js';
 import {BranchDisclosureReviewService} from '../branch-disclosure-review.js';
 import type {BranchResourceService} from '../branch-resource-service.js';
 import type {OutputAgentApps} from '../output-agent-apps.js';
-import {BRANCH_INSTALLATION_HOLD_UNTIL,BRANCH_INSTALLATION_RETRY_READY_SQL,type BranchInstallationService} from '../branch-installation-service.js';
+import {BRANCH_INSTALLATION_HOLD_UNTIL,BRANCH_INSTALLATION_RETRY_READY_SQL,describeBranchDeletionFailure,type BranchInstallationService} from '../branch-installation-service.js';
 import type {ChatCreator} from './projects.js';
 import { normalizeTriggerSourceConfig, type BranchTriggerSourceService } from '../branch-trigger-service.js';
 import { triggerSourceConfig } from '../branch-trigger-config.js';
@@ -13,7 +13,7 @@ import { realpathSync, statSync } from 'node:fs';
 import {createHash,randomUUID} from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import {validatedObject,exactObjectFields} from '../object-validation.js';
-import { readBranchRunCounts, workspaceRecencyCte, exportBranchPackage, importBranchPackage, stableJson, validateBranchDefinition, validateBranchBindings, validateBranchConfiguration, resolveBranchParameterReferences, interpolateBranchText, type CoordinationV3Store, type AgentStore, type BranchStore, type WorkspaceStore } from '@ponderosa/agents';
+import { branchDeletionErrorResourceId, readBranchRunCounts, workspaceRecencyCte, exportBranchPackage, importBranchPackage, stableJson, validateBranchDefinition, validateBranchBindings, validateBranchConfiguration, resolveBranchParameterReferences, interpolateBranchText, type CoordinationV3Store, type AgentStore, type BranchStore, type WorkspaceStore } from '@ponderosa/agents';
 import { BranchValidationError, FULL_PACKAGE_EXPORT_WARNING, AGENT_PACKAGE_MAX_BYTES,AGENT_PACKAGE_METADATA_MAX_BYTES,type BranchGateResolution, type BranchHomeDto, type BranchIntervention, type DeployBranchRequest, type WorkspacePreferencesDto } from '@ponderosa/core';
 import {activeChatResourceOwner} from '../branch-resource-owner.js';
 import {previewBranchExecutionActions,previewBranchExecutionDetail} from '../branch-detail-preview.js';
@@ -373,7 +373,7 @@ export function registerBranchRoutes(app: FastifyInstance, context: { dataDir?:s
     if(!row)return reply.code(404).send({error:'Branch not found'});
     return {sourceDiagnostics:context.workspace.listNotificationPage({limit:10,include:item=>Boolean(item.dedupeKey?.startsWith('branch-source:')) &&
       (item.branchId===id||item.dedupeKey?.startsWith('branch-source:poller:schedule_polling')===true)}).items.map(({id,title,body,createdAt})=>({id,title,body,createdAt})),
-      deleting:Boolean(row.deleting),runCounts:readBranchRunCounts(store.sqlite,[id]).get(id)!,chats:(store.sqlite.prepare('SELECT COUNT(*) n FROM conversations WHERE branch_id=?').get(id) as {n:number}).n,
+      deleting:Boolean(row.deleting),...(row.deleting?{deletionError:(store.sqlite.prepare('SELECT error FROM branch_retirement_errors WHERE resource_id=?').get(branchDeletionErrorResourceId(id)) as {error:string}|undefined)?.error}:{}),runCounts:readBranchRunCounts(store.sqlite,[id]).get(id)!,chats:(store.sqlite.prepare('SELECT COUNT(*) n FROM conversations WHERE branch_id=?').get(id) as {n:number}).n,
       activeExecutions:(store.sqlite.prepare("SELECT COUNT(*) n FROM branch_executions WHERE branch_id=? AND state IN ('queued','running','waiting')").get(id) as {n:number}).n,
       callers:store.sqlite.prepare('SELECT DISTINCT b.id,b.name FROM branch_dependencies d JOIN branches b ON b.id=d.branch_id WHERE d.target_branch_id=? AND d.branch_id!=?').all(id,id) as Array<{id:string;name:string}>,
       pendingRemoval:store.sqlite.prepare("SELECT r.local_id id,CASE WHEN r.agent_ref='' THEN 'Chat' ELSE 'Agent' END kind,e.error FROM branch_installation_resources r LEFT JOIN branch_retirement_errors e ON e.resource_id=r.local_id WHERE r.branch_id=? AND r.state='retiring'").all(id) as Array<{id:string;kind:'Chat'|'Agent';error?:string}>,
@@ -666,7 +666,7 @@ export function registerBranchRoutes(app: FastifyInstance, context: { dataDir?:s
   });
   app.delete<{ Params: { id: string } }>('/api/branches/:id', async (request, reply) => {
     try { const result=await context.installations.delete(request.params.id); await sources.refresh();notify();return reply.code(result.pending?202:200).send(result); }
-    catch (error) { return reply.code(409).send({ error: error instanceof Error ? error.message : 'Branch cleanup pending' }); }
+    catch (error) { return reply.code(409).send({ error: describeBranchDeletionFailure(error) }); }
   });
   app.get<{ Params: { id: string; versionId: string } }>('/api/branches/:id/versions/:versionId', async (request, reply) => branches.version(request.params.id, request.params.versionId) ?? reply.code(404).send({ error: 'Branch version not found' }));
   app.get<{ Params: { id: string }; Querystring: { before?: string; state?: string; mergeFor?:string } }>('/api/branches/:id/executions', async (request, reply) => {

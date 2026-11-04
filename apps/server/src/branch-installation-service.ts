@@ -14,7 +14,7 @@ import type {ChatCreator} from "./routes/projects.js";
 import {captureBranchRuntimeData,validateBranchRuntimeData,branchDefinitionChanges,validateBranchBindings,validateBranchExecutionTree,planBranchExecutionTree,readHeldTreeForContinuation} from "@ponderosa/agents";
 import {randomUUID,createHash} from 'node:crypto';
 import type {AgentStore,BranchStore} from '@ponderosa/agents';
-import {stableJson,validateBranchDefinition,validateBranchConfiguration,interpolateBranchText} from '@ponderosa/agents';
+import {stableJson,validateBranchDefinition,validateBranchConfiguration,interpolateBranchText,branchDeletionErrorResourceId} from '@ponderosa/agents';
 import type {AgentPortablePackageDto,BranchBindings,ImportAgentPackageResponse,DeployBranchRequest,BranchDto,BranchPackageChat,InstalledBranchPackage,BranchInstallationPreviewDto,BranchInstallationOperationDto} from '@ponderosa/core';
 import {realpathSync,statSync} from 'node:fs';
 import {portableArtifactByteLength} from './agent-package-codec.js';
@@ -33,6 +33,28 @@ export const BRANCH_INSTALLATION_HOLD_UNTIL='9999-12-31T23:59:59.999Z';
 // promises a retry when an explicit review or an incomplete write fences it.
 export const BRANCH_INSTALLATION_RETRY_READY_SQL="json_extract(preview_json,'$.pendingAccess') IS NULL AND json_extract(preview_json,'$.pendingWorkingRoot') IS NULL AND COALESCE(json_extract(preview_json,'$.workingDataApplication.state'),'') NOT IN ('applying','incomplete')";
 
+// Arbitrary exceptions may contain unlabeled provider credentials. Only
+// fixed, locally authored fence messages and known SQLite codes are public.
+const BRANCH_DELETION_PUBLIC_BLOCKERS=new Set([
+ 'Original generation deletion requires an exact sealed capture and intake fence receipt',
+ 'Final resource exit evidence pins owner deletion until archival',
+ 'Issued tree custody holds owner deletion',
+ 'Other Branches depend on this Branch',
+ 'An active execution still depends on this Branch',
+ 'Cancel/drain and delete Branch-owned Chats before finalizing deletion',
+ 'Cancel and drain Branch executions before deletion',
+ 'Branch audit publication is still pending',
+ 'Branch gate notification closure is still pending',
+ 'Branch budget audit publication is still pending',
+ 'Finish Output role recovery before deleting a published Branch tree',
+]);
+const BRANCH_DELETION_SQLITE_CODES=new Set(['SQLITE_CONSTRAINT_TRIGGER','SQLITE_BUSY','SQLITE_LOCKED','SQLITE_FULL','SQLITE_READONLY','SQLITE_IOERR','SQLITE_CORRUPT']);
+export function describeBranchDeletionFailure(error:unknown):string{
+ const message=error instanceof Error?error.message:'';
+ if(BRANCH_DELETION_PUBLIC_BLOCKERS.has(message))return message;
+ const code=(typeof error==='object'&&error!==null&&'code' in error)?(error as {code?:unknown}).code:undefined;
+ return `Workflow cleanup failed${typeof code==='string'&&BRANCH_DELETION_SQLITE_CODES.has(code)?` (${code})`:''}. Details withheld because they may contain credentials.`;
+}
 class InstallationStoppedError extends Error{}
 class InstallationConflictError extends Error{}
 type ChatSnapshot={id:string;title:string;instructions?:string};
@@ -767,7 +789,11 @@ export class BranchInstallationService {
    for(const plan of this.rows("SELECT id,state,error FROM branch_installation_plans WHERE branch_id=?",b.id))this.compactPlan(plan.id,plan.state==='preview'?'expired':plan.state,plan.state==='preview'?'Branch deletion invalidated this preview':plan.error??undefined);
    this.settleNotifications?.(b.id);
    this.branches.deleteBranch(b.id);
-  }catch{/* Fences remain until Engine cleanup and audit publication complete. */this.run('UPDATE branches SET updated_at=? WHERE id=?',now.toISOString(),b.id);}
+  }catch(error){
+   // Keep the deletion fence and retain a safe last diagnostic for the operator.
+   this.retirementError(branchDeletionErrorResourceId(b.id),new Error(describeBranchDeletionFailure(error)));
+   this.run('UPDATE branches SET updated_at=? WHERE id=?',now.toISOString(),b.id);
+  }
   if(this.runtimeRefreshPending&&this.refreshRuntime)try{await this.refreshRuntime();this.runtimeRefreshPending=false;}catch{/* The next scheduler tick retries. Startup also reconciles every source. */}
  }
  private retirementError(id:string,error:unknown):void{this.run('INSERT INTO branch_retirement_errors VALUES(?,?,?) ON CONFLICT(resource_id) DO UPDATE SET error=excluded.error,updated_at=excluded.updated_at',id,(error as Error).message,new Date().toISOString());}

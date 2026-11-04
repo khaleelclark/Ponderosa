@@ -165,7 +165,7 @@ export { admitDataDirectory, shareStateAdmission, requireAdmittedDatabase, readC
 
 export { inspectCurrentState } from "./state-admission.js";
 
-export { BranchStore } from "./branch-store.js";
+export { BranchStore, branchDeletionErrorResourceId } from "./branch-store.js";
 export { validateBranchTemplate } from "./branch-template.js";
 export { branchRequirements, exportBranchPackage, importBranchPackage } from "./branch-package.js";
 export * from "./branch-parameters.js";

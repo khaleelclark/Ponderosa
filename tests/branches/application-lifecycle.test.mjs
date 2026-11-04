@@ -66,3 +66,50 @@ test('deployment drain closes Branch filesystem watchers, preserves accepted bur
  const after=f.branches.triggers.getFilesystemTriggerBurst(branch.triggerId);assert.equal(after.occurrenceKey,before.occurrenceKey);assert.ok(after.changes.some(item=>item.path==='input-before.txt'));assert.equal(after.changes.some(item=>item.path==='input-drained.txt'),false);
  await f.close();f.pass();
 });
+
+
+test('final Branch deletion reports and retains a safe cleanup diagnostic until completion',options,async t=>{
+ const f=await fixture(t),branch=f.deploy('Deletion diagnostic',[{id:'script',kind:'script',runtime:'node',cwdRef:'workspace',timeoutMs:5000,source:"process.stdout.write('never runs')"}]);
+ const fakeSecret='fixture-private-token-value',key='branch-finalize:'+branch.id;
+ const other=f.branches.create('Other diagnostic','other-diagnostic'),otherKey='branch-finalize:'+other.id;
+ f.store.sqlite.prepare('INSERT INTO branch_retirement_errors VALUES(?,?,?)').run(otherKey,'unrelated retained diagnostic',new Date().toISOString());
+ const trigger=`CREATE TEMP TRIGGER block_final_branch_delete BEFORE DELETE ON branches WHEN OLD.id='${branch.id}' BEGIN SELECT RAISE(ABORT,'controlled final cleanup failure API_KEY=fixture-labeled-value fixture-private-token-value'); END`;
+ f.store.sqlite.exec(trigger);await f.open();
+ const pending=await f.api('DELETE',`/api/branches/${branch.id}`,undefined,202);
+ assert.equal(pending.pending,true);assert.equal(pending.deleted,false);
+ let lifecycle=await f.api('GET',`/api/branches/${branch.id}/lifecycle`);
+ assert.equal(lifecycle.deleting,true);assert.match(lifecycle.deletionError,/SQLITE_CONSTRAINT_TRIGGER/);assert.match(lifecycle.deletionError,/Details withheld/);assert.ok(!JSON.stringify(lifecycle).includes(fakeSecret));assert.ok(!JSON.stringify(lifecycle).includes('fixture-labeled-value'));
+ const saved=f.store.sqlite.prepare('SELECT error FROM branch_retirement_errors WHERE resource_id=?').get(key);
+ assert.equal(saved.error,lifecycle.deletionError);assert.ok(!saved.error.includes(fakeSecret));
+ await f.close();
+ const dataDir=path.join(f.root,'data'),reopenedStore=new AgentStore(dataDir);
+ let reopenedApp;
+ try{
+  assert.equal(reopenedStore.sqlite.prepare('SELECT error FROM branch_retirement_errors WHERE resource_id=?').get(key).error,saved.error,'the safe failure diagnostic survives a real store reopen');
+  reopenedStore.sqlite.exec(trigger);
+  reopenedApp=createServer({dataDir,store:reopenedStore,logger:false,startDrained:true,engines:[],allowedBrowseRoots:[f.root],communicationV3:{pollMs:10}});await reopenedApp.ready();
+  const api=async(method,url,expected=200)=>{const r=await reopenedApp.inject({method,url});assert.equal(r.statusCode,expected,r.body);return r.json();};
+  lifecycle=await api('GET',`/api/branches/${branch.id}/lifecycle`);
+  assert.equal(lifecycle.deletionError,saved.error,'the failure remains visible after restart');
+  assert.ok(reopenedStore.sqlite.prepare('SELECT id FROM branches WHERE id=? AND deleting=1').get(branch.id),'failed finalization preserves the fenced Branch');
+  reopenedStore.sqlite.exec('DROP TRIGGER block_final_branch_delete');
+  const done=await api('DELETE',`/api/branches/${branch.id}`);
+  assert.equal(done.deleted,true);assert.equal(done.pending,false);
+  assert.equal(reopenedStore.sqlite.prepare('SELECT id FROM branches WHERE id=?').get(branch.id),undefined);
+  assert.equal(reopenedStore.sqlite.prepare('SELECT error FROM branch_retirement_errors WHERE resource_id=?').get(key),undefined,'successful deletion removes only the owned diagnostic');
+  assert.equal(reopenedStore.sqlite.prepare('SELECT error FROM branch_retirement_errors WHERE resource_id=?').get(otherKey).error,'unrelated retained diagnostic','another Branch diagnostic survives');
+ }finally{if(reopenedApp){reopenedApp.prepareForShutdown();await reopenedApp.close()}else reopenedStore.close();}
+ f.pass();
+});
+
+test('an immediate Branch deletion failure does not expose an unlabeled synthetic secret',options,async t=>{
+ const f=await fixture(t),branch=f.deploy('Immediate deletion diagnostic',[{id:'script',kind:'script',runtime:'node',cwdRef:'workspace',timeoutMs:5000,source:"process.stdout.write('never runs')"}]),fakeSecret='fixture-unlabeled-private-value';
+ f.store.sqlite.exec(`CREATE TEMP TRIGGER fail_branch_deletion_start BEFORE UPDATE OF deleting ON branches WHEN OLD.id='${branch.id}' AND NEW.deleting=1 BEGIN SELECT RAISE(ABORT,'controlled start failure fixture-unlabeled-private-value'); END`);
+ await f.open();
+ const response=await f.api('DELETE',`/api/branches/${branch.id}`,undefined,409);
+ assert.match(response.error,/SQLITE_CONSTRAINT_TRIGGER/);assert.match(response.error,/Details withheld/);assert.ok(!JSON.stringify(response).includes(fakeSecret));
+ assert.equal(f.store.sqlite.prepare('SELECT deleting FROM branches WHERE id=?').get(branch.id).deleting,0);
+ f.store.sqlite.exec('DROP TRIGGER fail_branch_deletion_start');
+ const done=await f.api('DELETE',`/api/branches/${branch.id}`);assert.equal(done.deleted,true);
+ await f.close();f.pass();
+});

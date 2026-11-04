@@ -58,6 +58,8 @@ import { CapabilityPolicyStore } from "./capability-policy-store.js";
 
 type Row = Record<string, any>;
 const MERGE_TARGET_STATES:readonly string[]=['queued','running','waiting','completed'];
+/** Durable diagnostic key for a Branch's final deletion step. */
+export const branchDeletionErrorResourceId=(id:string):string=>`branch-finalize:${id}`;
 export interface BranchResourceProvision { branchId:string; executionId:string; workingDirectory:string; defaultEngine:string; stepExecutionId: string; projectId: string; chatId: string; creationKey: string; template: AgentPortablePackageDto; engineMapping: Record<string, string>; accessSettingsResolution?:import('@ponderosa/core').ImportAgentPackageRequest['accessSettingsResolution'] }
 export interface BranchActionLease { attemptId:string; fence:number; workerId:string; branchId:string; executionId:string; projectId?:string; chatId?:string; title:string; input:string }
 
@@ -3682,6 +3684,7 @@ export class BranchStore {
       for (const trigger of this.rows("SELECT id FROM trigger_definitions WHERE branch_id = ?", id)) this.triggers.deleteTriggerDefinition(trigger.id);
       this.run('DELETE FROM branch_dependencies WHERE branch_id=? OR target_branch_id=?',id,id);
       this.run('DELETE FROM branch_retirement_errors WHERE resource_id IN (SELECT local_id FROM branch_installation_resources WHERE branch_id=?)',id);
+      this.run('DELETE FROM branch_retirement_errors WHERE resource_id=?',branchDeletionErrorResourceId(id));
       this.run('DELETE FROM branch_installation_resources WHERE branch_id=?',id);
       if(this.row("SELECT 1 FROM branch_execution_budget_events WHERE branch_id=? AND audit_published=0",id))throw new Error("Branch budget audit publication is still pending");
       this.run("DELETE FROM branch_execution_budget_events WHERE branch_id=?",id);

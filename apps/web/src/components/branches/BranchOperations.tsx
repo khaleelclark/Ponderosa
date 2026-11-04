@@ -11,9 +11,13 @@ export function BranchInstallationUpdateStatus({update,onCancelUpdate,canceling=
  return <Alert severity={update.error?'error':'info'} action={onCancelUpdate&&update.state==='applying'?<Button color="inherit" disabled={canceling} onClick={()=>onCancelUpdate(update.id)}>Stop update</Button>:undefined}>{label}{update.error?`: ${update.error}`:'.'}{update.notice?` ${update.notice}`:''}</Alert>;
 }
 
+export function BranchDeletionStatus({error}:{error?:string}):JSX.Element {
+ return <Alert severity={error?'error':'info'}>Workflow deletion pending. {error?`Last cleanup error: ${error}`:'Workflow retained until cleanup completes.'}</Alert>;
+}
+
 export function BranchLifecycleStatus({lifecycle,onCancelUpdate,canceling=false}:{lifecycle:BranchLifecycleDto;onCancelUpdate?(id:string):void;canceling?:boolean}):JSX.Element {
  return <Stack spacing={1} role="status">
-  {lifecycle.deleting&&<Alert severity="info">Workflow deletion is draining active work.</Alert>}
+  {lifecycle.deleting&&<BranchDeletionStatus error={lifecycle.deletionError}/>}
   {lifecycle.updates.map(update=><BranchInstallationUpdateStatus key={update.id} update={update} onCancelUpdate={onCancelUpdate} canceling={canceling}/>)}
   {lifecycle.pendingRemoval.map(resource=><Alert key={resource.id} severity={resource.error?'error':'info'}>{resource.kind} pending retirement · {resource.id}. {resource.error??'Waiting for earlier executions to drain.'}</Alert>)}
  </Stack>;
