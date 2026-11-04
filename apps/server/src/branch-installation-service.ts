@@ -28,6 +28,11 @@ const MAX_RETAINED_PLAN_BYTES=512*1024*1024;
 const TERMINAL_RECEIPT_TTL_MS=30*24*60*60*1000;
 const MAX_TERMINAL_RECEIPTS=10_000;
 const IMPORT_DEADLINE_MS=5*60*1000;
+export const BRANCH_INSTALLATION_HOLD_UNTIL='9999-12-31T23:59:59.999Z';
+// The scheduler and lifecycle readback share this predicate so the UI never
+// promises a retry when an explicit review or an incomplete write fences it.
+export const BRANCH_INSTALLATION_RETRY_READY_SQL="json_extract(preview_json,'$.pendingAccess') IS NULL AND json_extract(preview_json,'$.pendingWorkingRoot') IS NULL AND COALESCE(json_extract(preview_json,'$.workingDataApplication.state'),'') NOT IN ('applying','incomplete')";
+
 class InstallationStoppedError extends Error{}
 class InstallationConflictError extends Error{}
 type ChatSnapshot={id:string;title:string;instructions?:string};
@@ -718,15 +723,15 @@ export class BranchInstallationService {
    const message='A prior working-folder restoration stopped before a completion receipt. Partial folders and original artifacts are retained; inspect the exact receipt without replay.';
    this.run('UPDATE branch_installation_plans SET preview_json=?,error=?,next_attempt_at=NULL WHERE id=?',stableJson({...state,workingDataApplication:{...receipt,state:'incomplete',error:{message,code:'ERR_INTERRUPTED_WORKING_DATA',partialStatePossible:true}}}),message,prior.id);
   }
-  if(this.engine)for(const plan of this.rows("SELECT * FROM branch_installation_plans WHERE state='applying' AND json_extract(preview_json,'$.pendingAccess') IS NULL AND json_extract(preview_json,'$.pendingWorkingRoot') IS NULL AND COALESCE(json_extract(preview_json,'$.workingDataApplication.state'),'') NOT IN ('applying','incomplete') AND (next_attempt_at IS NULL OR next_attempt_at<=?) ORDER BY COALESCE(next_attempt_at,created_at),created_at LIMIT 1",now.toISOString()))try{await this.apply(plan);}catch(error){
+  if(this.engine)for(const plan of this.rows(`SELECT * FROM branch_installation_plans WHERE state='applying' AND ${BRANCH_INSTALLATION_RETRY_READY_SQL} AND (next_attempt_at IS NULL OR next_attempt_at<=?) ORDER BY COALESCE(next_attempt_at,created_at),created_at LIMIT 1`,now.toISOString()))try{await this.apply(plan);}catch(error){
    if(error instanceof InstallationStoppedError||this.planState(plan.id)!=='applying')continue;
-   if(error instanceof Error&&error.message===MEMORY_CLEANUP_HOLD){this.run('UPDATE branch_installation_plans SET error=?,next_attempt_at=?,updated_at=? WHERE id=?',MEMORY_CLEANUP_HOLD,'9999-12-31T23:59:59.999Z',new Date().toISOString(),plan.id);continue;}
-   if(error instanceof BranchWorkingDataHeldError){this.run('UPDATE branch_installation_plans SET error=?,next_attempt_at=?,updated_at=? WHERE id=?',error.message,'9999-12-31T23:59:59.999Z',new Date().toISOString(),plan.id);continue;}
+   if(error instanceof Error&&error.message===MEMORY_CLEANUP_HOLD){this.run('UPDATE branch_installation_plans SET error=?,next_attempt_at=?,updated_at=? WHERE id=?',MEMORY_CLEANUP_HOLD,BRANCH_INSTALLATION_HOLD_UNTIL,new Date().toISOString(),plan.id);continue;}
+   if(error instanceof BranchWorkingDataHeldError){this.run('UPDATE branch_installation_plans SET error=?,next_attempt_at=?,updated_at=? WHERE id=?',error.message,BRANCH_INSTALLATION_HOLD_UNTIL,new Date().toISOString(),plan.id);continue;}
 
    if((error as import('./routes/agent-packages.js').BranchPackageImportError).accessSettingsReview){const current=this.row('SELECT * FROM branch_installation_plans WHERE id=?',plan.id)!;const state=this.rolePlan(current);this.run('UPDATE branch_installation_plans SET preview_json=? WHERE id=?',stableJson({...state,accessChoices:{}}),plan.id);}
    const current=this.row('SELECT * FROM branch_installation_plans WHERE id=?',plan.id);
    if(current&&this.rolePlan(current).published&&(error instanceof InstallationConflictError||(error as {statusCode?:number}).statusCode===409)){
-    this.run('UPDATE branch_installation_plans SET error=?,next_attempt_at=?,updated_at=? WHERE id=?',(error as Error).message,'9999-12-31T23:59:59.999Z',new Date().toISOString(),plan.id);continue;
+    this.run('UPDATE branch_installation_plans SET error=?,next_attempt_at=?,updated_at=? WHERE id=?',(error as Error).message,BRANCH_INSTALLATION_HOLD_UNTIL,new Date().toISOString(),plan.id);continue;
    }
    if(error instanceof InstallationConflictError){if(plan.branch_id)this.stopStaging(plan.branch_id);this.compactPlan(plan.id,'review_required',error.message);continue;}
    const attempt=(plan.attempt_count??0)+1,delay=Math.min(60_000,1000*2**Math.min(attempt-1,6));

@@ -6,10 +6,15 @@ import {requestJson} from '../../api/real';
 import type {BranchRoute} from '../../branchesRouting';
 import {OccurrenceAudit} from '../TriggerOccurrenceAudit';
 
+export function BranchInstallationUpdateStatus({update,onCancelUpdate,canceling=false}:{update:BranchLifecycleDto['updates'][number];onCancelUpdate?(id:string):void;canceling?:boolean}):JSX.Element {
+ const label=update.state==='canceling'?'Stopping package update':update.retry==='held'?'Package update is held':update.retry==='scheduled'?'Package update retry scheduled':update.error?'Package update needs attention':'Package update is applying';
+ return <Alert severity={update.error?'error':'info'} action={onCancelUpdate&&update.state==='applying'?<Button color="inherit" disabled={canceling} onClick={()=>onCancelUpdate(update.id)}>Stop update</Button>:undefined}>{label}{update.error||update.notice?`: ${update.error??update.notice}`:'.'}</Alert>;
+}
+
 export function BranchLifecycleStatus({lifecycle,onCancelUpdate,canceling=false}:{lifecycle:BranchLifecycleDto;onCancelUpdate?(id:string):void;canceling?:boolean}):JSX.Element {
  return <Stack spacing={1} role="status">
   {lifecycle.deleting&&<Alert severity="info">Workflow deletion is draining active work.</Alert>}
-  {lifecycle.updates.map(update=><Alert key={update.id} severity={update.error?'error':'info'} action={onCancelUpdate?<Button color="inherit" disabled={canceling} onClick={()=>onCancelUpdate(update.id)}>Stop update</Button>:undefined}>Package update is applying. {update.error?`Engine retry pending: ${update.error}`:'Progress is saved; you can return after reload.'}</Alert>)}
+  {lifecycle.updates.map(update=><BranchInstallationUpdateStatus key={update.id} update={update} onCancelUpdate={onCancelUpdate} canceling={canceling}/>)}
   {lifecycle.pendingRemoval.map(resource=><Alert key={resource.id} severity={resource.error?'error':'info'}>{resource.kind} pending retirement · {resource.id}. {resource.error??'Waiting for earlier executions to drain.'}</Alert>)}
  </Stack>;
 }

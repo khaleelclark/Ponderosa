@@ -92,8 +92,28 @@ for(const cyclic of [false,true])test(`published held ${cyclic?'cyclic':'acyclic
  const f=await fixture(t,{cyclic,withOutput:true}),p=await f.preview();
  f.store.sqlite.exec("CREATE TEMP TRIGGER held_tree_completion BEFORE UPDATE OF state ON branch_installation_plans WHEN NEW.state='completed' AND json_extract(OLD.preview_json,'$.published')=1 BEGIN SELECT RAISE(ABORT,'controlled held tree'); END");
  const done=await f.confirm(p);assert.equal(done.state,'applying',done.error);
- const plan=f.store.sqlite.prepare('SELECT package_json,preview_json FROM branch_installation_plans WHERE id=?').get(p.id),state=JSON.parse(plan.preview_json);
+ const plan=f.store.sqlite.prepare('SELECT package_json,preview_json,error,next_attempt_at FROM branch_installation_plans WHERE id=?').get(p.id),state=JSON.parse(plan.preview_json);
  assert.notEqual(plan.package_json,'{}');assert.equal(state.published,true);assert.ok(state.review);
+ if(!cyclic){
+  const readUpdate=async()=>(await f.api('GET',`/api/branches/${done.branchId}/lifecycle`)).updates.find(update=>update.id===p.id);
+  assert.match(plan.error,/controlled held tree/);
+  assert.deepEqual(await readUpdate(),{id:p.id,state:'applying',retry:'scheduled',error:plan.error});
+  // A pending access decision also fences scheduler retry, even with a retry time.
+  f.store.sqlite.prepare("UPDATE branch_installation_plans SET preview_json=json_set(preview_json,'$.pendingAccess',json('{}')) WHERE id=?").run(p.id);
+  assert.deepEqual(await readUpdate(),{id:p.id,state:'applying',retry:'held',error:plan.error});
+  f.store.sqlite.prepare('UPDATE branch_installation_plans SET error=NULL WHERE id=?').run(p.id);
+  assert.deepEqual(await readUpdate(),{id:p.id,state:'applying',retry:'held',notice:'Review imported Agent access to continue.'});
+  f.store.sqlite.prepare('UPDATE branch_installation_plans SET preview_json=?,error=? WHERE id=?').run(plan.preview_json,plan.error,p.id);
+  f.store.sqlite.prepare("UPDATE branch_installation_plans SET preview_json=json_set(preview_json,'$.pendingWorkingRoot',json('{}')),error=NULL WHERE id=?").run(p.id);
+  assert.deepEqual(await readUpdate(),{id:p.id,state:'applying',retry:'held',notice:'Choose a working folder to continue.'});
+  f.store.sqlite.prepare('UPDATE branch_installation_plans SET preview_json=?,error=? WHERE id=?').run(plan.preview_json,plan.error,p.id);
+  // The service persists a far-future hold rather than scheduling retries.
+  f.store.sqlite.prepare('UPDATE branch_installation_plans SET next_attempt_at=? WHERE id=?').run('9999-12-31T23:59:59.999Z',p.id);
+  assert.deepEqual(await readUpdate(),{id:p.id,state:'applying',retry:'held',error:plan.error});
+  f.store.sqlite.prepare("UPDATE branch_installation_plans SET state='canceling',next_attempt_at=NULL WHERE id=?").run(p.id);
+  assert.deepEqual(await readUpdate(),{id:p.id,state:'canceling',retry:'none',error:plan.error});
+  f.store.sqlite.prepare("UPDATE branch_installation_plans SET state='applying',next_attempt_at=? WHERE id=?").run(plan.next_attempt_at,p.id);
+ }
  const receipt=state.treeReceipt,agentIds=Object.values(receipt.agentMap),chatIds=Object.values(receipt.chatMap),branchIds=Object.values(receipt.branchMap);
  const childId=receipt.branchMap[f.child.branch.id],childChats=chatIds.filter(id=>f.store.getConversation(id)?.branchId===childId);
  const childAgents=agentIds.filter(id=>childChats.includes(f.store.getAgent(id)?.conversationId));

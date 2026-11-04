@@ -4,8 +4,23 @@ import '../shared/web-typescript-loader.mjs';
 import React from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 const {BranchWorkspaceHeader}=await import('../../apps/web/src/components/branches/BranchWorkspaceHeader.tsx');
+const {BranchInstallationUpdateStatus}=await import('../../apps/web/src/components/branches/BranchOperations.tsx');
 const {MutationNotificationProvider}=await import('../../apps/web/src/components/MutationNotifications.tsx');
 const renderBranchHeader=props=>renderToStaticMarkup(React.createElement(MutationNotificationProvider,null,React.createElement(BranchWorkspaceHeader,props)));
+
+test('Branch package status distinguishes an actual retry, a held error, and stopping',()=>{
+ const render=update=>renderToStaticMarkup(React.createElement(BranchInstallationUpdateStatus,{update,onCancelUpdate(){}}));
+ const scheduled=render({id:'p',state:'applying',retry:'scheduled',error:'temporary provider failure'});
+ assert.match(scheduled,/Package update retry scheduled/);assert.match(scheduled,/temporary provider failure/);assert.match(scheduled,/Stop update/);
+ const held=render({id:'p',state:'applying',retry:'held',error:'review the uncertain result'});
+ assert.match(held,/Package update is held/);assert.match(held,/review the uncertain result/);assert.doesNotMatch(held,/retry scheduled/);
+ const waiting=render({id:'p',state:'applying',retry:'held',notice:'Choose a working folder to continue.'});
+ assert.match(waiting,/Package update is held/);assert.match(waiting,/Choose a working folder to continue/);assert.doesNotMatch(waiting,/retry scheduled/);
+ const canceling=render({id:'p',state:'canceling',retry:'none',error:'cleanup unavailable'});
+ assert.match(canceling,/Stopping package update/);assert.match(canceling,/cleanup unavailable/);assert.doesNotMatch(canceling,/Stop update|retry scheduled|is applying/);
+ const ordinary=render({id:'p',state:'applying',retry:'none'});
+ assert.match(ordinary,/Package update is applying/);assert.doesNotMatch(ordinary,/will retry|is held/);
+});
 
 test('Branch header reuses ordered shared icon tabs and unpublished status without a duplicate Save',()=>{
  const html=renderBranchHeader({name:'A long workflow name',tab:'workflow',published:false,dirty:true,onTab(){},onExport(){},onUpdate(){}});

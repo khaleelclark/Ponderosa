@@ -665,3 +665,7 @@ working copy. Unconfirmed commands stay saved: read their exact result rather th
 the action. Missing legacy evidence stays unavailable. Call ancestry/counters/numeric owner
 budgets not supplied by the current tree contract are labeled unavailable. See the
 [current implementation boundaries](implementation-coverage.md) for remaining limits.
+
+### Workflow package update status
+
+Workflow and Settings show the saved package update state and its error. A scheduled retry is labeled as such; a held update remains held for review and is not described as retrying. A stopping update remains visible until cleanup finishes.

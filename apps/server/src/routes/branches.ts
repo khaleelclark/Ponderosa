@@ -5,7 +5,7 @@ import {BranchIssuedDestinationService} from '../branch-issued-destination.js';
 import {BranchDisclosureReviewService} from '../branch-disclosure-review.js';
 import type {BranchResourceService} from '../branch-resource-service.js';
 import type {OutputAgentApps} from '../output-agent-apps.js';
-import type {BranchInstallationService} from '../branch-installation-service.js';
+import {BRANCH_INSTALLATION_HOLD_UNTIL,BRANCH_INSTALLATION_RETRY_READY_SQL,type BranchInstallationService} from '../branch-installation-service.js';
 import type {ChatCreator} from './projects.js';
 import { normalizeTriggerSourceConfig, type BranchTriggerSourceService } from '../branch-trigger-service.js';
 import { triggerSourceConfig } from '../branch-trigger-config.js';
@@ -377,7 +377,11 @@ export function registerBranchRoutes(app: FastifyInstance, context: { dataDir?:s
       activeExecutions:(store.sqlite.prepare("SELECT COUNT(*) n FROM branch_executions WHERE branch_id=? AND state IN ('queued','running','waiting')").get(id) as {n:number}).n,
       callers:store.sqlite.prepare('SELECT DISTINCT b.id,b.name FROM branch_dependencies d JOIN branches b ON b.id=d.branch_id WHERE d.target_branch_id=? AND d.branch_id!=?').all(id,id) as Array<{id:string;name:string}>,
       pendingRemoval:store.sqlite.prepare("SELECT r.local_id id,CASE WHEN r.agent_ref='' THEN 'Chat' ELSE 'Agent' END kind,e.error FROM branch_installation_resources r LEFT JOIN branch_retirement_errors e ON e.resource_id=r.local_id WHERE r.branch_id=? AND r.state='retiring'").all(id) as Array<{id:string;kind:'Chat'|'Agent';error?:string}>,
-      updates:store.sqlite.prepare("SELECT id,error FROM branch_installation_plans WHERE branch_id=? AND state IN ('applying','canceling')").all(id) as Array<{id:string;error?:string}>} satisfies import('@ponderosa/core').BranchLifecycleDto;
+      updates:(store.sqlite.prepare(`SELECT id,state,error,next_attempt_at,(${BRANCH_INSTALLATION_RETRY_READY_SQL}) retry_ready,json_extract(preview_json,'$.pendingAccess') IS NOT NULL pending_access,json_extract(preview_json,'$.pendingWorkingRoot') IS NOT NULL pending_working_root,json_extract(preview_json,'$.workingDataApplication.state') working_data_state FROM branch_installation_plans WHERE branch_id=? AND state IN ('applying','canceling')`).all(id) as Array<{id:string;state:'applying'|'canceling';error:string|null;next_attempt_at:string|null;retry_ready:number;pending_access:number;pending_working_root:number;working_data_state:string|null}>).map(update=>{
+        const notice=update.state!=='applying'?undefined:update.pending_access?'Review imported Agent access to continue.':update.pending_working_root?'Choose a working folder to continue.':update.working_data_state==='incomplete'?'Inspect the incomplete working-folder restoration.':undefined;
+        return {id:update.id,state:update.state,...(update.error?{error:update.error}:{}),...(!update.error&&notice?{notice}:{}),
+          retry:update.state!=='applying'?'none' as const:update.next_attempt_at===BRANCH_INSTALLATION_HOLD_UNTIL||notice?'held' as const:update.error&&update.next_attempt_at&&update.retry_ready?'scheduled' as const:'none' as const};
+      })} satisfies import('@ponderosa/core').BranchLifecycleDto;
   });
   app.get<{Params:{id:string}}>('/api/branches/:id/dependencies',async request=>({
     calls:store.sqlite.prepare('SELECT target_branch_id id,ref FROM branch_dependencies WHERE branch_id=?').all(request.params.id),

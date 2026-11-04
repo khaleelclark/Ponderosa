@@ -305,7 +305,7 @@ export interface BranchLifecycleDto {
  runCounts?:BranchRunCountsDto;
  callers:Array<{id:string;name:string}>;
  pendingRemoval:Array<{id:string;kind:'Chat'|'Agent';error?:string}>;
- updates:Array<{id:string;error?:string}>;
+ updates:Array<{id:string;state:'applying'|'canceling';retry:'none'|'scheduled'|'held';error?:string;notice?:string}>;
 }
 
 export interface BranchInstallationOperationDto {kind:string;resource:string;label:string;before?:unknown;after?:unknown}
