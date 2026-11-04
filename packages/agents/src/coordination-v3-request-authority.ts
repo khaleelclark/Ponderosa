@@ -334,21 +334,22 @@ export class CoordinationV3RequestAuthority {
         if (!requesterOwnedTerminalControl && admission === "unconfirmed") {
           throw new Error("Request delivery is not yet confirmed");
         }
-        // A new tracked Request may affect the work already under way. Fence
+        // A peer instruction may affect the work already under way. Fence
         // fresh updates to older Requests too, once that steer is acknowledged.
         const latest = this.sqlite.prepare(`
           SELECT id, kind FROM scheduler_prompt_injections
           WHERE run_id = ? AND state = 'acknowledged'
           ORDER BY sequence DESC, created_at DESC, id DESC LIMIT 1
         `).get(input.runAuthorization.runId) as {id: string; kind: string} | undefined;
-        const newRequestSteer = latest?.kind === 'steer' && Boolean(this.sqlite.prepare(`
+        const newPeerSteer = latest?.kind === 'steer' && Boolean(this.sqlite.prepare(`
           SELECT 1 FROM scheduler_prompt_injections injection, json_each(injection.activation_ids_json) member
           JOIN agent_activations activation ON activation.id = member.value
           WHERE injection.run_id = ? AND injection.kind = 'steer' AND injection.state = 'acknowledged'
-            AND activation.kind = 'coordination_request'
+            AND activation.kind IN ('coordination_request','ordinary_message','urgent_message')
+            AND activation.prompt_class <> 'human'
           LIMIT 1
         `).get(input.runAuthorization.runId));
-        if (!requesterOwnedTerminalControl && (admission === "steer" || newRequestSteer)) {
+        if (!requesterOwnedTerminalControl && (admission === "steer" || newPeerSteer)) {
           if (!input.steeringInjectionId) throw new Error("Request update requires the current prompt fence");
           this.requireCurrentPromptInjection(input.runAuthorization, input.steeringInjectionId);
         }

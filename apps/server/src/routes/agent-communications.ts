@@ -86,7 +86,7 @@ interface AgentCommunicationRoutesContext {
 
 const AGENT_MESSAGE_FIELDS = new Set([
   "intent", "text", "artifactIds", "steeringInjectionId", "recipientAgentIds",
-  "urgency", "idempotencyKey", "document", "citations", "delivery", "expiresAt",
+  "urgency", "messagePurpose", "idempotencyKey", "document", "citations", "delivery", "expiresAt",
   "taskDelivery",
 ]);
 
@@ -116,6 +116,12 @@ export function validateAgentMessageBodyShape(body: unknown): string | undefined
       candidate.urgency !== "ordinary" && candidate.urgency !== "urgent") {
     return "urgency must be ordinary or urgent";
   }
+  if (candidate.messagePurpose !== undefined && !["instruction", "question", "progress", "fyi"].includes(candidate.messagePurpose as string)) {
+    return "messagePurpose must be instruction, question, progress, or fyi";
+  }
+  if ((candidate.messagePurpose === "progress" || candidate.messagePurpose === "fyi") && candidate.urgency === "urgent") {
+    return "progress and fyi cannot be urgent";
+  }
   if (candidate.recipientAgentIds !== undefined &&
       (!Array.isArray(candidate.recipientAgentIds) ||
         candidate.recipientAgentIds.some((id) => typeof id !== "string"))) {
@@ -144,7 +150,7 @@ export function validateAgentMessageBodyShape(body: unknown): string | undefined
     return "delivery must be next_run when supplied";
   }
     if (candidate.delivery === "next_run") {
-      if (candidate.intent !== undefined || candidate.urgency !== undefined ||
+      if (candidate.intent !== undefined || candidate.urgency !== undefined || candidate.messagePurpose !== undefined ||
         candidate.artifactIds !== undefined || candidate.document !== undefined ||
         candidate.citations !== undefined) {
       return "next_run accepts only text, recipientAgentIds, optional expiresAt, idempotencyKey, and steeringInjectionId";
@@ -211,7 +217,7 @@ export function registerAgentCommunicationRoutes(
     const latestPrompt = coordinationV3.latestAcknowledgedPromptInjection(capability.runId);
     const requiredSteeringFence = latestPrompt?.kind === "steer" ? latestPrompt.id : undefined;
     const discloseSteeringFence = requiredSteeringFence &&
-      !coordinationV3.runHasSteeredRequest(capability.runId);
+      !coordinationV3.runHasSteeredPeerWork(capability.runId);
     const inferredReply = request.body?.intent === undefined;
     const candidateIntent = request.body?.intent ?? capability.defaultReply?.intent;
     const text = request.body?.text === undefined
@@ -226,6 +232,7 @@ export function registerAgentCommunicationRoutes(
       return reply.code(400).send({ error: "artifactIds must contain 1 to 20 unique managed artifact IDs" });
     }
     const v3Urgency = (request.body as SendAgentMessageRequest & { urgency?: "ordinary" | "urgent" })?.urgency;
+    const messagePurpose = (request.body as SendAgentMessageRequest & { messagePurpose?: "instruction" | "question" | "progress" | "fyi" })?.messagePurpose;
     const currentAuthor = store.getAgent(capability.agentId);
     if (request.body?.delivery === "next_run") {
       const suppliedSteeringFence = request.body.steeringInjectionId?.trim();
@@ -374,6 +381,13 @@ export function registerAgentCommunicationRoutes(
       });
     }
     const intent: "broadcast" | "direct_to_user" | "collaboration" = candidateIntent;
+    if (messagePurpose !== undefined && intent !== "collaboration") {
+      return reply.code(400).send({ error: "messagePurpose is valid only for immediate collaboration" });
+    }
+    const actionableCollaboration = intent === "collaboration" && (
+      messagePurpose === "instruction" || messagePurpose === "question" ||
+      messagePurpose === undefined
+    );
     if (v3Urgency !== undefined && v3Urgency !== "ordinary" && v3Urgency !== "urgent") {
       return reply.code(400).send({ error: "urgency must be ordinary or urgent" });
     }
@@ -467,6 +481,7 @@ export function registerAgentCommunicationRoutes(
       citations,
       steeringInjectionId: suppliedSteeringFence ?? null,
       ...(taskDelivery ? { taskDelivery } : {}),
+      ...(messagePurpose ? { messagePurpose } : {}),
     })).digest("hex");
     const baseRequestFingerprint = conversationDeliveryRequestFingerprint({
       version: 1,
@@ -482,6 +497,7 @@ export function registerAgentCommunicationRoutes(
     });
     const requestFingerprint = createHash('sha256').update(JSON.stringify({
       baseRequestFingerprint, steeringInjectionId: suppliedSteeringFence ?? null, taskDelivery: taskDelivery ?? null,
+      ...(messagePurpose ? { messagePurpose } : {}),
     })).digest('hex');
     const requestedIdempotencyKey = request.body?.idempotencyKey?.trim();
     if (requestedIdempotencyKey && requestedIdempotencyKey.length > 200) {
@@ -633,14 +649,6 @@ export function registerAgentCommunicationRoutes(
 
     if (!currentAuthor) {
       return reply.code(409).send({ error: "agent is no longer available" });
-    }
-    const ordinaryCollaborationRecipients = intent === "collaboration"
-      ? inferredRecipientAgentIds
-      : [];
-    if (intent === "collaboration" && v3Urgency !== "urgent") {
-      if (scopedText && /^(thanks|thank you|got it|acknowledged|noted|sounds good|already complete)[.!\s]*$/i.test(scopedText)) {
-        return { suppressed: true, reason: "acknowledgement_only", recipientAgentIds: ordinaryCollaborationRecipients };
-      }
     }
     const conversation = capability.conversationId
       ? store.getConversation(capability.conversationId)
@@ -849,7 +857,7 @@ export function registerAgentCommunicationRoutes(
       renderedText = resolved.text;
       routing = { intents: resolved.intents, blocked: [] };
     }
-    const correlatedRequesterIds = intent === "collaboration" && v3Urgency !== "urgent"
+    const correlatedRequesterIds = intent === "collaboration" && !actionableCollaboration
       ? new Set(coordinationV3.requesterIdsForRun(
         capability.v3SchedulerRunId,
         capability.agentId,
@@ -918,8 +926,8 @@ export function registerAgentCommunicationRoutes(
           activations: actionableRoutingIntents.map((delivery, index) => ({
             agentId: delivery.targetAgentId,
             kind: v3Urgency === "urgent" ? "urgent_message" : "ordinary_message",
-            priority: v3Urgency === "urgent" ? 90 : 50,
-            dispatchPolicy: v3Urgency === "urgent" ? "steer_or_run" as const : "next_run" as const,
+            priority: v3Urgency === "urgent" ? 90 : actionableCollaboration ? 80 : 50,
+            dispatchPolicy: actionableCollaboration ? "steer_or_run" as const : "next_run" as const,
             promptClass: v3Urgency === "urgent" ? "blocker" as const : "ordinary" as const,
             dedupeKey: `communication:${proposedCommunication.eventId}:${delivery.targetAgentId}:${index}`,
           })),

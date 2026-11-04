@@ -216,7 +216,7 @@ export class CoordinationV3SteeringAuthority {
         candidate.run_id,
         scheduled?64:limit,
       ) as ActivationRow[]).filter(activation=>!scheduled||branchScheduleActivationEligible(this.sqlite,activation.id,candidate.run_id,now,this.canonicalTaskDecisions));
-      // A human interruption and a peer Request have different recovery
+      // Human interruptions and peer messages or Requests have different recovery
       // obligations. Keep each kind in a separate provider submission so a
       // single uncertain submission cannot combine human and peer work.
       let hasHuman = false;
@@ -225,7 +225,7 @@ export class CoordinationV3SteeringAuthority {
         if (activation.prompt_class === "human") {
           if (hasRequest) return false;
           hasHuman = true;
-        } else if (activation.kind === "coordination_request") {
+        } else if (["coordination_request", "ordinary_message", "urgent_message"].includes(activation.kind)) {
           if (hasHuman) return false;
           hasRequest = true;
         }
@@ -382,7 +382,7 @@ export class CoordinationV3SteeringAuthority {
           SET state = 'retry_pending',
             dispatch_policy = CASE
               WHEN EXISTS(SELECT 1 FROM activation_sources source WHERE source.activation_id=agent_activations.id AND source.source_kind='branch_schedule_update') THEN 'next_run'
-              WHEN ? = 'provider_unsupported' AND kind = 'coordination_request' THEN 'next_run'
+              WHEN ? = 'provider_unsupported' AND kind IN ('coordination_request','ordinary_message') THEN 'next_run'
               WHEN ? = 1 THEN dispatch_policy
               ELSE 'next_run'
             END,
@@ -392,14 +392,14 @@ export class CoordinationV3SteeringAuthority {
           input.preserveSteering ? input.waitReason ?? null : null, ...activationIds);
         // The provider explicitly refused before accepting input. Keep its
         // cancelled injection as audit evidence, but do not let the old Run
-        // claim the queued Request or settle it as an uncertain outcome.
+        // claim the queued peer work or settle it as an uncertain outcome.
         if (input.waitReason === "provider_unsupported") {
           this.sqlite.prepare(`
             DELETE FROM scheduler_run_activations WHERE run_id = ?
               AND activation_id IN (${placeholders})
               AND EXISTS (SELECT 1 FROM agent_activations activation
                 WHERE activation.id = scheduler_run_activations.activation_id
-                  AND activation.kind = 'coordination_request'
+                  AND activation.kind IN ('coordination_request','ordinary_message')
                   AND activation.state = 'retry_pending'
                   AND activation.steering_wait_reason = 'provider_unsupported')
               AND NOT EXISTS (SELECT 1 FROM scheduler_prompt_injections prior,

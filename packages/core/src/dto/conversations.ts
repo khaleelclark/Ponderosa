@@ -816,7 +816,9 @@ type ImmediateAgentMessageRequest = AgentMessageRequestBase & (
       intent: "collaboration";
       /** Stable agent IDs; display handles are presentation only. Must be non-empty. */
       recipientAgentIds: string[];
-      /** Urgent collaboration may steer; ordinary collaboration queues. */
+      /** Instructions and questions steer; progress and FYIs do not interrupt. */
+      messagePurpose?: "instruction" | "question" | "progress" | "fyi";
+      /** Priority only; use messagePurpose to choose whether collaboration interrupts. */
       urgency?: "ordinary" | "urgent";
     }
 ) & { delivery?: never; expiresAt?: never; taskDelivery?: "final" | "blocked" };
@@ -831,6 +833,7 @@ type NextRunAgentMessageRequest = Omit<
   expiresAt?: string;
   intent?: never;
   urgency?: never;
+  messagePurpose?: never;
   taskDelivery?: never;
 };
 

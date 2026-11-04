@@ -729,8 +729,8 @@ export class CoordinationV3Store {
     return this.runContextReadModel.requestSteeringAdmission(runId, agentId, requestId);
   }
 
-  runHasSteeredRequest(runId: string): boolean {
-    return this.runContextReadModel.runHasSteeredRequest(runId);
+  runHasSteeredPeerWork(runId: string): boolean {
+    return this.runContextReadModel.runHasSteeredPeerWork(runId);
   }
 
   outboundAwaitingQuestionRequestIdsAttachedToRun(runId: string, agentId: string): string[] {

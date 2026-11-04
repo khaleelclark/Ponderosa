@@ -30,7 +30,7 @@ export const PONDEROSA_WORKSPACE_TOOLS: RuntimeDynamicToolSpec[] = [
  * lifetimes, quorum conditions, and exact recovery. */
 export const PONDEROSA_COORDINATE_TOOL: RuntimeDynamicToolSpec = {
   name: "ponderosa_coordinate",
-  description: "Delegate tracked work with {recipientAgentId,text} or atomic {delegations:[...]}. New Requests run next; they never steer, pause, cancel or interrupt active work. Do not create another Request to stop a busy Agent. To stop work you requested, cancel your exact original outbound Request with ponderosa_update_request({requestId,kind:\"cancelled\"}); to stop a whole active descendant Run use ponderosa_manage stop_agent. Defaults: stable idempotency, indefinite lifetime, and one all-results Join waking each_result while preserving the parent workflow. For a deadline use lifetime:{kind:\"deadline\",at:\"<ISO timestamp>\"}. For final-only fan-out use completionMode:\"join\", wakePolicy:\"final_only\". Use record only for fire-and-observe; callback wakes once per unjoined result. Advanced requests/join supports quorum/any, different lifetimes, existing-request recovery and custom outcomes. Returned joinId already exists.",
+  description: "Delegate tracked work with {recipientAgentId,text} or atomic {delegations:[...]}. New Requests steer a busy Agent when supported; the existing work remains active. If steering is unsupported, the Request waits for the next Run. A new Request does not pause or cancel existing work. Do not create another Request to stop a busy Agent. To stop work you requested, cancel your exact original outbound Request with ponderosa_update_request({requestId,kind:\"cancelled\"}); to stop a whole active descendant Run use ponderosa_manage stop_agent. Defaults: stable idempotency, indefinite lifetime, and one all-results Join waking each_result while preserving the parent workflow. For a deadline use lifetime:{kind:\"deadline\",at:\"<ISO timestamp>\"}. For final-only fan-out use completionMode:\"join\", wakePolicy:\"final_only\". Use record only for fire-and-observe; callback wakes once per unjoined result. Advanced requests/join supports quorum/any, different lifetimes, existing-request recovery and custom outcomes. Returned joinId already exists.",
   inputSchema: {
     type: "object",
     additionalProperties: false,
@@ -236,7 +236,7 @@ export const PONDEROSA_REPLY_STREAM_TOOL: RuntimeDynamicToolSpec = {
 
 export const PONDEROSA_MESSAGE_TOOL: RuntimeDynamicToolSpec = {
   name: "ponderosa_message",
-  description: "Send immediately, or delivery:next_run for one-way information to explicit recipientAgentIds. {text} alone requires one authorized default reply route; otherwise supply intent. Immediate recipientAgentIds requires intent collaboration, including peer replies. Include the facts recipients need; they cannot see your hidden context. next_run omits intent and creates no chat message, Run, Request, Join, reply obligation or acknowledgement. Use coordinate for tracked work; update_request for correlated results.",
+  description: "Send immediately, or delivery:next_run for one-way information to explicit recipientAgentIds. {text} alone requires one authorized default reply route; otherwise supply intent. Immediate recipientAgentIds requires intent collaboration, including peer replies. For immediate collaboration, use messagePurpose instruction or question for actionable asks; use progress or fyi for visible information that must not interrupt. Unmarked immediate collaboration defaults to steering. Include the facts recipients need; they cannot see your hidden context. next_run omits intent and creates no chat message, Run, Request, Join, reply obligation or acknowledgement. Use coordinate for tracked work; update_request for correlated results.",
   inputSchema: {
     type: "object",
     additionalProperties: false,
@@ -256,6 +256,7 @@ export const PONDEROSA_MESSAGE_TOOL: RuntimeDynamicToolSpec = {
           anyOf: [
             { required: ["intent"] },
             { required: ["urgency"] },
+            { required: ["messagePurpose"] },
             { required: ["artifactIds"] },
             { required: ["document"] },
             { required: ["citations"] },
@@ -289,6 +290,7 @@ export const PONDEROSA_MESSAGE_TOOL: RuntimeDynamicToolSpec = {
         items: { type: "string", minLength: 1, maxLength: 200 },
         description: "Stable Agent IDs. Immediate recipients require explicit intent collaboration. Required for collaboration and next_run, including one recipient; next_run omits intent.",
       },
+      messagePurpose: { type: "string", enum: ["instruction", "question", "progress", "fyi"], description: "Immediate collaboration purpose: instruction/question steers; progress/fyi is visible without interrupting. If omitted, immediate collaboration steers." },
       urgency: { type: "string", enum: ["ordinary", "urgent"] },
       expiresAt: {
         type: "string", minLength: 1, maxLength: 100, format: "date-time",

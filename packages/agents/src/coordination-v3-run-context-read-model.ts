@@ -60,12 +60,13 @@ export class CoordinationV3RunContextReadModel {
     return rows.length ? "unconfirmed" : "unattached";
   }
 
-  runHasSteeredRequest(runId: string): boolean {
+  runHasSteeredPeerWork(runId: string): boolean {
     return Boolean(this.sqlite.prepare(`
       SELECT 1 FROM scheduler_prompt_injections injection, json_each(injection.activation_ids_json) member
       JOIN agent_activations activation ON activation.id = member.value
       WHERE injection.run_id = ? AND injection.kind = 'steer' AND injection.state = 'acknowledged'
-        AND activation.kind = 'coordination_request'
+        AND activation.kind IN ('coordination_request','ordinary_message','urgent_message')
+            AND activation.prompt_class <> 'human'
       LIMIT 1
     `).get(runId));
   }

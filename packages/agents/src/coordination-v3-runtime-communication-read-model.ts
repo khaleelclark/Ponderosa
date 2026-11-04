@@ -38,6 +38,8 @@ export class CoordinationV3RuntimeCommunicationReadModel {
     id: string; agent_id: string; scope_key: string; dispatch_policy: string; kind: string;
     state: string; steering_wait_reason: string | null;
   }): MessageDeliveryReceiptDto["steeringWaitReason"] {
+    if (activation.dispatch_policy === "next_run" && activation.state === "retry_pending" &&
+        activation.steering_wait_reason === "provider_unsupported") return "provider_unsupported";
     if (activation.dispatch_policy !== "steer_or_run" ||
       !["pending", "retry_pending"].includes(activation.state)) return undefined;
     const now = new Date().toISOString();
