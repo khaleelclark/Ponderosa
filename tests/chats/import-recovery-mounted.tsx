@@ -116,7 +116,7 @@ export async function heldImportRetirementRegression():Promise<void>{
  const button=(name:string)=>Array.from(host.querySelectorAll('button')).find(item=>item.textContent===name)!;
  try{
   retainPendingAgentImport(entry);
-  root.render(<PendingAgentImportRecovery entry={entry} onAccepted={()=>{throw Error('unexpected import');}} onRetired={value=>{releasePendingAgentImport(value);dismissed++;}}/>);await settle();
+  root.render(<PendingAgentImportRecovery entry={entry} onAccepted={()=>{throw Error('unexpected import');}} onRetired={value=>{releasePendingAgentImport(value);dismissed++;}} onDeleted={value=>{releasePendingAgentImport(value);dismissed++;}}/>);await settle();
   button('Check import status').click();await settle();
   assert(!button('Retire held request')&&listPendingAgentImports(product).some(item=>item.requestId===entry.requestId),'mismatched status cannot authorize retirement');
   current={...status};button('Check import status').click();await settle();
@@ -128,4 +128,43 @@ export async function heldImportRetirementRegression():Promise<void>{
   button('Dismiss retired request').click();await settle();
   assert(dismissed===1&&!listPendingAgentImports(product).some(item=>item.requestId===entry.requestId)&&sent===1,'confirmed retirement is dismissed without a new upload');
  }finally{try{releasePendingAgentImport(entry);}catch{}root.unmount();host.remove();Object.assign(api,original);}
+}
+
+export async function deletedImportNoticeRegression():Promise<void>{
+ const host=document.createElement('div');document.body.append(host);const root=createRoot(host),product=currentProductScope();
+ const entry={version:1,requestId:'test-deleted-request',projectId:'test-deleted-project',conversationId:'test-deleted-chat',product,metadata:{conversationId:'test-deleted-chat',engineMapping:{}},fingerprint:{algorithm:'sha256-4m-v1',bytes:5,digest:'c'.repeat(64)}} as unknown as PendingAgentImport;
+ const identity={projectId:entry.projectId,conversationId:entry.conversationId,product,requestId:entry.requestId,operationId:'deleted-operation',requestFingerprint:agentImportFingerprintHeader(entry.fingerprint)};
+ const original={getAgentImportOperationByRequest:api.getAgentImportOperationByRequest,startAgentPackageImport:api.startAgentPackageImport};
+ let current:unknown={state:'destination_deleted',...identity,requestFingerprint:'wrong'},dismissed=0,sends=0;
+ api.getAgentImportOperationByRequest=async()=>{throw new ApiRequestError(409,'Destination unavailable',current);};
+ api.startAgentPackageImport=async()=>{sends++;throw Error('must not retry');};
+ const button=(name:string)=>Array.from(host.querySelectorAll('button')).find(item=>item.textContent===name)!;
+ try{
+  retainPendingAgentImport(entry);
+  root.render(<PendingAgentImportRecovery entry={entry} onAccepted={()=>{throw Error('deleted result must not be returned');}} onRetired={()=>{throw Error('not a retired request');}} onDeleted={value=>{releasePendingAgentImport(value);dismissed++;}}/>);await settle();
+  button('Check import status').click();await settle();
+  assert(!button('Dismiss saved notice')&&listPendingAgentImports(product).some(item=>item.requestId===entry.requestId),'mismatched deleted status cannot clear the request');
+  current={state:'destination_deleted',...identity};button('Check import status').click();await settle();
+  assert(host.textContent?.includes('outcome and any effects remain unknown')&&Boolean(button('Dismiss saved notice')),'exact deletion receipt shows unresolved outcome and explicit choice');
+  assert(dismissed===0&&listPendingAgentImports(product).some(item=>item.requestId===entry.requestId),'the receipt never clears automatically');
+  button('Dismiss saved notice').click();await settle();
+  assert(dismissed===1&&sends===0&&!listPendingAgentImports(product).some(item=>item.requestId===entry.requestId),'explicit dismissal clears only browser notice without retry');
+ }finally{try{releasePendingAgentImport(entry);}catch{}root.unmount();host.remove();Object.assign(api,original);}
+}
+
+export async function lostImportPollingRegression():Promise<void>{
+ const host=document.createElement('div');document.body.append(host);const root=createRoot(host),product=currentProductScope();
+ const client=new QueryClient({defaultOptions:{queries:{retry:false},mutations:{retry:false}}});
+ const entry={version:1,requestId:'test-poll-request',projectId:'test-poll-project',conversationId:'test-poll-chat',product,metadata:{conversationId:'test-poll-chat',engineMapping:{}},fingerprint:{algorithm:'sha256-4m-v1',bytes:5,digest:'e'.repeat(64)}} as unknown as PendingAgentImport;
+ const original={getAgentImportOperationByRequest:api.getAgentImportOperationByRequest,getAgentImportOperation:api.getAgentImportOperation};
+ const operation={id:'poll-operation',requestId:entry.requestId,payloadHash:'a'.repeat(64),requestFingerprint:agentImportFingerprintHeader(entry.fingerprint),projectId:entry.projectId,conversationId:entry.conversationId,product,sourceLabel:'fixture',phase:'queued',status:'pending',createdAt:'now',updatedAt:'now'} as any;
+ api.getAgentImportOperationByRequest=async()=>operation;
+ api.getAgentImportOperation=async()=>{throw new ApiRequestError(404,'Owner unavailable');};
+ const button=(name:string)=>Array.from(host.querySelectorAll('button')).find(item=>item.textContent===name)!;
+ try{
+  retainPendingAgentImport(entry);
+  root.render(<QueryClientProvider client={client}><MutationNotificationProvider><ImportAgentForm projectId={entry.projectId} engines={[]} conversations={[]} onCancel={()=>{}}/></MutationNotificationProvider></QueryClientProvider>);await settle();
+  button('Check import status').click();await until(()=>Boolean(host.textContent?.includes('Import awaiting confirmation')),'poll error did not return to saved request');
+  assert(listPendingAgentImports(product).some(item=>item.requestId===entry.requestId),'polling failure retains request for scoped check');
+ }finally{try{releasePendingAgentImport(entry);}catch{}root.unmount();client.clear();host.remove();Object.assign(api,original);}
 }

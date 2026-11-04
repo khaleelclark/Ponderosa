@@ -174,6 +174,12 @@ export function ImportAgentForm({
     setRoleOperation(undefined);setFailedImport(entry);setError(operation.error??'Import failed');
   };
   useEffect(()=>{
+    if(!operationQuery.isError)return;
+    // A lost owner or a transient read failure is never a successful import.
+    // Return to the exact saved request so its scoped status can be checked.
+    setRoleOperation(undefined);setError('Import status could not be read. Check the saved request before trying again.');refreshSaved();
+  },[operationQuery.errorUpdatedAt]);
+  useEffect(()=>{
     const current=operationQuery.data;if(!current)return;
     const saved=savedImports.items.find(entry=>entry.requestId===current.requestId&&entry.projectId===current.projectId);
     if(!saved||!agentImportOperationMatches(current,saved)){
@@ -402,13 +408,14 @@ export function ImportAgentForm({
     <Button onClick={closeForm}>Close</Button>
   </Stack>;
   if(savedImports.error)return <Stack spacing={2}><Alert severity="error">{savedImports.error}</Alert><Button onClick={closeForm}>Close</Button></Stack>;
+  const dismissSavedNotice=(entry:PendingAgentImport)=>{
+    releasePendingAgentImport(entry);
+    if(savedIntentRef.current?.requestId===entry.requestId)savedIntentRef.current=undefined;
+    importRequestId.current=createClientId();setError(undefined);refreshSaved();clearPackageDraft();
+  };
   const untrackedImports=savedImports.items.filter(entry=>!roleOperation||!agentImportOperationMatches(roleOperation,entry));
   if(untrackedImports.length)return <Stack spacing={2}>
-    {untrackedImports.map(entry=><PendingAgentImportRecovery key={entry.requestId} entry={entry} initialBlob={submittedBlobRef.current?.requestId===entry.requestId?submittedBlobRef.current.blob:undefined} disabled={importAgents.isPending} onAccepted={acceptSaved} onRetired={retired=>{
-      releasePendingAgentImport(retired);
-      if(savedIntentRef.current?.requestId===retired.requestId)savedIntentRef.current=undefined;
-      importRequestId.current=createClientId();setError(undefined);refreshSaved();clearPackageDraft();
-    }}/>)}
+    {untrackedImports.map(entry=><PendingAgentImportRecovery key={entry.requestId} entry={entry} initialBlob={submittedBlobRef.current?.requestId===entry.requestId?submittedBlobRef.current.blob:undefined} disabled={importAgents.isPending} onAccepted={acceptSaved} onRetired={dismissSavedNotice} onDeleted={dismissSavedNotice}/>)}
     <Button disabled={pendingRef.current} onClick={closeForm}>Close</Button>
   </Stack>;
   return <Stack spacing={2}>
