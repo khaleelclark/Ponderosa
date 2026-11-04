@@ -19,7 +19,7 @@ const packageFor=(manifest,working={})=>{
  const files={'.ponderosa-portable-review/user-data.json':Buffer.from(JSON.stringify(manifest)),...working};
  return {schema:'ponderosa.agent-package.v1',mode:'full',kind:'organization',exportedAt:new Date().toISOString(),sourceLabel:'Real Git graph custody regression',rootRef:'agent',agents:[{ref:'agent',title:'Agent',engine:'codex',workingRootRef:'work',managementPermissions:{allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false},workingFolder:{directories:[],excludedPaths:['.git']},workingFiles:Object.keys(files).map((name,index)=>({path:name,artifactRef:'file-'+index})),artifacts:Object.entries(files).map(([name,bytes],index)=>({ref:'file-'+index,kind:'generated_file',path:name,createdAt:new Date().toISOString(),dataBase64:Buffer.from(bytes).toString('base64')}))}]};
 };
-async function fixture(t,worktree=false){
+async function fixture(t,worktree=false,selectedWorktree=false){
  const root=await realpath(await mkdtemp(path.join(tmpdir(),'native-real-graph-'))),source=path.join(root,'source'),destination=path.join(root,'destination');
  t.after(()=>rm(root,{recursive:true,force:true}));
  await mkdir(source);await mkdir(destination);
@@ -37,28 +37,54 @@ async function fixture(t,worktree=false){
   await git(source,'config','core.hooksPath','hooks');
   await mkdir(path.join(destination,'hooks'));await writeFile(path.join(destination,'hooks','script'),data);
  }
+ let selected;
+ if(selectedWorktree){
+  const sourceSelected=path.join(source,'.hooks'),destinationSelected=path.join(destination,'.hooks');
+  await mkdir(sourceSelected);await writeFile(path.join(sourceSelected,'run'),data);
+  await chmod(path.join(sourceSelected,'run'),0o700);await link(path.join(sourceSelected,'run'),path.join(sourceSelected,'hard'));
+  await symlink('run',path.join(sourceSelected,'symbol'));await chmod(sourceSelected,0o750);
+  await utimes(path.join(sourceSelected,'run'),1700000000.123456,1700000000.123456);
+  await lutimes(path.join(sourceSelected,'symbol'),1700000000.123456,1700000000.123456);
+  await utimes(sourceSelected,1700000000.123456,1700000000.123456);
+  await git(source,'config','core.hooksPath','.hooks');
+  await mkdir(destinationSelected);await writeFile(path.join(destinationSelected,'run'),data);
+  await link(path.join(destinationSelected,'run'),path.join(destinationSelected,'hard'));
+  await symlink('run',path.join(destinationSelected,'symbol'));
+  selected={sourceFile:await lstat(path.join(sourceSelected,'run'),{bigint:true}),sourceDir:await lstat(sourceSelected,{bigint:true}),sourceLink:await lstat(path.join(sourceSelected,'symbol'),{bigint:true}),destinationFile:await lstat(path.join(destinationSelected,'run'),{bigint:true}),destinationDir:await lstat(destinationSelected,{bigint:true})};
+ }
  const sourceFile=await lstat(path.join(sourceHooks,'script'),{bigint:true});
  const sourceDir=await lstat(sourceHooks,{bigint:true});
  const sourceLink=worktree?undefined:await lstat(path.join(sourceHooks,'symbol'),{bigint:true});
  const manifest=await exportReviewedUserData(source,{git:true,harness:false,externalGitDependencies:true});
- const activation={git:true,harness:false},pkg=packageFor(manifest,worktree?{'hooks/script':data}:{});
+ const working=worktree?{'hooks/script':data}:selectedWorktree?{'.hooks/run':data,'.hooks/hard':data}:{};
+ const activation={git:true,harness:false},pkg=packageFor(manifest,working);
  const tasks=planReviewedRecoveryRoots(pkg,{work:destination},activation);
  assert.equal(tasks.length,1);
  const graph=getNativeGitExternalGraph(tasks[0].configuration,{gitDir:path.join(destination,'.git'),privateDir:path.join(destination,'.git'),worktreePath:destination});
- return {root,source,destination,sourceHooks,sourceFile,sourceDir,sourceLink,manifest,activation,tasks,graph,apply:(expected,beforeFinalize)=>applyReviewedRecoveryRoots(tasks,activation,()=>{},expected,undefined,beforeFinalize)};
+ return {root,source,destination,sourceHooks,sourceFile,sourceDir,sourceLink,selected,manifest,activation,tasks,graph,apply:(expected,beforeFinalize)=>applyReviewedRecoveryRoots(tasks,activation,()=>{},expected,undefined,beforeFinalize)};
 }
 
 test('real reviewed default hook graph restores exact alias and metadata evidence',options,async t=>{
- const f=await fixture(t);
+ const f=await fixture(t,false,true);
  const original=f.graph.files.find(node=>node.path.endsWith('/hooks/hard')||node.path.endsWith('/hooks/script'));
  assert.ok(original,'the real planner issues an owned original');
- await f.apply();
+ const selectedPath=path.join(f.destination,'.hooks');
+ assert.ok(f.graph.files.some(node=>node.path===path.join(selectedPath,'hard')||node.path===path.join(selectedPath,'run')),'the selected working original is planned separately');
+ const issued={...identity(await lstat(f.destination,{bigint:true})),directories:{'.hooks':identity(f.selected.destinationDir)}};
+ await f.apply({[f.destination]:issued});
  const target=path.join(f.destination,'.git','hooks'),file=await lstat(path.join(target,'script'),{bigint:true}),hard=await lstat(path.join(target,'hard'),{bigint:true}),dir=await lstat(target,{bigint:true}),symbol=await lstat(path.join(target,'symbol'),{bigint:true});
  assert.equal(file.dev,hard.dev);assert.equal(file.ino,hard.ino);assert.equal(file.nlink,2n);
  assert.equal(file.mode&0o7777n,f.sourceFile.mode&0o7777n);assert.equal(file.mtimeNs,f.sourceFile.mtimeNs);
  assert.equal(dir.mode&0o7777n,f.sourceDir.mode&0o7777n);assert.equal(dir.mtimeNs,f.sourceDir.mtimeNs);
  assert.equal(await readlink(path.join(target,'symbol')),'script');assert.equal(symbol.mtimeNs,f.sourceLink.mtimeNs);
  assert.deepEqual(await readFile(path.join(target,'script')),data);
+ const reused=await lstat(path.join(selectedPath,'run'),{bigint:true}),selectedHard=await lstat(path.join(selectedPath,'hard'),{bigint:true});
+ const selectedDir=await lstat(selectedPath,{bigint:true}),selectedSymbol=await lstat(path.join(selectedPath,'symbol'),{bigint:true});
+ assert.equal(reused.dev,f.selected.destinationFile.dev);assert.equal(reused.ino,f.selected.destinationFile.ino);
+ assert.equal(reused.ino,selectedHard.ino);assert.equal(reused.nlink,2n);assert.equal(reused.mode&0o7777n,f.selected.sourceFile.mode&0o7777n);assert.equal(reused.mtimeNs,f.selected.sourceFile.mtimeNs);
+ assert.equal(selectedDir.mode&0o7777n,f.selected.sourceDir.mode&0o7777n);assert.equal(selectedDir.mtimeNs,f.selected.sourceDir.mtimeNs);
+ assert.equal(await readlink(path.join(selectedPath,'symbol')),'run');assert.equal(selectedSymbol.mtimeNs,f.selected.sourceLink.mtimeNs);
+ assert.deepEqual(await readFile(path.join(selectedPath,'run')),data);
 });
 
 test('real reviewed worktree hook requires original root custody before creating Git',options,async t=>{
