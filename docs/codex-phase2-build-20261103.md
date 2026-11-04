@@ -22,6 +22,54 @@ and keeps human-only checks from blocking independent work. Original worktrees,
 paused package work, live services, data and credentials were preserved.
 This is source work only: no deployment or production restart was performed.
 
+## Current integrated checkpoint — 4 November, later
+
+Product-and-test candidate: `791ef5c375ca86a9d5d3aa8a16e187d466c443fd`.
+This section supersedes older current-state claims in the historical checkpoints
+below; their exact-commit results remain useful evidence for those revisions.
+
+- Tracked peer Requests now steer a busy Agent with an exact Request ID and
+  host-issued injection freshness fence. Controlled stale calls before and
+  after acknowledgement are rejected, the original task remains pending, a
+  known unsupported delivery can queue for the next Run, and an uncertain
+  delivery stays held. Human interruptions and tracked Requests are not batched
+  together. Explicit next-Run FYIs remain noninterrupting. Ordinary non-urgent
+  collaboration messages still use the next-Run path. Provider acknowledgement
+  and the fence are practical freshness checks, not proof of model comprehension
+  or provider-supplied causal parentage; live-provider qualification is open.
+- An explicit reviewed-continuation flow can carry the saved original task,
+  steer, and available attachments into a fresh session after the human reviews
+  unresolved effects. The original delivery outcome remains unknown; the
+  successor is not an automatic replay. The currently qualified path is the
+  built-in persistent Codex provider on POSIX with exact start/exit evidence,
+  a single reviewable root and interruption, and available original files.
+  Other providers, Windows, historical or mixed/multiple uncertain cases,
+  changed evidence and uncertain source retirement stay held. An inert local
+  Codex app-server fixture verified the original task, both attachment bytes,
+  and reply on the original root; this is not a live provider qualification.
+- Chat and Agent removal now report when logical removal succeeded but cleanup
+  remains pending, distinct from a deletion that did not finish. This is not
+  physical Chroma deletion. The 12 historical cleanup/rollback cases remain
+  unresolved; one tests a foreign-data diagnostic and the others include
+  physical cleanup or compensation expectations.
+
+Combined validation on `791ef5c3`: offline install, full build and recursive
+typecheck passed; affected server tests 48/48 and web tests 27/27 passed;
+the full mounted matrix passed 100/100 (50 desktop, 50 emulated phone). Logs
+are in `/tmp/ponderosa-codex-phase2-20261103/evidence/final-791ef-*`.
+Fixtures and providers were inert; the loopback guard was process-level, not a
+kernel network namespace. The full server suite was not rerun and Bible
+acceptance, real-provider behavior and the 20-run reliability streak remain open.
+
+The existing built-in memory path normally has one Chroma client and queue per
+Ponderosa app, including forwarded MCP calls, but a second app or a direct client
+can bypass it. The cleanup stubs do not themselves enter that queue. A conditional
+sole-writer mode would require an explicit user decision to accept the risk of
+another writer bypassing it, as well as actual check/delete/receipt implementation.
+No such mode is enabled or assumed. An enforceable all-writer barrier or a
+qualified atomic backend and verified migration are alternatives. No production
+service or data was changed.
+
 ## Finite source checklist
 
 | Owner | Integrated source at checkpoint | Remaining work or boundary |
@@ -201,8 +249,8 @@ banner/sound behavior. Evidence: `evidence/combined-fe16-*`. The mounted runner
 blocked unmocked external requests, while the other lanes used a process-level
 loopback guard rather than a kernel-enforced network namespace.
 
-Bible 13 remains open: canonical tracked peer Requests currently queue behind a
-busy Run. Changing them directly to steering could associate an older in-flight
+At the earlier `8dbcc2b0b` checkpoint, tracked peer Requests queued behind a
+busy Run. The later integrated candidate above changes that tracked path. Changing them directly to steering could associate an older in-flight
 result with a Request not yet seen. Current Claude acceptance proves a pipe
 write rather than matching input delivery, and shared provider receipts do not
 bind later tool calls to a specific injected message. This is a source-permitted
@@ -249,7 +297,7 @@ contains four further changes:
   reintroduction of the instruction. The exact original reply obligation stays
   pending, legacy queued recoveries remain held, and the user sees the hold.
   No reviewed safe retry or resolution for unknown effects is implemented;
-  automatic agent-to-agent Request steering still does not meet Bible 13.
+  at that checkpoint automatic agent-to-agent Request steering was not implemented.
   The restart test invokes startup recovery directly, not a physical kill.
 
 On predecessor `2469eca3ff5c561659f0ac43816319f9eb9eacbd`, the full build
@@ -309,7 +357,7 @@ claim and submission, and ask only about unresolved effects; it must not
 silently replay the uncertain work. Existing explicit provider refusals already
 use the ordinary retry path. Do not treat the draft as shipped or validated.
 
-Busy tracked Requests remain queued and do not meet Bible section 13. Disposable
+At candidate `70ce427f`, busy tracked Requests remained queued. Disposable
 probes after a test-only policy flip demonstrated an older tool call could mark a
 new Request complete before or after acknowledgement, and that an error exposed
 its Request ID. Current provider/tool interfaces do not prove the causal link
@@ -344,7 +392,7 @@ across two Runs, each with exact Run/fence registration, and one start admission
 Windows Job coverage remains simulated. Tests used disposable fixtures and a
 process-level loopback guard, not kernel network isolation.
 
-The requested reviewed continuation remains disabled. Current adapters and
+At the earlier `5a5e4e05` checkpoint, reviewed continuation remained disabled. Then-current adapters and
 scheduler do not enforce a qualified boundary from the final process/source
 check through provider submission; one-shot inputs can reach the process before
 registration callbacks, and delayed starts cannot be excluded merely by an
@@ -357,7 +405,7 @@ it is not integrated or enabled. Any usable path must preserve the original task
 steer and attachments, reconcile conclusive cases, and request a decision only
 on unresolved effects, without automatic replay.
 
-Busy tracked Requests still queue, contrary to Bible section 13. A controlled
+At that earlier checkpoint busy tracked Requests still queued. A controlled
 old-call probe with an explicitly caller-selected Request ID showed that an
 ID/acknowledgement-only policy change can complete a new Request from an old
 call. The current provider tool-call contract supplies no qualified causal
