@@ -4,7 +4,7 @@ import {randomUUID} from 'node:crypto';
 import {writeFile,readFile} from 'node:fs/promises';
 import path from 'node:path';
 import {chatBrowserOwnerId} from '@ponderosa/core';
-import {AgentStore,BranchStore,CoordinationV3Store} from '@ponderosa/agents';
+import {AgentStore,BranchStore,CoordinationV3Store,WorkspaceStore} from '@ponderosa/agents';
 import {conversationJsonPath} from '../../packages/agents/dist/paths.js';
 import {withFixture,until} from '../shared/fixture.mjs';
 
@@ -204,6 +204,50 @@ test('live workspace streams scope draft invalidations and preference payloads t
   }
  }finally{for(const record of Object.values(streams))record.abort.abort();await Promise.all(Object.values(streams).map(record=>record.done));}
 }));
+
+test('pending Branch Output roles stay private in snapshots, live events and replay until their plan completes',async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const {branch,products}=await setup(f),stable=products.branches[0].agent,pending=products.branches[1],foreign=products.dev[0].agent;
+  let workspace;const original=WorkspaceStore.prototype.updatePreferences;
+  WorkspaceStore.prototype.updatePreferences=function(patch){workspace=this;return original.call(this,patch);};
+  try{f.ok(await f.api('PATCH','/api/branches/engine/workspace/preferences',{globalInstructions:'capture workspace'}));}
+  finally{WorkspaceStore.prototype.updatePreferences=original;}
+  assert.ok(workspace);
+  const reviewMarker='internal-review-'+randomUUID(),plan=randomUUID(),now=new Date().toISOString();
+  workspace.updatePreferences({outputApps:{agentIds:[stable.id,pending.agent.id,foreign.id],speakerAgentId:pending.agent.id,initialized:true,
+   agentEpochs:{[stable.id]:1,[pending.agent.id]:2,[foreign.id]:3},importReviews:{[reviewMarker]:{binding:'fixture',state:'fixture',targetEpochs:{[pending.agent.id]:2},eligible:true,createdAt:now,operationId:plan,review:{id:reviewMarker,inactive:false,speaker:'activate',targets:[{ref:pending.agent.id,output:true,speaker:true}]}}}}});
+  store.sqlite.prepare("INSERT INTO branch_installation_plans(id,branch_id,package_json,bindings_json,preview_json,state,created_at) VALUES(?,?, '{}','{}','{}','applying',?)").run(plan,branch.id,now);
+  store.sqlite.prepare("INSERT INTO branch_installation_resources(branch_id,package_id,chat_ref,agent_ref,local_id,state,staging_plan_id) VALUES(?,?,'pending','agent',?,'active',?)").run(branch.id,plan,pending.agent.id,plan);
+  const projected=async()=>f.ok(await f.api('GET','/api/branches/engine/workspace/preferences')).outputApps;
+  const hidden=roles=>{assert.deepEqual(roles.agentIds,[stable.id]);assert.equal(roles.speakerAgentId,null);assert.deepEqual(roles.agentEpochs,{[stable.id]:1});assert.equal(JSON.stringify(roles).includes(reviewMarker),false);};
+  hidden(await projected());
+  const core=f.ok(await f.api('GET','/api/workspace/preferences')).outputApps;assert.deepEqual(core.agentIds,[]);assert.equal(core.speakerAgentId,null);assert.equal(JSON.stringify(core).includes(foreign.id),false);
+  const origin=await f.listen(),abort=new AbortController(),record={text:''};
+  const response=await fetch(origin+'/api/branches/engine/workspace/stream',{signal:abort.signal});assert.equal(response.status,200);
+  const reading=(async()=>{try{for await(const bytes of response.body)record.text+=Buffer.from(bytes).toString('utf8');}catch(error){if(!abort.signal.aborted)throw error;}})();
+  let replayAbort,replayReading;
+  try{
+   await until(()=>record.text.includes('workspace_status'),'Output projection live stream');
+   const cursor=workspace.cursor(),marker='output-projection-'+randomUUID();
+   f.ok(await f.api('PATCH','/api/branches/engine/workspace/preferences',{globalInstructions:marker}));
+   await until(()=>record.text.includes(marker),'projected Output live event');
+   const events=text=>text.split('\n').filter(line=>line.startsWith('data: ')).map(line=>{try{return JSON.parse(line.slice(6));}catch{return null;}}).filter(x=>x?.event?.type==='preferences_updated'&&x.event.preferences.globalInstructions===marker);
+   const live=events(record.text);assert.equal(live.length,1);hidden(live[0].event.preferences.outputApps);assert.equal(JSON.stringify(live[0]).includes(pending.agent.id),false);
+   replayAbort=new AbortController();const replay=await fetch(origin+'/api/branches/engine/workspace/stream?lastEventId='+cursor,{signal:replayAbort.signal});assert.equal(replay.status,200);
+   const replayRecord={text:''};replayReading=(async()=>{try{for await(const bytes of replay.body)replayRecord.text+=Buffer.from(bytes).toString('utf8');}catch(error){if(!replayAbort.signal.aborted)throw error;}})();
+   await until(()=>replayRecord.text.includes(marker),'projected Output replay event');
+   const replayed=events(replayRecord.text);assert.equal(replayed.length,1);assert.equal(replayed[0].replayed,true);hidden(replayed[0].event.preferences.outputApps);
+   // A pending owning Chat or missing plan also fails closed.
+   store.sqlite.prepare('UPDATE branch_installation_resources SET local_id=? WHERE branch_id=? AND package_id=?').run(pending.chat.id,branch.id,plan);hidden(await projected());
+   store.sqlite.prepare('UPDATE branch_installation_resources SET staging_plan_id=? WHERE branch_id=? AND package_id=?').run(randomUUID(),branch.id,plan);hidden(await projected());
+   store.sqlite.prepare('UPDATE branch_installation_resources SET staging_plan_id=? WHERE branch_id=? AND package_id=?').run(plan,branch.id,plan);
+   store.sqlite.prepare("UPDATE branch_installation_plans SET state='completed' WHERE id=?").run(plan);
+   const published=await projected();assert.deepEqual(published.agentIds,[stable.id,pending.agent.id]);assert.equal(published.speakerAgentId,pending.agent.id);assert.equal(JSON.stringify(published).includes(reviewMarker),false);
+   assert.ok(workspace.getPreferences().outputApps.importReviews[reviewMarker],'public projection must not mutate canonical review state');
+  }finally{abort.abort();replayAbort?.abort();await reading;await replayReading;}
+ },{storeFactory:dataDir=>(store=new AgentStore(dataDir))});
+});
 
 test('published Branch results remain readable after private Agent deletion and reopening with exact product ownership',async t=>{
  let store;

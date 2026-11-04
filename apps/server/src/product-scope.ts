@@ -109,8 +109,30 @@ function preferenceMember(store:Pick<AgentStore,'sqlite'>,kind:string,id:string,
  if(kind!=='key')return resourceInProduct(store,kind,id,product);
  const split=id.indexOf(':');return split>0&&resourceInProduct(store,id.slice(0,split),id.slice(split+1),product);
 }
+/** Project role references against current ownership, including an active
+ * resource whose installation is not yet committed. Workspace events carry
+ * historical preference snapshots, so perform this check at delivery time. */
+function visibleOutputAgent(store:Pick<AgentStore,'sqlite'>,id:string,product:ProductScope):boolean {
+ if(product!=='branches'||!resourceInProduct(store,'agent',id,product))return false;
+ return Boolean(store.sqlite.prepare(`SELECT 1 FROM agents a JOIN conversations c ON c.id=a.conversation_id AND c.project_id=a.project_id
+  JOIN branches b ON b.id=c.branch_id AND b.deleting=0
+  WHERE a.id=? AND a.deleted_at IS NULL AND c.branch_execution_id IS NULL
+  AND NOT EXISTS(SELECT 1 FROM branch_installation_resources r WHERE r.local_id IN (a.id,c.id)
+   AND (r.state!='active' OR (r.staging_plan_id IS NOT NULL AND NOT EXISTS(
+    SELECT 1 FROM branch_installation_plans p WHERE p.id=r.staging_plan_id AND p.state='completed'))))`).get(id));
+}
 export function productPreferences(store:Pick<AgentStore,'sqlite'>,preferences:WorkspacePreferencesDto,product:ProductScope):WorkspacePreferencesDto {
  const result={...preferences} as WorkspacePreferencesDto & Record<string,unknown>;
+ if(preferences.outputApps){
+  const roles=preferences.outputApps,visible=new Map<string,boolean>();
+  const permits=(id:string)=>{if(!visible.has(id))visible.set(id,visibleOutputAgent(store,id,product));return visible.get(id)!;};
+  // Import reviews and setup are internal journal state. Reviews are returned
+  // by their dedicated preview endpoints, not by workspace preferences.
+  const {importReviews:_reviews,setup:_setup,agentEpochs,...publicRoles}=roles;
+  const agentIds=roles.agentIds.filter(permits);
+  result.outputApps={...publicRoles,agentIds,speakerAgentId:roles.speakerAgentId&&agentIds.includes(roles.speakerAgentId)?roles.speakerAgentId:null,
+   ...(agentEpochs?{agentEpochs:Object.fromEntries(Object.entries(agentEpochs).filter(([id])=>permits(id)))}:{})};
+ }
  for(const [key,kind]of Object.entries(preferenceResourceKinds))if(Array.isArray(result[key]))result[key]=(result[key] as string[]).filter(id=>preferenceMember(store,kind,id,product));
  result.notificationScopes=Object.fromEntries(Object.entries(preferences.notificationScopes??{}).filter(([key])=>preferenceMember(store,'key',key,product)));
  result.projectFolders=preferences.projectFolders?.filter(folder=>folder.projectIds.length?folder.projectIds.some(id=>resourceInProduct(store,'project',id,product)):product==='dev').map(folder=>({...folder,projectIds:folder.projectIds.filter(id=>resourceInProduct(store,'project',id,product))}));
