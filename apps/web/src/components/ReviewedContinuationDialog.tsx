@@ -81,8 +81,10 @@ function Communication({label,value}:{label:string;value:CommunicationEvent}):JS
  * the person to reconstruct them and never replays the uncertain operation. */
 export function ReviewedContinuationDialog({projectId,receipt,onClose,onOpenAgent}:{projectId:string;receipt:MessageDeliveryReceiptDto;onClose():void;onOpenAgent?(agentId:string):void}):JSX.Element {
  const client=useQueryClient(),product=currentProductScope(),name=storageName(product,projectId,receipt.activationId);
+ const releaseName=name+':source-release';
+ const releaseBytes=JSON.stringify({version:1,product,projectId,activationId:receipt.activationId,agentId:receipt.targetAgentId,injectionId:receipt.injectionId});
  const endpoint=`/api/projects/${encodeURIComponent(projectId)}/message-deliveries/${encodeURIComponent(receipt.activationId)}/reviewed-continuation`;
- const [status,setStatus]=useState<Status>(),[saved,setSaved]=useState<Saved>(),[error,setError]=useState(''),[notice,setNotice]=useState(''),[checked,setChecked]=useState(false),[note,setNote]=useState(''),[busy,setBusy]=useState(false),[sameCommand,setSameCommand]=useState<boolean>();
+ const [status,setStatus]=useState<Status>(),[saved,setSaved]=useState<Saved>(),[error,setError]=useState(''),[notice,setNotice]=useState(''),[checked,setChecked]=useState(false),[note,setNote]=useState(''),[busy,setBusy]=useState(false),[releasePending,setReleasePending]=useState(false),[sameCommand,setSameCommand]=useState<boolean>();
  const lock=useRef(false),mounted=useRef(true),statusGeneration=useRef(0);
  const load=async(existing?:Saved):Promise<Status>=>{
   const generation=++statusGeneration.current;
@@ -102,6 +104,16 @@ export function ReviewedContinuationDialog({projectId,receipt,onClose,onOpenAgen
     const initial=await load(original);
     if(!mounted.current||initial.status!=='source_retirement_required')return;
     if(original){setError('The earlier session needs attention while a continuation request is saved. Check the original request before continuing.');return;}
+    // Persist the one-shot release intent before dispatch. If a dialog is
+    // reopened while it is still in flight, read status instead of repeating it.
+    const prior=localStorage.getItem(releaseName);
+    if(prior!==null){
+     if(prior!==releaseBytes)throw Error('Saved session release information differs. Preserve browser data and check status.');
+     setReleasePending(true);setError('The earlier session release is unconfirmed. Check status; no second release was sent.');return;
+    }
+    try{localStorage.setItem(releaseName,releaseBytes);}catch(cause){throw Error(`Session release could not be saved. No release was sent. ${cause instanceof Error?cause.message:''}`);}
+    if(localStorage.getItem(releaseName)!==releaseBytes)throw Error('Session release could not be saved. No release was sent.');
+    setReleasePending(true);
     // Opening review is the explicit action authorizing this exact idle-session
     // release. A lost response is read back, never blindly repeated.
     lock.current=true;setBusy(true);setNotice('Releasing the completed Run’s idle session before review…');
@@ -124,17 +136,19 @@ export function ReviewedContinuationDialog({projectId,receipt,onClose,onOpenAgen
  // A lost response can settle later. Read status for a bounded period;
  // never resubmit on a timer. A person can request another check afterward.
  useEffect(()=>{
-  if(!saved||status?.status!=='review_required')return;
+  if(!(saved&&status?.status==='review_required')&&!(releasePending&&status?.status==='source_retirement_required'))return;
   let checks=0;
   const timer=window.setInterval(()=>{
    if(lock.current)return;
    checks++;
    const pending=load(saved),generation=statusGeneration.current;
-   void pending.catch(cause=>{if(mounted.current&&generation===statusGeneration.current)setError(cause instanceof Error?cause.message:'Could not read continuation status.');});
+   void pending.then(result=>{
+    if(mounted.current&&generation===statusGeneration.current&&result.status!=='source_retirement_required'&&releasePending){setError('');setNotice('');}
+   }).catch(cause=>{if(mounted.current&&generation===statusGeneration.current)setError(cause instanceof Error?cause.message:'Could not read continuation status.');});
    if(checks>=10)window.clearInterval(timer);
   },3000);
   return()=>window.clearInterval(timer);
- },[saved,status?.status,name]);
+ },[saved,releasePending,status?.status,name]);
  const refresh=async()=>{if(lock.current)return;lock.current=true;setBusy(true);try{const original=readSaved(name,product,projectId,receipt);setSaved(original);const current=await load(original);if(mounted.current&&current.status!=='source_retirement_required')setError('');}catch(cause){if(mounted.current)setError(cause instanceof Error?cause.message:'Could not read continuation status.');}finally{lock.current=false;if(mounted.current)setBusy(false);}};
  const submit=async()=>{
   if(lock.current||status?.status!=='review_required'||missingAttachments)return;

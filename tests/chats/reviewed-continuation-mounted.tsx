@@ -6,15 +6,16 @@ import {MessageDeliveryStatus} from '../../apps/web/src/components/MessageDelive
 const assert=(value:unknown,message:string)=>{if(!value)throw Error(message);};
 const flush=async()=>{for(let i=0;i<12;i++)await new Promise(resolve=>setTimeout(resolve,0));};
 const statusKey='ponderosa.reviewed-continuation.v1:dev:project-one:steer-one';
+const releaseKey=statusKey+':source-release';
 export async function reviewedContinuationRegression():Promise<void>{
- const oldFetch=window.fetch,oldStorage=localStorage.getItem(statusKey),oldSetItem=Storage.prototype.setItem,host=document.createElement('div');document.body.append(host);
+ const oldFetch=window.fetch,oldStorage=localStorage.getItem(statusKey),oldRelease=localStorage.getItem(releaseKey),oldSetItem=Storage.prototype.setItem,host=document.createElement('div');document.body.append(host);
  let root=createRoot(host);const client=new QueryClient({defaultOptions:{queries:{retry:false},mutations:{retry:false}}});
  const receipt={activationId:'steer-one',targetAgentId:'agent-one',state:'unconfirmed',injectionKind:'steer',injectionId:'injection-one',updatedAt:'now',attemptCount:1} as MessageDeliveryReceiptDto;
  const review={projectId:'project-one',activationId:'steer-one',agentId:'agent-one',conversationId:'chat-one',runId:'run-one',injectionId:'injection-one',reviewSha256:'a'.repeat(64),originalOutcome:'unknown',replayAuthorized:false,
   originalTask:{communication:{projectId:'project-one',conversationId:'chat-one',sender:{kind:'user',userId:'user'},text:'Finish the complete original task',attachments:[{id:'task-file',name:'task-notes.txt'}]}},
   originalSteer:{communication:{projectId:'project-one',conversationId:'chat-one',sender:{kind:'user',userId:'user'},text:'Also include the correction',attachments:[{id:'steer-file',name:'correction.pdf'}]}},
   effectInventory:{effects:[{kind:'communication',outcome:'host_committed',detail:'already settled'},{kind:'tool_call',outcome:'unknown',detail:'Tool effect is unconfirmed'}],nativeTail:'unknown',sourceWork:'held_unknown',replayAuthorized:false}};
- let recorded=false,loseResponse=true,commitOnLoss=true,badReceipt=false,otherCommand=false,unavailable=false,holdRead=false,holdPost=false,retirementNeeded=false,retirementLost=false,retirementFails=false,retirePosts=0,releaseRead:()=>void=()=>{},releasePost:()=>void=()=>{},posts:Array<Record<string,unknown>>=[],gets=0;
+ let recorded=false,loseResponse=true,commitOnLoss=true,badReceipt=false,otherCommand=false,unavailable=false,holdRead=false,holdPost=false,retirementNeeded=false,retirementLost=false,retirementFails=false,holdRetire=false,retirePosts=0,releaseRetire:()=>void=()=>{},releaseRead:()=>void=()=>{},releasePost:()=>void=()=>{},posts:Array<Record<string,unknown>>=[],gets=0;
  const result=async()=>{
   const saved=JSON.parse(localStorage.getItem(statusKey)??'null');
   const input=saved?{activationId:saved.activationId,effectsReviewed:true,idempotencyKey:saved.idempotencyKey,projectId:saved.projectId,...(saved.reviewNote!==undefined?{reviewNote:saved.reviewNote}:{}),reviewSha256:saved.reviewSha256}:{};
@@ -27,6 +28,7 @@ export async function reviewedContinuationRegression():Promise<void>{
   if(String(input).endsWith('/retire-source')){
    assert(init?.method==='POST'&&!init.body,'Release requires the scoped POST without user-supplied effects');
    retirePosts++;
+   if(holdRetire)await new Promise<void>(resolve=>{releaseRetire=resolve;});
    if(retirementFails)return new Response(JSON.stringify({error:'The earlier session is still active.'}),{status:409,headers:{'content-type':'application/json'}});
    retirementNeeded=false;
    if(retirementLost)throw Error('Controlled lost retirement response');
@@ -42,7 +44,7 @@ export async function reviewedContinuationRegression():Promise<void>{
  const render=async()=>{root.render(<QueryClientProvider client={client}><MessageDeliveryStatus projectId="project-one" receipts={[receipt]} recipientName={()=> 'Worker'}/></QueryClientProvider>);await flush();};
  const button=(label:string)=>Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find(item=>item.textContent?.trim()===label);
  try{
-  localStorage.removeItem(statusKey);await render();button('Review interrupted work')!.click();await flush();
+  localStorage.removeItem(statusKey);localStorage.removeItem(releaseKey);await render();button('Review interrupted work')!.click();await flush();
   assert(document.body.textContent?.includes('Finish the complete original task')&&document.body.textContent?.includes('Also include the correction'),'Original task and instruction must be shown');
   assert(document.body.textContent?.includes('task-notes.txt')&&document.body.textContent?.includes('correction.pdf'),'Original attachment names must remain visible');
   assert(document.body.textContent?.includes('Tool effect is unconfirmed')&&!document.body.textContent?.includes('already settled'),'Only unresolved effects request review');
@@ -95,10 +97,23 @@ export async function reviewedContinuationRegression():Promise<void>{
   await render();assert(document.body.textContent?.includes('Review may close the completed Run’s idle session.'),'Session release is disclosed before opening review');
   button('Review interrupted work')!.click();await flush();
   assert(retirePosts===1&&posts.length===0&&document.body.textContent?.includes('Finish the complete original task'),'A lost release response is read back once without authorizing continuation');
-  root.unmount();host.replaceChildren();root=createRoot(host);retirementNeeded=true;retirementLost=false;retirementFails=true;retirePosts=0;
+  root.unmount();host.replaceChildren();root=createRoot(host);retirementNeeded=true;retirementLost=false;retirementFails=true;retirePosts=0;localStorage.removeItem(releaseKey);
   await render();button('Review interrupted work')!.click();await flush();
   assert(retirePosts===1&&posts.length===0&&document.body.textContent?.includes('The earlier session is still active.')&&!button('Continue task'),'An unsuccessful release reports its real hold');
   button('Check status')!.click();await flush();assert(retirePosts===1&&document.body.textContent?.includes('The earlier session is still active.'),'Status checks never repeat session release or hide its hold');
+  button('Close')!.click();await flush();button('Review interrupted work')!.click();await flush();
+  assert(retirePosts===1&&document.body.textContent?.includes('session release is unconfirmed'),'Reopening does not repeat an uncertain release');
+  root.unmount();host.replaceChildren();root=createRoot(host);retirementNeeded=true;retirementFails=false;holdRetire=true;retirePosts=0;localStorage.removeItem(releaseKey);
+  await render();button('Review interrupted work')!.click();await flush();assert(retirePosts===1&&localStorage.getItem(releaseKey)!==null,'Release identity is saved before dispatch');
+  button('Close')!.click();await flush();button('Review interrupted work')!.click();await flush();
+  assert(retirePosts===1&&document.body.textContent?.includes('session release is unconfirmed'),'An in-flight release is not repeated on reopening');
+  holdRetire=false;releaseRetire();await flush();await new Promise(resolve=>setTimeout(resolve,3200));await flush();
+  assert(retirePosts===1&&document.body.textContent?.includes('Finish the complete original task'),'A conclusive later read opens the original review automatically without repeating release');
+  root.unmount();host.replaceChildren();root=createRoot(host);retirementNeeded=true;retirePosts=0;localStorage.removeItem(releaseKey);
+  Storage.prototype.setItem=function(key,value){if(key===releaseKey)throw Error('Release storage denied');return oldSetItem.call(this,key,value);};
+  await render();button('Review interrupted work')!.click();await flush();
+  assert(retirePosts===0&&document.body.textContent?.includes('No release was sent'),'No session release occurs without durable intent');
+  Storage.prototype.setItem=oldSetItem;
   root.unmount();host.replaceChildren();root=createRoot(host);retirementNeeded=false;retirementFails=false;
   Object.assign(review.originalTask.communication.attachments[0],{unavailable:true});
   await render();button('Review interrupted work')!.click();await flush();document.querySelector<HTMLInputElement>('input[type=checkbox]')!.click();await flush();
@@ -112,5 +127,5 @@ export async function reviewedContinuationRegression():Promise<void>{
   root.unmount();host.replaceChildren();root=createRoot(host);
   root.render(<QueryClientProvider client={client}><MessageDeliveryStatus projectId="project-one" receipts={[{...receipt,state:'queued'}]} recipientName={()=> 'Worker'}/></QueryClientProvider>);await flush();
   assert(!button('Review interrupted work'),'Automatically queued steering does not ask for review');
- }finally{Storage.prototype.setItem=oldSetItem;root.unmount();client.clear();window.fetch=oldFetch;if(oldStorage===null)localStorage.removeItem(statusKey);else localStorage.setItem(statusKey,oldStorage);host.remove();}
+ }finally{Storage.prototype.setItem=oldSetItem;root.unmount();client.clear();window.fetch=oldFetch;if(oldStorage===null)localStorage.removeItem(statusKey);else localStorage.setItem(statusKey,oldStorage);if(oldRelease===null)localStorage.removeItem(releaseKey);else localStorage.setItem(releaseKey,oldRelease);host.remove();}
 }
