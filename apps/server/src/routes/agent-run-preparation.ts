@@ -579,12 +579,14 @@ export async function prepareAgentRun(
     ?? rolloverRecoveryHandoff
     ?? (genericHandoff && !coordinationV3.rolloverOwnsContinuationHandoff(agent.id, genericHandoff.id)
       ? genericHandoff : undefined);
-  // Only continue with built-in Codex when the accepted packet proves the
-  // model is the sole contract change and Local Memory was unavailable.
-  // The native transport must confirm the saved thread before any turn.
-  let retainedModelChange=false;
-  const canRetainModelChange=()=>{
-    if(opts.localMemory || runtimeEngineId!=='codex' || Object.getPrototypeOf(engine.adapter)!==CodexAdapter.prototype ||
+  // Continue only a proven first-generation Codex session that was never
+  // offered Ponderosa Local Memory tools. Voice may reuse an unchanged contract; ordinary
+  // turns may also change only the explicit model. Other cases keep their
+  // existing scope and voice boundaries.
+  let retainedVerifiedContext=false;
+  const canRetainVerifiedContext=(kind:'voice'|'model')=>{
+    if(availableRuntimeTools.some(tool=>tool.name.startsWith('ponderosa_local_memory_')) ||
+       runtimeEngineId!=='codex' || Object.getPrototypeOf(engine.adapter)!==CodexAdapter.prototype ||
        Object.hasOwn(engine.adapter,'openSession') || !resumeSessionState?.toolContractHash ||
        !effectiveModel?.trim())return false;
     const runtime=reusableRuntime(agent.id),packet=store.acceptedProviderSessionInput(agent.id);
@@ -602,9 +604,10 @@ export async function prepareAgentRun(
       AND provider_session_id=? AND prompt_injection_state='injected'`).get(originExecutionId,agent.id,resumeSessionState.sessionId):undefined;
     const seed=originExecutionId&&originRun?store.getProviderInput(originExecutionId,true):undefined;
     const seedManifest=seed?.sourceManifest.schemaVersion===3?seed.sourceManifest:undefined;
+    // Any native history receipt targeting this Agent, including a cancelled
+    // or malformed fork, makes the inherited provider history unqualified.
     const fork=store.sqlite.prepare(`SELECT 1 FROM coordination_idempotency WHERE operation='native_history'
-      AND json_extract(result_json,'$.targetAgentId')=? AND json_extract(result_json,'$.kind')='fork'
-      AND json_extract(result_json,'$.state')!='cancelled' LIMIT 1`).get(agent.id);
+      AND json_extract(result_json,'$.targetAgentId')=? LIMIT 1`).get(agent.id);
     if(!seedManifest || seedManifest.providerSessionDisposition!=='fresh_task' ||
        !seedManifest.normalRuntimeContract || seedManifest.normalRuntimeContract.contractHash!==originContractHash ||
        !Array.isArray(seedManifest.sources) || !Array.isArray(seedManifest.normalRuntimeContract.dynamicTools) ||
@@ -615,15 +618,20 @@ export async function prepareAgentRun(
        !packet || !contract || contract.version!==1 || contract.engineId!==runtimeEngineId ||
        contract.workingCopyId!==workingCopy.id || contract.cwd!==workingCopy.rootPath ||
        contract.contractHash!==resumeSessionState.toolContractHash ||
-       !contract.model?.trim() || contract.model.trim()===effectiveModel.trim() ||
+       !contract.model?.trim() ||
        packet.exactSystemPrompt===undefined ||
        createHash('sha256').update(packet.exactSystemPrompt).digest('hex')!==systemPromptHash)return false;
+    if(kind==='voice'){
+      retainedVerifiedContext=resumeSessionState.toolContractHash===effectiveRuntimeSessionContractHash;
+      return retainedVerifiedContext;
+    }
+    if(contract.model.trim()===effectiveModel.trim())return false;
     const previousSessionHash=providerSessionContractHash(runtimeEngineId,workingCopy.id,contract.model,effectiveEffort,providerToolHash);
     const previousHash=providerRuntimeSessionContractHash({runtimeSessionContractHash:previousSessionHash,
       speed:effectiveSpeed,...(runtimeAuthentication.billingMode?{billingMode:runtimeAuthentication.billingMode}:{}),
       systemPromptHash,scopeKey:schedulerRunScopeKey},resumeSessionState.toolContractHash);
-    retainedModelChange=previousHash===resumeSessionState.toolContractHash;
-    return retainedModelChange;
+    retainedVerifiedContext=previousHash===resumeSessionState.toolContractHash;
+    return retainedVerifiedContext;
   };
   if (eligibleContinuationHandoff) {
     // The rollover's exact handoff remains eligible even when startup had to
@@ -636,7 +644,7 @@ export async function prepareAgentRun(
     // replacement reports low-water reconstruction and is atomically accepted.
     resumeSessionState = undefined;
     if (staleRuntime) await teardownPersistentRuntime(agent.id, staleRuntime, "continuation handoff rollover", project.id);
-  } else if (requestContextRollover) {
+  } else if (requestContextRollover && !(voiceMemoryBoundary && !v3FreshProviderSession && canRetainVerifiedContext('voice'))) {
     if (ownsFrozenHandoff) throw new Error("context rollover handoff cannot reseed the original session");
     // Scope/privacy changes retire opaque context; a new same-scope Request
     // alone is compatible. Close only idle owned runtime authority.
@@ -647,7 +655,7 @@ export async function prepareAgentRun(
     resumeSessionState = undefined;
     if (staleRuntime) await teardownPersistentRuntime(agent.id, staleRuntime, "request context rollover", project.id);
   } else if (resumeSessionState && resumeSessionState.toolContractHash !== effectiveRuntimeSessionContractHash &&
-      !canRetainModelChange()) {
+      !canRetainVerifiedContext('model')) {
     if (ownsFrozenHandoff) throw new Error("context rollover handoff contract changed; original accepted context retained");
     // A provider session is a cache of both context and its immutable
     // provider, model, reasoning, and tool contract. Missing hashes are
@@ -660,10 +668,10 @@ export async function prepareAgentRun(
     resumeSessionState = undefined;
     if (staleRuntime) await teardownPersistentRuntime(agent.id, staleRuntime, "tool-contract rollover", project.id);
   }
-  const assertRetainedModelPolicy=()=>{
+  const assertRetainedContextPolicy=()=>{
     const current=store.getAgent(agent.id),currentProject=current?store.getChatContext(current.conversationId):undefined,preferences=workspace.getPreferences();
     const currentPolicy=new CapabilityPolicyStore(store.sqlite).resolveForAgent(agent.id,runId);
-    const currentTools=filterRuntimeToolsForCapabilities([...providerDynamicTools(false),PONDEROSA_HISTORY_TOOL],currentPolicy);
+    const currentTools=filterRuntimeToolsForCapabilities([...providerDynamicTools(Boolean(opts.localMemory)),PONDEROSA_HISTORY_TOOL],currentPolicy);
     const currentRestrictions=runtimeRestrictions(currentPolicy,runtimeEngineId);
     const auth=runContext.engineAuthStatuses.snapshot(runtimeEngineId),saved=store.resumeSessionState(agent.id);
     if(!current || !currentProject || current.projectId!==agent.projectId || current.conversationId!==agent.conversationId ||
@@ -1260,7 +1268,7 @@ export async function prepareAgentRun(
   const currentBudgetEvidence = estimate(false, exactProviderInput);
   const freshBudgetEvidence = estimate(true, freshExactProviderInput);
   const providerSessionDisposition = replacementCandidateRollover || pauseRecovery
-    ? "reseeded" as const : requestContextRollover
+    ? "reseeded" as const : requestContextRollover && !retainedVerifiedContext
       ? coordinationV3.runChangesScope(runId, agent.id) ? "reseeded" as const : "fresh_task" as const
       : resumeSessionId ? "continued_session" as const : "fresh_task" as const;
   const manifestRequestIds = coordinationV3.requestIdsAttachedToRun(runId, agent.id);
@@ -1554,8 +1562,8 @@ export async function prepareAgentRun(
     systemPrompt: effectiveSystemPrompt,
     systemPromptHash: createHash("sha256").update(effectiveSystemPrompt).digest("hex"),
     runtimeSessionContractHash: effectiveRuntimeSessionContractHash,
-    retainedModelChange,
-    assertRetainedModelPolicy:retainedModelChange?assertRetainedModelPolicy:undefined,
+    retainedVerifiedContext,
+    assertRetainedContextPolicy:retainedVerifiedContext?assertRetainedContextPolicy:undefined,
     workingCopy,
     availableRuntimeTools,
     capabilityRestrictions,
