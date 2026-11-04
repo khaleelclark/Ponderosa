@@ -29,7 +29,7 @@ present implementation absence or current execution success.
 | 12 | Recovery authorities; lifecycle journals; receipts; local-memory.ts | Unknown effects and uncertain memory scopes are held; discovery pagination removes the confirmed hidden 1,000-entry cutoff. Submitted-but-unacknowledged memory creation lacks authenticated backend-drain recovery. Full crash/restart and truncation qualification remains. | Discovery + Runtime + Integration |
 | 13 | Coordination scheduler; Run controls; context recovery; native controls | Pause/stop/steer and exact rollover objective lineage have source. Proven unstarted direct-human continuations have an explicit bound retry; uncertain submissions stay held. Controlled pause/rollover boundaries passed focused checks; no-loop and complete product qualification remain. | Continuation + Interface |
 | 14 | Native provider errors; operational notifications; queued recovery presentation | Visible failure and retry state source exists. Provider outage/rate-limit/stuck-task injection and plain-language judging remain evidence. | Runtime + Interface |
-| 15 | Empty tombstone cleanup; project/Agent deletion; portable-working-files.ts; local-memory.ts | User-folder custody has source mechanisms. Automatic Chat, Project and Agent memory cleanup, package rollback and post-write compensation are held because Chroma lacks proven atomic identity/content deletion or independent-writer exclusion. Byte-identical deletion and race trials remain evidence. | Portability + Integration |
+| 15 | Empty tombstone cleanup; project/Agent deletion; portable-working-files.ts; local-memory.ts | User-folder custody has source mechanisms. A never-dispatched Chat collection can finish cleanup without touching the backend when both durable creation intents and the deletion receipt prove no effect. Stored-memory Chat, Project and Agent cleanup, package rollback and post-write compensation are held because Chroma lacks proven atomic identity/content deletion or independent-writer exclusion. Byte-identical deletion and race trials remain evidence. | Portability + Integration |
 | 16 | branch-trigger-service.ts; branch-trigger-store.ts | Durable occurrence identity and bounded catch-up exist. Clock-jump/no-double-fire, timing and reason tracing remain evidence. | Runtime |
 | 17 | state-admission.ts; db.ts; coordination recovery; existing regressions | 0044 adds scope-intent schema; exact ui096 0027 predecessor admission and controlled populated Core/Branches direct-server migration and restart passed. The pinned server lane finished 2,564 passed / 12 failed / 27 skipped; all 12 failures are memory cleanup/rollback requirements. A full pass, further crash/recovery qualification and 20 consecutive controlled core runs remain. | Integration |
 | 18 | notification-routing.ts; workspace-store.ts; Assistant report cursor | Default directResponses/broadcasts false; unread and chosen notification separation exist. Thirty-message bursts/settings combinations remain evidence. | Interface |
@@ -113,9 +113,9 @@ crash/recovery and combined-suite qualification remain open.
   on macOS and Windows. Unknown claims and reader leases retain charged
   capacity. Chunk verification is not an atomic independent-writer snapshot.
 - Chroma has no proven atomic identity/content compare-and-delete, compare-and-
-  update or enforceable independent-writer exclusion. Automatic Chat, Project
-  and Agent memory cleanup, package rollback and post-write compensation are
-  held. Ordinary saves, updates, forgets and conflict operations still have
+  update or enforceable independent-writer exclusion. Stored-memory Chat, Project and Agent memory cleanup, package rollback and
+  post-write compensation are held. The narrowly proven never-dispatched Chat
+  path performs no backend mutation. Ordinary saves, updates, forgets and conflict operations still have
   concurrent-writer races. Insert-only package/global imports do not establish
   a permanent or multi-record atomic snapshot.
 - Newly confirmed memory scopes bind a returned collection UUID and token.
