@@ -960,6 +960,17 @@
       "origin": "Runtime slider: exact stop IDs, commit fences, pending state, Escape and atomic inherited reset"
     },
     {
+      "path": "tests/chats/push-notification-grouping.test.mjs",
+      "feature": "chats",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "additionalFeatures": [
+        "notifications"
+      ],
+      "requirements": "Node24; built server; controlled service worker; no provider or network",
+      "origin": "Bound repeated Chat activity push display without losing individual notice receipts"
+    },
+    {
       "path": "tests/chats/notification-visibility.test.mjs",
       "feature": "chats",
       "lane": "web",
