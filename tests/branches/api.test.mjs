@@ -461,3 +461,18 @@ test('Output model saves compare the original full runtime settings without chan
   assert.equal(f.ok(await f.api('GET','/api/branches/output-apps/'+app.agentId)).runtimeSettings.model,null);
  });
 });
+
+test('malformed workflow import diagnostic does not reveal file contents', async t=>{
+ await withFixture(t,async f=>{
+  const malformed='{"token":"SYNTHETIC_SECRET_NOT_FOR_OUTPUT",\n"definition": }';
+  const response=await f.api('POST','/api/branches/import-preview',malformed,{'content-type':'application/json'});
+  assert.equal(response.status,400);assert.match(response.body.error,/Could not parse the workflow JSON/);
+  assert.doesNotMatch(JSON.stringify(response.body),/SYNTHETIC_SECRET_NOT_FOR_OUTPUT/);
+  const empty=await f.api('POST','/api/branches/import-preview','',{'content-type':'application/json'});
+  assert.equal(empty.status,400);assert.match(empty.body.error,/workflow file is empty/i);
+  const unsupported=await f.api('POST','/api/branches/import-preview','{"__proto__":{"secret":"SYNTHETIC_SECRET_NOT_FOR_OUTPUT"}}',{'content-type':'application/json'});
+  assert.equal(unsupported.status,400);assert.match(unsupported.body.error,/unsupported object keys/);assert.doesNotMatch(JSON.stringify(unsupported.body),/SYNTHETIC_SECRET_NOT_FOR_OUTPUT/);
+  const media=await f.api('POST','/api/branches/import-preview','data',{'content-type':'application/x-unknown'});
+  assert.equal(media.status,415,'unrelated Fastify errors keep their existing status');
+ });
+});

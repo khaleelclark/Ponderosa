@@ -497,7 +497,16 @@ export function registerBranchRoutes(app: FastifyInstance, context: { dataDir?:s
       return branches.preview(request.body);
     }catch(error){return reply.code(400).send({error:error instanceof Error?error.message:'Invalid deployment preview',...(error instanceof BranchValidationError?{issues:[error.issue]}:{})})}
   });
-  app.post<{Body:unknown}>('/api/branches/import-preview',{bodyLimit:AGENT_PACKAGE_MAX_BYTES+AGENT_PACKAGE_METADATA_MAX_BYTES+1},async(request,reply)=>{
+  app.post<{Body:unknown}>('/api/branches/import-preview',{
+    bodyLimit:AGENT_PACKAGE_MAX_BYTES+AGENT_PACKAGE_METADATA_MAX_BYTES+1,
+    // Fastify parses JSON before the handler. Use a fixed diagnostic rather
+    // than echoing parser text, which may include private file contents.
+    errorHandler(error,_request,reply){
+      if(error.code==='FST_ERR_CTP_EMPTY_JSON_BODY')return reply.code(400).send({error:'The workflow file is empty. Choose a JSON workflow package.'});
+      if(error.code==='FST_ERR_CTP_INVALID_JSON_BODY')return reply.code(400).send({error:'Could not parse the workflow JSON. Check for missing or extra quotes, commas, brackets, or unsupported object keys.'});
+      throw error;
+    },
+  },async(request,reply)=>{
     try{return request.body&&typeof request.body==='object'&&'schema'in request.body&&request.body.schema==='ponderosa.branch-installation.v1'?context.installations.validate(request.body):importBranchPackage(request.body)}catch(error){return reply.code(400).send({error:error instanceof Error?error.message:'Invalid package'})}
   });
   app.get<{Params:{id:string};Querystring:{revisionId?:string}}>('/api/branches/:id/configuration',async(request,reply)=>{
