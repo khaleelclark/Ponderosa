@@ -9,7 +9,7 @@ import {createHash,randomUUID} from 'node:crypto';
 import type {AgentPortablePackageDto,PortableArtifactDto,PortableWorkingLinkDto,ReviewedUserDataSelection,ReviewedMetadataActivation,ReviewedGitExternalDependencies,CanonicalGeneratedHooksProof} from '@ponderosa/core';
 import {applyFilesystemMetadata,planFilesystemMetadata} from './portable-filesystem-metadata.js';
 import {assertPortableSecretsAbsent} from './portable-secrets.js';
-import {captureRetainedReviewOriginal,selectedReviewedGitStorage,exportReviewedUserData,parseReviewedUserData,recreateReviewedGit,REVIEWED_USER_DATA_PATH,type GitExportCapture} from './portable-reviewed-user-data.js';
+import {assertRetainedReviewNamespace,captureRetainedReviewOriginal,selectedReviewedGitStorage,exportReviewedUserData,parseReviewedUserData,recreateReviewedGit,REVIEWED_USER_DATA_PATH,type GitExportCapture} from './portable-reviewed-user-data.js';
 
 export interface WorkingHardlinkCapture {
   originals:Map<string,{root:string;ref?:string;path:string;nlink:bigint;count:number;identity:string;paths:string[]}>;
@@ -592,10 +592,8 @@ export async function inventoryWorkingFolder(rootPath:string,reviewedSelection?:
         if(!stat.isDirectory()||await fs.realpath(folder)!==folder)throw new Error('Retained review directory must be canonical');
         // Hook aliases are excluded only after export verifies their complete canonical local proof.
         // Other generated native namespaces still refuse; they can contain changed user data.
-        for(const child of await fs.readdir(folder)){
-          if(!['user-data.json','git-repository','provider-files','active-git-hooks'].includes(child))throw new Error('Unknown retained review namespace contents require separate preservation');
-          if(child!=='user-data.json')excludedPaths.push(`${name}/${child}`);
-        }
+        const children=await fs.readdir(folder);assertRetainedReviewNamespace(children);
+        for(const child of children)if(child!=='user-data.json')excludedPaths.push(`${name}/${child}`);
         continue;
       }
       try{portableWorkingPath(name);}catch{excludedPaths.push(name);continue;}

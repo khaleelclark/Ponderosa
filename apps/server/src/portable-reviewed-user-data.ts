@@ -3287,6 +3287,13 @@ export async function exportReviewedUserData(root:string,selection:ReviewedUserD
 }
 
 
+/** Refuse generated Git namespaces that may contain current user edits. */
+export function assertRetainedReviewNamespace(names:readonly string[]):void {
+  if(names.includes('external-git'))throw new Error('Export is blocked: current contents of the imported external Git review folder cannot yet be included alongside imported originals. Source files remain in place.');
+  if(names.includes('native-git-common'))throw new Error('Export is blocked: current contents of the imported native Git common folder cannot yet be included alongside imported originals. Source files remain in place.');
+  if(names.length>4||names.some(name=>!['user-data.json','git-repository','provider-files','active-git-hooks'].includes(name)))throw new Error('Unknown retained review namespace contents require separate preservation');
+}
+
 /** Only the original manifest is authoritative; generated review repositories are never read. */
 export async function captureRetainedReviewOriginal(root:string,selection:ReviewedUserDataSelection,original:Buffer,canonicalGeneratedHooksProof?:CanonicalGeneratedHooksProof):Promise<{data:Buffer;verify:()=>Promise<void>}> {
   validateReviewedUserDataSelection(selection);
@@ -3297,7 +3304,7 @@ export async function captureRetainedReviewOriginal(root:string,selection:Review
   const directory=await fs.lstat(folder,{bigint:true});
   if(!directory.isDirectory()||await fs.realpath(folder)!==folder)throw new Error('Retained review directory must be canonical');
   const names=await fs.readdir(folder);
-  if(names.length>6||names.some(name=>!['user-data.json','git-repository','provider-files','external-git','native-git-common','active-git-hooks'].includes(name)))throw new Error('Unknown retained review namespace contents require separate preservation');
+  assertRetainedReviewNamespace(names);
   const before=await fs.lstat(target,{bigint:true}),captured=await regularOriginal(target,48*1024*1024);
   const verify=async()=>{
     const currentDirectory=await fs.lstat(folder,{bigint:true}),current=await fs.lstat(target,{bigint:true});

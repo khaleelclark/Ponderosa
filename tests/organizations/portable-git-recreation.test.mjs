@@ -629,10 +629,13 @@ test('retained-original export ignores only exact generated hook links backed by
   const exported=await reexport(proof),retained=exported.artifacts.find(item=>item.path==='.ponderosa-portable-review/user-data.json');
   assert.deepEqual(Buffer.from(retained.dataBase64,'base64'),original,'Re-export carries canonical originals, never generated Git state');
   assert.equal(exported.files.length,1);assert.equal(await readlink(pathname),text);
-  for(const name of ['external-git','native-git-common']){
-   const generated=path.join(review,name);await mkdir(generated);await writeFile(path.join(generated,'user-file'),'preserve changed user data');
-   await assert.rejects(inventoryWorkingFolder(destination,selection),/Unknown retained review namespace/,'Unverified generated namespaces cannot silently omit current user data');
-   assert.equal(await readFile(path.join(generated,'user-file'),'utf8'),'preserve changed user data');await rm(generated,{recursive:true});
+  for(const [name,label] of [['external-git','external Git review'],['native-git-common','native Git common']]){
+   const generated=path.join(review,name),file=path.join(generated,'private-file');await mkdir(generated);await writeFile(file,'SYNTHETIC_SECRET_KEEP_ON_SOURCE');
+   const check=error=>{assert.match(error.message,new RegExp('Export is blocked: current contents of the imported '+label+' folder'));assert.match(error.message,/cannot yet be included alongside imported originals/);assert.match(error.message,/Source files remain in place/);assert.doesNotMatch(error.message,/SYNTHETIC_SECRET_KEEP_ON_SOURCE|private-file/);return true;};
+   await assert.rejects(inventoryWorkingFolder(destination,selection),check,'Inventory must explain why current data cannot be included');
+   await assert.rejects(captureRetainedReviewOriginal(destination,selection,original,proof),check,'Direct retained export must not silently omit current data');
+   await assert.rejects(reexport(proof),check,'The package export helper must refuse even with an earlier inventory');
+   assert.equal(await readFile(file,'utf8'),'SYNTHETIC_SECRET_KEEP_ON_SOURCE');await rm(generated,{recursive:true});
   }
   await writeFile(path.join(review,'unrecognized-user-file'),'preserve unknown bytes');
   await assert.rejects(inventoryWorkingFolder(destination,selection),/Unknown retained review namespace/);
