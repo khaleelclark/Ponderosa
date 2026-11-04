@@ -167,7 +167,7 @@ export function ImportAgentForm({
     if(operation.status==='pending'){setRoleOperation(operation);return;}
     if(operation.status==='completed'){
       if(!operation.result)throw Error('Import completed without a result receipt. Its saved request is retained so you can check again.');
-      setRoleOperation(undefined);setCompletedImport(entry);setImportResult(operation.result);return;
+      setRoleOperation(undefined);setError(undefined);setCompletedImport(entry);setImportResult(operation.result);return;
     }
     // A failed import may include partial writes. Keep its identity across
     // reloads until the user has reviewed the result and explicitly dismisses it.
