@@ -444,3 +444,41 @@ test('Git export bounds aggregate loose-object inflation and refuses hardlinked 
   await assert.rejects(exportReviewedGit(repo),/bounded regular original|singly linked regular/i);
   assert.deepEqual(await readFile(alias),original);assert.equal((await lstat(alias)).nlink,2);
 });
+
+test('new linked reftable recovery emits canonical structural config for recapture',async t=>{
+  const {createHash}=await import('node:crypto');
+  const {importWorkingFiles,inventoryWorkingFolder,exportWorkingFiles}=await import('../../apps/server/dist/portable-working-files.js');
+  const {planReviewedRecoveryRoots,applyReviewedRecoveryRoots}=await import('../../apps/server/dist/portable-git-recreation.js');
+  const {parseReviewedGitConfiguration}=await import('../../apps/server/dist/portable-reviewed-user-data.js');
+  const root=await fixture(t),main=path.join(root,'main'),selected=path.join(root,'selected'),destination=path.join(root,'destination');
+  await repository(main,'reftable');native(main,'worktree','add','-b','selected',selected);
+  native(main,'config','extensions.worktreeConfig','true');native(main,'config','credential.helper','SYNTHETIC_CREDENTIAL_EXCLUDED');native(selected,'config','--worktree','portable.probe','private-kept');
+  await writeFile(path.join(selected,'file.txt'),'selected worktree\n');native(selected,'add','file.txt');native(selected,'commit','-m','selected worktree');
+  const selectedOid=native(selected,'rev-parse','HEAD'),sourceConfig=await readFile(path.join(main,'.git','config')),originalValue=await exportReviewedUserData(selected,{git:true,harness:false});
+  const wire=Buffer.from(JSON.stringify(originalValue)),originalPath='.ponderosa-portable-review/user-data.json';assert.doesNotMatch(wire.toString(),/SYNTHETIC_CREDENTIAL_EXCLUDED/);
+  await importWorkingFiles(destination,[{path:originalPath,data:wire,sha256:createHash('sha256').update(wire).digest('hex')}]);
+  await writeFile(path.join(destination,'file.txt'),'selected worktree\n');
+  const pkg={schema:'ponderosa.agent-package.v1',mode:'full',kind:'organization',exportedAt:new Date().toISOString(),sourceLabel:'fixture',rootRef:'agent',agents:[{ref:'agent',title:'Agent',engine:'codex',workingRootRef:'work',managementPermissions:{allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false},workingFolder:{directories:[],excludedPaths:['.git']},workingFiles:[{path:originalPath,artifactRef:'wire'}],artifacts:[{ref:'wire',kind:'generated_file',path:'wire',createdAt:new Date().toISOString(),dataBase64:wire.toString('base64')}]}]};
+  const activation={git:true,harness:false},tasks=planReviewedRecoveryRoots(pkg,{work:destination},activation);
+  await applyReviewedRecoveryRoots(tasks,activation,()=>{});
+  const common=path.join(destination,'.ponderosa-portable-review','native-git-common');
+  const config=await readFile(path.join(common,'config')),items=parseReviewedGitConfiguration(config).items;assert.doesNotMatch(config.toString(),/SYNTHETIC_CREDENTIAL_EXCLUDED/);
+  for(const [key,expected] of [['core.repositoryformatversion','1'],['core.bare','true'],['extensions.worktreeconfig','true']]){
+    const values=items.filter(item=>item.key.toLowerCase()===key);assert.equal(values.length,1,key);assert.equal(values[0].value,expected,key);
+  }
+  const privatePath=path.join(common,'worktrees','imported','config.worktree');
+  for(const [key,expected] of [['core.bare','false'],['core.worktree',destination],['portable.probe','private-kept']]){
+    assert.equal(native(destination,'config','--file',privatePath,'--get-all',key),expected,key);
+  }
+  assert.equal(native(destination,'config','--get','user.name'),'Fixture User','unrelated source setting remains usable');
+  assert.deepEqual(await readFile(path.join(main,'.git','config')),sourceConfig,'source repository configuration is unchanged');
+  assert.deepEqual(await readFile(path.join(destination,originalPath)),wire,'captured original config remains immutable evidence');
+  assert.equal(native(destination,'rev-parse','HEAD'),selectedOid);
+  const recaptured=await exportReviewedGit(destination);validateReviewedGit(recaptured.git);
+  assert.equal(recaptured.git.configurationSourceDirectories.common,common);
+  assert.ok(recaptured.git.reftableReview?.selectedWorktree);
+  assert.equal(native(destination,'rev-parse','HEAD'),selectedOid);
+  const choice={git:true,harness:false,source:'retained_originals'},inventory=await inventoryWorkingFolder(destination,choice);
+  await assert.rejects(exportWorkingFiles(destination,inventory.paths,64*1024*1024,inventory.links,choice,{data:wire},undefined,undefined,inventory),/Generated review contents changed|opaque binary data/);
+  assert.deepEqual(await readFile(path.join(destination,originalPath)),wire,'held binary export preserves source original');
+});

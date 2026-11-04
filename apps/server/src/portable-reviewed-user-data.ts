@@ -729,7 +729,7 @@ function excludedGitKey(key:string):boolean {
 }
 
 /** Pinned config.c lexical grammar; spans reference the original UTF-8 source, never include targets. */
-function configSource(data:Buffer,source?:'config.worktree'):{items:ReviewedGitUserData['configurationReview'];safe:Buffer;removedFields:boolean} {
+function configSource(data:Buffer,source?:'config.worktree',omitKeys?:ReadonlySet<string>):{items:ReviewedGitUserData['configurationReview'];safe:Buffer;removedFields:boolean} {
   const original=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(data);
   if(original.includes('\0')||!Buffer.from(original).equals(data))throw new Error('Git configuration requires exact UTF-8 source');
   let input='';const positions:number[]=[];
@@ -787,7 +787,7 @@ function configSource(data:Buffer,source?:'config.worktree'):{items:ReviewedGitU
     }
     if(items.length>=10000)fail();
     const item={key:section+'.'+variable,value,...(implicitBoolean?{implicitBoolean:true as const}:{}),...(source?{source}:{})};items.push(item);
-    let excluded=sectionExcluded||excludedGitKey(item.key);
+    let excluded=sectionExcluded||excludedGitKey(item.key)||Boolean(omitKeys?.has(item.key.toLowerCase()));
     try{safeText(`${item.key}=${value}`,'Git configuration');if(/:\/\/[^/]*@/.test(value))excluded=true;}catch{excluded=true;}
     if(excluded)strip(start,offset);
   }
@@ -2926,12 +2926,18 @@ async function writeReviewedGit(destination:string,value:ReviewedGitUserData,nat
     await write('HEAD','symbolic' in value.head?`ref: ${value.head.symbolic}\n`:`${value.head.oid}\n`);
     if(layout&&!native)await write('HEAD','ref: refs/heads/.invalid\n',undefined,true);
     else if(layout)await write('HEAD','symbolic' in value.head?`ref: ${value.head.symbolic}\n`:`${value.head.oid}\n`,undefined,true);
-    if(native)await write('config',Buffer.concat([configuration!.common,Buffer.from(layout?'\n[core]\n\trepositoryformatversion = 1\n\tbare = true\n[extensions]\n\tworktreeConfig = true\n':storage?storage.worktreeUnconfigured?'\n[core]\n\tbare = false\n':storage.bare?'\n[core]\n\tbare = true\n':`\n[core]\n\tbare = false\n\tworktree = ${JSON.stringify(storage.worktreePath)}\n`:'')]));else
+    // Linked layout owns these structural settings. Remove their compiled
+    // source rows before appending the new destination values, so a later
+    // capture sees one unambiguous declaration. The original stays in the
+    // retained user-data artifact.
+    const linkedCommon=layout&&native?configSource(configuration!.common,undefined,new Set(['core.repositoryformatversion','core.bare','core.worktree','extensions.worktreeconfig'])).safe:configuration?.common;
+    if(native)await write('config',Buffer.concat([linkedCommon!,Buffer.from(layout?'\n[core]\n\trepositoryformatversion = 1\n\tbare = true\n[extensions]\n\tworktreeConfig = true\n':storage?storage.worktreeUnconfigured?'\n[core]\n\tbare = false\n':storage.bare?'\n[core]\n\tbare = true\n':`\n[core]\n\tbare = false\n\tworktree = ${JSON.stringify(storage.worktreePath)}\n`:'')]));else
     await write('config','[core]\n\trepositoryformatversion = '+(value.reftableReview||value.format==='sha256'||layout?1:0)+'\n\tbare = '+(layout?'true':'false')+'\n\thooksPath = /dev/null\n\tfsmonitor = false\n'+(value.reftableReview||value.format==='sha256'||layout?'[extensions]\n':'')+(value.format==='sha256'?'\tobjectFormat = sha256\n':'')+(value.reftableReview?'\trefStorage = reftable\n':'')+(layout?'\tworktreeConfig = true\n':''));
     if(layout&&!native)await write('config.worktree','[core]\n\tbare = false\n\tworktree = '+JSON.stringify(destination)+'\n');
     if(native){
       const worktreeConfig=configuration!.private;
-      if(layout||worktreeConfig!==null)await write('config.worktree',Buffer.concat([worktreeConfig??Buffer.alloc(0),Buffer.from(layout?`\n[core]\n\tbare = false\n\tworktree = ${JSON.stringify(destination)}\n`:'')]));
+      const linkedPrivate=layout&&worktreeConfig!==null?configSource(worktreeConfig,undefined,new Set(['core.bare','core.worktree'])).safe:worktreeConfig;
+      if(layout||worktreeConfig!==null)await write('config.worktree',Buffer.concat([linkedPrivate??Buffer.alloc(0),Buffer.from(layout?`\n[core]\n\tbare = false\n\tworktree = ${JSON.stringify(destination)}\n`:'')]));
       if(value.sparseReview.patternsBase64!==null){
         const bytes=Buffer.from(value.sparseReview.patternsBase64,'base64');
         if(!await reuseBareControl('info/sparse-checkout',bytes))await write('info/sparse-checkout',bytes);
