@@ -1,11 +1,12 @@
 import { Alert, FormControl, InputLabel, MenuItem, Select, Stack, TextField, Typography } from "@mui/material";
 import type { AgentImportChatInstructionsResolution } from "@ponderosa/core";
+import { sha256Bytes } from "./idempotentAttempt";
 
 export type ChatInstructionsAction = AgentImportChatInstructionsResolution["action"] | "";
 export async function chatInstructionsResolution(action: ChatInstructionsAction, destination: string): Promise<AgentImportChatInstructionsResolution | undefined> {
   if (!action) return undefined;
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(destination));
-  return { action, expectedDestinationSha256: [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("") };
+  const digest = await sha256Bytes(new TextEncoder().encode(destination));
+  return { action, expectedDestinationSha256: digest };
 }
 export function ChatInstructionsImportChoice({ source, destination, value, onChange }: {
   source?: string; destination: string; value: ChatInstructionsAction; onChange(value: ChatInstructionsAction): void;

@@ -11,6 +11,7 @@ const flush=async()=>{for(let i=0;i<10;i++)await new Promise(resolve=>setTimeout
 
 export async function duplicateIntoCurrentChatRegression():Promise<void>{
  const original={listProjects:api.listProjects,listAgents:api.listAgents,listConversations:api.listConversations,copyAgent:api.copyAgent};
+ const originalSubtle=Object.getOwnPropertyDescriptor(window.crypto,'subtle');
  const destination={id:'target-chat',projectId:'target-project',title:'Destination Chat',instructions:'Destination rules'} as ConversationDto;
  const sourceChat={id:'source-chat',projectId:'source-project',title:'Source Chat',instructions:'Source rules'} as ConversationDto;
  const source={id:'source-agent',projectId:'source-project',conversationId:'source-chat',title:'Original',activeEngine:'codex',managementPermissions:{allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false}} as AgentDto;
@@ -40,10 +41,12 @@ export async function duplicateIntoCurrentChatRegression():Promise<void>{
   assert(document.body.textContent?.includes('Chat instructions differ'),'Source and destination instructions must be reviewed');
   const instructionSelect=document.querySelector('[role=combobox][aria-labelledby*="import-chat-instructions-choice"]');openSelect(instructionSelect);
   await clickOption('Keep existing Chat instructions');
+  Object.defineProperty(window.crypto,'subtle',{value:undefined,configurable:true});
   const confirm=button('Duplicate Agent');assert(confirm&&!confirm.disabled,'Duplicate confirmation unavailable');confirm!.click();await flush();
   assert(copies.length===1,'Expected one copy request');
   assert(copies[0]?.projectId==='target-project'&&copies[0]?.body.conversationId==='target-chat'&&copies[0]?.body.sourceAgentId==='source-agent','Copy must bind exact source and destination');
   assert(copies[0]?.body.chatInstructionsResolution?.action==='keep_destination','Instruction choice must reach server');
+  assert(copies[0]?.body.chatInstructionsResolution?.expectedDestinationSha256==='4fe6e5cd2f5b7f21244d0fb46fb3d4f29115eeb7de66d9c99e3b1dbc37f5b04b','Instruction digest matches exact destination even without Web Crypto');
   assert(created?.projectId==='target-project'&&created?.agentId==='copy','Completion reports actual destination');
- }finally{root.unmount();client.clear();Object.assign(api,original);host.remove();}
+ }finally{if(originalSubtle)Object.defineProperty(window.crypto,'subtle',originalSubtle);else Reflect.deleteProperty(window.crypto,'subtle');root.unmount();client.clear();Object.assign(api,original);host.remove();}
 }

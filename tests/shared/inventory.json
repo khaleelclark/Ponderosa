@@ -1223,6 +1223,14 @@
       "origin": "Exact Core and Branch destination Chat creation identity and replay"
     },
     {
+      "path": "tests/organizations/chat-instructions-hash.test.mjs",
+      "feature": "organizations",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, web workspace dependencies; no provider account",
+      "origin": "Import instruction conflict hashing with and without browser Web Crypto"
+    },
+    {
       "path": "tests/organizations/cross-chat-copy.test.mjs",
       "feature": "organizations",
       "lane": "server",
