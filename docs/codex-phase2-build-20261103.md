@@ -271,6 +271,57 @@ was identified; other names or configuration sources remain possible. No
 credentials or config contents were printed and no live service was contacted.
 This does not establish exclusive writer authority or resolve Chroma cleanup.
 
+## Reviewed interruption and HTTP follow-up — 4 November
+
+The source-and-test candidate `70ce427f7761e6c10847493223132d26ae53662d`
+adds four bounded improvements after `84832d60`:
+
+- Instruction-conflict confirmation and optimistic Chat message identity use
+  the existing SHA-256 fallback when Web Crypto is unavailable. A previously
+  dispatched uncertain message retains that status after a later error; where
+  Web Locks are available, outbox updates use the current locked record.
+  Chromium on non-secure HTTP did not provide Web Locks, so cross-tab safety
+  on that surface remains unqualified. The Chat test exercises the optimistic
+  provider and mocked locked outbox, not a complete Composer/server send.
+- A completed Run with an exact unconfirmed steering injection can now be
+  inspected through the existing source-effects API. External effects remain
+  unknown and the inspection neither resolves the hold nor authorizes replay.
+- For built-in Claude and Codex adapters, a typed host authority-change error
+  proven to occur before the steering write uses the existing known-refusal
+  path. Other adapter and transport exceptions remain uncertain. If the Run
+  fence has already been lost before the refusal can be persisted, the result
+  remains held; custom adapters' explicit refusal reports retain their prior
+  contract and are not newly qualified.
+
+Offline install, build and recursive typecheck passed at that candidate.
+Affected web tests passed 22/22 and affected server tests 14/14; logs are under
+`evidence/combined-70ce-*`. These focused checks do not replace the full suite.
+
+The reviewed-continuation design is not implemented. The preserved unwired
+uncommitted draft is under `/tmp/ponderosa-codex-phase2-20261103/reviewed-steering`.
+It cannot yet bind every provider-start admission to the exact successor Run
+and fence across supported platforms. The proposed continuation must carry the
+original objective and steer, preserve typed attachments, revalidate evidence at
+claim and submission, and ask only about unresolved effects; it must not
+silently replay the uncertain work. Existing explicit provider refusals already
+use the ordinary retry path. Do not treat the draft as shipped or validated.
+
+Busy tracked Requests remain queued and do not meet Bible section 13. Disposable
+probes after a test-only policy flip demonstrated an older tool call could mark a
+new Request complete before or after acknowledgement, and that an error exposed
+its Request ID. Current provider/tool interfaces do not prove the causal link
+between a particular injected instruction and its later update. These are
+controlled experiments, not observed production incidents. Probe logs are under
+`evidence/busy-request-*-probe-848.*`.
+
+Further nonsecret deployment inspection did not identify the production Chroma
+endpoint or a complete writer census. Chroma 1.4.1 source performs filtered
+delete by selecting IDs and then issuing unconditional deletes; production's
+version is unproven. The historical 12 populated-memory cleanup/rollback
+failures remain unresolved. Source comparison is not a fresh full-suite result.
+See `evidence/chroma-safety-assessment-84832.md`. No production data, service,
+or provider account was changed.
+
 ## Recorded validation and open checks
 
 - Earlier diagnostic builds and suites exposed failures and prompted fixes.
