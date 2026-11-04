@@ -322,6 +322,7 @@ export function registerAgentPackageRoutes(
     sha256: string;
     size: number;
     reservationId: string;
+    requestFingerprint?:string;
     metadata?:Omit<ImportAgentPackageRequest,'package'>;
   };
   const ownedUploads=new WeakSet<StagedImportUpload>();
@@ -414,6 +415,12 @@ export function registerAgentPackageRoutes(
     const key = value?.trim();
     return key && /^[A-Za-z0-9_-]{8,128}$/u.test(key) ? key : undefined;
   };
+  const parseRequestFingerprint=(value:unknown):{bytes:number;digest:string}|undefined=>{
+    const match=typeof value==='string'?/^sha256-4m-v1:(0|[1-9][0-9]*):([a-f0-9]{64})$/.exec(value):null;
+    const bytes=match?Number(match[1]):NaN;
+    return match&&Number.isSafeInteger(bytes)&&bytes>=0&&bytes<=AGENT_PACKAGE_MAX_BYTES+AGENT_PACKAGE_METADATA_MAX_BYTES+1
+      ?{bytes,digest:match[2]!}:undefined;
+  };
   const operationIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
   const importPhases = new Set<AgentImportPhase>([
     "queued", "creating_records", "importing_agents", "importing_history",
@@ -427,6 +434,7 @@ export function registerAgentPackageRoutes(
     if (operation.id !== expectedId || !operationIdPattern.test(operation.id) ||
         typeof operation.requestId !== "string" || !validIdempotencyKey(operation.requestId) ||
         typeof operation.payloadHash !== "string" || !/^[0-9a-f]{64}$/u.test(operation.payloadHash) ||
+        (operation.requestFingerprint!==undefined&&!parseRequestFingerprint(operation.requestFingerprint)) ||
         typeof operation.projectId !== "string" || !operation.projectId || operation.projectId.length > 200 ||
         typeof operation.conversationId!=='string'||!operation.conversationId||operation.conversationId.length>200||
         (operation.product!=='dev'&&operation.product!=='branches')||
@@ -666,12 +674,33 @@ export function registerAgentPackageRoutes(
       void (async () => {
         const allowedRoutes = jsonEnvelope ? ['/api/projects/:id/import-agents'] : ['/api/projects/:id/agent-import-operations','/api/projects/:id/import-agent-package','/api/projects/:id/agent-role-preview','/api/projects/:id/agent-access-preview'];
         if(request.method!=='POST'||!allowedRoutes.includes(request.routeOptions.url??''))throw Object.assign(new Error('Agent package media is only accepted by upload routes'),{statusCode:415});
+        // Only the asynchronous import endpoint accepts this optional exact
+        // request fingerprint. Older clients may omit it.
+        const rawFingerprint=request.routeOptions.url==='/api/projects/:id/agent-import-operations'
+          ?request.headers['x-ponderosa-agent-package-fingerprint']:undefined;
+        const expectedFingerprint=rawFingerprint===undefined?undefined:parseRequestFingerprint(rawFingerprint);
+        if(rawFingerprint!==undefined&&!expectedFingerprint)
+          throw Object.assign(new Error('Agent import request fingerprint is invalid'),{statusCode:400});
         await operationHydration;
         await fs.mkdir(importOperationDirectory, { recursive: true });
         const pathname = path.join(importOperationDirectory, `.incoming-${randomUUID()}`);
         const reservationId = `upload:${randomUUID()}`;
         const handle = await fs.open(pathname, "wx", 0o600);
         const hash = createHash("sha256");
+        const fingerprintChunkBytes=4*1024*1024;
+        const fingerprint=expectedFingerprint===undefined?undefined:createHash('sha256').update(
+          `ponderosa-agent-import:sha256-4m-v1\0${expectedFingerprint.bytes}\0${fingerprintChunkBytes}\0${Math.ceil(expectedFingerprint.bytes/fingerprintChunkBytes)}\0`,'utf8');
+        let fingerprintPart=createHash('sha256'),fingerprintPartBytes=0,fingerprintBytes=0;
+        const updateRequestFingerprint=(input:Buffer)=>{
+          if(!fingerprint)return;
+          fingerprintBytes+=input.length;
+          if(fingerprintBytes>expectedFingerprint!.bytes)throw Object.assign(new Error('Agent import request fingerprint differs'),{statusCode:400});
+          for(let offset=0;offset<input.length;){
+            const count=Math.min(fingerprintChunkBytes-fingerprintPartBytes,input.length-offset);
+            fingerprintPart.update(input.subarray(offset,offset+count));fingerprintPartBytes+=count;offset+=count;
+            if(fingerprintPartBytes===fingerprintChunkBytes){fingerprint.update(fingerprintPart.digest());fingerprintPart=createHash('sha256');fingerprintPartBytes=0;}
+          }
+        };
         let size = 0;
         let metadataBytes: number | undefined;
         let headerBytes = 0;
@@ -701,11 +730,17 @@ export function registerAgentPackageRoutes(
             if (jsonEnvelope ? size > maximumJsonImportBytes : size - (metadataBytes ?? headerBytes) > AGENT_PACKAGE_MAX_BYTES) {
               throw Object.assign(new Error(`Agent package exceeds ${AGENT_PACKAGE_LIMIT_LABEL}`), { statusCode: 413 });
             }
+            updateRequestFingerprint(bytes);
             reserveStagedBytes(reservationId, bytes.length);
             hash.update(bytes);
             await handle.write(bytes);
           }
           if((!jsonEnvelope&&!metadata)||completedUploadRequests.has(request.raw))throw Object.assign(new Error('Agent upload metadata is unavailable'),{statusCode:400});
+          if(fingerprint){
+            if(fingerprintPartBytes)fingerprint.update(fingerprintPart.digest());
+            if(fingerprintBytes!==expectedFingerprint!.bytes||fingerprint.digest('hex')!==expectedFingerprint!.digest)
+              throw Object.assign(new Error('Agent import request fingerprint differs'),{statusCode:400});
+          }
           await handle.sync();
           await handle.close();
           if(completedUploadRequests.has(request.raw))throw new Error('Agent upload request already completed');
@@ -715,6 +750,7 @@ export function registerAgentPackageRoutes(
             size,
             reservationId,
             metadata,
+            ...(typeof rawFingerprint==='string'?{requestFingerprint:rawFingerprint}:{}),
           };
           ownedUploads.add(staged);pendingUploads.set(request.raw,staged);
           done(null,staged);
@@ -2648,7 +2684,7 @@ export function registerAgentPackageRoutes(
         const existing = operationCache.get(existingId) ?? await readOperation(existingId);
         if (existing) {
           if(existing.conversationId!==destination.id||existing.product!==product)return reply.code(404).send({error:'import operation not found'});
-          if (existing.payloadHash !== requestPayloadHash) {
+          if (existing.payloadHash !== requestPayloadHash || existing.requestFingerprint!==staged.requestFingerprint) {
             return reply.code(409).send({
               error: "Import idempotency key was reused with different input",
             });
@@ -2669,6 +2705,7 @@ export function registerAgentPackageRoutes(
         id,
         requestId,
         payloadHash: requestPayloadHash,
+        ...(staged.requestFingerprint?{requestFingerprint:staged.requestFingerprint}:{}),
         projectId: request.params.id,
         conversationId:destination.id,
         product,
@@ -2719,6 +2756,34 @@ export function registerAgentPackageRoutes(
         else ownedUploads.delete(staged);
       }
     }),
+  );
+
+  // Read-only lookup after a lost enqueue response. A missing key does not
+  // prove an earlier upload has drained or may no longer be admitted.
+  app.get<{ Params:{id:string;requestId:string};Querystring:{conversationId?:string} }>(
+    "/api/projects/:id/agent-import-operations/by-request/:requestId",
+    async(request,reply)=>{
+      reply.header('cache-control','no-store');
+      await operationHydration;
+      const requestId=validIdempotencyKey(request.params.requestId),chatId=request.query?.conversationId,product=requestProduct(request);
+      if(!requestId||requestId!==request.params.requestId||typeof chatId!=='string'||!chatId||chatId.length>200)
+        return reply.code(404).send({error:'import operation not found'});
+      const chat=store.getConversation(chatId);
+      if(!chat||chat.projectId!==request.params.id||!resourceInProduct(store,'conversation',chatId,product))
+        return reply.code(404).send({error:'import operation not found'});
+      const operationId=operationByRequest.get(requestOperationKey(request.params.id,requestId));
+      if(!operationId)return reply.code(404).send({error:'import operation not found'});
+      // Both maps are populated only after the durable operation write or
+      // validated startup hydration. A dangling/invalid entry is not authority
+      // to reveal another Chat's operation; the caller must retain its request.
+      const cached=operationCache.get(operationId);
+      if(!cached)return reply.code(404).send({error:'import operation not found'});
+      let operation:AgentImportOperationDto;
+      try{operation=validatedOperation(cached,operationId);}catch{return reply.code(404).send({error:'import operation not found'});}
+      if(operation.requestId!==requestId||operation.projectId!==request.params.id||operation.conversationId!==chatId||operation.product!==product)
+        return reply.code(404).send({error:'import operation not found'});
+      return reply.send(operation);
+    },
   );
 
   app.get<{ Params: { id: string; operationId: string } }>(

@@ -287,6 +287,8 @@ export interface AgentImportOperationDto {
   requestId: string;
   /** SHA-256 of the exact submitted payload bound to requestId. */
   payloadHash: string;
+  /** Optional versioned bounded-stream fingerprint of the entire upload. */
+  requestFingerprint?: string;
   projectId: string;
   /** Immutable destination admitted from the bounded upload header. */
   conversationId:string;
