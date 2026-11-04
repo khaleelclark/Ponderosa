@@ -336,6 +336,10 @@ export function registerAgentPackageRoutes(
   const importOwnerUnavailable=(id:string):boolean=>{
     const intent=importIntentForOperation(id);return !!intent&&!importOwnerAvailable(intent);
   };
+  const importOperationMatchesIntent=(operation:AgentImportOperationDto,intent:ImportSubmissionIntent):boolean=>
+    operation.id===intent.operation_id&&operation.projectId===intent.project_id&&operation.requestId===intent.request_id&&
+    operation.conversationId===intent.conversation_id&&operation.product===intent.product_scope&&
+    operation.payloadHash===intent.payload_sha256&&(operation.requestFingerprint??null)===intent.request_fingerprint;
   const operationByRequest = new Map<string, string>();
   const operationCache = new Map<string, AgentImportOperationDto>();
   const quarantinedOperationIds = new Set<string>();
@@ -575,7 +579,12 @@ export function registerAgentPackageRoutes(
     if (!operationIdPattern.test(id) || importOwnerUnavailable(id)) return undefined;
     try {
       const operation=validatedOperation(JSON.parse(await fs.readFile(operationPath(id), "utf8")), id);
-      return importOwnerUnavailable(id)?undefined:operation;
+      if(importOwnerUnavailable(id))return undefined;
+      const byId=importIntentForOperation(id),byKey=getImportIntent(operation.projectId,operation.requestId);
+      // Keep structurally valid but mismatched journals in place. They cannot
+      // acquire authority through hydration, direct ID or legacy lookup.
+      if((byId&&!importOperationMatchesIntent(operation,byId))||(byKey&&!importOperationMatchesIntent(operation,byKey)))return undefined;
+      return operation;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT" || importOwnerUnavailable(id)) return undefined;
       await quarantineOperation(id, error);
@@ -585,7 +594,7 @@ export function registerAgentPackageRoutes(
   const readQueuedIntentOperation=async(intent:ImportSubmissionIntent):Promise<AgentImportOperationDto|undefined>=>{
     try{
       const operation=validatedOperation(JSON.parse(await fs.readFile(operationPath(intent.operation_id),'utf8')),intent.operation_id);
-      if(operation.projectId!==intent.project_id||operation.requestId!==intent.request_id||operation.conversationId!==intent.conversation_id||operation.product!==intent.product_scope||operation.payloadHash!==intent.payload_sha256||(operation.requestFingerprint??null)!==intent.request_fingerprint)return undefined;
+      if(!importOperationMatchesIntent(operation,intent))return undefined;
       return operation;
     }catch{return undefined;}
   };
@@ -2526,10 +2535,7 @@ export function registerAgentPackageRoutes(
     if (!operation || operation.status !== "pending") return;
     // A valid journal for another scope is not authority for this leased Chat.
     // Leave both journal and payload untouched if any exact identity differs.
-    if(intent&&(operation.id!==intent.operation_id||operation.projectId!==intent.project_id||
-      operation.requestId!==intent.request_id||operation.conversationId!==intent.conversation_id||
-      operation.product!==intent.product_scope||operation.payloadHash!==intent.payload_sha256||
-      (operation.requestFingerprint??null)!==intent.request_fingerprint))return;
+    if(intent&&!importOperationMatchesIntent(operation,intent))return;
     const update = async (patch: Partial<AgentImportOperationDto>) => {
       operation = { ...operation!, ...patch, updatedAt: new Date().toISOString() };
       await writeOperation(operation);
@@ -2942,6 +2948,7 @@ export function registerAgentPackageRoutes(
       if (!operation || operation.projectId !== request.params.id || operation.product!==requestProduct(request) || !resourceInProduct(store,'conversation',operation.conversationId,requestProduct(request))) {
         return reply.code(404).send({ error: "import operation not found" });
       }
+      if(intent&&!importOperationMatchesIntent(operation,intent))return reply.code(404).send({error:'import operation not found'});
       if(importAdmissionHeld(operation.id))return reply.code(409).send({error:heldImportMessage});
       return operation;
     },

@@ -291,3 +291,23 @@ test('committed Project deletion exposes only exact content-free import status',
   assert.equal((await f.api('GET',lookup.replace('/api/','/api/branches/engine/'))).status,404);
  });
 });
+
+test('hydration and direct lookup hold valid journals that differ from their exact intent',{timeout:30000},async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Original intent Chat'),other=f.ok(await f.api('POST','/api/projects/'+chat.projectId+'/conversations',{title:'Other Chat',defaultEngine:'codex'},{'idempotency-key':randomUUID()}));
+  const id=randomUUID(),otherId=randomUUID(),requestId=randomUUID(),hash='0'.repeat(64),directory=path.join(f.dataDir,'agent-import-operations'),now=new Date().toISOString();
+  const record={id,requestId,payloadHash:hash,projectId:chat.projectId,conversationId:other.id,product:'dev',sourceLabel:'Controlled mismatch',phase:'queued',status:'pending',createdAt:now,updatedAt:now};
+  store.sqlite.prepare("INSERT INTO agent_import_submission_intents(project_id,request_id,conversation_id,product_scope,payload_sha256,request_fingerprint,operation_id,staged_name,state) VALUES (?,?,?,?,?,?,?,?,'queued')").run(chat.projectId,requestId,chat.id,'dev',hash,null,id,'.incoming-'+randomUUID());
+  const original=JSON.stringify(record),otherOriginal=JSON.stringify({...record,id:otherId});
+  await writeFile(path.join(directory,id+'.json'),original);await writeFile(path.join(directory,otherId+'.json'),otherOriginal);await writeFile(path.join(directory,id+'.payload'),'retained original payload');
+  await f.reopen();
+  const endpoint='/api/projects/'+chat.projectId+'/agent-import-operations';
+  assert.equal((await f.api('GET',endpoint+'/'+id)).status,404,'intent mismatch cannot be read by operation ID');
+  assert.equal((await f.api('GET',endpoint+'/'+otherId)).status,404,'a different operation cannot reuse an existing request key');
+  assert.equal((await f.api('GET',endpoint+'/by-request/'+requestId+'?conversationId='+other.id)).status,404,'another Chat cannot read the request');
+  assert.equal((await f.api('GET',endpoint+'/by-request/'+requestId+'?conversationId='+chat.id)).status,409,'the original identity remains held');
+  assert.equal(await readFile(path.join(directory,id+'.json'),'utf8'),original);assert.equal(await readFile(path.join(directory,otherId+'.json'),'utf8'),otherOriginal);
+  assert.equal(await readFile(path.join(directory,id+'.payload'),'utf8'),'retained original payload');assert.equal(f.turns.length,0);
+ },{storeFactory:dataDir=>(store=new AgentStore(dataDir))});
+});
