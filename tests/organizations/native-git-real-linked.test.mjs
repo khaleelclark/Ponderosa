@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtemp,mkdir,writeFile,readFile,lstat,realpath,rm,chmod,utimes,link,open,readdir} from 'node:fs/promises';
+import {mkdtemp,mkdir,writeFile,readFile,lstat,realpath,rm,chmod,utimes,link,open,readdir,symlink} from 'node:fs/promises';
 import {lstatSync,readFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
@@ -256,4 +256,22 @@ test('real reftable capsule retains native private mapping when relative hooks p
  const restoredHook=await lstat(path.join(privateView,'pre-commit'),{bigint:true});assert.equal(restoredHook.mode&0o7777n,sourceHook.mode&0o7777n);assert.equal(restoredHook.mtimeNs,sourceHook.mtimeNs);
  assert.equal(await readFile(path.join(privateView,'pre-commit'),'utf8'),'#!/bin/sh\nexit 0\n');
  assert.match(await readFile(path.join(capsule.gitDir,'info','exclude'),'utf8'),/^\/\.ponderosa-portable-review\/$/m);
+});
+
+for(const aliased of [false,true])test('real reftable capsule keeps native custody with '+(aliased?'an aliased':'an absolute')+' private storage hook source',options,async t=>{
+ const root=await realpath(await mkdtemp(path.join(tmpdir(),'real-linked-absolute-'))),source=path.join(root,'source'),destination=path.join(root,'destination'),dependencies=path.join(root,'dependencies'),other=path.join(root,'other'),linked=path.join(dependencies,'capsule');
+ t.after(()=>rm(root,{recursive:true,force:true}));
+ await initialize(source);await initialize(other,true);await mkdir(destination);await mkdir(dependencies);
+ await git(other,'worktree','add','-b','linked',linked);
+ await git(linked,'update-ref','refs/worktree/selected-private',await git(linked,'rev-parse','HEAD'));
+ const privateSource=await git(linked,'rev-parse','--absolute-git-dir');
+ await git(source,'config','core.hooksPath',dependencies);const hookSource=aliased?path.join(root,'hook-alias'):privateSource;if(aliased)await symlink(privateSource,hookSource);await git(linked,'config','core.hooksPath',hookSource);
+ const manifest=await exportReviewedUserData(source,{git:true,harness:false,externalGitDependencies:true});
+ const activation={git:true,harness:false};await writeFile(path.join(destination,'file.txt'),'committed\n');
+ const tasks=planReviewedRecoveryRoots(packageFor(manifest,{'file.txt':Buffer.from('committed\n')}),{work:destination},activation),capsule=tasks[0].externalPlan.repositories.find(row=>row.sourceWorkingRoot===linked);assert.ok(capsule);
+ assert.equal(tasks[0].externalPlan.activation.gitPathMappings.find(row=>row.source===privateSource)?.destination,capsule.privateDir);
+ await applyReviewedRecoveryRoots(tasks,activation,()=>{});
+ const view=await git(capsule.worktreePath,'config','--get','core.hooksPath');assert.ok(path.isAbsolute(view));const actual=await realpath(view);assert.notEqual(actual,capsule.privateDir);
+ assert.ok(actual.startsWith(path.join(destination,'.git')+path.sep));assert.deepEqual(await readdir(actual),[]);
+ assert.equal(await git(capsule.worktreePath,'rev-parse','refs/worktree/selected-private'),await git(linked,'rev-parse','HEAD'));
 });
