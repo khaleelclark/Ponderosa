@@ -30,7 +30,7 @@ not True. The older reconciliation and exact historical results remain in
 | 12 | Continuation | Durable recovery and visible holds exist; crash/restart and all truncation paths need full qualification. Unknown effects are not silently replayed. |
 | 13 | Coordination | Tracked Requests and actionable peer messages steer; marked progress/FYI remains visible and noninterrupting. A practical host prompt fence rejects controlled stale calls, not proof of provider comprehension. Reviewed continuation covers qualified persistent Codex and Claude paths with exact evidence; unsupported/multiple/unknown cases remain held. Live-provider, full Stop/pause/redirect and no-loop verification remain open. |
 | 14 | Runtime | Visible failure/hold reporting exists. **Missing/held:** general stuck-work detection and complete exact-cause visibility are not established; provider-outage/rate-limit/stuck-work qualification remains open. |
-| 15 | Portability + memory | User-folder custody protections exist and pending cleanup is shown. **Missing/held:** populated Chroma cleanup and rollback remain unresolved; 12 historical server cases remain failing or unqualified. |
+| 15 | Portability + memory | User-folder custody protections and pending-cleanup reporting exist. Internal populated Chroma cleanup and staged rollback source changes are integrated through `e0a9414e9`; behavioral validation remains open, including the 12 historical server cases. Unknown effects remain held. |
 | 16 | Runtime | Trigger occurrence identity, catch-up and logging exist; all timing, clock-change and reason-trail acceptance remains open. |
 | 17 | Integration | A controlled populated upgrade and focused regressions passed; the final whole suite, crash qualification and 20 consecutive controlled core-path runs remain open. |
 | 18 | Interface | Notification settings and grouped browser displays exist; controlled bursts were checked. Actual push/OS behavior, all settings and mention semantics remain unqualified. |
@@ -45,7 +45,7 @@ not True. The older reconciliation and exact historical results remain in
 | 27 | Interface | Theme and text-size controls exist; keyboard, screen reader, contrast, zoom and automated accessibility qualification remain open. |
 | 28 | Integration | Branches uses shared Core paths, but every Bible requirement must separately be qualified for Branches; aggregate parity remains open. |
 | 29 | Interface | Folders and shared Output/chat UI exist. Full copy census, screenshots, recordings and blind comparison remain open; consequential safety disclosures remain visible. |
-| 30 | Memory | Authorized combined Chat/global search exists. Real-provider seeded recall and misuse review remain open; populated cleanup, rollback and uncertain scopes remain held. |
+| 30 | Memory | Authorized combined Chat/global search exists. Internal populated cleanup and staged rollback source changes are integrated through `e0a9414e9` but remain behaviorally unqualified; unknown effects and uncertain scopes remain held. Real-provider seeded recall and misuse review remain open. |
 | 31 | Interface + Runtime | Shared streaming/voice primitives exist. Full surface coverage, clean-render recordings and required call latency remain open. |
 | 32 | Runtime | The pinned finite framework-capability inventory exists. **Missing/held:** portable final-resource continuation lacks independently verifiable original completeness/effect evidence. Matched example execution and framework qualification remain open. |
 
@@ -105,12 +105,14 @@ functional evidence only, not the panel result. No panel UI is to be built.
 
 ## Blockers and next work
 
-- Physical Chroma cleanup/rollback remains under implementation. Patrick
-  clarified that Local Memory is internal Ponderosa memory and that Ponderosa
-  should coordinate its own concurrent operations without a user assurance
-  checkbox. Unknown direct external access is deployment qualification, not
-  a reason to stop candidate implementation. Do not touch live memory or
-  deploy; logical retirement alone does not mean physical deletion.
+- Internal physical Chroma cleanup and staged rollback source changes are
+  integrated through `e0a9414e9`; their behavior and the 12 historical server
+  cases still require consolidated validation. Unknown effects remain held;
+  do not blindly replay them. Patrick clarified that Local Memory is internal
+  Ponderosa memory and that Ponderosa should coordinate its own concurrent
+  operations without a user assurance checkbox. Unknown direct external access
+  is deployment qualification. Do not touch live memory or deploy; logical
+  retirement alone does not mean physical deletion.
 - Finish implementation gaps above and re-evaluate reviewed continuation on
   one-shot/Windows/legacy evidence and multiple uncertain roots without blindly
   replaying effects. Do not treat provider prompt fences as proof a model
