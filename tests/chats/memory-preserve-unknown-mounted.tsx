@@ -56,3 +56,76 @@ export async function memoryPreserveUnknownRegression():Promise<void>{
   assert(getReviews===1,'no ordinary review needed by preserve path');
  }finally{root.unmount();client.clear();host.remove();globalThis.fetch=originalFetch;if(saved===null)localStorage.removeItem(key);else localStorage.setItem(key,saved);}
 }
+
+// Storage failures must distinguish an unsent decision from a verified
+// preservation receipt, without claiming the original memory outcome is known.
+export async function memoryPreserveStorageFeedbackRegression():Promise<void>{
+ const host=document.createElement('div');document.body.append(host);
+ const root=createRoot(host),client=new QueryClient({defaultOptions:{queries:{retry:false},mutations:{retry:false}}});
+ const originalFetch=globalThis.fetch,originalSetItem=Storage.prototype.setItem,originalRemoveItem=Storage.prototype.removeItem;
+ const id='storage-preserve',key=JSON.stringify(['memory-preserve-unknown',window.location.origin,currentProductScope(),id]),saved=localStorage.getItem(key);
+ localStorage.removeItem(key);
+ let failSave=false,failRemove=false,remoteReceipt:any,returnedReceipt:any;
+ const posts:any[]=[],hold:any={id,sha256:'a'.repeat(64),preserveUnknownReviewSha256:'b'.repeat(64),legacy:true,state:'unsettled'};
+ const json=(value:unknown)=>new Response(JSON.stringify(value),{status:200,headers:{'content-type':'application/json'}});
+ Storage.prototype.setItem=function(k:string,value:string){
+  if(k===key&&failSave)throw new DOMException('Synthetic quota exceeded','QuotaExceededError');
+  return originalSetItem.call(this,k,value);
+ };
+ Storage.prototype.removeItem=function(k:string){
+  if(k===key&&failRemove)throw new DOMException('Synthetic storage failure','SecurityError');
+  return originalRemoveItem.call(this,k);
+ };
+ globalThis.fetch=async(input,init)=>{
+  const url=String(input);
+  if(init?.method==='POST'){
+   assert(url.endsWith('/mutation-holds/storage-preserve/preserve-unknown'),'only the preserve endpoint may be called');
+   const body=JSON.parse(String(init.body));posts.push(body);
+   assert(localStorage.getItem(key)?.includes(body.commandKey),'save original decision before dispatch');
+   remoteReceipt={version:1,id,holdSha256:hold.sha256,commandKey:body.commandKey,reviewSha256:body.reviewSha256,reason:body.reason,operatorId:'local-operator',disposition:'preserve_unknown',outcome:'unknown',held:true,replayed:false,backendModified:false};
+   returnedReceipt=remoteReceipt;
+   return json(remoteReceipt);
+  }
+  if(url.endsWith('/mutation-holds'))return json([{...hold,...(returnedReceipt?{disposition:returnedReceipt}:{})}]);
+  throw Error('Unexpected request: '+url);
+ };
+ const render=(mount:string)=>root.render(<QueryClientProvider client={client}><MemoryPreserveUnknown key={mount} id={id}/></QueryClientProvider>);
+ const stage=async()=>{
+  const field=document.querySelector('textarea:not([aria-hidden="true"])') as HTMLTextAreaElement;
+  assert(field,'reason field exists');
+  Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value')!.set!.call(field,'Completion cannot be verified');
+  field.dispatchEvent(new Event('input',{bubbles:true}));await settle();
+  (document.querySelector('input[type=checkbox]') as HTMLInputElement).click();await settle();
+  button('Record Preserve unknown').click();await settle();
+ };
+ try{
+  render('pre-dispatch');await settle();button('Preserve unknown').click();await settle();await stage();
+  failSave=true;button('Confirm Preserve unknown').click();await settle();
+  assert(posts.length===0&&!localStorage.getItem(key),'a failed initial save sends no request and retains no new command');
+  assert(document.body.textContent?.includes('No request was sent this time'),'unsent decision is explained');
+  assert(!document.body.textContent?.includes('Outcome unconfirmed · exact command held'),'unsent attempt is not misreported as dispatched');
+
+  failSave=false;render('post-response');await settle();button('Preserve unknown').click();await settle();await stage();
+  failRemove=true;button('Confirm Preserve unknown').click();await settle();
+  const retained=localStorage.getItem(key);
+  assert(posts.length===1&&retained,'verified receipt with failed local removal retains original input');
+  assert(document.body.textContent?.includes('The preserve decision was confirmed'),'only the preservation decision is confirmed');
+  assert(document.body.textContent?.includes('original memory outcome is still unknown')&&document.body.textContent?.includes('hold remains'),'original uncertainty and hold remain visible');
+  assert(document.body.textContent?.includes('Exact command retained'),'new decisions stay locked');
+
+  returnedReceipt={...remoteReceipt,commandKey:'different'};
+  button('Inspect original disposition').click();await settle();
+  assert(localStorage.getItem(key)===retained&&document.body.textContent?.includes('Disposition unconfirmed'),'a mismatched receipt remains unconfirmed');
+  returnedReceipt=remoteReceipt;
+  button('Inspect original disposition').click();await settle();
+  assert(localStorage.getItem(key)===retained&&document.body.textContent?.includes('The preserve decision was confirmed'),'matching lookup reports local cleanup failure');
+  assert(posts.length===1,'receipt inspection never repeats the mutation');
+  failRemove=false;button('Inspect original disposition').click();await settle();
+  assert(!localStorage.getItem(key)&&posts.length===1,'matching lookup clears after storage recovers without replay');
+  assert(document.body.textContent?.includes('hold unsettled'),'verified disposition never clears the original memory hold');
+ }finally{
+  Storage.prototype.setItem=originalSetItem;Storage.prototype.removeItem=originalRemoveItem;
+  root.unmount();client.clear();host.remove();globalThis.fetch=originalFetch;
+  if(saved===null)localStorage.removeItem(key);else localStorage.setItem(key,saved);
+ }
+}

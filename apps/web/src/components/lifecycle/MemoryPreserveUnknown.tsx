@@ -8,6 +8,9 @@ import {createClientId} from '../../clientId';
 import {ConfirmDialog} from '../ConfirmationDialogs';
 import {useWorkspaceReadOnly} from '../WorkspaceReadOnlyContext';
 import {memoryPreserveCommandValid,memoryPreserveHoldValid,memoryPreserveReceiptMatches,restoreMemoryPreserveCommand,type MemoryPreserveCommand} from './memoryPreserveUnknown';
+class PreserveCommandNotSent extends Error {}
+class PreserveReceiptStorageFailed extends Error {}
+const receiptStorageMessage='The preserve decision was confirmed, but your browser could not update its saved record. The original memory outcome is still unknown and the hold remains.';
 export function MemoryPreserveUnknown({id}:{id:string}):JSX.Element {
  const key=JSON.stringify(['memory-preserve-unknown',window.location.origin,currentProductScope(),id]);
  const [restored]=useState(()=>restoreMemoryPreserveCommand(key,id));
@@ -23,18 +26,22 @@ export function MemoryPreserveUnknown({id}:{id:string}):JSX.Element {
  },enabled:open,retry:false,refetchOnWindowFocus:false,refetchOnReconnect:false});
  const accept=(command:MemoryPreserveCommand,value:unknown)=>{
   if(!memoryPreserveReceiptMatches(command,value))throw Error('Disposition differs from original command');
-  localStorage.removeItem(key);setPending(undefined);setReceipt(value);setNotice('Decision recorded · outcome unknown · original hold unsettled');
+  // Receipt verification confirms the preservation decision only; it does
+  // not establish the original memory operation's outcome.
+  setReceipt(value);
+  try{localStorage.removeItem(key);}catch{throw new PreserveReceiptStorageFailed();}
+  setPending(undefined);setNotice('Decision recorded · outcome unknown · original hold unsettled');
  };
  const send=useMutation({retry:false,mutationFn:async(command:MemoryPreserveCommand)=>{
-  if(readOnly||!memoryPreserveCommandValid(command,id))throw Error('Preserve unknown scope unavailable');
+  if(readOnly||!memoryPreserveCommandValid(command,id))throw new PreserveCommandNotSent('This decision is unavailable. No request was sent this time; any earlier attempt may still be unresolved.');
   const existing=restoreMemoryPreserveCommand(key,id);
-  if(existing.error){setStorageError(existing.error);throw Error(existing.error);}
-  if(existing.command&&JSON.stringify(existing.command)!==JSON.stringify(command)){setPending(existing.command);throw Error('Original command conflict');}
-  try{localStorage.setItem(key,JSON.stringify(command));}catch{setStorageError('Original command could not be saved · mutation held');throw Error('Original command could not be saved');}
+  if(existing.error){setStorageError(existing.error);throw new PreserveCommandNotSent('The saved decision could not be read. No request was sent this time. Preserve browser data and reload the page.');}
+  if(existing.command&&JSON.stringify(existing.command)!==JSON.stringify(command)){setPending(existing.command);throw new PreserveCommandNotSent('Another decision is already saved. No request was sent this time; inspect the original disposition before retrying.');}
+  try{localStorage.setItem(key,JSON.stringify(command));}catch{setStorageError('Original command could not be saved · mutation held');throw new PreserveCommandNotSent('Could not save this decision in your browser. No request was sent this time. Free browser storage and reload; any earlier attempt may still be unresolved.');}
   setPending(command);
   const value=await requestJson(`/api/local-memory/mutation-holds/${encodeURIComponent(id)}/preserve-unknown`,{method:'POST',body:JSON.stringify(command.body)});
   accept(command,value);
- },onError:error=>setNotice(`Outcome unconfirmed · exact command held · ${error.message}`),onSettled:()=>{fence.current=false;setConfirm(undefined);setAck(false);}});
+ },onError:error=>setNotice(error instanceof PreserveCommandNotSent?error.message:error instanceof PreserveReceiptStorageFailed?receiptStorageMessage:`Outcome unconfirmed · exact command held · ${error.message}`),onSettled:()=>{fence.current=false;setConfirm(undefined);setAck(false);}});
  const lookup=useMutation({retry:false,mutationFn:async()=>{
   if(!pending)throw Error('No original command');
   const result=await inventory.refetch();
@@ -42,7 +49,7 @@ export function MemoryPreserveUnknown({id}:{id:string}):JSX.Element {
   if(result.data.sha256!==pending.holdSha256||result.data.preserveUnknownReviewSha256!==pending.body.reviewSha256)throw Error('Original hold changed · command retained');
   if(!result.data.disposition)throw Error('No disposition confirmed · original command retained');
   accept(pending,result.data.disposition);
- },onError:error=>setNotice(`Disposition unconfirmed · no replay · ${error.message}`)});
+ },onError:error=>setNotice(error instanceof PreserveReceiptStorageFailed?receiptStorageMessage:`Disposition unconfirmed · no replay · ${error.message}`)});
  const hold=inventory.data,busy=send.isPending||lookup.isPending;
  const valid=Boolean(hold&&!inventory.isError&&!inventory.isFetching&&!readOnly&&!pending&&!receipt&&!hold.disposition);
  const stage=()=>{
