@@ -66,16 +66,27 @@ test('Chat deletion clears its exact collection pair and global grant without to
  assert.deepEqual(await f.rows(other),[kept]);assert.deepEqual(await f.rows('global'),[global]);
  await f.memory.provisionInventory();assert.equal(await f.rows(scope),null,'retired scope must not be recreated');
 }));
-test('partial Chat cleanup failure remains durable and idempotent after reopen',()=>fixture(async f=>{
- const scope='chat:'+f.chat.id;await f.seed(scope,scope+':team');await f.seed(scope,scope+':team',f.a.id,true);
- const original=f.raw.client.deleteCollection.bind(f.raw.client);let refuse=true;
- f.raw.client.deleteCollection=async input=>{if(refuse&&input.name===f.raw.names(scope).log)throw Error('Controlled cleanup failure');return original(input);};
- const result=await f.api('DELETE','/api/conversations/'+f.chat.id);assert.equal(result.body.cleanupPending,true,JSON.stringify(result));
- assert.equal(f.store.getConversationDeletionReceipt(f.chat.id).serverCleanupCompleted,false);assert.equal(await f.rows(scope),null);assert.notEqual(await f.rows(scope,true),null);
- refuse=false;f.raw.client.deleteCollection=original;
- await f.reopen();
- const deadline=Date.now()+5000;while(!f.store.getConversationDeletionReceipt(f.chat.id).serverCleanupCompleted&&Date.now()<deadline)await new Promise(r=>setTimeout(r,10));
- assert.equal(f.store.getConversationDeletionReceipt(f.chat.id).serverCleanupCompleted,true);assert.equal(await f.rows(scope,true),null);
+test("partial Chat cleanup retains an unknown second delete without replay after reopen",()=>fixture(async f=>{
+ const scope="chat:"+f.chat.id,other="chat:"+f.otherChat.id;await f.seed(scope,scope+":team");
+ const logId=await f.seed(scope,scope+":team",f.a.id,true),otherId=await f.seed(other,other+":team");
+ const original=f.raw.client.deleteCollection.bind(f.raw.client);let memoryDeletes=0,logAttempts=0;
+ f.raw.client.deleteCollection=async input=>{
+  if(input.name===f.raw.names(scope).log){logAttempts++;throw Error("Controlled second delete failure");}
+  const result=await original(input);if(input.name===f.raw.names(scope).memory)memoryDeletes++;return result;
+ };
+ const result=await f.api("DELETE","/api/conversations/"+f.chat.id);f.raw.client.deleteCollection=original;
+ assert.equal(result.body.cleanupPending,true,JSON.stringify(result));assert.equal(memoryDeletes,1);assert.equal(logAttempts,1);
+ const receipt=f.store.getConversationDeletionReceipt(f.chat.id);assert.equal(receipt.serverCleanupCompleted,false);assert.equal(receipt.lastError,MEMORY_CLEANUP_UNKNOWN_HOLD);
+ assert.equal(await f.rows(scope),null);assert.deepEqual(await f.rows(scope,true),[logId]);assert.deepEqual(await f.rows(other),[otherId]);
+ assert.equal(f.memory.core.database.scopeHasUnsettledMutation(scope),true);
+ await f.reopen();const raw=f.liveMemory.core.database.raw,remove=raw.client.deleteCollection.bind(raw.client);let replayed=0;
+ raw.client.deleteCollection=async input=>{replayed++;return remove(input);};
+ try{
+  assert.equal(f.store.getConversationDeletionReceipt(f.chat.id).serverCleanupCompleted,false);
+  await f.api("DELETE","/api/conversations/"+f.chat.id);
+  assert.equal(replayed,0);assert.equal(f.liveMemory.core.database.scopeHasUnsettledMutation(scope),true);
+  assert.equal(await f.rows(scope),null);assert.deepEqual(await f.rows(scope,true),[logId]);assert.deepEqual(await f.rows(other),[otherId]);
+ }finally{raw.client.deleteCollection=remove;}
 }));
 test('Project deletion purges every owned Chat memory scope before removing its canonical owners',()=>fixture(async f=>{
  const scope='chat:'+f.chat.id,other='chat:'+f.otherChat.id;
@@ -107,14 +118,21 @@ test('unowned cleanup is rejected, incompatible binding is detected, and deletio
   assert.equal(deletes,0);assert.deepEqual(await f.rows(scope),[id]);
  }finally{f.raw.client.deleteCollection=original;}
 }));
-test('Agent cleanup failure retains its durable receipt and retry preserves team data',()=>fixture(async f=>{
- const scope='chat:'+f.chat.id,own=await f.seed(scope,scope+':agent:'+f.a.id),team=await f.seed(scope,scope+':team');
- await f.seed(scope,scope+':agent:'+f.a.id,f.a.id,true);
- const original=f.raw.client.getCollection.bind(f.raw.client);let refuse=true;
- f.raw.client.getCollection=async input=>{const c=await original(input);if(input.name===f.raw.names(scope).log){const remove=c.delete.bind(c);c.delete=async args=>{if(refuse)throw Error('Controlled private cleanup failure');return remove(args);};}return c;};
- const result=await f.removeAgent();assert.equal(result.body.cleanupPending,true);assert.equal((await f.rows(scope)).includes(own),false);assert.deepEqual(await f.rows(scope),[team]);
- const receipt=f.store.listPendingAgentDeletionReceipts().find(r=>r.deletedAgentIds.includes(f.a.id));assert.ok(receipt);refuse=false;
- const retry=await f.api('POST','/api/projects/'+f.first.id+'/agent-deletions/commit',{rootAgentIds:[f.a.id],previewHash:receipt.previewHash});
+test("Agent pre-dispatch cleanup failure retains its receipt and retry preserves team data",()=>fixture(async f=>{
+ const scope="chat:"+f.chat.id,own=await f.seed(scope,scope+":agent:"+f.a.id),team=await f.seed(scope,scope+":team");
+ const log=await f.seed(scope,scope+":agent:"+f.a.id,f.a.id,true),logs=await f.raw.client.getCollection({name:f.raw.names(scope).log});
+ await logs.update({ids:[log],metadatas:[{chunk_ids:JSON.stringify([own]),chunk_ids_affected:JSON.stringify([own])}]});
+ const original=f.raw.client.getCollection.bind(f.raw.client);let blocked=0;
+ f.raw.client.getCollection=async input=>{
+  if(input.name===f.raw.names(scope).log&&!f.store.getAgent(f.a.id)){blocked++;throw Error("Controlled failure before private cleanup");}
+  return original(input);
+ };
+ const result=await f.removeAgent();f.raw.client.getCollection=original;
+ assert.equal(result.body.cleanupPending,true,JSON.stringify(result));assert.ok(blocked>0);
+ assert.deepEqual(new Set(await f.rows(scope)),new Set([own,team]));assert.deepEqual(await f.rows(scope,true),[log]);
+ assert.equal(f.memory.core.database.scopeHasUnsettledMutation(scope),false);
+ const receipt=f.store.listPendingAgentDeletionReceipts().find(r=>r.deletedAgentIds.includes(f.a.id));assert.ok(receipt);assert.match(receipt.lastError,/Controlled failure before private cleanup/);
+ const retry=await f.api("POST","/api/projects/"+f.first.id+"/agent-deletions/commit",{rootAgentIds:[f.a.id],previewHash:receipt.previewHash});
  assert.equal(retry.body.cleanupPending,false,JSON.stringify(retry));assert.deepEqual(await f.rows(scope),[team]);assert.deepEqual(await f.rows(scope,true),[]);
 }));
 test('queued old memory work settles before Chat erasure and cannot leave a recreated scope',()=>fixture(async f=>{
