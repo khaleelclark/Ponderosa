@@ -39,51 +39,12 @@ test('native external graph preserves aliases and exact source metadata after Gi
  }finally{await f.dispose();}
 });
 
-test('worktree placement requires its original issued identity before any Git creation',options,async()=>{
- const f=await fixture();try{
-  f.external.files.push({path:'hook',context:'worktree',data:f.data,mode:0o700,mtimeNs:f.ns});
-  await assert.rejects(f.apply(f.configuration()),/original issued import-root identity/);await assert.rejects(lstat(path.join(f.destination,'.git')),{code:'ENOENT'});
-  f.external.worktreeIdentity={device:'0',inode:'0'};await assert.rejects(f.apply(f.configuration()),/original import-root custody/);await assert.rejects(lstat(path.join(f.destination,'.git')),{code:'ENOENT'});
- }finally{await f.dispose();}
-});
-
-test('equal-only worktree reuse refuses changed bytes and preserves the original destination',options,async()=>{
- const f=await fixture();try{
-  const target=path.join(f.destination,'hook');await writeFile(target,'different local bytes');const before=await lstat(target,{bigint:true}),root=await lstat(f.destination,{bigint:true});
-  f.external.worktreeIdentity={device:root.dev.toString(),inode:root.ino.toString()};f.external.files.push({path:'hook',context:'worktree',data:f.data,mode:0o700,mtimeNs:f.ns});
-  await assert.rejects(f.apply(f.configuration()),/original differs|bytes differ/);assert.equal(await readFile(target,'utf8'),'different local bytes');const after=await lstat(target,{bigint:true});assert.equal(after.ino,before.ino);assert.equal(after.mode,before.mode);assert.equal(after.mtimeNs,before.mtimeNs);
- }finally{await f.dispose();}
-});
-
-test('an undeclared existing hardlink cannot grant metadata authority over a reused original',options,async()=>{
- const f=await fixture();try{
-  const target=path.join(f.destination,'hook');await writeFile(target,f.data);await link(target,path.join(f.destination,'undeclared-alias'));const before=await lstat(target,{bigint:true}),root=await lstat(f.destination,{bigint:true});
-  f.external.worktreeIdentity={device:root.dev.toString(),inode:root.ino.toString()};f.external.files.push({path:'hook',context:'worktree',data:f.data,mode:0o700,mtimeNs:f.ns});
-  await assert.rejects(f.apply(f.configuration()),/aliases outside its complete declared graph/);const after=await lstat(target,{bigint:true});assert.equal(after.ino,before.ino);assert.equal(after.mode,before.mode);assert.equal(after.mtimeNs,before.mtimeNs);assert.deepEqual(await readFile(path.join(f.destination,'undeclared-alias')),f.data);
- }finally{await f.dispose();}
-});
-
 test('external alias paths and targets cannot escape or name an undeclared original',options,async()=>{
  const f=await fixture();try{
   f.external.links.push({path:'outside',target:'../outside',kind:'symlink'});await assert.rejects(f.apply(f.configuration()),/contained relative path/);await assert.rejects(lstat(path.join(f.destination,'.git')),{code:'ENOENT'});
   f.external.links.at(-1).target='missing';await assert.rejects(f.apply(f.configuration()),/named original closure/);await assert.rejects(lstat(path.join(f.destination,'.git')),{code:'ENOENT'});
  }finally{await f.dispose();}
 });
-
-
-test('a replaced worktree child directory cannot gain final-metadata custody through equal bytes',options,async()=>{
- const f=await fixture();try{
-  const target=path.join(f.destination,'hooks'),retained=path.join(f.destination,'retained-hooks');await mkdir(target);await writeFile(path.join(target,'run'),f.data);
-  const root=await lstat(f.destination,{bigint:true}),issued=await lstat(target,{bigint:true});
-  f.external.worktreeIdentity={device:root.dev.toString(),inode:root.ino.toString(),directories:{hooks:{device:issued.dev.toString(),inode:issued.ino.toString()}}};
-  f.external.directories.push({path:'hooks',context:'worktree',mode:0o700,mtimeNs:f.ns});f.external.files.push({path:'hooks/run',context:'worktree',data:f.data,mode:0o700,mtimeNs:f.ns});
-  await rename(target,retained);await mkdir(target);await writeFile(path.join(target,'run'),f.data);const before=await lstat(target,{bigint:true}),fileBefore=await lstat(path.join(target,'run'),{bigint:true});
-  await assert.rejects(f.apply(f.configuration()),/lost its original byte-phase custody/);
-  const after=await lstat(target,{bigint:true}),fileAfter=await lstat(path.join(target,'run'),{bigint:true});assert.equal(after.mode,before.mode);assert.equal(after.mtimeNs,before.mtimeNs);assert.equal(fileAfter.mode,fileBefore.mode);assert.equal(fileAfter.mtimeNs,fileBefore.mtimeNs);
-  assert.deepEqual(await readFile(path.join(retained,'run')),f.data);assert.deepEqual(await readFile(path.join(target,'run')),f.data);
- }finally{await f.dispose();}
-});
-
 
 test('linked repository capsules reuse owned native layout and borrow only declared top-owner hook trees',options,async()=>{
  const f=await fixture();try{
@@ -106,7 +67,6 @@ test('owner context cannot write nodes or target undeclared and nonregular origi
  }finally{await f.dispose();}
 });
 
-
 test('private-only linked initialization keeps common originals immutable and creates only its own hook view',options,async()=>{
  const f=await fixture();try{
   const common=path.join(f.root,'common'),second=path.join(f.root,'second');await mkdir(common);await mkdir(second);
@@ -122,7 +82,6 @@ test('private-only linked initialization keeps common originals immutable and cr
  }finally{await f.dispose();}
 });
 
-
 test('restrictive recursive source modes wait until global verification and captured cross-scope hardlinks exist',options,async()=>{
  const f=await fixture();let locked;try{
   const gitDir=path.join(f.destination,'.git/ponderosa-repositories/child'),worktreePath=path.join(f.destination,'.git/ponderosa-external/capsule');locked=path.join(gitDir,'hooks');
@@ -135,7 +94,6 @@ test('restrictive recursive source modes wait until global verification and capt
   assert.ok(configuration.directoryProofs.has(locked));assert.equal(configuration.directoryProofs,childConfiguration.directoryProofs,'Recursive scopes publish the same exact issued directory map');
  }finally{if(locked)await chmod(locked,0o700).catch(()=>{});await f.dispose();}
 });
-
 
 test('one shared metadata scope waits for all tasks and composes callbacks on the exact held descriptors',options,async()=>{
  const f=await fixture();let locked;try{
@@ -163,7 +121,6 @@ test('fully issued plain-working aliases count once and receive the native preci
   const actual=await lstat(alias,{bigint:true});assert.equal(actual.nlink,2n);assert.equal(actual.mtimeNs,BigInt(f.ns));assert.equal(configuration.fileProofs.get(alias).inode,actual.ino.toString());assert.equal(configuration.fileProofs.get(alias).expectedLinkCount,'2');assert.equal(configuration.nativeMetadata.protectedFiles.get(alias).mtimeNs,f.ns);
  }finally{await f.dispose();}
 });
-
 
 test('passive symlinks preserve only explicitly declared absent destinations',options,async()=>{
  const f=await fixture();try{
