@@ -1,6 +1,6 @@
 # Codex Phase 2 requirement reconciliation — 3 November 2026
 
-Starting source: `7a7504b0b25a79f72ab00cbc991a043606526467`; source checkpoint: `7fc0819ab5667aaf50c24b37eb9efec8a920c11b`. The implementation checkpoint is tracked in `codex-phase2-build-20261103.md`. Authoritative Library
+Starting source: `7a7504b0b25a79f72ab00cbc991a043606526467`; tested source checkpoint: `7fc0819ab5667aaf50c24b37eb9efec8a920c11b`. Its successor `3c05af480db31954f2bade56069b591b309473e4` changes only these documentation files. The implementation checkpoint is tracked in `codex-phase2-build-20261103.md`. Authoritative Library
 Bible: 530 lines, SHA-256
 `ac314d93732e631bb042b8d3d2dc802ba08446812f99ba931023d2e02b14ab58`.
 The complete Bible was read. Later human direction changes execution ownership to
@@ -31,7 +31,7 @@ present implementation absence or current execution success.
 | 14 | Native provider errors; operational notifications; queued recovery presentation | Visible failure and retry state source exists. Provider outage/rate-limit/stuck-task injection and plain-language judging remain evidence. | Runtime + Interface |
 | 15 | Empty tombstone cleanup; project/Agent deletion; portable-working-files.ts; local-memory.ts | User-folder custody has source mechanisms. Automatic Chat, Project and Agent memory cleanup, package rollback and post-write compensation are held because Chroma lacks proven atomic identity/content deletion or independent-writer exclusion. Byte-identical deletion and race trials remain evidence. | Portability + Integration |
 | 16 | branch-trigger-service.ts; branch-trigger-store.ts | Durable occurrence identity and bounded catch-up exist. Clock-jump/no-double-fire, timing and reason tracing remain evidence. | Runtime |
-| 17 | state-admission.ts; db.ts; coordination recovery; existing regressions | 0044 adds scope-intent schema; exact ui096 0027 predecessor admission and controlled populated Core/Branches direct-server migration and restart passed. Earlier full diagnostics failed or mixed outputs; the pinned suite, further crash/recovery qualification and 20 consecutive controlled core runs remain. | Integration |
+| 17 | state-admission.ts; db.ts; coordination recovery; existing regressions | 0044 adds scope-intent schema; exact ui096 0027 predecessor admission and controlled populated Core/Branches direct-server migration and restart passed. The pinned server lane finished 2,564 passed / 12 failed / 27 skipped; all 12 failures are memory cleanup/rollback requirements. A full pass, further crash/recovery qualification and 20 consecutive controlled core runs remain. | Integration |
 | 18 | notification-routing.ts; workspace-store.ts; Assistant report cursor | Default directResponses/broadcasts false; unread and chosen notification separation exist. Thirty-message bursts/settings combinations remain evidence. | Interface |
 | 19 | Audit/Activity projections; lifecycle receipts; group-journal-audit.ts | Source includes recovery pagination and controlled schedule-error classification. Ten random UI action trails, exact diagnostic visibility/redaction and log judging remain evidence. | Discovery + Interface + Integration |
 | 20 | server-request-hooks.ts | Ordinary operator admission has no network token/identity gate; origin checks remain. Source search is not whole-product runtime qualification. | Integration |
@@ -161,7 +161,12 @@ other lanes, and subsequent fixes are not included.
 
 At `7fc0819ab`, the isolated build and typecheck passed. Independent lanes
 report web 802 passed / 1 skipped, engines 60 passed, tooling 77 passed /
-23 skipped, and mounted desktop/phone 78 passed. The server lane remains
-running at this checkpoint. See the evidence folder and build checklist for
-logs. None of these results qualifies the entire Bible or proves real-provider
-behavior.
+23 skipped, and mounted desktop/phone 78 passed. The server lane finished
+**2,564 passed, 12 failed, 27 skipped** of 2,603, exit 1. Eight failures cover
+Agent, Chat or Project memory deletion; four cover staged memory rollback or
+compensation. Chroma lacks the proven atomic identity/content deletion or
+independent-writer exclusion needed to complete those requirements safely.
+The log is
+`/tmp/ponderosa-codex-phase2-20261103/evidence/final-combined-server.log`.
+The 20-run streak has not started. None of these results qualifies the entire
+Bible or proves real-provider behavior.

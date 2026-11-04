@@ -2,7 +2,9 @@
 
 Owner: Codex integration. Starting reviewed candidate:
 `7a7504b0b25a79f72ab00cbc991a043606526467`. Source reviewed for this
-checkpoint: `7fc0819ab5667aaf50c24b37eb9efec8a920c11b`.
+checkpoint: `7fc0819ab5667aaf50c24b37eb9efec8a920c11b`. The
+integration successor `3c05af480db31954f2bade56069b591b309473e4` changes only
+these two documentation files; it does not change the tested product source.
 
 The authoritative Ponderosa Behavior Bible 2 is Library file
 `libfile_d5c0d1c163d88191be429a72ee3e95a5`, 530 lines, SHA-256
@@ -51,11 +53,20 @@ before durable-pool issuance pending safe writable-handle custody.
 - The isolated `7fc0819ab` build and workspace typecheck passed; evidence:
   `/tmp/ponderosa-codex-phase2-20261103/evidence/final-combined-build.log`,
   `final-combined-typecheck.log` and `final-combined-build.exit`. Its
-  server lane is still running at this checkpoint. The independent lanes at
-  this same source passed as follows: web **802 passed, 0 failed, 1 skipped**;
-  engines **60 passed, 0 failed**; tooling **77 passed, 0 failed, 23 skipped**;
-  mounted **78 passed, 0 failed**. These lane results and all skips remain in
+  server lane finished with **2,564 passed, 12 failed and 27 skipped**
+  out of 2,603 tests, exit 1. Eight failures require Agent, Chat or Project
+  memory deletion; four require staged memory rollback or compensation.
+  These remain unmet product requirements because the installed Chroma API
+  supplies no proven atomic identity/content deletion precondition or
+  independent-writer exclusion. Evidence:
+  `/tmp/ponderosa-codex-phase2-20261103/evidence/final-combined-server.log`
+  and `final-combined-server.exit`.
+- Independent lanes at the same source passed as follows: web **802 passed,
+  0 failed, 1 skipped**; engines **60 passed, 0 failed, 0 skipped**; tooling
+  **77 passed, 0 failed, 23 skipped**; mounted **78 passed, 0 failed**.
+  Their results and skips remain in
   `final-combined-{web,engines,tooling,mounted}.log` in the evidence folder.
+  The server failure means these results are not a full repository pass.
 - The earlier `4e376a809` server lane finished with **2,517 passed, 34 failed,
   27 skipped** of 2,578 tests. It stopped the normal runner before later lanes.
   Subsequent fixture and Git changes address identified failures, but memory
@@ -76,10 +87,10 @@ before durable-pool issuance pending safe writable-handle custody.
   Branches workflow, Chat and memory fixture passed authority-filtered reads
   with local ONNX and an owned loopback Chroma. The preserved evidence roots and
   precise scope are in [the upgrade reconciliation](codex-phase2-reconciliation-20261103.md#populated-ui096-upgrade-evidence).
-- Remaining acceptance includes completion of the pinned `7fc0819ab` server
-  lane, all resulting corrections and a full current-source pass, further crash/recovery qualification, then
-  20 consecutive complete controlled core-path runs on a fixed commit and
-  environment. The 10k-message/20-Agent performance profile,
+- Remaining acceptance includes resolving the 12 server failures and a full
+  current-source pass, further crash/recovery qualification, then 20
+  consecutive complete controlled core-path runs on a fixed commit and
+  environment. The streak has not started. The 10k-message/20-Agent performance profile,
   streaming and voice recordings, phone latency, memory recall/misuse, trigger
   and notification matrices, installation and accessibility checks, public
   client/framework comparisons and subjective judging remain unqualified.
