@@ -187,7 +187,7 @@ export function validateWorkingFileData(relative:string,data:Buffer):void {
 
 type GeneratedNode={path:string;kind:'directory'|'file'|'symlink';mode:number;mtimeNs:string;sha256?:string;target?:string;device:string;inode:string;ctimeNs:string};
 type GeneratedObservation={name:'git-repository'|'provider-files';state:'absent'|'matches-original';nodes:Omit<GeneratedNode,'device'|'inode'|'ctimeNs'>[]};
-async function generatedTree(root:string,expected?:GeneratedNode[]):Promise<GeneratedNode[]>{
+async function generatedTree(root:string,expected?:GeneratedNode[],normalize?:(relative:string,data:Buffer)=>Buffer):Promise<GeneratedNode[]>{
   const entries:GeneratedNode[]=[],allowed=expected?new Map(expected.map(item=>[item.path,item])):undefined;let total=0;
   const visit=async(relative:string)=>{
     if(entries.length>=10000)throw new Error('Generated review evidence exceeds its inventory bound');
@@ -206,7 +206,7 @@ async function generatedTree(root:string,expected?:GeneratedNode[]):Promise<Gene
         data=Buffer.alloc(Number(opened.size));let offset=0;while(offset<data.length){const read=await handle.read(data,offset,data.length-offset,offset);if(!read.bytesRead)throw new Error('Generated review changed during inspection');offset+=read.bytesRead;}
         const after=await handle.stat({bigint:true});if(opened.dev!==after.dev||opened.ino!==after.ino||opened.size!==after.size||opened.mtimeNs!==after.mtimeNs||opened.ctimeNs!==after.ctimeNs)throw new Error('Generated review changed during inspection');
       }finally{await handle.close();}
-      entries.push({...base,kind:'file',sha256:createHash('sha256').update(data).digest('hex')});
+      entries.push({...base,kind:'file',sha256:createHash('sha256').update(normalize?normalize(relative,data):data).digest('hex')});
     }else if(before.isSymbolicLink())entries.push({...base,kind:'symlink',target:await fs.readlink(target)});
     else throw new Error('Generated review contains unsupported special nodes');
     const after=await fs.lstat(target,{bigint:true});if(before.dev!==after.dev||before.ino!==after.ino||before.mode!==after.mode||before.size!==after.size||before.mtimeNs!==after.mtimeNs||before.ctimeNs!==after.ctimeNs)throw new Error('Generated review changed during inspection');
@@ -238,7 +238,16 @@ async function captureGeneratedOriginalProof(review:string,original:Buffer):Prom
         }
         await fs.writeFile(path.join(target,'manifest.json'),JSON.stringify({activation:'inert_review_only',files:manifest,directories:value.providerDirectories},null,2),{flag:'wx',mode:0o600});
       }
-      const baseline=await generatedTree(target),current=await generatedTree(actual,baseline);expected.set(name,baseline);
+      // The inert selected-worktree review contains one generated absolute
+      // worktree path. Compare the exact known generated scratch spelling as
+      // the corresponding actual review path; every other byte stays exact.
+      const normalize=(relative:string,data:Buffer)=>{
+        if(name!=='git-repository'||relative!=='.ponderosa-review-git/worktrees/selected/config.worktree')return data;
+        const generated=(destination:string)=>Buffer.from('[core]\n\tbare = false\n\tworktree = '+JSON.stringify(destination)+'\n');
+        if(!data.equals(generated(target)))throw new Error('Generated review configuration differs');
+        return generated(actual);
+      };
+      const baseline=await generatedTree(target,undefined,normalize),current=await generatedTree(actual,baseline);expected.set(name,baseline);
       if(current.some((item,index)=>item.path!==baseline[index]?.path||item.kind!==baseline[index]?.kind||item.sha256!==baseline[index]?.sha256||item.target!==baseline[index]?.target))throw new Error('Generated review contains changed user data; source remains unchanged');
       observations.push({name,state:'matches-original',nodes:current.map(({device,inode,ctimeNs,...node})=>node)});
       guards.set(name,JSON.stringify(current));
