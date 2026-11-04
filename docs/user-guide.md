@@ -668,4 +668,4 @@ budgets not supplied by the current tree contract are labeled unavailable. See t
 
 ### Workflow package update status
 
-Workflow and Settings show the saved package update state and its error. A scheduled retry is labeled as such; a held update remains held for review and is not described as retrying. A stopping update remains visible until cleanup finishes.
+Workflow and Settings show the saved package update state, its error, and any required review action. A scheduled retry is labeled as such; a held update remains held for review and is not described as retrying. A stopping update remains visible until cleanup finishes.

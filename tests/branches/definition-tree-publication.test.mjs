@@ -100,12 +100,14 @@ for(const cyclic of [false,true])test(`published held ${cyclic?'cyclic':'acyclic
   assert.deepEqual(await readUpdate(),{id:p.id,state:'applying',retry:'scheduled',error:plan.error});
   // A pending access decision also fences scheduler retry, even with a retry time.
   f.store.sqlite.prepare("UPDATE branch_installation_plans SET preview_json=json_set(preview_json,'$.pendingAccess',json('{}')) WHERE id=?").run(p.id);
-  assert.deepEqual(await readUpdate(),{id:p.id,state:'applying',retry:'held',error:plan.error});
+  assert.deepEqual(await readUpdate(),{id:p.id,state:'applying',retry:'held',error:plan.error,notice:'Review imported Agent access to continue.'});
   f.store.sqlite.prepare('UPDATE branch_installation_plans SET error=NULL WHERE id=?').run(p.id);
   assert.deepEqual(await readUpdate(),{id:p.id,state:'applying',retry:'held',notice:'Review imported Agent access to continue.'});
   f.store.sqlite.prepare('UPDATE branch_installation_plans SET preview_json=?,error=? WHERE id=?').run(plan.preview_json,plan.error,p.id);
   f.store.sqlite.prepare("UPDATE branch_installation_plans SET preview_json=json_set(preview_json,'$.pendingWorkingRoot',json('{}')),error=NULL WHERE id=?").run(p.id);
   assert.deepEqual(await readUpdate(),{id:p.id,state:'applying',retry:'held',notice:'Choose a working folder to continue.'});
+  f.store.sqlite.prepare('UPDATE branch_installation_plans SET error=? WHERE id=?').run(plan.error,p.id);
+  assert.deepEqual(await readUpdate(),{id:p.id,state:'applying',retry:'held',error:plan.error,notice:'Choose a working folder to continue.'});
   f.store.sqlite.prepare('UPDATE branch_installation_plans SET preview_json=?,error=? WHERE id=?').run(plan.preview_json,plan.error,p.id);
   // The service persists a far-future hold rather than scheduling retries.
   f.store.sqlite.prepare('UPDATE branch_installation_plans SET next_attempt_at=? WHERE id=?').run('9999-12-31T23:59:59.999Z',p.id);

@@ -8,7 +8,7 @@ import {OccurrenceAudit} from '../TriggerOccurrenceAudit';
 
 export function BranchInstallationUpdateStatus({update,onCancelUpdate,canceling=false}:{update:BranchLifecycleDto['updates'][number];onCancelUpdate?(id:string):void;canceling?:boolean}):JSX.Element {
  const label=update.state==='canceling'?'Stopping package update':update.retry==='held'?'Package update is held':update.retry==='scheduled'?'Package update retry scheduled':update.error?'Package update needs attention':'Package update is applying';
- return <Alert severity={update.error?'error':'info'} action={onCancelUpdate&&update.state==='applying'?<Button color="inherit" disabled={canceling} onClick={()=>onCancelUpdate(update.id)}>Stop update</Button>:undefined}>{label}{update.error||update.notice?`: ${update.error??update.notice}`:'.'}</Alert>;
+ return <Alert severity={update.error?'error':'info'} action={onCancelUpdate&&update.state==='applying'?<Button color="inherit" disabled={canceling} onClick={()=>onCancelUpdate(update.id)}>Stop update</Button>:undefined}>{label}{update.error?`: ${update.error}`:'.'}{update.notice?` ${update.notice}`:''}</Alert>;
 }
 
 export function BranchLifecycleStatus({lifecycle,onCancelUpdate,canceling=false}:{lifecycle:BranchLifecycleDto;onCancelUpdate?(id:string):void;canceling?:boolean}):JSX.Element {
