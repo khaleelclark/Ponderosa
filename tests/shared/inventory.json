@@ -1678,6 +1678,14 @@
       "requirements": "Node24, built workspaces, inert provider fixture and private state"
     },
     {
+      "path": "tests/context-recovery/native-model-context.test.mjs",
+      "feature": "context-recovery",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server, inert native Codex and disposable Chroma with the pinned memory model",
+      "origin": "Bounded same-thread Codex model change, access fence and no-replay recovery"
+    },
+    {
       "path": "tests/context-recovery/reviewed-steering.test.mjs",
       "feature": "context-recovery",
       "lane": "server",

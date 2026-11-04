@@ -48,7 +48,7 @@ export function runtimeAttachmentPaths(value) {
 // The child is real but inert: no shell, network, provider account or user data.
 // Inert Windows roots cannot spawn descendants and are assigned to an exact
 // kill-on-close Job before publication; POSIX roots keep their detached group.
-export async function fixture({ diagnosticProvider = false, beforeRuntimeClose, providerAuthStatus, providerInstalled, steeringResponse, modelCatalog, modelValidator, capabilityCatalog, socketIdleTimeoutMs, storeFactory, authToken, resourceAdmissionObservation, providerContextUsage, providerCommandResult, providerContextRecoverySupport, providerValidatesResumeBeforeTurn = false, schedulerMaxConcurrentRuns = 4, nativeAdapterForOpen } = {}) {
+export async function fixture({ diagnosticProvider = false, beforeRuntimeClose, providerAuthStatus, providerInstalled, steeringResponse, modelCatalog, modelValidator, capabilityCatalog, socketIdleTimeoutMs, storeFactory, authToken, resourceAdmissionObservation, providerContextUsage, providerCommandResult, providerContextRecoverySupport, providerValidatesResumeBeforeTurn = false, schedulerMaxConcurrentRuns = 4, nativeAdapterForOpen, nativeAdapterForEngine, localMemoryForRoot } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), 'ponderosa-regression-'));
   const dataDir = path.join(root, 'data');
   const plans = new Map(), sessions = new Map(), turns = [], children = [], failures = [], openingSessions = new Set(), commands = [], steers = [];
@@ -167,10 +167,12 @@ export async function fixture({ diagnosticProvider = false, beforeRuntimeClose, 
     opening.then(() => openingSessions.delete(opening), () => openingSessions.delete(opening));
     return opening;
   };
-  const options = { dataDir, logger: false, allowedBrowseRoots: [root], ...(authToken ? { authToken } : {}),
+  const registeredAdapter = nativeAdapterForEngine ? await nativeAdapterForEngine(root) : adapter;
+  const localMemory = localMemoryForRoot ? await localMemoryForRoot(root) : undefined;
+  const options = { ...(localMemory ? {localMemory} : {}), dataDir, logger: false, allowedBrowseRoots: [root], ...(authToken ? { authToken } : {}),
     // Controlled inert providers use a fixed sample, independent of CI host pressure.
     resourceAdmissionObservation: resourceAdmissionObservation ?? { sample: async () => ({ availableBytes: 8 * 1024 ** 3, memoryFullPercent: 0, ioFullPercent: 0, source: 'linux_host' }) },
-    engines: [{ adapter, isInstalled: () => providerInstalled?.(adapter.id) !== false, authStatus: async () => providerAuthStatus ? providerAuthStatus(adapter.id) : ({ authenticated: true, billingMode: 'subscription', source: 'cli_status', detail: 'Controlled native mode observation; no provider account' }), availabilityProbe: async () => { providerProbes.push({ engineId: adapter.id }); return { available: true }; } },
+    engines: [{ adapter:registeredAdapter, isInstalled: () => providerInstalled?.(registeredAdapter.id) !== false, authStatus: async () => providerAuthStatus ? providerAuthStatus(adapter.id) : ({ authenticated: true, billingMode: 'subscription', source: 'cli_status', detail: 'Controlled native mode observation; no provider account' }), availabilityProbe: async () => { providerProbes.push({ engineId: adapter.id }); return { available: true }; } },
       ...(diagnosticProvider ? [{ adapter: { ...adapter, id: 'claude', displayName: 'Controlled diagnostic provider' },
         isInstalled: () => providerInstalled?.('claude') !== false,
         authStatus: async () => ({ authenticated: true, billingMode: 'subscription', source: 'cli_status', detail: 'Controlled diagnostic native mode; no provider account' }),

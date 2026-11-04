@@ -27,7 +27,7 @@ import {
 import { CapabilityPolicyStore, renderUnfinishedHumanTaskContext } from "@ponderosa/agents";
 import { MAX_CONTEXT_ROLLOVER_REPLACEMENT_PROVIDER_INPUT_UTF8_BYTES, boundedFrozenSeedHistory, communicationSeedProvenance, renderSeedHistoryMessage } from "@ponderosa/core/seed-history";
 import type { CommunicationV4NextRunDelivery } from "@ponderosa/agents";
-import { renderSeedPrompt } from "@ponderosa/engines";
+import { CodexAdapter, renderSeedPrompt } from "@ponderosa/engines";
 import { inboundContext } from "../agent-mentions.js";
 import { environmentFactsPrompt, runtimeEnvironmentFacts } from "../runtime-environment-facts.js";
 import { collectReachableArtifactIds } from "../artifact-refs.js";
@@ -579,6 +579,52 @@ export async function prepareAgentRun(
     ?? rolloverRecoveryHandoff
     ?? (genericHandoff && !coordinationV3.rolloverOwnsContinuationHandoff(agent.id, genericHandoff.id)
       ? genericHandoff : undefined);
+  // Only continue with built-in Codex when the accepted packet proves the
+  // model is the sole contract change and Local Memory was unavailable.
+  // The native transport must confirm the saved thread before any turn.
+  let retainedModelChange=false;
+  const canRetainModelChange=()=>{
+    if(opts.localMemory || runtimeEngineId!=='codex' || Object.getPrototypeOf(engine.adapter)!==CodexAdapter.prototype ||
+       Object.hasOwn(engine.adapter,'openSession') || !resumeSessionState?.toolContractHash ||
+       !effectiveModel?.trim())return false;
+    const runtime=reusableRuntime(agent.id),packet=store.acceptedProviderSessionInput(agent.id);
+    const contract=packet?.sourceManifest.schemaVersion===3?packet.sourceManifest.normalRuntimeContract:undefined;
+    // Only the Agent's first accepted generation is eligible. A later
+    // generation may inherit a compacted handoff; a user-authorized native
+    // fork can import opaque provider history from another Agent.
+    const origin=store.sqlite.prepare(`SELECT type,payload_json FROM events WHERE agent_id=?
+      AND type IN ('session_snapshot','context_rollover_session_accepted') ORDER BY seq LIMIT 1`).get(agent.id) as {type:string;payload_json:string}|undefined;
+    let originExecutionId:string|undefined,originContractHash:string|undefined;
+    try{const event=JSON.parse(origin?.payload_json??'null');if(origin?.type==='session_snapshot'&&
+      event?.sessionId===resumeSessionState.sessionId&&typeof event.executionId==='string'&&
+      typeof event.toolContractHash==='string'){originExecutionId=event.executionId;originContractHash=event.toolContractHash;}}catch{return false;}
+    const originRun=originExecutionId?store.sqlite.prepare(`SELECT 1 FROM scheduler_runs WHERE id=? AND agent_id=?
+      AND provider_session_id=? AND prompt_injection_state='injected'`).get(originExecutionId,agent.id,resumeSessionState.sessionId):undefined;
+    const seed=originExecutionId&&originRun?store.getProviderInput(originExecutionId,true):undefined;
+    const seedManifest=seed?.sourceManifest.schemaVersion===3?seed.sourceManifest:undefined;
+    const fork=store.sqlite.prepare(`SELECT 1 FROM coordination_idempotency WHERE operation='native_history'
+      AND json_extract(result_json,'$.targetAgentId')=? AND json_extract(result_json,'$.kind')='fork'
+      AND json_extract(result_json,'$.state')!='cancelled' LIMIT 1`).get(agent.id);
+    if(!seedManifest || seedManifest.providerSessionDisposition!=='fresh_task' ||
+       !seedManifest.normalRuntimeContract || seedManifest.normalRuntimeContract.contractHash!==originContractHash ||
+       !Array.isArray(seedManifest.sources) || !Array.isArray(seedManifest.normalRuntimeContract.dynamicTools) ||
+       seedManifest.sources.some(source=>source.kind==='continuation_handoff') ||
+       seedManifest.normalRuntimeContract.dynamicTools.some(tool=>tool.name.startsWith('ponderosa_local_memory_')) || fork)return false;
+    if((runtime && (!runtime.nativeCodexModelChange || !runtime.session.isAlive() ||
+       readProviderSessionIdentifier(runtime.session)!==resumeSessionState.sessionId)) ||
+       !packet || !contract || contract.version!==1 || contract.engineId!==runtimeEngineId ||
+       contract.workingCopyId!==workingCopy.id || contract.cwd!==workingCopy.rootPath ||
+       contract.contractHash!==resumeSessionState.toolContractHash ||
+       !contract.model?.trim() || contract.model.trim()===effectiveModel.trim() ||
+       packet.exactSystemPrompt===undefined ||
+       createHash('sha256').update(packet.exactSystemPrompt).digest('hex')!==systemPromptHash)return false;
+    const previousSessionHash=providerSessionContractHash(runtimeEngineId,workingCopy.id,contract.model,effectiveEffort,providerToolHash);
+    const previousHash=providerRuntimeSessionContractHash({runtimeSessionContractHash:previousSessionHash,
+      speed:effectiveSpeed,...(runtimeAuthentication.billingMode?{billingMode:runtimeAuthentication.billingMode}:{}),
+      systemPromptHash,scopeKey:schedulerRunScopeKey},resumeSessionState.toolContractHash);
+    retainedModelChange=previousHash===resumeSessionState.toolContractHash;
+    return retainedModelChange;
+  };
   if (eligibleContinuationHandoff) {
     // The rollover's exact handoff remains eligible even when startup had to
     // classify its unterminated source Run as interrupted. Durable rollover
@@ -600,7 +646,8 @@ export async function prepareAgentRun(
     organizationEnvelopeStates.delete(agent.id);
     resumeSessionState = undefined;
     if (staleRuntime) await teardownPersistentRuntime(agent.id, staleRuntime, "request context rollover", project.id);
-  } else if (resumeSessionState && resumeSessionState.toolContractHash !== effectiveRuntimeSessionContractHash) {
+  } else if (resumeSessionState && resumeSessionState.toolContractHash !== effectiveRuntimeSessionContractHash &&
+      !canRetainModelChange()) {
     if (ownsFrozenHandoff) throw new Error("context rollover handoff contract changed; original accepted context retained");
     // A provider session is a cache of both context and its immutable
     // provider, model, reasoning, and tool contract. Missing hashes are
@@ -613,6 +660,29 @@ export async function prepareAgentRun(
     resumeSessionState = undefined;
     if (staleRuntime) await teardownPersistentRuntime(agent.id, staleRuntime, "tool-contract rollover", project.id);
   }
+  const assertRetainedModelPolicy=()=>{
+    const current=store.getAgent(agent.id),currentProject=current?store.getChatContext(current.conversationId):undefined,preferences=workspace.getPreferences();
+    const currentPolicy=new CapabilityPolicyStore(store.sqlite).resolveForAgent(agent.id,runId);
+    const currentTools=filterRuntimeToolsForCapabilities([...providerDynamicTools(false),PONDEROSA_HISTORY_TOOL],currentPolicy);
+    const currentRestrictions=runtimeRestrictions(currentPolicy,runtimeEngineId);
+    const auth=runContext.engineAuthStatuses.snapshot(runtimeEngineId),saved=store.resumeSessionState(agent.id);
+    if(!current || !currentProject || current.projectId!==agent.projectId || current.conversationId!==agent.conversationId ||
+       currentProject.id!==project.id || currentProject.hostPath!==project.hostPath || current.activeEngine!==agent.activeEngine ||
+       current.model!==agent.model || current.effort!==agent.effort || current.speed!==agent.speed ||
+       current.role!==agent.role || runtimeSystemPrompt(current,managedRules)!==systemPrompt ||
+       current.workingCopy.state!=='ready' || current.workingCopy.id!==workingCopy.id ||
+       current.workingCopy.rootPath!==workingCopy.rootPath ||
+       saved?.sessionId!==resumeSessionState?.sessionId || saved?.toolContractHash!==resumeSessionState?.toolContractHash ||
+       (currentProject.instructions?.trim()??'')!==projectInstructions ||
+       preferences.globalInstructions.trim()!==globalInstructions ||
+       JSON.stringify(preferences.profile)!==JSON.stringify(operatorProfile) ||
+       JSON.stringify(currentTools)!==JSON.stringify(availableRuntimeTools) ||
+       JSON.stringify(currentRestrictions)!==JSON.stringify(capabilityRestrictions) ||
+       auth.billingMode!==runtimeAuthentication.billingMode || auth.state!==runtimeAuthentication.state ||
+       auth.authenticated!==runtimeAuthentication.authenticated ||
+       (v3SchedulerRunId && coordinationV3.runScopeKey(v3SchedulerRunId,agent.id)!==schedulerRunScopeKey))
+      throw new Error('Settings or access changed before the saved Codex thread could continue. The original context remains retained.');
+  };
   const reusablePersistentRuntime = engine.adapter.openSession ? reusableRuntime(agent.id) : undefined;
   cancelRuntimeIdleClose(reusablePersistentRuntime);
   const messageCapability = reusablePersistentRuntime?.messageCapability ?? randomUUID();
@@ -1484,6 +1554,8 @@ export async function prepareAgentRun(
     systemPrompt: effectiveSystemPrompt,
     systemPromptHash: createHash("sha256").update(effectiveSystemPrompt).digest("hex"),
     runtimeSessionContractHash: effectiveRuntimeSessionContractHash,
+    retainedModelChange,
+    assertRetainedModelPolicy:retainedModelChange?assertRetainedModelPolicy:undefined,
     workingCopy,
     availableRuntimeTools,
     capabilityRestrictions,

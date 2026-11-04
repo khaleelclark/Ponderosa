@@ -11,7 +11,7 @@ import {createServer} from '../../apps/server/dist/app.js';
 import {localMemoryFor} from '../../apps/server/dist/local-memory.js';
 
 let chroma;
-async function ownedChroma(){
+export async function ownedChroma(){
  if(chroma)return chroma.url;
  const root=await mkdtemp(path.join(tmpdir(),'memory-package-chroma-')),reserve=net.createServer();
  await new Promise(r=>reserve.listen(0,'127.0.0.1',r));const port=reserve.address().port;await new Promise(r=>reserve.close(r));

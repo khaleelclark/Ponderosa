@@ -131,6 +131,8 @@ export interface ProviderRunExecutionInput {
   runId: string;
   runtimeEngineId: string;
   runtimeSessionContractHash: string;
+  retainedModelChange: boolean;
+  assertRetainedModelPolicy?:()=>void;
   workingCopy: ResolvedAgentWorkingCopy;
   inputFiles?: RuntimeInputFile[];
   runtimeAttachmentDirectory: string | undefined;
@@ -245,6 +247,8 @@ export function startProviderRunExecution(
     runId,
     runtimeEngineId,
     runtimeSessionContractHash,
+    retainedModelChange,
+    assertRetainedModelPolicy,
     workingCopy,
     inputFiles = [],
     runtimeAttachmentDirectory,
@@ -554,6 +558,7 @@ export function startProviderRunExecution(
         return {
           identity,
           session,
+          nativeCodexModelChange:Object.getPrototypeOf(rawSession)===CodexAppServerSession.prototype && rawSession.startTurn===CodexAppServerSession.prototype.startTurn,
           iterator: session.events[Symbol.asyncIterator](),
           messageCapability,
         };
@@ -652,6 +657,12 @@ export function startProviderRunExecution(
       if (engine.adapter.openSession && !persistentRuntime) {
         persistentRuntime = await openRegisteredPersistentRuntime(resumeSessionId);
       }
+      if (retainedModelChange && (!persistentRuntime?.nativeCodexModelChange ||
+          !persistentRuntime.session.isAlive() ||
+          readProviderSessionIdentifier(persistentRuntime.session)!==resumeSessionId)) {
+        if (persistentRuntime) await teardownPersistentRuntime(agent.id,persistentRuntime,"unqualified model continuation",project.id);
+        throw new Error("The saved Codex thread could not be verified. The original context remains retained.");
+      }
       if (persistentRuntime) {
         providerProcessAuthority.register(persistentRuntime.session, {
           purpose: "persistent provider runtime",
@@ -726,6 +737,14 @@ export function startProviderRunExecution(
                       nativeAction: input.nativeAction,
                       assertCurrent: () => {
                         if (controller.signal.aborted || isClosed() || deletingAgentIds.has(agent.id) || deletingProjectIds.has(project.id) || !ownsActiveRun(agent.id, activeRun) || !renewExecutionLease(agent.id, activeRun)) throw new Error("Native turn lost current Run authority");
+                        if (retainedModelChange && (!persistentRuntime || reusableRuntime(agent.id)!==persistentRuntime ||
+                            activeRun.persistentRuntimeIdentity!==persistentRuntime.identity || !persistentRuntime.session.isAlive() ||
+                            readProviderSessionIdentifier(persistentRuntime.session)!==resumeSessionId))
+                          throw new Error("Saved Codex thread changed before model continuation; original context remains retained.");
+                        if(retainedModelChange){
+                          if(!assertRetainedModelPolicy)throw new Error("Saved Codex policy proof is unavailable.");
+                          assertRetainedModelPolicy();
+                        }
                         if (reviewedSteeringRun) {
                           if (!persistentRuntime || reusableRuntime(agent.id)!==persistentRuntime ||
                               activeRun.persistentRuntimeIdentity!==persistentRuntime.identity || !persistentRuntime.session.isAlive())
@@ -1005,7 +1024,7 @@ export function startProviderRunExecution(
               !providerWorkObserved && shouldRolloverEngineSession(runtimeEngineId, event)) {
             const fallbackBudget = freshProviderInputManifest.schemaVersion === 3
               ? freshProviderInputManifest.contextBudget : undefined;
-            if (!workspace.getPreferences().contextRolloverEnabled ||
+            if (retainedModelChange || !workspace.getPreferences().contextRolloverEnabled ||
                 fallbackBudget?.inputCeilingTokens === undefined ||
                 fallbackBudget.estimatedInputTokens > fallbackBudget.inputCeilingTokens) {
               // Keep the accepted generation and the failed attempt. A provider
