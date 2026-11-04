@@ -124,7 +124,13 @@ test('check 90: scope token totals require every finalized Run to report each me
   assert.match(markup,/Input Unavailable/,'The real usage view must not show a partial input as a total');
   assert.match(markup,/Output 16/,'The complete metric stays visible');
   assert.match(markup,/Reported Usage by Provider/);
-  assert.match(markup,/Total-token Coverage 100%/);
+  assert.match(markup,/Total-token Coverage 2 \/ 2 Runs/);
+  const incomplete=renderToStaticMarkup(React.createElement(TokenUsageDetails,{data:{...usage,reportedRuns:199,finalizedRuns:200,coverage:199/200}})).replace(/<style[^>]*>[\s\S]*?<\/style>/g,'').replace(/<[^>]+>/g,' ').replace(/\s+/g,' ');
+  assert.match(incomplete,/Total-token Coverage 199 \/ 200 Runs/,'Incomplete coverage must never round up to 100%');
+  assert.doesNotMatch(incomplete,/100%/);
+  const exact=renderToStaticMarkup(React.createElement(TokenUsageDetails,{data:{...usage,outputTokens:12345,durationMs:1001}})).replace(/<style[^>]*>[\s\S]*?<\/style>/g,'').replace(/<[^>]+>/g,' ').replace(/\s+/g,' ');
+  assert.ok(exact.includes(`Output ${new Intl.NumberFormat().format(12345)}`),'Token totals are not silently rounded');
+  assert.match(exact,/Aggregate Run Time 1s 1ms/,'Duration retains exact milliseconds');
   const single=f.ok(await f.api('GET',`/api/agents/${first.id}/usage`));
   assert.equal(single.cachedInputTokens,0); assert.equal(single.metricAvailability.cachedInputTokens,'available','Reported zero is valid');
   const empty=f.ok(await f.api('GET',`/api/conversations/${chat.id}/usage?from=2099-01-01T00:00:00.000Z`));
