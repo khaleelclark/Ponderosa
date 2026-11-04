@@ -234,3 +234,5 @@ export {validateBranchExecutionTree,planBranchExecutionTree,insertBranchExecutio
 export {enableProviderStartCoverage,holdProviderStart,admitProviderStart,settleProviderStart,requireProviderStartsDrained,sealProviderNeverStarted} from './provider-start-journal.js';
 
 export {renderUnfinishedHumanTaskContext} from "./coordination-v3-task-objective.js";
+
+export {hasRetainedTemporaryChatScope} from './branch-host-cut.js';

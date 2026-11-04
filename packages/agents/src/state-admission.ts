@@ -277,7 +277,7 @@ function bootstrap(root: string, names: string[]): StateIdentity {
     try { initializeCurrentDatabase(sqlite); declareGeneration(sqlite); mintGeneration(sqlite, marker.generationId);
       // Only the fresh, empty canonical bootstrap can prove memory has never
       // been configured for this data generation.
-      sqlite.prepare("INSERT INTO local_memory_host_binding VALUES(1,?,'never_configured',NULL,NULL)").run(marker.generationId);
+      sqlite.prepare("INSERT INTO local_memory_host_binding VALUES(1,?,'never_configured',NULL,NULL,NULL)").run(marker.generationId);
       verifyDatabase(sqlite, marker.generationId); }
     finally { sqlite.close(); }
     for (const suffix of ["", "-wal", "-shm", "-journal"]) if (regular(path + suffix)) fsyncPath(path + suffix);

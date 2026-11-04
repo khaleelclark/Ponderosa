@@ -3,6 +3,14 @@ import type {CoordinationDestinationReconciliationReview} from './coordination-d
 export interface MemoryMutationEffect {
   scope:string;log:boolean;operation:'create_collection'|'delete_collection'|'upsert'|'add'|'update'|'delete'|'modify';
 }
+export interface MemoryProvisioningHoldDto {
+  scope:'global'|'chat'|'unknown';
+  chatId?:string;
+  projectId?:string;
+  memoryState:'planned'|'submitted'|'confirmed'|'unknown';
+  logState:'planned'|'submitted'|'confirmed'|'unknown';
+  reason:string;
+}
 export interface MemoryMutationHoldDto {id:string;sha256:string;effect?:MemoryMutationEffect;state:'unsettled'|'reconciled';legacy:boolean;preserveUnknownReviewSha256?:string;disposition?:MemoryMutationPreserveUnknownReceipt}
 export interface MemoryMutationReviewDto {
   hold:MemoryMutationHoldDto;reviewSha256:string;backendSha256?:string;rowCount?:number;

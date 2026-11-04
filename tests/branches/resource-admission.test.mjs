@@ -3,10 +3,11 @@ import test from 'node:test';
 import {mkdtempSync,rmSync,writeFileSync,readFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
-import {AgentStore,BranchStore,CoordinationV3Store,verifyRetainedProviderExitEvidence} from '@ponderosa/agents';
+import {AgentStore,BranchStore,CoordinationV3Store,verifyRetainedProviderExitEvidence,hasRetainedTemporaryChatScope} from '@ponderosa/agents';
 import {captureBranchHostCut,verifyBranchHostCut} from '../../packages/agents/dist/branch-host-cut.js';
 import {selectBranchUnit} from '../../packages/agents/dist/branch-unit-selection.js';
 import {BranchResourceService} from '../../apps/server/dist/branch-resource-service.js';
+import {MEMORY_CLEANUP_HOLD} from '../../apps/server/dist/local-memory-authority.js';
 import {withFixture,until} from '../shared/fixture.mjs';
 
 function deployTemplate(branches,root,key,failure={action:'stop'}){
@@ -121,6 +122,23 @@ test('fresh-context retry deletes the previous generation Chat before resetting 
   assert.equal(prior.state,'sealed');assert.equal(prior.envelope.providerExitEvidence.schema,'provider-exit-evidence.v2');
   assert.equal(prior.envelope.providerExitEvidence.neverStarted.length,1);assert.equal(prior.envelope.providerExitEvidence.runs.length,1);
   verifyRetainedProviderExitEvidence(store.sqlite,prior.envelope.providerExitEvidence);
+  const retiredChat=contexts[0].chat_id,retiredReceipt=store.getConversationDeletionReceipt(retiredChat);
+  const retiredMembers=JSON.parse(contexts[0].agent_ids_json);
+  const proof={chatId:retiredChat,projectId:retiredReceipt.projectId,branchId:branch.id,agentId:retiredMembers[0]};
+  assert.equal(hasRetainedTemporaryChatScope(store.sqlite,proof),true);
+  assert.equal(hasRetainedTemporaryChatScope(store.sqlite,{...proof,projectId:'foreign-project'}),false);
+  assert.equal(hasRetainedTemporaryChatScope(store.sqlite,{...proof,branchId:'foreign-branch'}),false);
+  assert.equal(hasRetainedTemporaryChatScope(store.sqlite,{...proof,agentId:'foreign-agent'}),false);
+  for(const kind of ['receipt','receipt-branch','tombstone','retirement','seal']){
+   assert.throws(()=>store.sqlite.transaction(()=>{
+    if(kind==='receipt')store.sqlite.prepare('DELETE FROM conversation_deletion_receipts WHERE conversation_id=?').run(retiredChat);
+    else if(kind==='receipt-branch')store.sqlite.prepare("UPDATE conversation_deletion_receipts SET branch_id='foreign' WHERE conversation_id=?").run(retiredChat);
+    else if(kind==='tombstone')store.sqlite.prepare('DELETE FROM agent_deletion_tombstones WHERE agent_id=?').run(proof.agentId);
+    else store.sqlite.prepare('DELETE FROM branch_commands WHERE execution_id=? AND command_key=?').run(execution.id,`resource-generation-${kind==='seal'?'exit':'retired'}:${resource.step_execution_id}:0`);
+    assert.equal(hasRetainedTemporaryChatScope(store.sqlite,proof),false);
+    throw Error('rollback temporary scope adversary');
+   })(),/rollback temporary scope adversary/);
+  }
   // Retirement audit capture requires the exact historical seal/link, even after replacement retires.
   const capture=()=>store.sqlite.transaction(()=>captureBranchHostCut(store.sqlite,execution.id,selectBranchUnit(store.sqlite,execution.id)))();
   assert.ok(capture());
@@ -166,4 +184,22 @@ test('completed template workflows retire their exact Chats through tracked dele
   await f.reopen();for(const id of chats)assert.equal(store.getConversation(id),undefined);
   assert.ok(store.getConversation(normal.id));assert.equal(readFileSync(sentinel,'utf8'),'user source');
  },{storeFactory:root=>(store=new AgentStore(root))});
+});
+
+
+test('temporary resource cleanup retains a memory hold without retrying after restart',{timeout:15000},async t=>{
+ const root=mkdtempSync(path.join(tmpdir(),'branch-memory-held-'));let store,branches,resources,passed=false,calls=0;
+ const open=()=>{
+  store=new AgentStore(root);branches=new BranchStore(store.sqlite,new CoordinationV3Store(store.sqlite));
+  resources=new BranchResourceService(branches,store,async()=>{},async()=>{throw Error('Unexpected creation')},async()=>{calls++;throw Error(MEMORY_CLEANUP_HOLD)});
+ };open();
+ t.after(async()=>{await resources.stop();store.close();if(passed)rmSync(root,{recursive:true,force:true});else t.diagnostic('Retained fixture: '+root)});
+ const branch=deployTemplate(branches,root,'memory-held'),execution=branches.accept(branch.id,'input','Review');branches.advance();const provision=branches.resourceProvisions()[0];
+ const project=store.createProject({label:'Temporary',hostPath:root,defaultEngine:'codex',chatOwned:true,branchId:branch.id,executionId:execution.id});
+ const chat=store.getConversation(project.lastConversationId);branches.bindResourceChat(provision.stepExecutionId,chat.id);
+ branches.resourceRetired(provision.stepExecutionId);
+ await resources.tick(false);assert.equal(calls,1);
+ await resources.tick(false);assert.equal(calls,1);
+ await resources.stop();store.close();open();await resources.tick(false);
+ assert.equal(calls,1);assert.ok(store.getConversation(chat.id));passed=true;
 });

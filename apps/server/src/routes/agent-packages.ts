@@ -1,3 +1,4 @@
+import {MEMORY_CLEANUP_HOLD} from '../local-memory-authority.js';
 import type {CanonicalGeneratedHooksProof} from '@ponderosa/core';
 import {packageExportDownloads} from '../package-export-downloads.js';
 import {applyBranchWorkingData,prepareBranchWorkingDataChild,type ApplyBranchWorkingDataInput,type BranchWorkingDataApplication,type PrepareBranchWorkingDataChildInput,type BranchWorkingDataPreparation} from '../apply-branch-working-data.js';
@@ -2280,7 +2281,22 @@ export function registerAgentPackageRoutes(
         if(creationOperationId){
           store.updateAgentCreationOperation(creationOperationId,{status:'rolling_back'});
           try{const memoryPlan=(store.getAgentCreationOperation(creationOperationId)?.result as {memoryPlan?:unknown[]}|undefined)?.memoryPlan;if(memoryPlan?.length){const memory=localMemoryFor(app);if(!memory)throw new Error('Local memory configuration required for import rollback');await memory.rollbackImportMemory(creationOperationId);}}
-          catch{rollbackComplete=false;}
+          catch(memoryError){
+            // Do not discard staged owners, artifacts, instructions or the
+            // original reason when memory cleanup has not been proven safe.
+            let originalError:unknown=error;
+            for(let depth=0;depth<4;depth++){
+              if(originalError instanceof AggregateError&&originalError.errors.length){originalError=originalError.errors[0];continue;}
+              if(originalError instanceof Error&&originalError.cause instanceof Error){originalError=originalError.cause;continue;}
+              break;
+            }
+            const original=redactPortableDiagnostic(originalError instanceof Error?originalError.message:String(originalError)).slice(0,4096);
+            const cause=redactPortableDiagnostic(memoryError instanceof Error?memoryError.message:String(memoryError)).slice(0,4096);
+            const held=memoryError instanceof Error&&memoryError.message===MEMORY_CLEANUP_HOLD;
+            const previous=store.getAgentCreationOperation(creationOperationId);
+            store.updateAgentCreationOperation(creationOperationId,{status:'rolling_back',result:{...(previous?.result as object??{}),memoryCleanupOriginalError:original,...(!held?{memoryCleanupFailure:cause}:{})},lastError:held?MEMORY_CLEANUP_HOLD:cause});
+            throw Object.assign(new Error(held?MEMORY_CLEANUP_HOLD:cause,{cause:error}),{statusCode:409,code:'ERR_IMPORT_MEMORY_CLEANUP_HELD',partialStatePossible:true,operationId:creationOperationId});
+          }
         }
         if (appliedChatInstructions !== undefined) {
           try {

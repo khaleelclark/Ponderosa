@@ -9,7 +9,11 @@ CREATE TABLE local_memory_scope_provisioning (
  intent_id TEXT NOT NULL UNIQUE,
  memory_state TEXT NOT NULL CHECK(memory_state IN ('planned','submitted','confirmed')),
  log_state TEXT NOT NULL CHECK(log_state IN ('planned','submitted','confirmed')),
- created_at TEXT NOT NULL
+ memory_collection_id TEXT,
+ log_collection_id TEXT,
+ created_at TEXT NOT NULL,
+ CHECK((memory_state='confirmed' AND memory_collection_id IS NOT NULL) OR (memory_state!='confirmed' AND memory_collection_id IS NULL)),
+ CHECK((log_state='confirmed' AND log_collection_id IS NOT NULL) OR (log_state!='confirmed' AND log_collection_id IS NULL))
 );
 
 -- A canonical witness prevents a missing established policy from being
@@ -20,6 +24,7 @@ CREATE TABLE local_memory_host_binding (
  state TEXT NOT NULL CHECK(state IN ('never_configured','bound')),
  principal_id TEXT,
  storage_binding TEXT,
- CHECK((state='never_configured' AND principal_id IS NULL AND storage_binding IS NULL)
-    OR (state='bound' AND principal_id IS NOT NULL AND storage_binding IS NOT NULL))
+ policy_custody TEXT,
+ CHECK((state='never_configured' AND principal_id IS NULL AND storage_binding IS NULL AND policy_custody IS NULL)
+    OR (state='bound' AND principal_id IS NOT NULL AND storage_binding IS NOT NULL AND policy_custody IS NOT NULL))
 );

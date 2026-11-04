@@ -3,7 +3,7 @@ import {LifecycleDiscovery} from './LifecycleDiscovery';
 import {useEffect,useState} from 'react';
 import {useInfiniteQuery,useQuery} from '@tanstack/react-query';
 import {Alert,Button,MenuItem,Paper,Stack,TextField,Typography} from '@mui/material';
-import type {LifecycleDiscoveryPage,MemoryMutationHoldDto} from '@ponderosa/core';
+import type {LifecycleDiscoveryPage,MemoryMutationHoldDto,MemoryProvisioningHoldDto} from '@ponderosa/core';
 import {requestJson} from '../../api/real';
 import {currentProductScope} from '../../api/productScope';
 import {lifecycleDiscoveryPage} from './lifecycleDiscovery';
@@ -21,6 +21,7 @@ export function LifecyclePanel():JSX.Element {
  const [open,setOpen]=useState(false),[selected,setSelected]=useState(''),[generation,setGeneration]=useState(0);
  const custody=useEvidenceInventory<string>('custody','/api/lifecycle/checkpoint-custody',open,generation);
  const memory=useQuery({queryKey:['lifecycle-memory-list',currentProductScope()],queryFn:()=>requestJson<MemoryMutationHoldDto[]>('/api/local-memory/mutation-holds'),enabled:open,retry:false,refetchOnWindowFocus:false});
+ const provisioning=useQuery({queryKey:['lifecycle-memory-provisioning',currentProductScope()],queryFn:()=>requestJson<MemoryProvisioningHoldDto[]>('/api/local-memory/provisioning-holds'),enabled:open,retry:false,refetchOnWindowFocus:false});
  const orphans=useEvidenceInventory<unknown>('orphans','/api/lifecycle/agent-imports/orphan-evidence',open,generation);
  useEffect(()=>{if(custody.isError||memory.isError)setSelected('');},[custody.isError,memory.isError]);
  const custodyIds=custody.isError?[]:custody.data?.pages.flatMap(page=>page.items)??[];
@@ -32,8 +33,9 @@ export function LifecyclePanel():JSX.Element {
   <Button sx={{alignSelf:'flex-start'}} onClick={()=>setOpen(value=>!value)} aria-expanded={open}>{open?'Close lifecycle inventory':'Review lifecycle inventory'}</Button>
   {open&&<>
    <LifecycleDiscovery/>
-   <Button disabled={custody.isFetching||memory.isFetching||orphans.isFetching} onClick={()=>{setSelected('');setGeneration(value=>value+1);void memory.refetch();}}>Refresh inventories</Button>
-   {[custody.error,memory.error,orphans.error].filter(Boolean).map((error,index)=><Alert severity="warning" key={index}>{error?.message} · refresh inventories</Alert>)}
+   <Button disabled={custody.isFetching||memory.isFetching||provisioning.isFetching||orphans.isFetching} onClick={()=>{setSelected('');setGeneration(value=>value+1);void memory.refetch();void provisioning.refetch();}}>Refresh inventories</Button>
+   {[custody.error,memory.error,provisioning.error,orphans.error].filter(Boolean).map((error,index)=><Alert severity="warning" key={index}>{error?.message} · refresh inventories</Alert>)}
+   {!provisioning.isError&&provisioning.data?.map((hold,index)=><Alert severity="warning" key={(hold.chatId??hold.scope)+':'+index}>Memory operation held · {hold.scope==='global'?'Global':hold.scope==='unknown'?'Unknown scope':`Chat ${hold.chatId}`} · {hold.reason} Review memory mutation holds and backend status before taking action.</Alert>)}
    <Typography variant="caption">Checkpoint evidence: {custodyIds.length} loaded · {custody.isError?'refresh required':custody.isPending?'reading':custody.hasNextPage?'more available':'end of inventory'}</Typography>
    {custody.hasNextPage&&!custody.isError&&<Button disabled={custody.isFetching} onClick={()=>void custody.fetchNextPage()}>Load more checkpoint evidence</Button>}
    <TextField select label="Canonical retained identity" value={target?selected:''} onChange={event=>setSelected(event.target.value)}><MenuItem value="">Choose evidence</MenuItem>{items.map(item=><MenuItem key={JSON.stringify([item.kind,item.id])} value={JSON.stringify([item.kind,item.id])}>{item.label}</MenuItem>)}</TextField>

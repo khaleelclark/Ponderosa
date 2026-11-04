@@ -11,6 +11,19 @@ const body=(f,pkg)=>({package:pkg,conversationId:f.chat.id,engineMapping:{fixtur
 const imported=(f,pkg,key=randomUUID())=>api(f,'POST',`/api/projects/${f.project.id}/import-agents`,body(f,pkg),{headers:{...f.headers,'idempotency-key':key}});
 function noRuns(f){for(const table of ['scheduler_runs','agent_activations','provider_operation_outbox'])assert.equal(f.store.sqlite.prepare(`SELECT COUNT(*) n FROM ${table}`).get().n,0,table);}
 
+// The test operator supplies evidence only because these disposable fixtures
+// control the worker and the fake backend request; production must establish
+// its own independent backend-drain evidence before taking this action.
+async function reconcileControlled(f,scope,evidence){
+ const list=await api(f,'GET','/api/local-memory/mutation-holds');assert.equal(list.status,200,list.raw);
+ const holds=list.body.filter(item=>item.effect?.scope===scope);assert.ok(holds.length,'unknown remote write must remain visible');
+ for(const hold of holds){
+  const review=await api(f,'GET',`/api/local-memory/mutation-holds/${hold.id}`);assert.equal(review.status,200,review.raw);assert.equal(review.body.canReconcile,true);
+  const result=await api(f,'POST',`/api/local-memory/mutation-holds/${hold.id}/reconcile`,{commandKey:randomUUID(),reviewSha256:review.body.reviewSha256,backendDrainEvidence:evidence,preserveCurrentBackend:true});
+  assert.equal(result.status,200,result.raw);
+ }
+}
+
 test('actual organization HTTP package roundtrip restores scoped queries and deduplicates team memory after reopen/reexport/retry',async t=>{
  const source=await instance(t),destination=await instance(t);await seed(source);
  source.store.updateAgentOrganization(source.b.id,{managerAgentId:source.a.id});
@@ -36,16 +49,40 @@ test('product parser refuses encoded metadata credentials, malformed bindings/si
  noRuns(destination);
 });
 
-test('pending package rows stay hidden and SIGKILL after the first real product memory write is rolled back at startup',async t=>{
+test('SIGKILL during package memory write holds cleanup until an explicit drained-backend review',async t=>{
  const source=await instance(t),destination=await instance(t);await seed(source);const pkg=await exported(source,false),key=randomUUID();
  const options={...destination.options};delete options.engines;
  await destination.suspend();
  const worker=fork(new URL('./package-crash-worker.mjs',import.meta.url),[],{execArgv:['--import',new URL('../shared/workspace-resolution.mjs',import.meta.url).pathname],stdio:['ignore','ignore','pipe','ipc']});
  let errors='';worker.stderr.on('data',chunk=>{errors+=chunk;});const exited=once(worker,'exit');worker.send({options,payload:{projectId:destination.project.id,body:body(destination,pkg)},key});const [code,signal]=await exited;assert.equal(signal,'SIGKILL',errors||String(code));
  await destination.resume();
- const op=destination.store.findAgentCreationOperation({projectId:destination.project.id,actorScope:'user:local-operator',kind:'import',idempotencyKey:key});assert.equal(op.status,'rolled_back',op.lastError);assert.equal((await read(destination,destination.a.id)).length,0);assert.equal(destination.store.listAgents(destination.project.id).length,2);
- const raw=destination.memory.core.database.raw,c=await raw.client.getCollection({name:raw.names('chat:'+destination.chat.id).memory});assert.deepEqual((await c.get({include:['metadatas']})).ids,[],'no hidden namespace orphan remains');
- const retry=await imported(destination,pkg,key);assert.equal(retry.status,201,retry.raw);assert.equal((await read(destination,retry.body.rootAgentId)).length,3);noRuns(destination);
+ let op=destination.store.findAgentCreationOperation({projectId:destination.project.id,actorScope:'user:local-operator',kind:'import',idempotencyKey:key});assert.equal(op.status,'rolling_back',op.lastError);
+ await assert.rejects(read(destination,destination.a.id),/unsettled remote write/);
+ const raw=destination.memory.core.database.raw,c=await raw.client.getCollection({name:raw.names('chat:'+destination.chat.id).memory}),held=await c.get({include:['metadatas']});
+ const retryHeld=await imported(destination,pkg,key);assert.notEqual(retryHeld.status,201,retryHeld.raw);assert.deepEqual(await c.get({include:['metadatas']}),held,'retry must not change uncertain rows');
+ // The synthetic worker awaited its only upsert response before killing itself;
+ // this controlled evidence is not inferred for real interrupted operations.
+ await reconcileControlled(destination,'chat:'+destination.chat.id,'Controlled fixture worker awaited its only backend upsert response before exiting');
+ await destination.reopen();op=destination.store.findAgentCreationOperation({projectId:destination.project.id,actorScope:'user:local-operator',kind:'import',idempotencyKey:key});assert.equal(op.status,'rolling_back',op.lastError);assert.match(op.lastError,/Memory cleanup held/);
+ const retained=await destination.memory.core.database.raw.client.getCollection({name:destination.memory.core.database.raw.names('chat:'+destination.chat.id).memory});assert.deepEqual(await retained.get({include:['metadatas']}),held,'staged rows remain preserved without backend compare-and-delete');
+ const retry=await imported(destination,pkg,key);assert.notEqual(retry.status,201,retry.raw);assert.deepEqual(await retained.get({include:['metadatas']}),held);noRuns(destination);
+});
+
+test('immediate uncertain package write preserves staged ownership and both failure reasons across restart',async t=>{
+ const source=await instance(t),destination=await instance(t);await seed(source);const pkg=await exported(source,false),key=randomUUID(),raw=destination.memory.core.database.raw;
+ const original=raw.client.getCollection.bind(raw.client);let writes=0;
+ raw.client.getCollection=async args=>{const c=await original(args),add=c.add.bind(c);c.add=async input=>{const result=await add(input);if(input.metadatas?.some(m=>m.host_package_operation)&&++writes===1)throw Error('Synthetic immediate package write failure');return result;};return c;};
+ let response;try{response=await imported(destination,pkg,key);}finally{raw.client.getCollection=original;}
+ assert.equal(response.status,409,response.raw);assert.match(response.body.error,/Memory cleanup held/);assert.equal(writes,1);
+ const find=()=>destination.store.findAgentCreationOperation({projectId:destination.project.id,actorScope:'user:local-operator',kind:'import',idempotencyKey:key});
+ const held=find();assert.equal(held.status,'rolling_back');assert.match(held.lastError,/Memory cleanup held/);
+ assert.match(held.result.memoryCleanupOriginalError,/Synthetic immediate package write failure/);
+ assert.ok(held.agentIds.length>0);for(const id of held.agentIds)assert.ok(destination.store.getAgent(id),'staged Agent owner must remain');
+ const before=held.agentIds.slice(),artifacts=held.artifactIds.slice();await destination.reopen();
+ const reopened=find();assert.equal(reopened.status,'rolling_back');assert.equal(reopened.lastError,held.lastError);assert.deepEqual(reopened.agentIds,before);assert.deepEqual(reopened.artifactIds,artifacts);
+ for(const id of before)assert.ok(destination.store.getAgent(id),'restart must not delete the staged Agent owner');
+ assert.ok(destination.memory.core.database.listMutationHolds().some(hold=>hold.effect?.scope==='chat:'+destination.chat.id));
+ noRuns(destination);
 });
 
 const workflow=(defs)=>({schema:'ponderosa.branch-installation.v1',packageId:'memory.workflow.fixture',mode:'template',exportedAt:new Date().toISOString(),definition:{schema:'ponderosa.branch.v1',name:'Memory workflow',trigger:{kind:'manual'},entry:'agent',controls:[],steps:[{id:'agent',kind:'agent',target:{kind:'persistent_agent',ref:'speaker'},instructions:'No provider turn'}],edges:[],policy:{maxConcurrentExecutions:1,failure:{action:'stop'}}},chats:[{ref:'chat',title:'Memory Chat',agents:defs.map((definition,index)=>({ref:index?'peer':'speaker',definition}))}],agentBindings:{speaker:{chatRef:'chat',agentRef:'speaker'}}});
@@ -74,8 +111,9 @@ test('exact pending import membership allows restoration but denies visibility; 
  await assert.rejects(destination.memory.restoreImportMemory(operation.id,memory[0],{[source.a.id]:destination.a.id},plan[0].namespace),/membership/);
  const raw=destination.memory.core.database.raw,original=raw.client.getCollection.bind(raw.client);let refuse=true;
  raw.client.getCollection=async args=>{const c=await original(args),remove=c.delete.bind(c);c.delete=async input=>{if(refuse)throw Error('Controlled memory cleanup unavailable');return remove(input);};return c;};
- destination.store.updateAgentCreationOperation(operation.id,{status:'rolling_back'});await assert.rejects(destination.memory.rollbackImportMemory(operation.id),/cleanup unavailable/);assert.ok(destination.store.getAgentCreationOperation(operation.id).result.memoryPlan.length);assert.deepEqual(await read(destination,destination.a.id),[]);
- refuse=false;await destination.reopen();assert.equal(destination.store.getAgentCreationOperation(operation.id).status,'rolled_back');assert.equal(destination.store.getAgent(id),undefined);assert.deepEqual(await read(destination,destination.a.id),[]);noRuns(destination);
+ destination.store.updateAgentCreationOperation(operation.id,{status:'rolling_back'});await assert.rejects(destination.memory.rollbackImportMemory(operation.id),/Memory cleanup held/);assert.ok(destination.store.getAgentCreationOperation(operation.id).result.memoryPlan.length);
+ assert.deepEqual(await read(destination,destination.a.id),[],'uncommitted team rows remain hidden');refuse=false;raw.client.getCollection=original;
+ await destination.reopen();const held=destination.store.getAgentCreationOperation(operation.id);assert.equal(held.status,'rolling_back');assert.match(held.lastError,/Memory cleanup held/);assert.ok(destination.store.getAgent(id),'staged owner is retained');assert.deepEqual(await read(destination,destination.a.id),[]);noRuns(destination);
 });
 
 test('unconfigured memory destination explicitly refuses a memory-bearing package before creating Agents',async t=>{

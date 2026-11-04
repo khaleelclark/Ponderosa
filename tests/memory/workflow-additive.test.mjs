@@ -44,7 +44,7 @@ test('cancel compensates completed staged team/private memory on a preserved Cha
 
 test('partial physical memory write fails visibly, rolls back its rows, and same-plan retry adds no duplicate facts',async t=>{
  const x=await setup(t),plan=ok(await x.preview()),raw=x.f.memory.core.database.raw,get=raw.client.getCollection.bind(raw.client);let writes=0;
- raw.client.getCollection=async args=>{const c=await get(args),upsert=c.upsert.bind(c);c.upsert=async input=>{if(input.metadatas?.some(m=>m.host_package_operation)&&++writes===2)throw Error('Controlled second additive write failure');return upsert(input);};return c;};let state;try{state=ok(await confirm(x.f,plan.id));}finally{raw.client.getCollection=get;}
+ raw.client.getCollection=async args=>{const c=await get(args),add=c.add.bind(c);c.add=async input=>{if(input.metadatas?.some(m=>m.host_package_operation)&&++writes===2)throw Error('Controlled second additive write failure');return add(input);};return c;};let state;try{state=ok(await confirm(x.f,plan.id));}finally{raw.client.getCollection=get;}
  assert.equal(state.state,'applying');assert.match(state.error,/Controlled second additive write failure/);await x.unchanged();const done=await retry(x.f,plan.id);assert.equal(done.state,'completed',done.error);const after=await rows(x.f,x.chat.id);assert.equal(after[0].ids.length,x.before[0].ids.length+3);assert.equal(after[1].ids.length,x.before[1].ids.length+1);assert.equal((await retry(x.f,plan.id)).state,'completed');assert.deepEqual(await rows(x.f,x.chat.id),after);noRuns(x.f);
 });
 

@@ -1,3 +1,4 @@
+import {MEMORY_CLEANUP_HOLD} from './local-memory-authority.js';
 import {localMemoryFor} from './local-memory.js';
 import WebSocket from "ws";
 import type {
@@ -100,7 +101,7 @@ export function recoverFailedAgentCreations(input: {
   const failures: Array<{ operationId: string; error: unknown }> = [];
   for (const operation of input.store.listRecoverableAgentCreationOperations()) {
     if (operation.status === "canonical_committed") continue;
-    if((operation.result as {memoryPlan?:unknown[]}|undefined)?.memoryPlan?.length){failures.push({operationId:operation.id,error:new Error('Package memory cleanup remains pending')});continue;}
+    if((operation.result as {memoryPlan?:unknown[]}|undefined)?.memoryPlan?.length){failures.push({operationId:operation.id,error:new Error(operation.lastError===MEMORY_CLEANUP_HOLD?MEMORY_CLEANUP_HOLD:'Package memory cleanup remains pending')});continue;}
     input.store.updateAgentCreationOperation(operation.id, { status: "rolling_back" });
     let rolledBack = true;
     const authorityBlockedArtifactIds = new Set<string>();
@@ -407,7 +408,7 @@ export function registerServerLifecycle(
           }
           receipt = store.getAgentDeletionReceiptByPreviewHash(receipt.previewHash)!;
         }
-        if (!receipt.serverCleanupCompleted) await processAgentDeletionCleanup(receipt);
+        if (!receipt.serverCleanupCompleted&&receipt.lastError!==MEMORY_CLEANUP_HOLD) await processAgentDeletionCleanup(receipt);
       }
     } catch (error) {
       if (!isClosed()) app.log.error({ err: error }, "Agent deletion cleanup retry failed");
@@ -430,7 +431,7 @@ export function registerServerLifecycle(
     const operation = (async () => {
       for (const receipt of store.listPendingConversationDeletionReceipts()) {
         if (isClosed()) break;
-        await processConversationDeletionCleanup(receipt);
+        if(receipt.lastError!==MEMORY_CLEANUP_HOLD)await processConversationDeletionCleanup(receipt);
       }
     })().catch((error) => {
       if (!isClosed()) app.log.error({ err: error }, "Chat deletion cleanup retry failed");
@@ -518,7 +519,7 @@ export function registerServerLifecycle(
     completeLifecyclePhase("project_deletion_workspace_recovery");
     await runAgentCreationRecovery(Number.POSITIVE_INFINITY);
     for(const operation of store.listRecoverableAgentCreationOperations()){
-      if((operation.result as {memoryPlan?:unknown[]}|undefined)?.memoryPlan?.length){
+      if((operation.result as {memoryPlan?:unknown[]}|undefined)?.memoryPlan?.length&&operation.lastError!==MEMORY_CLEANUP_HOLD){
         store.updateAgentCreationOperation(operation.id,{status:'rolling_back'});
         try{const memory=localMemoryFor(app);if(!memory)throw new Error('Local memory configuration required for package cleanup');await memory.rollbackImportMemory(operation.id);}
         catch(error){store.updateAgentCreationOperation(operation.id,{lastError:error instanceof Error?error.message:String(error)});}

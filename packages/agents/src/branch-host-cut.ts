@@ -130,6 +130,47 @@ export function verifyBranchHostCut(cut:BranchHostCut,executionId:string):boolea
   &&['requests','updates','lateResults','joins','members','suspensions','communications','joinOutcomes','artifactRefs','resources','resourceMembers','resourceContexts','resourceReceipts'].every(key=>(cut[key as keyof BranchHostCut] as Evidence[]).every(record=>payloadHash(record.row)===record.sha256));}catch{return false;}
 }
 
+/**
+ * Proves a retired retry Chat belonged to an execution-only generation. This
+ * is audit evidence for leaving foreign storage untouched, not authority to
+ * restore or delete any external bytes.
+ */
+export function hasRetainedTemporaryChatScope(
+ db:Database.Database,input:{chatId:string;projectId:string;branchId:string;agentId?:string},
+):boolean {
+ const verify=()=>{
+  try{
+   const contexts=db.prepare(`SELECT x.*,r.state AS resource_state,r.generation AS current_generation,
+      e.id AS owned_execution_id
+     FROM branch_ephemeral_contexts x
+     JOIN branch_resources r ON r.step_execution_id=x.step_execution_id
+     JOIN branch_executions e ON e.id=r.execution_id AND e.branch_id=?
+     JOIN conversation_deletion_receipts d ON d.conversation_id=x.chat_id
+      AND d.project_id=? AND d.branch_id=? AND d.canonical_deletion_completed=1
+     WHERE x.chat_id=? AND x.generation<r.generation LIMIT 2`).all(input.branchId,input.projectId,input.branchId,input.chatId) as Row[];
+   if(contexts.length!==1)return false;
+   const c=contexts[0]!,executionId=c.owned_execution_id;
+   const context={step_execution_id:c.step_execution_id,generation:c.generation,chat_id:c.chat_id,
+     agent_ids_json:c.agent_ids_json,resource_state:c.resource_state,current_generation:c.current_generation};
+   if(!retainedGenerationScope(db,executionId,context))return false;
+   const seal=readGenerationExitCapture(db,executionId,c.step_execution_id,c.generation);
+   const ids=JSON.parse(c.agent_ids_json);
+   if(!seal||seal.state!=='sealed'||seal.identity.projectId!==input.projectId||
+      seal.identity.branchId!==input.branchId||seal.identity.chatId!==input.chatId||
+      !Array.isArray(ids)||ids.some((id:unknown)=>typeof id!=='string')||
+      new Set(ids).size!==ids.length||stableJson([...ids].sort())!==stableJson([...seal.identity.agentIds].sort())||
+      input.agentId!==undefined&&(!ids.includes(input.agentId)||!db.prepare("SELECT 1 FROM agent_deletion_tombstones WHERE agent_id=? AND project_id=? AND conversation_id=? AND ownership_token IS NOT NULL AND ownership_token!=''").get(input.agentId,input.projectId,input.chatId)))return false;
+   const row=db.prepare('SELECT result_json FROM branch_commands WHERE execution_id=? AND command_key=?')
+    .get(executionId,`resource-generation-retired:${c.step_execution_id}:${c.generation}`) as Row|undefined;
+   const retired=row&&JSON.parse(row.result_json);
+   return Boolean(retired&&Array.isArray(retired.members)&&
+    retired.members.every((member:Row)=>member.step_execution_id===c.step_execution_id&&typeof member.agent_id==='string')&&
+    stableJson(retired.members.map((member:Row)=>member.agent_id).sort())===stableJson([...ids].sort()));
+  }catch{return false;}
+ };
+ return db.inTransaction?verify():db.transaction(verify)();
+}
+
 /** Audit-only scope for an exactly sealed/deleted prior retry generation. */
 function retainedGenerationScope(db:Database.Database,executionId:string,context:Row):boolean {
  const row=db.prepare('SELECT input_hash,result_json FROM branch_commands WHERE execution_id=? AND command_key=?').get(executionId,`resource-generation-retired:${context.step_execution_id}:${context.generation}`) as Row|undefined;

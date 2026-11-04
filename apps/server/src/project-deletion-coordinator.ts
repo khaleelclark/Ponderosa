@@ -1,3 +1,4 @@
+import {MEMORY_CLEANUP_HOLD} from './local-memory-authority.js';
 import { withSourceMutation } from "@ponderosa/agents";
 import {localMemoryFor} from "./local-memory.js";
 import {requestProduct,resourceInProduct} from "./product-scope.js";
@@ -530,7 +531,7 @@ export function registerProjectDeletionRoutes(
           category: "system",
           severity: "urgent",
           title: "Project deletion needs attention",
-          body: `Ponderosa quarantined ${project.label} and revoked Agent authority, but cleanup has not completed. Retry deletion after the cleanup problem is resolved. ${error instanceof Error ? error.message : String(error)}`.slice(0, 1_000),
+          body: `Ponderosa quarantined ${project.label} and revoked Agent authority, but cleanup has not completed. ${error instanceof Error&&error.message===MEMORY_CLEANUP_HOLD?'Memory cleanup is held for review.':'Retry deletion after the cleanup problem is resolved.'} ${error instanceof Error ? error.message : String(error)}`.slice(0, 1_000),
           projectId: project.id,
         });
       } catch { /* in-memory quarantine remains fail closed */ }
@@ -538,7 +539,7 @@ export function registerProjectDeletionRoutes(
         error: error instanceof Error ? error.message : "Project deletion is waiting for provider runtime cleanup",
         cleanupPending: true,
         quarantined: true,
-        retryable: true,
+        retryable: !(error instanceof Error&&error.message===MEMORY_CLEANUP_HOLD),
       });
     } finally {
       projectDeletionInFlightIds.delete(project.id);

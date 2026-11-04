@@ -13,37 +13,51 @@ export type MemoryAuthority={chatId:string;actor:{kind:'agent'|'user';id:string}
 type Frame={owner:AuthorityStorage;authority:MemoryAuthority;all:Map<string,SourceStamp|null>;allowed:Map<string,SourceStamp>;scopes:string[];parents:Map<string,string>;created:Set<string>};
 const context=new AsyncLocalStorage<Frame>();const key=(scope:string,id:string)=>JSON.stringify([scope,id]);
 const denied=()=>new Error('Memory source unavailable or unauthorized');
+export const MEMORY_CLEANUP_HOLD='Memory cleanup held: backend lacks atomic identity and content checks; staged and existing data was preserved';
+export class MemoryCollectionHold extends Error{constructor(message:string){super(message);this.name='MemoryCollectionHold';}}
 const noGeneration={name:'local-memory-precomputed',generate:async():Promise<number[][]>=>{throw Error('Explicit embeddings required');}};
 const mutationBoundaries=new WeakMap<ChromaStorage,ReturnType<typeof memorySourceMutations>>();
+type CollectionProof={check:(scope:string,log:boolean,metadata:Record<string,unknown>|null|undefined,collectionId:string)=>void;missing:(scope:string,log:boolean)=>void};
+const collectionProofs=new WeakMap<ChromaStorage,CollectionProof>();
 const mutate=<T>(raw:ChromaStorage,work:()=>Promise<T>,effect?:MemoryMutationEffect)=>mutationBoundaries.get(raw)?.run(work,effect)??withSourceMutation(work);
 function trackedCollection<T extends object>(raw:ChromaStorage,collection:T,scope:string,log:boolean):T{
  return new Proxy(collection,{get(target,key){const value=Reflect.get(target,key);if(typeof value!=='function')return value;return (...args:unknown[])=>['upsert','add','update','delete','modify'].includes(String(key))?mutate(raw,()=>Reflect.apply(value,target,args),{scope,log,operation:String(key) as MemoryMutationEffect['operation']}):Reflect.apply(value,target,args);}});
 }
-export async function checkedCollection(raw:ChromaStorage,scope:string,log:boolean,guard:()=>Promise<void>,create=false):Promise<Awaited<ReturnType<ChromaStorage["client"]["getCollection"]>>>{
- await guard();let c;try{c=await raw.client.getCollection({name:raw.names(scope)[log?'log':'memory'],embeddingFunction:noGeneration});}catch(e){if(!create||!(e instanceof Error)||e.name!=='ChromaNotFoundError')throw e;await guard();c=await mutate(raw,()=>raw.client.createCollection({name:raw.names(scope)[log?'log':'memory'],embeddingFunction:noGeneration,configuration:{hnsw:{space:'cosine'}},metadata:{'hnsw:space':'cosine',embedding_signature:raw.signature,dimensions:384}}),{scope,log,operation:'create_collection'});}await guard();
- if((c.configuration?.hnsw?.space??c.metadata?.['hnsw:space'])!=='cosine'||c.metadata?.embedding_signature!==raw.signature||(c.metadata?.dimensions!==undefined&&c.metadata.dimensions!==384))throw Error('Incompatible memory collection binding');return trackedCollection(raw,c,scope,log);
+export async function checkedCollection(raw:ChromaStorage,scope:string,log:boolean,guard:()=>Promise<void>):Promise<Awaited<ReturnType<ChromaStorage["client"]["getCollection"]>>>{
+ await guard();let c;try{c=await raw.client.getCollection({name:raw.names(scope)[log?'log':'memory'],embeddingFunction:noGeneration});}catch(e){if(e instanceof Error&&e.name==='ChromaNotFoundError')collectionProofs.get(raw)?.missing(scope,log);throw e;}await guard();
+ if((c.configuration?.hnsw?.space??c.metadata?.['hnsw:space'])!=='cosine'||c.metadata?.embedding_signature!==raw.signature||(c.metadata?.dimensions!==undefined&&c.metadata.dimensions!==384)){collectionProofs.get(raw)?.missing(scope,log);throw new MemoryCollectionHold('Incompatible memory collection binding');}collectionProofs.get(raw)?.check(scope,log,c.metadata,c.id);return trackedCollection(raw,c,scope,log);
 }
 /** Issue one durably planned collection creation. An existing name is never
  * adopted as a fresh result; a lost response is resolved separately by token. */
 export async function createPlannedCollection(raw:ChromaStorage,scope:string,log:boolean,guard:()=>Promise<void>,token:string,beforeDispatch:()=>void){
  await guard();
- try{await raw.client.getCollection({name:raw.names(scope)[log?'log':'memory'],embeddingFunction:noGeneration});throw Error('Fresh memory collection already exists without its exact creation receipt');}
+ try{await raw.client.getCollection({name:raw.names(scope)[log?'log':'memory'],embeddingFunction:noGeneration});throw new MemoryCollectionHold('Fresh memory collection already exists without its exact creation receipt');}
  catch(error){if(!(error instanceof Error)||error.name!=='ChromaNotFoundError')throw error;}
  await guard();beforeDispatch();
  const c=await mutate(raw,()=>raw.client.createCollection({name:raw.names(scope)[log?'log':'memory'],embeddingFunction:noGeneration,configuration:{hnsw:{space:'cosine'}},metadata:{'hnsw:space':'cosine',embedding_signature:raw.signature,dimensions:384,ponderosa_provision_intent:token}}),{scope,log,operation:'create_collection'});
  await guard();
- if((c.configuration?.hnsw?.space??c.metadata?.['hnsw:space'])!=='cosine'||c.metadata?.embedding_signature!==raw.signature||c.metadata?.ponderosa_provision_intent!==token||(c.metadata?.dimensions!==undefined&&c.metadata.dimensions!==384))throw Error('Created memory collection proof differs');
+ if((c.configuration?.hnsw?.space??c.metadata?.['hnsw:space'])!=='cosine'||c.metadata?.embedding_signature!==raw.signature||c.metadata?.ponderosa_provision_intent!==token||(c.metadata?.dimensions!==undefined&&c.metadata.dimensions!==384)||typeof c.id!=='string'||!c.id)throw Error('Created memory collection proof differs');
+ // Confirm the name still resolves to the exact UUID returned by this request.
+ // A lost response is never reconstructed from copyable metadata alone.
+ await guard();const observed=await raw.client.getCollection({name:raw.names(scope)[log?'log':'memory'],embeddingFunction:noGeneration});await guard();
+ if(observed.id!==c.id||observed.metadata?.ponderosa_provision_intent!==token)throw Error('Created memory collection identity changed');
+ return c.id;
 }
 /** A per-call storage view, not persistence, a journal, a transaction or a recovery coordinator. */
 export class AuthorityStorage implements MemoryStorage{
  constructor(readonly raw:ChromaStorage,readonly principal:string,readonly inference:Inference,mutationDirectory?:string){if(mutationDirectory)mutationBoundaries.set(raw,memorySourceMutations(mutationDirectory));}
  assertSourceSettled(){const boundary=mutationBoundaries.get(this.raw);if(!boundary)throw Error('Checkpoint memory source boundary unavailable');boundary.assertSettled();}
  private mutationBoundary(){const boundary=mutationBoundaries.get(this.raw);if(!boundary)throw Error('Memory reconciliation unavailable');return boundary;}
+ setCollectionProof(proof:CollectionProof){collectionProofs.set(this.raw,proof);}
  listMutationHolds(){return this.mutationBoundary().list();}
+ hasUnidentifiedMutationHold(){return this.mutationBoundary().hasUnidentifiedHold();}
+ scopeHasUnsettledMutation(scope:string){return this.mutationBoundary().hasScopeHold(scope);}
+ assertScopeSettled(scope:string){if(this.scopeHasUnsettledMutation(scope))throw Error('Memory scope has an unsettled remote write; review memory health before use');}
+
  private async observeMutation(effect:MemoryMutationEffect,guard:()=>Promise<void>){
   if(!/^(global|chat:.+)$/.test(effect.scope)||effect.scope.length>512||typeof effect.log!=='boolean')throw Error('Memory effect scope invalid');
   await guard();let collection;
-  try{collection=await checkedCollection(this.raw,effect.scope,effect.log,guard);}catch(error){if(error instanceof Error&&(error.name==='ChromaNotFoundError'||/not.?found|does not exist/i.test(error.message)))return {rows:{scope:effect.scope,log:effect.log,absent:true},rowCount:0};throw error;}
+  try{collection=await checkedCollection(this.raw,effect.scope,effect.log,guard);}catch(error){if(error instanceof Error&&error.name==='ChromaNotFoundError')return {rows:{scope:effect.scope,log:effect.log,absent:true},rowCount:0};throw error;}
   const rows:Array<{id:string;document:unknown;metadata:unknown;embedding:unknown}>=[];let bytes=0;
   for(let offset=0;;offset+=100){
    await guard();const page=await collection.get({offset,limit:100,include:['documents','metadatas','embeddings'] as any});await guard();
@@ -71,7 +85,7 @@ export class AuthorityStorage implements MemoryStorage{
  }
 
  async run<T>(authority:MemoryAuthority,fn:()=>Promise<T>):Promise<T>{
-  return this.raw.exclusive(async()=>{const scopes=authority.writeScope?[authority.writeScope]:[...(authority.readChat?[`chat:${authority.chatId}`]:[]),...(authority.readGlobal?['global']:[])];if(authority.writeScope==='global'&&!scopes.includes('global'))scopes.push('global');const f:Frame={owner:this,authority,all:new Map(),allowed:new Map(),scopes,parents:new Map(),created:new Set()};return context.run(f,async()=>{
+  return this.raw.exclusive(async()=>{const scopes=authority.writeScope?[authority.writeScope]:[...(authority.readChat?[`chat:${authority.chatId}`]:[]),...(authority.readGlobal?['global']:[])];if(authority.writeScope==='global'&&!scopes.includes('global'))scopes.push('global');for(const scope of scopes)this.assertScopeSettled(scope);const f:Frame={owner:this,authority,all:new Map(),allowed:new Map(),scopes,parents:new Map(),created:new Set()};return context.run(f,async()=>{
    await this.guard();for(const scope of scopes){const c=await this.collection(scope);for(let offset=0;;offset+=500){await this.guard();const p=await c.get({offset,limit:500,include:['metadatas'] as any});await this.guard();if(p.ids.length!==p.metadatas.length||new Set(p.ids).size!==p.ids.length||p.ids.some(id=>f.all.has(key(scope,id))))throw denied();for(let i=0;i<p.ids.length;i++){const s=this.parse(p.ids[i]!,scope,p.metadatas[i]);f.all.set(key(scope,p.ids[i]!),s);if(typeof (p.metadatas[i] as any)?.supersedes==='string'&&(p.metadatas[i] as any).supersedes)f.parents.set(key(scope,p.ids[i]!),(p.metadatas[i] as any).supersedes);if(s&&this.readable(s,authority))f.allowed.set(key(scope,p.ids[i]!),s);}if(f.all.size>10000)throw Error('Memory authority inventory bound exceeded');if(p.ids.length<500)break;}}for(let pass=0,bound=f.allowed.size;pass<=bound;pass++){let removed=false;for(const [k,s]of f.allowed){const parent=f.parents.get(k);if(parent){const ancestor=f.allowed.get(key(s.scope,parent));if(!ancestor||ancestor.audience!==s.audience||JSON.stringify(s.origin??s.provenance)!==JSON.stringify(ancestor.origin??ancestor.provenance)){f.allowed.delete(k);removed=true;}}}if(!removed)break;}for(const stamp of f.allowed.values()){const seen=new Set<string>();let id=stamp.id;while(f.parents.has(key(stamp.scope,id))){if(seen.has(id)){for(const visited of seen)f.allowed.delete(key(stamp.scope,visited));break;}seen.add(id);id=f.parents.get(key(stamp.scope,id))!;}}if(authority.writeScope){const target=authority.targetId?f.allowed.get(key(authority.writeScope,authority.targetId)):undefined;if(authority.targetId&&!target)throw denied();const audience=target?.audience??(authority.writeScope==='global'?'installation-global':authority.visibility==='private'?`chat:${authority.chatId}:agent:${authority.actor.id}`:`chat:${authority.chatId}:team`);for(const [k,s]of f.allowed)if(s.scope!==authority.writeScope||s.audience!==audience)f.allowed.delete(k);}const result=await fn();await this.guard();return result;
   });});
  }
@@ -101,7 +115,7 @@ export class AuthorityStorage implements MemoryStorage{
  /** Trusted host inventory; deliberately separate from Agent read authority. No policy grants are read or changed. */
  async exportPackageMemory(chatId:string,agentIds:string[],guard:()=>Promise<void>):Promise<PortableMemorySnapshot>{
   return this.raw.exclusive(async()=>{
-   const scope='chat:'+chatId,audiences=new Set([scope+':team',...agentIds.map(id=>scope+':agent:'+id)]);
+   const scope='chat:'+chatId,audiences=new Set([scope+':team',...agentIds.map(id=>scope+':agent:'+id)]);this.assertScopeSettled(scope);
    const snapshot:PortableMemorySnapshot={schema:'ponderosa.chat-memory.v1',signature:this.raw.signature,sourceChatId:chatId,agentIds:[...agentIds],excludedScopes:['global'],chunks:[],conflicts:[]};
    let bytes=Buffer.byteLength(JSON.stringify(snapshot));
    for(const log of [false,true]){
@@ -131,6 +145,7 @@ export class AuthorityStorage implements MemoryStorage{
  }
  /** Caller holds raw.exclusive for the entire inventory/review/effect boundary; the queue is not reentrant. */
  private async globalMemoryInventory(guard:()=>Promise<void>):Promise<PortableGlobalMemorySnapshotDto>{
+   this.assertScopeSettled('global');
    const snapshot:PortableGlobalMemorySnapshotDto={schema:'ponderosa.selected-global-memory.v1',signature:this.raw.signature,sourcePrincipal:this.principal,chunks:[],conflicts:[]};let bytes=0;
    for(const log of [false,true]){
     const c=await checkedCollection(this.raw,'global',log,guard);
@@ -180,7 +195,12 @@ export class AuthorityStorage implements MemoryStorage{
     }
    }
    // Same ordinary-memory contract: multiwrite failure may leave partial additions; re-review retries exact IDs.
-   for(const {c,row}of pending){await guard();await c.upsert({ids:[row.id],documents:[row.text],metadatas:[row.metadata],embeddings:[row.embedding]});this.onMutation?.('global',row.id);await guard();}
+   for(const {c,row}of pending){
+    await guard();await c.add({ids:[row.id],documents:[row.text],metadatas:[row.metadata],embeddings:[row.embedding]});await guard();
+    const actual=await c.get({ids:[row.id],include:['documents','metadatas','embeddings'] as any});await guard();
+    if(actual.ids.length!==1||actual.ids[0]!==row.id||actual.documents[0]!==row.text||globalMemoryHash(actual.metadatas[0])!==globalMemoryHash(row.metadata)||globalMemoryHash(this.vector(actual.embeddings?.[0]).map(Math.fround))!==globalMemoryHash(row.embedding))throw Error('Global memory transfer: destination collision; existing record preserved');
+    this.onMutation?.('global',row.id);
+   }
    return {chunkIds:prepared[0]!.map(row=>row.id),conflictIds:prepared[1]!.map(row=>row.id),added:pending.length};
   });
  }
@@ -202,7 +222,8 @@ export class AuthorityStorage implements MemoryStorage{
    return {id:destinationId,text:row.text,metadata,embedding:row.embedding.map(Math.fround)};
   }));
   return this.raw.exclusive(async()=>{
-   const collections=await Promise.all([false,true].map(log=>checkedCollection(this.raw,scope,log,guard,Boolean(packageOperationId)))),pending:Array<{c:typeof collections[number];row:typeof prepared[number][number]}>=[];
+   this.assertScopeSettled(scope);
+   const collections=await Promise.all([false,true].map(log=>checkedCollection(this.raw,scope,log,guard))),pending:Array<{c:typeof collections[number];row:typeof prepared[number][number]}>=[];
    for(let index=0;index<2;index++)for(const row of prepared[index]!){
     const c=collections[index]!;await guard();const existing=await c.get({ids:[row.id],include:['documents','metadatas','embeddings'] as any});await guard();
     // Compare stored float32 values; Chroma's JSON decimals need not equal JS float32 doubles.
@@ -210,8 +231,13 @@ export class AuthorityStorage implements MemoryStorage{
     else pending.push({c,row});
    }
    const attempted:typeof pending=[];
-   try{for(const item of pending){await guard();attempted.push(item);await item.c.upsert({ids:[item.row.id],documents:[item.row.text],metadatas:[item.row.metadata],embeddings:[item.row.embedding]});await guard();}}
-   catch(error){try{await guard();for(const item of attempted){await guard();await item.c.delete({ids:[item.row.id]});}await guard();}catch(cleanup){throw new AggregateError([error,cleanup],'Memory snapshot installation incomplete; exact package namespace requires retry/cleanup');}throw error;}
+   try{for(const item of pending){
+    await guard();attempted.push(item);await item.c.add({ids:[item.row.id],documents:[item.row.text],metadatas:[item.row.metadata],embeddings:[item.row.embedding]});await guard();
+    const actual=await item.c.get({ids:[item.row.id],include:['documents','metadatas','embeddings'] as any});await guard();
+    const sorted=(v:any)=>JSON.stringify(Object.entries(v).sort(([a],[b])=>a.localeCompare(b)));
+    if(actual.ids.length!==1||actual.ids[0]!==item.row.id||actual.documents[0]!==item.row.text||sorted(actual.metadatas[0])!==sorted(item.row.metadata)||JSON.stringify(this.vector(actual.embeddings?.[0]).map(Math.fround))!==JSON.stringify(item.row.embedding))throw Error('Memory snapshot: destination ID collision; existing data preserved');
+   }}
+   catch(error){if(attempted.length)throw new AggregateError([error],MEMORY_CLEANUP_HOLD);throw error;}
    return {chunkIds:prepared[0]!.map(r=>r.id),conflictIds:prepared[1]!.map(r=>r.id),excludedScopes:source.excludedScopes};
   });
  }
@@ -220,49 +246,14 @@ export class AuthorityStorage implements MemoryStorage{
   const id=(kind:string,sourceId:string)=>createHash('sha256').update(JSON.stringify([this.principal,chatId,namespace,snapshot.sourceChatId,kind,sourceId])).digest('hex');
   return {chatId,chunkIds:snapshot.chunks.map(r=>id('chunk',r.id)),conflictIds:snapshot.conflicts.map(r=>id('conflict',r.id))};
  }
- async rollbackPackageMemory(plan:{chatId:string;chunkIds:string[];conflictIds:string[]},operationId:string,guard:()=>Promise<void>){
-  return this.raw.exclusive(async()=>{
-   const scope='chat:'+plan.chatId;
-   for(const log of [false,true]){
-    let c;try{c=await checkedCollection(this.raw,scope,log,guard);}catch(error){if(error instanceof Error&&error.name==='ChromaNotFoundError')continue;throw error;}
-    for(const id of log?plan.conflictIds:plan.chunkIds){
-     await guard();const rows=await c.get({ids:[id],include:['metadatas'] as any});await guard();
-     if(!rows.ids.length)continue;
-     const m:any=rows.metadatas[0],stamp=this.parse(id,scope,log?{...m,host_source_authority:m.host_conflict_authority}:m,true);
-     if(rows.ids.length!==1||rows.ids[0]!==id||!stamp||stamp.ownerChat!==plan.chatId||m.host_package_operation!==operationId)throw Error('Memory package rollback refused foreign source');
-     await guard();await c.delete({ids:[id]});await guard();
-    }
-   }
-  });
+ async rollbackPackageMemory(plan:{chatId:string;chunkIds:string[];conflictIds:string[]},_operationId:string,guard:()=>Promise<void>){
+  await guard();if(plan.chunkIds.length||plan.conflictIds.length)throw Error(MEMORY_CLEANUP_HOLD);
  }
- /** Only durable host deletion receipts call this; Agent tools never gain a clear operation. */
- async purge(scope:string,guard:()=>Promise<void>,agentId?:string){
-  return this.raw.exclusive(async()=>{
-   await guard();if(!scope.startsWith('chat:')||!scope.slice(5))throw denied();
-   const selected:Array<{collection:Awaited<ReturnType<typeof checkedCollection>>;log:boolean;ids:string[]}>=[];
-   for(const log of [false,true]){
-    let collection;try{collection=await checkedCollection(this.raw,scope,log,guard);}catch(e){if(e instanceof Error&&e.name==='ChromaNotFoundError')continue;throw e;}
-    const ids:string[]=[];
-    for(let offset=0;;offset+=500){
-     await guard();const rows=await collection.get({offset,limit:500,include:['metadatas'] as any});await guard();
-     if(rows.ids.length!==rows.metadatas.length)throw Error('Malformed memory cleanup inventory');
-     for(let i=0;i<rows.ids.length;i++){
-      const metadata:any=rows.metadatas[i],stamp=this.parse(rows.ids[i]!,scope,log?{...metadata,host_source_authority:metadata?.host_conflict_authority}:metadata);
-      if(!stamp||stamp.ownerChat!==scope.slice(5)){if(!agentId)throw Error('Foreign or unclassified memory prevents Chat cleanup');continue;}
-      if(!agentId||stamp.audience===scope+':agent:'+agentId)ids.push(rows.ids[i]!);
-     }
-     if(rows.ids.length<500)break;
-    }
-    selected.push({collection,log,ids});
-   }
-   for(const {collection,log,ids}of selected){
-    await guard();
-    if(!agentId){await mutate(this.raw,()=>this.raw.client.deleteCollection({name:collection.name}),{scope,log,operation:'delete_collection'});}
-    else for(let i=0;i<ids.length;i+=100){await guard();await collection.delete({ids:ids.slice(i,i+100)});}
-    if(!log)for(const id of ids)this.onMutation?.(scope,id);
-    await guard();
-   }
-  });
+ /** No name-based collection or unconditional record delete is safe without
+  * backend exclusion or an atomic identity-and-content precondition. */
+ async purge(scope:string,guard:()=>Promise<void>,_agentId?:string){
+  await guard();if(!scope.startsWith('chat:')||!scope.slice(5))throw denied();
+  throw Error(MEMORY_CLEANUP_HOLD);
  }
  async clear(_scope:string){throw Error('Host-wide replacement/backup restore is unavailable');}
  readIndex(_key:string):never{throw Error('Host semantic index is unavailable');}writeIndex(_key:string,_value:unknown):never{throw Error('Host semantic index is unavailable');}

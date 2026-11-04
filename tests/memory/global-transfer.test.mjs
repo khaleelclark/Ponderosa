@@ -83,10 +83,37 @@ test('selection order and JSON key order do not change exact reviewed global pac
 for(const mode of ['storage-failure','revoked-guard'])test(`partial ${mode} leaves only selected readable ancestors; explicit re-review/reopen completes exact namespace`,async t=>{
  const source=await instance(t),destination=await instance(t),ids=await globalSeed(source),snapshot=selectGlobalMemory((await inventory(source)).snapshot,ids.selection),review=await prepare(destination,snapshot),raw=destination.memory.core.database.raw;
  const original=raw.client.getCollection.bind(raw.client);let writes=0,revoked=false;
- raw.client.getCollection=async args=>{const c=await original(args),upsert=c.upsert.bind(c);c.upsert=async input=>{writes++;if(mode==='storage-failure'&&writes===2)throw Error('Controlled transfer write failure');const result=await upsert(input);if(mode==='revoked-guard')revoked=true;return result;};return c;};
+ raw.client.getCollection=async args=>{const c=await original(args),add=c.add.bind(c);c.add=async input=>{writes++;if(mode==='storage-failure'&&writes===2)throw Error('Controlled transfer write failure');const result=await add(input);if(mode==='revoked-guard')revoked=true;return result;};return c;};
  try{await assert.rejects(destination.memory.core.database.importGlobalMemory(snapshot,review.reviewHash,async()=>{if(revoked)throw Error('Controlled operator revocation');}),mode==='storage-failure'?/Controlled transfer write failure/:/Controlled operator revocation/);}finally{raw.client.getCollection=original;}
- assert.equal(writes,mode==='storage-failure'?2:1);const partial=(await inventory(destination)).snapshot;assert.equal(partial.chunks.length,1);assert.equal(partial.chunks[0].text,'Earlier source preference');assert.equal(partial.conflicts.length,0);assert.equal((await commit(destination,review)).status,409,'stale pre-failure review cannot release further writes');noWork(destination);
+ assert.equal(writes,mode==='storage-failure'?2:1);
+ if(mode==='storage-failure'){
+  const list=await destination.app.inject({method:'GET',url:'/api/local-memory/mutation-holds',headers:destination.headers});assert.equal(list.statusCode,200,list.body);
+  const hold=list.json().find(row=>row.effect?.scope==='global');assert.ok(hold,'unknown global write must remain held');
+  const review=await destination.app.inject({method:'GET',url:'/api/local-memory/mutation-holds/'+hold.id,headers:destination.headers});assert.equal(review.statusCode,200,review.body);
+  const decision=await destination.app.inject({method:'POST',url:'/api/local-memory/mutation-holds/'+hold.id+'/reconcile',headers:destination.headers,payload:{commandKey:randomUUID(),reviewSha256:review.json().reviewSha256,backendDrainEvidence:'Controlled fixture threw before sending the second backend write',preserveCurrentBackend:true}});assert.equal(decision.statusCode,200,decision.body);
+ }
+ const partial=(await inventory(destination)).snapshot;assert.equal(partial.chunks.length,1);assert.equal(partial.chunks[0].text,'Earlier source preference');assert.equal(partial.conflicts.length,0);assert.equal((await commit(destination,review)).status,409,'stale pre-failure review cannot release further writes');noWork(destination);
  await destination.reopen();assert.deepEqual((await inventory(destination)).snapshot,partial);const finished=await commit(destination,await prepare(destination,snapshot));assert.equal(finished.status,200,finished.raw);assert.equal(finished.body.added,2);assert.equal((await inventory(destination)).snapshot.chunks.length,2);assert.equal((await inventory(destination)).snapshot.conflicts.length,1);noWork(destination);
+});
+
+test('global import preserves an independently inserted record at the same ID',async t=>{
+ const source=await instance(t),destination=await instance(t),ids=await globalSeed(source),snapshot=selectGlobalMemory((await inventory(source)).snapshot,ids.selection),review=await prepare(destination,snapshot),raw=destination.memory.core.database.raw;
+ const original=raw.client.getCollection.bind(raw.client);let raced;
+ raw.client.getCollection=async args=>{
+  const c=await original(args),add=c.add.bind(c);
+  c.add=async input=>{
+   if(!raced){
+    raced={id:input.ids[0],name:args.name,text:'Independent synthetic global record'};
+    await add({...input,documents:[raced.text],metadatas:[{...input.metadatas[0],independent_fixture:'preserve'}]});
+   }
+   return add(input);
+  };return c;
+ };
+ try{
+  const result=await commit(destination,review);assert.notEqual(result.status,200,result.raw);assert.ok(raced);
+  const c=await original({name:raced.name}),current=await c.get({ids:[raced.id],include:['documents','metadatas']});
+  assert.deepEqual(current.ids,[raced.id]);assert.equal(current.documents[0],raced.text);assert.equal(current.metadatas[0].independent_fixture,'preserve');noWork(destination);
+ }finally{raw.client.getCollection=original;}
 });
 
 test('selected import uses the installed nonreentrant Chroma queue once for complete review and append',async t=>{

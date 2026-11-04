@@ -162,8 +162,12 @@ export function createConversationDeletionAuthority(context: {
     } catch (error) {
       errors.push(error instanceof Error ? error.message : "workspace publication failed");
     }
-    try { await context.purgeChatMemory?.(receipt.conversationId); }
-    catch(error){errors.push(error instanceof Error?error.message:'Chat memory cleanup failed');}
+    // Finish independently retryable work first. A stable memory safety hold
+    // must be recorded alone so the background sweep does not retry it forever.
+    if(errors.length===0&&receipt.storageCleanupCompleted){
+      try { await context.purgeChatMemory?.(receipt.conversationId); }
+      catch(error){errors.push(error instanceof Error?error.message:'Chat memory cleanup failed');}
+    }
     if (errors.length > 0 || !receipt.storageCleanupCompleted) {
       try {
         context.store.recordConversationDeletionCleanupError(

@@ -76,7 +76,7 @@ import {CapabilityPolicyStore} from '@ponderosa/agents';
 import {CAPABILITY_IDS} from '@ponderosa/core';
 import {AuthorityStorage,checkedCollection} from '../../apps/server/dist/local-memory-authority.js';
 
-test('collection provisioning recognizes a Chroma missing collection without creating on unrelated errors or existing state',async()=>{
+test('collection lookup never creates a missing or unauthorized collection',async()=>{
  const missing=new Error('The requested resource could not be found');missing.name='ChromaNotFoundError';
  const unrelated=new Error('The requested resource could not be found');unrelated.name='ChromaUnauthorizedError';
  const created=[];
@@ -87,15 +87,12 @@ test('collection provisioning recognizes a Chroma missing collection without cre
   async createCollection(options){created.push(options);return collection;},
  }};
  const guard=async()=>{guards++;};
- const opened=await checkedCollection(raw,'global',false,guard,true);assert.deepEqual(opened.metadata,collection.metadata);
- assert.equal(created.length,1);
- assert.equal(created[0].name,'fixture_memory');
- assert.ok(guards>=2);
- await assert.rejects(checkedCollection(raw,'global',false,guard,false),error=>error===missing);
- assert.equal(created.length,1,'existing state must not recreate a missing collection');
+ await assert.rejects(checkedCollection(raw,'global',false,guard),error=>error===missing);
+ assert.equal(created.length,0,'missing collections are never created by lookup');
+ assert.ok(guards>=1);
  failure=unrelated;
- await assert.rejects(checkedCollection(raw,'global',false,guard,true),error=>error===unrelated);
- assert.equal(created.length,1,'unrelated failures must never create a collection');
+ await assert.rejects(checkedCollection(raw,'global',false,guard),error=>error===unrelated);
+ assert.equal(created.length,0,'unrelated failures must never create a collection');
 });
 
 function authorizeMemoryAgent(ports,root){
@@ -112,6 +109,9 @@ test('global writes use live human policy, correct scope and provenance without 
  const {chat,agent}=authorizeMemoryAgent(ports,root);
  const memory=new LocalMemoryService(ports,inference),policies=new CapabilityPolicyStore(ports.store.sqlite);
  memory.ready=async()=>{};
+ // This authority-only fixture intentionally has no Chroma backend; real scope
+ // provisioning is covered by the disposable-backend integration tests.
+ memory.ensurePlannedChat=async()=>{};memory.ensureGlobalScope=async()=>{};
  let captured;
  memory.perform=async(_operation,_args,authority)=>{await authority.guard();captured=authority;return {ok:true};};
  try{
@@ -138,10 +138,12 @@ test('agent-authored global records remain readable across authority calls with 
  const rows=new Map(),vector=Array.from({length:384},(_,i)=>i?0:1);
  const collection={metadata:{'hnsw:space':'cosine',embedding_signature:'owned',dimensions:384},async get({ids}={}){const chosen=[...rows].filter(([id])=>!ids||ids.includes(id));return {ids:chosen.map(([id])=>id),metadatas:chosen.map(([,r])=>r.metadata),documents:chosen.map(([,r])=>r.text),embeddings:chosen.map(([,r])=>r.embedding)};},async upsert({ids,metadatas,documents,embeddings}){ids.forEach((id,i)=>rows.set(id,{metadata:metadatas[i],text:documents[i],embedding:embeddings[i]}));}};
  const raw={signature:'owned',exclusive:fn=>fn(),names:()=>({memory:'owned-memory',log:'owned-log'}),client:{getCollection:async()=>collection}};
- const storage=new AuthorityStorage(raw,'owned-principal',{}),authority={chatId:'owned-chat',actor:{kind:'agent',id:'writer'},runId:'owned-run',fenceToken:'1',sourceType:'ai_inference',readGlobal:true,readChat:true,writeScope:'global',guard:async()=>{}};
+ const holdRoot=await mkdtemp(path.join(tmpdir(),'memory-authority-holds-'));
+ const storage=new AuthorityStorage(raw,'owned-principal',{},holdRoot),authority={chatId:'owned-chat',actor:{kind:'agent',id:'writer'},runId:'owned-run',fenceToken:'1',sourceType:'ai_inference',readGlobal:true,readChat:true,writeScope:'global',guard:async()=>{}};
  await storage.run(authority,()=>storage.put({id:'fact',scope:'global',text:'Retained global fact',embedding:vector,metadata:{source_type:'ai_inference',confidence:1,deprecated:false,timestamp:new Date().toISOString()}}));
  const result=await storage.run({...authority,writeScope:undefined},()=>storage.get('fact',['global']));
  assert.equal(result.text,'Retained global fact');const stamp=JSON.parse(result.metadata.host_source_authority);assert.equal(stamp.provenance.actor.kind,'agent');assert.equal(stamp.sourceType,'ai_inference');
+ await rm(holdRoot,{recursive:true,force:true});
 });
 
 // Optional real physical-source qualification; always launches its own Chroma root.

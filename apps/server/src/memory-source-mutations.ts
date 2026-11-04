@@ -89,6 +89,21 @@ export function memorySourceMutations(directory:string){
     assertSettled(){
       if(fs.readdirSync(directory).some(name=>name.endsWith('.json')))throw new Error('Checkpoint capture refused: memory mutation requires reconciliation');
     },
+    hasUnidentifiedHold(){
+      for(const name of fs.readdirSync(directory).filter(name=>name.endsWith('.json'))){
+        if(!/^[a-f0-9-]{36}\.json$/.test(name))return true;
+        let hold:MemoryMutationHoldDto;try{hold=inspect(name.slice(0,-5));}catch{return true;}
+        const effect=hold.effect;
+        if(!effect||typeof effect!=='object'||Object.keys(effect).some(key=>!['scope','log','operation'].includes(key))||
+          typeof effect.scope!=='string'||effect.scope.length>512||!(/^(global|chat:.+)$/.test(effect.scope))||
+          typeof effect.log!=='boolean'||!['create_collection','delete_collection','upsert','add','update','delete','modify'].includes(effect.operation))return true;
+      }
+      return false;
+    },
+    hasScopeHold(scope:string){
+      if(this.hasUnidentifiedHold())return true;
+      return this.list().some(hold=>hold.effect?.scope===scope);
+    },
     async run<T>(work:()=>Promise<T>,effect?:MemoryMutationEffect):Promise<T>{
       const finish=beginSourceMutation(),id=randomUUID(),file=path.join(directory,`${id}.json`);let settled=false;
       try{

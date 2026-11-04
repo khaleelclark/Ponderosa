@@ -1,3 +1,4 @@
+import {MEMORY_CLEANUP_HOLD} from './local-memory-authority.js';
 import {issuedCaptureRetryBudget,generationHistoricalSelections} from '@ponderosa/agents';
 import type {BranchPackageEngine} from './routes/agent-packages.js';
 import type {ChatCreator} from "./routes/projects.js";
@@ -254,6 +255,8 @@ export class BranchResourceService {
   }
   private async cleanup():Promise<void> {
     for (const resource of this.branches.resourceCleanupCandidates()) {
+      const held=this.store.sqlite.prepare('SELECT r.error,(SELECT error FROM branch_retirement_errors WHERE resource_id=r.chat_id) retirement_error FROM branch_resources r WHERE r.step_execution_id=?').get(resource.stepExecutionId) as {error:string|null;retirement_error:string|null}|undefined;
+      if(held?.error===MEMORY_CLEANUP_HOLD||held?.retirement_error===MEMORY_CLEANUP_HOLD)continue;
       try {
         const capture=this.branches.resourceCaptureJournal(resource.stepExecutionId);
         if(capture?.state==='capturing'&&!this.branches.resourceCaptureAbandoned(resource.stepExecutionId)||this.branches.issuedResourceCapturePending(resource.stepExecutionId))continue;
@@ -281,6 +284,8 @@ export class BranchResourceService {
       } catch(error) { this.branches.resourceCleanupError(resource.stepExecutionId,error instanceof Error ? error.message : 'Resource cleanup remains pending'); }
     }
     for (const context of this.branches.resourceContextCleanupCandidates()) {
+      const held=this.store.sqlite.prepare('SELECT error FROM branch_retirement_errors WHERE resource_id=?').get(context.chatId) as {error:string}|undefined;
+      if(held?.error===MEMORY_CLEANUP_HOLD)continue;
       try {
         const chat=this.store.getConversation(context.chatId,{includeDeleting:true});
         if(chat && (chat.branchId!==context.branchId || chat.executionId!==context.executionId)) throw new Error('Historical temporary Chat ownership changed');

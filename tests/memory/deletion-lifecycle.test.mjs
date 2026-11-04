@@ -7,7 +7,7 @@ import {mkdtemp,realpath,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
-import {AgentStore} from '@ponderosa/agents';
+import {AgentStore,BranchStore,CoordinationV3Store} from '@ponderosa/agents';
 import {createServer} from '../../apps/server/dist/app.js';
 import {localMemoryFor} from '../../apps/server/dist/local-memory.js';
 
@@ -41,7 +41,7 @@ async function fixture(run){
   };
   const rows=async(scope,log=false)=>{try{return (await(await raw.client.getCollection({name:raw.names(scope)[log?'log':'memory']})).get({include:['metadatas']})).ids;}catch(error){if(error.name==='ChromaNotFoundError')return null;throw error;}};
   const removeAgent=async()=>{const preview=store.previewAgentDeletion([a.id]);return api('POST','/api/projects/'+first.id+'/agent-deletions/commit',{rootAgentIds:[a.id],previewHash:preview.previewHash});};
-  const f={root,headers,first,chat,a,b,otherChat,memory,raw,seed,rows,api,removeAgent,get store(){return store;},async reopen(){app.prepareForShutdown();await app.close();store.close();store=new AgentStore(dataDir);await open();}};
+  const f={root,headers,first,chat,a,b,otherChat,memory,raw,seed,rows,api,removeAgent,get store(){return store;},get liveMemory(){return localMemoryFor(app);},async reopen(){app.prepareForShutdown();await app.close();store.close();store=new AgentStore(dataDir);await open();}};
   await run(f);passed=true;
  }finally{if(app){app.prepareForShutdown();await app.close();}store.close();if(passed)await rm(root,{recursive:true,force:true});else console.log('Retained memory cleanup fixture:',root);}
 }
@@ -128,4 +128,86 @@ test('cleanup can erase valid scopes beyond the ordinary 10000-source read ceili
  const removed=await f.removeAgent();assert.equal(removed.body.cleanupPending,false,JSON.stringify(removed));assert.deepEqual(await f.rows(scope),[]);
  await populate(scope+':team');const result=await f.api('DELETE','/api/conversations/'+f.chat.id);
  assert.equal(result.body.cleanupPending,false,JSON.stringify(result));assert.equal(await f.rows(scope),null);
+}));
+
+test('backend without atomic delete holds Chat memory cleanup without dispatch or hidden orphan',()=>fixture(async f=>{
+ const scope='chat:'+f.chat.id,id=await f.seed(scope,scope+':team'),originalDelete=f.raw.client.deleteCollection.bind(f.raw.client);let deletes=0;
+ f.raw.client.deleteCollection=async args=>{deletes++;return originalDelete(args);};
+ try{
+  const result=await f.api('DELETE','/api/conversations/'+f.chat.id);
+  assert.equal(result.status,200,JSON.stringify(result));assert.equal(result.body.cleanupPending,true);
+  const receipt=f.store.getConversationDeletionReceipt(f.chat.id);assert.match(receipt.lastError,/Memory cleanup held/);
+  assert.equal(deletes,0);assert.deepEqual(await f.rows(scope),[id]);
+  const holds=await f.api('GET','/api/local-memory/provisioning-holds');
+  assert.equal(holds.status,200);assert.ok(holds.body.some(row=>row.scope==='unknown'&&/Memory cleanup held/.test(row.reason)));
+  assert.equal(JSON.stringify(holds.body).includes(f.chat.id),false,'retired Chat identity is not leaked across products');
+  const updatedAt=receipt.updatedAt;await f.reopen();
+  const after=f.store.getConversationDeletionReceipt(f.chat.id);assert.equal(after.serverCleanupCompleted,false);assert.equal(after.updatedAt,updatedAt,'startup sweep does not retry a stable unsupported cleanup');
+  assert.deepEqual(await f.rows(scope),[id]);
+ }finally{f.raw.client.deleteCollection=originalDelete;}
+}));
+
+test('backend without record CAS holds Agent cleanup and preserves all rows',()=>fixture(async f=>{
+ const scope='chat:'+f.chat.id,own=await f.seed(scope,scope+':agent:'+f.a.id),team=await f.seed(scope,scope+':team');
+ const original=f.raw.client.getCollection.bind(f.raw.client);let deletes=0;
+ f.raw.client.getCollection=async args=>{const c=await original(args),remove=c.delete.bind(c);c.delete=async input=>{deletes++;return remove(input);};return c;};
+ try{
+  const result=await f.removeAgent();assert.equal(result.status,200,JSON.stringify(result));assert.equal(result.body.cleanupPending,true);
+  assert.equal(deletes,0);assert.deepEqual(new Set(await f.rows(scope)),new Set([own,team]));
+  const receipt=f.store.listPendingAgentDeletionReceipts().find(row=>row.deletedAgentIds.includes(f.a.id));assert.ok(receipt);assert.match(receipt.lastError,/Memory cleanup held/);
+  const holds=await f.api('GET','/api/local-memory/provisioning-holds');assert.ok(holds.body.some(row=>row.scope==='unknown'&&/Memory cleanup held/.test(row.reason)));
+ }finally{f.raw.client.getCollection=original;}
+}));
+
+test('backend without atomic deletion holds Project cleanup before canonical removal',()=>fixture(async f=>{
+ const scope='chat:'+f.chat.id,id=await f.seed(scope,scope+':team'),original=f.raw.client.deleteCollection.bind(f.raw.client);let deletes=0;
+ f.raw.client.deleteCollection=async args=>{deletes++;return original(args);};
+ try{
+  const result=await f.api('DELETE','/api/projects/'+f.first.id);
+  assert.equal(result.status,503,JSON.stringify(result));assert.equal(result.body.cleanupPending,true);assert.equal(result.body.retryable,false);
+  assert.equal(deletes,0);assert.deepEqual(await f.rows(scope),[id]);
+  const holds=await f.api('GET','/api/local-memory/provisioning-holds');assert.ok(holds.body.some(row=>row.scope==='unknown'&&/Memory cleanup held/.test(row.reason)));
+ }finally{f.raw.client.deleteCollection=original;}
+}));
+
+test('independent Chat cleanup errors are retried before the stable memory hold is recorded',async()=>{
+ const {createConversationDeletionAuthority}=await import('../../apps/server/dist/conversation-deletion-authority.js');
+ const {MEMORY_CLEANUP_HOLD}=await import('../../apps/server/dist/local-memory-authority.js');
+ const receipt={conversationId:'synthetic-chat',projectId:'synthetic-project',canonicalDeletionCompleted:true,storageCleanupCompleted:true,serverCleanupCompleted:false};
+ let assetFails=true,memoryCalls=0;
+ const store={
+  getConversationDeletionReceipt:()=>receipt,
+  purgeOperatorChatArtifacts:()=>{},
+  refreshConversationDeletionProjection:()=>{},
+  recordConversationDeletionCleanupError:(_id,error)=>{receipt.lastError=error;},
+  markConversationDeletionServerCleanupComplete:()=>{throw Error('memory hold must not complete cleanup');},
+ };
+ const workspace={deleteDraft:()=>{},getPreferences:()=>({}),reconcileConversationDeletion:()=>({type:'synthetic'})};
+ const authority=createConversationDeletionAuthority({store,workspace,drafts:{deleteSurface:async()=>{},fenceMutations:async()=>()=>{}},assets:{purgeConversationAssets:async()=>{if(assetFails)throw Error('Synthetic asset cleanup unavailable');}},deletingConversationIds:new Set(),agentCreationConversationLeases:new Map(),conversationDeliveryLeases:new Map(),reconcileConversationRuntimeCommunicationProjections:async()=>0,purgeChatMemory:async()=>{memoryCalls++;throw Error(MEMORY_CLEANUP_HOLD);},commitAgentDeletion:async()=>{},purgeCommunicationV4Conversation:()=>{},publishWorkspace:()=>{}});
+ assert.equal(await authority.processConversationDeletionCleanup(receipt),false);assert.equal(memoryCalls,0);assert.match(receipt.lastError,/Synthetic asset cleanup unavailable/);
+ assetFails=false;assert.equal(await authority.processConversationDeletionCleanup(receipt),false);assert.equal(memoryCalls,1);assert.equal(receipt.lastError,MEMORY_CLEANUP_HOLD);
+});
+
+
+test('temporary Branch Agent and Chat cleanup uses retained owner proof across restart without touching foreign memory',()=>fixture(async f=>{
+ const branches=new BranchStore(f.store.sqlite,new CoordinationV3Store(f.store.sqlite));
+ const owner=branches.create('Temporary workflow','memory-temp-owner'),permissions={allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false};
+ const template={schema:'ponderosa.agent-package.v1',mode:'template',kind:'organization',exportedAt:new Date().toISOString(),sourceLabel:'Worker',rootRef:'worker',agents:[{ref:'worker',title:'Worker',engine:'fixture',managementPermissions:permissions}]};
+ const branch=branches.deploy({chatId:'',branchId:owner.id,expectedVersionId:'',idempotencyKey:'memory-temp-deploy',definition:{schema:'ponderosa.branch.v1',name:'Temporary workflow',trigger:{kind:'manual'},entry:'team',templates:{team:template},steps:[{id:'team',kind:'agent',target:{kind:'ephemeral_organization',templateRef:'team'},instructions:'Review'}],controls:[],edges:[],policy:{maxConcurrentExecutions:1,maxEphemeralAgents:1,failure:{action:'stop'}}},bindings:{agents:{},directories:{workspace:f.root},engines:{fixture:'fixture'}}});
+ const execution=branches.accept(branch.id,'input','Review');branches.advance();const provision=branches.resourceProvisions()[0];assert.ok(provision);
+ const project=f.store.createProject({label:'Temporary',hostPath:f.root,defaultEngine:'fixture',chatOwned:true,branchId:branch.id,executionId:execution.id}),chat=f.store.getConversation(project.lastConversationId);
+ branches.bindResourceChat(provision.stepExecutionId,chat.id);
+ const agent=f.store.createAgent(project.id,{engine:'fixture',conversationId:chat.id,title:'Temporary worker'});
+ f.store.sqlite.prepare("INSERT INTO branch_resource_members(agent_id,step_execution_id,origin) VALUES(?,?,'template')").run(agent.id,provision.stepExecutionId);
+ const scope='chat:'+chat.id,name=f.raw.names(scope).memory;
+ await f.raw.client.createCollection({name,metadata:{fixture:'foreign'}});
+ const preview=f.store.previewAgentDeletion([agent.id]);f.store.deleteAgentSubtrees([agent.id],preview.previewHash);
+ const receipt=f.store.getAgentDeletionReceiptByPreviewHash(preview.previewHash);assert.ok(receipt.storageCleanupCompleted);
+ await f.memory.purgeAgents(receipt);
+ const deleted=f.store.commitConversationDeletion(chat.id);assert.ok(deleted.canonicalDeletionCompleted);
+ assert.equal(f.memory.isProvenTemporaryChat(chat.id,project.id,branch.id),true);
+ assert.equal(f.memory.isProvenTemporaryChat(chat.id,'foreign-project',branch.id),false);
+ await f.memory.purgeAgents(receipt);
+ await f.memory.purgeChat(chat.id);assert.equal((await f.raw.client.getCollection({name})).name,name);
+ await f.reopen();await f.liveMemory.purgeChat(chat.id);assert.equal((await f.liveMemory.core.database.raw.client.getCollection({name})).name,name);
 }));

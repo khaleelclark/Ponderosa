@@ -2,6 +2,7 @@ import {sealProviderNeverStarted} from '@ponderosa/agents';
 import {ProviderStartAuthority} from './provider-start-authority.js';
 import {registerAgentWorkspaceActions} from './routes/agent-workspace.js';
 import {registerLocalMemory,localMemoryFor} from "./local-memory.js";
+import {MEMORY_CLEANUP_HOLD} from "./local-memory-authority.js";
 import {BranchScriptService} from "./branch-script-service.js";
 import {BranchTriggerSourceService} from "./branch-trigger-service.js";
 import {registerCapabilityRoutes} from './routes/capabilities.js';
@@ -1353,7 +1354,10 @@ app.server.on("upgrade", linkPreviewUpgrade);
   const deleteBranchAgents=async(ids:string[])=>{
     const selected=new Set(ids);
     for(const receipt of store.listPendingAgentDeletionReceipts()){
-      if(receipt.deletedAgentIds.some(id=>selected.has(id))&&!await processAgentDeletionCleanup(receipt))throw new Error('Branch Agent cleanup remains pending');
+      if(receipt.deletedAgentIds.some(id=>selected.has(id))){
+        if(receipt.lastError===MEMORY_CLEANUP_HOLD)throw new Error(MEMORY_CLEANUP_HOLD);
+        if(!await processAgentDeletionCleanup(receipt)){const current=store.getAgentDeletionReceiptByPreviewHash(receipt.previewHash);throw new Error(current?.lastError===MEMORY_CLEANUP_HOLD?MEMORY_CLEANUP_HOLD:'Branch Agent cleanup remains pending');}
+      }
     }
     const roots=ids.filter(id=>store.getAgent(id));if(!roots.length)return;
     const owner=store.getConversation(store.getAgent(roots[0]!)!.conversationId??'');
@@ -1365,10 +1369,10 @@ app.server.on("upgrade", linkPreviewUpgrade);
       if(!owner.executionId&&!store.sqlite.prepare("SELECT 1 FROM branch_installation_resources WHERE branch_id=? AND local_id=? AND state IN ('staging','retiring')").get(owner.branchId,agent.id))throw new Error('Branch cleanup would affect an active or unowned installed Agent');
     }
     const result=await commitAgentDeletion(roots,preview.previewHash);
-    if(!result.deleted||result.cleanupPending)throw new Error('Branch Agent cleanup remains pending');
+    if(!result.deleted||result.cleanupPending){const receipt=store.getAgentDeletionReceiptByPreviewHash(preview.previewHash);throw new Error(receipt?.lastError===MEMORY_CLEANUP_HOLD?MEMORY_CLEANUP_HOLD:'Branch Agent cleanup remains pending');}
   };
   const deleteBranchChat=async(id:string,expectedAgentIds?:string[])=>{
-    try{const result=await application.deleteConversation(id,expectedAgentIds);if(!result.deleted||result.cleanupPending)throw new Error('Branch Chat cleanup remains pending');}
+    try{const result=await application.deleteConversation(id,expectedAgentIds);if(!result.deleted||result.cleanupPending){const receipt=store.getConversationDeletionReceipt(id);throw new Error(receipt?.lastError===MEMORY_CLEANUP_HOLD?MEMORY_CLEANUP_HOLD:'Branch Chat cleanup remains pending');}}
     catch(error){if((error as {statusCode?:number}).statusCode!==404)throw error;}
   };
   const branchResources=new BranchResourceService(branches,store,deleteBranchAgents,application.createChat,id=>deleteBranchChat(id,[]));
