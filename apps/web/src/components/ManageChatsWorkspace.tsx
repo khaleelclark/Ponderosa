@@ -32,6 +32,7 @@ import {
   CollectionWorkspace,
 } from "./CollectionPrimitives";
 import { ResourceDeletionDialog } from "./ConfirmationDialogs";
+import { useMutationNotification } from "./MutationNotifications";
 
 type ChatRow = WorkspaceConversationDirectoryItemDto;
 const chatRowId = (row: ChatRow) => row.conversation.id;
@@ -56,6 +57,7 @@ export function ManageChatsWorkspace({
   onNavigate(route: Route): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
+  const notify = useMutationNotification();
   const [search, setSearch] = useState("");
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteTargets, setDeleteTargets] = useState<ChatRow[]>([]);
@@ -100,18 +102,25 @@ export function ManageChatsWorkspace({
       previews: ChatDeletionPreview[],
     ): Promise<{
       deleted: ChatDeletionPreview[];
+      pending: ChatDeletionPreview[];
+      cleanupPending: ChatDeletionPreview[];
       failures: ChatDeletionFailure[];
     }> => {
       const deleted: ChatDeletionPreview[] = [];
+      const pending: ChatDeletionPreview[] = [];
+      const cleanupPending: ChatDeletionPreview[] = [];
       const failures: ChatDeletionFailure[] = [];
       setDeleteProgress({ completed: 0, total: previews.length });
       for (const preview of previews) {
         try {
-          await api.deleteConversation(
+          const result = await api.deleteConversation(
             preview.row.conversation.id,
             preview.agents.map(agent => agent.id),
           );
-          deleted.push(preview);
+          if (result.deleted) {
+            deleted.push(preview);
+            if (result.cleanupPending) cleanupPending.push(preview);
+          } else pending.push(preview);
         } catch (error) {
           failures.push({ preview, message: errorMessage(error) });
         }
@@ -120,9 +129,17 @@ export function ManageChatsWorkspace({
           completed: current.completed + 1,
         }));
       }
-      return { deleted, failures };
+      return { deleted, pending, cleanupPending, failures };
     },
-    onSuccess: ({ deleted, failures }) => {
+    onSuccess: ({ deleted, pending, cleanupPending, failures }) => {
+      if (pending.length) notify({
+        message: `${pending.length} Chat deletion${pending.length === 1 ? " is" : "s are"} still pending. The Chat${pending.length === 1 ? "" : "s"} may still be present.`,
+        severity: "warning", persistent: true, key: `bulk-chat-deletion:${pending.map(item => item.row.conversation.id).sort().join(",")}`,
+      });
+      if (cleanupPending.length) notify({
+        message: `${cleanupPending.length} Chat${cleanupPending.length === 1 ? " was" : "s were"} removed, but cleanup is pending. Saved data, including memory, may remain.`,
+        severity: "warning", persistent: true, key: `bulk-chat-cleanup:${cleanupPending.map(item => item.row.conversation.id).sort().join(",")}`,
+      });
       const projectIds = new Set(deleted.map(item => item.row.project.id));
       void queryClient.invalidateQueries({
         queryKey: queryKeys.workspaceDirectory.kind("conversation"),

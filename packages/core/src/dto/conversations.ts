@@ -18,6 +18,16 @@ import type { OutcomeCause } from "../outcome-cause.js";
 
 // ─── Conversations ────────────────────────────────────────────────────────────
 
+/** A canonical Chat removal can finish before its physical cleanup. */
+export interface ConversationDeletionResponseDto {
+  deleted: boolean;
+  deletionReceiptId: string;
+  cleanupPending: boolean;
+  deletionPending?: boolean;
+  retryable?: boolean;
+  replayed?: boolean;
+}
+
 /** A model-agnostic project conversation that can include many agents. */
 export interface ConversationDto {
   id: string;

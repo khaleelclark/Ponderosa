@@ -51,6 +51,7 @@ import type {
   CommitAgentDeletionResponse,
   CommunicationDocumentContentDto,
   ConversationDetailDto,
+  ConversationDeletionResponseDto,
   ConversationMessageDto,
   ConversationDraftConflictListDto,
   ConversationDraftDto,
@@ -522,8 +523,8 @@ export const realApi = {
       body: JSON.stringify(patch satisfies UpdateConversationRequest),
     });
   },
-  async deleteConversation(conversationId: string, expectedAgentIds?: string[]): Promise<void> {
-    await requestJson("/api/conversations/" + encodeURIComponent(conversationId), {
+  deleteConversation(conversationId: string, expectedAgentIds?: string[]): Promise<ConversationDeletionResponseDto> {
+    return requestJson<ConversationDeletionResponseDto>("/api/conversations/" + encodeURIComponent(conversationId), {
       method: "DELETE",
       ...(expectedAgentIds ? { body: JSON.stringify({ expectedAgentIds }) } : {}),
     });

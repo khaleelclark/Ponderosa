@@ -856,6 +856,14 @@
       "origin": "F11 clipboard error handling and support report feedback"
     },
     {
+      "path": "tests/chats/deletion-cleanup-feedback.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, existing TypeScript/React dependencies; controlled deletion responses; no provider account",
+      "origin": "Pending physical memory cleanup must remain visible after logical deletion"
+    },
+    {
       "path": "tests/chats/delivery-recovery.test.mjs",
       "feature": "chats",
       "lane": "web",

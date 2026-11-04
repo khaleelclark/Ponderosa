@@ -4,6 +4,8 @@ import { api } from "../api";
 import { queryKeys } from "../queryKeys";
 import { TextInputDialog } from "./ConfirmationDialogs";
 import { ChatDeletionDialog } from "./ChatDeletionDialog";
+import { useMutationNotification } from "./MutationNotifications";
+import { deletionCleanupNotice } from "./deletionCleanupNotice";
 
 export type SidebarConversationAction = {
   kind: "rename" | "delete";
@@ -22,6 +24,7 @@ export function SidebarConversationDialogs({
   onDeleted(conversation: ConversationDto): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
+  const notify = useMutationNotification();
   const rename = useMutation({
     mutationFn: ({ conversation, title }: { conversation: ConversationDto; title: string }) =>
       api.updateConversation(conversation.id, { title }),
@@ -33,10 +36,13 @@ export function SidebarConversationDialogs({
   const remove = useMutation({
     mutationFn: ({ conversation, expectedAgentIds }: { conversation: ConversationDto; expectedAgentIds: string[] }) =>
       api.deleteConversation(conversation.id, expectedAgentIds),
-    onSuccess: (_deleted, { conversation }) => {
+    onSuccess: (result, { conversation }) => {
+      const message = deletionCleanupNotice("Chat", result);
+      if (message) notify({ message, severity: "warning", persistent: true, key: `chat-cleanup:${conversation.id}` });
       void queryClient.invalidateQueries({ queryKey: queryKeys.conversations.project(conversation.projectId) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.agents.project(conversation.projectId) });
-      onDeleted(conversation);
+      if (result.deleted) onDeleted(conversation);
+      else onClose();
     },
     onError: (_error, { conversation }) => {
       void queryClient.invalidateQueries({ queryKey: ["chat-deletion-agents", conversation.id] });

@@ -8,6 +8,7 @@ import type {
   AgentDto,
   AgentHealthProjectionDto,
   ConversationDetailDto,
+  ConversationDeletionResponseDto,
   CreateConversationRequest,
   ModelOption,
   TeamDirectoryDto,
@@ -92,14 +93,7 @@ export interface ConversationRouteDependencies {
   ): Promise<boolean>;
 }
 
-export interface ConversationDeletionResult {
-  deleted:boolean;
-  deletionReceiptId:string;
-  cleanupPending:boolean;
-  deletionPending?:boolean;
-  retryable?:boolean;
-  replayed?:boolean;
-}
+export type ConversationDeletionResult = ConversationDeletionResponseDto;
 export type ConversationDeleter=(conversationId:string,expectedAgentIds?:string[])=>Promise<ConversationDeletionResult>;
 
 export function registerConversationRoutes(

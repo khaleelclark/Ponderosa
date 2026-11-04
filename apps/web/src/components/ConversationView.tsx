@@ -81,6 +81,7 @@ import { useConversationHistory } from "./useConversationHistory";
 import { useConversationMessagingController } from "./useConversationMessagingController";
 import { ProviderFailureBanner } from "./ProviderFailureBanner";
 import { useMutationNotification } from "./MutationNotifications";
+import { deletionCleanupNotice } from "./deletionCleanupNotice";
 import { MasterRespondingIndicator } from "./ConversationComposerStatus";
 import {
   resolveMessageMentionText,
@@ -494,7 +495,14 @@ export function ConversationView({
 
   const deleteConversation = useMutation({
     mutationFn: (expectedAgentIds: string[]) => api.deleteConversation(conversationId, expectedAgentIds),
-    onSuccess: () => {
+    onSuccess: (result) => {
+      const message = deletionCleanupNotice("Chat", result);
+      if (message) notify({ message, severity: "warning", persistent: true, key: `chat-cleanup:${conversationId}` });
+      if (!result.deleted) {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.conversations.all });
+        setDeleteOpen(false);
+        return;
+      }
       queryClient.removeQueries({
         queryKey: queryKeys.conversations.detailPrefix(conversationId),
       });

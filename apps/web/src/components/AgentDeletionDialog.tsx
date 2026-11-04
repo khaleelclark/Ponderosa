@@ -10,6 +10,8 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import { queryKeys } from "../queryKeys";
 import { ResourceDeletionDialog } from "./ConfirmationDialogs";
+import { useMutationNotification } from "./MutationNotifications";
+import { deletionCleanupNotice } from "./deletionCleanupNotice";
 
 export function AgentDeletionDialog({
   open,
@@ -29,6 +31,7 @@ export function AgentDeletionDialog({
   onDeleted(deletedAgentIds: string[]): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
+  const notify = useMutationNotification();
   const roots = useMemo(() => [...new Set(rootAgentIds)].sort(), [rootAgentIds]);
   const rootsKey = roots.join(",");
   const [confirmation, setConfirmation] = useState("");
@@ -47,6 +50,8 @@ export function AgentDeletionDialog({
       });
     },
     onSuccess: (result) => {
+      const message = deletionCleanupNotice("Agent", result);
+      if (message) notify({ message, severity: "warning", persistent: true, key: `agent-cleanup:${result.deletionReceiptId}` });
       onDeleted(result.deletedAgentIds);
       result.deletedAgentIds.forEach((agentId) => queryClient.removeQueries({ queryKey: queryKeys.agents.detailPrefix(agentId) }));
       void Promise.all([
