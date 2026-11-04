@@ -341,9 +341,10 @@ export function MessageDeliveryStatus({
             </ButtonBase>
           </Box>
         </Tooltip>
-        {!readOnly && projectId && !receipt.contextRolloverHold && receipt.injectionKind === "steer" && receipt.injectionId && (receipt.state === "unconfirmed" || receipt.state === "waiting_for_run") ? <Button
-          color="warning" variant="text" size="small" onClick={() => setReviewContinuation(receipt)} sx={{ minHeight: 28, py: 0.25 }}
-        >Review interrupted work</Button> : null}
+        {!readOnly && projectId && !receipt.contextRolloverHold && receipt.injectionKind === "steer" && receipt.injectionId && (receipt.state === "unconfirmed" || receipt.state === "waiting_for_run") ? <>
+          <Button color="warning" variant="text" size="small" onClick={() => setReviewContinuation(receipt)} sx={{ minHeight: 28, py: 0.25 }}>Review interrupted work</Button>
+          <Typography variant="caption" color="text.secondary">Review may close the completed Run’s idle session.</Typography>
+        </> : null}
         {!readOnly && receipt.canLetCurrentRunFinish && receipt.injectionId ? <Button
           color="warning"
           variant="text"

@@ -13,7 +13,7 @@ type Review={projectId:string;activationId:string;agentId:string;conversationId:
  effectInventory:{effects:Array<{id?:string;kind:string;outcome:string;detail:string}>;nativeTail:string;sourceWork:string;replayAuthorized:false};
  reviewSha256:string;originalOutcome:'unknown';replayAuthorized:false};
 type Receipt={accepted:true;sourceActivationId:string;activationId:string;sourceRunId:string;injectionId:string;originalOutcome:'unknown';replayAuthorized:false;reviewSha256:string;commandSha256:string;activationState:string};
-type Status={status:'review_required';review:Review}|{status:'continuation_recorded';receipt:Receipt};
+type Status={status:'review_required';review:Review}|{status:'continuation_recorded';receipt:Receipt}|{status:'source_retirement_required';originalOutcome:'unknown'};
 type Saved={version:1;product:'dev'|'branches';projectId:string;activationId:string;agentId:string;runId:string;injectionId:string;reviewSha256:string;idempotencyKey:string;reviewNote?:string};
 
 const storageName=(product:string,projectId:string,activationId:string)=>`ponderosa.reviewed-continuation.v1:${product}:${encodeURIComponent(projectId)}:${encodeURIComponent(activationId)}`;
@@ -89,13 +89,36 @@ export function ReviewedContinuationDialog({projectId,receipt,onClose,onOpenAgen
   const result=await requestJson<Status>(endpoint,{cache:'no-store'});
   if(result?.status==='review_required'&&!validReview(result.review,projectId,receipt))throw Error('The original task or instruction could not be verified. No continuation was requested.');
   if(result?.status==='continuation_recorded'&&!validReceipt(result.receipt,receipt,existing))throw Error('The continuation receipt could not be verified. Preserve browser data and check again.');
-  if(result?.status!=='review_required'&&result?.status!=='continuation_recorded')throw Error('Continuation status is unavailable. No new request was sent.');
+  if(result?.status==='source_retirement_required'&&result.originalOutcome!=='unknown')throw Error('The earlier session could not be verified. No continuation was requested.');
+  if(result?.status!=='review_required'&&result?.status!=='continuation_recorded'&&result?.status!=='source_retirement_required')throw Error('Continuation status is unavailable. No new request was sent.');
   const matches=result.status==='continuation_recorded'&&existing?result.receipt.reviewSha256===existing.reviewSha256&&result.receipt.commandSha256===await reviewedContinuationCommandSha256(existing):undefined;
   if(mounted.current&&generation===statusGeneration.current){setSameCommand(matches);setStatus(result);if(result.status==='continuation_recorded')setError('');}return result;
  };
  useEffect(()=>{
   mounted.current=true;
-  void (async()=>{try{const original=readSaved(name,product,projectId,receipt);if(mounted.current)setSaved(original);await load(original);}catch(cause){if(mounted.current)setError(cause instanceof Error?cause.message:'Could not read continuation status.');}})();
+  void (async()=>{
+   try{
+    const original=readSaved(name,product,projectId,receipt);if(mounted.current)setSaved(original);
+    const initial=await load(original);
+    if(!mounted.current||initial.status!=='source_retirement_required')return;
+    if(original){setError('The earlier session needs attention while a continuation request is saved. Check the original request before continuing.');return;}
+    // Opening review is the explicit action authorizing this exact idle-session
+    // release. A lost response is read back, never blindly repeated.
+    lock.current=true;setBusy(true);setNotice('Releasing the completed Run’s idle session before review…');
+    let releaseError:unknown;
+    try{
+     const result=await requestJson<{status:string;originalOutcome:string}>(endpoint+'/retire-source',{method:'POST'});
+     if(result.status!=='source_retired'||result.originalOutcome!=='unknown')throw Error('The earlier session release could not be verified.');
+    }catch(cause){releaseError=cause;}
+    if(!mounted.current)return;
+    try{
+     const current=await load(original);
+     if(current.status==='source_retirement_required')setError(releaseError instanceof Error?releaseError.message:'The earlier session release is not yet confirmed. Close and reopen review to check again.');
+     else {setError('');setNotice('');}
+    }catch(cause){setError(releaseError instanceof Error?releaseError.message:cause instanceof Error?cause.message:'The earlier session release is unconfirmed.');}
+    finally{lock.current=false;if(mounted.current)setBusy(false);}
+   }catch(cause){if(mounted.current)setError(cause instanceof Error?cause.message:'Could not read continuation status.');}
+  })();
   return()=>{mounted.current=false;};
  },[name]);
  // A lost response can settle later. Read status for a bounded period;
@@ -112,7 +135,7 @@ export function ReviewedContinuationDialog({projectId,receipt,onClose,onOpenAgen
   },3000);
   return()=>window.clearInterval(timer);
  },[saved,status?.status,name]);
- const refresh=async()=>{if(lock.current)return;lock.current=true;setBusy(true);setError('');try{const original=readSaved(name,product,projectId,receipt);setSaved(original);await load(original);}catch(cause){if(mounted.current)setError(cause instanceof Error?cause.message:'Could not read continuation status.');}finally{lock.current=false;if(mounted.current)setBusy(false);}};
+ const refresh=async()=>{if(lock.current)return;lock.current=true;setBusy(true);try{const original=readSaved(name,product,projectId,receipt);setSaved(original);const current=await load(original);if(mounted.current&&current.status!=='source_retirement_required')setError('');}catch(cause){if(mounted.current)setError(cause instanceof Error?cause.message:'Could not read continuation status.');}finally{lock.current=false;if(mounted.current)setBusy(false);}};
  const submit=async()=>{
   if(lock.current||status?.status!=='review_required'||missingAttachments)return;
   const review=status.review;
@@ -130,6 +153,7 @@ export function ReviewedContinuationDialog({projectId,receipt,onClose,onOpenAgen
    const current=await load(command);
    if(!mounted.current)return;
    if(current.status==='continuation_recorded')return;
+   if(current.status!=='review_required')throw Error('The earlier session must be released before review.');
    if(current.review.reviewSha256!==review.reviewSha256){setChecked(false);throw Error('The review changed. Read the current task and effects again.');}
    if(!command){
     const next:Saved={version:1,product,projectId,activationId:receipt.activationId,agentId:receipt.targetAgentId,runId:review.runId,injectionId:review.injectionId,reviewSha256:review.reviewSha256,idempotencyKey:createClientId(),...(note?{reviewNote:note}:{})};
@@ -157,6 +181,7 @@ export function ReviewedContinuationDialog({projectId,receipt,onClose,onOpenAgen
    {error&&<Alert severity="error">{error}</Alert>}{notice&&<Alert severity="info">{notice}</Alert>}
    {!status&&!error&&<Typography role="status">Loading original work…</Typography>}
    {status?.status==='continuation_recorded'&&<Alert severity={sameCommand===false?'warning':'info'}>{sameCommand===false?'A different continuation was authorized. Your saved request was not confirmed. ':'Continuation authorized · '}{status.receipt.activationState.replaceAll('_',' ')}. The original outcome and effects remain unknown.</Alert>}
+   {status?.status==='source_retirement_required'&&<Typography variant="body2">The completed Run’s idle session must be released before review.</Typography>}
    {review&&<>
     <Communication label="Original task" value={review.originalTask.communication}/>
     <Communication label="Unconfirmed instruction" value={review.originalSteer.communication}/>

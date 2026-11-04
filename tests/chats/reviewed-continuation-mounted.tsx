@@ -14,7 +14,7 @@ export async function reviewedContinuationRegression():Promise<void>{
   originalTask:{communication:{projectId:'project-one',conversationId:'chat-one',sender:{kind:'user',userId:'user'},text:'Finish the complete original task',attachments:[{id:'task-file',name:'task-notes.txt'}]}},
   originalSteer:{communication:{projectId:'project-one',conversationId:'chat-one',sender:{kind:'user',userId:'user'},text:'Also include the correction',attachments:[{id:'steer-file',name:'correction.pdf'}]}},
   effectInventory:{effects:[{kind:'communication',outcome:'host_committed',detail:'already settled'},{kind:'tool_call',outcome:'unknown',detail:'Tool effect is unconfirmed'}],nativeTail:'unknown',sourceWork:'held_unknown',replayAuthorized:false}};
- let recorded=false,loseResponse=true,commitOnLoss=true,badReceipt=false,otherCommand=false,unavailable=false,holdRead=false,holdPost=false,releaseRead:()=>void=()=>{},releasePost:()=>void=()=>{},posts:Array<Record<string,unknown>>=[],gets=0;
+ let recorded=false,loseResponse=true,commitOnLoss=true,badReceipt=false,otherCommand=false,unavailable=false,holdRead=false,holdPost=false,retirementNeeded=false,retirementLost=false,retirementFails=false,retirePosts=0,releaseRead:()=>void=()=>{},releasePost:()=>void=()=>{},posts:Array<Record<string,unknown>>=[],gets=0;
  const result=async()=>{
   const saved=JSON.parse(localStorage.getItem(statusKey)??'null');
   const input=saved?{activationId:saved.activationId,effectsReviewed:true,idempotencyKey:saved.idempotencyKey,projectId:saved.projectId,...(saved.reviewNote!==undefined?{reviewNote:saved.reviewNote}:{}),reviewSha256:saved.reviewSha256}:{};
@@ -24,9 +24,18 @@ export async function reviewedContinuationRegression():Promise<void>{
  };
  window.fetch=async(input,init)=>{
   assert(String(input).includes('/api/projects/project-one/message-deliveries/steer-one/reviewed-continuation'),'Exact scoped endpoint required');
+  if(String(input).endsWith('/retire-source')){
+   assert(init?.method==='POST'&&!init.body,'Release requires the scoped POST without user-supplied effects');
+   retirePosts++;
+   if(retirementFails)return new Response(JSON.stringify({error:'The earlier session is still active.'}),{status:409,headers:{'content-type':'application/json'}});
+   retirementNeeded=false;
+   if(retirementLost)throw Error('Controlled lost retirement response');
+   return new Response(JSON.stringify({status:'source_retired',originalOutcome:'unknown'}),{status:200,headers:{'content-type':'application/json'}});
+  }
   if(init?.method==='POST'){posts.push(JSON.parse(String(init.body)));if(holdPost)await new Promise<void>(resolve=>{releasePost=resolve;});if(loseResponse){recorded=commitOnLoss;throw Error('Controlled lost response');}recorded=true;return new Response(JSON.stringify(await result()),{status:200,headers:{'content-type':'application/json'}});}
   if(holdRead)await new Promise<void>(resolve=>{releaseRead=resolve;});
   gets++;if(unavailable)return new Response(JSON.stringify({error:'The original Run is still active.'}),{status:409,headers:{'content-type':'application/json'}});
+  if(retirementNeeded)return new Response(JSON.stringify({status:'source_retirement_required',originalOutcome:'unknown'}),{status:200,headers:{'content-type':'application/json'}});
   const data=recorded?await result():{status:'review_required',review};if(badReceipt&&data.status==='continuation_recorded')data.receipt.sourceActivationId='other-steer';
   return new Response(JSON.stringify(data),{status:200,headers:{'content-type':'application/json'}});
  };
@@ -82,7 +91,15 @@ export async function reviewedContinuationRegression():Promise<void>{
   button('Close')!.click();await flush();holdPost=false;releasePost();await flush();
   button('Review interrupted work')!.click();await flush();
   assert(posts.length===1&&document.body.textContent?.includes('Continuation authorized'),'Reopening checks the in-flight result without another submission');
-  root.unmount();host.replaceChildren();root=createRoot(host);recorded=false;posts=[];localStorage.removeItem(statusKey);
+  root.unmount();host.replaceChildren();root=createRoot(host);recorded=false;posts=[];localStorage.removeItem(statusKey);retirementNeeded=true;retirementLost=true;retirePosts=0;
+  await render();assert(document.body.textContent?.includes('Review may close the completed Run’s idle session.'),'Session release is disclosed before opening review');
+  button('Review interrupted work')!.click();await flush();
+  assert(retirePosts===1&&posts.length===0&&document.body.textContent?.includes('Finish the complete original task'),'A lost release response is read back once without authorizing continuation');
+  root.unmount();host.replaceChildren();root=createRoot(host);retirementNeeded=true;retirementLost=false;retirementFails=true;retirePosts=0;
+  await render();button('Review interrupted work')!.click();await flush();
+  assert(retirePosts===1&&posts.length===0&&document.body.textContent?.includes('The earlier session is still active.')&&!button('Continue task'),'An unsuccessful release reports its real hold');
+  button('Check status')!.click();await flush();assert(retirePosts===1&&document.body.textContent?.includes('The earlier session is still active.'),'Status checks never repeat session release or hide its hold');
+  root.unmount();host.replaceChildren();root=createRoot(host);retirementNeeded=false;retirementFails=false;
   Object.assign(review.originalTask.communication.attachments[0],{unavailable:true});
   await render();button('Review interrupted work')!.click();await flush();document.querySelector<HTMLInputElement>('input[type=checkbox]')!.click();await flush();
   assert(button('Continue task')?.disabled&&document.body.textContent?.includes('original attachment is unavailable')&&posts.length===0,'An explicitly unavailable original attachment holds continuation');
