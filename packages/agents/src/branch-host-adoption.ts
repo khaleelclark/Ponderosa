@@ -1,3 +1,4 @@
+import {branchInstallationHoldSql} from './branch-installation-hold.js';
 import type Database from 'better-sqlite3';
 import {TERMINAL_REQUEST_STATES,type CoordinationRequestState,type BranchHostRequestSelection,type BranchHostRequestReviewDto,type BranchHostRequestAdoption,type BranchHostRequestAdoptionDto} from '@ponderosa/core';
 import {retainedBranchHostGraph} from './branch-tree-host-cut.js';
@@ -39,7 +40,8 @@ export function reviewBranchHostRequest(db:Database.Database,branchId:string,exe
  for(const id of [original.requester_agent_id,original.recipient_agent_id].filter(Boolean)){
   if(!db.prepare(`SELECT 1 FROM agents a WHERE a.id=? AND a.project_id=? AND a.conversation_id=? AND a.deleted_at IS NULL
    AND NOT EXISTS(SELECT 1 FROM agent_deletion_pending d WHERE d.agent_id=a.id)
-   AND NOT EXISTS(SELECT 1 FROM branch_installation_resources r WHERE r.local_id IN(a.id,a.conversation_id) AND r.state!='active')`).get(id,original.project_id,original.conversation_id))throw Error('Original participant current grant unavailable');
+   AND NOT EXISTS(SELECT 1 FROM branch_installation_resources r WHERE r.local_id IN(a.id,a.conversation_id) AND r.state!='active')
+   AND NOT ${branchInstallationHoldSql('a.id','a.conversation_id')}`).get(id,original.project_id,original.conversation_id))throw Error('Original participant current grant unavailable');
  }
  // Never borrow an ephemeral Agent whose lifecycle belongs to another attempt.
  if(db.prepare('SELECT 1 FROM branch_resource_members WHERE agent_id=?').get(original.recipient_agent_id))throw Error('Historical temporary Agent custody requires reconciliation');

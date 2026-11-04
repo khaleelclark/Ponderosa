@@ -38,6 +38,6 @@ export function managedArtifactProductSql(artifact:string,product:'dev'|'branche
         AND json_extract(publication.sender_json,'$.kind')='user' AND json_extract(publication.sender_json,'$.userId')='local-operator'
         AND (publication_chat.id IS NOT NULL OR removed.conversation_id IS NOT NULL)
         AND CASE WHEN publication_chat.id IS NOT NULL THEN publication_chat.branch_id ELSE removed.branch_id END ${scope}
-        AND NOT EXISTS(SELECT 1 FROM branch_installation_resources inactive WHERE inactive.local_id=publication_chat.id AND inactive.state!='active')
+        AND (publication_chat.id IS NULL OR ${activeChatOwnerSql('publication_chat')})
     )))`;
 }
