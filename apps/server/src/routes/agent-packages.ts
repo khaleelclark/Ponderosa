@@ -312,6 +312,11 @@ export function registerAgentPackageRoutes(
       try { await directory.sync(); } finally { await directory.close(); }
     }
   };
+  type ImportSubmissionIntent = {project_id:string;request_id:string;conversation_id:string;product_scope:string;payload_sha256:string;request_fingerprint:string|null;operation_id:string;staged_name:string;state:'reserved'|'queued'};
+  const getImportIntent=(projectId:string,requestId:string):ImportSubmissionIntent|undefined=>store.sqlite.prepare('SELECT * FROM agent_import_submission_intents WHERE project_id=? AND request_id=?').get(projectId,requestId) as ImportSubmissionIntent|undefined;
+  const importIntentForOperation=(id:string):ImportSubmissionIntent|undefined=>store.sqlite.prepare('SELECT * FROM agent_import_submission_intents WHERE operation_id=?').get(id) as ImportSubmissionIntent|undefined;
+  const importAdmissionHeld=(id:string)=>importIntentForOperation(id)?.state==='reserved';
+  const heldImportMessage='Import admission is held for recovery; the original request and upload have been preserved.';
   const operationByRequest = new Map<string, string>();
   const operationCache = new Map<string, AgentImportOperationDto>();
   const quarantinedOperationIds = new Set<string>();
@@ -553,6 +558,13 @@ export function registerAgentPackageRoutes(
       return undefined;
     }
   };
+  const readQueuedIntentOperation=async(intent:ImportSubmissionIntent):Promise<AgentImportOperationDto|undefined>=>{
+    try{
+      const operation=validatedOperation(JSON.parse(await fs.readFile(operationPath(intent.operation_id),'utf8')),intent.operation_id);
+      if(operation.projectId!==intent.project_id||operation.requestId!==intent.request_id||operation.conversationId!==intent.conversation_id||operation.product!==intent.product_scope||operation.payloadHash!==intent.payload_sha256||(operation.requestFingerprint??null)!==intent.request_fingerprint)return undefined;
+      return operation;
+    }catch{return undefined;}
+  };
   const discovery=lifecycleDiscovery({db:store.sqlite,dataDir:context.dataDir,validateImport:validatedOperation,owner:context.custodyOwner,readRetirement:(id,group)=>group?coordinationV3.readCoordinationDestinationGroupRetirement(id):coordinationV3.readCoordinationDestinationRetirement(id)});
   for(const [route,read] of [['agent-imports',discovery.imports],['destinations',discovery.destinations],['checkpoint-captures',discovery.captures],['checkpoint-capture-groups',discovery.groupCaptures]] as const){
     app.get<{Querystring:import('@ponderosa/core').LifecycleDiscoveryQuery}>(`/api/lifecycle/${route}`,(request,reply)=>{
@@ -566,7 +578,8 @@ export function registerAgentPackageRoutes(
     if(process.platform!=='win32'){const fd=syncFs.openSync(path.dirname(file),'r');try{syncFs.fsyncSync(fd);}finally{syncFs.closeSync(fd);}}
   };
   const importLifecycleReview=async(id:string)=>{
-    await operationHydration;const operation=await readOperation(id);if(!operation)throw Error('Import operation unavailable; corrupt evidence remains quarantined');
+    await operationHydration;if(importAdmissionHeld(id))throw Error(heldImportMessage);
+    const operation=await readOperation(id);if(!operation)throw Error('Import operation unavailable; corrupt evidence remains quarantined');
     const creation=store.findAgentCreationOperation({projectId:operation.projectId,actorScope:'user:local-operator',kind:'import',idempotencyKey:operation.requestId});
     const references=creation?custodyLifecycleProof(store.sqlite,undefined,creation.id).references:[];
     const blockers=[...(operation.status==='completed'||operation.result?['Committed import must retain its canonical owner receipt']:[]),...references.map(ref=>`Canonical reference: ${ref}`),...(creation&&(creation.status!=='preparing'||creation.agentIds.length||creation.artifactIds.length||creation.result)?['Import has actual/reserved effects; canonical owner reconciliation required']:[])];
@@ -584,6 +597,7 @@ export function registerAgentPackageRoutes(
     try{
       const input=validatedObject(request.body,'Import lifecycle reconciliation');exactObjectFields(input,['commandKey','reviewSha256','action','note'],'Import lifecycle reconciliation');
       if(typeof input.commandKey!=='string'||!input.commandKey||input.commandKey.length>256||typeof input.note!=='string'||input.note.length<8||input.note.length>4096||!['preserve_unresolved','retire_mutation_free'].includes(String(input.action)))throw Error('Exact operator reconciliation command and note required');
+      if(importAdmissionHeld(request.params.id))throw Error(heldImportMessage);
       const file=importLifecyclePath(request.params.id);
       if(syncFs.existsSync(file)){const saved=JSON.parse(syncFs.readFileSync(file,'utf8'));if(stableJson(saved.input)!==stableJson(input))throw Error('Import lifecycle command conflict');if(saved.receipt.state==='retired'){const operation=await readOperation(request.params.id);if(operation?.status==='pending')await writeOperation({...operation,status:'failed',phase:'failed',error:'Operator retired mutation-free import; original upload evidence retained',updatedAt:new Date().toISOString()});}return saved.receipt as import('@ponderosa/core').AgentImportLifecycleReceipt;}
       const review=await importLifecycleReview(request.params.id);
@@ -611,6 +625,8 @@ export function registerAgentPackageRoutes(
         if (match && operationIdPattern.test(match[1]!)) quarantinedOperationIds.add(match[1]!);
       }
       for (const name of names.filter((candidate) => candidate.endsWith(".json"))) {
+        // An uncertain admission is evidence, even if its journal is malformed.
+        if(importAdmissionHeld(name.slice(0,-5)))continue;
         const operation = await readOperation(name.slice(0, -5));
         if (!operation) continue;
         operationCache.set(operation.id, operation);
@@ -626,6 +642,8 @@ export function registerAgentPackageRoutes(
         const copyMatch = /^(agent-create-[0-9a-f]{64})\.copy\.payload$/u.exec(name);
         const temporary = name.endsWith(".tmp");
         const abandonedUpload = name.startsWith(".incoming-");
+        if(abandonedUpload && store.sqlite.prepare("SELECT 1 FROM agent_import_submission_intents WHERE state='reserved' AND staged_name=?").get(name)) continue;
+        if(payloadMatch && importAdmissionHeld(payloadMatch[1]!)) continue;
         const liveCopy = copyMatch
           ? store.getAgentCreationOperation(copyMatch[1]!)
           : undefined;
@@ -1418,14 +1436,17 @@ export function registerAgentPackageRoutes(
           return reply.code((error as {statusCode?:number})?.statusCode ?? 400).send({ error: error instanceof Error ? error.message : "invalid Agent import identity" });
         }
         try {
-          creationOperationId = store.beginAgentCreationOperation({
-            projectId,
-            actorScope: "user:local-operator",
-            kind: "import",
-            idempotencyKey: creationRequest.idempotencyKey,
-            payloadHash,
-            conversationId: body.conversationId,
-          }).operation.id;
+          creationOperationId = store.sqlite.transaction(()=>{
+            if(getImportIntent(projectId,creationRequest.idempotencyKey))throw Error(heldImportMessage);
+            return store.beginAgentCreationOperation({
+              projectId,
+              actorScope: "user:local-operator",
+              kind: "import",
+              idempotencyKey: creationRequest.idempotencyKey,
+              payloadHash,
+              conversationId: body.conversationId,
+            }).operation.id;
+          }).immediate();
         } catch (error) {
           return reply.code(409).send({
             error: error instanceof Error ? error.message : "Agent import replay conflict",
@@ -2468,6 +2489,7 @@ export function registerAgentPackageRoutes(
   const runBackgroundImport = async (operationId: string): Promise<void> =>
     withAgentImportAdmission(async () => {
     await operationHydration;
+    if(importAdmissionHeld(operationId))return;
     if(syncFs.existsSync(importLifecyclePath(operationId)))return;
     let operation = await readOperation(operationId);
     if (!operation || operation.status !== "pending") return;
@@ -2679,6 +2701,15 @@ export function registerAgentPackageRoutes(
       if(!destination||destination.projectId!==request.params.id||!resourceInProduct(store,'conversation',destination.id,product))return reply.code(404).send({error:'The destination Chat is unavailable in this product'});
       const requestKey = requestOperationKey(request.params.id, requestId);
       const requestPayloadHash = staged.sha256;
+      const priorIntent=getImportIntent(request.params.id,requestId);
+      if(priorIntent){
+        if(priorIntent.conversation_id!==destination.id||priorIntent.product_scope!==product)return reply.code(404).send({error:'import operation not found'});
+        if(priorIntent.payload_sha256!==requestPayloadHash||priorIntent.request_fingerprint!==(staged.requestFingerprint??null))return reply.code(409).send({error:'Import idempotency key was reused with different input'});
+        if(priorIntent.state==='reserved')return reply.code(409).send({error:heldImportMessage});
+        const prior=await readQueuedIntentOperation(priorIntent);
+        if(!prior)return reply.code(409).send({error:heldImportMessage});
+        return reply.code(prior.status==='pending'?202:200).send(prior);
+      }
       const existingId = operationByRequest.get(requestKey);
       if (existingId) {
         const existing = operationCache.get(existingId) ?? await readOperation(existingId);
@@ -2715,6 +2746,32 @@ export function registerAgentPackageRoutes(
         createdAt: now,
         updatedAt: now,
       };
+      // Reserve the key and operation before any queue-file mutation.
+      transferredReservation=true;
+      let reserved:boolean;
+      try{
+        reserved=store.sqlite.transaction(()=>{
+          // The legacy synchronous route creates in the same canonical ledger.
+          // Serialize its admission with this reservation across processes.
+          if(store.findAgentCreationOperation({projectId:request.params.id,actorScope:'user:local-operator',kind:'import',idempotencyKey:requestId}))return false;
+          const result=store.sqlite.prepare(`INSERT INTO agent_import_submission_intents
+            (project_id,request_id,conversation_id,product_scope,payload_sha256,request_fingerprint,operation_id,staged_name,state)
+            VALUES (?,?,?,?,?,?,?,?,'reserved') ON CONFLICT(project_id,request_id) DO NOTHING`)
+            .run(request.params.id,requestId,destination.id,product,requestPayloadHash,staged.requestFingerprint??null,id,path.basename(staged.pathname));
+          return result.changes===1;
+        }).immediate();
+      }catch{return reply.code(409).send({error:heldImportMessage});}
+      if(!reserved){
+        transferredReservation=false;
+        const competing=getImportIntent(request.params.id,requestId);
+        if(!competing)return reply.code(409).send({error:'An existing import owns this request identity; no second import was started.'});
+        if(competing.conversation_id!==destination.id||competing.product_scope!==product)return reply.code(404).send({error:'import operation not found'});
+        if(competing.payload_sha256!==requestPayloadHash||competing.request_fingerprint!==(staged.requestFingerprint??null))return reply.code(409).send({error:'Import idempotency key was reused with different input'});
+        if(competing.state==='reserved')return reply.code(409).send({error:heldImportMessage});
+        const prior=await readQueuedIntentOperation(competing);
+        if(!prior)return reply.code(409).send({error:heldImportMessage});
+        return reply.code(prior.status==='pending'?202:200).send(prior);
+      }
       try {
         await fs.mkdir(importOperationDirectory, { recursive: true });
         await fs.rename(staged.pathname, payloadPath(id));
@@ -2725,17 +2782,11 @@ export function registerAgentPackageRoutes(
           try { await directory.sync(); } finally { await directory.close(); }
         }
         await writeOperation(operation);
-      } catch (error) {
-        operationByRequest.delete(requestKey);
-        operationCache.delete(id);
-        const removed = await fs.unlink(payloadPath(id))
-          .then(() => true)
-          .catch(() => false);
-        if (removed) {
-          releaseStagedReservation(operationReservations.get(id));
-          operationReservations.delete(id);
-        }
-        throw error;
+        const updated=store.sqlite.prepare("UPDATE agent_import_submission_intents SET state='queued' WHERE project_id=? AND request_id=? AND operation_id=? AND state='reserved'").run(request.params.id,requestId,id);
+        if(updated.changes!==1)throw Error('Import reservation changed before queue admission');
+      } catch {
+        // Journal installation or rollback may have reached disk. Preserve evidence.
+        return reply.code(409).send({error:heldImportMessage});
       }
       setImmediate(() => void runBackgroundImport(id));
       try {
@@ -2771,6 +2822,14 @@ export function registerAgentPackageRoutes(
       const chat=store.getConversation(chatId);
       if(!chat||chat.projectId!==request.params.id||!resourceInProduct(store,'conversation',chatId,product))
         return reply.code(404).send({error:'import operation not found'});
+      const intent=getImportIntent(request.params.id,requestId);
+      if(intent){
+        if(intent.conversation_id!==chatId||intent.product_scope!==product)return reply.code(404).send({error:'import operation not found'});
+        if(intent.state==='reserved')return reply.code(409).send({error:heldImportMessage});
+        const operation=await readQueuedIntentOperation(intent);
+        if(!operation)return reply.code(409).send({error:heldImportMessage});
+        return reply.send(operation);
+      }
       const operationId=operationByRequest.get(requestOperationKey(request.params.id,requestId));
       if(!operationId)return reply.code(404).send({error:'import operation not found'});
       // Both maps are populated only after the durable operation write or
@@ -2790,11 +2849,17 @@ export function registerAgentPackageRoutes(
     "/api/projects/:id/agent-import-operations/:operationId",
     async (request, reply) => {
       await operationHydration;
+      const intent=importIntentForOperation(request.params.operationId);
+      if(intent?.state==='reserved'){
+        if(intent.project_id!==request.params.id||intent.product_scope!==requestProduct(request)||!resourceInProduct(store,'conversation',intent.conversation_id,requestProduct(request)))return reply.code(404).send({error:'import operation not found'});
+        return reply.code(409).send({error:heldImportMessage});
+      }
       const operation = operationCache.get(request.params.operationId)
         ?? await readOperation(request.params.operationId);
       if (!operation || operation.projectId !== request.params.id || operation.product!==requestProduct(request) || !resourceInProduct(store,'conversation',operation.conversationId,requestProduct(request))) {
         return reply.code(404).send({ error: "import operation not found" });
       }
+      if(importAdmissionHeld(operation.id))return reply.code(409).send({error:heldImportMessage});
       return operation;
     },
   );

@@ -81,6 +81,7 @@ const schemaExtensions = [
   "0042_destination_retained_sources.sql",
   "0043_package_export_cache.sql",
   "0044_memory_scope_provisioning.sql",
+  "0045_agent_import_submission_intents.sql",
 ] as const;
 const schemaVersionTable = "_schema_version";
 const contextRolloverAtomicityMigration = "0005_context_rollover_atomicity.ts";

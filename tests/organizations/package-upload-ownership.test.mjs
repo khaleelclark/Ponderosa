@@ -81,3 +81,63 @@ test('a lost import response is looked up by exact request and retried only with
   const replayAfterRestart=f.ok(await f.api('POST',endpoint,payload,headers));assert.equal(replayAfterRestart.id,admitted.id);assert.equal(f.turns.length,0);
  });
 });
+
+test('concurrent exact imports retain one request identity and reject changed input',{timeout:30000},async t=>{
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Concurrent import'),requestId=randomUUID();
+  const endpoint=`/api/projects/${chat.projectId}/agent-import-operations`;
+  const wire=Buffer.from(JSON.stringify({conversationId:chat.id,engineMapping:{codex:'codex'}})+'\n{}');
+  const headers={'content-type':'application/vnd.ponderosa.agent-import','idempotency-key':requestId,'x-ponderosa-agent-package-fingerprint':importRequestFingerprint(wire)};
+  const results=await Promise.all([f.api('POST',endpoint,wire,headers),f.api('POST',endpoint,wire,headers)]);
+  assert.ok(results.every(result=>result.status===202||result.status===200),JSON.stringify(results));
+  assert.equal(results[0].body.id,results[1].body.id);
+  const changed=Buffer.concat([wire,Buffer.from(' ')]);
+  assert.equal((await f.api('POST',endpoint,changed,{...headers,'x-ponderosa-agent-package-fingerprint':importRequestFingerprint(changed)})).status,409);
+ });
+});
+
+test('journal sync and rollback failure holds the exact import across restart',{timeout:30000,skip:process.platform==='win32'},async t=>{
+ await withFixture(t,async f=>{
+  const {promises:hostFs}=await import('@ponderosa/native-host/fs');
+  const chat=await f.createChat('Held admission'),requestId=randomUUID();
+  const endpoint=`/api/projects/${chat.projectId}/agent-import-operations`;
+  const pkg={schema:'ponderosa.agent-package.v1',mode:'template',kind:'agent',exportedAt:new Date().toISOString(),sourceLabel:'Held fixture',rootRef:'root',agents:[{ref:'root',title:'Held Agent',engine:'codex',managementPermissions:{allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false}}]};
+  const metadata={conversationId:chat.id,engineMapping:{codex:'codex'}};
+  const wire=Buffer.from(JSON.stringify(metadata)+'\n'+JSON.stringify(pkg));
+  const headers={'content-type':'application/vnd.ponderosa.agent-import','idempotency-key':requestId,'x-ponderosa-agent-package-fingerprint':importRequestFingerprint(wire)};
+  const directory=path.join(f.dataDir,'agent-import-operations');
+  const lookup=`${endpoint}/by-request/${requestId}?conversationId=${chat.id}`;
+  const originalOpen=hostFs.open,originalUnlink=hostFs.unlink;
+  let count=0,release,entered;const reached=new Promise(resolve=>{entered=resolve;}),gate=new Promise(resolve=>{release=resolve;});
+  hostFs.open=async function(name,...args){
+   const handle=await originalOpen.call(this,name,...args);
+   if(name===directory && ++count===2) return {sync:async()=>{entered();await gate;throw Error('injected journal directory sync failure');},close:()=>handle.close()};
+   return handle;
+  };
+  hostFs.unlink=async function(name,...args){
+   if(typeof name==='string'&&path.dirname(name)===directory&&/^[0-9a-f-]{36}\.json$/.test(path.basename(name)))throw Error('injected journal rollback failure');
+   return originalUnlink.call(this,name,...args);
+  };
+  try{
+   const first=f.api('POST',endpoint,wire,headers);
+   await reached;
+   assert.equal((await f.api('GET',lookup)).status,409,'in-flight reservation is visible as held');
+   release();assert.equal((await first).status,409);
+  }finally{release();hostFs.open=originalOpen;hostFs.unlink=originalUnlink;}
+  let names=await readdir(directory);const journals=names.filter(name=>/^[0-9a-f-]{36}\.json$/.test(name)),payloads=names.filter(name=>name.endsWith('.payload'));
+  assert.equal(journals.length,1);assert.equal(payloads.length,1);
+  const savedJournal=await readFile(path.join(directory,journals[0]));const savedPayload=await readFile(path.join(directory,payloads[0]));
+  assert.equal((await f.api('POST',endpoint,wire,headers)).status,409);
+  const legacyHeaders={'content-type':'application/vnd.ponderosa.agent-import','idempotency-key':requestId};
+  assert.equal((await f.api('POST',`/api/projects/${chat.projectId}/import-agent-package`,wire,legacyHeaders)).status,409,'binary legacy route cannot bypass the hold');
+  assert.equal((await f.api('POST',`/api/projects/${chat.projectId}/import-agents`,{...metadata,package:pkg},{'idempotency-key':requestId})).status,409,'JSON legacy route cannot bypass the hold');
+  const operationId=journals[0].slice(0,-5);
+  assert.equal((await f.api('GET',`/api/lifecycle/agent-imports/${operationId}`)).status,409,'held journal cannot be retired as mutation-free');
+  await f.reopen();
+  assert.equal((await f.api('GET',lookup)).status,409);
+  assert.equal((await f.api('POST',endpoint,wire,headers)).status,409);
+  names=await readdir(directory);assert.deepEqual(names.filter(name=>/^[0-9a-f-]{36}\.json$/.test(name)),journals);assert.deepEqual(names.filter(name=>name.endsWith('.payload')),payloads);
+  assert.deepEqual(await readFile(path.join(directory,journals[0])),savedJournal);assert.deepEqual(await readFile(path.join(directory,payloads[0])),savedPayload);
+  assert.equal(f.turns.length,0);
+ });
+});
