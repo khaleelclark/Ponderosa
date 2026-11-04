@@ -39,7 +39,9 @@ test('canonical generated hooks survive result replacement and restart, deduplic
   assert.equal(f.store.findGeneratedHookNamespace({...f.input(f.agents[0]),root:{...f.proof.root,inode:'0'}}),undefined);
   const changed=structuredClone(f.store.getAgentCreationOperation(f.operation.id).result);changed.canonicalGeneratedHooks[0].proof.links[0].text='different';
   assert.throws(()=>f.store.updateAgentCreationOperation(f.operation.id,{result:changed}),/only be issued/);
-  const other=path.join(f.root,'other-root');mkdirSync(other);const agent=f.store.getAgent(f.agents[0].id);f.store.updateAgentWorkingCopy(agent.id,{...agent.workingCopy,rootPath:other});
+  const other=path.join(f.root,'other-root');mkdirSync(other);const agent=f.store.getAgent(f.agents[0].id);
+  const moved=f.store.updateAgentWorkingCopy(agent.id,{...agent.workingCopy,id:'copy:'+randomUUID(),mode:'separate_git',rootPath:other,branch:'test-moved-owner',branchOwned:true});
+  assert.equal(moved.workingCopy.rootPath,other);assert.equal(moved.workingCopy.state,'ready');
   assert.equal(f.store.findGeneratedHookNamespace(f.input(agent)),undefined,'a changed current owner cannot reuse old root proof');
  }finally{f.dispose();}
 });
