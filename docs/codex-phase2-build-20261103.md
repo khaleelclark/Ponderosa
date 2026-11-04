@@ -124,6 +124,39 @@ has therefore not been established; an in-process lock alone is insufficient.
 For a published unfinished multi-Branch tree, root deletion is held before
 mutation until Output recovery; whole-tree cancellation remains unsupported.
 
+## Independent test-quality audit follow-up
+
+The read-only audit of seven failure-cluster files and representative supporting
+checks is at https://chatgpt.com/space/page_54624e545714819181c228d997a753f6.
+It is a sampled audit, not an evaluation of every server test. Its concrete
+findings resulted in test-only changes after product source `2f9bbf8f`:
+
+- The Branch deletion test now requires the recovered acyclic parent and its own
+  Chats and Agents to disappear while independently owned child resources remain.
+  The cyclic case remains blocked. Both affected Branch files passed 31/31 in
+  the isolated change worktree (`branch-deletion-assertion-focused.log`).
+- Concurrent import uses a valid two-Agent organization and forces both
+  admissions to overlap. It checks successful single-organization creation,
+  exact data, and completed receipt replay after restart. It does not claim
+  restart during the held admission (`concurrent-import-gated.log`).
+- The sidebar test calls the actual selector on directory-route results and
+  checks precedence and off-page membership. Directory and folder-presentation
+  files each passed 12/12 in isolation (`folder-real-{directory,presentation}.log`).
+  Appearance in both All and Starred sections can be intentional.
+- A live inert-provider test calls product shutdown before fixture cleanup,
+  checks process exit, then verifies uncertain Run state and no replay after
+  restart. The provider file passed 3/3 in its normal isolated-worktree test
+  environment (`fixture-shutdown-provider-normal.log`); network-namespace
+  execution could not spawn detached children. Ordinary shared-fixture teardown
+  still closes children first and is not separate product-shutdown proof.
+- The memory binding test separately checks the specific incompatible-binding
+  error and the generic no-deletion hold. It does not claim deletion diagnosed
+  that binding or that populated cleanup is supported.
+
+These are focused evidence for their stated cases, not a full regression or
+Behavior Bible qualification. The twelve populated Chroma failures and other
+boundaries described here remain open.
+
 ## Recorded validation and open checks
 
 - Earlier diagnostic builds and suites exposed failures and prompted fixes.
