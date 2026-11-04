@@ -3288,14 +3288,25 @@ export async function exportReviewedUserData(root:string,selection:ReviewedUserD
 
 
 /** Refuse generated Git namespaces that may contain current user edits. */
-export function assertRetainedReviewNamespace(names:readonly string[]):void {
-  if(names.includes('external-git'))throw new Error('Export is blocked: current contents of the imported external Git review folder cannot yet be included alongside imported originals. Source files remain in place.');
-  if(names.includes('native-git-common'))throw new Error('Export is blocked: current contents of the imported native Git common folder cannot yet be included alongside imported originals. Source files remain in place.');
-  if(names.length>4||names.some(name=>!['user-data.json','git-repository','provider-files','active-git-hooks'].includes(name)))throw new Error('Unknown retained review namespace contents require separate preservation');
+export function assertRetainedReviewNamespace(names:readonly string[],carryCurrent=false):void {
+  if(!carryCurrent&&names.includes('external-git'))throw new Error('Export is blocked: current contents of the imported external Git review folder cannot yet be included alongside imported originals. Source files remain in place.');
+  if(!carryCurrent&&names.includes('native-git-common'))throw new Error('Export is blocked: current contents of the imported native Git common folder cannot yet be included alongside imported originals. Source files remain in place.');
+  if(names.some(name=>!['user-data.json','git-repository','provider-files','active-git-hooks',...(carryCurrent?['external-git','native-git-common','current-git-evidence']:[])].includes(name)))throw new Error('Unknown retained review namespace contents require separate preservation');
+}
+
+/** Reuse Git's recognized-credential inspection on text and opaque bytes. */
+export function assertSafeCurrentGitEvidence(data:Buffer):void {
+  for(let offset=0;offset<data.length;offset+=1024*1024){
+    const segment=data.subarray(Math.max(0,offset-1024),Math.min(data.length,offset+1024*1024)).toString('latin1');
+    for(const text of [segment,segment.replace(/\0/g,'')]){
+      safeText(text,'Current retained Git evidence');
+      if(/:\/\/[^/\s]*@/.test(text)||/(?:^|[\r\n])\s*(?:extraheader|authorization|password|token|secret|api[_-]?key)\s*[:=]/i.test(text)||/(?:^|[\r\n])\s*\[credential(?:\s|\])/i.test(text))throw new Error('Current retained Git evidence contains recognizable credentials; source remains unchanged');
+    }
+  }
 }
 
 /** Only the original manifest is authoritative; generated review repositories are never read. */
-export async function captureRetainedReviewOriginal(root:string,selection:ReviewedUserDataSelection,original:Buffer,canonicalGeneratedHooksProof?:CanonicalGeneratedHooksProof):Promise<{data:Buffer;verify:()=>Promise<void>}> {
+export async function captureRetainedReviewOriginal(root:string,selection:ReviewedUserDataSelection,original:Buffer,canonicalGeneratedHooksProof?:CanonicalGeneratedHooksProof,carryCurrent=false):Promise<{data:Buffer;verify:()=>Promise<void>}> {
   validateReviewedUserDataSelection(selection);
   if(selection.source!=='retained_originals')throw new Error('Retained originals require explicit source selection');
   const manifest=parseReviewedUserData(original);
@@ -3304,7 +3315,7 @@ export async function captureRetainedReviewOriginal(root:string,selection:Review
   const directory=await fs.lstat(folder,{bigint:true});
   if(!directory.isDirectory()||await fs.realpath(folder)!==folder)throw new Error('Retained review directory must be canonical');
   const names=await fs.readdir(folder);
-  assertRetainedReviewNamespace(names);
+  assertRetainedReviewNamespace(names,carryCurrent);
   const before=await fs.lstat(target,{bigint:true}),captured=await regularOriginal(target,48*1024*1024);
   const verify=async()=>{
     const currentDirectory=await fs.lstat(folder,{bigint:true}),current=await fs.lstat(target,{bigint:true});

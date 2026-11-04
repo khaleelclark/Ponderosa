@@ -834,6 +834,7 @@ export function registerAgentPackageRoutes(
     if (!root || store.agentCreationPending(agentId)) throw new AssetError(404, "agent not found");
     // Context packages were an early V3.3 spelling of a full portable Agent.
     const mode: AgentExportMode = requestedMode === "context" ? "full" : requestedMode;
+    const retainedWorkingVerifiers:Array<()=>Promise<void>>=[];
     const nodes = workingSet?.nodes??(organization
       ? store.listAgentSubtree(root.id)
       : [root]);
@@ -1166,6 +1167,7 @@ export function registerAgentPackageRoutes(
       const selectedPaths=folderInventory?.paths??selectedWorkingFiles;
       const workingFiles=(organizationWorkingFolders?firstRoot:agent.id===root.id)&&(selectedPaths.length||folderInventory)
         ? await exportWorkingFiles(agent.workingCopy.rootPath,selectedPaths,AGENT_PACKAGE_ARTIFACT_MAX_BYTES-reservedArtifactBytes,folderInventory?.links,folderInventory?rootReviewedSelection:undefined,retainedOriginal,gitCapture,workingRoots,folderInventory):undefined;
+      if(workingFiles?.verify)retainedWorkingVerifiers.push(workingFiles.verify);
       if(workingFiles){if(mode!=='full')throw new AssetError(400,'Selected working files require a full export');for(const artifact of workingFiles.artifacts)artifacts.push(admitArtifact(artifact));reservedArtifactBytes+=workingFiles.bytes;}
       portableArtifactBytes = reservedArtifactBytes;
       const initialInstructions = importedHistories.get(agent.id)?.initialInstructions
@@ -1239,6 +1241,8 @@ export function registerAgentPackageRoutes(
     }
     if(portable.agents.some(node=>node.workingFolder?.links?.some(link=>link.targetRootRef)))validateMappedWorkingLinks(portable.agents.filter(node=>node.workingFolder).map(node=>({ref:node.workingRootRef??node.ref,links:node.workingFolder!.links??[],cyclicLinks:node.workingFolder!.cyclicLinks})));
     if(hardlinkCapture)await verifyWorkingHardlinkCapture(hardlinkCapture);
+    for(const verify of retainedWorkingVerifiers)await verify();
+    await verifySelectedRoots();
     agentPackageJsonUtf8Bytes(portable);
     return portable;
     }catch(error){captureError=error;throw error;}

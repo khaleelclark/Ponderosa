@@ -1,4 +1,5 @@
-import {inventoryWorkingFolder,exportWorkingFiles} from '../../apps/server/dist/portable-working-files.js';
+import {inventoryWorkingFolder,exportWorkingFiles,importWorkingFiles} from '../../apps/server/dist/portable-working-files.js';
+import {decodePortableArtifactData} from '../../apps/server/dist/agent-package-codec.js';
 import {captureRetainedReviewOriginal} from '../../apps/server/dist/portable-reviewed-user-data.js';
 import {generatedHookName,generatedHookIdentity} from '../../apps/server/dist/portable-generated-hook-proof.js';
 import test from 'node:test';
@@ -10,7 +11,7 @@ import {mkdirSync,renameSync} from 'node:fs';
 import path from 'node:path';
 import {promisify} from 'node:util';
 import {execFile} from 'node:child_process';
-import {exportReviewedUserData,parseReviewedUserData,createGitExportCapture,createReviewedNativeGit,createReviewedRecoveryGit} from '../../apps/server/dist/portable-reviewed-user-data.js';
+import {exportReviewedUserData,parseReviewedUserData,recreateReviewedGit,createGitExportCapture,createReviewedNativeGit,createReviewedRecoveryGit} from '../../apps/server/dist/portable-reviewed-user-data.js';
 import {planReviewedRecoveryRoots,applyReviewedRecoveryRoots} from '../../apps/server/dist/portable-git-recreation.js';
 import {AgentStore} from '@ponderosa/agents';
 import {AgentWorkingCopyService} from '../../apps/server/dist/agent-working-copy-service.js';
@@ -629,14 +630,6 @@ test('retained-original export ignores only exact generated hook links backed by
   const exported=await reexport(proof),retained=exported.artifacts.find(item=>item.path==='.ponderosa-portable-review/user-data.json');
   assert.deepEqual(Buffer.from(retained.dataBase64,'base64'),original,'Re-export carries canonical originals, never generated Git state');
   assert.equal(exported.files.length,1);assert.equal(await readlink(pathname),text);
-  for(const [name,label] of [['external-git','external Git review'],['native-git-common','native Git common']]){
-   const generated=path.join(review,name),file=path.join(generated,'private-file');await mkdir(generated);await writeFile(file,'SYNTHETIC_SECRET_KEEP_ON_SOURCE');
-   const check=error=>{assert.match(error.message,new RegExp('Export is blocked: current contents of the imported '+label+' folder'));assert.match(error.message,/cannot yet be included alongside imported originals/);assert.match(error.message,/Source files remain in place/);assert.doesNotMatch(error.message,/SYNTHETIC_SECRET_KEEP_ON_SOURCE|private-file/);return true;};
-   await assert.rejects(inventoryWorkingFolder(destination,selection),check,'Inventory must explain why current data cannot be included');
-   await assert.rejects(captureRetainedReviewOriginal(destination,selection,original,proof),check,'Direct retained export must not silently omit current data');
-   await assert.rejects(reexport(proof),check,'The package export helper must refuse even with an earlier inventory');
-   assert.equal(await readFile(file,'utf8'),'SYNTHETIC_SECRET_KEEP_ON_SOURCE');await rm(generated,{recursive:true});
-  }
   await writeFile(path.join(review,'unrecognized-user-file'),'preserve unknown bytes');
   await assert.rejects(inventoryWorkingFolder(destination,selection),/Unknown retained review namespace/);
   assert.equal(await readFile(path.join(review,'unrecognized-user-file'),'utf8'),'preserve unknown bytes');
@@ -658,6 +651,70 @@ test('retained-original export ignores only exact generated hook links backed by
   await assert.rejects(reexport(refreshed),/identity|changed/,'Whole-folder re-export must refuse changed generated aliases');
   await assert.rejects(next.verify(),/identity|changed/);assert.equal(await readlink(pathname),'../../../outside-ignored-target','Verifier preserves unknown replacement links');
   assert.deepEqual(await readFile(path.join(review,'user-data.json')),original,'Canonical source bytes are never mutated');
+ }finally{await rm(base,{recursive:true,force:true});}
+});
+
+test('retained Git current evidence preserves edits and originals across two inert exports', {skip:process.platform==='win32'},async()=>{
+ const base=await realpath(await mkdtemp(path.join(tmpdir(),'portable-current-git-evidence-')));
+ try{
+  const source=path.join(base,'source'),root=path.join(base,'retained'),destination=path.join(base,'destination'),second=path.join(base,'second');
+  await initialize(source);const original=Buffer.from(JSON.stringify(await exportReviewedUserData(source,{git:true,harness:false})));
+  const selection={git:true,harness:false,source:'retained_originals'},review=path.join(root,'.ponderosa-portable-review');
+  await mkdir(root);await mkdir(review);await writeFile(path.join(review,'user-data.json'),original);
+  await mkdir(path.join(review,'external-git'));await mkdir(path.join(review,'native-git-common'));await mkdir(path.join(review,'native-git-common','empty'));
+  await writeFile(path.join(review,'external-git','edited.review'),'current inert user edit\n');
+  await writeFile(path.join(review,'native-git-common','config'),'[core]\n\trepositoryformatversion = 0\n');
+  await writeFile(path.join(review,'native-git-common','table'),'current reference evidence\n');
+  await symlink('edited.review',path.join(review,'external-git','alias'));
+  const capture=async folder=>{const inv=await inventoryWorkingFolder(folder,selection);return exportWorkingFiles(folder,inv.paths,64*1024*1024,inv.links,selection,{data:original},undefined,undefined,inv);};
+  const entries=async result=>{const map=new Map(result.artifacts.map(artifact=>[artifact.ref,artifact]));return Promise.all(result.files.map(async file=>{const decoded=await decodePortableArtifactData(map.get(file.artifactRef));return {...file,data:decoded.data,sha256:decoded.sha256};}));};
+  const first=await capture(root),input=await entries(first),saved=input.find(file=>file.path==='.ponderosa-portable-review/user-data.json');
+  assert.deepEqual(saved.data,original,'canonical imported original is unchanged');
+  const evidence=input.find(file=>file.path==='.ponderosa-portable-review/current-git-evidence/manifest.json'),current=JSON.parse(evidence.data);
+  assert.equal(current.originalSha256,createHash('sha256').update(original).digest('hex'));
+  assert.deepEqual(current.namespaces.map(item=>item.name),['external-git','native-git-common']);
+  assert.equal(current.namespaces[0].links[0].path,'alias');
+  const damaged=input.map(file=>({...file,data:Buffer.from(file.data)})),bad=damaged.find(file=>file.path===evidence.path);const forged=JSON.parse(bad.data);forged.originalSha256='0'.repeat(64);bad.data=Buffer.from(JSON.stringify(forged));bad.sha256=createHash('sha256').update(bad.data).digest('hex');
+  await assert.rejects(importWorkingFiles(path.join(base,'forged'),damaged),/association/);
+  await importWorkingFiles(destination,input);
+  assert.deepEqual(await readFile(path.join(destination,'.ponderosa-portable-review','user-data.json')),original);
+  const restored=path.join(destination,'.ponderosa-portable-review','current-git-evidence');
+  assert.equal(await readFile(path.join(restored,'external-git','edited.review'),'utf8'),'current inert user edit\n');
+  assert.equal(await readFile(path.join(restored,'native-git-common','table'),'utf8'),'current reference evidence\n');
+  assert.equal((await lstat(path.join(restored,'external-git','edited.review'))).mode&0o777,0o600);
+  await assert.rejects(lstat(path.join(restored,'external-git','alias')),{code:'ENOENT'});
+  assert.equal((await lstat(path.join(restored,'native-git-common','empty'))).isDirectory(),true);
+  // A source change after capture must invalidate the returned export proof.
+  const firstProof=await capture(root),edited=path.join(review,'external-git','edited.review');
+  await writeFile(edited,'later source edit\n');await assert.rejects(firstProof.verify(),/changed/);await writeFile(edited,'current inert user edit\n');
+  const namespaceProof=await capture(root),newNamespace=path.join(review,'current-git-evidence');await mkdir(newNamespace);
+  await assert.rejects(namespaceProof.verify(),/changed/);await rm(newNamespace,{recursive:true});
+  // Generated original trees cannot be silently omitted if a user edited them.
+  const generated=path.join(destination,'.ponderosa-portable-review','git-repository'),extra=path.join(generated,'private-edited-name');
+  await writeFile(extra,'SYNTHETIC_SECRET_NOT_IN_ERROR');
+  await assert.rejects(capture(destination),error=>{assert.match(error.message,/Generated review contents changed/);assert.doesNotMatch(error.message,/private-edited-name|SYNTHETIC_SECRET/);return true;});
+  assert.equal(await readFile(extra,'utf8'),'SYNTHETIC_SECRET_NOT_IN_ERROR');await unlink(extra);
+  const provider=path.join(destination,'.ponderosa-portable-review','provider-files'),providerEntries=await readdir(provider);
+  const providerFile=path.join(provider,providerEntries.find(name=>name.endsWith('.review'))),providerOriginal=await readFile(providerFile);
+  await writeFile(providerFile,'modified generated provider data');
+  await assert.rejects(capture(destination),/Generated review contents changed/);
+  assert.equal(await readFile(providerFile,'utf8'),'modified generated provider data');await writeFile(providerFile,providerOriginal);
+  const again=await capture(destination),againInput=await entries(again);await importWorkingFiles(second,againInput);
+  assert.deepEqual(await readFile(path.join(second,'.ponderosa-portable-review','user-data.json')),original);
+  assert.equal(await readFile(path.join(second,'.ponderosa-portable-review','current-git-evidence','current-git-evidence','external-git','edited.review'),'utf8'),'current inert user edit\n');
+  await writeFile(path.join(review,'external-git','credential.review'),'API_KEY=SYNTHETIC_SECRET_DONT_EXPORT');
+  await assert.rejects(capture(root),/secret|credential/i);
+  assert.equal(await readFile(path.join(review,'external-git','credential.review'),'utf8'),'API_KEY=SYNTHETIC_SECRET_DONT_EXPORT');
+  for(const value of [Buffer.from('prefix\0Authorization: Bearer SYNTHETIC_BINARY_SECRET'),Buffer.concat([Buffer.from([255,254]),Buffer.from('\nextraheader=Basic SYNTHETIC_BINARY_SECRET')]),Buffer.from('A\0P\0I\0_\0K\0E\0Y\0=\0S\0Y\0N\0T\0H\0E\0T\0I\0C')]){
+   await writeFile(path.join(review,'external-git','credential.review'),value);
+   await assert.rejects(capture(root),error=>{assert.match(error.message,/credential|opaque binary/i);assert.doesNotMatch(error.message,/SYNTHETIC|credential.review/);return true;});
+   assert.deepEqual(await readFile(path.join(review,'external-git','credential.review')),value);
+  }
+  await unlink(path.join(review,'external-git','credential.review'));
+  const opaque=path.join(review,'native-git-common','table');await writeFile(opaque,Buffer.from([0,1,2,3,255]));
+  await assert.rejects(capture(root),/opaque binary data/);assert.deepEqual(await readFile(opaque),Buffer.from([0,1,2,3,255]));
+  await writeFile(path.join(review,'external-git','private-name.json'),'{invalid');
+  await assert.rejects(capture(root),error=>{assert.match(error.message,/cannot be safely captured/);assert.doesNotMatch(error.message,/private-name/);return true;});
  }finally{await rm(base,{recursive:true,force:true});}
 });
 
@@ -698,5 +755,16 @@ test('retained generated hook proof distinguishes a declared dangling source ali
   const name=generatedHookName(binding.sourceConfigPath,binding.rawValue),text='../../owned-dangling-alias';await symlink(text,path.join(namespace,name));
   const root=await lstat(destination,{bigint:true}),proof={schema:'ponderosa.generated-hook-namespace.v1',operationId:'fixture-dangling-source-import',sourceOriginalSha256:createHash('sha256').update(original).digest('hex'),root:{device:root.dev.toString(),inode:root.ino.toString()},namespace:generatedHookIdentity(await lstat(namespace,{bigint:true})),links:[{name,text,identity:generatedHookIdentity(await lstat(path.join(namespace,name),{bigint:true}))}]};
   const captured=await captureRetainedReviewOriginal(destination,selection,original,proof);await captured.verify();assert.deepEqual(captured.data,original);assert.equal(await readlink(path.join(namespace,name)),text);
+ }finally{await rm(base,{recursive:true,force:true});}
+});
+
+test('synthetic repeated Git recreation produces identical file content',async()=>{
+ const base=await realpath(await mkdtemp(path.join(tmpdir(),'portable-recreation-compare-')));
+ try{
+  const source=path.join(base,'src');await initialize(source);
+  const original=await exportReviewedUserData(source,{git:true,harness:false});
+  const a=path.join(base,'a'),b=path.join(base,'b');await recreateReviewedGit(a,original.git);await recreateReviewedGit(b,original.git);
+  const walk=async root=>{const result=[];const descend=async rel=>{for(const ent of (await readdir(path.join(root,rel),{withFileTypes:true})).sort((x,y)=>x.name.localeCompare(y.name))){const name=path.join(rel,ent.name),full=path.join(root,name),st=await lstat(full);if(st.isDirectory()){result.push([name,'dir',st.mode&0o777]);await descend(name);}else if(st.isFile())result.push([name,'file',st.mode&0o777,createHash('sha256').update(await readFile(full)).digest('hex')]);else if(st.isSymbolicLink())result.push([name,'symlink',await readlink(full)]);else throw Error('unsupported');}};await descend('');return result;};
+  assert.deepEqual(await walk(a),await walk(b));
  }finally{await rm(base,{recursive:true,force:true});}
 });

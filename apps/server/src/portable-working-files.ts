@@ -1,15 +1,16 @@
 import {AGENT_PACKAGE_MAX_BYTES,agentPackageJsonUtf8Bytes} from "@ponderosa/core";
-import {encodePortableArtifactData} from "./agent-package-codec.js";
+import {encodePortableArtifactData,decodePortableArtifactData} from "./agent-package-codec.js";
 import {constants} from 'node:fs';
 import {openPortableRegular} from './portable-held-regular.js';
 import {applyExactFileMetadata} from '@ponderosa/native-host';
 import {promises as fs} from '@ponderosa/native-host/fs';
 import path from 'node:path';
+import {tmpdir} from 'node:os';
 import {createHash,randomUUID} from 'node:crypto';
 import type {AgentPortablePackageDto,PortableArtifactDto,PortableWorkingLinkDto,ReviewedUserDataSelection,ReviewedMetadataActivation,ReviewedGitExternalDependencies,CanonicalGeneratedHooksProof} from '@ponderosa/core';
 import {applyFilesystemMetadata,planFilesystemMetadata} from './portable-filesystem-metadata.js';
 import {assertPortableSecretsAbsent} from './portable-secrets.js';
-import {assertRetainedReviewNamespace,captureRetainedReviewOriginal,selectedReviewedGitStorage,exportReviewedUserData,parseReviewedUserData,recreateReviewedGit,REVIEWED_USER_DATA_PATH,type GitExportCapture} from './portable-reviewed-user-data.js';
+import {assertRetainedReviewNamespace,assertSafeCurrentGitEvidence,parseReviewedGitConfiguration,captureRetainedReviewOriginal,selectedReviewedGitStorage,exportReviewedUserData,parseReviewedUserData,recreateReviewedGit,REVIEWED_USER_DATA_PATH,type GitExportCapture} from './portable-reviewed-user-data.js';
 
 export interface WorkingHardlinkCapture {
   originals:Map<string,{root:string;ref?:string;path:string;nlink:bigint;count:number;identity:string;paths:string[]}>;
@@ -184,13 +185,179 @@ export function validateWorkingFileData(relative:string,data:Buffer):void {
   }
 }
 
+type GeneratedNode={path:string;kind:'directory'|'file'|'symlink';mode:number;mtimeNs:string;sha256?:string;target?:string;device:string;inode:string;ctimeNs:string};
+type GeneratedObservation={name:'git-repository'|'provider-files';state:'absent'|'matches-original';nodes:Omit<GeneratedNode,'device'|'inode'|'ctimeNs'>[]};
+async function generatedTree(root:string,expected?:GeneratedNode[]):Promise<GeneratedNode[]>{
+  const entries:GeneratedNode[]=[],allowed=expected?new Map(expected.map(item=>[item.path,item])):undefined;let total=0;
+  const visit=async(relative:string)=>{
+    if(entries.length>=10000)throw new Error('Generated review evidence exceeds its inventory bound');
+    const target=relative?path.join(root,...relative.split('/')):root;
+    const before=await fs.lstat(target,{bigint:true}),base={path:relative,mode:Number(before.mode&0o7777n),mtimeNs:before.mtimeNs.toString(),device:before.dev.toString(),inode:before.ino.toString(),ctimeNs:before.ctimeNs.toString()};
+    const prior=allowed?.get(relative);if(allowed&&!prior)throw new Error('Generated review contents changed; source remains unchanged');
+    if(before.isDirectory()&&!before.isSymbolicLink()){
+      entries.push({...base,kind:'directory'});
+      const names=(await fs.readdir(target)).sort();if(names.length>10000)throw new Error('Generated review evidence exceeds its inventory bound');
+      for(const name of names){if(!name||name==='.'||name==='..'||name.includes('/')||name.includes('\\'))throw new Error('Generated review contains unsupported names');await visit(relative?relative+'/'+name:name);}
+    }else if(before.isFile()&&!before.isSymbolicLink()){
+      if(before.nlink!==1n||before.size>64n*1024n*1024n)throw new Error('Generated review contains unsupported file aliases or sizes');
+      total+=Number(before.size);if(total>64*1024*1024)throw new Error('Generated review evidence exceeds its byte bound');
+      const handle=await openPortableRegular(target);let data:Buffer;
+      try{const opened=await handle.stat({bigint:true});if(opened.dev!==before.dev||opened.ino!==before.ino||opened.size!==before.size)throw new Error('Generated review changed during inspection');
+        data=Buffer.alloc(Number(opened.size));let offset=0;while(offset<data.length){const read=await handle.read(data,offset,data.length-offset,offset);if(!read.bytesRead)throw new Error('Generated review changed during inspection');offset+=read.bytesRead;}
+        const after=await handle.stat({bigint:true});if(opened.dev!==after.dev||opened.ino!==after.ino||opened.size!==after.size||opened.mtimeNs!==after.mtimeNs||opened.ctimeNs!==after.ctimeNs)throw new Error('Generated review changed during inspection');
+      }finally{await handle.close();}
+      entries.push({...base,kind:'file',sha256:createHash('sha256').update(data).digest('hex')});
+    }else if(before.isSymbolicLink())entries.push({...base,kind:'symlink',target:await fs.readlink(target)});
+    else throw new Error('Generated review contains unsupported special nodes');
+    const after=await fs.lstat(target,{bigint:true});if(before.dev!==after.dev||before.ino!==after.ino||before.mode!==after.mode||before.size!==after.size||before.mtimeNs!==after.mtimeNs||before.ctimeNs!==after.ctimeNs)throw new Error('Generated review changed during inspection');
+  };
+  await visit('');
+  if(allowed&&(entries.length!==expected!.length||entries.some(item=>!allowed.has(item.path))))throw new Error('Generated review contents changed; source remains unchanged');
+  return entries;
+}
+async function captureGeneratedOriginalProof(review:string,original:Buffer):Promise<{observations:GeneratedObservation[];verify:()=>Promise<void>}>{
+  const value=parseReviewedUserData(original),names=['git-repository','provider-files'] as const;
+  const parent=await fs.realpath(tmpdir()),scratch=await fs.mkdtemp(path.join(parent,'ponderosa-retained-compare-'));
+  const issued=await fs.lstat(scratch,{bigint:true});
+  const expected=new Map<string,GeneratedNode[]>(),observations:GeneratedObservation[]=[],guards=new Map<string,string>();
+  try{
+    for(const name of names){
+      const actual=path.join(review,name);let present=true;
+      try{await fs.lstat(actual);}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')present=false;else throw error;}
+      if(!present){observations.push({name,state:'absent',nodes:[]});guards.set(name,'absent');continue;}
+      const target=path.join(scratch,name);
+      if(name==='git-repository'){
+        if(!value.git)throw new Error('Generated Git review lacks its canonical original');
+        await recreateReviewedGit(target,value.git);
+      }else{
+        if(!value.providerFiles.length&&!value.providerDirectories.length)throw new Error('Generated provider review lacks its canonical original');
+        await fs.mkdir(target,{mode:0o700});const manifest=[];
+        for(const [index,file] of value.providerFiles.entries()){
+          const reviewFile=`${index}.review`;await fs.writeFile(path.join(target,reviewFile),Buffer.from(file.dataBase64,'base64'),{flag:'wx',mode:0o600});
+          manifest.push({path:file.path,reviewFile,removedSecretFields:file.removedSecretFields,...(file.metadata?{metadata:file.metadata}:{})});
+        }
+        await fs.writeFile(path.join(target,'manifest.json'),JSON.stringify({activation:'inert_review_only',files:manifest,directories:value.providerDirectories},null,2),{flag:'wx',mode:0o600});
+      }
+      const baseline=await generatedTree(target),current=await generatedTree(actual,baseline);expected.set(name,baseline);
+      if(current.some((item,index)=>item.path!==baseline[index]?.path||item.kind!==baseline[index]?.kind||item.sha256!==baseline[index]?.sha256||item.target!==baseline[index]?.target))throw new Error('Generated review contains changed user data; source remains unchanged');
+      observations.push({name,state:'matches-original',nodes:current.map(({device,inode,ctimeNs,...node})=>node)});
+      guards.set(name,JSON.stringify(current));
+    }
+  }finally{
+    const current=await fs.lstat(scratch,{bigint:true});
+    if(current.dev!==issued.dev||current.ino!==issued.ino||!current.isDirectory()||await fs.realpath(scratch)!==scratch)throw new Error('Temporary Git comparison changed; its files were preserved');
+    await fs.rm(scratch,{recursive:true,force:false});
+  }
+  return {observations,verify:async()=>{
+    for(const name of names){
+      const root=path.join(review,name),guard=guards.get(name)!;
+      if(guard==='absent'){try{await fs.lstat(root);}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')continue;throw error;}throw new Error('Generated review changed during export; source remains unchanged');}
+      const current=await generatedTree(root,expected.get(name));
+      if(JSON.stringify(current)!==guard)throw new Error('Generated review changed during export; source remains unchanged');
+    }
+  }};
+}
+
+// Historical evidence only: these files are never used as native Git authority.
+const CURRENT_GIT_EVIDENCE='.ponderosa-portable-review/current-git-evidence';
+const CURRENT_GIT_MANIFEST=CURRENT_GIT_EVIDENCE+'/manifest.json';
+const CURRENT_GIT_NAMES=['external-git','native-git-common','current-git-evidence'] as const;
+type CurrentGitName=typeof CURRENT_GIT_NAMES[number];
+type CurrentGitNamespace={name:CurrentGitName;rootMode:number;rootMtime:string;directories:Array<{path:string;mode:number;mtime:string}>;links:PortableWorkingLinkDto[];files:Array<{path:string;sha256:string;mode:number;mtime:string}>};
+type CurrentGitManifest={version:1;originalSha256:string;namespaces:CurrentGitNamespace[];generatedObservations:GeneratedObservation[]};
+function inspectCurrentGitFile(name:string,data:Buffer):void {
+  try{if(data.includes(0))throw new Error();new TextDecoder('utf-8',{fatal:true}).decode(data);}
+  catch{throw new Error('Current retained Git evidence includes opaque binary data that cannot be inspected; export is held and source files remain in place');}
+  try{
+    validateWorkingFileData(name,data);assertSafeCurrentGitEvidence(data);
+    if(/(?:^|\/)(?:config|config\.worktree)$/i.test(name)){
+      const safe=parseReviewedGitConfiguration(data).data;
+      if(!safe.equals(data))throw new Error('excluded');
+    }
+  }catch{throw new Error('Current retained Git evidence contains unsupported or recognizable credential data; source remains unchanged');}
+}
+async function captureRetainedGitCurrent(root:string,original:Buffer,maxBytes:number):Promise<{files:Array<{path:string;artifactRef:string;mode:number;mtime?:string}>;artifacts:PortableArtifactDto[];bytes:number;verify:()=>Promise<void>}|undefined>{
+  const review=path.join(root,'.ponderosa-portable-review');
+  const present:CurrentGitName[]=[];
+  for(const name of CURRENT_GIT_NAMES){
+    const target=path.join(review,name);let stat;
+    try{stat=await fs.lstat(target,{bigint:true});}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')continue;throw new Error('Current retained Git evidence cannot be inspected; source remains unchanged');}
+    if(!stat.isDirectory()||stat.isSymbolicLink()||await fs.realpath(target)!==target)throw new Error('Current retained Git evidence must be a canonical directory');
+    present.push(name);
+  }
+  let generated:Awaited<ReturnType<typeof captureGeneratedOriginalProof>>;
+  try{generated=await captureGeneratedOriginalProof(review,original);}catch{throw new Error('Generated review contents changed or could not be verified; source remains unchanged');}
+  const originalSha256=createHash('sha256').update(original).digest('hex');
+  const collect=async()=>{
+    const namespaces:CurrentGitNamespace[]=[],outFiles:Array<{path:string;artifactRef:string;mode:number;mtime?:string}>=[],artifacts:PortableArtifactDto[]=[];
+    let bytes=0;
+    for(const name of present){
+      const target=path.join(review,name);let inventory:WorkingFolderInventory,captured:Awaited<ReturnType<typeof exportWorkingFiles>>;
+      try{inventory=await inventoryWorkingFolder(target);if(inventory.excludedPaths.length||inventory.persistentPaths.length)throw new Error('excluded');captured=await exportWorkingFiles(target,inventory.paths,maxBytes-bytes,inventory.links,undefined,undefined,undefined,undefined,inventory);}
+      catch{throw new Error('Current retained Git evidence cannot be safely captured; source remains unchanged');}
+      bytes+=captured.bytes;
+      const byRef=new Map(captured.artifacts.map(item=>[item.ref,item]));
+      const entries:CurrentGitNamespace['files']=[];
+      for(const file of captured.files){
+        const artifact=byRef.get(file.artifactRef);if(!artifact)throw new Error('Current retained Git artifact is missing');
+        const decoded=await decodePortableArtifactData(artifact);
+        inspectCurrentGitFile(file.path,decoded.data);
+        entries.push({path:file.path,sha256:decoded.sha256,mode:file.mode??0o600,mtime:file.mtime??inventory.mtime});
+        const output=CURRENT_GIT_EVIDENCE+'/'+name+'/'+file.path;
+        outFiles.push({path:output,artifactRef:file.artifactRef,mode:0o600});
+        artifacts.push({...artifact,path:output,summary:'Inert retained Git current evidence'});
+      }
+      namespaces.push({name,rootMode:inventory.mode,rootMtime:inventory.mtime,directories:inventory.directories,links:inventory.links,files:entries});
+    }
+    return {namespaces,outFiles,artifacts,bytes};
+  };
+  const captured=await collect();
+  const verifyGenerated=async()=>{try{await generated.verify();}catch{throw new Error('Generated review contents changed or could not be verified; source remains unchanged');}};
+  const verify=async()=>{await verifyGenerated();const check=await collect();if(JSON.stringify(captured.namespaces)!==JSON.stringify(check.namespaces))throw new Error('Current retained Git evidence changed during capture; source remains unchanged');await verifyGenerated();};
+  await verify();
+  const manifest:CurrentGitManifest={version:1,originalSha256,namespaces:captured.namespaces,generatedObservations:generated.observations};
+  const data=Buffer.from(JSON.stringify(manifest));if(captured.bytes+data.length>maxBytes)throw new Error('Current retained Git evidence exceeds the portable artifact limit');
+  const ref=randomUUID();captured.outFiles.push({path:CURRENT_GIT_MANIFEST,artifactRef:ref,mode:0o600});
+  captured.artifacts.push({ref,kind:'document',path:CURRENT_GIT_MANIFEST,summary:'Inert retained Git current evidence manifest',createdAt:new Date().toISOString(),mediaType:'application/json',...await encodePortableArtifactData(data)});
+  return {files:captured.outFiles,artifacts:captured.artifacts,bytes:captured.bytes+data.length,verify};
+}
+function validateRetainedGitCurrent(files:readonly {path:string;data:Buffer;sha256:string;mode?:number}[],original?:Buffer):Array<{path:string;mode:number;mtime:string}>{
+  const evidence=files.filter(file=>file.path===CURRENT_GIT_EVIDENCE||file.path.startsWith(CURRENT_GIT_EVIDENCE+'/'));
+  if(!evidence.length)return [];
+  const manifestFile=evidence.find(file=>file.path===CURRENT_GIT_MANIFEST);
+  if(!manifestFile||!original||manifestFile.mode!==0o600||createHash('sha256').update(manifestFile.data).digest('hex')!==manifestFile.sha256)throw new Error('Current retained Git evidence lacks its exact original association');
+  let value:unknown;try{value=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(manifestFile.data));}catch{throw new Error('Current retained Git evidence manifest is invalid');}
+  if(!value||typeof value!=='object'||Array.isArray(value))throw new Error('Current retained Git evidence manifest is invalid');
+  const manifest=value as CurrentGitManifest;
+  if(JSON.stringify(Object.keys(manifest).sort())!==JSON.stringify(['generatedObservations','namespaces','originalSha256','version'])||manifest.version!==1||manifest.originalSha256!==createHash('sha256').update(original).digest('hex')||!Array.isArray(manifest.namespaces)||manifest.namespaces.length>3)throw new Error('Current retained Git evidence association differs');
+  if(!Array.isArray(manifest.generatedObservations)||manifest.generatedObservations.length!==2||manifest.generatedObservations.some((item,index)=>!item||item.name!==['git-repository','provider-files'][index]||!['absent','matches-original'].includes(item.state)||!Array.isArray(item.nodes)||item.nodes.length>10000||item.state==='absent'&&item.nodes.length!==0))throw new Error('Generated review evidence is invalid');
+  assertPortableSecretsAbsent(manifest.generatedObservations,'Generated review evidence');
+  const expected=new Set([CURRENT_GIT_MANIFEST]),names=new Set<string>(),dirs:Array<{path:string;mode:number;mtime:string}>=[];
+  const epoch=new Date(0).toISOString();dirs.push({path:'.ponderosa-portable-review',mode:0o700,mtime:epoch},{path:CURRENT_GIT_EVIDENCE,mode:0o700,mtime:epoch});
+  for(const ns of manifest.namespaces){
+    if(!ns||!CURRENT_GIT_NAMES.includes(ns.name)||names.has(ns.name)||!Array.isArray(ns.files)||!Array.isArray(ns.directories)||!Array.isArray(ns.links)||!Number.isInteger(ns.rootMode)||typeof ns.rootMtime!=='string'||!Number.isFinite(Date.parse(ns.rootMtime)))throw new Error('Current retained Git evidence namespace is invalid');
+    names.add(ns.name);const base=CURRENT_GIT_EVIDENCE+'/'+ns.name;dirs.push({path:base,mode:0o700,mtime:epoch});
+    validateWorkingTopology(ns.files,ns.directories,ns.links,'passive_in_root');
+    for(const directory of ns.directories){if(!Number.isInteger(directory.mode)||directory.mode<0||directory.mode>0o7777||typeof directory.mtime!=='string'||!Number.isFinite(Date.parse(directory.mtime)))throw new Error('Current retained Git directory evidence is invalid');dirs.push({path:base+'/'+portableWorkingPath(directory.path),mode:0o700,mtime:epoch});}
+    for(const item of ns.files){
+      if(!item||typeof item.sha256!=='string'||!/^[a-f0-9]{64}$/.test(item.sha256)||!Number.isInteger(item.mode)||item.mode<0||item.mode>0o7777||typeof item.mtime!=='string'||!Number.isFinite(Date.parse(item.mtime)))throw new Error('Current retained Git file evidence is invalid');
+      const full=base+'/'+portableWorkingPath(item.path),file=evidence.find(candidate=>candidate.path===full);
+      if(expected.has(full)||!file||file.mode!==0o600||file.sha256!==item.sha256||createHash('sha256').update(file.data).digest('hex')!==item.sha256)throw new Error('Current retained Git evidence bytes differ');
+      inspectCurrentGitFile(item.path,file.data);expected.add(full);
+    }
+  }
+  if(evidence.length!==expected.size||evidence.some(file=>!expected.has(file.path)))throw new Error('Current retained Git evidence inventory differs');
+  return dirs;
+}
+
 /** Explicit selection only; no implicit traversal of user folders or native profiles. */
-export async function exportWorkingFiles(rootPath:string,selected:readonly string[],maxBytes:number,links:readonly PortableWorkingLinkDto[]=[],reviewedSelection?:ReviewedUserDataSelection,retainedOriginal?:{data:Buffer;mode?:number;mtime?:string;canonicalGeneratedHooksProof?:CanonicalGeneratedHooksProof},gitCapture?:GitExportCapture,rootMappings?:ReadonlyMap<string,string>,capturedInventory?:WorkingFolderInventory):Promise<{files:Array<{path:string;artifactRef:string;mode?:number;mtime?:string}>;artifacts:PortableArtifactDto[];bytes:number}> {
+export async function exportWorkingFiles(rootPath:string,selected:readonly string[],maxBytes:number,links:readonly PortableWorkingLinkDto[]=[],reviewedSelection?:ReviewedUserDataSelection,retainedOriginal?:{data:Buffer;mode?:number;mtime?:string;canonicalGeneratedHooksProof?:CanonicalGeneratedHooksProof},gitCapture?:GitExportCapture,rootMappings?:ReadonlyMap<string,string>,capturedInventory?:WorkingFolderInventory):Promise<{files:Array<{path:string;artifactRef:string;mode?:number;mtime?:string}>;artifacts:PortableArtifactDto[];bytes:number;verify?:()=>Promise<void>}> {
   const root=await fs.realpath(rootPath),files:Array<{path:string;artifactRef:string;mode?:number;mtime?:string}>=[],artifacts:PortableArtifactDto[]=[];
   const gitStorage=gitCapture?gitCapture.exclusions(root):reviewedSelection?.git&&reviewedSelection.source!=='retained_originals'?await selectedReviewedGitStorage(root):[];
   if(selected.some(name=>gitStorage.some(storage=>storage==='.'||name===storage||name.startsWith(storage+'/'))))throw new Error('Selected Git storage cannot also be exported as ordinary working files');
-  const retained=reviewedSelection?.source==='retained_originals'?await captureRetainedReviewOriginal(root,reviewedSelection,retainedOriginal?.data??Buffer.alloc(0),retainedOriginal?.canonicalGeneratedHooksProof):undefined;
-  validateWorkingTopology([...selected.map(path=>({path})),...(reviewedSelection?[{path:REVIEWED_USER_DATA_PATH}]:[])],[],links,'passive_in_root');
+  const retained=reviewedSelection?.source==='retained_originals'?await captureRetainedReviewOriginal(root,reviewedSelection,retainedOriginal?.data??Buffer.alloc(0),retainedOriginal?.canonicalGeneratedHooksProof,true):undefined;
+  const current=retained?await captureRetainedGitCurrent(root,retained.data,maxBytes):undefined;
+  validateWorkingTopology([...selected.map(path=>({path})),...(reviewedSelection?[{path:REVIEWED_USER_DATA_PATH}]:[]),...(current?.files??[])],[],links,'passive_in_root');
   const verifyLinks=async()=>{for(const link of links){
     const name=path.join(root,link.path);
     if(await fs.realpath(path.dirname(name))!==path.dirname(name))throw new Error('Working-link parent changed');
@@ -229,6 +396,11 @@ export async function exportWorkingFiles(rootPath:string,selected:readonly strin
     artifacts.push(artifact);
   }
   await verifyLinks();
+  if(current){
+    bytes+=current.bytes;if(bytes>maxBytes)throw new Error('Current retained Git evidence exceeds the portable artifact limit');
+    for(const artifact of current.artifacts){wireBytes+=agentPackageJsonUtf8Bytes(artifact);if(wireBytes>AGENT_PACKAGE_MAX_BYTES)throw new Error('Current retained Git evidence exceeds the package limit');}
+    files.push(...current.files);artifacts.push(...current.artifacts);
+  }
   if(reviewedSelection){
     const data=retained?.data??Buffer.from(JSON.stringify(await exportReviewedUserData(root,reviewedSelection,gitCapture,rootMappings,capturedInventory)));
     await retained?.verify();
@@ -238,7 +410,8 @@ export async function exportWorkingFiles(rootPath:string,selected:readonly strin
     const ref=randomUUID();files.push({path:REVIEWED_USER_DATA_PATH,artifactRef:ref,mode:retainedOriginal?.mode??0o600,...(retainedOriginal?.mtime?{mtime:retainedOriginal.mtime}:{})});
     artifacts.push({ref,kind:'document',path:REVIEWED_USER_DATA_PATH,summary:'Inert Git and provider configuration review',createdAt:new Date().toISOString(),mediaType:'application/json',dataBase64:data.toString('base64')});
   }
-  return {files,artifacts,bytes};
+  const verify=retained?async()=>{await retained.verify();await current?.verify();await retained.verify();}:undefined;
+  await verify?.();return {files,artifacts,bytes,...(verify?{verify}:{})};
 }
 
 export interface WorkingDirectoryIdentity {device:string;inode:string}
@@ -391,6 +564,10 @@ export async function importWorkingFiles(destination:string,files:readonly {path
   const reviewedFile=files.find(file=>file.path===REVIEWED_USER_DATA_PATH);
   if(reviewedFile&&createHash('sha256').update(reviewedFile.data).digest('hex')!==reviewedFile.sha256)throw new Error('Reviewed user-data identity changed');
   const reviewedData=reviewedFile?parseReviewedUserData(reviewedFile.data):undefined;
+  const extraDirs=validateRetainedGitCurrent(files,reviewedFile?.data);
+  const existingDirs=new Set(directories.map(directory=>directory.path));
+  const allDirectories=[...directories,...extraDirs.filter(directory=>!existingDirs.has(directory.path))];
+  validateWorkingTopology(files,allDirectories,links,cyclicLinks);
   if(metadataActivation){
     if(!reviewedData?.filesystemMetadata)throw new Error('Metadata activation requires the original per-node evidence');
     planFilesystemMetadata(reviewedData.filesystemMetadata,reviewedData.selection,metadataActivation);
@@ -425,7 +602,7 @@ export async function importWorkingFiles(destination:string,files:readonly {path
   const preserveBaseline=(relative:string)=>preserveWorkingBaseline(destination,relative,freshRoot);
   try{
     await checkRoot();
-    for(const folder of [...directories].sort((a,b)=>a.path.split('/').length-b.path.split('/').length)){
+    for(const folder of [...allDirectories].sort((a,b)=>a.path.split('/').length-b.path.split('/').length)){
       await checkRoot();
       const relative=portableWorkingPath(folder.path);
       const target=path.join(destination,relative);
@@ -467,7 +644,7 @@ export async function importWorkingFiles(destination:string,files:readonly {path
     // may intentionally remove traversal permission, so this precedes it.
     for(const relative of Object.keys(directoryIdentities))await rememberDirectory(relative,path.join(destination,relative));
     issuedIdentity={device:issuedIdentity.device,inode:issuedIdentity.inode,directories:Object.freeze({...directoryIdentities})};
-    if(!deferMetadataApplication)await finalizeWorkingFolderMetadata(destination,files,directories,rootMetadata,links,metadataActivation,undefined,issuedIdentity);
+    if(!deferMetadataApplication)await finalizeWorkingFolderMetadata(destination,files,allDirectories,rootMetadata,links,metadataActivation,undefined,issuedIdentity);
     await checkRoot();
     return issuedIdentity;
   }catch(error){throw Object.assign(new Error(`Working-files import incomplete; retained files at ${destination}: ${(error as Error).message}`,{cause:error}),{code:(error as {code?:string}).code??'ERR_WORKING_FILES_IMPORT_PARTIAL',partialStatePossible:true,observed:(error as {observed?:unknown}).observed??null});}
@@ -592,8 +769,8 @@ export async function inventoryWorkingFolder(rootPath:string,reviewedSelection?:
         if(!stat.isDirectory()||await fs.realpath(folder)!==folder)throw new Error('Retained review directory must be canonical');
         // Hook aliases are excluded only after export verifies their complete canonical local proof.
         // Other generated native namespaces still refuse; they can contain changed user data.
-        const children=await fs.readdir(folder);assertRetainedReviewNamespace(children);
-        for(const child of children)if(child!=='user-data.json')excludedPaths.push(`${name}/${child}`);
+        const children=await fs.readdir(folder);assertRetainedReviewNamespace(children,true);
+        for(const child of children)if(!['user-data.json','external-git','native-git-common','current-git-evidence'].includes(child))excludedPaths.push(`${name}/${child}`);
         continue;
       }
       try{portableWorkingPath(name);}catch{excludedPaths.push(name);continue;}

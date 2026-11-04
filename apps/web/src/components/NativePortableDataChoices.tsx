@@ -16,6 +16,7 @@ export function NativePortableExportChoices({available,disabled,value,onChange}:
   <FormControlLabel control={<Checkbox disabled={!available||disabled} checked={available&&Boolean(value.extendedMetadata)} onChange={event=>update({extendedMetadata:event.target.checked?{userXattrs:true,posixAcl:true}:undefined})}/>} label="File permissions and extended metadata"/>
   <FormControlLabel control={<Checkbox disabled={!available||disabled} checked={available&&Boolean(value.persistentNodes?.fifo)} onChange={event=>update({persistentNodes:{fifo:event.target.checked,evidenceOnly:value.persistentNodes?.evidenceOnly??false}})}/>} label="Named pipes"/>
   <FormControlLabel control={<Checkbox disabled={!available||disabled} checked={available&&Boolean(value.persistentNodes?.evidenceOnly)} onChange={event=>update({persistentNodes:{fifo:value.persistentNodes?.fifo??false,evidenceOnly:event.target.checked}})}/>} label="Device and socket evidence"/>
+  {available&&value.source==='retained_originals'&&value.git&&<Typography variant="caption" color="text.secondary">Current imported Git review text is included separately as inert evidence. Changed generated files or opaque binary data hold export; source files remain in place. Native Git metadata is not restored from this evidence.</Typography>}
   <Typography variant="caption" color="text.secondary">Whole folders required · import activation is separate · device and socket services are not recreated</Typography>
  </Stack>;
 }

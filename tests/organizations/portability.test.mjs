@@ -635,3 +635,57 @@ test('nested recovery metadata finalizes child before restrictive parent permiss
   await chmod(destination,0o700);assert.equal((await lstat(nested)).mode&0o777,0o750);assert.equal(await readFile(path.join(nested,'original'),'utf8'),'exact original');
  }finally{await chmod(destination,0o700).catch(()=>undefined);}
 }));
+
+
+test('Agent package route carries edited retained Git review evidence through two inert generations',options,t=>withPortability(t,async f=>{
+ const {mkdir,readdir,lstat,rename,unlink}=await import('node:fs/promises'),{execFile}=await import('node:child_process'),{promisify}=await import('node:util');
+ const {exportReviewedUserData}=await import('../../apps/server/dist/portable-reviewed-user-data.js'),run=promisify(execFile);
+ const source=path.join(f.dataDir,'workspaces','review-source');await mkdir(source,{recursive:true});
+ const env={...Object.fromEntries(Object.entries(process.env).filter(([name])=>!name.startsWith('GIT_'))),GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null',GIT_TERMINAL_PROMPT:'0'};
+ await run('git',['init','--template=','--initial-branch=main'],{cwd:source,env});
+ await writeFile(path.join(source,'file.txt'),'synthetic original');
+ await run('git',['-c','core.hooksPath=/dev/null','add','file.txt'],{cwd:source,env});
+ await run('git',['-c','core.hooksPath=/dev/null','-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','--no-gpg-sign','-m','Original'],{cwd:source,env});
+ await mkdir(path.join(source,'hooks'));await writeFile(path.join(source,'hooks','pre-commit'),'#!/bin/sh\nexit 0\n');
+ await run('git',['config','core.hooksPath','hooks'],{cwd:source,env});
+ const original=Buffer.from(JSON.stringify(await exportReviewedUserData(source,{git:true,harness:false}))),ref='manifest';
+ const pkg={schema:'ponderosa.agent-package.v1',mode:'full',kind:'agent',sourceLabel:'Synthetic reviewed Git',exportedAt:new Date().toISOString(),rootRef:'agent',agents:[{ref:'agent',title:'Imported',engine:'codex',managementPermissions:{allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false},workingCopyMode:'separate_git',workingFolder:{directories:[],excludedPaths:[]},workingFiles:[{path:'.ponderosa-portable-review/user-data.json',artifactRef:ref}],artifacts:[{ref,kind:'document',path:'manifest.json',createdAt:new Date().toISOString(),dataBase64:original.toString('base64')}]}]};
+ const initial=await f.packageEngine.importAgent(f.project.id,f.destination.id,pkg,{codex:'codex'},randomUUID(),{workingCopyMode:'separate_git',workingFilesDestination:path.join(f.dataDir,'recovery-one'),workingFilesActivation:{}});
+ const root=f.store.getAgent(initial.rootAgentId).workingCopy.rootPath,review=path.join(root,'.ponderosa-portable-review');
+ assert.deepEqual(await readFile(path.join(review,'user-data.json')),original);
+ const ext=path.join(review,'external-git');assert.ok((await readdir(ext)).includes('manifest.json'));
+ const selection=encodeURIComponent(JSON.stringify({git:true,harness:false,source:'retained_originals'}));
+ // No current-evidence namespace: changed generated files must still block export.
+ const movedExternal=path.join(f.dataDir,'held-external');await rename(ext,movedExternal);
+ const generatedEdit=path.join(review,'git-repository','edited-generated');await writeFile(generatedEdit,'retained generated edit');
+ const held=await f.request({method:'GET',url:`/api/agents/${initial.rootAgentId}/export?mode=full&wholeWorkingFolder=true&reviewedUserData=${selection}`});
+ assert.notEqual(held.statusCode,200);assert.equal(await readFile(generatedEdit,'utf8'),'retained generated edit');
+ await unlink(generatedEdit);
+ const generatedOnly=await f.request({method:'GET',url:`/api/agents/${initial.rootAgentId}/export?mode=full&wholeWorkingFolder=true&reviewedUserData=${selection}`});
+ assert.equal(generatedOnly.statusCode,200,generatedOnly.body);
+ const observedPackage=generatedOnly.json().agents[0],observedFile=observedPackage.workingFiles.find(file=>file.path==='.ponderosa-portable-review/current-git-evidence/manifest.json');
+ assert.ok(observedFile);const observedArtifact=observedPackage.artifacts.find(item=>item.ref===observedFile.artifactRef);
+ const {decodePortableArtifactData}=await import('../../apps/server/dist/agent-package-codec.js');
+ const observations=JSON.parse((await decodePortableArtifactData(observedArtifact)).data).generatedObservations;
+ const gitObservation=observations.find(item=>item.name==='git-repository');assert.equal(gitObservation.state,'matches-original');
+ const gitRootNode=gitObservation.nodes.find(item=>item.path===''),gitRootStat=await lstat(path.join(review,'git-repository'),{bigint:true});
+ assert.equal(gitRootNode.mode,Number(gitRootStat.mode&0o7777n));assert.equal(gitRootNode.mtimeNs,gitRootStat.mtimeNs.toString());
+ await rename(movedExternal,ext);
+ await writeFile(path.join(ext,'edited.review'),'product route current edit\n');
+ await mkdir(path.join(review,'native-git-common'));await writeFile(path.join(review,'native-git-common','table'),'current reference evidence\n');
+ const response=await f.request({method:'GET',url:`/api/agents/${initial.rootAgentId}/export?mode=full&wholeWorkingFolder=true&reviewedUserData=${selection}`});
+ assert.equal(response.statusCode,200,response.body);const exported=response.json(),node=exported.agents[0];
+ assert.ok(node.workingFiles.some(file=>file.path==='.ponderosa-portable-review/current-git-evidence/manifest.json'));
+ const second=await f.packageEngine.importAgent(f.project.id,f.destination.id,exported,{codex:'codex'},randomUUID(),{workingCopyMode:'separate_git',workingFilesDestination:path.join(f.dataDir,'recovery-two'),workingFilesActivation:{}});
+ const secondRoot=f.store.getAgent(second.rootAgentId).workingCopy.rootPath,secondReview=path.join(secondRoot,'.ponderosa-portable-review');
+ assert.deepEqual(await readFile(path.join(secondReview,'user-data.json')),original);
+ assert.equal(await readFile(path.join(secondReview,'current-git-evidence','external-git','edited.review'),'utf8'),'product route current edit\n');
+ assert.equal(await readFile(path.join(secondReview,'current-git-evidence','native-git-common','table'),'utf8'),'current reference evidence\n');
+ assert.equal((await lstat(path.join(secondReview,'current-git-evidence','external-git','edited.review'))).mode&0o777,0o600);
+ const again=await f.request({method:'GET',url:`/api/agents/${second.rootAgentId}/export?mode=full&wholeWorkingFolder=true&reviewedUserData=${selection}`});
+ assert.equal(again.statusCode,200,again.body);const secondPackage=again.json();
+ const third=await f.packageEngine.importAgent(f.project.id,f.destination.id,secondPackage,{codex:'codex'},randomUUID(),{workingCopyMode:'separate_git',workingFilesDestination:path.join(f.dataDir,'recovery-three'),workingFilesActivation:{}});
+ const thirdReview=path.join(f.store.getAgent(third.rootAgentId).workingCopy.rootPath,'.ponderosa-portable-review');
+ assert.deepEqual(await readFile(path.join(thirdReview,'user-data.json')),original);
+ assert.equal(await readFile(path.join(thirdReview,'current-git-evidence','current-git-evidence','external-git','edited.review'),'utf8'),'product route current edit\n');
+}));
