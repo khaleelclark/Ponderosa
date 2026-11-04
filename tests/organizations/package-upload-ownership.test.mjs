@@ -100,7 +100,7 @@ test('concurrent exact imports retain one request identity and reject changed in
 test('journal sync and rollback failure holds the exact import across restart',{timeout:30000,skip:process.platform==='win32'},async t=>{
  await withFixture(t,async f=>{
   const {promises:hostFs}=await import('@ponderosa/native-host/fs');
-  const chat=await f.createChat('Held admission'),requestId=randomUUID();
+  const chat=await f.createChat('Held admission'),other=f.ok(await f.api('POST',`/api/projects/${chat.projectId}/conversations`,{title:'Other destination',defaultEngine:'codex'},{'idempotency-key':randomUUID()})),requestId=randomUUID();
   const endpoint=`/api/projects/${chat.projectId}/agent-import-operations`;
   const pkg={schema:'ponderosa.agent-package.v1',mode:'template',kind:'agent',exportedAt:new Date().toISOString(),sourceLabel:'Held fixture',rootRef:'root',agents:[{ref:'root',title:'Held Agent',engine:'codex',managementPermissions:{allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false}}]};
   const metadata={conversationId:chat.id,engineMapping:{codex:'codex'}};
@@ -140,6 +140,8 @@ test('journal sync and rollback failure holds the exact import across restart',{
   names=await readdir(directory);assert.deepEqual(names.filter(name=>/^[0-9a-f-]{36}\.json$/.test(name)),journals);assert.deepEqual(names.filter(name=>name.endsWith('.payload')),payloads);
   assert.deepEqual(await readFile(path.join(directory,journals[0])),savedJournal);assert.deepEqual(await readFile(path.join(directory,payloads[0])),savedPayload);
   const retire=`${endpoint}/by-request/${requestId}/retire`;
+  assert.equal((await f.api('POST',retire,{conversationId:other.id,operationId})).status,404,'another Chat cannot retire the request');
+  assert.equal((await f.api('POST',retire.replace('/api/','/api/branches/engine/'),{conversationId:chat.id,operationId})).status,404,'another product cannot retire the request');
   assert.equal((await f.api('POST',retire,{conversationId:chat.id,operationId:randomUUID()})).status,404,'retirement requires the exact held operation');
   const receipt=f.ok(await f.api('POST',retire,{conversationId:chat.id,operationId}));
   assert.deepEqual(receipt,{state:'retired',operationId,requestId,projectId:chat.projectId,conversationId:chat.id,product:'dev',requestFingerprint:headers['x-ponderosa-agent-package-fingerprint']});
@@ -149,9 +151,39 @@ test('journal sync and rollback failure holds the exact import across restart',{
   await f.reopen();
   const retired=await f.api('GET',lookup);assert.equal(retired.status,409);assert.equal(retired.body.state,'retired');
   assert.equal((await f.api('POST',endpoint,wire,headers)).status,409);
+  assert.equal((await f.api('POST',`/api/projects/${chat.projectId}/import-agent-package`,wire,legacyHeaders)).status,409,'binary legacy route cannot revive a tombstone after restart');
+  assert.equal((await f.api('POST',`/api/projects/${chat.projectId}/import-agents`,{...metadata,package:pkg},{'idempotency-key':requestId})).status,409,'JSON legacy route cannot revive a tombstone after restart');
   assert.deepEqual(await readFile(path.join(directory,journals[0])),savedJournal);assert.deepEqual(await readFile(path.join(directory,payloads[0])),savedPayload);
   const newKey=randomUUID(),fresh=f.ok(await f.api('POST',endpoint,wire,{...headers,'idempotency-key':newKey}));
   assert.notEqual(fresh.id,operationId,'only an explicit fresh request starts another import');
   assert.equal(f.turns.length,0);
+ });
+});
+
+test('retirement waits for the in-flight Project admission and cannot retire a queued import',{timeout:30000,skip:process.platform==='win32'},async t=>{
+ await withFixture(t,async f=>{
+  const {promises:hostFs}=await import('@ponderosa/native-host/fs');
+  const chat=await f.createChat('Concurrent admission retirement'),requestId=randomUUID();
+  const endpoint=`/api/projects/${chat.projectId}/agent-import-operations`;
+  const pkg={schema:'ponderosa.agent-package.v1',mode:'template',kind:'agent',exportedAt:new Date().toISOString(),sourceLabel:'Admission fixture',rootRef:'root',agents:[{ref:'root',title:'Import target',engine:'codex',managementPermissions:{allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false}}]};
+  const wire=Buffer.from(JSON.stringify({conversationId:chat.id,engineMapping:{codex:'codex'}})+'\n'+JSON.stringify(pkg));
+  const headers={'content-type':'application/vnd.ponderosa.agent-import','idempotency-key':requestId,'x-ponderosa-agent-package-fingerprint':importRequestFingerprint(wire)};
+  const directory=await realpath(path.join(f.dataDir,'agent-import-operations')),originalOpen=hostFs.open;
+  let count=0,release,entered;const reached=new Promise(resolve=>{entered=resolve;}),gate=new Promise(resolve=>{release=resolve;});
+  hostFs.open=async function(name,...args){
+   const handle=await originalOpen.call(this,name,...args);
+   if(typeof name==='string'&&path.basename(name)==='agent-import-operations'&&await realpath(name)===directory&&++count===2)
+    return {sync:async()=>{entered();await gate;await handle.sync();},close:()=>handle.close()};
+   return handle;
+  };
+  try{
+   const admission=f.api('POST',endpoint,wire,headers);await reached;
+   const lookup=await f.api('GET',`${endpoint}/by-request/${requestId}?conversationId=${chat.id}`);assert.equal(lookup.status,409);assert.equal(lookup.body.state,'reserved');
+   const retirement=f.api('POST',`${endpoint}/by-request/${requestId}/retire`,{conversationId:chat.id,operationId:lookup.body.operationId});
+   const beforeRelease=await Promise.race([retirement.then(()=> 'settled'),new Promise(resolve=>setTimeout(()=>resolve('waiting'),40))]);
+   assert.equal(beforeRelease,'waiting','retirement waits for the Project admission lock');
+   release();const admitted=f.ok(await admission);assert.equal(admitted.id,lookup.body.operationId);
+   assert.equal((await retirement).status,409,'an admitted request cannot subsequently be retired as unqueued');
+  }finally{release();hostFs.open=originalOpen;}
  });
 });
