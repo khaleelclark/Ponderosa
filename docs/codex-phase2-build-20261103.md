@@ -22,6 +22,14 @@ and keeps human-only checks from blocking independent work. Original worktrees,
 paused package work, live services, data and credentials were preserved.
 This is source work only: no deployment or production restart was performed.
 
+## Patrick's browser-safeguard clarification
+
+Patrick clarified that the Bible's network-security rule concerns someone on
+the same network attacking Ponderosa. Normal website/browser protections are
+intended to remain. Do not integrate the isolated generic CSP, framing, HSTS,
+referrer-policy and MIME-sniffing header removal draft. Origin checks and
+existing browser protections remain in place; no production change was made.
+
 ## Current integrated checkpoint — 4 November, later
 
 Product-and-test candidate: `5c4f4bcd8b3eff72547493254578036a6acf038c`.

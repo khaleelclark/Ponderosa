@@ -35,7 +35,7 @@ not True. The older reconciliation and exact historical results remain in
 | 17 | Integration | A controlled populated upgrade and focused regressions passed; the final whole suite, crash qualification and 20 consecutive controlled core-path runs remain open. |
 | 18 | Interface | Notification settings and grouped browser displays exist; controlled bursts were checked. Actual push/OS behavior, all settings and mention semantics remain unqualified. |
 | 19 | Integration | Activity and audit records exist. **Missing/held:** unexpected Branch deletion errors can be withheld rather than giving the complete real cause because a general exact-secret-value redactor is unavailable. Ten UI trails and plain-language judging remain open. |
-| 20 | Integration | Origin checks remain and no operator-token gate was found in inspected paths. The reviewed change removing generic CSP, X-Frame-Options, HSTS, Referrer-Policy and X-Content-Type-Options from the global response hook was rejected by automatic approval review and is not integrated. Route-specific origin/preview isolation requires separate interpretation. |
+| 20 | Integration | Origin checks and normal browser safeguards remain. Patrick clarified that the network-security rule concerns attacks by someone on the same network, not ordinary website protections; the generic-header-removal draft must not be integrated. No operator-token gate was found in inspected core admission. Complete network-specific and authentication census remains open. |
 | 21 | Interface | Streaming and bounded rendering exist; the Bible's 10,000-message/20-active-Agent, desktop/mobile Event Timing measurements remain open. |
 | 22 | Integration | Installer, bootstrap and docs exist; the fresh docs-only install-to-first-reply timing remains open. |
 | 23 | Integration | Current guidance exists and a stale peer-steering instruction was corrected. Exhaustive documented-behavior execution and documentation reconciliation remain open. |
@@ -76,10 +76,8 @@ for end-to-end and acceptance evidence.
   one-shot/Windows/legacy evidence and multiple uncertain roots without blindly
   replaying effects. Do not treat provider prompt fences as proof a model
   understood an instruction.
-- Integrating generic response-header removal was rejected by automatic
-  approval review; the draft remains isolated. The review cited broad removal
-  of browser security protections without explicit authorization. No retry is
-  authorized by elapsed time.
+- Patrick clarified that normal website/browser protections should remain;
+  the generic-header-removal draft is abandoned and must not be integrated.
 - Run consolidated whole-product and Bible qualification only after the
   authorized implementation is assembled; report exact skips, failures,
   real-provider limits and human-only handoff items.
