@@ -80,8 +80,8 @@ export async function lifecycleNoteValidationRegression():Promise<void>{
   assert(posts.length===0&&!localStorage.getItem(key(memoryPath)),'invalid input creates no retained command');
   await write('1234567890123456');await approve();
   assert(!button('Reconcile and preserve evidence').disabled,'16 characters can proceed');
-  await write('x'.repeat(4096));await approve();
-  assert(!button('Reconcile and preserve evidence').disabled,'4096 characters can proceed');
+  await write('  '+ 'x'.repeat(4096) +'  ');await approve();
+  assert(!button('Reconcile and preserve evidence').disabled,'4096 trimmed characters can proceed');
   await write('x'.repeat(4097));await approve();
   assert(button('Reconcile and preserve evidence').disabled,'more than 4096 characters cannot submit');
   await write('1234567890123456');await approve();
@@ -93,6 +93,9 @@ export async function lifecycleNoteValidationRegression():Promise<void>{
   assert(retained&&document.body.textContent?.includes('Exact command retained'),'unknown result keeps command locked');
   render('memory','memory-remount');await settle();button('Review memory hold').click();await settle();
   assert(localStorage.getItem(key(memoryPath))===retained&&posts.length===1,'remount never clears or replays an uncertain command');
+  button('Retry exact command').click();await settle();button('Confirm exact command').click();await settle();
+  assert(posts.length===2&&JSON.stringify(posts[0].body)===JSON.stringify(posts[1].body),'only an explicit retry resends the unchanged command');
+  assert(localStorage.getItem(key(memoryPath))===retained,'another lost response retains the original command');
 
   render('import','import');await settle();button('Review import custody').click();await settle();
   await write('1234567');await approve();
@@ -101,7 +104,7 @@ export async function lifecycleNoteValidationRegression():Promise<void>{
   assert(!button('Preserve unresolved operation').disabled,'8 characters can proceed for imports');
   await write('x'.repeat(4097));await approve();
   assert(button('Preserve unresolved operation').disabled&&button('Retire mutation-free import').disabled,'oversize notes block both import decisions');
-  assert(!localStorage.getItem(key(importPath))&&posts.length===1,'invalid import note creates no retained command');
+  assert(!localStorage.getItem(key(importPath))&&posts.length===2,'invalid import note creates no retained command');
  }finally{
   root.unmount();client.clear();host.remove();globalThis.fetch=originalFetch;
   keys.forEach((k,i)=>{if(saved[i]===null)localStorage.removeItem(k);else localStorage.setItem(k,saved[i]!);});
