@@ -253,6 +253,8 @@ test('UI019 oversized aggregate answers are rejected before resolution or provid
 test('Decision and retained Chat audio ranges retain their owner checks after Agent removal',fixtureTestOptions,t=>withFixture(t,async f=>{
  const voice=Buffer.concat([Buffer.from('OggS'),Buffer.alloc(22),Buffer.from([1,19]),Buffer.from('OpusHead'),Buffer.alloc(11)]);
  const x=await ask(f), staged=await upload(f,x,voice,'voice.ogg','audio/ogg');
+ const previous=(await f.detail(x.agent.id)).runs.map(run=>run.id),marker='AUDIO_CONTINUED_'+randomUUID();
+ f.plans.set(x.agent.id,[{run:async session=>{f.ok(await f.tool(session,'ponderosa_message',{intent:'direct_to_user',text:marker}));}}]);
  const result=f.ok(await f.api('POST','/api/decisions/'+x.decision.id+'/respond',{attachmentIds:[staged.id]}));
  const file=result.response.attachments[0];
  const checkRange=async url=>{
@@ -263,7 +265,8 @@ test('Decision and retained Chat audio ranges retain their owner checks after Ag
  };
  await checkRange(file.downloadUrl);
  assert.equal((await f.api('GET',file.downloadUrl.replace(x.decision.id,randomUUID())+'?playback=audio',undefined,{range:'bytes=0-3'})).status,404);
- await f.settled(x.agent.id);
+ await until(async()=>(await f.detail(x.agent.id)).messages.some(message=>message.text===marker),'audio Decision continuation');
+ await f.settled(x.agent.id,previous);
  const preview=f.ok(await f.api('POST','/api/projects/'+x.chat.projectId+'/agent-deletions/preview',{rootAgentIds:[x.agent.id]}));
  f.ok(await f.api('POST','/api/projects/'+x.chat.projectId+'/agent-deletions/commit',{rootAgentIds:[x.agent.id],previewHash:preview.previewHash}));
  assert.equal((await f.api('GET','/api/agents/'+x.agent.id)).status,404);
