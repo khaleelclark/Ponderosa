@@ -23,7 +23,7 @@ export function PendingAgentImportRecovery({entry,initialBlob,disabled=false,onA
   onAccepted(entry,operation);
  };
  const check=async()=>{
-  setBusy(true);setNotice('');
+  setBusy(true);setNotice('');setHeld(undefined);
   try{verify(await api.getAgentImportOperationByRequest(entry.projectId,entry.conversationId,entry.requestId));}
   catch(error){
    const status=error instanceof ApiRequestError&&error.status===409?heldStatus(error.body):undefined;
@@ -39,7 +39,7 @@ export function PendingAgentImportRecovery({entry,initialBlob,disabled=false,onA
    if(!status||status.state!=='retired'||status.operationId!==held.operationId)throw Error('The retirement receipt does not match the saved request.');
    setHeld(status);
    try{onRetired(entry);}catch{setNotice('Retirement was confirmed, but the saved browser record could not be updated. Keep browser data and dismiss it after checking again.');}
-  }catch(error){setNotice(`Retirement is unconfirmed. Check the request status again. ${error instanceof Error?error.message:''}`);}
+  }catch(error){setHeld(undefined);setNotice(`Retirement is unconfirmed. Check the request status again. ${error instanceof Error?error.message:''}`);}
   finally{setBusy(false);}
  };
  const dismissRetired=()=>{try{onRetired(entry);}catch{setNotice('Retirement was confirmed, but the saved browser record could not be updated. Keep browser data and try again.');}};
