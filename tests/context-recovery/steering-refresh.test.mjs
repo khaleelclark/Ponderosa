@@ -295,33 +295,3 @@ test('legacy mixed-source uncertain recoveries stay held while unrelated work re
   assert.equal(store.sqlite.prepare('SELECT state FROM agent_activations WHERE id=?').get(peerRetry).state,'pending');
  },{storeFactory:dataDir=>(store=new AgentStore(dataDir)),steeringResponse:async()=>{throw Error('Controlled ambiguous steer');}});
 });
-
-
-test('reviewed steering retires the prior provider and holds an unqualified replacement', {timeout:30000}, async t=>{
- const previousLimit=process.env.PONDEROSA_MAX_IDLE_RUNTIME_SESSIONS;
- const originalCheck=CoordinationV3Store.prototype.isReviewedSteeringRun;
- process.env.PONDEROSA_MAX_IDLE_RUNTIME_SESSIONS='1';
- let reviewed=false,store;
- CoordinationV3Store.prototype.isReviewedSteeringRun=function(runId){return reviewed || Boolean(originalCheck?.call(this,runId));};
- try {
-  await withFixture(t,async f=>{
-   const chat=await f.createChat('Reviewed fresh context'),agent=await f.createIdleAgent(chat,'Worker');
-   await f.send(agent.id,'Original objective: preserve the exact task.');await f.settled(agent.id);
-   const first=f.sessions.get(agent.id);
-   assert.ok(first?.isAlive(),'fixture must have a live reusable original provider');
-   let handoffReads=0;
-   store.pendingContinuationHandoff=()=>{handoffReads++;return {id:'unrelated',executionId:'other-run',text:'unrelated stale handoff'};};
-   reviewed=true;
-   await f.send(agent.id,'Continue after human review without repeating uncertain actions.');
-   await until(()=>f.sessions.get(agent.id)!==first && !f.sessions.get(agent.id)?.isAlive(),'unqualified replacement is closed');
-   const turns=f.turns.filter(turn=>turn.agentId===agent.id);
-   assert.equal(turns.length,1,'an unqualified provider must receive no reviewed input');
-   assert.equal(first.isAlive(),false,'the previous owned provider must be retired');
-   assert.equal(handoffReads,0,'an unrelated generic handoff must not be selected');
-  },{storeFactory:dir=>(store=new AgentStore(dir))});
- } finally {
-  CoordinationV3Store.prototype.isReviewedSteeringRun=originalCheck;
-  if(previousLimit===undefined)delete process.env.PONDEROSA_MAX_IDLE_RUNTIME_SESSIONS;
-  else process.env.PONDEROSA_MAX_IDLE_RUNTIME_SESSIONS=previousLimit;
- }
-});

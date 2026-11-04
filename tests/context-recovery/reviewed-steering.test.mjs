@@ -108,11 +108,14 @@ test('qualified Codex continues the saved task and instruction with both files a
   const first=f.ok(await f.api('GET',path));
   if(first.status==='source_retirement_required') f.ok(await f.api('POST',path+'/retire-source'));
   const review=f.ok(await f.api('GET',path));assert.equal(review.status,'review_required');
+  let handoffReads=0;
+  store.pendingContinuationHandoff=()=>{handoffReads++;return {id:'unrelated',executionId:'other-run',text:'unrelated stale handoff'};};
   useNative=true;
   const receipt=f.ok(await f.api('POST',path,{reviewSha256:review.review.reviewSha256,effectsReviewed:true,reviewNote:'Checked known receipts',idempotencyKey:randomUUID()})).receipt;
   const call=await until(async()=> (await native.requests()).find(r=>r.method==='turn/start'),'qualified provider turn');
   assert.match(JSON.stringify(call),/The complete original task/);assert.match(JSON.stringify(call),/Apply the correction/);
   assert.match(JSON.stringify(call),/external effects occurred remain unknown/);
+  assert.equal(handoffReads,0,'reviewed continuation must not adopt an unrelated generic handoff');
   const bytes=await Promise.all(runtimeAttachmentPaths(call).map(path=>readFile(path,'utf8')));
   assert.ok(bytes.includes('original fixture bytes'));assert.ok(bytes.includes('correction fixture bytes'));
   await native.sendTool('ponderosa_message',{text:'Completed reviewed task'});
