@@ -87,6 +87,26 @@ test('a lost import response is looked up by exact request and retried only with
  });
 });
 
+test('same Project Chat cannot recover another Chat import',{timeout:30000},async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  // Older shared Projects support multiple Chats; exercise that actual layout.
+  const project=store.createProject({label:'Shared Project',hostPath:f.root,defaultEngine:'codex'});
+  const chat=store.getConversation(project.lastConversationId);
+  const other=store.createConversation(project.id,{title:'Other Chat'});
+  assert.equal(chat.projectId,other.projectId);assert.notEqual(chat.id,other.id);
+  const requestId=randomUUID(),endpoint=`/api/projects/${project.id}/agent-import-operations`;
+  const wire=Buffer.from(JSON.stringify({conversationId:chat.id,engineMapping:{codex:'codex'}})+'\n{}');
+  const headers={'content-type':'application/vnd.ponderosa.agent-import','idempotency-key':requestId,'x-ponderosa-agent-package-fingerprint':importRequestFingerprint(wire)};
+  const admitted=f.ok(await f.api('POST',endpoint,wire,headers));
+  const lookup=id=>`${endpoint}/by-request/${requestId}?conversationId=${id}`;
+  assert.equal(f.ok(await f.api('GET',lookup(chat.id))).id,admitted.id);
+  assert.equal((await f.api('GET',lookup(other.id))).status,404,'same-Project Chat cannot recover the receipt');
+  assert.equal((await f.api('POST',`${endpoint}/by-request/${requestId}/retire`,{conversationId:other.id,operationId:admitted.id})).status,404,'same-Project Chat cannot retire the request');
+  await drainImports();
+ },{storeFactory:dataDir=>(store=new AgentStore(dataDir))});
+});
+
 test('concurrent exact imports retain one request identity and reject changed input',{timeout:30000},async t=>{
  await withFixture(t,async f=>{
   const chat=await f.createChat('Concurrent import'),requestId=randomUUID();
