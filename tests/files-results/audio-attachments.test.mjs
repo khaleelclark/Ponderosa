@@ -59,11 +59,19 @@ test('duplicate wire-level Range headers never expose an unchecked multipart res
  const asset=f.ok(await f.api('POST','/api/conversations/'+chat.id+'/attachments',opus,{'content-type':'application/octet-stream','x-ponderosa-filename':'voice.ogg','x-ponderosa-media-type':'audio/ogg'}));
  const address=await f.listen();
  const url=address+'/api/conversations/'+chat.id+'/assets/'+asset.id+'/download?playback=audio';
- const response=await new Promise((resolve,reject)=>{
-  const req=request(url,{headers:['Range','bytes=0-1','Range','bytes=4-5']},res=>{
+ // A raw header list suppresses Node's automatic Host header. Supply it so
+ // this exercises the application instead of receiving an HTTP parser 400.
+ const rawRequest=ranges=>new Promise((resolve,reject)=>{
+  const req=request(url,{headers:['Host',new URL(url).host,...ranges]},res=>{
    const chunks=[];res.on('data',chunk=>chunks.push(chunk));res.on('end',()=>resolve({status:res.statusCode,headers:res.headers,body:Buffer.concat(chunks)}));res.on('error',reject);
   });req.on('error',reject);req.end();
  });
+ // Control proves the same raw HTTP path reaches the single-range handler.
+ const single=await rawRequest(['Range','bytes=0-1']);
+ assert.equal(single.status,206);assert.deepEqual(single.body,opus.subarray(0,2));
+ assert.equal(single.headers['content-range'],'bytes 0-1/'+opus.length);
+ const response=await rawRequest(['Range','bytes=0-1','Range','bytes=4-5']);
  assert.equal(response.status,200);assert.deepEqual(response.body,opus);
  assert.equal(response.headers['content-type'],'audio/ogg');
+ assert.equal(response.headers['content-range'],undefined);
 }));
