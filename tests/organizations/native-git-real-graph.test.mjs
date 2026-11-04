@@ -52,7 +52,7 @@ async function fixture(t,worktree=false,selectedWorktree=false,extensions={}){
   await setExactMtime(path.join(sourceSelected,'run'));
   await setExactMtime(path.join(sourceSelected,'symbol'),true);
   await setExactMtime(sourceSelected);
-  await git(source,'config','core.hooksPath','.hooks');
+  await git(source,'config','core.hooksPath',extensions.crossAlias?source:'.hooks');
   await mkdir(destinationSelected);await writeFile(path.join(destinationSelected,'run'),data);
   await link(path.join(destinationSelected,'run'),extensions.crossAlias?path.join(destination,'shared-script'):path.join(destinationSelected,'hard'));
   await symlink('run',path.join(destinationSelected,'symbol'));

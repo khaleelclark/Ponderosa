@@ -224,6 +224,14 @@ export function planReviewedGitExternalApplication(value:ReviewedUserData,activa
   // both retained views are exactly the same file; never decide after writes.
   for(const capsule of family.repositories??[]){
     if(!capsule.bare)continue;
+    // A descendant bare capsule can be created by an outer writer; the
+    // child writer does not yet retain descriptor-relative custody across
+    // that handoff. Refuse before any destination entry is created.
+    if((family.repositories??[]).some(outer=>outer!==capsule&&outer.bare&&!sourcePathsEqual(outer.sourcePath,capsule.sourcePath)&&sourcePathWithin(outer.sourcePath,capsule.sourcePath)))
+      throw new Error('Nested bare Git capsule requires descriptor-held storage custody; preserve the source');
+    const provenance=capsule.git.configurationSourceDirectories;
+    if(!provenance||!sourcePathsEqual(provenance.common,capsule.sourcePath)||!sourcePathsEqual(provenance.private,capsule.sourcePath))
+      throw new Error('Bare Git capsule requires its exact captured storage provenance');
     const controls:Array<{path:string;dataBase64:string|null}>=[
       ...capsule.git.infoReview,
       {path:'info/sparse-checkout',dataBase64:capsule.git.sparseReview.patternsBase64},
@@ -273,7 +281,11 @@ export function planReviewedGitExternalApplication(value:ReviewedUserData,activa
     // A selected worktree root can contain its native Git storage. A hook
     // rooted at that storage must not inherit the worktree's byte-phase
     // directory authority or collide with the Git directory being created.
-    if(!isDefault&&dataRoots.some(root=>sourcePathWithin(root.source,folder.sourcePath)&&sourceStorageOwner(root.source)===sourceStorageOwner(folder.sourcePath)))continue;
+    // A nested bare capsule already has a required native destination under
+    // the enclosing tree. Do not replace that exact binding with a second
+    // owned tree merely because the capsule is a distinct storage owner.
+    const nestedBareInOwnedTree=dataRoots.some(root=>sourcePathWithin(root.source,folder.sourcePath)&&repositories.some(scope=>scope.bare&&sourcePathsEqual(scope.sourceCommon,scope.sourceWorkingRoot)&&sourcePathsEqual(scope.sourcePrivate,scope.sourceWorkingRoot)&&sourcePathWithin(scope.sourceWorkingRoot,folder.sourcePath)&&sourceStorageOwner(folder.sourcePath)===sourcePathKey(scope.sourceWorkingRoot)&&sourcePathWithin(root.source,scope.sourceWorkingRoot)&&scope.gitDir===path.join(root.placement.absolute,...relativeSourcePath(root.source,scope.sourceWorkingRoot).split('/'))));
+    if(!isDefault&&(nestedBareInOwnedTree||dataRoots.some(root=>sourcePathWithin(root.source,folder.sourcePath)&&sourceStorageOwner(root.source)===sourceStorageOwner(folder.sourcePath))))continue;
     const choice=treeDestination(folder.sourcePath),target=choice.target,placement=place(choice.scope,choice.context,target);
     dataRoots.push({source:folder.sourcePath,placement});sourceMappings.set(sourcePathKey(folder.sourcePath),{source:folder.sourcePath,destination:target});
   }

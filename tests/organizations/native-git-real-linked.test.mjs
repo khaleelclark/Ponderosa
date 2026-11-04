@@ -40,6 +40,8 @@ for(const includeExclude of [true,false])test('real captured bare dependency pre
  assert.ok(manifest.gitExternalDependencies.repositories.some(repository=>repository.sourcePath===bare&&repository.bare===true));
  const activation={git:true,harness:false},pkg=packageFor(manifest,{'file.txt':Buffer.from('committed\n')});
  await writeFile(path.join(destination,'file.txt'),'committed\n');
+ const noProvenance=structuredClone(manifest);delete noProvenance.gitExternalDependencies.repositories.find(item=>item.sourcePath===bare).git.configurationSourceDirectories;
+ assert.throws(()=>planReviewedRecoveryRoots(packageFor(noProvenance,{'file.txt':Buffer.from('committed\n')}),{work:destination},activation),/provenance/);
  const conflicting=structuredClone(manifest),duplicate=conflicting.gitExternalDependencies.files.find(file=>file.sourcePath===path.join(bare,'info','attributes'));
  assert.ok(duplicate,'real capture retained both capsule and external evidence');
  duplicate.dataBase64=Buffer.from('conflicting original\n').toString('base64');
@@ -134,4 +136,26 @@ test('real mapped linked worktrees share common originals without private recrea
  assert.ok(commonBefore);const after=await lstat(path.join(storage,'config'),{bigint:true});assert.equal(after.ino,commonBefore.ino);assert.equal(after.mtimeNs,commonBefore.mtimeNs);assert.equal(after.ctimeNs,commonBefore.ctimeNs);assert.deepEqual(await readFile(path.join(storage,'config')),commonBytes);
  assert.equal((await lstat(hookOriginal,{bigint:true})).ino,hookBefore.ino);assert.deepEqual(await readFile(hookOriginal),hookBytes);
  for(const [work,branch] of [[one,'first'],[two,'second']]){assert.equal(await git(work,'branch','--show-current'),branch);const view=await git(work,'config','--path','--get','core.hooksPath');assert.equal(await realpath(path.resolve(work,view)),path.dirname(hookOriginal));}
+});
+
+test('nested bare dependencies hold before writes until inherited custody is supported',options,async t=>{
+ const root=await realpath(await mkdtemp(path.join(tmpdir(),'real-nested-bare-'))),source=path.join(root,'source'),destination=path.join(root,'destination'),dependencies=path.join(root,'dependencies');
+ t.after(()=>rm(root,{recursive:true,force:true}));
+ await initialize(source);await mkdir(destination);await mkdir(dependencies);
+ const outer=path.join(dependencies,'outer.git'),inner=path.join(outer,'nested.git');
+ await git(root,'clone','--bare','--no-hardlinks',source,outer);
+ await git(root,'clone','--bare','--no-hardlinks',source,inner);
+ await writeFile(path.join(outer,'hooks','outer-hook'),'outer hook\n');
+ await writeFile(path.join(inner,'hooks','inner-hook'),'inner hook\n');
+ await git(source,'config','core.hooksPath',dependencies);
+ const manifest=await exportReviewedUserData(source,{git:true,harness:false,externalGitDependencies:true});
+ const repositories=manifest.gitExternalDependencies.repositories;
+ assert.ok(repositories.some(item=>item.bare&&item.sourcePath===outer));
+ assert.ok(repositories.some(item=>item.bare&&item.sourcePath===inner));
+ await writeFile(path.join(destination,'file.txt'),'committed\n');
+ const activation={git:true,harness:false};
+ assert.throws(()=>planReviewedRecoveryRoots(packageFor(manifest,{'file.txt':Buffer.from('committed\n')}),{work:destination},activation),/Nested bare Git capsule requires descriptor-held storage custody/);
+ await assert.rejects(lstat(path.join(destination,'.git')),{code:'ENOENT'});
+ assert.equal(await readFile(path.join(outer,'hooks','outer-hook'),'utf8'),'outer hook\n');
+ assert.equal(await readFile(path.join(inner,'hooks','inner-hook'),'utf8'),'inner hook\n');
 });
