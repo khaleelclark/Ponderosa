@@ -466,6 +466,11 @@ test('new linked reftable recovery emits canonical structural config for recaptu
   await assert.rejects(untouched.verify(),/Generated review contents changed/,'mutation invalidates an already captured export');
   await assert.rejects(reexport(),/Generated review contents changed/);
   assert.notDeepEqual(await readFile(generatedConfig),originalGeneratedConfig,'edited generated config remains intact');
+  const generatedRoot=path.join(destination,'.ponderosa-portable-review','git-repository');
+  const redirected=Buffer.from(originalGeneratedConfig.toString().replace(JSON.stringify(generatedRoot),JSON.stringify(path.join(root,'other-review'))));
+  assert.notDeepEqual(redirected,originalGeneratedConfig,'fixture changes the generated worktree target');
+  await writeFile(generatedConfig,redirected);await assert.rejects(reexport(),/Generated review contents changed/);
+  assert.deepEqual(await readFile(generatedConfig),redirected,'changed target remains intact');
   await writeFile(generatedConfig,originalGeneratedConfig);
   const pkg={schema:'ponderosa.agent-package.v1',mode:'full',kind:'organization',exportedAt:new Date().toISOString(),sourceLabel:'fixture',rootRef:'agent',agents:[{ref:'agent',title:'Agent',engine:'codex',workingRootRef:'work',managementPermissions:{allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false},workingFolder:{directories:[],excludedPaths:['.git']},workingFiles:[{path:originalPath,artifactRef:'wire'}],artifacts:[{ref:'wire',kind:'generated_file',path:'wire',createdAt:new Date().toISOString(),dataBase64:wire.toString('base64')}]}]};
   const activation={git:true,harness:false},tasks=planReviewedRecoveryRoots(pkg,{work:destination},activation);
