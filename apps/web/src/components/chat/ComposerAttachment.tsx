@@ -65,7 +65,7 @@ export function ComposerAttachment({
       ) : (
         <Typography
           variant="caption"
-          sx={{ display: "block", p: 1, pr: 5, overflowWrap: "anywhere" }}
+          sx={{ display: "block", p: 1, pr: { xs: 6.5, sm: 5 }, overflowWrap: "anywhere" }}
         >
           {file.name}
           <br />

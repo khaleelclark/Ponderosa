@@ -39,6 +39,21 @@ try {
       await page.goto(surface==='inbox' ? manifest.origin+'/messages' : surface.startsWith('core') ? manifest.normalUrl : manifest.url);
       const editor=page.getByLabel('Message',{exact:true});
       await editor.waitFor();
+      if (surface==='core-shared') {
+        await page.getByRole('button',{name:'Add attachment or capability'}).click();
+        const chooser=page.waitForEvent('filechooser');
+        await page.getByRole('menu',{name:'Add attachment or runtime capability'}).getByRole('menuitem',{name:/^Files/}).click();
+        await (await chooser).setFiles({name:'synthetic-note.txt',mimeType:'text/plain',buffer:Buffer.from('Synthetic attachment')});
+        const remove=page.getByRole('button',{name:'Remove synthetic-note.txt'});await remove.waitFor();
+        const bounds=await remove.evaluate(button=>{
+          const text=button.parentElement.querySelector('.MuiTypography-root');
+          const node=[...text.childNodes].find(n=>n.nodeType===Node.TEXT_NODE&&n.textContent.includes('synthetic-note.txt'));
+          const range=document.createRange();range.selectNodeContents(node);
+          return {textRight:range.getBoundingClientRect().right,buttonLeft:button.getBoundingClientRect().left};
+        });
+        assert(bounds.textRight<=bounds.buttonLeft,'The filename stays visible beside its remove control');
+        await remove.click();await remove.waitFor({state:'hidden'});
+      }
       if (surface.endsWith('shared')) {
         if (!mobile && surface.startsWith('core')) {
           const resize=page.getByRole('separator',{name:'Resize sidebar',exact:true});
