@@ -1663,6 +1663,14 @@
       "requirements": "Node24 and installed Lexical; no browser or provider account"
     },
     {
+      "path": "tests/memory/expert-finding.test.mjs",
+      "feature": "memory",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Built server, owned Chroma and pinned models; no provider account",
+      "origin": "Temporary agent copy findings and memory retention"
+    },
+    {
       "path": "tests/memory/package-portability.test.mjs",
       "feature": "memory",
       "lane": "server",

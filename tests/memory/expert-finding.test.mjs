@@ -30,6 +30,21 @@ test('original finding destination is explicit and private',async()=>{
 
 test('host-only final memory export rejects an unrelated durable Chat',async t=>{
  const f=await instance(t);let checks=0;
- await assert.rejects(f.memory.exportExpertFinalPackageMemory(f.chat.id,[f.a.id],()=>{checks++;}),/Exact reviewed expert copy/);
+ await assert.rejects(f.memory.exportExpertFinalPackageMemory(f.chat.id,[f.a.id],()=>{checks++;}),/Exact reviewed temporary agent copy/);
  assert.equal(checks,1);
+});
+
+test('retained expert receipt identifies memory even when generic temporary proof excludes provisioned Chats',async t=>{
+ const f=await instance(t),{BranchStore,CoordinationV3Store,readBranchExpertCopy}=await import('@ponderosa/agents');
+ const {sealBranchExpertSnapshot,reserveBranchExpertChat}=await import('../../packages/agents/dist/branch-expert-copy.js');
+ const sourceProject=f.store.createProject({label:'Source',hostPath:f.root,defaultEngine:'fixture',chatOwned:true}),sourceChat=f.store.getConversation(sourceProject.lastConversationId),source=f.store.createAgent(sourceProject.id,{title:'Expert',engine:'fixture',conversationId:sourceChat.id});
+ const branches=new BranchStore(f.store.sqlite,new CoordinationV3Store(f.store.sqlite));
+ const definition={schema:'ponderosa.branch.v1',name:'Expert cleanup',trigger:{kind:'manual'},entry:'work',controls:[],steps:[{id:'work',kind:'agent',target:{kind:'persistent_agent',ref:'expert'},instructions:'Work',jobHandling:'copy'}],edges:[],policy:{maxConcurrentExecutions:1,maxEphemeralAgents:1,failure:{action:'stop'}}};
+ const branch=branches.deploy({chatId:sourceChat.id,idempotencyKey:'expert-cleanup-deploy',definition,bindings:{agents:{expert:source.id},directories:{workspace:f.root}}}),job=branches.accept(branch.id,'expert-cleanup-job','input');for(let i=0;i<6;i++)branches.advance();
+ const resource=f.store.sqlite.prepare('SELECT * FROM branch_resources WHERE execution_id=?').get(job.id),r=readBranchExpertCopy(f.store.sqlite,job.id,resource.step_execution_id);
+ sealBranchExpertSnapshot(f.store.sqlite,job.id,resource.step_execution_id,{...r.snapshotSource,version:1,custodyId:'fixture-custody',boundaryId:'fixture-boundary',sha256:'a'.repeat(64),byteLength:20});
+ reserveBranchExpertChat(f.store.sqlite,job.id,resource.step_execution_id,{copyChatId:f.chat.id,copyProjectId:f.project.id});
+ assert.equal(f.memory.isProvenTemporaryChat(f.chat.id,f.project.id,branch.id),false);
+ assert.equal(f.memory.hasExpertMemory(f.chat.id,f.project.id),true);
+ assert.throws(()=>f.memory.hasExpertMemory(f.chat.id,'different-project'),/memory is retained/);
 });

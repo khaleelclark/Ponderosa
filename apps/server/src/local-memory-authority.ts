@@ -25,7 +25,7 @@ export const MEMORY_CLEANUP_HOLD_REASONS=[
  'Memory collection bindings overlap; cleanup held',
  'Previously deleted memory collection exists again; cleanup held',
  'Memory collection identity changed; cleanup held',
- 'Expert copy memory is retained until its final custody is confirmed',
+ 'Temporary agent copy memory is retained until its final custody is confirmed',
 ] as const;
 const memoryCleanupHolds=new Set<string>(MEMORY_CLEANUP_HOLD_REASONS);
 export function isMemoryCleanupHold(value:unknown):boolean{

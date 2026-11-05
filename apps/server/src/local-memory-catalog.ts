@@ -1,6 +1,6 @@
 const str={type:'string',minLength:1};const destination={type:'string',enum:['chat','global']};
 const guidance = {
- save: 'Store a fact in the explicit destination: chat for this Chat, global for installation-wide memory. Chat visibility defaults to team; private is same-Agent only and unsupported for global. A reusable expert job copy may explicitly save a concise finding to its original Agent with recipient original, destination chat and private visibility; this does not start the original Agent.',
+ save: 'Store a fact in the explicit destination: chat for this Chat, global for installation-wide memory. Chat visibility defaults to team; private is same-Agent only and unsupported for global. A temporary agent copy may explicitly save a concise finding to its original Agent with recipient original, destination chat and private visibility; this does not start the original Agent.',
  update: 'Create a new physical version using a returned chunk_id and its destination. Existing-source read authority is required; retain the returned lineage.',
  forget: 'Forget a returned chunk_id in its destination. Existing-source read authority is required; this is not a hard delete.',
  get: 'Fetch a returned physical chunk_id. Omit source to resolve across both authorized Chat and global memory; use source only to deliberately narrow the lookup.',

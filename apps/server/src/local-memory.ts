@@ -250,7 +250,7 @@ export class LocalMemoryService{
    await this.ready();
    const guard=async()=>{this.live();const receipt=this.ports.store.getConversationDeletionReceipt(chatId);if(!receipt?.canonicalDeletionCompleted||this.ports.store.getConversation(chatId,{includeDeleting:true}))throw new MemoryDenied('Exact committed Chat deletion required');};
    await guard();const receipt=this.ports.store.getConversationDeletionReceipt(chatId)!;
-   if(this.isProvenTemporaryChat(chatId,receipt.projectId,receipt.branchId)&&this.ports.store.sqlite.prepare('SELECT 1 FROM local_memory_scope_provisioning WHERE chat_id=?').get(chatId))throw new MemoryCollectionHold('Expert copy memory is retained until its final custody is confirmed');
+   if(this.hasExpertMemory(chatId,receipt.projectId))throw new MemoryCollectionHold('Temporary agent copy memory is retained until its final custody is confirmed');
    if(!this.isProvenTemporaryChat(chatId,receipt.projectId,receipt.branchId)){
     // Serialize this no-effect proof with provisioning.
     const neverProvisioned=await this.core.database.raw.exclusive(async()=>{
@@ -291,7 +291,7 @@ export class LocalMemoryService{
    for(const target of targets)if(target.conversation_id){
     await guard();const chat=store.getConversation(target.conversation_id,{includeDeleting:true});
     const branchId=chat?.branchId??store.getConversationDeletionReceipt(target.conversation_id)?.branchId;
-    if(this.isProvenTemporaryChat(target.conversation_id,target.project_id,branchId,target.id)&&store.sqlite.prepare('SELECT 1 FROM local_memory_scope_provisioning WHERE chat_id=?').get(target.conversation_id))throw new MemoryCollectionHold('Expert copy memory is retained until its final custody is confirmed');
+    if(this.hasExpertMemory(target.conversation_id,target.project_id))throw new MemoryCollectionHold('Temporary agent copy memory is retained until its final custody is confirmed');
     if(this.isProvenTemporaryChat(target.conversation_id,target.project_id,branchId,target.id)){if(this.core.database.scopeHasUnsettledMutation('chat:'+target.conversation_id))throw Error(MEMORY_CLEANUP_UNKNOWN_HOLD);}
     else await this.core.database.purge('chat:'+target.conversation_id,guard,target.id);
    }
@@ -303,7 +303,7 @@ export class LocalMemoryService{
    await this.ready();const store=this.ports.store;
    const guard=async()=>{this.live();if(!store.sqlite.prepare('SELECT 1 FROM project_deletion_pending WHERE project_id=?').get(projectId))throw new MemoryDenied('Exact pending Project deletion required');};
    await guard();const chats=store.sqlite.prepare('SELECT id FROM conversations WHERE project_id=?').all(projectId) as {id:string}[];
-   for(const {id}of chats){const chat=store.getConversation(id,{includeDeleting:true});await guard();if(chat&&this.isProvenTemporaryChat(id,projectId,chat.branchId)&&store.sqlite.prepare('SELECT 1 FROM local_memory_scope_provisioning WHERE chat_id=?').get(id))throw new MemoryCollectionHold('Expert copy memory is retained until its final custody is confirmed');if(chat&&this.isProvenTemporaryChat(id,projectId,chat.branchId)){if(this.core.database.scopeHasUnsettledMutation('chat:'+id))throw Error(MEMORY_CLEANUP_UNKNOWN_HOLD);}else await this.core.database.purge('chat:'+id,guard);await guard();this.policy.prepare('DELETE FROM local_memory_chat_grants WHERE chat_id=? AND principal_id=?').run(id,this.principalId);this.knownScopes.delete('chat:'+id);}
+   for(const {id}of chats){const chat=store.getConversation(id,{includeDeleting:true});await guard();if(this.hasExpertMemory(id,projectId))throw new MemoryCollectionHold('Temporary agent copy memory is retained until its final custody is confirmed');if(chat&&this.isProvenTemporaryChat(id,projectId,chat.branchId)){if(this.core.database.scopeHasUnsettledMutation('chat:'+id))throw Error(MEMORY_CLEANUP_UNKNOWN_HOLD);}else await this.core.database.purge('chat:'+id,guard);await guard();this.policy.prepare('DELETE FROM local_memory_chat_grants WHERE chat_id=? AND principal_id=?').run(id,this.principalId);this.knownScopes.delete('chat:'+id);}
    for(const [id,entry]of this.unusedMemoryRuns)if(entry.projectId===projectId)this.unusedMemoryRuns.delete(id);
   });
  }
@@ -335,6 +335,16 @@ export class LocalMemoryService{
   if(row&&(deletedReceipt||(chat&&chat.project_id===projectId&&chat.branch_id===branchId&&chat.branch_execution_id===row.execution_id)))return true;
   if(db.prepare('SELECT 1 FROM local_memory_scope_provisioning WHERE chat_id=?').get(chatId))return false;
   return hasRetainedTemporaryChatScope(db,{chatId,projectId,branchId,...(agentId?{agentId}:{})});
+ }
+ /** Retained expert memory must never be purged without its final custody. */
+ private hasExpertMemory(chatId:string,projectId:string):boolean{
+  const db=this.ports.store.sqlite;if(!db.prepare('SELECT 1 FROM local_memory_scope_provisioning WHERE chat_id=?').get(chatId))return false;
+  const rows=db.prepare(`SELECT execution_id,substr(command_key,13) AS step_id FROM branch_commands WHERE command_key LIKE 'expert-copy:%' AND json_valid(result_json) AND json_extract(result_json,'$.copyChatId')=?`).all(chatId) as Array<{execution_id:string;step_id:string}>;
+  if(rows.length>1)throw new MemoryCollectionHold('Temporary agent copy memory is retained until its final custody is confirmed');
+  if(!rows.length)return false;
+  const r=readBranchExpertCopy(db,rows[0]!.execution_id,rows[0]!.step_id);
+  if(!r||r.copyChatId!==chatId||r.copyProjectId!==projectId)throw new MemoryCollectionHold('Temporary agent copy memory is retained until its final custody is confirmed');
+  return true;
  }
  /** Exact Branch-owned copy only; ordinary temporary Chats remain unsupported. */
  private expertChat(chatId:string,allowReserved=false,allowRetiring=false):BranchExpertCopyReceipt|undefined{
@@ -420,7 +430,7 @@ export class LocalMemoryService{
  /** Reserve only canonical local intent, after the per-copy human review. */
  reserveExpertChatMemory(chatId:string){
   this.live();const db=this.ports.store.sqlite;const reserve=()=>{
-   const expert=this.expertChat(chatId,true);if(!this.expertConsent(expert,'copySourceMemory')||!expert||!this.expertSourceLive(expert))throw new MemoryDenied('Expert copy memory requires explicit access review and a live source',409);
+   const expert=this.expertChat(chatId,true);if(!this.expertConsent(expert,'copySourceMemory')||!expert||!this.expertSourceLive(expert))throw new MemoryDenied('Temporary agent copy memory requires explicit access review and a live source',409);
    if(this.memoryIntent(chatId))return;
    this.reserveNewChat(chatId);
    if(!this.memoryIntent(chatId))throw new MemoryDenied('Expert copy memory intent was not recorded',409);
@@ -861,13 +871,13 @@ export class LocalMemoryService{
   const policies=new CapabilityPolicyStore(this.ports.store.sqlite),policy=policies.resolveForAgent(agent.id,capability.v3SchedulerRunId),denied=new Set(policy.restrictedCapabilityIds);
   const expert=owner.executionId?this.expertChat(agent.conversationId):undefined;
   if(owner.executionId){
-   if(!expert||expert.copyAgentId!==agent.id||!expert.requestId||this.coordination.requestSteeringAdmission(capability.v3SchedulerRunId,agent.id,expert.requestId)!=='turn')throw new MemoryDenied('Exact expert copy Request is not active');
+   if(!expert||expert.copyAgentId!==agent.id||!expert.requestId||this.coordination.requestSteeringAdmission(capability.v3SchedulerRunId,agent.id,expert.requestId)!=='turn')throw new MemoryDenied('Exact temporary agent copy Request is not active');
    const source=this.ports.store.getAgent(expert.sourceAgentId),sourceOwner=activeChatResourceOwner(this.ports.store,'agent',expert.sourceAgentId);
-   if(!source||!sourceOwner||source.projectId!==expert.sourceProjectId||source.conversationId!==expert.sourceChatId)throw new MemoryDenied('Expert source Agent is unavailable');
+   if(!source||!sourceOwner||source.projectId!==expert.sourceProjectId||source.conversationId!==expert.sourceChatId)throw new MemoryDenied('Original agent is unavailable');
    for(const id of policies.resolveForAgent(source.id).restrictedCapabilityIds)denied.add(id);
   }
   if(denied.has(write?CAPABILITY_IDS.memoryWrite:CAPABILITY_IDS.memoryRead))throw new MemoryDenied('Live memory capability policy denies operation');
-  if(expert&&!this.expertConsent(expert,finding?'allowFindingsWriteback':'copySourceMemory'))throw new MemoryDenied('Expert copy memory requires explicit access review',409);
+  if(expert&&!this.expertConsent(expert,finding?'allowFindingsWriteback':'copySourceMemory'))throw new MemoryDenied('Temporary agent copy memory requires explicit access review',409);
   const grant=expert?{readGlobal:false}:this.getGrant(agent.conversationId,product);
   return {chatId:agent.conversationId,actor:{kind:'agent',id:agent.id},runId:capability.v3SchedulerRunId,fenceToken:String(capability.v3FencingToken),active:true,grants:{readChat:!denied.has(CAPABILITY_IDS.memoryRead),readGlobal:!denied.has(CAPABILITY_IDS.memoryRead)&&grant.readGlobal,writeChat:!denied.has(CAPABILITY_IDS.memoryWrite),writeGlobal:!expert&&!denied.has(CAPABILITY_IDS.memoryWrite)},sourceType:'ai_inference'};
  }
@@ -882,8 +892,8 @@ export class LocalMemoryService{
        AND json_type(activation.payload_json,'$.settingsTransition')='object' LIMIT 1`).get(cap.v3SchedulerRunId))
     throw new MemoryDenied('Memory tools are unavailable during the isolated context handoff',403);
   const parsed=validateMemoryCall(operation,args),tool='ponderosa_local_memory_'+operation,finding=parsed.recipient==='original';this.agentContext(token,tool,write,finding);await this.ready();const before=this.agentContext(token,tool,write,finding);if(!finding)await this.ensurePlannedChat(before.chatId);const initial=this.agentContext(token,tool,write,finding);
-  const expertFinding=parsed.recipient==='original'?this.expertChat(initial.chatId):undefined;if(parsed.recipient==='original'&&!expertFinding)throw new MemoryDenied('Only the active expert copy can save a finding to its original',403);const expertIdentity=expertFinding&&JSON.stringify(expertFinding);
-  const globalWrite=write&&parsed.destination==='global';const usesGlobal=(globalWrite||!write&&parsed.source!=='chat')&&initial.grants.readGlobal;if(globalWrite&&parsed.visibility==='private')throw new MemoryDenied('Global private audience unsupported',400);if(globalWrite&&operation!=='save'&&!initial.grants.readGlobal)throw new MemoryDenied('Existing global source mutation requires read authority');const needsRead=!write||initial.grants.readChat;if(write&&operation!=='save'&&!initial.grants.readChat)throw new MemoryDenied('Existing source mutation requires read authority');const identity=JSON.stringify([initial.chatId,initial.actor,initial.runId,initial.fenceToken]);const guard=async()=>{const c=this.agentContext(token,tool,write,finding);if(JSON.stringify([c.chatId,c.actor,c.runId,c.fenceToken])!==identity)throw new MemoryDenied('Canonical memory binding changed');if(expertIdentity&&JSON.stringify(this.expertChat(c.chatId))!==expertIdentity)throw new MemoryDenied('Expert copy binding changed');if((needsRead&&!c.grants.readChat)||(usesGlobal&&!c.grants.readGlobal)||(write&&!(globalWrite?c.grants.writeGlobal:c.grants.writeChat)))throw new MemoryDenied('Live memory grant revoked');};
+  const expertFinding=parsed.recipient==='original'?this.expertChat(initial.chatId):undefined;if(parsed.recipient==='original'&&!expertFinding)throw new MemoryDenied('Only the active temporary agent copy can save a finding to its original',403);const expertIdentity=expertFinding&&JSON.stringify(expertFinding);
+  const globalWrite=write&&parsed.destination==='global';const usesGlobal=(globalWrite||!write&&parsed.source!=='chat')&&initial.grants.readGlobal;if(globalWrite&&parsed.visibility==='private')throw new MemoryDenied('Global private audience unsupported',400);if(globalWrite&&operation!=='save'&&!initial.grants.readGlobal)throw new MemoryDenied('Existing global source mutation requires read authority');const needsRead=!write||initial.grants.readChat;if(write&&operation!=='save'&&!initial.grants.readChat)throw new MemoryDenied('Existing source mutation requires read authority');const identity=JSON.stringify([initial.chatId,initial.actor,initial.runId,initial.fenceToken]);const guard=async()=>{const c=this.agentContext(token,tool,write,finding);if(JSON.stringify([c.chatId,c.actor,c.runId,c.fenceToken])!==identity)throw new MemoryDenied('Canonical memory binding changed');if(expertIdentity&&JSON.stringify(this.expertChat(c.chatId))!==expertIdentity)throw new MemoryDenied('Temporary agent copy binding changed');if((needsRead&&!c.grants.readChat)||(usesGlobal&&!c.grants.readGlobal)||(write&&!(globalWrite?c.grants.writeGlobal:c.grants.writeChat)))throw new MemoryDenied('Live memory grant revoked');};
   if(write&&!(globalWrite?initial.grants.writeGlobal:initial.grants.writeChat))throw new MemoryDenied('Memory write denied');if(!write&&parsed.source==='global'&&!initial.grants.readGlobal)throw new MemoryDenied('Global read denied');
   if(usesGlobal||globalWrite){await this.ensureGlobalScope();await guard();}
   if(expertFinding){await this.ensurePlannedChat(expertFinding.sourceChatId);await guard();}
@@ -989,15 +999,15 @@ export class LocalMemoryService{
 
  /** Internal final-custody capture only; the caller supplies the exact Branch fence. */
  async exportExpertFinalPackageMemory(chatId:string,agentIds:string[],assertFinal:()=>void){
-  if(typeof assertFinal!=='function'||!agentIds.length||new Set(agentIds).size!==agentIds.length)throw new MemoryDenied('Exact expert final capture required',409);
+  if(typeof assertFinal!=='function'||!agentIds.length||new Set(agentIds).size!==agentIds.length)throw new MemoryDenied('Exact temporary agent copy final capture required',409);
   let identity:string|undefined;
   const guard=async()=>{
    this.live();assertFinal();const receipt=this.expertChat(chatId,true,true);
-   if(!receipt||receipt.state!=='active'||!this.expertConsent(receipt,'copySourceMemory'))throw new MemoryDenied('Exact reviewed expert copy required for final capture',409);
+   if(!receipt||receipt.state!=='active'||!this.expertConsent(receipt,'copySourceMemory'))throw new MemoryDenied('Exact reviewed temporary agent copy required for final capture',409);
    const members=(this.ports.store.sqlite.prepare('SELECT agent_id FROM branch_resource_members WHERE step_execution_id=? ORDER BY agent_id').all(receipt.stepExecutionId) as Array<{agent_id:string}>).map(r=>r.agent_id);
-   if(agentIds.some(id=>!members.includes(id)))throw new MemoryDenied('Expert final capture membership changed',409);
-   for(const id of agentIds){const agent=this.ports.store.getAgent(id);if(!agent||agent.conversationId!==chatId||agent.projectId!==receipt.copyProjectId||!activeChatResourceOwner(this.ports.store,'agent',id))throw new MemoryDenied('Expert final capture Agent unavailable',409);}
-   const current=JSON.stringify([receipt,members]);if(identity!==undefined&&identity!==current)throw new MemoryDenied('Expert final capture changed',409);identity=current;
+   if(agentIds.some(id=>!members.includes(id)))throw new MemoryDenied('Temporary agent copy final capture membership changed',409);
+   for(const id of agentIds){const agent=this.ports.store.getAgent(id);if(!agent||agent.conversationId!==chatId||agent.projectId!==receipt.copyProjectId||!activeChatResourceOwner(this.ports.store,'agent',id))throw new MemoryDenied('Temporary agent copy final capture Agent unavailable',409);}
+   const current=JSON.stringify([receipt,members]);if(identity!==undefined&&identity!==current)throw new MemoryDenied('Temporary agent copy final capture changed',409);identity=current;
   };
   await guard();await this.ready();await guard();const pending=this.core.database.exportPackageMemory(chatId,agentIds,guard,true);this.calls.add(pending);try{return await pending;}finally{this.calls.delete(pending);}
  }
@@ -1018,7 +1028,7 @@ export class LocalMemoryService{
    if(!op||op.kind!=='import'||op.status!=='preparing'&&!completedStaging||!op.conversationId)throw new MemoryDenied('Exact preparing package import required');
    const chat=store.getConversation(op.conversationId);
    const temporary=chat&&store.sqlite.prepare('SELECT 1 FROM conversations WHERE id=? AND branch_execution_id IS NOT NULL').get(chat.id),expert=temporary&&chat?this.expertChat(chat.id,true):undefined;
-   if(temporary&&(!expert||expert.creationOperationId!==op.id||!this.expertConsent(expert,'copySourceMemory')||!this.expertSourceLive(expert)))throw new MemoryDenied('Expert copy memory requires explicit access review',409);
+   if(temporary&&(!expert||expert.creationOperationId!==op.id||!this.expertConsent(expert,'copySourceMemory')||!this.expertSourceLive(expert)))throw new MemoryDenied('Temporary agent copy memory requires explicit access review',409);
    if(!chat||chat.projectId!==op.projectId||store.sqlite.prepare('SELECT 1 FROM project_deletion_pending WHERE project_id=?').get(op.projectId)||store.sqlite.prepare('SELECT 1 FROM conversation_deletion_receipts WHERE conversation_id=?').get(chat.id))throw new MemoryDenied('Package memory destination retired');
    if(chat.branchId&&!store.sqlite.prepare('SELECT 1 FROM branches WHERE id=? AND deleting=0').get(chat.branchId))throw new MemoryDenied('Package Branch retired');
    if(!activeChatResourceOwner(store,'chat',chat.id)){
