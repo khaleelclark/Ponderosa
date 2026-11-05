@@ -429,3 +429,38 @@ test('verified replacement confirmation drains before queued human or peer work 
   const lease=v3.leaseNextRun({workerId:'peer-after-drain',now});assert.deepEqual(lease.activationIds,[peer]);
  } finally {db.exec('ROLLBACK TO peer_after_drain; RELEASE peer_after_drain');}
 });
+
+
+test('uncertain settings handoff holds its source reply recovery across reopen without blocking another Agent', t => {
+ const root=mkdtempSync(path.join(tmpdir(),'ponderosa-transition-source-hold-'));
+ let store=new AgentStore(root);
+ t.after(()=>{if(store)store.close();rmSync(root,{recursive:true,force:true});});
+ const project=store.createProject({label:'Source hold',hostPath:root,defaultEngine:'codex'});
+ const chat=store.createConversation(project.id,{title:'Chat'});
+ const worker=store.createAgent(project.id,{title:'Held worker',engine:'codex',conversationId:chat.id});
+ const other=store.createAgent(project.id,{title:'Other worker',engine:'codex',conversationId:chat.id});
+ let db=store.sqlite,v3=new CoordinationV3Store(db);const now=new Date().toISOString(),scope='conversation:'+chat.id;
+ const rollover=randomUUID(),handoff=randomUUID(),sourceRun=randomUUID(),recovery=randomUUID();
+ db.prepare(`INSERT INTO context_rollovers(id,project_id,agent_id,state,old_provider_session_id,provider_session_generation,
+  threshold,low_water_mark,compaction_cutoff_ordinal,recent_tail_event_ids_json,recent_tail_hashes_json,source_run_id,source_activation_ids_json,scope_key,created_at,updated_at)
+  VALUES(?,?,?,'outcome_unknown','old','old',100,50,0,'[]','[]',?,'[]',?,?,?)`).run(rollover,project.id,worker.id,sourceRun,scope,now,now);
+ const insert=db.prepare(`INSERT INTO agent_activations(id,project_id,agent_id,kind,priority,dispatch_policy,prompt_class,state,dedupe_key,payload_json,available_at,created_at,updated_at,scope_key)
+  VALUES(?,?,?,?,?,'next_run','blocker',?,?,?,?,?,?,?)`);
+ insert.run(handoff,project.id,worker.id,'context_rollover_handoff',100,'outcome_unknown',handoff,JSON.stringify({rolloverId:rollover,settingsTransition:{activationId:'original'}}),now,now,now,scope);
+ const payload=JSON.stringify({requiredReplyRecovery:{sourceRunId:sourceRun,sourceActivationId:'source',attempt:1},instruction:'Continue exact saved reply'});
+ insert.run(recovery,project.id,worker.id,'required_reply_recovery',100,'pending',recovery,payload,now,now,now,scope);
+ db.prepare("INSERT INTO activation_sources(activation_id,source_kind,source_id) VALUES(?,'context_rollover',?)").run(handoff,rollover);
+ store.close();store=new AgentStore(root);db=store.sqlite;v3=new CoordinationV3Store(db);
+ const retained=db.prepare('SELECT state,payload_json FROM agent_activations WHERE id=?').get(recovery);
+ assert.equal(retained.state,'pending');assert.equal(retained.payload_json,payload);
+ assert.ok(v3.pendingActivations(project.id).some(item=>item.id===recovery),'held source recovery remains visible');
+ assert.equal(v3.peekNextRunnable({now}),undefined,'unknown source recovery cannot be selected');
+ const event=randomUUID(),sender={kind:'user',userId:'local-operator'},audience={kind:'user_agents',userId:'local-operator',agentIds:[other.id]};
+ const communication={schemaVersion:2,eventId:event,projectId:project.id,conversationId:chat.id,sender,intent:'user_dm',audience,text:'Other work',createdAt:now};
+ const independent=v3.recordRuntimeCommunication({id:event,projectId:project.id,scopeKey:scope,sender,intent:'user_dm',audience,payload:{communication},now,
+   activation:{agentId:other.id,kind:'human_message',priority:90,dispatchPolicy:'next_run',promptClass:'human'}}).activationId;
+ const lease=v3.leaseNextRun({workerId:'independent',now});
+ assert.equal(lease.agentId,other.id);assert.deepEqual(lease.activationIds,[independent]);
+ assert.equal(db.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(recovery).n,0);
+ assert.equal(db.prepare('SELECT state FROM agent_activations WHERE id=?').get(recovery).state,'pending');
+});
