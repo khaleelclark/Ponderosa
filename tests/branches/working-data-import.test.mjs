@@ -1,11 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {randomUUID} from 'node:crypto';
+import {createHash,randomUUID} from 'node:crypto';
 import {readFile,writeFile,stat,lstat,rename,mkdir} from 'node:fs/promises';
 import path from 'node:path';
 import {AgentStore,destinationAdmissionHeld} from '@ponderosa/agents';
 import {createBranchWorkingData} from '../../apps/server/dist/branch-working-data.js';
 import {branchWorkingRootDestinations,prepareBranchWorkingDataChild} from '../../apps/server/dist/apply-branch-working-data.js';
+import {exportWorkingFiles} from '../../apps/server/dist/portable-working-files.js';
+import {encodePortableArtifactData} from '../../apps/server/dist/agent-package-codec.js';
 import {withFixture,until} from '../shared/fixture.mjs';
 const permissions={allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false};
 function installation({shared=false,nested=false}={}){
@@ -136,5 +138,86 @@ for(const changedRoot of ['moved','replaced'])test('one '+changedRoot+' held imp
   assert.equal(await readFile(path.join(retained,'hard'),'utf8'),'complete original');
   const after=JSON.parse(await readFile(projectFile,'utf8'));assert.equal(after.importedRootBinding.state,'binding');assert.equal(after.importedRootBinding.recoveryError.code,'ERR_IMPORTED_ROOT_RECOVERY_HELD');assert.deepEqual(after.importedRootBinding.parent,intent.parent);
   await f.send(independent.id,'Independent Agent still accepts explicit work');await f.settled(independent.id);await f.reopen();assert.ok(store.getAgent(independent.id));assert.equal(destinationAdmissionHeld(store.sqlite,agent.id,agent.conversationId),true);assert.equal(await readFile(path.join(retained,'hard'),'utf8'),'complete original');
+ },{storeFactory:dir=>(store=new AgentStore(dir))});
+});
+
+
+/** Build actual exported working data, rather than inventing part metadata. */
+async function largeBranchPackage(f,{corrupt=false}={}){
+ const source=path.join(f.root,'large-source');await mkdir(source);
+ const content=Buffer.alloc(64*1024*1024+17);
+ content[0]=1;content[32*1024*1024-1]=2;content[content.length-1]=3;
+ const sourceFile=path.join(source,'original');await writeFile(sourceFile,content);
+ const digest=createHash('sha256').update(content).digest('hex');
+ const exported=await exportWorkingFiles(source,['original'],content.length);
+ assert.equal(exported.files.length,1);
+ assert.equal(exported.files[0].parts?.byteLength,content.length);
+ assert.equal(exported.files[0].parts?.sha256,digest);
+ assert.equal(exported.files[0].parts?.refs.length,3);
+ const value=installation({shared:true}),pkg=value.pkg.workingData.package,owner=pkg.agents.find(node=>node.ref==='source-a');
+ owner.workingFiles=exported.files;owner.artifacts=exported.artifacts;
+ if(corrupt){
+  const second=owner.artifacts.find(artifact=>artifact.ref===owner.workingFiles[0].parts.refs[1]);
+  const changed=Buffer.alloc(32*1024*1024);changed[0]=9;
+  Object.assign(second,await encodePortableArtifactData(changed));
+ }
+ value.pkg.workingData=createBranchWorkingData(pkg,value.pkg.workingData.owners);
+ return {value,content,digest,sourceFile};
+}
+
+test('Branch working data imports one complete large original and retains its private parts across restart',{skip:process.platform==='win32',timeout:120000},async t=>{
+ let store;await withFixture(t,async f=>{
+  const {value,content,digest,sourceFile}=await largeBranchPackage(f);
+  const {plan,first}=await preview(f,value);
+  const reviewed=plan.fullImportReview.agents.find(agent=>agent.chat==='Chat a');
+  assert.ok(reviewed,'preview includes the source owner');
+  const originals=reviewed.artifacts.items.filter(item=>item.name==='original');
+  assert.equal(originals.length,1,'physical carrier appears as one logical original');
+  assert.equal(originals[0].bytes,content.length,'preview reports the whole original size');
+  assert.ok(reviewed.artifacts.items.every(item=>!item.name.startsWith('portable-working-part/')),'transport pieces are not presented as independent files');
+  const complete=await finish(f,plan);
+  assert.equal(complete.workingDataApplication.state,'completed');
+  const restored=path.join(first,'original'),bytes=await readFile(restored);
+  assert.equal(bytes.length,content.length);
+  assert.equal(createHash('sha256').update(bytes).digest('hex'),digest,'one complete reconstructed original');
+  assert.equal(createHash('sha256').update(await readFile(sourceFile)).digest('hex'),digest,'source original remains unchanged');
+  const resource=store.sqlite.prepare("SELECT local_id FROM branch_installation_resources WHERE branch_id=? AND chat_ref='chat-a' AND agent_ref='a'").get(complete.branchId);
+  assert.ok(resource);
+  const agent=store.getAgent(resource.local_id),working=store.getImportedHistory(agent.id).portableState.workingFiles;
+  assert.equal(working.length,1);assert.equal(working[0].path,'original');
+  assert.equal(working[0].parts.byteLength,content.length);assert.equal(working[0].parts.sha256,digest);
+  assert.equal(working[0].parts.refs.length,3);
+  for(const id of working[0].parts.refs)assert.equal(store.isWorkingFileTransportPart(agent.projectId,id),true);
+  const visible=f.ok(await f.api('GET','/api/branches/engine/projects/'+agent.projectId+'/artifacts'));
+  assert.ok(visible.items.every(item=>!working[0].parts.refs.includes(item.id)),'transport pieces are not independent visible artifacts');
+  for(const id of working[0].parts.refs){
+   const response=await f.api('GET','/api/branches/engine/projects/'+agent.projectId+'/artifacts/'+id+'/download');
+   assert.equal(response.status,404,'transport pieces cannot be downloaded as standalone originals');
+  }
+  const again=await exportWorkingFiles(first,['original'],content.length);
+  assert.equal(again.files.length,1);assert.equal(again.files[0].parts.byteLength,content.length);
+  assert.equal(again.files[0].parts.sha256,digest,'re-export retains full logical bytes');
+  await f.reopen();
+  assert.equal(createHash('sha256').update(await readFile(restored)).digest('hex'),digest);
+  const reopened=store.getImportedHistory(agent.id).portableState.workingFiles[0];
+  assert.equal(reopened.parts.sha256,digest);assert.deepEqual(reopened.parts.refs,working[0].parts.refs);
+ },{storeFactory:dir=>(store=new AgentStore(dir))});
+});
+
+test('Branch working data refuses a changed large original before publishing parts or destination files',{skip:process.platform==='win32',timeout:120000},async t=>{
+ let store;await withFixture(t,async f=>{
+  const {value,content,digest,sourceFile}=await largeBranchPackage(f,{corrupt:true});
+  const {plan,first}=await preview(f,value);
+  const before=store.sqlite.prepare('SELECT COUNT(*) n FROM managed_artifact_projection').get().n;
+  f.ok(await f.api('POST',route(plan.id)+'/confirm',{acknowledgeFullImport:true}));
+  const status=await until(async()=>{
+   const result=f.ok(await f.api('GET',route(plan.id)));
+   return result.state==='review_required'||result.workingDataApplication?.state==='incomplete'?result:false;
+  },'invalid large-original hold',30000);
+  assert.match(status.error??status.workingDataApplication?.error?.message??'',/original length or SHA-256 differs/);
+  assert.equal(store.sqlite.prepare('SELECT COUNT(*) n FROM managed_artifact_projection').get().n,before,'no transport part published');
+  await assert.rejects(lstat(first),error=>error.code==='ENOENT','no destination created');
+  assert.equal((await readFile(sourceFile)).length,content.length);
+  assert.equal(createHash('sha256').update(await readFile(sourceFile)).digest('hex'),digest,'source original remains unchanged');
  },{storeFactory:dir=>(store=new AgentStore(dir))});
 });
