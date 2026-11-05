@@ -254,7 +254,7 @@ test('interrupted large Branch working-data receipt stays held without replay',{
  },{storeFactory:dir=>(store=new AgentStore(dir))});
 });
 
-for(const scenario of ['exact','occupied','source-mismatch','artifact-mismatch','owner-mismatch','later-phase'])test('reserved physical import restart: '+scenario,{timeout:60000,skip:process.platform==='win32'},async t=>{
+for(const scenario of ['exact','occupied','input-mismatch','source-mismatch','artifact-mismatch','owner-mismatch','later-phase'])test('reserved physical import restart: '+scenario,{timeout:60000,skip:process.platform==='win32'},async t=>{
  let store,captured,intercept=true;
  await withFixture(t,async f=>{
   const value=installation(),{plan,first,second}=await preview(f,value);
@@ -272,7 +272,8 @@ for(const scenario of ['exact','occupied','source-mismatch','artifact-mismatch',
   // only the known pre-write row, with no synthetic in-process error marker.
   const row=store.sqlite.prepare('SELECT preview_json FROM branch_installation_plans WHERE id=?').get(plan.id),state=JSON.parse(row.preview_json);
   state.workingDataApplication=structuredClone(captured);
-  if(scenario==='source-mismatch')state.workingDataApplication.inputSha256='0'.repeat(64);
+  if(scenario==='input-mismatch')state.workingDataApplication.inputSha256='0'.repeat(64);
+  if(scenario==='source-mismatch')state.workingDataApplication.sourceSha256='0'.repeat(64);
   if(scenario==='artifact-mismatch')state.workingDataApplication.artifacts[0].sha256='1'.repeat(64);
   if(scenario==='owner-mismatch')state.workingDataApplication.roots[0].agentIds=['different-owner'];
   if(scenario==='later-phase')state.workingDataApplication.phase='publishing-originals';
@@ -290,7 +291,7 @@ for(const scenario of ['exact','occupied','source-mismatch','artifact-mismatch',
   }else{
    const held=await until(async()=>{const r=f.ok(await f.api('GET',route(plan.id)));return r.error&&r;},'unsafe reserved receipt held',30000);
    assert.notEqual(held.state,'completed');
-   if(['source-mismatch','artifact-mismatch','owner-mismatch'].includes(scenario))assert.match(held.error,/reserved physical receipt differs/i);
+   if(['input-mismatch','source-mismatch','artifact-mismatch','owner-mismatch'].includes(scenario))assert.match(held.error,/reserved physical receipt differs/i);
    if(scenario==='occupied')assert.match(held.error,/destination now exists/i);
    if(scenario==='later-phase')assert.match(held.error,/stopped before|without replay/i);
    if(['occupied','later-phase'].includes(scenario))assert.equal(await readFile(path.join(first,'user-kept.txt'),'utf8'),'user bytes must remain');
