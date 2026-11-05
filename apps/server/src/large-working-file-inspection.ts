@@ -1,3 +1,4 @@
+import {getHeapStatistics} from 'node:v8';
 import {AgentPackageJsonParser, AGENT_PACKAGE_ARTIFACT_MAX_BYTES} from '@ponderosa/core';
 import {isPortableSecretField, PORTABLE_SECRET_MAX_DEPTH} from './portable-secrets.js';
 import {assertAgentPackageMemoryAvailable} from './agent-package-codec.js';
@@ -12,7 +13,8 @@ const invalidJson = 'Agent package must contain valid bounded JSON';
 /** Inspect the full logical original, not independent segments. Callers must
  * enforce package memory admission before constructing this inspector: the
  * existing incremental parser materializes valid JSON and nested JSON strings.
- * The caller owns the source descriptor and its before/after identity checks. */
+ * The caller validates the working path and owns the source descriptor and its
+ * before/after identity checks. */
 export class LargeWorkingFileInspector {
   private readonly decoder = new TextDecoder('utf-8',{fatal:true,ignoreBOM:true});
   private readonly requiredJson:boolean;
@@ -34,12 +36,22 @@ export class LargeWorkingFileInspector {
     this.requiredJson=/\.json$/i.test(relative);
     // This parser materializes valid structured data. Use the same preflight
     // and available-memory reserve as package import; never bypass it.
-    if(declaredBytes>64*1024*1024)assertAgentPackageMemoryAvailable(0);
+    this.checkMemory();
     this.parser=new AgentPackageJsonParser(undefined,true,()=>this.checkMemory());
   }
 
   private checkMemory():void {
-    if(this.declaredBytes>64*1024*1024)assertAgentPackageMemoryAvailable(0);
+    if(this.declaredBytes>64*1024*1024){
+      assertAgentPackageMemoryAvailable(0);
+      // The retained parser materializes valid JSON in V8, whose heap limit can
+      // be much smaller than process or host memory. Keep room for one maximum
+      // parser token and its temporary copy before and throughout inspection.
+      if(this.requiredJson||this.candidate===true){
+        const heap=getHeapStatistics();
+        if(heap.heap_size_limit-heap.used_heap_size<1024*1024*1024)
+          throw Object.assign(new Error('Large working-file JSON inspection needs 1 GiB of available V8 heap; source data is retained'),{statusCode:503});
+      }
+    }
   }
 
   write(chunk:Buffer):void {
@@ -74,6 +86,7 @@ export class LargeWorkingFileInspector {
     }
     if(this.candidate===false){this.parser=undefined;return;}
     if(!this.parser)return;
+    this.checkMemory();
     try{this.parser.write(value);}
     catch(error){this.parseError=error;this.parser=undefined;}
   }

@@ -64,3 +64,14 @@ test('large-file structured inspection checks available memory before allocation
   assert.throws(()=>new LargeWorkingFileInspector('large.json',65*1024*1024),error=>error.statusCode===503&&/available memory/.test(error.message));
  }finally{if(original)Object.defineProperty(process,'availableMemory',original);}
 });
+
+
+test('large JSON inspection refuses before parsing when the V8 heap is too small',async()=>{
+ const {spawnSync}=await import('node:child_process');
+ const result=spawnSync(process.execPath,['--max-old-space-size=256','--input-type=module','--import','./tests/shared/workspace-resolution.mjs','-e',`
+  import {LargeWorkingFileInspector} from './apps/server/dist/large-working-file-inspection.js';
+  try{new LargeWorkingFileInspector('large.json',65*1024*1024);process.exitCode=2;}
+  catch(error){if(error.statusCode!==503||!String(error.message).includes('V8 heap'))process.exitCode=3;}
+ `],{cwd:process.cwd(),encoding:'utf8'});
+ assert.equal(result.status,0,result.stderr||result.stdout);
+});
