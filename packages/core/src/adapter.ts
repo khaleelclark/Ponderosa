@@ -346,6 +346,10 @@ export interface RuntimeSession extends RuntimeProcessHandle {
   listNativeTasks?(): Promise<NativeTask[]>;
   stopNativeTask?(taskKey: string): Promise<NativeTaskStopOutcome>;
   startTurn(input: RuntimeTurnInput): Promise<{ turnId: string }>;
+  /** Activate an existing paused native goal inside this exact managed Run. */
+  startNativeGoal?(input: RuntimeTurnInput): Promise<void>;
+  /** Pause the current native goal once; uncertain acknowledgement must not be retried automatically. */
+  pauseNativeGoal?(): Promise<void>;
   steer(input: RuntimeTurnInput): Promise<RuntimeSteerResult>;
   interrupt(): Promise<void>;
 }

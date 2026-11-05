@@ -26,17 +26,17 @@ function goalMessage(goal: NativeGoalSnapshot): string {
 export function codexNativeCommands(hasSession: boolean): EngineCommand[] {
   return [
     ["goal", "Inspect native objective, status, token budget and usage", false, "runtime"],
+    ["goal-create", 'Create a native goal: {"objective":"…","tokenBudget":10000}', true, "prompt"],
     ["goal-edit", 'Edit a paused native goal: {"objective":"…","tokenBudget":10000}', true, "runtime"],
     ["goal-pause", "Pause the retained native goal", false, "runtime"],
     ["goal-clear", "Clear the retained native goal", false, "runtime"],
-    ["goal-resume", "Resume native goal continuation", false, "runtime"],
+    ["goal-resume", "Resume native goal continuation", false, "prompt"],
     ["plan", 'Native plan mode: {"prompt":"…","mode":"plan"} (or "default")', true, "prompt"],
     ["review", 'Native review target: {"type":"uncommittedChanges"}, baseBranch, commit or custom', true, "prompt"],
     ["structured", 'Schema-constrained turn: {"prompt":"…","schema":{…}}', true, "prompt"],
   ].map<EngineCommand>(([name, description, acceptsArguments, invocation]) => {
-    const unavailableReason = name === "goal-resume"
-      ? "Native goal continuation can start turns outside the scheduler. Scheduler-bound continuation is not implemented."
-      : !hasSession && String(name).startsWith("goal") ? "Requires an accepted retained Codex session." : undefined;
+    const unavailableReason = !hasSession && name !== "goal-create" && String(name).startsWith("goal")
+      ? "Requires an accepted retained Codex session." : undefined;
     return { name: name as string, description: description as string, acceptsArguments: acceptsArguments as boolean,
       invocation: invocation as "runtime" | "prompt", source: "adapter-implemented", insertText: `/${name}${acceptsArguments ? " " : ""}`,
       status: unavailableReason ? "unavailable" : "available", ...(unavailableReason ? { unavailableReason } : {}) };
