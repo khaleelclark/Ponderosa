@@ -10,7 +10,7 @@ export interface BranchExpertCopyIdentity {
 export interface BranchExpertCopyReceipt extends BranchExpertCopyIdentity {
   schema:"branch-expert-copy.v1"; state:"reserved"|"active";
   snapshotReceipt?:CheckpointPackageReceipt;
-  copyAgentId?:string; copyChatId?:string; copyProjectId?:string; requestId?:string;
+  copyAgentId?:string; copyChatId?:string; copyProjectId?:string; creationOperationId?:string; requestId?:string;
 }
 const key=(stepId:string)=>`expert-copy:${stepId}`;
 const identity=(r:BranchExpertCopyReceipt):BranchExpertCopyIdentity=>({
@@ -41,8 +41,18 @@ export function sealBranchExpertSnapshot(db:Database.Database,executionId:string
   if(r.snapshotReceipt&&stableJson(r.snapshotReceipt)!==stableJson(receipt))throw Error("Expert copy snapshot already sealed differently");
   db.prepare("UPDATE branch_commands SET result_json=? WHERE execution_id=? AND command_key=?").run(stableJson({...r,snapshotReceipt:receipt}),executionId,key(stepId));
 }
+export function reserveBranchExpertChat(db:Database.Database,executionId:string,stepId:string,chat:{copyChatId:string;copyProjectId:string}):void {
+  const r=readBranchExpertCopy(db,executionId,stepId);if(!r||r.state!=="reserved"||!r.snapshotReceipt||!chat.copyChatId||!chat.copyProjectId||chat.copyChatId===r.sourceChatId)throw Error("Expert copy Chat reservation invalid");
+  if(r.copyChatId&&(r.copyChatId!==chat.copyChatId||r.copyProjectId!==chat.copyProjectId))throw Error("Expert copy Chat identity changed");
+  db.prepare("UPDATE branch_commands SET result_json=? WHERE execution_id=? AND command_key=?").run(stableJson({...r,...chat}),executionId,key(stepId));
+}
+export function reserveBranchExpertImport(db:Database.Database,executionId:string,stepId:string,creationOperationId:string):void {
+  const r=readBranchExpertCopy(db,executionId,stepId);if(!r||r.state!=="reserved"||!r.copyChatId||!creationOperationId)throw Error("Expert copy import reservation invalid");
+  if(r.creationOperationId&&r.creationOperationId!==creationOperationId)throw Error("Expert copy import identity changed");
+  db.prepare("UPDATE branch_commands SET result_json=? WHERE execution_id=? AND command_key=?").run(stableJson({...r,creationOperationId}),executionId,key(stepId));
+}
 export function bindBranchExpertCopy(db:Database.Database,executionId:string,stepId:string,copy:{copyAgentId:string;copyChatId:string;copyProjectId:string;requestId:string}):void {
   const r=readBranchExpertCopy(db,executionId,stepId);if(!r||r.state!=="reserved"||!r.snapshotReceipt)throw Error("Expert copy source snapshot unavailable");
-  if(!copy.copyAgentId||!copy.copyChatId||!copy.copyProjectId||!copy.requestId||copy.copyAgentId===r.sourceAgentId||copy.copyChatId===r.sourceChatId)throw Error("Expert copy destination identity invalid");
+  if(!copy.copyAgentId||!copy.copyChatId||!copy.copyProjectId||!copy.requestId||!r.creationOperationId||copy.copyChatId!==r.copyChatId||copy.copyProjectId!==r.copyProjectId||copy.copyAgentId===r.sourceAgentId||copy.copyChatId===r.sourceChatId)throw Error("Expert copy destination identity invalid");
   db.prepare("UPDATE branch_commands SET result_json=? WHERE execution_id=? AND command_key=?").run(stableJson({...r,...copy,state:"active"}),executionId,key(stepId));
 }
