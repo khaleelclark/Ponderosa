@@ -312,7 +312,7 @@ export class AgentArtifactCatalog {
     });
     const managedRows = this.client.prepare(`
       SELECT artifact_json FROM managed_artifact_projection
-      WHERE project_id = ? AND json_extract(artifact_json, '$.transportPart') IS NULL
+      WHERE project_id = ? AND owner_kind != 'working_file_part'
         AND (json_extract(audience_json, '$.kind') = 'organization' OR owner_kind = 'operator_chat')
         AND (owner_kind != 'operator_chat' OR EXISTS(SELECT 1 FROM conversations operator_chat WHERE operator_chat.id=owner_id AND operator_chat.project_id=managed_artifact_projection.project_id AND operator_chat.branch_execution_id IS NULL AND ${activeChatOwnerSql('operator_chat')}))
         ${input.productScope?`AND ${managedArtifactProductSql('managed_artifact_projection',input.productScope)}`:''}
@@ -461,8 +461,8 @@ export class AgentArtifactCatalog {
   }
 
   isWorkingFileTransportPart(projectId:string,artifactIdValue:string):boolean {
-    const row=this.client.prepare("SELECT json_extract(artifact_json,'$.transportPart.schema') AS schema FROM managed_artifact_projection WHERE project_id=? AND artifact_id=?").get(projectId,artifactIdValue) as {schema?:string}|undefined;
-    return row?.schema==='ponderosa.working-file-part-owner.v1';
+    const row=this.client.prepare("SELECT owner_kind FROM managed_artifact_projection WHERE project_id=? AND artifact_id=?").get(projectId,artifactIdValue) as {owner_kind?:string}|undefined;
+    return row?.owner_kind==='working_file_part';
   }
 
   projectArtifactIsOrganizationVisible(projectId: string, artifactIdValue: string): boolean {
@@ -535,7 +535,7 @@ export class AgentArtifactCatalog {
     const boundedLimit = Math.max(1, Math.min(limit, 500));
     const rows = this.client.prepare(`
       SELECT artifact_json FROM managed_artifact_projection
-      WHERE project_id = ? AND json_extract(artifact_json, '$.transportPart') IS NULL
+      WHERE project_id = ? AND owner_kind != 'working_file_part'
         AND json_extract(audience_json, '$.kind') = 'organization'
         AND (pinned = 1 OR visibility = 'published')
         AND (? IS NULL OR json_extract(artifact_json, '$.originAgentId') IN
@@ -620,9 +620,14 @@ export class AgentArtifactCatalog {
       if(group.indices.size!==group.count||group.size!==size)throw Error('Incomplete working-file transport association');
     }
     for (const entry of entries) {
-      if(Object.hasOwn(entry.artifact,'transportPart')||entry.transportPart&&!validWorkingFileTransportPart(entry.transportPart,entry.artifact.id))throw Error('Invalid host working-file transport part');
+      if(Object.hasOwn(entry.artifact,'transportPart')||entry.transportPart&&(!validWorkingFileTransportPart(entry.transportPart,entry.artifact.id)||entry.access)
+        ||entry.access?.ownerKind==='working_file_part')throw Error('Invalid host working-file transport part');
       const artifact:ManagedProjectArtifact=entry.transportPart?{...entry.artifact,transportPart:entry.transportPart}:entry.artifact;
-      const access = entry.access ?? {
+      const access = entry.transportPart ? {
+        ownerKind: "working_file_part" as const,
+        ownerId: artifact.id,
+        audience: {kind:"organization" as const,organizationId:artifact.projectId},
+      } : entry.access ?? {
         ownerKind: "project" as const,
         ownerId: artifact.id,
         audience: {

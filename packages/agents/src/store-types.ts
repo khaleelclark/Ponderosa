@@ -82,7 +82,7 @@ export interface ProjectJson {
 }
 
 export interface ManagedArtifactAccess {
-  ownerKind: "project" | "communication" | "request_update" | "operator_chat";
+  ownerKind: "project" | "communication" | "request_update" | "operator_chat" | "working_file_part";
   ownerId: string;
   audience: CommunicationAudience | { kind: "request_agents"; agentIds: string[]; userId?: string };
   senderAgentId?: string;

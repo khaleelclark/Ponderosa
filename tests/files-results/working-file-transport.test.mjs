@@ -19,6 +19,8 @@ test('host-issued complete working-file parts stay internal but retained for exp
  store.recordProjectArtifacts(marked);
  const ordinary={...artifact('ordinary',3),mediaType:'application/vnd.ponderosa.working-file-part.v1'};
  store.recordProjectArtifact(ordinary);
+ // Simulate a legacy ordinary artifact with coincidental untrusted JSON metadata.
+ store.sqlite.prepare("UPDATE managed_artifact_projection SET artifact_json=json_set(artifact_json,'$.transportPart',json(?)) WHERE project_id=? AND artifact_id=?").run(JSON.stringify({schema:'ponderosa.working-file-part-owner.v1'}),project.id,'ordinary');
  assert.deepEqual(store.getProjectArtifacts(project.id).map(a=>a.id).sort(),['ordinary','part-1','part-2']);
  assert.deepEqual(store.getProjectArtifactPage(project.id,{limit:50}).items.map(a=>a.id),['ordinary'],'ordinary user media type remains visible');
  assert.deepEqual(store.getProjectContextArtifacts(project.id).map(a=>a.id),['ordinary']);
@@ -33,6 +35,7 @@ test('host-issued complete working-file parts stay internal but retained for exp
  const changed=structuredClone(marked);changed.forEach(entry=>entry.transportPart.fileSha256='c'.repeat(64));
  assert.throws(()=>store.recordProjectArtifacts(changed),/immutable/);
  assert.throws(()=>store.recordProjectArtifacts([{artifact:{...ordinary,transportPart:marked[0].transportPart}}]),/Invalid host/);
+ assert.throws(()=>store.recordProjectArtifacts([{artifact:ordinary,access:{ownerKind:'working_file_part',ownerId:'ordinary',audience:{kind:'organization',organizationId:project.id}}}]),/Invalid host/);
  store.close();store=new AgentStore(root);
  assert.deepEqual(store.getProjectArtifactPage(project.id,{limit:50}).items.map(a=>a.id),['ordinary']);
  assert.deepEqual(store.getProjectArtifacts(project.id).map(a=>a.id).sort(),['ordinary','part-1','part-2']);
