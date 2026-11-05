@@ -6,8 +6,8 @@ import {BUILT_IN_CAPABILITIES,parseConnectorCapabilityId} from '@ponderosa/core'
 import {validatePortableCommunication} from './portable-communication.js';
 import {validateOutputRoles} from './portable-output-roles.js';
 import {validateMemorySnapshot} from './portable-memory-snapshot.js';
-import {normalizeAgentRole,AGENT_PACKAGE_MAX_AGENTS,agentPackageJsonUtf8Bytes,agentPackageTextIsWellFormed,AGENT_PACKAGE_ARTIFACT_MAX_BYTES,AGENT_PACKAGE_ARTIFACT_LIMIT_LABEL,type AgentPortablePackageDto,type PortableArtifactDto} from '@ponderosa/core';
-import {CANONICAL_ARTIFACT_ID,portableAgentTopologyError} from './artifact-refs.js';
+import {normalizeAgentRole,AGENT_PACKAGE_MAX_AGENTS,agentPackageJsonUtf8Bytes,agentPackageTextIsWellFormed,AGENT_PACKAGE_ARTIFACT_MAX_BYTES,AGENT_PACKAGE_ARTIFACT_LIMIT_LABEL,MAX_WORKING_FILE_PARTS,WORKING_FILE_PART_MEDIA_TYPE,type AgentPortablePackageDto,type PortableArtifactDto} from '@ponderosa/core';
+import {CANONICAL_ARTIFACT_ID,collectReachableArtifactIds,portableAgentTopologyError} from './artifact-refs.js';
 import {exactObjectFields,validatedObject} from './object-validation.js';
 import {validatePortableGitStorageBindings,parseReviewedUserData,gitBindingSourceEvidence} from './portable-reviewed-user-data.js';
 import {portableArtifactByteLength} from './agent-package-codec.js';
@@ -31,7 +31,7 @@ export function validatePortableAgentPackage(value:unknown):ValidatedPortableAge
   const topologyError=portableAgentTopologyError(portable);if(topologyError)throw new Error(topologyError);
   validateOutputRoles(portable.outputRoles,new Set(portable.agents.map(a=>a.ref)));
   agentPackageJsonUtf8Bytes(portable);
-  const artifactBytes=new Map<PortableArtifactDto,number>(),artifactRefs=new Set<string>();let totalArtifactBytes=0;
+  const artifactBytes=new Map<PortableArtifactDto,number>(),artifactRefs=new Set<string>(),allTransportRefs=new Set<string>();let totalArtifactBytes=0;
   for(const candidate of portable.agents as unknown[]){
     const node=validatedObject(candidate,'Agent package node');
     exactObjectFields(node,['ref','title','engine','model','effort','speed','role','presetSnapshot','accessSettings','workingCopyMode','sourceChat','workingFiles','workingFolder','workingRootRef','initialInstructions','managerRef','managementPermissions','history','artifacts'],'Agent package node');
@@ -48,10 +48,43 @@ export function validatePortableAgentPackage(value:unknown):ValidatedPortableAge
       for (const key of ['model','effort']) if (preset[key] !== undefined && typeof preset[key] !== 'string') throw new Error('Agent preset snapshot has invalid selection');
     }
     if(node.workingRootRef!==undefined&&(portable.mode!=='full'||typeof node.workingRootRef!=='string'||!node.workingRootRef||node.workingRootRef.length>128))throw new Error('Invalid working-root identity');
+    const largeRefs=new Set<string>();
     if(node.workingFiles!==undefined){
       if(portable.mode!=='full'||!Array.isArray(node.workingFiles)||node.workingFiles.length>10000)throw new Error('Selected working files require a bounded full package');
       const paths=new Set<string>();
-      for(const candidate of node.workingFiles){const file=validatedObject(candidate,'Working file');exactObjectFields(file,['path','artifactRef','mode','mtime'],'Working file');if(file.mode!==undefined&&(!Number.isInteger(file.mode)||Number(file.mode)<0||Number(file.mode)>0o777)||file.mtime!==undefined&&(typeof file.mtime!=='string'||!Number.isFinite(Date.parse(file.mtime))))throw new Error('Invalid working-file metadata');const relative=portableWorkingPath(file.path);if(paths.has(relative)||typeof file.artifactRef!=='string'||!Array.isArray(node.artifacts)||!node.artifacts.some(a=>a.ref===file.artifactRef))throw new Error('Working files need unique paths and included originals');paths.add(relative);}
+      const ordinaryRefs:string[]=[];
+      for(const candidate of node.workingFiles){
+        const file=validatedObject(candidate,'Working file');
+        exactObjectFields(file,['path','artifactRef','mode','mtime','parts'],'Working file');
+        if(file.mode!==undefined&&(!Number.isInteger(file.mode)||Number(file.mode)<0||Number(file.mode)>0o777)||file.mtime!==undefined&&(typeof file.mtime!=='string'||!Number.isFinite(Date.parse(file.mtime))))throw new Error('Invalid working-file metadata');
+        const relative=portableWorkingPath(file.path);
+        if(paths.has(relative)||typeof file.artifactRef!=='string'||!Array.isArray(node.artifacts)||!node.artifacts.some(a=>a.ref===file.artifactRef))throw new Error('Working files need unique paths and included originals');
+        paths.add(relative);
+        if(file.parts===undefined){ordinaryRefs.push(file.artifactRef);continue;}
+        const parts=validatedObject(file.parts,'Working-file parts');
+        exactObjectFields(parts,['schema','refs','byteLength','sha256'],'Working-file parts');
+        if(parts.schema!=='ponderosa.working-file-parts.v1'||!Array.isArray(parts.refs)||parts.refs.length<2||parts.refs.length>MAX_WORKING_FILE_PARTS
+          ||parts.refs[0]!==file.artifactRef||parts.refs.some(ref=>typeof ref!=='string'||!CANONICAL_ARTIFACT_ID.test(ref))
+          ||new Set(parts.refs).size!==parts.refs.length||!Number.isSafeInteger(parts.byteLength)||Number(parts.byteLength)<=64*1024*1024||Number(parts.byteLength)>AGENT_PACKAGE_ARTIFACT_MAX_BYTES
+          ||typeof parts.sha256!=='string'||!/^[a-f0-9]{64}$/.test(parts.sha256))throw Error('Invalid working-file parts manifest');
+        let bytes=0;
+        for(const ref of parts.refs){
+          if(largeRefs.has(ref))throw Error('Working-file parts cannot be shared between originals');
+          largeRefs.add(ref);allTransportRefs.add(ref);
+          const matching=node.artifacts.filter(artifact=>artifact.ref===ref);
+          if(matching.length!==1||matching[0].kind!=='document'||matching[0].mediaType!==WORKING_FILE_PART_MEDIA_TYPE)throw Error('Working-file part needs one same-owner transport artifact');
+          const size=portableArtifactByteLength(matching[0] as PortableArtifactDto);
+          if(size<1)throw Error('Working-file parts cannot be empty');
+          bytes+=size;
+          if(bytes>AGENT_PACKAGE_ARTIFACT_MAX_BYTES)throw Error('Working-file parts exceed decoded package limit');
+        }
+        if(bytes!==parts.byteLength)throw Error('Working-file part lengths differ from the declared original');
+      }
+      if(ordinaryRefs.some(ref=>largeRefs.has(ref)))throw Error('Working-file parts cannot also be another original');
+      for(const message of (node.history as AgentPortablePackageDto['agents'][number]['history']|undefined)??[]){
+        const refs=[...(message.attachmentRefs??[]),...Object.values(message.artifactRefs??{}),...(message.communication?.artifactIds??[]),...(message.communication?.document?.artifactId?[message.communication.document.artifactId]:[])];
+        if(refs.some(ref=>largeRefs.has(ref)))throw Error('Working-file transport parts cannot be history attachments');
+      }
       for(const relative of paths)if(relative.split('/').slice(0,-1).some((_,i)=>paths.has(relative.split('/').slice(0,i+1).join('/'))))throw new Error('A working file cannot also be a parent folder');
     }
     if(node.workingFolder!==undefined){
@@ -91,10 +124,19 @@ export function validatePortableAgentPackage(value:unknown):ValidatedPortableAge
       const artifact=validatedObject(artifactCandidate,'portable artifact');
       exactObjectFields(artifact,['ref','kind','path','summary','createdAt','mediaType','visibility','pinned','sourcePath','dataBase64','dataEncoding','decodedSize'],'portable artifact');
       if(typeof artifact.ref!=='string'||!CANONICAL_ARTIFACT_ID.test(artifact.ref)||artifactRefs.has(artifact.ref))throw new Error('artifact refs must be unique canonical identifiers');
+      if(artifact.mediaType===WORKING_FILE_PART_MEDIA_TYPE&&!largeRefs.has(String(artifact.ref)))throw Error('Unbound working-file transport artifact');
       if(!['diff','test_report','pr_summary','log','document','screenshot','generated_file'].includes(String(artifact.kind))||typeof artifact.path!=='string'||!artifact.path||typeof artifact.createdAt!=='string'||!Number.isFinite(Date.parse(artifact.createdAt))||typeof artifact.dataBase64!=='string'||(artifact.summary!==undefined&&typeof artifact.summary!=='string')||(artifact.mediaType!==undefined&&typeof artifact.mediaType!=='string')||(artifact.visibility!==undefined&&artifact.visibility!=='project'&&artifact.visibility!=='published')||(artifact.pinned!==undefined&&typeof artifact.pinned!=='boolean')||(artifact.sourcePath!==undefined&&typeof artifact.sourcePath!=='string'))throw new Error(`artifact ${String(artifact.ref)} has an invalid shape`);
       const bytes=portableArtifactByteLength(artifact as unknown as PortableArtifactDto);totalArtifactBytes+=bytes;if(totalArtifactBytes>AGENT_PACKAGE_ARTIFACT_MAX_BYTES)throw Object.assign(new Error(`portable Agent package artifacts exceed ${AGENT_PACKAGE_ARTIFACT_LIMIT_LABEL}`),{statusCode:413});
       const typed=artifactCandidate as PortableArtifactDto;artifactRefs.add(artifact.ref);artifactBytes.set(typed,bytes);
     }
+  }
+  if(allTransportRefs.size){
+    const referenced=collectReachableArtifactIds({sourceProjectInstructions:portable.sourceProjectInstructions,
+      agents:portable.agents.map(node=>({initialInstructions:node.initialInstructions,role:node.role,presetSnapshot:node.presetSnapshot,history:node.history}))});
+    for(const node of portable.agents)for(const message of node.history??[]){
+      for(const ref of [...(message.attachmentRefs??[]),...Object.values(message.artifactRefs??{})])referenced.add(ref);
+    }
+    if([...allTransportRefs].some(ref=>referenced.has(ref)))throw Error('Working-file transport parts cannot be used as standalone artifacts');
   }
   if(portable.memory!==undefined){
     if(portable.mode!=='full'||!Array.isArray(portable.memory)||portable.memory.length>portable.agents.length)throw new Error('Full-mode memory snapshots require included Agent owners');
@@ -145,6 +187,9 @@ export function validatePortableAgentPackage(value:unknown):ValidatedPortableAge
       const target=portable.agents.find(owner=>owner.workingRootRef===link.targetRootRef&&owner.workingFiles?.some(file=>file.path===link.target));
       const original=target?.workingFiles?.find(file=>file.path===link.target),artifact=original&&target?.artifacts?.find(artifact=>artifact.ref===original.artifactRef);
       if(!original||!artifact)throw new Error('Mapped hardlink requires an included regular original');
+      // ponytail: a parts-backed mapped hardlink stays held until its entire
+      // decoded original can be checked against the alias-sensitive policy.
+      if(original.parts)throw Error('Mapped hardlinks to multi-part working originals require complete alias validation');
       validateWorkingFileData(link.path,decodePortableMetadataArtifact(artifact,64*1024*1024));
     }
     orderWorkingRoots(portable.agents.filter(node=>node.workingFolder).map(node=>({ref:node.workingRootRef??node.ref,links:node.workingFolder!.links??[]})));

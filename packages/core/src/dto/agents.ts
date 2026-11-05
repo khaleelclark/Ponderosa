@@ -146,6 +146,27 @@ export interface PortableArtifactDto {
   dataEncoding?: "gzip";
   decodedSize?: number;
 }
+/** Transport parts remain one logical working original; refs are ordered. */
+export interface PortableWorkingFilePartsDto {
+  schema: "ponderosa.working-file-parts.v1";
+  refs: string[];
+  byteLength: number;
+  sha256: string;
+}
+export interface PortableWorkingFileDto {
+  path: string;
+  artifactRef: string;
+  mode?: number;
+  mtime?: string;
+  parts?: PortableWorkingFilePartsDto;
+}
+export const WORKING_FILE_PART_MEDIA_TYPE = "application/vnd.ponderosa.working-file-part.v1";
+export const MAX_WORKING_FILE_PARTS = 1024;
+/** Use only after the package contract has been validated. */
+export function workingFileArtifactRefs(file: PortableWorkingFileDto): string[] {
+  return file.parts ? [...file.parts.refs] : [file.artifactRef];
+}
+
 /** Passive topology inside one selected root; never imports an external/native owner. */
 export interface PortableWorkingLinkDto {path:string;kind:'symlink'|'hardlink';target:string;mtime?:string;sourceTarget?:string;targetRootRef?:string}
 export interface PortableAgentNodeDto {
@@ -170,7 +191,7 @@ export interface PortableAgentNodeDto {
   sourceChat?: {ref:string;title:string};
   /** Opaque package-local identity; equal refs share one exported folder. */
   workingRootRef?: string;
-  workingFiles?: Array<{path:string;artifactRef:string;mode?:number;mtime?:string}>;
+  workingFiles?: PortableWorkingFileDto[];
   workingFolder?: {cyclicLinks?:'refuse'|'passive_in_root';mode?:number;mtime?:string;directories:Array<{path:string;mode:number;mtime:string}>;excludedPaths:string[];links?:PortableWorkingLinkDto[]};
   history?: PortableAgentHistoryMessageDto[];
   artifacts?: PortableArtifactDto[];
