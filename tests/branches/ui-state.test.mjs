@@ -437,10 +437,15 @@ test('workspace save feedback uses confirmed owner callbacks while newer default
 });
 
 test('profile success requires the submitted profile to remain current and repeated saves use the same shared operation key',async()=>{
- const f=await settingsFeedbackFixture('OperatorProfileSettingsSection',['save']),submitted={...f.scope.currentProfile.current};
- const saved=await f.scope.save.mutationFn(submitted);assert.equal(f.notices.length,0);f.scope.save.onSuccess(saved,submitted);f.scope.save.onSuccess(saved,submitted);
+ const lifecycle=[],form={beginSave:()=>lifecycle.push({kind:'begin'}),finishSave:(profile,succeeded)=>lifecycle.push({kind:'finish',profile,succeeded})};
+ const f=await settingsFeedbackFixture('OperatorProfileSettingsSection',['save'],{form}),submitted={...f.scope.currentProfile.current};
+ f.scope.save.onMutate();const saved=await f.scope.save.mutationFn(submitted);assert.equal(f.notices.length,0);f.scope.save.onSuccess(saved,submitted);f.scope.save.onSuccess(saved,submitted);
  assert.deepEqual(f.notices.map(item=>[item.key,item.message]),[['operator-profile','Settings Saved'],['operator-profile','Settings Saved']]);
  f.scope.currentProfile.current={...submitted,displayName:'Newer name'};f.scope.save.onSuccess(saved,submitted);assert.equal(f.notices.length,2,'A stale profile completion never confirms the newer draft');assert.equal(f.writes.length,1);assert.equal(f.writes[0].profile,submitted);
+ assert.deepEqual(lifecycle.map(entry=>entry.kind),['begin','finish','finish','finish']);
+ for(const entry of lifecycle.slice(1)){assert.equal(entry.profile,submitted);assert.equal(entry.succeeded,true);}
+ f.scope.save.onMutate();f.scope.save.onError(new Error('synthetic save failure'),submitted);
+ assert.equal(f.notices.length,2,'A failed save cannot report success');assert.equal(lifecycle.at(-2).kind,'begin');assert.equal(lifecycle.at(-1).profile,submitted);assert.equal(lifecycle.at(-1).succeeded,false);
 });
 
 test('immediate-save capability presentation removes manual actions while preserving inherited/unavailable switches and ordinary defaults',async()=>{
