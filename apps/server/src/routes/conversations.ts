@@ -1,3 +1,4 @@
+import {describeChatDeletionIntentFailure} from '../branch-deletion-diagnostics.js';
 import {localMemoryFor} from '../local-memory.js';
 import {activeAgentProductSql,activeChatProductSql} from '@ponderosa/agents';
 import {requestProduct} from '../product-scope.js';
@@ -408,7 +409,7 @@ export function registerConversationRoutes(
       try {
         receipt = store.markConversationDeletionPending(current.id);
       } catch (error) {
-        throw Object.assign(new Error(error instanceof Error ? error.message : "Chat deletion intent could not be persisted", {cause:error}),{statusCode:503,cleanupPending:false,retryable:true});
+        throw Object.assign(new Error(describeChatDeletionIntentFailure(error), {cause:error}),{statusCode:503,cleanupPending:false,retryable:true});
       }
     }
     if (!receipt) throw new Error("Chat deletion intent was not persisted");

@@ -23,6 +23,26 @@ const BRANCH_DELETION_PUBLIC_BLOCKERS=new Set([
  'Historical temporary Chat ownership changed',
  'Temporary Chat ownership changed',
  'Provider process cleanup remains pending',
+ 'Generation custody unavailable',
+ 'Observed generation runtime/custody service unavailable; cleanup held',
+ 'Generation exit seal unavailable; cleanup held',
+ 'Final resource package has no working-folder inventory',
+ 'Final resource working-folder inventory is incomplete; cleanup held',
+ 'Final resource checkpoint package service unavailable; cleanup held',
+ 'Final resource package receipt unavailable; cleanup held',
+ 'Final resource package predates working-folder capture; cleanup held',
+ 'Final resource package intent differs; cleanup held',
+ 'Final resource exit changed during package verification',
+ 'Observed final resource drain unavailable; cleanup held',
+ 'Final resource cleanup changed after drain',
+ 'Final resource cleanup changed after package capture',
+ 'Required checkpoint custody unavailable',
+ 'Checkpoint custody was reconciled',
+ 'Checkpoint custody has been released',
+ 'Checkpoint custody receipt does not match retained capture',
+ 'Checkpoint custody bytes unavailable or changed',
+ 'Checkpoint custody digest mismatch',
+ 'Checkpoint custody retired during read',
 ]);
 // Fixed descriptions explain verified error classes without copying arbitrary
 // SQL, paths, trigger messages, or unlabeled credential values.
@@ -53,15 +73,30 @@ const BRANCH_DELETION_STEPS={
  agent:'removing a Workflow Agent',
  chat:'removing a Workflow Chat',
  historical:'removing a historical Workflow Chat',
+ resource:'cleaning up a temporary Workflow resource',
 } as const;
 export type BranchDeletionStep=keyof typeof BRANCH_DELETION_STEPS;
+function safeFailureCode(error:unknown):unknown {
+ const cause=error instanceof Error?error.cause:undefined;
+ return (typeof error==='object'&&error!==null&&'code' in error)?(error as {code?:unknown}).code:
+  (typeof cause==='object'&&cause!==null&&'code' in cause)?(cause as {code?:unknown}).code:undefined;
+}
+function safeFailureDescription(code:unknown):string|undefined {
+ return typeof code==='string'&&Object.hasOwn(BRANCH_DELETION_ERROR_DESCRIPTIONS,code)?BRANCH_DELETION_ERROR_DESCRIPTIONS[code]:undefined;
+}
+/** Do not copy arbitrary exception text into the direct Chat response. */
+export function describeChatDeletionIntentFailure(error:unknown):string {
+ const message=error instanceof Error?error.message:'';
+ if(BRANCH_DELETION_PUBLIC_BLOCKERS.has(message)||isMemoryCleanupHold(message)||message==='Chat deletion intent could not be persisted'||message==='conversation not found')return message;
+ const code=safeFailureCode(error),description=safeFailureDescription(code);
+ return description
+  ? `Chat deletion intent could not be confirmed (${code}): ${description} Details withheld because they may contain credentials.`
+  : 'Chat deletion intent could not be confirmed. Details withheld because they may contain credentials.';
+}
 export function describeBranchDeletionFailure(error:unknown,step?:BranchDeletionStep):string{
  const message=error instanceof Error?error.message:'';
  if(BRANCH_DELETION_PUBLIC_BLOCKERS.has(message)||isMemoryCleanupHold(message))return message;
- const cause=error instanceof Error?error.cause:undefined;
- const code=(typeof error==='object'&&error!==null&&'code' in error)?(error as {code?:unknown}).code:
-  (typeof cause==='object'&&cause!==null&&'code' in cause)?(cause as {code?:unknown}).code:undefined;
- const description=typeof code==='string'&&Object.hasOwn(BRANCH_DELETION_ERROR_DESCRIPTIONS,code)?BRANCH_DELETION_ERROR_DESCRIPTIONS[code]:undefined;
+ const code=safeFailureCode(error),description=safeFailureDescription(code);
  // This exact host-authored guard identifies an audit-record integrity failure.
  // Match the entire fixed message only at its actual deletion step; never
  // publish the saved journal, arbitrary exception text, or trigger details.

@@ -327,7 +327,7 @@ export class BranchResourceService {
         // The shared deletion authority has observed process and private-state cleanup.
         // The final SQLite check still rejects new members or an obsolete generation.
         this.branches.resourceRetired(resource.stepExecutionId);
-      } catch(error) { this.branches.resourceCleanupError(resource.stepExecutionId,error instanceof Error ? error.message : 'Resource cleanup remains pending'); }
+      } catch(error) { this.branches.resourceCleanupError(resource.stepExecutionId,describeBranchDeletionFailure(error,'resource')); }
     }
     for (const context of this.branches.resourceContextCleanupCandidates()) {
       const held=this.store.sqlite.prepare('SELECT error FROM branch_retirement_errors WHERE resource_id=?').get(context.chatId) as {error:string}|undefined;

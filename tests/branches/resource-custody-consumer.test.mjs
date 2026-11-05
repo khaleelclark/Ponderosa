@@ -23,7 +23,7 @@ test('cleanup cannot destroy source Agents when required retained package bytes 
  const branches={issuedResourceCapture:(execution,step,key)=>{assert.equal(execution,'execution');assert.equal(step,'step');assert.equal(key,'final-resource-package:step:0');return undefined;},issuedResourceCapturePending:()=>false,resourceCleanupCandidates:()=>[{executionId:'execution',stepExecutionId:'step',agentIds:['agent']}],resourceContextCleanupCandidates:()=>[],resourceCaptureJournal:()=>({state:'retained',receipt:{custodyId:'retained'}}),resourceCleanupError:(_step,message)=>{assert.match(message,/changed/);errors++;}};
  const store={sqlite:{prepare:sql=>{assert.match(sql,/branch_retirement_errors/);return {get:step=>{assert.equal(step,'step');return undefined;}};}}};
  const service=new BranchResourceService(branches,store,async()=>deleted++,async()=>assert.fail('create'),async()=>deleted++);
- service.setPackageEngine({readCheckpoint:async receipt=>{assert.equal(receipt.custodyId,'retained');reads++;throw Error('retained package changed');}});
+ service.setPackageEngine({readCheckpoint:async receipt=>{assert.equal(receipt.custodyId,'retained');reads++;throw Error('Checkpoint custody bytes unavailable or changed');}});
  await service.tick(false);assert.equal(reads,1);assert.equal(deleted,0);assert.equal(errors,1);await service.stop();
 });
 
