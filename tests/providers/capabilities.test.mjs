@@ -249,11 +249,12 @@ test('native Codex compact shutdown wakes the existing wait without claiming com
 });
 
 test('two completed native compacts cannot finish or charge the next warm ordinary turn', async () => {
-  const session = nativeCompactSession(), queue = []; let compacts = 0;
+  const session = nativeCompactSession(), queue = []; let compacts = 0, goalReads = 0;
   const emit = (method, params) => { const n = { method, params: { threadId: session.engineAgentId, ...params } }; session.observeNotification(n); queue.push(n); };
   session.rpc.notifications = { async *[Symbol.asyncIterator]() { yield* queue; } };
-  session.rpc.request = async method => {
+  session.rpc.request = async (method, params) => {
     if (method === 'turn/start') return { turn: { id: 'ordinary-followup' } };
+    if (method === 'thread/goal/get') { assert.deepEqual(params, {threadId: session.engineAgentId}); goalReads++; return {goal:null}; }
     assert.equal(method, 'thread/compact/start'); const turnId = 'native-' + ++compacts, id = 'compact-item-' + compacts;
     emit('turn/started', { turn: { id: turnId } });
     emit('item/started', { turnId, item: { id, type: 'contextCompaction' } });
@@ -275,6 +276,7 @@ test('two completed native compacts cannot finish or charge the next warm ordina
   assert.equal(terminals.length, 1, 'Native completion is never the next Agent Run completion');
   assert.equal(terminals[0].usage.totalTokens, 1000, 'Native usage is not billed to later ordinary work');
   assert.equal(events.filter(event => event.type === 'context_usage').length, 1);
+  assert.equal(goalReads, 1, 'The ordinary turn checks its exact native goal after completion');
 });
 
 test('native command outcome stays closed and invalid telemetry cannot imply completion', async () => {

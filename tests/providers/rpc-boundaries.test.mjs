@@ -119,9 +119,12 @@ for (const matches of [true, false]) test(`Codex validates the exact saved threa
   const root = mkdtempSync(path.join(os.tmpdir(), 'ponderosa-resume-'));
   const handles = []; let session;
   writeFileSync(path.join(root, 'app-server'), `
+    const fs=require('node:fs'), seen=[];
     require('node:readline').createInterface({input:process.stdin}).on('line', line => {
       const message = JSON.parse(line); if (message.id === undefined) return;
+      seen.push({method:message.method,params:message.params});fs.writeFileSync('seen.json',JSON.stringify(seen));
       const result = message.method === 'initialize' ? {userAgent:'codex/0.100.0'}
+        : message.method === 'thread/goal/get' ? {goal:null}
         : {thread:{id:${JSON.stringify(matches ? 'saved-thread' : 'foreign-thread')}}};
       console.log(JSON.stringify({id:message.id,result}));
     });
@@ -135,6 +138,10 @@ for (const matches of [true, false]) test(`Codex validates the exact saved threa
       assert.equal(session.engineAgentId, 'saved-thread');
       assert.equal(session.validatesResumeBeforeTurn, true);
     } else await assert.rejects(opening, /did not confirm the requested saved session/);
+    const seen=JSON.parse(readFileSync(path.join(root,'seen.json'),'utf8'));
+    assert.deepEqual(seen.filter(call=>call.method==='thread/goal/get').map(call=>call.params),[{threadId:'saved-thread'}]);
+    assert.ok(seen.findIndex(call=>call.method==='thread/goal/get')<seen.findIndex(call=>call.method==='thread/resume'));
+    assert.equal(seen.some(call=>call.method==='turn/start'),false);
   } finally {
     await session?.close(); await Promise.all(handles.map(handle => handle.close()));
     assert.ok(handles.length && handles.every(handle => !handle.isAlive()), 'Owned resume probes must exit');
@@ -342,6 +349,7 @@ for (const mode of ['subscription','api']) test('executing Codex account mode fe
    const changed=fs.existsSync('changed');
    const result=m.method==='initialize'?{userAgent:'codex/0.100.0'}:
     m.method==='account/read'?{account:{type:changed?${JSON.stringify(type==='apiKey'?'chatgpt':'apiKey')}:${JSON.stringify(type)}}}:
+    m.method==='thread/goal/get'?{goal:null}:
     m.method==='turn/start'?{turn:{id:'turn'}}:{thread:{id:'saved'}};
    console.log(JSON.stringify({id:m.id,result}));
   });
@@ -351,7 +359,9 @@ for (const mode of ['subscription','api']) test('executing Codex account mode fe
    expectedBillingMode:mode,sandboxMode:'read-only',signal:new AbortController().signal,killGraceMs:50,
    onRuntimeSpawned:h=>handles.push(h),onRuntimeRootExit(){}});
   const seen=JSON.parse(readFileSync(path.join(root,'seen.json'),'utf8'));
-  assert.ok(seen.indexOf('account/read')<seen.indexOf('thread/resume'));
+  for(const method of ['account/read','thread/goal/get','thread/resume']) assert.ok(seen.includes(method),method+' must be observed');
+  assert.ok(seen.indexOf('account/read')<seen.indexOf('thread/goal/get'));
+  assert.ok(seen.indexOf('thread/goal/get')<seen.indexOf('thread/resume'));
   writeFileSync(path.join(root,'changed'),'');
   await assert.rejects(session.startTurn({prompt:'must stay pending'}),/billing mode/);
   assert.equal(JSON.parse(readFileSync(path.join(root,'seen.json'),'utf8')).includes('turn/start'),false);
