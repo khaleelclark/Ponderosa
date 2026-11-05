@@ -23,6 +23,13 @@ import {validatePortableAgentPackage} from './portable-agent-package-validation.
 type Row=Record<string,any>;
 const PREVIEW_TTL_MS=24*60*60*1000;
 const MAX_OUTSTANDING_PLANS=32;
+const RESERVED_PHYSICAL_HOLDS=new Set([
+ 'Reserved physical artifact identity is unavailable; no replay',
+ 'Reserved physical receipt differs from its exact source and destination; no replay',
+ 'Reserved physical receipt differs from current exact source/destination bindings',
+ 'A reserved recovery destination now exists; preserve it and review the original plan',
+ 'A reserved recovery destination cannot be verified; preserve it and review the original plan',
+]);
 const MAX_OUTSTANDING_PLANS_PER_BRANCH=8;
 const MAX_RETAINED_PLAN_BYTES=512*1024*1024;
 const TERMINAL_RECEIPT_TTL_MS=30*24*60*60*1000;
@@ -31,7 +38,7 @@ const IMPORT_DEADLINE_MS=5*60*1000;
 export const BRANCH_INSTALLATION_HOLD_UNTIL='9999-12-31T23:59:59.999Z';
 // The scheduler and lifecycle readback share this predicate so the UI never
 // promises a retry when an explicit review or an incomplete write fences it.
-export const BRANCH_INSTALLATION_RETRY_READY_SQL="json_extract(preview_json,'$.pendingAccess') IS NULL AND json_extract(preview_json,'$.pendingWorkingRoot') IS NULL AND COALESCE(json_extract(preview_json,'$.workingDataApplication.state'),'') NOT IN ('applying','incomplete')";
+export const BRANCH_INSTALLATION_RETRY_READY_SQL="json_extract(preview_json,'$.pendingAccess') IS NULL AND json_extract(preview_json,'$.pendingWorkingRoot') IS NULL AND (COALESCE(json_extract(preview_json,'$.workingDataApplication.state'),'') NOT IN ('applying','incomplete') OR (json_extract(preview_json,'$.workingDataApplication.state')='applying' AND json_extract(preview_json,'$.workingDataApplication.phase')='reserved' AND error IS NULL AND next_attempt_at IS NULL))";
 
 export {describeBranchDeletionFailure} from './branch-deletion-diagnostics.js';
 import {describeBranchDeletionFailure,type BranchDeletionStep} from './branch-deletion-diagnostics.js';
@@ -772,7 +779,12 @@ export class BranchInstallationService {
   for(const prior of this.rows("SELECT * FROM branch_installation_plans WHERE state='applying' AND json_extract(preview_json,'$.workingDataApplication.state')='applying'")){
    if(this.activeImports.has(prior.id))continue;
    const state=this.rolePlan(prior),receipt=state.workingDataApplication!;
-   const message='A prior working-folder restoration stopped before a completion receipt. Partial folders and original artifacts are retained; inspect the exact receipt without replay.';
+   // Only a clean crash at the exact write-ahead reservation can restart.
+   // Any recorded failure or later phase remains held for inspection.
+   if(receipt.phase==='reserved' && !prior.error && !prior.next_attempt_at)continue;
+   const message=receipt.phase==='reserved'&&RESERVED_PHYSICAL_HOLDS.has(prior.error)
+    ? prior.error
+    : 'A prior working-folder restoration stopped before a completion receipt. Partial folders and original artifacts are retained; inspect the exact receipt without replay.';
    this.run('UPDATE branch_installation_plans SET preview_json=?,error=?,next_attempt_at=NULL WHERE id=?',stableJson({...state,workingDataApplication:{...receipt,state:'incomplete',error:{message,code:'ERR_INTERRUPTED_WORKING_DATA',partialStatePossible:true}}}),message,prior.id);
   }
   if(this.engine)for(const plan of this.rows(`SELECT * FROM branch_installation_plans WHERE state='applying' AND ${BRANCH_INSTALLATION_RETRY_READY_SQL} AND (next_attempt_at IS NULL OR next_attempt_at<=?) ORDER BY COALESCE(next_attempt_at,created_at),created_at LIMIT 1`,now.toISOString()))try{
@@ -988,12 +1000,14 @@ export class BranchInstallationService {
     const input={planId:plan.id,data:pkg.workingData,agentIds,fileSelections:state.fileSelections??{},preparations:state.workingDataPreparations??{}};
     const expected=branchWorkingDataInputHash(input);
     let result=state.workingDataApplication;
-    if(state.workingDataApplication){
-     if(state.workingDataApplication.state!=='completed')throw new BranchWorkingDataHeldError('Original physical working-folder outcome remains held; no automatic replay');
-     if(state.workingDataApplication.sourceSha256!==pkg.workingData.sha256||state.workingDataApplication.inputSha256!==expected)throw new BranchWorkingDataHeldError('Completed physical receipt differs from current exact source/destination bindings');
+    const reserved=result?.state==='applying'&&result.phase==='reserved'&&!current.error&&!current.next_attempt_at?result:undefined;
+    if(result&&!reserved){
+     if(result.state!=='completed')throw new BranchWorkingDataHeldError('Original physical working-folder outcome remains held; no automatic replay');
+     if(result.sourceSha256!==pkg.workingData.sha256||result.inputSha256!==expected)throw new BranchWorkingDataHeldError('Completed physical receipt differs from current exact source/destination bindings');
     }else{
+     if(reserved&&(reserved.sourceSha256!==pkg.workingData.sha256||reserved.inputSha256!==expected))throw new BranchWorkingDataHeldError('Reserved physical receipt differs from current exact source/destination bindings');
      try{
-      result=await this.engine!.applyWorkingData(input,receipt=>{
+      result=await this.engine!.applyWorkingData({...input,...(reserved?{reservedApplication:reserved}:{})},receipt=>{
        const latest=this.row('SELECT * FROM branch_installation_plans WHERE id=?',plan.id);if(!latest)throw new Error('Installation plan disappeared while saving physical evidence');
        this.run('UPDATE branch_installation_plans SET preview_json=?,updated_at=? WHERE id=?',stableJson({...this.rolePlan(latest),workingDataApplication:receipt}),new Date().toISOString(),plan.id);
       },controller.signal);

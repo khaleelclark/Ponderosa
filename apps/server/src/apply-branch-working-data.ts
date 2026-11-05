@@ -77,6 +77,8 @@ export async function prepareBranchWorkingDataChild(store:AgentStore,workingCopi
 
 export interface ApplyBranchWorkingDataInput {
  planId:string;data:BranchPortableWorkingData;agentIds:Record<string,string>;fileSelections:BranchImportFileSelections;preparations?:Record<string,BranchWorkingDataPreparation>;
+ /** Exact durable reservation saved before the physical phase began. */
+ reservedApplication?:BranchWorkingDataApplication;
 }
 export class BranchWorkingDataHeldError extends Error{}
 export function branchWorkingDataInputHash(input:ApplyBranchWorkingDataInput):string{
@@ -138,8 +140,13 @@ export async function applyBranchWorkingData(dataDir:string,store:AgentStore,wor
  const chatLive=(chatRef:string)=>Object.entries(fileSelections).some(([selectionKey,choice])=>JSON.parse(selectionKey)[0]===chatRef&&!!choice.workingFilesActivation);
  type Artifact={nodeRef:string;source:NonNullable<PortableAgentNodeDto['artifacts']>[number];id:string;data:Buffer;sha256:string;path:string;agent:AgentDto};
  const artifacts:Artifact[]=[];
+ let reservedArtifactIndex=0;
+ const artifactId=()=>input.reservedApplication
+  ? input.reservedApplication.artifacts[reservedArtifactIndex++]?.id
+  : randomUUID();
  for(const node of pkg.agents)for(const source of node.artifacts??[]){
-  signal?.throwIfAborted();const decoded=await decodePortableArtifactData(source),id=randomUUID();
+  signal?.throwIfAborted();const decoded=await decodePortableArtifactData(source),id=artifactId();
+  if(!id||!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id))throw new BranchWorkingDataHeldError('Reserved physical artifact identity is unavailable; no replay');
   artifacts.push({nodeRef:node.ref,source,id,...decoded,path:'imported/'+id+path.extname(source.path).toLowerCase().slice(0,16),agent:agents.get(node.ref)!});
  }
  const reviewCopies=new Map<string,{path:string;artifactRef:string;mode?:number;mtime?:string}>();
@@ -149,7 +156,9 @@ export async function applyBranchWorkingData(dataDir:string,store:AgentStore,wor
   if(!file||!original)continue;
   for(const chatRef of new Set(members.map(node=>data.owners[node.ref]!.chatRef))){
    if(data.owners[owner!.ref]!.chatRef===chatRef)continue;
-   const member=members.find(node=>data.owners[node.ref]!.chatRef===chatRef)!,copy={...original,id:randomUUID(),nodeRef:member.ref,agent:agents.get(member.ref)!};
+   const member=members.find(node=>data.owners[node.ref]!.chatRef===chatRef)!,id=artifactId();
+   if(!id||!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id))throw new BranchWorkingDataHeldError('Reserved physical artifact identity is unavailable; no replay');
+   const copy={...original,id,nodeRef:member.ref,agent:agents.get(member.ref)!};
    copy.path='imported/'+copy.id+path.extname(original.source.path).toLowerCase().slice(0,16);artifacts.push(copy);reviewCopies.set(member.ref,{...file,artifactRef:copy.id});
   }
  }
@@ -194,6 +203,18 @@ export async function applyBranchWorkingData(dataDir:string,store:AgentStore,wor
  const receipt:BranchWorkingDataApplication={schema:'ponderosa.branch-working-application.v1',sourceSha256:data.sha256,inputSha256,state:'applying',phase:'reserved',
   roots:roots.map(root=>({ref:root.ref,recoveryPath:root.destination,agentIds:root.members.map(member=>agents.get(member.ref)!.id),state:'planned'})),
   artifacts:artifacts.map(artifact=>({sourceRef:artifact.source.ref,nodeRef:artifact.nodeRef,agentId:artifact.agent.id,projectId:artifact.agent.projectId,id:artifact.id,path:artifact.path,sha256:artifact.sha256,size:artifact.data.length})),reviewedUserDataApplications:[],reviewedMetadataApplications:[]};
+ // This exact write-ahead reservation precedes the first physical mutation.
+ // Any altered identity, owner, digest, path, state or extra receipt remains held.
+ if(input.reservedApplication){
+  if(stableJson(input.reservedApplication)!==stableJson(receipt)||new Set(artifacts.map(a=>a.id)).size!==artifacts.length)
+   throw new BranchWorkingDataHeldError('Reserved physical receipt differs from its exact source and destination; no replay');
+  // A user may have occupied a selected destination while the daemon was
+  // stopped. Never publish artifacts before detecting an existing root.
+  for(const root of receipt.roots){
+   try{await fs.lstat(root.recoveryPath);throw new BranchWorkingDataHeldError('A reserved recovery destination now exists; preserve it and review the original plan');}
+   catch(error){if(error instanceof BranchWorkingDataHeldError)throw error;if((error as NodeJS.ErrnoException).code!=='ENOENT')throw new BranchWorkingDataHeldError('A reserved recovery destination cannot be verified; preserve it and review the original plan');}
+  }
+ }
  const save=()=>onReceipt(JSON.parse(JSON.stringify(receipt)) as BranchWorkingDataApplication);
  const nativeReceipt=(value:NativeReceipt)=>{const prior=receipt.reviewedUserDataApplications.findIndex(item=>item.ref===value.ref&&item.path===value.path);if(prior<0)receipt.reviewedUserDataApplications.push(value);else receipt.reviewedUserDataApplications[prior]=value;save();};
  const metadataReceipt=(ref:string,destination:string,originalSha256:string)=>{const value:MetadataReceipt={ref,path:destination,originalSha256,state:'applying'};receipt.reviewedMetadataApplications.push(value);save();return value;};

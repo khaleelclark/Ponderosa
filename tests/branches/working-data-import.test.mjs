@@ -253,3 +253,68 @@ test('interrupted large Branch working-data receipt stays held without replay',{
   assert.equal(createHash('sha256').update(await readFile(original)).digest('hex'),digest,'the complete original remains intact');
  },{storeFactory:dir=>(store=new AgentStore(dir))});
 });
+
+for(const scenario of ['exact','occupied','source-mismatch','artifact-mismatch','owner-mismatch','later-phase'])test('reserved physical import restart: '+scenario,{timeout:60000,skip:process.platform==='win32'},async t=>{
+ let store,captured,intercept=true;
+ await withFixture(t,async f=>{
+  const value=installation(),{plan,first,second}=await preview(f,value);
+  const confirmation=await f.api('POST',route(plan.id)+'/confirm',{acknowledgeFullImport:true});
+  assert.equal(confirmation.status,200,JSON.stringify(confirmation.body));
+  await until(()=>captured,'durable reserved receipt');
+  assert.equal(captured.state,'applying');assert.equal(captured.phase,'reserved');
+  for(const root of captured.roots)assert.equal(root.state,'planned');
+  await assert.rejects(lstat(first),error=>error.code==='ENOENT');
+  await assert.rejects(lstat(second),error=>error.code==='ENOENT');
+  const priorIds=captured.artifacts.map(item=>item.id);
+  assert.ok(priorIds.length);
+  for(const id of priorIds)assert.equal(store.sqlite.prepare('SELECT count(*) n FROM artifacts WHERE id=?').get(id).n,0);
+  // Simulate process loss immediately after the reservation commit: restore
+  // only the known pre-write row, with no synthetic in-process error marker.
+  const row=store.sqlite.prepare('SELECT preview_json FROM branch_installation_plans WHERE id=?').get(plan.id),state=JSON.parse(row.preview_json);
+  state.workingDataApplication=structuredClone(captured);
+  if(scenario==='source-mismatch')state.workingDataApplication.inputSha256='0'.repeat(64);
+  if(scenario==='artifact-mismatch')state.workingDataApplication.artifacts[0].sha256='1'.repeat(64);
+  if(scenario==='owner-mismatch')state.workingDataApplication.roots[0].agentIds=['different-owner'];
+  if(scenario==='later-phase')state.workingDataApplication.phase='publishing-originals';
+  if(scenario==='occupied'||scenario==='later-phase'){
+   await mkdir(first);await writeFile(path.join(first,'user-kept.txt'),'user bytes must remain');
+  }
+  store.sqlite.prepare("UPDATE branch_installation_plans SET state='applying',preview_json=?,error=NULL,next_attempt_at=NULL WHERE id=?").run(JSON.stringify(state),plan.id);
+  await f.reopen();
+  if(scenario==='exact'){
+   const done=await until(async()=>{const r=f.ok(await f.api('GET',route(plan.id)));return r.state==='completed'&&r;},'reserved-only recovery',30000);
+   assert.equal(done.workingDataApplication.state,'completed');
+   assert.deepEqual(done.workingDataApplication.artifacts.map(item=>item.id),priorIds,'original reserved artifact identities survive');
+   assert.equal(await readFile(path.join(first,'original'),'utf8'),'complete original');
+   assert.equal(await readFile(path.join(second,'hard'),'utf8'),'complete original');
+  }else{
+   const held=await until(async()=>{const r=f.ok(await f.api('GET',route(plan.id)));return r.error&&r;},'unsafe reserved receipt held',30000);
+   assert.notEqual(held.state,'completed');
+   if(['source-mismatch','artifact-mismatch','owner-mismatch'].includes(scenario))assert.match(held.error,/reserved physical receipt differs/i);
+   if(scenario==='occupied')assert.match(held.error,/destination now exists/i);
+   if(scenario==='later-phase')assert.match(held.error,/stopped before|without replay/i);
+   if(['occupied','later-phase'].includes(scenario))assert.equal(await readFile(path.join(first,'user-kept.txt'),'utf8'),'user bytes must remain');
+   for(const id of priorIds)assert.equal(store.sqlite.prepare('SELECT count(*) n FROM artifacts WHERE id=?').get(id).n,0);
+  }
+ },{storeFactory:dir=>{
+  store=new AgentStore(dir);
+  if(intercept){
+   const prepare=store.sqlite.prepare.bind(store.sqlite);
+   store.sqlite.prepare=sql=>{
+    const statement=prepare(sql);
+    if(!sql.includes('UPDATE branch_installation_plans SET preview_json=?,updated_at=?'))return statement;
+    return new Proxy(statement,{get(target,property){
+     if(property!=='run'){const value=Reflect.get(target,property,target);return typeof value==='function'?value.bind(target):value;}
+     return (...args)=>{
+      const result=target.run(...args);
+      try{const state=JSON.parse(args[0]);if(intercept&&state.workingDataApplication?.phase==='reserved'){
+       captured=structuredClone(state.workingDataApplication);intercept=false;throw new Error('controlled crash after reservation commit');
+      }}catch(error){if(error.message==='controlled crash after reservation commit')throw error;}
+      return result;
+     };
+    }});
+   };
+  }
+  return store;
+ }});
+});
