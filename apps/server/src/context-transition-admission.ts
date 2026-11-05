@@ -125,12 +125,15 @@ export async function requestSettingsTransition(input: {
    if(!targetModel?.trim()||!contract.model?.trim())return true;
    const changed=targetModel!==contract.model||targetEffort!==contract.effort||targetSpeed!==(contract.speed??'standard');
    const voiceBoundary=Boolean(opts.localMemory&&dispatch?.voiceReply===true);
-   if(memory?.retainedSourcesNeedReview(agent.id,agent.conversationId,boundary.executionId))
+   const exposure=memory&&await memory.retainedMemoryExposureStatus(agent.id,agent.conversationId,accepted.sessionId,packet.executionId,boundary.executionId);
+   if(exposure==='changed')
     return hold('A memory source previously used by this Agent was revoked or changed. Prior Agent text cannot yet be attributed safely; the original work remains queued for context review.');
    if(!changed&&!voiceBoundary){
     store.sqlite.prepare("DELETE FROM activation_sources WHERE activation_id=? AND source_kind='settings_transition_retry_pending'").run(pending.id);
     return true;
    }
+   if(exposure==='unknown')
+    return hold('The Agent’s earlier memory exposure cannot be verified. The original work remains queued for context review.');
    shouldHold=true;
    assertRetainedNativeAuthentication(contract,engineAuthStatuses.snapshot(agent.activeEngine));
    if(Boolean(opts.localMemory)!==Boolean(memory))return hold('Memory access could not be verified. The original work remains queued; review the Agent’s context before retrying.');
