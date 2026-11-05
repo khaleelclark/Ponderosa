@@ -6,7 +6,7 @@ import {requestJson} from '../../api/real';
 import {ApiRequestError} from '../../api/types';
 import {createClientId} from '../../clientId';
 import {ConfirmDialog} from '../ConfirmationDialogs';
-import {resourceInspectionMatches,resourceReleaseInput,resourceReleaseMatches,type ResourceReviewInspection} from './branchResourceReview';
+import {resourceInspectionMatches,resourceReleaseInput,resourceReleaseMatches,type ResourceReviewInspection,type TemporaryCopyHistory} from './branchResourceReview';
 
 type Choice='keep_destination'|'use_source';
 type Resolution=NonNullable<ImportAgentPackageRequest['accessSettingsResolution']>;
@@ -24,7 +24,14 @@ export function BranchResourceReview({branchId,executionId,stepId,enabled,onChan
   if(!resourceInspectionMatches(value,branchId,executionId,stepId))throw Error('Resource identity changed. Reload this Run.');
   return value;
  },enabled:open,retry:false,refetchOnWindowFocus:false,refetchOnReconnect:false});
- const refresh=async()=>{setCopyConsent(undefined);setChoices({});setAction('');setConfirm(undefined);await inspection.refetch();};
+ const [historyOpen,setHistoryOpen]=useState(false);
+ const trace=inspection.data?.temporaryCopyTrace;
+ const history=useQuery({queryKey:['branch-copy-history',branchId,executionId,stepId,trace?.sourceAgentId,trace?.copyAgentId,trace?.requestId],enabled:open&&historyOpen&&!inspection.isError&&Boolean(trace?.historyAvailable),retry:false,refetchOnWindowFocus:true,queryFn:async()=>{
+  const result=await requestJson<TemporaryCopyHistory>(base+'/copy-history');
+  if(!trace||result.sourceAgentId!==trace.sourceAgentId||result.copyAgentId!==trace.copyAgentId||result.requestId!==trace.requestId||!Array.isArray(result.messages)||!Array.isArray(result.runs)||!Array.isArray(result.events))throw Error('Retained history identity changed. Refresh this resource.');
+  return result;
+ }});
+ const refresh=async()=>{setHistoryOpen(false);setCopyConsent(undefined);setChoices({});setAction('');setConfirm(undefined);await inspection.refetch();};
  const access=useMutation({retry:false,mutationFn:(resolution:Resolution|CopyApproval)=>requestJson<AgentAccessImportReviewDto>(`${base}/access-review`,{method:'POST',body:JSON.stringify(resolution)}),onSuccess:()=>{setMessage('Access choice recorded.');onChanged();void refresh();},onError:error=>{
   setMessage(error instanceof ApiRequestError&&error.status===409?`Resource or policy changed. Review the refreshed scope. ${error.message}`:`Access choice unconfirmed. ${error.message}`);onChanged();void refresh();
  },onSettled:()=>{fence.current=false;}});
@@ -45,13 +52,13 @@ export function BranchResourceReview({branchId,executionId,stepId,enabled,onChan
  }});
  const value=inspection.data,review=value?.currentPolicyReview,refs=review?.source.filter(item=>item.settings!==undefined).map(item=>item.ref)??[];
  const expert=value?.expertCopyReview;
- const copyScope=expert&&review?JSON.stringify([branchId,executionId,stepId,review.reviewSha256,expert.sourceAgentId,expert.sourceChatId,expert.copyChatId,expert.snapshotSha256]):undefined;
- const copySourceMemory=Boolean(copyScope&&copyConsent?.scope===copyScope&&copyConsent.copySourceMemory);
- const allowFindingsWriteback=Boolean(copyScope&&copyConsent?.scope===copyScope&&copyConsent.allowFindingsWriteback);
+ const copyScope=expert&&review?JSON.stringify([branchId,executionId,stepId,review.reviewSha256,expert.sourceAgentId,expert.sourceChatId,expert.copyChatId,expert.snapshotSha256,expert.sourceMemoryAvailable,expert.reviewWithoutMemorySha256]):undefined;
+ const copySourceMemory=Boolean(expert?.sourceMemoryAvailable&&copyScope&&copyConsent?.scope===copyScope&&copyConsent.copySourceMemory);
+ const allowFindingsWriteback=Boolean(expert?.sourceMemoryAvailable&&copyScope&&copyConsent?.scope===copyScope&&copyConsent.allowFindingsWriteback);
  const chooseCopy=(field:'copySourceMemory'|'allowFindingsWriteback',checked:boolean)=>{if(copyScope)setCopyConsent({scope:copyScope,copySourceMemory,allowFindingsWriteback,[field]:checked});};
  useEffect(()=>{setChoices({});setAction('');setConfirm(undefined);setCopyConsent(undefined);},[copyScope]);
  const busy=access.isPending||release.isPending||inspectRelease.isPending;
- const accessReady=enabled&&!inspection.isFetching&&!inspection.isError&&!retained&&Boolean(review&&value?.destinationChatAvailable&&(expert?!expert.consentCurrent&&copySourceMemory:!value.accessChoiceCurrent))&&(refs.length>0?refs.every(ref=>choices[ref]):Boolean(action));
+ const accessReady=enabled&&!inspection.isFetching&&!inspection.isError&&!retained&&Boolean(review&&value?.destinationChatAvailable&&(expert?!expert.consentCurrent:!value.accessChoiceCurrent))&&(refs.length>0?refs.every(ref=>choices[ref]):Boolean(action));
  const newRelease=Boolean(value&&!inspection.isError&&resourceReleaseInput(value,'preview'));
  const retryReady=Boolean(retained&&releaseStatus&&releaseStatus.state!=='released');
  const apply=()=>{
@@ -62,7 +69,7 @@ export function BranchResourceReview({branchId,executionId,stepId,enabled,onChan
    let resolutionAction:Choice;
    if(refs.length)resolutionAction='keep_destination';
    else {if(!action)return;resolutionAction=action;}
-   const resolution:Resolution={action:resolutionAction,reviewSha256:review.reviewSha256,...(refs.length?{agentActions}:{})};
+   const resolution:Resolution={action:resolutionAction,reviewSha256:expert&&!copySourceMemory?expert.reviewWithoutMemorySha256:review.reviewSha256,...(refs.length?{agentActions}:{})};
    fence.current=true;setConfirm(undefined);setMessage('');access.mutate(expert?{accessSettingsResolution:resolution,copySourceMemory,allowFindingsWriteback,snapshotSha256:expert.snapshotSha256}:resolution);
   }
   else if(confirm==='release'){
@@ -83,6 +90,19 @@ export function BranchResourceReview({branchId,executionId,stepId,enabled,onChan
     {value&&!inspection.isError&&<>
      <Typography>Generation {value.generation} · {value.state} · import {value.importState??'not started'}</Typography>
      <Typography sx={{overflowWrap:'anywhere'}}>Destination Chat: {value.destinationChatId??'not created'}{value.destinationChatId&&!value.destinationChatAvailable?' · unavailable':''}</Typography>
+     {trace&&<Stack spacing={1}>
+      <Typography variant="subtitle2">Temporary copy record</Typography>
+      <Typography sx={{overflowWrap:'anywhere'}}>Source Agent {trace.sourceAgentId} · Chat {trace.sourceChatId}</Typography>
+      <Typography sx={{overflowWrap:'anywhere'}}>Copy Agent {trace.copyAgentId} · Chat {trace.copyChatId} · Request {trace.requestId} · Attempt {trace.attemptId}</Typography>
+      <Typography variant="subtitle2">Task</Typography><Typography sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{trace.task.instructions}</Typography><Typography sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{trace.task.input}</Typography>
+      <Typography variant="subtitle2">Result</Typography><Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{trace.result===undefined||trace.result===null?'No recorded result':typeof trace.result==='string'?trace.result:JSON.stringify(trace.result,null,2)}</Typography>
+      {trace.historyAvailable?<Button onClick={()=>{setHistoryOpen(true);void history.refetch();}}>View retained history</Button>:<Typography>Retained history is unavailable.</Typography>}
+      {historyOpen&&trace.historyAvailable&&<Stack spacing={1}>
+       {history.isFetching&&<Typography role="status">Loading retained history…</Typography>}
+       {history.error&&<Alert severity="error">{history.error.message}</Alert>}
+       {history.data&&!history.error&&!history.isFetching&&<><Typography variant="subtitle2">Retained messages</Typography>{history.data.messages.map((message,index)=><Stack key={index}><Typography variant="caption">{message.title} · {message.agentId} · {message.role} · {message.createdAt??''}</Typography><Typography sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{message.text}</Typography></Stack>)}<details><summary>Retained Run history</summary><Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{JSON.stringify(history.data.runs,null,2)}</Typography></details><details><summary>Retained work log</summary>{history.data.events.map((entry,index)=><Stack key={index}><Typography variant="caption">{entry.agentId} · {entry.seq} · {entry.ts}</Typography><Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{JSON.stringify(entry.event,null,2)}</Typography></Stack>)}</details></>}
+      </Stack>}
+     </Stack>}
      {value.reviewError&&<Alert severity="warning">{value.reviewError}</Alert>}
      {value.accessChoiceCurrent&&<Alert severity="success">Current access choice recorded.</Alert>}
      {review&&<>
@@ -97,11 +117,12 @@ export function BranchResourceReview({branchId,executionId,stepId,enabled,onChan
        <Alert severity="info">This copy uses a fresh temporary workspace; source working-folder files are not copied.</Alert>
        <Typography variant="body2" sx={{overflowWrap:'anywhere'}}>Original Agent: {expert.sourceAgentId} · source Chat: {expert.sourceChatId} · temporary Chat: {expert.copyChatId}</Typography>
        <Typography variant="caption" sx={{overflowWrap:'anywhere'}}>Source snapshot: {expert.snapshotSha256}</Typography>
-       <FormControlLabel control={<Checkbox checked={expert.consentCurrent?expert.copySourceMemory:copySourceMemory} disabled={busy||Boolean(retained)||inspection.isFetching||expert.consentCurrent} onChange={(_,checked)=>chooseCopy('copySourceMemory',checked)}/>} label="Copy the original Agent’s private memory and source Chat’s team memory into this temporary Chat"/>
-       <FormControlLabel control={<Checkbox checked={expert.consentCurrent?expert.allowFindingsWriteback:allowFindingsWriteback} disabled={busy||Boolean(retained)||inspection.isFetching||expert.consentCurrent} onChange={(_,checked)=>chooseCopy('allowFindingsWriteback',checked)}/>} label="Allow this copy to save concise private findings for the original Agent and later copies"/>
+       <FormControlLabel control={<Checkbox checked={expert.consentCurrent?expert.copySourceMemory:copySourceMemory} disabled={busy||Boolean(retained)||inspection.isFetching||expert.consentCurrent||!expert.sourceMemoryAvailable} onChange={(_,checked)=>chooseCopy('copySourceMemory',checked)}/>} label="Copy the original Agent’s private memory and source Chat’s team memory into this temporary Chat"/>
+       <FormControlLabel control={<Checkbox checked={expert.consentCurrent?expert.allowFindingsWriteback:allowFindingsWriteback} disabled={busy||Boolean(retained)||inspection.isFetching||expert.consentCurrent||!expert.sourceMemoryAvailable} onChange={(_,checked)=>chooseCopy('allowFindingsWriteback',checked)}/>} label="Allow this copy to save concise private findings for the original Agent and later copies"/>
        <Typography variant="body2">These choices do not grant Global Memory, browser access, or other capabilities.</Typography>
        <Typography variant="body2">Saving findings does not wake the original Agent; each later copy needs its own memory-copy approval to receive them.</Typography>
-       {!copySourceMemory&&!expert.consentCurrent&&<Alert severity="info">This copy stays held until source private and team memory is explicitly approved.</Alert>}
+       {!copySourceMemory&&!expert.consentCurrent&&<Alert severity="info">Continue without inherited memory when this option is unchecked.</Alert>}
+       {!expert.sourceMemoryAvailable&&<Alert severity="info">Local Memory is unavailable; this copy can proceed without inherited memory or findings writeback.</Alert>}
        {expert.consentCurrent&&<Alert severity="success">Approval recorded for this exact copy and source snapshot.</Alert>}
       </Stack>}
       <Button disabled={!accessReady||busy} onClick={()=>setConfirm('access')}>{expert?'Confirm copy access':'Confirm restrictions'}</Button>
@@ -124,7 +145,7 @@ export function BranchResourceReview({branchId,executionId,stepId,enabled,onChan
   </Dialog>
   <ConfirmDialog open={Boolean(confirm)} title={confirm==='access'?(expert?'Approve this temporary Agent copy?':'Apply reviewed restrictions?'):retained?'Retry the retained release?':'Release retained checkpoint?'} confirmLabel={confirm==='access'?(expert?'Approve copy':'Apply restrictions'):'Release checkpoint'} cancelLabel="Back" pending={access.isPending||release.isPending} confirmDisabled={!enabled||busy||confirm==='access'&&!accessReady||confirm==='release'&&!(retained?retryReady:newRelease&&!inspection.isFetching)} onCancel={()=>setConfirm(undefined)} onConfirm={apply}>
    <Typography>{confirm==='access'?'Uses the displayed destination policy hash and explicit per-Agent choices.':`Permanently removes retained package bytes + future restoration · ${retained?'Uses the original command, generation and receipt.':'Uses the displayed generation and exact custody receipt.'}`}</Typography>
-   {confirm==='access'&&<Typography variant="body2" sx={{overflowWrap:'anywhere'}}>Destination {value?.destinationChatId} · policy {review?.reviewSha256}</Typography>}
+   {confirm==='access'&&<Typography variant="body2" sx={{overflowWrap:'anywhere'}}>Destination {value?.destinationChatId} · policy {expert&&!copySourceMemory?expert.reviewWithoutMemorySha256:review?.reviewSha256}</Typography>}
    {confirm==='access'&&expert&&<Typography variant="body2">Copy source private/team memory: {copySourceMemory?'Yes':'No'} · allow private findings writeback: {allowFindingsWriteback?'Yes':'No'} · snapshot {expert.snapshotSha256}</Typography>}
    {confirm==='release'&&<Typography variant="body2" sx={{overflowWrap:'anywhere'}}>Generation {retained?.expectedGeneration??value?.generation} · custody {retained?.expectedCustodyId??value?.custody?.custodyId} · receipt {retained?.expectedReceiptSha256??value?.custody?.receiptSha256}</Typography>}
   </ConfirmDialog>

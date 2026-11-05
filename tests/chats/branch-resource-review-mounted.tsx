@@ -57,7 +57,7 @@ export async function branchResourceReviewRegression():Promise<void>{
 export async function expertCopyAccessReviewRegression():Promise<void>{
  const originalFetch=globalThis.fetch,host=document.createElement('div');document.body.append(host);
  const root=createRoot(host),client=new QueryClient({defaultOptions:{queries:{retry:false},mutations:{retry:false}}});
- const posts:any[]=[];let hash='copy-policy-1',snapshot='a'.repeat(64),consentCurrent=false,wrongCopy=false;
+ const posts:any[]=[];let hash='copy-policy-1',snapshot='a'.repeat(64),consentCurrent=false,wrongCopy=false,sourceMemoryAvailable=true;
  const json=(value:unknown,status=200)=>new Response(JSON.stringify(value),{status,headers:{'content-type':'application/json'}});
  globalThis.fetch=async(_input,init)=>{
   if(init?.method==='POST'){
@@ -66,7 +66,7 @@ export async function expertCopyAccessReviewRegression():Promise<void>{
    consentCurrent=true;return json({reviewSha256:hash,source:[],destination:{restrictedCapabilityIds:[]}});
   }
   return json({branchId:'branch',executionId:'run',stepExecutionId:'copy-step',generation:1,state:'reserved',destinationChatId:'copy-chat',destinationChatAvailable:true,accessChoiceCurrent:consentCurrent,
-   expertCopyReview:{sourceAgentId:'original-expert',sourceChatId:'original-chat',copyChatId:wrongCopy?'other-chat':'copy-chat',snapshotSha256:snapshot,consentCurrent,copySourceMemory:consentCurrent,allowFindingsWriteback:false},
+   expertCopyReview:{sourceAgentId:'original-expert',sourceChatId:'original-chat',copyChatId:wrongCopy?'other-chat':'copy-chat',snapshotSha256:snapshot,sourceMemoryAvailable,reviewWithoutMemorySha256:'c'.repeat(64),consentCurrent,copySourceMemory:consentCurrent&&posts.at(-1)?.copySourceMemory===true,allowFindingsWriteback:consentCurrent&&posts.at(-1)?.allowFindingsWriteback===true},
    currentPolicyReview:{reviewSha256:hash,source:[],destination:{restrictedCapabilityIds:['unchanged-restriction']}}});
  };
  const render=(key:string)=>root.render(<QueryClientProvider client={client}><BranchResourceReview key={key} branchId="branch" executionId="run" stepId="copy-step" enabled onChanged={()=>{}}/></QueryClientProvider>);
@@ -79,12 +79,12 @@ export async function expertCopyAccessReviewRegression():Promise<void>{
   assert(document.body.textContent?.includes('each later copy needs its own memory-copy approval'),'future copies require separate approval');
   assert(document.body.textContent?.includes('source working-folder files are not copied'),'fresh workspace limitation is disclosed before approval');
   await choose();check('Allow this copy').click();await settle();
-  assert(button('Confirm copy access').disabled,'findings approval alone cannot admit an incomplete full-context copy');
-  check('Copy the original Agent').click();await settle();button('Confirm copy access').click();await settle();
+  assert(!button('Confirm copy access').disabled,'findings approval is independent of inherited memory');
+  button('Confirm copy access').click();await settle();
   assert(posts.length===0,'approval is explicit and separate from selection');button('Approve copy').click();await settle();
   assert(posts.length===1,'stale approval never automatically retries');
-  assert(posts[0].copySourceMemory===true&&posts[0].allowFindingsWriteback===true,'independent opt-ins are sent explicitly');
-  assert(posts[0].snapshotSha256==='a'.repeat(64)&&posts[0].accessSettingsResolution.reviewSha256==='copy-policy-1','bind exact source snapshot and current policy');
+  assert(posts[0].copySourceMemory===false&&posts[0].allowFindingsWriteback===true,'independent opt-ins are sent explicitly');
+  assert(posts[0].snapshotSha256==='a'.repeat(64)&&posts[0].accessSettingsResolution.reviewSha256==='c'.repeat(64),'bind exact source snapshot and current policy');
   assert(posts[0].accessSettingsResolution.action==='keep_destination','memory approval does not apply source capabilities');
   assert(!check('Copy the original Agent').checked&&!check('Allow this copy').checked,'changed snapshot requires fresh unchecked choices');
   await choose();check('Copy the original Agent').click();await settle();button('Confirm copy access').click();await settle();button('Approve copy').click();await settle();
@@ -92,8 +92,35 @@ export async function expertCopyAccessReviewRegression():Promise<void>{
   assert(posts[1].snapshotSha256==='b'.repeat(64)&&posts[1].accessSettingsResolution.reviewSha256==='copy-policy-2','fresh approval uses exact refreshed evidence');
   assert(button('Confirm copy access').disabled,'recorded consent cannot be resubmitted as fresh approval');
   assert(check('Copy the original Agent').checked&&!check('Allow this copy').checked,'readback shows actual recorded independent consent');
+  consentCurrent=false;sourceMemoryAvailable=false;client.clear();render('without-memory');await settle();button('Review resource').click();await settle();
+  assert(check('Copy the original Agent').disabled&&check('Allow this copy').disabled,'unavailable memory cannot be opted into');
+  await choose();assert(!button('Confirm copy access').disabled,'copy proceeds without Local Memory');button('Confirm copy access').click();await settle();button('Approve copy').click();await settle();
+  assert(posts.length===3&&!posts[2].copySourceMemory&&!posts[2].allowFindingsWriteback&&posts[2].accessSettingsResolution.reviewSha256==='c'.repeat(64),'no-memory approval binds its exact reviewed package');
   wrongCopy=true;client.clear();render('mismatch');await settle();button('Review resource').click();await settle();
   assert(document.body.textContent?.includes('Resource identity changed'),'mismatched temporary Chat cannot be approved');
-  assert(posts.length===2,'inspection mismatch has no mutation');
+  assert(posts.length===3,'inspection mismatch has no mutation');
+ }finally{root.unmount();client.clear();host.remove();globalThis.fetch=originalFetch;}
+}
+
+export async function temporaryCopyTraceRegression():Promise<void>{
+ const originalFetch=globalThis.fetch,host=document.createElement('div');document.body.append(host);
+ const root=createRoot(host),client=new QueryClient({defaultOptions:{queries:{retry:false},mutations:{retry:false}}});
+ let reads=0,writes=0,denied=false,wrong=false,available=true;
+ const json=(value:unknown,status=200)=>new Response(JSON.stringify(value),{status,headers:{'content-type':'application/json'}});
+ globalThis.fetch=async(input,init)=>{
+  if(init?.method&&init.method!=='GET')writes++;
+  if(String(input).endsWith('/copy-history')){reads++;if(denied)return json({error:'Current access no longer permits retained history'},403);return json({sourceAgentId:'original',copyAgentId:wrong?'another-copy':'copy',requestId:'request',messages:[{agentId:'copy',title:'Temporary Agent',role:'assistant',text:'Retained response after cleanup'}],runs:[{agentId:'copy',id:'retained-run',status:'completed',created_at:'2026-11-05T01:00:00Z',started_at:null,terminal_at:null}],events:[{agentId:'copy',seq:7,ts:'2026-11-05T01:00:01Z',event:{type:'response',text:'Ordered retained work log'}},{agentId:'copy',seq:8,ts:'2026-11-05T01:00:02Z',event:{type:'completion',text:'After response'}}]});}
+  return json({branchId:'branch',executionId:'run',stepExecutionId:'trace-step',generation:1,state:'retired',destinationChatId:'deleted-chat',destinationChatAvailable:false,accessChoiceCurrent:false,temporaryCopyTrace:{sourceAgentId:'original',sourceChatId:'source-chat',copyAgentId:'copy',copyChatId:'deleted-chat',requestId:'request',attemptId:'attempt',task:{instructions:'Inspect the report',input:'Original exact task input'},result:{output:'Recorded exact result'},historyAvailable:available}});
+ };
+ try{
+  root.render(<QueryClientProvider client={client}><BranchResourceReview branchId="branch" executionId="run" stepId="trace-step" enabled onChanged={()=>{}}/></QueryClientProvider>);await settle();button('Review resource').click();await settle();
+  assert(document.body.textContent?.includes('Original exact task input')&&document.body.textContent?.includes('Recorded exact result'),'task and result survive deleted Chat');
+  assert(document.body.textContent?.includes('Source Agent original')&&document.body.textContent?.includes('Request request'),'source and request remain inspectable');
+  assert(reads===0,'history is only fetched deliberately');button('View retained history').click();await settle();
+  assert(document.body.textContent?.includes('Retained response after cleanup')&&document.body.textContent?.includes('retained-run'),'retained messages and Run record render');assert(document.body.textContent!.indexOf('Ordered retained work log')<document.body.textContent!.indexOf('After response'),'provider event order remains intact');
+  denied=true;button('View retained history').click();await settle();assert(document.body.textContent?.includes('Current access no longer permits'),'revoked history reports current denial');assert(!document.body.textContent?.includes('Retained response after cleanup'),'revoked cache is not shown');
+  denied=false;wrong=true;button('View retained history').click();await settle();assert(document.body.textContent?.includes('Retained history identity changed'),'foreign history is refused');assert(!document.body.textContent?.includes('Retained response after cleanup'),'foreign history is not displayed');
+  available=false;button('Refresh current scope').click();await settle();assert(document.body.textContent?.includes('Retained history is unavailable'),'missing custody does not promise history');
+  assert(writes===0,'all trace interactions are read only');
  }finally{root.unmount();client.clear();host.remove();globalThis.fetch=originalFetch;}
 }
