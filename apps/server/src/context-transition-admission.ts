@@ -128,6 +128,8 @@ export async function requestSettingsTransition(input: {
    const exposure=memory&&await memory.retainedMemoryExposureStatus(agent.id,agent.conversationId,accepted.sessionId,packet.executionId,boundary.executionId);
    if(exposure==='changed')
     return hold('A memory source previously used by this Agent was revoked or changed. Prior Agent text cannot yet be attributed safely; the original work remains queued for context review.');
+   if(exposure==='unknown'&&memory?.legacyPossibleGlobalRevocation(agent.id,agent.conversationId,packet.executionId))
+    return hold('Global memory access may have been removed since this older session began. Its earlier memory exposure is unavailable; the original work remains queued for context review.');
    if(!changed&&!voiceBoundary){
     store.sqlite.prepare("DELETE FROM activation_sources WHERE activation_id=? AND source_kind='settings_transition_retry_pending'").run(pending.id);
     return true;

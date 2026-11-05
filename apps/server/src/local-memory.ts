@@ -558,6 +558,16 @@ export class LocalMemoryService{
     this.transitionAuthorizationStillValid(agentId,chatId,originRunId,sourceRunId,runId,expected);
   }catch{return false;}
  }
+ /** Legacy sessions have no exposure receipts. A later explicit setting of
+  * global read to false is a possible revocation, not proof that the session
+  * read global memory or that the previous value was true. */
+ legacyPossibleGlobalRevocation(agentId:string,chatId:string,originRunId:string):boolean{
+  const origin=this.ports.store.sqlite.prepare('SELECT created_at FROM scheduler_runs WHERE id=? AND agent_id=?').get(originRunId,agentId) as {created_at:string}|undefined;
+  const grant=this.grant(chatId);
+  if(!origin||!grant||grant.principal_id!==this.principalId||grant.read_global!==0)return false;
+  const started=Date.parse(origin.created_at),updated=Date.parse(grant.updated_at);
+  return Number.isFinite(started)&&Number.isFinite(updated)&&updated>=started;
+ }
  /** Inspect the actual previously disclosed sources before reusing a retained
   * provider session after authorization changes. No source text is persisted. */
  async retainedMemoryExposureStatus(agentId:string,chatId:string,sessionId:string,originRunId:string,sourceRunId:string):Promise<'valid'|'changed'|'unknown'>{
