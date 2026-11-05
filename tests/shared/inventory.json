@@ -2814,6 +2814,38 @@
       "moduleBase": "apps/server/package.json",
       "requirements": "Node24, built server, disposable private stores",
       "origin": "Confirmed no-publication snapshot retry and retained staged evidence"
+    },
+    {
+      "path": "tests/branches/copy-archive-measurement.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server workspaces and disposable local fixtures; no provider account",
+      "origin": "Temporary copy archive measurement"
+    },
+    {
+      "path": "tests/files-results/working-file-transport.test.mjs",
+      "feature": "files-results",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server workspaces and disposable local fixtures; no provider account",
+      "origin": "Large working-file transport and retained portability"
+    },
+    {
+      "path": "tests/organizations/large-working-file-inspection.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server workspaces and disposable local fixtures; no provider account",
+      "origin": "Large working-file transport and retained portability"
+    },
+    {
+      "path": "tests/organizations/portable-working-file-parts.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server workspaces and disposable local fixtures; no provider account",
+      "origin": "Large working-file transport and retained portability"
     }
   ],
   "retainedReleasePayload": [
