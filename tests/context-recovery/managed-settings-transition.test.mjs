@@ -7,6 +7,16 @@ import { ownedChroma } from '../memory/portability-fixture.mjs';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
+async function accessRevocationPause(store,agentId,phase,kind){
+ const pause=await until(()=>store.sqlite.prepare(`SELECT p.id,p.run_id,p.state,p.checkpoint_json,r.status,r.side_effects_fenced_at
+  FROM agent_run_pauses p JOIN scheduler_runs r ON r.id=p.run_id
+  WHERE p.agent_id=? AND p.state=? AND json_extract(p.checkpoint_json,?)=?
+    AND json_extract(p.checkpoint_json,?)=1 AND r.status=? AND r.side_effects_fenced_at IS NOT NULL
+    AND EXISTS (SELECT 1 FROM scheduler_run_activations a JOIN agent_activations x ON x.id=a.activation_id WHERE a.run_id=r.id AND x.kind=?)`).get(agentId,"paused","$.phase",phase,"$.accessRevocationHold","cancelled",kind),"exact revoked Run paused and fenced",20000);
+ await until(()=>store.sqlite.prepare("SELECT 1 FROM provider_operation_outbox WHERE idempotency_key=? AND state=?").get("pause:"+pause.id,"completed"),"revoked provider drained",20000);
+ return pause;
+}
+
 test('memory-enabled voice preserves earlier work through an isolated managed handoff',{timeout:90000},async t=>{
  let store,native;
  await withFixture(t,async f=>{
@@ -61,7 +71,8 @@ test('revoking memory during a managed handoff prevents the old summary from bei
   await until(async()=>(await native.requests()).filter(x=>x.method==='turn/start').length>=2,'old-session handoff',20000);
   f.ok(await f.api('PUT',`/api/local-memory/grants/${chat.id}`,{readGlobal:false,expectedRevision:1}));
   await native.sendAnswer('Synthetic revoked summary must never transfer.');
-  await until(()=>store.sqlite.prepare("SELECT 1 FROM scheduler_runs r JOIN scheduler_run_activations a ON a.run_id=r.id JOIN agent_activations x ON x.id=a.activation_id WHERE x.kind='context_rollover_handoff' AND r.status IN ('failed','outcome_unknown')").get(),'invalidated handoff stopped',20000);
+  await accessRevocationPause(store,agent.id,'handoff','context_rollover_handoff');
+  assert.ok(store.sqlite.prepare("SELECT 1 FROM agent_activations WHERE agent_id=? AND kind='human_message' AND state='pending' AND payload_json LIKE ?").get(agent.id,'%Continue aloud.%'),'original voice task remains queued');
   const record=store.sqlite.prepare('SELECT handoff_event_id,state FROM context_rollovers WHERE id=?').get(rollover.id);
   assert.equal(record.handoff_event_id,null,'revoked content must never become a continuation handoff');
   assert.ok(!store.readEvents(agent.id).some(row=>row.event.type==='continuation_handoff'&&row.event.text?.includes('Synthetic revoked summary')));
@@ -86,7 +97,8 @@ test('revoking memory while replacement opens prevents the handoff from being su
   await until(async()=>(await native.requests()).filter(x=>x.method==='thread/start').length>=2,'replacement opening',20000);
   f.ok(await f.api('PUT',`/api/local-memory/grants/${chat.id}`,{readGlobal:false,expectedRevision:1}));
   await native.releaseThread();
-  await until(()=>store.sqlite.prepare("SELECT 1 FROM scheduler_runs r JOIN scheduler_run_activations a ON a.run_id=r.id JOIN agent_activations x ON x.id=a.activation_id WHERE x.kind='context_rollover_continuation' AND r.status IN ('failed','outcome_unknown')").get(),'replacement stopped',20000);
+  await accessRevocationPause(store,agent.id,'replacement','context_rollover_continuation');
+  assert.ok(store.sqlite.prepare("SELECT 1 FROM agent_activations WHERE agent_id=? AND kind='human_message' AND state='pending' AND payload_json LIKE ?").get(agent.id,'%Continue aloud.%'),'original voice task remains queued');
   const calls=await native.requests();
   assert.ok(!calls.filter(x=>x.method==='turn/start').some(x=>JSON.stringify(x).includes('Synthetic source summary, permitted before revocation.')),'revoked handoff never reaches replacement');
   assert.equal(calls.filter(x=>x.method==='turn/start'&&x.params?.threadId==='inert-reviewed-thread-2').length,0);
@@ -117,8 +129,10 @@ test('revoking memory while the managed voice reply streams invalidates publicat
   await until(()=>store.readEvents(agent.id).some(row=>row.event.type==='voice_reply'&&row.event.reply.state==='streaming'),'voice streaming',20000);
   f.ok(await f.api('PUT',`/api/local-memory/grants/${chat.id}`,{readGlobal:false,expectedRevision:1}));
   await native.releaseVoice();
-  await until(()=>store.readEvents(agent.id).some(row=>row.event.type==='voice_reply'&&row.event.reply.failureReason==='context_changed'),'voice invalidated',20000);
-  const status=f.ok(await f.api('GET',`/api/conversations/${chat.id}/voice-replies/${voice.message.communicationEventId}/${agent.id}`));
+  const pause=await accessRevocationPause(store,agent.id,'source','human_message');
+  assert.ok(JSON.stringify(JSON.parse(pause.checkpoint_json).sourceActivations).includes('Continue aloud.'),'original voice task remains in the durable pause');
+  const status=await until(async()=>{const s=f.ok(await f.api('GET',`/api/conversations/${chat.id}/voice-replies/${voice.message.communicationEventId}/${agent.id}`));return s.runStatus==='cancelled'&&s.reply?.state==='failed'?s:undefined;},'cancelled voice projected as failed',20000);
+  assert.equal(status.memoryExposure.state,'invalid');
   assert.notEqual(status.reply.state,'completed');
   assert.equal(store.sqlite.prepare("SELECT count(*) n FROM runtime_communications WHERE payload_json LIKE '%The objective continues safely.%'").get().n,0,'no stale final answer becomes canonical Communication');
  },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,emitVoiceReply:true,holdMemoryCompletion:true,holdVoiceCompletion:true,uniqueThreads:true})).adapter,
