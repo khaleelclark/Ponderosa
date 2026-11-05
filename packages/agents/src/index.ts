@@ -244,3 +244,5 @@ export type { BranchExpertCopyReceipt } from "./branch-expert-copy.js";
 export { requireGenerationExitDeletionReady } from "./branch-generation-exit-deletion.js";
 
 export {portableBase64ByteLength,portableArtifactByteLength,decodePortableMetadataArtifact} from './portable-artifact-original.js';
+
+export { safeWorkingCopyFailure, safeWorkingCopyFailureCode, safeStoredWorkingCopy } from "./working-copy-failure.js";

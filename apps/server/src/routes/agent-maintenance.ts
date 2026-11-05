@@ -10,6 +10,8 @@ import type {
 } from "@ponderosa/core";
 import {
   AgentDeletionConflictError,
+  safeWorkingCopyFailure,
+  safeStoredWorkingCopy,
   normalizeAgentTitle,
   type AgentManagementAuthorization,
   type AgentStore,
@@ -94,10 +96,10 @@ export function registerAgentMaintenanceRoutes(
           deleted: true,
         });
         appendWorkspace({ type: "project_changed", projectId: project.id, action: "updated" });
-        return removed;
+        return safeStoredWorkingCopy(removed);
       } catch (error) {
         return reply.code(409).send({
-          error: error instanceof Error ? error.message : "Retained Git copy cleanup failed",
+          error: safeWorkingCopyFailure(error),
         });
       }
     },
@@ -197,9 +199,7 @@ export function registerAgentMaintenanceRoutes(
           return changed;
         } catch (error) {
           return reply.code(409).send({
-            error: error instanceof Error
-              ? error.message
-              : "The working folder could not be changed safely.",
+            error: safeWorkingCopyFailure(error),
           });
         } finally {
           releaseModeChange?.();

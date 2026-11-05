@@ -26,6 +26,7 @@ import { decodeImportedUtf8Window, normalizeImportedHistorySearchText, readImpor
 import type { Db } from "./db.js";
 import { normalizeAgentTitle } from "./agent-identity.js";
 import { sharedWorkingCopy } from "./working-copy.js";
+import { preserveStoredWorkingCopy, safeStoredWorkingCopy } from "./working-copy-failure.js";
 import { requireManagementPermissions } from "./store-agent-management.js";
 import { appendFsyncedJsonl } from "./append-jsonl.js";
 import { pathEntryExists, validateDeletionTombstone } from "./deletion-tombstone-ownership.js";
@@ -628,7 +629,7 @@ export class AgentCatalogAuthority {
     return rows.map((row) => ({
       agentId: row.id,
       deleted: row.deleted_at !== null,
-      workingCopy: JSON.parse(row.working_copy_json) as AgentDto["workingCopy"],
+      workingCopy: safeStoredWorkingCopy(JSON.parse(row.working_copy_json) as AgentDto["workingCopy"]),
     }));
   }
 
@@ -643,6 +644,7 @@ export class AgentCatalogAuthority {
     if (!row) return undefined;
     const project = this.getProject(row.projectId);
     if (!project) throw new Error("Agent Project is unavailable");
+    workingCopy = preserveStoredWorkingCopy(JSON.parse(row.workingCopyJson) as AgentDto["workingCopy"], workingCopy);
     validateWorkingCopy(project, workingCopy);
     const json = readJson<AgentJson>(agentJsonPath(this.dataDir, row.projectId, id));
     writeJson(agentJsonPath(this.dataDir, row.projectId, id), {
@@ -667,6 +669,7 @@ export class AgentCatalogAuthority {
     if (!row || row.deletedAt === null) return false;
     const project = this.getProject(row.projectId);
     if (!project) throw new Error("Agent Project is unavailable");
+    workingCopy = preserveStoredWorkingCopy(JSON.parse(row.workingCopyJson) as AgentDto["workingCopy"], workingCopy);
     validateWorkingCopy(project, workingCopy);
     const json = readJson<AgentJson>(agentJsonPath(this.dataDir, row.projectId, id));
     writeJson(agentJsonPath(this.dataDir, row.projectId, id), {
@@ -1119,7 +1122,7 @@ export class AgentCatalogAuthority {
       spawnedByExecutionId: row.spawnedByExecutionId ?? undefined,
       spawnPrompt: row.spawnPrompt ?? undefined,
       presetSnapshot: row.presetSnapshotJson ? JSON.parse(row.presetSnapshotJson) as AgentDto["presetSnapshot"] : undefined,
-      workingCopy: JSON.parse(row.workingCopyJson) as AgentDto["workingCopy"],
+      workingCopy: safeStoredWorkingCopy(JSON.parse(row.workingCopyJson) as AgentDto["workingCopy"]),
       ...(imported ? { importedHistoryCount: imported.count, importedFrom: imported.source } : {}),
     };
   }

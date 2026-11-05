@@ -14,6 +14,8 @@ import path from "node:path";
 import { promisify } from "node:util";
 import {
   AgentWorkingCopyUnavailableError,
+  safeWorkingCopyFailure,
+  safeWorkingCopyFailureCode,
   resolveAgentWorkingCopy,
   sharedWorkingCopy,
   type AgentStore,
@@ -124,9 +126,7 @@ function deleteOwnedBranchReferences(
 }
 
 function safeFailure(error: unknown): string {
-  const detail = error instanceof Error ? error.message : "Git could not prepare the folder.";
-  const firstLine = detail.split(/[\r\n]/u, 1)[0]?.trim();
-  return `Separate Git copy is unavailable. ${firstLine || "Git could not prepare the folder."}`.slice(0, 600);
+  return safeWorkingCopyFailure(error);
 }
 
 function missingPath(error: unknown): boolean {
@@ -637,7 +637,7 @@ export class AgentWorkingCopyService {
       for(const id of pendingReady.keys()){const agent=this.store.getAgent(id);if(agent&&roots.includes(agent.workingCopy.rootPath)&&agent.workingCopy.state!=='removed')try{this.requireUpdated(id,{...agent.workingCopy,state:'unavailable',failure:'Native Git import proof is incomplete; preserve its exact root and original import operation.',updatedAt:new Date().toISOString()});}catch(storageError){receiptErrors.push(storageError);}}
 
       for(const receipt of receipts.values()){
-        try{onReceipt({...receipt,state:'incomplete',error:{code:error&&typeof (error as {code?:unknown}).code==='string'?(error as {code:string}).code:'ERR_IMPORTED_GIT_ADOPTION_PARTIAL',partialStatePossible:true,observed:{paths:roots,cause:safeFailure(error)}}});}
+        try{onReceipt({...receipt,state:'incomplete',error:{code:safeWorkingCopyFailureCode(error),partialStatePossible:true,observed:{paths:roots,cause:safeFailure(error)}}});}
         catch(storageError){receiptErrors.push(storageError);}
       }
       throw Object.assign(new Error('Imported Git adoption incomplete; preserve all local roots and exact import receipt',{cause:error}),{code:'ERR_IMPORTED_GIT_ADOPTION_PARTIAL',partialStatePossible:true,observed:{paths:roots},...(receiptErrors.length?{receiptErrors}:{})});

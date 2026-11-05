@@ -4,6 +4,8 @@ import type {
   ProjectDto,
 } from "@ponderosa/core";
 
+import { safeStoredWorkingCopy } from "./working-copy-failure.js";
+
 export interface ResolvedAgentWorkingCopy {
   id: string;
   mode: AgentWorkingCopyDto["mode"];
@@ -17,7 +19,7 @@ export class AgentWorkingCopyUnavailableError extends Error {
 
   constructor(
     readonly workingCopy: AgentWorkingCopyDto,
-    message = workingCopy.failure ?? "This Agent's working folder is unavailable.",
+    message = safeStoredWorkingCopy(workingCopy).failure ?? "This Agent's working folder is unavailable.",
   ) {
     super(message);
     this.name = "AgentWorkingCopyUnavailableError";

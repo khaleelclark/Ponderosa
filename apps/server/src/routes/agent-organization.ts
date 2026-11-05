@@ -1,4 +1,4 @@
-import {activeAgentProductSql,artifactAgentProductSql} from '@ponderosa/agents';
+import {activeAgentProductSql,artifactAgentProductSql,safeStoredWorkingCopy} from '@ponderosa/agents';
 import {requestProduct} from '../product-scope.js';
 import type {
   AgentDto,
@@ -275,7 +275,7 @@ export function registerAgentOrganizationRoutes(
         const byId = new Map(rows.map(row => [row.id, row]));
         items = idPage.items.flatMap(id => {
           const row = byId.get(id);
-          const workingCopy = row ? JSON.parse(row.working_copy_json) as AgentDto["workingCopy"] : undefined;
+          const workingCopy = row ? safeStoredWorkingCopy(JSON.parse(row.working_copy_json) as AgentDto["workingCopy"]) : undefined;
           return row ? [{
             id: row.id,
             title: row.title,

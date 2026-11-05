@@ -405,3 +405,98 @@ test('canonical history reuses authorized artifact full-file references without 
   const foreign=await f.hold(other.id),denied=await f.tool(foreign,'ponderosa_history',{action:'read',communicationEventId:sent.eventId,before:0,after:0});assert.ok(denied.status>=400);assert.doesNotMatch(JSON.stringify(denied),new RegExp(artifact.id));
  },{storeFactory:root=>store=new AgentStore(root)});
 });
+
+test('working-copy errors preserve fixed causes and withhold untrusted synthetic secrets', async () => {
+ const {safeWorkingCopyFailure,safeWorkingCopyFailureCode}=await import('@ponderosa/agents');
+ const secret='fixture-secret-synthetic-9d7e';
+ const unknown=Object.assign(new Error('Git failed '+secret+'\nsecond line '+secret),{code:secret});
+ assert.doesNotMatch(safeWorkingCopyFailure(unknown),new RegExp(secret));
+ assert.equal(safeWorkingCopyFailureCode(unknown),'ERR_IMPORTED_GIT_ADOPTION_PARTIAL');
+ for(const [code,expected] of [['ENOENT',/not found/],['EACCES',/denied/],['ENOSPC',/no available space/]]){
+  const error=Object.assign(new Error(secret),{code});
+  assert.match(safeWorkingCopyFailure(error),expected);
+  assert.equal(safeWorkingCopyFailureCode(error),code);
+  assert.doesNotMatch(safeWorkingCopyFailure(error),new RegExp(secret));
+ }
+ const fixed='the configured root is not a retained directory';
+ assert.equal(safeWorkingCopyFailure(new Error(fixed)),fixed);
+ assert.doesNotMatch(safeWorkingCopyFailure(new Error(fixed+' '+secret)),new RegExp(secret));
+});
+
+test('working-copy mode 409 withholds injected teardown error details',options,async t=>{
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Working-copy route errors'),agent=await f.createIdleAgent(chat,'Worker');
+  const original=AgentWorkingCopyService.prototype.setMode, secret='fixture-secret-synthetic-5c71';
+  AgentWorkingCopyService.prototype.setMode=async()=>{throw Object.assign(new Error('teardown '+secret+'\nprivate details'),{code:secret});};
+  try{
+   const result=await f.api('PATCH',`/api/agents/${agent.id}`,{workingCopyMode:'separate_git'});
+   assert.equal(result.status,409);assert.doesNotMatch(JSON.stringify(result.body),new RegExp(secret));
+   assert.match(result.body.error,/withheld/);
+  }finally{AgentWorkingCopyService.prototype.setMode=original;}
+ });
+});
+
+test('legacy working-copy failure is projected safely without erasing or resurrecting stored data',options,async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Legacy working-copy reason'),agent=await f.createIdleAgent(chat,'Worker');
+  const secret='fixture-secret-synthetic-e5aa',before=store.getAgent(agent.id).workingCopy;
+  store.updateAgentWorkingCopy(agent.id,{...before,state:'unavailable',failure:'old tool '+secret});
+  const read=()=>JSON.parse(store.client.prepare('SELECT working_copy_json FROM agents WHERE id=?').get(agent.id).working_copy_json);
+  const projected=store.getAgent(agent.id).workingCopy;
+  assert.doesNotMatch(JSON.stringify(projected),new RegExp(secret));assert.match(projected.failure,/withheld/);
+  assert.match(read().failure,new RegExp(secret));
+  store.updateAgentWorkingCopy(agent.id,{...projected,updatedAt:new Date().toISOString()});
+  assert.match(read().failure,new RegExp(secret),'unrelated update must retain original');
+  const replacement='Native Git import proof is incomplete; preserve its exact root and original import operation.';
+  store.updateAgentWorkingCopy(agent.id,{...store.getAgent(agent.id).workingCopy,failure:replacement});
+  assert.equal(read().failure,replacement,'intentional replacement must remain');
+  store.updateAgentWorkingCopy(agent.id,{...store.getAgent(agent.id).workingCopy,state:'ready',failure:undefined});
+  assert.equal(read().failure,undefined,'intentional clear must remain');
+ },{storeFactory:root=>store=new AgentStore(root)});
+});
+
+test('post-mutation working-copy failure persists only a safe synthetic reason',options,async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Working-copy persistence'),agent=await f.createIdleAgent(chat,'Worker'),cwd=chat.workingDirectory;
+  await exec('git',['init','-b','main'],{cwd});await writeFile(path.join(cwd,'tracked'),'fixture');
+  await exec('git',['add','tracked'],{cwd});await exec('git',['-c','user.name=Fixture','-c','user.email=fixture@invalid','commit','-m','Baseline'],{cwd});
+  const original=store.updateAgentWorkingCopy,secret='fixture-secret-synthetic-2f6d';let injected=false;
+  store.updateAgentWorkingCopy=function(...args){if(!injected){injected=true;throw new Error('untrusted '+secret+'\nprivate');}return original.apply(this,args);};
+  const service=new AgentWorkingCopyService(f.dataDir,store),release=service.beginModeChange(agent.id);
+  try{
+   const result=await service.setMode(store.getAgent(agent.id),store.getProject(chat.projectId),'separate_git');
+   assert.equal(result.workingCopy.state,'unavailable');assert.match(result.workingCopy.failure,/withheld/);
+   assert.doesNotMatch(JSON.stringify(result.workingCopy),new RegExp(secret));
+   assert.doesNotMatch(JSON.stringify(store.getAgent(agent.id).workingCopy),new RegExp(secret));
+  }finally{release();store.updateAgentWorkingCopy=original;}
+ },{storeFactory:root=>store=new AgentStore(root)});
+});
+
+test('deleted working-copy listing and cleanup response withhold synthetic legacy secrets',options,async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Deleted copy diagnostics'),agent=await f.createIdleAgent(chat,'Worker'),secret='fixture-secret-synthetic-739e';
+  const original=store.getAgent(agent.id).workingCopy;
+  const legacy={...original,id:'copy:fixture',mode:'separate_git',state:'unavailable',branch:'fixture',failure:'legacy '+secret};
+  store.sqlite.prepare('UPDATE agents SET deleted_at=?, conversation_id=NULL, working_copy_json=? WHERE id=?').run(new Date().toISOString(),JSON.stringify(legacy),agent.id);
+  store.sqlite.prepare('INSERT INTO agent_deletion_tombstones (agent_id,project_id,conversation_id,tombstone_name,created_at) VALUES (?,?,?,?,?)').run(agent.id,chat.projectId,chat.id,'fixture-tombstone',new Date().toISOString());
+  const listing=await f.api('GET','/api/projects/'+chat.projectId+'/agent-organization?scope=deleted');
+  assert.equal(listing.status,200);assert.doesNotMatch(JSON.stringify(listing.body),new RegExp(secret));
+  assert.match(JSON.stringify(listing.body),/withheld/);
+  // Exercise the actual handler directly: the complete app currently refuses
+  // this deleted-Agent path at product admission before the handler runs.
+  const {createRequire}=await import('node:module');
+  const Fastify=createRequire(new URL('../../apps/server/package.json',import.meta.url))('fastify');
+  const {registerAgentMaintenanceRoutes}=await import('../../apps/server/dist/routes/agent-maintenance.js');
+  const direct=Fastify();
+  registerAgentMaintenanceRoutes(direct,{store,workingCopies:{async cleanupRetained(){throw new Error('cleanup '+secret);}},appendWorkspace(){}});
+  try{
+   const response=await direct.inject({method:'DELETE',url:'/api/projects/'+chat.projectId+'/deleted-agents/'+agent.id+'/working-copy'});
+   assert.equal(response.statusCode,409);assert.doesNotMatch(response.body,new RegExp(secret));
+   assert.match(response.json().error,/withheld/);
+  }finally{await direct.close();}
+  assert.match(store.sqlite.prepare('SELECT working_copy_json FROM agents WHERE id=?').get(agent.id).working_copy_json,new RegExp(secret));
+ },{storeFactory:root=>store=new AgentStore(root)});
+});

@@ -208,10 +208,10 @@ test('adoption preserves its primary failure and attempts every incomplete recei
    const files=node.workingFiles.map(file=>{const data=Buffer.from(node.artifacts.find(artifact=>artifact.ref===file.artifactRef).dataBase64,'base64');return {path:file.path,data,sha256:createHash('sha256').update(data).digest('hex')};});
    await service.populateImportedRoot(allocated,project,files,[],undefined,path.join(allocated.workingCopy.rootPath,'.ponderosa-import-backups'),[],'refuse',{git:true,harness:false});
   }
-  const primary=new Error('Exact branch ownership readback failed'),attempted=[];
+  const secret='fixture-secret-synthetic-receipt-a91f',primary=Object.assign(new Error('Exact branch ownership readback failed '+secret),{code:secret}),attempted=[];
   service.resolve=async()=>{throw primary;};
   await assert.rejects(service.completeImportedGitRoots(project,pkg,destinations,{git:true,harness:false},receipt=>{
-   if(receipt.state==='incomplete'){attempted.push(receipt.ref);throw new Error('Receipt storage offline: '+receipt.ref);}
+   if(receipt.state==='incomplete'){assert.doesNotMatch(JSON.stringify(receipt),new RegExp(secret));assert.equal(receipt.error.code,'ERR_IMPORTED_GIT_ADOPTION_PARTIAL');assert.match(receipt.error.observed.cause,/withheld/);attempted.push(receipt.ref);throw new Error('Receipt storage offline: '+receipt.ref);}
   },ids),error=>{
    assert.equal(error.code,'ERR_IMPORTED_GIT_ADOPTION_PARTIAL');assert.equal(error.cause,primary);
    assert.equal(error.receiptErrors.length,2);assert.ok(error.receiptErrors.every(failure=>/Receipt storage offline/.test(failure.message)));

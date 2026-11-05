@@ -1,3 +1,4 @@
+import { preserveStoredWorkingCopy } from "./working-copy-failure.js";
 import {requireGenerationExitDeletionReady} from './branch-generation-exit-deletion.js';
 import type { ProjectionProgress } from "./projection-checkpoint.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -626,7 +627,10 @@ export class AgentWorkspaceCatalogAuthority {
       writeJson(chatFile,{...chat,workingDirectory:newRoot,managedWorkspaceName:undefined});
       this.db.update(projects).set({hostPath:newRoot}).where(eq(projects.id,projectId)).run();
       for(const agent of shared){
-        const filename=agentJsonPath(this.dataDir,projectId,agent.id),json=readJson<AgentJson>(filename),workingCopy={...agent.workingCopy,rootPath:newRoot,updatedAt:intent.updatedAt};
+        const filename=agentJsonPath(this.dataDir,projectId,agent.id),json=readJson<AgentJson>(filename);
+        const stored=this.client.prepare("SELECT working_copy_json FROM agents WHERE id = ?").get(agent.id) as {working_copy_json:string}|undefined;
+        if (!stored) throw new Error("Imported root owner disappeared");
+        const workingCopy=preserveStoredWorkingCopy(JSON.parse(stored.working_copy_json) as AgentDto["workingCopy"],{...agent.workingCopy,rootPath:newRoot,updatedAt:intent.updatedAt});
         writeJson(filename,{...json,workingCopy,updatedAt:workingCopy.updatedAt});
         this.db.update(agents).set({workingCopyJson:JSON.stringify(workingCopy),updatedAt:workingCopy.updatedAt}).where(eq(agents.id,agent.id)).run();
       }
