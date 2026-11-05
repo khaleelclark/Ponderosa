@@ -33,7 +33,7 @@ try{
  }catch(error){res.writeHead(500);res.end(String(error));}});
  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));const origin=`http://127.0.0.1:${server.address().port}`;
  browser=await chromium.launch({executablePath:process.env.PONDEROSA_BROWSER_EXECUTABLE??'/opt/google/chrome/chrome',headless:true,args:['--no-sandbox']});
- const page=await browser.newPage({viewport:{width:1280,height:900}});page.on('pageerror',error=>errors.push(error.message));
+ const page=await browser.newPage({viewport:{width:1280,height:900},hasTouch:true});page.on('pageerror',error=>errors.push(error.message));
  await Promise.all([page.waitForResponse(response=>response.url().endsWith('/api/branches/assistant')&&response.request().method()==='POST'&&response.status()===200),page.goto(origin+'/home')]);
  assert.equal(f.ok(await f.api('GET','/api/branches/assistant')).enabled,true,'fresh normal workspace initializes Assistant automatically');
  await page.goto(origin+'/assistant');
@@ -74,6 +74,7 @@ try{
   await viewer.screenshot({path:path.join(out,entry==='/assistant'?'assistant-file.png':'output-file.png'),fullPage:true});await viewer.close();
  }
  await page.goto(origin+'/assistant');await page.getByRole('textbox').first().waitFor();
+ await page.getByText(/Idle · Live/).first().waitFor();
  await page.screenshot({path:path.join(out,'assistant-desktop.png'),fullPage:true});
  await page.getByRole('button',{name:'Settings',exact:true}).first().click();
  await page.getByLabel('Check every (minutes)').fill('20');await Promise.all([page.waitForResponse(response=>response.url().endsWith('/schedule')&&response.status()===200),page.getByRole('button',{name:'Save schedule',exact:true}).click()]);
@@ -82,7 +83,17 @@ try{
  await page.keyboard.press('Escape');
  const status=f.ok(await f.api('GET','/api/branches/assistant'));assert.equal(status.app.everyMs,1200000);
  await page.goto(origin+status.app.url);await page.getByRole('textbox').first().waitFor();
- await page.setViewportSize({width:390,height:844});await page.screenshot({path:path.join(out,'output-phone.png'),fullPage:true});
+ await page.setViewportSize({width:390,height:844});
+ for(const width of [320,390]){
+  await page.setViewportSize({width,height:844});
+  const state=page.getByRole('button',{name:/idle.*live/i});await state.waitFor();
+  assert.match(await state.innerText(),/Idle · Live/,'mobile status is visible as text');
+  const box=await state.boundingBox();assert(box && box.x>=0 && box.x+box.width<=width && box.height>=44,'status is visible within the viewport and touch-sized');
+  await state.tap();const detail=page.getByRole('status').filter({hasText:/idle.*live/i});await detail.waitFor();
+  await page.screenshot({path:path.join(out,'status-phone-'+width+'.png')});
+  await page.keyboard.press('Escape');
+ }
+ await page.screenshot({path:path.join(out,'output-phone.png'),fullPage:true});
  await page.goto(origin+'/messages');await page.getByRole('heading',{name:'Inbox',exact:true}).waitFor({timeout:20000});await page.screenshot({path:path.join(out,'inbox.png'),fullPage:true});
  assert.deepEqual(errors,[]);assert.deepEqual(requests.filter(item=>item.status>=400),[]);assert.ok(requests.some(item=>item.path.includes('/agents/')&&item.status===200));
  await writeFile(path.join(out,'result.json'),JSON.stringify({checksPassed:true,freshWorkspaceInitialization:true,app:status.app,errors,requests,fileClicks,workspaceActions,screenshots:['assistant-desktop.png','assistant-settings.png','output-phone.png','assistant-file.png','output-file.png','inbox.png'],limit:'Controlled provider, not real phone audio, complete usability or blind judging.'},null,2));

@@ -56,11 +56,12 @@ function AgentRunState({
   phaseEvidenceFresh,
   startedAt,
   agentNameForId,
-  paused, accessRestricted,
+  paused, accessRestricted, visibleMobileLabel = false,
 }: {
   status: AgentStatus;
   paused?: boolean;
   accessRestricted?: boolean;
+  visibleMobileLabel?: boolean;
   health?: AgentHealthDto;
   connectionStatus: WorkspaceConnectionStatus;
   phaseEvidenceFresh: boolean;
@@ -104,8 +105,9 @@ function AgentRunState({
   const accessibleDetail = `${presentation.accessibleLabel}${elapsed ? `; ${elapsed}` : ""}; ${connectionState.toLocaleLowerCase()}. ${details}`;
   if (mobile && !paused) return <>
     <Tooltip title={accessibleDetail}><IconButton size="small" aria-label={accessibleDetail}
-      onClick={event => setDetailAnchor(event.currentTarget)} sx={{ width: 44, height: 44 }}>
+      onClick={event => setDetailAnchor(event.currentTarget)} sx={{ width: visibleMobileLabel ? "auto" : 44, minWidth: 44, height: 44, gap: 0.5, borderRadius: visibleMobileLabel ? 1 : "50%" }}>
       <Box component="span" sx={{ width: 10, height: 10, borderRadius: "50%", bgcolor: theme => semanticStatusColorToken(presentation.status, theme.palette.mode) }} />
+      {visibleMobileLabel && <Typography component="span" variant="caption" noWrap>{runState} · {connectionState}</Typography>}
     </IconButton></Tooltip>
     <Popover open={Boolean(detailAnchor)} anchorEl={detailAnchor} onClose={() => setDetailAnchor(null)}
       anchorOrigin={{ vertical: "bottom", horizontal: "right" }} transformOrigin={{ vertical: "top", horizontal: "right" }}>
@@ -202,7 +204,7 @@ export function AgentDetailHeader({
   const auditOnly=useWorkspaceReadOnly();
   const notify=useMutationNotification();
   if(standalone)return <Stack direction="row" spacing={1} sx={{alignItems:'center',px:1,minWidth:0,flexWrap:'wrap'}}>
-    <Box sx={{flex:1,minWidth:0}}><AgentRunState status={status} paused={paused} accessRestricted={accessRestricted} health={health} connectionStatus={connectionStatus} phaseEvidenceFresh={phaseEvidenceFresh} startedAt={startedAt} agentNameForId={agentNameForId}/></Box>
+    <Box sx={{flex:1,minWidth:0}}><AgentRunState status={status} paused={paused} accessRestricted={accessRestricted} health={health} connectionStatus={connectionStatus} phaseEvidenceFresh={phaseEvidenceFresh} startedAt={startedAt} agentNameForId={agentNameForId} visibleMobileLabel/></Box>
     {tab!=='chat'&&<Button onClick={()=>onTabChange('chat')}>Back to chat</Button>}
     {(running||paused)&&!accessRestricted&&!auditOnly&&onPauseResume&&<Button disabled={pausePending} onClick={onPauseResume}>{pausePending?'Waiting…':paused?'Resume':'Pause'}</Button>}
     {running&&!auditOnly&&<Button color="error" disabled={stopping} onClick={onStop}>{stopping?'Stopping…':'Stop'}</Button>}
