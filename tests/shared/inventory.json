@@ -1678,6 +1678,14 @@
       "requirements": "Node24, built workspaces, inert provider fixture and private state"
     },
     {
+      "path": "tests/context-recovery/managed-settings-transition.test.mjs",
+      "feature": "context-recovery",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server, inert Codex and disposable Chroma with the pinned memory model",
+      "origin": "Managed settings and voice transitions preserve accepted work and guard live authorization"
+    },
+    {
       "path": "tests/context-recovery/native-model-context.test.mjs",
       "feature": "context-recovery",
       "lane": "server",

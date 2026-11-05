@@ -159,6 +159,8 @@ export class CoordinationV3Scheduler {
       onRunLeased?: (lease: SchedulerLease) => void;
       /** Keep durable work queued while its provider is known unavailable. */
       blockedAgentIds?: () => readonly string[] | Promise<readonly string[]>;
+      /** Preflight exactly the candidate that the subsequent claim may lease. */
+      prepareRunAdmission?: (excludedAgentIds:readonly string[]) => Promise<string|null>;
       workflowOperations?: WorkflowOperations;
     },
   ) {
@@ -311,12 +313,16 @@ export class CoordinationV3Scheduler {
         // each lease so newly creating/deleting Agents cannot cross this gate.
         const excludedAgentIds = await this.options.blockedAgentIds?.();
         if (!this.isLeasingRuns() || this.store.activeRunCount() >= this.maxConcurrentRuns) break;
+        const expectedActivationId = this.options.prepareRunAdmission
+          ? await this.options.prepareRunAdmission(excludedAgentIds ?? []) : undefined;
+        if (!this.isLeasingRuns() || this.store.activeRunCount() >= this.maxConcurrentRuns) break;
         const lease = this.store.leaseNextRun({
           workerId: this.options.workerId,
           leaseMs: this.options.leaseMs,
           coalesceLimit: this.options.coalesceLimit,
           now: new Date().toISOString(),
           excludedAgentIds,
+          ...(this.options.prepareRunAdmission ? { expectedActivationId } : {}),
         });
         if (!lease) break;
         this.options.onRunLeased?.(lease);

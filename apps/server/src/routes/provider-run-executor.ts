@@ -133,6 +133,8 @@ export interface ProviderRunExecutionInput {
   runtimeSessionContractHash: string;
   retainedVerifiedContext: boolean;
   assertRetainedContextPolicy?:()=>void;
+  assertSettingsTransitionPolicy?:()=>void;
+  validateSettingsTransitionSources?:()=>Promise<void>;
   workingCopy: ResolvedAgentWorkingCopy;
   inputFiles?: RuntimeInputFile[];
   runtimeAttachmentDirectory: string | undefined;
@@ -249,6 +251,8 @@ export function startProviderRunExecution(
     runtimeSessionContractHash,
     retainedVerifiedContext,
     assertRetainedContextPolicy,
+    assertSettingsTransitionPolicy,
+    validateSettingsTransitionSources,
     workingCopy,
     inputFiles = [],
     runtimeAttachmentDirectory,
@@ -310,7 +314,7 @@ export function startProviderRunExecution(
     const validateVoiceReplyContext = (): Promise<boolean> => checkingVoice??=(async()=>{
       if (voiceContextInvalid) return false;
       if (!activeRun.voiceReply) return true;
-      try { const memory=localMemoryFor(app);if(memory&&!await memory.validateSpeech(runId))throw Error('Voice memory changed');return true; }
+      try { await validateSettingsTransitionSources?.();assertSettingsTransitionPolicy?.();const memory=localMemoryFor(app);if(memory&&!await memory.validateSpeech(runId))throw Error('Voice memory changed');return true; }
       catch {
         voiceContextInvalid = true;
         if (activeRun.voiceReply.invalidate("context_changed") && ownsActiveRun(agent.id, activeRun) && !controller.signal.aborted) {
@@ -322,7 +326,7 @@ export function startProviderRunExecution(
       }
     })().finally(()=>{checkingVoice=undefined;});
     activeRun.validateVoiceReplyContext = validateVoiceReplyContext;
-    activeRun.validateVoiceReplyCommit=()=>!voiceContextInvalid&&(localMemoryFor(app)?.speechCommitValid(runId)??true);
+    activeRun.validateVoiceReplyCommit=()=>{try{assertSettingsTransitionPolicy?.();return !voiceContextInvalid&&(localMemoryFor(app)?.speechCommitValid(runId)??true);}catch{return false;}};
     const voiceContextTimer = activeRun.voiceReplyStreamSupported
       ? setInterval(() => {
           if (ownsActiveRun(agent.id, activeRun) && !controller.signal.aborted && activeRun.voiceReply?.snapshot.state !== "completed") validateVoiceReplyContext();
@@ -738,6 +742,7 @@ export function startProviderRunExecution(
                       nativeAction: input.nativeAction,
                       assertCurrent: () => {
                         if (controller.signal.aborted || isClosed() || deletingAgentIds.has(agent.id) || deletingProjectIds.has(project.id) || !ownsActiveRun(agent.id, activeRun) || !renewExecutionLease(agent.id, activeRun)) throw new Error("Native turn lost current Run authority");
+                        assertSettingsTransitionPolicy?.();
                         if (retainedVerifiedContext && (!persistentRuntime || reusableRuntime(agent.id)!==persistentRuntime ||
                             activeRun.persistentRuntimeIdentity!==persistentRuntime.identity || !persistentRuntime.session.isAlive() ||
                             readProviderSessionIdentifier(persistentRuntime.session)!==resumeSessionId))
@@ -825,6 +830,7 @@ export function startProviderRunExecution(
                       nativeAction: input.nativeAction,
                       assertCurrent: () => {
                         if (controller.signal.aborted || isClosed() || deletingAgentIds.has(agent.id) || deletingProjectIds.has(project.id) || !ownsActiveRun(agent.id, activeRun) || !renewExecutionLease(agent.id, activeRun)) throw new Error("Native turn lost current Run authority");
+                        assertSettingsTransitionPolicy?.();
                         if (reviewedSteeringRun) {
                           if (!persistentRuntime || reusableRuntime(agent.id)!==persistentRuntime ||
                               activeRun.persistentRuntimeIdentity!==persistentRuntime.identity || !persistentRuntime.session.isAlive())
@@ -941,6 +947,7 @@ export function startProviderRunExecution(
         let retryFresh = false;
         if (inputFiles.length && !persistentRuntime) throw new Error("This engine has no typed-file session transport; input was not submitted");
         requireCurrentRuntimeInputAccess({ files: inputFiles, projectId: agent.projectId, agentId: agent.id, store, assets: context.assets });
+        await validateSettingsTransitionSources?.();
         if (activeRun.v3SchedulerRunId && activeRun.v3FencingToken !== undefined && !v3PromptInjected) {
           coordinationV3!.markPromptSubmitted({
             injectionId: v3InjectionId!,
@@ -958,6 +965,11 @@ export function startProviderRunExecution(
         activeRun.voiceReplyTiming ??= {};
         activeRun.voiceReplyTiming.submittedAt ??= new Date().toISOString();
         for await (const event of startStream(sessionId)) {
+          try { assertSettingsTransitionPolicy?.(); }
+          catch (error) {
+            if (activeRun.voiceReply) await validateVoiceReplyContext();
+            throw error;
+          }
           if(nativeSeed && !nativeForkOpened) {
             if(event.type==='session') {
               if(event.sessionId!==persistentRuntime?.session.engineAgentId)throw new Error("Native fork identity changed");
@@ -1461,7 +1473,14 @@ export function startProviderRunExecution(
         if (handoffActivationAcknowledged) {
           suppressRolloverHandoffOutput = true;
           const handoff = finalText.trim();
-          handoffValidationError = contextRolloverHandoffValidationError(handoff);
+          try { await validateSettingsTransitionSources?.(); assertSettingsTransitionPolicy?.(); }
+          catch {
+            runError = "Access, memory or settings changed during context transition; the original context remains retained.";
+            handoffValidationError = runError;
+            coordinationV3.failContextRollover(runRollover.id, "failed", runError, "internal");
+            await persistRuntimeEvent(agent.id, activeRun, {type:"error",message:runError});
+          }
+          if (!handoffValidationError) handoffValidationError = contextRolloverHandoffValidationError(handoff);
           if (!handoffValidationError) {
             const existing = store.continuationHandoffForRun(agent.id, runId);
             const handoffId = existing?.id ?? randomUUID();
@@ -1477,7 +1496,7 @@ export function startProviderRunExecution(
             coordinationV3.commitContextRolloverHandoff(runRollover.id, handoffId);
             scheduledSessionRollovers.set(agent.id, new Date().toISOString());
             runRollover = coordinationV3.activeContextRollover(agent.id);
-          } else {
+          } else if (!runError) {
             const retry = coordinationV3.retryContextRolloverHandoff(
               runRollover.id,
               handoffValidationError,

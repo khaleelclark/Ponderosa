@@ -1,0 +1,179 @@
+import { createHash } from 'node:crypto';
+import { CapabilityPolicyStore, type AgentStore, type CoordinationV3Store, type WorkspaceStore } from '@ponderosa/agents';
+import { filterRuntimeToolsForCapabilities, runtimeRestrictions, PONDEROSA_HISTORY_TOOL, type Adapter, type ModelOption, type AgentDto, type ProjectDto } from '@ponderosa/core';
+import { MAX_CONTEXT_ROLLOVER_REPLACEMENT_PROVIDER_INPUT_UTF8_BYTES } from '@ponderosa/core/seed-history';
+import { CodexAdapter } from '@ponderosa/engines';
+import type { PonderosaServer, CreateServerOptions, EngineRegistration } from './app-contracts.js';
+import type { EngineAuthStatusCache } from './engine-auth-cache.js';
+import type { createOperationalNotifications } from './operational-notifications.js';
+import { localMemoryFor } from './local-memory.js';
+import { evaluateContextRolloverPressure } from './context-rollover-pressure.js';
+import { assertRetainedNativeAuthentication, communicationV3SessionPrompt, concreteRuntimeSelection, normalizedRuntimeSelection, providerDynamicTools, providerRuntimeSessionContractHash, providerSessionContractHash, providerToolContractHash } from './runtime-selection.js';
+
+type TransitionDispatch={engine?:unknown;model?:unknown;effort?:unknown;speed?:unknown;voiceReply?:unknown};
+export function settingsTransitionTarget(agent:AgentDto,project:ProjectDto,adapter:Adapter,
+ preferences:ReturnType<WorkspaceStore["getPreferences"]>,optionsInput:ModelOption[]|undefined,dispatch:TransitionDispatch|undefined){
+ const options=optionsInput;
+ const recovered=concreteRuntimeSelection(adapter,[{model:agent.model??agent.presetSnapshot?.model,effort:agent.effort??agent.presetSnapshot?.effort},project.defaultEngine===agent.activeEngine?{model:project.defaultModel,effort:project.defaultEffort}:undefined,preferences.engineDefaults?.[agent.activeEngine]],options);
+ const hasModel=typeof dispatch?.model==='string',hasEffort=typeof dispatch?.effort==='string';
+ const targetModel=hasModel?(dispatch!.model as string).trim()||undefined:agent.model??agent.presetSnapshot?.model??recovered.model;
+ const targetEffort=hasEffort?(dispatch!.effort as string).trim()||undefined:hasModel
+    ? concreteRuntimeSelection(adapter,[{model:targetModel},preferences.engineDefaults?.[agent.activeEngine]],options).effort
+    : targetModel&&options&&!options.some(model=>model.id===targetModel)?agent.effort??agent.presetSnapshot?.effort
+    : normalizedRuntimeSelection(adapter,targetModel,agent.effort??agent.presetSnapshot?.effort??recovered.effort,options).effort;
+ const targetSpeed=typeof dispatch?.speed==='string'&&dispatch.speed.trim()?dispatch.speed.trim():'standard';
+ return {targetModel,targetEffort,targetSpeed};
+}
+
+const unrecordedHolds=new WeakMap<CoordinationV3Store,Map<string,string>>();
+type TransitionNotices=ReturnType<typeof createOperationalNotifications>;
+type TransitionContext={app:PonderosaServer;store:AgentStore;coordinationV3:CoordinationV3Store;workspace:WorkspaceStore;
+ createOperationalNotification:TransitionNotices['createOperationalNotification'];resolveOperationalNotification:TransitionNotices['resolveOperationalNotification']};
+function transitionFingerprint(ctx:TransitionContext,projectId:string,agentId:string,activationId:string):string{
+ const {app,store,workspace}=ctx,agent=store.getAgent(agentId),chat=agent&&store.getConversation(agent.conversationId),
+  project=agent&&store.getChatContext(agent.conversationId),memory=localMemoryFor(app),session=store.resumeSessionState(agentId);
+ const row=store.sqlite.prepare('SELECT payload_json,state,scope_key FROM agent_activations WHERE id=? AND project_id=? AND agent_id=?').get(activationId,projectId,agentId);
+ let grant:unknown;try{grant=memory&&agent?memory.getGrant(agent.conversationId,chat?.branchId?'branches':'dev'):undefined;}catch{grant='unavailable';}
+ let policies:unknown;try{const p=new CapabilityPolicyStore(store.sqlite),resolved=p.resolveForAgent(agentId);policies=resolved.layers.map(layer=>[layer.scopeKind,layer.scopeId,p.get(layer.scopeKind,layer.scopeId)??null]);}catch{policies='unavailable';}
+ return createHash('sha256').update(JSON.stringify([row,session,agent,project,workspace.getPreferences(),grant,policies])).digest('hex');
+}
+function transitionNotice(ctx:TransitionContext,projectId:string,agentId:string,activationId:string,reason:string){
+ const existing=ctx.workspace.getNotificationByDedupeKey(`settings-transition:${activationId}`);
+ if(existing&&(existing.status??'open')==='open')return;
+ const agent=ctx.store.getAgent(agentId);
+ ctx.createOperationalNotification({dedupeKey:`settings-transition:${activationId}`,renewAfterRecovery:true,category:'coordination',severity:'attention',
+  title:'Agent context needs review',body:reason,projectId,agentId,...(agent?.conversationId?{conversationId:agent.conversationId}:{}),
+  action:{kind:'open_agent',targetId:agentId}});
+}
+/** Recheck only durable, exact task holds. An unchanged fingerprint is never retried. */
+export function reconcileSettingsTransitionReservations(ctx:TransitionContext){
+ const rows=ctx.store.sqlite.prepare(`SELECT DISTINCT a.id,a.project_id,a.agent_id FROM activation_sources held
+  JOIN agent_activations a ON a.id=held.activation_id WHERE held.source_kind='settings_transition_reservation_wait'`).all() as Array<{id:string;project_id:string;agent_id:string}>;
+ for(const row of rows)try{
+  const fingerprint=transitionFingerprint(ctx,row.project_id,row.agent_id,row.id);
+  if(!ctx.coordinationV3.settingsTransitionReservationHeld({projectId:row.project_id,agentId:row.agent_id,activationId:row.id,fingerprint}))
+   ctx.resolveOperationalNotification(`settings-transition:${row.id}`);
+ }catch{/* A failed recheck never clears the existing hold. */}
+ const terminal=ctx.store.sqlite.prepare(`SELECT DISTINCT a.id,a.project_id,a.agent_id FROM context_rollovers r
+  JOIN activation_sources src ON src.source_kind='context_rollover' AND src.source_id=r.id
+  JOIN agent_activations handoff ON handoff.id=src.activation_id AND handoff.kind='context_rollover_handoff'
+  JOIN agent_activations a ON a.id=json_extract(handoff.payload_json,'$.settingsTransition.activationId')
+  WHERE r.state IN ('failed','outcome_unknown') AND a.state='pending' AND NOT EXISTS
+   (SELECT 1 FROM activation_sources released WHERE released.activation_id=a.id AND released.source_kind='settings_transition_release' AND released.source_id=r.id)`).all() as Array<{id:string;project_id:string;agent_id:string}>;
+ for(const row of terminal)try{transitionNotice(ctx,row.project_id,row.agent_id,row.id,
+  'The context handoff did not finish or its result is unknown. The original work remains queued. Review the Agent’s activity before retrying; the handoff will not be replayed automatically.');}catch{/* The durable hold remains in place. */}
+}
+
+/** Reserve a real old-session handoff before eligible pending work is leased.
+ * This only attempts a transition when the accepted policy and owner can be
+ * checked against current state; all other admission paths keep their existing
+ * behavior. requestContextRollover rechecks the source and queue transactionally. */
+export async function requestSettingsTransition(input: {
+  app:PonderosaServer; opts:CreateServerOptions; store:AgentStore; coordinationV3:CoordinationV3Store;
+  workspace:WorkspaceStore; engines:ReadonlyMap<string,EngineRegistration>; engineAuthStatuses:EngineAuthStatusCache;
+  cachedModelOptions:(adapter:Adapter,projectId?:string)=>ModelOption[]|undefined;
+  excludedAgentIds:readonly string[];
+  candidate:{activationId:string;agentId:string;projectId:string;scopeKey:string}|undefined;
+  createOperationalNotification:TransitionNotices['createOperationalNotification'];resolveOperationalNotification:TransitionNotices['resolveOperationalNotification'];
+}):Promise<boolean> {
+ const {app,opts,store,coordinationV3,workspace,engines,engineAuthStatuses,cachedModelOptions,excludedAgentIds,candidate}=input;
+ if(!candidate)return true;
+ const pending=coordinationV3.pendingActivations(candidate.projectId).find(item=>item.id===candidate.activationId);
+ if(!pending||pending.agentId!==candidate.agentId||!['human_message','coordination_request'].includes(pending.kind)||pending.state!=='pending')return true;
+ let shouldHold=false;
+ const localHolds=unrecordedHolds.get(coordinationV3)??new Map<string,string>();unrecordedHolds.set(coordinationV3,localHolds);
+ let currentFingerprint:string;
+ try{currentFingerprint=transitionFingerprint(input,pending.projectId,pending.agentId,pending.id);}catch{currentFingerprint='unavailable';}
+ const priorLocalHold=localHolds.get(pending.id);
+ if(priorLocalHold===currentFingerprint)return false;
+ if(priorLocalHold)localHolds.delete(pending.id);
+ const hold=(reason:string):boolean=>{
+  try{const fingerprint=transitionFingerprint(input,pending.projectId,pending.agentId,pending.id);
+   const held=coordinationV3.holdSettingsTransitionReservation({projectId:pending.projectId,agentId:pending.agentId,activationId:pending.id,fingerprint});
+   if(held){localHolds.delete(pending.id);try{transitionNotice(input,pending.projectId,pending.agentId,pending.id,reason);}catch{app.log.error({activationId:pending.id},'Context-review notice could not be recorded; the durable hold remains.');}}
+   else localHolds.set(pending.id,fingerprint);
+  }catch{localHolds.set(pending.id,currentFingerprint);app.log.error({activationId:pending.id},'Context hold could not be recorded; this work remains blocked locally.');}
+  return false;
+ };
+  try{
+   const row=store.sqlite.prepare(`SELECT a.scope_key,a.payload_json FROM agent_activations a WHERE a.id=? AND a.agent_id=? AND a.state='pending' AND a.available_at<=? AND NOT EXISTS (SELECT 1 FROM scheduler_run_activations attached WHERE attached.activation_id=a.id) AND NOT EXISTS (SELECT 1 FROM activation_sources held WHERE held.activation_id=a.id AND held.source_kind IN ('task_decision_repair_wait','task_reply_repair_wait','branch_schedule_update','settings_transition_hold')) AND NOT EXISTS (SELECT 1 FROM activation_outbox audit WHERE audit.activation_id=a.id AND audit.event_kind='communication_revision' AND audit.processed_at IS NULL)`).get(pending.id,pending.agentId,new Date().toISOString()) as {scope_key:string;payload_json:string}|undefined;
+   const payload=row?JSON.parse(row.payload_json) as {dispatch?:{engine?:unknown;model?:unknown;effort?:unknown;speed?:unknown;voiceReply?:unknown}}:undefined;
+   const dispatch=payload?.dispatch,agent=store.getAgent(pending.agentId),project=agent&&store.getChatContext(agent.conversationId);
+   const boundary=agent&&store.providerCommandContextBoundary(agent.id),accepted=agent&&store.resumeSessionState(agent.id);
+   const packet=agent&&store.acceptedProviderSessionInput(agent.id);
+   const contract=packet?.sourceManifest.schemaVersion===3?packet.sourceManifest.normalRuntimeContract:undefined;
+   // Do not silently reseed an explicitly changed/voice task when the old
+   // accepted generation cannot be attributed to a completed boundary.
+   const requiresKnownBoundary=Boolean(accepted&&agent&&row&&
+     (dispatch?.voiceReply===true&&opts.localMemory || typeof dispatch?.model==='string' ||
+      typeof dispatch?.effort==='string' || typeof dispatch?.speed==='string' || agent.model));
+   if(requiresKnownBoundary&&(!boundary||!packet||!contract||contract.version!==1))
+    return hold('The earlier provider session lacks a complete, verified context boundary. The original work remains queued for review.');
+   if(!row||!agent||!project||!boundary||!accepted||!packet||!contract||contract.version!==1||
+      agent.projectId!==pending.projectId||project.id!==pending.projectId||row.scope_key!==`conversation:${agent.conversationId}`||
+      boundary.providerSessionId!==accepted.sessionId||boundary.toolContractHash!==contract.contractHash||
+      contract.engineId!==agent.activeEngine||contract.workingCopyId!==agent.workingCopy.id||
+      agent.workingCopy.state!=='ready'||contract.cwd!==agent.workingCopy.rootPath||
+      typeof packet.exactSystemPrompt!=='string'||typeof packet.executionId!=='string'||
+      (typeof dispatch?.engine==='string'&&dispatch.engine!==agent.activeEngine)||
+      coordinationV3.activeContextRollover(agent.id))return true;
+   const engine=engines.get(agent.activeEngine);
+   if(!engine||Object.getPrototypeOf(engine.adapter)!==CodexAdapter.prototype||Object.hasOwn(engine.adapter,'openSession'))return true;
+   const memory=localMemoryFor(app);
+   const initialFingerprint=transitionFingerprint(input,pending.projectId,pending.agentId,pending.id);
+   const {targetModel,targetEffort,targetSpeed}=settingsTransitionTarget(agent,project,engine.adapter,workspace.getPreferences(),cachedModelOptions(engine.adapter,project.id),dispatch);
+   if(!targetModel?.trim()||!contract.model?.trim())return true;
+   const changed=targetModel!==contract.model||targetEffort!==contract.effort||targetSpeed!==(contract.speed??'standard');
+   const voiceBoundary=Boolean(opts.localMemory&&dispatch?.voiceReply===true);
+   if(memory?.retainedSourcesNeedReview(agent.id,agent.conversationId,boundary.executionId))
+    return hold('A memory source previously used by this Agent was revoked or changed. Prior Agent text cannot yet be attributed safely; the original work remains queued for context review.');
+   if(!changed&&!voiceBoundary)return true;
+   shouldHold=true;
+   assertRetainedNativeAuthentication(contract,engineAuthStatuses.snapshot(agent.activeEngine));
+   if(Boolean(opts.localMemory)!==Boolean(memory))return hold('Memory access could not be verified. The original work remains queued; review the Agent’s context before retrying.');
+   const authorization=memory?.transitionAuthorization(agent.id,agent.conversationId,accepted.sessionId,packet.executionId,boundary.executionId);
+   if(memory&&!authorization)return hold('Earlier memory access could not be verified or a source changed. The original work remains queued; review the Agent’s context before retrying.');
+   if(memory&&authorization&&!await memory.validateTransitionReads(agent.id,agent.conversationId,packet.executionId,boundary.executionId,boundary.executionId,authorization.signature))
+    return hold('A memory source used by this Agent changed or is unavailable. The original work remains queued; review its context before retrying.');
+   const policy=new CapabilityPolicyStore(store.sqlite).resolveForAgent(agent.id);
+   const restrictions=runtimeRestrictions(policy,agent.activeEngine);
+   const prior=contract.capabilityRestrictions;
+   if(!prior||restrictions.filesystemWriteRestricted!==prior.filesystemWriteRestricted||
+      JSON.stringify(restrictions.restrictedCapabilityIds)!==JSON.stringify(prior.restrictedCapabilityIds)||
+      JSON.stringify(restrictions.restrictedConnectorNames)!==JSON.stringify(prior.restrictedConnectorNames))return true;
+   const tools=filterRuntimeToolsForCapabilities([...providerDynamicTools(Boolean(opts.localMemory)),PONDEROSA_HISTORY_TOOL],policy);
+   const communicationPrompt=communicationV3SessionPrompt(),preferences=workspace.getPreferences();
+   // The old provider already has its accepted system prompt. Use its exact
+   // recorded bytes for the old-session handoff; the replacement receives
+   // current guidance after the handoff is verified.
+   const systemPrompt=packet.exactSystemPrompt,systemPromptHash=createHash('sha256').update(systemPrompt).digest('hex');
+   const ordinaryToolHash=providerToolContractHash(tools,communicationPrompt),toolHash=policy.restrictedCapabilityIds.length?createHash('sha256').update(JSON.stringify({tools:ordinaryToolHash,restrictions})).digest('hex'):ordinaryToolHash;
+   const oldHash=providerRuntimeSessionContractHash({runtimeSessionContractHash:providerSessionContractHash(agent.activeEngine,agent.workingCopy.id,contract.model,contract.effort,toolHash),speed:contract.speed,...(contract.observedBillingMode?{billingMode:contract.observedBillingMode}:{}),systemPromptHash,scopeKey:row.scope_key},contract.contractHash);
+   if(oldHash!==contract.contractHash)return hold('The prior provider context could not be verified. The original work remains queued; review the Agent’s context before retrying.');
+   const acceptedTail=store.acceptedProviderSessionCommunicationEventIds(agent.id);if(!acceptedTail)return hold('The prior context boundary is unavailable. The original work remains queued; review the Agent’s context before retrying.');
+   const measured=store.acceptedProviderSessionContextUsage(agent.id)?.usage;
+   const pressure=evaluateContextRolloverPressure(measured?{usedTokens:measured.usedTokens,...(measured.windowTokens===undefined?{}:{windowTokens:measured.windowTokens})}:{usedTokens:0},preferences);
+   const frozen=store.bindContextRolloverBoundary({agentId:agent.id,currentConversationId:agent.conversationId,submittedCommunicationEventIds:acceptedTail,maxUtf8Bytes:Math.min(pressure.lowWaterMark,MAX_CONTEXT_ROLLOVER_REPLACEMENT_PROVIDER_INPUT_UTF8_BYTES)});
+   const reserved=store.sqlite.transaction(()=>{
+   const selected=coordinationV3.peekNextRunnable({excludedAgentIds});
+   if(!selected||selected.activationId!==candidate.activationId||selected.agentId!==candidate.agentId||selected.scopeKey!==candidate.scopeKey||
+      initialFingerprint!==transitionFingerprint(input,pending.projectId,pending.agentId,pending.id))return false;
+   coordinationV3.requestContextRollover({projectId:agent.projectId,agentId:agent.id,oldProviderSessionId:accepted.sessionId,providerSessionGeneration:accepted.sessionId,
+    ...(measured?{detectedOccupancy:measured.usedTokens,...(measured.aggregateTokens===undefined?{}:{aggregateTokens:measured.aggregateTokens}),...(measured.windowTokens===undefined?{}:{contextWindow:measured.windowTokens})}:{}),
+    threshold:pressure.threshold,lowWaterMark:pressure.lowWaterMark,sourceRunId:boundary.executionId,sourceActivationIds:coordinationV3.activationIdsAttachedToRun(boundary.executionId,agent.id),scopeKey:row.scope_key,conversationId:agent.conversationId,
+    compactionCutoffOrdinal:frozen.canonicalOrdinal,compactionCutoffEventId:frozen.communicationEventId,recentTail:frozen.recentTail,
+    settingsTransition:{reason:changed?'settings':'voice',activationId:pending.id,sourceRunId:boundary.executionId,sourceFence:boundary.fencingToken,oldContractHash:contract.contractHash,oldSessionId:accepted.sessionId,engineId:agent.activeEngine,model:contract.model!,...(contract.effort?{effort:contract.effort}:{}),...(contract.speed?{speed:contract.speed}:{}),targetModel,...(targetEffort?{targetEffort}:{}),targetSpeed,...(authorization?{authorizationSignatureHash:authorization.signature,authorizationOriginRunId:packet.executionId}:{})},
+   });
+   return true;
+   })();
+   return reserved;
+  }catch{
+   // If SQLite committed before a caller saw an exception, adopt the matching
+   // durable rollover instead of replaying it or releasing the queued work.
+   const existing=coordinationV3.activeContextRollover(pending.agentId);
+   const owns=existing&&store.sqlite.prepare(`SELECT 1 FROM agent_activations WHERE kind='context_rollover_handoff'
+    AND json_extract(payload_json,'$.rolloverId')=? AND json_extract(payload_json,'$.settingsTransition.activationId')=?`).get(existing.id,pending.id);
+   if(owns)return false;
+   return shouldHold?hold('Ponderosa could not prepare the context handoff. The original work remains queued; review the Agent’s activity before retrying.'):true;
+  }
+}

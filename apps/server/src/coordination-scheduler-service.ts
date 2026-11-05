@@ -1,3 +1,6 @@
+import { reconcileSettingsTransitionReservations, requestSettingsTransition } from "./context-transition-admission.js";
+import type { createOperationalNotifications } from "./operational-notifications.js";
+import type { EngineAuthStatusCache } from "./engine-auth-cache.js";
 import { SteeringAuthorityChangedError } from "@ponderosa/engines";
 import { activationInputAttachmentSource, currentArtifactInputFiles, requireCurrentRuntimeInputAccess, runtimeInputAttachment, runtimeInputFilesContext } from "./runtime-input-files.js";
 import type { AssetDto, CommunicationEvent, RuntimeInputFile } from "@ponderosa/core";
@@ -220,6 +223,10 @@ interface CoordinationSchedulerContext {
   runtimeAuthorities: Map<string, AgentRuntimeAuthority>;
   deletingAgentIds: ReadonlySet<string>;
   engines: ReadonlyMap<string, EngineRegistration>;
+  engineAuthStatuses: EngineAuthStatusCache;
+  createOperationalNotification:ReturnType<typeof createOperationalNotifications>["createOperationalNotification"];
+  resolveOperationalNotification:ReturnType<typeof createOperationalNotifications>["resolveOperationalNotification"];
+  cachedModelOptions: (adapter: import("@ponderosa/core").Adapter, projectId?: string) => import("@ponderosa/core").ModelOption[] | undefined;
   runtimeStatus(
     id: string,
     registration: EngineRegistration,
@@ -707,7 +714,7 @@ return new CoordinationV3Scheduler(
           if (timer) clearTimeout(timer);
         }
       })));
-      return [...new Set([
+      const blocked = [...new Set([
         ...store.listAgentEngineAssignments()
           .filter((candidate) => intake.get(candidate.activeEngine) !== true)
           .concat(context.resourceAdmission && coordinationV3.activeRunCount() >= context.resourceAdmission.capacity() ? store.listAgentEngineAssignments() : [])
@@ -717,6 +724,16 @@ return new CoordinationV3Scheduler(
         ...activeRuns.keys(),
         ...deletingAgentIds,
       ])];
+      return blocked;
+    },
+    prepareRunAdmission: async excludedAgentIds => {
+      const notices={app,store,coordinationV3,workspace,createOperationalNotification:context.createOperationalNotification,
+        resolveOperationalNotification:context.resolveOperationalNotification};
+      reconcileSettingsTransitionReservations(notices);
+      const candidate=coordinationV3.peekNextRunnable({excludedAgentIds});
+      const safe=await requestSettingsTransition({...notices,opts,engines,
+        engineAuthStatuses:context.engineAuthStatuses,cachedModelOptions:context.cachedModelOptions,excludedAgentIds,candidate});
+      return safe?(candidate?.activationId??null):null;
     },
     onMessageDeliveryChanged: publishMessageDeliveryChanged,
   },

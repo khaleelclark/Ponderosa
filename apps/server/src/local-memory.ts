@@ -33,7 +33,8 @@ export class LocalMemoryService{
  private initialized?:Promise<void>;
  // One process-local aggregate per Agent; missing evidence never blocks
  // ordinary use and cannot authorize retained memory context.
- private readonly unusedMemoryRuns=new Map<string,{originRunId:string;lastRunId:string;previousRunId?:string;lastFence:number;count:number;projectId:string;chatId:string;signature:string;attempted:boolean}>();
+ private readonly unusedMemoryRuns=new Map<string,{originRunId:string;lastRunId:string;previousRunId?:string;lastFence:number;count:number;projectId:string;chatId:string;signature:string;attempted:boolean;authorizationChanged:boolean;earliestUnsafeFence?:number;runs:Map<string,{pending:number;unsafe:boolean;read:boolean;fence:number}>}>();
+ private readonly unobservedMemoryAttempts=new WeakSet<ActiveRun>();
  private deniedSpeech=new WeakSet<ActiveRun>();
  private speech=new Map<string,{authority:MemoryAuthority;signature:string;refs:Map<string,{id:string;scope:string;hash:string}>;invalid:boolean;expires:number;started:boolean}>();
  constructor(readonly ports:Ports,inference?:Inference){
@@ -195,10 +196,11 @@ export class LocalMemoryService{
   const authority:MemoryAuthority={chatId:cap.conversationId,actor:{kind:'agent',id:cap.agentId},runId:cap.runId,fenceToken:String(cap.v3FencingToken),sourceType:'ai_inference',readChat,readGlobal:readChat&&grant.readGlobal,guard:async()=>{}};
   const entry=this.speechEntry(authority);entry.started=true;if(entry.invalid)throw new MemoryDenied('Memory changed before speech authorization');
  }
- speechCommitValid(runId:string){
-  const e=this.speech.get(runId);if(!e||!e.started||e.invalid||e.expires<Date.now())return false;
+ private exposureValid(runId:string,requireStarted:boolean){
+  const e=this.speech.get(runId);if(!e||(requireStarted&&!e.started)||e.invalid||e.expires<Date.now())return false;
   try{if(e.signature!==this.speechSignature(e.authority))this.invalidateSpeech(e);}catch{this.invalidateSpeech(e);}return !e.invalid;
  }
+ speechCommitValid(runId:string){return this.exposureValid(runId,true);}
  async speechStatus(runId:string):Promise<boolean|undefined>{
   if(!this.speech.get(runId)?.started){
    const row=this.ports.store.sqlite.prepare('SELECT status FROM scheduler_runs WHERE id=?').get(runId) as {status:string}|undefined;
@@ -210,13 +212,13 @@ export class LocalMemoryService{
   const pending=this.validateSpeechNow(runId);this.calls.add(pending);
   try{return await pending;}finally{this.calls.delete(pending);}
  }
- private async validateSpeechNow(runId:string):Promise<boolean>{
-  const e=this.speech.get(runId);if(!e||!this.speechCommitValid(runId))return false;
-  const guard=async()=>{if(!this.speechCommitValid(runId))throw new MemoryDenied('Speech memory context changed');};
+ private async validateSpeechNow(runId:string,requireStarted=true):Promise<boolean>{
+  const e=this.speech.get(runId);if(!e||!this.exposureValid(runId,requireStarted))return false;
+  const guard=async()=>{if(!this.exposureValid(runId,requireStarted))throw new MemoryDenied('Speech memory context changed');};
   try{
    await this.core.database.run({...e.authority,observeExposure:false,guard},async()=>{
     for(const ref of e.refs.values()){const row=await this.core.database.get(ref.id,[ref.scope]);if(!row||this.chunkHash(row)!==ref.hash){this.invalidateSpeech(e,ref.scope==='global'?'global':'chat');throw new MemoryDenied('Speech memory source changed');}}
-   });return this.speechCommitValid(runId);
+   });return this.exposureValid(runId,requireStarted);
   }catch{this.invalidateSpeech(e);return false;}
  }
  private async retire(operation:()=>Promise<void>){
@@ -455,16 +457,95 @@ export class LocalMemoryService{
    const agent=this.ports.store.getAgent(cap.agentId);if(!agent)return;
    const signature=this.unusedMemorySignature(cap.agentId,cap.conversationId,cap.v3SchedulerRunId);
    const prior=this.unusedMemoryRuns.get(cap.agentId);
-   if(!prior){this.unusedMemoryRuns.set(cap.agentId,{originRunId:cap.v3SchedulerRunId,lastRunId:cap.v3SchedulerRunId,lastFence:cap.v3FencingToken,count:1,projectId:agent.projectId,chatId:cap.conversationId,signature,attempted:false});return;}
+   if(!prior){this.unusedMemoryRuns.set(cap.agentId,{originRunId:cap.v3SchedulerRunId,lastRunId:cap.v3SchedulerRunId,lastFence:cap.v3FencingToken,count:1,projectId:agent.projectId,chatId:cap.conversationId,signature,attempted:this.unobservedMemoryAttempts.has(active),authorizationChanged:this.unobservedMemoryAttempts.has(active),runs:new Map()});return;}
    // Re-entry must never erase an observed attempt or manufacture coverage.
-   if(prior.lastRunId===cap.v3SchedulerRunId){if(prior.lastFence!==cap.v3FencingToken||prior.signature!==signature||prior.chatId!==cap.conversationId)prior.attempted=true;return;}
-   if(cap.v3FencingToken<=prior.lastFence||prior.signature!==signature||prior.chatId!==cap.conversationId)prior.attempted=true;
+   if(prior.lastRunId===cap.v3SchedulerRunId){if(prior.lastFence!==cap.v3FencingToken||prior.signature!==signature||prior.chatId!==cap.conversationId){prior.attempted=true;prior.authorizationChanged=true;}return;}
+   if(cap.v3FencingToken<=prior.lastFence||prior.signature!==signature||prior.chatId!==cap.conversationId){prior.attempted=true;prior.authorizationChanged=true;}
    prior.previousRunId=prior.lastRunId;prior.lastRunId=cap.v3SchedulerRunId;prior.lastFence=cap.v3FencingToken;prior.count++;
   }catch{/* No complete witness means no retained-memory optimization. */}
  }
- private noteMemoryAttempt(token:string):void{
+ /** A retained native session must not silently reuse a source whose access
+  * was revoked or whose previously returned content was changed. */
+ retainedSourcesNeedReview(agentId:string,chatId:string,sourceRunId:string):boolean{
+  try{
+   const entry=this.unusedMemoryRuns.get(agentId),source=this.ports.store.sqlite.prepare(
+    'SELECT fencing_token FROM scheduler_runs WHERE id=? AND agent_id=?').get(sourceRunId,agentId) as {fencing_token:number}|undefined;
+   if(!entry||entry.chatId!==chatId||!source)return false;
+   const owner=activeChatResourceOwner(this.ports.store,'agent',agentId),grant=this.getGrant(chatId,owner?.branchId?'branches':'dev');
+   for(const [id,state] of entry.runs){
+    if(state.fence>source.fencing_token||!state.read)continue;
+    const exposure=this.speech.get(id);if(!exposure||!exposure.refs.size)continue;
+    if(exposure.invalid || exposure.authority.readGlobal&&!grant.readGlobal)return true;
+   }
+   return false;
+  }catch{return true;}
+ }
+ /** Proof that this live process observed the same grant and policy throughout
+  * the accepted generation. Memory calls themselves do not invalidate it. */
+ transitionAuthorization(agentId:string,chatId:string,sessionId:string,originRunId:string,sourceRunId:string):{signature:string;attempted:boolean}|undefined{
+  try{
+   const db=this.ports.store.sqlite,entry=this.unusedMemoryRuns.get(agentId);
+   if(!entry||entry.authorizationChanged||entry.originRunId!==originRunId||entry.lastRunId!==sourceRunId||entry.chatId!==chatId||
+      entry.signature!==this.unusedMemorySignature(agentId,chatId,sourceRunId))return undefined;
+   const origin=db.prepare('SELECT fencing_token,scope_key FROM scheduler_runs WHERE id=? AND agent_id=?').get(originRunId,agentId) as {fencing_token:number;scope_key:string}|undefined;
+   const source=db.prepare('SELECT fencing_token,scope_key FROM scheduler_runs WHERE id=? AND agent_id=?').get(sourceRunId,agentId) as {fencing_token:number;scope_key:string}|undefined;
+   if(!origin||!source||origin.scope_key!==source.scope_key||source.fencing_token!==entry.lastFence ||
+      (entry.earliestUnsafeFence!==undefined&&entry.earliestUnsafeFence<=source.fencing_token))return undefined;
+   let count=0,last:string|undefined;
+   const rows=db.prepare('SELECT id,scope_key,status,provider_session_id,prompt_injection_state FROM scheduler_runs WHERE agent_id=? AND fencing_token>=? AND fencing_token<=? ORDER BY fencing_token,id').iterate(agentId,origin.fencing_token,source.fencing_token) as Iterable<{id:string;scope_key:string;status:string;provider_session_id:string|null;prompt_injection_state:string}>;
+   for(const row of rows){
+    const evidence=entry.runs.get(row.id);
+    if((count===0&&row.id!==originRunId)||row.scope_key!==origin.scope_key||row.status!=='completed'||row.provider_session_id!==sessionId||row.prompt_injection_state!=='injected'||
+       (evidence&&(evidence.pending||evidence.unsafe||(evidence.read&&!this.exposureValid(row.id,false)))))return undefined;
+    count++;last=row.id;
+   }
+   if(count!==entry.count||last!==sourceRunId)return undefined;
+   return {signature:createHash('sha256').update(entry.signature).digest('hex'),attempted:entry.attempted};
+  }catch{return undefined;}
+ }
+ /** Recheck only the frozen, nonsecret signature after the source was proven.
+  * Registration remains monotonic and cannot erase an authorization change. */
+ transitionAuthorizationStillValid(agentId:string,chatId:string,originRunId:string,sourceRunId:string,runId:string,expected:string):boolean{
+  try{
+   const entry=this.unusedMemoryRuns.get(agentId);
+   if(!entry||entry.authorizationChanged||entry.originRunId!==originRunId||entry.chatId!==chatId||
+      entry.signature!==this.unusedMemorySignature(agentId,chatId,runId)||
+      createHash('sha256').update(entry.signature).digest('hex')!==expected)return false;
+   const source=this.ports.store.sqlite.prepare('SELECT fencing_token FROM scheduler_runs WHERE id=? AND agent_id=?').get(sourceRunId,agentId) as {fencing_token:number}|undefined;
+   if(!source||(entry.earliestUnsafeFence!==undefined&&entry.earliestUnsafeFence<=source.fencing_token))return false;
+   for(const [id,e] of entry.runs)if(e.fence<=source.fencing_token &&
+     (e.pending||e.unsafe||(e.read&&!this.exposureValid(id,false))))return false;
+   return true;
+  }catch{return false;}
+ }
+ async validateTransitionReads(agentId:string,chatId:string,originRunId:string,sourceRunId:string,runId:string,expected:string):Promise<boolean>{
+  const pending=this.validateTransitionReadsNow(agentId,chatId,originRunId,sourceRunId,runId,expected);this.calls.add(pending);
+  try{return await pending;}finally{this.calls.delete(pending);}
+ }
+ private async validateTransitionReadsNow(agentId:string,chatId:string,originRunId:string,sourceRunId:string,runId:string,expected:string):Promise<boolean>{
+  if(!this.transitionAuthorizationStillValid(agentId,chatId,originRunId,sourceRunId,runId,expected))return false;
+  const entry=this.unusedMemoryRuns.get(agentId);if(!entry)return false;
+  const source=this.ports.store.sqlite.prepare('SELECT fencing_token FROM scheduler_runs WHERE id=? AND agent_id=?').get(sourceRunId,agentId) as {fencing_token:number}|undefined;
+  if(!source)return false;
+  for(const [id,state] of entry.runs)if(state.fence<=source.fencing_token && state.read && !await this.validateSpeechNow(id,false))return false;
+  return this.transitionAuthorizationStillValid(agentId,chatId,originRunId,sourceRunId,runId,expected);
+ }
+ private noteMemoryAttempt(token:string,operation:string){
   const cap=this.ports.capabilities.get(token),entry=cap&&this.unusedMemoryRuns.get(cap.agentId);
-  if(cap&&entry)entry.attempted=true;
+  if(!cap)return undefined;
+  if(!entry){const run=this.ports.activeRuns.get(cap.agentId);if(run)this.unobservedMemoryAttempts.add(run);return undefined;}
+  entry.attempted=true;
+  if(entry.lastRunId!==cap.v3SchedulerRunId||entry.lastFence!==cap.v3FencingToken){entry.authorizationChanged=true;return undefined;}
+  // Retain only evidence which still has an existing bounded exposure entry.
+  // An expired record permanently disqualifies that older generation instead
+  // of accumulating one entry for every idle Run.
+  for(const [id,prior] of entry.runs){const exposure=this.speech.get(id);if(!prior.pending&&(!exposure||exposure.expires<Date.now())){
+    entry.earliestUnsafeFence=Math.min(entry.earliestUnsafeFence??prior.fence,prior.fence);entry.runs.delete(id);
+  }}
+  let state=entry.runs.get(cap.v3SchedulerRunId);
+  if(!state){state={pending:0,unsafe:false,read:false,fence:cap.v3FencingToken};entry.runs.set(cap.v3SchedulerRunId,state);}
+  state.pending++;if(operation!=='search'&&operation!=='get')state.unsafe=true;
+  return {state,entry,runId:cap.v3SchedulerRunId};
  }
  canRetainUnusedMemory(agentId:string,chatId:string,sessionId:string,originRunId:string,currentRunId:string):boolean{
   try{
@@ -519,13 +600,25 @@ export class LocalMemoryService{
   return {chatId:agent.conversationId,actor:{kind:'agent',id:agent.id},runId:capability.v3SchedulerRunId,fenceToken:String(capability.v3FencingToken),active:true,grants:{readChat:!denied.has(CAPABILITY_IDS.memoryRead),readGlobal:!denied.has(CAPABILITY_IDS.memoryRead)&&grant.readGlobal,writeChat:!denied.has(CAPABILITY_IDS.memoryWrite),writeGlobal:!denied.has(CAPABILITY_IDS.memoryWrite)},sourceType:'ai_inference'};
  }
  async executeAgent(token:string,operation:string,args:unknown){
-  this.noteMemoryAttempt(token);
+  const observed=this.noteMemoryAttempt(token,operation);let completed=false;
+  try{
+  const cap=this.ports.capabilities.get(token);
+  if(cap && this.ports.store.sqlite.prepare(`SELECT 1 FROM scheduler_run_activations linked
+     JOIN agent_activations activation ON activation.id=linked.activation_id
+     WHERE linked.run_id=? AND activation.kind IN ('context_rollover_handoff','context_rollover_continuation')
+       AND json_type(activation.payload_json,'$.settingsTransition')='object' LIMIT 1`).get(cap.v3SchedulerRunId))
+    throw new MemoryDenied('Memory tools are unavailable during the isolated context handoff',403);
   const parsed=validateMemoryCall(operation,args),tool='ponderosa_local_memory_'+operation,write=['save','update','forget'].includes(operation);this.agentContext(token,tool,write);await this.ready();const before=this.agentContext(token,tool,write);await this.ensurePlannedChat(before.chatId);const initial=this.agentContext(token,tool,write);
   const globalWrite=write&&parsed.destination==='global';const usesGlobal=(globalWrite||!write&&parsed.source!=='chat')&&initial.grants.readGlobal;if(globalWrite&&parsed.visibility==='private')throw new MemoryDenied('Global private audience unsupported',400);if(globalWrite&&operation!=='save'&&!initial.grants.readGlobal)throw new MemoryDenied('Existing global source mutation requires read authority');const needsRead=!write||initial.grants.readChat;if(write&&operation!=='save'&&!initial.grants.readChat)throw new MemoryDenied('Existing source mutation requires read authority');const identity=JSON.stringify([initial.chatId,initial.actor,initial.runId,initial.fenceToken]);const guard=async()=>{const c=this.agentContext(token,tool,write);if(JSON.stringify([c.chatId,c.actor,c.runId,c.fenceToken])!==identity)throw new MemoryDenied('Canonical memory binding changed');if((needsRead&&!c.grants.readChat)||(usesGlobal&&!c.grants.readGlobal)||(write&&!(globalWrite?c.grants.writeGlobal:c.grants.writeChat)))throw new MemoryDenied('Live memory grant revoked');};
   if(write&&!(globalWrite?initial.grants.writeGlobal:initial.grants.writeChat))throw new MemoryDenied('Memory write denied');if(!write&&parsed.source==='global'&&!initial.grants.readGlobal)throw new MemoryDenied('Global read denied');
   if(usesGlobal||globalWrite){await this.ensureGlobalScope();await guard();}
   const authority:MemoryAuthority={...initial,readChat:initial.grants.readChat,readGlobal:usesGlobal,writeScope:write?(globalWrite?'global':'chat:'+initial.chatId):undefined,targetId:write&&operation!=='save'?parsed.chunk_id:undefined,visibility:parsed.visibility??'team',guard};
-  const promise=this.perform(operation,parsed,authority);this.calls.add(promise);try{return await promise;}finally{this.calls.delete(promise);}
+  if(observed&&(operation==='search'||operation==='get')){
+   try{this.speechEntry(authority);observed.state.read=true;}catch{observed.state.unsafe=true;}
+  }
+  const promise=this.perform(operation,parsed,authority);this.calls.add(promise);try{const result=await promise;completed=true;return result;}finally{this.calls.delete(promise);}
+  }finally{if(observed){const {state,entry,runId}=observed;state.pending--;if(!completed)state.unsafe=true;
+   if(state.unsafe&&!state.pending){entry.earliestUnsafeFence=Math.min(entry.earliestUnsafeFence??state.fence,state.fence);entry.runs.delete(runId);}}}
  }
  private async perform(operation:string,args:Record<string,any>,authority:MemoryAuthority){
   return this.core.database.run(authority,async()=>{await authority.guard();const scope=args.source==='global'||args.destination==='global'?'global':'chat:'+authority.chatId;

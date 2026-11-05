@@ -1,3 +1,4 @@
+import { settingsTransitionTarget } from "../context-transition-admission.js";
 import { activationInputAttachmentSource, currentArtifactInputFiles, runtimeInputAttachment, runtimeInputFilesContext } from "../runtime-input-files.js";
 import type { RuntimeAttachmentCopy } from "../runtime-attachments.js";
 import {canonicalDefaultReplyRoute} from "../required-reply-route.js";
@@ -374,6 +375,14 @@ export async function prepareAgentRun(
     throw contextRecoveryRequired('The preserved pause checkpoint exceeds the bounded recovery packet; work and the human hold remain intact.');
   const preflightResumeSessionState = store.resumeSessionState(agent.id);
   const preflightActiveRollover = coordinationV3.activeContextRollover(agent.id);
+  const transitionActivation = manifestActivationPayloads.find(item =>
+    (item.kind === 'context_rollover_handoff' || item.kind === 'context_rollover_continuation') &&
+    item.payload && typeof item.payload === 'object' &&
+    (item.payload as {rolloverId?:unknown}).rolloverId === preflightActiveRollover?.id &&
+    Boolean((item.payload as {settingsTransition?:unknown}).settingsTransition));
+  let settingsTransition = transitionActivation?.payload && typeof transitionActivation.payload === 'object'
+    ? (transitionActivation.payload as {settingsTransition:{activationId:string;sourceRunId:string;oldSessionId:string;oldContractHash:string;engineId:string;
+      targetModel:string;targetEffort?:string;targetSpeed?:string;authorizationSignatureHash?:string;authorizationOriginRunId?:string}}).settingsTransition : undefined;
   const preflightAttachedActivationIds = v3SchedulerRunId
     ? coordinationV3.activationIdsAttachedToRun(v3SchedulerRunId, agent.id)
     : [];
@@ -449,7 +458,12 @@ export async function prepareAgentRun(
     ...communicationPrompt,
     ...environmentPrompt,
   ]);
-  const systemPrompt = runtimeSystemPrompt(agent, managedRules);
+  const currentSystemPrompt = runtimeSystemPrompt(agent, managedRules);
+  const priorTransitionPacket = transitionActivation?.kind === 'context_rollover_handoff'
+    ? store.acceptedProviderSessionInput(agent.id) : undefined;
+  const systemPrompt = transitionActivation?.kind === 'context_rollover_handoff'
+    ? priorTransitionPacket?.exactSystemPrompt : currentSystemPrompt;
+  if(systemPrompt===undefined)throw new Error('The accepted handoff instructions are unavailable; original context remains retained.');
   const systemPromptHash = createHash("sha256").update(systemPrompt).digest("hex");
   const schedulerRunScopeKey = v3SchedulerRunId
     ? coordinationV3.runScopeKey(v3SchedulerRunId, agent.id) : undefined;
@@ -541,6 +555,22 @@ export async function prepareAgentRun(
   // exposure. Reuse the existing fresh canonical boundary instead of an exposure journal.
   const voiceMemoryBoundary=Boolean(opts.localMemory&&internalV3Dispatch&&v3SchedulerRunId&&
     canonicalVoiceReplyInput(store,coordinationV3,{runId,agentId:agent.id,conversationId:routingConversationId}));
+  // A verified transition owns the exact queued voice Activation. Reusing
+  // that accepted replacement avoids discarding its managed handoff again.
+  let managedVoiceReplacementSession:string|undefined;
+  if(voiceMemoryBoundary && manifestActivationIds.length===1 && !settingsTransition){
+    const completed=store.sqlite.prepare(`SELECT handoff.payload_json,rollover.replacement_session_id
+      FROM context_rollovers rollover JOIN agent_activations handoff ON handoff.kind='context_rollover_handoff'
+        AND json_extract(handoff.payload_json,'$.rolloverId')=rollover.id
+      WHERE rollover.agent_id=? AND rollover.project_id=? AND rollover.state='completed'
+        AND rollover.completion_reason='replacement_verified' AND rollover.replacement_session_id=?
+        AND json_extract(handoff.payload_json,'$.settingsTransition.activationId')=?
+      ORDER BY rollover.updated_at DESC LIMIT 1`).get(agent.id,project.id,preflightResumeSessionState?.sessionId,manifestActivationIds[0]) as {payload_json:string;replacement_session_id:string}|undefined;
+    if(completed){
+      const marker=(JSON.parse(completed.payload_json) as {settingsTransition:typeof settingsTransition}).settingsTransition;
+      if(marker){settingsTransition=marker;managedVoiceReplacementSession=completed.replacement_session_id;}
+    }
+  }
   const requestContextRollover = Boolean(
     internalV3Dispatch && (v3FreshProviderSession||voiceMemoryBoundary),
   );
@@ -673,6 +703,17 @@ export async function prepareAgentRun(
     retainedVerifiedContext=previousHash===resumeSessionState.toolContractHash;
     return retainedVerifiedContext;
   };
+  const canRetainManagedVoice=()=>{
+    if(!managedVoiceReplacementSession||!settingsTransition||!memory||!settingsTransition.authorizationSignatureHash||
+       !settingsTransition.authorizationOriginRunId||runtimeEngineId!=='codex'||
+       Object.getPrototypeOf(engine.adapter)!==CodexAdapter.prototype||Object.hasOwn(engine.adapter,'openSession')||
+       resumeSessionState?.sessionId!==managedVoiceReplacementSession||
+       resumeSessionState.toolContractHash!==effectiveRuntimeSessionContractHash)throw new Error('The verified voice transition cannot be resumed; its accepted context remains retained.');
+    const proof=()=>memory.transitionAuthorizationStillValid(agent.id,agent.conversationId,
+      settingsTransition!.authorizationOriginRunId!,settingsTransition!.sourceRunId,runId,settingsTransition!.authorizationSignatureHash!);
+    if(!proof())throw new Error('Memory access changed before the verified voice transition resumed.');
+    retainedMemoryProof=proof;retainedVerifiedContext=true;return true;
+  };
   if (eligibleContinuationHandoff) {
     // The rollover's exact handoff remains eligible even when startup had to
     // classify its unterminated source Run as interrupted. Durable rollover
@@ -684,7 +725,7 @@ export async function prepareAgentRun(
     // replacement reports low-water reconstruction and is atomically accepted.
     resumeSessionState = undefined;
     if (staleRuntime) await teardownPersistentRuntime(agent.id, staleRuntime, "continuation handoff rollover", project.id);
-  } else if (requestContextRollover && !(voiceMemoryBoundary && !v3FreshProviderSession && canRetainVerifiedContext('voice'))) {
+  } else if (requestContextRollover && !(voiceMemoryBoundary && !v3FreshProviderSession && (managedVoiceReplacementSession?canRetainManagedVoice():canRetainVerifiedContext('voice')))) {
     if (ownsFrozenHandoff) throw new Error("context rollover handoff cannot reseed the original session");
     // Scope/privacy changes retire opaque context; a new same-scope Request
     // alone is compatible. Close only idle owned runtime authority.
@@ -708,6 +749,11 @@ export async function prepareAgentRun(
     resumeSessionState = undefined;
     if (staleRuntime) await teardownPersistentRuntime(agent.id, staleRuntime, "tool-contract rollover", project.id);
   }
+  const acceptedTransitionReplacement=():string|undefined=>{
+    if(!settingsTransition||!preflightActiveRollover || transitionActivation?.kind!=='context_rollover_continuation')return undefined;
+    const rollover=coordinationV3.contextRollover(preflightActiveRollover.id);
+    return rollover?.state==='completed'&&rollover.completionReason==='replacement_verified' ? rollover.replacementSessionId : undefined;
+  };
   const assertRetainedContextPolicy=()=>{
     const current=store.getAgent(agent.id),currentProject=current?store.getChatContext(current.conversationId):undefined,preferences=workspace.getPreferences();
     const currentPolicy=new CapabilityPolicyStore(store.sqlite).resolveForAgent(agent.id,runId);
@@ -718,10 +764,12 @@ export async function prepareAgentRun(
     if(!current || !currentProject || current.projectId!==agent.projectId || current.conversationId!==agent.conversationId ||
        currentProject.id!==project.id || currentProject.hostPath!==project.hostPath || current.activeEngine!==agent.activeEngine ||
        current.model!==agent.model || current.effort!==agent.effort || current.speed!==agent.speed ||
-       current.role!==agent.role || runtimeSystemPrompt(current,managedRules)!==systemPrompt ||
+       current.role!==agent.role || runtimeSystemPrompt(current,managedRules)!==currentSystemPrompt ||
        current.workingCopy.state!=='ready' || current.workingCopy.id!==workingCopy.id ||
        current.workingCopy.rootPath!==workingCopy.rootPath ||
-       saved?.sessionId!==resumeSessionState?.sessionId || saved?.toolContractHash!==resumeSessionState?.toolContractHash ||
+       (!(saved?.sessionId===(settingsTransition?preflightResumeSessionState?.sessionId:resumeSessionState?.sessionId) &&
+         saved?.toolContractHash===(settingsTransition?preflightResumeSessionState?.toolContractHash:resumeSessionState?.toolContractHash)) &&
+         !(saved?.sessionId===acceptedTransitionReplacement() && saved?.toolContractHash===effectiveRuntimeSessionContractHash)) ||
        (currentProject.instructions?.trim()??'')!==projectInstructions ||
        preferences.globalInstructions.trim()!==globalInstructions ||
        JSON.stringify(preferences.profile)!==JSON.stringify(operatorProfile) ||
@@ -732,6 +780,33 @@ export async function prepareAgentRun(
        (v3SchedulerRunId && coordinationV3.runScopeKey(v3SchedulerRunId,agent.id)!==schedulerRunScopeKey))
       throw new Error('Settings or access changed before the saved Codex thread could continue. The original context remains retained.');
   };
+  const assertSettingsTransitionPolicy = settingsTransition ? () => {
+    assertRetainedContextPolicy();
+    const current=store.getAgent(agent.id),currentProject=current?store.getChatContext(current.conversationId):undefined;
+    const saved=store.resumeSessionState(agent.id),row=store.sqlite.prepare(
+      "SELECT scope_key,payload_json FROM agent_activations WHERE id=? AND agent_id=? AND project_id=? AND state IN ('pending','attached')"
+    ).get(settingsTransition.activationId,agent.id,project.id) as {scope_key:string;payload_json:string}|undefined;
+    if(!current||!currentProject||!row||row.scope_key!==schedulerRunScopeKey ||
+       !((saved?.sessionId===(managedVoiceReplacementSession??settingsTransition.oldSessionId) &&
+          (managedVoiceReplacementSession || saved?.toolContractHash===settingsTransition.oldContractHash)) ||
+         (saved?.sessionId===acceptedTransitionReplacement() && saved?.toolContractHash===effectiveRuntimeSessionContractHash))||
+       current.activeEngine!==settingsTransition.engineId)throw new Error('The settings transition owner changed; the original context remains retained.');
+    const dispatch=(JSON.parse(row.payload_json) as {dispatch?:{model?:unknown;effort?:unknown;speed?:unknown}}).dispatch;
+    const target=settingsTransitionTarget(current,currentProject,engine.adapter,workspace.getPreferences(),runContext.cachedModelOptions(engine.adapter,currentProject.id),dispatch);
+    if(target.targetModel!==settingsTransition.targetModel || target.targetEffort!==settingsTransition.targetEffort ||
+       target.targetSpeed!==(settingsTransition.targetSpeed??'standard'))throw new Error('Settings changed during context transition; the original context remains retained.');
+    if(opts.localMemory && (!memory || !settingsTransition.authorizationSignatureHash || !settingsTransition.authorizationOriginRunId ||
+       !memory.transitionAuthorizationStillValid(agent.id,current.conversationId,settingsTransition.authorizationOriginRunId,settingsTransition.sourceRunId,runId,settingsTransition.authorizationSignatureHash)))
+      throw new Error('Memory access changed during context transition; the original context remains retained.');
+  } : undefined;
+  assertSettingsTransitionPolicy?.();
+  const validateSettingsTransitionSources = settingsTransition && opts.localMemory ? async () => {
+    if(!memory||!settingsTransition?.authorizationSignatureHash||!settingsTransition.authorizationOriginRunId||
+       !await memory.validateTransitionReads(agent.id,agent.conversationId,settingsTransition.authorizationOriginRunId,settingsTransition.sourceRunId,runId,settingsTransition.authorizationSignatureHash))
+      throw new Error('A prior memory source changed during context transition; the original context remains retained.');
+    assertSettingsTransitionPolicy?.();
+  } : undefined;
+  await validateSettingsTransitionSources?.();
   const reusablePersistentRuntime = engine.adapter.openSession ? reusableRuntime(agent.id) : undefined;
   cancelRuntimeIdleClose(reusablePersistentRuntime);
   const messageCapability = reusablePersistentRuntime?.messageCapability ?? randomUUID();
@@ -1605,6 +1680,8 @@ export async function prepareAgentRun(
     runtimeSessionContractHash: effectiveRuntimeSessionContractHash,
     retainedVerifiedContext,
     assertRetainedContextPolicy:retainedVerifiedContext?assertRetainedContextPolicy:undefined,
+    assertSettingsTransitionPolicy,
+    validateSettingsTransitionSources,
     workingCopy,
     availableRuntimeTools,
     capabilityRestrictions,

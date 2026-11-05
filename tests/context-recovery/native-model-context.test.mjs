@@ -357,7 +357,19 @@ test('two ordinary memory-enabled no-call Runs preserve context into a voice tur
    localMemoryForRoot:async root=>({chromaUrl:await ownedChroma(),collectionPrefix:'context_'+randomUUID().replaceAll('-',''),modelDir:process.env.PONDEROSA_TEST_MEMORY_MODEL_DIR,stateDirectory:path.join(root,'memory-policy'),provision:true})});
 });
 
-for(const operation of ['search','save','invalid'])test(`a prior ${operation} memory attempt excludes no-call voice continuity`,{timeout:30000},async t=>{
+async function finishVoiceThroughManagedHandoff(f,native,agent,prior){
+ const handoff=await until(async()=>{const x=(await native.requests()).filter(x=>x.method==='turn/start');return x.length>=2?x:undefined;},'old-thread handoff');
+ assert.equal(handoff[1].params.threadId,handoff[0].params.threadId,'the memory-capable old thread only receives a handoff');
+ await native.sendAnswer('Original objective retained; continue the work.');
+ const confirmation=await until(async()=>{const x=(await native.requests()).filter(x=>x.method==='turn/start');return x.length>=3?x:undefined;},'replacement confirmation');
+ assert.notEqual(confirmation[2].params.threadId,handoff[0].params.threadId);
+ await native.sendAnswer('Continuity context received.');
+ const voice=await until(async()=>{const x=(await native.requests()).filter(x=>x.method==='turn/start');return x.length>=4?x:undefined;},'new-thread voice');
+ assert.equal(voice[3].params.threadId,confirmation[2].params.threadId);
+ await native.sendTool('ponderosa_voice_reply',{});await f.settled(agent.id,prior);
+}
+
+for(const operation of ['search','save','invalid'])test(`a prior ${operation} memory attempt uses managed voice continuity`,{timeout:30000},async t=>{
  let store,native;
  await withFixture(t,async f=>{
   const chat=await f.createChat('Memory attempt'),agent=await f.createIdleAgent(chat,'Worker');
@@ -371,12 +383,8 @@ for(const operation of ['search','save','invalid'])test(`a prior ${operation} me
   await native.sendTool('ponderosa_message',{text:'First task complete.'});await f.settled(agent.id);
   const prior=(await f.detail(agent.id)).runs.map(run=>run.id);
   f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text:'Continue aloud.',idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'queue',voiceReply:true}));
-  await until(async()=>(await native.requests()).filter(x=>x.method==='turn/start').length===2,'fresh voice turn');
-  const calls=await native.requests();
-  assert.equal(calls.filter(x=>x.method==='thread/start').length,2,'a memory attempt must not authorize no-call continuity');
-  assert.equal(calls.filter(x=>x.method==='thread/resume').length,0);
-  await native.sendTool('ponderosa_voice_reply',{});await f.settled(agent.id,prior);
- },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,emitVoiceReply:true,holdMemoryCompletion:true})).adapter,
+  await finishVoiceThroughManagedHandoff(f,native,agent,prior);
+ },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,emitVoiceReply:true,holdMemoryCompletion:true,uniqueThreads:true})).adapter,
    localMemoryForRoot:async root=>({chromaUrl:await ownedChroma(),collectionPrefix:'context_'+randomUUID().replaceAll('-',''),modelDir:process.env.PONDEROSA_TEST_MEMORY_MODEL_DIR,stateDirectory:path.join(root,'memory-policy'),provision:true})});
 });
 
@@ -394,10 +402,8 @@ test('re-registering the same Run cannot erase a memory attempt',{timeout:30000}
   await native.sendTool('ponderosa_message',{text:'First task complete.'});await f.settled(agent.id);
   const prior=(await f.detail(agent.id)).runs.map(run=>run.id);
   f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text:'Continue aloud.',idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'queue',voiceReply:true}));
-  await until(async()=>(await native.requests()).filter(x=>x.method==='turn/start').length===2,'fresh voice turn');
-  const calls=await native.requests();assert.equal(calls.filter(x=>x.method==='thread/start').length,2);assert.equal(calls.filter(x=>x.method==='thread/resume').length,0);
-  await native.sendTool('ponderosa_voice_reply',{});await f.settled(agent.id,prior);
- },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,emitVoiceReply:true,holdMemoryCompletion:true})).adapter,
+  await finishVoiceThroughManagedHandoff(f,native,agent,prior);
+ },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,emitVoiceReply:true,holdMemoryCompletion:true,uniqueThreads:true})).adapter,
    localMemoryForRoot:async root=>({chromaUrl:await ownedChroma(),collectionPrefix:'context_'+randomUUID().replaceAll('-',''),modelDir:process.env.PONDEROSA_TEST_MEMORY_MODEL_DIR,stateDirectory:path.join(root,'memory-policy'),provision:true})});
 });
 
