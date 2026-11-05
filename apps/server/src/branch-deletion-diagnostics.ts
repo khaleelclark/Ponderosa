@@ -135,7 +135,13 @@ export function describeBranchDeletionFailure(error:unknown,step?:BranchDeletion
  // Match the entire fixed message only at its actual deletion step; never
  // publish the saved journal, arbitrary exception text, or trigger details.
  const groupScopeMismatch=step==='records'&&code===undefined&&message==='Retained group journal original scope differs';
- const safe=groupScopeMismatch
+ // This fixed host-authored guard is reached from the deletion fence before
+ // owner records change. Never include arbitrary exception text or receipts.
+ const finalExitUnavailable=(step===undefined||step==='records')&&code===undefined&&
+  message==='Authentic final resource exit command unavailable or ambiguous';
+ const safe=finalExitUnavailable
+  ? 'Workflow deletion is blocked because its final resource exit record is missing or ambiguous. Keep the Workflow and its data while the exit record is reviewed.'
+  : groupScopeMismatch
   ? 'Workflow cleanup failed: retained group audit evidence does not match its Workflow and execution. Workflow records were preserved.'
   : description
   ? `Workflow cleanup failed (${code}): ${description} Details withheld because they may contain credentials.`

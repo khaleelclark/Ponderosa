@@ -10,6 +10,7 @@ import {createServer} from '../../apps/server/dist/app.js';
 import {BranchResourceService} from '../../apps/server/dist/branch-resource-service.js';
 import {describeBranchDeletionFailure} from '../../apps/server/dist/branch-installation-service.js';
 import {MEMORY_CLEANUP_HOLD_REASONS} from '../../apps/server/dist/local-memory-authority.js';
+import {payloadHash,stableJson} from '../../packages/agents/dist/coordination-v3-canonical-json.js';
 import {until} from '../shared/fixture.mjs';
 
 const options={timeout:30000,skip:process.platform==='win32'?'Recoverable Branch Scripts currently require POSIX containment':false};
@@ -71,6 +72,29 @@ test('deployment drain closes Branch filesystem watchers, preserves accepted bur
 });
 
 
+test('DELETE Workflow explains a missing final exit record and leaves the Workflow intact',options,async t=>{
+ const f=await fixture(t),branch=f.deploy('Retained capture',[
+  {id:'script',kind:'script',runtime:'node',cwdRef:'workspace',timeoutMs:10000,source:'process.exit(0)'},
+ ]);
+ await f.open();
+ // Controlled malformed-retention fixture: a canonical permanent fence has
+ // no final exit command. The real deletion guard must stop before mutation.
+ const input={executionId:'synthetic-execution',stepExecutionId:'synthetic-step',generation:0,
+  projectId:'synthetic-project',conversationId:'synthetic-chat',agentIds:[]};
+ const fence={schema:'branch-generation-exit-fence.v1',purpose:'final-resource',input,
+  resource:{original_branch_id:branch.id}};
+ const identity=payloadHash({executionId:input.executionId,stepExecutionId:input.stepExecutionId,generation:input.generation});
+ f.store.sqlite.prepare('INSERT INTO host_lifecycle_commits(kind,identity,input_json,receipt_json,receipt_sha256) VALUES(?,?,?,?,?)')
+  .run('branch-generation-exit-fence',identity,stableJson(input),stableJson(fence),payloadHash(fence));
+ const response=await f.api('DELETE',`/api/branches/${branch.id}`,undefined,409);
+ assert.match(response.error,/final resource exit record is missing or ambiguous/);
+ assert.match(response.error,/Keep the Workflow and its data/);
+ assert.ok(f.branches.getBranch(branch.id),'the Workflow remains present');
+ assert.equal(f.store.sqlite.prepare('SELECT deleting FROM branches WHERE id=?').get(branch.id).deleting,0);
+ assert.ok(f.store.sqlite.prepare("SELECT 1 FROM host_lifecycle_commits WHERE kind='branch-generation-exit-fence' AND identity=?").get(identity),'the source fence remains intact');
+ f.pass();
+});
+
 test('Branch deletion explains known failure classes without exposing arbitrary diagnostics',()=>{
  const secret='fixture-bare-credential-value';
  for(const [code,phrase] of [
@@ -114,6 +138,16 @@ test('Branch deletion explains known failure classes without exposing arbitrary 
   assert.match(describeBranchDeletionFailure(new Error(message),'notifications'),/Details withheld/);
  }
  assert.match(describeBranchDeletionFailure(Object.assign(new Error('Temporary agent copy final custody bytes changed'),{code:'EACCES'}),'resource'),/operating system denied access/);
+ const finalExit='Authentic final resource exit command unavailable or ambiguous';
+ for(const step of [undefined,'records']){
+  const message=describeBranchDeletionFailure(new Error(finalExit),step);
+  assert.match(message,/final resource exit record is missing or ambiguous/);
+  assert.match(message,/Keep the Workflow and its data/);
+ }
+ assert.match(describeBranchDeletionFailure(new Error(finalExit),'notifications'),/Details withheld/);
+ assert.match(describeBranchDeletionFailure(Object.assign(new Error(finalExit),{code:'SQLITE_CONSTRAINT_TRIGGER'}),'records'),/database trigger rejected/);
+ const alteredFinal=describeBranchDeletionFailure(new Error(finalExit+' '+secret),'records');
+ assert.match(alteredFinal,/Details withheld/);assert.ok(!alteredFinal.includes(secret));
  const auditMismatch=describeBranchDeletionFailure(new Error('Retained group journal original scope differs'),'records');
  assert.match(auditMismatch,/retained group audit evidence does not match its Workflow and execution/i);
  assert.match(auditMismatch,/Workflow records were preserved/);
