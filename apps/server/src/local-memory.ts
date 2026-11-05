@@ -7,7 +7,7 @@ import Database from 'better-sqlite3';
 import {randomUUID,createHash} from 'node:crypto';
 import {AsyncLocalStorage} from 'node:async_hooks';
 import type {FastifyInstance,FastifyRequest} from 'fastify';
-import {CapabilityPolicyStore,hasRetainedTemporaryChatScope,type AgentStore,type AgentDeletionReceipt} from '@ponderosa/agents';
+import {CapabilityPolicyStore,CoordinationV3Store,readBranchExpertCopy,hasRetainedTemporaryChatScope,type AgentStore,type AgentDeletionReceipt,type BranchExpertCopyReceipt} from '@ponderosa/agents';
 import {CAPABILITY_IDS} from '@ponderosa/core';
 import {type Chunk,type Inference} from '@local-memory/mcp-node-private';
 import {HostMemoryRuntime,checkedCollection,createPlannedCollection,MemoryCollectionHold,MEMORY_CLEANUP_HOLD_REASONS,MEMORY_CLEANUP_UNKNOWN_HOLD,MEMORY_CLEANUP_PROVISION_HOLD,MEMORY_CLEANUP_RECEIPT_HOLD,type MemoryAuthority} from './local-memory-authority.js';
@@ -26,6 +26,7 @@ export class LocalMemoryService{
  readonly core:HostMemoryRuntime;
  readonly principalId:string;
  private policy!:Database.Database;
+ private readonly coordination:CoordinationV3Store;
  private closed=false;
  private calls=new Set<Promise<unknown>>();
  private policyCustodyCheck:()=>void=()=>{throw Error('Memory policy custody not initialized');};
@@ -40,6 +41,7 @@ export class LocalMemoryService{
  private deniedSpeech=new WeakSet<ActiveRun>();
  private speech=new Map<string,{authority:MemoryAuthority;signature:string;refs:Map<string,{id:string;scope:string;hash:string}>;invalid:boolean;expires:number;started:boolean}>();
  constructor(readonly ports:Ports,inference?:Inference){
+  this.coordination=new CoordinationV3Store(ports.store.sqlite);
   const c=ports.opts.localMemory!;if('journalDirectory'in c)throw Error('Legacy journalDirectory is unsupported; preserve old files and configure a fresh ordinary stateDirectory');
   const directory=path.resolve(c.stateDirectory),canonical=fs.realpathSync(ports.opts.dataDir);if(directory===canonical||directory.startsWith(canonical+path.sep))throw Error('Memory policy state must be outside canonical dataDir');
   const initialWitness=ports.store.sqlite.prepare('SELECT * FROM local_memory_host_binding WHERE singleton=1').get() as {state:string;policy_custody:string|null;data_generation:string}|undefined;
@@ -248,6 +250,7 @@ export class LocalMemoryService{
    await this.ready();
    const guard=async()=>{this.live();const receipt=this.ports.store.getConversationDeletionReceipt(chatId);if(!receipt?.canonicalDeletionCompleted||this.ports.store.getConversation(chatId,{includeDeleting:true}))throw new MemoryDenied('Exact committed Chat deletion required');};
    await guard();const receipt=this.ports.store.getConversationDeletionReceipt(chatId)!;
+   if(this.isProvenTemporaryChat(chatId,receipt.projectId,receipt.branchId)&&this.ports.store.sqlite.prepare('SELECT 1 FROM local_memory_scope_provisioning WHERE chat_id=?').get(chatId))throw new MemoryCollectionHold('Expert copy memory is retained until its final custody is confirmed');
    if(!this.isProvenTemporaryChat(chatId,receipt.projectId,receipt.branchId)){
     // Serialize this no-effect proof with provisioning.
     const neverProvisioned=await this.core.database.raw.exclusive(async()=>{
@@ -288,6 +291,7 @@ export class LocalMemoryService{
    for(const target of targets)if(target.conversation_id){
     await guard();const chat=store.getConversation(target.conversation_id,{includeDeleting:true});
     const branchId=chat?.branchId??store.getConversationDeletionReceipt(target.conversation_id)?.branchId;
+    if(this.isProvenTemporaryChat(target.conversation_id,target.project_id,branchId,target.id)&&store.sqlite.prepare('SELECT 1 FROM local_memory_scope_provisioning WHERE chat_id=?').get(target.conversation_id))throw new MemoryCollectionHold('Expert copy memory is retained until its final custody is confirmed');
     if(this.isProvenTemporaryChat(target.conversation_id,target.project_id,branchId,target.id)){if(this.core.database.scopeHasUnsettledMutation('chat:'+target.conversation_id))throw Error(MEMORY_CLEANUP_UNKNOWN_HOLD);}
     else await this.core.database.purge('chat:'+target.conversation_id,guard,target.id);
    }
@@ -299,7 +303,7 @@ export class LocalMemoryService{
    await this.ready();const store=this.ports.store;
    const guard=async()=>{this.live();if(!store.sqlite.prepare('SELECT 1 FROM project_deletion_pending WHERE project_id=?').get(projectId))throw new MemoryDenied('Exact pending Project deletion required');};
    await guard();const chats=store.sqlite.prepare('SELECT id FROM conversations WHERE project_id=?').all(projectId) as {id:string}[];
-   for(const {id}of chats){const chat=store.getConversation(id,{includeDeleting:true});await guard();if(chat&&this.isProvenTemporaryChat(id,projectId,chat.branchId)){if(this.core.database.scopeHasUnsettledMutation('chat:'+id))throw Error(MEMORY_CLEANUP_UNKNOWN_HOLD);}else await this.core.database.purge('chat:'+id,guard);await guard();this.policy.prepare('DELETE FROM local_memory_chat_grants WHERE chat_id=? AND principal_id=?').run(id,this.principalId);this.knownScopes.delete('chat:'+id);}
+   for(const {id}of chats){const chat=store.getConversation(id,{includeDeleting:true});await guard();if(chat&&this.isProvenTemporaryChat(id,projectId,chat.branchId)&&store.sqlite.prepare('SELECT 1 FROM local_memory_scope_provisioning WHERE chat_id=?').get(id))throw new MemoryCollectionHold('Expert copy memory is retained until its final custody is confirmed');if(chat&&this.isProvenTemporaryChat(id,projectId,chat.branchId)){if(this.core.database.scopeHasUnsettledMutation('chat:'+id))throw Error(MEMORY_CLEANUP_UNKNOWN_HOLD);}else await this.core.database.purge('chat:'+id,guard);await guard();this.policy.prepare('DELETE FROM local_memory_chat_grants WHERE chat_id=? AND principal_id=?').run(id,this.principalId);this.knownScopes.delete('chat:'+id);}
    for(const [id,entry]of this.unusedMemoryRuns)if(entry.projectId===projectId)this.unusedMemoryRuns.delete(id);
   });
  }
@@ -332,12 +336,33 @@ export class LocalMemoryService{
   if(db.prepare('SELECT 1 FROM local_memory_scope_provisioning WHERE chat_id=?').get(chatId))return false;
   return hasRetainedTemporaryChatScope(db,{chatId,projectId,branchId,...(agentId?{agentId}:{})});
  }
+ /** Exact Branch-owned copy only; ordinary temporary Chats remain unsupported. */
+ private expertChat(chatId:string,allowReserved=false,allowRetiring=false):BranchExpertCopyReceipt|undefined{
+  const db=this.ports.store.sqlite,rows=db.prepare(`SELECT r.step_execution_id,r.execution_id,r.state,e.branch_id,e.cancel_requested,b.deleting FROM branch_resources r JOIN branch_executions e ON e.id=r.execution_id JOIN branches b ON b.id=e.branch_id WHERE r.chat_id=?`).all(chatId) as Array<{step_execution_id:string;execution_id:string;state:string;branch_id:string;cancel_requested:number;deleting:number}>;
+  if(rows.length!==1)return;const row=rows[0]!;if((!allowRetiring&&(row.cancel_requested||row.deleting))||!['reserved','active'].includes(row.state))return;
+  const receipt=readBranchExpertCopy(db,row.execution_id,row.step_execution_id);if(!receipt||!receipt.snapshotReceipt||receipt.copyChatId!==chatId||!receipt.copyProjectId||(!allowReserved&&receipt.state!=='active'))return;
+  const chat=db.prepare('SELECT project_id,branch_id,branch_execution_id FROM conversations WHERE id=?').get(chatId) as {project_id:string;branch_id:string|null;branch_execution_id:string|null}|undefined;
+  if(!chat||chat.project_id!==receipt.copyProjectId||chat.branch_id!==row.branch_id||chat.branch_execution_id!==row.execution_id)return;
+  if(receipt.state==='active'){
+   if(!receipt.copyAgentId||!receipt.requestId||!receipt.creationOperationId||row.state!=='active'||!db.prepare('SELECT 1 FROM branch_resource_members WHERE step_execution_id=? AND agent_id=?').get(row.step_execution_id,receipt.copyAgentId))return;
+   if(!allowRetiring&&!db.prepare(`SELECT 1 FROM branch_attempts a JOIN coordination_requests q ON q.id=a.request_id WHERE a.id=? AND a.step_execution_id=? AND a.cancel_requested=0 AND a.state='waiting' AND q.id=? AND q.recipient_agent_id=? AND q.project_id=? AND q.conversation_id=? AND q.state IN ('open','in_progress','waiting_dependency','awaiting_answer')`).get(receipt.attemptId,row.step_execution_id,receipt.requestId,receipt.copyAgentId,receipt.copyProjectId,chatId))return;
+  }
+  return receipt;
+ }
+ private expertSourceLive(receipt:BranchExpertCopyReceipt):boolean{
+  const source=this.ports.store.getAgent(receipt.sourceAgentId),owner=activeChatResourceOwner(this.ports.store,'agent',receipt.sourceAgentId);
+  return Boolean(source&&owner&&source.projectId===receipt.sourceProjectId&&source.conversationId===receipt.sourceChatId);
+ }
+ private expertConsent(receipt:BranchExpertCopyReceipt|undefined,kind:'copySourceMemory'|'allowFindingsWriteback'):boolean{
+  const consent=receipt?.consent,review=receipt?.accessReview,choice=receipt?.accessChoice;
+  return Boolean(consent&&review&&choice&&receipt?.snapshotReceipt&&consent.snapshotSha256===receipt.snapshotReceipt.sha256&&consent.reviewSha256===review.reviewSha256&&choice.reviewSha256===review.reviewSha256&&consent[kind]===true);
+ }
  private live(){if(this.closed)throw new MemoryDenied('Local memory host is closing');this.policyCustodyCheck();}
- private chat(chatId:string,product?:ProductScope){
+ private chat(chatId:string,product?:ProductScope,allowExpert=false){
   this.live();const chat=this.ports.store.getConversation(chatId),owner=activeChatResourceOwner(this.ports.store,'chat',chatId);
   if(!chat||!owner||product&&!resourceInProduct(this.ports.store,'chat',chatId,product))throw new MemoryDenied('Canonical Chat is unavailable in this product',404);
   // ponytail: execution Chats retire with their temporary Agents; no durable memory target is invented.
-  if(owner.executionId)throw new MemoryDenied('Temporary execution Chat memory is unsupported by the durable Chat lifetime policy');
+  if(owner.executionId&&(!allowExpert||!this.expertChat(chatId)))throw new MemoryDenied('Temporary execution Chat memory is unsupported by the durable Chat lifetime policy');
   return {chat,owner};
  }
  private assertProvisioningSettled(){if(this.missingExistingScopes.size||this.ports.store.sqlite.prepare("SELECT 1 FROM local_memory_scope_provisioning WHERE memory_state='submitted' OR log_state='submitted' LIMIT 1").get())throw Error('Memory collection creation or deletion requires reconciliation or existing data is missing');}
@@ -374,7 +399,7 @@ export class LocalMemoryService{
  reserveNewChat(chatId:string){
   this.live();const db=this.ports.store.sqlite;if(!db.inTransaction)throw Error('Memory scope intent requires the Chat creation transaction');
   const chat=db.prepare('SELECT project_id,branch_execution_id FROM conversations WHERE id=?').get(chatId) as {project_id:string;branch_execution_id:string|null}|undefined;
-  if(!chat)throw Error('New memory scope Chat is unavailable');if(chat.branch_execution_id)return;
+  if(!chat)throw Error('New memory scope Chat is unavailable');if(chat.branch_execution_id&&!this.expertConsent(this.expertChat(chatId,true),'copySourceMemory'))return;
   const generation=(db.prepare('SELECT generation_id FROM _state_generation WHERE singleton=1').get() as {generation_id:string}).generation_id;
   const policy=this.policy.prepare('SELECT principal_id,data_generation,storage_binding FROM local_memory_installation WHERE id=1').get() as {principal_id:string;data_generation:string;storage_binding:string};
   if(policy.principal_id!==this.principalId||policy.data_generation!==generation)throw Error('Memory scope installation binding differs');
@@ -383,7 +408,7 @@ export class LocalMemoryService{
  async provisionInventory(){
   return this.core.database.raw.exclusive(async()=>{
    this.live();
-   const eligible=(this.ports.store.sqlite.prepare('SELECT id FROM conversations WHERE branch_execution_id IS NULL').all() as {id:string}[]).filter(({id})=>Boolean(activeChatResourceOwner(this.ports.store,'chat',id)));
+   const eligible=(this.ports.store.sqlite.prepare('SELECT id,branch_execution_id FROM conversations').all() as {id:string;branch_execution_id:string|null}[]).filter(({id,branch_execution_id})=>branch_execution_id?this.expertConsent(this.expertChat(id,true),'copySourceMemory'):Boolean(activeChatResourceOwner(this.ports.store,'chat',id)));
    for(const scope of ['global',...eligible.map(({id})=>'chat:'+id)]){
     const id=scope==='global'?'global':scope.slice(5);
     try{if(this.memoryIntent(id))await this.provisionIntent(id,undefined,true);
@@ -392,11 +417,20 @@ export class LocalMemoryService{
    }
   });
  }
+ /** Reserve only canonical local intent, after the per-copy human review. */
+ reserveExpertChatMemory(chatId:string){
+  this.live();const db=this.ports.store.sqlite;const reserve=()=>{
+   const expert=this.expertChat(chatId,true);if(!this.expertConsent(expert,'copySourceMemory')||!expert||!this.expertSourceLive(expert))throw new MemoryDenied('Expert copy memory requires explicit access review and a live source',409);
+   if(this.memoryIntent(chatId))return;
+   this.reserveNewChat(chatId);
+   if(!this.memoryIntent(chatId))throw new MemoryDenied('Expert copy memory intent was not recorded',409);
+  };if(db.inTransaction)reserve();else db.transaction(reserve).immediate();
+ }
  async provisionNewChat(chatId:string){await this.ready();return this.core.database.raw.exclusive(()=>this.provisionIntent(chatId));}
  async verifyChat(chatId:string){await this.ready();return this.core.database.raw.exclusive(async()=>{if(this.memoryIntent(chatId))await this.provisionIntent(chatId);else await this.provisionScope('chat:'+chatId);});}
  private async ensureGlobalScope(){if(this.missingExistingScopes.has('global'))throw Error('Existing global memory is missing or changed; restore its original backend and restart to recheck it');const intent=this.memoryIntent('global');if(intent&&(intent.memory_state!=='confirmed'||intent.log_state!=='confirmed'))await this.core.database.raw.exclusive(()=>this.provisionIntent('global'));}
  private async ensurePlannedChat(chatId:string,ownerCheck?:()=>void){const scope='chat:'+chatId;if(this.missingExistingScopes.has(scope))throw Error('Existing Chat memory is missing or changed; restore its original backend and restart to recheck it');const intent=this.memoryIntent(chatId);if(intent&&(intent.memory_state!=='confirmed'||intent.log_state!=='confirmed')){if(ownerCheck)await this.core.database.raw.exclusive(()=>this.provisionIntent(chatId,ownerCheck));else await this.verifyChat(chatId);}else if(!intent&&!this.knownScopes.has(scope)&&!ownerCheck){try{await this.verifyChat(chatId);}catch(error){if(error instanceof Error&&error.name==='ChromaNotFoundError')this.missingExistingScopes.add(scope);throw error;}}}
- private scopeGuard(scope:string){return async()=>{this.live();if(scope!=='global'){const owner=activeChatResourceOwner(this.ports.store,'chat',scope.slice(5));if(!owner||owner.executionId)throw Error('Canonical durable Chat unavailable during provisioning');}};}
+ private scopeGuard(scope:string){return async()=>{this.live();if(scope!=='global'){const owner=activeChatResourceOwner(this.ports.store,'chat',scope.slice(5));if(!owner||(owner.executionId&&!this.expertConsent(this.expertChat(scope.slice(5),true),'copySourceMemory')))throw Error('Canonical durable Chat unavailable during provisioning');}};}
  private memoryIntent(chatId:string,retiring=false){
   this.live();const db=this.ports.store.sqlite;
   const intent=db.prepare('SELECT * FROM local_memory_scope_provisioning WHERE chat_id=?').get(chatId) as {chat_id:string;project_id:string;data_generation:string;principal_id:string;storage_binding:string;intent_id:string;memory_state:string;log_state:string;memory_collection_id:string|null;log_collection_id:string|null}|undefined;
@@ -409,7 +443,7 @@ export class LocalMemoryService{
   // provisioning and reads continue to require the live owner.
   const receipt=!chat&&retiring&&chatId!=='global'?this.ports.store.getConversationDeletionReceipt(chatId):undefined;
   const ownerMatches=chatId==='global'?intent.project_id==='global':chat
-   ? !chat.branch_execution_id&&chat.project_id===intent.project_id
+   ? (!chat.branch_execution_id||Boolean(this.expertChat(chatId,true,retiring)))&&chat.project_id===intent.project_id
    : Boolean(receipt?.canonicalDeletionCompleted&&receipt.conversationId===chatId&&receipt.projectId===intent.project_id);
   if(!ownerMatches||intent.data_generation!==generation||policy.data_generation!==generation||intent.principal_id!==this.principalId||intent.principal_id!==policy.principal_id||intent.storage_binding!==policy.storage_binding||!/^[0-9a-f-]{36}$/.test(intent.intent_id))throw Error(MEMORY_SCOPE_RECEIPT_MISMATCH);
   return intent;
@@ -422,7 +456,7 @@ export class LocalMemoryService{
   const transition=(column:'memory_state'|'log_state',from:'planned'|'submitted',to:'submitted'|'confirmed',collectionId?:string)=>db.transaction(()=>{
    const current=this.memoryIntent(chatId),owner=chatId==='global'?undefined:activeChatResourceOwner(this.ports.store,'chat',chatId);
    if(ownerCheck)ownerCheck();
-   if(!current||current.intent_id!==expected.intent_id||!ownerCheck&&chatId!=='global'&&(!owner||owner.executionId)||current[column]!==from)throw Error('Memory scope creation ownership changed');
+   if(!current||current.intent_id!==expected.intent_id||!ownerCheck&&chatId!=='global'&&(!owner||(owner.executionId&&!this.expertConsent(this.expertChat(chatId,true),'copySourceMemory')))||current[column]!==from)throw Error('Memory scope creation ownership changed');
    if(to==='confirmed'&&(typeof collectionId!=='string'||!collectionId))throw Error('Confirmed memory collection identity required');
    const idColumn=column==='memory_state'?'memory_collection_id':'log_collection_id';
    const changed=db.prepare(`UPDATE local_memory_scope_provisioning SET ${column}=?,${idColumn}=? WHERE chat_id=? AND intent_id=? AND ${column}=?`).run(to,collectionId??null,chatId,expected.intent_id,from).changes;
@@ -813,7 +847,7 @@ export class LocalMemoryService{
   for(const e of this.speech.values())if(e.authority.chatId===chatId&&e.authority.readGlobal)this.invalidateSpeech(e,'global');
   return result;
  }
- private agentContext(token:string,tool:string,write:boolean):HostContext{
+ private agentContext(token:string,tool:string,write:boolean,finding=false):HostContext{
   this.live();const capability=this.ports.capabilities.get(token);if(!capability)throw new MemoryDenied('Unknown Agent capability',401);
   const run=this.ports.activeRuns.get(capability.agentId),agent=this.ports.store.getAgent(capability.agentId);
   if(!run||run.messageCapability!==token||run.controller.signal.aborted||!this.ports.ownsRun(capability,run))throw new MemoryDenied('Revoked or expired canonical Run');
@@ -822,12 +856,20 @@ export class LocalMemoryService{
   if(!agent||!agent.conversationId||capability.conversationId!==agent.conversationId||run.conversationId!==agent.conversationId||!activeChatResourceOwner(this.ports.store,'agent',agent.id))throw new MemoryDenied('Canonical Agent/Chat ownership unavailable');
   const owner=activeChatResourceOwner(this.ports.store,'agent',agent.id)!;
   const product:ProductScope=owner.branchId?'branches':'dev';
-  this.chat(agent.conversationId,product);
+  this.chat(agent.conversationId,product,true);
   if(!capability.availableToolNames.includes(tool))throw new MemoryDenied('Tool not authorized for this Run');
-  const policy=new CapabilityPolicyStore(this.ports.store.sqlite).resolveForAgent(agent.id,capability.v3SchedulerRunId),denied=new Set(policy.restrictedCapabilityIds);
+  const policies=new CapabilityPolicyStore(this.ports.store.sqlite),policy=policies.resolveForAgent(agent.id,capability.v3SchedulerRunId),denied=new Set(policy.restrictedCapabilityIds);
+  const expert=owner.executionId?this.expertChat(agent.conversationId):undefined;
+  if(owner.executionId){
+   if(!expert||expert.copyAgentId!==agent.id||!expert.requestId||this.coordination.requestSteeringAdmission(capability.v3SchedulerRunId,agent.id,expert.requestId)!=='turn')throw new MemoryDenied('Exact expert copy Request is not active');
+   const source=this.ports.store.getAgent(expert.sourceAgentId),sourceOwner=activeChatResourceOwner(this.ports.store,'agent',expert.sourceAgentId);
+   if(!source||!sourceOwner||source.projectId!==expert.sourceProjectId||source.conversationId!==expert.sourceChatId)throw new MemoryDenied('Expert source Agent is unavailable');
+   for(const id of policies.resolveForAgent(source.id).restrictedCapabilityIds)denied.add(id);
+  }
   if(denied.has(write?CAPABILITY_IDS.memoryWrite:CAPABILITY_IDS.memoryRead))throw new MemoryDenied('Live memory capability policy denies operation');
-  const grant=this.getGrant(agent.conversationId,product);
-  return {chatId:agent.conversationId,actor:{kind:'agent',id:agent.id},runId:capability.v3SchedulerRunId,fenceToken:String(capability.v3FencingToken),active:true,grants:{readChat:!denied.has(CAPABILITY_IDS.memoryRead),readGlobal:!denied.has(CAPABILITY_IDS.memoryRead)&&grant.readGlobal,writeChat:!denied.has(CAPABILITY_IDS.memoryWrite),writeGlobal:!denied.has(CAPABILITY_IDS.memoryWrite)},sourceType:'ai_inference'};
+  if(expert&&!this.expertConsent(expert,finding?'allowFindingsWriteback':'copySourceMemory'))throw new MemoryDenied('Expert copy memory requires explicit access review',409);
+  const grant=expert?{readGlobal:false}:this.getGrant(agent.conversationId,product);
+  return {chatId:agent.conversationId,actor:{kind:'agent',id:agent.id},runId:capability.v3SchedulerRunId,fenceToken:String(capability.v3FencingToken),active:true,grants:{readChat:!denied.has(CAPABILITY_IDS.memoryRead),readGlobal:!denied.has(CAPABILITY_IDS.memoryRead)&&grant.readGlobal,writeChat:!denied.has(CAPABILITY_IDS.memoryWrite),writeGlobal:!expert&&!denied.has(CAPABILITY_IDS.memoryWrite)},sourceType:'ai_inference'};
  }
  async executeAgent(token:string,operation:string,args:unknown){
   const observed=this.noteMemoryAttempt(token,operation);let completed=false,dispatched=false;
@@ -839,11 +881,13 @@ export class LocalMemoryService{
      WHERE linked.run_id=? AND activation.kind IN ('context_rollover_handoff','context_rollover_continuation')
        AND json_type(activation.payload_json,'$.settingsTransition')='object' LIMIT 1`).get(cap.v3SchedulerRunId))
     throw new MemoryDenied('Memory tools are unavailable during the isolated context handoff',403);
-  const parsed=validateMemoryCall(operation,args),tool='ponderosa_local_memory_'+operation;this.agentContext(token,tool,write);await this.ready();const before=this.agentContext(token,tool,write);await this.ensurePlannedChat(before.chatId);const initial=this.agentContext(token,tool,write);
-  const globalWrite=write&&parsed.destination==='global';const usesGlobal=(globalWrite||!write&&parsed.source!=='chat')&&initial.grants.readGlobal;if(globalWrite&&parsed.visibility==='private')throw new MemoryDenied('Global private audience unsupported',400);if(globalWrite&&operation!=='save'&&!initial.grants.readGlobal)throw new MemoryDenied('Existing global source mutation requires read authority');const needsRead=!write||initial.grants.readChat;if(write&&operation!=='save'&&!initial.grants.readChat)throw new MemoryDenied('Existing source mutation requires read authority');const identity=JSON.stringify([initial.chatId,initial.actor,initial.runId,initial.fenceToken]);const guard=async()=>{const c=this.agentContext(token,tool,write);if(JSON.stringify([c.chatId,c.actor,c.runId,c.fenceToken])!==identity)throw new MemoryDenied('Canonical memory binding changed');if((needsRead&&!c.grants.readChat)||(usesGlobal&&!c.grants.readGlobal)||(write&&!(globalWrite?c.grants.writeGlobal:c.grants.writeChat)))throw new MemoryDenied('Live memory grant revoked');};
+  const parsed=validateMemoryCall(operation,args),tool='ponderosa_local_memory_'+operation,finding=parsed.recipient==='original';this.agentContext(token,tool,write,finding);await this.ready();const before=this.agentContext(token,tool,write,finding);if(!finding)await this.ensurePlannedChat(before.chatId);const initial=this.agentContext(token,tool,write,finding);
+  const expertFinding=parsed.recipient==='original'?this.expertChat(initial.chatId):undefined;if(parsed.recipient==='original'&&!expertFinding)throw new MemoryDenied('Only the active expert copy can save a finding to its original',403);const expertIdentity=expertFinding&&JSON.stringify(expertFinding);
+  const globalWrite=write&&parsed.destination==='global';const usesGlobal=(globalWrite||!write&&parsed.source!=='chat')&&initial.grants.readGlobal;if(globalWrite&&parsed.visibility==='private')throw new MemoryDenied('Global private audience unsupported',400);if(globalWrite&&operation!=='save'&&!initial.grants.readGlobal)throw new MemoryDenied('Existing global source mutation requires read authority');const needsRead=!write||initial.grants.readChat;if(write&&operation!=='save'&&!initial.grants.readChat)throw new MemoryDenied('Existing source mutation requires read authority');const identity=JSON.stringify([initial.chatId,initial.actor,initial.runId,initial.fenceToken]);const guard=async()=>{const c=this.agentContext(token,tool,write,finding);if(JSON.stringify([c.chatId,c.actor,c.runId,c.fenceToken])!==identity)throw new MemoryDenied('Canonical memory binding changed');if(expertIdentity&&JSON.stringify(this.expertChat(c.chatId))!==expertIdentity)throw new MemoryDenied('Expert copy binding changed');if((needsRead&&!c.grants.readChat)||(usesGlobal&&!c.grants.readGlobal)||(write&&!(globalWrite?c.grants.writeGlobal:c.grants.writeChat)))throw new MemoryDenied('Live memory grant revoked');};
   if(write&&!(globalWrite?initial.grants.writeGlobal:initial.grants.writeChat))throw new MemoryDenied('Memory write denied');if(!write&&parsed.source==='global'&&!initial.grants.readGlobal)throw new MemoryDenied('Global read denied');
   if(usesGlobal||globalWrite){await this.ensureGlobalScope();await guard();}
-  const authority:MemoryAuthority={...initial,readChat:initial.grants.readChat,readGlobal:usesGlobal,writeScope:write?(globalWrite?'global':'chat:'+initial.chatId):undefined,targetId:write&&operation!=='save'?parsed.chunk_id:undefined,visibility:parsed.visibility??'team',guard};
+  if(expertFinding){await this.ensurePlannedChat(expertFinding.sourceChatId);await guard();}
+  const authority:MemoryAuthority={...initial,...(expertFinding?{chatId:expertFinding.sourceChatId,privateFindingRecipientId:expertFinding.sourceAgentId}:{}),readChat:expertFinding?false:initial.grants.readChat,readGlobal:usesGlobal,writeScope:write?(globalWrite?'global':'chat:'+(expertFinding?.sourceChatId??initial.chatId)):undefined,targetId:write&&operation!=='save'?parsed.chunk_id:undefined,visibility:parsed.visibility??'team',guard};
   if(observed?.state&&(operation==='search'||operation==='get')){
    try{this.speechEntry(authority);observed.state.read=true;}catch{observed.state.unsafe=true;}
   }
@@ -958,7 +1002,9 @@ export class LocalMemoryService{
    const completedStaging=stagedReceipt&&op?.status==='completed'&&op.agentIds.length>0&&op.agentIds.every(id=>store.sqlite.prepare("SELECT 1 FROM branch_installation_resources r JOIN branch_installation_plans p ON p.id=r.staging_plan_id WHERE r.local_id=? AND r.creation_operation_id=? AND r.state='staging' AND p.state='applying'").get(id,operationId));
    if(!op||op.kind!=='import'||op.status!=='preparing'&&!completedStaging||!op.conversationId)throw new MemoryDenied('Exact preparing package import required');
    const chat=store.getConversation(op.conversationId);
-   if(!chat||chat.projectId!==op.projectId||store.sqlite.prepare('SELECT 1 FROM conversations WHERE id=? AND branch_execution_id IS NOT NULL').get(chat.id)||store.sqlite.prepare('SELECT 1 FROM project_deletion_pending WHERE project_id=?').get(op.projectId)||store.sqlite.prepare('SELECT 1 FROM conversation_deletion_receipts WHERE conversation_id=?').get(chat.id))throw new MemoryDenied('Package memory destination retired');
+   const temporary=chat&&store.sqlite.prepare('SELECT 1 FROM conversations WHERE id=? AND branch_execution_id IS NOT NULL').get(chat.id),expert=temporary&&chat?this.expertChat(chat.id,true):undefined;
+   if(temporary&&(!expert||expert.creationOperationId!==op.id||!this.expertConsent(expert,'copySourceMemory')||!this.expertSourceLive(expert)))throw new MemoryDenied('Expert copy memory requires explicit access review',409);
+   if(!chat||chat.projectId!==op.projectId||store.sqlite.prepare('SELECT 1 FROM project_deletion_pending WHERE project_id=?').get(op.projectId)||store.sqlite.prepare('SELECT 1 FROM conversation_deletion_receipts WHERE conversation_id=?').get(chat.id))throw new MemoryDenied('Package memory destination retired');
    if(chat.branchId&&!store.sqlite.prepare('SELECT 1 FROM branches WHERE id=? AND deleting=0').get(chat.branchId))throw new MemoryDenied('Package Branch retired');
    if(!activeChatResourceOwner(store,'chat',chat.id)){
     const staged=store.sqlite.prepare("SELECT r.staging_plan_id AS plan FROM branch_installation_resources r JOIN branch_installation_plans p ON p.id=r.staging_plan_id WHERE r.local_id=? AND r.agent_ref='' AND r.state='staging' AND p.state='applying' AND r.branch_id=?").get(chat.id,chat.branchId) as {plan:string}|undefined;
