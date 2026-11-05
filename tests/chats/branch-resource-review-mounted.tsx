@@ -53,3 +53,47 @@ export async function branchResourceReviewRegression():Promise<void>{
   assert(deletes.length===3,'referenced refusal never retries automatically');
  }finally{root.unmount();client.clear();host.remove();globalThis.fetch=originalFetch;if(saved===null)localStorage.removeItem(storageKey);else localStorage.setItem(storageKey,saved);}
 }
+
+export async function expertCopyAccessReviewRegression():Promise<void>{
+ const originalFetch=globalThis.fetch,host=document.createElement('div');document.body.append(host);
+ const root=createRoot(host),client=new QueryClient({defaultOptions:{queries:{retry:false},mutations:{retry:false}}});
+ const posts:any[]=[];let hash='copy-policy-1',snapshot='a'.repeat(64),consentCurrent=false,wrongCopy=false;
+ const json=(value:unknown,status=200)=>new Response(JSON.stringify(value),{status,headers:{'content-type':'application/json'}});
+ globalThis.fetch=async(_input,init)=>{
+  if(init?.method==='POST'){
+   posts.push(JSON.parse(String(init.body)));
+   if(posts.length===1){hash='copy-policy-2';snapshot='b'.repeat(64);return json({error:'Source snapshot changed'},409);}
+   consentCurrent=true;return json({reviewSha256:hash,source:[],destination:{restrictedCapabilityIds:[]}});
+  }
+  return json({branchId:'branch',executionId:'run',stepExecutionId:'copy-step',generation:1,state:'reserved',destinationChatId:'copy-chat',destinationChatAvailable:true,accessChoiceCurrent:consentCurrent,
+   expertCopyReview:{sourceAgentId:'original-expert',sourceChatId:'original-chat',copyChatId:wrongCopy?'other-chat':'copy-chat',snapshotSha256:snapshot,consentCurrent,copySourceMemory:consentCurrent,allowFindingsWriteback:false},
+   currentPolicyReview:{reviewSha256:hash,source:[],destination:{restrictedCapabilityIds:['unchanged-restriction']}}});
+ };
+ const render=(key:string)=>root.render(<QueryClientProvider client={client}><BranchResourceReview key={key} branchId="branch" executionId="run" stepId="copy-step" enabled onChanged={()=>{}}/></QueryClientProvider>);
+ const check=(text:string)=>Array.from(document.querySelectorAll('label')).find(label=>label.textContent?.includes(text))?.querySelector('input') as HTMLInputElement;
+ const choose=async()=>{openSelect(document.querySelector('[role=combobox]'));await tick();(Array.from(document.querySelectorAll('[role=option]')).find(item=>item.textContent==='Keep destination restrictions') as HTMLElement).click();await settle();};
+ try{
+  render('first');await settle();button('Review resource').click();await settle();
+  assert(!check('Copy the original Agent').checked&&!check('Allow this copy').checked,'both memory choices default off');
+  assert(document.body.textContent?.includes('do not grant Global Memory, browser access, or other capabilities'),'actual scope is disclosed');
+  assert(document.body.textContent?.includes('each later copy needs its own memory-copy approval'),'future copies require separate approval');
+  assert(document.body.textContent?.includes('source working-folder files are not copied'),'fresh workspace limitation is disclosed before approval');
+  await choose();check('Allow this copy').click();await settle();
+  assert(button('Confirm copy access').disabled,'findings approval alone cannot admit an incomplete full-context copy');
+  check('Copy the original Agent').click();await settle();button('Confirm copy access').click();await settle();
+  assert(posts.length===0,'approval is explicit and separate from selection');button('Approve copy').click();await settle();
+  assert(posts.length===1,'stale approval never automatically retries');
+  assert(posts[0].copySourceMemory===true&&posts[0].allowFindingsWriteback===true,'independent opt-ins are sent explicitly');
+  assert(posts[0].snapshotSha256==='a'.repeat(64)&&posts[0].accessSettingsResolution.reviewSha256==='copy-policy-1','bind exact source snapshot and current policy');
+  assert(posts[0].accessSettingsResolution.action==='keep_destination','memory approval does not apply source capabilities');
+  assert(!check('Copy the original Agent').checked&&!check('Allow this copy').checked,'changed snapshot requires fresh unchecked choices');
+  await choose();check('Copy the original Agent').click();await settle();button('Confirm copy access').click();await settle();button('Approve copy').click();await settle();
+  assert(posts.length===2&&posts[1].copySourceMemory===true&&posts[1].allowFindingsWriteback===false,'findings remain independently optional');
+  assert(posts[1].snapshotSha256==='b'.repeat(64)&&posts[1].accessSettingsResolution.reviewSha256==='copy-policy-2','fresh approval uses exact refreshed evidence');
+  assert(button('Confirm copy access').disabled,'recorded consent cannot be resubmitted as fresh approval');
+  assert(check('Copy the original Agent').checked&&!check('Allow this copy').checked,'readback shows actual recorded independent consent');
+  wrongCopy=true;client.clear();render('mismatch');await settle();button('Review resource').click();await settle();
+  assert(document.body.textContent?.includes('Resource identity changed'),'mismatched temporary Chat cannot be approved');
+  assert(posts.length===2,'inspection mismatch has no mutation');
+ }finally{root.unmount();client.clear();host.remove();globalThis.fetch=originalFetch;}
+}

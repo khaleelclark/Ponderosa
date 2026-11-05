@@ -1619,7 +1619,7 @@ test('reusable expert job handling distinguishes legacy behavior, results and gu
  assert.match(legacy,/Existing behavior · steer or run/);assert.match(legacy,/steer current work when busy, otherwise start work/);
  assert.match(render('queue'),/Each job waits its turn and receives its own outcome/);
  const steer=render('steer');assert.match(steer,/delivery or uncertainty is not a separate job result/);
- const copy=render('copy');assert.match(copy,/temporary copy of the selected Agent/);assert.match(copy,/receives its own result/);
+ const copy=render('copy');assert.match(copy,/temporary copy of the selected Agent/);assert.match(copy,/with its own result/);assert.match(copy,/source working-folder files are not copied/);
 });
 test('new expert jobs queue explicitly while editing legacy and switching targets preserves intended semantics',async()=>{
  const {newDefinition,addNode,changeAgentTarget,changeAgentJobHandling}=await import('../../apps/web/src/components/branches/model.ts');
