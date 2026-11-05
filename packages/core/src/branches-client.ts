@@ -132,8 +132,8 @@ export class BranchesClient {
  moveSpeaker(agentId:string,expectedSpeakerId:string|null,options?:BranchesRequestOptions){return this.json<AssistantStatusDto>('/api/branches/assistant/speaker','POST',{agentId,expectedSpeakerId},options);}
  scheduleOutput(agentId:string,settings:{expectedVersionId:string;expectedSettingsRevision:string;automatic:boolean;everyMs?:number},options?:BranchesRequestOptions){return this.json<OutputAgentAppDto>(`/api/branches/output-apps/${part(agentId)}/schedule`,'PUT',settings,options);}
  agent(agentId:string,options?:BranchesRequestOptions){return this.json<AgentDetailDto>(`/api/branches/engine/agents/${part(agentId)}`,'GET',undefined,options);}
- fullOutput(agentId:string,seq:number,options?:BranchesRequestOptions){return this.json<RunOutputTextDto>(`/api/agents/${part(agentId)}/run-output/${seq}/text`,'GET',undefined,options);}
- streamAgent(agentId:string,options:BranchesRequestOptions&{lastEventId?:string}={}){return this.stream(`/api/agents/${part(agentId)}/stream`,options);}
+ fullOutput(agentId:string,seq:number,options?:BranchesRequestOptions){return this.json<RunOutputTextDto>(`/api/branches/engine/agents/${part(agentId)}/run-output/${seq}/text`,'GET',undefined,options);}
+ streamAgent(agentId:string,options:BranchesRequestOptions&{lastEventId?:string}={}){return this.stream(`/api/branches/engine/agents/${part(agentId)}/stream`,options);}
  streamWorkspace(options:BranchesRequestOptions&{lastEventId?:string}={}){return this.stream('/api/workspace/stream',options);}
  /** One connection only. Consumers own reconnect policy, cursor persistence and reset/snapshot handling. */
  private async *stream(path:string,options:BranchesRequestOptions&{lastEventId?:string}):AsyncGenerator<BranchesStreamMessage> {

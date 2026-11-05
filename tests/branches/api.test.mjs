@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {randomUUID} from 'node:crypto';
+import {setTimeout as delay} from 'node:timers/promises';
 import {AgentStore} from '@ponderosa/agents';
 import {CAPABILITY_IDS,AGENT_PACKAGE_MAX_BYTES,AGENT_PACKAGE_METADATA_MAX_BYTES} from '@ponderosa/core';
 import {pushPayload} from '../../apps/server/dist/web-push-delivery.js';
@@ -397,10 +398,10 @@ test("public research example uses explicitly owned Agents and reaches human rev
 
 test('public Branches SSE client preserves chunked UTF-8, CR/LF boundaries, reset and exact cursor while closing on return',async()=>{
  const {BranchesClient}=await import('../../packages/core/dist/branches-client.js');const bytes=new TextEncoder().encode(': heartbeat\r\nevent: agent_status\r\nid: 7\r\ndata: {"reset":true,"label":"é"}\r\n\r\nevent: event\nid: 8\ndata: {"event":{"executionId":"exact-run","text":"chunk"}}\n\n');
- let canceled=false,request;
- const client=new BranchesClient('http://fixture.invalid',async(_url,init)=>{request=init;return new Response(new ReadableStream({start(controller){for(const byte of bytes)controller.enqueue(Uint8Array.of(byte));},cancel(){canceled=true;}}),{headers:{'content-type':'text/event-stream'}});});
- const stream=client.streamAgent('agent',{lastEventId:'6'}),first=(await stream.next()).value,second=(await stream.next()).value;
- assert.equal(request.headers['last-event-id'],'6');assert.deepEqual(first,{event:'agent_status',id:'7',data:{reset:true,label:'é'}});assert.equal(second.id,'8');assert.equal(second.data.event.executionId,'exact-run');await stream.return();assert.equal(canceled,true);
+ let canceled=false,request,requestedUrl;
+ const client=new BranchesClient('http://fixture.invalid',async(url,init)=>{requestedUrl=String(url);request=init;return new Response(new ReadableStream({start(controller){for(const byte of bytes)controller.enqueue(Uint8Array.of(byte));},cancel(){canceled=true;}}),{headers:{'content-type':'text/event-stream'}});});
+ const stream=client.streamAgent('agent/one',{lastEventId:'6'}),first=(await stream.next()).value,second=(await stream.next()).value;
+ assert.equal(requestedUrl,'http://fixture.invalid/api/branches/engine/agents/agent%2Fone/stream');assert.equal(request.headers['last-event-id'],'6');assert.deepEqual(first,{event:'agent_status',id:'7',data:{reset:true,label:'é'}});assert.equal(second.id,'8');assert.equal(second.data.event.executionId,'exact-run');await stream.return();assert.equal(canceled,true);
 });
 
 test('output settings reject same-version trigger drift and a fresh snapshot can save the intended schedule',async t=>withFixture(t,async f=>{
@@ -543,4 +544,54 @@ test('Output schedule response remains bound to its own commit across another ed
    assert.equal((await f.api('PUT',url+'/schedule',{expectedVersionId:response.versionId,expectedSettingsRevision:response.settingsRevision,automatic:false})).status,409,'The first editor cannot overwrite the second editor with its committed baseline');
   }finally{release();await first;}
  });
+});
+
+test('public Branch example streams live Agent output',{timeout:45000},async t=>{
+ const {BranchesClient}=await import('../../packages/core/dist/branches-client.js');
+ const {createReviewApplication}=await import('../../examples/branches-capabilities/application.ts');
+ let criticId;
+ await withFixture(t,async f=>{
+  const create=async name=>{
+   const owner=f.ok(await f.api('POST','/api/branches',{name,idempotencyKey:randomUUID()}));
+   const chat=f.ok(await f.api('POST',`/api/branches/${owner.id}/chats`,{label:name,defaultEngine:'codex'},{'idempotency-key':randomUUID()}));
+   const agent=f.ok(await f.api('POST',`/api/branches/engine/projects/${chat.projectId}/agents`,{title:name,engine:'codex',conversationId:chat.id,idempotencyKey:randomUUID()}));
+   return {owner,agent};
+  };
+  const research=await create('Synthetic researcher'),parent=await create('Synthetic critic');criticId=parent.agent.id;
+  const client=new BranchesClient(await f.listen());
+  const unrelatedChat=await f.createChat('Synthetic unrelated product'),unrelated=await f.createIdleAgent(unrelatedChat,'Other product');
+  await assert.rejects(client.streamAgent(unrelated.id).next(),error=>error.status===404&&error.message==='Resource is unavailable in this product');
+  await assert.rejects(client.fullOutput(unrelated.id,1),error=>error.status===404&&error.message==='Resource is unavailable in this product');
+  const app=await createReviewApplication(client,{researchBranchId:research.owner.id,researchVersionId:research.owner.versionId,parentBranchId:parent.owner.id,parentVersionId:parent.owner.versionId,researcherId:research.agent.id,criticId,commandKey:'q11-stream'});
+  const execution=await app.start('Synthetic streaming question','q11-stream-run');
+  const live=await until(async()=>{const d=await client.state(execution.id);return d.liveOutputs?.find(x=>x.agentId===criticId);},'live critic output',20000);
+  const session=await until(()=>f.sessions.get(criticId),'controlled critic session',10000);
+  await assert.rejects(client.fullOutput(criticId,99999999),error=>error.status===404&&error.message==='run output segment not found');
+  await assert.rejects(app.stream(execution.id,criticId,randomUUID()).next(),/Output is not current/);
+  const stream=app.stream(execution.id,criticId,live.runId);
+  const observed=[];
+  try{
+   const first=await Promise.race([stream.next(),delay(10000,undefined,{ref:false}).then(()=>{throw Error("Timed out waiting for initial SSE output");})]);
+   assert.equal(first.done,false);observed.push(first.value);
+   assert.match(JSON.stringify(first.value),/Ordinary fixture execution output/);
+   let next=stream.next();
+   session.events.push({type:"text",delta:"Q11 first live chunk"});
+   session.events.push({type:"text",delta:"Q11 second live chunk"});
+   const deadline=Date.now()+10000;
+   while(Date.now()<deadline && !JSON.stringify(observed).includes('Q11 second live chunk')){
+    const item=await Promise.race([next,delay(10000,undefined,{ref:false}).then(()=>{throw Error('Timed out waiting for SSE output');})]);
+    assert.equal(item.done,false);observed.push(item.value);
+    if(!JSON.stringify(observed).includes('Q11 second live chunk'))next=stream.next();
+   }
+   const text=JSON.stringify(observed);
+   assert.match(text,/Q11 first live chunk/);assert.match(text,/Q11 second live chunk/);
+   assert.ok(text.indexOf('Q11 first live chunk')<text.indexOf('Q11 second live chunk'));
+   const response=await session.tool('ponderosa_update_request',{text:'Controlled critic result'});
+   assert.equal(response.success,true,response.text);session.finish();
+   const segment=await until(async()=>{const detail=await client.agent(criticId);return detail.runOutput.find(item=>item.text.includes('Q11 first live chunk'));},'saved output segment',10000);
+   const full=await client.fullOutput(criticId,segment.seq);
+   assert.match(full.text,/Q11 first live chunk/);
+  } finally { await stream.return(); }
+  console.log(JSON.stringify({transport:'loopback HTTP SSE',source:'controlled Agent Run',events:observed.map(item=>({event:item.event,id:item.id,type:item.data?.event?.type,text:item.data?.event?.text??item.data?.event?.delta})),wrongRunRefused:true,fullOutputRetrieved:true}));
+ },{providerRunPlan:({agentId})=>agentId===criticId?{hold:true}:undefined});
 });
