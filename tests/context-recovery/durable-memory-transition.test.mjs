@@ -111,6 +111,39 @@ test('legacy session with possible post-origin revocation holds original ordinar
    localMemoryForRoot:async root=>({chromaUrl:await ownedChroma(),collectionPrefix:'context_'+randomUUID().replaceAll('-',''),modelDir:process.env.PONDEROSA_TEST_MEMORY_MODEL_DIR,stateDirectory:path.join(root,'memory-policy'),provision:true})});
 });
 
+test('recorded unverified memory with no source IDs holds ordinary text',{timeout:90000},async t=>{
+ let store,native;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Text after source revocation'),agent=await f.createIdleAgent(chat,'Worker');
+  f.ok(await f.api('PUT',`/api/local-memory/grants/${chat.id}`,{readGlobal:true,expectedRevision:0}));
+  const saved=f.ok(await f.api('POST','/api/local-memory/global',{operation:'save',text:'Synthetic revoked coral source.',destination:'global'}));
+  const id=saved.structuredContent?.result?.chunk_id;assert.ok(id);
+  await f.send(agent.id,'Preserve the original user objective.');
+  await until(async()=>(await native.requests()).some(x=>x.method==='turn/start'),'original task');
+  await native.sendTool('ponderosa_local_memory_get',{chunk_id:id,source:'global'});
+  const read=await until(async()=>(await native.requests()).find(x=>x.toolResponse)?.toolResponse,'source read');
+  assert.ok(JSON.stringify(read).includes('Synthetic revoked coral source.'));
+  await native.sendTool('ponderosa_message',{text:'Earlier result: Synthetic revoked coral source.'});await f.settled(agent.id);
+  const accepted=store.resumeSessionState(agent.id);assert.ok(accepted?.sessionId);
+  // Model a receipt whose result could not be attributed to individual sources.
+  store.sqlite.prepare('DELETE FROM memory_exposure_sources WHERE run_id IN (SELECT run_id FROM memory_exposure_runs WHERE agent_id=?)').run(agent.id);
+  store.sqlite.prepare('UPDATE memory_exposure_runs SET unverified=1 WHERE agent_id=?').run(agent.id);
+  await f.reopen();
+  await f.send(agent.id,'Continue the original user objective in text.');
+  const held=await until(()=>store.sqlite.prepare(`SELECT a.id,a.payload_json FROM agent_activations a
+   JOIN activation_sources h ON h.activation_id=a.id AND h.source_kind='settings_transition_reservation_wait'
+   WHERE a.agent_id=? AND a.state='pending'`).get(agent.id),'context-review hold',20000);
+  assert.ok(held.payload_json.includes('Continue the original user objective in text.'));
+  const notices=f.ok(await f.api('GET','/api/notifications'));
+  assert.ok(notices.items.some(item=>item.title==='Agent context needs review'&&item.body.includes('could not be checked')));
+  await new Promise(resolve=>setTimeout(resolve,300));
+  assert.equal((await native.requests()).filter(x=>x.method==='turn/start').length,1,'no old or fresh thread receives unsafe seed text');
+  assert.equal(store.resumeSessionState(agent.id)?.sessionId,accepted.sessionId,'accepted context remains intact for review');
+  assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(held.id).n,0);
+ },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,emitVoiceReply:true,holdMemoryCompletion:true,uniqueThreads:true})).adapter,
+   localMemoryForRoot:async root=>({chromaUrl:await ownedChroma(),collectionPrefix:'context_'+randomUUID().replaceAll('-',''),modelDir:process.env.PONDEROSA_TEST_MEMORY_MODEL_DIR,stateDirectory:path.join(root,'memory-policy'),provision:true})});
+});
+
 test('legacy session with removed memory-read capability holds original ordinary text',{timeout:90000},async t=>{
  let store,native;
  await withFixture(t,async f=>{
@@ -318,6 +351,54 @@ test('unverified rollover parent with recorded sources holds ordinary work',{tim
   assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(held.id).n,0);
   const notices=f.ok(await f.api('GET','/api/notifications'));
   assert.ok(notices.items.some(item=>item.title==='Agent context needs review'&&item.body.includes('could not be checked')));
+ },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,emitVoiceReply:true,holdMemoryCompletion:true,uniqueThreads:true})).adapter,
+   localMemoryForRoot:async root=>({chromaUrl:await ownedChroma(),collectionPrefix:'context_'+randomUUID().replaceAll('-',''),modelDir:process.env.PONDEROSA_TEST_MEMORY_MODEL_DIR,stateDirectory:path.join(root,'memory-policy'),provision:true})});
+});
+
+test('forgetting inherited memory during the second handoff stops its summary',{timeout:120000},async t=>{
+ let store,native;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Inherited memory lineage'),agent=await f.createIdleAgent(chat,'Worker');
+  f.ok(await f.api('PUT',`/api/local-memory/grants/${chat.id}`,{readGlobal:true,expectedRevision:0}));
+  const saved=f.ok(await f.api('POST','/api/local-memory/global',{operation:'save',text:'Synthetic inherited source.',destination:'global'}));
+  const id=saved.structuredContent?.result?.chunk_id;assert.ok(id);
+  await f.send(agent.id,'Keep the original objective.');
+  await until(async()=>(await native.requests()).some(x=>x.method==='turn/start'),'original turn');
+  await native.sendTool('ponderosa_local_memory_get',{chunk_id:id,source:'global'});
+  await until(async()=>(await native.requests()).find(x=>x.toolResponse)?.toolResponse,'source read');
+  await native.sendTool('ponderosa_message',{text:'Read the inherited source.'});await f.settled(agent.id);
+  let count=1;
+  for(const model of ['fixture-next','fixture']){
+   f.ok(await f.api('PATCH',`/api/agents/${agent.id}`,{model}));
+   await f.send(agent.id,`Continue original objective with ${model}.`);
+   count++;await until(async()=>(await native.requests()).filter(x=>x.method==='turn/start').length===count,'old generation handoff',20000);
+   if(model==='fixture'){
+    f.ok(await f.api('POST','/api/local-memory/global',{operation:'forget',chunk_id:id,destination:'global'}));
+    await native.sendAnswer('A stale Synthetic inherited source must not be transferred.');
+    await until(()=>store.sqlite.prepare(`SELECT 1 FROM scheduler_runs r JOIN scheduler_run_activations a ON a.run_id=r.id
+     JOIN agent_activations x ON x.id=a.activation_id WHERE x.kind='context_rollover_handoff'
+      AND r.agent_id=? AND r.status IN ('failed','outcome_unknown')`).get(agent.id),'inherited source stopped handoff',20000);
+    const handoff=store.sqlite.prepare("SELECT handoff_event_id FROM context_rollovers WHERE agent_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1").get(agent.id);
+    assert.equal(handoff.handoff_event_id,null);
+    assert.ok(!store.readEvents(agent.id).some(row=>row.event.type==='continuation_handoff'&&row.event.text?.includes('stale Synthetic inherited source')));
+    return;
+   }
+   await native.sendAnswer('The original objective includes Synthetic inherited source.');
+   count++;await until(async()=>(await native.requests()).filter(x=>x.method==='turn/start').length===count,'replacement confirmation',20000);
+   await native.sendAnswer('Continuity context received.');
+   count++;await until(async()=>(await native.requests()).filter(x=>x.method==='turn/start').length===count,'queued objective',20000);
+   await native.sendTool('ponderosa_message',{text:'Continued work complete.'});await f.settled(agent.id);
+  }
+  const accepted=store.resumeSessionState(agent.id);await f.reopen();
+  f.ok(await f.api('PUT',`/api/local-memory/grants/${chat.id}`,{readGlobal:false,expectedRevision:1}));
+  await f.send(agent.id,'Continue after access change.');
+  const held=await until(()=>store.sqlite.prepare(`SELECT a.id FROM agent_activations a JOIN activation_sources s ON s.activation_id=a.id
+   WHERE a.agent_id=? AND a.state='pending' AND s.source_kind='settings_transition_reservation_wait'`).get(agent.id),'inherited source hold',20000);
+  assert.equal((await native.requests()).filter(x=>x.method==='turn/start').length,count);
+  assert.equal(store.resumeSessionState(agent.id)?.sessionId,accepted.sessionId);
+  assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(held.id).n,0);
+  const notices=f.ok(await f.api('GET','/api/notifications'));
+  assert.ok(notices.items.some(item=>item.title==='Agent context needs review'&&item.body.includes('revoked or changed')));
  },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,emitVoiceReply:true,holdMemoryCompletion:true,uniqueThreads:true})).adapter,
    localMemoryForRoot:async root=>({chromaUrl:await ownedChroma(),collectionPrefix:'context_'+randomUUID().replaceAll('-',''),modelDir:process.env.PONDEROSA_TEST_MEMORY_MODEL_DIR,stateDirectory:path.join(root,'memory-policy'),provision:true})});
 });

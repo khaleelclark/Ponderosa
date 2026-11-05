@@ -89,7 +89,8 @@ export async function requestSettingsTransition(input: {
  if(priorLocalHold)localHolds.delete(pending.id);
  const hold=(reason:string):boolean=>{
   try{const fingerprint=transitionFingerprint(input,pending.projectId,pending.agentId,pending.id);
-   const held=coordinationV3.holdSettingsTransitionReservation({projectId:pending.projectId,agentId:pending.agentId,activationId:pending.id,fingerprint});
+   const held=coordinationV3.holdSettingsTransitionReservation({projectId:pending.projectId,agentId:pending.agentId,activationId:pending.id,fingerprint})||
+    coordinationV3.holdUncertainSettingsTransitionReservation({projectId:pending.projectId,agentId:pending.agentId,activationId:pending.id,scopeKey:candidate.scopeKey,fingerprint});
    if(held){localHolds.delete(pending.id);try{transitionNotice(input,pending.projectId,pending.agentId,pending.id,reason);}catch{app.log.error({activationId:pending.id},'Context-review notice could not be recorded; the durable hold remains.');}}
    else localHolds.set(pending.id,fingerprint);
   }catch{localHolds.set(pending.id,currentFingerprint);app.log.error({activationId:pending.id},'Context hold could not be recorded; this work remains blocked locally.');}
@@ -143,8 +144,19 @@ export async function requestSettingsTransition(input: {
         AND parent.replacement_session_id=l.session_id AND parent.state='completed'
       JOIN scheduler_runs older ON older.agent_id=current.agent_id AND older.scope_key=current.scope_key AND older.fencing_token<current.fencing_token
       JOIN memory_exposure_sources e ON e.run_id=older.id
+     UNION
+     SELECT 1 FROM lineage l JOIN scheduler_runs first ON first.id=l.origin_id AND first.agent_id=?
+      JOIN scheduler_runs last ON last.id=l.source_id AND last.agent_id=first.agent_id AND last.scope_key=first.scope_key
+      JOIN scheduler_runs r ON r.agent_id=first.agent_id AND r.scope_key=first.scope_key AND r.fencing_token BETWEEN first.fencing_token AND last.fencing_token
+      JOIN memory_exposure_runs e ON e.run_id=r.id WHERE e.pending<>0 OR e.uncertain<>0 OR e.unverified<>0
+     UNION
+     SELECT 1 FROM lineage l JOIN scheduler_runs current ON current.id=l.origin_id AND current.agent_id=?
+      JOIN context_rollovers parent ON parent.agent_id=current.agent_id AND parent.replacement_run_id=current.id
+        AND parent.replacement_session_id=l.session_id AND parent.state='completed'
+      JOIN scheduler_runs older ON older.agent_id=current.agent_id AND older.scope_key=current.scope_key AND older.fencing_token<current.fencing_token
+      JOIN memory_exposure_runs e ON e.run_id=older.id WHERE e.pending<>0 OR e.uncertain<>0 OR e.unverified<>0
      LIMIT 1`)
-      .get(packet.executionId,boundary.executionId,accepted.sessionId,agent.id,agent.id,agent.id);
+      .get(packet.executionId,boundary.executionId,accepted.sessionId,agent.id,agent.id,agent.id,agent.id,agent.id);
     if(known)return hold('A previously used memory source cannot be checked because Local Memory is unavailable. The original work remains queued for context review.');
    }
    const exposure=memory&&await memory.retainedMemoryExposureStatus(agent.id,agent.conversationId,accepted.sessionId,packet.executionId,boundary.executionId);

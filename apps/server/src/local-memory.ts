@@ -642,9 +642,12 @@ export class LocalMemoryService{
     WHERE r.agent_id=? AND r.fencing_token>=? AND r.fencing_token<=? ORDER BY r.fencing_token,r.id`)
     .all(agentId,origin.fencing_token,source.fencing_token) as Array<any>;
    if(!rows.length||rows[0].id!==originRunId||rows.at(-1)?.id!==sourceRunId)return incomplete();
-   for(const row of rows)if(row.scope_key!==origin.scope_key||row.status!=='completed'||row.provider_session_id!==sessionId||
-    row.prompt_injection_state!=='injected'||row.receipt_agent!==agentId||row.chat_id!==chatId||
-    row.receipt_fence!==row.fencing_token||! /^[0-9a-f]{64}$/.test(row.authorization_hash??'')||row.pending!==0||row.uncertain!==0||row.unverified!==0)return incomplete();
+   for(const row of rows){
+    if(row.receipt_agent!=null&&(row.pending!==0||row.uncertain!==0||row.unverified!==0))return 'unavailable';
+    if(row.scope_key!==origin.scope_key||row.status!=='completed'||row.provider_session_id!==sessionId||
+     row.prompt_injection_state!=='injected'||row.receipt_agent!==agentId||row.chat_id!==chatId||
+     row.receipt_fence!==row.fencing_token||! /^[0-9a-f]{64}$/.test(row.authorization_hash??''))return incomplete();
+   }
    const refs=db.prepare(`SELECT DISTINCT e.scope,e.source_id,e.content_hash FROM memory_exposure_sources e
     JOIN scheduler_runs r ON r.id=e.run_id WHERE r.agent_id=? AND r.fencing_token>=? AND r.fencing_token<=?`)
     .all(agentId,origin.fencing_token,source.fencing_token) as Array<{scope:string;source_id:string;content_hash:string}>;
