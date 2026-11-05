@@ -542,6 +542,10 @@ test('effective capability restriction fences only affected active Codex work an
   const pause=await until(()=>store.sqlite.prepare("SELECT * FROM agent_run_pauses WHERE agent_id=? AND state='paused'").get(agent.id),'policy pause');
   assert.equal(pause.run_id,source.id);assert.equal(JSON.parse(pause.checkpoint_json).accessRevocationHold,true);
   assert.match(pause.last_error,/access restriction was requested/);
+  const visiblePause=(await f.detail(agent.id)).coordinationV3.pause;
+  assert.equal(visiblePause.reason,'access_restricted');
+  assert.equal(visiblePause.id,pause.id);
+  assert.equal(visiblePause.checkpoint,undefined,'private checkpoint and prior provider inputs are not exposed');
   assert.deepEqual(store.sqlite.prepare('SELECT provider_prompt,prompt_hash FROM provider_inputs WHERE scheduler_run_id=?').get(source.id),packet);
   assert.deepEqual(store.sqlite.prepare('SELECT activation_id FROM scheduler_run_activations WHERE run_id=?').all(source.id),original);
   assert.equal(store.sqlite.prepare('SELECT status FROM scheduler_runs WHERE id=?').get(source.id).status,'cancelled');

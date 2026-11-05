@@ -945,6 +945,7 @@ export function AgentDetail({
         onOpenAgent={onOpenAgent}
         onStop={stopActiveRun}
         paused={Boolean(pause)}
+        accessRestricted={pause?.reason === "access_restricted"}
         pausePending={pauseResume.isPending||pause?.state==='resume_requested'}
         onPauseResume={()=>pauseResume.mutate()}
 
@@ -998,6 +999,11 @@ export function AgentDetail({
           ) : null}
         </Stack>
       ) : null}
+
+      {pause?.reason === "access_restricted" && <Alert severity="warning" sx={{ mx: { xs: 1, sm: 2 }, mt: 1 }}
+        action={<Stack direction="row" spacing={1}><Button color="inherit" size="small" onClick={() => changeTab("chat")}>View Chat</Button><Button color="inherit" size="small" onClick={() => openTechnicalDetails()}>View Work log</Button></Stack>}>
+        Work is paused because access was restricted. Resume is unavailable while earlier context and uncertain effects require review. Review the existing Chat and Work log.
+      </Alert>}
 
       <AgentDetailPanels
         tab={auditOnly&&['subagents','settings'].includes(tab)?'chat':tab}
