@@ -67,7 +67,7 @@ const DEFAULT_MODELS: ModelOption[] = [{ id: "", label: "Codex default" }];
 export { renderSeedPrompt } from "./seed-history.js";
 
 export class CodexAdapter implements Adapter {
-  readonly nativeTurnActions = ["plan", "review", "structured"] as const;
+  readonly nativeTurnActions = ["plan", "review", "structured", "goal-resume", "goal-create"] as const;
   readonly id = "codex";
   readonly contextRecoverySupport = Object.freeze({ status: "managed_compaction" as const, crashReconciliation: "hold_without_native_query" as const });
   readonly supportsVoiceReplyStream = true;

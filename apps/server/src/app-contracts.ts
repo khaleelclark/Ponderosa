@@ -131,6 +131,9 @@ export interface CreateServerOptions {
 }
 
 export interface ActiveRun {
+  /** Exact built-in Codex Run currently owning a native goal campaign. */
+  nativeGoalActive?: boolean;
+  nativeGoalPauseOperation?: Promise<void>;
   voiceReply?: import("./voice-reply-stream.js").VoiceReplyStream;
   voiceReplyStreamSupported?: boolean;
   voiceReplyTiming?: { submittedAt?: string; firstModelTextAt?: string };
@@ -175,6 +178,8 @@ export interface PersistentRuntime {
   session: RuntimeSession;
   /** This live session is the unmodified built-in Codex transport. */
   nativeCodexModelChange?: boolean;
+  /** Built-in Codex goal implementation and stop methods are unchanged. */
+  nativeCodexGoal?: boolean;
   /** This live session is the unmodified built-in Claude stream transport. */
   nativeClaudeVerifiedInput?: boolean;
   iterator: AsyncIterator<AgentEvent>;

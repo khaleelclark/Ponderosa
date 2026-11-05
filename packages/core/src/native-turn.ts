@@ -7,6 +7,8 @@ export type NativeReviewTarget =
   | { type: "custom"; instructions: string };
 
 export type NativeTurnAction =
+  | { kind: "goal-resume" }
+  | { kind: "goal-create"; objective: string; tokenBudget?: number | null }
   | { kind: "review"; target: NativeReviewTarget }
   | { kind: "plan"; mode: "plan" | "default"; prompt: string }
   | { kind: "structured"; outputSchema: Record<string, unknown>; prompt: string };
@@ -49,6 +51,19 @@ export function nativeReviewTarget(value: unknown): NativeReviewTarget {
 /** Call only on the exact canonical human message; never on assembled context,
  * historical messages, agent-authored content, or revised display text. */
 export function parseNativeTurnCommand(input: string): NativeTurnAction | undefined {
+  if (input.trim() === "/goal-resume") return { kind: "goal-resume" };
+  if (input.trim() === "/goal-create") throw new Error("Goal creation requires bounded JSON arguments");
+  const createGoal = /^\/goal-create\s+([\s\S]+)$/u.exec(input.trim());
+  if (createGoal) {
+    if (createGoal[1]!.length > 40_000) throw new Error("Goal creation requires bounded JSON arguments");
+    const row = record(JSON.parse(createGoal[1]!), ["objective", "tokenBudget"]);
+    const objective = text(row.objective);
+    if (Object.hasOwn(row, "tokenBudget") && row.tokenBudget !== null &&
+        (!Number.isSafeInteger(row.tokenBudget) || (row.tokenBudget as number) <= 0))
+      throw new Error("Goal token budget must be a positive integer or null");
+    return { kind: "goal-create", objective,
+      ...(Object.hasOwn(row, "tokenBudget") ? { tokenBudget: row.tokenBudget as number | null } : {}) };
+  }
   const match = /^\/(review|plan|structured)(?:\s+([\s\S]+))?$/u.exec(input.trim());
   if (!match) return undefined;
   if (!match[2] || match[2].length > 64_000) throw new Error(`/${match[1]} requires bounded JSON arguments`);

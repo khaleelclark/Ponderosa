@@ -981,8 +981,8 @@ export function registerAgentMessageRunRoute(
       } catch (error) {
         return reply.code(422).send({ error: error instanceof Error ? error.message : "Invalid canonical native command" });
       }
-      if (nativeAction?.kind === "review" && sourceActivations.length > 1) {
-        return reply.code(422).send({ error: "Native review cannot consume coalesced sources; submit it as a separate Run" });
+      if ((nativeAction?.kind === "review" || nativeAction?.kind === "goal-resume" || nativeAction?.kind === "goal-create") && sourceActivations.length > 1) {
+        return reply.code(422).send({ error: "This native action cannot consume coalesced sources; submit it as a separate Run" });
       }
       if (nativeAction && !engine.adapter.nativeTurnActions?.includes(nativeAction.kind)) {
         return reply.code(422).send({ error: "Native action is unsupported by the selected provider" });
@@ -1070,8 +1070,9 @@ export function registerAgentMessageRunRoute(
       } = preparedRun;
 
       if (nativeAction) {
+        if ((nativeAction.kind === "goal-resume" || nativeAction.kind === "goal-create") && inputFiles.length) throw new Error("Native goals do not accept attached files; submit them separately.");
         if (!engine.adapter.nativeTurnActions?.includes(nativeAction.kind)) throw new Error("Native action is unsupported by the selected provider");
-        if (nativeAction.kind === "review" && !resumeSessionId) throw new Error("Native review requires this Agent’s accepted retained session");
+        if ((nativeAction.kind === "review" || nativeAction.kind === "goal-resume") && !resumeSessionId) throw new Error("This native action requires this Agent’s accepted retained session");
         if (providerInputManifest.schemaVersion !== 3 || freshProviderInputManifest.schemaVersion !== 3) throw new Error("Native action requires an exact structured input manifest");
         providerInputManifest.nativeAction = nativeAction;
         freshProviderInputManifest.nativeAction = nativeAction;
@@ -1143,7 +1144,13 @@ export function registerAgentMessageRunRoute(
           projectId: project.id,
           prompt: nativeAction?.kind === "review" ? JSON.stringify({ method: "review/start", params: {
             threadId: resumeSessionId, target: nativeAction.target, delivery: "inline",
-          } }) : exactProviderInput,
+          } }) : nativeAction?.kind === "goal-resume" ? JSON.stringify({
+            method: "thread/goal/set", params: { threadId: resumeSessionId, status: "active", origin: "user" },
+          }) : nativeAction?.kind === "goal-create" ? JSON.stringify({
+            method: "thread/goal/set", params: { ...(resumeSessionId ? {threadId:resumeSessionId} : {}),
+              objective:nativeAction.objective, ...(Object.hasOwn(nativeAction,"tokenBudget") ? {tokenBudget:nativeAction.tokenBudget} : {}),
+              status:"active", origin:"user" },
+          }) : exactProviderInput,
           systemPrompt,
           sourceManifest: providerInputManifest,
         });

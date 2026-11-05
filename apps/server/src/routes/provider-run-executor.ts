@@ -1,3 +1,4 @@
+import { pauseOwnedNativeGoal } from "../native-goal-stop.js";
 import { requireCurrentRuntimeInputAccess } from "../runtime-input-files.js";
 import { NativeHistoryAuthority } from "../native-history-authority.js";
 import { replyStreamCommit } from "../reply-stream-publication.js";
@@ -17,13 +18,16 @@ import {
   type RuntimeInputFile,
   type RuntimeCapabilityRestrictions,
   type RuntimeProcessHandle,
+  type RuntimeTurnInput,
   unicodeCodePointLength,
+  runtimeRestrictions,
   publicProviderFailureSummary,
   safeProviderConnectionUrl,
 } from "@ponderosa/core";
 import { randomUUID } from "node:crypto";
 import {
   AgentEventPersistenceError,
+  CapabilityPolicyStore,
   MAX_CONTEXT_ROLLOVER_REPLACEMENT_PROVIDER_INPUT_UTF8_BYTES,
   type LogEvent,
   type ResolvedAgentWorkingCopy,
@@ -564,6 +568,10 @@ export function startProviderRunExecution(
           identity,
           session,
           nativeCodexModelChange:Object.getPrototypeOf(rawSession)===CodexAppServerSession.prototype && rawSession.startTurn===CodexAppServerSession.prototype.startTurn,
+          nativeCodexGoal:Object.getPrototypeOf(rawSession)===CodexAppServerSession.prototype &&
+            rawSession.startTurn===CodexAppServerSession.prototype.startTurn &&
+            rawSession.startNativeGoal===CodexAppServerSession.prototype.startNativeGoal &&
+            rawSession.pauseNativeGoal===CodexAppServerSession.prototype.pauseNativeGoal,
           nativeClaudeVerifiedInput:Object.getPrototypeOf(rawSession)===ClaudeStreamSession.prototype && rawSession.startTurn===ClaudeStreamSession.prototype.startTurn,
           iterator: session.events[Symbol.asyncIterator](),
           messageCapability,
@@ -726,6 +734,14 @@ export function startProviderRunExecution(
           throw error;
         }
       };
+      const assertCurrentCodexAccess = (): void => {
+        if (runtimeEngineId !== "codex") return;
+        const current = runtimeRestrictions(
+          new CapabilityPolicyStore(store.sqlite).resolveForAgent(agent.id, runId), runtimeEngineId,
+        );
+        if (current.restrictedCapabilityIds.some(id => !capabilityRestrictions.restrictedCapabilityIds.includes(id)))
+          throw new Error("Access was restricted before provider input. The original work remains available for review.");
+      };
       const openVerifiedInputCapability=():void=>{
         const cap=agentMessageCapabilities.get(messageCapability);
         if(!cap||!cap.inputVerificationPending||cap.agentId!==agent.id||cap.runId!==runId||
@@ -741,7 +757,7 @@ export function startProviderRunExecution(
               async *[Symbol.asyncIterator](): AsyncIterator<AgentEvent> {
                 if (!persistentTurnStarted) {
                   try {
-                    await persistentRuntime!.session.startTurn({
+                    const runtimeInput: RuntimeTurnInput = {
                       prompt,
                       inputFiles,
                       kind: "collaboration",
@@ -754,6 +770,7 @@ export function startProviderRunExecution(
                       assertCurrent: () => {
                         if (controller.signal.aborted || isClosed() || deletingAgentIds.has(agent.id) || deletingProjectIds.has(project.id) || !ownsActiveRun(agent.id, activeRun) || !renewExecutionLease(agent.id, activeRun)) throw new Error("Native turn lost current Run authority");
                         assertSettingsTransitionPolicy?.();
+                        assertCurrentCodexAccess();
                         if (retainedVerifiedContext && (!persistentRuntime || reusableRuntime(agent.id)!==persistentRuntime ||
                             activeRun.persistentRuntimeIdentity!==persistentRuntime.identity || !persistentRuntime.session.isAlive() ||
                             readProviderSessionIdentifier(persistentRuntime.session)!==resumeSessionId))
@@ -769,7 +786,15 @@ export function startProviderRunExecution(
                           coordinationV3!.assertRunReviewedSteeringSubmission(agent.projectId,runId,v3FencingToken!);
                         }
                       },
-                    });
+                    };
+                    if (input.nativeAction?.kind === "goal-resume" || input.nativeAction?.kind === "goal-create") {
+                      if (!persistentRuntime!.nativeCodexGoal || !persistentRuntime!.session.startNativeGoal)
+                        throw new Error("This provider cannot own a native goal Run.");
+                      activeRun.nativeGoalActive = true;
+                      await persistentRuntime!.session.startNativeGoal(runtimeInput);
+                    } else {
+                      await persistentRuntime!.session.startTurn(runtimeInput);
+                    }
                   } catch (error) {
                     providerStreamBoundaryFailure = {
                       kind: "turn_submission_rejection",
@@ -830,7 +855,7 @@ export function startProviderRunExecution(
               async *[Symbol.asyncIterator](): AsyncIterator<AgentEvent> {
                 if (!persistentTurnStarted) {
                   try {
-                    await persistentRuntime!.session.startTurn({
+                    const runtimeInput: RuntimeTurnInput = {
                       prompt: freshPrompt,
                       inputFiles,
                       kind: "collaboration",
@@ -843,6 +868,7 @@ export function startProviderRunExecution(
                       assertCurrent: () => {
                         if (controller.signal.aborted || isClosed() || deletingAgentIds.has(agent.id) || deletingProjectIds.has(project.id) || !ownsActiveRun(agent.id, activeRun) || !renewExecutionLease(agent.id, activeRun)) throw new Error("Native turn lost current Run authority");
                         assertSettingsTransitionPolicy?.();
+                        assertCurrentCodexAccess();
                         if (reviewedSteeringRun) {
                           if (!persistentRuntime || reusableRuntime(agent.id)!==persistentRuntime ||
                               activeRun.persistentRuntimeIdentity!==persistentRuntime.identity || !persistentRuntime.session.isAlive())
@@ -850,7 +876,15 @@ export function startProviderRunExecution(
                           coordinationV3!.assertRunReviewedSteeringSubmission(agent.projectId,runId,v3FencingToken!);
                         }
                       },
-                    });
+                    };
+                    if (input.nativeAction?.kind === "goal-create") {
+                      if (!persistentRuntime!.nativeCodexGoal || !persistentRuntime!.session.startNativeGoal)
+                        throw new Error("This provider cannot own a native goal Run.");
+                      activeRun.nativeGoalActive = true;
+                      await persistentRuntime!.session.startNativeGoal(runtimeInput);
+                    } else {
+                      await persistentRuntime!.session.startTurn(runtimeInput);
+                    }
                   } catch (error) {
                     providerStreamBoundaryFailure = {
                       kind: "turn_submission_rejection",
@@ -1041,6 +1075,10 @@ export function startProviderRunExecution(
           if (!receiveRuntimeEvent(agent.id, activeRun)) break;
           if (event.type === "context_usage" && event.providerSessionGeneration !== undefined) {
             activeRun.observedProviderSessionGeneration = event.providerSessionGeneration;
+          }
+          if (persistentRuntime?.nativeCodexGoal && event.type === "work_item_update" &&
+              event.workItemId === `native-goal:${persistentRuntime.session.engineAgentId}`) {
+            activeRun.nativeGoalActive = event.status === "running";
           }
           if (event.type === "turn_done") activeRun.observedProviderTerminalStatus = "completed";
           if (event.type === "error" && event.terminalStatus !== undefined) activeRun.observedProviderTerminalStatus = event.terminalStatus;
@@ -1792,6 +1830,19 @@ export function startProviderRunExecution(
           });
           if (recoveryEvidence.available) resolveOperationalNotification(`provider:${runtimeEngineId}:unavailable`);
         }
+      }
+      if (schedulerCancelled && activeRun.nativeGoalActive) {
+        await pauseOwnedNativeGoal(activeRun, () => {
+          try { createOperationalNotification({
+            dedupeKey: `native-goal-pause-unknown:${runId}`,
+            category: "provider", severity: "attention",
+            title: "Native goal pause needs review",
+            body: "The provider did not confirm whether the native goal paused. Its process is being stopped; earlier work may have completed. Review the goal before resuming it.",
+            projectId: agent.projectId, conversationId: agent.conversationId, agentId: agent.id,
+          }); } catch (error) {
+            app.log.error({ err: error, agentId: agent.id, runId }, "Native goal pause uncertainty could not be published");
+          }
+        });
       }
       const released = releaseActiveRun(agent.id, activeRun, controller.signal.aborted || schedulerCancelled ? "cancelled" : runError ? "failed" : "completed");
       if (released || activeRuns.get(agent.id) !== activeRun) {

@@ -1,3 +1,4 @@
+import { pauseOwnedNativeGoal } from "./native-goal-stop.js";
 import { reconcileSettingsTransitionReservations, requestSettingsTransition } from "./context-transition-admission.js";
 import type { createOperationalNotifications } from "./operational-notifications.js";
 import type { EngineAuthStatusCache } from "./engine-auth-cache.js";
@@ -634,8 +635,22 @@ return new CoordinationV3Scheduler(
           store.consumeContinuationHandoff(agentId, abandonedHandoff.id, run.runId);
         }
       }
-      run.controller.abort();
       const runtime = persistentRuntimeForTermination(agentId);
+      await pauseOwnedNativeGoal(run, () => {
+        try { const agent = store.getAgent(agentId); context.createOperationalNotification({
+          dedupeKey: `native-goal-pause-unknown:${run.runId}`,
+          category: "provider",
+          severity: "attention",
+          title: "Native goal pause needs review",
+          body: "The provider did not confirm whether the native goal paused. Its process is being stopped; earlier work may have completed. Review the goal before resuming it.",
+          ...(agent?.projectId ? { projectId: agent.projectId } : {}),
+          ...(agent?.conversationId ? { conversationId: agent.conversationId } : {}),
+          agentId,
+        }); } catch (error) {
+          app.log.error({ err: error, agentId, runId: run.runId }, "Native goal pause uncertainty could not be published");
+        }
+      });
+      run.controller.abort();
       const cleanup = await Promise.allSettled([terminateRuntimeHandle(agentId, run, runtime), browserCleanup]);
       const termination = cleanup[0];
       if (cleanup.some(result => result.status === 'rejected') || termination.status === 'fulfilled' && termination.value) {
