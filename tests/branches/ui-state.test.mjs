@@ -1617,7 +1617,8 @@ test('reusable expert job handling distinguishes legacy behavior, results and gu
  const render=value=>renderToStaticMarkup(React.createElement(AgentJobHandlingField,{value,onChange(){}}));
  const legacy=render(undefined);
  assert.match(legacy,/Existing behavior · steer or run/);assert.match(legacy,/steer current work when busy, otherwise start work/);
- assert.match(render('queue'),/Each job waits its turn and receives its own outcome/);
+ assert.match(render('queue'),/Each admitted job waits its turn and receives its own outcome/);
+ assert.match(render('queue'),/Schedule settings still apply: Run Latest When Finished or Update Current Run can combine occurrences before admission/);
  const steer=render('steer');assert.match(steer,/delivery or uncertainty is not a separate job result/);
  const copy=render('copy');assert.match(copy,/temporary copy of the selected Agent/);assert.match(copy,/with its own result/);assert.match(copy,/source working-folder files are not copied/);
 });

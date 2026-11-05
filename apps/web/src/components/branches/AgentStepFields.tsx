@@ -12,12 +12,12 @@ import {changeAgentTarget,selectTemporaryAgent,changeAgentJobHandling,type Agent
 export type AgentSetupRequest={kind:'agent'|'organization'|'edit';nodeId:string;target:Extract<BranchStep,{kind:'agent'}>['target'];agent?:AgentDto;chatId?:string};
 type Choice={id:string;label:string;kind:Extract<BranchStep,{kind:'agent'}>['target']['kind']|'new_agent'|'new_organization';agent?:AgentDto&Partial<BranchAgentChoiceDto>};
 export function AgentJobHandlingField({value,onChange}:{value?:AgentJobHandling;onChange(value:AgentJobHandling):void}):JSX.Element{
- const hint=value===undefined?'Existing behavior: steer current work when busy, otherwise start work.':value==='queue'?'Each job waits its turn and receives its own outcome.':value==='steer'?'Send guidance to the shared Agent’s current work; delivery or uncertainty is not a separate job result, so end this path or pass explicit text onward.':'Each job uses a temporary copy of the selected Agent with its own result in a fresh workspace; source working-folder files are not copied.';
+ const hint=value===undefined?'Existing behavior: steer current work when busy, otherwise start work.':value==='queue'?'Each admitted job waits its turn and receives its own outcome. Schedule settings still apply: Run Latest When Finished or Update Current Run can combine occurrences before admission.':value==='steer'?'Send guidance to the shared Agent’s current work; delivery or uncertainty is not a separate job result, so end this path or pass explicit text onward.':'Each job uses a temporary copy of the selected Agent with its own result in a fresh workspace; source working-folder files are not copied.';
  return <TextField data-branch-field="jobHandling" select size="small" label="Job handling" value={value??''} helperText={hint} SelectProps={{displayEmpty:true}} InputLabelProps={{shrink:true}} onChange={event=>{if(event.target.value)onChange(event.target.value as AgentJobHandling)}}>
   {value===undefined&&<MenuItem value="" disabled>Existing behavior · steer or run</MenuItem>}
-  <MenuItem value="queue">Queue independent jobs</MenuItem>
-  <MenuItem value="steer">Steer shared Agent</MenuItem>
-  <MenuItem value="copy">Temporary copy per job</MenuItem>
+  <MenuItem value="queue">Wait its turn</MenuItem>
+  <MenuItem value="steer">Steer current work</MenuItem>
+  <MenuItem value="copy">Make a temporary Agent copy</MenuItem>
  </TextField>;
 }
 /** One scoped picker; creation is owned above the responsive editor so switching surfaces cannot lose it. */

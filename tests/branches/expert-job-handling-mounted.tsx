@@ -14,9 +14,9 @@ export async function expertJobHandlingRegression():Promise<void>{
   render();await settle();assert(writes===0,'opening legacy step never rewrites saved behavior');
   assert(host.textContent?.includes('Existing behavior · steer or run'),'legacy behavior remains visible');
   for(const [value,label,meaning] of [
-   ['queue','Queue independent jobs','receives its own outcome'],
-   ['steer','Steer shared Agent','delivery or uncertainty is not a separate job result'],
-   ['copy','Temporary copy per job','temporary copy of the selected Agent'],
+   ['queue','Wait its turn','receives its own outcome'],
+   ['steer','Steer current work','delivery or uncertainty is not a separate job result'],
+   ['copy','Make a temporary Agent copy','temporary copy of the selected Agent'],
   ] as const){
    const select=host.querySelector('[role="combobox"]');assert(select,'job handling picker');
    select!.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,button:0}));await settle();
