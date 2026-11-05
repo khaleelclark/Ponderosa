@@ -50,9 +50,14 @@ test('retained expert receipt identifies memory even when generic temporary proo
 });
 
 test('temporary-copy memory cleanup holds without verified final custody and rechecks its verifier',async t=>{
- const f=await instance(t),verify=()=>f.memory.verifyExpertFinalCustody(f.chat.id,f.project.id);
+ const f=await instance(t);
+ // The full application now installs its Branch verifier during startup. Exercise
+ // the unconfigured host boundary on a separate object without replacing it.
+ const isolated=Object.create(Object.getPrototypeOf(f.memory));
+ const verify=()=>isolated.verifyExpertFinalCustody(f.chat.id,f.project.id);
  await assert.rejects(verify(),/memory is retained/);
- let calls=0,available=true;f.memory.setExpertFinalCustodyVerifier(async(chat,project)=>{calls++;assert.equal(chat,f.chat.id);assert.equal(project,f.project.id);if(!available)throw Error('fixture missing retained bytes');});
+ let calls=0,available=true;isolated.setExpertFinalCustodyVerifier(async(chat,project)=>{calls++;assert.equal(chat,f.chat.id);assert.equal(project,f.project.id);if(!available)throw Error('fixture missing retained bytes');});
  await verify();available=false;await assert.rejects(verify(),/memory is retained/);assert.equal(calls,2);
- assert.throws(()=>f.memory.setExpertFinalCustodyVerifier(()=>{}),/already installed/);
+ assert.throws(()=>isolated.setExpertFinalCustodyVerifier(()=>{}),/already installed/);
+ assert.throws(()=>f.memory.setExpertFinalCustodyVerifier(()=>{}),/already installed/,'the application retains its own verifier');
 });
