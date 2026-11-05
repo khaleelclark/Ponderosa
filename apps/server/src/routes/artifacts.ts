@@ -199,7 +199,7 @@ export function registerArtifactRoutes(
   ): Promise<GeneratedFile | undefined> {
     const project = store.getProject(projectId);
     const managed = store.getProjectArtifact(projectId, artifactId);
-    if (project && managed) {
+    if (project && managed && !store.isWorkingFileTransportPart(projectId,artifactId)) {
       if ((managed.originAgentId ?? managed.agentId) !== agentId) return undefined;
       const runtime = assets.authoritativeRuntimeArtifactMetadataById(projectId, artifactId);
       if (runtime && !managedProjectArtifactAgreesWithRuntime(managed, runtime)) return undefined;

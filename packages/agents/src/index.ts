@@ -236,3 +236,5 @@ export {enableProviderStartCoverage,holdProviderStart,admitProviderStart,settleP
 export {renderUnfinishedHumanTaskContext} from "./coordination-v3-task-objective.js";
 
 export {hasRetainedTemporaryChatScope} from './branch-host-cut.js';
+
+export {makeWorkingFileTransportPart,type WorkingFileTransportPart} from "./working-file-transport.js";

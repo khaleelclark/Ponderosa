@@ -1,3 +1,4 @@
+import type {WorkingFileTransportPart} from "./working-file-transport.js";
 import { uncertainContextRecoverySourceSql } from './coordination-v3-context-recovery-authority.js';
 import type {CanonicalGeneratedHooksProof} from '@ponderosa/core';
 import {validateGeneratedHookNamespaceProof} from './generated-hook-namespace-proof.js';
@@ -2145,6 +2146,10 @@ export class AgentStore extends AgentEventSessionFacade {
     return this.artifactCatalog.getProjectArtifact(projectId, artifactIdValue);
   }
 
+  isWorkingFileTransportPart(projectId:string,artifactIdValue:string):boolean {
+    return this.artifactCatalog.isWorkingFileTransportPart(projectId,artifactIdValue);
+  }
+
   /** Server-owned publication-ledger authority for managed attachments. It is
    * applied whenever canonical Communications are materialized for an operator. */
   configureCommunicationAttachmentMetadataAuthority(
@@ -2196,6 +2201,7 @@ export class AgentStore extends AgentEventSessionFacade {
     entries: ReadonlyArray<{
       artifact: ArtifactDto & { projectId: string; originAgentId: string };
       access?: ManagedArtifactAccess;
+      transportPart?:WorkingFileTransportPart;
     }>,
   ): void {
     this.artifactCatalog.recordProjectArtifacts(entries);

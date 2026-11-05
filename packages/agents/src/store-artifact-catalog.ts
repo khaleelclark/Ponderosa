@@ -1,3 +1,4 @@
+import {validWorkingFileTransportPart,type WorkingFileTransportPart} from "./working-file-transport.js";
 import {activeChatOwnerSql} from "./product-scope-sql.js";
 import {artifactAgentProductSql,managedArtifactProductSql} from './artifact-product-scope.js';
 import type { ProjectionProgress } from "./projection-checkpoint.js";
@@ -311,7 +312,8 @@ export class AgentArtifactCatalog {
     });
     const managedRows = this.client.prepare(`
       SELECT artifact_json FROM managed_artifact_projection
-      WHERE project_id = ? AND (json_extract(audience_json, '$.kind') = 'organization' OR owner_kind = 'operator_chat')
+      WHERE project_id = ? AND json_extract(artifact_json, '$.transportPart') IS NULL
+        AND (json_extract(audience_json, '$.kind') = 'organization' OR owner_kind = 'operator_chat')
         AND (owner_kind != 'operator_chat' OR EXISTS(SELECT 1 FROM conversations operator_chat WHERE operator_chat.id=owner_id AND operator_chat.project_id=managed_artifact_projection.project_id AND operator_chat.branch_execution_id IS NULL AND ${activeChatOwnerSql('operator_chat')}))
         ${input.productScope?`AND ${managedArtifactProductSql('managed_artifact_projection',input.productScope)}`:''}
         ${conversationId ? `AND ((owner_kind='operator_chat' AND owner_id=?) OR EXISTS (
@@ -458,12 +460,19 @@ export class AgentArtifactCatalog {
     }
   }
 
+  isWorkingFileTransportPart(projectId:string,artifactIdValue:string):boolean {
+    const row=this.client.prepare("SELECT json_extract(artifact_json,'$.transportPart.schema') AS schema FROM managed_artifact_projection WHERE project_id=? AND artifact_id=?").get(projectId,artifactIdValue) as {schema?:string}|undefined;
+    return row?.schema==='ponderosa.working-file-part-owner.v1';
+  }
+
   projectArtifactIsOrganizationVisible(projectId: string, artifactIdValue: string): boolean {
+    if(this.isWorkingFileTransportPart(projectId,artifactIdValue))return false;
     return this.getProjectArtifactAccess(projectId, artifactIdValue)?.audience.kind
       === "organization";
   }
 
   projectArtifactBelongsToConversation(projectId: string, artifactIdValue: string, conversationId: string): boolean {
+    if(this.isWorkingFileTransportPart(projectId,artifactIdValue))return false;
     const artifact = this.getProjectArtifact(projectId, artifactIdValue);
     const originId = artifact?.originAgentId ?? artifact?.agentId;
     if (artifact?.origin?.kind === "operator") return artifact.origin.conversationId === conversationId && this.operatorCanReadProjectArtifact(projectId, artifactIdValue);
@@ -477,6 +486,7 @@ export class AgentArtifactCatalog {
   }
 
   operatorCanReadProjectArtifact(projectId: string, artifactIdValue: string): boolean {
+    if(this.isWorkingFileTransportPart(projectId,artifactIdValue))return false;
     // The single local operator owns the Project audit surfaces (including
     // Team Chat), but private artifacts still stay out of the organizational
     // catalog and future-agent context.
@@ -496,6 +506,7 @@ export class AgentArtifactCatalog {
     artifactIdValue: string,
     agentId: string,
   ): boolean {
+    if(this.isWorkingFileTransportPart(projectId,artifactIdValue))return false;
     const agent = this.agentById(agentId);
     const access = this.getProjectArtifactAccess(projectId, artifactIdValue);
     if (!agent || agent.projectId !== projectId || !access) return false;
@@ -524,7 +535,8 @@ export class AgentArtifactCatalog {
     const boundedLimit = Math.max(1, Math.min(limit, 500));
     const rows = this.client.prepare(`
       SELECT artifact_json FROM managed_artifact_projection
-      WHERE project_id = ? AND json_extract(audience_json, '$.kind') = 'organization'
+      WHERE project_id = ? AND json_extract(artifact_json, '$.transportPart') IS NULL
+        AND json_extract(audience_json, '$.kind') = 'organization'
         AND (pinned = 1 OR visibility = 'published')
         AND (? IS NULL OR json_extract(artifact_json, '$.originAgentId') IN
           (SELECT id FROM agents WHERE conversation_id = ?))
@@ -572,6 +584,7 @@ export class AgentArtifactCatalog {
     entries: ReadonlyArray<{
       artifact: ArtifactDto & { projectId: string; originAgentId: string };
       access?: ManagedArtifactAccess;
+      transportPart?:WorkingFileTransportPart;
     }>,
   ): void {
     if (entries.length === 0) return;
@@ -582,13 +595,33 @@ export class AgentArtifactCatalog {
   private writeProjectArtifacts(entries: ReadonlyArray<{
     artifact: ManagedProjectArtifact;
     access?: ManagedArtifactAccess;
+    transportPart?:WorkingFileTransportPart;
   }>): void {
     const projectId = entries[0]!.artifact.projectId;
     if (!this.projectExists(projectId)) throw new Error("artifact project not found");
     const ids = new Set<string>();
     const events: ManagedArtifactEvent[] = [];
+    // Host association must cover the complete logical original in this
+    // publication batch. Never hide an unrelated user artifact based on MIME.
+    const transportGroups=new Map<string,{count:number;size:number;indices:Set<number>}>();
+    for(const entry of entries){
+      const part=entry.transportPart;if(!part)continue;
+      if(!validWorkingFileTransportPart(part,entry.artifact.id)||!entry.artifact.originAgentId||!Number.isSafeInteger(entry.artifact.size)||entry.artifact.size!<1)
+        throw Error('Invalid host working-file transport part');
+      const key=JSON.stringify([part.operationId,entry.artifact.originAgentId,part.filePath,part.fileByteLength,part.fileSha256,part.partCount]);
+      const group=transportGroups.get(key)??{count:part.partCount,size:0,indices:new Set<number>()};
+      if(group.indices.has(part.partIndex))throw Error('Duplicate working-file transport part');
+      group.indices.add(part.partIndex);group.size+=entry.artifact.size!;
+      if(!Number.isSafeInteger(group.size)||group.size>part.fileByteLength)throw Error('Working-file transport size differs');
+      transportGroups.set(key,group);
+    }
+    for(const [key,group] of transportGroups){
+      const [,,,size]=JSON.parse(key) as [string,string,string,number,string,number];
+      if(group.indices.size!==group.count||group.size!==size)throw Error('Incomplete working-file transport association');
+    }
     for (const entry of entries) {
-      const { artifact } = entry;
+      if(Object.hasOwn(entry.artifact,'transportPart')||entry.transportPart&&!validWorkingFileTransportPart(entry.transportPart,entry.artifact.id))throw Error('Invalid host working-file transport part');
+      const artifact:ManagedProjectArtifact=entry.transportPart?{...entry.artifact,transportPart:entry.transportPart}:entry.artifact;
       const access = entry.access ?? {
         ownerKind: "project" as const,
         ownerId: artifact.id,
@@ -640,6 +673,7 @@ export class AgentArtifactCatalog {
             existing[field] === artifact[field]
           )
           && JSON.stringify(existing.origin) === JSON.stringify(artifact.origin)
+          && JSON.stringify((existing as ManagedProjectArtifact).transportPart) === JSON.stringify(artifact.transportPart)
           && JSON.stringify(existingAccess) === JSON.stringify(access)
         ) continue;
         throw new Error("managed artifact identity and provenance are immutable");

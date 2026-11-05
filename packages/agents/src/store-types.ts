@@ -88,7 +88,7 @@ export interface ManagedArtifactAccess {
   senderAgentId?: string;
 }
 
-export type ManagedProjectArtifact = ArtifactDto & {projectId: string; originAgentId?: string};
+export type ManagedProjectArtifact = ArtifactDto & {projectId: string; originAgentId?: string; transportPart?: import("./working-file-transport.js").WorkingFileTransportPart};
 
 export type ManagedArtifactEvent =
   | { type: "created"; artifact: ManagedProjectArtifact; access?: ManagedArtifactAccess }
