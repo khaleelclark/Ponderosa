@@ -3105,7 +3105,7 @@ test('final resource actual package engine captures later history and working fi
  }finally{if(service)await service.stop();await app.close();assets.close();}
 });
 
-for(const linkedFinal of [false,true,'dangling','cycle'])test(linkedFinal===true?'linked portable final resource continues with exact in-root file links':linkedFinal?'unsupported '+linkedFinal+' final links remain held':'completed portable final resource restores a fresh destination without replay',async t=>{
+for(const linkedFinal of [false,true,'dangling','cycle'])test(linkedFinal==='dangling'?'dangling portable final symlink continues without creating its target':linkedFinal===true?'linked portable final resource continues with exact in-root file links':linkedFinal?'unsupported '+linkedFinal+' final links remain held':'completed portable final resource restores a fresh destination without replay',async t=>{
  const Fastify=(await import('fastify')).default;
  const {AssetStore}=await import('../../apps/server/dist/assets.js');
  const {registerAgentPackageRoutes}=await import('../../apps/server/dist/routes/agent-packages.js');
@@ -3188,7 +3188,7 @@ for(const linkedFinal of [false,true,'dangling','cycle'])test(linkedFinal===true
   const retained=installation.runtimeData(preview.id,imported.branchId);
   assert.deepEqual(retained.data,portable.runtimeData);
   const importedOwner=retained.receipt.executionMap[f.source.id];
-  if(linkedFinal&&linkedFinal!==true){
+  if(linkedFinal==='cycle'){
    assert.ok(node.workingFolder.links.length);
    const before=db.prepare('SELECT COUNT(*) n FROM coordination_destination_admissions').get().n;
    const {BranchIssuedDestinationService}=await import('../../apps/server/dist/branch-issued-destination.js');
@@ -3216,10 +3216,11 @@ for(const linkedFinal of [false,true,'dangling','cycle'])test(linkedFinal===true
   assert.equal(retained.receipt.dispatched,false);
   assert.equal(db.prepare('SELECT COUNT(*) n FROM agents a JOIN conversations c ON c.id=a.conversation_id WHERE c.branch_id=?').get(imported.branchId).n,0);
   assert.equal(readFileSync(file,'utf8'),'after checkpoint exact content 😀\n');
-  if(linkedFinal===true){
+  if(linkedFinal===true||linkedFinal==='dangling'){
    await exerciseForeignFinalDestination(t,portable,f.source.id,final,exit.identity,'prewrite',1,2);
-   assert.equal(readlinkSync(join(root,'captured-link')),'final-work.txt');
-   assert.equal(lstatSync(file).ino,lstatSync(join(root,'z-hardlink')).ino);
+   assert.equal(readlinkSync(join(root,'captured-link')),linkedFinal==='dangling'?'missing-file':'final-work.txt');
+   if(linkedFinal===true)assert.equal(lstatSync(file).ino,lstatSync(join(root,'z-hardlink')).ino);
+   else assert.equal(existsSync(join(root,'missing-file')),false);
    assert.equal(readFileSync(file,'utf8'),'after checkpoint exact content 😀\n');
    return;
   }
@@ -3331,7 +3332,9 @@ async function exerciseForeignFinalDestination(t,portable,originalExecutionId,fi
   };
   verifyLinks();
   for(const root of [stagedLiveRoot,recoveryRoot])for(const mutation of expectedLinks.length?['missing','retargeted','timestamp','detached-hardlink']:[]){
-   const link=expectedLinks.find(link=>link.kind===(mutation==='detached-hardlink'?'hardlink':'symlink')),entry=join(root,link.path),saved=entry+'.fixture-preserved';
+   const link=expectedLinks.find(link=>link.kind===(mutation==='detached-hardlink'?'hardlink':'symlink'));
+   if(!link)continue;
+   const entry=join(root,link.path),saved=entry+'.fixture-preserved';
    renameSync(entry,saved);
    if(mutation==='timestamp'){symlinkSync(link.target,entry);lutimesSync(entry,new Date('2001-01-01T00:00:00Z'),new Date('2001-01-01T00:00:00Z'));}
    if(mutation==='retargeted')symlinkSync('different-file',entry);
@@ -3344,6 +3347,16 @@ async function exerciseForeignFinalDestination(t,portable,originalExecutionId,fi
    if(mutation==='timestamp')assert.equal(lstatSync(entry).mtime.toISOString(),'2001-01-01T00:00:00.000Z','edited timestamp left untouched');
    if(mutation!=='missing')rmSync(entry);renameSync(saved,entry);
    verifyLinks();
+  }
+  for(const root of [stagedLiveRoot,recoveryRoot])for(const link of expectedLinks.filter(link=>link.kind==='symlink'&&link.target==='missing-file'))for(const kind of ['file','dangling-link']){
+   const appeared=join(root,link.target);
+   if(kind==='file')writeFileSync(appeared,'operator-created target',{flag:'wx'});
+   else symlinkSync('another-missing-file',appeared);
+   await assert.rejects(composer.admit(imported.branchId,sourceId,input.commandKey,review.reviewHash),/dangling symlink target appeared/);
+   if(kind==='file')assert.equal(readFileSync(appeared,'utf8'),'operator-created target');
+   else assert.equal(readlinkSync(appeared),'another-missing-file');
+   assert.equal(g.store.sqlite.prepare('SELECT state FROM coordination_destination_admissions WHERE id=?').get(prepared.admissionId).state,'staged');
+   rmSync(appeared);
   }
 
   writeFileSync(recoveryFile,'operator edited recovered data');

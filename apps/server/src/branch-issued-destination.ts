@@ -66,8 +66,17 @@ export class BranchIssuedDestinationService {
       const target=portableLinkTarget(link),name=join(path,link.path),entry=lstatSync(name,{bigint:true});
       if(realpathSync(dirname(name))!==dirname(name))throw Error('Final imported link parent changed; preserve current data and review');
       if(link.kind==='symlink'){
-       if(!entry.isSymbolicLink()||readlinkSync(name)!==link.target||realpathSync(name)!==join(path,target)||link.mtime!==undefined&&entry.mtime.toISOString()!==link.mtime)
+       if(!entry.isSymbolicLink()||readlinkSync(name)!==link.target||link.mtime!==undefined&&entry.mtime.toISOString()!==link.mtime)
         throw Error('Final imported symlink changed; preserve current data and review');
+       const included=(node.workingFiles??[]).some(file=>file.path===target);
+       if(included){
+        if(realpathSync(name)!==join(path,target))throw Error('Final imported symlink target changed; preserve current data and review');
+       }else{
+        // Only a verified missing sibling is supported; if an operator has
+        // supplied its target, keep that data and hold admission.
+        try{lstatSync(join(path,target));throw Error('Final imported dangling symlink target appeared; preserve current data and review');}
+        catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
+       }
       }else{
        const original=lstatSync(join(path,target),{bigint:true});
        if(!entry.isFile()||!original.isFile()||entry.dev!==original.dev||entry.ino!==original.ino)
