@@ -376,3 +376,56 @@ test('uncertain retry-pending hold survives database reopen without blocking ano
  assert.equal(db.prepare('SELECT state FROM agent_activations WHERE id=?').get(held.activationId).state,'retry_pending');
  assert.equal(db.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(held.activationId).n,1);
 });
+
+test('verified replacement confirmation drains before queued human or peer work can steer', t => {
+ const db=openCurrentMemoryDatabase();t.after(()=>db.close());
+ const project=randomUUID(),chat=randomUUID(),worker=randomUUID(),manager=randomUUID(),now=new Date().toISOString(),scope='conversation:'+chat;
+ db.prepare('INSERT INTO projects(id,label,host_path,created_at) VALUES(?,?,?,?)').run(project,'Task','/unused',now);
+ db.prepare('INSERT INTO conversations(id,project_id,title,created_at,updated_at) VALUES(?,?,?,?,?)').run(chat,project,'Task',now,now);
+ for(const [id,name] of [[worker,'worker'],[manager,'manager']]){
+  db.prepare('INSERT INTO agents(id,project_id,conversation_id,title,handle,active_engine,created_at,updated_at,working_copy_json) VALUES(?,?,?,?,?,?,?,?,?)')
+    .run(id,project,chat,name,name,'codex',now,now,'{}');
+  db.prepare('INSERT INTO agent_conversation_memberships(agent_id,conversation_id,position) VALUES(?,?,0)').run(id,chat);
+ }
+ const v3=new CoordinationV3Store(db),run=randomUUID(),rollover=randomUUID(),confirmation=randomUUID(),handoff=randomUUID();
+ db.prepare(`INSERT INTO scheduler_runs(id,project_id,agent_id,status,lease_owner,lease_expires_at,fencing_token,prompt_injection_state,provider_session_id,heartbeat_at,created_at,updated_at,started_at,scope_key)
+  VALUES(?,?,?,'running','test',?,1,'injected','new-session',?,?,?,?,?)`).run(run,project,worker,'2999-01-01T00:00:00Z',now,now,now,now,scope);
+ db.prepare("INSERT INTO scheduler_agent_fences(agent_id,next_fencing_token) VALUES(?,2)").run(worker);
+ db.prepare(`INSERT INTO scheduler_prompt_injections(id,run_id,kind,sequence,state,prompt_hash,activation_ids_json,created_at,updated_at,submitted_at,acknowledged_at)
+  VALUES(?,?,'turn',0,'acknowledged','hash',?,?,?,?,?)`).run(randomUUID(),run,JSON.stringify([confirmation]),now,now,now,now);
+ db.prepare(`INSERT INTO context_rollovers(id,project_id,agent_id,state,old_provider_session_id,provider_session_generation,
+  threshold,low_water_mark,compaction_cutoff_ordinal,compaction_cutoff_event_id,recent_tail_event_ids_json,recent_tail_hashes_json,
+  source_run_id,source_activation_ids_json,scope_key,continuation_activation_id,replacement_run_id,replacement_verified_at,completion_reason,created_at,updated_at,terminal_at)
+  VALUES(?,?,?,'completed','old-session','old-session',100,50,1,'event','[]','[]','old-run','[]',?,?,?,?, 'replacement_verified',?,?,?)`)
+  .run(rollover,project,worker,scope,confirmation,run,now,now,now,now);
+ const insert=db.prepare(`INSERT INTO agent_activations(id,project_id,agent_id,kind,priority,dispatch_policy,prompt_class,state,dedupe_key,payload_json,available_at,created_at,updated_at,scope_key)
+  VALUES(?,?,?,?,?,'next_run','blocker',?,?,?,?,?,?,?)`);
+ const marker={rolloverId:rollover,settingsTransition:{activationId:'target',reason:'settings'}};
+ insert.run(handoff,project,worker,'context_rollover_handoff',100,'consumed',handoff,JSON.stringify(marker),now,now,now,scope);
+ insert.run(confirmation,project,worker,'context_rollover_continuation',110,'attached',confirmation,JSON.stringify(marker),now,now,now,scope);
+ db.prepare("INSERT INTO activation_sources(activation_id,source_kind,source_id) VALUES(?,'context_rollover',?),(?,'context_rollover',?)")
+   .run(handoff,rollover,confirmation,rollover);
+ db.prepare('INSERT INTO scheduler_run_activations(run_id,activation_id,attached_at) VALUES(?,?,?)').run(run,confirmation,now);
+ const eventId=randomUUID(),sender={kind:'user',userId:'local-operator'},audience={kind:'user_agents',userId:'local-operator',agentIds:[worker]};
+ const communication={schemaVersion:2,eventId,projectId:project,conversationId:chat,sender,intent:'user_dm',audience,text:'Original human task',createdAt:now};
+ const human=v3.recordRuntimeCommunication({id:eventId,projectId:project,scopeKey:scope,sender,intent:'user_dm',audience,payload:{communication},now,
+   activation:{agentId:worker,kind:'human_message',priority:100,dispatchPolicy:'steer_or_run',promptClass:'human'}}).activationId;
+ const requestId=randomUUID();
+ v3.coordinate({projectId:project,conversationId:chat,requesterAgentId:manager,actorScope:'user:local-operator',idempotencyKey:randomUUID(),
+  requests:[{requestId,recipientAgentId:worker,lifetime:{kind:'indefinite'},payload:{text:'Original peer task'}}]},now);
+ const peer=db.prepare("SELECT activation_id FROM activation_sources WHERE source_kind='request' AND source_id=?").get(requestId).activation_id;
+ assert.equal(v3.leaseNextSteering({workerId:'too-early',now}),undefined,'neither queued item may enter the confirmation Run');
+ for(const id of [human,peer]){
+  assert.equal(db.prepare('SELECT state FROM agent_activations WHERE id=?').get(id).state,'pending');
+  assert.equal(db.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(id).n,0);
+ }
+ v3.completeRun(run,1,now);
+ db.exec('SAVEPOINT human_after_drain');
+ try {const lease=v3.leaseNextRun({workerId:'human-after-drain',now});assert.ok(lease.activationIds.includes(human));}
+ finally {db.exec('ROLLBACK TO human_after_drain; RELEASE human_after_drain');}
+ db.exec('SAVEPOINT peer_after_drain');
+ try {
+  db.prepare("UPDATE agent_activations SET state='cancelled' WHERE id=?").run(human);
+  const lease=v3.leaseNextRun({workerId:'peer-after-drain',now});assert.deepEqual(lease.activationIds,[peer]);
+ } finally {db.exec('ROLLBACK TO peer_after_drain; RELEASE peer_after_drain');}
+});
