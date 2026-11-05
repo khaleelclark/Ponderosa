@@ -29,7 +29,7 @@ import {
 import { CapabilityPolicyStore, renderUnfinishedHumanTaskContext } from "@ponderosa/agents";
 import { MAX_CONTEXT_ROLLOVER_REPLACEMENT_PROVIDER_INPUT_UTF8_BYTES, boundedFrozenSeedHistory, communicationSeedProvenance, renderSeedHistoryMessage } from "@ponderosa/core/seed-history";
 import type { CommunicationV4NextRunDelivery } from "@ponderosa/agents";
-import { CodexAdapter, renderSeedPrompt } from "@ponderosa/engines";
+import { ClaudeAdapter, CodexAdapter, renderSeedPrompt } from "@ponderosa/engines";
 import { inboundContext } from "../agent-mentions.js";
 import { environmentFactsPrompt, runtimeEnvironmentFacts } from "../runtime-environment-facts.js";
 import { collectReachableArtifactIds } from "../artifact-refs.js";
@@ -705,8 +705,8 @@ export async function prepareAgentRun(
   };
   const canRetainManagedVoice=()=>{
     if(!managedVoiceReplacementSession||!settingsTransition||!memory||!settingsTransition.authorizationSignatureHash||
-       !settingsTransition.authorizationOriginRunId||runtimeEngineId!=='codex'||
-       Object.getPrototypeOf(engine.adapter)!==CodexAdapter.prototype||Object.hasOwn(engine.adapter,'openSession')||
+       !settingsTransition.authorizationOriginRunId||!['codex','claude'].includes(runtimeEngineId)||
+       ![CodexAdapter.prototype,ClaudeAdapter.prototype].includes(Object.getPrototypeOf(engine.adapter))||Object.hasOwn(engine.adapter,'openSession')||
        resumeSessionState?.sessionId!==managedVoiceReplacementSession||
        resumeSessionState.toolContractHash!==effectiveRuntimeSessionContractHash)throw new Error('The verified voice transition cannot be resumed; its accepted context remains retained.');
     const proof=()=>memory.transitionAuthorizationStillValid(agent.id,agent.conversationId,

@@ -83,6 +83,7 @@ export class ClaudeStreamSession implements RuntimeSession {
   private nativeUsage?: RuntimeContextUsage;
   private usageInvalidated = false;
   private sessionInitialization?: unknown;
+  private verifiedInput?: { id:string; echoed:boolean; ready:boolean; allowed:boolean; resolve:()=>void; reject:(error:Error)=>void; release:()=>void; released:Promise<void>; timer:ReturnType<typeof setTimeout> };
   private modelChangedSinceOpen = false;
   private sessionInitializationReady!: () => void;
   private sessionInitializationWait = new Promise<void>(resolve => { this.sessionInitializationReady = resolve; });
@@ -231,6 +232,15 @@ export class ClaudeStreamSession implements RuntimeSession {
     }
   }
 
+  private settleVerifiedInput():void {
+    const pending=this.verifiedInput;
+    if(pending?.echoed && this.sessionInitialization && !pending.ready){pending.ready=true;pending.resolve();}
+  }
+  private failVerifiedInput(message:string):void {
+    const pending=this.verifiedInput;if(!pending)return;
+    this.verifiedInput=undefined;clearTimeout(pending.timer);this.replayFraming?.forget(pending.id);
+    pending.reject(new Error(message));pending.release();
+  }
   async startTurn(input: RuntimeTurnInput): Promise<{ turnId: string }> {
     input.assertCurrent?.();
     if (this.closed || this.active || this.taskLifetime.ownsRun || this.nativeCommand && !this.nativeCommand.succeeded) throw new Error("Claude has active or uncertain native work");
@@ -264,12 +274,40 @@ export class ClaudeStreamSession implements RuntimeSession {
     this.contextObservations.beginTurn(turnId);
     this.active = true;
     this.activeInputId = turnId;
+    let receipt:Promise<void>|undefined,deadline:Promise<never>|undefined;
+    if(input.requireVerifiedInput){
+      let release!:()=>void;const released=new Promise<void>(resolve=>{release=resolve;});
+      let rejectDeadline!:(error:Error)=>void;deadline=new Promise<never>((_resolve,reject)=>{rejectDeadline=reject;});
+      receipt=new Promise<void>((resolve,reject)=>{
+        const timer=setTimeout(()=>{
+          const error=new Error("Claude input confirmation timed out; outcome is unknown");
+          this.failVerifiedInput(error.message);rejectDeadline(error);
+        },45_000);
+        this.verifiedInput={id:turnId,echoed:false,ready:false,allowed:false,resolve,reject,release,released,timer};
+      });
+      // Avoid an unhandled rejection if writing fails synchronously.
+      void receipt.catch(()=>undefined);
+    }
     try {
-      await this.writeInputFrame(frame);
+      const pending=this.verifiedInput;
+      const writing=this.writeInputFrame(frame,Boolean(receipt));
+      if(receipt && deadline)await Promise.race([Promise.all([writing,receipt]),deadline]);
+      else await writing;
+      if(receipt){
+        input.assertCurrent?.();
+        if(!pending || this.verifiedInput!==pending)throw new Error("Claude input confirmation was interrupted");
+        pending.allowed=true;this.verifiedInput=undefined;clearTimeout(pending.timer);pending.release();
+      }
       this.seedHistory.splice(0);
     } catch (error) {
+      this.failVerifiedInput("Claude input was not confirmed");
       this.active = false;
       this.contextObservations.endTurn();
+      if(receipt){
+        // A submitted or partially buffered frame may still reach the child.
+        // Observe the owned process drain before this uncertain Run settles.
+        try{await this.close();}catch(closeError){throw new AggregateError([error,closeError],"Claude confirmation failed and runtime cleanup is unconfirmed");}
+      }
       throw error;
     }
     return { turnId };
@@ -530,6 +568,7 @@ export class ClaudeStreamSession implements RuntimeSession {
   close(): Promise<void> {
     if (this.closePromise) return this.closePromise;
     this.closed = true;
+    this.failVerifiedInput("Claude session closed before its input was confirmed");
     this.fileHistory.close();
     this.controls.close();
     this.cancelApprovals();
@@ -563,16 +602,18 @@ export class ClaudeStreamSession implements RuntimeSession {
     return this.writeInputFrame(this.inputFrame(prompt, id, inputFiles));
   }
 
-  private async writeInputFrame(frame: ReturnType<ClaudeStreamSession["inputFrame"]>): Promise<void> {
+  private async writeInputFrame(frame: ReturnType<ClaudeStreamSession["inputFrame"]>, requireReceipt=false): Promise<void> {
     if (this.closed || !this.child.stdin || this.child.stdin.destroyed) throw new Error("Claude runtime is unavailable");
     const media = frame.message.content.some(block => block.type === "image" || block.type === "document");
-    if (media) this.mediaReplayFraming().expect(frame.uuid, frame.message, Buffer.byteLength(JSON.stringify(frame), "utf8"));
+    if (media || requireReceipt) this.mediaReplayFraming().expect(frame.uuid, frame.message, Buffer.byteLength(JSON.stringify(frame), "utf8"));
     try { await this.writeFrame(frame); }
     catch (error) { this.replayFraming?.forget(frame.uuid); throw error; }
   }
 
   private mediaReplayFraming(): ClaudeReplayFraming {
-    return this.replayFraming ??= new ClaudeReplayFraming(this.engineAgentId);
+    return this.replayFraming ??= new ClaudeReplayFraming(this.engineAgentId,id=>{
+      if(this.verifiedInput?.id===id){this.verifiedInput.echoed=true;this.settleVerifiedInput();}
+    });
   }
 
   private async writeFrame(frame: unknown): Promise<void> {
@@ -592,8 +633,20 @@ export class ClaudeStreamSession implements RuntimeSession {
     try {
       for await (const raw of this.mediaReplayFraming().parse(stdout as AsyncIterable<Buffer>)) {
         if (this.taskStop.observe(raw)) continue;
-        if (this.fileHistory.observe(raw)) continue;
         if (this.controls.observe(raw)) continue;
+        const frame=raw && typeof raw==='object'?raw as {type?:unknown;request?:{subtype?:unknown}}:undefined;
+        const pending=this.verifiedInput;
+        if(pending && (frame?.type==='assistant'||frame?.type==='result'||frame?.type==='stream_event'||
+           frame?.type==='control_request' && (frame.request?.subtype==='can_use_tool'||frame.request?.subtype==='hook_callback'))){
+          if(!pending.ready){
+            this.failVerifiedInput("Claude produced work before confirming the exact session and input");
+            throw new Error("Claude produced work before confirming the exact session and input");
+          }
+          // A fast buffered event cannot cross the host's post-echo Run check.
+          await pending.released;
+          if(!pending.allowed)throw new Error("Claude input confirmation lost Run authority");
+        }
+        if (this.fileHistory.observe(raw)) continue;
         const stopHook = this.taskLifetime.stopHook(raw);
         if (stopHook) {
           for (const event of stopHook.events) yield event;
@@ -609,6 +662,7 @@ export class ClaudeStreamSession implements RuntimeSession {
         if (capabilities?.sessionId === this.engineAgentId) {
           this.sessionInitialization = raw;
           this.sessionInitializationReady();
+          this.settleVerifiedInput();
         }
         if (capabilities) {
           this.claudeCodeVersion = raw && typeof raw === "object" &&
@@ -656,6 +710,7 @@ export class ClaudeStreamSession implements RuntimeSession {
         }
       }
     } catch (error) {
+      this.failVerifiedInput("Claude session or input confirmation failed");
       if (!(error instanceof JsonlRecordLimitError)) throw error;
       this.active = false;
       yield {
@@ -665,6 +720,7 @@ export class ClaudeStreamSession implements RuntimeSession {
       await this.close();
       return;
     } finally {
+      this.failVerifiedInput("Claude stream ended before its input was confirmed");
       // Parser completion, not the stream close event, proves buffered JSONL
       // was consumed. The root timer remains the bounded fallback.
       this.taskStop.close();

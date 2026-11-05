@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { CapabilityPolicyStore, type AgentStore, type CoordinationV3Store, type WorkspaceStore } from '@ponderosa/agents';
 import { CAPABILITY_IDS, filterRuntimeToolsForCapabilities, runtimeRestrictions, PONDEROSA_HISTORY_TOOL, type Adapter, type ModelOption, type AgentDto, type ProjectDto } from '@ponderosa/core';
 import { MAX_CONTEXT_ROLLOVER_REPLACEMENT_PROVIDER_INPUT_UTF8_BYTES } from '@ponderosa/core/seed-history';
-import { CodexAdapter } from '@ponderosa/engines';
+import { ClaudeAdapter, CodexAdapter } from '@ponderosa/engines';
 import type { PonderosaServer, CreateServerOptions, EngineRegistration } from './app-contracts.js';
 import type { EngineAuthStatusCache } from './engine-auth-cache.js';
 import type { createOperationalNotifications } from './operational-notifications.js';
@@ -193,7 +193,7 @@ export async function requestSettingsTransition(input: {
       new CapabilityPolicyStore(store.sqlite).resolveForAgent(agent.id).restrictedCapabilityIds.includes(CAPABILITY_IDS.memoryRead))
     return hold('Memory read access was removed since this older session began. Its earlier memory exposure is unavailable; the original work remains queued for context review.');
    const engine=engines.get(agent.activeEngine);
-   if(!engine||Object.getPrototypeOf(engine.adapter)!==CodexAdapter.prototype||Object.hasOwn(engine.adapter,'openSession'))return true;
+   if(!engine||![CodexAdapter.prototype,ClaudeAdapter.prototype].includes(Object.getPrototypeOf(engine.adapter))||Object.hasOwn(engine.adapter,'openSession'))return true;
    const initialFingerprint=transitionFingerprint(input,pending.projectId,pending.agentId,pending.id);
    const {targetModel,targetEffort,targetSpeed}=settingsTransitionTarget(agent,project,engine.adapter,workspace.getPreferences(),cachedModelOptions(engine.adapter,project.id),dispatch);
    if(!targetModel?.trim()||!contract.model?.trim())return true;

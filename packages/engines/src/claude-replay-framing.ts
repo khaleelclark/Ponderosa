@@ -28,7 +28,7 @@ function digest(value: unknown): string {
 /** Only exact expected user media echoes may exceed the ordinary output limit. */
 export class ClaudeReplayFraming {
   private readonly pending = new Map<string, { digest: string; limit: number }>();
-  constructor(private readonly sessionId: string) {}
+  constructor(private readonly sessionId: string, private readonly onAccepted?: (id:string)=>void) {}
 
   expect(id: string, message: unknown, frameBytes: number): void {
     if (this.pending.has(id) || this.pending.size >= 32) throw new Error("Claude media replay window is full or duplicated");
@@ -52,8 +52,9 @@ export class ClaudeReplayFraming {
         event.session_id === this.sessionId && event.parent_tool_use_id == null &&
         event.message?.role === "user" && digest(event.message) === expected.digest && size <= expected.limit) {
       this.pending.delete(event.uuid as string);
+      this.onAccepted?.(event.uuid as string);
       // Preserve the receipt envelope; no raw image/PDF bytes reach event mappers.
-      return { type: "user", uuid: event.uuid, session_id: event.session_id, isReplay: true,
+      return { type: "user", uuid: event.uuid, session_id: event.session_id, parent_tool_use_id: null, isReplay: true,
         message: { role: "user", content: [] } };
     }
     if (expected && event?.type === "user" && event.isReplay === true) {

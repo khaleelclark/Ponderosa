@@ -564,6 +564,7 @@ export function startProviderRunExecution(
           identity,
           session,
           nativeCodexModelChange:Object.getPrototypeOf(rawSession)===CodexAppServerSession.prototype && rawSession.startTurn===CodexAppServerSession.prototype.startTurn,
+          nativeClaudeVerifiedInput:Object.getPrototypeOf(rawSession)===ClaudeStreamSession.prototype && rawSession.startTurn===ClaudeStreamSession.prototype.startTurn,
           iterator: session.events[Symbol.asyncIterator](),
           messageCapability,
         };
@@ -662,7 +663,7 @@ export function startProviderRunExecution(
       if (engine.adapter.openSession && !persistentRuntime) {
         persistentRuntime = await openRegisteredPersistentRuntime(resumeSessionId);
       }
-      if (retainedVerifiedContext && (!persistentRuntime?.nativeCodexModelChange ||
+      if (retainedVerifiedContext && (!(persistentRuntime?.nativeCodexModelChange || (assertSettingsTransitionPolicy && persistentRuntime?.nativeClaudeVerifiedInput)) ||
           !persistentRuntime.session.isAlive() ||
           readProviderSessionIdentifier(persistentRuntime.session)!==resumeSessionId)) {
         if (persistentRuntime) await teardownPersistentRuntime(agent.id,persistentRuntime,"unqualified saved-thread continuation",project.id);
@@ -739,6 +740,7 @@ export function startProviderRunExecution(
                       effort: effectiveEffort,
                       speed: effectiveSpeed,
                       clientMessageId: communicationEventId,
+                      ...(assertSettingsTransitionPolicy && runtimeEngineId==='claude' ? {requireVerifiedInput:true} : {}),
                       nativeAction: input.nativeAction,
                       assertCurrent: () => {
                         if (controller.signal.aborted || isClosed() || deletingAgentIds.has(agent.id) || deletingProjectIds.has(project.id) || !ownsActiveRun(agent.id, activeRun) || !renewExecutionLease(agent.id, activeRun)) throw new Error("Native turn lost current Run authority");
@@ -827,6 +829,7 @@ export function startProviderRunExecution(
                       effort: effectiveEffort,
                       speed: effectiveSpeed,
                       clientMessageId: communicationEventId,
+                      ...(assertSettingsTransitionPolicy && runtimeEngineId==='claude' ? {requireVerifiedInput:true} : {}),
                       nativeAction: input.nativeAction,
                       assertCurrent: () => {
                         if (controller.signal.aborted || isClosed() || deletingAgentIds.has(agent.id) || deletingProjectIds.has(project.id) || !ownsActiveRun(agent.id, activeRun) || !renewExecutionLease(agent.id, activeRun)) throw new Error("Native turn lost current Run authority");

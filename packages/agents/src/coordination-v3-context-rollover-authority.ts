@@ -220,7 +220,7 @@ export class CoordinationV3ContextRolloverAuthority {
       if(input.settingsTransition){
         const t=input.settingsTransition;
         if(input.triggerKind==='human' || input.canonicalOnlyRefresh || t.sourceRunId!==input.sourceRunId ||
-           !Number.isSafeInteger(t.sourceFence) || t.sourceFence<1 || t.engineId!=='codex' ||
+           !Number.isSafeInteger(t.sourceFence) || t.sourceFence<1 || !['codex','claude'].includes(t.engineId) ||
            !t.activationId || input.sourceActivationIds.includes(t.activationId) || !t.model?.trim() || !t.targetModel?.trim() ||
            !/^[a-f0-9]{64}$/u.test(t.oldContractHash) ||
            ((t.authorizationSignatureHash===undefined)!==(t.authorizationOriginRunId===undefined)) ||

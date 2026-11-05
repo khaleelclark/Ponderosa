@@ -175,6 +175,8 @@ export interface PersistentRuntime {
   session: RuntimeSession;
   /** This live session is the unmodified built-in Codex transport. */
   nativeCodexModelChange?: boolean;
+  /** This live session is the unmodified built-in Claude stream transport. */
+  nativeClaudeVerifiedInput?: boolean;
   iterator: AsyncIterator<AgentEvent>;
   /** Stable secrets injected once into the persistent engine process. */
   messageCapability: string;

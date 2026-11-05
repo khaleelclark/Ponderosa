@@ -1686,6 +1686,14 @@
       "origin": "Durable source evidence preserves context across restart and fences revoked memory"
     },
     {
+      "path": "tests/context-recovery/claude-managed-transition.test.mjs",
+      "feature": "context-recovery",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server, inert Codex and disposable Chroma with the pinned memory model",
+      "origin": "Claude managed transitions verify exact session and input before continuity"
+    },
+    {
       "path": "tests/context-recovery/managed-settings-transition.test.mjs",
       "feature": "context-recovery",
       "lane": "server",
@@ -2884,6 +2892,11 @@
     },
     {
       "path": "tests/shared/inert-codex.mjs",
+      "moduleBase": "apps/server/package.json",
+      "classification": "shared-controlled-fixture"
+    },
+    {
+      "path": "tests/shared/inert-claude-handoff.mjs",
       "moduleBase": "apps/server/package.json",
       "classification": "shared-controlled-fixture"
     },
