@@ -566,3 +566,23 @@ test('memory revoked after the original managed voice turn begins invalidates th
  },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,emitVoiceReply:true,holdMemoryCompletion:true,holdVoiceCompletion:true,uniqueThreads:true})).adapter,
    localMemoryForRoot:async root=>({chromaUrl:await ownedChroma(),collectionPrefix:'context_'+randomUUID().replaceAll('-',''),modelDir:process.env.PONDEROSA_TEST_MEMORY_MODEL_DIR,stateDirectory:path.join(root,'memory-policy'),provision:true})});
 });
+
+
+for(const [label,restriction] of [['workflow-only','workflow.scripts'],['other-provider connector','connector:claude:other']])test(`unrelated ${label} change during native open does not block exact Codex input`,{timeout:30000},async t=>{
+ let store,native;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Unrelated capability during native open'),agent=await f.createIdleAgent(chat,'Worker');
+  store.updateAgent(agent.id,{model:'fixture',effort:'medium'});
+  const text='Original task after unrelated capability change.';
+  await f.send(agent.id,text);
+  await until(async()=>(await native.requests()).some(row=>row.method==='thread/start'),'native open held',10000);
+  new CapabilityPolicyStore(store.sqlite).put({scopeKind:'agent',scopeId:agent.id,expectedRevision:0,restrictedCapabilityIds:[restriction]});
+  await native.releaseThread();
+  const submitted=await until(async()=>(await native.requests()).find(row=>row.method==='turn/start'),'exact input after unrelated policy change',5000);
+  assert.ok(JSON.stringify(submitted).includes(text));
+  const run=store.sqlite.prepare("SELECT * FROM scheduler_runs WHERE agent_id=? AND status IN ('leased','running')").get(agent.id);
+  assert.ok(run);assert.equal(store.sqlite.prepare("SELECT count(*) n FROM agent_run_pauses WHERE agent_id=? AND state IN ('paused','resume_requested')").get(agent.id).n,0);
+  await native.sendTool('ponderosa_message',{text:'Original task completed after unrelated change.'});
+  await f.settled(agent.id);
+ },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{holdThreadStart:true,advertiseModels:true})).adapter});
+});

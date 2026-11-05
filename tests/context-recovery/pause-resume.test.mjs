@@ -620,3 +620,18 @@ test('memory revocation selects the Run home Chat and notification failures do n
  assert.equal(committed.revision,1);assert.equal(policies.get('agent',agent.id).revision,1);
  assert.equal(pauses.length,2);assert.deepEqual(logs,['wake scheduler','publish pause','wake scheduler','publish pause']);
 });
+
+
+for(const [label,restriction] of [['workflow-only','workflow.scripts'],['other-provider connector','connector:claude:other']])test(`unrelated ${label} restriction leaves an active Codex Run running`,{timeout:30000},async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Unrelated capability'),agent=await f.createIdleAgent(chat,'Worker');
+  await f.hold(agent.id);
+  const authority=new CoordinationV3Store(store.sqlite),run=authority.activeAgentRun(agent.id);
+  const input=store.sqlite.prepare('SELECT provider_prompt,prompt_hash FROM provider_inputs WHERE scheduler_run_id=?').get(run.id);
+  f.ok(await f.api('PUT',`/api/agents/${agent.id}/capabilities`,{revision:0,restrictedCapabilityIds:[restriction]}));
+  assert.equal(authority.activeAgentRun(agent.id)?.id,run.id);
+  assert.equal(store.sqlite.prepare("SELECT count(*) n FROM agent_run_pauses WHERE agent_id=? AND state IN ('paused','resume_requested')").get(agent.id).n,0);
+  assert.deepEqual(store.sqlite.prepare('SELECT provider_prompt,prompt_hash FROM provider_inputs WHERE scheduler_run_id=?').get(run.id),input);
+ },{storeFactory:p=>(store=new AgentStore(p))});
+});
