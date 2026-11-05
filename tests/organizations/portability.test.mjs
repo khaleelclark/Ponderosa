@@ -4,6 +4,7 @@ import {request as httpRequest} from "node:http";
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { randomUUID, createHash } from 'node:crypto';
+import { gzipSync, gunzipSync } from 'node:zlib';
 import { mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -441,6 +442,46 @@ test('selected working files copy to a new folder and never overwrite an existin
   assert.equal(again.agents[0].workingFiles[0].path,'unmanaged-working-file.txt');
   const collision=await f.request(f.importRequest(pkg,randomUUID(),{workingFilesDestination:destination}));assert.ok(collision.statusCode>=400);
   assert.equal(await readFile(path.join(destination,'unmanaged-working-file.txt'),'utf8'),'UNMANAGED_FILE_MARKER');
+}));
+
+test('large working original survives Agent import, retained export, fresh recapture and tamper refusal',{timeout:180_000},t=>withPortability(t,async f=>{
+  const bytes=Buffer.alloc(64*1024*1024+8193,0x61);
+  bytes[0]=0x62;bytes[bytes.length-1]=0x63;
+  const expected=createHash('sha256').update(bytes).digest('hex');
+  await writeFile(path.join(f.dataDir,'large-original.bin'),bytes);
+  const capture=async id=>f.ok(await f.request({method:'GET',url:`/api/agents/${id}/export?mode=full&workingFiles=${encodeURIComponent(JSON.stringify(['large-original.bin']))}`}));
+  const pkg=await capture(f.a.id);
+  const original=pkg.agents[0].workingFiles.find(file=>file.path==='large-original.bin');
+  assert.ok(original.parts&&original.parts.refs.length>=2);
+  assert.equal(original.parts.byteLength,bytes.length);
+  assert.equal(original.parts.sha256,expected);
+  const altered=structuredClone(pkg);
+  const tamperedPart=altered.agents[0].artifacts.find(artifact=>artifact.ref===original.parts.refs[0]);
+  assert.equal(tamperedPart.dataEncoding,'gzip');
+  const alteredBytes=gunzipSync(Buffer.from(tamperedPart.dataBase64,'base64'));
+  alteredBytes[0]^=1;tamperedPart.dataBase64=gzipSync(alteredBytes).toString('base64');
+  const before=f.store.getProjectArtifacts(f.project.id).length;
+  const rejected=await f.request(f.importRequest(altered,randomUUID(),{workingFilesDestination:path.join(f.dataDir,'tampered-output')}));
+  assert.ok(rejected.statusCode>=400,rejected.body);
+  assert.equal(f.store.getProjectArtifacts(f.project.id).length,before,'tampered part is rejected before publishing artifacts');
+  const destination=path.join(f.dataDir,'large-output');
+  const imported=f.ok(await f.request(f.importRequest(pkg,randomUUID(),{workingFilesDestination:destination})));
+  assert.equal(createHash('sha256').update(await readFile(path.join(destination,'large-original.bin'))).digest('hex'),expected);
+  const retained=await f.exportAgent(imported.rootAgentId);
+  const retainedFile=retained.agents[0].workingFiles.find(file=>file.path==='large-original.bin');
+  assert.equal(retainedFile.parts.sha256,expected);
+  assert.ok(retainedFile.parts.refs.every(ref=>retained.agents[0].artifacts.some(artifact=>artifact.ref===ref)));
+  const destination2=path.join(f.dataDir,'large-output-again');
+  f.ok(await f.request(f.importRequest(retained,randomUUID(),{workingFilesDestination:destination2})));
+  assert.equal(createHash('sha256').update(await readFile(path.join(destination2,'large-original.bin'))).digest('hex'),expected);
+  const fresh=await capture(imported.rootAgentId);
+  const freshFile=fresh.agents[0].workingFiles.find(file=>file.path==='large-original.bin');
+  assert.equal(freshFile.parts.sha256,expected);
+  const partArtifacts=fresh.agents[0].artifacts.filter(artifact=>artifact.mediaType==='application/vnd.ponderosa.working-file-part.v1');
+  assert.deepEqual(new Set(partArtifacts.map(artifact=>artifact.ref)),new Set(freshFile.parts.refs),'fresh capture omits stale transport parts');
+  const destination3=path.join(f.dataDir,'large-output-fresh');
+  f.ok(await f.request(f.importRequest(fresh,randomUUID(),{workingFilesDestination:destination3})));
+  assert.equal(createHash('sha256').update(await readFile(path.join(destination3,'large-original.bin'))).digest('hex'),expected);
 }));
 
 test('foreign source Chat bindings are refused before an organization is silently collapsed',options,t=>withPortability(t,async f=>{
