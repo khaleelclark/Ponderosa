@@ -147,6 +147,9 @@ export function registerRequestSecurityHooks(
     if (capability && !isAgentToolRoute(request.url)) {
       return reply.code(401).send({ error: "Agent capability is not operator authority" });
     }
+    if (capability?.inputVerificationPending && isAgentToolRoute(request.url)) {
+      return reply.code(409).send({ error: "The current provider input is not yet confirmed." });
+    }
     if (capability && deletingAgentIds.has(capability.agentId)) {
       return reply.code(409).send({ error: "Agent deletion is already in progress" });
     }

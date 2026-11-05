@@ -33,6 +33,20 @@ setInterval(async()=>{
  if((instruction.releaseEcho||instruction.echoAndTool)&&heldEcho){emit(heldEcho);heldEcho=undefined;}
  if(instruction.preEchoTool||instruction.echoAndTool)emit({type:'control_request',request_id:'premature-tool',request:{subtype:'can_use_tool',tool_name:'Bash',input:{command:'echo synthetic'}}});
  if(instruction.preEchoStop)emit({type:'control_request',request_id:'premature-stop',request:{subtype:'hook_callback',callback_id:'ponderosa-lifetime-'+session,input:{session_id:session,hook_event_name:'Stop',background_tasks:[{id:'old-task',type:'agent',status:'running'}]}}});
+ if(instruction.probe&&current){
+  const messageUrl=process.env.PONDEROSA_AGENT_MESSAGE_URL,token=process.env.PONDEROSA_AGENT_MESSAGE_TOKEN;
+  const paths=instruction.probe==='before'?
+   [['message','/api/agent-messages','POST',{intent:'direct_to_user',text:'SYNTHETIC_UNCONFIRMED_TOOL_EFFECT'}],
+    ['update','/api/agent-request-updates','POST',{}],['directory','/api/agent-directory','GET']]:
+   [['directory','/api/agent-directory','GET']];
+  const results=[];
+  for(const [name,route,method,body] of paths){
+   const url=messageUrl.replace(/\\/api\\/agent-messages$/,route);
+   const response=await fetch(url,{method,headers:{authorization:'Bearer '+token,'content-type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});
+   results.push({name,status:response.status});await response.text();
+  }
+  record({kind:'probe',phase:instruction.probe,results});
+ }
  if(instruction.answer&&current){
   const msg={id:crypto.randomUUID(),role:'assistant',model,content:[{type:'text',text:instruction.answer}],usage:{input_tokens:15,cache_read_input_tokens:0,cache_creation_input_tokens:0,output_tokens:2}};
   emit({type:'assistant',session_id:session,parent_tool_use_id:null,message:msg});
@@ -59,5 +73,5 @@ setInterval(async()=>{
  async function send(value){const temporary=command+'.new';await writeFile(temporary,JSON.stringify(value));await rename(temporary,command);}
  return {adapter:new ClaudeAdapter({bin,killGraceMs:100}),
   async frames(){try{return (await readFile(log,'utf8')).trim().split('\n').filter(Boolean).map(line=>JSON.parse(line));}catch(error){if(error.code==='ENOENT')return [];throw error;}},
-  answer:text=>send({answer:text}),voice:text=>send({voice:text}),releaseEcho:()=>send({releaseEcho:true}),preEchoTool:()=>send({preEchoTool:true}),echoAndTool:()=>send({echoAndTool:true}),preEchoStop:()=>send({preEchoStop:true}),corruptEcho:()=>send({corruptEcho:true})};
+  answer:text=>send({answer:text}),voice:text=>send({voice:text}),releaseEcho:()=>send({releaseEcho:true}),preEchoTool:()=>send({preEchoTool:true}),echoAndTool:()=>send({echoAndTool:true}),preEchoStop:()=>send({preEchoStop:true}),corruptEcho:()=>send({corruptEcho:true}),probe:phase=>send({probe:phase})};
 }

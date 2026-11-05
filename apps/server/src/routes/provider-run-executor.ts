@@ -726,6 +726,15 @@ export function startProviderRunExecution(
           throw error;
         }
       };
+      const openVerifiedInputCapability=():void=>{
+        const cap=agentMessageCapabilities.get(messageCapability);
+        if(!cap||!cap.inputVerificationPending||cap.agentId!==agent.id||cap.runId!==runId||
+           cap.v3SchedulerRunId!==activeRun.v3SchedulerRunId||cap.v3FencingToken!==activeRun.v3FencingToken||
+           activeRuns.get(agent.id)!==activeRun||activeRun.controller.signal.aborted||!ownsActiveRun(agent.id,activeRun))
+          throw new Error("The verified provider input lost its exact Run capability.");
+        assertSettingsTransitionPolicy?.();
+        cap.inputVerificationPending=false;
+      };
       const startStream = (sessionId?: string): AsyncIterable<AgentEvent> => sessionId
         ? persistentRuntime
           ? {
@@ -740,7 +749,7 @@ export function startProviderRunExecution(
                       effort: effectiveEffort,
                       speed: effectiveSpeed,
                       clientMessageId: communicationEventId,
-                      ...(assertSettingsTransitionPolicy && runtimeEngineId==='claude' ? {requireVerifiedInput:true} : {}),
+                      ...(assertSettingsTransitionPolicy && runtimeEngineId==='claude' ? {requireVerifiedInput:true,onVerifiedInput:openVerifiedInputCapability} : {}),
                       nativeAction: input.nativeAction,
                       assertCurrent: () => {
                         if (controller.signal.aborted || isClosed() || deletingAgentIds.has(agent.id) || deletingProjectIds.has(project.id) || !ownsActiveRun(agent.id, activeRun) || !renewExecutionLease(agent.id, activeRun)) throw new Error("Native turn lost current Run authority");
@@ -829,7 +838,7 @@ export function startProviderRunExecution(
                       effort: effectiveEffort,
                       speed: effectiveSpeed,
                       clientMessageId: communicationEventId,
-                      ...(assertSettingsTransitionPolicy && runtimeEngineId==='claude' ? {requireVerifiedInput:true} : {}),
+                      ...(assertSettingsTransitionPolicy && runtimeEngineId==='claude' ? {requireVerifiedInput:true,onVerifiedInput:openVerifiedInputCapability} : {}),
                       nativeAction: input.nativeAction,
                       assertCurrent: () => {
                         if (controller.signal.aborted || isClosed() || deletingAgentIds.has(agent.id) || deletingProjectIds.has(project.id) || !ownsActiveRun(agent.id, activeRun) || !renewExecutionLease(agent.id, activeRun)) throw new Error("Native turn lost current Run authority");

@@ -296,6 +296,7 @@ export class ClaudeStreamSession implements RuntimeSession {
       if(receipt){
         input.assertCurrent?.();
         if(!pending || this.verifiedInput!==pending)throw new Error("Claude input confirmation was interrupted");
+        input.onVerifiedInput?.();
         pending.allowed=true;this.verifiedInput=undefined;clearTimeout(pending.timer);pending.release();
       }
       this.seedHistory.splice(0);

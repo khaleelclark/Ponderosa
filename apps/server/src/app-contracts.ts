@@ -274,6 +274,8 @@ export interface PendingTurn {
 }
 
 export interface AgentMessageCapability {
+  /** Host route admission waits until the current native input is verified. */
+  inputVerificationPending?: boolean;
   agentId: string;
   conversationId?: string;
   runId: string;

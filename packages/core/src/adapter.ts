@@ -189,6 +189,8 @@ export interface RuntimeTurnInput {
   clientMessageId?: string;
   /** Require the adapter to confirm the native session and this exact input before accepting a managed handoff. */
   requireVerifiedInput?: boolean;
+  /** Host opens the exact Run capability after native input verification. */
+  onVerifiedInput?: () => void;
   /** Exact human-selected action, admitted and recorded by the scheduler. */
   nativeAction?: import("./native-turn.js").NativeTurnAction;
   /** Host callback rechecks the exact current Run after asynchronous admission. */

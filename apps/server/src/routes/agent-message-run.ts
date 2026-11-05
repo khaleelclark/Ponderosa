@@ -1224,6 +1224,7 @@ export function registerAgentMessageRunRoute(
       // unambiguous without manufacturing acknowledgement or recovery work.
       const defaultReply = canonicalDefaultReplyRoute(coordinationV3, runId, agent.id);
       agentMessageCapabilities.set(messageCapability, {
+        ...(assertSettingsTransitionPolicy && runtimeEngineId === 'claude' ? {inputVerificationPending:true} : {}),
         agentId: agent.id,
         conversationId: routingConversationId,
         runId,

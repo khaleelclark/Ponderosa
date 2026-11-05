@@ -227,3 +227,40 @@ test('silent Claude handoff is held as unknown by the scheduler without replay',
   assert.equal(store.sqlite.prepare("SELECT count(*) n FROM agent_activations WHERE kind='context_rollover_handoff' AND json_extract(payload_json,'$.rolloverId')=?").get(rollover.id).n,1);
  },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertClaudeHandoff(root,{holdEcho:true})).adapter});
 });
+
+
+test('Claude direct MCP calls wait for verified transition input and resume afterward',{timeout:90000},async t=>{
+ let store,native;
+ const reserve=net.createServer();await new Promise(resolve=>reserve.listen(0,'127.0.0.1',resolve));
+ const port=reserve.address().port;await new Promise(resolve=>reserve.close(resolve));
+ await withFixture(t,async f=>{
+  await f.listen({host:'127.0.0.1',port});
+  const chat=f.ok(await f.api('POST','/api/chats',{label:'Claude MCP input fence',defaultEngine:'claude'},{'idempotency-key':randomUUID()}));
+  const agent=f.ok(await f.api('POST',`/api/projects/${chat.projectId}/agents`,{title:'Worker',engine:'claude',conversationId:chat.id,idempotencyKey:randomUUID()}));
+  await f.send(agent.id,'Keep the original objective.');
+  await until(async()=>(await userFrames(native)).length>=1,'ordinary input',20000);
+  await native.probe('ordinary');
+  const ordinary=await until(async()=>(await native.frames()).find(x=>x.kind==='probe'&&x.phase==='ordinary'),'ordinary directory probe',20000);
+  assert.equal(ordinary.results[0].status,200,'ordinary Claude runs keep their existing tool access');
+  await native.answer('Earlier research complete.');await f.settled(agent.id);
+  f.ok(await f.api('PATCH',`/api/agents/${agent.id}`,{model:'opus'}));
+  await f.send(agent.id,'Continue the original objective.');
+  await until(async()=>(await userFrames(native)).length>=2,'unconfirmed handoff input',20000);
+  const rollover=store.sqlite.prepare("SELECT id FROM context_rollovers WHERE agent_id=? AND state='requested'").get(agent.id);assert.ok(rollover);
+  await native.probe('before');
+  const before=await until(async()=>(await native.frames()).find(x=>x.kind==='probe'&&x.phase==='before'),'unconfirmed tool probes',20000);
+  assert.deepEqual(before.results.map(x=>[x.name,x.status]),[['message',409],['update',409],['directory',409]]);
+  assert.equal(store.sqlite.prepare("SELECT count(*) n FROM runtime_communications WHERE payload_json LIKE '%SYNTHETIC_UNCONFIRMED_TOOL_EFFECT%'").get().n,0);
+  await native.releaseEcho();
+  await until(()=>store.sqlite.prepare(`SELECT 1 FROM scheduler_prompt_injections i,json_each(i.activation_ids_json) a
+   JOIN agent_activations x ON x.id=a.value WHERE x.kind='context_rollover_handoff' AND json_extract(x.payload_json,'$.rolloverId')=? AND i.state='acknowledged'`).get(rollover.id),'handoff input confirmed',20000);
+  await native.probe('after');
+  const after=await until(async()=>(await native.frames()).find(x=>x.kind==='probe'&&x.phase==='after'),'confirmed directory probe',20000);
+  assert.equal(after.results[0].status,200,'the exact confirmed Run regains its authorized tools');
+  await native.answer('The original objective and research remain available.');
+  await until(async()=>(await userFrames(native)).length>=3,'replacement',20000);
+  await native.answer('Continuity context received.');
+  await until(async()=>(await userFrames(native)).length>=4,'queued task',20000);
+  await native.answer('The original objective is complete.');await f.settled(agent.id);
+ },{agentBaseUrl:`http://127.0.0.1:${port}`,storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertClaudeHandoff(root,{holdEcho:true})).adapter});
+});
