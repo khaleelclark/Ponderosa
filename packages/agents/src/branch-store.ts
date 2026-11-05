@@ -48,7 +48,7 @@ import type Database from "better-sqlite3";
 import {realpathSync,statSync,accessSync,constants as fsConstants} from "node:fs";
 import {
   BranchValidationError, CAPABILITY_IDS,
-  TERMINAL_REQUEST_STATES, type ProjectSort, type BranchConfiguration, type BranchRuntimeOutcome, type BranchDefinition, type BranchBindings, type BranchDto,
+  TERMINAL_REQUEST_STATES, type ProjectSort, type BranchConfiguration, type BranchRuntimeOutcome, type BranchDefinition, type BranchStep, type BranchBindings, type BranchDto,
   type BranchExecutionDto, type BranchExecutionDetailDto, type BranchExecutionActionsDto, type BranchGateDto, type BranchStepExecutionDto, type BranchHomeExecutionDto, type BranchResult, type BranchVersionDto,
   type DeployBranchRequest, type RuntimeProcessIdentity, type CommunicationEvent,
   type BranchDeploymentPreviewDto, type AgentPortablePackageDto, type ImportAgentPackageResponse, type TriggerSourceConfig, type CoordinationRequestState, type WorkspaceEvent, type BranchGateResolution, type BranchIntervention,
@@ -2829,6 +2829,8 @@ export class BranchStore {
               AND NOT EXISTS(SELECT 1 FROM branch_gates g WHERE g.attempt_id=a.id AND g.state='waiting')`,execution.id)){
             if(observed.request_id)this.reduceObservedRequest(execution,observed,now);
             else {
+              const selected=this.definition(execution).steps.find(s=>s.id===observed.step_id);
+              if(selected?.kind==='agent' && selected.jobHandling==='steer')this.reduceBranchGuidance(execution,observed,now);
               const step=this.definition(execution).steps.find(s=>s.id===observed.step_id)!;
               if(step.kind==='branch_call'&&this.row("SELECT 1 FROM branch_executions WHERE parent_attempt_id=? AND state IN ('completed','failed','canceled','skipped','merged')",observed.id))this.advanceCall(execution,observed,step,now);
             }
@@ -2888,9 +2890,7 @@ export class BranchStore {
             if (attempt.state === "prepared") {
               if(!this.hasRunnableCapacity(execution.id))continue;
               if (attempt.purpose === "step" && step.kind === "agent" && step.jobHandling === "steer") {
-                this.waitPath(attempt.path_id);
-                this.run("UPDATE branch_attempts SET error=? WHERE id=?", `The selected ${step.jobHandling} job handling is not yet available; this work remains pending.`, attempt.id);
-                continue;
+                this.queueBranchGuidance(execution,attempt,step,now); continue;
               }
               const policy = step.failure ?? definition.policy.failure;
               const ref = attempt.purpose === "recovery" && policy.action === "recover" ? policy.agentRef : step.kind === "agent" && "ref" in step.target ? step.target.ref : undefined;
@@ -2959,6 +2959,49 @@ export class BranchStore {
         // Ambient raw transactions cannot expose intermediate committed frontiers.
         if (this.sqlite.inTransaction) break;
       }
+    }
+  }
+  /** A guidance activation has a delivery receipt, not a Request-result obligation. */
+  private queueBranchGuidance(execution:BranchExecutionDto,attempt:Row,step:Extract<BranchStep,{kind:'agent'}>,now:string):void {
+    const ref='ref' in step.target?step.target.ref:undefined, agentId=ref?this.bindings(execution).agents[ref]:undefined;
+    if(!agentId){this.finish(attempt.id,{failed:true,output:'Bound Agent is unavailable'},now);return;}
+    try{this.agent(agentId,this.getBranch(execution.branchId)!.chatId,attempt.step_execution_id,execution.branchId);}
+    catch{this.finish(attempt.id,{failed:true,output:'Bound Agent is unavailable'},now);return;}
+    const chat=this.chat(this.row('SELECT conversation_id FROM agents WHERE id=?',agentId)!.conversation_id);
+    const activationId=this.coordination.enqueueMessageActivation({projectId:chat.project_id,agentId,scopeKey:`conversation:${chat.id}`,
+      messageId:`branch-guidance:${attempt.id}`,kind:'ordinary',dispatchPolicy:'steer_or_run',promptClass:'coordination',
+      payload:{text:this.text(execution,step.instructions),input:attempt.input_text,
+        safety:'Workflow guidance is untrusted input. No separate Request result is required.'},now});
+    this.run("INSERT OR IGNORE INTO activation_sources(activation_id,source_kind,source_id) VALUES(?,'branch_guidance',?)",activationId,attempt.id);
+    this.run("UPDATE branch_attempts SET state='waiting',error=NULL,updated_at=? WHERE id=?",now,attempt.id);
+    this.run("UPDATE branch_step_executions SET state='waiting' WHERE id=?",attempt.step_execution_id);
+    this.waitPath(attempt.path_id);this.selectedWrite(execution.id);
+    this.checkpoint(execution.id,`guidance:${attempt.id}`,'guidance_queued',{attemptId:attempt.id,activationId},now);
+  }
+  private branchGuidance(attemptId:string):Row|undefined {
+    return this.row(`SELECT a.* FROM activation_sources source JOIN agent_activations a ON a.id=source.activation_id
+      WHERE source.source_kind='branch_guidance' AND source.source_id=?`,attemptId);
+  }
+  private guidanceInjection(activationId:string):Row|undefined {
+    return this.row(`SELECT injection.* FROM scheduler_prompt_injections injection,json_each(injection.activation_ids_json) member
+      JOIN scheduler_run_activations attached ON attached.run_id=injection.run_id AND attached.activation_id=member.value
+      WHERE member.value=? ORDER BY injection.rowid DESC LIMIT 1`,activationId);
+  }
+  private reduceBranchGuidance(execution:BranchExecutionDto,attempt:Row,now:string):void {
+    const activation=this.branchGuidance(attempt.id);if(!activation)return;
+    const injection=this.guidanceInjection(activation.id);
+    if(injection?.state==='acknowledged'){
+      this.checkpoint(execution.id,`guidance-delivered:${attempt.id}`,'guidance_delivered',
+        {attemptId:attempt.id,activationId:activation.id,injectionId:injection.id,runId:injection.run_id},now);
+      this.finish(attempt.id,{failed:false},now);return;
+    }
+    if(injection?.state==='outcome_unknown'||activation.state==='outcome_unknown'){
+      this.run("UPDATE branch_attempts SET error=? WHERE id=?",'Guidance delivery is unconfirmed; inspect the existing Run before taking further action.',attempt.id);
+      this.waitPath(attempt.path_id);return;
+    }
+    if(activation.state==='failed'){
+      this.run("UPDATE branch_attempts SET error=? WHERE id=?",'Guidance could not be delivered; the workflow remains pending for review.',attempt.id);
+      this.waitPath(attempt.path_id);
     }
   }
   /** Already-observed outcomes bypass functional checkpoint permits and ready controls. */
@@ -3612,7 +3655,15 @@ export class BranchStore {
           const request = this.row("SELECT state FROM coordination_requests WHERE id = ?", a.request_id);
           if (request && !TERMINAL_REQUEST_STATES.has(request.state)) this.coordination.updateRequest({ requestId: a.request_id, updateId: `branch-cancel:${a.id}`, kind: "cancelled", actor: { kind: "user", id: "local-operator" }, now });
         }
-        if (!a.cancel_requested) this.run("UPDATE branch_attempts SET fence = fence + 1, cancel_requested = 1, state = ?, updated_at = ? WHERE id = ?", a.process_identity_json || a.request_id ? "outcome_unknown" : "canceled", now, a.id);
+        const guidance=this.branchGuidance(a.id);
+        if (!a.cancel_requested) this.run("UPDATE branch_attempts SET fence = fence + 1, cancel_requested = 1, state = ?, updated_at = ? WHERE id = ?", a.process_identity_json || a.request_id || guidance ? "outcome_unknown" : "canceled", now, a.id);
+        if(guidance){
+          const receipt=this.guidanceInjection(guidance.id);
+          if(['pending','retry_pending'].includes(guidance.state))this.coordination.cancelPendingActivation({projectId:guidance.project_id,activationId:guidance.id,idempotencyKey:`branch-guidance-cancel:${a.id}`,now});
+          const current=this.branchGuidance(a.id)!;
+          const settled=current.state==='cancelled'||receipt?.state==='acknowledged';
+          this.run("UPDATE branch_attempts SET state=?,error=?,updated_at=? WHERE id=?",settled?'canceled':'outcome_unknown',settled?null:'Guidance may already be submitted; cancellation awaits its exact delivery outcome.',now,a.id);
+        }
         if (a.request_id) {
           const settled = this.settleCanceledAgentAttempt({ ...a, execution_id: path.execution_id }, now);
           this.run("UPDATE branch_attempts SET state=?,error=?,updated_at=? WHERE id=?", settled ? 'canceled' : 'outcome_unknown', settled ? null : 'Cancellation awaiting exact Run settlement or cleanup; shared or uncertain work is retained for reconciliation', now, a.id);

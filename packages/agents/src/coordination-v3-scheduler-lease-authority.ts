@@ -330,6 +330,8 @@ export class CoordinationV3SchedulerLeaseAuthority {
       const candidateIsExplicitQueuedTurn = isExplicitQueuedTurn(
         queuedActivations[0]!,
       );
+      const isBranchGuidance = (activation: ActivationRow): boolean => Boolean(this.sqlite.prepare("SELECT 1 FROM activation_sources WHERE activation_id=? AND source_kind='branch_guidance'").get(activation.id));
+      const candidateIsBranchGuidance = isBranchGuidance(queuedActivations[0]!);
       // A separately requested model/voice boundary needs its own admission
       // check before it can be attached to a provider Run.
       const hasIndependentDispatch = (activation: ActivationRow): boolean => {
@@ -377,11 +379,12 @@ export class CoordinationV3SchedulerLeaseAuthority {
         "SELECT 1 FROM activation_sources WHERE activation_id=? AND source_kind='reviewed_steering'"
       ).get(activation.id));
       const candidateIsReviewedSteering = isReviewedSteering(queuedActivations[0]!);
-      const activations = candidateIsExplicitQueuedTurn || candidateIsContextRollover || candidateIsReviewedSteering || hasIndependentDispatch(queuedActivations[0]!) || awaitsSettingsPreflight(queuedActivations[0]!)
+      const activations = candidateIsExplicitQueuedTurn || candidateIsBranchGuidance || candidateIsContextRollover || candidateIsReviewedSteering || hasIndependentDispatch(queuedActivations[0]!) || awaitsSettingsPreflight(queuedActivations[0]!)
         ? [queuedActivations[0]!]
         : queuedActivations
           .filter((activation) =>
             !isExplicitQueuedTurn(activation) &&
+            !isBranchGuidance(activation) &&
             !hasIndependentDispatch(activation) &&
             !awaitsSettingsPreflight(activation) &&
             !isContextRolloverCandidate(activation) &&

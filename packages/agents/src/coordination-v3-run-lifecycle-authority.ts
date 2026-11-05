@@ -1,3 +1,4 @@
+import { requireBranchGuidanceSubmission } from "./branch-guidance-authority.js";
 import { currentRequestAttachmentSql } from "./coordination-v3-request-lineage.js";
 import { requireBranchScheduleInjectionEligible } from "./coordination-v3-branch-schedule.js";
 import { createHash } from "node:crypto";
@@ -251,6 +252,7 @@ export class CoordinationV3RunLifecycleAuthority {
     const now = input.now ?? new Date().toISOString();
     this.sqlite.transaction(() => {
       requireBranchScheduleInjectionEligible(this.sqlite,input.injectionId,input.runId,now,this.canonicalTaskDecisions);
+      requireBranchGuidanceSubmission(this.sqlite,input.injectionId,input.runId);
       const run = this.support.getFencedRun(
         input.runId,
         input.fencingToken,

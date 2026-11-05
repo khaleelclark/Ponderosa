@@ -1,3 +1,4 @@
+import { requireBranchGuidanceSubmission } from "./branch-guidance-authority.js";
 import type { RuntimeInputFile } from "@ponderosa/core";
 import {payloadHash} from './coordination-v3-canonical-json.js';
 import { REQUEST_SOURCE_LINEAGE_CTE, currentRequestAttachmentSql } from "./coordination-v3-request-lineage.js";
@@ -1331,6 +1332,10 @@ export class CoordinationV3Store {
     state: string;
   } | undefined {
     return this.runLifecycleAuthority.promptInjectionForActivation(runId, activationId);
+  }
+
+  assertBranchGuidanceSubmission(injectionId:string,runId:string):void {
+    requireBranchGuidanceSubmission(this.sqlite,injectionId,runId);
   }
 
   markPromptSubmitted(input: {

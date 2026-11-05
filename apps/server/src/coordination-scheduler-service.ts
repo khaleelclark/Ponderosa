@@ -473,6 +473,7 @@ return new CoordinationV3Scheduler(
           .get(lease.runId, lease.agentId, lease.fencingToken, providerSessionId, new Date().toISOString(), lease.injectionId);
         if (!owned || !renewExecutionLease(lease.agentId, run)) throw new SteeringAuthorityChangedError("Steering lost current leased authority");
         requireCurrentRuntimeInputAccess({ files: inputFiles, projectId: lease.projectId, agentId: lease.agentId, store, assets });
+        coordinationV3.assertBranchGuidanceSubmission(lease.injectionId,lease.runId);
       };
       try {
         coordinationV3.markPromptSubmitted({

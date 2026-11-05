@@ -5,6 +5,10 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { AgentStore, CoordinationV3Store, BranchStore, CapabilityPolicyStore } from '@ponderosa/agents';
 import {CAPABILITY_IDS} from '@ponderosa/core';
+import {withFixture,until} from '../shared/fixture.mjs';
+import {captureBranchHostCut} from '../../packages/agents/dist/branch-host-cut.js';
+import {selectBranchUnit} from '../../packages/agents/dist/branch-unit-selection.js';
+import {scriptDefinitionSupported} from '../../packages/agents/dist/branch-script-continuation.js';
 function fixture(t) {
   const dir = mkdtempSync(join(tmpdir(), 'branches-'));
   let store = new AgentStore(dir);
@@ -329,9 +333,124 @@ test("job handling validates persistent-Agent scope and holds unavailable modes 
  for(const [target,jobHandling] of [[{kind:"persistent_agent",ref:"reviewer"},"wrong"],[{kind:"persistent_agent",ref:"reviewer"},["queue"]],[{kind:"persistent_agent",ref:"reviewer"},{}],[{kind:"persistent_organization",ref:"reviewer"},"queue"]]){
   assert.throws(()=>f.branches.deploy({...f.deployment,idempotencyKey:"bad-validation",definition:{...base,steps:[{...step,target,jobHandling}],edges:[]}}),/Job handling/);
  }
- for(const jobHandling of ["steer","copy"]){
+ for(const jobHandling of ["copy"]){
   const branch=f.branches.deploy({...f.deployment,idempotencyKey:`hold-${jobHandling}`,definition:{...base,name:`Held ${jobHandling}`,steps:[{...step,jobHandling}],edges:[]}});
   const job=f.branches.accept(branch.id,`job-${jobHandling}`,"input");for(let i=0;i<4;i++)f.branches.advance();
   const attempt=f.branches.detail(job.id).attempts[0];assert.equal(attempt.requestId,undefined);assert.match(attempt.error,/not yet available/);assert.equal(f.branches.execution(job.id).state,"waiting");
  }
+});
+
+function guidanceFixture(t){
+ const f=fixture(t),base=f.deployment.definition,step={id:'agent',kind:'agent',target:{kind:'persistent_agent',ref:'reviewer'},instructions:'Prioritize this detail',jobHandling:'steer'};
+ const branch=f.branches.deploy({...f.deployment,idempotencyKey:'guidance-deploy',definition:{...base,name:'Guidance',steps:[step],edges:[]}});
+ const job=f.branches.accept(branch.id,'guidance-job','Guidance input');for(let i=0;i<4;i++)f.branches.advance();
+ const attempt=f.branches.detail(job.id).attempts[0],activation=f.store.sqlite.prepare("SELECT a.* FROM activation_sources s JOIN agent_activations a ON a.id=s.activation_id WHERE s.source_kind='branch_guidance' AND s.source_id=?").get(attempt.id);
+ assert.ok(activation);assert.equal(attempt.requestId,undefined);return {f,job,attempt,activation};
+}
+function busyRun(f){
+ f.coordination.enqueueMessageActivation({projectId:f.agent.projectId,agentId:f.agent.id,scopeKey:`conversation:${f.agent.conversationId}`,messageId:'busy-original',kind:'ordinary',payload:{text:'Existing task'}});
+ const run=f.coordination.leaseNextRun({workerId:'busy'});assert.ok(run);f.coordination.markRunStarted(run.runId,run.fencingToken);
+ f.coordination.preparePromptInjection({...run,prompt:'Existing task'});f.coordination.markPromptSubmitted(run);f.coordination.acknowledgePromptInjection(run);return run;
+}
+test('workflow guidance steers a busy Run and records delivery without inventing a result',t=>{
+ const f=fixture(t);busyRun(f);
+ const base=f.deployment.definition,definition={...base,name:'Busy guidance',steps:[{id:'agent',kind:'agent',target:{kind:'persistent_agent',ref:'reviewer'},instructions:'Change priority',jobHandling:'steer'}],edges:[]};
+ const branch=f.branches.deploy({...f.deployment,idempotencyKey:'busy-guidance',definition});const job=f.branches.accept(branch.id,'event','detail');for(let i=0;i<4;i++)f.branches.advance();
+ const attempt=f.branches.detail(job.id).attempts[0];assert.equal(attempt.requestId,undefined);
+ const lease=f.coordination.leaseNextSteering({workerId:'steer'});assert.ok(lease);f.coordination.preparePromptInjection({...lease,prompt:'Change priority: detail'});
+ f.branches.advance();assert.equal(f.branches.execution(job.id).state,'waiting');
+ f.coordination.markPromptSubmitted(lease);f.coordination.acknowledgePromptInjection(lease);for(let i=0;i<3;i++)f.branches.advance();
+ const result=f.branches.execution(job.id);assert.equal(result.state,'completed');assert.equal(result.output,undefined);
+ assert.equal(f.store.sqlite.prepare("SELECT count(*) n FROM branch_checkpoints WHERE execution_id=? AND kind='guidance_delivered'").get(job.id).n,1);
+ assert.equal(f.store.sqlite.prepare("SELECT count(*) n FROM coordination_requests WHERE id=?").get(`branch:${attempt.id}`).n,0);
+});
+test('idle workflow guidance starts an ordinary Run and records only acknowledged delivery',t=>{
+ const {f,job,activation}=guidanceFixture(t),lease=f.coordination.leaseNextRun({workerId:'idle'});assert.ok(lease);
+ assert.deepEqual(lease.activations.map(a=>a.id),[activation.id]);f.coordination.markRunStarted(lease.runId,lease.fencingToken);
+ f.coordination.preparePromptInjection({...lease,prompt:'Guidance input'});f.coordination.markPromptSubmitted(lease);f.coordination.acknowledgePromptInjection(lease);
+ for(let i=0;i<3;i++)f.branches.advance();assert.equal(f.branches.execution(job.id).state,'completed');assert.equal(f.branches.execution(job.id).output,undefined);
+});
+test('uncertain workflow guidance stays held across restart and cancellation',t=>{
+ const f=fixture(t);busyRun(f);
+ const base=f.deployment.definition,definition={...base,name:'Uncertain guidance',steps:[{id:'agent',kind:'agent',target:{kind:'persistent_agent',ref:'reviewer'},instructions:'Change priority',jobHandling:'steer'}],edges:[]};
+ const branch=f.branches.deploy({...f.deployment,idempotencyKey:'uncertain-guidance',definition});const job=f.branches.accept(branch.id,'event','detail');for(let i=0;i<4;i++)f.branches.advance();
+ const lease=f.coordination.leaseNextSteering({workerId:'steer'});assert.ok(lease);f.coordination.preparePromptInjection({...lease,prompt:'Guidance'});f.coordination.markPromptSubmitted(lease);f.coordination.markSteeringOutcomeUnknown(lease);
+ f.branches.advance();assert.equal(f.branches.execution(job.id).state,'waiting');assert.match(f.branches.detail(job.id).attempts[0].error,/unconfirmed/);
+ f.reopen();f.branches.advance();assert.equal(f.branches.execution(job.id).state,'waiting');f.branches.cancel(job.id);assert.equal(f.branches.execution(job.id).state,'waiting');
+ assert.equal(f.store.sqlite.prepare('SELECT state FROM scheduler_prompt_injections WHERE id=?').get(lease.injectionId).state,'outcome_unknown');
+});
+test('workflow cancellation prevents queued or leased guidance from later submission',t=>{
+ const {f,job,activation}=guidanceFixture(t);f.branches.cancel(job.id);assert.equal(f.branches.execution(job.id).state,'canceled');
+ assert.equal(f.store.sqlite.prepare('SELECT state FROM agent_activations WHERE id=?').get(activation.id).state,'cancelled');assert.equal(f.coordination.leaseNextRun({workerId:'late'}),undefined);
+});
+test('workflow cancellation fences leased guidance at the provider submission boundary',t=>{
+ const f=fixture(t);busyRun(f);
+ const base=f.deployment.definition,definition={...base,name:'Cancel guidance',steps:[{id:'agent',kind:'agent',target:{kind:'persistent_agent',ref:'reviewer'},instructions:'Change priority',jobHandling:'steer'}],edges:[]};
+ const branch=f.branches.deploy({...f.deployment,idempotencyKey:'cancel-guidance',definition});const job=f.branches.accept(branch.id,'event','detail');for(let i=0;i<4;i++)f.branches.advance();
+ const lease=f.coordination.leaseNextSteering({workerId:'steer'});assert.ok(lease);f.coordination.preparePromptInjection({...lease,prompt:'Guidance'});f.branches.cancel(job.id);
+ assert.throws(()=>f.coordination.markPromptSubmitted(lease),/no longer authorized/);assert.equal(f.branches.execution(job.id).state,'waiting');
+});
+
+test('guidance cannot supply imagined Agent output or state to downstream work',t=>{
+ const f=fixture(t),base=f.deployment.definition,step={id:'agent',kind:'agent',target:{kind:'persistent_agent',ref:'reviewer'},instructions:'Guide',jobHandling:'steer'};
+ const script={id:'next',kind:'script',runtime:'node',source:'console.log("ok")',cwdRef:'workspace',timeoutMs:1000};
+ for(const input of [undefined,{kind:'output'}]){
+  const definition={...base,steps:[step,script],edges:[{id:'next-edge',from:'agent',to:'next',on:'success',...(input?{input}:{})}]};
+  assert.throws(()=>f.branches.deploy({...f.deployment,idempotencyKey:'bad-guidance-edge',definition}),/Guidance has no Agent result/);
+ }
+ const literal={...base,name:'Literal guidance',steps:[step,script],edges:[{id:'next-edge',from:'agent',to:'next',on:'success',input:{kind:'literal',text:'Independent input'}}]};
+ assert.ok(f.branches.deploy({...f.deployment,idempotencyKey:'literal-guidance',definition:literal}));
+ assert.throws(()=>f.branches.deploy({...f.deployment,idempotencyKey:'bad-guidance-communication',definition:{...base,steps:[{...step,requireUserCommunication:true}],edges:[]}}),/cannot supply/);
+});
+
+test('guidance cancellation after submission marking is fenced at final provider write',t=>{
+ const f=fixture(t);busyRun(f);
+ const base=f.deployment.definition,definition={...base,name:'Fenced guidance',steps:[{id:'agent',kind:'agent',target:{kind:'persistent_agent',ref:'reviewer'},instructions:'Change priority',jobHandling:'steer'}],edges:[]};
+ const branch=f.branches.deploy({...f.deployment,idempotencyKey:'final-fence-guidance',definition});const job=f.branches.accept(branch.id,'event','detail');for(let i=0;i<4;i++)f.branches.advance();
+ const lease=f.coordination.leaseNextSteering({workerId:'steer'});assert.ok(lease);f.coordination.preparePromptInjection({...lease,prompt:'Guidance'});f.coordination.markPromptSubmitted(lease);
+ f.branches.cancel(job.id);assert.throws(()=>f.coordination.assertBranchGuidanceSubmission(lease.injectionId,lease.runId),/no longer authorized/);
+ assert.equal(f.store.sqlite.prepare('SELECT state FROM scheduler_prompt_injections WHERE id=?').get(lease.injectionId).state,'submitted');
+ assert.equal(f.branches.execution(job.id).state,'waiting');
+});
+
+
+test('real server delivers workflow guidance to a busy Agent without a Request result', {timeout:30000}, async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Workflow guidance'),agent=await f.createIdleAgent(chat,'Specialist'),session=await f.hold(agent.id);
+  const coordination=new CoordinationV3Store(store.sqlite),branches=new BranchStore(store.sqlite,coordination);
+  const definition={schema:'ponderosa.branch.v1',name:'Guidance',trigger:{kind:'manual'},entry:'agent',controls:[],steps:[{id:'agent',kind:'agent',target:{kind:'persistent_agent',ref:'expert'},instructions:'Prioritize this document',jobHandling:'steer'}],edges:[],policy:{maxConcurrentExecutions:1,failure:{action:'stop'}}};
+  const branch=branches.deploy({chatId:chat.id,idempotencyKey:'guidance-test',definition,bindings:{agents:{expert:agent.id},directories:{}}});
+  const job=branches.accept(branch.id,'job','Document A');for(let i=0;i<4;i++)branches.advance();
+  const attempt=branches.detail(job.id).attempts[0];assert.equal(attempt.requestId,undefined);
+  const sent=await until(()=>f.steers.find(item=>item.agentId===agent.id&&JSON.stringify(item.input).includes('Prioritize this document')),'actual provider guidance');
+  assert.ok(JSON.stringify(sent.input).includes('Document A'));
+  await until(()=>{branches.advance();return branches.execution(job.id).state==='completed'},'acknowledged workflow guidance');
+  assert.equal(branches.execution(job.id).output,undefined);
+  assert.equal(store.sqlite.prepare("SELECT count(*) n FROM coordination_requests WHERE id=?").get(`branch:${attempt.id}`).n,0);
+  assert.equal(f.sessions.get(agent.id),session,'the existing Agent Run remains active');
+ },{storeFactory:dataDir=>(store=new AgentStore(dataDir))});
+});
+
+
+test('workflow guidance is not coalesced with another busy-Agent steer',t=>{
+ const f=fixture(t);busyRun(f);
+ const base=f.deployment.definition,definition={...base,name:'Isolated guidance',steps:[{id:'agent',kind:'agent',target:{kind:'persistent_agent',ref:'reviewer'},instructions:'Guide one job',jobHandling:'steer'}],edges:[]};
+ const branch=f.branches.deploy({...f.deployment,idempotencyKey:'isolated-guidance',definition});const job=f.branches.accept(branch.id,'event','detail');for(let i=0;i<4;i++)f.branches.advance();
+ const attempt=f.branches.detail(job.id).attempts[0],guidance=f.store.sqlite.prepare("SELECT activation_id FROM activation_sources WHERE source_kind='branch_guidance' AND source_id=?").get(attempt.id).activation_id;
+ const other=f.coordination.enqueueMessageActivation({projectId:f.agent.projectId,agentId:f.agent.id,scopeKey:`conversation:${f.agent.conversationId}`,messageId:'separate-peer-steer',kind:'ordinary',dispatchPolicy:'steer_or_run',payload:{text:'A separate instruction'}});
+ const first=f.coordination.leaseNextSteering({workerId:'steer'});assert.equal(first.activations.length,1);
+ const id=first.activations[0].id;assert.ok([other,guidance].includes(id));f.coordination.preparePromptInjection({...first,prompt:'Separate input'});f.coordination.markPromptSubmitted(first);f.coordination.acknowledgePromptInjection(first);
+ const next=f.coordination.leaseNextSteering({workerId:'steer'});assert.ok(next);assert.equal(next.activations.length,1);assert.notEqual(next.activations[0].id,id);assert.ok([other,guidance].includes(next.activations[0].id));
+});
+
+
+test('guidance checkpoint records incomplete authority and cannot claim executable continuation',t=>{
+ const {f,job,attempt}=guidanceFixture(t);
+ const selected=selectBranchUnit(f.store.sqlite,job.id);
+ const host=f.store.sqlite.transaction(()=>captureBranchHostCut(f.store.sqlite,job.id,selected))();
+ assert.ok(host);assert.equal(host.coverage.complete,false);
+ assert.deepEqual(host.coverage.missingReferences.filter(m=>m.kind==='branch_guidance'),[{kind:'branch_guidance',id:attempt.id}]);
+ const version=f.branches.version(f.branches.execution(job.id).branchId,f.branches.execution(job.id).versionId);
+ assert.equal(scriptDefinitionSupported(version.definition),false);
 });
