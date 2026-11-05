@@ -274,7 +274,11 @@ export type RuntimeElicitationHandler = (
 
 export type RuntimeSteerResult =
   | { status: "accepted"; turnId?: string }
-  | { status: "not_active" | "not_steerable" | "unsupported"; reason?: string };
+  | { status: "not_active" | "not_steerable"; reason?: string }
+  /** The adapter confirms that no steering input was submitted and no effects
+   * from it can have started. If submission or effects are uncertain, throw
+   * instead so the host preserves the unknown outcome rather than retrying. */
+  | { status: "unsupported"; reason?: string };
 
 export interface RuntimeContextUsage {
   usedTokens: number;
