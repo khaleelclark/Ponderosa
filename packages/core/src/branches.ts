@@ -174,6 +174,7 @@ export interface BranchStepEvidenceDto {
 /** Focused current decisions and failed/uncertain attempts, independent of audit-history pages. */
 export type BranchExecutionActionDto =
   | { kind: 'schedule_update'; occurrenceId: string; injectionId: string; eventCount: number; lastScheduledAt: string }
+  | { kind: 'guidance_review'; attemptId: string; injectionId: string }
   | { kind: 'decision'; decision: DecisionDto }
   | { kind: 'gate'; gate: BranchGateDto; step: BranchStepExecutionDto }
   | { kind: 'attempt'; attempt: BranchAttemptDto; step: BranchStepExecutionDto; current: boolean };
@@ -235,8 +236,8 @@ export interface BranchGateResolution {
   decision: "approve" | "reject" | "retry"; output?: string; choice?: string;
 }
 export interface BranchIntervention {
-  commandKey: string; expectedRevision: number; action: "retry" | "resolve_script" | "resolve_schedule_update" | "skip" | "merge";
-  attemptId?: string; result?: BranchResult; mergedInto?: string; occurrenceId?: string; updateApplied?: boolean;
+  commandKey: string; expectedRevision: number; action: "retry" | "resolve_script" | "resolve_schedule_update" | "resolve_guidance" | "skip" | "merge";
+  attemptId?: string; injectionId?: string; result?: BranchResult; mergedInto?: string; occurrenceId?: string; updateApplied?: boolean;
   externalEffectsReconciled?: boolean; reason: string;
 }
 

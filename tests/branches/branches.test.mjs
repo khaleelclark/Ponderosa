@@ -468,6 +468,12 @@ for(const outcome of ['unsupported','unknown'])test(`real server keeps ${outcome
    await until(()=>store.sqlite.prepare("SELECT state FROM agent_activations WHERE id=?").get(activation).state==='outcome_unknown','unknown guidance delivery');
    branches.advance();assert.equal(branches.execution(job.id).state,'waiting');assert.match(branches.detail(job.id).attempts[0].error,/unconfirmed/);
    assert.equal(calls,1);assert.equal(store.sqlite.prepare("SELECT count(*) n FROM scheduler_prompt_injections i,json_each(i.activation_ids_json) m WHERE m.value=? AND i.state='outcome_unknown'").get(activation).n,1);
+   const actions=f.ok(await f.api('GET',`/api/branch-executions/${job.id}/actions`)),review=actions.items.find(item=>item.kind==='guidance_review');assert.ok(review);
+   const decision={commandKey:'http-guidance-review',expectedRevision:actions.revision,action:'resolve_guidance',attemptId:review.attemptId,injectionId:review.injectionId,externalEffectsReconciled:true,updateApplied:true,reason:'Reviewed the original provider work and effects'};
+   const saved=f.ok(await f.api('POST',`/api/branch-executions/${job.id}/intervene`,decision));
+   assert.deepEqual(f.ok(await f.api('POST',`/api/branch-executions/${job.id}/intervene`,decision)),saved);
+   assert.equal(branches.execution(job.id).state,'completed');assert.equal(branches.execution(job.id).output,undefined);
+   assert.equal(store.sqlite.prepare('SELECT state FROM scheduler_prompt_injections WHERE id=?').get(review.injectionId).state,'outcome_unknown');
   }else{
    await until(()=>store.sqlite.prepare("SELECT steering_wait_reason FROM agent_activations WHERE id=?").get(activation)?.steering_wait_reason==='provider_unsupported','unsupported guidance refusal');
    assert.equal(branches.execution(job.id).state,'waiting');assert.equal(calls,1);
@@ -478,4 +484,34 @@ for(const outcome of ['unsupported','unknown'])test(`real server keeps ${outcome
    assert.equal(branches.execution(job.id).output,undefined);assert.equal(calls,1);
   }
  },{storeFactory:dataDir=>(store=new AgentStore(dataDir)),steeringResponse:async()=>{calls++;if(outcome==='unknown')throw new Error('Controlled lost acknowledgement');return {status:'unsupported'};}});
+});
+
+
+for(const applied of [true,false])test(`review of uncertain guidance preserves evidence and ${applied?'records delivery':'does not resend'}`,t=>{
+ const f=fixture(t);busyRun(f);
+ const base=f.deployment.definition,definition={...base,name:'Reviewed guidance',steps:[{id:'agent',kind:'agent',target:{kind:'persistent_agent',ref:'reviewer'},instructions:'Original guidance',jobHandling:'steer'}],edges:[]};
+ const branch=f.branches.deploy({...f.deployment,idempotencyKey:'review-guidance',definition});const job=f.branches.accept(branch.id,'event','original input');for(let i=0;i<4;i++)f.branches.advance();
+ const lease=f.coordination.leaseNextSteering({workerId:'steer'});assert.ok(lease);f.coordination.preparePromptInjection({...lease,prompt:'Original guidance'});f.coordination.markPromptSubmitted(lease);f.coordination.markSteeringOutcomeUnknown(lease);f.branches.advance();
+ f.reopen();f.branches.advance();
+ const actions=f.branches.currentActions(job.id),review=actions.items.find(item=>item.kind==='guidance_review');assert.ok(review);assert.equal(review.injectionId,lease.injectionId);
+ const before=f.store.sqlite.prepare('SELECT payload_json FROM agent_activations WHERE id=?').get(lease.activations[0].id).payload_json;
+ const command={commandKey:'guidance-review',expectedRevision:actions.revision,action:'resolve_guidance',attemptId:review.attemptId,injectionId:review.injectionId,externalEffectsReconciled:true,updateApplied:applied,reason:'Reviewed original provider work and effects'};
+ assert.throws(()=>f.branches.intervene(job.id,{...command,injectionId:'other'}),/exact review/);
+ assert.throws(()=>f.branches.intervene(job.id,{...command,externalEffectsReconciled:false}),/Review the guidance/);
+ const result=f.branches.intervene(job.id,command);assert.deepEqual(f.branches.intervene(job.id,command),result);
+ assert.equal(f.store.sqlite.prepare('SELECT state FROM scheduler_prompt_injections WHERE id=?').get(lease.injectionId).state,'outcome_unknown');
+ assert.equal(f.store.sqlite.prepare('SELECT payload_json FROM agent_activations WHERE id=?').get(lease.activations[0].id).payload_json,before);
+ assert.equal(f.store.sqlite.prepare("SELECT count(*) n FROM activation_sources WHERE source_kind='branch_guidance' AND source_id=?").get(review.attemptId).n,1);
+ if(applied){assert.equal(f.branches.execution(job.id).state,'completed');assert.equal(f.branches.execution(job.id).output,undefined);assert.equal(f.branches.currentActions(job.id).items.some(item=>item.kind==='guidance_review'),false);}
+ else {assert.equal(f.branches.execution(job.id).state,'waiting');assert.equal(f.branches.currentActions(job.id).items.some(item=>item.kind==='guidance_review'),true);assert.equal(f.store.sqlite.prepare('SELECT state FROM agent_activations WHERE id=?').get(lease.activations[0].id).state,'outcome_unknown');}
+});
+
+test('review of uncertain guidance can settle a pending workflow cancellation without replay',t=>{
+ const f=fixture(t);busyRun(f);
+ const base=f.deployment.definition,definition={...base,name:'Cancelled guidance review',steps:[{id:'agent',kind:'agent',target:{kind:'persistent_agent',ref:'reviewer'},instructions:'Original guidance',jobHandling:'steer'}],edges:[]};
+ const branch=f.branches.deploy({...f.deployment,idempotencyKey:'cancelled-review-guidance',definition});const job=f.branches.accept(branch.id,'event','original input');for(let i=0;i<4;i++)f.branches.advance();
+ const lease=f.coordination.leaseNextSteering({workerId:'steer'});f.coordination.preparePromptInjection({...lease,prompt:'Original guidance'});f.coordination.markPromptSubmitted(lease);f.coordination.markSteeringOutcomeUnknown(lease);f.branches.cancel(job.id);
+ const actions=f.branches.currentActions(job.id),review=actions.items.find(item=>item.kind==='guidance_review');assert.ok(review);
+ f.branches.intervene(job.id,{commandKey:'review-cancel',expectedRevision:actions.revision,action:'resolve_guidance',attemptId:review.attemptId,injectionId:review.injectionId,externalEffectsReconciled:true,updateApplied:true,reason:'Reviewed original effects'});
+ assert.equal(f.branches.execution(job.id).state,'canceled');assert.equal(f.store.sqlite.prepare('SELECT state FROM scheduler_prompt_injections WHERE id=?').get(lease.injectionId).state,'outcome_unknown');
 });

@@ -2620,7 +2620,13 @@ export class BranchStore {
       COUNT(r.id) requests,CAST(COALESCE(SUM(r.version),0) AS TEXT) versions FROM branch_attempts a
       JOIN branch_step_executions s ON s.id=a.step_execution_id LEFT JOIN coordination_requests r ON r.id=a.request_id WHERE s.execution_id=?`,id)!;
     const scheduleChanges=this.row("SELECT COUNT(*) count,COALESCE(MAX(rowid),0) latest FROM trigger_occurrences WHERE branch_execution_id=? AND state='pending' AND json_extract(activation_config_json,'$.schedule.delivery')='unconfirmed'",id)!;
-    const generation=`${scheduleChanges.count}:${scheduleChanges.latest}:${checkpoint}:${changes.attempts}:${changes.fences}:${changes.requests}:${changes.versions}:${decisionGeneration.digest('hex')}`;
+    const guidanceChanges=this.row(`SELECT COUNT(*) count,COALESCE(MAX(injection.rowid),0) latest
+      FROM branch_attempts attempt JOIN branch_step_executions step ON step.id=attempt.step_execution_id
+      JOIN activation_sources source ON source.source_kind='branch_guidance' AND source.source_id=attempt.id
+      JOIN scheduler_prompt_injections injection,json_each(injection.activation_ids_json) member
+        ON member.value=source.activation_id AND injection.state='outcome_unknown'
+      WHERE step.execution_id=?`,id)!;
+    const generation=`${scheduleChanges.count}:${scheduleChanges.latest}:${guidanceChanges.count}:${guidanceChanges.latest}:${checkpoint}:${changes.attempts}:${changes.fences}:${changes.requests}:${changes.versions}:${decisionGeneration.digest('hex')}`;
     let after:{rank:number;position:number}|undefined;
     if(cursor){
       if(cursor.length>512)throw new Error('Invalid execution actions cursor');
@@ -2645,7 +2651,10 @@ export class BranchStore {
         a.rowid position,'attempt' kind,a.id,s.id step_id
         FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id JOIN branch_paths p ON p.id=s.path_id
         LEFT JOIN coordination_requests r ON r.id=a.request_id
-        WHERE s.execution_id=? AND (a.state IN ('failed','outcome_unknown') OR a.state='waiting' AND r.state='outcome_unknown')
+        WHERE s.execution_id=? AND (a.state IN ('failed','outcome_unknown') OR a.state='waiting' AND (r.state='outcome_unknown' OR EXISTS(
+          SELECT 1 FROM activation_sources guidance JOIN scheduler_prompt_injections injection,json_each(injection.activation_ids_json) member
+          WHERE guidance.source_kind='branch_guidance' AND guidance.source_id=a.id AND member.value=guidance.activation_id
+            AND injection.state='outcome_unknown')))
           AND NOT EXISTS(SELECT 1 FROM branch_attempts newer WHERE newer.step_execution_id=s.id AND newer.number>a.number)
           AND NOT EXISTS(SELECT 1 FROM branch_gates g WHERE g.step_execution_id=s.id AND g.state='waiting')
       ) WHERE ? IS NULL OR rank>? OR rank=? AND position>? ORDER BY rank,position LIMIT 101`,
@@ -2655,6 +2664,10 @@ export class BranchStore {
       if(row.kind==='decision')return {kind:'decision',decision:decisions.get(row.id)!};
       if(row.kind==='schedule_update'){const occurrence=this.triggers.getTriggerOccurrence(row.id)!,status=this.coordination.branchScheduleUpdateStatus(row.id);return {kind:'schedule_update',occurrenceId:row.id,injectionId:status.injectionId!,eventCount:occurrence.schedule!.eventCount,lastScheduledAt:occurrence.schedule!.lastScheduledAt};}
       const step=this.stepDto(this.row('SELECT * FROM branch_step_executions WHERE id=? AND execution_id=?',row.step_id,id)!);
+      if(row.kind==='attempt'){
+        const activation=this.branchGuidance(row.id),injection=activation&&this.guidanceInjection(activation.id);
+        if(injection?.state==='outcome_unknown')return {kind:'guidance_review',attemptId:row.id,injectionId:injection.id};
+      }
       if(row.kind==='gate')return {kind:'gate',step,gate:this.gateDto(execution,definition,this.row('SELECT g.*,s.step_id FROM branch_gates g JOIN branch_step_executions s ON s.id=g.step_execution_id WHERE g.id=? AND s.execution_id=?',row.id,id)!)};
       return {kind:'attempt',step,current:row.rank===3,attempt:this.attemptDto(execution,definition,this.row('SELECT * FROM branch_attempts WHERE id=? AND step_execution_id=?',row.id,step.id)!)};
     });
@@ -3463,7 +3476,34 @@ export class BranchStore {
     return this.command(id, input.commandKey, input, () => {
       const execution = this.execution(id);
       if (!execution || execution.revision !== input.expectedRevision) throw new Error("Execution revision conflict");
-      if(input.action==='resolve_schedule_update'){
+      if(input.action==='resolve_guidance'){
+        if(input.externalEffectsReconciled!==true||typeof input.updateApplied!=='boolean')throw Error('Review the guidance effects and record whether it was delivered');
+        const attempt=this.row(`SELECT a.*,s.execution_id,s.path_id,p.step_execution_id AS current_step
+          FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id
+          JOIN branch_paths p ON p.id=s.path_id WHERE a.id=? AND s.execution_id=?`,input.attemptId,id);
+        const activation=attempt&&this.branchGuidance(attempt.id),injection=activation&&this.guidanceInjection(activation.id);
+        if(!attempt||attempt.current_step!==attempt.step_execution_id||!activation||!injection||
+          injection.id!==input.injectionId||injection.state!=='outcome_unknown'||activation.state!=='outcome_unknown'||
+          this.row('SELECT 1 FROM branch_attempts WHERE step_execution_id=? AND number>?',attempt.step_execution_id,attempt.number))
+          throw Error('Guidance delivery is no longer awaiting this exact review');
+        this.checkpoint(id,`guidance-review:${input.commandKey}`,'guidance_reviewed',
+          {attemptId:attempt.id,activationId:activation.id,injectionId:injection.id,runId:injection.run_id,
+            applied:input.updateApplied,reason:branchText(input.reason),at:now},now);
+        if(input.updateApplied){
+          const settled=this.coordination.cancelTerminalMessageDelivery({projectId:activation.project_id,activationId:activation.id,
+            idempotencyKey:`branch-guidance-review:${id}:${input.commandKey}`,now});
+          if(!settled.cancelled)throw Error('Guidance delivery is no longer held');
+          if(attempt.cancel_requested||this.row('SELECT cancel_requested FROM branch_executions WHERE id=?',id)?.cancel_requested){
+            this.cancelPath(attempt.path_id,now);this.aggregate(id,now);
+          }else this.finish(attempt.id,{failed:false},now);
+        }else{
+          this.run("UPDATE branch_attempts SET error=?,updated_at=? WHERE id=?",
+            'Guidance was reviewed as not delivered; it remains held until the original provider authority is resolved.',now,attempt.id);
+          this.selectedWrite(id);
+          this.run('UPDATE branch_executions SET revision=revision+1,updated_at=? WHERE id=?',now,id);
+          this.aggregate(id,now);
+        }
+      } else if(input.action==='resolve_schedule_update'){
         if(input.externalEffectsReconciled!==true||typeof input.updateApplied!=='boolean')throw new Error('Reconcile the scheduled update effects and record whether it was applied');
         const occurrence=this.row("SELECT rowid position,* FROM trigger_occurrences WHERE id=? AND branch_execution_id=? AND branch_id=? AND state='pending'",input.occurrenceId,id,execution.branchId);
         if(!occurrence?.activation_id||this.coordination.branchScheduleUpdateStatus(occurrence.id,now).state!=='outcome_unknown')throw new Error('Scheduled update is no longer awaiting reconciliation');
