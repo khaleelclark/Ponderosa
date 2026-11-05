@@ -2784,6 +2784,14 @@
       "origin": "Exact reusable expert-copy reservation and explicit consent"
     },
     {
+      "path": "tests/branches/copy-memory-unavailable.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Built server, owned Chroma and pinned models; synthetic providers",
+      "origin": "Temporary copy optional memory readiness and unknown source effects"
+    },
+    {
       "path": "tests/branches/expert-copy-workflow.test.mjs",
       "feature": "branches",
       "lane": "server",
