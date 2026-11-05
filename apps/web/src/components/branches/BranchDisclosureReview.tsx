@@ -110,7 +110,7 @@ export function BranchDisclosureReview({branchId,executionId,enabled,onChanged,r
     {target&&<>
      <Typography sx={{overflowWrap:'anywhere'}}>Admission {target.admissionId} · Project {target.destination.projectId} · Chat {target.destination.conversationId} · Run {target.destination.executionId} · Step {target.destination.resourceStepId} · generation {target.destination.resourceGeneration}</Typography>
      <Typography variant="body2">Persisted disclosure: {target.disclosure.state} · revision {target.disclosure.revision} · current eligibility: fresh preview required</Typography>
-     {target.state==='capture_pending'&&<Alert severity="warning">Final capture held. A retry starts capture only if it never began; an uncertain capture remains held.
+     {target.state==='capture_pending'&&<Alert severity="warning">Final capture held: retry starts capture only if it never began; an uncertain capture remains held.
       <Button disabled={busy||Boolean(pending&&pending.kind!=='admit')||!target.disclosure.reviewHash} onClick={()=>{
        if(fence.current)return;
        const command:Command=pending?.kind==='admit'?pending:{kind:'admit',admissionId:target.admissionId,body:{commandKey:target.commandKey,reviewHash:target.disclosure.reviewHash!}};

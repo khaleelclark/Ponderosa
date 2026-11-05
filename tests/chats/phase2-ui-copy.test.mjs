@@ -31,6 +31,10 @@ test('short copy retains consequential warnings beside exact evidence',()=>{
  for(const text of ['Historical: true','currentAuthority: false','actionEligible: false','held: true','Private payloads suppressed','unknown imports held'])assert.ok(audit.includes(text),text);
  const lifecycle=read('lifecycle/LifecycleReview.tsx');
  for(const text of ['your drain testimony required','stable readback supplies no drain proof','permanently retains source pins','unknown effects held without replay'])assert.ok(lifecycle.includes(text),text);
+ const portable=read('branches/BranchRuntimePackageReview.tsx');
+ assert.ok(portable.includes('Inspect prior imported history before acknowledging: it may contain additional held resource exits or unavailable checkpoint data'));
+ const disclosure=read('branches/BranchDisclosureReview.tsx');
+ assert.ok(disclosure.includes('retry starts capture only if it never began; an uncertain capture remains held'));
  const retry=read('branches/ExecutionPanel.tsx');
  assert.ok(retry.includes('retry may duplicate file changes or external effects'));
  assert.ok(retry.includes('earlier side effects remain and may repeat'));
