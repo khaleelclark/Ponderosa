@@ -49,18 +49,21 @@ test('Assistant creates Chat and starts cross-project work with exact durable so
 });
 
 test('human source and destination grants deny workspace reads and writes, including live revocation',options,t=>{
- let store;return withFixture(t,async f=>{
+ let store;const tokens=new Map();return withFixture(t,async f=>{
   const app=await assistant(f),chat=await f.createChat('Restricted Project'),target=await f.createIdleAgent(chat,'Existing Worker');
   const source=`/api/branches/${app.branchId}/agents/${app.agentId}/capabilities`,dest=`/api/conversations/${chat.id}/capabilities`;
+  const rawWorkspace=body=>f.api('POST','/api/agent-workspace',body,{authorization:`Bearer ${tokens.get(app.agentId)}`});
   await restrict(f,dest,[CAPABILITY_IDS.workspaceRead,CAPABILITY_IDS.workspaceStartWork]);
+  await restrict(f,source,[CAPABILITY_IDS.workspaceCreateChat]);
   await run(f,store,app,async session=>{
    const list=f.ok(await f.tool(session,'ponderosa_workspace_projects',{}));assert.equal(list.items.some(item=>item.id===chat.id),false);
    assert.equal((await f.tool(session,'ponderosa_workspace_start_work',{chatId:chat.id,agentId:target.id,text:'Do not run',idempotencyKey:randomUUID()})).status,403);
-   await restrict(f,source,[CAPABILITY_IDS.workspaceCreateChat]);
-   assert.equal((await f.tool(session,'ponderosa_workspace_create_chat',{label:'Denied',engine:'codex',idempotencyKey:randomUUID()})).status,403);
-   await restrict(f,source,[CAPABILITY_IDS.workspaceRead,CAPABILITY_IDS.workspaceStartWork]);
-   assert.equal((await f.tool(session,'ponderosa_workspace_projects',{})).status,403);
-   assert.equal((await f.tool(session,'ponderosa_workspace_start_work',{chatId:chat.id,agentId:target.id,text:'Still denied',idempotencyKey:randomUUID()})).status,403);
+   assert.equal((await rawWorkspace({operation:'create_chat',label:'Denied',engine:'codex',idempotencyKey:randomUUID()})).status,403);
+  });
+  await restrict(f,source,[CAPABILITY_IDS.workspaceRead,CAPABILITY_IDS.workspaceStartWork]);
+  await run(f,store,app,async session=>{
+   assert.equal((await rawWorkspace({operation:'projects'})).status,403);
+   assert.equal((await rawWorkspace({operation:'start_work',chatId:chat.id,agentId:target.id,text:'Still denied',idempotencyKey:randomUUID()})).status,403);
   });
   assert.equal(store.sqlite.prepare('SELECT count(*) n FROM workspace_agent_actions').get().n,0);assert.equal(f.turns.some(turn=>turn.agentId===target.id),false);
   await restrict(f,source,[]);await restrict(f,dest,[]);
@@ -73,7 +76,34 @@ test('human source and destination grants deny workspace reads and writes, inclu
   await run(f,store,app,async session=>{assert.equal((await f.tool(session,'ponderosa_workspace_start_work',{chatId:chat.id,agentId:target.id,text:'Explicitly allowed now',idempotencyKey:acceptedKey})).status,403,'replay also rechecks destination permission');});
   await restrict(f,dest,[]);
   await run(f,store,app,async session=>{const digest=f.ok(await f.tool(session,'ponderosa_assistant_check',{}));assert.equal(digest.published,true);assert.ok(digest.sources.some(key=>key.startsWith('request:'+accepted.requestId+':')));});
- },{storeFactory:dir=>(store=new AgentStore(dir))});
+
+  // A restriction added during a live Run fences its entire capability, so a
+  // stale tool request is unauthorized even before its operation is checked.
+  const original='Preserve the unfinished workspace task after live revocation.';
+  const actionsBefore=store.sqlite.prepare('SELECT count(*) n FROM workspace_agent_actions').get().n;
+  let liveResult,callbackError,liveRunId,oldFence;
+  f.plans.set(app.agentId,[{output:false,run:async session=>{
+   try{
+    assert.ok(f.ok(await f.tool(session,'ponderosa_workspace_projects',{})).items.some(item=>item.id===chat.id));
+    const active=store.sqlite.prepare("SELECT id,fencing_token FROM scheduler_runs WHERE agent_id=? AND status='running'").get(app.agentId);
+    assert.ok(active);liveRunId=active.id;oldFence=active.fencing_token;
+    await restrict(f,source,[CAPABILITY_IDS.workspaceCreateChat]);
+    liveResult=await f.tool(session,'ponderosa_workspace_create_chat',{label:'Denied after live revocation',engine:'codex',idempotencyKey:randomUUID()});
+   }catch(error){callbackError=error;}
+  }}]);
+  new CoordinationV3Store(store.sqlite).enqueueMessageActivation({projectId:app.projectId,agentId:app.agentId,scopeKey:`conversation:${app.chatId}`,messageId:randomUUID(),kind:'ordinary',payload:{text:original}});
+  await until(()=>liveResult||callbackError,'live revocation tool result',20000);
+  if(callbackError)throw callbackError;
+  assert.equal(liveResult.status,401,'the old Run capability is fenced after live revocation');
+  const paused=store.sqlite.prepare("SELECT run_id,state,checkpoint_json,last_error FROM agent_run_pauses WHERE agent_id=? ORDER BY paused_at DESC LIMIT 1").get(app.agentId);
+  assert.ok(paused);assert.equal(paused.run_id,liveRunId);assert.equal(paused.state,'paused');
+  const checkpoint=JSON.parse(paused.checkpoint_json);
+  assert.equal(checkpoint.accessRevocationHold,true);assert.match(JSON.stringify(checkpoint.sourceActivations),/Preserve the unfinished workspace task/);
+  assert.match(paused.last_error,/uncertain effects/);
+  const fenced=store.sqlite.prepare('SELECT status,fencing_token,side_effects_fenced_at FROM scheduler_runs WHERE id=?').get(liveRunId);
+  assert.equal(fenced.status,'cancelled');assert.ok(fenced.fencing_token>oldFence);assert.ok(fenced.side_effects_fenced_at);
+  assert.equal(store.sqlite.prepare('SELECT count(*) n FROM workspace_agent_actions').get().n,actionsBefore,'no unauthorized workspace action was created');
+ },{storeFactory:dir=>(store=new AgentStore(dir)),nativeAdapterForOpen:opts=>{tokens.set(opts.agentId,opts.environment.PONDEROSA_AGENT_MESSAGE_TOKEN);return undefined;}});
 });
 
 for(const enabled of [false,true,'muted','attention'])test(`Assistant check aggregates completion and planted issue, persists dedup and respects notifications=${enabled}`,options,t=>{
