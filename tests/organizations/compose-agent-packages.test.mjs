@@ -52,3 +52,43 @@ test('Shared composition compares exact originals across compressed and plain en
  const original=owner.artifacts.find(artifact=>artifact.ref===owner.workingFiles[0].artifactRef);
  assert.deepEqual((await decodePortableArtifactData(original)).data,Buffer.from(body));
 });
+
+test('Shared composition keeps one verified multipart working original and rejects a conflicting one',async()=>{
+ const {createHash}=await import('node:crypto');
+ const {encodePortableArtifactData,decodePortableArtifactData}=await import('../../apps/server/dist/agent-package-codec.js');
+ const {WORKING_FILE_PART_MEDIA_TYPE}=await import('../../packages/core/dist/index.js');
+ const size=32*1024*1024,first=Buffer.alloc(size,0x00),second=Buffer.alloc(size,0x62),last=Buffer.from('x');
+ const sha=chunks=>{const hash=createHash('sha256');for(const chunk of chunks)hash.update(chunk);return hash.digest('hex');};
+ const packageFor=async(title,chunks)=>{
+  const value=definition(title),node=value.agents[0],refs=chunks.map((_,index)=>title+'-part-'+index),bytes=chunks.reduce((total,chunk)=>total+chunk.length,0);
+  node.artifacts.push(...await Promise.all(chunks.map(async(chunk,index)=>({ref:refs[index],kind:'document',path:'portable-working-part/'+refs[index],
+   summary:'Transport part '+(index+1)+' of '+chunks.length+' for working file large.bin; not a complete file',
+   createdAt:value.exportedAt,mediaType:WORKING_FILE_PART_MEDIA_TYPE,...await encodePortableArtifactData(chunk)}))));
+  node.workingFiles=[{path:'large.bin',artifactRef:refs[0],mode:0o640,mtime:'2026-01-01T00:00:00.000Z',
+   parts:{schema:'ponderosa.working-file-parts.v1',refs,byteLength:bytes,sha256:sha(chunks)}}];
+  return value;
+ };
+ const input=[{ref:'first',package:await packageFor('a',[first,second,last])},{ref:'second',package:await packageFor('b',[first,second,last])}];
+ const original=structuredClone(input),result=await composeAgentPackages(input);
+ assert.deepEqual(input,original,'composition never mutates source packages');
+ const owners=result.package.agents.filter(node=>node.workingFolder),owner=owners[0];
+ assert.equal(owners.length,1,'the shared root has one owner');
+ assert.equal(owner.workingFiles.length,1,'the path remains one logical file');
+ const file=owner.workingFiles[0],parts=file.parts.refs;
+ assert.equal(file.path,'large.bin');assert.equal(file.artifactRef,parts[0]);assert.equal(parts.length,3);
+ assert.equal(file.parts.byteLength,2*size+1);assert.equal(file.parts.sha256,sha([first,second,last]));
+ const transport=result.package.agents.flatMap(node=>(node.artifacts??[]).filter(item=>item.mediaType===WORKING_FILE_PART_MEDIA_TYPE));
+ assert.equal(transport.length,3,'exactly one set of parts survives deduplication');
+ assert.deepEqual(transport.map(item=>item.ref).sort(),[...parts].sort(),'all parts belong to the selected original');
+ assert.ok(result.package.agents.filter(node=>node!==owner).every(node=>(node.artifacts??[]).every(item=>item.mediaType!==WORKING_FILE_PART_MEDIA_TYPE)));
+ for(const [index,ref] of parts.entries()){
+  const item=owner.artifacts.find(item=>item.ref===ref);assert.ok(item);
+  assert.deepEqual((await decodePortableArtifactData(item)).data,[first,second,last][index]);
+ }
+ for(const item of input)for(const ref of item.package.agents[0].workingFiles[0].parts.refs)
+  assert.equal(result.artifactRefs[item.ref][ref],undefined,'transport parts are not public artifact mappings');
+ assert.ok(result.artifactRefs.first['same-ref']&&result.artifactRefs.second['same-ref'],'ordinary artifact mappings survive');
+ const different=await packageFor('b',[first,second,Buffer.from('y')]);
+ await assert.rejects(composeAgentPackages([input[0],{ref:'second',package:different}]),/Conflicting Shared working originals/);
+ assert.deepEqual(input,original,'conflict refusal preserves both source packages');
+});
