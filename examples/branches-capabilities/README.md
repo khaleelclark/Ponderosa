@@ -19,7 +19,13 @@ The application deploys a research subgraph and a parent fork/join workflow that
 combines independent research and criticism before an editable human gate. Its
 bound Agents retain their existing tool and memory permissions. Instructions to
 use tools or memory are requests, not proof they are configured or accessible.
-Configure those integrations through the existing Agent settings first.
+Configure those integrations through the existing Agent settings first. Optional
+`rememberApproved: true` asks the critic to search its current Chat memory and,
+after approval only, save the approved answer to that same Chat. It grants no
+permissions. This Chat-scoped persistent memory differs from the comparator's
+process-local `InMemoryStore`. Tool availability and whether an Agent follows
+the instruction must be checked; a completed Agent turn alone is not proof of a
+memory write.
 
 A disposable synthetic HTTP fixture exercises deployment, two controlled Agents,
 the called subgraph, and human approval. This does not establish live-provider or

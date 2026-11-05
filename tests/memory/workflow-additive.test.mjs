@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {BranchStore} from '@ponderosa/agents';
-import {read,vector} from './portability-fixture.mjs';
+import {read,vector,ownedChroma} from './portability-fixture.mjs';
+import path from 'node:path';
+import {randomUUID} from 'node:crypto';
+import {withFixture,until} from '../shared/fixture.mjs';
 import {api,ok,noRuns,bindings,selection,confirm,rows,byId,preserve,setup} from './workflow-additive-fixture.mjs';
 
 test('reviewed new Agent/private and preserved Chat/team additions preserve existing memory/authority across reopen and same-plan retry',async t=>{
@@ -153,4 +156,49 @@ test('pending inventory admission cannot revive expired, canceled or review-requ
    release.resolve();const late=await pending;assert.equal(late.status,409,late.raw);assert.deepEqual(x.f.store.sqlite.prepare('SELECT * FROM branch_installation_plans WHERE id=?').get(plan.id),receipt);await x.unchanged();
   }finally{release.resolve();if(pending)await pending;prototype.memoryInventory=inventory;}
  }
+});
+
+test('approved Branch answer is saved and found in the next run through live memory tools',{timeout:120000,skip:!process.env.PONDEROSA_TEST_MEMORY_MODEL_DIR||!process.env.PONDEROSA_TEST_CHROMA_BIN?'Requires the disposable Chroma binary and local memory models':false},async t=>{
+ const {BranchesClient}=await import('../../packages/core/dist/branches-client.js');
+ const {createReviewApplication}=await import('../../examples/branches-capabilities/application.ts');
+ const chromaUrl=await ownedChroma(), text='Q11 synthetic approved answer: green koala';
+ let criticId, criticCalls=0, saves=0, nextSearch;
+ const options={
+  localMemoryForRoot:async root=>({chromaUrl,collectionPrefix:'q11_'+randomUUID().replaceAll('-',''),modelDir:process.env.PONDEROSA_TEST_MEMORY_MODEL_DIR,stateDirectory:path.join(root,'memory-policy'),provision:true}),
+  providerRunPlan:({agentId})=>agentId!==criticId?undefined:{onStart:async(session,input)=>{
+   const call=++criticCalls;
+   if(call===1||call===3){
+    const result=await session.tool('ponderosa_local_memory_search',{query:'Q11 synthetic approved answer green koala',source:'chat'});
+    assert.equal(result.success,true,result.text);
+    if(call===3){nextSearch=result.text;assert.match(nextSearch,/green koala/);}
+   } else if(call===2){
+    assert.match(JSON.stringify(input),/green koala/,'approved answer reaches the memory Agent');
+    const result=await session.tool('ponderosa_local_memory_save',{destination:'chat',text});
+    assert.equal(result.success,true,result.text);saves++;
+   } else throw Error('Unexpected critic Run');
+  }}
+ };
+ await withFixture(t,async f=>{
+  const create=async name=>{
+   const owner=f.ok(await f.api('POST','/api/branches',{name,idempotencyKey:randomUUID()}));
+   const chat=f.ok(await f.api('POST',`/api/branches/${owner.id}/chats`,{label:name,defaultEngine:'codex'},{'idempotency-key':randomUUID()}));
+   const agent=f.ok(await f.api('POST',`/api/branches/engine/projects/${chat.projectId}/agents`,{title:name,engine:'codex',conversationId:chat.id,idempotencyKey:randomUUID()}));
+   return {owner,agent};
+  };
+  const research=await create('Q11 synthetic researcher'),parent=await create('Q11 synthetic critic');criticId=parent.agent.id;
+  const client=new BranchesClient(await f.listen());
+  const app=await createReviewApplication(client,{researchBranchId:research.owner.id,researchVersionId:research.owner.versionId,parentBranchId:parent.owner.id,parentVersionId:parent.owner.versionId,researcherId:research.agent.id,criticId,commandKey:'q11-real-memory',rememberApproved:true});
+  const gateFor=id=>until(async()=>{const current=await app.inspect(id);return current.actions.items.find(item=>item.kind==='gate')?.gate;},'human gate',30000);
+  const completed=id=>until(async()=>{const current=await client.state(id);return current.execution.state==='completed'&&current;},'workflow completion',30000);
+  const first=await app.start('Q11 synthetic approved answer green koala','q11-first');
+  const gate=await gateFor(first.id);
+  await app.resolve(first.id,gate.id,{commandKey:'q11-approve',expectedRevision:gate.revision,decision:'approve',output:text});
+  await completed(first.id);assert.equal(saves,1);
+  const second=await app.start('Q11 synthetic approved answer green koala','q11-second');
+  const secondGate=await gateFor(second.id);assert.match(nextSearch,/green koala/);
+  await app.resolve(second.id,secondGate.id,{commandKey:'q11-reject',expectedRevision:secondGate.revision,decision:'reject'});
+  const rejected=await until(async()=>{const current=await client.state(second.id);return current.execution.state==='skipped'&&current;},'rejected workflow',30000);
+  assert.equal(rejected.execution.state,'skipped');assert.equal(saves,1,'rejected answer must not be saved');
+  console.log(JSON.stringify({realMemory:true,disposableChroma:true,controlledProvider:true,approvedAnswerForwarded:true,approvedSaves:saves,secondRunSearchFoundAnswer:true,rejectionDidNotSave:true}));
+ },options);
 });
