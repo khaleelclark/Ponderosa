@@ -3,7 +3,7 @@ import {withAgentImportAdmission} from "../../apps/server/dist/agent-package-cod
 import {request as httpRequest} from "node:http";
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { randomUUID, createHash } from 'node:crypto';
+import { randomUUID, createHash, randomFillSync } from 'node:crypto';
 import { gzipSync, gunzipSync } from 'node:zlib';
 import { mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -837,4 +837,18 @@ test('Agent package route carries associated external Git binary through two ine
  const unknown=path.join(review,'user-unassociated.review'),unknownBytes=Buffer.from([0,9,8,255]);await writeFile(unknown,unknownBytes);
  const refused=await request();assert.notEqual(refused.statusCode,200);assert.deepEqual(await readFile(unknown),unknownBytes);
  assert.deepEqual(await readFile(path.join(root,'.ponderosa-portable-review','user-data.json')),original);
+}));
+
+test('incompressible large working original survives Agent HTTP export and import',{timeout:180_000},t=>withPortability(t,async f=>{
+  const bytes=randomFillSync(Buffer.allocUnsafe(64*1024*1024+8193));
+  const expected=createHash('sha256').update(bytes).digest('hex');
+  await writeFile(path.join(f.dataDir,'large-random.bin'),bytes);
+  const pkg=f.ok(await f.request({method:'GET',url:`/api/agents/${f.a.id}/export?mode=full&workingFiles=${encodeURIComponent(JSON.stringify(['large-random.bin']))}`}));
+  const file=pkg.agents[0].workingFiles.find(item=>item.path==='large-random.bin');
+  assert.equal(file.parts.byteLength,bytes.length);
+  assert.equal(file.parts.sha256,expected);
+  assert.ok(file.parts.refs.some(ref=>!pkg.agents[0].artifacts.find(item=>item.ref===ref).dataEncoding),'at least one full transport part is not compressed');
+  const destination=path.join(f.dataDir,'large-random-output');
+  f.ok(await f.request(f.importRequest(pkg,randomUUID(),{workingFilesDestination:destination})));
+  assert.equal(createHash('sha256').update(await readFile(path.join(destination,'large-random.bin'))).digest('hex'),expected);
 }));
