@@ -12,7 +12,7 @@ test('every exported mounted regression module is included in the browser entry 
 import {runMountedCase} from '../shared/mounted-regression-lifetime.mjs';
 test('authored foreign continuation storage and stale-authority paths have explicit browser cases',()=>{
  const entry=mountedRegressionInventory().find(row=>row.file==='tests/chats/branch-foreign-continuation-mounted.tsx');
- assert.deepEqual(entry?.names,['foreignContinuationQuotaRegression','foreignContinuationRegression','foreignContinuationSecurityRegression','foreignContinuationStaleRegression']);
+ assert.deepEqual(entry?.names,['foreignBeforeEntryMissingRegression','foreignBeforeEntryRegression','foreignBeforeEntryTamperedRegression','foreignContinuationQuotaRegression','foreignContinuationRegression','foreignContinuationSecurityRegression','foreignContinuationStaleRegression']);
 });
 test('a hung case and hung cleanup retain finite evidence and permit the next independent cell',async()=>{
  let stopped=0,next=0;const never=()=>new Promise(()=>{});
