@@ -27,3 +27,9 @@ test('original finding destination is explicit and private',async()=>{
  assert.deepEqual(validateMemoryCall('save',{text:'useful finding',destination:'chat',visibility:'private',recipient:'original'}),{text:'useful finding',destination:'chat',visibility:'private',recipient:'original'});
  for(const input of [{text:'x',destination:'global',visibility:'private',recipient:'original'},{text:'x',destination:'chat',recipient:'original'},{text:'x',destination:'chat',visibility:'team',recipient:'original'},{text:'x',destination:'chat',visibility:'private',recipient:'other'}])assert.throws(()=>validateMemoryCall('save',input),/Original recipient/);
 });
+
+test('host-only final memory export rejects an unrelated durable Chat',async t=>{
+ const f=await instance(t);let checks=0;
+ await assert.rejects(f.memory.exportExpertFinalPackageMemory(f.chat.id,[f.a.id],()=>{checks++;}),/Exact reviewed expert copy/);
+ assert.equal(checks,1);
+});

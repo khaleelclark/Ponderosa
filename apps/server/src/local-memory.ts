@@ -987,6 +987,21 @@ export class LocalMemoryService{
   this.calls.add(pending);try{return await pending;}finally{this.calls.delete(pending);}
  }
 
+ /** Internal final-custody capture only; the caller supplies the exact Branch fence. */
+ async exportExpertFinalPackageMemory(chatId:string,agentIds:string[],assertFinal:()=>void){
+  if(typeof assertFinal!=='function'||!agentIds.length||new Set(agentIds).size!==agentIds.length)throw new MemoryDenied('Exact expert final capture required',409);
+  let identity:string|undefined;
+  const guard=async()=>{
+   this.live();assertFinal();const receipt=this.expertChat(chatId,true,true);
+   if(!receipt||receipt.state!=='active'||!this.expertConsent(receipt,'copySourceMemory'))throw new MemoryDenied('Exact reviewed expert copy required for final capture',409);
+   const members=(this.ports.store.sqlite.prepare('SELECT agent_id FROM branch_resource_members WHERE step_execution_id=? ORDER BY agent_id').all(receipt.stepExecutionId) as Array<{agent_id:string}>).map(r=>r.agent_id);
+   if(agentIds.some(id=>!members.includes(id)))throw new MemoryDenied('Expert final capture membership changed',409);
+   for(const id of agentIds){const agent=this.ports.store.getAgent(id);if(!agent||agent.conversationId!==chatId||agent.projectId!==receipt.copyProjectId||!activeChatResourceOwner(this.ports.store,'agent',id))throw new MemoryDenied('Expert final capture Agent unavailable',409);}
+   const current=JSON.stringify([receipt,members]);if(identity!==undefined&&identity!==current)throw new MemoryDenied('Expert final capture changed',409);identity=current;
+  };
+  await guard();await this.ready();await guard();const pending=this.core.database.exportPackageMemory(chatId,agentIds,guard,true);this.calls.add(pending);try{return await pending;}finally{this.calls.delete(pending);}
+ }
+
  /** Host package inventory only. Callers must complete their human import/export admission first. */
  async exportPackageMemory(chatId:string,agentIds:string[]){
   const guard=async()=>{this.chat(chatId);for(const id of agentIds){const agent=this.ports.store.getAgent(id);if(!agent||agent.conversationId!==chatId||!activeChatResourceOwner(this.ports.store,'agent',id))throw new MemoryDenied('Package Agent ownership changed');}};
