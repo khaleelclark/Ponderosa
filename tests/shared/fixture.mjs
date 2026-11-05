@@ -48,7 +48,7 @@ export function runtimeAttachmentPaths(value) {
 // The child is real but inert: no shell, network, provider account or user data.
 // Inert Windows roots cannot spawn descendants and are assigned to an exact
 // kill-on-close Job before publication; POSIX roots keep their detached group.
-export async function fixture({ agentBaseUrl, diagnosticProvider = false, beforeRuntimeClose, providerAuthStatus, providerInstalled, steeringResponse, modelCatalog, modelValidator, capabilityCatalog, socketIdleTimeoutMs, storeFactory, authToken, resourceAdmissionObservation, providerContextUsage, providerCommandResult, providerContextRecoverySupport, providerValidatesResumeBeforeTurn = false, schedulerMaxConcurrentRuns = 4, nativeAdapterForOpen, nativeAdapterForEngine, localMemoryForRoot, providerRunPlan } = {}) {
+export async function fixture({ onProviderOpen, agentBaseUrl, diagnosticProvider = false, beforeRuntimeClose, providerAuthStatus, providerInstalled, steeringResponse, modelCatalog, modelValidator, capabilityCatalog, socketIdleTimeoutMs, storeFactory, authToken, resourceAdmissionObservation, providerContextUsage, providerCommandResult, providerContextRecoverySupport, providerValidatesResumeBeforeTurn = false, schedulerMaxConcurrentRuns = 4, nativeAdapterForOpen, nativeAdapterForEngine, localMemoryForRoot, providerRunPlan } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), 'ponderosa-regression-'));
   const dataDir = path.join(root, 'data');
   const plans = new Map(), sessions = new Map(), turns = [], children = [], failures = [], openingSessions = new Set(), commands = [], steers = [];
@@ -65,6 +65,7 @@ export async function fixture({ agentBaseUrl, diagnosticProvider = false, before
     async *seed() { throw Error('Persistent fixture unexpectedly used one-shot seed'); },
     async *continue() { throw Error('Persistent fixture unexpectedly used one-shot continuation'); },
     async openSession(options) {
+      onProviderOpen?.(options);
       const nativeAdapter = nativeAdapterForOpen?.(options);
       if (nativeAdapter) {
         const session = await nativeAdapter.openSession(options);

@@ -463,7 +463,7 @@ for (const phase of ['before-probe', 'before-spawn']) test(`shutdown fences and 
   }
 });
 
-import { canonicalProviderFailureEvent } from '../../apps/server/dist/provider-failure-event.js';
+import { canonicalProviderFailureEvent, redactKnownProviderValues } from '../../apps/server/dist/provider-failure-event.js';
 import { redactPortableDiagnostic } from '../../apps/server/dist/portable-secrets.js';
 
 const marker = 'HARMLESS_CAUSE_14_19_BROKEN_WIDGET_731';
@@ -894,4 +894,69 @@ test('runtime question guidance permits the native bridge without duplicating qu
   assert.match(prompt,/do not ask the same question twice/);
   assert.match(prompt,/Questions never grant permissions/);
   assert.doesNotMatch(prompt,/only user-question path|never call a provider-native AskUserQuestion/);
+});
+
+
+test('current-run known values are redacted while provider cause remains available after restart', {timeout:30000}, async t => {
+  const configured = 'SYNTHETIC_CONFIGURED_VALUE_8F231';
+  const marker = 'UNRELATED_TRANSPORT_CAUSE_8F231';
+  process.env.ANTHROPIC_API_KEY = configured;
+  t.after(() => { delete process.env.ANTHROPIC_API_KEY; });
+  let capability;
+  await withFixture(t, async f => {
+    const chat=await f.createChat('Controlled known values'),agent=await f.createIdleAgent(chat,'Controlled provider');
+    f.plans.set(agent.id,[{run:s=>s.events.push({type:'error',code:'provider_error',message:marker+' '+capability+' '+configured})}]);
+    await f.send(agent.id,'Run controlled failure');
+    await until(async()=>{const d=await f.detail(agent.id);return d.runs.length&&d.runs.every(r=>!['running','preparing'].includes(r.status))?d:false},'failed Run');
+    assert.ok(capability);
+    const check = async () => {
+      const detail=await f.detail(agent.id);
+      const failure=detail.activity.find(item=>item.event.type==='error');
+      assert.ok(failure.event.message.includes(marker));
+      for(const value of [capability,configured]) assert.ok(!JSON.stringify(detail).includes(value));
+      const activity=f.ok(await f.api('GET',`/api/agents/${agent.id}/history/activity`));
+      assert.ok(JSON.stringify(activity).includes(marker));
+      for(const value of [capability,configured]) assert.ok(!JSON.stringify(activity).includes(value));
+    };
+    await check();await f.reopen();await check();
+  }, {onProviderOpen: options => { capability=options.environment.PONDEROSA_AGENT_MESSAGE_TOKEN; }});
+});
+
+test('known value filter handles overlap, short values, and keeps benign cause',()=>{
+  const value=redactKnownProviderValues('network failed token-SYNTHETIC123 and SYNTHETIC', ['SYNTHETIC','SYNTHETIC123','']);
+  assert.ok(value.includes('network failed'));assert.ok(!value.includes('SYNTHETIC'));
+  assert.ok(!redactKnownProviderValues('error x middle y', ['x','y']).includes('x'));
+  assert.equal(redactKnownProviderValues('unchanged cause', ['not-present']), 'unchanged cause');
+  const markerCollision=redactKnownProviderValues('bad X', ['X','[REDACTED]']);
+  assert.ok(!markerCollision.includes('X') && !markerCollision.includes('[REDACTED]'));
+});
+
+test('provider open exception redacts current-run capability before activity and run storage', {timeout:30000}, async t => {
+  let capability;
+  const marker='SYNTHETIC_OPEN_FAILURE_2B87';
+  await withFixture(t, async f => {
+    const chat=await f.createChat('Controlled open failure'),agent=await f.createIdleAgent(chat,'Open failure');
+    await f.send(agent.id,'Open controlled provider');
+    await until(async()=>{const d=await f.detail(agent.id);return d.runs.length&&d.runs.every(r=>!['running','preparing'].includes(r.status))?d:false},'failed open');
+    assert.ok(capability);
+    const detail=await f.detail(agent.id);
+    assert.ok(JSON.stringify(detail).includes(marker));
+    assert.ok(!JSON.stringify(detail).includes(capability));
+  }, {onProviderOpen: options => { capability=options.environment.PONDEROSA_AGENT_MESSAGE_TOKEN; },
+      nativeAdapterForOpen: options => ({openSession:async()=>{throw Error(marker+' '+options.environment.PONDEROSA_AGENT_MESSAGE_TOKEN);}})});
+});
+
+test('provider root exit redacts current-run capability from terminal observation', {timeout:30000}, async t => {
+  let capability;
+  const marker='SYNTHETIC_ROOT_FAILURE_9B32';
+  await withFixture(t, async f => {
+    const chat=await f.createChat('Controlled root failure'),agent=await f.createIdleAgent(chat,'Root failure');
+    f.plans.set(agent.id,[{output:false,run:s=>s.exitWithDetail({stderr:marker+' '+capability,terminalEvent:{type:'error',message:marker+' '+capability}})}]);
+    await f.send(agent.id,'Exit controlled provider');
+    await until(async()=>{const d=await f.detail(agent.id);return d.runs.length&&d.runs.every(r=>!['running','preparing'].includes(r.status))?d:false},'root-exit failure');
+    assert.ok(capability);
+    const detail=await f.detail(agent.id);
+    assert.ok(JSON.stringify(detail).includes(marker));
+    assert.ok(!JSON.stringify(detail).includes(capability));
+  }, {onProviderOpen: options => { capability=options.environment.PONDEROSA_AGENT_MESSAGE_TOKEN; }});
 });

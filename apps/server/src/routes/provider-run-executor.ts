@@ -4,7 +4,7 @@ import { pauseOwnedNativeGoal } from "../native-goal-stop.js";
 import { requireCurrentRuntimeInputAccess } from "../runtime-input-files.js";
 import { NativeHistoryAuthority } from "../native-history-authority.js";
 import { replyStreamCommit } from "../reply-stream-publication.js";
-import { canonicalProviderFailureEvent } from "../provider-failure-event.js";
+import { canonicalProviderFailureEvent, redactKnownProviderValues } from "../provider-failure-event.js";
 import {localMemoryFor} from "../local-memory.js";
 import {canonicalVoiceReplyInput} from "../voice-reply-input.js";
 import {
@@ -36,6 +36,7 @@ import {
 } from "@ponderosa/agents";
 import {
   classifyProviderFailure,
+  inheritedProviderCredentialValues,
   shouldRolloverEngineSession,
   CodexAppServerSession,
   ClaudeStreamSession,
@@ -269,6 +270,10 @@ export function startProviderRunExecution(
     v3FencingToken,
     v3InjectionId,
   } = input;
+
+  // Values are scoped to this Run and are never persisted as a credential inventory.
+  const knownProviderSecrets = [messageCapability, ...inheritedProviderCredentialValues()];
+  const redactRunDiagnostic = (text: string) => redactKnownProviderValues(text, knownProviderSecrets);
 
   // Capability belongs to the engine selected for this exact Run, which may
   // differ from the Agent's saved engine preference.
@@ -608,7 +613,11 @@ export function startProviderRunExecution(
           onRuntimeSpawned,
           onRuntimeRootExit: (detail) => {
             let observation;
-            try { observation = projectProviderRootExitDetail(detail); }
+            try {
+              observation = projectProviderRootExitDetail(detail);
+              if (observation?.stderr !== undefined) observation.stderr = redactRunDiagnostic(observation.stderr);
+              if (observation?.terminalEvent) observation.terminalEvent.message = redactRunDiagnostic(observation.terminalEvent.message);
+            }
             catch { app.log.warn({ agentId: agent.id }, "invalid provider root-exit detail; using generic failure"); }
             persistentRootExited(agent.id, identity, observation);
           },
@@ -1070,6 +1079,7 @@ export function startProviderRunExecution(
         activeRun.voiceReplyTiming ??= {};
         activeRun.voiceReplyTiming.submittedAt ??= new Date().toISOString();
         for await (const event of startStream(sessionId)) {
+          if (event.type === "error") event.message = redactRunDiagnostic(event.message);
           try { assertSettingsTransitionPolicy?.(); }
           catch (error) {
             if (activeRun.voiceReply) await validateVoiceReplyContext();
@@ -1486,8 +1496,8 @@ export function startProviderRunExecution(
           agentId: agent.id,
           operation: cleanupFailure.operation,
           category: cleanupFailure.category,
-          ...(cleanupFailure.code ? { code: cleanupFailure.code } : {}),
-          restrictedDetail: cleanupFailure.restrictedDetail,
+          ...(cleanupFailure.code ? { code: redactRunDiagnostic(cleanupFailure.code) } : {}),
+          restrictedDetail: redactRunDiagnostic(cleanupFailure.restrictedDetail),
         }, "provider event stream cleanup failed after primary provider failure");
       }
       if (isClosed() || controller.signal.aborted || !ownsActiveRunForAuditDrain(agent.id, activeRun)) return;
@@ -1499,8 +1509,8 @@ export function startProviderRunExecution(
       const providerFailure = isProviderRuntimeBoundaryError(err)
         ? err
         : undefined;
-      const message = providerFailure?.restrictedDetail
-        ?? "Agent execution failed due to an internal runtime error.";
+      const message = providerFailure ? redactRunDiagnostic(providerFailure.restrictedDetail)
+        : "Agent execution failed due to an internal runtime error.";
       const failureEvent = providerFailure
         ? canonicalProviderFailureEvent({
             type: "error",
@@ -1509,6 +1519,7 @@ export function startProviderRunExecution(
             category: providerFailure.category,
           })
         : { type: "error" as const, message };
+      failureEvent.message = redactRunDiagnostic(failureEvent.message);
       runFailureClassification ??= providerFailure?.category;
       const workspaceIssue = await reconcileProjectWorkspace(project, agent);
       projectWorkspaceUnavailable = Boolean(workspaceIssue);

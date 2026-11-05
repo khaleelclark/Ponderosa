@@ -38,3 +38,9 @@ export function claudeBillingEnvironment(
   }
   return snapshot();
 }
+
+/** Named provider credentials already inherited by the native CLI; retain only within the caller's Run. */
+export function inheritedProviderCredentialValues(environment: NodeJS.ProcessEnv = process.env): Array<string | undefined> {
+  return [environment.ANTHROPIC_API_KEY, environment.ANTHROPIC_AUTH_TOKEN, environment.CLAUDE_CODE_OAUTH_TOKEN,
+    environment.OPENAI_API_KEY, environment.CODEX_API_KEY];
+}
