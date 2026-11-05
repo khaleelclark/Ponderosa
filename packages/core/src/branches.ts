@@ -417,7 +417,8 @@ export type CheckpointPackageStatus=
 export interface BranchResourceInspectionDto {
  branchId:string;executionId:string;stepExecutionId:string;generation:number;state:string;destinationChatId:string|null;destinationChatAvailable:boolean;importState:string|null;
  custody:null|{kind:'capture'|'restoration_source';state:'capturing'|'retained'|'releasing'|'released'|'restoration_source';custodyId:string|null;receiptSha256:string|null;checkpointId:string;packageSha256:string|null};
- expertCopyReview?:{sourceAgentId:string;sourceChatId:string;copyChatId:string;snapshotSha256:string;consentCurrent:boolean;copySourceMemory:boolean;allowFindingsWriteback:boolean};
+ temporaryCopyTrace?:{sourceAgentId:string;sourceChatId:string;copyAgentId:string;copyChatId:string;requestId:string;attemptId:string;task:{instructions:string;input:string};result:unknown;historyAvailable:boolean};
+ expertCopyReview?:{sourceAgentId:string;sourceChatId:string;copyChatId:string;snapshotSha256:string;consentCurrent:boolean;sourceMemoryAvailable:boolean;reviewWithoutMemorySha256:string;copySourceMemory:boolean;allowFindingsWriteback:boolean};
  currentPolicyReview:import('./dto/agents.js').AgentAccessImportReviewDto|null;
  accessChoiceCurrent:boolean;reviewError?:string;
 }

@@ -74,7 +74,8 @@ function fenceExit(db:Database.Database,input:BranchGenerationExitFenceInput,pur
     !['completed','failed','cancelled','expired','recipient_unavailable'].includes(request.state)||!operation)
     throw Error('Exact completed expert copy ownership required for final capture');
  }
- const evidence={schema:'branch-generation-exit-fence.v1',...(purpose!=='retry'?{purpose}:{}),input:normalized,resource,members};
+ const resourceEvidence=purpose==='expert-copy'?{...(resource as Record<string,unknown>),error:null}:resource;
+ const evidence={schema:'branch-generation-exit-fence.v1',...(purpose!=='retry'?{purpose}:{}),input:normalized,resource:resourceEvidence,members};
  const bytes=stableJson(evidence),sha256=payloadHash(evidence);
  if(Buffer.byteLength(bytes)>4*1024*1024)throw Error('Generation-exit fence exceeds bound');
  if(prior){if(prior.receipt_json!==bytes||prior.receipt_sha256!==sha256)throw Error('Final resource fence evidence changed');}

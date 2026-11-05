@@ -91,8 +91,8 @@ function exactFence(db:Database.Database,agentId:string,projectId:string,convers
  const row=rows[0]!;if(Buffer.byteLength(row.receipt_json)>4*1024*1024)throw Error('Generation fence exceeds bound');
  const f=JSON.parse(row.receipt_json),i=f.input;
  if(f.schema!=='branch-generation-exit-fence.v1'||stableJson(f)!==row.receipt_json||payloadHash(f)!==row.receipt_sha256||stableJson(i)!==row.input_json||i.projectId!==projectId||i.conversationId!==conversationId||!Array.isArray(i.agentIds)||!i.agentIds.includes(agentId)||new Set(i.agentIds).size!==i.agentIds.length||!i.agentIds.length||i.agentIds.length>256||!Number.isSafeInteger(i.generation)||i.generation<0||row.identity!==payloadHash({executionId:i.executionId,stepExecutionId:i.stepExecutionId,generation:i.generation})||stableJson(f.members.map((m:any)=>m.agent_id).sort())!==stableJson([...i.agentIds].sort()))throw Error('Exact permanent generation fence differs');
- if(f.purpose!==undefined&&f.purpose!=='final-resource')throw Error('Unknown generation fence purpose');
- if(f.purpose==='final-resource'&&(!Number.isSafeInteger(i.generation)||i.generation<0||f.resource?.generation!==i.generation||f.resource.retry_draining!==0||f.resource.execution_id!==i.executionId||f.resource.step_execution_id!==i.stepExecutionId||f.resource.chat_id!==i.conversationId))throw Error('Final generation fence resource differs');
+ if(f.purpose!==undefined&&!['final-resource','expert-copy'].includes(f.purpose))throw Error('Unknown generation fence purpose');
+ if(['final-resource','expert-copy'].includes(f.purpose)&&(!Number.isSafeInteger(i.generation)||i.generation<0||f.resource?.generation!==i.generation||f.resource.retry_draining!==0||f.resource.execution_id!==i.executionId||f.resource.step_execution_id!==i.stepExecutionId||f.resource.chat_id!==i.conversationId))throw Error('Final generation fence resource differs');
  return {fence:{identity:row.identity,sha256:row.receipt_sha256},input:i};
 }
 /** Server invokes only after draining runtime producers AND tracked adapter operations. */

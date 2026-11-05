@@ -636,6 +636,9 @@ export function registerBranchRoutes(app: FastifyInstance, context: { dataDir?:s
   app.get<{Params:{id:string;executionId:string;stepId:string};Querystring:{commandKey:string}}>('/api/branches/:id/executions/:executionId/resources/:stepId/checkpoint-custody',async(request,reply)=>{
     try{const p=request.params;ownedResource(p.id,p.executionId,p.stepId);return branches.resourceCustodyReleaseStatus(p.stepId,request.query.commandKey);}catch(error){return reply.code(409).send({error:(error as Error).message});}
   });
+  app.get<{Params:{id:string;executionId:string;stepId:string}}>('/api/branches/:id/executions/:executionId/resources/:stepId/copy-history',async(request,reply)=>{
+    try{const p=request.params;ownedResource(p.id,p.executionId,p.stepId);return await context.resources.temporaryCopyHistory(p.stepId);}catch(error){return reply.code(409).send({error:(error as Error).message});}
+  });
   app.get<{Params:{id:string;executionId:string;stepId:string}}>('/api/branches/:id/executions/:executionId/resources/:stepId/access-review',async(request,reply)=>{
     try{const p=request.params;ownedResource(p.id,p.executionId,p.stepId);return await context.resources.reviewRestoreAccess(p.stepId);}catch(error){return reply.code(409).send({error:(error as Error).message});}
   });

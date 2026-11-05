@@ -1,3 +1,5 @@
+import {decodePortableArtifactData} from "./agent-package-codec.js";
+import {EXECUTION_ARCHIVE_MEDIA_TYPE,validateExecutionArchive} from "./portable-execution-archive.js";
 import {describeBranchDeletionFailure} from './branch-deletion-diagnostics.js';
 import {isMemoryCleanupHold} from './local-memory-authority.js';
 import {issuedCaptureRetryBudget,generationHistoricalSelections,readBranchExpertCopy,requireGenerationExitDeletionReady} from '@ponderosa/agents';
@@ -58,9 +60,9 @@ export class BranchResourceService {
     this.branches.requireFinalResourceCaptureFence(executionId,stepId,key);
   }
   /** Fence a completed expert, retain its exact full context, then permit deletion. */
-  private async captureExpertFinal(resource:{executionId:string;stepExecutionId:string;agentIds:string[]}):Promise<void>{
+  private async captureExpertFinal(resource:{executionId:string;stepExecutionId:string;agentIds:string[]}):Promise<boolean>{
     const expert=readBranchExpertCopy(this.store.sqlite,resource.executionId,resource.stepExecutionId);
-    if(!expert||expert.state!=='active')return;
+    if(!expert||expert.state!=='active')return true;
     if(!this.packages)throw Error('Expert final context custody unavailable; cleanup held');
     const fence=this.branches.fenceExpertCopyFinal(resource.stepExecutionId,resource.agentIds);
     this.branches.cancelResourceWork(resource.stepExecutionId);
@@ -84,16 +86,31 @@ export class BranchResourceService {
     if(!current)throw Error('Expert final capture receipt unavailable');
     if(!current.finalSnapshotReceipt){
       const status=await this.packages.inspectCheckpoint(source);assertFinal();
-      if(status.state!=='missing')throw Error(`Expert final context custody ${status.state}; cleanup held for review`);
-      await this.packages.captureCheckpoint(source,receipt=>{assertFinal();this.branches.sealExpertFinal(resource.executionId,resource.stepExecutionId,receipt);},
-        {wholeWorkingFolder:true,expertFinal:assertFinal});
+      if(status.state==='failed'&&status.reason==='source_changed'){
+        this.branches.retryExpertFinal(resource.executionId,resource.stepExecutionId,source);return false;
+      }
+      if(status.state!=='missing')throw Error(`Temporary agent copy final context custody ${status.state}; cleanup held for review`);
+      try{
+        await this.packages.captureCheckpoint(source,receipt=>{assertFinal();this.branches.sealExpertFinal(resource.executionId,resource.stepExecutionId,receipt);},
+          {wholeWorkingFolder:true,expertFinal:assertFinal,omitMemory:!expert.consent?.copySourceMemory});
+      }catch(error){
+        if(error instanceof Error&&error.name==='SourceCaptureChangedError'){
+          const failed=await this.packages.inspectCheckpoint(source);
+          if(failed.state==='failed'&&failed.reason==='source_changed'){
+            this.branches.retryExpertFinal(resource.executionId,resource.stepExecutionId,source);return false;
+          }
+        }
+        throw error;
+      }
     }
     const retained=readBranchExpertCopy(this.store.sqlite,resource.executionId,resource.stepExecutionId)?.finalSnapshotReceipt;
     if(!retained)throw Error('Expert final context receipt unavailable; cleanup held');
     const portable=await this.packages.readCheckpoint(retained);assertFinal();
     this.requireFinalWorkingFolders(portable);
-    if(!portable.memory?.length)throw Error('Temporary agent copy final memory is unavailable; cleanup held');
+    if(portable.agents.some(agent=>agent.workingFolder?.excludedPaths.length))throw Error('Temporary agent copy working files were excluded from final custody; cleanup held');
+    if(expert.consent?.copySourceMemory&&!portable.memory?.length)throw Error('Temporary agent copy final memory is unavailable; cleanup held');
     this.branches.verifyExpertFinal(resource.executionId,resource.stepExecutionId,retained.sha256);
+    return true;
   }
   /** Verify the exact retained bytes again during every destructive cleanup guard. */
   verifyExpertFinalCustody(chatId:string,projectId:string):void {
@@ -104,6 +121,15 @@ export class BranchResourceService {
     const r=readBranchExpertCopy(this.store.sqlite,rows[0]!.execution_id,rows[0]!.step_id);
     if(!r||r.copyChatId!==chatId||r.copyProjectId!==projectId||!r.finalSnapshotReceipt||r.finalVerifiedSha256!==r.finalSnapshotReceipt.sha256)
       throw Error('Exact temporary agent copy final custody unavailable');
+    const source=r.finalSnapshotSource;
+    if(!source||!r.finalFenceSha256)throw Error('Temporary agent copy final fence is unavailable');
+    const identity=createHash('sha256').update(stableJson({executionId:r.executionId,stepExecutionId:r.stepExecutionId,generation:source.intent.resourceGeneration})).digest('hex');
+    const fence=this.store.sqlite.prepare("SELECT receipt_json,receipt_sha256 FROM host_lifecycle_commits WHERE kind='branch-generation-exit-fence' AND identity=?").get(identity) as {receipt_json:string;receipt_sha256:string}|undefined;
+    if(!fence||fence.receipt_sha256!==r.finalFenceSha256)throw Error('Temporary agent copy final fence is unavailable');
+    const retained=JSON.parse(fence.receipt_json);
+    if(retained.purpose!=='expert-copy'||retained.input?.executionId!==r.executionId||retained.input?.stepExecutionId!==r.stepExecutionId||
+      retained.input?.conversationId!==chatId||retained.input?.projectId!==projectId||stableJson(retained.input?.agentIds)!==stableJson([...source.agentIds].sort()))
+      throw Error('Temporary agent copy final fence identity differs');
     requireGenerationExitDeletionReady(this.store.sqlite,{conversationId:chatId});
     if(this.packages.verifyCheckpointNow(r.finalSnapshotReceipt)!==r.finalSnapshotReceipt.sha256)throw Error('Temporary agent copy final custody bytes changed');
   }
@@ -217,25 +243,60 @@ export class BranchResourceService {
     return this.issuedResourceCaptureStatus(executionId,stepId,commandKey);
   }
   async inspectResource(stepExecutionId:string):Promise<import('@ponderosa/core').BranchResourceInspectionDto> {
-    const snapshot=this.branches.resourceInspection(stepExecutionId),journal=this.branches.resourceRestoreJournal(stepExecutionId);
+    const base=this.branches.resourceInspection(stepExecutionId),journal=this.branches.resourceRestoreJournal(stepExecutionId);
     const row=this.store.sqlite.prepare('SELECT execution_id FROM branch_resources WHERE step_execution_id=?').get(stepExecutionId) as {execution_id:string}|undefined;
     const expert=row&&readBranchExpertCopy(this.store.sqlite,row.execution_id,stepExecutionId);
+    const attempt=expert&&this.store.sqlite.prepare('SELECT result_json FROM branch_attempts WHERE id=? AND step_execution_id=?').get(expert.attemptId,stepExecutionId) as {result_json:string|null}|undefined;
+    const trace=expert?.state==='active'&&expert.copyAgentId&&expert.copyChatId&&expert.requestId&&expert.task?{
+      sourceAgentId:expert.sourceAgentId,sourceChatId:expert.sourceChatId,copyAgentId:expert.copyAgentId,copyChatId:expert.copyChatId,
+      requestId:expert.requestId,attemptId:expert.attemptId,task:expert.task,result:attempt?.result_json?JSON.parse(attempt.result_json):null,
+      historyAvailable:!!expert.finalSnapshotReceipt&&expert.finalVerifiedSha256===expert.finalSnapshotReceipt.sha256}:undefined;
+    const snapshot={...base,...(trace?{temporaryCopyTrace:trace}:{})};
     const receipt=journal?.receipt??expert?.snapshotReceipt;
     if(!receipt||!snapshot.destinationChatId||!snapshot.destinationChatAvailable||snapshot.state!=='reserved'||snapshot.importState)return snapshot;
-    let review:import('@ponderosa/core').AgentAccessImportReviewDto|null=null,reviewError:string|undefined;
+    let review:import('@ponderosa/core').AgentAccessImportReviewDto|null=null,withoutMemoryReview:import('@ponderosa/core').AgentAccessImportReviewDto|null=null,reviewError:string|undefined,sourceMemoryAvailable=false;
     try{
       if(!this.packages)throw Error('Checkpoint package service unavailable');
       const portable=await this.packages.readCheckpoint(receipt);
+      sourceMemoryAvailable=Boolean(portable.memory?.length);
       const {outputRoles:unusedOutputRoles,...expertPackage}=portable;
       review=await this.packages.reviewAccess(expert?expertPackage:{...portable,rootRef:journal!.rootRef},snapshot.destinationChatId);
+      if(expert){const {memory:unusedMemory,...withoutMemory}=expertPackage;withoutMemoryReview=await this.packages.reviewAccess(withoutMemory,snapshot.destinationChatId);}
     }catch(error){reviewError=error instanceof Error?error.message:'Resource policy review unavailable';}
     const currentExpert=row&&readBranchExpertCopy(this.store.sqlite,row.execution_id,stepExecutionId);
-    if(stableJson(this.branches.resourceInspection(stepExecutionId))!==stableJson(snapshot)||stableJson(this.branches.resourceRestoreJournal(stepExecutionId))!==stableJson(journal)||stableJson(currentExpert)!==stableJson(expert))throw Error('Resource inspection changed; refresh');
+    if(stableJson(this.branches.resourceInspection(stepExecutionId))!==stableJson(base)||stableJson(this.branches.resourceRestoreJournal(stepExecutionId))!==stableJson(journal)||stableJson(currentExpert)!==stableJson(expert))throw Error('Resource inspection changed; refresh');
     const choice=expert?.accessChoice??journal?.choice;
-    const consentCurrent=!!expert?.consent?.copySourceMemory&&expert.consent.snapshotSha256===expert.snapshotReceipt?.sha256&&expert.consent.reviewSha256===review?.reviewSha256;
-    return {...snapshot,currentPolicyReview:review,accessChoiceCurrent:!!review&&choice?.reviewSha256===review.reviewSha256,
-      ...(expert?.snapshotReceipt&&expert.copyChatId?{expertCopyReview:{sourceAgentId:expert.sourceAgentId,sourceChatId:expert.sourceChatId,copyChatId:expert.copyChatId,snapshotSha256:expert.snapshotReceipt.sha256,consentCurrent,copySourceMemory:consentCurrent&&expert.consent?.copySourceMemory===true,allowFindingsWriteback:consentCurrent&&expert.consent?.allowFindingsWriteback===true}}:{}),
+    const selectedReview=expert?.consent?.copySourceMemory===false?withoutMemoryReview:review;
+    const consentCurrent=!!expert?.consent&&expert.consent.snapshotSha256===expert.snapshotReceipt?.sha256&&expert.consent.reviewSha256===selectedReview?.reviewSha256;
+    return {...snapshot,currentPolicyReview:review,accessChoiceCurrent:!!selectedReview&&choice?.reviewSha256===selectedReview.reviewSha256,
+      ...(expert?.snapshotReceipt&&expert.copyChatId&&withoutMemoryReview?{expertCopyReview:{sourceAgentId:expert.sourceAgentId,sourceChatId:expert.sourceChatId,copyChatId:expert.copyChatId,snapshotSha256:expert.snapshotReceipt.sha256,consentCurrent,sourceMemoryAvailable,reviewWithoutMemorySha256:withoutMemoryReview.reviewSha256,copySourceMemory:consentCurrent&&expert.consent?.copySourceMemory===true,allowFindingsWriteback:consentCurrent&&expert.consent?.allowFindingsWriteback===true}}:{}),
       ...(reviewError?{reviewError}:{})};
+  }
+  async temporaryCopyHistory(stepExecutionId:string) {
+    if(!this.packages)throw Error('Temporary agent copy history is unavailable');
+    const resource=this.store.sqlite.prepare('SELECT execution_id FROM branch_resources WHERE step_execution_id=?').get(stepExecutionId) as {execution_id:string}|undefined;
+    const r=resource&&readBranchExpertCopy(this.store.sqlite,resource.execution_id,stepExecutionId);
+    if(!r?.copyAgentId||!r.copyChatId||!r.copyProjectId||!r.requestId||!r.finalSnapshotReceipt||r.finalVerifiedSha256!==r.finalSnapshotReceipt.sha256)
+      throw Error('Temporary agent copy history is not retained yet');
+    this.verifyExpertFinalCustody(r.copyChatId,r.copyProjectId);
+    const portable=await this.packages.readCheckpoint(r.finalSnapshotReceipt),messages:Array<unknown>=[],runs:Array<unknown>=[],events:Array<unknown>=[];
+    const allowed=new Set(r.finalSnapshotReceipt.agentIds);
+    for(const agent of portable.agents){
+      if(!allowed.has(agent.ref))throw Error('Temporary agent copy history member differs');
+      for(const message of agent.history??[])messages.push({agentId:agent.ref,title:agent.title,role:message.role,text:message.text,...(message.createdAt?{createdAt:message.createdAt}:{})});
+      for(const artifact of agent.artifacts??[])if(artifact.mediaType===EXECUTION_ARCHIVE_MEDIA_TYPE){
+        const {data}=await decodePortableArtifactData(artifact);validateExecutionArchive(data);
+        const archive=JSON.parse(data.toString('utf8')) as {sourceAgentId:string;sourceProjectId:string;runs:Array<Record<string,unknown>>;events:Array<Record<string,unknown>>};
+        const copyArchive=allowed.has(archive.sourceAgentId)&&archive.sourceProjectId===r.copyProjectId;
+        const sourceArchive=archive.sourceAgentId===r.sourceAgentId&&archive.sourceProjectId===r.sourceProjectId;
+        if(!copyArchive&&!sourceArchive)throw Error('Temporary agent copy Run archive owner differs');
+        for(const run of archive.runs)runs.push({agentId:archive.sourceAgentId,...run});
+        for(const event of archive.events)events.push({agentId:archive.sourceAgentId,...event});
+      }
+    }
+    this.verifyExpertFinalCustody(r.copyChatId,r.copyProjectId);
+    if(stableJson(readBranchExpertCopy(this.store.sqlite,resource!.execution_id,stepExecutionId))!==stableJson(r))throw Error('Temporary agent copy history changed; refresh');
+    return {sourceAgentId:r.sourceAgentId,copyAgentId:r.copyAgentId,requestId:r.requestId,messages,runs,events};
   }
   async reviewRestoreAccess(stepExecutionId:string,choice?:import('@ponderosa/core').ImportAgentPackageRequest['accessSettingsResolution'],consent?:{snapshotSha256:string;copySourceMemory:boolean;allowFindingsWriteback:boolean}) {
     if(!this.packages)throw Error('Checkpoint package service unavailable');
@@ -244,7 +305,11 @@ export class BranchResourceService {
     const expert=row&&readBranchExpertCopy(this.store.sqlite,row.execution_id,stepExecutionId),receipt=journal?.receipt??expert?.snapshotReceipt;
     if(!receipt||!row?.chat_id)throw Error('Fresh resource destination Chat is not ready');
     const portable=await this.packages.readCheckpoint(receipt),{outputRoles:unusedOutputRoles,...expertPackage}=portable;
-    const review=await this.packages.reviewAccess(expert?expertPackage:{...portable,rootRef:journal!.rootRef},row.chat_id);
+    const {memory:unusedMemory,...withoutMemory}=expertPackage;
+    const reviewed=expert?(consent?.copySourceMemory===false?withoutMemory:expertPackage):{...portable,rootRef:journal!.rootRef};
+    const review=await this.packages.reviewAccess(reviewed,row.chat_id);
+    if(expert&&consent?.copySourceMemory&&!portable.memory?.length)throw Error('Source memory was unavailable in this snapshot');
+    if(expert&&consent?.allowFindingsWriteback&&!portable.memory?.length)throw Error('Local Memory was unavailable in this snapshot; findings writeback cannot be enabled');
     if(stableJson(this.branches.resourceInspection(stepExecutionId))!==stableJson(snapshot)||stableJson(this.branches.resourceRestoreJournal(stepExecutionId))!==stableJson(journal)||stableJson(readBranchExpertCopy(this.store.sqlite,row.execution_id,stepExecutionId))!==stableJson(expert))throw Error('Resource destination changed; review again');
     if(expert){
       if(choice&&!consent)throw Error('Explicit expert copy memory choices are required');
@@ -288,19 +353,22 @@ export class BranchResourceService {
           if(!expert||expert.state!=='reserved')throw Error('Expert copy reservation unavailable');
           if(!expert.snapshotReceipt){
             const state=await this.packages.inspectCheckpoint(expert.snapshotSource);
-            if(state.state!=='missing')throw Error(`Expert snapshot custody ${state.state}; reconciliation required`);
+            if(state.state==='failed'&&state.reason==='source_changed'){
+              this.branches.retryExpertSnapshot(provision.executionId,provision.stepExecutionId,expert.snapshotSource);
+              continue;
+            }
+            if(state.state!=='missing')throw Error(`Temporary agent copy snapshot custody ${state.state}; reconciliation required`);
             await this.packages.captureExpertSnapshot(expert.snapshotSource,expert.sourceProjectId,
               receipt=>this.branches.sealExpertSnapshot(provision.executionId,provision.stepExecutionId,receipt));
             expert=readBranchExpertCopy(this.store.sqlite,provision.executionId,provision.stepExecutionId);
           }
           if(!expert?.snapshotReceipt)throw Error('Expert snapshot receipt unavailable');
           const captured=await this.packages.readCheckpoint(expert.snapshotReceipt);
-          if(captured.mode!=='full'||captured.agents.length!==1||captured.rootRef!==expert.sourceAgentId||!captured.memory?.length)throw Error('Expert snapshot does not contain the selected Agent and Local Memory');
+          if(captured.mode!=='full'||captured.agents.length!==1||captured.rootRef!==expert.sourceAgentId)throw Error('Temporary agent copy snapshot does not contain the selected Agent');
           // Output app bindings belong to the original, not to a temporary worker.
           const {outputRoles:unusedOutputRoles,...template}=captured;
           const root=template.agents[0]!;
           provision={...provision,expertCopy:expert,template,defaultEngine:root.engine,engineMapping:{[root.engine]:root.engine}};
-          this.packages.validateAgent(template,provision.engineMapping);
         }
         const imported=this.branches.resourceOperation(provision.stepExecutionId,'import');
         if(imported?.state==='completed'){
@@ -357,12 +425,20 @@ export class BranchResourceService {
         if(provision.expertCopy){
           const expert=readBranchExpertCopy(this.store.sqlite,provision.executionId,provision.stepExecutionId);
           if(!expert||expert.state!=='reserved'||expert.copyChatId!==provision.chatId)throw Error('Expert copy destination reservation changed');
+          if(expert.consent?.copySourceMemory===false){
+            const {memory:unusedMemory,...withoutMemory}=provision.template;
+            provision={...provision,template:withoutMemory};
+          }
           const review=await this.packages!.reviewAccess(provision.template,provision.chatId);
-          if(!expert.accessChoice||expert.accessChoice.reviewSha256!==review.reviewSha256||expert.consent?.reviewSha256!==review.reviewSha256||expert.consent.snapshotSha256!==expert.snapshotReceipt?.sha256||!expert.consent.copySourceMemory){
+          if(!expert.accessChoice||expert.accessChoice.reviewSha256!==review.reviewSha256||expert.consent?.reviewSha256!==review.reviewSha256||expert.consent.snapshotSha256!==expert.snapshotReceipt?.sha256){
             this.branches.reviewExpertAccess(provision.executionId,provision.stepExecutionId,review);
             continue;
           }
-          this.packages!.reserveExpertChatMemory(provision.chatId);
+          if(expert.consent.copySourceMemory){
+            if(!provision.template.memory?.length)throw Error('Source memory was unavailable in the snapshot; review whether to continue without it');
+            this.packages!.reserveExpertChatMemory(provision.chatId);
+          }
+          this.packages!.validateAgent(provision.template,provision.engineMapping);
           accessSettingsResolution=expert.accessChoice;
         }
         // Every new effect revalidates current owner/ancestor release after the previous await.
@@ -385,6 +461,18 @@ export class BranchResourceService {
         this.branches.finishResourceOperation(provision.stepExecutionId,phase,importToken);
         token=undefined;phase=undefined;
       } catch (error) {
+        if(provision.expertCopy&&!phase&&error instanceof Error&&error.name==='SourceCaptureChangedError'&&this.packages){
+          try{
+            const current=readBranchExpertCopy(this.store.sqlite,provision.executionId,provision.stepExecutionId);
+            if(current&&!current.snapshotReceipt){
+              const status=await this.packages.inspectCheckpoint(current.snapshotSource);
+              if(status.state==='failed'&&status.reason==='source_changed'){
+                this.branches.retryExpertSnapshot(provision.executionId,provision.stepExecutionId,current.snapshotSource);
+                continue;
+              }
+            }
+          }catch(retryError){error=retryError;}
+        }
         const message=error instanceof Error ? error.message : 'Template creation failed';
         if(phase&&token)this.branches.finishResourceOperation(provision.stepExecutionId,phase,token,error);
         else if(this.branches.resourceCaptureJournal(provision.stepExecutionId))this.branches.resourceCaptureError(provision.stepExecutionId,message);
@@ -415,7 +503,7 @@ export class BranchResourceService {
         await this.captureGenerationExitBeforeCleanup(resource.stepExecutionId);
         await this.captureFinalExitBeforeCleanup(resource.stepExecutionId);
         if (!this.branches.resourceCanRetire(resource.stepExecutionId,resource.agentIds) || !this.idle(resource.agentIds)) continue;
-        await this.captureExpertFinal(resource);
+        if(!await this.captureExpertFinal(resource))continue;
         if (!this.branches.resourceCanRetire(resource.stepExecutionId,resource.agentIds) || !this.idle(resource.agentIds)) continue;
         await this.deleteAgents(resource.agentIds);
         if(this.branches.finalResourceExitRequired(resource.stepExecutionId)){await this.verifyFinalPackage(resource.executionId,resource.stepExecutionId);this.branches.requireFinalResourceFrontier(resource.executionId,resource.stepExecutionId);}

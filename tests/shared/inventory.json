@@ -2782,6 +2782,14 @@
       "moduleBase": "apps/server/package.json",
       "requirements": "Node24, built server and disposable private stores",
       "origin": "Exact reusable expert-copy reservation and explicit consent"
+    },
+    {
+      "path": "tests/branches/expert-copy-workflow.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server and disposable private stores",
+      "origin": "Real temporary agent copy admission, separate results and final custody"
     }
   ],
   "retainedReleasePayload": [

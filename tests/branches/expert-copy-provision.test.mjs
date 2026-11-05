@@ -4,7 +4,8 @@ import {mkdtempSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {AgentStore,BranchStore,CoordinationV3Store,readBranchExpertCopy} from '@ponderosa/agents';
-import {sealBranchExpertSnapshot,reserveBranchExpertChat,reserveBranchExpertImport,reviewBranchExpertAccess,bindBranchExpertCopy} from '../../packages/agents/dist/branch-expert-copy.js';
+import {BranchResourceService} from '../../apps/server/dist/branch-resource-service.js';
+import {sealBranchExpertSnapshot,reserveBranchExpertChat,reserveBranchExpertImport,reviewBranchExpertAccess,bindBranchExpertCopy,reserveBranchExpertFinal,sealBranchExpertFinal,verifyBranchExpertFinal} from '../../packages/agents/dist/branch-expert-copy.js';
 
 test('copy jobs reserve distinct source-bound identities without sending work to the original',t=>{
  const root=mkdtempSync(path.join(tmpdir(),'expert-copy-reservation-')),store=new AgentStore(root);
@@ -49,7 +50,7 @@ test('expert copy binding requires a sealed exact snapshot, separate consent and
  const resource=store.sqlite.prepare('SELECT * FROM branch_resources WHERE execution_id=?').get(job.id);
  const original=readBranchExpertCopy(store.sqlite,job.id,resource.step_execution_id);
  const captured={...original.snapshotSource,version:1,custodyId:'custody',boundaryId:'boundary',sha256:'a'.repeat(64),byteLength:20};
- assert.throws(()=>bindBranchExpertCopy(store.sqlite,job.id,resource.step_execution_id,{copyAgentId:'copy',copyChatId:'other',copyProjectId:'other',requestId:'request'}),/snapshot or explicit consent/);
+ assert.throws(()=>bindBranchExpertCopy(store.sqlite,job.id,resource.step_execution_id,{copyAgentId:'copy',copyChatId:'other',copyProjectId:'other',requestId:'request',task:{instructions:'work',input:'input'}}),/snapshot or explicit consent/);
  sealBranchExpertSnapshot(store.sqlite,job.id,resource.step_execution_id,captured);
  reserveBranchExpertChat(store.sqlite,job.id,resource.step_execution_id,{copyChatId:'copy-chat',copyProjectId:'copy-project'});
  assert.throws(()=>reserveBranchExpertChat(store.sqlite,job.id,resource.step_execution_id,{copyChatId:'changed',copyProjectId:'copy-project'}),/identity changed/);
@@ -58,9 +59,17 @@ test('expert copy binding requires a sealed exact snapshot, separate consent and
  assert.throws(()=>reviewBranchExpertAccess(store.sqlite,job.id,resource.step_execution_id,review,choice,{snapshotSha256:'c'.repeat(64),reviewSha256:review.reviewSha256,copySourceMemory:true,allowFindingsWriteback:true}),/does not match/);
  reviewBranchExpertAccess(store.sqlite,job.id,resource.step_execution_id,review,choice,{snapshotSha256:captured.sha256,reviewSha256:review.reviewSha256,copySourceMemory:true,allowFindingsWriteback:false});
  reserveBranchExpertImport(store.sqlite,job.id,resource.step_execution_id,'import-operation');
- assert.throws(()=>bindBranchExpertCopy(store.sqlite,job.id,resource.step_execution_id,{copyAgentId:agent.id,copyChatId:'copy-chat',copyProjectId:'copy-project',requestId:'request'}),/identity invalid/);
- bindBranchExpertCopy(store.sqlite,job.id,resource.step_execution_id,{copyAgentId:'copy-agent',copyChatId:'copy-chat',copyProjectId:'copy-project',requestId:'request'});
+ assert.throws(()=>bindBranchExpertCopy(store.sqlite,job.id,resource.step_execution_id,{copyAgentId:agent.id,copyChatId:'copy-chat',copyProjectId:'copy-project',requestId:'request',task:{instructions:'work',input:'input'}}),/identity invalid/);
+ bindBranchExpertCopy(store.sqlite,job.id,resource.step_execution_id,{copyAgentId:'copy-agent',copyChatId:'copy-chat',copyProjectId:'copy-project',requestId:'request',task:{instructions:'work',input:'input'}});
  const bound=readBranchExpertCopy(store.sqlite,job.id,resource.step_execution_id);
  assert.equal(bound.state,'active');assert.equal(bound.requestId,'request');assert.equal(bound.attemptId,original.attemptId);
  assert.equal(bound.consent.copySourceMemory,true);assert.equal(bound.consent.allowFindingsWriteback,false);
+ const finalSource={...original.snapshotSource,checkpointId:'final',sourceChatId:'copy-chat',agentIds:['copy-agent']};
+ reserveBranchExpertFinal(store.sqlite,job.id,resource.step_execution_id,finalSource,'d'.repeat(64));
+ const final={...finalSource,version:1,custodyId:'final-custody',boundaryId:'final-boundary',sha256:'e'.repeat(64),byteLength:30};
+ sealBranchExpertFinal(store.sqlite,job.id,resource.step_execution_id,final);
+ verifyBranchExpertFinal(store.sqlite,job.id,resource.step_execution_id,final.sha256);
+ const service=new BranchResourceService(branches,store,async()=>{},async()=>{},async()=>{});
+ service.setPackageEngine({verifyCheckpointNow:()=>final.sha256});
+ assert.throws(()=>service.verifyExpertFinalCustody('copy-chat','copy-project'),/final fence is unavailable/,'a receipt without its exact retained fence cannot release cleanup');
 });

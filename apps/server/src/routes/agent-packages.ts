@@ -123,7 +123,7 @@ export interface BranchPackageEngine {
   prepareWorkingDataChild(input:PrepareBranchWorkingDataChildInput,onReceipt:(receipt:BranchWorkingDataPreparation)=>void):Promise<NonNullable<BranchWorkingDataPreparation['reservation']>>;
   applyWorkingData(input:ApplyBranchWorkingDataInput,onReceipt:(receipt:BranchWorkingDataApplication)=>void,signal?:AbortSignal):Promise<BranchWorkingDataApplication>;
   inspectCheckpoint(source:CheckpointPackageSource):Promise<CheckpointPackageStatus>;
-  captureCheckpoint(source:CheckpointPackageSource,seal?:(receipt:CheckpointPackageReceipt)=>void,options?:{wholeWorkingFolder?:boolean;expertFinal?:()=>void}):Promise<CheckpointPackageReceipt>;
+  captureCheckpoint(source:CheckpointPackageSource,seal?:(receipt:CheckpointPackageReceipt)=>void,options?:{wholeWorkingFolder?:boolean;expertFinal?:()=>void;omitMemory?:boolean}):Promise<CheckpointPackageReceipt>;
   captureExpertSnapshot(source:CheckpointPackageSource,sourceProjectId:string,seal:(receipt:CheckpointPackageReceipt)=>void):Promise<CheckpointPackageReceipt>;
   reserveExpertChatMemory(chatId:string):void;
   readCheckpoint(receipt:CheckpointPackageReceipt):Promise<AgentPortablePackageDto>;
@@ -832,6 +832,7 @@ export function registerAgentPackageRoutes(
     workingSet?:{nodes:AgentDto[];selections:import('@ponderosa/core').BranchExportFileSelections},
     omitWorkingData=false,
     expertFinal?:()=>void,
+    omitMemory=false,
   ): Promise<AgentPortablePackageDto> => {
     if(!Array.isArray(selectedWorkingFiles)||selectedWorkingFiles.some(item=>typeof item!=='string'))throw new AssetError(400,'Select working files as an array of relative paths');
     if(selectedWorkingFiles.length&&requestedMode==='template')throw new AssetError(400,'Selected working files require a full export');
@@ -1227,7 +1228,7 @@ export function registerAgentPackageRoutes(
       agents,
       ...(workingRootNesting.length?{workingRootNesting}:{}),
     };
-    if(!workingSet&&mode==='full'&&localMemoryFor(app)){
+    if(!workingSet&&mode==='full'&&!omitMemory&&localMemoryFor(app)){
       const groups=new Map<string,string[]>();for(const agent of nodes){if(!agent.conversationId)throw new Error('Package memory Agent has no Chat');const ids=groups.get(agent.conversationId)??[];ids.push(agent.id);groups.set(agent.conversationId,ids);}
       if(groups.size>1)throw new Error('Cross-Chat memory exports require separate packages and destination Chats');
       portable.memory=[];
@@ -3262,7 +3263,7 @@ export function registerAgentPackageRoutes(
         for(const id of frozen.agentIds){
           const agent=store.getAgent(id);
           if(!agent||agent.conversationId!==frozen.sourceChatId||store.agentCreationPending(id)||deletingAgentIds.has(id)||deletingConversationIds.has(agent.conversationId)||deletingProjectIds.has(agent.projectId))throw new Error('Checkpoint source membership unavailable');
-          const portable=await buildPortablePackage(id,'full',false,[],options?.wholeWorkingFolder===true,false,undefined,undefined,undefined,false,options?.expertFinal);
+          const portable=await buildPortablePackage(id,'full',false,[],options?.wholeWorkingFolder===true,false,undefined,undefined,undefined,false,options?.expertFinal,options?.omitMemory===true);
           capturedBytes+=agentPackageJsonUtf8Bytes(portable);
           if(capturedBytes>AGENT_PACKAGE_MAX_BYTES)throw new Error('Checkpoint source packages exceed package byte limit');
           inputs.push({ref:id,...(agent.managerAgentId&&frozen.agentIds.includes(agent.managerAgentId)?{managerRef:agent.managerAgentId}:{}),package:portable});
@@ -3275,19 +3276,20 @@ export function registerAgentPackageRoutes(
       if(frozen.agentIds.length!==1)throw new Error('Expert copy requires exactly one source Agent');
       const status=await checkpointCustody.inspect(frozen);
       if(status.state!=='missing')throw new Error(`Expert snapshot custody ${status.state}; review its existing receipt`);
-      const memory=localMemoryFor(app);
-      if(!memory)throw new Error('Local Memory is unavailable; the expert context cannot be copied');
-      const token=beginSourceCapture(store.sqlite,...await memory.checkpointSourceDatabases());
+      let memory=localMemoryFor(app);
+      let memoryDatabases:import('better-sqlite3').Database[]=[];
+      if(memory)try{memoryDatabases=await memory.checkpointSourceDatabases();}catch{memory=undefined;}
+      const token=beginSourceCapture(store.sqlite,...memoryDatabases);
       const admit=()=>{
         const chat=store.getConversation(frozen.sourceChatId),agent=store.getAgent(frozen.agentIds[0]!);
         if(!chat||chat.projectId!==sourceProjectId||!agent||agent.projectId!==sourceProjectId||agent.conversationId!==chat.id||
           !activeChatResourceOwner(store,'chat',chat.id)||!activeChatResourceOwner(store,'agent',agent.id)||
           store.agentCreationPending(agent.id)||deletingAgentIds.has(agent.id)||deletingConversationIds.has(chat.id)||deletingProjectIds.has(sourceProjectId))
           throw new Error('Expert source identity or ownership changed');
-        memory.assertCheckpointSourceSettled();
+        memory?.assertCheckpointSourceSettled();
       };
       try{return await checkpointCustody.capture(frozen,token.boundaryId,async()=>{
-        admit();return buildPortablePackage(frozen.agentIds[0]!,'full',false,[]);
+        admit();return buildPortablePackage(frozen.agentIds[0]!,'full',false,[],false,false,undefined,undefined,undefined,false,undefined,!memory);
       },(publish,receipt)=>commitSourceCapture(token,()=>{admit();seal(receipt);publish();}));}finally{releaseSourceCapture(token);}
     }),
     reserveExpertChatMemory:chatId=>{const memory=localMemoryFor(app);if(!memory)throw Error('Local Memory is unavailable; expert copy remains held');memory.reserveExpertChatMemory(chatId);},

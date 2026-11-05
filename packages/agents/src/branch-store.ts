@@ -1,4 +1,4 @@
-import {readBranchExpertCopy,reserveBranchExpertCopy,sealBranchExpertSnapshot,bindBranchExpertCopy,reserveBranchExpertChat,reserveBranchExpertImport,reviewBranchExpertAccess,reserveBranchExpertFinal,sealBranchExpertFinal,verifyBranchExpertFinal,type BranchExpertCopyReceipt} from "./branch-expert-copy.js";
+import {readBranchExpertCopy,reserveBranchExpertCopy,sealBranchExpertSnapshot,bindBranchExpertCopy,reserveBranchExpertChat,reserveBranchExpertImport,reviewBranchExpertAccess,reserveBranchExpertFinal,sealBranchExpertFinal,verifyBranchExpertFinal,renewBranchExpertSnapshot,renewBranchExpertFinal,type BranchExpertCopyReceipt} from "./branch-expert-copy.js";
 import {fenceBranchFinalResourceExit,fenceBranchExpertCopyExit} from './branch-generation-exit-fence.js';
 import {fenceFinalResourceExit,captureFinalResourceExit,readFinalResourceExit,finalResourceIssuedCheckpointRequired} from './branch-final-resource-exit.js';
 import {bundleParentInput,bundleCallInput,inheritedBundleCallInput,remapBundleValue,type BundleValueMap} from './branch-bundle-values.js';
@@ -1739,7 +1739,7 @@ export class BranchStore {
     const rows=this.rows(`SELECT r.rowid position,r.* FROM branch_resources r JOIN branch_executions e ON e.id=r.execution_id JOIN branches b ON b.id=e.branch_id
       WHERE r.state='reserved' AND e.cancel_requested=0 AND EXISTS(SELECT 1 FROM branch_attempts a WHERE a.step_execution_id=r.step_execution_id AND a.state='prepared' AND a.cancel_requested=0 AND a.available_at<=? AND NOT EXISTS(SELECT 1 FROM branch_attempts newer WHERE newer.step_execution_id=a.step_execution_id AND newer.number>a.number)) ORDER BY CASE WHEN r.rowid>? THEN 0 ELSE 1 END,r.rowid LIMIT 1`, new Date().toISOString(),this.provisionCursor);
     if(rows.length)this.provisionCursor=rows[0]!.position;
-    return rows.filter(r=>{const expert=readBranchExpertCopy(this.sqlite,r.execution_id,r.step_execution_id);return !(expert?.accessReview&&(!expert.accessChoice||expert.consent?.copySourceMemory!==true));}).filter(r=>(this.resourceRelease(r.step_execution_id,r.creation_key)==='ready'||this.resourceCaptureJournal(r.step_execution_id)?.state==='capturing'&&this.resourceOperation(r.step_execution_id,'import')?.state==='completed')&&!['chat','import'].some(phase=>['running','unknown'].includes(this.resourceOperation(r.step_execution_id,phase as 'chat'|'import')?.state))).map(r => {
+    return rows.filter(r=>{const expert=readBranchExpertCopy(this.sqlite,r.execution_id,r.step_execution_id);return !(expert?.accessReview&&(!expert.accessChoice||!expert.consent))&&r.error!=='Temporary agent copy source changed repeatedly; review before retry';}).filter(r=>(this.resourceRelease(r.step_execution_id,r.creation_key)==='ready'||this.resourceCaptureJournal(r.step_execution_id)?.state==='capturing'&&this.resourceOperation(r.step_execution_id,'import')?.state==='completed')&&!['chat','import'].some(phase=>['running','unknown'].includes(this.resourceOperation(r.step_execution_id,phase as 'chat'|'import')?.state))).map(r => {
       const execution = this.execution(r.execution_id)!;
       const bindings=this.bindings(execution),expert=readBranchExpertCopy(this.sqlite,execution.id,r.step_execution_id);
       if(expert)return {branchId:execution.branchId,executionId:execution.id,workingDirectory:'',defaultEngine:'',
@@ -1757,8 +1757,12 @@ export class BranchStore {
     sealBranchExpertSnapshot(this.sqlite,executionId,stepExecutionId,receipt);
   }
   reserveExpertChat(executionId:string,stepExecutionId:string,chatId:string):void {
-    this.bindResourceChat(stepExecutionId,chatId);
+    if(!this.sqlite.inTransaction)throw Error('Temporary agent copy Chat must be bound during its creation transaction');
+    const r=this.row('SELECT r.*,e.branch_id FROM branch_resources r JOIN branch_executions e ON e.id=r.execution_id WHERE r.execution_id=? AND r.step_execution_id=?',executionId,stepExecutionId);
     const chat=this.chat(chatId);
+    if(!r||r.state!=='reserved'||chat.branch_id!==r.branch_id||chat.branch_execution_id!==executionId||r.chat_id&&r.chat_id!==chatId)throw Error('Temporary agent copy Chat ownership changed');
+    this.run('UPDATE branch_resources SET chat_id=? WHERE step_execution_id=?',chatId,stepExecutionId);
+    this.run('INSERT OR IGNORE INTO branch_ephemeral_contexts(step_execution_id,generation,chat_id) VALUES(?,?,?)',stepExecutionId,r.generation,chatId);
     reserveBranchExpertChat(this.sqlite,executionId,stepExecutionId,{copyChatId:chat.id,copyProjectId:chat.project_id});
   }
   reserveExpertImport(executionId:string,stepExecutionId:string,creationOperationId:string):void {
@@ -1769,6 +1773,15 @@ export class BranchStore {
       const r=this.row("SELECT * FROM branch_resources WHERE execution_id=? AND step_execution_id=?",executionId,stepExecutionId);
       if(!r||r.state!=='reserved'||this.resourceOperation(stepExecutionId,'import'))throw Error('Expert copy access review is unavailable');
       reviewBranchExpertAccess(this.sqlite,executionId,stepExecutionId,review,choice,consent);
+    })();
+  }
+  retryExpertSnapshot(executionId:string,stepExecutionId:string,previous:import('@ponderosa/core').CheckpointPackageSource):void {
+    this.unitTransaction(()=>{
+      if(this.resourceRelease(stepExecutionId)!=='ready')throw Error('Temporary agent copy snapshot retry is no longer current');
+      const next={...previous,checkpointId:randomUUID()};
+      renewBranchExpertSnapshot(this.sqlite,executionId,stepExecutionId,previous,next);
+      this.run("UPDATE branch_resources SET error=NULL WHERE execution_id=? AND step_execution_id=?",executionId,stepExecutionId);
+      this.selectedWrite(executionId);
     })();
   }
   resourceRelease(stepExecutionId:string,creationKey?:string):'ready'|'waiting'|'fenced' {
@@ -1956,6 +1969,7 @@ export class BranchStore {
   }
   resourceCaptureEligible(stepExecutionId:string):boolean {
     const r=this.row('SELECT * FROM branch_resources WHERE step_execution_id=?',stepExecutionId),e=r&&this.execution(r.execution_id);
+    if(r&&readBranchExpertCopy(this.sqlite,r.execution_id,stepExecutionId))return false;
     if(!e||!e.configuration||Object.keys(e.configuration.secretBindings??{}).length||!scriptDefinitionSupported(this.definition(e),false,true)||this.definition(e).steps.filter(s=>s.kind==='agent').length!==1)return false;
     const selected=selectBranchUnit(this.sqlite,e.id);
     return selected.resources!.length===1&&selected.paths!.length===1&&!selected.attempts!.some(a=>a.request_id||a.recovery_of_request_id);
@@ -2122,7 +2136,7 @@ export class BranchStore {
       if(!r||r.state!=='reserved'||chat.branch_id!==r.branch_id||chat.branch_execution_id!==r.execution_id)throw new Error('Invalid temporary Chat ownership');
       if(r.chat_id && r.chat_id!==chatId)throw new Error('Temporary Chat already bound');
       this.run('UPDATE branch_resources SET chat_id=? WHERE step_execution_id=?',chatId,stepExecutionId);
-      if(r.chat_id!==chatId)this.selectedWrite(r.execution_id);
+      if(r.chat_id!==chatId||readBranchExpertCopy(this.sqlite,r.execution_id,stepExecutionId))this.selectedWrite(r.execution_id);
       this.run("INSERT OR IGNORE INTO branch_ephemeral_contexts(step_execution_id,generation,chat_id) VALUES(?,?,?)",stepExecutionId,r.generation,chatId);
     })();
   }
@@ -2164,7 +2178,7 @@ export class BranchStore {
       const expert=readBranchExpertCopy(this.sqlite,execution.id,stepExecutionId);
       if(expert){
         if(expert.attemptId!==attempt.id||result.agentIds.length!==1)throw Error("Expert copy attempt or inventory changed");
-        bindBranchExpertCopy(this.sqlite,execution.id,stepExecutionId,{copyAgentId:result.rootAgentId,copyChatId:chat.id,copyProjectId:chat.project_id,requestId:opening.requestIds[0]!});
+        bindBranchExpertCopy(this.sqlite,execution.id,stepExecutionId,{copyAgentId:result.rootAgentId,copyChatId:chat.id,copyProjectId:chat.project_id,requestId:opening.requestIds[0]!,task:{instructions:this.text(execution,step.instructions),input:attempt.input_text}});
       }
       this.run("UPDATE branch_attempts SET state='waiting',request_id=?,updated_at=? WHERE id=?", opening.requestIds[0], now, attempt.id);
       this.run("UPDATE branch_step_executions SET state='waiting' WHERE id=?", stepExecutionId);
@@ -2373,6 +2387,9 @@ export class BranchStore {
         bindingSha256:expert.snapshotSource.intent.bindingSha256,configurationSha256:expert.snapshotSource.intent.configurationSha256}};
       reserveBranchExpertFinal(this.sqlite,executionId,stepId,source,fenceSha256);return source;
     }).immediate();
+  }
+  retryExpertFinal(executionId:string,stepId:string,previous:import('@ponderosa/core').CheckpointPackageSource):void {
+    this.unitTransaction(()=>renewBranchExpertFinal(this.sqlite,executionId,stepId,previous,{...previous,checkpointId:randomUUID()}))();
   }
   sealExpertFinal(executionId:string,stepId:string,receipt:import('@ponderosa/core').CheckpointPackageReceipt):void {
     if(!this.sqlite.inTransaction)throw Error('Expert final seal requires the package owner transaction');
@@ -3205,8 +3222,10 @@ export class BranchStore {
   }
   private waitPath(pathId:string):void {
     const path=this.row('SELECT execution_id,state FROM branch_paths WHERE id=?',pathId)!;
-    this.run("UPDATE branch_paths SET state='waiting' WHERE id=?",pathId);
-    if(path.state!=='waiting')this.selectedWrite(path.execution_id);
+    if(path.state!=='waiting'){
+      this.run("UPDATE branch_paths SET state='waiting' WHERE id=?",pathId);
+      this.selectedWrite(path.execution_id);
+    }
   }
   private movePath(pathId: string, next: string | undefined, input: string, result: BranchResult, now: string, terminal?: string): void {
     const path = this.row("SELECT * FROM branch_paths WHERE id = ?", pathId)!;
@@ -3312,7 +3331,7 @@ export class BranchStore {
       const root = paths.find(p => !p.parent_path_id);
       state = root?.state === "failed" ? "failed" : root?.state === "skipped" ? "skipped" : "completed";
       const result = root?.result_json ? JSON.parse(root.result_json) as BranchResult : undefined;
-      this.run("UPDATE branch_executions SET output_text = ? WHERE id = ?", result?.output ?? null, id);
+      this.run("UPDATE branch_executions SET output_text = ? WHERE id = ? AND output_text IS NOT ?", result?.output ?? null, id, result?.output ?? null);
     }
     if (!["running", "waiting", "queued"].includes(state) && this.row("SELECT 1 FROM branch_resources WHERE execution_id=? AND state!='retired'", id)) {
       state = "waiting"; reason = this.row("SELECT error FROM branch_resources WHERE execution_id=? AND error IS NOT NULL LIMIT 1", id)?.error ?? "Waiting for ephemeral Agent work and runtime cleanup";
