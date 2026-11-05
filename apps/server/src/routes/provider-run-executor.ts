@@ -1,3 +1,4 @@
+import { hasKnownRetainedMemory } from "../context-transition-admission.js";
 import { pauseOwnedNativeGoal } from "../native-goal-stop.js";
 import { requireCurrentRuntimeInputAccess } from "../runtime-input-files.js";
 import { NativeHistoryAuthority } from "../native-history-authority.js";
@@ -390,12 +391,12 @@ export function startProviderRunExecution(
         const accepted = store.resumeSessionState(agent.id);
         const origin = store.acceptedProviderSessionInput(agent.id)?.executionId;
         const scope = coordinationV3.runScopeKey(runId, agent.id);
-        const source = scope && store.sqlite.prepare(`
+        const source = scope ? store.sqlite.prepare(`
           SELECT id FROM scheduler_runs
           WHERE agent_id=? AND scope_key=? AND provider_session_id=? AND id<>?
             AND status='completed' AND prompt_injection_state='injected'
           ORDER BY fencing_token DESC LIMIT 1
-        `).get(agent.id, scope, resumeSessionId, runId) as {id:string}|undefined;
+        `).get(agent.id, scope, resumeSessionId, runId) as {id:string}|undefined : undefined;
         const known = scope && store.sqlite.prepare(`
           SELECT 1 FROM scheduler_runs r JOIN memory_exposure_runs e ON e.run_id=r.id
           WHERE r.agent_id=? AND r.scope_key=? AND r.provider_session_id=?
@@ -405,7 +406,16 @@ export function startProviderRunExecution(
         `).get(agent.id, scope, resumeSessionId);
         if (accepted?.sessionId !== resumeSessionId) throw new Error("The retained session changed. The original work remains available for review.");
         if (!origin || !source || !memory) {
-          if (known) throw new Error("Earlier memory exposure cannot be verified. The original work remains available for review.");
+          // A managed handoff can inherit disclosed sources from an older
+          // session even when this replacement has no exposure rows itself.
+          const possibleOrigins = origin ? [origin] : (store.sqlite.prepare(`
+            SELECT DISTINCT replacement_run_id AS id FROM context_rollovers
+            WHERE agent_id=? AND replacement_session_id=? AND state='completed'
+              AND completion_reason='replacement_verified' AND replacement_run_id IS NOT NULL
+          `).all(agent.id, resumeSessionId) as Array<{id:string}>).map(row => row.id);
+          const inherited = possibleOrigins.some(id =>
+            hasKnownRetainedMemory(store, agent.id, id, source?.id ?? id, resumeSessionId));
+          if (known || inherited) throw new Error("Earlier memory exposure cannot be verified. The original work remains available for review.");
         } else {
           const proof = await memory.prepareRetainedInputProof({
             agentId:agent.id, chatId:agent.conversationId, sessionId:resumeSessionId,
