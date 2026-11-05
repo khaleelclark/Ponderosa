@@ -227,7 +227,7 @@ export { CoordinationV3SourceEffectsAuthority, SourceEffectConflictError } from 
 export {groupOwnerReviewEvidence} from './branch-group-review-evidence.js';
 
 export { NativeTaskStopAuthority } from "./native-task-stop-authority.js";
-export {captureBranchRuntimeData,validateBranchRuntimeData} from './branch-runtime-package.js';
+export {captureBranchRuntimeData,validateBranchRuntimeData,readRuntimeImportFacts} from './branch-runtime-package.js';
 
 export {validateBranchExecutionTree,planBranchExecutionTree,insertBranchExecutionTree,readBranchExecutionTree,readHeldTreeForContinuation} from './branch-runtime-tree-package.js';
 

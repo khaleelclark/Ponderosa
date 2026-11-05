@@ -13,20 +13,34 @@ export async function branchRuntimeReadbackRegression(){
   root.render(<><RuntimePrivateFacts data={data}/><BranchRuntimeReadback planId="plan" branchId="destination" manifestSha256={sha} expected={data} onVerified={()=>acknowledged++}/></>);await settle();assert(requests===0,'explicit private data read');
   data.owners[0].facts.push({kind:'command',key:'resource-final-exit:step:0',json:'{"retained":"original"}',sha256:'d'.repeat(64)});
   root.render(<><RuntimePrivateFacts data={data}/><BranchRuntimeReadback planId="plan" branchId="destination" manifestSha256={sha} expected={data} onVerified={()=>acknowledged++}/></>);await settle();
-  assert(document.body.textContent?.includes('Retired resource exit included · execution held · portable continuation unavailable'),'Import must clearly identify held final-resource data');
+  assert(document.body.textContent?.includes('Retired resource exit included · execution held pending a supported destination review'),'Import must clearly identify held final-resource data');
   const original=structuredClone(data),nested:any={...data,owners:[{...data.owners[0],facts:[{kind:'import',key:'original',json:JSON.stringify({data:original}),sha256:'e'.repeat(64)}]}]};
   nested.owners[0].facts.push({kind:'custody',key:'missing',json:'{"disposition":"unavailable_held"}',sha256:'f'.repeat(64)});
   root.render(<RuntimePrivateFacts data={nested}/>);await settle();
-  assert(document.body.textContent?.includes('Retired resource exit included · execution held · portable continuation unavailable')&&document.body.textContent?.includes('Some checkpoint data was unavailable at export'),'Nested re-export must retain the held and unavailable warnings');
+  assert(document.body.textContent?.includes('Retired resource exit included · execution held pending a supported destination review')&&document.body.textContent?.includes('Some checkpoint data was unavailable at export'),'Nested re-export must retain the held and unavailable warnings');
   nested.owners[0].facts=[{kind:'tree-continuation',key:'original',json:JSON.stringify({held:{data:original}}),sha256:'e'.repeat(64)}];
   root.render(<RuntimePrivateFacts data={nested}/>);await settle();
-  assert(document.body.textContent?.includes('Retired resource exit included · execution held · portable continuation unavailable'),'Nested tree continuation must retain the held-resource warning');
+  assert(document.body.textContent?.includes('Retired resource exit included · execution held pending a supported destination review'),'Nested tree continuation must retain the held-resource warning');
   root.render(<><RuntimePrivateFacts data={data}/><BranchRuntimeReadback planId="plan" branchId="destination" manifestSha256={sha} expected={data} onVerified={()=>acknowledged++}/></>);await settle();
 
   const click=async(text:string)=>{const b=Array.from(document.querySelectorAll('button')).find(b=>b.textContent===text);assert(b,text);b!.click();await settle();};
   await click('Read saved runtime data');assert(document.body.textContent?.includes('differs'),'foreign receipt held');assert(acknowledged===0,'cannot acknowledge wrong receipt');
   wrong=false;await click('Read saved runtime data');assert(document.body.textContent?.includes('Unknown native effects')&&document.body.textContent?.includes('source-chat')&&document.body.textContent?.includes('fresh-chat'),'exact maps and evidence-only reason');assert(document.body.textContent?.includes('All retained bytes')&&document.body.textContent?.includes('traversals'),'every private fact byte retained in reveal');
   await click('Acknowledge held runtime receipt');assert(acknowledged===1&&requests===2,'deliberate readback acknowledgment only');
+  const compressed:any={...data,schema:'ponderosa.branch-runtime-data.v2',owners:[{...data.owners[0],facts:[{kind:'import',key:'original',sha256:'e'.repeat(64),json:JSON.stringify({schema:'ponderosa.runtime-import-bytes.v1',dataEncoding:'gzip',dataBase64:'opaque-exact-bytes'})}]}]};
+  let reads=0;
+  globalThis.fetch=async(input,init)=>{
+   assert(!init?.method||init.method==='GET','selected source inspection is read only');
+   const url=new URL(String(input),location.origin);assert(url.pathname.endsWith('/installations/plan/runtime-import-facts'),'saved preview scope');
+   assert(url.searchParams.get('manifestSha256')===sha&&url.searchParams.get('path')===JSON.stringify(['source-owner']),'exact manifest and imported owner path');
+   reads++;
+   return new Response(JSON.stringify(url.searchParams.has('kind')?{manifestSha256:sha,sourceManifestSha256:'f'.repeat(64),fact:{kind:'frontier',key:'current',sha256:'c'.repeat(64),json:'{"text":"Readable original retained history"}'}}:{manifestSha256:sha,sourceManifestSha256:'f'.repeat(64),status:{finalResource:true,unavailable:true},receipt:{dispatched:false},owners:[{sourceExecutionId:'prior-owner',sha256:'b'.repeat(64),facts:[{kind:'frontier',key:'current',sha256:'c'.repeat(64),bytes:47}]}]}),{headers:{'content-type':'application/json'}});
+  };
+  root.render(<RuntimePrivateFacts data={compressed} inspection={{planId:'plan',manifestSha256:sha}}/>);await settle();
+  assert(reads===0&&document.body.textContent?.includes('Inspect prior imported history before acknowledging'),'compressed nested status disclosed before acknowledgment without automatic byte reads');
+  await click('Inspect prior imported history');assert(document.body.textContent?.includes('Prior history includes a retired resource exit')&&document.body.textContent?.includes('Prior history includes checkpoint data that was unavailable'),'decoded nested warning summary is readable');assert(reads===1&&!document.body.textContent?.includes('Readable original retained history'),'inventory alone does not dump fact contents');
+  await click('Read selected fact');assert(reads===2&&document.body.textContent?.includes('Readable original retained history'),'selected compressed-source fact is readable without a browser decoder');
+
  }finally{root.unmount();host.remove();globalThis.fetch=original;}
 }
 

@@ -265,6 +265,15 @@ export function registerBranchRoutes(app: FastifyInstance, context: { dataDir?:s
   app.post<{Params:{id:string};Body:{chatRef:string;agentRef:string;sharedRoot:string}}>('/api/branches/installations/:id/working-root-review',async(request,reply)=>{
     try{const body=validatedObject(request.body,'Installation working-root review');exactObjectFields(body,['chatRef','agentRef','sharedRoot'],'Installation working-root review');if(typeof body.chatRef!=='string'||typeof body.agentRef!=='string'||typeof body.sharedRoot!=='string')throw new Error('Confirm the created installation root');const result=context.installations.resolveWorkingRoot(request.params.id,body.chatRef,body.agentRef,body.sharedRoot);notify();return result;}catch(error){return reply.code(409).send({error:(error as Error).message,...context.installations.status(request.params.id)});}
   });
+  app.get<{Params:{id:string};Querystring:{manifestSha256:string;sourceBranchId:string;path:string;ownerId?:string;kind?:string;key?:string}}>('/api/branches/installations/:id/runtime-import-facts',async(request,reply)=>{
+    try{
+      const q=request.query;
+      if(typeof q.manifestSha256!=='string'||! /^[a-f0-9]{64}$/.test(q.manifestSha256)||typeof q.sourceBranchId!=='string'||typeof q.path!=='string'||q.path.length>4000)throw Error('Choose saved runtime evidence');
+      const selected=q.ownerId!==undefined||q.kind!==undefined||q.key!==undefined;
+      if(selected&&(typeof q.ownerId!=='string'||typeof q.kind!=='string'||typeof q.key!=='string'))throw Error('Choose one exact source fact');
+      return context.installations.runtimeImportFacts(request.params.id,{manifestSha256:q.manifestSha256,sourceBranchId:q.sourceBranchId,path:JSON.parse(q.path),...(selected?{selection:{ownerId:q.ownerId!,kind:q.kind!,key:q.key!}}:{})});
+    }catch(error){return reply.code(409).send({error:(error as Error).message});}
+  });
   app.get<{Params:{id:string};Querystring:{branchId:string}}>('/api/branches/installations/:id/runtime-data',async(request,reply)=>{
     try{if(typeof request.query.branchId!=='string'||!context.branches.getBranch(request.query.branchId))throw new Error('Runtime destination Branch unavailable');return context.installations.runtimeData(request.params.id,request.query.branchId)??reply.code(404).send({error:'Runtime data receipt not found'});}catch(error){return reply.code(409).send({error:(error as Error).message});}
   });

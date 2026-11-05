@@ -288,3 +288,41 @@ export function resolveBranchRuntimeSource(data:BranchPortableRuntimeData,execut
  }
  throw Error('Runtime generation chain exceeds 16 retained generations');
 }
+
+function retainedImportStatus(data:BranchPortableRuntimeData){
+ const status={finalResource:false,unavailable:false},seen=new Set<string>(),cache:RuntimeImportCache={values:new Map(),decodedBytes:0};
+ const walk=(value:Row,depth:number)=>{
+  if(depth>16)throw Error('Runtime status exceeds retained generation bound');
+  if(!value||seen.has(value.sha256))return;seen.add(value.sha256);
+  if(value.schema==='ponderosa.branch-runtime-tree.v1'){for(const branch of Object.values(value.branches))walk(branch as Row,depth+1);return;}
+  for(const owner of value.owners as BranchPortableRuntimeOwner[])for(const fact of owner.facts){
+   if(fact.kind==='command'&&fact.key.startsWith('resource-final-exit:'))status.finalResource=true;
+   if(fact.kind==='custody'&&JSON.parse(fact.json).disposition==='unavailable_held')status.unavailable=true;
+   if(fact.kind==='import')walk(runtimeImportEvidenceCached(value as BranchPortableRuntimeData,owner,cache).data,depth+1);
+   else if(['tree-import','continuation','tree-continuation'].includes(fact.kind)){
+    const saved=JSON.parse(fact.json),nested=fact.kind==='tree-continuation'?saved.held?.data:saved.data;
+    if(nested)walk(nested,depth+1);
+   }
+  }
+ };
+ walk(data,0);return status;
+}
+/** Read one retained import's inventory or exact fact; never grant execution authority. */
+export function readRuntimeImportFacts(value:unknown,path:string[],selection?:{ownerId:string;kind:string;key:string},called=false){
+ if(!Array.isArray(path)||!path.length||path.length>16||path.some(id=>typeof id!=='string'||!id||id.length>200))throw Error('Choose a bounded retained owner path');
+ let data=validateBranchRuntimeData(value,called),receipt:Row|undefined;
+ for(const id of path){
+  const owners=data.owners.filter(owner=>owner.sourceExecutionId===id);
+  if(owners.length!==1)throw Error('Retained source owner unavailable');
+  const original=runtimeImportEvidence(data,owners[0]!);receipt=original.receipt;
+  data=validateBranchRuntimeData(original.data);
+ }
+ if(selection){
+  const owner=data.owners.find(owner=>owner.sourceExecutionId===selection.ownerId);
+  const facts=owner?.facts.filter(fact=>fact.kind===selection.kind&&fact.key===selection.key);
+  if(facts?.length!==1)throw Error('Retained source fact unavailable');
+  return {sourceManifestSha256:data.sha256,fact:facts[0]};
+ }
+ return {sourceManifestSha256:data.sha256,status:retainedImportStatus(data),receipt,owners:data.owners.map(owner=>({sourceExecutionId:owner.sourceExecutionId,sha256:owner.sha256,
+  facts:owner.facts.map(fact=>({kind:fact.kind,key:fact.key,sha256:fact.sha256,bytes:Buffer.byteLength(fact.json)}))}))};
+}

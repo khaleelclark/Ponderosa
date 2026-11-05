@@ -11,7 +11,7 @@ import {validateOutputRoles} from './portable-output-roles.js';
 import type {OutputAgentApps} from './output-agent-apps.js';
 import {agentPackageJsonUtf8Bytes} from '@ponderosa/core';
 import type {ChatCreator} from "./routes/projects.js";
-import {captureBranchRuntimeData,validateBranchRuntimeData,branchDefinitionChanges,validateBranchBindings,validateBranchExecutionTree,planBranchExecutionTree,readHeldTreeForContinuation} from "@ponderosa/agents";
+import {readRuntimeImportFacts,captureBranchRuntimeData,validateBranchRuntimeData,branchDefinitionChanges,validateBranchBindings,validateBranchExecutionTree,planBranchExecutionTree,readHeldTreeForContinuation} from "@ponderosa/agents";
 import {randomUUID,createHash} from 'node:crypto';
 import type {AgentStore,BranchStore} from '@ponderosa/agents';
 import {stableJson,validateBranchDefinition,validateBranchConfiguration,interpolateBranchText,branchDeletionErrorResourceId} from '@ponderosa/agents';
@@ -658,6 +658,17 @@ export class BranchInstallationService {
   const id=randomUUID(),createdAt=new Date().toISOString();this.run("INSERT INTO branch_installation_plans(id,branch_id,expected_version_id,expected_configuration_revision,package_json,bindings_json,preview_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",id,branchId??null,branch?.versionId??null,branchId?this.row('SELECT configuration_revision FROM branches WHERE id=?',branchId)!.configuration_revision:null,packageJson,bindingsJson,previewJson,createdAt,createdAt);
   if(branchId)this.run('UPDATE branch_installation_plans SET expected_resources_hash=? WHERE id=?',this.resourceRevision(branchId),id);
   return {id,operations,...(tree?{definitionTreeReview:{manifestSha256:pkg.definitionTree!.sha256,reviewSha256:tree.reviewSha256,branches:pkg.definitionTree!.nodes.length,bindings:tree.bindings}}:{}),...(pkg.executionTree?{runtimeDataReview:{manifestSha256:pkg.executionTree.sha256,owners:Object.values(pkg.executionTree.branches).reduce((n,b)=>n+b.owners.length,0),facts:Object.values(pkg.executionTree.branches).flatMap(b=>b.owners).reduce((n,o)=>n+o.facts.length,0),disposition:'held' as const,currentAuthority:false as const}}:pkg.runtimeData?{runtimeDataReview:{manifestSha256:pkg.runtimeData.sha256,owners:pkg.runtimeData.owners.length,facts:pkg.runtimeData.owners.reduce((n,o)=>n+o.facts.length,0),disposition:'held' as const,currentAuthority:false as const}}:{}),...(memoryUpdate?{memoryUpdateReview:memoryUpdate.review}:{}),...(outputRoleReview?{outputRoleReview}:{}),...(fullImportReview?{fullImportReview}:{})};
+ }
+ runtimeImportFacts(planId:string,input:{manifestSha256:string;sourceBranchId:string;path:string[];selection?:{ownerId:string;kind:string;key:string}}){
+  const plan=this.row('SELECT package_json,branch_id,state FROM branch_installation_plans WHERE id=?',planId);
+  if(!plan)throw Error('Saved installation preview unavailable');
+  const pkg=JSON.parse(plan.package_json),saved=plan.state==='completed'&&plan.branch_id?this.runtimeData(planId,plan.branch_id):undefined;
+  const runtime=saved?.data??(pkg.executionTree??pkg.runtimeData),tree=runtime?.schema==='ponderosa.branch-runtime-tree.v1';
+  if(plan.state==='completed'&&(!saved||!this.branches.getBranch(plan.branch_id)))throw Error('Saved runtime destination unavailable');
+  if(!runtime||runtime.sha256!==input.manifestSha256)throw Error('Saved runtime manifest differs');
+  const data=tree?runtime.branches[input.sourceBranchId]:runtime;
+  if(!data||data.sourceBranchId!==input.sourceBranchId)throw Error('Saved runtime Branch differs');
+  return {manifestSha256:runtime.sha256,...readRuntimeImportFacts(data,input.path,input.selection,tree)};
  }
  runtimeData(planId:string,branchId:string){return this.branches.runtimeTreeData(planId,branchId)??this.branches.runtimeData(planId,branchId);}
  async resolveAccess(id:string,chatRef:string,agentRef:string,choice:AccessChoice){

@@ -2876,7 +2876,35 @@ for(const [kind,parallel] of [['serial',false],['fork',true],['map','map']])test
   const nested=runtimeImportEvidence(reexport.runtimeData,nestedOwner);
   assert.deepEqual(nested.data,pkg.runtimeData);assert.equal(nested.receipt.currentAuthority,false);assert.equal(nested.receipt.dispatched,false);
   const preview2=await service.preview(reexport,{agents:{},directories:{root:f.dir,workspace:f.dir},engines:{codex:'codex'}});
-  const done2=await service.confirm(preview2.id,true,undefined,false,preview2.runtimeDataReview.manifestSha256);
+  const {registerBranchRoutes}=await import('../../apps/server/dist/routes/branches.js'),readApp=(await import('fastify')).default();
+  registerBranchRoutes(readApp,{branches:f.branches,store:f.store,installations:service,notify(){assert.fail('private readback cannot wake work')}});
+  let done2;
+  try{
+   const query=new URLSearchParams({manifestSha256:reexport.runtimeData.sha256,sourceBranchId:reexport.runtimeData.sourceBranchId,path:JSON.stringify([nestedOwner.sourceExecutionId])});
+   const url='/api/branches/installations/'+preview2.id+'/runtime-import-facts?'+query;
+   const count=db.prepare('SELECT COUNT(*) n FROM branch_commands').get().n;
+   const catalog=await readApp.inject({method:'GET',url});assert.equal(catalog.statusCode,200);
+   assert.equal(catalog.json().sourceManifestSha256,pkg.runtimeData.sha256);
+   assert.deepEqual(catalog.json().status,{finalResource:true,unavailable:true},'compressed source warning inventory remains visible');
+   assert.ok(catalog.json().owners.every(o=>o.facts.every(f=>f.json===undefined)),'inventory does not dump prior fact contents');
+   const expectedOwner=pkg.runtimeData.owners[0],expectedFact=expectedOwner.facts.find(f=>f.kind==='frontier');
+   const selected=await readApp.inject({method:'GET',url:url+'&'+new URLSearchParams({ownerId:expectedOwner.sourceExecutionId,kind:expectedFact.kind,key:expectedFact.key})});
+   assert.equal(selected.statusCode,200);assert.deepEqual(selected.json().fact,expectedFact,'readable original fact bytes and hash are exact');
+   assert.equal(selected.json().owners,undefined,'one selected fact only');
+   assert.equal((await readApp.inject({method:'GET',url:url.replace(reexport.runtimeData.sha256,'0'.repeat(64))})).statusCode,409);
+   assert.equal((await readApp.inject({method:'GET',url:url+'&ownerId=missing&kind=frontier&key=current'})).statusCode,409);
+   assert.throws(()=>service.runtimeImportFacts(preview2.id,{manifestSha256:reexport.runtimeData.sha256,sourceBranchId:reexport.runtimeData.sourceBranchId,path:Array(17).fill(nestedOwner.sourceExecutionId)}),/bounded/);
+   assert.equal(db.prepare('SELECT COUNT(*) n FROM branch_commands').get().n,count,'readback has no command effects');
+   done2=await service.confirm(preview2.id,true,undefined,false,preview2.runtimeDataReview.manifestSha256);
+   assert.equal(done2.state,'completed',done2.error);
+   assert.equal(db.prepare('SELECT package_json FROM branch_installation_plans WHERE id=?').get(preview2.id).package_json,'{}','completed preview compacted');
+   const afterCount=db.prepare('SELECT COUNT(*) n FROM branch_commands').get().n;
+   const afterCatalog=await readApp.inject({method:'GET',url});assert.equal(afterCatalog.statusCode,200);assert.deepEqual(afterCatalog.json(),catalog.json());
+   const afterSelected=await readApp.inject({method:'GET',url:url+'&'+new URLSearchParams({ownerId:expectedOwner.sourceExecutionId,kind:expectedFact.kind,key:expectedFact.key})});
+   assert.equal(afterSelected.statusCode,200);assert.deepEqual(afterSelected.json().fact,expectedFact,'completed saved receipt resolves original readable bytes');
+   assert.equal(db.prepare('SELECT COUNT(*) n FROM branch_commands').get().n,afterCount,'completed readback has no command effects');
+
+  }finally{await readApp.close();}
   assert.equal(done2.state,'completed',done2.error);
   const heldAgain=service.runtimeData(preview2.id,done2.branchId);
   assert.deepEqual(heldAgain.data,reexport.runtimeData);assert.equal(heldAgain.receipt.currentAuthority,false);assert.equal(heldAgain.receipt.dispatched,false);
