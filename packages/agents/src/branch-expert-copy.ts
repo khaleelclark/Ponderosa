@@ -1,3 +1,4 @@
+import {randomUUID as cryptoRandomId} from "node:crypto";
 import type Database from "better-sqlite3";
 import type { CheckpointPackageReceipt, CheckpointPackageSource } from "@ponderosa/core";
 import { payloadHash, stableJson } from "./coordination-v3-canonical-json.js";
@@ -11,6 +12,7 @@ export interface BranchExpertCopyReceipt extends BranchExpertCopyIdentity {
   schema:"branch-expert-copy.v1"; state:"reserved"|"active";
   snapshotReceipt?:CheckpointPackageReceipt;
   snapshotFailures?:Array<{source:CheckpointPackageSource;reason:"source_changed"}>;
+  snapshotRetryBase?:number; snapshotRetryHeld?:boolean;
   copyAgentId?:string; copyChatId?:string; copyProjectId?:string; creationOperationId?:string; requestId?:string; task?:{instructions:string;input:string};
   consent?:{snapshotSha256:string;reviewSha256:string;copySourceMemory:boolean;allowFindingsWriteback:boolean};
   finalSnapshotSource?:CheckpointPackageSource; finalSnapshotReceipt?:CheckpointPackageReceipt; finalFenceSha256?:string; finalVerifiedSha256?:string; finalSnapshotFailures?:Array<{source:CheckpointPackageSource;reason:"source_changed"}>;
@@ -33,9 +35,11 @@ export function readBranchExpertCopy(db:Database.Database,executionId:string,ste
     r.snapshotSource?.sourceChatId!==r.sourceChatId||r.snapshotSource?.intent.executionId!==executionId||
     r.snapshotSource?.intent.resourceStepId!==stepId||stableJson(r.snapshotSource?.agentIds)!==stableJson([r.sourceAgentId]))
     throw Error("Expert copy receipt integrity failure");
-  if(r.snapshotFailures&&(!Array.isArray(r.snapshotFailures)||r.snapshotFailures.length>2||r.snapshotFailures.some(failure=>
+  if(r.snapshotFailures&&(!Array.isArray(r.snapshotFailures)||r.snapshotFailures.some(failure=>
     failure.reason!=="source_changed"||!failure.source?.checkpointId||stableJson({...failure.source,checkpointId:r.snapshotSource.checkpointId})!==stableJson(r.snapshotSource))))
     throw Error("Temporary agent copy snapshot retry history differs");
+  if(r.snapshotRetryBase!==undefined&&(!Number.isSafeInteger(r.snapshotRetryBase)||r.snapshotRetryBase<0||r.snapshotRetryBase>(r.snapshotFailures?.length??0)))throw Error("Temporary agent copy retry boundary differs");
+  if(r.snapshotRetryHeld&&(!r.snapshotFailures?.length||stableJson(r.snapshotFailures.at(-1)?.source)!==stableJson(r.snapshotSource)))throw Error("Temporary agent copy held retry evidence differs");
   if(r.snapshotReceipt){
     const {version,custodyId,boundaryId,sha256,byteLength,...source}=r.snapshotReceipt;
     if(version!==1||!custodyId||!boundaryId||!/^[a-f0-9]{64}$/.test(sha256)||!Number.isSafeInteger(byteLength)||byteLength<=0||
@@ -66,13 +70,21 @@ export function reserveBranchExpertCopy(db:Database.Database,input:BranchExpertC
   return receipt;
 }
 /** The caller has observed that this exact private capture never published. */
-export function renewBranchExpertSnapshot(db:Database.Database,executionId:string,stepId:string,previous:CheckpointPackageSource,next:CheckpointPackageSource):void {
+export function renewBranchExpertSnapshot(db:Database.Database,executionId:string,stepId:string,previous:CheckpointPackageSource,next:CheckpointPackageSource):boolean {
   const r=readBranchExpertCopy(db,executionId,stepId);
-  if(!r||r.state!=="reserved"||r.snapshotReceipt||r.copyChatId||stableJson(r.snapshotSource)!==stableJson(previous))throw Error("Temporary agent copy snapshot retry is fenced");
-  const failures=r.snapshotFailures??[];
-  if(failures.length>=2)throw Error("Temporary agent copy source changed repeatedly; review before retry");
-  if(previous.checkpointId===next.checkpointId||stableJson({...previous,checkpointId:next.checkpointId})!==stableJson(next))throw Error("Temporary agent copy retry changed its source identity");
-  const updated:BranchExpertCopyReceipt={...r,snapshotSource:next,snapshotFailures:[...failures,{source:previous,reason:"source_changed"}]};
+  if(!r||r.state!=="reserved"||r.snapshotReceipt||r.copyChatId||r.snapshotRetryHeld||stableJson(r.snapshotSource)!==stableJson(previous))throw Error("Temporary agent copy snapshot retry is fenced");
+  const failures=[...(r.snapshotFailures??[]),{source:previous,reason:"source_changed" as const}];
+  const exhausted=failures.length-(r.snapshotRetryBase??0)>=3;
+  if(!exhausted&&(previous.checkpointId===next.checkpointId||stableJson({...previous,checkpointId:next.checkpointId})!==stableJson(next)))throw Error("Temporary agent copy retry changed its source identity");
+  const updated:BranchExpertCopyReceipt={...r,snapshotSource:exhausted?previous:next,snapshotFailures:failures,...(exhausted?{snapshotRetryHeld:true}:{})};
+  db.prepare("UPDATE branch_commands SET input_hash=?,result_json=? WHERE execution_id=? AND command_key=?").run(payloadHash(identity(updated)),stableJson(updated),executionId,key(stepId));
+  return !exhausted;
+}
+export function resumeBranchExpertSnapshot(db:Database.Database,executionId:string,stepId:string):void {
+  const r=readBranchExpertCopy(db,executionId,stepId),last=r?.snapshotFailures?.at(-1);
+  if(!r||r.state!=="reserved"||r.snapshotReceipt||r.copyChatId||!r.snapshotRetryHeld||!last||last.reason!=="source_changed"||
+    stableJson(last.source)!==stableJson(r.snapshotSource))throw Error("Temporary agent copy snapshot retry evidence is unavailable");
+  const updated:BranchExpertCopyReceipt={...r,snapshotSource:{...r.snapshotSource,checkpointId:cryptoRandomId()},snapshotRetryHeld:false,snapshotRetryBase:r.snapshotFailures!.length};
   db.prepare("UPDATE branch_commands SET input_hash=?,result_json=? WHERE execution_id=? AND command_key=?").run(payloadHash(identity(updated)),stableJson(updated),executionId,key(stepId));
 }
 export function sealBranchExpertSnapshot(db:Database.Database,executionId:string,stepId:string,receipt:CheckpointPackageReceipt):void {

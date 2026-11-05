@@ -1,4 +1,4 @@
-import {readBranchExpertCopy,reserveBranchExpertCopy,sealBranchExpertSnapshot,bindBranchExpertCopy,reserveBranchExpertChat,reserveBranchExpertImport,reviewBranchExpertAccess,reserveBranchExpertFinal,sealBranchExpertFinal,verifyBranchExpertFinal,renewBranchExpertSnapshot,renewBranchExpertFinal,type BranchExpertCopyReceipt} from "./branch-expert-copy.js";
+import {readBranchExpertCopy,reserveBranchExpertCopy,sealBranchExpertSnapshot,bindBranchExpertCopy,reserveBranchExpertChat,reserveBranchExpertImport,reviewBranchExpertAccess,reserveBranchExpertFinal,sealBranchExpertFinal,verifyBranchExpertFinal,renewBranchExpertSnapshot,renewBranchExpertFinal,resumeBranchExpertSnapshot,type BranchExpertCopyReceipt} from "./branch-expert-copy.js";
 import {fenceBranchFinalResourceExit,fenceBranchExpertCopyExit} from './branch-generation-exit-fence.js';
 import {fenceFinalResourceExit,captureFinalResourceExit,readFinalResourceExit,finalResourceIssuedCheckpointRequired} from './branch-final-resource-exit.js';
 import {bundleParentInput,bundleCallInput,inheritedBundleCallInput,remapBundleValue,type BundleValueMap} from './branch-bundle-values.js';
@@ -1739,7 +1739,7 @@ export class BranchStore {
     const rows=this.rows(`SELECT r.rowid position,r.* FROM branch_resources r JOIN branch_executions e ON e.id=r.execution_id JOIN branches b ON b.id=e.branch_id
       WHERE r.state='reserved' AND e.cancel_requested=0 AND EXISTS(SELECT 1 FROM branch_attempts a WHERE a.step_execution_id=r.step_execution_id AND a.state='prepared' AND a.cancel_requested=0 AND a.available_at<=? AND NOT EXISTS(SELECT 1 FROM branch_attempts newer WHERE newer.step_execution_id=a.step_execution_id AND newer.number>a.number)) ORDER BY CASE WHEN r.rowid>? THEN 0 ELSE 1 END,r.rowid LIMIT 1`, new Date().toISOString(),this.provisionCursor);
     if(rows.length)this.provisionCursor=rows[0]!.position;
-    return rows.filter(r=>{const expert=readBranchExpertCopy(this.sqlite,r.execution_id,r.step_execution_id);return !(expert?.accessReview&&(!expert.accessChoice||!expert.consent))&&r.error!=='Temporary agent copy source changed repeatedly; review before retry';}).filter(r=>(this.resourceRelease(r.step_execution_id,r.creation_key)==='ready'||this.resourceCaptureJournal(r.step_execution_id)?.state==='capturing'&&this.resourceOperation(r.step_execution_id,'import')?.state==='completed')&&!['chat','import'].some(phase=>['running','unknown'].includes(this.resourceOperation(r.step_execution_id,phase as 'chat'|'import')?.state))).map(r => {
+    return rows.filter(r=>{const expert=readBranchExpertCopy(this.sqlite,r.execution_id,r.step_execution_id);return !(expert?.accessReview&&(!expert.accessChoice||!expert.consent))&&!expert?.snapshotRetryHeld;}).filter(r=>(this.resourceRelease(r.step_execution_id,r.creation_key)==='ready'||this.resourceCaptureJournal(r.step_execution_id)?.state==='capturing'&&this.resourceOperation(r.step_execution_id,'import')?.state==='completed')&&!['chat','import'].some(phase=>['running','unknown'].includes(this.resourceOperation(r.step_execution_id,phase as 'chat'|'import')?.state))).map(r => {
       const execution = this.execution(r.execution_id)!;
       const bindings=this.bindings(execution),expert=readBranchExpertCopy(this.sqlite,execution.id,r.step_execution_id);
       if(expert)return {branchId:execution.branchId,executionId:execution.id,workingDirectory:'',defaultEngine:'',
@@ -1779,8 +1779,10 @@ export class BranchStore {
     this.unitTransaction(()=>{
       if(this.resourceRelease(stepExecutionId)!=='ready')throw Error('Temporary agent copy snapshot retry is no longer current');
       const next={...previous,checkpointId:randomUUID()};
-      renewBranchExpertSnapshot(this.sqlite,executionId,stepExecutionId,previous,next);
-      this.run("UPDATE branch_resources SET error=NULL WHERE execution_id=? AND step_execution_id=?",executionId,stepExecutionId);
+      const retried=renewBranchExpertSnapshot(this.sqlite,executionId,stepExecutionId,previous,next);
+      const error=retried?null:'The source changed repeatedly while the copy was prepared. This run is held; use Retry preparing copy to try again.';
+      this.run("UPDATE branch_resources SET error=? WHERE execution_id=? AND step_execution_id=?",error,executionId,stepExecutionId);
+      if(!retried)this.run("UPDATE branch_attempts SET error=? WHERE step_execution_id=? AND state='prepared'",error,stepExecutionId);
       this.selectedWrite(executionId);
     })();
   }
@@ -2479,13 +2481,20 @@ export class BranchStore {
     const evidence=this.row("SELECT evidence_json FROM branch_checkpoints WHERE kind='script_process_exit' AND transition_key GLOB ? ORDER BY id DESC LIMIT 1",`process-exit:${attemptId}:*`);
     return evidence?JSON.parse(evidence.evidence_json):undefined;
   }
+  private snapshotRetryAvailable(executionId:string,attempt:Row|undefined):boolean {
+    if(!attempt||attempt.state!=='prepared'||attempt.request_id||attempt.cancel_requested)return false;
+    const resource=this.row("SELECT * FROM branch_resources WHERE execution_id=? AND step_execution_id=?",executionId,attempt.step_execution_id);
+    if(!resource||resource.state!=='reserved'||resource.chat_id||this.resourceOperation(attempt.step_execution_id,'chat')||this.resourceOperation(attempt.step_execution_id,'import'))return false;
+    const receipt=readBranchExpertCopy(this.sqlite,executionId,attempt.step_execution_id),last=receipt?.snapshotFailures?.at(-1);
+    return Boolean(receipt?.state==='reserved'&&receipt.attemptId===attempt.id&&!receipt.snapshotReceipt&&!receipt.copyChatId&&receipt.snapshotRetryHeld&&last?.reason==='source_changed'&&stableJson(last.source)===stableJson(receipt.snapshotSource));
+  }
   private retryBlockedReason(execution:BranchExecutionDto,attemptId:string):string|undefined {
     if(!['running','waiting','failed'].includes(execution.state)||this.row('SELECT cancel_requested FROM branch_executions WHERE id=?',execution.id)?.cancel_requested)return 'This execution no longer accepts a retry.';
     const attempt=this.row(`SELECT a.*,s.path_id,p.step_execution_id AS current_step,p.fork_invocation_id
       FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id JOIN branch_paths p ON p.id=s.path_id WHERE a.id=?`,attemptId);
     const request=attempt?.request_id?this.coordination.getRequest(attempt.request_id):undefined;
     const unknown=attempt?.state==='outcome_unknown'||request?.state==='outcome_unknown';
-    if(!attempt||(attempt.state!=='failed'&&!unknown))return 'Only a failed or uncertain attempt can be retried.';
+    if(!attempt||(attempt.state!=='failed'&&!unknown&&!this.snapshotRetryAvailable(execution.id,attempt)))return 'Only a failed or uncertain attempt can be retried.';
     if(attempt.current_step!==attempt.step_execution_id||this.row('SELECT 1 FROM branch_attempts WHERE step_execution_id=? AND number>?',attempt.step_execution_id,attempt.number))return 'This Step has already advanced; start a new execution.';
     if(attempt.fork_invocation_id&&this.row('SELECT state FROM branch_forks WHERE id=?',attempt.fork_invocation_id)?.state!=='open')return 'The parallel join has already closed; start a new execution.';
     if(this.row('SELECT 1 FROM branch_join_arrivals WHERE path_id=?',attempt.path_id))return 'This path has already reached its join; start a new execution.';
@@ -2655,8 +2664,9 @@ export class BranchStore {
   /** One canonical projection for bounded history and exact full Step evidence. */
   private attemptDto(execution:BranchExecutionDto,definition:BranchDefinition,r:Row):import('@ponderosa/core').BranchAttemptDto {
     const requestOutcomeUnknown=Boolean(r.request_id&&this.row('SELECT state FROM coordination_requests WHERE id=?',r.request_id)?.state==='outcome_unknown');
-    const retryBlockedReason=['failed','outcome_unknown'].includes(r.state)||r.state==='waiting'&&requestOutcomeUnknown?this.retryBlockedReason(execution,r.id):undefined;
-    return { id: r.id, stepExecutionId: r.step_execution_id, number: r.number, state: r.state, createdAt:r.created_at, updatedAt:r.updated_at, ...this.callInspection(execution,definition,r.step_execution_id,r.id), ...(r.runtime_outcome_json?{outcome:JSON.parse(r.runtime_outcome_json)}:{}),...(this.scriptEvidence(r.id)?{scriptEvidence:this.scriptEvidence(r.id)}:{}), ...(this.row("SELECT id FROM branch_executions WHERE parent_attempt_id=?",r.id)?{childExecutionId:this.row("SELECT id FROM branch_executions WHERE parent_attempt_id=?",r.id)!.id}:{}), fence: r.fence, ...(r.request_id ? { requestId: r.request_id } : {}), ...(requestOutcomeUnknown?{requestOutcomeUnknown:true}:{}), ...(r.lease_owner ? { leaseOwner: r.lease_owner, leaseUntil: r.lease_until } : {}), ...(r.error ? { error: r.error } : {}), ...(retryBlockedReason?{retryBlockedReason}:{}), ...(r.available_at ? { availableAt: r.available_at } : {}), purpose: r.purpose, ...(r.result_json ? { result: JSON.parse(r.result_json) } : {}) };
+    const snapshotRetryAvailable=this.snapshotRetryAvailable(execution.id,r);
+    const retryBlockedReason=['failed','outcome_unknown'].includes(r.state)||r.state==='waiting'&&requestOutcomeUnknown||snapshotRetryAvailable?this.retryBlockedReason(execution,r.id):undefined;
+    return { id: r.id, stepExecutionId: r.step_execution_id, number: r.number, state: r.state, ...(snapshotRetryAvailable?{snapshotRetryAvailable:true}:{}), createdAt:r.created_at, updatedAt:r.updated_at, ...this.callInspection(execution,definition,r.step_execution_id,r.id), ...(r.runtime_outcome_json?{outcome:JSON.parse(r.runtime_outcome_json)}:{}),...(this.scriptEvidence(r.id)?{scriptEvidence:this.scriptEvidence(r.id)}:{}), ...(this.row("SELECT id FROM branch_executions WHERE parent_attempt_id=?",r.id)?{childExecutionId:this.row("SELECT id FROM branch_executions WHERE parent_attempt_id=?",r.id)!.id}:{}), fence: r.fence, ...(r.request_id ? { requestId: r.request_id } : {}), ...(requestOutcomeUnknown?{requestOutcomeUnknown:true}:{}), ...(r.lease_owner ? { leaseOwner: r.lease_owner, leaseUntil: r.lease_until } : {}), ...(r.error ? { error: r.error } : {}), ...(retryBlockedReason?{retryBlockedReason}:{}), ...(r.available_at ? { availableAt: r.available_at } : {}), purpose: r.purpose, ...(r.result_json ? { result: JSON.parse(r.result_json) } : {}) };
   }
   /** Exact execution ownership is checked before returning one Step's full evidence. */
   stepEvidence(executionId:string,stepExecutionId:string):import('@ponderosa/core').BranchStepEvidenceDto|undefined {
@@ -3458,6 +3468,15 @@ export class BranchStore {
         if (this.row("SELECT 1 FROM branch_join_arrivals WHERE path_id = ?", attempt.path_id)) throw new Error("Path result already arrived at its join; create a new invocation instead");
         if (this.row("SELECT 1 FROM branch_resources WHERE step_execution_id=? AND state='retired'",attempt.step_execution_id)) throw new Error("Ephemeral resources are retired; create a new invocation instead");
         if (this.resourceChatDeletionStarted(attempt.step_execution_id)) throw new Error('Temporary Chat cleanup has started; create a new invocation instead');
+        if(input.action==='retry'&&this.snapshotRetryAvailable(id,attempt)){
+          resumeBranchExpertSnapshot(this.sqlite,id,attempt.step_execution_id);
+          this.run('UPDATE branch_resources SET error=NULL WHERE step_execution_id=?',attempt.step_execution_id);
+          this.run('UPDATE branch_attempts SET error=NULL,updated_at=? WHERE id=?',now,attempt.id);
+          this.selectedWrite(id);
+          this.checkpoint(id,`command:${input.commandKey}`,"operator_intervention",input,now);
+          this.aggregate(id,now);
+          return;
+        }
         const request = attempt.request_id ? this.coordination.getRequest(attempt.request_id) : undefined;
         const unknown = attempt.state === "outcome_unknown" || request?.state === "outcome_unknown";
         if (attempt.state !== "failed" && !unknown) throw new Error("Only failed or outcome-unknown attempts accept intervention");

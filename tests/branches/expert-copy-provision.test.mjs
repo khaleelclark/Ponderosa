@@ -5,7 +5,7 @@ import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {AgentStore,BranchStore,CoordinationV3Store,readBranchExpertCopy} from '@ponderosa/agents';
 import {BranchResourceService} from '../../apps/server/dist/branch-resource-service.js';
-import {sealBranchExpertSnapshot,reserveBranchExpertChat,reserveBranchExpertImport,reviewBranchExpertAccess,bindBranchExpertCopy,reserveBranchExpertFinal,sealBranchExpertFinal,verifyBranchExpertFinal} from '../../packages/agents/dist/branch-expert-copy.js';
+import {sealBranchExpertSnapshot,reserveBranchExpertChat,reserveBranchExpertImport,reviewBranchExpertAccess,bindBranchExpertCopy,reserveBranchExpertFinal,sealBranchExpertFinal,verifyBranchExpertFinal,renewBranchExpertSnapshot} from '../../packages/agents/dist/branch-expert-copy.js';
 
 test('copy jobs reserve distinct source-bound identities without sending work to the original',t=>{
  const root=mkdtempSync(path.join(tmpdir(),'expert-copy-reservation-')),store=new AgentStore(root);
@@ -72,4 +72,34 @@ test('expert copy binding requires a sealed exact snapshot, separate consent and
  const service=new BranchResourceService(branches,store,async()=>{},async()=>{},async()=>{});
  service.setPackageEngine({verifyCheckpointNow:()=>final.sha256});
  assert.throws(()=>service.verifyExpertFinalCustody('copy-chat','copy-project'),/final fence is unavailable/,'a receipt without its exact retained fence cannot release cleanup');
+});
+
+test('only the exact exhausted no-publication snapshot reservation accepts the existing Retry intervention',async t=>{
+ const root=mkdtempSync(path.join(tmpdir(),'expert-copy-retry-')),store=new AgentStore(root);t.after(()=>store.close());
+ const coordination=new CoordinationV3Store(store.sqlite),branches=new BranchStore(store.sqlite,coordination);
+ const project=store.createProject({label:'Expert',hostPath:root,defaultEngine:'codex'}),chat=store.createConversation(project.id,{title:'Source'});
+ const agent=store.createAgent(project.id,{title:'Agent',engine:'codex',conversationId:chat.id});
+ const definition={schema:'ponderosa.branch.v1',name:'Copy retry',trigger:{kind:'manual'},entry:'work',controls:[],
+  steps:[{id:'work',kind:'agent',target:{kind:'persistent_agent',ref:'expert'},instructions:'Work',jobHandling:'copy'}],edges:[],
+  policy:{maxConcurrentExecutions:1,maxEphemeralAgents:1,failure:{action:'stop'}}};
+ const branch=branches.deploy({chatId:chat.id,idempotencyKey:'copy-retry-deploy',definition,bindings:{agents:{expert:agent.id},directories:{workspace:root}}});
+ const job=branches.accept(branch.id,'copy-retry-job','Preserve this exact input');for(let i=0;i<6;i++)branches.advance();
+ const resource=store.sqlite.prepare('SELECT * FROM branch_resources WHERE execution_id=?').get(job.id);
+ const attempt=branches.detail(job.id).attempts[0];assert.equal(attempt.snapshotRetryAvailable,undefined);
+ let current=readBranchExpertCopy(store.sqlite,job.id,resource.step_execution_id);
+ for(let i=0;i<3;i++){
+  const next={...current.snapshotSource,checkpointId:'next-'+i};
+  const retried=renewBranchExpertSnapshot(store.sqlite,job.id,resource.step_execution_id,current.snapshotSource,next);
+  assert.equal(retried,i<2);
+  current=readBranchExpertCopy(store.sqlite,job.id,resource.step_execution_id);
+ }
+ assert.equal(current.snapshotRetryHeld,true);assert.equal(current.snapshotFailures.length,3);
+ assert.equal(branches.detail(job.id).attempts[0].snapshotRetryAvailable,true);
+ const before=current.snapshotSource.checkpointId;
+ const response=branches.intervene(job.id,{commandKey:'retry-proven-snapshot',expectedRevision:branches.execution(job.id).revision,action:'retry',attemptId:attempt.id,reason:'Retry the confirmed no-effect snapshot'});
+ const after=readBranchExpertCopy(store.sqlite,job.id,resource.step_execution_id);
+ assert.equal(after.snapshotRetryHeld,false);assert.equal(after.snapshotRetryBase,3);assert.notEqual(after.snapshotSource.checkpointId,before);
+ assert.equal(response.attempts[0].id,attempt.id,'the same job and attempt remain');
+ assert.equal(response.attempts[0].requestId,undefined);assert.equal(store.sqlite.prepare('SELECT count(*) n FROM coordination_requests WHERE recipient_agent_id=?').get(agent.id).n,0);
+ assert.throws(()=>branches.intervene(job.id,{commandKey:'retry-unproven-snapshot',expectedRevision:branches.execution(job.id).revision,action:'retry',attemptId:attempt.id,reason:'Not held'}),/Only failed or outcome-unknown/);
 });

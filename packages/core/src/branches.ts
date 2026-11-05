@@ -144,7 +144,7 @@ export interface BranchAttemptDto {
   calledBranch?: {id:string;name:string;enabled:boolean};
   childExecution?: {id:string;state:BranchExecutionState;versionId?:string};
   scriptEvidence?: {stderr?:string;stdout?:string;code?:number|null;error?:string;outputHash?:string;cwd?:string;runtime?:string;finishedAt?:string};
-  error?: string; retryBlockedReason?: string; requestOutcomeUnknown?: boolean; availableAt?: string; purpose?: "step" | "recovery"; result?: BranchResult;
+  error?: string; retryBlockedReason?: string; requestOutcomeUnknown?: boolean; snapshotRetryAvailable?:boolean; availableAt?: string; purpose?: "step" | "recovery"; result?: BranchResult;
 }
 /** Exact current Attempt → started scheduler Run association, not execution authority. */
 export interface BranchLiveOutputDto {

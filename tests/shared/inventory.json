@@ -2790,6 +2790,14 @@
       "moduleBase": "apps/server/package.json",
       "requirements": "Node24, built server and disposable private stores",
       "origin": "Real temporary agent copy admission, separate results and final custody"
+    },
+    {
+      "path": "tests/branches/expert-copy-memory-workflow.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server, disposable loopback Chroma and private local memory models",
+      "origin": "Reviewed temporary agent copy memory and findings across separate jobs"
     }
   ],
   "retainedReleasePayload": [

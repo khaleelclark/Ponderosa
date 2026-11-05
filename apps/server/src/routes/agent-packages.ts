@@ -3245,7 +3245,7 @@ export function registerAgentPackageRoutes(
       const status=await checkpointCustody.inspect(frozen);
       if(status.state==='retained'){if(seal)throw new Error('Issued capture needs its committed Branch receipt; retained bytes alone cannot reseal a later cut');return status.receipt;}
       if(status.state!=='missing')throw new Error(`Checkpoint custody ${status.state}; cannot recapture this intent`);
-      const memory=localMemoryFor(app);
+      const memory=options?.omitMemory?undefined:localMemoryFor(app);
       const memoryDatabases=memory?await memory.checkpointSourceDatabases():[];
       const token=beginSourceCapture(store.sqlite,...memoryDatabases);
       const admit=()=>{
@@ -3278,7 +3278,13 @@ export function registerAgentPackageRoutes(
       if(status.state!=='missing')throw new Error(`Expert snapshot custody ${status.state}; review its existing receipt`);
       let memory=localMemoryFor(app);
       let memoryDatabases:import('better-sqlite3').Database[]=[];
-      if(memory)try{memoryDatabases=await memory.checkpointSourceDatabases();}catch{memory=undefined;}
+      if(memory){
+        // A known source-mutation/provisioning hold is not an unavailable
+        // service: preserve that evidence and keep this capture held.
+        memory.assertCheckpointSourceSettled();
+        try{memoryDatabases=await memory.checkpointSourceDatabases();}
+        catch{memory.assertCheckpointSourceSettled();memory=undefined;}
+      }
       const token=beginSourceCapture(store.sqlite,...memoryDatabases);
       const admit=()=>{
         const chat=store.getConversation(frozen.sourceChatId),agent=store.getAgent(frozen.agentIds[0]!);
