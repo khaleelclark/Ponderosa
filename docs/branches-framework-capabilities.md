@@ -5,7 +5,7 @@ not an equivalence verdict. Released Python comparator baseline:
 [LangGraph 1.0.5](https://pypi.org/project/langgraph/1.0.5/) and
 [LangChain 1.0.8](https://pypi.org/project/langchain/1.0.8/).
 These are selected released versions, not a claim of latest releases or a resolved
-transitive lock. No packages installed or examples executed. Current official docs
+transitive lock. No comparator packages have been installed or comparator examples executed. Current official docs
 may describe newer APIs; the comparator uses the baseline StateGraph/stream API,
 not newer event-stream projections. Source compatibility remains unqualified.
 
@@ -24,7 +24,8 @@ not newer event-stream projections. Source compatibility remains unqualified.
 Representative source lives in `examples/branches-capabilities/application.ts` and
 its README, alongside `examples/branches-client` and `examples/branches-engine-app`.
 Deploying this example performs real work only when explicitly invoked by its
-caller; writing the source did not deploy it. All execution, fresh-instance,
+caller; writing the source did not deploy it. Synthetic HTTP fixtures now exercise the Branch state example and the research/review
+example with controlled Agents and a human gate. Live-provider, fresh-instance,
 crash/lost-response, upgrade and comparator qualification remains deferred.
 
 ## Matched comparator definition
@@ -57,6 +58,6 @@ crash durability, model quality, native effect safety, or framework parity.
 U2/U4/U6 and M4 source dispositions are detailed in
 [branch-finite-contract-dispositions.md](branch-finite-contract-dispositions.md).
 Pinned release source establishes the state gap; the new public state application
-is additional source, not an executed replacement for the existing comparator.
+has a synthetic HTTP fixture, not an executed replacement for the existing comparator.
 Shared-state results use the existing selected checkpoint/replay/remap; original
 consumed retry allowance may be up to100 even when retained history is at most32.

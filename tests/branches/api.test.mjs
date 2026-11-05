@@ -371,6 +371,30 @@ test("public state example creates its Branch and runs its graph through HTTP",{
  });
 });
 
+test("public research example uses explicitly owned Agents and reaches human review",{timeout:30000},async t=>{
+ await withFixture(t,async f=>{
+  const create=async name=>{
+   const owner=f.ok(await f.api("POST","/api/branches",{name,idempotencyKey:randomUUID()}));
+   const chat=f.ok(await f.api("POST",`/api/branches/${owner.id}/chats`,{label:name,defaultEngine:"codex"},{"idempotency-key":randomUUID()}));
+   const agent=f.ok(await f.api("POST",`/api/branches/engine/projects/${chat.projectId}/agents`,{title:name,engine:"codex",conversationId:chat.id,idempotencyKey:randomUUID()}));
+   return {owner,agent};
+  };
+  const research=await create("Synthetic researcher"),parent=await create("Synthetic critic");
+  const {BranchesClient}=await import("../../packages/core/dist/branches-client.js");
+  const {createReviewApplication}=await import("../../examples/branches-capabilities/application.ts");
+  const client=new BranchesClient(await f.listen());
+  const input={researchBranchId:research.owner.id,researchVersionId:research.owner.versionId,parentBranchId:parent.owner.id,parentVersionId:parent.owner.versionId,researcherId:research.agent.id,criticId:parent.agent.id,commandKey:randomUUID()};
+  await assert.rejects(createReviewApplication(client,{...input,researcherId:parent.agent.id,commandKey:randomUUID()}),/Persistent Agents must belong to a persistent Chat in this Branch/);
+  const app=await createReviewApplication(client,input),again=await createReviewApplication(client,input);
+  assert.equal(again.subgraph.id,app.subgraph.id);assert.equal(again.workflow.id,app.workflow.id);
+  const execution=await app.start("Synthetic question","review-example");
+  const gate=await until(async()=>{const snapshot=await app.inspect(execution.id);return snapshot.actions.items.find(item=>item.kind==="gate")?.gate;},"human review gate",20000);
+  await app.resolve(execution.id,gate.id,{commandKey:"approve",expectedRevision:gate.revision,decision:"approve",output:"Synthetic approved answer"});
+  const done=await until(async()=>{const detail=await client.state(execution.id);return detail.execution.state==="completed"&&detail;},"review completion",20000);
+  assert.equal(done.execution.state,"completed");
+ });
+});
+
 test('public Branches SSE client preserves chunked UTF-8, CR/LF boundaries, reset and exact cursor while closing on return',async()=>{
  const {BranchesClient}=await import('../../packages/core/dist/branches-client.js');const bytes=new TextEncoder().encode(': heartbeat\r\nevent: agent_status\r\nid: 7\r\ndata: {"reset":true,"label":"é"}\r\n\r\nevent: event\nid: 8\ndata: {"event":{"executionId":"exact-run","text":"chunk"}}\n\n');
  let canceled=false,request;

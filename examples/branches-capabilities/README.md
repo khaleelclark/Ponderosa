@@ -1,8 +1,14 @@
 # Research and human review application
 
 `application.ts` exports `createReviewApplication(client, input)`. Supply the
-existing local HTTP `BranchesClient`, a Chat, two existing authorized Agents and
-a stable deployment command key. Call `start(question, occurrenceKey)` and retain
+existing local HTTP `BranchesClient`, two existing Branches and their expected version IDs,
+a persistent researcher in the research Branch, a persistent critic in the parent Branch,
+and a stable deployment command key. Create fresh, dedicated Branches and their Agents
+explicitly first; this example does not create or grant access to Agents. Deployment replaces
+each supplied Branch definition and bindings, and the manual trigger can disable or remove an
+existing trigger. The two deployments are separate: if the parent deployment fails, the
+research Branch may already have changed. Do not use existing work Branches for this example.
+Call `start(question, occurrenceKey)` and retain
 that occurrence key on an uncertain response. `inspect(executionId)` returns the
 canonical state, human actions and available checkpoints. `resolve` submits an
 explicit current gate choice; it does not choose for the human. `stream` requires
@@ -15,13 +21,14 @@ bound Agents retain their existing tool and memory permissions. Instructions to
 use tools or memory are requests, not proof they are configured or accessible.
 Configure those integrations through the existing Agent settings first.
 
-This is representative source, not executed evidence or framework parity. It does
-not expose arbitrary rewind: issued cuts require the existing separate host review
+A disposable synthetic HTTP fixture exercises deployment, two controlled Agents,
+the called subgraph, and human approval. This does not establish live-provider or
+framework parity. The example does not expose arbitrary rewind: issued cuts require the existing separate host review
 and reconciliation flow; the listed checkpoint's support flag remains authoritative.
 The existing `branches-engine-app/server.mjs` supplies a standalone HTTP process;
 this module supplies the previously missing concrete multi-capability workflow.
 See `docs/branches-framework-capabilities.md` for all nine dispositions and the
-released external comparator baseline. No build, typecheck or execution was performed.
+released external comparator baseline. The comparator remains unexecuted.
 
 The matched Python source is `comparator.py`, with released framework pins in
 `comparator-requirements.txt`. `create_review_application` requires two actual
