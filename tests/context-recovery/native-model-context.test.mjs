@@ -530,10 +530,10 @@ test('a newly discovered later unknown Run blocks a model handoff without Local 
   f.ok(await f.api('PATCH',`/api/agents/${agent.id}`,{model:'fixture-next'}));
   await f.send(agent.id,'Continue the original objective.');
   await until(async()=>(await native.requests()).some(x=>x.method==='thread/resume'),'paused voice resume');
-  const now=new Date().toISOString();
-  store.sqlite.prepare("INSERT INTO scheduler_runs(id,project_id,agent_id,status,lease_owner,lease_expires_at,fencing_token,prompt_injection_state,heartbeat_at,created_at,updated_at,scope_key) VALUES (?,?,?,'outcome_unknown','synthetic',?,100,'injecting',?,?,?,?)").run(randomUUID(),chat.projectId,agent.id,now,now,now,now,first.scope_key);
+  const now=new Date().toISOString(),synthetic=randomUUID();
+  store.sqlite.prepare("INSERT INTO scheduler_runs(id,project_id,agent_id,status,lease_owner,lease_expires_at,fencing_token,prompt_injection_state,heartbeat_at,created_at,updated_at,scope_key) VALUES (?,?,?,'outcome_unknown','synthetic',?,100,'injecting',?,?,?,?)").run(synthetic,chat.projectId,agent.id,now,now,now,now,first.scope_key);
   await native.releaseThread();
-  await until(()=>store.sqlite.prepare("SELECT 1 FROM scheduler_runs WHERE agent_id=? AND fencing_token>2 AND status IN ('failed','outcome_unknown')").get(agent.id),'unknown history rejected');
+  await until(()=>store.sqlite.prepare("SELECT 1 FROM scheduler_runs WHERE agent_id=? AND fencing_token>2 AND id<>? AND status IN ('failed','outcome_unknown')").get(agent.id,synthetic),'unknown history rejected');
   const calls=await native.requests();assert.equal(calls.filter(x=>x.method==='turn/start').length,1);assert.equal(calls.filter(x=>x.method==='thread/start').length,1);
   assert.equal(store.resumeSessionState(agent.id)?.sessionId,old.sessionId);
  },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,holdResume:true})).adapter});
