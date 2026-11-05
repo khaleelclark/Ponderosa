@@ -16,11 +16,18 @@ export class AgentPackageJsonParser {
     value: Record<string, unknown> | unknown[];
     state: "keyOrEnd" | "key" | "colon" | "valueOrEnd" | "value" | "commaOrEnd";
     key?: string;
+    keys?: Set<string>;
   }> = [];
-  constructor(private readonly maxStringLength = AGENT_PACKAGE_MAX_STRING_LENGTH) {}
+  private duplicates = false;
+  private valueCount = 0;
+  private stringFlushCount = 0;
+  constructor(private readonly maxStringLength = AGENT_PACKAGE_MAX_STRING_LENGTH, private readonly observeDuplicates = false, private readonly checkResources?:()=>void) {}
+
+  hasDuplicateKeys(): boolean { return this.duplicates; }
 
   private fail(): never { throw new Error("Agent package must contain valid bounded JSON"); }
   private value(value: unknown): void {
+    if ((++this.valueCount & 65535) === 0) this.checkResources?.();
     if (this.frames.length > 64) throw new Error("Agent package nesting exceeds 64 levels");
     const frame = this.frames.at(-1);
     if (!frame) {
@@ -42,6 +49,7 @@ export class AgentPackageJsonParser {
   }
   private flushString(): void {
     if (!this.rawLength) return;
+    if ((++this.stringFlushCount & 15) === 0) this.checkResources?.();
     const value = JSON.parse('"' + this.raw.join("") + '"') as string;
     this.stringLength += value.length;
     if (this.stringLength > this.maxStringLength) throw Object.assign(new Error("Agent package JSON string exceeds the supported 448 Mi code units"), { statusCode: 413 });
@@ -53,6 +61,11 @@ export class AgentPackageJsonParser {
     this.strings = []; this.stringLength = 0; this.mode = "idle";
     const frame = this.frames.at(-1);
     if (frame && !Array.isArray(frame.value) && (frame.state === "keyOrEnd" || frame.state === "key")) {
+      if (this.observeDuplicates) {
+        frame.keys ??= new Set<string>();
+        if (frame.keys.has(value)) this.duplicates = true;
+        else frame.keys.add(value);
+      }
       frame.key = value; frame.state = "colon";
     } else this.value(value);
   }
