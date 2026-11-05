@@ -135,6 +135,17 @@ export class CoordinationV3SteeringAuthority {
         AND json_type(confirmation.payload_json,'$.settingsTransition')='object')`;
   }
 
+  /** A verified handoff is delivered only to its own new Run. */
+  private verifiedTransitionTask(activation:string):string {
+    return `EXISTS (SELECT 1 FROM context_rollovers r
+      JOIN activation_sources x ON x.source_kind='context_rollover' AND x.source_id=r.id
+      JOIN agent_activations h ON h.id=x.activation_id AND h.kind='context_rollover_handoff'
+      WHERE r.project_id=${activation}.project_id AND r.agent_id=${activation}.agent_id
+        AND r.state='completed' AND r.completion_reason='replacement_verified'
+        AND json_type(h.payload_json,'$.settingsTransition.targetSystemPromptHash')='text'
+        AND json_extract(h.payload_json,'$.settingsTransition.activationId')=${activation}.id)`;
+  }
+
   leaseNextSteering(input: {
     workerId: string;
     now?: string;
@@ -162,6 +173,7 @@ export class CoordinationV3SteeringAuthority {
           AND NOT EXISTS (SELECT 1 FROM activation_sources held WHERE held.activation_id=a.id AND held.source_kind IN ('task_decision_repair_wait','task_reply_repair_wait','settings_transition_retry_pending'))
           AND NOT ${settingsTransitionActivationHoldSql('a')}
           AND NOT ${this.settingsConfirmationRun('r.id')}
+          AND NOT ${this.verifiedTransitionTask('a')}
           AND ${decisionSteeringAuthority('a', 'r.id')}
           AND (a.kind = 'context_rollover_handoff' OR NOT EXISTS (
             SELECT 1 FROM context_rollovers rollover
@@ -206,6 +218,7 @@ export class CoordinationV3SteeringAuthority {
           AND NOT EXISTS (SELECT 1 FROM activation_sources held WHERE held.activation_id=agent_activations.id AND held.source_kind IN ('task_decision_repair_wait','task_reply_repair_wait','settings_transition_retry_pending'))
           AND NOT ${settingsTransitionActivationHoldSql('agent_activations')}
           AND NOT ${this.settingsConfirmationRun('?')}
+          AND NOT ${this.verifiedTransitionTask('agent_activations')}
           AND ${decisionSteeringAuthority('agent_activations', '?')}
           AND EXISTS(SELECT 1 FROM activation_sources source WHERE source.activation_id=agent_activations.id AND source.source_kind='branch_schedule_update')=?
           AND (kind = 'context_rollover_handoff' OR NOT EXISTS (

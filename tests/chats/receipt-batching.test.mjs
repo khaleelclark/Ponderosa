@@ -309,6 +309,18 @@ test('settings transitions keep retry-pending work only after every old Run is p
    ()=>db.prepare("INSERT INTO provider_inputs(execution_id,scheduler_run_id,agent_id,project_id,provider_prompt,prompt_hash,source_manifest_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)")
      .run(runs[0],randomUUID(),agent,project,'unknown input','hash','{}',now,now),
  ];
+ // A safely deferred prompt-change lease returns to pending, while retaining
+ // its cancelled attempt. The same complete evidence must hold for that state.
+ for(const change of reject) {
+   db.exec('SAVEPOINT pending_deferred_attempt');
+   try {
+     db.prepare("UPDATE agent_activations SET state='pending' WHERE id=?").run(activationId);
+     assert.equal(v3.settingsTransitionUnsubmittedActivation(eligibility),true);
+     change();
+     assert.equal(v3.settingsTransitionUnsubmittedActivation(eligibility),false,'pending deferred work with contradictory evidence stays held');
+     assert.equal(v3.holdSettingsTransitionReservation(hold),false);
+   } finally {db.exec('ROLLBACK TO pending_deferred_attempt; RELEASE pending_deferred_attempt');}
+ }
  for(const change of reject) {
    db.exec('SAVEPOINT ambiguous_prior_attempt');
    try {
@@ -420,6 +432,34 @@ test('verified replacement confirmation drains before queued human or peer work 
   assert.equal(db.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(id).n,0);
  }
  v3.completeRun(run,1,now);
+ db.exec('SAVEPOINT verified_transition_isolation');
+ try {
+  db.prepare("UPDATE agent_activations SET payload_json=json_set(payload_json,'$.settingsTransition.activationId',?,'$.settingsTransition.targetSystemPromptHash','test-hash') WHERE id=?").run(human,handoff);
+  const secondId=randomUUID(),secondCommunication={...communication,eventId:secondId,text:'Other pending human task'};
+  const other=v3.recordRuntimeCommunication({id:secondId,projectId:project,scopeKey:scope,sender,intent:'user_dm',audience,
+   payload:{communication:secondCommunication},now,
+   activation:{agentId:worker,kind:'human_message',priority:100,dispatchPolicy:'steer_or_run',promptClass:'human'}}).activationId;
+  assert.equal(v3.peekNextRunnable({now,excludedAgentIds:[worker]}),undefined,'excluded Agent cannot be selected by the priority fence');
+  db.exec('SAVEPOINT verified_task_steering');
+  try {
+   db.prepare("UPDATE scheduler_runs SET status='running',terminal_at=NULL WHERE id=?").run(run);
+   const steer=v3.leaseNextSteering({workerId:'unrelated-running',now});
+   assert.ok(!steer || !steer.activationIds.includes(human),'verified-transition task cannot steer into an unrelated Run');
+  } finally {db.exec('ROLLBACK TO verified_task_steering; RELEASE verified_task_steering');}
+  db.exec('SAVEPOINT original_first');
+  try {
+   const lease=v3.leaseNextRun({workerId:'marked-first',now});
+   assert.deepEqual(lease.activationIds,[human],'the verified-transition task runs alone');
+   assert.equal(db.prepare('SELECT state FROM agent_activations WHERE id=?').get(other).state,'pending');
+  } finally {db.exec('ROLLBACK TO original_first; RELEASE original_first');}
+  db.exec('SAVEPOINT other_first');
+  try {
+   db.prepare('UPDATE agent_activations SET priority=101 WHERE id=?').run(other);
+   const lease=v3.leaseNextRun({workerId:'other-first',now});
+   assert.deepEqual(lease.activationIds,[human],'the marked task precedes even higher-priority same-scope work');
+   assert.equal(db.prepare('SELECT state FROM agent_activations WHERE id=?').get(other).state,'pending');
+  } finally {db.exec('ROLLBACK TO other_first; RELEASE other_first');}
+ } finally {db.exec('ROLLBACK TO verified_transition_isolation; RELEASE verified_transition_isolation');}
  db.exec('SAVEPOINT human_after_drain');
  try {const lease=v3.leaseNextRun({workerId:'human-after-drain',now});assert.ok(lease.activationIds.includes(human));}
  finally {db.exec('ROLLBACK TO human_after_drain; RELEASE human_after_drain');}

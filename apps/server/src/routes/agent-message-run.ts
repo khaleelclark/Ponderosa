@@ -69,7 +69,7 @@ import {
 } from "./conversation-deliveries.js";
 import { cleanupRuntimeAttachments } from "../runtime-attachments.js";
 import { leaseAgentDelivery, leaseConversationDelivery } from "../delivery-leases.js";
-import { prepareAgentRun } from "./agent-run-preparation.js";
+import { prepareAgentRun, PromptContractAdmissionChanged } from "./agent-run-preparation.js";
 import { startProviderRunExecution } from "./provider-run-executor.js";
 import { canonicalDefaultReplyRoute } from "../required-reply-route.js";
 import { ProviderDisabledError } from "../provider-admission.js";
@@ -992,7 +992,8 @@ export function registerAgentMessageRunRoute(
       }
 
       const agentMessageUrl = agentMessageEndpoint(request, opts.agentBaseUrl);
-      const preparedRun = await prepareAgentRun(runContext, {
+      let preparedRun: Awaited<ReturnType<typeof prepareAgentRun>>;
+      try { preparedRun = await prepareAgentRun(runContext, {
         agent,
         project,
         runtimeEngineId,
@@ -1017,7 +1018,15 @@ export function registerAgentMessageRunRoute(
         sourceMasterMessage,
         pendingTurn,
         requestedSourceChannel: request.body.sourceChannel,
-      });
+      }); } catch(error) {
+        if(error instanceof PromptContractAdmissionChanged && internalV3Dispatch && v3SchedulerRunId && v3FencingToken!==undefined) {
+          coordinationV3.deferUninjectedRun(v3SchedulerRunId,v3FencingToken);
+          publishCoordinationV3Changed(agent.id);
+          notifyScheduler();
+          return reply.code(409).send({error:error.message,queued:true});
+        }
+        throw error;
+      }
       const {
         routingConversationId,
         sourceChannel,

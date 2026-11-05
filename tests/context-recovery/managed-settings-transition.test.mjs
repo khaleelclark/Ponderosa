@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { AgentStore, CoordinationV3Store } from '../../packages/agents/dist/index.js';
+import { AgentStore, CoordinationV3Store, CapabilityPolicyStore } from '../../packages/agents/dist/index.js';
 import { withFixture, until } from '../shared/fixture.mjs';
 import { inertCodex } from '../shared/inert-codex.mjs';
 import { ownedChroma } from '../memory/portability-fixture.mjs';
 import { randomUUID } from 'node:crypto';
+import { CAPABILITY_IDS } from '@ponderosa/core';
 import path from 'node:path';
 
 async function accessRevocationPause(store,agentId,phase,kind){
@@ -383,4 +384,255 @@ test('changed Chat guidance uses accepted old handoff and current replacement in
   assert.equal(final[3].params.threadId,confirmed[2].params.threadId);assert.ok(JSON.stringify(final[3]).includes('Continue using the updated guidance.'));
   await native.sendTool('ponderosa_message',{text:'Updated task complete.'});await f.settled(agent.id);
  },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,emitVoiceReply:true,uniqueThreads:true})).adapter});
+});
+
+
+test('same-model Chat guidance preserves the original objective through one managed handoff',{timeout:90000},async t=>{
+ let store,native;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Same-model guidance transition');
+  f.ok(await f.api('PATCH',`/api/conversations/${chat.id}`,{instructions:'Synthetic earlier guidance.'}));
+  const agent=await f.createIdleAgent(chat,'Worker');
+  await f.send(agent.id,'Preserve the original objective and completed research.');
+  await until(async()=>(await native.requests()).some(x=>x.method==='turn/start'),'initial turn');
+  await native.sendTool('ponderosa_message',{text:'Research completed.'});await f.settled(agent.id);
+  f.ok(await f.api('PATCH',`/api/conversations/${chat.id}`,{instructions:'Synthetic updated guidance.'}));
+  await f.send(agent.id,'Continue with the updated guidance.');
+  const pending=await until(()=>store.sqlite.prepare("SELECT id FROM agent_activations WHERE agent_id=? AND kind='human_message' AND state='pending' AND payload_json LIKE ?").get(agent.id,'%Continue with the updated guidance.%'),'original task stays pending',20000);
+  const old=await until(async()=>{const x=(await native.requests()).filter(x=>x.method==='turn/start');return x.length>=2?x:undefined;},'old handoff',20000);
+  assert.equal(old[1].params.threadId,old[0].params.threadId);
+  assert.equal(old[1].params.model,old[0].params.model);
+  assert.ok(!JSON.stringify(old[1]).includes('Continue with the updated guidance.'));
+  await native.sendAnswer('The original objective remains; earlier research is complete.');
+  const next=await until(async()=>{const x=(await native.requests()).filter(x=>x.method==='turn/start');return x.length>=3?x:undefined;},'replacement',20000);
+  assert.notEqual(next[2].params.threadId,old[0].params.threadId);
+  assert.ok(JSON.stringify(next[2]).includes('The original objective remains; earlier research is complete.'));
+  const opened=(await native.requests()).filter(x=>x.method==='thread/start');
+  assert.equal(opened.length,2);
+  assert.ok(JSON.stringify(opened[1]).includes('Synthetic updated guidance.'));
+  await native.sendAnswer('Continuity context received.');
+  const final=await until(async()=>{const x=(await native.requests()).filter(x=>x.method==='turn/start');return x.length>=4?x:undefined;},'original queued task',20000);
+  assert.equal(final[3].params.threadId,next[2].params.threadId);
+  assert.ok(JSON.stringify(final[3]).includes('Continue with the updated guidance.'));
+  await native.sendTool('ponderosa_message',{text:'Continued work complete.'});await f.settled(agent.id);
+  assert.equal(store.sqlite.prepare('SELECT count(*) n FROM context_rollovers WHERE agent_id=?').get(agent.id).n,1);
+  assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(pending.id).n,1);
+ },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,uniqueThreads:true})).adapter});
+});
+
+
+test('guidance changed after lease defers the uninjected task into a managed handoff',{timeout:90000},async t=>{
+ let store,native;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Prompt edit during admission'),agent=await f.createIdleAgent(chat,'Worker');
+  await f.send(agent.id,'Original objective and prior work.');
+  await until(async()=>(await native.requests()).some(x=>x.method==='turn/start'),'initial turn');
+  await native.sendTool('ponderosa_message',{text:'Initial work complete.'});await f.settled(agent.id);
+  const originalLease=CoordinationV3Store.prototype.leaseNextRun;let changed=false;
+  CoordinationV3Store.prototype.leaseNextRun=function(...args){
+   const lease=originalLease.apply(this,args);
+   if(lease && !changed && lease.agentId===agent.id && lease.activations.some(a=>a.kind==='human_message')){
+    changed=true;assert.ok(store.updateConversation(chat.id,{instructions:'Guidance edited after preflight.'}));
+   }
+   return lease;
+  };
+  t.after(()=>{CoordinationV3Store.prototype.leaseNextRun=originalLease;});
+  await f.send(agent.id,'The exact queued objective.');
+  const handoff=await until(async()=>{const x=(await native.requests()).filter(x=>x.method==='turn/start');return x.length>=2?x:undefined;},'old session handoff after deferral',20000);
+  assert.equal(changed,true);
+  assert.equal(handoff[1].params.threadId,handoff[0].params.threadId);
+  assert.ok(!JSON.stringify(handoff[1]).includes('The exact queued objective.'));
+  const task=store.sqlite.prepare("SELECT id FROM agent_activations WHERE agent_id=? AND kind='human_message' AND payload_json LIKE ? ORDER BY created_at DESC LIMIT 1").get(agent.id,'%The exact queued objective.%');assert.ok(task);
+  const prior=store.sqlite.prepare("SELECT r.* FROM scheduler_runs r JOIN scheduler_run_activations a ON a.run_id=r.id WHERE a.activation_id=? AND r.status='cancelled'").get(task.id);
+  assert.ok(prior);assert.equal(prior.prompt_injection_state,'not_injected');assert.equal(prior.started_at,null);
+  await native.sendAnswer('The objective and earlier work remain.');
+  const confirmation=await until(async()=>{const x=(await native.requests()).filter(x=>x.method==='turn/start');return x.length>=3?x:undefined;},'replacement confirmation',20000);
+  assert.ok(JSON.stringify(confirmation[2]).includes('The objective and earlier work remain.'));
+  await native.sendAnswer('Continuity context received.');
+  const final=await until(async()=>{const x=(await native.requests()).filter(x=>x.method==='turn/start');return x.length>=4?x:undefined;},'queued task',20000);
+  assert.equal(final[3].params.threadId,confirmation[2].params.threadId);
+  assert.ok(JSON.stringify(final[3]).includes('The exact queued objective.'));
+  assert.equal((await native.requests()).filter(x=>x.method==='turn/start'&&JSON.stringify(x).includes('The exact queued objective.')).length,1);
+  await native.sendTool('ponderosa_message',{text:'Finished the exact task.'});await f.settled(agent.id);
+ },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,uniqueThreads:true})).adapter});
+});
+
+test('a later guidance change during the handoff cannot publish a stale replacement',{timeout:90000},async t=>{
+ let store,native;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Prompt changes during handoff'),agent=await f.createIdleAgent(chat,'Worker');
+  await f.send(agent.id,'Original objective.');
+  await until(async()=>(await native.requests()).some(x=>x.method==='turn/start'),'initial turn');
+  await native.sendTool('ponderosa_message',{text:'Initial work complete.'});await f.settled(agent.id);
+  f.ok(await f.api('PATCH',`/api/conversations/${chat.id}`,{instructions:'First updated guidance.'}));
+  await f.send(agent.id,'Original pending task.');
+  await until(async()=>(await native.requests()).filter(x=>x.method==='turn/start').length>=2,'old handoff',20000);
+  const rollover=store.sqlite.prepare("SELECT id FROM context_rollovers WHERE agent_id=? AND state='requested'").get(agent.id);assert.ok(rollover);
+  f.ok(await f.api('PATCH',`/api/conversations/${chat.id}`,{instructions:'Second updated guidance.'}));
+  await native.sendAnswer('This stale handoff must not be transferred.');
+  await until(()=>store.sqlite.prepare("SELECT 1 FROM context_rollovers WHERE id=? AND state IN ('failed','outcome_unknown')").get(rollover.id),'held stale handoff',20000);
+  assert.ok(store.sqlite.prepare("SELECT 1 FROM agent_activations WHERE agent_id=? AND state IN ('pending','retry_pending') AND payload_json LIKE ?").get(agent.id,'%Original pending task.%'));
+  assert.ok(!(await native.requests()).filter(x=>x.method==='turn/start').some(x=>JSON.stringify(x).includes('This stale handoff must not be transferred.')));
+  assert.ok(!(await native.requests()).filter(x=>x.method==='turn/start').some(x=>JSON.stringify(x).includes('Original pending task.')));
+ },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,uniqueThreads:true})).adapter});
+});
+
+
+test('same-model guidance handoff retains an unchanged authorized memory source',{timeout:90000},async t=>{
+ let store,native;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Prompt transition with memory'),agent=await f.createIdleAgent(chat,'Worker');
+  f.ok(await f.api('PUT',`/api/local-memory/grants/${chat.id}`,{readGlobal:true,expectedRevision:0}));
+  const saved=f.ok(await f.api('POST','/api/local-memory/global',{operation:'save',text:'Synthetic violet observatory source.',destination:'global'}));
+  const id=saved.structuredContent?.result?.chunk_id;assert.ok(id);
+  await f.send(agent.id,'Preserve the original objective.');
+  await until(async()=>(await native.requests()).some(x=>x.method==='turn/start'),'initial turn');
+  await native.sendTool('ponderosa_local_memory_get',{chunk_id:id,source:'global'});
+  const read=await until(async()=>(await native.requests()).find(x=>x.toolResponse)?.toolResponse,'memory read');
+  assert.ok(JSON.stringify(read).includes('Synthetic violet observatory source.'));
+  await native.sendTool('ponderosa_message',{text:'Initial research complete.'});await f.settled(agent.id);
+  f.ok(await f.api('PATCH',`/api/conversations/${chat.id}`,{instructions:'Updated guidance for the same model.'}));
+  await f.send(agent.id,'Continue the original objective.');
+  const old=await until(async()=>{const x=(await native.requests()).filter(x=>x.method==='turn/start');return x.length>=2?x:undefined;},'old handoff',20000);
+  assert.equal(old[1].params.threadId,old[0].params.threadId);
+  await native.sendAnswer('Objective retained, including the authorized violet source.');
+  const next=await until(async()=>{const x=(await native.requests()).filter(x=>x.method==='turn/start');return x.length>=3?x:undefined;},'replacement',20000);
+  assert.ok(JSON.stringify(next[2]).includes('Objective retained, including the authorized violet source.'));
+  await native.sendAnswer('Continuity context received.');
+  const final=await until(async()=>{const x=(await native.requests()).filter(x=>x.method==='turn/start');return x.length>=4?x:undefined;},'original queued task',20000);
+  assert.equal(final[3].params.threadId,next[2].params.threadId);
+  assert.ok(JSON.stringify(final[3]).includes('Continue the original objective.'));
+  await native.sendTool('ponderosa_message',{text:'The objective is complete.'});await f.settled(agent.id);
+ },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,holdMemoryCompletion:true,uniqueThreads:true})).adapter,
+   localMemoryForRoot:async root=>({chromaUrl:await ownedChroma(),collectionPrefix:'prompt_'+randomUUID().replaceAll('-',''),modelDir:process.env.PONDEROSA_TEST_MEMORY_MODEL_DIR,stateDirectory:path.join(root,'memory-policy'),provision:true})});
+});
+
+test('revoking a read memory during a same-model guidance handoff prevents transfer',{timeout:90000},async t=>{
+ let store,native;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Prompt transition revoked memory'),agent=await f.createIdleAgent(chat,'Worker');
+  f.ok(await f.api('PUT',`/api/local-memory/grants/${chat.id}`,{readGlobal:true,expectedRevision:0}));
+  const saved=f.ok(await f.api('POST','/api/local-memory/global',{operation:'save',text:'Synthetic revoked violet source.',destination:'global'}));
+  const id=saved.structuredContent?.result?.chunk_id;assert.ok(id);
+  await f.send(agent.id,'Preserve the original objective.');
+  await until(async()=>(await native.requests()).some(x=>x.method==='turn/start'),'initial turn');
+  await native.sendTool('ponderosa_local_memory_get',{chunk_id:id,source:'global'});
+  const read=await until(async()=>(await native.requests()).find(x=>x.toolResponse)?.toolResponse,'memory read');
+  assert.ok(JSON.stringify(read).includes('Synthetic revoked violet source.'));
+  await native.sendTool('ponderosa_message',{text:'Initial research complete.'});await f.settled(agent.id);
+  f.ok(await f.api('PATCH',`/api/conversations/${chat.id}`,{instructions:'Updated guidance for the same model.'}));
+  await f.send(agent.id,'Continue the original objective.');
+  const rollover=await until(()=>store.sqlite.prepare("SELECT id FROM context_rollovers WHERE agent_id=? AND state='requested'").get(agent.id),'prompt handoff',20000);
+  await until(async()=>(await native.requests()).filter(x=>x.method==='turn/start').length>=2,'old handoff',20000);
+  f.ok(await f.api('PUT',`/api/local-memory/grants/${chat.id}`,{readGlobal:false,expectedRevision:1}));
+  await native.sendAnswer('Synthetic revoked source must never transfer.');
+  const pause=await accessRevocationPause(store,agent.id,'handoff','context_rollover_handoff');
+  assert.equal(pause.rollover_id,rollover.id);
+  assert.ok(store.sqlite.prepare("SELECT 1 FROM agent_activations WHERE agent_id=? AND state IN ('pending','retry_pending') AND payload_json LIKE ?").get(agent.id,'%Continue the original objective.%'));
+  assert.ok(!(await native.requests()).filter(x=>x.method==='turn/start').some(x=>JSON.stringify(x).includes('Synthetic revoked source must never transfer.')));
+  assert.equal(store.sqlite.prepare('SELECT handoff_event_id FROM context_rollovers WHERE id=?').get(rollover.id).handoff_event_id,null);
+ },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,holdMemoryCompletion:true,uniqueThreads:true})).adapter,
+   localMemoryForRoot:async root=>({chromaUrl:await ownedChroma(),collectionPrefix:'prompt_'+randomUUID().replaceAll('-',''),modelDir:process.env.PONDEROSA_TEST_MEMORY_MODEL_DIR,stateDirectory:path.join(root,'memory-policy'),provision:true})});
+});
+
+
+test('an interrupted prompt handoff remains held without replay after restart',{timeout:90000},async t=>{
+ let store,native;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Interrupted prompt handoff'),agent=await f.createIdleAgent(chat,'Worker');
+  await f.send(agent.id,'Preserve the original objective.');
+  await until(async()=>(await native.requests()).some(x=>x.method==='turn/start'),'initial turn');
+  await native.sendTool('ponderosa_message',{text:'Research complete.'});await f.settled(agent.id);
+  f.ok(await f.api('PATCH',`/api/conversations/${chat.id}`,{instructions:'Guidance changed for this task.'}));
+  await f.send(agent.id,'The original queued task remains.');
+  const rollover=await until(()=>store.sqlite.prepare("SELECT * FROM context_rollovers WHERE agent_id=? AND state='requested'").get(agent.id),'prompt handoff',20000);
+  await until(async()=>(await native.requests()).filter(x=>x.method==='turn/start').length>=2,'handoff submitted',20000);
+  await until(()=>store.sqlite.prepare("SELECT 1 FROM scheduler_prompt_injections i JOIN scheduler_run_activations a ON a.run_id=i.run_id JOIN agent_activations x ON x.id=a.activation_id WHERE x.kind='context_rollover_handoff' AND i.state='acknowledged' AND json_extract(x.payload_json,'$.rolloverId')=?").get(rollover.id),'handoff acknowledged',20000);
+  await f.reopen();
+  await until(()=>store.sqlite.prepare("SELECT 1 FROM context_rollovers WHERE id=? AND state IN ('failed','outcome_unknown')").get(rollover.id),'interrupted handoff recorded',20000);
+  await new Promise(resolve=>setTimeout(resolve,300));
+  assert.equal(store.sqlite.prepare("SELECT count(*) n FROM agent_activations WHERE kind='context_rollover_handoff' AND json_extract(payload_json,'$.rolloverId')=?").get(rollover.id).n,1);
+  assert.ok(store.sqlite.prepare("SELECT 1 FROM agent_activations WHERE agent_id=? AND state IN ('pending','retry_pending') AND payload_json LIKE ?").get(agent.id,'%The original queued task remains.%'));
+  assert.equal((await native.requests()).filter(x=>x.method==='turn/start').length,2);
+ },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,uniqueThreads:true})).adapter});
+});
+
+
+test('combined model and prompt change holds if target guidance changes before replacement',{timeout:90000},async t=>{
+ let store,native;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Combined transition target'),agent=await f.createIdleAgent(chat,'Worker');
+  await f.send(agent.id,'Original objective.');
+  await until(async()=>(await native.requests()).some(x=>x.method==='turn/start'),'first turn');
+  await native.sendTool('ponderosa_message',{text:'Research complete.'});await f.settled(agent.id);
+  f.ok(await f.api('PATCH',`/api/conversations/${chat.id}`,{instructions:'First target guidance.'}));
+  f.ok(await f.api('PATCH',`/api/agents/${agent.id}`,{model:'fixture-next'}));
+  await f.send(agent.id,'The original queued task.');
+  const rollover=await until(()=>store.sqlite.prepare("SELECT id FROM context_rollovers WHERE agent_id=? AND state='requested'").get(agent.id),'handoff',20000);
+  await until(async()=>(await native.requests()).filter(x=>x.method==='turn/start').length>=2,'old handoff',20000);
+  const originalLease=CoordinationV3Store.prototype.leaseNextRun;let changed=false;
+  CoordinationV3Store.prototype.leaseNextRun=function(...args){
+   const lease=originalLease.apply(this,args);
+   if(lease && !changed && lease.agentId===agent.id && lease.activations.some(a=>a.kind==='context_rollover_continuation')){
+    changed=true;assert.ok(store.updateConversation(chat.id,{instructions:'Later target guidance.'}));
+   }
+   return lease;
+  };
+  t.after(()=>{CoordinationV3Store.prototype.leaseNextRun=originalLease;});
+  await native.sendAnswer('Original objective preserved in the handoff.');
+  await until(()=>store.sqlite.prepare("SELECT 1 FROM context_rollovers WHERE id=? AND state IN ('failed','outcome_unknown')").get(rollover.id),'changed target held',20000);
+  assert.equal(changed,true);
+  assert.ok(store.sqlite.prepare("SELECT 1 FROM agent_activations WHERE agent_id=? AND state IN ('pending','retry_pending') AND payload_json LIKE ?").get(agent.id,'%The original queued task.%'));
+  const turns=(await native.requests()).filter(x=>x.method==='turn/start');
+  assert.equal(turns.length,2,'the changed target never receives the handoff or queued work');
+ },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,uniqueThreads:true})).adapter});
+});
+
+test('legacy exact prompt change without a contract holds the original task',{timeout:90000},async t=>{
+ let store,native;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Legacy prompt change'),agent=await f.createIdleAgent(chat,'Worker');
+  await f.send(agent.id,'Preserve earlier objective.');
+  await until(async()=>(await native.requests()).some(x=>x.method==='turn/start'),'first turn');
+  await native.sendTool('ponderosa_message',{text:'Initial work complete.'});await f.settled(agent.id);
+  const accepted=store.resumeSessionState(agent.id),packet=store.acceptedProviderSessionInput(agent.id);assert.ok(packet?.exactSystemPrompt);
+  store.sqlite.prepare("UPDATE provider_inputs SET source_manifest_json=json_remove(source_manifest_json,'$.normalRuntimeContract') WHERE execution_id=?").run(packet.executionId);
+  assert.equal(store.acceptedProviderSessionInput(agent.id).sourceManifest.normalRuntimeContract,undefined);
+  f.ok(await f.api('PATCH',`/api/conversations/${chat.id}`,{instructions:'Changed guidance after legacy session.'}));
+  await f.send(agent.id,'The original queued work.');
+  await until(()=>store.sqlite.prepare("SELECT 1 FROM activation_sources h JOIN agent_activations a ON a.id=h.activation_id WHERE a.agent_id=? AND h.source_kind='settings_transition_reservation_wait' AND a.state IN ('pending','retry_pending')").get(agent.id),'legacy prompt review hold',20000);
+  assert.equal(store.resumeSessionState(agent.id).sessionId,accepted.sessionId);
+  assert.equal((await native.requests()).filter(x=>x.method==='turn/start').length,1);
+ },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,uniqueThreads:true})).adapter});
+});
+
+test('capability change after verified replacement holds the exact queued task',{timeout:90000},async t=>{
+ let store,native;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Access changes after replacement'),agent=await f.createIdleAgent(chat,'Worker');
+  await f.send(agent.id,'Original objective.');
+  await until(async()=>(await native.requests()).some(x=>x.method==='turn/start'),'first turn');
+  await native.sendTool('ponderosa_message',{text:'Research complete.'});await f.settled(agent.id);
+  f.ok(await f.api('PATCH',`/api/conversations/${chat.id}`,{instructions:'Updated guidance.'}));
+  await f.send(agent.id,'The exact pending objective.');
+  await until(async()=>(await native.requests()).filter(x=>x.method==='turn/start').length>=2,'old handoff',20000);
+  await native.sendAnswer('Original objective retained.');
+  await until(async()=>(await native.requests()).filter(x=>x.method==='turn/start').length>=3,'replacement confirmation',20000);
+  const originalLease=CoordinationV3Store.prototype.leaseNextRun;let changed=false;
+  CoordinationV3Store.prototype.leaseNextRun=function(...args){
+   const lease=originalLease.apply(this,args);
+   if(lease && !changed && lease.agentId===agent.id && lease.activations.some(a=>a.kind==='human_message')){
+    changed=true;new CapabilityPolicyStore(store.sqlite).put({scopeKind:'agent',scopeId:agent.id,expectedRevision:0,restrictedCapabilityIds:[CAPABILITY_IDS.browserRead]});
+   }
+   return lease;
+  };
+  t.after(()=>{CoordinationV3Store.prototype.leaseNextRun=originalLease;});
+  await native.sendAnswer('Continuity context received.');
+  await until(()=>changed,'queued-task lease',20000);
+  const held=await until(()=>store.sqlite.prepare(`SELECT a.id,a.state FROM agent_activations a JOIN activation_sources s ON s.activation_id=a.id
+   WHERE a.agent_id=? AND a.payload_json LIKE ? AND s.source_kind='settings_transition_reservation_wait' AND a.state IN ('pending','retry_pending')`).get(agent.id,'%The exact pending objective.%'),'exact task held for access review',20000);
+  assert.ok(held);
+  assert.ok(!(await native.requests()).filter(x=>x.method==='turn/start').some(x=>JSON.stringify(x).includes('The exact pending objective.')));
+  assert.ok(!store.readEvents(agent.id).some(e=>e.event.type==='session_reset'&&e.event.reason==='tool_contract_changed'));
+ },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,uniqueThreads:true})).adapter});
 });

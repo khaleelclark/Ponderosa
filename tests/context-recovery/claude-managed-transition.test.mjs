@@ -264,3 +264,29 @@ test('Claude direct MCP calls wait for verified transition input and resume afte
   await native.answer('The original objective is complete.');await f.settled(agent.id);
  },{agentBaseUrl:`http://127.0.0.1:${port}`,storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertClaudeHandoff(root,{holdEcho:true})).adapter});
 });
+
+
+test('Claude same-model guidance change preserves the objective on a verified replacement',{timeout:90000},async t=>{
+ let store,native;
+ await withFixture(t,async f=>{
+  const chat=f.ok(await f.api('POST','/api/chats',{label:'Claude guidance transition',defaultEngine:'claude'},{'idempotency-key':randomUUID()}));
+  const agent=f.ok(await f.api('POST',`/api/projects/${chat.projectId}/agents`,{title:'Worker',engine:'claude',conversationId:chat.id,idempotencyKey:randomUUID()}));
+  await f.send(agent.id,'Preserve the original objective.');
+  await until(async()=>(await userFrames(native)).length>=1,'first input',20000);
+  await native.answer('Original research complete.');await f.settled(agent.id);
+  f.ok(await f.api('PATCH',`/api/conversations/${chat.id}`,{instructions:'Updated synthetic Claude guidance.'}));
+  await f.send(agent.id,'Continue the exact original objective.');
+  const old=await until(async()=>{const x=await userFrames(native);return x.length>=2?x:undefined;},'old handoff',20000);
+  assert.equal(old[1].session,old[0].session);assert.ok(!prompt(old[1]).includes('Continue the exact original objective.'));
+  await native.answer('Preserve the original objective and completed research.');
+  const next=await until(async()=>{const x=await userFrames(native);return x.length>=3?x:undefined;},'replacement confirmation',20000);
+  assert.notEqual(next[2].session,old[0].session);assert.ok(prompt(next[2]).includes('Preserve the original objective and completed research.'));
+  const run=await until(()=>store.sqlite.prepare("SELECT id FROM scheduler_runs WHERE agent_id=? AND provider_session_id=? AND prompt_injection_state IN ('injecting','injected')").get(agent.id,next[2].session),'replacement input record',20000);
+  assert.ok(store.getProviderInput(run.id,true)?.exactSystemPrompt?.includes('Updated synthetic Claude guidance.'));
+  await native.answer('Continuity context received.');
+  const final=await until(async()=>{const x=await userFrames(native);return x.length>=4?x:undefined;},'original queued task',20000);
+  assert.equal(final[3].session,next[2].session);assert.ok(prompt(final[3]).includes('Continue the exact original objective.'));
+  await native.answer('The objective is complete.');await f.settled(agent.id);
+  assert.equal(store.sqlite.prepare('SELECT count(*) n FROM context_rollovers WHERE agent_id=?').get(agent.id).n,1);
+ },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertClaudeHandoff(root)).adapter});
+});

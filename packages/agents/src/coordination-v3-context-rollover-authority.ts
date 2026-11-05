@@ -32,7 +32,8 @@ function boundedInternalRolloverFailure(error: string): string {
 /** The old tuple owns the isolated handoff; the target tuple owns the
  * replacement and the still-pending user work. */
 export interface SettingsTransition {
-  reason:"settings"|"voice";
+  reason:"settings"|"voice"|"prompt";
+  targetSystemPromptHash?:string; targetRestrictionsHash?:string;
   activationId:string; sourceRunId:string; sourceFence:number;
   oldSessionId:string; oldContractHash:string;
   engineId:string; model:string; effort?:string; speed?:string;
@@ -231,7 +232,12 @@ export class CoordinationV3ContextRolloverAuthority {
            ((t.authorizationSignatureHash===undefined)!==(t.authorizationOriginRunId===undefined)) ||
            (t.authorizationSignatureHash!==undefined && (!/^[a-f0-9]{64}$/u.test(t.authorizationSignatureHash) || !t.authorizationOriginRunId?.trim())) || t.oldSessionId!==input.oldProviderSessionId ||
            t.oldSessionId!==input.providerSessionGeneration ||
-           (t.reason!=='settings' && t.reason!=='voice') ||
+           (t.reason!=='settings' && t.reason!=='voice' && t.reason!=='prompt') ||
+           (t.targetSystemPromptHash!==undefined && !/^[a-f0-9]{64}$/u.test(t.targetSystemPromptHash)) ||
+           (t.targetRestrictionsHash!==undefined && !/^[a-f0-9]{64}$/u.test(t.targetRestrictionsHash)) ||
+           (t.reason==='prompt' && (!/^[a-f0-9]{64}$/u.test(t.targetSystemPromptHash??'') ||
+            t.model!==t.targetModel || (t.effort??null)!==(t.targetEffort??null) ||
+            (t.speed??'standard')!==(t.targetSpeed??'standard'))) ||
            (t.reason==='settings' && t.model===t.targetModel && (t.effort??null)===(t.targetEffort??null) && (t.speed??null)===(t.targetSpeed??null)))
           throw new Error("Invalid exact settings transition");
         const pending=this.sqlite.prepare(`SELECT 1 FROM agent_activations a JOIN agents ag ON ag.id=a.agent_id

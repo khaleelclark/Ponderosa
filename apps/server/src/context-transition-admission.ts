@@ -7,6 +7,8 @@ import type { PonderosaServer, CreateServerOptions, EngineRegistration } from '.
 import type { EngineAuthStatusCache } from './engine-auth-cache.js';
 import type { createOperationalNotifications } from './operational-notifications.js';
 import { localMemoryFor } from './local-memory.js';
+import { runtimeManagedRules, runtimeSystemPrompt } from './prompts.js';
+import { runtimeEnvironmentFacts, environmentFactsPrompt } from './runtime-environment-facts.js';
 import { evaluateContextRolloverPressure } from './context-rollover-pressure.js';
 import { assertRetainedNativeAuthentication, communicationV3SessionPrompt, concreteRuntimeSelection, normalizedRuntimeSelection, providerDynamicTools, providerRuntimeSessionContractHash, providerSessionContractHash, providerToolContractHash } from './runtime-selection.js';
 
@@ -23,6 +25,13 @@ export function settingsTransitionTarget(agent:AgentDto,project:ProjectDto,adapt
     : normalizedRuntimeSelection(adapter,targetModel,agent.effort??agent.presetSnapshot?.effort??recovered.effort,options).effort;
  const targetSpeed=typeof dispatch?.speed==='string'&&dispatch.speed.trim()?dispatch.speed.trim():'standard';
  return {targetModel,targetEffort,targetSpeed};
+}
+
+async function transitionSystemPromptHash(agent:AgentDto,project:ProjectDto,preferences:ReturnType<WorkspaceStore['getPreferences']>,opts:CreateServerOptions):Promise<string>{
+ const environment=environmentFactsPrompt(await runtimeEnvironmentFacts({cwd:agent.workingCopy.rootPath,agentId:agent.id,allowedImportRoots:opts.allowedImportRoots}));
+ const prompt=runtimeSystemPrompt(agent,runtimeManagedRules(agent,preferences.globalInstructions.trim(),
+  project.instructions?.trim()??'',preferences.profile,communicationV3SessionPrompt(),environment));
+ return createHash('sha256').update(prompt).digest('hex');
 }
 
 const unrecordedHolds=new WeakMap<CoordinationV3Store,Map<string,string>>();
@@ -161,6 +170,17 @@ export async function requestSettingsTransition(input: {
     if(legacyMemory?.legacyPossibleGlobalRevocation(agent.id,agent.conversationId,packet.executionId))
      return hold('Global memory access may have been removed since this older session began. Its earlier memory exposure is unavailable; the original work remains queued for context review.');
    }
+   // A legacy packet may lack the full contract while still retaining the
+   // accepted exact prompt. A demonstrable prompt change is not an unchanged
+   // legacy session, and cannot safely use the ordinary reseed fallback.
+   if(!contract && row && agent && project && accepted && typeof packet?.exactSystemPrompt==='string' &&
+      agent.projectId===pending.projectId && project.id===pending.projectId &&
+      row.scope_key===`conversation:${agent.conversationId}` && agent.workingCopy.state==='ready'){
+    const currentHash=await transitionSystemPromptHash(agent,project,workspace.getPreferences(),opts);
+    if(currentFingerprint!==transitionFingerprint(input,pending.projectId,pending.agentId,pending.id))return false;
+    if(currentHash!==createHash('sha256').update(packet.exactSystemPrompt).digest('hex'))
+     return hold('The earlier provider session has changed instructions but lacks a verified context boundary. The original work remains queued for review.');
+   }
    // Do not silently reseed an explicitly changed/voice task when the old
    // accepted generation cannot be attributed to a completed boundary.
    const requiresKnownBoundary=Boolean(accepted&&agent&&row&&
@@ -192,12 +212,31 @@ export async function requestSettingsTransition(input: {
       !contract.capabilityRestrictions.restrictedCapabilityIds.includes(CAPABILITY_IDS.memoryRead)&&
       new CapabilityPolicyStore(store.sqlite).resolveForAgent(agent.id).restrictedCapabilityIds.includes(CAPABILITY_IDS.memoryRead))
     return hold('Memory read access was removed since this older session began. Its earlier memory exposure is unavailable; the original work remains queued for context review.');
+   // A verified replacement still belongs to this exact queued task. A
+   // capability change after the handoff cannot silently adopt its summary.
+   const completedTransition=store.sqlite.prepare(`SELECT h.payload_json FROM context_rollovers r
+    JOIN activation_sources x ON x.source_kind='context_rollover' AND x.source_id=r.id
+    JOIN agent_activations h ON h.id=x.activation_id AND h.kind='context_rollover_handoff'
+    WHERE r.agent_id=? AND r.project_id=? AND r.state='completed' AND r.completion_reason='replacement_verified'
+     AND r.replacement_run_id=? AND r.replacement_session_id=? AND json_extract(h.payload_json,'$.settingsTransition.activationId')=?
+    ORDER BY r.updated_at DESC LIMIT 1`).get(agent.id,pending.projectId,boundary.executionId,accepted.sessionId,pending.id) as {payload_json:string}|undefined;
+   const completedMarker=completedTransition?JSON.parse(completedTransition.payload_json)?.settingsTransition:undefined;
+   if(completedMarker?.targetRestrictionsHash){
+    const current=runtimeRestrictions(new CapabilityPolicyStore(store.sqlite).resolveForAgent(agent.id),agent.activeEngine);
+    if(createHash('sha256').update(JSON.stringify(current)).digest('hex')!==completedMarker.targetRestrictionsHash)
+     return hold('Access changed after the context handoff. The original work remains queued for review.');
+   }
    const engine=engines.get(agent.activeEngine);
    if(!engine||![CodexAdapter.prototype,ClaudeAdapter.prototype].includes(Object.getPrototypeOf(engine.adapter))||Object.hasOwn(engine.adapter,'openSession'))return true;
    const initialFingerprint=transitionFingerprint(input,pending.projectId,pending.agentId,pending.id);
    const {targetModel,targetEffort,targetSpeed}=settingsTransitionTarget(agent,project,engine.adapter,workspace.getPreferences(),cachedModelOptions(engine.adapter,project.id),dispatch);
    if(!targetModel?.trim()||!contract.model?.trim())return true;
    const changed=targetModel!==contract.model||targetEffort!==contract.effort||targetSpeed!==(contract.speed??'standard');
+   // A same-scope instruction change must bridge the old provider context,
+   // even when model settings themselves are unchanged.
+   const targetSystemPromptHash=await transitionSystemPromptHash(agent,project,workspace.getPreferences(),opts);
+   if(initialFingerprint!==transitionFingerprint(input,pending.projectId,pending.agentId,pending.id))return false;
+   const promptChanged=targetSystemPromptHash!==createHash('sha256').update(packet.exactSystemPrompt).digest('hex');
    const verifiedVoice=Boolean(opts.localMemory&&dispatch?.voiceReply===true&&store.sqlite.prepare(`SELECT 1
     FROM context_rollovers r JOIN activation_sources x ON x.source_kind='context_rollover' AND x.source_id=r.id
     JOIN agent_activations h ON h.id=x.activation_id AND h.kind='context_rollover_handoff'
@@ -209,7 +248,7 @@ export async function requestSettingsTransition(input: {
       AND json_extract(h.payload_json,'$.settingsTransition.targetSpeed') IS ? LIMIT 1`)
     .get(agent.id,pending.projectId,boundary.executionId,accepted.sessionId,pending.id,targetModel,targetEffort??null,targetSpeed??null));
    const voiceBoundary=Boolean(opts.localMemory&&dispatch?.voiceReply===true&&!verifiedVoice);
-   if(!changed&&!voiceBoundary){
+   if(!changed&&!voiceBoundary&&!promptChanged){
     store.sqlite.prepare("DELETE FROM activation_sources WHERE activation_id=? AND source_kind='settings_transition_retry_pending'").run(pending.id);
     return true;
    }
@@ -249,7 +288,7 @@ export async function requestSettingsTransition(input: {
     ...(measured?{detectedOccupancy:measured.usedTokens,...(measured.aggregateTokens===undefined?{}:{aggregateTokens:measured.aggregateTokens}),...(measured.windowTokens===undefined?{}:{contextWindow:measured.windowTokens})}:{}),
     threshold:pressure.threshold,lowWaterMark:pressure.lowWaterMark,sourceRunId:boundary.executionId,sourceActivationIds:coordinationV3.activationIdsAttachedToRun(boundary.executionId,agent.id),scopeKey:row.scope_key,conversationId:agent.conversationId,
     compactionCutoffOrdinal:frozen.canonicalOrdinal,compactionCutoffEventId:frozen.communicationEventId,recentTail:frozen.recentTail,
-    settingsTransition:{reason:changed?'settings':'voice',activationId:pending.id,sourceRunId:boundary.executionId,sourceFence:boundary.fencingToken,oldContractHash:contract.contractHash,oldSessionId:accepted.sessionId,engineId:agent.activeEngine,model:contract.model!,...(contract.effort?{effort:contract.effort}:{}),...(contract.speed?{speed:contract.speed}:{}),targetModel,...(targetEffort?{targetEffort}:{}),targetSpeed,...(authorization?{authorizationSignatureHash:authorization.signature,authorizationOriginRunId:packet.executionId}:{})},
+    settingsTransition:{reason:changed?'settings':voiceBoundary?'voice':'prompt',targetSystemPromptHash,targetRestrictionsHash:createHash('sha256').update(JSON.stringify(restrictions)).digest('hex'),activationId:pending.id,sourceRunId:boundary.executionId,sourceFence:boundary.fencingToken,oldContractHash:contract.contractHash,oldSessionId:accepted.sessionId,engineId:agent.activeEngine,model:contract.model!,...(contract.effort?{effort:contract.effort}:{}),...(contract.speed?{speed:contract.speed}:{}),targetModel,...(targetEffort?{targetEffort}:{}),targetSpeed,...(authorization?{authorizationSignatureHash:authorization.signature,authorizationOriginRunId:packet.executionId}:{})},
    });
    store.sqlite.prepare("DELETE FROM activation_sources WHERE activation_id=? AND source_kind='settings_transition_retry_pending'").run(pending.id);
    return true;

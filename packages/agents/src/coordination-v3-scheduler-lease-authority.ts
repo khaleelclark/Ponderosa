@@ -219,6 +219,23 @@ export class CoordinationV3SchedulerLeaseAuthority {
                   AND json_type(handoff.payload_json, '$.settingsTransition') = 'object'
               )
           )
+          -- The first task using a verified replacement must see that exact
+          -- context before a competing Run can add unverified exposure.
+          AND NOT EXISTS (
+            SELECT 1 FROM context_rollovers r
+            JOIN activation_sources x ON x.source_kind='context_rollover' AND x.source_id=r.id
+            JOIN agent_activations h ON h.id=x.activation_id AND h.kind='context_rollover_handoff'
+            JOIN agent_activations target ON target.id=json_extract(h.payload_json,'$.settingsTransition.activationId')
+            WHERE r.project_id=a.project_id AND r.agent_id=a.agent_id AND r.scope_key=a.scope_key
+              AND r.state='completed' AND r.completion_reason='replacement_verified'
+              AND json_type(h.payload_json,'$.settingsTransition.targetSystemPromptHash')='text'
+              AND target.id<>a.id AND target.state IN ('pending','retry_pending') AND target.available_at<=?
+              AND NOT ${settingsTransitionActivationHoldSql('target')}
+              AND NOT EXISTS (SELECT 1 FROM activation_sources held WHERE held.activation_id=target.id
+                AND held.source_kind IN ('task_decision_repair_wait','task_reply_repair_wait','branch_schedule_update'))
+              AND NOT EXISTS (SELECT 1 FROM activation_outbox audit WHERE audit.activation_id=target.id
+                AND audit.event_kind='communication_revision' AND audit.processed_at IS NULL)
+          )
           AND NOT EXISTS (
             SELECT 1 FROM activation_outbox audit
             WHERE audit.activation_id = a.id
@@ -232,7 +249,7 @@ export class CoordinationV3SchedulerLeaseAuthority {
           )
         ORDER BY a.priority DESC, a.created_at, a.rowid
         LIMIT 1
-      `).get(now, ...excludedAgentIds) as {
+      `).get(now, ...excludedAgentIds, now) as {
         activation_id: string;
         agent_id: string;
         project_id: string;
@@ -306,11 +323,12 @@ export class CoordinationV3SchedulerLeaseAuthority {
               AND audit.event_kind = 'communication_revision'
               AND audit.processed_at IS NULL
           )
-        ORDER BY priority DESC, created_at, rowid LIMIT 64
+        ORDER BY CASE WHEN id=? THEN 0 ELSE 1 END, priority DESC, created_at, rowid LIMIT 64
       `).all(
         candidate.agentId,
         candidate.scopeKey,
         now,
+        candidate.activationId,
       ) as ActivationRow[];
       const startsFreshTask = (activation: ActivationRow) =>
         activation.kind === "coordination_request";
@@ -375,11 +393,21 @@ export class CoordinationV3SchedulerLeaseAuthority {
       const candidateIsContextRollover = isContextRolloverCandidate(
         queuedActivations[0]!,
       );
+      // A verified handoff belongs to one exact pending task. Do not let a
+      // different ordinary activation bypass that task's target recheck.
+      const hasVerifiedTransition = (activation: ActivationRow): boolean => Boolean(this.sqlite.prepare(`
+        SELECT 1 FROM context_rollovers r
+        JOIN activation_sources x ON x.source_kind='context_rollover' AND x.source_id=r.id
+        JOIN agent_activations h ON h.id=x.activation_id AND h.kind='context_rollover_handoff'
+        WHERE r.project_id=? AND r.agent_id=? AND r.state='completed' AND r.completion_reason='replacement_verified'
+          AND json_type(h.payload_json,'$.settingsTransition.targetSystemPromptHash')='text'
+          AND json_extract(h.payload_json,'$.settingsTransition.activationId')=? LIMIT 1`)
+        .get(candidate.projectId,candidate.agentId,activation.id));
       const isReviewedSteering = (activation: ActivationRow) => Boolean(this.sqlite.prepare(
         "SELECT 1 FROM activation_sources WHERE activation_id=? AND source_kind='reviewed_steering'"
       ).get(activation.id));
       const candidateIsReviewedSteering = isReviewedSteering(queuedActivations[0]!);
-      const activations = candidateIsExplicitQueuedTurn || candidateIsBranchGuidance || candidateIsContextRollover || candidateIsReviewedSteering || hasIndependentDispatch(queuedActivations[0]!) || awaitsSettingsPreflight(queuedActivations[0]!)
+      const activations = candidateIsExplicitQueuedTurn || candidateIsBranchGuidance || candidateIsContextRollover || candidateIsReviewedSteering || hasVerifiedTransition(queuedActivations[0]!) || hasIndependentDispatch(queuedActivations[0]!) || awaitsSettingsPreflight(queuedActivations[0]!)
         ? [queuedActivations[0]!]
         : queuedActivations
           .filter((activation) =>
@@ -389,6 +417,7 @@ export class CoordinationV3SchedulerLeaseAuthority {
             !awaitsSettingsPreflight(activation) &&
             !isContextRolloverCandidate(activation) &&
             !isReviewedSteering(activation) &&
+            !hasVerifiedTransition(activation) &&
             startsFreshTask(activation) === candidateStartsFreshTask)
           .slice(0, limit);
       if (activations.length === 0) return undefined;

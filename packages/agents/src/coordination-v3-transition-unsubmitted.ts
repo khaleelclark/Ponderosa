@@ -5,7 +5,7 @@
 export function transitionUnsubmittedActivationSql(activation:string):string {
   return `((${activation}.state='pending' AND NOT EXISTS (
       SELECT 1 FROM scheduler_run_activations attached WHERE attached.activation_id=${activation}.id))
-    OR (${activation}.state='retry_pending'
+    OR (${activation}.state IN ('pending','retry_pending')
       AND EXISTS (SELECT 1 FROM scheduler_run_activations attached WHERE attached.activation_id=${activation}.id)
       AND NOT EXISTS (
         SELECT 1 FROM scheduler_run_activations attached
