@@ -73,18 +73,72 @@ test('unsupported steering queues the Request once for the following Run', {time
     assert.equal(coordination.requestDelivery(requestId).steeringWaitReason,'provider_unsupported');
     await new Promise(resolve=>setTimeout(resolve,1300));
     assert.equal(calls,1,'known unsupported provider is not polled repeatedly');
+    // Exercise the pending Request through required-reply recovery before
+    // admitting the Request to its own Run.
+    const requestActivation=activation(store,requestId).id;
+    // Select the real reply recovery deterministically; the scheduler can
+    // otherwise lease the lower-priority Request before recovery is queued.
+    // Release this fixture-only scheduling gate while recovery is still live.
+    store.sqlite.prepare("UPDATE agent_activations SET available_at=? WHERE id=?").run('9999-12-31T23:59:59.999Z',requestActivation);
     f.plans.set(target.id,[{hold:true}]);
     session.finish();
-    await until(()=>f.turns.filter(turn=>turn.agentId===target.id).length>=2,'following Run starts');
+    const recovery=await until(()=>{
+      const row=store.sqlite.prepare(`SELECT ra.run_id,a.id activation_id FROM scheduler_run_activations ra
+        JOIN agent_activations a ON a.id=ra.activation_id
+        WHERE a.agent_id=? AND a.kind='required_reply_recovery' ORDER BY ra.rowid DESC LIMIT 1`).get(target.id);
+      return row&&f.turns.some(turn=>turn.agentId===target.id&&JSON.stringify(turn.input).includes(row.run_id))?row:undefined;
+    },'required human reply recovery starts');
     assert.equal(coordination.getRequest(requestId).state,'open');
-    const input=f.turns.filter(turn=>turn.agentId===target.id).at(-1);
-    assert.ok(JSON.stringify(input).includes(requestId));
-    assert.ok(JSON.stringify(input).includes('Handle the new Request'));
+    assert.equal(activation(store,requestId).state,'retry_pending');
+    store.sqlite.prepare("UPDATE agent_activations SET available_at=? WHERE id=?").run(new Date().toISOString(),requestActivation);
+    const original=activation(store,requestId),proof={projectId:original.project_id,agentId:original.agent_id,activationId:original.id,scopeKey:original.scope_key};
+    const refused=store.sqlite.prepare(`SELECT injection.id,injection.run_id FROM scheduler_prompt_injections injection,json_each(injection.activation_ids_json) member
+      WHERE member.value=? AND injection.kind='steer' AND injection.state='cancelled'`).get(requestActivation);
+    assert.ok(refused,'the exact unsupported steer remains as cancelled audit evidence');
+    assert.equal(coordination.settingsTransitionUnsubmittedActivation(proof),true,'definite no-write refusal is eligible for the next Run');
+    for(const [sql,value] of [
+      ["UPDATE scheduler_prompt_injections SET state='outcome_unknown' WHERE id=?",refused.id],
+      ["UPDATE scheduler_prompt_injections SET acknowledged_at='2026-01-01T00:00:00.000Z' WHERE id=?",refused.id],
+      ["UPDATE scheduler_prompt_injections SET provider_turn_id='contradictory' WHERE id=?",refused.id],
+      ["UPDATE scheduler_runs SET status='failed' WHERE id=?",refused.run_id],
+    ]){
+      const rollback=Error('restore synthetic contradictory evidence');
+      assert.throws(()=>store.sqlite.transaction(()=>{
+        store.sqlite.prepare(sql).run(value);
+        assert.equal(coordination.settingsTransitionUnsubmittedActivation(proof),false,'ambiguous, acknowledged or non-completed evidence stays held');
+        throw rollback;
+      })(),error=>error===rollback);
+    }
+    assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE run_id=? AND activation_id=?').get(recovery.run_id,requestActivation).n,0);
+    const recoveryInput=f.turns.find(turn=>turn.agentId===target.id&&JSON.stringify(turn.input).includes(recovery.run_id));
+    assert.ok(JSON.stringify(recoveryInput).includes(recovery.activation_id));
+    assert.ok(!JSON.stringify(recoveryInput).includes(requestId),'the Request remains separate from the recovery');
+    assert.equal(f.turns.filter(turn=>turn.agentId===target.id&&JSON.stringify(turn.input).includes(requestId)).length,0,"the Request has not been submitted during recovery");
+    await until(()=>store.sqlite.prepare('SELECT prompt_injection_state FROM scheduler_runs WHERE id=?').get(recovery.run_id)?.prompt_injection_state==='injected','recovery input acknowledged');
+    const recoverySession=f.sessions.get(target.id);
+    const humanReply=await f.tool(recoverySession,'ponderosa_message',{text:'The original task is complete.'});
+    assert.equal(humanReply.status,200,JSON.stringify(humanReply));
+    f.plans.set(target.id,[{hold:true}]);
+    recoverySession.finish();
+
+    const requestRun=await until(()=>{
+      const row=store.sqlite.prepare('SELECT run_id FROM scheduler_run_activations WHERE activation_id=?').get(requestActivation);
+      return row&&f.turns.some(turn=>turn.agentId===target.id&&JSON.stringify(turn.input).includes(requestId))?row:undefined;
+    },'exact queued Request starts');
+    assert.notEqual(requestRun.run_id,recovery.run_id);
+    assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(requestActivation).n,1);
+    const matching=f.turns.filter(turn=>turn.agentId===target.id&&JSON.stringify(turn.input).includes(requestId));
+    assert.equal(matching.length,1,'the original Request is submitted exactly once');
+    assert.ok(JSON.stringify(matching[0].input).includes(requestRun.run_id));
+    assert.ok(JSON.stringify(matching[0].input).includes('Handle the new Request'));
+    assert.equal(coordination.getRequest(requestId).state,'open');
+    await until(()=>store.sqlite.prepare('SELECT prompt_injection_state FROM scheduler_runs WHERE id=?').get(requestRun.run_id)?.prompt_injection_state==='injected','Request input acknowledged');
     const next=f.sessions.get(target.id);
     const done=await f.tool(next,'ponderosa_update_request',{requestId,text:'Completed once'});
     assert.equal(done.status,200,JSON.stringify(done));
     assert.equal(coordination.getRequest(requestId).state,'completed');
     assert.equal(store.sqlite.prepare("SELECT COUNT(*) AS count FROM coordination_request_updates WHERE request_id=? AND kind='completed'").get(requestId).count,1);
+    assert.equal(f.turns.filter(turn=>turn.agentId===target.id&&JSON.stringify(turn.input).includes(requestId)).length,1);
     next.finish();
   },{storeFactory:dataDir=>(store=new AgentStore(dataDir)),steeringResponse:async()=>{calls++;return {status:'unsupported'};}});
 });
