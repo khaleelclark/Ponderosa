@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {readdir,stat,writeFile,access,readFile} from 'node:fs/promises';
+import {readdir,lstat,writeFile,access,readFile} from 'node:fs/promises';
 import path from 'node:path';
 import {AgentStore,BranchStore,CoordinationV3Store,readBranchExpertCopy} from '../../packages/agents/dist/index.js';
 import {checkpointPackageCustody} from '../../apps/server/dist/checkpoint-agent-packages.js';
@@ -9,16 +9,27 @@ import {withFixture,until} from '../shared/fixture.mjs';
 
 async function custodySizes(root){
  const dir=path.join(root,'checkpoint-package-custody');
- let names;try{names=await readdir(dir);}catch(error){if(error.code==='ENOENT')return {logical:0,allocated:0,files:0,payload:0};throw error;}
- let logical=0,allocated=0,payload=0;const pending=[],receipts=[],payloadIds=[];
+ let names;try{names=await readdir(dir);}catch(error){if(error.code==='ENOENT')return {logical:0,allocated:0,entries:0,files:0,payload:0,receiptCount:0,pending:[],payloadsWithoutReceipt:0,receiptedPayloadBytes:0,unreceiptedPayloadBytes:0};throw error;}
+ let logical=0,allocated=0,payload=0,files=0,metadataBytes=0,otherBytes=0,otherFiles=0;
+ const pending=[],receipts=[],payloads=new Map();
  for(const name of names){
-  const info=await stat(path.join(dir,name));if(!info.isFile())continue;logical+=info.size;allocated+=info.blocks*512;
-  if(name.endsWith('.payload')){payload+=info.size;payloadIds.push(name.slice(0,-8));}
-  else if(name.endsWith('.pending.json')){const r=JSON.parse(await readFile(path.join(dir,name),'utf8'));pending.push({id:name.slice(0,-13),state:r.state,reason:r.reason??null});}
-  else if(/^[a-f0-9]{64}\.json$/.test(name)){const r=JSON.parse(await readFile(path.join(dir,name),'utf8'));receipts.push({id:r.custodyId,bytes:r.byteLength});}
+  const info=await lstat(path.join(dir,name));if(!info.isFile())continue;
+  files++;logical+=info.size;allocated+=info.blocks*512;
+  if(name.endsWith('.payload')){payload+=info.size;payloads.set(name.slice(0,-8),info.size);}
+  else if(name.endsWith('.pending.json')){const r=JSON.parse(await readFile(path.join(dir,name),'utf8'));metadataBytes+=info.size;pending.push({id:name.slice(0,-13),state:r.state,reason:r.reason??null});}
+  else if(/^[a-f0-9]{64}\.json$/.test(name)){const r=JSON.parse(await readFile(path.join(dir,name),'utf8'));metadataBytes+=info.size;receipts.push({id:r.custodyId,bytes:r.byteLength});}
+  else{otherFiles++;otherBytes+=info.size;}
  }
- return {logical,allocated,files:names.length,payload,receiptCount:receipts.length,pending,payloadsWithoutReceipt:payloadIds.filter(id=>!receipts.some(r=>r.id===id)).length};
+ for(const receipt of receipts)assert.equal(payloads.get(receipt.id),receipt.bytes,'each retained receipt matches its exact regular payload byte length');
+ const orphanIds=[...payloads.keys()].filter(id=>!receipts.some(r=>r.id===id));
+ const unreceiptedPayloadBytes=orphanIds.reduce((sum,id)=>sum+payloads.get(id),0),receiptedPayloadBytes=receipts.reduce((sum,r)=>sum+r.bytes,0);
+ assert.equal(payload,receiptedPayloadBytes+unreceiptedPayloadBytes);
+ assert.equal(logical,payload+metadataBytes+otherBytes);
+ assert.equal(files,payloads.size+pending.length+receipts.length+otherFiles);
+ for(const id of orphanIds)assert.ok(pending.some(p=>p.id===id&&p.state==='failed'&&p.reason==='source_changed'),'unreceipted payload belongs to a recorded source_changed capture');
+ return {logical,allocated,entries:names.length,files,payload,receiptCount:receipts.length,pending,payloadsWithoutReceipt:orphanIds.length,receiptedPayloadBytes,unreceiptedPayloadBytes,metadataBytes,otherBytes,otherFiles};
 }
+
 async function inspectPackage(custody,receipt,expectedAgent){
  const pkg=await custody.read(receipt),node=pkg.agents.find(a=>a.ref===expectedAgent);assert.ok(node);
  const archives=[];for(const artifact of node.artifacts??[])if(artifact.mediaType==='application/vnd.ponderosa.execution-archive+json'){
@@ -42,7 +53,7 @@ test('measure six reviewed temporary copies in two overlapping waves',{timeout:2
    steps:[{id:'work',kind:'agent',target:{kind:'persistent_agent',ref:'source'},instructions:'Complete the exact independent synthetic task',jobHandling:'copy'}],edges:[],
    policy:{maxConcurrentExecutions:3,maxEphemeralAgents:1,failure:{action:'stop'}}};
   const branch=branches.deploy({chatId:chat.id,idempotencyKey:'measurement-deploy',definition,bindings:{agents:{source:source.id},directories:{workspace:f.root}}});
-  const custody=checkpointPackageCustody(f.dataDir),before=await custodySizes(f.dataDir),waves=[];
+  const custody=checkpointPackageCustody(f.dataDir),before=await custodySizes(f.dataDir),waves=[],expectedReceipts=[];
   for(let wave=1;wave<=2;wave++){
    const jobs=Array.from({length:3},(_,i)=>branches.accept(branch.id,'measurement-'+wave+'-'+(i+1),'Synthetic task wave '+wave+' item '+(i+1)));
    const items=[];
@@ -69,6 +80,7 @@ test('measure six reviewed temporary copies in two overlapping waves',{timeout:2
     await until(()=>branches.execution(item.job.id)?.state==='completed','copy job completion',60000);
     await until(()=>store.sqlite.prepare("SELECT 1 FROM branch_resources WHERE step_execution_id=? AND state='retired'").get(item.resource.step_execution_id),'copy cleanup',90000);
     const r=readBranchExpertCopy(store.sqlite,item.job.id,item.resource.step_execution_id);assert.ok(r.finalSnapshotReceipt);assert.equal(r.finalVerifiedSha256,r.finalSnapshotReceipt.sha256);
+    expectedReceipts.push(r.snapshotReceipt,r.finalSnapshotReceipt);
     const details=await f.api('GET',item.url);assert.equal(details.status,200,JSON.stringify(details.body));
     const trace=details.body.temporaryCopyTrace;assert.ok(trace);assert.equal(trace.sourceAgentId,source.id);assert.equal(trace.copyAgentId,r.copyAgentId);assert.equal(trace.requestId,r.requestId);assert.equal(trace.task.input,item.job.input);assert.ok(trace.result);assert.equal(trace.historyAvailable,true);
     assert.ok(JSON.stringify(trace.task).includes('Synthetic task wave '+wave),'operator trace retains the exact task');
@@ -96,7 +108,11 @@ test('measure six reviewed temporary copies in two overlapping waves',{timeout:2
     assert.equal(remainingEvents,0);assert.equal(remainingRuns,0);
     measured.push({sourceBytes:r.snapshotReceipt.byteLength,finalBytes:r.finalSnapshotReceipt.byteLength,sourceHistoryMessages:original.node.history?.length??0,sourceArchives:original.archives.length,finalHistoryMessages:final.node.history?.length??0,finalArchives:final.archives.length,copyArchiveEvents:copyArchive.events.length,copyArchiveRuns:copyArchive.runs.length,sourceHistoryPresent:sourceHistory.includes('Synthetic source history marker.'),sourceHistoryInFinal:finalHistory.includes('Synthetic source history marker.'),operatorReadback:true,operatorSourceRunPresent:readback.body.runs.some(run=>run.agentId===source.id),operatorSourceHistoryPresent:JSON.stringify(readback.body.messages).includes('Synthetic source history marker.'),operatorTaskMarkerPresent:JSON.stringify(trace.task).includes('Synthetic task wave '+wave),operatorResultMarkerPresent:JSON.stringify(trace.result).includes('Synthetic completed result '+wave+'-'+(i+1)),taskMarkerInFinal:archived.includes('Synthetic task wave '+wave),resultMarkerInFinal:archived.includes('Synthetic completed result '+wave+'-'+(i+1)),finalJobFileBytes:Buffer.byteLength('Synthetic job-created output for '+r.copyAgentId+'\n'),sourceFileCopied:false,remainingLiveEvents:remainingEvents,remainingLiveRuns:remainingRuns});
    }
-   const size=await custodySizes(f.dataDir);waves.push({wave,copies:measured,custody:size});
+   const size=await custodySizes(f.dataDir);
+   assert.equal(size.receiptCount,expectedReceipts.length,'only these completed copy receipts are retained');
+   assert.equal(size.receiptedPayloadBytes,expectedReceipts.reduce((sum,r)=>sum+r.byteLength,0),'completed receipt bytes reconcile with measured payload bytes');
+   assert.equal(size.entries,size.files,'the custody directory contains only regular files in this fixture');
+   waves.push({wave,copies:measured,custody:size});
   }
   assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_runs WHERE agent_id=?').get(source.id).n,sourceRuns,'original never awakened by copies');
   console.log('COPY_ARCHIVE_MEASUREMENT',JSON.stringify({concurrentPerWave:3,waves,baseline:before,memory:'disabled',provider:'synthetic',sourceFolderCopied:false}));
