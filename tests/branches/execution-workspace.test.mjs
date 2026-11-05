@@ -364,3 +364,12 @@ for(const applied of [true,false])test('guidance review requires observed delive
  f.release();await assert.rejects(pending,/Response lost/);f.scope.execution.revision=19;await f.submit();assert.equal(f.bodies[1].body,f.bodies[0].body);
  const intent=JSON.parse(f.bodies[0].body);assert.equal(intent.action,'resolve_guidance');assert.equal(intent.attemptId,'exact-attempt');assert.equal(intent.injectionId,'exact-injection');assert.equal(intent.updateApplied,applied);assert.equal(intent.externalEffectsReconciled,true);assert.equal(intent.expectedRevision,7);assert.equal(intent.result,undefined);
 });
+
+test('only confirmed current prepared copy exposes the scoped preparation retry',()=>{
+ const action=olderAttempt();action.attempt.state='prepared';action.attempt.snapshotRetryAvailable=true;
+ const f=fixture({actions:[action]});assert.match(f.render(),/Copy Preparation Needs Retry/);
+ f.button('Retry preparing copy').onClick();const dialog=f.render();assert.match(dialog,/same temporary copy reservation/);assert.match(dialog,/no copy was published/);assert.doesNotMatch(dialog,/Starts · new Step invocation/);assert.equal(f.requests.length,0);
+ f.props.authorityFresh=false;f.render();assert.equal(f.button('Retry preparing copy').disabled,true);
+ const ordinary=olderAttempt();ordinary.attempt.state='prepared';const held=fixture({actions:[ordinary]});held.render();assert.equal(held.button('Retry preparing copy'),undefined);assert.equal(held.button('Retry Step'),undefined);
+ const unknown=olderAttempt({unknown:true});unknown.attempt.snapshotRetryAvailable=true;const uncertain=fixture({actions:[unknown]});uncertain.render();assert.equal(uncertain.button('Retry preparing copy'),undefined);assert.ok(uncertain.button('Retry Anyway'));
+});
