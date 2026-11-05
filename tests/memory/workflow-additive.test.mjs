@@ -165,7 +165,7 @@ test('approved Branch answer is saved and found in the next run through live mem
  let criticId, criticCalls=0, saves=0, nextSearch;
  const options={
   localMemoryForRoot:async root=>({chromaUrl,collectionPrefix:'q11_'+randomUUID().replaceAll('-',''),modelDir:process.env.PONDEROSA_TEST_MEMORY_MODEL_DIR,stateDirectory:path.join(root,'memory-policy'),provision:true}),
-  providerRunPlan:({agentId})=>agentId!==criticId?undefined:{onStart:async(session,input)=>{
+  providerRunPlan:({agentId})=>agentId!==criticId?undefined:{run:async(session,input)=>{
    const call=++criticCalls;
    if(call===1||call===3){
     const result=await session.tool('ponderosa_local_memory_search',{query:'Q11 synthetic approved answer green koala',source:'chat'});
@@ -176,6 +176,8 @@ test('approved Branch answer is saved and found in the next run through live mem
     const result=await session.tool('ponderosa_local_memory_save',{destination:'chat',text});
     assert.equal(result.success,true,result.text);saves++;
    } else throw Error('Unexpected critic Run');
+   const response=await session.tool("ponderosa_update_request",{text:call===2?text:"Controlled critique"});
+   assert.equal(response.success,true,response.text);
   }}
  };
  await withFixture(t,async f=>{
@@ -193,12 +195,12 @@ test('approved Branch answer is saved and found in the next run through live mem
   const first=await app.start('Q11 synthetic approved answer green koala','q11-first');
   const gate=await gateFor(first.id);
   await app.resolve(first.id,gate.id,{commandKey:'q11-approve',expectedRevision:gate.revision,decision:'approve',output:text});
-  await completed(first.id);assert.equal(saves,1);
+  const firstDone=await completed(first.id);assert.equal(firstDone.execution.output,text);assert.equal(saves,1);
   const second=await app.start('Q11 synthetic approved answer green koala','q11-second');
   const secondGate=await gateFor(second.id);assert.match(nextSearch,/green koala/);
   await app.resolve(second.id,secondGate.id,{commandKey:'q11-reject',expectedRevision:secondGate.revision,decision:'reject'});
   const rejected=await until(async()=>{const current=await client.state(second.id);return current.execution.state==='skipped'&&current;},'rejected workflow',30000);
   assert.equal(rejected.execution.state,'skipped');assert.equal(saves,1,'rejected answer must not be saved');
-  console.log(JSON.stringify({realMemory:true,disposableChroma:true,controlledProvider:true,approvedAnswerForwarded:true,approvedSaves:saves,secondRunSearchFoundAnswer:true,rejectionDidNotSave:true}));
+  console.log(JSON.stringify({realMemory:true,disposableChroma:true,controlledProvider:true,approvedAnswerForwarded:true,approvedAnswerRetained:true,approvedSaves:saves,secondRunSearchFoundAnswer:true,rejectionDidNotSave:true}));
  },options);
 });
