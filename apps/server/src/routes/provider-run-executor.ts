@@ -382,8 +382,44 @@ export function startProviderRunExecution(
         PONDEROSA_AGENT_TOOL_NAMES: JSON.stringify(availableRuntimeTools.map((tool) => tool.name)),
         PONDEROSA_INTERNAL_SUBAGENTS_DISABLED: "1",
       };
+      let retainedMemoryInputProof: (() => boolean) | undefined;
+      // The scheduler preflight may have yielded before the Run was claimed.
+      // Revalidate the exact previously disclosed sources immediately before
+      // reusing an ordinary retained Codex session.
+      if (runtimeEngineId === "codex" && resumeSessionId && !assertSettingsTransitionPolicy && !nativeSeed) {
+        const accepted = store.resumeSessionState(agent.id);
+        const origin = store.acceptedProviderSessionInput(agent.id)?.executionId;
+        const scope = coordinationV3.runScopeKey(runId, agent.id);
+        const source = scope && store.sqlite.prepare(`
+          SELECT id FROM scheduler_runs
+          WHERE agent_id=? AND scope_key=? AND provider_session_id=? AND id<>?
+            AND status='completed' AND prompt_injection_state='injected'
+          ORDER BY fencing_token DESC LIMIT 1
+        `).get(agent.id, scope, resumeSessionId, runId) as {id:string}|undefined;
+        const known = scope && store.sqlite.prepare(`
+          SELECT 1 FROM scheduler_runs r JOIN memory_exposure_runs e ON e.run_id=r.id
+          WHERE r.agent_id=? AND r.scope_key=? AND r.provider_session_id=?
+            AND (e.pending<>0 OR e.uncertain<>0 OR e.unverified<>0 OR EXISTS(
+              SELECT 1 FROM memory_exposure_sources s WHERE s.run_id=e.run_id))
+          LIMIT 1
+        `).get(agent.id, scope, resumeSessionId);
+        if (accepted?.sessionId !== resumeSessionId) throw new Error("The retained session changed. The original work remains available for review.");
+        if (!origin || !source || !memory) {
+          if (known) throw new Error("Earlier memory exposure cannot be verified. The original work remains available for review.");
+        } else {
+          const proof = await memory.prepareRetainedInputProof({
+            agentId:agent.id, chatId:agent.conversationId, sessionId:resumeSessionId,
+            originRunId:origin, sourceRunId:source.id, currentRunId:runId,
+          });
+          if (proof.status === "changed" || proof.status === "unavailable" || !proof.isCurrent())
+            throw new Error("A previously used memory source or its access changed. The original work remains available for review.");
+          retainedMemoryInputProof = proof.isCurrent;
+        }
+      }
       const assertCurrentCodexAccess = (): void => {
         if (runtimeEngineId !== "codex") return;
+        if (retainedMemoryInputProof && !retainedMemoryInputProof())
+          throw new Error("A previously used memory source or its access changed. The original work remains available for review.");
         const current = runtimeRestrictions(
           new CapabilityPolicyStore(store.sqlite).resolveForAgent(agent.id, runId), runtimeEngineId,
         );
@@ -396,13 +432,14 @@ export function startProviderRunExecution(
         identity: object,
       ): Promise<PersistentRuntime> => {
         if (v3FencingToken !== undefined) coordinationV3.assertRunReviewedSteeringLease(agent.projectId,runId,v3FencingToken);
+        if (controller.signal.aborted || isClosed() || deletingAgentIds.has(agent.id) || deletingProjectIds.has(project.id) || !ownsActiveRun(agent.id, activeRun) || !renewExecutionLease(agent.id, activeRun)) throw new Error("Native session lost current Run authority");
         assertCurrentCodexAccess();
         const rawSession = await providerRuntimeOperation("open provider session", () => engine.adapter.openSession!({
           agentId: agent.id,
           ...(v3FencingToken !== undefined ? {providerRun:{runId,fence:v3FencingToken}} : {}),
           assertRuntimeCurrent: () => {
             if (controller.signal.aborted || isClosed() || deletingAgentIds.has(agent.id) ||
-                deletingProjectIds.has(project.id) || !ownsActiveRun(agent.id, activeRun))
+                deletingProjectIds.has(project.id) || !ownsActiveRun(agent.id, activeRun) || !renewExecutionLease(agent.id, activeRun))
               throw new Error("Native session lost current Run authority");
             assertCurrentCodexAccess();
           },
