@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {randomUUID} from 'node:crypto';
+import {execFileSync} from 'node:child_process';
+import {existsSync} from 'node:fs';
 import {writeFile,readFile} from 'node:fs/promises';
 import path from 'node:path';
 import {chatBrowserOwnerId} from '@ponderosa/core';
@@ -495,3 +497,87 @@ for(const scope of ['conversation','agent'])for(const mode of ['muted','attentio
   assert.equal((await projection()).conversations[chat.id].quietUnreadCount??0,0);
  }));
 }
+
+test('deleted Separate Git cleanup requires its exact Project, original Chat and product', {timeout:60000},async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Deleted copy owner'),other=await f.createChat('Different Project'),agent=await f.createIdleAgent(chat,'Deleted copy worker');
+  const source=chat.workingDirectory,git=(...args)=>execFileSync('git',args,{cwd:source,stdio:'ignore'});
+  git('init','-b','main');await writeFile(path.join(source,'original.txt'),'original user bytes');
+  git('add','original.txt');git('-c','user.name=Fixture','-c','user.email=fixture@invalid','commit','-m','fixture');
+  const changed=f.ok(await f.api('PATCH','/api/agents/'+agent.id,{workingCopyMode:'separate_git'}));
+  assert.equal(changed.workingCopy.mode,'separate_git');assert.equal(changed.workingCopy.state,'ready');
+  const copyRoot=changed.workingCopy.rootPath;assert.equal(existsSync(copyRoot),true);
+  const preview=f.ok(await f.api('POST','/api/projects/'+chat.projectId+'/agent-deletions/preview',{rootAgentIds:[agent.id]}));
+  const deleted=f.ok(await f.api('POST','/api/projects/'+chat.projectId+'/agent-deletions/commit',{rootAgentIds:[agent.id],previewHash:preview.previewHash}));
+  assert.ok(deleted.deletedAgentIds.includes(agent.id));
+  const route='/projects/'+chat.projectId+'/deleted-agents/'+agent.id+'/working-copy';
+  const listing=f.ok(await f.api('GET','/api/projects/'+chat.projectId+'/agent-organization?scope=deleted'));
+  assert.ok(JSON.stringify(listing).includes(agent.id));
+  assert.ok(store.sqlite.prepare('SELECT 1 FROM agent_deletion_tombstones WHERE agent_id=? AND project_id=? AND conversation_id=?').get(agent.id,chat.projectId,chat.id));
+  assert.equal((await f.api('DELETE','/api/branches/engine'+route)).status,404,'a foreign product cannot clean the Core copy');
+  assert.equal((await f.api('DELETE','/api/projects/'+other.projectId+'/deleted-agents/'+agent.id+'/working-copy')).status,404,'another Project cannot clean the copy');
+  assert.equal((await f.api('DELETE','/api/projects/'+chat.projectId+'/deleted-agents/'+randomUUID()+'/working-copy')).status,404,'unknown Agents remain unavailable');
+  const tombstone=store.sqlite.prepare('SELECT * FROM agent_deletion_tombstones WHERE agent_id=?').get(agent.id);
+  store.sqlite.prepare('DELETE FROM agent_deletion_tombstones WHERE agent_id=?').run(agent.id);
+  try{assert.equal((await f.api('DELETE','/api'+route)).status,404,'a missing tombstone cannot authorize cleanup');}
+  finally{store.sqlite.prepare('INSERT INTO agent_deletion_tombstones(agent_id,project_id,conversation_id,tombstone_name,ownership_token,created_at) VALUES (?,?,?,?,?,?)').run(tombstone.agent_id,tombstone.project_id,tombstone.conversation_id,tombstone.tombstone_name,tombstone.ownership_token,tombstone.created_at);}
+  store.sqlite.prepare('UPDATE agent_deletion_tombstones SET conversation_id=? WHERE agent_id=?').run(other.id,agent.id);
+  try{assert.equal((await f.api('DELETE','/api'+route)).status,404,'a mismatched original Chat cannot authorize cleanup');}
+  finally{store.sqlite.prepare('UPDATE agent_deletion_tombstones SET conversation_id=? WHERE agent_id=?').run(chat.id,agent.id);}
+  assert.equal(existsSync(copyRoot),true,'refused requests leave the owned copy intact');
+  const cleaned=await f.api('DELETE','/api'+route);
+  assert.equal(cleaned.status,200,JSON.stringify(cleaned.body));assert.equal(cleaned.body.state,'removed');
+  assert.equal(existsSync(copyRoot),false,'the authorized cleanup removes only the owned copy');
+  assert.equal(await readFile(path.join(source,'original.txt'),'utf8'),'original user bytes','source work is preserved');
+  assert.ok(store.getConversation(other.id),'the unrelated Project remains available');
+  const retiredChat=await f.createChat('Deleted original Chat'),retiredAgent=await f.createIdleAgent(retiredChat,'Deleted owner');
+  const retiredPreview=f.ok(await f.api('POST','/api/projects/'+retiredChat.projectId+'/agent-deletions/preview',{rootAgentIds:[retiredAgent.id]}));
+  f.ok(await f.api('POST','/api/projects/'+retiredChat.projectId+'/agent-deletions/commit',{rootAgentIds:[retiredAgent.id],previewHash:retiredPreview.previewHash}));
+  f.ok(await f.api('DELETE','/api/conversations/'+retiredChat.id));
+  assert.equal(store.getConversation(retiredChat.id),undefined);
+  const retired=await f.api('DELETE','/api/projects/'+retiredChat.projectId+'/deleted-agents/'+retiredAgent.id+'/working-copy');
+  assert.equal(retired.status,404,'a deleted original Chat cannot authorize this route');
+ },{storeFactory:dir=>(store=new AgentStore(dir))});
+});
+
+test('mixed Project admits only the original Core Chat deleted-copy cleanup', {timeout:60000},async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const project=store.createProject({label:'Mixed restored copy Project',hostPath:f.root,defaultEngine:'codex'});
+  const core=store.listConversations(project.id)[0];
+  const branch=f.ok(await f.api('POST','/api/branches',{name:'Mixed copy scope',idempotencyKey:randomUUID()}));
+  const branchChat=store.createConversation(core.projectId,{title:'Restored Branch sibling'});
+  const filename=conversationJsonPath(f.dataDir,core.projectId,branchChat.id),record=JSON.parse(await readFile(filename,'utf8'));
+  record.branchId=branch.id;await writeFile(filename,JSON.stringify(record));store.rebuildProjections();
+  const agent=await f.createIdleAgent(core,'Core copy worker'),source=f.root;
+  const sibling=f.ok(await f.api('POST','/api/branches/engine/projects/'+core.projectId+'/agents',{title:'Branch copy worker',engine:'codex',conversationId:branchChat.id,idempotencyKey:randomUUID()}));
+  const git=(...args)=>execFileSync('git',args,{cwd:source,stdio:'ignore'});
+  git('init','-b','main');await writeFile(path.join(source,'original.txt'),'mixed source bytes');
+  git('add','original.txt');git('-c','user.name=Fixture','-c','user.email=fixture@invalid','commit','-m','fixture');
+  const branchWorking=f.ok(await f.api('PATCH','/api/branches/engine/agents/'+sibling.id,{workingCopyMode:'separate_git'}));
+  assert.equal(branchWorking.workingCopy.state,'ready');const branchCopyRoot=branchWorking.workingCopy.rootPath;
+  const branchPreview=f.ok(await f.api('POST','/api/branches/engine/projects/'+core.projectId+'/agent-deletions/preview',{rootAgentIds:[sibling.id]}));
+  f.ok(await f.api('POST','/api/branches/engine/projects/'+core.projectId+'/agent-deletions/commit',{rootAgentIds:[sibling.id],previewHash:branchPreview.previewHash}));
+  const branchRoute='/projects/'+core.projectId+'/deleted-agents/'+sibling.id+'/working-copy';
+  for(const namespace of ['/api','/api/branches/engine']){
+   const denied=await f.api('DELETE',namespace+branchRoute);
+   assert.ok([404,409].includes(denied.status),'Branch-owned copy cleanup stays under Branch lifecycle');
+  }
+  assert.equal(existsSync(branchCopyRoot),true,'neither product removed the Branch-owned copy');
+  const working=f.ok(await f.api('PATCH','/api/agents/'+agent.id,{workingCopyMode:'separate_git'}));
+  assert.equal(working.workingCopy.state,'ready');const copyRoot=working.workingCopy.rootPath;
+  const preview=f.ok(await f.api('POST','/api/projects/'+core.projectId+'/agent-deletions/preview',{rootAgentIds:[agent.id]}));
+  f.ok(await f.api('POST','/api/projects/'+core.projectId+'/agent-deletions/commit',{rootAgentIds:[agent.id],previewHash:preview.previewHash}));
+  const route='/projects/'+core.projectId+'/deleted-agents/'+agent.id+'/working-copy';
+  const foreign=await f.api('DELETE','/api/branches/engine'+route);
+  assert.ok([404,409].includes(foreign.status),'Branch product cannot delete the Core-owned copy');
+  assert.equal((await f.api('DELETE','/api/projects/'+core.projectId)).status,409,'mixed Project deletion stays protected');
+  assert.equal(existsSync(copyRoot),true);
+  const cleaned=await f.api('DELETE','/api'+route);
+  assert.equal(cleaned.status,200,JSON.stringify(cleaned.body));assert.equal(cleaned.body.state,'removed');
+  assert.equal(existsSync(copyRoot),false);assert.equal(await readFile(path.join(source,'original.txt'),'utf8'),'mixed source bytes');
+  assert.equal(existsSync(branchCopyRoot),true,'Core cleanup preserves the Branch-owned copy');
+  assert.ok(store.getConversation(branchChat.id),'the Branch-owned sibling is preserved');
+ },{storeFactory:dir=>(store=new AgentStore(dir))});
+});

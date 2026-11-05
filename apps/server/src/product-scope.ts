@@ -268,6 +268,19 @@ export function registerProductScope(app:FastifyInstance,store:AgentStore,worksp
     const draftOwner=agentDraftOwner(store,request);
     const externalMutation=!['GET','HEAD','OPTIONS'].includes(request.method)&&!runtimeChat;
     const resourceMutable=(id:string):boolean=>(retained.has(id)||!store.sqlite.prepare("SELECT 1 FROM branch_installation_resources WHERE local_id=? AND state!='active'").get(id))&&(!externalMutation||!store.sqlite.prepare("SELECT 1 FROM conversations c JOIN branch_installation_plans p ON p.branch_id=c.branch_id WHERE p.state IN ('applying','canceling') AND (c.id=? OR c.project_id=? OR EXISTS(SELECT 1 FROM agents a WHERE a.conversation_id=c.id AND a.id=?))").get(id,id,id));
+    // The nested :id is a deleted Agent, not the outer Project. Its active
+    // Chat ownership is gone, so require its exact tombstone and original Chat.
+    const deletedCopyRoute=request.method==='DELETE'&&request.routeOptions.url==='/api/projects/:projectId/deleted-agents/:id/working-copy';
+    const deletedCopyParams=request.params as {id?:string;projectId?:string};
+    const deletedCopyOwner=deletedCopyRoute&&deletedCopyParams.id&&deletedCopyParams.projectId?store.sqlite.prepare(`SELECT tombstone.conversation_id FROM agent_deletion_tombstones tombstone
+      JOIN agents agent ON agent.id=tombstone.agent_id AND agent.project_id=tombstone.project_id
+      JOIN conversations chat ON chat.id=tombstone.conversation_id AND chat.project_id=tombstone.project_id
+      WHERE tombstone.agent_id=? AND tombstone.project_id=? AND agent.deleted_at IS NOT NULL AND agent.conversation_id IS NULL
+      AND chat.branch_execution_id IS NULL
+      AND NOT EXISTS(SELECT 1 FROM branch_installation_resources r WHERE r.local_id=agent.id AND r.agent_ref!='' AND r.state='active')`).get(deletedCopyParams.id,deletedCopyParams.projectId) as {conversation_id:string}|undefined:undefined;
+    const deletedCopyAvailable=Boolean(deletedCopyParams.id&&deletedCopyParams.projectId&&deletedCopyOwner
+      &&resourceMutable(deletedCopyParams.id)&&resourceMutable(deletedCopyParams.projectId)&&resourceMutable(deletedCopyOwner.conversation_id)
+      &&ordinaryBelongs(deletedCopyParams.projectId,'project',product)&&ordinaryBelongs(deletedCopyOwner.conversation_id,'conversation',product));
     const browserOwner=browserRouteUsesOwnerHandle(request.routeOptions.url)?browserOwnerFromId((request.params as {projectId:string}).projectId):undefined;
     if(browserOwner?.kind==='chat'){
       if(!resourceMutable(browserOwner.conversationId)||!belongs(browserOwner.conversationId,'chat',product))return reply.code(404).send({error:'Browser Chat is unavailable in this product'});
@@ -338,7 +351,9 @@ export function registerProductScope(app:FastifyInstance,store:AgentStore,worksp
           : kind==='agents'
             ? store.sqlite.prepare("SELECT 1 FROM branch_installation_resources WHERE local_id=? AND agent_ref!='' AND state='active'").get(id)
             : chatRemoval?.branchId||store.sqlite.prepare('SELECT 1 FROM conversations WHERE id=? AND branch_id IS NOT NULL').get(id);
-        if(branchOwned)return reply.code(409).send({error:'Installed Branch resources must be removed through the Branch lifecycle'});
+        // A mixed Project may contain a Core-owned deleted copy. Only its
+        // exact proven Core owner may bypass the Project-wide deletion guard.
+        if(branchOwned&&!(deletedCopyRoute&&deletedCopyAvailable&&product==='dev'))return reply.code(409).send({error:'Installed Branch resources must be removed through the Branch lifecycle'});
       }
     }
     const agentDeletionRoute=externalMutation&&request.routeOptions.url?.startsWith('/api/projects/:id/agent-deletions/');
@@ -396,10 +411,12 @@ export function registerProductScope(app:FastifyInstance,store:AgentStore,worksp
       ?? /^\/api\/(projects|agents|conversations|chats|triggers|notifications|decisions)\/([^/?]+)/.exec(request.url);
     const params=request.params as Record<string,string>;
     if(params.projectId&&params.aid&&!artifactInProduct(store,params.projectId,params.aid,product))return reply.code(404).send({error:'Resource is unavailable in this product'});
-    const pathAvailable=draftOwner
-      ? resourceMutable(draftOwner.agentId)&&resourceMutable(draftOwner.conversationId)
-        &&ordinaryBelongs(draftOwner.agentId,'agent',product)&&ordinaryBelongs(draftOwner.conversationId,'conversation',product)
-      : !resource||!params.id||(resourceMutable(params.id)&&belongs(params.id,resource[1]!.replace(/s$/,''),product));
+    const pathAvailable=deletedCopyRoute
+      ? deletedCopyAvailable
+      : draftOwner
+        ? resourceMutable(draftOwner.agentId)&&resourceMutable(draftOwner.conversationId)
+          &&ordinaryBelongs(draftOwner.agentId,'agent',product)&&ordinaryBelongs(draftOwner.conversationId,'conversation',product)
+        : !resource||!params.id||(resourceMutable(params.id)&&belongs(params.id,resource[1]!.replace(/s$/,''),product));
     if(!pathAvailable||!inspect(request.body)||!inspect(request.query)||!inspect(request.params))return reply.code(404).send({error:'Resource is unavailable in this product'});
     if(product==='branches'&&request.method==='POST'&&['/api/projects','/api/chats'].includes(request.url))return reply.code(400).send({error:'Create Chats inside a Branch'});
   });
