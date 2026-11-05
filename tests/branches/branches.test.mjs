@@ -295,3 +295,40 @@ for (const recovery of ['defer','restart']) test(`Branch cancellation ignores a 
  f.coordination.completeProviderOperation(operations[0].id,'cleanup');f.reopen();f.branches.advance();
  assert.equal(f.branches.execution(e.id).state,'canceled');assert.equal(f.coordination.leaseNextRun({workerId:'late'}),undefined);
 });
+
+test("queued persistent-Agent jobs stay separate across busy work and produce independent results",t=>{
+ const f=fixture(t),base=f.deployment.definition,definition={...base,name:"Queued jobs",steps:[{id:"agent",kind:"agent",target:{kind:"persistent_agent",ref:"reviewer"},instructions:"Process one job",jobHandling:"queue"}],edges:[]};
+ const branch=f.branches.deploy({...f.deployment,idempotencyKey:"queued-deploy",definition});
+ const first=f.branches.accept(branch.id,"job-1","First input"),second=f.branches.accept(branch.id,"job-2","Second input");
+ for(let i=0;i<6;i++)f.branches.advance();
+ const a=f.branches.detail(first.id).attempts[0].requestId,b=f.branches.detail(second.id).attempts[0].requestId;assert.ok(a&&b&&a!==b);
+ const rows=f.store.sqlite.prepare("SELECT dispatch_policy,payload_json FROM agent_activations WHERE id IN (SELECT activation_id FROM activation_sources WHERE source_kind=? AND source_id IN (?,?))").all("request",a,b);
+ assert.equal(rows.length,2);for(const row of rows){assert.equal(row.dispatch_policy,"next_run");assert.equal(JSON.parse(row.payload_json).dispatch.activeRunDelivery,"queue");}
+ const one=f.coordination.leaseNextRun({workerId:"worker"});assert.ok(one);assert.deepEqual(f.coordination.requestIdsAttachedToRun(one.runId,f.agent.id),[a]);
+ f.coordination.markRunStarted(one.runId,one.fencingToken);f.coordination.preparePromptInjection({...one,prompt:"First input"});f.coordination.markPromptSubmitted(one);f.coordination.acknowledgePromptInjection(one);assert.equal(f.coordination.leaseNextRun({workerId:"other"}),undefined);assert.equal(f.coordination.leaseNextSteering({workerId:"other"}),undefined);
+ f.coordination.updateRequest({requestId:a,updateId:"complete-first",kind:"completed",actor:{kind:"agent",id:f.agent.id},payload:{text:"First result"}});f.coordination.completeRun(one.runId,one.fencingToken);f.branches.advance();
+ const two=f.coordination.leaseNextRun({workerId:"worker"});assert.ok(two);assert.notEqual(two.runId,one.runId);assert.deepEqual(f.coordination.requestIdsAttachedToRun(two.runId,f.agent.id),[b]);
+ f.coordination.markRunStarted(two.runId,two.fencingToken);f.coordination.preparePromptInjection({...two,prompt:"Second input"});f.coordination.markPromptSubmitted(two);f.coordination.acknowledgePromptInjection(two);f.coordination.updateRequest({requestId:b,updateId:"complete-second",kind:"completed",actor:{kind:"agent",id:f.agent.id},payload:{text:"Second result"}});f.coordination.completeRun(two.runId,two.fencingToken);for(let i=0;i<4;i++)f.branches.advance();
+ assert.equal(f.branches.execution(first.id).output,"First result");assert.equal(f.branches.execution(second.id).output,"Second result");
+});
+
+test("legacy persistent-Agent steps keep their original steer-or-run policy",t=>{
+ const f=fixture(t),base=f.deployment.definition,definition={...base,name:"Legacy",steps:[{id:"agent",kind:"agent",target:{kind:"persistent_agent",ref:"reviewer"},instructions:"Original work"}],edges:[]};
+ const branch=f.branches.deploy({...f.deployment,idempotencyKey:"legacy-deploy",definition});
+ const job=f.branches.accept(branch.id,"legacy-job","input");for(let i=0;i<4;i++)f.branches.advance();
+ const request=f.branches.detail(job.id).attempts[0].requestId;
+ const activation=f.store.sqlite.prepare("SELECT a.dispatch_policy,a.payload_json FROM agent_activations a JOIN activation_sources s ON s.activation_id=a.id WHERE s.source_kind=? AND s.source_id=?").get("request",request);
+ assert.equal(activation.dispatch_policy,"steer_or_run");assert.equal(JSON.parse(activation.payload_json).dispatch,undefined);
+});
+
+test("job handling validates persistent-Agent scope and holds unavailable modes without dispatch",t=>{
+ const f=fixture(t),base=f.deployment.definition,step={id:"agent",kind:"agent",target:{kind:"persistent_agent",ref:"reviewer"},instructions:"Work"};
+ for(const [target,jobHandling] of [[{kind:"persistent_agent",ref:"reviewer"},"wrong"],[{kind:"persistent_organization",ref:"reviewer"},"queue"]]){
+  assert.throws(()=>f.branches.deploy({...f.deployment,idempotencyKey:`bad-${jobHandling}-${target.kind}`,definition:{...base,steps:[{...step,target,jobHandling}],edges:[]}}),/Job handling/);
+ }
+ for(const jobHandling of ["steer","copy"]){
+  const branch=f.branches.deploy({...f.deployment,idempotencyKey:`hold-${jobHandling}`,definition:{...base,name:`Held ${jobHandling}`,steps:[{...step,jobHandling}],edges:[]}});
+  const job=f.branches.accept(branch.id,`job-${jobHandling}`,"input");for(let i=0;i<4;i++)f.branches.advance();
+  const attempt=f.branches.detail(job.id).attempts[0];assert.equal(attempt.requestId,undefined);assert.match(attempt.error,/not yet available/);assert.equal(f.branches.execution(job.id).state,"waiting");
+ }
+});
