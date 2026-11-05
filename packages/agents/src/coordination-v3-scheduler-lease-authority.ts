@@ -212,6 +212,20 @@ export class CoordinationV3SchedulerLeaseAuthority {
                 AND rollover.state IN ('requested','handoff_committed','session_retiring')
             ))
           )
+          -- A settings transition must confirm the replacement before any
+          -- queued work can run in it, regardless of activation priority.
+          AND NOT EXISTS (
+            SELECT 1 FROM context_rollovers transition
+            WHERE transition.agent_id = a.agent_id
+              AND transition.state = 'continuation_ready'
+              AND a.id <> transition.continuation_activation_id
+              AND EXISTS (
+                SELECT 1 FROM agent_activations handoff
+                WHERE handoff.kind = 'context_rollover_handoff'
+                  AND json_extract(handoff.payload_json, '$.rolloverId') = transition.id
+                  AND json_type(handoff.payload_json, '$.settingsTransition') = 'object'
+              )
+          )
           AND NOT EXISTS (
             SELECT 1 FROM activation_outbox audit
             WHERE audit.activation_id = a.id
@@ -254,6 +268,20 @@ export class CoordinationV3SchedulerLeaseAuthority {
               WHERE rollover.agent_id = a.agent_id
                 AND rollover.state IN ('requested','handoff_committed','session_retiring')
             ))
+          )
+          -- A settings transition must confirm the replacement before any
+          -- queued work can run in it, regardless of activation priority.
+          AND NOT EXISTS (
+            SELECT 1 FROM context_rollovers transition
+            WHERE transition.agent_id = a.agent_id
+              AND transition.state = 'continuation_ready'
+              AND a.id <> transition.continuation_activation_id
+              AND EXISTS (
+                SELECT 1 FROM agent_activations handoff
+                WHERE handoff.kind = 'context_rollover_handoff'
+                  AND json_extract(handoff.payload_json, '$.rolloverId') = transition.id
+                  AND json_type(handoff.payload_json, '$.settingsTransition') = 'object'
+              )
           )
           AND NOT EXISTS (
             SELECT 1 FROM activation_outbox audit
