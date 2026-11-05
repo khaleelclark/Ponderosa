@@ -173,3 +173,27 @@ test('Branch deletion reports retained group audit scope mismatch without exposi
  assert.ok(f.branches.getBranch(branch.id));
  await f.close();f.pass();
 });
+
+
+test('Branch Chat retirement preserves safe cause without exposing an unlabeled credential',options,async t=>{
+ const f=await fixture(t),branch=f.deploy('Retirement diagnostic',[{id:'script',kind:'script',runtime:'node',cwdRef:'workspace',timeoutMs:5000,source:"process.stdout.write('never runs')"}]);
+ const project=f.store.createProject({label:'Retirement Chat',hostPath:f.root,defaultEngine:'codex',chatOwned:true,branchId:branch.id});
+ const chat=f.store.getConversation(project.lastConversationId),secret='fixture-private-retirement-credential';
+ f.store.sqlite.prepare('UPDATE branches SET package_id=? WHERE id=?').run('probe',branch.id);
+ f.store.sqlite.prepare("INSERT INTO branch_installation_resources(branch_id,package_id,chat_ref,agent_ref,local_id,state) VALUES(?,?,'chat','',?,'active')").run(branch.id,'probe',chat.id);
+ f.store.sqlite.exec(`CREATE TEMP TRIGGER fail_retirement_intent BEFORE INSERT ON conversation_deletion_receipts WHEN NEW.conversation_id='${chat.id}' BEGIN SELECT RAISE(ABORT,'controlled chat deletion ${secret}'); END`);
+ await f.open();
+ const deletion=await f.api('DELETE',`/api/branches/${branch.id}`,undefined,202);
+ assert.equal(deletion.pending,true);
+ const lifecycle=await f.api('GET',`/api/branches/${branch.id}/lifecycle`);
+ const pending=lifecycle.pendingRemoval.find(item=>item.id===chat.id);
+ assert.ok(pending);
+ assert.match(pending.error,/SQLITE_CONSTRAINT_TRIGGER/);
+ assert.match(pending.error,/database trigger rejected/);
+ assert.match(pending.error,/removing a Workflow Chat/);
+ assert.ok(!JSON.stringify(lifecycle).includes(secret));
+ assert.equal(f.store.sqlite.prepare('SELECT error FROM branch_retirement_errors WHERE resource_id=?').get(chat.id).error,pending.error);
+ assert.ok(f.store.getConversation(chat.id,{includeDeleting:true}));
+ f.store.sqlite.exec('DROP TRIGGER fail_retirement_intent');
+ await f.close();f.pass();
+});

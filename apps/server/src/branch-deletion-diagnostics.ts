@@ -1,0 +1,76 @@
+import {isMemoryCleanupHold} from './local-memory-authority.js';
+
+// Arbitrary exceptions may contain unlabeled provider credentials. Only
+// fixed, locally authored fence messages and known SQLite codes are public.
+const BRANCH_DELETION_PUBLIC_BLOCKERS=new Set([
+ 'Original generation deletion requires an exact sealed capture and intake fence receipt',
+ 'Final resource exit evidence pins owner deletion until archival',
+ 'Issued tree custody holds owner deletion',
+ 'Other Branches depend on this Branch',
+ 'An active execution still depends on this Branch',
+ 'Cancel/drain and delete Branch-owned Chats before finalizing deletion',
+ 'Cancel and drain Branch executions before deletion',
+ 'Branch audit publication is still pending',
+ 'Branch gate notification closure is still pending',
+ 'Branch budget audit publication is still pending',
+ 'Finish Output role recovery before deleting a published Branch tree',
+ // Fixed host-authored retirement and ownership reasons remain actionable.
+ 'Branch Chat cleanup remains pending',
+ 'Branch Agent cleanup remains pending',
+ 'Branch Agent owner is unavailable',
+ 'Branch cleanup would affect an unrelated Agent',
+ 'Branch cleanup would affect an active or unowned installed Agent',
+ 'Historical temporary Chat ownership changed',
+ 'Temporary Chat ownership changed',
+ 'Provider process cleanup remains pending',
+]);
+// Fixed descriptions explain verified error classes without copying arbitrary
+// SQL, paths, trigger messages, or unlabeled credential values.
+const BRANCH_DELETION_ERROR_DESCRIPTIONS:Readonly<Record<string,string>>=Object.freeze({
+ SQLITE_CONSTRAINT_TRIGGER:'A database trigger rejected the operation.',
+ SQLITE_CONSTRAINT_FOREIGNKEY:'A related database record prevented the operation.',
+ SQLITE_CONSTRAINT_NOTNULL:'A required database value was missing.',
+ SQLITE_CONSTRAINT_UNIQUE:'A database uniqueness constraint was violated.',
+ SQLITE_CONSTRAINT_PRIMARYKEY:'A database primary-key constraint was violated.',
+ SQLITE_CONSTRAINT_CHECK:'A database check constraint was violated.',
+ SQLITE_BUSY:'The database was busy.',
+ SQLITE_LOCKED:'The database or table was locked.',
+ SQLITE_FULL:'The database could not write because storage was full.',
+ SQLITE_READONLY:'The database was read-only.',
+ SQLITE_IOERR:'The database reported an input/output error.',
+ SQLITE_CORRUPT:'The database reported corruption.',
+ SQLITE_CANTOPEN:'The database could not open a required file.',
+ EACCES:'The operating system denied access.',
+ EPERM:'The operating system denied the operation.',
+ ENOSPC:'The operating system reported no space left.',
+ EROFS:'The operating system reported a read-only filesystem.',
+});
+const BRANCH_DELETION_STEPS={
+ pending:'checking pending installation',
+ receipts:'compacting installation receipts',
+ notifications:'settling notifications',
+ records:'removing Workflow records',
+ agent:'removing a Workflow Agent',
+ chat:'removing a Workflow Chat',
+ historical:'removing a historical Workflow Chat',
+} as const;
+export type BranchDeletionStep=keyof typeof BRANCH_DELETION_STEPS;
+export function describeBranchDeletionFailure(error:unknown,step?:BranchDeletionStep):string{
+ const message=error instanceof Error?error.message:'';
+ if(BRANCH_DELETION_PUBLIC_BLOCKERS.has(message)||isMemoryCleanupHold(message))return message;
+ const cause=error instanceof Error?error.cause:undefined;
+ const code=(typeof error==='object'&&error!==null&&'code' in error)?(error as {code?:unknown}).code:
+  (typeof cause==='object'&&cause!==null&&'code' in cause)?(cause as {code?:unknown}).code:undefined;
+ const description=typeof code==='string'&&Object.hasOwn(BRANCH_DELETION_ERROR_DESCRIPTIONS,code)?BRANCH_DELETION_ERROR_DESCRIPTIONS[code]:undefined;
+ // This exact host-authored guard identifies an audit-record integrity failure.
+ // Match the entire fixed message only at its actual deletion step; never
+ // publish the saved journal, arbitrary exception text, or trigger details.
+ const groupScopeMismatch=step==='records'&&code===undefined&&message==='Retained group journal original scope differs';
+ const safe=groupScopeMismatch
+  ? 'Workflow cleanup failed: retained group audit evidence does not match its Workflow and execution. Workflow records were preserved.'
+  : description
+  ? `Workflow cleanup failed (${code}): ${description} Details withheld because they may contain credentials.`
+  : 'Workflow cleanup failed. Details withheld because they may contain credentials.';
+ const label=step&&Object.hasOwn(BRANCH_DELETION_STEPS,step)?BRANCH_DELETION_STEPS[step]:undefined;
+ return label?`${safe} Cleanup step: ${label}.`:safe;
+}

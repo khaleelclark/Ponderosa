@@ -33,66 +33,8 @@ export const BRANCH_INSTALLATION_HOLD_UNTIL='9999-12-31T23:59:59.999Z';
 // promises a retry when an explicit review or an incomplete write fences it.
 export const BRANCH_INSTALLATION_RETRY_READY_SQL="json_extract(preview_json,'$.pendingAccess') IS NULL AND json_extract(preview_json,'$.pendingWorkingRoot') IS NULL AND COALESCE(json_extract(preview_json,'$.workingDataApplication.state'),'') NOT IN ('applying','incomplete')";
 
-// Arbitrary exceptions may contain unlabeled provider credentials. Only
-// fixed, locally authored fence messages and known SQLite codes are public.
-const BRANCH_DELETION_PUBLIC_BLOCKERS=new Set([
- 'Original generation deletion requires an exact sealed capture and intake fence receipt',
- 'Final resource exit evidence pins owner deletion until archival',
- 'Issued tree custody holds owner deletion',
- 'Other Branches depend on this Branch',
- 'An active execution still depends on this Branch',
- 'Cancel/drain and delete Branch-owned Chats before finalizing deletion',
- 'Cancel and drain Branch executions before deletion',
- 'Branch audit publication is still pending',
- 'Branch gate notification closure is still pending',
- 'Branch budget audit publication is still pending',
- 'Finish Output role recovery before deleting a published Branch tree',
-]);
-// Fixed descriptions explain verified error classes without copying arbitrary
-// SQL, paths, trigger messages, or unlabeled credential values.
-const BRANCH_DELETION_ERROR_DESCRIPTIONS:Readonly<Record<string,string>>=Object.freeze({
- SQLITE_CONSTRAINT_TRIGGER:'A database trigger rejected the operation.',
- SQLITE_CONSTRAINT_FOREIGNKEY:'A related database record prevented the operation.',
- SQLITE_CONSTRAINT_NOTNULL:'A required database value was missing.',
- SQLITE_CONSTRAINT_UNIQUE:'A database uniqueness constraint was violated.',
- SQLITE_CONSTRAINT_PRIMARYKEY:'A database primary-key constraint was violated.',
- SQLITE_CONSTRAINT_CHECK:'A database check constraint was violated.',
- SQLITE_BUSY:'The database was busy.',
- SQLITE_LOCKED:'The database or table was locked.',
- SQLITE_FULL:'The database could not write because storage was full.',
- SQLITE_READONLY:'The database was read-only.',
- SQLITE_IOERR:'The database reported an input/output error.',
- SQLITE_CORRUPT:'The database reported corruption.',
- SQLITE_CANTOPEN:'The database could not open a required file.',
- EACCES:'The operating system denied access.',
- EPERM:'The operating system denied the operation.',
- ENOSPC:'The operating system reported no space left.',
- EROFS:'The operating system reported a read-only filesystem.',
-});
-const BRANCH_DELETION_STEPS={
- pending:'checking pending installation',
- receipts:'compacting installation receipts',
- notifications:'settling notifications',
- records:'removing Workflow records',
-} as const;
-type BranchDeletionStep=keyof typeof BRANCH_DELETION_STEPS;
-export function describeBranchDeletionFailure(error:unknown,step?:BranchDeletionStep):string{
- const message=error instanceof Error?error.message:'';
- if(BRANCH_DELETION_PUBLIC_BLOCKERS.has(message)||isMemoryCleanupHold(message))return message;
- const code=(typeof error==='object'&&error!==null&&'code' in error)?(error as {code?:unknown}).code:undefined;
- const description=typeof code==='string'&&Object.hasOwn(BRANCH_DELETION_ERROR_DESCRIPTIONS,code)?BRANCH_DELETION_ERROR_DESCRIPTIONS[code]:undefined;
- // This exact host-authored guard identifies an audit-record integrity failure.
- // Match the entire fixed message only at its actual deletion step; never
- // publish the saved journal, arbitrary exception text, or trigger details.
- const groupScopeMismatch=step==='records'&&code===undefined&&message==='Retained group journal original scope differs';
- const safe=groupScopeMismatch
-  ? 'Workflow cleanup failed: retained group audit evidence does not match its Workflow and execution. Workflow records were preserved.'
-  : description
-  ? `Workflow cleanup failed (${code}): ${description} Details withheld because they may contain credentials.`
-  : 'Workflow cleanup failed. Details withheld because they may contain credentials.';
- const label=step&&Object.hasOwn(BRANCH_DELETION_STEPS,step)?BRANCH_DELETION_STEPS[step]:undefined;
- return label?`${safe} Cleanup step: ${label}.`:safe;
-}
+export {describeBranchDeletionFailure} from './branch-deletion-diagnostics.js';
+import {describeBranchDeletionFailure,type BranchDeletionStep} from './branch-deletion-diagnostics.js';
 class InstallationStoppedError extends Error{}
 class InstallationConflictError extends Error{}
 type ChatSnapshot={id:string;title:string;instructions?:string};
@@ -850,14 +792,14 @@ export class BranchInstallationService {
    if(root&&root.id!==r.branch_id)this.branches.requireDeletionReady(root.id);
    if(r.staging_plan_id&&r.creation_operation_id&&this.engine&&!this.row("SELECT 1 FROM branch_installation_plans WHERE id=? AND json_extract(preview_json,'$.published')=1",r.staging_plan_id))await this.engine.rollbackStagedMemory(r.creation_operation_id);
    await this.deleteAgent(r.local_id);this.run("UPDATE branch_installation_resources SET state='deleted' WHERE branch_id=? AND package_id=? AND chat_ref=? AND agent_ref=?",r.branch_id,r.package_id,r.chat_ref,r.agent_ref);
-  }catch(error){this.retirementError(r.local_id,error)}
+  }catch(error){this.retirementError(r.local_id,new Error(describeBranchDeletionFailure(error,'agent')))}
   for(const r of this.rows(`SELECT r.rowid position,r.* FROM branch_installation_resources r WHERE r.state='retiring' AND r.agent_ref='' AND NOT EXISTS(SELECT 1 FROM branch_installation_resources child WHERE child.branch_id=r.branch_id AND child.package_id=r.package_id AND child.chat_ref=r.chat_ref AND child.agent_ref!='' AND child.state!='deleted') AND NOT EXISTS(SELECT 1 FROM branch_retirement_errors held WHERE held.resource_id=r.local_id AND held.error IN (${MEMORY_CLEANUP_HOLD_REASONS.map(()=>'?').join(',')})) AND NOT EXISTS(SELECT 1 FROM branch_resource_references ref JOIN branch_executions e ON e.id=ref.execution_id WHERE ref.chat_id=r.local_id AND e.state IN ('queued','running','waiting')) ORDER BY CASE WHEN r.rowid>? THEN 0 ELSE 1 END,r.rowid LIMIT 5`,...MEMORY_CLEANUP_HOLD_REASONS,this.chatCleanupCursor))try{
    this.chatCleanupCursor=r.position;
    if(this.row('SELECT deleting FROM branches WHERE id=?',r.branch_id)?.deleting)this.branches.requireDeletionReady(r.branch_id);
    const root=r.staging_plan_id&&this.row('SELECT b.id FROM branch_installation_plans p JOIN branches b ON b.id=p.branch_id WHERE p.id=? AND b.deleting=1',r.staging_plan_id);
    if(root&&root.id!==r.branch_id)this.branches.requireDeletionReady(root.id);
    await this.deleteChat(r.local_id);this.run("UPDATE branch_installation_resources SET state='deleted' WHERE branch_id=? AND package_id=? AND chat_ref=?",r.branch_id,r.package_id,r.chat_ref);this.run('DELETE FROM branch_retirement_errors WHERE resource_id=?',r.local_id);
-  }catch(error){this.retirementError(r.local_id,error)}
+  }catch(error){this.retirementError(r.local_id,new Error(describeBranchDeletionFailure(error,'chat')))}
   for(const plan of this.rows("SELECT * FROM branch_installation_plans WHERE state='canceling' ORDER BY updated_at,created_at"))if(!this.journal(plan.id)&&this.cancelReady(plan)){
    const state=this.rolePlan(plan);
    if(state.published&&state.review){

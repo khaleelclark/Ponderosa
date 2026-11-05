@@ -408,7 +408,7 @@ export function registerConversationRoutes(
       try {
         receipt = store.markConversationDeletionPending(current.id);
       } catch (error) {
-        throw Object.assign(new Error(error instanceof Error ? error.message : "Chat deletion intent could not be persisted"),{statusCode:503,cleanupPending:false,retryable:true});
+        throw Object.assign(new Error(error instanceof Error ? error.message : "Chat deletion intent could not be persisted", {cause:error}),{statusCode:503,cleanupPending:false,retryable:true});
       }
     }
     if (!receipt) throw new Error("Chat deletion intent was not persisted");

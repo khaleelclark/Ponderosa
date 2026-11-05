@@ -1,3 +1,4 @@
+import {describeBranchDeletionFailure} from './branch-deletion-diagnostics.js';
 import {isMemoryCleanupHold} from './local-memory-authority.js';
 import {issuedCaptureRetryBudget,generationHistoricalSelections} from '@ponderosa/agents';
 import type {BranchPackageEngine} from './routes/agent-packages.js';
@@ -342,7 +343,7 @@ export class BranchResourceService {
         this.store.sqlite.prepare('DELETE FROM branch_retirement_errors WHERE resource_id=?').run(context.chatId);
       } catch(error) {
         this.store.sqlite.prepare('INSERT INTO branch_retirement_errors VALUES(?,?,?) ON CONFLICT(resource_id) DO UPDATE SET error=excluded.error,updated_at=excluded.updated_at')
-          .run(context.chatId,error instanceof Error?error.message:'Historical Chat cleanup remains pending',new Date().toISOString());
+          .run(context.chatId,describeBranchDeletionFailure(error,'historical'),new Date().toISOString());
       }
     }
   }

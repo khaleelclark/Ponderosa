@@ -72,7 +72,9 @@ test('historical retry context cleanup survives reopen without deleting the curr
  const current=create('Current generation',owner);branches.bindResourceChat(provision.stepExecutionId,current.id);const unrelated=create('Unrelated Chat');
  writeFileSync(path.join(root,'keep-source.txt'),'user source');
  await resources.tick(false);assert.deepEqual(seen,[old.id]);assert.ok(store.getConversation(old.id,{includeDeleting:true}));assert.ok(store.getConversation(current.id));assert.ok(store.getConversation(unrelated.id));
- assert.match(store.sqlite.prepare('SELECT error FROM branch_retirement_errors WHERE resource_id=?').get(old.id).error,/interrupted/);
+ const safeError=store.sqlite.prepare('SELECT error FROM branch_retirement_errors WHERE resource_id=?').get(old.id).error;
+ assert.match(safeError,/Details withheld/);assert.match(safeError,/historical Workflow Chat/);
+ assert.doesNotMatch(safeError,/Controlled interrupted Chat deletion/);
  await resources.stop();store.close();open();await resources.tick(false);
  assert.deepEqual(seen,[old.id,old.id]);assert.equal(store.getConversation(old.id),undefined);assert.equal(store.getConversationDeletionReceipt(old.id).serverCleanupCompleted,true);
  assert.equal(store.sqlite.prepare('SELECT error FROM branch_retirement_errors WHERE resource_id=?').get(old.id),undefined);
