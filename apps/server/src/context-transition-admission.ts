@@ -127,7 +127,10 @@ export async function requestSettingsTransition(input: {
    const voiceBoundary=Boolean(opts.localMemory&&dispatch?.voiceReply===true);
    if(memory?.retainedSourcesNeedReview(agent.id,agent.conversationId,boundary.executionId))
     return hold('A memory source previously used by this Agent was revoked or changed. Prior Agent text cannot yet be attributed safely; the original work remains queued for context review.');
-   if(!changed&&!voiceBoundary)return true;
+   if(!changed&&!voiceBoundary){
+    store.sqlite.prepare("DELETE FROM activation_sources WHERE activation_id=? AND source_kind='settings_transition_retry_pending'").run(pending.id);
+    return true;
+   }
    shouldHold=true;
    assertRetainedNativeAuthentication(contract,engineAuthStatuses.snapshot(agent.activeEngine));
    if(Boolean(opts.localMemory)!==Boolean(memory))return hold('Memory access could not be verified. The original work remains queued; review the Agent’s context before retrying.');
@@ -164,6 +167,7 @@ export async function requestSettingsTransition(input: {
     compactionCutoffOrdinal:frozen.canonicalOrdinal,compactionCutoffEventId:frozen.communicationEventId,recentTail:frozen.recentTail,
     settingsTransition:{reason:changed?'settings':'voice',activationId:pending.id,sourceRunId:boundary.executionId,sourceFence:boundary.fencingToken,oldContractHash:contract.contractHash,oldSessionId:accepted.sessionId,engineId:agent.activeEngine,model:contract.model!,...(contract.effort?{effort:contract.effort}:{}),...(contract.speed?{speed:contract.speed}:{}),targetModel,...(targetEffort?{targetEffort}:{}),targetSpeed,...(authorization?{authorizationSignatureHash:authorization.signature,authorizationOriginRunId:packet.executionId}:{})},
    });
+   store.sqlite.prepare("DELETE FROM activation_sources WHERE activation_id=? AND source_kind='settings_transition_retry_pending'").run(pending.id);
    return true;
    })();
    return reserved;
