@@ -81,7 +81,13 @@ export function describeBranchDeletionFailure(error:unknown,step?:BranchDeletion
  if(BRANCH_DELETION_PUBLIC_BLOCKERS.has(message)||isMemoryCleanupHold(message))return message;
  const code=(typeof error==='object'&&error!==null&&'code' in error)?(error as {code?:unknown}).code:undefined;
  const description=typeof code==='string'&&Object.hasOwn(BRANCH_DELETION_ERROR_DESCRIPTIONS,code)?BRANCH_DELETION_ERROR_DESCRIPTIONS[code]:undefined;
- const safe=description
+ // This exact host-authored guard identifies an audit-record integrity failure.
+ // Match the entire fixed message only at its actual deletion step; never
+ // publish the saved journal, arbitrary exception text, or trigger details.
+ const groupScopeMismatch=step==='records'&&code===undefined&&message==='Retained group journal original scope differs';
+ const safe=groupScopeMismatch
+  ? 'Workflow cleanup failed: retained group audit evidence does not match its Workflow and execution. Workflow records were preserved.'
+  : description
   ? `Workflow cleanup failed (${code}): ${description} Details withheld because they may contain credentials.`
   : 'Workflow cleanup failed. Details withheld because they may contain credentials.';
  const label=step&&Object.hasOwn(BRANCH_DELETION_STEPS,step)?BRANCH_DELETION_STEPS[step]:undefined;

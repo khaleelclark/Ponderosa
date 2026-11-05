@@ -86,6 +86,13 @@ test('Branch deletion explains known failure classes without exposing arbitrary 
   assert.ok(diagnostic.includes(code));assert.ok(diagnostic.includes(phrase));
   assert.ok(!diagnostic.includes(secret));assert.ok(!diagnostic.includes('labeled-secret'));
  }
+ const auditMismatch=describeBranchDeletionFailure(new Error('Retained group journal original scope differs'),'records');
+ assert.match(auditMismatch,/retained group audit evidence does not match its Workflow and execution/i);
+ assert.match(auditMismatch,/Workflow records were preserved/);
+ assert.match(describeBranchDeletionFailure(new Error('Retained group journal original scope differs'),'notifications'),/Details withheld/);
+ assert.match(describeBranchDeletionFailure(Object.assign(new Error('Retained group journal original scope differs'),{code:'SQLITE_CONSTRAINT_TRIGGER'}),'records'),/database trigger rejected/);
+ const decorated=describeBranchDeletionFailure(new Error(`Retained group journal original scope differs ${secret}`),'records');
+ assert.match(decorated,/Details withheld/);assert.ok(!decorated.includes(secret));
  const unknown=describeBranchDeletionFailure(Object.assign(new Error(`unknown failure ${secret}`),{code:secret}));
  assert.match(unknown,/Workflow cleanup failed/);assert.ok(!unknown.includes(secret));
  assert.equal(describeBranchDeletionFailure(new Error('Other Branches depend on this Branch')),'Other Branches depend on this Branch');
@@ -139,5 +146,30 @@ test('an immediate Branch deletion failure does not expose an unlabeled syntheti
  assert.equal(f.store.sqlite.prepare('SELECT deleting FROM branches WHERE id=?').get(branch.id).deleting,0);
  f.store.sqlite.exec('DROP TRIGGER fail_branch_deletion_start');
  const done=await f.api('DELETE',`/api/branches/${branch.id}`);assert.equal(done.deleted,true);
+ await f.close();f.pass();
+});
+
+
+test('Branch deletion reports retained group audit scope mismatch without exposing its contents',options,async t=>{
+ const f=await fixture(t),branch=f.deploy('Group audit diagnostic',[{id:'script',kind:'script',runtime:'node',cwdRef:'workspace',timeoutMs:5000,source:"process.stdout.write('never runs')"}]);
+ const execution=f.branches.accept(branch.id,'one','Test input');
+ f.branches.cancel(execution.id);await f.branches.unitSaver.drain();
+ assert.equal(f.branches.execution(execution.id).state,'canceled');
+ f.branches.publishAudit(()=>{});await f.branches.unitSaver.drain();
+ const key='issued-group-capture:'+'a'.repeat(64),secret='fixture-bare-audit-secret';
+ const result=JSON.stringify({secret,snapshot:{selected:{execution:[{branch_id:'different-branch',id:execution.id}]}}});
+ f.store.sqlite.prepare('INSERT INTO branch_commands(execution_id,command_key,input_hash,result_json,created_at) VALUES(?,?,?,?,?)').run(execution.id,key,'input-hash',result,new Date().toISOString());
+ assert.throws(()=>f.branches.deleteBranch(branch.id),/Retained group journal original scope differs/,'actual retention guard rejects the saved original scope');
+ assert.equal(f.store.sqlite.prepare('SELECT result_json FROM branch_commands WHERE execution_id=? AND command_key=?').get(execution.id,key).result_json,result);
+ await f.open();
+ const deletion=await f.api('DELETE',`/api/branches/${branch.id}`,undefined,202);
+ assert.equal(deletion.pending,true);
+ const lifecycle=await f.api('GET',`/api/branches/${branch.id}/lifecycle`);
+ assert.equal(lifecycle.deleting,true);
+ assert.match(lifecycle.deletionError,/retained group audit evidence does not match its Workflow and execution/i);
+ assert.ok(!JSON.stringify(lifecycle).includes(secret));
+ assert.equal(f.store.sqlite.prepare('SELECT error FROM branch_retirement_errors WHERE resource_id=?').get('branch-finalize:'+branch.id).error,lifecycle.deletionError);
+ assert.equal(f.store.sqlite.prepare('SELECT result_json FROM branch_commands WHERE execution_id=? AND command_key=?').get(execution.id,key).result_json,result);
+ assert.ok(f.branches.getBranch(branch.id));
  await f.close();f.pass();
 });
