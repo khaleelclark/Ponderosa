@@ -467,6 +467,28 @@ test('a newly discovered prior unknown Run blocks no-call voice submission',{tim
    localMemoryForRoot:async root=>({chromaUrl:await ownedChroma(),collectionPrefix:'context_'+randomUUID().replaceAll('-',''),modelDir:process.env.PONDEROSA_TEST_MEMORY_MODEL_DIR,stateDirectory:path.join(root,'memory-policy'),provision:true})});
 });
 
+test('a newly discovered prior unknown Run blocks a model handoff without Local Memory',{timeout:30000},async t=>{
+ let store,native;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Prior unknown Run'),agent=await f.createIdleAgent(chat,'Worker');
+  store.sqlite.prepare("INSERT INTO scheduler_agent_fences(agent_id,next_fencing_token) VALUES (?,2) ON CONFLICT(agent_id) DO UPDATE SET next_fencing_token=2").run(agent.id);
+  await f.send(agent.id,'Original objective.');
+  await until(async()=>(await native.requests()).some(x=>x.method==='turn/start'),'first native turn');
+  await native.sendTool('ponderosa_message',{text:'First task complete.'});await f.settled(agent.id);
+  const old=store.resumeSessionState(agent.id),prior=(await f.detail(agent.id)).runs.map(run=>run.id);
+  const first=store.sqlite.prepare('SELECT fencing_token,scope_key FROM scheduler_runs WHERE id=?').get(prior[0]);assert.equal(first.fencing_token,2);
+  f.ok(await f.api('PATCH',`/api/agents/${agent.id}`,{model:'fixture-next'}));
+  await f.send(agent.id,'Continue the original objective.');
+  await until(async()=>(await native.requests()).some(x=>x.method==='thread/resume'),'paused voice resume');
+  const now=new Date().toISOString();
+  store.sqlite.prepare("INSERT INTO scheduler_runs(id,project_id,agent_id,status,lease_owner,lease_expires_at,fencing_token,prompt_injection_state,heartbeat_at,created_at,updated_at,scope_key) VALUES (?,?,?,'outcome_unknown','synthetic',?,1,'injecting',?,?,?,?)").run(randomUUID(),chat.projectId,agent.id,now,now,now,now,first.scope_key);
+  await native.releaseThread();
+  await until(()=>store.sqlite.prepare("SELECT 1 FROM scheduler_runs WHERE agent_id=? AND fencing_token>2 AND status IN ('failed','outcome_unknown')").get(agent.id),'unknown history rejected');
+  const calls=await native.requests();assert.equal(calls.filter(x=>x.method==='turn/start').length,1);assert.equal(calls.filter(x=>x.method==='thread/start').length,1);
+  assert.equal(store.resumeSessionState(agent.id)?.sessionId,old.sessionId);
+ },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,holdResume:true})).adapter});
+});
+
 test('memory revoked after a retained voice turn begins invalidates the live stream',{timeout:30000},async t=>{
  let store,native;
  await withFixture(t,async f=>{

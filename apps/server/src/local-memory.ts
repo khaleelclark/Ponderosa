@@ -496,6 +496,12 @@ export class LocalMemoryService{
    const origin=db.prepare('SELECT fencing_token,scope_key FROM scheduler_runs WHERE id=? AND agent_id=?').get(originRunId,agentId) as {fencing_token:number;scope_key:string}|undefined;
    const source=db.prepare('SELECT fencing_token,scope_key FROM scheduler_runs WHERE id=? AND agent_id=?').get(sourceRunId,agentId) as {fencing_token:number;scope_key:string}|undefined;
    if(!origin||!source||origin.scope_key!==source.scope_key||origin.fencing_token>source.fencing_token)return undefined;
+   // A previously unknown provider outcome can invalidate the supposedly
+   // complete session boundary, including while a handoff resume is paused.
+   if(db.prepare(`SELECT 1 FROM scheduler_runs r WHERE r.agent_id=? AND r.fencing_token<? AND
+      (r.status IN ('leased','running','outcome_unknown') OR r.prompt_injection_state='injecting'
+       OR EXISTS(SELECT 1 FROM scheduler_prompt_injections i WHERE i.run_id=r.id AND i.state='outcome_unknown')) LIMIT 1`)
+      .get(agentId,origin.fencing_token))return undefined;
    let first:string|undefined,last:string|undefined,attempted=false;
    const rows=db.prepare(`SELECT r.id,r.scope_key,r.status,r.provider_session_id,r.prompt_injection_state,r.fencing_token,
     e.agent_id AS receipt_agent,e.chat_id,e.fencing_token AS receipt_fence,e.authorization_hash,e.attempted,e.pending,e.uncertain,e.unverified

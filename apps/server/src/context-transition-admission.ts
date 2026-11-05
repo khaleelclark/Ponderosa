@@ -58,10 +58,48 @@ export function reconcileSettingsTransitionReservations(ctx:TransitionContext){
   JOIN activation_sources src ON src.source_kind='context_rollover' AND src.source_id=r.id
   JOIN agent_activations handoff ON handoff.id=src.activation_id AND handoff.kind='context_rollover_handoff'
   JOIN agent_activations a ON a.id=json_extract(handoff.payload_json,'$.settingsTransition.activationId')
-  WHERE r.state IN ('failed','outcome_unknown') AND a.state='pending' AND NOT EXISTS
+  WHERE r.state IN ('failed','outcome_unknown') AND a.state IN ('pending','retry_pending') AND NOT EXISTS
    (SELECT 1 FROM activation_sources released WHERE released.activation_id=a.id AND released.source_kind='settings_transition_release' AND released.source_id=r.id)`).all() as Array<{id:string;project_id:string;agent_id:string}>;
  for(const row of terminal)try{transitionNotice(ctx,row.project_id,row.agent_id,row.id,
   'The context handoff did not finish or its result is unknown. The original work remains queued. Review the Agent’s activity before retrying; the handoff will not be replayed automatically.');}catch{/* The durable hold remains in place. */}
+}
+
+function hasKnownRetainedMemory(store:AgentStore,agentId:string,originId:string,sourceId:string,sessionId:string):boolean{
+ return Boolean(store.sqlite.prepare(`WITH RECURSIVE lineage(origin_id,source_id,session_id) AS (
+      VALUES(?,?,?)
+      UNION
+      SELECT json_extract(h.payload_json,'$.settingsTransition.authorizationOriginRunId'),r.source_run_id,r.old_provider_session_id
+      FROM lineage l JOIN context_rollovers r ON r.agent_id=? AND r.replacement_run_id=l.origin_id
+        AND r.replacement_session_id=l.session_id AND r.state='completed' AND r.completion_reason='replacement_verified'
+      JOIN activation_sources x ON x.source_kind='context_rollover' AND x.source_id=r.id
+      JOIN agent_activations h ON h.id=x.activation_id AND h.kind='context_rollover_handoff'
+      WHERE json_extract(h.payload_json,'$.settingsTransition.sourceRunId')=r.source_run_id
+        AND json_extract(h.payload_json,'$.settingsTransition.oldSessionId')=r.old_provider_session_id
+        AND json_type(h.payload_json,'$.settingsTransition.authorizationOriginRunId')='text'
+     )
+     SELECT 1 FROM lineage l JOIN scheduler_runs first ON first.id=l.origin_id AND first.agent_id=?
+      JOIN scheduler_runs last ON last.id=l.source_id AND last.agent_id=first.agent_id AND last.scope_key=first.scope_key
+      JOIN scheduler_runs r ON r.agent_id=first.agent_id AND r.scope_key=first.scope_key AND r.fencing_token BETWEEN first.fencing_token AND last.fencing_token
+      JOIN memory_exposure_sources e ON e.run_id=r.id
+     UNION
+     SELECT 1 FROM lineage l JOIN scheduler_runs current ON current.id=l.origin_id AND current.agent_id=?
+      JOIN context_rollovers parent ON parent.agent_id=current.agent_id AND parent.replacement_run_id=current.id
+        AND parent.replacement_session_id=l.session_id AND parent.state='completed'
+      JOIN scheduler_runs older ON older.agent_id=current.agent_id AND older.scope_key=current.scope_key AND older.fencing_token<current.fencing_token
+      JOIN memory_exposure_sources e ON e.run_id=older.id
+     UNION
+     SELECT 1 FROM lineage l JOIN scheduler_runs first ON first.id=l.origin_id AND first.agent_id=?
+      JOIN scheduler_runs last ON last.id=l.source_id AND last.agent_id=first.agent_id AND last.scope_key=first.scope_key
+      JOIN scheduler_runs r ON r.agent_id=first.agent_id AND r.scope_key=first.scope_key AND r.fencing_token BETWEEN first.fencing_token AND last.fencing_token
+      JOIN memory_exposure_runs e ON e.run_id=r.id WHERE e.pending<>0 OR e.uncertain<>0 OR e.unverified<>0
+     UNION
+     SELECT 1 FROM lineage l JOIN scheduler_runs current ON current.id=l.origin_id AND current.agent_id=?
+      JOIN context_rollovers parent ON parent.agent_id=current.agent_id AND parent.replacement_run_id=current.id
+        AND parent.replacement_session_id=l.session_id AND parent.state='completed'
+      JOIN scheduler_runs older ON older.agent_id=current.agent_id AND older.scope_key=current.scope_key AND older.fencing_token<current.fencing_token
+      JOIN memory_exposure_runs e ON e.run_id=older.id WHERE e.pending<>0 OR e.uncertain<>0 OR e.unverified<>0
+     LIMIT 1`)
+      .get(originId,sourceId,sessionId,agentId,agentId,agentId,agentId,agentId));
 }
 
 /** Reserve a real old-session handoff before eligible pending work is leased.
@@ -105,6 +143,24 @@ export async function requestSettingsTransition(input: {
    const boundary=agent&&store.providerCommandContextBoundary(agent.id),accepted=agent&&store.resumeSessionState(agent.id);
    const packet=agent&&store.acceptedProviderSessionInput(agent.id);
    const contract=packet?.sourceManifest.schemaVersion===3?packet.sourceManifest.normalRuntimeContract:undefined;
+   // Older accepted packets may have no runtime contract, while their Run
+   // origin and a later explicit global-read removal are still available.
+   // Treat that signal as a possible change, not proof of historical access.
+   if(!contract&&row&&agent&&boundary&&accepted&&packet?.executionId&&
+      boundary.providerSessionId===accepted.sessionId&&row.scope_key===`conversation:${agent.conversationId}`){
+    const legacyMemory=localMemoryFor(app);
+    if(legacyMemory){
+     const status=await legacyMemory.retainedMemoryExposureStatus(agent.id,agent.conversationId,accepted.sessionId,packet.executionId,boundary.executionId);
+     if(status==='changed'||status==='unavailable')
+      return hold(status==='changed'?'A memory source previously used by this Agent was revoked or changed. The original work remains queued for context review.':
+       'A previously used memory source could not be checked. The original work remains queued for context review.');
+    }else{
+     const known=hasKnownRetainedMemory(store,agent.id,packet.executionId,boundary.executionId,accepted.sessionId);
+     if(known)return hold('A previously used memory source cannot be checked because Local Memory is unavailable. The original work remains queued for context review.');
+    }
+    if(legacyMemory?.legacyPossibleGlobalRevocation(agent.id,agent.conversationId,packet.executionId))
+     return hold('Global memory access may have been removed since this older session began. Its earlier memory exposure is unavailable; the original work remains queued for context review.');
+   }
    // Do not silently reseed an explicitly changed/voice task when the old
    // accepted generation cannot be attributed to a completed boundary.
    const requiresKnownBoundary=Boolean(accepted&&agent&&row&&
@@ -122,41 +178,7 @@ export async function requestSettingsTransition(input: {
       coordinationV3.activeContextRollover(agent.id))return true;
    const memory=localMemoryFor(app);
    if(!memory){
-    const known=store.sqlite.prepare(`WITH RECURSIVE lineage(origin_id,source_id,session_id) AS (
-      VALUES(?,?,?)
-      UNION
-      SELECT json_extract(h.payload_json,'$.settingsTransition.authorizationOriginRunId'),r.source_run_id,r.old_provider_session_id
-      FROM lineage l JOIN context_rollovers r ON r.agent_id=? AND r.replacement_run_id=l.origin_id
-        AND r.replacement_session_id=l.session_id AND r.state='completed' AND r.completion_reason='replacement_verified'
-      JOIN activation_sources x ON x.source_kind='context_rollover' AND x.source_id=r.id
-      JOIN agent_activations h ON h.id=x.activation_id AND h.kind='context_rollover_handoff'
-      WHERE json_extract(h.payload_json,'$.settingsTransition.sourceRunId')=r.source_run_id
-        AND json_extract(h.payload_json,'$.settingsTransition.oldSessionId')=r.old_provider_session_id
-        AND json_type(h.payload_json,'$.settingsTransition.authorizationOriginRunId')='text'
-     )
-     SELECT 1 FROM lineage l JOIN scheduler_runs first ON first.id=l.origin_id AND first.agent_id=?
-      JOIN scheduler_runs last ON last.id=l.source_id AND last.agent_id=first.agent_id AND last.scope_key=first.scope_key
-      JOIN scheduler_runs r ON r.agent_id=first.agent_id AND r.scope_key=first.scope_key AND r.fencing_token BETWEEN first.fencing_token AND last.fencing_token
-      JOIN memory_exposure_sources e ON e.run_id=r.id
-     UNION
-     SELECT 1 FROM lineage l JOIN scheduler_runs current ON current.id=l.origin_id AND current.agent_id=?
-      JOIN context_rollovers parent ON parent.agent_id=current.agent_id AND parent.replacement_run_id=current.id
-        AND parent.replacement_session_id=l.session_id AND parent.state='completed'
-      JOIN scheduler_runs older ON older.agent_id=current.agent_id AND older.scope_key=current.scope_key AND older.fencing_token<current.fencing_token
-      JOIN memory_exposure_sources e ON e.run_id=older.id
-     UNION
-     SELECT 1 FROM lineage l JOIN scheduler_runs first ON first.id=l.origin_id AND first.agent_id=?
-      JOIN scheduler_runs last ON last.id=l.source_id AND last.agent_id=first.agent_id AND last.scope_key=first.scope_key
-      JOIN scheduler_runs r ON r.agent_id=first.agent_id AND r.scope_key=first.scope_key AND r.fencing_token BETWEEN first.fencing_token AND last.fencing_token
-      JOIN memory_exposure_runs e ON e.run_id=r.id WHERE e.pending<>0 OR e.uncertain<>0 OR e.unverified<>0
-     UNION
-     SELECT 1 FROM lineage l JOIN scheduler_runs current ON current.id=l.origin_id AND current.agent_id=?
-      JOIN context_rollovers parent ON parent.agent_id=current.agent_id AND parent.replacement_run_id=current.id
-        AND parent.replacement_session_id=l.session_id AND parent.state='completed'
-      JOIN scheduler_runs older ON older.agent_id=current.agent_id AND older.scope_key=current.scope_key AND older.fencing_token<current.fencing_token
-      JOIN memory_exposure_runs e ON e.run_id=older.id WHERE e.pending<>0 OR e.uncertain<>0 OR e.unverified<>0
-     LIMIT 1`)
-      .get(packet.executionId,boundary.executionId,accepted.sessionId,agent.id,agent.id,agent.id,agent.id,agent.id);
+    const known=hasKnownRetainedMemory(store,agent.id,packet.executionId,boundary.executionId,accepted.sessionId);
     if(known)return hold('A previously used memory source cannot be checked because Local Memory is unavailable. The original work remains queued for context review.');
    }
    const exposure=memory&&await memory.retainedMemoryExposureStatus(agent.id,agent.conversationId,accepted.sessionId,packet.executionId,boundary.executionId);

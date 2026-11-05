@@ -381,7 +381,7 @@ export async function prepareAgentRun(
     (item.payload as {rolloverId?:unknown}).rolloverId === preflightActiveRollover?.id &&
     Boolean((item.payload as {settingsTransition?:unknown}).settingsTransition));
   let settingsTransition = transitionActivation?.payload && typeof transitionActivation.payload === 'object'
-    ? (transitionActivation.payload as {settingsTransition:{activationId:string;sourceRunId:string;oldSessionId:string;oldContractHash:string;engineId:string;
+    ? (transitionActivation.payload as {settingsTransition:{activationId:string;sourceRunId:string;sourceFence:number;oldSessionId:string;oldContractHash:string;engineId:string;
       targetModel:string;targetEffort?:string;targetSpeed?:string;authorizationSignatureHash?:string;authorizationOriginRunId?:string}}).settingsTransition : undefined;
   const preflightAttachedActivationIds = v3SchedulerRunId
     ? coordinationV3.activationIdsAttachedToRun(v3SchedulerRunId, agent.id)
@@ -784,8 +784,15 @@ export async function prepareAgentRun(
     assertRetainedContextPolicy();
     const current=store.getAgent(agent.id),currentProject=current?store.getChatContext(current.conversationId):undefined;
     const saved=store.resumeSessionState(agent.id),row=store.sqlite.prepare(
-      "SELECT scope_key,payload_json FROM agent_activations WHERE id=? AND agent_id=? AND project_id=? AND state IN ('pending','attached')"
+      "SELECT scope_key,payload_json FROM agent_activations WHERE id=? AND agent_id=? AND project_id=? AND state IN ('pending','retry_pending','attached')"
     ).get(settingsTransition.activationId,agent.id,project.id) as {scope_key:string;payload_json:string}|undefined;
+    const source=store.sqlite.prepare('SELECT fencing_token FROM scheduler_runs WHERE id=? AND agent_id=?').get(settingsTransition.sourceRunId,agent.id) as {fencing_token:number}|undefined;
+    const uncertain=source&&store.sqlite.prepare(`SELECT 1 FROM scheduler_runs r WHERE r.agent_id=? AND r.fencing_token<? AND
+      (r.status IN ('leased','running','outcome_unknown') OR r.prompt_injection_state='injecting'
+       OR EXISTS(SELECT 1 FROM scheduler_prompt_injections i WHERE i.run_id=r.id AND i.state='outcome_unknown')) LIMIT 1`)
+      .get(agent.id,source.fencing_token);
+    if(!source||source.fencing_token!==settingsTransition.sourceFence||uncertain)
+      throw new Error('Earlier provider work has an uncertain outcome; the original context remains retained.');
     if(!current||!currentProject||!row||row.scope_key!==schedulerRunScopeKey ||
        !((saved?.sessionId===(managedVoiceReplacementSession??settingsTransition.oldSessionId) &&
           (managedVoiceReplacementSession || saved?.toolContractHash===settingsTransition.oldContractHash)) ||

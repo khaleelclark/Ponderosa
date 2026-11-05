@@ -149,6 +149,35 @@ test('interrupted managed handoff is not automatically replayed after restart',{
    localMemoryForRoot:async root=>({chromaUrl:await ownedChroma(),collectionPrefix:'context_'+randomUUID().replaceAll('-',''),modelDir:process.env.PONDEROSA_TEST_MEMORY_MODEL_DIR,stateDirectory:path.join(root,'memory-policy'),provision:true})});
 });
 
+test('interrupted transition exposes retry-pending review after restart',{timeout:90000},async t=>{
+ let store,native;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Interrupted handoff'),agent=await f.createIdleAgent(chat,'Worker');
+  await f.send(agent.id,'Keep the original objective.');
+  await until(async()=>(await native.requests()).some(x=>x.method==='turn/start'),'first native turn');
+  await native.sendTool('ponderosa_local_memory_search',{query:'Synthetic search'});
+  await until(async()=>(await native.requests()).some(x=>x.toolResponse),'memory result');
+  await native.sendTool('ponderosa_message',{text:'Research complete.'});await f.settled(agent.id);
+  f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text:'Continue aloud.',idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'queue',voiceReply:true}));
+  const rollover=await until(()=>store.sqlite.prepare("SELECT * FROM context_rollovers WHERE agent_id=? AND state='requested'").get(agent.id),'handoff requested',20000);
+  await until(async()=>(await native.requests()).filter(x=>x.method==='turn/start').length>=2,'old handoff submitted',20000);
+  await until(()=>store.sqlite.prepare("SELECT 1 FROM scheduler_prompt_injections i JOIN scheduler_run_activations a ON a.run_id=i.run_id JOIN agent_activations x ON x.id=a.activation_id WHERE x.kind='context_rollover_handoff' AND i.state='acknowledged'").get(),'handoff acknowledged',20000);
+  // Isolate the notice projection for an original task in retry_pending.
+  const original=store.sqlite.prepare("SELECT id FROM agent_activations WHERE agent_id=? AND kind='human_message' AND state='pending'").get(agent.id);
+  assert.ok(original);
+  store.sqlite.prepare("UPDATE agent_activations SET state='retry_pending' WHERE id=?").run(original.id);
+  await f.reopen();
+  await until(()=>store.sqlite.prepare("SELECT 1 FROM context_rollovers WHERE id=? AND state IN ('failed','outcome_unknown')").get(rollover.id),'interrupted handoff recorded',20000);
+  await until(async()=>f.ok(await f.api('GET','/api/notifications')).items.some(item=>item.title==='Agent context needs review'&&item.body.includes('handoff did not finish')),'retry-pending review notice',20000);
+  assert.equal(store.sqlite.prepare('SELECT state FROM agent_activations WHERE id=?').get(original.id).state,'retry_pending');
+  const rows=store.sqlite.prepare("SELECT state FROM agent_activations WHERE kind='context_rollover_handoff' AND json_extract(payload_json,'$.rolloverId')=?").all(rollover.id);
+  assert.equal(rows.length,1,'an uncertain handoff must not be scheduled a second time');
+  const calls=await native.requests();
+  assert.equal(calls.filter(x=>x.method==='turn/start'&&x.params?.threadId==='inert-reviewed-thread-1').length,2,'no repeated input on the old thread');
+ },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,emitVoiceReply:true,holdMemoryCompletion:true,uniqueThreads:true})).adapter,
+   localMemoryForRoot:async root=>({chromaUrl:await ownedChroma(),collectionPrefix:'context_'+randomUUID().replaceAll('-',''),modelDir:process.env.PONDEROSA_TEST_MEMORY_MODEL_DIR,stateDirectory:path.join(root,'memory-policy'),provision:true})});
+});
+
 test('model change after a memory read transfers the objective before queued work',{timeout:90000},async t=>{
  let store,native;
  await withFixture(t,async f=>{
