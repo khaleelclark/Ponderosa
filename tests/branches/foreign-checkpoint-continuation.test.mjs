@@ -229,6 +229,14 @@ test('before-entry acceptance rechecks source, Agent policy and reviewed destina
  f.store.updateAgent(f.destinationAgent,{speed:speed==="fast"?"standard":"fast"});
  result=await f.call('POST',f.url,command(third,'speed-changed'));assert.equal(result.statusCode,409);assert.match(result.json().error,/review|authority|changed|stale/i);
  assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM branch_executions WHERE branch_id=?').get(f.result.branchId).n,before);
+ const destinationAgent=f.store.getAgent(f.destinationAgent),destinationChat=f.store.getConversation(destinationAgent.conversationId);
+ const replacement=await f.api("POST",`/api/branches/engine/projects/${destinationChat.projectId}/agents`,{title:"Synthetic replacement",engine:"codex",conversationId:destinationChat.id,idempotencyKey:randomUUID()});
+ const branches=new BranchStore(f.store.sqlite,new CoordinationV3Store(f.store.sqlite)),current=branches.getBranch(f.result.branchId);
+ const definition=branches.version(current.id,current.versionId).definition,bindings=await f.api("GET",`/api/branches/${current.id}/configuration`);
+ const bindingReview=await f.review();
+ await f.api("POST","/api/branches/deploy",{chatId:"",branchId:current.id,expectedVersionId:current.versionId,idempotencyKey:randomUUID(),definition,bindings:{...bindings,agents:{...bindings.agents,worker:replacement.id}}});
+ result=await f.call("POST",f.url,command(bindingReview,"binding-changed"));assert.equal(result.statusCode,409);assert.match(result.json().error,/review|authority|changed|stale/i);
+ assert.equal(f.store.sqlite.prepare("SELECT count(*) n FROM branch_executions WHERE branch_id=?").get(f.result.branchId).n,before);
  assert.equal(f.store.sqlite.prepare('SELECT admitted_at FROM branch_executions WHERE id=?').get(f.imported).admitted_at,null);
  f.done();
 });
