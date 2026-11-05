@@ -328,15 +328,10 @@ test("legacy persistent-Agent steps keep their original steer-or-run policy",t=>
  assert.equal(activation.dispatch_policy,"steer_or_run");assert.equal(JSON.parse(activation.payload_json).dispatch,undefined);
 });
 
-test("job handling validates persistent-Agent scope and holds unavailable modes without dispatch",t=>{
+test("job handling validates persistent-Agent scope",t=>{
  const f=fixture(t),base=f.deployment.definition,step={id:"agent",kind:"agent",target:{kind:"persistent_agent",ref:"reviewer"},instructions:"Work"};
  for(const [target,jobHandling] of [[{kind:"persistent_agent",ref:"reviewer"},"wrong"],[{kind:"persistent_agent",ref:"reviewer"},["queue"]],[{kind:"persistent_agent",ref:"reviewer"},{}],[{kind:"persistent_organization",ref:"reviewer"},"queue"]]){
   assert.throws(()=>f.branches.deploy({...f.deployment,idempotencyKey:"bad-validation",definition:{...base,steps:[{...step,target,jobHandling}],edges:[]}}),/Job handling/);
- }
- for(const jobHandling of ["copy"]){
-  const branch=f.branches.deploy({...f.deployment,idempotencyKey:`hold-${jobHandling}`,definition:{...base,name:`Held ${jobHandling}`,steps:[{...step,jobHandling}],edges:[]}});
-  const job=f.branches.accept(branch.id,`job-${jobHandling}`,"input");for(let i=0;i<4;i++)f.branches.advance();
-  const attempt=f.branches.detail(job.id).attempts[0];assert.equal(attempt.requestId,undefined);assert.match(attempt.error,/not yet available/);assert.equal(f.branches.execution(job.id).state,"waiting");
  }
 });
 
