@@ -2,8 +2,25 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {randomUUID} from 'node:crypto';
 import {AgentStore,CapabilityPolicyStore} from '@ponderosa/agents';
-import {CAPABILITY_IDS} from '@ponderosa/core';
+import {BUILT_IN_CAPABILITIES,CAPABILITY_IDS,PONDEROSA_BROWSER_TOOLS} from '@ponderosa/core';
 import {withFixture,until} from '../shared/fixture.mjs';
+import {BrowserSessionManager} from '../../apps/server/dist/browser-session-manager.js';
+
+test('every hosted browser tool has exactly one intended capability classification',()=>{
+ const expected={
+  [CAPABILITY_IDS.browserRead]:['ponderosa_browser_open','ponderosa_browser_inspect','ponderosa_browser_screenshot','ponderosa_browser_console','ponderosa_browser_recording_start','ponderosa_browser_recording_stop'],
+  [CAPABILITY_IDS.browserInteract]:['ponderosa_browser_navigate','ponderosa_browser_new_page','ponderosa_browser_switch_page','ponderosa_browser_close_page','ponderosa_browser_upload','ponderosa_browser_act','ponderosa_browser_take_control','ponderosa_browser_close'],
+ };
+ const classified=[];
+ for(const [id,names] of Object.entries(expected)){
+  const descriptor=BUILT_IN_CAPABILITIES.find(capability=>capability.id===id);
+  assert.ok(descriptor,`missing ${id} descriptor`);
+  assert.deepEqual([...descriptor.runtimeToolNames].sort(),[...names].sort());
+  classified.push(...descriptor.runtimeToolNames);
+ }
+ assert.equal(new Set(classified).size,classified.length,'each browser tool is classified exactly once');
+ assert.deepEqual(classified.sort(),PONDEROSA_BROWSER_TOOLS.map(tool=>tool.name).sort());
+});
 
 test('tightening a live policy refuses previously admitted tool calls, including the management create backdoor, while explicit user communication remains usable',{timeout:30000},async t=>{
  let store;
@@ -152,4 +169,45 @@ test('operator permission history retains before/after, rejects stale writes, an
   }
   assert.equal((await f.api('GET',`/api/branches/${branch.id}/agents/${agent.id}/capabilities/history`)).status,404);
  });
+});
+
+
+test('browser new-page creation follows the live interaction restriction',{timeout:30000},async t=>{
+ let store,ownerId,created=0;
+ const previousGet=BrowserSessionManager.prototype.get,previousNewPage=BrowserSessionManager.prototype.newPage;
+ BrowserSessionManager.prototype.get=function(id){
+  if(id===ownerId)return {id:'controlled-browser',status:'ready',controlEpoch:9,activePageId:'old',pages:[]};
+  return previousGet.call(this,id);
+ };
+ BrowserSessionManager.prototype.newPage=async function(scope,epoch,owner){
+  assert.equal(scope.agentId,ownerId);assert.equal(epoch,9);assert.equal(owner,'agent');created++;
+  return {id:'controlled-browser',status:'ready',controlEpoch:9,activePageId:'new',pages:[{pageId:'new',url:'about:blank',title:'',active:true,isNew:true,closable:true}]};
+ };
+ t.after(()=>{BrowserSessionManager.prototype.get=previousGet;BrowserSessionManager.prototype.newPage=previousNewPage;});
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('New-page capability'),agent=await f.createIdleAgent(chat,'Worker');ownerId=agent.id;
+  const session=await f.hold(agent.id),policies=new CapabilityPolicyStore(store.sqlite);
+  const allowed=await f.tool(session,'ponderosa_browser_new_page',{});
+  assert.equal(allowed.status,200,'interaction-authorized new page reaches the owned browser route');
+  assert.equal(created,1);
+  policies.put({scopeKind:'agent',scopeId:agent.id,expectedRevision:0,restrictedCapabilityIds:[CAPABILITY_IDS.browserInteract]});
+  const denied=await f.tool(session,'ponderosa_browser_new_page',{});
+  assert.equal(denied.status,403,'the current Run is denied after interaction is restricted');
+  assert.equal(created,1,'denied call never reaches the browser manager');
+  // Reading and interacting are separate capabilities. A read restriction
+  // alone does not revoke already-authorized interactions.
+  policies.put({scopeKind:'agent',scopeId:agent.id,expectedRevision:1,restrictedCapabilityIds:[CAPABILITY_IDS.browserRead]});
+  const interactionStillAllowed=await f.tool(session,'ponderosa_browser_new_page',{});
+  assert.equal(interactionStillAllowed.status,200);
+  assert.equal(created,2);
+  session.finish();await f.settled(agent.id);
+  const fresh=await f.createIdleAgent(chat,'Restricted worker');ownerId=fresh.id;
+  policies.put({scopeKind:'agent',scopeId:fresh.id,expectedRevision:0,restrictedCapabilityIds:[CAPABILITY_IDS.browserInteract]});
+  const restricted=await f.hold(fresh.id);
+  const unavailable=await restricted.tool('ponderosa_browser_new_page',{});
+  assert.equal(unavailable.success,false);
+  assert.match(unavailable.text,/Unavailable Ponderosa tool/,'a newly admitted restricted Run never receives the tool');
+  assert.equal(created,2,'restricted Run never reaches the browser manager');
+  restricted.finish();await f.settled(fresh.id);
+ },{storeFactory:p=>(store=new AgentStore(p))});
 });

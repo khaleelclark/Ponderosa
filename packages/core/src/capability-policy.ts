@@ -113,6 +113,7 @@ export const BUILT_IN_CAPABILITIES: CapabilityDescriptor[] = [
     description: "Navigate, fill, click, upload, switch pages, and control the Ponderosa browser.",
     runtimeToolNames: [
       "ponderosa_browser_navigate",
+      "ponderosa_browser_new_page",
       "ponderosa_browser_switch_page",
       "ponderosa_browser_close_page",
       "ponderosa_browser_upload",
