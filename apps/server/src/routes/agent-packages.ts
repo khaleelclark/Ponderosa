@@ -2074,7 +2074,7 @@ export function registerAgentPackageRoutes(
         finally{if(receipt)saveMetadataApplications();}
       }
       for(const item of folderImports){
-        try{await importWorkingLinks(item.destination,item.links,body.workingRootDestinations,undefined,recoveryRootIdentities[item.destination]);}
+        try{await importWorkingLinks(item.destination,item.links,body.workingRootDestinations,undefined,recoveryRootIdentities[item.destination],Boolean(branchHooks?.retainFinalWorkingData));}
         catch(error){metadataPrimaryError=error;for(const receipt of metadataApplications)if(receipt.state==='applying'){receipt.state='incomplete';receipt.error=metadataFailure(error);}saveMetadataApplications();throw error;}
       }
       if(body.reviewedUserDataActivation&&!body.workingFilesActivation){
@@ -2186,7 +2186,7 @@ export function registerAgentPackageRoutes(
           finally{if(receipt)saveMetadataApplications();}
         }
         for(const row of rows){
-          try{await importWorkingLinks(row.agent.workingCopy.rootPath,row.folder?.links??[],liveLinkDestinations,{backupRoot:path.join(row.agent.workingCopy.rootPath,'.ponderosa-import-backups')},liveRootIdentities[row.agent.workingCopy.rootPath]);}
+          try{await importWorkingLinks(row.agent.workingCopy.rootPath,row.folder?.links??[],liveLinkDestinations,{backupRoot:path.join(row.agent.workingCopy.rootPath,'.ponderosa-import-backups')},liveRootIdentities[row.agent.workingCopy.rootPath],Boolean(branchHooks?.retainFinalWorkingData));}
           catch(error){metadataPrimaryError=error;for(const receipt of metadataApplications)if(receipt.state==='applying'){receipt.state='incomplete';receipt.error=metadataFailure(error);}saveMetadataApplications();throw error;}
         }
         for(const [backup,issued] of finalBackups){

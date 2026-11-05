@@ -159,3 +159,57 @@ test('external Git review keeps original bytes and link evidence inert and inspe
     await assert.rejects(lstat(path.join(folder,'alias')),error=>error.code==='ENOENT');
   }finally{await rm(root,{recursive:true,force:true});}
 });
+
+test('Linux imported symbolic timestamps survive exact inventory and re-export', {skip:process.platform!=='linux'},async()=>{
+ const {inventoryWorkingFolder,importWorkingLinks}=await import('../../apps/server/dist/portable-working-files.js');
+ const root=await mkdtemp(path.join(tmpdir(),'portable-symbolic-time-')),data=Buffer.from('original file');
+ const files=[{path:'file.txt',data,sha256:createHash('sha256').update(data).digest('hex')}];
+ try{
+  const links=[1,100,102,326,999].map(ms=>({path:'link-'+ms,kind:'symlink',target:'file.txt',mtime:'2026-11-05T01:00:00.'+String(ms).padStart(3,'0')+'Z'}));
+  const destination=path.join(root,'first');const issued=await importWorkingFiles(destination,files,[],undefined,undefined,links,'refuse',undefined,true,undefined,true);
+  await importWorkingLinks(destination,links,undefined,undefined,issued);
+  const inventory=await inventoryWorkingFolder(destination);
+  assert.deepEqual(inventory.links,links.sort((a,b)=>a.path.localeCompare(b.path)));
+  for(const link of links)assert.equal((await lstat(path.join(destination,link.path),{bigint:true})).mtimeNs,BigInt(Date.parse(link.mtime))*1000000n);
+  const exported=await exportWorkingFiles(destination,inventory.paths,1024,inventory.links);await exported.verify?.();
+  const next=path.join(root,'second');const nextIssued=await importWorkingFiles(next,files,[],undefined,undefined,inventory.links,'refuse',undefined,true,undefined,true);
+  await importWorkingLinks(next,inventory.links,undefined,undefined,nextIssued,true);
+  assert.deepEqual((await inventoryWorkingFolder(next)).links,inventory.links);
+  assert.equal(await readFile(path.join(destination,'file.txt'),'utf8'),'original file');
+  assert.equal(await readFile(path.join(next,'file.txt'),'utf8'),'original file');
+ }finally{await rm(root,{recursive:true,force:true});}
+});
+
+for(const failure of ['missing','unsupported','partial'])test('ordinary symlink metadata '+failure+' preserves capability and no-replay behavior',{skip:process.platform!=='linux'},async()=>{
+ const {spawnSync}=await import('node:child_process');
+ const result=spawnSync(process.execPath,['--import',new URL('../shared/workspace-resolution.mjs',import.meta.url).pathname,'--input-type=module'],{cwd:new URL('../../',import.meta.url),encoding:'utf8',input:`
+ import assert from 'node:assert/strict';
+ import Module from 'node:module';
+ import {mkdtemp,writeFile,readFile,readlink,rm} from 'node:fs/promises';
+ const mode=${JSON.stringify(failure)},original=Module._load;
+ Module._load=function(id,...args){
+  if(String(id).endsWith('ponderosa_native.node')){
+   if(mode==='missing')throw Object.assign(Error('controlled absent optional helper'),{code:'MODULE_NOT_FOUND'});
+   const native=original.call(this,id,...args);
+   const wrapped=Object.create(native);Object.defineProperty(wrapped,'applyExactSymlinkMetadata',{value:()=>{throw Object.assign(Error('controlled '+mode),{code:mode==='unsupported'?'ERR_EXACT_SYMLINK_METADATA_UNSUPPORTED':'ERR_EXACT_SYMLINK_METADATA_PARTIAL',partialStatePossible:mode==='partial'});}});return wrapped;
+  }
+  return original.call(this,id,...args);
+ };
+ const {importWorkingLinks}=await import('./apps/server/dist/portable-working-files.js');
+ const root=await mkdtemp('/tmp/optional-link-metadata-');await writeFile(root+'/file.txt','source bytes');
+ try{
+  const link={path:'ordinary',kind:'symlink',target:'file.txt',mtime:'2026-11-05T01:00:00.101Z'};
+  if(mode==='partial')await assert.rejects(importWorkingLinks(root,[link]),{code:'ERR_EXACT_SYMLINK_METADATA_PARTIAL'});
+  else await importWorkingLinks(root,[link]);
+  assert.equal(await readlink(root+'/ordinary'),'file.txt');
+  if(mode!=='partial'){
+   await assert.rejects(importWorkingLinks(root,[{...link,path:'inexact',mtime:'2026-11-05T01:00:00.100Z'}]),{code:'ERR_WORKING_SYMLINK_TIMESTAMP_INEXACT'});
+   assert.equal(await readlink(root+'/inexact'),'file.txt','inexact fallback retains the created link');
+  }
+  await assert.rejects(importWorkingLinks(root,[{...link,path:'strict'}],undefined,undefined,undefined,true),error=>error.code===(mode==='missing'?'MODULE_NOT_FOUND':mode==='unsupported'?'ERR_EXACT_SYMLINK_METADATA_UNSUPPORTED':'ERR_EXACT_SYMLINK_METADATA_PARTIAL'));
+  assert.equal(await readlink(root+'/strict'),'file.txt');
+  assert.equal(await readFile(root+'/file.txt','utf8'),'source bytes');
+ }finally{await rm(root,{recursive:true,force:true});}
+ `});
+ assert.equal(result.status,0,result.stderr||result.stdout);
+});

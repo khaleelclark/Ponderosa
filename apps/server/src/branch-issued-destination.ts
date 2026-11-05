@@ -1,5 +1,6 @@
-import {lstatSync,readFileSync} from 'node:fs';
-import {join} from 'node:path';
+import {portableLinkTarget,validateWorkingTopology} from './portable-working-files.js';
+import {lstatSync,readFileSync,readlinkSync,realpathSync} from 'node:fs';
+import {join,dirname} from 'node:path';
 import {createHash} from 'node:crypto';
 import {
  stableJson,workspaceCreationId,
@@ -54,10 +55,24 @@ export class BranchIssuedDestinationService {
    for(const path of [live[0].path,recovery[0].destination]){
     if(!lstatSync(path).isDirectory())throw Error('Final imported root changed');
     for(const node of nodes){
+     validateWorkingTopology(node.workingFiles??[],node.workingFolder?.directories??[],node.workingFolder?.links??[],node.workingFolder?.cyclicLinks??'refuse');
      for(const dir of node.workingFolder?.directories??[])if(!lstatSync(join(path,dir.path)).isDirectory())throw Error('Final imported directory changed');
      for(const file of node.workingFiles??[]){
       const artifact=node.artifacts?.find(a=>a.ref===file.artifactRef);
       if(!artifact||!lstatSync(join(path,file.path)).isFile()||!readFileSync(join(path,file.path)).equals(Buffer.from(artifact.dataBase64,'base64')))throw Error('Final imported file changed; preserve current data and review');
+     }
+     for(const link of node.workingFolder?.links??[]){
+      if(link.targetRootRef!==undefined)throw Error('Final imported cross-root links remain held');
+      const target=portableLinkTarget(link),name=join(path,link.path),entry=lstatSync(name,{bigint:true});
+      if(realpathSync(dirname(name))!==dirname(name))throw Error('Final imported link parent changed; preserve current data and review');
+      if(link.kind==='symlink'){
+       if(!entry.isSymbolicLink()||readlinkSync(name)!==link.target||realpathSync(name)!==join(path,target)||link.mtime!==undefined&&entry.mtime.toISOString()!==link.mtime)
+        throw Error('Final imported symlink changed; preserve current data and review');
+      }else{
+       const original=lstatSync(join(path,target),{bigint:true});
+       if(!entry.isFile()||!original.isFile()||entry.dev!==original.dev||entry.ino!==original.ino)
+        throw Error('Final imported hardlink changed; preserve current data and review');
+      }
      }
     }
    }

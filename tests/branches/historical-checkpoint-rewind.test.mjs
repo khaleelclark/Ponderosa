@@ -5,7 +5,7 @@ import {encodeScriptContinuation} from '../../packages/agents/dist/branch-script
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {CAPABILITY_IDS} from '../../packages/core/dist/index.js';
-import {mkdtempSync,rmSync,mkdirSync,writeFileSync,readFileSync,existsSync,symlinkSync,readlinkSync,renameSync} from 'node:fs';
+import {mkdtempSync,rmSync,mkdirSync,writeFileSync,readFileSync,existsSync,symlinkSync,readlinkSync,renameSync,linkSync,lstatSync,lutimesSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
@@ -3105,7 +3105,7 @@ test('final resource actual package engine captures later history and working fi
  }finally{if(service)await service.stop();await app.close();assets.close();}
 });
 
-for(const linkedFinal of [false,true])test(linkedFinal?'linked portable final resource stays held with original bytes':'completed portable final resource restores a fresh destination without replay',async t=>{
+for(const linkedFinal of [false,true,'dangling','cycle'])test(linkedFinal===true?'linked portable final resource continues with exact in-root file links':linkedFinal?'unsupported '+linkedFinal+' final links remain held':'completed portable final resource restores a fresh destination without replay',async t=>{
  const Fastify=(await import('fastify')).default;
  const {AssetStore}=await import('../../apps/server/dist/assets.js');
  const {registerAgentPackageRoutes}=await import('../../apps/server/dist/routes/agent-packages.js');
@@ -3140,7 +3140,7 @@ for(const linkedFinal of [false,true])test(linkedFinal?'linked portable final re
   assert.ok(earlierPackage.agents[0].history.some(message=>message.text==='before checkpoint history'));
   assert.equal(earlierPackage.agents[0].workingFiles?.some(entry=>entry.path==='final-work.txt')??false,false,'ordinary issued checkpoint keeps its original file selection');
   writeFileSync(file,'after checkpoint exact content 😀\n');
-  if(linkedFinal)symlinkSync('final-work.txt',join(file,'..','captured-link'));
+  if(linkedFinal){symlinkSync(linkedFinal==='dangling'?'missing-file':linkedFinal==='cycle'?'captured-link':'final-work.txt',join(root,'captured-link'));if(linkedFinal===true)linkSync(file,join(root,'z-hardlink'));}
   message('after checkpoint history 😀');
   coordination.updateRequest({requestId:opened.requestId,updateId:'actual-engine-result',kind:'completed',actor:{kind:'agent',id:opened.agentId},payload:{text:'known result'}});
   const suffix=await f.claim();f.settle(suffix);await f.branches.unitSaver.drain();
@@ -3188,14 +3188,14 @@ for(const linkedFinal of [false,true])test(linkedFinal?'linked portable final re
   const retained=installation.runtimeData(preview.id,imported.branchId);
   assert.deepEqual(retained.data,portable.runtimeData);
   const importedOwner=retained.receipt.executionMap[f.source.id];
-  if(linkedFinal){
+  if(linkedFinal&&linkedFinal!==true){
    assert.ok(node.workingFolder.links.length);
    const before=db.prepare('SELECT COUNT(*) n FROM coordination_destination_admissions').get().n;
    const {BranchIssuedDestinationService}=await import('../../apps/server/dist/branch-issued-destination.js');
    const destinations=new BranchIssuedDestinationService(f.store,f.branches,coordination,undefined,()=>packageEngine,async()=>assert.fail('linked source must hold before allocation'));
    await assert.rejects(destinations.prepare(imported.branchId,importedOwner,{commandKey:'linked-final-held',checkpointId:final.checkpointId,expectedHash:final.checkpointHash,reconcileEffects:true}),/excluded|non-working|working.folder|complete/i);
    assert.equal(db.prepare('SELECT COUNT(*) n FROM coordination_destination_admissions').get().n,before);
-   assert.equal(readlinkSync(join(file,'..','captured-link')),'final-work.txt');
+   assert.equal(readlinkSync(join(file,'..','captured-link')),linkedFinal==='dangling'?'missing-file':'captured-link');
    assert.equal(readFileSync(file,'utf8'),'after checkpoint exact content 😀\n');
    return;
   }
@@ -3216,6 +3216,13 @@ for(const linkedFinal of [false,true])test(linkedFinal?'linked portable final re
   assert.equal(retained.receipt.dispatched,false);
   assert.equal(db.prepare('SELECT COUNT(*) n FROM agents a JOIN conversations c ON c.id=a.conversation_id WHERE c.branch_id=?').get(imported.branchId).n,0);
   assert.equal(readFileSync(file,'utf8'),'after checkpoint exact content 😀\n');
+  if(linkedFinal===true){
+   await exerciseForeignFinalDestination(t,portable,f.source.id,final,exit.identity,'prewrite',1,2);
+   assert.equal(readlinkSync(join(root,'captured-link')),'final-work.txt');
+   assert.equal(lstatSync(file).ino,lstatSync(join(root,'z-hardlink')).ino);
+   assert.equal(readFileSync(file,'utf8'),'after checkpoint exact content 😀\n');
+   return;
+  }
   await exerciseForeignFinalDestination(t,portable,f.source.id,final,exit.identity);
   await exerciseForeignFinalDestination(t,portable,f.source.id,final,exit.identity,'failed');
   await exerciseForeignFinalDestination(t,portable,f.source.id,final,exit.identity,'backup-nonempty');
@@ -3237,7 +3244,7 @@ for(const linkedFinal of [false,true])test(linkedFinal?'linked portable final re
  }finally{if(service)await service.stop();await app.close();assets.close();}
 });
 
-async function exerciseForeignFinalDestination(t,portable,originalExecutionId,final,originalIdentity,captureMode='prewrite',portableGeneration=1){
+async function exerciseForeignFinalDestination(t,portable,originalExecutionId,final,originalIdentity,captureMode='prewrite',portableGeneration=1,maxGeneration=3){
  console.log('RUNTIME_GENERATION_BYTES',portableGeneration,Buffer.byteLength(stableJson(portable.runtimeData)),'PACKAGE_BYTES',Buffer.byteLength(stableJson(portable)));
  const g=await reservationHistoryFixture(t,'async',false,false,false);
  let coordination,app,assets,packageEngine;
@@ -3312,6 +3319,33 @@ async function exerciseForeignFinalDestination(t,portable,originalExecutionId,fi
   const stage=JSON.parse(staged.stage_json),operation=g.store.getAgentCreationOperation(stage.importPlan.creationOperationId);
   const recoveryRoot=operation.result.workingRoots[0].destination,recoveryFile=join(recoveryRoot,'final-work.txt');
   const exactContent=readFileSync(recoveryFile);
+  const incomingPackage=g.branches.issuedDestinationSource(imported.branchId,sourceId,final.checkpointId,final.checkpointHash).proof.selectedCustody.package;
+  const expectedLinks=incomingPackage.agents.flatMap(a=>a.workingFolder?.links??[]);
+  const stagedLiveRoot=operation.result.liveWorkingRoots[0].path;
+  const verifyLinks=()=>{
+   for(const root of [stagedLiveRoot,recoveryRoot])for(const link of expectedLinks){
+    const entry=join(root,link.path);
+    if(link.kind==='symlink')assert.equal(readlinkSync(entry),link.target);
+    else {assert.equal(lstatSync(entry).ino,lstatSync(join(root,link.target)).ino);assert.equal(lstatSync(entry).dev,lstatSync(join(root,link.target)).dev);}
+   }
+  };
+  verifyLinks();
+  for(const root of [stagedLiveRoot,recoveryRoot])for(const mutation of expectedLinks.length?['missing','retargeted','timestamp','detached-hardlink']:[]){
+   const link=expectedLinks.find(link=>link.kind===(mutation==='detached-hardlink'?'hardlink':'symlink')),entry=join(root,link.path),saved=entry+'.fixture-preserved';
+   renameSync(entry,saved);
+   if(mutation==='timestamp'){symlinkSync(link.target,entry);lutimesSync(entry,new Date('2001-01-01T00:00:00Z'),new Date('2001-01-01T00:00:00Z'));}
+   if(mutation==='retargeted')symlinkSync('different-file',entry);
+   if(mutation==='detached-hardlink')writeFileSync(entry,readFileSync(saved));
+   await assert.rejects(composer.admit(imported.branchId,sourceId,input.commandKey,review.reviewHash),/ENOENT|Final imported (symlink|hardlink) changed/);
+   assert.equal(g.store.sqlite.prepare('SELECT state FROM coordination_destination_admissions WHERE id=?').get(prepared.admissionId).state,'staged');
+   if(mutation==='retargeted')assert.equal(readlinkSync(entry),'different-file','operator link left untouched');
+   if(mutation==='detached-hardlink')assert.deepEqual(readFileSync(entry),readFileSync(saved),'detached file bytes left untouched');
+   assert.equal(readFileSync(join(root,'final-work.txt'),'utf8'),'after checkpoint exact content 😀\n');
+   if(mutation==='timestamp')assert.equal(lstatSync(entry).mtime.toISOString(),'2001-01-01T00:00:00.000Z','edited timestamp left untouched');
+   if(mutation!=='missing')rmSync(entry);renameSync(saved,entry);
+   verifyLinks();
+  }
+
   writeFileSync(recoveryFile,'operator edited recovered data');
   await assert.rejects(composer.admit(imported.branchId,sourceId,input.commandKey,review.reviewHash),/Final imported file changed/);
   assert.equal(readFileSync(recoveryFile,'utf8'),'operator edited recovered data');
@@ -3375,6 +3409,7 @@ async function exerciseForeignFinalDestination(t,portable,originalExecutionId,fi
   const finalNode=finalPackage.agents.find(a=>a.ref===mappedAgent),finalFile=finalNode.workingFiles.find(a=>a.path==='final-work.txt');
   assert.ok(finalNode.history.some(message=>message.text==='after checkpoint history 😀'));
   const sourcePackage=g.branches.issuedDestinationSource(imported.branchId,sourceId,final.checkpointId,final.checkpointHash).proof.selectedCustody.package;
+  assert.deepEqual(finalNode.workingFolder.links,expectedLinks,'final recapture preserves exact link topology and timestamps');verifyLinks();
   const incomingArtifacts=sourcePackage.agents.flatMap(a=>a.artifacts??[]),outgoingArtifacts=finalPackage.agents.flatMap(a=>a.artifacts??[]);
   for(const bytes of new Set(incomingArtifacts.map(a=>a.dataBase64))){
    assert.ok(outgoingArtifacts.filter(a=>a.dataBase64===bytes).length>=incomingArtifacts.filter(a=>a.dataBase64===bytes).length,'every imported artifact copy survives final recapture');
@@ -3409,7 +3444,7 @@ async function exerciseForeignFinalDestination(t,portable,originalExecutionId,fi
    }
   }
 
-  if(portableGeneration<3){
+  if(portableGeneration<maxGeneration){
    const {retainedIssuedResourceSource}=await import('../../packages/agents/dist/branch-issued-resource-continuation.js');
    const repeatProof=retainedIssuedResourceSource(secondPackage.runtimeData,destination.executionId,String(captured.checkpointId),captured.checkpointHash);
    assert.equal(repeatProof.finalExit.identity.executionId,destination.executionId);
@@ -3426,7 +3461,7 @@ async function exerciseForeignFinalDestination(t,portable,originalExecutionId,fi
     const {sha256,...fields}=changed;changed.sha256=hash(stableJson(fields));
     assert.throws(()=>retainedIssuedResourceSource(changed,destination.executionId,String(captured.checkpointId),captured.checkpointHash));
    }
-   await exerciseForeignFinalDestination(t,secondPackage,destination.executionId,captured,currentExit.identity,'prewrite',portableGeneration+1);
+   await exerciseForeignFinalDestination(t,secondPackage,destination.executionId,captured,currentExit.identity,'prewrite',portableGeneration+1,maxGeneration);
   }
   const commandCount=g.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_commands').get().n;
   await cleanup.stop();cleanup=undefined;
@@ -3434,6 +3469,7 @@ async function exerciseForeignFinalDestination(t,portable,originalExecutionId,fi
   const restartedCoordination=new CoordinationV3Store(g.store.sqlite);
   const restartedDisclosures=new BranchDisclosureReviewService(g.store,g.branches,restartedCoordination,async()=>assert.fail('restart must not resolve native source custody'));
   const restartedComposer=new BranchIssuedDestinationService(g.store,g.branches,restartedCoordination,restartedDisclosures,()=>assert.fail('restart must not import or capture'),async()=>assert.fail('restart must not create'));
+  verifyLinks();
   assert.deepEqual(g.branches.requireFinalResourceExit(destination.executionId,destination.resourceStepId),currentExit);
   assert.equal(g.branches.issuedDestinationSource(imported.branchId,sourceId,final.checkpointId,final.checkpointHash).proof.selectedCustody.wireJson,sourceWire);
   for(const update of updates)assert.deepEqual(restoredRequestUpdatePayload(g.store.sqlite,update),{text:'known result'});

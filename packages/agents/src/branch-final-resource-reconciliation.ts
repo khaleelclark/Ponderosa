@@ -1,3 +1,4 @@
+import {posix} from 'node:path';
 import {createHash} from 'node:crypto';
 import {TERMINAL_REQUEST_STATES, type BranchPortableRuntimeData, type BranchPortableRuntimeOwner} from '@ponderosa/core';
 import {verifyBranchHostCut, type BranchHostCut} from './branch-host-cut.js';
@@ -114,9 +115,15 @@ export function retainedCompletedFinalResourceSource(owner:BranchPortableRuntime
  const roots=[...new Set(pkg.agents.map((a:any)=>a.workingRootRef))];
  if(roots.length!==1)throw Error('One complete final Shared root is required');
  const owners=pkg.agents.filter((a:any)=>a.workingFolder);
- if(owners.length!==1||owners[0].workingFolder.excludedPaths?.length||owners[0].workingFolder.links?.length
+ // ponytail: admit only direct links to captured regular files; wider link shapes
+ // need matching staged-root verification through the existing topology importer.
+ if(owners.length!==1||owners[0].workingFolder.excludedPaths?.length||owners[0].workingFolder.links?.some((link:any)=>{
+   if(link.targetRootRef!==undefined||!['symlink','hardlink'].includes(link.kind)||typeof link.target!=='string'||posix.isAbsolute(link.target))return true;
+   const target=link.kind==='symlink'?posix.normalize(posix.join(posix.dirname(link.path),link.target)):link.target;
+   return !(owners[0].workingFiles??[]).some((file:any)=>file.path===target);
+  })
   ||pkg.agents.some((a:any)=>(a.artifacts??[]).some((artifact:any)=>artifact.dataEncoding!==undefined)))
-  throw Error('Final source has excluded, linked or encoded artifact data');
+  throw Error('Final source has excluded data, unsupported links or encoded artifacts');
  // latest denotes the independently recorded equal final boundary, not a post-cleanup checkpoint.
  return {selected,latest:selected,selectedCustody:custody,latestCustody:custody,finalExit:exit,currentAuthority:false as const};
 }

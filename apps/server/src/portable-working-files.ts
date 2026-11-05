@@ -1,8 +1,8 @@
 import {AGENT_PACKAGE_MAX_BYTES,agentPackageJsonUtf8Bytes} from "@ponderosa/core";
 import {encodePortableArtifactData,decodePortableArtifactData} from "./agent-package-codec.js";
-import {constants} from 'node:fs';
+import {constants,closeSync} from 'node:fs';
 import {openPortableRegular} from './portable-held-regular.js';
-import {applyExactFileMetadata} from '@ponderosa/native-host';
+import {applyExactFileMetadata,applyExactSymlinkMetadata,pinPortableSymlink} from '@ponderosa/native-host';
 import {promises as fs} from '@ponderosa/native-host/fs';
 import path from 'node:path';
 import {tmpdir} from 'node:os';
@@ -610,7 +610,7 @@ export async function materializeGitExternalReview(folder:string,data:ReviewedGi
 
 /** Exclusively create a new user-selected folder. Failure retains every byte for recovery. */
 /** Shared link phase; global root imports call this only after every original exists. */
-async function placeWorkingLinks(destination:string,links:readonly PortableWorkingLinkDto[],rootDestinations:Readonly<Record<string,string>>|undefined,preserveBaseline:(relative:string)=>Promise<void>,assertCurrent?:()=>Promise<void>):Promise<void>{
+async function placeWorkingLinks(destination:string,links:readonly PortableWorkingLinkDto[],rootDestinations:Readonly<Record<string,string>>|undefined,preserveBaseline:(relative:string)=>Promise<void>,assertCurrent?:()=>Promise<void>,exactSymlinkTimestamps=false):Promise<void>{
     for(const link of [...links].sort((a,b)=>(a.kind==='hardlink'?0:1)-(b.kind==='hardlink'?0:1))){
       const mappedRoot=link.targetRootRef?rootDestinations?.[link.targetRootRef]:undefined;
       if(link.targetRootRef&&!mappedRoot)throw new Error('Working-link target root is missing from the selected destination map');
@@ -633,7 +633,30 @@ async function placeWorkingLinks(destination:string,links:readonly PortableWorki
       }else{
         const symbolicTarget=mappedRoot?path.relative(parent,link.target==='.'?mappedRoot:path.join(mappedRoot,link.target)):link.target;
         await fs.symlink(symbolicTarget||'.',target);
-        if(link.mtime)await fs.lutimes(target,new Date(link.mtime),new Date(link.mtime));
+        if(link.mtime){
+          if(exactSymlinkTimestamps&&process.platform!=='linux')throw new Error('Exact final symbolic-link timestamps require Linux native metadata support; files and links are retained');
+          if(process.platform!=='linux'&&!exactSymlinkTimestamps)await fs.lutimes(target,new Date(link.mtime),new Date(link.mtime));
+          else{
+            // The package declares millisecond timestamps. Date/lutimes can round
+            // below that boundary and lose another millisecond on each export.
+            const heldParent=await fs.open(parent,constants.O_RDONLY|constants.O_DIRECTORY|constants.O_NOFOLLOW);
+            let descriptor:number|undefined,fallback=false;
+            try{
+              const parentStat=await heldParent.stat({bigint:true}),before=await fs.lstat(target,{bigint:true}),mtimeNs=String(BigInt(Date.parse(link.mtime))*1000000n);
+              descriptor=pinPortableSymlink({parentFd:heldParent.fd,leaf:path.basename(target),expectedParentDevice:parentStat.dev,expectedParentInode:parentStat.ino,expectedDevice:before.dev,expectedInode:before.ino}).fd;
+              applyExactSymlinkMetadata({fd:descriptor,expectedDevice:before.dev,expectedInode:before.ino,mtimeNs});
+              const after=await fs.lstat(target,{bigint:true});
+              if(after.dev!==before.dev||after.ino!==before.ino||after.mtimeNs!==BigInt(mtimeNs)||await fs.readlink(target)!==(symbolicTarget||'.'))throw new Error('Working symlink timestamp or identity changed');
+            }catch(error){
+              // Only these capability failures prove that metadata was not
+              // attempted. Never replay after a partial or identity failure.
+              if(!exactSymlinkTimestamps&&['MODULE_NOT_FOUND','ERR_DLOPEN_FAILED','ERR_PORTABLE_SYMLINK_PIN_UNSUPPORTED','ERR_EXACT_SYMLINK_METADATA_UNSUPPORTED'].includes((error as NodeJS.ErrnoException).code??''))fallback=true;
+              else throw error;
+            }finally{if(descriptor!==undefined)closeSync(descriptor);await heldParent.close();}
+            if(fallback)await fs.lutimes(target,new Date(link.mtime),new Date(link.mtime));
+          }
+          if((await fs.lstat(target,{bigint:true})).mtime.toISOString()!==link.mtime)throw Object.assign(new Error('Symbolic-link timestamp could not be restored exactly; files and links are retained'),{code:'ERR_WORKING_SYMLINK_TIMESTAMP_INEXACT',partialStatePossible:true});
+        }
       }
     }
 }
@@ -653,7 +676,7 @@ async function preserveWorkingBaseline(destination:string,relative:string,freshR
 }
 
 /** Existing imported root only. A collision preserves the observed entry and refuses, never overwrites it. */
-export async function importWorkingLinks(destination:string,links:readonly PortableWorkingLinkDto[],rootDestinations?:Readonly<Record<string,string>>,freshRoot?:{backupRoot:string},expectedIdentity?:WorkingRootIdentity):Promise<void>{
+export async function importWorkingLinks(destination:string,links:readonly PortableWorkingLinkDto[],rootDestinations?:Readonly<Record<string,string>>,freshRoot?:{backupRoot:string},expectedIdentity?:WorkingRootIdentity,exactSymlinkTimestamps=false):Promise<void>{
  if(await fs.realpath(destination)!==destination)throw new Error('Imported link root changed');
  for(const link of links){portableLinkTarget(link);if(link.targetRootRef&&!rootDestinations?.[link.targetRootRef])throw new Error('Mapped link target root is missing');}
  const identity=expectedIdentity??await observedWorkingRootIdentity(destination);
@@ -661,7 +684,7 @@ export async function importWorkingLinks(destination:string,links:readonly Porta
  if(freshRoot&&(freshRoot.backupRoot!==path.join(destination,'.ponderosa-import-backups')||await fs.realpath(freshRoot.backupRoot)!==freshRoot.backupRoot))throw new Error('Fresh link recovery folder changed');
  const check=()=>assertWorkingRootIdentity(destination,identity);
  await check();
- await placeWorkingLinks(destination,links,rootDestinations,async relative=>{await check();await preserveWorkingBaseline(destination,relative,freshRoot);},check);
+ await placeWorkingLinks(destination,links,rootDestinations,async relative=>{await check();await preserveWorkingBaseline(destination,relative,freshRoot);},check,exactSymlinkTimestamps);
  await check();
 }
 
