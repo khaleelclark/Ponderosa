@@ -1694,6 +1694,14 @@
       "origin": "Retained memory admission tracks disclosed source access and mutation"
     },
     {
+      "path": "tests/context-recovery/retained-memory-admission-races.test.mjs",
+      "feature": "context-recovery",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server, inert Codex and disposable Chroma with the pinned memory model",
+      "origin": "Retained source and grant changes are fenced at provider admission; harmless expansion remains usable"
+    },
+    {
       "path": "tests/context-recovery/durable-memory-transition.test.mjs",
       "feature": "context-recovery",
       "lane": "server",
