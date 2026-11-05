@@ -1,7 +1,7 @@
 import type {BranchDefinition} from '@ponderosa/core';
 import type {BranchesClient} from '@ponderosa/core/branches-client';
 /** Caller-provided working directory and explicit invocation; importing this file runs nothing. */
-export async function createStateApplication(client:BranchesClient,input:{chatId:string;directory:string;commandKey:string}){
+export async function createStateApplication(client:BranchesClient,input:{directory:string;commandKey:string}){
  const definition:BranchDefinition={schema:'ponderosa.branch.v1',name:'Shared state aggregation',trigger:{kind:'manual'},entry:'fork',
   state:{observations:{initial:[],reducer:'append'},total:{initial:0,reducer:'sum'},summary:{initial:null,reducer:'replace'}},
   steps:[
@@ -10,6 +10,7 @@ export async function createStateApplication(client:BranchesClient,input:{chatId
   controls:[{id:'fork',kind:'fork',joinId:'join'},{id:'join',kind:'join',forkId:'fork',mode:'all',remainder:'finish',inputOrder:['two','three']}],
   edges:[{id:'two',from:'fork',to:'worker2',on:'selected'},{id:'three',from:'fork',to:'worker3',on:'selected'},{id:'two-done',from:'worker2',to:'join',on:'success'},{id:'three-done',from:'worker3',to:'join',on:'success'},{id:'reduce-result',from:'join',to:'reduce',on:'success'}],
   policy:{maxConcurrentExecutions:2,failure:{action:'stop'}}};
- const workflow=await client.deploy({chatId:input.chatId,idempotencyKey:input.commandKey,definition,bindings:{agents:{},directories:{root:input.directory}}});
+ const owner=await client.create(definition.name,`${input.commandKey}:create`);
+ const workflow=await client.deploy({chatId:'',branchId:owner.id,expectedVersionId:'',idempotencyKey:input.commandKey,definition,bindings:{agents:{},directories:{root:input.directory}}});
  return {workflow,start:(text:string,key:string)=>client.invoke(workflow.id,text,key),read:(id:string)=>client.sharedState(id)};
 }

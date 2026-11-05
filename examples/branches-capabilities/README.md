@@ -35,7 +35,7 @@ source documentation and distinguishes these semantics from the Branch example.
 
 `state.ts` adds a public-client shared-state application: two Script contributions
 use append/sum channels; a Script after Join computes a custom aggregate into a
-replace channel. Caller supplies Chat/working directory and explicitly invokes it.
-Read using `BranchesClient.sharedState`. This is authored source, never deployed
-or executed as part of this change; settlement ordering differs from LangGraph
-supersteps. See `docs/branch-finite-contract-dispositions.md` for exact semantics.
+replace channel. Caller supplies a working directory and explicitly invokes it.
+Read using `BranchesClient.sharedState`. A disposable synthetic HTTP fixture
+exercises the example; this does not establish provider-backed or framework parity.
+Settlement ordering differs from LangGraph supersteps. See `docs/branch-finite-contract-dispositions.md` for exact semantics.

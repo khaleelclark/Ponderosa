@@ -353,6 +353,24 @@ test('public Branches client uses only encoded HTTP routes, stable mutation keys
  assert.equal(calls.length,1,'Mutations are never automatically retried');assert.equal(calls[0].url,'http://fixture.invalid/api/branches/workflow%2Fone/executions');assert.deepEqual(JSON.parse(calls[0].init.body),{input:'state',occurrenceKey:'stable-key'});
 });
 
+test("public state example creates its Branch and runs its graph through HTTP",{timeout:30000},async t=>{
+ await withFixture(t,async f=>{
+  const {BranchesClient}=await import("../../packages/core/dist/branches-client.js");
+  const {createStateApplication}=await import("../../examples/branches-capabilities/state.ts");
+  const client=new BranchesClient(await f.listen()),input={directory:f.root,commandKey:randomUUID()};
+  const app=await createStateApplication(client,input),again=await createStateApplication(client,input);
+  assert.equal(again.workflow.id,app.workflow.id,"deployment retry reuses its Branch");
+  const execution=await app.start("synthetic input","state-example");
+  const result=await until(async()=>{const detail=await client.state(execution.id);return detail.execution.state==="completed"&&detail;},"state example completion",20000);
+  assert.equal(result.execution.state,"completed");
+  const state=await app.read(execution.id);
+  assert.deepEqual([...state.values.observations].sort(),[2,3]);
+  assert.equal(state.values.total,5);
+  assert.deepEqual(state.values.summary,{maximum:3,total:5});
+  assert.equal(state.revision,3);
+ });
+});
+
 test('public Branches SSE client preserves chunked UTF-8, CR/LF boundaries, reset and exact cursor while closing on return',async()=>{
  const {BranchesClient}=await import('../../packages/core/dist/branches-client.js');const bytes=new TextEncoder().encode(': heartbeat\r\nevent: agent_status\r\nid: 7\r\ndata: {"reset":true,"label":"é"}\r\n\r\nevent: event\nid: 8\ndata: {"event":{"executionId":"exact-run","text":"chunk"}}\n\n');
  let canceled=false,request;
