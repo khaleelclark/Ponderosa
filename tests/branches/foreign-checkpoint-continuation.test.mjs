@@ -181,10 +181,51 @@ test('same-root before-entry import reviews live source and accepts one fresh de
  assert.deepEqual(f.store.sqlite.prepare('SELECT * FROM branch_executions WHERE id=?').get(f.original.id),f.sourceRow,'original source remains unchanged');
  assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM branch_step_executions WHERE execution_id=?').get(f.original.id).n,0);
  assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM coordination_requests').get().n,0);
+ // Progress the new execution only, with the provider still drained. No original
+ // source instruction or old work is replayed into the new attempt.
+ const driver=new BranchStore(f.store.sqlite,new CoordinationV3Store(f.store.sqlite));
+ for(let i=0;i<4;i++){driver.advance();await driver.unitSaver.drain();}
+ const attempts=driver.detail(receipt.executionId).attempts;
+ assert.equal(attempts.length,1);assert.ok(attempts[0].id);
+ const activation=f.store.sqlite.prepare("SELECT a.id FROM activation_sources s JOIN agent_activations a ON a.id=s.activation_id WHERE s.source_kind='branch_guidance' AND s.source_id=?").get(attempts[0].id);
+ assert.ok(activation,'only the fresh execution issues its guidance activation');
+ assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM branch_step_executions WHERE execution_id=?').get(f.original.id).n,0);
+ assert.deepEqual(f.store.sqlite.prepare('SELECT * FROM branch_executions WHERE id=?').get(f.original.id),f.sourceRow);
+ assert.deepEqual(f.store.sqlite.prepare('SELECT * FROM branch_executions WHERE id=?').get(f.imported),held);
  assert.deepEqual(await f.confirm(review),receipt);assert.deepEqual(await f.api('GET',f.url+'?commandKey=h2-once'),receipt);
+ // Make this synthetic source's access choices distinct so the second import
+ // must request a fresh decision rather than inheriting source restrictions.
+ new CapabilityPolicyStore(f.store.sqlite).put({scopeKind:'agent',scopeId:f.destinationAgent,expectedRevision:0,restrictedCapabilityIds:[CAPABILITY_IDS.memoryWrite]});
  const exported=await f.api('GET',`/api/branches/${f.result.branchId}/package?mode=full&includeValues=true`);
  assert.ok(exported.runtimeData.owners.some(owner=>owner.sourceExecutionId===f.imported),'held owner remains in re-export');
  assert.ok(exported.runtimeData.owners.some(owner=>owner.sourceExecutionId===receipt.executionId),'fresh owner remains in re-export');
+ // A second fresh Branch accepts the re-export only after its own access review.
+ const preview2=await f.api('POST','/api/branches/install-preview',{package:exported,bindings:{agents:{},directories:{workspace:f.root},engines:{codex:'codex'}}});
+ const install2=`/api/branches/installations/${preview2.id}`;
+ let second=await f.api('POST',install2+'/confirm',{acknowledgeFullImport:true,acknowledgeRuntimeDataSha256:exported.runtimeData.sha256}),reviewed2=false;
+ for(let i=0;i<20&&second.state==='applying';i++){
+  const pending=(await f.api('GET',install2)).accessSettingsReview;
+  if(pending){
+   const choices=Object.fromEntries((pending.review.source??[]).filter(item=>item.settings).map(item=>[item.ref,'keep_destination']));
+   await f.api('POST',install2+'/access-review',{chatRef:pending.chatRef,agentRef:pending.agentRef,resolution:{action:'keep_destination',reviewSha256:pending.review.reviewSha256,agentActions:choices}});reviewed2=true;
+  }
+  second=await f.api('POST',install2+'/confirm',{});
+ }
+ assert.equal(second.state,'completed',second.error);assert.equal(reviewed2,true);
+ const retained=await f.api('GET',install2+`/runtime-data?branchId=${second.branchId}`);
+ for(const id of [f.imported,receipt.executionId]){
+  assert.ok(retained.receipt.executionMap[id],`execution ${id} remains represented`);
+  assert.ok(retained.data.owners.some(owner=>owner.sourceExecutionId===id),`execution ${id} retains its evidence`);
+  assert.ok(['evidence_only','recreated_held'].includes(retained.receipt.frontiers[id].disposition),`execution ${id} must remain held`);
+  assert.equal(f.store.sqlite.prepare('SELECT admitted_at FROM branch_executions WHERE id=?').get(retained.receipt.executionMap[id]).admitted_at,null);
+ }
+ const originalOwner=retained.data.owners.find(owner=>owner.sourceExecutionId===f.imported);
+ const savedCommand=originalOwner.facts.find(fact=>fact.kind==='command'&&fact.key.startsWith('foreign-continuation:'));
+ const exportedCommand=exported.runtimeData.owners.find(owner=>owner.sourceExecutionId===f.imported).facts.find(fact=>fact.kind==='command'&&fact.key.startsWith('foreign-continuation:'));
+ assert.ok(savedCommand,'accepted receipt remains in retained history');assert.deepEqual(savedCommand,exportedCommand);
+ assert.ok(savedCommand.json.includes(receipt.executionId),'the preserved receipt identifies the fresh execution');
+ assert.ok(originalOwner.facts.some(fact=>fact.kind==='import'),'prior import history remains retained');
+ assert.deepEqual(await f.api('GET',f.url+'?commandKey=h2-once'),receipt);
  // A later unavailable source cannot make an already accepted receipt vanish or replay.
  f.store.sqlite.prepare('UPDATE branches SET deleting=1 WHERE id=?').run(f.owner.id);
  await f.reopen();assert.deepEqual(await f.api('GET',f.url+'?commandKey=h2-once'),receipt);assert.equal(count(),before+1);
