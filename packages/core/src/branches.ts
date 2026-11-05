@@ -489,7 +489,7 @@ export interface BranchForeignContinuationReview {
  sharedState?:{channels:NonNullable<BranchDefinition['state']>;selected:BranchSharedStateDto;latest:BranchSharedStateDto};controls?:BranchDefinition['controls'];
  manifestSha256:string;ownerSha256:string;checkpoint:unknown;nativeMaps:BranchRuntimeDataReceipt|BranchRuntimeTreeReceipt;
  versionId:string;bindingRevisionId:string;configurationRevision:number;definitionSha256:string;bindings:BranchBindings;configuration:BranchConfiguration;
- directoryChoices:Record<string,{path:string;realpath:string;device:number;inode:number}>;capabilityPolicy:unknown;budget:BranchExecutionBudgetDto;custody:'not_applicable';engine:'node';secretChoice:'none';accessChoice:'current_destination';reviewSha256:string;
+ directoryChoices:Record<string,{path:string;realpath:string;device:number;inode:number}>;capabilityPolicy:unknown;budget:BranchExecutionBudgetDto;custody:'not_applicable';engine:'node'|'current_destination';secretChoice:'none';accessChoice:'current_destination';beforeEntry?:{sourceBranchId:string;sourceExecutionId:string;sourceFrontierSha256:string};reviewSha256:string;
 }
 export interface BranchForeignContinuationInput extends BranchForeignContinuationSelection {commandKey:string;reviewSha256:string;acceptCurrentAuthority:true}
 export interface BranchForeignContinuationReceipt {
