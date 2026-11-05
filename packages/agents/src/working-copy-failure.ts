@@ -139,6 +139,13 @@ const gitGuidance: Record<GitOperation, string> = {
 const gitSuffix = "Additional Git details are not shown because they may contain credentials.";
 const notRepository = "Git could not find a repository from the checked folder";
 const notRepositoryGuidance = "Check the Agent's working folder; select or initialize a Git repository as appropriate before retrying.";
+const unresolvedHead = "Git could not resolve HEAD to a revision";
+const unresolvedHeadGuidance = "Check that HEAD points to an existing commit; for a new repository, create an initial commit before retrying.";
+const unresolvedHeadStderr = [
+  "fatal: ambiguous argument 'HEAD': unknown revision or path not in the working tree.",
+  "Use '--' to separate paths from revisions, like this:",
+  "'git <command> [<revision>...] -- [<file>...]'",
+].join("\n");
 const gitActions = new Set(["status", "rev-list", "rev-parse", "show-ref", "check-ref-format", "worktree", "init", "commit", "symbolic-ref", "update-ref", "hash-object", "commit-tree", "other"]);
 const gitSystemCodes: Readonly<Record<string,string>> = {
   ENOENT: "a required file or program was not found", EACCES: "access was denied",
@@ -147,7 +154,7 @@ const gitSystemCodes: Readonly<Record<string,string>> = {
   EBUSY: "a required file or folder is busy", ETIMEDOUT: "the operation timed out",
 };
 
-export function recordWorkingCopyGitFailure(error: unknown, operation: GitOperation, action: string): void {
+export function recordWorkingCopyGitFailure(error: unknown, operation: GitOperation, action: string, exactHead = false): void {
   if (!error || typeof error !== "object" || !Object.hasOwn(gitPrefix, operation) || !gitActions.has(action)) return;
   const value = error as {code?: unknown; status?: unknown; signal?: unknown; stderr?: unknown};
   const exitStatus = typeof value.code === "number" ? value.code : value.status;
@@ -163,11 +170,29 @@ export function recordWorkingCopyGitFailure(error: unknown, operation: GitOperat
   const knownNotRepository = operation === "inspect" && action === "rev-parse" &&
     value.code === 128 && typeof value.stderr === "string" &&
     value.stderr.trim() === "fatal: not a git repository (or any of the parent directories): .git";
+  const knownUnresolvedHead = exactHead && operation === "inspect" && action === "rev-parse" &&
+    value.code === 128 && typeof value.stderr === "string" && value.stderr.trim() === unresolvedHeadStderr;
   if (knownNotRepository) {
     gitFailures.set(error, `${gitPrefix[operation]} (git ${action}; ${detail}; ${notRepository}). ${notRepositoryGuidance}`);
+  } else if (knownUnresolvedHead) {
+    gitFailures.set(error, `${gitPrefix[operation]} (git ${action}; ${detail}; ${unresolvedHead}). ${unresolvedHeadGuidance}`);
   } else {
     gitFailures.set(error, `${gitPrefix[operation]} (git ${action}; ${detail}). ${gitGuidance[operation]} ${gitSuffix}`);
   }
+}
+
+const sharedFolderFailures: Readonly<Record<string, string>> = {
+  ENOENT: "The Shared folder or one of its parent folders could not be found (ENOENT). Restore or reconnect it, then retry.",
+  ENOTDIR: "A component of the Shared folder path is not a directory (ENOTDIR). Check the selected folder, then retry.",
+  EACCES: "Access was denied while resolving the Shared folder (EACCES). Check the folder and parent directory permissions, then retry.",
+  EPERM: "Access was denied while resolving the Shared folder (EPERM). Check the folder and parent directory permissions, then retry.",
+};
+
+/** Classify only the host error from resolving the Shared folder. */
+export function recordWorkingCopySharedFolderFailure(error: unknown): void {
+  if (!error || typeof error !== "object" || !("code" in error)) return;
+  const code = (error as {code?: unknown}).code;
+  if (typeof code === "string" && Object.hasOwn(sharedFolderFailures, code)) gitFailures.set(error, sharedFolderFailures[code]!);
 }
 
 /** Carry only the already-classified diagnostic through host wrappers. */
@@ -180,7 +205,9 @@ export function carryWorkingCopyGitFailure(source: unknown, target: object): voi
 
 /** Stored forms contain only a closed operation, status and fixed guidance. */
 export function isStoredWorkingCopyGitFailure(value: string): boolean {
-  if (value === `${gitPrefix.inspect} (git rev-parse; exit status 128; ${notRepository}). ${notRepositoryGuidance}`) return true;
+  if (Object.values(sharedFolderFailures).includes(value)) return true;
+  if (value === `${gitPrefix.inspect} (git rev-parse; exit status 128; ${notRepository}). ${notRepositoryGuidance}` ||
+      value === `${gitPrefix.inspect} (git rev-parse; exit status 128; ${unresolvedHead}). ${unresolvedHeadGuidance}`) return true;
   for (const op of ["inspect", "update"] as const) {
     const start = `${gitPrefix[op]} (`, end = `). ${gitGuidance[op]} ${gitSuffix}`;
     if (!value.startsWith(start) || !value.endsWith(end)) continue;

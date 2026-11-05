@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID, createHash } from 'node:crypto';
-import { writeFile, readFile, access, rm } from 'node:fs/promises';
+import { writeFile, readFile, access, rm, rename } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
@@ -431,6 +431,54 @@ test('working-copy mode reports a real Git failure and safe recovery direction',
   assert.match(result.body.error,/git rev-parse; exit status 128/);
   assert.match(result.body.error,/Git could not find a repository from the checked folder/);
   assert.match(result.body.error,/select or initialize a Git repository/);
+ });
+});
+
+test('working-copy mode explains an unresolved HEAD in a new Git repository',options,async t=>{
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('New Git repository'),agent=await f.createIdleAgent(chat,'Worker');
+  const source=chat.workingDirectory;
+  const git=args=>exec('git',['-c','core.hooksPath=/dev/null','-c','core.fsmonitor=false',...args],{
+   cwd:source,env:{PATH:process.env.PATH,LC_ALL:'C',GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null',GIT_TERMINAL_PROMPT:'0'},
+  });
+  await git(['init','--quiet']);
+  await writeFile(path.join(source,'retained.txt'),'unchanged fixture bytes');
+  const result=await f.api('PATCH',`/api/agents/${agent.id}`,{workingCopyMode:'separate_git'});
+  assert.equal(result.status,409);
+  assert.match(result.body.error,/Git could not resolve HEAD to a revision/);
+  assert.match(result.body.error,/create an initial commit before retrying/);
+  await git(['add','retained.txt']);
+  await git(['-c','user.name=Fixture','-c','user.email=fixture@invalid','commit','--no-gpg-sign','-m','Initial fixture']);
+  const retried=f.ok(await f.api('PATCH',`/api/agents/${agent.id}`,{workingCopyMode:'separate_git'}));
+  assert.equal(retried.workingCopy.mode,'separate_git');
+  assert.equal(await readFile(path.join(source,'retained.txt'),'utf8'),'unchanged fixture bytes');
+  assert.equal(await readFile(path.join(retried.workingCopy.rootPath,'retained.txt'),'utf8'),'unchanged fixture bytes');
+ });
+});
+
+test('working-copy mode explains a temporarily missing Shared folder',options,async t=>{
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Temporarily missing folder'),agent=await f.createIdleAgent(chat,'Worker');
+  const source=chat.workingDirectory;
+  const git=args=>exec('git',['-c','core.hooksPath=/dev/null','-c','core.fsmonitor=false',...args],{
+   cwd:source,env:{PATH:process.env.PATH,LC_ALL:'C',GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null',GIT_TERMINAL_PROMPT:'0'},
+  });
+  await git(['init','--quiet']);
+  await writeFile(path.join(source,'retained.txt'),'unchanged folder bytes');
+  await git(['add','retained.txt']);
+  await git(['-c','user.name=Fixture','-c','user.email=fixture@invalid','commit','--no-gpg-sign','-m','Owned fixture']);
+  const saved=chat.workingDirectory+'-temporarily-moved';
+  await rename(chat.workingDirectory,saved);
+  try{
+   const result=await f.api('PATCH',`/api/agents/${agent.id}`,{workingCopyMode:'separate_git'});
+   assert.equal(result.status,409);
+   assert.match(result.body.error,/Shared folder or one of its parent folders could not be found/);
+   assert.match(result.body.error,/Restore or reconnect it, then retry/);
+  }finally{await rename(saved,chat.workingDirectory);}
+  const retried=f.ok(await f.api('PATCH',`/api/agents/${agent.id}`,{workingCopyMode:'separate_git'}));
+  assert.equal(retried.workingCopy.mode,'separate_git');
+  assert.equal(await readFile(path.join(source,'retained.txt'),'utf8'),'unchanged folder bytes');
+  assert.equal(await readFile(path.join(retried.workingCopy.rootPath,'retained.txt'),'utf8'),'unchanged folder bytes');
  });
 });
 

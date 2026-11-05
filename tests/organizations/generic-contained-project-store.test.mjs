@@ -4,7 +4,7 @@ import {mkdtempSync,mkdirSync,readFileSync,writeFileSync,renameSync,rmdirSync,re
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
-import {AgentStore,managedWorkspacePath,resolveAgentWorkingCopy,recordWorkingCopyGitFailure,safeWorkingCopyFailure,isStoredWorkingCopyGitFailure} from '@ponderosa/agents';
+import {AgentStore,managedWorkspacePath,resolveAgentWorkingCopy,recordWorkingCopyGitFailure,recordWorkingCopySharedFolderFailure,safeWorkingCopyFailure,isStoredWorkingCopyGitFailure} from '@ponderosa/agents';
 import {destinationAdmissionHeld} from '../../packages/agents/dist/coordination-v3-destination-staging.js';
 import {AgentWorkingCopyService} from '../../apps/server/dist/agent-working-copy-service.js';
 
@@ -149,6 +149,43 @@ test('trusted Git diagnostic survives restart and Run admission without exposing
   recordWorkingCopyGitFailure(ambiguous,'inspect','rev-parse');
   assert.doesNotMatch(safeWorkingCopyFailure(ambiguous),/could not find a repository from the checked folder/);
   assert.doesNotMatch(safeWorkingCopyFailure(ambiguous),new RegExp(secret));
+  const headStderr=[
+   "fatal: ambiguous argument 'HEAD': unknown revision or path not in the working tree.",
+   "Use '--' to separate paths from revisions, like this:",
+   "'git <command> [<revision>...] -- [<file>...]'",
+  ].join('\n');
+  const unresolved=Object.assign(new Error(secret),{code:128,stderr:headStderr});
+  recordWorkingCopyGitFailure(unresolved,'inspect','rev-parse',true);
+  const headDiagnostic=safeWorkingCopyFailure(unresolved);
+  assert.match(headDiagnostic,/Git could not resolve HEAD to a revision/);
+  assert.match(headDiagnostic,/create an initial commit/);
+  assert.equal(isStoredWorkingCopyGitFailure(headDiagnostic),true);
+  const otherCommand=Object.assign(new Error(secret),{code:128,stderr:headStderr});
+  recordWorkingCopyGitFailure(otherCommand,'inspect','rev-parse');
+  assert.doesNotMatch(safeWorkingCopyFailure(otherCommand),/could not resolve HEAD/);
+  const extra=Object.assign(new Error(secret),{code:128,stderr:headStderr+' '+secret});
+  recordWorkingCopyGitFailure(extra,'inspect','rev-parse',true);
+  assert.doesNotMatch(safeWorkingCopyFailure(extra),/could not resolve HEAD/);
+  assert.doesNotMatch(safeWorkingCopyFailure(extra),new RegExp(secret));
+  for(const [code,expected] of [['ENOENT',/could not be found/],['ENOTDIR',/not a directory/],['EACCES',/Access was denied/],['EPERM',/Access was denied/]]){
+   const folderError=Object.assign(new Error(secret),{code});
+   recordWorkingCopySharedFolderFailure(folderError);
+   const reason=safeWorkingCopyFailure(folderError);
+   assert.match(reason,expected);assert.match(reason,/retry/);
+   assert.doesNotMatch(reason,new RegExp(secret));
+   assert.equal(isStoredWorkingCopyGitFailure(reason),true);
+   assert.equal(isStoredWorkingCopyGitFailure(reason+" "+secret),false);
+   f.store.updateAgentWorkingCopy(agent.id,{...agent.workingCopy,state:"unavailable",failure:reason});
+   f.close();const reopenedStore=f.reopen(),reopenedAgent=reopenedStore.getAgent(agent.id);
+   assert.equal(reopenedAgent.workingCopy.failure,reason);
+   const service=new AgentWorkingCopyService(f.data,reopenedStore);
+   assert.throws(()=>service.assertRunAdmission(agent.id,agent.workingCopy),error=>error.message===reason);
+   assert.throws(()=>resolveAgentWorkingCopy(reopenedAgent,reopenedStore.getProject(f.project.id)),error=>error.message===reason);
+  }
+  const unknownFolderError=Object.assign(new Error(secret),{code:secret});
+  recordWorkingCopySharedFolderFailure(unknownFolderError);
+  assert.match(safeWorkingCopyFailure(unknownFolderError),/withheld/);
+  assert.doesNotMatch(safeWorkingCopyFailure(unknownFolderError),new RegExp(secret));
   const missing=Object.assign(new Error(secret),{code:'ENOENT'});
   recordWorkingCopyGitFailure(missing,'inspect','rev-parse');
   assert.match(safeWorkingCopyFailure(missing),/system error ENOENT: a required file or program was not found/);
@@ -166,5 +203,20 @@ test('trusted Git diagnostic survives restart and Run admission without exposing
   const service=new AgentWorkingCopyService(f.data,store);
   assert.throws(()=>service.assertRunAdmission(agent.id,agent.workingCopy),error=>error.message===diagnostic);
   assert.throws(()=>resolveAgentWorkingCopy(reopened,store.getProject(f.project.id)),error=>error.message===diagnostic);
+ }finally{f.dispose();}
+});
+
+test("retained working-copy cleanup reports a missing Shared folder without exposing native paths",async()=>{
+ const f=fixture();try{
+  const agent=f.store.getAgent(f.ids[0]),service=new AgentWorkingCopyService(f.data,f.store);
+  const root=path.join(f.data,"working-copies",f.project.id,agent.id,"root");mkdirSync(root,{recursive:true});
+  const copy={...agent.workingCopy,mode:"separate_git",state:"unavailable",rootPath:root,branch:"retained-fixture",baseHead:"a".repeat(40),branchOwned:true};
+  const project={...f.project,hostPath:path.join(f.root,"missing-synthetic-secret")};
+  await assert.rejects(()=>service.cleanupRetained(agent.id,copy,project),error=>{
+   const reason=safeWorkingCopyFailure(error);
+   return error.code==="ENOENT" && /Shared folder or one of its parent folders could not be found/.test(reason) && !reason.includes("missing-synthetic-secret");
+  });
+  await assert.rejects(()=>service.cleanupRetained(agent.id,copy,project,{allowSourceUnavailable:true}),/retained Git copy was preserved/);
+  assert.ok(lstatSync(root).isDirectory(),"cleanup preserves the retained root");
  }finally{f.dispose();}
 });

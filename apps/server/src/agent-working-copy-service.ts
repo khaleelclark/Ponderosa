@@ -17,6 +17,7 @@ import {
   safeWorkingCopyFailure,
   safeWorkingCopyFailureCode,
   recordWorkingCopyGitFailure,
+  recordWorkingCopySharedFolderFailure,
   carryWorkingCopyGitFailure,
   isStoredWorkingCopyGitFailure,
   resolveAgentWorkingCopy,
@@ -71,7 +72,8 @@ async function runGit(cwd: string, args: string[]): Promise<string> {
     const readOnly = ["status", "rev-list", "rev-parse", "show-ref", "check-ref-format"].includes(args[0] ?? "") ||
       (args[0] === "worktree" && args[1] === "list");
     const action = args[0] === "-c" && args[6] === "commit" ? "commit" : args[0] ?? "other";
-    recordWorkingCopyGitFailure(error, readOnly ? "inspect" : "update", action);
+    recordWorkingCopyGitFailure(error, readOnly ? "inspect" : "update", action,
+      args.length === 2 && args[0] === "rev-parse" && args[1] === "HEAD");
     throw error;
   }
 }
@@ -847,8 +849,11 @@ export class AgentWorkingCopyService {
     try {
       projectRoot = await realpath(project.hostPath);
     } catch (error) {
-      if (!options.allowSourceUnavailable || !missingPath(error)) throw error;
-      throw new Error("The Project Shared folder is unavailable; the retained Git copy was preserved");
+      if (options.allowSourceUnavailable && missingPath(error)) {
+        throw new Error("The Project Shared folder is unavailable; the retained Git copy was preserved");
+      }
+      recordWorkingCopySharedFolderFailure(error);
+      throw error;
     }
     const topLevel = await realpath(await runGit(projectRoot, ["rev-parse", "--show-toplevel"]));
     if (!samePath(projectRoot, topLevel)) {
@@ -1180,7 +1185,9 @@ export class AgentWorkingCopyService {
     });
     let preparedBaseHead = agent.workingCopy.baseHead;
     try {
-      const projectRoot = await realpath(project.hostPath);
+      let projectRoot: string;
+      try { projectRoot = await realpath(project.hostPath); }
+      catch (error) { recordWorkingCopySharedFolderFailure(error); throw error; }
       const topLevel = await realpath(await runGit(projectRoot, ["rev-parse", "--show-toplevel"]));
       if (!samePath(projectRoot, topLevel)) {
         throw new Error("the Project Shared folder is not the root of its Git repository");
