@@ -1,3 +1,4 @@
+import {StepInputField} from '../../apps/web/src/components/branches/NodeEditor';
 import {createRoot} from 'react-dom/client';
 import {AgentJobHandlingField} from '../../apps/web/src/components/branches/AgentStepFields';
 import {changeAgentJobHandling,newDefinition,addNode,type AgentJobHandling} from '../../apps/web/src/components/branches/model';
@@ -26,5 +27,24 @@ export async function expertJobHandlingRegression():Promise<void>{
    assert(host.textContent?.includes(meaning),'mode consequence remains visible');
   }
   assert(writes===3,'each explicit choice writes once');render();await settle();assert(writes===3,'rerender does not rewrite draft');
+ }finally{root.unmount();host.remove();}
+}
+
+export async function steeringNoResultRegression():Promise<void>{
+ const host=document.createElement('div');document.body.append(host);const root=createRoot(host);
+ let input:import('@ponderosa/core').BranchDefinition['edges'][number]['input'],writes=0;
+ const render=(noResult=true)=>root.render(<StepInputField input={input} noResult={noResult} onChange={next=>{input=next;writes++;render(noResult);}}/>);
+ const open=async()=>{host.querySelector('[role="combobox"]')!.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,button:0}));await settle();};
+ try{
+  render();await settle();assert(writes===0&&input===undefined,'saved output dependency is not silently rewritten');
+  assert(host.querySelector('[aria-invalid="true"]'),'incompatible output dependency is visibly invalid');
+  await open();const unavailable=Array.from(document.querySelectorAll('[role="option"]')).find(item=>item.textContent?.includes('steering has no output'))!;
+  assert(unavailable?.getAttribute('aria-disabled')==='true','steering output is unavailable');
+  (Array.from(document.querySelectorAll('[role="option"]')).find(item=>item.textContent==='Explicit Text') as HTMLElement).click();await settle();
+  assert(writes===1&&input?.kind==='literal','only explicit correction changes edge input');
+  assert(!host.querySelector('[aria-invalid="true"]'),'literal independent input resolves no-result validation');
+  input=undefined;render(false);await settle();await open();
+  const available=Array.from(document.querySelectorAll('[role="option"]')).find(item=>item.textContent==='This Step’s Output')!;
+  assert(available?.getAttribute('aria-disabled')!=='true','result-bearing modes retain output selection');(available as HTMLElement).click();await settle();
  }finally{root.unmount();host.remove();}
 }

@@ -1644,3 +1644,17 @@ test('new expert jobs queue explicitly while editing legacy and switching target
  }
  assert.deepEqual(legacy,before,'editing helpers preserve the saved definition');
 });
+
+test('steering exposes no result selector and preserves existing dependent edges until explicitly corrected',async()=>{
+ const {StepInputField}=await import('../../apps/web/src/components/branches/NodeEditor.tsx');
+ const {newDefinition,addNode,changeAgentJobHandling}=await import('../../apps/web/src/components/branches/model.ts');
+ const first=addNode(newDefinition(),'agent').definition;
+ const second=addNode(first,'script',first.steps[0].id).definition;
+ const snapshot=structuredClone(second.edges),changed=changeAgentJobHandling(second,second.steps[0],'steer');
+ assert.deepEqual(changed.edges,snapshot,'choosing guidance cannot silently discard authored downstream work');
+ const render=(input,noResult)=>renderToStaticMarkup(React.createElement(StepInputField,{input,noResult,onChange(){}}));
+ assert.match(render(undefined,true),/Unavailable — steering has no output/);
+ assert.match(render(undefined,true),/aria-invalid="true"/);
+ assert.match(render({kind:'literal',text:'Independent input'},true),/aria-invalid="false"/);
+ assert.match(render(undefined,false),/This Step’s Output/);
+});

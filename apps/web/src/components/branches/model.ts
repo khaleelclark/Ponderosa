@@ -152,7 +152,8 @@ export function workflowIncoming(definition:BranchDefinition,nodeId:string):Arra
  return [...(definition.entry===nodeId?[{id:'workflow-input',label:'Workflow Input',custom:false}]:[]),...definition.edges.filter(edge=>edge.to===nodeId).map(edge=>({id:edge.id,label:nodeName(nodes.find(node=>node.id===edge.from)??{id:edge.from} as WorkflowNode),custom:edge.input?.kind==='literal'}))];
 }
 export type AgentJobHandling='queue'|'steer'|'copy';
-type ReusableAgentStep=Extract<BranchStep,{kind:'agent'}>&{jobHandling?:AgentJobHandling};
+export type ReusableAgentStep=Extract<BranchStep,{kind:'agent'}>&{jobHandling?:AgentJobHandling};
+export const isSteeringAgent=(node:WorkflowNode):boolean=>node.kind==='agent'&&(node as ReusableAgentStep).jobHandling==='steer';
 /** Job handling changes only this step; the original Agent binding and graph remain intact. */
 export function changeAgentJobHandling(definition:BranchDefinition,node:ReusableAgentStep,jobHandling:AgentJobHandling):BranchDefinition{
  if(node.target.kind!=='persistent_agent')return definition;
