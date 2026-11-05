@@ -1195,7 +1195,7 @@ export function registerAgentPackageRoutes(
         ...(workingFiles?{workingFiles:workingFiles.files}:!omitWorkingData&&mode==='full'&&importedHistories.get(agent.id)?.portableState?.workingFiles?{workingFiles:importedHistories.get(agent.id)!.portableState!.workingFiles}:{}),
         sourceChat:{ref:agent.conversationId,title:store.getConversation(agent.conversationId)?.title??agent.conversationId},
         accessSettings:{restrictedCapabilityIds:new CapabilityPolicyStore(store.sqlite).resolveForAgent(agent.id).restrictedCapabilityIds,
-          ...(localMemoryFor(app)?{readGlobalMemory:localMemoryFor(app)!.getGrant(agent.conversationId,store.getConversation(agent.conversationId)?.branchId?'branches':'dev').readGlobal}:{}),
+          ...(localMemoryFor(app)&&!expertFinal&&!omitMemory?{readGlobalMemory:localMemoryFor(app)!.getGrant(agent.conversationId,store.getConversation(agent.conversationId)?.branchId?'branches':'dev').readGlobal}:{}),
           ...context.portableBrowserSettings?.(agent)},
         ...(initialInstructions !== undefined ? { initialInstructions } : {}),
         ...(agent.managerAgentId && included.has(agent.managerAgentId)

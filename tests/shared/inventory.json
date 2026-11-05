@@ -2798,6 +2798,14 @@
       "moduleBase": "apps/server/package.json",
       "requirements": "Node24, built server, disposable loopback Chroma and private local memory models",
       "origin": "Reviewed temporary agent copy memory and findings across separate jobs"
+    },
+    {
+      "path": "tests/branches/expert-copy-snapshot-retry.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server, disposable private stores",
+      "origin": "Confirmed no-publication snapshot retry and retained staged evidence"
     }
   ],
   "retainedReleasePayload": [
