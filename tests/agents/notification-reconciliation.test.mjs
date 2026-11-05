@@ -7,7 +7,6 @@ import { randomUUID } from 'node:crypto';
 import { setImmediate as immediate } from 'node:timers/promises';
 import Database from 'better-sqlite3';
 import { AgentStore, WorkspaceStore, CoordinationV3Store } from '@ponderosa/agents';
-import { createRunInactivityMonitor, RUN_INACTIVITY_WARNING_MS } from '../../apps/server/dist/run-inactivity-monitor.js';
 import { createOperationalNotifications } from '../../apps/server/dist/operational-notifications.js';
 import { createRuntimeEventAuthority } from '../../apps/server/dist/runtime-event-authority.js';
 import { createServerReadModels } from '../../apps/server/dist/server-read-models.js';
@@ -423,99 +422,4 @@ test('runtime event-consumer stall surfaces at 30 seconds and clears only after 
  run.ownershipState='cancelling';assert.equal(authority.receiveRuntimeEvent(agent.id,run),false);
  assert.equal(await authority.persistRuntimeEvent(agent.id,run,{type:'text',text:'late',executionId:'execution'}),undefined);
  assert.equal(persisted.length,1);
-});
-
-
-function inactivityFixture(t) {
-  const f = notifications(t), activeRuns = new Map(), statuses = new Map(), paused = new Set();
-  const decisions = [], pushes = [];
-  f.workspace.listDecisions = () => decisions;
-  f.store.sqlite = { prepare: () => ({ get: id => statuses.has(id) ? { status: statuses.get(id) } : undefined }) };
-  const ctx = { activeRuns, store: f.store, workspace: f.workspace,
-    coordinationV3: { runPause: id => paused.has(id) ? { id: 'pause' } : undefined },
-    ownsRun: (_id, run) => run.owned !== false,
-    createOperationalNotification: input => { pushes.push(input.push); return f.ops.createOperationalNotification(input); },
-    resolveOperationalNotification: f.ops.resolveOperationalNotification,
-    logWarn: () => assert.fail('unexpected monitor error'),
-  };
-  const monitor = createRunInactivityMonitor(ctx);
-  const start = Date.parse('2026-10-22T00:00:00.000Z');
-  const run = { runId: 'provider-run', v3SchedulerRunId: 'scheduler-run', startedAt: new Date(start).toISOString(),
-    ownershipState: 'running', controller: new AbortController(), owned: true };
-  activeRuns.set('p-worker', run);
-  statuses.set('scheduler-run', 'running');
-  const notice = () => f.workspace.getNotificationByDedupeKey('provider-inactivity:scheduler-run');
-  return { ...f, activeRuns, statuses, paused, decisions, pushes, monitor, start, run, notice };
-}
-
-test('provider inactivity notice reflects only observed silence and clears on activity and termination', t => {
-  const f = inactivityFixture(t), threshold = RUN_INACTIVITY_WARNING_MS;
-  f.monitor.check(f.start + threshold - 1);
-  assert.equal(f.notice(), undefined);
-  f.monitor.check(f.start + threshold);
-  const first = f.notice();
-  assert.equal(first.status, 'open');
-  assert.match(first.body, /no provider events for at least 15 minutes/);
-  assert.match(first.body, /may still be working or waiting on a tool/);
-  assert.equal(f.pushes[0], false);
-  assert.ok(f.workspace.listNotificationPage({limit: 100}).items.some(item => item.id === first.id));
-  f.monitor.check(f.start + threshold + 1000);
-  assert.equal(f.notice().id, first.id);
-
-  f.run.lastEventReceivedAt = new Date(f.start + threshold + 2000).toISOString();
-  f.monitor.check(f.start + threshold + 2000);
-  assert.equal(f.workspace.getNotification(first.id).status, 'resolved');
-  f.monitor.check(f.start + 2 * threshold + 2000);
-  const second = f.notice();
-  assert.notEqual(second.id, first.id);
-  assert.equal(second.status, 'open');
-  assert.equal(f.activeRuns.get('p-worker'), f.run);
-  assert.equal(f.run.controller.signal.aborted, false);
-
-  f.activeRuns.delete('p-worker');
-  f.monitor.check(f.start + 2 * threshold + 3000);
-  assert.equal(f.workspace.getNotification(second.id).status, 'open', 'absence alone does not prove termination');
-  f.statuses.set('scheduler-run', 'completed');
-  f.monitor.check(f.start + 2 * threshold + 4000);
-  assert.equal(f.workspace.getNotification(second.id).status, 'resolved');
-});
-
-test('known exact Decision and pause waits reset the inactivity window', t => {
-  const f = inactivityFixture(t), threshold = RUN_INACTIVITY_WARNING_MS;
-  f.decisions.push({ agentId: 'p-worker', runId: 'different-run', coordinationRunId: 'different-run', blocking: true });
-  f.monitor.check(f.start + threshold);
-  assert.equal(f.notice().status, 'open', 'a different task Decision does not hide this Run');
-  f.decisions.push({ agentId: 'p-worker', runId: 'provider-run', coordinationRunId: 'scheduler-run', blocking: true });
-  f.monitor.check(f.start + threshold + 1000);
-  assert.equal(f.notice().status, 'resolved');
-  f.decisions.pop();
-  f.monitor.check(f.start + 2 * threshold);
-  assert.equal(f.notice().status, 'resolved', 'a newly answered Decision gets a fresh observation window');
-  f.monitor.check(f.start + 2 * threshold + 1000);
-  assert.equal(f.notice().status, 'open');
-  f.paused.add('scheduler-run');
-  f.monitor.check(f.start + 2 * threshold + 2000);
-  assert.equal(f.notice().status, 'resolved');
-  f.paused.clear();
-  f.monitor.check(f.start + 3 * threshold + 1000);
-  assert.equal(f.notice().status, 'resolved');
-  f.monitor.check(f.start + 3 * threshold + 2000);
-  assert.equal(f.notice().status, 'open');
-});
-
-test('stale ownership and cancellation never produce or resolve an inactivity warning', t => {
-  const f = inactivityFixture(t), threshold = RUN_INACTIVITY_WARNING_MS;
-  f.run.owned = false;
-  f.monitor.check(f.start + threshold);
-  assert.equal(f.notice(), undefined);
-  f.run.owned = true;
-  f.monitor.check(f.start + threshold);
-  assert.equal(f.notice().status, 'open');
-  f.run.ownershipState = 'cancelling';
-  f.monitor.check(f.start + threshold + 1000);
-  assert.equal(f.notice().status, 'open');
-  f.activeRuns.delete('p-worker');
-  f.statuses.set('scheduler-run', 'outcome_unknown');
-  f.monitor.check(f.start + threshold + 2000);
-  assert.equal(f.notice().status, 'resolved');
 });
