@@ -1214,7 +1214,7 @@ export function registerAgentMessageRunRoute(
         return reply.code(503).send({ error: "Agent event persistence requires repair before new work", retryable: false });
       }
       const activeRun: ActiveRun = {
-        runId, startedAt, executionId: runId, leaseExpiresAt: leaseExpiry(), controller, messageCapability,
+        runId, runtimeEngineId, homeConversationId:agent.conversationId, startedAt, executionId: runId, leaseExpiresAt: leaseExpiry(), controller, messageCapability,
         workingCopy,
         ...(routingConversationId ? { conversationId: routingConversationId } : {}),
         ...(trackedV3FencingToken !== undefined

@@ -141,6 +141,10 @@ export interface ActiveRun {
   validateVoiceReplyContext?: () => Promise<boolean>;
   validateVoiceReplyCommit?: () => boolean;
   runId: string;
+  /** Provider chosen for this Run, unaffected by later Agent settings changes. */
+  runtimeEngineId?: string;
+  /** Agent's Chat at admission; routing can use a different Chat. */
+  homeConversationId?: string;
   startedAt: string;
   executionId: string;
   leaseExpiresAt: string;

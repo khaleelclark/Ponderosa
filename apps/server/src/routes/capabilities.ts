@@ -11,6 +11,7 @@ interface Context {
  store:AgentStore;branches:BranchStore;engines:ReadonlyMap<string,EngineRegistration>;dataDir:string;localMemoryEnabled:boolean;
  providerEnabled(id:string):boolean;
  discoverCapabilities(projectId:string,cwd:string,adapter:Adapter,model:string|undefined,refresh:boolean):Promise<EngineCapabilities>;
+ policyChange<T>(apply:()=>T):T;
 }
 
 /** One operator contract for both products; runtime authority stays in CapabilityPolicyStore. */
@@ -88,7 +89,7 @@ export function registerCapabilityRoutes(app:FastifyInstance,context:Context):vo
   app.put(path,async(request,reply)=>{request.raw.socket.setTimeout?.(app.server.requestTimeout||120_000);try{
    const scope=scopeFor(request,kind,branchRoute),body=request.body as {revision:number;restrictedCapabilityIds:string[]};
    if(!body||!Number.isSafeInteger(body.revision)||body.revision<0||!Array.isArray(body.restrictedCapabilityIds)||!body.restrictedCapabilityIds.every(id=>typeof id==='string'&&(BUILT_IN_CAPABILITIES.some(item=>item.id===id)||parseConnectorCapabilityId(id))))throw new Error('Invalid capability policy');
-   policies.put({scopeKind:scope.kind,scopeId:scope.id,expectedRevision:body.revision,restrictedCapabilityIds:body.restrictedCapabilityIds,actor:"operator",reason:"Human updated tool permissions through Settings or the operator API"});
+   context.policyChange(()=>policies.put({scopeKind:scope.kind,scopeId:scope.id,expectedRevision:body.revision,restrictedCapabilityIds:body.restrictedCapabilityIds,actor:"operator",reason:"Human updated tool permissions through Settings or the operator API"}));
    return await response(scope);
   }catch(error){return reply.code(error instanceof CapabilityPolicyRevisionConflictError?409:error instanceof CapabilityOwnerError?404:400).send({error:(error as Error).message,...(error instanceof CapabilityPolicyRevisionConflictError?{current:error.current}:{})})}});
  }

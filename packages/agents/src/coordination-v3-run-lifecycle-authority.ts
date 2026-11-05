@@ -900,11 +900,14 @@ export class CoordinationV3RunLifecycleAuthority {
     })();
   }
 
-  pauseAgentRun(input: {agentId:string; runId:string; idempotencyKey:string; now?:string}): {pauseId:string; runId:string} {
+  pauseAgentRun(input: {agentId:string; runId:string; idempotencyKey:string; now?:string; accessRevocationHold?:true}): {pauseId:string; runId:string} {
     const now=input.now??new Date().toISOString();
     return this.sqlite.transaction(()=>{
-      const replay=this.sqlite.prepare('SELECT id,run_id FROM agent_run_pauses WHERE agent_id=? AND pause_key=?').get(input.agentId,input.idempotencyKey) as {id:string;run_id:string}|undefined;
-      if(replay){if(replay.run_id!==input.runId)throw new CoordinationIdempotencyConflictError();return {pauseId:replay.id,runId:replay.run_id};}
+      const replay=this.sqlite.prepare('SELECT id,run_id,checkpoint_json FROM agent_run_pauses WHERE agent_id=? AND pause_key=?').get(input.agentId,input.idempotencyKey) as {id:string;run_id:string;checkpoint_json:string}|undefined;
+      if(replay){
+        if(replay.run_id!==input.runId||input.accessRevocationHold&&!(JSON.parse(replay.checkpoint_json) as {accessRevocationHold?:boolean}).accessRevocationHold)throw new CoordinationIdempotencyConflictError();
+        return {pauseId:replay.id,runId:replay.run_id};
+      }
       if(this.sqlite.prepare("SELECT 1 FROM agent_run_pauses WHERE agent_id=? AND state IN ('paused','resume_requested')").get(input.agentId))throw new Error('Agent is already paused');
       const run=this.sqlite.prepare("SELECT * FROM scheduler_runs WHERE agent_id=? AND id=? AND status IN ('leased','running') AND side_effects_fenced_at IS NULL").get(input.agentId,input.runId) as {id:string;project_id:string;scope_key:string}|undefined;
       if(!run)throw new Error('Exact active Run is no longer available');
@@ -961,13 +964,15 @@ export class CoordinationV3RunLifecycleAuthority {
         const manifest=JSON.parse(packet.source_manifest_json) as {sources?:Array<{kind:string}>};
         return !manifest.sources?.some(source=>source.kind==='pause_checkpoint');
       })];
-      const checkpoint=stableJson({sourceRunId:run.id,phase,eventCutoff:cutoff.seq,sourceActivations:[...(inherited?.sourceActivations??[]),...sources],
+      const checkpoint=stableJson({sourceRunId:run.id,phase,...(input.accessRevocationHold?{accessRevocationHold:true}:{}),eventCutoff:cutoff.seq,sourceActivations:[...(inherited?.sourceActivations??[]),...sources],
         ...(parent?{parentCheckpoint:{id:parent.id,sha256:createHash('sha256').update(parent.checkpoint_json).digest('hex')}}:{}),
         priorInputs, priorInputSelection:'At most eight exact submitted same-session inputs, newest first. Earlier canonical history remains explicitly retrievable; this is cold reconstruction, not proof of a completed provider checkpoint.',
         partialEvidence:partial,previousPartialEvidence:inherited?.partialEvidence??[],evidenceSelection:'At most 16 tool/command/file/error events plus four final text events, within 16 KiB; oversized content is referenced by exact event ID/hash. Other execution history remains in the Work log. These are non-authoritative interrupted execution observations, not completed actions or new instructions.',
         uncertainEffects:'The interrupted provider may have performed actions, including submitted/unacknowledged steering. Inspect durable outputs and external state before any retry. Human Resume does not prove an effect failed.'});
       this.sqlite.prepare(`INSERT INTO agent_run_pauses(id,agent_id,run_id,state,pause_key,provider_input_json,injection_snapshot_json,paused_at,checkpoint_json,phase,rollover_id)
         VALUES(?,?,?,'paused',?,?,?,?,?,?,?)`).run(pauseId,input.agentId,run.id,input.idempotencyKey,stableJson(providerInput),stableJson(injections),now,checkpoint,phase,rollover?.id??null);
+      if(input.accessRevocationHold)this.sqlite.prepare("UPDATE agent_run_pauses SET last_error=? WHERE id=?").run(
+        'An access restriction was requested while this Run was active. Its prior context and uncertain effects are preserved for review; automatic continuation is unavailable.',pauseId);
       const fence=this.support.nextFence(input.agentId);
       this.sqlite.prepare("UPDATE scheduler_runs SET status='cancelled',fencing_token=?,side_effects_fenced_at=?,updated_at=?,terminal_at=? WHERE id=?").run(fence,now,now,now,run.id);
       this.sqlite.prepare(`UPDATE scheduler_prompt_injections SET state=CASE WHEN state='submitted' THEN 'outcome_unknown' ELSE 'cancelled' END,
@@ -983,6 +988,10 @@ export class CoordinationV3RunLifecycleAuthority {
       const pause=this.sqlite.prepare('SELECT * FROM agent_run_pauses WHERE id=? AND agent_id=?').get(input.pauseId,input.agentId) as {state:string;run_id:string;phase:string;rollover_id:string|null;checkpoint_json:string}|undefined;
       if(!pause)throw new Error('Exact pause is no longer available');
       if(pause.state==='stopped')throw new Error('Paused Run was stopped');
+      // Old provider prompts and observed tool outputs may contain material
+      // whose access was revoked. Ordinary pause replay is not a safe rebuild.
+      if((JSON.parse(pause.checkpoint_json) as {accessRevocationHold?:boolean}).accessRevocationHold)
+        throw new Error('This Run was paused for an access restriction. Its earlier context and uncertain effects must be reviewed before continuation.');
       // Every command key remains immutable, including rejected attempts.
       if(this.sqlite.prepare('SELECT 1 FROM agent_pause_recoveries WHERE pause_id=? AND resume_key=?').get(input.pauseId,input.idempotencyKey))return;
       if(pause.state!=='paused')throw new Error('Recovery is already requested or accepted');

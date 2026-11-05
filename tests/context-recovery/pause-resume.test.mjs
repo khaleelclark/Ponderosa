@@ -1,9 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash,randomUUID} from 'node:crypto';
+import {ownedChroma} from '../memory/portability-fixture.mjs';
+import {CAPABILITY_IDS} from '../../packages/core/dist/index.js';
 import {projectPauseCheckpointForProvider} from '../../apps/server/dist/routes/agent-run-preparation.js';
 import {withFixture,until} from '../shared/fixture.mjs';
-import {AgentStore,CoordinationV3Store} from '../../packages/agents/dist/index.js';
+import {AgentStore,CoordinationV3Store,CapabilityPolicyStore} from '../../packages/agents/dist/index.js';
+import {createActiveAccessRevocation} from '../../apps/server/dist/active-access-revocation.js';
 
 test('pause checkpoint projects obsolete tool definitions without changing durable evidence or task text',()=>{
  const definitions=[{name:'old-tool',description:'historical tool definition'}];
@@ -519,4 +522,97 @@ test('leased unsubmitted source pause retains its original Request and completes
   f.ok(await f.tool(f.sessions.get(agent.id),'ponderosa_update_request',{text:'Original early task completed'}));
   assert.deepEqual(store.sqlite.prepare('SELECT state,requester_agent_id FROM coordination_requests WHERE id=?').get(request.id),{state:'completed',requester_agent_id:requester.id});
  },{storeFactory:dataDir=>(store=new AgentStore(dataDir))});}finally{CoordinationV3Store.prototype[method]=original;}
+});
+
+
+test('effective capability restriction fences only affected active Codex work and prevents checkpoint replay',{timeout:30000},async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const first=await f.createChat('Revoked access'),second=await f.createChat('Unaffected access');
+  const agent=await f.createIdleAgent(first,'Restricted worker'),other=await f.createIdleAgent(second,'Other worker');
+  await f.hold(agent.id);await f.hold(other.id);
+  const authority=new CoordinationV3Store(store.sqlite),source=authority.activeAgentRun(agent.id),otherRun=authority.activeAgentRun(other.id);
+  const packet=store.sqlite.prepare('SELECT provider_prompt,prompt_hash FROM provider_inputs WHERE scheduler_run_id=?').get(source.id);
+  const original=store.sqlite.prepare('SELECT activation_id FROM scheduler_run_activations WHERE run_id=?').all(source.id);
+  f.ok(await f.api('PUT',`/api/conversations/${first.id}/capabilities`,{revision:0,restrictedCapabilityIds:[]}));
+  assert.equal(authority.activeAgentRun(agent.id).id,source.id,'no effective change does not interrupt');
+  const stale=await f.api('PUT',`/api/conversations/${first.id}/capabilities`,{revision:0,restrictedCapabilityIds:[CAPABILITY_IDS.memoryRead]});
+  assert.equal(stale.status,409);assert.equal(authority.activeAgentRun(agent.id).id,source.id);
+  f.ok(await f.api('PUT',`/api/conversations/${first.id}/capabilities`,{revision:1,restrictedCapabilityIds:[CAPABILITY_IDS.memoryRead]}));
+  const pause=await until(()=>store.sqlite.prepare("SELECT * FROM agent_run_pauses WHERE agent_id=? AND state='paused'").get(agent.id),'policy pause');
+  assert.equal(pause.run_id,source.id);assert.equal(JSON.parse(pause.checkpoint_json).accessRevocationHold,true);
+  assert.match(pause.last_error,/access restriction was requested/);
+  assert.deepEqual(store.sqlite.prepare('SELECT provider_prompt,prompt_hash FROM provider_inputs WHERE scheduler_run_id=?').get(source.id),packet);
+  assert.deepEqual(store.sqlite.prepare('SELECT activation_id FROM scheduler_run_activations WHERE run_id=?').all(source.id),original);
+  assert.equal(store.sqlite.prepare('SELECT status FROM scheduler_runs WHERE id=?').get(source.id).status,'cancelled');
+  assert.equal(authority.activeAgentRun(other.id).id,otherRun.id);
+  await until(()=>store.sqlite.prepare("SELECT state FROM provider_operation_outbox WHERE idempotency_key=?").get('pause:'+pause.id)?.state==='completed','exact process drain');
+  const turns=f.turns.filter(item=>item.agentId===agent.id).length;
+  const refused=await f.api('POST',`/api/agents/${agent.id}/resume`,{pauseId:pause.id,idempotencyKey:randomUUID()});
+  assert.equal(refused.status,409);assert.match(refused.body.error,/access restriction/);
+  await f.reopen();
+  assert.equal(store.sqlite.prepare('SELECT state FROM agent_run_pauses WHERE id=?').get(pause.id).state,'paused');
+  const again=await f.api('POST',`/api/agents/${agent.id}/resume`,{pauseId:pause.id,idempotencyKey:randomUUID()});
+  assert.equal(again.status,409);assert.equal(f.turns.filter(item=>item.agentId===agent.id).length,turns);
+  assert.deepEqual(store.sqlite.prepare('SELECT provider_prompt,prompt_hash FROM provider_inputs WHERE scheduler_run_id=?').get(source.id),packet);
+ },{storeFactory:p=>(store=new AgentStore(p))});
+});
+
+test('global memory revocation holds only a Run with effective prior memory access',{timeout:90000},async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const first=await f.createChat('Memory access'),second=await f.createChat('Already restricted');
+  const agent=await f.createIdleAgent(first,'Memory worker'),other=await f.createIdleAgent(second,'Restricted worker');
+  f.ok(await f.api('PUT',`/api/local-memory/grants/${second.id}`,{readGlobal:true,expectedRevision:0}));
+  f.ok(await f.api('PUT',`/api/agents/${other.id}/capabilities`,{revision:0,restrictedCapabilityIds:[CAPABILITY_IDS.memoryRead]}));
+  await f.hold(agent.id);await f.hold(other.id);
+  const authority=new CoordinationV3Store(store.sqlite),source=authority.activeAgentRun(agent.id),otherRun=authority.activeAgentRun(other.id);
+  f.ok(await f.api('PUT',`/api/local-memory/grants/${first.id}`,{readGlobal:true,expectedRevision:0}));
+  assert.equal(authority.activeAgentRun(agent.id).id,source.id,'grant expansion does not interrupt');
+  const conflict=await f.api('PUT',`/api/local-memory/grants/${first.id}`,{readGlobal:false,expectedRevision:0});
+  assert.equal(conflict.status,409);assert.equal(authority.activeAgentRun(agent.id).id,source.id);
+  f.ok(await f.api('PUT',`/api/local-memory/grants/${second.id}`,{readGlobal:false,expectedRevision:1}));
+  assert.equal(authority.activeAgentRun(other.id).id,otherRun.id,'revocation cannot further restrict an already denied memory reader');
+  // Separate policy DB failure occurs after the canonical Run is fenced.
+  const policyDb=new Database(path.join(f.root,'memory-policy','host-policy.sqlite'));
+  try {
+   policyDb.exec("CREATE TRIGGER controlled_grant_write_failure BEFORE UPDATE ON local_memory_chat_grants BEGIN SELECT RAISE(ABORT,'controlled policy write failure'); END");
+   const failed=await f.api('PUT',`/api/local-memory/grants/${first.id}`,{readGlobal:false,expectedRevision:1});
+   assert.ok(failed.status>=400);assert.equal(f.ok(await f.api('GET',`/api/local-memory/grants/${first.id}`)).readGlobal,true);
+  } finally { policyDb.exec('DROP TRIGGER controlled_grant_write_failure');policyDb.close(); }
+  const pause=await until(()=>store.sqlite.prepare("SELECT * FROM agent_run_pauses WHERE agent_id=? AND state='paused'").get(agent.id),'memory policy pause');
+  assert.equal(pause.run_id,source.id);assert.equal(JSON.parse(pause.checkpoint_json).accessRevocationHold,true);
+  assert.match(pause.last_error,/access restriction was requested/);
+  f.ok(await f.api('PUT',`/api/local-memory/grants/${first.id}`,{readGlobal:false,expectedRevision:1}));
+  assert.equal(authority.activeAgentRun(other.id).id,otherRun.id);
+  await until(()=>store.sqlite.prepare("SELECT state FROM provider_operation_outbox WHERE idempotency_key=?").get('pause:'+pause.id)?.state==='completed','memory policy process drain');
+  const refused=await f.api('POST',`/api/agents/${agent.id}/resume`,{pauseId:pause.id,idempotencyKey:randomUUID()});
+  assert.equal(refused.status,409);assert.match(refused.body.error,/access restriction/);
+  assert.equal(f.ok(await f.api('GET',`/api/local-memory/grants/${first.id}`)).readGlobal,false);
+ },{storeFactory:p=>(store=new AgentStore(p)),localMemoryForRoot:async root=>({
+  chromaUrl:await ownedChroma(),collectionPrefix:'policy_'+randomUUID().replaceAll('-',''),
+  modelDir:process.env.PONDEROSA_TEST_MEMORY_MODEL_DIR,stateDirectory:path.join(root,'memory-policy'),provision:true,
+ })});
+});
+
+
+test('memory revocation selects the Run home Chat and notification failures do not change committed policy',t=>{
+ const root=mkdtempSync(path.join(tmpdir(),'access-revocation-owner-')),store=new AgentStore(root);
+ t.after(()=>{store.close();rmSync(root,{recursive:true,force:true})});
+ const project=store.createProject({label:'Home',hostPath:root,defaultEngine:'codex',chatOwned:true}),home=store.getConversation(project.lastConversationId);
+ const agent=store.createAgent(project.id,{conversationId:home.id,title:'Worker',engine:'codex'});
+ const run={runId:'source',v3SchedulerRunId:'source',runtimeEngineId:'codex',homeConversationId:home.id,conversationId:'different-routed-chat'};
+ const pauses=[],logs=[];
+ const context={store,coordinationV3:{pauseAgentRun:input=>{pauses.push(input)}},activeRuns:new Map([[agent.id,run]]),ownsRun:()=>true,
+  wakeScheduler:()=>{throw Error('controlled wake failure')},publishPause:()=>{throw Error('controlled publication failure')},logError:(_error,operation)=>logs.push(operation)};
+ const helper=createActiveAccessRevocation(context);
+ helper.beforeGlobalMemoryRevocation('different-routed-chat');
+ assert.equal(pauses.length,0,'a routing Chat alone does not grant global memory');
+ helper.beforeGlobalMemoryRevocation(home.id);
+ assert.equal(pauses.length,1);assert.equal(pauses[0].runId,'source');assert.equal(pauses[0].accessRevocationHold,true);
+ assert.deepEqual(logs,['wake scheduler','publish pause']);
+ const policies=new CapabilityPolicyStore(store.sqlite);
+ const committed=helper.policyChange(()=>policies.put({scopeKind:'agent',scopeId:agent.id,expectedRevision:0,restrictedCapabilityIds:[CAPABILITY_IDS.memoryRead]}));
+ assert.equal(committed.revision,1);assert.equal(policies.get('agent',agent.id).revision,1);
+ assert.equal(pauses.length,2);assert.deepEqual(logs,['wake scheduler','publish pause','wake scheduler','publish pause']);
 });

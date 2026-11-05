@@ -19,7 +19,7 @@ import type {CreateServerOptions,AgentMessageCapability,ActiveRun} from './app-c
 import {activeChatResourceOwner} from './branch-resource-owner.js';
 import {requestProduct,resourceInProduct,type ProductScope} from './product-scope.js';
 
-type Ports={opts:CreateServerOptions;store:AgentStore;capabilities:Map<string,AgentMessageCapability>;activeRuns:Map<string,ActiveRun>;ownsRun:(capability:AgentMessageCapability,run:ActiveRun|undefined)=>boolean;publishInvalidation?:(agentId:string,event:import('@ponderosa/core').MemoryChangedEvent)=>void};
+type Ports={opts:CreateServerOptions;store:AgentStore;capabilities:Map<string,AgentMessageCapability>;activeRuns:Map<string,ActiveRun>;ownsRun:(capability:AgentMessageCapability,run:ActiveRun|undefined)=>boolean;publishInvalidation?:(agentId:string,event:import('@ponderosa/core').MemoryChangedEvent)=>void;beforeGlobalMemoryRevocation?:(chatId:string)=>void};
 class MemoryDenied extends Error{constructor(message:string,readonly statusCode=403){super(message);}}
 /** Host authority view; physical sources/business operations stay in immutable private.6. No memory journal or command receipt state. */
 export class LocalMemoryService{
@@ -730,6 +730,11 @@ export class LocalMemoryService{
  getGrant(chatId:string,product:ProductScope){this.chat(chatId,product);const g=this.grant(chatId);if(g&&g.principal_id!==this.principalId)throw new MemoryDenied('Foreign memory grant principal');return {chatId,readGlobal:g?.read_global===1,revision:g?.revision??0};}
  setGrant(chatId:string,readGlobal:boolean,expectedRevision:number,product:ProductScope){
   this.live();if(typeof readGlobal!=='boolean'||!Number.isSafeInteger(expectedRevision)||expectedRevision<0)throw new MemoryDenied('Boolean readGlobal and nonnegative expectedRevision required',400);
+  // The grant lives in a separate policy database. Fence first: if that
+  // later write fails, the Run remains paused and its old context is retained.
+  const prior=this.getGrant(chatId,product);
+  if(prior.revision!==expectedRevision)throw new MemoryDenied('Global memory grant revision conflict',409);
+  if(prior.readGlobal&&!readGlobal)this.ports.beforeGlobalMemoryRevocation?.(chatId);
   const result=this.policy.transaction(()=>{
    const current=this.getGrant(chatId,product);if(current.revision!==expectedRevision)throw new MemoryDenied('Global memory grant revision conflict',409);
    const revision=current.revision+1;this.policy.prepare(`INSERT INTO local_memory_chat_grants VALUES(?,?,?,?,?) ON CONFLICT(chat_id) DO UPDATE SET principal_id=excluded.principal_id,read_global=excluded.read_global,revision=excluded.revision,updated_at=excluded.updated_at`).run(chatId,this.principalId,readGlobal?1:0,revision,new Date().toISOString());

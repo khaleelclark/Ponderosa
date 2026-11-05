@@ -1436,7 +1436,7 @@ export class CoordinationV3Store {
     return this.runLifecycleAuthority.resumeProviderBlockedAgent(agentId, runtimeSelection, now);
   }
 
-  pauseAgentRun(input: {agentId:string;runId:string;idempotencyKey:string;now?:string}) {
+  pauseAgentRun(input: {agentId:string;runId:string;idempotencyKey:string;now?:string;accessRevocationHold?:true}) {
     return this.runLifecycleAuthority.pauseAgentRun(input);
   }
   resumeAgentRun(input: {agentId:string;pauseId:string;idempotencyKey:string}) {
