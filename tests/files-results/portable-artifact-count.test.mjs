@@ -98,6 +98,8 @@ test('lossless gzip preserves originals and refuses corrupt, oversized and misle
  const source=Buffer.from('雪🌲 exact\r\n'.repeat(100000));
  const encoded=await encodePortableArtifactData(source);
  assert.equal(encoded.dataEncoding,'gzip');
+ const {decodePortableMetadataArtifact}=await import('../../apps/server/dist/agent-package-codec.js');
+ assert.deepEqual(decodePortableMetadataArtifact(encoded),source);
  const decoded=await decodePortableArtifactData(encoded);
  assert.deepEqual(decoded.data,source);
  assert.equal(decoded.sha256,createHash('sha256').update(source).digest('hex'));
@@ -107,7 +109,9 @@ test('lossless gzip preserves originals and refuses corrupt, oversized and misle
   {...encoded,dataBase64:Buffer.concat([Buffer.from(encoded.dataBase64,'base64'),Buffer.from(encoded.dataBase64,'base64')]).toString('base64')},
   {...encoded,dataEncoding:'invented'}, {...encoded,decodedSize:MANAGED_ARTIFACT_MAX_BYTES+1},
   {dataBase64:'eA==',decodedSize:1},
- ])await assert.rejects(decodePortableArtifactData(candidate),/gzip|decoded size|encoding/u);
+ ]){await assert.rejects(decodePortableArtifactData(candidate),/gzip|decoded size|encoding/u);assert.throws(()=>decodePortableMetadataArtifact(candidate),/gzip|size|encoding|Unencoded/u);}
+ assert.throws(()=>decodePortableMetadataArtifact({...encoded,dataBase64:encoded.dataBase64.slice(0,-4)}),/gzip/);
+ assert.throws(()=>decodePortableMetadataArtifact({...encoded,dataBase64:'!invalid'}),/base64/);
  const ordinary=await encodePortableArtifactData(Buffer.from('small original'));
  assert.deepEqual(ordinary,{dataBase64:Buffer.from('small original').toString('base64')});
 });

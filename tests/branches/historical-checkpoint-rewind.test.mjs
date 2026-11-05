@@ -3083,7 +3083,7 @@ test('final resource actual package engine captures later history and working fi
   const retained=installation.runtimeData(preview.id,imported.branchId);
   assert.deepEqual(retained.data,portable.runtimeData);
   const importedOwner=retained.receipt.executionMap[f.source.id];
-  assert.throws(()=>f.branches.issuedDestinationSource(imported.branchId,importedOwner,final.checkpointId,final.checkpointHash),/Final source has excluded data, unsupported links or encoded artifacts/);
+  assert.throws(()=>f.branches.issuedDestinationSource(imported.branchId,importedOwner,final.checkpointId,final.checkpointHash),/Final source has excluded data/);
   assert.equal(retained.receipt.dispatched,false);
   assert.equal(db.prepare('SELECT COUNT(*) n FROM agents a JOIN conversations c ON c.id=a.conversation_id WHERE c.branch_id=?').get(imported.branchId).n,0);
   assert.equal(readFileSync(file,'utf8'),'after checkpoint exact content 😀\n');
@@ -3105,7 +3105,7 @@ test('final resource actual package engine captures later history and working fi
  }finally{if(service)await service.stop();await app.close();assets.close();}
 });
 
-for(const linkedFinal of [false,true,'dangling','cycle'])test(linkedFinal==='dangling'?'dangling portable final symlink continues without creating its target':linkedFinal===true?'linked portable final resource continues with exact in-root file links':linkedFinal?'unsupported '+linkedFinal+' final links remain held':'completed portable final resource restores a fresh destination without replay',async t=>{
+for(const linkedFinal of [false,true,'dangling','cycle','compressed','multipart'])test(linkedFinal==='compressed'||linkedFinal==='multipart'?linkedFinal+' portable final originals continue with exact decoded bytes':linkedFinal==='dangling'?'dangling portable final symlink continues without creating its target':linkedFinal===true?'linked portable final resource continues with exact in-root file links':linkedFinal?'unsupported '+linkedFinal+' final links remain held':'completed portable final resource restores a fresh destination without replay',async t=>{
  const Fastify=(await import('fastify')).default;
  const {AssetStore}=await import('../../apps/server/dist/assets.js');
  const {registerAgentPackageRoutes}=await import('../../apps/server/dist/routes/agent-packages.js');
@@ -3140,7 +3140,10 @@ for(const linkedFinal of [false,true,'dangling','cycle'])test(linkedFinal==='dan
   assert.ok(earlierPackage.agents[0].history.some(message=>message.text==='before checkpoint history'));
   assert.equal(earlierPackage.agents[0].workingFiles?.some(entry=>entry.path==='final-work.txt')??false,false,'ordinary issued checkpoint keeps its original file selection');
   writeFileSync(file,'after checkpoint exact content 😀\n');
-  if(linkedFinal){symlinkSync(linkedFinal==='dangling'?'missing-file':linkedFinal==='cycle'?'captured-link':'final-work.txt',join(root,'captured-link'));if(linkedFinal===true)linkSync(file,join(root,'z-hardlink'));}
+  if(linkedFinal===true||linkedFinal==='dangling'||linkedFinal==='cycle'){symlinkSync(linkedFinal==='dangling'?'missing-file':linkedFinal==='cycle'?'captured-link':'final-work.txt',join(root,'captured-link'));if(linkedFinal===true)linkSync(file,join(root,'z-hardlink'));}
+  const transported=linkedFinal==='compressed'||linkedFinal==='multipart';
+  const transportBytes=transported?Buffer.alloc(linkedFinal==='multipart'?64*1024*1024+17:96*1024,0x61):undefined;
+  if(transportBytes)writeFileSync(join(root,'transport-original.bin'),transportBytes);
   message('after checkpoint history 😀');
   coordination.updateRequest({requestId:opened.requestId,updateId:'actual-engine-result',kind:'completed',actor:{kind:'agent',id:opened.agentId},payload:{text:'known result'}});
   const suffix=await f.claim();f.settle(suffix);await f.branches.unitSaver.drain();
@@ -3216,6 +3219,13 @@ for(const linkedFinal of [false,true,'dangling','cycle'])test(linkedFinal==='dan
   assert.equal(retained.receipt.dispatched,false);
   assert.equal(db.prepare('SELECT COUNT(*) n FROM agents a JOIN conversations c ON c.id=a.conversation_id WHERE c.branch_id=?').get(imported.branchId).n,0);
   assert.equal(readFileSync(file,'utf8'),'after checkpoint exact content 😀\n');
+  if(transported){
+   const transport=node.workingFiles.find(file=>file.path==='transport-original.bin');assert.ok(transport);
+   assert.equal(Boolean(transport.parts),linkedFinal==='multipart');
+   assert.ok(node.artifacts.some(a=>(transport.parts?.refs??[transport.artifactRef]).includes(a.ref)&&a.dataEncoding==='gzip'),'real final capture uses compressed transport');
+   await exerciseForeignFinalDestination(t,portable,f.source.id,final,exit.identity,'prewrite',1,1);
+   assert.deepEqual(readFileSync(join(root,'transport-original.bin')),transportBytes,'source original remains unchanged');return;
+  }
   if(linkedFinal===true||linkedFinal==='dangling'){
    await exerciseForeignFinalDestination(t,portable,f.source.id,final,exit.identity,'prewrite',1,2);
    assert.equal(readlinkSync(join(root,'captured-link')),linkedFinal==='dangling'?'missing-file':'final-work.txt');
@@ -3323,6 +3333,34 @@ async function exerciseForeignFinalDestination(t,portable,originalExecutionId,fi
   const incomingPackage=g.branches.issuedDestinationSource(imported.branchId,sourceId,final.checkpointId,final.checkpointHash).proof.selectedCustody.package;
   const expectedLinks=incomingPackage.agents.flatMap(a=>a.workingFolder?.links??[]);
   const stagedLiveRoot=operation.result.liveWorkingRoots[0].path;
+  const transportFile=incomingPackage.agents.flatMap(a=>a.workingFiles??[]).find(file=>file.path==='transport-original.bin');
+  const transportExpected=transportFile?Buffer.alloc(transportFile.parts?.byteLength??96*1024,0x61):undefined;
+  if(transportFile?.parts){
+   const {validatePortableAgentPackage}=await import('../../apps/server/dist/portable-agent-package-validation.js');
+   const wrong=structuredClone(incomingPackage),manifest=wrong.agents.flatMap(a=>a.workingFiles??[]).find(file=>file.path==='transport-original.bin');
+   manifest.parts.sha256='0'.repeat(64);validatePortableAgentPackage(wrong);
+   const reservation=g.branches.issuedDestinationPlan(imported.branchId,sourceId,input.commandKey).reservation;
+   assert.throws(()=>composer.verifyFinalWorkingFiles(reservation,wrong),/Final imported file changed/,'exact staged bytes cannot satisfy a wrong whole-original digest');
+   for(const root of [stagedLiveRoot,recoveryRoot])assert.deepEqual(readFileSync(join(root,'transport-original.bin')),transportExpected);
+   assert.equal(g.store.sqlite.prepare('SELECT state FROM coordination_destination_admissions WHERE id=?').get(prepared.admissionId).state,'staged');
+   for(const mutation of ['missing','duplicate']){
+    const invalid=structuredClone(incomingPackage),file=invalid.agents.flatMap(a=>a.workingFiles??[]).find(file=>file.path==='transport-original.bin');
+    if(mutation==='missing')file.parts.refs[1]=randomUUID();else file.parts.refs[1]=file.parts.refs[0];
+    assert.throws(()=>validatePortableAgentPackage(invalid),/part|original/i);
+   }
+  }
+  if(transportExpected)for(const root of [stagedLiveRoot,recoveryRoot]){
+   const path=join(root,'transport-original.bin');assert.deepEqual(readFileSync(path),transportExpected);
+   for(const kind of ['changed','truncated','extra']){
+    const modified=kind==='changed'?Buffer.from(transportExpected):kind==='truncated'?transportExpected.subarray(0,transportExpected.length-1):Buffer.concat([transportExpected,Buffer.from('!')]);
+    if(kind==='changed')modified[modified.length-1]^=1;
+    writeFileSync(path,modified);await assert.rejects(composer.admit(imported.branchId,sourceId,input.commandKey,review.reviewHash),/Final imported file changed/);
+    assert.deepEqual(readFileSync(path),modified,'staged operator edits remain untouched');
+    assert.equal(g.store.sqlite.prepare('SELECT state FROM coordination_destination_admissions WHERE id=?').get(prepared.admissionId).state,'staged');
+    writeFileSync(path,transportExpected);
+   }
+  }
+
   const verifyLinks=()=>{
    for(const root of [stagedLiveRoot,recoveryRoot])for(const link of expectedLinks){
     const entry=join(root,link.path);
@@ -3423,6 +3461,14 @@ async function exerciseForeignFinalDestination(t,portable,originalExecutionId,fi
   assert.ok(finalNode.history.some(message=>message.text==='after checkpoint history 😀'));
   const sourcePackage=g.branches.issuedDestinationSource(imported.branchId,sourceId,final.checkpointId,final.checkpointHash).proof.selectedCustody.package;
   assert.deepEqual(finalNode.workingFolder.links??[],expectedLinks,'final recapture preserves exact link topology and timestamps');verifyLinks();
+  if(transportExpected){
+   for(const root of [liveRoot,recoveryRoot])assert.deepEqual(readFileSync(join(root,'transport-original.bin')),transportExpected,'complete original survives actual cleanup');
+   const file=finalNode.workingFiles.find(file=>file.path==='transport-original.bin');assert.ok(file);
+   const {decodePortableArtifactData}=await import('../../apps/server/dist/agent-package-codec.js');
+   const parts=[];for(const ref of file.parts?.refs??[file.artifactRef])parts.push((await decodePortableArtifactData(finalNode.artifacts.find(a=>a.ref===ref))).data);
+   assert.deepEqual(Buffer.concat(parts),transportExpected,'final recapture retains every decoded original byte');
+  }
+
   const incomingArtifacts=sourcePackage.agents.flatMap(a=>a.artifacts??[]),outgoingArtifacts=finalPackage.agents.flatMap(a=>a.artifacts??[]);
   for(const bytes of new Set(incomingArtifacts.map(a=>a.dataBase64))){
    assert.ok(outgoingArtifacts.filter(a=>a.dataBase64===bytes).length>=incomingArtifacts.filter(a=>a.dataBase64===bytes).length,'every imported artifact copy survives final recapture');
@@ -3495,6 +3541,7 @@ async function exerciseForeignFinalDestination(t,portable,originalExecutionId,fi
   assert.equal(g.store.sqlite.prepare('SELECT COUNT(*) n FROM scheduler_runs WHERE agent_id=?').get(mappedAgent).n,0);
   assert.equal(readFileSync(join(liveRoot,'final-work.txt'),'utf8'),exactContent.toString());
   assert.equal(readFileSync(recoveryFile,'utf8'),exactContent.toString());
+  if(transportExpected)for(const root of [liveRoot,recoveryRoot])assert.deepEqual(readFileSync(join(root,'transport-original.bin')),transportExpected,'complete original remains exact after store reopen and idempotent receipt readback');
   console.log('FOREIGN_FINAL_ACTIVE',JSON.stringify({completed:true,retired:true,freshFinalCustody:true,restartHistory:true,workingFilesPreserved:true,requestsReplayed:0,portableGeneration}));
  }finally{if(cleanup)await cleanup.stop();await app.close();assets.close();}
 }

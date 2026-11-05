@@ -1,4 +1,6 @@
-import { gzip, gunzip, gunzipSync } from "node:zlib";
+import {portableArtifactByteLength} from '@ponderosa/agents';
+export {portableBase64ByteLength,portableArtifactByteLength,decodePortableMetadataArtifact} from '@ponderosa/agents';
+import { gzip, gunzip } from "node:zlib";
 import { promisify } from "node:util";
 import { createHash } from "node:crypto";
 import { setImmediate as yieldToLoop } from "node:timers/promises";
@@ -136,20 +138,6 @@ export async function parsePortablePackageFile(pathname: string, options: Packag
 
 const CHUNK_BYTES = 192 * 1024; // divisible by 3 for independent base64 chunks
 /** Package previews need exact sizes without allocating decoded artifacts. */
-export function portableBase64ByteLength(dataBase64: string): number {
-  if (dataBase64.length > Math.ceil(MANAGED_ARTIFACT_MAX_BYTES / 3) * 4) throw new Error("portable artifact exceeds the 64 MiB managed-file limit");
-  const padding = dataBase64.endsWith("==") ? 2 : dataBase64.endsWith("=") ? 1 : 0;
-  const length = dataBase64.length - padding;
-  const bytes = Math.floor(length * 3 / 4);
-  if (bytes > MANAGED_ARTIFACT_MAX_BYTES) throw new Error("portable artifact exceeds the 64 MiB managed-file limit");
-  if (length % 4 === 1 || (padding && dataBase64.length % 4 !== 0)) throw new Error("portable artifact has invalid base64 data");
-  for (let offset=0; offset<length; offset+=256*1024) {
-    if (/[^A-Za-z0-9+/]/u.test(dataBase64.slice(offset,Math.min(length,offset+256*1024)))) throw new Error("portable artifact has invalid base64 data");
-  }
-  const tail=dataBase64.slice(length ? Math.floor((length-1)/4)*4 : 0,length);
-  if (Buffer.from(tail,"base64").toString("base64").replace(/=+$/u,"") !== tail) throw new Error("portable artifact has invalid base64 data");
-  return bytes;
-}
 
 export async function encodePortableArtifact(source: Buffer): Promise<string> {
   if (source.length > MANAGED_ARTIFACT_MAX_BYTES) throw new Error("portable artifact exceeds the 64 MiB managed-file limit");
@@ -210,18 +198,7 @@ const gzipAsync = promisify(gzip);
 const gunzipAsync = promisify(gunzip);
 type ArtifactData = Pick<PortableArtifactDto, "dataBase64" | "dataEncoding" | "decodedSize">;
 /** Previews charge the declared original size; import verifies it before mutation. */
-export function portableArtifactByteLength(artifact: ArtifactData): number {
-  const encodedBytes = portableBase64ByteLength(artifact.dataBase64);
-  if (artifact.dataEncoding === undefined) {
-    if (artifact.decodedSize !== undefined) throw new Error("Unencoded artifact cannot declare a decoded size");
-    return encodedBytes;
-  }
-  if (artifact.dataEncoding !== "gzip" || !Number.isSafeInteger(artifact.decodedSize)
-      || artifact.decodedSize! < 0 || artifact.decodedSize! > MANAGED_ARTIFACT_MAX_BYTES) {
-    throw new Error("Invalid portable artifact encoding or decoded size (64 MiB per file)");
-  }
-  return artifact.decodedSize!;
-}
+
 export async function encodePortableArtifactData(source: Buffer): Promise<ArtifactData> {
   if (source.length > MANAGED_ARTIFACT_MAX_BYTES) throw new Error("portable artifact exceeds the 64 MiB managed-file limit");
   // Small originals keep their established representation. Compression is only
@@ -245,18 +222,4 @@ export async function decodePortableArtifactData(artifact: ArtifactData): Promis
   } catch { throw new Error("Portable artifact gzip is corrupt or exceeds its declared decoded size"); }
   if (data.length !== expected) throw new Error("Portable artifact decoded size does not match its original");
   return { data, sha256: createHash("sha256").update(data).digest("hex") };
-}
-
-/** Canonical review metadata has synchronous validation callers. Inflate only
- * its separately bounded original; hashing/parsing must never use gzip bytes. */
-export function decodePortableMetadataArtifact(artifact: ArtifactData, maximumBytes = 48 * 1024 * 1024): Buffer {
-  const expected = portableArtifactByteLength(artifact);
-  if (expected > maximumBytes) throw new Error("Reviewed user-data original exceeds " + maximumBytes / (1024 * 1024) + " MiB");
-  let data = Buffer.from(artifact.dataBase64, "base64");
-  if (artifact.dataEncoding === "gzip") {
-    try { data = gunzipSync(data, { maxOutputLength: Math.max(1, expected) }); }
-    catch { throw new Error("Reviewed user-data gzip is corrupt or exceeds its declared original size"); }
-  }
-  if (data.length !== expected) throw new Error("Reviewed user-data original size differs");
-  return data;
 }

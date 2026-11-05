@@ -126,9 +126,8 @@ export function retainedCompletedFinalResourceSource(owner:BranchPortableRuntime
    // remain outside this bounded continuation.
    if(link.kind!=='symlink'||link.sourceTarget!==undefined||link.target.includes('/')||link.target==='.'||link.target==='..')return true;
    return [...(owners[0].workingFolder.directories??[]),...(owners[0].workingFolder.links??[])].some((entry:any)=>entry.path===target);
-  })
-  ||pkg.agents.some((a:any)=>(a.workingFiles??[]).some((file:any)=>file.parts)||(a.artifacts??[]).some((artifact:any)=>artifact.dataEncoding!==undefined)))
-  throw Error('Final source has excluded data, unsupported links, multipart originals or encoded artifacts');
+  }))
+  throw Error('Final source has excluded data or unsupported links');
  // latest denotes the independently recorded equal final boundary, not a post-cleanup checkpoint.
  return {selected,latest:selected,selectedCustody:custody,latestCustody:custody,finalExit:exit,currentAuthority:false as const};
 }

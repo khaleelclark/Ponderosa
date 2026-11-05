@@ -1,5 +1,7 @@
+import {decodePortableMetadataArtifact} from './agent-package-codec.js';
+import {MANAGED_ARTIFACT_MAX_BYTES} from '@ponderosa/agents';
 import {portableLinkTarget,validateWorkingTopology} from './portable-working-files.js';
-import {lstatSync,readFileSync,readlinkSync,realpathSync} from 'node:fs';
+import {lstatSync,openSync,readSync,closeSync,fstatSync,constants,readlinkSync,realpathSync} from 'node:fs';
 import {join,dirname} from 'node:path';
 import {createHash} from 'node:crypto';
 import {
@@ -58,8 +60,30 @@ export class BranchIssuedDestinationService {
      validateWorkingTopology(node.workingFiles??[],node.workingFolder?.directories??[],node.workingFolder?.links??[],node.workingFolder?.cyclicLinks??'refuse');
      for(const dir of node.workingFolder?.directories??[])if(!lstatSync(join(path,dir.path)).isDirectory())throw Error('Final imported directory changed');
      for(const file of node.workingFiles??[]){
-      const artifact=node.artifacts?.find(a=>a.ref===file.artifactRef);
-      if(!artifact||!lstatSync(join(path,file.path)).isFile()||!readFileSync(join(path,file.path)).equals(Buffer.from(artifact.dataBase64,'base64')))throw Error('Final imported file changed; preserve current data and review');
+      const pathname=join(path,file.path),refs=file.parts?.refs??[file.artifactRef];
+      const changed=()=>Error('Final imported file changed; preserve current data and review');
+      if(!lstatSync(pathname).isFile())throw changed();
+      const fd=openSync(pathname,constants.O_RDONLY|constants.O_NOFOLLOW);
+      try{
+       const before=fstatSync(fd,{bigint:true}),digest=createHash('sha256'),chunk=Buffer.alloc(64*1024);let total=0;
+       if(!before.isFile())throw changed();
+       // Reuse the bounded synchronous original decoder; only one managed-size
+       // part is inflated at a time, never a second whole multipart file.
+       for(const ref of refs){
+        const matches=node.artifacts?.filter(a=>a.ref===ref)??[];
+        if(matches.length!==1)throw changed();
+        const original=decodePortableMetadataArtifact(matches[0]!,MANAGED_ARTIFACT_MAX_BYTES);
+        digest.update(original);total+=original.length;
+        for(let offset=0;offset<original.length;){
+         const count=readSync(fd,chunk,0,Math.min(chunk.length,original.length-offset),null);
+         if(!count||!chunk.subarray(0,count).equals(original.subarray(offset,offset+count)))throw changed();
+         offset+=count;
+        }
+       }
+       const after=fstatSync(fd,{bigint:true});
+       if(readSync(fd,chunk,0,1,null)!==0||before.size!==BigInt(total)||after.size!==before.size||after.mtimeNs!==before.mtimeNs
+        ||file.parts&&(total!==file.parts.byteLength||digest.digest('hex')!==file.parts.sha256))throw changed();
+      }finally{closeSync(fd);}
      }
      for(const link of node.workingFolder?.links??[]){
       if(link.targetRootRef!==undefined)throw Error('Final imported cross-root links remain held');

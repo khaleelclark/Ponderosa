@@ -1,3 +1,5 @@
+import {decodePortableMetadataArtifact} from './portable-artifact-original.js';
+import {MANAGED_ARTIFACT_MAX_BYTES} from './managed-artifact-files.js';
 import {readPinnedRetainedIssuedSource} from './coordination-v3-retained-destination-source.js';
 import {destinationResourceEvidence} from './coordination-v3-destination-resource-evidence.js';
 import {branchContinuationIds} from './branch-continuation-remap.js';
@@ -278,7 +280,7 @@ export class CoordinationV3DestinationAdmissionAuthority {
   if(reservation.retainedSourceId){
    const proof=readPinnedRetainedIssuedSource(this.db,reservation.retainedSourceId).proof;
    const artifacts=proof.selectedCustody.package.agents.flatMap((a:Row)=>a.artifacts??[]);
-   const expected=artifacts.map((a:Row)=>({sourceRef:a.ref,sha256:createHash('sha256').update(Buffer.from(a.dataBase64,'base64')).digest('hex'),byteLength:Buffer.from(a.dataBase64,'base64').length})).sort((a:Row,b:Row)=>a.sourceRef.localeCompare(b.sourceRef));
+   const expected=artifacts.map((a:Row)=>{const original=decodePortableMetadataArtifact(a as any,MANAGED_ARTIFACT_MAX_BYTES);return {sourceRef:a.ref,sha256:createHash('sha256').update(original).digest('hex'),byteLength:original.length};}).sort((a:Row,b:Row)=>a.sourceRef.localeCompare(b.sourceRef));
    const actual=stage.importPlan.artifacts.map(({destinationId,...a})=>a).sort((a,b)=>a.sourceRef.localeCompare(b.sourceRef));
    if(stableJson(actual)!==stableJson(expected)||Object.keys(stage.artifactMap).length)throw Error('Final working artifact receipt differs');
   }
