@@ -170,6 +170,7 @@ export class BranchResourceService {
   setPackageEngine(engine:BranchPackageEngine):void {this.packages=engine;}
   destinationPackageEngine():BranchPackageEngine {if(!this.packages)throw Error('Checkpoint package service unavailable');return this.packages;}
   private pending?: Promise<void>;
+  private provisioningStepId?: string;
   private maintenance?:Promise<void>;
   private importController?: AbortController;
   private stopped = false;
@@ -350,6 +351,7 @@ export class BranchResourceService {
   }
   private async work(admit: boolean): Promise<void> {
     if (admit && this.importer) for (let provision of this.branches.resourceProvisions().slice(0, 1)) {
+      this.provisioningStepId = provision.stepExecutionId;
       const controller = new AbortController();
       this.importController = controller;
       const timer = setTimeout(() => controller.abort(new Error('Temporary Agent import exceeded its deadline')), IMPORT_DEADLINE_MS);
@@ -489,6 +491,7 @@ export class BranchResourceService {
       } finally {
         clearTimeout(timer);
         if (this.importController === controller) this.importController = undefined;
+        if (this.provisioningStepId === provision.stepExecutionId) this.provisioningStepId = undefined;
       }
     }
     await this.maintain();
@@ -500,6 +503,9 @@ export class BranchResourceService {
   }
   private async cleanup():Promise<void> {
     for (const resource of this.branches.resourceCleanupCandidates()) {
+      // An in-flight capture can still publish or record a failure for this
+      // exact resource. Retire it only after that operation has settled.
+      if (this.provisioningStepId === resource.stepExecutionId) continue;
       const held=this.store.sqlite.prepare('SELECT r.error,(SELECT error FROM branch_retirement_errors WHERE resource_id=r.chat_id) retirement_error FROM branch_resources r WHERE r.step_execution_id=?').get(resource.stepExecutionId) as {error:string|null;retirement_error:string|null}|undefined;
       if(isMemoryCleanupHold(held?.error)||isMemoryCleanupHold(held?.retirement_error))continue;
       try {

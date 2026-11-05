@@ -52,6 +52,29 @@ test('unknown source memory mutation stays held and is not replayed by a copy', 
   const receipt=readBranchExpertCopy(store.sqlite,job.id,resource.step_execution_id);assert.equal(receipt.snapshotReceipt,undefined);assert.equal(resource.root_agent_id,null);assert.equal(writes,1);assert.equal(memory.core.database.scopeHasUnsettledMutation(scope),true);
   const collection=await original({name});assert.ok((await collection.get({ids:[id]})).ids.includes(id),'the acknowledged backend row is preserved');
   const holds=f.ok(await f.api('GET','/api/local-memory/mutation-holds')).filter(h=>h.effect?.scope===scope);assert.ok(holds.length,'unknown outcome stays visible and unreconciled');
-  branches.cancel(job.id);
+  // Pause a real retry after it has entered source capture. A concurrent
+  // cancellation must not retire this resource before that capture settles.
+  const assertSettled=memory.assertCheckpointSourceSettled.bind(memory), sourceDatabases=memory.checkpointSourceDatabases.bind(memory);
+  let enteredResolve, releaseResolve;
+  const entered=new Promise(resolve=>{enteredResolve=resolve}), release=new Promise(resolve=>{releaseResolve=resolve});
+  memory.assertCheckpointSourceSettled=()=>{};
+  memory.checkpointSourceDatabases=async()=>{enteredResolve();await release;return sourceDatabases();};
+  t.after(()=>{releaseResolve();memory.assertCheckpointSourceSettled=assertSettled;memory.checkpointSourceDatabases=sourceDatabases;});
+  try {
+    await Promise.race([entered,new Promise((_,reject)=>{const timer=setTimeout(()=>reject(Error('capture retry did not start')),30000);timer.unref();})]);
+    branches.cancel(job.id);
+    const other=deploy(f,store,chat,source,'independent-cancel');
+    const otherResource=await until(()=>store.sqlite.prepare('SELECT * FROM branch_resources WHERE execution_id=?').get(other.job.id),'independent resource',30000);
+    other.branches.cancel(other.job.id);
+    await until(()=>store.sqlite.prepare('SELECT state FROM branch_resources WHERE step_execution_id=?').get(otherResource.step_execution_id)?.state==='retired','unrelated resource retirement',30000);
+    assert.equal(store.sqlite.prepare('SELECT state FROM branch_resources WHERE step_execution_id=?').get(resource.step_execution_id).state,'reserved','in-flight capture has not drained');
+    assert.equal(readBranchExpertCopy(store.sqlite,job.id,resource.step_execution_id).snapshotReceipt,undefined);
+  } finally {releaseResolve();}
+  await until(()=>store.sqlite.prepare('SELECT state FROM branch_resources WHERE step_execution_id=?').get(resource.step_execution_id)?.state==='retired','cancelled copy retirement',60000);
+  assert.equal(writes,1);
+  assert.equal(memory.core.database.scopeHasUnsettledMutation(scope),true);
+  assert.ok((await collection.get({ids:[id]})).ids.includes(id),'the source row remains after copy retirement');
+  assert.ok(f.ok(await f.api('GET','/api/local-memory/mutation-holds')).some(h=>h.effect?.scope===scope),'the source hold remains visible after copy retirement');
+
  },{storeFactory:dir=>(store=new AgentStore(dir)),localMemoryForRoot:memoryOptions});
 });
