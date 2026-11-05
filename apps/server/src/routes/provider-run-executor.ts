@@ -1,3 +1,4 @@
+import { newlyRestrictedCodexAccess } from "../codex-access-restrictions.js";
 import { hasKnownRetainedMemory } from "../context-transition-admission.js";
 import { pauseOwnedNativeGoal } from "../native-goal-stop.js";
 import { requireCurrentRuntimeInputAccess } from "../runtime-input-files.js";
@@ -433,7 +434,7 @@ export function startProviderRunExecution(
         const current = runtimeRestrictions(
           new CapabilityPolicyStore(store.sqlite).resolveForAgent(agent.id, runId), runtimeEngineId,
         );
-        if (current.restrictedCapabilityIds.some(id => !capabilityRestrictions.restrictedCapabilityIds.includes(id)))
+        if (newlyRestrictedCodexAccess(capabilityRestrictions.restrictedCapabilityIds, current.restrictedCapabilityIds))
           throw new Error("Access was restricted before provider input. The original work remains available for review.");
       };
       const openPersistentRuntime = async (

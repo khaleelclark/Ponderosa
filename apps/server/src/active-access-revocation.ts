@@ -1,3 +1,4 @@
+import { newlyRestrictedCodexAccess } from "./codex-access-restrictions.js";
 import {CapabilityPolicyStore,type AgentStore,type CoordinationV3Store} from '@ponderosa/agents';
 import {CAPABILITY_IDS} from '@ponderosa/core';
 import type {ActiveRun} from './app-contracts.js';
@@ -28,12 +29,12 @@ export function createActiveAccessRevocation(context:{
   const affected:string[]=[];
   const result=context.store.sqlite.transaction(()=>{
    const before=candidates().map(([agentId,run])=>({agentId,run,
-    restricted:new Set(policies.resolveForAgent(agentId,run.v3SchedulerRunId).restrictedCapabilityIds)}));
+    restricted:policies.resolveForAgent(agentId,run.v3SchedulerRunId).restrictedCapabilityIds}));
    const value=apply();
    for(const item of before){
     if(!context.ownsRun(item.agentId,item.run))continue;
     const after=policies.resolveForAgent(item.agentId,item.run.v3SchedulerRunId).restrictedCapabilityIds;
-    if(after.some(id=>!item.restricted.has(id))){hold(item.agentId,item.run);affected.push(item.agentId);}
+    if(newlyRestrictedCodexAccess(item.restricted,after)){hold(item.agentId,item.run);affected.push(item.agentId);}
    }
    return value;
   })();
