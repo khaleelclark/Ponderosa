@@ -27,6 +27,7 @@ export class LocalMemoryService{
  readonly principalId:string;
  private policy!:Database.Database;
  private readonly coordination:CoordinationV3Store;
+ private expertFinalCustodyVerifier?: (chatId:string,projectId:string)=>void|Promise<void>;
  private closed=false;
  private calls=new Set<Promise<unknown>>();
  private policyCustodyCheck:()=>void=()=>{throw Error('Memory policy custody not initialized');};
@@ -242,15 +243,26 @@ export class LocalMemoryService{
    });return this.exposureValid(runId,requireStarted);
   }catch{this.invalidateSpeech(e);return false;}
  }
+ /** Installed by the Branch host; absent or unverifiable custody keeps cleanup held. */
+ setExpertFinalCustodyVerifier(verify:(chatId:string,projectId:string)=>void|Promise<void>){
+  if(this.expertFinalCustodyVerifier)throw Error('Temporary copy custody verifier is already installed');
+  this.expertFinalCustodyVerifier=verify;
+ }
+ private async verifyExpertFinalCustody(chatId:string,projectId:string){
+  if(!this.expertFinalCustodyVerifier)throw new MemoryCollectionHold('Temporary agent copy memory is retained until its final custody is confirmed');
+  try{await this.expertFinalCustodyVerifier(chatId,projectId);}catch(error){throw new MemoryCollectionHold('Temporary agent copy memory is retained until its final custody is confirmed');}
+ }
  private async retire(operation:()=>Promise<void>){
   this.live();const pending=operation();this.calls.add(pending);try{await pending;}finally{this.calls.delete(pending);}
  }
  async purgeChat(chatId:string){
   return this.retire(async()=>{
    await this.ready();
-   const guard=async()=>{this.live();const receipt=this.ports.store.getConversationDeletionReceipt(chatId);if(!receipt?.canonicalDeletionCompleted||this.ports.store.getConversation(chatId,{includeDeleting:true}))throw new MemoryDenied('Exact committed Chat deletion required');};
+   let expertProject:string|undefined;
+   const checkDeletion=()=>{this.live();const receipt=this.ports.store.getConversationDeletionReceipt(chatId);if(!receipt?.canonicalDeletionCompleted||this.ports.store.getConversation(chatId,{includeDeleting:true}))throw new MemoryDenied('Exact committed Chat deletion required');};
+   const guard=async()=>{checkDeletion();if(expertProject){await this.verifyExpertFinalCustody(chatId,expertProject);checkDeletion();}};
    await guard();const receipt=this.ports.store.getConversationDeletionReceipt(chatId)!;
-   if(this.hasExpertMemory(chatId,receipt.projectId))throw new MemoryCollectionHold('Temporary agent copy memory is retained until its final custody is confirmed');
+   if(this.hasExpertMemory(chatId,receipt.projectId)){expertProject=receipt.projectId;await guard();}
    if(!this.isProvenTemporaryChat(chatId,receipt.projectId,receipt.branchId)){
     // Serialize this no-effect proof with provisioning.
     const neverProvisioned=await this.core.database.raw.exclusive(async()=>{
@@ -291,9 +303,10 @@ export class LocalMemoryService{
    for(const target of targets)if(target.conversation_id){
     await guard();const chat=store.getConversation(target.conversation_id,{includeDeleting:true});
     const branchId=chat?.branchId??store.getConversationDeletionReceipt(target.conversation_id)?.branchId;
-    if(this.hasExpertMemory(target.conversation_id,target.project_id))throw new MemoryCollectionHold('Temporary agent copy memory is retained until its final custody is confirmed');
+    const expert=this.hasExpertMemory(target.conversation_id,target.project_id);
+    const scopedGuard=async()=>{await guard();if(expert){await this.verifyExpertFinalCustody(target.conversation_id!,target.project_id);await guard();}};
     if(this.isProvenTemporaryChat(target.conversation_id,target.project_id,branchId,target.id)){if(this.core.database.scopeHasUnsettledMutation('chat:'+target.conversation_id))throw Error(MEMORY_CLEANUP_UNKNOWN_HOLD);}
-    else await this.core.database.purge('chat:'+target.conversation_id,guard,target.id);
+    else await this.core.database.purge('chat:'+target.conversation_id,scopedGuard,target.id);
    }
    for(const target of targets)this.unusedMemoryRuns.delete(target.id);
   });
@@ -303,7 +316,7 @@ export class LocalMemoryService{
    await this.ready();const store=this.ports.store;
    const guard=async()=>{this.live();if(!store.sqlite.prepare('SELECT 1 FROM project_deletion_pending WHERE project_id=?').get(projectId))throw new MemoryDenied('Exact pending Project deletion required');};
    await guard();const chats=store.sqlite.prepare('SELECT id FROM conversations WHERE project_id=?').all(projectId) as {id:string}[];
-   for(const {id}of chats){const chat=store.getConversation(id,{includeDeleting:true});await guard();if(this.hasExpertMemory(id,projectId))throw new MemoryCollectionHold('Temporary agent copy memory is retained until its final custody is confirmed');if(chat&&this.isProvenTemporaryChat(id,projectId,chat.branchId)){if(this.core.database.scopeHasUnsettledMutation('chat:'+id))throw Error(MEMORY_CLEANUP_UNKNOWN_HOLD);}else await this.core.database.purge('chat:'+id,guard);await guard();this.policy.prepare('DELETE FROM local_memory_chat_grants WHERE chat_id=? AND principal_id=?').run(id,this.principalId);this.knownScopes.delete('chat:'+id);}
+   for(const {id}of chats){const chat=store.getConversation(id,{includeDeleting:true});await guard();const expert=this.hasExpertMemory(id,projectId),scopedGuard=async()=>{await guard();if(expert){await this.verifyExpertFinalCustody(id,projectId);await guard();}};if(chat&&this.isProvenTemporaryChat(id,projectId,chat.branchId)){if(this.core.database.scopeHasUnsettledMutation('chat:'+id))throw Error(MEMORY_CLEANUP_UNKNOWN_HOLD);}else await this.core.database.purge('chat:'+id,scopedGuard);await scopedGuard();this.policy.prepare('DELETE FROM local_memory_chat_grants WHERE chat_id=? AND principal_id=?').run(id,this.principalId);this.knownScopes.delete('chat:'+id);}
    for(const [id,entry]of this.unusedMemoryRuns)if(entry.projectId===projectId)this.unusedMemoryRuns.delete(id);
   });
  }
