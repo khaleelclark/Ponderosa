@@ -17,7 +17,18 @@ export function settingsTransitionActivationHoldSql(activation:string):string {
         AND NOT EXISTS (SELECT 1 FROM activation_sources released
           WHERE released.activation_id=${activation}.id AND released.source_kind='settings_transition_release'
             AND released.source_id=rollover.id)
-    ))`;
+    )
+    OR (${activation}.kind='required_reply_recovery' AND EXISTS (
+      SELECT 1 FROM context_rollovers rollover
+      JOIN activation_sources source ON source.source_kind='context_rollover' AND source.source_id=rollover.id
+      JOIN agent_activations handoff ON handoff.id=source.activation_id AND handoff.kind='context_rollover_handoff'
+      WHERE rollover.project_id=${activation}.project_id AND rollover.agent_id=${activation}.agent_id
+        AND rollover.scope_key=${activation}.scope_key AND rollover.state IN ('failed','outcome_unknown')
+        AND json_type(handoff.payload_json,'$.settingsTransition')='object'
+        AND json_extract(${activation}.payload_json,'$.requiredReplyRecovery.sourceRunId')=rollover.source_run_id
+        AND NOT EXISTS(SELECT 1 FROM activation_sources released
+          WHERE released.source_kind='settings_transition_release' AND released.source_id=rollover.id)
+    )))`;
 }
 
 export type SettingsTransitionDeliveryHold = {
