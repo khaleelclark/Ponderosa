@@ -72,9 +72,9 @@ function AgentRunState({
   const now = useAgentRunClock(startedAt);
   const presentation = paused ? {
     status: "waiting" as const,
-    label: accessRestricted ? "Access restricted" : "Paused",
-    detail: accessRestricted ? "Work is held because access was restricted. Earlier context requires review." : "Paused by you. Unfinished work is held until Resume; Stop ends the held work.",
-    accessibleLabel: accessRestricted ? "Work is held because access was restricted. Earlier context requires review." : "Paused by you. Unfinished work is held until Resume; Stop ends the held work.",
+    label: accessRestricted ? "Access review" : "Paused",
+    detail: accessRestricted ? "Work is held because an access restriction was requested. Earlier context requires review." : "Paused by you. Unfinished work is held until Resume; Stop ends the held work.",
+    accessibleLabel: accessRestricted ? "Work is held because an access restriction was requested. Earlier context requires review." : "Paused by you. Unfinished work is held until Resume; Stop ends the held work.",
   } : agentStatusPresentation(health, {
     status,
     connectionStatus,

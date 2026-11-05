@@ -1002,7 +1002,7 @@ export function AgentDetail({
 
       {pause?.reason === "access_restricted" && <Alert severity="warning" sx={{ mx: { xs: 1, sm: 2 }, mt: 1 }}
         action={<Stack direction="row" spacing={1}><Button color="inherit" size="small" onClick={() => changeTab("chat")}>View Chat</Button><Button color="inherit" size="small" onClick={() => openTechnicalDetails()}>View Work log</Button></Stack>}>
-        Work is paused because access was restricted. Resume is unavailable while earlier context and uncertain effects require review. Review the existing Chat and Work log.
+        Work is paused because an access restriction was requested. Resume is unavailable while earlier context and uncertain effects require review. Review the existing Chat and Work log.
       </Alert>}
 
       <AgentDetailPanels
