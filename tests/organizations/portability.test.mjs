@@ -866,7 +866,7 @@ test('large retained Git evidence crosses Agent package HTTP export and import s
  const pkg={schema:'ponderosa.agent-package.v1',mode:'full',kind:'agent',sourceLabel:'Synthetic reviewed Git',exportedAt:new Date().toISOString(),rootRef:'agent',agents:[{ref:'agent',title:'Imported',engine:'codex',managementPermissions:{allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false},workingCopyMode:'separate_git',workingFolder:{directories:[],excludedPaths:[]},workingFiles:[{path:'.ponderosa-portable-review/user-data.json',artifactRef:ref}],artifacts:[{ref,kind:'document',path:'manifest.json',createdAt:new Date().toISOString(),dataBase64:original.toString('base64')}]}]};
  const initial=await f.packageEngine.importAgent(f.project.id,f.destination.id,pkg,{codex:'codex'},randomUUID(),{workingCopyMode:'separate_git',workingFilesDestination:path.join(f.dataDir,'large-recovery-one'),workingFilesActivation:{}});
  const root=f.store.getAgent(initial.rootAgentId).workingCopy.rootPath,review=path.join(root,'.ponderosa-portable-review'),external=path.join(review,'external-git'),file=path.join(external,'large.review');
- const bytes=Buffer.alloc(64*1024*1024+37,0x61),expected=createHash('sha256').update(bytes).digest('hex');
+ const bytes=Buffer.alloc(65*1024*1024+37,0x61),expected=createHash('sha256').update(bytes).digest('hex');
  new CapabilityPolicyStore(f.store.sqlite).put({scopeKind:'agent',scopeId:initial.rootAgentId,expectedRevision:0,restrictedCapabilityIds:[CAPABILITY_IDS.memoryWrite],actor:'operator'});
  await mkdir(external,{recursive:true});await writeFile(file,bytes);
  const selection=encodeURIComponent(JSON.stringify({git:true,harness:false,source:'retained_originals'}));

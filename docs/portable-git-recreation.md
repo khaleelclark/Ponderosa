@@ -131,7 +131,8 @@ parts format. Capture verifies the full ordered original and applies the existin
 whole-file credential and Git provenance checks before retaining it as inert
 evidence; re-export and import preserve the one logical file. Available-memory
 admission accounts for accumulated evidence and reconstruction. The focused
-65 MiB regression covers inert text, re-export, corruption and credential
-refusal across a part boundary. This does not expand the existing reviewed-Git
+64 MiB plus 37 byte regression covers inert text, re-export, corruption and
+credential refusal across a part boundary. A separate 65 MiB plus 37 byte
+HTTP regression covers package export/import, review, size and credential guards. This does not expand the existing reviewed-Git
 object-graph or selected native-configuration bounds, and unproven opaque binary
 Git data remains held with its source preserved.
