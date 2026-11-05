@@ -3083,7 +3083,7 @@ test('final resource actual package engine captures later history and working fi
   const retained=installation.runtimeData(preview.id,imported.branchId);
   assert.deepEqual(retained.data,portable.runtimeData);
   const importedOwner=retained.receipt.executionMap[f.source.id];
-  assert.throws(()=>f.branches.issuedDestinationSource(imported.branchId,importedOwner,final.checkpointId,final.checkpointHash),/excluded or non-working/);
+  assert.throws(()=>f.branches.issuedDestinationSource(imported.branchId,importedOwner,final.checkpointId,final.checkpointHash),/Final source has excluded data, unsupported links or encoded artifacts/);
   assert.equal(retained.receipt.dispatched,false);
   assert.equal(db.prepare('SELECT COUNT(*) n FROM agents a JOIN conversations c ON c.id=a.conversation_id WHERE c.branch_id=?').get(imported.branchId).n,0);
   assert.equal(readFileSync(file,'utf8'),'after checkpoint exact content 😀\n');
@@ -3409,7 +3409,7 @@ async function exerciseForeignFinalDestination(t,portable,originalExecutionId,fi
   const finalNode=finalPackage.agents.find(a=>a.ref===mappedAgent),finalFile=finalNode.workingFiles.find(a=>a.path==='final-work.txt');
   assert.ok(finalNode.history.some(message=>message.text==='after checkpoint history 😀'));
   const sourcePackage=g.branches.issuedDestinationSource(imported.branchId,sourceId,final.checkpointId,final.checkpointHash).proof.selectedCustody.package;
-  assert.deepEqual(finalNode.workingFolder.links,expectedLinks,'final recapture preserves exact link topology and timestamps');verifyLinks();
+  assert.deepEqual(finalNode.workingFolder.links??[],expectedLinks,'final recapture preserves exact link topology and timestamps');verifyLinks();
   const incomingArtifacts=sourcePackage.agents.flatMap(a=>a.artifacts??[]),outgoingArtifacts=finalPackage.agents.flatMap(a=>a.artifacts??[]);
   for(const bytes of new Set(incomingArtifacts.map(a=>a.dataBase64))){
    assert.ok(outgoingArtifacts.filter(a=>a.dataBase64===bytes).length>=incomingArtifacts.filter(a=>a.dataBase64===bytes).length,'every imported artifact copy survives final recapture');
