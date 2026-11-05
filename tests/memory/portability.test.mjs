@@ -138,14 +138,23 @@ test('memory HTTP errors identify invalid fields and keep revoked capabilities d
  ports.capabilities.set(token,{agentId:f.a.id,conversationId:f.chat.id,runId:run,v3SchedulerRunId:run,v3FencingToken:1,availableToolNames:['ponderosa_local_memory_search']});
  ports.activeRuns.set(f.a.id,{messageCapability:token,conversationId:f.chat.id,controller});ports.ownsRun=()=>true;
  try{
+ assert.ok(f.memory.agentContext(token,'ponderosa_local_memory_search',false),'the synthetic capability is authorized');
+ const unwitnessed=await f.app.inject({method:'POST',url:'/api/agent-local-memory',headers:{authorization:'Bearer '+token},payload:{operation:'search',query:'private authored text'}});
+ assert.equal(unwitnessed.statusCode,403,unwitnessed.body);assert.doesNotMatch(unwitnessed.body,/private authored text/);assert.ok(!unwitnessed.body.includes(token));
+ assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM memory_exposure_runs WHERE run_id=?').get(run).n,0,'a missing receipt remains held');
+ f.memory.beginUnusedMemoryWitness(token);
+ const receipt=()=>f.store.sqlite.prepare('SELECT agent_id,chat_id,fencing_token,attempted,pending,uncertain FROM memory_exposure_runs WHERE run_id=?').get(run);
+ assert.deepEqual(receipt(),{agent_id:f.a.id,chat_id:f.chat.id,fencing_token:1,attempted:0,pending:0,uncertain:0},'the exact synthetic Run has its normal pre-input exposure receipt');
  assert.ok(f.memory.agentContext(token,'ponderosa_local_memory_search',false),'the test capability is actually authorized');
  const bad=await f.app.inject({method:'POST',url:'/api/agent-local-memory',headers:{authorization:'Bearer '+token},payload:{operation:'search',query:'private authored text',top_k:21}});
- assert.equal(bad.statusCode,400,bad.body);assert.match(bad.json().error,/top_k must be an integer from 1 to 20/);assert.doesNotMatch(bad.body,/private authored text/);
+ assert.equal(bad.statusCode,400,bad.body);assert.match(bad.json().error,/top_k must be an integer from 1 to 20/);assert.doesNotMatch(bad.body,/private authored text/);assert.ok(!bad.body.includes(token));
  const extra=await f.app.inject({method:'POST',url:'/api/agent-local-memory',headers:{authorization:'Bearer '+token},payload:{operation:'search',query:'private authored text',['private unknown field']:'private value'}});
- assert.equal(extra.statusCode,400,extra.body);assert.doesNotMatch(extra.body,/private/);
+ assert.equal(extra.statusCode,400,extra.body);assert.doesNotMatch(extra.body,/private/);assert.ok(!extra.body.includes(token));
+ assert.deepEqual(receipt(),{agent_id:f.a.id,chat_id:f.chat.id,fencing_token:1,attempted:1,pending:0,uncertain:0},'rejected inputs leave no pending or uncertain memory operation');
  ports.capabilities.delete(token);
  const denied=await f.app.inject({method:'POST',url:'/api/agent-local-memory',headers:{authorization:'Bearer '+token},payload:{operation:'search',query:'safe query'}});
- assert.equal(denied.statusCode,401,denied.body);
+ assert.equal(denied.statusCode,401,denied.body);assert.ok(!denied.body.includes(token));
+ assert.equal(receipt().pending,0,'a revoked capability cannot start a memory operation');
  }finally{controller.abort();ports.capabilities.delete(token);ports.activeRuns.delete(f.a.id);ports.ownsRun=originalOwnsRun;}
 });
 

@@ -105,6 +105,12 @@ function authorizeMemoryAgent(ports,root){
  return {chat,agent};
 }
 
+function beginMemoryWitness(memory,ports,chat,agent){
+ memory.beginUnusedMemoryWitness("owned-capability");
+ const row=ports.store.sqlite.prepare("SELECT agent_id,chat_id,fencing_token,attempted,pending,uncertain FROM memory_exposure_runs WHERE run_id=?").get("owned-global-run");
+ assert.deepEqual(row,{agent_id:agent.id,chat_id:chat.id,fencing_token:1,attempted:0,pending:0,uncertain:0},"the exact synthetic Run has its normal pre-input exposure receipt");
+}
+
 test('global writes use live human policy, correct scope and provenance without operator authentication',()=>admittedFixture(async({root,ports,inference})=>{
  const {chat,agent}=authorizeMemoryAgent(ports,root);
  const memory=new LocalMemoryService(ports,inference),policies=new CapabilityPolicyStore(ports.store.sqlite);
@@ -113,8 +119,11 @@ test('global writes use live human policy, correct scope and provenance without 
  // provisioning is covered by the disposable-backend integration tests.
  memory.ensurePlannedChat=async()=>{};memory.ensureGlobalScope=async()=>{};
  let captured;
- memory.perform=async(_operation,_args,authority)=>{await authority.guard();captured=authority;return {ok:true};};
+ memory.perform=async(_operation,_args,authority)=>{await authority.guard();captured=authority;return {structuredContent:{result:{}}};};
  try{
+  await assert.rejects(memory.executeAgent('owned-capability','save',{text:'Unwitnessed fact',destination:'global'}),/Memory exposure receipt unavailable/);
+  assert.equal(captured,undefined,'unwitnessed write never reaches the memory backend');
+  beginMemoryWitness(memory,ports,chat,agent);
   assert.equal(memory.operator({raw:{aborted:false},headers:{}}),memory.principalId);
   await memory.executeAgent('owned-capability','save',{text:'Global fact',destination:'global'});
   assert.equal(captured.writeScope,'global');assert.equal(captured.sourceType,'ai_inference');assert.deepEqual(captured.actor,{kind:'agent',id:agent.id});
@@ -155,9 +164,9 @@ test('real Chroma stores and retrieves an Agent global write through the complet
  try{
   ports.opts.localMemory.chromaUrl='http://127.0.0.1:'+port;
   for(let i=0;i<200;i++){if(child.exitCode!==null)throw Error('Owned Chroma exited');try{if((await fetch(ports.opts.localMemory.chromaUrl+'/api/v2/heartbeat')).ok)break;}catch{}await new Promise(r=>setTimeout(r,25));}
-  const {chat}=authorizeMemoryAgent(ports,root);ports.capabilities.get('owned-capability').availableToolNames.push('ponderosa_local_memory_get');
+  const {chat,agent}=authorizeMemoryAgent(ports,root);ports.capabilities.get('owned-capability').availableToolNames.push('ponderosa_local_memory_get');
   const inference={signature:'synthetic-global-qualification',async embed(){return Array.from({length:384},(_,i)=>i?0:1);},async rerank(pairs){return pairs.map(()=>1);},async close(){}};
-  memory=new LocalMemoryService(ports,inference);memory.setGrant(chat.id,true,0,'dev');
+  memory=new LocalMemoryService(ports,inference);memory.setGrant(chat.id,true,0,'dev');beginMemoryWitness(memory,ports,chat,agent);
   const saved=await memory.executeAgent('owned-capability','save',{text:'Disposable global fact',destination:'global'}),id=saved.structuredContent.result.chunk_id;
   assert.equal(typeof id,'string');
   const found=await memory.executeAgent('owned-capability','get',{chunk_id:id,source:'global'});
@@ -169,6 +178,7 @@ test('real Chroma stores and retrieves an Agent global write through the complet
   assert.equal(updated.structuredContent.result.updated_from_chunk_id,id);assert.notEqual(next,id);
   const changed=await memory.executeAgent('owned-capability','get',{chunk_id:next,source:'global'});assert.match(changed.structuredContent.result.text,/Changed disposable/);
   const forgotten=await memory.executeAgent('owned-capability','forget',{chunk_id:next,destination:'global'});assert.equal(forgotten.structuredContent.result.deleted,true);
+  assert.deepEqual(ports.store.sqlite.prepare('SELECT attempted,pending,uncertain FROM memory_exposure_runs WHERE run_id=?').get('owned-global-run'),{attempted:1,pending:0,uncertain:0},'acknowledged real memory calls leave no uncertain effects');
 
  }finally{if(memory)await memory.close();child.kill('SIGTERM');await exit;}
 }));
