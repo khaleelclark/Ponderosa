@@ -17,7 +17,7 @@ const goal=()=>status===null?null:{threadId:'thread',objective:'Saved objective'
 const note=(turnId=null)=>emit({method:'thread/goal/updated',params:{threadId:'thread',turnId,goal:goal()}});
 const started=id=>emit({method:'turn/started',params:{threadId:'thread',turn:{id}}});
 const finished=id=>emit({method:'turn/completed',params:{threadId:'thread',turn:{id,status:'completed'}}});
-const usage=id=>emit({method:'thread/tokenUsage/updated',params:{threadId:'thread',turnId:id,tokenUsage:{last:{inputTokens:10,outputTokens:2,totalTokens:12},modelContextWindow:1000}}});
+const usage=id=>{const n=id==='one'?1:2;emit({method:'thread/tokenUsage/updated',params:{threadId:'thread',turnId:id,tokenUsage:{total:{inputTokens:10*n,outputTokens:2*n,totalTokens:12*n},last:{inputTokens:10,outputTokens:2,totalTokens:12},modelContextWindow:1000}}});};
 
 readline.createInterface({input:process.stdin}).on('line',line=>{
  const m=JSON.parse(line);if(!m.method||m.id===undefined)return;
