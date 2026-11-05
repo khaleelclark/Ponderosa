@@ -29,7 +29,7 @@ const unrecordedHolds=new WeakMap<CoordinationV3Store,Map<string,string>>();
 type TransitionNotices=ReturnType<typeof createOperationalNotifications>;
 type TransitionContext={app:PonderosaServer;store:AgentStore;coordinationV3:CoordinationV3Store;workspace:WorkspaceStore;
  createOperationalNotification:TransitionNotices['createOperationalNotification'];resolveOperationalNotification:TransitionNotices['resolveOperationalNotification']};
-function transitionFingerprint(ctx:TransitionContext,projectId:string,agentId:string,activationId:string):string{
+export function transitionFingerprint(ctx:Pick<TransitionContext,"app"|"store"|"workspace">,projectId:string,agentId:string,activationId:string):string{
  const {app,store,workspace}=ctx,agent=store.getAgent(agentId),chat=agent&&store.getConversation(agent.conversationId),
   project=agent&&store.getChatContext(agent.conversationId),memory=localMemoryFor(app),session=store.resumeSessionState(agentId);
  const row=store.sqlite.prepare('SELECT payload_json,state,scope_key FROM agent_activations WHERE id=? AND project_id=? AND agent_id=?').get(activationId,projectId,agentId);

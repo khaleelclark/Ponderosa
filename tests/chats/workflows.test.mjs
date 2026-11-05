@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { AgentStore, WorkspaceStore, CoordinationV3Store } from '@ponderosa/agents';
 import { processBirthMarker } from '@ponderosa/engines';
+import { transitionFingerprint } from '../../apps/server/dist/context-transition-admission.js';
 import { withFixture, until, runtimeAttachmentPaths, fixtureTestOptions as options } from '../shared/fixture.mjs';
 
 test('checks 14, 15: server drafts use revision fencing, owner isolation and durable recovery', options, t => withFixture(t, async f => {
@@ -338,11 +339,20 @@ test('global instruction rejection preserves the store revision and complete sav
   } finally { workspace.close(); }
 }));
 
+function reserveCurrentSettingsTransition(f,store,coordination,projectId,agentId,activationId){
+  const workspace=new WorkspaceStore(f.dataDir);
+  try {
+    const fingerprint=transitionFingerprint({app:f.app,store,workspace},projectId,agentId,activationId);
+    assert.equal(coordination.holdSettingsTransitionReservation({projectId,agentId,activationId,fingerprint}),true);
+  } finally { workspace.close(); }
+}
+
 test('settings-handoff held message uses the existing delivery retry endpoint', options, async t => {
   let store;
   await withFixture(t,async f=>{
     const chat=await f.createChat('Held settings retry'),agent=await f.createIdleAgent(chat,'Reader');
     await f.hold(agent.id);
+    await until(()=>store.sqlite.prepare("SELECT 1 FROM scheduler_runs WHERE agent_id=? AND status='running' AND prompt_injection_state='injected'").get(agent.id),'held input acknowledged');
     const marker='Original queued instructions '+randomUUID();
     await f.send(agent.id,marker,{activeRunDelivery:'queue',model:'fixture',effort:'medium'});
     const row=store.sqlite.prepare(`SELECT a.id,json_extract(r.payload_json,'$.communication.eventId') AS event_id,a.payload_json
@@ -351,7 +361,7 @@ test('settings-handoff held message uses the existing delivery retry endpoint', 
       WHERE a.agent_id=? AND json_extract(r.payload_json,'$.communication.text')=?`).get(agent.id,marker);
     assert.ok(row?.event_id);
     const coordination=new CoordinationV3Store(store.sqlite),before=row.payload_json;
-    assert.equal(coordination.holdSettingsTransitionReservation({projectId:chat.projectId,agentId:agent.id,activationId:row.id,fingerprint:'f'.repeat(64)}),true);
+    reserveCurrentSettingsTransition(f,store,coordination,chat.projectId,agent.id,row.id);
     const receipts=async()=>f.ok(await f.api('POST',`/api/conversations/${chat.id}/message-delivery-receipts`,
       {communicationEventIds:[row.event_id],activationIds:[]})).items.flatMap(item=>item.deliveryReceipts);
     let receipt=(await receipts()).find(item=>item.activationId===row.id);
@@ -391,6 +401,7 @@ test('held peer Request retries the same assignment through Work controls', opti
   await withFixture(t,async f=>{
     const chat=await f.createChat('Held peer request'),manager=await f.createIdleAgent(chat,'Manager'),worker=await f.createIdleAgent(chat,'Worker');
     await f.hold(worker.id);
+    await until(()=>store.sqlite.prepare("SELECT 1 FROM scheduler_runs WHERE agent_id=? AND status='running' AND prompt_injection_state='injected'").get(worker.id),'held input acknowledged');
     const coordination=new CoordinationV3Store(store.sqlite),requestId=randomUUID();
     const originalPayload={text:'Finish this exact assigned work',references:['safe-reference'],priority:'high'};
     const assigned=coordination.coordinate({projectId:chat.projectId,conversationId:chat.id,requesterAgentId:manager.id,
@@ -400,7 +411,7 @@ test('held peer Request retries the same assignment through Work controls', opti
     const original=store.sqlite.prepare(`SELECT a.id,a.payload_json FROM agent_activations a JOIN activation_sources s
       ON s.activation_id=a.id AND s.source_kind='request' WHERE s.source_id=? AND a.kind='coordination_request'`).get(requestId);
     assert.ok(original);
-    assert.equal(coordination.holdSettingsTransitionReservation({projectId:chat.projectId,agentId:worker.id,activationId:original.id,fingerprint:'c'.repeat(64)}),true);
+    reserveCurrentSettingsTransition(f,store,coordination,chat.projectId,worker.id,original.id);
     const details=async()=>f.ok(await f.api('GET',`/api/projects/${chat.projectId}/agent-work/items/request/${requestId}?conversationId=${chat.id}`));
     assert.equal((await details()).requestLifecycle.request.settingsTransitionHold,'retry_available');
     const url=`/api/requests/${requestId}/retry`,body={idempotencyKey:randomUUID(),retryHeldContext:true};
@@ -435,5 +446,34 @@ test('held peer Request retries the same assignment through Work controls', opti
     assert.equal((await f.api('POST',url,{idempotencyKey:randomUUID()})).status,409,'ordinary retry cannot bypass this hold');
     assert.equal(store.sqlite.prepare('SELECT count(*) n FROM coordination_requests WHERE project_id=?').get(chat.projectId).n,1);
     assert.equal(store.sqlite.prepare('SELECT payload_json FROM agent_activations WHERE id=?').get(original.id).payload_json,original.payload_json);
+  },{storeFactory:root=>store=new AgentStore(root)});
+});
+
+test('changed settings reservation defers a peer Request until context preflight', options, async t => {
+  let store;
+  await withFixture(t,async f=>{
+    const chat=await f.createChat('Changed reservation preflight'),manager=await f.createIdleAgent(chat,'Manager'),worker=await f.createIdleAgent(chat,'Worker');
+    const session=await f.hold(worker.id);
+    await until(()=>store.sqlite.prepare("SELECT 1 FROM scheduler_runs WHERE agent_id=? AND status='running' AND prompt_injection_state='injected'").get(worker.id),'held input acknowledged');
+    const coordination=new CoordinationV3Store(store.sqlite),requestId=randomUUID();
+    coordination.coordinate({projectId:chat.projectId,conversationId:chat.id,requesterAgentId:manager.id,actorScope:'user:local-operator',idempotencyKey:randomUUID(),
+      requests:[{requestId,recipientAgentId:worker.id,lifetime:{kind:'indefinite'},payload:{text:'Preserve this exact work'}}]});
+    const original=store.sqlite.prepare("SELECT a.id,a.payload_json FROM agent_activations a JOIN activation_sources s ON s.activation_id=a.id AND s.source_kind='request' WHERE s.source_id=? AND a.kind='coordination_request'").get(requestId);
+    assert.ok(original);
+    const hold={projectId:chat.projectId,agentId:worker.id,activationId:original.id,fingerprint:'a'.repeat(64)};
+    assert.equal(coordination.holdSettingsTransitionReservation(hold),true);
+    assert.equal(coordination.settingsTransitionReservationHeld({...hold,fingerprint:'b'.repeat(64)}),false);
+    assert.ok(store.sqlite.prepare("SELECT 1 FROM activation_sources WHERE activation_id=? AND source_kind='settings_transition_retry_pending'").get(original.id));
+    assert.equal(coordination.leaseNextSteering({workerId:'preflight-bypass-check'}),undefined,'changed context must not steer the old Run');
+    assert.equal(store.sqlite.prepare('SELECT state FROM agent_activations WHERE id=?').get(original.id).state,'pending');
+    assert.equal(store.sqlite.prepare('SELECT payload_json FROM agent_activations WHERE id=?').get(original.id).payload_json,original.payload_json);
+    assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(original.id).n,0);
+    f.plans.set(worker.id,[{hold:true}]);
+    assert.equal((await f.tool(session,'ponderosa_message',{text:'The earlier task is complete'})).status,200);
+    session.finish();
+    await until(()=>f.turns.filter(turn=>turn.agentId===worker.id).length===2,'the original Request reaches its later preflighted Run');
+    const resumed=f.turns.filter(turn=>turn.agentId===worker.id).at(-1);
+    assert.match(resumed.input.prompt,/Preserve this exact work/);
+    assert.equal(store.sqlite.prepare("SELECT count(*) n FROM coordination_requests WHERE project_id=?").get(chat.projectId).n,1);
   },{storeFactory:root=>store=new AgentStore(root)});
 });

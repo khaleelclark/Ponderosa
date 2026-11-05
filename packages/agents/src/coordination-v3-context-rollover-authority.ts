@@ -149,10 +149,15 @@ export class CoordinationV3ContextRolloverAuthority {
         JOIN agent_activations a ON a.id=held.activation_id WHERE a.id=? AND a.agent_id=? AND a.project_id=?
           AND a.state IN ('pending','retry_pending','attached','outcome_unknown')
           AND held.source_kind='settings_transition_reservation_wait'`).get(input.activationId,input.agentId,input.projectId));
-      this.sqlite.prepare(`DELETE FROM activation_sources WHERE activation_id=?
+      const removed=this.sqlite.prepare(`DELETE FROM activation_sources WHERE activation_id=?
         AND source_kind='settings_transition_reservation_wait' AND source_id<>?`).run(input.activationId,input.fingerprint);
-      return Boolean(this.sqlite.prepare(`SELECT 1 FROM activation_sources WHERE activation_id=?
+      const stillHeld=Boolean(this.sqlite.prepare(`SELECT 1 FROM activation_sources WHERE activation_id=?
         AND source_kind='settings_transition_reservation_wait' AND source_id=?`).get(input.activationId,input.fingerprint));
+      // A changed fingerprint permits a fresh admission check, not steering the
+      // old Run before that check has established the new context is safe.
+      if(removed.changes&&!stillHeld)this.sqlite.prepare(`INSERT OR IGNORE INTO activation_sources(activation_id,source_kind,source_id)
+        VALUES(?,'settings_transition_retry_pending','preflight')`).run(input.activationId);
+      return stillHeld;
     })();
   }
 
