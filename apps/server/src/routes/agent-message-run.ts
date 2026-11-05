@@ -249,6 +249,7 @@ export function registerAgentMessageRunRoute(
     assetMetadata,
     reconcileRuntimeCommunicationProjections,
     notifyScheduler,
+    isClosed,
     reconcileProjectWorkspace,
     cachedModelOptions,
     discoverEngineCapabilities,
@@ -1112,6 +1113,13 @@ export function registerAgentMessageRunRoute(
         return reply.code(409).send({ error: error instanceof Error ? error.message : "working folder changed; retry safely", retryable: true });
       }
       const resourceHeld = await runContext.resourceAdmissionHeld?.() === true;
+      // Preparation can yield across shutdown. No provider or Run authority
+      // may be claimed after the server starts closing; keep the work queued.
+      if (isClosed()) {
+        coordinationV3.deferUninjectedRun(runId, v3FencingToken!);
+        if (runtimeAttachmentCleanupAfterRun) await cleanupRuntimeAttachments(runtimeAttachmentDirectory);
+        return reply.code(409).send({ error: "Server is shutting down; work remains queued", queued: true });
+      }
       if (resourceHeld || !runContext.providerEnabled(runtimeEngineId)) {
         coordinationV3.deferUninjectedRun(runId, v3FencingToken!);
         if (runtimeAttachmentCleanupAfterRun) await cleanupRuntimeAttachments(runtimeAttachmentDirectory);

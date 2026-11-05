@@ -150,3 +150,39 @@ test('product shutdown drains a live provider before fixture cleanup and retains
   await f.dispose(succeeded);
  }
 });
+
+test('shutdown prevents a prepared scheduler dispatch from claiming a new provider Run',options,async t=>{
+ let store,reopened,releaseSample,sampleStartedResolve;
+ const sampleStarted=new Promise(resolve=>{sampleStartedResolve=resolve;});
+ let armed=false,clock=Date.now();
+ const sample=async()=>{
+  if(armed && store?.sqlite.prepare("SELECT 1 FROM scheduler_runs WHERE status='leased' AND prompt_injection_state='not_injected'").get()){armed=false;sampleStartedResolve();await new Promise(resolve=>{releaseSample=resolve;});}
+  return {availableBytes:8*1024**3,memoryFullPercent:0,ioFullPercent:0,source:'linux_host'};
+ };
+ const f=await fixture({storeFactory:dataDir=>(store=new AgentStore(dataDir)),resourceAdmissionObservation:{platform:'linux',sample,now:()=>clock+=2100}});
+ let success=false, timeout;
+ try {
+  const chat=await f.createChat('Shutdown during admission'),agent=await f.createIdleAgent(chat,'Waiting worker');
+  armed=true;
+  const submitted=f.send(agent.id,'Preserve this request for after shutdown.');
+  await Promise.race([sampleStarted,new Promise((_,reject)=>{timeout=setTimeout(()=>reject(Error('Admission did not reach the sample')),5000);})]);
+  clearTimeout(timeout); timeout=undefined;
+  const leased=store.sqlite.prepare("SELECT id,status,prompt_injection_state FROM scheduler_runs WHERE agent_id=? ORDER BY created_at DESC LIMIT 1").get(agent.id);
+  assert.ok(leased && leased.status==='leased' && leased.prompt_injection_state==='not_injected','An exact Run must be leased before the admission observation');
+  const stopping=f.shutdownProduct();
+  releaseSample();releaseSample=undefined;
+  await Promise.all([submitted,stopping]);
+  assert.equal(f.turns.length,0,'Shutdown allowed an unadmitted provider to receive work');
+  reopened=new AgentStore(f.dataDir);
+  const run=reopened.sqlite.prepare('SELECT status,prompt_injection_state FROM scheduler_runs WHERE id=?').get(leased.id);
+  assert.notEqual(run.status,'running','A provider Run was claimed after shutdown began');
+  assert.equal(run.prompt_injection_state,'not_injected','An unsubmitted request acquired a provider input');
+  assert.ok(reopened.sqlite.prepare("SELECT 1 FROM agent_activations WHERE agent_id=? AND state='pending'").get(agent.id),'The original work was not retained');
+  reopened.close();reopened=undefined;
+  success=true;
+ } finally {
+  if(timeout)clearTimeout(timeout); releaseSample?.();reopened?.close();
+  if(!success)t.diagnostic(`Failed disposable fixture retained: ${f.root}`);
+  await f.dispose(success);
+ }
+});
