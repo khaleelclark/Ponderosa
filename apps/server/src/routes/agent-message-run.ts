@@ -1,3 +1,4 @@
+import { acceptedGoalResumeCommand } from "../native-goal-command-availability.js";
 import {localMemoryFor} from "../local-memory.js";
 import { selectNativeCommand } from "../native-command-selection.js";
 import { parseNativeTurnCommand } from "@ponderosa/core";
@@ -689,7 +690,9 @@ export function registerAgentMessageRunRoute(
                 error,
               );
         }
-        const command = catalog.commands.find((candidate) => candidate.name === providerSlash[1]);
+        const discovered = catalog.commands.find((candidate) => candidate.name === providerSlash[1]);
+        const command = discovered && acceptedGoalResumeCommand(discovered,
+          runtimeEngineId === "codex" && agent.activeEngine === runtimeEngineId && Boolean(store.resumeSessionState(agent.id)?.sessionId));
         if (!command || command.status !== "available") {
           return reply.code(409).send({
             error: command?.unavailableReason ?? `the active provider does not expose /${providerSlash[1]}`,

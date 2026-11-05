@@ -218,3 +218,13 @@ test('native goal commands preserve explicit human objective and budget',async()
  assert.throws(()=>parseNativeTurnCommand('/goal-create {"objective":"Audit","tokenBudget":0}'));
  assert.throws(()=>parseNativeTurnCommand('/goal-create {"objective":"Audit","status":"paused"}'));
 });
+
+test('goal resume availability recognizes only an accepted retained Codex session',async()=>{
+ const {acceptedGoalResumeCommand}=await import('../../apps/server/dist/native-goal-command-availability.js');
+ const command={name:'goal-resume',description:'Resume',acceptsArguments:false,invocation:'prompt',source:'adapter-implemented',insertText:'/goal-resume',status:'unavailable',unavailableReason:'Requires an accepted retained Codex session.'};
+ assert.equal(acceptedGoalResumeCommand(command,false).status,'unavailable');
+ const accepted=acceptedGoalResumeCommand(command,true);
+ assert.equal(accepted.status,'available');assert.equal(accepted.unavailableReason,undefined);
+ assert.equal(acceptedGoalResumeCommand({...command,unavailableReason:'Provider disabled'},true).status,'unavailable');
+ assert.equal(acceptedGoalResumeCommand({...command,name:'goal-pause'},true).status,'unavailable');
+});

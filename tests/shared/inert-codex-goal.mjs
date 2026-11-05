@@ -7,6 +7,7 @@ import {until} from './fixture.mjs';
 
 function nativeProcess(config){
  const fs=require('node:fs'),readline=require('node:readline');
+ if(process.argv.includes('mcp')&&process.argv.includes('list')){console.log('[]');return;}
  if(process.argv.includes('--version')){console.log('codex-cli 0.159.2');return;}
  if(process.argv.includes('--help')){console.log('app-server');return;}
  const record=value=>fs.appendFileSync(config.log,JSON.stringify({pid:process.pid,...value})+'\n');
