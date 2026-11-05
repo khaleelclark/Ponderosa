@@ -20,9 +20,12 @@ const envelope=(row:Row):Evidence=>({row,sha256:payloadHash(row)});
 export function captureBranchHostCut(db:Database.Database,id:string,selected:Selected):BranchHostCut|undefined {
  if(!db.inTransaction)throw Error('Host dependency capture requires the owner transaction');
  const roots=selected.attempts!.filter(a=>a.request_id||a.recovery_of_request_id).map(a=>({attemptId:a.id,requestId:a.request_id,recoveryOfRequestId:a.recovery_of_request_id}));
- if(!roots.length&&!selected.resources!.length)return;
+ // Guidance delivery authority is not yet encoded by this host-cut format.
+ // Mark its exact owned attempts incomplete instead of inferring a receipt.
+ const guidance=selected.attempts!.filter(a=>db.prepare("SELECT 1 FROM activation_sources WHERE source_kind='branch_guidance' AND source_id=?").get(a.id));
+ if(!roots.length&&!selected.resources!.length&&!guidance.length)return;
  for(const root of roots){const owner=db.prepare('SELECT a.request_id,a.recovery_of_request_id FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id WHERE a.id=? AND s.execution_id=?').get(root.attemptId,id) as Row|undefined;if(!owner||owner.request_id!==root.requestId||owner.recovery_of_request_id!==root.recoveryOfRequestId)throw Error('Host Request root differs from its owned attempt');}
- const missingReferences:{kind:string;id:string}[]=[],requestVersions:{requestId:string;version:number;updatePrefixComplete:boolean}[]=[];
+ const missingReferences:{kind:string;id:string}[]=guidance.map(a=>({kind:'branch_guidance',id:a.id})),requestVersions:{requestId:string;version:number;updatePrefixComplete:boolean}[]=[];
  const pin=db.prepare(`SELECT e.binding_revision_id,e.configuration_json,b.bindings_json,b.content_hash,w.id AS branch_id,c.project_id,c.id AS chat_id
   FROM branch_executions e JOIN branch_bindings b ON b.id=e.binding_revision_id JOIN branches w ON w.id=e.branch_id LEFT JOIN conversations c ON c.id=w.chat_id WHERE e.id=?`).get(id) as Row|undefined;
  if(!pin||payloadHash(JSON.parse(pin.bindings_json))!==pin.content_hash)throw Error('Host cut owner pins unavailable');

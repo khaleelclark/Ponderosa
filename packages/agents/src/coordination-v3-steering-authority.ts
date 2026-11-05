@@ -231,12 +231,17 @@ export class CoordinationV3SteeringAuthority {
         candidate.run_id,
         scheduled?64:limit,
       ) as ActivationRow[]).filter(activation=>!scheduled||branchScheduleActivationEligible(this.sqlite,activation.id,candidate.run_id,now,this.canonicalTaskDecisions));
+      // A workflow guidance delivery has its own receipt and cancellation
+      // boundary; never combine it with another activation in one submission.
+      const isBranchGuidance=(id:string)=>Boolean(this.sqlite.prepare("SELECT 1 FROM activation_sources WHERE activation_id=? AND source_kind='branch_guidance'").get(id));
+      const candidateGuidance=isBranchGuidance(candidate.activation_id);
+      const isolatedEligible=eligibleActivations.filter(a=>candidateGuidance?a.id===candidate.activation_id:!isBranchGuidance(a.id));
       // Human interruptions and peer messages or Requests have different recovery
       // obligations. Keep each kind in a separate provider submission so a
       // single uncertain submission cannot combine human and peer work.
       let hasHuman = false;
       let hasRequest = false;
-      const activations = eligibleActivations.filter(activation => {
+      const activations = isolatedEligible.filter(activation => {
         if (activation.prompt_class === "human") {
           if (hasRequest) return false;
           hasHuman = true;

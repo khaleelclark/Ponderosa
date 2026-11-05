@@ -20,6 +20,7 @@ export const hasParallelControls=(d:BranchDefinition)=>d.controls.some(c=>c.kind
 /** Only graph families with an exact host replay codec are admitted. */
 export function parallelDefinitionSupported(d:BranchDefinition,calls=false,issuedResource=false):boolean {
  return hasParallelControls(d)&&d.policy.failure.action==='stop'
+  &&!d.steps.some(s=>s.kind==='agent'&&(s.jobHandling==='steer'||s.jobHandling==='copy'))
   &&d.steps.every(s=>(s.kind==='script'&&s.runtime==='node'||s.kind==='agent'&&('ref' in s.target||issuedResource&&s.target.kind==='ephemeral_organization')||s.kind==='human_gate'||calls&&s.kind==='branch_call')&&(!s.failure||s.failure.action==='stop'||s.failure.action==='retry'&&(s.kind==='script'||issuedResource&&s.kind==='agent'&&s.target.kind==='ephemeral_organization'&&s.failure.freshContext===true)))
   &&d.controls.every(c=>['fork','map','join','condition','route'].includes(c.kind))
   &&!Object.values(d.parameters??{}).some(p=>p.type==='secret');

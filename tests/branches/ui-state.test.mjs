@@ -1611,3 +1611,51 @@ test('shared permission Settings expose durable before/after audit records for b
   }finally{client.clear()}
  }
 });
+
+test('reusable expert job handling distinguishes legacy behavior, results and guidance delivery',async()=>{
+ const {AgentJobHandlingField}=await import('../../apps/web/src/components/branches/AgentStepFields.tsx');
+ const render=value=>renderToStaticMarkup(React.createElement(AgentJobHandlingField,{value,onChange(){}}));
+ const legacy=render(undefined);
+ assert.match(legacy,/Existing behavior · steer or run/);assert.match(legacy,/steer current work when busy, otherwise start work/);
+ assert.match(render('queue'),/Each admitted job waits its turn and receives its own outcome/);
+ assert.match(render('queue'),/Schedule settings still apply: Run Latest When Finished or Update Current Run can combine occurrences before admission/);
+ const steer=render('steer');assert.match(steer,/delivery or uncertainty is not a separate job result/);
+ const copy=render('copy');assert.match(copy,/temporary copy of the selected Agent/);assert.match(copy,/with its own result/);assert.match(copy,/source working-folder files are not copied/);
+});
+test('new expert jobs queue explicitly while editing legacy and switching targets preserves intended semantics',async()=>{
+ const {newDefinition,addNode,changeAgentTarget,changeAgentJobHandling}=await import('../../apps/web/src/components/branches/model.ts');
+ const created=addNode(newDefinition(),'agent').definition;
+ assert.equal(created.steps[0].jobHandling,'queue');
+ const mapped=addNode(newDefinition(),'for_each').definition;assert.equal(mapped.steps[0].jobHandling,'queue');
+ const legacy=structuredClone(created);delete legacy.steps[0].jobHandling;
+ const node=legacy.steps[0],before=structuredClone(legacy);
+ const rebound=changeAgentTarget(legacy,node,{kind:'persistent_agent',ref:'another'});
+ assert.equal(Object.hasOwn(rebound.steps[0],'jobHandling'),false,'rebinding a legacy step cannot silently change busy behavior');
+ for(const mode of ['queue','steer','copy']){
+  const changed=changeAgentJobHandling(legacy,node,mode);
+  assert.equal(changed.steps[0].jobHandling,mode);assert.deepEqual(changed.steps[0].target,node.target);
+  assert.deepEqual(changed.edges,legacy.edges);assert.deepEqual(changed.policy,legacy.policy);
+  assert.equal(changeAgentTarget(changed,changed.steps[0],{kind:'persistent_agent',ref:'another'}).steps[0].jobHandling,mode);
+  for(const target of [{kind:'persistent_organization',ref:'team'},{kind:'ephemeral_agent',templateRef:'temporary'}]){
+   const other=changeAgentTarget(changed,changed.steps[0],target);
+   assert.equal(Object.hasOwn(other.steps[0],'jobHandling'),false);
+   assert.equal(changeAgentJobHandling(other,other.steps[0],'copy'),other);
+   assert.equal(changeAgentTarget(other,other.steps[0],node.target).steps[0].jobHandling,'queue');
+  }
+ }
+ assert.deepEqual(legacy,before,'editing helpers preserve the saved definition');
+});
+
+test('steering exposes no result selector and preserves existing dependent edges until explicitly corrected',async()=>{
+ const {StepInputField}=await import('../../apps/web/src/components/branches/NodeEditor.tsx');
+ const {newDefinition,addNode,changeAgentJobHandling}=await import('../../apps/web/src/components/branches/model.ts');
+ const first=addNode(newDefinition(),'agent').definition;
+ const second=addNode(first,'script',first.steps[0].id).definition;
+ const snapshot=structuredClone(second.edges),changed=changeAgentJobHandling(second,second.steps[0],'steer');
+ assert.deepEqual(changed.edges,snapshot,'choosing guidance cannot silently discard authored downstream work');
+ const render=(input,noResult)=>renderToStaticMarkup(React.createElement(StepInputField,{input,noResult,onChange(){}}));
+ assert.match(render(undefined,true),/Unavailable — steering has no output/);
+ assert.match(render(undefined,true),/aria-invalid="true"/);
+ assert.match(render({kind:'literal',text:'Independent input'},true),/aria-invalid="false"/);
+ assert.match(render(undefined,false),/This Step’s Output/);
+});

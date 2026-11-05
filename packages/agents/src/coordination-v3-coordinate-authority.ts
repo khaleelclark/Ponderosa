@@ -169,6 +169,7 @@ export class CoordinationV3CoordinateAuthority {
       const requestIds: string[] = [];
       const requestActivationIds = new Map<string, string>();
       for (const request of input.requests) {
+        if (request.workflowQueue !== undefined && (request.workflowQueue !== true || !input.actorScope.startsWith("branch:") || input.runAuthorization)) throw new Error("workflow queue requires server-owned Branch coordination");
         this.support.requireAgent(
           input.projectId,
           request.recipientAgentId,
@@ -259,9 +260,10 @@ export class CoordinationV3CoordinateAuthority {
           ),
           kind: "coordination_request",
           priority: PRIORITY.request,
-          dispatchPolicy: "steer_or_run",
+          dispatchPolicy: request.workflowQueue ? "next_run" : "steer_or_run",
           dedupeKey: `request:${requestId}:created`,
           payload: {
+            ...(request.workflowQueue ? { dispatch: { activeRunDelivery: "queue" } } : {}),
             requestId,
             requesterAgentId: input.requesterAgentId ?? null,
             request: request.payload ?? null,

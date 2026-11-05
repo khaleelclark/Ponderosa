@@ -636,11 +636,26 @@ export function registerBranchRoutes(app: FastifyInstance, context: { dataDir?:s
   app.get<{Params:{id:string;executionId:string;stepId:string};Querystring:{commandKey:string}}>('/api/branches/:id/executions/:executionId/resources/:stepId/checkpoint-custody',async(request,reply)=>{
     try{const p=request.params;ownedResource(p.id,p.executionId,p.stepId);return branches.resourceCustodyReleaseStatus(p.stepId,request.query.commandKey);}catch(error){return reply.code(409).send({error:(error as Error).message});}
   });
+  app.get<{Params:{id:string;executionId:string;stepId:string}}>('/api/branches/:id/executions/:executionId/resources/:stepId/copy-history',async(request,reply)=>{
+    try{const p=request.params;ownedResource(p.id,p.executionId,p.stepId);return await context.resources.temporaryCopyHistory(p.stepId);}catch(error){return reply.code(409).send({error:(error as Error).message});}
+  });
   app.get<{Params:{id:string;executionId:string;stepId:string}}>('/api/branches/:id/executions/:executionId/resources/:stepId/access-review',async(request,reply)=>{
     try{const p=request.params;ownedResource(p.id,p.executionId,p.stepId);return await context.resources.reviewRestoreAccess(p.stepId);}catch(error){return reply.code(409).send({error:(error as Error).message});}
   });
-  app.post<{Params:{id:string;executionId:string;stepId:string};Body:NonNullable<import('@ponderosa/core').ImportAgentPackageRequest['accessSettingsResolution']>}>('/api/branches/:id/executions/:executionId/resources/:stepId/access-review',async(request,reply)=>{
-    try{const p=request.params;ownedResource(p.id,p.executionId,p.stepId);if(!request.body||typeof request.body.reviewSha256!=='string'||!['keep_destination','use_source'].includes(request.body.action))throw Error('Explicit current destination access choice required');const result=await context.resources.reviewRestoreAccess(p.stepId,request.body);notify();return result;}catch(error){return reply.code(409).send({error:(error as Error).message});}
+  app.post<{Params:{id:string;executionId:string;stepId:string};Body:unknown}>('/api/branches/:id/executions/:executionId/resources/:stepId/access-review',async(request,reply)=>{
+    try{
+      const p=request.params;ownedResource(p.id,p.executionId,p.stepId);
+      if(!request.body||typeof request.body!=='object'||Array.isArray(request.body))throw Error('Explicit current destination access choice required');
+      const body=request.body as Record<string,unknown>,wrapped=Object.hasOwn(body,'accessSettingsResolution');
+      const selection=(wrapped?body.accessSettingsResolution:body) as NonNullable<import('@ponderosa/core').ImportAgentPackageRequest['accessSettingsResolution']>;
+      if(!selection||typeof selection.reviewSha256!=='string'||!['keep_destination','use_source'].includes(selection.action))throw Error('Explicit current destination access choice required');
+      let consent:{snapshotSha256:string;copySourceMemory:boolean;allowFindingsWriteback:boolean}|undefined;
+      if(wrapped){
+        if(typeof body.snapshotSha256!=='string'||typeof body.copySourceMemory!=='boolean'||typeof body.allowFindingsWriteback!=='boolean')throw Error('Explicit expert copy memory choices required');
+        consent={snapshotSha256:body.snapshotSha256,copySourceMemory:body.copySourceMemory,allowFindingsWriteback:body.allowFindingsWriteback};
+      }
+      const result=await context.resources.reviewRestoreAccess(p.stepId,selection,consent);notify();return result;
+    }catch(error){return reply.code(409).send({error:(error as Error).message});}
   });
   app.delete<{Params:{id:string;executionId:string;stepId:string};Body:import('@ponderosa/core').BranchResourceCustodyReleaseInput}>('/api/branches/:id/executions/:executionId/resources/:stepId/checkpoint-custody',async(request,reply)=>{
     try{const p=request.params;ownedResource(p.id,p.executionId,p.stepId);const body=validatedObject(request.body,'Resource custody release');exactObjectFields(body,['commandKey','expectedGeneration','expectedCustodyId','expectedReceiptSha256'],'Resource custody release');return await context.resources.releaseCapture(p.stepId,body as unknown as import('@ponderosa/core').BranchResourceCustodyReleaseInput);}catch(error){return reply.code(409).send({error:(error as Error).message});}

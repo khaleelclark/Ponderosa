@@ -69,7 +69,7 @@ export interface BranchConfiguration { checkpointMode?: BranchCheckpointMode; pa
 export interface BranchRuntimeOutcome { kind: "child_canceled" | "limit_exhausted"; limit?: keyof BranchLimits; configured?: number; observed?: number }
 interface StepBase { id: string; label?: string; failure?: BranchFailurePolicy; stateWrites?:string[] }
 export type BranchStep =
-  | (StepBase & { kind: "agent"; target: BranchTarget; instructions: string; requireUserCommunication?: boolean })
+  | (StepBase & { kind: "agent"; target: BranchTarget; instructions: string; requireUserCommunication?: boolean; jobHandling?: "queue" | "steer" | "copy" })
   | (StepBase & { kind: "branch_call"; branchRef: string; canceled?: "retry" | "ask_human" | "terminate" })
   | (StepBase & { kind: "script"; runtime: "node"; source: string; cwdRef: string; timeoutMs: number })
   | (StepBase & { kind: "human_gate"; prompt: string; editable: boolean; choices?: string[] })
@@ -144,7 +144,7 @@ export interface BranchAttemptDto {
   calledBranch?: {id:string;name:string;enabled:boolean};
   childExecution?: {id:string;state:BranchExecutionState;versionId?:string};
   scriptEvidence?: {stderr?:string;stdout?:string;code?:number|null;error?:string;outputHash?:string;cwd?:string;runtime?:string;finishedAt?:string};
-  error?: string; retryBlockedReason?: string; requestOutcomeUnknown?: boolean; availableAt?: string; purpose?: "step" | "recovery"; result?: BranchResult;
+  error?: string; retryBlockedReason?: string; requestOutcomeUnknown?: boolean; snapshotRetryAvailable?:boolean; availableAt?: string; purpose?: "step" | "recovery"; result?: BranchResult;
 }
 /** Exact current Attempt → started scheduler Run association, not execution authority. */
 export interface BranchLiveOutputDto {
@@ -174,6 +174,7 @@ export interface BranchStepEvidenceDto {
 /** Focused current decisions and failed/uncertain attempts, independent of audit-history pages. */
 export type BranchExecutionActionDto =
   | { kind: 'schedule_update'; occurrenceId: string; injectionId: string; eventCount: number; lastScheduledAt: string }
+  | { kind: 'guidance_review'; attemptId: string; injectionId: string }
   | { kind: 'decision'; decision: DecisionDto }
   | { kind: 'gate'; gate: BranchGateDto; step: BranchStepExecutionDto }
   | { kind: 'attempt'; attempt: BranchAttemptDto; step: BranchStepExecutionDto; current: boolean };
@@ -235,8 +236,8 @@ export interface BranchGateResolution {
   decision: "approve" | "reject" | "retry"; output?: string; choice?: string;
 }
 export interface BranchIntervention {
-  commandKey: string; expectedRevision: number; action: "retry" | "resolve_script" | "resolve_schedule_update" | "skip" | "merge";
-  attemptId?: string; result?: BranchResult; mergedInto?: string; occurrenceId?: string; updateApplied?: boolean;
+  commandKey: string; expectedRevision: number; action: "retry" | "resolve_script" | "resolve_schedule_update" | "resolve_guidance" | "skip" | "merge";
+  attemptId?: string; injectionId?: string; result?: BranchResult; mergedInto?: string; occurrenceId?: string; updateApplied?: boolean;
   externalEffectsReconciled?: boolean; reason: string;
 }
 
@@ -417,6 +418,8 @@ export type CheckpointPackageStatus=
 export interface BranchResourceInspectionDto {
  branchId:string;executionId:string;stepExecutionId:string;generation:number;state:string;destinationChatId:string|null;destinationChatAvailable:boolean;importState:string|null;
  custody:null|{kind:'capture'|'restoration_source';state:'capturing'|'retained'|'releasing'|'released'|'restoration_source';custodyId:string|null;receiptSha256:string|null;checkpointId:string;packageSha256:string|null};
+ temporaryCopyTrace?:{sourceAgentId:string;sourceChatId:string;copyAgentId:string;copyChatId:string;requestId:string;attemptId:string;task:{instructions:string;input:string};result:unknown;historyAvailable:boolean};
+ expertCopyReview?:{sourceAgentId:string;sourceChatId:string;copyChatId:string;snapshotSha256:string;consentCurrent:boolean;sourceMemoryAvailable:boolean;reviewWithoutMemorySha256:string;copySourceMemory:boolean;allowFindingsWriteback:boolean};
  currentPolicyReview:import('./dto/agents.js').AgentAccessImportReviewDto|null;
  accessChoiceCurrent:boolean;reviewError?:string;
 }

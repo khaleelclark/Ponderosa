@@ -1,4 +1,5 @@
 import {readFinalResourceExit} from './branch-final-resource-exit.js';
+import {readBranchExpertCopy} from './branch-expert-copy.js';
 import type Database from 'better-sqlite3';
 import {payloadHash,stableJson} from './coordination-v3-canonical-json.js';
 import {receiptMatchesSource,resourceCaptureFrontierHash} from './branch-resource-capture.js';
@@ -26,6 +27,15 @@ export function requireGenerationExitDeletionReady(db:Database.Database,scope:{a
   const fail=()=>{throw Error('Original generation deletion requires an exact sealed capture and intake fence receipt');};
   const retained=JSON.parse(f.receipt_json),input=retained.input;
   if(retained.schema!=='branch-generation-exit-fence.v1'||stableJson(retained)!==f.receipt_json||payloadHash(retained)!==f.receipt_sha256||stableJson(input)!==f.input_json||f.identity!==payloadHash({executionId:input.executionId,stepExecutionId:input.stepExecutionId,generation:input.generation}))fail();
+  if(retained.purpose==='expert-copy'){
+   const expert=readBranchExpertCopy(db,input.executionId,input.stepExecutionId),source=expert?.finalSnapshotSource,receipt=expert?.finalSnapshotReceipt;
+   if(!expert||expert.state!=='active'||expert.copyChatId!==input.conversationId||expert.copyProjectId!==input.projectId||
+    !expert.copyAgentId||!input.agentIds.includes(expert.copyAgentId)||expert.finalFenceSha256!==f.receipt_sha256||
+    !source||!receipt||expert.finalVerifiedSha256!==receipt.sha256||source.sourceChatId!==input.conversationId||source.intent.executionId!==input.executionId||
+    source.intent.resourceStepId!==input.stepExecutionId||source.intent.resourceGeneration!==input.generation||
+    stableJson([...source.agentIds].sort())!==stableJson(input.agentIds)||!receiptMatchesSource(receipt,source))fail();
+   continue;
+  }
   if(retained.purpose==='final-resource'){
    const final=readFinalResourceExit(db,input.executionId,input.stepExecutionId);
    if(final.identity.projectId!==input.projectId||final.identity.chatId!==input.conversationId||final.identity.generation!==input.generation||stableJson(final.identity.agentIds)!==stableJson(input.agentIds)

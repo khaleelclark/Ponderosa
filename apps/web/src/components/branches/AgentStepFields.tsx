@@ -8,9 +8,18 @@ import type {AgentDto,BranchAgentChoiceDto,AgentPortablePackageDto,BranchBinding
 import {realApi,requestCollectionPage} from '../../api/real';
 import {createClientId} from '../../clientId';
 import {effortOptionsForModel,modelSelectionIsCompatible,engineIsAvailable,engineUnavailableReason,runtimeControlState} from '../../conversationEngine';
-import {changeAgentTarget,selectTemporaryAgent} from './model';
+import {changeAgentTarget,selectTemporaryAgent,changeAgentJobHandling,type AgentJobHandling} from './model';
 export type AgentSetupRequest={kind:'agent'|'organization'|'edit';nodeId:string;target:Extract<BranchStep,{kind:'agent'}>['target'];agent?:AgentDto;chatId?:string};
 type Choice={id:string;label:string;kind:Extract<BranchStep,{kind:'agent'}>['target']['kind']|'new_agent'|'new_organization';agent?:AgentDto&Partial<BranchAgentChoiceDto>};
+export function AgentJobHandlingField({value,onChange}:{value?:AgentJobHandling;onChange(value:AgentJobHandling):void}):JSX.Element{
+ const hint=value===undefined?'Existing behavior: steer current work when busy, otherwise start work.':value==='queue'?'Each admitted job waits its turn and receives its own outcome. Schedule settings still apply: Run Latest When Finished or Update Current Run can combine occurrences before admission.':value==='steer'?'Send guidance to the shared Agent’s current work; delivery or uncertainty is not a separate job result, so end this path or pass explicit text onward.':'Each job uses a temporary copy of the selected Agent with its own result in a fresh workspace; source working-folder files are not copied.';
+ return <TextField data-branch-field="jobHandling" select size="small" label="Job handling" value={value??''} helperText={hint} SelectProps={{displayEmpty:true}} InputLabelProps={{shrink:true}} onChange={event=>{if(event.target.value)onChange(event.target.value as AgentJobHandling)}}>
+  {value===undefined&&<MenuItem value="" disabled>Existing behavior · steer or run</MenuItem>}
+  <MenuItem value="queue">Wait its turn</MenuItem>
+  <MenuItem value="steer">Steer current work</MenuItem>
+  <MenuItem value="copy">Make a temporary Agent copy</MenuItem>
+ </TextField>;
+}
 /** One scoped picker; creation is owned above the responsive editor so switching surfaces cannot lose it. */
 export function AgentStepFields({branchId,node,definition,bindings,onDefinition,agents,contexts,engines,validationRequest,validationIssue,onSetup,retainedTemplates={},onDraft}:{onDraft(value:{definition?:BranchDefinition;bindings?:BranchBindings}):void;retainedTemplates?:NonNullable<BranchDefinition['templates']>;branchId:string;node:Extract<BranchStep,{kind:'agent'}>;definition:BranchDefinition;bindings:BranchBindings;onDefinition(value:BranchDefinition):void;agents:AgentDto[];contexts:ConversationDto[];engines:EngineDto[];validationIssue?:import("@ponderosa/core").BranchValidationIssue;validationRequest:number;onSetup(request:AgentSetupRequest):void}):JSX.Element {
  const setup=useRef<HTMLDivElement>(null);
@@ -41,7 +50,8 @@ export function AgentStepFields({branchId,node,definition,bindings,onDefinition,
   {selected.error&&<Alert severity="warning">The Selected Agent Is Unavailable. {selected.error.message}</Alert>}
   {current&&'ref'in node.target&&<Button size="small" sx={{alignSelf:'flex-start'}} onClick={()=>onSetup({kind:'edit',nodeId:node.id,target:node.target,agent:current})}>Edit Agent…</Button>}
   {current&&node.target.kind==='persistent_organization'&&<Button size="small" sx={{alignSelf:'flex-start'}} onClick={()=>onSetup({kind:'organization',nodeId:node.id,target:node.target,agent:current,chatId:current.conversationId})}>Team Setup…</Button>}
-  <TextField label="Agent Instructions" placeholder="Describe The Work And Expected Result For This Step" onBlur={()=>setTouched(true)} multiline minRows={4} value={node.instructions} onChange={event=>update({...node,instructions:event.target.value})}/>
+  {node.target.kind==='persistent_agent'&&<Stack ref={setup}><AgentJobHandlingField value={(node as typeof node&{jobHandling?:AgentJobHandling}).jobHandling} onChange={mode=>onDefinition(changeAgentJobHandling(definition,node,mode))}/></Stack>}
+  <TextField label="Agent Instructions" placeholder={(node as typeof node&{jobHandling?:AgentJobHandling}).jobHandling==='steer'?'Describe Guidance For The Agent’s Current Work':'Describe The Work And Expected Result For This Step'} onBlur={()=>setTouched(true)} multiline minRows={4} value={node.instructions} onChange={event=>update({...node,instructions:event.target.value})}/>
   {template&&<Stack ref={setup} component="section" aria-label={template.kind==='organization'?'Team Setup':'Agent Setup'} spacing={1.5}><Typography variant="subtitle2">{template.kind==='organization'?'Team Setup':'Agent Setup'}</Typography>
    {template.agents.map(member=>{const engine=engines.find(item=>item.id===bindings.engines?.[member.engine]),resolvedModel=member.model??engine?.defaultModel??'',runtime=runtimeControlState(engine,{model:resolvedModel,effort:member.effort??''}),defaultEffort=engine?.models.find(item=>item.id===resolvedModel)?.defaultEffort??engine?.defaultEffort;const change=(patch:Partial<typeof member>)=>setTemplate({...template,agents:template.agents.map(item=>item.ref===member.ref?{...item,...patch}:item)});const invalid=!engineIsAvailable(engine)||!modelSelectionIsCompatible(engine,member.model??'')||Boolean(member.effort&&!runtime.efforts.some(option=>option.id===member.effort&&!option.disabled));
     return <Stack key={member.ref} data-template-member={member.ref} spacing={1.5} sx={{pb:1,borderBottom:template.kind==='organization'?'1px solid':undefined,borderColor:'divider'}}>

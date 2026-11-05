@@ -231,7 +231,7 @@ async function interventionIntentFixture(t,action,{failure=new Error('Response l
  const {QueryClient,MutationObserver}=require('@tanstack/react-query');
  const ast=ts.createSourceFile('ExecutionPanel.tsx',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX),declarations=new Map();let dialog;
  function visit(node){if(ts.isVariableDeclaration(node))declarations.set(node.name.getText(ast),node);if(ts.isBinaryExpression(node)&&node.left.getText(ast)==='intervention'&&ts.isJsxElement(node.right)&&node.right.openingElement.tagName.getText(ast)==='ConfirmDialog')dialog=node.getText(ast);ts.forEachChild(node,visit)}visit(ast);assert.ok(dialog);
- const bodies=[],refreshes=[],setters=[],scope={React,ApiRequestError,JSON,Date,Error,execution:{id:'exact-run',revision:7,parentExecutionId:'parent'},intervention:{action,...(['retry','resolve_script'].includes(action)?{attemptId:'exact-attempt',unknown:true}:{}),...(action==='resolve_schedule_update'?{occurrenceId:'exact-occurrence'}:{})},updateApplied:'not_applied',reason:'Verified exact reason',reconciled:true,result:'Exact observed output',failed:true,target:'exact-target',commandKey:'original-command',actionsCurrent:true,mergeTargets:{data:{},isPending:false,error:null,hasNextPage:false},executions:[{id:'exact-target',state:'completed',createdAt:'2026-10-26T00:00:00Z'}],detail:{attempts:[],steps:[]},attentionAttempts:[],refresh:()=>refreshes.push('refresh'),createClientId:()=>{setters.push('new-key');return 'new-command'},inspectStep(){}};
+ const bodies=[],refreshes=[],setters=[],scope={React,ApiRequestError,JSON,Date,Error,execution:{id:'exact-run',revision:7,parentExecutionId:'parent'},intervention:{action,...(['retry','resolve_script'].includes(action)?{attemptId:'exact-attempt',unknown:true}:{}),...(action==='resolve_schedule_update'?{occurrenceId:'exact-occurrence'}:{}),...(action==='resolve_guidance'?{attemptId:'exact-attempt',injectionId:'exact-injection'}:{})},updateApplied:'not_applied',reason:'Verified exact reason',reconciled:true,result:'Exact observed output',failed:true,target:'exact-target',commandKey:'original-command',actionsCurrent:true,mergeTargets:{data:{},isPending:false,error:null,hasNextPage:false},executions:[{id:'exact-target',state:'completed',createdAt:'2026-10-26T00:00:00Z'}],detail:{attempts:[],steps:[]},attentionAttempts:[],refresh:()=>refreshes.push('refresh'),createClientId:()=>{setters.push('new-key');return 'new-command'},inspectStep(){}};
  for(const name of ['intervention','updateApplied','reason','reconciled','result','failed','target','commandKey'])scope['set'+name[0].toUpperCase()+name.slice(1)]=value=>{setters.push(name);scope[name]=value;};
  for(const name of ['ConfirmDialog','Stack','Alert','Typography','Button','TextField','MenuItem','FormControlLabel','Switch'])scope[name]=name;
  let release;
@@ -247,7 +247,7 @@ async function interventionIntentFixture(t,action,{failure=new Error('Response l
  return {scope,bodies,refreshes,setters,refresh,render,release:()=>release(),submit:()=>{refresh();return scope.submitIntervention()}};
 }
 
-for(const action of ['retry','resolve_script','resolve_schedule_update','merge','skip'])test('uncertain '+action+' replays byte-identical intervention after polling advances the Run revision',async t=>{
+for(const action of ['retry','resolve_script','resolve_schedule_update','resolve_guidance','merge','skip'])test('uncertain '+action+' replays byte-identical intervention after polling advances the Run revision',async t=>{
  const f=await interventionIntentFixture(t,action),pending=f.submit();await new Promise(resolve=>setImmediate(resolve));f.refresh();assert.equal(f.scope.interventionLocked,true);
  f.release();await assert.rejects(pending,/Response lost/);f.scope.execution.revision=12;
  const view=f.render();assert.equal(f.scope.interventionUnconfirmed,true);assert.equal(view.root.props.confirmDisabled,false,'A newer revision cannot block exact idempotent readback');
@@ -336,4 +336,40 @@ test('loaded live-output history merges exact current revision targets and exclu
  const page=(revision,liveOutputs,id='run-a')=>({execution:{id,revision},liveOutputs,steps:[],attempts:[],gates:[],paths:[],resources:[]});
  const a={attemptId:'a',runId:'scheduler-a'},b={attemptId:'b',runId:'scheduler-b'};
  assert.deepEqual(JSON.parse(JSON.stringify(scope.merge([page(2,[a]),page(2,[b,a]),page(1,[{attemptId:'stale',runId:'old'}]),page(2,[{attemptId:'foreign',runId:'foreign'}],'other')]).liveOutputs)),[b,a]);
+});
+
+test('uncertain guidance is actionable with exact evidence and no invented result',()=>{
+ const guidance={kind:'guidance_review',attemptId:'own-attempt',injectionId:'own-injection'};
+ const f=fixture({actions:[guidance]}),html=f.render();
+ assert.match(html,/Guidance Delivery Needs Review/);assert.ok(html.indexOf('Review Guidance Delivery')<html.indexOf('<details'));assert.equal(f.requests.length,0);
+ f.button('Review Guidance Delivery').onClick();const dialog=f.render();
+ assert.match(dialog,/keeps this guidance held without automatic resend/);assert.match(dialog,/not an Agent result/);
+ const selector=f.fields.find(field=>field.label==='Observed guidance delivery');assert.equal(selector.value,'');assert.equal(selector.disabled,true);
+ selector.onChange({target:{value:'applied'}});f.render();assert.equal(f.fields.find(field=>field.label===selector.label).value,'');
+ f.props.authorityFresh=false;f.render();assert.equal(f.button('Review Guidance Delivery').disabled,true);
+ const page={executionId:f.execution.id,revision:f.execution.revision,generation:'current',items:[guidance]};
+ assert.equal(presentation.currentExecutionActions(f.execution,[page,page]).length,1);
+ assert.equal(presentation.currentExecutionActions(f.execution,[page,{...page,items:[{...guidance,injectionId:'other'}]}]).length,2);
+});
+
+for(const applied of [true,false])test('guidance review requires observed delivery, checked effects and reason: '+applied,async t=>{
+ const f=await interventionIntentFixture(t,'resolve_guidance');f.scope.updateApplied='';f.scope.reconciled=false;f.scope.reason='';
+ let view=f.render();assert.equal(view.root.props.title,'Review Guidance Delivery');assert.equal(view.root.props.confirmDisabled,true);
+ const outcome=()=>view.nodes.find(node=>node.type==='TextField'&&node.props.label==='Observed guidance delivery');
+ assert.equal(outcome().props.disabled,true);outcome().props.onChange({target:{value:'applied'}});assert.equal(f.scope.updateApplied,'');
+ const confirmation=view.nodes.find(node=>node.type==='FormControlLabel'&&node.props.label==='I have checked and reconciled this guidance’s effects');assert.ok(confirmation);
+ confirmation.props.control.props.onChange(null,true);view=f.render();outcome().props.onChange({target:{value:applied?'applied':'not_applied'}});view=f.render();assert.equal(view.root.props.confirmDisabled,true);
+ view.nodes.find(node=>node.type==='TextField'&&node.props.label==='Reason for this decision').props.onChange({target:{value:'Checked original delivery and effects'}});
+ view=f.render();assert.equal(view.root.props.confirmDisabled,false);const pending=view.root.props.onConfirm();await new Promise(resolve=>setImmediate(resolve));assert.equal(await f.submit(),undefined);
+ f.release();await assert.rejects(pending,/Response lost/);f.scope.execution.revision=19;await f.submit();assert.equal(f.bodies[1].body,f.bodies[0].body);
+ const intent=JSON.parse(f.bodies[0].body);assert.equal(intent.action,'resolve_guidance');assert.equal(intent.attemptId,'exact-attempt');assert.equal(intent.injectionId,'exact-injection');assert.equal(intent.updateApplied,applied);assert.equal(intent.externalEffectsReconciled,true);assert.equal(intent.expectedRevision,7);assert.equal(intent.result,undefined);
+});
+
+test('only confirmed current prepared copy exposes the scoped preparation retry',()=>{
+ const action=olderAttempt();action.attempt.state='prepared';action.attempt.snapshotRetryAvailable=true;
+ const f=fixture({actions:[action]});assert.match(f.render(),/Copy Preparation Needs Retry/);
+ f.button('Retry preparing copy').onClick();const dialog=f.render();assert.match(dialog,/same temporary copy reservation/);assert.match(dialog,/no copy was published/);assert.doesNotMatch(dialog,/Starts · new Step invocation/);assert.equal(f.requests.length,0);
+ f.props.authorityFresh=false;f.render();assert.equal(f.button('Retry preparing copy').disabled,true);
+ const ordinary=olderAttempt();ordinary.attempt.state='prepared';const held=fixture({actions:[ordinary]});held.render();assert.equal(held.button('Retry preparing copy'),undefined);assert.equal(held.button('Retry Step'),undefined);
+ const unknown=olderAttempt({unknown:true});unknown.attempt.snapshotRetryAvailable=true;const uncertain=fixture({actions:[unknown]});uncertain.render();assert.equal(uncertain.button('Retry preparing copy'),undefined);assert.ok(uncertain.button('Retry Anyway'));
 });

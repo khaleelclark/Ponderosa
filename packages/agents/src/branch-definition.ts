@@ -105,7 +105,7 @@ function validateDefinition(value: unknown): BranchDefinition {
       for(const key of step.stateWrites){branchKey(key);if(!Object.hasOwn(record(d.state),String(key)))throw Error('Unknown state channel');}
     }
     if (step.kind === "agent") {
-      keys(step, ["id", "label", "kind", "target", "instructions", "failure", "stateWrites", "requireUserCommunication"]);
+      keys(step, ["id", "label", "kind", "target", "instructions", "failure", "stateWrites", "requireUserCommunication", "jobHandling"]);
       if(step.requireUserCommunication!==undefined&&typeof step.requireUserCommunication!=='boolean')throw Error('requireUserCommunication must be boolean');
       field = "target"; const target = record(step.target);
       if (target.kind === "persistent_agent" || target.kind === "persistent_organization") { keys(target, ["kind", "ref"]); branchKey(target.ref); }
@@ -114,6 +114,10 @@ function validateDefinition(value: unknown): BranchDefinition {
         const template = record(d.templates)[String(target.templateRef)];
         if (!template || validateBranchTemplate(template).kind !== (target.kind === "ephemeral_agent" ? "agent" : "organization")) throw new Error("Missing or incompatible Agent template");
       } else throw new Error("Invalid Agent target");
+      section="agent_setup"; field="jobHandling";
+      if(step.jobHandling!==undefined && (target.kind!=="persistent_agent" || typeof step.jobHandling!=="string" || !["queue","steer","copy"].includes(step.jobHandling)))throw Error("Job handling requires a persistent Agent and a valid choice");
+      if(step.jobHandling==='steer' && (step.requireUserCommunication || step.stateWrites))throw Error('Guidance delivery cannot supply a separate Agent result or state update');
+      section="task";
       field = "instructions"; step.instructions = branchText(step.instructions);
     } else if (step.kind === "branch_call") {
       keys(step,['id','label','kind','branchRef','canceled','failure']); field = 'branchRef'; branchKey(step.branchRef);
@@ -176,6 +180,9 @@ function validateDefinition(value: unknown): BranchDefinition {
     edgeIds.add(id);
     field = 'loop'; if (e.loop !== undefined && typeof e.loop !== 'boolean') throw new Error('Invalid loop edge');
     field = 'input'; if(e.input !== undefined) { const input=keys(e.input,['kind','text']); if(input.kind === 'literal') branchText(input.text); else if(input.kind !== 'output'||input.text !== undefined) throw new Error('Invalid edge input'); }
+    const source=nodes.get(from);
+    if(source?.kind==='agent'&&source.jobHandling==='steer'&&(e.input===undefined||record(e.input).kind!=='literal'))
+      throw new Error('Guidance has no Agent result; use an explicit literal for a following step');
     field = "choice"; if (e.choice !== undefined) { e.choice = branchText(e.choice).trim(); if (!e.choice || String(e.choice).length > 100) throw new Error('Invalid route choice'); }
     field = "on"; if (!["success", "failure", "approved", "rejected", "selected", "canceled"].includes(String(e.on))) throw new Error("Invalid edge outcome");
     } catch (error) { throw new BranchValidationError((error as Error).message, { nodeId: String(e.from), edgeId: String(e.id), section: field === "input" || field === "loop" ? "advanced" : "connections", field }); }

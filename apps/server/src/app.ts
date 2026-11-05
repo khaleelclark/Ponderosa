@@ -1411,6 +1411,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
   });
   branchInstallations.setEngine(application.packageEngine);
   branchResources.setPackageEngine(application.packageEngine);
+  localMemoryFor(app)?.setExpertFinalCustodyVerifier((chatId,projectId)=>branchResources.verifyExpertFinalCustody(chatId,projectId));
   branchResources.setImporter(async(input,hooks,signal)=>{
     await application.packageEngine.importAgent(input.projectId,input.chatId,input.template,input.engineMapping,input.creationKey,{branchHooks:hooks,signal,accessSettingsResolution:input.accessSettingsResolution});
   });

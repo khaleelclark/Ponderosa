@@ -826,6 +826,7 @@ export function startProviderRunExecution(
                         if (controller.signal.aborted || isClosed() || deletingAgentIds.has(agent.id) || deletingProjectIds.has(project.id) || !ownsActiveRun(agent.id, activeRun) || !renewExecutionLease(agent.id, activeRun)) throw new Error("Native turn lost current Run authority");
                         assertSettingsTransitionPolicy?.();
                         assertCurrentCodexAccess();
+                        if(v3InjectionId && activeRun.v3SchedulerRunId)coordinationV3!.assertBranchGuidanceSubmission(v3InjectionId,activeRun.v3SchedulerRunId);
                         if (retainedVerifiedContext && (!persistentRuntime || reusableRuntime(agent.id)!==persistentRuntime ||
                             activeRun.persistentRuntimeIdentity!==persistentRuntime.identity || !persistentRuntime.session.isAlive() ||
                             readProviderSessionIdentifier(persistentRuntime.session)!==resumeSessionId))
@@ -889,6 +890,7 @@ export function startProviderRunExecution(
               "continue provider session",
               () => {
                 if (v3FencingToken !== undefined) coordinationV3.assertRunReviewedSteeringLease(agent.projectId,runId,v3FencingToken);
+                if(v3InjectionId && activeRun.v3SchedulerRunId)coordinationV3!.assertBranchGuidanceSubmission(v3InjectionId,activeRun.v3SchedulerRunId);
                 return engine.adapter.continue({
               agentId: agent.id,
               ...(v3FencingToken !== undefined ? {providerRun:{runId,fence:v3FencingToken}} : {}),
@@ -924,6 +926,7 @@ export function startProviderRunExecution(
                         if (controller.signal.aborted || isClosed() || deletingAgentIds.has(agent.id) || deletingProjectIds.has(project.id) || !ownsActiveRun(agent.id, activeRun) || !renewExecutionLease(agent.id, activeRun)) throw new Error("Native turn lost current Run authority");
                         assertSettingsTransitionPolicy?.();
                         assertCurrentCodexAccess();
+                        if(v3InjectionId && activeRun.v3SchedulerRunId)coordinationV3!.assertBranchGuidanceSubmission(v3InjectionId,activeRun.v3SchedulerRunId);
                         if (reviewedSteeringRun) {
                           if (!persistentRuntime || reusableRuntime(agent.id)!==persistentRuntime ||
                               activeRun.persistentRuntimeIdentity!==persistentRuntime.identity || !persistentRuntime.session.isAlive())
@@ -979,6 +982,7 @@ export function startProviderRunExecution(
               "seed provider session",
               () => {
                 if (v3FencingToken !== undefined) coordinationV3.assertRunReviewedSteeringLease(agent.projectId,runId,v3FencingToken);
+                if(v3InjectionId && activeRun.v3SchedulerRunId)coordinationV3!.assertBranchGuidanceSubmission(v3InjectionId,activeRun.v3SchedulerRunId);
                 return engine.adapter.seed({
               agentId: agent.id,
               ...(v3FencingToken !== undefined ? {providerRun:{runId,fence:v3FencingToken}} : {}),

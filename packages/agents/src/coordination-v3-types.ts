@@ -37,6 +37,8 @@ export interface CoordinateV3Input {
   requests: Array<{
     requestId?: string;
     recipientAgentId: string;
+    /** Server-owned workflow jobs can request a separate queued Run. */
+    workflowQueue?: boolean;
     lifetime: RequestLifetime;
     communicationEventId?: string;
     payload?: unknown;

@@ -1,6 +1,6 @@
 const str={type:'string',minLength:1};const destination={type:'string',enum:['chat','global']};
 const guidance = {
- save: 'Store a fact in the explicit destination: chat for this Chat, global for installation-wide memory. Chat visibility defaults to team; private is same-Agent only and unsupported for global.',
+ save: 'Store a fact in the explicit destination: chat for this Chat, global for installation-wide memory. Chat visibility defaults to team; private is same-Agent only and unsupported for global. A temporary agent copy may explicitly save a concise finding to its original Agent with recipient original, destination chat and private visibility; this does not start the original Agent.',
  update: 'Create a new physical version using a returned chunk_id and its destination. Existing-source read authority is required; retain the returned lineage.',
  forget: 'Forget a returned chunk_id in its destination. Existing-source read authority is required; this is not a hard delete.',
  get: 'Fetch a returned physical chunk_id. Omit source to resolve across both authorized Chat and global memory; use source only to deliberately narrow the lookup.',
@@ -8,7 +8,7 @@ const guidance = {
  history: 'Retrieve version lineage for a returned chunk_id. Omit source for both authorized scopes; use source only to deliberately narrow the lookup.',
 } as const;
 const definitions=[
- ['save',{text:str,destination,visibility:{type:'string',enum:['team','private']}},['text','destination']],
+ ['save',{text:str,destination,visibility:{type:'string',enum:['team','private']},recipient:{type:'string',enum:['original']}},['text','destination']],
  ['update',{chunk_id:str,text:str,destination},['chunk_id','text','destination']],
  ['forget',{chunk_id:str,destination},['chunk_id','destination']],
  ['get',{chunk_id:str,source:destination},['chunk_id']],
@@ -36,6 +36,7 @@ export function validateMemoryCall(operation:string,args:unknown):Record<string,
  }
  for(const k of ['destination','source'])if(Object.hasOwn(a,k)&&!['chat','global'].includes(a[k]))throw new MemoryArgumentError(`${k} must be chat or global`);
  if(Object.hasOwn(a,'visibility')&&!['team','private'].includes(a.visibility))throw new MemoryArgumentError('visibility must be team or private');
+ if(Object.hasOwn(a,'recipient')&&(a.recipient!=='original'||a.destination!=='chat'||a.visibility!=='private'))throw new MemoryArgumentError('Original recipient requires chat destination and private visibility');
  if(Object.hasOwn(a,'include_history')&&typeof a.include_history!=='boolean')throw new MemoryArgumentError('include_history must be boolean');
  if(Object.hasOwn(a,'top_k')&&(!Number.isInteger(a.top_k)||a.top_k<1||a.top_k>20))throw new MemoryArgumentError('top_k must be an integer from 1 to 20');
  return structuredClone(a);
