@@ -161,7 +161,7 @@ test('native browser: rendered href, Open-link actions and whole-message/code co
   const origin = `http://127.0.0.1:${preview.port}`;
   await page.context().grantPermissions(['clipboard-read', 'clipboard-write'], { origin });
   // External navigation is intercepted locally: tests do not visit WynnBuilder.
-  await page.route('https://wynnbuilder.github.io/**', route => route.fulfill({ body: '<title>Captured destination</title>' }));
+  await page.context().route('https://wynnbuilder.github.io/**', route => route.fulfill({ body: '<title>Captured destination</title>' }));
   await page.goto(origin);
   await page.getByRole('button', { name: /^Open agent Build-Coordinator/u }).click();
   assert.equal(await page.evaluate(() => window.openedAgent), agentId);
@@ -183,6 +183,7 @@ test('native browser: rendered href, Open-link actions and whole-message/code co
   const popup = await popupPromise;
   await popup.waitForLoadState();
   assert.equal(popup.url(), `${url}&second=2`);
+  assert.equal(await popup.title(), 'Captured destination', 'the popup navigation was fulfilled locally');
   await popup.close();
   await page.getByRole('button', { name: 'Copy whole message' }).click();
   const expectedCopy = visible(text, mentions);
