@@ -221,3 +221,35 @@ test('Branch working data refuses a changed large original before publishing par
   assert.equal(createHash('sha256').update(await readFile(sourceFile)).digest('hex'),digest,'source original remains unchanged');
  },{storeFactory:dir=>(store=new AgentStore(dir))});
 });
+
+test('Branch package HTTP export retains a live large working original',{skip:process.platform==='win32',timeout:120000},async t=>{
+ let store;await withFixture(t,async f=>{
+  const {value,content,digest}=await largeBranchPackage(f);
+  const {plan}=await preview(f,value,true),complete=await finish(f,plan,true);
+  const resource=store.sqlite.prepare("SELECT local_id FROM branch_installation_resources WHERE branch_id=? AND chat_ref='chat-a' AND agent_ref='a'").get(complete.branchId);
+  assert.ok(resource);
+  const selections=encodeURIComponent(JSON.stringify({[resource.local_id]:{wholeWorkingFolder:true}}));
+  const exported=f.ok(await f.api('GET',`/api/branches/${complete.branchId}/package?mode=full&fileSelections=${selections}`));
+  const files=exported.workingData?.package.agents.flatMap(node=>node.workingFiles??[])??[];
+  const original=files.find(file=>file.path==='original');
+  assert.ok(original,'the exported Branch includes the selected original');
+  assert.equal(original.parts?.byteLength,content.length);
+  assert.equal(original.parts?.sha256,digest);
+ },{storeFactory:dir=>(store=new AgentStore(dir))});
+});
+
+test('interrupted large Branch working-data receipt stays held without replay',{skip:process.platform==='win32',timeout:120000},async t=>{
+ let store;await withFixture(t,async f=>{
+  const {value,digest}=await largeBranchPackage(f),{plan,first}=await preview(f,value);
+  await finish(f,plan);
+  const original=path.join(first,'original'),before=await stat(original);
+  const row=store.sqlite.prepare('SELECT preview_json FROM branch_installation_plans WHERE id=?').get(plan.id),state=JSON.parse(row.preview_json);
+  state.workingDataApplication.state='applying';
+  store.sqlite.prepare("UPDATE branch_installation_plans SET state='applying',preview_json=?,next_attempt_at=NULL WHERE id=?").run(JSON.stringify(state),plan.id);
+  await f.reopen();
+  const held=await until(async()=>{const status=f.ok(await f.api('GET',route(plan.id)));return status.workingDataApplication?.state==='incomplete'&&status;},'large physical outcome remains held');
+  assert.match(held.error,/without replay|stopped before/i);
+  assert.equal((await stat(original)).ino,before.ino,'the existing original was not recreated');
+  assert.equal(createHash('sha256').update(await readFile(original)).digest('hex'),digest,'the complete original remains intact');
+ },{storeFactory:dir=>(store=new AgentStore(dir))});
+});
