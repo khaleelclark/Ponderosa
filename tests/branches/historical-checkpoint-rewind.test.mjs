@@ -3450,7 +3450,7 @@ async function exerciseForeignFinalDestination(t,portable,originalExecutionId,fi
  }finally{if(cleanup)await cleanup.stop();await app.close();assets.close();}
 }
 
-test('0045 populated native restoration receipts migrate losslessly and keep result provenance',async t=>{
+for(const version of ['0045_agent_import_submission_intents.sql','0046_retained_coordination_cut_sources.sql']) test(`${version.slice(0,4)} populated native restoration receipts migrate losslessly and keep result provenance`,async t=>{
  const f=await reservationHistoryFixture(t),prefix=await f.claim();f.settle(prefix);await f.advance(f.source.id);
  let saved;
  await f.finish(f.source.id,undefined,async({stepId,generation})=>{
@@ -3466,6 +3466,7 @@ test('0045 populated native restoration receipts migrate losslessly and keep res
  await disclosure.choose(f.branch.id,f.source.id,prepared.admissionId,{commandKey:'migration-approve',action:'approve',reviewHash:review.reviewHash,expectedRevision:0});
  const admitted=await composer.admit(f.branch.id,f.source.id,input.commandKey,review.reviewHash);
  const before=f.store.sqlite.prepare('SELECT id,branch_id,source_execution_id,checkpoint_id,cut_hash,command_key,command_hash,receipt_json,created_at FROM coordination_cut_restorations ORDER BY id').all();
+ const beforeFull=f.store.sqlite.prepare('SELECT * FROM coordination_cut_restorations ORDER BY id').all();
  const origins=f.store.sqlite.prepare('SELECT * FROM coordination_restored_update_origins ORDER BY update_id').all();
  assert.ok(before.length);assert.ok(origins.length);
  const {captureBranchHostCut}=await import('../../packages/agents/dist/branch-host-cut.js');
@@ -3486,7 +3487,7 @@ test('0045 populated native restoration receipts migrate losslessly and keep res
  const filename=join(f.dir,'ponderosa.db'),source=new Database(filename),older=new Database(':memory:');
  const quote=name=>'"'+name.replaceAll('"','""')+'"';
  try{
-  initializePredecessorSchema(older,'0045_agent_import_submission_intents.sql');
+  initializePredecessorSchema(older,version);
   older.exec(source.prepare("SELECT sql FROM sqlite_master WHERE name='_state_generation'").get().sql);
   older.pragma('foreign_keys=OFF');older.prepare('DELETE FROM collection_generations').run();
   const types=new Map(older.pragma('table_list').filter(row=>row.schema==='main').map(row=>[row.name,row.type]));
@@ -3500,7 +3501,7 @@ test('0045 populated native restoration receipts migrate losslessly and keep res
     for(const row of rows){const keys=Object.keys(row);older.prepare('INSERT INTO '+quote(name)+'('+keys.map(k=>quote(k==='__fixture_rowid'?'rowid':k)).join(',')+') VALUES('+keys.map(()=>'?').join(',')+')').run(...keys.map(k=>row[k]));}
    }
   })();
-  assert.deepEqual(older.prepare('SELECT * FROM coordination_cut_restorations ORDER BY id').all(),before);
+  assert.deepEqual(older.prepare('SELECT * FROM coordination_cut_restorations ORDER BY id').all(),version.startsWith('0046')?beforeFull:before);
   assert.deepEqual(older.prepare('SELECT * FROM coordination_restored_update_origins ORDER BY update_id').all(),origins);
   await older.backup(join(f.dir,'before-0046.db'));
  }finally{older.close();source.close();}
@@ -3508,6 +3509,9 @@ test('0045 populated native restoration receipts migrate losslessly and keep res
  await f.reopen();
  assert.deepEqual(f.store.sqlite.prepare('SELECT id,branch_id,source_execution_id,checkpoint_id,cut_hash,command_key,command_hash,receipt_json,created_at FROM coordination_cut_restorations ORDER BY id').all(),before);
  assert.deepEqual(f.store.sqlite.prepare('SELECT * FROM coordination_restored_update_origins ORDER BY update_id').all(),origins);
+ if(version.startsWith('0046'))assert.deepEqual(f.store.sqlite.prepare('SELECT * FROM coordination_cut_restorations ORDER BY id').all(),beforeFull);
+ assert.ok(f.store.sqlite.prepare("SELECT 1 FROM _schema_version WHERE name='0047_memory_exposure_receipts.sql'").get());
+ assert.deepEqual(f.store.sqlite.pragma('foreign_key_check'),[]);
  assert.ok(f.store.sqlite.prepare("SELECT 1 FROM coordination_cut_restorations WHERE source_kind='native' AND retained_source_id IS NULL").get());
  assert.throws(()=>f.store.sqlite.prepare('UPDATE coordination_cut_restorations SET cut_hash=? WHERE id=?').run('0'.repeat(64),before[0].id),/immutable/);
  assert.throws(()=>f.store.sqlite.prepare('UPDATE coordination_restored_update_origins SET source_payload_hash=? WHERE update_id=?').run('0'.repeat(64),origins[0].update_id),/immutable/);
