@@ -3341,7 +3341,9 @@ export function registerAgentPackageRoutes(
         memory?.assertCheckpointSourceSettled();
       };
       try{return await checkpointCustody.capture(frozen,token.boundaryId,async()=>{
-        admit();return buildPortablePackage(frozen.agentIds[0]!,'full',false,[],false,false,undefined,undefined,undefined,false,undefined,!memory);
+        // Expert copies use a fresh workspace. Retained working originals stay
+        // with their source; ordinary history and artifacts still travel.
+        admit();return buildPortablePackage(frozen.agentIds[0]!,'full',false,[],false,false,undefined,undefined,undefined,true,undefined,!memory);
       },(publish,receipt)=>commitSourceCapture(token,()=>{admit();seal(receipt);publish();}));}finally{releaseSourceCapture(token);}
     }),
     reserveExpertChatMemory:chatId=>{const memory=localMemoryFor(app);if(!memory)throw Error('Local Memory is unavailable; expert copy remains held');memory.reserveExpertChatMemory(chatId);},

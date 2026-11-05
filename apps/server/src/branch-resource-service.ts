@@ -279,6 +279,14 @@ export class BranchResourceService {
     if(!r?.copyAgentId||!r.copyChatId||!r.copyProjectId||!r.requestId||!r.finalSnapshotReceipt||r.finalVerifiedSha256!==r.finalSnapshotReceipt.sha256)
       throw Error('Temporary agent copy history is not retained yet');
     this.verifyExpertFinalCustody(r.copyChatId,r.copyProjectId);
+    if(!r.snapshotReceipt||r.consent?.snapshotSha256!==r.snapshotReceipt.sha256)throw Error('Reviewed temporary agent copy source unavailable');
+    const source=await this.packages.readCheckpoint(r.snapshotReceipt),approvedArchives=new Set<string>();
+    // Imported experts may already carry older Run archives. Only the exact
+    // archive bytes in the explicitly reviewed source snapshot are inherited.
+    for(const agent of source.agents)for(const artifact of agent.artifacts??[])if(artifact.mediaType===EXECUTION_ARCHIVE_MEDIA_TYPE){
+      const {data}=await decodePortableArtifactData(artifact);validateExecutionArchive(data);
+      approvedArchives.add(createHash('sha256').update(data).digest('hex'));
+    }
     const portable=await this.packages.readCheckpoint(r.finalSnapshotReceipt),messages:Array<unknown>=[],runs:Array<unknown>=[],events:Array<unknown>=[];
     const allowed=new Set(r.finalSnapshotReceipt.agentIds);
     for(const agent of portable.agents){
@@ -288,8 +296,8 @@ export class BranchResourceService {
         const {data}=await decodePortableArtifactData(artifact);validateExecutionArchive(data);
         const archive=JSON.parse(data.toString('utf8')) as {sourceAgentId:string;sourceProjectId:string;runs:Array<Record<string,unknown>>;events:Array<Record<string,unknown>>};
         const copyArchive=allowed.has(archive.sourceAgentId)&&archive.sourceProjectId===r.copyProjectId;
-        const sourceArchive=archive.sourceAgentId===r.sourceAgentId&&archive.sourceProjectId===r.sourceProjectId;
-        if(!copyArchive&&!sourceArchive)throw Error('Temporary agent copy Run archive owner differs');
+        const reviewedArchive=approvedArchives.has(createHash('sha256').update(data).digest('hex'));
+        if(!copyArchive&&!reviewedArchive)throw Error('Temporary agent copy Run archive owner differs');
         for(const run of archive.runs)runs.push({agentId:archive.sourceAgentId,...run});
         for(const event of archive.events)events.push({agentId:archive.sourceAgentId,...event});
       }

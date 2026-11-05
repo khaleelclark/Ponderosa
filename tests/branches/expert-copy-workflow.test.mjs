@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {AgentStore,BranchStore,CoordinationV3Store,readBranchExpertCopy} from '@ponderosa/agents';
+import {randomUUID,createHash} from 'node:crypto';
+import {writeFile,readFile} from 'node:fs/promises';
+import path from 'node:path';
+import {AgentStore,BranchStore,CoordinationV3Store,readBranchExpertCopy,CapabilityPolicyStore,publishManagedArtifactContentAsync,readManagedArtifactContent} from '@ponderosa/agents';
 import {withFixture,until} from '../shared/fixture.mjs';
+import {CAPABILITY_IDS} from '@ponderosa/core';
+import {checkpointPackageCustody} from '../../apps/server/dist/checkpoint-agent-packages.js';
+import {decodePortableArtifactData} from '../../apps/server/dist/agent-package-codec.js';
 
 test('parallel temporary copies run independently without Local Memory after explicit review', {timeout:180000}, async t=>{
  let store;
@@ -56,5 +62,101 @@ test('parallel temporary copies run independently without Local Memory after exp
    assert.equal(store.getConversation(r.copyChatId),undefined,'copy Chat was actually deleted');
    console.log('COPY_ARCHIVE_BYTES',JSON.stringify({source:r.snapshotReceipt.byteLength,final:r.finalSnapshotReceipt.byteLength,sourceHistory:'empty',sourceMemory:'unavailable',jobs:2}));
   }
+ },{storeFactory:dir=>(store=new AgentStore(dir))});
+});
+
+test('temporary copy starts with fresh workspace when its source retains a multipart working original',{timeout:180000},async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Imported source'),seed=await f.createIdleAgent(chat,'Seed expert');
+  await f.send(seed.id,'HISTORICAL_EXPERT_OBJECTIVE');await f.settled(seed.id);
+  const bytes=Buffer.alloc(64*1024*1024+17,0x61);bytes[0]=0;bytes[bytes.length-1]=23;
+  const digest=createHash('sha256').update(bytes).digest('hex'),root=store.getAgent(seed.id).workingCopy.rootPath;
+  await writeFile(path.join(root,'large-original.bin'),bytes);
+  const artifactId=randomUUID(),artifact=Buffer.from('PRESERVED_HISTORICAL_DOCUMENT');
+  await publishManagedArtifactContentAsync(f.dataDir,chat.projectId,artifactId,artifact);
+  store.recordProjectArtifact({id:artifactId,projectId:chat.projectId,agentId:seed.id,originAgentId:seed.id,kind:'document',path:'history.txt',summary:'Historical document',createdAt:new Date().toISOString(),size:artifact.length,sha256:createHash('sha256').update(artifact).digest('hex'),mediaType:'text/plain'});
+  const exported=f.ok(await f.api('GET',`/api/agents/${seed.id}/export?mode=full&workingFiles=${encodeURIComponent(JSON.stringify(['large-original.bin']))}`));
+  const recovery=path.join(f.root,'source-recovery'),imported=f.ok(await f.api('POST',`/api/projects/${chat.projectId}/import-agents`,{
+   package:exported,conversationId:chat.id,engineMapping:{codex:'codex'},workingFilesDestination:recovery
+  },{'idempotency-key':randomUUID()}));
+  const source=store.getAgent(imported.rootAgentId),sourceState=store.getImportedHistory(source.id).portableState;
+  assert.equal(sourceState.workingFiles[0].parts.sha256,digest);
+  const policies=new CapabilityPolicyStore(store.sqlite);
+  policies.put({scopeKind:'agent',scopeId:source.id,expectedRevision:0,restrictedCapabilityIds:[CAPABILITY_IDS.memoryWrite],actor:'operator'});
+  const updateCreation=store.updateAgentCreationOperation.bind(store);
+  store.updateAgentCreationOperation=(id,patch)=>{
+   const op=updateCreation(id,patch);
+   if(op?.kind==='import'&&patch.status==='completed'&&op.agentIds.length===1)f.plans.set(op.agentIds[0],[{hold:true}]);
+   return op;
+  };
+  const branches=new BranchStore(store.sqlite,new CoordinationV3Store(store.sqlite));
+  const definition={schema:'ponderosa.branch.v1',name:'Copy imported expert',trigger:{kind:'manual'},entry:'work',controls:[],
+   steps:[{id:'work',kind:'agent',target:{kind:'persistent_agent',ref:'source'},instructions:'Finish the job',jobHandling:'copy'}],edges:[],
+   policy:{maxConcurrentExecutions:1,maxEphemeralAgents:1,failure:{action:'stop'}}};
+  const branch=branches.deploy({chatId:chat.id,idempotencyKey:'copy-imported-expert',definition,bindings:{agents:{source:source.id},directories:{workspace:f.root}}});
+  const job=branches.accept(branch.id,'copy-imported-job','Preserve the original objective');
+  const resource=await until(()=>store.sqlite.prepare('SELECT * FROM branch_resources WHERE execution_id=?').get(job.id),'copy reservation',30000);
+  const url=`/api/branches/${branch.id}/executions/${job.id}/resources/${resource.step_execution_id}`;
+  const inspection=await until(async()=>{const r=await f.api('GET',url);return r.status===200&&r.body.expertCopyReview&&r.body.currentPolicyReview?r.body:undefined},'copy access review',60000);
+  assert.equal(inspection.expertCopyReview.consentCurrent,false);
+  assert.ok(inspection.currentPolicyReview.source.some(item=>item.settings?.restrictedCapabilityIds.includes(CAPABILITY_IDS.memoryWrite)),'the source restriction is shown for explicit review');
+  assert.equal(readBranchExpertCopy(store.sqlite,job.id,resource.step_execution_id).copyAgentId,undefined,'no copy is imported before review');
+  assert.equal(store.sqlite.prepare('SELECT COUNT(*) n FROM coordination_requests WHERE recipient_agent_id=?').get(source.id).n,0);
+  const approval=await f.api('POST',url+'/access-review',{accessSettingsResolution:{action:'keep_destination',reviewSha256:inspection.expertCopyReview.reviewWithoutMemorySha256,agentActions:Object.fromEntries(inspection.currentPolicyReview.source.filter(x=>x.settings).map(x=>[x.ref,'keep_destination']))},snapshotSha256:inspection.expertCopyReview.snapshotSha256,copySourceMemory:false,allowFindingsWriteback:false});
+  assert.equal(approval.status,200,JSON.stringify(approval.body));
+  const active=await until(()=>{
+   const current=readBranchExpertCopy(store.sqlite,job.id,resource.step_execution_id);
+   const state=store.sqlite.prepare('SELECT state,error FROM branch_resources WHERE step_execution_id=?').get(resource.step_execution_id);
+   if(state?.error?.includes('Choose a new destination folder'))throw Error(state.error);
+   return current?.state==='active'&&current;
+  },'copy of imported expert active',60000);
+  assert.notEqual(active.copyAgentId,source.id);
+  assert.equal(policies.resolveForAgent(active.copyAgentId).restrictedCapabilityIds.includes(CAPABILITY_IDS.memoryWrite),false,'keeping destination policy does not silently inherit a source restriction');
+  const history=store.getImportedHistory(active.copyAgentId);
+  assert.ok(history.messages.some(message=>message.text.includes('HISTORICAL_EXPERT_OBJECTIVE')),'historical objective remains available');
+  assert.equal(history.portableState?.workingFiles,undefined,'fresh workspace does not restore source files');
+  const copied=store.getProjectArtifacts(active.copyProjectId).find(item=>item.summary==='Historical document');
+  assert.ok(copied,'ordinary historical artifact remains available');
+  assert.equal(readManagedArtifactContent(f.dataDir,active.copyProjectId,copied.id,copied.size,copied.sha256).body.toString(),artifact.toString());
+  assert.equal(createHash('sha256').update(await readFile(path.join(recovery,'large-original.bin'))).digest('hex'),digest,'source recovery original remains intact');
+  assert.equal(store.getImportedHistory(source.id).portableState.workingFiles[0].parts.sha256,digest);
+  const copyAgent=store.getAgent(active.copyAgentId);
+  await writeFile(path.join(copyAgent.workingCopy.rootPath,'copy-generated-large.bin'),bytes);
+  const session=await until(()=>f.sessions.get(active.copyAgentId),'copy provider session',30000);
+  const done=await f.tool(session,'ponderosa_update_request',{kind:'completed',text:'Copy job finished'});
+  assert.equal(done.status,200,JSON.stringify(done.body));session.finish();
+  await until(()=>branches.execution(job.id)?.state==='completed','copy job completion',60000);
+  await until(()=>store.sqlite.prepare('SELECT state FROM branch_resources WHERE step_execution_id=?').get(resource.step_execution_id)?.state==='retired','copy retirement after final custody',90000);
+  const final=readBranchExpertCopy(store.sqlite,job.id,resource.step_execution_id);
+  assert.ok(final.finalSnapshotReceipt);assert.equal(final.finalVerifiedSha256,final.finalSnapshotReceipt.sha256);
+  const finalHistory=await f.api('GET',url+'/copy-history');assert.equal(finalHistory.status,200,'final custody remains readable after cleanup: '+JSON.stringify(finalHistory.body));
+  assert.ok(finalHistory.body.runs.some(run=>run.agentId===seed.id),'the approved source snapshot retains the earlier imported Run archive');
+  assert.ok(finalHistory.body.runs.some(run=>run.agentId===active.copyAgentId),'the temporary copy Run remains visible');
+  const finalPackage=await checkpointPackageCustody(f.dataDir).read(final.finalSnapshotReceipt);
+  const owner=finalPackage.agents.find(agent=>agent.ref===active.copyAgentId),generated=owner?.workingFiles?.find(file=>file.path==='copy-generated-large.bin');
+  assert.equal(generated?.parts?.sha256,digest,'final custody includes the new complete large original');
+  const full=createHash('sha256');for(const ref of generated.parts.refs){const part=owner.artifacts.find(item=>item.ref===ref);full.update((await decodePortableArtifactData(part)).data);}
+  assert.equal(full.digest('hex'),digest,'all final working-file part bytes survive cleanup');
+  assert.equal(createHash('sha256').update(await readFile(path.join(recovery,'large-original.bin'))).digest('hex'),digest,'cleanup preserved the source original');
+  // A new archive cannot claim to be reviewed source history merely by
+  // naming the source Agent: its exact bytes must have been in the snapshot.
+  const job2=branches.accept(branch.id,'copy-forged-archive-job','A separate job');
+  const resource2=await until(()=>store.sqlite.prepare('SELECT * FROM branch_resources WHERE execution_id=?').get(job2.id),'second copy reservation',30000);
+  const url2=`/api/branches/${branch.id}/executions/${job2.id}/resources/${resource2.step_execution_id}`;
+  const review2=await until(async()=>{const r=await f.api('GET',url2);return r.status===200&&r.body.expertCopyReview&&r.body.currentPolicyReview?r.body:undefined},'second copy review',60000);
+  const approved2=await f.api('POST',url2+'/access-review',{accessSettingsResolution:{action:'keep_destination',reviewSha256:review2.expertCopyReview.reviewWithoutMemorySha256,agentActions:Object.fromEntries(review2.currentPolicyReview.source.filter(x=>x.settings).map(x=>[x.ref,'keep_destination']))},snapshotSha256:review2.expertCopyReview.snapshotSha256,copySourceMemory:false,allowFindingsWriteback:false});
+  assert.equal(approved2.status,200,JSON.stringify(approved2.body));
+  const copy2=await until(()=>{const value=readBranchExpertCopy(store.sqlite,job2.id,resource2.step_execution_id);return value?.state==='active'&&value},'second copy active',60000);
+  const forged=Buffer.from(JSON.stringify({schema:'ponderosa.execution-archive.v1',sourceAgentId:source.id,sourceProjectId:source.projectId,events:[],runs:[]}));
+  const forgedId=randomUUID();await publishManagedArtifactContentAsync(f.dataDir,copy2.copyProjectId,forgedId,forged);
+  store.recordProjectArtifact({id:forgedId,projectId:copy2.copyProjectId,agentId:copy2.copyAgentId,originAgentId:copy2.copyAgentId,kind:'log',path:'unreviewed.json',summary:'Unreviewed archive',createdAt:new Date().toISOString(),size:forged.length,sha256:createHash('sha256').update(forged).digest('hex'),mediaType:'application/vnd.ponderosa.execution-archive+json'});
+  const session2=await until(()=>f.sessions.get(copy2.copyAgentId),'second copy provider session',30000);
+  const done2=await f.tool(session2,'ponderosa_update_request',{kind:'completed',text:'Second copy finished'});
+  assert.equal(done2.status,200,JSON.stringify(done2.body));session2.finish();
+  await until(()=>store.sqlite.prepare('SELECT state FROM branch_resources WHERE step_execution_id=?').get(resource2.step_execution_id)?.state==='retired','second copy retirement',90000);
+  const refused=await f.api('GET',url2+'/copy-history');
+  assert.equal(refused.status,409,'unreviewed archive bytes are not accepted as inherited history');
+  assert.match(refused.body.error,/Run archive owner differs/);
  },{storeFactory:dir=>(store=new AgentStore(dir))});
 });
