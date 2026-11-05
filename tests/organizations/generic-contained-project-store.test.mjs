@@ -94,11 +94,11 @@ test('a Shared contained child can bind beneath its same-Project preparing Separ
 test('Shared import custody stays unavailable until the exact metadata operation finishes',()=>{
  const f=fixture();try{
   const agent=f.store.getAgent(f.ids[0]),project=f.store.getProject(f.project.id);
-  const pending={...agent.workingCopy,state:'unavailable',failure:'Native import metadata proof pending'};
+  const pending={...agent.workingCopy,state:'unavailable',failure:'Native import metadata and ownership proof are pending; preserve the exact import operation.'};
   f.store.updateAgentWorkingCopy(agent.id,pending);
   const held=f.store.getAgent(agent.id);
   assert.equal(held.workingCopy.state,'unavailable');
-  assert.throws(()=>resolveAgentWorkingCopy(held,project),/metadata proof pending/);
+  assert.throws(()=>resolveAgentWorkingCopy(held,project),error=>error.message===pending.failure);
   assert.throws(()=>f.store.updateAgentWorkingCopy(agent.id,{...pending,rootPath:f.newRoot}),/Shared folder identity/);
   assert.throws(()=>f.store.updateAgentWorkingCopy(agent.id,{...pending,failure:undefined}),/Shared folder identity/);
   assert.throws(()=>f.store.updateAgentWorkingCopy(agent.id,{...pending,state:'ready'}),/Shared folder identity/);
@@ -116,9 +116,12 @@ test('Run admission reports known pending import proof and redacts unknown nativ
   const incomplete='Native Git import proof is incomplete; preserve its exact root and original import operation.';
   f.store.updateAgentWorkingCopy(original.id,{...original.workingCopy,state:'unavailable',failure:incomplete});
   assert.throws(()=>service.assertRunAdmission(original.id,original.workingCopy),error=>error.message===incomplete);
-  const privateDetail='native failure at /private/synthetic/file';
+  const secret='fixture-secret-synthetic-import',privateDetail='native failure at /private/synthetic/file '+secret;
   f.store.updateAgentWorkingCopy(original.id,{...original.workingCopy,state:'unavailable',failure:privateDetail});
-  assert.throws(()=>service.assertRunAdmission(original.id,original.workingCopy),error=>/working folder is unavailable/.test(error.message)&&!error.message.includes('/private/'));
+  const projected=f.store.getAgent(original.id).workingCopy;
+  assert.doesNotMatch(JSON.stringify(projected),new RegExp(secret));
+  assert.match(projected.failure,/withheld/);
+  assert.throws(()=>service.assertRunAdmission(original.id,original.workingCopy),error=>/working folder is unavailable/.test(error.message)&&!error.message.includes('/private/')&&!error.message.includes(secret));
   assert.throws(()=>service.assertRunAdmission(original.id,{...original.workingCopy,rootPath:f.newRoot}),/changed before the Run/);
  }finally{f.dispose();}
 });
