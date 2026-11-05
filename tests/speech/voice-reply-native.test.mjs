@@ -211,7 +211,7 @@ async function fixture(options={},runCheck){
  await boundedWait(()=>options.noVoiceTool?reached:armed,'provider ready');
  await boundedWait(()=>options.unsupported||options.ordinary||reached,'candidate processed');
  const url=`/api/branches/engine/conversations/${chat.id}/voice-replies/${messageId}/${agent.id}`;
- await runCheck({app,store,coord,agent,chat,project,headers,messageId,url,release,done,installation,get armed(){return armed;},get reauthorization(){return reauthorization;},get fallbackResult(){return fallbackResult;},get modes(){return modes;},get starts(){return starts;},memoryRecord,memoryUrl,memoryHeaders,submitted});
+ await runCheck({app,store,coord,agent,chat,project,headers,messageId,url,release,done,installation,get armed(){return armed;},get reauthorization(){return reauthorization;},get fallbackResult(){return fallbackResult;},get modes(){return modes;},get starts(){return starts;},memoryRecord,globalRecord,memoryUrl,memoryHeaders,submitted});
  }finally{PonderosaMemory.prototype.bindChat=originalBindChat;release();if(app){if(starts)await done;app.prepareForShutdown();await app.close();assert.equal(app.server.listening,false);console.log('OWN SERVER CLOSED');}store.close();await rm(dir,{recursive:true,force:true});
   await new Promise(resolve=>setImmediate(resolve));
   console.log('FIXTURE RESOURCE OBSERVATION',JSON.stringify({root:dir,listening:app?.server.listening??false,activeResources:process.getActiveResourcesInfo(),activeHandleTypes:process._getActiveHandles().map(x=>x.constructor.name)}));
@@ -536,18 +536,54 @@ for(const previewFault of ['missing','mismatch','error'])
  }));
 
 
+test('memory-authorized voice stream completes with unchanged exposure',async()=>fixture({memory:true},async f=>{
+ const early=(await f.app.inject({method:'GET',url:f.url,headers:f.headers})).json();
+ assert.equal(early.reply.state,'streaming');assert.equal(early.memoryExposure.state,'valid');
+ assert.ok(f.store.sqlite.prepare("SELECT 1 FROM memory_exposure_sources e JOIN memory_exposure_runs r ON r.run_id=e.run_id WHERE r.agent_id=? AND e.source_id=?").get(f.agent.id,f.memoryRecord.chunk_id),'the actual source read is tracked');
+ f.release();await f.done;await boundedWait(()=>f.coord.activeAgentRun(f.agent.id)===undefined,'unchanged voice Run released');
+ const final=(await f.app.inject({method:'GET',url:f.url,headers:f.headers})).json();
+ assert.equal(final.reply.state,'completed');assert.equal(final.memoryExposure.state,'valid');
+ const replies=f.coord.runtimeCommunications(f.project.id).filter(x=>x.payload.communication?.sender.kind==='agent'&&x.payload.communication.sender.executionId===early.runId);
+ assert.equal(replies.length,1);assert.equal(replies[0].payload.communication.text,'First stable phrase. Second phrase.');
+}));
+
 for(const {memory,voice,streaming}of [{memory:true,voice:true,streaming:true},{memory:true,voice:true,streaming:false},{memory:true,voice:false,streaming:false},{memory:false,voice:true,streaming:false}])
 test('retained-context boundary '+JSON.stringify({memory,voice,streaming}),()=>fixture({memory,readMemory:memory,global:memory,ordinary:true,unsupported:!streaming,noVoiceTool:true,retainedMemory:true},async f=>{
  f.release();await f.done;await boundedWait(()=>f.coord.activeAgentRun(f.agent.id)===undefined,'first ordinary memory Run released');
- if(memory){const changed=await f.app.inject({method:'PUT',url:'/api/branches/engine/local-memory/grants/'+f.chat.id,headers:f.headers,payload:{readGlobal:false,expectedRevision:1}});assert.equal(changed.statusCode,200,changed.body);}
- const second=await f.app.inject({method:'POST',url:'/api/branches/engine/conversations/'+f.chat.id+'/direct-messages',headers:f.headers,payload:{text:'What do you remember?',idempotencyKey:'retained-voice',recipients:[{agentId:f.agent.id}],activeRunDelivery:'queue',...(voice?{voiceReply:true}:{})}});
- assert.equal(second.statusCode,200,second.body);await boundedWait(()=>f.starts===2&&f.coord.activeAgentRun(f.agent.id)===undefined,'second Run released');
- if(voice){
-  const messageId=second.json().message.communicationEventId,status=await f.app.inject({method:'GET',url:'/api/branches/engine/conversations/'+f.chat.id+'/voice-replies/'+messageId+'/'+f.agent.id,headers:f.headers});
-  assert.equal(status.statusCode,200,status.body);assert.equal(status.json().memoryExposure.state,memory?'valid':'disabled');
+ const accepted=f.store.resumeSessionState(f.agent.id);assert.ok(accepted?.sessionId);
+ if(memory){
+  const source=f.store.sqlite.prepare("SELECT e.content_hash FROM memory_exposure_sources e JOIN memory_exposure_runs r ON r.run_id=e.run_id WHERE r.agent_id=? AND e.scope='global' AND e.source_id=?").get(f.agent.id,f.globalRecord.chunk_id);
+  assert.ok(source?.content_hash,'the earlier Run actually read this exact global source');
+  const changed=await f.app.inject({method:'PUT',url:'/api/branches/engine/local-memory/grants/'+f.chat.id,headers:f.headers,payload:{readGlobal:false,expectedRevision:1}});assert.equal(changed.statusCode,200,changed.body);
  }
- const fresh=memory&&voice;assert.deepEqual(f.modes,fresh?['seed','seed']:['seed','continue'],'opaque retained memory cannot authorize a fresh voice exposure');
- assert.equal(f.submitted[1].sourceManifest.providerSessionDisposition,fresh?'fresh_task':'continued_session');
+ const second=await f.app.inject({method:'POST',url:'/api/branches/engine/conversations/'+f.chat.id+'/direct-messages',headers:f.headers,payload:{text:'What do you remember?',idempotencyKey:'retained-voice',recipients:[{agentId:f.agent.id}],activeRunDelivery:'queue',...(voice?{voiceReply:true}:{})}});
+ assert.equal(second.statusCode,200,second.body);
+ const messageId=second.json().message.communicationEventId;
+ if(memory){
+  let activation;
+  await boundedWait(()=>activation=f.store.sqlite.prepare(`SELECT a.id,a.state,a.payload_json FROM agent_activations a JOIN activation_sources h ON h.activation_id=a.id AND h.source_kind='settings_transition_reservation_wait'
+   WHERE a.agent_id=? AND a.kind='human_message' AND json_extract(a.payload_json,'$.communication.eventId')=?`).get(f.agent.id,messageId),'exact revoked-context task held');
+  assert.equal(activation.state,'pending');assert.ok(activation.payload_json.includes('What do you remember?'));
+  assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(activation.id).n,0,'the original task is not attached to any Run');
+  assert.deepEqual(f.modes,['seed']);assert.equal(f.starts,1);assert.equal(f.submitted.length,1,'no old or fresh provider receives the revoked context');
+  assert.equal(f.store.resumeSessionState(f.agent.id)?.sessionId,accepted.sessionId,'the accepted prior session remains intact');
+  assert.equal(f.store.sqlite.prepare("SELECT count(*) n FROM runtime_communications WHERE payload_json LIKE '%Remembered revoked memory.%'").get().n,0,'no revoked result becomes canonical communication');
+  assert.ok(!f.store.readEvents(f.agent.id).some(row=>row.event.type==='voice_reply'&&row.event.reply.messageId===messageId),'held work does not publish a voice stream');
+  const notices=await f.app.inject({method:'GET',url:'/api/branches/engine/notifications',headers:f.headers});assert.equal(notices.statusCode,200,notices.body);
+  assert.ok(notices.json().items.some(n=>n.agentId===f.agent.id&&n.title==='Agent context needs review'&&n.body.includes('revoked or changed')),'the exact Agent context hold is visible');
+  if(voice){
+   const status=await f.app.inject({method:'GET',url:'/api/branches/engine/conversations/'+f.chat.id+'/voice-replies/'+messageId+'/'+f.agent.id,headers:f.headers});
+   assert.equal(status.statusCode,200,status.body);assert.equal(status.json().memoryExposure.state,'pending');assert.equal(status.json().reply,undefined,'held voice input cannot publish a reply');
+  }
+  return;
+ }
+ await boundedWait(()=>f.starts===2&&f.coord.activeAgentRun(f.agent.id)===undefined,'second Run released');
+ if(voice){
+  const status=await f.app.inject({method:'GET',url:'/api/branches/engine/conversations/'+f.chat.id+'/voice-replies/'+messageId+'/'+f.agent.id,headers:f.headers});
+  assert.equal(status.statusCode,200,status.body);assert.equal(status.json().memoryExposure.state,'disabled');
+ }
+ assert.deepEqual(f.modes,['seed','continue'],'unchanged memory-disabled context remains usable');
+ assert.equal(f.submitted[1].sourceManifest.providerSessionDisposition,'continued_session');
 }));
 
 test('durable voice lookup survives unrelated event volume and remains exact to Agent/message/Run', async () => {
