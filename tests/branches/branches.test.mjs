@@ -302,6 +302,9 @@ test("queued persistent-Agent jobs stay separate across busy work and produce in
  const first=f.branches.accept(branch.id,"job-1","First input"),second=f.branches.accept(branch.id,"job-2","Second input");
  for(let i=0;i<6;i++)f.branches.advance();
  const a=f.branches.detail(first.id).attempts[0].requestId,b=f.branches.detail(second.id).attempts[0].requestId;assert.ok(a&&b&&a!==b);
+ f.reopen();for(let i=0;i<3;i++)f.branches.advance();
+ assert.equal(f.branches.detail(first.id).attempts[0].requestId,a);assert.equal(f.branches.detail(second.id).attempts[0].requestId,b);
+ assert.equal(f.store.sqlite.prepare("SELECT count(*) n FROM coordination_requests WHERE id IN (?,?)").get(a,b).n,2);
  const rows=f.store.sqlite.prepare("SELECT dispatch_policy,payload_json FROM agent_activations WHERE id IN (SELECT activation_id FROM activation_sources WHERE source_kind=? AND source_id IN (?,?))").all("request",a,b);
  assert.equal(rows.length,2);for(const row of rows){assert.equal(row.dispatch_policy,"next_run");assert.equal(JSON.parse(row.payload_json).dispatch.activeRunDelivery,"queue");}
  const one=f.coordination.leaseNextRun({workerId:"worker"});assert.ok(one);assert.deepEqual(f.coordination.requestIdsAttachedToRun(one.runId,f.agent.id),[a]);
