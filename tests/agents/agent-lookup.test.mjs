@@ -405,3 +405,25 @@ test('scheduler preview uses exact runnable priority, exclusions and transaction
  const next=coordination.leaseNextRun({workerId:'expected-fence',now,excludedAgentIds:[other.id],expectedActivationId:first});
  assert.ok(next.activationIds.includes(first));assert.ok(next.activationIds.includes(second));assert.ok(!next.activationIds.includes(delayed));
 }));
+
+
+for (const {dispatch,marker,label} of [{dispatch:{model:'fixture-next'},label:'model'}, {dispatch:{voiceReply:true},label:'voice'}, {dispatch:{},marker:true,label:'peer retry preflight'}]) {
+ test(`scheduler reserves a separate admission for queued ${label} work`, t => withStores(t, async f => {
+  const store=f.open('independent-dispatch'),agent=f.seed(store),db=store.sqlite,coordination=new CoordinationV3Store(db);
+  const now=new Date().toISOString(),first=randomUUID(),second=randomUUID(),scope=`agent:${agent.id}`;
+  const insert=db.prepare(`INSERT INTO agent_activations(id,project_id,agent_id,kind,priority,dispatch_policy,prompt_class,state,dedupe_key,payload_json,available_at,created_at,updated_at,scope_key)
+   VALUES(?,?,?,'human_message',?,'next_run','human','pending',?,?,?,?,?,?)`);
+  insert.run(first,agent.projectId,agent.id,20,first,JSON.stringify({text:'first'}),now,now,now,scope);
+  insert.run(second,agent.projectId,agent.id,10,second,JSON.stringify({text:'second',dispatch}),now,now,now,scope);
+  if(marker)db.prepare("INSERT INTO activation_sources(activation_id,source_kind,source_id) VALUES(?,'settings_transition_retry_pending','preflight')").run(second);
+  assert.equal(coordination.peekNextRunnable({now}).activationId,first);
+  const lease=coordination.leaseNextRun({workerId:'dispatch-boundary',now,expectedActivationId:first});
+  assert.deepEqual(lease.activationIds,[first]);
+  assert.equal(db.prepare('SELECT state FROM agent_activations WHERE id=?').get(second).state,'pending');
+  assert.equal(db.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(second).n,0);
+  db.prepare("UPDATE scheduler_runs SET status='completed' WHERE id=?").run(lease.runId);
+  assert.equal(coordination.peekNextRunnable({now}).activationId,second);
+  const next=coordination.leaseNextRun({workerId:'dispatch-boundary',now,expectedActivationId:second});
+  assert.deepEqual(next.activationIds,[second]);
+ }));
+}

@@ -330,6 +330,23 @@ export class CoordinationV3SchedulerLeaseAuthority {
       const candidateIsExplicitQueuedTurn = isExplicitQueuedTurn(
         queuedActivations[0]!,
       );
+      // A separately requested model/voice boundary needs its own admission
+      // check before it can be attached to a provider Run.
+      const hasIndependentDispatch = (activation: ActivationRow): boolean => {
+        try {
+          const payload = JSON.parse(activation.payload_json) as {
+            dispatch?: Record<string, unknown>;
+          };
+          const dispatch = payload.dispatch;
+          return Boolean(dispatch && ["engine", "model", "effort", "speed", "voiceReply"]
+            .some((key) => Object.hasOwn(dispatch, key)));
+        } catch {
+          return true;
+        }
+      };
+      const awaitsSettingsPreflight = (activation: ActivationRow): boolean => Boolean(
+        this.sqlite.prepare("SELECT 1 FROM activation_sources WHERE activation_id=? AND source_kind='settings_transition_retry_pending'")
+          .get(activation.id));
       const isContextRolloverCandidate = (activation: ActivationRow): boolean =>
         Boolean(this.sqlite.prepare(`
           SELECT 1 FROM agent_pause_recoveries WHERE activation_id=?
@@ -360,11 +377,13 @@ export class CoordinationV3SchedulerLeaseAuthority {
         "SELECT 1 FROM activation_sources WHERE activation_id=? AND source_kind='reviewed_steering'"
       ).get(activation.id));
       const candidateIsReviewedSteering = isReviewedSteering(queuedActivations[0]!);
-      const activations = candidateIsExplicitQueuedTurn || candidateIsContextRollover || candidateIsReviewedSteering
+      const activations = candidateIsExplicitQueuedTurn || candidateIsContextRollover || candidateIsReviewedSteering || hasIndependentDispatch(queuedActivations[0]!) || awaitsSettingsPreflight(queuedActivations[0]!)
         ? [queuedActivations[0]!]
         : queuedActivations
           .filter((activation) =>
             !isExplicitQueuedTurn(activation) &&
+            !hasIndependentDispatch(activation) &&
+            !awaitsSettingsPreflight(activation) &&
             !isContextRolloverCandidate(activation) &&
             !isReviewedSteering(activation) &&
             startsFreshTask(activation) === candidateStartsFreshTask)

@@ -510,6 +510,32 @@ export class LocalMemoryService{
    return first===originRunId&&last===sourceRunId?{signature,attempted}:undefined;
   }catch{return undefined;}
  }
+ private memoryLineageStart(agentId:string,chatId:string,originRunId:string):number|undefined{
+  const db=this.ports.store.sqlite,seen=new Set<string>();
+  let cursor=originRunId;
+  while(!seen.has(cursor)){
+   seen.add(cursor);
+   const run=db.prepare('SELECT fencing_token,scope_key,provider_session_id FROM scheduler_runs WHERE id=? AND agent_id=?')
+    .get(cursor,agentId) as {fencing_token:number;scope_key:string;provider_session_id:string|null}|undefined;
+   if(!run)return undefined;
+   const parents=db.prepare(`SELECT r.old_provider_session_id,r.source_run_id,r.scope_key,r.conversation_id,r.replacement_session_id,
+       r.state,r.completion_reason,h.payload_json FROM context_rollovers r
+      JOIN activation_sources x ON x.source_kind='context_rollover' AND x.source_id=r.id
+      JOIN agent_activations h ON h.id=x.activation_id AND h.kind='context_rollover_handoff'
+      WHERE r.agent_id=? AND r.replacement_run_id=?`).all(agentId,cursor) as Array<any>;
+   if(!parents.length)return run.fencing_token;
+   if(parents.length!==1)return undefined;
+   const p=parents[0],m=JSON.parse(p.payload_json)?.settingsTransition;
+   if(p.state!=='completed'||p.completion_reason!=='replacement_verified'||p.scope_key!==run.scope_key||
+      p.conversation_id!==chatId||p.replacement_session_id!==run.provider_session_id||!m||
+      m.oldSessionId!==p.old_provider_session_id||m.sourceRunId!==p.source_run_id||
+      typeof m.authorizationOriginRunId!=='string')return undefined;
+   const prior=db.prepare('SELECT fencing_token FROM scheduler_runs WHERE id=? AND agent_id=?').get(p.source_run_id,agentId) as {fencing_token:number}|undefined;
+   if(!prior||prior.fencing_token>=run.fencing_token)return undefined;
+   cursor=m.authorizationOriginRunId;
+  }
+  return undefined;
+ }
  private transitionSourceEpochs(agentId:string,first:number,last:number){
   return this.ports.store.sqlite.prepare(`SELECT e.run_id,e.mutation_epoch FROM memory_exposure_runs e JOIN scheduler_runs r ON r.id=e.run_id
    WHERE r.agent_id=? AND r.fencing_token>=? AND r.fencing_token<=?`).all(agentId,first,last) as Array<{run_id:string;mutation_epoch:number}>;
@@ -526,10 +552,12 @@ export class LocalMemoryService{
   try{
    const db=this.ports.store.sqlite,source=db.prepare('SELECT provider_session_id FROM scheduler_runs WHERE id=? AND agent_id=?').get(sourceRunId,agentId) as {provider_session_id:string|null}|undefined;
    if(!source?.provider_session_id||createHash('sha256').update(this.unusedMemorySignature(agentId,chatId,runId)).digest('hex')!==expected)return false;
+   const lineageStart=this.memoryLineageStart(agentId,chatId,originRunId);
+   if(lineageStart===undefined)return false;
    if(!allowDirty&&db.prepare(`SELECT 1 FROM memory_exposure_runs e JOIN scheduler_runs r ON r.id=e.run_id
-    WHERE r.agent_id=? AND r.fencing_token>=(SELECT fencing_token FROM scheduler_runs WHERE id=?)
+    WHERE r.agent_id=? AND r.fencing_token>=?
     AND r.fencing_token<=(SELECT fencing_token FROM scheduler_runs WHERE id=?) AND e.mutation_epoch<>e.checked_epoch LIMIT 1`)
-    .get(agentId,originRunId,sourceRunId))return false;
+    .get(agentId,lineageStart,sourceRunId))return false;
    return this.transitionAuthorization(agentId,chatId,source.provider_session_id,originRunId,sourceRunId)?.signature===expected;
   }catch{return false;}
  }
@@ -543,11 +571,12 @@ export class LocalMemoryService{
   try{
    const db=this.ports.store.sqlite,source=db.prepare('SELECT fencing_token FROM scheduler_runs WHERE id=? AND agent_id=?').get(sourceRunId,agentId) as {fencing_token:number}|undefined;
    const origin=db.prepare('SELECT fencing_token FROM scheduler_runs WHERE id=? AND agent_id=?').get(originRunId,agentId) as {fencing_token:number}|undefined;
-   if(!source||!origin)return false;
-   const epochs=this.transitionSourceEpochs(agentId,origin.fencing_token,source.fencing_token);
+   const lineageStart=this.memoryLineageStart(agentId,chatId,originRunId);
+   if(!source||!origin||lineageStart===undefined)return false;
+   const epochs=this.transitionSourceEpochs(agentId,lineageStart,source.fencing_token);
    const refs=db.prepare(`SELECT DISTINCT e.scope,e.source_id,e.content_hash FROM memory_exposure_sources e
     JOIN scheduler_runs r ON r.id=e.run_id WHERE r.agent_id=? AND r.fencing_token>=? AND r.fencing_token<=?`)
-    .all(agentId,origin.fencing_token,source.fencing_token) as Array<{scope:string;source_id:string;content_hash:string}>;
+    .all(agentId,lineageStart,source.fencing_token) as Array<{scope:string;source_id:string;content_hash:string}>;
    const guard=async()=>{if(!valid())throw new MemoryDenied('Memory transition authority changed');};
    const authority:MemoryAuthority={chatId,actor:{kind:'agent',id:agentId},runId:sourceRunId,fenceToken:String(source.fencing_token),
     sourceType:'ai_inference',readChat:true,readGlobal:refs.some(ref=>ref.scope==='global'),observeExposure:false,guard};
@@ -570,11 +599,41 @@ export class LocalMemoryService{
  }
  /** Inspect the actual previously disclosed sources before reusing a retained
   * provider session after authorization changes. No source text is persisted. */
- async retainedMemoryExposureStatus(agentId:string,chatId:string,sessionId:string,originRunId:string,sourceRunId:string):Promise<'valid'|'changed'|'unknown'>{
+ async retainedMemoryExposureStatus(agentId:string,chatId:string,sessionId:string,originRunId:string,sourceRunId:string,seen=new Set<string>()):Promise<'valid'|'changed'|'unknown'|'unavailable'>{
+  let recordedSources=false;
   try{
    const db=this.ports.store.sqlite,origin=db.prepare('SELECT fencing_token,scope_key FROM scheduler_runs WHERE id=? AND agent_id=?').get(originRunId,agentId) as {fencing_token:number;scope_key:string}|undefined;
    const source=db.prepare('SELECT fencing_token,scope_key FROM scheduler_runs WHERE id=? AND agent_id=?').get(sourceRunId,agentId) as {fencing_token:number;scope_key:string}|undefined;
-   if(!origin||!source||origin.scope_key!==source.scope_key||origin.fencing_token>source.fencing_token)return 'unknown';
+   if(!origin||!source||origin.scope_key!==source.scope_key||origin.fencing_token>source.fencing_token||seen.has(originRunId))return 'unknown';
+   seen.add(originRunId);
+   // A verified replacement may inherit memory through its managed handoff.
+   // Recheck the exact recorded source generation instead of treating the
+   // replacement's own empty receipt as proof that it has no earlier sources.
+   const parents=db.prepare(`SELECT r.old_provider_session_id,r.source_run_id,r.scope_key,r.conversation_id,
+      r.replacement_session_id,r.state,r.completion_reason,h.payload_json
+    FROM context_rollovers r JOIN activation_sources x ON x.source_kind='context_rollover' AND x.source_id=r.id
+    JOIN agent_activations h ON h.id=x.activation_id AND h.kind='context_rollover_handoff'
+    WHERE r.agent_id=? AND r.replacement_run_id=?`).all(agentId,originRunId) as Array<{
+     old_provider_session_id:string;source_run_id:string;scope_key:string;conversation_id:string|null;
+     replacement_session_id:string|null;state:string;completion_reason:string|null;payload_json:string}>;
+   const inheritedRecorded=Boolean(db.prepare(`SELECT 1 FROM memory_exposure_sources e JOIN scheduler_runs r ON r.id=e.run_id
+    WHERE r.agent_id=? AND r.scope_key=? AND r.fencing_token<? LIMIT 1`).get(agentId,origin.scope_key,origin.fencing_token));
+   if(parents.length>1)return inheritedRecorded?'unavailable':'unknown';
+   if(parents.length){
+    const parent=parents[0]!,marker=JSON.parse(parent.payload_json)?.settingsTransition;
+    if(parent.state!=='completed'||parent.completion_reason!=='replacement_verified'||parent.scope_key!==origin.scope_key||
+       parent.conversation_id!==chatId||parent.replacement_session_id!==sessionId||!marker||
+       marker.oldSessionId!==parent.old_provider_session_id||marker.sourceRunId!==parent.source_run_id||
+       typeof marker.authorizationOriginRunId!=='string')return inheritedRecorded?'unavailable':'unknown';
+    const parentSource=db.prepare('SELECT fencing_token FROM scheduler_runs WHERE id=? AND agent_id=?').get(parent.source_run_id,agentId) as {fencing_token:number}|undefined;
+    if(!parentSource||parentSource.fencing_token>=origin.fencing_token)return inheritedRecorded?'unavailable':'unknown';
+    const inherited=await this.retainedMemoryExposureStatus(agentId,chatId,parent.old_provider_session_id,
+      marker.authorizationOriginRunId,parent.source_run_id,seen);
+    if(inherited!=='valid')return inherited==='unknown'&&inheritedRecorded?'unavailable':inherited;
+   }
+   recordedSources=Boolean(db.prepare(`SELECT 1 FROM memory_exposure_sources e JOIN scheduler_runs r ON r.id=e.run_id
+    WHERE r.agent_id=? AND r.fencing_token>=? AND r.fencing_token<=? LIMIT 1`).get(agentId,origin.fencing_token,source.fencing_token));
+   const incomplete=()=>recordedSources?'unavailable' as const:'unknown' as const;
    const signature=this.unusedMemorySignature(agentId,chatId,sourceRunId);
    const epochs=this.transitionSourceEpochs(agentId,origin.fencing_token,source.fencing_token);
    const rows=db.prepare(`SELECT r.id,r.scope_key,r.status,r.provider_session_id,r.prompt_injection_state,r.fencing_token,
@@ -582,15 +641,16 @@ export class LocalMemoryService{
     FROM scheduler_runs r LEFT JOIN memory_exposure_runs e ON e.run_id=r.id
     WHERE r.agent_id=? AND r.fencing_token>=? AND r.fencing_token<=? ORDER BY r.fencing_token,r.id`)
     .all(agentId,origin.fencing_token,source.fencing_token) as Array<any>;
-   if(!rows.length||rows[0].id!==originRunId||rows.at(-1)?.id!==sourceRunId)return 'unknown';
+   if(!rows.length||rows[0].id!==originRunId||rows.at(-1)?.id!==sourceRunId)return incomplete();
    for(const row of rows)if(row.scope_key!==origin.scope_key||row.status!=='completed'||row.provider_session_id!==sessionId||
     row.prompt_injection_state!=='injected'||row.receipt_agent!==agentId||row.chat_id!==chatId||
-    row.receipt_fence!==row.fencing_token||! /^[0-9a-f]{64}$/.test(row.authorization_hash??'')||row.pending!==0||row.uncertain!==0||row.unverified!==0)return 'unknown';
+    row.receipt_fence!==row.fencing_token||! /^[0-9a-f]{64}$/.test(row.authorization_hash??'')||row.pending!==0||row.uncertain!==0||row.unverified!==0)return incomplete();
    const refs=db.prepare(`SELECT DISTINCT e.scope,e.source_id,e.content_hash FROM memory_exposure_sources e
     JOIN scheduler_runs r ON r.id=e.run_id WHERE r.agent_id=? AND r.fencing_token>=? AND r.fencing_token<=?`)
     .all(agentId,origin.fencing_token,source.fencing_token) as Array<{scope:string;source_id:string;content_hash:string}>;
+   recordedSources=refs.length>0;
    const owner=activeChatResourceOwner(this.ports.store,'agent',agentId);
-   if(!owner)return 'unknown';
+   if(!owner)return recordedSources?'unavailable':'unknown';
    const policy=new CapabilityPolicyStore(db).resolveForAgent(agentId,sourceRunId);
    if(refs.length&&policy.restrictedCapabilityIds.includes(CAPABILITY_IDS.memoryRead))return 'changed';
    if(refs.some(ref=>ref.scope==='global')&&!this.getGrant(chatId,owner.branchId?'branches':'dev').readGlobal)return 'changed';
@@ -602,8 +662,8 @@ export class LocalMemoryService{
     for(const ref of refs){const row=await this.core.database.get(ref.source_id,[ref.scope]);if(!row||this.transitionChunkHash(row)!==ref.content_hash){changed=true;break;}}
    });
    await guard();
-   return changed?'changed':this.acceptTransitionSourceEpochs(epochs)?'valid':'unknown';
-  }catch{return 'unknown';}
+   return changed?'changed':this.acceptTransitionSourceEpochs(epochs)?'valid':recordedSources?'unavailable':'unknown';
+  }catch{return recordedSources?'unavailable':'unknown';}
  }
  private noteMemoryAttempt(token:string,operation:string){
   const cap=this.ports.capabilities.get(token),entry=cap&&this.unusedMemoryRuns.get(cap.agentId);

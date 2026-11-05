@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { CapabilityPolicyStore, type AgentStore, type CoordinationV3Store, type WorkspaceStore } from '@ponderosa/agents';
-import { filterRuntimeToolsForCapabilities, runtimeRestrictions, PONDEROSA_HISTORY_TOOL, type Adapter, type ModelOption, type AgentDto, type ProjectDto } from '@ponderosa/core';
+import { CAPABILITY_IDS, filterRuntimeToolsForCapabilities, runtimeRestrictions, PONDEROSA_HISTORY_TOOL, type Adapter, type ModelOption, type AgentDto, type ProjectDto } from '@ponderosa/core';
 import { MAX_CONTEXT_ROLLOVER_REPLACEMENT_PROVIDER_INPUT_UTF8_BYTES } from '@ponderosa/core/seed-history';
 import { CodexAdapter } from '@ponderosa/engines';
 import type { PonderosaServer, CreateServerOptions, EngineRegistration } from './app-contracts.js';
@@ -79,7 +79,7 @@ export async function requestSettingsTransition(input: {
  const {app,opts,store,coordinationV3,workspace,engines,engineAuthStatuses,cachedModelOptions,excludedAgentIds,candidate}=input;
  if(!candidate)return true;
  const pending=coordinationV3.pendingActivations(candidate.projectId).find(item=>item.id===candidate.activationId);
- if(!pending||pending.agentId!==candidate.agentId||!['human_message','coordination_request'].includes(pending.kind)||pending.state!=='pending')return true;
+ if(!pending||pending.agentId!==candidate.agentId||!['human_message','coordination_request'].includes(pending.kind)||!['pending','retry_pending'].includes(pending.state))return true;
  let shouldHold=false;
  const localHolds=unrecordedHolds.get(coordinationV3)??new Map<string,string>();unrecordedHolds.set(coordinationV3,localHolds);
  let currentFingerprint:string;
@@ -96,7 +96,9 @@ export async function requestSettingsTransition(input: {
   return false;
  };
   try{
-   const row=store.sqlite.prepare(`SELECT a.scope_key,a.payload_json FROM agent_activations a WHERE a.id=? AND a.agent_id=? AND a.state='pending' AND a.available_at<=? AND NOT EXISTS (SELECT 1 FROM scheduler_run_activations attached WHERE attached.activation_id=a.id) AND NOT EXISTS (SELECT 1 FROM activation_sources held WHERE held.activation_id=a.id AND held.source_kind IN ('task_decision_repair_wait','task_reply_repair_wait','branch_schedule_update','settings_transition_hold')) AND NOT EXISTS (SELECT 1 FROM activation_outbox audit WHERE audit.activation_id=a.id AND audit.event_kind='communication_revision' AND audit.processed_at IS NULL)`).get(pending.id,pending.agentId,new Date().toISOString()) as {scope_key:string;payload_json:string}|undefined;
+   const row=store.sqlite.prepare(`SELECT a.scope_key,a.payload_json FROM agent_activations a WHERE a.id=? AND a.agent_id=? AND a.state IN ('pending','retry_pending') AND a.available_at<=? AND NOT EXISTS (SELECT 1 FROM activation_sources held WHERE held.activation_id=a.id AND held.source_kind IN ('task_decision_repair_wait','task_reply_repair_wait','branch_schedule_update','settings_transition_hold')) AND NOT EXISTS (SELECT 1 FROM activation_outbox audit WHERE audit.activation_id=a.id AND audit.event_kind='communication_revision' AND audit.processed_at IS NULL)`).get(pending.id,pending.agentId,new Date().toISOString()) as {scope_key:string;payload_json:string}|undefined;
+   if(row&&!coordinationV3.settingsTransitionUnsubmittedActivation({projectId:pending.projectId,agentId:pending.agentId,activationId:pending.id,scopeKey:row.scope_key}))
+    return hold('The earlier delivery attempt cannot be proven unsubmitted. The original work remains queued for review.');
    const payload=row?JSON.parse(row.payload_json) as {dispatch?:{engine?:unknown;model?:unknown;effort?:unknown;speed?:unknown;voiceReply?:unknown}}:undefined;
    const dispatch=payload?.dispatch,agent=store.getAgent(pending.agentId),project=agent&&store.getChatContext(agent.conversationId);
    const boundary=agent&&store.providerCommandContextBoundary(agent.id),accepted=agent&&store.resumeSessionState(agent.id);
@@ -106,7 +108,7 @@ export async function requestSettingsTransition(input: {
    // accepted generation cannot be attributed to a completed boundary.
    const requiresKnownBoundary=Boolean(accepted&&agent&&row&&
      (dispatch?.voiceReply===true&&opts.localMemory || typeof dispatch?.model==='string' ||
-      typeof dispatch?.effort==='string' || typeof dispatch?.speed==='string' || agent.model));
+      typeof dispatch?.effort==='string' || typeof dispatch?.speed==='string'));
    if(requiresKnownBoundary&&(!boundary||!packet||!contract||contract.version!==1))
     return hold('The earlier provider session lacks a complete, verified context boundary. The original work remains queued for review.');
    if(!row||!agent||!project||!boundary||!accepted||!packet||!contract||contract.version!==1||
@@ -117,19 +119,52 @@ export async function requestSettingsTransition(input: {
       typeof packet.exactSystemPrompt!=='string'||typeof packet.executionId!=='string'||
       (typeof dispatch?.engine==='string'&&dispatch.engine!==agent.activeEngine)||
       coordinationV3.activeContextRollover(agent.id))return true;
+   const memory=localMemoryFor(app);
+   if(!memory){
+    const known=store.sqlite.prepare(`WITH RECURSIVE lineage(origin_id,source_id,session_id) AS (
+      VALUES(?,?,?)
+      UNION
+      SELECT json_extract(h.payload_json,'$.settingsTransition.authorizationOriginRunId'),r.source_run_id,r.old_provider_session_id
+      FROM lineage l JOIN context_rollovers r ON r.agent_id=? AND r.replacement_run_id=l.origin_id
+        AND r.replacement_session_id=l.session_id AND r.state='completed' AND r.completion_reason='replacement_verified'
+      JOIN activation_sources x ON x.source_kind='context_rollover' AND x.source_id=r.id
+      JOIN agent_activations h ON h.id=x.activation_id AND h.kind='context_rollover_handoff'
+      WHERE json_extract(h.payload_json,'$.settingsTransition.sourceRunId')=r.source_run_id
+        AND json_extract(h.payload_json,'$.settingsTransition.oldSessionId')=r.old_provider_session_id
+        AND json_type(h.payload_json,'$.settingsTransition.authorizationOriginRunId')='text'
+     )
+     SELECT 1 FROM lineage l JOIN scheduler_runs first ON first.id=l.origin_id AND first.agent_id=?
+      JOIN scheduler_runs last ON last.id=l.source_id AND last.agent_id=first.agent_id AND last.scope_key=first.scope_key
+      JOIN scheduler_runs r ON r.agent_id=first.agent_id AND r.scope_key=first.scope_key AND r.fencing_token BETWEEN first.fencing_token AND last.fencing_token
+      JOIN memory_exposure_sources e ON e.run_id=r.id
+     UNION
+     SELECT 1 FROM lineage l JOIN scheduler_runs current ON current.id=l.origin_id AND current.agent_id=?
+      JOIN context_rollovers parent ON parent.agent_id=current.agent_id AND parent.replacement_run_id=current.id
+        AND parent.replacement_session_id=l.session_id AND parent.state='completed'
+      JOIN scheduler_runs older ON older.agent_id=current.agent_id AND older.scope_key=current.scope_key AND older.fencing_token<current.fencing_token
+      JOIN memory_exposure_sources e ON e.run_id=older.id
+     LIMIT 1`)
+      .get(packet.executionId,boundary.executionId,accepted.sessionId,agent.id,agent.id,agent.id);
+    if(known)return hold('A previously used memory source cannot be checked because Local Memory is unavailable. The original work remains queued for context review.');
+   }
+   const exposure=memory&&await memory.retainedMemoryExposureStatus(agent.id,agent.conversationId,accepted.sessionId,packet.executionId,boundary.executionId);
+   if(exposure==='changed')
+    return hold('A memory source previously used by this Agent was revoked or changed. Prior Agent text cannot yet be attributed safely; the original work remains queued for context review.');
+   if(exposure==='unavailable')
+    return hold('A previously used memory source could not be checked. The original work remains queued for context review.');
+   if(exposure==='unknown'&&memory?.legacyPossibleGlobalRevocation(agent.id,agent.conversationId,packet.executionId))
+    return hold('Global memory access may have been removed since this older session began. Its earlier memory exposure is unavailable; the original work remains queued for context review.');
+   if(exposure==='unknown'&&contract.capabilityRestrictions&&
+      !contract.capabilityRestrictions.restrictedCapabilityIds.includes(CAPABILITY_IDS.memoryRead)&&
+      new CapabilityPolicyStore(store.sqlite).resolveForAgent(agent.id).restrictedCapabilityIds.includes(CAPABILITY_IDS.memoryRead))
+    return hold('Memory read access was removed since this older session began. Its earlier memory exposure is unavailable; the original work remains queued for context review.');
    const engine=engines.get(agent.activeEngine);
    if(!engine||Object.getPrototypeOf(engine.adapter)!==CodexAdapter.prototype||Object.hasOwn(engine.adapter,'openSession'))return true;
-   const memory=localMemoryFor(app);
    const initialFingerprint=transitionFingerprint(input,pending.projectId,pending.agentId,pending.id);
    const {targetModel,targetEffort,targetSpeed}=settingsTransitionTarget(agent,project,engine.adapter,workspace.getPreferences(),cachedModelOptions(engine.adapter,project.id),dispatch);
    if(!targetModel?.trim()||!contract.model?.trim())return true;
    const changed=targetModel!==contract.model||targetEffort!==contract.effort||targetSpeed!==(contract.speed??'standard');
    const voiceBoundary=Boolean(opts.localMemory&&dispatch?.voiceReply===true);
-   const exposure=memory&&await memory.retainedMemoryExposureStatus(agent.id,agent.conversationId,accepted.sessionId,packet.executionId,boundary.executionId);
-   if(exposure==='changed')
-    return hold('A memory source previously used by this Agent was revoked or changed. Prior Agent text cannot yet be attributed safely; the original work remains queued for context review.');
-   if(exposure==='unknown'&&memory?.legacyPossibleGlobalRevocation(agent.id,agent.conversationId,packet.executionId))
-    return hold('Global memory access may have been removed since this older session began. Its earlier memory exposure is unavailable; the original work remains queued for context review.');
    if(!changed&&!voiceBoundary){
     store.sqlite.prepare("DELETE FROM activation_sources WHERE activation_id=? AND source_kind='settings_transition_retry_pending'").run(pending.id);
     return true;
