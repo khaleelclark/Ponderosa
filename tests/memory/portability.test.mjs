@@ -133,7 +133,7 @@ test('an uncertain package write retains staged rows and blocks cleanup until re
 
 test('memory HTTP errors identify invalid fields and keep revoked capabilities denied',async t=>{
  const f=await instance(t),ports=f.memory.ports,at=new Date().toISOString(),lease=new Date(Date.now()+60000).toISOString(),run='memory-validation-'+randomUUID(),token='owned-memory-validation-'+randomUUID();
- f.store.sqlite.prepare("INSERT INTO scheduler_runs(id,project_id,agent_id,status,lease_owner,lease_expires_at,fencing_token,prompt_injection_state,heartbeat_at,created_at,updated_at,scope_key) VALUES(?,?,?,'running','owned',?,1,'injected',?,?,?,?)").run(run,f.project.id,f.a.id,lease,at,at,at,'conversation:'+f.chat.id);
+ f.store.sqlite.prepare("INSERT INTO scheduler_runs(id,project_id,agent_id,status,lease_owner,lease_expires_at,fencing_token,prompt_injection_state,heartbeat_at,created_at,updated_at,scope_key) VALUES(?,?,?,'running','owned',?,1,'not_injected',?,?,?,?)").run(run,f.project.id,f.a.id,lease,at,at,at,'conversation:'+f.chat.id);
  const originalOwnsRun=ports.ownsRun,controller=new AbortController();
  ports.capabilities.set(token,{agentId:f.a.id,conversationId:f.chat.id,runId:run,v3SchedulerRunId:run,v3FencingToken:1,availableToolNames:['ponderosa_local_memory_search']});
  ports.activeRuns.set(f.a.id,{messageCapability:token,conversationId:f.chat.id,controller});ports.ownsRun=()=>true;
@@ -145,6 +145,8 @@ test('memory HTTP errors identify invalid fields and keep revoked capabilities d
  f.memory.beginUnusedMemoryWitness(token);
  const receipt=()=>f.store.sqlite.prepare('SELECT agent_id,chat_id,fencing_token,attempted,pending,uncertain FROM memory_exposure_runs WHERE run_id=?').get(run);
  assert.deepEqual(receipt(),{agent_id:f.a.id,chat_id:f.chat.id,fencing_token:1,attempted:0,pending:0,uncertain:0},'the exact synthetic Run has its normal pre-input exposure receipt');
+ assert.equal(f.store.sqlite.prepare('SELECT prompt_injection_state FROM scheduler_runs WHERE id=?').get(run).prompt_injection_state,'not_injected');
+ assert.equal(f.store.sqlite.prepare("UPDATE scheduler_runs SET prompt_injection_state='injected' WHERE id=? AND prompt_injection_state='not_injected'").run(run).changes,1);
  assert.ok(f.memory.agentContext(token,'ponderosa_local_memory_search',false),'the test capability is actually authorized');
  const bad=await f.app.inject({method:'POST',url:'/api/agent-local-memory',headers:{authorization:'Bearer '+token},payload:{operation:'search',query:'private authored text',top_k:21}});
  assert.equal(bad.statusCode,400,bad.body);assert.match(bad.json().error,/top_k must be an integer from 1 to 20/);assert.doesNotMatch(bad.body,/private authored text/);assert.ok(!bad.body.includes(token));

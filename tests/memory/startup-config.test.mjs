@@ -99,7 +99,7 @@ function authorizeMemoryAgent(ports,root){
  const project=ports.store.createProject({label:'Global writes',hostPath:root,defaultEngine:'inert',chatOwned:true});
  const chat=ports.store.getConversation(project.lastConversationId),agent=ports.store.createAgent(project.id,{engine:'inert',conversationId:chat.id,title:'Writer'});
  const at=new Date().toISOString(),lease=new Date(Date.now()+60000).toISOString();
- ports.store.sqlite.prepare("INSERT INTO scheduler_runs(id,project_id,agent_id,status,lease_owner,lease_expires_at,fencing_token,prompt_injection_state,heartbeat_at,created_at,updated_at,scope_key) VALUES(?,?,?,'running','owned',?,1,'injected',?,?,?,?)").run('owned-global-run',project.id,agent.id,lease,at,at,at,'conversation:'+chat.id);
+ ports.store.sqlite.prepare("INSERT INTO scheduler_runs(id,project_id,agent_id,status,lease_owner,lease_expires_at,fencing_token,prompt_injection_state,heartbeat_at,created_at,updated_at,scope_key) VALUES(?,?,?,'running','owned',?,1,'not_injected',?,?,?,?)").run('owned-global-run',project.id,agent.id,lease,at,at,at,'conversation:'+chat.id);
  const capability={agentId:agent.id,conversationId:chat.id,runId:'owned-global-run',v3SchedulerRunId:'owned-global-run',v3FencingToken:1,availableToolNames:['save','update','forget'].map(n=>'ponderosa_local_memory_'+n)};
  ports.capabilities.set('owned-capability',capability);ports.activeRuns.set(agent.id,{messageCapability:'owned-capability',conversationId:chat.id,controller:new AbortController()});ports.ownsRun=()=>true;
  return {chat,agent};
@@ -109,6 +109,8 @@ function beginMemoryWitness(memory,ports,chat,agent){
  memory.beginUnusedMemoryWitness("owned-capability");
  const row=ports.store.sqlite.prepare("SELECT agent_id,chat_id,fencing_token,attempted,pending,uncertain FROM memory_exposure_runs WHERE run_id=?").get("owned-global-run");
  assert.deepEqual(row,{agent_id:agent.id,chat_id:chat.id,fencing_token:1,attempted:0,pending:0,uncertain:0},"the exact synthetic Run has its normal pre-input exposure receipt");
+ assert.equal(ports.store.sqlite.prepare("SELECT prompt_injection_state FROM scheduler_runs WHERE id=?").get("owned-global-run").prompt_injection_state,"not_injected");
+ assert.equal(ports.store.sqlite.prepare("UPDATE scheduler_runs SET prompt_injection_state=? WHERE id=? AND prompt_injection_state=?").run("injected","owned-global-run","not_injected").changes,1);
 }
 
 test('global writes use live human policy, correct scope and provenance without operator authentication',()=>admittedFixture(async({root,ports,inference})=>{
