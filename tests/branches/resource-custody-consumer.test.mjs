@@ -39,16 +39,20 @@ test('a changed fresh destination review holds import instead of reusing an old 
 });
 
 // Deferred: this read must neither stage a choice nor clear an existing one.
-test('pure resource inspection recomputes current destination review without changing journals',async()=>{
+test('pure resource inspection recomputes current destination review without changing journals',async t=>{
  const snapshot={branchId:'branch',executionId:'execution',stepExecutionId:'step',generation:7,state:'reserved',destinationChatId:'fresh-chat',destinationChatAvailable:true,importState:null,custody:{kind:'restoration_source',state:'restoration_source',custodyId:'custody',receiptSha256:'receipt-hash',checkpointId:'checkpoint',packageSha256:'package-hash'},currentPolicyReview:null,accessChoiceCurrent:false};
  const journal={receipt:{},rootRef:'source-root',choice:{action:'use_source',reviewSha256:'review'}};
  const branches={resourceInspection:()=>structuredClone(snapshot),resourceRestoreJournal:()=>structuredClone(journal),resourceOperation:()=>undefined,resourceRestoreReview:()=>assert.fail('pure GET must not stage review')};
- const service=new BranchResourceService(branches,{},async()=>assert.fail('delete'),async()=>assert.fail('create'),async()=>assert.fail('delete'));
+ const Database=(await import('better-sqlite3')).default,db=new Database(':memory:');t.after(()=>db.close());
+ db.exec("CREATE TABLE branch_resources(step_execution_id TEXT PRIMARY KEY,execution_id TEXT NOT NULL); INSERT INTO branch_resources VALUES ('other-step','other-execution'); PRAGMA query_only=ON");
+ const before=db.prepare('SELECT * FROM branch_resources').all(),store={sqlite:db};
+ const service=new BranchResourceService(branches,store,async()=>assert.fail('delete'),async()=>assert.fail('create'),async()=>assert.fail('delete'));
  service.setPackageEngine({readCheckpoint:async()=>({rootRef:'source-root'}),reviewAccess:async(_pkg,chat)=>{assert.equal(chat,'fresh-chat');return {reviewSha256:'review'};}});
  const result=await service.inspectResource('step');assert.equal(result.accessChoiceCurrent,true);assert.equal(result.currentPolicyReview.reviewSha256,'review');
  assert.equal(snapshot.currentPolicyReview,null);assert.equal(journal.choice.reviewSha256,'review');
  service.setPackageEngine({readCheckpoint:async()=>({}),reviewAccess:async()=>{snapshot.generation++;return {reviewSha256:'changed'};}});
  await assert.rejects(service.inspectResource('step'),/inspection changed/);
+ assert.deepEqual(db.prepare('SELECT * FROM branch_resources').all(),before,'inspection leaves persisted resources unchanged');
 });
 
 test('resource custody SDK retains exact release input and performs no automatic retry',async()=>{
