@@ -9,7 +9,7 @@ import {withFixture,until} from '../shared/fixture.mjs';
 
 async function custodySizes(root){
  const dir=path.join(root,'checkpoint-package-custody');
- let names;try{names=await readdir(dir);}catch(error){if(error.code==='ENOENT')return {logical:0,allocated:0,entries:0,files:0,payload:0,receiptCount:0,pending:[],payloadsWithoutReceipt:0,receiptedPayloadBytes:0,unreceiptedPayloadBytes:0};throw error;}
+ let names;try{names=await readdir(dir);}catch(error){if(error.code==='ENOENT')return {logical:0,allocated:0,entries:0,files:0,payload:0,receiptCount:0,receiptIds:[],pending:[],payloadsWithoutReceipt:0,receiptedPayloadBytes:0,unreceiptedPayloadBytes:0};throw error;}
  let logical=0,allocated=0,payload=0,files=0,metadataBytes=0,otherBytes=0,otherFiles=0;
  const pending=[],receipts=[],payloads=new Map();
  for(const name of names){
@@ -27,7 +27,7 @@ async function custodySizes(root){
  assert.equal(logical,payload+metadataBytes+otherBytes);
  assert.equal(files,payloads.size+pending.length+receipts.length+otherFiles);
  for(const id of orphanIds)assert.ok(pending.some(p=>p.id===id&&p.state==='failed'&&p.reason==='source_changed'),'unreceipted payload belongs to a recorded source_changed capture');
- return {logical,allocated,entries:names.length,files,payload,receiptCount:receipts.length,pending,payloadsWithoutReceipt:orphanIds.length,receiptedPayloadBytes,unreceiptedPayloadBytes,metadataBytes,otherBytes,otherFiles};
+ return {logical,allocated,entries:names.length,files,payload,receiptCount:receipts.length,receiptIds:receipts.map(r=>r.id).sort(),pending,payloadsWithoutReceipt:orphanIds.length,receiptedPayloadBytes,unreceiptedPayloadBytes,metadataBytes,otherBytes,otherFiles};
 }
 
 async function inspectPackage(custody,receipt,expectedAgent){
@@ -110,6 +110,7 @@ test('measure six reviewed temporary copies in two overlapping waves',{timeout:2
    }
    const size=await custodySizes(f.dataDir);
    assert.equal(size.receiptCount,expectedReceipts.length,'only these completed copy receipts are retained');
+   assert.deepEqual(size.receiptIds,expectedReceipts.map(r=>r.custodyId).sort(),'retained receipt identities exactly match the completed copies');
    assert.equal(size.receiptedPayloadBytes,expectedReceipts.reduce((sum,r)=>sum+r.byteLength,0),'completed receipt bytes reconcile with measured payload bytes');
    assert.equal(size.entries,size.files,'the custody directory contains only regular files in this fixture');
    waves.push({wave,copies:measured,custody:size});
