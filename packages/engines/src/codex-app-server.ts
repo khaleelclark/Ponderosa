@@ -1,7 +1,7 @@
 import { steeringPreflight } from "./steering-preflight.js";
 import { answerCodexNativeQuestions } from "./native-questions.js";
 import { codexTurnContent } from "./typed-input.js";
-import { codexNativeObservation, invokeCodexGoal, setCodexPlanMode, startCodexReview } from "./codex-native-actions.js";
+import { codexGoalSnapshot, codexNativeObservation, invokeCodexGoal, setCodexPlanMode, startCodexReview } from "./codex-native-actions.js";
 import { answerCodexNativeApproval, CODEX_NATIVE_APPROVAL_METHODS } from "./native-approvals.js";
 import { forkCodexTranscript } from "./codex-transcript-fork.js";
 import { CodexBackgroundTasks } from "./codex-background-tasks.js";
@@ -20,6 +20,7 @@ import {
   type RuntimeSteerResult,
   type RuntimeTurnInput,
   type RuntimeProcessHandle,
+  type NativeGoalSnapshot,
   safeProviderConnectionUrl,
 } from "@ponderosa/core";
 import { stripVTControlCharacters } from "node:util";
@@ -28,6 +29,43 @@ import { JsonRpcOutputLimitError, JsonRpcProcess, type JsonRpcNotification } fro
 import { renderSeedPrompt } from "./seed-history.js";
 import { normalizeCodexProviderDiscovery } from "./capabilities.js";
 import { codexRateLimitBuckets } from "./provider-usage.js";
+
+/** Query the exact persisted goal before resuming and at native turn boundaries.
+ * Unsupported is limited to explicit protocol/feature refusals; transport and
+ * malformed responses never prove the absence of an active goal. */
+async function readNativeGoal(rpc: JsonRpcProcess, threadId: string): Promise<NativeGoalSnapshot | null | undefined> {
+  let response: unknown;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    response = await Promise.race([
+      rpc.request("thread/goal/get", { threadId }),
+      new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error("Native goal read timed out")), 10_000); }),
+    ]);
+  }
+  catch (error) {
+    const rpcError = error && typeof error === "object" && "rpcError" in error
+      ? (error as {rpcError?: {code?: unknown; message?: unknown}}).rpcError : undefined;
+    if (rpcError?.code === -32601 || rpcError?.message === "goals feature is disabled") return undefined;
+    throw new Error("Native goal state is unavailable; retained work remains held", {cause:error});
+  } finally { if (timer) clearTimeout(timer); }
+  const result = object(response);
+  if (!result || !Object.hasOwn(result, "goal")) throw new Error("Native goal state is malformed; retained work remains held");
+  return codexGoalSnapshot(result.goal, threadId);
+}
+
+async function setNativeGoalOnce(rpc: JsonRpcProcess, threadId:string, status:"active"|"paused",
+  create?:{objective:string;tokenBudget?:number|null}): Promise<NativeGoalSnapshot> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const response = object(await Promise.race([
+      rpc.request("thread/goal/set", {threadId,status,origin:"user",...create}),
+      new Promise<never>((_resolve,reject) => { timer=setTimeout(() => reject(new Error("Native goal mutation timed out")),10_000); }),
+    ]));
+    const goal = response && codexGoalSnapshot(response.goal, threadId);
+    if (!goal || goal.status !== status) throw new Error("Native goal mutation was not confirmed");
+    return goal;
+  } finally { if (timer) clearTimeout(timer); }
+}
 
 interface ThreadResponse { thread: { id: string }; model?: string }
 interface TurnResponse { turn: { id: string } }
@@ -503,6 +541,11 @@ export class CodexAppServerSession implements RuntimeSession {
   private nativeTaskHold = false;
   private closingNativeTasks = false;
   private activeTurnId?: string;
+  private observedTurnStarts = 0;
+  private goalOwned = false;
+  private goalStatus?: NativeGoalSnapshot["status"];
+  private goalMarkerEmitted = false;
+  private goalPauseAttempted = false;
   private accountGeneration = 0;
   private readonly usageByTurnId = new Map<string, TokenUsage>();
   private readonly providerRequestUsageByTurnId = new Map<string, TokenUsage[]>();
@@ -625,6 +668,7 @@ export class CodexAppServerSession implements RuntimeSession {
     });
     const cliVersion = codexCliVersion(await rpc.initialize());
     if (opts.expectedBillingMode) await requireCodexBillingMode(rpc, opts.expectedBillingMode);
+    opts.assertRuntimeCurrent?.();
     const fork = opts.transcriptFork ? await forkCodexTranscript(rpc,opts.transcriptFork.sourceSessionId,opts.transcriptFork.throughId,() => {
       if (opts.signal.aborted) throw new Error("Fork lost Run authority");
       opts.assertHistoryCurrent?.();
@@ -632,6 +676,16 @@ export class CodexAppServerSession implements RuntimeSession {
       ...(sessionConfig?{config:sessionConfig}:{}),developerInstructions:opts.systemPrompt ?? null}) : undefined;
     if (fork?.sessionId)opts.onTranscriptForkObserved?.(fork.sessionId);
     if (fork && (fork.outcome !== "completed" || !fork.sessionId)) throw new Error("Native transcript fork outcome unknown; do not repeat");
+    if (opts.resumeSessionId && !opts.transcriptFork) {
+      try {
+        const goal = await readNativeGoal(rpc, opts.resumeSessionId);
+        if (goal?.status === "active") throw new Error("The saved session has an active native goal; its outcome remains held for review");
+      } catch (error) {
+        try { await rpc.close(); } catch { /* the host retains the registered cleanup handle */ }
+        throw error;
+      }
+    }
+    opts.assertRuntimeCurrent?.();
     const response: ThreadResponse = fork?.sessionId ? {thread:{id:fork.sessionId},model:opts.model} : opts.resumeSessionId
       ? await rpc.request<ThreadResponse>("thread/resume", {
           threadId: opts.resumeSessionId,
@@ -901,7 +955,10 @@ export class CodexAppServerSession implements RuntimeSession {
     const params = object(notification.params);
     if (params?.threadId === this.engineAgentId && (!compact || compact.closed)) {
       const turn = object(params.turn);
-      if (notification.method === "turn/started" && typeof turn?.id === "string") this.activeTurnId = turn.id;
+      if (notification.method === "turn/started" && typeof turn?.id === "string") {
+        this.activeTurnId = turn.id;
+        this.observedTurnStarts++;
+      }
       if (notification.method === "turn/completed" && turn?.id === this.activeTurnId) this.activeTurnId = undefined;
     }
     if (compact && !compact.closed && params?.threadId === this.engineAgentId) {
@@ -993,6 +1050,54 @@ export class CodexAppServerSession implements RuntimeSession {
     const generation = this.accountGeneration;
     await requireCodexBillingMode(this.rpc, this.expectedBillingMode);
     if (generation !== this.accountGeneration) throw new Error("Native account changed during billing-mode admission; no new input was authorized");
+  }
+
+  async startNativeGoal(input: RuntimeTurnInput): Promise<void> {
+    input.assertCurrent?.();
+    if (this.activeTurnId || this.nativeTaskHold || this.goalOwned) throw new Error("Native session has active work");
+    await this.validateBillingMode();
+    const action = input.nativeAction as {kind:string;objective?:unknown;tokenBudget?:unknown} | undefined;
+    if (action?.kind !== "goal-create" && action?.kind !== "goal-resume")
+      throw new Error("An exact native goal action is required");
+    const current = await readNativeGoal(this.rpc, this.engineAgentId);
+    let create: {objective:string;tokenBudget?:number|null} | undefined;
+    if (action?.kind === "goal-create") {
+      if (current !== null) throw new Error("An existing or unavailable native goal cannot be replaced");
+      if (typeof action.objective !== "string" || !action.objective.trim() || action.objective.length > 32_000 ||
+          /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(action.objective))
+        throw new Error("A nonempty bounded native goal objective is required");
+      if (action.tokenBudget !== undefined && action.tokenBudget !== null &&
+          (!Number.isSafeInteger(action.tokenBudget) || (action.tokenBudget as number) <= 0))
+        throw new Error("Native goal budget must be positive or null");
+      create = {objective:action.objective,
+        ...(action.tokenBudget !== undefined ? {tokenBudget:action.tokenBudget as number|null} : {})};
+    } else if (!current || current.status !== "paused") throw new Error("An exact paused native goal is required");
+    input.assertCurrent?.();
+    // From the moment the mutation is sent, its effects may already be live.
+    // Never repeat it on a lost or malformed response.
+    this.goalOwned = true;
+    this.goalPauseAttempted = false;
+    this.goalStatus = "active";
+    try {
+      const goal = await setNativeGoalOnce(this.rpc, this.engineAgentId, "active", create);
+      if (goal.objective !== (create ? create.objective.trim() : current?.objective) ||
+          (create && Object.hasOwn(create,"tokenBudget") && goal.tokenBudget !== create.tokenBudget))
+        throw new Error("Native goal activation changed the requested objective or budget");
+      input.assertCurrent?.();
+    } catch (error) {
+      try { await this.close(); } catch { /* host cleanup retains the registered process */ }
+      throw new Error("Native goal activation outcome is unknown; do not repeat it", {cause:error});
+    }
+  }
+
+  async pauseNativeGoal(): Promise<void> {
+    if (!this.goalOwned) throw new Error("No native goal is owned by this Run");
+    if (this.goalPauseAttempted) throw new Error("Native goal pause was already attempted; inspect its outcome");
+    this.goalPauseAttempted = true;
+    try {
+      await setNativeGoalOnce(this.rpc, this.engineAgentId, "paused");
+      this.goalStatus = "paused";
+    } catch (error) { throw new Error("Native goal pause outcome is unknown; do not repeat it", {cause:error}); }
   }
 
   async startTurn(input: RuntimeTurnInput): Promise<{ turnId: string }> {
@@ -1138,17 +1243,93 @@ export class CodexAppServerSession implements RuntimeSession {
   private async *eventStream(): AsyncIterable<AgentEvent> {
     // The transport may have observed completion before this queued reader advances.
     let eventTurnId = this.activeTurnId;
+    let consumedTurnStarts = 0;
+    let heldCompletion: Extract<AgentEvent, {type:"turn_done"}> | undefined;
+    let heldCompletionTurnId: string | undefined;
+    let goalTerminalTurnId: string | undefined;
+    let goalUsage: TokenUsage[] = [];
+    let goalRequests: TokenUsage[] = [];
+    let goalTurnCount = 0;
+    let completeGoalUsage = true;
+    let completeGoalRequests = true;
+    const goalMarker = (status:"running"|"done", state?:string): AgentEvent => ({
+      type:"work_item_update", workItemId:`native-goal:${this.engineAgentId}`, status,
+      title:state ? `Native goal: ${state}` : "Native goal",
+    });
+    const terminalGoal = (): AgentEvent => {
+      const status = this.goalStatus;
+      this.goalOwned = false;
+      const usage = completeGoalUsage && goalTurnCount > 0 ? sumProviderRequestUsage(goalUsage) : undefined;
+      const requests = usage && completeGoalRequests ? reconcileProviderRequestUsage(usage, goalRequests) : undefined;
+      const result: AgentEvent = status === "complete" && heldCompletion
+        ? (() => {
+            const {usage: _lastUsage, providerRequestUsage: _lastRequests, ...completion} = heldCompletion;
+            return {...completion, ...(usage ? {usage} : {}), ...(requests ? {providerRequestUsage:requests} : {})};
+          })()
+        : {type:"error", terminalStatus:"unknown", message:`Native goal stopped with status ${status ?? "unknown"}; its remaining work was not repeated.`};
+      heldCompletion = undefined;
+      heldCompletionTurnId = undefined;
+      goalTerminalTurnId = undefined;
+      goalUsage = [];
+      goalRequests = [];
+      goalTurnCount = 0;
+      completeGoalUsage = true;
+      completeGoalRequests = true;
+      this.goalPauseAttempted = false;
+      return result;
+    };
     yield { type: "session", sessionId: this.engineAgentId };
+    if (this.goalOwned && !this.goalMarkerEmitted) {
+      this.goalMarkerEmitted = true;
+      yield goalMarker("running");
+    }
     const responseText = new CodexResponseText(this.engineAgentId);
     for await (const notification of this.rpc.notifications) {
+      if (this.goalOwned && !this.goalMarkerEmitted) {
+        this.goalMarkerEmitted = true;
+        yield goalMarker("running");
+      }
       if (this.nativeCommandNotifications.has(notification)) continue;
       const params = object(notification.params);
+      if (notification.method === "thread/goal/updated" && params?.threadId === this.engineAgentId) {
+        let goal: NativeGoalSnapshot | null;
+        try { goal = codexGoalSnapshot(params.goal, this.engineAgentId); }
+        catch (error) { try { await this.close(); } catch { /* retain host cleanup authority */ } throw error; }
+        if (!goal) { await this.close(); throw new Error("Native goal update is missing its goal"); }
+        this.goalStatus = goal.status;
+        if (goal.status === "active") {
+          goalTerminalTurnId = undefined;
+          this.goalOwned = true;
+          if (!this.goalMarkerEmitted) { this.goalMarkerEmitted = true; yield goalMarker("running"); }
+        } else if (this.goalOwned) {
+          if (goal.status === "complete" && typeof params.turnId === "string") goalTerminalTurnId = params.turnId;
+          if (!eventTurnId && !this.activeTurnId && consumedTurnStarts === this.observedTurnStarts &&
+              (goal.status !== "complete" || goalTerminalTurnId === heldCompletionTurnId && !!heldCompletionTurnId)) {
+            if (goal.status !== "complete") { try { await this.close(); } catch { /* host keeps cleanup authority */ } }
+            yield goalMarker("done", goal.status);
+            this.goalMarkerEmitted = false;
+            yield terminalGoal();
+          }
+        }
+        continue;
+      }
+      if (notification.method === "thread/goal/cleared" && params?.threadId === this.engineAgentId && this.goalOwned) {
+        this.goalStatus = undefined;
+        if (!eventTurnId && !this.activeTurnId && consumedTurnStarts === this.observedTurnStarts) {
+          try { await this.close(); } catch { /* host keeps cleanup authority */ }
+          yield goalMarker("done", "cleared");
+          this.goalMarkerEmitted = false;
+          yield terminalGoal();
+        }
+        continue;
+      }
       if (notification.method.startsWith("item/") || notification.method.startsWith("turn/")) {
         if (params?.threadId !== this.engineAgentId) continue;
         if (notification.method === "turn/started") {
           const turn = object(params.turn);
           if (typeof turn?.id !== "string" || !turn.id) throw new Error("Native turn start has no identity");
           eventTurnId = turn.id;
+          consumedTurnStarts++;
         } else if (notification.method === "turn/completed") {
           if (object(params.turn)?.id !== eventTurnId || !eventTurnId) continue;
         } else if (params.turnId !== eventTurnId || !eventTurnId) continue;
@@ -1237,6 +1418,42 @@ export class CodexAppServerSession implements RuntimeSession {
             return;
           }
         }
+        if (event.type === "error" && this.goalOwned) {
+          // An active goal can schedule more work after a failed turn. Retain
+          // unknown effects and drain its process before returning the error.
+          try { await this.close(); } catch { /* host retains process cleanup authority */ }
+          yield event;
+          return;
+        }
+        if (event.type === "turn_done") {
+          let goal: NativeGoalSnapshot | null | undefined;
+          try { goal = await readNativeGoal(this.rpc, this.engineAgentId); }
+          catch (error) { try { await this.close(); } catch { /* retain host cleanup authority */ } throw error; }
+          if (goal?.status === "active" || goal && consumedTurnStarts < this.observedTurnStarts) {
+            this.goalOwned = true;
+            this.goalStatus = goal.status;
+            if (!this.goalMarkerEmitted) { this.goalMarkerEmitted = true; yield goalMarker("running"); }
+          } else if (this.goalOwned) {
+            this.goalStatus = goal?.status;
+          }
+          if (this.goalOwned) {
+            heldCompletion = event;
+            heldCompletionTurnId = typeof completedTurnId === "string" ? completedTurnId : undefined;
+            goalTurnCount++;
+            if (event.usage) goalUsage.push(event.usage);
+            else completeGoalUsage = false;
+            if (event.providerRequestUsage?.length) goalRequests.push(...event.providerRequestUsage);
+            else completeGoalRequests = false;
+            if (this.goalStatus !== "active" && !this.activeTurnId && consumedTurnStarts === this.observedTurnStarts &&
+                (this.goalStatus !== "complete" || !!heldCompletionTurnId && goalTerminalTurnId === heldCompletionTurnId)) {
+              if (this.goalStatus !== "complete") { try { await this.close(); } catch { /* host keeps cleanup authority */ } }
+              yield goalMarker("done", this.goalStatus ?? "unknown");
+              this.goalMarkerEmitted = false;
+              yield terminalGoal();
+            }
+            continue;
+          }
+        }
         yield event;
       }
       if (typeof completedTurnId === "string") {
@@ -1246,6 +1463,9 @@ export class CodexAppServerSession implements RuntimeSession {
         this.usageCheckpointsByTurnId.delete(completedTurnId);
         if (this.latestTotal) this.baselineTotal = this.latestTotal;
       }
+    }
+    if (this.goalOwned) {
+      yield {type:"error", terminalStatus:"unknown", message:"Native goal stream ended before its outcome was confirmed; work remains held."};
     }
   }
 }

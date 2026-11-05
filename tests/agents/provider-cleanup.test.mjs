@@ -186,3 +186,45 @@ test('shutdown prevents a prepared scheduler dispatch from claiming a new provid
   await f.dispose(success);
  }
 });
+
+test('concurrent Stop and Run settlement share one native goal pause attempt',options,async()=>{
+ const {pauseOwnedNativeGoal}=await import('../../apps/server/dist/native-goal-stop.js');
+ let calls=0,finish;
+ const run={nativeGoalActive:true,runtimeSession:{pauseNativeGoal:()=>{calls++;return new Promise(resolve=>{finish=resolve;});}}};
+ const first=pauseOwnedNativeGoal(run,()=>assert.fail('pause should be confirmed'));
+ const second=pauseOwnedNativeGoal(run,()=>assert.fail('pause should be confirmed'));
+ assert.equal(first,second);
+ assert.equal(calls,1);
+ finish();await Promise.all([first,second]);
+ assert.equal(calls,1);
+});
+
+test('an unconfirmed native goal pause is reported once and is never replayed',options,async()=>{
+ const {pauseOwnedNativeGoal}=await import('../../apps/server/dist/native-goal-stop.js');
+ let calls=0,notices=0;
+ const run={nativeGoalActive:true,runtimeSession:{pauseNativeGoal:async()=>{calls++;throw Error('lost synthetic acknowledgement');}}};
+ await pauseOwnedNativeGoal(run,()=>{notices++;});
+ await pauseOwnedNativeGoal(run,()=>{notices++;});
+ assert.equal(calls,1);
+ assert.equal(notices,1);
+});
+
+test('native goal commands preserve explicit human objective and budget',async()=>{
+ const { parseNativeTurnCommand } = await import('../../packages/core/dist/native-turn.js');
+ assert.deepEqual(parseNativeTurnCommand('/goal-resume'),{kind:'goal-resume'});
+ assert.deepEqual(parseNativeTurnCommand('/goal-create {"objective":"Finish the audit","tokenBudget":1000}'),{kind:'goal-create',objective:'Finish the audit',tokenBudget:1000});
+ assert.deepEqual(parseNativeTurnCommand('/goal-create {"objective":"Finish the audit","tokenBudget":null}'),{kind:'goal-create',objective:'Finish the audit',tokenBudget:null});
+ assert.throws(()=>parseNativeTurnCommand('/goal-create'));
+ assert.throws(()=>parseNativeTurnCommand('/goal-create {"objective":"Audit","tokenBudget":0}'));
+ assert.throws(()=>parseNativeTurnCommand('/goal-create {"objective":"Audit","status":"paused"}'));
+});
+
+test('goal resume availability recognizes only an accepted retained Codex session',async()=>{
+ const {acceptedGoalResumeCommand}=await import('../../apps/server/dist/native-goal-command-availability.js');
+ const command={name:'goal-resume',description:'Resume',acceptsArguments:false,invocation:'prompt',source:'adapter-implemented',insertText:'/goal-resume',status:'unavailable',unavailableReason:'Requires an accepted retained Codex session.'};
+ assert.equal(acceptedGoalResumeCommand(command,false).status,'unavailable');
+ const accepted=acceptedGoalResumeCommand(command,true);
+ assert.equal(accepted.status,'available');assert.equal(accepted.unavailableReason,undefined);
+ assert.equal(acceptedGoalResumeCommand({...command,unavailableReason:'Provider disabled'},true).status,'unavailable');
+ assert.equal(acceptedGoalResumeCommand({...command,name:'goal-pause'},true).status,'unavailable');
+});

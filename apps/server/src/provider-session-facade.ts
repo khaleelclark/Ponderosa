@@ -403,6 +403,8 @@ export function providerSessionFacade(value: unknown): RuntimeSession {
   let isAliveMethod: (...args: unknown[]) => unknown;
   let closeMethod: (...args: unknown[]) => unknown;
   let startTurnMethod: (...args: unknown[]) => unknown;
+  let startNativeGoalMethod: ((...args: unknown[]) => unknown) | undefined;
+  let pauseNativeGoalMethod: ((...args: unknown[]) => unknown) | undefined;
   let steerMethod: (...args: unknown[]) => unknown;
   let interruptMethod: (...args: unknown[]) => unknown;
   let contextUsageMethod: ((...args: unknown[]) => unknown) | undefined;
@@ -424,6 +426,8 @@ export function providerSessionFacade(value: unknown): RuntimeSession {
     isAliveMethod = method(raw, "isAlive")!;
     closeMethod = method(raw, "close")!;
     startTurnMethod = method(raw, "startTurn")!;
+    startNativeGoalMethod = method(raw, "startNativeGoal", false);
+    pauseNativeGoalMethod = method(raw, "pauseNativeGoal", false);
     steerMethod = method(raw, "steer")!;
     interruptMethod = method(raw, "interrupt")!;
     contextUsageMethod = method(raw, "contextUsage", false);
@@ -466,6 +470,12 @@ export function providerSessionFacade(value: unknown): RuntimeSession {
       try { return turnStartResult(value); }
       catch (error) { throw boundaryError("project provider turn start", error); }
     },
+    ...(startNativeGoalMethod ? { startNativeGoal: async (input) => {
+      await providerRuntimeOperation("start native goal", () => Reflect.apply(startNativeGoalMethod!, raw, [input]));
+    } } : {}),
+    ...(pauseNativeGoalMethod ? { pauseNativeGoal: async () => {
+      await providerRuntimeOperation("pause native goal", () => Reflect.apply(pauseNativeGoalMethod!, raw, []));
+    } } : {}),
     steer: async (input) => {
       const value = await providerRuntimeOperation(
         "steer provider turn",

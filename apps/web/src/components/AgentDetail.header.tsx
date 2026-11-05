@@ -56,10 +56,11 @@ function AgentRunState({
   phaseEvidenceFresh,
   startedAt,
   agentNameForId,
-  paused,
+  paused, accessRestricted,
 }: {
   status: AgentStatus;
   paused?: boolean;
+  accessRestricted?: boolean;
   health?: AgentHealthDto;
   connectionStatus: WorkspaceConnectionStatus;
   phaseEvidenceFresh: boolean;
@@ -71,9 +72,9 @@ function AgentRunState({
   const now = useAgentRunClock(startedAt);
   const presentation = paused ? {
     status: "waiting" as const,
-    label: "Paused",
-    detail: "Paused by you. Unfinished work is held until Resume; Stop ends the held work.",
-    accessibleLabel: "Paused by you. Unfinished work is held until Resume; Stop ends the held work.",
+    label: accessRestricted ? "Access review" : "Paused",
+    detail: accessRestricted ? "Work is held because an access restriction was requested. Earlier context requires review." : "Paused by you. Unfinished work is held until Resume; Stop ends the held work.",
+    accessibleLabel: accessRestricted ? "Work is held because an access restriction was requested. Earlier context requires review." : "Paused by you. Unfinished work is held until Resume; Stop ends the held work.",
   } : agentStatusPresentation(health, {
     status,
     connectionStatus,
@@ -151,6 +152,7 @@ interface AgentDetailHeaderProps {
   onOpenAgent(agentId: string): void;
   onStop(): void;
   paused?:boolean;
+  accessRestricted?:boolean;
   pausePending?:boolean;
   onPauseResume?():void;
   onExportPackage(): void;
@@ -187,7 +189,7 @@ export function AgentDetailHeader({
   onOpenChat,
   onOpenAgent,
   onStop,
-  paused, pausePending, onPauseResume,
+  paused, accessRestricted, pausePending, onPauseResume,
   onExportPackage,
   onDuplicate,
   onOpenTechnical,
@@ -200,9 +202,9 @@ export function AgentDetailHeader({
   const auditOnly=useWorkspaceReadOnly();
   const notify=useMutationNotification();
   if(standalone)return <Stack direction="row" spacing={1} sx={{alignItems:'center',px:1,minWidth:0,flexWrap:'wrap'}}>
-    <Box sx={{flex:1,minWidth:0}}><AgentRunState status={status} paused={paused} health={health} connectionStatus={connectionStatus} phaseEvidenceFresh={phaseEvidenceFresh} startedAt={startedAt} agentNameForId={agentNameForId}/></Box>
+    <Box sx={{flex:1,minWidth:0}}><AgentRunState status={status} paused={paused} accessRestricted={accessRestricted} health={health} connectionStatus={connectionStatus} phaseEvidenceFresh={phaseEvidenceFresh} startedAt={startedAt} agentNameForId={agentNameForId}/></Box>
     {tab!=='chat'&&<Button onClick={()=>onTabChange('chat')}>Back to chat</Button>}
-    {(running||paused)&&!auditOnly&&onPauseResume&&<Button disabled={pausePending} onClick={onPauseResume}>{pausePending?'Waiting…':paused?'Resume':'Pause'}</Button>}
+    {(running||paused)&&!accessRestricted&&!auditOnly&&onPauseResume&&<Button disabled={pausePending} onClick={onPauseResume}>{pausePending?'Waiting…':paused?'Resume':'Pause'}</Button>}
     {running&&!auditOnly&&<Button color="error" disabled={stopping} onClick={onStop}>{stopping?'Stopping…':'Stop'}</Button>}
   </Stack>;
   return (
@@ -255,6 +257,7 @@ export function AgentDetailHeader({
         <AgentRunState
           status={status}
           paused={paused}
+          accessRestricted={accessRestricted}
           health={health}
           connectionStatus={connectionStatus}
           phaseEvidenceFresh={phaseEvidenceFresh}
@@ -272,7 +275,7 @@ export function AgentDetailHeader({
           flexWrap="wrap"
           sx={{ alignItems: "center" }}
         >
-          {(running||paused)&&!auditOnly&&onPauseResume?<Button size="small" variant="outlined" disabled={pausePending} onClick={onPauseResume}>{pausePending?'Waiting…':paused?'Resume':'Pause'}</Button>:null}
+          {(running||paused)&&!accessRestricted&&!auditOnly&&onPauseResume?<Button size="small" variant="outlined" disabled={pausePending} onClick={onPauseResume}>{pausePending?'Waiting…':paused?'Resume':'Pause'}</Button>:null}
           {running && !auditOnly ? (
             <Button
               size="small"

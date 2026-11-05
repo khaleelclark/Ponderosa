@@ -64,7 +64,7 @@ export function reconcileSettingsTransitionReservations(ctx:TransitionContext){
   'The context handoff did not finish or its result is unknown. The original work remains queued. Review the Agent’s activity before retrying; the handoff will not be replayed automatically.');}catch{/* The durable hold remains in place. */}
 }
 
-function hasKnownRetainedMemory(store:AgentStore,agentId:string,originId:string,sourceId:string,sessionId:string):boolean{
+export function hasKnownRetainedMemory(store:AgentStore,agentId:string,originId:string,sourceId:string,sessionId:string):boolean{
  return Boolean(store.sqlite.prepare(`WITH RECURSIVE lineage(origin_id,source_id,session_id) AS (
       VALUES(?,?,?)
       UNION

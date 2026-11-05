@@ -1,3 +1,4 @@
+import {createActiveAccessRevocation} from './active-access-revocation.js';
 import {sealProviderNeverStarted} from '@ponderosa/agents';
 import {ProviderStartAuthority} from './provider-start-authority.js';
 import {registerAgentWorkspaceActions} from './routes/agent-workspace.js';
@@ -1048,7 +1049,12 @@ app.server.on("upgrade", linkPreviewUpgrade);
     artifactFilesystemError,
     isArtifactDependentWorkIntake,
   });
-  registerLocalMemory(app,{opts,store,capabilities:agentMessageCapabilities,activeRuns,ownsRun:capabilityOwnsAuthoritativeRun,publishInvalidation:(agentId,event)=>publish(agentId,store.appendEvent(agentId,event))});
+  const activeAccessRevocation=createActiveAccessRevocation({store,coordinationV3,activeRuns,ownsRun:ownsActiveRun,
+    wakeScheduler:()=>coordinationV3Scheduler.notify(),publishPause:publishMessageDeliveryChanged,
+    logError:(error,operation)=>app.log.error({err:error,operation},'access revocation notification failed')});
+  registerLocalMemory(app,{opts,store,capabilities:agentMessageCapabilities,activeRuns,ownsRun:capabilityOwnsAuthoritativeRun,
+    beforeGlobalMemoryRevocation:activeAccessRevocation.beforeGlobalMemoryRevocation,
+    publishInvalidation:(agentId,event)=>publish(agentId,store.appendEvent(agentId,event))});
 
   registerServerLifecycle(app, {
     appendWorkspace,
@@ -1455,7 +1461,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
       } else resolveOperationalNotification(key);
     },
   });
-  registerCapabilityRoutes(app,{store,branches,engines,dataDir:opts.dataDir,localMemoryEnabled:Boolean(opts.localMemory),providerEnabled,discoverCapabilities:discoverEngineCapabilities});
+  registerCapabilityRoutes(app,{store,branches,engines,dataDir:opts.dataDir,localMemoryEnabled:Boolean(opts.localMemory),providerEnabled,discoverCapabilities:discoverEngineCapabilities,policyChange:activeAccessRevocation.policyChange});
   const outputApps=new OutputAgentApps(store,branches,workspace,application.createChat,application.packageEngine,()=>[...engines.keys()].find(id=>providerEnabled(id)),publishWorkspaceSince);
   application.packageEngine.setOutputApps(outputApps);
   branchInstallations.setOutputApps(outputApps);

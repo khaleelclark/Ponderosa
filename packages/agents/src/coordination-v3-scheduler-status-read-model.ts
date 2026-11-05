@@ -267,7 +267,7 @@ export class CoordinationV3SchedulerStatusReadModel {
     `).all(agentId) as Array<{ id: string; kind: string; priority: number; state: string; created_at: string }>;
     const activeRun = this.activeAgentRun(agentId);
     return {
-      ...(()=>{const row=this.sqlite.prepare("SELECT id,run_id,state,paused_at,last_error FROM agent_run_pauses WHERE agent_id=? AND state IN ('paused','resume_requested')").get(agentId) as {id:string;run_id:string;state:'paused'|'resume_requested';paused_at:string;last_error:string|null}|undefined;return row?{pause:{id:row.id,runId:row.run_id,state:row.state,pausedAt:row.paused_at,...(row.last_error?{error:row.last_error}:{})}}:{};})(),
+      ...(()=>{const row=this.sqlite.prepare("SELECT id,run_id,state,paused_at,last_error,json_extract(checkpoint_json,'$.accessRevocationHold') AS access_hold FROM agent_run_pauses WHERE agent_id=? AND state IN ('paused','resume_requested')").get(agentId) as {id:string;run_id:string;state:'paused'|'resume_requested';paused_at:string;last_error:string|null;access_hold:number|null}|undefined;return row?{pause:{id:row.id,runId:row.run_id,state:row.state,pausedAt:row.paused_at,...(row.last_error?{error:row.last_error}:{}),...(row.access_hold===1?{reason:'access_restricted' as const}:{})}}:{};})(),
       availability: this.getAgentAvailability(agentId),
       requests: requests.map((request) => ({
         id: request.id,

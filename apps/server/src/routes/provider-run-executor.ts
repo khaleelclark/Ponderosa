@@ -1,3 +1,6 @@
+import { newlyRestrictedCodexAccess } from "../codex-access-restrictions.js";
+import { hasKnownRetainedMemory } from "../context-transition-admission.js";
+import { pauseOwnedNativeGoal } from "../native-goal-stop.js";
 import { requireCurrentRuntimeInputAccess } from "../runtime-input-files.js";
 import { NativeHistoryAuthority } from "../native-history-authority.js";
 import { replyStreamCommit } from "../reply-stream-publication.js";
@@ -17,13 +20,16 @@ import {
   type RuntimeInputFile,
   type RuntimeCapabilityRestrictions,
   type RuntimeProcessHandle,
+  type RuntimeTurnInput,
   unicodeCodePointLength,
+  runtimeRestrictions,
   publicProviderFailureSummary,
   safeProviderConnectionUrl,
 } from "@ponderosa/core";
 import { randomUUID } from "node:crypto";
 import {
   AgentEventPersistenceError,
+  CapabilityPolicyStore,
   MAX_CONTEXT_ROLLOVER_REPLACEMENT_PROVIDER_INPUT_UTF8_BYTES,
   type LogEvent,
   type ResolvedAgentWorkingCopy,
@@ -378,15 +384,76 @@ export function startProviderRunExecution(
         PONDEROSA_AGENT_TOOL_NAMES: JSON.stringify(availableRuntimeTools.map((tool) => tool.name)),
         PONDEROSA_INTERNAL_SUBAGENTS_DISABLED: "1",
       };
+      let retainedMemoryInputProof: (() => boolean) | undefined;
+      // The scheduler preflight may have yielded before the Run was claimed.
+      // Revalidate the exact previously disclosed sources immediately before
+      // reusing an ordinary retained Codex session.
+      if (runtimeEngineId === "codex" && resumeSessionId && !assertSettingsTransitionPolicy && !nativeSeed) {
+        const accepted = store.resumeSessionState(agent.id);
+        const origin = store.acceptedProviderSessionInput(agent.id)?.executionId;
+        const scope = coordinationV3.runScopeKey(runId, agent.id);
+        const source = scope ? store.sqlite.prepare(`
+          SELECT id FROM scheduler_runs
+          WHERE agent_id=? AND scope_key=? AND provider_session_id=? AND id<>?
+            AND status='completed' AND prompt_injection_state='injected'
+          ORDER BY fencing_token DESC LIMIT 1
+        `).get(agent.id, scope, resumeSessionId, runId) as {id:string}|undefined : undefined;
+        const known = scope && store.sqlite.prepare(`
+          SELECT 1 FROM scheduler_runs r JOIN memory_exposure_runs e ON e.run_id=r.id
+          WHERE r.agent_id=? AND r.scope_key=? AND r.provider_session_id=?
+            AND (e.pending<>0 OR e.uncertain<>0 OR e.unverified<>0 OR EXISTS(
+              SELECT 1 FROM memory_exposure_sources s WHERE s.run_id=e.run_id))
+          LIMIT 1
+        `).get(agent.id, scope, resumeSessionId);
+        if (accepted?.sessionId !== resumeSessionId) throw new Error("The retained session changed. The original work remains available for review.");
+        if (!origin || !source || !memory) {
+          // A managed handoff can inherit disclosed sources from an older
+          // session even when this replacement has no exposure rows itself.
+          const possibleOrigins = origin ? [origin] : (store.sqlite.prepare(`
+            SELECT DISTINCT replacement_run_id AS id FROM context_rollovers
+            WHERE agent_id=? AND replacement_session_id=? AND state='completed'
+              AND replacement_run_id IS NOT NULL
+          `).all(agent.id, resumeSessionId) as Array<{id:string}>).map(row => row.id);
+          const inherited = possibleOrigins.some(id =>
+            hasKnownRetainedMemory(store, agent.id, id, source?.id ?? id, resumeSessionId));
+          if (known || inherited) throw new Error("Earlier memory exposure cannot be verified. The original work remains available for review.");
+        } else {
+          const proof = await memory.prepareRetainedInputProof({
+            agentId:agent.id, chatId:agent.conversationId, sessionId:resumeSessionId,
+            originRunId:origin, sourceRunId:source.id, currentRunId:runId,
+          });
+          if (proof.status === "changed" || proof.status === "unavailable" || !proof.isCurrent())
+            throw new Error("A previously used memory source or its access changed. The original work remains available for review.");
+          retainedMemoryInputProof = proof.isCurrent;
+        }
+      }
+      const assertCurrentCodexAccess = (): void => {
+        if (runtimeEngineId !== "codex") return;
+        if (retainedMemoryInputProof && !retainedMemoryInputProof())
+          throw new Error("A previously used memory source or its access changed. The original work remains available for review.");
+        const current = runtimeRestrictions(
+          new CapabilityPolicyStore(store.sqlite).resolveForAgent(agent.id, runId), runtimeEngineId,
+        );
+        if (newlyRestrictedCodexAccess(capabilityRestrictions.restrictedCapabilityIds, current.restrictedCapabilityIds))
+          throw new Error("Access was restricted before provider input. The original work remains available for review.");
+      };
       const openPersistentRuntime = async (
         sessionResumeId: string | undefined,
         onRuntimeSpawned: (handle: RuntimeProcessHandle) => void,
         identity: object,
       ): Promise<PersistentRuntime> => {
         if (v3FencingToken !== undefined) coordinationV3.assertRunReviewedSteeringLease(agent.projectId,runId,v3FencingToken);
+        if (controller.signal.aborted || isClosed() || deletingAgentIds.has(agent.id) || deletingProjectIds.has(project.id) || !ownsActiveRun(agent.id, activeRun) || !renewExecutionLease(agent.id, activeRun)) throw new Error("Native session lost current Run authority");
+        assertCurrentCodexAccess();
         const rawSession = await providerRuntimeOperation("open provider session", () => engine.adapter.openSession!({
           agentId: agent.id,
           ...(v3FencingToken !== undefined ? {providerRun:{runId,fence:v3FencingToken}} : {}),
+          assertRuntimeCurrent: () => {
+            if (controller.signal.aborted || isClosed() || deletingAgentIds.has(agent.id) ||
+                deletingProjectIds.has(project.id) || !ownsActiveRun(agent.id, activeRun) || !renewExecutionLease(agent.id, activeRun))
+              throw new Error("Native session lost current Run authority");
+            assertCurrentCodexAccess();
+          },
           cwd: workingCopy.rootPath,
           resumeSessionId: sessionResumeId,
           fileCheckpointTracking: nativeHistory.tracking(agent.id).enabled,
@@ -564,6 +631,10 @@ export function startProviderRunExecution(
           identity,
           session,
           nativeCodexModelChange:Object.getPrototypeOf(rawSession)===CodexAppServerSession.prototype && rawSession.startTurn===CodexAppServerSession.prototype.startTurn,
+          nativeCodexGoal:Object.getPrototypeOf(rawSession)===CodexAppServerSession.prototype &&
+            rawSession.startTurn===CodexAppServerSession.prototype.startTurn &&
+            rawSession.startNativeGoal===CodexAppServerSession.prototype.startNativeGoal &&
+            rawSession.pauseNativeGoal===CodexAppServerSession.prototype.pauseNativeGoal,
           nativeClaudeVerifiedInput:Object.getPrototypeOf(rawSession)===ClaudeStreamSession.prototype && rawSession.startTurn===ClaudeStreamSession.prototype.startTurn,
           iterator: session.events[Symbol.asyncIterator](),
           messageCapability,
@@ -741,7 +812,7 @@ export function startProviderRunExecution(
               async *[Symbol.asyncIterator](): AsyncIterator<AgentEvent> {
                 if (!persistentTurnStarted) {
                   try {
-                    await persistentRuntime!.session.startTurn({
+                    const runtimeInput: RuntimeTurnInput = {
                       prompt,
                       inputFiles,
                       kind: "collaboration",
@@ -754,6 +825,7 @@ export function startProviderRunExecution(
                       assertCurrent: () => {
                         if (controller.signal.aborted || isClosed() || deletingAgentIds.has(agent.id) || deletingProjectIds.has(project.id) || !ownsActiveRun(agent.id, activeRun) || !renewExecutionLease(agent.id, activeRun)) throw new Error("Native turn lost current Run authority");
                         assertSettingsTransitionPolicy?.();
+                        assertCurrentCodexAccess();
                         if (retainedVerifiedContext && (!persistentRuntime || reusableRuntime(agent.id)!==persistentRuntime ||
                             activeRun.persistentRuntimeIdentity!==persistentRuntime.identity || !persistentRuntime.session.isAlive() ||
                             readProviderSessionIdentifier(persistentRuntime.session)!==resumeSessionId))
@@ -769,7 +841,15 @@ export function startProviderRunExecution(
                           coordinationV3!.assertRunReviewedSteeringSubmission(agent.projectId,runId,v3FencingToken!);
                         }
                       },
-                    });
+                    };
+                    if (input.nativeAction?.kind === "goal-resume" || input.nativeAction?.kind === "goal-create") {
+                      if (!persistentRuntime!.nativeCodexGoal || !persistentRuntime!.session.startNativeGoal)
+                        throw new Error("This provider cannot own a native goal Run.");
+                      activeRun.nativeGoalActive = true;
+                      await persistentRuntime!.session.startNativeGoal(runtimeInput);
+                    } else {
+                      await persistentRuntime!.session.startTurn(runtimeInput);
+                    }
                   } catch (error) {
                     providerStreamBoundaryFailure = {
                       kind: "turn_submission_rejection",
@@ -830,7 +910,7 @@ export function startProviderRunExecution(
               async *[Symbol.asyncIterator](): AsyncIterator<AgentEvent> {
                 if (!persistentTurnStarted) {
                   try {
-                    await persistentRuntime!.session.startTurn({
+                    const runtimeInput: RuntimeTurnInput = {
                       prompt: freshPrompt,
                       inputFiles,
                       kind: "collaboration",
@@ -843,6 +923,7 @@ export function startProviderRunExecution(
                       assertCurrent: () => {
                         if (controller.signal.aborted || isClosed() || deletingAgentIds.has(agent.id) || deletingProjectIds.has(project.id) || !ownsActiveRun(agent.id, activeRun) || !renewExecutionLease(agent.id, activeRun)) throw new Error("Native turn lost current Run authority");
                         assertSettingsTransitionPolicy?.();
+                        assertCurrentCodexAccess();
                         if (reviewedSteeringRun) {
                           if (!persistentRuntime || reusableRuntime(agent.id)!==persistentRuntime ||
                               activeRun.persistentRuntimeIdentity!==persistentRuntime.identity || !persistentRuntime.session.isAlive())
@@ -850,7 +931,15 @@ export function startProviderRunExecution(
                           coordinationV3!.assertRunReviewedSteeringSubmission(agent.projectId,runId,v3FencingToken!);
                         }
                       },
-                    });
+                    };
+                    if (input.nativeAction?.kind === "goal-create") {
+                      if (!persistentRuntime!.nativeCodexGoal || !persistentRuntime!.session.startNativeGoal)
+                        throw new Error("This provider cannot own a native goal Run.");
+                      activeRun.nativeGoalActive = true;
+                      await persistentRuntime!.session.startNativeGoal(runtimeInput);
+                    } else {
+                      await persistentRuntime!.session.startTurn(runtimeInput);
+                    }
                   } catch (error) {
                     providerStreamBoundaryFailure = {
                       kind: "turn_submission_rejection",
@@ -1041,6 +1130,10 @@ export function startProviderRunExecution(
           if (!receiveRuntimeEvent(agent.id, activeRun)) break;
           if (event.type === "context_usage" && event.providerSessionGeneration !== undefined) {
             activeRun.observedProviderSessionGeneration = event.providerSessionGeneration;
+          }
+          if (persistentRuntime?.nativeCodexGoal && event.type === "work_item_update" &&
+              event.workItemId === `native-goal:${persistentRuntime.session.engineAgentId}`) {
+            activeRun.nativeGoalActive = event.status === "running";
           }
           if (event.type === "turn_done") activeRun.observedProviderTerminalStatus = "completed";
           if (event.type === "error" && event.terminalStatus !== undefined) activeRun.observedProviderTerminalStatus = event.terminalStatus;
@@ -1792,6 +1885,19 @@ export function startProviderRunExecution(
           });
           if (recoveryEvidence.available) resolveOperationalNotification(`provider:${runtimeEngineId}:unavailable`);
         }
+      }
+      if (schedulerCancelled && activeRun.nativeGoalActive) {
+        await pauseOwnedNativeGoal(activeRun, () => {
+          try { createOperationalNotification({
+            dedupeKey: `native-goal-pause-unknown:${runId}`,
+            category: "provider", severity: "attention",
+            title: "Native goal pause needs review",
+            body: "The provider did not confirm whether the native goal paused. Its process is being stopped; earlier work may have completed. Review the goal before resuming it.",
+            projectId: agent.projectId, conversationId: agent.conversationId, agentId: agent.id,
+          }); } catch (error) {
+            app.log.error({ err: error, agentId: agent.id, runId }, "Native goal pause uncertainty could not be published");
+          }
+        });
       }
       const released = releaseActiveRun(agent.id, activeRun, controller.signal.aborted || schedulerCancelled ? "cancelled" : runError ? "failed" : "completed");
       if (released || activeRuns.get(agent.id) !== activeRun) {
