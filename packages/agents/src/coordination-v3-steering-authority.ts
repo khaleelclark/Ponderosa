@@ -126,6 +126,15 @@ export class CoordinationV3SteeringAuthority {
     })();
   }
 
+  /** Verification is isolated until its Run actually finishes, even if the
+   * rollover has already recorded replacement acceptance. */
+  private settingsConfirmationRun(run:string):string {
+    return `EXISTS (SELECT 1 FROM scheduler_run_activations attached
+      JOIN agent_activations confirmation ON confirmation.id=attached.activation_id
+      WHERE attached.run_id=${run} AND confirmation.kind='context_rollover_continuation'
+        AND json_type(confirmation.payload_json,'$.settingsTransition')='object')`;
+  }
+
   leaseNextSteering(input: {
     workerId: string;
     now?: string;
@@ -152,6 +161,7 @@ export class CoordinationV3SteeringAuthority {
           AND a.dispatch_policy = 'steer_or_run'
           AND NOT EXISTS (SELECT 1 FROM activation_sources held WHERE held.activation_id=a.id AND held.source_kind IN ('task_decision_repair_wait','task_reply_repair_wait','settings_transition_retry_pending'))
           AND NOT ${settingsTransitionActivationHoldSql('a')}
+          AND NOT ${this.settingsConfirmationRun('r.id')}
           AND ${decisionSteeringAuthority('a', 'r.id')}
           AND (a.kind = 'context_rollover_handoff' OR NOT EXISTS (
             SELECT 1 FROM context_rollovers rollover
@@ -195,6 +205,7 @@ export class CoordinationV3SteeringAuthority {
           AND dispatch_policy = 'steer_or_run'
           AND NOT EXISTS (SELECT 1 FROM activation_sources held WHERE held.activation_id=agent_activations.id AND held.source_kind IN ('task_decision_repair_wait','task_reply_repair_wait','settings_transition_retry_pending'))
           AND NOT ${settingsTransitionActivationHoldSql('agent_activations')}
+          AND NOT ${this.settingsConfirmationRun('?')}
           AND ${decisionSteeringAuthority('agent_activations', '?')}
           AND EXISTS(SELECT 1 FROM activation_sources source WHERE source.activation_id=agent_activations.id AND source.source_kind='branch_schedule_update')=?
           AND (kind = 'context_rollover_handoff' OR NOT EXISTS (
@@ -214,6 +225,7 @@ export class CoordinationV3SteeringAuthority {
         candidate.agent_id,
         candidate.scope_key,
         now,
+        candidate.run_id,
         candidate.run_id,
         scheduled?1:0,
         candidate.run_id,
