@@ -1,4 +1,5 @@
-import {AGENT_PACKAGE_MAX_BYTES,agentPackageJsonUtf8Bytes} from "@ponderosa/core";
+import {AGENT_PACKAGE_MAX_BYTES,agentPackageJsonUtf8Bytes,workingFileArtifactRefs} from "@ponderosa/core";
+import {verifyPortableWorkingFileParts} from "./portable-working-file-parts.js";
 import {assertAgentPackageMemoryAvailable,encodePortableArtifactData,decodePortableArtifactData} from "./agent-package-codec.js";
 import {LargeWorkingFileInspector} from './large-working-file-inspection.js';
 import {constants,closeSync} from 'node:fs';
@@ -364,7 +365,7 @@ async function captureExactRetainedNativeGit(root:string):Promise<ReviewedGitUse
     }finally{await capture.close();}
   }finally{await handle.close();}
 }
-async function captureRetainedGitCurrent(root:string,original:Buffer,maxBytes:number):Promise<{files:Array<{path:string;artifactRef:string;mode:number;mtime?:string}>;artifacts:PortableArtifactDto[];bytes:number;verify:()=>Promise<void>}|undefined>{
+async function captureRetainedGitCurrent(root:string,original:Buffer,maxBytes:number):Promise<{files:Array<import("@ponderosa/core").PortableWorkingFileDto>;artifacts:PortableArtifactDto[];bytes:number;verify:()=>Promise<void>}|undefined>{
   const review=path.join(root,'.ponderosa-portable-review');
   const present:CurrentGitName[]=[];
   for(const name of CURRENT_GIT_NAMES){
@@ -378,7 +379,7 @@ async function captureRetainedGitCurrent(root:string,original:Buffer,maxBytes:nu
   try{generated=await captureGeneratedOriginalProof(review,original);}catch{throw new Error('Generated review contents changed or could not be verified; source remains unchanged');}
   const originalSha256=createHash('sha256').update(original).digest('hex');
   const collect=async()=>{
-    const namespaces:CurrentGitNamespace[]=[],outFiles:Array<{path:string;artifactRef:string;mode:number;mtime?:string}>=[],artifacts:PortableArtifactDto[]=[];
+    const namespaces:CurrentGitNamespace[]=[],outFiles:Array<import("@ponderosa/core").PortableWorkingFileDto>=[],artifacts:PortableArtifactDto[]=[];
     let bytes=0;const nativeFiles:Array<{path:string;data:Buffer}>=[],externalFiles:Array<{path:string;data:Buffer}>=[],nestedFiles:Array<{path:string;data:Buffer;sha256:string;mode?:number}>=[];let hasNativeBinary=false,hasExternalBinary=false;
     for(const name of present){
       const target=path.join(review,name);let inventory:WorkingFolderInventory,captured:Awaited<ReturnType<typeof exportWorkingFiles>>;
@@ -388,9 +389,16 @@ async function captureRetainedGitCurrent(root:string,original:Buffer,maxBytes:nu
       const byRef=new Map(captured.artifacts.map(item=>[item.ref,item]));
       const entries:CurrentGitNamespace['files']=[];
       for(const file of captured.files){
-        if(file.parts)throw new Error('Multipart current Git review originals require a complete metadata reader; original data is retained');
-        const artifact=byRef.get(file.artifactRef);if(!artifact)throw new Error('Current retained Git artifact is missing');
-        const decoded=await decodePortableArtifactData(artifact);
+        const parts=workingFileArtifactRefs(file).map(ref=>byRef.get(ref));
+        if(parts.some(artifact=>!artifact))throw new Error('Current retained Git artifact is missing');
+        // Account for all retained originals captured so far as well as this
+        // whole-file reconstruction. The verifier runs a second collect while
+        // the first snapshot remains resident, so admission is rechecked there.
+        if(file.parts)assertAgentPackageMemoryAvailable(bytes+file.parts.byteLength);
+        const bodies:Buffer[]=[];
+        for(const artifact of parts)bodies.push((await decodePortableArtifactData(artifact!)).data);
+        const verified=verifyPortableWorkingFileParts(file,bodies);
+        const decoded={data:bodies.length===1?bodies[0]!:Buffer.concat(bodies,verified.byteLength),sha256:verified.sha256};
         const opaque=opaqueGitBytes(decoded.data);
         if(name==='native-git-common'){nativeFiles.push({path:file.path,data:decoded.data});if(opaque||file.path==='worktrees/imported/config.worktree')hasNativeBinary=true;}
         if(name==='external-git'){externalFiles.push({path:file.path,data:decoded.data});if(opaque)hasExternalBinary=true;}
@@ -399,8 +407,8 @@ async function captureRetainedGitCurrent(root:string,original:Buffer,maxBytes:nu
         if(!opaque&&!(name==='native-git-common'&&file.path==='worktrees/imported/config.worktree')&&!(name==='current-git-evidence'&&nestedNativeConfig(file.path)))inspectCurrentGitFile(file.path,decoded.data);
         entries.push({path:file.path,sha256:decoded.sha256,mode:file.mode??0o600,mtime:file.mtime??inventory.mtime});
         const output=CURRENT_GIT_EVIDENCE+'/'+name+'/'+file.path;
-        outFiles.push({path:output,artifactRef:file.artifactRef,mode:0o600});
-        artifacts.push({...artifact,path:output,summary:'Inert retained Git current evidence'});
+        outFiles.push({path:output,artifactRef:file.artifactRef,mode:0o600,...(file.parts?{parts:file.parts}:{})});
+        for(const artifact of parts)artifacts.push(file.parts?artifact!:{...artifact!,path:output,summary:'Inert retained Git current evidence'});
       }
       namespaces.push({name,rootMode:inventory.mode,rootMtime:inventory.mtime,directories:inventory.directories,links:inventory.links,files:entries});
     }

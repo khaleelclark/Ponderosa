@@ -125,3 +125,13 @@ The bounded absolute result is retained in the existing dependency binding;
 import validates its original raw declaration and closed transported target,
 then relocates it without consulting destination users or installation paths.
 Unprovable native expansion fails explicitly rather than guessing a path.
+
+Retained current Git review files larger than 64 MiB use the existing working-file
+parts format. Capture verifies the full ordered original and applies the existing
+whole-file credential and Git provenance checks before retaining it as inert
+evidence; re-export and import preserve the one logical file. Available-memory
+admission accounts for accumulated evidence and reconstruction. The focused
+65 MiB regression covers inert text, re-export, corruption and credential
+refusal across a part boundary. This does not expand the existing reviewed-Git
+object-graph or selected native-configuration bounds, and unproven opaque binary
+Git data remains held with its source preserved.

@@ -789,3 +789,37 @@ test('synthetic repeated Git recreation produces identical file content',async()
   assert.deepEqual(await walk(a),await walk(b));
  }finally{await rm(base,{recursive:true,force:true});}
 });
+
+test('retained large Git originals preserve full bytes, source association and secret screening across re-export', {skip:process.platform==='win32',timeout:240000},async()=>{
+ const base=await realpath(await mkdtemp(path.join(tmpdir(),'portable-large-current-git-')));
+ try{
+  const source=path.join(base,'source'),root=path.join(base,'retained'),destination=path.join(base,'destination'),second=path.join(base,'second');
+  await initialize(source);const original=Buffer.from(JSON.stringify(await exportReviewedUserData(source,{git:true,harness:false})));
+  const selection={git:true,harness:false,source:'retained_originals'},review=path.join(root,'.ponderosa-portable-review'),large=Buffer.alloc(64*1024*1024+37,0x61);
+  await mkdir(root);await mkdir(review);await writeFile(path.join(review,'user-data.json'),original);await mkdir(path.join(review,'external-git'));
+  const pathname=path.join(review,'external-git','large.review');await writeFile(pathname,large);
+  const capture=async folder=>{const inv=await inventoryWorkingFolder(folder,selection);return exportWorkingFiles(folder,inv.paths,256*1024*1024,inv.links,selection,{data:original},undefined,undefined,inv);};
+  const {verifyPortableWorkingFileParts}=await import('../../apps/server/dist/portable-working-file-parts.js');
+  const entries=async result=>{const map=new Map(result.artifacts.map(artifact=>[artifact.ref,artifact]));return Promise.all(result.files.map(async file=>{const bodies=[];for(const ref of file.parts?.refs??[file.artifactRef])bodies.push((await decodePortableArtifactData(map.get(ref))).data);const verified=verifyPortableWorkingFileParts(file,bodies);return {...file,data:bodies.length===1?bodies[0]:Buffer.concat(bodies,verified.byteLength),sha256:verified.sha256};}));};
+  const first=await capture(root),target=first.files.find(file=>file.path.endsWith('/external-git/large.review'));
+  assert.ok(target?.parts,'one logical file carries all parts');assert.equal(target.parts.byteLength,large.length);assert.equal(target.parts.sha256,createHash('sha256').update(large).digest('hex'));
+  const {validatePortableAgentPackage}=await import('../../apps/server/dist/portable-agent-package-validation.js');
+  const pkg={schema:'ponderosa.agent-package.v1',mode:'full',kind:'agent',exportedAt:new Date().toISOString(),sourceLabel:'Synthetic retained Git',rootRef:'agent',agents:[{ref:'agent',title:'Synthetic',engine:'codex',managementPermissions:{allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false},workingRootRef:'work',workingFolder:{directories:[],excludedPaths:[]},workingFiles:first.files,artifacts:first.artifacts}]};
+  assert.doesNotThrow(()=>validatePortableAgentPackage(pkg),'existing package contract accepts every retained part');
+  const input=await entries(first);await importWorkingFiles(destination,input);
+  assert.deepEqual(await readFile(path.join(destination,target.path)),large);assert.deepEqual(await readFile(path.join(destination,'.ponderosa-portable-review/user-data.json')),original);
+  const again=await capture(destination),againInput=await entries(again);await importWorkingFiles(second,againInput);
+  assert.deepEqual(await readFile(path.join(second,'.ponderosa-portable-review/current-git-evidence/current-git-evidence/external-git/large.review')),large);
+  const broken=input.map(file=>({...file})),victim=broken.find(file=>file.path===target.path);victim.data=Buffer.from(victim.data);victim.data[victim.data.length-1]^=1;
+  await assert.rejects(importWorkingFiles(path.join(base,'corrupt'),broken),/bytes differ/);assert.deepEqual(await readFile(pathname),large);
+  const unsafe=Buffer.from(large);unsafe.write('\nAPI_KEY=SYNTHETIC_DO_NOT_EXPORT\n',unsafe.length-40,'utf8');await writeFile(pathname,unsafe);
+  await assert.rejects(capture(root),error=>{assert.match(error.message,/cannot be safely captured|credential|secret/i);assert.doesNotMatch(error.message,/SYNTHETIC_DO_NOT_EXPORT/);return true;});
+  assert.deepEqual(await readFile(pathname),unsafe,'credential refusal preserves source');
+  const crossPart=Buffer.from(large);crossPart.write('\nAPI_KEY=SYNTHETIC_CROSS_BOUNDARY\n',32*1024*1024-4,'utf8');await writeFile(pathname,crossPart);
+  await assert.rejects(capture(root),error=>{assert.match(error.message,/cannot be safely captured|credential|secret/i);assert.doesNotMatch(error.message,/SYNTHETIC_CROSS_BOUNDARY/);return true;});
+  assert.deepEqual(await readFile(pathname),crossPart,'cross-part credential refusal preserves source');
+  const opaque=Buffer.from(large);opaque[opaque.length-1]=0;await writeFile(pathname,opaque);
+  await assert.rejects(capture(root),/binary evidence cannot be validated/i);
+  assert.deepEqual(await readFile(pathname),opaque,'unproven binary source remains intact');
+ }finally{await rm(base,{recursive:true,force:true});}
+});
