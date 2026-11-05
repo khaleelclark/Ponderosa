@@ -57,10 +57,10 @@ if(full)await stage('accepted-inputs',async()=>{
     }
     // One frame and observer delivery task: observation flush only, never included as interaction latency.
     await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>setTimeout(resolve,0))));
-    row.raw=await page.evaluate(()=>window.__finalizeUiTiming());row.raw.namespace=`${id}/${row.raw.documentId}`;row.emulation=await page.evaluate(()=>({width:innerWidth,height:innerHeight,dpr:devicePixelRatio,ua:navigator.userAgent,visibility:document.visibilityState}));
+    await page.evaluate(()=>window.__finalizeUiTiming());await page.screenshot({path:out+'/'+id+'.png'});row.raw=await page.evaluate(()=>window.__verifyUiTiming());row.raw.namespace=`${id}/${row.raw.documentId}`;row.emulation=await page.evaluate(()=>({width:innerWidth,height:innerHeight,dpr:devicePixelRatio,ua:navigator.userAgent,visibility:document.visibilityState}));
     assert.deepEqual([row.emulation.width,row.emulation.height,row.emulation.dpr],[row.profile.width,row.profile.height,row.profile.dpr],'Effective viewport/DPR must match frozen cell');if(mobile)assert.equal(row.emulation.ua,row.profile.ua);assert.equal(row.raw.visibility,'visible');assert(row.raw.cutoff.time>=row.raw.marks.find(m=>m.name==='editor-ready').time,'First trusted input must follow actual canonical tail readiness');
     await f.drain();row.workWindow=f.assertWindow(product,row.raw.window.timeOrigin+row.raw.window.start,row.raw.window.timeOrigin+row.raw.window.end);
-    f.assertContinuity();row.summary=summarizeTimings([row.raw]);assert.deepEqual(row.errors,[]);await page.screenshot({path:out+'/'+id+'.png'});row.status='complete';
+    f.assertContinuity();row.summary=summarizeTimings([row.raw]);assert.deepEqual(row.errors,[]);row.status='complete';
    }catch(error){row.status='failed';row.error=error.stack;throw error;}
    finally{row.cleanup=[];try{await context?.close();row.cleanup.push({name:'context',status:'complete'});}catch(error){row.cleanup.push({name:'context',status:'failed',error:String(error)});row.status='failed';ledger.status='failed';}row.terminalAt=Date.now();await persist();}
   }

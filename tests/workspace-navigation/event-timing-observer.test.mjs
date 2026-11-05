@@ -1,8 +1,8 @@
 import {runInNewContext} from 'node:vm';
 import test from 'node:test';import assert from 'node:assert/strict';import {summarizeTimings,latencyBreakdown,installTimingObserver} from './event-timing-observer.mjs';
 let sequence=0;
-// Synthetic terminal-contract receipts exercise arithmetic only; no installed-browser contract is asserted.
-const session=(events,totalInteractions)=>{const documentId='document-'+(++sequence),n=totalInteractions??1;return {documentId,namespace:'test/'+documentId,window:{start:0,end:4000,lastPresentation:4000,timeOrigin:1700000000000+sequence},lifecycle:[{type:'init',time:0,visibility:'visible'}],health:{registered:true,drained:true,callbacks:1,callbackLedger:[{observedAt:1515,droppedEntriesCount:0}],flushCompletedAt:4001,droppedEntries:0,terminalDelivery:{supported:true,basis:'independently-reviewed-browser-delivery-contract',coversThrough:4000,observedAt:4001}},tasks:[{id:'synthetic',start:1400,end:3900,complete:true,nativeStart:0,nativeEnd:totalInteractions,expectedTrustedCounts:{pointerdown:0,pointerup:0,click:0,keydown:n,keyup:n}}],eventCounts:{keydown:n,keyup:n},trustedInputs:Array.from({length:n},(_,i)=>[{type:'keydown',time:1500+i*.1},{type:'keyup',time:1500+i*.1+.05}]).flat(),events:events.map(e=>({name:'keydown',startTime:1500,processingStart:1501,processingEnd:1502,...e})),lcp:[{startTime:1000},{startTime:2000}],cutoff:{time:1500,handlerObservedAt:1510,validOccurrence:true,reason:'first-trusted-input'},threshold:16,finalized:true,visibility:'visible',countSupport:'performance.interactionCount',totalInteractions,supported:['event','largest-contentful-paint'],errors:[]};};
+// Synthetic observations exercise arithmetic and guards only; they do not establish browser delivery guarantees.
+const session=(events,totalInteractions)=>{const documentId='document-'+(++sequence),n=totalInteractions??1;return {documentId,namespace:'test/'+documentId,window:{start:0,end:4000,lastFrame:4000,timeOrigin:1700000000000+sequence},lifecycle:[{type:'init',time:0,visibility:'visible'}],health:{registered:true,drained:true,callbacks:1,callbackLedger:[{observedAt:1515,droppedEntriesCount:0}],flushCompletedAt:4001,droppedEntries:0,delivery:{checkpoints:[{at:3901,frame:3900,events:events.length,lcp:2,interactions:totalInteractions??null,droppedEntries:0,lifecycle:1,inputs:n*2,eventCounts:{keydown:n,keyup:n}},{at:4001,frame:4000,events:events.length,lcp:2,interactions:totalInteractions??null,droppedEntries:0,lifecycle:1,inputs:n*2,eventCounts:{keydown:n,keyup:n}}],stable:true,postCapture:{stable:true,checkpoint:{at:4101,frame:4100,events:events.length,lcp:2,interactions:totalInteractions??null,droppedEntries:0,lifecycle:1,inputs:n*2,eventCounts:{keydown:n,keyup:n}}}}},tasks:[{id:'synthetic',start:1400,end:3900,complete:true,nativeStart:0,nativeEnd:totalInteractions,expectedTrustedCounts:{pointerdown:0,pointerup:0,click:0,keydown:n,keyup:n}}],eventCounts:{keydown:n,keyup:n},trustedInputs:Array.from({length:n},(_,i)=>[{type:'keydown',code:'KeyA',time:1500+i*.1},{type:'keyup',code:'KeyA',time:1500+i*.1+.05}]).flat(),events:events.map(e=>({name:'keydown',startTime:1500,processingStart:1501,processingEnd:1502,...e})),lcp:[{startTime:1000},{startTime:2000}],cutoff:{time:1500,handlerObservedAt:1510,validOccurrence:true,reason:'first-trusted-input'},threshold:16,finalized:true,visibility:'visible',countSupport:'performance.interactionCount',totalInteractions,supported:['event','largest-contentful-paint'],errors:[]};};
 test('unavailable independent counts stay diagnostic and cannot become an exact p75',()=>{
  const value=summarizeTimings([session([{interactionId:1,duration:32}],undefined)]);assert.equal(value.p75,null);assert.equal(value.qualifiedPopulation,false);assert.equal(value.observedP75,32);assert.equal(value.sessions[0].lcp,1000);
 });
@@ -30,7 +30,7 @@ test('latency decomposition preserves raw timing and separates queuing, handler 
  const value=latencyBreakdown({events:[{interactionId:1,startTime:100,processingStart:120,processingEnd:130,duration:48},{interactionId:0,duration:999}]});assert.equal(value.length,1);assert.equal(value[0].inputDelayMs,20);assert.equal(value[0].handlerMs,10);assert.equal(value[0].presentationRemainderMs,18);assert.equal(value[0].duration,48);
 });
 
-test('native positive count with healthy finalized collector may consist entirely of subfloor interactions',()=>{
+test('synthetic zero-drop receipt permits a fully censored population arithmetically',()=>{
  const value=summarizeTimings([session([],41)]);assert.equal(value.totalInteractions,41);assert.equal(value.censored,41);assert.equal(value.nInteractions,0);assert.equal(value.observedP75,null);assert.equal(value.p75,null);assert.equal(value.p75BelowFloor,true);assert.equal(value.qualifiedPopulation,true);
 });
 
@@ -47,8 +47,8 @@ test('actual collector uses event occurrence and excludes LCP between delayed in
  const row=session([{interactionId:1,duration:32}],1);row.cutoff=cutoff;row.lcp=[{startTime:90},{startTime:110}];assert.equal(summarizeTimings([row]).sessions[0].lcp,90);
 });
 
-test('early no-drop callback does not establish final delivery coverage',()=>{
- const row=session([],41);row.health.terminalDelivery={supported:false};assert.equal(summarizeTimings([row]).qualifiedPopulation,false);row.health.terminalDelivery={supported:true,basis:'independently-reviewed-browser-delivery-contract',coversThrough:3999,observedAt:4001};assert.equal(summarizeTimings([row]).qualifiedPopulation,false);
+test('missing, timed out or changing drains remain inconclusive',()=>{
+ const row=session([],41),delivery=row.health.delivery;for(const bad of [undefined,{...delivery,stable:false},{...delivery,postCapture:undefined},{...delivery,postCapture:{...delivery.postCapture,stable:false}},{...delivery,postCapture:{...delivery.postCapture,checkpoint:{...delivery.postCapture.checkpoint,events:1}}},{...delivery,postCapture:{...delivery.postCapture,checkpoint:{...delivery.postCapture.checkpoint,frame:null}}}])assert.equal(summarizeTimings([{...row,health:{...row.health,delivery:bad}}]).qualifiedPopulation,false);
 });
 test('finite entry ordering and conservative quantized completion must fit window',()=>{
  const row=session([{interactionId:1,duration:32}],1);for(const change of [{startTime:undefined},{duration:NaN},{processingStart:1499},{processingEnd:1500},{startTime:3990,processingStart:3991,processingEnd:3992},{duration:0,processingEnd:1520}])assert.equal(summarizeTimings([{...row,events:[{...row.events[0],...change}]}]).qualifiedPopulation,false);
@@ -60,6 +60,44 @@ test('incomplete task, keyup counter and native-boundary disagreement stay diagn
  const row=session([],1);for(const change of [{tasks:[{...row.tasks[0],complete:false}]},{tasks:[{...row.tasks[0],nativeEnd:0}]},{eventCounts:{keydown:1,keyup:0}},{tasks:[{...row.tasks[0],expectedTrustedCounts:{...row.tasks[0].expectedTrustedCounts,keyup:2}}]}])assert.equal(summarizeTimings([{...row,...change}]).qualifiedPopulation,false);
 });
 
-test('callback and terminal health timestamps must be finite and ordered',()=>{
- const row=session([],1);for(const health of [{...row.health,callbacks:Infinity},{...row.health,callbackLedger:[{observedAt:NaN,droppedEntriesCount:0}]},{...row.health,callbackLedger:[]},{...row.health,flushCompletedAt:3999},{...row.health,terminalDelivery:{...row.health.terminalDelivery,observedAt:NaN}}])assert.equal(summarizeTimings([{...row,health}]).qualifiedPopulation,false);
+test('callback and drain health timestamps must be finite and ordered',()=>{
+ const row=session([],1);for(const health of [{...row.health,callbacks:Infinity},{...row.health,callbackLedger:[{observedAt:NaN,droppedEntriesCount:0}]},{...row.health,callbackLedger:[]},{...row.health,flushCompletedAt:3999},{...row.health,delivery:{...row.health.delivery,postCapture:{stable:true,checkpoint:{...row.health.delivery.postCapture.checkpoint,at:NaN}}}}])assert.equal(summarizeTimings([{...row,health}]).qualifiedPopulation,false);
+});
+
+test('missing input completion and changed native counters remain inconclusive',()=>{
+ const row=session([{interactionId:1,duration:32}],1);
+ for(const change of [{trustedInputs:[{type:'keydown',time:1500}]},{health:{...row.health,delivery:{...row.health.delivery,postCapture:{stable:true,checkpoint:{...row.health.delivery.postCapture.checkpoint,interactions:2}}}}}])assert.equal(summarizeTimings([{...row,...change}]).qualifiedPopulation,false);
+});
+
+test('collector records post-capture late entries instead of calling the drains stable',async()=>{
+ const observers=[],listeners={};let clock=100;
+ const context={window:{},crypto:{randomUUID:()=> 'doc'},document:{visibilityState:'visible'},
+  performance:{timeOrigin:1700000000000,now:()=>++clock,interactionCount:1,eventCounts:new Map([['keydown',1],['keyup',1]])},
+  addEventListener:(type,fn)=>(listeners[type]??=[]).push(fn),
+  PerformanceObserver:class {static supportedEntryTypes=['event','largest-contentful-paint'];constructor(cb){this.cb=cb;observers.push(this);}observe(){}takeRecords(){return [];}},
+  Number,JSON,setTimeout,clearTimeout,requestAnimationFrame:fn=>setImmediate(()=>fn(++clock)),
+  requestIdleCallback:fn=>setImmediate(()=>fn({didTimeout:false}))};
+ runInNewContext(`(${installTimingObserver.toString()})()`,context);
+ observers[0].cb({getEntries:()=>[]},null,{droppedEntriesCount:0});
+ await context.window.__finalizeUiTiming();
+ assert.equal(context.window.__uiTiming.health.delivery.stable,true);
+ observers[0].cb({getEntries:()=>[{name:'keydown',startTime:100,duration:32,processingStart:101,processingEnd:102,interactionId:1}]},null,{droppedEntriesCount:0});
+ await context.window.__verifyUiTiming();
+ assert.equal(context.window.__uiTiming.health.delivery.postCapture.stable,false);
+ assert.equal(context.window.__uiTiming.events.length,1);
+});
+
+test('no event callback cannot establish a zero-drop receipt for subfloor interactions',()=>{
+ const row=session([],41);row.health.callbacks=0;row.health.callbackLedger=[];row.health.droppedEntries=null;
+ for(const checkpoint of [...row.health.delivery.checkpoints,row.health.delivery.postCapture.checkpoint])checkpoint.droppedEntries=null;
+ const value=summarizeTimings([row]);assert.equal(value.qualifiedPopulation,false);assert.equal(value.p75BelowFloor,false);assert.equal(value.censored,null);
+});
+
+test('missing keyboard or pointer identity cannot count as a completed input pair',()=>{
+ const row=session([],1);
+ for(const trustedInputs of [[{type:'keydown',time:1500},{type:'keyup',time:1500.05}],
+  [{type:'pointerdown',time:1500},{type:'pointerup',time:1500.05}]]){
+  const candidate={...row,trustedInputs,eventCounts:{keydown:1,keyup:1,pointerdown:1,pointerup:1}};
+  assert.equal(summarizeTimings([candidate]).sessions[0].paired,false);
+ }
 });

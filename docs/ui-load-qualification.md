@@ -384,3 +384,21 @@ no third-file cases or suite are credited. Original packet/argv bytes remain.
 Occurrence/LCP lifecycle source gate remains credited CLOSED; profile source
 substantially CLOSED; final delivery, execution prerequisite provenance, live20,
 contemporary capacity and full32/GO remain OPEN.
+
+### Current observational delivery method
+
+The preceding terminal-health section describes the earlier collector and is
+historical. The current collector retains raw records and compares two normal
+rendering/idle drains with a further drain after the screenshot. The frame
+timestamp is a frame boundary, not an attested presentation time. Changes in
+entries, counters, input or lifecycle evidence, reported drops, missing drop
+receipts, unpaired input and timed-out drains leave the result inconclusive.
+Native interaction counts support a censored below-16ms population only when
+the other checks pass. These checks describe observed delivery; no browser API
+guarantees that a later event cannot arrive or increase an interaction maximum.
+In particular a zero-callback session has no zero-drop receipt and remains
+inconclusive even if all interactions could have been below the reporting floor.
+
+This source change and its synthetic checks do not constitute a real-browser
+qualification, an independent method acceptance, or a completed 32-cell load.
+The execution, active-work, capacity, and full-run evidence remain open.

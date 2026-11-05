@@ -1,6 +1,6 @@
 // Inject before navigation. Raw entries remain evidence, including zero-ID noninteractions.
 export function installTimingObserver(){
- const state=window.__uiTiming={documentId:crypto.randomUUID(),events:[],lcp:[],errors:[],supported:PerformanceObserver.supportedEntryTypes,marks:[],threshold:16,cutoff:null,finalized:false,totalInteractions:null,countSupport:'unavailable',trustedInputs:[],eventCounts:null,tasks:[],window:{start:0,end:null,lastPresentation:null,timeOrigin:performance.timeOrigin},lifecycle:[{type:'init',time:performance.now(),visibility:document.visibilityState}],health:{registered:false,callbacks:0,callbackLedger:[],droppedEntries:null,drained:false,terminalDelivery:{supported:false,reason:'No reviewed installed-browser pending-presentation/delivery contract; rAF plus takeRecords is not final delivery proof'}}};
+ const state=window.__uiTiming={documentId:crypto.randomUUID(),events:[],lcp:[],errors:[],supported:PerformanceObserver.supportedEntryTypes,marks:[],threshold:16,cutoff:null,finalized:false,totalInteractions:null,countSupport:'unavailable',trustedInputs:[],eventCounts:null,tasks:[],window:{start:0,end:null,lastFrame:null,timeOrigin:performance.timeOrigin},lifecycle:[{type:'init',time:performance.now(),visibility:document.visibilityState}],health:{registered:false,callbacks:0,callbackLedger:[],droppedEntries:null,drained:false}};
  const occurrence=e=>e.timeStamp>performance.timeOrigin?e.timeStamp-performance.timeOrigin:e.timeStamp;
  const events=entries=>{for(const e of entries)state.events.push({name:e.name,startTime:e.startTime,duration:e.duration,processingStart:e.processingStart,processingEnd:e.processingEnd,interactionId:e.interactionId,target:e.target?.getAttribute('aria-label')??e.target?.tagName});};
  const paints=entries=>{for(const e of entries)state.lcp.push({startTime:e.startTime,renderTime:e.renderTime,loadTime:e.loadTime,size:e.size,id:e.id,element:e.element?.tagName});};
@@ -9,17 +9,40 @@ export function installTimingObserver(){
  try{lcpObserver=new PerformanceObserver(list=>paints(list.getEntries()));lcpObserver.observe({type:'largest-contentful-paint',buffered:true});}catch(error){state.errors.push(String(error));}
  const flush=()=>{events(eventObserver?.takeRecords()??[]);paints(lcpObserver?.takeRecords()??[]);};
  const cutoff=(reason,event)=>{if(state.cutoff)return;const handlerObservedAt=performance.now(),raw=event?.timeStamp;const occurrence=Number.isFinite(raw)?(raw>performance.timeOrigin?raw-performance.timeOrigin:raw):handlerObservedAt;flush();state.cutoff={reason,time:occurrence,handlerObservedAt,rawTimeStamp:raw??null,validOccurrence:!event||(occurrence>=0&&occurrence<=handlerObservedAt)};};
- for(const type of ['pointerdown','pointerup','keydown','keyup','click'])addEventListener(type,e=>{if(e.isTrusted)state.trustedInputs.push({type,time:occurrence(e),key:e.key,repeat:e.repeat,pointerId:e.pointerId});},{capture:true});
+ for(const type of ['pointerdown','pointerup','keydown','keyup','click'])addEventListener(type,e=>{if(e.isTrusted)state.trustedInputs.push({type,time:occurrence(e),key:e.key,code:e.code,repeat:e.repeat,pointerId:e.pointerId});},{capture:true});
  for(const type of ['pointerdown','keydown'])addEventListener(type,e=>{if(e.isTrusted)cutoff('first-trusted-input',e);},{capture:true});
  addEventListener('visibilitychange',()=>{state.lifecycle.push({type:'visibilitychange',time:performance.now(),visibility:document.visibilityState});if(document.visibilityState==='hidden')cutoff('hidden');});addEventListener('pagehide',()=>{state.lifecycle.push({type:'pagehide',time:performance.now(),visibility:document.visibilityState});cutoff('pagehide');});
  window.__beginUiTask=(id,expectedTrustedCounts)=>{if(state.tasks.some(t=>!t.complete)||state.tasks.some(t=>t.id===id))throw Error('Overlapping or duplicate trusted task');state.tasks.push({id,start:performance.now(),expectedTrustedCounts,nativeStart:performance.interactionCount,complete:false});};
  window.__endUiTask=id=>{const task=state.tasks.at(-1);if(!task||task.id!==id||task.complete)throw Error('Unexpected task completion');Object.assign(task,{end:performance.now(),nativeEnd:performance.interactionCount,complete:true});};
+ // Observe normal rendering and idle delivery, then compare independent drains.
+ // This is an operational browser measurement, not a terminal-delivery guarantee.
+ const checkpoint=async()=>{
+  const ready=await new Promise(resolve=>{
+   let done=false;
+   const timer=setTimeout(()=>{if(!done){done=true;resolve(null);}},4000);
+   if(typeof requestIdleCallback!=='function'){clearTimeout(timer);done=true;resolve(null);return;}
+   requestAnimationFrame(()=>requestAnimationFrame(frame=>requestIdleCallback(deadline=>{
+    if(done)return;done=true;clearTimeout(timer);resolve(deadline.didTimeout?null:frame);
+   },{timeout:2000})));
+  });
+  flush();
+  return {at:performance.now(),frame:ready,events:state.events.length,lcp:state.lcp.length,
+   interactions:performance.interactionCount??null,droppedEntries:state.health.droppedEntries,
+   lifecycle:state.lifecycle.length,inputs:state.trustedInputs.length,
+   eventCounts:performance.eventCounts?Object.fromEntries(performance.eventCounts):null};
+ };
+ const same=(a,b)=>['events','lcp','interactions','droppedEntries','lifecycle','inputs','eventCounts'].every(k=>JSON.stringify(a[k])===JSON.stringify(b[k]));
  window.__finalizeUiTiming=async()=>{
-  await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(time=>{state.window.lastPresentation=time;setTimeout(resolve,0);})));flush();
+  const first=await checkpoint(),second=await checkpoint();
+  state.health.delivery={basis:'two rendering-and-idle drains plus post-capture check; observational, not a terminal guarantee',checkpoints:[first,second],stable:!!(first.frame!==null&&second.frame!==null&&same(first,second)),postCapture:null};
   if(!state.cutoff)cutoff('explicit-finalize');
-  // Only an independently supplied browser count can establish subfloor groups; never infer them from key presses.
   if(Number.isInteger(performance.interactionCount)&&performance.interactionCount>=0){state.totalInteractions=performance.interactionCount;state.countSupport='performance.interactionCount';}
-  state.health.drained=true;state.window.end=state.window.lastPresentation;state.health.flushCompletedAt=performance.now();state.eventCounts=performance.eventCounts?Object.fromEntries(performance.eventCounts):null;state.nativeCountProperty=('interactionCount' in performance);state.finalized=true;state.visibility=document.visibilityState;state.finishedAt=performance.now();return state;
+  state.health.drained=true;state.window.lastFrame=second.frame;state.window.end=second.frame;state.health.flushCompletedAt=performance.now();state.eventCounts=performance.eventCounts?Object.fromEntries(performance.eventCounts):null;state.nativeCountProperty=('interactionCount' in performance);state.finalized=true;state.visibility=document.visibilityState;state.finishedAt=performance.now();return state;
+ };
+ window.__verifyUiTiming=async()=>{
+  const previous=state.health.delivery?.checkpoints?.at(-1),check=await checkpoint();
+  state.health.delivery.postCapture={checkpoint:check,stable:!!(previous&&check.frame!==null&&same(previous,check))};
+  state.health.flushCompletedAt=performance.now();state.visibility=document.visibilityState;return state;
  };
 }
 export function summarizeTimings(sessions){
@@ -41,8 +64,10 @@ export function summarizeTimings(sessions){
   const identity=typeof session.documentId==='string'&&session.documentId.length>0&&typeof session.namespace==='string'&&session.namespace.endsWith('/'+session.documentId);
   const window=session.window,cutoff=session.cutoff;
   const lifecycle=Array.isArray(session.lifecycle)&&session.lifecycle.length>0&&session.lifecycle[0].type==='init'&&session.lifecycle.every(e=>e.visibility==='visible'&&e.type!=='pagehide'&&Number.isFinite(e.time)&&e.time>=window?.start&&e.time<=window?.end);
+  // A session with no callback has no browser drop-count receipt; even if every
+  // interaction might be below the reporting floor it remains inconclusive.
   const health=session.health?.registered===true&&session.health.drained===true&&session.health.droppedEntries===0&&Number.isInteger(session.health.callbacks)&&session.health.callbacks>0&&Number.isFinite(session.health.flushCompletedAt)&&session.health.flushCompletedAt>=window?.end&&Array.isArray(session.health.callbackLedger)&&session.health.callbackLedger.length===session.health.callbacks&&session.health.callbackLedger.every(c=>Number.isFinite(c.observedAt)&&c.observedAt>=window?.start&&c.observedAt<=session.health.flushCompletedAt&&Number.isInteger(c.droppedEntriesCount)&&c.droppedEntriesCount>=0)&&session.eventCounts&&Array.isArray(session.trustedInputs)&&session.trustedInputs.length>0&&session.trustedInputs.every(e=>Number.isFinite(e.time)&&e.time>=window?.start&&e.time<=window?.end)&&['pointerdown','pointerup','click','keydown','keyup'].every(type=>Number.isInteger(session.eventCounts[type]??0)&&(session.eventCounts[type]??0)>=session.trustedInputs.filter(e=>e.type===type).length);
-  const bounded=window&&Number.isFinite(window.start)&&Number.isFinite(window.end)&&Number.isFinite(window.timeOrigin)&&window.start===0&&window.end>window.start&&window.lastPresentation===window.end&&cutoff&&Number.isFinite(cutoff.time)&&cutoff.time>=window.start&&cutoff.time<=window.end&&cutoff.validOccurrence===true&&Number.isFinite(cutoff.handlerObservedAt)&&cutoff.handlerObservedAt>=cutoff.time&&cutoff.handlerObservedAt<=window.end;
+  const bounded=window&&Number.isFinite(window.start)&&Number.isFinite(window.end)&&Number.isFinite(window.timeOrigin)&&window.start===0&&window.end>window.start&&window.lastFrame===window.end&&cutoff&&Number.isFinite(cutoff.time)&&cutoff.time>=window.start&&cutoff.time<=window.end&&cutoff.validOccurrence===true&&Number.isFinite(cutoff.handlerObservedAt)&&cutoff.handlerObservedAt>=cutoff.time&&cutoff.handlerObservedAt<=window.end;
   const firstInput=session.trustedInputs?.filter(e=>['pointerdown','keydown'].includes(e.type)).reduce((time,e)=>Math.min(time,e.time),Infinity);
   const occurrenceMatches=Number.isFinite(firstInput)&&cutoff?.reason==='first-trusted-input'&&cutoff.time===firstInput;
   // Duration is quantized in 8ms units. Use one full quantum conservatively, never an exact paint timestamp.
@@ -50,19 +75,29 @@ export function summarizeTimings(sessions){
   const eventWindow=Array.isArray(session.events)&&session.events.every(e=>[e.startTime,e.duration,e.processingStart,e.processingEnd].every(Number.isFinite)&&e.startTime>=window?.start&&e.duration>=0&&e.startTime<=e.processingStart&&e.processingStart<=e.processingEnd&&e.processingEnd<=window?.end&&e.startTime+e.duration+quantizationToleranceMs>=e.processingEnd&&Math.max(e.processingEnd,e.startTime+e.duration+quantizationToleranceMs)<=window?.end);
   const tasks=session.tasks,types=['pointerdown','pointerup','click','keydown','keyup'];
   const taskLedger=Array.isArray(tasks)&&tasks.length>0&&new Set(tasks.map(t=>t.id)).size===tasks.length&&tasks.every((t,i)=>t.complete===true&&Number.isFinite(t.start)&&Number.isFinite(t.end)&&t.start>=window?.start&&t.end>=t.start&&t.end<=window?.end&&(!i||t.start>=tasks[i-1].end)&&Number.isInteger(t.nativeStart)&&Number.isInteger(t.nativeEnd)&&t.nativeStart>=0&&t.nativeEnd>=t.nativeStart&&t.nativeEnd<=session.totalInteractions&&types.every(type=>Number.isInteger(t.expectedTrustedCounts?.[type])&&t.expectedTrustedCounts[type]>=0&&(session.trustedInputs??[]).filter(e=>e.type===type&&e.time>=t.start&&e.time<=t.end).length>=t.expectedTrustedCounts[type]))&&tasks[0].nativeStart===0&&tasks.at(-1).nativeEnd===session.totalInteractions&&(session.trustedInputs??[]).every(e=>tasks.some(t=>e.time>=t.start&&e.time<=t.end));
-  const terminal=session.health?.terminalDelivery;
-  // The installed collector intentionally supplies supported:false until this browser contract is independently established.
-  const terminalCoverage=terminal?.supported===true&&terminal.basis==='independently-reviewed-browser-delivery-contract'&&Number.isFinite(terminal.coversThrough)&&terminal.coversThrough>=window?.end&&Number.isFinite(terminal.observedAt)&&terminal.observedAt>=terminal.coversThrough;
-  const supported=Boolean(!ambiguousInteractionId&&occurrenceMatches&&eventWindow&&taskLedger&&terminalCoverage&&identity&&bounded&&lifecycle&&health&&session.finalized===true&&session.visibility==='visible'&&session.countSupport==='performance.interactionCount'&&Number.isInteger(session.totalInteractions)&&session.totalInteractions>=values.length);
+  const delivery=session.health?.delivery,checks=delivery?.checkpoints,post=delivery?.postCapture;
+  const sameCheckpoint=(a,b)=>['events','lcp','interactions','droppedEntries','lifecycle','inputs','eventCounts'].every(k=>JSON.stringify(a?.[k])===JSON.stringify(b?.[k]));
+  const validCheckpoint=c=>c&&Number.isFinite(c.at)&&Number.isFinite(c.frame)&&c.at>=c.frame&&Number.isInteger(c.events)&&Number.isInteger(c.lcp)&&Number.isInteger(c.interactions)&&Number.isInteger(c.droppedEntries)&&Number.isInteger(c.lifecycle)&&Number.isInteger(c.inputs)&&c.eventCounts;
+  const settled=Array.isArray(checks)&&checks.length===2&&checks.every(validCheckpoint)&&validCheckpoint(post?.checkpoint)&&checks[0].at<=checks[1].frame&&checks[1].at<=post.checkpoint.frame&&checks[1].frame===window?.end&&delivery.stable===true&&post.stable===true&&sameCheckpoint(checks[0],checks[1])&&sameCheckpoint(checks[1],post.checkpoint)&&post.checkpoint.events===session.events.length&&post.checkpoint.lcp===session.lcp.length&&post.checkpoint.interactions===session.totalInteractions&&post.checkpoint.droppedEntries===session.health.droppedEntries&&post.checkpoint.lifecycle===session.lifecycle.length&&post.checkpoint.inputs===session.trustedInputs.length&&JSON.stringify(post.checkpoint.eventCounts)===JSON.stringify(session.eventCounts);
+  const pendingKeys=new Set(),pendingPointers=new Set();let paired=true;
+  for(const input of session.trustedInputs??[]){
+   const keyboard=input.type.startsWith('key'),pointer=input.type==='pointerdown'||input.type==='pointerup';
+   const set=keyboard?pendingKeys:pendingPointers,key=keyboard?input.code:input.pointerId;
+   if((keyboard&&(typeof key!=='string'||!key))||(pointer&&(!Number.isInteger(key)||key<0)))paired=false;
+   if(input.type==='keydown'||input.type==='pointerdown'){if(set.has(key)&&!input.repeat)paired=false;set.add(key);}
+   if(input.type==='keyup'||input.type==='pointerup'){if(!set.has(key))paired=false;set.delete(key);}
+  }
+  paired&&=pendingKeys.size===0&&pendingPointers.size===0;
+  const supported=Boolean(!ambiguousInteractionId&&occurrenceMatches&&eventWindow&&taskLedger&&settled&&paired&&identity&&bounded&&lifecycle&&health&&session.finalized===true&&session.visibility==='visible'&&session.countSupport==='performance.interactionCount'&&Number.isInteger(session.totalInteractions)&&session.totalInteractions>=values.length);
   if(!grouped.size&&!(Number.isInteger(session.totalInteractions)&&session.totalInteractions>0))throw Error('Missing qualified discrete interactions, never substitute zero');
   complete&&=supported;if(supported){total+=session.totalInteractions;censored+=session.totalInteractions-values.length;}
-  return {namespace,terminalCoverage,taskLedger:Boolean(taskLedger),eventWindow,ambiguousInteractionId,quantizationToleranceMs,observedInteractions:values.length,totalInteractions:session.totalInteractions??null,censored:supported?session.totalInteractions-values.length:null,lcp:eligible.at(-1).startTime,lcpCutoff:session.cutoff??null,complete:supported,zeroIdEntries:session.events.filter(e=>!e.interactionId).length};
+  return {namespace,settled:Boolean(settled),paired,taskLedger:Boolean(taskLedger),eventWindow,ambiguousInteractionId,quantizationToleranceMs,observedInteractions:values.length,totalInteractions:session.totalInteractions??null,censored:supported?session.totalInteractions-values.length:null,lcp:eligible.at(-1).startTime,lcpCutoff:session.cutoff??null,complete:supported,zeroIdEntries:session.events.filter(e=>!e.interactionId).length};
  });
  durations.sort((a,b)=>a-b);const observedP75=durations.length?durations[Math.ceil(.75*durations.length)-1]:null,rank=Math.ceil(.75*total);
  // Mixed thresholds cannot establish one subfloor population.
  complete&&=sessions.every(s=>s.threshold===16);
  const p75=complete?(rank<=censored?null:durations[rank-censored-1]):null;
- return {nSessions:sessions.length,nInteractions:durations.length,totalInteractions:complete?total:null,censored:complete?censored:null,qualifiedPopulation:complete,method:'per-document maxima; nearest-rank pooling; duration quantized by browser',observedP75,p75,p75BelowFloor:complete&&rank<=censored,reportingFloor:16,populationReason:complete?'browser count with explicit identity, window, lifecycle and no-drop collector health':'conditional observed-only diagnostic; final delivery/task/window/identity health not established',sessions:sessionResults};
+ return {nSessions:sessions.length,nInteractions:durations.length,totalInteractions:complete?total:null,censored:complete?censored:null,qualifiedPopulation:complete,method:'per-document maxima; nearest-rank pooling; browser-quantized duration; observed rendering and idle drains, not a terminal delivery guarantee',observedP75,p75,p75BelowFloor:complete&&rank<=censored,reportingFloor:16,populationReason:complete?'browser count with identity, task and lifecycle checks, no reported drops and stable observed drains; later delivery cannot be ruled out':'conditional observed-only diagnostic; observed delivery/task/window/identity health not established',sessions:sessionResults};
 }
 
 export function latencyBreakdown(session){
