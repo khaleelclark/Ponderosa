@@ -111,7 +111,10 @@ for(const interruption of ['shutdown','cancellation','cleanup_failure','retired_
  assert.equal(store.sqlite.prepare('SELECT count(*) n FROM coordination_requests').get().n,0);
  let resource=store.sqlite.prepare('SELECT * FROM branch_resources').get();assert.ok(resource.chat_id);
  if(['cleanup_failure','retired_cleanup'].includes(interruption)){
-  const id=resource.chat_id;assert.equal(resource.state,'reserved');assert.match(resource.error,/cleanup failure/);assert.ok(store.getConversation(id));
+  const id=resource.chat_id;assert.equal(resource.state,'reserved');
+  assert.equal(resource.error,'Workflow cleanup failed. Details withheld because they may contain credentials. Cleanup step: cleaning up a temporary Workflow resource.');
+  assert.ok(!resource.error.includes('Controlled Chat cleanup failure'),'arbitrary cleanup exception text stays withheld');
+  assert.ok(store.getConversation(id));
   // Model the previously released implementation, which retired the resource
   // after deleting Agents but omitted its Chat. Maintenance must catch it up.
   if(interruption==='retired_cleanup')branches.resourceRetired(resource.step_execution_id);

@@ -3,7 +3,7 @@ import test from 'node:test';
 import {randomUUID} from 'node:crypto';
 import {AgentStore,CapabilityPolicyStore} from '@ponderosa/agents';
 import {CAPABILITY_IDS} from '@ponderosa/core';
-import {withFixture} from '../shared/fixture.mjs';
+import {withFixture,until} from '../shared/fixture.mjs';
 
 test('tightening a live policy refuses previously admitted tool calls, including the management create backdoor, while explicit user communication remains usable',{timeout:30000},async t=>{
  let store;
@@ -70,18 +70,33 @@ test('permission catalogs reuse tool definitions, scope connectors by engine, an
  },{diagnosticProvider:true});
 });
 
-test('operator permission updates block a live regular Agent on host boundaries and rotate its next session',{timeout:30000},async t=>{
+test('operator permission updates fence the old Run and retain unfinished work while fresh restricted sessions keep user communication',{timeout:30000},async t=>{
+ let store;
  await withFixture(t,async f=>{
   const chat=await f.createChat('Live operator policy'),agent=await f.createIdleAgent(chat,'Live owner'),first=await f.hold(agent.id),url=`/api/agents/${agent.id}/capabilities`;
+  const active=store.sqlite.prepare("SELECT id,fencing_token FROM scheduler_runs WHERE agent_id=? AND status='running'").get(agent.id);
+  assert.ok(active);const agentsBefore=store.listAgents(chat.projectId).map(a=>a.id);
   const plan=f.ok(await f.tool(first,'ponderosa_manage',{action:'plan',idempotencyKey:'operator-prepared-create',operations:[{kind:'create_agent',ref:'child',title:'Prepared child'}]}));
   f.ok(await f.api('PUT','/api/workspace/capabilities',{revision:0,restrictedCapabilityIds:[CAPABILITY_IDS.hostFileImport]}));
   f.ok(await f.api('PUT',url,{revision:0,restrictedCapabilityIds:[CAPABILITY_IDS.managedAgentCreate,CAPABILITY_IDS.browserRead,CAPABILITY_IDS.filesystemWrite]}));
-  for(const [name,args]of [['ponderosa_manage',{action:'apply',planId:plan.planId}],['ponderosa_browser_open',{url:'https://example.invalid'}],['ponderosa_import_file',{path:'does-not-exist.txt'}]])assert.equal((await f.tool(first,name,args)).status,403,name);
+  for(const [name,args]of [['ponderosa_manage',{action:'apply',planId:plan.planId}],['ponderosa_browser_open',{url:'https://example.invalid'}],['ponderosa_import_file',{path:'does-not-exist.txt'}],['ponderosa_message',{intent:'direct_to_user',text:'Stale capability cannot publish'}]])assert.equal((await f.tool(first,name,args)).status,401,name+' uses the fenced old Run capability');
   assert.equal((await f.api('PUT',url,{revision:0,restrictedCapabilityIds:[]},{authorization:'Bearer obsolete-operator-token'})).status,409);
-  f.ok(await f.tool(first,'ponderosa_message',{intent:'direct_to_user',text:'User communication survives permission changes'}));first.finish();await f.settled(agent.id);
-  const previous=(await f.detail(agent.id)).runs.map(r=>r.id),second=await f.hold(agent.id);assert.notEqual(second.engineAgentId,first.engineAgentId);assert.equal((await second.tool('ponderosa_create_managed_agent',{title:'Blocked',text:'Do nothing',lifetime:{kind:'indefinite'},idempotencyKey:'blocked-new-session'})).success,false);
-  second.finish();await f.settled(agent.id,previous);
- },{authToken:'operator-permission-fixture'});
+  const paused=await until(()=>store.sqlite.prepare("SELECT run_id,state,checkpoint_json FROM agent_run_pauses WHERE agent_id=? ORDER BY paused_at DESC LIMIT 1").get(agent.id),'durable access revocation pause');
+  assert.equal(paused.run_id,active.id);assert.equal(paused.state,'paused');
+  const checkpoint=JSON.parse(paused.checkpoint_json);assert.equal(checkpoint.accessRevocationHold,true);assert.match(JSON.stringify(checkpoint.sourceActivations),/Controlled held task/);
+  const fenced=store.sqlite.prepare('SELECT status,fencing_token,side_effects_fenced_at FROM scheduler_runs WHERE id=?').get(active.id);
+  assert.equal(fenced.status,'cancelled');assert.ok(fenced.fencing_token>active.fencing_token);assert.ok(fenced.side_effects_fenced_at);
+  assert.deepEqual(store.listAgents(chat.projectId).map(a=>a.id),agentsBefore,'stale prepared management plan creates no Agent');
+  assert.ok(!JSON.stringify(store.readEvents(agent.id)).includes('Stale capability cannot publish'),'revoked Run publishes no reply');
+  await f.reopen();
+  assert.equal(store.sqlite.prepare('SELECT state FROM agent_run_pauses WHERE run_id=?').get(active.id).state,'paused');
+  assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_runs WHERE agent_id=?').get(agent.id).n,1,'restart does not replay retained work');
+  const fresh=await f.createIdleAgent(chat,'Restricted fresh owner');
+  f.ok(await f.api('PUT',`/api/agents/${fresh.id}/capabilities`,{revision:0,restrictedCapabilityIds:[CAPABILITY_IDS.managedAgentCreate,CAPABILITY_IDS.browserRead,CAPABILITY_IDS.filesystemWrite]}));
+  const second=await f.hold(fresh.id);assert.notEqual(second.engineAgentId,first.engineAgentId);
+  assert.equal((await second.tool('ponderosa_create_managed_agent',{title:'Blocked',text:'Do nothing',lifetime:{kind:'indefinite'},idempotencyKey:'blocked-new-session'})).success,false);
+  f.ok(await f.tool(second,'ponderosa_message',{intent:'direct_to_user',text:'User communication is allowed under the current restricted policy'}));second.finish();await f.settled(fresh.id);
+ },{authToken:'operator-permission-fixture',storeFactory:dataDir=>(store=new AgentStore(dataDir))});
 });
 
 
