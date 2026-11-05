@@ -1247,7 +1247,10 @@ function OperatorProfileSettingsSection({
   currentProfile.current = form.profile;
   const save = useMutation({
     mutationFn: (profile: WorkspacePreferencesDto["profile"]) => onSavePreferences({ profile }),
+    onMutate: () => form.beginSave(),
+    onError: (_error, submitted) => form.finishSave(submitted, false),
     onSuccess: (_saved, submitted) => {
+      form.finishSave(submitted, true);
       if (JSON.stringify(submitted) === JSON.stringify(currentProfile.current)) {
         notify({ key: "operator-profile", message: "Settings Saved" });
       }

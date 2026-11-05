@@ -34,10 +34,14 @@ export interface OperatorProfileForm {
   busy: boolean;
   error?: string;
   valid: boolean;
+  dirty: boolean;
+  saving: boolean;
   profile: WorkspacePreferencesDto["profile"];
   setName(value: string): void;
   setHandle(value: string): void;
   setAvatarId(value: string): void;
+  beginSave(): void;
+  finishSave(submitted: WorkspacePreferencesDto["profile"], succeeded: boolean): void;
   upload(file: File): void;
 }
 
@@ -45,29 +49,46 @@ export function useOperatorProfileForm(
   profile: WorkspacePreferencesDto["profile"],
   resetWhen?: boolean,
 ): OperatorProfileForm {
-  const [name, setName] = useState(profile.displayName);
-  const [handle, setHandle] = useState(profile.handle);
-  const [avatarId, setAvatarId] = useState(profile.avatarId);
+  const [name, setNameState] = useState(profile.displayName);
+  const [handle, setHandleState] = useState(profile.handle);
+  const [avatarId, setAvatarIdState] = useState(profile.avatarId);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
-  const previousProfile = useRef(profile);
-  const dirty = name !== profile.displayName || handle !== profile.handle || avatarId !== profile.avatarId;
-  useUnsavedForm("operator-profile", dirty || busy);
+  const canonicalProfile = useRef(profile);
+  canonicalProfile.current = profile;
+  const currentDraft = useRef(profile);
+  const saveBase = useRef(profile);
+  const [savePending, setSavePending] = useState(false);
+  const editedSinceSync = useRef(false);
+  const normalizedHandle = handle.replace(/^#/, "").toLowerCase();
+  const draft = { displayName: name.trim(), handle: normalizedHandle, avatarId };
+  currentDraft.current = draft;
+  const sameProfile = (left: WorkspacePreferencesDto["profile"], right: WorkspacePreferencesDto["profile"]) =>
+    left.displayName === right.displayName && left.handle === right.handle && left.avatarId === right.avatarId;
+  const dirty = !sameProfile(draft, profile);
+  useUnsavedForm("operator-profile", dirty || busy || savePending);
 
   useEffect(() => {
-    const previous = previousProfile.current;
-    previousProfile.current = profile;
-    if (!resetWhen && (name !== previous.displayName || handle !== previous.handle || avatarId !== previous.avatarId)) return;
-    setName(profile.displayName);
-    setHandle(profile.handle);
-    setAvatarId(profile.avatarId);
+    if (!resetWhen && (savePending || (editedSinceSync.current && !sameProfile(currentDraft.current, profile)))) return;
+    if (sameProfile(currentDraft.current, profile)) editedSinceSync.current = false;
+    else if (resetWhen) editedSinceSync.current = false;
+    setNameState(profile.displayName);
+    setHandleState(profile.handle);
+    setAvatarIdState(profile.avatarId);
     setError(undefined);
-  }, [profile, resetWhen]);
+  }, [profile, resetWhen, savePending]);
 
-  const normalizedHandle = handle.replace(/^#/, "").toLowerCase();
   const valid = Boolean(name.trim())
     && /^[a-z][a-z0-9_-]{1,31}$/.test(normalizedHandle)
     && !["broadcast", "everyone", "user"].includes(normalizedHandle);
+  const updateDraft = (next: WorkspacePreferencesDto["profile"], update: () => void) => {
+    currentDraft.current = next;
+    editedSinceSync.current = savePending || !sameProfile(next, canonicalProfile.current);
+    update();
+  };
+  const setName = (value: string) => updateDraft({ ...currentDraft.current, displayName: value.trim() }, () => setNameState(value));
+  const setHandle = (value: string) => updateDraft({ ...currentDraft.current, handle: value.replace(/^#/, "").toLowerCase() }, () => setHandleState(value));
+  const setAvatarId = (value: string) => updateDraft({ ...currentDraft.current, avatarId: value }, () => setAvatarIdState(value));
 
   return {
     name,
@@ -76,11 +97,24 @@ export function useOperatorProfileForm(
     busy,
     error,
     valid,
-    profile: { displayName: name.trim(), handle: normalizedHandle, avatarId },
+    dirty,
+    saving: savePending,
+    profile: draft,
     setName,
     setHandle,
     setAvatarId,
-    upload: (file) => {
+    beginSave: () => {
+      saveBase.current = canonicalProfile.current;
+      setSavePending(true);
+      editedSinceSync.current = true;
+    },
+    finishSave: (submitted, succeeded) => {
+      setSavePending(false);
+      editedSinceSync.current = succeeded
+        ? !sameProfile(currentDraft.current, submitted)
+        : !sameProfile(currentDraft.current, saveBase.current);
+    },
+    upload: file => {
       if (file.size > IMAGE_MAX_BYTES) {
         setError("Picture must be 10 MiB or smaller.");
         return;
@@ -88,8 +122,8 @@ export function useOperatorProfileForm(
       setBusy(true);
       setError(undefined);
       void api.uploadOperatorAvatar(file)
-        .then((uploaded) => setAvatarId(uploaded.avatarId))
-        .catch((reason) => setError(reason instanceof Error ? reason.message : "Picture upload failed."))
+        .then(uploaded => setAvatarId(uploaded.avatarId))
+        .catch(reason => setError(reason instanceof Error ? reason.message : "Picture upload failed."))
         .finally(() => setBusy(false));
     },
   };
