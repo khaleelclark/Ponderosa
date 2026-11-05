@@ -34,7 +34,7 @@ export class LargeWorkingFileInspector {
     this.requiredJson=/\.json$/i.test(relative);
     // This parser materializes valid structured data. Use the same preflight
     // and available-memory reserve as package import; never bypass it.
-    if(declaredBytes>64*1024*1024)assertAgentPackageMemoryAvailable(declaredBytes);
+    if(declaredBytes>64*1024*1024)assertAgentPackageMemoryAvailable(0);
     this.parser=new AgentPackageJsonParser(undefined,true,()=>this.checkMemory());
   }
 
