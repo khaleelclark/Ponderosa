@@ -232,6 +232,7 @@ export async function fixture({ diagnosticProvider = false, beforeRuntimeClose, 
       app = undefined; productShutdownComplete = false; await open();
     },
     async reopen() { await close(); await open(); },
+    async reopenWithoutMemory() { await close(); delete options.localMemory; await open(); },
     async dispose(remove = true) {
       await close();
       assert.equal(children.every(c => c.exited), true, 'Owned child exit was not observed');
