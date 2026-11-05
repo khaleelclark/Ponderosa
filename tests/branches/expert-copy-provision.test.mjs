@@ -5,6 +5,7 @@ import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {AgentStore,BranchStore,CoordinationV3Store,readBranchExpertCopy} from '@ponderosa/agents';
 import {BranchResourceService} from '../../apps/server/dist/branch-resource-service.js';
+import {describeBranchDeletionFailure} from '../../apps/server/dist/branch-deletion-diagnostics.js';
 import {sealBranchExpertSnapshot,reserveBranchExpertChat,reserveBranchExpertImport,reviewBranchExpertAccess,bindBranchExpertCopy,reserveBranchExpertFinal,sealBranchExpertFinal,verifyBranchExpertFinal,renewBranchExpertSnapshot} from '../../packages/agents/dist/branch-expert-copy.js';
 
 test('copy jobs reserve distinct source-bound identities without sending work to the original',t=>{
@@ -71,7 +72,11 @@ test('expert copy binding requires a sealed exact snapshot, separate consent and
  verifyBranchExpertFinal(store.sqlite,job.id,resource.step_execution_id,final.sha256);
  const service=new BranchResourceService(branches,store,async()=>{},async()=>{},async()=>{});
  service.setPackageEngine({verifyCheckpointNow:()=>final.sha256});
- assert.throws(()=>service.verifyExpertFinalCustody('copy-chat','copy-project'),/final fence is unavailable/,'a receipt without its exact retained fence cannot release cleanup');
+ assert.throws(()=>service.verifyExpertFinalCustody('copy-chat','copy-project'),error=>{
+  assert.match(error.message,/final fence is unavailable/);
+  assert.equal(describeBranchDeletionFailure(error,'resource'),'Temporary agent copy final fence is unavailable. Cleanup step: cleaning up a temporary Workflow resource.');
+  return true;
+ },'a receipt without its exact retained fence cannot release cleanup and its exact cause is visible');
 });
 
 test('only the exact exhausted no-publication snapshot reservation accepts the existing Retry intervention',async t=>{

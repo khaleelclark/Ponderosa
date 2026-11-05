@@ -48,6 +48,28 @@ const BRANCH_DELETION_PUBLIC_BLOCKERS=new Set([
  'Checkpoint custody digest mismatch',
  'Checkpoint custody retired during read',
 ]);
+// These exact host-authored final-custody guards carry no external text.
+// Limit them to resource cleanup; other errors still use the safe classifier.
+const BRANCH_RESOURCE_FINAL_BLOCKERS=new Set([
+ 'Expert final context custody unavailable; cleanup held',
+ 'Observed expert provider drain unavailable; cleanup held',
+ 'Expert final context fence or provider drain changed',
+ 'Expert final capture receipt unavailable',
+ 'Expert final context receipt unavailable; cleanup held',
+ 'Temporary agent copy final custody unavailable',
+ 'Exact temporary agent copy final custody unavailable',
+ 'Temporary agent copy final fence is unavailable',
+ 'Temporary agent copy final fence identity differs',
+ 'Temporary agent copy final custody bytes changed',
+ 'Exact completed expert copy ownership required for final capture',
+ 'Final resource fence evidence changed',
+ 'Current checkpoint custody unavailable',
+ 'Current checkpoint custody bytes differ',
+ 'Checkpoint custody changed',
+ 'Checkpoint custody grew',
+ 'Checkpoint custody digest changed',
+ 'Checkpoint custody released during verification',
+]);
 // Fixed descriptions explain verified error classes without copying arbitrary
 // SQL, paths, trigger messages, or unlabeled credential values.
 const BRANCH_DELETION_ERROR_DESCRIPTIONS:Readonly<Record<string,string>>=Object.freeze({
@@ -101,6 +123,7 @@ export function describeBranchDeletionFailure(error:unknown,step?:BranchDeletion
  const message=error instanceof Error?error.message:'';
  if(BRANCH_DELETION_PUBLIC_BLOCKERS.has(message)||isMemoryCleanupHold(message))return message;
  const code=safeFailureCode(error),description=safeFailureDescription(code);
+ if(step==='resource'&&code===undefined&&BRANCH_RESOURCE_FINAL_BLOCKERS.has(message))return `${message}. Cleanup step: ${BRANCH_DELETION_STEPS.resource}.`;
  // This exact host-authored guard identifies an audit-record integrity failure.
  // Match the entire fixed message only at its actual deletion step; never
  // publish the saved journal, arbitrary exception text, or trigger details.

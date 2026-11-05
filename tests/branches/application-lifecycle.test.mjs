@@ -87,6 +87,33 @@ test('Branch deletion explains known failure classes without exposing arbitrary 
   assert.ok(diagnostic.includes(code));assert.ok(diagnostic.includes(phrase));
   assert.ok(!diagnostic.includes(secret));assert.ok(!diagnostic.includes('labeled-secret'));
  }
+ for(const message of [
+  'Expert final context custody unavailable; cleanup held',
+  'Observed expert provider drain unavailable; cleanup held',
+  'Expert final context fence or provider drain changed',
+  'Expert final capture receipt unavailable',
+  'Expert final context receipt unavailable; cleanup held',
+  'Temporary agent copy final custody unavailable',
+  'Exact temporary agent copy final custody unavailable',
+  'Temporary agent copy final fence is unavailable',
+  'Temporary agent copy final fence identity differs',
+  'Temporary agent copy final custody bytes changed',
+  'Exact completed expert copy ownership required for final capture',
+  'Final resource fence evidence changed',
+  'Current checkpoint custody unavailable',
+  'Current checkpoint custody bytes differ',
+  'Checkpoint custody changed',
+  'Checkpoint custody grew',
+  'Checkpoint custody digest changed',
+  'Checkpoint custody released during verification',
+ ]){
+  const visible=describeBranchDeletionFailure(new Error(message),'resource');
+  assert.equal(visible,`${message}. Cleanup step: cleaning up a temporary Workflow resource.`);
+  const altered=describeBranchDeletionFailure(new Error(`${message} ${secret} API_KEY=labeled-secret`),'resource');
+  assert.match(altered,/Details withheld/);assert.ok(!altered.includes(secret));assert.ok(!altered.includes('labeled-secret'));
+  assert.match(describeBranchDeletionFailure(new Error(message),'notifications'),/Details withheld/);
+ }
+ assert.match(describeBranchDeletionFailure(Object.assign(new Error('Temporary agent copy final custody bytes changed'),{code:'EACCES'}),'resource'),/operating system denied access/);
  const auditMismatch=describeBranchDeletionFailure(new Error('Retained group journal original scope differs'),'records');
  assert.match(auditMismatch,/retained group audit evidence does not match its Workflow and execution/i);
  assert.match(auditMismatch,/Workflow records were preserved/);
