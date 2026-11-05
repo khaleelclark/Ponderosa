@@ -519,12 +519,17 @@ export class LocalMemoryService{
 
  private unusedMemorySignature(agentId:string,chatId:string,runId:string):string{
   this.live();const store=this.ports.store,agent=store.getAgent(agentId),owner=activeChatResourceOwner(store,'agent',agentId);
-  if(!agent||!owner||owner.executionId||agent.conversationId!==chatId)throw Error('Memory witness owner changed');
+  if(!agent||!owner||agent.conversationId!==chatId)throw Error('Memory witness owner changed');
   const policies=new CapabilityPolicyStore(store.sqlite),policy=policies.resolveForAgent(agentId,runId);
-  const grant=this.getGrant(chatId,owner.branchId?'branches':'dev');
+  const expert=owner.executionId?this.expertChat(chatId):undefined;
+  if(owner.executionId&&(!expert||expert.copyAgentId!==agentId||!expert.requestId||!this.expertSourceLive(expert)||
+     (!this.expertConsent(expert,'copySourceMemory')&&!this.expertConsent(expert,'allowFindingsWriteback'))||
+     this.coordination.requestSteeringAdmission(runId,agentId,expert.requestId)!=='turn'))throw Error('Temporary agent copy memory witness is not authorized');
+  const grant=expert?{readGlobal:false,writeGlobal:false}:this.getGrant(chatId,owner.branchId?'branches':'dev');
+  const sourcePolicy=expert?policies.resolveForAgent(expert.sourceAgentId).layers.flatMap(layer=>{const saved=policies.get(layer.scopeKind,layer.scopeId);return saved?[[layer.scopeKind,layer.scopeId,saved]]:[];}):undefined;
   const reset=(store.sqlite.prepare("SELECT COALESCE(MAX(seq),0) seq FROM events WHERE agent_id=? AND type='session_reset'").get(agentId) as {seq:number}).seq;
   return JSON.stringify([agentId,agent.projectId,chatId,owner.branchId,reset,grant,
-   policy.layers.flatMap(layer=>{const saved=policies.get(layer.scopeKind,layer.scopeId);return saved?[[layer.scopeKind,layer.scopeId,saved]]:[];})]);
+   policy.layers.flatMap(layer=>{const saved=policies.get(layer.scopeKind,layer.scopeId);return saved?[[layer.scopeKind,layer.scopeId,saved]]:[];}),...(expert?[expert,sourcePolicy]:[])]);
  }
  beginUnusedMemoryWitness(token:string):void{
   try{
