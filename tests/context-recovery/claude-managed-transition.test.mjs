@@ -260,8 +260,26 @@ test('Claude direct MCP calls wait for verified transition input and resume afte
   await native.answer('The original objective and research remain available.');
   await until(async()=>(await userFrames(native)).length>=3,'replacement',20000);
   await native.answer('Continuity context received.');
-  await until(async()=>(await userFrames(native)).length>=4,'queued task',20000);
+  const final=await until(async()=>{const x=await userFrames(native);return x.length>=4?x:undefined;},'queued task',20000);
+  assert.equal(final[3].session,final[2].session,'the original task uses the verified replacement session');
+  const queued=store.sqlite.prepare("SELECT id FROM agent_activations WHERE agent_id=? AND kind='human_message' AND payload_json LIKE ?").get(agent.id,'%Continue the original objective.%');
+  assert.ok(queued);
+  await native.probe('before');
+  const queuedProbe=await until(async()=>{const probes=(await native.frames()).filter(x=>x.kind==='probe'&&x.phase==='before');return probes.length>=2?probes[1]:undefined;},'unconfirmed queued task probes',20000);
+  assert.deepEqual(queuedProbe.results.map(x=>[x.name,x.status]),[['message',409],['update',409],['directory',409]],'the queued task remains gated before its own echo');
+  assert.equal(store.sqlite.prepare("SELECT count(*) n FROM runtime_communications WHERE payload_json LIKE '%SYNTHETIC_UNCONFIRMED_TOOL_EFFECT%'").get().n,0);
+  // The fixture withholds echoes for every resumed process, including the
+  // exact queued task. Release its echo before allowing provider work.
+  await native.releaseEcho();
+  await until(()=>store.sqlite.prepare(`SELECT 1 FROM scheduler_prompt_injections i,json_each(i.activation_ids_json) a
+   JOIN scheduler_runs r ON r.id=i.run_id WHERE a.value=? AND r.agent_id=? AND r.provider_session_id=? AND i.state='acknowledged'`)
+   .get(queued.id,agent.id,final[3].session),'exact queued input confirmed',20000);
+  await native.probe('after');
+  const queuedAfter=await until(async()=>{const probes=(await native.frames()).filter(x=>x.kind==='probe'&&x.phase==='after');return probes.length>=2?probes[1]:undefined;},'confirmed queued task probe',20000);
+  assert.equal(queuedAfter.results[0].status,200,'the confirmed queued task regains its authorized tools');
   await native.answer('The original objective is complete.');await f.settled(agent.id);
+  assert.equal((await userFrames(native)).filter(x=>prompt(x).includes('Continue the original objective.')).length,1,'the original task is submitted once');
+  assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(queued.id).n,1,'the exact original task attaches once');
  },{agentBaseUrl:`http://127.0.0.1:${port}`,storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertClaudeHandoff(root,{holdEcho:true})).adapter});
 });
 
