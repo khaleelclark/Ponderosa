@@ -454,3 +454,28 @@ test('guidance checkpoint records incomplete authority and cannot claim executab
  const version=f.branches.version(f.branches.execution(job.id).branchId,f.branches.execution(job.id).versionId);
  assert.equal(scriptDefinitionSupported(version.definition),false);
 });
+
+for(const outcome of ['unsupported','unknown'])test(`real server keeps ${outcome} guidance visible without replaying an uncertain steer`,{timeout:30000},async t=>{
+ let store,calls=0;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Workflow guidance recovery'),agent=await f.createIdleAgent(chat,'Specialist'),session=await f.hold(agent.id);
+  const coordination=new CoordinationV3Store(store.sqlite),branches=new BranchStore(store.sqlite,coordination);
+  const definition={schema:'ponderosa.branch.v1',name:'Guidance',trigger:{kind:'manual'},entry:'agent',controls:[],steps:[{id:'agent',kind:'agent',target:{kind:'persistent_agent',ref:'expert'},instructions:'Handle the unusual case',jobHandling:'steer'}],edges:[],policy:{maxConcurrentExecutions:1,failure:{action:'stop'}}};
+  const branch=branches.deploy({chatId:chat.id,idempotencyKey:'guidance-recovery',definition,bindings:{agents:{expert:agent.id},directories:{}}});
+  const job=branches.accept(branch.id,'job','Specific guidance');for(let i=0;i<4;i++)branches.advance();
+  const attempt=branches.detail(job.id).attempts[0],activation=store.sqlite.prepare("SELECT activation_id FROM activation_sources WHERE source_kind='branch_guidance' AND source_id=?").get(attempt.id).activation_id;
+  if(outcome==='unknown'){
+   await until(()=>store.sqlite.prepare("SELECT state FROM agent_activations WHERE id=?").get(activation).state==='outcome_unknown','unknown guidance delivery');
+   branches.advance();assert.equal(branches.execution(job.id).state,'waiting');assert.match(branches.detail(job.id).attempts[0].error,/unconfirmed/);
+   assert.equal(calls,1);assert.equal(store.sqlite.prepare("SELECT count(*) n FROM scheduler_prompt_injections i,json_each(i.activation_ids_json) m WHERE m.value=? AND i.state='outcome_unknown'").get(activation).n,1);
+  }else{
+   await until(()=>store.sqlite.prepare("SELECT steering_wait_reason FROM agent_activations WHERE id=?").get(activation)?.steering_wait_reason==='provider_unsupported','unsupported guidance refusal');
+   assert.equal(branches.execution(job.id).state,'waiting');assert.equal(calls,1);
+   const reply=await f.tool(session,'ponderosa_message',{text:'Original task complete.'});assert.equal(reply.status,200);
+   f.plans.set(agent.id,[{hold:true}]);session.finish();
+   await until(()=>f.turns.some(turn=>turn.agentId===agent.id&&JSON.stringify(turn.input).includes('Handle the unusual case')),'queued guidance Run');
+   await until(()=>{branches.advance();return branches.execution(job.id).state==='completed'},'guidance delivery receipt');
+   assert.equal(branches.execution(job.id).output,undefined);assert.equal(calls,1);
+  }
+ },{storeFactory:dataDir=>(store=new AgentStore(dataDir)),steeringResponse:async()=>{calls++;if(outcome==='unknown')throw new Error('Controlled lost acknowledgement');return {status:'unsupported'};}});
+});
