@@ -313,6 +313,7 @@ export class BranchResourceService {
             this.branches.reviewExpertAccess(provision.executionId,provision.stepExecutionId,review);
             continue;
           }
+          this.packages!.reserveExpertChatMemory(provision.chatId);
           accessSettingsResolution=expert.accessChoice;
         }
         // Every new effect revalidates current owner/ancestor release after the previous await.

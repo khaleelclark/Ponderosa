@@ -125,6 +125,7 @@ export interface BranchPackageEngine {
   inspectCheckpoint(source:CheckpointPackageSource):Promise<CheckpointPackageStatus>;
   captureCheckpoint(source:CheckpointPackageSource,seal?:(receipt:CheckpointPackageReceipt)=>void,options?:{wholeWorkingFolder?:boolean}):Promise<CheckpointPackageReceipt>;
   captureExpertSnapshot(source:CheckpointPackageSource,sourceProjectId:string,seal:(receipt:CheckpointPackageReceipt)=>void):Promise<CheckpointPackageReceipt>;
+  reserveExpertChatMemory(chatId:string):void;
   readCheckpoint(receipt:CheckpointPackageReceipt):Promise<AgentPortablePackageDto>;
   readCheckpointBytes(receipt:CheckpointPackageReceipt):Promise<string>;
   verifyCheckpointNow(receipt:CheckpointPackageReceipt):string;
@@ -3287,6 +3288,7 @@ export function registerAgentPackageRoutes(
         admit();return buildPortablePackage(frozen.agentIds[0]!,'full',false,[]);
       },(publish,receipt)=>commitSourceCapture(token,()=>{admit();seal(receipt);publish();}));}finally{releaseSourceCapture(token);}
     }),
+    reserveExpertChatMemory:chatId=>{const memory=localMemoryFor(app);if(!memory)throw Error('Local Memory is unavailable; expert copy remains held');memory.reserveExpertChatMemory(chatId);},
     readCheckpoint:receipt=>checkpointCustody.read(receipt),
     readCheckpointBytes:receipt=>checkpointCustody.readBytes(receipt),
     verifyCheckpointNow:receipt=>checkpointCustody.verifyNow(receipt),
