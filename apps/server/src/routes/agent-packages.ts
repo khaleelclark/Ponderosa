@@ -1,3 +1,7 @@
+import {describeExpertMemoryPreflightFailure} from '../branch-deletion-diagnostics.js';
+import {ExpertCaptureHeldBeforeStart} from '../expert-source-capture-outcome.js';
+import {MemorySourceMutationHold} from '../memory-source-mutations.js';
+import {MemoryHostClosing} from '../local-memory.js';
 import {verifyPortableWorkingFileParts} from '../portable-working-file-parts.js';
 import {isMemoryCleanupHold} from '../local-memory-authority.js';
 import type {CanonicalGeneratedHooksProof} from '@ponderosa/core';
@@ -126,7 +130,9 @@ export interface BranchPackageEngine {
   applyWorkingData(input:ApplyBranchWorkingDataInput,onReceipt:(receipt:BranchWorkingDataApplication)=>void,signal?:AbortSignal):Promise<BranchWorkingDataApplication>;
   inspectCheckpoint(source:CheckpointPackageSource):Promise<CheckpointPackageStatus>;
   captureCheckpoint(source:CheckpointPackageSource,seal?:(receipt:CheckpointPackageReceipt)=>void,options?:{wholeWorkingFolder?:boolean;expertFinal?:()=>void;omitMemory?:boolean}):Promise<CheckpointPackageReceipt>;
-  captureExpertSnapshot(source:CheckpointPackageSource,sourceProjectId:string,seal:(receipt:CheckpointPackageReceipt)=>void):Promise<CheckpointPackageReceipt>;
+  captureExpertSnapshot(source:CheckpointPackageSource,sourceProjectId:string,seal:(receipt:CheckpointPackageReceipt)=>void,attemptId:string,beforeCapture:()=>void):Promise<CheckpointPackageReceipt>;
+  expertSourceHoldWitness():string|undefined;
+  checkExpertSnapshotSource(source:CheckpointPackageSource,sourceProjectId:string):void;
   reserveExpertChatMemory(chatId:string):void;
   readCheckpoint(receipt:CheckpointPackageReceipt):Promise<AgentPortablePackageDto>;
   readCheckpointBytes(receipt:CheckpointPackageReceipt):Promise<string>;
@@ -3278,6 +3284,13 @@ export function registerAgentPackageRoutes(
       try{finishRoles(row.id);}catch(error){try{createOperationalNotification({dedupeKey:'import-role-recovery:'+row.id,category:'system',severity:'attention',title:'Imported output roles need review',body:(error as Error).message,projectId:store.getAgentCreationOperation(row.id)!.projectId,conversationId:store.getAgentCreationOperation(row.id)!.conversationId,action:{kind:'open_agent',targetId:(store.getAgentCreationOperation(row.id)!.result as ImportAgentPackageResponse).rootAgentId}});}catch{/* Durable receipt remains pending role recovery. */}}
     }
   });
+  const checkExpertSnapshotSource=(frozen:CheckpointPackageSource,sourceProjectId:string)=>{
+    const chat=store.getConversation(frozen.sourceChatId),agent=store.getAgent(frozen.agentIds[0]!);
+    if(!chat||chat.projectId!==sourceProjectId||!agent||agent.projectId!==sourceProjectId||agent.conversationId!==chat.id||
+      !activeChatResourceOwner(store,'chat',chat.id)||!activeChatResourceOwner(store,'agent',agent.id)||
+      store.agentCreationPending(agent.id)||deletingAgentIds.has(agent.id)||deletingConversationIds.has(chat.id)||deletingProjectIds.has(sourceProjectId))
+      throw new Error('Expert source identity or ownership changed');
+  };
   return {packageEngine:{
     verifyImportedArtifactBytes:(projectId,artifacts)=>{
       for(const artifact of artifacts)if(!readManagedArtifactContent(context.dataDir,projectId,artifact.destinationId,artifact.byteLength,artifact.sha256))
@@ -3317,7 +3330,7 @@ export function registerAgentPackageRoutes(
         return (await composeAgentPackages(inputs)).package;
       },(publish,receipt)=>commitSourceCapture(token,()=>{admit();const result:unknown=seal?.(receipt);if(result&&typeof result==='object'&&'then' in result)throw new Error('Checkpoint sealing must be synchronous');publish();}));}finally{releaseSourceCapture(token);}
     }),
-    captureExpertSnapshot:(source,sourceProjectId,seal)=>withAgentImportAdmission(async()=>{
+    captureExpertSnapshot:(source,sourceProjectId,seal,attemptId,beforeCapture)=>withAgentImportAdmission(async()=>{
       const frozen={...source,agentIds:[...source.agentIds],intent:{...source.intent}};
       if(frozen.agentIds.length!==1)throw new Error('Expert copy requires exactly one source Agent');
       const status=await checkpointCustody.inspect(frozen);
@@ -3327,17 +3340,34 @@ export function registerAgentPackageRoutes(
       if(memory){
         // A known source-mutation/provisioning hold is not an unavailable
         // service: preserve that evidence and keep this capture held.
-        memory.assertCheckpointSourceSettled();
+        const preflight=()=>{
+          try{memory!.assertCheckpointSourceSettled();}
+          catch(error){
+            if(error instanceof MemorySourceMutationHold||error instanceof MemoryHostClosing){
+              let witness:string|undefined;
+              try{witness=memory!.checkpointMutationHoldWitness();}catch{/* No proof means retain the original failure. */}
+              if(witness)throw new ExpertCaptureHeldBeforeStart(frozen,sourceProjectId,attemptId,witness,error);
+            }
+            throw error;
+          }
+        };
+        preflight();
         try{memoryDatabases=await memory.checkpointSourceDatabases();}
-        catch{memory.assertCheckpointSourceSettled();memory=undefined;}
+        catch(original){
+          try{preflight();}
+          catch(current){
+            if((original instanceof MemorySourceMutationHold||original instanceof MemoryHostClosing)&&current instanceof ExpertCaptureHeldBeforeStart)throw current;
+            throw new Error(describeExpertMemoryPreflightFailure(original));
+          }
+          memory=undefined;
+        }
       }
+      // The owner fences the exact prior proof synchronously immediately
+      // before this capture starts; there is no await between the two.
+      beforeCapture();
       const token=beginSourceCapture(store.sqlite,...memoryDatabases);
       const admit=()=>{
-        const chat=store.getConversation(frozen.sourceChatId),agent=store.getAgent(frozen.agentIds[0]!);
-        if(!chat||chat.projectId!==sourceProjectId||!agent||agent.projectId!==sourceProjectId||agent.conversationId!==chat.id||
-          !activeChatResourceOwner(store,'chat',chat.id)||!activeChatResourceOwner(store,'agent',agent.id)||
-          store.agentCreationPending(agent.id)||deletingAgentIds.has(agent.id)||deletingConversationIds.has(chat.id)||deletingProjectIds.has(sourceProjectId))
-          throw new Error('Expert source identity or ownership changed');
+        checkExpertSnapshotSource(frozen,sourceProjectId);
         memory?.assertCheckpointSourceSettled();
       };
       try{return await checkpointCustody.capture(frozen,token.boundaryId,async()=>{
@@ -3346,6 +3376,8 @@ export function registerAgentPackageRoutes(
         admit();return buildPortablePackage(frozen.agentIds[0]!,'full',false,[],false,false,undefined,undefined,undefined,true,undefined,!memory);
       },(publish,receipt)=>commitSourceCapture(token,()=>{admit();seal(receipt);publish();}));}finally{releaseSourceCapture(token);}
     }),
+    expertSourceHoldWitness:()=>localMemoryFor(app)?.checkpointMutationHoldWitness(),
+    checkExpertSnapshotSource,
     reserveExpertChatMemory:chatId=>{const memory=localMemoryFor(app);if(!memory)throw Error('Local Memory is unavailable; expert copy remains held');memory.reserveExpertChatMemory(chatId);},
     readCheckpoint:receipt=>checkpointCustody.read(receipt),
     readCheckpointBytes:receipt=>checkpointCustody.readBytes(receipt),

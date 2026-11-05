@@ -90,7 +90,7 @@ test('failed process-authority commit closes the waiting child before any Script
 test('shutdown during asynchronous resource work cannot claim or launch a pending Script',options,async t=>{
  let release,entered,stopped=false;
  const ready=new Promise(resolve=>{entered=resolve}),gate=new Promise(resolve=>{release=resolve});
- const resources={errors:()=>[],async tick(){entered();await gate},requestStop(){stopped=true},async stop(){stopped=true}};
+ const resources={errors:()=>[],shutdownErrors:async()=>[],async tick(){entered();await gate},requestStop(){stopped=true},async stop(){stopped=true}};
  const f=fixture(t,"import {writeFileSync} from 'node:fs';writeFileSync('late-effect','effect');",{resources});
  const pending=f.service.tick(true);
  try{await ready;f.service.requestStop();assert.equal(stopped,true)}finally{release();await pending}
@@ -149,7 +149,7 @@ for(const [label,source,timeoutMs,expected] of [
 test('resource start yields to stop before fresh Script or notification claims',options,async t=>{
  let release,entered;let notifications=0;
  const gate=new Promise(resolve=>{release=resolve}),ready=new Promise(resolve=>{entered=resolve});
- const resources={errors:()=>[],async tick(){entered();await gate},requestStop(){},async stop(){release()}};
+ const resources={errors:()=>[],shutdownErrors:async()=>[],async tick(){entered();await gate},requestStop(){},async stop(){release()}};
  const f=fixture(t,'// no Script should launch',{resources,notifyAction:()=>{notifications++;return 'unexpected'}});
  const branch=f.branches.execution(f.execution.id).branchId;
  const deployed=f.branches.getBranch(branch);
@@ -172,7 +172,7 @@ test('resource start yields to stop before fresh Script or notification claims',
 test('resource work is tracked through stop without holding cleanup ticks or swallowing rejection',options,async t=>{
  let release,entered,cleanup=0;
  const ready=new Promise(resolve=>{entered=resolve}),gate=new Promise(resolve=>{release=resolve});
- const resources={errors:()=>[],async tick(admit){if(!admit){cleanup++;return}entered();await gate;throw Error('tracked resource rejection')},requestStop(){},async stop(){}};
+ const resources={errors:()=>[],shutdownErrors:async()=>[],async tick(admit){if(!admit){cleanup++;return}entered();await gate;throw Error('tracked resource rejection')},requestStop(){},async stop(){}};
  const f=fixture(t,'// inert',{resources});
  // Do not start the unrelated Script in this lifecycle-only probe.
  f.service.launch=async lease=>f.branches.settleScript(lease,{failed:false,output:'independent'});

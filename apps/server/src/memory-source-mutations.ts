@@ -4,6 +4,10 @@ import fs from '@ponderosa/native-host/fs';
 import {beginSourceMutation,sourceMutationState,reconcileSourceMutation,stableJson} from '@ponderosa/agents';
 import type {MemoryMutationEffect,MemoryMutationHoldDto,MemoryMutationReviewDto,MemoryMutationReconcileInput,MemoryMutationReconcileReceipt,MemoryMutationPreserveUnknownInput,MemoryMutationPreserveUnknownReceipt} from '@ponderosa/core';
 
+export class MemorySourceMutationHold extends Error {
+ constructor(){super('Checkpoint capture refused: memory mutation requires reconciliation');}
+}
+
 /** A failed/unknown remote write stays ineligible across restart until explicit reconciliation. */
 export function memorySourceMutations(directory:string){
   fs.mkdirSync(directory,{recursive:true,mode:0o700});
@@ -108,7 +112,7 @@ export function memorySourceMutations(directory:string){
       });return receipt;
     },
     assertSettled(){
-      if(fs.readdirSync(directory).some(name=>name.endsWith('.json')))throw new Error('Checkpoint capture refused: memory mutation requires reconciliation');
+      if(fs.readdirSync(directory).some(name=>name.endsWith('.json')))throw new MemorySourceMutationHold();
     },
     hasUnidentifiedHold(){
       for(const name of fs.readdirSync(directory).filter(name=>name.endsWith('.json'))){

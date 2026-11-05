@@ -110,6 +110,13 @@ function safeFailureCode(error:unknown):unknown {
 function safeFailureDescription(code:unknown):string|undefined {
  return typeof code==='string'&&Object.hasOwn(BRANCH_DELETION_ERROR_DESCRIPTIONS,code)?BRANCH_DELETION_ERROR_DESCRIPTIONS[code]:undefined;
 }
+/** Keep the structured cause while withholding arbitrary preflight text. */
+export function describeExpertMemoryPreflightFailure(error:unknown):string {
+ const code=safeFailureCode(error),description=safeFailureDescription(code);
+ return description
+  ? `Expert memory preflight failed (${code}): ${description} Details withheld because they may contain credentials.`
+  : 'Expert memory preflight failed. Details withheld because they may contain credentials.';
+}
 /** Do not copy arbitrary exception text into the direct Chat response. */
 export function describeChatDeletionIntentFailure(error:unknown):string {
  const message=error instanceof Error?error.message:'';

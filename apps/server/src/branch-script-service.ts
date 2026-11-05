@@ -216,7 +216,10 @@ export class BranchScriptService {
         await operation.handle.close(); await operation.done;
       })]);
     const failures = results.flatMap(r => r.status === 'rejected' ? [r.reason] : []);
-    try { this.checkpointErrors(); } catch(error) { failures.push(error); }
+    try {
+      const errors=[...this.branches.unitSaver.errors(),...(await this.options.resources?.shutdownErrors()??[]),...this.resourceFailures];
+      if(errors.length)throw new AggregateError(errors,'Branch checkpoint durability failed');
+    } catch(error) { failures.push(error); }
     // Shutdown may precede the first tick; durable identities must also drain.
     failures.push(...await this.recoverScripts(true));
     // Drain after mandatory cleanup; saver failures never enter markUnknown/deliveryFailed.

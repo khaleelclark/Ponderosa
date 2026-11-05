@@ -214,11 +214,15 @@ export class CoordinationV3Scheduler {
     this.schedule(0);
   }
 
-  async stop(): Promise<void> {
+  requestStop(): void {
     this.stopped = true;
     if (this.timer) clearTimeout(this.timer);
     this.timer = undefined;
     this.options.workflowOperations?.requestStop?.();
+  }
+
+  async stop(): Promise<void> {
+    this.requestStop();
     if (this.draining || this.dispatchJobs.size) {
       await new Promise<void>((resolve) => this.stopWaiters.add(resolve));
     }

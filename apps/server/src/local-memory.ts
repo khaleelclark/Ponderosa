@@ -7,7 +7,7 @@ import Database from 'better-sqlite3';
 import {randomUUID,createHash} from 'node:crypto';
 import {AsyncLocalStorage} from 'node:async_hooks';
 import type {FastifyInstance,FastifyRequest} from 'fastify';
-import {CapabilityPolicyStore,CoordinationV3Store,readBranchExpertCopy,hasRetainedTemporaryChatScope,type AgentStore,type AgentDeletionReceipt,type BranchExpertCopyReceipt} from '@ponderosa/agents';
+import {CapabilityPolicyStore,CoordinationV3Store,readBranchExpertCopy,hasRetainedTemporaryChatScope,sourceMutationState,type AgentStore,type AgentDeletionReceipt,type BranchExpertCopyReceipt} from '@ponderosa/agents';
 import {CAPABILITY_IDS} from '@ponderosa/core';
 import {type Chunk,type Inference} from '@local-memory/mcp-node-private';
 import {HostMemoryRuntime,checkedCollection,createPlannedCollection,MemoryCollectionHold,MEMORY_CLEANUP_HOLD_REASONS,MEMORY_CLEANUP_UNKNOWN_HOLD,MEMORY_CLEANUP_PROVISION_HOLD,MEMORY_CLEANUP_RECEIPT_HOLD,type MemoryAuthority} from './local-memory-authority.js';
@@ -21,6 +21,7 @@ import {requestProduct,resourceInProduct,type ProductScope} from './product-scop
 
 type Ports={opts:CreateServerOptions;store:AgentStore;capabilities:Map<string,AgentMessageCapability>;activeRuns:Map<string,ActiveRun>;ownsRun:(capability:AgentMessageCapability,run:ActiveRun|undefined)=>boolean;publishInvalidation?:(agentId:string,event:import('@ponderosa/core').MemoryChangedEvent)=>void;beforeGlobalMemoryRevocation?:(chatId:string)=>void};
 class MemoryDenied extends Error{constructor(message:string,readonly statusCode=403){super(message);}}
+export class MemoryHostClosing extends MemoryDenied{constructor(){super('Local memory host is closing');}}
 /** Host authority view; physical sources/business operations stay in immutable private.6. No memory journal or command receipt state. */
 export class LocalMemoryService{
  readonly core:HostMemoryRuntime;
@@ -380,7 +381,7 @@ export class LocalMemoryService{
   const consent=receipt?.consent,review=receipt?.accessReview,choice=receipt?.accessChoice;
   return Boolean(consent&&review&&choice&&receipt?.snapshotReceipt&&consent.snapshotSha256===receipt.snapshotReceipt.sha256&&consent.reviewSha256===review.reviewSha256&&choice.reviewSha256===review.reviewSha256&&consent[kind]===true);
  }
- private live(){if(this.closed)throw new MemoryDenied('Local memory host is closing');this.policyCustodyCheck();}
+ private live(){if(this.closed)throw new MemoryHostClosing();this.policyCustodyCheck();}
  private chat(chatId:string,product?:ProductScope,allowExpert=false){
   this.live();const chat=this.ports.store.getConversation(chatId),owner=activeChatResourceOwner(this.ports.store,'chat',chatId);
   if(!chat||!owner||product&&!resourceInProduct(this.ports.store,'chat',chatId,product))throw new MemoryDenied('Canonical Chat is unavailable in this product',404);
@@ -391,6 +392,16 @@ export class LocalMemoryService{
  private assertProvisioningSettled(){if(this.missingExistingScopes.size||this.ports.store.sqlite.prepare("SELECT 1 FROM local_memory_scope_provisioning WHERE memory_state='submitted' OR log_state='submitted' LIMIT 1").get())throw Error('Memory collection creation or deletion requires reconciliation or existing data is missing');}
  async checkpointSourceDatabases():Promise<Database.Database[]>{await this.ready();this.live();this.assertProvisioningSettled();this.core.database.assertSourceSettled();return [this.policy];}
  assertCheckpointSourceSettled(){this.live();this.assertProvisioningSettled();this.core.database.assertSourceSettled();}
+ // Read-only shutdown evidence; it grants no memory access and works after the
+ // normal host fence. Any unclassified/missing/changing custody stays held.
+ checkpointMutationHoldWitness():string|undefined{
+  this.policyCustodyCheck();this.assertProvisioningSettled();
+  const before=sourceMutationState();if(before.activeWriters||this.core.database.hasUnidentifiedMutationHold())return;
+  const holds=this.core.database.listMutationHolds();if(!holds.length)return;
+  const after=sourceMutationState();
+  if(after.activeWriters||before.epoch!==after.epoch||before.uncertainWriters!==after.uncertainWriters)return;
+  return createHash('sha256').update(JSON.stringify({holds})).digest('hex');
+ }
  provisioningHolds():import('@ponderosa/core').MemoryProvisioningHoldDto[]{
   this.live();
   const holds:import('@ponderosa/core').MemoryProvisioningHoldDto[]=(this.ports.store.sqlite.prepare("SELECT chat_id,project_id,memory_state,log_state FROM local_memory_scope_provisioning WHERE memory_state='submitted' OR log_state='submitted' ORDER BY chat_id").all() as {chat_id:string;project_id:string;memory_state:string;log_state:string}[]).map(row=>{

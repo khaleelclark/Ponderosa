@@ -1052,6 +1052,8 @@ app.server.on("upgrade", linkPreviewUpgrade);
   const activeAccessRevocation=createActiveAccessRevocation({store,coordinationV3,activeRuns,ownsRun:ownsActiveRun,
     wakeScheduler:()=>coordinationV3Scheduler.notify(),publishPause:publishMessageDeliveryChanged,
     logError:(error,operation)=>app.log.error({err:error,operation},'access revocation notification failed')});
+  // Stop new scheduler/resource admissions before the existing memory fence.
+  app.addHook('preClose',async()=>{app.prepareForShutdown();coordinationV3Scheduler.requestStop();});
   registerLocalMemory(app,{opts,store,capabilities:agentMessageCapabilities,activeRuns,ownsRun:capabilityOwnsAuthoritativeRun,
     beforeGlobalMemoryRevocation:activeAccessRevocation.beforeGlobalMemoryRevocation,
     publishInvalidation:(agentId,event)=>publish(agentId,store.appendEvent(agentId,event))});

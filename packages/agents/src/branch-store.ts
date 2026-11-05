@@ -2236,12 +2236,47 @@ export class BranchStore {
   private resourceCompletionError(r:Row):string|undefined {
     return this.row("SELECT json_extract(result_json,'$.error') error FROM branch_commands WHERE execution_id=? AND command_key LIKE ? ORDER BY created_at DESC,command_key DESC LIMIT 1",r.execution_id,`resource-completion-error:${r.creation_key}:%`)?.error;
   }
-  resourceErrors():Error[] {return this.rows(`SELECT error FROM branch_resources WHERE error IS NOT NULL
+  /** Exact known-unstarted expert preflight evidence; never inferred from an error string. */
+  expertPreflightHolds():Array<{executionId:string;stepExecutionId:string;attemptId:string;sourceProjectId:string;source:import('@ponderosa/core').CheckpointPackageSource;holdWitness:string}>{
+    return this.rows("SELECT execution_id,command_key,input_hash,result_json FROM branch_commands WHERE command_key LIKE 'expert-preflight-hold:%'").map(row=>{
+      const value=JSON.parse(row.result_json);
+      if(stableJson(value)!==row.result_json||payloadHash(value)!==row.input_hash||value.version!==1||
+        value.executionId!==row.execution_id||row.command_key!==`expert-preflight-hold:${value.stepExecutionId}`||
+        !value.attemptId||!value.sourceProjectId||!/^[a-f0-9]{64}$/.test(value.holdWitness)||!value.source)throw Error('Expert preflight hold evidence differs');
+      return value;
+    });
+  }
+  invalidateExpertPreflightHold(stepExecutionId:string):void {
+    this.unitTransaction(()=>{
+      const row=this.row('SELECT execution_id FROM branch_resources WHERE step_execution_id=?',stepExecutionId);if(!row)return;
+      if(!this.row('SELECT 1 FROM branch_commands WHERE execution_id=? AND command_key=?',row.execution_id,`expert-preflight-hold:${stepExecutionId}`))return;
+      this.run('DELETE FROM branch_commands WHERE execution_id=? AND command_key=?',row.execution_id,`expert-preflight-hold:${stepExecutionId}`);
+      this.selectedWrite(row.execution_id);
+    })();
+  }
+  recordExpertPreflightHold(input:{executionId:string;stepExecutionId:string;attemptId:string;sourceProjectId:string;source:import('@ponderosa/core').CheckpointPackageSource;holdWitness:string}):void {
+    this.unitTransaction(()=>{
+      const r=this.row('SELECT * FROM branch_resources WHERE execution_id=? AND step_execution_id=?',input.executionId,input.stepExecutionId);
+      const expert=r&&readBranchExpertCopy(this.sqlite,input.executionId,input.stepExecutionId);
+      if(!r||this.resourceRelease(input.stepExecutionId)==='fenced'||r.state!=='reserved'||r.chat_id||r.root_agent_id||!expert||expert.state!=='reserved'||
+        expert.attemptId!==input.attemptId||expert.sourceProjectId!==input.sourceProjectId||expert.snapshotReceipt||expert.copyChatId||
+        expert.copyAgentId||expert.creationOperationId||expert.requestId||stableJson(expert.snapshotSource)!==stableJson(input.source)||
+        this.resourceOperation(input.stepExecutionId,'chat')||this.resourceOperation(input.stepExecutionId,'import')||!/^[a-f0-9]{64}$/.test(input.holdWitness))
+        throw Error('Expert preflight hold ownership changed');
+      const value={version:1,...input},json=stableJson(value),key=`expert-preflight-hold:${input.stepExecutionId}`;
+      this.run('INSERT INTO branch_commands VALUES(?,?,?,?,?) ON CONFLICT(execution_id,command_key) DO UPDATE SET input_hash=excluded.input_hash,result_json=excluded.result_json,created_at=excluded.created_at',input.executionId,key,payloadHash(value),json,new Date().toISOString());
+      this.run('UPDATE branch_resources SET error=? WHERE execution_id=? AND step_execution_id=?','Checkpoint capture refused: memory mutation requires reconciliation',input.executionId,input.stepExecutionId);
+      this.selectedWrite(input.executionId);
+    })();
+  }
+  resourceErrors(ignoreResourceErrorStepIds:readonly string[]=[]):Error[] {
+    const placeholders=ignoreResourceErrorStepIds.map(()=>'?').join(',');
+    return this.rows(`SELECT error FROM branch_resources WHERE error IS NOT NULL ${placeholders?`AND step_execution_id NOT IN (${placeholders})`:''}
     UNION SELECT d.error FROM branch_retirement_errors d JOIN branch_resources r ON r.chat_id=d.resource_id
     UNION SELECT json_extract(result_json,'$.error') error FROM branch_commands WHERE (command_key LIKE 'resource-capture:%' OR command_key LIKE 'resource-completion-error:%') AND json_extract(result_json,'$.error') IS NOT NULL
     UNION SELECT json_extract(c.result_json,'$.error') error FROM branch_resources r JOIN branch_commands c ON c.execution_id=r.execution_id
       AND c.command_key IN ('resource-operation:'||r.creation_key||':chat','resource-operation:'||r.creation_key||':import')
-      WHERE json_extract(c.result_json,'$.error') IS NOT NULL`).map(r=>new Error(r.error));}
+      WHERE json_extract(c.result_json,'$.error') IS NOT NULL`,...ignoreResourceErrorStepIds).map(r=>new Error(r.error));}
   private resourceCleanupQuery = `FROM branch_resources r JOIN branch_executions e ON e.id=r.execution_id
     JOIN branch_step_executions s ON s.id=r.step_execution_id JOIN branch_paths path ON path.id=s.path_id
     WHERE ((r.state!='retired' AND (r.retry_draining=1 OR e.cancel_requested=1 OR path.state='canceled' OR NOT EXISTS

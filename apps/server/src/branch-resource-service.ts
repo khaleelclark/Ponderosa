@@ -1,3 +1,4 @@
+import {ExpertCaptureHeldBeforeStart} from './expert-source-capture-outcome.js';
 import {decodePortableArtifactData} from "./agent-package-codec.js";
 import {EXECUTION_ARCHIVE_MEDIA_TYPE,validateExecutionArchive} from "./portable-execution-archive.js";
 import {describeBranchDeletionFailure} from './branch-deletion-diagnostics.js';
@@ -362,6 +363,8 @@ export class BranchResourceService {
           let expert=readBranchExpertCopy(this.store.sqlite,provision.executionId,provision.stepExecutionId);
           if(!expert||expert.state!=='reserved')throw Error('Expert copy reservation unavailable');
           if(!expert.snapshotReceipt){
+            const prior=this.branches.expertPreflightHolds().find(value=>value.stepExecutionId===provision.stepExecutionId);
+            if(prior&&await this.provenHeldPreflight(prior))continue;
             const state=await this.packages.inspectCheckpoint(expert.snapshotSource);
             if(state.state==='failed'&&state.reason==='source_changed'){
               this.branches.retryExpertSnapshot(provision.executionId,provision.stepExecutionId,expert.snapshotSource);
@@ -369,7 +372,10 @@ export class BranchResourceService {
             }
             if(state.state!=='missing')throw Error(`Temporary agent copy snapshot custody ${state.state}; reconciliation required`);
             await this.packages.captureExpertSnapshot(expert.snapshotSource,expert.sourceProjectId,
-              receipt=>this.branches.sealExpertSnapshot(provision.executionId,provision.stepExecutionId,receipt));
+              receipt=>this.branches.sealExpertSnapshot(provision.executionId,provision.stepExecutionId,receipt),expert.attemptId,()=>{
+                if(this.stopped||this.branches.resourceRelease(provision.stepExecutionId)!=='ready')throw Error('Expert capture admission is no longer active');
+                this.branches.invalidateExpertPreflightHold(provision.stepExecutionId);
+              });
             expert=readBranchExpertCopy(this.store.sqlite,provision.executionId,provision.stepExecutionId);
           }
           if(!expert?.snapshotReceipt)throw Error('Expert snapshot receipt unavailable');
@@ -471,6 +477,17 @@ export class BranchResourceService {
         this.branches.finishResourceOperation(provision.stepExecutionId,phase,importToken);
         token=undefined;phase=undefined;
       } catch (error) {
+        if(provision.expertCopy&&!phase&&error instanceof ExpertCaptureHeldBeforeStart){
+          const current=readBranchExpertCopy(this.store.sqlite,provision.executionId,provision.stepExecutionId);
+          if(!current||current.attemptId!==error.attemptId||current.sourceProjectId!==error.sourceProjectId||
+            stableJson(current.snapshotSource)!==stableJson(error.source))throw Error('Expert source changed during capture preflight');
+          // A canceled or gated resource may retire after this known-unstarted
+          // attempt settles; it must not be classified as live held work.
+          if(this.branches.resourceRelease(provision.stepExecutionId)==='fenced')continue;
+          this.branches.recordExpertPreflightHold({executionId:provision.executionId,stepExecutionId:provision.stepExecutionId,
+            attemptId:error.attemptId,sourceProjectId:error.sourceProjectId,source:error.source,holdWitness:error.holdWitness});
+          continue;
+        }
         if(provision.expertCopy&&!phase&&error instanceof Error&&error.name==='SourceCaptureChangedError'&&this.packages){
           try{
             const current=readBranchExpertCopy(this.store.sqlite,provision.executionId,provision.stepExecutionId);
@@ -556,6 +573,32 @@ export class BranchResourceService {
     }
   }
   errors():Error[]{return this.branches.resourceErrors();}
+  private async provenHeldPreflight(proof:ReturnType<BranchStore['expertPreflightHolds']>[number]):Promise<boolean>{
+    const stepId=proof.stepExecutionId;
+    const matches=()=>{
+      const row=this.store.sqlite.prepare('SELECT execution_id,state,chat_id,root_agent_id,error FROM branch_resources WHERE step_execution_id=?').get(stepId) as
+        {execution_id:string;state:string;chat_id:string|null;root_agent_id:string|null;error:string|null}|undefined;
+      if(this.branches.resourceRelease(stepId)==='fenced'||!row||row.execution_id!==proof.source.intent.executionId||row.state!=='reserved'||row.chat_id||row.root_agent_id||row.error!=='Checkpoint capture refused: memory mutation requires reconciliation')return false;
+      const recorded=this.branches.expertPreflightHolds().find(value=>value.stepExecutionId===stepId);
+      if(!recorded||stableJson(recorded)!==stableJson(proof))return false;
+      const expert=readBranchExpertCopy(this.store.sqlite,row.execution_id,stepId);
+      return Boolean(expert&&expert.state==='reserved'&&expert.attemptId===proof.attemptId&&expert.sourceProjectId===proof.sourceProjectId&&
+        !expert.snapshotReceipt&&!expert.copyChatId&&!expert.copyAgentId&&!expert.creationOperationId&&!expert.requestId&&
+        stableJson(expert.snapshotSource)===stableJson(proof.source)&&!this.branches.resourceOperation(stepId,'chat')&&!this.branches.resourceOperation(stepId,'import'));
+    };
+    if(!this.packages||!matches())return false;
+    try{this.packages.checkExpertSnapshotSource(proof.source,proof.sourceProjectId);}catch{return false;}
+    const custody=await this.packages.inspectCheckpoint(proof.source);
+    if(custody.state!=='missing'||this.packages.expertSourceHoldWitness()!==proof.holdWitness||!matches())return false;
+    try{this.packages.checkExpertSnapshotSource(proof.source,proof.sourceProjectId);}catch{return false;}
+    return true;
+  }
+  async shutdownErrors():Promise<Error[]>{
+    const held:string[]=[];
+    for(const proof of this.branches.expertPreflightHolds())if(await this.provenHeldPreflight(proof))held.push(proof.stepExecutionId);
+    // Other resource rows and every retirement/capture/operation error remain.
+    return this.branches.resourceErrors(held);
+  }
   activeOperationCount():number{return Number(Boolean(this.pending))+Number(Boolean(this.maintenance));}
   requestStop(): void {
     this.stopped=true;
