@@ -115,7 +115,7 @@ function validateDefinition(value: unknown): BranchDefinition {
         if (!template || validateBranchTemplate(template).kind !== (target.kind === "ephemeral_agent" ? "agent" : "organization")) throw new Error("Missing or incompatible Agent template");
       } else throw new Error("Invalid Agent target");
       section="agent_setup"; field="jobHandling";
-      if(step.jobHandling!==undefined && (target.kind!=="persistent_agent" || !["queue","steer","copy"].includes(String(step.jobHandling))))throw Error("Job handling requires a persistent Agent and a valid choice");
+      if(step.jobHandling!==undefined && (target.kind!=="persistent_agent" || typeof step.jobHandling!=="string" || !["queue","steer","copy"].includes(step.jobHandling)))throw Error("Job handling requires a persistent Agent and a valid choice");
       section="task";
       field = "instructions"; step.instructions = branchText(step.instructions);
     } else if (step.kind === "branch_call") {
