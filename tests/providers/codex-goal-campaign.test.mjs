@@ -92,3 +92,30 @@ test('lost native goal-resume acknowledgement stays unreplayed across physical s
   assert.equal(runs(store,agent.id).filter(row=>!old.includes(row.id)).length,1,'restart does not allocate a replacement goal Run');
  },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodexGoal(root,{dropResumeAcknowledgement:true})).adapter});
 });
+
+test('native Codex goal creation preserves exact submitted objective while accepting provider normalization',{timeout:60000},async t=>{
+ let store,native;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Fresh native goal'),agent=await f.createIdleAgent(chat,'Goal creator');
+  store.updateAgent(agent.id,{model:'fixture',effort:'medium'});
+  const objective='  Preserve this exact original objective.  ';
+  const command='/goal-create '+JSON.stringify({objective,tokenBudget:2000});
+  await f.send(agent.id,command);
+  const mutation=await until(async()=>(await native.requests()).find(row=>row.method==='thread/goal/set'&&row.params.status==='active'),'fresh native goal creation');
+  assert.equal(mutation.params.objective,objective);
+  assert.equal(mutation.params.tokenBudget,2000);
+  assert.equal((await native.state()).goal.objective,objective.trim());
+  const run=await until(()=>runs(store,agent.id)[0],'fresh owned goal Run');
+  const recorded=store.sqlite.prepare('SELECT provider_prompt FROM provider_inputs WHERE scheduler_run_id=?').all(run.id);
+  assert.ok(recorded.some(row=>row.provider_prompt.includes(objective)),'durable provider input retains the original objective whitespace');
+  assert.equal(run.status,'running','normalized provider response is accepted without abandoning goal ownership');
+  await native.control('goal',{status:'complete'});
+  await native.control('reply',{text:'Fresh native objective completed.'});
+  await until(()=>store.sqlite.prepare("SELECT 1 FROM scheduler_runs WHERE id=? AND status='completed'").get(run.id),'created goal completion');
+  const calls=await native.requests();
+  assert.equal(calls.filter(row=>row.method==='thread/start').length,1);
+  assert.equal(calls.filter(row=>row.method==='thread/resume').length,0);
+  assert.equal(calls.filter(row=>row.method==='thread/goal/set'&&row.params.status==='active').length,1);
+  assert.equal(calls.filter(row=>row.method==='turn/start').length,0);
+ },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodexGoal(root,{freshGoal:true,normalizeObjective:true})).adapter});
+});

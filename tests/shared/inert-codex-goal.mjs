@@ -46,17 +46,19 @@ function nativeProcess(config){
    saved.ownerPid=process.pid;persist();result={thread:{id:saved.threadId},model:'fixture'};
    // A real persisted active goal may resume autonomous work: the host must
    // inspect it before issuing thread/resume after an uncertain interruption.
-   if(request.method==='thread/resume'&&saved.goal.status==='active')after=()=>start('unowned-resumed-goal');
+   if(request.method==='thread/resume'&&saved.goal?.status==='active')after=()=>start('unowned-resumed-goal');
   }else if(request.method==='turn/start'){result={turn:{id:'ordinary-'+(sequence+1)}};after=()=>start('ordinary');}
   else if(request.method==='thread/goal/get')result={goal:saved.goal};
   else if(request.method==='thread/goal/set'){
    if(request.params.threadId!==saved.threadId)throw Error('Wrong goal thread');
-   const previous=saved.goal.status;
-   saved.goal={...saved.goal,...Object.fromEntries(Object.entries(request.params).filter(([key])=>['objective','status','tokenBudget'].includes(key))),updatedAt:saved.goal.updatedAt+1};persist();
+   const previous=saved.goal?.status;
+   saved.goal={threadId:saved.threadId,tokenBudget:null,tokensUsed:0,timeUsedSeconds:0,createdAt:1700000000,...saved.goal,...Object.fromEntries(Object.entries(request.params).filter(([key])=>['objective','status','tokenBudget'].includes(key))),updatedAt:(saved.goal?.updatedAt??1700000000)+1};
+   if(config.normalizeObjective&&typeof saved.goal.objective==='string')saved.goal.objective=saved.goal.objective.trim();
+   persist();
    record({goalMutation:saved.goal.status});
-   if(saved.goal.status==='active'&&config.dropResumeAcknowledgement){record({lostGoalAcknowledgement:true});process.exit(19);}
+   if(saved.goal?.status==='active'&&config.dropResumeAcknowledgement){record({lostGoalAcknowledgement:true});process.exit(19);}
    result={goal:saved.goal};
-   after=()=>{notify('thread/goal/updated',{threadId:saved.threadId,...(turn?{turnId:turn}:{}),goal:saved.goal});if(previous==='paused'&&saved.goal.status==='active')start('goal');};
+   after=()=>{notify('thread/goal/updated',{threadId:saved.threadId,...(turn?{turnId:turn}:{}),goal:saved.goal});if(previous!=='active'&&saved.goal?.status==='active')start('goal');};
   }else if(request.method==='turn/interrupt'){after=()=>{if(turn)complete('interrupted');};}
   emit({id:request.id,result});after?.();
  });
@@ -75,11 +77,11 @@ function nativeProcess(config){
  },10);
 }
 
-export async function inertCodexGoal(root,{dropResumeAcknowledgement=false}={}){
+export async function inertCodexGoal(root,{dropResumeAcknowledgement=false,freshGoal=false,normalizeObjective=false}={}){
  const bin=path.join(root,'inert-codex-goal'),log=bin+'.jsonl',state=bin+'.state.json',command=bin+'.command.json';
  const threadId='inert-goal-thread';
- await writeFile(state,JSON.stringify({threadId,goal:{threadId,objective:'Preserve the entire original goal objective.',status:'paused',tokenBudget:1000,tokensUsed:0,timeUsedSeconds:0,createdAt:1700000000,updatedAt:1700000000}}));
- await writeFile(bin,'#!'+process.execPath+'\n('+nativeProcess.toString()+')('+JSON.stringify({log,state,command,dropResumeAcknowledgement})+');\n');await chmod(bin,0o700);
+ await writeFile(state,JSON.stringify({threadId,goal:freshGoal?null:{threadId,objective:'Preserve the entire original goal objective.',status:'paused',tokenBudget:1000,tokensUsed:0,timeUsedSeconds:0,createdAt:1700000000,updatedAt:1700000000}}));
+ await writeFile(bin,'#!'+process.execPath+'\n('+nativeProcess.toString()+')('+JSON.stringify({log,state,command,dropResumeAcknowledgement,normalizeObjective})+');\n');await chmod(bin,0o700);
  const requests=async()=>{try{return (await readFile(log,'utf8')).split('\n').filter(Boolean).map(JSON.parse);}catch(error){if(error.code==='ENOENT')return [];throw error;}};
  return {adapter:new CodexAdapter({bin,killGraceMs:100}),threadId,requests,state:async()=>JSON.parse(await readFile(state,'utf8')),
   async control(op,fields={}){
