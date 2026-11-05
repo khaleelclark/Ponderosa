@@ -1,13 +1,14 @@
 import path from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
 import {promises as fs} from '@ponderosa/native-host/fs';
-import {stableJson,publishManagedArtifactContentsAsync,type AgentStore} from '@ponderosa/agents';
-import type {AgentDto,BranchPortableWorkingData,BranchImportFileSelections,ImportAgentPackageResponse,PortableAgentNodeDto} from '@ponderosa/core';
+import {stableJson,publishManagedArtifactContentsAsync,makeWorkingFileTransportPart,type AgentStore,type WorkingFileTransportPart} from '@ponderosa/agents';
+import {workingFileArtifactRefs,type AgentDto,type BranchPortableWorkingData,type BranchImportFileSelections,type ImportAgentPackageResponse,type PortableAgentNodeDto,type PortableWorkingFileDto} from '@ponderosa/core';
 import type {AgentWorkingCopyService} from './agent-working-copy-service.js';
 import {portableApplicationFailure} from './portable-application-error.js';
 import {validatePortableAgentPackage} from './portable-agent-package-validation.js';
 import {assertAgentPackageMemoryAvailable,decodePortableArtifactData} from './agent-package-codec.js';
-import {importWorkingFiles,importWorkingLinks,finalizeWorkingFolderMetadata,workingLinkCounts,createWorkingNativeMetadataEvidence,validateWorkingRootNesting,type WorkingRootIdentity} from './portable-working-files.js';
+import {verifyPortableWorkingFileParts} from './portable-working-file-parts.js';
+import {importWorkingFiles,importWorkingLinks,finalizeWorkingFolderMetadata,workingLinkCounts,createWorkingNativeMetadataEvidence,validateWorkingFileData,validateWorkingRootNesting,type WorkingRootIdentity} from './portable-working-files.js';
 import {applyReviewedRecoveryRoots,planReviewedRecoveryRoots} from './portable-git-recreation.js';
 import {branchWorkingDataHash} from './branch-working-data.js';
 import {REVIEWED_USER_DATA_PATH,verifyDormantModuleDeclarations} from './portable-reviewed-user-data.js';
@@ -152,17 +153,37 @@ export async function applyBranchWorkingData(dataDir:string,store:AgentStore,wor
    copy.path='imported/'+copy.id+path.extname(original.source.path).toLowerCase().slice(0,16);artifacts.push(copy);reviewCopies.set(member.ref,{...file,artifactRef:copy.id});
   }
  }
+ const remapFile=(nodeRef:string,file:PortableWorkingFileDto)=>{
+  const selected=workingFileArtifactRefs(file).map(ref=>artifacts.find(item=>item.nodeRef===nodeRef&&item.source.ref===ref));
+  if(selected.some(item=>!item))throw Error('Carrier working original is absent');
+  const parts=selected as Artifact[],verified=verifyPortableWorkingFileParts(file,parts.map(part=>part.data));
+  const mapped={...file,artifactRef:parts[0]!.id,...(file.parts?{parts:{...file.parts,refs:parts.map(part=>part.id)}}:{})};
+  const original=parts.length===1?parts[0]!.data:Buffer.concat(parts.map(part=>part.data),verified.byteLength);
+  if(file.parts)validateWorkingFileData(file.path,original);
+  return {mapped,data:original,sha256:verified.sha256};
+ };
  const roots=rootRefs.map(ref=>{
   const members=pkg.agents.filter(node=>(node.workingRootRef??node.ref)===ref),node=members.find(node=>node.workingFolder)??members[0]!;
   const selected=members.map(member=>chatLive(data.owners[member.ref]!.chatRef));
   if(selected.some(Boolean)&&!selected.every(Boolean))throw Error('Chats sharing a source working folder must activate that folder together');
   const live=selected.every(Boolean),representative=node.workingCopyMode==='separate_git'?node:members.find(member=>store.isManagedProjectImportDestination(agents.get(member.ref)!.projectId))??node,agent=agents.get(representative.ref)!,project=store.getProject(agent.projectId);
   if(!project)throw Error('Imported working-root Project disappeared');
-  const files=members.flatMap(member=>(member.workingFiles??[]).map(file=>{const original=artifacts.find(item=>item.nodeRef===member.ref&&item.source.ref===file.artifactRef);if(!original)throw Error('Carrier working original is absent');return {...file,data:original.data,sha256:original.sha256,artifactRef:original.id};}));
+  const files=members.flatMap(member=>(member.workingFiles??[]).map(file=>{const original=remapFile(member.ref,file);return {...original.mapped,data:original.data,sha256:original.sha256};}));
   const paths=new Set<string>();for(const file of files){if(paths.has(file.path))throw Error('Physical root originals are duplicated');paths.add(file.path);}
+  for(const link of node.workingFolder?.links??[])if(link.kind==='hardlink'&&!link.targetRootRef){
+   const original=files.find(file=>file.path===link.target);
+   if(original?.parts)validateWorkingFileData(link.path,original.data);
+  }
   return {ref,members,node,agent,project,files,links:node.workingFolder?.links??[],metadata:metadataFor(ref),live,destination:destinations[ref]!,mode:node.workingCopyMode??'shared',livePath:undefined as string|undefined};
  });
  // A connected physical graph cannot be split between an independent recovery snapshot and live copies.
+ const partMarkers=new Map<string,WorkingFileTransportPart>();
+ for(const node of pkg.agents)for(const file of node.workingFiles??[])if(file.parts){
+  const refs=file.parts.refs.map(ref=>{const match=artifacts.find(artifact=>artifact.nodeRef===node.ref&&artifact.source.ref===ref);if(!match)throw Error('Carrier working part is absent');return match.id;});
+  const mapped={...file,artifactRef:refs[0]!,parts:{...file.parts,refs}};
+  const owner=planId+':'+createHash('sha256').update(node.ref).digest('hex');
+  refs.forEach((id,index)=>partMarkers.set(id,makeWorkingFileTransportPart(mapped,index,owner)));
+ }
  const byRef=new Map(roots.map(root=>[root.ref,root]));
  const edges=roots.flatMap(root=>root.links.flatMap(link=>link.targetRootRef?[[root.ref,link.targetRootRef] as const]:[]));
  for(const binding of pkg.gitStorageBindings??[])edges.push([binding.worktreeRootRef,binding.storageRootRef]);
@@ -184,10 +205,13 @@ export async function applyBranchWorkingData(dataDir:string,store:AgentStore,wor
   for(const projectId of new Set(artifacts.map(artifact=>artifact.agent.projectId))){
    const selected=artifacts.filter(artifact=>artifact.agent.projectId===projectId);
    await publishManagedArtifactContentsAsync(dataDir,projectId,selected.map(artifact=>({artifactId:artifact.id,input:artifact.data})));
-   store.recordProjectArtifacts(selected.map(artifact=>({artifact:{id:artifact.id,projectId,agentId:artifact.agent.id,originAgentId:artifact.agent.id,kind:artifact.source.kind,path:artifact.path,summary:artifact.source.summary??path.basename(artifact.source.path),createdAt:artifact.source.createdAt,mediaType:artifact.source.mediaType??'application/octet-stream',visibility:artifact.source.visibility??'project',pinned:artifact.source.pinned??false,size:artifact.data.length,sha256:artifact.sha256,...(artifact.source.sourcePath?{sourcePath:artifact.source.sourcePath}:{})}})));
+   store.recordProjectArtifacts(selected.map(artifact=>({artifact:{id:artifact.id,projectId,agentId:artifact.agent.id,originAgentId:artifact.agent.id,kind:artifact.source.kind,path:artifact.path,summary:artifact.source.summary??path.basename(artifact.source.path),createdAt:artifact.source.createdAt,mediaType:artifact.source.mediaType??'application/octet-stream',visibility:artifact.source.visibility??'project',pinned:artifact.source.pinned??false,size:artifact.data.length,sha256:artifact.sha256,...(artifact.source.sourcePath?{sourcePath:artifact.source.sourcePath}:{})},...(partMarkers.has(artifact.id)?{transportPart:partMarkers.get(artifact.id)!}:{})})));
   }
   for(const node of pkg.agents){
-   const originals=(node.workingFiles??[]).map(file=>({...file,artifactRef:artifacts.find(artifact=>artifact.nodeRef===node.ref&&artifact.source.ref===file.artifactRef)!.id}));
+   const originals=(node.workingFiles??[]).map(file=>{
+    const selected=workingFileArtifactRefs(file).map(ref=>artifacts.find(artifact=>artifact.nodeRef===node.ref&&artifact.source.ref===ref)!.id);
+    return {...file,artifactRef:selected[0]!,...(file.parts?{parts:{...file.parts,refs:selected}}:{})};
+   });
    const review=reviewCopies.get(node.ref);if(review)originals.push(review);
    await store.attachImportedWorkingStateAsync(agents.get(node.ref)!.id,planId,{workingFiles:originals,...(node.workingFolder?{workingFolder:node.workingFolder}:{})});
   }

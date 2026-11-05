@@ -1,6 +1,6 @@
 import {createHash} from 'node:crypto';
 import {stableJsonParts} from '@ponderosa/agents/canonical-json';
-import {AGENT_PACKAGE_MAX_BYTES,type AgentPortablePackageDto,type BranchPackageChat,type BranchPortableWorkingData} from '@ponderosa/core';
+import {AGENT_PACKAGE_MAX_BYTES,workingFileArtifactRefs,type AgentPortablePackageDto,type BranchPackageChat,type BranchPortableWorkingData} from '@ponderosa/core';
 import {validatePortableAgentPackage} from './portable-agent-package-validation.js';
 
 export function branchWorkingDataHash(value:Omit<BranchPortableWorkingData,'sha256'>):string{
@@ -21,7 +21,7 @@ export function validateBranchWorkingData(value:unknown,chats:readonly BranchPac
   if(!owner||Object.keys(owner).some(key=>!['chatRef','agentRef'].includes(key))||typeof owner.chatRef!=='string'||typeof owner.agentRef!=='string'||!chats.find(chat=>chat.ref===owner.chatRef)?.agents.some(agent=>agent.ref===owner.agentRef)||logical.has(JSON.stringify([owner.chatRef,owner.agentRef])))throw Error('Branch working root owner is absent or duplicated');
   logical.add(JSON.stringify([owner.chatRef,owner.agentRef]));
   if(!node.workingRootRef||node.history!==undefined||node.initialInstructions!==undefined||node.role!==undefined||node.presetSnapshot!==undefined||node.accessSettings!==undefined||node.sourceChat!==undefined||node.managerRef!==undefined||node.managementPermissions.allowAutomaticDescendantDeletion||node.managementPermissions.allowAutomaticDescendantReorganization)throw Error('Working data cannot carry Agent context, relationships or grants');
-  const originals=new Set((node.workingFiles??[]).map(file=>file.artifactRef));
+  const originals=new Set((node.workingFiles??[]).flatMap(file=>workingFileArtifactRefs(file)));
   if((node.artifacts??[]).some(artifact=>!originals.has(artifact.ref))||originals.size!==(node.artifacts??[]).length)throw Error('Working data artifacts must be exactly the selected physical originals');
   const agent=chats.find(chat=>chat.ref===owner.chatRef)!.agents.find(agent=>agent.ref===owner.agentRef)!;
   if(agent.definition.agents.some(item=>item.workingFolder||item.workingFiles?.length||item.workingRootRef)||agent.definition.gitStorageBindings!==undefined)throw Error('Physical originals cannot be duplicated in a Branch Agent definition');

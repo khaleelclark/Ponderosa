@@ -592,8 +592,17 @@ export class BranchInstallationService {
   const fullImportAgents:import('@ponderosa/core').BranchFullImportAgentReviewDto[]|undefined=pkg.mode==='full'?pkg.chats.flatMap(c=>c.agents.flatMap(a=>{
    const old=existing.find(r=>r.package_id===pkg.packageId&&r.chat_ref===c.ref&&r.agent_ref===a.ref);if(old)return [];
    const node=a.definition.agents[0]!,instructions=node.initialInstructions??'',history=node.history??[],artifacts=node.artifacts??[];
+   const multipart=(node.workingFiles??[]).filter(file=>file.parts);
+   const partRefs=new Set(multipart.flatMap(file=>file.parts!.refs));
+   const items=[...artifacts.filter(item=>!partRefs.has(item.ref)).map(item=>({name:item.path,kind:item.kind,mediaType:item.mediaType??'application/octet-stream',bytes:portableArtifactByteLength(item)})),...multipart.map(file=>({name:file.path,kind:'working file',mediaType:'application/octet-stream',bytes:file.parts!.byteLength}))];
+   const carrier=pkg.workingData?.package.agents.find(candidate=>pkg.workingData?.owners[candidate.ref]?.chatRef===c.ref&&pkg.workingData?.owners[candidate.ref]?.agentRef===a.ref);
+   for(const file of carrier?.workingFiles??[]){
+    const original=carrier?.artifacts?.find(item=>item.ref===file.artifactRef);
+    if(!original)throw new Error("Missing working original in import review");
+    items.push({name:file.path,kind:"working file",mediaType:"application/octet-stream",bytes:file.parts?.byteLength??portableArtifactByteLength(original)});
+   }
    const roles={user:0,assistant:0,system:0};for(const message of history)roles[message.role]++;
-   return [{chat:c.title,agent:node.title,mode:a.definition.mode==='full'?'full':'template' as const,initialInstructions:{bytes:Buffer.byteLength(instructions),...(instructions?{preview:instructions.slice(0,2000)}:{}),truncated:instructions.length>2000},history:{messages:history.length,bytes:history.reduce((n,m)=>n+Buffer.byteLength(m.text),0),roles},artifacts:{count:artifacts.length,bytes:artifacts.reduce((n,item)=>n+portableArtifactByteLength(item),0),items:artifacts.map(item=>({name:item.path,kind:item.kind,mediaType:item.mediaType??'application/octet-stream',bytes:portableArtifactByteLength(item)}))}}];
+   return [{chat:c.title,agent:node.title,mode:a.definition.mode==='full'?'full':'template' as const,initialInstructions:{bytes:Buffer.byteLength(instructions),...(instructions?{preview:instructions.slice(0,2000)}:{}),truncated:instructions.length>2000},history:{messages:history.length,bytes:history.reduce((n,m)=>n+Buffer.byteLength(m.text),0),roles},artifacts:{count:items.length,bytes:items.reduce((n,item)=>n+item.bytes,0),items}}];
   })):undefined;
   const fullImportReview=pkg.mode==='full'?{mode:'full' as const,warning:'Full import adds the listed opening instructions and conversation history to each new Agent context and writes the listed files into managed Branch storage. Imported context may affect future model responses. Review every Agent before continuing.',agents:fullImportAgents!}:undefined;
   const targets=pkg.outputRoles?.map(role=>({ref:JSON.stringify([role.chatRef,role.agentRef]),output:role.output,speaker:role.speaker}));

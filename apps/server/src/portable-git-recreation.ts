@@ -31,9 +31,13 @@ export function planReviewedRecoveryRoots(pkg:AgentPortablePackageDto,destinatio
   if(bindings.length)validatePortableGitStorageBindings(bindings,roots);
   const tasks:RecoveryTask[]=[];
   type Original=Pick<PortableArtifactDto,'dataBase64'|'dataEncoding'|'decodedSize'>;
-  const originals=new Map<string,Original>();
-  const addOriginal=(name:string,original:Original)=>{const prior=originals.get(name);if(prior!==undefined&&(prior.dataBase64!==original.dataBase64||prior.dataEncoding!==original.dataEncoding||prior.decodedSize!==original.decodedSize))throw new Error('Conflicting transported Git configuration original');originals.set(name,original);};
-  for(const node of pkg.agents){const root=destinations[node.workingRootRef??node.ref];if(!root)continue;for(const file of node.workingFiles??[]){const artifact=node.artifacts?.find(artifact=>artifact.ref===file.artifactRef);if(artifact)addOriginal(path.join(root,file.path),artifact);}}
+  const originals=new Map<string,Original>(),largeOriginals=new Map<string,string>();
+  const addOriginal=(name:string,original:Original)=>{if(largeOriginals.has(name))throw new Error('Conflicting transported Git configuration original');const prior=originals.get(name);if(prior!==undefined&&(prior.dataBase64!==original.dataBase64||prior.dataEncoding!==original.dataEncoding||prior.decodedSize!==original.decodedSize))throw new Error('Conflicting transported Git configuration original');originals.set(name,original);};
+  for(const node of pkg.agents){const root=destinations[node.workingRootRef??node.ref];if(!root)continue;for(const file of node.workingFiles??[]){
+    const name=path.join(root,file.path);
+    if(file.parts){if(originals.has(name)||largeOriginals.has(name)&&largeOriginals.get(name)!==file.parts.sha256)throw new Error('Conflicting transported Git configuration original');largeOriginals.set(name,file.parts.sha256);continue;}
+    const artifact=node.artifacts?.find(artifact=>artifact.ref===file.artifactRef);if(artifact)addOriginal(name,artifact);
+  }}
   for(const ref of roots){
     const owners=pkg.agents.filter(node=>(node.workingRootRef??node.ref)===ref);
     const originals=owners.flatMap(node=>{const file=node.workingFiles?.find(file=>file.path===REVIEWED_USER_DATA_PATH);return file?[node.artifacts?.find(artifact=>artifact.ref===file.artifactRef)]:[];});
@@ -84,7 +88,7 @@ export function planReviewedRecoveryRoots(pkg:AgentPortablePackageDto,destinatio
       }
       for(const record of task.value.git!.configurationOriginalReview)if(record.dataBase64!==null)addOriginal(path.join(record.source==='selected_worktree'?privateDir:common,record.path),{dataBase64:record.dataBase64});
     }
-    const read=(name:string)=>{const encoded=originals.get(name);if(encoded===undefined)return;return decodePortableMetadataArtifact(encoded,64*1024*1024);};
+    const read=(name:string)=>{if(largeOriginals.has(name))throw new Error('A selected Git configuration dependency exceeds the 64 MiB metadata limit; its complete working original is retained');const encoded=originals.get(name);if(encoded===undefined)return;return decodePortableMetadataArtifact(encoded,64*1024*1024);};
     for(const task of tasks.filter(task=>task.activation.git)){
       const common=task.layout?.commonDir??task.storage?.gitDir??path.join(task.destination,'.git'),privateDir=task.layout?.privateDir??common;
       task.externalPlan=planReviewedGitExternalApplication(task.value,task.activation,{common,private:privateDir,worktree:task.destination},paths,read);

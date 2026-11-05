@@ -1,5 +1,6 @@
 import {AGENT_PACKAGE_MAX_BYTES,agentPackageJsonUtf8Bytes} from "@ponderosa/core";
 import {assertAgentPackageMemoryAvailable,encodePortableArtifactData,decodePortableArtifactData} from "./agent-package-codec.js";
+import {LargeWorkingFileInspector} from './large-working-file-inspection.js';
 import {constants,closeSync} from 'node:fs';
 import {openPortableRegular} from './portable-held-regular.js';
 import {applyExactFileMetadata,applyExactSymlinkMetadata,pinPortableSymlink} from '@ponderosa/native-host';
@@ -175,6 +176,11 @@ export function validateMappedWorkingLinks(roots:readonly {ref:string;links:read
 
 export function validateWorkingFileData(relative:string,data:Buffer):void {
   portableWorkingPath(relative);
+  if(data.length>64*1024*1024){
+    const inspector=new LargeWorkingFileInspector(relative,data.length);
+    for(let offset=0;offset<data.length;offset+=1024*1024)inspector.write(data.subarray(offset,Math.min(data.length,offset+1024*1024)));
+    inspector.finish();return;
+  }
   if(data.includes(Buffer.from('-----BEGIN PRIVATE KEY-----'))||data.includes(Buffer.from('-----BEGIN RSA PRIVATE KEY-----')))throw new Error(`Private key content cannot be exported: ${relative}`);
   if(!data.includes(0)){
     const text=data.toString('utf8');
@@ -382,6 +388,7 @@ async function captureRetainedGitCurrent(root:string,original:Buffer,maxBytes:nu
       const byRef=new Map(captured.artifacts.map(item=>[item.ref,item]));
       const entries:CurrentGitNamespace['files']=[];
       for(const file of captured.files){
+        if(file.parts)throw new Error('Multipart current Git review originals require a complete metadata reader; original data is retained');
         const artifact=byRef.get(file.artifactRef);if(!artifact)throw new Error('Current retained Git artifact is missing');
         const decoded=await decodePortableArtifactData(artifact);
         const opaque=opaqueGitBytes(decoded.data);

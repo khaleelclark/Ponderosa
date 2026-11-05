@@ -1,9 +1,11 @@
 import {createHash} from 'node:crypto';
-import type {AgentPortablePackageDto,PortableAgentNodeDto,PortableArtifactDto,PortablePackageMemoryDto,PortableGitStorageBinding} from '@ponderosa/core';
+import {workingFileArtifactRefs,type AgentPortablePackageDto,type PortableAgentNodeDto,type PortableArtifactDto,type PortablePackageMemoryDto,type PortableGitStorageBinding} from '@ponderosa/core';
 import {stableJson} from '@ponderosa/agents';
 import {validatePortableAgentPackage} from './portable-agent-package-validation.js';
 import {rewritePortableArtifactReferences} from './artifact-refs.js';
-import {decodePortableArtifactData} from './agent-package-codec.js';
+import {assertAgentPackageMemoryAvailable,decodePortableArtifactData} from './agent-package-codec.js';
+import {verifyPortableWorkingFileParts} from './portable-working-file-parts.js';
+import {validateWorkingFileData} from './portable-working-files.js';
 
 export interface AgentPackageCompositionInput {ref:string;managerRef?:string;package:AgentPortablePackageDto}
 export interface AgentPackageComposition {
@@ -43,6 +45,8 @@ export async function composeAgentPackages(inputs:readonly AgentPackageCompositi
     const oldRef=node.ref;
     const refs=new Map((node.artifacts??[]).map(artifact=>[artifact.ref,identity('artifact',input.ref,artifact.ref)]));
     artifactRefs[input.ref]=Object.fromEntries(refs);
+    // Parts are private transport, not separately addressable composed artifacts.
+    for(const file of node.workingFiles??[])if(file.parts)for(const ref of file.parts.refs)delete artifactRefs[input.ref]![ref];
     for(const artifact of node.artifacts??[])artifact.ref=refs.get(artifact.ref)!;
     const rewrite=(text:string)=>rewritePortableArtifactReferences(text,refs);
     if(node.initialInstructions!==undefined)node.initialInstructions=rewrite(node.initialInstructions);
@@ -54,7 +58,10 @@ export async function composeAgentPackages(inputs:readonly AgentPackageCompositi
       if(message.artifactRefs)message.artifactRefs=Object.fromEntries(Object.entries(message.artifactRefs).map(([id,ref])=>[id,refs.get(ref)!]));
       // Authored Communication identities remain historical evidence; only portable bindings change.
     }
-    for(const file of node.workingFiles??[])file.artifactRef=refs.get(file.artifactRef)!;
+    for(const file of node.workingFiles??[]){
+      file.artifactRef=refs.get(file.artifactRef)!;
+      if(file.parts)file.parts={...file.parts,refs:file.parts.refs.map(ref=>refs.get(ref)!)};
+    }
     node.ref=input.ref;
     delete node.managerRef;
     if(input.managerRef)node.managerRef=input.managerRef;
@@ -104,14 +111,26 @@ export async function composeAgentPackages(inputs:readonly AgentPackageCompositi
       folder.excludedPaths=[...new Set([...folder.excludedPaths,...node.workingFolder.excludedPaths])];
     }
     for(const file of node.workingFiles??[]){
-      const artifact=node.artifacts!.find(candidate=>candidate.ref===file.artifactRef)!;
-      const {sha256}=await decodePortableArtifactData(artifact);
+      const partRefs=workingFileArtifactRefs(file),partArtifacts=partRefs.map(ref=>node.artifacts!.find(candidate=>candidate.ref===ref)!);
+      if(file.parts)assertAgentPackageMemoryAvailable(file.parts.byteLength);
+      const decoded=[];for(const artifact of partArtifacts)decoded.push((await decodePortableArtifactData(artifact)).data);
+      const {sha256}=verifyPortableWorkingFileParts(file,decoded);
       const prior=group.files.get(file.path);
-      if(prior){if(prior.sha256!==sha256||prior.file.mode!==file.mode||prior.file.mtime!==file.mtime)throw new Error('Conflicting Shared working originals; re-export a coherent snapshot');continue;}
+      if(prior){
+        if(prior.sha256!==sha256||prior.file.mode!==file.mode||prior.file.mtime!==file.mtime)throw new Error('Conflicting Shared working originals; re-export a coherent snapshot');
+        if(file.parts)node.artifacts=node.artifacts!.filter(artifact=>!partRefs.includes(artifact.ref));
+        continue;
+      }
       let merged={...file};
       if(group.owner!==node){
-        const copy:PortableArtifactDto={...artifact,ref:identity('working',rootKey,file.path)};
-        (group.owner.artifacts??=[]).push(copy);merged={...file,artifactRef:copy.ref};
+        if(file.parts){
+          // Transport pieces remain associated with this one logical original.
+          (group.owner.artifacts??=[]).push(...partArtifacts);
+          node.artifacts=node.artifacts!.filter(artifact=>!partRefs.includes(artifact.ref));
+        }else{
+          const copy:PortableArtifactDto={...partArtifacts[0]!,ref:identity('working',rootKey,file.path)};
+          (group.owner.artifacts??=[]).push(copy);merged={...file,artifactRef:copy.ref};
+        }
       }
       group.files.set(file.path,{file:merged,sha256});
     }
@@ -120,7 +139,23 @@ export async function composeAgentPackages(inputs:readonly AgentPackageCompositi
   if(folders.size){
     // Every member needs a root manifest, even an otherwise empty distinct root.
     for(const node of nodes){const key=workingRootRefs[node.ref]!;node.workingRootRef=key;if(!folders.has(key)){node.workingFolder={directories:[],excludedPaths:[]};folders.set(key,{owner:node,files:new Map()});}}
-    for(const group of folders.values())group.owner.workingFiles=[...group.files.values()].map(value=>value.file);
+    for(const group of folders.values()){
+      group.owner.workingFiles=[...group.files.values()].map(value=>value.file);
+      // Inspect each complete original and any hardlink names, never a transport part alone.
+      for(const file of group.owner.workingFiles)if(file.parts){
+        assertAgentPackageMemoryAvailable(file.parts.byteLength);
+        const decoded:Buffer[]=[];
+        for(const ref of file.parts.refs){
+          const artifact=group.owner.artifacts?.find(candidate=>candidate.ref===ref);
+          if(!artifact)throw new Error('Composed working original is absent');
+          decoded.push((await decodePortableArtifactData(artifact)).data);
+        }
+        const verified=verifyPortableWorkingFileParts(file,decoded);
+        const original=Buffer.concat(decoded,verified.byteLength);
+        validateWorkingFileData(file.path,original);
+        for(const link of group.owner.workingFolder?.links??[])if(link.kind==='hardlink'&&!link.targetRootRef&&link.target===file.path)validateWorkingFileData(link.path,original);
+      }
+    }
   }
   const roots=nodes.filter(node=>!node.managerRef).map(node=>node.ref);
   if(!roots.length)throw new Error('Composed Agents need a reporting root');
