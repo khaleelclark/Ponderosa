@@ -616,8 +616,12 @@ export class LocalMemoryService{
     WHERE r.agent_id=? AND r.replacement_run_id=?`).all(agentId,originRunId) as Array<{
      old_provider_session_id:string;source_run_id:string;scope_key:string;conversation_id:string|null;
      replacement_session_id:string|null;state:string;completion_reason:string|null;payload_json:string}>;
-   const inheritedRecorded=Boolean(db.prepare(`SELECT 1 FROM memory_exposure_sources e JOIN scheduler_runs r ON r.id=e.run_id
-    WHERE r.agent_id=? AND r.scope_key=? AND r.fencing_token<? LIMIT 1`).get(agentId,origin.scope_key,origin.fencing_token));
+   const inheritedRecorded=Boolean(db.prepare(`SELECT 1 FROM scheduler_runs r JOIN memory_exposure_runs receipt ON receipt.run_id=r.id
+    WHERE r.agent_id=? AND r.scope_key=? AND r.fencing_token<?
+     AND (receipt.pending<>0 OR receipt.uncertain<>0 OR receipt.unverified<>0
+       OR EXISTS(SELECT 1 FROM memory_exposure_sources e WHERE e.run_id=r.id)) LIMIT 1`)
+    .get(agentId,origin.scope_key,origin.fencing_token));
+   recordedSources=parents.length>0&&inheritedRecorded;
    if(parents.length>1)return inheritedRecorded?'unavailable':'unknown';
    if(parents.length){
     const parent=parents[0]!,marker=JSON.parse(parent.payload_json)?.settingsTransition;
@@ -631,7 +635,7 @@ export class LocalMemoryService{
       marker.authorizationOriginRunId,parent.source_run_id,seen);
     if(inherited!=='valid')return inherited==='unknown'&&inheritedRecorded?'unavailable':inherited;
    }
-   recordedSources=Boolean(db.prepare(`SELECT 1 FROM memory_exposure_sources e JOIN scheduler_runs r ON r.id=e.run_id
+   recordedSources=recordedSources||Boolean(db.prepare(`SELECT 1 FROM memory_exposure_sources e JOIN scheduler_runs r ON r.id=e.run_id
     WHERE r.agent_id=? AND r.fencing_token>=? AND r.fencing_token<=? LIMIT 1`).get(agentId,origin.fencing_token,source.fencing_token));
    const incomplete=()=>recordedSources?'unavailable' as const:'unknown' as const;
    const signature=this.unusedMemorySignature(agentId,chatId,sourceRunId);
@@ -651,7 +655,7 @@ export class LocalMemoryService{
    const refs=db.prepare(`SELECT DISTINCT e.scope,e.source_id,e.content_hash FROM memory_exposure_sources e
     JOIN scheduler_runs r ON r.id=e.run_id WHERE r.agent_id=? AND r.fencing_token>=? AND r.fencing_token<=?`)
     .all(agentId,origin.fencing_token,source.fencing_token) as Array<{scope:string;source_id:string;content_hash:string}>;
-   recordedSources=refs.length>0;
+   recordedSources ||= refs.length>0;
    const owner=activeChatResourceOwner(this.ports.store,'agent',agentId);
    if(!owner)return recordedSources?'unavailable':'unknown';
    const policy=new CapabilityPolicyStore(db).resolveForAgent(agentId,sourceRunId);

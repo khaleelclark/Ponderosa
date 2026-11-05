@@ -37,6 +37,8 @@ test('memory-enabled voice preserves earlier work through an isolated managed ha
   const final=await until(async()=>{const x=(await native.requests()).filter(x=>x.method==='turn/start');return x.length>=4?x:undefined;},'queued voice task',20000);
   assert.equal(final[3].params.threadId,continuation[2].params.threadId);
   assert.ok(JSON.stringify(final[3]).includes('Continue the original objective aloud.'));
+  assert.equal(store.sqlite.prepare('SELECT count(*) n FROM context_rollovers WHERE agent_id=?').get(agent.id).n,1,'one managed transition serves this voice task');
+  assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(pending.id).n,1,'original voice task attaches exactly once');
   await native.sendTool('ponderosa_voice_reply',{});await f.settled(agent.id);
   const reply=f.ok(await f.api('GET',`/api/conversations/${chat.id}/voice-replies/${voice.message.communicationEventId}/${agent.id}`));
   assert.equal(reply.reply.state,'completed');

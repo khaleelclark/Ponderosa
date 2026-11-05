@@ -176,7 +176,17 @@ export async function requestSettingsTransition(input: {
    const {targetModel,targetEffort,targetSpeed}=settingsTransitionTarget(agent,project,engine.adapter,workspace.getPreferences(),cachedModelOptions(engine.adapter,project.id),dispatch);
    if(!targetModel?.trim()||!contract.model?.trim())return true;
    const changed=targetModel!==contract.model||targetEffort!==contract.effort||targetSpeed!==(contract.speed??'standard');
-   const voiceBoundary=Boolean(opts.localMemory&&dispatch?.voiceReply===true);
+   const verifiedVoice=Boolean(opts.localMemory&&dispatch?.voiceReply===true&&store.sqlite.prepare(`SELECT 1
+    FROM context_rollovers r JOIN activation_sources x ON x.source_kind='context_rollover' AND x.source_id=r.id
+    JOIN agent_activations h ON h.id=x.activation_id AND h.kind='context_rollover_handoff'
+    WHERE r.agent_id=? AND r.project_id=? AND r.state='completed' AND r.completion_reason='replacement_verified'
+      AND r.replacement_run_id=? AND r.replacement_session_id=?
+      AND json_extract(h.payload_json,'$.settingsTransition.activationId')=?
+      AND json_extract(h.payload_json,'$.settingsTransition.targetModel')=?
+      AND json_extract(h.payload_json,'$.settingsTransition.targetEffort') IS ?
+      AND json_extract(h.payload_json,'$.settingsTransition.targetSpeed') IS ? LIMIT 1`)
+    .get(agent.id,pending.projectId,boundary.executionId,accepted.sessionId,pending.id,targetModel,targetEffort??null,targetSpeed??null));
+   const voiceBoundary=Boolean(opts.localMemory&&dispatch?.voiceReply===true&&!verifiedVoice);
    if(!changed&&!voiceBoundary){
     store.sqlite.prepare("DELETE FROM activation_sources WHERE activation_id=? AND source_kind='settings_transition_retry_pending'").run(pending.id);
     return true;
