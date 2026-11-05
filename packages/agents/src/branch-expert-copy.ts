@@ -11,6 +11,9 @@ export interface BranchExpertCopyReceipt extends BranchExpertCopyIdentity {
   schema:"branch-expert-copy.v1"; state:"reserved"|"active";
   snapshotReceipt?:CheckpointPackageReceipt;
   copyAgentId?:string; copyChatId?:string; copyProjectId?:string; creationOperationId?:string; requestId?:string;
+  consent?:{snapshotSha256:string;reviewSha256:string;copySourceMemory:boolean;allowFindingsWriteback:boolean};
+  accessReview?:import("@ponderosa/core").AgentAccessImportReviewDto;
+  accessChoice?:NonNullable<import("@ponderosa/core").ImportAgentPackageRequest["accessSettingsResolution"]>;
 }
 const key=(stepId:string)=>`expert-copy:${stepId}`;
 const identity=(r:BranchExpertCopyReceipt):BranchExpertCopyIdentity=>({
@@ -50,6 +53,14 @@ export function reserveBranchExpertImport(db:Database.Database,executionId:strin
   const r=readBranchExpertCopy(db,executionId,stepId);if(!r||r.state!=="reserved"||!r.copyChatId||!creationOperationId)throw Error("Expert copy import reservation invalid");
   if(r.creationOperationId&&r.creationOperationId!==creationOperationId)throw Error("Expert copy import identity changed");
   db.prepare("UPDATE branch_commands SET result_json=? WHERE execution_id=? AND command_key=?").run(stableJson({...r,creationOperationId}),executionId,key(stepId));
+}
+export function reviewBranchExpertAccess(db:Database.Database,executionId:string,stepId:string,review:import("@ponderosa/core").AgentAccessImportReviewDto,choice?:NonNullable<import("@ponderosa/core").ImportAgentPackageRequest["accessSettingsResolution"]>,consent?:{snapshotSha256:string;reviewSha256:string;copySourceMemory:boolean;allowFindingsWriteback:boolean}):void {
+  const r=readBranchExpertCopy(db,executionId,stepId);
+  if(!r||r.state!=="reserved"||!r.copyChatId||!r.snapshotReceipt||r.creationOperationId)throw Error("Expert copy access review is unavailable");
+  if(choice&&choice.reviewSha256!==review.reviewSha256)throw Error("Expert copy access review changed");
+  if(consent&&(!choice||consent.reviewSha256!==review.reviewSha256||consent.snapshotSha256!==r.snapshotReceipt.sha256||typeof consent.copySourceMemory!=="boolean"||typeof consent.allowFindingsWriteback!=="boolean"))throw Error("Expert copy consent does not match this snapshot and review");
+  const {accessChoice:previous,consent:previousConsent,...unchosen}=r;
+  db.prepare("UPDATE branch_commands SET result_json=? WHERE execution_id=? AND command_key=?").run(stableJson({...unchosen,accessReview:review,...(choice?{accessChoice:choice}:{}),...(consent?{consent}:{})}),executionId,key(stepId));
 }
 export function bindBranchExpertCopy(db:Database.Database,executionId:string,stepId:string,copy:{copyAgentId:string;copyChatId:string;copyProjectId:string;requestId:string}):void {
   const r=readBranchExpertCopy(db,executionId,stepId);if(!r||r.state!=="reserved"||!r.snapshotReceipt)throw Error("Expert copy source snapshot unavailable");

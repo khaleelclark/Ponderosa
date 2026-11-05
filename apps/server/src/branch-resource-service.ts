@@ -1,6 +1,6 @@
 import {describeBranchDeletionFailure} from './branch-deletion-diagnostics.js';
 import {isMemoryCleanupHold} from './local-memory-authority.js';
-import {issuedCaptureRetryBudget,generationHistoricalSelections} from '@ponderosa/agents';
+import {issuedCaptureRetryBudget,generationHistoricalSelections,readBranchExpertCopy} from '@ponderosa/agents';
 import type {BranchPackageEngine} from './routes/agent-packages.js';
 import type {ChatCreator} from "./routes/projects.js";
 import {createHash} from 'node:crypto';
@@ -13,6 +13,7 @@ export type BranchTemplateImporter = (input: BranchResourceProvision, hooks: {
   transaction?(operation:()=>void):void;
 }, signal: AbortSignal) => Promise<void>;
 const IMPORT_DEADLINE_MS = 5 * 60 * 1000;
+const EXPERT_COPY_CLEANUP_HOLD='Expert copy cleanup is held until its final context and memory are safely retained';
 /** Existing tracked template imports, driven only by the existing scheduler cycle. */
 export class BranchResourceService {
   private importer?: BranchTemplateImporter;
@@ -168,24 +169,42 @@ export class BranchResourceService {
   }
   async inspectResource(stepExecutionId:string):Promise<import('@ponderosa/core').BranchResourceInspectionDto> {
     const snapshot=this.branches.resourceInspection(stepExecutionId),journal=this.branches.resourceRestoreJournal(stepExecutionId);
-    if(!journal||!snapshot.destinationChatId||!snapshot.destinationChatAvailable||snapshot.state!=='reserved'||snapshot.importState)return snapshot;
+    const row=this.store.sqlite.prepare('SELECT execution_id FROM branch_resources WHERE step_execution_id=?').get(stepExecutionId) as {execution_id:string}|undefined;
+    const expert=row&&readBranchExpertCopy(this.store.sqlite,row.execution_id,stepExecutionId);
+    const receipt=journal?.receipt??expert?.snapshotReceipt;
+    if(!receipt||!snapshot.destinationChatId||!snapshot.destinationChatAvailable||snapshot.state!=='reserved'||snapshot.importState)return snapshot;
     let review:import('@ponderosa/core').AgentAccessImportReviewDto|null=null,reviewError:string|undefined;
     try{
       if(!this.packages)throw Error('Checkpoint package service unavailable');
-      const portable=await this.packages.readCheckpoint(journal.receipt);
-      review=await this.packages.reviewAccess({...portable,rootRef:journal.rootRef},snapshot.destinationChatId);
+      const portable=await this.packages.readCheckpoint(receipt);
+      const {outputRoles:unusedOutputRoles,...expertPackage}=portable;
+      review=await this.packages.reviewAccess(expert?expertPackage:{...portable,rootRef:journal!.rootRef},snapshot.destinationChatId);
     }catch(error){reviewError=error instanceof Error?error.message:'Resource policy review unavailable';}
-    if(stableJson(this.branches.resourceInspection(stepExecutionId))!==stableJson(snapshot)||stableJson(this.branches.resourceRestoreJournal(stepExecutionId))!==stableJson(journal))throw Error('Resource inspection changed; refresh');
-    return {...snapshot,currentPolicyReview:review,accessChoiceCurrent:!!review&&journal.choice?.reviewSha256===review.reviewSha256,...(reviewError?{reviewError}:{})};
+    const currentExpert=row&&readBranchExpertCopy(this.store.sqlite,row.execution_id,stepExecutionId);
+    if(stableJson(this.branches.resourceInspection(stepExecutionId))!==stableJson(snapshot)||stableJson(this.branches.resourceRestoreJournal(stepExecutionId))!==stableJson(journal)||stableJson(currentExpert)!==stableJson(expert))throw Error('Resource inspection changed; refresh');
+    const choice=expert?.accessChoice??journal?.choice;
+    const consentCurrent=!!expert?.consent?.copySourceMemory&&expert.consent.snapshotSha256===expert.snapshotReceipt?.sha256&&expert.consent.reviewSha256===review?.reviewSha256;
+    return {...snapshot,currentPolicyReview:review,accessChoiceCurrent:!!review&&choice?.reviewSha256===review.reviewSha256,
+      ...(expert?.snapshotReceipt&&expert.copyChatId?{expertCopyReview:{sourceAgentId:expert.sourceAgentId,sourceChatId:expert.sourceChatId,copyChatId:expert.copyChatId,snapshotSha256:expert.snapshotReceipt.sha256,consentCurrent,copySourceMemory:consentCurrent&&expert.consent?.copySourceMemory===true,allowFindingsWriteback:consentCurrent&&expert.consent?.allowFindingsWriteback===true}}:{}),
+      ...(reviewError?{reviewError}:{})};
   }
-  async reviewRestoreAccess(stepExecutionId:string,choice?:import('@ponderosa/core').ImportAgentPackageRequest['accessSettingsResolution']) {
+  async reviewRestoreAccess(stepExecutionId:string,choice?:import('@ponderosa/core').ImportAgentPackageRequest['accessSettingsResolution'],consent?:{snapshotSha256:string;copySourceMemory:boolean;allowFindingsWriteback:boolean}) {
     if(!this.packages)throw Error('Checkpoint package service unavailable');
     const snapshot=this.branches.resourceInspection(stepExecutionId),journal=this.branches.resourceRestoreJournal(stepExecutionId);
     const row=this.store.sqlite.prepare('SELECT r.chat_id,r.execution_id,e.branch_id FROM branch_resources r JOIN branch_executions e ON e.id=r.execution_id WHERE r.step_execution_id=?').get(stepExecutionId) as {chat_id:string;execution_id:string;branch_id:string}|undefined;
-    if(!journal||!row?.chat_id)throw Error('Fresh resource destination Chat is not ready');
-    const portable=await this.packages.readCheckpoint(journal.receipt),review=await this.packages.reviewAccess({...portable,rootRef:journal.rootRef},row.chat_id);
-    if(stableJson(this.branches.resourceInspection(stepExecutionId))!==stableJson(snapshot)||stableJson(this.branches.resourceRestoreJournal(stepExecutionId))!==stableJson(journal))throw Error('Resource destination changed; review again');
-    this.branches.resourceRestoreReview(stepExecutionId,review,choice);return review;
+    const expert=row&&readBranchExpertCopy(this.store.sqlite,row.execution_id,stepExecutionId),receipt=journal?.receipt??expert?.snapshotReceipt;
+    if(!receipt||!row?.chat_id)throw Error('Fresh resource destination Chat is not ready');
+    const portable=await this.packages.readCheckpoint(receipt),{outputRoles:unusedOutputRoles,...expertPackage}=portable;
+    const review=await this.packages.reviewAccess(expert?expertPackage:{...portable,rootRef:journal!.rootRef},row.chat_id);
+    if(stableJson(this.branches.resourceInspection(stepExecutionId))!==stableJson(snapshot)||stableJson(this.branches.resourceRestoreJournal(stepExecutionId))!==stableJson(journal)||stableJson(readBranchExpertCopy(this.store.sqlite,row.execution_id,stepExecutionId))!==stableJson(expert))throw Error('Resource destination changed; review again');
+    if(expert){
+      if(choice&&!consent)throw Error('Explicit expert copy memory choices are required');
+      this.branches.reviewExpertAccess(row.execution_id,stepExecutionId,review,choice,consent?{...consent,reviewSha256:review.reviewSha256}:undefined);
+    }else{
+      if(consent)throw Error('Expert copy consent cannot apply to this resource');
+      this.branches.resourceRestoreReview(stepExecutionId,review,choice);
+    }
+    return review;
   }
   async releaseCapture(stepExecutionId:string,input:import('@ponderosa/core').BranchResourceCustodyReleaseInput):Promise<import('@ponderosa/core').BranchResourceCustodyReleaseDto> {
     if(!this.packages)throw Error('Checkpoint package service unavailable');
@@ -214,6 +233,26 @@ export class BranchResourceService {
       const timer = setTimeout(() => controller.abort(new Error('Temporary Agent import exceeded its deadline')), IMPORT_DEADLINE_MS);
       let phase:'chat'|'import'|undefined,token:string|undefined;
       try {
+        if(provision.expertCopy){
+          if(!this.packages)throw Error('Expert snapshot package service unavailable');
+          let expert=readBranchExpertCopy(this.store.sqlite,provision.executionId,provision.stepExecutionId);
+          if(!expert||expert.state!=='reserved')throw Error('Expert copy reservation unavailable');
+          if(!expert.snapshotReceipt){
+            const state=await this.packages.inspectCheckpoint(expert.snapshotSource);
+            if(state.state!=='missing')throw Error(`Expert snapshot custody ${state.state}; reconciliation required`);
+            await this.packages.captureExpertSnapshot(expert.snapshotSource,expert.sourceProjectId,
+              receipt=>this.branches.sealExpertSnapshot(provision.executionId,provision.stepExecutionId,receipt));
+            expert=readBranchExpertCopy(this.store.sqlite,provision.executionId,provision.stepExecutionId);
+          }
+          if(!expert?.snapshotReceipt)throw Error('Expert snapshot receipt unavailable');
+          const captured=await this.packages.readCheckpoint(expert.snapshotReceipt);
+          if(captured.mode!=='full'||captured.agents.length!==1||captured.rootRef!==expert.sourceAgentId||!captured.memory?.length)throw Error('Expert snapshot does not contain the selected Agent and Local Memory');
+          // Output app bindings belong to the original, not to a temporary worker.
+          const {outputRoles:unusedOutputRoles,...template}=captured;
+          const root=template.agents[0]!;
+          provision={...provision,expertCopy:expert,template,defaultEngine:root.engine,engineMapping:{[root.engine]:root.engine}};
+          this.packages.validateAgent(template,provision.engineMapping);
+        }
         const imported=this.branches.resourceOperation(provision.stepExecutionId,'import');
         if(imported?.state==='completed'){
           if(!this.branches.resourceCaptureEligible(provision.stepExecutionId)&&!this.branches.resourceCaptureJournal(provision.stepExecutionId)){this.branches.bindResource(provision.stepExecutionId,imported.result as ImportAgentPackageResponse);continue;}
@@ -244,7 +283,8 @@ export class BranchResourceService {
             token=undefined;phase=undefined;continue;
           }
           const chat=await this.createChat({label:'Temporary workflow organization',hostPath,defaultEngine:provision.defaultEngine},
-            'branch-resource-'+createHash('sha256').update(provision.creationKey).digest('hex'),{branchId:provision.branchId,executionId:provision.executionId},controller.signal);
+            'branch-resource-'+createHash('sha256').update(provision.creationKey).digest('hex'),{branchId:provision.branchId,executionId:provision.executionId},controller.signal,
+            provision.expertCopy?chatId=>this.branches.reserveExpertChat(provision.executionId,provision.stepExecutionId,chatId):undefined);
           this.branches.completeResourceOperation(provision.stepExecutionId,phase,token,{chatId:chat.id});
           token=undefined;phase=undefined;
           provision={...provision,projectId:chat.projectId,chatId:chat.id};
@@ -265,12 +305,26 @@ export class BranchResourceService {
           }
           accessSettingsResolution=restore.choice;
         }
+        if(provision.expertCopy){
+          const expert=readBranchExpertCopy(this.store.sqlite,provision.executionId,provision.stepExecutionId);
+          if(!expert||expert.state!=='reserved'||expert.copyChatId!==provision.chatId)throw Error('Expert copy destination reservation changed');
+          const review=await this.packages!.reviewAccess(provision.template,provision.chatId);
+          if(!expert.accessChoice||expert.accessChoice.reviewSha256!==review.reviewSha256||expert.consent?.reviewSha256!==review.reviewSha256||expert.consent.snapshotSha256!==expert.snapshotReceipt?.sha256||!expert.consent.copySourceMemory){
+            this.branches.reviewExpertAccess(provision.executionId,provision.stepExecutionId,review);
+            continue;
+          }
+          accessSettingsResolution=expert.accessChoice;
+        }
         // Every new effect revalidates current owner/ancestor release after the previous await.
         phase='import';token=this.branches.beginResourceOperation(provision.stepExecutionId,provision.creationKey,phase);if(!token)continue;
         const importToken=token;
         await this.importer({...provision,...(accessSettingsResolution?{accessSettingsResolution}:{})}, {
           plan: async(ids,creationOperationId) => {
             this.branches.observeResourceImportPlan(provision.stepExecutionId,importToken,creationOperationId);
+            if(provision.expertCopy){
+              if(!creationOperationId)throw Error('Expert copy requires an exact import operation');
+              this.branches.reserveExpertImport(provision.executionId,provision.stepExecutionId,creationOperationId);
+            }
             // The start/receipt markers must be covered before a later plan/effect boundary.
             await this.branches.waitResourceCheckpoint(provision.stepExecutionId);controller.signal.throwIfAborted();
             this.branches.planResource(provision.stepExecutionId,ids,importToken);
@@ -301,7 +355,7 @@ export class BranchResourceService {
   private async cleanup():Promise<void> {
     for (const resource of this.branches.resourceCleanupCandidates()) {
       const held=this.store.sqlite.prepare('SELECT r.error,(SELECT error FROM branch_retirement_errors WHERE resource_id=r.chat_id) retirement_error FROM branch_resources r WHERE r.step_execution_id=?').get(resource.stepExecutionId) as {error:string|null;retirement_error:string|null}|undefined;
-      if(isMemoryCleanupHold(held?.error)||isMemoryCleanupHold(held?.retirement_error))continue;
+      if(isMemoryCleanupHold(held?.error)||isMemoryCleanupHold(held?.retirement_error)||held?.error===EXPERT_COPY_CLEANUP_HOLD||held?.retirement_error===EXPERT_COPY_CLEANUP_HOLD)continue;
       try {
         const capture=this.branches.resourceCaptureJournal(resource.stepExecutionId);
         await this.captureFinalPackage(resource.executionId,resource.stepExecutionId,false);
@@ -311,6 +365,8 @@ export class BranchResourceService {
         await this.captureGenerationExitBeforeCleanup(resource.stepExecutionId);
         await this.captureFinalExitBeforeCleanup(resource.stepExecutionId);
         if (!this.branches.resourceCanRetire(resource.stepExecutionId,resource.agentIds) || !this.idle(resource.agentIds)) continue;
+        const expert=readBranchExpertCopy(this.store.sqlite,resource.executionId,resource.stepExecutionId);
+        if(expert?.state==='active')throw Error(EXPERT_COPY_CLEANUP_HOLD);
         await this.deleteAgents(resource.agentIds);
         if(this.branches.finalResourceExitRequired(resource.stepExecutionId)){await this.verifyFinalPackage(resource.executionId,resource.stepExecutionId);this.branches.requireFinalResourceFrontier(resource.executionId,resource.stepExecutionId);}
         if (!this.branches.resourceCanRetire(resource.stepExecutionId,resource.agentIds) || !this.idle(resource.agentIds)) continue;

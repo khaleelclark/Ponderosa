@@ -124,6 +124,7 @@ export interface BranchPackageEngine {
   applyWorkingData(input:ApplyBranchWorkingDataInput,onReceipt:(receipt:BranchWorkingDataApplication)=>void,signal?:AbortSignal):Promise<BranchWorkingDataApplication>;
   inspectCheckpoint(source:CheckpointPackageSource):Promise<CheckpointPackageStatus>;
   captureCheckpoint(source:CheckpointPackageSource,seal?:(receipt:CheckpointPackageReceipt)=>void,options?:{wholeWorkingFolder?:boolean}):Promise<CheckpointPackageReceipt>;
+  captureExpertSnapshot(source:CheckpointPackageSource,sourceProjectId:string,seal:(receipt:CheckpointPackageReceipt)=>void):Promise<CheckpointPackageReceipt>;
   readCheckpoint(receipt:CheckpointPackageReceipt):Promise<AgentPortablePackageDto>;
   readCheckpointBytes(receipt:CheckpointPackageReceipt):Promise<string>;
   verifyCheckpointNow(receipt:CheckpointPackageReceipt):string;
@@ -3265,6 +3266,26 @@ export function registerAgentPackageRoutes(
         }
         return (await composeAgentPackages(inputs)).package;
       },(publish,receipt)=>commitSourceCapture(token,()=>{admit();const result:unknown=seal?.(receipt);if(result&&typeof result==='object'&&'then' in result)throw new Error('Checkpoint sealing must be synchronous');publish();}));}finally{releaseSourceCapture(token);}
+    }),
+    captureExpertSnapshot:(source,sourceProjectId,seal)=>withAgentImportAdmission(async()=>{
+      const frozen={...source,agentIds:[...source.agentIds],intent:{...source.intent}};
+      if(frozen.agentIds.length!==1)throw new Error('Expert copy requires exactly one source Agent');
+      const status=await checkpointCustody.inspect(frozen);
+      if(status.state!=='missing')throw new Error(`Expert snapshot custody ${status.state}; review its existing receipt`);
+      const memory=localMemoryFor(app);
+      if(!memory)throw new Error('Local Memory is unavailable; the expert context cannot be copied');
+      const token=beginSourceCapture(store.sqlite,...await memory.checkpointSourceDatabases());
+      const admit=()=>{
+        const chat=store.getConversation(frozen.sourceChatId),agent=store.getAgent(frozen.agentIds[0]!);
+        if(!chat||chat.projectId!==sourceProjectId||!agent||agent.projectId!==sourceProjectId||agent.conversationId!==chat.id||
+          !activeChatResourceOwner(store,'chat',chat.id)||!activeChatResourceOwner(store,'agent',agent.id)||
+          store.agentCreationPending(agent.id)||deletingAgentIds.has(agent.id)||deletingConversationIds.has(chat.id)||deletingProjectIds.has(sourceProjectId))
+          throw new Error('Expert source identity or ownership changed');
+        memory.assertCheckpointSourceSettled();
+      };
+      try{return await checkpointCustody.capture(frozen,token.boundaryId,async()=>{
+        admit();return buildPortablePackage(frozen.agentIds[0]!,'full',false,[]);
+      },(publish,receipt)=>commitSourceCapture(token,()=>{admit();seal(receipt);publish();}));}finally{releaseSourceCapture(token);}
     }),
     readCheckpoint:receipt=>checkpointCustody.read(receipt),
     readCheckpointBytes:receipt=>checkpointCustody.readBytes(receipt),

@@ -31,7 +31,7 @@ import {
 } from "./project-folders.js";
 
 export type ChatCreator = (input: CreateProjectRequest, idempotencyKey: string,
-  owner?: {branchId:string;executionId?:string}, signal?: AbortSignal) => Promise<ConversationDto>;
+  owner?: {branchId:string;executionId?:string}, signal?: AbortSignal, onCreated?:(chatId:string)=>void) => Promise<ConversationDto>;
 
 interface ProjectRoutesContext {
   store: AgentStore;
@@ -863,7 +863,7 @@ export function registerProjectRoutes(
   };
 
   app.post("/api/projects", async (_request, reply) => reply.code(410).send({ code: "project_namespace_retired", error: "Create a Chat through /api/chats. Project namespaces are retained for storage compatibility." }));
-  const createChat: ChatCreator = async (input,key,owner,signal) => {
+  const createChat: ChatCreator = async (input,key,owner,signal,onCreated) => {
     signal?.throwIfAborted();
     if (owner) {
       if (!store.sqlite.prepare("SELECT 1 FROM branches WHERE id=? AND deleting=0").get(owner.branchId)) throw Object.assign(new Error("Branch owner is unavailable"),{statusCode:404});
@@ -983,7 +983,7 @@ export function registerProjectRoutes(
         ...(resolvedCreation.model ? { defaultModel: resolvedCreation.model } : {}),
         ...(resolvedCreation.effort ? { defaultEffort: resolvedCreation.effort } : {}),
         defaultSpeed: resolvedCreation.speed,
-      }, creationIdentity, chatId => { localMemoryFor(app)?.reserveNewChat(chatId); freshlyCommittedChatId = chatId; });
+      }, creationIdentity, chatId => { onCreated?.(chatId); localMemoryFor(app)?.reserveNewChat(chatId); freshlyCommittedChatId = chatId; });
     } catch (error) {
       const committed = store.getProjectCreation(creationIdentity);
       if (committed) project = committed;
