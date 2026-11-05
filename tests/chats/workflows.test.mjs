@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { AgentStore, WorkspaceStore } from '@ponderosa/agents';
+import { AgentStore, WorkspaceStore, CoordinationV3Store } from '@ponderosa/agents';
 import { processBirthMarker } from '@ponderosa/engines';
 import { withFixture, until, runtimeAttachmentPaths, fixtureTestOptions as options } from '../shared/fixture.mjs';
 
@@ -337,3 +337,51 @@ test('global instruction rejection preserves the store revision and complete sav
     assert.equal(workspace.getPreferences().globalInstructions,saved.globalInstructions);
   } finally { workspace.close(); }
 }));
+
+test('settings-handoff held message uses the existing delivery retry endpoint', options, async t => {
+  let store;
+  await withFixture(t,async f=>{
+    const chat=await f.createChat('Held settings retry'),agent=await f.createIdleAgent(chat,'Reader');
+    await f.hold(agent.id);
+    const marker='Original queued instructions '+randomUUID();
+    await f.send(agent.id,marker,{activeRunDelivery:'queue',model:'fixture',effort:'medium'});
+    const row=store.sqlite.prepare(`SELECT a.id,json_extract(r.payload_json,'$.communication.eventId') AS event_id,a.payload_json
+      FROM agent_activations a JOIN activation_sources s ON s.activation_id=a.id AND s.source_kind='communication'
+      JOIN runtime_communications r ON r.id=s.source_id
+      WHERE a.agent_id=? AND json_extract(r.payload_json,'$.communication.text')=?`).get(agent.id,marker);
+    assert.ok(row?.event_id);
+    const coordination=new CoordinationV3Store(store.sqlite),before=row.payload_json;
+    assert.equal(coordination.holdSettingsTransitionReservation({projectId:chat.projectId,agentId:agent.id,activationId:row.id,fingerprint:'f'.repeat(64)}),true);
+    const receipts=async()=>f.ok(await f.api('POST',`/api/conversations/${chat.id}/message-delivery-receipts`,
+      {communicationEventIds:[row.event_id],activationIds:[]})).items.flatMap(item=>item.deliveryReceipts);
+    let receipt=(await receipts()).find(item=>item.activationId===row.id);
+    assert.equal(receipt.settingsTransitionHold,'retry_available');assert.equal(receipt.canRetry,true);
+    const url=`/api/projects/${chat.projectId}/message-deliveries/${row.id}/retry`,body={idempotencyKey:randomUUID()};
+    const firstResponse=await f.api('POST',url,body);
+    assert.equal(firstResponse.status,202); // Simulate the client losing the accepted response body.
+    const replay=f.ok(await f.api('POST',url,body));
+    assert.equal(replay.replayed,true);assert.equal(replay.activationId,row.id);
+    assert.equal(store.sqlite.prepare('SELECT payload_json FROM agent_activations WHERE id=?').get(row.id).payload_json,before);
+    assert.equal(store.sqlite.prepare('SELECT state FROM agent_activations WHERE id=?').get(row.id).state,'pending');
+    assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(row.id).n,0);
+    assert.equal((await receipts()).find(item=>item.activationId===row.id).settingsTransitionHold,undefined);
+    // A stale action must be refused if a later handoff outcome is unknown.
+    const rollover=randomUUID(),handoff=randomUUID(),now=new Date().toISOString(),scope='conversation:'+chat.id;
+    store.sqlite.prepare(`INSERT INTO context_rollovers(id,project_id,agent_id,state,old_provider_session_id,provider_session_generation,
+      threshold,low_water_mark,compaction_cutoff_ordinal,compaction_cutoff_event_id,recent_tail_event_ids_json,recent_tail_hashes_json,
+      source_run_id,source_activation_ids_json,scope_key,created_at,updated_at,terminal_at)
+      VALUES(?,?,?,'outcome_unknown','old-session','old-session',100,50,1,'event','[]','[]','old-run','[]',?,?,?,?)`)
+      .run(rollover,chat.projectId,agent.id,scope,now,now,now);
+    const payload={rolloverId:rollover,settingsTransition:{activationId:row.id,oldSessionId:'old-session',oldContractHash:'a'.repeat(64)}};
+    store.sqlite.prepare(`INSERT INTO agent_activations(id,project_id,agent_id,kind,priority,dispatch_policy,prompt_class,state,dedupe_key,payload_json,available_at,created_at,updated_at,scope_key)
+      VALUES(?,?,?,'context_rollover_handoff',100,'next_run','blocker','cancelled',?,?,?,?,?,?)`)
+      .run(handoff,chat.projectId,agent.id,handoff,JSON.stringify(payload),now,now,now,scope);
+    store.sqlite.prepare("INSERT INTO activation_sources(activation_id,source_kind,source_id) VALUES(?,'context_rollover',?)").run(handoff,rollover);
+    receipt=(await receipts()).find(item=>item.activationId===row.id);
+    assert.equal(receipt.settingsTransitionHold,'review_required');assert.equal(receipt.canRetry,undefined);
+    assert.equal((await f.api('POST',url,{idempotencyKey:randomUUID()})).status,409);
+    assert.equal(store.sqlite.prepare('SELECT state FROM agent_activations WHERE id=?').get(handoff).state,'cancelled');
+    assert.equal(store.sqlite.prepare('SELECT payload_json FROM agent_activations WHERE id=?').get(row.id).payload_json,before);
+    assert.equal(f.turns.filter(turn=>turn.agentId===agent.id).length,1,'retry does not send the queued instructions to the active provider');
+  },{storeFactory:root=>store=new AgentStore(root)});
+});

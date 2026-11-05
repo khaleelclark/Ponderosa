@@ -106,3 +106,79 @@ test('an exact unresolved Decision accounting hold is visible only on its origin
  db.prepare("UPDATE required_reply_obligations SET blocking_decision_id='real-pending-decision' WHERE run_id=? AND source_activation_id=?").run(run,root.activationId);
  assert.equal(restored.deliveryReceiptsForCommunication(project,root.id)[0].taskDecisionRepairHold,undefined,'a normal Decision wait alone is not a repair failure');
 });
+
+test('settings handoff receipt retries only provably unstarted original delivery', t => {
+  const db=openCurrentMemoryDatabase();t.after(()=>db.close());
+  const project=randomUUID(),chat=randomUUID(),agent=randomUUID(),now=new Date().toISOString(),scope='conversation:'+chat;
+  db.prepare('INSERT INTO projects(id,label,host_path,created_at) VALUES(?,?,?,?)').run(project,'Task','/unused',now);
+  db.prepare('INSERT INTO conversations(id,project_id,title,created_at,updated_at) VALUES(?,?,?,?,?)').run(chat,project,'Task',now,now);
+  db.prepare('INSERT INTO agents(id,project_id,conversation_id,title,handle,active_engine,active_session_id,active_session_contract_hash,created_at,updated_at,working_copy_json) VALUES(?,?,?,?,?,?,?,?,?,?,?)')
+    .run(agent,project,chat,'Worker','worker','codex','old-session','a'.repeat(64),now,now,'{}');
+  db.prepare('INSERT INTO agent_conversation_memberships(agent_id,conversation_id,position) VALUES(?,?,0)').run(agent,chat);
+  const v3=new CoordinationV3Store(db);
+  const message=text=>{
+    const id=randomUUID(),sender={kind:'user',userId:'local-operator'},audience={kind:'organization',organizationId:project};
+    const communication={schemaVersion:2,eventId:id,projectId:project,conversationId:chat,sender,intent:'broadcast',audience,text,createdAt:now};
+    const saved=v3.recordRuntimeCommunication({id,projectId:project,scopeKey:scope,sender,intent:'broadcast',audience,
+      payload:{communication,dispatch:{model:'chosen-model',effort:'high'}},now,
+      activation:{agentId:agent,kind:'human_message',priority:100,dispatchPolicy:'next_run',promptClass:'human'}});
+    return {id,activationId:saved.activationId};
+  };
+  const first=message('Original instructions and attachments');
+  const original=db.prepare('SELECT payload_json FROM agent_activations WHERE id=?').get(first.activationId).payload_json;
+  const before=db.prepare('SELECT source_kind,source_id FROM activation_sources WHERE activation_id=? ORDER BY source_kind,source_id').all(first.activationId);
+  assert.equal(v3.holdSettingsTransitionReservation({projectId:project,agentId:agent,activationId:first.activationId,fingerprint:'b'.repeat(64)}),true);
+  db.exec('SAVEPOINT nonoperator');
+  try {
+    db.prepare("UPDATE runtime_communications SET sender_json=? WHERE id=?").run(JSON.stringify({kind:'agent',agentId:agent}),first.id);
+    const peerReceipt=v3.deliveryReceiptsForCommunication(project,first.id)[0];
+    if (peerReceipt) { assert.equal(peerReceipt.settingsTransitionHold,'review_required');assert.equal(peerReceipt.canRetry,undefined); }
+    assert.equal(v3.retryMessageDelivery({projectId:project,activationId:first.activationId,idempotencyKey:'nonoperator'}).accepted,false);
+  } finally { db.exec('ROLLBACK TO nonoperator; RELEASE nonoperator'); }
+  let receipt=v3.deliveryReceiptsForCommunication(project,first.id)[0];
+  assert.equal(receipt.settingsTransitionHold,'retry_available'); assert.equal(receipt.canRetry,true);assert.equal(receipt.retryMayDuplicate,undefined);
+  const attempt={projectId:project,activationId:first.activationId,idempotencyKey:'first-explicit-retry'};
+  const done=v3.retryMessageDelivery(attempt);assert.equal(done.accepted,true);assert.equal(done.activationId,first.activationId);
+  assert.equal(v3.retryMessageDelivery(attempt).replayed,true);
+  assert.equal(db.prepare('SELECT payload_json FROM agent_activations WHERE id=?').get(first.activationId).payload_json,original);
+  assert.deepEqual(db.prepare('SELECT source_kind,source_id FROM activation_sources WHERE activation_id=? ORDER BY source_kind,source_id').all(first.activationId),before);
+  assert.equal(db.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(first.activationId).n,0);
+  assert.equal(v3.deliveryReceiptsForCommunication(project,first.id)[0].settingsTransitionHold,undefined);
+
+  const second=message('Preserve the second exact task'),rollover=randomUUID(),handoff=randomUUID();
+  db.prepare(`INSERT INTO context_rollovers(id,project_id,agent_id,state,old_provider_session_id,provider_session_generation,
+    threshold,low_water_mark,compaction_cutoff_ordinal,compaction_cutoff_event_id,recent_tail_event_ids_json,recent_tail_hashes_json,source_run_id,source_activation_ids_json,scope_key,created_at,updated_at,terminal_at)
+    VALUES(?,?,?,'failed','old-session','old-session',100,50,1,'synthetic-event','[]','[]','old-run','[]',?,?,?,?)`).run(rollover,project,agent,scope,now,now,now);
+  const payload={rolloverId:rollover,settingsTransition:{activationId:second.activationId,oldSessionId:'old-session',oldContractHash:'a'.repeat(64),targetModel:'new'}};
+  db.prepare(`INSERT INTO agent_activations(id,project_id,agent_id,kind,priority,dispatch_policy,prompt_class,state,dedupe_key,payload_json,available_at,created_at,updated_at,scope_key)
+    VALUES(?,?,?,'context_rollover_handoff',100,'next_run','blocker','cancelled',?,?,?,?,?,?)`)
+    .run(handoff,project,agent,handoff,JSON.stringify(payload),now,now,now,scope);
+  db.prepare("INSERT INTO activation_sources(activation_id,source_kind,source_id) VALUES(?,'context_rollover',?)").run(handoff,rollover);
+  const secondPayload=db.prepare('SELECT payload_json FROM agent_activations WHERE id=?').get(second.activationId).payload_json;
+  receipt=v3.deliveryReceiptsForCommunication(project,second.id)[0];
+  assert.equal(receipt.settingsTransitionHold,'retry_available');assert.equal(receipt.canRetry,true);
+  // An older receipt cannot override a later unknown outcome.
+  db.prepare("UPDATE context_rollovers SET state='outcome_unknown' WHERE id=?").run(rollover);
+  receipt=v3.deliveryReceiptsForCommunication(project,second.id)[0];
+  assert.equal(receipt.settingsTransitionHold,'review_required');assert.equal(receipt.canRetry,undefined);
+  assert.equal(v3.retryMessageDelivery({projectId:project,activationId:second.activationId,idempotencyKey:'stale-unknown'}).accepted,false);
+  assert.equal(db.prepare('SELECT state FROM agent_activations WHERE id=?').get(handoff).state,'cancelled');
+  // Even a failure status is insufficient if a handoff Run was ever attached.
+  db.prepare("UPDATE context_rollovers SET state='failed' WHERE id=?").run(rollover);
+  const run=randomUUID();
+  db.prepare("INSERT INTO scheduler_runs(id,project_id,agent_id,status,lease_owner,lease_expires_at,fencing_token,prompt_injection_state,heartbeat_at,created_at,updated_at,scope_key) VALUES(?,?,?,'failed','fixture',?,1,'not_injected',?,?,?,?)")
+    .run(run,project,agent,now,now,now,now,scope);
+  db.prepare('INSERT INTO scheduler_run_activations(run_id,activation_id,attached_at) VALUES(?,?,?)').run(run,handoff,now);
+  assert.equal(v3.deliveryReceiptsForCommunication(project,second.id)[0].settingsTransitionHold,'review_required');
+  assert.equal(v3.retryMessageDelivery({projectId:project,activationId:second.activationId,idempotencyKey:'stale-attached'}).accepted,false);
+  db.prepare('DELETE FROM scheduler_run_activations WHERE run_id=? AND activation_id=?').run(run,handoff);
+  assert.equal(v3.deliveryReceiptsForCommunication(project,second.id)[0].settingsTransitionHold,'retry_available');
+  const secondAttempt={projectId:project,activationId:second.activationId,idempotencyKey:'second-explicit-retry'};
+  const retried=v3.retryMessageDelivery(secondAttempt);
+  assert.equal(retried.accepted,true);assert.equal(retried.activationId,second.activationId);
+  assert.equal(db.prepare('SELECT state FROM context_rollovers WHERE id=?').get(rollover).state,'requested');
+  assert.equal(db.prepare('SELECT state FROM agent_activations WHERE id=?').get(handoff).state,'pending');
+  assert.equal(db.prepare('SELECT payload_json FROM agent_activations WHERE id=?').get(second.activationId).payload_json,secondPayload);
+  assert.equal(db.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(second.activationId).n,0);
+  assert.equal(v3.retryMessageDelivery(secondAttempt).replayed,true);
+});

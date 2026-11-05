@@ -365,3 +365,25 @@ test('captured send acquires the latest durable marker after another tab release
   assert.equal(observed?.dispatchStarted, true, 'the second tab must use the current durable dispatch marker');
   assert.equal(observed?.status, 'unknown');
 });
+
+test('settings handoff receipt exposes retry only for a provably unstarted hold', async () => {
+  const calls=[];
+  const render=status({state:'unconfirmed',settingsTransitionHold:'retry_available',canRetry:true},
+    {retryMessageDelivery:async (...args)=>calls.push(args)});
+  const nodes=render(),announcement=nodes.find(node=>node.props.role==='status');
+  assert.match(text(announcement),/original message remains queued/u);
+  assert.ok(nodes.some(node=>node.type===mui.Typography&&text(node)==='Context handoff held'));
+  const retry=nodes.find(node=>node.type===mui.Button&&text(node)==='Try Delivery Again');
+  assert.ok(retry);retry.props.onClick();
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(calls.length,1);assert.equal(calls[0][0],'project');assert.equal(calls[0][1],'delivery-a');
+  assert.equal(calls[0][2].idempotencyKey,'fixture-id');
+  assert.deepEqual(Object.keys(calls[0][2]),['idempotencyKey']);
+  assert.ok(!nodes.some(node=>node.type===mui.Button&&text(node)==='Cancel Delivery'));
+  const both=status({state:'unconfirmed',settingsTransitionHold:'review_required',taskDecisionRepairHold:true,canRetry:true})();
+  assert.match(text(both.find(node=>node.props.role==='status')),/Decision status.*Context refresh also could not safely continue/u);
+  assert.ok(!both.some(node=>node.type===mui.Button&&/Try Delivery Again|Review interrupted work|Cancel Delivery/u.test(text(node))));
+  const uncertain=status({state:'unconfirmed',settingsTransitionHold:'review_required',canRetry:true})();
+  assert.match(text(uncertain.find(node=>node.props.role==='status')),/review the Agent’s activity/u);
+  assert.ok(!uncertain.some(node=>node.type===mui.Button&&/Try Delivery Again|Review interrupted work|Cancel Delivery/u.test(text(node))));
+});

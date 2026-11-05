@@ -1,3 +1,4 @@
+import { settingsTransitionDeliveryHolds } from "./coordination-v3-settings-transition-hold.js";
 import {heldTaskDecisionRepairs,heldTaskDecisionRepairRuns} from './coordination-v3-task-decision-repair-hold.js';
 import type Database from "better-sqlite3";
 import type { RetryMessageDeliveryResponse } from "@ponderosa/core";
@@ -146,6 +147,28 @@ export class CoordinationV3ActivationCommandAuthority {
         || (held && heldTaskDecisionRepairRuns(this.sqlite,input.projectId,[held.candidate_run_id]).has(held.candidate_run_id))) return {
         accepted:false,replayed:false,state:"not_retryable",rejectionReason:"not_terminal",
       };
+      const settingsHold=settingsTransitionDeliveryHolds(this.sqlite,input.projectId,[original.id]).get(original.id);
+      if (settingsHold) {
+        if (!settingsHold.retryable || held || input.expectedRolloverAttemptId) return {
+          accepted:false,replayed:false,state:"not_retryable",rejectionReason:"not_terminal",
+        };
+        if (settingsHold.rolloverId && settingsHold.handoffId) {
+          const changed=this.sqlite.prepare(`UPDATE context_rollovers SET state='requested',last_error=NULL,
+            failure_signal=NULL,failure_provenance='internal',terminal_at=NULL,updated_at=?
+            WHERE id=? AND project_id=? AND agent_id=? AND state='failed' AND handoff_event_id IS NULL
+              AND replacement_run_id IS NULL`).run(now,settingsHold.rolloverId,original.project_id,original.agent_id);
+          const handoff=this.sqlite.prepare(`UPDATE agent_activations SET state='pending',terminal_at=NULL,
+            last_delivery_error=NULL,available_at=?,updated_at=? WHERE id=? AND kind='context_rollover_handoff' AND state='cancelled'`)
+            .run(now,now,settingsHold.handoffId);
+          if(changed.changes!==1||handoff.changes!==1) throw Error('Settings transition changed before retry');
+        }
+        this.sqlite.prepare("DELETE FROM activation_sources WHERE activation_id=? AND source_kind='settings_transition_reservation_wait'").run(original.id);
+        const result: Omit<RetryMessageDeliveryResponse,"replayed">={
+          accepted:true,state:'queued',activationId:original.id,targetAgentId:original.agent_id,
+        };
+        this.recordIdempotency(input.projectId,'user:local-operator','retry_message_delivery',input.idempotencyKey,hash,result,now);
+        return {...result,replayed:false};
+      }
       if (held) {
         if (!canRetryHeldHumanRollover(held) || input.expectedRolloverAttemptId !== held.continuation_activation_id) return {
           accepted:false,replayed:false,state:"not_retryable",rejectionReason:"not_terminal",

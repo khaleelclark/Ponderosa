@@ -701,6 +701,15 @@ export function registerQueuedMessageRoutes(
         const status = result.rejectionReason === "not_found" ? 404 : 409;
         return reply.code(status).send(result satisfies RetryMessageDeliveryResponse);
       }
+      if (!result.replayed && result.activationId === activationId) bestEffort(() => {
+        const notification=workspace.getNotificationByDedupeKey(`settings-transition:${activationId}`);
+        if (notification && ["operational","information"].includes(notification.kind) &&
+            (notification.status??"open")==="open") {
+          const cursor=workspace.cursor();
+          workspace.setNotificationStatus(notification.id,"resolved");
+          publishWorkspaceSince(cursor);
+        }
+      });
       bestEffort(notifyScheduler);
       bestEffort(() => publishMessageDeliveryChanged(result.targetAgentId!));
       return reply.code(202).send(result satisfies RetryMessageDeliveryResponse);

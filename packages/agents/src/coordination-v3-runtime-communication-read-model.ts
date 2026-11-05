@@ -1,3 +1,4 @@
+import { settingsTransitionDeliveryHolds } from "./coordination-v3-settings-transition-hold.js";
 import {heldTaskDecisionRepairs,heldTaskDecisionRepairRuns} from './coordination-v3-task-decision-repair-hold.js';
 import {heldHumanRollovers,heldHumanRolloverKey,canRetryHeldHumanRollover} from './coordination-v3-rollover-held-task.js';
 import { providerResetAt, PROVIDER_QUOTA_LIMITS, type ProviderQuotaLimit, PONDEROSA_BROWSER_TOOLS, type MessageDeliveryReceiptDto } from "@ponderosa/core";
@@ -582,6 +583,7 @@ export class CoordinationV3RuntimeCommunicationReadModel {
     })));
     const decisionRepairRuns = heldTaskDecisionRepairRuns(this.sqlite,projectId,[...new Set([...heldRollovers.values()].map(held=>held.candidate_run_id))]);
     const injections = latestInjections(selected.map(activation => activation.id));
+    const settingsHolds = settingsTransitionDeliveryHolds(this.sqlite,projectId,selected.map(activation=>activation.id));
     const failures = this.deliveryProviderFailures(projectId, selected.map(activation => activation.id));
     const recoveries = new Map(selected.map(activation => {
       const injection = injections.get(activation.id);
@@ -620,9 +622,10 @@ export class CoordinationV3RuntimeCommunicationReadModel {
         const recoveryInjection = recovery?.recovery_activation_id
           ? recoveryInjections.get(recovery.recovery_activation_id) : undefined;
         const heldRollover = heldRollovers.get(heldHumanRolloverKey(activation.id,activation.communication_event_id));
+        const settingsHold = settingsHolds.get(activation.id);
         const decisionRepair = decisionRepairs.has(heldRollover?.root_activation_id ?? activation.id) || Boolean(heldRollover && decisionRepairRuns.has(heldRollover.candidate_run_id));
         let state: MessageDeliveryReceiptDto["state"];
-        if (decisionRepair) state = "unconfirmed";
+        if (settingsHold || decisionRepair) state = "unconfirmed";
         else if (heldRollover) state = "run_unconfirmed";
         else if (requiredReplyExhausted) state = "retry_exhausted";
         else if (activation.state === "outcome_unknown") {
@@ -668,6 +671,7 @@ export class CoordinationV3RuntimeCommunicationReadModel {
             : {}),
           state,
           ...(decisionRepair ? {taskDecisionRepairHold:true as const} : {}),
+          ...(settingsHold ? {settingsTransitionHold:settingsHold.retryable && !heldRollover && !decisionRepair ? "retry_available" as const : "review_required" as const} : {}),
           ...(heldRollover ? {contextRolloverHold:!decisionRepair && canRetryHeldHumanRollover(heldRollover)
             ? "retry_available" as const : "review_required" as const,
             contextRolloverAttemptId:heldRollover.continuation_activation_id} : {}),
@@ -691,8 +695,10 @@ export class CoordinationV3RuntimeCommunicationReadModel {
               : "unconfirmed" as const,
           } : {}),
           ...(
-            (state === "undelivered" || state === "run_unconfirmed" || state === "retry_exhausted" || state === "failed")
-            && !decisionRepair && (!heldRollover || canRetryHeldHumanRollover(heldRollover))
+            ((settingsHold?.retryable === true) || (!settingsHold &&
+              (state === "undelivered" || state === "run_unconfirmed" || state === "retry_exhausted" || state === "failed")))
+            && !decisionRepair && (!settingsHold || !heldRollover)
+            && (!heldRollover || canRetryHeldHumanRollover(heldRollover))
             && recipientCurrentlyAuthorized
             && this.runtimeScopeAuthority.recipientAuthorizedForActivationScope(
               activation.project_id,
