@@ -678,6 +678,76 @@ export class LocalMemoryService{
    return changed?'changed':this.acceptTransitionSourceEpochs(epochs)?'valid':recordedSources?'unavailable':'unknown';
   }catch{return recordedSources?'unavailable':'unknown';}
  }
+ /** Revalidate retained, actually disclosed memory before provider admission.
+  * The returned synchronous fence is suitable for the native open/write
+  * boundaries; it stores only source scopes and mutation epochs. The caller
+  * must separately fence the exact current Run and lease at each boundary. */
+ async prepareRetainedInputProof(input:{agentId:string;chatId:string;sessionId:string;originRunId:string;sourceRunId:string;currentRunId:string}):
+  Promise<{status:'valid'|'unknown'|'changed'|'unavailable';isCurrent:()=>boolean}>{
+  const {agentId,chatId,sessionId,originRunId,sourceRunId,currentRunId}=input;
+  const status=await this.retainedMemoryExposureStatus(agentId,chatId,sessionId,originRunId,sourceRunId);
+  if(status==='changed'||status==='unavailable')return {status,isCurrent:()=>false};
+  try{
+   const db=this.ports.store.sqlite,agent=this.ports.store.getAgent(agentId),owner=activeChatResourceOwner(this.ports.store,'agent',agentId);
+   const runRow=db.prepare('SELECT fencing_token,scope_key,provider_session_id,status,prompt_injection_state FROM scheduler_runs WHERE id=? AND agent_id=?');
+   const origin=runRow.get(originRunId,agentId) as {fencing_token:number;scope_key:string;provider_session_id:string|null;status:string;prompt_injection_state:string}|undefined;
+   const source=runRow.get(sourceRunId,agentId) as typeof origin;
+   if(!agent||agent.conversationId!==chatId||!owner||owner.executionId||!origin||!source||
+      origin.scope_key!==source.scope_key||origin.fencing_token>source.fencing_token||
+      origin.provider_session_id!==sessionId||source.provider_session_id!==sessionId||
+      origin.status!=='completed'||source.status!=='completed'||origin.prompt_injection_state!=='injected'||source.prompt_injection_state!=='injected'||
+      this.ports.store.resumeSessionState(agentId)?.sessionId!==sessionId)return {status:'unavailable',isCurrent:()=>false};
+   const product:ProductScope=owner.branchId?'branches':'dev',initialGrant=this.getGrant(chatId,product);
+   const initialReadDenied=new CapabilityPolicyStore(db).resolveForAgent(agentId).restrictedCapabilityIds.includes(CAPABILITY_IDS.memoryRead);
+   const sameOwner=()=>{
+    const current=this.ports.store.getAgent(agentId),currentOwner=activeChatResourceOwner(this.ports.store,'agent',agentId);
+    const latest=db.prepare(`SELECT id,fencing_token FROM scheduler_runs WHERE agent_id=? AND scope_key=?
+      AND provider_session_id=? AND status='completed' AND prompt_injection_state='injected' ORDER BY fencing_token DESC LIMIT 1`)
+      .get(agentId,source.scope_key,sessionId) as {id:string;fencing_token:number}|undefined;
+    const uncertain=db.prepare(`SELECT 1 FROM scheduler_runs r WHERE r.agent_id=? AND r.scope_key=? AND r.id<>? AND
+      (r.status IN ('leased','running','outcome_unknown') OR r.prompt_injection_state='injecting'
+       OR EXISTS(SELECT 1 FROM scheduler_prompt_injections i WHERE i.run_id=r.id AND i.state='outcome_unknown')) LIMIT 1`)
+      .get(agentId,source.scope_key,currentRunId);
+    return !uncertain&&!!current&&current.projectId===agent.projectId&&current.conversationId===chatId&&!!currentOwner&&
+      currentOwner.projectId===owner.projectId&&currentOwner.branchId===owner.branchId&&!currentOwner.executionId&&
+      this.ports.store.resumeSessionState(agentId)?.sessionId===sessionId&&
+      this.ports.store.acceptedProviderSessionInput(agentId)?.executionId===originRunId&&
+      latest?.id===sourceRunId&&latest.fencing_token===source.fencing_token;
+   };
+   if(status==='unknown'){
+    // An older session may lack source receipts. Preserve ordinary behavior,
+    // but hold on an observed possible prior revocation or a new one.
+    const manifest=this.ports.store.getProviderInput(originRunId,true)?.sourceManifest;
+    const oldRestrictions=manifest?.schemaVersion===3?manifest.normalRuntimeContract?.capabilityRestrictions:undefined;
+    if(this.legacyPossibleGlobalRevocation(agentId,chatId,originRunId)||
+       initialReadDenied&&oldRestrictions&&!oldRestrictions.restrictedCapabilityIds.includes(CAPABILITY_IDS.memoryRead))
+      return {status:'unavailable',isCurrent:()=>false};
+    return {status,isCurrent:()=>{try{
+     this.live();if(!sameOwner())return false;
+     const denied=new CapabilityPolicyStore(db).resolveForAgent(agentId).restrictedCapabilityIds.includes(CAPABILITY_IDS.memoryRead);
+     return (initialReadDenied||!denied)&&(!initialGrant.readGlobal||this.getGrant(chatId,product).readGlobal);
+    }catch{return false;}}};
+   }
+   const floor=this.memoryLineageStart(agentId,chatId,originRunId);
+   if(floor===undefined)return {status:'unavailable',isCurrent:()=>false};
+   const refs=db.prepare(`SELECT DISTINCT e.scope FROM memory_exposure_sources e JOIN scheduler_runs r ON r.id=e.run_id
+    WHERE r.agent_id=? AND r.scope_key=? AND r.fencing_token>=? AND r.fencing_token<=?`)
+    .all(agentId,source.scope_key,floor,source.fencing_token) as Array<{scope:string}>;
+   const epochs=db.prepare(`SELECT e.run_id,e.mutation_epoch,e.checked_epoch FROM memory_exposure_runs e JOIN scheduler_runs r ON r.id=e.run_id
+    WHERE r.agent_id=? AND r.scope_key=? AND r.fencing_token>=? AND r.fencing_token<=?`)
+    .all(agentId,source.scope_key,floor,source.fencing_token) as Array<{run_id:string;mutation_epoch:number;checked_epoch:number}>;
+   if(epochs.some(row=>row.mutation_epoch!==row.checked_epoch))return {status:'unavailable',isCurrent:()=>false};
+   const global=refs.some(row=>row.scope==='global');
+   return {status,isCurrent:()=>{try{
+    this.live();if(!sameOwner())return false;
+    if(refs.length&&new CapabilityPolicyStore(db).resolveForAgent(agentId).restrictedCapabilityIds.includes(CAPABILITY_IDS.memoryRead))return false;
+    if(global&&!this.getGrant(chatId,product).readGlobal)return false;
+    const check=db.prepare('SELECT mutation_epoch,checked_epoch FROM memory_exposure_runs WHERE run_id=?');
+    return epochs.every(row=>{const live=check.get(row.run_id) as {mutation_epoch:number;checked_epoch:number}|undefined;
+     return !!live&&live.mutation_epoch===row.mutation_epoch&&live.checked_epoch===row.mutation_epoch;});
+   }catch{return false;}}};
+  }catch{return {status:'unavailable',isCurrent:()=>false};}
+ }
  private noteMemoryAttempt(token:string,operation:string){
   const cap=this.ports.capabilities.get(token),entry=cap&&this.unusedMemoryRuns.get(cap.agentId);
   if(!cap)return undefined;

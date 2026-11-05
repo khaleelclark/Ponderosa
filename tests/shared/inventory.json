@@ -1678,6 +1678,14 @@
       "requirements": "Node24, built workspaces, inert provider fixture and private state"
     },
     {
+      "path": "tests/context-recovery/retained-memory-admission.test.mjs",
+      "feature": "context-recovery",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server, inert Codex and disposable Chroma with the pinned memory model",
+      "origin": "Retained memory admission tracks disclosed source access and mutation"
+    },
+    {
       "path": "tests/context-recovery/durable-memory-transition.test.mjs",
       "feature": "context-recovery",
       "lane": "server",
