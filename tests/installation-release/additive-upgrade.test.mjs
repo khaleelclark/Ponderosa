@@ -9,7 +9,7 @@ import {AgentStore} from '@ponderosa/agents';
 import {initializePredecessorSchema} from '../../packages/agents/dist/db.js';
 const require=createRequire(new URL('../../packages/agents/package.json',import.meta.url));
 const Database=require('better-sqlite3');
-const versions=['0027_schedule_work_lookup.sql','0028_capability_policy_history.sql','0029_assistant_workspace.sql','0030_agent_run_pauses.sql','0031_branch_initial_checkpoints.sql','0032_branch_unit_snapshots.sql','0033_branch_checkpoint_invocations.sql','0042_destination_retained_sources.sql','0043_package_export_cache.sql','0044_memory_scope_provisioning.sql','0045_agent_import_submission_intents.sql'];
+const versions=['0027_schedule_work_lookup.sql','0028_capability_policy_history.sql','0029_assistant_workspace.sql','0030_agent_run_pauses.sql','0031_branch_initial_checkpoints.sql','0032_branch_unit_snapshots.sql','0033_branch_checkpoint_invocations.sql','0042_destination_retained_sources.sql','0043_package_export_cache.sql','0044_memory_scope_provisioning.sql','0045_agent_import_submission_intents.sql','0046_retained_coordination_cut_sources.sql'];
 const quote=name=>'"'+name.replaceAll('"','""')+'"';
 
 const cases=[...versions.map(version=>({version,shape:'current-prefix'})),
@@ -68,6 +68,8 @@ for(const {version,shape} of cases)test(`populated exact additive predecessor ${
   const found=store.sqlite.prepare("SELECT communication_event_id,text FROM compaction_history_fts WHERE compaction_history_fts MATCH 'evergreen'").get();
   assert.deepEqual(found,{communication_event_id:eventId,text:'Evergreen audit proof'});
   assert.ok(store.sqlite.prepare("SELECT 1 FROM sqlite_master WHERE name='provider_context_recovery_requests'").get());
+  assert.ok(store.sqlite.prepare("SELECT 1 FROM sqlite_master WHERE name='memory_exposure_runs'").get());
+  assert.equal(store.sqlite.prepare("SELECT count(*) AS n FROM memory_exposure_runs").get().n,0);
   assert.equal(readFileSync(path.join(data,'.ponderosa-layout-version'),'utf8'),marker);
  }finally{store.close();}
  passed=true;
