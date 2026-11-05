@@ -71,10 +71,16 @@ test('measure six reviewed temporary copies in two overlapping waves',{timeout:2
     const r=readBranchExpertCopy(store.sqlite,item.job.id,item.resource.step_execution_id);assert.ok(r.finalSnapshotReceipt);assert.equal(r.finalVerifiedSha256,r.finalSnapshotReceipt.sha256);
     const details=await f.api('GET',item.url);assert.equal(details.status,200,JSON.stringify(details.body));
     const trace=details.body.temporaryCopyTrace;assert.ok(trace);assert.equal(trace.sourceAgentId,source.id);assert.equal(trace.copyAgentId,r.copyAgentId);assert.equal(trace.requestId,r.requestId);assert.equal(trace.task.input,item.job.input);assert.ok(trace.result);assert.equal(trace.historyAvailable,true);
+    assert.ok(JSON.stringify(trace.task).includes('Synthetic task wave '+wave),'operator trace retains the exact task');
+    assert.ok(JSON.stringify(trace.result).includes('Synthetic completed result '+wave+'-'+(i+1)),'operator trace retains the exact result');
     const readback=await f.api('GET',item.url+'/copy-history');assert.equal(readback.status,200,JSON.stringify(readback.body));
     assert.equal(readback.body.sourceAgentId,source.id);assert.equal(readback.body.copyAgentId,r.copyAgentId);assert.equal(readback.body.requestId,r.requestId);
     assert.ok(readback.body.runs.some(run=>run.agentId===r.copyAgentId&&run.status==='completed'),'operator readback contains the completed copy Run');
     assert.ok(readback.body.events.some(event=>event.agentId===r.copyAgentId),'operator readback contains copy Work log');
+    assert.ok(readback.body.runs.some(run=>run.agentId===source.id),'operator readback contains the source Run');
+    assert.ok(JSON.stringify(readback.body.messages).includes('Synthetic source history marker.'),'operator readback contains the source history');
+    assert.equal(store.getAgent(r.copyAgentId),undefined,'temporary Agent has been deleted');
+    assert.equal(store.getConversation(r.copyChatId),undefined,'temporary Chat has been deleted');
     const original=await inspectPackage(custody,r.snapshotReceipt,source.id),final=await inspectPackage(custody,r.finalSnapshotReceipt,r.copyAgentId);
     const sourceHistory=JSON.stringify(original.node.history??[]),finalHistory=JSON.stringify(final.node.history??[]);
     assert.ok(sourceHistory.includes('Synthetic source history marker.'),'source history retained');
@@ -83,6 +89,7 @@ test('measure six reviewed temporary copies in two overlapping waves',{timeout:2
     const outputArtifact=final.node.artifacts.find(v=>v.ref===output.artifactRef);assert.equal((await decodePortableArtifactData(outputArtifact)).data.toString('utf8'),'Synthetic job-created output for '+r.copyAgentId+'\n');
     const copyArchive=final.archives.find(a=>a.sourceAgentId===r.copyAgentId);assert.ok(copyArchive,'temporary copy execution archive retained');
     assert.ok(copyArchive.runs.some(x=>x.status==='completed'),'completed Run metadata retained');
+    assert.equal(copyArchive.runs.length,1,'this exact copied task had one Run');
     const archived=JSON.stringify({history:final.node.history,archives:final.archives});
     const remainingEvents=store.sqlite.prepare('SELECT count(*) n FROM events WHERE agent_id=?').get(r.copyAgentId).n;
     const remainingRuns=store.sqlite.prepare('SELECT count(*) n FROM scheduler_runs WHERE agent_id=?').get(r.copyAgentId).n;
