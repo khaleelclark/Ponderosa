@@ -59,7 +59,7 @@ export function readRetainedDestinationSource(db:Database.Database,id:string,rea
 export function readRetainedIssuedDestinationSource(db:Database.Database,id:string,readInstallation:InstallationReader) {
  return db.transaction(()=>{
   const retained=readRetainedDestinationSource(db,id,readInstallation);
-  if(retained.installation.data.schema!=='ponderosa.branch-runtime-data.v1')throw Error('Retained issued tree replay is not supported');
+  if(retained.installation.data.schema==='ponderosa.branch-runtime-tree.v1')throw Error('Retained issued tree replay is not supported');
   const source=retained.source;
   const proof=retainedIssuedResourceSource(retained.installation.data,source.original_execution_id,source.original_checkpoint_key,source.original_checkpoint_sha256);
   if(stableJson(proof.selected)!==source.original_snapshot_json)throw Error('Retained issued association selected bytes differ');
@@ -72,7 +72,7 @@ export function retainIssuedDestinationSource(db:Database.Database,input:{planId
  if(!db.inTransaction)throw Error('Retained source creation requires the owner transaction');
  return db.transaction(()=>{
  const saved=readInstallation(input.planId,input.branchId);
- if(!saved||saved.data.schema!=='ponderosa.branch-runtime-data.v1')throw Error('Retained standalone issued installation unavailable');
+ if(!saved||saved.data.schema==='ponderosa.branch-runtime-tree.v1')throw Error('Retained standalone issued installation unavailable');
  const proof=retainedIssuedResourceSource(saved.data,input.originalExecutionId,input.checkpointKey,input.checkpointSha256);
  const receipt=saved.receipt,commandKey=`portable-runtime-manifest:${payloadHash(input.planId)}`;
  const commands=db.prepare('SELECT execution_id FROM branch_commands WHERE command_key=?').all(commandKey) as Row[];

@@ -36,6 +36,14 @@ export function retainedRestorationSnapshot(db:Database.Database,receipt:Row):Ro
 export function restorationOriginalIdentity(receipt:Row,retained?:{source:Row;owners:Row[]}):{executionId:string;branchId:string;checkpointId:number} {
  if(receipt.source_kind!=='retained_foreign')return {executionId:receipt.source_execution_id,branchId:receipt.branch_id,checkpointId:receipt.checkpoint_id};
  if(!retained)throw Error('Retained restoration association missing');
+ if((retained as Row).schema==='ponderosa.retained-source-reference.v1'){
+  const r=retained as Row,map=JSON.parse(receipt.receipt_json);
+  if(r.id!==receipt.retained_source_id||r.id!==map.destination?.retainedSourceId||r.localExecutionId!==receipt.source_execution_id
+   ||r.branchId!==receipt.branch_id||receipt.checkpoint_id!==null||r.checkpointHash!==receipt.cut_hash||r.checkpointId!==map.checkpointId
+   ||typeof r.originalExecutionId!=='string'||typeof r.originalBranchId!=='string'||typeof r.manifestSha256!=='string'||typeof r.installationPlanId!=='string')
+   throw Error('Retained restoration reference differs');
+  return {executionId:r.originalExecutionId,branchId:r.originalBranchId,checkpointId:r.checkpointId};
+ }
  const {source,owners}=retained,{id,...identity}=source;
  const map=JSON.parse(receipt.receipt_json);
  const original=owners.find(o=>o.original_execution_id===source.original_execution_id),owner=original&&JSON.parse(original.owner_json);
@@ -72,7 +80,15 @@ export function captureHostProvenance(db:Database.Database,requests:Row[],update
   const admission=destination?db.prepare("SELECT * FROM coordination_destination_admissions WHERE id=? AND state='admitted'").get(destination.admissionId):undefined;
   if(destination&&!admission)throw Error('Historical destination admission receipt unavailable');
   const retained=receipt.source_kind==='retained_foreign'?readPinnedRetainedIssuedSource(db,receipt.retained_source_id):undefined;
-  return evidence({id,receipt,snapshot,...(admission?{admission}:{}),...(retained?{retainedSource:{source:retained.source,owners:retained.owners}}:{})});
+  const projectedAdmission=admission&&retained?(()=>{
+   const {snapshot_json,...fields}=admission as Row;
+   if(snapshot_json!==saved.snapshot_json)throw Error('Retained admission snapshot differs');
+   return {...fields,snapshot_ref:{sha256:receipt.cut_hash}};
+  })():admission;
+  return evidence({id,receipt,snapshot,...(projectedAdmission?{admission:projectedAdmission}:{}),...(retained?{retainedSource:{schema:'ponderosa.retained-source-reference.v1',id:retained.source.id,
+   branchId:retained.source.branch_id,localExecutionId:retained.source.local_execution_id,originalExecutionId:retained.source.original_execution_id,
+   originalBranchId:retained.proof.owner.sourceBranchId,checkpointId:Number(retained.source.original_checkpoint_key),checkpointHash:retained.source.original_checkpoint_sha256,
+   installationPlanId:retained.source.installation_plan_id,manifestSha256:retained.source.manifest_sha256}}:{})});
  });
  return {restorations,origins};
 }
@@ -110,6 +126,7 @@ class HostFacts {
    if(!mapping||stableJson(Object.keys(mapping).sort())!==stableJson(ids)||new Set(Object.values(mapping)).size!==ids.length||Object.values(mapping).some(value=>typeof value!=='string'||!value||ids.includes(value)))throw Error('Historical provenance canonical map differs');
   }
   if(map.destination){
+   if(proof.row.admission?.snapshot_ref&&(proof.row.admission.snapshot_json!==undefined||stableJson(proof.row.admission.snapshot_ref)!==stableJson({sha256:receipt.cut_hash})))throw Error('Historical admission snapshot reference differs');
    const admission=proof.row.admission,final=admission?.receipt_json&&JSON.parse(admission.receipt_json),reservation=admission?.reservation_json&&JSON.parse(admission.reservation_json),stage=admission?.stage_json&&JSON.parse(admission.stage_json);
    if(!admission||(admission.retained_source_id??null)!==(receipt.retained_source_id??null)||admission.id!==map.destination.admissionId||admission.state!=='admitted'||!final||final.restorationId!==id
     ||final.reservationHash!==admission.reservation_hash||payloadHash(reservation)!==admission.reservation_hash

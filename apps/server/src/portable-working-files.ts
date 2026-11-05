@@ -526,7 +526,7 @@ export async function exportWorkingFiles(rootPath:string,selected:readonly strin
 
 export interface WorkingDirectoryIdentity {device:string;inode:string}
 /** Original directories observed during the byte phase, never late-phase observations. */
-export interface WorkingRootIdentity extends WorkingDirectoryIdentity {directories?:Readonly<Record<string,WorkingDirectoryIdentity>>}
+export interface WorkingRootIdentity extends WorkingDirectoryIdentity {directories?:Readonly<Record<string,WorkingDirectoryIdentity>>;backupDirectory?:WorkingDirectoryIdentity}
 /** Resolve only a directory issued by the original byte phase. Does not inspect the host. */
 export function workingDirectoryIdentity(rootPath:string,issued:WorkingRootIdentity,targetPath:string):WorkingRootIdentity {
   if(!path.isAbsolute(rootPath)||path.resolve(rootPath)!==rootPath||!path.isAbsolute(targetPath)||path.resolve(targetPath)!==targetPath)throw new Error('Directory custody requires canonical destination paths');
@@ -699,6 +699,8 @@ export async function importWorkingFiles(destination:string,files:readonly {path
     issuedIdentity=freshRoot.identity??await observedWorkingRootIdentity(destination);
     await assertWorkingRootIdentity(destination,issuedIdentity);
     await fs.mkdir(freshRoot.backupRoot,{mode:0o700});
+    const backup=await fs.lstat(freshRoot.backupRoot,{bigint:true});
+    issuedIdentity={...issuedIdentity,backupDirectory:{device:String(backup.dev),inode:String(backup.ino)}};
     if(await fs.realpath(freshRoot.backupRoot)!==freshRoot.backupRoot)throw new Error('Recovery folder changed');
   }else{await fs.mkdir(destination,{mode:0o700});issuedIdentity=await observedWorkingRootIdentity(destination);}
   const directoryIdentities:Record<string,WorkingDirectoryIdentity>=Object.create(null);
@@ -753,7 +755,7 @@ export async function importWorkingFiles(destination:string,files:readonly {path
     // Check original directory names before publishing custody. Final metadata
     // may intentionally remove traversal permission, so this precedes it.
     for(const relative of Object.keys(directoryIdentities))await rememberDirectory(relative,path.join(destination,relative));
-    issuedIdentity={device:issuedIdentity.device,inode:issuedIdentity.inode,directories:Object.freeze({...directoryIdentities})};
+    issuedIdentity={device:issuedIdentity.device,inode:issuedIdentity.inode,directories:Object.freeze({...directoryIdentities}),...(issuedIdentity.backupDirectory?{backupDirectory:issuedIdentity.backupDirectory}:{})};
     if(!deferMetadataApplication)await finalizeWorkingFolderMetadata(destination,files,allDirectories,rootMetadata,links,metadataActivation,undefined,issuedIdentity);
     await checkRoot();
     return issuedIdentity;

@@ -5,7 +5,7 @@ import {encodeScriptContinuation} from '../../packages/agents/dist/branch-script
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {CAPABILITY_IDS} from '../../packages/core/dist/index.js';
-import {mkdtempSync,rmSync,mkdirSync,writeFileSync,readFileSync,existsSync,symlinkSync,readlinkSync} from 'node:fs';
+import {mkdtempSync,rmSync,mkdirSync,writeFileSync,readFileSync,existsSync,symlinkSync,readlinkSync,renameSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
@@ -2872,7 +2872,8 @@ for(const [kind,parallel] of [['serial',false],['fork',true],['map','map']])test
   // Re-export and import the already-held owner; its entire original manifest
   // and checkpoint bytes remain nested data without acquiring authority.
   const reexport=await service.export(done.branchId,'full'),nestedOwner=reexport.runtimeData.owners.find(o=>o.sourceExecutionId===readback.receipt.executionMap[f.source.id]);
-  const nested=JSON.parse(nestedOwner.facts.find(v=>v.kind==='import').json);
+  const {runtimeImportEvidence}=await import('../../packages/agents/dist/branch-runtime-package.js');
+  const nested=runtimeImportEvidence(reexport.runtimeData,nestedOwner);
   assert.deepEqual(nested.data,pkg.runtimeData);assert.equal(nested.receipt.currentAuthority,false);assert.equal(nested.receipt.dispatched,false);
   const preview2=await service.preview(reexport,{agents:{},directories:{root:f.dir,workspace:f.dir},engines:{codex:'codex'}});
   const done2=await service.confirm(preview2.id,true,undefined,false,preview2.runtimeDataReview.manifestSha256);
@@ -3095,6 +3096,11 @@ for(const linkedFinal of [false,true])test(linkedFinal?'linked portable final re
   const agent=f.store.getAgent(opened.agentId),root=agent.workingCopy.rootPath;
   assert.equal(root,workspace,'the fixture captures only its disposable working directory');
   const file=join(root,'final-work.txt');writeFileSync(file,'before checkpoint\n');
+  const extraId=randomUUID(),extraBytes=Buffer.from('independent retained attachment 😀');
+  const {publishManagedArtifactContent}=await import('../../packages/agents/dist/managed-artifact-files.js');
+  publishManagedArtifactContent(f.dir,agent.projectId,extraId,extraBytes);
+  f.store.recordProjectArtifact({id:extraId,projectId:agent.projectId,agentId:agent.id,originAgentId:agent.id,kind:'document',path:'independent.txt',summary:'Independent retained attachment',createdAt:new Date().toISOString(),mediaType:'text/plain',visibility:'project',pinned:false,size:extraBytes.length,sha256:hash(extraBytes)});
+
 
   const message=text=>f.store.appendCommunicationEvent({schemaVersion:2,eventId:randomUUID(),projectId:agent.projectId,conversationId:opened.chatId,sender:{kind:'user',userId:'local-operator'},intent:'broadcast',audience:{kind:'organization',organizationId:agent.projectId},text,createdAt:new Date().toISOString()});
   message('before checkpoint history');
@@ -3136,6 +3142,7 @@ for(const linkedFinal of [false,true])test(linkedFinal?'linked portable final re
   installation.setEngine(packageEngine);
   installation.setPublisher((input,configuration)=>f.branches.deploy(input,undefined,undefined,configuration));
   const portable=await installation.export(f.branch.id,'full');
+  assert.equal(portable.runtimeData.schema,'ponderosa.branch-runtime-data.v1','ordinary native exports retain legacy v1');
   const owner=portable.runtimeData.owners.find(o=>o.sourceExecutionId===f.source.id);
   const reconciled=reconcileRetainedFinalResourceRequests(owner,String(final.checkpointId),final.checkpointHash);
   const finalSnapshot=JSON.parse(exit.selectedCheckpoint.snapshot_json);
@@ -3183,6 +3190,8 @@ for(const linkedFinal of [false,true])test(linkedFinal?'linked portable final re
   assert.equal(readFileSync(file,'utf8'),'after checkpoint exact content 😀\n');
   await exerciseForeignFinalDestination(t,portable,f.source.id,final,exit.identity);
   await exerciseForeignFinalDestination(t,portable,f.source.id,final,exit.identity,'failed');
+  await exerciseForeignFinalDestination(t,portable,f.source.id,final,exit.identity,'backup-nonempty');
+  await exerciseForeignFinalDestination(t,portable,f.source.id,final,exit.identity,'backup-replaced');
   const {BranchIssuedDestinationService}=await import('../../apps/server/dist/branch-issued-destination.js');
   const destinations=new BranchIssuedDestinationService(f.store,f.branches,coordination,undefined,()=>packageEngine,async()=>assert.fail('must refuse before creating destination'));
   await assert.rejects(destinations.prepare(f.branch.id,f.source.id,{commandKey:'native-final-folder-probe',checkpointId:final.checkpointId,expectedHash:final.checkpointHash,reconcileEffects:true}),/artifact-free.*native working copies/);
@@ -3200,7 +3209,8 @@ for(const linkedFinal of [false,true])test(linkedFinal?'linked portable final re
  }finally{if(service)await service.stop();await app.close();assets.close();}
 });
 
-async function exerciseForeignFinalDestination(t,portable,originalExecutionId,final,originalIdentity,captureMode='prewrite'){
+async function exerciseForeignFinalDestination(t,portable,originalExecutionId,final,originalIdentity,captureMode='prewrite',portableGeneration=1){
+ console.log('RUNTIME_GENERATION_BYTES',portableGeneration,Buffer.byteLength(stableJson(portable.runtimeData)),'PACKAGE_BYTES',Buffer.byteLength(stableJson(portable)));
  const g=await reservationHistoryFixture(t,'async',false,false,false);
  let coordination,app,assets,packageEngine;
  const Fastify=(await import('fastify')).default,{AssetStore}=await import('../../apps/server/dist/assets.js');
@@ -3214,7 +3224,17 @@ async function exerciseForeignFinalDestination(t,portable,originalExecutionId,fi
  const {restoredRequestUpdatePayload}=await import('../../packages/agents/dist/coordination-v3-cut-restoration-authority.js');
  const openPackages=async()=>{
  coordination=new CoordinationV3Store(g.store.sqlite);app=Fastify();assets=new AssetStore(g.dir);
- ({packageEngine}=registerAgentPackageRoutes(app,{dataDir:g.dir,store:g.store,coordination,assets,workingCopies:new AgentWorkingCopyService(g.dir,g.store),engines:new Map([['codex',{adapter:{id:'codex',listModels:()=>[],listEfforts:()=>[]}}]]),deletingProjectIds:new Set(),deletingConversationIds:new Set(),deletingAgentIds:new Set(),agentCreationConversationLeases:new Map(),cachedModelOptions:()=>[],appendWorkspace(){},agentMessages:id=>g.store.getProjectedAgentMessages(id),createOperationalNotification(){}}));
+ const workingCopies=new AgentWorkingCopyService(g.dir,g.store);
+ if(captureMode.startsWith('backup-')){
+  const populate=workingCopies.populateImportedRoot.bind(workingCopies);
+  workingCopies.populateImportedRoot=async(...args)=>{
+   const identity=await populate(...args),backup=args[5];
+   if(captureMode==='backup-replaced'){renameSync(backup,backup+'-original');mkdirSync(backup);}
+   else writeFileSync(join(backup,'operator-original.txt'),'preserve backup bytes');
+   return identity;
+  };
+ }
+ ({packageEngine}=registerAgentPackageRoutes(app,{dataDir:g.dir,store:g.store,coordination,assets,workingCopies,engines:new Map([['codex',{adapter:{id:'codex',listModels:()=>[],listEfforts:()=>[]}}]]),deletingProjectIds:new Set(),deletingConversationIds:new Set(),deletingAgentIds:new Set(),agentCreationConversationLeases:new Map(),cachedModelOptions:()=>[],appendWorkspace(){},agentMessages:id=>g.store.getProjectedAgentMessages(id),createOperationalNotification(){}}));
  await app.ready();};
  await openPackages();let cleanup;
  try{
@@ -3243,6 +3263,17 @@ async function exerciseForeignFinalDestination(t,portable,originalExecutionId,fi
   });
   let composer=new BranchIssuedDestinationService(g.store,g.branches,coordination,disclosures,captureEngine,createChat);
   const input={commandKey:'foreign-final-continue',checkpointId:final.checkpointId,expectedHash:final.checkpointHash,reconcileEffects:true};
+  if(captureMode.startsWith('backup-')){
+   await assert.rejects(composer.prepare(imported.branchId,sourceId,input),captureMode==='backup-replaced'?/backup ownership changed/:/backup contains retained files/);
+   const pending=composer.list(imported.branchId,sourceId).find(item=>item.commandKey===input.commandKey);
+   assert.equal(pending.state,'import_unknown');assert.equal(pending.restoreSupported,false);
+   const project=g.store.getProject(pending.destination.projectId),backup=join(project.hostPath,'.ponderosa-import-backups');
+   if(captureMode==='backup-replaced'){assert.ok(existsSync(backup));assert.ok(existsSync(backup+'-original'));}
+   else assert.equal(readFileSync(join(backup,'operator-original.txt'),'utf8'),'preserve backup bytes');
+   assert.equal(readFileSync(join(project.hostPath,'final-work.txt'),'utf8'),'after checkpoint exact content 😀\n');
+   assert.equal(g.store.sqlite.prepare('SELECT COUNT(*) n FROM coordination_destination_admissions WHERE state=?').get('admitted').n,0);
+   return;
+  }
   const prepared=await composer.prepare(imported.branchId,sourceId,input);
   assert.equal(prepared.state,'awaiting_disclosure');
   const destination=prepared.destination;
@@ -3315,17 +3346,60 @@ async function exerciseForeignFinalDestination(t,portable,originalExecutionId,fi
   const finalPackage=await packageEngine.readCheckpoint(captured.receipt);
   const finalNode=finalPackage.agents.find(a=>a.ref===mappedAgent),finalFile=finalNode.workingFiles.find(a=>a.path==='final-work.txt');
   assert.ok(finalNode.history.some(message=>message.text==='after checkpoint history 😀'));
+  const sourcePackage=g.branches.issuedDestinationSource(imported.branchId,sourceId,final.checkpointId,final.checkpointHash).proof.selectedCustody.package;
+  const incomingArtifacts=sourcePackage.agents.flatMap(a=>a.artifacts??[]),outgoingArtifacts=finalPackage.agents.flatMap(a=>a.artifacts??[]);
+  for(const bytes of new Set(incomingArtifacts.map(a=>a.dataBase64))){
+   assert.ok(outgoingArtifacts.filter(a=>a.dataBase64===bytes).length>=incomingArtifacts.filter(a=>a.dataBase64===bytes).length,'every imported artifact copy survives final recapture');
+  }
+
 
   assert.equal(Buffer.from(finalNode.artifacts.find(a=>a.ref===finalFile.artifactRef).dataBase64,'base64').toString(),exactContent.toString());
   const sourceWire=g.branches.issuedDestinationSource(imported.branchId,sourceId,final.checkpointId,final.checkpointHash).proof.selectedCustody.wireJson;
   assert.equal(hash(sourceWire),final.receipt.sha256);
   const secondPackage=await installation.export(imported.branchId,'full');
-  const secondPreview=await installation.preview(secondPackage,{agents:{},directories:{root:g.dir,workspace:g.dir},engines:{codex:'codex'}});
-  const secondImport=await installation.confirm(secondPreview.id,true,undefined,false,secondPreview.runtimeDataReview.manifestSha256);
-  assert.equal(secondImport.state,'completed',secondImport.error);
-  const secondHeld=installation.runtimeData(secondPreview.id,secondImport.branchId),secondSource=secondHeld.receipt.executionMap[destination.executionId];
-  assert.throws(()=>g.branches.issuedDestinationSource(secondImport.branchId,secondSource,captured.checkpointId,captured.checkpointHash),/Final-resource selected or final frontier replay unsupported/);
-  assert.equal(secondHeld.receipt.dispatched,false,'second generation travels as held evidence; executable repeat portability is not qualified');
+  assert.equal(secondPackage.runtimeData.schema,'ponderosa.branch-runtime-data.v2');
+  const {captureBranchRuntimeData}=await import('../../packages/agents/dist/branch-runtime-package.js');
+  const calledCapture=captureBranchRuntimeData(g.store.sqlite,imported.branchId,secondPackage.runtimeData.identities.chats,secondPackage.runtimeData.identities.agents,true);
+  assert.equal(calledCapture.schema,'ponderosa.branch-runtime-data.v2','called-tree capture marks compact provenance version too');
+
+  console.log('RUNTIME_GENERATION_BYTES',portableGeneration+1,Buffer.byteLength(stableJson(secondPackage.runtimeData)),'PACKAGE_BYTES',Buffer.byteLength(stableJson(secondPackage)));
+  assert.ok(Buffer.byteLength(stableJson(secondPackage.runtimeData))<16*1024*1024,'tiny repeated fixture stays below the unchanged32MiB limit');
+  if(portableGeneration>=2){
+   const {validateBranchRuntimeData}=await import('../../packages/agents/dist/branch-runtime-package.js');
+   const sharedOwner=secondPackage.runtimeData.owners.find(o=>o.facts.some(f=>f.kind==='import'&&JSON.parse(f.json).schema==='ponderosa.runtime-import-reference.v1'));
+   assert.ok(sharedOwner,'third package shares its repeated import manifest');
+   for(const mutation of ['missing-target','digest','cycle']){
+    const data=structuredClone(secondPackage.runtimeData),owner=data.owners.find(o=>o.sourceExecutionId===sharedOwner.sourceExecutionId);
+    const fact=owner.facts.find(f=>f.kind==='import'),ref=JSON.parse(fact.json);
+    if(mutation==='missing-target')ref.ownerId='absent-owner';
+    if(mutation==='digest')ref.sha256='0'.repeat(64);
+    if(mutation==='cycle')ref.ownerId=owner.sourceExecutionId;
+    fact.json=stableJson(ref);fact.sha256=hash(fact.json);
+    const {sha256,...ownerFields}=owner;owner.sha256=hash(stableJson(ownerFields));
+    const {sha256:old,...fields}=data;data.sha256=hash(stableJson(fields));
+    assert.throws(()=>validateBranchRuntimeData(data),/reference/);
+   }
+  }
+
+  if(portableGeneration<3){
+   const {retainedIssuedResourceSource}=await import('../../packages/agents/dist/branch-issued-resource-continuation.js');
+   const repeatProof=retainedIssuedResourceSource(secondPackage.runtimeData,destination.executionId,String(captured.checkpointId),captured.checkpointHash);
+   assert.equal(repeatProof.finalExit.identity.executionId,destination.executionId);
+   for(const mutation of ['plan-map','missing-prior-owner']){
+    const changed=structuredClone(secondPackage.runtimeData),sourceOwner=changed.owners.find(o=>o.sourceExecutionId===sourceId);
+    assert.ok(sourceOwner);
+    if(mutation==='missing-prior-owner')changed.owners=changed.owners.filter(o=>o!==sourceOwner);
+    else{
+     const fact=sourceOwner.facts.find(f=>f.kind==='command'&&f.key==='issued-destination:'+hash(stableJson(input.commandKey))),command=JSON.parse(fact.json),plan=JSON.parse(command.result_json);
+     plan.idMap[Object.keys(plan.idMap)[0]]='different-restored-prefix';command.result_json=stableJson(plan);
+     fact.json=stableJson(command);fact.sha256=hash(fact.json);
+     const {sha256,...fields}=sourceOwner;sourceOwner.sha256=hash(stableJson(fields));
+    }
+    const {sha256,...fields}=changed;changed.sha256=hash(stableJson(fields));
+    assert.throws(()=>retainedIssuedResourceSource(changed,destination.executionId,String(captured.checkpointId),captured.checkpointHash));
+   }
+   await exerciseForeignFinalDestination(t,secondPackage,destination.executionId,captured,currentExit.identity,'prewrite',portableGeneration+1);
+  }
   const commandCount=g.store.sqlite.prepare('SELECT COUNT(*) n FROM branch_commands').get().n;
   await cleanup.stop();cleanup=undefined;
   await g.reopen();
@@ -3344,7 +3418,7 @@ async function exerciseForeignFinalDestination(t,portable,originalExecutionId,fi
   assert.equal(g.store.sqlite.prepare('SELECT COUNT(*) n FROM scheduler_runs WHERE agent_id=?').get(mappedAgent).n,0);
   assert.equal(readFileSync(join(liveRoot,'final-work.txt'),'utf8'),exactContent.toString());
   assert.equal(readFileSync(recoveryFile,'utf8'),exactContent.toString());
-  console.log('FOREIGN_FINAL_ACTIVE',JSON.stringify({completed:true,retired:true,freshFinalCustody:true,restartHistory:true,workingFilesPreserved:true,requestsReplayed:0}));
+  console.log('FOREIGN_FINAL_ACTIVE',JSON.stringify({completed:true,retired:true,freshFinalCustody:true,restartHistory:true,workingFilesPreserved:true,requestsReplayed:0,portableGeneration}));
  }finally{if(cleanup)await cleanup.stop();await app.close();assets.close();}
 }
 
@@ -3415,4 +3489,37 @@ test('0045 populated native restoration receipts migrate losslessly and keep res
  assert.equal(reread.receipt.restorationId,admitted.receipt.restorationId);
  const {restoredRequestUpdatePayload}=await import('../../packages/agents/dist/coordination-v3-cut-restoration-authority.js');
  for(const origin of origins){const update=f.store.sqlite.prepare('SELECT * FROM coordination_request_updates WHERE id=?').get(origin.update_id);assert.doesNotThrow(()=>restoredRequestUpdatePayload(f.store.sqlite,update));}
+});
+
+test('runtime import compact bytes preserve exact legacy evidence and bound corrupt decoding',async()=>{
+ const {gzipSync}=await import('node:zlib');
+ const {runtimeImportEvidence,encodedRuntimeImport,decodedRuntimeImport}=await import('../../packages/agents/dist/branch-runtime-package.js');
+ const original={receipt:{manifestSha256:'retained'},data:{schema:'legacy',text:'exact 😀 '+ 'a'.repeat(100000)}},json=stableJson(original),bytes=Buffer.from(json);
+ const encoded={schema:'ponderosa.runtime-import-bytes.v1',dataEncoding:'gzip',decodedSize:bytes.length,sha256:hash(bytes),dataBase64:gzipSync(bytes).toString('base64')};
+ const resolve=(value,schema='ponderosa.branch-runtime-data.v2')=>{
+  const owner={sourceExecutionId:'held',facts:[{kind:'import',key:'original',json:stableJson(value)}]};
+  return runtimeImportEvidence({schema,owners:[owner]},owner);
+ };
+ assert.deepEqual(resolve(original,'ponderosa.branch-runtime-data.v1'),original,'legacy raw evidence remains readable');
+ assert.deepEqual(resolve(encoded),original);
+ assert.deepEqual(resolve(JSON.parse(encodedRuntimeImport(json))),original);
+ const {randomBytes}=await import('node:crypto');
+ const incompressible=stableJson({receipt:{},data:{random:randomBytes(100000).toString('base64')}});
+ assert.ok(Buffer.byteLength(encodedRuntimeImport(incompressible))<=Buffer.byteLength(incompressible),'full base64 wrapper never inflates retained evidence');
+ assert.throws(()=>resolve(encoded,'ponderosa.branch-runtime-data.v1'),/require runtime-data.v2/);
+ for(const change of [
+  {dataBase64:Buffer.from('not gzip').toString('base64')},
+  {dataBase64:Buffer.from(encoded.dataBase64,'base64').subarray(0,-8).toString('base64')},
+  {decodedSize:bytes.length-1},
+  {decodedSize:bytes.length+1},
+  {decodedSize:32*1024*1024+1},
+  {sha256:'0'.repeat(64)},
+  {dataBase64:encoded.dataBase64+'='},
+ ]) assert.throws(()=>resolve({...encoded,...change}),/Runtime import/);
+ const budget={values:new Map(),decodedBytes:0};
+ const large=JSON.parse(encodedRuntimeImport(stableJson({receipt:{},data:{padding:'a'.repeat(17*1024*1024)}})));
+ decodedRuntimeImport(large,budget);
+ assert.throws(()=>decodedRuntimeImport({...large,sha256:'1'.repeat(64)},budget),/aggregate decoded bytes/,'distinct expanded anchors share the existing32MiB budget before another allocation');
+ const invalidUtf8=Buffer.from([0xff]);
+ assert.throws(()=>resolve({...encoded,decodedSize:1,sha256:hash(invalidUtf8),dataBase64:gzipSync(invalidUtf8).toString('base64')}),/decoded identity/);
 });

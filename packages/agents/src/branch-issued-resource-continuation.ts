@@ -1,6 +1,6 @@
 import {readPinnedRetainedIssuedSource} from './coordination-v3-retained-destination-source.js';
 import {retainedCompletedFinalResourceSource} from './branch-final-resource-reconciliation.js';
-import {validateBranchRuntimeData} from './branch-runtime-package.js';
+import {runtimeImportEvidence,validateBranchRuntimeData} from './branch-runtime-package.js';
 import {generationOneReplay,type GenerationOneProof} from './branch-resource-generation-one.js';
 import type Database from 'better-sqlite3';
 import type {BranchDefinition,BranchPortableRuntimeData,BranchPortableRuntimeOwner,CheckpointPackageReceipt} from '@ponderosa/core';
@@ -9,7 +9,7 @@ import {SCRIPT_CONTINUATION_COMPATIBILITY,replayScriptCut,replayRetainedIssuedRe
 import {resourceCaptureFrontierHash,receiptMatchesSource} from './branch-resource-capture.js';
 import {branchContinuationIds,remapBranchFrontier} from './branch-continuation-remap.js';
 import {verifyBranchHostCut,type BranchHostCut} from './branch-host-cut.js';
-import {verifyHostProvenance} from './branch-host-provenance.js';
+import {restorationOriginalIdentity,verifyHostProvenance} from './branch-host-provenance.js';
 import {validateBranchConfiguration} from './branch-parameters.js';
 type Row=Record<string,any>;
 
@@ -38,7 +38,7 @@ export function issuedResourceContinuationSupported(db:Database.Database,executi
  return issuedResourceReplay({kind:'native',db},executionId,selected,host,c);
 }
 
-type IssuedReplaySource={kind:'native';db:Database.Database}|{kind:'retained-issued-resource';owner:BranchPortableRuntimeOwner};
+type IssuedReplaySource={kind:'native';db:Database.Database}|{kind:'retained-issued-resource';owner:BranchPortableRuntimeOwner;data?:BranchPortableRuntimeData;depth?:number};
 function issuedResourceReplay(source:IssuedReplaySource,executionId:string,selected:Selected,host:BranchHostCut,c:Row):boolean {
  try{
   const e=selected.execution?.[0];
@@ -65,8 +65,8 @@ function issuedResourceReplay(source:IssuedReplaySource,executionId:string,selec
   const retry=source.kind==='native'&&c.generationRetry?generationOneReplay(source.db,selected,host,c.generationRetry):undefined;
   if(selected.resources[0]?.generation>0&&!retry||retry&&c.group)return false;
   const context:ScriptOwnerContext={...(retry?{resourceRetry:retry}:{}),resourceFrontier:true,issuedResource:true,...(c.group===true?{issuedGroup:true}:{}),resourceCleanup,terminal:e.state==='completed'||resourceCleanup,waiting:e.state==='waiting'&&!resourceCleanup,descendantTraversals:0,descendantLoops:0,children:{}};
-  return source.kind==='native'?(replayScriptCut(source.db,executionId,retry?c.generationRetry.originalSelected:selected,definition,c.configuration,c.audit,undefined,undefined,context,retry?.replayHost??host)||retainedFinalDestinationReplay(source.db,executionId,selected,host,c))
-   :replayRetainedIssuedResourceCut(source,selected,definition,c.configuration,c.audit,context,host);
+  return source.kind==='native'?(replayScriptCut(source.db,executionId,retry?c.generationRetry.originalSelected:selected,definition,c.configuration,c.audit,undefined,undefined,context,retry?.replayHost??host)||retainedFinalDestinationReplay(source,executionId,selected,host,c))
+   :(replayRetainedIssuedResourceCut(source,selected,definition,c.configuration,c.audit,context,host)||retainedFinalDestinationReplay(source,executionId,selected,host,c));
  }catch{return false;}
 }
 
@@ -93,13 +93,14 @@ function issuedCheckpointCustodySupported(snapshot:Row,executionId:string):boole
 }
 
 /** Committed selected and independent latest evidence; never source or destination execution authority. */
-export function retainedIssuedResourceSource(value:BranchPortableRuntimeData,executionId:string,checkpointKey:string,checkpointSha256:string) {
+export function retainedIssuedResourceSource(value:BranchPortableRuntimeData,executionId:string,checkpointKey:string,checkpointSha256:string,depth=0) {
+ if(depth>16)throw Error('Retained final continuation exceeds the runtime generation bound');
  const data=validateBranchRuntimeData(value),owner=data.owners.find(o=>o.sourceExecutionId===executionId);
  if(!owner)throw Error('Retained issued owner unavailable');
  // A trusted exact automatic final checkpoint may supply retained source data.
  // Current destination custody and admission remain separate; no Request is replayed here.
  if(owner.facts.some(f=>f.kind==='command'&&f.key.startsWith('resource-final-exit:'))){
-  try{return {data,owner,...retainedCompletedFinalResourceSource(owner,checkpointKey,checkpointSha256)};}
+  try{return {data,owner,...retainedCompletedFinalResourceSource(owner,checkpointKey,checkpointSha256,data,depth)};}
   catch(error){throw Error(`Portable continuation remains held: ${(error as Error).message}`);}
  }
  const fact=(kind:string)=>{const facts=owner.facts.filter(f=>f.kind===kind);if(facts.length!==1)throw Error('Retained issued owner evidence is missing or ambiguous');return JSON.parse(facts[0]!.json);};
@@ -170,36 +171,88 @@ export function reconstructVerifiedIssuedResourceContinuation(saved:ReturnType<t
 }
 
 /** Internal retained boundary replay used by final-exit command validation. */
-export function retainedIssuedEnvelopeSupported(owner:BranchPortableRuntimeOwner,snapshot:Row):boolean {
+export function retainedIssuedEnvelopeSupported(owner:BranchPortableRuntimeOwner,snapshot:Row,data?:BranchPortableRuntimeData,depth=0):boolean {
  return snapshot.schema==='branch-unit-selected.v2'&&snapshot.captureKind==='issued_resource'&&snapshot.restore_supported===false
   &&snapshot.selected?.resources?.length===1&&issuedCheckpointCustodySupported(snapshot,owner.sourceExecutionId)
-  &&issuedResourceReplay({kind:'retained-issued-resource',owner},owner.sourceExecutionId,snapshot.selected,snapshot.hostDependencies,snapshot.issuedContinuation);
+  &&issuedResourceReplay({kind:'retained-issued-resource',owner,data,depth},owner.sourceExecutionId,snapshot.selected,snapshot.hostDependencies,snapshot.issuedContinuation);
 }
-export function retainedIssuedLatestSupported(owner:BranchPortableRuntimeOwner,selected:Selected,host:BranchHostCut,continuation:Row):boolean {
- return issuedResourceReplay({kind:'retained-issued-resource',owner},owner.sourceExecutionId,selected,host,continuation);
+export function retainedIssuedLatestSupported(owner:BranchPortableRuntimeOwner,selected:Selected,host:BranchHostCut,continuation:Row,data?:BranchPortableRuntimeData,depth=0):boolean {
+ return issuedResourceReplay({kind:'retained-issued-resource',owner,data,depth},owner.sourceExecutionId,selected,host,continuation);
 }
 
 /** A completed imported final cut has no new executable suffix. Re-capture only
  * its exact committed remap and admission audit, so cleanup can retain real bytes. */
-function retainedFinalDestinationReplay(db:Database.Database,executionId:string,selected:Selected,host:BranchHostCut,c:Row):boolean {
+function retainedFinalDestinationReplay(source:IssuedReplaySource,executionId:string,selected:Selected,host:BranchHostCut,c:Row):boolean {
  try{
-  const admissions=db.prepare("SELECT * FROM coordination_destination_admissions WHERE state='admitted' AND retained_source_id IS NOT NULL AND json_extract(reservation_json,'$.destination.executionId')=?").all(executionId) as Row[];
-  if(admissions.length!==1)return false;
-  const admission=admissions[0]!,r=JSON.parse(admission.reservation_json),receipt=JSON.parse(admission.receipt_json),stage=JSON.parse(admission.stage_json);
-  const retained=readPinnedRetainedIssuedSource(db,admission.retained_source_id),proof=retained.proof;
-  const planRow=db.prepare('SELECT input_hash,result_json FROM branch_commands WHERE execution_id=? AND command_key=?').get(r.sourceExecutionId,`issued-destination:${payloadHash(r.commandKey)}`) as Row|undefined;
+  let admission:Row,planRow:Row|undefined,ownerRow:Row|undefined,proof:Row,retainedSourceId:string,actual:Row[],owner:Row;
+  if(source.kind==='native'){
+   const db=source.db;
+   const admissions=db.prepare("SELECT * FROM coordination_destination_admissions WHERE state='admitted' AND retained_source_id IS NOT NULL AND json_extract(reservation_json,'$.destination.executionId')=?").all(executionId) as Row[];
+   if(admissions.length!==1)return false;
+   admission=admissions[0]!;
+   const r=JSON.parse(admission.reservation_json),retained=readPinnedRetainedIssuedSource(db,admission.retained_source_id);
+   proof=retained.proof;retainedSourceId=retained.source.id;
+   planRow=db.prepare('SELECT input_hash,result_json FROM branch_commands WHERE execution_id=? AND command_key=?').get(r.sourceExecutionId,`issued-destination:${payloadHash(r.commandKey)}`) as Row|undefined;
+   ownerRow=db.prepare('SELECT input_hash,result_json FROM branch_commands WHERE execution_id=? AND command_key=?').get(executionId,`issued-destination-owner:${admission.id}`) as Row|undefined;
+   actual=db.prepare('SELECT id,transition_key,kind,evidence_json,created_at FROM branch_checkpoints WHERE execution_id=? ORDER BY id').all(executionId) as Row[];
+   owner=db.prepare('SELECT * FROM branch_executions WHERE id=?').get(executionId) as Row;
+  }else{
+   if(!source.data||(source.depth??0)>=16)return false;
+   const rows=host.provenance?.restorations.filter(p=>p.row.admission&&JSON.parse(p.row.admission.reservation_json).destination.executionId===executionId)??[];
+   if(rows.length!==1)return false;
+   const historical=rows[0]!.row,association=historical.retainedSource;
+   if(!association||historical.receipt.source_kind!=='retained_foreign')return false;
+   restorationOriginalIdentity(historical.receipt,association);
+   admission=historical.admission;
+   const r=JSON.parse(admission.reservation_json);
+   const held=source.data.owners.filter(o=>o.sourceExecutionId===r.sourceExecutionId&&o.sourceBranchId===r.branchId);
+   if(held.length!==1)return false;
+   const fact=(o:BranchPortableRuntimeOwner,kind:string,key:string)=>{const found=o.facts.filter(f=>f.kind===kind&&f.key===key);if(found.length!==1)throw Error('Exact retained continuation fact unavailable');return JSON.parse(found[0]!.json);};
+   const compact=association.schema==='ponderosa.retained-source-reference.v1';
+   const saved=compact?runtimeImportEvidence(source.data,held[0]!):JSON.parse(association.source.proof_json);
+   const prior=compact?{id:association.id,branch_id:association.branchId,local_execution_id:association.localExecutionId,
+    original_execution_id:association.originalExecutionId,original_checkpoint_key:String(association.checkpointId),original_checkpoint_sha256:association.checkpointHash,
+    installation_plan_id:association.installationPlanId,manifest_sha256:association.manifestSha256,original_snapshot_json:stableJson(historical.snapshot)}:association.source;
+   if(!['ponderosa.branch-runtime-data.v1','ponderosa.branch-runtime-data.v2'].includes(saved.data?.schema)
+    ||!compact&&(stableJson(saved)!==prior.proof_json||payloadHash(saved)!==prior.proof_sha256)
+    ||saved.data.sha256!==prior.manifest_sha256||saved.receipt.planId!==prior.installation_plan_id||saved.receipt.manifestSha256!==prior.manifest_sha256
+    ||saved.receipt.currentAuthority!==false||saved.receipt.dispatched!==false
+    ||saved.receipt.executionMap[prior.original_execution_id]!==prior.local_execution_id
+    ||prior.original_snapshot_json!==stableJson(historical.snapshot))return false;
+   const originalData=validateBranchRuntimeData(saved.data);
+   if(!compact){
+    const expectedOwners=originalData.owners.map(o=>({source_id:prior.id,original_execution_id:o.sourceExecutionId,local_execution_id:saved.receipt.executionMap[o.sourceExecutionId],owner_json:stableJson(o),owner_sha256:payloadHash(o)})).sort((a,b)=>a.original_execution_id<b.original_execution_id?-1:a.original_execution_id>b.original_execution_id?1:0);
+    if(stableJson(expectedOwners)!==stableJson(association.owners))return false;
+   }
+   proof=retainedIssuedResourceSource(originalData,prior.original_execution_id,prior.original_checkpoint_key,prior.original_checkpoint_sha256,(source.depth??0)+1);
+   if(!('finalExit' in proof)||stableJson(proof.selected)!==prior.original_snapshot_json||compact&&proof.owner.sourceBranchId!==association.originalBranchId)return false;
+   retainedSourceId=prior.id;
+   if(admission.state!=='admitted'||admission.source_kind!=='retained_foreign'||admission.retained_source_id!==prior.id
+    ||r.retainedSourceId!==prior.id||r.sourceExecutionId!==prior.local_execution_id||r.branchId!==prior.branch_id
+    ||r.checkpointId!==Number(prior.original_checkpoint_key)||r.checkpointHash!==prior.original_checkpoint_sha256)return false;
+   const heldFrontier=fact(held[0]!,'frontier','current'),heldOrigin=fact(held[0]!,'provenance','original');
+   if(heldFrontier.execution[0].state!=='waiting'||heldOrigin.source!=='portable_runtime_data'
+    ||heldOrigin.planId!==prior.installation_plan_id||heldOrigin.sourceExecutionId!==prior.original_execution_id
+    ||heldOrigin.manifestSha256!==prior.manifest_sha256||heldOrigin.currentAuthority!==false)return false;
+   planRow=fact(held[0]!,'command',`issued-destination:${payloadHash(r.commandKey)}`);
+   ownerRow=fact(source.owner,'command',`issued-destination-owner:${admission.id}`);
+   const acceptance=fact(source.owner,'acceptance','original');
+   if(typeof acceptance.admittedAt!=='string'||!acceptance.admittedAt||typeof acceptance.admissionJson!=='string')return false;
+   owner={...selected.execution![0]!,admission_json:acceptance.admissionJson};
+   actual=source.owner.facts.filter(f=>f.kind==='transition').map(f=>JSON.parse(f.json)).slice(0,c.audit.length);
+  }
   if(!planRow)return false;
-  const plan=JSON.parse(planRow.result_json),ownerRow=db.prepare('SELECT input_hash,result_json FROM branch_commands WHERE execution_id=? AND command_key=?').get(executionId,`issued-destination-owner:${admission.id}`) as Row|undefined;
+  const r=JSON.parse(admission.reservation_json),receipt=JSON.parse(admission.receipt_json),stage=JSON.parse(admission.stage_json),plan=JSON.parse(planRow.result_json);
   if(!ownerRow||ownerRow.input_hash!==payloadHash(plan)||planRow.input_hash!==payloadHash(plan.input)
    ||stableJson(plan.reservation)!==admission.reservation_json||plan.admissionId!==admission.id
    ||receipt.reservationHash!==admission.reservation_hash||receipt.stageHash!==payloadHash(stage)
-   ||receipt.activationIds.length||r.retainedSourceId!==retained.source.id)return false;
+   ||receipt.activationIds.length||r.retainedSourceId!==retainedSourceId)return false;
   const owned=JSON.parse(ownerRow.result_json),graph=owned.coordinationDestination;
-  if(graph?.destination?.admissionId!==admission.id||graph.destination.retainedSourceId!==retained.source.id
+  if(graph?.destination?.admissionId!==admission.id||graph.destination.retainedSourceId!==retainedSourceId
    ||stableJson(graph.requestMap)!==stableJson(receipt.requestMap)||stableJson(graph.updateMap)!==stableJson(receipt.updateMap)
    ||stableJson(owned.idMap)!==stableJson(plan.idMap))return false;
   const restored=reconstructVerifiedIssuedResourceContinuation({selected:proof.selected.selected,hostDependencies:proof.selected.hostDependencies,continuation:proof.selected.issuedContinuation,custody:proof.selected.issuedResourceCustody},
-   proof.owner?.sourceExecutionId??retained.source.original_execution_id,r.checkpointId,r.checkpointHash,
+   proof.owner.sourceExecutionId,r.checkpointId,r.checkpointHash,
    {executionId,conversationId:r.destination.conversationId,resourceGeneration:0},{idMap:plan.idMap,requestMap:receipt.requestMap,agentMap:stage.agentMap});
   const normalized=(rows:Row[])=>rows.map(row=>stableJson(Object.fromEntries(Object.entries(row).filter(([key])=>!['created_at','updated_at'].includes(key))))).sort();
   for(const key of Object.keys(restored.frontier))if(stableJson(normalized(restored.frontier[key]!))!==stableJson(normalized(selected[key]!)))return false;
@@ -212,10 +265,8 @@ function retainedFinalDestinationReplay(db:Database.Database,executionId:string,
   if(stableJson(host.requests.map(q=>q.row.id).sort())!==stableJson(expectedRequests)||host.requests.some(q=>q.row.state!=='completed')
    ||host.joins.length||host.suspensions.length||host.artifactRefs.length||host.lateResults.length)return false;
   verifyHostProvenance(host);
-  const actual=db.prepare('SELECT id,transition_key,kind,evidence_json,created_at FROM branch_checkpoints WHERE execution_id=? ORDER BY id').all(executionId) as Row[];
   if(stableJson(actual)!==stableJson(c.audit)||actual.length!==6
    ||actual.map(e=>e.kind).join('|')!=='trigger_accepted|resource_operation|resource_operation|issued_restored_prefix|workflow_started|resource_created')return false;
-  const owner=db.prepare('SELECT * FROM branch_executions WHERE id=?').get(executionId) as Row;
   const chatOperation=JSON.parse(resource.chat_operation_json),importOperation=JSON.parse(resource.import_operation_json);
   if(stableJson(chatOperation)!==stableJson({schema:'branch-resource-operation.v1',phase:'chat',token:`destination:${admission.id}:chat`,state:'completed',generation:0,result:{chatId:r.destination.conversationId},creationKey:plan.chatCreationKey})
    ||importOperation.schema!=='branch-resource-operation.v1'||importOperation.phase!=='import'||importOperation.state!=='completed'

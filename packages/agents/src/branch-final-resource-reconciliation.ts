@@ -1,5 +1,5 @@
 import {createHash} from 'node:crypto';
-import {TERMINAL_REQUEST_STATES, type BranchPortableRuntimeOwner} from '@ponderosa/core';
+import {TERMINAL_REQUEST_STATES, type BranchPortableRuntimeData, type BranchPortableRuntimeOwner} from '@ponderosa/core';
 import {verifyBranchHostCut, type BranchHostCut} from './branch-host-cut.js';
 import {verifyHostProvenance} from './branch-host-provenance.js';
 import {verifyRetainedFinalExitCommand} from './branch-final-resource-exit.js';
@@ -10,7 +10,7 @@ import {payloadHash, stableJson} from './coordination-v3-canonical-json.js';
 /** Compare one retained final exit with its exact selected checkpoint. This
  * reports recorded outcomes only: it neither grants admission nor proves that
  * external effects did or did not occur. Ambiguous graphs stay held. */
-export function reconcileRetainedFinalResourceRequests(owner:BranchPortableRuntimeOwner,checkpointKey:string,checkpointSha256:string) {
+export function reconcileRetainedFinalResourceRequests(owner:BranchPortableRuntimeOwner,checkpointKey:string,checkpointSha256:string,data?:BranchPortableRuntimeData,depth=0) {
  const checkpoints=owner.facts.filter(f=>f.kind==='checkpoint'&&f.key===checkpointKey&&f.sha256===checkpointSha256);
  const commands=owner.facts.filter(f=>f.kind==='command'&&f.key.startsWith('resource-final-exit:'));
  if(checkpoints.length!==1||commands.length!==1)throw Error('Exact final-resource checkpoint and exit required');
@@ -21,7 +21,12 @@ export function reconcileRetainedFinalResourceRequests(owner:BranchPortableRunti
  if(stableJson(checkpoint)!==fact.json||payloadHash(checkpoint)!==checkpointSha256
   ||String(exit.selectedCheckpoint.id)!==checkpointKey||exit.selectedCheckpoint.content_hash!==checkpointSha256
   ||exit.selectedCheckpoint.snapshot_json!==fact.json)throw Error('Final-resource checkpoint selection differs');
- if(!retainedIssuedEnvelopeSupported(owner,checkpoint)||!retainedIssuedLatestSupported(owner,exit.envelope.selected,exit.envelope.hostDependencies,exit.latestContinuation))throw Error('Final-resource selected or final frontier replay unsupported');
+ const equalBoundary=stableJson(checkpoint.selected)===stableJson(exit.envelope.selected)
+  &&stableJson(checkpoint.hostDependencies)===stableJson(exit.envelope.hostDependencies)
+  &&stableJson(checkpoint.issuedContinuation)===stableJson(exit.latestContinuation);
+ // Two independently recorded equal boundaries require one replay validation;
+ // this avoids repeating the complete retained predecessor chain at each hop.
+ if(!retainedIssuedEnvelopeSupported(owner,checkpoint,data,depth)||!equalBoundary&&!retainedIssuedLatestSupported(owner,exit.envelope.selected,exit.envelope.hostDependencies,exit.latestContinuation,data,depth))throw Error('Final-resource selected or final frontier replay unsupported');
  const selected=checkpoint.hostDependencies as BranchHostCut,final=exit.envelope.hostDependencies as BranchHostCut;
  if(!verifyBranchHostCut(selected,owner.sourceExecutionId)||!verifyBranchHostCut(final,owner.sourceExecutionId)
   ||!selected.coverage.complete||!final.coverage.complete||stableJson(selected.roots)!==stableJson(final.roots)
@@ -55,8 +60,8 @@ export function reconcileRetainedFinalResourceRequests(owner:BranchPortableRunti
 
 /** Exact final automatic checkpoint in a trusted portable installation. Historical
  * source identities remain original; this proof supplies no current admission. */
-export function retainedCompletedFinalResourceSource(owner:BranchPortableRuntimeOwner,checkpointKey:string,checkpointSha256:string) {
- const reconciled=reconcileRetainedFinalResourceRequests(owner,checkpointKey,checkpointSha256);
+export function retainedCompletedFinalResourceSource(owner:BranchPortableRuntimeOwner,checkpointKey:string,checkpointSha256:string,data?:BranchPortableRuntimeData,depth=0) {
+ const reconciled=reconcileRetainedFinalResourceRequests(owner,checkpointKey,checkpointSha256,data,depth);
  const one=(kind:string,key?:string)=>{const rows=owner.facts.filter(f=>f.kind===kind&&(key===undefined||f.key===key));if(rows.length!==1)throw Error('Exact final source fact unavailable');return JSON.parse(rows[0]!.json);};
  const command=one('command',reconciled.exitCommandKey),exit=JSON.parse(command.result_json),i=exit.identity;
  const selected=one('checkpoint',checkpointKey),latest=one('frontier');
@@ -110,8 +115,8 @@ export function retainedCompletedFinalResourceSource(owner:BranchPortableRuntime
  if(roots.length!==1)throw Error('One complete final Shared root is required');
  const owners=pkg.agents.filter((a:any)=>a.workingFolder);
  if(owners.length!==1||owners[0].workingFolder.excludedPaths?.length||owners[0].workingFolder.links?.length
-  ||pkg.agents.some((a:any)=>(a.artifacts??[]).some((artifact:any)=>artifact.dataEncoding!==undefined||!(a.workingFiles??[]).some((file:any)=>file.artifactRef===artifact.ref))))
-  throw Error('Final source has excluded or non-working file data');
+  ||pkg.agents.some((a:any)=>(a.artifacts??[]).some((artifact:any)=>artifact.dataEncoding!==undefined)))
+  throw Error('Final source has excluded, linked or encoded artifact data');
  // latest denotes the independently recorded equal final boundary, not a post-cleanup checkpoint.
  return {selected,latest:selected,selectedCustody:custody,latestCustody:custody,finalExit:exit,currentAuthority:false as const};
 }

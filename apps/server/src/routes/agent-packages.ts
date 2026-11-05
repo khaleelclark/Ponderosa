@@ -127,6 +127,7 @@ export interface BranchPackageEngine {
   readCheckpoint(receipt:CheckpointPackageReceipt):Promise<AgentPortablePackageDto>;
   readCheckpointBytes(receipt:CheckpointPackageReceipt):Promise<string>;
   verifyCheckpointNow(receipt:CheckpointPackageReceipt):string;
+  verifyImportedArtifactBytes(projectId:string,artifacts:readonly {destinationId:string;byteLength:number;sha256:string}[]):void;
   finishDestinationImport(operationId:string,compose:(result:ImportAgentPackageResponse,complete:()=>void)=>void):void;
   releaseCheckpoint(receipt:CheckpointPackageReceipt):Promise<void>;
   composeAgents(inputs:readonly AgentPackageCompositionInput[]):Promise<AgentPackageComposition>;
@@ -2166,6 +2167,7 @@ export function registerAgentPackageRoutes(
         remember();
         const liveLinkDestinations=Object.fromEntries(rows.map(row=>[row.ref,row.agent.workingCopy.rootPath]));
         validateWorkingRootNesting(new Set(rows.map(row=>row.ref)),portablePackage.workingRootNesting??[],liveLinkDestinations);
+        const finalBackups=new Map<string,{device:string;inode:string}>();
         for(const row of [...rows].sort((a,b)=>a.agent.workingCopy.rootPath.split(path.sep).length-b.agent.workingCopy.rootPath.split(path.sep).length)){
           if(row.members.some(member=>created.get(member.ref)!.workingCopy.rootPath!==row.agent.workingCopy.rootPath))throw new Error('Live import split source working-root membership');
           const root={ref:row.ref,path:row.agent.workingCopy.rootPath,agentIds:row.members.map(member=>created.get(member.ref)!.id)};
@@ -2176,13 +2178,26 @@ export function registerAgentPackageRoutes(
           try{
             const identity=await context.workingCopies!.populateImportedRoot(row.agent,liveProject,row.files,row.folder?.directories??[],row.folder?.mode!==undefined&&row.folder.mtime?{mode:row.folder.mode,mtime:row.folder.mtime}:undefined,path.join(root.path,'.ponderosa-import-backups'),row.folder?.links,row.folder?.cyclicLinks,undefined,metadataActivation,liveLinkDestinations,true,true);
             liveRootIdentities[root.path]=identity;
-            pendingLiveMetadata.push({destination:root.path,...(receipt?{receipt}:{}),apply:()=>context.workingCopies!.finalizeImportedRootMetadata(store.getAgent(row.agent.id)!,store.getProject(project.id)!,row.files,row.folder?.directories??[],row.folder?.mode!==undefined&&row.folder.mtime?{mode:row.folder.mode,mtime:row.folder.mtime}:undefined,row.folder?.links??[],metadataActivation,workingLinkCounts(row.ref,metadataRootLinks()),nativeMetadata)});
+            if(branchHooks?.retainFinalWorkingData){if(!identity.backupDirectory)throw Error('Final import backup creation proof unavailable');finalBackups.set(path.join(root.path,'.ponderosa-import-backups'),identity.backupDirectory);}
+            pendingLiveMetadata.push({destination:root.path,...(receipt?{receipt}:{}),apply:async()=>{
+              await context.workingCopies!.finalizeImportedRootMetadata(store.getAgent(row.agent.id)!,store.getProject(project.id)!,row.files,row.folder?.directories??[],row.folder?.mode!==undefined&&row.folder.mtime?{mode:row.folder.mode,mtime:row.folder.mtime}:undefined,row.folder?.links??[],metadataActivation,workingLinkCounts(row.ref,metadataRootLinks()),nativeMetadata);
+            }});
           }catch(error){metadataPrimaryError=error;for(const receipt of metadataApplications)if(receipt.state==='applying'){receipt.state='incomplete';receipt.error=metadataFailure(error);}throw error;}
           finally{if(receipt)saveMetadataApplications();}
         }
         for(const row of rows){
           try{await importWorkingLinks(row.agent.workingCopy.rootPath,row.folder?.links??[],liveLinkDestinations,{backupRoot:path.join(row.agent.workingCopy.rootPath,'.ponderosa-import-backups')},liveRootIdentities[row.agent.workingCopy.rootPath]);}
           catch(error){metadataPrimaryError=error;for(const receipt of metadataApplications)if(receipt.state==='applying'){receipt.state='incomplete';receipt.error=metadataFailure(error);}saveMetadataApplications();throw error;}
+        }
+        for(const [backup,issued] of finalBackups){
+          const current=await fs.lstat(backup,{bigint:true});
+          if(!current.isDirectory()||String(current.dev)!==issued.device||String(current.ino)!==issued.inode)throw Error('Final import backup ownership changed; preserve retained roots and review');
+          // Only this operation's empty generated backup is removed, before root
+          // metadata is finalized. Nonempty/replaced directories retain all data.
+          try{await fs.rmdir(backup);}catch(error){
+            if((error as NodeJS.ErrnoException).code==='ENOTEMPTY')throw Error('Final import backup contains retained files; preserve retained roots and review',{cause:error});
+            throw error;
+          }
         }
         const recoveryDestinations=body.workingRootDestinations??{[rows[0]!.ref]:body.workingFilesDestination!};
         const relocate=(target:string)=>{const entry=Object.entries(recoveryDestinations).filter(([,root])=>target===root||target.startsWith(root+path.sep)).sort((a,b)=>b[1].length-a[1].length)[0];if(!entry)throw new Error('Git activation path lost its included source root');return path.join(liveLinkDestinations[entry[0]]!,path.relative(entry[1],target));};
@@ -3214,6 +3229,10 @@ export function registerAgentPackageRoutes(
     }
   });
   return {packageEngine:{
+    verifyImportedArtifactBytes:(projectId,artifacts)=>{
+      for(const artifact of artifacts)if(!readManagedArtifactContent(context.dataDir,projectId,artifact.destinationId,artifact.byteLength,artifact.sha256))
+        throw Error('Final imported artifact bytes changed; preserve current data and review');
+    },
     prepareWorkingDataChild:(input,onReceipt)=>prepareBranchWorkingDataChild(store,context.workingCopies!,input,onReceipt),
     applyWorkingData:(input,onReceipt,signal)=>withAgentImportAdmission(()=>applyBranchWorkingData(context.dataDir,store,context.workingCopies!,input,onReceipt,signal)),
     inspectCheckpoint:source=>checkpointCustody.inspect(source),

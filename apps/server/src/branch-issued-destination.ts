@@ -41,6 +41,7 @@ export class BranchIssuedDestinationService {
   if(!row?.stage_json)return;
   const stage=JSON.parse(row.stage_json),operation=this.store.getAgentCreationOperation(stage.importPlan.creationOperationId);
   if(operation?.status==='preparing')return;
+  this.packages().verifyImportedArtifactBytes(r.destination.projectId,stage.importPlan.artifacts);
   const result=operation?.result as Row|undefined;
   if(!result||!Array.isArray(result.liveWorkingRoots)||!Array.isArray(result.workingRoots))throw Error('Final imported working root receipts unavailable');
   const refs=[...new Set(pkg.agents.map(a=>a.workingRootRef!))];
