@@ -1,5 +1,4 @@
 import {createActiveAccessRevocation} from './active-access-revocation.js';
-import { createRunInactivityMonitor } from "./run-inactivity-monitor.js";
 import {sealProviderNeverStarted} from '@ponderosa/agents';
 import {ProviderStartAuthority} from './provider-start-authority.js';
 import {registerAgentWorkspaceActions} from './routes/agent-workspace.js';
@@ -807,13 +806,6 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   });
   const serverMetrics = new ServerMetrics(opts.dataDir, store.startupProfile());
   serverMetrics.install(app);
-  const inactivityMonitor = createRunInactivityMonitor({
-    activeRuns, store, coordinationV3, workspace, ownsRun: ownsActiveRun,
-    createOperationalNotification, resolveOperationalNotification,
-    logWarn: (meta, message) => app.log.warn(meta, message),
-  });
-  startupDisposers.push(() => inactivityMonitor.stop());
-  app.addHook("onReady", async () => { inactivityMonitor.start(); });
   app.addHook("onReady", restoreSharedBrowsers);
   app.setErrorHandler((error, request, reply) => {
     if (error instanceof ProjectDeletionInProgressError) {
@@ -1480,8 +1472,6 @@ app.server.on("upgrade", linkPreviewUpgrade);
 notify:()=>coordinationV3Scheduler.notify(),
   });
   app.addHook('onReady',async()=>{await branchSources!.start();});
-
-  app.addHook("onClose", async () => { inactivityMonitor.stop(); });
 
   return app;
   } catch (error) {
