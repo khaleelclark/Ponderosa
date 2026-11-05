@@ -411,7 +411,7 @@ export function startProviderRunExecution(
           const possibleOrigins = origin ? [origin] : (store.sqlite.prepare(`
             SELECT DISTINCT replacement_run_id AS id FROM context_rollovers
             WHERE agent_id=? AND replacement_session_id=? AND state='completed'
-              AND completion_reason='replacement_verified' AND replacement_run_id IS NOT NULL
+              AND replacement_run_id IS NOT NULL
           `).all(agent.id, resumeSessionId) as Array<{id:string}>).map(row => row.id);
           const inherited = possibleOrigins.some(id =>
             hasKnownRetainedMemory(store, agent.id, id, source?.id ?? id, resumeSessionId));
