@@ -1502,8 +1502,16 @@ export class CoordinationV3Store {
     return this.operationalOutboxAuthority.pruneSettledOutboxes(retain);
   }
 
+  settingsTransitionUnsubmittedActivation(input: Parameters<CoordinationV3ContextRolloverAuthority["settingsTransitionUnsubmittedActivation"]>[0]): boolean {
+    return this.contextRolloverAuthority.settingsTransitionUnsubmittedActivation(input);
+  }
+
   holdSettingsTransitionReservation(input: Parameters<CoordinationV3ContextRolloverAuthority["holdSettingsTransitionReservation"]>[0]): boolean {
     return this.contextRolloverAuthority.holdSettingsTransitionReservation(input);
+  }
+
+  holdUncertainSettingsTransitionReservation(input: Parameters<CoordinationV3ContextRolloverAuthority["holdUncertainSettingsTransitionReservation"]>[0]): boolean {
+    return this.contextRolloverAuthority.holdUncertainSettingsTransitionReservation(input);
   }
 
   settingsTransitionReservationHeld(input: Parameters<CoordinationV3ContextRolloverAuthority["settingsTransitionReservationHeld"]>[0]): boolean {

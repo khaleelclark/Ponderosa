@@ -198,6 +198,13 @@ test('held peer Request reuses only a known-unstarted handoff', t => {
     requests:[{requestId,recipientAgentId:worker,lifetime:{kind:'indefinite'},payload}]});
   const activation=db.prepare(`SELECT a.id,a.payload_json FROM agent_activations a JOIN activation_sources s
     ON s.activation_id=a.id AND s.source_kind='request' WHERE s.source_id=?`).get(requestId);
+  const peerNow=new Date(Date.now()+1000).toISOString();
+  const peerLease=v3.leaseNextRun({workerId:'old-peer-attempt',now:peerNow});
+  assert.ok(peerLease);assert.deepEqual(peerLease.activationIds,[activation.id]);
+  assert.equal(v3.recoverOrphanedRuns('new-peer-owner',peerNow).retried,1);
+  assert.equal(v3.canRetryUninjectedRun(peerLease.runId),true);
+  assert.equal(db.prepare('SELECT state FROM agent_activations WHERE id=?').get(activation.id).state,'retry_pending');
+  const oldPeerAttachment=db.prepare('SELECT * FROM scheduler_run_activations WHERE run_id=? AND activation_id=?').get(peerLease.runId,activation.id);
   const rollover=randomUUID(),handoff=randomUUID(),hash='a'.repeat(64);
   db.prepare('UPDATE agents SET active_session_id=?,active_session_contract_hash=? WHERE id=?').run('old-session',hash,worker);
   db.prepare(`INSERT INTO context_rollovers(id,project_id,agent_id,state,old_provider_session_id,provider_session_generation,
@@ -220,7 +227,7 @@ test('held peer Request reuses only a known-unstarted handoff', t => {
   assert.equal(v3.retryHeldSettingsTransitionRequest({projectId:project,requestId,idempotencyKey:'unknown'}).accepted,false);
   db.prepare("UPDATE context_rollovers SET state='failed' WHERE id=?").run(rollover);
   const run=randomUUID();
-  db.prepare("INSERT INTO scheduler_runs(id,project_id,agent_id,status,lease_owner,lease_expires_at,fencing_token,prompt_injection_state,heartbeat_at,created_at,updated_at,scope_key) VALUES(?,?,?,'failed','test',?,1,'not_injected',?,?,?,?)")
+  db.prepare("INSERT INTO scheduler_runs(id,project_id,agent_id,status,lease_owner,lease_expires_at,fencing_token,prompt_injection_state,heartbeat_at,created_at,updated_at,scope_key) VALUES(?,?,?,'failed','test',?,99,'not_injected',?,?,?,?)")
     .run(run,project,worker,stamp,stamp,stamp,stamp,scope);
   db.prepare('INSERT INTO scheduler_run_activations(run_id,activation_id,attached_at) VALUES(?,?,?)').run(run,handoff,stamp);
   assert.equal(v3.settingsTransitionRequestHold({projectId:project,requestId}).retryable,false);
@@ -235,5 +242,91 @@ test('held peer Request reuses only a known-unstarted handoff', t => {
   assert.equal(db.prepare('SELECT payload_json FROM agent_activations WHERE id=?').get(activation.id).payload_json,activation.payload_json);
   assert.deepEqual(v3.getRequest(requestId).payload,payload);
   assert.equal(db.prepare('SELECT count(*) n FROM coordination_requests WHERE project_id=?').get(project).n,1);
-  assert.equal(db.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(activation.id).n,0);
+  assert.deepEqual(db.prepare('SELECT * FROM scheduler_run_activations WHERE run_id=? AND activation_id=?').get(peerLease.runId,activation.id),oldPeerAttachment);
+  assert.equal(db.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(activation.id).n,1);
+});
+
+test('settings transitions keep retry-pending work only after every old Run is proved unsubmitted', t => {
+ const db=openCurrentMemoryDatabase();t.after(()=>db.close());
+ const project=randomUUID(),chat=randomUUID(),agent=randomUUID(),now=new Date().toISOString(),scope='conversation:'+chat;
+ db.prepare('INSERT INTO projects(id,label,host_path,created_at) VALUES(?,?,?,?)').run(project,'Task','/unused',now);
+ db.prepare('INSERT INTO conversations(id,project_id,title,created_at,updated_at) VALUES(?,?,?,?,?)').run(chat,project,'Task',now,now);
+ db.prepare('INSERT INTO agents(id,project_id,conversation_id,title,handle,active_engine,active_session_id,active_session_contract_hash,created_at,updated_at,working_copy_json) VALUES(?,?,?,?,?,?,?,?,?,?,?)')
+   .run(agent,project,chat,'Worker','worker','codex','old-session','a'.repeat(64),now,now,'{}');
+ db.prepare('INSERT INTO agent_conversation_memberships(agent_id,conversation_id,position) VALUES(?,?,0)').run(agent,chat);
+ const v3=new CoordinationV3Store(db),sourceRun=randomUUID();
+ db.prepare(`INSERT INTO scheduler_runs(id,project_id,agent_id,status,lease_owner,lease_expires_at,fencing_token,prompt_injection_state,provider_session_id,heartbeat_at,created_at,updated_at,terminal_at,scope_key)
+   VALUES(?,?,?,'completed','old',?,1,'injected','old-session',?,?,?,?,?)`).run(sourceRun,project,agent,now,now,now,now,now,scope);
+ db.prepare(`INSERT INTO scheduler_prompt_injections(id,run_id,kind,sequence,state,prompt_hash,activation_ids_json,created_at,updated_at)
+   VALUES(?,?,'turn',0,'acknowledged','hash','[]',?,?)`).run(randomUUID(),sourceRun,now,now);
+ db.prepare(`INSERT INTO provider_inputs(execution_id,scheduler_run_id,agent_id,project_id,provider_prompt,prompt_hash,source_manifest_json,created_at,updated_at)
+   VALUES(?,?,?,?, 'old input','hash',?,?,?)`).run(sourceRun,sourceRun,agent,project,
+   JSON.stringify({schemaVersion:3,normalRuntimeContract:{contractHash:'a'.repeat(64),engineId:'codex',model:'old',effort:'medium'}}),now,now);
+ db.prepare('INSERT INTO scheduler_agent_fences(agent_id,next_fencing_token) VALUES(?,2)').run(agent);
+ const eventId=randomUUID(),sender={kind:'user',userId:'local-operator'},audience={kind:'user_agents',userId:'local-operator',agentIds:[agent]};
+ const communication={schemaVersion:2,eventId,projectId:project,conversationId:chat,sender,intent:'user_dm',audience,text:'Keep the exact queued objective',createdAt:now};
+ const saved=v3.recordRuntimeCommunication({id:eventId,projectId:project,scopeKey:scope,sender,intent:'user_dm',audience,
+   payload:{communication,dispatch:{conversationId:chat,model:'new',effort:'high'}},now,
+   activation:{agentId:agent,kind:'human_message',priority:100,dispatchPolicy:'next_run',promptClass:'human'}});
+ const activationId=saved.activationId,original=db.prepare('SELECT payload_json FROM agent_activations WHERE id=?').get(activationId).payload_json;
+ const runs=[];
+ for(let i=0;i<2;i++){
+   const lease=v3.leaseNextRun({workerId:'old-worker-'+i,now});assert.deepEqual(lease.activationIds,[activationId]);runs.push(lease.runId);
+   const recovered=v3.recoverOrphanedRuns('new-worker-'+i,now);assert.equal(recovered.retried,1);
+   assert.equal(v3.canRetryUninjectedRun(lease.runId),true);
+   assert.equal(db.prepare('SELECT state FROM agent_activations WHERE id=?').get(activationId).state,'retry_pending');
+ }
+ const prior=()=>db.prepare('SELECT run_id,activation_id,attached_at,consumed_at FROM scheduler_run_activations WHERE activation_id=? ORDER BY run_id').all(activationId);
+ const attachments=prior();assert.equal(attachments.length,2);
+ const transition={reason:'settings',activationId,sourceRunId:sourceRun,sourceFence:1,oldSessionId:'old-session',oldContractHash:'a'.repeat(64),
+   engineId:'codex',model:'old',effort:'medium',targetModel:'new',targetEffort:'high'};
+ const request={projectId:project,agentId:agent,oldProviderSessionId:'old-session',providerSessionGeneration:'old-session',threshold:150000,lowWaterMark:90000,
+   sourceRunId:sourceRun,sourceActivationIds:[],scopeKey:scope,conversationId:chat,compactionCutoffOrdinal:1,compactionCutoffEventId:eventId,
+   recentTail:[{communicationEventId:eventId,contentSha256:'b'.repeat(64)}],settingsTransition:transition};
+ const hold={projectId:project,agentId:agent,activationId,fingerprint:'c'.repeat(64)};
+ const eligibility={projectId:project,agentId:agent,activationId,scopeKey:scope};
+ assert.equal(v3.settingsTransitionUnsubmittedActivation(eligibility),true);
+ assert.equal(v3.settingsTransitionUnsubmittedActivation({...eligibility,scopeKey:'agent:foreign'}),false);
+ assert.equal(v3.holdSettingsTransitionReservation(hold),true);
+ let receipt=v3.deliveryReceiptsForCommunication(project,eventId)[0];
+ assert.equal(receipt.settingsTransitionHold,'retry_available');assert.equal(receipt.canRetry,true);
+ const reject=[
+   ()=>db.prepare("UPDATE scheduler_runs SET status='running' WHERE id=?").run(runs[0]),
+   ()=>db.prepare("UPDATE scheduler_runs SET terminal_at=NULL WHERE id=?").run(runs[0]),
+   ()=>db.prepare("UPDATE scheduler_runs SET status='outcome_unknown' WHERE id=?").run(runs[0]),
+   ()=>db.prepare("UPDATE scheduler_runs SET prompt_injection_state='injecting' WHERE id=?").run(runs[0]),
+   ()=>db.prepare("UPDATE scheduler_runs SET started_at=? WHERE id=?").run(now,runs[0]),
+   ()=>db.prepare("UPDATE scheduler_runs SET scope_key='agent:foreign' WHERE id=?").run(runs[0]),
+   ()=>db.prepare("UPDATE scheduler_run_activations SET consumed_at=? WHERE run_id=? AND activation_id=?").run(now,runs[0],activationId),
+   ()=>db.prepare("UPDATE scheduler_prompt_injections SET state='submitted' WHERE run_id=?").run(runs[0]),
+   ()=>db.prepare("UPDATE scheduler_prompt_injections SET submitted_at=? WHERE run_id=?").run(now,runs[0]),
+   ()=>db.prepare("UPDATE scheduler_prompt_injections SET provider_turn_id='contradictory' WHERE run_id=?").run(runs[0]),
+   ()=>db.prepare("INSERT INTO provider_inputs(execution_id,scheduler_run_id,agent_id,project_id,provider_prompt,prompt_hash,source_manifest_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)")
+     .run(randomUUID(),runs[0],agent,project,'unknown input','hash','{}',now,now),
+   ()=>db.prepare("INSERT INTO provider_inputs(execution_id,scheduler_run_id,agent_id,project_id,provider_prompt,prompt_hash,source_manifest_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)")
+     .run(runs[0],randomUUID(),agent,project,'unknown input','hash','{}',now,now),
+ ];
+ for(const change of reject) {
+   db.exec('SAVEPOINT ambiguous_prior_attempt');
+   try {
+     change();
+     assert.equal(v3.settingsTransitionUnsubmittedActivation(eligibility),false);
+     assert.equal(v3.holdSettingsTransitionReservation(hold),false);
+     assert.equal(v3.settingsTransitionReservationHeld({...hold,fingerprint:'d'.repeat(64)}),true,'changed fingerprint cannot clear an uncertain hold');
+     const uncertain=v3.deliveryReceiptsForCommunication(project,eventId)[0];
+     assert.equal(uncertain.settingsTransitionHold,'review_required');assert.equal(uncertain.canRetry,undefined);
+     assert.equal(v3.retryMessageDelivery({projectId:project,activationId,idempotencyKey:randomUUID()}).accepted,false);
+     assert.throws(()=>v3.requestContextRollover(request),/source or pending work changed/);
+   } finally {db.exec('ROLLBACK TO ambiguous_prior_attempt; RELEASE ambiguous_prior_attempt');}
+ }
+ assert.deepEqual(prior(),attachments);
+ const command={projectId:project,activationId,idempotencyKey:'same-original-retry'};
+ assert.equal(v3.retryMessageDelivery(command).activationId,activationId);
+ assert.equal(v3.retryMessageDelivery(command).replayed,true);
+ assert.equal(db.prepare('SELECT state FROM agent_activations WHERE id=?').get(activationId).state,'retry_pending');
+ assert.equal(db.prepare('SELECT payload_json FROM agent_activations WHERE id=?').get(activationId).payload_json,original);
+ assert.deepEqual(prior(),attachments);
+ const rollover=v3.requestContextRollover(request);assert.equal(rollover.created,true);
+ assert.deepEqual(prior(),attachments,'handoff reservation must retain every old Run attachment');
+ assert.equal(db.prepare('SELECT state FROM agent_activations WHERE id=?').get(activationId).state,'retry_pending');
 });

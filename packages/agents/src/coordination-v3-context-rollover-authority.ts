@@ -1,3 +1,4 @@
+import { transitionUnsubmittedActivationSql } from "./coordination-v3-transition-unsubmitted.js";
 import { createHash, randomUUID } from "node:crypto";
 import {
   publicProviderFailureSummary,
@@ -92,17 +93,43 @@ export class CoordinationV3ContextRolloverAuthority {
     return marker;
   }
 
-  /** Record only an exact, still-unattached activation. The fingerprint is
+  /** Read the exact same eligibility used by the transaction that reserves
+   * a transition; callers must still recheck under that transaction. */
+  settingsTransitionUnsubmittedActivation(input:{projectId:string;agentId:string;activationId:string;scopeKey:string}):boolean {
+    return Boolean(this.sqlite.prepare(`SELECT 1 FROM agent_activations a
+      WHERE a.id=? AND a.project_id=? AND a.agent_id=? AND a.scope_key=?
+        AND ${transitionUnsubmittedActivationSql('a')}`)
+      .get(input.activationId,input.projectId,input.agentId,input.scopeKey));
+  }
+
+  /** Record only an exact, provably unsubmitted activation. The fingerprint is
    * caller-computed from the observed source session and effective settings;
    * it is not a credential or a provider payload. */
   holdSettingsTransitionReservation(input: { projectId:string; agentId:string; activationId:string; fingerprint:string }): boolean {
     if (!/^[a-f0-9]{64}$/u.test(input.fingerprint)) throw new Error("Invalid transition reservation fingerprint");
     return this.sqlite.transaction(() => {
       const pending=this.sqlite.prepare(`SELECT 1 FROM agent_activations a
-        WHERE a.id=? AND a.agent_id=? AND a.project_id=? AND a.state='pending'
-          AND NOT EXISTS (SELECT 1 FROM scheduler_run_activations attached WHERE attached.activation_id=a.id)`)
+        WHERE a.id=? AND a.agent_id=? AND a.project_id=?
+          AND ${transitionUnsubmittedActivationSql('a')}`)
         .get(input.activationId,input.agentId,input.projectId);
       if (!pending) return false;
+      this.sqlite.prepare(`INSERT OR IGNORE INTO activation_sources(activation_id,source_kind,source_id)
+        VALUES(?,'settings_transition_reservation_wait',?)`).run(input.activationId,input.fingerprint);
+      return true;
+    })();
+  }
+
+  /** Fence exact queued work whose old attempt evidence is uncertain. This
+   * records no permission to execute or retry; later reads re-prove eligibility. */
+  holdUncertainSettingsTransitionReservation(input: {
+    projectId:string;agentId:string;activationId:string;scopeKey:string;fingerprint:string;
+  }): boolean {
+    if (!/^[a-f0-9]{64}$/u.test(input.fingerprint)) throw new Error("Invalid transition reservation fingerprint");
+    return this.sqlite.transaction(() => {
+      const queued=this.sqlite.prepare(`SELECT 1 FROM agent_activations a
+        WHERE a.id=? AND a.project_id=? AND a.agent_id=? AND a.scope_key=? AND a.state IN ('pending','retry_pending')`)
+        .get(input.activationId,input.projectId,input.agentId,input.scopeKey);
+      if (!queued) return false;
       this.sqlite.prepare(`INSERT OR IGNORE INTO activation_sources(activation_id,source_kind,source_id)
         VALUES(?,'settings_transition_reservation_wait',?)`).run(input.activationId,input.fingerprint);
       return true;
@@ -115,10 +142,13 @@ export class CoordinationV3ContextRolloverAuthority {
     if (!/^[a-f0-9]{64}$/u.test(input.fingerprint)) throw new Error("Invalid transition reservation fingerprint");
     return this.sqlite.transaction(() => {
       const pending=this.sqlite.prepare(`SELECT 1 FROM agent_activations a
-        WHERE a.id=? AND a.agent_id=? AND a.project_id=? AND a.state='pending'
-          AND NOT EXISTS (SELECT 1 FROM scheduler_run_activations attached WHERE attached.activation_id=a.id)`)
+        WHERE a.id=? AND a.agent_id=? AND a.project_id=?
+          AND ${transitionUnsubmittedActivationSql('a')}`)
         .get(input.activationId,input.agentId,input.projectId);
-      if (!pending) return false;
+      if (!pending) return Boolean(this.sqlite.prepare(`SELECT 1 FROM activation_sources held
+        JOIN agent_activations a ON a.id=held.activation_id WHERE a.id=? AND a.agent_id=? AND a.project_id=?
+          AND a.state IN ('pending','retry_pending','attached','outcome_unknown')
+          AND held.source_kind='settings_transition_reservation_wait'`).get(input.activationId,input.agentId,input.projectId));
       this.sqlite.prepare(`DELETE FROM activation_sources WHERE activation_id=?
         AND source_kind='settings_transition_reservation_wait' AND source_id<>?`).run(input.activationId,input.fingerprint);
       return Boolean(this.sqlite.prepare(`SELECT 1 FROM activation_sources WHERE activation_id=?
@@ -142,10 +172,10 @@ export class CoordinationV3ContextRolloverAuthority {
           (marker.targetModel===input.targetModel && (marker.targetEffort??null)===(input.targetEffort??null) &&
            (marker.targetSpeed??null)===(input.targetSpeed??null))) return false;
       const safe=this.sqlite.prepare(`SELECT 1 FROM agent_activations original JOIN agents ag ON ag.id=original.agent_id
-        WHERE original.id=? AND original.project_id=? AND original.agent_id=? AND original.state='pending'
+        WHERE original.id=? AND original.project_id=? AND original.agent_id=?
+          AND ${transitionUnsubmittedActivationSql('original')}
           AND ag.project_id=original.project_id AND ag.deleted_at IS NULL AND ag.active_session_id=?
           AND ag.active_session_contract_hash=?
-          AND NOT EXISTS(SELECT 1 FROM scheduler_run_activations attached WHERE attached.activation_id=original.id)
           AND NOT EXISTS(SELECT 1 FROM activation_sources src JOIN scheduler_run_activations attached
             ON attached.activation_id=src.activation_id
             WHERE src.source_kind='context_rollover' AND src.source_id=?)`)
@@ -200,10 +230,10 @@ export class CoordinationV3ContextRolloverAuthority {
            (t.reason==='settings' && t.model===t.targetModel && (t.effort??null)===(t.targetEffort??null) && (t.speed??null)===(t.targetSpeed??null)))
           throw new Error("Invalid exact settings transition");
         const pending=this.sqlite.prepare(`SELECT 1 FROM agent_activations a JOIN agents ag ON ag.id=a.agent_id
-          WHERE a.id=? AND a.project_id=? AND a.agent_id=? AND a.scope_key=? AND a.state='pending'
+          WHERE a.id=? AND a.project_id=? AND a.agent_id=? AND a.scope_key=?
+            AND ${transitionUnsubmittedActivationSql('a')}
             AND ag.project_id=a.project_id AND ag.deleted_at IS NULL AND ag.active_engine=?
-            AND ag.active_session_id=? AND ag.active_session_contract_hash=?
-            AND NOT EXISTS (SELECT 1 FROM scheduler_run_activations attached WHERE attached.activation_id=a.id)`)
+            AND ag.active_session_id=? AND ag.active_session_contract_hash=?`)
           .get(t.activationId,input.projectId,input.agentId,input.scopeKey,t.engineId,t.oldSessionId,t.oldContractHash);
         if (t.reason === "voice") {
           const row = this.sqlite.prepare(`SELECT a.kind,a.prompt_class,a.payload_json,r.id AS runtime_id,r.payload_json AS runtime_payload

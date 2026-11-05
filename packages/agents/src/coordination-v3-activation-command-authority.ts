@@ -77,7 +77,7 @@ export class CoordinationV3ActivationCommandAuthority {
     const otherHold=this.sqlite.prepare(`SELECT 1 FROM activation_sources WHERE activation_id=?
       AND source_kind IN ('task_decision_repair_wait','task_reply_repair_wait')`).get(row.id);
     return {activationId:row.id,retryable:rows.length===1 && held.length===1 && authorized &&
-      row.request_state==='open' && !row.superseded_by_request_id && row.activation_state==='pending' && hold.retryable && !otherHold};
+      row.request_state==='open' && !row.superseded_by_request_id && ['pending','retry_pending'].includes(row.activation_state) && hold.retryable && !otherHold};
   }
 
   retryHeldSettingsTransitionRequest(input:{projectId:string;requestId:string;idempotencyKey:string;now?:string}):

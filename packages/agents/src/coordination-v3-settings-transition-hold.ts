@@ -1,3 +1,4 @@
+import { transitionUnsubmittedActivationSql } from "./coordination-v3-transition-unsubmitted.js";
 import type Database from "better-sqlite3";
 
 /** Scope only the exact queued Activation. A failed or uncertain rollover
@@ -37,7 +38,7 @@ export function settingsTransitionDeliveryHolds(
       EXISTS(SELECT 1 FROM activation_sources x JOIN runtime_communications m ON m.id=x.source_id
         WHERE x.activation_id=a.id AND x.source_kind='communication' AND m.project_id=a.project_id
           AND json_extract(m.sender_json,'$.kind')='user' AND json_extract(m.sender_json,'$.userId')='local-operator') AS operator_authored,
-      EXISTS(SELECT 1 FROM scheduler_run_activations x WHERE x.activation_id=a.id) AS attached,
+      ${transitionUnsubmittedActivationSql('a')} AS unsubmitted,
       EXISTS(SELECT 1 FROM activation_sources x WHERE x.activation_id=a.id AND x.source_kind='settings_transition_reservation_wait') AS reserved,
       ag.active_session_id,ag.active_session_contract_hash,
       r.id AS rollover_id,r.state AS rollover_state,r.handoff_event_id,r.replacement_run_id,
@@ -62,7 +63,7 @@ export function settingsTransitionDeliveryHolds(
     WHERE a.project_id=? AND a.id IN (SELECT value FROM json_each(?))
     ORDER BY a.id,r.created_at,r.id,handoff.created_at,handoff.id`)
     .all(projectId,JSON.stringify([...new Set(activationIds)])) as Array<{
-      id:string;state:string;kind:string;prompt_class:string;operator_authored:number;attached:number;reserved:number;active_session_id:string|null;active_session_contract_hash:string|null;
+      id:string;state:string;kind:string;prompt_class:string;operator_authored:number;unsubmitted:number;reserved:number;active_session_id:string|null;active_session_contract_hash:string|null;
       rollover_id:string|null;rollover_state:string|null;handoff_event_id:string|null;replacement_run_id:string|null;
       handoff_id:string|null;handoff_state:string|null;old_session_id:string|null;old_contract_hash:string|null;rollover_attached:number;
     }>;
@@ -81,7 +82,7 @@ export function settingsTransitionDeliveryHolds(
     const eligible=mode==='human'
       ? first.kind==='human_message'&&first.prompt_class==='human'&&first.operator_authored===1
       : first.kind==='coordination_request'&&first.prompt_class==='coordination';
-    const retryable=first.state==='pending'&&eligible&&!first.attached&&
+    const retryable=Boolean(first.unsubmitted)&&eligible&&
       !relevant.some(row=>row.rollover_state!=='failed')&&
       (!terminal.length||Boolean(safeFailed));
     result.set(id,{retryable,...(safeFailed?{rolloverId:failed.rollover_id!,handoffId:failed.handoff_id!}:{})});
