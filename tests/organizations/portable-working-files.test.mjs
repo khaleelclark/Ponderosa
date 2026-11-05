@@ -249,3 +249,57 @@ test('large binary working original exports as ordered bounded transport parts',
   const retained=await readFile(name);assert.equal(retained.subarray(32*1024*1024-8,32*1024*1024-8+marker.length).toString(),marker.toString());
  }finally{await rm(root,{recursive:true,force:true});}
 });
+
+test('mapped relative symlink with a real directory before dot-dot preserves its selected file and holds changed or ambiguous components',async()=>{
+ const {inventoryWorkingFolder,importWorkingLinks,validateMappedWorkingLinks}=await import('../../apps/server/dist/portable-working-files.js');
+ const {readlink}=await import('node:fs/promises');
+ const base=await mkdtemp(path.join(tmpdir(),'portable-relative-dotdot-'));
+ try{
+  const left=path.join(base,'left'),right=path.join(base,'right'),other=path.join(base,'other');
+  await mkdir(left);await mkdir(right);await mkdir(path.join(left,'sub'));
+  await mkdir(path.join(other,'nested1','nested2'),{recursive:true});await mkdir(path.join(other,'right'));
+  await writeFile(path.join(right,'file.txt'),'selected original');
+  await writeFile(path.join(other,'right','file.txt'),'different real target');
+  await symlink('sub/../../right/file.txt',path.join(left,'link'));
+  const mappings=new Map([[left,'left'],[right,'right']]);
+  const a=await inventoryWorkingFolder(left,undefined,undefined,mappings),b=await inventoryWorkingFolder(right,undefined,undefined,mappings);
+  const link=a.links.find(item=>item.path==='link');
+  assert.equal(link.targetRootRef,'right');assert.equal(link.target,'file.txt');assert.equal(link.sourceTarget,'sub/../../right/file.txt');
+  validateMappedWorkingLinks([{ref:'left',links:a.links},{ref:'right',links:b.links}]);
+  const nativeFs=(await import('@ponderosa/native-host/fs')).promises,originalLstat=nativeFs.lstat,originalRealpath=nativeFs.realpath;
+  let outsideReads=0;
+  nativeFs.lstat=async (...args)=>{if(args[0]===path.join(right,'file.txt'))outsideReads++;return originalLstat(...args);};
+  nativeFs.realpath=async (...args)=>{if(args[0]===path.join(right,'file.txt'))outsideReads++;return originalRealpath(...args);};
+  try{
+   await assert.rejects(inventoryWorkingFolder(left,undefined,undefined,new Map([[left,'left']])),/leaves all explicitly selected roots/);
+   assert.equal(outsideReads,0,'unselected target is refused before inspection');
+  }finally{nativeFs.lstat=originalLstat;nativeFs.realpath=originalRealpath;}
+  const source=await exportWorkingFiles(left,a.paths,1024,a.links,undefined,undefined,undefined,mappings,a);
+  assert.equal(source.bytes,0);
+  const files=await exportWorkingFiles(right,b.paths,1024,b.links,undefined,undefined,undefined,mappings,b);
+  const decoded=files.files.map(file=>{const data=Buffer.from(files.artifacts.find(artifact=>artifact.ref===file.artifactRef).dataBase64,'base64');return {...file,data,sha256:createHash('sha256').update(data).digest('hex')};});
+  const restoredLeft=path.join(base,'restored-left'),restoredRight=path.join(base,'restored-right');
+  await importWorkingFiles(restoredRight,decoded,b.directories);
+  await importWorkingFiles(restoredLeft,[],a.directories);
+  await importWorkingLinks(restoredLeft,a.links,{left:restoredLeft,right:restoredRight});
+  assert.equal(await readFile(path.join(restoredLeft,'link'),'utf8'),'selected original');
+  assert.equal(await readlink(path.join(left,'link')),'sub/../../right/file.txt');
+  let checks=0;
+  nativeFs.lstat=async (...args)=>{
+   if(args[0]===path.join(left,'link')&&++checks===2){
+    await rename(path.join(left,'sub'),path.join(left,'saved-sub'));
+    await symlink('../other/nested1/nested2',path.join(left,'sub'));
+   }
+   return originalLstat(...args);
+  };
+  try{
+   await assert.rejects(exportWorkingFiles(left,a.paths,1024,a.links,undefined,undefined,undefined,mappings,a),/ambiguous directory/);
+   assert.equal(checks,2,'replacement was injected between the initial and final link checks');
+  }finally{nativeFs.lstat=originalLstat;}
+  assert.equal(await readFile(path.join(left,'link'),'utf8'),'different real target');
+  await assert.rejects(inventoryWorkingFolder(left,undefined,undefined,mappings),/ambiguous directory/);
+  assert.equal(await readlink(path.join(left,'link')),'sub/../../right/file.txt');
+  assert.equal(await readFile(path.join(right,'file.txt'),'utf8'),'selected original');
+  assert.equal(await readFile(path.join(other,'right','file.txt'),'utf8'),'different real target');
+ }finally{await rm(base,{recursive:true,force:true});}
+});

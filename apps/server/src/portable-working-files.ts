@@ -92,6 +92,35 @@ export function portableWorkingPath(value:unknown):string {
   return value;
 }
 
+/** Only collapse a real selected-root directory when the live link resolves
+ * to the same canonical regular file.
+ * ponytail: dangling and linked targets remain held; support them only with
+ * complete captured topology and a proven equivalent destination resolution. */
+async function verifiedMappedRelativeTarget(root:string,linkPath:string,sourceTarget:string):Promise<string>{
+  const parent=path.dirname(path.join(root,linkPath)),parts=sourceTarget.split('/');
+  let current=parent;
+  for(let index=0;index<parts.length;index++){
+    const part=parts[index]!;
+    if(!part||part==='.')throw new Error('Mapped symbolic target requires canonical path components');
+    if(part==='..'){current=path.dirname(current);continue;}
+    const next=path.join(current,part);
+    if(parts[index+1]==='..'){
+      if(next!==root&&!next.startsWith(root+path.sep))throw new Error('Mapped symbolic target directory leaves its selected source root');
+      const stat=await fs.lstat(next);
+      if(!stat.isDirectory()||stat.isSymbolicLink()||await fs.realpath(next)!==next)throw new Error('Mapped symbolic target contains an ambiguous directory');
+    }
+    current=next;
+  }
+  const resolved=path.resolve(parent,sourceTarget);
+  if(await fs.realpath(path.dirname(resolved))!==path.dirname(resolved))throw new Error('Mapped symbolic target parent is not canonical');
+  const stat=await fs.lstat(resolved);
+  if(!stat.isFile()||stat.isSymbolicLink()||await fs.realpath(resolved)!==resolved||await fs.realpath(path.join(root,linkPath))!==resolved)throw new Error('Mapped symbolic target does not resolve to one canonical regular original');
+  return resolved;
+}
+function hasInteriorParent(value:string):boolean{
+  return value.replace(/^(?:\.\.\/)+/,'').split('/').includes('..');
+}
+
 /** Relative symbolic targets retain their spelling, including dangling in-root targets. */
 export function portableLinkTarget(link:PortableWorkingLinkDto):string {
   portableWorkingPath(link.path);
@@ -487,7 +516,16 @@ export async function exportWorkingFiles(rootPath:string,selected:readonly strin
     const name=path.join(root,link.path);
     if(await fs.realpath(path.dirname(name))!==path.dirname(name))throw new Error('Working-link parent changed');
     const stat=await fs.lstat(name,{bigint:true});
-    if(link.kind==='symlink'){if(!stat.isSymbolicLink()||await fs.readlink(name)!==(link.sourceTarget??link.target)||link.mtime!==undefined&&stat.mtime.toISOString()!==link.mtime)throw new Error('Working symlink changed during export');}
+    if(link.kind==='symlink'){
+      if(!stat.isSymbolicLink()||await fs.readlink(name)!==(link.sourceTarget??link.target)||link.mtime!==undefined&&stat.mtime.toISOString()!==link.mtime)throw new Error('Working symlink changed during export');
+      if(link.sourceTarget&&!path.isAbsolute(link.sourceTarget)&&hasInteriorParent(link.sourceTarget)){
+        const targetRoot=link.targetRootRef?[...(rootMappings??new Map())].find(([,ref])=>ref===link.targetRootRef)?.[0]:undefined;
+        if(link.targetRootRef&&!targetRoot)throw new Error('Working symbolic target root is not selected');
+        const expected=targetRoot?path.resolve(targetRoot,link.target):path.resolve(path.dirname(name),link.target);
+        if(path.resolve(path.dirname(name),link.sourceTarget)!==expected)throw new Error('Mapped symbolic target changed during export');
+        if(await verifiedMappedRelativeTarget(root,link.path,link.sourceTarget)!==expected)throw new Error('Mapped symbolic target changed during export');
+      }
+    }
     else {const originalRoot=link.targetRootRef?[...(rootMappings??new Map())].find(([,ref])=>ref===link.targetRootRef)?.[0]:root;if(!originalRoot)throw new Error('Hardlink source root is not selected');const target=await fs.lstat(path.join(originalRoot,link.target),{bigint:true});if(!stat.isFile()||stat.dev!==target.dev||stat.ino!==target.ino)throw new Error('Working hardlink changed during export');}
   }};
   await verifyLinks();
@@ -947,14 +985,15 @@ export async function inventoryWorkingFolder(rootPath:string,reviewedSelection?:
         const sourceTarget=await fs.readlink(path.join(root,name)),link:PortableWorkingLinkDto={path:name,kind:'symlink',target:sourceTarget,mtime:stat.mtime.toISOString()};
         const absolute=path.isAbsolute(sourceTarget),escapes=!absolute&&path.relative(root,path.resolve(path.dirname(path.join(root,name)),sourceTarget)).split(path.sep)[0]==='..';
         if(absolute||escapes){
-          // Relocate only canonical absolute targets or leading-parent sibling paths.
-          // Resolving an internal "a/../" would wrongly normalize through a symlink.
+          // An internal directory/.. is usable only after verifying that the
+          // canceled component is a real directory and the live target agrees.
           const rest=sourceTarget.replace(/^(?:\.\.\/)+/,'');
-          if(absolute?path.normalize(sourceTarget)!==sourceTarget:rest.split('/').some(part=>part==='.'||part==='..'))throw new Error('Mapped symbolic target requires canonical path components');
+          if(absolute?path.normalize(sourceTarget)!==sourceTarget:rest.split('/').some(part=>part==='.'))throw new Error('Mapped symbolic target requires canonical path components');
           const resolved=path.resolve(path.dirname(path.join(root,name)),sourceTarget);
           const candidates=[...new Map<string,string|undefined>([[root,undefined],...(rootMappings??new Map<string,string>())]).entries()].filter(([selected])=>resolved===selected||resolved.startsWith(selected+path.sep)).sort((a,b)=>b[0].length-a[0].length);
           const chosen=candidates[0];
           if(!chosen)throw new Error('Symbolic target leaves all explicitly selected roots');
+          if(!absolute&&hasInteriorParent(sourceTarget)&&await verifiedMappedRelativeTarget(root,name,sourceTarget)!==resolved)throw new Error('Mapped symbolic target differs from the selected original');
           link.sourceTarget=sourceTarget;
           if(chosen[0]!==root){if(!chosen[1])throw new Error('Mapped symbolic target lacks a final root reference');link.targetRootRef=chosen[1];link.target=path.relative(chosen[0],resolved)||'.';}
           else link.target=path.relative(path.dirname(path.join(root,name)),resolved)||'.';

@@ -298,3 +298,12 @@ anchor exists. Named `absentPaths` preserve dangling links only after ENOENT che
 before and after alias creation and before final metadata; access errors never
 mean absence. Bare repository capsules require an explicit matching bare source,
 parent-created storage, and no working pointer or forced core.worktree override.
+
+Ordinary selected-root export also supports a relative symbolic target with an
+internal directory followed by `..` when every canceled directory is a real,
+canonical directory inside the source root and the live link resolves to the
+same canonical regular file in an explicitly selected root. The source check
+is repeated during export, and selection is verified before target inspection.
+The destination uses the existing mapped-link representation. Symlink directory
+components, dangling or linked final targets, and unselected roots stay held;
+no claim is made for those shapes.
