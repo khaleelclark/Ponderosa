@@ -17,6 +17,8 @@ const goal=()=>status===null?null:{threadId:'thread',objective:'Saved objective'
 const note=(turnId=null)=>emit({method:'thread/goal/updated',params:{threadId:'thread',turnId,goal:goal()}});
 const started=id=>emit({method:'turn/started',params:{threadId:'thread',turn:{id}}});
 const finished=id=>emit({method:'turn/completed',params:{threadId:'thread',turn:{id,status:'completed'}}});
+const usage=id=>emit({method:'thread/tokenUsage/updated',params:{threadId:'thread',turnId:id,tokenUsage:{last:{inputTokens:10,outputTokens:2,totalTokens:12},modelContextWindow:1000}}});
+
 readline.createInterface({input:process.stdin}).on('line',line=>{
  const m=JSON.parse(line);if(!m.method||m.id===undefined)return;
  fs.appendFileSync(log,JSON.stringify(m)+'\\n');
@@ -26,7 +28,7 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
    if(mode==='disabled'){emit({id:m.id,error:{code:-32600,message:'goals feature is disabled'}});return;}
    if(mode==='malformed'){emit({id:m.id,result:{}});return;}
    reads++;emit({id:m.id,result:{goal:goal()}});
-   if(mode==='auto'&&status==='active'){setTimeout(()=>{started('two');status='complete';note('two');finished('two');},20);}
+   if(['auto','usage-full','usage-partial'].includes(mode)&&status==='active'){setTimeout(()=>{started('two');if(mode.startsWith('usage-'))usage('two');status='complete';note('two');finished('two');},20);}
    return;
  }
  if(m.method==='thread/goal/set'){
@@ -40,7 +42,8 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
  if(m.method==='thread/start'||m.method==='thread/resume'){emit({id:m.id,result:{thread:{id:'thread'},model:'fixture'}});return;}
  if(m.method==='turn/start'){
    emit({id:m.id,result:{turn:{id:'one'}}});started('one');
-   if(mode==='auto'||mode==='fast'||mode==='foreign-terminal'){status='active';note();}
+   if(['auto','fast','foreign-terminal','usage-full','usage-partial'].includes(mode)){status='active';note();}
+   if(mode==='usage-full')usage('one');
    if(mode==='foreign-terminal'){status='complete';note('different-turn');}
    finished('one');
    if(mode==='fast'){started('two');status='complete';note('two');finished('two');}
@@ -113,10 +116,10 @@ test('paused native goal resumes once and finishes after an actual turn', {timeo
 });
 test('goal creation sends one exact human objective and budget', {timeout:12000},async t=>{
  const f=await fixture(t,'create'),session=await f.open();
- await session.startNativeGoal({...input,nativeAction:{kind:'goal-create',objective:'Saved objective',tokenBudget:500}});
+ await session.startNativeGoal({...input,nativeAction:{kind:'goal-create',objective:'  Saved objective  ',tokenBudget:500}});
  const events=await terminal(session.events);assert.equal(events.at(-1).type,'turn_done');
  const mutations=(await f.calls()).filter(c=>c.method==='thread/goal/set');
- assert.equal(mutations.length,1);assert.deepEqual(mutations[0].params,{threadId:'thread',status:'active',origin:'user',objective:'Saved objective',tokenBudget:500});
+ assert.equal(mutations.length,1);assert.deepEqual(mutations[0].params,{threadId:'thread',status:'active',origin:'user',objective:'  Saved objective  ',tokenBudget:500});
 });
 test('creation cannot overwrite a prior native goal', {timeout:12000},async t=>{
  const f=await fixture(t,'resume',true),session=await f.open();
@@ -148,4 +151,18 @@ test('goal activation rejects missing or unrelated native actions before mutatio
  await assert.rejects(session.startNativeGoal(input),/exact native goal action/);
  await assert.rejects(session.startNativeGoal({...input,nativeAction:{kind:'review',target:{type:'uncommittedChanges'}}}),/exact native goal action/);
  assert.equal((await f.calls()).filter(c=>c.method==='thread/goal/set').length,0);
+});
+
+
+for(const [mode,expectUsage] of [['usage-full',true],['usage-partial',false]])test(`goal usage is ${expectUsage?'complete':'unavailable when a turn is missing'}`,{timeout:12000},async t=>{
+ const f=await fixture(t,mode),session=await f.open();
+ await session.startTurn(input);const events=await terminal(session.events);
+ const done=events.find(event=>event.type==='turn_done');assert.ok(done);
+ if(expectUsage){
+  assert.deepEqual(done.usage,{inputTokens:20,outputTokens:4,totalTokens:24});
+  assert.equal(done.providerRequestUsage.length,2);
+ }else{
+  assert.equal(done.usage,undefined);
+  assert.equal(done.providerRequestUsage,undefined);
+ }
 });

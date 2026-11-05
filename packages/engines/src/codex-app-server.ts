@@ -1069,7 +1069,7 @@ export class CodexAppServerSession implements RuntimeSession {
       if (action.tokenBudget !== undefined && action.tokenBudget !== null &&
           (!Number.isSafeInteger(action.tokenBudget) || (action.tokenBudget as number) <= 0))
         throw new Error("Native goal budget must be positive or null");
-      create = {objective:action.objective.trim(),
+      create = {objective:action.objective,
         ...(action.tokenBudget !== undefined ? {tokenBudget:action.tokenBudget as number|null} : {})};
     } else if (!current || current.status !== "paused") throw new Error("An exact paused native goal is required");
     input.assertCurrent?.();
@@ -1080,7 +1080,7 @@ export class CodexAppServerSession implements RuntimeSession {
     this.goalStatus = "active";
     try {
       const goal = await setNativeGoalOnce(this.rpc, this.engineAgentId, "active", create);
-      if (goal.objective !== (create?.objective ?? current?.objective) ||
+      if (goal.objective !== (create ? create.objective.trim() : current?.objective) ||
           (create && Object.hasOwn(create,"tokenBudget") && goal.tokenBudget !== create.tokenBudget))
         throw new Error("Native goal activation changed the requested objective or budget");
       input.assertCurrent?.();
@@ -1249,6 +1249,9 @@ export class CodexAppServerSession implements RuntimeSession {
     let goalTerminalTurnId: string | undefined;
     let goalUsage: TokenUsage[] = [];
     let goalRequests: TokenUsage[] = [];
+    let goalTurnCount = 0;
+    let completeGoalUsage = true;
+    let completeGoalRequests = true;
     const goalMarker = (status:"running"|"done", state?:string): AgentEvent => ({
       type:"work_item_update", workItemId:`native-goal:${this.engineAgentId}`, status,
       title:state ? `Native goal: ${state}` : "Native goal",
@@ -1256,15 +1259,22 @@ export class CodexAppServerSession implements RuntimeSession {
     const terminalGoal = (): AgentEvent => {
       const status = this.goalStatus;
       this.goalOwned = false;
-      const usage = sumProviderRequestUsage(goalUsage);
+      const usage = completeGoalUsage && goalTurnCount > 0 ? sumProviderRequestUsage(goalUsage) : undefined;
+      const requests = usage && completeGoalRequests ? reconcileProviderRequestUsage(usage, goalRequests) : undefined;
       const result: AgentEvent = status === "complete" && heldCompletion
-        ? {...heldCompletion, ...(usage ? {usage} : {}), ...(goalRequests.length ? {providerRequestUsage:goalRequests} : {})}
+        ? (() => {
+            const {usage: _lastUsage, providerRequestUsage: _lastRequests, ...completion} = heldCompletion;
+            return {...completion, ...(usage ? {usage} : {}), ...(requests ? {providerRequestUsage:requests} : {})};
+          })()
         : {type:"error", terminalStatus:"unknown", message:`Native goal stopped with status ${status ?? "unknown"}; its remaining work was not repeated.`};
       heldCompletion = undefined;
       heldCompletionTurnId = undefined;
       goalTerminalTurnId = undefined;
       goalUsage = [];
       goalRequests = [];
+      goalTurnCount = 0;
+      completeGoalUsage = true;
+      completeGoalRequests = true;
       this.goalPauseAttempted = false;
       return result;
     };
@@ -1429,8 +1439,11 @@ export class CodexAppServerSession implements RuntimeSession {
           if (this.goalOwned) {
             heldCompletion = event;
             heldCompletionTurnId = typeof completedTurnId === "string" ? completedTurnId : undefined;
+            goalTurnCount++;
             if (event.usage) goalUsage.push(event.usage);
-            if (event.providerRequestUsage) goalRequests.push(...event.providerRequestUsage);
+            else completeGoalUsage = false;
+            if (event.providerRequestUsage?.length) goalRequests.push(...event.providerRequestUsage);
+            else completeGoalRequests = false;
             if (this.goalStatus !== "active" && !this.activeTurnId && consumedTurnStarts === this.observedTurnStarts &&
                 (this.goalStatus !== "complete" || !!heldCompletionTurnId && goalTerminalTurnId === heldCompletionTurnId)) {
               if (this.goalStatus !== "complete") { try { await this.close(); } catch { /* host keeps cleanup authority */ } }
