@@ -28,11 +28,13 @@ and reconciliation flow; the listed checkpoint's support flag remains authoritat
 The existing `branches-engine-app/server.mjs` supplies a standalone HTTP process;
 this module supplies the previously missing concrete multi-capability workflow.
 See `docs/branches-framework-capabilities.md` for all nine dispositions and the
-released external comparator baseline. The comparator remains unexecuted.
+released external comparator baseline. A separate synthetic comparator run uses
+deterministic models and search, and does not establish live-provider parity.
 
 The matched Python source is `comparator.py`, with released framework pins in
-`comparator-requirements.txt`. `create_review_application` requires two actual
-configured tool-capable chat models and an authorized search callable. Nothing
+`comparator-requirements.txt`, including the tested prebuilt dependency. Other
+transitives are not locked. `create_review_application` requires two configured
+tool-capable chat models and an authorized search callable. Nothing
 installs, deploys or invokes on import. `start`, `resume`, `checkpoints`, and `rewind`
 are explicit caller operations. A rewind may repeat external model/tool effects;
 it is not equivalent to reviewed Branch custody admission. Comparator memory and

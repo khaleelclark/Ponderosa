@@ -5,7 +5,8 @@ not an equivalence verdict. Released Python comparator baseline:
 [LangGraph 1.0.5](https://pypi.org/project/langgraph/1.0.5/) and
 [LangChain 1.0.8](https://pypi.org/project/langchain/1.0.8/).
 These are selected released versions, not a claim of latest releases or a resolved
-transitive lock. No comparator packages have been installed or comparator examples executed. Current official docs
+transitive lock. A disposable synthetic comparator run used two deterministic
+models and local search, with no provider calls. Current official docs
 may describe newer APIs; the comparator uses the baseline StateGraph/stream API,
 not newer event-stream projections. Source compatibility remains unqualified.
 
@@ -26,16 +27,17 @@ its README, alongside `examples/branches-client` and `examples/branches-engine-a
 Deploying this example performs real work only when explicitly invoked by its
 caller; writing the source did not deploy it. Synthetic HTTP fixtures now exercise the Branch state example and the research/review
 example with controlled Agents and a human gate. Live-provider, fresh-instance,
-crash/lost-response, upgrade and comparator qualification remains deferred.
+crash/lost-response, upgrade and full comparator qualification remains deferred.
 
 ## Matched comparator definition
 
 `examples/branches-capabilities/comparator.py` mirrors the public Branch app:
 question → parallel research subgraph and independent critic → ordered review
 payload → explicit editable approve/reject → retained approved answer. Caller
-provides actual chat models and authorized evidence search. No fabricated tool
-response or backend identity equivalence. Its requirements file pins only the two
-top-level framework releases; provider packages/model versions remain caller input.
+provides tool-capable chat models and authorized evidence search. Synthetic test
+models and search establish mechanics only; they do not establish backend identity
+or quality equivalence. The requirements file pins both framework releases and the
+tested prebuilt dependency; other transitives and provider models remain caller input.
 
 | Capability | Comparator operation and official definition |
 | --- | --- |
