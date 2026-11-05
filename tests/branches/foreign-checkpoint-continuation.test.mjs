@@ -91,7 +91,7 @@ test('current imported native uncertainty refuses fresh authority and a changed 
 
 // The source is a real canceled-before-admission owner; only the fresh synthetic
 // fixture data root is touched and the provider is never allowed to execute.
-async function h2BeforeEntryFixture(t,{separate=false,forge=false}={}){
+async function h2BeforeEntryFixture(t,{separate=false,forge=false,automatic=false}={}){
  const root=mkdtempSync(path.join(tmpdir(),'h2-before-entry-'));
  const sourceState=path.join(root,'source'),destinationState=path.join(root,'destination');
  mkdirSync(sourceState);mkdirSync(destinationState);
@@ -108,12 +108,12 @@ async function h2BeforeEntryFixture(t,{separate=false,forge=false}={}){
  const chat=await api('POST',`/api/branches/${owner.id}/chats`,{label:'H2 source Chat',defaultEngine:'codex'});
  const agent=await api('POST',`/api/branches/engine/projects/${chat.projectId}/agents`,{title:'H2 source Agent',engine:'codex',conversationId:chat.id,idempotencyKey:randomUUID()});
  new CapabilityPolicyStore(store.sqlite).put({scopeKind:'agent',scopeId:agent.id,expectedRevision:0,restrictedCapabilityIds:[CAPABILITY_IDS.memoryWrite]});
- const definition={schema:'ponderosa.branch.v1',name:'H2 source',trigger:{kind:'manual'},entry:'steer',controls:[],
+ const definition={schema:'ponderosa.branch.v1',name:'H2 source',trigger:automatic?{kind:'webhook',configRef:'source'}:{kind:'manual'},entry:'steer',controls:[],
   steps:[{id:'steer',kind:'agent',target:{kind:'persistent_agent',ref:'worker'},instructions:'Synthetic guidance',jobHandling:'steer'},
    {id:'copy',kind:'agent',target:{kind:'persistent_agent',ref:'worker'},instructions:'Synthetic copy',jobHandling:'copy'}],
   edges:[{id:'next',from:'steer',to:'copy',on:'success',input:{kind:'literal',text:'Synthetic copy input'}}],
   policy:{maxConcurrentExecutions:1,maxEphemeralAgents:1,failure:{action:'stop'}}};
- await api('POST','/api/branches/deploy',{chatId:'',branchId:owner.id,expectedVersionId:'',idempotencyKey:randomUUID(),definition,bindings:{agents:{worker:agent.id},directories:{}}});
+ await api('POST','/api/branches/deploy',{chatId:'',branchId:owner.id,expectedVersionId:'',idempotencyKey:randomUUID(),definition,bindings:{agents:{worker:agent.id},directories:{},...(automatic?{triggers:{source:{sourceConfig:{},enabled:false}}}:{})}});
  const sourceStore=new BranchStore(store.sqlite,new CoordinationV3Store(store.sqlite));
  const original=sourceStore.accept(owner.id,'h2-original','Original objective');sourceStore.cancel(original.id);
  await sourceStore.unitSaver.drain();
@@ -139,7 +139,7 @@ async function h2BeforeEntryFixture(t,{separate=false,forge=false}={}){
   const data=pkg.runtimeData;data.sha256=h2Hash({schema:data.schema,sourceBranchId:data.sourceBranchId,identities:data.identities,owners:data.owners});
  }
  if(separate){await close();activeState=destinationState;store=new AgentStore(activeState);await open();}
- const preview=await api('POST','/api/branches/install-preview',{package:pkg,bindings:{agents:{},directories:{workspace:root},engines:{codex:'codex'}}});
+ const preview=await api('POST','/api/branches/install-preview',{package:pkg,bindings:{agents:{},directories:{workspace:root},engines:{codex:'codex'},...(automatic?{triggers:{source:{sourceConfig:{},enabled:false}}}:{})}});
  const installation=`/api/branches/installations/${preview.id}`;
  let result=await api('POST',installation+'/confirm',{acknowledgeFullImport:true,acknowledgeRuntimeDataSha256:pkg.runtimeData.sha256}),reviewed=false;
  for(let i=0;i<20&&result.state==='applying';i++){
@@ -157,7 +157,7 @@ async function h2BeforeEntryFixture(t,{separate=false,forge=false}={}){
  assert.ok(fact);assert.equal(JSON.parse(fact.json).execution[0].state,'canceled');
  const destinationAgent=saved.receipt.agentMap[agent.id];assert.ok(destinationAgent);
  assert.equal(new CapabilityPolicyStore(store.sqlite).resolveForAgent(destinationAgent).restrictedCapabilityIds.includes(CAPABILITY_IDS.memoryWrite),false,'keep destination does not inherit source access');
- await api('PUT',`/api/branches/${result.branchId}/availability`,{enabled:true});
+ if(!automatic)await api('PUT',`/api/branches/${result.branchId}/availability`,{enabled:true});
  const selection={planId:preview.id,sourceExecutionId:original.id,checkpointKey:'current',checkpointSha256:fact.sha256};
  const url=`/api/branches/${result.branchId}/executions/${imported}/foreign-continuation`;
  return {root,owner,agent,original,sourceRow,pkg,preview,result,saved,imported,destinationAgent,selection,url,api,call,get store(){return store;},
@@ -279,6 +279,18 @@ test('before-entry acceptance rechecks source, Agent policy and reviewed destina
  result=await f.call("POST",f.url,command(bindingReview,"binding-changed"));assert.equal(result.statusCode,409);assert.equal(result.json().error,'Foreign continuation review is stale; review current authority again');
  assert.equal(f.store.sqlite.prepare("SELECT count(*) n FROM branch_executions WHERE branch_id=?").get(f.result.branchId).n,before);
  assert.equal(f.store.sqlite.prepare('SELECT admitted_at FROM branch_executions WHERE id=?').get(f.imported).admitted_at,null);
+ f.done();
+});
+
+test('before-entry import of an automatic-trigger definition remains held',{timeout:60000},async t=>{
+ const f=await h2BeforeEntryFixture(t,{automatic:true});
+ const before=f.store.sqlite.prepare('SELECT count(*) n FROM branch_executions WHERE branch_id=?').get(f.result.branchId).n;
+ const result=await f.call('POST',f.url+'/review',f.selection);
+ assert.equal(result.statusCode,409,result.body);
+ assert.equal(result.json().error,'Original definition, configuration or supported before-entry scope differs; original data stays held');
+ assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM branch_executions WHERE branch_id=?').get(f.result.branchId).n,before);
+ assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM branch_step_executions WHERE execution_id=?').get(f.original.id).n,0);
+ assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM coordination_requests').get().n,0);
  f.done();
 });
 
