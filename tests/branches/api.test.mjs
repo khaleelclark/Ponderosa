@@ -369,6 +369,17 @@ test("public state example creates its Branch and runs its graph through HTTP",{
   assert.equal(state.values.total,5);
   assert.deepEqual(state.values.summary,{maximum:3,total:5});
   assert.equal(state.revision,3);
+  // Only effect-free Script/control checkpoints are selected; no uncertain Agent effect is replayed.
+  const checkpoints=await client.checkpoints(app.workflow.id,execution.id);
+  const selected=checkpoints.find(checkpoint=>checkpoint.restoreSupported&&checkpoint.eligibility==="script_control_frontier");
+  assert.ok(selected,"expected a supported Script/control checkpoint");
+  const selection={checkpointId:selected.id,expectedHash:selected.contentHash,commandKey:"state-rewind"};
+  const restored=await client.rewind(app.workflow.id,execution.id,"historical",selection);
+  assert.equal((await client.rewind(app.workflow.id,execution.id,"historical",selection)).id,restored.id);
+  await until(async()=>{const detail=await client.state(restored.id);return detail.execution.state==="completed"&&detail;},"restored state completion",20000);
+  const restoredState=await app.read(restored.id);
+  assert.deepEqual(restoredState.values,state.values);assert.equal(restoredState.revision,state.revision);
+  assert.deepEqual((await app.read(execution.id)).values,state.values);
  });
 });
 
