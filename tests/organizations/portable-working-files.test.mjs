@@ -213,3 +213,39 @@ for(const failure of ['missing','unsupported','partial'])test('ordinary symlink 
  `});
  assert.equal(result.status,0,result.stderr||result.stdout);
 });
+
+
+test('large binary working original exports as ordered bounded transport parts', {timeout:120000}, async()=>{
+ const {decodePortableArtifactData}=await import('../../apps/server/dist/agent-package-codec.js');
+ const root=await mkdtemp(path.join(tmpdir(),'portable-large-original-'));
+ const original=Buffer.alloc(64*1024*1024+17);
+ original[0]=1;original[32*1024*1024-1]=2;original[32*1024*1024]=3;original[original.length-1]=4;
+ const name=path.join(root,'large.bin');
+ try{
+  await writeFile(name,original);
+  const expected=createHash('sha256').update(original).digest('hex');
+  const result=await exportWorkingFiles(root,['large.bin'],original.length);
+  assert.equal(result.files.length,1,'one logical original path');
+  const file=result.files[0],manifest=file.parts;
+  assert.equal(file.path,'large.bin');
+  assert.equal(manifest.schema,'ponderosa.working-file-parts.v1');
+  assert.equal(manifest.refs.length,3);
+  assert.equal(file.artifactRef,manifest.refs[0]);
+  assert.equal(manifest.byteLength,original.length);
+  assert.equal(manifest.sha256,expected);
+  const hash=createHash('sha256');let bytes=0;
+  for(const [index,ref] of manifest.refs.entries()){
+   const part=result.artifacts.find(item=>item.ref===ref);
+   assert.ok(part);assert.equal(part.mediaType,'application/vnd.ponderosa.working-file-part.v1');
+   assert.match(part.summary,new RegExp('Transport part '+(index+1)+' of 3'));
+   const decoded=await decodePortableArtifactData(part);
+   assert.ok(decoded.data.length<=32*1024*1024);bytes+=decoded.data.length;hash.update(decoded.data);
+  }
+  assert.equal(bytes,original.length);assert.equal(hash.digest('hex'),expected);
+  assert.equal(createHash('sha256').update(await readFile(name)).digest('hex'),expected,'source is unchanged');
+  const marker=Buffer.from('-----BEGIN PRIVATE KEY-----');
+  marker.copy(original,32*1024*1024-8);await writeFile(name,original);
+  await assert.rejects(exportWorkingFiles(root,['large.bin'],original.length),/Private key content/);
+  const retained=await readFile(name);assert.equal(retained.subarray(32*1024*1024-8,32*1024*1024-8+marker.length).toString(),marker.toString());
+ }finally{await rm(root,{recursive:true,force:true});}
+});

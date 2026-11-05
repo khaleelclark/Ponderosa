@@ -1,5 +1,5 @@
 import {AGENT_PACKAGE_MAX_BYTES,agentPackageJsonUtf8Bytes} from "@ponderosa/core";
-import {encodePortableArtifactData,decodePortableArtifactData} from "./agent-package-codec.js";
+import {assertAgentPackageMemoryAvailable,encodePortableArtifactData,decodePortableArtifactData} from "./agent-package-codec.js";
 import {constants,closeSync} from 'node:fs';
 import {openPortableRegular} from './portable-held-regular.js';
 import {applyExactFileMetadata,applyExactSymlinkMetadata,pinPortableSymlink} from '@ponderosa/native-host';
@@ -461,8 +461,8 @@ function validateRetainedGitCurrent(files:readonly {path:string;data:Buffer;sha2
 }
 
 /** Explicit selection only; no implicit traversal of user folders or native profiles. */
-export async function exportWorkingFiles(rootPath:string,selected:readonly string[],maxBytes:number,links:readonly PortableWorkingLinkDto[]=[],reviewedSelection?:ReviewedUserDataSelection,retainedOriginal?:{data:Buffer;mode?:number;mtime?:string;canonicalGeneratedHooksProof?:CanonicalGeneratedHooksProof},gitCapture?:GitExportCapture,rootMappings?:ReadonlyMap<string,string>,capturedInventory?:WorkingFolderInventory):Promise<{files:Array<{path:string;artifactRef:string;mode?:number;mtime?:string}>;artifacts:PortableArtifactDto[];bytes:number;verify?:()=>Promise<void>}> {
-  const root=await fs.realpath(rootPath),files:Array<{path:string;artifactRef:string;mode?:number;mtime?:string}>=[],artifacts:PortableArtifactDto[]=[];
+export async function exportWorkingFiles(rootPath:string,selected:readonly string[],maxBytes:number,links:readonly PortableWorkingLinkDto[]=[],reviewedSelection?:ReviewedUserDataSelection,retainedOriginal?:{data:Buffer;mode?:number;mtime?:string;canonicalGeneratedHooksProof?:CanonicalGeneratedHooksProof},gitCapture?:GitExportCapture,rootMappings?:ReadonlyMap<string,string>,capturedInventory?:WorkingFolderInventory):Promise<{files:Array<{path:string;artifactRef:string;mode?:number;mtime?:string;parts?:{schema:'ponderosa.working-file-parts.v1';refs:string[];byteLength:number;sha256:string}}>;artifacts:PortableArtifactDto[];bytes:number;verify?:()=>Promise<void>}> {
+  const root=await fs.realpath(rootPath),files:Array<{path:string;artifactRef:string;mode?:number;mtime?:string;parts?:{schema:'ponderosa.working-file-parts.v1';refs:string[];byteLength:number;sha256:string}}>=[],artifacts:PortableArtifactDto[]=[];
   const gitStorage=gitCapture?gitCapture.exclusions(root):reviewedSelection?.git&&reviewedSelection.source!=='retained_originals'?await selectedReviewedGitStorage(root):[];
   if(selected.some(name=>gitStorage.some(storage=>storage==='.'||name===storage||name.startsWith(storage+'/'))))throw new Error('Selected Git storage cannot also be exported as ordinary working files');
   const retained=reviewedSelection?.source==='retained_originals'?await captureRetainedReviewOriginal(root,reviewedSelection,retainedOriginal?.data??Buffer.alloc(0),retainedOriginal?.canonicalGeneratedHooksProof,true):undefined;
@@ -486,8 +486,11 @@ export async function exportWorkingFiles(rootPath:string,selected:readonly strin
     let data:Buffer,mode:number,mtime:string;
     try{
       const before=await handle.stat({bigint:true});
-      if(!before.isFile()||before.nlink!==(capturedInventory?.linkCounts.get(relative)??BigInt(1+links.filter(link=>link.kind==='hardlink'&&!link.targetRootRef&&link.target===relative).length))||before.size>BigInt(Math.min(maxBytes-bytes,64*1024*1024)))throw new Error(`Working file lacks a bounded complete regular-link inventory: ${relative}`);
+      if(!before.isFile()||before.nlink!==(capturedInventory?.linkCounts.get(relative)??BigInt(1+links.filter(link=>link.kind==='hardlink'&&!link.targetRootRef&&link.target===relative).length))||before.size>BigInt(maxBytes-bytes))throw new Error(`Working file lacks a bounded complete regular-link inventory: ${relative}`);
       if(await fs.realpath(path.dirname(current))!==path.dirname(current))throw new Error('Working-file directory changed during export');
+      // Import already uses this budget for retained decoded originals. Apply
+      // the same admission before allocating an extended export original.
+      if(before.size>64n*1024n*1024n)assertAgentPackageMemoryAvailable(Number(before.size));
       data=Buffer.alloc(Number(before.size));let offset=0;
       while(offset<data.length){const read=await handle.read(data,offset,data.length-offset,offset);if(!read.bytesRead)throw new Error(`Working file shortened during export: ${relative}`);offset+=read.bytesRead;}
       if((before.mode&0o7000n)!==0n&&!reviewedSelection?.extendedMetadata)throw new Error('Select filesystem metadata to preserve special POSIX mode bits');
@@ -499,11 +502,25 @@ export async function exportWorkingFiles(rootPath:string,selected:readonly strin
     for(const alias of capturedInventory?.validationPaths.get(relative)??[])validateWorkingFileData(alias,data);
     for(const link of links.filter(link=>link.kind==='hardlink'&&link.target===relative))validateWorkingFileData(link.path,data);
     bytes+=data.length;if(bytes>maxBytes)throw new Error('Selected working files exceed the portable artifact limit');
-    const ref=randomUUID();files.push({path:relative,artifactRef:ref,mode:mode!,mtime:mtime!});
-    const artifact:PortableArtifactDto={ref,kind:'document',path:relative,summary:relative,createdAt:new Date().toISOString(),mediaType:'application/octet-stream',...await encodePortableArtifactData(data)};
-    wireBytes+=agentPackageJsonUtf8Bytes(artifact);
-    if(wireBytes>AGENT_PACKAGE_MAX_BYTES)throw Object.assign(new Error('Selected working files exceed the serialized package byte limit; no originals were omitted'),{statusCode:413});
-    artifacts.push(artifact);
+    if(data.length<=64*1024*1024){
+      const ref=randomUUID();files.push({path:relative,artifactRef:ref,mode:mode!,mtime:mtime!});
+      const artifact:PortableArtifactDto={ref,kind:'document',path:relative,summary:relative,createdAt:new Date().toISOString(),mediaType:'application/octet-stream',...await encodePortableArtifactData(data)};
+      wireBytes+=agentPackageJsonUtf8Bytes(artifact);
+      if(wireBytes>AGENT_PACKAGE_MAX_BYTES)throw Object.assign(new Error('Selected working files exceed the serialized package byte limit; no originals were omitted'),{statusCode:413});
+      artifacts.push(artifact);
+    }else{
+      // One logical original, transported as existing bounded artifact parts.
+      // The media type and summary identify each as partial transport data.
+      const chunkSize=32*1024*1024,refs:string[]=[],count=Math.ceil(data.length/chunkSize),createdAt=new Date().toISOString();
+      for(let index=0;index<count;index++){
+        const ref=randomUUID();refs.push(ref);
+        const artifact:PortableArtifactDto={ref,kind:'document',path:'portable-working-part/'+ref,summary:'Transport part '+(index+1)+' of '+count+' for working file '+relative+'; not a complete file',createdAt,mediaType:'application/vnd.ponderosa.working-file-part.v1',...await encodePortableArtifactData(data.subarray(index*chunkSize,Math.min(data.length,(index+1)*chunkSize)))};
+        wireBytes+=agentPackageJsonUtf8Bytes(artifact);
+        if(wireBytes>AGENT_PACKAGE_MAX_BYTES)throw Object.assign(new Error('Selected working files exceed the serialized package byte limit; no originals were omitted'),{statusCode:413});
+        artifacts.push(artifact);
+      }
+      files.push({path:relative,artifactRef:refs[0]!,mode:mode!,mtime:mtime!,parts:{schema:'ponderosa.working-file-parts.v1',refs,byteLength:data.length,sha256:createHash('sha256').update(data).digest('hex')}});
+    }
   }
   await verifyLinks();
   if(current){
