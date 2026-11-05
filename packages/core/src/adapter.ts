@@ -370,6 +370,8 @@ export interface ProviderRootExitDetail {
 }
 
 export interface OpenRuntimeSessionOptions {
+  /** Host-side authority must still match before native thread setup. */
+  assertRuntimeCurrent?: () => void;
   /** Host-only exact scheduler ownership of the process start. */
   providerRun?: { runId: string; fence: number };
   fileCheckpointTracking?: boolean;

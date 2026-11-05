@@ -668,6 +668,7 @@ export class CodexAppServerSession implements RuntimeSession {
     });
     const cliVersion = codexCliVersion(await rpc.initialize());
     if (opts.expectedBillingMode) await requireCodexBillingMode(rpc, opts.expectedBillingMode);
+    opts.assertRuntimeCurrent?.();
     const fork = opts.transcriptFork ? await forkCodexTranscript(rpc,opts.transcriptFork.sourceSessionId,opts.transcriptFork.throughId,() => {
       if (opts.signal.aborted) throw new Error("Fork lost Run authority");
       opts.assertHistoryCurrent?.();
@@ -684,6 +685,7 @@ export class CodexAppServerSession implements RuntimeSession {
         throw error;
       }
     }
+    opts.assertRuntimeCurrent?.();
     const response: ThreadResponse = fork?.sessionId ? {thread:{id:fork.sessionId},model:opts.model} : opts.resumeSessionId
       ? await rpc.request<ThreadResponse>("thread/resume", {
           threadId: opts.resumeSessionId,
@@ -1054,8 +1056,10 @@ export class CodexAppServerSession implements RuntimeSession {
     input.assertCurrent?.();
     if (this.activeTurnId || this.nativeTaskHold || this.goalOwned) throw new Error("Native session has active work");
     await this.validateBillingMode();
-    const current = await readNativeGoal(this.rpc, this.engineAgentId);
     const action = input.nativeAction as {kind:string;objective?:unknown;tokenBudget?:unknown} | undefined;
+    if (action?.kind !== "goal-create" && action?.kind !== "goal-resume")
+      throw new Error("An exact native goal action is required");
+    const current = await readNativeGoal(this.rpc, this.engineAgentId);
     let create: {objective:string;tokenBudget?:number|null} | undefined;
     if (action?.kind === "goal-create") {
       if (current !== null) throw new Error("An existing or unavailable native goal cannot be replaced");

@@ -58,6 +58,7 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
  return {open,calls};
 }
 const input={prompt:'An ordinary task',kind:'collaboration',assertCurrent(){}};
+const resumeInput={...input,nativeAction:{kind:'goal-resume'}};
 async function terminal(events) {
  const values=[];
  await Promise.race([(async()=>{for await(const value of events){values.push(value);if(value.type==='turn_done'||value.type==='error')return;}})(),new Promise((_,reject)=>setTimeout(()=>reject(Error('goal event timed out')),5000))]);
@@ -106,7 +107,7 @@ test('saved active goal is held before native thread resume', {timeout:12000},as
 });
 test('paused native goal resumes once and finishes after an actual turn', {timeout:12000},async t=>{
  const f=await fixture(t,'resume',true),session=await f.open();
- await session.startNativeGoal(input);const events=await terminal(session.events);
+ await session.startNativeGoal(resumeInput);const events=await terminal(session.events);
  assert.equal(events.filter(e=>e.type==='turn_done').length,1);
  assert.equal((await f.calls()).filter(c=>c.method==='thread/goal/set'&&c.params.status==='active').length,1);
 });
@@ -129,14 +130,22 @@ test('lost creation acknowledgement is unknown and never repeated', {timeout:120
 });
 test('lost native activation response is unknown and is never retried', {timeout:12000},async t=>{
  const f=await fixture(t,'lost',true),session=await f.open();
- await assert.rejects(session.startNativeGoal(input),/outcome is unknown/);
+ await assert.rejects(session.startNativeGoal(resumeInput),/outcome is unknown/);
  assert.equal((await f.calls()).filter(c=>c.method==='thread/goal/set').length,1);
 });
 test('native pause is issued once and a paused goal is not reported as successful', {timeout:12000},async t=>{
  const f=await fixture(t,'pause',true),session=await f.open();
- await session.startNativeGoal(input);
+ await session.startNativeGoal(resumeInput);
  const result=terminal(session.events);await new Promise(resolve=>setTimeout(resolve,80));await session.pauseNativeGoal();
  const events=await result;assert.equal(events.at(-1).type,'error');assert.match(events.at(-1).message,/paused/);
  await assert.rejects(session.pauseNativeGoal(),/already attempted|No native goal/);
  assert.equal((await f.calls()).filter(c=>c.method==='thread/goal/set'&&c.params.status==='paused').length,1);
+});
+
+
+test('goal activation rejects missing or unrelated native actions before mutation', {timeout:12000},async t=>{
+ const f=await fixture(t,'resume',true),session=await f.open();
+ await assert.rejects(session.startNativeGoal(input),/exact native goal action/);
+ await assert.rejects(session.startNativeGoal({...input,nativeAction:{kind:'review',target:{type:'uncommittedChanges'}}}),/exact native goal action/);
+ assert.equal((await f.calls()).filter(c=>c.method==='thread/goal/set').length,0);
 });

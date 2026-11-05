@@ -382,15 +382,30 @@ export function startProviderRunExecution(
         PONDEROSA_AGENT_TOOL_NAMES: JSON.stringify(availableRuntimeTools.map((tool) => tool.name)),
         PONDEROSA_INTERNAL_SUBAGENTS_DISABLED: "1",
       };
+      const assertCurrentCodexAccess = (): void => {
+        if (runtimeEngineId !== "codex") return;
+        const current = runtimeRestrictions(
+          new CapabilityPolicyStore(store.sqlite).resolveForAgent(agent.id, runId), runtimeEngineId,
+        );
+        if (current.restrictedCapabilityIds.some(id => !capabilityRestrictions.restrictedCapabilityIds.includes(id)))
+          throw new Error("Access was restricted before provider input. The original work remains available for review.");
+      };
       const openPersistentRuntime = async (
         sessionResumeId: string | undefined,
         onRuntimeSpawned: (handle: RuntimeProcessHandle) => void,
         identity: object,
       ): Promise<PersistentRuntime> => {
         if (v3FencingToken !== undefined) coordinationV3.assertRunReviewedSteeringLease(agent.projectId,runId,v3FencingToken);
+        assertCurrentCodexAccess();
         const rawSession = await providerRuntimeOperation("open provider session", () => engine.adapter.openSession!({
           agentId: agent.id,
           ...(v3FencingToken !== undefined ? {providerRun:{runId,fence:v3FencingToken}} : {}),
+          assertRuntimeCurrent: () => {
+            if (controller.signal.aborted || isClosed() || deletingAgentIds.has(agent.id) ||
+                deletingProjectIds.has(project.id) || !ownsActiveRun(agent.id, activeRun))
+              throw new Error("Native session lost current Run authority");
+            assertCurrentCodexAccess();
+          },
           cwd: workingCopy.rootPath,
           resumeSessionId: sessionResumeId,
           fileCheckpointTracking: nativeHistory.tracking(agent.id).enabled,
@@ -733,14 +748,6 @@ export function startProviderRunExecution(
           };
           throw error;
         }
-      };
-      const assertCurrentCodexAccess = (): void => {
-        if (runtimeEngineId !== "codex") return;
-        const current = runtimeRestrictions(
-          new CapabilityPolicyStore(store.sqlite).resolveForAgent(agent.id, runId), runtimeEngineId,
-        );
-        if (current.restrictedCapabilityIds.some(id => !capabilityRestrictions.restrictedCapabilityIds.includes(id)))
-          throw new Error("Access was restricted before provider input. The original work remains available for review.");
       };
       const openVerifiedInputCapability=():void=>{
         const cap=agentMessageCapabilities.get(messageCapability);
