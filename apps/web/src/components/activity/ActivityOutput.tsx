@@ -112,11 +112,11 @@ export function RunOutputFullText({
   });
   if (!reference) return render(segment.text);
   return <Box>
-    {render(open && query.data ? query.data.text : segment.text)}
     <Button size="small" color="inherit" onClick={() => setOpen((value) => !value)} sx={{ mt: 0.5 }}>
       {open ? "Show preview" : `Load full text · ${byteLabel(reference.totalUtf8Bytes)}`}
     </Button>
-    {open && query.isLoading ? <CircularProgress size={18} sx={{ ml: 1 }} /> : null}
+    {open && query.isLoading ? <CircularProgress size={18} role="status" aria-label="Loading full text" sx={{ ml: 1 }} /> : null}
     {open && query.isError ? <Alert severity="error" sx={{ mt: 0.75 }}>The complete canonical segment could not be loaded.</Alert> : null}
+    {render(open && query.data ? query.data.text : segment.text)}
   </Box>;
 }

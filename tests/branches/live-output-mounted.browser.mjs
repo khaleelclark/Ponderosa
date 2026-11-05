@@ -59,11 +59,14 @@ try{
    const beforeRetrieval=retrievalCount();output=[preview()];snapshot();
    await page.getByText(previewText,{exact:true}).waitFor();
    await page.getByRole('button',{name:/Load full text/}).waitFor();assert.equal(retrievalCount(),beforeRetrieval,'Preview does not automatically fetch canonical text');
+   assert(await page.getByRole('button',{name:/Load full text/}).evaluate((button,text)=>Boolean(button.compareDocumentPosition([...document.querySelectorAll('*')].find(node=>node.textContent===text)) & Node.DOCUMENT_POSITION_FOLLOWING),previewText),'Full-text control precedes the long preview');
    await page.getByRole('button',{name:/Load full text/}).click();
    await page.getByText(canonicalText,{exact:true}).waitFor();assert.equal(retrievalCount(),beforeRetrieval+1);
    // Same stable segment gains a new canonical byte count after snapshot replacement.
    canonicalFailure=true;output=[preview(Buffer.byteLength(canonicalText)+1)];snapshot();
    await page.getByText('The complete canonical segment could not be loaded.',{exact:true}).waitFor();
+   assert(await page.getByRole('alert').evaluate((alert,text)=>Boolean(alert.compareDocumentPosition([...document.querySelectorAll('*')].find(node=>node.textContent===text)) & Node.DOCUMENT_POSITION_FOLLOWING),previewText),'Retrieval error precedes the long preview');
+   await page.getByRole('alert').scrollIntoViewIfNeeded();const errorBox=await page.getByRole('alert').boundingBox();assert(errorBox && errorBox.y >= 0 && errorBox.y + errorBox.height <= (mobile?844:962),'Retrieval error is reachable within the viewport');
    await page.getByText(previewText,{exact:true}).waitFor();assert.equal(retrievalCount(),beforeRetrieval+2);
    await page.screenshot({path:out+'/'+cell+'-canonical-error.png'});
    canonicalFailure=false;output=[entry('current-run','Complete replacement snapshot','snapshot')];snapshot();
