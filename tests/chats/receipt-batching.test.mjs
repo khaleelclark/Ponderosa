@@ -438,7 +438,8 @@ test('uncertain settings handoff holds its source reply recovery across reopen w
  const project=store.createProject({label:'Source hold',hostPath:root,defaultEngine:'codex'});
  const chat=store.createConversation(project.id,{title:'Chat'});
  const worker=store.createAgent(project.id,{title:'Held worker',engine:'codex',conversationId:chat.id});
- const other=store.createAgent(project.id,{title:'Other worker',engine:'codex',conversationId:chat.id});
+ const otherChat=store.createConversation(project.id,{title:'Other Chat'});
+ const other=store.createAgent(project.id,{title:'Other worker',engine:'codex',conversationId:otherChat.id});
  let db=store.sqlite,v3=new CoordinationV3Store(db);const now=new Date().toISOString(),scope='conversation:'+chat.id;
  const rollover=randomUUID(),handoff=randomUUID(),sourceRun=randomUUID(),recovery=randomUUID();
  db.prepare(`INSERT INTO context_rollovers(id,project_id,agent_id,state,old_provider_session_id,provider_session_generation,
@@ -456,8 +457,8 @@ test('uncertain settings handoff holds its source reply recovery across reopen w
  assert.ok(v3.pendingActivations(project.id).some(item=>item.id===recovery),'held source recovery remains visible');
  assert.equal(v3.peekNextRunnable({now}),undefined,'unknown source recovery cannot be selected');
  const event=randomUUID(),sender={kind:'user',userId:'local-operator'},audience={kind:'user_agents',userId:'local-operator',agentIds:[other.id]};
- const communication={schemaVersion:2,eventId:event,projectId:project.id,conversationId:chat.id,sender,intent:'user_dm',audience,text:'Other work',createdAt:now};
- const independent=v3.recordRuntimeCommunication({id:event,projectId:project.id,scopeKey:scope,sender,intent:'user_dm',audience,payload:{communication},now,
+ const communication={schemaVersion:2,eventId:event,projectId:project.id,conversationId:otherChat.id,sender,intent:'user_dm',audience,text:'Other work',createdAt:now};
+ const independent=v3.recordRuntimeCommunication({id:event,projectId:project.id,scopeKey:'conversation:'+otherChat.id,sender,intent:'user_dm',audience,payload:{communication},now,
    activation:{agentId:other.id,kind:'human_message',priority:90,dispatchPolicy:'next_run',promptClass:'human'}}).activationId;
  const lease=v3.leaseNextRun({workerId:'independent',now});
  assert.equal(lease.agentId,other.id);assert.deepEqual(lease.activationIds,[independent]);
