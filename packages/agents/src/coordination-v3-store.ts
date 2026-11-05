@@ -567,6 +567,14 @@ export class CoordinationV3Store {
   }
 
   /** Create a new delivery attempt without duplicating the canonical user message. */
+  settingsTransitionRequestHold(input: Parameters<CoordinationV3ActivationCommandAuthority["settingsTransitionRequestHold"]>[0]) {
+    return this.activationCommandAuthority.settingsTransitionRequestHold(input);
+  }
+
+  retryHeldSettingsTransitionRequest(input: Parameters<CoordinationV3ActivationCommandAuthority["retryHeldSettingsTransitionRequest"]>[0]) {
+    return this.activationCommandAuthority.retryHeldSettingsTransitionRequest(input);
+  }
+
   retryMessageDelivery(input: {
     projectId: string;
     activationId: string;

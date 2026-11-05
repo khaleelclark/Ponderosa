@@ -1,4 +1,4 @@
-import { settingsTransitionDeliveryHolds } from "./coordination-v3-settings-transition-hold.js";
+import { settingsTransitionDeliveryHolds, retrySettingsTransitionHold } from "./coordination-v3-settings-transition-hold.js";
 import {heldTaskDecisionRepairs,heldTaskDecisionRepairRuns} from './coordination-v3-task-decision-repair-hold.js';
 import type Database from "better-sqlite3";
 import type { RetryMessageDeliveryResponse } from "@ponderosa/core";
@@ -56,6 +56,51 @@ export class CoordinationV3ActivationCommandAuthority {
       now: string,
     ) => void,
   ) {}
+
+  /** Read an exact still-open peer Request, never an inferred or successor task. */
+  settingsTransitionRequestHold(input:{projectId:string;requestId:string}):{activationId:string;retryable:boolean}|undefined {
+    const rows=this.sqlite.prepare(`SELECT a.id,a.agent_id,a.scope_key,a.state AS activation_state,r.conversation_id,
+        r.state AS request_state,r.superseded_by_request_id
+      FROM coordination_requests r
+      JOIN activation_sources s ON s.source_kind='request' AND s.source_id=r.id
+      JOIN agent_activations a ON a.id=s.activation_id AND a.project_id=r.project_id AND a.agent_id=r.recipient_agent_id
+      WHERE r.id=? AND r.project_id=? AND a.kind='coordination_request'
+        AND json_extract(a.payload_json,'$.requestId')=r.id`)
+      .all(input.requestId,input.projectId) as Array<{id:string;agent_id:string;scope_key:string;activation_state:string;
+        conversation_id:string|null;request_state:string;superseded_by_request_id:string|null}>;
+    const holds=settingsTransitionDeliveryHolds(this.sqlite,input.projectId,rows.map(row=>row.id),"request");
+    const held=rows.filter(row=>holds.has(row.id));
+    if(!held.length)return undefined;
+    const row=held[0]!,hold=holds.get(row.id)!;
+    const authorized=row.scope_key===this.runtimeScopeAuthority.coordinationScopeKey(row.conversation_id,row.agent_id) &&
+      this.runtimeScopeAuthority.recipientAuthorizedForActivationScope(input.projectId,row.agent_id,row.scope_key);
+    const otherHold=this.sqlite.prepare(`SELECT 1 FROM activation_sources WHERE activation_id=?
+      AND source_kind IN ('task_decision_repair_wait','task_reply_repair_wait')`).get(row.id);
+    return {activationId:row.id,retryable:rows.length===1 && held.length===1 && authorized &&
+      row.request_state==='open' && !row.superseded_by_request_id && row.activation_state==='pending' && hold.retryable && !otherHold};
+  }
+
+  retryHeldSettingsTransitionRequest(input:{projectId:string;requestId:string;idempotencyKey:string;now?:string}):
+    {accepted:boolean;replayed:boolean;activationId?:string;targetAgentId?:string} {
+    if(!input.idempotencyKey.trim())throw Error('Request retry idempotency key is required');
+    const now=input.now??new Date().toISOString();
+    return this.sqlite.transaction(()=>{
+      const hash=payloadHash({projectId:input.projectId,requestId:input.requestId});
+      const replay=this.idempotentReplay<{accepted:boolean;activationId?:string;targetAgentId?:string}>(
+        input.projectId,'user:local-operator','retry_held_settings_request',input.idempotencyKey,hash);
+      if(replay)return {...replay,replayed:true};
+      const match=this.settingsTransitionRequestHold(input);
+      if(!match?.retryable)return {accepted:false,replayed:false};
+      const row=this.sqlite.prepare('SELECT agent_id FROM agent_activations WHERE id=? AND project_id=?').get(match.activationId,input.projectId) as {agent_id:string}|undefined;
+      if(!row)return {accepted:false,replayed:false};
+      const hold=settingsTransitionDeliveryHolds(this.sqlite,input.projectId,[match.activationId],"request").get(match.activationId);
+      if(!hold?.retryable)return {accepted:false,replayed:false};
+      retrySettingsTransitionHold(this.sqlite,match.activationId,input.projectId,row.agent_id,hold,now,true);
+      const result={accepted:true,activationId:match.activationId,targetAgentId:row.agent_id};
+      this.recordIdempotency(input.projectId,'user:local-operator','retry_held_settings_request',input.idempotencyKey,hash,result,now);
+      return {...result,replayed:false};
+    })();
+  }
 
   /** Create a new delivery attempt without duplicating the canonical user
    * message. Only the latest terminal attempt can advance the attempt chain. */
@@ -152,17 +197,7 @@ export class CoordinationV3ActivationCommandAuthority {
         if (!settingsHold.retryable || held || input.expectedRolloverAttemptId) return {
           accepted:false,replayed:false,state:"not_retryable",rejectionReason:"not_terminal",
         };
-        if (settingsHold.rolloverId && settingsHold.handoffId) {
-          const changed=this.sqlite.prepare(`UPDATE context_rollovers SET state='requested',last_error=NULL,
-            failure_signal=NULL,failure_provenance='internal',terminal_at=NULL,updated_at=?
-            WHERE id=? AND project_id=? AND agent_id=? AND state='failed' AND handoff_event_id IS NULL
-              AND replacement_run_id IS NULL`).run(now,settingsHold.rolloverId,original.project_id,original.agent_id);
-          const handoff=this.sqlite.prepare(`UPDATE agent_activations SET state='pending',terminal_at=NULL,
-            last_delivery_error=NULL,available_at=?,updated_at=? WHERE id=? AND kind='context_rollover_handoff' AND state='cancelled'`)
-            .run(now,now,settingsHold.handoffId);
-          if(changed.changes!==1||handoff.changes!==1) throw Error('Settings transition changed before retry');
-        }
-        this.sqlite.prepare("DELETE FROM activation_sources WHERE activation_id=? AND source_kind='settings_transition_reservation_wait'").run(original.id);
+        retrySettingsTransitionHold(this.sqlite,original.id,original.project_id,original.agent_id,settingsHold,now);
         const result: Omit<RetryMessageDeliveryResponse,"replayed">={
           accepted:true,state:'queued',activationId:original.id,targetAgentId:original.agent_id,
         };

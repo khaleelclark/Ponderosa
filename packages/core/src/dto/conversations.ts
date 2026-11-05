@@ -473,6 +473,8 @@ export interface CoordinationRequestLifecycleDto {
   request: {
     /** Current canonical eligibility; the retry route remains authoritative. */
     retryAvailable?: boolean;
+    /** The original peer Request is held before its settings handoff. */
+    settingsTransitionHold?: "retry_available" | "review_required";
     id: string;
     requesterAgentId?: string;
     recipientAgentId: string;

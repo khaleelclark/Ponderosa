@@ -29,7 +29,7 @@ export type SettingsTransitionDeliveryHold = {
  * reservation error does not authorize retry if an uncertain transition also
  * exists. This query is batched across receipts. */
 export function settingsTransitionDeliveryHolds(
-  db:Database.Database, projectId:string, activationIds:string[],
+  db:Database.Database, projectId:string, activationIds:string[], mode:"human"|"request"="human",
 ):Map<string,SettingsTransitionDeliveryHold> {
   const result=new Map<string,SettingsTransitionDeliveryHold>();
   if (!activationIds.length) return result;
@@ -78,10 +78,32 @@ export function settingsTransitionDeliveryHolds(
       row.rollover_id===failed.rollover_id&&row.handoff_state==='cancelled'&&!row.handoff_event_id&&!row.replacement_run_id&&!row.rollover_attached&&
       row.old_session_id===first.active_session_id&&row.old_contract_hash===first.active_session_contract_hash&&
       !!row.old_session_id&&!!row.old_contract_hash);
-    const retryable=first.state==='pending'&&first.kind==='human_message'&&first.prompt_class==='human'&&first.operator_authored===1&&!first.attached&&
+    const eligible=mode==='human'
+      ? first.kind==='human_message'&&first.prompt_class==='human'&&first.operator_authored===1
+      : first.kind==='coordination_request'&&first.prompt_class==='coordination';
+    const retryable=first.state==='pending'&&eligible&&!first.attached&&
       !relevant.some(row=>row.rollover_state!=='failed')&&
       (!terminal.length||Boolean(safeFailed));
     result.set(id,{retryable,...(safeFailed?{rolloverId:failed.rollover_id!,handoffId:failed.handoff_id!}:{})});
   }
   return result;
+}
+
+/** The caller has checked exact task ownership and this hold in the same
+ * transaction. Rearm only the existing handoff; never create task work. */
+export function retrySettingsTransitionHold(db:Database.Database,activationId:string,projectId:string,agentId:string,
+  hold:SettingsTransitionDeliveryHold,now:string,deferSteering=false):void {
+  if (!hold.retryable) throw Error('Settings transition is not safe to retry');
+  if (hold.rolloverId && hold.handoffId) {
+    const changed=db.prepare(`UPDATE context_rollovers SET state='requested',last_error=NULL,
+      failure_signal=NULL,failure_provenance='internal',terminal_at=NULL,updated_at=?
+      WHERE id=? AND project_id=? AND agent_id=? AND state='failed' AND handoff_event_id IS NULL
+        AND replacement_run_id IS NULL`).run(now,hold.rolloverId,projectId,agentId);
+    const handoff=db.prepare(`UPDATE agent_activations SET state='pending',terminal_at=NULL,
+      last_delivery_error=NULL,available_at=?,updated_at=? WHERE id=? AND kind='context_rollover_handoff' AND state='cancelled'`)
+      .run(now,now,hold.handoffId);
+    if(changed.changes!==1||handoff.changes!==1) throw Error('Settings transition changed before retry');
+  }
+  if (deferSteering && !hold.rolloverId) db.prepare("INSERT OR IGNORE INTO activation_sources(activation_id,source_kind,source_id) VALUES(?,'settings_transition_retry_pending','preflight')").run(activationId);
+  db.prepare("DELETE FROM activation_sources WHERE activation_id=? AND source_kind='settings_transition_reservation_wait'").run(activationId);
 }

@@ -17,7 +17,8 @@ import type {
   CoordinationRequestUpdateDto,
 } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { createClientId } from "../clientId";
 import { api } from "../api";
 import { ApiRequestError } from "../api/types";
 import { queryKeys } from "../queryKeys";
@@ -281,20 +282,30 @@ export function RequestLifecycleCard({
   const readOnly = useWorkspaceReadOnly();
   const queryClient = useQueryClient();
   const [confirmRetry, setConfirmRetry] = useState(false);
+  const heldAttempt = useRef<string>();
+  const acceptedHeldRead = useRef<number>();
+  const heldContext = lifecycle?.request.settingsTransitionHold;
   const retry = useMutation({
     mutationFn: async () => {
-      if (readOnly || !lifecycle?.request.retryAvailable) throw new Error("This assignment cannot be retried.");
+      const retryHeld=heldContext==="retry_available";
+      if (readOnly || (!retryHeld && (!lifecycle?.request.retryAvailable || heldContext))) throw new Error("This assignment cannot be retried.");
       try {
-        const result = await api.retryCoordinationRequest(requestId, { idempotencyKey: `operator-retry:${requestId}` });
-        if (result?.retryOfRequestId !== requestId || !result.requestIds?.length) throw new Error("Unconfirmed recovery");
+        const result = await api.retryCoordinationRequest(requestId, retryHeld
+          ? { idempotencyKey: heldAttempt.current ??= createClientId(), retryHeldContext:true }
+          : { idempotencyKey: `operator-retry:${requestId}` });
+        if (result?.retryOfRequestId !== requestId || !result.requestIds?.length ||
+            (retryHeld && (result.requestIds.length!==1 || result.requestIds[0]!==requestId))) throw new Error("Unconfirmed recovery");
         return result;
       } catch (error) {
         if (error instanceof ApiRequestError && error.status < 500) throw error;
-        throw new Error("Could not confirm whether the retry started. Check activity before trying again; repeating work may duplicate changes.");
+        throw new Error(retryHeld ? "Could not confirm whether the handoff retry was accepted. Try the same action again or check activity."
+          : "Could not confirm whether the retry started. Check activity before trying again; repeating work may duplicate changes.");
       }
     },
     onSuccess: () => {
       setConfirmRetry(false);
+      if (heldContext==="retry_available") acceptedHeldRead.current=query.dataUpdatedAt;
+      heldAttempt.current=undefined;
       // The accepted successor is canonical even if a background refresh fails.
       void Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.agentWork.all }),
@@ -302,7 +313,13 @@ export function RequestLifecycleCard({
       ]).catch(() => {});
     },
   });
-  const retryAvailable = !readOnly && lifecycle?.request.retryAvailable && !retry.isSuccess;
+  useEffect(() => {
+    // If the same original Request becomes held again after a successful
+    // retry, a fresh canonical read may offer a new explicit attempt.
+    if (heldContext==="retry_available" && retry.isSuccess &&
+        query.dataUpdatedAt !== acceptedHeldRead.current) retry.reset();
+  },[heldContext,query.dataUpdatedAt,retry.isSuccess]);
+  const retryAvailable = !readOnly && (heldContext==="retry_available" || (!heldContext && lifecycle?.request.retryAvailable)) && !retry.isSuccess;
   const questions = useMemo(
     () =>
       new Map(
@@ -440,15 +457,18 @@ export function RequestLifecycleCard({
                 Open Work details
               </Button>
             ) : null}
-            {expanded && retryAvailable ? <Button size="small" disabled={retry.isPending} sx={{ alignSelf: "flex-start" }} onClick={event => { event.stopPropagation(); retry.reset(); setConfirmRetry(true); }}>Retry assignment…</Button> : null}
+            {heldContext ? <Alert severity="warning">{heldContext==="retry_available"
+              ? "Context handoff stopped before this assignment started. The original assignment remains queued."
+              : "The context handoff could not be verified. This assignment remains held; review activity before recovery."}</Alert> : null}
+            {expanded && retryAvailable ? <Button size="small" disabled={retry.isPending} sx={{ alignSelf: "flex-start" }} onClick={event => { event.stopPropagation(); retry.reset(); setConfirmRetry(true); }}>{heldContext==="retry_available" ? "Retry context handoff…" : "Retry assignment…"}</Button> : null}
           </Stack>
         ) : null}
         <Box onClick={event => event.stopPropagation()}>
           <ConfirmDialog
             open={confirmRetry}
-            title="Retry this assignment?"
+            title={heldContext==="retry_available" ? "Retry context handoff?" : "Retry this assignment?"}
             cancelLabel="Not now"
-            confirmLabel="Retry assignment"
+            confirmLabel={heldContext==="retry_available" ? "Retry handoff" : "Retry assignment"}
             pendingLabel="Starting…"
             pending={retry.isPending}
             confirmDisabled={!retryAvailable}
@@ -457,7 +477,9 @@ export function RequestLifecycleCard({
             onConfirm={() => retry.mutateAsync()}
           >
             <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{resolvedRequestText ?? "Assignment description unavailable."}</Typography>
-            <Typography variant="body2" sx={{ mt: 1 }}>Earlier effects unknown · retry starts another attempt and may duplicate changes · review activity first</Typography>
+            <Typography variant="body2" sx={{ mt: 1 }}>{heldContext==="retry_available"
+              ? "This retries the handoff for the same queued assignment. Its instructions and details stay the same."
+              : "Earlier effects unknown · retry starts another attempt and may duplicate changes · review activity first"}</Typography>
           </ConfirmDialog>
         </Box>
       </AccordionDetails>

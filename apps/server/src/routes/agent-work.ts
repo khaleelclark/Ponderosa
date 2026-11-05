@@ -20,7 +20,7 @@ export class AgentWorkProjection {
     >,
     private readonly coordination: Pick<
       CoordinationV3Store,
-      "agentWorkItems" | "agentWorkItemDetails" | "requestLifecycleDetails" | "requestRetryStatus"
+      "agentWorkItems" | "agentWorkItemDetails" | "requestLifecycleDetails" | "requestRetryStatus" | "settingsTransitionRequestHold"
     >,
     private readonly workspace: Pick<
       WorkspaceStore,
@@ -464,9 +464,15 @@ export class AgentWorkProjection {
           recordId: input.recordId,
         });
         if (lifecycle) {
+          const settingsHold=this.coordination.settingsTransitionRequestHold({projectId:input.projectId,requestId:input.recordId});
           requestLifecycle = {
             ...lifecycle,
-            request: { ...lifecycle.request, retryAvailable: Boolean(
+            request: { ...lifecycle.request,
+              ...(settingsHold ? {settingsTransitionHold:settingsHold.retryable &&
+                (!lifecycle.request.requesterAgentId || this.store.getAgent(lifecycle.request.requesterAgentId)) &&
+                this.store.getAgent(lifecycle.request.recipientAgentId)
+                ? "retry_available" as const : "review_required" as const} : {}),
+              retryAvailable: Boolean(
               ["blocked", "expired", "outcome_unknown", "failed", "recipient_unavailable"].includes(lifecycle.request.state)
               && !this.coordination.requestRetryStatus(input.recordId).successorRequestId
               && lifecycle.request.requesterAgentId

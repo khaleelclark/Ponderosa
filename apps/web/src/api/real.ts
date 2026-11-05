@@ -684,7 +684,7 @@ export const realApi = {
     });
     return response.dismissed;
   },
-  retryCoordinationRequest(requestId: string, request: { idempotencyKey?: string; createJoin?: boolean } = {}): Promise<RetryCoordinationRequestResponse> {
+  retryCoordinationRequest(requestId: string, request: { idempotencyKey?: string; createJoin?: boolean; retryHeldContext?: boolean } = {}): Promise<RetryCoordinationRequestResponse> {
     return requestJson(`/api/requests/${encodeURIComponent(requestId)}/retry`, {
       method: "POST",
       body: JSON.stringify(request),

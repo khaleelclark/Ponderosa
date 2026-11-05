@@ -385,3 +385,55 @@ test('settings-handoff held message uses the existing delivery retry endpoint', 
     assert.equal(f.turns.filter(turn=>turn.agentId===agent.id).length,1,'retry does not send the queued instructions to the active provider');
   },{storeFactory:root=>store=new AgentStore(root)});
 });
+
+test('held peer Request retries the same assignment through Work controls', options, async t => {
+  let store;
+  await withFixture(t,async f=>{
+    const chat=await f.createChat('Held peer request'),manager=await f.createIdleAgent(chat,'Manager'),worker=await f.createIdleAgent(chat,'Worker');
+    await f.hold(worker.id);
+    const coordination=new CoordinationV3Store(store.sqlite),requestId=randomUUID();
+    const originalPayload={text:'Finish this exact assigned work',references:['safe-reference'],priority:'high'};
+    const assigned=coordination.coordinate({projectId:chat.projectId,conversationId:chat.id,requesterAgentId:manager.id,
+      actorScope:'user:local-operator',idempotencyKey:randomUUID(),requests:[{requestId,recipientAgentId:worker.id,
+        lifetime:{kind:'indefinite'},payload:originalPayload}]});
+    assert.deepEqual(assigned.requestIds,[requestId]);
+    const original=store.sqlite.prepare(`SELECT a.id,a.payload_json FROM agent_activations a JOIN activation_sources s
+      ON s.activation_id=a.id AND s.source_kind='request' WHERE s.source_id=? AND a.kind='coordination_request'`).get(requestId);
+    assert.ok(original);
+    assert.equal(coordination.holdSettingsTransitionReservation({projectId:chat.projectId,agentId:worker.id,activationId:original.id,fingerprint:'c'.repeat(64)}),true);
+    const details=async()=>f.ok(await f.api('GET',`/api/projects/${chat.projectId}/agent-work/items/request/${requestId}?conversationId=${chat.id}`));
+    assert.equal((await details()).requestLifecycle.request.settingsTransitionHold,'retry_available');
+    const url=`/api/requests/${requestId}/retry`,body={idempotencyKey:randomUUID(),retryHeldContext:true};
+    const first=await f.api('POST',url,body);assert.equal(first.status,200); // discard body, as if response was lost
+    const replay=f.ok(await f.api('POST',url,body));
+    assert.equal(replay.replayed,true);assert.deepEqual(replay.requestIds,[requestId]);assert.equal(replay.retryOfRequestId,requestId);
+    assert.equal(store.sqlite.prepare('SELECT payload_json FROM agent_activations WHERE id=?').get(original.id).payload_json,original.payload_json);
+    assert.equal(store.sqlite.prepare('SELECT state FROM agent_activations WHERE id=?').get(original.id).state,'pending');
+    assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(original.id).n,0);
+    assert.ok(store.sqlite.prepare("SELECT 1 FROM activation_sources WHERE activation_id=? AND source_kind='settings_transition_retry_pending'").get(original.id));
+    assert.equal(coordination.leaseNextSteering({workerId:'independent-retry-check'}),undefined,
+      'a retried Request cannot bypass preflight by steering the current Run');
+    assert.equal(store.sqlite.prepare('SELECT count(*) n FROM coordination_requests WHERE project_id=?').get(chat.projectId).n,1);
+    assert.deepEqual(coordination.getRequest(requestId).payload,originalPayload);
+    assert.equal((await details()).requestLifecycle.request.settingsTransitionHold,undefined);
+    assert.equal(f.turns.filter(turn=>turn.agentId===worker.id).length,1);
+    // Preserve and expose an unknown transition; neither retry mode may replay it.
+    const rollover=randomUUID(),handoff=randomUUID(),now=new Date().toISOString(),scope='conversation:'+chat.id;
+    store.sqlite.prepare(`INSERT INTO context_rollovers(id,project_id,agent_id,state,old_provider_session_id,provider_session_generation,
+      threshold,low_water_mark,compaction_cutoff_ordinal,compaction_cutoff_event_id,recent_tail_event_ids_json,recent_tail_hashes_json,
+      source_run_id,source_activation_ids_json,scope_key,created_at,updated_at,terminal_at)
+      VALUES(?,?,?,'outcome_unknown','old-session','old-session',100,50,1,'event','[]','[]','old-run','[]',?,?,?,?)`)
+      .run(rollover,chat.projectId,worker.id,scope,now,now,now);
+    const payload={rolloverId:rollover,settingsTransition:{activationId:original.id,oldSessionId:'old-session',oldContractHash:'a'.repeat(64)}};
+    store.sqlite.prepare(`INSERT INTO agent_activations(id,project_id,agent_id,kind,priority,dispatch_policy,prompt_class,state,dedupe_key,payload_json,available_at,created_at,updated_at,scope_key)
+      VALUES(?,?,?,'context_rollover_handoff',100,'next_run','blocker','cancelled',?,?,?,?,?,?)`)
+      .run(handoff,chat.projectId,worker.id,handoff,JSON.stringify(payload),now,now,now,scope);
+    store.sqlite.prepare("INSERT INTO activation_sources(activation_id,source_kind,source_id) VALUES(?,'context_rollover',?)").run(handoff,rollover);
+    assert.equal((await details()).requestLifecycle.request.settingsTransitionHold,'review_required');
+    assert.equal((await f.api('POST',url,{idempotencyKey:randomUUID(),retryHeldContext:true})).status,409);
+    store.sqlite.prepare("UPDATE coordination_requests SET state='outcome_unknown' WHERE id=?").run(requestId);
+    assert.equal((await f.api('POST',url,{idempotencyKey:randomUUID()})).status,409,'ordinary retry cannot bypass this hold');
+    assert.equal(store.sqlite.prepare('SELECT count(*) n FROM coordination_requests WHERE project_id=?').get(chat.projectId).n,1);
+    assert.equal(store.sqlite.prepare('SELECT payload_json FROM agent_activations WHERE id=?').get(original.id).payload_json,original.payload_json);
+  },{storeFactory:root=>store=new AgentStore(root)});
+});

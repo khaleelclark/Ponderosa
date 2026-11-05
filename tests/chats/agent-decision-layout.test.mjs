@@ -49,7 +49,7 @@ function requestFixture(t,{expanded=true,readOnly=false,retryAvailable=true,stat
  const client=new QueryClient({defaultOptions:{mutations:{retry:false,gcTime:Infinity},queries:{retry:false,gcTime:Infinity}}});
  const slots=[],buttons=[],dialogs=[],calls=[],invalidations=[],queries=[],clickOwners=[];let index=0,observer,unsubscribe;
  const lifecycle={request:{id:'request-a',state,text:'Exact canonical assignment',retryAvailable},updates:[]};
- const react={useState(initial){const i=index++;slots[i]??={value:typeof initial==='function'?initial():initial};return[slots[i].value,value=>{slots[i].value=typeof value==='function'?value(slots[i].value):value;}];},useEffect(){},useMemo:fn=>fn()};
+ const react={useState(initial){const i=index++;slots[i]??={value:typeof initial==='function'?initial():initial};return[slots[i].value,value=>{slots[i].value=typeof value==='function'?value(slots[i].value):value;}];},useRef(initial){const i=index++;slots[i]??={current:initial};return slots[i];},useEffect(){},useMemo:fn=>fn()};
  const primitive=({children})=>React.createElement('div',null,children);
  const mui=Object.fromEntries(['Accordion','AccordionDetails','AccordionSummary','Alert','Box','Chip','CircularProgress','DialogActions','DialogContent','DialogTitle','Paper','Stack','Typography'].map(name=>[name,primitive]));
  mui.Button=p=>{buttons.push(p);return React.createElement('button',{disabled:p.disabled},p.children);};
@@ -57,7 +57,7 @@ function requestFixture(t,{expanded=true,readOnly=false,retryAvailable=true,stat
  const shared={};mui.Box=p=>{if(p.onClick)clickOwners.push(p);return primitive(p);};
  vm.runInNewContext(ts.transpileModule(readFileSync(new URL('../../apps/web/src/components/ConfirmationDialogs.tsx',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX}}).outputText,{exports:shared,require:name=>name==='@mui/material'?mui:require(name)});
  const exports={},keys={agentWork:{all:['agent-work'],detail:(...args)=>['agent-work',...args]},notifications:{all:['notifications']}};
- vm.runInNewContext(ts.transpileModule(readFileSync(new URL('../../apps/web/src/components/RequestLifecycleCard.tsx',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX}}).outputText,{exports,Error,require:name=>({react,'../api/types':{ApiRequestError},'@mui/material':mui,'@tanstack/react-query':{useQuery:options=>{queries.push(options);return{data:{requestLifecycle:lifecycle}};},useQueryClient:()=>client,useMutation:options=>{if(!observer){observer=new MutationObserver(client,options);unsubscribe=observer.subscribe(()=>{});}else observer.setOptions(options);return {...observer.getCurrentResult(),mutateAsync:observer.mutate.bind(observer)};}},'../api':{api:{retryCoordinationRequest:(...args)=>{calls.push(args);return retryCommand(...args);}}},'../queryKeys':{queryKeys:keys},'./WorkspaceReadOnlyContext':{useWorkspaceReadOnly:()=>readOnly},'./chat/DirectReplyPreview':{DirectReplyPreview:()=>null},'./ConfirmationDialogs':shared}[name]??require(name))});
+ vm.runInNewContext(ts.transpileModule(readFileSync(new URL('../../apps/web/src/components/RequestLifecycleCard.tsx',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX}}).outputText,{exports,Error,require:name=>({react,'../clientId':{createClientId:()=> 'held-attempt-id'},'../api/types':{ApiRequestError},'@mui/material':mui,'@tanstack/react-query':{useQuery:options=>{queries.push(options);return{data:{requestLifecycle:lifecycle}};},useQueryClient:()=>client,useMutation:options=>{if(!observer){observer=new MutationObserver(client,options);unsubscribe=observer.subscribe(()=>{});}else observer.setOptions(options);return {...observer.getCurrentResult(),mutateAsync:observer.mutate.bind(observer)};}},'../api':{api:{retryCoordinationRequest:(...args)=>{calls.push(args);return retryCommand(...args);}}},'../queryKeys':{queryKeys:keys},'./WorkspaceReadOnlyContext':{useWorkspaceReadOnly:()=>readOnly},'./chat/DirectReplyPreview':{DirectReplyPreview:()=>null},'./ConfirmationDialogs':shared}[name]??require(name))});
  client.invalidateQueries=async({queryKey})=>{invalidations.push([...queryKey]);};
  const render=()=>{index=0;buttons.length=0;dialogs.length=0;clickOwners.length=0;const tree=exports.RequestLifecycleCard({projectId:'project-a',conversationId:'chat-a',requestId:'request-a',state,recipientAgentId:'worker',requesterAgentId:'manager',updatedAt:'2026-10-23T00:00:00Z',defaultExpanded:expanded,agentTitle:id=>id??'You'});return renderToStaticMarkup(tree);};
  const button=label=>buttons.find(p=>p.children===label);
@@ -100,4 +100,30 @@ test('definite Retry rejection preserves the actionable server explanation',asyn
 test('shared assignment confirmation stops parent-card clicks when opening and interacting',t=>{
  const f=requestFixture(t);f.render();let stopped=0;const event={stopPropagation(){stopped++;}};f.button('Retry assignment…').onClick(event);f.render();assert.equal(stopped,1);assert.equal(f.clickOwners.length,1);f.clickOwners[0].onClick(event);assert.equal(stopped,2);assert.equal(f.button('Retry assignment').autoFocus,true);assert.equal(f.dialogs[0].maxWidth,'xs');
  for(const reason of ['escapeKeyDown','backdropClick']){f.dialogs[0].onClose({},reason);f.render();assert.equal(f.dialogs[0].open,false);f.button('Retry assignment…').onClick(event);f.render();}
+});
+
+
+test('held peer handoff retries the original assignment with one stable command and refuses uncertain holds',async t=>{
+ let attempt=0;
+ const f=requestFixture(t,{state:'open',retryAvailable:false,retryCommand:async()=>{
+  if(++attempt===1)throw Error('response lost');
+  return {requestIds:['request-a'],retryOfRequestId:'request-a',replayed:true};
+ }});
+ f.lifecycle.request.settingsTransitionHold='retry_available';
+ let html=f.render();assert.match(html,/original assignment remains queued/u);
+ assert.ok(f.button('Retry context handoff…'));assert.equal(f.button('Retry assignment…'),undefined);
+ f.button('Retry context handoff…').onClick({stopPropagation(){}});html=f.render();
+ assert.match(html,/same queued assignment/u);assert.doesNotMatch(html,/may duplicate changes/u);
+ await assert.rejects(f.button('Retry handoff').onClick(),/Could not confirm whether the handoff retry/u);
+ f.render();await f.button('Retry handoff').onClick();f.render();
+ assert.equal(f.calls.length,2);
+ assert.equal(f.calls[0][0],'request-a');assert.equal(f.calls[0][1].retryHeldContext,true);
+ assert.equal(f.calls[0][1].idempotencyKey,'held-attempt-id');
+ assert.equal(f.calls[1][1].idempotencyKey,f.calls[0][1].idempotencyKey);
+ const u=requestFixture(t,{state:'open',retryAvailable:true});
+ u.lifecycle.request.settingsTransitionHold='review_required';
+ assert.match(u.render(),/assignment remains held/u);
+ assert.equal(u.button('Retry assignment…'),undefined);assert.equal(u.button('Retry context handoff…'),undefined);
+ const ro=requestFixture(t,{state:'open',retryAvailable:false,readOnly:true});
+ ro.lifecycle.request.settingsTransitionHold='retry_available';ro.render();assert.equal(ro.button('Retry context handoff…'),undefined);
 });

@@ -182,3 +182,58 @@ test('settings handoff receipt retries only provably unstarted original delivery
   assert.equal(db.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(second.activationId).n,0);
   assert.equal(v3.retryMessageDelivery(secondAttempt).replayed,true);
 });
+
+test('held peer Request reuses only a known-unstarted handoff', t => {
+  const db=openCurrentMemoryDatabase();t.after(()=>db.close());
+  const project=randomUUID(),chat=randomUUID(),manager=randomUUID(),worker=randomUUID(),stamp=new Date().toISOString(),scope='conversation:'+chat;
+  db.prepare('INSERT INTO projects(id,label,host_path,created_at) VALUES(?,?,?,?)').run(project,'Project','/unused',stamp);
+  db.prepare('INSERT INTO conversations(id,project_id,title,created_at,updated_at) VALUES(?,?,?,?,?)').run(chat,project,'Chat',stamp,stamp);
+  for(const [id,handle] of [[manager,'manager'],[worker,'worker']]){
+    db.prepare('INSERT INTO agents(id,project_id,conversation_id,title,handle,active_engine,created_at,updated_at,working_copy_json) VALUES(?,?,?,?,?,?,?,?,?)')
+      .run(id,project,chat,handle,handle,'codex',stamp,stamp,'{}');
+    db.prepare('INSERT INTO agent_conversation_memberships(agent_id,conversation_id,position) VALUES(?,?,0)').run(id,chat);
+  }
+  const v3=new CoordinationV3Store(db),requestId=randomUUID(),payload={text:'Exact peer assignment',refs:['owned-ref']};
+  v3.coordinate({projectId:project,conversationId:chat,requesterAgentId:manager,actorScope:'user:local-operator',idempotencyKey:randomUUID(),
+    requests:[{requestId,recipientAgentId:worker,lifetime:{kind:'indefinite'},payload}]});
+  const activation=db.prepare(`SELECT a.id,a.payload_json FROM agent_activations a JOIN activation_sources s
+    ON s.activation_id=a.id AND s.source_kind='request' WHERE s.source_id=?`).get(requestId);
+  const rollover=randomUUID(),handoff=randomUUID(),hash='a'.repeat(64);
+  db.prepare('UPDATE agents SET active_session_id=?,active_session_contract_hash=? WHERE id=?').run('old-session',hash,worker);
+  db.prepare(`INSERT INTO context_rollovers(id,project_id,agent_id,state,old_provider_session_id,provider_session_generation,
+    threshold,low_water_mark,compaction_cutoff_ordinal,compaction_cutoff_event_id,recent_tail_event_ids_json,recent_tail_hashes_json,
+    source_run_id,source_activation_ids_json,scope_key,created_at,updated_at,terminal_at)
+    VALUES(?,?,?,'failed','old-session','old-session',100,50,1,'event','[]','[]','old-run','[]',?,?,?,?)`)
+    .run(rollover,project,worker,scope,stamp,stamp,stamp);
+  const marker={rolloverId:rollover,settingsTransition:{activationId:activation.id,oldSessionId:'old-session',oldContractHash:hash}};
+  db.prepare(`INSERT INTO agent_activations(id,project_id,agent_id,kind,priority,dispatch_policy,prompt_class,state,dedupe_key,payload_json,available_at,created_at,updated_at,scope_key)
+    VALUES(?,?,?,'context_rollover_handoff',100,'next_run','blocker','cancelled',?,?,?,?,?,?)`)
+    .run(handoff,project,worker,handoff,JSON.stringify(marker),stamp,stamp,stamp,scope);
+  db.prepare("INSERT INTO activation_sources(activation_id,source_kind,source_id) VALUES(?,'context_rollover',?)").run(handoff,rollover);
+  assert.equal(v3.settingsTransitionRequestHold({projectId:project,requestId}).retryable,true);
+  db.prepare("INSERT INTO activation_sources(activation_id,source_kind,source_id) VALUES(?,'task_reply_repair_wait','unresolved-accounting')").run(activation.id);
+  assert.equal(v3.settingsTransitionRequestHold({projectId:project,requestId}).retryable,false);
+  assert.equal(v3.retryHeldSettingsTransitionRequest({projectId:project,requestId,idempotencyKey:'other-hold'}).accepted,false);
+  db.prepare("DELETE FROM activation_sources WHERE activation_id=? AND source_kind='task_reply_repair_wait'").run(activation.id);
+  db.prepare("UPDATE context_rollovers SET state='outcome_unknown' WHERE id=?").run(rollover);
+  assert.equal(v3.settingsTransitionRequestHold({projectId:project,requestId}).retryable,false);
+  assert.equal(v3.retryHeldSettingsTransitionRequest({projectId:project,requestId,idempotencyKey:'unknown'}).accepted,false);
+  db.prepare("UPDATE context_rollovers SET state='failed' WHERE id=?").run(rollover);
+  const run=randomUUID();
+  db.prepare("INSERT INTO scheduler_runs(id,project_id,agent_id,status,lease_owner,lease_expires_at,fencing_token,prompt_injection_state,heartbeat_at,created_at,updated_at,scope_key) VALUES(?,?,?,'failed','test',?,1,'not_injected',?,?,?,?)")
+    .run(run,project,worker,stamp,stamp,stamp,stamp,scope);
+  db.prepare('INSERT INTO scheduler_run_activations(run_id,activation_id,attached_at) VALUES(?,?,?)').run(run,handoff,stamp);
+  assert.equal(v3.settingsTransitionRequestHold({projectId:project,requestId}).retryable,false);
+  assert.equal(v3.retryHeldSettingsTransitionRequest({projectId:project,requestId,idempotencyKey:'attached'}).accepted,false);
+  db.prepare('DELETE FROM scheduler_run_activations WHERE run_id=? AND activation_id=?').run(run,handoff);
+  const command={projectId:project,requestId,idempotencyKey:'one-attempt'};
+  const result=v3.retryHeldSettingsTransitionRequest(command);
+  assert.equal(result.accepted,true);assert.equal(result.activationId,activation.id);
+  assert.equal(v3.retryHeldSettingsTransitionRequest(command).replayed,true);
+  assert.equal(db.prepare('SELECT state FROM context_rollovers WHERE id=?').get(rollover).state,'requested');
+  assert.equal(db.prepare('SELECT state FROM agent_activations WHERE id=?').get(handoff).state,'pending');
+  assert.equal(db.prepare('SELECT payload_json FROM agent_activations WHERE id=?').get(activation.id).payload_json,activation.payload_json);
+  assert.deepEqual(v3.getRequest(requestId).payload,payload);
+  assert.equal(db.prepare('SELECT count(*) n FROM coordination_requests WHERE project_id=?').get(project).n,1);
+  assert.equal(db.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(activation.id).n,0);
+});

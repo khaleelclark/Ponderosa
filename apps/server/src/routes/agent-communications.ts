@@ -1012,13 +1012,13 @@ export function registerAgentCommunicationRoutes(
     }
   });
 
-  app.post<{ Params: { id: string }; Body: { idempotencyKey?: string; createJoin?: boolean } }>(
+  app.post<{ Params: { id: string }; Body: { idempotencyKey?: string; createJoin?: boolean; retryHeldContext?: boolean } }>(
     "/api/requests/:id/retry",
     async (request, reply) => {
       if (request.body !== undefined && (!request.body || typeof request.body !== "object" || Array.isArray(request.body))) {
         return reply.code(400).send({ error: "retry body must be an object" });
       }
-      if (request.body && Object.keys(request.body).some((key) => !["idempotencyKey", "createJoin"].includes(key))) {
+      if (request.body && Object.keys(request.body).some((key) => !["idempotencyKey", "createJoin", "retryHeldContext"].includes(key))) {
         return reply.code(400).send({ error: "unknown retry field" });
       }
       if (request.body?.idempotencyKey !== undefined && typeof request.body.idempotencyKey !== "string") {
@@ -1027,8 +1027,44 @@ export function registerAgentCommunicationRoutes(
       if (request.body?.createJoin !== undefined && typeof request.body.createJoin !== "boolean") {
         return reply.code(400).send({ error: "createJoin must be a boolean" });
       }
+      if (request.body?.retryHeldContext !== undefined && typeof request.body.retryHeldContext !== "boolean")
+        return reply.code(400).send({error:"retryHeldContext must be a boolean"});
+      if (request.body?.retryHeldContext && request.body.createJoin !== undefined)
+        return reply.code(400).send({error:"A held original Request cannot create a new join"});
       const original = coordinationV3.getRequest(request.params.id);
       if (!original) return reply.code(404).send({ error: "request not found" });
+      if (request.body?.retryHeldContext) {
+        const key=request.body.idempotencyKey?.trim();
+        if(!key || key.length>200)return reply.code(400).send({error:"idempotencyKey must be 1 to 200 characters"});
+        const requester=original.requesterAgentId?store.getAgent(original.requesterAgentId):undefined;
+        const recipient=store.getAgent(original.recipientAgentId);
+        const conversation=original.conversationId?store.getConversation(original.conversationId):undefined;
+        const participants=[...(requester?[requester.id]:[]),...(recipient?[recipient.id]:[])];
+        if (!recipient || (original.requesterAgentId && !requester) || projectDeletionInProgress(original.projectId) ||
+            participants.some(agentDeletionInProgress) || (original.conversationId &&
+              (conversationDeletionInProgress(original.conversationId)||!conversation||conversation.projectId!==original.projectId)) ||
+            [requester,recipient].some(agent=>agent && agent.projectId!==original.projectId))
+          return reply.code(409).send({error:"request participants are no longer available"});
+        const release=conversation ? leaseConversationDelivery(conversationDeliveryLeases,agentDeliveryLeases,conversation.id,participants)
+          : leaseAgentDelivery(agentDeliveryLeases,participants);
+        try {
+          if(projectDeletionInProgress(original.projectId) || participants.some(id=>agentDeletionInProgress(id)||!store.getAgent(id)) ||
+              (original.conversationId && (conversationDeletionInProgress(original.conversationId)||!store.getConversation(original.conversationId))))
+            return reply.code(409).send({error:"request participants are no longer available"});
+          const result=coordinationV3.retryHeldSettingsTransitionRequest({projectId:original.projectId,requestId:original.id,idempotencyKey:key});
+          if(!result.accepted||!result.activationId)return reply.code(409).send({error:"The original Request is no longer safely retryable"});
+          if(!result.replayed)try{resolveOperationalNotification(`settings-transition:${result.activationId}`);}catch{/* durable result remains authoritative */}
+          try{
+            for(const id of participants)publishCoordinationV3Changed(id,{conversationIds:original.conversationId?[original.conversationId]:[]});
+            notifyScheduler();
+          }catch{/* durable result remains authoritative */}
+          return {requestIds:[original.id],retryOfRequestId:original.id,replayed:result.replayed};
+        } catch(error) {
+          return reply.code(409).send({error:error instanceof Error?error.message:"Request retry failed"});
+        } finally {release();}
+      }
+      if (coordinationV3.settingsTransitionRequestHold({projectId:original.projectId,requestId:original.id}))
+        return reply.code(409).send({error:"The original Request has a context handoff hold; review its Work details."});
       if (!["blocked", "expired", "outcome_unknown", "failed", "recipient_unavailable"].includes(original.state)) {
         return reply.code(409).send({ error: "only blocked, expired, uncertain, or failed requests can be retried" });
       }
