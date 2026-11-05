@@ -1,7 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { CoordinationV3Store } from '../../packages/agents/dist/index.js';
+import { AgentStore, CoordinationV3Store } from '../../packages/agents/dist/index.js';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { openCurrentMemoryDatabase } from '../../packages/agents/dist/state-admission.js';
 
 test('receipt injection batches preserve latest rows, recovery, missing IDs and project scope', t => {
@@ -329,4 +332,47 @@ test('settings transitions keep retry-pending work only after every old Run is p
  const rollover=v3.requestContextRollover(request);assert.equal(rollover.created,true);
  assert.deepEqual(prior(),attachments,'handoff reservation must retain every old Run attachment');
  assert.equal(db.prepare('SELECT state FROM agent_activations WHERE id=?').get(activationId).state,'retry_pending');
+});
+
+test('uncertain retry-pending hold survives database reopen without blocking another Agent', t => {
+ const root=mkdtempSync(path.join(tmpdir(),'ponderosa-transition-hold-'));
+ let store=new AgentStore(root);
+ t.after(()=>{if(store)store.close();rmSync(root,{recursive:true,force:true});});
+ const project=store.createProject({label:'Transition hold',hostPath:root,defaultEngine:'codex'});
+ const chat=store.createConversation(project.id,{title:'Chat'});
+ const worker=store.createAgent(project.id,{title:'Held worker',engine:'codex',conversationId:chat.id});
+ const other=store.createAgent(project.id,{title:'Other worker',engine:'codex',conversationId:chat.id});
+ let db=store.sqlite,v3=new CoordinationV3Store(db),now=new Date().toISOString();
+ const send=(agent,text)=>{
+   const id=randomUUID(),sender={kind:'user',userId:'local-operator'},audience={kind:'user_agents',userId:'local-operator',agentIds:[agent.id]};
+   const communication={schemaVersion:2,eventId:id,projectId:project.id,conversationId:chat.id,sender,intent:'user_dm',audience,text,createdAt:now};
+   const saved=v3.recordRuntimeCommunication({id,projectId:project.id,scopeKey:'conversation:'+chat.id,sender,intent:'user_dm',audience,payload:{communication},now,
+     activation:{agentId:agent.id,kind:'human_message',priority:100,dispatchPolicy:'next_run',promptClass:'human'}});
+   return {id,activationId:saved.activationId};
+ };
+ const held=send(worker,'Preserve the unresolved original work');
+ const old=v3.leaseNextRun({workerId:'crashed-worker',now});assert.deepEqual(old.activationIds,[held.activationId]);
+ assert.equal(v3.recoverOrphanedRuns('new-owner',now).retried,1);
+ assert.equal(v3.canRetryUninjectedRun(old.runId),true);
+ db.prepare("UPDATE scheduler_prompt_injections SET state='outcome_unknown' WHERE id=?").run(old.injectionId);
+ const input={projectId:project.id,agentId:worker.id,activationId:held.activationId,scopeKey:'conversation:'+chat.id,fingerprint:'a'.repeat(64)};
+ assert.equal(v3.settingsTransitionUnsubmittedActivation(input),false);
+ assert.equal(v3.holdSettingsTransitionReservation(input),false);
+ assert.equal(v3.holdUncertainSettingsTransitionReservation({...input,scopeKey:'agent:wrong'}),false);
+ assert.equal(v3.holdUncertainSettingsTransitionReservation(input),true);
+ assert.equal(v3.deliveryReceiptsForCommunication(project.id,held.id)[0].settingsTransitionHold,'review_required');
+ const prior=db.prepare('SELECT run_id,activation_id,attached_at,consumed_at FROM scheduler_run_activations WHERE activation_id=?').all(held.activationId);
+ store.close();store=new AgentStore(root);db=store.sqlite;v3=new CoordinationV3Store(db);
+ assert.equal(v3.settingsTransitionReservationHeld({...input,fingerprint:'b'.repeat(64)}),true,'a settings change cannot clear uncertain evidence');
+ const receipt=v3.deliveryReceiptsForCommunication(project.id,held.id)[0];
+ assert.equal(receipt.settingsTransitionHold,'review_required');assert.equal(receipt.canRetry,undefined);
+ assert.equal(v3.retryMessageDelivery({projectId:project.id,activationId:held.activationId,idempotencyKey:'do-not-replay'}).accepted,false);
+ assert.deepEqual(db.prepare('SELECT run_id,activation_id,attached_at,consumed_at FROM scheduler_run_activations WHERE activation_id=?').all(held.activationId),prior);
+ assert.equal(db.prepare('SELECT state FROM scheduler_prompt_injections WHERE id=?').get(old.injectionId).state,'outcome_unknown');
+ now=new Date().toISOString();
+ const independent=send(other,'Other Agent work can continue');
+ const next=v3.leaseNextRun({workerId:'independent-worker',now});
+ assert.equal(next.agentId,other.id);assert.deepEqual(next.activationIds,[independent.activationId]);
+ assert.equal(db.prepare('SELECT state FROM agent_activations WHERE id=?').get(held.activationId).state,'retry_pending');
+ assert.equal(db.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(held.activationId).n,1);
 });
