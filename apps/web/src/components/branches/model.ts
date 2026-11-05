@@ -22,10 +22,10 @@ export function addNode(definition:BranchDefinition,kind:BranchStep['kind']|'par
  }else if(kind==='for_each'){
   const join=id+'_join',worker=id+'_worker';
   d.controls.push({id,kind:'map',label:'For Each item',joinId:join,workerId:worker,source:'interpret',maxItems:100,maxConcurrentItems:4},{id:join,kind:'join',label:'Wait for items',forkId:id,mode:'all',remainder:'finish',inputOrder:[]});
-  d.steps.push({id:worker,label:'Review item',kind:'agent',target:{kind:'persistent_agent',ref:worker},instructions:''});
+  d.steps.push({id:worker,label:'Review item',kind:'agent',target:{kind:'persistent_agent',ref:worker},jobHandling:'queue',instructions:''} as ReusableAgentStep);
   d.edges.push({id:id+'_item',from:id,to:worker,on:'selected'});link(worker,join);if(forward)link(join,forward.to);
  }else{
-  const node:BranchStep=kind==='branch_call'?{id,label:'Run Branch',kind,branchRef:id}:kind==='script'?makeScript(id):kind==='human_gate'?{id,label:'Review result',kind,prompt:'Review the proposed result.',editable:true}:kind==='action'?{id,label:'Notify me',kind,action:'notify',configRefs:[]}:{id,label:'Agent work',kind:'agent',target:{kind:'persistent_agent',ref:id},instructions:''};
+  const node:BranchStep=kind==='branch_call'?{id,label:'Run Branch',kind,branchRef:id}:kind==='script'?makeScript(id):kind==='human_gate'?{id,label:'Review result',kind,prompt:'Review the proposed result.',editable:true}:kind==='action'?{id,label:'Notify me',kind,action:'notify',configRefs:[]}:{id,label:'Agent work',kind:'agent',target:{kind:'persistent_agent',ref:id},jobHandling:'queue',instructions:''} as ReusableAgentStep;
   d.steps.push(node);if(forward)link(id,forward.to,kind==='human_gate'?'approved':'success');
  }
  if(previous&&!['fork','map','condition','route'].includes(previous.kind))link(previous.id,id,outcome);
@@ -151,9 +151,19 @@ export function workflowIncoming(definition:BranchDefinition,nodeId:string):Arra
  const nodes=[...definition.steps,...definition.controls];
  return [...(definition.entry===nodeId?[{id:'workflow-input',label:'Workflow Input',custom:false}]:[]),...definition.edges.filter(edge=>edge.to===nodeId).map(edge=>({id:edge.id,label:nodeName(nodes.find(node=>node.id===edge.from)??{id:edge.from} as WorkflowNode),custom:edge.input?.kind==='literal'}))];
 }
+export type AgentJobHandling='queue'|'steer'|'copy';
+type ReusableAgentStep=Extract<BranchStep,{kind:'agent'}>&{jobHandling?:AgentJobHandling};
+/** Job handling changes only this step; the original Agent binding and graph remain intact. */
+export function changeAgentJobHandling(definition:BranchDefinition,node:ReusableAgentStep,jobHandling:AgentJobHandling):BranchDefinition{
+ if(node.target.kind!=='persistent_agent')return definition;
+ return {...definition,steps:definition.steps.map(step=>step.id===node.id?{...node,jobHandling}:step)};
+}
 /** Remove a displaced template only when no other step uses it; the editor retains its unpublished form values. */
 export function changeAgentTarget(definition:BranchDefinition,node:Extract<BranchStep,{kind:'agent'}>,target:Extract<BranchStep,{kind:'agent'}>['target']):BranchDefinition {
- const steps=definition.steps.map(step=>step.id===node.id?{...node,target}:step),templates={...definition.templates};
+ const next:ReusableAgentStep={...node,target};
+ if(target.kind!=='persistent_agent')delete next.jobHandling;
+ else if(node.target.kind!=='persistent_agent')next.jobHandling='queue';
+ const steps=definition.steps.map(step=>step.id===node.id?next:step),templates={...definition.templates};
  if('templateRef'in node.target&&!steps.some(step=>step.kind==='agent'&&'templateRef'in step.target&&step.target.templateRef===('templateRef'in node.target?node.target.templateRef:'')))delete templates[node.target.templateRef];
  return {...definition,steps,...(definition.templates?{templates}:{})};
 }

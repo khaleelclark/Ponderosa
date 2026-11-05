@@ -1611,3 +1611,36 @@ test('shared permission Settings expose durable before/after audit records for b
   }finally{client.clear()}
  }
 });
+
+test('reusable expert job handling distinguishes legacy behavior, results and guidance delivery',async()=>{
+ const {AgentJobHandlingField}=await import('../../apps/web/src/components/branches/AgentStepFields.tsx');
+ const render=value=>renderToStaticMarkup(React.createElement(AgentJobHandlingField,{value,onChange(){}}));
+ const legacy=render(undefined);
+ assert.match(legacy,/Existing behavior · steer or run/);assert.match(legacy,/steer current work when busy, otherwise start work/);
+ assert.match(render('queue'),/Each job waits its turn and receives its own outcome/);
+ const steer=render('steer');assert.match(steer,/delivery or uncertainty is not a separate job result/);
+ const copy=render('copy');assert.match(copy,/temporary copy of the selected Agent/);assert.match(copy,/receives its own result/);
+});
+test('new expert jobs queue explicitly while editing legacy and switching targets preserves intended semantics',async()=>{
+ const {newDefinition,addNode,changeAgentTarget,changeAgentJobHandling}=await import('../../apps/web/src/components/branches/model.ts');
+ const created=addNode(newDefinition(),'agent').definition;
+ assert.equal(created.steps[0].jobHandling,'queue');
+ const mapped=addNode(newDefinition(),'for_each').definition;assert.equal(mapped.steps[0].jobHandling,'queue');
+ const legacy=structuredClone(created);delete legacy.steps[0].jobHandling;
+ const node=legacy.steps[0],before=structuredClone(legacy);
+ const rebound=changeAgentTarget(legacy,node,{kind:'persistent_agent',ref:'another'});
+ assert.equal(Object.hasOwn(rebound.steps[0],'jobHandling'),false,'rebinding a legacy step cannot silently change busy behavior');
+ for(const mode of ['queue','steer','copy']){
+  const changed=changeAgentJobHandling(legacy,node,mode);
+  assert.equal(changed.steps[0].jobHandling,mode);assert.deepEqual(changed.steps[0].target,node.target);
+  assert.deepEqual(changed.edges,legacy.edges);assert.deepEqual(changed.policy,legacy.policy);
+  assert.equal(changeAgentTarget(changed,changed.steps[0],{kind:'persistent_agent',ref:'another'}).steps[0].jobHandling,mode);
+  for(const target of [{kind:'persistent_organization',ref:'team'},{kind:'ephemeral_agent',templateRef:'temporary'}]){
+   const other=changeAgentTarget(changed,changed.steps[0],target);
+   assert.equal(Object.hasOwn(other.steps[0],'jobHandling'),false);
+   assert.equal(changeAgentJobHandling(other,other.steps[0],'copy'),other);
+   assert.equal(changeAgentTarget(other,other.steps[0],node.target).steps[0].jobHandling,'queue');
+  }
+ }
+ assert.deepEqual(legacy,before,'editing helpers preserve the saved definition');
+});
