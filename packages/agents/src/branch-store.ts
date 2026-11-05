@@ -1,5 +1,5 @@
-import {readBranchExpertCopy,reserveBranchExpertCopy,sealBranchExpertSnapshot,bindBranchExpertCopy,reserveBranchExpertChat,reserveBranchExpertImport,reviewBranchExpertAccess,type BranchExpertCopyReceipt} from "./branch-expert-copy.js";
-import {fenceBranchFinalResourceExit} from './branch-generation-exit-fence.js';
+import {readBranchExpertCopy,reserveBranchExpertCopy,sealBranchExpertSnapshot,bindBranchExpertCopy,reserveBranchExpertChat,reserveBranchExpertImport,reviewBranchExpertAccess,reserveBranchExpertFinal,sealBranchExpertFinal,verifyBranchExpertFinal,type BranchExpertCopyReceipt} from "./branch-expert-copy.js";
+import {fenceBranchFinalResourceExit,fenceBranchExpertCopyExit} from './branch-generation-exit-fence.js';
 import {fenceFinalResourceExit,captureFinalResourceExit,readFinalResourceExit,finalResourceIssuedCheckpointRequired} from './branch-final-resource-exit.js';
 import {bundleParentInput,bundleCallInput,inheritedBundleCallInput,remapBundleValue,type BundleValueMap} from './branch-bundle-values.js';
 import {readRetainedDestinationSource,retainIssuedDestinationSource} from './coordination-v3-retained-destination-source.js';
@@ -2355,6 +2355,31 @@ export class BranchStore {
     const r=this.row('SELECT * FROM branch_resources WHERE step_execution_id=?',stepId);
     if(!r||r.retry_draining===1)return false;
     return finalResourceIssuedCheckpointRequired(this.sqlite,r.execution_id,stepId);
+  }
+  fenceExpertCopyFinal(stepId:string,agentIds:string[]){
+    return this.unitTransaction(()=>{
+      const r=this.row('SELECT * FROM branch_resources WHERE step_execution_id=?',stepId),expert=r&&readBranchExpertCopy(this.sqlite,r.execution_id,stepId);
+      if(!r||!expert?.copyChatId||!expert.copyProjectId||!this.resourceCanRetire(stepId,agentIds))throw Error('Expert copy final cleanup is not eligible');
+      return fenceBranchExpertCopyExit(this.sqlite,{executionId:r.execution_id,stepExecutionId:stepId,generation:r.generation,projectId:expert.copyProjectId,conversationId:expert.copyChatId,agentIds});
+    }).immediate();
+  }
+  reserveExpertFinal(executionId:string,stepId:string,agentIds:string[],fenceSha256:string){
+    return this.unitTransaction(()=>{
+      const r=this.row('SELECT * FROM branch_resources WHERE execution_id=? AND step_execution_id=?',executionId,stepId),expert=r&&readBranchExpertCopy(this.sqlite,executionId,stepId);
+      if(!r||!expert?.copyChatId||!this.resourceCanRetire(stepId,agentIds))throw Error('Expert copy final cleanup is not eligible');
+      if(expert.finalSnapshotSource){if(expert.finalFenceSha256!==fenceSha256||stableJson([...expert.finalSnapshotSource.agentIds].sort())!==stableJson([...agentIds].sort()))throw Error('Expert final capture reservation changed');return expert.finalSnapshotSource;}
+      const source={checkpointId:randomUUID(),sourceChatId:expert.copyChatId,agentIds:[...agentIds].sort(),intent:{executionId,resourceStepId:stepId,resourceGeneration:r.generation,
+        frontierSha256:payloadHash({executionId,stepId,requestId:expert.requestId,agentIds:[...agentIds].sort(),fenceSha256}),
+        bindingSha256:expert.snapshotSource.intent.bindingSha256,configurationSha256:expert.snapshotSource.intent.configurationSha256}};
+      reserveBranchExpertFinal(this.sqlite,executionId,stepId,source,fenceSha256);return source;
+    }).immediate();
+  }
+  sealExpertFinal(executionId:string,stepId:string,receipt:import('@ponderosa/core').CheckpointPackageReceipt):void {
+    if(!this.sqlite.inTransaction)throw Error('Expert final seal requires the package owner transaction');
+    sealBranchExpertFinal(this.sqlite,executionId,stepId,receipt);
+  }
+  verifyExpertFinal(executionId:string,stepId:string,sha256:string):void {
+    this.unitTransaction(()=>verifyBranchExpertFinal(this.sqlite,executionId,stepId,sha256))();
   }
   resourceRetryGeneration(stepId:string):number|undefined {const r=this.row('SELECT generation,retry_draining FROM branch_resources WHERE step_execution_id=?',stepId);return r?.retry_draining===1?r.generation:undefined;}
   resourceCanRetire(stepExecutionId: string, agentIds: string[]): boolean {

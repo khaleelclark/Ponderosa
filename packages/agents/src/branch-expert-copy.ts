@@ -12,6 +12,7 @@ export interface BranchExpertCopyReceipt extends BranchExpertCopyIdentity {
   snapshotReceipt?:CheckpointPackageReceipt;
   copyAgentId?:string; copyChatId?:string; copyProjectId?:string; creationOperationId?:string; requestId?:string;
   consent?:{snapshotSha256:string;reviewSha256:string;copySourceMemory:boolean;allowFindingsWriteback:boolean};
+  finalSnapshotSource?:CheckpointPackageSource; finalSnapshotReceipt?:CheckpointPackageReceipt; finalFenceSha256?:string; finalVerifiedSha256?:string;
   accessReview?:import("@ponderosa/core").AgentAccessImportReviewDto;
   accessChoice?:NonNullable<import("@ponderosa/core").ImportAgentPackageRequest["accessSettingsResolution"]>;
 }
@@ -41,6 +42,16 @@ export function readBranchExpertCopy(db:Database.Database,executionId:string,ste
     throw Error("Expert copy consent integrity failure");
   if(r.state==="active"&&(!r.snapshotReceipt||!r.creationOperationId||!r.copyAgentId||!r.copyChatId||!r.copyProjectId||!r.requestId||
     !r.consent?.copySourceMemory))throw Error("Expert copy activation receipt incomplete");
+  if(r.finalSnapshotSource&&(!r.finalFenceSha256||r.finalSnapshotSource.sourceChatId!==r.copyChatId||
+    r.finalSnapshotSource.intent.executionId!==executionId||r.finalSnapshotSource.intent.resourceStepId!==stepId||
+    !r.copyAgentId||!r.finalSnapshotSource.agentIds.includes(r.copyAgentId)||r.finalSnapshotSource.agentIds.includes(r.sourceAgentId)))
+    throw Error("Expert final capture source integrity failure");
+  if(r.finalSnapshotReceipt){
+    const {version,custodyId,boundaryId,sha256,byteLength,...source}=r.finalSnapshotReceipt;
+    if(!r.finalSnapshotSource||version!==1||!custodyId||!boundaryId||!/^[a-f0-9]{64}$/.test(sha256)||
+      !Number.isSafeInteger(byteLength)||byteLength<=0||stableJson(source)!==stableJson(r.finalSnapshotSource))
+      throw Error("Expert final capture receipt integrity failure");
+  }
   return r;
 }
 export function reserveBranchExpertCopy(db:Database.Database,input:BranchExpertCopyIdentity):BranchExpertCopyReceipt {
@@ -79,4 +90,31 @@ export function bindBranchExpertCopy(db:Database.Database,executionId:string,ste
   const r=readBranchExpertCopy(db,executionId,stepId);if(!r||r.state!=="reserved"||!r.snapshotReceipt||!r.accessChoice||!r.consent?.copySourceMemory||r.consent.reviewSha256!==r.accessChoice.reviewSha256||r.consent.snapshotSha256!==r.snapshotReceipt.sha256)throw Error("Expert copy source snapshot or explicit consent unavailable");
   if(!copy.copyAgentId||!copy.copyChatId||!copy.copyProjectId||!copy.requestId||!r.creationOperationId||copy.copyChatId!==r.copyChatId||copy.copyProjectId!==r.copyProjectId||copy.copyAgentId===r.sourceAgentId||copy.copyChatId===r.sourceChatId)throw Error("Expert copy destination identity invalid");
   db.prepare("UPDATE branch_commands SET result_json=? WHERE execution_id=? AND command_key=?").run(stableJson({...r,...copy,state:"active"}),executionId,key(stepId));
+}
+
+export function reserveBranchExpertFinal(db:Database.Database,executionId:string,stepId:string,source:CheckpointPackageSource,fenceSha256:string):void {
+  const r=readBranchExpertCopy(db,executionId,stepId);
+  if(!r||r.state!=="active"||!r.copyAgentId||!r.copyChatId||source.sourceChatId!==r.copyChatId||
+    source.intent.executionId!==executionId||source.intent.resourceStepId!==stepId||!source.agentIds.includes(r.copyAgentId)||
+    source.agentIds.includes(r.sourceAgentId)||!/^[a-f0-9]{64}$/.test(fenceSha256))throw Error("Expert final capture identity invalid");
+  if(r.finalSnapshotSource){
+    if(stableJson(r.finalSnapshotSource)!==stableJson(source)||r.finalFenceSha256!==fenceSha256)throw Error("Expert final capture reservation changed");
+    return;
+  }
+  db.prepare("UPDATE branch_commands SET result_json=? WHERE execution_id=? AND command_key=?").run(stableJson({...r,finalSnapshotSource:source,finalFenceSha256:fenceSha256}),executionId,key(stepId));
+}
+export function sealBranchExpertFinal(db:Database.Database,executionId:string,stepId:string,receipt:CheckpointPackageReceipt):void {
+  const r=readBranchExpertCopy(db,executionId,stepId);
+  if(!r||r.state!=="active"||!r.finalSnapshotSource||!r.finalFenceSha256)throw Error("Expert final capture reservation unavailable");
+  const {version,custodyId,boundaryId,sha256,byteLength,...source}=receipt;
+  if(version!==1||!custodyId||!boundaryId||!/^[a-f0-9]{64}$/.test(sha256)||!Number.isSafeInteger(byteLength)||byteLength<=0||
+    stableJson(source)!==stableJson(r.finalSnapshotSource))throw Error("Expert final snapshot differs from its reservation");
+  if(r.finalSnapshotReceipt&&stableJson(r.finalSnapshotReceipt)!==stableJson(receipt))throw Error("Expert final snapshot already sealed differently");
+  db.prepare("UPDATE branch_commands SET result_json=? WHERE execution_id=? AND command_key=?").run(stableJson({...r,finalSnapshotReceipt:receipt}),executionId,key(stepId));
+}
+
+export function verifyBranchExpertFinal(db:Database.Database,executionId:string,stepId:string,sha256:string):void {
+  const r=readBranchExpertCopy(db,executionId,stepId);
+  if(!r?.finalSnapshotReceipt||r.finalSnapshotReceipt.sha256!==sha256)throw Error("Temporary agent copy final verification differs");
+  db.prepare("UPDATE branch_commands SET result_json=? WHERE execution_id=? AND command_key=?").run(stableJson({...r,finalVerifiedSha256:sha256}),executionId,key(stepId));
 }

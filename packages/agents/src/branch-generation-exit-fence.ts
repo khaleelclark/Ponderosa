@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3';
 import {payloadHash,stableJson} from './coordination-v3-canonical-json.js';
+import {readBranchExpertCopy} from './branch-expert-copy.js';
 
 export interface BranchGenerationExitFenceInput {
  executionId:string;stepExecutionId:string;generation:number;
@@ -14,19 +15,25 @@ export function fenceBranchGenerationExit(db:Database.Database,input:BranchGener
 export function fenceBranchFinalResourceExit(db:Database.Database,input:BranchGenerationExitFenceInput):{identity:string;sha256:string} {
  return fenceExit(db,input,'final-resource');
 }
-function fenceExit(db:Database.Database,input:BranchGenerationExitFenceInput,purpose:'retry'|'final-resource') {
+/** Exact temporary expert-copy intake fence, independent of native-session outcome. */
+export function fenceBranchExpertCopyExit(db:Database.Database,input:BranchGenerationExitFenceInput):{identity:string;sha256:string} {
+ return fenceExit(db,input,'expert-copy');
+}
+function fenceExit(db:Database.Database,input:BranchGenerationExitFenceInput,purpose:'retry'|'final-resource'|'expert-copy') {
  if(!db.inTransaction)throw Error('Generation-exit fence requires the Branch owner transaction');
  const normalized={...input,agentIds:[...input.agentIds].sort()};
  if(!input.executionId||!input.stepExecutionId||!input.projectId||!input.conversationId||!Number.isSafeInteger(input.generation)||input.generation<0||!input.agentIds.length||input.agentIds.length>256||new Set(input.agentIds).size!==input.agentIds.length||input.agentIds.some(id=>!id))throw Error('Exact original generation-exit identities required');
  const identity=payloadHash({executionId:input.executionId,stepExecutionId:input.stepExecutionId,generation:input.generation});
  const prior=db.prepare("SELECT input_json,receipt_json,receipt_sha256 FROM host_lifecycle_commits WHERE kind='branch-generation-exit-fence' AND identity=?").get(identity) as {input_json:string;receipt_json:string;receipt_sha256:string}|undefined;
  if(prior){const retained=JSON.parse(prior.receipt_json);
-  if(retained.purpose!==undefined&&retained.purpose!=='final-resource')throw Error('Unknown generation-exit fence purpose');
+  if(retained.purpose!==undefined&&!['final-resource','expert-copy'].includes(retained.purpose))throw Error('Unknown generation-exit fence purpose');
   if((retained.purpose??'retry')!==purpose)throw Error('Generation-exit fence purpose conflict');
   if(prior.input_json!==stableJson(normalized)||stableJson(retained)!==prior.receipt_json||payloadHash(retained)!==prior.receipt_sha256||stableJson(retained.input)!==prior.input_json)throw Error('Generation-exit fence replay differs');
   if(purpose==='retry')return {identity,sha256:prior.receipt_sha256};
  }
- const eligibility=purpose==='retry'?"r.retry_draining=1":`r.retry_draining=0 AND r.state IN ('active','draining')
+ const eligibility=purpose==='retry'?"r.retry_draining=1":purpose==='expert-copy'?`r.retry_draining=0 AND r.state IN ('active','draining')
+  AND (e.cancel_requested=1 OR EXISTS(SELECT 1 FROM branch_paths p WHERE p.id=s.path_id AND p.state='canceled')
+   OR NOT EXISTS(SELECT 1 FROM branch_paths p WHERE p.execution_id=e.id AND p.state IN ('active','waiting','joining','canceling')))`:`r.retry_draining=0 AND r.state IN ('active','draining')
   AND e.parent_execution_id IS NULL AND e.parent_attempt_id IS NULL AND e.call_depth=0 AND e.admission_source='manual'
   AND b.enabled=1 AND b.deleting=0 AND b.active_version_id=e.version_id AND b.binding_revision_id=e.binding_revision_id
   AND EXISTS(SELECT 1 FROM branch_versions v WHERE v.id=e.version_id AND v.branch_id=e.branch_id AND json_extract(v.definition_json,'$.trigger.kind')='manual')
@@ -56,7 +63,18 @@ function fenceExit(db:Database.Database,input:BranchGenerationExitFenceInput,pur
   const created=creation?db.prepare('SELECT agent_id FROM agent_creation_operation_members WHERE operation_id=? ORDER BY agent_id').all(imported.creationOperationId) as Array<{agent_id:string}>:[];
   if(!operation||operation.input_hash!==payloadHash({creationKey:(resource as {creation_key:string}).creation_key,phase:'import'})||stableJson(imported)!==operation.result_json||imported.schema!=='branch-resource-operation.v1'||imported.phase!=='import'||!creation||imported.state!=='completed'||stableJson(created.map(m=>m.agent_id))!==stableJson(normalized.agentIds))throw Error('Final resource requires exact completed local creation membership');
  }
- const evidence={schema:'branch-generation-exit-fence.v1',...(purpose==='final-resource'?{purpose}:{}),input:normalized,resource,members};
+ if(purpose==='expert-copy'){
+  const expert=readBranchExpertCopy(db,input.executionId,input.stepExecutionId);
+  const attempt=expert&&db.prepare('SELECT request_id FROM branch_attempts WHERE id=? AND step_execution_id=?').get(expert.attemptId,input.stepExecutionId) as {request_id:string}|undefined;
+  const request=expert&&db.prepare('SELECT recipient_agent_id,conversation_id,project_id,state FROM coordination_requests WHERE id=?').get(expert.requestId) as {recipient_agent_id:string;conversation_id:string;project_id:string;state:string}|undefined;
+  const operation=expert&&db.prepare("SELECT id FROM agent_creation_operations WHERE id=? AND kind='import' AND status='completed' AND project_id=? AND conversation_id=?").get(expert.creationOperationId,input.projectId,input.conversationId);
+  if(!expert||expert.state!=='active'||expert.copyChatId!==input.conversationId||expert.copyProjectId!==input.projectId||
+    !expert.copyAgentId||!normalized.agentIds.includes(expert.copyAgentId)||attempt?.request_id!==expert.requestId||
+    request?.recipient_agent_id!==expert.copyAgentId||request.conversation_id!==input.conversationId||request.project_id!==input.projectId||
+    !['completed','failed','cancelled','expired','recipient_unavailable'].includes(request.state)||!operation)
+    throw Error('Exact completed expert copy ownership required for final capture');
+ }
+ const evidence={schema:'branch-generation-exit-fence.v1',...(purpose!=='retry'?{purpose}:{}),input:normalized,resource,members};
  const bytes=stableJson(evidence),sha256=payloadHash(evidence);
  if(Buffer.byteLength(bytes)>4*1024*1024)throw Error('Generation-exit fence exceeds bound');
  if(prior){if(prior.receipt_json!==bytes||prior.receipt_sha256!==sha256)throw Error('Final resource fence evidence changed');}

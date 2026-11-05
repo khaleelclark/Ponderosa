@@ -1,6 +1,6 @@
 import {describeBranchDeletionFailure} from './branch-deletion-diagnostics.js';
 import {isMemoryCleanupHold} from './local-memory-authority.js';
-import {issuedCaptureRetryBudget,generationHistoricalSelections,readBranchExpertCopy} from '@ponderosa/agents';
+import {issuedCaptureRetryBudget,generationHistoricalSelections,readBranchExpertCopy,requireGenerationExitDeletionReady} from '@ponderosa/agents';
 import type {BranchPackageEngine} from './routes/agent-packages.js';
 import type {ChatCreator} from "./routes/projects.js";
 import {createHash} from 'node:crypto';
@@ -13,7 +13,6 @@ export type BranchTemplateImporter = (input: BranchResourceProvision, hooks: {
   transaction?(operation:()=>void):void;
 }, signal: AbortSignal) => Promise<void>;
 const IMPORT_DEADLINE_MS = 5 * 60 * 1000;
-const EXPERT_COPY_CLEANUP_HOLD='Expert copy cleanup is held until its final context and memory are safely retained';
 /** Existing tracked template imports, driven only by the existing scheduler cycle. */
 export class BranchResourceService {
   private importer?: BranchTemplateImporter;
@@ -57,6 +56,56 @@ export class BranchResourceService {
     if(retained?.state!=='retained')throw Error('Final resource package receipt unavailable; cleanup held');
     this.requireFinalWorkingFolders(await this.packages.readCheckpoint(retained.receipt));
     this.branches.requireFinalResourceCaptureFence(executionId,stepId,key);
+  }
+  /** Fence a completed expert, retain its exact full context, then permit deletion. */
+  private async captureExpertFinal(resource:{executionId:string;stepExecutionId:string;agentIds:string[]}):Promise<void>{
+    const expert=readBranchExpertCopy(this.store.sqlite,resource.executionId,resource.stepExecutionId);
+    if(!expert||expert.state!=='active')return;
+    if(!this.packages)throw Error('Expert final context custody unavailable; cleanup held');
+    const fence=this.branches.fenceExpertCopyFinal(resource.stepExecutionId,resource.agentIds);
+    this.branches.cancelResourceWork(resource.stepExecutionId);
+    if(!this.generationExitDrain)throw Error('Observed expert provider drain unavailable; cleanup held');
+    await this.generationExitDrain(resource.agentIds);
+    const assertFinal=()=>{
+      const current=this.branches.fenceExpertCopyFinal(resource.stepExecutionId,resource.agentIds);
+      if(current.identity!==fence.identity||current.sha256!==fence.sha256||
+        !this.branches.resourceCanRetire(resource.stepExecutionId,resource.agentIds)||!this.idle(resource.agentIds))throw Error('Expert final context fence or provider drain changed');
+      for(const id of resource.agentIds){
+        if(this.store.sqlite.prepare("SELECT 1 FROM provider_process_authority WHERE agent_id=?").get(id)||
+          this.store.sqlite.prepare("SELECT 1 FROM scheduler_runs WHERE agent_id=? AND status='outcome_unknown'").get(id)||
+          this.store.sqlite.prepare("SELECT 1 FROM scheduler_prompt_injections i JOIN scheduler_runs r ON r.id=i.run_id WHERE r.agent_id=? AND i.state IN ('submitted','outcome_unknown')").get(id)||
+          this.store.sqlite.prepare("SELECT 1 FROM coordination_requests WHERE recipient_agent_id=? AND state='outcome_unknown'").get(id))
+          throw Error('Expert copy has an unresolved provider outcome; cleanup held');
+      }
+    };
+    assertFinal();
+    const source=this.branches.reserveExpertFinal(resource.executionId,resource.stepExecutionId,resource.agentIds,fence.sha256);
+    const current=readBranchExpertCopy(this.store.sqlite,resource.executionId,resource.stepExecutionId);
+    if(!current)throw Error('Expert final capture receipt unavailable');
+    if(!current.finalSnapshotReceipt){
+      const status=await this.packages.inspectCheckpoint(source);assertFinal();
+      if(status.state!=='missing')throw Error(`Expert final context custody ${status.state}; cleanup held for review`);
+      await this.packages.captureCheckpoint(source,receipt=>{assertFinal();this.branches.sealExpertFinal(resource.executionId,resource.stepExecutionId,receipt);},
+        {wholeWorkingFolder:true,expertFinal:assertFinal});
+    }
+    const retained=readBranchExpertCopy(this.store.sqlite,resource.executionId,resource.stepExecutionId)?.finalSnapshotReceipt;
+    if(!retained)throw Error('Expert final context receipt unavailable; cleanup held');
+    const portable=await this.packages.readCheckpoint(retained);assertFinal();
+    this.requireFinalWorkingFolders(portable);
+    if(!portable.memory?.length)throw Error('Temporary agent copy final memory is unavailable; cleanup held');
+    this.branches.verifyExpertFinal(resource.executionId,resource.stepExecutionId,retained.sha256);
+  }
+  /** Verify the exact retained bytes again during every destructive cleanup guard. */
+  verifyExpertFinalCustody(chatId:string,projectId:string):void {
+    if(!this.packages)throw Error('Temporary agent copy final custody unavailable');
+    const rows=this.store.sqlite.prepare(`SELECT execution_id,substr(command_key,13) AS step_id FROM branch_commands
+      WHERE command_key LIKE 'expert-copy:%' AND json_valid(result_json) AND json_extract(result_json,'$.copyChatId')=?`).all(chatId) as Array<{execution_id:string;step_id:string}>;
+    if(rows.length!==1)throw Error('Exact temporary agent copy final custody unavailable');
+    const r=readBranchExpertCopy(this.store.sqlite,rows[0]!.execution_id,rows[0]!.step_id);
+    if(!r||r.copyChatId!==chatId||r.copyProjectId!==projectId||!r.finalSnapshotReceipt||r.finalVerifiedSha256!==r.finalSnapshotReceipt.sha256)
+      throw Error('Exact temporary agent copy final custody unavailable');
+    requireGenerationExitDeletionReady(this.store.sqlite,{conversationId:chatId});
+    if(this.packages.verifyCheckpointNow(r.finalSnapshotReceipt)!==r.finalSnapshotReceipt.sha256)throw Error('Temporary agent copy final custody bytes changed');
   }
   /** Read the final receipt even after a previous cleanup pass deleted Agents. */
   private async verifyFinalPackage(executionId:string,stepId:string):Promise<void> {
@@ -356,7 +405,7 @@ export class BranchResourceService {
   private async cleanup():Promise<void> {
     for (const resource of this.branches.resourceCleanupCandidates()) {
       const held=this.store.sqlite.prepare('SELECT r.error,(SELECT error FROM branch_retirement_errors WHERE resource_id=r.chat_id) retirement_error FROM branch_resources r WHERE r.step_execution_id=?').get(resource.stepExecutionId) as {error:string|null;retirement_error:string|null}|undefined;
-      if(isMemoryCleanupHold(held?.error)||isMemoryCleanupHold(held?.retirement_error)||held?.error===EXPERT_COPY_CLEANUP_HOLD||held?.retirement_error===EXPERT_COPY_CLEANUP_HOLD)continue;
+      if(isMemoryCleanupHold(held?.error)||isMemoryCleanupHold(held?.retirement_error))continue;
       try {
         const capture=this.branches.resourceCaptureJournal(resource.stepExecutionId);
         await this.captureFinalPackage(resource.executionId,resource.stepExecutionId,false);
@@ -366,8 +415,8 @@ export class BranchResourceService {
         await this.captureGenerationExitBeforeCleanup(resource.stepExecutionId);
         await this.captureFinalExitBeforeCleanup(resource.stepExecutionId);
         if (!this.branches.resourceCanRetire(resource.stepExecutionId,resource.agentIds) || !this.idle(resource.agentIds)) continue;
-        const expert=readBranchExpertCopy(this.store.sqlite,resource.executionId,resource.stepExecutionId);
-        if(expert?.state==='active')throw Error(EXPERT_COPY_CLEANUP_HOLD);
+        await this.captureExpertFinal(resource);
+        if (!this.branches.resourceCanRetire(resource.stepExecutionId,resource.agentIds) || !this.idle(resource.agentIds)) continue;
         await this.deleteAgents(resource.agentIds);
         if(this.branches.finalResourceExitRequired(resource.stepExecutionId)){await this.verifyFinalPackage(resource.executionId,resource.stepExecutionId);this.branches.requireFinalResourceFrontier(resource.executionId,resource.stepExecutionId);}
         if (!this.branches.resourceCanRetire(resource.stepExecutionId,resource.agentIds) || !this.idle(resource.agentIds)) continue;

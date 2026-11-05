@@ -123,7 +123,7 @@ export interface BranchPackageEngine {
   prepareWorkingDataChild(input:PrepareBranchWorkingDataChildInput,onReceipt:(receipt:BranchWorkingDataPreparation)=>void):Promise<NonNullable<BranchWorkingDataPreparation['reservation']>>;
   applyWorkingData(input:ApplyBranchWorkingDataInput,onReceipt:(receipt:BranchWorkingDataApplication)=>void,signal?:AbortSignal):Promise<BranchWorkingDataApplication>;
   inspectCheckpoint(source:CheckpointPackageSource):Promise<CheckpointPackageStatus>;
-  captureCheckpoint(source:CheckpointPackageSource,seal?:(receipt:CheckpointPackageReceipt)=>void,options?:{wholeWorkingFolder?:boolean}):Promise<CheckpointPackageReceipt>;
+  captureCheckpoint(source:CheckpointPackageSource,seal?:(receipt:CheckpointPackageReceipt)=>void,options?:{wholeWorkingFolder?:boolean;expertFinal?:()=>void}):Promise<CheckpointPackageReceipt>;
   captureExpertSnapshot(source:CheckpointPackageSource,sourceProjectId:string,seal:(receipt:CheckpointPackageReceipt)=>void):Promise<CheckpointPackageReceipt>;
   reserveExpertChatMemory(chatId:string):void;
   readCheckpoint(receipt:CheckpointPackageReceipt):Promise<AgentPortablePackageDto>;
@@ -831,6 +831,7 @@ export function registerAgentPackageRoutes(
     gitStorageBindings?:import('@ponderosa/core').GitStorageSelection[],
     workingSet?:{nodes:AgentDto[];selections:import('@ponderosa/core').BranchExportFileSelections},
     omitWorkingData=false,
+    expertFinal?:()=>void,
   ): Promise<AgentPortablePackageDto> => {
     if(!Array.isArray(selectedWorkingFiles)||selectedWorkingFiles.some(item=>typeof item!=='string'))throw new AssetError(400,'Select working files as an array of relative paths');
     if(selectedWorkingFiles.length&&requestedMode==='template')throw new AssetError(400,'Selected working files require a full export');
@@ -1230,7 +1231,7 @@ export function registerAgentPackageRoutes(
       const groups=new Map<string,string[]>();for(const agent of nodes){if(!agent.conversationId)throw new Error('Package memory Agent has no Chat');const ids=groups.get(agent.conversationId)??[];ids.push(agent.id);groups.set(agent.conversationId,ids);}
       if(groups.size>1)throw new Error('Cross-Chat memory exports require separate packages and destination Chats');
       portable.memory=[];
-      for(const [chatId,ids] of groups)portable.memory.push({snapshot:await localMemoryFor(app)!.exportPackageMemory(chatId,ids),agentRefs:Object.fromEntries(ids.map(id=>[id,id]))});
+      for(const [chatId,ids] of groups)portable.memory.push({snapshot:expertFinal?await localMemoryFor(app)!.exportExpertFinalPackageMemory(chatId,ids,expertFinal):await localMemoryFor(app)!.exportPackageMemory(chatId,ids),agentRefs:Object.fromEntries(ids.map(id=>[id,id]))});
     }
     const roles=workingSet?undefined:outputApps?.portableRoles([...included]);if(roles?.length)portable.outputRoles=roles;
     for(const node of agents)for(const message of node.history??[]){
@@ -3247,6 +3248,7 @@ export function registerAgentPackageRoutes(
       const memoryDatabases=memory?await memory.checkpointSourceDatabases():[];
       const token=beginSourceCapture(store.sqlite,...memoryDatabases);
       const admit=()=>{
+        options?.expertFinal?.();
         const chat=store.getConversation(frozen.sourceChatId);
         if(!chat||!activeChatResourceOwner(store,'chat',chat.id))throw new Error('Checkpoint source Chat unavailable');
         assertCheckpointMembership(frozen.sourceChatId,frozen.agentIds,store.listAgents(chat.projectId,{includePendingCreation:true}));
@@ -3260,7 +3262,7 @@ export function registerAgentPackageRoutes(
         for(const id of frozen.agentIds){
           const agent=store.getAgent(id);
           if(!agent||agent.conversationId!==frozen.sourceChatId||store.agentCreationPending(id)||deletingAgentIds.has(id)||deletingConversationIds.has(agent.conversationId)||deletingProjectIds.has(agent.projectId))throw new Error('Checkpoint source membership unavailable');
-          const portable=await buildPortablePackage(id,'full',false,[],options?.wholeWorkingFolder===true);
+          const portable=await buildPortablePackage(id,'full',false,[],options?.wholeWorkingFolder===true,false,undefined,undefined,undefined,false,options?.expertFinal);
           capturedBytes+=agentPackageJsonUtf8Bytes(portable);
           if(capturedBytes>AGENT_PACKAGE_MAX_BYTES)throw new Error('Checkpoint source packages exceed package byte limit');
           inputs.push({ref:id,...(agent.managerAgentId&&frozen.agentIds.includes(agent.managerAgentId)?{managerRef:agent.managerAgentId}:{}),package:portable});

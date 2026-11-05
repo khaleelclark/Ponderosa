@@ -3,7 +3,6 @@ import {isMemoryCleanupHold} from './local-memory-authority.js';
 // Arbitrary exceptions may contain unlabeled provider credentials. Only
 // fixed, locally authored fence messages and known SQLite codes are public.
 const BRANCH_DELETION_PUBLIC_BLOCKERS=new Set([
- 'Expert copy cleanup is held until its final context and memory are safely retained',
  'Original generation deletion requires an exact sealed capture and intake fence receipt',
  'Final resource exit evidence pins owner deletion until archival',
  'Issued tree custody holds owner deletion',

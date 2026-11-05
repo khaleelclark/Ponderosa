@@ -239,3 +239,5 @@ export {hasRetainedTemporaryChatScope} from './branch-host-cut.js';
 
 export { readBranchExpertCopy } from "./branch-expert-copy.js";
 export type { BranchExpertCopyReceipt } from "./branch-expert-copy.js";
+
+export { requireGenerationExitDeletionReady } from "./branch-generation-exit-deletion.js";
