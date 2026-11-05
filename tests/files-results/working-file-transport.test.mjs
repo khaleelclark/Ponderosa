@@ -3,6 +3,7 @@ import test from 'node:test';
 import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+import {createHash} from 'node:crypto';
 import {AgentStore,makeWorkingFileTransportPart} from '../../packages/agents/dist/index.js';
 
 test('host-issued complete working-file parts stay internal but retained for export and cleanup',t=>{
@@ -39,4 +40,22 @@ test('host-issued complete working-file parts stay internal but retained for exp
  store.close();store=new AgentStore(root);
  assert.deepEqual(store.getProjectArtifactPage(project.id,{limit:50}).items.map(a=>a.id),['ordinary']);
  assert.deepEqual(store.getProjectArtifacts(project.id).map(a=>a.id).sort(),['ordinary','part-1','part-2']);
+});
+
+test('one import keeps identical paths in distinct roots as distinct complete originals',t=>{
+ const root=mkdtempSync(join(tmpdir(),'working-part-roots-'));
+ const store=new AgentStore(root);
+ t.after(()=>{store.close();rmSync(root,{recursive:true,force:true});});
+ const project=store.createProject({label:'Roots',hostPath:root,defaultEngine:'codex',chatOwned:true});
+ const agent=store.createAgent(project.id,{conversationId:project.lastConversationId,title:'Owner',engine:'codex'});
+ const entries=[];
+ for(const nodeRef of ['root-a','root-b']){
+  const refs=[nodeRef+'-part-1',nodeRef+'-part-2'];
+  const file={path:'same.bin',parts:{schema:'ponderosa.working-file-parts.v1',refs,byteLength:64*1024*1024+2,sha256:'a'.repeat(64)}};
+  const ownerScope=createHash('sha256').update(JSON.stringify(['operation-1',nodeRef])).digest('hex');
+  refs.forEach((id,index)=>entries.push({artifact:{id,projectId:project.id,agentId:agent.id,originAgentId:agent.id,kind:'document',path:'imported/'+id,summary:id,createdAt:'2026-11-05T00:00:00.000Z',mediaType:'application/vnd.ponderosa.working-file-part.v1',visibility:'project',pinned:true,size:32*1024*1024+1,sha256:'b'.repeat(64)},transportPart:makeWorkingFileTransportPart(file,index,ownerScope)}));
+ }
+ store.recordProjectArtifacts(entries);
+ assert.equal(store.getProjectArtifacts(project.id).length,4);
+ assert.equal(store.getProjectArtifactPage(project.id,{limit:50}).items.length,0);
 });

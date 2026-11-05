@@ -1,3 +1,4 @@
+import {verifyPortableWorkingFileParts} from '../portable-working-file-parts.js';
 import {isMemoryCleanupHold} from '../local-memory-authority.js';
 import type {CanonicalGeneratedHooksProof} from '@ponderosa/core';
 import {packageExportDownloads} from '../package-export-downloads.js';
@@ -39,7 +40,7 @@ import { setImmediate as yieldToLoop } from "node:timers/promises";
 import {
   normalizeAgentRole, FULL_PACKAGE_EXPORT_WARNING, agentPackageJsonUtf8Bytes, AGENT_PACKAGE_MAX_AGENTS, AGENT_PACKAGE_MAX_BYTES, AGENT_PACKAGE_ARTIFACT_MAX_BYTES,
   AGENT_PACKAGE_STAGING_MAX_BYTES, AGENT_PACKAGE_METADATA_MAX_BYTES,
-  AGENT_PACKAGE_LIMIT_LABEL, AGENT_PACKAGE_ARTIFACT_LIMIT_LABEL,
+  AGENT_PACKAGE_LIMIT_LABEL, AGENT_PACKAGE_ARTIFACT_LIMIT_LABEL, workingFileArtifactRefs,
 } from "@ponderosa/core";
 import path from "node:path";
 import type {
@@ -61,6 +62,7 @@ import {
   readManagedArtifactContentsAsync,
   readManagedArtifactContent,
   removeManagedArtifactContent,
+  makeWorkingFileTransportPart,
   stableJson,
   importedAgentHistoryPath,
   type AgentStore,
@@ -1011,7 +1013,8 @@ export function registerAgentPackageRoutes(
         }
         const referencingAgent = nodes.find((agent) =>
           (histories.get(agent.id) ?? []).some((message) =>
-            message.text.includes(artifact.id)||Object.values(message.artifactRefs??{}).includes(artifact.id)||message.attachmentRefs?.includes(artifact.id)||message.communication?.artifactIds?.includes(artifact.id)||message.communication?.document?.artifactId===artifact.id||importedHistories.get(agent.id)?.portableState?.workingFiles?.some(file=>file.artifactRef===artifact.id)));
+            message.text.includes(artifact.id)||Object.values(message.artifactRefs??{}).includes(artifact.id)||message.attachmentRefs?.includes(artifact.id)||message.communication?.artifactIds?.includes(artifact.id)||message.communication?.document?.artifactId===artifact.id)
+          || importedHistories.get(agent.id)?.portableState?.workingFiles?.some(file=>workingFileArtifactRefs(file).includes(artifact.id)));
         if (referencingAgent) artifactOwner.set(artifact.id, referencingAgent.id);
       }
     }
@@ -1027,9 +1030,22 @@ export function registerAgentPackageRoutes(
     let retainedAgentBytes = 0;
     for (const agent of nodes) {
       const history = histories.get(agent.id) ?? [];
+      const sourceRoot=path.resolve(agent.workingCopy.rootPath);
+      await verifySelectedRoots();
+      const firstRoot=organizationWorkingFolders&&!exportedRoots.has(workingRoots.get(sourceRoot)!);
+      if(firstRoot)exportedRoots.add(workingRoots.get(sourceRoot)!);
+      const folderInventory=firstRoot?folderInventories.get(sourceRoot):!organizationWorkingFolders&&agent.id===root.id&&wholeWorkingFolder?folderInventories.get(sourceRoot):undefined;
+      const selectedPaths=folderInventory?.paths??selectedWorkingFiles;
+      const capturesWorkingFiles=(organizationWorkingFolders?firstRoot:agent.id===root.id)&&!!(selectedPaths.length||folderInventory);
+      // Retained transport parts belong only to the retained manifest, not a
+      // fresh capture or an export that explicitly omits working data.
+      const retainedParts=new Set(!capturesWorkingFiles&&!omitWorkingData&&mode==='full'
+        ?(importedHistories.get(agent.id)?.portableState?.workingFiles??[]).flatMap(file=>file.parts?.refs??[])
+        :[]);
       const selectedArtifacts = mode === "template"
         ? []
-        : artifactsByOwner.get(agent.id) ?? [];
+        : (artifactsByOwner.get(agent.id) ?? []).filter(artifact=>
+            !store.isWorkingFileTransportPart(agent.projectId,artifact.id)||retainedParts.has(artifact.id));
       const artifacts: NonNullable<AgentPortablePackageDto["agents"][number]["artifacts"]> = [];
       const pendingArtifacts: Array<{
         artifact: typeof selectedArtifacts[number];
@@ -1135,13 +1151,8 @@ export function registerAgentPackageRoutes(
         const archives=await executionArchives(store,agent.id,AGENT_PACKAGE_ARTIFACT_MAX_BYTES-reservedArtifactBytes);
         for(const archive of archives){reservedArtifactBytes+=portableArtifactByteLength(archive);artifacts.push(admitArtifact(archive));}
       }
-      const sourceRoot=path.resolve(agent.workingCopy.rootPath);
-      await verifySelectedRoots();
-      const firstRoot=organizationWorkingFolders&&!exportedRoots.has(workingRoots.get(sourceRoot)!);
-      if(firstRoot)exportedRoots.add(workingRoots.get(sourceRoot)!);
       if(gitCapture?.exclusions(sourceRoot).includes('.')&&(await reviewedSelectionForRoot(sourceRoot))?.harness)throw new Error('Whole-root Git storage cannot also carry harness working-file review; select separate storage and working roots');
       const rootReviewedSelection=await reviewedSelectionForRoot(sourceRoot);
-      const folderInventory=firstRoot?folderInventories.get(sourceRoot):!organizationWorkingFolders&&agent.id===root.id&&wholeWorkingFolder?folderInventories.get(sourceRoot):undefined;
       let retainedOriginal:{data:Buffer;mode?:number;mtime?:string;canonicalGeneratedHooksProof?:CanonicalGeneratedHooksProof}|undefined;
       if(folderInventory&&rootReviewedSelection?.source==='retained_originals'){
         // Shared-root originals may belong to a peer excluded from this Agent export.
@@ -1167,8 +1178,7 @@ export function registerAgentPackageRoutes(
         const canonicalGeneratedHooksProof=store.findGeneratedHookNamespace({agentId:ownerAgentId,rootPath:sourceRoot,root:{device:observedRoot.dev.toString(),inode:observedRoot.ino.toString()},sourceOriginalSha256:createHash('sha256').update(data).digest('hex')});
         retainedOriginal={data,mode:binding.mode,mtime:binding.mtime,...(canonicalGeneratedHooksProof?{canonicalGeneratedHooksProof}:{})};
       }
-      const selectedPaths=folderInventory?.paths??selectedWorkingFiles;
-      const workingFiles=(organizationWorkingFolders?firstRoot:agent.id===root.id)&&(selectedPaths.length||folderInventory)
+      const workingFiles=capturesWorkingFiles
         ? await exportWorkingFiles(agent.workingCopy.rootPath,selectedPaths,AGENT_PACKAGE_ARTIFACT_MAX_BYTES-reservedArtifactBytes,folderInventory?.links,folderInventory?rootReviewedSelection:undefined,retainedOriginal,gitCapture,workingRoots,folderInventory):undefined;
       if(workingFiles?.verify)retainedWorkingVerifiers.push(workingFiles.verify);
       if(workingFiles){if(mode!=='full')throw new AssetError(400,'Selected working files require a full export');for(const artifact of workingFiles.artifacts)artifacts.push(admitArtifact(artifact));reservedArtifactBytes+=workingFiles.bytes;}
@@ -1841,7 +1851,8 @@ export function registerAgentPackageRoutes(
             ...(model ? { model } : {}),
             ...(effort ? { effort } : {}),
             history,
-            ...(node.workingFiles?{workingFiles:node.workingFiles.map(file=>({...file,artifactRef:artifactRefMap.get(file.artifactRef)!}))}:{}),
+            ...(node.workingFiles?{workingFiles:node.workingFiles.map(file=>({...file,artifactRef:artifactRefMap.get(file.artifactRef)!,
+              ...(file.parts?{parts:{...file.parts,refs:file.parts.refs.map(ref=>artifactRefMap.get(ref)!)}}:{})}))}:{}),
             artifacts: artifactsByNode.get(node.ref) ?? [],
           });
           await yieldToLoop();
@@ -1853,10 +1864,43 @@ export function registerAgentPackageRoutes(
         });
       }
 
+      // Resolve and verify every complete logical original before publishing any
+      // part or creating a working root. Existing package admission reserves
+      // capacity for decoded bytes and this one combined original.
+      const workingOriginals=new Map<string,Map<string,{data:Buffer;sha256:string}>>();
+      const transportParts=new Map<string,ReturnType<typeof makeWorkingFileTransportPart>>();
+      try {
       for(const node of importNodes)for(const file of node.workingFiles??[]){
-        const original=node.artifacts.find(artifact=>artifact.destinationId===file.artifactRef);
-        if(!original)throw new Error('Selected working-file original is missing');
-        validateWorkingFileData(file.path,original.data);
+        const parts=workingFileArtifactRefs(file).map(ref=>node.artifacts.find(artifact=>artifact.destinationId===ref));
+        if(parts.some(part=>!part))throw new Error('Selected working-file original part is missing');
+        const bodies=parts.map(part=>part!.data),verified=verifyPortableWorkingFileParts(file,bodies);
+        const data=bodies.length===1?bodies[0]!:Buffer.concat(bodies,verified.byteLength);
+        validateWorkingFileData(file.path,data);
+        const byPath=workingOriginals.get(node.ref)??new Map<string,{data:Buffer;sha256:string}>();
+        byPath.set(file.path,{data,sha256:verified.sha256});workingOriginals.set(node.ref,byPath);
+      }
+      for(const node of importNodes)for(const link of node.workingFolder?.links??[]){
+        if(link.kind!=='hardlink')continue;
+        const targetRoot=link.targetRootRef??node.workingRootRef??node.ref;
+        const owner=importNodes.find(candidate=>(candidate.workingRootRef??candidate.ref)===targetRoot&&workingOriginals.get(candidate.ref)?.has(link.target));
+        const original=owner&&workingOriginals.get(owner.ref)?.get(link.target);
+        if(!original)throw new Error('Selected hardlink original is missing');
+        validateWorkingFileData(link.path,original.data);
+      }
+      for(const node of importNodes)for(const file of node.workingFiles??[])if(file.parts){
+        // Scope ownership to a node, even when two roots have the same path and bytes.
+        const ownerScope=createHash('sha256').update(JSON.stringify([creationOperationId,node.ref])).digest('hex');
+        for(let index=0;index<file.parts.refs.length;index++){
+          const marker=makeWorkingFileTransportPart(file,index,ownerScope);
+          if(transportParts.has(marker.artifactId))throw new Error('Working-file transport part has multiple owners');
+          transportParts.set(marker.artifactId,marker);
+        }
+      }
+      } catch (error) {
+        abandonMutationFreeOperation(error instanceof Error ? error.message : "Invalid working-file original");
+        return reply.code((error as {statusCode?:number})?.statusCode ?? 400).send({
+          error:error instanceof Error ? error.message : "Invalid working-file original",
+        });
       }
       const activeDestinationConversation = () => {
         const current = store.getConversation(conversation.id);
@@ -2060,7 +2104,7 @@ export function registerAgentPackageRoutes(
         ? Object.entries(body.workingRootDestinations).map(([ref,destination])=>({destination,nodes:importNodes.filter(node=>node.workingRootRef===ref)}))
         : body.workingFilesDestination?[{destination:body.workingFilesDestination,nodes:importNodes}]:[]).map(item=>({...item,ref:item.nodes.find(node=>node.workingFolder)?.workingRootRef??item.nodes[0]!.ref,links:item.nodes.find(node=>node.workingFolder)?.workingFolder?.links??[]})),portablePackage.workingRootNesting);
       for(const {destination,nodes} of folderImports){
-        const files=nodes.flatMap(node=>(node.workingFiles??[]).map(file=>{const artifact=node.artifacts.find(a=>a.destinationId===file.artifactRef)!;return {path:file.path,data:artifact.data,sha256:artifact.sha256,mode:file.mode,mtime:file.mtime};}));
+        const files=nodes.flatMap(node=>(node.workingFiles??[]).map(file=>{const original=workingOriginals.get(node.ref)!.get(file.path)!;return {path:file.path,data:original.data,sha256:original.sha256,mode:file.mode,mtime:file.mtime};}));
         store.updateAgentCreationOperation(creationOperationId!,{result:{...(store.getAgentCreationOperation(creationOperationId!)?.result as object??{}),workingFilesDestination:body.workingFilesDestination,workingRootDestinations:body.workingRootDestinations}});
         const folder=nodes.find(node=>node.workingFolder)?.workingFolder;
         retainedWorkingFiles=true;
@@ -2132,7 +2176,7 @@ export function registerAgentPackageRoutes(
           const mode=body.workingCopyMode??selected.workingCopyMode??'shared';
           const members=importNodes.filter(node=>rootRef(node)===ref||!selected.workingRootRef&&!node.workingRootRef&&mode==='shared'&&(body.workingCopyMode??node.workingCopyMode??'shared')==='shared'),node=members.find(member=>member.workingFolder)??members[0]!;
           const agent=created.get(node.ref)!;
-          const files=members.flatMap(member=>(member.workingFiles??[]).map(file=>{const original=member.artifacts.find(artifact=>artifact.destinationId===file.artifactRef)!;return {path:file.path,data:original.data,sha256:original.sha256,mode:file.mode,mtime:file.mtime};}));
+          const files=members.flatMap(member=>(member.workingFiles??[]).map(file=>{const original=workingOriginals.get(member.ref)!.get(file.path)!;return {path:file.path,data:original.data,sha256:original.sha256,mode:file.mode,mtime:file.mtime};}));
           return {ref,members,node,agent,mode,files,folder:node.workingFolder};
         });
         const byRef=new Map(rows.map(row=>[row.ref,row])),allocated=new Set<string>();
@@ -2219,6 +2263,7 @@ export function registerAgentPackageRoutes(
       for(const release of liveModeReleases.splice(0).reverse())release();
       const catalogArtifacts: Array<{
         artifact: Parameters<AgentStore["recordProjectArtifact"]>[0];
+        transportPart?:ReturnType<typeof makeWorkingFileTransportPart>;
       }> = [];
       await onPhase?.("importing_history");
       await onPhase?.("finalizing");
@@ -2243,7 +2288,8 @@ export function registerAgentPackageRoutes(
             size: artifact.data.length,
             sha256: artifact.sha256,
           };
-          catalogArtifacts.push({ artifact: catalogArtifact });
+          const transportPart=transportParts.get(artifact.destinationId);
+          catalogArtifacts.push({ artifact: catalogArtifact,...(transportPart?{transportPart}:{}) });
         }
       }
       store.recordProjectArtifacts(catalogArtifacts);
