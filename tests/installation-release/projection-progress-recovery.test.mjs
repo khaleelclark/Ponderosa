@@ -131,19 +131,30 @@ test('a failed revision index transaction and exact retry retain the latest edit
 
 test('a failed unsupported metadata projection cannot be laundered by a later hot Agent update', t => {
   const f = fixture(t);
+  const syntheticCredential = 'SYNTHETIC_BARE_WORKING_COPY_CREDENTIAL';
   const workingCopy = { id: `copy:${randomUUID()}`, mode: 'separate_git', state: 'unavailable',
     rootPath: path.join(f.root, 'retained-copy'), branch: 'codex/retained-fixture',
-    failure: 'Retained copy needs operator inspection', updatedAt: '2026-10-24T00:00:02.000Z' };
+    failure: syntheticCredential, updatedAt: '2026-10-24T00:00:02.000Z' };
   f.store.sqlite.exec(`CREATE TEMP TRIGGER fail_working_copy BEFORE UPDATE OF working_copy_json ON main.agents
     BEGIN SELECT RAISE(ABORT, 'controlled working-copy projection failure'); END;`);
   assert.throws(() => f.store.updateAgentWorkingCopy(f.agent.id, workingCopy), /controlled working-copy projection failure/);
   f.store.sqlite.exec('DROP TRIGGER fail_working_copy');
+  const canonical=path.join(f.dataDir,'projects',f.project.id,'agents',f.agent.id,'agent.json');
+  const readCanonical=()=>JSON.parse(readFileSync(canonical,'utf8')).workingCopy;
+  const readProjection=store=>JSON.parse(store.sqlite.prepare('SELECT working_copy_json FROM agents WHERE id=?').get(f.agent.id).working_copy_json);
+  assert.deepEqual(readCanonical(),workingCopy,'failed projection must retain the original canonical metadata');
+  assert.notDeepEqual(readProjection(f.store),workingCopy,'fault must leave a stale SQLite projection');
   f.store.updateAgent(f.agent.id, { title: 'Later harmless rename' });
-  assert.notDeepEqual(f.store.getAgent(f.agent.id).workingCopy, workingCopy, 'Fault did not leave the intended stale projection');
+  assert.deepEqual(readCanonical(),workingCopy,'later update must preserve the original canonical metadata');
+  assert.notDeepEqual(readProjection(f.store),workingCopy,'later update must not disguise the stale projection');
   const reopened = f.reopen();
   assert.equal(reopened.startupProfile().mode, 'recovery');
   assert.equal(reopened.getAgent(f.agent.id).title, 'Later harmless rename');
-  assert.deepEqual(reopened.getAgent(f.agent.id).workingCopy, workingCopy);
+  assert.deepEqual(readCanonical(),workingCopy,'recovery must preserve canonical metadata');
+  assert.deepEqual(readProjection(reopened),workingCopy,'recovery must repair the raw SQLite projection');
+  const visible=reopened.getAgent(f.agent.id).workingCopy;
+  assert.deepEqual(visible,{...workingCopy,failure:'Previously recorded working-folder error details are withheld.'});
+  assert.equal(JSON.stringify(visible).includes(syntheticCredential),false,'public projection must not expose the synthetic credential');
 });
 
 test('coherent raw FTS damage followed by a healthy hot write still requires full repair', t => {
