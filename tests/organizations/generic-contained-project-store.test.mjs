@@ -4,7 +4,7 @@ import {mkdtempSync,mkdirSync,readFileSync,writeFileSync,renameSync,rmdirSync,re
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
-import {AgentStore,managedWorkspacePath,resolveAgentWorkingCopy} from '@ponderosa/agents';
+import {AgentStore,managedWorkspacePath,resolveAgentWorkingCopy,recordWorkingCopyGitFailure,safeWorkingCopyFailure,isStoredWorkingCopyGitFailure} from '@ponderosa/agents';
 import {destinationAdmissionHeld} from '../../packages/agents/dist/coordination-v3-destination-staging.js';
 import {AgentWorkingCopyService} from '../../apps/server/dist/agent-working-copy-service.js';
 
@@ -123,5 +123,48 @@ test('Run admission reports known pending import proof and redacts unknown nativ
   assert.match(projected.failure,/withheld/);
   assert.throws(()=>service.assertRunAdmission(original.id,original.workingCopy),error=>/working folder is unavailable/.test(error.message)&&!error.message.includes('/private/')&&!error.message.includes(secret));
   assert.throws(()=>service.assertRunAdmission(original.id,{...original.workingCopy,rootPath:f.newRoot}),/changed before the Run/);
+ }finally{f.dispose();}
+});
+
+
+test('trusted Git diagnostic survives restart and Run admission without exposing raw secrets',()=>{
+ const f=fixture();try{
+  f.bind();
+  const agent=f.store.getAgent(f.ids[0]),secret='fixture-secret-synthetic-cause';
+  const native=Object.assign(new Error('native stderr '+secret),{code:128});
+  recordWorkingCopyGitFailure(native,'inspect','rev-parse');
+  const diagnostic=safeWorkingCopyFailure(native);
+  assert.match(diagnostic,/git rev-parse; exit status 128/);
+  assert.match(diagnostic,/Check the selected folder and Git repository/);
+  assert.doesNotMatch(diagnostic,new RegExp(secret));
+  assert.equal(native.code,128,'original native status remains available for Git control flow');
+  assert.match(safeWorkingCopyFailure(new Error(diagnostic)),/withheld/,'caller text cannot forge native provenance');
+  assert.equal(isStoredWorkingCopyGitFailure(diagnostic.replace('status 128','status 9999')),false);
+  assert.equal(isStoredWorkingCopyGitFailure(diagnostic.replace('git rev-parse','git '+secret)),false);
+  const stderr='fatal: not a git repository (or any of the parent directories): .git';
+  const exact=Object.assign(new Error(secret),{code:128,stderr});
+  recordWorkingCopyGitFailure(exact,'inspect','rev-parse');
+  assert.match(safeWorkingCopyFailure(exact),/Git could not find a repository from the checked folder/);
+  const ambiguous=Object.assign(new Error(secret),{code:128,stderr:stderr+' '+secret});
+  recordWorkingCopyGitFailure(ambiguous,'inspect','rev-parse');
+  assert.doesNotMatch(safeWorkingCopyFailure(ambiguous),/could not find a repository from the checked folder/);
+  assert.doesNotMatch(safeWorkingCopyFailure(ambiguous),new RegExp(secret));
+  const missing=Object.assign(new Error(secret),{code:'ENOENT'});
+  recordWorkingCopyGitFailure(missing,'inspect','rev-parse');
+  assert.match(safeWorkingCopyFailure(missing),/system error ENOENT: a required file or program was not found/);
+  const stopped=Object.assign(new Error(secret),{signal:'SIGTERM'});
+  recordWorkingCopyGitFailure(stopped,'update','worktree');
+  assert.match(safeWorkingCopyFailure(stopped),/stopped by SIGTERM/);
+  assert.match(safeWorkingCopyFailure(stopped),/partial changes may exist/);
+  const syncFailure=Object.assign(new Error(secret),{status:1});
+  recordWorkingCopyGitFailure(syncFailure,'update','update-ref');
+  assert.match(safeWorkingCopyFailure(syncFailure),/git update-ref; exit status 1/);
+  assert.doesNotMatch(safeWorkingCopyFailure(syncFailure),new RegExp(secret));
+  f.store.updateAgentWorkingCopy(agent.id,{...agent.workingCopy,state:'unavailable',failure:diagnostic});
+  f.close();const store=f.reopen(),reopened=store.getAgent(agent.id);
+  assert.equal(reopened.workingCopy.failure,diagnostic);
+  const service=new AgentWorkingCopyService(f.data,store);
+  assert.throws(()=>service.assertRunAdmission(agent.id,agent.workingCopy),error=>error.message===diagnostic);
+  assert.throws(()=>resolveAgentWorkingCopy(reopened,store.getProject(f.project.id)),error=>error.message===diagnostic);
  }finally{f.dispose();}
 });

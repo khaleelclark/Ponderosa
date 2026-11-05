@@ -16,6 +16,9 @@ import {
   AgentWorkingCopyUnavailableError,
   safeWorkingCopyFailure,
   safeWorkingCopyFailureCode,
+  recordWorkingCopyGitFailure,
+  carryWorkingCopyGitFailure,
+  isStoredWorkingCopyGitFailure,
   resolveAgentWorkingCopy,
   sharedWorkingCopy,
   type AgentStore,
@@ -50,18 +53,32 @@ function gitEnvironment(): NodeJS.ProcessEnv {
     "GIT_ALTERNATE_OBJECT_DIRECTORIES",
   ]) delete environment[name];
   environment.GIT_TERMINAL_PROMPT = "0";
+  environment.LC_ALL = "C";
   return environment;
 }
 
 async function runGit(cwd: string, args: string[]): Promise<string> {
-  const result = await execFileAsync("git", ["--no-optional-locks", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", ...args], {
-    cwd,
-    encoding: "utf8",
-    env: gitEnvironment(),
-    timeout: GIT_TIMEOUT_MS,
-    maxBuffer: 1024 * 1024,
-  });
-  return result.stdout.trim();
+  try {
+    const result = await execFileAsync("git", ["--no-optional-locks", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", ...args], {
+      cwd,
+      encoding: "utf8",
+      env: gitEnvironment(),
+      timeout: GIT_TIMEOUT_MS,
+      maxBuffer: 1024 * 1024,
+    });
+    return result.stdout.trim();
+  } catch (error) {
+    const readOnly = ["status", "rev-list", "rev-parse", "show-ref", "check-ref-format"].includes(args[0] ?? "") ||
+      (args[0] === "worktree" && args[1] === "list");
+    const action = args[0] === "-c" && args[6] === "commit" ? "commit" : args[0] ?? "other";
+    recordWorkingCopyGitFailure(error, readOnly ? "inspect" : "update", action);
+    throw error;
+  }
+}
+
+function recordedGitMutation<T>(action: string, execute: () => T): T {
+  try { return execute(); }
+  catch (error) { recordWorkingCopyGitFailure(error, "update", action); throw error; }
 }
 
 /** Ownership permits cleanup, but never grants permission to discard work. */
@@ -108,7 +125,7 @@ function deleteOwnedBranchReferences(
   ownershipRef: string,
   branchHead: string,
 ): void {
-  execFileSync("git", ["--no-optional-locks", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "update-ref", "--stdin"], {
+  recordedGitMutation("update-ref", () => execFileSync("git", ["--no-optional-locks", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "update-ref", "--stdin"], {
     cwd: projectRoot,
     encoding: "utf8",
     env: gitEnvironment(),
@@ -122,7 +139,7 @@ function deleteOwnedBranchReferences(
       "commit",
       "",
     ].join("\n"),
-  });
+  }));
 }
 
 function safeFailure(error: unknown): string {
@@ -168,7 +185,7 @@ function createOwnedBranchReferences(
   ownershipRef: string,
   branchHead: string,
 ): void {
-  execFileSync("git", ["--no-optional-locks", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "update-ref", "--stdin"], {
+  recordedGitMutation("update-ref", () => execFileSync("git", ["--no-optional-locks", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "update-ref", "--stdin"], {
     cwd: projectRoot,
     encoding: "utf8",
     env: gitEnvironment(),
@@ -182,7 +199,7 @@ function createOwnedBranchReferences(
       "commit",
       "",
     ].join("\n"),
-  });
+  }));
 }
 
 async function gitWorktreeBranchRoots(
@@ -291,10 +308,9 @@ export class AgentWorkingCopyService {
       return { ...resolved, rootPath: canonical };
     } catch (error) {
       if (error instanceof AgentWorkingCopyUnavailableError) throw error;
-      throw new AgentWorkingCopyUnavailableError(
-        agent.workingCopy,
-        safeFailure(error),
-      );
+      const unavailable = new AgentWorkingCopyUnavailableError(agent.workingCopy, safeFailure(error));
+      carryWorkingCopyGitFailure(error, unavailable);
+      throw unavailable;
     }
   }
 
@@ -604,8 +620,8 @@ export class AgentWorkingCopyService {
       catch(error){
         const task=tasks.find(task=>task.destination===root&&task.activation.git),git=task?.value.git;
         if(git&&(!('symbolic' in git.head)||git.refs.some(ref=>ref.name===('symbolic' in git.head?git.head.symbolic:''))))throw error;
-        const emptyTree=execFileSync('git',['-c','core.hooksPath=/dev/null','hash-object','-t','tree','-w','--stdin'],{cwd:root,env:gitEnvironment(),input:'',encoding:'utf8',timeout:GIT_TIMEOUT_MS}).trim();
-        baseHead=execFileSync('git',['-c','core.hooksPath=/dev/null','-c','user.name=Ponderosa Import','-c','user.email=import@localhost','commit-tree','--no-gpg-sign',emptyTree,'-m','Initialize imported Separate ownership'],{cwd:root,env:gitEnvironment(),encoding:'utf8',timeout:GIT_TIMEOUT_MS}).trim();
+        const emptyTree=recordedGitMutation('hash-object',()=>execFileSync('git',['-c','core.hooksPath=/dev/null','hash-object','-t','tree','-w','--stdin'],{cwd:root,env:gitEnvironment(),input:'',encoding:'utf8',timeout:GIT_TIMEOUT_MS})).trim();
+        baseHead=recordedGitMutation('commit-tree',()=>execFileSync('git',['-c','core.hooksPath=/dev/null','-c','user.name=Ponderosa Import','-c','user.email=import@localhost','commit-tree','--no-gpg-sign',emptyTree,'-m','Initialize imported Separate ownership'],{cwd:root,env:gitEnvironment(),encoding:'utf8',timeout:GIT_TIMEOUT_MS})).trim();
       }
       if(await gitBranchExists(root,branch))throw new Error('The newly allocated managed branch collides with imported user refs');
       const receipt={ownershipRef:creationOwnershipRef(),branchHead:baseHead};
@@ -744,7 +760,8 @@ export class AgentWorkingCopyService {
       // native failures can contain filesystem paths or tool output.
       const reason = current.workingCopy.failure;
       if (reason === "Native import metadata and ownership proof are pending; preserve the exact import operation." ||
-          reason === "Native Git import proof is incomplete; preserve its exact root and original import operation.") {
+          reason === "Native Git import proof is incomplete; preserve its exact root and original import operation." ||
+          reason !== undefined && isStoredWorkingCopyGitFailure(reason)) {
         throw new Error(reason);
       }
       throw new Error("This Agent's working folder is unavailable; inspect its status before retrying.");

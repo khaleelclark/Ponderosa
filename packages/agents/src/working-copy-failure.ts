@@ -123,6 +123,83 @@ const fixed = new Set<string>([
   "the requested Git branch does not match its atomic creation receipt",
   "the requested Git branch is registered to another working folder",
 ]);
+// Bind native failures to an application-selected operation without trusting
+// stderr, argv, paths or user-provided exception text. The original Error is
+// left intact so status-based Git control flow continues to work.
+type GitOperation = "inspect" | "update";
+const gitFailures = new WeakMap<object, string>();
+const gitPrefix: Record<GitOperation, string> = {
+  inspect: "Git failed while checking the working folder or repository",
+  update: "Git failed while changing the working folder or repository",
+};
+const gitGuidance: Record<GitOperation, string> = {
+  inspect: "Check the selected folder and Git repository before trying again.",
+  update: "Inspect the folder and Git state before retrying; partial changes may exist.",
+};
+const gitSuffix = "Additional Git details are not shown because they may contain credentials.";
+const notRepository = "Git could not find a repository from the checked folder";
+const notRepositoryGuidance = "Check the Agent's working folder; select or initialize a Git repository as appropriate before retrying.";
+const gitActions = new Set(["status", "rev-list", "rev-parse", "show-ref", "check-ref-format", "worktree", "init", "commit", "symbolic-ref", "update-ref", "hash-object", "commit-tree", "other"]);
+const gitSystemCodes: Readonly<Record<string,string>> = {
+  ENOENT: "a required file or program was not found", EACCES: "access was denied",
+  EPERM: "the operating system denied the operation", ENOSPC: "the storage volume has no available space",
+  EDQUOT: "the storage quota was exceeded", EROFS: "the storage volume is read-only",
+  EBUSY: "a required file or folder is busy", ETIMEDOUT: "the operation timed out",
+};
+
+export function recordWorkingCopyGitFailure(error: unknown, operation: GitOperation, action: string): void {
+  if (!error || typeof error !== "object" || !Object.hasOwn(gitPrefix, operation) || !gitActions.has(action)) return;
+  const value = error as {code?: unknown; status?: unknown; signal?: unknown; stderr?: unknown};
+  const exitStatus = typeof value.code === "number" ? value.code : value.status;
+  let detail = "the cause was not identified";
+  if (typeof exitStatus === "number" && Number.isSafeInteger(exitStatus) && exitStatus >= 1 && exitStatus <= 255)
+    detail = `exit status ${exitStatus}`;
+  else if (typeof value.code === "string" && Object.hasOwn(gitSystemCodes, value.code))
+    detail = `system error ${value.code}: ${gitSystemCodes[value.code]}`;
+  else if (value.signal === "SIGTERM" || value.signal === "SIGKILL" || value.signal === "SIGINT")
+    detail = `stopped by ${value.signal}`;
+  // Git is invoked with LC_ALL=C. Accept only this complete literal, never
+  // a substring or a path supplied by stderr.
+  const knownNotRepository = operation === "inspect" && action === "rev-parse" &&
+    value.code === 128 && typeof value.stderr === "string" &&
+    value.stderr.trim() === "fatal: not a git repository (or any of the parent directories): .git";
+  if (knownNotRepository) {
+    gitFailures.set(error, `${gitPrefix[operation]} (git ${action}; ${detail}; ${notRepository}). ${notRepositoryGuidance}`);
+  } else {
+    gitFailures.set(error, `${gitPrefix[operation]} (git ${action}; ${detail}). ${gitGuidance[operation]} ${gitSuffix}`);
+  }
+}
+
+/** Carry only the already-classified diagnostic through host wrappers. */
+export function carryWorkingCopyGitFailure(source: unknown, target: object): void {
+  if (source && typeof source === "object") {
+    const value = gitFailures.get(source);
+    if (value) gitFailures.set(target, value);
+  }
+}
+
+/** Stored forms contain only a closed operation, status and fixed guidance. */
+export function isStoredWorkingCopyGitFailure(value: string): boolean {
+  if (value === `${gitPrefix.inspect} (git rev-parse; exit status 128; ${notRepository}). ${notRepositoryGuidance}`) return true;
+  for (const op of ["inspect", "update"] as const) {
+    const start = `${gitPrefix[op]} (`, end = `). ${gitGuidance[op]} ${gitSuffix}`;
+    if (!value.startsWith(start) || !value.endsWith(end)) continue;
+    const parts = value.slice(start.length, -end.length).split("; ");
+    if (parts.length !== 2 || !parts[0]!.startsWith("git ") || !gitActions.has(parts[0]!.slice(4))) continue;
+    const detail = parts[1]!;
+    if (detail === "the cause was not identified" || /^stopped by SIG(?:TERM|KILL|INT)$/.test(detail)) return true;
+    if (Object.entries(gitSystemCodes).some(([code, text]) => detail === `system error ${code}: ${text}`)) return true;
+    const status = /^exit status ([1-9][0-9]{0,2})$/.exec(detail);
+    if (status && Number(status[1]) <= 255) return true;
+  }
+  return false;
+}
+
+/** Reconstitute only the closed persisted form on a host-created exception. */
+export function adoptStoredWorkingCopyGitFailure(target: object, value: string): void {
+  if (isStoredWorkingCopyGitFailure(value)) gitFailures.set(target, value);
+}
+
 const legacyPrefix = "Separate Git copy is unavailable. ";
 function fixedReason(value: string): boolean {
   return fixed.has(value) || (value.startsWith(legacyPrefix) && fixed.has(value.slice(legacyPrefix.length)));
@@ -142,6 +219,7 @@ const generic = "The working folder could not be changed safely; unverified erro
 const legacyWithheld = "Previously recorded working-folder error details are withheld.";
 
 export function safeWorkingCopyFailure(error: unknown): string {
+  if (error && typeof error === "object" && gitFailures.has(error)) return gitFailures.get(error)!;
   if (error instanceof Error && fixedReason(error.message)) return error.message;
   const code = error && typeof error === "object" && "code" in error ? (error as { code?: unknown }).code : undefined;
   return typeof code === "string" && Object.hasOwn(systemCodes, code) ? systemCodes[code]! : generic;
@@ -153,7 +231,7 @@ export function safeWorkingCopyFailureCode(error: unknown): string {
 }
 
 export function safeStoredWorkingCopy(copy: AgentWorkingCopyDto): AgentWorkingCopyDto {
-  return copy.failure === undefined ? copy : { ...copy, failure: fixedReason(copy.failure) || Object.values(systemCodes).includes(copy.failure) || copy.failure === generic ? copy.failure : legacyWithheld };
+  return copy.failure === undefined ? copy : { ...copy, failure: fixedReason(copy.failure) || Object.values(systemCodes).includes(copy.failure) || copy.failure === generic || isStoredWorkingCopyGitFailure(copy.failure) ? copy.failure : legacyWithheld };
 }
 
 /** A read projection must not erase an older stored diagnostic when an

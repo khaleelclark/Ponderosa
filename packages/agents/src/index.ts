@@ -245,4 +245,4 @@ export { requireGenerationExitDeletionReady } from "./branch-generation-exit-del
 
 export {portableBase64ByteLength,portableArtifactByteLength,decodePortableMetadataArtifact} from './portable-artifact-original.js';
 
-export { safeWorkingCopyFailure, safeWorkingCopyFailureCode, safeStoredWorkingCopy } from "./working-copy-failure.js";
+export { safeWorkingCopyFailure, safeWorkingCopyFailureCode, safeStoredWorkingCopy, recordWorkingCopyGitFailure, carryWorkingCopyGitFailure, isStoredWorkingCopyGitFailure } from "./working-copy-failure.js";

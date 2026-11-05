@@ -423,6 +423,17 @@ test('working-copy errors preserve fixed causes and withhold untrusted synthetic
  assert.doesNotMatch(safeWorkingCopyFailure(new Error(fixed+' '+secret)),new RegExp(secret));
 });
 
+test('working-copy mode reports a real Git failure and safe recovery direction',options,async t=>{
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Non-repository working folder'),agent=await f.createIdleAgent(chat,'Worker');
+  const result=await f.api('PATCH',`/api/agents/${agent.id}`,{workingCopyMode:'separate_git'});
+  assert.equal(result.status,409);
+  assert.match(result.body.error,/git rev-parse; exit status 128/);
+  assert.match(result.body.error,/Git could not find a repository from the checked folder/);
+  assert.match(result.body.error,/select or initialize a Git repository/);
+ });
+});
+
 test('working-copy mode 409 withholds injected teardown error details',options,async t=>{
  await withFixture(t,async f=>{
   const chat=await f.createChat('Working-copy route errors'),agent=await f.createIdleAgent(chat,'Worker');

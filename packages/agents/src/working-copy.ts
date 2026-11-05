@@ -4,7 +4,7 @@ import type {
   ProjectDto,
 } from "@ponderosa/core";
 
-import { safeStoredWorkingCopy } from "./working-copy-failure.js";
+import { adoptStoredWorkingCopyGitFailure, safeStoredWorkingCopy } from "./working-copy-failure.js";
 
 export interface ResolvedAgentWorkingCopy {
   id: string;
@@ -23,6 +23,7 @@ export class AgentWorkingCopyUnavailableError extends Error {
   ) {
     super(message);
     this.name = "AgentWorkingCopyUnavailableError";
+    if (message === safeStoredWorkingCopy(workingCopy).failure) adoptStoredWorkingCopyGitFailure(this, message);
   }
 }
 
