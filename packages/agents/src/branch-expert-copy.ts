@@ -27,7 +27,20 @@ export function readBranchExpertCopy(db:Database.Database,executionId:string,ste
   const r=JSON.parse(row.result_json) as BranchExpertCopyReceipt;
   if(r.schema!=="branch-expert-copy.v1"||r.executionId!==executionId||r.stepExecutionId!==stepId||
     stableJson(r)!==row.result_json||payloadHash(identity(r))!==row.input_hash||
-    !["reserved","active"].includes(r.state))throw Error("Expert copy receipt integrity failure");
+    !["reserved","active"].includes(r.state)||!r.attemptId||!r.sourceAgentId||!r.sourceChatId||!r.sourceProjectId||
+    r.snapshotSource?.sourceChatId!==r.sourceChatId||r.snapshotSource?.intent.executionId!==executionId||
+    r.snapshotSource?.intent.resourceStepId!==stepId||stableJson(r.snapshotSource?.agentIds)!==stableJson([r.sourceAgentId]))
+    throw Error("Expert copy receipt integrity failure");
+  if(r.snapshotReceipt){
+    const {version,custodyId,boundaryId,sha256,byteLength,...source}=r.snapshotReceipt;
+    if(version!==1||!custodyId||!boundaryId||!/^[a-f0-9]{64}$/.test(sha256)||!Number.isSafeInteger(byteLength)||byteLength<=0||
+      stableJson(source)!==stableJson(r.snapshotSource))throw Error("Expert copy snapshot receipt integrity failure");
+  }
+  if(r.consent&&(!r.snapshotReceipt||!r.accessChoice||r.consent.snapshotSha256!==r.snapshotReceipt.sha256||
+    r.consent.reviewSha256!==r.accessChoice.reviewSha256||typeof r.consent.copySourceMemory!=="boolean"||typeof r.consent.allowFindingsWriteback!=="boolean"))
+    throw Error("Expert copy consent integrity failure");
+  if(r.state==="active"&&(!r.snapshotReceipt||!r.creationOperationId||!r.copyAgentId||!r.copyChatId||!r.copyProjectId||!r.requestId||
+    !r.consent?.copySourceMemory))throw Error("Expert copy activation receipt incomplete");
   return r;
 }
 export function reserveBranchExpertCopy(db:Database.Database,input:BranchExpertCopyIdentity):BranchExpertCopyReceipt {
@@ -63,7 +76,7 @@ export function reviewBranchExpertAccess(db:Database.Database,executionId:string
   db.prepare("UPDATE branch_commands SET result_json=? WHERE execution_id=? AND command_key=?").run(stableJson({...unchosen,accessReview:review,...(choice?{accessChoice:choice}:{}),...(consent?{consent}:{})}),executionId,key(stepId));
 }
 export function bindBranchExpertCopy(db:Database.Database,executionId:string,stepId:string,copy:{copyAgentId:string;copyChatId:string;copyProjectId:string;requestId:string}):void {
-  const r=readBranchExpertCopy(db,executionId,stepId);if(!r||r.state!=="reserved"||!r.snapshotReceipt)throw Error("Expert copy source snapshot unavailable");
+  const r=readBranchExpertCopy(db,executionId,stepId);if(!r||r.state!=="reserved"||!r.snapshotReceipt||!r.accessChoice||!r.consent?.copySourceMemory||r.consent.reviewSha256!==r.accessChoice.reviewSha256||r.consent.snapshotSha256!==r.snapshotReceipt.sha256)throw Error("Expert copy source snapshot or explicit consent unavailable");
   if(!copy.copyAgentId||!copy.copyChatId||!copy.copyProjectId||!copy.requestId||!r.creationOperationId||copy.copyChatId!==r.copyChatId||copy.copyProjectId!==r.copyProjectId||copy.copyAgentId===r.sourceAgentId||copy.copyChatId===r.sourceChatId)throw Error("Expert copy destination identity invalid");
   db.prepare("UPDATE branch_commands SET result_json=? WHERE execution_id=? AND command_key=?").run(stableJson({...r,...copy,state:"active"}),executionId,key(stepId));
 }

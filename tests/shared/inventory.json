@@ -2766,6 +2766,14 @@
       "moduleBase": "apps/server/package.json",
       "requirements": "Linux, Node24, built native server workspaces, Git2.53+ with reftable; disposable repositories; no provider account",
       "origin": "Real native bare and linked capsule capture, issued planning, private/shared custody and no-write mismatch rejection"
+    },
+    {
+      "path": "tests/branches/expert-copy-provision.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server and disposable private stores",
+      "origin": "Exact reusable expert-copy reservation and explicit consent"
     }
   ],
   "retainedReleasePayload": [
