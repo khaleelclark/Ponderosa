@@ -42,6 +42,10 @@ test('reviewed finding is private, does not wake its source, and appears in a la
    const approved=await f.api('POST',base+'/access-review',{accessSettingsResolution:selection,snapshotSha256:review.expertCopyReview.snapshotSha256,copySourceMemory:copyMemory,allowFindingsWriteback:writeback});
    assert.equal(approved.status,200,JSON.stringify(approved.body));
    const receipt=await until(()=>{const r=readBranchExpertCopy(store.sqlite,job.id,resource.step_execution_id);return r?.state==='active'&&r},'active copy',90000);
+   const request=store.sqlite.prepare('SELECT payload_json FROM coordination_requests WHERE id=?').get(receipt.requestId);
+   const safety=JSON.parse(request.payload_json).safety;
+   if(writeback){assert.match(safety,/temporary agent copy/i);assert.match(safety,/save concise durable findings to the original/i);assert.match(safety,/not wake it/i);}
+   else assert.doesNotMatch(safety,/save concise durable findings to the original/i);
    await until(()=>store.sqlite.prepare('SELECT state FROM coordination_requests WHERE id=?').get(receipt.requestId)?.state==='completed','copy request completed',90000);
    return {job,resource,receipt,base};
   }

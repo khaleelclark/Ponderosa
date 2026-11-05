@@ -86,6 +86,7 @@ test('only the exact exhausted no-publication snapshot reservation accepts the e
  const job=branches.accept(branch.id,'copy-retry-job','Preserve this exact input');for(let i=0;i<6;i++)branches.advance();
  const resource=store.sqlite.prepare('SELECT * FROM branch_resources WHERE execution_id=?').get(job.id);
  const attempt=branches.detail(job.id).attempts[0];assert.equal(attempt.snapshotRetryAvailable,undefined);
+ assert.equal(branches.currentActions(job.id).items.some(item=>item.kind==='attempt'&&item.attempt.id===attempt.id),false,'ordinary prepared work is not an intervention');
  let current=readBranchExpertCopy(store.sqlite,job.id,resource.step_execution_id);
  for(let i=0;i<3;i++){
   const next={...current.snapshotSource,checkpointId:'next-'+i};
@@ -95,10 +96,13 @@ test('only the exact exhausted no-publication snapshot reservation accepts the e
  }
  assert.equal(current.snapshotRetryHeld,true);assert.equal(current.snapshotFailures.length,3);
  assert.equal(branches.detail(job.id).attempts[0].snapshotRetryAvailable,true);
+ const action=branches.currentActions(job.id).items.find(item=>item.kind==='attempt'&&item.attempt.id===attempt.id);
+ assert.ok(action);assert.equal(action.attempt.snapshotRetryAvailable,true);assert.equal(action.attempt.retryBlockedReason,undefined);
  const before=current.snapshotSource.checkpointId;
  const response=branches.intervene(job.id,{commandKey:'retry-proven-snapshot',expectedRevision:branches.execution(job.id).revision,action:'retry',attemptId:attempt.id,reason:'Retry the confirmed no-effect snapshot'});
  const after=readBranchExpertCopy(store.sqlite,job.id,resource.step_execution_id);
  assert.equal(after.snapshotRetryHeld,false);assert.equal(after.snapshotRetryBase,3);assert.notEqual(after.snapshotSource.checkpointId,before);
+ assert.equal(branches.currentActions(job.id).items.some(item=>item.kind==='attempt'&&item.attempt.id===attempt.id),false);
  assert.equal(response.attempts[0].id,attempt.id,'the same job and attempt remain');
  assert.equal(response.attempts[0].requestId,undefined);assert.equal(store.sqlite.prepare('SELECT count(*) n FROM coordination_requests WHERE recipient_agent_id=?').get(agent.id).n,0);
  assert.throws(()=>branches.intervene(job.id,{commandKey:'retry-unproven-snapshot',expectedRevision:branches.execution(job.id).revision,action:'retry',attemptId:attempt.id,reason:'Not held'}),/Only failed or outcome-unknown/);
