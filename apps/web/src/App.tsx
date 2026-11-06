@@ -766,7 +766,7 @@ export default function App({
                     projectResolution={projectResolution}
                     onRetryProject={() => void routedProjectQuery.refetch()}
                     projects={projects}
-                    projectsLoaded={projectsQuery.isSuccess}
+                    projectsLoaded={projectsQuery.data !== undefined}
                     engines={engines}
                     enginesLoaded={enginesQuery.data !== undefined}
                     notifications={presentedNotifications}
@@ -791,6 +791,11 @@ export default function App({
                           preferencesQuery.isError,
                         ) === "initial")
                     }
+                    loadErrorDetails={[
+                      enginesQuery.data === undefined && enginesQuery.isError ? enginesQuery.error.message : undefined,
+                      !isProjectRoute(route) && projectsQuery.data === undefined && projectsQuery.isError ? projectsQuery.error.message : undefined,
+                      route.kind === "settings" && preferencesQuery.data === undefined && preferencesQuery.isError ? preferencesQuery.error.message : undefined,
+                    ].filter(Boolean).join(" ")}
                     refreshError={
                       retainedDataFailure(
                         enginesQuery.data !== undefined,
@@ -805,6 +810,11 @@ export default function App({
                         preferencesQuery.isError,
                       ) === "refresh"
                     }
+                    refreshErrorDetails={[
+                      enginesQuery.data !== undefined && enginesQuery.isError ? enginesQuery.error.message : undefined,
+                      projectsQuery.data !== undefined && projectsQuery.isError ? projectsQuery.error.message : undefined,
+                      preferencesQuery.data !== undefined && preferencesQuery.isError ? preferencesQuery.error.message : undefined,
+                    ].filter(Boolean).join(" ")}
                     onRetryLoad={() => {
                       void projectsQuery.refetch();
                       void enginesQuery.refetch();
@@ -882,6 +892,9 @@ export default function App({
         <ContextualCreateDialog
           request={creationRequest}
           projects={projects}
+          projectsLoaded={projectsQuery.data !== undefined}
+          projectsError={projectsQuery.isError && projectsQuery.data === undefined ? projectsQuery.error.message : undefined}
+          onRetryProjects={() => void projectsQuery.refetch()}
           engines={engines}
           enginesLoaded={enginesQuery.data !== undefined}
           preferences={preferences}

@@ -2,7 +2,9 @@ import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import CloseIcon from "@mui/icons-material/Close";
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
 import {
+  Alert,
   Box,
+  Button,
   Dialog,
   DialogContent,
   DialogTitle,
@@ -25,6 +27,7 @@ import type { Route } from "../routing";
 import { ConfirmDialog } from "./ConfirmationDialogs";
 import { IconTitle } from "./IconTitle";
 import { MobileNavigationButton } from "./MobileNavigationContext";
+import { LoadingState } from "./LoadingState";
 import { AgentCreateSurface } from "./AgentCreateDialog";
 import { PrimaryHeaderActionsOutlet } from "./PrimaryHeaderActions";
 import { NewChatComposer } from "./NewChatComposer";
@@ -84,6 +87,9 @@ function CreateSurface({
 export function CreateWorkspace({
   route,
   projects,
+  projectsLoaded = true,
+  projectsError,
+  onRetryProjects,
   engines,
   enginesLoaded = true,
   preferences,
@@ -92,6 +98,9 @@ export function CreateWorkspace({
 }: {
   route: Extract<Route, { kind: "create" }>;
   projects: ProjectDto[];
+  projectsLoaded?: boolean;
+  projectsError?: string;
+  onRetryProjects?(): void;
   engines: EngineDto[];
   enginesLoaded?: boolean;
   preferences: WorkspacePreferencesDto;
@@ -99,13 +108,16 @@ export function CreateWorkspace({
   onNavigate(route: Route): void;
 }): JSX.Element {
   if (route.resource === "chat") return <CreateFormContent
-    route={route} projects={projects} engines={engines} enginesLoaded={enginesLoaded}
+    route={route} projects={projects} projectsLoaded={projectsLoaded} projectsError={projectsError} onRetryProjects={onRetryProjects} engines={engines} enginesLoaded={enginesLoaded}
     preferences={preferences} onCancel={onCancel} onNavigate={onNavigate}
   />;
   return <CreateSurface route={route}>
     <CreateFormContent
       route={route}
       projects={projects}
+      projectsLoaded={projectsLoaded}
+      projectsError={projectsError}
+      onRetryProjects={onRetryProjects}
       engines={engines}
       enginesLoaded={enginesLoaded}
       preferences={preferences}
@@ -123,6 +135,9 @@ export type CreationRequest = Omit<
 function CreateFormContent({
   route,
   projects,
+  projectsLoaded = true,
+  projectsError,
+  onRetryProjects,
   engines,
   enginesLoaded = true,
   preferences,
@@ -135,6 +150,9 @@ function CreateFormContent({
 }: {
   route: Extract<Route, { kind: "create" }>;
   projects: ProjectDto[];
+  projectsLoaded?: boolean;
+  projectsError?: string;
+  onRetryProjects?(): void;
   engines: EngineDto[];
   enginesLoaded?: boolean;
   preferences: WorkspacePreferencesDto;
@@ -166,6 +184,9 @@ function CreateFormContent({
         onNavigate({ kind: "conversation", projectId, conversationId });
       }}
     />
+  ) : !projectsLoaded ? (
+    projectsError ? <Alert severity="error" action={onRetryProjects ? <Button color="inherit" onClick={onRetryProjects}>Retry</Button> : undefined}>{projectsError}</Alert>
+      : <LoadingState resource="Chats" />
   ) : (
     <AgentCreateSurface
       projects={projects}
@@ -203,6 +224,9 @@ function CreateFormContent({
 export function ContextualCreateDialog({
   request,
   projects,
+  projectsLoaded = true,
+  projectsError,
+  onRetryProjects,
   engines,
   enginesLoaded = true,
   preferences,
@@ -211,6 +235,9 @@ export function ContextualCreateDialog({
 }: {
   request?: CreationRequest;
   projects: ProjectDto[];
+  projectsLoaded?: boolean;
+  projectsError?: string;
+  onRetryProjects?(): void;
   engines: EngineDto[];
   enginesLoaded?: boolean;
   preferences: WorkspacePreferencesDto;
@@ -296,6 +323,9 @@ export function ContextualCreateDialog({
               key={[route.resource, route.projectId ?? "", route.conversationId ?? "", route.managerAgentId ?? ""].join(":")}
               route={route}
               projects={projects}
+              projectsLoaded={projectsLoaded}
+              projectsError={projectsError}
+              onRetryProjects={onRetryProjects}
               engines={engines}
               enginesLoaded={enginesLoaded}
               preferences={preferences}

@@ -50,7 +50,9 @@ interface WorkspaceRouteOutletProps {
   colorMode: ColorMode;
   projectBrowserRequest?: ProjectBrowserRequest;
   loadError: boolean;
+  loadErrorDetails?: string;
   refreshError: boolean;
+  refreshErrorDetails?: string;
   onRetryLoad(): void;
   onNavigate(route: Route, options?: {replace?: boolean}): boolean | void;
   onPreferences(patch: Partial<WorkspacePreferencesDto>): void;
@@ -89,7 +91,9 @@ export function WorkspaceRouteOutlet({
   colorMode,
   projectBrowserRequest,
   loadError,
+  loadErrorDetails,
   refreshError,
+  refreshErrorDetails,
   onRetryLoad,
   onNavigate,
   onPreferences,
@@ -120,7 +124,7 @@ export function WorkspaceRouteOutlet({
           action={<Button color="inherit" size="small" onClick={onRetryLoad}>Retry</Button>}
           sx={{ m: 1 }}
         >
-          Some workspace data could not be refreshed. The last loaded data remains available.
+          Some workspace data could not be refreshed. {refreshErrorDetails} The last loaded data remains available.
         </Alert>
       ) : null}
       <Box sx={{ minHeight: 0, minWidth: 0, display: "flex", flexDirection:"column" }}>
@@ -137,8 +141,7 @@ export function WorkspaceRouteOutlet({
               </Button>
             }
           >
-            Ponderosa could not load its workspace data. Check the server
-            connection and try again.
+            Ponderosa could not load its workspace data. {loadErrorDetails || "Check the server connection and try again."}
           </Alert>
         </Box>
       ) : routeWaitsForWorkspacePreferences(route, preferencesLoaded) ? (
@@ -154,7 +157,7 @@ export function WorkspaceRouteOutlet({
             route.creationKey ?? "",
           ].join(":")}
           load={loadCreateWorkspace}
-          componentProps={{ route, projects, engines, enginesLoaded, preferences, onCancel: onCancelCreate, onNavigate }}
+          componentProps={{ route, projects, projectsLoaded, engines, enginesLoaded, preferences, onCancel: onCancelCreate, onNavigate }}
         />
       ) : route.kind === "home" ? (
         <RecoverableLazyRoute key="home" load={loadHomeView} componentProps={{ projects, projectsLoaded, engines, enginesLoaded, notifications, notificationCounts, notificationsLoadFailed, onNavigate, onCreateProject: () => onCreate("chat"), onOpenInbox }} />

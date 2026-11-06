@@ -594,6 +594,9 @@ export function AgentCreateSurface(props: AgentCreateSurfaceProps): JSX.Element 
   const scopedProjectId = props.fixedProjectId ?? (props.fixedConversationId ? props.initialProjectId : undefined);
   const projects = scopedProjectId ? props.projects.filter(project => project.id === scopedProjectId) : props.projects;
   const queries = useProjectConversations(projects);
+  const failedQueries = queries.filter(query => query.isError);
+  const chatError = failedQueries.map(query => query.error?.message ?? "Chats could not be loaded.").join(" ");
+  const retryChats = () => { for (const query of failedQueries) void query.refetch(); };
   const agentQueries = useProjectAgents(props.initialManagerAgentId ? projects : []);
   const manager = agentQueries.flatMap(query => query.data ?? []).find(agent => agent.id === props.initialManagerAgentId);
   const chats = projects.flatMap((project, index) =>
@@ -617,10 +620,13 @@ export function AgentCreateSurface(props: AgentCreateSurfaceProps): JSX.Element 
         {chats.map(({chat}) => <MenuItem key={chat.id} value={chat.id}>{chat.title}</MenuItem>)}
       </Select>
     </FormControl>
+    {selected && failedQueries.length > 0 ? <Alert severity="warning" action={<Button color="inherit" onClick={retryChats}>Retry</Button>}>{chatError} The last loaded Chats remain available.</Alert> : null}
     {selected ? <ScopedAgentCreateSurface key={selected.chat.id} {...props}
       fixedProjectId={selected.projectId} fixedConversationId={selected.chat.id}
       onPendingChange={value => { setPending(value); props.onPendingChange?.(value); }} />
-      : <Alert severity="info">{queries.some(query => query.isPending) ? "Loading Chats…" : "Create a Chat before adding an Agent."}</Alert>}
+      : queries.some(query => query.isPending) ? <Alert severity="info" role="status">Loading Chats…</Alert>
+      : failedQueries.length > 0 ? <Alert severity="error" action={<Button color="inherit" onClick={retryChats}>Retry</Button>}>{chatError}</Alert>
+      : <Alert severity="info">Create a Chat before adding an Agent.</Alert>}
   </Stack>;
 }
 
