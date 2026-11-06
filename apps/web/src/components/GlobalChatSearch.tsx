@@ -454,7 +454,7 @@ export function GlobalChatSearch({ open, onClose, onExited, onSelect, initialSea
       {debouncedQuery && !searchFailed && !isSearching && visibleResults.length === 0 && fileResults.length === 0 ? <Typography color="text.secondary" sx={{ p: 2, textAlign: "center" }}>{`No ${scope === "all" ? "messages, Agents or files" : scope} match “${debouncedQuery}”.`}</Typography> : null}
       {scope !== "files" && !searchFailed && !debouncedQuery && !isSearching && unread.length === 0 && (search.data?.recentChats.length ?? 0) === 0 ? <Typography variant="body2" color="text.secondary" sx={{ px: 1, py: .5 }}>{openAttentionCount ? `${openAttentionCount} item${openAttentionCount === 1 ? "" : "s"} needs attention.` : "You’re all caught up."}</Typography> : null}
       {scope !== "files" && search.data?.truncated ? <Stack spacing={1} sx={{ mt: 1 }}>
-        <Alert severity="info">Showing the newest matches from a bounded search. Add more terms to narrow the result.</Alert>
+        <Alert severity="info">Newest matches only</Alert>
         {resultLimit < 50 ? <Button
           color="inherit"
           onClick={() => setResultLimit(50)}
