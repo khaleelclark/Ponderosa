@@ -331,7 +331,10 @@ test('live output keeps exact cached Run text while reconnecting and reconciles 
 
 test('loaded live-output history merges exact current revision targets and excludes stale or foreign pages',async()=>{
  const source=await readFile(new URL('../../apps/web/src/components/BranchesView.tsx',import.meta.url),'utf8');
- const body=source.slice(source.indexOf('function mergeHistory('),source.indexOf('/** Branches has its own'));
+ const module=ts.createSourceFile('BranchesView.tsx',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);
+ const declaration=module.statements.find(statement=>ts.isFunctionDeclaration(statement)&&statement.name?.text==='mergeHistory');
+ assert.ok(declaration,'The product history merger must be present');
+ const body=declaration.getText(module);
  const scope={};vm.runInNewContext(ts.transpileModule(body,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.None}}).outputText+';globalThis.merge=mergeHistory',scope);
  const page=(revision,liveOutputs,id='run-a')=>({execution:{id,revision},liveOutputs,steps:[],attempts:[],gates:[],paths:[],resources:[]});
  const a={attemptId:'a',runId:'scheduler-a'},b={attemptId:'b',runId:'scheduler-b'};
