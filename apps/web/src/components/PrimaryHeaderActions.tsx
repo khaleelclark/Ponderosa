@@ -13,8 +13,8 @@ import { createPortal } from "react-dom";
 import { ProviderQuotaIndicator } from "./ProviderUsageCenter";
 
 type HeaderActionTrigger = ComponentProps<typeof ProviderQuotaIndicator>["renderTrigger"];
-type RegisterHeaderActionOutlet = (element: HTMLElement, depth?: number, renderTrigger?: HeaderActionTrigger) => () => void;
-type HeaderActionOutlet = { element: HTMLElement; depth: number; renderTrigger?: HeaderActionTrigger };
+type RegisterHeaderActionOutlet = (element: HTMLElement, depth?: number, renderTrigger?: HeaderActionTrigger, showMobileUsageLabel?: boolean) => () => void;
+type HeaderActionOutlet = { element: HTMLElement; depth: number; renderTrigger?: HeaderActionTrigger; showMobileUsageLabel?: boolean };
 
 const PrimaryHeaderActionsContext = createContext<
   {register: RegisterHeaderActionOutlet; activeOutlet?: HTMLElement} | undefined
@@ -42,8 +42,8 @@ export function PrimaryHeaderActionsProvider({
   const mobile = narrow || coarsePointer;
   const [fallbackOutlet, setFallbackOutlet] = useState<HTMLDivElement | null>(null);
   const [outlets, setOutlets] = useState<HeaderActionOutlet[]>([]);
-  const register = useCallback<RegisterHeaderActionOutlet>((element, depth = 0, renderTrigger) => {
-    setOutlets(current => [...current.filter(candidate => candidate.element !== element), { element, depth, renderTrigger }]);
+  const register = useCallback<RegisterHeaderActionOutlet>((element, depth = 0, renderTrigger, showMobileUsageLabel) => {
+    setOutlets(current => [...current.filter(candidate => candidate.element !== element), { element, depth, renderTrigger, showMobileUsageLabel }]);
     return () => {
       setOutlets(current => current.filter(candidate => candidate.element !== element));
     };
@@ -87,6 +87,7 @@ export function PrimaryHeaderActionsProvider({
         renderTrigger={activeRegistration?.renderTrigger}
         preferredProvider={preferredProvider}
         mobile={mobile}
+        showMobileUsageLabel={activeRegistration?.showMobileUsageLabel}
         portalTarget={activeOutlet ?? fallbackOutlet}
         onOpenProviderSettings={onOpenProviderSettings}
       />
@@ -98,8 +99,8 @@ export function PrimaryHeaderActionsProvider({
 export function PrimaryHeaderActionsScope({children}:{children:ReactNode}):JSX.Element {
   const owner=useContext(PrimaryHeaderActionsContext);
   const register=owner?.register;
-  const scopedRegister=useCallback<RegisterHeaderActionOutlet>((element,depth=0,renderTrigger)=>{
-    const unregister=register?.(element,depth+1,renderTrigger);
+  const scopedRegister=useCallback<RegisterHeaderActionOutlet>((element,depth=0,renderTrigger,showMobileUsageLabel)=>{
+    const unregister=register?.(element,depth+1,renderTrigger,showMobileUsageLabel);
     return ()=>unregister?.();
   },[register]);
   const value=useMemo(()=>({register:scopedRegister,activeOutlet:owner?.activeOutlet}),[scopedRegister,owner?.activeOutlet]);
@@ -107,14 +108,14 @@ export function PrimaryHeaderActionsScope({children}:{children:ReactNode}):JSX.E
 }
 
 /** The trailing action destination shared by primary and utility headers. */
-export function PrimaryHeaderActionsOutlet({renderTrigger, fallback}: {renderTrigger?: HeaderActionTrigger; fallback?: ReactNode} = {}): JSX.Element {
+export function PrimaryHeaderActionsOutlet({renderTrigger, fallback, showMobileUsageLabel}: {renderTrigger?: HeaderActionTrigger; fallback?: ReactNode; showMobileUsageLabel?: boolean} = {}): JSX.Element {
   const owner = useContext(PrimaryHeaderActionsContext);
   const register = owner?.register;
   const [element, setElement] = useState<HTMLDivElement | null>(null);
   useLayoutEffect(() => {
     if (!element || !register) return;
-    return register(element, 0, renderTrigger);
-  }, [element, register, renderTrigger]);
+    return register(element, 0, renderTrigger, showMobileUsageLabel);
+  }, [element, register, renderTrigger, showMobileUsageLabel]);
 
   return (
     <Box

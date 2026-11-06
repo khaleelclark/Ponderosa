@@ -269,12 +269,14 @@ function constrainedProvider(providers: ProviderUsageStateDto[]): ProviderUsageS
 export function ProviderQuotaIndicator({
   preferredProvider,
   mobile = false,
+  showMobileUsageLabel = false,
   renderTrigger,
   portalTarget,
   onOpenProviderSettings,
 }: {
   preferredProvider?: string;
   mobile?: boolean;
+  showMobileUsageLabel?: boolean;
   renderTrigger?: (open: (element: HTMLElement) => void, fullTrigger?: ReactNode) => ReactNode;
   portalTarget?: Element | null;
   onOpenProviderSettings?: () => void;
@@ -399,16 +401,20 @@ export function ProviderQuotaIndicator({
         sx={{
           position: "relative",
           flexShrink: 0,
-          width: 44,
+          width: showMobileUsageLabel ? "auto" : 44,
+          minWidth: 44,
           height: 44,
+          gap: showMobileUsageLabel ? 0.5 : 0,
+          whiteSpace: "nowrap",
         }}
       >
         <DataUsageOutlinedIcon />
+        {showMobileUsageLabel ? <Typography component="span" variant="body2">Usage</Typography> : null}
         {query.isLoading || constrained?.refreshing ? (
           <CircularProgress
             size={16}
             aria-hidden
-            sx={{ position: "absolute", right: 3, bottom: 3 }}
+            sx={{ position: "absolute", ...(showMobileUsageLabel ? { left: 3 } : { right: 3 }), bottom: 3 }}
           />
         ) : null}
       </IconButton>

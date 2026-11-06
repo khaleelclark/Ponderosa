@@ -113,7 +113,7 @@ function SettingsHeader({
         </Typography>
       </Box>
       {onReturn ? <Button onClick={onReturn}>{returnLabel ?? "Back to Home"}</Button> : null}
-      <PrimaryHeaderActionsOutlet />
+      <PrimaryHeaderActionsOutlet showMobileUsageLabel />
     </Stack>
   );
 }
@@ -191,8 +191,8 @@ function GeneralSettingsSection({
         <Typography variant="h6" component="h2" fontWeight={800} sx={{ mb: 1.5 }}>
           Appearance
         </Typography>
-        <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
-          <Button variant="outlined" onClick={onToggleColorMode}>
+        <Stack direction={{ xs: "column", md: "row" }} spacing={1.5}>
+          <Button variant="outlined" onClick={onToggleColorMode} sx={{ flexShrink: 0, whiteSpace: "nowrap" }}>
             Use {colorMode === "dark" ? "Light" : "Dark"} Mode
           </Button>
           <FormControl fullWidth>
