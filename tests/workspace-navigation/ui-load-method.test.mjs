@@ -105,3 +105,20 @@ test('post-window cleanup cancels exact queued receipts before worker release an
  assert(calls.slice(0,2).every(row=>row.body.idempotencyKey));assert.notEqual(calls[0].body.idempotencyKey,calls[1].body.idempotencyKey);
  await assert.rejects(cancelQueuedLoadMessages({...f,api:async()=>({cancelled:false,status:'delivery_started'})},product,receipts),/cancel before workload release/);
 });
+
+test('controlled settlement uses each product endpoint and keeps cross-product access closed',{timeout:30000},async()=>{
+ const {fixture}=await import('../shared/fixture.mjs'),f=await fixture(),events=[];
+ try{
+  const coreChat=await f.createChat('Core settlement'),core=await f.createAgent(coreChat,'Core worker');
+  const branch=f.ok(await f.api('POST','/api/branches',{name:'Branch settlement',idempotencyKey:'settle-branch'}));
+  const chat=f.ok(await f.api('POST','/api/branches/'+branch.id+'/chats',{label:'Branch settlement',defaultEngine:'codex'},{'idempotency-key':'settle-chat'}));
+  const prefix='/api/branches/engine';
+  const worker=f.ok(await f.api('POST',prefix+'/projects/'+chat.projectId+'/agents',{title:'Branch worker',engine:'codex',conversationId:chat.id,initialMessage:'Complete this controlled settlement task.',idempotencyKey:'settle-worker'}));
+  assert.equal((await f.api('GET','/api/agents/'+worker.id)).status,404);
+  assert.equal((await f.api('GET',prefix+'/agents/'+core.id)).status,404);
+  await settleLoadAgents(f,[core],event=>events.push(event));
+  await settleLoadAgents(f,[worker],event=>events.push(event),prefix);
+  assert.deepEqual(events.map(event=>event.agentId),[core.id,worker.id]);
+  assert(events.every(event=>event.event==='provider-settled'&&event.runs.length>0&&event.runs.every(run=>run.status==='completed')));
+ }finally{await f.dispose(false);}
+});

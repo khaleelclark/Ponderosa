@@ -68,13 +68,13 @@ export async function createLoadFixture(out,{messages=10000}={}){
    clearInterval(monitor);await Promise.all(pending);
    for(const agent of products[product].agents)work.set(agent.id,false);
    await until(async()=>{for(const a of products[product].agents){const d=f.ok(await f.api('GET',`${products[product].prefix}/agents/${a.id}`));if(d.runs.some(r=>['running','preparing'].includes(r.status)))return false;}return true;},'controlled work completes',30000);
-   await settleLoadAgents(f,products[product].agents,record);
+   await settleLoadAgents(f,products[product].agents,record,products[product].prefix);
    for(const agent of products[product].agents)activatedAgents.delete(agent.id);
    verifyHistory(product);assertContinuity();record({event:'deactivated',product});
   }
   function assertContinuity(){assert.deepEqual(continuityFailures,[],'Per-Agent continuity failure; no active-work credit');}
   writeFileSync(out+'/seed.json',JSON.stringify({root:f.root,products},null,2));
-  return {f,products,activate,deactivate,snapshot,assertContinuity,async drain(){await Promise.all([...pending]);assertContinuity();},assertWindow(product,start,end){return assertProgressWindow(products[product].agents.map(a=>a.id),canonicalReceipts,start,end);},async close(){closing=true;clearInterval(monitor);await Promise.all(pending);record({event:'closing'});try{await settleLoadAgents(f,[...activatedAgents].map(id=>({id})),record);for(const product of Object.keys(products))verifyHistory(product);assertContinuity();}finally{await f.dispose(false);record({event:'fixture-closed-owned-roots-observed-exited'});}}};
+  return {f,products,activate,deactivate,snapshot,assertContinuity,async drain(){await Promise.all([...pending]);assertContinuity();},assertWindow(product,start,end){return assertProgressWindow(products[product].agents.map(a=>a.id),canonicalReceipts,start,end);},async close(){closing=true;clearInterval(monitor);await Promise.all(pending);record({event:'closing'});try{const errors=[];for(const p of Object.values(products)){try{await settleLoadAgents(f,p.agents.filter(agent=>activatedAgents.has(agent.id)),record,p.prefix);}catch(error){errors.push(error);}}if(errors.length)throw new AggregateError(errors,'Product provider settlement failed');for(const product of Object.keys(products))verifyHistory(product);assertContinuity();}finally{await f.dispose(false);record({event:'fixture-closed-owned-roots-observed-exited'});}}};
  }catch(error){closing=true;record({event:'setup-failed',error:error.stack});await f.dispose(false);throw error;}
 }
 
@@ -146,10 +146,10 @@ export function assertProgressWindow(agentIds,receipts,start,end,maxGapMs=10000)
 }
 
 // Monitor completion does not waive retained provider errors or terminal Run failure.
-export async function settleLoadAgents(f,agents,record=()=>{}){
+export async function settleLoadAgents(f,agents,record=()=>{},prefix='/api'){
  const errors=[];
  for(const agent of agents){
-  try{const detail=await f.settled(agent.id);assert(detail.runs.length>0&&detail.runs.every(r=>r.status==='completed'),'Every controlled Run must complete successfully');record({event:'provider-settled',agentId:agent.id,runs:detail.runs});}
+  try{const detail=await f.settled(agent.id,[],prefix);assert(detail.runs.length>0&&detail.runs.every(r=>r.status==='completed'),'Every controlled Run must complete successfully');record({event:'provider-settled',agentId:agent.id,runs:detail.runs});}
   catch(error){errors.push(error);record({event:'provider-settlement-failed',agentId:agent.id,error:String(error)});}
   finally{try{await f.sessions.get(agent.id)?.close();}catch(error){errors.push(error);record({event:'session-close-failed',agentId:agent.id,error:String(error)});}}
  }

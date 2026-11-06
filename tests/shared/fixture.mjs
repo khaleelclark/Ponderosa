@@ -199,9 +199,9 @@ export async function fixture({ onProviderOpen, onProviderSession, agentBaseUrl,
     return { status: response.statusCode, body, headers: response.headers, rawBody: response.rawPayload };
   };
   const ok = response => { assert.ok(response.status >= 200 && response.status < 300, `HTTP ${response.status}: ${JSON.stringify(response.body).slice(0, 600)}`); return response.body; };
-  const detail = async id => ok(await api('GET', `/api/agents/${id}`));
-  const settled = async (id, previous = []) => until(async () => {
-    const d = await detail(id), fresh = d.runs.filter(r => !previous.includes(r.id));
+  const detail = async (id, prefix = '/api') => ok(await api('GET', `${prefix}/agents/${id}`));
+  const settled = async (id, previous = [], prefix = '/api') => until(async () => {
+    const d = await detail(id, prefix), fresh = d.runs.filter(r => !previous.includes(r.id));
     if (!fresh.length || fresh.some(r => ['running', 'preparing'].includes(r.status))) return false;
     if (failures.length) throw failures[0];
     assert.equal(fresh.some(r => r.status === 'failed'), false, JSON.stringify(fresh));
