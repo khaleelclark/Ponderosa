@@ -4,7 +4,7 @@ import { decisionAnswersError, chatBrowserOwnerId } from "@ponderosa/core";
 import { createReadStream, promises as fs } from "@ponderosa/native-host/fs";
 import os from "node:os";
 import path from "node:path";
-import { createBrotliCompress, createGzip } from "node:zlib";
+import { constants as zlibConstants, createBrotliCompress, createGzip } from "node:zlib";
 import type {
   DecisionDto,
   AssetDto,
@@ -1136,8 +1136,9 @@ if (opts.webDist) {
         : compressible && /(?:^|,)\s*gzip\s*(?:,|$)/iu.test(accepts)
           ? "gzip"
           : undefined;
+      // These streams encode each response; avoid Brotli's maximum-quality default.
       const body = encoding === "br"
-        ? createReadStream(file).pipe(createBrotliCompress())
+        ? createReadStream(file).pipe(createBrotliCompress({ params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 4 } }))
         : encoding === "gzip"
           ? createReadStream(file).pipe(createGzip())
           : createReadStream(file);
