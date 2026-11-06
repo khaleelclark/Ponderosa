@@ -5,7 +5,7 @@ Archival source chronology; current limits are in web-feature-completion.md.
 # Web implementation coverage
 
 Base: `f64f631b490dbfc8125f0f7a2f8c649b6c54d19f`. Writer: Phase 2 UI and accessibility fixes.
-Branch: `phase2/web-feature-completion`. Worktree: `/home/phoenix/ponderosa-worktrees/phase2-web-feature-completion`.
+Branch: `phase2/web-feature-completion`. Worktree: `/path/to/worktrees/phase2-web-feature-completion`.
 
 Implementation-first: no tests, suites, typechecks, builds, browser sessions,
 benchmarks, capacity checks, or acceptance packets executed in this feature work.

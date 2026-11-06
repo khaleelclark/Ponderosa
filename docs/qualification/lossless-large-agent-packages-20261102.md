@@ -2,7 +2,7 @@
 
 Source base: `b1fd75be85cd14b0037259b50a207684d5088ff3`.
 Writer: Codex task-3, branch `fix/lossless-large-agent-packages-20261102`,
-worktree `/home/phoenix/ponderosa-worktrees/lossless-large-agent-packages-20261102`.
+worktree `/path/to/worktrees/lossless-large-agent-packages-20261102`.
 This is isolated source qualification, not a deployment or complete Bible verdict.
 No push, PR, merge, live Agent mutation, provider request or service restart occurred.
 
@@ -94,7 +94,7 @@ in full organization round trips, preset guidance versus changed initial
 instructions, long guidance remapping, and NEW Shared root activation. These were
 not folded into the resource/transport correction. Baseline evidence:
 `/tmp/ponderosa-large-package-baseline.log`; worktree
-`/home/phoenix/ponderosa-worktrees/large-package-baseline-20261102`.
+`/path/to/worktrees/large-package-baseline-20261102`.
 The 10000-Agent live import qualification remains opt-in/not run. No full-suite,
 real-provider, native browser end-to-end or production-import claim is made.
 

@@ -103,7 +103,7 @@ UI/lifecycle/Bible/Phase2 acceptance claimed.
 
 Source successor of `557dfcd75333efab8c4377998d87ba149c199226` (retains the
 memory Preserve unknown work), on sole UI writer `phase2/web-feature-completion`
-at `/home/phoenix/ponderosa-worktrees/phase2-web-feature-completion`.
+at `/path/to/worktrees/phase2-web-feature-completion`.
 Required backend/core exact `172fc335bc8efc327be27335a507f51710cdd35a` at
 `/tmp/ponderosa-branches-finite-contract`; earlier backend dependencies remain
 required or integration-verified equivalents. Actual group DTO, saved evidence

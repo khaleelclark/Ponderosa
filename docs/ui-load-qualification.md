@@ -85,7 +85,7 @@ follow-up must explain it before any performance True verdict.
 ## Independent METHOD corrections (successor of 2dca)
 
 Full independent review was read at
-`/home/phoenix/.p-prod-tmp/ponderosa-output-independent-20261101/report.md`.
+`/path/to/local-evidence/ponderosa-output-independent-20261101/report.md`.
 Its UI42e ACCEPT is separate from METHOD REQUEST_CHANGES. No heavy session is
 authorized by implementing these corrections.
 

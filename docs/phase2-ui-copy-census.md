@@ -5,7 +5,7 @@ Request basis: `docs/phase2-remaining-implementation.md`, snapshot
 `391d682c0cf4c209d3d7a0040716708b6a99e0f5`, M5.
 Writer: Phase 2 — UI and accessibility fixes. Branch:
 `phase2/web-feature-completion`. Worktree:
-`/home/phoenix/ponderosa-worktrees/phase2-web-feature-completion`.
+`/path/to/worktrees/phase2-web-feature-completion`.
 
 ## Source disposition
 

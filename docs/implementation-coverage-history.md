@@ -752,7 +752,7 @@ Source-only inventory includes Branch1aa09968 (2–32 serial/local-parallel reso
 retirement9edf00516, group API31bf3636 and memory exposure13bf72442, sole UI-owner through6b1f7a398 (12e744222/eba8fa646 predecessors) (91e8f8ad2/6ddf47dfa predecessors),
 and lifecycle source throughf73a1e5a discovery atop393a02f5 (including Runtime713af3ad equivalent1e4d9e2). Integration owns
 `phase2-implementation-integration` at
-`/home/phoenix/ponderosa-worktrees/phase2-implementation-integration`.
+`/path/to/worktrees/phase2-implementation-integration`.
 No tests/checks/build/types/Node/native/browser/runner preparation or execution,
 push/deploy or new workers. Nothing here is a passing or whole-Bible verdict.
 
