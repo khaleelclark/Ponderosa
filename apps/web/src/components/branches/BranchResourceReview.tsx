@@ -59,6 +59,7 @@ export function BranchResourceReview({branchId,executionId,stepId,enabled,onChan
  useEffect(()=>{setChoices({});setAction('');setConfirm(undefined);setCopyConsent(undefined);},[copyScope]);
  const busy=access.isPending||release.isPending||inspectRelease.isPending;
  const accessReady=enabled&&!inspection.isFetching&&!inspection.isError&&!retained&&Boolean(review&&value?.destinationChatAvailable&&(expert?!expert.consentCurrent:!value.accessChoiceCurrent))&&(refs.length>0?refs.every(ref=>choices[ref]):Boolean(action));
+ const choiceRequired=enabled&&!busy&&!inspection.isFetching&&!inspection.isError&&!retained&&Boolean(review&&value?.destinationChatAvailable&&(expert?!expert.consentCurrent:!value.accessChoiceCurrent));
  const newRelease=Boolean(value&&!inspection.isError&&resourceReleaseInput(value,'preview'));
  const retryReady=Boolean(retained&&releaseStatus&&releaseStatus.state!=='released');
  const apply=()=>{
@@ -81,7 +82,7 @@ export function BranchResourceReview({branchId,executionId,stepId,enabled,onChan
   <Button size="small" onClick={()=>{setCopyConsent(undefined);setChoices({});setAction('');setMessage('');setOpen(true);}}>Review resource</Button>
   <Dialog open={open} fullWidth maxWidth="sm" onClose={()=>{if(!busy)setOpen(false);}} disableEscapeKeyDown={busy}>
    <DialogTitle>Resource review</DialogTitle><DialogContent><Stack spacing={2} sx={{pt:1}}>
-    <Typography variant="body2" sx={{overflowWrap:'anywhere'}}>Branch {branchId} · Run {executionId} · Step {stepId}</Typography>
+    <details><summary>Resource identifiers</summary><Typography variant="body2" sx={{overflowWrap:'anywhere'}}>Branch {branchId} · Run {executionId} · Step {stepId}</Typography></details>
     {!enabled&&<Alert severity="warning">Refresh this Run before applying changes.</Alert>}
     <Button disabled={busy||inspection.isFetching} onClick={()=>void refresh()}>Refresh current scope</Button>
     {inspection.isFetching&&<Typography role="status">Loading current scope…</Typography>}
@@ -92,31 +93,30 @@ export function BranchResourceReview({branchId,executionId,stepId,enabled,onChan
      <Typography sx={{overflowWrap:'anywhere'}}>Destination Chat: {value.destinationChatId??'not created'}{value.destinationChatId&&!value.destinationChatAvailable?' · unavailable':''}</Typography>
      {trace&&<Stack spacing={1}>
       <Typography variant="subtitle2">Temporary copy record</Typography>
-      <Typography sx={{overflowWrap:'anywhere'}}>Source Agent {trace.sourceAgentId} · Chat {trace.sourceChatId}</Typography>
-      <Typography sx={{overflowWrap:'anywhere'}}>Copy Agent {trace.copyAgentId} · Chat {trace.copyChatId} · Request {trace.requestId} · Attempt {trace.attemptId}</Typography>
+      <details><summary>Copy identifiers</summary><Typography sx={{overflowWrap:'anywhere'}}>Source Agent {trace.sourceAgentId} · Chat {trace.sourceChatId}</Typography>
+      <Typography sx={{overflowWrap:'anywhere'}}>Copy Agent {trace.copyAgentId} · Chat {trace.copyChatId} · Request {trace.requestId} · Attempt {trace.attemptId}</Typography></details>
       <Typography variant="subtitle2">Task</Typography><Typography sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{trace.task.instructions}</Typography><Typography sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{trace.task.input}</Typography>
-      <Typography variant="subtitle2">Result</Typography><Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{trace.result===undefined||trace.result===null?'No recorded result':typeof trace.result==='string'?trace.result:JSON.stringify(trace.result,null,2)}</Typography>
+      <Typography variant="subtitle2">Result</Typography>{trace.result!==null&&typeof trace.result==='object'?<details><summary>View structured result</summary><Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{JSON.stringify(trace.result,null,2)}</Typography></details>:<Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{trace.result===undefined||trace.result===null?'No recorded result':typeof trace.result==='string'?trace.result:JSON.stringify(trace.result)}</Typography>}
       {trace.historyAvailable?<Button onClick={()=>{setHistoryOpen(true);void history.refetch();}}>View retained history</Button>:<Typography>Retained history is unavailable.</Typography>}
       {historyOpen&&trace.historyAvailable&&<Stack spacing={1}>
        {history.isFetching&&<Typography role="status">Loading retained history…</Typography>}
        {history.error&&<Alert severity="error">{history.error.message}</Alert>}
-       {history.data&&!history.error&&!history.isFetching&&<><Typography variant="subtitle2">Retained messages</Typography>{history.data.messages.map((message,index)=><Stack key={index}><Typography variant="caption">{message.title} · {message.agentId} · {message.role} · {message.createdAt??''}</Typography><Typography sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{message.text}</Typography></Stack>)}<details><summary>Retained Run history</summary><Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{JSON.stringify(history.data.runs,null,2)}</Typography></details><details><summary>Retained work log</summary>{history.data.events.map((entry,index)=><Stack key={index}><Typography variant="caption">{entry.agentId} · {entry.seq} · {entry.ts}</Typography><Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{JSON.stringify(entry.event,null,2)}</Typography></Stack>)}</details></>}
+       {history.data&&!history.error&&!history.isFetching&&<><Typography variant="subtitle2">Retained Runs ({history.data.runs.length})</Typography>{history.data.runs.map((run,index)=><Stack key={run.id}><Typography variant="body2">Run {index+1} · {run.status.replaceAll('_',' ')}</Typography><Typography variant="caption">Created {new Date(run.created_at).toLocaleString()}{run.started_at?` · Started ${new Date(run.started_at).toLocaleString()}`:''}{run.terminal_at?` · Finished ${new Date(run.terminal_at).toLocaleString()}`:''}</Typography></Stack>)}<Typography variant="subtitle2">Retained messages</Typography>{history.data.messages.map((message,index)=><Stack key={index}><Typography variant="caption">{message.title} · {message.agentId} · {message.role} · {message.createdAt??''}</Typography><Typography sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{message.text}</Typography></Stack>)}<details><summary>Retained Run history</summary><Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{JSON.stringify(history.data.runs,null,2)}</Typography></details><details><summary>Retained work log</summary>{history.data.events.map((entry,index)=><Stack key={index}><Typography variant="caption">{entry.agentId} · {entry.seq} · {entry.ts}</Typography><Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{JSON.stringify(entry.event,null,2)}</Typography></Stack>)}</details></>}
       </Stack>}
      </Stack>}
      {value.reviewError&&<Alert severity="warning">{value.reviewError}</Alert>}
      {value.accessChoiceCurrent&&<Alert severity="success">Current access choice recorded.</Alert>}
      {review&&<>
-      <Typography variant="caption" sx={{overflowWrap:'anywhere'}}>Current policy hash: {review.reviewSha256}</Typography>
       <Typography variant="body2">Destination restrictions: {review.destination.restrictedCapabilityIds.join(', ')||'none'}</Typography>
-      <details><summary>Source settings and current policy</summary><Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere',maxHeight:240,overflow:'auto',fontSize:12}}>{JSON.stringify({source:review.source,destination:review.destination},null,2)}</Typography></details>
+      <details><summary>Source settings and current policy</summary><Typography variant="caption" sx={{overflowWrap:'anywhere'}}>Current policy hash: {review.reviewSha256}</Typography><Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere',maxHeight:240,overflow:'auto',fontSize:12}}>{JSON.stringify({source:review.source,destination:review.destination},null,2)}</Typography></details>
       {review.source.map(item=><Typography variant="body2" key={item.ref}>Source {item.ref}: {item.settings?.restrictedCapabilityIds?.join(', ')||'No capability restrictions'}</Typography>)}
-      {refs.map(ref=><TextField select key={ref} label={`Restrictions: ${ref}`} value={choices[ref]??''} disabled={busy||Boolean(retained)||inspection.isFetching} onChange={event=>setChoices(current=>({...current,[ref]:event.target.value as Choice}))}><MenuItem value="keep_destination">Keep destination restrictions</MenuItem><MenuItem value="use_source">Apply source restrictions</MenuItem></TextField>)}
-      {!refs.length&&<TextField select label="Restrictions" value={action} disabled={busy||Boolean(retained)||inspection.isFetching} onChange={event=>setAction(event.target.value as Choice)}><MenuItem value="keep_destination">Keep destination restrictions</MenuItem><MenuItem value="use_source">Apply source restrictions</MenuItem></TextField>}
+      {refs.map(ref=><TextField select key={ref} required={choiceRequired} label={`Restrictions: ${ref}`} helperText={choiceRequired&&!choices[ref]?'Choose restrictions to continue.':undefined} value={choices[ref]??''} disabled={busy||Boolean(retained)||inspection.isFetching} onChange={event=>setChoices(current=>({...current,[ref]:event.target.value as Choice}))}><MenuItem value="keep_destination">Keep destination restrictions</MenuItem><MenuItem value="use_source">Apply source restrictions</MenuItem></TextField>)}
+      {!refs.length&&<TextField select required={choiceRequired} label="Restrictions" helperText={choiceRequired&&!action?'Choose restrictions to continue.':undefined} value={action} disabled={busy||Boolean(retained)||inspection.isFetching} onChange={event=>setAction(event.target.value as Choice)}><MenuItem value="keep_destination">Keep destination restrictions</MenuItem><MenuItem value="use_source">Apply source restrictions</MenuItem></TextField>}
       {expert&&<Stack spacing={1}>
        <Typography variant="subtitle2">This temporary Agent copy</Typography>
        <Alert severity="info">This copy uses a fresh temporary workspace; source working-folder files are not copied.</Alert>
-       <Typography variant="body2" sx={{overflowWrap:'anywhere'}}>Original Agent: {expert.sourceAgentId} · source Chat: {expert.sourceChatId} · temporary Chat: {expert.copyChatId}</Typography>
-       <Typography variant="caption" sx={{overflowWrap:'anywhere'}}>Source snapshot: {expert.snapshotSha256}</Typography>
+       <details><summary>Copy source and snapshot</summary><Typography variant="body2" sx={{overflowWrap:'anywhere'}}>Original Agent: {expert.sourceAgentId} · source Chat: {expert.sourceChatId} · temporary Chat: {expert.copyChatId}</Typography>
+       <Typography variant="caption" sx={{overflowWrap:'anywhere'}}>Source snapshot: {expert.snapshotSha256}</Typography></details>
        <FormControlLabel control={<Checkbox checked={expert.consentCurrent?expert.copySourceMemory:copySourceMemory} disabled={busy||Boolean(retained)||inspection.isFetching||expert.consentCurrent||!expert.sourceMemoryAvailable} onChange={(_,checked)=>chooseCopy('copySourceMemory',checked)}/>} label="Copy the original Agent’s private memory and source Chat’s team memory into this temporary Chat"/>
        <FormControlLabel control={<Checkbox checked={expert.consentCurrent?expert.allowFindingsWriteback:allowFindingsWriteback} disabled={busy||Boolean(retained)||inspection.isFetching||expert.consentCurrent||!expert.sourceMemoryAvailable} onChange={(_,checked)=>chooseCopy('allowFindingsWriteback',checked)}/>} label="Allow this copy to save concise private findings for the original Agent and later copies"/>
        <Typography variant="body2">These choices do not grant Global Memory, browser access, or other capabilities.</Typography>
@@ -125,6 +125,7 @@ export function BranchResourceReview({branchId,executionId,stepId,enabled,onChan
        {!expert.sourceMemoryAvailable&&<Alert severity="info">Local Memory is unavailable; this copy can proceed without inherited memory or findings writeback.</Alert>}
        {expert.consentCurrent&&<Alert severity="success">Approval recorded for this exact copy and source snapshot.</Alert>}
       </Stack>}
+      {choiceRequired&&(refs.length?refs.some(ref=>!choices[ref]):!action)&&<Typography variant="body2" color="text.secondary">Select restrictions above before confirming.</Typography>}
       <Button disabled={!accessReady||busy} onClick={()=>setConfirm('access')}>{expert?'Confirm copy access':'Confirm restrictions'}</Button>
      </>}
      {value.custody&&<>

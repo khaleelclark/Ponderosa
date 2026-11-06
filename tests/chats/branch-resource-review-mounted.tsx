@@ -30,16 +30,20 @@ export async function branchResourceReviewRegression():Promise<void>{
   assert(!url.endsWith('/access-review'),'never inspect using the legacy journal-writing GET');
   return json({branchId:'branch',executionId:'run',stepExecutionId:'step',generation,state:'reserved',destinationChatId:'actual-chat',destinationChatAvailable:true,importState:null,custody:{kind:'capture',state:'retained',custodyId:'custody',receiptSha256:'receipt',checkpointId:'cut',packageSha256:'package'},accessChoiceCurrent:choiceRecorded,currentPolicyReview:{reviewSha256:hash,source:[{ref:'agent',settings:{restrictedCapabilityIds:['capability']}}],destination:{restrictedCapabilityIds:[]}}});
  };
- const render=(key:string)=>root.render(<QueryClientProvider client={client}><BranchResourceReview key={key} branchId="branch" executionId="run" stepId="step" enabled onChanged={()=>{}}/></QueryClientProvider>);
+ const render=(key:string,enabled=true)=>root.render(<QueryClientProvider client={client}><BranchResourceReview key={key} branchId="branch" executionId="run" stepId="step" enabled={enabled} onChanged={()=>{}}/></QueryClientProvider>);
  const choose=async()=>{openSelect(document.querySelector('[role=combobox]'));await tick();(Array.from(document.querySelectorAll('[role=option]')).find(item=>item.textContent==='Apply source restrictions') as HTMLElement).click();await tick();};
  try{
   render('initial');await settle();button('Review resource').click();await settle();
   assert(document.body.textContent?.includes('actual-chat')&&document.body.textContent?.includes('Generation 3'),'show actual destination and generation');
   assert(choices.length===0&&deletes.length===0,'inspection cannot apply or release');
-  await choose();button('Confirm restrictions').click();await tick();button('Apply restrictions').click();await settle();
+  const restrictions=document.querySelector('[role=combobox]')!;
+  assert(restrictions.getAttribute('aria-required')==='true'&&document.getElementById(restrictions.getAttribute('aria-describedby')??'')?.textContent==='Choose restrictions to continue.','per-Agent restrictions expose the required choice and its help');
+  assert(button('Confirm restrictions').disabled&&document.body.textContent?.includes('Select restrictions above before confirming.'),'disabled confirmation identifies the missing choice');
+  await choose();assert(!document.body.textContent?.includes('Select restrictions above before confirming.'),'explicit selection clears missing-choice hint');button('Confirm restrictions').click();await tick();button('Apply restrictions').click();await settle();
   assert(choices.length===1,'409 cannot retry access choice');assert((button('Confirm restrictions') as HTMLButtonElement).disabled,'fresh policy requires fresh choice');
   await choose();button('Confirm restrictions').click();await tick();button('Apply restrictions').click();await settle();
   assert(choices[1].reviewSha256==='policy-2','fresh choice uses refreshed opaque policy hash');
+  assert(!document.body.textContent?.includes('Choose restrictions to continue.')&&!document.body.textContent?.includes('Select restrictions above before confirming.')&&document.querySelector('[role=combobox]')?.getAttribute('aria-required')!=='true','recorded restrictions do not ask for a new choice');
   button('Release retained checkpoint').click();await tick();button('Release checkpoint').click();await settle();
   assert(deletes.length===1&&localStorage.getItem(storageKey),'lost response retains input without retry');
   generation=4;render('remounted');await settle();button('Review resource').click();await settle();
@@ -51,6 +55,8 @@ export async function branchResourceReviewRegression():Promise<void>{
   referenced=true;button('Release retained checkpoint').click();await tick();button('Release checkpoint').click();await settle();
   assert(document.body.textContent?.includes('referenced by a restored resource'),'surface exact referenced-custody refusal');
   assert(deletes.length===3,'referenced refusal never retries automatically');
+  choiceRecorded=false;client.clear();render('read-only',false);await settle();button('Review resource').click();await settle();
+  assert(!document.body.textContent?.includes('Choose restrictions to continue.')&&!document.body.textContent?.includes('Select restrictions above before confirming.')&&document.querySelector('[role=combobox]')?.getAttribute('aria-required')!=='true','read-only review does not ask for an unavailable choice');
  }finally{root.unmount();client.clear();host.remove();globalThis.fetch=originalFetch;if(saved===null)localStorage.removeItem(storageKey);else localStorage.setItem(storageKey,saved);}
 }
 
@@ -75,6 +81,9 @@ export async function expertCopyAccessReviewRegression():Promise<void>{
  try{
   render('first');await settle();button('Review resource').click();await settle();
   assert(!check('Copy the original Agent').checked&&!check('Allow this copy').checked,'both memory choices default off');
+  const restrictions=document.querySelector('[role=combobox]')!;
+  assert(restrictions.getAttribute('aria-required')==='true'&&document.getElementById(restrictions.getAttribute('aria-describedby')??'')?.textContent==='Choose restrictions to continue.','single restrictions choice is required independently of optional memory');
+  assert(button('Confirm copy access').disabled&&document.body.textContent?.includes('Select restrictions above before confirming.'),'copy confirmation explains the missing restrictions choice');
   assert(document.body.textContent?.includes('do not grant Global Memory, browser access, or other capabilities'),'actual scope is disclosed');
   assert(document.body.textContent?.includes('each later copy needs its own memory-copy approval'),'future copies require separate approval');
   assert(document.body.textContent?.includes('source working-folder files are not copied'),'fresh workspace limitation is disclosed before approval');
@@ -91,6 +100,7 @@ export async function expertCopyAccessReviewRegression():Promise<void>{
   assert(posts.length===2&&posts[1].copySourceMemory===true&&posts[1].allowFindingsWriteback===false,'findings remain independently optional');
   assert(posts[1].snapshotSha256==='b'.repeat(64)&&posts[1].accessSettingsResolution.reviewSha256==='copy-policy-2','fresh approval uses exact refreshed evidence');
   assert(button('Confirm copy access').disabled,'recorded consent cannot be resubmitted as fresh approval');
+  assert(!document.body.textContent?.includes('Choose restrictions to continue.')&&!document.body.textContent?.includes('Select restrictions above before confirming.')&&document.querySelector('[role=combobox]')?.getAttribute('aria-required')!=='true','recorded copy approval does not show a missing-choice prompt');
   assert(check('Copy the original Agent').checked&&!check('Allow this copy').checked,'readback shows actual recorded independent consent');
   consentCurrent=false;sourceMemoryAvailable=false;client.clear();render('without-memory');await settle();button('Review resource').click();await settle();
   assert(check('Copy the original Agent').disabled&&check('Allow this copy').disabled,'unavailable memory cannot be opted into');
@@ -109,15 +119,23 @@ export async function temporaryCopyTraceRegression():Promise<void>{
  const json=(value:unknown,status=200)=>new Response(JSON.stringify(value),{status,headers:{'content-type':'application/json'}});
  globalThis.fetch=async(input,init)=>{
   if(init?.method&&init.method!=='GET')writes++;
-  if(String(input).endsWith('/copy-history')){reads++;if(denied)return json({error:'Current access no longer permits retained history'},403);return json({sourceAgentId:'original',copyAgentId:wrong?'another-copy':'copy',requestId:'request',messages:[{agentId:'copy',title:'Temporary Agent',role:'assistant',text:'Retained response after cleanup'}],runs:[{agentId:'copy',id:'retained-run',status:'completed',created_at:'2026-11-05T01:00:00Z',started_at:null,terminal_at:null}],events:[{agentId:'copy',seq:7,ts:'2026-11-05T01:00:01Z',event:{type:'response',text:'Ordered retained work log'}},{agentId:'copy',seq:8,ts:'2026-11-05T01:00:02Z',event:{type:'completion',text:'After response'}}]});}
+  if(String(input).endsWith('/copy-history')){reads++;if(denied)return json({error:'Current access no longer permits retained history'},403);return json({sourceAgentId:'original',copyAgentId:wrong?'another-copy':'copy',requestId:'request',messages:[{agentId:'copy',title:'Temporary Agent',role:'assistant',text:'Retained response after cleanup'}],runs:[{agentId:'copy',id:'retained-run',status:'completed',created_at:'2026-11-05T01:00:00Z',started_at:null,terminal_at:null},{agentId:'copy',id:'retained-timed-run',status:'completed',created_at:'2026-11-05T01:00:00Z',started_at:'2026-11-05T01:00:01Z',terminal_at:'2026-11-05T01:00:02Z'}],events:[{agentId:'copy',seq:7,ts:'2026-11-05T01:00:01Z',event:{type:'response',text:'Ordered retained work log'}},{agentId:'copy',seq:8,ts:'2026-11-05T01:00:02Z',event:{type:'completion',text:'After response'}}]});}
   return json({branchId:'branch',executionId:'run',stepExecutionId:'trace-step',generation:1,state:'retired',destinationChatId:'deleted-chat',destinationChatAvailable:false,accessChoiceCurrent:false,temporaryCopyTrace:{sourceAgentId:'original',sourceChatId:'source-chat',copyAgentId:'copy',copyChatId:'deleted-chat',requestId:'request',attemptId:'attempt',task:{instructions:'Inspect the report',input:'Original exact task input'},result:{output:'Recorded exact result'},historyAvailable:available}});
  };
  try{
   root.render(<QueryClientProvider client={client}><BranchResourceReview branchId="branch" executionId="run" stepId="trace-step" enabled onChanged={()=>{}}/></QueryClientProvider>);await settle();button('Review resource').click();await settle();
   assert(document.body.textContent?.includes('Original exact task input')&&document.body.textContent?.includes('Recorded exact result'),'task and result survive deleted Chat');
   assert(document.body.textContent?.includes('Source Agent original')&&document.body.textContent?.includes('Request request'),'source and request remain inspectable');
+  const details=(title:string)=>Array.from(document.querySelectorAll('details')).find(item=>item.querySelector('summary')?.textContent===title)!;
+  assert(!details('Resource identifiers').open&&!details('Copy identifiers').open,'ordinary identifiers do not precede the task as expanded technical text');
+  const result=details('View structured result');assert(!result.open&&result.querySelector('pre')!.getClientRects().length===0,'structured result starts behind its labeled disclosure');
+  result.querySelector('summary')!.click();await tick();assert(result.open&&result.querySelector('pre')!.getClientRects().length>0&&result.textContent?.includes('Recorded exact result'),'structured result remains deliberately inspectable');
   assert(reads===0,'history is only fetched deliberately');button('View retained history').click();await settle();
-  assert(document.body.textContent?.includes('Retained response after cleanup')&&document.body.textContent?.includes('retained-run'),'retained messages and Run record render');assert(document.body.textContent!.indexOf('Ordered retained work log')<document.body.textContent!.indexOf('After response'),'provider event order remains intact');
+  assert(document.body.textContent?.includes('Retained response after cleanup')&&document.body.textContent?.includes('retained-run'),'retained messages and Run record render');
+  assert(document.body.textContent?.includes('Retained Runs (2)')&&document.body.textContent?.includes('Run 1 · completed')&&document.body.textContent?.includes(`Started ${new Date('2026-11-05T01:00:01Z').toLocaleString()}`)&&document.body.textContent?.includes(`Finished ${new Date('2026-11-05T01:00:02Z').toLocaleString()}`),'retained Run status and times are readable without expanding JSON');
+  const untimedRun=Array.from(document.querySelectorAll('p')).find(item=>item.textContent==='Run 1 · completed')!.parentElement!;
+  assert(untimedRun.textContent?.includes('Created')&&!untimedRun.textContent?.includes('Started')&&!untimedRun.textContent?.includes('Finished'),'nullable Run times are omitted rather than invented');
+  assert(!details('Retained Run history').open,'raw Run records remain available without dominating the summary');assert(document.body.textContent!.indexOf('Ordered retained work log')<document.body.textContent!.indexOf('After response'),'provider event order remains intact');
   denied=true;button('View retained history').click();await settle();assert(document.body.textContent?.includes('Current access no longer permits'),'revoked history reports current denial');assert(!document.body.textContent?.includes('Retained response after cleanup'),'revoked cache is not shown');
   denied=false;wrong=true;button('View retained history').click();await settle();assert(document.body.textContent?.includes('Retained history identity changed'),'foreign history is refused');assert(!document.body.textContent?.includes('Retained response after cleanup'),'foreign history is not displayed');
   available=false;button('Refresh current scope').click();await settle();assert(document.body.textContent?.includes('Retained history is unavailable'),'missing custody does not promise history');
