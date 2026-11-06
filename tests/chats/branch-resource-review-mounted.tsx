@@ -128,8 +128,9 @@ export async function temporaryCopyTraceRegression():Promise<void>{
   assert(document.body.textContent?.includes('Source Agent original')&&document.body.textContent?.includes('Request request'),'source and request remain inspectable');
   const details=(title:string)=>Array.from(document.querySelectorAll('details')).find(item=>item.querySelector('summary')?.textContent===title)!;
   assert(!details('Resource identifiers').open&&!details('Copy identifiers').open,'ordinary identifiers do not precede the task as expanded technical text');
-  const result=details('View structured result');assert(!result.open&&result.querySelector('pre')!.getClientRects().length===0,'structured result starts behind its labeled disclosure');
-  result.querySelector('summary')!.click();await tick();assert(result.open&&result.querySelector('pre')!.getClientRects().length>0&&result.textContent?.includes('Recorded exact result'),'structured result remains deliberately inspectable');
+  // Closed native details can retain layout rectangles while suppressing paint.
+  const result=details('View structured result');assert(!result.open&&!result.querySelector('pre')!.checkVisibility(),'structured result starts behind its labeled disclosure');
+  result.querySelector('summary')!.click();await tick();assert(result.open&&result.querySelector('pre')!.checkVisibility()&&result.textContent?.includes('Recorded exact result'),'structured result remains deliberately inspectable');
   assert(reads===0,'history is only fetched deliberately');button('View retained history').click();await settle();
   assert(document.body.textContent?.includes('Retained response after cleanup')&&document.body.textContent?.includes('retained-run'),'retained messages and Run record render');
   assert(document.body.textContent?.includes('Retained Runs (2)')&&document.body.textContent?.includes('Run 1 · completed')&&document.body.textContent?.includes(`Started ${new Date('2026-11-05T01:00:01Z').toLocaleString()}`)&&document.body.textContent?.includes(`Finished ${new Date('2026-11-05T01:00:02Z').toLocaleString()}`),'retained Run status and times are readable without expanding JSON');
