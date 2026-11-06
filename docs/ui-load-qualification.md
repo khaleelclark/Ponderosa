@@ -514,3 +514,9 @@ including both formatter-error actions producing a visible notification with no
 unhandled page error or preparation when merely opening the submenu. The formatter
 failure stays in the existing notification owner; successful export bytes remain
 unchanged. All owned runtime work drained.
+
+## Production-listener load fixture
+
+The load fixture now supplies the built web directory to the existing production UI/API listener. Load navigation and API requests share that fixture-owned listener, using the production static-route behavior rather than a separate whole-file web server and API proxy. Fixture cleanup owns and verifies closure of the shared listener. Other UI qualification fixtures keep their existing serving paths.
+
+After building the web app and server, `PONDEROSA_UI_EVIDENCE=<owned output> node --import ./tests/shared/workspace-resolution.mjs tests/workspace-navigation/production-ui-fixture-qualification.mjs` checks the same-origin SPA, assets, headers, decoded bytes and API with 100 synthetic messages and no active Agents. This smoke is not a performance qualification. Earlier proxy-based timing results remain historical evidence and do not establish production-listener timing.
