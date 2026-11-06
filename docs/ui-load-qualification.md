@@ -418,3 +418,18 @@ legitimate messages. History verification occurs outside measured windows.
 Navigation deadlines, active-worker continuity, Event Timing health and latency
 thresholds are unchanged. The earlier first-navigation timeout remains retained
 as an observer-induced failure, not a product or performance pass.
+
+
+## Busy-recipient timed submission
+
+The full interaction sends its short message with the explicit **Queue message**
+control because all twenty workload Agents are already working. It does not
+substitute an idle Agent or use a broad selector that silently chooses Steer.
+The driver checks the actual request's queue mode, stable target and authored
+task, then retains the accepted message/delivery receipt in queued state.
+Independent actions must have distinct receipts. After measured windows, the
+existing cancellation API cancels these exact disposable deliveries and verifies
+an empty queue before releasing the twenty controlled workers. Failed cells attempt one
+bounded screenshot before teardown. This corrects the previously unexecuted
+full-branch action assumption; it does not change worker activity, input cadence,
+navigation deadlines, Event Timing health or the performance threshold.

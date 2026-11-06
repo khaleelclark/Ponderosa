@@ -1,5 +1,5 @@
 import {mkdtemp,writeFile,rm} from 'node:fs/promises';import {tmpdir} from 'node:os';import {join} from 'node:path';import {verifyAcceptedMethod,finalizeLedger,sha256,inputManifestDigest} from './qualification-ledger.mjs';
-import test from 'node:test';import assert from 'node:assert/strict';import {sendQualificationTask,readLeasedRun,readCanonicalProgress,workIdentity,assertProgressWindow,settleLoadAgents,sampleLoadOnce,verifyQualificationHistory} from '../shared/ui-load-fixture.mjs';
+import test from 'node:test';import assert from 'node:assert/strict';import {sendQualificationTask,readLeasedRun,readCanonicalProgress,workIdentity,assertProgressWindow,settleLoadAgents,sampleLoadOnce,verifyQualificationHistory,verifyQueuedLoadMessage,cancelQueuedLoadMessages} from '../shared/ui-load-fixture.mjs';
 test('normal asset maintenance retry uses one idempotency key and retains the actual refusal',async()=>{
  const attempts=[],keys=[];const f={api:async(_method,_path,body)=>{keys.push(body.idempotencyKey);return keys.length===1?{status:409,body:{error:'Agent asset maintenance is in progress; retry safely'}}:{status:200,body:{accepted:true}};},ok:response=>{assert.equal(response.status,200);return response.body;}};
  assert.deepEqual(await sendQualificationTask(f,'/api','agent','task',row=>attempts.push(row)),{accepted:true});assert.equal(new Set(keys).size,1);assert.equal(attempts[0].status,409);assert.equal(attempts[1].status,200);
@@ -83,4 +83,25 @@ test('boundary history verification allows new messages but rejects lost, reorde
  let rows=[...original,{id:'new',text:'legitimate later message'}];const store={getConversationMessages:id=>{assert.equal(id,'chat');return rows}};
  assert.deepEqual(verifyQualificationHistory(store,{id:'chat'},seed,ids),{seededMessageCount:2,totalMessageCount:3,recordSha256:seed.recordSha256});
  for(const changed of [[original[1]],[original[1],original[0]],[{...original[0],text:'first'}, {...original[1],text:'message\nsecond'}],[{...original[0],id:'replacement'},original[1]]]){rows=changed;assert.throws(()=>verifyQualificationHistory(store,{id:'chat'},seed,ids));}
+});
+
+
+test('timed busy submission requires explicit queue and an exact owned queued receipt',()=>{
+ const request={activeRunDelivery:'queue',text:'#Working Timed short message',recipients:[{agentId:'working'}]};
+ const receipt={messageId:'message',recipients:[{agentId:'working',queued:true,state:'queued',deliveryId:'delivery'}]};
+ assert.deepEqual(verifyQueuedLoadMessage(request,receipt,[{id:'working',handle:'Working'}]),{messageId:'message',deliveryId:'delivery',agentId:'working',state:'queued'});
+ for(const change of [{activeRunDelivery:'steer'},{text:'Different task'},{recipients:[{agentId:'foreign'}]}])assert.throws(()=>verifyQueuedLoadMessage({...request,...change},receipt,[{id:'working',handle:'Working'}]));
+ for(const change of [{agentId:'foreign'},{queued:false},{state:'steered'},{state:'started'},{deliveryId:undefined}])assert.throws(()=>verifyQueuedLoadMessage(request,{...receipt,recipients:[{...receipt.recipients[0],...change}]},[{id:'working',handle:'Working'}]));
+ assert.throws(()=>verifyQueuedLoadMessage(request,{...receipt,messageId:undefined},[{id:'working',handle:'Working'}]));
+ assert.throws(()=>verifyQueuedLoadMessage(request,{...receipt,unavailableRecipients:[{agentId:'working'}]},[{id:'working',handle:'Working'}]));
+});
+
+test('post-window cleanup cancels exact queued receipts before worker release and refuses started delivery',async()=>{
+ const calls=[],product={prefix:'/api',chat:{id:'chat'}},receipts=[{deliveryId:'one'},{deliveryId:'two'}];
+ const f={ok:response=>response,api:async(method,path,body)=>{calls.push({method,path,body});return method==='GET'?[]:{cancelled:true,status:'cancelled',replayed:false};}};
+ const result=await cancelQueuedLoadMessages(f,product,receipts);
+ assert.deepEqual(result.map(row=>row.deliveryId),['one','two']);
+ assert.deepEqual(calls.map(row=>[row.method,row.path]),[['POST','/api/conversations/chat/queued-messages/one/cancel'],['POST','/api/conversations/chat/queued-messages/two/cancel'],['GET','/api/conversations/chat/queued-messages']]);
+ assert(calls.slice(0,2).every(row=>row.body.idempotencyKey));assert.notEqual(calls[0].body.idempotencyKey,calls[1].body.idempotencyKey);
+ await assert.rejects(cancelQueuedLoadMessages({...f,api:async()=>({cancelled:false,status:'delivery_started'})},product,receipts),/cancel before workload release/);
 });

@@ -5,7 +5,7 @@ import {serveFixture} from '../shared/serve-ui-fixture.mjs';import {installTimin
 const out=process.env.PONDEROSA_LOAD_EVIDENCE;assert(out,'Owned evidence directory required');await mkdir(out,{recursive:true});
 const full=process.env.PONDEROSA_LOAD_MODE==='full';
 const results=[];for(const product of ['core','branches'])for(const mobile of [false,true])for(let session=0;session<(full?8:1);session++)results.push({id:`${product}-${mobile?'phone':'desktop'}-${session}`,product,mobile,session,status:'planned'});
-const ledger={full,status:'setup',stages:[],results};let f,browser,web,chromium,createLoadFixture;
+const ledger={full,status:'setup',stages:[],results};let f,browser,web,chromium,createLoadFixture,verifyQueuedLoadMessage,cancelQueuedLoadMessages;
 const persist=()=>writeFile(out+'/sessions.json',JSON.stringify(ledger,null,2));
 async function stage(name,run){const row={name,status:'started',startedAt:Date.now()};ledger.stages.push(row);await persist();try{const value=await run();row.status='complete';row.endedAt=Date.now();await persist();return value;}catch(error){row.status='failed';row.error=error.stack;row.endedAt=Date.now();await persist();throw error;}}
 await persist();
@@ -26,17 +26,17 @@ if(full)await stage('accepted-inputs',async()=>{
  ledger.acceptedMethod=await verifyAcceptedMethod(process.env.PONDEROSA_ACCEPTED_METHOD_RECEIPT,process.env.PONDEROSA_ACCEPTED_METHOD_SHA256,required,process.env.PONDEROSA_REVIEWED_METHOD_HEAD);
 });
  chromium=await stage('installed-browser-tooling',async()=>createRequire(new URL('../../apps/server/package.json',import.meta.url))('playwright-core').chromium);
- ({createLoadFixture}=await stage('fixture-module',()=>import('../shared/ui-load-fixture.mjs')));
+ ({createLoadFixture,verifyQueuedLoadMessage,cancelQueuedLoadMessages}=await stage('fixture-module',()=>import('../shared/ui-load-fixture.mjs')));
  f=await stage('fixture-setup',()=>createLoadFixture(out));
  web=await stage('private-web',()=>serveFixture(f.f));browser=await stage('browser-launch',()=>chromium.launch({executablePath:'/opt/google/chrome/chrome',headless:true,args:['--no-sandbox']}));ledger.browser=await browser.version();
  for(const product of ['core','branches']){
   await stage('activate-'+product,()=>f.activate(product));
   for(const mobile of [false,true])for(let session=0;session<(full?8:1);session++){
    const id=`${product}-${mobile?'phone':'desktop'}-${session}`,row=Object.assign(results.find(r=>r.id===id),{status:'started',profile:mobile?primaryProfile.config:{width:1365,height:768,dpr:1,cpu:1,mobile:false,touch:false}});
-   let context;
+   let context,page;
    try{context=await browser.newContext({viewport:{width:row.profile.width,height:row.profile.height},deviceScaleFactor:row.profile.dpr,isMobile:mobile,hasTouch:mobile,...(mobile?{userAgent:row.profile.ua,screen:{width:row.profile.screenWidth,height:row.profile.screenHeight}}:{}),serviceWorkers:'block',recordVideo:{dir:out+'/video'}});
 
-    const page=await context.newPage();page.setDefaultTimeout(10000);row.errors=[];page.on('pageerror',e=>row.errors.push(e.message));
+    page=await context.newPage();page.setDefaultTimeout(10000);row.errors=[];page.on('pageerror',e=>row.errors.push(e.message));
     await page.route('**/*',route=>['127.0.0.1','localhost'].includes(new URL(route.request().url()).hostname)?route.continue():route.abort());
     await page.addInitScript(installTimingObserver);await page.addInitScript(()=>localStorage.setItem('ponderosa-color-mode','light'));
     const cdp=await context.newCDPSession(page);await cdp.send('Emulation.setCPUThrottlingRate',{rate:row.profile.cpu});
@@ -51,7 +51,14 @@ if(full)await stage('accepted-inputs',async()=>{
      await page.mouse.wheel(0,-500);await page.keyboard.press('Control+k');const search=page.getByRole('combobox',{name:'Search Ponderosa',exact:true});await search.waitFor();await page.keyboard.type('Qualification');await page.keyboard.press('Escape');
      if(full){
       await page.getByRole('button',{name:'Chat settings and actions',exact:true}).click();await page.getByRole('menuitem',{name:'Rename',exact:true}).click();const name=page.getByLabel('Chat name',{exact:true});await name.waitFor();await name.press('Control+A');await name.pressSequentially(`Load ${product} ${session} ${repeat}`);await name.press('Enter');await name.waitFor({state:'hidden'});
-      await editor.click();await page.keyboard.type('#Working');await page.getByRole('option').filter({hasText:'Working'}).first().click();await page.keyboard.type('Timed short message');await page.getByRole('button',{name:'Send message',exact:true}).click();
+      await editor.click();await page.keyboard.type('#Working');await page.getByRole('option').filter({hasText:'Working'}).first().click();await page.keyboard.type('Timed short message');const [response]=await Promise.all([
+       page.waitForResponse(response=>new URL(response.url()).pathname===f.products[product].prefix+'/conversations/'+f.products[product].chat.id+'/direct-messages'&&response.request().method()==='POST'),
+       page.getByRole('button',{name:'Queue message',exact:true}).click(),
+      ]);assert.ok(response.ok(),'Queue submission must be accepted');
+      const request=response.request().postDataJSON(),body=await response.json();(row.queueAttempts??=[]).push({status:response.status(),request,response:body});
+      const receipt=verifyQueuedLoadMessage(request,body,f.products[product].agents);
+      assert(!results.flatMap(result=>result.queuedMessages??[]).some(prior=>prior.messageId===receipt.messageId||prior.deliveryId===receipt.deliveryId),'Independent queued tasks require distinct receipts');
+      (row.queuedMessages??=[]).push(receipt);
      }
      await page.evaluate(id=>window.__endUiTask(id),`repeat-${repeat}`);
     }
@@ -61,10 +68,13 @@ if(full)await stage('accepted-inputs',async()=>{
     assert.deepEqual([row.emulation.width,row.emulation.height,row.emulation.dpr],[row.profile.width,row.profile.height,row.profile.dpr],'Effective viewport/DPR must match frozen cell');if(mobile)assert.equal(row.emulation.ua,row.profile.ua);assert.equal(row.raw.visibility,'visible');assert(row.raw.cutoff.time>=row.raw.marks.find(m=>m.name==='editor-ready').time,'First trusted input must follow actual canonical tail readiness');
     await f.drain();row.workWindow=f.assertWindow(product,row.raw.window.timeOrigin+row.raw.window.start,row.raw.window.timeOrigin+row.raw.window.end);
     f.assertContinuity();row.summary=summarizeTimings([row.raw]);assert.deepEqual(row.errors,[]);row.status='complete';
-   }catch(error){row.status='failed';row.error=error.stack;throw error;}
+   }catch(error){row.status='failed';row.error=error.stack;
+    if(page)try{row.failureScreenshot=out+'/'+id+'-failure.png';await page.screenshot({path:row.failureScreenshot,timeout:3000});}catch(captureError){row.failureScreenshotError=String(captureError);}
+    throw error;}
    finally{row.cleanup=[];try{await context?.close();row.cleanup.push({name:'context',status:'complete'});}catch(error){row.cleanup.push({name:'context',status:'failed',error:String(error)});row.status='failed';ledger.status='failed';}row.terminalAt=Date.now();await persist();}
   }
-  await stage('deactivate-'+product,()=>f.deactivate(product));await f.drain();f.assertContinuity();
+  await stage('cancel-queued-'+product,async()=>{ledger.queuedCancellations??={};ledger.queuedCancellations[product]=await cancelQueuedLoadMessages(f.f,f.products[product],results.filter(row=>row.product===product).flatMap(row=>row.queuedMessages??[]));});
+   await stage('deactivate-'+product,()=>f.deactivate(product));await f.drain();f.assertContinuity();
  }
  for(const product of ['core','branches'])for(const mobile of [false,true]){
   const cells=results.filter(r=>r.product===product&&r.mobile===mobile);assert.equal(cells.length,full?8:1);const summary=summarizeTimings(cells.map(r=>r.raw));await writeFile(out+`/${product}-${mobile?'phone':'desktop'}-summary.json`,JSON.stringify(summary,null,2));

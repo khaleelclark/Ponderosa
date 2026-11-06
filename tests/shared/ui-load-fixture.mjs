@@ -155,3 +155,30 @@ export async function settleLoadAgents(f,agents,record=()=>{}){
  }
  if(errors.length)throw new AggregateError(errors,'Provider terminal settlement failed');
 }
+
+
+export function verifyQueuedLoadMessage(request,receipt,agents){
+ assert.equal(request.activeRunDelivery,'queue','A busy Agent submission must use explicit Queue');
+ assert.equal(request.recipients.length,1,'The timed action addresses one working Agent');
+ const agentId=request.recipients[0].agentId,agent=agents.find(agent=>agent.id===agentId);assert(agent?.handle,'Queue target must be one of the twenty working Agents');
+ assert.equal(request.text,'#'+agent.handle+' Timed short message','Keep the exact authored handle and task');
+ assert.equal(receipt.recipients.length,1);const delivery=receipt.recipients[0];
+ assert.equal(delivery.agentId,agentId);assert.equal(delivery.queued,true);assert.equal(delivery.state,'queued');
+ assert.equal(typeof receipt.messageId,'string');assert(receipt.messageId);assert.equal(typeof delivery.deliveryId,'string');assert(delivery.deliveryId);
+ assert.equal(receipt.unavailableRecipients?.length??0,0);
+ return {messageId:receipt.messageId,deliveryId:delivery.deliveryId,agentId,state:delivery.state};
+}
+
+// Only cancel this disposable test's exact pending deliveries, after timing ends.
+export async function cancelQueuedLoadMessages(f,product,receipts){
+ const cancelled=[];
+ for(const receipt of receipts){
+  const result=f.ok(await f.api('POST',product.prefix+'/conversations/'+product.chat.id+'/queued-messages/'+receipt.deliveryId+'/cancel',{idempotencyKey:randomUUID()}));
+  assert.equal(result.cancelled,true,'Disposable queued delivery must cancel before workload release');
+  assert.equal(result.status,'cancelled');
+  cancelled.push({deliveryId:receipt.deliveryId,...result});
+ }
+ const pending=f.ok(await f.api('GET',product.prefix+'/conversations/'+product.chat.id+'/queued-messages'));
+ assert.equal(pending.length,0,'No disposable follow-up may remain for a later Run');
+ return cancelled;
+}
