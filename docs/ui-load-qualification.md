@@ -402,3 +402,19 @@ inconclusive even if all interactions could have been below the reporting floor.
 This source change and its synthetic checks do not constitute a real-browser
 qualification, an independent method acceptance, or a completed 32-cell load.
 The execution, active-work, capacity, and full-run evidence remain open.
+
+
+## Bounded observation cost
+
+Periodic load-monitor samples are single-flight. Explicit before-cell snapshots
+remain outside timed navigation and can overlap a periodic resource read. Per-Agent
+samples retain
+canonical Run/lease/session/fence/process identity and persisted output receipts;
+they do not hydrate twenty full Agent audit views or repeatedly materialize the
+10,000-message Chat. The controlled providers still invoke the same granted
+workspace tool and stream progress at the same cadence. Seed IDs, order and
+exact text bytes are checked at setup and after work settles, allowing later
+legitimate messages. History verification occurs outside measured windows.
+Navigation deadlines, active-worker continuity, Event Timing health and latency
+thresholds are unchanged. The earlier first-navigation timeout remains retained
+as an observer-induced failure, not a product or performance pass.

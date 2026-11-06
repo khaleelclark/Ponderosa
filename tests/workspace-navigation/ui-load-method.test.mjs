@@ -1,5 +1,5 @@
 import {mkdtemp,writeFile,rm} from 'node:fs/promises';import {tmpdir} from 'node:os';import {join} from 'node:path';import {verifyAcceptedMethod,finalizeLedger,sha256,inputManifestDigest} from './qualification-ledger.mjs';
-import test from 'node:test';import assert from 'node:assert/strict';import {sendQualificationTask,readLeasedRun,readCanonicalProgress,workIdentity,assertProgressWindow,settleLoadAgents} from '../shared/ui-load-fixture.mjs';
+import test from 'node:test';import assert from 'node:assert/strict';import {sendQualificationTask,readLeasedRun,readCanonicalProgress,workIdentity,assertProgressWindow,settleLoadAgents,sampleLoadOnce,verifyQualificationHistory} from '../shared/ui-load-fixture.mjs';
 test('normal asset maintenance retry uses one idempotency key and retains the actual refusal',async()=>{
  const attempts=[],keys=[];const f={api:async(_method,_path,body)=>{keys.push(body.idempotencyKey);return keys.length===1?{status:409,body:{error:'Agent asset maintenance is in progress; retry safely'}}:{status:200,body:{accepted:true}};},ok:response=>{assert.equal(response.status,200);return response.body;}};
  assert.deepEqual(await sendQualificationTask(f,'/api','agent','task',row=>attempts.push(row)),{accepted:true});assert.equal(new Set(keys).size,1);assert.equal(attempts[0].status,409);assert.equal(attempts[1].status,200);
@@ -54,4 +54,33 @@ test('provider failure after monitoring stops still fails settlement and closes 
 });
 test('non-success terminal outcome and close failure cannot waive later cleanup',async()=>{
  const closed=[];const f={settled:async()=>({runs:[{status:'cancelled'}]}),sessions:new Map(['a','b'].map(id=>[id,{close:async()=>{closed.push(id);if(id==='a')throw Error('close failed');}}]))};await assert.rejects(settleLoadAgents(f,[{id:'a'},{id:'b'}]));assert.deepEqual(closed,['a','b']);
+});
+
+
+test('active Run discovery refuses missing or ambiguous authority and later lookup stays pinned',()=>{
+ const row={id:'run',agent_id:'agent',status:'running',lease_owner:'owner',lease_expires_at:new Date(Date.now()+60000).toISOString(),fencing_token:7,provider_session_id:'session'};
+ let rows=[row],lookups=0;const store={sqlite:{prepare:sql=>({all:agentId=>{assert.match(sql,/WHERE agent_id=\?/);assert.equal(agentId,'agent');return rows},get:id=>{lookups++;assert.equal(id,'run');return row}})}};
+ assert.equal(readLeasedRun(store,'agent',undefined,'session'),row);assert.equal(lookups,0);
+ assert.equal(readLeasedRun(store,'agent','run','session'),row);assert.equal(lookups,1);
+ rows=[];assert.throws(()=>readLeasedRun(store,'agent',undefined,'session'),/Exactly one/);
+ rows=[row,{...row,id:'replacement'}];assert.throws(()=>readLeasedRun(store,'agent',undefined,'session'),/Exactly one/);
+});
+
+test('periodic load observation is single flight and releases successful and failed samples',async()=>{
+ const pending=new Set(),failures=[];let release,calls=0,active=0,maxActive=0;
+ const read=async()=>{calls++;active++;maxActive=Math.max(maxActive,active);await new Promise(resolve=>release=resolve);active--;};
+ assert.equal(sampleLoadOnce(pending,read,error=>failures.push(error)),true);await Promise.resolve();
+ for(let i=0;i<7;i++)assert.equal(sampleLoadOnce(pending,read,error=>failures.push(error)),false);
+ assert.equal(calls,1);assert.equal(pending.size,1);release();await Promise.all([...pending]);await Promise.resolve();assert.equal(pending.size,0);assert.equal(maxActive,1);
+ const error=new Error('observation failed');
+ assert.equal(sampleLoadOnce(pending,async()=>{throw error},value=>failures.push(value)),true);await Promise.all([...pending]);await Promise.resolve();
+ assert.deepEqual(failures,[error]);assert.equal(pending.size,0);
+});
+
+test('boundary history verification allows new messages but rejects lost, reordered or altered seed records',()=>{
+ const original=[{id:'one',text:'first\nmessage'},{id:'two',text:'second'}],ids=original.map(row=>row.id);
+ const seed={messages:2,recordSha256:sha256(JSON.stringify(original.map(({id,text})=>[id,text])))};
+ let rows=[...original,{id:'new',text:'legitimate later message'}];const store={getConversationMessages:id=>{assert.equal(id,'chat');return rows}};
+ assert.deepEqual(verifyQualificationHistory(store,{id:'chat'},seed,ids),{seededMessageCount:2,totalMessageCount:3,recordSha256:seed.recordSha256});
+ for(const changed of [[original[1]],[original[1],original[0]],[{...original[0],text:'first'}, {...original[1],text:'message\nsecond'}],[{...original[0],id:'replacement'},original[1]]]){rows=changed;assert.throws(()=>verifyQualificationHistory(store,{id:'chat'},seed,ids));}
 });
