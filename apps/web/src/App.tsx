@@ -143,6 +143,15 @@ export default function App({
     },
   });
   const { route, navigate } = useRoute();
+  const routedConversationId = route.kind === "conversation" ? route.conversationId : undefined;
+  // The active Chat must not wait for a previously unopened navigation owner.
+  // Warm the existing canonical query without subscribing the whole App to it.
+  useEffect(() => {
+    if (routedConversationId) void queryClient.prefetchQuery({
+      queryKey: queryKeys.conversations.detail(routedConversationId, 100),
+      queryFn: () => api.getConversation(routedConversationId, 100),
+    });
+  }, [queryClient, routedConversationId]);
   const [pageVisible, setPageVisible] = useState(
     () => document.visibilityState === "visible",
   );
@@ -267,6 +276,10 @@ export default function App({
   const providerRecheckInFlight = useRef(new Set<string>());
   const theme = useTheme();
   const mobileWorkspace = useMediaQuery(theme.breakpoints.down("md"));
+  const [desktopNavigationMounted, setDesktopNavigationMounted] = useState(!mobileWorkspace);
+  useEffect(() => {
+    if (!mobileWorkspace) setDesktopNavigationMounted(true);
+  }, [mobileWorkspace]);
 
   const [notificationPanelOpen, setNotificationPanelOpen] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
@@ -687,7 +700,7 @@ export default function App({
               overflow: "hidden",
             }}
           >
-            <WorkspaceSidebar
+            {(!mobileWorkspace || desktopNavigationMounted) && <WorkspaceSidebar
               projects={projects}
               preferences={preferences}
               route={route}
@@ -712,7 +725,7 @@ export default function App({
               onWidthChange={width =>
                 setSidebarPresentation(current => ({ ...current, width }))
               }
-            />
+            />}
           </Box>
           <Box
             component="main"
