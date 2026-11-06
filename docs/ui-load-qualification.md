@@ -493,8 +493,7 @@ skip. They cover no-parse literal/untagged cases, supplied-AST reuse, clickable
 historical/current mentions and literal links/code/JSON, plus unopened-menu lazy
 preparation. Private web typecheck/build passed. The real maintained-fixture check
 `tests/chats/transcript-action-qualification.mjs <owned-evidence-directory>` passed
-Core and Branches main/Team Chat Copy and Download byte/filename parity at
-`/tmp/p2parse-wi6v14t4/evidence`; browser, web server and fixture closed. It uses100
+Core and Branches main Chat plus empty-Team Chat Copy and Download byte/filename parity in the retained private evidence; browser, web server and fixture closed. It uses100
 synthetic canonical messages and no active provider. Run TS-importing checks with
 `node --experimental-transform-types --import ./tests/shared/resolve-typescript.mjs --import ./tests/shared/workspace-resolution.mjs`.
 Earlier missing-loader setup failures were retained; they did not create fixtures.
