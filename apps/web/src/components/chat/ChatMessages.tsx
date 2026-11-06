@@ -480,38 +480,7 @@ const ChatMarkdown = memo(function ChatMarkdown({
     taggedText = taggedText.slice(0, start) + `[#${handle}](${MESSAGE_TAG_PREFIX}${encodeURIComponent(handle)})` + taggedText.slice(end);
   }
   return (
-    <Box
-      sx={{
-        width: "100%",
-        maxWidth: "100%",
-        minWidth: 0,
-        overflowWrap: "anywhere",
-        // The prose transform preserves authored breaks without exposing parser separators.
-        whiteSpace: "normal",
-        "& > :first-of-type": { mt: 0 },
-        "& > :last-child": { mb: 0 },
-        ...messageProseTypography[small ? "small" : "normal"],
-        "& p": { my: compact ? 0.15 : 0.35, maxWidth: "100%", whiteSpace: "normal", overflowWrap: "anywhere", wordBreak: "break-word" },
-        "& h1, & h2, & h3, & h4": { mt: 1.05, mb: 0.4, lineHeight: 1.22 },
-        "& h1": { fontSize: { xs: "1.22rem", sm: "1.35rem" } },
-        "& h2": { fontSize: { xs: "1.1rem", sm: "1.2rem" } },
-        "& h3, & h4": { fontSize: { xs: "1rem", sm: "1.05rem" } },
-        "& ul, & ol": { my: compact ? 0.25 : 0.45, pl: 2.75, whiteSpace: "normal" },
-        "& li": { maxWidth: "100%", whiteSpace: "normal", overflowWrap: "anywhere", wordBreak: "break-word" },
-        "& li + li": { mt: compact ? 0.05 : 0.15 },
-        "& blockquote": { my: 0.65, mx: 0, pl: 1.5, whiteSpace: "normal", borderLeft: 3, borderColor: "divider" },
-        "& code": { fontFamily: "monospace", fontSize: "0.875em" },
-        "& :not(pre) > code": { px: 0.5, py: 0.125, borderRadius: 0.75, bgcolor: "action.hover" },
-        "& pre": { my: 0.65, p: 1.1, maxWidth: "100%", overflowX: "auto", borderRadius: 1, bgcolor: "action.hover" },
-        "& img": { display: "block", maxWidth: "100%", height: "auto", objectFit: "contain" },
-        "& table": { width: "100%", borderCollapse: "collapse", fontVariantNumeric: "tabular-nums" },
-        "& th, & td": { px: 1.25, py: 0.875, borderBottom: 1, borderColor: "divider", minWidth: "7rem", maxWidth: "24rem", verticalAlign: "top", overflowWrap: "break-word", wordBreak: "normal" },
-        "& th": { textAlign: "left", fontWeight: 700, bgcolor: "action.hover" },
-        "& th:first-child, & td:first-child": { minWidth: "3rem" },
-        "& td a, & th a": { maxWidth: "16rem" },
-        "& a": { maxWidth: "100%", color: "primary.main", textDecoration: "underline", textUnderlineOffset: "0.15em", overflowWrap: "anywhere", wordBreak: "break-word", "&:hover": { textDecorationThickness: "2px" }, "&:focus-visible": { outline: "2px solid", outlineColor: "primary.main", outlineOffset: 2 } },
-      }}
-    >
+    <div className={`chat-prose${compact ? " chat-prose-compact" : ""}${small ? " chat-prose-small" : ""}`}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkMessageFormatting, [remarkMessageTags, { tokens, recipients: collaborationRecipients, mentions: agentMentions }]]}
         urlTransform={(url, key) => chatMarkdownUrlTransform(url, key, projectId)}
@@ -616,7 +585,7 @@ const ChatMarkdown = memo(function ChatMarkdown({
       >
         {taggedText}
       </ReactMarkdown>
-    </Box>
+    </div>
   );
 });
 

@@ -94,6 +94,45 @@ body {
   .chat-message-actions .MuiIconButton-root { min-height: 44px; }
 }
 
+/* Static Markdown geometry has four compact/small combinations. The parser,
+   authored HTML projection and interactive descendants keep their own owners. */
+.chat-prose { --chat-prose-paragraph-margin: 2.8px; --chat-prose-list-margin: 3.6px; --chat-prose-list-gap: 1.2px; width: 100%; max-width: 100%; min-width: 0; overflow-wrap: anywhere; white-space: normal; font-size: 0.875rem; line-height: 1.48; }
+.chat-prose.chat-prose-small { font-size: 0.9375rem; line-height: 1.42; }
+.chat-prose > :first-of-type { margin-top: 0; }
+.chat-prose > :last-child { margin-bottom: 0; }
+.chat-prose p { margin-block: var(--chat-prose-paragraph-margin); max-width: 100%; white-space: normal; overflow-wrap: anywhere; word-break: break-word; }
+.chat-prose-compact { --chat-prose-paragraph-margin: 1.2px; --chat-prose-list-margin: 2px; --chat-prose-list-gap: 0.4px; }
+.chat-prose h1, .chat-prose h2, .chat-prose h3, .chat-prose h4 { margin-top: 8.4px; margin-bottom: 3.2px; line-height: 1.22; }
+.chat-prose h1 { font-size: 1.22rem; }
+.chat-prose h2 { font-size: 1.1rem; }
+.chat-prose h3, .chat-prose h4 { font-size: 1rem; }
+.chat-prose ul, .chat-prose ol { margin-block: var(--chat-prose-list-margin); padding-left: 22px; white-space: normal; }
+.chat-prose li { max-width: 100%; white-space: normal; overflow-wrap: anywhere; word-break: break-word; }
+.chat-prose li + li { margin-top: var(--chat-prose-list-gap); }
+.chat-prose blockquote { margin-block: 5.2px; margin-inline: 0; padding-left: 12px; white-space: normal; border-left: 3px solid var(--ponderosa-prose-divider); border-color: var(--ponderosa-prose-divider); }
+.chat-prose code { font-family: monospace; font-size: 0.875em; }
+.chat-prose :not(pre) > code { padding: 1px 4px; border-radius: 9px; background-color: var(--ponderosa-prose-hover); }
+.chat-prose pre { margin-block: 5.2px; padding: 8.8px; max-width: 100%; overflow-x: auto; border-radius: 12px; background-color: var(--ponderosa-prose-hover); }
+.chat-prose img { display: block; max-width: 100%; height: auto; object-fit: contain; }
+.chat-prose table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.chat-prose th, .chat-prose td { padding: 7px 10px; border-bottom: 1px solid var(--ponderosa-prose-divider); border-color: var(--ponderosa-prose-divider); min-width: 7rem; max-width: 24rem; vertical-align: top; overflow-wrap: break-word; word-break: normal; }
+.chat-prose th { text-align: left; font-weight: 700; background-color: var(--ponderosa-prose-hover); }
+.chat-prose th:first-child, .chat-prose td:first-child { min-width: 3rem; }
+.chat-prose td a, .chat-prose th a { max-width: 16rem; }
+.chat-prose a { max-width: 100%; color: var(--ponderosa-prose-link); text-decoration: underline; text-underline-offset: 0.15em; overflow-wrap: anywhere; word-break: break-word; }
+.chat-prose a:hover { text-decoration-thickness: 2px; }
+.chat-prose a:focus-visible { outline: 2px solid var(--ponderosa-prose-link); outline-offset: 2px; }
+@media (min-width: 600px) {
+  .chat-prose { font-size: 1rem; }
+  .chat-prose h1 { font-size: 1.35rem; }
+  .chat-prose h2 { font-size: 1.2rem; }
+  .chat-prose h3, .chat-prose h4 { font-size: 1.05rem; }
+}
+@media (min-width: 900px) {
+  .chat-prose { font-size: 0.9375rem; }
+  .chat-prose.chat-prose-small { font-size: 0.82rem; }
+}
+
 /* Keep the document column calm until a message is being inspected. Keyboard
    focus and touch taps remain first-class ways to reveal the same actions. */
 .chat-message-actions .chat-message-action-buttons {
