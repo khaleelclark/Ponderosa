@@ -1869,10 +1869,11 @@
     {
       "path": "tests/memory/real-provider-recall.test.mjs",
       "feature": "memory",
+      "additionalFeatures": ["branches"],
       "lane": "server",
       "moduleBase": "apps/server/package.json",
-      "requirements": "Opt-in PONDEROSA_REGRESSION_REAL_MEMORY=1; Node24/built native server, existing permitted Codex and Claude accounts, explicit PONDEROSA_TEST_CHROMA_BIN and read-only PONDEROSA_TEST_MEMORY_MODEL_DIR; fresh owned Chroma/data/cache; at most two native turns",
-      "origin": "One source-omitted managed search per native engine returns both blind synthetic Chat/global facts through the private.6 host bridge; no standalone private.10 compatibility or whole-privacy claim"
+      "requirements": "Separate Core PONDEROSA_REGRESSION_REAL_MEMORY=1 and Branches PONDEROSA_REGRESSION_BRANCHES_REAL_MEMORY=1 opt-ins; Node24/built native server, permitted Codex/Claude accounts, explicit PONDEROSA_TEST_CHROMA_BIN and read-only PONDEROSA_TEST_MEMORY_MODEL_DIR; fresh owned Chroma/data/cache; at most two native turns per selected case",
+      "origin": "Each selected product case uses one source-omitted managed search per native engine for blind synthetic Chat/global facts; Branches adds persistent canonical ownership/product grant checks; no execution-copy, standalone private.10 or whole-privacy claim"
     },
     {
       "path": "tests/memory/tool-guidance.test.mjs",

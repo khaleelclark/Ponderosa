@@ -7,10 +7,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 
-test('real Codex and Claude each recall fresh Chat and global facts in one managed search', {
-  timeout: 600000,
-  skip: process.env.PONDEROSA_REGRESSION_REAL_MEMORY !== '1' ? 'Set PONDEROSA_REGRESSION_REAL_MEMORY=1 with permitted native Codex/Claude and qualified Chroma/models' : false,
-}, async t => {
+async function qualifyRecall(t, product) {
   const chromaBin = process.env.PONDEROSA_TEST_CHROMA_BIN, modelDir = process.env.PONDEROSA_TEST_MEMORY_MODEL_DIR;
   assert.ok(chromaBin && modelDir, 'Explicit qualified Chroma binary and local model directory are required');
   const { defaultEngineRegistrations, spawnContainedCli, runtimeProcessHandle } = await import('@ponderosa/engines');
@@ -19,7 +16,7 @@ test('real Codex and Claude each recall fresh Chat and global facts in one manag
   const { localMemoryFor } = await import('../../apps/server/dist/local-memory.js');
   const { until } = await import('../shared/fixture.mjs');
   const root = await realpath(await mkdtemp(path.join(tmpdir(), 'ponderosa-native-recall-'))), working = path.join(root, 'working');
-  const handles = [], submissions = [], searches = [], summary = { root, providers: [], passed: false };
+  const handles = [], submissions = [], searches = [], summary = { root, product, providers: [], passed: false };
   const previous = { TMPDIR: process.env.TMPDIR, XDG_CACHE_HOME: process.env.XDG_CACHE_HOME };
   let app, chromaHandle, chromaLog;
   t.after(async () => {
@@ -39,7 +36,7 @@ test('real Codex and Claude each recall fresh Chat and global facts in one manag
     summary.cleanupPassed = !error; summary.submissions = submissions;
     if (error) summary.cleanupError = String(error);
     await writeFile(path.join(root, 'qualification.json'), JSON.stringify(summary, null, 2));
-    t.diagnostic(`Native recall providers=${JSON.stringify(summary.providers)}; submissions=${JSON.stringify(submissions)}; owned roots drained=${!error} (${handles.length})`);
+    t.diagnostic(`Native recall providers=${JSON.stringify(summary.providers)}; submissions=${JSON.stringify(submissions)}; owned roots drained=${!error} (${handles.length}); product=${product}`);
     if (summary.passed && !error) await rm(root, { recursive: true, force: true });
     else t.diagnostic(`Failed native memory fixture retained: ${root}`);
     if (error) throw error;
@@ -88,10 +85,17 @@ test('real Codex and Claude each recall fresh Chat and global facts in one manag
   assert.equal(await app.listen({ host: '127.0.0.1', port }), baseUrl); assert.equal(app.server.address().port, port);
   summary.callback = messageUrl; summary.chromaUrl = chromaUrl; summary.query = query;
   const api = async (method, url, payload, headers = {}) => {
-    const response = await app.inject({ method, url, ...(payload === undefined ? {} : { payload }), headers });
+    const target = product === 'branches' && !url.startsWith('/api/branches') ? '/api/branches/engine/' + url.slice('/api/'.length) : url;
+    const response = await app.inject({ method, url: target, ...(payload === undefined ? {} : { payload }), headers });
     assert.ok(response.statusCode >= 200 && response.statusCode < 300, `HTTP ${response.statusCode}: ${response.body}`); return response.json();
   };
-  const chat = await api('POST', '/api/chats', { label: 'Native memory recall', hostPath: working, defaultEngine: 'codex' }, { 'idempotency-key': randomUUID() });
+  const owner = product === 'branches' ? await api('POST', '/api/branches', { name: 'Native memory recall owner', idempotencyKey: randomUUID() }) : undefined;
+  const chat = await api('POST', owner ? `/api/branches/${owner.id}/chats` : '/api/chats', { label: 'Native memory recall', hostPath: working, defaultEngine: 'codex' }, { 'idempotency-key': randomUUID() });
+  if (owner) {
+    assert.equal(chat.branchId, owner.id); assert.equal(chat.executionId, undefined, 'This qualification uses persistent Branch-owned Agents');
+    summary.branchId = owner.id;
+    assert.equal((await app.inject({ method: 'GET', url: `/api/conversations/${chat.id}` })).statusCode, 404, 'Core cannot read the Branch-owned Chat');
+  }
   assert.equal(await realpath((await api('GET', `/api/projects/${chat.projectId}`)).hostPath), working);
   const memory = localMemoryFor(app); assert.ok(memory); await memory.ready();
   // Reuse the host's public core operation under explicit synthetic operator
@@ -100,10 +104,15 @@ test('real Codex and Claude each recall fresh Chat and global facts in one manag
   const chatSeed = await seed(`chat:${chat.id}`, chatFact), globalSeed = await seed('global', globalFact);
   assert.equal(chatSeed.stored, true); assert.equal(globalSeed.stored, true);
   await api('PUT', `/api/local-memory/grants/${chat.id}`, { readGlobal: true, expectedRevision: 0 });
+  if (owner) {
+    assert.equal((await api('GET', `/api/local-memory/grants/${chat.id}`)).readGlobal, true);
+    assert.equal((await app.inject({ method: 'GET', url: `/api/local-memory/grants/${chat.id}` })).statusCode, 404, 'Core cannot read the Branch Chat grant');
+  }
   summary.seeds = [{ scope: `chat:${chat.id}`, id: chatSeed.chunk_id, text: chatFact }, { scope: 'global', id: globalSeed.chunk_id, text: globalFact }];
   const jsonl = async filename => (await readFile(filename, 'utf8')).split('\n').filter(Boolean).map(JSON.parse);
   for (const engine of ['codex', 'claude']) {
     const agent = await api('POST', `/api/projects/${chat.projectId}/agents`, { title: `Native ${engine} recall`, engine, conversationId: chat.id, idempotencyKey: randomUUID() });
+    if (owner) assert.equal((await app.inject({ method: 'GET', url: `/api/agents/${agent.id}` })).statusCode, 404, 'Core cannot read the Branch-owned Agent');
     const before = searches.length;
     await api('POST', `/api/agents/${agent.id}/messages`, { text: `Call ponderosa_local_memory_search exactly once with query ${JSON.stringify(query)} and top_k 20, omitting source so both authorized Chat and global memory are searched together. Read the two returned facts. Then call ponderosa_message exactly once with intent direct_to_user and text RECALL|<Chat code>|<global code>, replacing the placeholders with the codes found only in those results. End the turn. If either call errors, stop without retry. Do not guess, issue another search, save/update/forget memory, use files, shell, browser, network, other connectors, provider-native helpers, or create/contact Agents.`, idempotencyKey: randomUUID() });
     const detail = await until(async () => { const value = await api('GET', `/api/agents/${agent.id}`); return value.runs.length && value.runs.every(run => !['preparing', 'running', 'queued'].includes(run.status)) ? value : false; }, `native ${engine} recall`, 150000);
@@ -133,4 +142,14 @@ test('real Codex and Claude each recall fresh Chat and global facts in one manag
   }
   assert.equal(submissions.length, 2); assert.equal(searches.length, 2);
   summary.passed = true;
-});
+}
+
+test('real Codex and Claude each recall fresh Chat and global facts in one managed search', {
+  timeout: 600000,
+  skip: process.env.PONDEROSA_REGRESSION_REAL_MEMORY !== '1' ? 'Set PONDEROSA_REGRESSION_REAL_MEMORY=1 with permitted native Codex/Claude and qualified Chroma/models' : false,
+}, t => qualifyRecall(t, 'dev'));
+
+test('real Branches Codex and Claude each recall their own Chat and global facts in one managed search', {
+  timeout: 600000,
+  skip: process.env.PONDEROSA_REGRESSION_BRANCHES_REAL_MEMORY !== '1' ? 'Set PONDEROSA_REGRESSION_BRANCHES_REAL_MEMORY=1 with permitted native Codex/Claude and qualified Chroma/models' : false,
+}, t => qualifyRecall(t, 'branches'));
