@@ -229,7 +229,7 @@ export interface PortableSymlinkPinInput {
   expectedInode:bigint;
 }
 /** Pin this exact single-name symlink under a borrowed held parent, without
- * reading link bytes, xattrs or target content. Linux only; no offline mount
+ * reading link bytes, xattrs or target content. Linux/macOS; no offline mount
  * policy is implied. Caller owns/closes the returned fd and retains parent/name
  * custody independently through later readlink/metadata checks.
  */
@@ -238,7 +238,7 @@ export function pinPortableSymlink(input:PortableSymlinkPinInput):{fd:number;dev
 }
 
 export interface ExactSymlinkMetadataInput {
-  /** Caller-held Linux O_PATH|O_NOFOLLOW descriptor; caller retains and closes it. */
+  /** Caller-held Linux O_PATH|O_NOFOLLOW or macOS O_SYMLINK descriptor; caller retains and closes it. */
   fd: number;
   expectedDevice: bigint;
   expectedInode: bigint;
@@ -256,7 +256,7 @@ export interface ExactSymlinkMetadataPartialError extends Error {
   partialStatePossible: true;
   observed: (Omit<ExactSymlinkMetadataEvidence,"kind"> & {kind:"symlink"|"file"|"directory"|"other"}) | null;
 }
-/** Linux only. Update this exact held, single-name symlink inode without following
+/** Linux/macOS. Update this exact held, single-name symlink inode without following
  * its target. Preserve uid/gid/mode and atime; require exact signed-ns readback.
  * Caller independently proves fresh destination and held parent/name membership.
  * No owner/ACL/xattr changes, rollback, durability or independent-writer snapshot

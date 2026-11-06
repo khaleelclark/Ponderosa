@@ -1,4 +1,4 @@
-// Descriptor-only Linux metadata. No path reopen, principal lookup or service activation.
+// Descriptor-only native metadata. No path reopen, principal lookup or service activation.
 namespace portable_metadata {
 constexpr size_t kNames = 65536, kCount = 256, kValue = 65536, kTotal = 1048576;
 napi_value Property(napi_env env, napi_value object, const char* key) {
@@ -38,6 +38,35 @@ bool Literal(napi_env env, napi_value obj, const char* key, const char* expected
 napi_value Failure(napi_env env, const char* code, const std::string& message) {
   ThrowCode(env,code,message); return nullptr;
 }
+#if defined(__linux__) || defined(__APPLE__)
+const struct timespec& Modified(const struct stat& s) {
+#ifdef __APPLE__
+  return s.st_mtimespec;
+#else
+  return s.st_mtim;
+#endif
+}
+const struct timespec& Accessed(const struct stat& s) {
+#ifdef __APPLE__
+  return s.st_atimespec;
+#else
+  return s.st_atim;
+#endif
+}
+const struct timespec& Changed(const struct stat& s) {
+#ifdef __APPLE__
+  return s.st_ctimespec;
+#else
+  return s.st_ctim;
+#endif
+}
+bool SameObservation(const struct stat& a, const struct stat& b) {
+  return a.st_dev == b.st_dev && a.st_ino == b.st_ino && a.st_mode == b.st_mode && a.st_nlink == b.st_nlink &&
+      a.st_uid == b.st_uid && a.st_gid == b.st_gid && a.st_rdev == b.st_rdev &&
+      Modified(a).tv_sec == Modified(b).tv_sec && Modified(a).tv_nsec == Modified(b).tv_nsec &&
+      Changed(a).tv_sec == Changed(b).tv_sec && Changed(a).tv_nsec == Changed(b).tv_nsec;
+}
+#endif
 #ifdef __linux__
 struct Target { int fd; uint64_t dev, ino; bool directory; uint64_t links=1; bool fifo=false; };
 Target ReadTarget(napi_env env, napi_value input) {
@@ -59,12 +88,6 @@ struct stat Stat(const Target& t) {
   struct stat s{};
   if (fstat(t.fd,&s) != 0 || !Matches(t,s)) throw std::runtime_error("held target identity/kind/link count differs");
   return s;
-}
-bool SameObservation(const struct stat& a, const struct stat& b) {
-  return a.st_dev == b.st_dev && a.st_ino == b.st_ino && a.st_mode == b.st_mode && a.st_nlink == b.st_nlink &&
-      a.st_uid == b.st_uid && a.st_gid == b.st_gid && a.st_rdev == b.st_rdev &&
-      a.st_mtim.tv_sec == b.st_mtim.tv_sec && a.st_mtim.tv_nsec == b.st_mtim.tv_nsec &&
-      a.st_ctim.tv_sec == b.st_ctim.tv_sec && a.st_ctim.tv_nsec == b.st_ctim.tv_nsec;
 }
 // O_PATH descriptors never open a FIFO data endpoint. The fixed procfs magic
 // descriptor path resolves this exact still-owned fd; no user path is used.
@@ -366,7 +389,7 @@ napi_value ApplyExtendedMetadata(napi_env env,napi_callback_info info) {
 }
 
 namespace portable_metadata {
-#ifdef __linux__
+#if defined(__linux__) || defined(__APPLE__)
 struct Parent { int fd; uint64_t dev,ino; std::string leaf; };
 Parent ReadParent(napi_env env,napi_value input) {
   Parent p;
@@ -390,6 +413,8 @@ struct timespec Time(napi_env env,napi_value value) {
   if(sec<static_cast<__int128>(std::numeric_limits<time_t>::lowest()) || sec>static_cast<__int128>(std::numeric_limits<time_t>::max()))throw std::runtime_error("timestamp does not fit time_t");
   return {static_cast<time_t>(sec),static_cast<long>(ns)};
 }
+#endif
+#ifdef __linux__
 bool Special(mode_t mode) {return S_ISFIFO(mode)||S_ISSOCK(mode)||S_ISCHR(mode)||S_ISBLK(mode);}
 struct stat ReadNode(const Parent& p,int fd) {
   CheckParent(p);struct stat held{},named{},after{};
@@ -528,9 +553,12 @@ napi_value CreatePersistentNode(napi_env env,napi_callback_info info) {
 
 // Linux do_utimes() uses the held fd for empty paths and LOOKUP_FOLLOW only
 // without AT_SYMLINK_NOFOLLOW: https://github.com/torvalds/linux/blob/v7.0/fs/utimes.c
+// Darwin O_SYMLINK pins the link itself; futimens accepts that descriptor.
+// O_SYMLINK cannot be combined with O_NOFOLLOW and is absent from F_GETFL;
+// fstat's symlink kind and exact identity prove the held link on Darwin.
 // No mutable pathname, target open, ownership change or xattr authority is used.
 napi_value ApplyExactSymlinkMetadata(napi_env env,napi_callback_info info) {
-#if defined(__linux__) && defined(O_PATH) && defined(AT_EMPTY_PATH) && defined(AT_SYMLINK_NOFOLLOW)
+#if (defined(__linux__) && defined(O_PATH) && defined(AT_EMPTY_PATH) && defined(AT_SYMLINK_NOFOLLOW)) || defined(__APPLE__)
   using namespace portable_metadata;
   int fd=-1;bool attempted=false;
   auto evidence=[&](const struct stat& value){
@@ -546,31 +574,41 @@ napi_value ApplyExactSymlinkMetadata(napi_env env,napi_callback_info info) {
     const auto input=args[0];fd=Integer(env,Property(env,input,"fd"),INT_MAX);
     const auto device=Identity(env,Property(env,input,"expectedDevice")),inode=Identity(env,Property(env,input,"expectedInode"));
     const auto modified=Time(env,Property(env,input,"mtimeNs"));
+#ifdef __linux__
     const int flags=fcntl(fd,F_GETFL);
+    if(flags<0||(flags&O_PATH)!=O_PATH||(flags&O_NOFOLLOW)!=O_NOFOLLOW)
+      throw std::runtime_error("held no-follow symlink descriptor flags differ; no metadata changed");
+#endif
     struct stat before{};
-    if(flags<0||(flags&O_PATH)!=O_PATH||(flags&O_NOFOLLOW)!=O_NOFOLLOW||
-       fstat(fd,&before)!=0||!S_ISLNK(before.st_mode)||before.st_nlink!=1||
+    if(fstat(fd,&before)!=0||!S_ISLNK(before.st_mode)||before.st_nlink!=1||
        uint64_t(before.st_dev)!=device||uint64_t(before.st_ino)!=inode)
       throw std::runtime_error("held no-follow symlink identity/kind/link count differs; no metadata changed");
+#ifdef __linux__
     // Older kernels reject the empty-path flags. Probe only an invalid fd, so
     // availability checks cannot modify any node or follow a link target.
     const struct timespec probe[2]={{0,UTIME_OMIT},{0,0}};
     errno=0;
     if(utimensat(-1,"",probe,AT_EMPTY_PATH|AT_SYMLINK_NOFOLLOW)!=-1||errno!=EBADF)
       return Failure(env,"ERR_EXACT_SYMLINK_METADATA_UNSUPPORTED","descriptor-only no-follow symlink timestamps unavailable; no metadata changed");
+#endif
     struct stat current{};
     if(fstat(fd,&current)!=0||!SameObservation(before,current))
       throw std::runtime_error("held symlink changed before timestamp application");
     const struct timespec times[2]={{0,UTIME_OMIT},modified};
     attempted=true;
-    if(utimensat(fd,"",times,AT_EMPTY_PATH|AT_SYMLINK_NOFOLLOW)!=0)
+#ifdef __APPLE__
+    const int result=futimens(fd,times);
+#else
+    const int result=utimensat(fd,"",times,AT_EMPTY_PATH|AT_SYMLINK_NOFOLLOW);
+#endif
+    if(result!=0)
       throw std::runtime_error(std::string("descriptor-only symlink timestamp application failed: ")+std::strerror(errno));
     struct stat after{};
     if(fstat(fd,&after)!=0||!S_ISLNK(after.st_mode)||after.st_nlink!=1||
        before.st_dev!=after.st_dev||before.st_ino!=after.st_ino||before.st_mode!=after.st_mode||
        before.st_uid!=after.st_uid||before.st_gid!=after.st_gid||
-       before.st_atim.tv_sec!=after.st_atim.tv_sec||before.st_atim.tv_nsec!=after.st_atim.tv_nsec||
-       after.st_mtim.tv_sec!=modified.tv_sec||after.st_mtim.tv_nsec!=modified.tv_nsec)
+       Accessed(before).tv_sec!=Accessed(after).tv_sec||Accessed(before).tv_nsec!=Accessed(after).tv_nsec||
+       Modified(after).tv_sec!=modified.tv_sec||Modified(after).tv_nsec!=modified.tv_nsec)
       throw std::runtime_error("exact symlink timestamp/identity/unchanged ownership readback differs");
     return evidence(after);
   }catch(const std::exception& error){
@@ -581,7 +619,7 @@ napi_value ApplyExactSymlinkMetadata(napi_env env,napi_callback_info info) {
     napi_throw(env,failure);return nullptr;
   }
 #else
-  return portable_metadata::Failure(env,"ERR_EXACT_SYMLINK_METADATA_UNSUPPORTED","Exact symlink timestamps require Linux O_PATH and utimensat AT_EMPTY_PATH|AT_SYMLINK_NOFOLLOW; no metadata changed");
+  return portable_metadata::Failure(env,"ERR_EXACT_SYMLINK_METADATA_UNSUPPORTED","Exact symlink timestamps require Linux O_PATH/utimensat or macOS O_SYMLINK/futimens; no metadata changed");
 #endif
 }
 
@@ -589,7 +627,7 @@ napi_value ApplyExactSymlinkMetadata(napi_env env,napi_callback_info info) {
 // Online metadata-only pin. Unlike offline clone inspection this never reads
 // link bytes/xattrs or requires a read-only/noatime mount.
 napi_value PinPortableSymlink(napi_env env,napi_callback_info info) {
-#if defined(__linux__) && defined(O_PATH)
+#if (defined(__linux__) && defined(O_PATH)) || (defined(__APPLE__) && defined(O_SYMLINK))
   using namespace portable_metadata;
   int fd=-1;
   try{
@@ -598,7 +636,12 @@ napi_value PinPortableSymlink(napi_env env,napi_callback_info info) {
     const auto input=args[0];const auto parent=ReadParent(env,input);
     const auto device=Identity(env,Property(env,input,"expectedDevice")),inode=Identity(env,Property(env,input,"expectedInode"));
     CheckParent(parent);
+#ifdef __APPLE__
+    // A replaced FIFO leaf must not block the pin.
+    fd=openat(parent.fd,parent.leaf.c_str(),O_RDONLY|O_SYMLINK|O_NONBLOCK|O_CLOEXEC);
+#else
     fd=openat(parent.fd,parent.leaf.c_str(),O_PATH|O_NOFOLLOW|O_CLOEXEC);
+#endif
     if(fd<0)throw std::runtime_error(std::string("metadata-only symlink pin open failed: ")+std::strerror(errno));
     struct stat held{},named{},after{};
     if(fstat(fd,&held)!=0||!S_ISLNK(held.st_mode)||held.st_nlink!=1||
@@ -618,6 +661,6 @@ napi_value PinPortableSymlink(napi_env env,napi_callback_info info) {
     return Failure(env,"ERR_PORTABLE_SYMLINK_PIN",message);
   }
 #else
-  return portable_metadata::Failure(env,"ERR_PORTABLE_SYMLINK_PIN_UNSUPPORTED","Online symlink metadata pins require Linux O_PATH; no target opened");
+  return portable_metadata::Failure(env,"ERR_PORTABLE_SYMLINK_PIN_UNSUPPORTED","Online symlink metadata pins require Linux O_PATH or macOS O_SYMLINK; no target opened");
 #endif
 }

@@ -704,8 +704,8 @@ async function placeWorkingLinks(destination:string,links:readonly PortableWorki
         const symbolicTarget=mappedRoot?path.relative(parent,link.target==='.'?mappedRoot:path.join(mappedRoot,link.target)):link.target;
         await fs.symlink(symbolicTarget||'.',target);
         if(link.mtime){
-          if(exactSymlinkTimestamps&&process.platform!=='linux')throw new Error('Exact final symbolic-link timestamps require Linux native metadata support; files and links are retained');
-          if(process.platform!=='linux'&&!exactSymlinkTimestamps)await fs.lutimes(target,new Date(link.mtime),new Date(link.mtime));
+          if(exactSymlinkTimestamps&&!['linux','darwin'].includes(process.platform))throw new Error('Exact final symbolic-link timestamps require Linux or macOS native metadata support; files and links are retained');
+          if(!['linux','darwin'].includes(process.platform)&&!exactSymlinkTimestamps)await fs.lutimes(target,new Date(link.mtime),new Date(link.mtime));
           else{
             // The package declares millisecond timestamps. Date/lutimes can round
             // below that boundary and lose another millisecond on each export.

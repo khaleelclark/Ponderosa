@@ -4,12 +4,12 @@ import {mkdtemp,open,writeFile,symlink,lstat,readFile,readlink,rename,link,rm} f
 import {constants,closeSync,fstatSync,readSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
-import {applyExactSymlinkMetadata,pinPortableSymlink,pinPortableRegularFile} from '@ponderosa/native-host';
+import {applyExactSymlinkMetadata,pinPortableSymlink} from '@ponderosa/native-host';
 
-const linux={skip:process.platform!=='linux'};
-async function fixture(t){
+const supported={skip:!['linux','darwin'].includes(process.platform)};
+async function fixture(t,linkTarget='target'){
  const root=await mkdtemp(path.join(tmpdir(),'exact-symlink-metadata-')),target=path.join(root,'target'),selected=path.join(root,'selected');
- await writeFile(target,'target bytes remain exact');await symlink('target',selected);
+ await writeFile(target,'target bytes remain exact');await symlink(linkTarget,selected);
  const parent=await open(root,constants.O_RDONLY|constants.O_DIRECTORY),parentIdentity=await parent.stat({bigint:true}),named=await lstat(selected,{bigint:true});
  const pinInput={parentFd:parent.fd,leaf:'selected',expectedParentDevice:parentIdentity.dev,expectedParentInode:parentIdentity.ino,expectedDevice:named.dev,expectedInode:named.ino},pin=pinPortableSymlink(pinInput),fd=pin.fd;
  assert.equal(pin.device,named.dev);assert.equal(pin.inode,named.ino);assert.equal((await lstat(selected,{bigint:true})).atimeNs,named.atimeNs,'Online pin does not read link bytes or alter atime');
@@ -18,9 +18,9 @@ async function fixture(t){
  return {root,target,selected,parent,pinInput,fd,identity,input:{fd,expectedDevice:identity.dev,expectedInode:identity.ino,mtimeNs:'1700000000123456789'}};
 }
 
-test('held symlink timestamp retains exact submicrosecond and signed nanoseconds without target mutation',linux,async t=>{
+test('held symlink timestamp retains exact submicrosecond and signed nanoseconds without target mutation',supported,async t=>{
  const f=await fixture(t),targetBefore=await lstat(f.target,{bigint:true}),before=fstatSync(f.fd,{bigint:true});
- assert.throws(()=>readSync(f.fd,Buffer.alloc(1),0,1,0),error=>error.code==='EBADF','O_PATH never becomes a data endpoint');
+ assert.throws(()=>readSync(f.fd,Buffer.alloc(1),0,1,0),error=>['EBADF','EPERM'].includes(error.code),'Pinned symlink never becomes a target data endpoint');
  for(const mtimeNs of ['1700000000123456789','-123456789','0']){
   const result=applyExactSymlinkMetadata({...f.input,mtimeNs}),after=fstatSync(f.fd,{bigint:true});
   assert.equal(result.kind,'symlink');assert.equal(result.device,before.dev);assert.equal(result.inode,before.ino);assert.equal(result.linkCount,1n);
@@ -31,16 +31,26 @@ test('held symlink timestamp retains exact submicrosecond and signed nanoseconds
  assert.equal(await readFile(f.target,'utf8'),'target bytes remain exact');assert.equal(await readlink(f.selected),'target');
 });
 
-test('stale identities and wrong descriptor kinds refuse before changing either node',linux,async t=>{
+test('dangling and cyclic symlink pins and timestamps never resolve their targets',supported,async t=>{
+ for(const linkTarget of ['missing','selected']){
+  const f=await fixture(t,linkTarget),target=await lstat(f.target,{bigint:true});
+  applyExactSymlinkMetadata(f.input);
+  assert.equal((await lstat(f.selected,{bigint:true})).mtimeNs,BigInt(f.input.mtimeNs));
+  assert.equal(await readlink(f.selected),linkTarget);
+  assert.equal((await lstat(f.target,{bigint:true})).mtimeNs,target.mtimeNs);
+ }
+});
+
+test('stale identities and wrong descriptor kinds refuse before changing either node',supported,async t=>{
  const f=await fixture(t),before=await lstat(f.selected,{bigint:true}),target=await lstat(f.target,{bigint:true});
  assert.throws(()=>applyExactSymlinkMetadata({...f.input,expectedInode:before.ino+1n}),error=>error.code==='ERR_EXACT_SYMLINK_METADATA_PREFLIGHT');
  assert.throws(()=>applyExactSymlinkMetadata({...f.input,expectedDevice:before.dev+1n}),error=>error.code==='ERR_EXACT_SYMLINK_METADATA_PREFLIGHT');
- const regular=pinPortableRegularFile({path:f.target,expectedDevice:target.dev,expectedInode:target.ino});
- try{assert.throws(()=>applyExactSymlinkMetadata({...f.input,fd:regular.fd,expectedDevice:target.dev,expectedInode:target.ino}),error=>error.code==='ERR_EXACT_SYMLINK_METADATA_PREFLIGHT');}finally{closeSync(regular.fd);}
+ const regular=await open(f.target,constants.O_RDONLY|constants.O_NOFOLLOW);
+ try{assert.throws(()=>applyExactSymlinkMetadata({...f.input,fd:regular.fd,expectedDevice:target.dev,expectedInode:target.ino}),error=>error.code==='ERR_EXACT_SYMLINK_METADATA_PREFLIGHT');}finally{await regular.close();}
  assert.equal((await lstat(f.selected,{bigint:true})).mtimeNs,before.mtimeNs);assert.equal((await lstat(f.target,{bigint:true})).mtimeNs,target.mtimeNs);
 });
 
-test('a retained descriptor changes its original symlink inode after name replacement, never the replacement or target',linux,async t=>{
+test('a retained descriptor changes its original symlink inode after name replacement, never the replacement or target',supported,async t=>{
  const f=await fixture(t),retained=path.join(f.root,'retained-original');
  await rename(f.selected,retained);await symlink('target',f.selected);
  const replacement=await lstat(f.selected,{bigint:true}),target=await lstat(f.target,{bigint:true});
@@ -50,7 +60,7 @@ test('a retained descriptor changes its original symlink inode after name replac
  assert.equal(await readlink(retained),'target');assert.equal(await readlink(f.selected),'target');
 });
 
-test('online symlink pins refuse stale parent/name/child proofs without changing either node',linux,async t=>{
+test('online symlink pins refuse stale parent/name/child proofs without changing either node',supported,async t=>{
  const f=await fixture(t),before=await lstat(f.selected,{bigint:true});
  for(const changed of [{expectedParentInode:f.pinInput.expectedParentInode+1n},{expectedInode:before.ino+1n},{leaf:'.'},{leaf:'..'},{leaf:'nested/selected'},{leaf:'target'}]){
   assert.throws(()=>pinPortableSymlink({...f.pinInput,...changed}),error=>error.code==='ERR_PORTABLE_SYMLINK_PIN');
@@ -59,17 +69,23 @@ test('online symlink pins refuse stale parent/name/child proofs without changing
  assert.equal((await lstat(f.selected,{bigint:true})).atimeNs,before.atimeNs);assert.equal((await lstat(f.selected,{bigint:true})).mtimeNs,before.mtimeNs);
 });
 
-test('multiple symlink names and out-of-range or lossy timestamps refuse',linux,async t=>{
+test('out-of-range or lossy timestamps refuse',supported,async t=>{
  const f=await fixture(t),before=await lstat(f.selected,{bigint:true});
  for(const mtimeNs of ['1.5','-0','01','1e9','9'.repeat(40)])assert.throws(()=>applyExactSymlinkMetadata({...f.input,mtimeNs}),error=>error.code==='ERR_EXACT_SYMLINK_METADATA_INPUT');
  assert.throws(()=>applyExactSymlinkMetadata({...f.input,mtimeNs:'999999999999999999999999999999999999999'}),error=>error.code==='ERR_EXACT_SYMLINK_METADATA_PREFLIGHT');
+ assert.equal((await lstat(f.selected,{bigint:true})).mtimeNs,before.mtimeNs);
+});
+
+// Darwin link(2), including Node fs.link, follows the link instead of aliasing it.
+test('multiple symlink names refuse',{skip:process.platform!=='linux'},async t=>{
+ const f=await fixture(t),before=await lstat(f.selected,{bigint:true});
  await link(f.selected,path.join(f.root,'second-name'));assert.equal((await lstat(f.selected,{bigint:true})).nlink,2n);
  assert.throws(()=>pinPortableSymlink(f.pinInput),error=>error.code==='ERR_PORTABLE_SYMLINK_PIN');
  assert.throws(()=>applyExactSymlinkMetadata(f.input),error=>error.code==='ERR_EXACT_SYMLINK_METADATA_PREFLIGHT');
  assert.equal((await lstat(f.selected,{bigint:true})).mtimeNs,before.mtimeNs);
 });
 
-test('other platforms explicitly refuse exact held symlink timestamp mutation',{skip:process.platform==='linux'},()=>{
+test('other platforms explicitly refuse exact held symlink timestamp mutation',{skip:['linux','darwin'].includes(process.platform)},()=>{
  assert.throws(()=>applyExactSymlinkMetadata({fd:0,expectedDevice:0n,expectedInode:0n,mtimeNs:'1'}),error=>error.code==='ERR_EXACT_SYMLINK_METADATA_UNSUPPORTED');
  assert.throws(()=>pinPortableSymlink({parentFd:0,leaf:'selected',expectedParentDevice:0n,expectedParentInode:0n,expectedDevice:0n,expectedInode:0n}),error=>error.code==='ERR_PORTABLE_SYMLINK_PIN_UNSUPPORTED');
 });
