@@ -3239,6 +3239,22 @@
       "classification": "manual-qualification-entrypoint"
     },
     {
+      "path": "tests/branches/startup-metadata-history-qualification.mjs",
+      "feature": "branches",
+      "lane": "manual",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Owned disposable UI metadata/owner-fence/history-retention check; built web/server/packages and installed Chrome; no provider account or performance qualification",
+      "classification": "manual-qualification-entrypoint"
+    },
+    {
+      "path": "tests/chats/transcript-action-qualification.mjs",
+      "feature": "chats",
+      "lane": "manual",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Owned disposable UI transcript Copy/Download parity check; built web/server/packages and installed Chrome; no provider account or performance qualification",
+      "classification": "manual-qualification-entrypoint"
+    },
+    {
       "path": "tests/chats/message-frame-style-qualification.mjs",
       "feature": "chats",
       "lane": "manual",

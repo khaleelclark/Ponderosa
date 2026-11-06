@@ -81,6 +81,12 @@ function RetainedBranchWorkflow(props:ComponentProps<typeof WorkflowEditor>):JSX
  useEffect(()=>{if(active)setOpened(true)},[active]);
  return active||opened?<WorkflowEditor {...props}/>:null;
 }
+// Hidden Run History has layout effects and controls that Chat startup does not need.
+function RetainedBranchRunHistory(props:ComponentProps<typeof BranchRunHistory>):JSX.Element|null{
+ const active=props.active??true,[opened,setOpened]=useState(active);
+ useEffect(()=>{if(active)setOpened(true)},[active]);
+ return active||opened?<BranchRunHistory {...props}/>:null;
+}
 // Mount Settings on its first real selection, then preserve its local drafts.
 function RetainedBranchSettings(props:ComponentProps<typeof BranchSettings>):JSX.Element|null{
  const active=props.active??true,[opened,setOpened]=useState(active);
@@ -197,7 +203,19 @@ function BranchesWorkspace({route,navigate,colorMode,onToggleColorMode}:Appearan
    if(id===draft.branchId){setLoading(false);setOpeningLink(false);return;}
    setDeployedUpdate(undefined);
    const branch=await requestJson<BranchDto>(`/api/branches/${encodeURIComponent(id)}`);
-   if(!cancelled&&await select(branch,true)&&!cancelled)markWorkspaceResourceUsed(client,'branch',id);
+   if(!cancelled){
+    const selected=select(branch,true),generation=selection.current;
+    // Overlap existing owner/workspace reads with the workflow draft. Rendering
+    // still waits for all existing BranchChats and ProjectShell checks.
+    const chatId=route.tab==='chats'&&!route.global?route.chatId:undefined;
+    if(chatId&&(!route.workspace||route.workspace.kind==='conversation'&&route.workspace.conversationId===chatId)){
+     void client.fetchQuery({queryKey:['branch-chat-owner',chatId],queryFn:()=>requestJson<BranchContextDto>(`/api/branches/contexts/${chatId}`),retry:false}).then(chat=>{
+      if(cancelled||selection.current!==generation||routeOwner.current!==route||chat.id!==chatId||chat.branchId!==id||(chat.executionId??undefined)!==(route.executionId??undefined)||route.workspace&&route.workspace.projectId!==chat.projectId)return;
+      return client.prefetchQuery({queryKey:queryKeys.projects.detail(chat.projectId),queryFn:()=>realApi.getProject(chat.projectId)});
+     }).catch(()=>{/* The existing owner query displays its normal error when the Chat opens. */});
+    }
+    if(await selected&&!cancelled)markWorkspaceResourceUsed(client,'branch',id);
+   }
   }catch(e){if(!cancelled){setLoading(false);setError((e as Error).message);setOpeningLink(false)}}})();
   return()=>{cancelled=true;selection.current++};
  },[route.branchId,route.executionId,openingAttempt]);
@@ -339,7 +357,7 @@ function BranchesWorkspace({route,navigate,colorMode,onToggleColorMode}:Appearan
     {openingWorkspace?<Typography role="status">Opening workflow…</Typography>:failedOpening?<Typography role="status">Workflow unavailable · retry loading</Typography>:deployedUpdate?.reason==='failed'&&deployedUpdate.branch.id===draft.branchId&&!(tab==='executions'&&detailOwned)?<Typography role="status">The published workflow is waiting to be loaded.</Typography>:!draft.branchId?<BranchHome engines={engines.data??[]} enginesLoaded={Boolean(engines.data)} enginesError={engines.error?.message} onRetryEngines={()=>void engines.refetch()} onNavigate={navigate} onCreate={()=>void createBranch()} onImport={()=>workflowImportInput.current?.click()} creating={creating}/>:<>
      <Box role="tabpanel" id="branch-workflow-panel" aria-labelledby="branch-workflow-tab" hidden={tab!=='workflow'} sx={{display:tab==='workflow'?'flex':'none',flex:1,minHeight:0,minWidth:0}}><RetainedBranchWorkflow editing={dirty} saveControl={<Button variant="contained" disabled={saveDisabled} aria-busy={review.isPending||deploy.isPending||discard.isPending||undefined} onClick={reviewChanges}>Save Workflow</Button>} canvasViews={canvasViews.current} undoRedo={undoRedo} onDraft={(edit:WorkflowDraftEdit)=>{if(editorGeneration===selection.current)setDraft(d=>{const definition=edit.definition??d.definition,bindings=edit.bindings??d.bindings;return {...d,definition,bindings:edit.definition?bindDefinitionDirectories(definition,bindings,contexts.data?.find(c=>c.id===d.chatId)?.workingDirectory):bindings}})}} branchId={draft.branchId??''} onSettingsIssue={()=>setTab('settings')} validationIssues={review.error instanceof ApiRequestError&&review.variables&&branchDraftRevision(review.variables)===draftRevision.current?(review.error.body as {issues?:import("@ponderosa/core").BranchValidationIssue[]})?.issues:undefined} active={tab==='workflow'&&!route.global&&!loading&&!openingLink} onInvalidStep={()=>setTab('workflow')} jsonOpen={jsonOpen} onCloseJson={()=>setJsonOpen(false)} validationRequest={validationRequest} triggerDirty={Boolean(savedDraft.current&&(JSON.stringify(JSON.parse(savedDraft.current).definition.trigger)!==JSON.stringify(draft.definition.trigger)||JSON.stringify(JSON.parse(savedDraft.current).bindings.triggers)!==JSON.stringify(draft.bindings.triggers)))} intake={trigger.data&&<Paper variant="outlined" sx={{p:2}}><Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap"><Typography sx={{flex:1}}>Published {trigger.data.sourceKind} intake · {trigger.data.enabled?'Enabled':'Paused'}</Typography><Button disabled={automatic.isPending} onClick={()=>automatic.mutate()}>{trigger.data.enabled?'Pause intake':'Resume intake'}</Button></Stack><Typography variant="caption" color="text.secondary">Last automatic run: {trigger.data.lastFiredAt?new Date(trigger.data.lastFiredAt).toLocaleString():'None'} · Next automatic run: {current?.enabled===false?'Paused while Branch is disabled':!trigger.data.enabled?'Paused':trigger.data.nextFireAt?new Date(trigger.data.nextFireAt).toLocaleString():'Not scheduled'}</Typography>{trigger.data.sourceKind==='webhook'&&<><Typography variant="body2" sx={{overflowWrap:'anywhere'}}>{window.location.origin}/api/trigger-webhooks/{trigger.data.id}</Typography></>}</Paper>} availability={current&&<BranchAvailability key={current.id} branch={current} disabled={!lifecycle.data||Boolean(lifecycle.error)||lifecycle.data.deleting||lifecycle.data.updates.length>0}/>} onPendingEdits={reportPendingEdits} key={editorKey} definition={draft.definition} bindings={draft.bindings} chatId={draft.chatId} contexts={contexts.data??[]} agents={agents.data?.items??[]} engines={engines.data??[]} existing={Boolean(draft.branchId)} onDefinition={definition=>{if(editorGeneration===selection.current)setDraft(d=>({...d,definition,bindings:bindDefinitionDirectories(definition,d.bindings,contexts.data?.find(c=>c.id===d.chatId)?.workingDirectory)}))}} onBindings={bindings=>{if(editorGeneration===selection.current)setDraft(d=>({...d,bindings}))}} onChat={changeChat}/></Box>
      <Box role="tabpanel" id="branch-executions-panel" aria-labelledby="branch-executions-tab" hidden={tab!=='executions'} sx={{display:tab==='executions'?'flex':'none',flex:1,minHeight:0,minWidth:0}}>
-      <BranchRunHistory key={draft.branchId} active={tab==='executions'&&!route.global&&!loading&&!openingLink&&route.branchId===draft.branchId} runs={shownExecutions} selectedId={executionId} selectedRun={detailOwned?detail.data?.execution:undefined} filter={route.executionFilter} onFilter={value=>navigate({...route,executionFilter:value||undefined})} onSelect={(id,replace)=>navigate({...route,tab:'executions',executionId:id,chatId:undefined,workspace:undefined},replace)} loading={histories.isPending} error={histories.error} onRetry={()=>void histories.refetch()} hasMore={histories.hasNextPage} loadingMore={histories.isFetchingNextPage} onMore={()=>void histories.fetchNextPage()} triggerEvents={<BranchTriggerAudit branchId={draft.branchId} onNavigate={navigate} diagnostics={lifecycle.data?.sourceDiagnostics}/>}>
+      <RetainedBranchRunHistory key={draft.branchId} active={tab==='executions'&&!route.global&&!loading&&!openingLink&&route.branchId===draft.branchId} runs={shownExecutions} selectedId={executionId} selectedRun={detailOwned?detail.data?.execution:undefined} filter={route.executionFilter} onFilter={value=>navigate({...route,executionFilter:value||undefined})} onSelect={(id,replace)=>navigate({...route,tab:'executions',executionId:id,chatId:undefined,workspace:undefined},replace)} loading={histories.isPending} error={histories.error} onRetry={()=>void histories.refetch()} hasMore={histories.hasNextPage} loadingMore={histories.isFetchingNextPage} onMore={()=>void histories.fetchNextPage()} triggerEvents={<BranchTriggerAudit branchId={draft.branchId} onNavigate={navigate} diagnostics={lifecycle.data?.sourceDiagnostics}/>}>
        <Stack spacing={2}>
         {detail.error?<Alert severity="error" action={<Button onClick={()=>void detail.refetch()}>Retry Run</Button>}>This Run is unavailable. {detail.error.message}</Alert>:executionId&&!detailOwned?<Typography role="status">Loading this Run…</Typography>:null}
         {tab==='executions'&&detailOwned&&detail.data&&<>
@@ -355,7 +373,7 @@ function BranchesWorkspace({route,navigate,colorMode,onToggleColorMode}:Appearan
 
         </>}
        </Stack>
-      </BranchRunHistory>
+      </RetainedBranchRunHistory>
      </Box>
      <Box role="tabpanel" id="branch-chats-panel" aria-labelledby="branch-chats-tab" hidden={tab!=='chats'} sx={{display:tab==='chats'?'flex':'none',flex:1,minHeight:0}}>{tab==='chats'&&draft.branchId&&<BranchChats key={draft.branchId} branchId={draft.branchId} engines={engines.data??[]} enginesLoaded={Boolean(engines.data)} executionId={route.executionId} branchRoute={route} onNavigate={navigate}/>}</Box>
 
