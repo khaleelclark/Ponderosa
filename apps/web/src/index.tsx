@@ -9,8 +9,17 @@ import { StrictMode, Suspense, lazy, useEffect, useLayoutEffect, useMemo, useSta
 import { createRoot } from "react-dom/client";
 const OutputAgentApp=lazy(()=>import('./components/OutputAgentApp').then(module=>({default:module.OutputAgentApp})));
 if(isOutputAppPath(window.location.pathname))setStandaloneProductScope('branches');
-const App=lazy(()=>import('./App'));
+const App = lazy(() => {
+  // Overlap the selected route code with the Core shell, before metadata mounts.
+  if (isProjectRoute(parseRoute(window.location.pathname, window.location.search))) {
+    void loadProjectShell().catch(() => {});
+  }
+  return import("./App");
+});
 const BranchesView=lazy(()=>import('./components/BranchesView').then(module=>({default:module.BranchesView})));
+import { loadProjectShell } from "./projectShellLoader";
+import { parseRoute } from "./routing";
+import { isProjectRoute } from "./routeRegistry";
 import { WorkspaceErrorBoundary } from "./components/WorkspaceErrorBoundary";
 import { MutationNotificationProvider } from "./components/MutationNotifications";
 import "./global.css";

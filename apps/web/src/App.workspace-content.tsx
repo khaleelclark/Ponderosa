@@ -1,5 +1,6 @@
 import {AssistantEntry} from './components/AssistantEntry';
 import { useEffect } from "react";
+import { loadProjectShell } from "./projectShellLoader";
 import { Alert, Box, Button } from "@mui/material";
 import { LoadingState } from "./components/LoadingState";
 import { MobileNavigationButton } from "./components/MobileNavigationContext";
@@ -30,7 +31,6 @@ const loadManageChatsWorkspace = () => import("./components/ManageChatsWorkspace
 const loadManageAgentsWorkspace = () => import("./components/WorkspaceResourceViews").then(module => ({ default: module.AllAgentsWorkspace }));
 const loadHomeView = () => import("./components/HomeView").then(module => ({ default: module.HomeView }));
 const loadCreateWorkspace = () => import("./components/CreateWorkspace").then(module => ({ default: module.CreateWorkspace }));
-const loadProjectShell = () => import("./components/ProjectShell").then(module => ({ default: module.ProjectShell }));
 const workspaceSettingsViews = () => import("./components/WorkspaceSettingsView");
 const loadWorkspaceSettingsView = () => workspaceSettingsViews().then(module => ({ default: module.WorkspaceSettingsView }));
 
