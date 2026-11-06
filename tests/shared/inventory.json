@@ -3205,6 +3205,22 @@
       "path": "tests/branches/additive-mounted-ownership.mjs",
       "moduleBase": "apps/server/package.json",
       "classification": "shared-controlled-fixture"
+    },
+    {
+      "path": "tests/branches/unopened-settings.mjs",
+      "feature": "branches",
+      "lane": "manual",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Owned disposable UI/API interaction check; built web/server/packages and installed Chrome; no provider account or load/performance qualification",
+      "classification": "manual-qualification-entrypoint"
+    },
+    {
+      "path": "tests/workspace-navigation/core-navigation-startup-qualification.mjs",
+      "feature": "workspace-navigation",
+      "lane": "manual",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Owned disposable UI/API interaction check; built web/server/packages and installed Chrome; no provider account or load/performance qualification",
+      "classification": "manual-qualification-entrypoint"
     }
   ],
   "support": [
