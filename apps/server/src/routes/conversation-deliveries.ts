@@ -996,8 +996,9 @@ export function registerConversationDeliveryRoutes(
           communication?.sender.kind !== "user" || communication.sender.userId !== "local-operator") return [];
       const position = (perAgentPosition.get(activation.agentId) ?? 0) + 1;
       perAgentPosition.set(activation.agentId, position);
-      const message = store.getConversationMessages(conversation.id, "main")
-        .find((candidate) => candidate.communicationEventId === communication.eventId);
+      const message = store.getProjectedConversationMessageById(
+        conversation.id, "main", communication.eventId,
+      );
       return [{
         deliveryId: activation.id,
         messageId: message?.id ?? communication.eventId,

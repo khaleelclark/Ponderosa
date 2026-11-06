@@ -477,3 +477,38 @@ test('changed settings reservation defers a peer Request until context preflight
     assert.equal(store.sqlite.prepare("SELECT count(*) n FROM coordination_requests WHERE project_id=?").get(chat.projectId).n,1);
   },{storeFactory:root=>store=new AgentStore(root)});
 });
+
+test('conversation queue listing preserves exact receipts without projecting the full history', options, t => {
+  let store;
+  return withFixture(t, async f => {
+    const chat = await f.createChat('Scoped queue listing'), agent = await f.createAgent(chat, 'Queue target');
+    const session = await f.hold(agent.id), path = '/api/conversations/' + chat.id;
+    const submissions = [];
+    for (const text of ['First queued task', 'Second queued task']) {
+      const response = f.ok(await f.api('POST', path + '/direct-messages', {
+        text, recipients: [{agentId: agent.id}], activeRunDelivery: 'queue', idempotencyKey: randomUUID(),
+      }));
+      assert.equal(response.recipients[0].state, 'queued');
+      submissions.push({text, response});
+    }
+    const original = store.getConversationMessages;
+    store.getConversationMessages = () => { throw Error('Queue listing must not project unrelated chat history'); };
+    let queued;
+    try { queued = f.ok(await f.api('GET', path + '/queued-messages')); }
+    finally { store.getConversationMessages = original; }
+    assert.deepEqual(queued.map(row => ({
+      deliveryId: row.deliveryId, messageId: row.messageId,
+      targetAgentId: row.targetAgentId, text: row.text,
+      position: row.position, conversationId: row.conversationId, status: row.status,
+    })), submissions.map(({text, response}, index) => ({
+      deliveryId: response.recipients[0].deliveryId, messageId: response.messageId,
+      targetAgentId: agent.id, text, position: index + 1,
+      conversationId: chat.id, status: 'queued',
+    })));
+    for (const row of queued) {
+      const cancelled = f.ok(await f.api('POST', path + '/queued-messages/' + row.deliveryId + '/cancel', {idempotencyKey: randomUUID()}));
+      assert.equal(cancelled.cancelled, true);
+    }
+    session.finish(); await f.settled(agent.id);
+  }, {storeFactory: root => store = new AgentStore(root)});
+});
