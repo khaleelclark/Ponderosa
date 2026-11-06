@@ -120,7 +120,7 @@ test('deleting a published held Branch retires its exact roles and review withou
    await until(async()=>{
     const result=await f.api('DELETE',`/api/branches/${pending.branchId}`);
     if(result.status===409){
-     assert.equal(result.body.error,'Workflow cleanup failed (SQLITE_CONSTRAINT_TRIGGER): A database trigger rejected the operation. Details withheld because they may contain credentials.');
+     assert.equal(result.body.error,'Workflow cleanup failed (SQLITE_CONSTRAINT_TRIGGER): A database trigger rejected the operation. controlled cancellation receipt failure');
      sawCancellationHold=true;
     }else assert.ok([200,202,404].includes(result.status),JSON.stringify(result.body));
     return !store.getAgent(removed)&&!workspace.getPreferences().outputApps.importReviews?.[reviewId];

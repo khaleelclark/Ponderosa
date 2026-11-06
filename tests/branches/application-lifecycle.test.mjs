@@ -9,6 +9,7 @@ import {recoveredRuntimeProcessHandle} from '@ponderosa/engines';
 import {createServer} from '../../apps/server/dist/app.js';
 import {BranchResourceService} from '../../apps/server/dist/branch-resource-service.js';
 import {describeBranchDeletionFailure} from '../../apps/server/dist/branch-installation-service.js';
+import {describeExpertMemoryPreflightFailure,describeChatDeletionIntentFailure} from '../../apps/server/dist/branch-deletion-diagnostics.js';
 import {MEMORY_CLEANUP_HOLD_REASONS} from '../../apps/server/dist/local-memory-authority.js';
 import {payloadHash,stableJson} from '../../packages/agents/dist/coordination-v3-canonical-json.js';
 import {until} from '../shared/fixture.mjs';
@@ -95,8 +96,18 @@ test('DELETE Workflow explains a missing final exit record and leaves the Workfl
  f.pass();
 });
 
-test('Branch deletion explains known failure classes without exposing arbitrary diagnostics',()=>{
+test('Branch deletion explains failures while redacting known secrets',t=>{
  const secret='fixture-bare-credential-value';
+ process.env.PONDEROSA_TEST_DIAGNOSTIC_TOKEN=secret;process.env.PONDEROSA_TEST_SECOND_TOKEN='fixture-unlabeled-secret';
+ t.after(()=>{delete process.env.PONDEROSA_TEST_DIAGNOSTIC_TOKEN;delete process.env.PONDEROSA_TEST_SECOND_TOKEN;});
+ for(const format of [describeExpertMemoryPreflightFailure,describeChatDeletionIntentFailure,describeBranchDeletionFailure]){
+  const diagnostic=format(Object.assign(new Error(`useful synthetic cause ${secret} API_KEY=labeled-secret`),{code:'UNTRUSTED_CODE'}));
+  assert.match(diagnostic,/useful synthetic cause/);assert.doesNotMatch(diagnostic,/UNTRUSTED_CODE/);
+  assert.ok(!diagnostic.includes(secret));assert.ok(!diagnostic.includes('labeled-secret'));
+ }
+ process.env.PONDEROSA_TEST_JOIN_TOKEN='failed. X';
+ assert.ok(!describeBranchDeletionFailure(new Error('X')).includes('failed. X'));
+ delete process.env.PONDEROSA_TEST_JOIN_TOKEN;
  for(const [code,phrase] of [
   ['SQLITE_CONSTRAINT_TRIGGER','A database trigger rejected the operation.'],
   ['SQLITE_CONSTRAINT_FOREIGNKEY','A related database record prevented the operation.'],
@@ -134,8 +145,8 @@ test('Branch deletion explains known failure classes without exposing arbitrary 
   const visible=describeBranchDeletionFailure(new Error(message),'resource');
   assert.equal(visible,`${message}. Cleanup step: cleaning up a temporary Workflow resource.`);
   const altered=describeBranchDeletionFailure(new Error(`${message} ${secret} API_KEY=labeled-secret`),'resource');
-  assert.match(altered,/Details withheld/);assert.ok(!altered.includes(secret));assert.ok(!altered.includes('labeled-secret'));
-  assert.match(describeBranchDeletionFailure(new Error(message),'notifications'),/Details withheld/);
+  assert.match(altered,/API_KEY/);assert.ok(!altered.includes(secret));assert.ok(!altered.includes('labeled-secret'));
+  assert.match(describeBranchDeletionFailure(new Error(message),'notifications'),/Cleanup step: settling notifications/);
  }
  assert.match(describeBranchDeletionFailure(Object.assign(new Error('Temporary agent copy final custody bytes changed'),{code:'EACCES'}),'resource'),/operating system denied access/);
  const finalExit='Authentic final resource exit command unavailable or ambiguous';
@@ -144,17 +155,17 @@ test('Branch deletion explains known failure classes without exposing arbitrary 
   assert.match(message,/final resource exit record is missing or ambiguous/);
   assert.match(message,/Keep the Workflow and its data/);
  }
- assert.match(describeBranchDeletionFailure(new Error(finalExit),'notifications'),/Details withheld/);
+ assert.match(describeBranchDeletionFailure(new Error(finalExit),'notifications'),/Cleanup step: settling notifications/);
  assert.match(describeBranchDeletionFailure(Object.assign(new Error(finalExit),{code:'SQLITE_CONSTRAINT_TRIGGER'}),'records'),/database trigger rejected/);
  const alteredFinal=describeBranchDeletionFailure(new Error(finalExit+' '+secret),'records');
- assert.match(alteredFinal,/Details withheld/);assert.ok(!alteredFinal.includes(secret));
+ assert.match(alteredFinal,/Authentic final resource exit/);assert.ok(!alteredFinal.includes(secret));
  const auditMismatch=describeBranchDeletionFailure(new Error('Retained group journal original scope differs'),'records');
  assert.match(auditMismatch,/retained group audit evidence does not match its Workflow and execution/i);
  assert.match(auditMismatch,/Workflow records were preserved/);
- assert.match(describeBranchDeletionFailure(new Error('Retained group journal original scope differs'),'notifications'),/Details withheld/);
+ assert.match(describeBranchDeletionFailure(new Error('Retained group journal original scope differs'),'notifications'),/Cleanup step: settling notifications/);
  assert.match(describeBranchDeletionFailure(Object.assign(new Error('Retained group journal original scope differs'),{code:'SQLITE_CONSTRAINT_TRIGGER'}),'records'),/database trigger rejected/);
  const decorated=describeBranchDeletionFailure(new Error(`Retained group journal original scope differs ${secret}`),'records');
- assert.match(decorated,/Details withheld/);assert.ok(!decorated.includes(secret));
+ assert.match(decorated,/Retained group journal original scope differs/);assert.ok(!decorated.includes(secret));
  const unknown=describeBranchDeletionFailure(Object.assign(new Error(`unknown failure ${secret}`),{code:secret}));
  assert.match(unknown,/Workflow cleanup failed/);assert.ok(!unknown.includes(secret));
  assert.equal(describeBranchDeletionFailure(new Error('Other Branches depend on this Branch')),'Other Branches depend on this Branch');
@@ -168,6 +179,7 @@ test('Branch deletion explains known failure classes without exposing arbitrary 
 test('final Branch deletion reports and retains a safe cleanup diagnostic until completion',options,async t=>{
  const f=await fixture(t),branch=f.deploy('Deletion diagnostic',[{id:'script',kind:'script',runtime:'node',cwdRef:'workspace',timeoutMs:5000,source:"process.stdout.write('never runs')"}]);
  const fakeSecret='fixture-private-token-value',key='branch-finalize:'+branch.id;
+ process.env.PONDEROSA_TEST_DIAGNOSTIC_TOKEN=fakeSecret;t.after(()=>delete process.env.PONDEROSA_TEST_DIAGNOSTIC_TOKEN);
  const other=f.branches.create('Other diagnostic','other-diagnostic'),otherKey='branch-finalize:'+other.id;
  f.store.sqlite.prepare('INSERT INTO branch_retirement_errors VALUES(?,?,?)').run(otherKey,'unrelated retained diagnostic',new Date().toISOString());
  const trigger=`CREATE TEMP TRIGGER block_final_branch_delete BEFORE DELETE ON branches WHEN OLD.id='${branch.id}' BEGIN SELECT RAISE(ABORT,'controlled final cleanup failure API_KEY=fixture-labeled-value fixture-private-token-value'); END`;
@@ -175,7 +187,7 @@ test('final Branch deletion reports and retains a safe cleanup diagnostic until 
  const pending=await f.api('DELETE',`/api/branches/${branch.id}`,undefined,202);
  assert.equal(pending.pending,true);assert.equal(pending.deleted,false);
  let lifecycle=await f.api('GET',`/api/branches/${branch.id}/lifecycle`);
- assert.equal(lifecycle.deleting,true);assert.match(lifecycle.deletionError,/SQLITE_CONSTRAINT_TRIGGER/);assert.match(lifecycle.deletionError,/database trigger rejected/);assert.match(lifecycle.deletionError,/Cleanup step: removing Workflow records/);assert.match(lifecycle.deletionError,/Details withheld/);assert.ok(!JSON.stringify(lifecycle).includes(fakeSecret));assert.ok(!JSON.stringify(lifecycle).includes('fixture-labeled-value'));
+ assert.equal(lifecycle.deleting,true);assert.match(lifecycle.deletionError,/SQLITE_CONSTRAINT_TRIGGER/);assert.match(lifecycle.deletionError,/database trigger rejected/);assert.match(lifecycle.deletionError,/Cleanup step: removing Workflow records/);assert.match(lifecycle.deletionError,/controlled final cleanup failure/);assert.ok(!JSON.stringify(lifecycle).includes(fakeSecret));assert.ok(!JSON.stringify(lifecycle).includes('fixture-labeled-value'));
  const saved=f.store.sqlite.prepare('SELECT error FROM branch_retirement_errors WHERE resource_id=?').get(key);
  assert.equal(saved.error,lifecycle.deletionError);assert.ok(!saved.error.includes(fakeSecret));
  await f.close();
@@ -201,10 +213,11 @@ test('final Branch deletion reports and retains a safe cleanup diagnostic until 
 
 test('an immediate Branch deletion failure does not expose an unlabeled synthetic secret',options,async t=>{
  const f=await fixture(t),branch=f.deploy('Immediate deletion diagnostic',[{id:'script',kind:'script',runtime:'node',cwdRef:'workspace',timeoutMs:5000,source:"process.stdout.write('never runs')"}]),fakeSecret='fixture-unlabeled-private-value';
+ process.env.PONDEROSA_TEST_DIAGNOSTIC_TOKEN=fakeSecret;t.after(()=>delete process.env.PONDEROSA_TEST_DIAGNOSTIC_TOKEN);
  f.store.sqlite.exec(`CREATE TEMP TRIGGER fail_branch_deletion_start BEFORE UPDATE OF deleting ON branches WHEN OLD.id='${branch.id}' AND NEW.deleting=1 BEGIN SELECT RAISE(ABORT,'controlled start failure fixture-unlabeled-private-value'); END`);
  await f.open();
  const response=await f.api('DELETE',`/api/branches/${branch.id}`,undefined,409);
- assert.match(response.error,/SQLITE_CONSTRAINT_TRIGGER/);assert.match(response.error,/database trigger rejected/);assert.match(response.error,/Details withheld/);assert.ok(!JSON.stringify(response).includes(fakeSecret));
+ assert.match(response.error,/SQLITE_CONSTRAINT_TRIGGER/);assert.match(response.error,/database trigger rejected/);assert.match(response.error,/controlled start failure/);assert.ok(!JSON.stringify(response).includes(fakeSecret));
  assert.equal(f.store.sqlite.prepare('SELECT deleting FROM branches WHERE id=?').get(branch.id).deleting,0);
  f.store.sqlite.exec('DROP TRIGGER fail_branch_deletion_start');
  const done=await f.api('DELETE',`/api/branches/${branch.id}`);assert.equal(done.deleted,true);

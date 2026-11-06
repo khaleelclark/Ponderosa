@@ -1,3 +1,4 @@
+import {workingCopyDiagnostic,rememberWorkingCopyDiagnostic} from "./working-copy-diagnostic.js";
 import {snapshotImportedNativeGit,finalizeImportedNativeSnapshot,importedNativeGitStorage,type ImportedNativeGitStorage,type ImportedNativeExternalProof,type ImportedNativeGitCustody,type LocalGeneratedHooksProof} from './portable-native-git-snapshot.js';
 import {compileReviewedGitConfiguration} from './portable-git-configuration.js';
 import {applyReviewedRecoveryRoots,planReviewedRecoveryRoots} from './portable-git-recreation.js';
@@ -14,12 +15,12 @@ import path from "node:path";
 import { promisify } from "node:util";
 import {
   AgentWorkingCopyUnavailableError,
-  safeWorkingCopyFailure,
   safeWorkingCopyFailureCode,
   recordWorkingCopyGitFailure,
   recordWorkingCopySharedFolderFailure,
   carryWorkingCopyGitFailure,
   isStoredWorkingCopyGitFailure,
+  isFreshStoredWorkingCopyFailure,
   resolveAgentWorkingCopy,
   sharedWorkingCopy,
   type AgentStore,
@@ -74,13 +75,14 @@ async function runGit(cwd: string, args: string[]): Promise<string> {
     const action = args[0] === "-c" && args[6] === "commit" ? "commit" : args[0] ?? "other";
     recordWorkingCopyGitFailure(error, readOnly ? "inspect" : "update", action,
       args.length === 2 && args[0] === "rev-parse" && args[1] === "HEAD");
+    rememberWorkingCopyDiagnostic(error);
     throw error;
   }
 }
 
 function recordedGitMutation<T>(action: string, execute: () => T): T {
   try { return execute(); }
-  catch (error) { recordWorkingCopyGitFailure(error, "update", action); throw error; }
+  catch (error) { recordWorkingCopyGitFailure(error, "update", action); rememberWorkingCopyDiagnostic(error); throw error; }
 }
 
 /** Ownership permits cleanup, but never grants permission to discard work. */
@@ -145,7 +147,7 @@ function deleteOwnedBranchReferences(
 }
 
 function safeFailure(error: unknown): string {
-  return safeWorkingCopyFailure(error);
+  return workingCopyDiagnostic(error);
 }
 
 function missingPath(error: unknown): boolean {
@@ -312,6 +314,7 @@ export class AgentWorkingCopyService {
       if (error instanceof AgentWorkingCopyUnavailableError) throw error;
       const unavailable = new AgentWorkingCopyUnavailableError(agent.workingCopy, safeFailure(error));
       carryWorkingCopyGitFailure(error, unavailable);
+      rememberWorkingCopyDiagnostic(unavailable, unavailable.message);
       throw unavailable;
     }
   }
@@ -763,7 +766,7 @@ export class AgentWorkingCopyService {
       const reason = current.workingCopy.failure;
       if (reason === "Native import metadata and ownership proof are pending; preserve the exact import operation." ||
           reason === "Native Git import proof is incomplete; preserve its exact root and original import operation." ||
-          reason !== undefined && isStoredWorkingCopyGitFailure(reason)) {
+          reason !== undefined && (isStoredWorkingCopyGitFailure(reason) || isFreshStoredWorkingCopyFailure(current.workingCopy))) {
         throw new Error(reason);
       }
       throw new Error("This Agent's working folder is unavailable; inspect its status before retrying.");
@@ -1170,7 +1173,7 @@ export class AgentWorkingCopyService {
     let branchCreationReceipt = agent.workingCopy.mode === "separate_git"
       ? agent.workingCopy.branchCreationReceipt
       : undefined;
-    const unavailable = (failure: string, baseHead = agent.workingCopy.baseHead) => this.requireUpdated(agent.id, {
+    const unavailable = (failure: string, baseHead = agent.workingCopy.baseHead, diagnostic = false) => this.requireUpdated(agent.id, {
       id: identity,
       mode: "separate_git",
       state: "unavailable",
@@ -1181,6 +1184,7 @@ export class AgentWorkingCopyService {
       ...(branchCreationIntent ? { branchCreationIntent: true as const } : {}),
       ...(branchCreationReceipt ? { branchCreationReceipt } : {}),
       failure,
+      ...(diagnostic ? { failureDiagnosticSha256: createHash("sha256").update(failure).digest("hex") } : {}),
       updatedAt: new Date().toISOString(),
     });
     let preparedBaseHead = agent.workingCopy.baseHead;
@@ -1350,7 +1354,7 @@ export class AgentWorkingCopyService {
       return ready;
     } catch (error) {
       if (!mutationStarted) throw error;
-      return unavailable(safeFailure(error), preparedBaseHead);
+      return unavailable(safeFailure(error), preparedBaseHead, true);
     }
   }
 

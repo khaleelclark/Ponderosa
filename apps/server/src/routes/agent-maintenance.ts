@@ -1,3 +1,4 @@
+import {workingCopyDiagnostic} from "../working-copy-diagnostic.js";
 import { normalizeAgentRole } from "@ponderosa/core";
 import type {
   AgentWorkingCopyDto,
@@ -10,7 +11,6 @@ import type {
 } from "@ponderosa/core";
 import {
   AgentDeletionConflictError,
-  safeWorkingCopyFailure,
   safeStoredWorkingCopy,
   normalizeAgentTitle,
   type AgentManagementAuthorization,
@@ -99,7 +99,7 @@ export function registerAgentMaintenanceRoutes(
         return safeStoredWorkingCopy(removed);
       } catch (error) {
         return reply.code(409).send({
-          error: safeWorkingCopyFailure(error),
+          error: workingCopyDiagnostic(error),
         });
       }
     },
@@ -199,7 +199,7 @@ export function registerAgentMaintenanceRoutes(
           return changed;
         } catch (error) {
           return reply.code(409).send({
-            error: safeWorkingCopyFailure(error),
+            error: workingCopyDiagnostic(error),
           });
         } finally {
           releaseModeChange?.();

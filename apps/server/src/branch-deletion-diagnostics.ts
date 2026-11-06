@@ -1,7 +1,7 @@
 import {isMemoryCleanupHold} from './local-memory-authority.js';
+import {freshFailureDiagnostic,redactKnownDiagnosticValues} from './working-copy-diagnostic.js';
 
-// Arbitrary exceptions may contain unlabeled provider credentials. Only
-// fixed, locally authored fence messages and known SQLite codes are public.
+// Fixed local blockers and known SQLite codes retain their existing classification.
 const BRANCH_DELETION_PUBLIC_BLOCKERS=new Set([
  'Temporary agent copy working files were excluded from final custody; cleanup held',
  'Temporary agent copy final memory is unavailable; cleanup held',
@@ -110,27 +110,23 @@ function safeFailureCode(error:unknown):unknown {
 function safeFailureDescription(code:unknown):string|undefined {
  return typeof code==='string'&&Object.hasOwn(BRANCH_DELETION_ERROR_DESCRIPTIONS,code)?BRANCH_DELETION_ERROR_DESCRIPTIONS[code]:undefined;
 }
-/** Keep the structured cause while withholding arbitrary preflight text. */
 export function describeExpertMemoryPreflightFailure(error:unknown):string {
  const code=safeFailureCode(error),description=safeFailureDescription(code);
- return description
-  ? `Expert memory preflight failed (${code}): ${description} Details withheld because they may contain credentials.`
-  : 'Expert memory preflight failed. Details withheld because they may contain credentials.';
+ const base=description ? `Expert memory preflight failed (${code}): ${description}` : 'Expert memory preflight failed.';
+ return freshFailureDiagnostic(error,base);
 }
-/** Do not copy arbitrary exception text into the direct Chat response. */
 export function describeChatDeletionIntentFailure(error:unknown):string {
  const message=error instanceof Error?error.message:'';
- if(BRANCH_DELETION_PUBLIC_BLOCKERS.has(message)||isMemoryCleanupHold(message)||message==='Chat deletion intent could not be persisted'||message==='conversation not found')return message;
+ if(BRANCH_DELETION_PUBLIC_BLOCKERS.has(message)||isMemoryCleanupHold(message)||message==='Chat deletion intent could not be persisted'||message==='conversation not found')return redactKnownDiagnosticValues(message);
  const code=safeFailureCode(error),description=safeFailureDescription(code);
- return description
-  ? `Chat deletion intent could not be confirmed (${code}): ${description} Details withheld because they may contain credentials.`
-  : 'Chat deletion intent could not be confirmed. Details withheld because they may contain credentials.';
+ const base=description ? `Chat deletion intent could not be confirmed (${code}): ${description}` : 'Chat deletion intent could not be confirmed.';
+ return freshFailureDiagnostic(error,base);
 }
 export function describeBranchDeletionFailure(error:unknown,step?:BranchDeletionStep):string{
  const message=error instanceof Error?error.message:'';
- if(BRANCH_DELETION_PUBLIC_BLOCKERS.has(message)||isMemoryCleanupHold(message))return message;
+ if(BRANCH_DELETION_PUBLIC_BLOCKERS.has(message)||isMemoryCleanupHold(message))return redactKnownDiagnosticValues(message);
  const code=safeFailureCode(error),description=safeFailureDescription(code);
- if(step==='resource'&&code===undefined&&BRANCH_RESOURCE_FINAL_BLOCKERS.has(message))return `${message}. Cleanup step: ${BRANCH_DELETION_STEPS.resource}.`;
+ if(step==='resource'&&code===undefined&&BRANCH_RESOURCE_FINAL_BLOCKERS.has(message))return redactKnownDiagnosticValues(`${message}. Cleanup step: ${BRANCH_DELETION_STEPS.resource}.`);
  // This exact host-authored guard identifies an audit-record integrity failure.
  // Match the entire fixed message only at its actual deletion step; never
  // publish the saved journal, arbitrary exception text, or trigger details.
@@ -144,8 +140,9 @@ export function describeBranchDeletionFailure(error:unknown,step?:BranchDeletion
   : groupScopeMismatch
   ? 'Workflow cleanup failed: retained group audit evidence does not match its Workflow and execution. Workflow records were preserved.'
   : description
-  ? `Workflow cleanup failed (${code}): ${description} Details withheld because they may contain credentials.`
-  : 'Workflow cleanup failed. Details withheld because they may contain credentials.';
+  ? `Workflow cleanup failed (${code}): ${description}`
+  : 'Workflow cleanup failed.';
  const label=step&&Object.hasOwn(BRANCH_DELETION_STEPS,step)?BRANCH_DELETION_STEPS[step]:undefined;
- return label?`${safe} Cleanup step: ${label}.`:safe;
+ const formatted=finalExitUnavailable||groupScopeMismatch?safe:freshFailureDiagnostic(error,safe);
+ return redactKnownDiagnosticValues(label?`${formatted} Cleanup step: ${label}.`:formatted);
 }

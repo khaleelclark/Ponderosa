@@ -1,8 +1,9 @@
 import type { AgentWorkingCopyDto } from "@ponderosa/core";
+import { createHash } from "node:crypto";
 
 // Only fixed, application-authored explanations can cross this boundary.
-// Tool stderr, OS messages, stored legacy text and arbitrary error codes may
-// contain credentials, so unknown text is never copied into public DTOs.
+// Legacy text is withheld unless a host-written digest binds it to a fresh
+// redacted diagnostic. Tool stderr and arbitrary error codes remain untrusted.
 const fixed = new Set<string>([
   "A selected bare common-storage root cannot also become a Separate Git working tree; choose a distinct storage subfolder or retain its Shared folder mode",
   "Agent became unavailable while changing its working folder",
@@ -223,8 +224,8 @@ export function isStoredWorkingCopyGitFailure(value: string): boolean {
 }
 
 /** Reconstitute only the closed persisted form on a host-created exception. */
-export function adoptStoredWorkingCopyGitFailure(target: object, value: string): void {
-  if (isStoredWorkingCopyGitFailure(value)) gitFailures.set(target, value);
+export function adoptStoredWorkingCopyGitFailure(target: object, value: string, copy?: AgentWorkingCopyDto): void {
+  if (isStoredWorkingCopyGitFailure(value) || copy?.failure === value && isFreshStoredWorkingCopyFailure(copy)) gitFailures.set(target, value);
 }
 
 const legacyPrefix = "Separate Git copy is unavailable. ";
@@ -257,8 +258,13 @@ export function safeWorkingCopyFailureCode(error: unknown): string {
   return typeof code === "string" && Object.hasOwn(systemCodes, code) ? code : "ERR_IMPORTED_GIT_ADOPTION_PARTIAL";
 }
 
+export function isFreshStoredWorkingCopyFailure(copy: AgentWorkingCopyDto): boolean {
+  return typeof copy.failure === "string" && typeof copy.failureDiagnosticSha256 === "string" &&
+    copy.failureDiagnosticSha256 === createHash("sha256").update(copy.failure).digest("hex");
+}
+
 export function safeStoredWorkingCopy(copy: AgentWorkingCopyDto): AgentWorkingCopyDto {
-  return copy.failure === undefined ? copy : { ...copy, failure: fixedReason(copy.failure) || Object.values(systemCodes).includes(copy.failure) || copy.failure === generic || isStoredWorkingCopyGitFailure(copy.failure) ? copy.failure : legacyWithheld };
+  return copy.failure === undefined ? copy : { ...copy, failure: isFreshStoredWorkingCopyFailure(copy) || fixedReason(copy.failure) || Object.values(systemCodes).includes(copy.failure) || copy.failure === generic || isStoredWorkingCopyGitFailure(copy.failure) ? copy.failure : legacyWithheld };
 }
 
 /** A read projection must not erase an older stored diagnostic when an

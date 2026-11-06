@@ -23,7 +23,7 @@ export class AgentWorkingCopyUnavailableError extends Error {
   ) {
     super(message);
     this.name = "AgentWorkingCopyUnavailableError";
-    if (message === safeStoredWorkingCopy(workingCopy).failure) adoptStoredWorkingCopyGitFailure(this, message);
+    if (message === safeStoredWorkingCopy(workingCopy).failure) adoptStoredWorkingCopyGitFailure(this, message, workingCopy);
   }
 }
 

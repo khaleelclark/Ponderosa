@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID, createHash } from 'node:crypto';
-import { writeFile, readFile, access, rm, rename } from 'node:fs/promises';
+import { writeFile, readFile, access, rm, rename, mkdir, chmod } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
@@ -482,16 +482,17 @@ test('working-copy mode explains a temporarily missing Shared folder',options,as
  });
 });
 
-test('working-copy mode 409 withholds injected teardown error details',options,async t=>{
+test('working-copy mode 409 preserves teardown cause while redacting a known value',options,async t=>{
  await withFixture(t,async f=>{
   const chat=await f.createChat('Working-copy route errors'),agent=await f.createIdleAgent(chat,'Worker');
   const original=AgentWorkingCopyService.prototype.setMode, secret='fixture-secret-synthetic-5c71';
+  process.env.PONDEROSA_TEST_DIAGNOSTIC_TOKEN=secret;
   AgentWorkingCopyService.prototype.setMode=async()=>{throw Object.assign(new Error('teardown '+secret+'\nprivate details'),{code:secret});};
   try{
    const result=await f.api('PATCH',`/api/agents/${agent.id}`,{workingCopyMode:'separate_git'});
    assert.equal(result.status,409);assert.doesNotMatch(JSON.stringify(result.body),new RegExp(secret));
-   assert.match(result.body.error,/withheld/);
-  }finally{AgentWorkingCopyService.prototype.setMode=original;}
+   assert.match(result.body.error,/teardown/);assert.match(result.body.error,/private details/);
+  }finally{AgentWorkingCopyService.prototype.setMode=original;delete process.env.PONDEROSA_TEST_DIAGNOSTIC_TOKEN;}
  });
 });
 
@@ -500,7 +501,7 @@ test('legacy working-copy failure is projected safely without erasing or resurre
  await withFixture(t,async f=>{
   const chat=await f.createChat('Legacy working-copy reason'),agent=await f.createIdleAgent(chat,'Worker');
   const secret='fixture-secret-synthetic-e5aa',before=store.getAgent(agent.id).workingCopy;
-  store.updateAgentWorkingCopy(agent.id,{...before,state:'unavailable',failure:'old tool '+secret});
+  store.updateAgentWorkingCopy(agent.id,{...before,state:'unavailable',failure:'old tool '+secret,failureDiagnosticSha256:createHash('sha256').update('different sanitized text').digest('hex')});
   const read=()=>JSON.parse(store.client.prepare('SELECT working_copy_json FROM agents WHERE id=?').get(agent.id).working_copy_json);
   const projected=store.getAgent(agent.id).workingCopy;
   assert.doesNotMatch(JSON.stringify(projected),new RegExp(secret));assert.match(projected.failure,/withheld/);
@@ -522,14 +523,35 @@ test('post-mutation working-copy failure persists only a safe synthetic reason',
   await exec('git',['init','-b','main'],{cwd});await writeFile(path.join(cwd,'tracked'),'fixture');
   await exec('git',['add','tracked'],{cwd});await exec('git',['-c','user.name=Fixture','-c','user.email=fixture@invalid','commit','-m','Baseline'],{cwd});
   const original=store.updateAgentWorkingCopy,secret='fixture-secret-synthetic-2f6d';let injected=false;
+  process.env.PONDEROSA_TEST_DIAGNOSTIC_TOKEN=secret;
   store.updateAgentWorkingCopy=function(...args){if(!injected){injected=true;throw new Error('untrusted '+secret+'\nprivate');}return original.apply(this,args);};
   const service=new AgentWorkingCopyService(f.dataDir,store),release=service.beginModeChange(agent.id);
   try{
    const result=await service.setMode(store.getAgent(agent.id),store.getProject(chat.projectId),'separate_git');
-   assert.equal(result.workingCopy.state,'unavailable');assert.match(result.workingCopy.failure,/withheld/);
+   assert.equal(result.workingCopy.state,'unavailable');assert.match(result.workingCopy.failure,/untrusted/);assert.match(result.workingCopy.failure,/private/);
    assert.doesNotMatch(JSON.stringify(result.workingCopy),new RegExp(secret));
    assert.doesNotMatch(JSON.stringify(store.getAgent(agent.id).workingCopy),new RegExp(secret));
-  }finally{release();store.updateAgentWorkingCopy=original;}
+   await f.reopen();const restored=store.getAgent(agent.id).workingCopy;
+   assert.match(restored.failure,/untrusted/);assert.match(restored.failure,/private/);assert.doesNotMatch(JSON.stringify(restored),new RegExp(secret));
+   const resumed=new AgentWorkingCopyService(f.dataDir,store);
+   assert.throws(()=>resumed.assertRunAdmission(agent.id,restored),error=>error.message===restored.failure);
+   const turns=f.turns.length;
+   const admission=await f.api('POST',`/api/agents/${agent.id}/messages`,{text:'Attempt unavailable folder',idempotencyKey:randomUUID()});
+   assert.doesNotMatch(JSON.stringify(admission.body),new RegExp(secret));
+   if(admission.status>=400){assert.match(JSON.stringify(admission.body),/untrusted/);}
+   else{
+    const work=await until(async()=>{
+     const response=await f.api('GET',`/api/projects/${chat.projectId}/agent-work?agentId=${agent.id}`);
+     if(response.status!==200)return;
+     for(const item of response.body.items.filter(item=>item.kind==='activation')){
+      const detail=await f.api('GET',`/api/projects/${chat.projectId}/agent-work/items/activation/${item.recordId}`);
+      if(detail.status===200&&JSON.stringify(detail.body).includes('untrusted'))return detail.body;
+     }
+    },'unavailable folder admission detail');
+    assert.match(JSON.stringify(work),/untrusted/);assert.doesNotMatch(JSON.stringify(work),new RegExp(secret));
+   }
+   assert.equal(f.turns.length,turns,'unavailable working folder must not enter provider');
+  }finally{release();store.updateAgentWorkingCopy=original;delete process.env.PONDEROSA_TEST_DIAGNOSTIC_TOKEN;}
  },{storeFactory:root=>store=new AgentStore(root)});
 });
 
@@ -550,12 +572,65 @@ test('deleted working-copy listing and cleanup response withhold synthetic legac
   const Fastify=createRequire(new URL('../../apps/server/package.json',import.meta.url))('fastify');
   const {registerAgentMaintenanceRoutes}=await import('../../apps/server/dist/routes/agent-maintenance.js');
   const direct=Fastify();
+  process.env.PONDEROSA_TEST_DIAGNOSTIC_TOKEN=secret;
   registerAgentMaintenanceRoutes(direct,{store,workingCopies:{async cleanupRetained(){throw new Error('cleanup '+secret);}},appendWorkspace(){}});
   try{
    const response=await direct.inject({method:'DELETE',url:'/api/projects/'+chat.projectId+'/deleted-agents/'+agent.id+'/working-copy'});
    assert.equal(response.statusCode,409);assert.doesNotMatch(response.body,new RegExp(secret));
-   assert.match(response.json().error,/withheld/);
-  }finally{await direct.close();}
+   assert.match(response.json().error,/cleanup/);
+  }finally{await direct.close();delete process.env.PONDEROSA_TEST_DIAGNOSTIC_TOKEN;}
   assert.match(store.sqlite.prepare('SELECT working_copy_json FROM agents WHERE id=?').get(agent.id).working_copy_json,new RegExp(secret));
+ },{storeFactory:root=>store=new AgentStore(root)});
+});
+
+
+test('fresh working-copy diagnostics retain Git stderr and redact known literal values while rejecting an unsafe code',async()=>{
+ const {workingCopyDiagnostic,rememberWorkingCopyDiagnostic}=await import('../../apps/server/dist/working-copy-diagnostic.js');
+ const {recordWorkingCopyGitFailure,safeWorkingCopyFailureCode}=await import('@ponderosa/agents');
+ const value='SYNTHETIC_GIT_KNOWN_VALUE_741',malicious='SYNTHETIC_CODE_741';
+ process.env.PONDEROSA_TEST_DIAGNOSTIC_TOKEN=value;
+ try{
+  const error=Object.assign(new Error('opaque command failure'),{code:malicious,stderr:'fatal: benign Git reason '+value+'\napi_key='+value});
+  recordWorkingCopyGitFailure(error,'inspect','rev-parse');rememberWorkingCopyDiagnostic(error);
+  delete process.env.PONDEROSA_TEST_DIAGNOSTIC_TOKEN;
+  const message=workingCopyDiagnostic(error);assert.match(message,/benign Git reason/);
+  assert.doesNotMatch(message,new RegExp(value));assert.doesNotMatch(message,new RegExp(malicious));
+  assert.equal(safeWorkingCopyFailureCode(error),'ERR_IMPORTED_GIT_ADOPTION_PARTIAL');
+ }finally{delete process.env.PONDEROSA_TEST_DIAGNOSTIC_TOKEN;}
+});
+
+
+test('working-copy route retains Git stderr while redacting a configured synthetic value',options,async t=>{
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Git diagnostic'),agent=await f.createIdleAgent(chat,'Worker');
+  const dir=path.join(f.root,'synthetic-git-bin');await mkdir(dir);
+  const bin=path.join(dir,'git'),secret='SYNTHETIC_GIT_ROUTE_VALUE_518';
+  await writeFile(bin,'#!/bin/sh\nprintf "fatal: synthetic Git diagnosis %s\\n" "$PONDEROSA_TEST_DIAGNOSTIC_TOKEN" >&2\nexit 128\n');await chmod(bin,0o700);
+  const priorPath=process.env.PATH;process.env.PATH=dir+path.delimiter+priorPath;process.env.PONDEROSA_TEST_DIAGNOSTIC_TOKEN=secret;
+  try{
+   const result=await f.api('PATCH',`/api/agents/${agent.id}`,{workingCopyMode:'separate_git'});
+   assert.equal(result.status,409);assert.match(result.body.error,/synthetic Git diagnosis/);
+   assert.doesNotMatch(JSON.stringify(result.body),new RegExp(secret));
+  }finally{process.env.PATH=priorPath;delete process.env.PONDEROSA_TEST_DIAGNOSTIC_TOKEN;}
+ });
+});
+
+test('Agent package import rejects forged working-copy diagnostic metadata',options,async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Import marker boundary');
+  const base={schema:'ponderosa.agent-package.v1',mode:'template',kind:'agent',exportedAt:new Date().toISOString(),sourceLabel:'Synthetic',rootRef:'worker',agents:[{ref:'worker',title:'Worker',engine:'codex',managementPermissions:{allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false}}]};
+  const {validatePortableAgentPackage}=await import('../../apps/server/dist/portable-agent-package-validation.js');
+  assert.doesNotThrow(()=>validatePortableAgentPackage(base));
+  const before=store.listAgents(chat.projectId).length;
+  for(const field of ['failureDiagnosticSha256','workingCopy']){
+   const pkg=structuredClone(base);pkg.agents[0][field]=field==='workingCopy'?{failure:'unverified legacy',failureDiagnosticSha256:'0'.repeat(64)}:'0'.repeat(64);
+   const result=await f.api('POST',`/api/projects/${chat.projectId}/import-agents`,{package:pkg,conversationId:chat.id,engineMapping:{codex:'codex'}},{'idempotency-key':randomUUID()});
+   assert.ok(result.status>=400);assert.match(JSON.stringify(result.body),new RegExp('unknown Agent package node field.*'+field));
+   assert.equal(store.listAgents(chat.projectId).length,before);
+  }
+  const control=await f.api('POST',`/api/projects/${chat.projectId}/import-agents`,{package:base,conversationId:chat.id,engineMapping:{codex:'codex'}},{'idempotency-key':randomUUID()});
+  assert.ok(control.status>=200&&control.status<300,JSON.stringify(control.body));
+  assert.equal(store.listAgents(chat.projectId).length,before+1);
  },{storeFactory:root=>store=new AgentStore(root)});
 });

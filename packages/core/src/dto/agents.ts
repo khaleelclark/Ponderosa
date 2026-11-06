@@ -76,6 +76,8 @@ export interface AgentWorkingCopyDto {
   cleanupReceipt?: AgentWorkingCopyCleanupReceiptDto;
   /** Safe operator-facing reason when the requested mode cannot be used. */
   failure?: string;
+  /** Host-written hash binding a fresh diagnostic to its redacted text. */
+  failureDiagnosticSha256?: string;
   updatedAt: string;
 }
 
