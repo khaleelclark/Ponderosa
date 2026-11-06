@@ -373,3 +373,25 @@ test('only confirmed current prepared copy exposes the scoped preparation retry'
  const ordinary=olderAttempt();ordinary.attempt.state='prepared';const held=fixture({actions:[ordinary]});held.render();assert.equal(held.button('Retry preparing copy'),undefined);assert.equal(held.button('Retry Step'),undefined);
  const unknown=olderAttempt({unknown:true});unknown.attempt.snapshotRetryAvailable=true;const uncertain=fixture({actions:[unknown]});uncertain.render();assert.equal(uncertain.button('Retry preparing copy'),undefined);assert.ok(uncertain.button('Retry Anyway'));
 });
+
+
+test('valid same-Run action revision drift is neutral while malformed, foreign and HTTP errors stay visible',async()=>{
+ const f=fixture({actions:[olderAttempt()]});f.render();
+ f.setTransport(async()=>({...f.actionPage,revision:8,generation:'checkpoint-8'}));
+ let pending;await assert.rejects(f.queries.get('branch-execution-actions').queryFn({}),error=>{pending=error;return true;},'Different revision cannot grant action authority');
+ f.setQuery('branch-execution-actions',{error:pending});
+ const waiting=f.render();assert.match(waiting,/Refreshing Run actions/);assert.doesNotMatch(waiting,/Decisions and failures could not refresh/);
+ assert.equal(f.button('Retry Step').disabled,true);assert.ok(f.button('Refresh Run'),'Neutral pending keeps a manual recovery path');
+ f.execution.revision=8;f.actionPage.revision=8;f.actionPage.generation='checkpoint-8';f.setQuery('branch-execution-actions',{error:null});
+ assert.doesNotMatch(f.render(),/Refreshing Run actions/);assert.equal(f.button('Retry Step').disabled,false);
+ for(const response of [null,{...f.actionPage,executionId:'foreign'},{...f.actionPage,revision:'8'},{...f.actionPage,generation:''},{...f.actionPage,items:null},{...f.actionPage,revision:9,items:[null]}]){
+  f.setTransport(async()=>response);let failure;
+  await assert.rejects(f.queries.get('branch-execution-actions').queryFn({}),error=>{failure=error;return true;},'Invalid response must be rejected');
+  f.setQuery('branch-execution-actions',{error:failure});const html=f.render();
+  assert.match(html,/Decisions and failures could not refresh/);assert.equal(f.button('Retry Step').disabled,true);assert.ok(f.button('Refresh Run'));
+ }
+ const outage=new ApiRequestError(503,'Actions service unavailable');f.setTransport(async()=>{throw outage});
+ await assert.rejects(f.queries.get('branch-execution-actions').queryFn({}),error=>error===outage);
+ f.setQuery('branch-execution-actions',{error:outage});assert.match(f.render(),/Decisions and failures could not refresh.*Actions service unavailable/);
+ assert.equal(f.button('Retry Step').disabled,true);
+});

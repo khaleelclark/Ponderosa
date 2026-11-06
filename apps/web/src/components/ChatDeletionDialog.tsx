@@ -53,7 +53,7 @@ export function ChatDeletionDialog({
   >
     <Alert severity="warning">
       This permanently deletes the Chat and its history{agents.length ? ", plus the Agents listed below" : ""}.
-      {agents.length ? " Their runs, work logs, private attachments, and in-app artifact views will no longer be available." : ""}
+      {agents.length ? " Their runs, work logs, private attachments, and in-app artifact views will no longer be available." : ""}{" "}
       Files saved in the Project working folder and Project-level artifacts are not deleted.
       Pending work is cancelled. Stop active Agents before deleting.
     </Alert>

@@ -23,6 +23,8 @@ import {ChatMessageBody} from '../chat/ChatMessages';
 import {currentFailedInvocations,nodeName} from './model';
 import {SemanticStatus} from '../SemanticStatus';
 import {branchOperationalStatusKinds,controlStates,currentExecutionActions,mapItemStatus,shouldPollOperations} from './executionPresentation';
+// A valid same-Run actions page may arrive before matching execution details.
+class RunActionsRevisionPending extends Error {}
 function Gate({gate,label,onChanged,disabled=false}:{gate:BranchGateDto;label:string;onChanged():void;disabled?:boolean}):JSX.Element{
  const [text,setText]=useState(gate.proposal),[choice,setChoice]=useState(gate.choices?.[0]??''),[key,setKey]=useState(()=>createClientId());
  const resolve=useMutation({mutationFn:(decision:BranchGateResolution['decision'])=>requestJson(`/api/branch-gates/${gate.id}/resolve`,{method:'POST',body:JSON.stringify({commandKey:key,expectedRevision:gate.revision,decision,...(decision==='approve'?(gate.choices?.length?{choice}:gate.editable?{output:text}:{}):{})} satisfies BranchGateResolution)}),onSuccess:onChanged});
@@ -99,9 +101,13 @@ export function ExecutionPanel({detail,definition,viewStates,onBudgetSettings,ev
  const actionsKey=['branch-execution-actions',execution.id];
  const actions=useInfiniteQuery({queryKey:actionsKey,initialPageParam:undefined as string|undefined,queryFn:async({pageParam})=>{
   const page=await requestJson<BranchExecutionActionsDto>('/api/branch-executions/'+execution.id+'/actions'+(pageParam?'?cursor='+encodeURIComponent(pageParam):''));
-  if(page.executionId!==execution.id||page.revision!==execution.revision||!page.generation)throw new Error('This run changed. Refresh its details to load current decisions and failures.');
+  if(!page||page.executionId!==execution.id||!Number.isSafeInteger(page.revision)||page.revision<0||typeof page.generation!=='string'||!page.generation||!Array.isArray(page.items))throw new Error('This run changed or returned invalid actions. Refresh its details to load current decisions and failures.');
+  // Reject malformed action items before treating revision drift as synchronization.
+  currentExecutionActions({id:execution.id,revision:page.revision},[page]);
+  if(page.revision!==execution.revision)throw new RunActionsRevisionPending('This run changed; its details are refreshing.');
   return page;
  },getNextPageParam:last=>last.nextCursor,retry:false,refetchInterval:5000});
+ const actionsRevisionPending=actions.error instanceof RunActionsRevisionPending;
  const currentActions=currentExecutionActions(execution,actions.data?.pages);
  // Keep same-ID Decision forms mounted while this Run refreshes. Their response
  // owner validates Decisions independently; Branch interventions still require
@@ -152,8 +158,8 @@ export function ExecutionPanel({detail,definition,viewStates,onBudgetSettings,ev
   {waitRows.length>0?<Stack spacing={1}>{waitRows}</Stack>:execution.waitReason&&<Alert severity="info">{execution.waitReason}</Alert>}
   {(execution.budgetWait||detail.waits?.some(wait=>wait.kind==='execution_budget'))&&<Alert severity="warning" action={onBudgetSettings?<Button onClick={()=>onBudgetSettings(execution.budgetWait?.branchId??detail.waits?.find(wait=>wait.kind==='execution_budget')?.branchId)}>Budget Settings</Button>:undefined}>Waiting for automatic execution budget · manual runs exempt</Alert>}
   {execution.budgetExhausted&&<Alert severity={execution.state==='failed'?'error':'warning'}><Typography fontWeight={650}>Workflow traversal limit reached</Typography><Typography>{detail.decisions?.find(decision=>decision.kind==='limit_exhausted')?.message??'Inspect the run decisions and completed Steps before restarting any work.'}</Typography></Alert>}
-  {actions.error&&<Alert severity="warning" action={<Button onClick={refresh}>Refresh Run</Button>}>Decisions and failures could not refresh. {actions.error.message}</Alert>}
-  {!execution.runtimeData&&actionItems&&!actionsCurrent&&!actions.error&&<Typography role="status" color="text.secondary">Refreshing Run actions · open decisions are kept</Typography>}
+  {actions.error&&!actionsRevisionPending&&<Alert severity="warning" action={<Button onClick={refresh}>Refresh Run</Button>}>Decisions and failures could not refresh. {actions.error.message}</Alert>}
+  {!execution.runtimeData&&(actionsRevisionPending||actionItems&&!actionsCurrent&&!actions.error)&&<Stack direction="row" alignItems="center" gap={1} flexWrap="wrap"><Typography role="status" color="text.secondary">Refreshing Run actions · open decisions are kept</Typography>{actionsRevisionPending&&<Button onClick={refresh}>Refresh Run</Button>}</Stack>}
   {!execution.runtimeData&&!actionItems&&!actions.error&&<Typography role="status" color="text.secondary">Loading current decisions and failures…</Typography>}
   {guidanceReviews.map(update=><Paper key={update.attemptId+':'+update.injectionId} variant="outlined" sx={{p:2,borderColor:'warning.main'}}><Stack spacing={1}><Typography fontWeight={650}>Guidance Delivery Needs Review</Typography><Typography>Inspect Agent work and external effects; delivery is unconfirmed and no separate Agent result is expected.</Typography><Typography variant="caption" sx={{overflowWrap:'anywhere'}}>Attempt {update.attemptId} · injection {update.injectionId}</Typography><Button sx={{alignSelf:'start'}} disabled={!actionsCurrent} onClick={()=>open({action:'resolve_guidance',attemptId:update.attemptId,injectionId:update.injectionId})}>Review Guidance Delivery</Button></Stack></Paper>)}
   {scheduleUpdates.map(update=><Paper key={update.occurrenceId+':'+update.injectionId} variant="outlined" sx={{p:2,borderColor:'warning.main'}}><Stack spacing={1}><Typography fontWeight={650}>Scheduled Update Needs Reconciliation</Typography><Typography>Scheduled delivery uncertain · inspect Agent work + external effects before reconciliation</Typography><Typography variant="caption" color="text.secondary">{update.eventCount} scheduled event{update.eventCount===1?'':'s'} · Latest: {new Date(update.lastScheduledAt).toLocaleString()}</Typography><Button sx={{alignSelf:'start'}} disabled={!actionsCurrent} onClick={()=>open({action:'resolve_schedule_update',occurrenceId:update.occurrenceId})}>Reconcile Scheduled Update</Button></Stack></Paper>)}
