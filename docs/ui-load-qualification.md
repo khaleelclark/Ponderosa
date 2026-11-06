@@ -399,6 +399,21 @@ guarantees that a later event cannot arrive or increase an interaction maximum.
 In particular a zero-callback session has no zero-drop receipt and remains
 inconclusive even if all interactions could have been below the reporting floor.
 
+The first callback after `observe()` must contain an explicit zero dropped-entry
+receipt. The Performance Timeline processing model then leaves that callback
+field unset; subsequent raw null fields are retained and do not themselves mean
+a missing receipt. Any reported positive drop, malformed field, missing initial
+receipt or zero-callback session still leaves the population unqualified.
+
+The Event Timing API also reports auxiliary events with interaction ID zero.
+Documented hover/mouse/beforeinput companions do not invalidate the native count;
+zero-ID `input` is exempted only when independent composition counters are all
+zero. Unknown event types, zero-ID discrete interaction events and malformed IDs
+remain ambiguous. Positive IDs always contribute their observed maxima. Raw
+auxiliary entries remain evidence and never become invented zero-duration inputs.
+Sources: [Event Timing](https://www.w3.org/TR/event-timing/#sec-performance-event-timing)
+and [Performance Timeline callback processing](https://www.w3.org/TR/performance-timeline/#queue-the-performanceobserver-task).
+
 This source change and its synthetic checks do not constitute a real-browser
 qualification, an independent method acceptance, or a completed 32-cell load.
 The execution, active-work, capacity, and full-run evidence remain open.

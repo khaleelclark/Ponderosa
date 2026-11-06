@@ -20,6 +20,46 @@ test('slow zero-ID or malformed Event Timing records make the censored populatio
   assert.equal(summarizeTimings([row]).qualifiedPopulation,false);
  }
 });
+test('documented auxiliary zero-ID entries do not invalidate native interaction counts',()=>{
+ const names=['pointerover','pointerenter','pointerout','pointerleave','mouseover','mouseenter','mouseout','mouseleave','mousedown','mouseup','beforeinput','input'];
+ const row=session([{interactionId:1,duration:32},...names.map(name=>({name,interactionId:0,duration:999}))],1);
+ for(const counters of [row.eventCounts,...row.health.delivery.checkpoints.map(c=>c.eventCounts),row.health.delivery.postCapture.checkpoint.eventCounts])Object.assign(counters,{compositionstart:0,compositionupdate:0,compositionend:0});
+ const result=summarizeTimings([row]);
+ assert.equal(result.qualifiedPopulation,true);assert.equal(result.totalInteractions,1);assert.equal(result.nInteractions,1);
+ assert.equal(result.p75,32);assert.equal(result.censored,0);assert.equal(result.sessions[0].zeroIdEntries,names.length);
+ assert.equal(row.events.length,names.length+1,'Raw auxiliary evidence remains intact');
+});
+test('eligible or unknown zero-ID events and malformed auxiliary IDs stay ambiguous',()=>{
+ for(const name of ['keydown','keyup','keypress','pointerdown','pointerup','click','unknown-event']){
+  const result=summarizeTimings([session([{interactionId:1,duration:32},{name,interactionId:0,duration:999}],2)]);
+  assert.equal(result.qualifiedPopulation,false,name);assert.equal(result.p75,null,name);assert.equal(result.sessions[0].ambiguousInteractionId,true,name);
+ }
+ for(const interactionId of [undefined,-1,1.5,Number.MAX_SAFE_INTEGER+1])assert.equal(summarizeTimings([session([{name:'mouseover',interactionId,duration:32}],1)]).qualifiedPopulation,false);
+});
+test('zero-ID input needs independent absence of composition; positive IDs stay measured',()=>{
+ for(const counters of [{},{compositionstart:1,compositionupdate:0,compositionend:0},{compositionstart:0,compositionupdate:1,compositionend:0},{compositionstart:0,compositionupdate:0,compositionend:1}]){
+  const row=session([{interactionId:1,duration:32},{name:'input',interactionId:0,duration:999}],2);Object.assign(row.eventCounts,counters);
+  const result=summarizeTimings([row]);assert.equal(result.qualifiedPopulation,false);assert.equal(result.sessions[0].ambiguousInteractionId,true);
+ }
+ const row=session([{interactionId:1,duration:32},{name:'input',interactionId:2,duration:96}],2);
+ const result=summarizeTimings([row]);assert.equal(result.qualifiedPopulation,true);assert.equal(result.nInteractions,2);assert.equal(result.p75,96);
+});
+
+test('first zero-drop receipt permits later spec-defined omitted callback fields',()=>{
+ const row=session([{interactionId:1,duration:32}],1);
+ row.health.callbacks=2;row.health.callbackLedger.push({observedAt:1516,droppedEntriesCount:null});
+ assert.equal(summarizeTimings([row]).qualifiedPopulation,true);
+ assert.equal(row.health.callbackLedger[1].droppedEntriesCount,null,'Omission stays unknown as a raw field, not a fabricated zero');
+ for(const droppedEntriesCount of [null,undefined,-1,1,'0']){
+  const bad=structuredClone(row);bad.health.callbackLedger[0].droppedEntriesCount=droppedEntriesCount;
+  assert.equal(summarizeTimings([bad]).qualifiedPopulation,false,'First callback needs an explicit zero receipt');
+ }
+ for(const droppedEntriesCount of [undefined,-1,1,'0']){
+  const bad=structuredClone(row);bad.health.callbackLedger[1].droppedEntriesCount=droppedEntriesCount;
+  assert.equal(summarizeTimings([bad]).qualifiedPopulation,false,'Later reported drops or malformed fields stay unqualified');
+ }
+});
+
 test('namespaces, unfinished collectors and missing evidence fail closed',()=>{
  const row=session([{interactionId:1,duration:32}],1);assert.throws(()=>summarizeTimings([{...row,namespace:'same'},{...row,namespace:'same'}]));
  assert.equal(summarizeTimings([{...row,finalized:false}]).qualifiedPopulation,false);

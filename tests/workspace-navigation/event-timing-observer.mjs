@@ -53,10 +53,14 @@ export function summarizeTimings(sessions){
   const namespace=session.namespace??`diagnostic-${index}`;if(namespaces.has(namespace))throw Error('Duplicate document namespace');namespaces.add(namespace);
   if(session.documentId){if(documents.has(session.documentId))throw Error('Duplicate document identity');documents.add(session.documentId);}
   if(Number.isFinite(session.window?.timeOrigin)){if(origins.has(session.window.timeOrigin))throw Error('Duplicate document time origin');origins.add(session.window.timeOrigin);}
-  // Chrome can increment interactionCount yet expose an entry with interactionId
-  // zero (for example, selection autoscroll). An observed zero-ID entry may be
-  // slow and cannot safely be classified as a fast censored interaction.
-  const ambiguousInteractionId=session.events.some(entry=>!Number.isSafeInteger(entry.interactionId)||entry.interactionId<=0);
+  // Event Timing also exposes auxiliary events whose zero ID is expected:
+  // https://www.w3.org/TR/event-timing/#sec-performance-event-timing
+  // https://www.w3.org/TR/event-timing/#compute-interactionid
+  // A composing input can create an interaction; exempt zero-ID input only
+  // when the independent event counters establish no composition occurred.
+  const auxiliaryZeroTypes=new Set(['pointerover','pointerenter','pointerout','pointerleave','mouseover','mouseenter','mouseout','mouseleave','mousedown','mouseup','beforeinput']);
+  const noComposition=['compositionstart','compositionupdate','compositionend'].every(type=>session.eventCounts?.[type]===0);
+  const ambiguousInteractionId=session.events.some(entry=>!Number.isSafeInteger(entry.interactionId)||entry.interactionId<0||(entry.interactionId===0&&!auxiliaryZeroTypes.has(entry.name)&&!(entry.name==='input'&&noComposition)));
   const grouped=new Map();for(const entry of session.events)if(Number.isSafeInteger(entry.interactionId)&&entry.interactionId>0&&Number.isFinite(entry.duration)&&entry.duration>=0)grouped.set(entry.interactionId,Math.max(grouped.get(entry.interactionId)??0,entry.duration));
   const eligible=session.lcp.filter(e=>!session.cutoff||e.startTime<=session.cutoff.time);
   if(!eligible.length)throw Error('Missing eligible LCP, never substitute zero');
@@ -66,7 +70,11 @@ export function summarizeTimings(sessions){
   const lifecycle=Array.isArray(session.lifecycle)&&session.lifecycle.length>0&&session.lifecycle[0].type==='init'&&session.lifecycle.every(e=>e.visibility==='visible'&&e.type!=='pagehide'&&Number.isFinite(e.time)&&e.time>=window?.start&&e.time<=window?.end);
   // A session with no callback has no browser drop-count receipt; even if every
   // interaction might be below the reporting floor it remains inconclusive.
-  const health=session.health?.registered===true&&session.health.drained===true&&session.health.droppedEntries===0&&Number.isInteger(session.health.callbacks)&&session.health.callbacks>0&&Number.isFinite(session.health.flushCompletedAt)&&session.health.flushCompletedAt>=window?.end&&Array.isArray(session.health.callbackLedger)&&session.health.callbackLedger.length===session.health.callbacks&&session.health.callbackLedger.every(c=>Number.isFinite(c.observedAt)&&c.observedAt>=window?.start&&c.observedAt<=session.health.flushCompletedAt&&Number.isInteger(c.droppedEntriesCount)&&c.droppedEntriesCount>=0)&&session.eventCounts&&Array.isArray(session.trustedInputs)&&session.trustedInputs.length>0&&session.trustedInputs.every(e=>Number.isFinite(e.time)&&e.time>=window?.start&&e.time<=window?.end)&&['pointerdown','pointerup','click','keydown','keyup'].every(type=>Number.isInteger(session.eventCounts[type]??0)&&(session.eventCounts[type]??0)>=session.trustedInputs.filter(e=>e.type===type).length);
+  // Performance Timeline reports droppedEntriesCount on the first callback
+  // after observe(), then leaves it unset. Require that first zero receipt;
+  // retain later nulls without fabricating zeros or accepting reported drops.
+  // https://www.w3.org/TR/performance-timeline/#queue-the-performanceobserver-task
+  const health=session.health?.registered===true&&session.health.drained===true&&session.health.droppedEntries===0&&Number.isInteger(session.health.callbacks)&&session.health.callbacks>0&&Number.isFinite(session.health.flushCompletedAt)&&session.health.flushCompletedAt>=window?.end&&Array.isArray(session.health.callbackLedger)&&session.health.callbackLedger.length===session.health.callbacks&&session.health.callbackLedger.every((c,i)=>Number.isFinite(c.observedAt)&&c.observedAt>=window?.start&&c.observedAt<=session.health.flushCompletedAt&&(c.droppedEntriesCount===0||(i>0&&c.droppedEntriesCount===null)))&&session.eventCounts&&Array.isArray(session.trustedInputs)&&session.trustedInputs.length>0&&session.trustedInputs.every(e=>Number.isFinite(e.time)&&e.time>=window?.start&&e.time<=window?.end)&&['pointerdown','pointerup','click','keydown','keyup'].every(type=>Number.isInteger(session.eventCounts[type]??0)&&(session.eventCounts[type]??0)>=session.trustedInputs.filter(e=>e.type===type).length);
   const bounded=window&&Number.isFinite(window.start)&&Number.isFinite(window.end)&&Number.isFinite(window.timeOrigin)&&window.start===0&&window.end>window.start&&window.lastFrame===window.end&&cutoff&&Number.isFinite(cutoff.time)&&cutoff.time>=window.start&&cutoff.time<=window.end&&cutoff.validOccurrence===true&&Number.isFinite(cutoff.handlerObservedAt)&&cutoff.handlerObservedAt>=cutoff.time&&cutoff.handlerObservedAt<=window.end;
   const firstInput=session.trustedInputs?.filter(e=>['pointerdown','keydown'].includes(e.type)).reduce((time,e)=>Math.min(time,e.time),Infinity);
   const occurrenceMatches=Number.isFinite(firstInput)&&cutoff?.reason==='first-trusted-input'&&cutoff.time===firstInput;
