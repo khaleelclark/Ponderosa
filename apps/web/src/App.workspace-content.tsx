@@ -1,4 +1,5 @@
 import {AssistantEntry} from './components/AssistantEntry';
+import { useEffect } from "react";
 import { Alert, Box, Button } from "@mui/material";
 import { LoadingState } from "./components/LoadingState";
 import { MobileNavigationButton } from "./components/MobileNavigationContext";
@@ -105,6 +106,12 @@ export function WorkspaceRouteOutlet({
   onResourceDeleted,
   onToggleColorMode,
 }: WorkspaceRouteOutletProps): JSX.Element {
+  // Fetch the existing route chunk while its Project metadata resolves. The
+  // route boundary still owns its loading, failure and explicit retry states.
+  const projectRoute = isProjectRoute(route);
+  useEffect(() => {
+    if (projectRoute) void loadProjectShell().catch(() => {});
+  }, [projectRoute]);
   return (
     <Box
       sx={{

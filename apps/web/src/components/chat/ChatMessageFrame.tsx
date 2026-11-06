@@ -1,5 +1,5 @@
-import { Avatar, Box, ButtonBase, Stack, Tooltip } from "@mui/material";
-import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { Avatar, ButtonBase, Tooltip } from "@mui/material";
+import { useEffect, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
 import type { ChatMessagePresentation } from "./contracts";
 import { MessageSenderLabel } from "../MessageSenderLabel";
 import { MessageActionsAndTimestamp, MessageTimestamp } from "../MessageTimestamp";
@@ -82,11 +82,11 @@ export function ChatMessageFrame({
   );
 
   return (
-    <Box
+    <article
       ref={articleRef}
       id={message.id}
-      component="article"
-      className="chat-message"
+      className={`MuiBox-root chat-message chat-message-frame${fromOperator ? " chat-message-end" : ""}${message.status ? " chat-message-has-status" : ""}${selectable ? " chat-message-selectable" : ""}`}
+      style={{ "--chat-agent-max-width": `${maxAgentWidth}px` } as CSSProperties}
       aria-label={message.ariaLabel ?? `${senderName} message`}
       onClick={selectable
         ? event => {
@@ -96,21 +96,13 @@ export function ChatMessageFrame({
             }
           }
         : toggleTimestamp}
-      sx={{
-        alignSelf: "center",
-        width: "min(1120px, 100%)",
-        maxWidth: "100%",
-        minWidth: 0,
-        py: { xs: 0.75, sm: 1 },
-        ...(selectable ? { cursor: "pointer" } : {}),
-      }}
     >
       {message.beforeHeader ? (
-        <Box sx={{ minWidth: 0, pl: { xs: 5, sm: 6.5 } }}>
+        <div className="MuiBox-root chat-message-before-header">
           {message.beforeHeader}
-        </Box>
+        </div>
       ) : null}
-      <Stack direction="row" spacing={{ xs: 1, sm: 1.5 }} sx={{ alignItems: "flex-start", justifyContent: fromOperator ? "flex-end" : "flex-start", minWidth: 0 }}>
+      <div className="MuiStack-root chat-message-row">
         {!fromOperator ? openAuthor
           ? <Tooltip title={`Open ${senderName}`}><ButtonBase
               aria-label={`Open agent ${senderName} from profile image`}
@@ -119,51 +111,33 @@ export function ChatMessageFrame({
             >{avatar}</ButtonBase></Tooltip>
           : avatar
         : null}
-        <Box sx={{
-          minWidth: 0,
-          width: fromOperator ? "fit-content" : `min(100%, ${maxAgentWidth}px)`,
-          ...(fromOperator && message.status ? { width: { xs: "100%", sm: "fit-content" } } : {}),
-          maxWidth: fromOperator ? { xs: message.status ? "100%" : "94%", sm: "88%", md: "min(78%, 780px)" } : "100%",
-        }}>
+        <div className="MuiBox-root chat-message-column">
           {author.kind === "agent" ? (
-            <Stack direction="row" spacing={0.75} sx={{ minHeight: 28, alignItems: "center", mb: 0.25 }}>
+            <div className="MuiStack-root chat-message-agent-header">
               {openAuthor ? <ButtonBase
                 aria-label={`Open agent ${senderName} from name`}
                 onClick={(event) => { event.stopPropagation(); openAuthor(); }}
                 sx={{ minHeight: 28, borderRadius: 0.75, textAlign: "left", "& [data-message-sender]": { mb: 0, fontSize: "0.875rem" } }}
               ><MessageSenderLabel name={senderName} /></ButtonBase>
-                : <Box sx={{ "& [data-message-sender]": { mb: 0, fontSize: "0.875rem" } }}><MessageSenderLabel name={senderName} /></Box>}
+                : <div className="MuiBox-root chat-message-agent-name"><MessageSenderLabel name={senderName} /></div>}
               {message.source}
-              <Box sx={{ color: "text.secondary" }}><MessageTimestamp value={message.createdAt} align="start" desktopOnly /></Box>
-            </Stack>
+              <div className="MuiBox-root chat-message-secondary"><MessageTimestamp value={message.createdAt} align="start" desktopOnly /></div>
+            </div>
           ) : author.kind === "operator" ? (
-            <Stack
-              direction="row"
-              spacing={0.75}
-              sx={{ justifyContent: "flex-end", alignItems: "center", mb: 0.25 }}
-            >
+            <div className="MuiStack-root chat-message-operator-header">
               {message.source}
               <ChatOperatorLabel profile={operatorProfile} createdAt={message.createdAt} />
-            </Stack>
+            </div>
           ) : author.kind === "inbound_agent" ? (
-            <Stack
-              direction="row"
-              spacing={0.75}
-              sx={{
-                minHeight: { xs: 32, sm: 36 },
-                justifyContent: "flex-end",
-                alignItems: "center",
-                mb: 0.25,
-              }}
-            >
+            <div className="MuiStack-root chat-message-inbound-header">
               {message.source}
-              <Box sx={{ color: "text.secondary" }}>
+              <div className="MuiBox-root chat-message-secondary">
                 <MessageTimestamp
                   value={message.createdAt}
                   align="end"
                   desktopOnly
                 />
-              </Box>
+              </div>
               {openAuthor ? (
                 <ButtonBase
                   aria-label={`Open agent ${senderName} from name`}
@@ -181,13 +155,9 @@ export function ChatMessageFrame({
                   <MessageSenderLabel name={senderName} />
                 </ButtonBase>
               ) : (
-                <Box
-                  sx={{
-                    "& [data-message-sender]": { mb: 0, fontSize: "0.875rem" },
-                  }}
-                >
+                <div className="MuiBox-root chat-message-agent-name">
                   <MessageSenderLabel name={senderName} />
-                </Box>
+                </div>
               )}
               {openAuthor ? (
                 <Tooltip title={`Open ${senderName}`}>
@@ -205,29 +175,16 @@ export function ChatMessageFrame({
               ) : (
                 avatar
               )}
-            </Stack>
+            </div>
           ) : null}
-          <Box
-            sx={{
-              width: fromOperator ? "fit-content" : "auto",
-              maxWidth: "100%",
-              ml: fromOperator ? "auto" : 0,
-              px: fromOperator ? { xs: 1.25, sm: 1.5 } : 0,
-              py: fromOperator ? { xs: 1, sm: 1.15 } : 0,
-              borderRadius: 2,
-              bgcolor: fromOperator ? (theme) => theme.palette.mode === "dark" ? "#27332F" : "#EFF0EB" : "transparent",
-              color: "text.primary",
-              border: 0,
-              minWidth: 0,
-            }}
-          >
-            {author.kind === "operator" || author.kind === "notice" ? <Box sx={{ position: "absolute", width: "1px", height: "1px", p: 0, m: -1, overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap", border: 0 }}><MessageSenderLabel name={senderName} /></Box> : null}
+          <div className="MuiBox-root chat-message-body">
+            {author.kind === "operator" || author.kind === "notice" ? <div className="MuiBox-root chat-message-accessible-name"><MessageSenderLabel name={senderName} /></div> : null}
             {message.body}
             {message.afterBody}
             <ChatAttachments
               attachments={message.attachments ?? []}
             />
-          </Box>
+          </div>
           {message.belowBody}
           <MessageActionsAndTimestamp
             actionAlign={fromOperator ? "end" : "start"}
@@ -239,8 +196,8 @@ export function ChatMessageFrame({
             footer={message.footer}
             actions={message.actions}
           />
-        </Box>
-      </Stack>
-    </Box>
+        </div>
+      </div>
+    </article>
   );
 }

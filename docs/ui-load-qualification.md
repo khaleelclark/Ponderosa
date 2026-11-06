@@ -448,3 +448,32 @@ an empty queue before releasing the twenty controlled workers. Failed cells atte
 bounded screenshot before teardown. This corrects the previously unexecuted
 full-branch action assumption; it does not change worker activity, input cadence,
 navigation deadlines, Event Timing health or the performance threshold.
+
+## Route loading and message-wrapper compatibility (2026-11-06)
+
+The Core project route starts its existing lazy import while metadata resolves;
+the existing route boundary retains visible failure and explicit Retry ownership.
+Static shared message layout now uses native wrappers and the existing global
+CssBaseline variables rather than resolving repeated responsive style objects
+for every row. Semantic tags, class hooks, actions, callbacks and the canonical
+100-message page remain. This is neither virtualization nor reduced history.
+
+`tests/chats/message-frame-style-qualification.mjs <owned-evidence-directory>`
+requires `BASELINE_REPO` pointing to the explicit frozen comparison build. It
+serves both builds against one disposable maintained fixture (100 canonical
+messages per product), compares computed row/bubble geometry, typography, theme
+colors and action sizing, and exercises Copy by keyboard/touch plus mobile
+timestamp reveal. Four paired cells cover both products, themes and viewport
+sizes. A held-metadata/failed-chunk case verifies early loading, visible route
+failure and explicit successful Retry. It does not activate provider loops and
+is compatibility evidence, not performance qualification or independent UX review.
+
+Private source typecheck/build passed. The paired check passed against frozen
+e9e0 shared web artifacts (message sources unchanged at base058997) at `/tmp/p2style-_0rdkphj/retry-evidence`; all 100 rows
+remained, measured geometry differed by at most 1px, and computed bubble styles,
+caption typography, time metadata and control sizing matched exactly. Contexts,
+browser, both owned web servers and fixture closed. An earlier setup attempt
+failed before fixture creation due to missing private dependency links; the first
+browser trial tapped the seeded anchor rather than plain text and was corrected
+without changing product code. All trial evidence remains. Performance acceptance
+still requires measurement on the combined build under the unchanged workload.
