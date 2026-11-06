@@ -7,7 +7,7 @@ import InsertDriveFileOutlinedIcon from "@mui/icons-material/InsertDriveFileOutl
 import { Alert, Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, IconButton, Stack, Tooltip, Typography } from "@mui/material";
 import { parseRichMessageBlock, messageTagTokens, missingCollaborationRecipients, unicodeCodePointLength } from "@ponderosa/core";
 import type { AgentMentionBindingDto, CollaborationRecipientDto, CommunicationDocumentReference, CommunicationIntent, MessageDto, VerifiedCitationDto, WorkspaceFileOwnerDto } from "@ponderosa/core";
-import { type ReactNode, type ComponentPropsWithoutRef, useState, memo } from "react";
+import { type ReactNode, type ComponentPropsWithoutRef, useState, useCallback, memo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { remarkMessageFormatting } from "./messageMarkdown";
@@ -610,13 +610,13 @@ export function ChatMessageBody({ text, citations, collaborationRecipients, agen
   compactMarkdown?: boolean;
   smallText?: boolean;
 }): JSX.Element {
-  const collaborationMention = (handle: string) => {
+  const collaborationMention = useCallback((handle: string) => {
     const matches = agentMentions?.filter(mention => mention.handle === handle) ?? [];
     if (matches.length !== 1) return undefined;
     const binding = matches[0]!;
     return { agentId: binding.agentId, label: handle, available: binding.available,
       title: binding.available === false ? "Agent no longer available" : binding.currentHandle !== handle ? `Currently ${binding.currentTitle}` : undefined };
-  };
+  }, [agentMentions]);
   const collapsible = collapseLongMessage && isLongChatMessage(text);
   const [expanded, setExpanded] = useState(false);
   return (

@@ -190,6 +190,11 @@ test('native browser: rendered href, Open-link actions and whole-message/code co
     import React from 'react';
     import ${JSON.stringify(path.join(webRoot, 'src/global.css'))};
     import { createRoot } from 'react-dom/client';
+    import { flushSync } from 'react-dom';
+    import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+    import { MainConversationTimeline } from ${JSON.stringify(path.join(webRoot, 'src/components/ConversationView.parts.tsx'))};
+    import { unified } from ${JSON.stringify(webRequire.resolve('unified'))};
+    import remarkParse from ${JSON.stringify(webRequire.resolve('remark-parse'))};
     import { ChatMessageBody, communicationVisibleText, authoredAgentMentionForHandle } from ${JSON.stringify(path.join(webRoot, 'src/components/chat/ChatMessages.tsx'))};
     import { ChatOverflowMenu } from ${JSON.stringify(path.join(webRoot, 'src/components/ChatOverflowMenu.tsx'))};
     import { CopyMessageButton } from ${JSON.stringify(path.join(webRoot, 'src/components/CopyMessageButton.tsx'))};
@@ -207,6 +212,28 @@ test('native browser: rendered href, Open-link actions and whole-message/code co
       <ChatOverflowMenu label="Transcript failure test" actions={[]} transcriptFileName="owned.md" transcriptMarkdown={() => { window.transcriptPreparations++; throw new Error('Controlled transcript formatting failed'); }} />
     </ProjectBrowserContext.Provider></MutationNotificationProvider>);
     window.rerender();
+
+    const memoClient = new QueryClient({defaultOptions:{queries:{enabled:false,staleTime:Infinity}}});memoClient.setQueryData(['workspace-preferences'],{});
+    const memoAgent = mentions[0].agentId, memoTitle = () => 'Fixture Agent', memoHandle = () => memoAgent, memoNoop = () => {};
+    const memoText = '#Original-Builder **retained prose** [working file](./report.txt) [app](http://127.0.0.1:3000/)';
+    function MarkdownMemoProbe(){
+      const [state,setState] = React.useState({receipt:0,health:0,bindings:[{...mentions[0],available:true}],ownerAgent:memoAgent,ownerChat:'fixture-chat',activeRun:'fixture-run',navigation:0,step:0});
+      window.patchMarkdownMemo = patch => flushSync(()=>setState(before=>({...before,...patch,step:before.step+1})));
+      const message = React.useMemo(()=>({id:'memo-message',conversationId:state.ownerChat,role:'assistant',authorAgentId:state.ownerAgent,executionId:'fixture-run',communicationIntent:'broadcast',text:memoText,createdAt:'2026-10-20T12:00:00Z',agentMentions:state.bindings,...(state.receipt?{deliveryReceipts:[]}: {})}),[state.receipt,state.bindings,state.ownerAgent,state.ownerChat]);
+      const timeline = React.useMemo(()=>[{kind:'message',id:'memo-message',at:message.createdAt,message}],[message]);
+      const health = React.useMemo(()=>new Map([[memoAgent,{runtimeActivity:{executionId:state.activeRun}}]]),[state.activeRun,state.health]);
+      const navigate = React.useCallback(id=>{window.memoOpened={id,revision:state.navigation};},[state.navigation]);
+      const recipients = React.useMemo(()=>[{id:memoAgent,handle:'Original-Builder',title:'Builder',currentTitle:state.bindings[0].currentTitle,available:state.bindings[0].available}],[state.bindings]);
+      React.useEffect(()=>{window.markdownMemoStep=state.step;},[state.step]);
+      return <QueryClientProvider client={memoClient}><section aria-label="Memo timeline"><MainConversationTimeline mainTimeline={timeline} projectId="test" healthByAgentId={health} agentTitle={memoTitle} agentIdForHandle={memoHandle} onOpenAgent={navigate} mentionAgent={memoNoop} markCommunicationVisible={memoNoop} notifications={[]}/></section><section aria-label="Memo collaboration"><ChatMessageBody text="#Original-Builder" collaborationRecipients={recipients} agentMentions={state.bindings} onOpenAgent={navigate}/></section></QueryClientProvider>;
+    }
+    window.mountMarkdownMemo = () => {
+      window.markdownParses=0;
+      const prototype=Object.getPrototypeOf(unified().use(remarkParse)),parse=prototype.parse;
+      prototype.parse=function(...args){window.markdownParses++;return parse.apply(this,args);};
+      root.render(<MutationNotificationProvider><ProjectBrowserContext.Provider value={{projectId:'test',open(){}}}><MarkdownMemoProbe/></ProjectBrowserContext.Provider></MutationNotificationProvider>);
+    };
+
   `);
   const rsbuild = await createRsbuild({ cwd: webRoot, rsbuildConfig: {
     plugins: [pluginReact()], source: { entry: { index: path.join(root, 'entry.tsx') } },
@@ -303,6 +330,41 @@ test('native browser: rendered href, Open-link actions and whole-message/code co
   assert.equal(await error.isVisible(), true, 'clipboard failures stay visible beyond the ordinary success timeout');
   await error.getByRole('button', { name: 'Close' }).click();
   await error.waitFor({ state: 'hidden' });
+
+  // Count the real unified parser in the existing mounted browser harness.
+  await page.evaluate(()=>window.mountMarkdownMemo());
+  const memo = page.getByRole('region',{name:'Memo timeline',exact:true}), collaboration = page.getByRole('region',{name:'Memo collaboration',exact:true});
+  await memo.getByRole('button',{name:/^Open agent Build-Coordinator/u}).waitFor();
+  await page.waitForFunction(()=>window.markdownMemoStep===0);
+  const settleMemo = () => page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+  const parses = () => page.evaluate(()=>window.markdownParses);
+  let step=0;
+  const patchMemo = async patch => {await page.evaluate(value=>window.patchMarkdownMemo(value),patch);await page.waitForFunction(value=>window.markdownMemoStep===value,++step);await settleMemo();};
+  await settleMemo();const initialParses=await parses();assert(initialParses>0);
+  await patchMemo({receipt:1});assert.equal(await parses(),initialParses,'Receipt-only message updates must not reparse unchanged prose');
+  await patchMemo({health:1});assert.equal(await parses(),initialParses,'Unrelated health updates must not reparse unchanged prose');
+  t.diagnostic('Mounted parser calls: initial='+initialParses+', after receipt/health='+await parses());
+  await memo.getByRole('button',{name:/^Open agent Build-Coordinator/u}).click();assert.equal((await page.evaluate(()=>window.memoOpened)).id,agentId);
+  const previous=await parses();
+  await patchMemo({bindings:[{...mentions[0],currentHandle:'Renamed-Builder',currentTitle:'Renamed Builder',available:true}]});
+  assert((await parses())>previous,'A meaningful mention rename must re-render Markdown');
+  await memo.getByRole('button',{name:/^Open agent Renamed-Builder/u}).waitFor();
+  await patchMemo({navigation:1});await memo.getByRole('button',{name:/^Open agent Renamed-Builder/u}).click();
+  assert.deepEqual(await page.evaluate(()=>window.memoOpened),{id:agentId,revision:1},'Navigation uses the current callback');
+  await patchMemo({bindings:[{...mentions[0],currentHandle:'Renamed-Builder',currentTitle:'Renamed Builder',available:false}]});
+  assert.equal(await collaboration.getByRole('button',{name:/^Open agent/u}).count(),0,'Unavailable collaboration bindings must not retain an old clickable target');
+  const file = memo.getByRole('link',{name:'working file',exact:true});
+  const beforeOwner=await file.getAttribute('href');assert(beforeOwner.includes(agentId));
+  await patchMemo({ownerAgent:undefined,ownerChat:'next-chat'});
+  const afterOwner=await file.getAttribute('href');assert.notEqual(afterOwner,beforeOwner);assert(afterOwner.includes('next-chat'));
+  await patchMemo({ownerAgent:agentId,ownerChat:'fixture-chat',activeRun:'fixture-run'});
+  const appLink=memo.getByRole('link',{name:'Open link to 127.0.0.1:3000',exact:true});
+  await appLink.click();const appDialog=page.getByRole('dialog',{name:'Open link',exact:true});await appDialog.waitFor();
+  assert.equal(await appDialog.getByRole('button',{name:'Open Live App Preview',exact:true}).count(),1);await appDialog.getByRole('button',{name:'Cancel',exact:true}).click();await appDialog.waitFor({state:'hidden'});
+  await patchMemo({activeRun:undefined});await appLink.click();await appDialog.waitFor();
+  assert.equal(await appDialog.getByRole('button',{name:'Open Live App Preview',exact:true}).count(),0,'A stopped or replaced Run must not retain its old preview grant');
+  await appDialog.getByRole('button',{name:'Cancel',exact:true}).click();assert.deepEqual(pageErrors,[]);
+
 });
 
 

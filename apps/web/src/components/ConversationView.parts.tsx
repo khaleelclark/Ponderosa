@@ -107,18 +107,31 @@ function ConversationMessageComponent({
 }): JSX.Element {
   const reportVisibility = useCallback((visible: boolean) =>
     onVisible?.(message.communicationEventId, visible), [onVisible, message.communicationEventId]);
+  // Receipt/status updates must not invalidate unchanged Markdown inputs.
+  const authoredMention = useCallback((handle: string) =>
+    authoredAgentMentionForHandle(handle, message.agentMentions), [message.agentMentions]);
+  const fileScope = useMemo(() => fileOwnerForMessage(message),
+    [message.authorAgentId, message.conversationId]);
+  const previewScope = useMemo(() => message.authorAgentId && message.executionId && activeRunId === message.executionId
+    ? { projectId, agentId: message.authorAgentId, runId: message.executionId, conversationId: message.conversationId }
+    : undefined, [projectId, message.authorAgentId, message.executionId, message.conversationId, activeRunId]);
+  const collaborationRecipients = useMemo(() => message.communicationIntent === "collaboration"
+    ? message.collaborationRecipients ?? [] : undefined, [message.communicationIntent, message.collaborationRecipients]);
   const fromManager = !message.authorAgentId;
   const routedText = message.text;
   const copyableText = stripDocumentPrefixText(
     routedText,
     Boolean(message.document),
   );
-  const visibleText = communicationVisibleText({
+  const visibleText = useMemo(() => communicationVisibleText({
     text: copyableText,
     intent: message.communicationIntent,
     fromAgent: Boolean(message.authorAgentId),
     agentMentions: message.agentMentions,
-  });
+  }), [copyableText, message.communicationIntent, message.authorAgentId, message.agentMentions]);
+  const readAloudText = useMemo(() => message.authorAgentId
+    ? resolveMessageMentionText(visibleText, message.agentMentions) : "",
+    [visibleText, message.authorAgentId, message.agentMentions]);
   const senderName = fromManager
     ? (operatorProfile?.displayName ?? "You")
     : agentTitle(message.authorAgentId);
@@ -149,30 +162,17 @@ function ConversationMessageComponent({
         body: (
           <ChatMessageBody
             text={visibleText}
-            collaborationRecipients={message.communicationIntent === "collaboration" ? message.collaborationRecipients ?? [] : undefined}
+            collaborationRecipients={collaborationRecipients}
             agentMentions={message.agentMentions}
             compactMarkdown
             citations={message.citations}
             agentIdForHandle={agentIdForHandle}
-            agentMentionForHandle={handle =>
-              authoredAgentMentionForHandle(handle, message.agentMentions)
-            }
+            agentMentionForHandle={authoredMention}
             operatorHandle={operatorProfile?.handle}
             onOpenAgent={onOpenAgent}
             projectId={projectId}
-            fileScope={fileOwnerForMessage(message)}
-            previewScope={
-              message.authorAgentId &&
-              message.executionId &&
-              activeRunId === message.executionId
-                ? {
-                    projectId,
-                    agentId: message.authorAgentId,
-                    runId: message.executionId,
-                    conversationId: message.conversationId,
-                  }
-                : undefined
-            }
+            fileScope={fileScope}
+            previewScope={previewScope}
           />
         ),
         afterBody: (
@@ -186,7 +186,7 @@ function ConversationMessageComponent({
               />
             ) : null}
             {message.document ? (
-              <CommunicationDocumentCard document={message.document} projectId={projectId} fileScope={fileOwnerForMessage(message)} />
+              <CommunicationDocumentCard document={message.document} projectId={projectId} fileScope={fileScope} />
             ) : null}
             {message.fileActivity?.length ? (
               <ResponseFileActivity
@@ -235,10 +235,7 @@ function ConversationMessageComponent({
             /> : null}
             {message.authorAgentId ? (
               <ReadAloudControls
-                text={resolveMessageMentionText(
-                  visibleText,
-                  message.agentMentions,
-                )}
+                text={readAloudText}
               />
             ) : null}
             {conversation === "main" && message.authorAgentId && onMentionAgent ? (
