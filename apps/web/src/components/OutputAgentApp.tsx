@@ -25,7 +25,8 @@ export function OutputAgentApp({colorMode,onToggleColorMode}:{colorMode:ColorMod
  const preferences=useWorkspacePreferences();
  useWorkspaceFont(preferences.data?.fontFamily);
  const [discardSettings,setDiscardSettings]=useState(false);
- const [settings,setSettings]=useState(false),[error,setError]=useState(''),[busy,setBusy]=useState(false),[saved,setSaved]=useState('');
+ const [settings,setSettings]=useState(false),[error,setError]=useState(''),[pendingAction,setPendingAction]=useState<false|'saving'|'reloading'>(false),[saved,setSaved]=useState('');
+ const busy=Boolean(pendingAction);
  const inFlight=useRef(false);
  const ownerGeneration=useRef(0),mounted=useRef(false);
  const [automatic,setAutomatic]=useState(true),[minutes,setMinutes]=useState('10'),[model,setModel]=useState(''),[engine,setEngine]=useState('');
@@ -60,17 +61,17 @@ export function OutputAgentApp({colorMode,onToggleColorMode}:{colorMode:ColorMod
  };
  const retryRefresh=async(reloadDraft=false)=>{
   if(inFlight.current)return;
-  inFlight.current=true;setBusy(true);
+  inFlight.current=true;setPendingAction('reloading');
   const generation=ownerGeneration.current;
   const cause=await refresh(value=>{if(reloadDraft&&mounted.current&&generation===ownerGeneration.current)loadDraft(value);});
-  inFlight.current=false;if(mounted.current)setBusy(false);
+  inFlight.current=false;if(mounted.current)setPendingAction(false);
   if(mounted.current&&generation===ownerGeneration.current){setSaved('');setError(cause?`Could not refresh settings: ${cause.message}`:'');}
  };
  const act=async<T,>(work:()=>Promise<T>,savedLabel='',onCommitted?:(value:T)=>void)=>{
   if(inFlight.current)return;
   const generation=ownerGeneration.current;
   const current=()=>mounted.current&&generation===ownerGeneration.current;
-  inFlight.current=true;setBusy(true);setError('');setSaved('');
+  inFlight.current=true;setPendingAction('saving');setError('');setSaved('');
   try{
    const committed=await work();
    // Only this mutation can advance its draft baseline; a later read may contain another editor's work.
@@ -81,7 +82,7 @@ export function OutputAgentApp({colorMode,onToggleColorMode}:{colorMode:ColorMod
     setError(cause?`Changes saved, but settings could not be refreshed: ${cause.message}`:'');
    }
   }catch(cause){if(current()){setSaved('');setError(cause instanceof Error?cause.message:String(cause));}}
-  finally{inFlight.current=false;if(mounted.current)setBusy(false);}
+  finally{inFlight.current=false;if(mounted.current)setPendingAction(false);}
  };
  const configure=(enabled:boolean)=>act(()=>requestJson('/api/branches/assistant',{method:'POST',body:JSON.stringify({enabled})}));
  useEffect(()=>{if(assistant&&status.data&&!status.data.initialized)void act(()=>requestJson('/api/branches/assistant',{method:'POST',body:JSON.stringify({initialize:true})}));},[assistant,status.data?.initialized]);
@@ -113,7 +114,7 @@ export function OutputAgentApp({colorMode,onToggleColorMode}:{colorMode:ColorMod
   <Dialog open={settings} onClose={closeSettings} aria-labelledby="output-app-settings-title" fullWidth maxWidth="xs">
    <DialogTitle id="output-app-settings-title">Settings</DialogTitle><DialogContent><Stack spacing={2} sx={{pt:1}}>
     {error&&<Alert severity="error">{error}</Alert>}
-    <Typography role="status" variant="body2" sx={{minHeight:"1.5em"}}>{busy?'Saving…':saved}</Typography>
+    <Typography role="status" variant="body2" sx={{minHeight:"1.5em"}}>{pendingAction==='reloading'?'Reloading…':busy?'Saving…':saved}</Typography>
     <Button onClick={onToggleColorMode}>Use {colorMode==='dark'?'Light':'Dark'} Mode</Button><TextSizeSetting/>
     {app&&<><FormControlLabel control={<Switch disabled={busy} checked={automatic} onChange={(_,value)=>{setSaved('');setAutomatic(value);}}/>} label="Run automatically"/>
      {editableInterval?<TextField disabled={busy} label="Check every (minutes)" type="number" value={minutes} onChange={event=>{setSaved('');setMinutes(event.target.value);}} error={!validInterval} helperText={!validInterval?'Enter at least 1 minute.':undefined} inputProps={{min:1,step:'any'}}/>:<Typography>{scheduleSource?.schedule?.scheduleKind==='cron'?`Cron schedule: ${scheduleSource?.schedule.expression} (${scheduleSource?.schedule.timezone})`:scheduleSource?.schedule?.scheduleKind==='once'?`Once at ${scheduleSource?.schedule.at}`:scheduleSource?.triggerKind==='filesystem'?'When files change':'When a webhook event arrives'}</Typography>}

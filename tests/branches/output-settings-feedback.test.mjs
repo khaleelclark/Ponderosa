@@ -10,7 +10,7 @@ function fixture(pathname='/assistant',overrides={},behavior={}){
  const state=[],deps=[],pending=[];let index=0,tree,changed=false;const requests=[],modelRequests=[];
  const app={agentId:'speaker',branchId:'branch',chatId:'chat',projectId:'project',title:'VeryLongOutputTitle'.repeat(20),engine:'codex',versionId:'version',automatic:true,triggerKind:'schedule',schedule:{scheduleKind:'interval',everyMs:600000,startsAt:'2099-01-01T00:00:00.000Z'},everyMs:600000,settingsRevision:'revision',runtimeSettings:{activeEngine:'codex',model:null,effort:null,speed:null},...overrides};
  const imports={react:{useState(initial){const i=index++;if(!(i in state))state[i]=initial;return [state[i],value=>{if(state[i]!==value){state[i]=value;changed=true;}}];},useRef(value){const i=index++;return state[i]??=( {current:value});},useEffect(effect,next){const i=index++;if(!deps[i]||next.some((value,j)=>value!==deps[i][j])){deps[i]=next;pending.push(effect);}}},
-  '@tanstack/react-query':{useQuery(options){const snapshot={...app};return {data:options.queryKey[0]==='assistant-status'?{initialized:true,enabled:true,app:snapshot}:options.queryKey[0]==='output-app'?snapshot:[],refetch:async()=>({data:options.queryKey[0]==='assistant-status'?{initialized:true,enabled:true,app}:app})};}},
+  '@tanstack/react-query':{useQuery(options){const snapshot={...app};return {data:options.queryKey[0]==='assistant-status'?{initialized:true,enabled:true,app:snapshot}:options.queryKey[0]==='output-app'?snapshot:[],refetch:async()=>behavior.refresh?behavior.refresh(options.queryKey[0],app):({data:options.queryKey[0]==='assistant-status'?{initialized:true,enabled:true,app}:app})};}},
   '../api/real':{realApi:{updateAgent:async(id,patch)=>{modelRequests.push({id,patch});if(behavior.model)return behavior.model(patch,app,modelRequests.length);throw Error('Model update refused');}},requestJson:async(url,options)=>{requests.push({url,options});if(behavior.schedule)return behavior.schedule(JSON.parse(options.body),app,requests.length);throw Error('Workflow version changed');}},
   '../hooks/queries':{useWorkspacePreferences:()=>({data:{}})},
   '../api/productScope':{setStandaloneWorkspaceOwner(){}},'../hooks/useWorkspaceStream':{useWorkspaceStream:()=>({})}};
@@ -104,4 +104,29 @@ for(const pathname of ['/assistant','/apps/speaker'])for(const section of ['mode
   assert.equal(JSON.parse(f.requests[1].options.body).expectedSettingsRevision,'committed-revision');assert.equal(f.app.automatic,true);assert.equal(f.app.settingsRevision,'external-revision');
  }
  assert.ok(f.nodes().some(n=>n.type==='Alert'&&/changed/.test(n.props.children)),'The later edit remains protected by the original successful mutation result');
+});
+
+
+for(const pathname of ['/assistant','/apps/speaker'])test(pathname+': deferred discard reload reads persisted settings while real model save reports saving',async()=>{
+ let releaseRefresh,releaseSave;
+ const refreshes=[],f=fixture(pathname,{model:'stored-model',runtimeSettings:{activeEngine:'codex',model:'stored-model',effort:null,speed:null}},{
+  refresh(key,app){refreshes.push(key);return new Promise(resolve=>{releaseRefresh=()=>resolve({data:key==='assistant-status'?{initialized:true,enabled:true,app:{...app}}:{...app}});});},
+  model(patch,app){return new Promise(resolve=>{releaseSave=()=>{app.model=patch.model;app.runtimeSettings={...app.runtimeSettings,model:patch.model};resolve({id:app.agentId,activeEngine:app.engine,model:app.model,effort:null,speed:null});};});},
+ });
+ const model=()=>f.nodes().find(n=>n.type==='TextField'&&n.props.label==='Model');
+ const status=()=>f.nodes().find(n=>n.type==='Typography'&&n.props.role==='status'&&n.props.variant==='body2').props.children;
+ f.button('Settings').props.onClick();model().props.onChange({target:{value:'unsaved-draft'}});
+ f.button('Discard draft and reload').props.onClick();
+ assert.equal(status(),'Reloading…');assert.equal(model().props.value,'unsaved-draft');assert.equal(model().props.disabled,true);
+ assert.equal(f.app.model,'stored-model');assert.equal(f.modelRequests.length,0);assert.equal(f.requests.length,0);
+ releaseRefresh();await new Promise(setImmediate);
+ assert.equal(status(),'');assert.equal(model().props.value,'stored-model');assert.equal(f.app.model,'stored-model');
+ model().props.onChange({target:{value:'saved-model'}});f.button('Save model').props.onClick();
+ assert.equal(status(),'Saving…');assert.equal(f.app.model,'stored-model');assert.equal(f.modelRequests.length,1);
+ assert.equal(f.modelRequests[0].patch.expectedRuntimeSettings.model,'stored-model');
+ releaseSave();await new Promise(setImmediate);
+ assert.equal(status(),'Saving…');assert.equal(f.app.model,'saved-model');
+ releaseRefresh();await new Promise(setImmediate);
+ assert.equal(status(),'Model saved');assert.equal(model().props.value,'saved-model');assert.equal(f.app.model,'saved-model');
+ assert.equal(f.requests.length,0);assert.deepEqual(refreshes,[pathname==='/assistant'?'assistant-status':'output-app',pathname==='/assistant'?'assistant-status':'output-app']);
 });
