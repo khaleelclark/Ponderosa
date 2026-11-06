@@ -230,9 +230,9 @@ export function AgentWorkInspector({
   const technicalKinds = ["request", "join", "activation", "run", "decision"] as const;
 
   return <Stack sx={{ position: "relative", height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden" }}>
-      <Stack direction="row" spacing={1} sx={{ alignItems: "center", px: 2, py: 1.5, borderBottom: 1, borderColor: "divider" }}>
+      <Stack direction="row" spacing={1} sx={{ alignItems: "center", flexWrap: { xs: "wrap", sm: "nowrap" }, flexShrink: 0, px: 2, py: 1.5, borderBottom: 1, borderColor: "divider" }}>
         <Tooltip title={backLabel}><IconButton aria-label={backLabel} onClick={onClose}><ArrowBackIcon /></IconButton></Tooltip>
-        <Box sx={{ flex: 1, minWidth: 0 }}>
+        <Box sx={{ flex: 1, flexBasis: { xs: "calc(100% - 48px)", sm: "0%" }, minWidth: 0 }}>
           <Typography variant="h6">Diagnostics</Typography>
           <Typography variant="caption" color="text.secondary">Understand why work stopped or behaved unexpectedly.</Typography>
         </Box>
@@ -321,7 +321,7 @@ export function AgentWorkInspector({
                 aria-label={`${expandedTraceId === trace.id ? "Collapse" : "Expand"} ${trace.title}`}
                 sx={{ minWidth: 0, px: 1.5, minHeight: 64, "& .MuiAccordionSummary-content": { minWidth: 0, my: 1.25 } }}
               >
-                <Stack direction="row" spacing={1} sx={{ width: "100%", minWidth: 0, alignItems: "center" }}>
+                <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ width: "100%", minWidth: 0, alignItems: { xs: "flex-start", sm: "center" } }}>
                   <Chip
                     size="small"
                     color={trace.coordinationRecovery ? "warning" : trace.state === "attention" ? "warning" : trace.state === "active" ? "info" : "default"}
@@ -330,15 +330,17 @@ export function AgentWorkInspector({
                       : trace.coordinationRecovery ? "Provider blocked"
                         : trace.state === "attention" ? "Needs attention" : trace.state === "active" ? "Active" : "Finished"}
                   />
-                  <Box sx={{ flex: 1, minWidth: 0 }}>
-                    <Typography variant="subtitle2" fontWeight={750} noWrap>{trace.title}</Typography>
+                  <Box sx={{ flex: 1, width: { xs: "100%", sm: "auto" }, minWidth: 0 }}>
+                    <Typography variant="subtitle2" fontWeight={750} noWrap sx={{ whiteSpace: { xs: "normal", sm: "nowrap" }, overflowWrap: "anywhere" }}>{trace.title}</Typography>
                     <Typography variant="body2" color="text.secondary" sx={{ overflowWrap: "anywhere" }}>{trace.summary}</Typography>
                     {trace.coordinationRecovery ? <Typography variant="caption" color="warning.main">
                       Retry eligible · next retry {new Date(trace.coordinationRecovery.nextRetryAt).toLocaleString()}. Changing this Agent’s engine or model resumes the retained wake-up immediately.
                     </Typography> : null}
                   </Box>
-                  <Typography variant="caption" color="text.secondary">{traceItems.length} records</Typography>
-                  <Typography variant="caption" color="text.secondary">{new Date(trace.updatedAt).toLocaleString()}</Typography>
+                  <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ flexShrink: 0 }}>
+                    <Typography variant="caption" color="text.secondary">{traceItems.length} records</Typography>
+                    <Typography variant="caption" color="text.secondary">{new Date(trace.updatedAt).toLocaleString()}</Typography>
+                  </Stack>
                 </Stack>
               </AccordionSummary>
               <AccordionDetails sx={{ pt: 0, px: 1 }}>

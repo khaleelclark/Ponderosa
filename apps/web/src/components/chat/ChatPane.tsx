@@ -531,6 +531,7 @@ function ChatPaneComponent({
                   <MessageDeliveryStatus
                     projectId={projectId ?? previewScope?.projectId}
                     receipts={message.deliveryReceipts}
+                    pausedRunId={pausedRunId}
                     recipientName={agentId =>
                       agentNameForId?.(agentId) ?? agentName
                     }

@@ -127,3 +127,37 @@ test('held peer handoff retries the original assignment with one stable command 
  const ro=requestFixture(t,{state:'open',retryAvailable:false,readOnly:true});
  ro.lifecycle.request.settingsTransitionHold='retry_available';ro.render();assert.equal(ro.button('Retry context handoff…'),undefined);
 });
+
+
+test('Agent detail reserves each visible status notice before its bounded content row',()=>{
+ const source=readFileSync(new URL('../../apps/web/src/components/AgentDetail.tsx',import.meta.url),'utf8'),ast=ts.createSourceFile('AgentDetail.tsx',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX),matches=[];
+ function walk(node){if(ts.isPropertyAssignment(node)&&node.name.getText(ast)==='gridTemplateRows'&&node.initializer.getText(ast).includes('activeBrowser'))matches.push(node.initializer);ts.forEachChild(node,walk)}walk(ast);assert.equal(matches.length,1);
+ for(const activeBrowser of [undefined,{status:'opening'}])for(const detailRefreshFailed of [false,true])for(const pause of [undefined,{reason:'user'},{reason:'access_restricted'}]){
+  const rows=vm.runInNewContext(matches[0].getText(ast),{activeBrowser,detailRefreshFailed,pause}),before=rows.split('minmax(0, 1fr)')[0].trim().split(/\s+/);
+  assert.equal(before.length,1+Number(Boolean(activeBrowser||detailRefreshFailed))+Number(pause?.reason==='access_restricted'),'Only the content panel may take the flexible row');assert(before.every(row=>row==='auto'));assert.match(rows,/minmax\(0, 1fr\) auto$/);
+ }
+});
+
+test('paused work receipts do not promise Resume and preserve the stopped Run status',()=>{
+ const exports={},primitive=({children})=>React.createElement('div',null,children),mui=Object.fromEntries(['Box','Button','Stack','Typography'].map(name=>[name,primitive]));
+ const imports={react:React,'@mui/material':mui,'../../telemetryFocus':{telemetryElementId:(kind,id)=>kind+id},'../../time':{formatFinalizedWorkDuration:()=> '1s'},'../activity/ActivityStreamPane':{groupConsecutiveActions:entries=>entries},'../activity/ActivityRows':{ActionGroupRow:primitive,CompactActivityRow:primitive,ResponseRow:primitive,ThinkingRow:primitive},'../SemanticStatus':{semanticAgentStatus:state=>state,SemanticStatus:({label})=>React.createElement('span',null,label)},'./receiptActivityEntries':{receiptActivityEntries:entries=>entries}};
+ vm.runInNewContext(ts.transpileModule(readFileSync(new URL('../../apps/web/src/components/chat/AgentWorkReceipt.tsx',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX}}).outputText,{exports,require:name=>imports[name]??require(name)});
+ const html=renderToStaticMarkup(React.createElement(exports.AgentWorkReceipt,{agentName:'Restricted worker',run:{id:'run',status:'cancelled',startedAt:'2026-11-06T12:00:00Z',completedAt:'2026-11-06T12:00:01Z'},paused:true,entries:[]}));
+ assert.match(html,/work is paused/);assert.match(html,/Cancelled/);assert.doesNotMatch(html,/Resume to continue/);
+});
+
+
+test('only exact paused Run delivery displays Paused without changing canonical evidence or hold precedence',async()=>{
+ const {messageDeliveryPhase}=await import('../../apps/web/src/components/messageDeliveryPhase.ts');
+ const source=readFileSync(new URL('../../apps/web/src/components/MessageDeliveryStatus.tsx',import.meta.url),'utf8'),ast=ts.createSourceFile('MessageDeliveryStatus.tsx',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX),functions=[];
+ for(const node of ast.statements)if(ts.isFunctionDeclaration(node)&&['deliveryLabel','compactDeliveryLabel','deliveryWaitLabel'].includes(node.name?.text))functions.push(node.getText(ast));assert.equal(functions.length,3);
+ const owners=vm.runInNewContext(ts.transpileModule(functions.join('\n')+';({deliveryLabel,compactDeliveryLabel})',{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText,{messageDeliveryPhase});
+ const receipt=Object.freeze({activationId:'activation',targetAgentId:'worker',state:'delivered',injectionKind:'turn',providerAcknowledged:true,injectionId:'injection',executionId:'paused-run'}),before=JSON.stringify(receipt);
+ assert.equal(owners.compactDeliveryLabel(receipt,'paused-run'),'Paused');assert.match(owners.deliveryLabel(receipt,'Worker','paused-run'),/delivered.*paused/);assert.doesNotMatch(owners.deliveryLabel(receipt,'Worker','paused-run'),/active|Resume|continue/);
+ for(const pausedRunId of [undefined,'foreign-run'])assert.equal(owners.compactDeliveryLabel(receipt,pausedRunId),'Working');
+ assert.equal(owners.compactDeliveryLabel({...receipt,state:'processed'},'paused-run'),'Processed');
+ assert.equal(owners.compactDeliveryLabel({...receipt,taskDecisionRepairHold:true},'paused-run'),'Task check held');
+ assert.equal(owners.compactDeliveryLabel({...receipt,settingsTransitionHold:'review_required'},'paused-run'),'Context handoff held');
+ assert.match(owners.deliveryLabel({...receipt,contextRolloverHold:'review_required'},'Worker','paused-run'),/Context refresh could not safely continue/);
+ assert.equal(JSON.stringify(receipt),before,'No delivery/task/Run authority is rewritten');
+});

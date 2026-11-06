@@ -32,12 +32,14 @@ function runtimeLabel(receipt: MessageDeliveryReceiptDto): string | undefined {
 function deliveryLabel(
   receipt: MessageDeliveryReceiptDto,
   recipientName: string,
+  pausedRunId?: string,
 ): string {
   if (receipt.taskDecisionRepairHold) return `Ponderosa could not verify the Decision status for ${recipientName}'s work. Task recovery is held until it can be checked.${receipt.contextRolloverHold || receipt.settingsTransitionHold ? ' Context refresh also could not safely continue.' : ''}`;
   if (receipt.settingsTransitionHold === "retry_available") return `Ponderosa could not prepare the context handoff for ${recipientName}. Your original message remains queued; you can try again.`;
   if (receipt.settingsTransitionHold === "review_required") return `Ponderosa could not verify the context handoff for ${recipientName}. Your original message is held; review the Agent’s activity before recovery.`;
   if (receipt.contextRolloverHold === "retry_available") return `Context refresh stopped before the replacement started. ${recipientName}'s unfinished work is held; review activity before trying again.`;
   if (receipt.contextRolloverHold === "review_required") return `Context refresh could not safely continue. ${recipientName}'s unfinished work is held; review activity before recovery.`;
+  if (pausedRunId && receipt.executionId === pausedRunId && messageDeliveryPhase(receipt) === "Working") return `Message delivered to ${recipientName}. Work is paused.`;
   const waiting = deliveryWaitLabel(receipt);
   if (waiting) return receipt.steeringWaitReason
     ? `Steer for ${recipientName}: ${waiting.detail} Provider acceptance does not guarantee immediate reconsideration or stop a running tool.`
@@ -71,13 +73,13 @@ function deliveryLabel(
   }
 }
 
-function compactDeliveryLabel(receipt: MessageDeliveryReceiptDto): string {
+function compactDeliveryLabel(receipt: MessageDeliveryReceiptDto, pausedRunId?: string): string {
   if (receipt.taskDecisionRepairHold) return "Task check held";
   if (receipt.settingsTransitionHold) return "Context handoff held";
   const waiting = deliveryWaitLabel(receipt);
   if (waiting) return waiting.compact;
   const phase = messageDeliveryPhase(receipt);
-  if (phase) return phase;
+  if (phase) return phase === "Working" && pausedRunId && receipt.executionId === pausedRunId && !receipt.contextRolloverHold ? "Paused" : phase;
   switch (receipt.state) {
     case "queued": return "Queued";
     case "preparing": return "Preparing";
@@ -135,6 +137,7 @@ function severity(receipt: MessageDeliveryReceiptDto): "success" | "info" | "war
 export function MessageDeliveryStatus({
   projectId,
   receipts,
+  pausedRunId,
   recipientName,
   onOpenAgent,
   compact = false,
@@ -144,6 +147,7 @@ export function MessageDeliveryStatus({
 }: {
   projectId?: string;
   receipts?: MessageDeliveryReceiptDto[];
+  pausedRunId?: string;
   recipientName(agentId: string): string;
   onOpenAgent?(agentId: string): void;
   compact?: boolean;
@@ -190,12 +194,13 @@ export function MessageDeliveryStatus({
         const delivery = deliveryLabel(
           receipt,
           recipientName(receipt.targetAgentId),
+          pausedRunId,
         );
         const runtime = receipt.state === "started" ? runtimeLabel(receipt) : undefined;
         return runtime ? `${delivery} ${runtime}.` : delivery;
       })
       .join(" ");
-    const compactLabel = receipts.map(compactDeliveryLabel).join(". ");
+    const compactLabel = receipts.map(receipt => compactDeliveryLabel(receipt, pausedRunId)).join(". ");
     const indicator = (
       <Box
         component="span"
@@ -290,12 +295,12 @@ export function MessageDeliveryStatus({
   };
   return <Stack spacing={0.5} sx={{ alignItems: "flex-end", maxWidth: "100%" }} aria-label="Message delivery status">
     <Box component="span" role="status" aria-live="polite" sx={{ position: "absolute", width: "1px", height: "1px", overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap" }}>
-      {receipts.map(receipt => deliveryLabel(receipt, recipientName(receipt.targetAgentId))).join(" ")}
+      {receipts.map(receipt => deliveryLabel(receipt, recipientName(receipt.targetAgentId), pausedRunId)).join(" ")}
     </Box>
     {receipts.map((receipt) => {
       const tone = severity(receipt);
       const name = recipientName(receipt.targetAgentId);
-      const label = deliveryLabel(receipt, name);
+      const label = deliveryLabel(receipt, name, pausedRunId);
       const runtime = receipt.state === "started" ? runtimeLabel(receipt) : undefined;
       const detailedLabel = runtime ? `${label} ${runtime}.` : label;
       const StatusIcon = tone === "success"
@@ -308,8 +313,8 @@ export function MessageDeliveryStatus({
       const shortLabel = receipt.state === "delivered" && receipt.injectionKind === "steer" && receipt.providerAcknowledged
         ? `Instructions delivered to ${name}`
         : receipt.state === "cancelled" && receipt.providerAcknowledged
-        ? `Delivered · ${compactDeliveryLabel(receipt)}`
-        : compactDeliveryLabel(receipt);
+        ? `Delivered · ${compactDeliveryLabel(receipt, pausedRunId)}`
+        : compactDeliveryLabel(receipt, pausedRunId);
       return <Stack key={receipt.activationId} direction="row" spacing={0.5} useFlexGap flexWrap="wrap" sx={{ justifyContent: "flex-end", maxWidth: "100%", "& > .MuiButton-root": { minWidth: 0, px: { xs: 0.5, sm: 1 }, whiteSpace: "nowrap", fontSize: { xs: 11, sm: 13 }, "@media (pointer: coarse)": { minHeight: 44 } } }}>
         <Tooltip title={detailedLabel}>
           <Box component="span" sx={{ display: "inline-flex", minWidth: 0, maxWidth: "100%" }}>

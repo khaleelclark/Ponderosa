@@ -915,9 +915,7 @@ export function AgentDetail({
         minWidth: 0,
         overflow: "hidden",
         display: "grid",
-        gridTemplateRows: activeBrowser || detailRefreshFailed
-          ? "auto auto minmax(0, 1fr) auto"
-          : "auto minmax(0, 1fr) auto",
+        gridTemplateRows: `auto ${activeBrowser || detailRefreshFailed ? "auto " : ""}${pause?.reason === "access_restricted" ? "auto " : ""}minmax(0, 1fr) auto`,
       }}
     >
       <AgentDetailHeader
