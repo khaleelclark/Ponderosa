@@ -1867,6 +1867,14 @@
       "origin": "Workflow-owned Chat deletion route regression"
     },
     {
+      "path": "tests/memory/real-provider-recall.test.mjs",
+      "feature": "memory",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Opt-in PONDEROSA_REGRESSION_REAL_MEMORY=1; Node24/built native server, existing permitted Codex and Claude accounts, explicit PONDEROSA_TEST_CHROMA_BIN and read-only PONDEROSA_TEST_MEMORY_MODEL_DIR; fresh owned Chroma/data/cache; at most two native turns",
+      "origin": "One source-omitted managed search per native engine returns both blind synthetic Chat/global facts through the private.6 host bridge; no standalone private.10 compatibility or whole-privacy claim"
+    },
+    {
       "path": "tests/memory/tool-guidance.test.mjs",
       "feature": "memory",
       "lane": "server",
