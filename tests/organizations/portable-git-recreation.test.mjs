@@ -6,11 +6,11 @@ import test from 'node:test';
 import {createHash} from 'node:crypto';
 import assert from 'node:assert/strict';
 import {mkdtemp,mkdir,writeFile,readFile,readlink,readdir,unlink,chmod,lstat,realpath,open,rm,symlink} from 'node:fs/promises';
-import {tmpdir,homedir,userInfo} from 'node:os';
+import {tmpdir,userInfo} from 'node:os';
 import {mkdirSync,renameSync} from 'node:fs';
 import path from 'node:path';
 import {promisify} from 'node:util';
-import {execFile} from 'node:child_process';
+import {execFile,spawnSync} from 'node:child_process';
 import {exportReviewedUserData,parseReviewedUserData,recreateReviewedGit,createGitExportCapture,createReviewedNativeGit,createReviewedRecoveryGit} from '../../apps/server/dist/portable-reviewed-user-data.js';
 import {planReviewedRecoveryRoots,applyReviewedRecoveryRoots} from '../../apps/server/dist/portable-git-recreation.js';
 import {AgentStore} from '@ponderosa/agents';
@@ -561,6 +561,19 @@ test('live native adoption seals and rechecks configured closed hardlink/symlink
  }finally{store?.close();await rm(base,{recursive:true,force:true});}
 });
 
+test('native Git expands a named-user path against account home when HOME differs',{skip:process.platform==='win32'},async()=>{
+  const root=await realpath(await mkdtemp(path.join(tmpdir(),'git-named-home-')));
+  try{
+    const isolatedHome=path.join(root,'isolated-home'),target=path.join(root,'external.conf'),account=userInfo();
+    await mkdir(isolatedHome);assert.notEqual(isolatedHome,account.homedir);
+    const named='~'+account.username+'/'+path.relative(account.homedir,target);
+    const env={...Object.fromEntries(Object.entries(process.env).filter(([key])=>!key.startsWith('GIT_'))),HOME:isolatedHome,GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null',GIT_TERMINAL_PROMPT:'0'};
+    const result=spawnSync('git',['config','--file','-','--path','--get','portable.path'],{cwd:root,env,input:'[portable]\n path = '+JSON.stringify(named)+'\n',encoding:'utf8'});
+    assert.equal(result.status,0,'native Git must expand the synthetic stdin configuration');
+    assert.equal(path.resolve(result.stdout.trim()),target,'named-user expansion follows the account home, independent of HOME');
+  }finally{await rm(root,{recursive:true,force:true});}
+});
+
 test('configured dependency source capture is explicit, complete and keeps credential stores excluded',{skip:process.platform==='win32'},async()=>{
   const root=await mkdtemp(path.join(tmpdir(),'portable-external-capture-'));
   try{
@@ -586,7 +599,7 @@ test('configured dependency source capture is explicit, complete and keeps crede
     const hardCycle=structuredClone(cycle);for(const alias of hardCycle.gitExternalDependencies.links.filter(alias=>alias.sourcePath.includes('/cycle-')))alias.kind='hardlink';assert.throws(()=>parseReviewedUserData(Buffer.from(JSON.stringify(hardCycle))),/hardlink|target/i);
     const unrelated=path.join(root,'unrelated');await initialize(unrelated);const unrelatedValue=await exportReviewedUserData(unrelated,{git:true,harness:false}),disconnected=structuredClone(value),other=unrelatedValue.gitExternalDependencies;
     for(const key of ['files','directories','links','absentPaths','omittedPaths','bindings'])disconnected.gitExternalDependencies[key].push(...other[key]);disconnected.gitExternalDependencies.directories.push({sourcePath:unrelated,mode:0o700,mtimeNs:'0',root:true});disconnected.gitExternalDependencies.repositories=[{sourcePath:unrelated,git:unrelatedValue.git,originals:unrelatedValue.providerFiles}];assert.throws(()=>parseReviewedUserData(Buffer.from(JSON.stringify(disconnected))),/capsule|repository|disconnected|closure/i);
-    const named='~'+userInfo().username+'/'+path.relative(homedir(),path.join(external,'outer.conf'));await git(source,'config','include.path',named);await git(source,'config','core.attributesFile','%(prefix)/ponderosa-absent-'+path.basename(root));
+    const named='~'+userInfo().username+'/'+path.relative(userInfo().homedir,path.join(external,'outer.conf'));await git(source,'config','include.path',named);await git(source,'config','core.attributesFile','%(prefix)/ponderosa-absent-'+path.basename(root));
     const expanded=await exportReviewedUserData(source,{git:true,harness:false,externalGitDependencies:true});assert.ok(expanded.gitExternalDependencies.bindings.some(binding=>binding.rawValue===named&&binding.resolvedPath===path.join(external,'outer.conf')));assert.ok(expanded.gitExternalDependencies.bindings.some(binding=>binding.rawValue.startsWith('%(prefix)')&&path.isAbsolute(binding.resolvedPath)));parseReviewedUserData(Buffer.from(JSON.stringify(expanded)));
     await mkdir(path.join(external,'.aws'));await writeFile(path.join(external,'.aws','credentials'),'private');await git(source,'config','include.path',path.join(external,'.aws','credentials'));
     const excluded=await exportReviewedUserData(source,{git:true,harness:false,externalGitDependencies:true});assert.ok(excluded.gitExternalDependencies.omittedPaths.includes(path.join(external,'.aws','credentials')));assert.ok(!excluded.gitExternalDependencies.files.some(file=>file.sourcePath.includes('/.aws/')));
