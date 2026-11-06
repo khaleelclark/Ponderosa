@@ -111,14 +111,15 @@ export class AgentCommunicationProjectionLedger {
   communicationProjectionAllowed(
     projectId: string,
     projection: Pick<CommunicationProjection, "eventId" | "surface" | "projectionKey" | "message">,
+    getConversation = this.getConversation,
   ): boolean {
     const event = this.communicationIndex(projectId).byId.get(projection.eventId);
     if (!event) throw new Error("communication projection source event not found");
     // Deleted rooms are hard context boundaries. Their retained append-only
     // records are historical storage only and may not materialize anywhere.
-    if (event.conversationId && !this.getConversation(event.conversationId)) return false;
+    if (event.conversationId && !getConversation(event.conversationId)) return false;
     const roomKeyAllowed = event.conversationId === projection.projectionKey && (() => {
-      const room = this.getConversation(projection.projectionKey);
+      const room = getConversation(projection.projectionKey);
       return Boolean(room && room.projectId === projectId);
     })();
     // A user-authored Project message remains an organization-scoped
@@ -244,10 +245,10 @@ export class AgentCommunicationProjectionLedger {
     return { projection, replayed: false };
   }
 
-  readCommunicationProjections(projectId: string): CommunicationProjection[] {
+  readCommunicationProjections(projectId: string, getConversation = this.getConversation): CommunicationProjection[] {
     if (!this.getProject(projectId)) throw new Error("communication project not found");
     return this.projectionIndex(projectId).projections.filter((projection) =>
-      this.communicationProjectionAllowed(projectId, projection));
+      this.communicationProjectionAllowed(projectId, projection, getConversation));
   }
 
   getCommunicationProjection(
@@ -449,11 +450,17 @@ export class AgentCommunicationProjectionLedger {
 
   /** Verify that canonical events and their projections agree. */
   reconcileCommunicationEvents(projectId: string): CommunicationReconciliationReport {
+    // One synchronous pass shares current room metadata; nothing survives the pass.
+    const conversations = new Map<string, ConversationDto | undefined>();
+    const getConversation = (id: string): ConversationDto | undefined => {
+      if (!conversations.has(id)) conversations.set(id, this.getConversation(id));
+      return conversations.get(id);
+    };
     const allCanonical = this.readCommunicationEvents(projectId);
     const canonical = allCanonical.filter((event) =>
-      !event.conversationId || Boolean(this.getConversation(event.conversationId)));
+      !event.conversationId || Boolean(getConversation(event.conversationId)));
     const canonicalIds = new Set(canonical.map((event) => event.eventId));
-    const projections = this.readCommunicationProjections(projectId);
+    const projections = this.readCommunicationProjections(projectId, getConversation);
     const counts = new Map<string, number>();
     for (const projection of projections) counts.set(projection.eventId, (counts.get(projection.eventId) ?? 0) + 1);
     const tupleCounts = new Map<string, number>();

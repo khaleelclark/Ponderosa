@@ -38,6 +38,13 @@
       "origin": "Busy Request prompt fencing, unsupported-provider fallback, and uncertain delivery"
     },
     {
+      "path": "tests/agents/communication-reconciliation-scope.test.mjs",
+      "feature": "agents",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24 and built agents/server/core; isolated real canonical history, no provider account or browser"
+    },
+    {
       "path": "tests/agents/request-update-projection-recovery.test.mjs",
       "feature": "agents",
       "lane": "server",
