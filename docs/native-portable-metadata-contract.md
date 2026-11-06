@@ -10,6 +10,7 @@ claim. Public functions and exact TypeScript types are exported from
 
 | Family | Implemented source | Unsupported or still required |
 | --- | --- | --- |
+| Exact held symlink timestamps | Linux O_PATH/no-follow with empty-path utimensat; macOS O_SYMLINK with descriptor futimens; exact signed-nanosecond readback | Windows unsupported. Filesystem refusal or precision loss remains failure. This does not extend other metadata families to macOS. |
 | Extended inspection | Linux held regular-file/directory descriptors and internally held FIFO O_PATH nodes; bounded visible name/value inventory; explicit POSIX ACL probes and v2 parser | Linux may hide privileged names. `allNamespacesComplete` is always false. Other platforms throw a specific unsupported error; they are not empty inventories. |
 | Selected extended restore | Linux exact selected `user.*` plus POSIX access/default ACL state, explicit principal remapping and full selected readback | No security/trusted/capability/SELinux/unknown namespace application, chown or alternate ACL dialect. A destination with other visible namespaces refuses before mutation. Hidden namespaces cannot be proved absent. |
 | Persistent inspection | Linux O_PATH descriptor and held parent/one leaf binding for FIFO, socket, character/block node | No content open, socket communication or service adoption. Exact device numbers are evidence, never destination mapping authority. |
@@ -244,3 +245,23 @@ The added FIFO ACL round-trip regression is unexecuted pending combined validati
 ## Held ordinary regular pins
 
 See [the regular-file replacement contract](portable-filesystem-recreation.md#regular-file-replacement-boundary). Linux metadata capture/application uses exact no-follow O_PATH regular pins, while data/hash reads reopen that held inode through its qualified procfs fd path. No FIFO endpoint is opened before a type check. Parent/root identity checks remain required. O_PATH exact mode/time applies through descriptor-only fchmodat2/utimensat with support preflight and readback. Non-Linux ordinary replacement races remain unqualified; their existing functionality is preserved. No tests/build/native execution were run in this successor.
+
+
+## Held symlink timestamps
+
+`pinPortableSymlink` binds one single-name symlink to a borrowed held parent and
+returns a caller-owned descriptor after exact parent/name/device/inode/kind checks.
+Linux uses O_PATH|O_NOFOLLOW; macOS uses O_SYMLINK|O_NONBLOCK. Neither follows the
+symlink target or reads link bytes. Darwin O_SYMLINK cannot be combined with
+O_NOFOLLOW. A replaced non-symlink leaf can be opened before Darwin's type/identity
+rejection, so the existing fresh-node and parent/name custody contract remains
+required; this is not a claim of Linux O_PATH behavior on macOS.
+
+`applyExactSymlinkMetadata` uses Linux empty-path no-follow utimensat or macOS
+futimens on that exact held inode. It preserves atime, owner/group and mode and
+requires exact signed-nanosecond timestamp/identity readback. A filesystem refusal,
+rounding or changed observation fails; attempted mutation reports partial-state
+evidence without rollback or retry. Final exact working-link restoration uses
+this native path on Linux and macOS. Windows remains explicitly unsupported.
+This narrow support does not extend Linux ACL, xattr, FIFO or regular-file pin
+contracts to other platforms, or qualify full package import/export on macOS.

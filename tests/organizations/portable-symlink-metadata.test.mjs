@@ -4,7 +4,7 @@ import {mkdtemp,open,writeFile,symlink,lstat,readFile,readlink,rename,link,rm} f
 import {constants,closeSync,fstatSync,readSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
-import {applyExactSymlinkMetadata,pinPortableSymlink} from '@ponderosa/native-host';
+import {applyExactSymlinkMetadata,pinPortableSymlink,pinPortableRegularFile} from '@ponderosa/native-host';
 
 const supported={skip:!['linux','darwin'].includes(process.platform)};
 async function fixture(t,linkTarget='target'){
@@ -45,8 +45,8 @@ test('stale identities and wrong descriptor kinds refuse before changing either 
  const f=await fixture(t),before=await lstat(f.selected,{bigint:true}),target=await lstat(f.target,{bigint:true});
  assert.throws(()=>applyExactSymlinkMetadata({...f.input,expectedInode:before.ino+1n}),error=>error.code==='ERR_EXACT_SYMLINK_METADATA_PREFLIGHT');
  assert.throws(()=>applyExactSymlinkMetadata({...f.input,expectedDevice:before.dev+1n}),error=>error.code==='ERR_EXACT_SYMLINK_METADATA_PREFLIGHT');
- const regular=await open(f.target,constants.O_RDONLY|constants.O_NOFOLLOW);
- try{assert.throws(()=>applyExactSymlinkMetadata({...f.input,fd:regular.fd,expectedDevice:target.dev,expectedInode:target.ino}),error=>error.code==='ERR_EXACT_SYMLINK_METADATA_PREFLIGHT');}finally{await regular.close();}
+ const regular=process.platform==='linux'?pinPortableRegularFile({path:f.target,expectedDevice:target.dev,expectedInode:target.ino}):await open(f.target,constants.O_RDONLY|constants.O_NOFOLLOW);
+ try{assert.throws(()=>applyExactSymlinkMetadata({...f.input,fd:regular.fd,expectedDevice:target.dev,expectedInode:target.ino}),error=>error.code==='ERR_EXACT_SYMLINK_METADATA_PREFLIGHT');}finally{if(process.platform==='linux')closeSync(regular.fd);else await regular.close();}
  assert.equal((await lstat(f.selected,{bigint:true})).mtimeNs,before.mtimeNs);assert.equal((await lstat(f.target,{bigint:true})).mtimeNs,target.mtimeNs);
 });
 

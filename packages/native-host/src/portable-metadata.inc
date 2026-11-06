@@ -1,4 +1,4 @@
-// Descriptor-only native metadata. No path reopen, principal lookup or service activation.
+// Metadata mutation uses held descriptors without following symlink targets.
 namespace portable_metadata {
 constexpr size_t kNames = 65536, kCount = 256, kValue = 65536, kTotal = 1048576;
 napi_value Property(napi_env env, napi_value object, const char* key) {
