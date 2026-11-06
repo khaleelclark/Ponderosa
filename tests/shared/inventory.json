@@ -3229,6 +3229,22 @@
       "moduleBase": "apps/server/package.json",
       "requirements": "Owned disposable required-Agent validation and publication check; built web/server/packages and installed Chrome; no native provider job or performance qualification",
       "classification": "manual-qualification-entrypoint"
+    },
+    {
+      "path": "tests/branches/workflow-startup-qualification.mjs",
+      "feature": "branches",
+      "lane": "manual",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Owned disposable UI startup/state check; built web/server/packages and installed Chrome; no provider account or performance qualification",
+      "classification": "manual-qualification-entrypoint"
+    },
+    {
+      "path": "tests/chats/message-frame-style-qualification.mjs",
+      "feature": "chats",
+      "lane": "manual",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Owned disposable UI startup/state check; built web/server/packages and installed Chrome; no provider account or performance qualification",
+      "classification": "manual-qualification-entrypoint"
     }
   ],
   "support": [
