@@ -589,10 +589,15 @@ function ProviderModelCheck({ engine, projectId, model }: { engine: EngineDto; p
   });
   const current = check.variables?.projectId === projectId && check.variables?.modelId === model;
   return <Stack spacing={1} sx={{ mt: 2 }}>
-    <Typography variant="caption" color="text.secondary" sx={{ overflowWrap: "anywhere" }}>
-      {engine.cliVersion ? `CLI ${engine.cliVersion}. ` : ""}A model listing does not verify access.
-      {engine.modelCatalogFetchedAt ? ` Models read ${new Date(engine.modelCatalogFetchedAt).toLocaleString()}.` : ""}
-      {" "}Testing sends a small harness-backed request and keeps existing Agent settings.
+    {engine.cliVersion || engine.modelCatalogFetchedAt ? (
+      <Typography variant="caption" color="text.secondary" sx={{ overflowWrap: "anywhere" }}>
+        {engine.cliVersion ? `CLI ${engine.cliVersion}` : ""}
+        {engine.cliVersion && engine.modelCatalogFetchedAt ? " · " : ""}
+        {engine.modelCatalogFetchedAt ? `Models read ${new Date(engine.modelCatalogFetchedAt).toLocaleString()}` : ""}
+      </Typography>
+    ) : null}
+    <Typography variant="caption" color="text.secondary">
+      Sends a small request; Agent settings stay unchanged.
     </Typography>
     <Button variant="outlined" sx={{ alignSelf: { xs: "stretch", sm: "flex-start" } }}
       disabled={!projectId || !model || !engineCanDiscover(engine) || check.isPending}

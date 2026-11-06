@@ -67,11 +67,16 @@ inspect GET for the settled phase. Shutdown and deletion also fence native input
 and acceptance. There is no generic Agent task cancellation manufactured for a
 command that owns no scheduler Run.
 
-## Unsupported and legacy sessions
+## Claude and legacy sessions
 
-Claude has no mapped structured retained-session compaction command. Its support
-is `unsupported` with `missingOperation: structured_retained_session_compaction`.
-Legacy packets without a retained contract also stay on the refusal path. The POST
+Claude also advertises `managed_compaction` with crash policy
+`hold_without_native_query`. The streaming adapter dispatches the native
+`/compact` command, correlates its submitted UUID with the native command
+completion, and requires fresh session-bound context usage before acceptance.
+See [Claude native command recovery](claude-native-command-recovery.md) for the
+exact protocol and remaining qualification limits.
+
+Legacy packets without a retained contract stay on the refusal path. The POST
 records a hold and returns409 `provider_context_recovery_unsupported` without
 launching a provider, replacing a session, changing permissions or accepting context.
 Requiring an unchanged-context no-effects diagnostic turn is not a separate Bible
@@ -93,7 +98,8 @@ operation key or result lookup after a crash. Completion and usage notifications
 can certify an observed invocation, but cannot reconstruct an unseen original tail
 or a lost invocation result. Original-work continuation exactly once therefore
 needs a native source-turn outcome/transcript read and queryable operation identity.
-Claude additionally needs a mapped structured compaction equivalent.
+Claude's mapped native compaction has the same remaining lost-operation
+identity/result lookup limitation; an unknown command is never repeated.
 
 A host replacement requires an immutable complete native transcript plus the
 canonical journals. Authored Chat alone is insufficient after unseen native work.
