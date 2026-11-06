@@ -193,6 +193,8 @@ test('native browser: rendered href, Open-link actions and whole-message/code co
     import { flushSync } from 'react-dom';
     import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
     import { MainConversationTimeline } from ${JSON.stringify(path.join(webRoot, 'src/components/ConversationView.parts.tsx'))};
+    import { ChatSurface } from ${JSON.stringify(path.join(webRoot, 'src/components/chat/ChatSurface.tsx'))};
+    import { useConversationMessageFocusRefs, useConversationMessageFocusEffect, useConversationMessageFocusCleanup } from ${JSON.stringify(path.join(webRoot, 'src/components/useConversationMessageFocus.ts'))};
     import { unified } from ${JSON.stringify(webRequire.resolve('unified'))};
     import remarkParse from ${JSON.stringify(webRequire.resolve('remark-parse'))};
     import { ChatMessageBody, communicationVisibleText, authoredAgentMentionForHandle } from ${JSON.stringify(path.join(webRoot, 'src/components/chat/ChatMessages.tsx'))};
@@ -232,6 +234,54 @@ test('native browser: rendered href, Open-link actions and whole-message/code co
       const prototype=Object.getPrototypeOf(unified().use(remarkParse)),parse=prototype.parse;
       prototype.parse=function(...args){window.markdownParses++;return parse.apply(this,args);};
       root.render(<MutationNotificationProvider><ProjectBrowserContext.Provider value={{projectId:'test',open(){}}}><MarkdownMemoProbe/></ProjectBrowserContext.Provider></MutationNotificationProvider>);
+    };
+
+    const transcriptRows = Array.from({length:100},(_,i)=>({kind:'message',id:'row-'+i,at:'2026-10-20T12:00:00Z',
+      message:{id:'row-'+i,conversationId:'loading-chat',role:'user',text:'Row '+String(i).padStart(3,'0')+' **retained text** '+(i===99?longText:'short content.'),
+      createdAt:'2026-10-20T12:00:00Z'}}));
+    let loadingProbe = 0;
+    window.holdTranscriptTasks = false;window.transcriptTasks=[];
+    const nativePostTask=window.scheduler.postTask.bind(window.scheduler);
+    window.scheduler.postTask=(callback,options={})=>{
+      if(!window.holdTranscriptTasks||options.priority!=='background')return nativePostTask(callback,options);
+      return new Promise((resolve,reject)=>{
+        options.signal?.addEventListener('abort',()=>reject(new DOMException('Canceled','AbortError')),{once:true});
+        window.transcriptTasks.push({signal:options.signal,run:()=>{try{resolve(callback());}catch(error){reject(error);}}});
+      });
+    };
+    window.runTranscriptBatch=()=>{const task=window.transcriptTasks.find(task=>!task.signal?.aborted);if(!task)throw Error('No pending transcript task');window.transcriptTasks.splice(window.transcriptTasks.indexOf(task),1);task.run();};
+    function InitialTranscriptProbe({reveal,height,probe}){
+      const [items,setItems]=React.useState([]),[showAll,setShowAll]=React.useState(reveal);
+      const key='initial-transcript-'+probe;
+      window.installTranscript=()=>flushSync(()=>setItems(transcriptRows));
+      window.mutateTranscript=()=>flushSync(()=>setItems(before=>[{...transcriptRows[0],id:'added',message:{...transcriptRows[0].message,id:'added',text:'Added first row'}},...before]));
+      window.focusTranscript=()=>flushSync(()=>setShowAll(true));
+      window.transcriptData=items;
+      const {focusedMessage,focusedMessageHighlightDisposer}=useConversationMessageFocusRefs();
+      useConversationMessageFocusCleanup(focusedMessageHighlightDisposer);
+      useConversationMessageFocusEffect({activeView:'main',collaborationMessages:[],collaborationQuery:{},conversationId:'loading-chat',
+        detailQuery:{data:{messages:items.map(item=>item.message)}},focusedMessage,focusedMessageHighlightDisposer,
+        focusMessageId:showAll&&items.length?'row-0':undefined,initialView:'main',messages:items.map(item=>item.message),
+        setActiveView:memoNoop,setOlderCollaboration:memoNoop,setOlderMain:memoNoop});
+      return <QueryClientProvider client={memoClient}><div data-transcript-probe={probe}><section aria-label="Loaded transcript copy"><input aria-label="Outside transcript editor" defaultValue="Retained editor draft" /><CopyMessageButton text={items.map(item=>item.message.text).join('\\n')}/></section>
+        <div style={{height,width:'100%',minHeight:0}}><ChatSurface label="Initial transcript" layout="project" layoutKey={items.map(item=>item.id).join(':')}
+          initialTranscript={{rowIds:items.map(item=>item.id),reveal:showAll}} follow={{kind:'latest',storageKey:key,onPositionChange(element,latest){window.transcriptPositions.push({key,latest,top:element.scrollTop,height:element.scrollHeight,rows:element.querySelectorAll('article').length});}}}
+          history={{kind:'cursor',hasEarlier:true,loading:false,onLoadEarlier(){window.historySawComplete=document.querySelectorAll('article').length;}}}>
+          {firstMountedIndex=><div data-loaded-transcript><MainConversationTimeline mainTimeline={items} firstMountedIndex={firstMountedIndex} projectId="test" healthByAgentId={new Map()} agentTitle={memoTitle} agentIdForHandle={memoHandle} onOpenAgent={memoNoop} mentionAgent={memoNoop} markCommunicationVisible={memoNoop} notifications={[]}/></div>}
+        </ChatSurface></div></div></QueryClientProvider>;
+    }
+    window.mountInitialTranscript=({saved=false,reveal=false,height=1400}={})=>{
+      loadingProbe++;window.transcriptTasks=[];window.transcriptPositions=[];
+      const key='initial-transcript-'+loadingProbe;
+      if(saved)localStorage.setItem(key,'0');else localStorage.removeItem(key);
+      flushSync(()=>root.render(<MutationNotificationProvider><InitialTranscriptProbe key={loadingProbe} probe={loadingProbe} reveal={reveal} height={height}/></MutationNotificationProvider>));
+    };
+    window.initialTranscriptSnapshot=()=>{
+      const container=document.querySelector('[data-transcript-probe="'+loadingProbe+'"] .chat-scroll-region'),rows=container.querySelector('[data-loaded-transcript]');
+      const box=container.getBoundingClientRect(),articles=[...rows.querySelectorAll('article')];
+      const visible=articles.find(node=>{const b=node.getBoundingClientRect();return b.bottom>box.top&&b.top<box.bottom;});
+      return {busy:container.getAttribute('aria-busy'),count:articles.length,data:window.transcriptData.length,rowsHeight:rows.getBoundingClientRect().height,height:container.clientHeight,
+        scrollTop:container.scrollTop,visible:visible?.id,visibleTop:visible?.getBoundingClientRect().top-box.top};
     };
 
   `);
@@ -364,6 +414,115 @@ test('native browser: rendered href, Open-link actions and whole-message/code co
   await patchMemo({activeRun:undefined});await appLink.click();await appDialog.waitFor();
   assert.equal(await appDialog.getByRole('button',{name:'Open Live App Preview',exact:true}).count(),0,'A stopped or replaced Run must not retain its old preview grant');
   await appDialog.getByRole('button',{name:'Cancel',exact:true}).click();assert.deepEqual(pageErrors,[]);
+
+  // Reset the earlier deliberate clipboard/execCommand failure injections.
+  await page.reload();
+  // Real shared surface: fetched data stays complete during a finite cold mount.
+  await page.evaluate(()=>{window.holdTranscriptTasks=true;window.mountInitialTranscript();});
+  await page.evaluate(()=>{const region=document.querySelector('.chat-scroll-region');region.dispatchEvent(new Event('scroll'));window.installTranscript();});
+  let initial=await page.evaluate(()=>window.initialTranscriptSnapshot());
+  assert.equal(initial.data,100);assert(initial.count>0&&initial.count<100,'empty/loading -> first response must actually progress');
+  assert.equal(initial.busy,'true');assert(initial.rowsHeight>=initial.height,'actual mounted rows fill the viewport before paint');
+  t.diagnostic('Cold transcript measured before background work: '+JSON.stringify(initial));
+  await page.getByRole('region',{name:'Loaded transcript copy'}).getByRole('button',{name:'Copy whole message'}).click();
+  const allCopied=await page.evaluate(()=>navigator.clipboard.readText());
+  assert.equal(allCopied,await page.evaluate(()=>window.transcriptData.map(item=>item.message.text).join('\n')),'all100 fetched entries remain exactly copyable while rows are pending');
+  await page.waitForFunction(()=>window.transcriptTasks.some(task=>!task.signal?.aborted));
+  await page.evaluate(()=>document.querySelector('#master-message-row-99 button[aria-expanded]').click());
+  await settleMemo();
+  assert.equal(await page.locator('#master-message-row-99 button[aria-expanded]').getAttribute('aria-expanded'),'true');
+  await page.evaluate(()=>{const region=document.querySelector('.chat-scroll-region');region.scrollTop-=180;});
+  await settleMemo();
+  const anchor=await page.evaluate(()=>{window.retainedTranscriptNodes=[...document.querySelectorAll('[data-loaded-transcript] article')];return window.initialTranscriptSnapshot();});
+  await page.evaluate(()=>window.runTranscriptBatch());
+  const afterBatch=await page.evaluate(()=>window.initialTranscriptSnapshot());
+  assert.equal(afterBatch.visible,anchor.visible);assert(Math.abs(afterBatch.visibleTop-anchor.visibleTop)<=1,'actual prepend preserves the reading anchor');
+  t.diagnostic('Measured prepend anchor: '+JSON.stringify({before:anchor,after:afterBatch}));
+  assert.equal(await page.evaluate(()=>window.retainedTranscriptNodes.every(node=>document.getElementById(node.id)===node)),true,'mounted row instances are never replaced');
+  assert.equal(await page.locator('#master-message-row-99 button[aria-expanded]').getAttribute('aria-expanded'),'true','expanded body state survives prepends');
+  await page.evaluate(()=>{window.holdTranscriptTasks=false;if(window.transcriptTasks.some(task=>!task.signal?.aborted))window.runTranscriptBatch();});
+  await page.waitForFunction(()=>window.initialTranscriptSnapshot().busy===null);
+  assert.equal((await page.evaluate(()=>window.initialTranscriptSnapshot())).count,100,'all rows finish automatically using the normal scheduler');
+  assert.equal(await page.evaluate(()=>window.retainedTranscriptNodes.every(node=>document.getElementById(node.id)===node)),true);
+  assert.equal(await page.getByRole('region',{name:'Initial transcript'}).getByRole('article').count(),100);
+  assert.equal(await page.evaluate(()=>{getSelection().removeAllRanges();return window.find('Row 000');}),true,'native browser text finding sees completed rows');
+  const selected=await page.evaluate(()=>{const region=document.querySelector('.chat-scroll-region'),range=document.createRange();range.selectNodeContents(region);getSelection().removeAllRanges();getSelection().addRange(range);return getSelection().toString();});
+  assert(selected.includes('Row 000')&&selected.includes('Row 099'),'post-completion native selection includes the complete loaded transcript');
+  await page.evaluate(()=>getSelection().removeAllRanges());
+
+  // Native Find/selection are tested to completion above; restore starts a new navigation.
+  await page.reload();
+  await page.evaluate(()=>{window.holdTranscriptTasks=true;window.mountInitialTranscript({saved:true,height:620});window.installTranscript();});
+  initial=await page.evaluate(()=>window.initialTranscriptSnapshot());
+  t.diagnostic('Saved-zero restoration: '+JSON.stringify(await page.evaluate(()=>({snapshot:window.initialTranscriptSnapshot(),calls:window.transcriptPositions,surfaces:[...document.querySelectorAll('.chat-scroll-region')].map(node=>({probe:node.closest('[data-transcript-probe]')?.getAttribute('data-transcript-probe'),height:node.clientHeight,root:node.closest('#root')?.id}))}))));
+  assert.equal(await page.locator('[data-transcript-probe]').count(),1,'one current fixture surface remains mounted');
+  assert.equal(initial.count,100);assert.equal(initial.busy,null);assert.equal(initial.scrollTop,0,'a genuinely preexisting saved zero is restored exactly');
+  await page.evaluate(()=>{
+    window.navigationBottomWrites=[];window.navigationGuardSawNearBottom=false;
+    const top=Object.getOwnPropertyDescriptor(Element.prototype,'scrollTop'),nativeTo=Element.prototype.scrollTo;
+    window.restoreFocusInstrumentation=()=>{Object.defineProperty(Element.prototype,'scrollTop',top);Element.prototype.scrollTo=nativeTo;};
+    Object.defineProperty(Element.prototype,'scrollTop',{...top,set(value){if(window.navigationCommandActive&&this.matches?.('.chat-scroll-region')&&value>=this.scrollHeight-this.clientHeight)window.navigationBottomWrites.push(value);top.set.call(this,value);}});
+    Element.prototype.scrollTo=function(...args){
+      if(this.matches?.('.chat-scroll-region')&&args[0]?.behavior==='smooth'){
+        window.navigationCommandActive=true;
+        const response=nativeTo.apply(this,args);
+        // Reproduce the observed queued old-bottom delivery before resize.
+        window.navigationGuardSawNearBottom=this.scrollHeight-this.clientHeight-this.scrollTop<=48;
+        this.dispatchEvent(new Event('scroll'));
+        return response;
+      }
+      return nativeTo.apply(this,args);
+    };
+    window.mountInitialTranscript({reveal:true,height:620});window.installTranscript();
+  });
+  initial=await page.evaluate(()=>window.initialTranscriptSnapshot());assert.equal(initial.count,100);assert.equal(initial.busy,null,'focused routes bypass partial DOM');
+  assert.equal(await page.locator('[data-transcript-probe]').count(),1,'one live surface remains after changing focused scope');
+  await page.locator('#master-message-row-0[data-notification-focus="true"]').waitFor();
+  await page.waitForFunction(()=>{const node=document.getElementById('master-message-row-0'),root=node.closest('.chat-scroll-region'),a=node.getBoundingClientRect(),b=root.getBoundingClientRect();return a.bottom>b.top&&a.top<b.bottom;});
+  assert.equal(await page.locator('#master-message-row-0').getAttribute('data-notification-focus'),'true','existing focus helper reaches and highlights the early loaded row');
+  assert.equal(await page.evaluate(()=>window.navigationGuardSawNearBottom),true,'the known queued old-bottom event is actually exercised');
+  assert.deepEqual(await page.evaluate(()=>window.navigationBottomWrites),[],'resize delivery must not overwrite explicit away-navigation with bottom');
+  await page.evaluate(()=>{window.navigationCommandActive=false;window.restoreFocusInstrumentation();});
+
+  await page.getByRole('button',{name:'Jump to latest message',exact:true}).click();
+  await page.waitForFunction(()=>{const root=document.querySelector('.chat-scroll-region');return root.scrollHeight-root.clientHeight-root.scrollTop<=48;});
+  await page.locator('#master-message-row-99 button[aria-expanded]').click();
+  await settleMemo();
+  assert.equal(await page.locator('#master-message-row-99 button[aria-expanded]').getAttribute('aria-expanded'),'true');
+  await page.waitForFunction(()=>{const root=document.querySelector('.chat-scroll-region');return root.scrollHeight-root.clientHeight-root.scrollTop<=48;});
+
+
+  await page.evaluate(()=>{window.mountInitialTranscript({height:620});window.installTranscript();});
+  await page.waitForFunction(()=>window.transcriptTasks.some(task=>!task.signal?.aborted));
+  await page.evaluate(()=>{document.querySelector('.chat-scroll-region').scrollTop-=120;});
+  await settleMemo();const beforeMutation=await page.evaluate(()=>window.initialTranscriptSnapshot());
+  await page.evaluate(()=>window.mutateTranscript());
+  const afterMutation=await page.evaluate(()=>window.initialTranscriptSnapshot());
+  assert.equal(afterMutation.count,101);assert.equal(afterMutation.busy,null);
+  assert.equal(afterMutation.visible,beforeMutation.visible);assert(Math.abs(afterMutation.visibleTop-beforeMutation.visibleTop)<=1,'ID mutation full reveal preserves the existing real-height anchor');
+
+  await page.evaluate(()=>{window.mountInitialTranscript({height:620});window.installTranscript();});
+  assert.equal((await page.evaluate(()=>window.initialTranscriptSnapshot())).busy,'true');
+  await page.getByRole('textbox',{name:'Outside transcript editor'}).focus();
+  await page.keyboard.press('Control+a');
+  assert.equal((await page.evaluate(()=>window.initialTranscriptSnapshot())).busy,'true','editable Select All does not force unrelated transcript work');
+  assert.deepEqual(await page.getByRole('textbox',{name:'Outside transcript editor'}).evaluate(node=>[node.selectionStart,node.selectionEnd]),[0,'Retained editor draft'.length]);
+  await page.keyboard.press('Control+f');
+  initial=await page.evaluate(()=>window.initialTranscriptSnapshot());assert.equal(initial.count,100);assert.equal(initial.busy,null,'keyboard find reveals pending rows before browser default handling');
+  await page.keyboard.press('Escape');
+  await page.evaluate(()=>{window.mountInitialTranscript({height:620});window.installTranscript();});
+  await page.getByRole('button',{name:/Earlier|older/i}).click();
+  assert.equal(await page.evaluate(()=>window.historySawComplete),100,'earlier-history action sees all pending fetched rows first');
+
+  await page.setViewportSize({width:412,height:823});
+  const phoneInitial=await page.evaluate(()=>{window.holdTranscriptTasks=false;window.mountInitialTranscript({height:620});window.installTranscript();return window.initialTranscriptSnapshot();});
+  assert.equal(phoneInitial.data,100);assert.equal(phoneInitial.busy,'true');assert(phoneInitial.count>0&&phoneInitial.count<100);
+  assert(phoneInitial.rowsHeight>=phoneInitial.height&&phoneInitial.height<=823,'phone first viewport is filled with measured rows');
+  assert.equal(await page.locator('#master-message-row-99').evaluate(node=>{const root=node.closest('.chat-scroll-region'),a=node.getBoundingClientRect(),b=root.getBoundingClientRect();return a.bottom>b.top&&a.top<b.bottom;}),true);
+  await page.waitForFunction(()=>window.initialTranscriptSnapshot().busy===null);
+  assert.deepEqual(await page.locator('[data-loaded-transcript] article').evaluateAll(nodes=>nodes.map(node=>node.id)),Array.from({length:100},(_,i)=>'master-message-row-'+i),'phone completion retains the full accessible DOM in original order');
+  t.diagnostic('Phone412x823 initial measured suffix: '+JSON.stringify(phoneInitial));
+  assert.deepEqual(pageErrors,[]);
 
 });
 

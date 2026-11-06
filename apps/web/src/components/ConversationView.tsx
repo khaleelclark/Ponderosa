@@ -943,6 +943,7 @@ export function ConversationView({
             layout="project"
             layoutKey={`main:${visibleMessageLayoutKey}`}
             label="Chat messages"
+            initialTranscript={{ rowIds: visibleMainTimeline.map(entry => entry.id), reveal: Boolean(focusMessageId || agentWorkOpen || activeView !== "main") }}
             follow={{
               kind: "latest",
               storageKey: chatStateKey(
@@ -1001,7 +1002,8 @@ export function ConversationView({
               </>
             }
           >
-            <MainConversationTimeline
+            {firstMountedIndex => <MainConversationTimeline
+              firstMountedIndex={firstMountedIndex}
               mainTimeline={visibleMainTimeline}
               operatorProfile={preferencesQuery.data?.profile}
               projectId={conversation.projectId}
@@ -1015,7 +1017,7 @@ export function ConversationView({
               mentionAgent={mentionAgent}
               markCommunicationVisible={markCommunicationVisible}
               notifications={notificationsQuery.data?.items ?? []}
-            />
+            />}
           </ChatSurface>
         </Box>
 

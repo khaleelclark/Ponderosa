@@ -1,3 +1,5 @@
+export const CHAT_MESSAGE_NAVIGATION_EVENT = "ponderosa:chat-message-navigation";
+
 /** Resolve either a surface-local projected ID or its canonical communication ID. */
 export function projectedMessageIdForFocus(
   messages: ReadonlyArray<{ id: string; communicationEventId?: string }>,
@@ -29,10 +31,11 @@ export function scrollFocusedMessageIntoView(
     targetRect.height < container.clientHeight
       ? (container.clientHeight - targetRect.height) / 2
       : 0;
-  container.scrollTo({
-    top: targetTop - centeredOffset,
-    behavior,
-  });
+  const top = targetTop - centeredOffset;
+  // The owning controller resolves this intent before any queued scroll/resize
+  // delivery can mistake the old bottom position for a request to keep following.
+  container.dispatchEvent(new CustomEvent<number>(CHAT_MESSAGE_NAVIGATION_EVENT, { detail: top }));
+  container.scrollTo({ top, behavior });
 }
 
 /** Mark an exact deep-linked message long enough to orient the user, without

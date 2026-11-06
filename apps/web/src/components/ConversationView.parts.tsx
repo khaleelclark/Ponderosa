@@ -405,6 +405,7 @@ function ConversationHeader({
 
 function MainConversationTimeline({
   mainTimeline,
+  firstMountedIndex = 0,
   operatorProfile,
   projectId,
   projectRoot,
@@ -419,6 +420,7 @@ function MainConversationTimeline({
   notifications,
 }: {
   mainTimeline: MainTimelineEntry[];
+  firstMountedIndex?: number;
   operatorProfile?: OperatorProfileDto;
   projectId: string;
   projectRoot?: string;
@@ -448,7 +450,7 @@ function MainConversationTimeline({
           No messages yet · send a message or mention an Agent
         </Typography>
       ) : null}
-      {mainTimeline.map(entry => {
+      {mainTimeline.slice(firstMountedIndex).map(entry => {
         if (entry.kind === "decision") {
           const notification = notifications.find((item) =>
             item.decision?.id === entry.event.decision.id && (item.status ?? "open") === "open");
