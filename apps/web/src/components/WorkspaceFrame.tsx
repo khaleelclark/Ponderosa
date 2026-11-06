@@ -343,7 +343,7 @@ export function TabbedWorkspaceFrame<T extends string>({
   }, [collapsed]);
 
   if (collapsed) {
-    const toggle = <Tooltip title="Expand workspace header">
+    const toggle = <Tooltip title="Expand workspace header" disableInteractive>
       <IconButton ref={toggleButtonRef} size="small" aria-label="Expand workspace header"
         aria-expanded={false} onClick={handleToggleCollapsed}
         sx={{flexShrink:0,width:{xs:44,sm:36},height:{xs:44,sm:36}}}>
@@ -414,7 +414,7 @@ export function TabbedWorkspaceFrame<T extends string>({
             {statusBeforePrimaryActions ? null : status}
             {compact && actionsInMobileTabs ? null : actions}
           </Stack>
-          <Tooltip title="Collapse workspace header">
+          <Tooltip title="Collapse workspace header" disableInteractive>
             <IconButton
               ref={toggleButtonRef}
               size="small"

@@ -133,11 +133,13 @@ function GeneralSettingsSection({
   onLimit,
   onSaveAgentDefaults,
   agentDefaultsSaving,
+  agentDefaultsSaved,
   agentDefaultsSaveError,
   onRolloverTokens,
   onRolloverFraction,
   onSaveRollover,
   rolloverSaving,
+  rolloverSaved,
   rolloverSaveError,
 }: {
   preferences: WorkspacePreferencesDto;
@@ -154,11 +156,13 @@ function GeneralSettingsSection({
   onLimit(value: string): void;
   onSaveAgentDefaults(): void;
   agentDefaultsSaving: boolean;
+  agentDefaultsSaved: boolean;
   agentDefaultsSaveError?: string;
   onRolloverTokens(value: string): void;
   onRolloverFraction(value: string): void;
   onSaveRollover(tokens: number, fraction: number): void;
   rolloverSaving: boolean;
+  rolloverSaved: boolean;
   rolloverSaveError?: string;
 }): JSX.Element {
   const parsedRolloverTokens = Number(rolloverTokens);
@@ -240,17 +244,20 @@ function GeneralSettingsSection({
             minRows={6}
             helperText={GLOBAL_AGENT_INSTRUCTIONS_HELPER_TEXT}
           />
-          <Button
-            variant="contained"
-            sx={{ alignSelf: "flex-start" }}
-            disabled={
-              agentDefaultsSaving ||
-              parseAgentRunConcurrencyLimit(limit) === undefined
-            }
-            onClick={onSaveAgentDefaults}
-          >
-            {agentDefaultsSaving ? "Saving…" : "Save Agent Defaults"}
-          </Button>
+          <Stack direction="row" spacing={1.5} useFlexGap sx={{ alignItems: "center", flexWrap: "wrap" }}>
+            <Button
+              variant="contained"
+              sx={{ alignSelf: "flex-start" }}
+              disabled={
+                agentDefaultsSaving ||
+                parseAgentRunConcurrencyLimit(limit) === undefined
+              }
+              onClick={onSaveAgentDefaults}
+            >
+              {agentDefaultsSaving ? "Saving…" : "Save Agent Defaults"}
+            </Button>
+            {agentDefaultsSaved ? <Typography role="status" variant="body2" color="text.secondary">Settings Saved</Typography> : null}
+          </Stack>
           {agentDefaultsSaveError ? (
             <Alert severity="error" role="alert">
               {agentDefaultsSaveError}
@@ -298,17 +305,20 @@ function GeneralSettingsSection({
               "Requires a provider-reported context window size."
             }
           />
-          <Button
-            variant="contained"
-            sx={{ alignSelf: "flex-start" }}
-            disabled={!rolloverValuesValid || rolloverSaving}
-            onClick={() => onSaveRollover(
-              parsedRolloverTokens,
-              parsedRolloverFraction,
-            )}
-          >
-            {rolloverSaving ? "Saving…" : "Save Rollover Limits"}
-          </Button>
+          <Stack direction="row" spacing={1.5} useFlexGap sx={{ alignItems: "center", flexWrap: "wrap" }}>
+            <Button
+              variant="contained"
+              sx={{ alignSelf: "flex-start" }}
+              disabled={!rolloverValuesValid || rolloverSaving}
+              onClick={() => onSaveRollover(
+                parsedRolloverTokens,
+                parsedRolloverFraction,
+              )}
+            >
+              {rolloverSaving ? "Saving…" : "Save Rollover Limits"}
+            </Button>
+            {rolloverSaved ? <Typography role="status" variant="body2" color="text.secondary">Settings Saved</Typography> : null}
+          </Stack>
           {rolloverSaveError ? <Alert severity="error">{rolloverSaveError}</Alert> : null}
         </Stack>
       </Paper>
@@ -900,7 +910,6 @@ export function WorkspaceSettingsView({
   returnLabel?: string;
 }): JSX.Element {
   const queryClient = useQueryClient();
-  const notify = useMutationNotification();
   const validationProject = projects[0];
   const modelCatalogQuery = useEngineModelCatalogs(validationProject?.id, engines);
   const readinessQuery = useQuery({
@@ -1059,9 +1068,6 @@ export function WorkspaceSettingsView({
         limitRef.current,
         String(submitted.maxConcurrentAgentRuns),
       ));
-      if (instructionsRef.current === submitted.globalInstructions && limitRef.current === String(submitted.maxConcurrentAgentRuns)) {
-        notify({ key: "workspace-agent-defaults", message: "Settings Saved" });
-      }
     },
   });
   const saveRollover = useMutation({
@@ -1069,9 +1075,6 @@ export function WorkspaceSettingsView({
     onSuccess: (_saved, submitted) => {
       setRolloverTokensDirty(rolloverTokensRef.current !== String(submitted.contextRolloverTokens));
       setRolloverFractionDirty(rolloverFractionRef.current !== String(submitted.contextRolloverWindowFraction));
-      if (rolloverTokensRef.current === String(submitted.contextRolloverTokens) && rolloverFractionRef.current === String(submitted.contextRolloverWindowFraction)) {
-        notify({ key: "workspace-rollover-limits", message: "Settings Saved" });
-      }
     },
   });
   const setPushFrom = (action: () => Promise<WebPushState>) => {
@@ -1120,6 +1123,11 @@ export function WorkspaceSettingsView({
               })
             }
             agentDefaultsSaving={saveAgentDefaults.isPending}
+            agentDefaultsSaved={
+              saveAgentDefaults.isSuccess && !instructionsDirty && !limitDirty &&
+              instructions === saveAgentDefaults.variables.globalInstructions &&
+              limit === String(saveAgentDefaults.variables.maxConcurrentAgentRuns)
+            }
             agentDefaultsSaveError={
               saveAgentDefaults.isError
                 ? saveAgentDefaults.error instanceof Error
@@ -1142,6 +1150,11 @@ export function WorkspaceSettingsView({
               });
             }}
             rolloverSaving={saveRollover.isPending}
+            rolloverSaved={
+              saveRollover.isSuccess && !rolloverTokensDirty && !rolloverFractionDirty &&
+              rolloverTokens === String(saveRollover.variables.contextRolloverTokens) &&
+              rolloverFraction === String(saveRollover.variables.contextRolloverWindowFraction)
+            }
             rolloverSaveError={saveRollover.isError ? saveRollover.error instanceof Error ? saveRollover.error.message : "Rollover limits could not be saved. Try again." : undefined}
           />
         ) : null}
