@@ -15,6 +15,11 @@ import {payloadHash,stableJson} from '../../packages/agents/dist/coordination-v3
 import {until} from '../shared/fixture.mjs';
 
 const options={timeout:30000,skip:process.platform==='win32'?'Recoverable Branch Scripts currently require POSIX containment':false};
+function registerSyntheticSecret(t,name,value){
+ const previous=process.env[name];process.env[name]=value;
+ t.after(()=>{if(previous===undefined)delete process.env[name];else process.env[name]=previous;});
+}
+
 async function fixture(t){
  const root=await mkdtemp(path.join(tmpdir(),'branch-app-current-')),dataDir=path.join(root,'data'),store=new AgentStore(dataDir),branches=new BranchStore(store.sqlite,new CoordinationV3Store(store.sqlite));
  let app,passed=false;const identities=[];
@@ -254,6 +259,7 @@ test('Branch Chat retirement preserves safe cause without exposing an unlabeled 
  const f=await fixture(t),branch=f.deploy('Retirement diagnostic',[{id:'script',kind:'script',runtime:'node',cwdRef:'workspace',timeoutMs:5000,source:"process.stdout.write('never runs')"}]);
  const project=f.store.createProject({label:'Retirement Chat',hostPath:f.root,defaultEngine:'codex',chatOwned:true,branchId:branch.id});
  const chat=f.store.getConversation(project.lastConversationId),secret='fixture-private-retirement-credential';
+ registerSyntheticSecret(t,'PONDEROSA_TEST_RETIREMENT_TOKEN',secret);
  f.store.sqlite.prepare('UPDATE branches SET package_id=? WHERE id=?').run('probe',branch.id);
  f.store.sqlite.prepare("INSERT INTO branch_installation_resources(branch_id,package_id,chat_ref,agent_ref,local_id,state) VALUES(?,?,'chat','',?,'active')").run(branch.id,'probe',chat.id);
  f.store.sqlite.exec(`CREATE TEMP TRIGGER fail_retirement_intent BEFORE INSERT ON conversation_deletion_receipts WHEN NEW.conversation_id='${chat.id}' BEGIN SELECT RAISE(ABORT,'controlled chat deletion ${secret}'); END`);
@@ -265,6 +271,7 @@ test('Branch Chat retirement preserves safe cause without exposing an unlabeled 
  assert.ok(pending);
  assert.match(pending.error,/SQLITE_CONSTRAINT_TRIGGER/);
  assert.match(pending.error,/database trigger rejected/);
+ assert.match(pending.error,/controlled chat deletion/);
  assert.match(pending.error,/removing a Workflow Chat/);
  assert.ok(!JSON.stringify(lifecycle).includes(secret));
  assert.equal(f.store.sqlite.prepare('SELECT error FROM branch_retirement_errors WHERE resource_id=?').get(chat.id).error,pending.error);
@@ -278,10 +285,11 @@ test('direct Chat deletion reports a safe structured cause without a credential'
  const f=await fixture(t);
  const project=f.store.createProject({label:'Core Chat',hostPath:f.root,defaultEngine:'codex',chatOwned:true});
  const chat=f.store.getConversation(project.lastConversationId),secret='fixture-direct-chat-credential';
+ registerSyntheticSecret(t,'PONDEROSA_TEST_DIRECT_TOKEN',secret);
  f.store.sqlite.exec(`CREATE TEMP TRIGGER fail_direct_intent BEFORE INSERT ON conversation_deletion_receipts WHEN NEW.conversation_id='${chat.id}' BEGIN SELECT RAISE(ABORT,'controlled chat deletion ${secret}'); END`);
  await f.open();
  const result=await f.api('DELETE',`/api/conversations/${chat.id}`,undefined,503);
- assert.match(result.error,/SQLITE_CONSTRAINT_TRIGGER/);assert.match(result.error,/database trigger rejected/);
+ assert.match(result.error,/SQLITE_CONSTRAINT_TRIGGER/);assert.match(result.error,/database trigger rejected/);assert.match(result.error,/controlled chat deletion/);
  assert.ok(!JSON.stringify(result).includes(secret));assert.equal(result.retryable,true);assert.equal(result.cleanupPending,false);
  assert.ok(f.store.getConversation(chat.id,{includeDeleting:true}));
  f.store.sqlite.exec('DROP TRIGGER fail_direct_intent');
@@ -301,13 +309,14 @@ test('temporary resource cleanup preserves safe diagnostic without a credential'
  f.store.sqlite.exec(`CREATE TEMP TRIGGER hold_temporary_cleanup BEFORE INSERT ON conversation_deletion_receipts WHEN NEW.conversation_id='${chat.id}' BEGIN SELECT RAISE(ABORT,'fixture holds actual cleanup'); END`);
  f.branches.cancel(execution.id);await f.branches.waitResourceCheckpoint(provision.stepExecutionId);
  const secret='fixture-temporary-resource-credential';let calls=0;
+ registerSyntheticSecret(t,'PONDEROSA_TEST_RESOURCE_TOKEN',secret);
  const service=new BranchResourceService(f.branches,f.store,async()=>{},async()=>{throw Error('Unexpected creation')},async()=>{calls++;throw Error('controlled temporary cleanup '+secret)});
  t.after(()=>service.stop());
  await f.open();await service.tick(false);
  assert.equal(calls,1);
  const detail=await f.api('GET',`/api/branch-executions/${execution.id}`);
  assert.ok(!JSON.stringify(detail).includes(secret));
- assert.match(JSON.stringify(detail),/Details withheld/);
+ assert.match(JSON.stringify(detail),/controlled temporary cleanup/);
  assert.ok(f.store.getConversation(chat.id,{includeDeleting:true}));
  f.store.sqlite.exec('DROP TRIGGER hold_temporary_cleanup');
  await service.stop();
