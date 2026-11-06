@@ -97,6 +97,15 @@
       "afterSha256": "78365698330dcfcedd3898ef209d459ef1d166214752d0ba8ef36cd55122c792"
     },
     {
+      "path": "tests/agents/real-claude.test.mjs",
+      "feature": "agents",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "additionalFeatures": ["providers", "chats"],
+      "requirements": "Opt-in PONDEROSA_REGRESSION_REAL_CLAUDE=1; Node24 and built native server workspaces; existing permitted normal Claude CLI/account; disposable owned loopback listener, data and working folder",
+      "origin": "One native Claude READY user_dm/private Agent projection, local-only context and tagged operator Chat projection, one managed message with optional exact-tool discovery, completed Run and observed owned runtime drain; no broad provider/platform parity claim"
+    },
+    {
       "path": "tests/agents/real-joins.test.mjs",
       "feature": "agents",
       "lane": "server",
