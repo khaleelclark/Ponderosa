@@ -48,7 +48,7 @@ export function runtimeAttachmentPaths(value) {
 // The child is real but inert: no shell, network, provider account or user data.
 // Inert Windows roots cannot spawn descendants and are assigned to an exact
 // kill-on-close Job before publication; POSIX roots keep their detached group.
-export async function fixture({ onProviderOpen, agentBaseUrl, diagnosticProvider = false, beforeRuntimeClose, providerAuthStatus, providerInstalled, steeringResponse, modelCatalog, modelValidator, capabilityCatalog, socketIdleTimeoutMs, storeFactory, authToken, resourceAdmissionObservation, providerContextUsage, providerCommandResult, providerContextRecoverySupport, providerValidatesResumeBeforeTurn = false, schedulerMaxConcurrentRuns = 4, nativeAdapterForOpen, nativeAdapterForEngine, localMemoryForRoot, providerRunPlan } = {}) {
+export async function fixture({ onProviderOpen, onProviderSession, agentBaseUrl, diagnosticProvider = false, beforeRuntimeClose, providerAuthStatus, providerInstalled, steeringResponse, modelCatalog, modelValidator, capabilityCatalog, socketIdleTimeoutMs, storeFactory, authToken, resourceAdmissionObservation, providerContextUsage, providerCommandResult, providerContextRecoverySupport, providerValidatesResumeBeforeTurn = false, schedulerMaxConcurrentRuns = 4, nativeAdapterForOpen, nativeAdapterForEngine, localMemoryForRoot, providerRunPlan } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), 'ponderosa-regression-'));
   const dataDir = path.join(root, 'data');
   const plans = new Map(), sessions = new Map(), turns = [], children = [], failures = [], openingSessions = new Set(), commands = [], steers = [];
@@ -156,6 +156,7 @@ export async function fixture({ onProviderOpen, agentBaseUrl, diagnosticProvider
           return { turnId };
         },
       };
+      onProviderSession?.(session,options);
       record.close = session.close;
       known.add(engineAgentId); knownProviderSessions.set(options.agentId, known);
       sessions.set(options.agentId, session); options.onRuntimeSpawned(session); return session;

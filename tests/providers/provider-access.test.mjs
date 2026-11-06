@@ -395,7 +395,7 @@ test('native persistent runtime aliases retain one root and cancellation never t
 
 import {createRuntimeAuthority} from '../../apps/server/dist/runtime-authority.js';
 test('two-phase root exit preserves the first causal observation instead of attributing cleanup as a crash cause',async()=>{
- for(const hostOperation of [undefined,'failed resume replacement']){
+ for(const hostOperation of [undefined,'failed resume replacement','Run cancellation']){
   const identity={},audit=[],failures=[],run={runId:'run',executionId:'run',v3SchedulerRunId:'run',v3FencingToken:1,generation:1,persistentRuntimeIdentity:identity,messageCapability:'capability',controller:new AbortController()};
   const runtime={identity,session:{isAlive:()=>false,close:async()=>{}}},authority={oneShots:new Map(),retryAttempt:0,...(hostOperation?{closing:{runtime,reason:hostOperation}}:{reusable:runtime})};
   const activeRuns=new Map([['agent',run]]),agentMessageCapabilities=new Map([['capability',{}]]);
@@ -403,9 +403,10 @@ test('two-phase root exit preserves the first causal observation instead of attr
    store:{getAgent:()=>({projectId:'project'}),appendEvent:(_id,event)=>{audit.push(event);return {event}}},coordinationV3:{ownsRunForCleanup:()=>true,agentSnapshot:()=>({activeRun:{promptInjectionState:'injected'}}),failRun:value=>failures.push(value)},coordinationV3WorkerId:'owned',
    runtimeAuthority:()=>authority,reusableRuntime:()=>authority.reusable,openingRuntime:()=>authority.opening,closingRuntime:()=>authority.closing,pruneRuntimeAuthority(){},clearAgentResumeSession(){},closeRunBrowser:async()=>{},closeLinkPreviewsForAgent(){},publish(){},publishMessageDeliveryChanged(){},resolveOperationalNotification(){},notifyScheduler(){},logError(){},transitionRun:()=>true,clearRunLeaseTimer(){},clearRunLivenessTimer(){},isClosed:()=>false});
   owner.persistentRootExited('agent',identity,{exitCode:1,outputDraining:true});assert.equal(failures.length,0);
-  owner.persistentRootExited('agent',identity,{exitCode:1});
-  if(hostOperation){assert.equal(failures.length,0);assert.equal(run.controller.signal.aborted,false)}
-  else {assert.equal(failures.length,1);assert.equal(audit.at(-1).runtimeObservation.origin,'not_established');assert.equal(audit.at(-1).runtimeObservation.hostOperation,undefined);assert.equal(run.controller.signal.aborted,true)}
+  owner.persistentRootExited('agent',identity,{exitCode:1,stderr:'SYNTHETIC_OBSERVED_STDERR'});
+  if(hostOperation==='failed resume replacement'){assert.equal(failures.length,0);assert.equal(run.controller.signal.aborted,false)}
+  else {assert.equal(failures.length,1);assert.equal(audit.at(-1).runtimeObservation.origin,hostOperation?'host_operation_observed':'not_established');assert.equal(audit.at(-1).runtimeObservation.hostOperation,hostOperation);assert.equal(run.controller.signal.aborted,true)}
+  assert.equal(audit.filter(event=>event.type==='error'&&event.message.includes('SYNTHETIC_OBSERVED_STDERR')).length,hostOperation?0:1);
   await authority.closing?.operation;
  }
 });
@@ -959,4 +960,49 @@ test('provider root exit redacts current-run capability from terminal observatio
     assert.ok(JSON.stringify(detail).includes(marker));
     assert.ok(!JSON.stringify(detail).includes(capability));
   }, {onProviderOpen: options => { capability=options.environment.PONDEROSA_AGENT_MESSAGE_TOKEN; }});
+});
+
+test('provider stderr-only root exit redacts current-run capability and preserves its cause', {timeout:30000}, async t => {
+  let capability,store;
+  const {AgentStore}=await import('@ponderosa/agents');
+  const marker='SYNTHETIC_ROOT_STDERR_842C';
+  await withFixture(t, async f => {
+    const chat=await f.createChat('Controlled stderr failure'),agent=await f.createIdleAgent(chat,'Stderr failure');
+    f.plans.set(agent.id,[{output:false,run:s=>s.exitWithDetail({stderr:marker+' '+capability})}]);
+    await f.send(agent.id,'Exit controlled provider');
+    await until(async()=>{const d=await f.detail(agent.id);return d.runs.length&&d.runs.every(r=>!['running','preparing'].includes(r.status))?d:false},'stderr root-exit failure');
+    assert.ok(capability);
+    const check=async()=>{
+      const detail=await f.detail(agent.id);
+      assert.ok(!JSON.stringify(detail).includes(capability));
+      const row=store.sqlite.prepare('SELECT provider_failure_json FROM scheduler_runs WHERE agent_id=? AND provider_failure_json IS NOT NULL ORDER BY created_at DESC LIMIT 1').get(agent.id);
+      assert.ok(row?.provider_failure_json);
+      const failure=JSON.parse(row.provider_failure_json);
+      assert.ok(failure.stderr.includes(marker));assert.ok(!failure.stderr.includes(capability));
+      const work=f.ok(await f.api('GET',`/api/projects/${chat.projectId}/agent-work?agentId=${agent.id}`));
+      assert.ok(JSON.stringify(work).includes(marker),'Operator work view retains observed stderr');
+      assert.ok(!JSON.stringify(work).includes(capability));
+    };
+    await check();await f.reopen();await check();
+  }, {storeFactory: dataDir => (store=new AgentStore(dataDir)), onProviderOpen: options => { capability=options.environment.PONDEROSA_AGENT_MESSAGE_TOKEN; }});
+});
+
+test('provider secondary iterator cleanup log redacts current-run capability and preserves its cause', {timeout:30000}, async t => {
+  let capability;const logs=[],marker='SYNTHETIC_CLEANUP_FAILURE_C31F';
+  await withFixture(t, async f => {
+    const original=f.app.log.error;
+    f.app.log.error=(fields,message)=>{logs.push({fields,message});};
+    try {
+      const chat=await f.createChat('Controlled cleanup failure'),agent=await f.createIdleAgent(chat,'Cleanup failure');
+      await f.send(agent.id,'Run controlled provider');
+      await until(()=>logs.find(item=>item.message==='provider event stream cleanup failed after primary provider failure'),'secondary cleanup log');
+      const log=logs.find(item=>item.message==='provider event stream cleanup failed after primary provider failure');
+      assert.ok(capability);assert.ok(JSON.stringify(log).includes(marker));
+      assert.ok(!JSON.stringify(log).includes(capability));
+    } finally {f.app.log.error=original;}
+  }, {onProviderOpen: options => {capability=options.environment.PONDEROSA_AGENT_MESSAGE_TOKEN;},
+      onProviderSession: session => {session.events={ [Symbol.asyncIterator]() {return {
+        async next(){throw Error('synthetic primary provider failure');},
+        async return(){throw Error(marker+' '+capability);},
+      };}};}});
 });

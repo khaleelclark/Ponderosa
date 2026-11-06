@@ -590,6 +590,21 @@ export function createRuntimeAuthority(context: RuntimeAuthorityContext) {
     if (detail?.outputDraining || run.observedProviderFailure || run.observedProviderTerminalStatus === "completed") return;
     transitionRun(agentId, run, "cancelling");
     run.controller.abort();
+    // The Run callback has already projected and redacted this exact root-exit
+    // observation. Keep it as telemetry, without claiming stderr caused the exit.
+    if (!observedHostOperation && detail?.stderr) {
+      try {
+        const diagnostic = store.appendEvent(agentId, {
+          type: "error", message: `Provider root exited; observed stderr:\n${detail.stderr}`,
+        });
+        publish(agentId, diagnostic);
+      } catch (error) {
+        if (!(error instanceof AgentEventPersistenceError)) throw error;
+        auditPersistenceFailed = true;
+        logError({ agentId, runId: run.executionId, persistenceFailure: error.diagnostic },
+          "provider root exit diagnostic could not be recorded");
+      }
+    }
     try {
       const lifecycle = store.appendEvent(agentId, {
         type: "agent_lifecycle", status: "failed", reason: "runtime_error", executionId: run.executionId,
