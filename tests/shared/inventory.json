@@ -3221,6 +3221,14 @@
       "moduleBase": "apps/server/package.json",
       "requirements": "Owned disposable UI/API interaction check; built web/server/packages and installed Chrome; no provider account or load/performance qualification",
       "classification": "manual-qualification-entrypoint"
+    },
+    {
+      "path": "tests/branches/required-agent-selection.mjs",
+      "feature": "branches",
+      "lane": "manual",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Owned disposable required-Agent validation and publication check; built web/server/packages and installed Chrome; no native provider job or performance qualification",
+      "classification": "manual-qualification-entrypoint"
     }
   ],
   "support": [
