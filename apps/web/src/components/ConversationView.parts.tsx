@@ -288,7 +288,7 @@ function ConversationHeader({
   agentWorkOpen: boolean;
   conversation: ConversationDto;
   projectLabel?: string;
-  transcriptMarkdown: string;
+  transcriptMarkdown: string | (() => string);
   transcriptTitle: string;
   onOpenProject(): void;
   onOpenProjectBrowser(): void;

@@ -632,7 +632,9 @@ export function ConversationView({
     attachments: message.attachments,
     document: message.document,
   }), [agentTitle]);
-  const mainTranscriptMarkdown = useMemo(
+  // Transcript formatting resolves bound prose mentions across the loaded page.
+  // Do that only for the explicit Copy/Download action, not every Chat render.
+  const mainTranscriptMarkdown = useCallback(
     () =>
       conversation
         ? buildMarkdownTranscript(
@@ -643,7 +645,7 @@ export function ConversationView({
         : "",
     [transcriptMessage, conversation?.title, messages, mainHistory.hasMore],
   );
-  const collaborationTranscriptMarkdown = useMemo(
+  const collaborationTranscriptMarkdown = useCallback(
     () =>
       conversation
         ? buildMarkdownTranscript(

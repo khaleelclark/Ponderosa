@@ -46,7 +46,7 @@ export function ChatOverflowMenu({
   actions: ChatOverflowAction[];
   copyActions?: ChatOverflowAction[];
   downloadActions?: ChatOverflowAction[];
-  transcriptMarkdown: string;
+  transcriptMarkdown: string | (() => string);
   transcriptFileName: string;
   details?: ReactNode;
   detailsLabel?: string;
@@ -143,11 +143,18 @@ export function ChatOverflowMenu({
         <MenuItem sx={menuRowSx} onClick={() => {
           const kind = exportMenu?.kind;
           setExportMenu(undefined);
-          if (kind === "download") {
-            downloadMarkdownTranscript(transcriptMarkdown, transcriptFileName);
+          let markdown: string;
+          try {
+            markdown = typeof transcriptMarkdown === "function" ? transcriptMarkdown() : transcriptMarkdown;
+          } catch (error) {
+            notify({ key: "copy-transcript", message: error instanceof Error ? error.message : "Chat transcript could not be prepared", severity: "error" });
             return;
           }
-          void copyText(transcriptMarkdown)
+          if (kind === "download") {
+            downloadMarkdownTranscript(markdown, transcriptFileName);
+            return;
+          }
+          void copyText(markdown)
             .then(() => notify({ key: "copy-transcript", message: "Copied" }))
             .catch((error) => notify({ key: "copy-transcript", message: error instanceof Error ? error.message : "Chat transcript could not be copied", severity: "error" }));
         }}>

@@ -5,7 +5,7 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { resolveAgentMentionBindings, recipientMentionIdentities } from '../../apps/server/src/mention-bindings.ts';
 import { communicationMentionBindings } from '../../packages/agents/src/store-mention-bindings.ts';
-import { resolveMessageMentionText } from '../../apps/web/src/components/chat/messageMentionPresentation.ts';
+import { messageProseTagTokens, resolveMessageMentionText } from '../../apps/web/src/components/chat/messageMentionPresentation.ts';
 const { ChatMessageBody, communicationVisibleText, authoredAgentMentionForHandle } = await import('../../apps/web/src/components/chat/ChatMessages.tsx');
 const { MutationNotificationProvider } = await import('../../apps/web/src/components/MutationNotifications.tsx');
 const { providerCommandResultText } = await import('../../apps/web/src/providerCommandResult.ts');
@@ -23,6 +23,60 @@ const render = (text, mentions) => renderToStaticMarkup(React.createElement(Muta
   collapseLongMessage: false, onOpenAgent() {},
 })));
 const hrefs = html => [...html.matchAll(/<a\b[^>]*href="([^"]*)"/gu)].map(match => match[1].replaceAll('&amp;', '&'));
+
+test('an unopened Chat export menu does not prepare a lazy transcript', async () => {
+  const {ChatOverflowMenu} = await import('../../apps/web/src/components/ChatOverflowMenu.tsx');
+  let preparations = 0;
+  const html = renderToStaticMarkup(React.createElement(MutationNotificationProvider, null,
+    React.createElement(ChatOverflowMenu, {actions: [], transcriptFileName: 'owned.md', transcriptMarkdown: () => {preparations++; return '# Owned transcript\n';}})));
+  assert.equal(preparations, 0);
+  assert.match(html, /aria-label="Chat Actions"/u);
+});
+
+test('literal/no-tag messages skip Markdown parsing and a supplied tree is reused', async () => {
+  const {createRequire} = await import('node:module');
+  const webRequire = createRequire(new URL('../../apps/web/package.json', import.meta.url));
+  const {unified} = await import(webRequire.resolve('unified'));
+  const {default:remarkParse} = await import(webRequire.resolve('remark-parse'));
+  const {default:remarkGfm} = await import(webRequire.resolve('remark-gfm'));
+  const processor = unified().use(remarkParse).use(remarkGfm);
+  const prototype = Object.getPrototypeOf(processor), original = prototype.parse;
+  let parses = 0;
+  prototype.parse = function (...args) { parses++; return original.apply(this, args); };
+  try {
+    for (const text of ['Plain **Markdown**, λ😀, no tags.', '123', '"#Original-Builder"', '{"agent":"#Original-Builder"}']) {
+      assert.deepEqual(messageProseTagTokens(text), [], text);
+    }
+    assert.equal(parses, 0, 'No rich parse for no-token text or literal JSON');
+    const text = '| Task | Owner |\n| --- | --- |\n| ~~before~~ | #Original-Builder |\n\n`#literal` [link](https://example.com/#literal)';
+    const expected = messageProseTagTokens(text);
+    assert.deepEqual(expected.map(token => token.handle), ['Original-Builder']);
+    assert.equal(parses, 1, 'Tagged GFM is parsed normally');
+    const tree = processor.parse(text); parses = 0;
+    assert.deepEqual(messageProseTagTokens(text, tree), expected);
+    assert.equal(parses, 0, 'Existing parsed AST is traversed without parsing again');
+    parses = 0;
+    const ordinary = render('**Bold** ~~before~~ #unbound [local anchor](#history)', []);
+    assert.equal(parses, 1, 'Only the normal rich renderer parses unbound prose/fragment handles');
+    assert.match(ordinary, /<strong>Bold<\/strong>/u);
+    assert.match(ordinary, /<del>before<\/del>/u);
+    assert.ok(!ordinary.includes('Open agent'));
+    parses = 0;
+    assert.match(render('#Original-Builder', [binding('Original-Builder')]), /Open agent Build-Coordinator/u);
+    assert.equal(parses, 2, 'Bound mention projection retains the full opaque-region parse');
+    const renderOptions = props => renderToStaticMarkup(React.createElement(MutationNotificationProvider, null, React.createElement(ChatMessageBody, {collapseLongMessage: false, ...props})));
+    for (const handle of ['user', 'pto', 'broadcast', 'everyone', 'new-agent', 'My-Operator']) {
+      parses = 0;
+      const html = renderOptions({text: '#'+handle, operatorHandle: 'My-Operator', onOpenBroadcast() {}});
+      assert.equal(parses, 2, handle+' retains reserved/operator projection');
+      if (handle === 'broadcast') assert.match(html, /Open originating broadcast/u);
+    }
+    parses = 0;
+    const recipients = renderOptions({text: '`#Original-Builder`', agentMentions: [binding('Original-Builder')], collaborationRecipients: [{id: agentId, handle: 'Original-Builder', title: 'Builder', currentTitle: 'Builder', available: true}], onOpenAgent() {}});
+    assert.equal(parses, 2, 'Canonical recipient prefix keeps full authored/opaque accounting');
+    assert.match(recipients, /Open agent Original-Builder/u);
+  } finally { prototype.parse = original; }
+});
 
 test('one unmatched nonnumeric token is never inferred from the DM recipient', () => {
   for (const text of [url, `${url}\n${url}`, '#unknown Please review', '#123 Please review']) {
@@ -136,15 +190,18 @@ test('native browser: rendered href, Open-link actions and whole-message/code co
     import React from 'react';
     import { createRoot } from 'react-dom/client';
     import { ChatMessageBody, communicationVisibleText, authoredAgentMentionForHandle } from ${JSON.stringify(path.join(webRoot, 'src/components/chat/ChatMessages.tsx'))};
+    import { ChatOverflowMenu } from ${JSON.stringify(path.join(webRoot, 'src/components/ChatOverflowMenu.tsx'))};
     import { CopyMessageButton } from ${JSON.stringify(path.join(webRoot, 'src/components/CopyMessageButton.tsx'))};
     import { MutationNotificationProvider } from ${JSON.stringify(path.join(webRoot, 'src/components/MutationNotifications.tsx'))};
     import { ProjectBrowserContext } from ${JSON.stringify(path.join(webRoot, 'src/components/ProjectBrowserContext.tsx'))};
     const mentions = ${JSON.stringify(mentions)};
     const text = communicationVisibleText({ text: ${JSON.stringify(text)}, intent: 'user_dm', fromAgent: false, agentMentions: mentions });
+    window.transcriptPreparations = 0;
     const root = createRoot(document.getElementById('root')!);
     window.rerender = () => root.render(<MutationNotificationProvider><ProjectBrowserContext.Provider value={{ projectId: 'test', open(url) { window.openedInside = url; } }}>
       <ChatMessageBody text={text} agentMentions={mentions} agentMentionForHandle={handle => authoredAgentMentionForHandle(handle, mentions)} onOpenAgent={id => { window.openedAgent = id; }} collapseLongMessage={false} />
       <CopyMessageButton text={text} />
+      <ChatOverflowMenu label="Transcript failure test" actions={[]} transcriptFileName="owned.md" transcriptMarkdown={() => { window.transcriptPreparations++; throw new Error('Controlled transcript formatting failed'); }} />
     </ProjectBrowserContext.Provider></MutationNotificationProvider>);
     window.rerender();
   `);
@@ -163,6 +220,18 @@ test('native browser: rendered href, Open-link actions and whole-message/code co
   // External navigation is intercepted locally: tests do not visit WynnBuilder.
   await page.context().route('https://wynnbuilder.github.io/**', route => route.fulfill({ body: '<title>Captured destination</title>' }));
   await page.goto(origin);
+  const pageErrors = []; page.on('pageerror', error => pageErrors.push(error.message));
+  assert.equal(await page.evaluate(() => window.transcriptPreparations), 0);
+  for (const kind of ['Copy', 'Download']) {
+    await page.getByRole('button', {name: 'Transcript failure test', exact: true}).click();
+    await page.getByRole('menuitem', {name: kind, exact: true}).click();
+    assert.equal(await page.evaluate(() => window.transcriptPreparations), kind === 'Copy' ? 0 : 1, 'Opening options does not format');
+    await page.getByRole('menuitem', {name: 'Chat Transcript', exact: true}).click();
+    const failure = page.getByRole('alert').filter({hasText: 'Controlled transcript formatting failed'});
+    await failure.waitFor(); await failure.getByRole('button', {name: 'Close', exact: true}).click();
+  }
+  assert.equal(await page.evaluate(() => window.transcriptPreparations), 2);
+  assert.deepEqual(pageErrors, [], 'Formatter errors stay in the existing visible notification owner');
   await page.getByRole('button', { name: /^Open agent Build-Coordinator/u }).click();
   assert.equal(await page.evaluate(() => window.openedAgent), agentId);
   const links = page.locator('a[aria-label^="Open link to"]');

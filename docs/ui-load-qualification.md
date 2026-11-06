@@ -477,3 +477,41 @@ failed before fixture creation due to missing private dependency links; the firs
 browser trial tapped the seeded anchor rather than plain text and was corrected
 without changing product code. All trial evidence remains. Performance acceptance
 still requires measurement on the combined build under the unchanged workload.
+
+## Defer unopened transcript formatting (2026-11-06)
+
+The Chat and Team Chat transcript callbacks now format the current loaded
+projection only when the existing Copy or Download action is selected. Existing
+string callers and transcript bytes, filenames, attachment references and coverage
+labels remain unchanged. Prose-tag detection now applies the canonical raw-token
+and JSON guards before parsing Markdown, and still accepts an already-parsed AST.
+The authored-offset/opaque-region/GFM walk is unchanged; no cache or Markdown
+replacement was introduced.
+
+Focused mention/transcript tests passed21, failed0, with1 existing browser-opt-in
+skip. They cover no-parse literal/untagged cases, supplied-AST reuse, clickable
+historical/current mentions and literal links/code/JSON, plus unopened-menu lazy
+preparation. Private web typecheck/build passed. The real maintained-fixture check
+`tests/chats/transcript-action-qualification.mjs <owned-evidence-directory>` passed
+Core and Branches main/Team Chat Copy and Download byte/filename parity at
+`/tmp/p2parse-wi6v14t4/evidence`; browser, web server and fixture closed. It uses100
+synthetic canonical messages and no active provider. Run TS-importing checks with
+`node --experimental-transform-types --import ./tests/shared/resolve-typescript.mjs --import ./tests/shared/workspace-resolution.mjs`.
+Earlier missing-loader setup failures were retained; they did not create fixtures.
+These are functional checks; combined-build performance remains to be measured.
+
+The final guard also skips the extra tag AST when every raw handle is unbound
+and unreserved; normal ReactMarkdown still renders the complete message. Bound
+aliases, direct stable-ID resolvers, operator/user/pto, broadcast/everyone/new-agent
+and canonical recipient accounting retain their existing projection. A temporary
+23-case before/after SSR capture matched serialized HTML exactly, including GFM,
+headings/emphasis, links/fragments, code, JSON/escapes, reserved/operator handles,
+bound aliases and canonical prefixes. The maintained parse-spy checks distinguish
+one normal Markdown parse for ordinary unbound fragments from two for projected
+bound/reserved cases. No cache, custom parser or root style change is part of this
+patch. Final private typecheck/build and byte-parity UI passed again at
+`/tmp/p2parse-s6tl4akn`; the existing native browser opt-in case also passed1/1,
+including both formatter-error actions producing a visible notification with no
+unhandled page error or preparation when merely opening the submenu. The formatter
+failure stays in the existing notification owner; successful export bytes remain
+unchanged. All owned runtime work drained.

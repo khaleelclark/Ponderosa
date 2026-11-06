@@ -461,7 +461,18 @@ const ChatMarkdown = memo(function ChatMarkdown({
   compact?: boolean;
   small?: boolean;
 }): JSX.Element {
-  const tokens = messageProseTagTokens(children);
+  // An unbound, unreserved hash is rendered as ordinary Markdown text. Avoid
+  // an extra AST parse when no raw handle can affect that presentation. Keep
+  // recipient-prefix accounting on the existing full prose/opaque-region path.
+  const needsTagProjection = Boolean(collaborationRecipients?.length) || messageTagTokens(children).some(({ handle }) => {
+    const normalized = handle.toLocaleLowerCase();
+    return ["user", "pto", "broadcast", "everyone", "new-agent"].includes(normalized)
+      || Boolean(operatorHandle && normalized === operatorHandle.toLocaleLowerCase())
+      || Boolean(agentMentionForHandle?.(handle))
+      || Boolean(agentIdForHandle?.(handle))
+      || Boolean(agentMentions?.some(mention => [mention.handle, mention.currentHandle].some(label => label.toLocaleLowerCase() === normalized)));
+  });
+  const tokens = needsTagProjection ? messageProseTagTokens(children) : [];
   // Insert links at authored source offsets before Markdown decodes entities
   // and escapes. Copy/source text stays untouched; literal regions are excluded.
   let taggedText = children;
