@@ -3215,6 +3215,14 @@
       "classification": "manual-qualification-entrypoint"
     },
     {
+      "path": "tests/workspace-navigation/production-ui-fixture-qualification.mjs",
+      "feature": "workspace-navigation",
+      "lane": "manual",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Owned 100-message production static/API listener smoke; built web/server/packages and installed Chrome; no Agent/provider work or performance qualification",
+      "classification": "manual-qualification-entrypoint"
+    },
+    {
       "path": "tests/workspace-navigation/core-navigation-startup-qualification.mjs",
       "feature": "workspace-navigation",
       "lane": "manual",

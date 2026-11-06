@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {randomUUID,createHash} from 'node:crypto';
 import {appendFileSync,writeFileSync} from 'node:fs';
 import {setTimeout as delay} from 'node:timers/promises';
+import {fileURLToPath} from 'node:url';
 import {fixture,until} from './fixture.mjs';
 import {AgentStore} from '../../packages/agents/dist/index.js';
 import {sampleLinuxResources,RESOURCE_ADMISSION_DEFAULTS} from '../../apps/server/dist/resource-admission.js';
@@ -13,7 +14,8 @@ export async function createLoadFixture(out,{messages=10000}={}){
  assert.ok(sample.availableBytes>=RESOURCE_ADMISSION_DEFAULTS.reserveBytes+20*RESOURCE_ADMISSION_DEFAULTS.startupBytes,'Real effective headroom must admit twenty, without a guard override');
  assert.ok(sample.memoryFullPercent<5&&sample.ioFullPercent<10,'No pressured preflight');
  // Passing {} selects createServer's actual default sampler; shared fixture's fixed sample is NOT used.
- const f=await fixture({resourceAdmissionObservation:{},schedulerMaxConcurrentRuns:20,storeFactory:dir=>(store=new AgentStore(dir))});
+ // Use the installed static routes on the API listener, with no extra UI proxy.
+ const f=await fixture({webDist:fileURLToPath(new URL('../../apps/web/dist/',import.meta.url)),resourceAdmissionObservation:{},schedulerMaxConcurrentRuns:20,storeFactory:dir=>(store=new AgentStore(dir))});
  const products={},runIds=new Map(),seedIds=new Map();
  function leaseFor(agentId,sessionId){
   const lease=readLeasedRun(store,agentId,runIds.get(agentId),sessionId);
