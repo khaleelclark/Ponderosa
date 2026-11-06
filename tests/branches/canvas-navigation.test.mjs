@@ -88,3 +88,14 @@ test('all insertion controls retain their exact clicked anchor, with Outline as 
  const edge={id:'failure',label:'Failure Path'};render(edge).props.onClick({currentTarget:clicked});assert.equal(opened[0].anchor,clicked);assert.equal(opened[0].value,target);
  outlineButton.current=outline;const temporary={id:'temporary-dialog-button'};render(edge,true).props.onClick({currentTarget:temporary});assert.equal(opened[1].anchor,temporary,'The clicked control supplies the captured position even when Outline closes');assert.equal(opened[1].returnTo,outline,'The mounted Outline trigger restores focus after its temporary control closes');
 });
+
+
+test('Fit follows measured insertion-action reflow until an explicit camera action',async()=>{
+ const graph=layout([node('entry',40,28)],400,700),frame=frameWorkflowCanvas(graph,'entry',{width:320,height:44}),fits=[],views=[],fitPending={current:true},available={width:390,height:263};
+ const scope={flow:{getViewport:()=>({x:0,y:0,zoom:.4})},layout:graph,frame,active:true,available,applied:{current:{mode:'explore',layout:graph,selected:'entry',docked:true}},canvasViews:new Map(),branchId:'branch',selected:'entry',nativeGuided:false,mode:'explore',enterExplore:{current:undefined},fitPending,settingsDocked:true,setFree:view=>views.push(view),reveal(){assert.fail('Reflow must not reveal or enlarge the selected card')},getViewportForBounds:(_bounds,width,height)=>{fits.push({width,height});return {x:0,y:0,zoom:height/1000}},requestAnimationFrame:fn=>{fn();return 1},cancelAnimationFrame(){}};
+ const run=await canvasOwner((node,ts,ast)=>ts.isArrowFunction(node)&&ts.isCallExpression(node.parent)&&node.parent.expression.getText(ast)==='useLayoutEffect'&&node.getText(ast).includes('applied.current='),scope);
+ run();available.height=163;run();assert.deepEqual(fits,[{width:390,height:263},{width:390,height:163}]);assert.equal(views.at(-1).zoom,.163);
+ const zoomBy=await canvasOwner((node,ts)=>ts.isArrowFunction(node)&&ts.isVariableDeclaration(node.parent)&&node.parent.name.getText()==='zoomBy',{flow:scope.flow,fitPending,available,setFree:view=>views.push(view)});
+ zoomBy(1.2);assert.equal(fitPending.current,false);run();assert.equal(fits.length,2,'Manual zoom must end automatic Fit reflow');
+ const changeWorkflow=await canvasOwner((node,ts,ast)=>ts.isArrowFunction(node)&&ts.isCallExpression(node.parent)&&node.parent.expression.getText(ast)==='useLayoutEffect'&&node.getText(ast).includes('fitPending.current=false'),{fitPending});fitPending.current=true;changeWorkflow();assert.equal(fitPending.current,false,'Fit intent must not override a different workflow’s saved camera');
+});
