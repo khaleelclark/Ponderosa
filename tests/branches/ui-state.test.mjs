@@ -1645,11 +1645,11 @@ test('reusable expert job handling distinguishes legacy behavior, results and gu
  const {AgentJobHandlingField}=await import('../../apps/web/src/components/branches/AgentStepFields.tsx');
  const render=value=>renderToStaticMarkup(React.createElement(AgentJobHandlingField,{value,onChange(){}}));
  const legacy=render(undefined);
- assert.match(legacy,/Existing behavior · steer or run/);assert.match(legacy,/steer current work when busy, otherwise start work/);
- assert.match(render('queue'),/Each admitted job waits its turn and receives its own outcome/);
- assert.match(render('queue'),/Schedule settings still apply: Run Latest When Finished or Update Current Run can combine occurrences before admission/);
- const steer=render('steer');assert.match(steer,/delivery or uncertainty is not a separate job result/);
- const copy=render('copy');assert.match(copy,/temporary copy of the selected Agent/);assert.match(copy,/with its own result/);assert.match(copy,/source working-folder files are not copied/);
+ assert.match(legacy,/Existing behavior · steer or run/);assert.match(legacy,/Steer when busy; otherwise start work/);
+ assert.match(render('queue'),/Queued jobs keep separate results/);
+ assert.match(render('queue'),/schedules may combine triggers before the queue/);
+ const steer=render('steer');assert.match(steer,/without a separate result/);
+ const copy=render('copy');assert.match(copy,/Make a temporary Agent copy/);assert.match(copy,/fresh workspace and separate result/);assert.match(copy,/without source working-folder files/);
 });
 test('new expert jobs queue explicitly while editing legacy and switching targets preserves intended semantics',async()=>{
  const {newDefinition,addNode,changeAgentTarget,changeAgentJobHandling}=await import('../../apps/web/src/components/branches/model.ts');

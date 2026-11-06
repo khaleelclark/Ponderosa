@@ -66,6 +66,16 @@ built `@ponderosa/core` package. It never imports Ponderosa server/store interna
 The example enforces its workflow boundary before operating on supplied execution
 ids. It uses the user's existing Ponderosa runtime and does not start providers.
 
+## Reusing an existing Agent
+
+An existing Agent step offers these Job handling choices:
+
+- **Wait its turn:** each admitted job waits for the Agent and retains its own outcome. Schedule overlap still applies before admission: **Run Latest When Finished** or **Update Current Run** can combine trigger occurrences before they reach the queue.
+- **Steer current work:** send guidance to the shared Agent's current work without a separate job result. A delivery acknowledgement or an uncertain delivery is not an Agent answer; end this path or pass explicit text onward instead of consuming it as a result.
+- **Make a temporary Agent copy:** each job uses a temporary copy of the selected Agent in a fresh workspace with its own result. Source working-folder files are not copied.
+
+Older steps without an explicit choice retain **Existing behavior · steer or run**: steer the Agent when it is busy, otherwise start work. These choices do not change the existing access-review, permission or uncertain-effect recovery requirements.
+
 ## Checkpoints and human review
 
 `initialCheckpoint`, `checkpoints`, `interrupt` and `rewind` expose the existing
