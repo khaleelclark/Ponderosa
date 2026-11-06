@@ -180,9 +180,9 @@ export function ResourceFolders<Item extends FolderResource>({ resourceKind, res
         sx={{ borderRadius: 1, outline: target?.id === folder.id ? "2px solid" : "none", outlineColor: "info.main",
           ...(folderTarget?.id === folder.id ? { borderTop: folderTarget.position === "before" ? 2 : 0, borderBottom: folderTarget.position === "after" ? 2 : 0, borderColor: "primary.main" } : {}),
           "@media (hover: hover) and (pointer: fine)": { "& .sidebar-secondary": { opacity: 0 }, "&:hover .sidebar-secondary, &:focus-within .sidebar-secondary": { opacity: 1 } } }}>
-        <ListItemButton aria-label={`Folder ${folder.name}`} aria-expanded={expanded}
-          aria-description={unread ? `${unread.importantCount} important unread; ${unread.ordinaryCount} ordinary unread` :
-            notificationState ? `Folder notifications ${notificationState}` : undefined}
+        <ListItemButton aria-expanded={expanded}
+          aria-description={"Folder" + (unread ? ". " + unread.importantCount + " important unread; " + unread.ordinaryCount + " ordinary unread" :
+            notificationState ? ". Folder notifications " + notificationState : "")}
           onClick={() => {
             if (section === "starred") {
               const next = !savedExpanded;

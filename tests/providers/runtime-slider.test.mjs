@@ -40,9 +40,19 @@ function picker(overrides = {}) {
   const find = label => { render(); return nodes.find(node => node.props['aria-label'] === label); };
   render();
   const anchor = { ownerDocument: document, focus() {} };
-  find('Choose engine, model, reasoning, and speed').props.onClick({ detail: 0, currentTarget: anchor }); render();
-  return { props, callbacks, render, find, document, mui, exports, HTMLElement, close() { for (const value of cells) value?.cleanup?.(); } };
+  const trigger = () => { render(); const choices=nodes.filter(node => node.props['aria-haspopup']==='dialog' && node.props['aria-label']?.endsWith('Choose engine, model, reasoning, and speed')); assert.equal(choices.length,1,'One named runtime picker'); return choices[0]; };
+  trigger().props.onClick({ detail: 0, currentTarget: anchor }); render();
+  return { props, callbacks, render, find, trigger, document, mui, exports, HTMLElement, close() { for (const value of cells) value?.cleanup?.(); } };
 }
+
+test('runtime picker accessible name includes displayed model, reasoning and nonstandard speed', t => {
+ const p=picker({scopeLabel:'Selected Agent'});t.after(p.close);
+ assert.equal(p.trigger().props['aria-label'],'Live label · Medium. Selected Agent. Choose engine, model, reasoning, and speed');
+ p.props.speed='advertised-fast-id';p.props.effort='deep-id';p.render();
+ assert.equal(p.trigger().props['aria-label'],'Live label · Ultra · Fast. Selected Agent. Choose engine, model, reasoning, and speed');
+ p.props.loading=true;p.render();
+ assert.match(p.trigger().props['aria-label'],/^Loading model… · Loading reasoning… · Fast\./);
+});
 
 test('slider maps advertised stops and accessible labels to exact IDs; preview does not save', t => {
   const p = picker(); t.after(p.close);
@@ -61,7 +71,7 @@ for (const boundary of ['close', 'model', 'catalog', 'owner', 'effort', 'pending
   const p = picker(); t.after(p.close);
   const late = p.find('Reasoning effort').props.onChangeCommitted;
   p.find('Reasoning effort').props.onChange({}, 2);
-  if (boundary === 'close') p.find('Choose engine, model, reasoning, and speed').props.onClick({ detail: 0, currentTarget: {} });
+  if (boundary === 'close') p.trigger().props.onClick({ detail: 0, currentTarget: {} });
   else if (boundary === 'model') p.props.model = 'replacement';
   else if (boundary === 'catalog') p.props.efforts = [{ id: 'new', label: 'New' }];
   else if (boundary === 'owner') p.props.selectionKey = 'owner-b';
@@ -108,14 +118,13 @@ test('keyboard slider focus resumes after its pending save without stealing a ne
 });
 test('MUI thumb focus during touch restores the editor and exact saved caret without cancelling drag', t => {
   const p = picker(); t.after(p.close);
-  const trigger = 'Choose engine, model, reasoning, and speed';
-  p.find(trigger).props.onClick({ detail: 0, currentTarget: {} }); p.render();
+  p.trigger().props.onClick({ detail: 0, currentTarget: {} }); p.render();
   let focused = 0, restored;
   const editor = new p.HTMLElement(); Object.assign(editor, { isConnected: true, closest: () => editor, focus() { focused++; } });
   const range = {}; p.document.getSelection = () => ({ rangeCount: 1, getRangeAt: () => ({ cloneRange: () => range }), removeAllRanges() {}, addRange(value) { restored = value; } });
   p.document.activeElement = editor;
-  p.find(trigger).props.onPointerDown({ pointerType: 'touch' });
-  p.find(trigger).props.onClick({ detail: 1, currentTarget: { ownerDocument: p.document } });
+  p.trigger().props.onPointerDown({ pointerType: 'touch' });
+  p.trigger().props.onClick({ detail: 1, currentTarget: { ownerDocument: p.document } });
   const slider = p.find('Reasoning effort'); slider.props.onFocusCapture();
   assert.equal(focused, 1); assert.equal(restored, range);
   slider.props.onChange({}, 2); p.find('Reasoning effort').props.onChangeCommitted({}, 2);

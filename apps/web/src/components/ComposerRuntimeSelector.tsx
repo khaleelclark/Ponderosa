@@ -267,7 +267,7 @@ export function ComposerRuntimeSelector({
 
   return <>
     <ButtonBase
-      aria-label={`${scopeLabel ? `${scopeLabel}. ` : ""}Choose engine, model, reasoning, and speed`}
+      aria-label={selectedModelLabel + " · " + selectedEffortLabel + (selectedSpeed && selectedSpeed.id !== "standard" ? " · " + selectedSpeed.label : "") + ". " + (scopeLabel ? scopeLabel + ". " : "") + "Choose engine, model, reasoning, and speed"}
       aria-haspopup="dialog"
       aria-controls={anchor ? menuId : undefined}
       aria-expanded={Boolean(anchor)}

@@ -61,6 +61,14 @@ try {
    if(product==='core'&&theme==='light'&&scale===1)assert.ok(await page.getByText('Write a message…',{exact:true}).isVisible(),'Empty composer placeholder is present for contrast verification');
    await page.addScriptTag({path:process.env.AXE_CORE_PATH});
    row.scans.push({surface:'empty-chat',...await page.evaluate(()=>window.axe.run())});
+   if(product==='branches'&&scale===1){
+    const folder=page.getByRole('button',{name:/Qualification workflows.*2/});await folder.waitFor();
+    const handle=await folder.elementHandle();row.actions.push({name:'Tab to visible folder name and count',tabs:await tabTo(page,folder)});
+    await page.keyboard.press('Enter');await page.waitForFunction(el=>el.getAttribute('aria-expanded')==='false',handle);
+    await page.keyboard.press('Enter');await page.waitForFunction(el=>el.getAttribute('aria-expanded')==='true',handle);
+    assert.ok(await folder.evaluate(el=>el===document.activeElement));row.actions.push({name:'Keyboard folder collapse and expand preserves focus',pass:true});
+   }
+
    row.actions.push({name:'Tab to editor',tabs:await tabTo(page,editor)});
    await page.keyboard.press('Control+A');await page.keyboard.press('Backspace');
    const marker=`a11y-${product}-${theme}-${scale}`;

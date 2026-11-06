@@ -211,7 +211,7 @@ test('shared Settings entry is one direct accessible button in desktop and drawe
  const {SidebarOperatorFooter}=await import('../../apps/web/src/components/WorkspaceSidebar.chrome.tsx');
  for(const drawer of [false,true]){
   const html=renderToStaticMarkup(React.createElement(SidebarOperatorFooter,{profile:{displayName:'Multiword Operator',handle:'operator'},drawer,onSettings(){}}));
-  assert.equal((html.match(/aria-label="Open settings"/g)??[]).length,1);
+  assert.equal((html.match(/aria-label="Multiword Operator #operator. Open settings"/g)??[]).length,1);
   assert.match(html,/Multiword Operator/);assert.match(html,/#operator/);
   assert.doesNotMatch(html,/aria-haspopup|aria-expanded|Open operator menu/);
  }
@@ -286,7 +286,7 @@ test('both products share ordered accessible sidebar controls and preserve norma
   const render=element=>renderToStaticMarkup(React.createElement(ThemeProvider,{theme:createPonderosaTheme(mode)},element));
   const normal=render(React.createElement(ProjectRail,{drawer,route:{kind:'home'},profile,sections:{onSelect:noop},attentionNotifications:7,unreadNotificationUpdates:0,onOpenHome:noop,onOpenInbox:noop,onManageSection:noop,onOpenSearch:noop,onOpenNotifications:noop,onOpenSettings:noop,onCollapse:noop,onClose:noop}));
   const branches=render(React.createElement(BranchesSidebar,{drawer,panel:null,notifications:React.createElement('button',{'aria-label':'Branches notifications, 7 unread'}),onHome:noop,onSearch:noop,onGlobal:noop,onDismiss:noop,onCollapsedChange:noop}));
-  for(const [html,home,search,bell]of [[normal,'Home','Search','Notifications, 7 unread'],[branches,'Ponderosa Branches home','Search Branch Chats','Branches notifications, 7 unread']]){
+  for(const [html,home,search,bell]of [[normal,'Ponderosa home','Search','Notifications, 7 unread'],[branches,'Ponderosa Branches home','Search Branch Chats','Branches notifications, 7 unread']]){
    const end=drawer?'Close workspace navigation':'Collapse sidebar';
    const labels=[home,search,bell,end].map(label=>html.indexOf('aria-label="'+label+'"'));
    assert.ok(labels.every(i=>i>=0));assert.deepEqual([...labels].sort((a,b)=>a-b),labels);
@@ -294,7 +294,7 @@ test('both products share ordered accessible sidebar controls and preserve norma
    assert.match(html,drawer?/data-testid="CloseIcon"/:/data-testid="MenuIcon"/);
    assert.doesNotMatch(html,/data-testid="ChevronLeftIcon"/);
   }
-  assert.match(normal,/aria-label="Home" aria-current="page"/);
+  assert.match(normal,/aria-label="Ponderosa home" aria-current="page"/);
   assert.ok(normal.includes('aria-label="Inbox"'));
  }
 });
@@ -1687,4 +1687,13 @@ test('steering exposes no result selector and preserves existing dependent edges
  assert.match(render(undefined,true),/aria-invalid="true"/);
  assert.match(render({kind:'literal',text:'Independent input'},true),/aria-invalid="false"/);
  assert.match(render(undefined,false),/This Step’s Output/);
+});
+
+
+test('folder controls retain visible title, member count and status in their natural name',async()=>{
+ const {ResourceFolders}=await import('../../apps/web/src/components/ResourceFolders.tsx');
+ const html=renderToStaticMarkup(React.createElement(ResourceFolders,{resourceKind:'branch',resourceLabel:'Workflows',items:[{id:'a',title:'One'},{id:'b',title:'Two'}],folders:[{id:'f',name:'Visible workflows',memberIds:['a','b'],expanded:true}],sort:'alphabetical',starredIds:new Set(),filtering:false,folderUnread:{f:{importantCount:1,ordinaryCount:2,totalCount:3}},renderFolderStatus:()=>React.createElement('span',null,'2 working'),renderRow:item=>React.createElement('span',null,item.title),onChange(){},onReorder(){}},({allRows})=>React.createElement('div',null,allRows)));
+ const folder=html.match(/<div[^>]*aria-description="Folder\. 1 important unread; 2 ordinary unread"[^>]*>/);
+ assert.ok(folder,'Folder and unread purpose remain described');assert.doesNotMatch(folder[0],/aria-label=/,'Visible children own the name instead of a partial override');
+ assert.match(html,/Visible workflows/);assert.match(html,/>2 working</);assert.match(html,/>2<\/span>/,'The full displayed member count remains present');
 });

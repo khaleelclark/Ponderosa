@@ -96,7 +96,7 @@ export function ProjectRail({
     (unreadNotificationUpdates ? unreadNotificationUpdates : undefined);
   return (
     <>
-      <SidebarHeader drawer={drawer} hideTitle={drawer} homeLabel="Home" selected={route.kind === "home"} onHome={onOpenHome} onCollapse={drawer ? onClose : onCollapse} actions={<>
+      <SidebarHeader drawer={drawer} hideTitle={drawer} selected={route.kind === "home"} onHome={onOpenHome} onCollapse={drawer ? onClose : onCollapse} actions={<>
         {drawer ? (
           <Tooltip title="Inbox">
             <IconButton aria-label="Inbox" aria-current={route.kind === "inbox" ? "page" : undefined} onClick={onOpenInbox}>

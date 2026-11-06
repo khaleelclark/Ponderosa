@@ -71,3 +71,15 @@ test('provider attention uses the existing settings destination without trying t
  actions.openNotification({id:'sign-in',kind:'operational',branchId:'b',projectId:'old-project',conversationId:'deleted-chat',action:{kind:'open_settings',targetId:'codex'}});
  assert.deepEqual(routes,[{tab:'workflow',global:'providers'}]);
 });
+
+
+test('notification icon names zero, ordinary and capped unread badges without losing the exact count',t=>{
+ const client=new QueryClient({defaultOptions:{queries:{retry:false,staleTime:Infinity,gcTime:Infinity}}});t.after(()=>client.clear());
+ for(const count of [0,7,100]){
+  client.setQueryData(queryKeys.notifications.all,{items:[],unacknowledgedActionCount:count,unreadUpdateCount:0});
+  const html=renderToStaticMarkup(React.createElement(QueryClientProvider,{client},React.createElement(BranchNotifications,{onNavigate(){}})));
+  const badge=html.match(/<span[^>]*class="[^"]*MuiBadge-badge[^"]*"[^>]*>([^<]*)<\/span>/);
+  assert.ok(badge,'Existing badge presentation is retained');assert.equal(badge[1],count>99?'99+':count?String(count):'');
+  assert.ok(html.includes('aria-label="Branches notifications'+(count?', '+count+' unread'+(count>99?' (99+ shown)':''):'')+'"'));
+ }
+});

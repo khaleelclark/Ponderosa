@@ -150,7 +150,7 @@ export function SidebarOperatorFooter({profile,onSettings,drawer=false}:{profile
         }}
       >
         <ButtonBase
-          aria-label="Open settings"
+          aria-label={(profile.displayName || "Operator") + (profile.handle ? " #" + profile.handle.replace(/^[@#]/, "") : "") + ". Open settings"}
           onClick={onSettings}
           sx={{
             width: "100%",
