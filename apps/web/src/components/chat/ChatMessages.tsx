@@ -620,23 +620,12 @@ export function ChatMessageBody({ text, citations, collaborationRecipients, agen
   const collapsible = collapseLongMessage && isLongChatMessage(text);
   const [expanded, setExpanded] = useState(false);
   return (
-    <Box sx={{ width: "100%", maxWidth: "100%", minWidth: 0 }}>
-      <Box
-        sx={{
-          width: "100%",
-          maxWidth: "100%",
-          minWidth: 0,
-          ...(collapsible && !expanded ? {
-            maxHeight: "22rem",
-            overflow: "hidden",
-            maskImage: "linear-gradient(to bottom, black calc(100% - 3rem), transparent)",
-          } : {}),
-        }}
-      >
+    <div className="MuiBox-root chat-message-content">
+      <div className={`MuiBox-root chat-message-content${collapsible && !expanded ? " chat-message-content-collapsed" : ""}`}>
         <ChatMarkdown collaborationRecipients={collaborationRecipients} agentMentions={agentMentions} agentIdForHandle={collaborationRecipients ? undefined : agentIdForHandle} agentMentionForHandle={collaborationRecipients ? collaborationMention : agentMentionForHandle} onOpenAgent={onOpenAgent} onOpenBroadcast={onOpenBroadcast} previewScope={previewScope} fileScope={fileScope} projectId={projectId} operatorHandle={operatorHandle} compact={compactMarkdown} small={smallText}>
           {collapsible && !expanded ? collapsedLongMessagePreview(text) : text}
         </ChatMarkdown>
-      </Box>
+      </div>
       {collapsible ? (
         <Button
           className="chat-text-navigation"
@@ -651,6 +640,6 @@ export function ChatMessageBody({ text, citations, collaborationRecipients, agen
         </Button>
       ) : null}
       {citations?.length ? <Box component="aside" aria-label="Sources" sx={{ mt: 1, pt: 1, borderTop: 1, borderColor: "divider" }}><Typography variant="caption" sx={{ display: "block", fontWeight: 700, mb: .5 }}>Sources</Typography>{citations.map((citation) => <Typography key={citation.url} variant="caption" component="div"><ChatLink href={citation.url} projectId={projectId} fileScope={fileScope} previewScope={previewScope}>{citation.title}</ChatLink></Typography>)}</Box> : null}
-    </Box>
+    </div>
   );
 }

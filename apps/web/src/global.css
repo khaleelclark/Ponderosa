@@ -94,6 +94,15 @@ body {
   .chat-message-actions .MuiIconButton-root { min-height: 44px; }
 }
 
+/* Shared geometry for ordinary and collapsed message bodies. */
+.chat-message-content { width: 100%; max-width: 100%; min-width: 0; }
+.chat-message-content-collapsed {
+  max-height: 22rem;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, black calc(100% - 3rem), transparent);
+  mask-image: linear-gradient(to bottom, black calc(100% - 3rem), transparent);
+}
+
 /* Static Markdown geometry has four compact/small combinations. The parser,
    authored HTML projection and interactive descendants keep their own owners. */
 .chat-prose { --chat-prose-paragraph-margin: 2.8px; --chat-prose-list-margin: 3.6px; --chat-prose-list-gap: 1.2px; width: 100%; max-width: 100%; min-width: 0; overflow-wrap: anywhere; white-space: normal; font-size: 0.875rem; line-height: 1.48; }

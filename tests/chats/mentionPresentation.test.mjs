@@ -188,6 +188,7 @@ test('native browser: rendered href, Open-link actions and whole-message/code co
   const mentions = [binding('Original-Builder'), binding(fragment.split('+')[0])];
   await writeFile(path.join(root, 'entry.tsx'), `
     import React from 'react';
+    import ${JSON.stringify(path.join(webRoot, 'src/global.css'))};
     import { createRoot } from 'react-dom/client';
     import { ChatMessageBody, communicationVisibleText, authoredAgentMentionForHandle } from ${JSON.stringify(path.join(webRoot, 'src/components/chat/ChatMessages.tsx'))};
     import { ChatOverflowMenu } from ${JSON.stringify(path.join(webRoot, 'src/components/ChatOverflowMenu.tsx'))};
@@ -197,10 +198,12 @@ test('native browser: rendered href, Open-link actions and whole-message/code co
     const mentions = ${JSON.stringify(mentions)};
     const text = communicationVisibleText({ text: ${JSON.stringify(text)}, intent: 'user_dm', fromAgent: false, agentMentions: mentions });
     window.transcriptPreparations = 0;
+    const longText = Array.from({length: 90}, (_, i) => 'Long message paragraph '+i+' with retained words and original text.').join('\\n\\n')+'\\n\\nEND OF LONG SOURCE';
     const root = createRoot(document.getElementById('root')!);
     window.rerender = () => root.render(<MutationNotificationProvider><ProjectBrowserContext.Provider value={{ projectId: 'test', open(url) { window.openedInside = url; } }}>
       <ChatMessageBody text={text} agentMentions={mentions} agentMentionForHandle={handle => authoredAgentMentionForHandle(handle, mentions)} onOpenAgent={id => { window.openedAgent = id; }} collapseLongMessage={false} />
       <CopyMessageButton text={text} />
+      <section aria-label="Long message wrapper check"><ChatMessageBody text={longText} /></section>
       <ChatOverflowMenu label="Transcript failure test" actions={[]} transcriptFileName="owned.md" transcriptMarkdown={() => { window.transcriptPreparations++; throw new Error('Controlled transcript formatting failed'); }} />
     </ProjectBrowserContext.Provider></MutationNotificationProvider>);
     window.rerender();
@@ -232,6 +235,23 @@ test('native browser: rendered href, Open-link actions and whole-message/code co
   }
   assert.equal(await page.evaluate(() => window.transcriptPreparations), 2);
   assert.deepEqual(pageErrors, [], 'Formatter errors stay in the existing visible notification owner');
+  const longBody = page.getByRole('region', {name: 'Long message wrapper check'});
+  const previewBody = longBody.locator(':scope > div > div').first();
+  const geometry = () => previewBody.evaluate(e => {const s=getComputedStyle(e);return {height:e.getBoundingClientRect().height,maxHeight:s.maxHeight,overflow:s.overflow,mask:s.maskImage,webkitMask:s.webkitMaskImage};});
+  const collapsed = await geometry();
+  assert.equal(collapsed.maxHeight, '352px'); assert.equal(collapsed.overflow, 'hidden');
+  assert.notEqual(collapsed.mask, 'none'); assert.equal(collapsed.webkitMask, collapsed.mask);
+  assert.ok(collapsed.height <= 352);
+  assert.ok(!(await longBody.textContent()).includes('END OF LONG SOURCE'));
+  await longBody.getByRole('button', {name: 'Show Full Message', exact: true}).click();
+  assert.equal(await longBody.getByRole('button', {name: 'Show Less', exact: true}).getAttribute('aria-expanded'), 'true');
+  const expanded = await geometry();
+  assert.equal(expanded.maxHeight, 'none'); assert.equal(expanded.overflow, 'visible'); assert.equal(expanded.mask, 'none');
+  assert.ok(expanded.height > 352); assert.ok((await longBody.textContent()).includes('END OF LONG SOURCE'));
+  await longBody.getByRole('button', {name: 'Show Less', exact: true}).click();
+  assert.equal(await longBody.getByRole('button', {name: 'Show Full Message', exact: true}).getAttribute('aria-expanded'), 'false');
+  assert.deepEqual(await geometry(), collapsed);
+
   await page.getByRole('button', { name: /^Open agent Build-Coordinator/u }).click();
   assert.equal(await page.evaluate(() => window.openedAgent), agentId);
   const links = page.locator('a[aria-label^="Open link to"]');

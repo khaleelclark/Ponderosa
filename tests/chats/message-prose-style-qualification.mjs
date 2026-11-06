@@ -30,9 +30,9 @@ async function renderDocuments(sourceRoot){
 }
 const old=await renderDocuments(baseline),next=await renderDocuments(repo);assert.deepEqual(next.typography,old.typography,'Existing exported live/completed typography remains unchanged');
 const {chromium}=createRequire(path.join(repo,'apps/server/package.json'))('playwright-core');
-const properties=['display','fontFamily','fontSize','fontWeight','lineHeight','color','backgroundColor','whiteSpace','overflowWrap','wordBreak','overflowX','minWidth','maxWidth','maxHeight','marginTop','marginRight','marginBottom','marginLeft','paddingTop','paddingRight','paddingBottom','paddingLeft','borderRadius','borderLeftWidth','borderLeftStyle','borderLeftColor','borderBottomWidth','borderBottomStyle','borderBottomColor','borderCollapse','verticalAlign','textAlign','fontVariantNumeric','objectFit','textDecorationLine','textUnderlineOffset'];
+const properties=['display','width','height','minHeight','boxSizing','overflow','maskImage','webkitMaskImage','fontFamily','fontSize','fontWeight','lineHeight','color','backgroundColor','whiteSpace','overflowWrap','wordBreak','overflowX','minWidth','maxWidth','maxHeight','marginTop','marginRight','marginBottom','marginLeft','paddingTop','paddingRight','paddingBottom','paddingLeft','borderRadius','borderLeftWidth','borderLeftStyle','borderLeftColor','borderBottomWidth','borderBottomStyle','borderBottomColor','borderCollapse','verticalAlign','textAlign','fontVariantNumeric','objectFit','textDecorationLine','textUnderlineOffset'];
 async function measure(page){return page.locator('main h1').evaluate((heading,keys)=>{
- const prose=heading.parentElement,root=prose.getBoundingClientRect(),elements=[prose,...prose.querySelectorAll('p,h1,h2,h3,h4,ul,ol,li,blockquote,pre,code,table,thead,tbody,tr,th,td,a,img,button,[role="region"]')];
+ const prose=heading.parentElement,root=prose.getBoundingClientRect(),elements=[prose.parentElement.parentElement,prose.parentElement,prose,...prose.querySelectorAll('p,h1,h2,h3,h4,ul,ol,li,blockquote,pre,code,table,thead,tbody,tr,th,td,a,img,button,[role="region"]')];
  const clone=prose.cloneNode(true);clone.removeAttribute('class');for(const style of clone.querySelectorAll('style'))style.remove();
  return {html:clone.outerHTML,metrics:elements.map(e=>{const s=getComputedStyle(e),r=e.getBoundingClientRect();return{tag:e.tagName,text:e.textContent,box:{x:r.x-root.x,y:r.y-root.y,width:r.width,height:r.height},style:Object.fromEntries(keys.map(k=>[k,s[k]]))}})};
  },properties);}
@@ -59,6 +59,6 @@ try{
   }}finally{await context.close();}
  }
  await writeFile(path.join(out,'results.json'),JSON.stringify({passed:true,baseline,repo,cases:results.length,typography:next.typography,results,scope:'actual SSR component/CssBaseline plus browser CSS; no hydration, provider, app startup or timing claim'},null,2));
- console.log(JSON.stringify({passed:true,cases:results.length,out,scope:'component style equivalence only'}));
+ console.log(JSON.stringify({passed:true,cases:results.length,out,scope:'component and body-wrapper style equivalence only'}));
 }catch(error){await writeFile(path.join(out,'failure.json'),JSON.stringify({error:error.stack,results},null,2));throw error;}
 finally{try{await browser?.close();cleanup.push({resource:'browser',status:'closed'});}catch(error){cleanup.push({resource:'browser',status:'failed',error:String(error)});throw error;}finally{await writeFile(path.join(out,'cleanup.json'),JSON.stringify(cleanup,null,2));}}

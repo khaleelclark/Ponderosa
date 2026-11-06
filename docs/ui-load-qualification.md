@@ -488,7 +488,7 @@ and JSON guards before parsing Markdown, and still accepts an already-parsed AST
 The authored-offset/opaque-region/GFM walk is unchanged; no cache or Markdown
 replacement was introduced.
 
-Focused mention/transcript tests passed21, failed0, with1 existing browser-opt-in
+Focused mention/transcript tests passed21, failed0, with 1 existing browser-opt-in
 skip. They cover no-parse literal/untagged cases, supplied-AST reuse, clickable
 historical/current mentions and literal links/code/JSON, plus unopened-menu lazy
 preparation. Private web typecheck/build passed. The real maintained-fixture check
@@ -520,3 +520,13 @@ unchanged. All owned runtime work drained.
 The load fixture now supplies the built web directory to the existing production UI/API listener. Load navigation and API requests share that fixture-owned listener, using the production static-route behavior rather than a separate whole-file web server and API proxy. Fixture cleanup owns and verifies closure of the shared listener. Other UI qualification fixtures keep their existing serving paths.
 
 After building the web app and server, `PONDEROSA_UI_EVIDENCE=<owned output> node --import ./tests/shared/workspace-resolution.mjs tests/workspace-navigation/production-ui-fixture-qualification.mjs` checks the same-origin SPA, assets, headers, decoded bytes and API with 100 synthetic messages and no active Agents. This smoke is not a performance qualification. Earlier proxy-based timing results remain historical evidence and do not establish production-listener timing.
+
+## Shared message body geometry (2026-11-06)
+
+Two static body wrappers now use native divs with the retained `MuiBox-root`
+hook. Shared CSS preserves 100% width, min-width 0 and the existing 22rem collapsed
+height/overflow/standard+WebKit mask; parser, content selection and toggle stay
+unchanged. Private typecheck/build passed. Focused tests passed 16 with 1 existing
+opt-in skip; 48 paired style/geometry cases (including both wrapper ancestors) and
+the native expand/collapse case passed. Evidence: `/tmp/p2wrap-vb_7oplo`.
+These compatibility checks make no startup performance claim.
