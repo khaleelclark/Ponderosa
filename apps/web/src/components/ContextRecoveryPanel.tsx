@@ -56,7 +56,7 @@ export function ContextRecoveryPanel({agentId}:{agentId:string}):JSX.Element {
  return <Paper variant="outlined" sx={{m:1,p:1.5}}><Stack spacing={1}>
   <Button onClick={()=>setOpen(value=>!value)} aria-expanded={open}>Context recovery</Button>
   {open&&<>
-   <Typography variant="body2">{stopped?'The earlier task stays stopped. Recover retained context for new independent work; earlier effects remain unknown.':'Retained context inspection · original outcome/effects unknown · no original-work retry'}</Typography>
+   <Typography variant="body2">{stopped?'Task stopped · new work only · effects unknown':'Retained context inspection · original outcome/effects unknown · no original-work retry'}</Typography>
    {status.isFetching&&<Typography role="status">Reading recovery status…</Typography>}
    {(restored.error||error||status.error)&&<Alert severity="error">{restored.error||error||status.error?.message}</Alert>}
    {notice&&<Alert severity="info">{notice}</Alert>}
