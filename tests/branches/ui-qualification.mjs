@@ -21,7 +21,7 @@ const mime={'.js':'text/javascript','.css':'text/css','.html':'text/html','.woff
 const server=createServer(async(req,res)=>{
  try{
   const url=new URL(req.url,'http://localhost');
-  if(url.pathname==='/api/__qualification/state'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify({root:f.root,branch,chat,agents,normal,requests}));return;}
+  if(url.pathname==='/api/__qualification/state'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify({root:f.root,branch,chat,agents,normal,requests,providerTurnIds:f.turns.map(turn=>turn.turnId)}));return;}
   if(url.pathname==='/api/__qualification/reopen'&&req.method==='POST'){await f.reopen();api=await f.listen();res.writeHead(200,{'content-type':'application/json'});res.end('{"reopened":true}');return;}
   if(url.pathname.startsWith('/api/')){
    const chunks=[];for await(const chunk of req)chunks.push(chunk);const bytes=Buffer.concat(chunks);

@@ -22,24 +22,35 @@ try{
  let setup;for await(const line of createInterface({input:fixture.stdout}))if(line.startsWith('{"origin":')){setup=JSON.parse(line);break;}
  assert(setup);browser=await chromium.launch({executablePath:process.env.CHROME_PATH??'/usr/bin/google-chrome',headless:true,args:['--no-sandbox']});
  for(const kind of ['held-app','home-first-use','chunk-retry']){
-  const row={kind,status:'started',api:[],blocked:[],errors:[]};rows.push(row);
+  const row={kind,status:'started',api:[],apiRequests:[],blocked:[],errors:[]};rows.push(row);
   context=await browser.newContext({viewport:{width:412,height:823},isMobile:true,hasTouch:true,serviceWorkers:'block'});
   let appHeld=false,markAppHeld,allowProject=kind!=='chunk-retry';const appGate=new Promise(resolve=>releaseApp=resolve),appHoldReady=new Promise(resolve=>markAppHeld=resolve);
   const page=await context.newPage();page.setDefaultTimeout(15000);page.on('pageerror',error=>row.errors.push(error.message));
   await context.route('**/*',async route=>{
    const url=new URL(route.request().url());if(url.origin!==setup.origin){row.blocked.push(url.href);return route.abort();}
-   if(url.pathname.startsWith('/api/'))row.api.push(url.pathname);
+   if(url.pathname.startsWith('/api/')){row.api.push(url.pathname);row.apiRequests.push({method:route.request().method(),path:url.pathname,search:url.search});}
    if(kind==='held-app'&&url.pathname===appChunk){appHeld=true;markAppHeld();await appGate;}
    if(url.pathname===projectChunk&&!allowProject)return route.abort('failed');
    return route.continue();
   });
   try{
    if(kind==='held-app'){
+    const before=await fetch(setup.origin+'/api/__qualification/state');assert(before.ok);row.providerTurnsBefore=(await before.json()).providerTurnIds;assert(Array.isArray(row.providerTurnsBefore),'Fixture must report a provider-turn array before navigation');
     const selectedCode=page.waitForRequest(request=>new URL(request.url()).pathname===projectChunk);
+    const selectedUrl=new URL(setup.normalUrl),parts=selectedUrl.pathname.split('/');
+    assert.equal(parts[1],'projects');assert.equal(parts[3],'chats');
+    row.earlyDataPaths=[`/api/conversations/${parts[4]}`,`/api/projects/${parts[2]}/conversations`,`/api/projects/${parts[2]}/agents`];
+    const earlyData=row.earlyDataPaths.map(path=>page.waitForResponse(response=>new URL(response.url()).pathname===path&&response.ok()));
     await page.goto(setup.normalUrl,{waitUntil:'commit'});
-    let gateTimer;try{await Promise.race([Promise.all([selectedCode,appHoldReady]),new Promise((_,reject)=>{gateTimer=setTimeout(()=>reject(new Error('Initial route code did not overlap held App code')),15000);})]);}finally{clearTimeout(gateTimer);}
+    let gateTimer;try{await Promise.race([Promise.all([selectedCode,appHoldReady,...earlyData]),new Promise((_,reject)=>{gateTimer=setTimeout(()=>reject(new Error('Initial route code did not overlap held App code')),15000);})]);}finally{clearTimeout(gateTimer);}
     assert(appHeld,'App response must still be held when project code is requested');
-    assert.deepEqual(row.api,[],'Pure code warm-up must not fetch API data before App mounts');row.overlapBeforeAppExecution=true;releaseApp();
+    for(const path of row.earlyDataPaths)assert.equal(row.api.filter(request=>request===path).length,1,'Each canonical read starts once while App code remains held: '+path);
+    assert.deepEqual([...row.api].sort(),[...row.earlyDataPaths].sort(),'Only the three selected canonical browser API reads may start before App execution');
+    assert(row.apiRequests.every(request=>request.method==='GET'),'Initial Root warm-up cannot send a mutation');
+    assert.equal(new URLSearchParams(row.apiRequests.find(request=>request.path===row.earlyDataPaths[0]).search).get('limit'),'100','The exact existing canonical tail bound is retained');
+    const held=await fetch(setup.origin+'/api/__qualification/state');assert(held.ok);row.providerTurnsWhileHeld=(await held.json()).providerTurnIds;assert(Array.isArray(row.providerTurnsWhileHeld),'Fixture must report a provider-turn array while App is held');
+    assert.deepEqual(row.providerTurnsWhileHeld,row.providerTurnsBefore,'Early canonical reads cannot execute provider work');
+    row.overlapBeforeAppExecution=true;row.dataBeforeAppExecution=true;releaseApp();
    }else if(kind==='home-first-use'){
     const projectRequests=[];page.on('request',request=>{if(new URL(request.url()).pathname===projectChunk)projectRequests.push(request.url());});
     await page.goto(setup.origin+'/home');await page.getByRole('button',{name:'Open workspace navigation',exact:true}).click();

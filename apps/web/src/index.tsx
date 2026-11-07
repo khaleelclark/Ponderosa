@@ -19,6 +19,7 @@ const App = lazy(() => {
 const BranchesView=lazy(()=>import('./components/BranchesView').then(module=>({default:module.BranchesView})));
 import { loadProjectShell } from "./projectShellLoader";
 import { parseRoute } from "./routing";
+import { prefetchConversationWorkspace } from "./conversationWorkspacePrefetch";
 import { isProjectRoute } from "./routeRegistry";
 import { WorkspaceErrorBoundary } from "./components/WorkspaceErrorBoundary";
 import { MutationNotificationProvider } from "./components/MutationNotifications";
@@ -48,6 +49,13 @@ const queryClient = new QueryClient({
 });
 
 function Root(): JSX.Element {
+  useEffect(() => {
+    if (isBranchesPath(window.location.pathname) || isOutputAppPath(window.location.pathname)) return;
+    const route = parseRoute(window.location.pathname, window.location.search);
+    if (route.kind === "conversation") {
+      void prefetchConversationWorkspace(queryClient, route.conversationId, route.projectId);
+    }
+  }, []);
   const [colorMode, setColorMode] = useState<ColorMode>(loadColorMode);
   useEffect(()=>{
     const apply=()=>{document.documentElement.style.fontSize=`${readTextSize()}%`;};

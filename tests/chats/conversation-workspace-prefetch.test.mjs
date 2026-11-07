@@ -25,6 +25,13 @@ function arrow(file,predicate){
  const visit=node=>{if(ts.isArrowFunction(node)&&predicate(node.getText(ast)))matches.push(node.getText(ast));ts.forEachChild(node,visit);};visit(ast);const found=matches.sort((a,b)=>a.length-b.length)[0];assert(found,'Expected existing warm callback in '+file);return found;
 }
 const appWarm=arrow('App.tsx',text=>text.includes('if (routedConversationId)')&&text.includes('prefetchConversationWorkspace'));
+const rootWarm=arrow('index.tsx',text=>text.includes('isBranchesPath(window.location.pathname)')&&text.includes('prefetchConversationWorkspace'));
+const parseRoute=module(source('routing.ts'),{'./routeRegistry.js':registry}).parseRoute;
+const productScope=module(source('api/productScope.ts'));
+function warmRoot(f,pathname,search=''){
+ return invoke(rootWarm,{window:{location:{pathname,search}},parseRoute,...productScope,queryClient:f.client,prefetchConversationWorkspace:f.warm});
+}
+
 const branchWarm=arrow('components/BranchesView.tsx',text=>text.includes('chat.branchId!==id')&&text.includes('prefetchConversationWorkspace'));
 const invoke=(text,env,...args)=>vm.runInNewContext('('+text+')',env)(...args);
 const turn=()=>new Promise(setImmediate);
@@ -162,5 +169,37 @@ test('Branches overlap retains execution resolution, route/cancellation guards a
    else{branchResolve({id:'branch-a'});ownerReject(Error('Exact owner refused'));await opening;await turn();assert.deepEqual(errors,[]);assert.equal(f.client.getQueryState(['branch-chat-owner','chat-a']).error.message,'Exact owner refused');}
    assert.equal(f.calls.length,0,'No scoped workspace reads after a failed readiness read');
   }finally{f.close();}
+ }
+});
+
+
+test('Root starts explicit Core Chat canonical data before App executes and mounted observers reuse the same reads',async()=>{
+ const f=fixture();try{
+  warmRoot(f,'/projects/project-a/chats/chat-a','?message=exact-focus');
+  assert.deepEqual(f.calls.map(c=>c.kind),['tail','conversations','agents'],'The actual Root effect starts all three existing reads before App warm-up');
+  invoke(appWarm,{queryClient:f.client,routedConversationId:'chat-a',routedProjectId:'project-a',prefetchConversationWorkspace:f.warm});
+  const observers=[
+   new QueryObserver(f.client,{queryKey:queryKeys.conversations.detail('chat-a',100),queryFn:()=>f.api.getConversation('chat-a',100)}),
+   new QueryObserver(f.client,{queryKey:queryKeys.conversations.project('project-a'),queryFn:()=>f.api.listConversations('project-a')}),
+   new QueryObserver(f.client,{queryKey:queryKeys.agents.project('project-a'),queryFn:()=>f.api.listAgents('project-a')}),
+  ];
+  const stops=observers.map(observer=>observer.subscribe(()=>{}));
+  try{
+   assert.equal(f.calls.length,3,'App and mounted observers share Root in-flight promises');
+   f.resolve('tail',{conversation:{id:'chat-a'},messages:[]});f.resolve('conversations',[{id:'chat-a'}]);f.resolve('agents',[]);await turn();
+   warmRoot(f,'/projects/project-a/chats/chat-a');
+   assert.equal(f.calls.length,3,'Repeated initial effect retains existing freshness and deduplication');
+   assert.equal(f.client.getQueryData(queryKeys.conversations.detail('chat-a',100)).conversation.id,'chat-a');
+  }finally{stops.forEach(stop=>stop());}
+ }finally{f.close();}
+});
+test('Root data warm excludes malformed and non-Core-Chat routes without global reads',()=>{
+ for(const [pathname,search] of [
+  ['/',''],['/home',''],['/settings/general',''],['/projects/project-a/agents/agent-a',''],
+  ['/projects/project-a/chats/%E0%A4%A',''],['/projects/%E0%A4%A/chats/chat-a',''],
+  ['/branches','?branch=branch-a&tab=chats&chat=chat-a&workspace=/projects/project-a/chats/chat-a'],
+  ['/assistant',''],['/apps/output-a',''],
+ ]){
+  const f=fixture();try{warmRoot(f,pathname,search);assert.deepEqual(f.calls,[],pathname+' must not start Core reads');}finally{f.close();}
  }
 });
