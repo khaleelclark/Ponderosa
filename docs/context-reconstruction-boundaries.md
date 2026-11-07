@@ -75,3 +75,18 @@ If those facts cannot be established, the appropriate visible recovery and
 product behavior remain unresolved. A blanket hold would also disable affected
 voice or changed-contract turns, so it has not been introduced as an assumed
 solution.
+
+## Pre-sampling provider failure — current retained-context behavior
+
+A failed pre-sampling compact does not prove that earlier native/tool work exists
+in canonical Communication. The executor therefore preserves the accepted session,
+its saved input and prior history, reports the original redacted provider failure,
+and drains the failed process. It does not reset the session, resubmit a fresh
+canonical seed or replay the assignment. A genuinely first turn also has no
+automatic retry. Existing scheduler injection/outcome authority owns settlement.
+
+Explicit context recovery is available only when the existing exact source
+boundary, retained contract and adapter protocol qualify. A clean failed/completed
+source or unsupported adapter does not gain a working recovery button from this
+change. Unknown original effects remain unknown, and no recovery operation or
+permission is manufactured by a failed provider attempt.

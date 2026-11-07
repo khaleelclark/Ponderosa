@@ -182,7 +182,6 @@ export function startProviderRunExecution(
     oneShotRuntime,
     runtimeAuthority,
     pruneRuntimeAuthority,
-    clearAgentResumeSession,
     notifyManagerOfChildFailure,
     notifyScheduler,
     reconcileProjectWorkspace,
@@ -313,7 +312,6 @@ export function startProviderRunExecution(
       providerAccepted: boolean;
     } | undefined;
     let schedulerCancelled = false;
-    let usedFreshFallback = false;
     let projectWorkspaceUnavailable = false;
     let voiceContextInvalid = false;
     let voiceContextNotice: Promise<unknown> | undefined;
@@ -1055,10 +1053,9 @@ export function startProviderRunExecution(
         continuationHandoffConsumed = true;
       };
 
-      let sessionId = resumeSessionId;
-      while (true) {
+      const sessionId = resumeSessionId;
+      {
         const bufferedSessionEvents: Extract<AgentEvent, { type: "session" }>[] = [];
-        let retryFresh = false;
         if (inputFiles.length && !persistentRuntime) throw new Error("This engine has no typed-file session transport; input was not submitted");
         requireCurrentRuntimeInputAccess({ files: inputFiles, projectId: agent.projectId, agentId: agent.id, store, assets: context.assets });
         await validateSettingsTransitionSources?.();
@@ -1154,55 +1151,14 @@ export function startProviderRunExecution(
           if(event.type==='error')activeRun.observedProviderFailure=event;
           if (event.type === "error" && !input.nativeAction && !nativeSeed && sessionId && !frozenHandoffSessionId &&
               !providerWorkObserved && shouldRolloverEngineSession(runtimeEngineId, event)) {
-            const fallbackBudget = freshProviderInputManifest.schemaVersion === 3
-              ? freshProviderInputManifest.contextBudget : undefined;
-            if (retainedVerifiedContext || !workspace.getPreferences().contextRolloverEnabled ||
-                fallbackBudget?.inputCeilingTokens === undefined ||
-                fallbackBudget.estimatedInputTokens > fallbackBudget.inputCeilingTokens) {
-              // Keep the accepted generation and the failed attempt. A provider
-              // pre-sampling error cannot authorize an over-budget/disabled reset.
-              bufferedSessionEvents.length = 0;
-            } else {
-              // The provider confirmed the resumed session failed before
-              // sampling. Discard its buffered session event and retry once
-              // with the separately persisted canonical fresh-seed packet.
-              clearAgentResumeSession(agent.id, "resume_compaction_failed");
-              coordinationV3.setRunContextDisposition(runId, v3FencingToken!, "reseeded");
-              coordinationV3.recordProviderInput({
-                executionId: runId,
-                schedulerRunId: runId,
-                fencingToken: v3FencingToken!,
-                agentId: agent.id,
-                projectId: project.id,
-                prompt: freshExactProviderInput,
-                systemPrompt,
-                sourceManifest: freshProviderInputManifest,
-              });
-              manifestArtifactIds.splice(0, manifestArtifactIds.length, ...freshProviderInputManifest.artifactIds);
-              if (freshProviderInputManifest.schemaVersion === 3) {
-                runCapability.historyRetrievalBoundary = freshProviderInputManifest.historyContext?.boundary;
-                runCapability.importedHistoryArchiveVersion = freshProviderInputManifest.historyContext?.importedArchiveVersion;
-                runCapability.historyRetrievalExcludedCommunicationEventIds = freshProviderInputManifest.historyContext?.fullyIncludedCommunicationEventIds ?? [];
-              }
-              if (persistentRuntime) {
-                const staleRuntime = persistentRuntime;
-                await teardownPersistentRuntime(agent.id, staleRuntime, "failed resume replacement", project.id);
-                activeRun.observedProviderFailure = undefined;
-                activeRun.observedProviderTerminalStatus = undefined;
-                activeRun.observedRootExit = undefined;
-                persistentRuntime = await openRegisteredPersistentRuntime();
-                activeRun.runtimeSession = persistentRuntime.session;
-                persistentTurnStarted = false;
-              }
-              sessionId = undefined;
-              usedFreshFallback = true;
-              retryFresh = true;
-              break;
-            }
+            // Failure before this attempt samples is not proof that prior native
+            // work exists in canonical history. Keep the accepted generation and
+            // input; ordinary failure settlement owns the visible error and hold.
+            bufferedSessionEvents.length = 0;
           }
-          // Codex can emit its session id immediately before a resume-time
-          // compaction failure. Hold only those initial session events so a
-          // failed resume does not restore the stale id after we clear it.
+          // Codex can emit a session id immediately before a resume-time
+          // compaction failure. Keep the prior accepted snapshot until this
+          // attempt supplies evidence beyond its initial session event.
           if (sessionId && event.type === "session") {
             bufferedSessionEvents.push(event);
             continue;
@@ -1455,7 +1411,6 @@ export function startProviderRunExecution(
                 runFailureClassification === "rate_limit" || runFailureClassification === "quota_exhausted" || runFailureClassification === "throttled");
           }
         }
-        if (!retryFresh) break;
       }
       if(runError&&persistentRuntime&&activeRun.observedProviderFailure){
         try{await teardownPersistentRuntime(agent.id,persistentRuntime,'provider terminal failure',project.id);}
@@ -1997,7 +1952,7 @@ export function startProviderRunExecution(
             // A continued session advances only through the FIFO page that
             // was actually submitted. A fresh/reseeded session deliberately
             // accepts the newest bounded tail and records the canonical tip.
-            lastMessageId: !usedFreshFallback && incremental && roomDeltaOmitted
+            lastMessageId: incremental && roomDeltaOmitted
               ? roomMessages.at(-1)?.id ?? previousCursor?.lastMessageId
               : roomCanonicalTipId,
             routingHash,
@@ -2011,7 +1966,7 @@ export function startProviderRunExecution(
             sessionId: acceptedSessionId,
             conversationId: routingConversationId,
             channel: "broadcast",
-            lastMessageId: !usedFreshFallback && broadcastIncremental && broadcastDeltaOmitted
+            lastMessageId: broadcastIncremental && broadcastDeltaOmitted
               ? initialBroadcastContext.at(-1)?.id ?? previousBroadcastCursor?.lastMessageId
               : broadcastCanonicalTipId,
             routingHash,
