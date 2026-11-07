@@ -5,21 +5,21 @@ import {mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import Fastify from 'fastify';
-import {AgentStore,CoordinationV3Store,BranchStore,readManagedArtifactContent,publishManagedArtifactContentAsync} from '@ponderosa/agents';
+import {AgentStore,CoordinationV3Store,WorkspaceStore,BranchStore,readManagedArtifactContent,publishManagedArtifactContentAsync} from '@ponderosa/agents';
 import {AssetStore} from '../../apps/server/dist/assets.js';
 import {registerAgentPackageRoutes} from '../../apps/server/dist/routes/agent-packages.js';
 import {withoutPortableSecrets,assertPortableSecretsAbsent,redactPortableDiagnostic} from '../../apps/server/dist/portable-secrets.js';
 import {EXECUTION_ARCHIVE_MEDIA_TYPE,validateExecutionArchive,executionArchives} from '../../apps/server/dist/portable-execution-archive.js';
 
 async function instance(t,branch=false,connectionTimeout=0){
- const dataDir=await mkdtemp(path.join(tmpdir(),'execution-portability-'));let store,assets,app,engine;
+ const dataDir=await mkdtemp(path.join(tmpdir(),'execution-portability-'));let store,workspace,assets,app,engine;
  const open=async()=>{
-  store=new AgentStore(dataDir);assets=new AssetStore(dataDir);app=Fastify({connectionTimeout});
+  store=new AgentStore(dataDir);workspace=new WorkspaceStore(dataDir);assets=new AssetStore(dataDir);app=Fastify({connectionTimeout});
   const coordination=new CoordinationV3Store(store.sqlite);
-  engine=registerAgentPackageRoutes(app,{dataDir,store,coordination,assets,engines:new Map([['codex',{adapter:{id:'codex',listModels:()=>[],listEfforts:()=>[]}}]]),deletingProjectIds:new Set(),deletingConversationIds:new Set(),deletingAgentIds:new Set(),agentCreationConversationLeases:new Map(),cachedModelOptions:()=>[],appendWorkspace(){},agentMessages:id=>store.getProjectedAgentMessages(id),createOperationalNotification(){}}).packageEngine;
+  engine=registerAgentPackageRoutes(app,{dataDir,store,workspace,coordination,assets,engines:new Map([['codex',{adapter:{id:'codex',listModels:()=>[],listEfforts:()=>[]}}]]),deletingProjectIds:new Set(),deletingConversationIds:new Set(),deletingAgentIds:new Set(),agentCreationConversationLeases:new Map(),cachedModelOptions:()=>[],appendWorkspace(){},agentMessages:id=>store.getProjectedAgentMessages(id),createOperationalNotification(){}}).packageEngine;
   await app.ready();
  };
- const close=async()=>{await app.close();assets.close();store.close();};await open();
+ const close=async()=>{await app.close();assets.close();workspace.close();store.close();};await open();
  t.after(async()=>{await close();await rm(dataDir,{recursive:true,force:true});});
  const branchId=branch?new BranchStore(store.sqlite,new CoordinationV3Store(store.sqlite)).create('Portable workflow','fixture').id:undefined;
  const project=store.createProject({label:'Portable evidence',hostPath:dataDir,defaultEngine:'codex',chatOwned:true,...(branchId?{branchId}:{})});

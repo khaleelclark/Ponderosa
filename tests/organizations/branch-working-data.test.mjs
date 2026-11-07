@@ -4,7 +4,7 @@ import {mkdtemp,mkdir,writeFile,link,symlink,readFile,readlink,rm} from 'node:fs
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import Fastify from 'fastify';
-import {AgentStore,CoordinationV3Store} from '@ponderosa/agents';
+import {AgentStore,CoordinationV3Store,WorkspaceStore} from '@ponderosa/agents';
 import {registerAgentPackageRoutes} from '../../apps/server/dist/routes/agent-packages.js';
 import {createBranchWorkingData,validateBranchWorkingData,branchWorkingDataHash} from '../../apps/server/dist/branch-working-data.js';
 import {collectBranchGitStorageSelections} from '../../apps/server/dist/branch-export-selections.js';
@@ -54,12 +54,12 @@ test('carrier validation refuses missing owners, altered bytes, context/grants a
 test('shared export captures all selected source roots once across separate Chat owners, without copying their history into physical data',{skip:process.platform==='win32'},async t=>{
  const root=await mkdtemp(path.join(tmpdir(),'branch-working-closure-')),dataDir=path.join(root,'state'),first=path.join(root,'first'),second=path.join(root,'second');
  await mkdir(dataDir);await mkdir(first);await mkdir(second);await writeFile(path.join(first,'original'),'complete original');await link(path.join(first,'original'),path.join(second,'hard'));await symlink('../first/original',path.join(second,'symbolic'));
- const store=new AgentStore(dataDir),coordination=new CoordinationV3Store(store.sqlite),app=Fastify();let complete=false;
+ const store=new AgentStore(dataDir),workspace=new WorkspaceStore(dataDir),coordination=new CoordinationV3Store(store.sqlite),app=Fastify();let complete=false;
  try{
   const aProject=store.createProject({label:'A',hostPath:first,defaultEngine:'codex',chatOwned:true}),bProject=store.createProject({label:'B',hostPath:second,defaultEngine:'codex',chatOwned:true});
   const a=store.createAgent(aProject.id,{title:'A',engine:'codex',conversationId:aProject.lastConversationId}),b=store.createAgent(bProject.id,{title:'B',engine:'codex',conversationId:bProject.lastConversationId});
   store.setImportedHistory(a.id,'private-a',[{role:'user',text:'ONLY_A_HISTORY'}]);store.setImportedHistory(b.id,'private-b',[{role:'user',text:'ONLY_B_HISTORY'}]);
-  const {packageEngine}=registerAgentPackageRoutes(app,{dataDir,store,coordination,assets:{},engines:new Map([['codex',{adapter:{id:'codex',listModels:()=>[],listEfforts:()=>[]}}]]),deletingProjectIds:new Set(),deletingConversationIds:new Set(),deletingAgentIds:new Set(),agentCreationConversationLeases:new Map(),cachedModelOptions:()=>[],appendWorkspace(){},agentMessages:()=>[],createOperationalNotification(){}});
+  const {packageEngine}=registerAgentPackageRoutes(app,{dataDir,store,workspace,coordination,assets:{},engines:new Map([['codex',{adapter:{id:'codex',listModels:()=>[],listEfforts:()=>[]}}]]),deletingProjectIds:new Set(),deletingConversationIds:new Set(),deletingAgentIds:new Set(),agentCreationConversationLeases:new Map(),cachedModelOptions:()=>[],appendWorkspace(){},agentMessages:()=>[],createOperationalNotification(){}});
   await app.ready();
   const exported=await packageEngine.exportAgentSet([a.id,b.id],'full',{[a.id]:{wholeWorkingFolder:true},[b.id]:{wholeWorkingFolder:true}});
   const working=exported.working;validatePortableAgentPackage(working);
@@ -100,5 +100,5 @@ test('shared export captures all selected source roots once across separate Chat
   assert.equal((await app.inject({method:'POST',url:'/api/agents/'+a.id+'/export',payload:{mode:'full',organization:'true'}})).statusCode,400);
   assert.equal((await app.inject({method:'POST',url:'/api/agents/'+a.id+'/export',payload:{mode:'full',gitStorageBindings:[]}})).statusCode,400);
   complete=true;
- }finally{await app.close();store.close();if(complete)await rm(root,{recursive:true,force:true});else t.diagnostic('Retained failed Branch closure fixture: '+root);}
+ }finally{await app.close();workspace.close();store.close();if(complete)await rm(root,{recursive:true,force:true});else t.diagnostic('Retained failed Branch closure fixture: '+root);}
 });

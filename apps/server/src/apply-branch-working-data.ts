@@ -224,7 +224,7 @@ export async function applyBranchWorkingData(dataDir:string,store:AgentStore,wor
   for(const id of new Set(roots.filter(root=>root.live).flatMap(root=>root.members.flatMap(member=>store.listAgents(agents.get(member.ref)!.projectId).map(agent=>agent.id)))))releases.push(workingCopies.beginModeChange(id));
   signal?.throwIfAborted();receipt.phase='publishing-originals';save();
   for(const projectId of new Set(artifacts.map(artifact=>artifact.agent.projectId))){
-   const selected=artifacts.filter(artifact=>artifact.agent.projectId===projectId);
+   const selected=artifacts.filter(artifact=>artifact.agent.projectId===projectId&&artifact.data.length>0);
    await publishManagedArtifactContentsAsync(dataDir,projectId,selected.map(artifact=>({artifactId:artifact.id,input:artifact.data})));
    store.recordProjectArtifacts(selected.map(artifact=>({artifact:{id:artifact.id,projectId,agentId:artifact.agent.id,originAgentId:artifact.agent.id,kind:artifact.source.kind,path:artifact.path,summary:artifact.source.summary??path.basename(artifact.source.path),createdAt:artifact.source.createdAt,mediaType:artifact.source.mediaType??'application/octet-stream',visibility:artifact.source.visibility??'project',pinned:artifact.source.pinned??false,size:artifact.data.length,sha256:artifact.sha256,...(artifact.source.sourcePath?{sourcePath:artifact.source.sourcePath}:{})},...(partMarkers.has(artifact.id)?{transportPart:partMarkers.get(artifact.id)!}:{})})));
   }
@@ -234,7 +234,7 @@ export async function applyBranchWorkingData(dataDir:string,store:AgentStore,wor
     return {...file,artifactRef:selected[0]!,...(file.parts?{parts:{...file.parts,refs:selected}}:{})};
    });
    const review=reviewCopies.get(node.ref);if(review)originals.push(review);
-   await store.attachImportedWorkingStateAsync(agents.get(node.ref)!.id,planId,{workingFiles:originals,...(node.workingFolder?{workingFolder:node.workingFolder}:{})});
+   await store.attachImportedWorkingStateAsync(agents.get(node.ref)!.id,planId,{workingFiles:originals,...(node.workingFolder?{workingFolder:node.workingFolder}:{}),emptyWorkingArtifacts:artifacts.filter(artifact=>artifact.nodeRef===node.ref&&artifact.data.length===0).map(artifact=>({...artifact.source,ref:artifact.id,path:artifact.path}))});
   }
   receipt.phase='recovery-folders';save();
   const recoveryIdentity=new Map<string,WorkingRootIdentity>(),liveIdentity=new Map<string,WorkingRootIdentity>(),nativeMetadata=createWorkingNativeMetadataEvidence();

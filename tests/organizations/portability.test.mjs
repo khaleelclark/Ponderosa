@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { randomUUID, createHash, randomFillSync } from 'node:crypto';
 import { gzipSync, gunzipSync } from 'node:zlib';
-import { mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile, readFile, chmod, utimes, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -589,6 +589,84 @@ test('shared engine forwards selected folder intent, result mappings and retaine
   const roots=Object.fromEntries(refs.map((ref,index)=>[ref,path.join(f.dataDir,`branch-root-${index}`)]));
   const imported=await f.packageEngine.importAgent(f.project.id,f.destination.id,bundle,{codex:'codex'},randomUUID(),{workingRootDestinations:roots});
   assert.deepEqual(imported.workingRoots,[{ref:refs[0],destination:roots[refs[0]],agentIds:imported.agentIds}]);
+}));
+
+test('empty ordinary working originals retain exact metadata through import, reopen and re-export',{...options,skip:process.platform==='win32'},t=>withPortability(t,async f=>{
+  const filename='empty-working-file.txt',source=path.join(f.dataDir,filename),timestamp=new Date('2026-11-02T01:02:03.000Z');
+  await writeFile(source,Buffer.alloc(0));await chmod(source,0o640);await utimes(source,timestamp,timestamp);
+  const pkg=await f.packageEngine.exportAgent(f.a.id,'full',{selectedWorkingFiles:[filename]});
+  const file=pkg.agents[0].workingFiles.find(file=>file.path===filename),original=pkg.agents[0].artifacts.find(artifact=>artifact.ref===file.artifactRef);
+  assert.equal(original.dataBase64,'');assert.equal(file.mode,0o640);assert.equal(file.mtime,timestamp.toISOString());
+  // The ordinary managed-blob contract remains positive, including its batch API.
+  const {publishManagedArtifactContentsAsync}=await import('@ponderosa/agents');
+  await assert.rejects(async()=>publishManagedArtifactContentAsync(f.dataDir,f.project.id,randomUUID(),Buffer.alloc(0)),/1 to 64 MiB/);
+  await assert.rejects(publishManagedArtifactContentsAsync(f.dataDir,f.project.id,[{artifactId:randomUUID(),input:Buffer.alloc(0)}]),/1 to 64 MiB/);
+  const reject=async(value,pattern)=>{
+    const before=f.store.listAgents(f.project.id).map(agent=>agent.id);
+    await assert.rejects(f.packageEngine.importAgent(f.project.id,f.destination.id,value,{codex:'codex'},randomUUID()),pattern);
+    assert.deepEqual(f.store.listAgents(f.project.id).map(agent=>agent.id),before,'invalid empty use creates no Agent');
+  };
+  const standalone=structuredClone(pkg);delete standalone.agents[0].workingFiles;
+  await reject(standalone,/same-owner ordinary working-file/);
+  const attached=structuredClone(pkg);attached.agents[0].history.push({role:'assistant',text:'Invalid standalone empty attachment',attachmentRefs:[file.artifactRef]});
+  await reject(attached,/Empty working-file originals cannot be used as standalone/);
+  const foreign=structuredClone(pkg),otherRef=randomUUID(),empty=foreign.agents[0].artifacts.find(artifact=>artifact.ref===file.artifactRef);
+  foreign.kind='organization';
+  foreign.agents[0].artifacts=foreign.agents[0].artifacts.filter(artifact=>artifact.ref!==file.artifactRef);
+  foreign.agents.push({ref:otherRef,managerRef:foreign.rootRef,title:'Other owner',engine:'codex',managementPermissions:{allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false},artifacts:[empty]});
+  await reject(foreign,/included originals|same-owner ordinary working-file/);
+  const parts=structuredClone(pkg),secondRef=randomUUID();
+  parts.agents[0].artifacts.find(artifact=>artifact.ref===file.artifactRef).mediaType='application/vnd.ponderosa.working-file-part.v1';
+  parts.agents[0].artifacts.push({...original,ref:secondRef,mediaType:'application/vnd.ponderosa.working-file-part.v1'});
+  parts.agents[0].workingFiles[0].parts={schema:'ponderosa.working-file-parts.v1',refs:[file.artifactRef,secondRef],byteLength:64*1024*1024+1,sha256:'a'.repeat(64)};
+  await reject(parts,/Working-file parts cannot be empty/);
+  const destination=path.join(f.dataDir,'empty-original-recovery');
+  const importKey=randomUUID();
+  const imported=await f.packageEngine.importAgent(f.project.id,f.destination.id,pkg,{codex:'codex'},importKey,{workingFilesDestination:destination});
+  const recovered=path.join(destination,filename),before=await stat(recovered);
+  assert.equal((await readFile(recovered)).length,0);assert.equal(before.mode&0o777,0o640);assert.equal(before.mtime.toISOString(),timestamp.toISOString());
+  await f.restart();
+  const next=await f.packageEngine.exportAgent(imported.rootAgentId,'full'),retained=next.agents[0].workingFiles.find(value=>value.path===filename);
+  assert.deepEqual({...retained,artifactRef:file.artifactRef},file,'the exact ordinary-file metadata survives reopen');
+  const importOperation=f.store.getAgentCreationOperation(f.store.sqlite.prepare('SELECT id FROM agent_creation_operations WHERE idempotency_key=?').get(importKey).id);
+  assert.ok(importOperation.artifactIds.includes(retained.artifactRef),'re-export retains the exact canonical import reservation identity');
+  assert.notEqual(retained.artifactRef,file.artifactRef,'zero originals use locally reserved references without a catalog collision record');
+  const retainedOriginal=next.agents[0].artifacts.find(artifact=>artifact.ref===retained.artifactRef);
+  for(const key of ['kind','summary','createdAt','mediaType','dataBase64'])assert.equal(retainedOriginal[key],original[key],key);
+  assert.equal(f.store.getProjectArtifacts(f.project.id).some(artifact=>artifact.id===retained.artifactRef),false,'zero originals never become ordinary managed blobs');
+  assert.equal((await readFile(recovered)).length,0);assert.equal((await stat(recovered)).mtime.toISOString(),timestamp.toISOString());
+  const secondDestination=path.join(f.dataDir,'empty-original-second-recovery');
+  const second=await f.packageEngine.importAgent(f.project.id,f.destination.id,pkg,{codex:'codex'},randomUUID(),{workingFilesDestination:secondDestination});
+  const secondPackage=await f.packageEngine.exportAgent(second.rootAgentId,'full'),secondFile=secondPackage.agents[0].workingFiles.find(value=>value.path===filename);
+  assert.notEqual(secondFile.artifactRef,retained.artifactRef,'separate imports reserve distinct zero-original identities');
+  assert.equal((await readFile(path.join(secondDestination,filename))).length,0);
+  f.store.updateAgentOrganization(second.rootAgentId,{managerAgentId:imported.rootAgentId});
+  const combined=await f.packageEngine.exportAgent(imported.rootAgentId,'full',{organization:true});
+  const {validatePortableAgentPackage}=await import('../../apps/server/dist/portable-agent-package-validation.js');
+  assert.doesNotThrow(()=>validatePortableAgentPackage(combined));
+  const combinedRefs=combined.agents.flatMap(node=>node.artifacts??[]).map(artifact=>artifact.ref);
+  assert.equal(new Set(combinedRefs).size,combinedRefs.length,'the actual combined organization package has no duplicate artifact refs');
+  for(const id of [imported.rootAgentId,second.rootAgentId]){
+    const node=combined.agents.find(node=>node.ref===id),binding=node.workingFiles.find(value=>value.path===filename);
+    assert.equal(node.artifacts.find(artifact=>artifact.ref===binding.artifactRef).dataBase64,'','each original remains bound to its own Agent');
+  }
+  // Fail after physical originals are published and recovery files are written.
+  // Rollback must clean positive blobs while retaining the user's recovery data.
+  const rollbackKey=randomUUID(),failedDestination=path.join(f.dataDir,'empty-original-failed-recovery'),store=f.store,writeHistory=store.setImportedHistoryAsync;
+  const agentsBefore=store.listAgents(f.project.id).map(agent=>agent.id);
+  store.setImportedHistoryAsync=async()=>{throw Error('Injected empty-original archive failure');};
+  try{await assert.rejects(f.packageEngine.importAgent(f.project.id,f.destination.id,pkg,{codex:'codex'},rollbackKey,{workingFilesDestination:failedDestination}),/Injected empty-original archive failure/);}
+  finally{store.setImportedHistoryAsync=writeHistory;}
+  assert.deepEqual(store.listAgents(f.project.id).map(agent=>agent.id),agentsBefore);
+  const operation=store.getAgentCreationOperation(store.sqlite.prepare('SELECT id FROM agent_creation_operations WHERE idempotency_key=?').get(rollbackKey).id);
+  assert.equal(operation.status,'rolled_back','never-published zeros do not leave rollback pending');
+  assert.ok(operation.artifactIdentities.some(identity=>identity.byteLength===0),'the original reservation still includes zero identities');
+  assert.ok(operation.artifactIdentities.some(identity=>identity.byteLength>0),'rollback exercises real positive publications too');
+  for(const identity of operation.artifactIdentities){
+    assert.equal(store.getProjectArtifact(f.project.id,identity.id),undefined);
+    if(identity.byteLength>0)assert.equal(readManagedArtifactContent(f.dataDir,f.project.id,identity.id,identity.byteLength,identity.sha256),undefined);
+  }
+  assert.equal((await readFile(path.join(failedDestination,filename))).length,0,'failed recovery data remains available');
 }));
 
 test('explicit live Shared activation uses a NEW managed Chat root and refuses existing Shared roots',options,t=>withPortability(t,async f=>{

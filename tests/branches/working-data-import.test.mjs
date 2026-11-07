@@ -254,10 +254,17 @@ test('interrupted large Branch working-data receipt stays held without replay',{
  },{storeFactory:dir=>(store=new AgentStore(dir))});
 });
 
-for(const scenario of ['exact','occupied','input-mismatch','source-mismatch','artifact-mismatch','owner-mismatch','later-phase'])test('reserved physical import restart: '+scenario,{timeout:60000,skip:process.platform==='win32'},async t=>{
+for(const scenario of ['exact','exact-zero','exact-mixed','occupied','input-mismatch','source-mismatch','artifact-mismatch','owner-mismatch','later-phase'])test('reserved physical import restart: '+scenario,{timeout:60000,skip:process.platform==='win32'},async t=>{
  let store,captured,intercept=true;
  await withFixture(t,async f=>{
-  const value=installation(),{plan,first,second}=await preview(f,value);
+  const value=installation();
+  if(scenario==='exact-zero'||scenario==='exact-mixed'){
+   const data=value.pkg.workingData,node=data.package.agents[0];
+   if(scenario==='exact-zero')node.artifacts[0].dataBase64='';
+   else{const ref=randomUUID();node.workingFiles.unshift({path:'empty',artifactRef:ref,mode:0o640,mtime:'2026-11-02T01:02:03.000Z'});node.artifacts.unshift({ref,kind:'document',path:'empty',createdAt:data.package.exportedAt,dataBase64:''});}
+   value.pkg.workingData=createBranchWorkingData(data.package,data.owners);
+  }
+  const {plan,first,second}=await preview(f,value);
   const confirmation=await f.api('POST',route(plan.id)+'/confirm',{acknowledgeFullImport:true});
   assert.equal(confirmation.status,200,JSON.stringify(confirmation.body));
   await until(()=>captured,'durable reserved receipt');
@@ -282,12 +289,19 @@ for(const scenario of ['exact','occupied','input-mismatch','source-mismatch','ar
   }
   store.sqlite.prepare("UPDATE branch_installation_plans SET state='applying',preview_json=?,error=NULL,next_attempt_at=NULL WHERE id=?").run(JSON.stringify(state),plan.id);
   await f.reopen();
-  if(scenario==='exact'){
+  if(['exact','exact-zero','exact-mixed'].includes(scenario)){
    const done=await until(async()=>{const r=f.ok(await f.api('GET',route(plan.id)));return r.state==='completed'&&r;},'reserved-only recovery',30000);
    assert.equal(done.workingDataApplication.state,'completed');
    assert.deepEqual(done.workingDataApplication.artifacts.map(item=>item.id),priorIds,'original reserved artifact identities survive');
-   assert.equal(await readFile(path.join(first,'original'),'utf8'),'complete original');
-   assert.equal(await readFile(path.join(second,'hard'),'utf8'),'complete original');
+   const expected=scenario==='exact-zero'?'':'complete original';
+   assert.equal(await readFile(path.join(first,'original'),'utf8'),expected);
+   assert.equal(await readFile(path.join(second,'hard'),'utf8'),expected);
+   if(scenario==='exact-zero'||scenario==='exact-mixed'){
+    assert.equal(done.workingDataApplication.artifacts.filter(item=>item.size===0).length,1,'durable reservations retain the zero original identity');
+    const empty=done.workingDataApplication.artifacts.find(item=>item.size===0);
+    assert.equal(store.getProjectArtifacts(empty.projectId).some(item=>item.id===empty.id),false,'zero original never enters the managed-blob catalog');
+   }
+   if(scenario==='exact-mixed'){const empty=await stat(path.join(first,'empty'));assert.equal(empty.size,0);assert.equal(empty.mode&0o777,0o640);assert.equal(empty.mtime.toISOString(),'2026-11-02T01:02:03.000Z');}
   }else{
    const held=await until(async()=>{const r=f.ok(await f.api('GET',route(plan.id)));return r.error&&r;},'unsafe reserved receipt held',30000);
    assert.notEqual(held.state,'completed');

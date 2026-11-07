@@ -33,7 +33,7 @@ export function validatePortableAgentPackage(value:unknown):ValidatedPortableAge
   const topologyError=portableAgentTopologyError(portable);if(topologyError)throw new Error(topologyError);
   validateOutputRoles(portable.outputRoles,new Set(portable.agents.map(a=>a.ref)));
   agentPackageJsonUtf8Bytes(portable);
-  const artifactBytes=new Map<PortableArtifactDto,number>(),artifactRefs=new Set<string>(),allTransportRefs=new Set<string>();let totalArtifactBytes=0;
+  const artifactBytes=new Map<PortableArtifactDto,number>(),artifactRefs=new Set<string>(),allTransportRefs=new Set<string>(),emptyWorkingRefs=new Set<string>();let totalArtifactBytes=0;
   for(const candidate of portable.agents as unknown[]){
     const node=validatedObject(candidate,'Agent package node');
     exactObjectFields(node,['ref','title','engine','model','effort','speed','role','presetSnapshot','accessSettings','workingCopyMode','sourceChat','workingFiles','workingFolder','workingRootRef','initialInstructions','managerRef','managementPermissions','history','artifacts'],'Agent package node');
@@ -128,17 +128,26 @@ export function validatePortableAgentPackage(value:unknown):ValidatedPortableAge
       if(typeof artifact.ref!=='string'||!CANONICAL_ARTIFACT_ID.test(artifact.ref)||artifactRefs.has(artifact.ref))throw new Error('artifact refs must be unique canonical identifiers');
       if(artifact.mediaType===WORKING_FILE_PART_MEDIA_TYPE&&!largeRefs.has(String(artifact.ref)))throw Error('Unbound working-file transport artifact');
       if(!['diff','test_report','pr_summary','log','document','screenshot','generated_file'].includes(String(artifact.kind))||typeof artifact.path!=='string'||!artifact.path||typeof artifact.createdAt!=='string'||!Number.isFinite(Date.parse(artifact.createdAt))||typeof artifact.dataBase64!=='string'||(artifact.summary!==undefined&&typeof artifact.summary!=='string')||(artifact.mediaType!==undefined&&typeof artifact.mediaType!=='string')||(artifact.visibility!==undefined&&artifact.visibility!=='project'&&artifact.visibility!=='published')||(artifact.pinned!==undefined&&typeof artifact.pinned!=='boolean')||(artifact.sourcePath!==undefined&&typeof artifact.sourcePath!=='string'))throw new Error(`artifact ${String(artifact.ref)} has an invalid shape`);
-      const bytes=portableArtifactByteLength(artifact as unknown as PortableArtifactDto);totalArtifactBytes+=bytes;if(totalArtifactBytes>AGENT_PACKAGE_ARTIFACT_MAX_BYTES)throw Object.assign(new Error(`portable Agent package artifacts exceed ${AGENT_PACKAGE_ARTIFACT_LIMIT_LABEL}`),{statusCode:413});
+      const bytes=portableArtifactByteLength(artifact as unknown as PortableArtifactDto);
+      if(bytes===0){
+        // Empty ordinary files are retained in the same owner's imported working
+        // state; they are never admitted as standalone managed blobs or parts.
+        if(artifact.kind!=='document'||artifact.dataBase64!==''||artifact.dataEncoding!==undefined||artifact.decodedSize!==undefined
+          ||!(node.workingFiles as AgentPortablePackageDto['agents'][number]['workingFiles'])?.some(file=>!file.parts&&file.artifactRef===artifact.ref))throw Error('Empty artifacts require a same-owner ordinary working-file original');
+        emptyWorkingRefs.add(artifact.ref);
+      }
+      totalArtifactBytes+=bytes;if(totalArtifactBytes>AGENT_PACKAGE_ARTIFACT_MAX_BYTES)throw Object.assign(new Error(`portable Agent package artifacts exceed ${AGENT_PACKAGE_ARTIFACT_LIMIT_LABEL}`),{statusCode:413});
       const typed=artifactCandidate as PortableArtifactDto;artifactRefs.add(artifact.ref);artifactBytes.set(typed,bytes);
     }
   }
-  if(allTransportRefs.size){
+  if(allTransportRefs.size||emptyWorkingRefs.size){
     const referenced=collectReachableArtifactIds({sourceProjectInstructions:portable.sourceProjectInstructions,
       agents:portable.agents.map(node=>({initialInstructions:node.initialInstructions,role:node.role,presetSnapshot:node.presetSnapshot,history:node.history}))});
     for(const node of portable.agents)for(const message of node.history??[]){
       for(const ref of [...(message.attachmentRefs??[]),...Object.values(message.artifactRefs??{})])referenced.add(ref);
     }
     if([...allTransportRefs].some(ref=>referenced.has(ref)))throw Error('Working-file transport parts cannot be used as standalone artifacts');
+    if([...emptyWorkingRefs].some(ref=>referenced.has(ref)))throw Error('Empty working-file originals cannot be used as standalone artifacts');
   }
   if(portable.memory!==undefined){
     if(portable.mode!=='full'||!Array.isArray(portable.memory)||portable.memory.length>portable.agents.length)throw new Error('Full-mode memory snapshots require included Agent owners');

@@ -69,7 +69,7 @@ test('Branch body export passes complete selections through the existing install
   const fileSelections=Object.fromEntries(Array.from({length:250},(_,index)=>['source-'+index,{wholeWorkingFolder:true,reviewedUserData:{git:true,harness:false}}]));
   const body={mode:'full',includeValues:true,fileSelections,download:true};assert.ok(JSON.stringify(body).length>14000);
   const result=await app.inject({method:'POST',url:'/api/branches/source/package',payload:body});assert.equal(result.statusCode,200,result.body);
-  assert.deepEqual(calls,[['source','full',true,fileSelections]]);const downloaded=await app.inject(result.json().downloadUrl);assert.deepEqual(downloaded.json(),pkg);
+  assert.deepEqual(calls,[['source','full',true,fileSelections,false,false,undefined,true]]);const downloaded=await app.inject(result.json().downloadUrl);assert.deepEqual(downloaded.json(),pkg);
   const invalid=await app.inject({method:'POST',url:'/api/branches/source/package',payload:{...body,includeValues:'true'}});assert.equal(invalid.statusCode,400);assert.equal(calls.length,1);
  }finally{await app.close();}
 });

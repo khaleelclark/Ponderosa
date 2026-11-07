@@ -964,7 +964,7 @@ export function registerAgentPackageRoutes(
     type ImportedHistory = {
       messages: NonNullable<AgentPortablePackageDto["agents"][number]["history"]>;
       initialInstructions?: string;
-      chatTitleHistory?:import('@ponderosa/core').PortableChatTitleChangeDto[];portableState?: {workingFiles?:AgentPortablePackageDto['agents'][number]['workingFiles'];workingFolder?:AgentPortablePackageDto['agents'][number]['workingFolder']};
+      chatTitleHistory?:import('@ponderosa/core').PortableChatTitleChangeDto[];portableState?: {workingFiles?:AgentPortablePackageDto['agents'][number]['workingFiles'];workingFolder?:AgentPortablePackageDto['agents'][number]['workingFolder'];emptyWorkingArtifacts?:AgentPortablePackageDto['agents'][number]['artifacts']};
     };
     const importedHistories = new Map<string, ImportedHistory>();
     let retainedImportedBytes = 0;
@@ -1141,6 +1141,13 @@ export function registerAgentPackageRoutes(
         if (pendingArtifacts.length >= 128 || pendingArtifacts.reduce((bytes, entry) => bytes + entry.identity.size, 0) >= 16 * 1024 * 1024) await flushArtifacts();
       }
       await flushArtifacts();
+      if(!capturesWorkingFiles&&!omitWorkingData&&mode==='full'){
+        for(const artifact of importedHistories.get(agent.id)?.portableState?.emptyWorkingArtifacts??[]){
+          const files=importedHistories.get(agent.id)!.portableState!.workingFiles;
+          if(artifact.kind!=='document'||artifact.dataBase64!==''||artifact.dataEncoding!==undefined||artifact.decodedSize!==undefined||!files?.some(file=>!file.parts&&file.artifactRef===artifact.ref))throw new AssetError(409,'Retained empty working-file original binding changed');
+          artifacts.push(admitArtifact(artifact));
+        }
+      }
       if(!workingSet&&mode === "full") {
         const originals=new Map<string,string>();
         for(const message of history) {
@@ -1785,7 +1792,8 @@ export function registerAgentPackageRoutes(
             const replayDestinationId = durableOperation.artifactIds[artifactPosition];
             let destinationId = replayDestinationId ?? artifact.ref;
             if (!replayDestinationId && (
-              store.getProjectArtifact(project.id, destinationId)
+              data.length===0
+              || store.getProjectArtifact(project.id, destinationId)
               || reservedDestinationIds.has(destinationId)
               || (
                 artifact.kind === "generated_file"
@@ -2046,7 +2054,8 @@ export function registerAgentPackageRoutes(
         for(const entry of packageMemory){try{validateMemorySnapshot(entry.snapshot,memory.core.database.raw.signature);}catch(error){throw new AssetError(400,error instanceof Error?error.message:'Invalid memory snapshot');}}
       }
       const plannedArtifacts = importNodes.flatMap((node) => node.artifacts);
-      rollbackArtifacts = plannedArtifacts;
+      const physicalArtifacts=plannedArtifacts.filter(artifact=>artifact.data.length>0);
+      rollbackArtifacts = physicalArtifacts;
       store.sqlite.transaction(() => {
       if (creationOperationId) {
         const creationOperation = store.getAgentCreationOperation(creationOperationId);
@@ -2100,7 +2109,7 @@ export function registerAgentPackageRoutes(
         if(!creationOperationId)throw new Error('Staged import requires its canonical creation operation');
         const result:unknown=branchHooks.stage({creationOperationId,projectId:project.id,conversationId:conversation.id,
           agents:importNodes.map((node,index)=>({sourceRef:node.ref,agentId:operationAgentIds[index]!})),
-          artifacts:plannedArtifacts.map(artifact=>({sourceRef:artifact.ref,destinationId:artifact.destinationId,sha256:artifact.sha256,byteLength:artifact.data.length}))});
+          artifacts:plannedArtifacts.filter(artifact=>artifact.data.length>0).map(artifact=>({sourceRef:artifact.ref,destinationId:artifact.destinationId,sha256:artifact.sha256,byteLength:artifact.data.length}))});
         if(result&&typeof result==='object'&&'then' in result)throw new Error('Import staging must be synchronous');
       }
       })();
@@ -2108,16 +2117,18 @@ export function registerAgentPackageRoutes(
       signal?.throwIfAborted();
       await onPhase?.("importing_artifacts");
       signal?.throwIfAborted();
+      // Zero originals already have exact same-owner working-file bindings.
+      // Their inert DTOs use the existing imported archive, not a managed blob.
       const publishedArtifacts = await publishManagedArtifactContentsAsync(
         context.dataDir,
         project.id,
-        plannedArtifacts.map((artifact) => ({
+        physicalArtifacts.map((artifact) => ({
           artifactId: artifact.destinationId,
           input: artifact.data,
         })),
       );
       const publicationById = new Map(
-        plannedArtifacts.map((artifact, index) => [
+        physicalArtifacts.map((artifact, index) => [
           artifact.destinationId,
           publishedArtifacts[index]!,
         ]),
@@ -2125,7 +2136,7 @@ export function registerAgentPackageRoutes(
 
       if (deletingProjectIds.has(project.id) ||
           !activeDestinationConversation()) {
-        const rollbackComplete = removeUncataloguedPublications(plannedArtifacts);
+        const rollbackComplete = removeUncataloguedPublications(physicalArtifacts);
         const reason = deletingProjectIds.has(project.id)
           ? "Project deletion is already in progress"
           : "The destination Chat is no longer active";
@@ -2310,6 +2321,7 @@ export function registerAgentPackageRoutes(
       for (const node of importNodes) {
         const agent = created.get(node.ref)!;
         for (const artifact of node.artifacts) {
+          if(artifact.data.length===0)continue;
           const catalogArtifact = {
             id: artifact.destinationId,
             projectId: project.id,
@@ -2342,7 +2354,9 @@ export function registerAgentPackageRoutes(
             importSourceLabel,
             node.history,
             node.initialInstructions,
-            node.workingFiles||node.workingFolder?{workingFiles:node.workingFiles,workingFolder:node.workingFolder}:undefined,
+            node.workingFiles||node.workingFolder?{workingFiles:node.workingFiles,workingFolder:node.workingFolder,
+              emptyWorkingArtifacts:node.artifacts.filter(artifact=>artifact.data.length===0).map(({data,destinationId,managedPath,sha256,...artifact})=>({...artifact,ref:destinationId,path:managedPath})),
+            }:undefined,
             node.ref===portablePackage.rootRef&&portablePackage.chatTitleHistory?mergeChatTitleHistory(portablePackage.chatTitleHistory):undefined,
           );
         }
