@@ -3340,6 +3340,14 @@
       "moduleBase": "apps/server/package.json",
       "requirements": "Owned actual-component CSS comparison with explicit frozen BASELINE_REPO and installed Chrome; no provider account or performance qualification",
       "classification": "manual-qualification-entrypoint"
+    },
+    {
+      "path": "tests/workspace-navigation/import-recovery-qualification.mjs",
+      "feature": "workspace-navigation",
+      "lane": "manual",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Owned synthetic two-member template import through real UI, lost acceptance response and status-only recovery; normal built web/server/packages, Chrome and existing recording ffmpeg; no private snapshot or provider work",
+      "classification": "manual-qualification-entrypoint"
     }
   ],
   "support": [
