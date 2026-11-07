@@ -472,13 +472,15 @@ test('child frontier failure rolls back the single tree receipt, deliveries and 
  f.db.exec('DROP TRIGGER fail_tree_child');assert.ok(f.rewind().id);
 });
 test('lost-response tree replay still checks child participant grants and current child binding pins',async t=>{
- const f=await treeIssuedFixture(t),next=f.rewind(),before=f.db.prepare('SELECT COUNT(*) n FROM coordination_cut_restorations').get().n;
+ const f=await treeIssuedFixture(t),next=f.rewind(),tables=['coordination_cut_restorations','coordination_requests','coordination_request_updates','coordination_restored_update_origins','branch_executions','branch_attempts','branch_commands','agent_activations','activation_outbox'],counts=()=>tables.map(table=>f.db.prepare(`SELECT COUNT(*) n FROM ${table}`).get().n),before=counts();
  f.db.prepare('UPDATE agents SET conversation_id=NULL WHERE id=?').run(f.agent.id);assert.throws(()=>f.rewind(),/unavailable|current grant/);
- f.db.prepare('UPDATE agents SET conversation_id=? WHERE id=?').run(f.chat.id,f.agent.id);
+ assert.deepEqual(counts(),before);
+ f.db.prepare('UPDATE agents SET conversation_id=? WHERE id=?').run(f.chat.id,f.agent.id);assert.equal(f.rewind().id,next.id);assert.deepEqual(counts(),before);
  f.db.prepare("UPDATE branches SET enabled=0 WHERE id=?").run(f.leaf.id);assert.throws(()=>f.rewind(),/unavailable/);
+ assert.deepEqual(counts(),before);
  f.db.prepare("UPDATE branches SET enabled=1 WHERE id=?").run(f.leaf.id);
- const config=f.branches.configuration(f.leaf.id);f.branches.configure(f.leaf.id,{...config,limits:{...config.limits,maxTraversals:config.limits.maxTraversals+1}},0);assert.throws(()=>f.rewind(),/pins changed|configuration/);
- assert.equal(f.db.prepare('SELECT COUNT(*) n FROM coordination_cut_restorations').get().n,before);assert.ok(next.id);
+ const config=f.branches.configuration(f.leaf.id);f.branches.configure(f.leaf.id,{...config,limits:{...config.limits,maxTraversals:config.limits.maxTraversals+1}},0);const configured=counts();assert.throws(()=>f.rewind(),/pins changed|configuration/);
+ assert.deepEqual(counts(),configured);assert.ok(next.id);
 });
 
 // Deferred source only: repeated capture/selection/rewind of restored coordination.
@@ -557,10 +559,11 @@ for(const tamper of ['origin','receipt','source-cut','missing-proof','kind','pay
 });
 test('recaptured rewind rollback and replay preserve original current participant grants',async t=>{
  const f=await issuedRewindFixture(t,{terminal:true}),first=f.rewind(),{selection}=retainRecaptured(f,first.id);await settleRecaptured(f,first.id);
- const rewind=rewindRecaptured(f,first.id,selection,'recapture-rollback'),tables=['coordination_requests','coordination_request_updates','coordination_restored_update_origins','coordination_cut_restorations','branch_executions','activation_outbox'],counts=()=>tables.map(table=>f.db.prepare(`SELECT COUNT(*) n FROM ${table}`).get().n),before=counts();
+ const rewind=rewindRecaptured(f,first.id,selection,'recapture-rollback'),tables=['coordination_requests','coordination_request_updates','coordination_restored_update_origins','coordination_cut_restorations','branch_executions','branch_attempts','branch_commands','agent_activations','activation_outbox'],counts=()=>tables.map(table=>f.db.prepare(`SELECT COUNT(*) n FROM ${table}`).get().n),before=counts();
  f.db.exec("CREATE TEMP TRIGGER fail_recaptured_suffix BEFORE INSERT ON branch_attempts WHEN NEW.request_id IS NOT NULL BEGIN SELECT RAISE(ABORT,'recaptured suffix failure'); END");assert.throws(rewind,/recaptured suffix failure/);assert.deepEqual(counts(),before);
  f.db.exec('DROP TRIGGER fail_recaptured_suffix');const second=rewind();assert.equal(rewind().id,second.id);
- f.db.prepare('UPDATE agents SET conversation_id=NULL WHERE id=?').run(f.agent.id);assert.throws(rewind,/grant|unavailable/);
+ const committed=counts();f.db.prepare('UPDATE agents SET conversation_id=NULL WHERE id=?').run(f.agent.id);assert.throws(rewind,/grant|unavailable/);assert.deepEqual(counts(),committed);
+ f.db.prepare('UPDATE agents SET conversation_id=? WHERE id=?').run(f.chat.id,f.agent.id);assert.equal(rewind().id,second.id);assert.deepEqual(counts(),committed);
 });
 for(const shape of ['map','fork','mixed'])for(const mode of ['async','sync','exit'])test(`restored ${shape} ${mode} frontier can save and rewind another checkpoint`,async t=>{
  const f=await parallelIssuedFixture(t,{shape,mode}),first=f.rewind(),capture=retainRecaptured(f,first.id);

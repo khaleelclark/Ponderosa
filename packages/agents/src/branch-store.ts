@@ -1289,7 +1289,12 @@ export class BranchStore {
         const origin=JSON.parse(lineage.snapshot_json);
         if(origin.schema!=='ponderosa.branch.rewind-lineage.v1'||origin.commandHash!==commandHash||origin.sourceExecutionId!==executionId||origin.checkpointId!==checkpointId||origin.checkpointHash!==expectedHash||origin.commandKey!==commandKey||origin.executionId!==result.executionId)throw Error('Rewind lineage integrity failure');
         const c=snapshot.continuation,version=c?this.row('SELECT definition_json FROM branch_versions WHERE id=? AND branch_id=?',c.versionId,branchId):undefined;
-        if(!version||!scriptCutSupported(this.sqlite,executionId,snapshot.selected,JSON.parse(version.definition_json),c.configuration,c.audit,c.checkpoint,c.provenance,snapshot.hostDependencies))throw Error('Rewind source continuation integrity failure');
+        if(!version||!scriptCutSupported(this.sqlite,executionId,snapshot.selected,JSON.parse(version.definition_json),c.configuration,c.audit,c.checkpoint,c.provenance,snapshot.hostDependencies)){
+          // Report a known current grant/pin refusal before the generic replay failure.
+          if(version&&graph&&Array.isArray(snapshot.selected?.attempts)&&snapshot.selected.attempts.some((a:Row)=>a.request_id))
+            this.coordination.reviewHostCoordinationCut(branchId,executionId,{checkpointId,expectedHash},graph.grant);
+          throw Error('Rewind source continuation integrity failure');
+        }
         if(snapshot.selected.attempts.some((a:Row)=>a.request_id)){
           if(!graph||origin.graphReviewHash!==graph.reviewHash)throw Error('Reviewed historical graph authority required');
           const canonical=this.coordination.restoreHostCoordinationCut(branchId,executionId,{checkpointId,expectedHash,commandKey:`branch-rewind:${payloadHash(commandKey)}`,reviewHash:graph.reviewHash,reconcileEffects:graph.reconcileEffects},graph.grant,now);
@@ -1631,7 +1636,13 @@ export class BranchStore {
   }
   /** Quiescent owner tree, including an unstarted resource reservation without transferred effects. */
   private rewindHistoricalTree(branchId:string,executionId:string,checkpointId:number,expectedHash:string,commandKey:string,snapshot:Row,now:string,graph?:{reviewHash:string;reconcileEffects:true;grant:HostArtifactGrant}):BranchExecutionDto {
-    if(!scriptTreeSnapshotSupported(this.sqlite,executionId,snapshot))throw Error('Historical tree continuation integrity unsupported');
+    if(!scriptTreeSnapshotSupported(this.sqlite,executionId,snapshot)){
+      // The read-only review may explain a live refusal; it cannot admit this cut.
+      const owners=snapshot.continuation?.owners;
+      if(graph&&Array.isArray(owners)&&owners.some((o:Row)=>Array.isArray(o.selected?.attempts)&&o.selected.attempts.some((a:Row)=>a.request_id)))
+        this.coordination.reviewHostCoordinationCut(branchId,executionId,{checkpointId,expectedHash},graph.grant);
+      throw Error('Historical tree continuation integrity unsupported');
+    }
     const c=snapshot.continuation,commandHash=payloadHash({executionId,checkpointId,expectedHash}),key=`tree-historical-rewind:${payloadHash(commandKey)}`;
     if(c.owners.some((o:Row)=>o.selected.resources.length)){
       for(const o of c.owners)for(const resource of o.selected.resources){
