@@ -30,6 +30,13 @@ export function ImportedCommunications({agentId}:{agentId:string}):JSX.Element {
     </Box>
    </Stack>:page.data.source?<Stack spacing={0.5}><Typography variant="body2">Imported from {page.data.source}{page.data.importedAt?` · ${page.data.importedAt}`:''}</Typography><Typography variant="body2">Import actor and operation: Not recorded</Typography></Stack>:<Typography>No import record is available.</Typography>}
    {page.data.messages.length===0&&<Typography>No imported messages.</Typography>}
+   {page.data.chatTitleHistory?.map(item=><Box key={`${item.sourceInstanceId}:${item.projectId}:${item.conversationId}:${item.eventId}`} component="section" aria-label="Imported Chat title change" sx={{borderBottom:1,borderColor:'divider',pb:1,overflowWrap:'anywhere'}}>
+    <Typography variant="subtitle2">Imported source Chat rename</Typography>
+    <Typography variant="caption">Source record · {new Date(item.createdAt).toLocaleString()}</Typography>
+    <Typography variant="body2">Previous title: {item.change.previousTitle}</Typography><Typography variant="body2">New title: {item.change.title}</Typography>
+    <Typography variant="body2">Recorded source: {item.change.origin==='automatic_title'?'System automatic title':'Operator API request'}</Typography>
+    <Box component="details"><Box component="summary">Source identifiers</Box><Typography variant="caption" component="div">Source Chat: {item.conversationId} · Event: {item.eventId}</Typography><Typography variant="caption" component="div">Source instance: {item.sourceInstanceId}</Typography>{item.change.requestId&&<Typography variant="caption" component="div">Source request: {item.change.requestId}</Typography>}</Box>
+   </Box>)}
    {page.data.messages.map((message,index)=><Box key={`${offset}:${index}`} sx={{borderBottom:1,borderColor:'divider',pb:1}}>
     <Typography variant="caption">{message.role} · {message.communication?.intent??'Historical message'} · {message.createdAt??''}</Typography>
     <Typography sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{message.text}</Typography>

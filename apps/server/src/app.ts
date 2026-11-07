@@ -1411,7 +1411,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     const cursor=workspace.cursor();workspace.forEachNotification(notification=>{
       if(notification.branchId===branchId&&(notification.status??'open')==='open')workspace.setNotificationStatus(notification.id,'resolved');
     });publishWorkspaceSince(cursor);
-  });
+  },workspace);
   branchInstallations.setEngine(application.packageEngine);
   branchResources.setPackageEngine(application.packageEngine);
   localMemoryFor(app)?.setExpertFinalCustodyVerifier((chatId,projectId)=>branchResources.verifyExpertFinalCustody(chatId,projectId));

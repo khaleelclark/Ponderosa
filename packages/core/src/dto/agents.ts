@@ -1,3 +1,4 @@
+import type {PortableChatTitleChangeDto} from "./conversations.js";
 import { normalizeCanonicalText, unicodeCodePointLength } from "../text-policy.js";
 import type { EngineId } from "../adapter.js";
 import type { ArtifactKind } from "./artifacts.js";
@@ -235,6 +236,8 @@ export interface AgentPortablePackageDto {
   sourceLabel: string;
   /** Full-copy Chat instructions; applying to an existing Chat requires an explicit conflict choice. */
   sourceProjectInstructions?: string;
+  /** Explicit operator full export only; passive historical metadata. */
+  chatTitleHistory?: PortableChatTitleChangeDto[];
   rootRef: string;
   /** Explicit independent same-Chat roots for grouped imports; never synthesizes reporting edges. */
   rootRefs?: string[];
@@ -694,6 +697,7 @@ export interface ImportedAgentProvenanceDto {
 /** Owning-Agent historical provenance only; source identities convey no destination authority. */
 export interface ImportedCommunicationsPageDto {
   importProvenance?:ImportedAgentProvenanceDto;
+  chatTitleHistory?: PortableChatTitleChangeDto[];
   source:string; importedAt:string; archiveVersion?:string;
   messages:PortableAgentHistoryMessageDto[];
   artifacts:import('./artifacts.js').ArtifactDto[];

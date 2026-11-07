@@ -604,6 +604,7 @@ const agentPackages=registerAgentPackageRoutes(app, {
   workingCopies,
   dataDir: opts.dataDir,
   store,
+  workspace,
   coordination: coordinationV3,
   assets,
   engines,

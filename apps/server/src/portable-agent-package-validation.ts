@@ -1,3 +1,4 @@
+import {portableChatTitleHistoryError} from "@ponderosa/core";
 import {decodePortableMetadataArtifact} from './agent-package-codec.js';
 import {createHash} from 'node:crypto';
 import {assertPortableSecretsAbsent} from './portable-secrets.js';
@@ -22,11 +23,12 @@ export interface ValidatedPortableAgentPackage {
 /** Mutation-free parser shared by standalone and Branch package imports. */
 export function validatePortableAgentPackage(value:unknown):ValidatedPortableAgentPackage {
   const record=validatedObject(value,'Agent package');
-  exactObjectFields(record,['schema','mode','kind','exportedAt','sourceLabel','sourceProjectInstructions','rootRef','rootRefs','agents','memory','outputRoles','gitStorageBindings','workingRootNesting'],'Agent package');
+  exactObjectFields(record,['schema','mode','kind','exportedAt','sourceLabel','sourceProjectInstructions','chatTitleHistory','rootRef','rootRefs','agents','memory','outputRoles','gitStorageBindings','workingRootNesting'],'Agent package');
   if(record.schema!=='ponderosa.agent-package.v1'||(record.mode!=='template'&&record.mode!=='full')||!Array.isArray(record.agents)||record.agents.length<1)throw new Error('invalid Ponderosa Agent package');
   if(record.agents.length>AGENT_PACKAGE_MAX_AGENTS)throw Object.assign(new Error(`Agent package contains ${record.agents.length} Agents; the limit is ${AGENT_PACKAGE_MAX_AGENTS}`),{statusCode:413});
   if(typeof record.exportedAt!=='string'||!Number.isFinite(Date.parse(record.exportedAt))||typeof record.sourceLabel!=='string'||(record.sourceProjectInstructions!==undefined&&(typeof record.sourceProjectInstructions!=='string'||record.sourceProjectInstructions.length>100_000)))throw new Error('Agent package metadata is invalid');
   if(record.mode==='template'&&record.sourceProjectInstructions!==undefined)throw new Error('template packages cannot contain full-mode Project context');
+  if(record.chatTitleHistory!==undefined){if(record.mode!=='full')throw Error('Template packages cannot contain Chat title history');const error=portableChatTitleHistoryError(record.chatTitleHistory);if(error)throw Error(error);}
   const portable=record as unknown as AgentPortablePackageDto;
   const topologyError=portableAgentTopologyError(portable);if(topologyError)throw new Error(topologyError);
   validateOutputRoles(portable.outputRoles,new Set(portable.agents.map(a=>a.ref)));

@@ -1,3 +1,4 @@
+import {mergeChatTitleHistory} from "../portable-chat-title-history.js";
 import {describeExpertMemoryPreflightFailure} from '../branch-deletion-diagnostics.js';
 import {ExpertCaptureHeldBeforeStart} from '../expert-source-capture-outcome.js';
 import {MemorySourceMutationHold} from '../memory-source-mutations.js';
@@ -179,6 +180,7 @@ interface AgentPackageRoutesContext {
   assertLifecycleEffectsSettled:()=>void;
   custodyOwner:()=>import('@ponderosa/agents').BranchCustodyLifecycle;
   dataDir: string;
+  workspace?:Pick<import("@ponderosa/agents").WorkspaceStore,"exportChatTitleHistory">;
   workingCopies?: AgentWorkingCopyService;
   portableBrowserSettings?:(agent:AgentDto)=>{savedBrowserAllowed:boolean;browserMode:'disposable'|'trusted';sourceProfileName?:string};
   store: AgentStore;
@@ -841,6 +843,7 @@ export function registerAgentPackageRoutes(
     omitWorkingData=false,
     expertFinal?:()=>void,
     omitMemory=false,
+    operatorTitleHistory=false,
   ): Promise<AgentPortablePackageDto> => {
     if(!Array.isArray(selectedWorkingFiles)||selectedWorkingFiles.some(item=>typeof item!=='string'))throw new AssetError(400,'Select working files as an array of relative paths');
     if(selectedWorkingFiles.length&&requestedMode==='template')throw new AssetError(400,'Selected working files require a full export');
@@ -939,6 +942,8 @@ export function registerAgentPackageRoutes(
     if(hardlinkCapture)await verifyWorkingHardlinkCapture(hardlinkCapture);
     const included = new Set(nodes.map((agent) => agent.id));
     const chat = store.getConversation(root.conversationId);
+    if(operatorTitleHistory&&mode==='full'&&!context.workspace)throw Error('Selected Chat title history exporter is unavailable');
+    const selectedTitleHistory=operatorTitleHistory&&mode==='full'?context.workspace!.exportChatTitleHistory({projectId:root.projectId,conversationId:root.conversationId,maximumBytes:AGENT_PACKAGE_MAX_BYTES}):undefined;
     const project = { ...store.getProject(root.projectId)!, label: chat?.title ?? root.title, instructions: chat?.instructions };
     let portableArtifactBytes = 0;
     let retainedArtifactWireBytes = 0;
@@ -959,7 +964,7 @@ export function registerAgentPackageRoutes(
     type ImportedHistory = {
       messages: NonNullable<AgentPortablePackageDto["agents"][number]["history"]>;
       initialInstructions?: string;
-      portableState?: {workingFiles?:AgentPortablePackageDto['agents'][number]['workingFiles'];workingFolder?:AgentPortablePackageDto['agents'][number]['workingFolder']};
+      chatTitleHistory?:import('@ponderosa/core').PortableChatTitleChangeDto[];portableState?: {workingFiles?:AgentPortablePackageDto['agents'][number]['workingFiles'];workingFolder?:AgentPortablePackageDto['agents'][number]['workingFolder']};
     };
     const importedHistories = new Map<string, ImportedHistory>();
     let retainedImportedBytes = 0;
@@ -981,7 +986,7 @@ export function registerAgentPackageRoutes(
       if (mode !== "template") retainedImportedBytes += agentPackageJsonUtf8Bytes(messages);
       if (importedInstructions !== undefined) retainedImportedBytes += agentPackageJsonUtf8Bytes(importedInstructions);
       if (retainedImportedBytes > AGENT_PACKAGE_MAX_BYTES) throw new AssetError(413, `Agent package exceeds ${AGENT_PACKAGE_LIMIT_LABEL} (${retainedImportedBytes} serialized UTF-8 bytes)`);
-      importedHistories.set(agent.id, { messages, ...(imported.portableState?{portableState:imported.portableState}:{}), ...(importedInstructions !== undefined ? { initialInstructions: importedInstructions } : {}) });
+      importedHistories.set(agent.id, { messages,...(operatorTitleHistory&&imported.chatTitleHistory?{chatTitleHistory:imported.chatTitleHistory}:{}), ...(imported.portableState?{portableState:imported.portableState}:{}), ...(importedInstructions !== undefined ? { initialInstructions: importedInstructions } : {}) });
     }
     const histories = new Map<string, ImportedHistory["messages"]>();
     let retainedHistoryBytes = 0;
@@ -1230,6 +1235,7 @@ export function registerAgentPackageRoutes(
       agents.push(portableAgent);
       await yieldToLoop();
     }
+    const exportedTitleHistory=selectedTitleHistory?mergeChatTitleHistory(selectedTitleHistory,...[...importedHistories.values()].map(history=>history.chatTitleHistory)):undefined;
     const portable: AgentPortablePackageDto = {
       schema: "ponderosa.agent-package.v1",
       mode,
@@ -1239,6 +1245,7 @@ export function registerAgentPackageRoutes(
       ...(!workingSet && mode === "full" && project.instructions
         ? { sourceProjectInstructions: project.instructions }
         : {}),
+      ...(exportedTitleHistory?.length?{chatTitleHistory:exportedTitleHistory}:{}),
       rootRef: workingSet?agents[0]!.ref:root.id,
       ...(workingSet&&agents.length>1?{rootRefs:agents.map(agent=>agent.ref)}:{}),
       agents,
@@ -1250,6 +1257,7 @@ export function registerAgentPackageRoutes(
       portable.memory=[];
       for(const [chatId,ids] of groups)portable.memory.push({snapshot:expertFinal?await localMemoryFor(app)!.exportExpertFinalPackageMemory(chatId,ids,expertFinal):await localMemoryFor(app)!.exportPackageMemory(chatId,ids),agentRefs:Object.fromEntries(ids.map(id=>[id,id]))});
     }
+    if(selectedTitleHistory&&stableJson(selectedTitleHistory)!==stableJson(context.workspace!.exportChatTitleHistory({projectId:root.projectId,conversationId:root.conversationId,maximumBytes:AGENT_PACKAGE_MAX_BYTES})))throw Error('Selected Chat title history changed during export; review again');
     const roles=workingSet?undefined:outputApps?.portableRoles([...included]);if(roles?.length)portable.outputRoles=roles;
     for(const node of agents)for(const message of node.history??[]){
       const refs=[...(message.communication?.artifactIds??[]),...(message.communication?.document?[message.communication.document.artifactId]:[])];
@@ -1374,16 +1382,18 @@ export function registerAgentPackageRoutes(
     const {portable:archiveData}=await parsePortablePackageFile(importedAgentHistoryPath(context.dataDir,agent.projectId,agent.id),{packageOnly:true});
     if(!store.getAgent(agent.id)||deletingAgentIds.has(agent.id))return reply.code(404).send({error:'Agent unavailable'});
     if(store.getImportedHistoryAvailability(agent.id).archiveVersion!==availability.archiveVersion)return reply.code(409).send({error:'Imported history changed; reload from the first page'});
-    const archive=archiveData as unknown as {source:string;importedAt:string;messages:AgentPortablePackageDto['agents'][number]['history']};
+    const archive=archiveData as unknown as {source:string;importedAt:string;messages:AgentPortablePackageDto['agents'][number]['history'];chatTitleHistory?:import('@ponderosa/core').PortableChatTitleChangeDto[]};
     if(!archive?.messages)return reply.code(404).send({error:'Imported history unavailable'});
     const messages=archive.messages.slice(offset,offset+limit);
+    const titleHistory=archive.chatTitleHistory?mergeChatTitleHistory(archive.chatTitleHistory):[];
+    const chatTitleHistory=titleHistory.slice(offset,offset+limit),pageLength=Math.max(messages.length,chatTitleHistory.length);
     const refs=new Set(messages.flatMap(message=>[...(message.attachmentRefs??[]),...Object.values(message.artifactRefs??{})]));
     const artifacts=[...refs].flatMap(ref=>{
       if(!store.agentCanReadProjectArtifact(agent.projectId,ref,agent.id)||!store.operatorCanReadProjectArtifact(agent.projectId,ref))return [];
       const artifact=store.getProjectArtifact(agent.projectId,ref);
       return artifact?[{...artifact,downloadUrl:`/api/projects/${encodeURIComponent(agent.projectId)}/artifacts/${encodeURIComponent(ref)}/download`}]:[];
     });
-    const result={source:archive.source,importedAt:archive.importedAt,archiveVersion:availability.archiveVersion,messages,artifacts,...(importProvenance?{importProvenance}:{}),hasMore:offset+messages.length<archive.messages.length,nextOffset:offset+messages.length};
+    const result={source:archive.source,importedAt:archive.importedAt,archiveVersion:availability.archiveVersion,messages,artifacts,...(importProvenance?{importProvenance}:{}),...(chatTitleHistory.length?{chatTitleHistory}:{}),hasMore:offset+pageLength<Math.max(archive.messages.length,titleHistory.length),nextOffset:offset+pageLength};
     if(agentPackageJsonUtf8Bytes(result)>2*1024*1024)return reply.code(413).send({error:'History page exceeds 2 MiB; request fewer messages or use bounded history retrieval'});
     return result;
   });
@@ -1398,7 +1408,7 @@ export function registerAgentPackageRoutes(
     let reviewedUserData:import('@ponderosa/core').ReviewedUserDataSelection|undefined,gitStorageBindings:import('@ponderosa/core').GitStorageSelection[]|undefined;
     if(input.reviewedUserData!==undefined){validateReviewedUserDataSelection(input.reviewedUserData);reviewedUserData=input.reviewedUserData;}
     if(input.gitStorageBindings!==undefined){validateGitStorageSelections(input.gitStorageBindings);gitStorageBindings=input.gitStorageBindings;}
-    const result=await buildPortablePackage(agentId,requestedMode,input.organization===true,selectedWorkingFiles as string[],input.wholeWorkingFolder===true,input.organizationWorkingFolders===true,reviewedUserData,gitStorageBindings);
+    const result=await buildPortablePackage(agentId,requestedMode,input.organization===true,selectedWorkingFiles as string[],input.wholeWorkingFolder===true,input.organizationWorkingFolders===true,reviewedUserData,gitStorageBindings,undefined,false,undefined,false,true);
     if(result.mode==='full')reply.header('x-ponderosa-export-warning',FULL_PACKAGE_EXPORT_WARNING);
     const safeTitle=result.sourceLabel.normalize('NFKD').replace(/[^\p{L}\p{N}]+/gu,'-').replace(/^-+|-+$/gu,'').toLocaleLowerCase().slice(0,80);
     return downloads.send(result,`${safeTitle||'agent'}-${result.mode}.ponderosa.json`,reply,input.download===true,attachment);
@@ -2023,6 +2033,7 @@ export function registerAgentPackageRoutes(
             importedAt: new Date().toISOString(),
             ...(node.initialInstructions !== undefined ? { initialInstructions: node.initialInstructions, initialInstructionsSeparated: true } : {}),
             messages: node.history,
+            ...(node.ref===portablePackage.rootRef&&portablePackage.chatTitleHistory?{chatTitleHistory:portablePackage.chatTitleHistory}:{}),
           }, AGENT_PACKAGE_MAX_BYTES - 1);
         }
       } catch (error) {
@@ -2325,13 +2336,14 @@ export function registerAgentPackageRoutes(
 
       for (const node of importNodes) {
         const agent = created.get(node.ref)!;
-        if (node.history.length || node.initialInstructions !== undefined || node.workingFiles?.length || node.workingFolder) {
+        if (node.history.length || node.initialInstructions !== undefined || node.workingFiles?.length || node.workingFolder || node.ref===portablePackage.rootRef&&portablePackage.chatTitleHistory?.length) {
           await store.setImportedHistoryAsync(
             agent.id,
             importSourceLabel,
             node.history,
             node.initialInstructions,
             node.workingFiles||node.workingFolder?{workingFiles:node.workingFiles,workingFolder:node.workingFolder}:undefined,
+            node.ref===portablePackage.rootRef&&portablePackage.chatTitleHistory?mergeChatTitleHistory(portablePackage.chatTitleHistory):undefined,
           );
         }
       }

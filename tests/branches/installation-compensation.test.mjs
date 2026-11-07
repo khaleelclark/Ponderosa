@@ -3,7 +3,9 @@ import test from 'node:test';
 import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
-import {AgentStore} from '@ponderosa/agents';
+import {AgentStore,WorkspaceStore} from '@ponderosa/agents';
+import {AGENT_PACKAGE_MAX_BYTES} from '@ponderosa/core';
+import {randomUUID} from 'node:crypto';
 
 test('installation compensation restores the exact reserved handle and runtime settings without resurrecting a deleted Agent',t=>{
  const root=mkdtempSync(path.join(tmpdir(),'branch-compensation-'));let store=new AgentStore(root),passed=false;
@@ -87,4 +89,40 @@ test('staged managed root confirmation is exact, durable and canceled plans cann
  assert.throws(()=>f.service.resolveWorkingRoot('root-review','chat','agent',pending.sharedRoot),/review changed/);
  f.store.sqlite.prepare("UPDATE branch_installation_plans SET state='canceling',preview_json=? WHERE id='root-review'").run(JSON.stringify({pendingWorkingRoot:pending}));
  assert.throws(()=>f.service.resolveWorkingRoot('root-review','chat','agent',pending.sharedRoot),/not awaiting/);
+});
+
+test('empty Chat imports retain passive title history after plan compaction and restart without replaying a Rename',async t=>{
+ const root=mkdtempSync(path.join(tmpdir(),'branch-title-history-'));let store=new AgentStore(root),workspace=new WorkspaceStore(root),branches,service;let passed=false;
+ const noOperation=async()=>{throw Error('Unexpected Agent, deletion or snapshot operation');};
+ const open=()=>{
+  branches=new BranchStore(store.sqlite,new CoordinationV3Store(store.sqlite));
+  service=new BranchInstallationService(store,branches,noOperation,noOperation,async(input,_key,owner)=>{
+   const project=store.createProject({label:input.label,hostPath:root,defaultEngine:'codex',chatOwned:true,branchId:owner.branchId});return store.getConversation(project.lastConversationId);
+  },undefined,workspace);
+  service.setEngine({validateAgent(){throw Error('Empty Chat cannot import an Agent');},exportAgent:noOperation,readCheckpointBytes:noOperation,captureCheckpoint:noOperation,captureExpertSnapshot:noOperation});
+  service.setPublisher(input=>branches.deploy(input));
+ };open();t.after(async()=>{await service.stop();workspace.close();store.close();if(passed)rmSync(root,{recursive:true,force:true});else t.diagnostic(`Retained fixture: ${root}`)});
+ const history=[{sourceInstanceId:randomUUID(),eventId:7,projectId:'original-project',conversationId:'original-chat',createdAt:'2026-11-07T00:00:00.000Z',change:{previousTitle:'Original before',title:'Original after',actor:{kind:'operator_api'},origin:'operator_request',requestId:'original-request'}}];
+ const {DEFAULT_BRANCH_CONFIGURATION}=await import('../../packages/agents/dist/branch-parameters.js');
+ const definition={schema:'ponderosa.branch.v1',name:'Passive Chat history',trigger:{kind:'manual'},entry:'unused',steps:[{id:'unused',kind:'script',runtime:'node',cwdRef:'workspace',source:"process.stdout.write('not invoked')",timeoutMs:1000}],controls:[],edges:[],policy:{maxConcurrentExecutions:1,failure:{action:'stop'}}};
+ const pkg={schema:'ponderosa.branch-installation.v1',packageId:randomUUID(),mode:'full',exportedAt:new Date().toISOString(),definition,chats:[{ref:'chat',title:'Destination Chat title',agents:[],titleHistory:history}],agentBindings:{},limits:structuredClone(DEFAULT_BRANCH_CONFIGURATION.limits)};
+ const preview=await service.preview(pkg,{agents:{},directories:{workspace:root}}),result=await service.confirm(preview.id,true);assert.equal(result.state,'completed',JSON.stringify(result));
+ assert.equal(store.sqlite.prepare('SELECT package_json FROM branch_installation_plans WHERE id=?').get(preview.id).package_json,'{}','existing compaction actually ran');
+ const chat=store.sqlite.prepare('SELECT id,project_id,title FROM conversations WHERE branch_id=?').get(result.branchId);assert.equal(chat.title,'Destination Chat title');
+ assert.equal(workspace.listConversationChanges({projectId:chat.project_id,conversationId:chat.id}).items.length,0,'imported evidence never enters live Rename history');
+ assert.deepEqual(workspace.exportChatTitleHistory({projectId:chat.project_id,conversationId:chat.id,maximumBytes:AGENT_PACKAGE_MAX_BYTES}),history);
+ await service.stop();workspace.close();store.close();store=new AgentStore(root);workspace=new WorkspaceStore(root);open();
+ const internal=await service.export(result.branchId,'full');assert.equal(internal.chats[0].titleHistory,undefined,'shared Branch export default stays excluded');
+ const exported=await service.export(result.branchId,'full',false,{},false,false,undefined,true);assert.deepEqual(exported.chats[0].titleHistory,history);
+ // Existing same-Chat package updates can re-import a redacted copy of a
+ // locally retained original after its literal value becomes a known secret.
+ const known='synthetic-later-known-title-'+randomUUID(),prior=process.env.PONDEROSA_TEST_TITLE_TOKEN;t.after(()=>{if(prior===undefined)delete process.env.PONDEROSA_TEST_TITLE_TOKEN;else process.env.PONDEROSA_TEST_TITLE_TOKEN=prior;});
+ workspace.append({type:'conversation_changed',projectId:chat.project_id,conversationId:chat.id,action:'updated',titleChange:{previousTitle:'Before '+known,title:'After local rename',actor:{kind:'operator_api'},origin:'operator_request',requestId:'actual-local-source'}});
+ process.env.PONDEROSA_TEST_TITLE_TOKEN=known;
+ const normalized=await service.export(result.branchId,'full',false,{},false,false,undefined,true);assert.equal(JSON.stringify(normalized.chats[0].titleHistory).includes(known),false);
+ const update=await service.preview(normalized,{agents:{},directories:{workspace:root}},result.branchId),updated=await service.confirm(update.id,true);assert.equal(updated.state,'completed',JSON.stringify(updated));
+ assert.equal(workspace.exportChatTitleHistory({projectId:chat.project_id,conversationId:chat.id,maximumBytes:AGENT_PACKAGE_MAX_BYTES}).length,2,'same-source import preserves its canonical original without raw/redacted duplicates');
+ const again=await service.export(result.branchId,'full',false,{},false,false,undefined,true);assert.deepEqual(again.chats[0].titleHistory,normalized.chats[0].titleHistory);
+ const {mergeChatTitleHistory}=await import('../../apps/server/dist/portable-chat-title-history.js');const conflict=structuredClone(history);conflict[0].change.title='Genuinely different source value';assert.throws(()=>mergeChatTitleHistory(history,conflict),/identity differs/u);
+ assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_runs').get().n,0);assert.equal(store.sqlite.prepare('SELECT count(*) n FROM branch_executions').get().n,0);passed=true;
 });

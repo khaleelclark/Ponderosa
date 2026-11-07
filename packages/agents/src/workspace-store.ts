@@ -6,6 +6,7 @@ import { decisionAnswersError, normalizeSpeechPreferences, draftPendingSubmissio
 import type {
   ConversationDraftDto,
   ConversationMutationDto,
+  PortableChatTitleChangeDto,
   PutConversationDraftRequest,
   DecisionDto,
   ConversationDraftConflictDto,
@@ -25,6 +26,7 @@ import type {
   WebPushSubscriptionDto,
 } from "@ponderosa/core";
 import { appendFsyncedJsonl, readRepairableJsonl } from "./append-jsonl.js";
+import {portableChatTitleHistoryError} from "@ponderosa/core";
 import { stableJson } from "./coordination-v3-canonical-json.js";
 import { workspaceEventsPath, workspaceInstancePath } from "./paths.js";
 
@@ -238,6 +240,7 @@ export class WorkspaceStore {
   private readonly events: CanonicalWorkspaceEvent[];
   private readonly drafts = new Map<string, ConversationDraftDto>();
   private readonly conversationMutationHistory = new Map<string, ConversationMutationDto[]>();
+  private readonly importedTitleHistoryReceipts = new Map<string,string>();
   private readonly draftConflicts = new Map<string, ConversationDraftConflictDto[]>();
   private readonly draftConflictResolutions = new Map<string, DraftConflictResolution>();
   private readonly supersededDraftConflicts = new Map<string, ConversationDraftConflictDto[]>();
@@ -425,7 +428,8 @@ export class WorkspaceStore {
   }
 
   private project(record: CanonicalWorkspaceEvent): void {
-    if (record.event.type === "conversation_changed" && record.event.action === "updated") {
+    if(record.event.type==="conversation_changed"&&record.event.importedTitleHistory){const e=record.event;this.importedTitleHistoryReceipts.set(JSON.stringify([e.projectId,e.conversationId,e.importedTitleHistory!.importId]),stableJson(e.importedTitleHistory));}
+    if (record.event.type === "conversation_changed" && record.event.action === "updated" && !record.event.importedTitleHistory) {
       const event = record.event, key = `${event.projectId}\0${event.conversationId}`;
       const history = this.conversationMutationHistory.get(key) ?? [];
       history.push({ id: record.id, projectId: event.projectId, conversationId: event.conversationId, createdAt: record.ts,
@@ -985,6 +989,31 @@ export class WorkspaceStore {
   }
 
   cursor(): number { return this.events.at(-1)?.id ?? 0; }
+
+  /** Complete selected new Rename metadata, never the bounded UI tail. */
+  exportChatTitleHistory(input: { projectId: string; conversationId: string; maximumBytes: number }): PortableChatTitleChangeDto[] {
+    if(!Number.isSafeInteger(input.maximumBytes)||input.maximumBytes<2)throw Error("Invalid Chat title history budget");
+    const result=new Map<string,PortableChatTitleChangeDto>();let bytes=2;
+    const add=(row:PortableChatTitleChangeDto)=>{const key=JSON.stringify([row.sourceInstanceId,row.projectId,row.conversationId,row.eventId]),prior=result.get(key);
+      if(prior){if(stableJson(prior)!==stableJson(row))throw Error("Retained Chat title history identity differs");return;}
+      bytes+=utf8ByteLength(JSON.stringify(row))+(result.size?1:0);
+      if(bytes>input.maximumBytes)throw Object.assign(Error("Selected Chat title history exceeds the existing package budget; no records were omitted"),{statusCode:413});
+      result.set(key,structuredClone(row));
+    };
+    for(const record of this.events){const event=record.event;
+      if(event.type!=="conversation_changed"||event.action!=="updated"||event.projectId!==input.projectId||event.conversationId!==input.conversationId)continue;
+      if(event.titleChange)add({sourceInstanceId:this.instance,eventId:record.id,projectId:event.projectId,conversationId:event.conversationId,createdAt:record.ts,change:event.titleChange});
+      for(const row of event.importedTitleHistory?.items??[])add(row);
+    }return [...result.values()];
+  }
+
+  /** Retained source metadata only, never a destination Rename or Communication. */
+  reconcileImportedChatTitleHistory(projectId:string,conversationId:string,importId:string,items:PortableChatTitleChangeDto[]):void {
+    const error=portableChatTitleHistoryError(items);if(error)throw Error(error);
+    const value={importId,items},key=JSON.stringify([projectId,conversationId,importId]),hash=stableJson(value),prior=this.importedTitleHistoryReceipts.get(key);
+    if(prior){if(prior!==hash)throw Error("Imported Chat title history identity changed");return;}
+    this.append({type:"conversation_changed",projectId,conversationId,action:"updated",importedTitleHistory:structuredClone(value)});
+  }
 
   listConversationChanges(input: { projectId: string; conversationId: string; limit?: number }): { items: ConversationMutationDto[]; truncated?: boolean } {
     const limit = Math.min(100, Math.max(1, Math.trunc(input.limit ?? 50)));

@@ -288,7 +288,7 @@ export function registerBranchRoutes(app: FastifyInstance, context: { dataDir?:s
     try{
       exactObjectFields(input,['mode','includeValues','fileSelections','download'],'Branch export');
       if(input.mode!==undefined&&!['template','full'].includes(input.mode as string)||input.includeValues!==undefined&&typeof input.includeValues!=='boolean'||input.download!==undefined&&typeof input.download!=='boolean')throw Error('Choose explicit Branch export mode and values');
-      const mode=input.mode==='full'?'full':'template',result=await context.installations.export(id,mode,input.includeValues===true,input.fileSelections as import('@ponderosa/core').BranchExportFileSelections|undefined);
+      const mode=input.mode==='full'?'full':'template',result=await context.installations.export(id,mode,input.includeValues===true,input.fileSelections as import('@ponderosa/core').BranchExportFileSelections|undefined,false,false,undefined,true);
       if(mode==='full')reply.header('x-ponderosa-export-warning',FULL_PACKAGE_EXPORT_WARNING);
       return await packageDownloads.send(result,'workflow-'+mode+'.ponderosa.json',reply,input.download===true);
     }catch(error){return reply.code((error as {statusCode?:number}).statusCode??400).send({error:(error as Error).message});}

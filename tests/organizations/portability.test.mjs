@@ -10,8 +10,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import Fastify from 'fastify';
-import { CapabilityPolicyStore, AgentStore, publishManagedArtifactContentAsync, readManagedArtifactContent, importedAgentHistoryPath } from '@ponderosa/agents';
-import { CAPABILITY_IDS, deriveCommunicationBehavior } from '@ponderosa/core';
+import { CapabilityPolicyStore, WorkspaceStore, AgentStore, publishManagedArtifactContentAsync, readManagedArtifactContent, importedAgentHistoryPath } from '@ponderosa/agents';
+import { CAPABILITY_IDS, AGENT_PACKAGE_MAX_BYTES, deriveCommunicationBehavior } from '@ponderosa/core';
 import { AssetStore } from '../../apps/server/dist/assets.js';
 import {AgentWorkingCopyService} from '../../apps/server/dist/agent-working-copy-service.js';
 import { registerAgentPackageRoutes } from '../../apps/server/dist/routes/agent-packages.js';
@@ -20,12 +20,12 @@ import { registerAgentPackageRoutes } from '../../apps/server/dist/routes/agent-
 // managed bytes, with no listener, scheduler, provider session or user profile.
 async function withPortability(t, run, requestLimits={handlerDeadlineMs:20,packageHandlerDeadlineMs:10000}) {
   const dataDir = await mkdtemp(path.join(tmpdir(), 'ponderosa-portability-'));
-  let store, assets, app, packageEngine, passed = false;
+  let store, assets, app, packageEngine,workspace, passed = false;
   const open = () => {
-    store = new AgentStore(dataDir); assets = new AssetStore(dataDir); app = Fastify();
+    store = new AgentStore(dataDir);workspace=new WorkspaceStore(dataDir); assets = new AssetStore(dataDir); app = Fastify();
     registerRequestSecurityHooks(app,{opts:{requestLimits:{maxRequestsPerMinute:100000,maxInflight:128,...requestLimits}},v3DispatchKey:'fixture',agentMessageCapabilities:new Map(),deletingAgentIds:new Set(),validLauncherSession:()=>false,artifactFilesystemError:()=>undefined,isArtifactDependentWorkIntake:()=>false,isPublicWebAssetRequest:()=>false});
     ({packageEngine}=registerAgentPackageRoutes(app, {
-      dataDir, store, assets, workingCopies:new AgentWorkingCopyService(dataDir,store),
+      dataDir, store, workspace, assets, workingCopies:new AgentWorkingCopyService(dataDir,store),
       coordination: { runtimeArtifact: () => undefined, handleAgentDeletion() {} },
       engines: new Map([['codex', { adapter: { id: 'codex', listModels: () => [], listEfforts: () => [] } }]]),
       deletingProjectIds: new Set(), deletingConversationIds: new Set(), deletingAgentIds: new Set(),
@@ -33,7 +33,7 @@ async function withPortability(t, run, requestLimits={handlerDeadlineMs:20,packa
       agentMessages: id => store.getProjectedAgentMessages(id), createOperationalNotification() {},
     }));
   };
-  const close = async () => { await app?.close(); assets?.close(); store?.close(); };
+  const close = async () => { await app?.close(); assets?.close();workspace?.close(); store?.close(); };
   try {
     open();
     const project = store.createProject({ label: 'Portability fixture', hostPath: dataDir, defaultEngine: 'codex' });
@@ -83,7 +83,7 @@ async function withPortability(t, run, requestLimits={handlerDeadlineMs:20,packa
       headers: { 'idempotency-key': key }, payload: { package: pkg, conversationId: destination.id, engineMapping: { codex: 'codex' }, ...extra } });
     const projection = id => store.sqlite.prepare('SELECT role, text, source_kind AS sourceKind, created_at AS createdAt FROM imported_history_messages WHERE agent_id = ? ORDER BY sequence').all(id);
     await run({ dataDir, project, chat, destination, a, b, outside, artifactId, guidance, bytes, collaboration, request, ok,
-      exportAgent, copy, copyRequest, importRequest, projection, get packageEngine() { return packageEngine; }, get assets() { return assets; }, get store() { return store; }, get app(){return app;},
+      exportAgent, copy, copyRequest, importRequest, projection, get workspace(){return workspace;}, get packageEngine() { return packageEngine; }, get assets() { return assets; }, get store() { return store; }, get app(){return app;},
       async restart() { await close(); open(); await app.ready(); } });
     passed = true;
   } finally {
@@ -921,3 +921,38 @@ test('large retained Git evidence crosses Agent package HTTP export and import s
  const unsafe=Buffer.from(bytes);unsafe.write('\nAPI_KEY=SYNTHETIC_BOUNDARY_SECRET\n',32*1024*1024-4);await writeFile(file,unsafe);
  const refused=await capture();assert.equal(refused.statusCode,400);assert.match(refused.json().error,/current retained Git evidence contains unsupported or recognizable credential data/i);assert.doesNotMatch(refused.body,/SYNTHETIC_BOUNDARY_SECRET/);assert.deepEqual(await readFile(file),unsafe);
 },{handlerDeadlineMs:5000,packageHandlerDeadlineMs:120000}));
+
+test('explicit operator full exports retain complete passive Chat title history through import restart and re-export',options,t=>withPortability(t,async f=>{
+ for(let i=0;i<110;i++){
+  const previousTitle=f.store.getConversation(f.chat.id).title,title=`Selected title ${i}`;f.store.updateConversation(f.chat.id,{title});
+  f.workspace.append({type:'conversation_changed',projectId:f.project.id,conversationId:f.chat.id,action:'updated',titleChange:{previousTitle,title,actor:{kind:'operator_api'},origin:'operator_request',requestId:`original-request-${i}`}});
+ }
+ f.workspace.append({type:'conversation_changed',projectId:f.project.id,conversationId:f.destination.id,action:'updated',titleChange:{previousTitle:'Foreign',title:'FOREIGN_CHAT_PRIVATE_HISTORY',actor:{kind:'system'},origin:'automatic_title'}});
+ const pkg=await f.exportAgent(f.a.id);assert.ok(Array.isArray(pkg.chatTitleHistory),'actual explicit full operator export must carry selected Chat title history');
+ const selected=f.workspace.exportChatTitleHistory({projectId:f.project.id,conversationId:f.chat.id,maximumBytes:AGENT_PACKAGE_MAX_BYTES});
+ assert.equal(selected.length,110);assert.equal(f.workspace.listConversationChanges({projectId:f.project.id,conversationId:f.chat.id,limit:100}).items.length,100,'export must not substitute the UI tail');
+ assert.deepEqual(pkg.chatTitleHistory,selected);assert.equal(JSON.stringify(pkg.chatTitleHistory).includes('FOREIGN_CHAT_PRIVATE_HISTORY'),false);
+ // This is an ordinary synthetic Agent export helper, not a temporary-copy
+ // snapshot or readCheckpointBytes operation; its shared default stays private.
+ const internal=await f.packageEngine.exportAgent(f.a.id,'full',{organization:true});assert.equal(internal.chatTitleHistory,undefined);
+ assert.equal((await f.exportAgent(f.a.id,'template')).chatTitleHistory,undefined);
+ const destinationTitle=f.store.getConversation(f.destination.id).title,imported=f.ok(await f.request(f.importRequest(pkg)));
+ const rows=async id=>{const result=[];let offset=0,version;for(let i=0;i<20;i++){
+  const page=f.ok(await f.request({method:'GET',url:`/api/agents/${id}/imported-communications?offset=${offset}&limit=10${version?`&archiveVersion=${version}`:''}`}));
+  result.push(...(page.chatTitleHistory??[]));if(!page.hasMore)return result;assert.ok(page.nextOffset>offset);offset=page.nextOffset;version=page.archiveVersion;
+ }throw Error('Unbounded history paging');};
+ assert.deepEqual(await rows(imported.rootAgentId),selected);assert.equal(f.store.getConversation(f.destination.id).title,destinationTitle,'passive source history never renames the destination');
+ assert.equal(f.workspace.listConversationChanges({projectId:f.project.id,conversationId:f.destination.id}).items.some(row=>row.titleChange?.title.startsWith('Selected title')),false,'source changes are not live destination Renames');
+ await f.restart();assert.deepEqual(await rows(imported.rootAgentId),selected);
+ const again=await f.exportAgent(imported.rootAgentId);assert.deepEqual(again.chatTitleHistory.filter(row=>row.conversationId===f.chat.id),selected,'re-export preserves original source IDs, actor, request and time');
+ const legacy=structuredClone(pkg);delete legacy.chatTitleHistory;const old=f.ok(await f.request(f.importRequest(legacy)));
+ assert.equal((f.ok(await f.request({method:'GET',url:`/api/agents/${old.rootAgentId}/imported-communications`}))).chatTitleHistory,undefined,'old packages remain compatible without fabricated history');
+},{}));
+
+test('selected Chat title history budget refuses oversize without clipping or changing canonical events',options,t=>withPortability(t,async f=>{
+ for(let i=0;i<5;i++)f.workspace.append({type:'conversation_changed',projectId:f.project.id,conversationId:f.chat.id,action:'updated',titleChange:{previousTitle:'Before '+i,title:'After '+i,actor:{kind:'operator_api'},origin:'operator_request',requestId:'source-'+i}});
+ const cursor=f.workspace.cursor();assert.throws(()=>f.workspace.exportChatTitleHistory({projectId:f.project.id,conversationId:f.chat.id,maximumBytes:128}),error=>error.statusCode===413&&/no records were omitted/u.test(error.message));
+ assert.equal(f.workspace.cursor(),cursor);assert.equal(f.workspace.exportChatTitleHistory({projectId:f.project.id,conversationId:f.chat.id,maximumBytes:AGENT_PACKAGE_MAX_BYTES}).length,5);
+ const pkg=await f.exportAgent(f.a.id),invalid=structuredClone(pkg);invalid.chatTitleHistory[0].change.actor={kind:'authenticated_admin'};
+ const before=f.store.listAgents(f.project.id).length,response=await f.request(f.importRequest(invalid));assert.equal(response.statusCode,400);assert.equal(f.store.listAgents(f.project.id).length,before);
+}));

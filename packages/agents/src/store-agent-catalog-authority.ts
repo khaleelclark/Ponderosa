@@ -1,3 +1,4 @@
+import {portableChatTitleHistoryError} from "@ponderosa/core";
 import {readPortableHistoryJson,readPortableHistoryJsonAsync,writePortableHistoryJson,writePortableHistoryJsonAsync} from './portable-history-json.js';
 import {recordProviderStartCoverage} from './provider-start-journal.js';
 import { withSourceMutation } from "./source-capture-boundary.js";
@@ -68,7 +69,7 @@ const MAX_AGENT_TITLE_PROJECTION_IDS = 500;
 const AGENT_CREATION_MARKER = ".ponderosa-agent-creation.json";
 const agentIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 
-type ImportedArchive = { source: string; importedAt: string; messages: PortableAgentHistoryMessageDto[];
+type ImportedArchive = {chatTitleHistory?:import('@ponderosa/core').PortableChatTitleChangeDto[]; source: string; importedAt: string; messages: PortableAgentHistoryMessageDto[];
   initialInstructions?: string; initialInstructionsSeparated?: boolean;
   portableState?: {workingFiles?:PortableAgentNodeDto['workingFiles'];workingFolder?:PortableAgentNodeDto['workingFolder']} };
 type ImportedIndex = { archive_version: string; integrity_key: string; imported_at: string; expected_messages: number;
@@ -690,7 +691,7 @@ export class AgentCatalogAuthority {
   }
 
   /** Creation-pending fencing keeps incomplete imports out of ordinary views. */
-  private async setImportedHistoryAsyncUntracked(agentId: string, source: string, messages: PortableAgentHistoryMessageDto[], initialInstructions?: string, portableState?: {workingFiles?:PortableAgentNodeDto['workingFiles'];workingFolder?:PortableAgentNodeDto['workingFolder']}): Promise<void> {
+  private async setImportedHistoryAsyncUntracked(agentId: string, source: string, messages: PortableAgentHistoryMessageDto[], initialInstructions?: string, portableState?: {workingFiles?:PortableAgentNodeDto['workingFiles'];workingFolder?:PortableAgentNodeDto['workingFolder']},chatTitleHistory?:import('@ponderosa/core').PortableChatTitleChangeDto[]): Promise<void> {
     const agent = this.getAgent(agentId);
     if (!agent) throw new Error("agent not found");
     if (!this.client.prepare(`SELECT 1 FROM agent_creation_operation_members AS members
@@ -700,6 +701,7 @@ export class AgentCatalogAuthority {
     }
     const imported: ImportedArchive = { source: source.slice(0, 240), importedAt: new Date().toISOString(), messages,
       ...(portableState?{portableState}:{}),
+      ...(chatTitleHistory?.length?{chatTitleHistory}:{}),
       ...(initialInstructions !== undefined ? { initialInstructions, initialInstructionsSeparated: true } : {}) };
     await this.writeImportedArchiveAsync(agent.id, imported);
   }
@@ -758,13 +760,13 @@ export class AgentCatalogAuthority {
     });
   }
 
-  setImportedHistoryAsync(agentId: string, source: string, messages: PortableAgentHistoryMessageDto[], initialInstructions?: string, portableState?: {workingFiles?:PortableAgentNodeDto['workingFiles'];workingFolder?:PortableAgentNodeDto['workingFolder']}): Promise<void> {
-    return withSourceMutation(() => this.setImportedHistoryAsyncUntracked(agentId, source, messages, initialInstructions, portableState));
+  setImportedHistoryAsync(agentId: string, source: string, messages: PortableAgentHistoryMessageDto[], initialInstructions?: string, portableState?: {workingFiles?:PortableAgentNodeDto['workingFiles'];workingFolder?:PortableAgentNodeDto['workingFolder']},chatTitleHistory?:import('@ponderosa/core').PortableChatTitleChangeDto[]): Promise<void> {
+    return withSourceMutation(() => this.setImportedHistoryAsyncUntracked(agentId, source, messages, initialInstructions, portableState,chatTitleHistory));
   }
 
   private validateImportedArchiveSize(imported: ImportedArchive): void {
     if (!imported || typeof imported !== "object" || Array.isArray(imported) ||
-        Object.keys(imported).some(key => !["source", "importedAt", "messages", "initialInstructions", "initialInstructionsSeparated", "portableState"].includes(key)) ||
+        Object.keys(imported).some(key => !["source", "importedAt", "messages", "initialInstructions", "initialInstructionsSeparated", "portableState", "chatTitleHistory"].includes(key)) ||
         typeof imported.source !== "string" || typeof imported.importedAt !== "string" || !Array.isArray(imported.messages) ||
         imported.initialInstructions !== undefined && typeof imported.initialInstructions !== "string" ||
         imported.initialInstructionsSeparated !== undefined && typeof imported.initialInstructionsSeparated !== "boolean" ||
@@ -774,6 +776,7 @@ export class AgentCatalogAuthority {
           message.createdAt !== undefined && typeof message.createdAt !== "string")) {
       throw new Error("Imported history archive has invalid fields or types");
     }
+    if(imported.chatTitleHistory!==undefined){const error=portableChatTitleHistoryError(imported.chatTitleHistory);if(error)throw Error(error); }
     if(imported.portableState!==undefined){
       const state=imported.portableState;
       if(!state||typeof state!=='object'||Array.isArray(state)||Object.keys(state).some(key=>!['workingFiles','workingFolder'].includes(key))||state.workingFiles!==undefined&&(!Array.isArray(state.workingFiles)||state.workingFiles.some(file=>!file||typeof file.path!=='string'||typeof file.artifactRef!=='string')))throw new Error('Invalid imported working-file manifest');

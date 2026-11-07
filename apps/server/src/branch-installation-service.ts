@@ -1,3 +1,5 @@
+import {mergeChatTitleHistory} from "./portable-chat-title-history.js";
+import {portableChatTitleHistoryError,AGENT_PACKAGE_MAX_BYTES} from "@ponderosa/core";
 import {MEMORY_CLEANUP_HOLD_REASONS,isMemoryCleanupHold} from './local-memory-authority.js';
 import {BranchWorkingDataHeldError,branchWorkingDataInputHash,branchWorkingRootDestinations,type BranchWorkingDataApplication,type BranchWorkingDataPreparation} from './apply-branch-working-data.js';
 import {createBranchWorkingData,validateBranchWorkingData} from './branch-working-data.js';
@@ -118,7 +120,7 @@ export class BranchInstallationService {
   if(state.treeReceipt)this.verifyTreeReceipt(state.treeReceipt,runtimeTree);
   return {workingDataPreparations:state.workingDataPreparations,workingDataApplication:state.workingDataApplication,runtimeTreeReceipt:state.runtimeTreeReceipt,definitionTreeReceipt:state.treeReceipt,runtimeDataReceipt,branchId:p.branch_id??undefined,state:p.state,error:p.error??undefined,importResults:state.importResults,workingRootReview:state.pendingWorkingRoot,...(state.pendingAccess?{accessSettingsReview:state.pendingAccess}:{})};
  }
- constructor(private store:AgentStore,private branches:BranchStore,private deleteChat:(id:string)=>Promise<void>,private deleteAgent:(id:string)=>Promise<void>,private createChat:ChatCreator,private settleNotifications?:(branchId:string)=>void){}
+ constructor(private store:AgentStore,private branches:BranchStore,private deleteChat:(id:string)=>Promise<void>,private deleteAgent:(id:string)=>Promise<void>,private createChat:ChatCreator,private settleNotifications?:(branchId:string)=>void,private workspace?:Pick<import("@ponderosa/agents").WorkspaceStore,"exportChatTitleHistory"|"reconcileImportedChatTitleHistory">){}
  setEngine(engine:BranchPackageEngine):void{this.engine=engine;}
  private rows(sql:string,...args:unknown[]):Row[]{return this.store.sqlite.prepare(sql).all(...args) as Row[];}
  private row(sql:string,...args:unknown[]):Row|undefined{return this.store.sqlite.prepare(sql).get(...args) as Row|undefined;}
@@ -208,7 +210,7 @@ export class BranchInstallationService {
   }
   return [...visited];
  }
- private async exportDefinitionTree(root:string,ids:string[],includeValues:boolean,selections:import('@ponderosa/core').BranchExportFileSelections):Promise<InstalledBranchPackage>{
+ private async exportDefinitionTree(root:string,ids:string[],includeValues:boolean,selections:import('@ponderosa/core').BranchExportFileSelections,operatorTitleHistory=false):Promise<InstalledBranchPackage>{
   const snapshot=()=>this.store.sqlite.transaction(()=>{return stableJson(ids.map(id=>({branch:this.branches.getBranch(id),bindings:this.branches.localConfiguration(id),configuration:this.branches.configuration(id),runtime:captureBranchRuntimeData(this.store.sqlite,id,Object.fromEntries(this.rows('SELECT id FROM conversations WHERE branch_id=? ORDER BY id',id).map(c=>[c.id,c.id])),Object.fromEntries(this.rows('SELECT a.id,a.conversation_id FROM agents a JOIN conversations c ON c.id=a.conversation_id WHERE c.branch_id=? ORDER BY a.id',id).map(a=>[a.id,{chatRef:a.conversation_id,agentRef:a.id}])),true),chats:this.rows('SELECT id,branch_execution_id FROM conversations WHERE branch_id=? ORDER BY id',id),agents:this.rows('SELECT a.id,a.conversation_id FROM agents a JOIN conversations c ON c.id=a.conversation_id WHERE c.branch_id=? ORDER BY a.id',id)})));}).deferred();
   const refuse=()=>{for(const id of ids)if(this.row("SELECT 1 FROM conversations c JOIN branch_installation_resources r ON r.local_id=c.id WHERE c.branch_id=? AND r.state!='active'",id)||this.row("SELECT 1 FROM agents a JOIN conversations c ON c.id=a.conversation_id JOIN branch_installation_resources r ON r.local_id=a.id WHERE c.branch_id=? AND r.state!='active'",id)||this.row("SELECT 1 FROM branch_installation_plans WHERE branch_id=? AND state IN ('applying','canceling')",id))throw new Error('Multi-Branch export requires settled installation/resource ownership');};
   refuse();
@@ -219,7 +221,7 @@ export class BranchInstallationService {
   if(!captured&&Object.values(selections).some(selection=>selection.wholeWorkingFolder||selection.gitStorageBindings))throw new Error('The shared package engine must capture the complete Branch working-root closure');
   const selected=new Set(Object.keys(selections));
   for(const id of ids){const local=Object.fromEntries(Object.entries(selections).filter(([agent])=>!!this.row('SELECT 1 FROM agents a JOIN conversations c ON c.id=a.conversation_id WHERE a.id=? AND c.branch_id=?',agent,id)));for(const key of Object.keys(local))selected.delete(key);
-   const pkg=await this.export(id,'full',includeValues,local,true,true,captured);
+   const pkg=await this.export(id,'full',includeValues,local,true,true,captured,operatorTitleHistory);
    const chatRef=(ref:string)=>JSON.stringify([id,ref]);pkg.chats.forEach(c=>{c.ref=chatRef(c.ref);});
    pkg.agentBindings=Object.fromEntries(Object.entries(pkg.agentBindings).map(([ref,target])=>[ref,{...target,chatRef:chatRef(target.chatRef)}]));
    for(const role of pkg.outputRoles??[])role.chatRef=chatRef(role.chatRef);
@@ -275,8 +277,8 @@ export class BranchInstallationService {
   }
   if(chatRefs.size!==Object.keys(receipt.chatMap).length||agentRefs.size!==Object.keys(receipt.agentMap).length||new Set(Object.values(receipt.chatMap)).size!==chatRefs.size||new Set(Object.values(receipt.agentMap)).size!==agentRefs.size)throw new Error('Aliased or incomplete tree resource maps');
  }
- async export(branchId:string,mode:'template'|'full',includeValues=false,fileSelections:import('@ponderosa/core').BranchExportFileSelections={},single=false,called=false,capturedSource?:BranchAgentExportSet):Promise<InstalledBranchPackage>{
-  if(mode==='full'&&!single){const closure=this.definitionClosure(branchId);if(closure.length>1||this.branches.version(branchId,this.branches.getBranch(branchId)!.versionId)!.definition.steps.some(s=>s.kind==='branch_call'))return this.exportDefinitionTree(branchId,closure,includeValues,fileSelections);}
+ async export(branchId:string,mode:'template'|'full',includeValues=false,fileSelections:import('@ponderosa/core').BranchExportFileSelections={},single=false,called=false,capturedSource?:BranchAgentExportSet,operatorTitleHistory=false):Promise<InstalledBranchPackage>{
+  if(mode==='full'&&!single){const closure=this.definitionClosure(branchId);if(closure.length>1||this.branches.version(branchId,this.branches.getBranch(branchId)!.versionId)!.definition.steps.some(s=>s.kind==='branch_call'))return this.exportDefinitionTree(branchId,closure,includeValues,fileSelections,operatorTitleHistory);}
   if(!this.engine)throw new Error('Package Engine unavailable');
   if(!fileSelections||typeof fileSelections!=='object'||Array.isArray(fileSelections))throw new Error('Invalid export file selections');
   const requested=new Set(Object.keys(fileSelections));
@@ -315,7 +317,13 @@ export class BranchInstallationService {
     delete portable.outputRoles;
     nodes.push({ref,...(a.managerAgentId&&refs.has(a.managerAgentId)?{managerRef:refs.get(a.managerAgentId)!.agentRef}:{}),definition:{...portable,rootRef:ref,agents:portable.agents.map(n=>({...n,ref,managerRef:undefined}))}});
    }
-   chats.push({ref:identity.chatRef,title:c.title,instructions:c.instructions,agents:nodes,...(mode==='full'&&row.branch_execution_id?{executionRef:row.branch_execution_id}:{})});
+   let titleHistory:import('@ponderosa/core').PortableChatTitleChangeDto[]|undefined;
+   if(operatorTitleHistory&&mode==='full'){
+    if(!this.workspace)throw Error('Selected Chat title history exporter is unavailable');
+    titleHistory=this.workspace.exportChatTitleHistory({projectId:c.projectId,conversationId:c.id,maximumBytes:AGENT_PACKAGE_MAX_BYTES});
+    titleHistory=mergeChatTitleHistory(titleHistory);
+   }
+   chats.push({ref:identity.chatRef,title:c.title,instructions:c.instructions,agents:nodes,...(titleHistory?.length?{titleHistory}:{}),...(mode==='full'&&row.branch_execution_id?{executionRef:row.branch_execution_id}:{})});
   }
   if(requested.size)throw new Error('Export selection Agent is not owned by this workflow');
   const configuration=this.branches.configuration(branchId),bindings=this.branches.localConfiguration(branchId)!,agentBindings:InstalledBranchPackage['agentBindings']={};
@@ -374,6 +382,7 @@ export class BranchInstallationService {
   const seen=new Set<string>();let count=0;
   for(const c of p.chats){
    if(!c.ref||seen.has(c.ref)||typeof c.title!=='string'||!Array.isArray(c.agents))throw new Error('Invalid Chat identity');seen.add(c.ref);
+   if(c.titleHistory!==undefined){if(p.mode!=='full')throw Error('Template Chats cannot contain title history');const error=portableChatTitleHistoryError(c.titleHistory);if(error)throw Error(error);}
    const agents=new Map(c.agents.map(a=>[a.ref,a]));if(agents.size!==c.agents.length)throw new Error('Duplicate Agent identity');
    for(const a of c.agents){validatePortableAgentPackage(a.definition);if(++count>1000||!a.ref||a.definition?.schema!=='ponderosa.agent-package.v1'||a.definition.agents.length!==1||a.definition.agents[0]?.ref!==a.ref||a.definition.rootRef!==a.ref||a.definition.agents[0]?.managerRef)throw new Error('Expected a single portable Agent for each logical identity');
     if(p.mode==='template'&&a.definition.mode!=='template')throw new Error('Template package cannot contain Agent history');
@@ -1055,6 +1064,20 @@ export class BranchInstallationService {
     if(roleState.review)this.outputApps!.checkImport(roleState.review.id,roleState.binding!,plan.id);
     this.store.sqlite.transaction(()=>{
      this.ensureApplying(plan.id,branchId);
+     // Preserve source metadata before the existing plan receipt compacts.
+     // This is passive imported evidence, never a destination Rename or grant.
+     for(const c of pkg.chats)if(c.titleHistory?.length){
+      if(!this.workspace)throw Error('Imported Chat title history storage is unavailable');
+      const resource=get(c.ref,'');const destination=resource&&this.store.getConversation(resource.local_id);if(!destination)throw Error('Imported Chat title history destination is unavailable');
+      const incoming=mergeChatTitleHistory(c.titleHistory);
+      const retained=this.workspace.exportChatTitleHistory({projectId:destination.projectId,conversationId:destination.id,maximumBytes:AGENT_PACKAGE_MAX_BYTES});
+      mergeChatTitleHistory(retained,incoming);
+      const identity=(row:import('@ponderosa/core').PortableChatTitleChangeDto)=>JSON.stringify([row.sourceInstanceId,row.projectId,row.conversationId,row.eventId]),known=new Set(retained.map(identity));
+      // Keep the original already-retained row when only current redaction differs.
+      // The normalized comparison above still rejects inconsistent source history.
+      const novel=incoming.filter(row=>!known.has(identity(row)));
+      if(novel.length)this.workspace.reconcileImportedChatTitleHistory(destination.projectId,destination.id,plan.id+':'+destination.id,novel);
+     }
      const branch=this.branches.getBranch(branchId)!;
      if(!this.publish)throw new Error('Package publisher unavailable');
      if(branch.versionId!==(plan.expected_version_id??''))throw new InstallationConflictError('Branch changed while the update was applying; review the package again');

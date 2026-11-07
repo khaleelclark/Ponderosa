@@ -254,7 +254,7 @@ export interface BranchResourceDto { stepExecutionId: string; templateRef: strin
 
 export interface BranchContextDto extends ConversationDto { workingDirectory:string; defaultEngine:string }
 
-export type BranchPackageChat={executionRef?:string;ref:string;title:string;instructions?:string;agents:Array<{ref:string;managerRef?:string;definition:AgentPortablePackageDto}>};
+export type BranchPackageChat={executionRef?:string;ref:string;title:string;instructions?:string;titleHistory?:import('./dto/conversations.js').PortableChatTitleChangeDto[];agents:Array<{ref:string;managerRef?:string;definition:AgentPortablePackageDto}>};
 /** Closed selected filesystem data; owners refer to logical Agents, never new carrier Agents. */
 export interface BranchPortableWorkingData {
  schema:'ponderosa.branch-working-data.v1';package:AgentPortablePackageDto;

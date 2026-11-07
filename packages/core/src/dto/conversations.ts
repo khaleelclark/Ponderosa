@@ -428,6 +428,35 @@ export type ConversationTitleChangeDto = {
   | { origin: "automatic_title"; actor: { kind: "system" } }
 );
 
+/** Passive source evidence only: IDs and actors never authorize destination work. */
+export interface PortableChatTitleChangeDto {
+  sourceInstanceId: string;
+  eventId: number;
+  projectId: string;
+  conversationId: string;
+  createdAt: string;
+  change: ConversationTitleChangeDto;
+}
+
+export function portableChatTitleHistoryError(value: unknown): string | undefined {
+  const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
+  const fields = (v: Record<string, unknown>, keys: string[]) => Object.keys(v).every(key => keys.includes(key));
+  const id = (v: unknown): v is string => typeof v === "string" && v.length > 0 && v.length <= 256;
+  if (!Array.isArray(value)) return "Chat title history must be an array";
+  const seen = new Set<string>();
+  for (const row of value) {
+    if (!object(row) || !fields(row,["sourceInstanceId","eventId","projectId","conversationId","createdAt","change"])
+      || !id(row.sourceInstanceId) || !id(row.projectId) || !id(row.conversationId) || !Number.isSafeInteger(row.eventId) || Number(row.eventId) < 1
+      || typeof row.createdAt !== "string" || !Number.isFinite(Date.parse(row.createdAt)) || !object(row.change)) return "Invalid passive Chat title history record";
+    const c=row.change;
+    if (!fields(c,["previousTitle","title","actor","origin","requestId"]) || typeof c.previousTitle !== "string" || typeof c.title !== "string"
+      || !object(c.actor) || !fields(c.actor,["kind"]) || !(c.origin === "operator_request" && c.actor.kind === "operator_api" || c.origin === "automatic_title" && c.actor.kind === "system")
+      || c.requestId !== undefined && !id(c.requestId)) return "Invalid passive Chat title change";
+    const key=JSON.stringify([row.sourceInstanceId,row.projectId,row.conversationId,row.eventId]);
+    if(seen.has(key)) return "Duplicate passive Chat title history identity";seen.add(key);
+  }
+}
+
 export interface ConversationMutationDto {
   id: number;
   projectId: string;
