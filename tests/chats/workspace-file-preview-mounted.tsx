@@ -1,0 +1,35 @@
+import {createRoot} from 'react-dom/client';
+import {QueryClient,QueryClientProvider} from '@tanstack/react-query';
+import {ConversationWorkspaceFiles} from '../../apps/web/src/components/files/ConversationWorkspaceFiles';
+import {api} from '../../apps/web/src/api';
+const assert=(value:unknown,message:string)=>{if(!value)throw new Error(message);};
+const frame=()=>new Promise<void>(resolve=>requestAnimationFrame(()=>resolve()));
+async function until(read:()=>boolean,label:string){const end=performance.now()+2500;while(!read()){if(performance.now()>end)throw Error(label);await frame();}}
+function visibleOpacity(element:HTMLElement){let opacity=1;for(let node:HTMLElement|null=element;node;node=node.parentElement)opacity*=Number(getComputedStyle(node).opacity);return element.getClientRects().length?opacity:0;}
+
+export async function workspaceFileExitRetentionRegression():Promise<void>{
+ const original={directory:api.getConversationFiles,preview:api.getWorkspaceFileView};
+ const host=document.createElement('div');document.body.append(host);const root=createRoot(host);
+ const client=new QueryClient({defaultOptions:{queries:{retry:false}}});const reads:string[]=[];
+ const names=['first.txt','second.txt','missing.txt','binary.bin','loading.txt'];let resolveLoading:(value:Awaited<ReturnType<typeof api.getWorkspaceFileView>>)=>void=()=>{};
+ const value=(name:string)=>({name,path:name,size:10,mediaType:name==='binary.bin'?'application/octet-stream':'text/plain',...(name==='binary.bin'?{downloadUrl:'/owned-binary-download'}:{text:'Actual content of '+name})}) as Awaited<ReturnType<typeof api.getWorkspaceFileView>>;
+ api.getConversationFiles=async(conversationId,path)=>{assert(conversationId==='chat'&&path==='','only the existing owned directory is read');return {kind:'dir',path:'',entries:names.map(name=>({kind:'file',path:name,name}))} as Awaited<ReturnType<typeof api.getConversationFiles>>;};
+ api.getWorkspaceFileView=async(projectId,path,agentId,conversationId)=>{assert(projectId==='project'&&conversationId==='chat'&&agentId===undefined,'preview scope is unchanged');assert(names.includes(path),'clearing selection never fetches an undefined or foreign path');reads.push(path);if(path==='missing.txt')throw Error('Owned original no longer exists');if(path==='loading.txt')return new Promise(resolve=>{resolveLoading=resolve;});return value(path);};
+ const dialog=()=>document.querySelector<HTMLElement>('[role="dialog"]');
+ const open=(name:string)=>{const entry=Array.from(host.querySelectorAll<HTMLAnchorElement>('a')).find(a=>a.textContent===name);assert(entry,'actual file link exists: '+name);entry!.click();};
+ async function loaded(name:string,text:string){open(name);await until(()=>Boolean(dialog()?.textContent?.includes(text)),'preview ready: '+name);}
+ async function closeRetaining(name:string,text:string){const d=dialog()!;await until(()=>dialog()===d&&visibleOpacity(d)>.99&&Boolean(d.textContent?.includes(name)&&d.textContent?.includes(text)),'preview is visibly ready before Close');const button=Array.from(d.querySelectorAll<HTMLButtonElement>('button')).find(b=>b.textContent==='Close');assert(button,'normal Close is available');button!.click();let visibleFrames=0;const end=performance.now()+2500;await frame();while(dialog()){assert(performance.now()<end,'normal dialog exit finishes');const current=dialog()!,content=current.textContent??'';if(visibleOpacity(current)>.01){visibleFrames++;assert(content.includes(name)&&content.includes(text),'selected filename and actual preview stay intact through visible exit: '+name);if(name!=='binary.bin')assert(!content.includes('This file type cannot be displayed safely'),'closing a known preview never flashes the generic unsupported fallback');}await frame();}assert(visibleFrames>0,'the actual animated exit was inspected');}
+ try{
+  root.render(<QueryClientProvider client={client}><ConversationWorkspaceFiles projectId="project" conversationId="chat"/></QueryClientProvider>);
+  await until(()=>host.querySelectorAll('a').length===names.length,'directory ready');
+  await loaded('first.txt','Actual content of first.txt');await closeRetaining('first.txt','Actual content of first.txt');
+  await loaded('second.txt','Actual content of second.txt');await closeRetaining('second.txt','Actual content of second.txt');
+  await loaded('missing.txt','Preview is unavailable: Owned original no longer exists');await closeRetaining('missing.txt','Preview is unavailable: Owned original no longer exists');
+  const unsupported='This file type cannot be displayed safely in Ponderosa. Download it to open it with a compatible application.';
+  await loaded('binary.bin',unsupported);assert(Array.from(dialog()!.querySelectorAll('a')).some(a=>a.textContent?.includes('Download')),'the real unsupported-file Download remains');await closeRetaining('binary.bin',unsupported);
+  await loaded('loading.txt','Loading preview…');await closeRetaining('loading.txt','Loading preview…');
+  await loaded('second.txt','Actual content of second.txt');resolveLoading?.(value('loading.txt'));await frame();assert(dialog()?.textContent?.includes('Actual content of second.txt')&&!dialog()?.textContent?.includes('Actual content of loading.txt'),'a late old read cannot replace the reopened file');
+  const close=Array.from(dialog()!.querySelectorAll<HTMLButtonElement>('button')).find(b=>b.textContent==='Close')!;close.click();await frame();open('first.txt');await until(()=>Boolean(dialog()?.textContent?.includes('Actual content of first.txt')),'new file opens during exit');for(let n=0;n<20;n++)await frame();assert(dialog()?.textContent?.includes('Actual content of first.txt'),'a prior exit never clears a newer open selection');await closeRetaining('first.txt','Actual content of first.txt');
+  assert(reads.length>=names.length,'all actual preview paths were exercised');
+ }finally{resolveLoading?.(value('loading.txt'));root.unmount();client.clear();host.remove();api.getConversationFiles=original.directory;api.getWorkspaceFileView=original.preview;}
+}
