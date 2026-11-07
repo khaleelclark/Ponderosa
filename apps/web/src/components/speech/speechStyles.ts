@@ -1,11 +1,11 @@
 import type { SxProps, Theme } from "@mui/material";
 
-export const speechControlGroupSx: SxProps<Theme> = {
+export const speechControlGroupSx = {
   display: "flex",
   alignItems: "center",
   minWidth: 0,
   gap: 0.25,
-};
+} satisfies SxProps<Theme>;
 
 export const speechStatusSx = {
   maxWidth: { xs: 132, sm: 240 },

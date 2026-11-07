@@ -104,7 +104,7 @@ export function DictationControls({
   }, [statusLabel, active, paused, dictation.error]);
 
   return (
-    <Box ref={rootRef} sx={speechControlGroupSx}>
+    <Box ref={rootRef} sx={[speechControlGroupSx, dictation.error ? { flexDirection: { xs: "column", sm: "row" }, alignItems: { xs: "flex-start", sm: "center" } } : {}]}>
       <Tooltip title="Voice options">
         <span>
           <IconButton
@@ -179,7 +179,7 @@ export function DictationControls({
           variant="caption"
           sx={[
             speechStatusSx,
-            !dictation.error ? { "@media (max-width: 899.95px)": visuallyHiddenSpeechStatusSx } : {},
+            dictation.error ? { whiteSpace: "normal", overflowWrap: "anywhere" } : { "@media (max-width: 899.95px)": visuallyHiddenSpeechStatusSx },
           ]}
           title={statusLabel}
         >
