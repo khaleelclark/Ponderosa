@@ -44,14 +44,14 @@ test('UI014 shared broadcasts count affected deliveries, not duplicated user mes
 });
 
 
-test('UI014 outage Details open only the exact canonical error, with truthful missing-pointer and recheck behavior',async()=>{
- for(const activityId of ['a:activity:17',undefined]){
-  const opened=[],h=harness([{text:'Exact retained request',deliveryReceipts:[receipt('unavailable',{activityId})]}],{onOpenError:(...args)=>opened.push(args)});
+test('UI014 all represented interruption rows open exact canonical errors, with truthful missing-pointer and recheck behavior',async()=>{
+ for(const category of ['quota_exhausted','rate_limit','throttled','capacity','unavailable'])for(const activityId of ['a:activity:17',undefined]){
+  const opened=[],h=harness([{text:'Exact retained request',deliveryReceipts:[receipt(category,{activityId})]}],{onOpenError:(...args)=>opened.push(args)});
   h.render().find(node=>node.type===mui.ButtonBase).props.onClick();let nodes=h.render();
-  const words=nodes.map(text).join(' ');assert.match(words,/provider.*unavailable/iu);assert.match(words,/Earlier changes may remain\./);assert.match(words,/Review the full error before manual retry\./);assert.doesNotMatch(words,/limited this request|Review usage/);
+  const words=nodes.map(text).join(' ');if(category==='unavailable'){assert.match(words,/provider.*unavailable/iu);assert.match(words,/Earlier changes may remain\./);assert.match(words,/Review the full error before manual retry\./);assert.doesNotMatch(words,/limited this request|Review usage/);}
   const full=nodes.find(node=>node.type===mui.Button&&text(node)===(activityId?'View full error':'View failed Run'));assert(full);
   await nodes.find(node=>node.type===mui.Button&&text(node)==='Recheck codex').props.onClick();await new Promise(setImmediate);nodes=h.render();
-  assert.match(nodes.map(text).join(' '),/Provider checked; retained work is unchanged\./);assert.doesNotMatch(nodes.map(text).join(' '),/allowance has reset/);
+  assert.match(nodes.map(text).join(' '),category==='unavailable'?/Provider checked; retained work is unchanged\./:/does not confirm that its usage allowance has reset/);
   full.props.onClick();assert.deepEqual(opened,[['a','failed-run',activityId]]);assert.equal(h.render().find(node=>node.type===mui.Dialog).props.open,false);
   assert.deepEqual(h.calls.map(call=>call[0]),['recheck','invalidate'],'Viewing the error never retries retained work');
  }

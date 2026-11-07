@@ -88,7 +88,7 @@ export function ProviderFailureBanner({ messages, agents, projectId, hasMore, on
               {failure.quotaLimit ? <Typography variant="body2">Affected allowance: {{ five_hour: "Five-hour", weekly: "Weekly", weekly_model: "Weekly model", extra_usage: "Extra usage" }[failure.quotaLimit]}.</Typography> : null}
               {failure.model ? <Typography variant="caption">Failed Run model: {failure.model}</Typography> : null}
               <Typography variant="body2" sx={{ my: 0.5 }}>Message: {text.length > 240 ? `${text.slice(0, 240)}…` : text}</Typography>
-              {failure.category === "unavailable" && onOpenError ? <Button onClick={() => {
+              {onOpenError ? <Button onClick={() => {
                 setOpen(false); onOpenError(receipt.targetAgentId, failure.runId, failure.activityId);
               }}>{failure.activityId ? "View full error" : "View failed Run"}</Button> : null}
               <MessageDeliveryStatus projectId={projectId} receipts={[receipt]} recipientName={name} onOpenAgent={onOpenAgent} hideCancelAction />
