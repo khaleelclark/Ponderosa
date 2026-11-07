@@ -216,7 +216,7 @@ export class CoordinationV3SchedulerLeaseAuthority {
                 SELECT 1 FROM agent_activations handoff
                 WHERE handoff.kind = 'context_rollover_handoff'
                   AND json_extract(handoff.payload_json, '$.rolloverId') = transition.id
-                  AND json_type(handoff.payload_json, '$.settingsTransition') = 'object'
+                  AND (json_type(handoff.payload_json, '$.settingsTransition') = 'object' OR json_type(handoff.payload_json, '$.workingCopyTransition') = 'object')
               )
           )
           -- The first task using a verified replacement must see that exact
@@ -314,7 +314,7 @@ export class CoordinationV3SchedulerLeaseAuthority {
                 SELECT 1 FROM agent_activations handoff
                 WHERE handoff.kind = 'context_rollover_handoff'
                   AND json_extract(handoff.payload_json, '$.rolloverId') = transition.id
-                  AND json_type(handoff.payload_json, '$.settingsTransition') = 'object'
+                  AND (json_type(handoff.payload_json, '$.settingsTransition') = 'object' OR json_type(handoff.payload_json, '$.workingCopyTransition') = 'object')
               )
           )
           AND NOT EXISTS (

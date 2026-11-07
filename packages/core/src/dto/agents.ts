@@ -109,6 +109,10 @@ export interface AgentDto {
   managementPermissions: AgentManagementPermissionsDto;
   /** Explicit Shared folder or opt-in Separate Git copy contract. */
   workingCopy: AgentWorkingCopyDto;
+  /** Pending operator folder choice; never substitutes for the canonical workingCopy. */
+  workingCopyChange?: { rolloverId:string; mode:AgentWorkingCopyMode;
+    phase:"handoff"|"preparing"|"verifying"|"held"|"completed"|"kept_current"; retryable:boolean; canKeepCurrent:boolean; message?:string };
+
   /** Stable creation provenance for an agent spawned by another agent. */
   spawnedByAgentId?: string;
   spawnedByExecutionId?: string;

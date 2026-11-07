@@ -1527,6 +1527,16 @@ export class CoordinationV3Store {
     return this.contextRolloverAuthority.releaseUnstartedFailedSettingsTransition(input);
   }
 
+  workingCopyTransition(id:string) { return this.contextRolloverAuthority.workingCopyTransition(id); }
+  workingCopyTransitionForAgent(agentId:string) { return this.contextRolloverAuthority.workingCopyTransitionForAgent(agentId); }
+  retryWorkingCopyTransition(id:string) { return this.contextRolloverAuthority.retryWorkingCopyTransition(id); }
+  recordWorkingCopyTransitionCopy(input:Parameters<CoordinationV3ContextRolloverAuthority['recordWorkingCopyTransitionCopy']>[0]) { return this.contextRolloverAuthority.recordWorkingCopyTransitionCopy(input); }
+  updateWorkingCopyTransition(...args:Parameters<CoordinationV3ContextRolloverAuthority['updateWorkingCopyTransition']>) { return this.contextRolloverAuthority.updateWorkingCopyTransition(...args); }
+  canKeepWorkingCopyTransition(id:string) { return this.contextRolloverAuthority.canKeepWorkingCopyTransition(id); }
+  keepWorkingCopyTransition(id:string) { return this.contextRolloverAuthority.keepWorkingCopyTransition(id); }
+
+
+
   requestContextRollover(input: Parameters<CoordinationV3ContextRolloverAuthority["request"]>[0]): ReturnType<CoordinationV3ContextRolloverAuthority["request"]> {
     return this.contextRolloverAuthority.request(input);
   }

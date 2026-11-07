@@ -1,4 +1,5 @@
 import { isGrantOnlyRestrictionsChange } from "@ponderosa/core";
+import {prepareWorkingCopyTransition} from "../working-copy-context-transition.js";
 import { settingsTransitionTarget } from "../context-transition-admission.js";
 import { activationInputAttachmentSource, currentArtifactInputFiles, runtimeInputAttachment, runtimeInputFilesContext } from "../runtime-input-files.js";
 import type { RuntimeAttachmentCopy } from "../runtime-attachments.js";
@@ -228,7 +229,7 @@ export async function prepareAgentRun(
     workingCopies,
   } = runContext;
   const {
-    agent,
+    agent: originalAgent,
     project: storageProject,
     runtimeEngineId,
     engine,
@@ -253,10 +254,14 @@ export async function prepareAgentRun(
     pendingTurn,
     requestedSourceChannel,
   } = input;
-  if (coordinationV3.contextRecovery.active(agent.id)) {
+  if (coordinationV3.contextRecovery.active(originalAgent.id)) {
     throw contextRecoveryRequired("An explicit context recovery hold is active; no provider input is authorized.");
   }
 
+  const folderTransition=await prepareWorkingCopyTransition({...runContext,memory,
+    drainRuntime:async(id,projectId)=>{await reconcileAgentRuntimeAuthority(id);const runtime=reusableRuntime(id);
+      if(runtime)await teardownPersistentRuntime(id,runtime,"working-folder handoff committed",projectId);}},originalAgent,v3SchedulerRunId,v3FencingToken);
+  const agent=folderTransition?.agent??originalAgent;
   const project = store.getChatContext(agent.conversationId);
   if (!project || project.id !== storageProject.id) throw new Error("Agent has no active owning Chat context");
 
@@ -464,7 +469,8 @@ export async function prepareAgentRun(
     throw new Error('The target instructions changed during context transition; the original work remains queued.');
   const priorTransitionPacket = transitionActivation?.kind === 'context_rollover_handoff'
     ? store.acceptedProviderSessionInput(agent.id) : undefined;
-  const systemPrompt = transitionActivation?.kind === 'context_rollover_handoff'
+  const systemPrompt = folderTransition?.handoff ? folderTransition.sourceSystemPrompt
+    : transitionActivation?.kind === 'context_rollover_handoff'
     ? priorTransitionPacket?.exactSystemPrompt : currentSystemPrompt;
   if(systemPrompt===undefined)throw new Error('The accepted handoff instructions are unavailable; original context remains retained.');
   const systemPromptHash = createHash("sha256").update(systemPrompt).digest("hex");
@@ -802,7 +808,9 @@ export async function prepareAgentRun(
        (v3SchedulerRunId && coordinationV3.runScopeKey(v3SchedulerRunId,agent.id)!==schedulerRunScopeKey))
       throw new Error('Settings or access changed before the saved Codex thread could continue. The original context remains retained.');
   };
-  const assertSettingsTransitionPolicy = settingsTransition ? () => {
+  const assertSettingsTransitionPolicy = settingsTransition || folderTransition ? () => {
+    folderTransition?.assertCurrent();
+    if(!settingsTransition)return;
     if(settingsTransition!.targetSystemPromptHash && createHash('sha256').update(currentSystemPrompt).digest('hex')!==settingsTransition!.targetSystemPromptHash)
       throw new Error('The target instructions changed during context transition; the original work remains queued.');
     if(settingsTransition!.targetRestrictionsHash && createHash('sha256').update(JSON.stringify(targetCapabilityRestrictions)).digest('hex')!==settingsTransition!.targetRestrictionsHash)
@@ -833,7 +841,9 @@ export async function prepareAgentRun(
       throw new Error('Memory access changed during context transition; the original context remains retained.');
   } : undefined;
   assertSettingsTransitionPolicy?.();
-  const validateSettingsTransitionSources = settingsTransition ? async () => {
+  const validateSettingsTransitionSources = settingsTransition || folderTransition ? async () => {
+    await folderTransition?.validateSources();
+    if(!settingsTransition)return;
     if(opts.localMemory && (!memory||!settingsTransition.authorizationSignatureHash||!settingsTransition.authorizationOriginRunId||
        !await memory.validateTransitionReads(agent.id,agent.conversationId,settingsTransition.authorizationOriginRunId,settingsTransition.sourceRunId,runId,settingsTransition.authorizationSignatureHash)))
       throw new Error('A prior memory source changed during context transition; the original work remains retained.');
@@ -853,10 +863,9 @@ export async function prepareAgentRun(
   const retainedSessionArtifactIds = resumeSessionState?.artifactIds ?? [];
   const continuationHandoff = resumeSessionId ? undefined : eligibleContinuationHandoff;
   const mode = resumeSessionId ? "continue" : "seed";
-  // Always snapshot the bounded canonical seed sources at the turn boundary.
-  // A resumed provider normally retains them, but a provider-confirmed
-  // pre-sampling failure must be able to replace that opaque session with a
-  // truthful fresh seed without replaying the failed continuation packet.
+  // Snapshot bounded canonical seed sources for fresh first turns and qualified
+  // pressure/handoff replacements. Retained-context failures stay held; this
+  // snapshot does not authorize a fresh-seed retry or replay.
   type SeedHistoryCandidate = ChatMessage & {
     sourceCommunicationEventId?: string;
     sourceContentSha256?: string;

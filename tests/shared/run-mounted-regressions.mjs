@@ -16,6 +16,8 @@ const {chromium}=require('playwright-core');
 const inventory=mountedRegressionInventory(),expected=inventory.flatMap(row=>row.names).sort();
 assert.deepEqual(mountedRegressionEntryImports(),inventory.map(row=>row.file),'Every mounted source must be included exactly once');
 assert.equal(new Set(expected).size,expected.length,'Mounted case names must be unique');assert.ok(expected.length>0);
+const selected=process.env.PONDEROSA_MOUNTED_CASES?process.env.PONDEROSA_MOUNTED_CASES.split(',').map(name=>name.trim()):expected;
+assert(selected.length>0&&new Set(selected).size===selected.length&&selected.every(name=>expected.includes(name)),'Selected mounted cases must be distinct registered names');
 const owned=await mkdtemp(path.join(tmpdir(),'ponderosa-mounted-regressions-'));
 const build=process.env.PONDEROSA_MOUNTED_BUILD??path.join(owned,'build');
 const out=process.env.PONDEROSA_MOUNTED_EVIDENCE??path.join(owned,'evidence');
@@ -27,7 +29,7 @@ const timeout=Number(process.env.PONDEROSA_MOUNTED_CASE_TIMEOUT_MS??30_000);
 assert(Number.isSafeInteger(timeout)&&timeout>=1000&&timeout<=120_000,'Case timeout must be between 1 and 120 seconds');
 const results=[],globalErrors=[];let server,browser,browserServer,origin,forceExit=false;
 console.log(`Mounted regression evidence: ${out}`);
-const record=async()=>writeFile(path.join(out,'results.json'),JSON.stringify({inventory,expected,cells:results,errors:globalErrors},null,2)+'\n');
+const record=async()=>writeFile(path.join(out,'results.json'),JSON.stringify({inventory,expected,selected,cells:results,errors:globalErrors},null,2)+'\n');
 const describe=error=>error?.stack??String(error);
 const launchOwnedBrowser=async()=>{
  browserServer=await withinMountedDeadline(()=>chromium.launchServer({executablePath:process.env.PONDEROSA_CHROME_PATH||'/usr/bin/google-chrome',headless:true,args:['--no-sandbox'],timeout:15_000}),20_000,'owned browser launch');
@@ -60,7 +62,7 @@ try{
  });
  await withinMountedDeadline(()=>new Promise((resolve,reject)=>{server.once('error',reject);server.listen(0,'127.0.0.1',resolve);}),5000,'owned listener setup');origin='http://127.0.0.1:'+server.address().port;
  await launchOwnedBrowser();
- for(const mobile of [false,true])for(const name of expected){
+ for(const mobile of [false,true])for(const name of selected){
   const cell=mobile?'phone':'desktop',pageErrors=[],network=[];let context,page,stopped=false;
   const startedAt=Date.now(),checkpoint=()=>{if(stopped)throw Error('Mounted cell ended; no late browser action is allowed');};
   const outcome=await runMountedCase({timeout,stop:()=>{stopped=true;},
@@ -88,10 +90,10 @@ try{
    // A timeout can leave a late context-creation/evaluate promise. Reclaim only
    // this owned browser before later independent cells; never replay this case.
    if(!await closeOwnedBrowser())throw Error('Owned browser cleanup is unresolved; remaining cells are blocked');
-   if(results.length<expected.length*2)await launchOwnedBrowser();
+   if(results.length<selected.length*2)await launchOwnedBrowser();
   }
  }
- assert.equal(results.length,expected.length*2,'Every exported regression must complete one desktop and one phone cell');
+ assert.equal(results.length,selected.length*2,'Every exported regression must complete one desktop and one phone cell');
  assert.ok(results.every(result=>result.status==='PASS'),'Mounted regressions failed; inspect results.json and failure evidence');
 }catch(error){globalErrors.push({stage:'qualification',error:describe(error)});process.exitCode=1;if(error?.code==='ERR_MOUNTED_TIMEOUT')forceExit=true;}
 finally{

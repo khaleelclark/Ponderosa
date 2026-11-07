@@ -76,9 +76,12 @@ export function AgentRoleSettings({ agent, onSaved }: { agent: AgentDto; onSaved
   </Stack>;
 }
 
-function AgentWorkingCopySettings({ agent }: { agent: AgentDto }): JSX.Element {
+export function AgentWorkingCopySettings({ agent }: { agent: AgentDto }): JSX.Element {
   const queryClient = useQueryClient();
   const notify = useMutationNotification();
+  const statusKey=["agent-working-folder-change",agent.id];
+  const status=useQuery({queryKey:statusKey,queryFn:()=>api.agentWorkingCopyChange(agent.id),
+    refetchInterval:query=>query.state.data?.workingCopyChange&&!["completed","held","kept_current"].includes(query.state.data.workingCopyChange.phase)?1000:false});
   const changeMode = useMutation({
     mutationFn: (workingCopyMode: AgentWorkingCopyMode) =>
       api.updateAgent(agent.id, { workingCopyMode }),
@@ -91,12 +94,18 @@ function AgentWorkingCopySettings({ agent }: { agent: AgentDto }): JSX.Element {
         { queryKey: queryKeys.agents.detailPrefix(agent.id) },
         current => current ? { ...current, agent: updated } : current,
       );
-      notify({ key: `agent-working-folder:${agent.id}`, message: "Agent working folder updated." });
+      queryClient.setQueryData(statusKey,updated);
+      if(!updated.workingCopyChange||updated.workingCopyChange.phase==='completed')
+        notify({ key: `agent-working-folder:${agent.id}`, message: "Agent working folder updated." });
     },
+    onSettled:()=>{void queryClient.invalidateQueries({queryKey:statusKey});},
   });
-  const workingCopy = changeMode.data?.id === agent.id
-    ? changeMode.data.workingCopy
-    : agent.workingCopy;
+  const keepFolder=useMutation({mutationFn:(id:string)=>api.keepCurrentWorkingCopy(agent.id,id),
+    onSuccess:updated=>{queryClient.setQueryData(statusKey,updated);void queryClient.invalidateQueries({queryKey:queryKeys.agents.detailPrefix(agent.id)});},
+    onSettled:()=>{void queryClient.invalidateQueries({queryKey:statusKey});}});
+  const observed=status.data?.id===agent.id?status.data:changeMode.data?.id===agent.id?changeMode.data:agent;
+  const workingCopy=observed.workingCopy,change=observed.workingCopyChange;
+  const changing=Boolean(change&&!['completed','held','kept_current'].includes(change.phase));
   const label = workingCopy.mode === "separate_git" ? "Separate Git copy" : "Shared folder";
   return (
     <Paper variant="outlined" sx={{ p: 2 }}>
@@ -104,8 +113,8 @@ function AgentWorkingCopySettings({ agent }: { agent: AgentDto }): JSX.Element {
         <Typography variant="subtitle1" fontWeight={800} sx={{ flex: 1 }}>Working Folder</Typography>
         <Chip
           size="small"
-          color={workingCopy.state === "ready" ? "success" : "error"}
-          label={workingCopy.state === "ready" ? `${label} · Ready` : `${label} · Needs attention`}
+          color={change?.phase==='held'?'error':changing?'info':workingCopy.state === "ready" ? "success" : "error"}
+          label={change?.phase==='held'?`${label} · Context review`:changing?`${label} · Saving…`:workingCopy.state === "ready" ? `${label} · Ready` : `${label} · Needs attention`}
         />
       </Stack>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
@@ -120,12 +129,19 @@ function AgentWorkingCopySettings({ agent }: { agent: AgentDto }): JSX.Element {
           label={workingCopy.mode === "separate_git" ? "Agent working copy" : "Project Shared folder"}
         />
       </Box>
-      <FormControl fullWidth size="small" disabled={changeMode.isPending}>
+      {status.isError?<Alert severity="error">{status.error instanceof Error?status.error.message:"Could not check the working-folder change. Try Check status."}</Alert>:null}
+      {keepFolder.isError?<Alert severity="error">{keepFolder.error instanceof Error?keepFolder.error.message:'Could not keep the current folder.'}</Alert>:null}
+      {change&&change.phase==='kept_current'?<Alert severity="success" sx={{mb:1.5}}>Kept the current working folder and existing context.</Alert>:null}
+      {change&&!['completed','kept_current'].includes(change.phase)?<Alert severity={change.phase==='held'?'error':'info'} sx={{mb:1.5}}
+        action={<Stack direction="row"><Button color="inherit" size="small" disabled={changeMode.isPending||keepFolder.isPending} onClick={()=>change.retryable?changeMode.mutate(change.mode):void status.refetch()}>{change.retryable?'Retry':'Check status'}</Button>{change.canKeepCurrent?<Button color="inherit" size="small" disabled={keepFolder.isPending||changeMode.isPending} onClick={()=>keepFolder.mutate(change.rolloverId)}>Keep current folder</Button>:null}</Stack>}>
+        {change.phase==='held'?(change.message??'Inspect Activity before another change.'):change.phase==='handoff'?'Saving: preserving this Agent’s context before changing folders.':change.phase==='verifying'?'Folder changed; verifying preserved context before queued work.':'Saving: preparing the selected working folder.'}
+      </Alert>:null}
+      <FormControl fullWidth size="small" disabled={changeMode.isPending||changing||change?.phase==='held'}>
         <InputLabel id={`working-copy-${agent.id}`}>Working folder</InputLabel>
         <Select
           labelId={`working-copy-${agent.id}`}
           label="Working folder"
-          value={workingCopy.mode}
+          value={changing&&change?change.mode:workingCopy.mode}
           onChange={event => {
             const nextMode = event.target.value as AgentWorkingCopyMode;
             if (workingCopy.mode === "separate_git" && nextMode === "shared" &&

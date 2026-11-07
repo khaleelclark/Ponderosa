@@ -5,7 +5,14 @@ import type Database from "better-sqlite3";
  * remains a hold even if its failure was recorded by startup recovery rather
  * than the ordinary transition path. */
 export function settingsTransitionActivationHoldSql(activation:string):string {
-  return `(EXISTS (SELECT 1 FROM activation_sources reservation
+  return `(EXISTS(SELECT 1 FROM context_rollovers folder JOIN activation_sources source
+      ON source.source_kind='context_rollover' AND source.source_id=folder.id
+      JOIN agent_activations handoff ON handoff.id=source.activation_id AND handoff.kind='context_rollover_handoff'
+      WHERE folder.agent_id=${activation}.agent_id AND folder.project_id=${activation}.project_id
+        AND (folder.state<>'completed' OR EXISTS(SELECT 1 FROM scheduler_runs verifying
+          WHERE verifying.id=folder.replacement_run_id AND verifying.status IN ('leased','running'))) AND json_type(handoff.payload_json,'$.workingCopyTransition')='object'
+        AND ${activation}.id<>handoff.id AND ${activation}.id<>coalesce(folder.continuation_activation_id,''))
+    OR EXISTS (SELECT 1 FROM activation_sources reservation
       WHERE reservation.activation_id=${activation}.id AND reservation.source_kind='settings_transition_reservation_wait')
     OR EXISTS (
       SELECT 1 FROM context_rollovers rollover

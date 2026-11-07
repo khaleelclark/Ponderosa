@@ -620,7 +620,7 @@ const agentPackages=registerAgentPackageRoutes(app, {
 registerAgentUsageRoute(app, serverContext);
 
 registerAgentMaintenanceRoutes(app, {
-  store, coordinationV3, engines, deletingAgentIds,
+  store, workspace, engineAuthStatuses, coordinationV3, engines, deletingAgentIds,
   cachedModelOptions, commitAgentDeletion,
   activeRuns, workingCopies, clearAgentResumeSession,
   persistentRuntimeForTermination, teardownPersistentRuntime,

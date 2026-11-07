@@ -1,3 +1,7 @@
+import {localMemoryFor} from "../local-memory.js";
+import {requestWorkingCopyChange,workingCopyChangeStatus,keepCurrentWorkingCopy} from "../working-copy-context-transition.js";
+import type {WorkspaceStore} from "@ponderosa/agents";
+import type {EngineAuthStatusCache} from "../engine-auth-cache.js";
 import {workingCopyDiagnostic} from "../working-copy-diagnostic.js";
 import { normalizeAgentRole } from "@ponderosa/core";
 import type {
@@ -24,6 +28,8 @@ import type { AgentWorkingCopyService } from "../agent-working-copy-service.js";
 
 interface AgentMaintenanceRoutesContext {
   store: AgentStore;
+  workspace: WorkspaceStore;
+  engineAuthStatuses: Pick<EngineAuthStatusCache,"snapshot">;
   coordinationV3: CoordinationV3Store;
   engines: ReadonlyMap<string, EngineRegistration>;
   deletingAgentIds: Set<string>;
@@ -105,6 +111,17 @@ export function registerAgentMaintenanceRoutes(
     },
   );
 
+  app.post<{Params:{id:string;rolloverId:string}}>("/api/agents/:id/working-folder-change/:rolloverId/keep",async(request,reply)=>{
+    const agent=store.getAgent(request.params.id);if(!agent)return reply.code(404).send({error:"agent not found"});
+    try{const result=await keepCurrentWorkingCopy({...context,memory:localMemoryFor(app)},agent,request.params.rolloverId);notifyScheduler();return result;}
+    catch(error){return reply.code(409).send({error:workingCopyDiagnostic(error)});}
+  });
+
+  app.get<{Params:{id:string}}>("/api/agents/:id/working-folder-change",async(request,reply)=>{
+    if(!store.getAgent(request.params.id))return reply.code(404).send({error:"agent not found"});
+    return workingCopyChangeStatus(context,request.params.id);
+  });
+
   app.patch<{ Params: { id: string }; Body: UpdateAgentRequest }>(
     "/api/agents/:id",
     async (request, reply) => {
@@ -176,6 +193,15 @@ export function registerAgentMaintenanceRoutes(
         });
       }
       if (body.workingCopyMode !== undefined) {
+        try {
+          const existing=coordinationV3.workingCopyTransitionForAgent(current.id);
+          const incomplete=existing&&!(existing.rollover.state==='completed'&&(existing.rollover.completionReason==='replacement_verified'||existing.change.keptCurrent===true));
+          if(!incomplete&&current.workingCopy.mode===body.workingCopyMode&&current.workingCopy.state==='ready')return current;
+          if(!incomplete&&(activeRuns.has(current.id)||coordinationV3.agentSnapshot(current.id).activeRun))
+            return reply.code(409).send({error:"Stop this Agent's active Run before changing its working folder."});
+          const pending=await requestWorkingCopyChange({...context,memory:localMemoryFor(app)},current,body.workingCopyMode);
+          if(pending){notifyScheduler();return reply.code(pending.workingCopyChange?.phase==='completed'?200:202).send(pending);}
+        }catch(error){return reply.code(409).send({error:workingCopyDiagnostic(error)});}
         let releaseModeChange: (() => void) | undefined;
         try {
           releaseModeChange = workingCopies.beginModeChange(current.id);

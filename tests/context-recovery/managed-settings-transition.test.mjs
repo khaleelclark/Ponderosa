@@ -780,3 +780,135 @@ test('human capability grant preserves native-only work through the old restrict
   assert.equal((await native.requests()).filter(x=>x.method==='turn/start').length,4);
  },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,uniqueThreads:true})).adapter});
 });
+
+async function prepareFolderGit(f,store,chat){
+ const {writeFile}=await import('node:fs/promises'),{execFileSync}=await import('node:child_process');
+ const cwd=store.getChatContext(chat.id).hostPath;
+ assert.ok(cwd===f.root||cwd.startsWith(f.root+path.sep),'Git setup is confined to the owned fixture');
+ const git=args=>execFileSync('git',['-c','core.hooksPath=/dev/null','-c','user.name=Fixture','-c','user.email=fixture@localhost',...args],{cwd,stdio:'pipe'});
+ git(['init','--initial-branch=main']);await writeFile(path.join(cwd,'owned-fixture.txt'),'owned folder fixture\n');git(['add','owned-fixture.txt']);git(['commit','-m','Owned fixture']);
+ return cwd;
+}
+async function folderStatus(f,id){return f.ok(await f.api('GET',`/api/agents/${id}/working-folder-change`));}
+
+test('idle working-folder changes preserve native-only findings and verify the actual new cwd before queued work',{timeout:90000},async t=>{
+ let store,native;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Working-folder continuity'),agent=await f.createIdleAgent(chat,'Worker');
+  const shared=await prepareFolderGit(f,store,chat);
+  await f.send(agent.id,'Preserve this objective and its private native research.');
+  await until(async()=>(await native.requests()).some(x=>x.method==='turn/start'),'initial turn');
+  await native.sendWorkResult('Private native finding: violet gearbox 641.');
+  await until(()=>store.readEvents(agent.id).some(x=>x.event.type==='tool_result'&&x.event.id==='synthetic-private-work'&&x.event.output==='Private native finding: violet gearbox 641.'),'native-only work');
+  await native.sendTool('ponderosa_message',{text:'Research is recorded.'});await f.settled(agent.id);
+  let expectedStarts=1;
+  for(const mode of ['separate_git','shared']){
+   const before=store.getAgent(agent.id),response=await f.api('PATCH',`/api/agents/${agent.id}`,{workingCopyMode:mode});assert.equal(response.status,202);const first=f.ok(response);
+   assert.equal(first.workingCopy.mode,before.workingCopy.mode,'pending Save does not pretend its mode is saved');
+   assert.equal(first.workingCopyChange.phase,'handoff');
+   const repeated=f.ok(await f.api('PATCH',`/api/agents/${agent.id}`,{workingCopyMode:mode}));
+   assert.equal(repeated.workingCopyChange.rolloverId,first.workingCopyChange.rolloverId);
+   const old=await until(async()=>{const x=(await native.requests()).filter(x=>x.method==='turn/start');return x.length===expectedStarts+1?x:undefined;},'one old-session handoff',20000);
+   assert.equal(old.at(-1).params.threadId,old.at(-2).params.threadId);
+   assert.equal(store.getAgent(agent.id).workingCopy.id,before.workingCopy.id,'handoff precedes folder mutation');
+   if(mode==='shared')await f.send(agent.id,'Now complete the original objective once.');
+   await native.sendAnswer('Continue the preserved objective. Private native finding: violet gearbox 641.');
+   const next=await until(async()=>{const x=(await native.requests()).filter(x=>x.method==='turn/start');return x.length===expectedStarts+2?x:undefined;},'new-cwd verification',20000);
+   assert.notEqual(next.at(-1).params.threadId,old.at(-1).params.threadId);
+   assert.ok(JSON.stringify(next.at(-1)).includes('violet gearbox 641'),'noncanonical native finding survives via the real handoff');
+   const pending=await folderStatus(f,agent.id);assert.equal(pending.workingCopy.mode,mode);assert.equal(pending.workingCopyChange.phase,'verifying');
+   const calls=await native.requests();assert.equal(calls.filter(x=>x.method==='thread/start').at(-1).params.cwd,pending.workingCopy.rootPath);
+   assert.equal(calls.filter(x=>x.launchCwd).at(-1).launchCwd,pending.workingCopy.rootPath,'provider process actually launches at the new cwd');
+   if(mode==='shared')assert.equal(pending.workingCopy.rootPath,shared);
+   assert.equal(next.length,expectedStarts+2,'queued work stays out until replacement verification');
+   await native.sendAnswer('Preserved context verified.');
+   await until(async()=>(await folderStatus(f,agent.id)).workingCopyChange.phase==='completed','accepted new context',20000);
+   expectedStarts+=2;
+   if(mode==='shared'){
+    const work=await until(async()=>{const x=(await native.requests()).filter(x=>x.method==='turn/start');return x.length===expectedStarts+1?x:undefined;},'queued objective',20000);
+    assert.equal(work.at(-1).params.threadId,next.at(-1).params.threadId);assert.ok(JSON.stringify(work.at(-1)).includes('Now complete the original objective once.'));
+    await native.sendTool('ponderosa_message',{text:'Objective completed.'});expectedStarts++;
+   }
+   await f.settled(agent.id);
+   const count=store.sqlite.prepare('SELECT count(*) n FROM context_rollovers WHERE agent_id=?').get(agent.id).n;
+   const same=f.ok(await f.api('PATCH',`/api/agents/${agent.id}`,{workingCopyMode:mode}));assert.equal(same.workingCopy.mode,mode);
+   assert.equal(store.sqlite.prepare('SELECT count(*) n FROM context_rollovers WHERE agent_id=?').get(agent.id).n,count,'same-mode Save is a no-op');
+  }
+  assert.equal((await native.requests()).filter(x=>x.method==='turn/start').length,expectedStarts);
+ },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,uniqueThreads:true,recordCwd:true})).adapter});
+});
+
+test('working-folder mutation refusal retains context and retries the same committed handoff without replay',{timeout:90000},async t=>{
+ let store,native;
+ await withFixture(t,async f=>{
+  const {writeFile,unlink}=await import('node:fs/promises');
+  const chat=await f.createChat('Folder failure and retry'),agent=await f.createIdleAgent(chat,'Worker');await prepareFolderGit(f,store,chat);
+  f.ok(await f.api('PATCH',`/api/agents/${agent.id}`,{workingCopyMode:'separate_git'}));
+  await f.send(agent.id,'Keep the working-folder objective.');await until(async()=>(await native.requests()).some(x=>x.method==='turn/start'),'initial turn');
+  await native.sendWorkResult('Native work is retained.');await until(()=>store.readEvents(agent.id).some(x=>x.event.type==='tool_result'&&x.event.output==='Native work is retained.'),'actual native work before reply');await native.sendTool('ponderosa_message',{text:'Native research is recorded.'});await f.settled(agent.id);
+  const old=store.getAgent(agent.id),dirty=path.join(old.workingCopy.rootPath,'owned-untracked.txt');await writeFile(dirty,'preserve me');
+  const saved=f.ok(await f.api('PATCH',`/api/agents/${agent.id}`,{workingCopyMode:'shared'}));
+  await until(async()=>(await native.requests()).filter(x=>x.method==='turn/start').length===2,'handoff');await native.sendAnswer('Keep the objective and native working state.');
+  const held=await until(async()=>{const x=await folderStatus(f,agent.id);return x.workingCopyChange?.phase==='held'?x:undefined;},'dirty-copy refusal',20000);
+  assert.equal(held.workingCopy.id,old.workingCopy.id);assert.equal(held.workingCopyChange.canKeepCurrent,true);assert.match(held.workingCopyChange.message,/changed|untracked|ignored|preserv/i);
+  await f.send(agent.id,'Queued work must not silently reseed.');
+  assert.equal((await native.requests()).filter(x=>x.method==='turn/start').length,2);
+  await unlink(dirty);
+  const retry=f.ok(await f.api('PATCH',`/api/agents/${agent.id}`,{workingCopyMode:'shared'}));assert.equal(retry.workingCopyChange.rolloverId,saved.workingCopyChange.rolloverId);
+  const next=await until(async()=>{const x=(await native.requests()).filter(x=>x.method==='turn/start');return x.length===3?x:undefined;},'same-handoff replacement',20000);
+  assert.ok(JSON.stringify(next[2]).includes('Keep the objective and native working state.'));
+  assert.equal(store.sqlite.prepare("SELECT count(*) n FROM agent_activations WHERE agent_id=? AND kind='context_rollover_handoff'").get(agent.id).n,1,'retry never repeats compaction/handoff');
+  await native.sendAnswer('Context verified.');await until(async()=>(await folderStatus(f,agent.id)).workingCopyChange.phase==='completed','verified',20000);
+  await until(async()=>(await native.requests()).filter(x=>x.method==='turn/start').length===4,'retained queued work',20000);
+  await native.sendTool('ponderosa_message',{text:'Queued objective completed.'});await f.settled(agent.id);
+ },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,uniqueThreads:true})).adapter});
+});
+
+test('restart during a working-folder handoff retains the exact choice and refuses replay or fresh fallback',{timeout:90000},async t=>{
+ let store,native;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Interrupted folder Save'),agent=await f.createIdleAgent(chat,'Worker');await prepareFolderGit(f,store,chat);
+  await f.send(agent.id,'Preserve the original working context.');await until(async()=>(await native.requests()).some(x=>x.method==='turn/start'),'initial turn');await native.sendWorkResult('Prior native context retained.');await until(()=>store.readEvents(agent.id).some(x=>x.event.type==='tool_result'&&x.event.output==='Prior native context retained.'),'prior native work before reply');await native.sendTool('ponderosa_message',{text:'Prior research is recorded.'});await f.settled(agent.id);
+  const before=store.getAgent(agent.id),saved=f.ok(await f.api('PATCH',`/api/agents/${agent.id}`,{workingCopyMode:'separate_git'}));
+  await until(async()=>(await native.requests()).filter(x=>x.method==='turn/start').length===2,'handoff submitted');
+  await f.reopen();
+  const held=await until(async()=>{const x=await folderStatus(f,agent.id);return x.workingCopyChange?.phase==='held'?x:undefined;},'interrupted Save retained',20000);
+  assert.equal(held.workingCopy.id,before.workingCopy.id);assert.equal(held.workingCopyChange.rolloverId,saved.workingCopyChange.rolloverId);
+  assert.equal(held.workingCopyChange.canKeepCurrent,false,'uncertain handoff cannot be cancelled as unchanged');
+  assert.equal((await f.api('POST',`/api/agents/${agent.id}/working-folder-change/${saved.workingCopyChange.rolloverId}/keep`,{})).status,409);
+  f.ok(await f.api('PATCH',`/api/agents/${agent.id}`,{workingCopyMode:'separate_git'}));
+  await f.send(agent.id,'Do not replay the uncertain handoff.');
+  assert.equal((await native.requests()).filter(x=>x.method==='turn/start').length,2);
+  assert.equal(store.sqlite.prepare("SELECT count(*) n FROM agent_activations WHERE agent_id=? AND kind='context_rollover_handoff'").get(agent.id).n,1);
+ },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,uniqueThreads:true})).adapter});
+});
+
+
+test('dirty working-folder refusal can explicitly keep the unchanged folder and native context',{timeout:90000},async t=>{
+ let store,native;await withFixture(t,async f=>{
+  const {writeFile,readFile}=await import('node:fs/promises');
+  const chat=await f.createChat('Keep unchanged folder'),agent=await f.createIdleAgent(chat,'Worker');await prepareFolderGit(f,store,chat);
+  f.ok(await f.api('PATCH',`/api/agents/${agent.id}`,{workingCopyMode:'separate_git'}));
+  await f.send(agent.id,'Retain the original objective and native work.');await until(async()=>(await native.requests()).some(x=>x.method==='turn/start'),'initial turn');await native.sendWorkResult('Private finding remains in the accepted native session.');await until(()=>store.readEvents(agent.id).some(x=>x.event.type==='tool_result'&&x.event.id==='synthetic-private-work'&&x.event.output==='Private finding remains in the accepted native session.'),'actual private native finding');await native.sendTool('ponderosa_message',{text:'Progress recorded.'});await f.settled(agent.id);
+  const before=store.getAgent(agent.id),session=store.resumeSessionState(agent.id),dirty=path.join(before.workingCopy.rootPath,'owned-untracked.txt');await writeFile(dirty,'retain unchanged bytes');
+  const saved=f.ok(await f.api('PATCH',`/api/agents/${agent.id}`,{workingCopyMode:'shared'}));
+  await until(async()=>(await native.requests()).filter(x=>x.method==='turn/start').length===2,'handoff');await native.sendAnswer('Preserve the native finding and original objective.');
+  const held=await until(async()=>{const value=await folderStatus(f,agent.id);return value.workingCopyChange?.phase==='held'&&value.workingCopyChange.canKeepCurrent?value:undefined;},'safe unchanged-folder escape',20000);
+  assert.equal(held.workingCopy.id,before.workingCopy.id);await f.send(agent.id,'Continue the original task in the unchanged folder.');assert.equal((await native.requests()).filter(x=>x.method==='turn/start').length,2);
+  const url=`/api/agents/${agent.id}/working-folder-change/${saved.workingCopyChange.rolloverId}/keep`,kept=f.ok(await f.api('POST',url,{}));assert.equal(kept.workingCopyChange.phase,'kept_current');assert.equal(kept.workingCopy.id,before.workingCopy.id);
+  f.ok(await f.api('POST',url,{}));
+  const work=await until(async()=>{const rows=(await native.requests()).filter(x=>x.method==='turn/start');return rows.length===3?rows:undefined;},'queued work in retained native context',20000);
+  assert.equal(work[2].params.threadId,work[0].params.threadId);assert.ok(JSON.stringify(work[2]).includes('Continue the original task in the unchanged folder.'));
+  assert.equal(store.resumeSessionState(agent.id).sessionId,session.sessionId);assert.equal(await readFile(dirty,'utf8'),'retain unchanged bytes');
+  assert.equal((await native.requests()).find(x=>x.method==='thread/start').params.cwd,before.workingCopy.rootPath,'retained native session actually opened in the unchanged folder');
+  await native.sendWorkResult('Continuation retained the native finding in the unchanged session.');
+  await until(()=>store.readEvents(agent.id).some(x=>x.event.type==='tool_result'&&x.event.output==='Continuation retained the native finding in the unchanged session.'),'fresh owned usage before another turn');
+  await native.sendTool('ponderosa_message',{text:'Original objective continued.'});await f.settled(agent.id);
+  const prior=f.ok(await f.api('GET',`/api/agents/${agent.id}`)).runs.map(x=>x.id);
+  await f.send(agent.id,'Use the retained private finding to finish the next step after keeping this folder.');
+  const fresh=await until(async()=>{const rows=(await native.requests()).filter(x=>x.method==='turn/start');return rows.length===4?rows:undefined;},'new instruction after Keep',20000);
+  assert.equal(fresh[3].params.threadId,work[0].params.threadId);assert.ok(JSON.stringify(fresh[3]).includes('Use the retained private finding'));
+  await native.sendTool('ponderosa_message',{text:'Next step completed using retained native context.'});await f.settled(agent.id,prior);
+  assert.equal((await native.requests()).filter(x=>x.method==='turn/start').length,4);assert.equal(store.sqlite.prepare("SELECT count(*) n FROM agent_activations WHERE agent_id=? AND kind='context_rollover_handoff'").get(agent.id).n,1);
+ },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,uniqueThreads:true})).adapter});
+});

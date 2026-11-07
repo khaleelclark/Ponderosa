@@ -825,6 +825,8 @@ export const realApi = {
   createAgentPreset(projectId: string, request: CreateAgentPresetRequest, idempotencyKey: string): Promise<AgentPresetDto> { return requestJson(`/api/projects/${encodeURIComponent(projectId)}/agent-presets`, { method: "POST", headers: { "idempotency-key": idempotencyKey }, body: JSON.stringify(request) }); },
   updateAgentPreset(id: string, patch: UpdateAgentPresetRequest): Promise<AgentPresetDto> { return requestJson(`/api/agent-presets/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(patch) }); },
   async deleteAgentPreset(id: string): Promise<void> { await requestJson(`/api/agent-presets/${encodeURIComponent(id)}`, { method: "DELETE" }); },
+  keepCurrentWorkingCopy(agentId:string,rolloverId:string):Promise<AgentDto>{ return requestJson(`/api/agents/${encodeURIComponent(agentId)}/working-folder-change/${encodeURIComponent(rolloverId)}/keep`,{method:"POST"}); },
+  agentWorkingCopyChange(agentId:string):Promise<AgentDto>{ return requestJson(`/api/agents/${encodeURIComponent(agentId)}/working-folder-change`); },
   updateAgent(agentId: string, patch: UpdateAgentRequest): Promise<AgentDto> {
     return requestJson<AgentDto>(`/api/agents/${encodeURIComponent(agentId)}`, {
       method: "PATCH",

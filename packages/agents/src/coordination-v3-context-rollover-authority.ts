@@ -43,6 +43,16 @@ export interface SettingsTransition {
   authorizationSignatureHash?:string; authorizationOriginRunId?:string;
 }
 
+/** One operator working-folder choice, retained on its existing rollover. */
+export interface WorkingCopyTransition {
+  mode:"shared"|"separate_git";
+  oldCopy:{id:string;mode:"shared"|"separate_git";rootPath:string};
+  appliedCopy?:{id:string;mode:"shared"|"separate_git";rootPath:string};
+  mutationStarted?:boolean; keptCurrent?:boolean; failureMessage?:string;
+  sourceFence:number; oldContractHash:string; settingsHash:string;
+  authorizationSignatureHash?:string; authorizationOriginRunId?:string;
+}
+
 interface RolloverRow {
   id: string; project_id: string; agent_id: string; state: ContextRolloverState;
   old_provider_session_id: string; provider_session_generation: string;
@@ -94,6 +104,117 @@ export class CoordinationV3ContextRolloverAuthority {
       marker=candidate;
     }
     return marker;
+  }
+
+  workingCopyTransition(id:string):WorkingCopyTransition|undefined {
+    const rows=this.sqlite.prepare(`SELECT a.payload_json FROM agent_activations a
+      JOIN activation_sources s ON s.activation_id=a.id
+      WHERE s.source_kind='context_rollover' AND s.source_id=? AND a.kind='context_rollover_handoff'
+      ORDER BY a.created_at,a.id`).all(id) as Array<{payload_json:string}>;
+    let marker:WorkingCopyTransition|undefined;
+    for(const row of rows){const next=JSON.parse(row.payload_json)?.workingCopyTransition as WorkingCopyTransition|undefined;
+      if(!next)continue;
+      if(marker&&stableJson(marker)!==stableJson(next))throw Error('Working-folder transition evidence is ambiguous');
+      marker=next;}
+    return marker;
+  }
+
+  workingCopyTransitionForAgent(agentId:string):{rollover:ContextRolloverV3;change:WorkingCopyTransition}|undefined {
+    const row=this.sqlite.prepare(`SELECT r.id FROM context_rollovers r WHERE r.agent_id=?
+      AND EXISTS(SELECT 1 FROM activation_sources s JOIN agent_activations a ON a.id=s.activation_id
+        WHERE s.source_kind='context_rollover' AND s.source_id=r.id AND a.kind='context_rollover_handoff'
+          AND json_type(a.payload_json,'$.workingCopyTransition')='object')
+      ORDER BY r.rowid DESC LIMIT 1`).get(agentId) as {id:string}|undefined;
+    const rollover=row&&this.get(row.id),change=row&&this.workingCopyTransition(row.id);
+    return rollover&&change?{rollover,change}:undefined;
+  }
+
+  updateWorkingCopyTransition(id:string,runId:string,fencingToken:number,fields:{mutationStarted?:true;failureMessage?:string}):void {
+    this.sqlite.transaction(()=>{
+      const r=this.get(id),marker=this.workingCopyTransition(id);
+      const owned=r&&this.sqlite.prepare(`SELECT 1 FROM scheduler_runs run JOIN scheduler_run_activations attached ON attached.run_id=run.id
+        WHERE run.id=? AND run.agent_id=? AND run.fencing_token=? AND run.status IN ('leased','running') AND attached.activation_id=?`)
+        .get(runId,r.agentId,fencingToken,r.continuationActivationId);
+      if(!r||!marker||r.state!=='continuation_ready'||!owned)throw Error('The working-folder result lost its exact Run custody.');
+      for(const [key,value] of Object.entries(fields))this.sqlite.prepare(`UPDATE agent_activations
+        SET payload_json=json_set(payload_json,?,json(?)) WHERE kind='context_rollover_handoff'
+        AND id IN(SELECT activation_id FROM activation_sources WHERE source_kind='context_rollover' AND source_id=?)`)
+        .run('$.workingCopyTransition.'+key,JSON.stringify(value),id);
+    })();
+  }
+
+  canKeepWorkingCopyTransition(id:string):boolean {
+    const r=this.sqlite.prepare('SELECT * FROM context_rollovers WHERE id=?').get(id) as RolloverRow|undefined,marker=this.workingCopyTransition(id);
+    if(!r||!marker||marker.mutationStarted||marker.appliedCopy||r.state!=='failed'||!r.handoff_event_id||r.replacement_input_committed_at||r.replacement_session_id)return false;
+    return Boolean(this.sqlite.prepare(`SELECT 1 FROM agents a WHERE a.id=? AND a.project_id=? AND a.active_session_id=? AND a.active_session_contract_hash=?
+      AND json_extract(a.working_copy_json,'$.id')=? AND json_extract(a.working_copy_json,'$.mode')=? AND json_extract(a.working_copy_json,'$.rootPath')=?
+      AND json_extract(a.working_copy_json,'$.state')='ready'
+      AND NOT EXISTS(SELECT 1 FROM scheduler_runs run WHERE run.agent_id=a.id AND (run.status IN ('leased','running','outcome_unknown') OR run.prompt_injection_state='injecting'))
+      AND NOT EXISTS(SELECT 1 FROM scheduler_runs run JOIN scheduler_run_activations attached ON attached.run_id=run.id
+        WHERE attached.activation_id=? AND (run.prompt_injection_state<>'not_injected' OR run.provider_session_id IS NOT NULL))
+      AND NOT EXISTS(SELECT 1 FROM agent_run_pauses p WHERE p.agent_id=a.id AND p.state IN ('paused','resume_requested'))
+      AND NOT EXISTS(SELECT 1 FROM provider_context_recovery_requests p WHERE p.agent_id=a.id AND p.state='unsupported_fenced')`)
+      .get(r.agent_id,r.project_id,r.old_provider_session_id,marker.oldContractHash,marker.oldCopy.id,marker.oldCopy.mode,marker.oldCopy.rootPath,r.continuation_activation_id));
+  }
+
+  keepWorkingCopyTransition(id:string,now=new Date().toISOString()):void {
+    this.sqlite.transaction(()=>{
+      if(!this.canKeepWorkingCopyTransition(id))throw Error('This folder change may have applied or submitted provider input. Its context must remain held.');
+      this.sqlite.prepare(`UPDATE agent_activations SET payload_json=json_set(payload_json,'$.workingCopyTransition.keptCurrent',json('true'))
+        WHERE kind='context_rollover_handoff' AND id IN(SELECT activation_id FROM activation_sources WHERE source_kind='context_rollover' AND source_id=?)`).run(id);
+      this.sqlite.prepare(`UPDATE context_rollovers SET state='completed',completion_reason=NULL,last_error=NULL,
+        terminal_at=?,updated_at=? WHERE id=? AND state='failed'`).run(now,now,id);
+    })();
+  }
+
+  /** Bind only setMode's returned canonical tuple under the exact replacement lease. */
+  recordWorkingCopyTransitionCopy(input:{id:string;runId:string;fencingToken:number;
+    previous:WorkingCopyTransition['oldCopy'];copy:WorkingCopyTransition['oldCopy']}):void {
+    this.sqlite.transaction(()=>{
+      const marker=this.workingCopyTransition(input.id),r=this.get(input.id);
+      const known=marker?.appliedCopy??marker?.oldCopy;
+      const owner=r&&this.sqlite.prepare(`SELECT a.working_copy_json FROM agents a JOIN scheduler_runs run ON run.agent_id=a.id
+        JOIN scheduler_run_activations attached ON attached.run_id=run.id
+        WHERE a.id=? AND a.project_id=? AND run.id=? AND run.fencing_token=? AND run.status IN ('leased','running')
+          AND attached.activation_id=?`).get(r.agentId,r.projectId,input.runId,input.fencingToken,r.continuationActivationId) as {working_copy_json:string}|undefined;
+      const copy=owner&&JSON.parse(owner.working_copy_json);
+      if(!r||r.state!=='continuation_ready'||!known||stableJson(known)!==stableJson(input.previous)||
+        !copy||copy.id!==input.copy.id||copy.mode!==input.copy.mode||copy.rootPath!==input.copy.rootPath)
+        throw Error('Working-folder receipt lost its exact intent or Run ownership; preserve the folder and handoff.');
+      this.sqlite.prepare(`UPDATE agent_activations SET payload_json=json_set(payload_json,'$.workingCopyTransition.appliedCopy',json(?))
+        WHERE kind='context_rollover_handoff' AND id IN(SELECT activation_id FROM activation_sources WHERE source_kind='context_rollover' AND source_id=?)`)
+        .run(JSON.stringify(input.copy),r.id);
+    })();
+  }
+
+  /** Explicit Save retry only before any replacement provider input. Never replay a handoff. */
+  retryWorkingCopyTransition(id:string,now=new Date().toISOString()):void {
+    this.sqlite.transaction(()=>{
+      const row=this.sqlite.prepare('SELECT * FROM context_rollovers WHERE id=?').get(id) as RolloverRow|undefined;
+      const marker=this.workingCopyTransition(id);
+      if(!row||!marker||row.state!=='failed'||!row.handoff_event_id||row.replacement_input_committed_at||row.replacement_session_id)
+        throw Error('Working-folder recovery is uncertain. Inspect Activity before another change.');
+      const prior=this.sqlite.prepare('SELECT payload_json FROM agent_activations WHERE id=?').get(row.continuation_activation_id) as {payload_json:string}|undefined;
+      const injected=this.sqlite.prepare(`SELECT 1 FROM scheduler_runs r JOIN scheduler_run_activations attached ON attached.run_id=r.id
+        WHERE attached.activation_id=? AND (r.prompt_injection_state<>'not_injected' OR r.provider_session_id IS NOT NULL
+          OR EXISTS(SELECT 1 FROM scheduler_prompt_injections i WHERE i.run_id=r.id AND (i.submitted_at IS NOT NULL OR i.state='outcome_unknown')))`)
+        .get(row.continuation_activation_id);
+      const known=marker.appliedCopy??marker.oldCopy;
+      const accepted=this.sqlite.prepare(`SELECT 1 FROM agents WHERE id=? AND active_session_id=? AND active_session_contract_hash=?
+        AND json_extract(working_copy_json,'$.id')=? AND json_extract(working_copy_json,'$.mode')=? AND json_extract(working_copy_json,'$.rootPath')=?`)
+        .get(row.agent_id,row.old_provider_session_id,marker.oldContractHash,known.id,known.mode,known.rootPath);
+      if(!prior||injected||!accepted)throw Error('Working-folder continuation cannot be safely retried; inspect its retained context.');
+      const attempts=(this.sqlite.prepare(`SELECT count(*) n FROM agent_activations a JOIN activation_sources s ON s.activation_id=a.id
+        WHERE s.source_kind='context_rollover' AND s.source_id=? AND a.kind='context_rollover_continuation'`).get(id) as {n:number}).n;
+      const activationId=this.createActivation({projectId:row.project_id,agentId:row.agent_id,scopeKey:row.scope_key,
+        kind:'context_rollover_continuation',priority:110,dispatchPolicy:'next_run',promptClass:'blocker',
+        dedupeKey:`working-folder-retry:${id}:${attempts}`,payload:JSON.parse(prior.payload_json),sourceKind:'context_rollover',sourceId:id,now});
+      this.sqlite.prepare(`UPDATE agent_activations SET payload_json=json_remove(payload_json,'$.workingCopyTransition.failureMessage')
+        WHERE kind='context_rollover_handoff' AND id IN(SELECT activation_id FROM activation_sources WHERE source_kind='context_rollover' AND source_id=?)`).run(id);
+      this.sqlite.prepare(`UPDATE context_rollovers SET state='continuation_ready',continuation_activation_id=?,
+        replacement_run_id=NULL,last_error=NULL,failure_signal=NULL,terminal_at=NULL,updated_at=? WHERE id=?`)
+        .run(activationId,now,id);
+    })();
   }
 
   /** Read the exact same eligibility used by the transaction that reserves
@@ -201,6 +322,7 @@ export class CoordinationV3ContextRolloverAuthority {
     threshold: number; contextWindow?: number; lowWaterMark: number;
     triggerKind?: "automatic" | "human";
     settingsTransition?: SettingsTransition;
+    workingCopyTransition?: WorkingCopyTransition;
     /** Explicit idle recovery with no provider-held unfinished work. */
     canonicalOnlyRefresh?: { fencingToken: number };
     sourceRunId: string;
@@ -225,6 +347,23 @@ export class CoordinationV3ContextRolloverAuthority {
       throw new Error("context rollover requires a bounded unique content-hash-bound recent tail");
     }
     return this.sqlite.transaction(() => {
+      if(input.workingCopyTransition){
+        const t=input.workingCopyTransition;
+        if(input.triggerKind!=='human'||input.settingsTransition||input.canonicalOnlyRefresh||
+          !['shared','separate_git'].includes(t.mode)||!['shared','separate_git'].includes(t.oldCopy.mode)||
+          !t.oldCopy.id||!t.oldCopy.rootPath||!Number.isSafeInteger(t.sourceFence)||t.sourceFence<1||
+          !/^[a-f0-9]{64}$/.test(t.oldContractHash)||!/^[a-f0-9]{64}$/.test(t.settingsHash))throw Error('Invalid exact working-folder transition');
+        const source=this.sqlite.prepare(`SELECT 1 FROM agents a JOIN scheduler_runs r ON r.agent_id=a.id
+          WHERE a.id=? AND a.project_id=? AND a.active_session_id=? AND a.active_session_contract_hash=?
+            AND json_extract(a.working_copy_json,'$.id')=? AND json_extract(a.working_copy_json,'$.rootPath')=? AND json_extract(a.working_copy_json,'$.mode')=?
+            AND r.id=? AND r.provider_session_id=a.active_session_id AND r.fencing_token=? AND r.scope_key=?
+            AND r.status='completed' AND r.prompt_injection_state='injected'
+            AND EXISTS(SELECT 1 FROM scheduler_prompt_injections i WHERE i.run_id=r.id AND i.kind='turn' AND i.state='acknowledged')
+            AND NOT EXISTS(SELECT 1 FROM scheduler_runs later WHERE later.agent_id=a.id AND (later.status IN ('leased','running','outcome_unknown')
+              OR later.prompt_injection_state='injecting' OR later.fencing_token>r.fencing_token AND later.prompt_injection_state<>'not_injected'))`)
+          .get(input.agentId,input.projectId,input.oldProviderSessionId,t.oldContractHash,t.oldCopy.id,t.oldCopy.rootPath,t.oldCopy.mode,input.sourceRunId,t.sourceFence,input.scopeKey);
+        if(!source)throw Error('The saved working-folder context boundary changed; context and folder were retained.');
+      }
       if(input.settingsTransition){
         const t=input.settingsTransition;
         const sameRuntimeSettings=t.model===t.targetModel && (t.effort??null)===(t.targetEffort??null) && (t.speed??'standard')===(t.targetSpeed??'standard');
@@ -376,6 +515,11 @@ export class CoordinationV3ContextRolloverAuthority {
       // became durable. That retry receives a new rollover ID and fresh frozen
       // boundary; recovery of a committed handoff remains bound to the original
       // record and can never be mistaken for a manual retry.
+      if(existing&&input.workingCopyTransition&&!(existing.state==='completed'&&this.workingCopyTransition(existing.id)?.keptCurrent===true)){
+        const retained=this.workingCopyTransition(existing.id);
+        if(!retained||stableJson(retained)!==stableJson(input.workingCopyTransition))
+          throw Error('Another context transition already owns this saved session; inspect its status before changing folders.');
+      }
       if (existing && input.settingsTransition) {
         const prior=this.settingsTransition(existing.id);
         if(prior && stableJson(prior)===stableJson(input.settingsTransition)) {
@@ -399,7 +543,7 @@ export class CoordinationV3ContextRolloverAuthority {
           existing.handoff_event_id === null &&
           existing.replacement_run_id === null;
         const nextHeadroomCycle = existing.id === latest?.id &&
-          existing.state === "completed" && ["native_compaction", "headroom_restored"].includes(existing.completion_reason ?? "") &&
+          existing.state === "completed" && (["native_compaction", "headroom_restored"].includes(existing.completion_reason ?? "") || input.workingCopyTransition&&this.workingCopyTransition(existing.id)?.keptCurrent===true) &&
           (input.triggerKind === "human" || !matchingBoundary &&
             existing.compaction_cutoff_ordinal < input.compactionCutoffOrdinal &&
             existing.source_run_id !== input.sourceRunId);
@@ -479,6 +623,7 @@ export class CoordinationV3ContextRolloverAuthority {
         dedupeKey: `context-rollover-handoff:${id}`,
         payload: {
           rolloverId: id,
+          ...(input.workingCopyTransition?{workingCopyTransition:input.workingCopyTransition}:{}),
           ...(input.settingsTransition?{settingsTransition:input.settingsTransition,dispatch:{
             engine:input.settingsTransition.engineId,model:input.settingsTransition.model,
             ...(input.settingsTransition.effort?{effort:input.settingsTransition.effort}:{}),
@@ -623,7 +768,7 @@ export class CoordinationV3ContextRolloverAuthority {
       `).get(id) as { count: number }).count;
       if (handoffAttempts >= 2) return { rollover: current, scheduled: false };
       const diagnostic = boundedInternalRolloverFailure(validationError);
-      const transition=this.settingsTransition(id);
+      const transition=this.settingsTransition(id),folder=this.workingCopyTransition(id);
       this.sqlite.prepare(`
         UPDATE context_rollovers SET last_error = ?, updated_at = ?
         WHERE id = ? AND state = 'requested' AND handoff_event_id IS NULL
@@ -640,6 +785,7 @@ export class CoordinationV3ContextRolloverAuthority {
         payload: {
           rolloverId: id,
           retryAttempt: 1,
+          ...(folder?{workingCopyTransition:folder}:{}),
           ...(transition?{settingsTransition:transition,dispatch:{engine:transition.engineId,model:transition.model,
             ...(transition.effort?{effort:transition.effort}:{}),...(transition.speed?{speed:transition.speed}:{})}}:{}),
           instruction: `The previous continuation handoff could not be used because ${diagnostic}. Retry once. ${CONTEXT_ROLLOVER_HANDOFF_GUIDANCE}`,
