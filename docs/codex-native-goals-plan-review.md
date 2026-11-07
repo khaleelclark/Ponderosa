@@ -1,4 +1,10 @@
-# Codex native goals, plan, review and structured output
+# Historical Codex native goals, plan, review and structured-output implementation
+
+This report records the implementation stage at the base below. Its unavailable
+and deferred statements are historical, not current command availability or test
+results. The later scheduler-owned goal creation/resume path is described in
+[current native goal availability](codex-native-goal-continuation-boundary.md#current-availability).
+The older external-operation/recovery limits remain distinct from that path.
 
 Source implementation at base `95448f0e52e350e306dc1d7c262e43292468a01c`.
 No tests, checks, builds, types, Node, native harness or browser execution were performed in this lane. Deferred fixture source is `tests/agents/codex-native-actions.test.mjs`. Source implementation is not live parity acceptance or Bible #4 completion.

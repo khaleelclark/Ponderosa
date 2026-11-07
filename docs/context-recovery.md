@@ -9,7 +9,10 @@ terminal Request/Join, erases history, or changes human permissions.
 `GET /api/agents/:id/context-recoveries` returns native support, the exact eligible
 unknown boundary, source evidence and any active hold/progress. It never opens or
 probes a provider. Eligibility requires an accepted tracked native session, normal
-contract hash, latest injected Run terminal `outcome_unknown`, and no busy Run,
+contract hash and the exact latest injected source boundary. That source is either
+an `outcome_unknown` Run, or a completed Run whose original turn was acknowledged
+but whose injection remains `injecting` with an `outcome_unknown` steer. Completion
+of the original turn does not settle that interruption. There must be no busy Run,
 pause or context transition. Source evidence includes input/system hashes, event
 position and attached Request IDs. Prior effects and native-tail completeness stay
 explicitly unknown.

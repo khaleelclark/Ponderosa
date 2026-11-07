@@ -576,13 +576,9 @@ Your profile identity controls how Agents address you throughout Ponderosa.
 Pictures are stored in managed workspace data. Use PNG, JPEG, WebP, GIF or AVIF
 (up to 10 MiB); HEIC is unsupported because browser rendering is inconsistent.
 
-For a local browser, use a dedicated Chrome/Edge window with extension 0.4.1.
-Pairing can happen before sign-in. Existing and new application tabs in that
-window are included; other windows stay outside access. Agent actions show a
-temporary cursor. Sign-in pauses control while retaining the pairing; complete
-sign-in directly, then use Resume browser access in the extension. Manual pause
-is available anytime. Agents can attach PDF, DOCX and text files from their Chat
-(up to 10 MiB).
+Local-window extension pairing is deferred for this release. Use the Chat’s
+hosted browser or an explicitly shared saved browser as described in
+[Use the internal browser](#use-the-internal-browser).
 
 Opening Rename from the Chat menu keeps keyboard focus in the name field, including
 at larger browser zoom. Menu actions wait for the menu to close before opening the

@@ -1,12 +1,23 @@
-# Provider context reconstruction: open Bible #1 boundary
+# Historical provider context-reconstruction boundary
+
+Current source includes before-admission managed handoffs for supported settings,
+workspace guidance/profile and voice transitions. Missing exact saved instructions
+and changed or unattributable memory exposure retain their specific queued-work
+holds for context review. See [current context
+recovery](context-recovery.md#workspace-guidance-and-profile-changes) and
+`apps/server/src/context-transition-admission.ts`. This does not claim every
+provider, legacy contract or revoked-information reconstruction is supported.
+
+The observations below describe the older source pin and its then-open questions;
+they are not a current inventory of reset callers or missing handoff support.
 
 Source reviewed: `6409981942ad2fad5b711b2e8a02a566b9e37042`. The authoritative
 Ponderosa Behavior Bible 2 has SHA-256
 `ac314d93732e631bb042b8d3d2dc802ba08446812f99ba931023d2e02b14ab58`.
-This records current source behavior and a remaining implementation question;
+This records behavior and an implementation question at that historical pin;
 it does not grant an exception or establish that Bible #1 is satisfied.
 
-## Current replacement triggers
+## Replacement triggers at the historical pin
 
 `apps/server/src/routes/agent-run-preparation.ts` can clear a retained provider
 session and construct a fresh one without taking the ordinary managed-rollover
@@ -48,7 +59,7 @@ conflict with that rule; no approval of an exception is recorded here. The
 existing tests for voice-memory exposure, bounded history and objective
 reconstruction do not prove full-history parity across these resets.
 
-## Work still required
+## Work identified at the historical pin
 
 The existing managed rollover requires a verified original provider session and
 source-Run boundary, an exact canonical tail, and measured automatic pressure

@@ -1,8 +1,32 @@
-# Codex native continuation boundary and command intake successor
+# Codex native goal availability and historical continuation boundary
+
+## Current availability
+
+Source checked at `a4e6906499fc67e5e0c35a77d422d2288dceff03`: canonical human
+`/goal-create` and `/goal-resume` are supported prompt actions admitted through the
+scheduler. They are not runtime commands or text-only steers. Creation validates
+that no goal exists, plus the bounded objective and optional positive/null budget;
+resume requires the exact paused goal and this Agent’s accepted retained session.
+Both reject attachments and coalesced source bundles.
+
+The executor dispatches `startNativeGoal` only on the qualified built-in Codex
+session owned by the current Run. The session checks current authority before and
+after activation; a lost or malformed activation result stays unknown and is not
+repeated. The standalone `invokeCodexGoal('goal-resume')` helper still refuses:
+that helper is not the canonical scheduler-owned prompt-action path.
+
+This implemented campaign path supersedes the blanket unavailable statements in
+the historical notes below. It does not add an external per-continuation lease
+RPC, durable original-operation lookup, or permission to replay uncertain work.
+Source availability is not universal installed-provider or parity qualification.
+Direct source: `native-goal-command-availability.ts`, `codex-native-actions.ts`,
+`CodexAppServerSession.startNativeGoal`, and `routes/provider-run-executor.ts`.
+
+## Historical implementation notes
 
 Parent implementation: `f1ba5e152f8fa24d41d5fc8bfd89af673c8770ea`, isolated writer branch `phase2/codex-native-goals-plan`, checkout `/tmp/ponderosa-codex-goals-plan`. This successor changes server source, docs and deferred fixture source only. No web writes or execution validation.
 
-## Native continuation: exact external block
+### Native continuation: external contract investigated at the parent pin
 
 Primary source is OpenAI Codex pinned `cb1bc0ae4ed996c67a6e118bf79a7435f0d3f0d2`. These are source contracts, not installed-version evidence:
 
