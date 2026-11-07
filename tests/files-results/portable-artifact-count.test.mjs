@@ -132,9 +132,12 @@ test('browser preview uses the same count ceiling and keeps complete counts',asy
    messages.length=0;const pkg=packageFor(count);
    await globalThis.self.onmessage({data:{id:count,blob:new Blob([JSON.stringify(pkg)])}});
    const result=messages.at(-1);
-   if(count<=AGENT_PACKAGE_MAX_AGENTS){assert.equal(result.preview.agentCount,count);assert.equal(result.preview.agentTitles.length,count)}
+   if(count<=AGENT_PACKAGE_MAX_AGENTS){assert.equal(result.preview.agentCount,count);assert.equal(result.preview.agentTitles.length,count);assert.deepEqual(result.preview.agentIdentities,pkg.agents.map(agent=>({ref:agent.ref,title:agent.title.trim().slice(0,80)||'Imported Agent'})))}
    else assert.match(result.error,/10001.*10000/u);
   }
+  const named=packageFor(4);named.agents[0].title='Repeated';named.agents[1].title='Unambiguous';named.agents[2].title='Repeated';named.agents[3].title='';
+  await globalThis.self.onmessage({data:{id:77,blob:new Blob([JSON.stringify(named)])}});
+  assert.deepEqual(messages.at(-1).preview.agentIdentities,named.agents.map(agent=>({ref:agent.ref,title:agent.title||'Imported Agent'})),'existing worker binds duplicate and empty names to their exact source refs');
   for(const field of ['initialInstructions','history']){
    const pkg=packageFor();pkg.agents[0][field]=field==='history'?[{role:'user',text:'\ud800'}]:'\udfff';
    await globalThis.self.onmessage({data:{id:1,blob:new Blob([JSON.stringify(pkg)])}});

@@ -24,11 +24,11 @@ export async function importRequestRecoveryRegression():Promise<void>{
  const calls:Array<{requestId:string;metadata:string;fingerprint:string;body:string}>=[];let statusChecks=0,lookupFound=false,operation:any;
  window.Worker=class {
   onmessage?: (event:MessageEvent)=>void;
-  postMessage({id}:{id:number}){queueMicrotask(()=>this.onmessage?.({data:{id,preview:{sourceLabel:'fixture',hasOutputRoles:false,hasWorkingFiles:false,mode:'template',kind:'agent',agentCount:1,artifactCount:0,historyMessageCount:0,agentTitles:['Imported'],sourceEngines:['codex'],elevatedAgentRefs:[],invalidPermissionShape:false}}} as MessageEvent));}
+  postMessage({id}:{id:number}){queueMicrotask(()=>this.onmessage?.({data:{id,preview:{sourceLabel:'fixture',hasOutputRoles:false,hasWorkingFiles:false,mode:'template',kind:'agent',agentCount:1,artifactCount:0,historyMessageCount:0,agentTitles:['Repeated','Clear source','Repeated','Imported Agent'],agentIdentities:[{ref:'source-a',title:'Repeated'},{ref:'source-c',title:'Clear source'},{ref:'source-b',title:'Repeated'},{ref:'source-empty',title:'Imported Agent'}],sourceEngines:['codex'],elevatedAgentRefs:[],invalidPermissionShape:false}}} as MessageEvent));}
   terminate(){}
  } as unknown as typeof Worker;
  api.listAgents=async()=>[];
- api.previewAgentAccess=async()=>({reviewSha256:'a'.repeat(64),source:[],destination:{restrictedCapabilityIds:[],restrictionSources:{},layers:[]}});
+ api.previewAgentAccess=async()=>({reviewSha256:'a'.repeat(64),source:[{ref:'source-c'},{ref:'source-b'},{ref:'source-a'},{ref:'source-empty'},{ref:'source-missing'}],destination:{restrictedCapabilityIds:[],restrictionSources:{},layers:[]}});
  api.startAgentPackageImport=async(projectId,blob,metadata,requestId,fingerprint)=>{
   const body=new Blob([JSON.stringify(metadata)+'\n',blob],{type:'application/vnd.ponderosa.agent-import'});
   const expected=agentImportFingerprintHeader(await fingerprintAgentImport(body));
@@ -65,6 +65,8 @@ export async function importRequestRecoveryRegression():Promise<void>{
   assert(listPendingAgentImports(product).length===0,'fresh browser context has no retained import');
   render('first');await settle();choose(packageText,'original.json');await settle();
   button('Review access settings').click();await settle();
+  assert(host.textContent?.includes('Clear source: No source restrictions')&&!host.textContent?.includes('source-c: No source restrictions'),'review uses exact ref/name binding rather than source order');
+  for(const label of ['Repeated (source-a)','Repeated (source-b)','Imported Agent (source-empty)','Imported Agent (source-missing)'])assert(host.textContent?.includes(label+': No source restrictions'),'ambiguous or missing source names retain their exact ref');
   const label=Array.from(host.querySelectorAll('label')).find(item=>item.textContent?.startsWith('Restrictions for imported Agents'))!;
   openSelect(document.getElementById(label.htmlFor));await settle();
   (Array.from(document.querySelectorAll('[role=option]')).find(item=>item.textContent==='Keep destination restrictions') as HTMLElement).click();await settle();

@@ -11,6 +11,7 @@ export interface PortableAgentPreview {
   artifactCount: number;
   historyMessageCount: number;
   agentTitles: string[];
+  agentIdentities?: Array<{ref:string;title:string}>;
   sourceEngines: string[];
   elevatedAgentRefs: string[];
   invalidPermissionShape: boolean;

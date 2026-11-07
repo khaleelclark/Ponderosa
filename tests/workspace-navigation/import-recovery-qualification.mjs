@@ -7,7 +7,7 @@ import path from 'node:path';
 import {fixture,until} from '../shared/fixture.mjs';
 const out=process.env.QUALIFICATION_DIRECTORY;assert(out);await mkdir(out,{recursive:true});
 const {chromium}=createRequire(new URL('../../apps/server/package.json',import.meta.url))('playwright-core');
-const result={kind:'Synthetic template import, lost acceptance response, status-only recovery',sourceHead:'01931ae045e71f1b086b01e2f21813ccabbe2aa0',cells:[],cleanup:[]};
+const result={kind:'Synthetic template import, lost acceptance response, status-only recovery',sourceHead:process.env.QUALIFICATION_SOURCE_HEAD??'01931ae045e71f1b086b01e2f21813ccabbe2aa0',cells:[],cleanup:[]};
 let f,browser,listener,store;
 const persist=()=>writeFile(path.join(out,'result.json'),JSON.stringify(result,null,2));
 try{
@@ -51,6 +51,7 @@ try{
    await picture('package-reviewed');
    await page.getByRole('button',{name:'Review access settings',exact:true}).click();
    const restrictions=page.getByRole('combobox',{name:'Restrictions for imported Agents',exact:true});await restrictions.click();await page.getByRole('option',{name:'Keep destination restrictions',exact:true}).click();
+   for(const title of [sourceAgent.title,child.title])assert.equal(await page.getByText(`${title}: No source restrictions`,{exact:true}).count(),1,'actual source Agent names are readable and bound to their package refs');
    await picture('explicit-destination-restrictions');
    await page.getByRole('button',{name:'Import',exact:true}).click();
    await page.getByText('The original request may still be running. Check its status or retry the exact same package; no new import will be started automatically.',{exact:true}).waitFor();
@@ -64,7 +65,10 @@ try{
    await page.getByRole('heading',{name:'Import complete',exact:true}).waitFor().catch(async()=>{await page.getByText('Import complete',{exact:true}).waitFor();});
    const operation=await (await fetch(`${origin}/api/projects/${dest.projectId}/agent-import-operations/${accepted.id}`)).json();
    assert.equal(operation.status,'completed');assert.equal(operation.requestId,accepted.requestId);assert(operation.result);assert.equal(operation.result.agentIds.length,2);
-   row.completedOperation=operation;await picture('import-complete');
+   row.completedOperation=operation;
+   const doneBounds=await page.getByRole('button',{name:'Done',exact:true}).boundingBox(),viewport=page.viewportSize();
+   assert(doneBounds&&doneBounds.y>=0&&doneBounds.y+doneBounds.height<=viewport.height,'completion Done is visible without scrolling');row.doneBounds={...doneBounds,viewport};
+   await picture('import-complete');
    await page.getByRole('button',{name:'Done',exact:true}).click();
    assert.equal(await page.getByRole('button',{name:'Check import status',exact:true}).count(),0);
    const imported=store.listAgents(dest.projectId);assert.equal(imported.length,beforeIds.length+2);

@@ -32,7 +32,7 @@ import {
 import type { SelectChangeEvent } from "@mui/material/Select";
 import { AGENT_PACKAGE_MAX_BYTES, AGENT_PACKAGE_LIMIT_LABEL, AGENT_PACKAGE_ARTIFACT_LIMIT_LABEL, type AgentDto, type ConversationDto, type EngineDto, type ProjectDto } from "@ponderosa/core";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { copyText } from "../clipboard";
 import { createClientId } from "../clientId";
@@ -149,6 +149,11 @@ export function ImportAgentForm({
   const [accessAction,setAccessAction]=useState<''|'keep_destination'|'use_source'>('');
 
   const [packagePreview, setPackagePreview] = useState<PortableAgentPreview>();
+  const sourceAgentNames=useMemo(()=>{
+    const identities=packagePreview?.agentIdentities??[],counts=new Map<string,number>();
+    for(const {title} of identities)counts.set(title,(counts.get(title)??0)+1);
+    return new Map(identities.map(({ref,title})=>[ref,title==="Imported Agent"||(counts.get(title)??0)>1?`${title} (${ref})`:title]));
+  },[packagePreview]);
   const [inspecting, setInspecting] = useState(false);
   const [inspectionPhase, setInspectionPhase] = useState<string>();
   const [fileName, setFileName] = useState<string>();
@@ -609,7 +614,7 @@ export function ImportAgentForm({
       </Alert> : null}
       {error ? <Alert severity="error">{error}</Alert> : null}
       {accessReview&&<Paper variant="outlined" sx={{p:2}}><Typography component="h3" variant="subtitle1">Capability restrictions</Typography>
-        {accessReview.source.map(item=><Typography key={item.ref} variant="body2">{item.ref}: {item.settings?.restrictedCapabilityIds?.join(', ')||'No source restrictions'}</Typography>)}
+        {accessReview.source.map(item=><Typography key={item.ref} variant="body2" sx={{overflowWrap:"anywhere"}}>{sourceAgentNames.get(item.ref)??`Imported Agent (${item.ref})`}: {item.settings?.restrictedCapabilityIds?.join(', ')||'No source restrictions'}</Typography>)}
         <Typography variant="body2" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>Current destination policy: {accessReview.destination.restrictedCapabilityIds.join(', ')||'No capability restrictions'}</Typography>
         <TextField select fullWidth label="Restrictions for imported Agents" value={accessAction} onChange={event=>{setAccessAction(event.target.value as typeof accessAction);importRequestId.current=createClientId();}} sx={{mt:1}}><MenuItem value="keep_destination">Keep destination restrictions</MenuItem><MenuItem value="use_source">Apply source restrictions to new Agents</MenuItem></TextField>
         <Typography variant="body2">Memory and saved-browser access require separate choices in Settings.</Typography>

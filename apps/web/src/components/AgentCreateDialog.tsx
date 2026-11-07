@@ -677,11 +677,11 @@ function ScopedAgentCreateSurface({
       <Stack spacing={2}>
         {busyStatus}
         <Stack
-          direction="row"
+          direction={{xs:"column",sm:"row"}}
           spacing={1}
-          sx={{ alignItems: "center", justifyContent: "space-between" }}
+          sx={{ alignItems: {xs:"flex-start",sm:"center"}, justifyContent: "space-between" }}
         >
-          <div>
+          <div style={{minWidth:0}}>
             <Typography variant="h6">Import Agent package</Typography>
             <Typography variant="body2" color="text.secondary">
               Import one Agent or an organization into a chat.
@@ -690,6 +690,7 @@ function ScopedAgentCreateSurface({
           <Button
             color="inherit"
             startIcon={<ArrowBackIcon />}
+            sx={{flexShrink:0}}
             disabled={pending}
             onClick={() => setMode("create")}
           >

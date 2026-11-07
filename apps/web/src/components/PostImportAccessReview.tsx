@@ -39,9 +39,9 @@ function BrowserChoice({suggestion,onStateChange,title}:{suggestion:Suggestion;o
   <Typography variant="body2">Source: saved access {source.savedBrowserAllowed===undefined?'unspecified':source.savedBrowserAllowed?'allowed':'denied'} · {source.browserMode??'unspecified'}{source.sourceProfileName?` · ${source.sourceProfileName} (source label)`:''}</Typography>
   <Typography variant="body2">Destination: saved access {current.data?(current.data.saved.agentIds.includes(agentId)?'allowed':'denied'):'unavailable'} · {current.data?.preference.profileName??current.data?.preference.mode??'unavailable'}</Typography>
   {(current.error||profiles.error||saveAccess.error||saveProfile.error)&&<Alert severity="error">{current.error?.message||profiles.error?.message||saveAccess.error?.message||saveProfile.error?.message}</Alert>}
-  <TextField select label="Access to the current destination saved browser" value={saved} disabled={!current.data||saveAccess.isPending} onChange={event=>setSaved(event.target.value)}><MenuItem value="">Keep current access</MenuItem><MenuItem value="allow">Allow</MenuItem><MenuItem value="deny">Deny</MenuItem></TextField>
+  <TextField select fullWidth SelectProps={{SelectDisplayProps:{style:{whiteSpace:"normal",overflowWrap:"anywhere"}}}} label="Destination saved-browser access" value={saved} disabled={!current.data||saveAccess.isPending} onChange={event=>setSaved(event.target.value)}><MenuItem value="">Keep current access</MenuItem><MenuItem value="allow">Allow</MenuItem><MenuItem value="deny">Deny</MenuItem></TextField>
   <Button disabled={!saved||!current.data||saveAccess.isPending} onClick={()=>saveAccess.mutate()}>Apply saved-browser choice</Button>
-  <TextField select label="Destination browser profile" value={profile} disabled={!current.data||!profiles.data||saveProfile.isPending} onChange={event=>setProfile(event.target.value)}><MenuItem value="">Keep current profile</MenuItem><MenuItem value="disposable">Disposable browser</MenuItem>{profiles.data?.map(item=><MenuItem key={item.id} value={item.id}>{item.name}</MenuItem>)}</TextField>
+  <TextField select fullWidth SelectProps={{SelectDisplayProps:{style:{whiteSpace:"normal",overflowWrap:"anywhere"}}}} label="Destination browser profile" value={profile} disabled={!current.data||!profiles.data||saveProfile.isPending} onChange={event=>setProfile(event.target.value)}><MenuItem value="">Keep current profile</MenuItem><MenuItem value="disposable">Disposable browser</MenuItem>{profiles.data?.map(item=><MenuItem key={item.id} value={item.id}>{item.name}</MenuItem>)}</TextField>
   <Button disabled={!profile||!current.data||saveProfile.isPending} onClick={()=>saveProfile.mutate()}>Apply profile choice</Button>
   <Button onClick={()=>{void current.refetch();void profiles.refetch();}}>Reload browser settings</Button>
  </Stack></Paper>;
@@ -60,7 +60,7 @@ export function PostImportAccessReview({result,onDone,projectId}:{result:ImportS
  const agentTitle=(id:string)=>(agents.data??mappedAgents.data)?.find(item=>item.id===id)?.title??`Imported Agent ${id}`;
  const memory=new Map<string,Suggestion[]>();
  for(const item of suggestions)if(item.source.readGlobalMemory!==undefined)memory.set(item.conversationId,[...(memory.get(item.conversationId)??[]),item]);
- return <Stack spacing={2}><Typography variant="h6">Import complete</Typography>
+ return <Stack spacing={2}><Stack direction="row" spacing={1} sx={{alignItems:"center",justifyContent:"space-between"}}><Typography variant="h6">Import complete</Typography><Button variant="contained" disabled={busy} onClick={()=>dirty?setDiscard(true):onDone()}>Done</Button></Stack>
   {(mappedAgents.error||mappedChats.error)&&<Alert severity="error">{mappedAgents.error?.message||mappedChats.error?.message}</Alert>}
   <NativeApplications result={result}/>
   {result.workingFilesDestination&&<Typography>Restored folder: {result.workingFilesDestination}</Typography>}
@@ -68,7 +68,6 @@ export function PostImportAccessReview({result,onDone,projectId}:{result:ImportS
   {result.liveWorkingRoots?.map(root=><Typography key={JSON.stringify([root.ref,root.path])}>Live working folder: {root.path} · {root.agentIds.map(agentTitle).join(', ')}</Typography>)}
   {[...memory].map(([chatId,items])=><MemoryChoice key={chatId} chatId={chatId} suggestions={items} chatTitle={(chats.data??mappedChats.data)?.find(item=>item.id===chatId)?.title??'Destination Chat'} agentTitle={agentTitle} onStateChange={onStateChange}/>)}
   {suggestions.filter(item=>item.source.savedBrowserAllowed!==undefined||item.source.browserMode!==undefined).map(item=><BrowserChoice key={item.agentId} suggestion={item} title={agentTitle(item.agentId)} onStateChange={onStateChange}/>)}
-  <Button variant="contained" disabled={busy} onClick={()=>dirty?setDiscard(true):onDone()}>Done</Button>
   <ConfirmDialog open={discard} title="Unapplied settings" confirmLabel="Discard choices" cancelLabel="Keep editing" onCancel={()=>setDiscard(false)} onConfirm={onDone}>Discard unapplied choices?</ConfirmDialog>
  </Stack>;
 }
