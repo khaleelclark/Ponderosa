@@ -14,9 +14,9 @@ const App = lazy(() => {
   if (isProjectRoute(parseRoute(window.location.pathname, window.location.search))) {
     void loadProjectShell().catch(() => {});
   }
-  return import("./App");
+  return import(/* webpackFetchPriority: "high" */ "./App");
 });
-const BranchesView=lazy(()=>import('./components/BranchesView').then(module=>({default:module.BranchesView})));
+const BranchesView=lazy(()=>import(/* webpackFetchPriority: "high" */ './components/BranchesView').then(module=>({default:module.BranchesView})));
 import { loadProjectShell } from "./projectShellLoader";
 import { parseRoute } from "./routing";
 import { prefetchConversationWorkspace } from "./conversationWorkspacePrefetch";
