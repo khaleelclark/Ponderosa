@@ -117,6 +117,73 @@ test('Codex occupancy and capacity observations stay with their exact provider t
 });
 
 
+test('Codex context snapshots and native status require a complete reported occupancy', async () => {
+  const { CodexAppServerSession, codexContextUsageSnapshot, mapCodexTokenUsage } = await import('../../packages/engines/dist/codex-app-server.js');
+  const session = Object.create(CodexAppServerSession.prototype);
+  session.engineAgentId = 'owned-generation';
+  session.activeModel = 'fixture';
+  session.contextUsageGate = { observe() {} };
+  session.nativeCommandNotifications = new WeakSet();
+  session.capabilities = async () => ({ commands: [{ name: 'status', invocation: 'runtime', status: 'available' }] });
+  const rpcMethods = [];
+  session.rpc = { request: async method => { rpcMethods.push(method); return {}; } };
+  const cases = [
+    [{ cachedInputTokens: 4 }, undefined],
+    [{ reasoningOutputTokens: 2 }, undefined],
+    [{ inputTokens: 7 }, undefined],
+    [{ outputTokens: 9 }, undefined],
+    [{ inputTokens: 0 }, undefined],
+    [{ inputTokens: 7, outputTokens: 9 }, 16],
+    [{ totalTokens: 0 }, 0],
+    [{ inputTokens: 0, outputTokens: 0 }, 0],
+    [{ inputTokens: 7, outputTokens: 9, totalTokens: 20 }, 20],
+  ];
+  for (const [last, expected] of cases) {
+    const tokenUsage = { last, total: { totalTokens: 900000 }, modelContextWindow: 200000 };
+    const snapshot = codexContextUsageSnapshot(tokenUsage);
+    if (expected === undefined) {
+      assert.equal(snapshot, undefined);
+      assert.deepEqual(mapCodexTokenUsage(last), last, 'Partial billing counters remain available');
+    } else assert.deepEqual(snapshot, { usedTokens: expected, aggregateTokens: 900000, modelContextWindow: 200000 });
+    session.observeNotification({ method: 'thread/tokenUsage/updated', params: { threadId: session.engineAgentId, turnId: 'turn', tokenUsage } });
+    const status = await session.invokeCommand('status');
+    if (expected === undefined) {
+      assert.equal(session.contextUsage(), undefined);
+      assert.match(status.message, /Context occupancy unavailable/);
+      assert.doesNotMatch(status.message, /Context (?:\d|occupancy \d)/);
+    } else {
+      assert.equal(session.contextUsage().usedTokens, expected);
+      assert.ok(status.message.includes(`${expected.toLocaleString()} of ${(200000).toLocaleString()} tokens`));
+      if (expected === 0) assert.match(status.message, /Context 0% used/);
+    }
+  }
+  assert.deepEqual(rpcMethods, cases.map(() => 'account/rateLimits/read'));
+});
+
+test('a fresh partial Codex usage update clears stale occupancy without accepting a foreign or no-data update', async () => {
+  const { CodexAppServerSession } = await import('../../packages/engines/dist/codex-app-server.js');
+  const session = Object.create(CodexAppServerSession.prototype);
+  session.engineAgentId = 'owned-generation';
+  session.contextUsageGate = { observe() {} };
+  session.nativeCommandNotifications = new WeakSet();
+  session.capabilities = async () => ({ commands: [{ name: 'status', invocation: 'runtime', status: 'available' }] });
+  session.rpc = { request: async () => ({}) };
+  const notice = (last, threadId = session.engineAgentId) => ({ method: 'thread/tokenUsage/updated', params: { threadId, turnId: 'turn', tokenUsage: { last, modelContextWindow: 200000 } } });
+  for (const partial of [{ cachedInputTokens: 4 }, { inputTokens: 7 }, { outputTokens: 9 }]) {
+    session.observeNotification(notice({ totalTokens: 1200 }));
+    session.observeNotification(notice(partial, 'foreign-generation'));
+    session.observeNotification({ method: 'unrelated/updated', params: { threadId: session.engineAgentId } });
+    session.observeNotification({ method: 'thread/tokenUsage/updated', params: { threadId: session.engineAgentId } });
+    assert.equal(session.contextUsage().usedTokens, 1200, 'Only fresh owned usage data changes occupancy');
+    session.compactOperation = { turnId: 'turn', itemCompleted: true, closed: false, usage: { usedTokens: 1200 } };
+    session.observeNotification(notice(partial));
+    assert.equal(session.contextUsage(), undefined);
+    assert.equal(session.compactOperation.usage, undefined, 'The same native operation cannot retain its stale measurement');
+    assert.match((await session.invokeCommand('status')).message, /Context occupancy unavailable/);
+    session.compactOperation = undefined;
+  }
+});
+
 test('Claude context includes actual request-local output while missing output stays an explicit partial checkpoint', async () => {
   const { ClaudeContextUsage } = await import('../../packages/engines/dist/claude-context-usage.js');
   const { projectAgentEvent } = await import('../../packages/engines/dist/agent-event-projection.js');

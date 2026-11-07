@@ -415,13 +415,13 @@ export function codexContextUsageSnapshot(tokenUsage: {
 } | undefined): CodexContextUsage | undefined {
   const aggregate = mapCodexTokenUsage(tokenUsage?.total);
   const last = mapCodexTokenUsage(tokenUsage?.last);
-  if (!last) return undefined;
+  if (last?.totalTokens === undefined) return undefined;
   const modelContextWindow = typeof tokenUsage?.modelContextWindow === "number" &&
     Number.isFinite(tokenUsage.modelContextWindow) && tokenUsage.modelContextWindow > 0
     ? tokenUsage.modelContextWindow
     : undefined;
   return {
-    usedTokens: last.totalTokens ?? (last.inputTokens ?? 0) + (last.outputTokens ?? 0),
+    usedTokens: last.totalTokens,
     ...(aggregate?.totalTokens !== undefined ? { aggregateTokens: aggregate.totalTokens } : {}),
     ...(modelContextWindow ? { modelContextWindow } : {}),
   };
@@ -458,7 +458,7 @@ export function formatCodexStatus(input: {
   } else if (input.context) {
     parts.push(`Context occupancy ${input.context.usedTokens.toLocaleString()} tokens; context-window size not reported`);
   } else {
-    parts.push("Context usage not yet reported");
+    parts.push("Context occupancy unavailable");
   }
   parts.push(...formatCodexRateLimits(input.rateLimits));
   return parts.join(" · ");
@@ -989,10 +989,13 @@ export class CodexAppServerSession implements RuntimeSession {
       } | undefined;
       const usage = params?.threadId === this.engineAgentId
         ? codexContextUsageSnapshot(params.tokenUsage) : undefined;
-      if (usage) {
+      if (params?.threadId === this.engineAgentId && params.tokenUsage !== undefined) {
+        // A fresh partial report invalidates the prior complete occupancy.
         this.latestContextUsage = usage;
         if (compact && !compact.closed && compact.itemCompleted &&
             object(notification.params)?.turnId === compact.turnId) compact.usage = usage;
+      }
+      if (usage) {
         if (this.nativeCommandNotifications.has(notification) && (!this.activeTurnId || this.activeTurnId === compact?.turnId)) {
           const total = mapCodexTokenUsage(params?.tokenUsage?.total);
           if (total) { this.baselineTotal = total; this.latestTotal = total; }
@@ -1344,7 +1347,7 @@ export class CodexAppServerSession implements RuntimeSession {
           if (total || requestUsage) {
             const contextUsage = codexContextUsageSnapshot(params.tokenUsage);
             const modelContextWindow = contextUsage?.modelContextWindow;
-            if (contextUsage) this.latestContextUsage = contextUsage;
+            this.latestContextUsage = contextUsage;
 
             // A resumed thread replays its prior cumulative total before the new
             // turn's events. That checkpoint is the durable interval baseline.
