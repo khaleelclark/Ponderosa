@@ -13,10 +13,9 @@ import type {
 } from "@ponderosa/core";
 import { and, asc, eq, isNotNull } from "drizzle-orm";
 import type { CommunicationEvent } from "@ponderosa/core";
-import { agentMentionHandleBase } from "@ponderosa/core";
 import type { Db } from "./db.js";
 import { messages } from "./schema.js";
-import { userDmAgentIds } from "./store-communication.js";
+import { directMessageAgentBindings } from "./store-communication.js";
 import { communicationMentionBindings } from "./store-mention-bindings.js";
 
 type Page<T> = (agentId: string, input: { limit: number }) => HistoryPageDto<T>;
@@ -79,14 +78,7 @@ export class AgentAuditReadModel {
           ? communication.sender.agentId
           : undefined;
         const directMessageAgents = communication
-          ? userDmAgentIds(communication).map((directAgentId) => {
-              const directAgent = this.getAgent(directAgentId);
-              return {
-                id: directAgentId,
-                title: directAgent?.title ?? communication.identity?.recipientLabels?.[directAgentId] ?? "Deleted Agent",
-                handle: directAgent?.handle ?? communication.identity?.recipientHandles?.[directAgentId] ?? agentMentionHandleBase(communication.identity?.recipientLabels?.[directAgentId] ?? "Deleted Agent"),
-              };
-            })
+          ? directMessageAgentBindings(communication, id => this.getAgent(id))
           : [];
         const agentMentions = communication
           ? communicationMentionBindings(row.text, communication, id => this.getAgent(id), conversationId)

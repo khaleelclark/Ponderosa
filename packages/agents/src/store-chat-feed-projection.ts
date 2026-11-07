@@ -13,7 +13,7 @@ import type {
   ProjectDto,
   ProjectedCommunicationMessage,
 } from "@ponderosa/core";
-import { agentMentionHandleBase, deriveCommunicationBehavior } from "@ponderosa/core";
+import { deriveCommunicationBehavior } from "@ponderosa/core";
 import type { Db } from "./db.js";
 import { chatSearchMessages } from "./schema.js";
 import {
@@ -21,7 +21,7 @@ import {
   type GlobalChatSearchInput,
 } from "./store-chat-search-read-model.js";
 import type { ContextReadBoundary, ContextSourcePage } from "./store-types.js";
-import { userDmAgentIds } from "./store-communication.js";
+import { directMessageAgentBindings } from "./store-communication.js";
 import { communicationMentionBindings } from "./store-mention-bindings.js";
 
 interface CommunicationIndexView {
@@ -323,14 +323,7 @@ export class AgentChatFeedProjection {
           ? communicationMentionBindings(message.text, communication, id => this.getAgent(id), agent?.conversationId ?? "")
           : [];
         const directMessageAgents = communication
-          ? userDmAgentIds(communication).map((directAgentId) => {
-              const directAgent = this.getAgent(directAgentId);
-              return {
-                id: directAgentId,
-                title: directAgent?.title ?? communication.identity?.recipientLabels?.[directAgentId] ?? "Deleted Agent",
-                handle: directAgent?.handle ?? communication.identity?.recipientHandles?.[directAgentId] ?? agentMentionHandleBase(communication.identity?.recipientLabels?.[directAgentId] ?? "Deleted Agent"),
-              };
-            })
+          ? directMessageAgentBindings(communication, id => this.getAgent(id))
           : [];
         return [{
           id: message.messageId,
@@ -460,14 +453,7 @@ export class AgentChatFeedProjection {
       const directMessageAgent = targetAgentId
         ? agentByProject.get(row.projectId)?.get(targetAgentId)
         : undefined;
-      const directMessageAgents = userDmAgentIds(event).map((agentId) => {
-        const directAgent = agentByProject.get(row.projectId)?.get(agentId);
-        return {
-          id: agentId,
-          title: directAgent?.title ?? event.identity?.recipientLabels?.[agentId] ?? "Deleted Agent",
-          handle: directAgent?.handle ?? event.identity?.recipientHandles?.[agentId] ?? agentMentionHandleBase(event.identity?.recipientLabels?.[agentId] ?? "Deleted Agent"),
-        };
-      });
+      const directMessageAgents = directMessageAgentBindings(event, agentId => agentByProject.get(row.projectId)?.get(agentId));
       const agentMentions = communicationMentionBindings(
         message.text,
         event,
