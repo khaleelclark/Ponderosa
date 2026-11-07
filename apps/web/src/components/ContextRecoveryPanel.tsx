@@ -17,6 +17,7 @@ export function ContextRecoveryPanel({agentId}:{agentId:string}):JSX.Element {
  const status=useQuery({queryKey:['context-recovery',agentId,key],enabled:open,queryFn:()=>api.getContextRecovery(agentId,key),retry:false,
   refetchInterval:query=>open&&query.state.data?.request?.state==='unsupported_fenced'&&['reserved','drained','native_started'].includes(query.state.data.request.progress?.phase??'')?1000:false});
  const boundary=status.data?.boundary,request=status.data?.request;
+ const stopped=status.data?.sourceEvidence?.sourceRunStatus==='cancelled';
  const boundaryIdentity=boundary?JSON.stringify(boundary):'';
  const active=request?.state==='unsupported_fenced';
  const settled=active&&(!request.progress||['held','context_accepted'].includes(request.progress.phase));
@@ -31,7 +32,7 @@ export function ContextRecoveryPanel({agentId}:{agentId:string}):JSX.Element {
    writeRecoveryKey(storageKey,nextKey);
    setKey(nextKey);
    await api.recoverContext(agentId,{idempotencyKey:nextKey,expectedSessionId:boundary.providerSessionId,expectedSourceRunId:boundary.sourceRunId,expectedToolContractHash:boundary.toolContractHash,acknowledgeUnknownEffects:true});
-   setNotice('Recovery response received · inspect phase · original work unresolved');
+   setNotice(stopped?'Recovery response received · earlier task stays stopped · inspect phase':'Recovery response received · inspect phase · original work unresolved');
   }catch(cause){setError((cause as Error).message);}
   finally{await client.invalidateQueries({queryKey:['context-recovery',agentId]});startLock.current=false;setStarting(false);}
  };
@@ -47,7 +48,7 @@ export function ContextRecoveryPanel({agentId}:{agentId:string}):JSX.Element {
     await api.dismissContextRecovery(agentId,request.id);
     writeRecoveryKey(storageKey,'');
     setKey(undefined);setDismissAck('');setAcknowledged('');
-    setNotice('Hold dismissed · original work unresolved · no automatic replay');
+    setNotice(stopped?'Hold dismissed · earlier task stays stopped · no original-work replay':'Hold dismissed · original work unresolved · no automatic replay');
    }
   }catch(cause){setError((cause as Error).message);}
   finally{await client.invalidateQueries({queryKey:['context-recovery',agentId]});changeLock.current=false;setChanging(false);}
@@ -55,21 +56,21 @@ export function ContextRecoveryPanel({agentId}:{agentId:string}):JSX.Element {
  return <Paper variant="outlined" sx={{m:1,p:1.5}}><Stack spacing={1}>
   <Button onClick={()=>setOpen(value=>!value)} aria-expanded={open}>Context recovery</Button>
   {open&&<>
-   <Typography variant="body2">Retained context inspection · original outcome/effects unknown · no original-work retry</Typography>
+   <Typography variant="body2">{stopped?'The earlier task stays stopped. Recover retained context for new independent work; earlier effects remain unknown.':'Retained context inspection · original outcome/effects unknown · no original-work retry'}</Typography>
    {status.isFetching&&<Typography role="status">Reading recovery status…</Typography>}
    {(restored.error||error||status.error)&&<Alert severity="error">{restored.error||error||status.error?.message}</Alert>}
    {notice&&<Alert severity="info">{notice}</Alert>}
    <Button disabled={status.isFetching} onClick={()=>void status.refetch()}>Reload recovery status</Button>
    {status.data&&<>
     <Typography>Native recovery: {status.data.support.status==='managed_compaction'?'managed compaction':'unsupported'}</Typography>
-    {!boundary&&!request&&<Typography>No eligible uncertain context boundary is available.</Typography>}
+    {!boundary&&!request&&<Typography>No eligible retained context boundary is available.</Typography>}
     {key&&!request&&<Alert severity="warning">Retained exact key · no recovery record returned · new recovery blocked here</Alert>}
     {request&&<>
      <Typography>Recorded phase: {request.progress?.phase.replaceAll('_',' ')??'unsupported hold'} · {request.state==='dismissed'?'dismissed':'dispatch held'}</Typography>
      {request.progress?.message&&<Typography sx={{overflowWrap:'anywhere'}}>{request.progress.message}</Typography>}
-     {request.progress?.phase==='context_accepted'&&<Alert severity="info"><Stack spacing={0.5}><Typography>Context measurement accepted · original work/effects unknown</Typography><Typography>New independent work · explicit hold dismissal + runtime admission required</Typography></Stack></Alert>}
+     {request.progress?.phase==='context_accepted'&&<Alert severity="info"><Stack spacing={0.5}><Typography>{stopped?'Context measurement accepted · earlier task stays stopped':'Context measurement accepted · original work/effects unknown'}</Typography><Typography>New independent work · explicit hold dismissal + runtime admission required</Typography></Stack></Alert>}
      {active&&<Button disabled={changing||status.isError} onClick={()=>void change('stop')}>Stop exact recovery</Button>}
-     {settled&&<><FormControlLabel control={<Checkbox checked={dismissAck===request.id} onChange={event=>setDismissAck(event.target.checked?request.id:'')}/>} label="I understand dismissal leaves original work unresolved and does not replay it"/><Button disabled={changing||starting||status.isError||dismissAck!==request.id} onClick={()=>void change('dismiss')}>Dismiss settled hold</Button></>}
+     {settled&&<><FormControlLabel control={<Checkbox checked={dismissAck===request.id} onChange={event=>setDismissAck(event.target.checked?request.id:'')}/>} label={stopped?"I understand the earlier task stays stopped and dismissal does not replay it":"I understand dismissal leaves original work unresolved and does not replay it"}/><Button disabled={changing||starting||status.isError||dismissAck!==request.id} onClick={()=>void change('dismiss')}>Dismiss settled hold</Button></>}
     </>}
     {boundary&&!request&&!key&&!restored.error&&<>
      {status.data.support.status==='unsupported'&&<Alert severity="warning">Structured recovery unmapped · request records hold only · no provider launch or measurable context restoration</Alert>}

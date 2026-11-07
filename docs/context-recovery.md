@@ -195,3 +195,20 @@ Combined settings drift, an unverifiable old contract or changing target access
 holds the original work for context review. Memory revocation and restrictions
 retain their existing independent safety checks; this is not permission to carry
 revoked information forward or to reuse an incompatible tool set silently.
+
+## Stop preserves context for new independent work
+
+Stop still cancels the original task immediately and observes exact runtime cleanup.
+It retains the Agent's accepted native session, input and history. It does not start
+compaction, resume the task, undo effects or change access. A later independent
+instruction stays queued before submission when that stopped context is unmeasured.
+The existing Context recovery controls can compact the same session only after an
+exact latest injected cancelled source, accepted Stop receipt and completed matching
+cleanup operation are verified. Unknown input, changed scope/access, unsupported
+contracts and uncertain native outcomes stay visibly held. Recovery accepts context
+measurement only; the old Run/Requests/Joins and effects are not resolved or replayed.
+After successful recovery and explicit settled-hold dismissal, the same queued new
+instruction may continue with the retained context under unchanged settings.
+Settings/voice transitions needing another handoff remain separately qualified.
+A capability grant also stays held here: a cancelled source is not qualified for
+a fresh settings handoff.

@@ -1,5 +1,5 @@
 import type {WorkingFileTransportPart} from "./working-file-transport.js";
-import { uncertainContextRecoverySourceSql } from './coordination-v3-context-recovery-authority.js';
+import { uncertainContextRecoverySourceSql, stoppedContextSourceSql, stoppedContextRecoverySourceSql } from './coordination-v3-context-recovery-authority.js';
 import type {CanonicalGeneratedHooksProof} from '@ponderosa/core';
 import {validateGeneratedHookNamespaceProof} from './generated-hook-namespace-proof.js';
 import {destinationAdmissionHeld} from './coordination-v3-destination-staging.js';
@@ -586,17 +586,23 @@ export class AgentStore extends AgentEventSessionFacade {
     return start && terminal && terminal.seq > start.seq ? { ...boundary, run, start, terminal } : undefined;
   }
 
-  /** Only the latest injected, canonically cancelled generation may be retired
-   * after the cancellation owner has observed its complete runtime cleanup. */
-  cancelledProviderSessionForRetirement(runId: string): { agentId: string; sessionId: string } | undefined {
-    const row = this.client.prepare(`SELECT r.agent_id, r.provider_session_id FROM scheduler_runs r
-      WHERE r.id=? AND r.status='cancelled' AND r.prompt_injection_state='injected'
-        AND r.provider_session_id IS NOT NULL AND NOT EXISTS (
-          SELECT 1 FROM scheduler_runs newer WHERE newer.agent_id=r.agent_id
-            AND newer.fencing_token>r.fencing_token AND newer.prompt_injection_state<>'not_injected'
-        )`).get(runId) as { agent_id: string; provider_session_id: string } | undefined;
-    return row && this.resumeSessionId(row.agent_id) === row.provider_session_id
-      ? { agentId: row.agent_id, sessionId: row.provider_session_id } : undefined;
+  /** Read the exact stopped native generation without granting task or recovery input. */
+  stoppedProviderSessionBoundary(agentId: string) {
+    const accepted = this.resumeSessionState(agentId);
+    if (!accepted?.toolContractHash) return undefined;
+    const source = this.client.prepare(`SELECT r.id,r.project_id,r.scope_key,r.provider_session_id,r.fencing_token,
+      ${stoppedContextRecoverySourceSql('r')} AS cleanup_confirmed
+      FROM scheduler_runs r WHERE r.agent_id=? AND ${stoppedContextSourceSql('r')}
+        AND NOT EXISTS (SELECT 1 FROM scheduler_runs newer WHERE newer.agent_id=r.agent_id
+          AND newer.fencing_token>r.fencing_token AND newer.prompt_injection_state<>'not_injected')
+      ORDER BY r.fencing_token DESC LIMIT 1`).get(agentId) as {
+        id:string;project_id:string;scope_key:string;provider_session_id:string;fencing_token:number;cleanup_confirmed:number;
+      }|undefined;
+    return source?.provider_session_id===accepted.sessionId ? {
+      agentId,projectId:source.project_id,scopeKey:source.scope_key,providerSessionId:source.provider_session_id,
+      executionId:source.id,fencingToken:source.fencing_token,toolContractHash:accepted.toolContractHash,
+      cleanupConfirmed:Boolean(source.cleanup_confirmed),
+    } : undefined;
   }
 
   /** Capture and recheck the canonical idle boundary around an async native
@@ -687,6 +693,21 @@ export class AgentStore extends AgentEventSessionFacade {
     const tail=this.client.prepare(`SELECT COALESCE(SUM(length(CAST(payload_json AS BLOB))),0) bytes
       FROM events WHERE agent_id=? AND seq>? AND type IN ('text','reasoning')`).get(agentId,row.seq) as {bytes:number};
     return {usage,observedAt:row.created_at,executionId:row.source_run_id,postObservationUtf8Bytes:tail.bytes};
+  }
+
+  /** The existing recovered measurement is a boundary for independent input,
+   * never proof that its original work completed or may be replayed. */
+  acceptedProviderRecoveryBoundary(agentId: string) {
+    if (this.client.prepare("SELECT 1 FROM provider_context_recovery_requests WHERE agent_id=? AND state='unsupported_fenced'").get(agentId)) return undefined;
+    const usage = this.acceptedProviderRecoveryContextUsage(agentId);
+    const accepted = this.resumeSessionState(agentId);
+    if (!usage || !accepted?.toolContractHash) return undefined;
+    const source = this.client.prepare('SELECT id,project_id,scope_key,provider_session_id,fencing_token FROM scheduler_runs WHERE id=? AND agent_id=?')
+      .get(usage.executionId,agentId) as {id:string;project_id:string;scope_key:string;provider_session_id:string;fencing_token:number}|undefined;
+    return source?.provider_session_id===accepted.sessionId ? {
+      agentId,projectId:source.project_id,scopeKey:source.scope_key,providerSessionId:source.provider_session_id,
+      executionId:source.id,fencingToken:source.fencing_token,toolContractHash:accepted.toolContractHash,
+    } : undefined;
   }
 
   /** Warm and cold resumes share this completed-Run proof. Native work and

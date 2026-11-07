@@ -45,7 +45,8 @@ export function transitionFingerprint(ctx:Pick<TransitionContext,"app"|"store"|"
  const row=store.sqlite.prepare('SELECT payload_json,state,scope_key FROM agent_activations WHERE id=? AND project_id=? AND agent_id=?').get(activationId,projectId,agentId);
  let grant:unknown;try{grant=memory&&agent?memory.getGrant(agent.conversationId,chat?.branchId?'branches':'dev'):undefined;}catch{grant='unavailable';}
  let policies:unknown;try{const p=new CapabilityPolicyStore(store.sqlite),resolved=p.resolveForAgent(agentId);policies=resolved.layers.map(layer=>[layer.scopeKind,layer.scopeId,p.get(layer.scopeKind,layer.scopeId)??null]);}catch{policies='unavailable';}
- return createHash('sha256').update(JSON.stringify([row,session,agent,project,workspace.getPreferences(),grant,policies])).digest('hex');
+ const recovery=store.sqlite.prepare('SELECT id,state,progress_json FROM provider_context_recovery_requests WHERE agent_id=? ORDER BY created_at DESC,id DESC LIMIT 1').get(agentId);
+ return createHash('sha256').update(JSON.stringify([row,session,agent,project,workspace.getPreferences(),grant,policies,recovery,store.stoppedProviderSessionBoundary(agentId)])).digest('hex');
 }
 function transitionNotice(ctx:TransitionContext,projectId:string,agentId:string,activationId:string,reason:string){
  const existing=ctx.workspace.getNotificationByDedupeKey(`settings-transition:${activationId}`);
@@ -150,8 +151,21 @@ export async function requestSettingsTransition(input: {
     return hold('The earlier delivery attempt cannot be proven unsubmitted. The original work remains queued for review.');
    const payload=row?JSON.parse(row.payload_json) as {dispatch?:{engine?:unknown;model?:unknown;effort?:unknown;speed?:unknown;voiceReply?:unknown}}:undefined;
    const dispatch=payload?.dispatch,agent=store.getAgent(pending.agentId),project=agent&&store.getChatContext(agent.conversationId);
-   const boundary=agent&&store.providerCommandContextBoundary(agent.id),accepted=agent&&store.resumeSessionState(agent.id);
-   const packet=agent&&store.acceptedProviderSessionInput(agent.id);
+   const accepted=agent&&store.resumeSessionState(agent.id);
+   const stopped=agent&&store.stoppedProviderSessionBoundary(agent.id);
+   const stoppedUsage=stopped&&store.acceptedProviderSessionContextUsage(agent!.id);
+   if(stopped&&row){
+    if(!stopped.cleanupConfirmed)return hold('The earlier task stays stopped while its exact input or cleanup requires review. The new instruction remains queued; no provider input was sent.');
+    if(row.scope_key!==stopped.scopeKey)return hold('The new instruction changes scope from the stopped context. Its earlier work is preserved; review the context before continuing.');
+    if(!stoppedUsage||coordinationV3.contextRecovery.active(agent!.id))return hold('The earlier task stays stopped. Use Context recovery to preserve its native context for this new queued instruction; earlier effects will not be replayed.');
+   }
+   const recovered=agent&&store.acceptedProviderRecoveryBoundary(agent.id);
+   if(agent&&row&&!stopped&&(coordinationV3.contextRecovery.active(agent.id)||store.uncertainProviderContextRecoveryBoundary(agent.id)))
+    return hold('Earlier provider input or effects remain unconfirmed. Use Context recovery; this new instruction stays queued without replaying the original work.');
+   const boundary=agent&&(store.providerCommandContextBoundary(agent.id)??recovered);
+   // Only the existing accepted measurement after explicit hold dismissal may
+   // expose a formerly interrupted packet here; this is not ordinary resume permission.
+   const packet=agent&&(store.acceptedProviderSessionInput(agent.id)??(recovered?store.acceptedProviderSessionInput(agent.id,true):undefined));
    const contract=packet?.sourceManifest.schemaVersion===3?packet.sourceManifest.normalRuntimeContract:undefined;
    // Workspace guidance/profile edits must not bypass continuity merely because
    // the accepted boundary cannot support a verified native handoff.
@@ -266,6 +280,8 @@ export async function requestSettingsTransition(input: {
       AND json_extract(h.payload_json,'$.settingsTransition.targetSpeed') IS ? LIMIT 1`)
     .get(agent.id,pending.projectId,boundary.executionId,accepted.sessionId,pending.id,targetModel,targetEffort??null,targetSpeed??null));
    const voiceBoundary=Boolean(opts.localMemory&&dispatch?.voiceReply===true&&!verifiedVoice);
+   if(stopped&&(changed||voiceBoundary||promptChanged||grantExpansion))
+    return hold('Recovered context from the stopped task is retained, but the requested settings or voice transition lacks a verified handoff. The new instruction remains queued for review.');
    if(grantExpansion&&(changed||voiceBoundary||promptChanged))return hold('Access expanded together with other runtime settings. The original work remains queued for context review.');
    if(!changed&&!voiceBoundary&&!promptChanged&&!grantExpansion){
     store.sqlite.prepare("DELETE FROM activation_sources WHERE activation_id=? AND source_kind='settings_transition_retry_pending'").run(pending.id);

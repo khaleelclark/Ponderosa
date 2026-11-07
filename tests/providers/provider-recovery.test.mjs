@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { publicProviderFailure, publicProviderFailureEvent, providerRecoveryDelay, MAX_PROVIDER_RECOVERY_ATTEMPTS } from '@ponderosa/core';
@@ -627,7 +628,11 @@ for (const reused of [false,true]) test(`completed Run with unknown steer requir
   assert.ok(JSON.stringify(originalInputs).includes('Original objective must be preserved'));
   assert.ok(JSON.stringify(originalInputs).includes('Unconfirmed memory update'));
   await f.send(agent.id,'Later independent request');
-  await until(()=>store.sqlite.prepare("SELECT 1 FROM scheduler_runs WHERE agent_id=? AND id<>? AND fencing_token>? AND status='failed' AND prompt_injection_state='not_injected'").get(agent.id,run.id,run.fencing_token),'later refused start');
+  const queued=await until(()=>store.sqlite.prepare(`SELECT a.id,a.payload_json FROM agent_activations a
+   JOIN activation_sources held ON held.activation_id=a.id AND held.source_kind='settings_transition_reservation_wait'
+   WHERE a.agent_id=? AND a.state IN ('pending','retry_pending')`).get(agent.id),'later independent input held before submission');
+  assert(JSON.stringify(queued.payload_json).includes('Later independent request'));
+  assert.equal(store.sqlite.prepare("SELECT count(*) n FROM scheduler_runs WHERE agent_id=? AND fencing_token>? AND prompt_injection_state<>'not_injected'").get(agent.id,run.fencing_token).n,0);
   assert.equal(f.turns.length,turnCount,'Unmeasurable session receives no new provider input');
   const boundary=store.uncertainProviderContextRecoveryBoundary(agent.id);
   assert.ok(boundary,'The exact completed Run and unknown steer must expose explicit recovery');
@@ -662,8 +667,9 @@ for (const reused of [false,true]) test(`completed Run with unknown steer requir
   assert.equal(reopenedReplay.body.replayed,true);assert.equal(f.commands.length,commandCount+1);
   assert.equal(f.turns.length,turnCount);
   f.ok(await f.api('POST',`/api/agents/${agent.id}/context-recoveries/${result.body.request.id}/dismiss`,{acknowledgeStillBlocked:true}));
-  await f.send(agent.id,'Separate new task after context repair');
-  const next=await until(()=>f.turns.find(turn=>turn.agentId===agent.id && /Separate new task after context repair/.test(turn.input.prompt)),'new task following explicit recovery');
+  const next=await until(()=>f.turns.find(turn=>turn.agentId===agent.id && /Later independent request/.test(turn.input.prompt)),'same queued task following explicit recovery');
+  await until(()=>store.sqlite.prepare("SELECT 1 FROM scheduler_runs r JOIN scheduler_run_activations attached ON attached.run_id=r.id WHERE attached.activation_id=? AND r.status='completed'").get(queued.id),'queued task completed once after context repair');
+  assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(queued.id).n,1);
   assert.equal(next.sessionId,sessionState.sessionId,'The original provider context is retained');
   assert.equal(f.turns.length,turnCount+1,'Only the explicit separate task may start');
   assert.equal(store.sqlite.prepare('SELECT state FROM scheduler_prompt_injections WHERE id=?').get(injection.id).state,'outcome_unknown');
@@ -907,4 +913,72 @@ test('UI014 outage projection clears only after a newer completed attempt in the
  const receipt=f.store().deliveryReceiptsForCommunication('project','communication')[0];
  assert.equal(receipt.providerFailure,undefined,'A completed newer same-work attempt suppresses the old outage');
  assert.equal(f.db.prepare('SELECT count(*) n FROM scheduler_runs').get().n,2);
+});
+
+
+test('Stop retains native context for one queued independent task without reviving stopped work',{timeout:45000},async t=>{
+ let store;const nativeFindings=new Map(),finding='NATIVE_ONLY_FINDING_'+randomUUID();
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Stop context continuity'),agent=await f.createIdleAgent(chat,'Persistent stopped owner');
+  f.plans.set(agent.id,[{run:async session=>{
+   nativeFindings.set(session.engineAgentId,finding);
+   session.events.push({type:'text',delta:finding});
+   const reply=await session.tool('ponderosa_message',{text:'Earlier research completed.'});assert.equal(reply.success,true,reply.text);
+  }}]);
+  await f.send(agent.id,'Complete earlier research.');await f.settled(agent.id);
+  const saved=store.resumeSessionState(agent.id);assert.ok(saved?.sessionId);
+  assert.equal(store.getConversationMessages(chat.id,'main').some(row=>row.text.includes(finding)),false,'The material finding was not published as Communication');
+  f.plans.set(agent.id,[{hold:true}]);
+  await f.send(agent.id,'Stop this separate original objective.');
+  const running=await until(()=>store.sqlite.prepare("SELECT * FROM scheduler_runs WHERE agent_id=? AND status='running' ORDER BY fencing_token DESC LIMIT 1").get(agent.id),'second running task');
+  const stopped=f.ok(await f.api('POST',`/api/agents/${agent.id}/cancel`,{targetRunId:running.id,idempotencyKey:'stop-native-context'}));
+  assert.equal(stopped.cancelled,true);
+  const cleanup=await until(()=>store.sqlite.prepare("SELECT id FROM provider_operation_outbox WHERE run_id=? AND idempotency_key=? AND state='completed'").get(running.id,`cancel:${agent.id}:stop-native-context`),'observed exact Stop cleanup');
+  const original=store.sqlite.prepare('SELECT * FROM scheduler_runs WHERE id=?').get(running.id);
+  assert.equal(original.status,'cancelled');assert.equal(store.resumeSessionState(agent.id).sessionId,saved.sessionId);
+  assert.equal(store.stoppedProviderSessionBoundary(agent.id).cleanupConfirmed,true);
+  const obligations=store.sqlite.prepare('SELECT * FROM required_reply_obligations WHERE run_id=? ORDER BY source_activation_id').all(running.id);
+  assert(obligations.every(row=>['cancelled','superseded','satisfied'].includes(row.state)));
+  const sourceInputs=store.sqlite.prepare('SELECT * FROM provider_inputs WHERE execution_id=?').get(running.id);
+  await f.reopen();assert.equal(store.resumeSessionState(agent.id).sessionId,saved.sessionId);
+  const turnCount=f.turns.length,commandCount=f.commands.length,newTask='A separate new task must use the earlier research.';
+  f.plans.set(agent.id,[{run:async(session,input)=>{
+   assert(input.prompt.includes(newTask));assert.equal(nativeFindings.get(session.engineAgentId),finding,'A fresh seed loses the prior native-only finding');
+   const reply=await session.tool('ponderosa_message',{text:'Retained result: '+nativeFindings.get(session.engineAgentId)});assert.equal(reply.success,true,reply.text);
+  }}]);
+  await f.send(agent.id,newTask);
+  const queued=await until(()=>store.sqlite.prepare(`SELECT a.id,a.payload_json FROM agent_activations a
+   JOIN activation_sources held ON held.activation_id=a.id AND held.source_kind='settings_transition_reservation_wait'
+   WHERE a.agent_id=? AND a.state IN ('pending','retry_pending')`).get(agent.id),'independent task held before submission');
+  assert(JSON.stringify(queued.payload_json).includes(newTask));assert.equal(f.turns.length,turnCount);
+  assert.equal(store.sqlite.prepare("SELECT count(*) n FROM scheduler_runs WHERE agent_id=? AND fencing_token>? AND prompt_injection_state<>'not_injected'").get(agent.id,original.fencing_token).n,0);
+  const status=f.ok(await f.api('GET',`/api/agents/${agent.id}/context-recoveries`));
+  const boundary=status.boundary;assert.equal(boundary.sourceRunId,running.id);assert.equal(status.sourceEvidence.sourceRunStatus,'cancelled');
+  const body={idempotencyKey:'recover-stopped-context',expectedSessionId:saved.sessionId,expectedSourceRunId:running.id,expectedToolContractHash:boundary.toolContractHash,acknowledgeUnknownEffects:true};
+  assert.equal((await f.api('POST',`/api/agents/${agent.id}/context-recoveries`,{...body,expectedSessionId:'foreign-session'})).status,409);
+  store.sqlite.exec('SAVEPOINT stop_cleanup_witness');
+  try{
+   store.sqlite.prepare("UPDATE provider_operation_outbox SET state='pending' WHERE id=?").run(cleanup.id);
+   assert.equal(store.uncertainProviderContextRecoveryBoundary(agent.id),undefined,'Incomplete cleanup cannot authorize native context recovery');
+  }finally{store.sqlite.exec('ROLLBACK TO stop_cleanup_witness; RELEASE stop_cleanup_witness');}
+  const recovered=await f.api('POST',`/api/agents/${agent.id}/context-recoveries`,body);
+  assert.equal(recovered.status,200,JSON.stringify(recovered.body));assert.equal(recovered.body.request.progress.phase,'context_accepted');
+  assert.equal(f.commands.length,commandCount+1);assert.equal(f.commands.at(-1).name,'compact');assert.equal(f.commands.at(-1).sessionId,saved.sessionId);
+  assert.equal(f.turns.length,turnCount,'Context-only recovery sends no task input');
+  assert.equal(store.acceptedProviderSessionContextUsage(agent.id)?.usage.usedTokens,1000);
+  assert.deepEqual(store.sqlite.prepare('SELECT * FROM scheduler_runs WHERE id=?').get(running.id),original);
+  assert.deepEqual(store.sqlite.prepare('SELECT * FROM required_reply_obligations WHERE run_id=? ORDER BY source_activation_id').all(running.id),obligations);
+  assert.deepEqual(store.sqlite.prepare('SELECT * FROM provider_inputs WHERE execution_id=?').get(running.id),sourceInputs);
+  assert.equal((await f.api('POST',`/api/agents/${agent.id}/context-recoveries`,body)).body.replayed,true);assert.equal(f.commands.length,commandCount+1);
+  f.ok(await f.api('POST',`/api/agents/${agent.id}/context-recoveries/${recovered.body.request.id}/dismiss`,{acknowledgeStillBlocked:true}));
+  const next=await until(()=>f.turns.find(turn=>turn.agentId===agent.id&&turn.input.prompt.includes(newTask)),'same queued independent task released after accepted measurement');
+  assert.equal(next.sessionId,saved.sessionId);assert.equal(f.turns.length,turnCount+1);
+  const independent=await until(()=>store.sqlite.prepare("SELECT r.* FROM scheduler_runs r JOIN scheduler_run_activations attached ON attached.run_id=r.id WHERE attached.activation_id=? AND r.status='completed'").get(queued.id),'independent task completed');
+  assert.equal(independent.provider_session_id,saved.sessionId);
+  assert.equal(store.sqlite.prepare("SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?").get(queued.id).n,1,'The original queued instruction is admitted once');
+  assert.deepEqual(store.sqlite.prepare('SELECT * FROM scheduler_runs WHERE id=?').get(running.id),original);
+  assert.deepEqual(store.sqlite.prepare('SELECT * FROM required_reply_obligations WHERE run_id=? ORDER BY source_activation_id').all(running.id),obligations);
+ },{storeFactory:root=>store=new AgentStore(root),providerValidatesResumeBeforeTurn:true,
+  providerContextRecoverySupport:{status:'managed_compaction',crashReconciliation:'hold_without_native_query'},
+  providerCommandResult:({sessionId})=>({outcome:'completed',contextUsage:{usedTokens:1000,windowTokens:200000,providerSessionGeneration:sessionId}})});
 });

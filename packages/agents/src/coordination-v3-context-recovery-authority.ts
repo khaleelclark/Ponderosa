@@ -4,10 +4,29 @@ import type { ProviderContextRecoveryProgress, ProviderContextRecoveryRequest } 
 
 export class ContextRecoveryConflictError extends Error {}
 
+/** Exact canonical Stop cancellation does not request erasure of native context. */
+export const stoppedContextSourceSql = (run: string): string => `(
+  ${run}.status='cancelled' AND ${run}.provider_session_id IS NOT NULL
+  AND ${run}.prompt_injection_state<>'not_injected'
+  AND EXISTS (SELECT 1 FROM scheduler_cancellation_receipts stopped
+    WHERE stopped.agent_id=${run}.agent_id AND stopped.run_id=${run}.id
+      AND stopped.accepted=1 AND stopped.fencing_token=${run}.fencing_token)
+)`;
+/** Only acknowledged source input and observed exact Stop cleanup qualify. */
+export const stoppedContextRecoverySourceSql = (run: string): string => `(
+  ${stoppedContextSourceSql(run)} AND ${run}.prompt_injection_state='injected'
+  AND NOT EXISTS (SELECT 1 FROM scheduler_prompt_injections pending
+    WHERE pending.run_id=${run}.id AND pending.state IN ('pending','submitted','outcome_unknown'))
+  AND EXISTS (SELECT 1 FROM provider_operation_outbox cleanup
+    WHERE cleanup.run_id=${run}.id AND cleanup.operation='interrupt' AND cleanup.state='completed'
+      AND json_extract(cleanup.payload_json,'$.agentId')=${run}.agent_id
+      AND json_extract(cleanup.payload_json,'$.fencingToken')=${run}.fencing_token)
+)`;
+
 /** A completed turn can still contain an unconfirmed interruption. The
  * acknowledged turn binds the session; the steer remains unknown work. */
 export const uncertainContextRecoverySourceSql = (run: string): string => `(
-  ${run}.status='outcome_unknown' OR (
+  ${stoppedContextRecoverySourceSql(run)} OR ${run}.status='outcome_unknown' OR (
     ${run}.status='completed' AND ${run}.prompt_injection_state='injecting'
     AND EXISTS (SELECT 1 FROM scheduler_prompt_injections turn
       WHERE turn.run_id=${run}.id AND turn.kind='turn' AND turn.state='acknowledged')
@@ -66,7 +85,7 @@ export class CoordinationV3ContextRecoveryAuthority {
         } | undefined;
       if (source?.id !== input.sourceRunId || !source.eligible ||
           source.provider_session_id !== input.providerSessionId || source.project_id !== input.projectId ||
-          source.fencing_token !== input.sourceFence || source.scope_key !== input.scopeKey) throw new ContextRecoveryConflictError("Recovery requires the exact idle uncertain source boundary");
+          source.fencing_token !== input.sourceFence || source.scope_key !== input.scopeKey) throw new ContextRecoveryConflictError("Recovery requires the exact idle uncertain or stopped source boundary");
       if (this.sqlite.prepare(`SELECT 1 FROM scheduler_runs WHERE agent_id=? AND status IN ('leased','running')
         UNION ALL SELECT 1 FROM agent_run_pauses WHERE agent_id=? AND state IN ('paused','resume_requested')
         UNION ALL SELECT 1 FROM context_rollovers WHERE agent_id=? AND state IN ('requested','handoff_committed','session_retiring','continuation_ready') LIMIT 1`).get(input.agentId,input.agentId,input.agentId)) {

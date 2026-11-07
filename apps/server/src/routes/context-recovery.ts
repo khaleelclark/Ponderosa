@@ -45,7 +45,7 @@ export function registerContextRecoveryRoutes(app: FastifyInstance, context: {
     if(!prior && context.unavailable(agent.id,agent.projectId)) return reply.code(409).send({error:"Agent runtime or cleanup is active"});
     const boundary=prior ?? store.uncertainProviderContextRecoveryBoundary(agent.id);
     if(!boundary || boundary.providerSessionId!==body.expectedSessionId || boundary.sourceRunId!==body.expectedSourceRunId ||
-       boundary.toolContractHash!==body.expectedToolContractHash) return reply.code(409).send({error:"Exact uncertain context boundary changed or unavailable"});
+       boundary.toolContractHash!==body.expectedToolContractHash) return reply.code(409).send({error:"Exact retained context boundary changed or unavailable"});
     const input={agentId:agent.id,projectId:boundary.projectId,providerSessionId:boundary.providerSessionId,
       sourceRunId:boundary.sourceRunId,toolContractHash:boundary.toolContractHash,sourceFence:boundary.sourceFence,
       scopeKey:boundary.scopeKey,idempotencyKey:body.idempotencyKey!};

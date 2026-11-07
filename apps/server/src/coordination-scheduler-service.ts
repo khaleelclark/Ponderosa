@@ -289,7 +289,6 @@ export function createCoordinationScheduler(
     terminateRuntimeHandle,
     closeRunBrowser,
     persistentRuntimeForTermination,
-    clearAgentResumeSession,
     clearRunLeaseTimer,
     clearRunLivenessTimer,
     renewExecutionLease,
@@ -329,11 +328,8 @@ export function createCoordinationScheduler(
     return [...attachments.values()];
   };
 
-  const retireCancelledSession = (runId: string): void => {
-    if (coordinationV3.runPause(runId)) return;
-    const owner = store.cancelledProviderSessionForRetirement(runId);
-    if (owner) clearAgentResumeSession(owner.agentId, "agent_cancelled");
-  };
+  // Stop retires runtime authority, not the persistent Agent's accepted context.
+  // Later independent input must pass the existing measurable-context recovery gate.
 
 return new CoordinationV3Scheduler(
   coordinationV3,
@@ -617,7 +613,6 @@ return new CoordinationV3Scheduler(
               ...(canonical.scope_key.startsWith('conversation:') ? {conversationId:canonical.scope_key.slice('conversation:'.length)} : {})}, "run_cancelled"),
           ]);
           if (results.some(result => result.status === 'rejected')) throw new Error('Exact provider or browser cleanup remains pending');
-          retireCancelledSession(operation.runId);
           return { accepted: true };
         } catch (error) {
           return { accepted: false, retryable: true, error: error instanceof Error ? error.message : String(error) };
@@ -660,8 +655,7 @@ return new CoordinationV3Scheduler(
       try {
         await providerProcessAuthority.terminateRun(operation.runId);
         // Cancellation is not a completed-turn measurement. Only after exact
-        // observed provider and browser cleanup may later independent work rebuild context.
-        retireCancelledSession(operation.runId);
+        // observed provider and browser cleanup may later independent work recover context.
       } catch (error) {
         return { accepted: false, retryable: true, error: error instanceof Error ? error.message : String(error) };
       }
