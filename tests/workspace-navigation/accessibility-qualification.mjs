@@ -12,6 +12,9 @@ const require=createRequire(new URL('../../apps/server/package.json',import.meta
 const {chromium}=require('playwright-core');
 const root=fileURLToPath(new URL('../../',import.meta.url));
 const output=process.env.QUALIFICATION_DIRECTORY;
+// Opt in to the app preference; the default remains native browser zoom.
+const appTextSizeMode=process.env.PONDEROSA_A11Y_MODE==='app-text-size';
+assert.ok(!process.env.PONDEROSA_A11Y_MODE||appTextSizeMode,'Unknown PONDEROSA_A11Y_MODE');
 assert.ok(output&&process.env.AXE_CORE_PATH,'Set QUALIFICATION_DIRECTORY and AXE_CORE_PATH');
 await mkdir(path.join(output,'framebuffer'),{recursive:true});
 const fixture=spawn(process.execPath,['--import','./tests/shared/workspace-resolution.mjs','tests/branches/ui-qualification.mjs'],{cwd:root,stdio:['ignore','pipe','inherit']});
@@ -45,19 +48,37 @@ try {
  for await(const line of createInterface({input:fixture.stdout}))if(line.startsWith('{"origin":')){manifest=JSON.parse(line);break;}
  assert.ok(manifest,'Fixture ready');
  browser=await chromium.launch({executablePath:process.env.CHROME_PATH??'/usr/bin/google-chrome',headless:false,env,args:['--no-sandbox','--window-size=1280,900']});
- for(const product of ['core','branches'])for(const theme of ['light','dark'])for(const scale of [1,2,4]){
-  if(process.env.QUALIFICATION_CASE&&process.env.QUALIFICATION_CASE!==`${product}-${theme}-${scale}`)continue;
+ for(const product of ['core','branches'])for(const theme of ['light','dark'])for(const size of (appTextSizeMode?[100,200]:[1,2,4])){
+  const scale=appTextSizeMode?1:size,caseId=`${product}-${theme}-${appTextSizeMode?'app-text-':''}${size}`;
+  if(process.env.QUALIFICATION_CASE&&process.env.QUALIFICATION_CASE!==caseId)continue;
   const context=await browser.newContext({viewport:null});
-  const row={product,theme,scale,actions:[],scans:[],errors:[]};results.push(row);
+  const row={product,theme,scale,...(appTextSizeMode?{appTextSize:size,caseId}:{}),actions:[],scans:[],errors:[]};results.push(row);
   try{
    const page=await context.newPage();await page.addInitScript(()=>{window.focusTrace=[];addEventListener('focusin',event=>window.focusTrace.push({at:performance.now(),target:event.target.outerHTML.slice(0,200)}),true);});page.setDefaultTimeout(10_000);page.on('pageerror',e=>row.errors.push(e.message));
    await page.addInitScript(theme=>localStorage.setItem('ponderosa-color-mode',theme),theme);
    await page.goto(product==='core'?manifest.normalUrl:manifest.url);
-   const editor=page.getByLabel('Message',{exact:true});await editor.waitFor();await page.bringToFront();
+   const editor=page.getByLabel('Message',{exact:true}),chatUrl=product==='core'?manifest.normalUrl:manifest.url,settingsUrl=manifest.origin+(product==='core'?'/settings/general':'/branches?settings=general');await editor.waitFor();await page.bringToFront();
    execFileSync('xdotool',['key','--clearmodifiers','ctrl+0',...Array(scale===4?8:scale===2?5:0).fill('ctrl+plus')],{env});
    await page.waitForFunction(scale=>devicePixelRatio===scale,scale);
    row.metrics=await page.evaluate(()=>({dpr:devicePixelRatio,width:innerWidth,height:innerHeight,scrollWidth:document.documentElement.scrollWidth,colorScheme:document.documentElement.style.colorScheme,font:getComputedStyle(document.querySelector('[aria-label="Message"]')).fontSize}));
    assert.equal(row.metrics.colorScheme,theme);assert.ok(row.metrics.scrollWidth<=row.metrics.width,'No page-wide overflow at native zoom');
+   if(appTextSizeMode){
+    row.baselineFonts=await page.evaluate(()=>({root:parseFloat(getComputedStyle(document.documentElement).fontSize),editor:parseFloat(getComputedStyle(document.querySelector('[aria-label="Message"]')).fontSize)}));
+    await page.goto(settingsUrl);
+    const textSize=page.getByRole('combobox',{name:'Text size',exact:true});await textSize.waitFor();
+    // An intermediate real choice makes even the 100% cell exercise onChange.
+    for(const choice of [115,size]){await textSize.click();await page.getByRole('option',{name:`${choice}%`,exact:true}).click();await page.waitForFunction(choice=>document.documentElement.style.fontSize===`${choice}%`,choice);}
+    assert.equal((await textSize.innerText()).trim(),`${size}%`);
+    row.textSizeSelection=await page.evaluate(()=>({stored:localStorage.getItem('ponderosa.text-size.v1'),rootStyle:document.documentElement.style.fontSize,rootFont:parseFloat(getComputedStyle(document.documentElement).fontSize),width:innerWidth,scrollWidth:document.documentElement.scrollWidth,dpr:devicePixelRatio}));
+    assert.equal(row.textSizeSelection.stored,String(size));assert.equal(row.textSizeSelection.dpr,1);assert.ok(row.textSizeSelection.scrollWidth<=row.textSizeSelection.width,'App Text size Settings has no page-wide overflow');
+    assert.ok(Math.abs(row.textSizeSelection.rootFont-row.baselineFonts.root*size/100)<0.1,'Actual setting updates root font');
+    row.actions.push({name:'Actual General Text size selection',choices:[115,size],pass:true});
+    await page.goto(chatUrl);await editor.waitFor();await page.waitForFunction(size=>document.documentElement.style.fontSize===`${size}%`,size);
+    row.metrics=await page.evaluate(()=>({dpr:devicePixelRatio,width:innerWidth,height:innerHeight,scrollWidth:document.documentElement.scrollWidth,colorScheme:document.documentElement.style.colorScheme,font:getComputedStyle(document.querySelector('[aria-label="Message"]')).fontSize,rootFont:parseFloat(getComputedStyle(document.documentElement).fontSize)}));
+    assert.equal(row.metrics.dpr,1);assert.equal(row.metrics.colorScheme,theme);assert.ok(row.metrics.scrollWidth<=row.metrics.width,'App Text size Chat has no page-wide overflow');
+    assert.ok(Math.abs(row.metrics.rootFont-row.baselineFonts.root*size/100)<0.1,'Selected root font survives Chat navigation');
+    assert.ok(Math.abs(parseFloat(row.metrics.font)-row.baselineFonts.editor*size/100)<0.1,'Composer font follows selected app Text size');
+   }
    if(product==='core'&&theme==='light'&&scale===1)assert.ok(await page.getByText('Write a message…',{exact:true}).isVisible(),'Empty composer placeholder is present for contrast verification');
    await page.addScriptTag({path:process.env.AXE_CORE_PATH});
    row.scans.push({surface:'empty-chat',...await page.evaluate(()=>window.axe.run())});
@@ -71,12 +92,12 @@ try {
 
    row.actions.push({name:'Tab to editor',tabs:await tabTo(page,editor)});
    await page.keyboard.press('Control+A');await page.keyboard.press('Backspace');
-   const marker=`a11y-${product}-${theme}-${scale}`;
+   const marker=`a11y-${caseId}`;
    await page.keyboard.type(marker);await page.keyboard.press('Shift+Enter');await page.keyboard.type('tail');
    const send=page.getByRole('button',{name:'Send message',exact:true});
    row.actions.push({name:'Tab to Send',tabs:await tabTo(page,send)});
-   const sent=page.waitForRequest(r=>r.method()==='POST'&&r.postData()?.includes(marker));
-   await page.keyboard.press('Enter');await sent;
+   const sent=appTextSizeMode?page.waitForResponse(r=>r.request().method()==='POST'&&r.request().postData()?.includes(marker)):page.waitForRequest(r=>r.method()==='POST'&&r.postData()?.includes(marker));
+   await page.keyboard.press('Enter');const sentResult=await sent;if(appTextSizeMode){row.sendStatus=sentResult.status();assert.equal(row.sendStatus,200,'Actual keyboard Send succeeds');}
    row.actions.push({name:'Keyboard explicit Send',pass:true});
    const actions=page.getByRole('button',{name:'Chat settings and actions',exact:true});
    row.actions.push({name:'Tab to Chat actions',tabs:await tabTo(page,actions)});await page.keyboard.press('Enter');
@@ -88,22 +109,25 @@ try {
    assert.ok(await rename.evaluate(el=>el===document.activeElement));await page.keyboard.press('Enter');
    const name=page.getByLabel('Chat name',{exact:true});await name.waitFor();assert.ok(await name.evaluate(el=>el===document.activeElement));
    await page.keyboard.press('Control+A');await page.keyboard.type(marker+' renamed');await page.keyboard.press('Enter');await name.waitFor({state:'hidden'});
+   if(appTextSizeMode){await page.getByText(marker+' renamed',{exact:true}).first().waitFor({state:'visible'});row.chatAfter=await page.evaluate(()=>({width:innerWidth,scrollWidth:document.documentElement.scrollWidth,dpr:devicePixelRatio}));assert.equal(row.chatAfter.dpr,1);assert.ok(row.chatAfter.scrollWidth<=row.chatAfter.width,'App Text size Chat remains usable after keyboard flows');}
    row.actions.push({name:'Keyboard rename Enter',pass:true});
    await page.addScriptTag({path:process.env.AXE_CORE_PATH});
    row.scans.push({surface:'chat',...await page.evaluate(()=>window.axe.run())});
-   await captureDesktop(`${product}-${theme}-${scale}-chat.png`);
-   await page.goto(manifest.origin+(product==='core'?'/settings/general':'/branches?settings=general'));
+   await captureDesktop(`${caseId}-chat.png`);
+   await page.goto(settingsUrl);
    const instructions=page.getByLabel('Global Agent Instructions',{exact:true});await instructions.waitFor();
+   if(appTextSizeMode){assert.equal((await page.getByRole('combobox',{name:'Text size',exact:true}).innerText()).trim(),`${size}%`);const geometry=await page.evaluate(()=>({width:innerWidth,scrollWidth:document.documentElement.scrollWidth,dpr:devicePixelRatio}));assert.equal(geometry.dpr,1);assert.ok(geometry.scrollWidth<=geometry.width,'App Text size remains usable after keyboard flows');row.settingsAfter=geometry;}
    row.actions.push({name:'Tab to instructions',tabs:await tabTo(page,instructions)});
    await page.keyboard.press('Control+A');await page.keyboard.type(marker+' instructions');
    assert.equal(await instructions.inputValue(),marker+' instructions');
    await page.addScriptTag({path:process.env.AXE_CORE_PATH});row.scans.push({surface:'settings',...await page.evaluate(()=>window.axe.run())});
-   await captureDesktop(`${product}-${theme}-${scale}-settings.png`);
+   await captureDesktop(`${caseId}-settings.png`);
    for(const scan of row.scans)assert.deepEqual(scan.violations.filter(v=>['critical','serious'].includes(v.impact)).map(v=>v.id),[],`${product}/${theme}/${scale}/${scan.surface}: no critical or serious axe findings`);
-   assert.deepEqual(row.errors,[]);row.status='pass';console.log(`PASS ${product} ${theme} native zoom ${scale*100}%`);
-  }catch(error){row.status='failed';row.error=error.stack;row.focusTrace=await context.pages()[0]?.evaluate(()=>window.focusTrace).catch(()=>null);row.focus=await context.pages()[0]?.evaluate(()=>document.activeElement?.outerHTML).catch(()=>null);await context.pages()[0]?.screenshot({path:path.join(output,`${product}-${theme}-${scale}-failure.png`)}).catch(()=>{});throw error;}
+   assert.deepEqual(row.errors,[]);row.status='pass';console.log(`PASS ${product} ${theme} ${appTextSizeMode?'app Text size '+size+'% at native zoom 100%':'native zoom '+scale*100+'%'}`);
+  }catch(error){row.status='failed';row.error=error.stack;row.focusTrace=await context.pages()[0]?.evaluate(()=>window.focusTrace).catch(()=>null);row.focus=await context.pages()[0]?.evaluate(()=>document.activeElement?.outerHTML).catch(()=>null);await context.pages()[0]?.screenshot({path:path.join(output,`${caseId}-failure.png`)}).catch(()=>{});throw error;}
   finally{await context.close();await writeFile(path.join(output,'results.json'),JSON.stringify(results,null,2));}
  }
+ if(appTextSizeMode)assert.equal(results.length,process.env.QUALIFICATION_CASE?1:8,'Requested app Text size cells must actually run');
 }finally{
  await browser?.close();fixture.kill('SIGTERM');await fixtureExit;xvfb.kill('SIGTERM');await displayExit;
 }
