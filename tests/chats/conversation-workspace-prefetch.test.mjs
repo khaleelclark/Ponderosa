@@ -32,7 +32,6 @@ function warmRoot(f,pathname,search=''){
  return invoke(rootWarm,{window:{location:{pathname,search}},parseRoute,...productScope,queryClient:f.client,prefetchConversationWorkspace:f.warm,api:f.api,queryKeys});
 }
 
-const branchWarm=arrow('components/BranchesView.tsx',text=>text.includes('chat.branchId!==id')&&text.includes('prefetchConversationWorkspace'));
 const invoke=(text,env,...args)=>vm.runInNewContext('('+text+')',env)(...args);
 const turn=()=>new Promise(setImmediate);
 function shell(f,route){
@@ -102,23 +101,6 @@ test('actual ProjectShell keeps pending, failed, foreign and deleted membership 
   }finally{f.close();}
  }
 });
-test('Branches existing owner guard overlaps the same reads with Project detail and refuses stale, foreign or mismatched owners',async()=>{
- const invalid=['cancelled','selection','route','chat','branch','execution','project'];
- for(const scenario of ['valid','held',...invalid]){
-  const f=fixture();try{
-   const route={branchId:'branch-a',tab:'chats',chatId:'chat-a',...(scenario==='held'?{executionId:'held-run'}:{}),workspace:{kind:'conversation',conversationId:'chat-a',projectId:'project-a'}};
-   const branchCalls=[],branchApi=Object.fromEntries(Object.entries(f.api).map(([name,fn])=>[name,(...args)=>{branchCalls.push(name);return fn(...args);} ]));
-   const env={client:f.client,realApi:branchApi,queryKeys,prefetchConversationWorkspace:f.warm,cancelled:scenario==='cancelled',selection:{current:scenario==='selection'?2:1},generation:1,routeOwner:{current:route},route,chatId:'chat-a',id:'branch-a'};
-   const chat={id:'chat-a',projectId:'project-a',branchId:'branch-a',...(scenario==='held'?{executionId:'held-run'}:{})};
-   if(scenario==='route')env.routeOwner.current={...route};if(scenario==='chat')chat.id='other-chat';if(scenario==='branch')chat.branchId='other-branch';if(scenario==='execution')chat.executionId='other-execution';if(scenario==='project')chat.projectId='other-project';
-   const pending=invoke(branchWarm,env,chat);
-   if(invalid.includes(scenario)){assert.equal(f.calls.length,0,scenario+' cannot prefetch a mismatched owner');continue;}
-   assert.deepEqual(f.calls.map(c=>c.kind),['project','tail','conversations','agents'],'The tail and lists start while Project detail is still pending');assert.deepEqual(branchCalls,['getProject','getConversation','listConversations','listAgents'],'Branches uses its explicit scoped realApi transport');
-   f.resolve('project',{id:'project-a'});f.resolve('tail',{conversation:{id:'chat-a'},messages:[]});f.resolve('conversations',[{id:'chat-a'}]);f.resolve('agents',[]);await pending;
-  }finally{f.close();}
- }
-});
-
 test('a failed warm refresh preserves verified membership data and its existing visible refresh warning',async()=>{
  const f=fixture();try{
   const first=f.warm(f.client,'chat-a','project-a');f.resolve('tail',{conversation:{id:'chat-a'},messages:[]});f.resolve('conversations',[{id:'chat-a'}]);f.resolve('agents',[]);await first;
@@ -129,49 +111,82 @@ test('a failed warm refresh preserves verified membership data and its existing 
  }finally{f.close();}
 });
 
-const branchOpen=arrow('components/BranchesView.tsx',text=>text.includes('const executionBranchId=')&&text.includes('const ownerRead='));
-function invokeOpening(env){
- const compiled=ts.transpileModule('const open='+branchOpen+'; open();',{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.None}}).outputText;
- return vm.runInNewContext(compiled,env);
+// Execute the actual opening effect, select and workflow draft reader together.
+// Transport/state cells are controlled; select and its generation transitions are not mocked.
+const branchText=source('components/BranchesView.tsx');
+const branchAst=ts.createSourceFile('BranchesView.tsx',branchText,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);
+function declaration(name){let found;function visit(n){if(ts.isFunctionDeclaration(n)&&n.name?.text===name)found=n.getText(branchAst);ts.forEachChild(n,visit);}visit(branchAst);assert(found,name);return found;}
+const openingEffect=arrow('components/BranchesView.tsx',text=>text.includes('let cancelled=false')&&text.includes('const executionBranchId='));
+const realTransportText=source('api/real.ts'),transportAst=ts.createSourceFile('real.ts',realTransportText,ts.ScriptTarget.Latest,true);
+const transportFunctions=['backgroundRead','coalesceBackgroundRead','decodeHttpError','requestJson'].map(name=>transportAst.statements.find(n=>ts.isFunctionDeclaration(n)&&n.name?.text===name).getText(transportAst)).join('\n');
+function realRequestTransport(fetch){
+ const env={exports:{},Headers,Map,JSON,Promise,fetch,productApiPath:path=>path,waitForBackgroundCooldown:()=>Promise.resolve(),ApiRequestError:module(source('api/types.ts')).ApiRequestError,parseRetryAfter:()=>undefined,noteBackgroundRateLimit:()=>assert.fail('403 does not set rate cooldown'),API_BASE:'',pendingBackgroundReads:new Map()};
+ vm.runInNewContext(ts.transpileModule(transportFunctions,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText,env);return env.exports.requestJson;
 }
-test('Branches starts only its canonical owner read alongside Branch metadata and waits for both before scoped warming',async()=>{
- for(const order of ['owner-first','branch-first']){
-  const f=fixture();let resolveBranch,resolveOwner;const calls=[];
-  const route={branchId:'branch-a',tab:'chats',chatId:'chat-a',workspace:{kind:'conversation',conversationId:'chat-a',projectId:'project-a'}};
-  const owner={id:'chat-a',branchId:'branch-a',projectId:'project-a'};
-  const requestJson=path=>{calls.push(path);return new Promise(resolve=>{if(path==='/api/branches/branch-a')resolveBranch=resolve;else if(path==='/api/branches/contexts/chat-a')resolveOwner=resolve;else assert.fail('Unexpected '+path);});};
-  const selection={current:0};let selected=0;
-  const env={requestJson,route,cancelled:false,draft:{},navigate:()=>assert.fail('No redirect expected'),setLoading(){},setOpeningLink(){},setDeployedUpdate(){},client:f.client,selection,routeOwner:{current:route},realApi:f.api,queryKeys,prefetchConversationWorkspace:f.warm,select:()=>{selected++;selection.current++;return Promise.resolve(true);},markWorkspaceResourceUsed(){},setError:message=>assert.fail(message),encodeURIComponent};
-  try{
-   const opening=invokeOpening(env);await turn();assert.deepEqual(calls,['/api/branches/contexts/chat-a','/api/branches/branch-a']);assert.equal(selected,0);assert.equal(f.calls.length,0);
-   const observer=new QueryObserver(f.client,{queryKey:['branch-chat-owner','chat-a'],queryFn:()=>requestJson('/api/branches/contexts/chat-a'),retry:false});const stop=observer.subscribe(()=>{});assert.equal(calls.length,2,'Canonical subscriber shares the in-flight owner read');
-   if(order==='owner-first'){resolveOwner(owner);await turn();assert.equal(f.calls.length,0,'Owner alone cannot warm workspace');resolveBranch({id:'branch-a'});}
-   else{resolveBranch({id:'branch-a'});await turn();assert.equal(f.calls.length,0,'Branch alone cannot warm workspace');resolveOwner(owner);}
-   await opening;await turn();assert.equal(selected,1);assert.deepEqual(f.calls.map(c=>c.kind),['project','tail','conversations','agents']);
-   assert.equal(f.client.getQueryData(['branch-chat-owner','chat-a']).id,'chat-a');
-   f.resolve('project',{id:'project-a'});f.resolve('tail',{conversation:{id:'chat-a'},messages:[]});f.resolve('conversations',[{id:'chat-a'}]);f.resolve('agents',[]);await turn();stop();
-  }finally{f.close();}
- }
+function openingFixture(options={}){
+ const f=fixture(),requests=[],pending=[],errors=[],state={draft:{},baseline:0},route={branchId:'branch-a',tab:'chats',chatId:'chat-a',...options.route};
+ const requestJson=realRequestTransport((path,init)=>{requests.push(path);return new Promise((resolve,reject)=>{const row={path,signal:init?.signal,respond:resolve,resolve:value=>resolve(new Response(JSON.stringify(value),{status:200,headers:{'content-type':'application/json'}})),reject};pending.push(row);init?.signal?.addEventListener('abort',()=>{row.aborted=true;reject(init.signal.reason);},{once:true});});});
+ const env={QueryObserver,route,draft:state.draft,selection:{current:0},routeOwner:{current:route},client:f.client,realApi:f.api,queryKeys,prefetchConversationWorkspace:f.warm,requestJson,
+  navigate(next){env.routeOwner.current=next;},setLoading(){},setOpeningLink(){},setDeployedUpdate(){},setError:message=>errors.push(message),setInput(){},setRunOpen(){},run:{reset(){}},setOccurrenceKey(){},createClientId:()=> 'synthetic-id',currentDraft:{current:{}},draftRevision:{current:''},pendingAdvanced:{current:false},
+  resetWorkflowBaseline(next){state.draft=next;state.baseline++;},newDefinition:()=>({steps:[]}),markWorkspaceResourceUsed(){},encodeURIComponent};
+ if(options.cache)f.client.setQueryData(['branch-chat-owner','chat-a'],options.cache);
+ const code=ts.transpileModule(declaration('readWorkflowDraft')+'\n'+declaration('select')+'\nconst cleanup=('+openingEffect+')();',{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.None}}).outputText;
+ vm.runInNewContext(code,env);const cleanup=vm.runInNewContext('cleanup',env);
+ const next=(path,value,fail=false)=>{const row=pending.find(x=>x.path===path&&!x.done);assert(row,'Pending '+path);row.done=true;row[fail?'reject':'resolve'](value);};
+ return{...f,env,state,requests,pending,errors,cleanup,next,http(path,status,message){const row=pending.find(x=>x.path===path&&!x.done);assert(row);row.done=true;row.respond(new Response(JSON.stringify({error:message}),{status,headers:{'content-type':'application/json'}}));},close(){cleanup?.();f.close();}};
+}
+const ownerValue={id:'chat-a',branchId:'branch-a',projectId:'project-a'};
+const ownerPath='/api/branches/contexts/chat-a',branchPath='/api/branches/branch-a',configPath='/api/branches/branch-a/configuration';
+async function settleWarm(f){for(const [kind,value]of [['project',{id:'project-a'}],['tail',{conversation:{id:'chat-a'},messages:[]}],['conversations',[{id:'chat-a'}]],['agents',[]]])f.resolve(kind,value);await turn();}
+test('actual opening/select overlaps owner before or after DTO while workflow configuration remains held',async()=>{
+ for(const order of ['owner-first','branch-first','fresh-cache']){const f=openingFixture(order==='fresh-cache'?{cache:ownerValue}:{});try{
+  await turn();if(order==='owner-first'){f.next(ownerPath,ownerValue);await turn();assert.equal(f.calls.length,0);}
+  f.next(branchPath,{id:'branch-a',chatId:'chat-a',name:'Synthetic'});await turn();assert.equal(f.env.selection.current,1,'Actual select advances its generation');assert(f.requests.includes(configPath));assert.equal(f.state.baseline,0,'Actual select still awaits configuration');
+  if(order==='branch-first'){assert.equal(f.calls.length,0);f.next(ownerPath,ownerValue);await turn();}
+  assert.deepEqual(f.calls.map(x=>x.kind),['project','tail','conversations','agents']);
+  if(order==='fresh-cache')assert(!f.requests.includes(ownerPath),'Nonstale canonical cache needs no artificial fetch');
+  assert.equal(f.client.getQueryCache().find({queryKey:['branch-chat-owner','chat-a']}).getObserversCount(),0,'Success disposes opening observer');
+  f.next(configPath,{agents:{},directories:{}});await turn();assert.equal(f.state.baseline,1);assert.equal(f.state.draft.branchId,'branch-a');await settleWarm(f);
+ }finally{f.close();}}
 });
-test('Branches overlap retains execution resolution, route/cancellation guards and canonical owner errors on Branch failure',async()=>{
- for(const scenario of ['execution-pending','cancelled','redirect','branch-failure','owner-failure','other-tab','other-workspace']){
-  const f=fixture(),calls=[];let executionResolve,branchResolve,branchReject,ownerResolve,ownerReject;const errors=[];
-  const route={branchId:'branch-a',tab:scenario==='other-tab'?'workflow':'chats',chatId:'chat-a',...(scenario==='execution-pending'?{executionId:'run-a'}:{}),...(scenario==='other-workspace'?{workspace:{kind:'agent',agentId:'agent-a',projectId:'project-a'}}:{})};
-  const env={route,cancelled:scenario==='cancelled',draft:{},selection:{current:0},routeOwner:{current:route},client:f.client,realApi:f.api,queryKeys,prefetchConversationWorkspace:f.warm,requestJson:path=>{calls.push(path);return new Promise((resolve,reject)=>{if(path.startsWith('/api/branch-executions/'))executionResolve=resolve;else if(path==='/api/branches/branch-a'){branchResolve=resolve;branchReject=reject;}else if(path==='/api/branches/contexts/chat-a'){ownerResolve=resolve;ownerReject=reject;}else assert.fail(path);});},navigate(){calls.push('redirect');},setLoading(){},setOpeningLink(){},setDeployedUpdate(){},select:()=>{env.selection.current++;return Promise.resolve(true);},markWorkspaceResourceUsed(){},setError:message=>errors.push(message),encodeURIComponent};
-  if(scenario==='redirect')env.route={...route,branchId:undefined,executionId:'run-a'};
-  try{
-   const opening=invokeOpening(env);await turn();
-   if(scenario==='execution-pending'){assert.deepEqual(calls,['/api/branch-executions/run-a']);env.cancelled=true;executionResolve({execution:{branchId:'branch-a'}});await opening;assert.equal(calls.length,1);continue;}
-   if(scenario==='cancelled'){await opening;assert.equal(calls.length,0);continue;}
-   if(scenario==='redirect'){executionResolve({execution:{branchId:'branch-a'}});await opening;assert.deepEqual(calls,['/api/branch-executions/run-a','redirect']);continue;}
-   if(scenario==='other-tab'||scenario==='other-workspace'){assert.deepEqual(calls,['/api/branches/branch-a']);branchResolve({id:'branch-a'});await opening;assert.equal(f.calls.length,0);continue;}
-   if(scenario==='branch-failure'){ownerReject(Error('Exact owner refused'));branchReject(Error('Exact Branch refused'));await opening;await turn();assert.deepEqual(errors,['Exact Branch refused']);assert.equal(f.client.getQueryState(['branch-chat-owner','chat-a']).error.message,'Exact owner refused');}
-   else{branchResolve({id:'branch-a'});ownerReject(Error('Exact owner refused'));await opening;await turn();assert.deepEqual(errors,[]);assert.equal(f.client.getQueryState(['branch-chat-owner','chat-a']).error.message,'Exact owner refused');}
-   assert.equal(f.calls.length,0,'No scoped workspace reads after a failed readiness read');
+test('actual snapshot cancel/invalidate resumes exactly once from fresh owner and never admits late pre-baseline result',async()=>{
+ const f=openingFixture();try{await turn();f.next(branchPath,{id:'branch-a',chatId:'chat-a',name:'Synthetic'});await turn();
+  const old=f.pending.find(x=>x.path===ownerPath);assert(old.signal instanceof AbortSignal,'Actual query passes its cancellation signal to actual requestJson/fetch');await f.client.cancelQueries();assert.equal(old.signal.aborted,true);assert.equal(old.aborted,true,'Old transport observes cancellation');const fresh=f.client.invalidateQueries({refetchType:'active'});await turn();assert.equal(f.requests.filter(x=>x===ownerPath).length,2);assert.notEqual(f.pending.filter(x=>x.path===ownerPath).at(-1).signal,old.signal,'Fresh query owns a distinct signal');
+  f.next(ownerPath,{...ownerValue,projectId:'pre-baseline-project'});await turn();assert.equal(f.calls.length,0,'Cancelled HTTP completion cannot admit its old result');
+  f.next(ownerPath,ownerValue);await fresh;await turn();assert.deepEqual(f.calls.map(x=>x.kind),['project','tail','conversations','agents']);
+  await f.client.invalidateQueries({refetchType:'active'});assert.equal(f.requests.filter(x=>x===ownerPath).length,2,'Successful handoff unsubscribes and cannot dispatch again');
+  f.next(configPath,{agents:{},directories:{}});await turn();await settleWarm(f);
+ }finally{f.close();}
+});
+test('actual owner handoff preserves HTTP errors, failed selection, route/foreign guards and disposal',async()=>{
+ for(const scenario of ['http-error','select-error','route-switch','foreign-branch','foreign-execution','foreign-project','wrong-chat','selection','cleanup']){
+  const route=scenario==='foreign-project'?{workspace:{kind:'conversation',conversationId:'chat-a',projectId:'project-a'}}:{};
+  const f=openingFixture({route});try{await turn();f.next(branchPath,{id:'branch-a',chatId:'chat-a',name:'Synthetic'});await turn();
+   if(scenario==='select-error'){f.next(configPath,Error('Configuration refused'),true);await turn();}
+   if(scenario==='route-switch')f.env.routeOwner.current={branchId:'branch-b',tab:'chats',chatId:'chat-b'};
+   if(scenario==='cleanup')f.cleanup();
+   if(scenario==='selection')f.env.selection.current++;
+   const value={...ownerValue,...(scenario==='wrong-chat'?{id:'other-chat'}:{}),...(scenario==='foreign-branch'?{branchId:'branch-b'}:{}),...(scenario==='foreign-execution'?{executionId:'other-run'}:{}),...(scenario==='foreign-project'?{projectId:'other-project'}:{})};
+   if(scenario==='http-error')f.http(ownerPath,403,'Exact owner denied');else f.next(ownerPath,value);await turn();await turn();
+   assert.equal(f.calls.length,0,scenario+' cannot warm workspace');assert.equal(f.requests.filter(x=>x===ownerPath).length,1,'No error retry');
+   const q=f.client.getQueryCache().find({queryKey:['branch-chat-owner','chat-a']});assert.equal(q.getObserversCount(),0,scenario+' disposes observer');
+   if(scenario==='http-error'){assert.equal(q.state.error.message,'Exact owner denied');assert.equal(q.state.error.status,403);}
   }finally{f.close();}
  }
 });
 
+test('actual opening keeps execution resolution, redirect, tab/workspace and Branch failure gates',async()=>{
+ for(const scenario of ['execution-pending','execution-redirect','other-tab','other-workspace','branch-failure']){
+  const route=scenario.startsWith('execution')?{executionId:'run-a',...(scenario==='execution-redirect'?{branchId:undefined}:{})}:scenario==='other-tab'?{tab:'workflow'}:scenario==='other-workspace'?{workspace:{kind:'agent',agentId:'agent-a',projectId:'project-a'}}:{};
+  const f=openingFixture({route});try{await turn();
+   if(scenario==='execution-pending'){assert.deepEqual(f.requests,['/api/branch-executions/run-a']);f.cleanup();f.next('/api/branch-executions/run-a',{execution:{branchId:'branch-a'}});await turn();assert.equal(f.requests.length,1);}
+   else if(scenario==='execution-redirect'){f.next('/api/branch-executions/run-a',{execution:{branchId:'branch-a'}});await turn();assert.equal(f.env.routeOwner.current.branchId,'branch-a');assert.equal(f.requests.length,1);}
+   else if(scenario==='other-tab'||scenario==='other-workspace'){assert.deepEqual(f.requests,[branchPath]);f.next(branchPath,{id:'branch-a',name:'Synthetic'});await turn();f.next(configPath,{agents:{},directories:{}});await turn();assert.equal(f.state.baseline,1);}
+   else {f.next(branchPath,Error('Exact Branch refused'),true);await turn();assert.deepEqual(f.errors,['Exact Branch refused']);assert.equal(f.client.getQueryCache().find({queryKey:['branch-chat-owner','chat-a']}).getObserversCount(),0);f.next(ownerPath,ownerValue);await turn();}
+   assert.equal(f.calls.length,0,scenario+' must not warm');
+  }finally{f.close();}
+ }
+});
 
 test('Root starts explicit Core Chat canonical data before App executes and mounted observers reuse the same reads',async()=>{
  const f=fixture();try{

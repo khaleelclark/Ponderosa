@@ -39,7 +39,7 @@ import {BranchChats} from './branches/BranchChats';
 import {WorkspaceConnectionProvider} from './WorkspaceConnectionContext';
 import {useWorkspaceStream} from '../hooks/useWorkspaceStream';
 import {useCallback,useEffect,useRef,useState,type ComponentProps} from 'react';
-import {useInfiniteQuery,useMutation,useQuery,useQueryClient} from '@tanstack/react-query';
+import {QueryObserver,useInfiniteQuery,useMutation,useQuery,useQueryClient} from '@tanstack/react-query';
 import {Accordion,AccordionSummary,AccordionDetails,Alert,Box,Button,Chip,Dialog,DialogActions,DialogContent,DialogTitle,Divider,Paper,Stack,SwipeableDrawer,TextField,Typography,useMediaQuery,useTheme} from '@mui/material';
 import type {BranchBindings,BranchContextDto,BranchDefinition,BranchDeploymentPreviewDto,BranchDto,BranchExecutionDetailDto,BranchExecutionDto,BranchLifecycleDto,BranchVersionDto,BranchVersionSummaryDto,DeployBranchRequest,DeployBranchResponse,TriggerDefinitionDto} from '@ponderosa/core';
 import {ApiRequestError} from '../api/types';
@@ -197,7 +197,7 @@ function BranchesWorkspace({route,navigate,colorMode,onToggleColorMode}:Appearan
  }
  const reloadWorkflow=async(branchId:string)=>{const revision=draftRevision.current,generation=selection.current;try{const branch=await requestJson<BranchDto>(`/api/branches/${branchId}`,{cache:'no-store'});if(routeOwner.current.branchId===branchId&&!routeOwner.current.global&&selection.current===generation&&draftRevision.current===revision&&!pendingAdvanced.current)await select(branch,true,revision)}catch(error){if(routeOwner.current.branchId===branchId&&!routeOwner.current.global&&selection.current===generation&&draftRevision.current===revision)setError((error as Error).message)}};
   useEffect(()=>{if(!current||current.id!==draft.branchId||current.versionId===draft.expectedVersionId||deployedUpdate?.reason==='failed'&&deployedUpdate.branch.id===current.id)return;if(renameId===current.id)return;if(dirty){setDeployedUpdate({branch:current,reason:'dirty'});return;}setDeployedUpdate(undefined);void select(current,true,draftRevision.current)},[current?.id,current?.versionId,draft.branchId,draft.expectedVersionId,dirty,deployedUpdate?.reason,renameId]);
- useEffect(()=>{let cancelled=false;
+ useEffect(()=>{let cancelled=false,stopOwner:(()=>void)|undefined;
   if(!route.branchId&&!route.executionId){selection.current++;draftHistory.current=emptyWorkflowHistory();setDraft(emptyDraft(),false);savedDraft.current=undefined;setAdvancedDirty(false);setLoading(false);setOpeningLink(false);return;}
   setOpeningLink(Boolean(route.executionId&&!draft.branchId)||route.branchId!==draft.branchId);
   void(async()=>{try{
@@ -210,26 +210,36 @@ function BranchesWorkspace({route,navigate,colorMode,onToggleColorMode}:Appearan
    // Only the existing canonical owner read may overlap Branch metadata.
    // Workspace reads still require the Branch result and all owner checks below.
    const chatId=route.tab==="chats"&&!route.global?route.chatId:undefined;
-   const ownerRead=chatId&&(!route.workspace||route.workspace.kind==="conversation"&&route.workspace.conversationId===chatId)
-    ? client.fetchQuery({queryKey:["branch-chat-owner",chatId],queryFn:()=>requestJson<BranchContextDto>(`/api/branches/contexts/${chatId}`),retry:false}) : undefined;
-   // A failed Branch read can leave no consumer; retain the canonical query error
-   // for BranchChats without producing an unhandled rejection.
-   void ownerRead?.catch(()=>{});
+   let ownerReady:(()=>void)|undefined;
+   if(chatId&&(!route.workspace||route.workspace.kind==="conversation"&&route.workspace.conversationId===chatId)){
+    // Remain active across the workspace snapshot's cancel/invalidate fence.
+    // Consume its signal so the generic GET coalescer cannot reuse pre-baseline HTTP.
+    const observer=new QueryObserver<BranchContextDto>(client,{queryKey:["branch-chat-owner",chatId],queryFn:({signal})=>requestJson<BranchContextDto>(`/api/branches/contexts/${chatId}`,{signal}),retry:false});
+    let generation:number|undefined,dispatch:((chat:BranchContextDto)=>void)|undefined;
+    const observe=()=>{
+     const result=observer.getCurrentResult();
+     if(cancelled||result.isError){stopOwner?.();return;}
+     if(!dispatch||generation===undefined||!result.isSuccess||result.isFetching||!result.isFetchedAfterMount&&result.isStale)return;
+     const chat=result.data;
+     if(selection.current!==generation||routeOwner.current!==route||chat.id!==chatId||chat.branchId!==id||(chat.executionId??undefined)!==(route.executionId??undefined)||route.workspace&&route.workspace.projectId!==chat.projectId){stopOwner?.();return;}
+     stopOwner?.();dispatch(chat);
+    };
+    const unsubscribe=observer.subscribe(observe);
+    stopOwner=()=>{unsubscribe();observer.destroy();stopOwner=undefined;};
+    ownerReady=()=>{
+     generation=selection.current;
+     dispatch=chat=>{void Promise.all([client.prefetchQuery({queryKey:queryKeys.projects.detail(chat.projectId),queryFn:()=>realApi.getProject(chat.projectId)}),prefetchConversationWorkspace(client,chat.id,chat.projectId,realApi)]).catch(()=>{/* Existing workspace queries display their normal errors. */});};
+     observe();
+    };
+   }
    const branch=await requestJson<BranchDto>(`/api/branches/${encodeURIComponent(id)}`);
    if(!cancelled){
-    const selected=select(branch,true),generation=selection.current;
-    // Overlap existing owner/workspace reads with the workflow draft. Rendering
-    // still waits for all existing BranchChats and ProjectShell checks.
-    if(chatId&&ownerRead){
-     void ownerRead.then(chat=>{
-      if(cancelled||selection.current!==generation||routeOwner.current!==route||chat.id!==chatId||chat.branchId!==id||(chat.executionId??undefined)!==(route.executionId??undefined)||route.workspace&&route.workspace.projectId!==chat.projectId)return;
-      return Promise.all([client.prefetchQuery({queryKey:queryKeys.projects.detail(chat.projectId),queryFn:()=>realApi.getProject(chat.projectId)}),prefetchConversationWorkspace(client,chat.id,chat.projectId,realApi)]);
-     }).catch(()=>{/* The existing owner query displays its normal error when the Chat opens. */});
-    }
-    if(await selected&&!cancelled)markWorkspaceResourceUsed(client,'branch',id);
+    const selected=select(branch,true);
+    ownerReady?.();
+    if(await selected&&!cancelled)markWorkspaceResourceUsed(client,'branch',id);else stopOwner?.();
    }
-  }catch(e){if(!cancelled){setLoading(false);setError((e as Error).message);setOpeningLink(false)}}})();
-  return()=>{cancelled=true;selection.current++};
+  }catch(e){stopOwner?.();if(!cancelled){setLoading(false);setError((e as Error).message);setOpeningLink(false)}}})();
+  return()=>{cancelled=true;stopOwner?.();selection.current++};
  },[route.branchId,route.executionId,openingAttempt]);
  const review=useMutation({mutationFn:async(startedDraft:Draft)=>{const sequence=selection.current,payload={...startedDraft,bindings:bindDefinitionDirectories(startedDraft.definition,startedDraft.bindings,contexts.data?.find(c=>c.id===startedDraft.chatId)?.workingDirectory),idempotencyKey:createClientId()};return {sequence,draftRevision:branchDraftRevision(startedDraft),input:payload,result:await requestJson<BranchDeploymentPreviewDto>('/api/branches/preview',{method:'POST',body:JSON.stringify(payload)})}},onSuccess:(result,startedDraft)=>{const leaving=workflowLeave.current?.kind==='save'&&workflowLeave.current.draft===startedDraft?workflowLeave.current:undefined;if(result.sequence===selection.current&&result.draftRevision===draftRevision.current&&!pendingAdvanced.current){if(leaving)leaving.attempt=result;setPreview(result)}else if(leaving)finishWorkflowLeave(false,leaving)},onError:(_error,startedDraft)=>{if(workflowLeave.current?.draft===startedDraft)finishWorkflowLeave()},onSettled:()=>actionLocks.current.delete('review')});
  const deploy=useMutation({mutationFn:(attempt:NonNullable<typeof preview>)=>requestJson<DeployBranchResponse>('/api/branches/deploy',{method:'POST',body:JSON.stringify(attempt.input)}),onSuccess:async(branch,attempt)=>{

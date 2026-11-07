@@ -3294,6 +3294,14 @@
       "classification": "manual-qualification-entrypoint"
     },
     {
+      "path": "tests/branches/owner-handoff-qualification.mjs",
+      "feature": "branches",
+      "lane": "manual",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Owned disposable normal-snapshot owner handoff and held-configuration check; built web/server/packages and installed Chrome; no provider account or performance qualification",
+      "classification": "manual-qualification-entrypoint"
+    },
+    {
       "path": "tests/branches/navigation-startup-qualification.mjs",
       "feature": "branches",
       "lane": "manual",
