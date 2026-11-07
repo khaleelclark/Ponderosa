@@ -461,9 +461,11 @@ for(const kind of ['cut-hash','request-bound','owner-pin','shared-fact'])test(`t
  if(kind==='request-bound')o.audit=o.audit.filter(a=>a.kind!=='request_bound');
  if(kind==='owner-pin')o.hostDependencies.bindingPin.revisionId='another-owner';
  if(kind==='shared-fact'){const record=o.hostDependencies.requests.find(({row})=>row.id===f.dependency.requestIds[0]);record.row.updated_at='2099-01-01T00:00:00.000Z';record.sha256=payloadHash(record.row);o.hostDependenciesHash=payloadHash(o.hostDependencies);}
- const hash=payloadHash(saved),id=Number(f.db.prepare('INSERT INTO branch_unit_snapshots(execution_id,snapshot_json,content_hash) VALUES(?,?,?)').run(f.source.id,stableJson(saved),hash).lastInsertRowid),before=f.db.prepare('SELECT COUNT(*) n FROM coordination_cut_restorations').get().n;
- assert.throws(()=>f.branches.rewindHistorical(f.branch.id,f.source.id,id,hash,'tampered-tree',undefined,f.graph),/integrity|unsupported/);
- assert.equal(f.db.prepare('SELECT COUNT(*) n FROM coordination_cut_restorations').get().n,before);
+ const hash=payloadHash(saved),id=Number(f.db.prepare('INSERT INTO branch_unit_snapshots(execution_id,snapshot_json,content_hash) VALUES(?,?,?)').run(f.source.id,stableJson(saved),hash).lastInsertRowid);
+ const tables=['coordination_cut_restorations','coordination_requests','coordination_request_updates','coordination_restored_update_origins','branch_executions','branch_step_executions','branch_attempts','branch_commands','agent_activations','activation_outbox'],state=()=>tables.map(table=>f.db.prepare(`SELECT * FROM ${table}`).all()),before=state();
+ const expected={'cut-hash':'Tree per-owner host cut differs','request-bound':'Historical tree continuation integrity unsupported','owner-pin':'Tree per-owner host cut differs','shared-fact':'Shared tree requests fact differs'};
+ assert.throws(()=>f.branches.rewindHistorical(f.branch.id,f.source.id,id,hash,'tampered-tree',undefined,f.graph),{name:'Error',message:expected[kind]});
+ assert.deepEqual(state(),before,'tampered tree creates or changes no canonical ownership, delivery or receipt');
 });
 test('child frontier failure rolls back the single tree receipt, deliveries and every fresh owner',async t=>{
  const f=await treeIssuedFixture(t,{parallel:true}),tables=['branch_executions','branch_attempts','branch_commands','coordination_requests','coordination_request_updates','coordination_cut_restorations','agent_activations','activation_outbox'],counts=()=>tables.map(table=>f.db.prepare(`SELECT COUNT(*) n FROM ${table}`).get().n),before=counts();
