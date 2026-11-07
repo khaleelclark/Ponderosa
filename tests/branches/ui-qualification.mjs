@@ -6,7 +6,7 @@ import {fileURLToPath} from 'node:url';
 import {randomUUID} from 'node:crypto';
 import {Readable} from 'node:stream';
 import {fixture} from '../shared/fixture.mjs';
-import {AgentStore} from '@ponderosa/agents';
+import {AgentStore} from '../../packages/agents/dist/index.js';
 let store;
 const f=await fixture({storeFactory:root=>(store=new AgentStore(root))}),requests=[];
 const branch=f.ok(await f.api('POST','/api/branches',{name:'Current master Branch QA',idempotencyKey:randomUUID()}));
