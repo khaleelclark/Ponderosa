@@ -23,6 +23,7 @@ import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tansta
 import { normalizeResetPages } from "../collections";
 import { providerAvailabilityMessage } from "../providerAvailability";
 import {
+  type ComponentProps,
   useCallback,
   useEffect,
   useMemo,
@@ -56,7 +57,8 @@ import { ComposerRuntimeSelector } from "./ComposerRuntimeSelector";
 import { AgentWorkInspector } from "./AgentWorkInspector";
 import { TargetedNextRunReceipts } from "./TargetedNextRunReceipts";
 import { queryKeys } from "../queryKeys";
-import { AgentsTab } from "./AgentsTab";
+import type { AgentsTab } from "./AgentsTab";
+import { RecoverableLazyRoute } from "./RecoverableLazyRoute";
 import type { ConversationDetailView } from "../routing";
 import {
   conversationComposerRuntime,
@@ -97,6 +99,11 @@ import { ChatContextSettings } from "./ChatContextSettings";
 import { chatStateKey } from "../chatState";
 import { publishUpdatedAgent, refreshAgentRuntime } from "../conversationAgentCache";
 import { pendingRuntimeSelection, runtimeMutationOptions, useRuntimeControls, useRuntimeSaving } from "../hooks/useRuntimeControls";
+
+const loadConversationAgents = () => import("./AgentsTab").then(module => ({ default: module.AgentsTab }));
+function ConversationAgentsPanel(props: ComponentProps<typeof AgentsTab>): JSX.Element {
+  return <RecoverableLazyRoute load={loadConversationAgents} componentProps={props} />;
+}
 
 export function ConversationView({
   conversationId,
@@ -1153,7 +1160,7 @@ export function ConversationView({
             agents={conversationAgents}
           /></Box>
         ) : activeView === "agents" ? (
-          <Box id="chat-workspace-agents-panel" role="tabpanel" aria-labelledby="chat-workspace-agents-tab" sx={{ height: "100%", minHeight: 0, minWidth: 0 }}><AgentsTab
+          <Box id="chat-workspace-agents-panel" role="tabpanel" aria-labelledby="chat-workspace-agents-tab" sx={{ height: "100%", minHeight: 0, minWidth: 0 }}><ConversationAgentsPanel
             searchValue={memberSearch}
             onSearchValueChange={setMemberSearch}
             agents={conversationAgents}

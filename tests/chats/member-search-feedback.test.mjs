@@ -17,6 +17,7 @@ registerHooks({ load(url, context, next) {
 const { ConversationView } = await import('../../apps/web/src/components/ConversationView.tsx');
 const { MutationNotificationProvider } = await import('../../apps/web/src/components/MutationNotifications.tsx');
 const { AgentsTab } = await import('../../apps/web/src/components/AgentsTab.tsx');
+const { RecoverableLazyRoute } = await import('../../apps/web/src/components/RecoverableLazyRoute.tsx');
 const { queryKeys } = await import('../../apps/web/src/queryKeys.ts');
 const { api } = await import('../../apps/web/src/api/index.ts');
 const chat = { id: 'chat', projectId: 'project', title: 'Search fixture', defaultEngine: 'codex' };
@@ -27,6 +28,13 @@ const data = items => ({ pages: [page(items)], pageParams: [undefined] });
 const findRoster = node => {
   if (!React.isValidElement(node)) return;
   if (node.type === AgentsTab) return node;
+  if (typeof node.type === 'function' && node.type.name === 'ConversationAgentsPanel') {
+    // Follow the actual pure boundary wrapper, then keep this SSR regression
+    // on the real owner/query/roster projection. Browser checks cover loading.
+    const boundary = node.type(node.props);
+    assert.equal(boundary.type, RecoverableLazyRoute);
+    return React.createElement(AgentsTab, boundary.props.componentProps);
+  }
   for (const child of React.Children.toArray(node.props.children)) {
     const found = findRoster(child); if (found) return found;
   }

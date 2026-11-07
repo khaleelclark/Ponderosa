@@ -3348,6 +3348,14 @@
       "moduleBase": "apps/server/package.json",
       "requirements": "Owned synthetic two-member template import through real UI, lost acceptance response and status-only recovery; normal built web/server/packages, Chrome and existing recording ffmpeg; no private snapshot or provider work",
       "classification": "manual-qualification-entrypoint"
+    },
+    {
+      "path": "tests/workspace-navigation/chat-settings-code-boundary-qualification.mjs",
+      "feature": "workspace-navigation",
+      "lane": "manual",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Owned disposable desktop/phone inactive-panel first-use and explicit chunk retry; normal built web/server/packages and sandboxed Chrome; no provider account, load or timing",
+      "classification": "manual-qualification-entrypoint"
     }
   ],
   "support": [
