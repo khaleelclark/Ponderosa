@@ -68,7 +68,8 @@ export function canonicalTextReplyInput(store: AgentStore, coordination: Coordin
   const sources=coordination.activationPayloads(agentId,ids,runId);
   let selected: {input:CommunicationEvent;activationId:string}|undefined;
   for(const source of sources){
-    if(!["human_message","urgent_message","ordinary_message"].includes(source.kind))continue;
+    const opening=source.kind==="managed_agent_opening";
+    if(!opening && !["human_message","urgent_message","ordinary_message"].includes(source.kind))continue;
     const payload=source.payload as {communication?:CommunicationEvent;dispatch?:{voiceReply?:boolean}}|undefined;
     const id=payload?.communication?.eventId;
     if(!id || payload?.dispatch?.voiceReply===true)continue;
@@ -76,6 +77,9 @@ export function canonicalTextReplyInput(store: AgentStore, coordination: Coordin
     const input=(canonical?.payload as {communication?:CommunicationEvent}|undefined)?.communication;
     if(!input || input.eventId!==id || input.projectId!==chat.projectId || input.conversationId!==chat.id ||
         !canonical?.activations?.some(a=>a.id===source.id&&a.agentId===agentId))continue;
+    // Creation's first human turn is canonical intake, not a general opening bypass.
+    if(opening && (source.promptClass!=="human" || input.eventId!==`agent-opening:${agentId}` ||
+        input.sender?.kind!=="user" || input.sender.userId!=="local-operator"))continue;
     const direct=route.intent==='direct_to_user' && input.intent==='user_dm' && input.sender.kind==='user' &&
       input.sender.userId==='local-operator' && (input.audience.kind==='user_agent' ? input.audience.agentId===agentId
       : input.audience.kind==='user_agents' && input.audience.agentIds.includes(agentId));

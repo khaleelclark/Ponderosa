@@ -713,4 +713,54 @@ test('text streaming selects canonical shared/private/peer routes and refuses co
   assert.equal(canonicalVoiceReplyInput(f.store,{...fake,requestIdsAttachedToRun:()=>['correlated']},scope,'text'),undefined);
   input.conversationId='foreign';assert.equal(canonicalVoiceReplyInput(f.store,fake,scope,'text'),undefined);
  }
+ const openingInput={eventId:`agent-opening:${f.agent.id}`,projectId:f.project.id,conversationId:f.chat.id,createdAt:'2026-10-10T00:00:00Z',text:'First task',intent:'broadcast',sender:{kind:'user',userId:'local-operator'},audience:{kind:'organization',organizationId:f.project.id}};
+ const opening=(patch={})=>{
+  const input={...openingInput,...patch.input},source={id:'opening',kind:'managed_agent_opening',promptClass:patch.promptClass??'human',payload:{communication:input}};
+  const fake={requestIdsAttachedToRun:()=>[],requiredReplyObligationsForRun:()=>[],activationIdsAttachedToRun:(run,agent)=>patch.detached!==true&&run==='run'&&agent===f.agent.id?['opening']:[],activationPayloads:(_agent,ids)=>ids.length?[source]:[],runtimeCommunicationForEvent:()=>({projectId:f.project.id,payload:{communication:input},activations:[{id:patch.acceptedActivationId??'opening',agentId:patch.acceptedAgentId??f.agent.id}]})};
+  return canonicalVoiceReplyInput(f.store,fake,{runId:'run',agentId:f.agent.id,conversationId:f.chat.id,...patch.scope},patch.presentation??'text',patch.publication);
+ };
+ assert.equal(opening().input.eventId,openingInput.eventId);
+ for(const patch of [{input:{eventId:'agent-opening:other-agent'}},{input:{sender:{kind:'user',userId:'other-human'}}},{input:{sender:{kind:'agent',agentId:f.agent.id}}},{promptClass:'system'},{acceptedAgentId:'other-agent'},{acceptedActivationId:'other-activation'},{detached:true},{presentation:'voice'},{scope:{runId:'other-run'}},{scope:{agentId:'other-agent'}},{input:{conversationId:'other-chat'}},{publication:{kind:'message',intent:'direct_to_user'}}])assert.equal(opening(patch),undefined);
 }));
+
+
+test('first public Chat opening streams and publishes exactly one canonical shared reply', async () => {
+ const root=await realpath(await mkdtemp(path.join(tmpdir(),'first-chat-stream-'))),dataDir=path.join(root,'data');
+ const store=new AgentStore(dataDir),coord=new CoordinationV3Store(store.sqlite);
+ const answer='A controlled first Chat reply.';let app,authorization,providerError,capability,runId,starts=0,release,completed;
+ const gate=new Promise(resolve=>release=resolve),done=new Promise(resolve=>completed=resolve);
+ const adapter={id:'codex',displayName:'Controlled opening',trustedSystemPromptChannel:'developer',supportsVoiceReplyStream:true,
+  listModels:()=>[{id:'fixture',label:'Fixture'}],listEfforts:()=>[],defaultModel:()=> 'fixture',
+  async *seed(options){try{
+   starts++;runId=options.providerRun.runId;capability=options.environment.PONDEROSA_AGENT_MESSAGE_TOKEN;
+   yield* mapCodexAppServerNotification({method:'item/started',params:{item:{type:'dynamicToolCall',id:'opening-authorize',tool:'ponderosa_reply_stream',arguments:{}}}},root);
+   authorization=await createProviderDynamicToolHandler(app,[PONDEROSA_REPLY_STREAM_TOOL],capability)({id:'opening-rpc',operationId:'opening-authorize',name:'ponderosa_reply_stream',arguments:{}});
+   assert.equal(authorization.success,true,authorization.text);
+   yield* mapCodexAppServerNotification({method:'item/completed',params:{item:{type:'dynamicToolCall',id:'opening-authorize',tool:'ponderosa_reply_stream',success:true,contentItems:[{type:'inputText',text:authorization.text}]}}},root);
+   yield candidate('start');yield candidate('delta','A controlled first Chat ');await gate;
+   yield candidate('delta','reply.');yield candidate('complete',answer);yield {type:'turn_done'};
+  }catch(error){providerError=error;throw error;}finally{completed();}},
+  async *continue(){throw Error('Opening must not require a second provider turn');}};
+ try{
+  app=createServer({dataDir,store,logger:false,engines:[{adapter,isInstalled:()=>true,authStatus:async()=>({authenticated:true,billingMode:'subscription',source:'cli_status',detail:'Controlled observation; no provider account'}),availabilityProbe:async()=>({available:true})}],
+   resourceAdmissionObservation:{sample:async()=>({availableBytes:8*1024**3,memoryFullPercent:0,ioFullPercent:0,source:'linux_host'})},communicationV3:{pollMs:10}});
+  await app.ready();
+  const created=await app.inject({method:'POST',url:'/api/chats',headers:{'idempotency-key':'opening-chat'},payload:{label:'First public Chat',defaultEngine:'codex'}});assert.equal(created.statusCode,200,created.body);const chat=created.json();
+  const body={title:'First Agent',engine:'codex',conversationId:chat.id,initialMessage:'Reply in this Chat.',idempotencyKey:'opening-agent'};
+  const admitted=await app.inject({method:'POST',url:`/api/projects/${chat.projectId}/agents`,payload:body});assert.equal(admitted.statusCode,200,admitted.body);const agent=admitted.json(),eventId=`agent-opening:${agent.id}`;
+  await boundedWait(()=>authorization||providerError,'opening stream authorization');if(providerError)throw providerError;
+  assert.equal(authorization.success,true,authorization.text);
+  const runtime=coord.runtimeCommunicationForEvent(eventId,agent.id);assert.equal(runtime.payload.communication.intent,'broadcast');assert.equal(runtime.payload.communication.conversationId,chat.id);
+  const source=coord.activationPayloads(agent.id,coord.activationIdsAttachedToRun(runId,agent.id),runId);assert.equal(source.length,1);assert.equal(source[0].kind,'managed_agent_opening');assert.equal(source[0].payload.communication.eventId,eventId);
+  const statusUrl=`/api/conversations/${chat.id}/reply-streams/${encodeURIComponent(eventId)}/${agent.id}`;
+  await boundedWait(()=>store.latestVoiceReply(agent.id,eventId,runId)?.text==='A controlled first Chat ','opening preview');
+  const early=await app.inject({method:'GET',url:statusUrl});assert.equal(early.statusCode,200,early.body);assert.equal(early.json().reply.presentation,'text');assert.equal(early.json().reply.text,'A controlled first Chat ');
+  assert.equal(coord.runtimeCommunications(chat.projectId).filter(row=>row.payload.communication?.sender.kind==='agent').length,0,'no work output substitutes for committed reply');
+  release();await done;await boundedWait(()=>coord.activeAgentRun(agent.id)===undefined,'opening Run completed');if(providerError)throw providerError;
+  const visible=await app.inject({method:'GET',url:`/api/conversations/${chat.id}`});assert.equal(visible.statusCode,200,visible.body);
+  const messages=visible.json().messages.filter(message=>message.role==='assistant'&&message.authorAgentId===agent.id);assert.equal(messages.length,1);assert.equal(messages[0].text,answer);
+  const replies=coord.runtimeCommunications(chat.projectId).filter(row=>row.payload.communication?.sender.kind==='agent');assert.equal(replies.length,1);assert.equal(replies[0].payload.communication.conversationId,chat.id);assert.equal(replies[0].payload.communication.sender.executionId,runId);
+  const replay=await app.inject({method:'POST',url:`/api/projects/${chat.projectId}/agents`,payload:body});assert.equal(replay.statusCode,200,replay.body);assert.equal(replay.json().id,agent.id);assert.equal(starts,1);
+  const late=await app.inject({method:'POST',url:'/api/agent-reply-stream',headers:{authorization:`Bearer ${capability}`},payload:{}});assert.equal(late.statusCode,401,late.body);assert.equal(coord.runtimeCommunications(chat.projectId).filter(row=>row.payload.communication?.sender.kind==='agent').length,1);
+ }finally{release();if(starts)await done;if(app){app.prepareForShutdown();await app.close();assert.equal(app.server.listening,false);}store.close();await rm(root,{recursive:true,force:true});}
+});
