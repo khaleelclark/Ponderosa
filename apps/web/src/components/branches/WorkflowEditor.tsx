@@ -118,7 +118,11 @@ export function WorkflowEditor({definition,bindings,contexts,agents,engines,onDe
 /** Definition policy edits use the same draft owner as the canvas. */
 export function WorkflowExecutionSettings({definition,onDefinition,bindings,onBindings,agents,contexts}:Pick<Parameters<typeof WorkflowEditor>[0],'definition'|'onDefinition'|'bindings'|'onBindings'|'agents'|'contexts'>):JSX.Element {
  return <Stack component="section" aria-label="Execution Settings" spacing={2}><Typography variant="h6">Execution Settings</Typography>
-  {([['maxConcurrentExecutions','Concurrent Executions',2],['maxEphemeralAgents','Temporary Agents Per Execution',100],['maxPathInstances','Maximum Paths',1000],['maxStepInvocations','Maximum Step Invocations',1000]] as const).map(([field,label,fallback])=><TextField key={field} label={label} type="number" size="small" inputProps={{min:1,max:field==='maxConcurrentExecutions'?1000:100000,step:1}} error={!Number.isSafeInteger(definition.policy[field]??fallback)||(definition.policy[field]??fallback)<1||(definition.policy[field]??fallback)>(field==='maxConcurrentExecutions'?1000:100000)} value={definition.policy[field]??fallback} onChange={e=>onDefinition({...definition,policy:{...definition.policy,[field]:Number(e.target.value)}})}/>)}
+  {([['maxConcurrentExecutions','Concurrent Executions',2],['maxEphemeralAgents','Temporary Agents Per Execution',100],['maxPathInstances','Maximum Paths',1000],['maxStepInvocations','Maximum Step Invocations',1000]] as const).map(([field,label,fallback])=>{
+    const value=definition.policy[field]??fallback,maximum=field==='maxConcurrentExecutions'?1000:100000;
+    const invalid=!Number.isSafeInteger(value)||value<1||value>maximum;
+    return <TextField key={field} label={label} type="number" size="small" inputProps={{min:1,max:maximum,step:1}} error={invalid} helperText={field==='maxConcurrentExecutions'&&invalid?'Enter a whole number from 1 to 1,000.':undefined} value={value} onChange={e=>onDefinition({...definition,policy:{...definition.policy,[field]:Number(e.target.value)}})}/>;
+   })}
   <FailureEditor value={definition.policy.failure} onChange={failure=>onDefinition({...definition,policy:{...definition.policy,failure:failure??{action:'stop'}}})} bindings={bindings} onBindings={onBindings} agents={agents} contexts={contexts}/>
  </Stack>;
 }

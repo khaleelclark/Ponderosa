@@ -1248,6 +1248,12 @@ test('execution settings edits return a draft definition without mutating its pu
  const published=addNode(newDefinition(),'agent').definition,changes=[],props={definition:published,bindings:{agents:{},directories:{}},agents:[],contexts:[],onDefinition:value=>changes.push(value),onBindings(){}};
  const surface=WorkflowExecutionSettings(props),fields=surface.props.children[1];fields[0].props.onChange({target:{value:'5'}});assert.equal(changes[0].policy.maxConcurrentExecutions,5);assert.equal(published.policy.maxConcurrentExecutions,2);assert.equal(changes[0].steps,published.steps);
  const failure=surface.props.children[2];failure.props.onChange({action:'retry',maxAttempts:4,delayMs:2000});assert.deepEqual(changes[1].policy.failure,{action:'retry',maxAttempts:4,delayMs:2000});assert.deepEqual(published.policy.failure,{action:'stop'});
+ const concurrency=value=>WorkflowExecutionSettings({...props,definition:{...published,policy:{...published.policy,maxConcurrentExecutions:value}}}).props.children[1][0];
+ for(const value of [0,1.5,1001]){const field=concurrency(value);assert.equal(field.props.error,true);assert.equal(field.props.helperText,'Enter a whole number from 1 to 1,000.');}
+ for(const value of [1,3,1000]){const field=concurrency(value);assert.equal(field.props.error,false);assert.equal(field.props.helperText,undefined);}
+ const invalid=renderToStaticMarkup(React.createElement(WorkflowExecutionSettings,{...props,definition:{...published,policy:{...published.policy,maxConcurrentExecutions:0}}}));
+ assert.ok(invalid.includes('Enter a whole number from 1 to 1,000.'));assert.ok(invalid.includes('aria-invalid="true"'));
+ assert.equal(published.policy.maxConcurrentExecutions,2,'Validation feedback does not alter the published policy');
 });
 
 test('closing the Add-step menu fences its exiting item handlers from creating another step',async()=>{
