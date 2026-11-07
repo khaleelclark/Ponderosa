@@ -7,7 +7,7 @@ import {ChatCreationRecovery} from "../ChatCreationRecovery";
 import {readCreationAttempts, sameCreationOwner, isOrdinaryPendingChatAttempt} from "../chatCreationAttempts";
 import {PrimaryHeaderActionsScope} from '../PrimaryHeaderActions';
 import {BranchNotifications} from "./BranchNotifications";
-import {useWorkspacePreferences,useWorkspacePreferencesWriter} from '../../hooks/queries';
+import {useWorkspacePreferences,useWorkspacePreferencesWriter,useNotificationProjection} from '../../hooks/queries';
 import {createClientId} from '../../clientId';
 import type {BranchRoute} from '../../branchesRouting';
 import {useBranchDraftGuard,useBranchNavigationGuard} from './BranchNavigation';
@@ -50,6 +50,8 @@ export function BranchChats({branchId,engines,executionId,branchRoute,onNavigate
  const searches=useInfiniteQuery({queryKey:['branch-chats',branchId,executionId,'search',searchText],initialPageParam:undefined as string|undefined,queryFn:({pageParam})=>requestCollectionPage<BranchContextDto>(`/api/branches/${branchId}/chats?limit=100&search=${encodeURIComponent(searchText)}${executionId?'&executionId='+encodeURIComponent(executionId):''}${pageParam?'&cursor='+encodeURIComponent(pageParam):''}`),getNextPageParam:last=>last.hasMore?last.cursor:undefined,select:normalizeResetPages,enabled:picker&&Boolean(searchText),refetchInterval:picker&&searchText?5000:false});
  const chats={...chatPages,data:chatPages.data?uniqueBy(chatPages.data.pages.flatMap(page=>page.items),chat=>chat.id):undefined};
  const choices=searchText?searches:chatPages,choiceRows=uniqueBy(choices.data?.pages.flatMap(page=>page.items)??[],chat=>chat.id);
+ const unread=useNotificationProjection([], [...(chats.data??[]).map(chat=>chat.id),...choiceRows.map(chat=>chat.id),...(chatId?[chatId]:[])],[],Boolean(chatId||choiceRows.length));
+ const chatUnread=(id:string)=>Boolean(unread.data?.conversations[id]?.totalCount||unread.data?.conversations[id]?.quietUnreadCount);
  const titleCounts=new Map<string,number>();for(const c of choiceRows)titleCounts.set(c.title,(titleCounts.get(c.title)??0)+1);
  const [browserRequest,setBrowserRequest]=useState<ProjectBrowserRequest>(),browserRequestSequence=useRef(0);
  const owner=useQuery({queryKey:['branch-chat-owner',chatId],queryFn:()=>requestJson<BranchContextDto>(`/api/branches/contexts/${chatId}`),enabled:Boolean(chatId),retry:false,refetchInterval:5000});
@@ -97,8 +99,8 @@ export function BranchChats({branchId,engines,executionId,branchRoute,onNavigate
     loading={choices.isPending} loadingText="Loading Chats…" noOptionsText={choices.error?'Chats could not be loaded.':searchText?'No Chats match this search.':'No Chats in this scope.'}
     onHighlightChange={(_event,c,reason)=>{if(reason==='keyboard'&&c?.id===choiceRows.at(-1)?.id&&choices.hasNextPage&&!choices.isFetching&&!choices.error)void choices.fetchNextPage()}}
     slots={{paper:ChatOptionsPaper}} slotProps={{paper:pickerPaperProps,listbox:{onScroll:event=>{const list=event.currentTarget;if(list.scrollHeight-list.scrollTop-list.clientHeight<32&&choices.hasNextPage&&!choices.isFetching&&!choices.error)void choices.fetchNextPage()}}}}
-    renderOption={({key,...props},c)=><Box component="li" key={key} {...props}><Box sx={{minWidth:0}}><Typography sx={{overflowWrap:'anywhere'}}>{c.title}</Typography>{(titleCounts.get(c.title)??0)>1&&<Typography variant="caption" color="text.secondary" sx={{overflowWrap:'anywhere'}}>{c.id}</Typography>}</Box></Box>}
-    renderInput={params=><TextField {...params} size="small" label={executionId?'Execution Chat':'Chat'} placeholder="Search Chats" slotProps={{htmlInput:{...params.inputProps,maxLength:200}}} InputProps={{...params.InputProps,endAdornment:<>{choices.isFetching&&<CircularProgress size={16} aria-label="Loading Chats"/>}{params.InputProps.endAdornment}</>}}/>}
+    renderOption={({key,...props},c)=><Box component="li" key={key} {...props}><Box sx={{minWidth:0}}><Typography sx={{overflowWrap:'anywhere',fontWeight:chatUnread(c.id)?800:400}}>{c.title}</Typography>{(titleCounts.get(c.title)??0)>1&&<Typography variant="caption" color="text.secondary" sx={{overflowWrap:'anywhere'}}>{c.id}</Typography>}</Box></Box>}
+    renderInput={params=><TextField {...params} size="small" label={executionId?'Execution Chat':'Chat'} placeholder="Search Chats" slotProps={{htmlInput:{...params.inputProps,maxLength:200}}} InputProps={{...params.InputProps,sx:{'& input':{fontWeight:chatId&&chatUnread(chatId)?800:400}},endAdornment:<>{choices.isFetching&&<CircularProgress size={16} aria-label="Loading Chats"/>}{params.InputProps.endAdornment}</>}}/>}
     sx={{flex:1,minWidth:0,maxWidth:360}}/>
    {!executionId&&<Button size="small" startIcon={<AddIcon/>} disabled={Boolean(creationKey)} onClick={startChat} sx={{flexShrink:0,whiteSpace:'nowrap'}}>New Chat</Button>}
    {executionId&&<Button size="small" onClick={()=>onNavigate({...branchRoute,executionId:undefined,chatId:undefined,workspace:undefined})}>Persistent Chats</Button>}{notificationAction}
@@ -109,6 +111,7 @@ export function BranchChats({branchId,engines,executionId,branchRoute,onNavigate
   {!creationKey&&creationAllowed&&pendingImportAttempts.length>0&&<ChatCreationRecovery key={pendingImportAttempts.map(item=>item.key).join(':')} owner={creationOwner} importOnly onCreated={(projectId,conversationId)=>{void client.invalidateQueries({queryKey:['branch-chats',branchId]});openChat(conversationId,projectId);}}/>}
   {routedAgent.error&&<Alert severity="error" action={<Button onClick={()=>void routedAgent.refetch()}>Retry Agent</Button>}>The linked Agent is unavailable in Branches.</Alert>}
   {error&&<Alert severity="error" onClose={()=>setError('')}>{error}</Alert>}
+  {unread.error&&<Alert severity="error" action={<Button onClick={()=>void unread.refetch()}>Retry unread status</Button>}>Unread status could not be loaded.</Alert>}
   {chats.error&&<Alert severity="error" action={<Button onClick={()=>void chats.refetch()}>Retry Chats</Button>}>Chats could not be loaded. {chats.error.message}</Alert>}
   {chatId&&owner.error&&!listedChat&&<Alert severity="error" action={<Button onClick={()=>setChatId('')}>Choose another Chat</Button>}>This Chat is unavailable or no longer belongs to a Branch.</Alert>}
   {chat&&project.error&&<Alert severity="error" action={<Button onClick={()=>void project.refetch()}>Retry Chat workspace</Button>}>The Chat workspace could not be loaded. {project.error.message}</Alert>}

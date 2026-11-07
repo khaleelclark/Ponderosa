@@ -133,6 +133,7 @@ export function registerNotificationListRoute(
       const projectIds = request.body?.projectIds;
       const conversationIds = request.body?.conversationIds;
       const chatFolders = request.body?.chatFolders;
+      const branchIds = request.body?.branchIds;
       const validIds = (value: unknown): value is string[] => Array.isArray(value) &&
         value.length <= 200 &&
         value.every((id) => typeof id === "string" && id.length > 0 && id.length <= 200);
@@ -141,6 +142,7 @@ export function registerNotificationListRoute(
           error: "projectIds and conversationIds must each contain at most 200 IDs",
         });
       }
+      if (branchIds !== undefined && !validIds(branchIds)) return reply.code(400).send({error:'branchIds must contain at most 200 IDs'});
       if (chatFolders !== undefined) {
         let memberCount = 0;
         const folderIds = new Set<string>();
@@ -152,12 +154,33 @@ export function registerNotificationListRoute(
           return memberCount > 10_000 || folder.conversationIds.some(id => typeof id !== "string" || !id || id.length > 200);
         })) return reply.code(400).send({ error: "chatFolders must contain at most 200 unique groups and 10000 total member IDs" });
       }
-      return options.workspace.notificationProjection({
+      const folders=[...(chatFolders??[])],usedGroupIds=new Set(folders.map(folder=>folder.id));
+      const requestedBranches=[...new Set(branchIds??[])],branchGroups=new Map<string,string>();
+      const members=new Map(requestedBranches.map(id=>[id,[] as string[]]));
+      if(requestedBranches.length){
+        const rows=options.store.sqlite.prepare('SELECT id,branch_id FROM conversations WHERE branch_id IN ('+requestedBranches.map(()=>'?').join(',')+')').all(...requestedBranches) as Array<{id:string;branch_id:string}>;
+        for(const row of rows)members.get(row.branch_id)?.push(row.id);
+        for(const id of requestedBranches){
+          let groupId='branch:'+id;while(usedGroupIds.has(groupId))groupId='_'+groupId;
+          usedGroupIds.add(groupId);branchGroups.set(id,groupId);folders.push({id:groupId,conversationIds:members.get(id)!});
+        }
+      }
+      const projection=options.workspace.notificationProjection({
         include: notificationProductPredicate(options.store,requestProduct(request)),
         projectIds: [...new Set(projectIds)],
         conversationIds: [...new Set(conversationIds)],
-        ...(chatFolders ? { chatFolders } : {}),
+        ...(folders.length ? { chatFolders:folders } : {}),
       });
+      if(branchIds===undefined)return projection;
+      // Workflow grouping uses the same canonical count pass; transport only
+      // requested Chat scopes, never the workflow's full Chat membership.
+      const visibleChats=new Set([...conversationIds,...(chatFolders??[]).flatMap(folder=>folder.conversationIds)]);
+      const visibleFolders=new Set((chatFolders??[]).map(folder=>folder.id));
+      return {...projection,
+        conversations:Object.fromEntries(Object.entries(projection.conversations).filter(([id])=>visibleChats.has(id))),
+        chatFolders:Object.fromEntries(Object.entries(projection.chatFolders??{}).filter(([id])=>visibleFolders.has(id))),
+        branches:Object.fromEntries([...branchGroups].map(([id,group])=>[id,projection.chatFolders![group]])),
+      };
     },
   );
 }

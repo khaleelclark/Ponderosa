@@ -11,7 +11,7 @@ import {useWorkspaceFont} from "../hooks/useWorkspaceFont";
 import {BranchHome} from './branches/BranchHome';
 import { BranchFolders } from './branches/BranchFolders';
 import { WorkspacePreferencesWriter } from '../workspacePreferencesWriter';
-import { useWorkspacePreferences } from '../hooks/queries';
+import { useWorkspacePreferences, useNotificationProjection } from '../hooks/queries';
 import { queryKeys } from '../queryKeys';
 import {normalizeResetPages} from '../collections';
 import {markWorkspaceResourceUsed} from '../workspaceRecency';
@@ -149,6 +149,7 @@ function BranchesWorkspace({route,navigate,colorMode,onToggleColorMode}:Appearan
  const organizedKey=JSON.stringify([organizedIds,preferences.data?.branchSort,preferences.data?.branchOrder]);
  const organized=useQuery({queryKey:['branches','organized',search.trim(),organizedKey],enabled:Boolean(preferences.data&&organizedIds.length),queryFn:()=>requestJson<BranchDto[]>('/api/branches?section=organized&search='+encodeURIComponent(search.trim())),refetchInterval:5000});
  const branches={...branchPages,data:branchPages.data?Array.from(new Map([...(organized.data??[]),...branchPages.data.pages.flatMap(page=>page.items)].map(branch=>[branch.id,branch])).values()):undefined};
+ const branchUnread=useNotificationProjection([],[],[],Boolean(branches.data),branches.data?.map(branch=>branch.id)??[]);
  const contextList=useQuery({queryKey:['branch-chats',draft.branchId],queryFn:()=>requestJson<Context[]>(`/api/branches/${draft.branchId}/chats`),enabled:Boolean(draft.branchId),refetchInterval:5000});
  const selectedContext=useQuery({queryKey:['branch-context',draft.chatId],queryFn:()=>requestJson<Context>(`/api/branches/contexts/${draft.chatId}`),enabled:Boolean(draft.chatId)});
  const setTab=(next:BranchRoute['tab'])=>{
@@ -299,7 +300,7 @@ function BranchesWorkspace({route,navigate,colorMode,onToggleColorMode}:Appearan
  const shownExecutions=executions.map(e=>e.id===detail.data?.execution.id&&detail.data.execution.revision>=e.revision?detail.data.execution:e);
  const actionFailure=error||(review.variables&&branchDraftRevision(review.variables)===draftRevision.current&&!advancedDirty?review.error?.message:undefined)||run.error?.message||automatic.error?.message||cancelInstallation.error?.message;
  const failedOpening=Boolean(error&&!openingLink&&!loading&&(route.branchId||route.executionId)&&(!draft.branchId||route.branchId!==draft.branchId));
- const failure=actionFailure||branches.error?.message||contexts.error?.message||agents.error?.message||engines.error?.message||selectedBranch.error?.message||trigger.error?.message||lifecycle.error?.message;
+ const failure=actionFailure||branches.error?.message||contexts.error?.message||agents.error?.message||engines.error?.message||selectedBranch.error?.message||trigger.error?.message||lifecycle.error?.message||branchUnread.error?.message;
  useEffect(()=>{if(actionFailure){feedback.current?.scrollIntoView({block:'center',behavior:'instant'});feedback.current?.focus({preventScroll:true});if(review.error&&actionFailure===review.error.message&&review.variables&&branchDraftRevision(review.variables)===draftRevision.current&&!advancedDirty)setValidationRequest(value=>value+1)}},[actionFailure]);
  const searchReturnFocus=useRef<HTMLElement>();
  const restoreSearchTrigger=()=>{const previous=searchReturnFocus.current;searchReturnFocus.current=undefined;restoreOverlayFocus(previous,'[aria-label="Open workspace navigation"], [aria-label="Search Branch Chats"]')};
@@ -317,7 +318,7 @@ function BranchesWorkspace({route,navigate,colorMode,onToggleColorMode}:Appearan
  useEffect(()=>{const keydown=(event:KeyboardEvent)=>{if(!isGlobalSearchShortcut(event))return;event.preventDefault();openGlobalSearch()};window.addEventListener('keydown',keydown);return()=>window.removeEventListener('keydown',keydown)},[]);
  const workflowPanel=(drawer:boolean)=>preferences.data?<BranchFolders branches={branches.data??[]} preferences={preferences.data} filtering={Boolean(search.trim())}
     onRename={requestRename} onPreferences={patch=>preferenceWriter.current!.enqueue(patch)}
-    renderRow={b=><SidebarResourceRow href={branchRoutePath({branchId:b.id,tab:'workflow'})} id={b.id} label={`Open Branch ${b.name}`} title={b.name} selected={draft.branchId===b.id} icon={<AccountTreeOutlinedIcon fontSize="small"/>} status={<BranchDirectoryStatus branch={b} delayed={Boolean(branches.error||organized.error||connection.prolongedDisconnect)}/>}
+    renderRow={b=><SidebarResourceRow href={branchRoutePath({branchId:b.id,tab:'workflow'})} id={b.id} label={`Open Branch ${b.name}`} title={b.name} selected={draft.branchId===b.id} emphasis={Boolean(branchUnread.data?.branches?.[b.id]?.totalCount||branchUnread.data?.branches?.[b.id]?.quietUnreadCount)} icon={<AccountTreeOutlinedIcon fontSize="small"/>} status={<BranchDirectoryStatus branch={b} delayed={Boolean(branches.error||organized.error||connection.prolongedDisconnect)}/>}
       starred={starredWorkspaceResources(preferences.data!).has(`branch:${b.id}`)} onStar={()=>preferenceWriter.current!.enqueue(toggleWorkspaceResourceStar(client.getQueryData(queryKeys.workspacePreferences.all)??preferences.data!,'branch',b.id))}
       onOpen={()=>{if(loading||openingLink||creating||deploy.isPending)return;if(drawer)closeMobileNavigation();void select(b)}}/>}>
     {({starredRows,allRows})=><SharedSidebarPanel

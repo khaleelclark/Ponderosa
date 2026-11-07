@@ -2,9 +2,9 @@ import {AgentStore} from '@ponderosa/agents';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, writeFile, readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { withFixture, fixtureTestOptions as options } from '../shared/fixture.mjs';
+import { withFixture, until, fixtureTestOptions as options } from '../shared/fixture.mjs';
 
 
 test('checks 61, 62, 63: folder membership, rename, order, stars and collapse persist with conflict fencing', options, t => withFixture(t, async f => {
@@ -303,4 +303,75 @@ test('deleted Chat unread cannot be projected, searched or acknowledged after re
   assert.equal(f.ok(await f.api('POST', '/api/notifications/read-visible', { communicationEventIds: ids })).read, 0);
   assert.equal((await f.api('POST', '/api/notifications/projection', { projectIds: [chat.projectId], conversationIds: [chat.id] })).status, 404);
   assert.ok(!f.ok(await f.api('GET', '/api/search')).recentChats.some(row => row.chat.id === chat.id || row.chat.id === agent.id));
+}));
+
+
+for(const product of ['dev','branches'])test('authored notification scopes obey independent settings and inherited modes in '+product,{timeout:60000},async t=>withFixture(t,async f=>{
+ const base=product==='branches'?'/api/branches/engine':'/api';
+ const branch=product==='branches'?f.ok(await f.api('POST','/api/branches',{name:'Notification scope fixture',idempotencyKey:randomUUID()})):undefined;
+ const chat=branch?f.ok(await f.api('POST','/api/branches/'+branch.id+'/chats',{label:'Authored scope fixture',defaultEngine:'codex'},{'idempotency-key':randomUUID()})):await f.createChat('Authored scope fixture');
+ const create=title=>f.api('POST',base+'/projects/'+chat.projectId+'/agents',{title,engine:'codex',conversationId:chat.id,idempotencyKey:randomUUID()}).then(f.ok);
+ const source=await create('Source'),peer=await create('Mention recipient');
+ f.plans.set(source.id,[{hold:true}]);f.ok(await f.api('POST',base+'/agents/'+source.id+'/messages',{text:'Hold for authored setting verification',idempotencyKey:randomUUID()}));await until(()=>f.sessions.get(source.id),'held notification source');
+ // Keep the recipient busy: this verifies passive FYI delivery without letting
+ // the fixture's automatic idle-worker result steer our notification publisher.
+ f.plans.set(peer.id,[{hold:true}]);f.ok(await f.api('POST',base+'/agents/'+peer.id+'/messages',{text:'Hold while receiving FYI',idempotencyKey:randomUUID()}));await until(()=>f.sessions.get(peer.id),'held FYI recipient');
+ const session=f.sessions.get(source.id),projection=()=>f.api('POST',base+'/notifications/projection',{projectIds:[chat.projectId],conversationIds:[chat.id]}).then(f.ok);
+ const rows=async()=> (await readFile(path.join(f.dataDir,'projects',chat.projectId,'communication-events.jsonl'),'utf8')).trim().split(String.fromCharCode(10)).map(JSON.parse);
+ let previous=[];
+ const cases=[
+  ...[false,true].flatMap(directResponses=>[false,true].map(broadcasts=>({directResponses,broadcasts,chatMode:'all',agentMode:'inherit',allowed:Number(directResponses)+Number(broadcasts)}))),
+  {directResponses:true,broadcasts:true,chatMode:'muted',agentMode:'inherit',allowed:0},
+  {directResponses:true,broadcasts:true,chatMode:'muted',agentMode:'all',allowed:2},
+  {directResponses:true,broadcasts:true,chatMode:'all',agentMode:'attention',allowed:0},
+  {directResponses:true,broadcasts:true,chatMode:'all',agentMode:'inherit',allowed:2},
+ ];
+ for(const [index,c] of cases.entries()){
+  if(previous.length)f.ok(await f.api('POST',base+'/notifications/read-visible',{communicationEventIds:previous}));
+  f.ok(await f.api('PATCH',base+'/workspace/preferences',{notifications:{directResponses:c.directResponses,broadcasts:c.broadcasts}}));
+  f.ok(await f.api('PUT',base+'/notification-settings/conversation/'+chat.id,{mode:c.chatMode}));
+  f.ok(await f.api('PUT',base+'/notification-settings/agent/'+source.id,{mode:c.agentMode}));
+  const marker='SCOPE-'+product+'-'+index+'-'+randomUUID();
+  for(const [intent,text,extra] of [
+   ['direct_to_user',marker+'-direct',{}],
+   ['broadcast',marker+'-broadcast',{}],
+   ['collaboration','#'+peer.handle+' '+marker+'-mention',{recipientAgentIds:[peer.id],messagePurpose:'fyi'}],
+  ]){
+   const sent=await f.tool(session,'ponderosa_message',{intent,text,...extra,idempotencyKey:randomUUID()});
+   assert.equal(sent.status,200,JSON.stringify({index,intent,error:sent.body,sourceSteerCount:f.steers.filter(item=>item.agentId===source.id).length,peerSteerCount:f.steers.filter(item=>item.agentId===peer.id).length}));
+  }
+  const authored=(await rows()).filter(event=>event.text.includes(marker));assert.equal(authored.length,3);
+  const mention=authored.find(event=>event.intent==='collaboration');assert.equal(mention.audienceSelector,'mention');assert.deepEqual(mention.audience.agentIds,[peer.id]);assert.equal(mention.identity.recipientHandles[peer.id],peer.handle);
+  const notices=f.ok(await f.api('GET',base+'/notifications?limit=100')).items;
+  assert.equal(notices.some(item=>item.communicationEventId===mention.eventId),false,'Agent mention is Team collaboration, not an operator alert');
+  const view=(await projection()).conversations[chat.id];
+  assert.equal(view.totalCount,c.allowed,JSON.stringify(c));assert.equal(view.quietUnreadCount??0,2-c.allowed,'ordinary activity stays unread without multiplying alert identities');
+  const human=authored.filter(event=>event.intent!=='collaboration');
+  if(c.chatMode==='all'&&c.agentMode==='inherit')for(const event of human){
+   const enabled=event.intent==='user_dm'?c.directResponses:c.broadcasts;
+   assert.equal(notices.some(item=>item.communicationEventId===event.eventId),enabled,'only the matching authored category enables this alert');
+  }
+  previous=human.map(event=>event.eventId);
+ }
+ assert.equal(f.turns.filter(turn=>turn.agentId===peer.id).length,1,'FYI mention keeps the existing recipient Run');assert.equal(f.steers.filter(item=>item.agentId===peer.id).length,0,'FYI mention does not interrupt its busy recipient');
+}));
+
+test('workflow unread projection uses current canonical Chat membership, preserves explicit groups and keeps product scope',{timeout:60000},async t=>withFixture(t,async f=>{
+ const base='/api/branches/engine',branch=f.ok(await f.api('POST','/api/branches',{name:'Grouped quiet unread',idempotencyKey:randomUUID()}));
+ const createChat=label=>f.api('POST','/api/branches/'+branch.id+'/chats',{label,defaultEngine:'codex'},{'idempotency-key':randomUUID()}).then(f.ok);
+ const createMessage=async chat=>{
+  const agent=f.ok(await f.api('POST',base+'/projects/'+chat.projectId+'/agents',{title:'Grouped author',engine:'codex',conversationId:chat.id,idempotencyKey:randomUUID()}));
+  f.plans.set(agent.id,[{hold:true}]);f.ok(await f.api('POST',base+'/agents/'+agent.id+'/messages',{text:'Hold for grouped unread verification',idempotencyKey:randomUUID()}));await until(()=>f.sessions.get(agent.id),'grouped source');
+  const text='GROUP-'+randomUUID();f.ok(await f.tool(f.sessions.get(agent.id),'ponderosa_message',{intent:'broadcast',text,idempotencyKey:randomUUID()}));
+  return (await readFile(path.join(f.dataDir,'projects',chat.projectId,'communication-events.jsonl'),'utf8')).trim().split(String.fromCharCode(10)).map(JSON.parse).find(event=>event.text===text).eventId;
+ };
+ const first=await createChat('First member'),second=await createChat('Second member'),firstId=await createMessage(first);await createMessage(second);
+ const input={projectIds:[],conversationIds:[],branchIds:[branch.id,branch.id],chatFolders:[{id:'branch:'+branch.id,conversationIds:[first.id]}]};
+ const projection=()=>f.api('POST',base+'/notifications/projection',input).then(f.ok);
+ let view=await projection();assert.deepEqual(Object.keys(view.branches),[branch.id]);assert.equal(view.branches[branch.id].totalCount,0);assert.equal(view.branches[branch.id].quietUnreadCount,2);
+ assert.equal(view.chatFolders['branch:'+branch.id].quietUnreadCount,1,'caller folder cannot collide with internal workflow grouping');assert.deepEqual(Object.keys(view.conversations),[first.id],'no full workflow Chat membership crosses the projection boundary');
+ const third=await createChat('Later member');await createMessage(third);view=await projection();assert.equal(view.branches[branch.id].quietUnreadCount,3,'fresh canonical membership includes later Chats without a client directory fetch');
+ const foreign=f.ok(await f.api('POST','/api/notifications/projection',{projectIds:[],conversationIds:[],branchIds:[branch.id]}));assert.equal(foreign.branches[branch.id].quietUnreadCount??0,0);assert.equal(foreign.branches[branch.id].totalCount,0);
+ f.ok(await f.api('POST',base+'/notifications/read-visible',{communicationEventIds:[firstId]}));view=await projection();assert.equal(view.branches[branch.id].quietUnreadCount,2);assert.equal(view.chatFolders['branch:'+branch.id].quietUnreadCount??0,0);
+ for(const branchIds of [Array(201).fill(branch.id),'not-an-array',[1]])assert.equal((await f.api('POST',base+'/notifications/projection',{projectIds:[],conversationIds:[],branchIds})).status,400);
 }));
