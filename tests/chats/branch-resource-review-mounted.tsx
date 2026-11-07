@@ -110,6 +110,7 @@ export async function expertCopyAccessReviewRegression():Promise<void>{
   assert(document.body.textContent?.includes('Resource identity changed'),'mismatched temporary Chat cannot be approved');
   assert(posts.length===3,'inspection mismatch has no mutation');
  }finally{root.unmount();client.clear();host.remove();globalThis.fetch=originalFetch;}
+ await copyApprovalFeedback();
 }
 
 export async function temporaryCopyTraceRegression():Promise<void>{
@@ -142,4 +143,46 @@ export async function temporaryCopyTraceRegression():Promise<void>{
   available=false;button('Refresh current scope').click();await settle();assert(document.body.textContent?.includes('Retained history is unavailable'),'missing custody does not promise history');
   assert(writes===0,'all trace interactions are read only');
  }finally{root.unmount();client.clear();host.remove();globalThis.fetch=originalFetch;}
+}
+
+
+async function copyApprovalFeedback():Promise<void>{
+ for(const mode of ['success','unconfirmed','unavailable'] as const){
+  const originalFetch=globalThis.fetch,host=document.createElement('div');document.body.append(host);
+  const root=createRoot(host),client=new QueryClient({defaultOptions:{queries:{retry:false},mutations:{retry:false}}});
+  let posts=0,afterReads=0,changed=0,destructiveFlash=false;const bodies:any[]=[];
+  const json=(value:unknown,status=200)=>new Response(JSON.stringify(value),{status,headers:{'content-type':'application/json'}});
+  const wait=async(read:()=>boolean)=>{const deadline=Date.now()+4000;while(Date.now()<deadline){if(read())return;await new Promise(resolve=>setTimeout(resolve,10));}throw Error('Copy feedback did not settle: '+mode);};
+  const snapshot='a'.repeat(64),policy='b'.repeat(64);
+  globalThis.fetch=async(_input,init)=>{
+   if(init?.method==='POST'){posts++;bodies.push(JSON.parse(String(init.body)));if(mode==='unconfirmed')throw new TypeError('Known unconfirmed response');return json({reviewSha256:policy,source:[],destination:{restrictedCapabilityIds:[]}});}
+   if(posts){afterReads++;if(mode!=='success'||afterReads<=2)return json({error:'Resource inspection changed; refresh'},409);}
+   return json({branchId:'branch',executionId:'run',stepExecutionId:'feedback-step',generation:1,state:'reserved',destinationChatId:'destination-with-long-identifier',destinationChatAvailable:true,accessChoiceCurrent:posts>0,expertCopyReview:{sourceAgentId:'selected-source',sourceChatId:'source-chat',copyChatId:'destination-with-long-identifier',snapshotSha256:snapshot,sourceMemoryAvailable:false,reviewWithoutMemorySha256:policy,consentCurrent:posts>0,copySourceMemory:false,allowFindingsWriteback:false},currentPolicyReview:{reviewSha256:policy,source:[],destination:{restrictedCapabilityIds:['existing-restriction']}}});
+  };
+  const observer=new MutationObserver(()=>{if(document.body.textContent?.includes('Permanently removes retained package bytes'))destructiveFlash=true;});
+  try{
+   root.render(<QueryClientProvider client={client}><BranchResourceReview branchId="branch" executionId="run" stepId="feedback-step" enabled onChanged={()=>{changed++;}}/></QueryClientProvider>);await settle();button('Review resource').click();await settle();
+   openSelect(document.querySelector('[role=combobox]'));await tick();(Array.from(document.querySelectorAll('[role=option]')).find(item=>item.textContent==='Keep destination restrictions') as HTMLElement).click();await settle();button('Confirm copy access').click();await settle();
+   assert(document.body.textContent?.includes('Run this workflow job in a temporary copy of the selected Agent.'),'confirmation explains the one-job action');
+   assert(document.body.textContent?.includes('Copy private/team memory: No')&&document.body.textContent?.includes('Save private findings for later copies: No'),'confirmation shows both independent choices plainly');
+   const details=Array.from(document.querySelectorAll('details')).find(item=>item.querySelector('summary')?.textContent==='Approval identifiers and hashes')!;
+   assert(details&&!details.open&&!details.querySelector('p')!.checkVisibility(),'opaque approval binding is secondary, not a clipped primary instruction');
+   details.querySelector('summary')!.click();await tick();assert(details.open&&details.textContent?.includes(snapshot)&&details.textContent.includes(policy)&&details.textContent.includes('selected-source'),'full frozen source/snapshot/policy remain inspectable');
+   assert(getComputedStyle(details.querySelector('p')!).overflowWrap==='anywhere','technical values wrap on a narrow display');
+   observer.observe(document.body,{subtree:true,childList:true,characterData:true});button('Approve copy').click();
+   if(mode==='success'){
+    await wait(()=>document.body.textContent?.includes('Copy approved. Current progress is shown below.')===true);
+    assert(afterReads===3,'only the known successful transition receives two bounded GET retries');assert(!document.body.textContent?.includes('Resource inspection changed; refresh'),'success reconciles its own transitional read error');
+    button('View Run progress').click();await settle();assert(changed>=2,'current progress action refreshes the owning Run without resubmitting');
+   }else if(mode==='unconfirmed'){
+    await wait(()=>document.body.textContent?.includes('Access choice unconfirmed. Known unconfirmed response')===true);await new Promise(resolve=>setTimeout(resolve,300));
+    assert(afterReads===1,'unknown approval outcome does not enable success-only GET retries');assert(!document.body.textContent?.includes('Copy approved.'),'unknown outcome is not relabeled successful');assert(document.body.textContent?.includes('Resource inspection changed; refresh'),'actual read failure remains actionable');
+   }else{
+    await wait(()=>document.body.textContent?.includes('Current progress could not be loaded; refresh current scope.')===true);await new Promise(resolve=>setTimeout(resolve,300));
+    assert(afterReads===3,'persistent transitional reads stop after the bounded retries');assert(document.body.textContent?.includes('Resource inspection changed; refresh'),'unresolved cause remains visible beside the qualified approval acknowledgment');
+   }
+   assert(posts===1,'feedback reconciliation never repeats the approval POST');assert(!destructiveFlash,'approval dismissal never changes into checkpoint destruction');
+   assert(bodies[0].snapshotSha256===snapshot&&bodies[0].accessSettingsResolution.reviewSha256===policy&&bodies[0].accessSettingsResolution.action==='keep_destination'&&!bodies[0].copySourceMemory&&!bodies[0].allowFindingsWriteback,'submitted approval retains the exact inspected binding and independent false flags');
+  }finally{observer.disconnect();root.unmount();client.clear();host.remove();globalThis.fetch=originalFetch;}
+ }
 }
