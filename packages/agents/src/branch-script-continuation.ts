@@ -1,3 +1,4 @@
+import {activeAgentOwnerSql,activeChatOwnerSql} from './product-scope-sql.js';
 import {bundleValue,treeBundle,bundleReference,type BundleValueOwner,type BundleValueMap} from './branch-bundle-values.js';
 import {automaticScriptDefinitionSupported,automaticScriptOriginSupported} from './branch-script-origin.js';
 import {selectBranchUnit} from './branch-unit-selection.js';
@@ -356,8 +357,17 @@ function replayScriptCutCore(source:ScriptReplaySource,executionId:string,select
         const s=selected.steps!.find(s=>s.id===a.step_execution_id)!,node=definition.steps.find(n=>n.id===s.step_id)!,r=hostCut!.requests.find(({row})=>row.id===a.request_id)!.row;
         if(node.kind!=='agent')return false;
         const resource=context?.resourceRetry?.generations.find(g=>g.prior.id===a.id)?.oldResource??(context?.issuedResource?selected.resources!.find(resource=>resource.step_execution_id===s.id):undefined);
-        if(resource?node.target.kind!=='ephemeral_organization'||r.recipient_agent_id!==resource.root_agent_id||r.conversation_id!==resource.chat_id
-          :source.kind==='retained-issued-resource'||!('ref' in node.target)||r.recipient_agent_id!==bindings.agents[node.target.ref]||r.conversation_id!==chat!.chat_id)return false;
+        if(resource){
+          if(node.target.kind!=='ephemeral_organization'||r.recipient_agent_id!==resource.root_agent_id||r.conversation_id!==resource.chat_id)return false;
+        }else{
+          if(source.kind==='retained-issued-resource'||!('ref' in node.target)||r.recipient_agent_id!==bindings.agents[node.target.ref])return false;
+          if(!db!.prepare(`SELECT 1 FROM agents bound_agent JOIN conversations bound_chat
+            ON bound_chat.id=bound_agent.conversation_id AND bound_chat.project_id=bound_agent.project_id
+            WHERE bound_agent.id=? AND bound_agent.project_id=? AND bound_agent.conversation_id=?
+              AND (bound_chat.branch_id=? OR bound_chat.id=?)
+              AND ${activeAgentOwnerSql('bound_agent')} AND ${activeChatOwnerSql('bound_chat')}`)
+            .get(r.recipient_agent_id,r.project_id,r.conversation_id,e.branch_id,chat!.chat_id))return false;
+        }
         const actualPayload=hostRequestPayload(hostCut!,r) as Row;
         const requestState=definition.state?branchSharedState(definition,selected.steps!,selected.sealedResults!.filter(seal=>{const u=JSON.parse(seal.result_json).stateUpdate;return !u||u.revision<=actualPayload?.sharedState?.revision;})):undefined;
         if(definition.state&&stableJson(actualPayload?.sharedState)!==stableJson(requestState))return false;

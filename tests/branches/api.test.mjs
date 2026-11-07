@@ -679,3 +679,68 @@ test('public Branch workspace stream delivers graph checkpoints and replays miss
   }finally{await replay?.close();await first?.close();}
  });
 });
+
+test('public Agent-result checkpoints retain actual bound Chat ownership across modern Branch rewind',{timeout:45000},async t=>{
+ let store;const roots=[];t.after(()=>t.diagnostic(JSON.stringify({nativeRoots:roots})));
+ await withFixture(t,async f=>{
+  const {BranchesClient}=await import('../../packages/core/dist/branches-client.js');
+  const owner=await branch(f,'Modern Agent checkpoint'),created=await chat(f,owner);
+  const worker=f.ok(await f.api('POST',`/api/branches/engine/projects/${created.projectId}/agents`,{title:'Bound worker',engine:'codex',conversationId:created.id,idempotencyKey:randomUUID()}));
+  assert.equal(store.sqlite.prepare('SELECT chat_id FROM branches WHERE id=?').get(owner.id).chat_id,'','public Branch has no legacy single-Chat pointer');
+  assert.equal(store.getConversation(created.id).branchId,owner.id);
+  f.plans.set(worker.id,[{hold:true}]);
+  let client=new BranchesClient(await f.listen());const retained='Actual retained MCP result';
+  const definition={schema:'ponderosa.branch.v1',name:'Actual Agent then review',trigger:{kind:'manual'},entry:'work',steps:[{id:'work',kind:'agent',target:{kind:'persistent_agent',ref:'worker'},instructions:'Return the retained synthetic evidence.'},{id:'review',kind:'human_gate',prompt:'Review the retained result.',editable:true}],controls:[],edges:[{id:'review-result',from:'work',to:'review',on:'success'}],policy:{maxConcurrentExecutions:2,failure:{action:'stop'}}};
+  const workflow=await client.deploy({chatId:'',branchId:owner.id,expectedVersionId:owner.versionId,idempotencyKey:randomUUID(),definition,bindings:{agents:{worker:worker.id},directories:{}}});
+  const original=await client.invoke(workflow.id,'Synthetic retained question','actual-mcp-checkpoint');
+  const session=await until(()=>f.sessions.get(worker.id),'actual held provider session');
+  await until(()=>f.turns.length===1,'actual admitted provider input');
+  const beforeCompletion=await client.checkpoints(workflow.id,original.id),boundary=Math.max(0,...beforeCompletion.map(checkpoint=>checkpoint.id));
+  const response=await session.tool('ponderosa_update_request',{text:retained});assert.equal(response.success,true,response.text);session.finish();
+  const gate=await until(async()=>(await client.actions(original.id)).items.find(item=>item.kind==='gate')?.gate,'review after actual MCP handoff',10000);
+  assert.equal(gate.proposal,retained);
+  const selected=await until(async()=>{const latest=(await client.checkpoints(workflow.id,original.id))[0];return latest?.id>boundary&&latest;},'saved checkpoint AFTER actual Agent completion',10000);
+  assert.equal(selected.restoreSupported,true,'a real modern-Chat Agent result must be eligible, rather than falling back to a pre-Agent checkpoint');
+  const saved=store.sqlite.prepare('SELECT snapshot_json FROM branch_unit_snapshots WHERE id=?').get(selected.id).snapshot_json;
+  const sourceFact=JSON.parse(saved);assert.ok(sourceFact.hostDependencies.requests.some(item=>item.row.recipient_agent_id===worker.id&&item.row.state==='completed'));
+  assert.ok(sourceFact.selected.sealedResults.some(item=>JSON.parse(item.result_json).output===retained),'the selected cut contains the completed Agent result');
+  await client.resolveGate(gate.id,{commandKey:'original-choice',expectedRevision:gate.revision,decision:'approve',output:'Edited retained answer'});
+  await until(async()=>(await client.state(original.id)).execution.state==='completed','original completion');
+  await f.settled(worker.id,[],'/api/branches/engine');
+  // Graph restoration requires quiescent original runtimes. This explicit fixture
+  // product shutdown/startup prepares that existing boundary without canceling
+  // completed work or editing its retained Request, history or snapshot.
+  await f.shutdownProduct();assert.equal(session.isAlive(),false,'product shutdown drains the original controlled provider root');
+  await f.restartAfterProductShutdown();client=new BranchesClient(await f.listen());
+  const selection={checkpointId:selected.id,expectedHash:selected.contentHash};
+  const sameBranch=await chat(f,owner),other=await branch(f,'Foreign checkpoint owner'),foreign=await chat(f,other);
+  const assertHeld=async(change,restore,label)=>{
+   const before=(await client.executions(workflow.id)).length;
+   try{
+    change();const current=(await client.checkpoints(workflow.id,original.id)).find(checkpoint=>checkpoint.id===selected.id);
+    assert.equal(current.contentHash,selected.contentHash,'ownership negative keeps the original hash');assert.equal(current.restoreSupported,false,label);
+    await assert.rejects(client.rewind(workflow.id,original.id,'historical',{...selection,commandKey:'held-'+label}),error=>error.status===409);
+    assert.equal((await client.executions(workflow.id)).length,before,'refusal creates no execution');assert.equal(f.turns.length,1,'refusal dispatches no provider input');
+    assert.equal(store.sqlite.prepare('SELECT snapshot_json FROM branch_unit_snapshots WHERE id=?').get(selected.id).snapshot_json,saved,'negative never rewrites the frozen cut');
+   }finally{restore();}
+   assert.equal((await client.checkpoints(workflow.id,original.id)).find(checkpoint=>checkpoint.id===selected.id).restoreSupported,true,'restoring exact current ownership restores eligibility');
+  };
+  await assertHeld(()=>store.sqlite.prepare('UPDATE agents SET project_id=?,conversation_id=? WHERE id=?').run(sameBranch.projectId,sameBranch.id,worker.id),()=>store.sqlite.prepare('UPDATE agents SET project_id=?,conversation_id=? WHERE id=?').run(created.projectId,created.id,worker.id),'same-Branch-other-Chat');
+  await assertHeld(()=>store.sqlite.prepare('UPDATE conversations SET branch_id=? WHERE id=?').run(other.id,created.id),()=>store.sqlite.prepare('UPDATE conversations SET branch_id=? WHERE id=?').run(owner.id,created.id),'foreign-Branch');
+  await assertHeld(()=>store.sqlite.prepare('UPDATE agents SET project_id=? WHERE id=?').run(foreign.projectId,worker.id),()=>store.sqlite.prepare('UPDATE agents SET project_id=? WHERE id=?').run(created.projectId,worker.id),'foreign-Project');
+  await assertHeld(()=>store.sqlite.prepare('UPDATE agents SET deleted_at=? WHERE id=?').run(new Date().toISOString(),worker.id),()=>store.sqlite.prepare('UPDATE agents SET deleted_at=NULL WHERE id=?').run(worker.id),'deleted-owner');
+  const review=await client.reviewHostGraph(workflow.id,original.id,selection),command={...selection,commandKey:'restore-actual-result',graphReview:{reviewHash:review.reviewHash,reconcileEffects:true}};
+  const resumed=await client.rewind(workflow.id,original.id,'historical',command);assert.notEqual(resumed.id,original.id);
+  assert.equal((await client.rewind(workflow.id,original.id,'historical',command)).id,resumed.id,'lost response reconciles the same continuation');
+  const resumedGate=await until(async()=>(await client.actions(resumed.id)).items.find(item=>item.kind==='gate')?.gate,'review from retained Agent result');
+  assert.notEqual(resumedGate.id,gate.id);assert.equal(resumedGate.proposal,retained);assert.equal(f.turns.length,1,'completed Agent result is not replayed');
+  await client.resolveGate(resumedGate.id,{commandKey:'fresh-choice',expectedRevision:resumedGate.revision,decision:'approve',output:'Edited retained answer'});
+  await until(async()=>(await client.state(resumed.id)).execution.state==='completed','restored review completion');
+  assert.equal((await client.result(original.id)).output,'Edited retained answer');assert.equal((await client.result(resumed.id)).output,'Edited retained answer');assert.equal(f.turns.length,1);
+  const replacement=f.ok(await f.api('POST',`/api/branches/engine/projects/${created.projectId}/agents`,{title:'Different bound worker',engine:'codex',conversationId:created.id,idempotencyKey:randomUUID()}));
+  await client.deploy({chatId:'',branchId:workflow.id,expectedVersionId:workflow.versionId,idempotencyKey:randomUUID(),definition,bindings:{agents:{worker:replacement.id},directories:{}}});
+  const beforeRebind=(await client.executions(workflow.id)).length;
+  await assert.rejects(client.rewind(workflow.id,original.id,'historical',{...selection,commandKey:'stale-binding',graphReview:command.graphReview}),error=>error.status===409);
+  assert.equal((await client.executions(workflow.id)).length,beforeRebind);assert.equal(f.turns.length,1);assert.equal(store.sqlite.prepare('SELECT snapshot_json FROM branch_unit_snapshots WHERE id=?').get(selected.id).snapshot_json,saved);
+ },{storeFactory:dir=>(store=new AgentStore(dir)),onProviderSession:session=>roots.push(session.processIdentity),providerRunPlan:()=>{throw Error('Unexpected replay of completed Agent work');}});
+});

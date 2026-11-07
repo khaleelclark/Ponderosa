@@ -29,6 +29,13 @@ caller; writing the source did not deploy it. Synthetic HTTP fixtures now exerci
 example with controlled Agents and a human gate. Live-provider, fresh-instance,
 crash/lost-response, upgrade and full comparator qualification remains deferred.
 
+Persistent-Agent historical cuts bind the exact configured Agent to its current
+owned Chat and project, including modern Branches with multiple Chats. Reviewed
+host-graph continuation still requires the original participants to be quiescent.
+The real public MCP regression prepares that boundary with an explicit normal
+shutdown/startup of its disposable product fixture; it does not demonstrate
+automatic draining in a live consumer or native-provider instruction compliance.
+
 ## Matched comparator definition
 
 `examples/branches-capabilities/comparator.py` mirrors the public Branch app:
