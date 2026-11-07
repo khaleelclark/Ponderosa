@@ -52,6 +52,41 @@ export function pruneNativeBuildFiles(packageRoot, platform = process.platform) 
   }
 }
 
+// The pinned ONNX package ships several OS/architecture payloads. A Linux x64
+// DEB must not ask native dpkg-shlibdeps to resolve its ARM64 libraries.
+export function pruneOnnxLinuxX64Payloads(packageRoot) {
+  const metadata = JSON.parse(readFileSync(path.join(packageRoot, "package.json"), "utf8"));
+  if (metadata.name !== "onnxruntime-node" || metadata.version !== "1.27.0") {
+    throw new Error("Review native payload layout before packaging this ONNX Runtime version.");
+  }
+  const native = path.join(packageRoot, "bin", "napi-v6");
+  for (const directory of [packageRoot, path.join(packageRoot, "bin"), native,
+    path.join(native, "linux"), path.join(native, "linux", "x64")]) {
+    if (!lstatSync(directory).isDirectory()) throw new Error("ONNX runtime paths must be ordinary directories.");
+  }
+  for (const name of ["onnxruntime_binding.node", "libonnxruntime.so.1"]) {
+    const filename = path.join(native, "linux", "x64", name);
+    if (!lstatSync(filename).isFile()) throw new Error("ONNX x64 runtime must be an ordinary file.");
+    const header = Buffer.alloc(20);
+    const descriptor = openSync(filename, "r");
+    try {
+      if (readSync(descriptor, header, 0, 20, 0) !== 20 ||
+          !header.subarray(0, 4).equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46])) ||
+          header[4] !== 2 || header[5] !== 1 || header.readUInt16LE(18) !== 62) {
+        throw new Error("ONNX retained runtime must be ELF64 little-endian x86-64.");
+      }
+    } finally { closeSync(descriptor); }
+  }
+  const removed = [path.join(native, "darwin"), path.join(native, "win32"),
+    path.join(native, "linux", "arm64")].filter(filename => existsSync(filename));
+  // Validate every removal before changing this disposable dependency copy.
+  for (const directory of removed) {
+    if (!lstatSync(directory).isDirectory()) throw new Error("ONNX non-target runtime must be an ordinary directory.");
+  }
+  for (const directory of removed) rmSync(directory, { recursive: true });
+  return removed.map(directory => path.relative(packageRoot, directory));
+}
+
 export function assertNoBuildMachinePaths(root, prefixes) {
   const patterns = [...new Set(prefixes.filter(Boolean).flatMap(prefix => [
     prefix, prefix.replaceAll("\\", "/"), encodeURI(prefix.replaceAll("\\", "/")),
