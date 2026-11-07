@@ -1347,6 +1347,18 @@ async function branchTriggerDraftFixture(kind,config,{echo=true}={}) {
  return {calls,get draft(){return tree.props.draft;},get invalid(){return invalid.at(-1);},get config(){return props.config;},input(field,value){tree.props.draft['set'+field[0].toUpperCase()+field.slice(1)](value);render();},setConfig(next){props={...props,config:next};render();},render,unmount(){for(const slot of slots)slot?.cleanup?.();}};
 }
 
+test('the shared trigger draft accepts 730 days, preserves rounding and blocks unsafe or unrepresentable intervals',async t=>{
+ t.mock.timers.enable({apis:['Date'],now:Date.parse('2030-01-01T00:00:00.000Z')});
+ const original={scheduleKind:'interval',everyMs:3600000,startsAt:'2030-01-01T00:00:00.000Z'},f=await branchTriggerDraftFixture('schedule',original);
+ f.input('intervalValue','730');f.input('intervalUnit','days');
+ assert.equal(f.invalid,false);assert.equal(f.config.everyMs,730*86400000);assert.equal(f.config.startsAt,original.startsAt);
+ const saved=f.config,count=f.calls.length;
+ f.input('intervalValue',String(Number.MAX_SAFE_INTEGER));assert.equal(f.invalid,true);assert.equal(f.calls.length,count);assert.equal(f.config,saved,'Invalid input retains the exact published config object');
+ f.input('intervalValue','100000000');assert.equal(f.invalid,true);assert.match(f.draft.intervalError,/outside the supported range/);
+ f.input('intervalUnit','minutes');f.input('intervalValue','1.000001');
+ assert.equal(f.invalid,false);assert.equal(f.config.everyMs,60000,'Existing UI unit rounding still produces whole milliseconds');f.unmount();
+});
+
 test('trigger draft same-kind Undo/Redo reloads displayed schedule fields without emitting the displaced values',async()=>{
  const original={scheduleKind:'interval',everyMs:3600000,startsAt:'2030-01-01T00:00:00.000Z'},f=await branchTriggerDraftFixture('schedule',original);
  assert.equal(f.calls.length,0);f.input('intervalValue','2');assert.equal(f.calls.length,1);assert.equal(f.draft.intervalValue,'2');assert.equal(f.config.everyMs,7200000);assert.equal(f.config.startsAt,original.startsAt);

@@ -415,6 +415,30 @@ test('public Branches SSE client preserves chunked UTF-8, CR/LF boundaries, rese
  assert.equal(requestedUrl,'http://fixture.invalid/api/branches/engine/agents/agent%2Fone/stream');assert.equal(request.headers['last-event-id'],'6');assert.deepEqual(first,{event:'agent_status',id:'7',data:{reset:true,label:'é'}});assert.equal(second.id,'8');assert.equal(second.data.event.executionId,'exact-run');await stream.return();assert.equal(canceled,true);
 });
 
+test('Output saves a 730-day interval through the public API and refuses unsafe dates without changing it',async t=>{
+ let store;await withFixture(t,async f=>{
+  const {BranchStore,CoordinationV3Store}=await import('@ponderosa/agents'),branches=new BranchStore(store.sqlite,new CoordinationV3Store(store.sqlite));
+  const initial=f.ok(await f.api('GET','/api/branches/assistant')).app,url=`/api/branches/output-apps/${initial.agentId}`;
+  const read=async()=>f.ok(await f.api('GET',url)),before=await read(),everyMs=730*86400000,turns=f.turns.length,started=Date.now();
+  const saved=f.ok(await f.api('PUT',url+'/schedule',{expectedVersionId:before.versionId,expectedSettingsRevision:before.settingsRevision,automatic:true,everyMs}));
+  assert.equal(saved.everyMs,everyMs);assert.equal(saved.schedule.everyMs,everyMs);assert.equal(saved.automatic,true);
+  const trigger=branches.trigger(saved.branchId);assert.equal(trigger.sourceConfig.everyMs,everyMs);assert.equal(trigger.nextFireAt,trigger.sourceConfig.startsAt);
+  assert.ok(Date.parse(trigger.nextFireAt)>=started+everyMs&&Date.parse(trigger.nextFireAt)<=Date.now()+everyMs);
+  assert.deepEqual((await read()).schedule,saved.schedule);assert.equal(branches.triggers.listTriggerOccurrences(trigger.id).length,0);
+  for(const [invalid,reason] of [[60000.5,/Invalid schedule settings/],[Number.MAX_SAFE_INTEGER+1,/Invalid schedule settings/],[Number.MAX_SAFE_INTEGER,/outside the supported range/]]){
+   const response=await f.api('PUT',url+'/schedule',{expectedVersionId:saved.versionId,expectedSettingsRevision:saved.settingsRevision,automatic:true,everyMs:invalid});
+   assert.equal(response.status,409);assert.match(response.body.error,reason);
+   const retained=await read();assert.equal(retained.versionId,saved.versionId);assert.equal(retained.settingsRevision,saved.settingsRevision);assert.deepEqual(retained.schedule,saved.schedule);
+   assert.deepEqual(branches.trigger(saved.branchId),trigger,'Invalid interval cannot mutate the saved trigger');
+  }
+  assert.equal(branches.triggers.listTriggerOccurrences(trigger.id).length,0);assert.equal(f.turns.length,turns);
+  await f.reopen();assert.deepEqual((await read()).schedule,saved.schedule);
+  const reopened=new BranchStore(store.sqlite,new CoordinationV3Store(store.sqlite));
+  assert.deepEqual(reopened.trigger(saved.branchId),trigger);assert.equal(reopened.triggers.listTriggerOccurrences(trigger.id).length,0);
+  assert.equal(f.turns.length,turns,'Restart must not turn a future schedule into provider work');
+ },{storeFactory:dir=>(store=new AgentStore(dir))});
+});
+
 test('output settings reject same-version trigger drift and a fresh snapshot can save the intended schedule',async t=>withFixture(t,async f=>{
  const app=f.ok(await f.api('GET','/api/branches/assistant')).app;assert.ok(app);
  const trigger=f.ok(await f.api('GET',`/api/branches/${app.branchId}/trigger`));

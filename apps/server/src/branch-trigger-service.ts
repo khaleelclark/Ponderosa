@@ -1,4 +1,5 @@
 import path from "node:path";
+import {nextIntervalTime} from "@ponderosa/core";
 import {realpathSync,statSync} from "node:fs";
 import { watch, type FSWatcher } from "chokidar";
 import { Cron } from "croner";
@@ -12,8 +13,6 @@ import type {
   TriggerSourceKind,
 } from "@ponderosa/core";
 
-const MIN_INTERVAL_MS = 60_000;
-const MAX_INTERVAL_MS = 365 * 24 * 60 * 60 * 1_000;
 const MAX_SCHEDULE_OCCURRENCES_PER_POLL = 100;
 const MAX_FILES_PER_OCCURRENCE = 500;
 const MAX_FILESYSTEM_WINDOW_MS = 60 * 60 * 1_000;
@@ -52,13 +51,8 @@ export function normalizeTriggerSourceConfig(
     // Absence preserves legacy queueing when an existing schedule is republished.
     const policy = schedule.whenRunning === undefined ? {} : { whenRunning: schedule.whenRunning };
     if (schedule.scheduleKind === "interval") {
-      if (!Number.isInteger(schedule.everyMs) || schedule.everyMs < MIN_INTERVAL_MS || schedule.everyMs > MAX_INTERVAL_MS) {
-        throw new Error("interval must be between 1 minute and 365 days");
-      }
       const startsAt = new Date(schedule.startsAt);
-      if (!Number.isFinite(startsAt.getTime())) throw new Error("interval startsAt must be an ISO timestamp");
-      let next = startsAt.getTime();
-      if (next <= now.getTime()) next += (Math.floor((now.getTime() - next) / schedule.everyMs) + 1) * schedule.everyMs;
+      const next = nextIntervalTime(schedule.everyMs, startsAt.getTime(), now.getTime());
       return {
         config: { scheduleKind: "interval", everyMs: schedule.everyMs, startsAt: startsAt.toISOString(), ...policy },
         nextFireAt: new Date(next).toISOString(),
@@ -450,7 +444,7 @@ export class BranchTriggerSourceService {
     for (let count = 0; cursor && cursor.getTime() <= now.getTime() && count < MAX_SCHEDULE_OCCURRENCES_PER_POLL; count += 1) {
       const scheduledAt = cursor.toISOString();
       const next: Date | null = config.scheduleKind === "once" ? null
-        : config.scheduleKind === "interval" ? new Date(cursor.getTime() + config.everyMs)
+        : config.scheduleKind === "interval" ? new Date(nextIntervalTime(config.everyMs, cursor.getTime(), cursor.getTime()))
         : cron!.nextRun(cursor);
       this.options.triggers.recordScheduledTriggerOccurrence({
         triggerId: trigger.id,

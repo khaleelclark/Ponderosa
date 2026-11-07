@@ -1,3 +1,4 @@
+import {nextIntervalTime} from "@ponderosa/core";
 import {useUnsavedForm} from '../reloadSafety';
 import {ConfirmDialog} from './ConfirmationDialogs';
 import {useAppViewport} from '../hooks/useAppViewport';
@@ -89,7 +90,13 @@ export function OutputAgentApp({colorMode,onToggleColorMode}:{colorMode:ColorMod
  const scheduleSource=settings?scheduleBase:app;
  const editableInterval=scheduleSource?.triggerKind==='manual'||scheduleSource?.schedule?.scheduleKind==='interval';
  const intervalChanged=Boolean(editableInterval&&scheduleSource&&Number(minutes)!==(scheduleSource.everyMs??600000)/60000);
- const interval=Number(minutes),validInterval=!editableInterval||minutes.trim()!==''&&Number.isFinite(interval)&&interval>=1&&Number.isSafeInteger(interval*60000);
+ const interval=Number(minutes);let intervalError:string|undefined;
+ if(editableInterval){
+  if(!minutes.trim()||interval<1)intervalError='Enter at least 1 minute.';
+  else try{const now=Date.now();nextIntervalTime(interval*60000,now,now);}
+  catch(cause){intervalError=cause instanceof Error?cause.message:'Invalid interval.';}
+ }
+ const validInterval=!intervalError;
  const settingsDirty=Boolean(scheduleBase&&(automatic!==scheduleBase.automatic||intervalChanged)||runtimeBase&&(engine!==runtimeBase.engine||model!==(runtimeBase.model??'')));
  useUnsavedForm('output-app-settings',settings&&settingsDirty);
  const closeSettings=()=>{if(busy)return;if(settingsDirty)setDiscardSettings(true);else setSettings(false);};
@@ -117,7 +124,7 @@ export function OutputAgentApp({colorMode,onToggleColorMode}:{colorMode:ColorMod
     <Typography role="status" variant="body2" sx={{minHeight:"1.5em"}}>{pendingAction==='reloading'?'Reloading…':busy?'Saving…':saved}</Typography>
     <Button onClick={onToggleColorMode}>Use {colorMode==='dark'?'Light':'Dark'} Mode</Button><TextSizeSetting/>
     {app&&<><FormControlLabel control={<Switch disabled={busy} checked={automatic} onChange={(_,value)=>{setSaved('');setAutomatic(value);}}/>} label="Run automatically"/>
-     {editableInterval?<TextField disabled={busy} label="Check every (minutes)" type="number" value={minutes} onChange={event=>{setSaved('');setMinutes(event.target.value);}} error={!validInterval} helperText={!validInterval?'Enter at least 1 minute.':undefined} inputProps={{min:1,step:'any'}}/>:<Typography>{scheduleSource?.schedule?.scheduleKind==='cron'?`Cron schedule: ${scheduleSource?.schedule.expression} (${scheduleSource?.schedule.timezone})`:scheduleSource?.schedule?.scheduleKind==='once'?`Once at ${scheduleSource?.schedule.at}`:scheduleSource?.triggerKind==='filesystem'?'When files change':'When a webhook event arrives'}</Typography>}
+     {editableInterval?<TextField disabled={busy} label="Check every (minutes)" type="number" value={minutes} onChange={event=>{setSaved('');setMinutes(event.target.value);}} error={!validInterval} helperText={intervalError} inputProps={{min:1,step:'any'}}/>:<Typography>{scheduleSource?.schedule?.scheduleKind==='cron'?`Cron schedule: ${scheduleSource?.schedule.expression} (${scheduleSource?.schedule.timezone})`:scheduleSource?.schedule?.scheduleKind==='once'?`Once at ${scheduleSource?.schedule.at}`:scheduleSource?.triggerKind==='filesystem'?'When files change':'When a webhook event arrives'}</Typography>}
      <Button disabled={busy||!validInterval} onClick={saveSchedule}>Save schedule</Button>
      {engines.isError&&<Alert severity="error" action={<Button onClick={()=>void engines.refetch()}>Retry</Button>}>{engines.error.message}</Alert>}
      <TextField disabled={busy||engines.isPending} select label="Provider" value={engine} onChange={event=>{setSaved('');setEngine(event.target.value);setModel(engines.data?.find(item=>item.id===event.target.value)?.defaultModel??'');}}>

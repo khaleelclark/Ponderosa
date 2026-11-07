@@ -4,6 +4,20 @@ export type TriggerSourceKind = "schedule" | "webhook" | "filesystem";
 export type TriggerOccurrenceState = "pending" | "activated" | "cancelled" | "dead_lettered";
 export type TriggerScheduleWhenRunning = "update_current" | "run_latest" | "queue_all";
 
+export const MIN_SCHEDULE_INTERVAL_MS = 60_000;
+
+/** Shared scalar/date domain for schedule publication and its existing UI. */
+export function nextIntervalTime(everyMs: number, startsAt: number, now: number): number {
+  if (!Number.isSafeInteger(everyMs)) throw new Error("Interval must use finite, safe whole milliseconds.");
+  if (everyMs < MIN_SCHEDULE_INTERVAL_MS) throw new Error("Interval must be at least 1 minute.");
+  if (!Number.isFinite(startsAt)) throw new Error("Interval startsAt must be an ISO timestamp.");
+  let next = startsAt;
+  if (next <= now) next += (Math.floor((now - next) / everyMs) + 1) * everyMs;
+  if (!Number.isSafeInteger(next) || !Number.isFinite(new Date(next).getTime()))
+    throw new Error("Interval produces a date outside the supported range.");
+  return next;
+}
+
 export type TriggerScheduleConfig =
   | { scheduleKind: "once"; at: string }
   | { scheduleKind: "interval"; everyMs: number; startsAt: string; whenRunning?: TriggerScheduleWhenRunning }

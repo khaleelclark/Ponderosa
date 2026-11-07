@@ -1,3 +1,4 @@
+import {nextIntervalTime} from "@ponderosa/core";
 import {localMemoryFor} from '../local-memory.js';
 import {packageExportDownloads} from '../package-export-downloads.js';
 import {BranchIssuedGroupDestinationService} from '../branch-issued-group-destination.js';
@@ -235,7 +236,8 @@ export function registerBranchRoutes(app: FastifyInstance, context: { dataDir?:s
       // In particular, disabling a past one-time schedule must not revalidate its date.
       store.sqlite.transaction(()=>{
         if(changeCadence){
-          const config={scheduleKind:'interval' as const,everyMs:everyMs!,startsAt:new Date(Date.now()+everyMs!).toISOString(),...(schedule&&'whenRunning'in schedule&&schedule.whenRunning?{whenRunning:schedule.whenRunning}:{})};
+          const now=Date.now(),startsAt=new Date(nextIntervalTime(everyMs!,now,now)).toISOString();
+          const config={scheduleKind:'interval' as const,everyMs:everyMs!,startsAt,...(schedule&&'whenRunning'in schedule&&schedule.whenRunning?{whenRunning:schedule.whenRunning}:{})};
           normalizeTriggerSourceConfig('schedule',config);
           const ref=version.definition.trigger.kind==='schedule'?version.definition.trigger.configRef:'output_schedule';
           const bindings=branches.localConfiguration(branch.id);if(!bindings)throw new Error('Workflow bindings are unavailable');

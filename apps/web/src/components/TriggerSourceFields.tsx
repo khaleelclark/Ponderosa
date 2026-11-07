@@ -1,3 +1,4 @@
+import {MIN_SCHEDULE_INTERVAL_MS,nextIntervalTime} from "@ponderosa/core";
 import {useState} from 'react';
 import {FormControl,InputLabel,Select,MenuItem,Stack,TextField,Typography} from '@mui/material';
 import type {TriggerScheduleConfig,TriggerScheduleWhenRunning,TriggerSourceConfig,TriggerSourceKind} from '@ponderosa/core';
@@ -19,8 +20,6 @@ export const INTERVAL_UNIT_MS: Record<IntervalUnit, number> = {
   days: 86_400_000,
   weeks: 604_800_000,
 };
-export const MIN_INTERVAL_MS = 60_000;
-export const MAX_INTERVAL_MS = 365 * 86_400_000;
 
 export function intervalParts(everyMs: number): { value: string; unit: IntervalUnit } {
   for (const unit of ["weeks", "days", "hours"] as const) {
@@ -63,7 +62,13 @@ export function useTriggerSourceDraft(initial?:TriggerSourceConfig){
   const [maxWindowSeconds, setMaxWindowSeconds] = useState(String((files?.maxWindowMs??10000)/1000));
   const filesystemErrors=filesystemWindowErrors(quietSeconds,maxWindowSeconds);
   const intervalMs=Number(intervalValue)*INTERVAL_UNIT_MS[intervalUnit];
-  const intervalInvalid=!intervalValue.trim()||!Number.isFinite(intervalMs)||intervalMs<MIN_INTERVAL_MS||intervalMs>MAX_INTERVAL_MS;
+  let intervalError: string | undefined;
+  if(!intervalValue.trim()||intervalMs<MIN_SCHEDULE_INTERVAL_MS)intervalError="Choose an interval of at least 1 minute.";
+  else try{
+   const now=Date.now(),startsAt=schedule?.scheduleKind==='interval'?new Date(schedule.startsAt).getTime():now;
+   nextIntervalTime(Math.round(intervalMs),startsAt,now);
+  }catch(error){intervalError=error instanceof Error?error.message:"Invalid interval.";}
+  const intervalInvalid=Boolean(intervalError);
   const cronFormatError = cronExpression.trim().split(/\s+/u).length !== 5 ? "Five fields: minute, hour, day, month, weekday · minimum interval: one minute" : undefined;
   let timezoneError: string | undefined;
   try { if (!timezone.trim()) throw new Error(); new Intl.DateTimeFormat(undefined, { timeZone: timezone.trim() }); }
@@ -80,14 +85,14 @@ export function useTriggerSourceDraft(initial?:TriggerSourceConfig){
    if(scheduleKind==='cron')return {scheduleKind:'cron',expression:cronExpression,timezone,...policy};
    return {...intervalSourceConfig(Math.round(intervalMs),original&&'scheduleKind'in original&&original.scheduleKind==='interval'?original:undefined),...policy};
   };
-  return {scheduleKind,whenRunning,onceAt,intervalValue,intervalUnit,cronExpression,timezone,include,exclude,quietSeconds,maxWindowSeconds,setScheduleKind,setWhenRunning,setOnceAt,setIntervalValue,setIntervalUnit,setCronExpression,setTimezone,setInclude,setExclude,setQuietSeconds,setMaxWindowSeconds,filesystemErrors,intervalInvalid,cronFormatError,timezoneError,configuration,load};
+  return {scheduleKind,whenRunning,onceAt,intervalValue,intervalUnit,cronExpression,timezone,include,exclude,quietSeconds,maxWindowSeconds,setScheduleKind,setWhenRunning,setOnceAt,setIntervalValue,setIntervalUnit,setCronExpression,setTimezone,setInclude,setExclude,setQuietSeconds,setMaxWindowSeconds,filesystemErrors,intervalInvalid,intervalError,cronFormatError,timezoneError,configuration,load};
 }
 export function TriggerSourceFields({sourceKind,draft}:{sourceKind:TriggerSourceKind;draft:ReturnType<typeof useTriggerSourceDraft>}):JSX.Element{
- const {scheduleKind,whenRunning,onceAt,intervalValue,intervalUnit,cronExpression,timezone,include,exclude,quietSeconds,maxWindowSeconds,setScheduleKind,setWhenRunning,setOnceAt,setIntervalValue,setIntervalUnit,setCronExpression,setTimezone,setInclude,setExclude,setQuietSeconds,setMaxWindowSeconds,filesystemErrors,intervalInvalid,cronFormatError,timezoneError}=draft;
+ const {scheduleKind,whenRunning,onceAt,intervalValue,intervalUnit,cronExpression,timezone,include,exclude,quietSeconds,maxWindowSeconds,setScheduleKind,setWhenRunning,setOnceAt,setIntervalValue,setIntervalUnit,setCronExpression,setTimezone,setInclude,setExclude,setQuietSeconds,setMaxWindowSeconds,filesystemErrors,intervalInvalid,intervalError,cronFormatError,timezoneError}=draft;
  return <>      {sourceKind === "schedule" ? <>
         <FormControl fullWidth><InputLabel id="schedule-kind-label">Schedule type</InputLabel><Select labelId="schedule-kind-label" label="Schedule type" value={scheduleKind} onChange={(event) => setScheduleKind(event.target.value as typeof scheduleKind)}><MenuItem value="interval">Interval</MenuItem><MenuItem value="once">One Time</MenuItem><MenuItem value="cron">Cron</MenuItem></Select></FormControl>
         {scheduleKind === "interval" ? <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
-          <TextField fullWidth label="Every" type="number" value={intervalValue} onChange={(event) => setIntervalValue(event.target.value)} inputProps={{ min: 1, step: 1 }} error={intervalInvalid} helperText={intervalInvalid ? "Choose an interval from 1 minute through 365 days." : "1 minute–365 days"} />
+          <TextField fullWidth label="Every" type="number" value={intervalValue} onChange={(event) => setIntervalValue(event.target.value)} inputProps={{ min: 1, step: 1 }} error={intervalInvalid} helperText={intervalError??"At least 1 minute"} />
           <FormControl fullWidth><InputLabel id="trigger-interval-unit-label">Unit</InputLabel><Select labelId="trigger-interval-unit-label" label="Unit" value={intervalUnit} onChange={(event) => setIntervalUnit(event.target.value as IntervalUnit)}><MenuItem value="minutes">Minutes</MenuItem><MenuItem value="hours">Hours</MenuItem><MenuItem value="days">Days</MenuItem><MenuItem value="weeks">Weeks</MenuItem></Select></FormControl>
         </Stack> : null}
         {scheduleKind === "once" ? <TextField label="Run at" type="datetime-local" value={onceAt} onChange={(event) => setOnceAt(event.target.value)} InputLabelProps={{ shrink: true }} inputProps={{ step: 0.001 }} /> : null}

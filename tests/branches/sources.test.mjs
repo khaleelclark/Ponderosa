@@ -78,6 +78,32 @@ test('source configuration validates exact current fields and preserves the minu
  const normalized=normalizeTriggerSourceConfig('schedule',{scheduleKind:'cron',expression:'0 9 * * *',timezone:'America/New_York'},new Date('2026-03-07T15:00:00Z'));assert.equal(normalized.nextFireAt,'2026-03-08T13:00:00.000Z');
 });
 
+test('a 730-day interval stays future, admits one exact occurrence and preserves its cursor across reopen',async t=>{
+ const now=Date.parse('2030-01-01T00:00:00.000Z'),everyMs=730*86400000,at=new Date(now+everyMs).toISOString();
+ t.mock.timers.enable({apis:['Date'],now});
+ const config={scheduleKind:'interval',everyMs,startsAt:at,whenRunning:'queue_all'},normalized=normalizeTriggerSourceConfig('schedule',config);
+ assert.equal(normalized.nextFireAt,at);assert.deepEqual(normalized.config,config);
+ const f=await fixture(t,'schedule',config,{nextFireAt:normalized.nextFireAt});
+ await f.sources.processDueSchedules();assert.equal(f.triggers.listTriggerOccurrences(f.branch.triggerId).length,0);
+ t.mock.timers.setTime(now+everyMs-1);await f.sources.processDueSchedules();assert.equal(f.triggers.listTriggerOccurrences(f.branch.triggerId).length,0);
+ t.mock.timers.setTime(now+everyMs);await f.sources.processDueSchedules();await f.sources.processDueSchedules();
+ const occurrences=f.triggers.listTriggerOccurrences(f.branch.triggerId);assert.equal(occurrences.length,1);
+ assert.deepEqual(occurrences[0].payload.scheduledTimes,[at]);assert.equal(occurrences[0].provenance.source,'schedule');
+ const next=new Date(now+2*everyMs).toISOString();assert.equal(f.triggers.getTriggerDefinition(f.branch.triggerId).nextFireAt,next);
+ await f.reopen();await f.sources.processDueSchedules();
+ assert.deepEqual(f.triggers.listTriggerOccurrences(f.branch.triggerId).map(o=>[o.id,o.inputHash,o.branchExecutionId]),occurrences.map(o=>[o.id,o.inputHash,o.branchExecutionId]));
+ assert.equal(f.triggers.getTriggerDefinition(f.branch.triggerId).nextFireAt,next);
+ assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM branch_executions').get().n,1);f.noProviderWork();f.pass();
+});
+
+test('interval normalization rejects unsafe or fractional milliseconds and unrepresentable computed dates explicitly',()=>{
+ const now=new Date('2030-01-01T00:00:00.000Z'),base={scheduleKind:'interval',startsAt:now.toISOString()};
+ for(const everyMs of [NaN,Infinity,Number.MAX_SAFE_INTEGER+1,60000.5])assert.throws(()=>normalizeTriggerSourceConfig('schedule',{...base,everyMs},now),/finite, safe whole milliseconds/);
+ assert.throws(()=>normalizeTriggerSourceConfig('schedule',{...base,everyMs:59999},now),/at least 1 minute/);
+ assert.throws(()=>normalizeTriggerSourceConfig('schedule',{...base,everyMs:60000,startsAt:'not-a-date'},now),/ISO timestamp/);
+ assert.throws(()=>normalizeTriggerSourceConfig('schedule',{...base,everyMs:Number.MAX_SAFE_INTEGER},now),/outside the supported range/);
+});
+
 test('repeating schedules preserve explicit busy policies and leave legacy queue behavior implicit',()=>{
  const now=new Date('2030-01-01T00:00:00Z'),configs=[{scheduleKind:'interval',everyMs:60000,startsAt:'2030-01-02T00:00:00Z'},{scheduleKind:'cron',expression:'0 9 * * *',timezone:'UTC'}];
  for(const config of configs){

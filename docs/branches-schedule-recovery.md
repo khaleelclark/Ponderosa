@@ -15,3 +15,5 @@ local time fires once; a nonexistent spring local time retains the elapsed
 hour offset (02:30 becomes 03:30). This change does not redefine DST policy.
 
 Schedule source failures keep their classified recovery hint and fresh local cause in the existing notification and Trigger Events view. The app applies the shared known-value and provider-pattern redaction before persistence; raw exceptions are not stored. Failure episodes, due cursors and automatic retry behavior are unchanged.
+
+Intervals have a one-minute minimum and use finite safe-integer milliseconds; there is no fixed one-year maximum. Publication, Output settings and the shared trigger editor reject an unrepresentable next date explicitly. Cadence, original startsAt, overlap policy, catch-up and occurrence identity are unchanged.

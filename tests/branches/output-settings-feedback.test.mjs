@@ -9,7 +9,7 @@ const source=readFileSync(new URL('../../apps/web/src/components/OutputAgentApp.
 function fixture(pathname='/assistant',overrides={},behavior={}){
  const state=[],deps=[],pending=[];let index=0,tree,changed=false;const requests=[],modelRequests=[];
  const app={agentId:'speaker',branchId:'branch',chatId:'chat',projectId:'project',title:'VeryLongOutputTitle'.repeat(20),engine:'codex',versionId:'version',automatic:true,triggerKind:'schedule',schedule:{scheduleKind:'interval',everyMs:600000,startsAt:'2099-01-01T00:00:00.000Z'},everyMs:600000,settingsRevision:'revision',runtimeSettings:{activeEngine:'codex',model:null,effort:null,speed:null},...overrides};
- const imports={react:{useState(initial){const i=index++;if(!(i in state))state[i]=initial;return [state[i],value=>{if(state[i]!==value){state[i]=value;changed=true;}}];},useRef(value){const i=index++;return state[i]??=( {current:value});},useEffect(effect,next){const i=index++;if(!deps[i]||next.some((value,j)=>value!==deps[i][j])){deps[i]=next;pending.push(effect);}}},
+ const imports={'@ponderosa/core':require('@ponderosa/core'),react:{useState(initial){const i=index++;if(!(i in state))state[i]=initial;return [state[i],value=>{if(state[i]!==value){state[i]=value;changed=true;}}];},useRef(value){const i=index++;return state[i]??=( {current:value});},useEffect(effect,next){const i=index++;if(!deps[i]||next.some((value,j)=>value!==deps[i][j])){deps[i]=next;pending.push(effect);}}},
   '@tanstack/react-query':{useQuery(options){const snapshot={...app};return {data:options.queryKey[0]==='assistant-status'?{initialized:true,enabled:true,app:snapshot}:options.queryKey[0]==='output-app'?snapshot:[],refetch:async()=>behavior.refresh?behavior.refresh(options.queryKey[0],app):({data:options.queryKey[0]==='assistant-status'?{initialized:true,enabled:true,app}:app})};}},
   '../api/real':{realApi:{updateAgent:async(id,patch)=>{modelRequests.push({id,patch});if(behavior.model)return behavior.model(patch,app,modelRequests.length);throw Error('Model update refused');}},requestJson:async(url,options)=>{requests.push({url,options});if(behavior.schedule)return behavior.schedule(JSON.parse(options.body),app,requests.length);throw Error('Workflow version changed');}},
   '../hooks/queries':{useWorkspacePreferences:()=>({data:{}})},
@@ -61,6 +61,19 @@ for(const triggerKind of ['manual','schedule'])test(`${triggerKind}: an explicit
  f.nodes().find(n=>n.type==='TextField'&&n.props.label==='Check every (minutes)').props.onChange({target:{value:'20'}});
  f.nodes().find(n=>n.type==='Switch').props.onChange(null,true);f.button('Save schedule').props.onClick();await new Promise(setImmediate);
  assert.equal(JSON.parse(f.requests[0].options.body).everyMs,1200000);
+});
+
+for(const pathname of ['/assistant','/apps/speaker'])test(pathname+': interval validation accepts 730 days and blocks unsafe or unrepresentable dates',async()=>{
+ const f=fixture(pathname);f.button('Settings').props.onClick();
+ const field=()=>f.nodes().find(n=>n.type==='TextField'&&n.props.label==='Check every (minutes)');
+ field().props.onChange({target:{value:String(730*24*60)}});assert.equal(field().props.error,false);
+ f.button('Save schedule').props.onClick();await new Promise(setImmediate);
+ assert.equal(JSON.parse(f.requests[0].options.body).everyMs,730*86400000);
+ const count=f.requests.length;
+ for(const value of ['1.000001',String(Number.MAX_SAFE_INTEGER),String(8640000000000000/60000)]){
+  field().props.onChange({target:{value}});assert.equal(field().props.error,true);
+  f.button('Save schedule').props.onClick();await new Promise(setImmediate);assert.equal(f.requests.length,count);
+ }
 });
 
 for(const pathname of ['/assistant','/apps/speaker'])test(pathname+': background refresh never upgrades a stale draft baseline',async()=>{
