@@ -49,9 +49,9 @@ export function ProviderFailureBanner({ messages, agents, projectId, hasMore, on
       await api.recheckEngine(provider);
       await queryClient.invalidateQueries({ queryKey: queryKeys.engines.all });
       setNotice(rows.some(({ receipt }) => receipt.providerFailure?.providerId === provider && receipt.providerFailure.category === "unavailable")
-        ? "Provider checked. The recorded failure and work are unchanged. Review the error before retrying explicitly."
+        ? "Provider checked; retained work is unchanged."
         : "Provider checked. This does not confirm that its usage allowance has reset. Retry retained work explicitly when ready.");
-    } catch { setNotice("Could not recheck the provider. The recorded work and recovery state are unchanged."); }
+    } catch (cause) { setNotice(cause instanceof Error && cause.message ? cause.message : "Could not recheck the provider. The recorded work and recovery state are unchanged."); }
     finally { setChecking(undefined); }
   };
   if (!rows.length) return <>{status}{children}</>;
@@ -74,14 +74,14 @@ export function ProviderFailureBanner({ messages, agents, projectId, hasMore, on
             return <Box key={receipt.activationId}>
               <Typography fontWeight={700}>{name(receipt.targetAgentId)} — {providerFailureHeadline(failure)}</Typography>
               <Typography variant="body2">{failure.category === "quota_exhausted" ? "The provider reported that the allowance for this work is exhausted."
-                : failure.category === "unavailable" ? "The provider could not complete this work because it was unavailable. Review the full error before retrying. Changes from the previous attempt may remain."
+                : failure.category === "unavailable" ? "Earlier changes may remain."
                 : failure.category === "capacity" ? "Provider capacity is unavailable; this does not establish that your subscription allowance is exhausted."
                 : failure.category === "throttled" ? "The provider explicitly reported temporary throttling."
                 : "Ponderosa cannot yet confirm whether this is temporary throttling or an exhausted allowance."}</Typography>
               <Typography variant="body2">{failure.recovery === "scheduled" ? `Waiting for an automatic retry, eligible ${new Date(failure.nextRetryAt!).toLocaleString()}. Eligibility does not guarantee provider acceptance.`
                 : failure.recovery === "retrying" ? "An authorized recovery attempt is running; its outcome is not yet confirmed."
                 : failure.recovery === "stopped" ? "Automatic retries stopped. Review this work before trying again."
-                : failure.category === "unavailable" ? "Automatic recovery requires user action. Review the full error, then retry explicitly when the provider is available."
+                : failure.category === "unavailable" ? "Review the full error before manual retry."
                 : "Automatic recovery requires user action. Review usage, then retry this work explicitly."}</Typography>
               {failure.category === "quota_exhausted" ? <Typography variant="body2">{failure.resetAt ? `Provider-reported reset: ${new Date(failure.resetAt).toLocaleString()}.`
                 : "The provider did not report a reset time."}</Typography> : null}

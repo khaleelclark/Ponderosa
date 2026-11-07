@@ -8,7 +8,7 @@ const widget=name=>Object.assign(()=>null,{displayName:name}),mui=new Proxy({},{
 const Banner=widget('ChatLiveBanner'),Delivery=widget('MessageDeliveryStatus'),Usage=widget('ProviderQuotaIndicator');
 function harness(messages,extra={}){
   let index=0;const values=[],calls=[],exports={};
-  vm.runInNewContext(ts.transpileModule(readFileSync(new URL('../../apps/web/src/components/ProviderFailureBanner.tsx',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX,esModuleInterop:true}}).outputText,{exports,Date,Map,Set,require:name=>({react:{...React,useEffect(){},useState:initial=>{const i=index++;if(!(i in values))values[i]=initial;return[values[i],v=>values[i]=v]}},'@mui/material':mui,'@tanstack/react-query':{useQueryClient:()=>({invalidateQueries:async input=>calls.push(['invalidate',input])})},'../api':{api:{recheckEngine:async provider=>calls.push(['recheck',provider])}},'../queryKeys':{queryKeys:{engines:{all:['engines']}}},'./chat/ChatLiveBanner':{ChatLiveBanner:Banner},'./MessageDeliveryStatus':{MessageDeliveryStatus:Delivery},'./ProviderUsageCenter':{ProviderQuotaIndicator:Usage},'./WorkspaceReadOnlyContext':{useWorkspaceReadOnly:()=>false}}[name]??require(name))});
+  vm.runInNewContext(ts.transpileModule(readFileSync(new URL('../../apps/web/src/components/ProviderFailureBanner.tsx',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX,esModuleInterop:true}}).outputText,{exports,Date,Map,Set,Error,require:name=>({react:{...React,useEffect(){},useState:initial=>{const i=index++;if(!(i in values))values[i]=initial;return[values[i],v=>values[i]=v]}},'@mui/material':mui,'@tanstack/react-query':{useQueryClient:()=>({invalidateQueries:async input=>calls.push(['invalidate',input])})},'../api':{api:{recheckEngine:async provider=>{calls.push(['recheck',provider]);if(extra.recheckError)throw extra.recheckError;}}},'../queryKeys':{queryKeys:{engines:{all:['engines']}}},'./chat/ChatLiveBanner':{ChatLiveBanner:Banner},'./MessageDeliveryStatus':{MessageDeliveryStatus:Delivery},'./ProviderUsageCenter':{ProviderQuotaIndicator:Usage},'./WorkspaceReadOnlyContext':{useWorkspaceReadOnly:()=>false}}[name]??require(name))});
   const render=()=>{index=0;return [...walk(exports.ProviderFailureBanner({projectId:'p',messages,agents:[{id:'a',title:'Full multiword Agent name'}],children:'working fallback',...extra}))]};
   return{render,calls,exports};
 }
@@ -48,11 +48,25 @@ test('UI014 outage Details open only the exact canonical error, with truthful mi
  for(const activityId of ['a:activity:17',undefined]){
   const opened=[],h=harness([{text:'Exact retained request',deliveryReceipts:[receipt('unavailable',{activityId})]}],{onOpenError:(...args)=>opened.push(args)});
   h.render().find(node=>node.type===mui.ButtonBase).props.onClick();let nodes=h.render();
-  const words=nodes.map(text).join(' ');assert.match(words,/provider.*unavailable/iu);assert.doesNotMatch(words,/limited this request|Review usage/);
+  const words=nodes.map(text).join(' ');assert.match(words,/provider.*unavailable/iu);assert.match(words,/Earlier changes may remain\./);assert.match(words,/Review the full error before manual retry\./);assert.doesNotMatch(words,/limited this request|Review usage/);
   const full=nodes.find(node=>node.type===mui.Button&&text(node)===(activityId?'View full error':'View failed Run'));assert(full);
   await nodes.find(node=>node.type===mui.Button&&text(node)==='Recheck codex').props.onClick();await new Promise(setImmediate);nodes=h.render();
-  assert.match(nodes.map(text).join(' '),/recorded failure and work are unchanged/);assert.doesNotMatch(nodes.map(text).join(' '),/allowance has reset/);
+  assert.match(nodes.map(text).join(' '),/Provider checked; retained work is unchanged\./);assert.doesNotMatch(nodes.map(text).join(' '),/allowance has reset/);
   full.props.onClick();assert.deepEqual(opened,[['a','failed-run',activityId]]);assert.equal(h.render().find(node=>node.type===mui.Dialog).props.open,false);
   assert.deepEqual(h.calls.map(call=>call[0]),['recheck','invalidate'],'Viewing the error never retries retained work');
+ }
+});
+
+
+test('UI014 recheck retains the available public API cause and uses its fallback for non-Error failures',async()=>{
+ const publicMessage='Provider authentication was rejected.';
+ for(const recheckError of [new Error(publicMessage),{message:'Unverified object text'},new Error('')]){
+  const h=harness([{text:'Exact retained request',deliveryReceipts:[receipt('unavailable')]}],{recheckError});
+  h.render().find(node=>node.type===mui.ButtonBase).props.onClick();
+  await h.render().find(node=>node.type===mui.Button&&text(node)==='Recheck codex').props.onClick();
+  await new Promise(setImmediate);
+  const words=h.render().map(text).join(' ');
+  assert.match(words,recheckError instanceof Error&&recheckError.message?new RegExp(publicMessage):/Could not recheck the provider/);
+  assert.doesNotMatch(words,/Unverified object text/);assert.deepEqual(h.calls.map(call=>call[0]),['recheck']);
  }
 });
