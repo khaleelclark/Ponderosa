@@ -73,8 +73,11 @@ export async function requestWorkingCopyChange(ctx:Context,agent:AgentDto,mode:A
   speed:contract.speed,...(contract.observedBillingMode?{billingMode:contract.observedBillingMode}:{}),
   systemPromptHash:createHash('sha256').update(packet.exactSystemPrompt).digest('hex'),scopeKey},contract.contractHash);
  if(exactHash!==contract.contractHash)throw Error('The saved provider policy changed; review context before changing the working folder.');
- const memory=ctx.memory,authorization=memory?.transitionAuthorization(agent.id,agent.conversationId,accepted.sessionId,packet.executionId,boundary.executionId);
- if(memory&&(!authorization||!await memory.validateTransitionReads(agent.id,agent.conversationId,packet.executionId,boundary.executionId,boundary.executionId,authorization.signature)))
+ const memory=ctx.memory,memoryOrigin=memory?ctx.store.acceptedProviderSessionInput(agent.id):undefined;
+ const authorization=memory&&memoryOrigin?memory.transitionAuthorization(agent.id,agent.conversationId,accepted.sessionId,memoryOrigin.executionId,boundary.executionId):undefined;
+ const exposure=memory&&memoryOrigin?await memory.retainedMemoryExposureStatus(agent.id,agent.conversationId,accepted.sessionId,memoryOrigin.executionId,boundary.executionId):undefined;
+ if(exposure==='changed')throw Error('Earlier memory access changed or was revoked; the working folder and context were retained.');
+ if(memory&&(!memoryOrigin||exposure!=='valid'||!authorization||!await memory.validateTransitionReads(agent.id,agent.conversationId,memoryOrigin.executionId,boundary.executionId,boundary.executionId,authorization.signature)))
   throw Error('Earlier memory access changed or cannot be verified; the working folder and context were retained.');
  const tail=ctx.store.acceptedProviderSessionCommunicationEventIds(agent.id);if(!tail)throw Error('The exact saved context boundary is unavailable; the folder was retained.');
  const measured=ctx.store.acceptedProviderSessionContextUsage(agent.id)?.usage;
@@ -86,8 +89,8 @@ export async function requestWorkingCopyChange(ctx:Context,agent:AgentDto,mode:A
   triggerKind:'human',...(measured?{detectedOccupancy:measured.usedTokens}:{}),threshold:pressure.threshold,lowWaterMark:pressure.lowWaterMark,
   sourceRunId:boundary.executionId,sourceActivationIds:[],scopeKey,...(conversationId?{conversationId}:{}),
   compactionCutoffOrdinal:frozen.canonicalOrdinal,compactionCutoffEventId:frozen.communicationEventId,recentTail:frozen.recentTail,
-  workingCopyTransition:{mode,oldCopy:{id:agent.workingCopy.id,mode:agent.workingCopy.mode,rootPath:agent.workingCopy.rootPath},sourceFence:boundary.fencingToken,
-   oldContractHash:contract.contractHash,settingsHash:originalSettingsHash,...(authorization?{authorizationSignatureHash:authorization.signature,authorizationOriginRunId:packet.executionId}:{})}});
+  workingCopyTransition:{mode,sourceRunId:boundary.executionId,oldSessionId:accepted.sessionId,oldCopy:{id:agent.workingCopy.id,mode:agent.workingCopy.mode,rootPath:agent.workingCopy.rootPath},sourceFence:boundary.fencingToken,
+   oldContractHash:contract.contractHash,settingsHash:originalSettingsHash,...(authorization?{authorizationSignatureHash:authorization.signature,authorizationOriginRunId:memoryOrigin!.executionId}:{})}});
  return workingCopyChangeStatus(ctx,agent.id);
 }
 

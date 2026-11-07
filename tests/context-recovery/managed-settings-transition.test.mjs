@@ -912,3 +912,70 @@ test('dirty working-folder refusal can explicitly keep the unchanged folder and 
   assert.equal((await native.requests()).filter(x=>x.method==='turn/start').length,4);assert.equal(store.sqlite.prepare("SELECT count(*) n FROM agent_activations WHERE agent_id=? AND kind='context_rollover_handoff'").get(agent.id).n,1);
  },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,uniqueThreads:true})).adapter});
 });
+
+test('working-folder history preserves older uncertainty but newer unresolved input blocks reservation and Keep',{timeout:90000},async t=>{
+ const original=CoordinationV3Store.prototype.requestContextRollover;let requested;
+ CoordinationV3Store.prototype.requestContextRollover=function(input){if(input.workingCopyTransition)requested=structuredClone(input);return original.call(this,input);};
+ t.after(()=>{CoordinationV3Store.prototype.requestContextRollover=original;});
+ for(const newer of [false,'source','later']){
+  let store,native;await withFixture(t,async f=>{
+   const {writeFile}=await import('node:fs/promises');
+   const chat=await f.createChat('Retained historical uncertainty '+newer),agent=await f.createIdleAgent(chat,'Worker');await prepareFolderGit(f,store,chat);
+   await f.send(agent.id,'Preserve the current valid objective.');await until(async()=>(await native.requests()).some(x=>x.method==='turn/start'),'initial native turn');
+   await native.sendWorkResult('Original native finding.');await until(()=>store.readEvents(agent.id).some(x=>x.event.type==='tool_result'&&x.event.output==='Original native finding.'),'actual finding');await native.sendTool('ponderosa_message',{text:'Progress recorded.'});await f.settled(agent.id);
+   const historical=store.providerCommandContextBoundary(agent.id).executionId;
+   f.ok(await f.api('PATCH',`/api/agents/${agent.id}`,{workingCopyMode:'separate_git'}));
+   await until(async()=>(await native.requests()).filter(x=>x.method==='turn/start').length===2,'first actual handoff');await native.sendAnswer('Preserve original native finding and objective.');
+   await until(async()=>(await native.requests()).filter(x=>x.method==='turn/start').length===3,'accepted new generation');await native.sendAnswer('Native context reconstructed.');
+   await until(async()=>(await folderStatus(f,agent.id)).workingCopyChange.phase==='completed','first folder verified');await f.settled(agent.id);
+   const current=store.providerCommandContextBoundary(agent.id);assert.ok(current.fencingToken>store.sqlite.prepare('SELECT fencing_token FROM scheduler_runs WHERE id=?').get(historical).fencing_token);
+   // Seed a retained older unknown row after constructing a real newer accepted
+   // generation. This qualifies guard scope, not an external recovery workflow.
+   store.sqlite.prepare("UPDATE scheduler_runs SET status='outcome_unknown',prompt_injection_state='injecting' WHERE id=?").run(historical);
+   const oldBytes=JSON.stringify(store.sqlite.prepare('SELECT * FROM scheduler_runs WHERE id=?').get(historical));
+   const before=store.getAgent(agent.id);await writeFile(path.join(before.workingCopy.rootPath,'owned-untracked.txt'),'preserve historical fixture');
+   const save=await f.api('PATCH',`/api/agents/${agent.id}`,{workingCopyMode:'shared'});assert.equal(save.status,202,'older retained uncertainty does not veto a valid newer source');const saved=f.ok(save),intent=structuredClone(requested);
+   await until(async()=>(await native.requests()).filter(x=>x.method==='turn/start').length===4,'current generation handoff');await native.sendAnswer('Keep current native context and objective.');
+   const held=await until(async()=>{const value=await folderStatus(f,agent.id);return value.workingCopyChange?.phase==='held'?value:undefined;},'dirty failure with older history');assert.equal(held.workingCopyChange.canKeepCurrent,true,'older uncertainty does not permanently lock the unchanged folder');
+   if(newer){
+    const row=store.sqlite.prepare('SELECT source_execution_id FROM continuation_handoffs WHERE id=(SELECT handoff_event_id FROM context_rollovers WHERE id=?)').get(saved.workingCopyChange.rolloverId);
+    store.sqlite.prepare("UPDATE scheduler_runs SET status='outcome_unknown',prompt_injection_state='injecting' WHERE id=?").run(newer==='source'?intent.sourceRunId:row.source_execution_id);
+    assert.equal((await folderStatus(f,agent.id)).workingCopyChange.canKeepCurrent,false,'later unresolved input still vetoes Keep');
+    assert.equal((await f.api('POST',`/api/agents/${agent.id}/working-folder-change/${saved.workingCopyChange.rolloverId}/keep`,{})).status,409);
+    assert.throws(()=>new CoordinationV3Store(store.sqlite).requestContextRollover(intent),/saved working-folder context boundary changed/,'later uncertainty still vetoes canonical reservation');
+   }else{
+    const kept=f.ok(await f.api('POST',`/api/agents/${agent.id}/working-folder-change/${saved.workingCopyChange.rolloverId}/keep`,{}));assert.equal(kept.workingCopyChange.phase,'kept_current');assert.equal(kept.workingCopy.id,before.workingCopy.id);
+   }
+   assert.equal(JSON.stringify(store.sqlite.prepare('SELECT * FROM scheduler_runs WHERE id=?').get(historical)),oldBytes,'older uncertainty is neither rewritten nor certified resolved');
+  },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,uniqueThreads:true})).adapter});
+ }
+});
+
+test('working-folder memory authorization includes earlier reads before a later completed native Run',{timeout:90000},async t=>{
+ let store,native;await withFixture(t,async f=>{
+  const chat=await f.createChat('Earlier native memory read'),agent=await f.createIdleAgent(chat,'Worker');await prepareFolderGit(f,store,chat);
+  f.ok(await f.api('PUT',`/api/local-memory/grants/${chat.id}`,{readGlobal:true,expectedRevision:0}));
+  const savedMemory=f.ok(await f.api('POST','/api/local-memory/global',{operation:'save',text:'Synthetic earlier folder lineage source.',destination:'global'}));
+  const memoryId=savedMemory.structuredContent?.result?.chunk_id;assert.ok(memoryId,'real synthetic memory source saved');
+  await f.send(agent.id,'Read memory and preserve the original objective.');await until(async()=>(await native.requests()).some(x=>x.method==='turn/start'),'first memory turn');
+  await native.sendTool('ponderosa_local_memory_get',{chunk_id:memoryId,source:'global'});const response=await until(async()=>(await native.requests()).find(x=>x.toolResponse)?.toolResponse,'actual memory result');assert.equal(response.result.success,true);assert.ok(JSON.stringify(response).includes('Synthetic earlier folder lineage source.'),'earlier source was actually disclosed');
+  await native.sendWorkResult('Earlier memory read completed.');await until(()=>store.readEvents(agent.id).some(x=>x.event.type==='tool_result'&&x.event.output==='Earlier memory read completed.'),'fresh memory-turn usage');await native.sendTool('ponderosa_message',{text:'Research recorded.'});await f.settled(agent.id);
+  const origin=store.acceptedProviderSessionInput(agent.id).executionId;
+  await f.send(agent.id,'Continue without another memory read.');await until(async()=>(await native.requests()).filter(x=>x.method==='turn/start').length===2,'later native turn');
+  await native.sendWorkResult('Later work completed.');await until(()=>store.readEvents(agent.id).some(x=>x.event.type==='tool_result'&&x.event.output==='Later work completed.'),'later fresh usage');await native.sendTool('ponderosa_message',{text:'Later work recorded.'});await f.settled(agent.id);
+  assert.notEqual(store.providerCommandContextBoundary(agent.id).executionId,origin,'the latest source differs from generation origin');
+  const save=await f.api('PATCH',`/api/agents/${agent.id}`,{workingCopyMode:'separate_git'});assert.equal(save.status,202);
+  await until(async()=>(await native.requests()).filter(x=>x.method==='turn/start').length===3,'memory-authorized old-session handoff');await native.sendAnswer('Preserve the earlier authorized memory research and original objective.');
+  await until(async()=>(await native.requests()).filter(x=>x.method==='turn/start').length===4,'memory-authorized folder replacement');await native.sendAnswer('Earlier memory context reconstructed.');
+  await until(async()=>(await folderStatus(f,agent.id)).workingCopyChange.phase==='completed','memory-enabled folder verified');await f.settled(agent.id);
+  await f.send(agent.id,'Continue the original objective after the folder change without a new memory read.');
+  await until(async()=>(await native.requests()).filter(x=>x.method==='turn/start').length===5,'normal task traverses folder memory lineage');
+  await native.sendWorkResult('Post-folder work completed.');await until(()=>store.readEvents(agent.id).some(x=>x.event.type==='tool_result'&&x.event.output==='Post-folder work completed.'),'post-folder fresh usage');await native.sendTool('ponderosa_message',{text:'Post-folder work recorded.'});await f.settled(agent.id);
+  const before=store.getAgent(agent.id),accepted=store.resumeSessionState(agent.id),count=store.sqlite.prepare('SELECT count(*) n FROM context_rollovers WHERE agent_id=?').get(agent.id).n;
+  f.ok(await f.api('PUT',`/api/local-memory/grants/${chat.id}`,{readGlobal:false,expectedRevision:1}));
+  const result=await f.api('PATCH',`/api/agents/${agent.id}`,{workingCopyMode:'shared'});assert.equal(result.status,409);assert.match(result.body.error,/memory access changed|memory.*verif/i);
+  assert.equal(store.getAgent(agent.id).workingCopy.id,before.workingCopy.id);assert.equal(store.resumeSessionState(agent.id).sessionId,accepted.sessionId);
+  assert.equal(store.sqlite.prepare('SELECT count(*) n FROM context_rollovers WHERE agent_id=?').get(agent.id).n,count,'revoked earlier memory cannot enter another summary');assert.equal((await native.requests()).filter(x=>x.method==='turn/start').length,5,'no unreviewed native replay');
+ },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,uniqueThreads:true,holdMemoryCompletion:true})).adapter,
+  localMemoryForRoot:async root=>({chromaUrl:await ownedChroma(),collectionPrefix:'folder_origin_'+randomUUID().replaceAll('-',''),modelDir:process.env.PONDEROSA_TEST_MEMORY_MODEL_DIR,stateDirectory:path.join(root,'memory-policy'),provision:true})});
+});

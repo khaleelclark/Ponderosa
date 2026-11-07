@@ -589,6 +589,20 @@ export class LocalMemoryService{
    return first===originRunId&&last===sourceRunId?{signature,attempted}:undefined;
   }catch{return undefined;}
  }
+ /** Only canonical settings lineage or a fully bound folder intent may carry
+  * inherited memory. Ambiguous/malformed payloads remain fail-closed. */
+ private memoryTransitionMarker(payload:any):any|undefined{
+  if(payload&&Object.hasOwn(payload,'settingsTransition'))
+   return Object.hasOwn(payload,'workingCopyTransition')?undefined:payload.settingsTransition;
+  const m=payload?.workingCopyTransition;
+  if(!m||!['shared','separate_git'].includes(m.mode)||!['shared','separate_git'].includes(m.oldCopy?.mode)||
+     typeof m.oldCopy?.id!=='string'||!m.oldCopy.id||typeof m.oldCopy.rootPath!=='string'||!m.oldCopy.rootPath||
+     typeof m.sourceRunId!=='string'||!m.sourceRunId||typeof m.oldSessionId!=='string'||!m.oldSessionId||
+     !Number.isSafeInteger(m.sourceFence)||m.sourceFence<1||! /^[0-9a-f]{64}$/.test(m.oldContractHash??'')||
+     ! /^[0-9a-f]{64}$/.test(m.settingsHash??'')||! /^[0-9a-f]{64}$/.test(m.authorizationSignatureHash??'')||
+     typeof m.authorizationOriginRunId!=='string'||!m.authorizationOriginRunId)return undefined;
+  return m;
+ }
  private memoryLineageStart(agentId:string,chatId:string,originRunId:string):number|undefined{
   const db=this.ports.store.sqlite,seen=new Set<string>();
   let cursor=originRunId;
@@ -604,13 +618,13 @@ export class LocalMemoryService{
       WHERE r.agent_id=? AND r.replacement_run_id=?`).all(agentId,cursor) as Array<any>;
    if(!parents.length)return run.fencing_token;
    if(parents.length!==1)return undefined;
-   const p=parents[0],m=JSON.parse(p.payload_json)?.settingsTransition;
+   const p=parents[0],payload=JSON.parse(p.payload_json),m=this.memoryTransitionMarker(payload);
    if(p.state!=='completed'||p.completion_reason!=='replacement_verified'||p.scope_key!==run.scope_key||
       p.conversation_id!==chatId||p.replacement_session_id!==run.provider_session_id||!m||
       m.oldSessionId!==p.old_provider_session_id||m.sourceRunId!==p.source_run_id||
       typeof m.authorizationOriginRunId!=='string')return undefined;
    const prior=db.prepare('SELECT fencing_token FROM scheduler_runs WHERE id=? AND agent_id=?').get(p.source_run_id,agentId) as {fencing_token:number}|undefined;
-   if(!prior||prior.fencing_token>=run.fencing_token)return undefined;
+   if(!prior||prior.fencing_token>=run.fencing_token||payload?.workingCopyTransition&&m.sourceFence!==prior.fencing_token)return undefined;
    cursor=m.authorizationOriginRunId;
   }
   return undefined;
@@ -703,13 +717,13 @@ export class LocalMemoryService{
    recordedSources=parents.length>0&&inheritedRecorded;
    if(parents.length>1)return inheritedRecorded?'unavailable':'unknown';
    if(parents.length){
-    const parent=parents[0]!,marker=JSON.parse(parent.payload_json)?.settingsTransition;
+    const parent=parents[0]!,payload=JSON.parse(parent.payload_json),marker=this.memoryTransitionMarker(payload);
     if(parent.state!=='completed'||parent.completion_reason!=='replacement_verified'||parent.scope_key!==origin.scope_key||
        parent.conversation_id!==chatId||parent.replacement_session_id!==sessionId||!marker||
        marker.oldSessionId!==parent.old_provider_session_id||marker.sourceRunId!==parent.source_run_id||
        typeof marker.authorizationOriginRunId!=='string')return inheritedRecorded?'unavailable':'unknown';
     const parentSource=db.prepare('SELECT fencing_token FROM scheduler_runs WHERE id=? AND agent_id=?').get(parent.source_run_id,agentId) as {fencing_token:number}|undefined;
-    if(!parentSource||parentSource.fencing_token>=origin.fencing_token)return inheritedRecorded?'unavailable':'unknown';
+    if(!parentSource||parentSource.fencing_token>=origin.fencing_token||payload?.workingCopyTransition&&marker.sourceFence!==parentSource.fencing_token)return inheritedRecorded?'unavailable':'unknown';
     const inherited=await this.retainedMemoryExposureStatus(agentId,chatId,parent.old_provider_session_id,
       marker.authorizationOriginRunId,parent.source_run_id,seen);
     if(inherited!=='valid')return inherited==='unknown'&&inheritedRecorded?'unavailable':inherited;

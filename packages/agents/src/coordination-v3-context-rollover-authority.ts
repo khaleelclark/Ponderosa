@@ -49,7 +49,7 @@ export interface WorkingCopyTransition {
   oldCopy:{id:string;mode:"shared"|"separate_git";rootPath:string};
   appliedCopy?:{id:string;mode:"shared"|"separate_git";rootPath:string};
   mutationStarted?:boolean; keptCurrent?:boolean; failureMessage?:string;
-  sourceFence:number; oldContractHash:string; settingsHash:string;
+  sourceRunId:string; oldSessionId:string; sourceFence:number; oldContractHash:string; settingsHash:string;
   authorizationSignatureHash?:string; authorizationOriginRunId?:string;
 }
 
@@ -149,12 +149,13 @@ export class CoordinationV3ContextRolloverAuthority {
     return Boolean(this.sqlite.prepare(`SELECT 1 FROM agents a WHERE a.id=? AND a.project_id=? AND a.active_session_id=? AND a.active_session_contract_hash=?
       AND json_extract(a.working_copy_json,'$.id')=? AND json_extract(a.working_copy_json,'$.mode')=? AND json_extract(a.working_copy_json,'$.rootPath')=?
       AND json_extract(a.working_copy_json,'$.state')='ready'
-      AND NOT EXISTS(SELECT 1 FROM scheduler_runs run WHERE run.agent_id=a.id AND (run.status IN ('leased','running','outcome_unknown') OR run.prompt_injection_state='injecting'))
+      AND NOT EXISTS(SELECT 1 FROM scheduler_runs run WHERE run.agent_id=a.id AND (run.status IN ('leased','running')
+        OR run.fencing_token>=? AND (run.status='outcome_unknown' OR run.prompt_injection_state='injecting')))
       AND NOT EXISTS(SELECT 1 FROM scheduler_runs run JOIN scheduler_run_activations attached ON attached.run_id=run.id
         WHERE attached.activation_id=? AND (run.prompt_injection_state<>'not_injected' OR run.provider_session_id IS NOT NULL))
       AND NOT EXISTS(SELECT 1 FROM agent_run_pauses p WHERE p.agent_id=a.id AND p.state IN ('paused','resume_requested'))
       AND NOT EXISTS(SELECT 1 FROM provider_context_recovery_requests p WHERE p.agent_id=a.id AND p.state='unsupported_fenced')`)
-      .get(r.agent_id,r.project_id,r.old_provider_session_id,marker.oldContractHash,marker.oldCopy.id,marker.oldCopy.mode,marker.oldCopy.rootPath,r.continuation_activation_id));
+      .get(r.agent_id,r.project_id,r.old_provider_session_id,marker.oldContractHash,marker.oldCopy.id,marker.oldCopy.mode,marker.oldCopy.rootPath,marker.sourceFence,r.continuation_activation_id));
   }
 
   keepWorkingCopyTransition(id:string,now=new Date().toISOString()):void {
@@ -349,7 +350,7 @@ export class CoordinationV3ContextRolloverAuthority {
     return this.sqlite.transaction(() => {
       if(input.workingCopyTransition){
         const t=input.workingCopyTransition;
-        if(input.triggerKind!=='human'||input.settingsTransition||input.canonicalOnlyRefresh||
+        if(input.triggerKind!=='human'||input.settingsTransition||input.canonicalOnlyRefresh||t.sourceRunId!==input.sourceRunId||t.oldSessionId!==input.oldProviderSessionId||
           !['shared','separate_git'].includes(t.mode)||!['shared','separate_git'].includes(t.oldCopy.mode)||
           !t.oldCopy.id||!t.oldCopy.rootPath||!Number.isSafeInteger(t.sourceFence)||t.sourceFence<1||
           !/^[a-f0-9]{64}$/.test(t.oldContractHash)||!/^[a-f0-9]{64}$/.test(t.settingsHash))throw Error('Invalid exact working-folder transition');
@@ -359,8 +360,8 @@ export class CoordinationV3ContextRolloverAuthority {
             AND r.id=? AND r.provider_session_id=a.active_session_id AND r.fencing_token=? AND r.scope_key=?
             AND r.status='completed' AND r.prompt_injection_state='injected'
             AND EXISTS(SELECT 1 FROM scheduler_prompt_injections i WHERE i.run_id=r.id AND i.kind='turn' AND i.state='acknowledged')
-            AND NOT EXISTS(SELECT 1 FROM scheduler_runs later WHERE later.agent_id=a.id AND (later.status IN ('leased','running','outcome_unknown')
-              OR later.prompt_injection_state='injecting' OR later.fencing_token>r.fencing_token AND later.prompt_injection_state<>'not_injected'))`)
+            AND NOT EXISTS(SELECT 1 FROM scheduler_runs later WHERE later.agent_id=a.id AND (later.status IN ('leased','running')
+              OR later.fencing_token>r.fencing_token AND (later.status='outcome_unknown' OR later.prompt_injection_state='injecting' OR later.prompt_injection_state<>'not_injected')))`)
           .get(input.agentId,input.projectId,input.oldProviderSessionId,t.oldContractHash,t.oldCopy.id,t.oldCopy.rootPath,t.oldCopy.mode,input.sourceRunId,t.sourceFence,input.scopeKey);
         if(!source)throw Error('The saved working-folder context boundary changed; context and folder were retained.');
       }
