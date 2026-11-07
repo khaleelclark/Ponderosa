@@ -6,6 +6,7 @@ import {registerLocalMemory,localMemoryFor} from "./local-memory.js";
 import {isMemoryCleanupHold} from "./local-memory-authority.js";
 import {BranchScriptService} from "./branch-script-service.js";
 import {BranchTriggerSourceService} from "./branch-trigger-service.js";
+import {freshFailureDiagnostic} from "./working-copy-diagnostic.js";
 import {registerCapabilityRoutes} from './routes/capabilities.js';
 import {OutputAgentApps} from './output-agent-apps.js';
 import {registerBranchRoutes} from './routes/branches.js';
@@ -1427,14 +1428,14 @@ app.server.on("upgrade", linkPreviewUpgrade);
     sourceAvailable:()=>!closed&&!deploymentControl.isDraining(),
     logDiagnosticFailure:()=>app.log.error({code:'branch_source_diagnostic_write_failed'},'Branch source diagnostic could not be persisted'),
     notify:()=>coordinationV3Scheduler.notify(),
-    onSourceFailure:({trigger,kind,error,episode})=>{
+    onSourceFailure:({trigger,kind,error,episode,cause})=>{
       const prefix = `branch-source:${trigger?.id ?? 'poller'}:${kind}`;
       // A new poller failure after confirmed recovery gets a new episode;
       // repeated failures and persistent dismissals reuse the same notice.
       const key = episode ? `${prefix}:${episode}` : prefix;
       createOperationalNotification({dedupeKey:key,renewAfterRecovery:kind==='schedule_polling',...(trigger?.branchId?{branchId:trigger.branchId}:{}),
         informational:kind==='schedule'||kind==='schedule_polling',...(kind==='schedule'||kind==='schedule_polling'?{push:false}:{}),category:'system',severity:kind==='schedule'||kind==='schedule_polling'?'info':'attention',
-        title:kind==='schedule'||kind==='schedule_polling'?'Schedule Check Delayed':'Branch discovery needs attention',body:error,
+        title:kind==='schedule'||kind==='schedule_polling'?'Schedule Check Delayed':'Branch discovery needs attention',body:cause===undefined?error:freshFailureDiagnostic(cause,error),
         ...(trigger?.branchId?{action:{kind:'open_branch' as const,targetId:trigger.branchId}}:{})});
     },
     onSourceRecovered:(id,kind,episode)=>{

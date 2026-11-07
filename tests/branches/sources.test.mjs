@@ -154,7 +154,7 @@ test('failed schedule acceptance stays due, reports a stable sanitized episode, 
  const at=new Date(Date.now()-60000).toISOString(),f=await fixture(t,'schedule',{scheduleKind:'interval',everyMs:60000,startsAt:at},{nextFireAt:at});
  f.store.sqlite.exec("CREATE TEMP TRIGGER fail_schedule BEFORE INSERT ON branch_executions BEGIN SELECT RAISE(ABORT,'SQL payload secret/path'); END");
  for(let i=0;i<3;i++)await f.sources.processDueSchedules();
- const failures=f.failures.filter(row=>row.kind==='schedule');assert.equal(failures.length,3);assert.equal(new Set(failures.map(row=>row.trigger.id+row.episode+row.error)).size,1);assert.doesNotMatch(failures[0].error,/SQL|secret|path/);
+ const failures=f.failures.filter(row=>row.kind==='schedule');assert.equal(failures.length,3);assert.equal(new Set(failures.map(row=>row.trigger.id+row.episode+row.error)).size,1);assert.doesNotMatch(failures[0].error,/SQL|secret|path/);assert.ok(failures[0].cause instanceof Error);assert.match(failures[0].cause.message,/SQL payload secret\/path/);
  assert.equal(f.triggers.getTriggerDefinition(f.branch.triggerId).nextFireAt,at);assert.equal(f.triggers.listTriggerOccurrences(f.branch.triggerId).length,0);
  f.store.sqlite.exec('DROP TRIGGER fail_schedule');await f.sources.processDueSchedules();await f.sources.processDueSchedules();
  assert.equal(f.triggers.listTriggerOccurrences(f.branch.triggerId).length,2);assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM branch_executions').get().n,2);f.noProviderWork();f.pass();
@@ -162,8 +162,8 @@ test('failed schedule acceptance stays due, reports a stable sanitized episode, 
 
 test('schedule polling classifies failures without exposing raw exception text',async t=>{
  const at=new Date(Date.now()-60000).toISOString(),f=await fixture(t,'schedule',{scheduleKind:'interval',everyMs:60000,startsAt:at},{nextFireAt:at});
- let code='SQLITE_BUSY';
- t.mock.method(f.triggers,'listDueScheduleTriggers',()=>{throw Object.assign(new Error('SQL private-secret /private/path'),{code});});
+ let code='SQLITE_BUSY';const fresh=new Error('SQL private-secret /private/path');
+ t.mock.method(f.triggers,'listDueScheduleTriggers',()=>{throw Object.assign(fresh,{code});});
  await f.sources.processDueSchedules();
  assert.equal(f.failures.length,1);assert.equal(f.failures[0].kind,'schedule_polling');
  assert.match(f.failures[0].error,/local database is busy/);
@@ -171,10 +171,44 @@ test('schedule polling classifies failures without exposing raw exception text',
  assert.doesNotMatch(f.failures[0].error,/private-secret|\/private\/path|SQL private/);
  code='SQLITE_UNRECOGNIZED';
  await f.sources.processDueSchedules();
- assert.equal(f.failures.length,2);assert.match(f.failures[1].error,/internal scheduler error/);
+ assert.equal(f.failures.length,2);assert.match(f.failures[1].error,/internal scheduler error/);assert.equal(f.failures[1].cause,fresh);
  assert.doesNotMatch(f.failures[1].error,/private-secret|\/private\/path|SQL private/);
  assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM branch_executions').get().n,0);
  assert.equal(f.triggers.getTriggerDefinition(f.branch.triggerId).nextFireAt,at);
+ f.noProviderWork();f.pass();
+});
+
+test('unexpected schedule timer rejection passes its fresh cause to the existing diagnostic boundary',async t=>{
+ t.mock.timers.enable({apis:['setInterval']});
+ const at=new Date(Date.now()+60000).toISOString(),f=await fixture(t,'schedule',{scheduleKind:'once',at},{nextFireAt:at});
+ await f.sources.start();
+ const fresh=new Error('Controlled unexpected timer failure');
+ t.mock.method(f.sources,'processDueSchedules',async()=>{throw fresh});
+ t.mock.timers.tick(1000);await Promise.resolve();await Promise.resolve();
+ assert.equal(f.failures.length,1);assert.equal(f.failures[0].kind,'schedule_polling');assert.equal(f.failures[0].cause,fresh);
+ assert.match(f.failures[0].error,/internal scheduler error/);assert.match(f.failures[0].error,/Polling will retry/);
+ assert.equal(f.triggers.listTriggerOccurrences(f.branch.triggerId).length,0);assert.equal(f.triggers.getTriggerDefinition(f.branch.triggerId).nextFireAt,at);
+ f.noProviderWork();f.pass();
+});
+
+test('the actual schedule timer admits a future once-only check within 60 seconds with durable Run provenance', {timeout:20000},async t=>{
+ const due=Date.now()+5000,at=new Date(due).toISOString(),f=await fixture(t,'schedule',{scheduleKind:'once',at},{nextFireAt:at});
+ await f.sources.start();
+ assert.ok(Date.now()<due,'The source starts before the selected check becomes due');
+ assert.equal(f.triggers.listTriggerOccurrences(f.branch.triggerId).length,0,'An enabled future check cannot fire early');
+ const occurrence=await until(()=>f.triggers.listTriggerOccurrences(f.branch.triggerId)[0],'actual future schedule timer',15000);
+ const accepted=Date.parse(occurrence.createdAt);
+ assert.ok(accepted>=due&&accepted-due<=60000,'Actual timer admission is due and within the accepted 60-second window');
+ assert.deepEqual(occurrence.payload.scheduledTimes,[at]);assert.equal(occurrence.provenance.source,'schedule');
+ assert.equal(occurrence.provenance.evaluatedAt,occurrence.createdAt);assert.equal(occurrence.triggerSnapshot.id,f.branch.triggerId);
+ const execution=f.branches.execution(occurrence.branchExecutionId);assert.ok(execution);assert.equal(execution.admissionSource,'automatic');
+ assert.deepEqual(f.notices,[f.branch.triggerId]);assert.equal(f.triggers.getTriggerDefinition(f.branch.triggerId).enabled,false);
+ await f.reopen();await f.sources.start();
+ const retained=f.triggers.listTriggerOccurrences(f.branch.triggerId);
+ assert.equal(retained.length,1);assert.equal(retained[0].id,occurrence.id);assert.equal(retained[0].branchExecutionId,execution.id);
+ assert.deepEqual(retained[0].provenance,occurrence.provenance);
+ assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM branch_executions').get().n,1);
+ assert.deepEqual(f.notices,[f.branch.triggerId],'Restart cannot re-notify the accepted once-only check');
  f.noProviderWork();f.pass();
 });
 

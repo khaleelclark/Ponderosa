@@ -61,6 +61,67 @@ test('application schedule intake stays fenced during deployment drain and admit
  await f.close();f.pass();
 });
 
+test('schedule admission retains its actionable cause in stored Trigger Events while redacting known secrets and preserving due work',options,async t=>{
+ const f=await fixture(t),secret='schedule-known-bare-credential',labeled='schedule-pattern-credential';
+ registerSyntheticSecret(t,'PONDEROSA_TEST_SCHEDULE_TOKEN',secret);
+ const owner=f.branches.create('Diagnostic source','diagnostic-source'),at=new Date(Date.now()-1000).toISOString(),config={scheduleKind:'once',at};
+ const branch=f.branches.deploy({chatId:'',branchId:owner.id,expectedVersionId:'',idempotencyKey:'diagnostic',definition:{schema:'ponderosa.branch.v1',name:'Diagnostic source',trigger:{kind:'schedule',configRef:'source'},entry:'gate',steps:[{id:'gate',kind:'human_gate',prompt:'Review',editable:false}],controls:[],edges:[],policy:{maxConcurrentExecutions:1,failure:{action:'stop'}}},bindings:{agents:{},directories:{},triggers:{source:{sourceConfig:config,enabled:true}}}},new Date().toISOString(),{sourceConfig:config,nextFireAt:at});
+ const cause='Selected workflow directory binding is missing; restore the selected folder.';
+ const interception=t.mock.method(Object.getPrototypeOf(f.branches.triggers),'recordScheduledTriggerOccurrence',()=>{
+  throw Object.assign(new Error(cause+' '+secret+' API_KEY='+labeled),{code:'SQLITE_UNRECOGNIZED'});
+ });
+ const read=()=>f.api('GET',`/api/branches/${branch.id}/lifecycle`);let originalOpen=false;
+ try{
+  await f.open();originalOpen=true;await f.api('POST','/api/deployment/resume');
+  const lifecycle=await until(async()=>{const value=await read();return value.sourceDiagnostics.length&&value},'stored schedule cause');
+  assert.equal(lifecycle.sourceDiagnostics.length,1);
+  const notice=lifecycle.sourceDiagnostics[0];
+  assert.equal(notice.title,'Schedule Check Delayed');
+  assert.match(notice.body,/Scheduled check could not be accepted: an internal scheduler error occurred/);
+  assert.ok(notice.body.includes(cause),'The fresh actionable cause survives the app boundary');
+  assert.match(notice.body,/unchanged due checks retry automatically/);
+  for(const value of [secret,labeled])assert.ok(!JSON.stringify(lifecycle).includes(value),'Known and credential-pattern values stay out of the public stored diagnostic');
+  assert.equal(f.branches.trigger(branch.id).nextFireAt,at);
+  assert.equal(f.branches.triggers.listTriggerOccurrences(branch.triggerId).length,0);
+  assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM branch_executions').get().n,0);
+  assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM scheduler_runs').get().n,0);
+
+  // Render the real Trigger Events component with the actual HTTP diagnostic.
+  // Only query readiness, opening state and Dialog's portal are controlled.
+  const {createRequire}=await import('node:module'),{readFileSync}=await import('node:fs'),vm=await import('node:vm');
+  const require=createRequire(new URL('../../apps/web/package.json',import.meta.url)),React=require('react'),{renderToStaticMarkup}=require('react-dom/server'),ts=require('typescript'),exports={};
+  const input=readFileSync(new URL('../../apps/web/src/components/branches/BranchOperations.tsx',import.meta.url),'utf8');
+  const source=ts.transpileModule(input,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX}}).outputText;
+  const dependency=name=>{
+   if(name==='react')return {...React,useState:()=>[true,()=>{}]};
+   if(name==='@tanstack/react-query')return {useInfiniteQuery:()=>({data:{pages:[]},isPending:false})};
+   if(name==='@mui/material')return {...require(name),Dialog:({children})=>React.createElement('section',null,children)};
+   if(name==='../../api/real')return {requestJson(){throw Error('Unexpected UI request')}};
+   if(name==='../TriggerOccurrenceAudit')return {OccurrenceAudit(){throw Error('No accepted occurrence exists')}};
+   if(name==='react/jsx-runtime')return require(name);
+   throw Error('Unexpected UI dependency '+name);
+  };
+  vm.runInNewContext(source,{exports,require:dependency});
+  const html=renderToStaticMarkup(React.createElement(exports.BranchTriggerAudit,{branchId:branch.id,diagnostics:lifecycle.sourceDiagnostics,onNavigate(){throw Error('Rendering cannot navigate')}}));
+  assert.ok(html.includes(cause),'Trigger Events exposes the same actionable cause');
+  assert.match(html,/Schedule Check Delayed/);assert.match(html,/No trigger events yet/);
+  for(const value of [secret,labeled])assert.ok(!html.includes(value),'Rendered Trigger Events never recovers redacted values');
+  await f.close();originalOpen=false;
+  const store=new AgentStore(path.join(f.root,'data')),branches=new BranchStore(store.sqlite,new CoordinationV3Store(store.sqlite));
+  const reopened=createServer({dataDir:path.join(f.root,'data'),store,logger:false,startDrained:true,engines:[],allowedBrowseRoots:[f.root],communicationV3:{pollMs:10}});
+  try{
+   await reopened.ready();
+   const response=await reopened.inject({url:`/api/branches/${branch.id}/lifecycle`});assert.equal(response.statusCode,200,response.body);
+   const retained=response.json();
+   assert.equal(retained.sourceDiagnostics[0].id,notice.id);
+   assert.equal(retained.sourceDiagnostics[0].body,notice.body,'Paused restart retains the already-redacted useful cause');
+   assert.equal(branches.trigger(branch.id).nextFireAt,at);
+   assert.equal(branches.triggers.listTriggerOccurrences(branch.triggerId).length,0);
+  }finally{reopened.prepareForShutdown();await reopened.close();}
+  f.pass();
+ }finally{if(originalOpen)await f.close();interception.mock.restore();}
+});
+
 test('deployment drain closes Branch filesystem watchers, preserves accepted bursts, and resumes their exact evidence',options,async t=>{
  const f=await fixture(t),owner=f.branches.create('Filesystem source','filesystem-source'),config={include:['input-*.txt'],exclude:[],quietMs:10000,maxWindowMs:20000};
  const branch=f.branches.deploy({chatId:'',branchId:owner.id,expectedVersionId:'',idempotencyKey:'deploy',definition:{schema:'ponderosa.branch.v1',name:'Filesystem source',trigger:{kind:'filesystem',configRef:'source'},entry:'script',steps:[{id:'script',kind:'script',runtime:'node',cwdRef:'workspace',timeoutMs:5000,source:"process.stdout.write('file result');"}],controls:[],edges:[],policy:{maxConcurrentExecutions:1,failure:{action:'stop'}}},bindings:{agents:{},directories:{workspace:f.root},triggers:{source:{sourceConfig:config,enabled:true}}}},new Date().toISOString(),{sourceConfig:config});
