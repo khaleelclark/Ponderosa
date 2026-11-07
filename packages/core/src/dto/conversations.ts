@@ -228,7 +228,9 @@ export interface MessageDeliveryReceiptDto {
   recoveryActivationId?: string;
   /** Current failure/recovery of this exact work's Run lineage, never the Agent's current selection. */
   providerFailure?: {
-    category: "quota_exhausted" | "rate_limit" | "throttled" | "capacity";
+    category: "quota_exhausted" | "rate_limit" | "throttled" | "capacity" | "unavailable";
+    /** Exact canonical Activity error, already safe for the existing focused history route. */
+    activityId?: string;
     providerId?: string;
     model?: string;
     resetAt?: string;

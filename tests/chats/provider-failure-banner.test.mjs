@@ -15,7 +15,7 @@ function harness(messages,extra={}){
 function* walk(node){if(!React.isValidElement(node))return;yield node;for(const child of React.Children.toArray(node.props.children))yield*walk(child)}
 const text=node=>React.isValidElement(node)?React.Children.toArray(node.props.children).map(text).join(''):String(node??'');
 const receipt=(category,extra={})=>({activationId:'exact-work',targetAgentId:'a',state:'failed',updatedAt:'2026-10-23T20:00:00Z',attemptCount:1,canRetry:true,providerFailure:{category,providerId:'codex',recovery:'action_required',runId:'failed-run',...extra}});
-for(const[category,expected]of[['quota_exhausted','Codex usage limit reached'],['rate_limit','Codex limited this request'],['throttled','Codex is temporarily limiting requests'],['capacity','Codex is temporarily at capacity']])test('UI014 actual Chat banner and Details: '+category,()=>{
+for(const[category,expected]of[['quota_exhausted','Codex usage limit reached'],['rate_limit','Codex limited this request'],['throttled','Codex is temporarily limiting requests'],['capacity','Codex is temporarily at capacity'],['unavailable','Codex is temporarily unavailable']])test('UI014 actual Chat banner and Details: '+category,()=>{
  const r=receipt(category),h=harness([{text:'Exact retained request',deliveryReceipts:[r]}]);
  let nodes=h.render();assert.equal(nodes.find(n=>n.type===Banner).props.singleLine,true);assert.match(text(nodes.find(n=>n.type===Banner)),new RegExp(expected));
  assert.equal(nodes.find(n=>n.type===mui.Dialog).props.open,false);
@@ -41,4 +41,18 @@ test('UI014 shared broadcasts count affected deliveries, not duplicated user mes
  const a=receipt('quota_exhausted'),b={...a,activationId:'another-work',targetAgentId:'another-agent'};
  const h=harness([{text:'One message to two agents',deliveryReceipts:[a,b]}]);
  const banner=h.render().find(node=>node.type===Banner);assert.match(text(banner),/2 deliveries/);assert.doesNotMatch(text(banner),/2 messages/);
+});
+
+
+test('UI014 outage Details open only the exact canonical error, with truthful missing-pointer and recheck behavior',async()=>{
+ for(const activityId of ['a:activity:17',undefined]){
+  const opened=[],h=harness([{text:'Exact retained request',deliveryReceipts:[receipt('unavailable',{activityId})]}],{onOpenError:(...args)=>opened.push(args)});
+  h.render().find(node=>node.type===mui.ButtonBase).props.onClick();let nodes=h.render();
+  const words=nodes.map(text).join(' ');assert.match(words,/provider.*unavailable/iu);assert.doesNotMatch(words,/limited this request|Review usage/);
+  const full=nodes.find(node=>node.type===mui.Button&&text(node)===(activityId?'View full error':'View failed Run'));assert(full);
+  await nodes.find(node=>node.type===mui.Button&&text(node)==='Recheck codex').props.onClick();await new Promise(setImmediate);nodes=h.render();
+  assert.match(nodes.map(text).join(' '),/recorded failure and work are unchanged/);assert.doesNotMatch(nodes.map(text).join(' '),/allowance has reset/);
+  full.props.onClick();assert.deepEqual(opened,[['a','failed-run',activityId]]);assert.equal(h.render().find(node=>node.type===mui.Dialog).props.open,false);
+  assert.deepEqual(h.calls.map(call=>call[0]),['recheck','invalidate'],'Viewing the error never retries retained work');
+ }
 });

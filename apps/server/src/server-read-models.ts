@@ -331,7 +331,7 @@ export function createServerReadModels(context: ReadModelContext) {
         WHERE message.project_id = ? AND message.chat_kind = 'conversation' AND message.chat_id = ?
           AND root.state IN ('failed','outcome_unknown','retry_pending')
           AND EXISTS (SELECT 1 FROM scheduler_run_activations attached JOIN scheduler_runs run ON run.id = attached.run_id
-            WHERE attached.activation_id = root.id AND json_extract(run.provider_failure_json, '$.category') IN ('quota_exhausted','rate_limit','throttled','capacity'))
+            WHERE attached.activation_id = root.id AND json_extract(run.provider_failure_json, '$.category') IN ('quota_exhausted','rate_limit','throttled','capacity','unavailable'))
         UNION
         SELECT chain.root, retry.successor_activation_id, chain.event_id FROM chain
         JOIN activation_delivery_retry_lineage retry ON retry.predecessor_activation_id = chain.id
@@ -347,7 +347,7 @@ export function createServerReadModels(context: ReadModelContext) {
         FROM chain JOIN scheduler_run_activations attached ON attached.activation_id = chain.id
         JOIN scheduler_runs run ON run.id = attached.run_id
       ) SELECT DISTINCT event_id FROM latest WHERE rank = 1 AND status <> 'completed'
-        AND (provider_failure_json IS NULL OR json_extract(provider_failure_json, '$.category') IN ('quota_exhausted','rate_limit','throttled','capacity'))
+        AND (provider_failure_json IS NULL OR json_extract(provider_failure_json, '$.category') IN ('quota_exhausted','rate_limit','throttled','capacity','unavailable'))
       ORDER BY event_id LIMIT 101
     `).all(conversation.projectId, conversationId) as Array<{event_id:string}>;
     // ponytail: at most 100 full notices per response; expose overflow honestly.

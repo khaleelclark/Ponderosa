@@ -745,7 +745,14 @@ export class CoordinationV3RuntimeCommunicationReadModel {
         WHERE reply.recovery_activation_id IS NOT NULL AND reply.project_id = root.project_id
           AND reply.agent_id = root.agent_id AND reply.scope_key = root.scope_key
       )
-      SELECT chain.root, run.id, run.status, run.provider_failure_json,
+      SELECT chain.root, run.id, run.agent_id, run.status, run.provider_failure_json,
+        CASE WHEN json_valid(run.provider_failure_json) THEN
+          CASE WHEN json_extract(run.provider_failure_json, '$.category') = 'unavailable' THEN
+            (SELECT MAX(activity.seq) FROM activity_projection activity
+          JOIN provider_inputs provider ON provider.execution_id = activity.execution_id
+          WHERE provider.scheduler_run_id = run.id AND activity.agent_id = run.agent_id
+            AND json_extract(activity.event_json, '$.type') = 'error')
+          END END AS failure_activity_seq,
         wake.state AS wake_state, wake.available_at, wake.terminal_outcome,
         selected.state AS selected_state, selected.available_at AS selected_available_at
       FROM chain JOIN agent_activations selected ON selected.id = chain.root
@@ -754,7 +761,7 @@ export class CoordinationV3RuntimeCommunicationReadModel {
       LEFT JOIN required_reply_obligations reply ON reply.run_id = run.id AND reply.source_activation_id = chain.id
       JOIN agent_activations wake ON wake.id = COALESCE(reply.recovery_activation_id, chain.id)
       ORDER BY chain.root, run.created_at DESC, run.rowid DESC
-    `).all(JSON.stringify(ids), projectId) as Array<{root:string;id:string;status:string;provider_failure_json:string|null;wake_state:string;available_at:string;terminal_outcome:string|null;selected_state:string;selected_available_at:string}>;
+    `).all(JSON.stringify(ids), projectId) as Array<{root:string;id:string;agent_id:string;failure_activity_seq:number|null;status:string;provider_failure_json:string|null;wake_state:string;available_at:string;terminal_outcome:string|null;selected_state:string;selected_available_at:string}>;
     const latest = new Map<string, typeof rows[number]>();
     const classified = new Set<string>();
     for (const row of rows) {
@@ -765,12 +772,14 @@ export class CoordinationV3RuntimeCommunicationReadModel {
       try { detail = JSON.parse(row.provider_failure_json ?? "null"); } catch { continue; }
       if (!detail || typeof detail !== "object") continue;
       classified.add(row.root);
-      if (!["quota_exhausted", "rate_limit", "throttled", "capacity"].includes(String(detail.category))) continue;
+      if (!["quota_exhausted", "rate_limit", "throttled", "capacity", "unavailable"].includes(String(detail.category))) continue;
       const resetAt = detail.category === "quota_exhausted" ? providerResetAt(detail.quotaResetAt) : undefined;
       const selectedPending = current.selected_state === "pending" || current.selected_state === "retry_pending";
       const pending = selectedPending || current.wake_state === "pending" || current.wake_state === "retry_pending";
       failures.set(row.root, {
-        category: detail.category as "quota_exhausted" | "rate_limit" | "throttled" | "capacity",
+        category: detail.category as NonNullable<MessageDeliveryReceiptDto["providerFailure"]>["category"],
+        ...(detail.category === "unavailable" && Number.isSafeInteger(row.failure_activity_seq) && row.failure_activity_seq! > 0
+          ? { activityId: `${row.agent_id}:activity:${row.failure_activity_seq}` } : {}),
         runId: row.id,
         ...(typeof detail.engineId === "string" && /^[a-z][a-z0-9_-]{0,63}$/u.test(detail.engineId) ? { providerId: detail.engineId } : {}),
         ...(typeof detail.model === "string" && detail.model.length <= 200 && !/[\u0000-\u001f\u007f]/u.test(detail.model) ? { model: detail.model } : {}),

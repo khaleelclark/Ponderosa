@@ -888,3 +888,23 @@ test('recorded recovery completion survives phase loss without repeating native 
   assert.deepEqual(store.sqlite.prepare('SELECT * FROM scheduler_runs WHERE id=?').get(boundary.sourceRunId),original);
  },{storeFactory:root=>store=new AgentStore(root),providerValidatesResumeBeforeTurn:true});
 });
+
+
+test('UI014 outage projection clears only after a newer completed attempt in the same canonical lineage',t=>{
+ const f=memoryRecovery(t),first=f.lease(f.now);
+ f.fail(first,f.now,true,'unavailable',{retryable:false,failureDetail:{phase:'provider_execution',promptInjectionState:'injected',engineId:'codex'}});
+ const initial=f.store().deliveryReceiptsForCommunication('project','communication')[0];
+ assert.equal(initial.providerFailure.category,'unavailable');assert.equal(initial.providerFailure.activityId,undefined,'Without a canonical Activity record, the receipt must not invent a pointer');
+ assert.deepEqual(f.store().deliveryReceiptsForCommunication('other-project','communication'),[]);
+ const at=new Date(Date.parse(f.now)+1000).toISOString();
+ const retry=f.store().retryMessageDelivery({projectId:'project',activationId:f.root,idempotencyKey:'outage-projection-explicit-retry',now:at});assert.equal(retry.accepted,true);
+ const next=f.lease(at);assert(next);assert.notEqual(next.runId,first.runId);
+ f.store().markRunStarted(next.runId,next.fencingToken,at);
+ f.store().preparePromptInjection({injectionId:next.injectionId,runId:next.runId,fencingToken:next.fencingToken,prompt:'Controlled explicit recovery',now:at});
+ f.store().markPromptSubmitted({injectionId:next.injectionId,runId:next.runId,fencingToken:next.fencingToken,now:at});
+ f.store().acknowledgePromptInjection({injectionId:next.injectionId,runId:next.runId,fencingToken:next.fencingToken,now:at});
+ f.store().completeRun(next.runId,next.fencingToken,at);
+ const receipt=f.store().deliveryReceiptsForCommunication('project','communication')[0];
+ assert.equal(receipt.providerFailure,undefined,'A completed newer same-work attempt suppresses the old outage');
+ assert.equal(f.db.prepare('SELECT count(*) n FROM scheduler_runs').get().n,2);
+});

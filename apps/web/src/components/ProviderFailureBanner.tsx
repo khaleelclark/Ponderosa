@@ -13,11 +13,12 @@ export function providerFailureHeadline(failure: NonNullable<MessageDeliveryRece
   const provider = failure.providerId === "codex" ? "Codex" : failure.providerId === "claude" ? "Claude" : "Provider";
   return failure.category === "quota_exhausted" ? `${provider} usage limit reached`
     : failure.category === "throttled" ? `${provider} is temporarily limiting requests`
+    : failure.category === "unavailable" ? `${provider} is temporarily unavailable`
     : failure.category === "capacity" ? `${provider} is temporarily at capacity` : `${provider} limited this request`;
 }
 
-export function ProviderFailureBanner({ messages, agents, projectId, hasMore, onOpenAgent, children }: {
-  messages: ConversationMessageDto[]; agents: AgentDto[]; projectId: string; hasMore?: boolean; onOpenAgent?(agentId: string): void; children?: ReactNode;
+export function ProviderFailureBanner({ messages, agents, projectId, hasMore, onOpenAgent, onOpenError, children }: {
+  messages: ConversationMessageDto[]; agents: AgentDto[]; projectId: string; hasMore?: boolean; onOpenAgent?(agentId: string): void; onOpenError?(agentId: string, runId: string, activityId?: string): void; children?: ReactNode;
 }): JSX.Element {
   const [open, setOpen] = useState(false);
   const [checking, setChecking] = useState<string>();
@@ -47,7 +48,9 @@ export function ProviderFailureBanner({ messages, agents, projectId, hasMore, on
     try {
       await api.recheckEngine(provider);
       await queryClient.invalidateQueries({ queryKey: queryKeys.engines.all });
-      setNotice("Provider checked. This does not confirm that its usage allowance has reset. Retry retained work explicitly when ready.");
+      setNotice(rows.some(({ receipt }) => receipt.providerFailure?.providerId === provider && receipt.providerFailure.category === "unavailable")
+        ? "Provider checked. The recorded failure and work are unchanged. Review the error before retrying explicitly."
+        : "Provider checked. This does not confirm that its usage allowance has reset. Retry retained work explicitly when ready.");
     } catch { setNotice("Could not recheck the provider. The recorded work and recovery state are unchanged."); }
     finally { setChecking(undefined); }
   };
@@ -71,18 +74,23 @@ export function ProviderFailureBanner({ messages, agents, projectId, hasMore, on
             return <Box key={receipt.activationId}>
               <Typography fontWeight={700}>{name(receipt.targetAgentId)} — {providerFailureHeadline(failure)}</Typography>
               <Typography variant="body2">{failure.category === "quota_exhausted" ? "The provider reported that the allowance for this work is exhausted."
+                : failure.category === "unavailable" ? "The provider could not complete this work because it was unavailable. Review the full error before retrying. Changes from the previous attempt may remain."
                 : failure.category === "capacity" ? "Provider capacity is unavailable; this does not establish that your subscription allowance is exhausted."
                 : failure.category === "throttled" ? "The provider explicitly reported temporary throttling."
                 : "Ponderosa cannot yet confirm whether this is temporary throttling or an exhausted allowance."}</Typography>
               <Typography variant="body2">{failure.recovery === "scheduled" ? `Waiting for an automatic retry, eligible ${new Date(failure.nextRetryAt!).toLocaleString()}. Eligibility does not guarantee provider acceptance.`
                 : failure.recovery === "retrying" ? "An authorized recovery attempt is running; its outcome is not yet confirmed."
                 : failure.recovery === "stopped" ? "Automatic retries stopped. Review this work before trying again."
+                : failure.category === "unavailable" ? "Automatic recovery requires user action. Review the full error, then retry explicitly when the provider is available."
                 : "Automatic recovery requires user action. Review usage, then retry this work explicitly."}</Typography>
               {failure.category === "quota_exhausted" ? <Typography variant="body2">{failure.resetAt ? `Provider-reported reset: ${new Date(failure.resetAt).toLocaleString()}.`
                 : "The provider did not report a reset time."}</Typography> : null}
               {failure.quotaLimit ? <Typography variant="body2">Affected allowance: {{ five_hour: "Five-hour", weekly: "Weekly", weekly_model: "Weekly model", extra_usage: "Extra usage" }[failure.quotaLimit]}.</Typography> : null}
               {failure.model ? <Typography variant="caption">Failed Run model: {failure.model}</Typography> : null}
               <Typography variant="body2" sx={{ my: 0.5 }}>Message: {text.length > 240 ? `${text.slice(0, 240)}…` : text}</Typography>
+              {failure.category === "unavailable" && onOpenError ? <Button onClick={() => {
+                setOpen(false); onOpenError(receipt.targetAgentId, failure.runId, failure.activityId);
+              }}>{failure.activityId ? "View full error" : "View failed Run"}</Button> : null}
               <MessageDeliveryStatus projectId={projectId} receipts={[receipt]} recipientName={name} onOpenAgent={onOpenAgent} hideCancelAction />
             </Box>;
           })}

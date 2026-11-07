@@ -112,6 +112,7 @@ export function ConversationView({
   onOpenProject,
   onOpenProjectBrowser,
   onOpenAgent,
+  onOpenProviderError,
   onAgentsDeleted,
   onOpenReview,
   onOpenBrowser,
@@ -140,6 +141,7 @@ export function ConversationView({
     view?: "technical" | "settings",
     technicalFocusId?: string,
   ): void;
+  onOpenProviderError?(agentId: string, runId: string, activityId?: string): void;
   onAgentsDeleted(agentIds: string[]): void;
   onOpenReview?(agentId: string, executionId?: string): void;
   onOpenBrowser(agentId: string, runId: string): void;
@@ -1191,7 +1193,7 @@ export function ConversationView({
               pointerEvents: "none",
             }}
           >
-            <ProviderFailureBanner messages={detailQuery.data.providerFailureMessages ?? messages} hasMore={detailQuery.data.providerFailuresHasMore} onOpenAgent={id => onOpenAgent(id)} agents={identityAgents} projectId={conversation.projectId}>
+            <ProviderFailureBanner onOpenError={onOpenProviderError} messages={detailQuery.data.providerFailureMessages ?? messages} hasMore={detailQuery.data.providerFailuresHasMore} onOpenAgent={id => onOpenAgent(id)} agents={identityAgents} projectId={conversation.projectId}>
             <MasterRespondingIndicator
               messages={messages}
               agents={agents}

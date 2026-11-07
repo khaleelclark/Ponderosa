@@ -172,6 +172,11 @@ export function ProjectShell({
     }
   });
 
+  const openProviderError = useEventCallback((agentId: string, runId: string, activityId?: string) => {
+    if (activityId) navigate({ kind: "agent", projectId, agentId, focusTelemetry: { stream: "activity", id: activityId } });
+    else openAgent(agentId, "technical", runId);
+  });
+
   const openProjectArtifact = (agentId: string, artifactId: string) => {
     navigate({ kind: "agent", projectId, agentId, focusTelemetry: { stream: "artifacts", id: artifactId } });
   };
@@ -267,6 +272,7 @@ export function ProjectShell({
         onOpenProject={() => navigate({ kind: "home" })}
         onOpenProjectBrowser={() => projectBrowser.open()}
         onOpenAgent={openAgent}
+        onOpenProviderError={openProviderError}
         onAgentsDeleted={(agentIds) =>
           agentIds.forEach(agentId =>
             onResourceDeleted?.({ kind: "agent", projectId, agentId }),
