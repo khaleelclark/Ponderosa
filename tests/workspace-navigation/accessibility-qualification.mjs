@@ -65,7 +65,7 @@ try {
    if(appTextSizeMode){
     row.baselineFonts=await page.evaluate(()=>({root:parseFloat(getComputedStyle(document.documentElement).fontSize),editor:parseFloat(getComputedStyle(document.querySelector('[aria-label="Message"]')).fontSize)}));
     await page.goto(settingsUrl);
-    const textSize=page.getByRole('combobox',{name:'Text size',exact:true});await textSize.waitFor();
+    const textSize=page.getByRole('combobox',{name:/^Text size (?:100|115|130|150|175|200)%$/});await textSize.waitFor();
     // An intermediate real choice makes even the 100% cell exercise onChange.
     for(const choice of [115,size]){await textSize.click();await page.getByRole('option',{name:`${choice}%`,exact:true}).click();await page.waitForFunction(choice=>document.documentElement.style.fontSize===`${choice}%`,choice);}
     assert.equal((await textSize.innerText()).trim(),`${size}%`);
@@ -116,7 +116,7 @@ try {
    await captureDesktop(`${caseId}-chat.png`);
    await page.goto(settingsUrl);
    const instructions=page.getByLabel('Global Agent Instructions',{exact:true});await instructions.waitFor();
-   if(appTextSizeMode){assert.equal((await page.getByRole('combobox',{name:'Text size',exact:true}).innerText()).trim(),`${size}%`);const geometry=await page.evaluate(()=>({width:innerWidth,scrollWidth:document.documentElement.scrollWidth,dpr:devicePixelRatio}));assert.equal(geometry.dpr,1);assert.ok(geometry.scrollWidth<=geometry.width,'App Text size remains usable after keyboard flows');row.settingsAfter=geometry;}
+   if(appTextSizeMode){assert.equal((await page.getByRole('combobox',{name:/^Text size (?:100|115|130|150|175|200)%$/}).innerText()).trim(),`${size}%`);const geometry=await page.evaluate(()=>({width:innerWidth,scrollWidth:document.documentElement.scrollWidth,dpr:devicePixelRatio}));assert.equal(geometry.dpr,1);assert.ok(geometry.scrollWidth<=geometry.width,'App Text size remains usable after keyboard flows');row.settingsAfter=geometry;}
    row.actions.push({name:'Tab to instructions',tabs:await tabTo(page,instructions)});
    await page.keyboard.press('Control+A');await page.keyboard.type(marker+' instructions');
    assert.equal(await instructions.inputValue(),marker+' instructions');
