@@ -1,13 +1,17 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {randomUUID} from 'node:crypto';
+import {randomUUID,createHash} from 'node:crypto';
+import {writeFile,readFile} from 'node:fs/promises';
+import path from 'node:path';
+import {publishManagedArtifactContentAsync} from '@ponderosa/agents';
+import {FULL_PACKAGE_EXPORT_WARNING} from '@ponderosa/core';
 import {fork} from 'node:child_process';
 import {once} from 'node:events';
 import {instance,seed,read,vector} from './portability-fixture.mjs';
 import {AgentStore} from '@ponderosa/agents';
 import {createServer} from '../../apps/server/dist/app.js';
 
-async function api(f,method,url,payload,extra={}){const res=await f.app.inject({method,url,headers:f.headers,...(payload===undefined?{}:{payload}),...extra});return {status:res.statusCode,body:res.json(),raw:res.body};}
+async function api(f,method,url,payload,extra={}){const res=await f.app.inject({method,url,headers:f.headers,...(payload===undefined?{}:{payload}),...extra});return {status:res.statusCode,body:res.json(),raw:res.body,headers:res.headers};}
 async function exported(f,organization=true){const res=await api(f,'GET',`/api/agents/${f.a.id}/export?mode=full&organization=${organization}`);assert.equal(res.status,200,res.raw);return res.body;}
 const body=(f,pkg)=>({package:pkg,conversationId:f.chat.id,engineMapping:{fixture:'fixture'}});
 const imported=(f,pkg,key=randomUUID())=>api(f,'POST',`/api/projects/${f.project.id}/import-agents`,body(f,pkg),{headers:{...f.headers,'idempotency-key':key}});
@@ -26,20 +30,94 @@ async function reconcileControlled(f,scope,evidence){
  }
 }
 
-test('actual organization HTTP package roundtrip restores scoped queries and deduplicates team memory after reopen/reexport/retry',async t=>{
- const source=await instance(t),destination=await instance(t);await seed(source);
+// Compare the whole selected portable contract. Only destination identities and
+// documented import provenance are transformed; unknown/new fields remain compared.
+function expectedFreshOrganization(pkg,destination,result,key,exportedAt){
+ const expected=structuredClone(pkg),mapping=result.agentRefs;
+ assert.ok(mapping);assert.deepEqual(Object.keys(mapping).sort(),pkg.agents.map(a=>a.ref).sort());
+ expected.rootRef=mapping[pkg.rootRef];expected.exportedAt=exportedAt;
+ for(const node of expected.agents){
+  node.ref=mapping[node.ref];if(node.managerRef)node.managerRef=mapping[node.managerRef];
+  node.sourceChat={ref:destination.chat.id,title:destination.store.getConversation(destination.chat.id).title};
+  for(const artifact of node.artifacts??[]){
+   const originalPath=artifact.path;artifact.path='imported/'+artifact.ref+path.extname(originalPath).toLowerCase().slice(0,16);
+   artifact.createdAt=new Date(artifact.createdAt).toISOString();artifact.summary=artifact.summary?.trim()||path.basename(originalPath).trim()||'Imported artifact';
+   artifact.mediaType=artifact.mediaType?.trim()||'application/octet-stream';artifact.visibility??='project';artifact.pinned??=false;
+  }
+ }
+ const operation=destination.store.findAgentCreationOperation({projectId:destination.project.id,actorScope:'user:local-operator',kind:'import',idempotencyKey:key});
+ assert.ok(operation);assert.equal(operation.status,'completed');
+ for(const [index,entry] of expected.memory.entries()){
+  const old=entry.snapshot,sourceChat=old.sourceChatId,namespace=operation.id+':m:'+index;
+  const id=(kind,value)=>createHash('sha256').update(JSON.stringify([destination.memory.principalId,destination.chat.id,namespace,sourceChat,kind,value])).digest('hex');
+  entry.agentRefs=Object.fromEntries(Object.entries(entry.agentRefs).map(([agent,ref])=>[mapping[agent],mapping[ref]]));
+  old.sourceChatId=destination.chat.id;old.agentIds=old.agentIds.map(agent=>mapping[agent]);
+  for(const [field,kind] of [['chunks','chunk'],['conflicts','conflict']])for(const row of old[field]){
+   const original=structuredClone(row.stamp),privateAgent=pkg.memory[index].snapshot.agentIds.find(agent=>original.audience==='chat:'+sourceChat+':agent:'+agent);
+   row.id=id(kind,row.id);
+   if(row.metadata.supersedes)row.metadata.supersedes=id('chunk',row.metadata.supersedes);
+   if(kind==='conflict'){
+    const refs=JSON.parse(row.metadata.chunk_ids_affected??row.metadata.chunk_ids).map(value=>id('chunk',value));
+    row.metadata.chunk_ids=JSON.stringify(refs);row.metadata.chunk_ids_affected=JSON.stringify(refs);row.metadata.log_id=row.id;row.metadata.chunks_affected=refs.length;
+   }
+   row.metadata.package_source_stamp=JSON.stringify(original);
+   row.stamp={format:1,principal:destination.memory.principalId,id:row.id,scope:'chat:'+destination.chat.id,ownerChat:destination.chat.id,audience:'chat:'+destination.chat.id+(privateAgent?':agent:'+mapping[privateAgent]:':team'),sourceType:original.sourceType,provenance:{actor:{kind:'user',id:destination.memory.principalId},runId:'package-import:'+namespace,fenceToken:'historical',at:original.provenance.at},origin:original.origin??original.provenance};
+  }
+ }
+ return expected;
+}
+function orderedPortable(pkg){
+ const value=structuredClone(pkg);value.agents.sort((a,b)=>a.ref.localeCompare(b.ref));
+ for(const node of value.agents)node.artifacts?.sort((a,b)=>a.ref.localeCompare(b.ref));
+ for(const entry of value.memory??[]){entry.snapshot.agentIds.sort();for(const field of ['chunks','conflicts'])entry.snapshot[field].sort((a,b)=>a.id.localeCompare(b.id));}
+ return value;
+}
+
+for(const branch of [false,true])test(branch?'Branches organization HTTP package roundtrip retains the complete nonsecret contract on a fresh instance':'actual organization HTTP package roundtrip restores scoped queries and deduplicates team memory after reopen/reexport/retry',async t=>{
+ const source=await instance(t,branch),destination=await instance(t,branch);await seed(source);
+ const product=branch?'branches':'dev';
+ assert.equal(Boolean(source.chat.branchId),branch);assert.equal(Boolean(destination.chat.branchId),branch);
+ const scopedApi=(f,method,url,...rest)=>api(f,method,branch?url.replace('/api/','/api/branches/engine/'):url,...rest);
+ assert.notEqual(source.dataDir,destination.dataDir);assert.equal(destination.store.getProjectArtifacts(destination.project.id).length,0);
  source.store.updateAgentOrganization(source.b.id,{managerAgentId:source.a.id});
+ source.store.updateAgent(source.a.id,{role:'Preserve this standing role 雪',speed:'standard'});
+ source.store.setImportedHistory(source.a.id,'Synthetic source',[{role:'user',text:'Exact history \r\n😀',createdAt:'2026-11-07T00:00:00.000Z'}]);
+ source.store.appendEvent(source.a.id,{type:'tool_call',id:'portable-event',name:'fixture',input:{safe:'ordinary retained data',env:{OPENAI_API_KEY:'SYNTHETIC_EVENT_SECRET'}}});
+ const bytes=Buffer.from('Managed original \0 雪'),artifactId=randomUUID();
+ await publishManagedArtifactContentAsync(source.dataDir,source.project.id,artifactId,bytes);
+ source.store.recordProjectArtifact({id:artifactId,projectId:source.project.id,agentId:source.a.id,originAgentId:source.a.id,kind:'document',path:'fixture-original.txt',summary:'Synthetic managed original',createdAt:'2026-11-07T00:00:00.000Z',size:bytes.length,sha256:createHash('sha256').update(bytes).digest('hex'),mediaType:'text/plain'});
+ const workingBytes=Buffer.from('Selected working original \0 😀');await writeFile(path.join(source.root,'portable-user-file.txt'),workingBytes);
+
  const raw=source.memory.core.database.raw,collection=await raw.client.getCollection({name:raw.names('chat:'+source.chat.id).memory}),row=await collection.get({limit:1,include:['metadatas']});await collection.update({ids:row.ids,metadatas:[{...row.metadatas[0],env:JSON.stringify(JSON.stringify({OPENAI_API_KEY:'SYNTHETIC_EXPORT_SECRET',safe:'kept'}))}]});
- const pkg=await exported(source);assert.doesNotMatch(JSON.stringify(pkg),/SYNTHETIC_EXPORT_SECRET/);assert.match(JSON.stringify(pkg),/kept/);assert.equal(pkg.memory.length,1);assert.equal(pkg.memory[0].snapshot.chunks.length,4);
- assert.equal((await api(source,'GET',`/api/agents/${source.a.id}/export?mode=template&organization=true`)).body.memory,undefined);
- const key=randomUUID(),result=await imported(destination,pkg,key);assert.equal(result.status,201,result.raw);
+ const exportedResponse=await scopedApi(source,'GET',`/api/agents/${source.a.id}/export?mode=full&organization=true&workingFiles=${encodeURIComponent(JSON.stringify(['portable-user-file.txt']))}`);
+ assert.equal(exportedResponse.status,200,exportedResponse.raw);assert.equal(exportedResponse.headers['x-ponderosa-export-warning'],FULL_PACKAGE_EXPORT_WARNING);
+ const pkg=exportedResponse.body;assert.equal(pkg.kind,'organization');assert.equal(pkg.agents.length,2);
+ assert.doesNotMatch(JSON.stringify(pkg),/SYNTHETIC_(?:EXPORT|EVENT)_SECRET/);
+ for(const artifact of pkg.agents.flatMap(node=>node.artifacts??[]))assert.doesNotMatch(Buffer.from(artifact.dataBase64,'base64').toString(),/SYNTHETIC_(?:EXPORT|EVENT)_SECRET/);
+ assert.match(JSON.stringify(pkg),/kept/);assert.equal(pkg.memory.length,1);assert.equal(pkg.memory[0].snapshot.chunks.length,4);
+ assert.equal((await scopedApi(source,'GET',`/api/agents/${source.a.id}/export?mode=template&organization=true`)).body.memory,undefined);
+ const exportedRoot=pkg.agents.find(node=>node.ref===source.a.id),exportedChild=pkg.agents.find(node=>node.ref===source.b.id);
+ assert.equal(exportedChild.managerRef,source.a.id);assert.equal(exportedRoot.role,'Preserve this standing role 雪');assert.equal(exportedRoot.speed,'standard');
+ assert.ok(exportedRoot.history.some(message=>message.role==='user'&&message.text==='Exact history \r\n😀'&&message.createdAt==='2026-11-07T00:00:00.000Z'));
+ assert.deepEqual(Buffer.from(exportedRoot.artifacts.find(artifact=>artifact.ref===artifactId).dataBase64,'base64'),bytes);
+ const selectedOriginal=exportedRoot.workingFiles.find(file=>file.path==='portable-user-file.txt');assert.ok(selectedOriginal);
+ assert.deepEqual(Buffer.from(exportedRoot.artifacts.find(artifact=>artifact.ref===selectedOriginal.artifactRef).dataBase64,'base64'),workingBytes);
+ assert.ok(exportedRoot.artifacts.some(artifact=>Buffer.from(artifact.dataBase64,'base64').toString().includes('ordinary retained data')),'historical tool evidence is actually exported');
+ const workingDestination=path.join(destination.root,'selected-originals');
+ const chosenImport=key=>scopedApi(destination,'POST',`/api/projects/${destination.project.id}/import-agents`,{...body(destination,pkg),workingFilesDestination:workingDestination},{headers:{...destination.headers,'idempotency-key':key}});
+ const key=randomUUID(),result=await chosenImport(key);assert.equal(result.status,201,result.raw);
+ assert.equal(destination.store.findAgentCreationOperation({projectId:destination.project.id,actorScope:'user:local-operator',kind:'import',idempotencyKey:key}).productScope,product);
  const root=result.body.rootAgentId,child=result.body.agentIds.find(id=>id!==root);
  assert.equal((await read(destination,root)).length,3);assert.equal((await read(destination,child)).length,3);
  const query=await destination.memory.core.database.run({chatId:destination.chat.id,actor:{kind:'agent',id:root},runId:'trusted-test-query',fenceToken:'1',sourceType:'ai_inference',readChat:true,readGlobal:false,observeExposure:false,guard:async()=>{}},()=>destination.memory.core.database.candidates(['chat:'+destination.chat.id],Array.from({length:384},(_,i)=>i?0:1),100,true,0));assert.equal(query.length,3);
- assert.equal((await read(destination,destination.a.id)).length,2,'unrelated destination peer sees team only');assert.equal(destination.memory.getGrant(destination.chat.id,'dev').readGlobal,false);
- assert.equal((await imported(destination,pkg,key)).status,200);noRuns(destination);
- await destination.reopen();assert.equal((await read(destination,root)).length,3);assert.equal(destination.memory.getGrant(destination.chat.id,'dev').readGlobal,false);
- const next=await api(destination,'GET',`/api/agents/${root}/export?mode=full&organization=true`);assert.equal(next.status,200,next.raw);assert.equal(next.body.memory[0].snapshot.chunks.length,4);assert.equal(next.body.memory[0].snapshot.conflicts.length,1);
+ assert.equal((await read(destination,destination.a.id)).length,2,'unrelated destination peer sees team only');assert.equal(destination.memory.getGrant(destination.chat.id,product).readGlobal,false);
+ assert.equal((await chosenImport(key)).status,200);noRuns(destination);
+ await destination.reopen();assert.equal((await read(destination,root)).length,3);assert.equal(destination.memory.getGrant(destination.chat.id,product).readGlobal,false);
+ const next=await scopedApi(destination,'GET',`/api/agents/${root}/export?mode=full&organization=true`);assert.equal(next.status,200,next.raw);assert.equal(next.body.memory[0].snapshot.chunks.length,4);assert.equal(next.body.memory[0].snapshot.conflicts.length,1);
+ assert.ok(Number.isFinite(Date.parse(next.body.exportedAt)));assert.ok(Date.parse(next.body.exportedAt)>=Date.parse(pkg.exportedAt));
+ assert.deepEqual(orderedPortable(next.body),orderedPortable(expectedFreshOrganization(pkg,destination,result.body,key,next.body.exportedAt)),'complete selected organization portable contract survives fresh-instance import/reopen/re-export');
+ assert.deepEqual(await readFile(path.join(workingDestination,'portable-user-file.txt')),workingBytes,'fresh destination working original is exact');
+ assert.deepEqual(await readFile(path.join(source.root,'portable-user-file.txt')),workingBytes,'export/import never changes the source working original');
  const semantic=s=>s.chunks.map(r=>[r.text,r.embedding,r.metadata.deprecated,Boolean(r.metadata.supersedes)]).sort((a,b)=>a[0].localeCompare(b[0]));assert.deepEqual(semantic(next.body.memory[0].snapshot),semantic(pkg.memory[0].snapshot));noRuns(destination);
 });
 
