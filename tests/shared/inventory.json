@@ -1569,6 +1569,14 @@
       "requirements": "Node24; pure canonical draft/layout behavioral checks; no providers or live data"
     },
     {
+      "path": "tests/chats/transcript-copy-feedback.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, installed web dependencies; controlled React scheduling and clipboard, no live data",
+      "origin": "Transcript submenu local success, exact copy bytes, repeat and unmount safety with unchanged failures/downloads"
+    },
+    {
       "path": "tests/chats/mutation-notifications.test.mjs",
       "feature": "chats",
       "lane": "web",

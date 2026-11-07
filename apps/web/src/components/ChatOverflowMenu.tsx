@@ -1,9 +1,11 @@
 import MoreVertIcon from "@mui/icons-material/MoreVert";
+import CheckIcon from "@mui/icons-material/Check";
 import ContentCopyOutlinedIcon from "@mui/icons-material/ContentCopyOutlined";
 import DownloadOutlinedIcon from "@mui/icons-material/DownloadOutlined";
 import TuneOutlinedIcon from "@mui/icons-material/TuneOutlined";
 import ChevronRightIcon from "@mui/icons-material/ChevronRight";
 import {
+  Box,
   Divider,
   IconButton,
   ListItemIcon,
@@ -15,7 +17,7 @@ import {
   Tooltip,
 } from "@mui/material";
 import type { ReactNode } from "react";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { copyText } from "../clipboard";
 import { downloadMarkdownTranscript } from "../chatTranscript";
 import { useMutationNotification } from "./MutationNotifications";
@@ -56,6 +58,17 @@ export function ChatOverflowMenu({
   const [detailsAnchor, setDetailsAnchor] = useState<HTMLElement | null>(null);
   const [exportMenu, setExportMenu] = useState<{ kind: "copy" | "download"; anchor: HTMLElement }>();
   const notify = useMutationNotification();
+  const mounted = useRef(false);
+  const [copied, setCopied] = useState(0);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
+  useEffect(() => {
+    if (!copied) return;
+    const timer = setTimeout(() => setCopied(0), 3_000);
+    return () => clearTimeout(timer);
+  }, [copied]);
   const close = () => setAnchor(null);
   const afterMenuClose = useRef<(() => void)>();
   const finishMenuAction = () => {
@@ -71,7 +84,7 @@ export function ChatOverflowMenu({
     close();
   };
   return <>
-    <Tooltip title={label}>
+    <Tooltip title={copied ? "Copied" : label}>
       <IconButton
         aria-label={label}
         aria-haspopup="menu"
@@ -79,7 +92,8 @@ export function ChatOverflowMenu({
         onClick={(event) => setAnchor(event.currentTarget)}
         sx={{ display: "inline-flex" }}
       >
-        <MoreVertIcon />
+        {copied ? <CheckIcon color="success" /> : <MoreVertIcon />}
+        <Box component="span" role="status" aria-live="polite" sx={{ position: "absolute", width: "1px", height: "1px", p: 0, m: "-1px", overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap", border: 0 }}>{copied ? "Copied" : ""}</Box>
       </IconButton>
     </Tooltip>
     <Menu
@@ -155,7 +169,7 @@ export function ChatOverflowMenu({
             return;
           }
           void copyText(markdown)
-            .then(() => notify({ key: "copy-transcript", message: "Copied" }))
+            .then(() => { if (mounted.current) setCopied(current => current + 1); })
             .catch((error) => notify({ key: "copy-transcript", message: error instanceof Error ? error.message : "Chat transcript could not be copied", severity: "error" }));
         }}>
           <ListItemIcon>{exportMenu?.kind === "download" ? <DownloadOutlinedIcon fontSize="small" /> : <ContentCopyOutlinedIcon fontSize="small" />}</ListItemIcon>
