@@ -1,3 +1,5 @@
+import {redactProviderDiagnostic} from "./provider-failure-event.js";
+import {redactKnownDiagnosticValues} from "./working-copy-diagnostic.js";
 import type { CommunicationEvent, CommunicationReconciliationReport } from "@ponderosa/core";
 import { notificationPreviewText } from "@ponderosa/core";
 import type { AgentStore, WorkspaceStore } from "@ponderosa/agents";
@@ -161,8 +163,11 @@ export function createCommunicationJournal(context: CommunicationJournalContext)
     if (!latest || !/^New Chat$/i.test(latest.title)) return { title: latest?.title ?? conversation.title, generated: false };
     const updated = store.updateConversation(conversationId, { title });
     if (!updated) return { title: conversation.title, generated: false };
-    appendWorkspace({ type: "conversation_changed", projectId: updated.projectId, conversationId, action: "updated" });
-    return { title: updated.title, generated: true };
+    if (updated.title !== latest.title) appendWorkspace({ type: "conversation_changed", projectId: updated.projectId, conversationId, action: "updated", titleChange: {
+      previousTitle: redactKnownDiagnosticValues(redactProviderDiagnostic(redactKnownDiagnosticValues(latest.title))), title: redactKnownDiagnosticValues(redactProviderDiagnostic(redactKnownDiagnosticValues(updated.title))),
+      actor: { kind: "system" }, origin: "automatic_title",
+    } });
+    return { title: updated.title, generated: updated.title !== latest.title };
   };
 
   const stopCommunicationReconciliation = (): void => {

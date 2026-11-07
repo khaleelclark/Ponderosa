@@ -62,7 +62,7 @@ function diagnosticLogBundle(data: AgentWorkInspectorDto): string {
     `Generated: ${new Date(data.generatedAt).toLocaleString()}`,
     data.truncated ? "Window: bounded recent evidence (older records omitted)" : "Window: complete returned evidence",
     "",
-    JSON.stringify({ traces: data.traces, records: data.items }, null, 2),
+    JSON.stringify({ traces: data.traces, records: data.items, chatChanges: data.chatChanges }, null, 2),
   ].filter((line): line is string => line !== undefined).join("\n");
 }
 
@@ -293,6 +293,26 @@ export function AgentWorkInspector({
               focused
             />
           </Box> : focus?.id ? <Alert severity="warning">The focused technical record is not available in this bounded evidence window.</Alert> : null}
+
+          {query.data.chatChanges ? <Box component="section" aria-labelledby="chat-changes">
+            <Typography id="chat-changes" variant="overline" color="text.secondary">Chat changes</Typography>
+            <Stack spacing={1}>
+              {query.data.chatChanges.truncated ? <Typography variant="caption" color="text.secondary">Showing recent Chat changes. Older events remain preserved.</Typography> : null}
+              {query.data.chatChanges.items.length === 0 ? <Typography variant="body2" color="text.secondary">No recorded Chat changes in this window.</Typography> : null}
+              {query.data.chatChanges.items.map(change => <Box key={change.id} sx={{ border: 1, borderColor: "divider", borderRadius: 1, p: 1.25, overflowWrap: "anywhere" }}>
+                <Typography variant="body2" fontWeight={700}>{change.titleChange ? "Chat renamed" : "Chat settings changed"}</Typography>
+                <Typography variant="caption" color="text.secondary">{new Date(change.createdAt).toLocaleString()}</Typography>
+                <Typography variant="body2">Previous title: {change.titleChange?.previousTitle ?? "Not recorded"}</Typography>
+                <Typography variant="body2">New title: {change.titleChange?.title ?? "Not recorded"}</Typography>
+                <Typography variant="body2">Changed by: {change.titleChange?.actor.kind === "operator_api" ? "Operator request" : change.titleChange?.actor.kind === "system" ? "System automatic title" : "Not recorded"}</Typography>
+                <Box component="details" sx={{ mt: 0.5 }}><Box component="summary" sx={{ cursor: "pointer", typography: "caption" }}>Technical details</Box>
+                  <Typography variant="caption" component="div">Workspace event: {change.id}</Typography>
+                  <Typography variant="caption" component="div">Origin: {change.titleChange?.origin === "operator_request" ? "Operator API request" : change.titleChange?.origin === "automatic_title" ? "Automatic title generation" : "Not recorded"}</Typography>
+                  <Typography variant="caption" component="div">Request ID: {change.titleChange?.requestId ?? "Not recorded"}</Typography>
+                </Box>
+              </Box>)}
+            </Stack>
+          </Box> : null}
 
           <Box component="section" aria-labelledby="diagnostic-workflows">
             <Typography id="diagnostic-workflows" variant="overline" color="text.secondary">Workflows</Typography>

@@ -1,3 +1,5 @@
+import {redactProviderDiagnostic} from "../provider-failure-event.js";
+import {redactKnownDiagnosticValues} from "../working-copy-diagnostic.js";
 import {describeChatDeletionIntentFailure} from '../branch-deletion-diagnostics.js';
 import {localMemoryFor} from '../local-memory.js';
 import {activeAgentProductSql,activeChatProductSql} from '@ponderosa/agents';
@@ -357,8 +359,12 @@ export function registerConversationRoutes(
       if (speedError) return reply.code(400).send({ error: speedError });
     }
     const conversation = store.updateConversation(request.params.id, body);
-    if (conversation) {
-      appendWorkspace({ type: "conversation_changed", projectId: conversation.projectId, conversationId: conversation.id, action: "updated" });
+    if (conversation && (current.title !== conversation.title || Object.keys(body).some(key => key !== "title"))) {
+      appendWorkspace({ type: "conversation_changed", projectId: conversation.projectId, conversationId: conversation.id, action: "updated",
+        ...(current.title !== conversation.title ? { titleChange: {
+          previousTitle: redactKnownDiagnosticValues(redactProviderDiagnostic(redactKnownDiagnosticValues(current.title))), title: redactKnownDiagnosticValues(redactProviderDiagnostic(redactKnownDiagnosticValues(conversation.title))),
+          actor: { kind: "operator_api" }, origin: "operator_request", requestId: request.id,
+        } } : {}) });
     }
     return conversation;
   });

@@ -2,6 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
+import {mkdtempSync,rmSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import path from 'node:path';
 import { AgentStore, WorkspaceStore, CoordinationV3Store } from '@ponderosa/agents';
 import { processBirthMarker } from '@ponderosa/engines';
 import { transitionFingerprint } from '../../apps/server/dist/context-transition-admission.js';
@@ -511,4 +514,65 @@ test('conversation queue listing preserves exact receipts without projecting the
     }
     session.finish(); await f.settled(agent.id);
   }, {storeFactory: root => store = new AgentStore(root)});
+});
+
+test('Chat rename history records real PATCH origin, survives restart and never invents no-op or legacy provenance',options,async t=>{
+ const known='synthetic-literal-title-token-'+randomUUID(),prior=process.env.PONDEROSA_TEST_TITLE_TOKEN;process.env.PONDEROSA_TEST_TITLE_TOKEN=known;t.after(()=>{if(prior===undefined)delete process.env.PONDEROSA_TEST_TITLE_TOKEN;else process.env.PONDEROSA_TEST_TITLE_TOKEN=prior;});
+ let store;await withFixture(t,async f=>{
+  const secret='synthetic-old-title-secret',chat=await f.createChat(`Original orchard ${known} api_key=${secret}`);
+  const initialJournal=new WorkspaceStore(f.dataDir),cursor=initialJournal.cursor();initialJournal.close();
+  const read=async(id=chat.id,projectId=chat.projectId,prefix='/api')=>f.ok(await f.api('GET',`${prefix}/projects/${projectId}/agent-work?conversationId=${id}`));
+  f.ok(await f.api('PATCH',`/api/conversations/${chat.id}`,{title:'First orchard title'}));
+  const firstView=await read();assert.ok(firstView.chatChanges,'the existing Work response must expose recorded changes for its exact Chat');let rows=firstView.chatChanges.items;
+  assert.equal(rows.length,1);const first=rows[0];
+  assert.equal(first.titleChange.title,'First orchard title');assert.match(first.titleChange.previousTitle,/Original orchard/u);assert.equal(first.titleChange.previousTitle.includes(secret),false);assert.equal(first.titleChange.previousTitle.includes(known),false,'known literal credential is redacted before persistence');
+  assert.deepEqual(first.titleChange.actor,{kind:'operator_api'});assert.equal(first.titleChange.origin,'operator_request');assert.ok(first.titleChange.requestId);
+  const {AgentWorkProjection}=await import('../../apps/server/dist/routes/agent-work.js');const projectionJournal=new WorkspaceStore(f.dataDir);
+  try{const projection=new AgentWorkProjection(store,new CoordinationV3Store(store.sqlite),projectionJournal),agent=await f.createIdleAgent(chat,'Inspector owner');for(const scope of [{conversationId:chat.id},{conversationId:chat.id,agentId:agent.id},{agentId:agent.id}])assert.equal(projection.inspect({projectId:chat.projectId,...scope}).chatChanges,undefined,'shared non-operator projection never gains private title history by default');}finally{projectionJournal.close();}
+  f.ok(await f.api('PATCH',`/api/conversations/${chat.id}`,{title:'First orchard title'}));assert.equal((await read()).chatChanges.items.length,1,'an unchanged title creates no fake Rename');
+  f.ok(await f.api('PATCH',`/api/conversations/${chat.id}`,{title:'Second orchard title'}));rows=(await read()).chatChanges.items;
+  assert.equal(rows.length,2);assert.equal(rows[0].titleChange.previousTitle,'First orchard title');assert.equal(rows[0].titleChange.title,'Second orchard title');assert.notEqual(rows[0].titleChange.requestId,first.titleChange.requestId);
+  const other=await f.createChat('Other Chat');
+  f.ok(await f.api('PATCH',`/api/conversations/${other.id}`,{title:'OTHER_CHAT_RENAME'}));
+  const scoped=await read();assert.equal(scoped.chatChanges.items.length,2);assert.ok(scoped.chatChanges.items.every(row=>row.conversationId===chat.id&&row.projectId===chat.projectId));assert.equal(JSON.stringify(scoped.chatChanges).includes('OTHER_CHAT_RENAME'),false);
+  const foreign=await f.createChat('Foreign project');assert.equal((await f.api('GET',`/api/projects/${foreign.projectId}/agent-work?conversationId=${chat.id}`)).status,404);
+  assert.equal((await f.api('GET',`/api/branches/engine/projects/${chat.projectId}/agent-work?conversationId=${chat.id}`)).status,404,'another product cannot expose the same Chat history');
+  assert.equal((await f.api('GET',`/api/projects/${chat.projectId}/agent-work`)).body.chatChanges,undefined,'project scope does not clone all Chat histories');
+  // Give the one canonical workspace writer a clean lifecycle boundary before
+  // adding a retained generic event that predates enriched title provenance.
+  await f.shutdownProduct();const journal=new WorkspaceStore(f.dataDir);
+  try{
+   const persisted=journal.readSince(cursor,10).filter(item=>item.event.type==='conversation_changed'&&item.event.conversationId===chat.id&&item.event.action==='updated');
+   assert.equal(persisted.length,2);assert.equal(JSON.stringify(persisted).includes(secret),false,'new durable event never stores the credential value');assert.equal(JSON.stringify(persisted).includes(known),false,'new durable event never stores the known literal credential');
+   journal.append({type:'conversation_changed',projectId:chat.projectId,conversationId:chat.id,action:'updated'});
+  }finally{journal.close();}
+  await f.restartAfterProductShutdown();delete process.env.PONDEROSA_TEST_TITLE_TOKEN;const restarted=(await read()).chatChanges.items;
+  assert.equal(restarted.length,3);assert.equal(restarted[0].titleChange,undefined,'legacy generic event does not become a fabricated Rename');
+  assert.deepEqual(restarted.find(item=>item.id===first.id),first,'restart retains old/new/origin/request and timestamp');assert.equal(JSON.stringify(restarted).includes(secret),false);assert.equal(JSON.stringify(restarted).includes(known),false);
+ },{storeFactory:dir=>(store=new AgentStore(dir))});
+});
+
+test('automatic Chat title records system provenance independently of operator renames',options,async t=>{
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('New Chat'),agent=await f.createIdleAgent(chat,'Synthetic title worker');
+  await f.send(agent.id,'Plan the synthetic orchard review.');await f.settled(agent.id);
+  f.ok(await f.api('POST',`/api/conversations/${chat.id}/generate-title`));
+  const history=f.ok(await f.api('GET',`/api/projects/${chat.projectId}/agent-work?conversationId=${chat.id}`)).chatChanges.items;
+  const automatic=history.filter(item=>item.titleChange?.origin==='automatic_title');assert.equal(automatic.length,1);
+  assert.deepEqual(automatic[0].titleChange.actor,{kind:'system'});assert.equal(automatic[0].titleChange.previousTitle,'New Chat');assert.notEqual(automatic[0].titleChange.title,'New Chat');assert.equal(automatic[0].titleChange.requestId,undefined);
+  f.ok(await f.api('POST',`/api/conversations/${chat.id}/generate-title`));
+  assert.equal(f.ok(await f.api('GET',`/api/projects/${chat.projectId}/agent-work?conversationId=${chat.id}`)).chatChanges.items.length,history.length,'repeated automatic title request invents no new change');
+ });
+});
+
+test('Chat change projection is bounded, project-and-Chat exact and rebuilt from the existing workspace log',()=>{
+ const root=mkdtempSync(path.join(tmpdir(),'ponderosa-chat-changes-'));let workspace=new WorkspaceStore(root);
+ try{
+  for(let i=0;i<110;i++)workspace.append({type:'conversation_changed',projectId:'p',conversationId:'chat',action:'updated',titleChange:{previousTitle:`Title ${i}`,title:`Title ${i+1}`,actor:{kind:'operator_api'},origin:'operator_request',requestId:`request-${i}`}});
+  workspace.append({type:'conversation_changed',projectId:'foreign',conversationId:'chat',action:'updated'});workspace.append({type:'conversation_changed',projectId:'p',conversationId:'other',action:'updated'});
+  const read=()=>workspace.listConversationChanges({projectId:'p',conversationId:'chat',limit:3});
+  const selected=read();assert.equal(selected.items.length,3);assert.equal(selected.truncated,true);assert.deepEqual(selected.items.map(item=>item.titleChange.title),['Title 110','Title 109','Title 108']);
+  assert.ok(selected.items.every(item=>item.projectId==='p'&&item.conversationId==='chat'));assert.equal(workspace.listConversationChanges({projectId:'p',conversationId:'chat',limit:1000}).items.length,100);
+  workspace.close();workspace=new WorkspaceStore(root);assert.deepEqual(read(),selected);assert.equal(workspace.listConversationChanges({projectId:'missing',conversationId:'chat'}).items.length,0);
+ }finally{workspace.close();rmSync(root,{recursive:true,force:true});}
 });

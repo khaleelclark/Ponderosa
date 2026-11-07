@@ -5,6 +5,7 @@ import { dirname } from "node:path";
 import { decisionAnswersError, normalizeSpeechPreferences, draftPendingSubmissionError, draftPendingSubmissionRetired, LONG_TEXT_MAX_UTF8_BYTES, utf8ByteLength } from "@ponderosa/core";
 import type {
   ConversationDraftDto,
+  ConversationMutationDto,
   PutConversationDraftRequest,
   DecisionDto,
   ConversationDraftConflictDto,
@@ -236,6 +237,7 @@ export class WorkspaceStore {
   private readonly instance: string;
   private readonly events: CanonicalWorkspaceEvent[];
   private readonly drafts = new Map<string, ConversationDraftDto>();
+  private readonly conversationMutationHistory = new Map<string, ConversationMutationDto[]>();
   private readonly draftConflicts = new Map<string, ConversationDraftConflictDto[]>();
   private readonly draftConflictResolutions = new Map<string, DraftConflictResolution>();
   private readonly supersededDraftConflicts = new Map<string, ConversationDraftConflictDto[]>();
@@ -423,6 +425,15 @@ export class WorkspaceStore {
   }
 
   private project(record: CanonicalWorkspaceEvent): void {
+    if (record.event.type === "conversation_changed" && record.event.action === "updated") {
+      const event = record.event, key = `${event.projectId}\0${event.conversationId}`;
+      const history = this.conversationMutationHistory.get(key) ?? [];
+      history.push({ id: record.id, projectId: event.projectId, conversationId: event.conversationId, createdAt: record.ts,
+        ...(event.titleChange ? { titleChange: structuredClone(event.titleChange) } : {}) });
+      // Bounded projection only; older canonical events remain in the existing log.
+      if (history.length > 101) history.shift();
+      this.conversationMutationHistory.set(key, history);
+    }
     this.projectResourceRecency(record);
     this.projectDeletedProjectNotifications(record);
     if (record.event.type === "queued_message_changed") {
@@ -974,6 +985,12 @@ export class WorkspaceStore {
   }
 
   cursor(): number { return this.events.at(-1)?.id ?? 0; }
+
+  listConversationChanges(input: { projectId: string; conversationId: string; limit?: number }): { items: ConversationMutationDto[]; truncated?: boolean } {
+    const limit = Math.min(100, Math.max(1, Math.trunc(input.limit ?? 50)));
+    const history = this.conversationMutationHistory.get(`${input.projectId}\0${input.conversationId}`) ?? [];
+    return { items: structuredClone(history.slice(-limit).reverse()), ...(history.length > limit ? { truncated: true } : {}) };
+  }
 
   hasQueuedMessageChange(input: {
     conversationId: string;

@@ -161,3 +161,17 @@ test('only exact paused Run delivery displays Paused without changing canonical 
  assert.match(owners.deliveryLabel({...receipt,contextRolloverHold:'review_required'},'Worker','paused-run'),/Context refresh could not safely continue/);
  assert.equal(JSON.stringify(receipt),before,'No delivery/task/Run authority is rewritten');
 });
+
+test('Work shows recorded Chat renames and system titles while keeping generic legacy changes unknown',()=>{
+ const exports={},noop=()=>{},data={projectId:'p',conversationId:'chat',generatedAt:'2026-11-07T00:00:00Z',agents:[],traces:[],items:[],chatChanges:{truncated:true,items:[
+  {id:3,projectId:'p',conversationId:'chat',createdAt:'2026-11-07T00:00:03Z'},
+  {id:2,projectId:'p',conversationId:'chat',createdAt:'2026-11-07T00:00:02Z',titleChange:{previousTitle:'New Chat',title:'Automatic orchard title',actor:{kind:'system'},origin:'automatic_title'}},
+  {id:1,projectId:'p',conversationId:'chat',createdAt:'2026-11-07T00:00:01Z',titleChange:{previousTitle:'Original orchard',title:'Reviewed orchard',actor:{kind:'operator_api'},origin:'operator_request',requestId:'actual-recorded-request'}},
+ ]}};
+ const imports={react:React,'@tanstack/react-query':{useQuery:()=>({data,isLoading:false,isFetching:false,isError:false,refetch:noop})},'../api':{api:{}},'../queryKeys':{queryKeys:{agentWork:{list:()=>['work']}}},'../clipboard':{copyText:noop},'./MutationNotifications':{useMutationNotification:()=>noop},'./PrimaryHeaderActions':{PrimaryHeaderActionsOutlet:({children})=>React.createElement('div',null,children)},'./RequestLifecycleCard':{RequestLifecycleCard:()=>null},'./chat/scroll':{isChatNearBottom:()=>true,scrollChatToBottom:noop,ScrollToLatestButton:()=>null}};
+ vm.runInNewContext(ts.transpileModule(readFileSync(new URL('../../apps/web/src/components/AgentWorkInspector.tsx',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX}}).outputText,{exports,require:name=>imports[name]??require(name)});
+ const html=renderToStaticMarkup(React.createElement(exports.AgentWorkInspector,{open:true,projectId:'p',conversationId:'chat',onClose:noop}));
+ assert.match(html,/Chat changes/u);assert.equal((html.match(/>Chat renamed</gu)??[]).length,2);assert.match(html,/Chat settings changed/u);
+ assert.match(html,/Original orchard/u);assert.match(html,/Reviewed orchard/u);assert.match(html,/Operator request/u);assert.match(html,/System automatic title/u);assert.match(html,/actual-recorded-request/u);assert.match(html,/Not recorded/u);assert.match(html,/Older events remain preserved/u);
+ assert.doesNotMatch(html,/Authenticated operator|Recovered rename|Unknown rename/u);
+});

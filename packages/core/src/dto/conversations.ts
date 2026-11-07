@@ -418,6 +418,25 @@ export interface AgentWorkTraceDto {
   updatedAt: string;
 }
 
+/** Local API origin, not an authenticated human identity. */
+export type ConversationTitleChangeDto = {
+  previousTitle: string;
+  title: string;
+  requestId?: string;
+} & (
+  | { origin: "operator_request"; actor: { kind: "operator_api" } }
+  | { origin: "automatic_title"; actor: { kind: "system" } }
+);
+
+export interface ConversationMutationDto {
+  id: number;
+  projectId: string;
+  conversationId: string;
+  createdAt: string;
+  /** Absent on old generic settings events: do not invent a Rename or actor. */
+  titleChange?: ConversationTitleChangeDto;
+}
+
 /** GET /api/projects/:id/agent-work response. This is a projection only. */
 export interface AgentWorkInspectorDto {
   projectId: string;
@@ -427,6 +446,7 @@ export interface AgentWorkInspectorDto {
   /** True when the bounded relationship expansion omitted older connected records. */
   truncated?: boolean;
   agents: Array<{ id: string; title: string }>;
+  chatChanges?: { items: ConversationMutationDto[]; truncated?: boolean };
   traces: AgentWorkTraceDto[];
   items: AgentWorkItemDto[];
 }

@@ -10,13 +10,14 @@ import type {
 } from "@ponderosa/core";
 import type { FastifyInstance } from "fastify";
 import { redactProviderDiagnostic } from "../provider-failure-event.js";
+import {redactKnownDiagnosticValues} from "../working-copy-diagnostic.js";
 import { sendInspectorJson } from "../inspector-response.js";
 
 export class AgentWorkProjection {
   constructor(
     private readonly store: Pick<
       AgentStore,
-      "sqlite" | "listAgents" | "getProjectArtifact" | "operatorCanReadProjectArtifact" | "agentCreationPending" | "pendingAgentCreationIds" | "getAgent"
+      "sqlite" | "listAgents" | "getProjectArtifact" | "operatorCanReadProjectArtifact" | "agentCreationPending" | "pendingAgentCreationIds" | "getAgent" | "getConversation"
     >,
     private readonly coordination: Pick<
       CoordinationV3Store,
@@ -24,7 +25,7 @@ export class AgentWorkProjection {
     >,
     private readonly workspace: Pick<
       WorkspaceStore,
-      "listDecisionPage" | "getDecision" | "decisionsForRuns"
+      "listDecisionPage" | "getDecision" | "decisionsForRuns" | "listConversationChanges"
     >,
   ) {}
 
@@ -53,6 +54,8 @@ export class AgentWorkProjection {
     agentId?: string;
     focusId?: string;
     limit?: number;
+    /** Host-only: enabled by the operator inspector route, never by Agent tools. */
+    includeChatChanges?: true;
   }): AgentWorkInspectorDto {
     const projectAgents = this.store.listAgents(input.projectId);
     const names = new Map(projectAgents.map((agent) => [agent.id, agent.title]));
@@ -400,6 +403,16 @@ export class AgentWorkProjection {
       || left.id.localeCompare(right.id));
     const selectedItems = items.filter((item) => selectedItemIds.has(item.id));
     const responseTruncated = selectedTraces.length < traces.length;
+    const scopedAgent = input.includeChatChanges && input.agentId ? this.store.getAgent(input.agentId) : undefined;
+    const chatId = input.includeChatChanges ? input.conversationId ?? scopedAgent?.conversationId : undefined;
+    const chat = chatId ? this.store.getConversation(chatId) : undefined;
+    const chatChanges = chat && chat.projectId === input.projectId
+      && (!input.agentId || scopedAgent?.projectId === input.projectId && scopedAgent.conversationId === chat.id)
+      ? this.workspace.listConversationChanges({ projectId: input.projectId, conversationId: chat.id, limit: Math.min(input.limit ?? 50, 100) }) : undefined;
+    if (chatChanges) chatChanges.items = chatChanges.items.map(change => ({ ...change,
+      ...(change.titleChange ? { titleChange: { ...change.titleChange,
+        previousTitle: redactKnownDiagnosticValues(redactProviderDiagnostic(redactKnownDiagnosticValues(change.titleChange.previousTitle))), title: redactKnownDiagnosticValues(redactProviderDiagnostic(redactKnownDiagnosticValues(change.titleChange.title))),
+      } } : {}) }));
     return {
       projectId: input.projectId,
       ...(input.conversationId ? { conversationId: input.conversationId } : {}),
@@ -409,6 +422,7 @@ export class AgentWorkProjection {
         ? { truncated: true }
         : {}),
       agents: projectAgents.map((agent) => ({ id: agent.id, title: agent.title })),
+      ...(chatChanges ? { chatChanges } : {}),
       traces: selectedTraces,
       items: selectedItems,
     };
@@ -561,6 +575,7 @@ export function registerAgentWorkRoutes(
     }
     const result = projection.inspect({
       projectId: project.id,
+      includeChatChanges: true,
       ...(request.query.conversationId
         ? { conversationId: request.query.conversationId }
         : {}),
