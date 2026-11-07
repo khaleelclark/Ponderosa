@@ -17,6 +17,7 @@ import type {
   AgentDto,
   ConversationMessageDto,
   WorkspacePreferencesDto,
+  QueuedConversationMessageDto,
 } from "@ponderosa/core";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { normalizeResetPages } from "../collections";
@@ -586,6 +587,14 @@ export function ConversationView({
     ),
     [mainTimeline, queuedMessagesQuery.data],
   );
+  const queuedAttachmentNames = useCallback((queued: QueuedConversationMessageDto) =>
+    messages.find(message => message.id === queued.messageId || message.communicationEventId === queued.messageId)?.attachments?.map(attachment => attachment.name), [messages]);
+  const steerQueuedMessage = useCallback((message: QueuedConversationMessageDto) =>
+    steerQueued.mutateAsync({ deliveryId: message.deliveryId, targetAgentId: message.targetAgentId }), [steerQueued.mutateAsync]);
+  const editQueuedMessage = useCallback((message: QueuedConversationMessageDto, text: string) =>
+    editQueued.mutateAsync({ deliveryId: message.deliveryId, targetAgentId: message.targetAgentId, text }), [editQueued.mutateAsync]);
+  const deleteQueuedMessage = useCallback((message: QueuedConversationMessageDto) =>
+    cancelQueued.mutateAsync(message.deliveryId), [cancelQueued.mutateAsync]);
   const visibleMainTimeline = reconciledQueuedMessages.timeline;
   const visibleMessageLayoutKey = visibleMainTimeline
     .map(entry => entry.id)
@@ -1230,27 +1239,16 @@ export function ConversationView({
           <QueuedMessageTray
             messages={reconciledQueuedMessages.queuedMessages}
             scope={conversationId}
-            attachmentNamesForMessage={queued => messages.find(message => message.id === queued.messageId || message.communicationEventId === queued.messageId)?.attachments?.map(attachment => attachment.name)}
+            attachmentNamesForMessage={queuedAttachmentNames}
             agentNameForId={agentTitle}
             busy={
               cancelQueued.isPending ||
               editQueued.isPending ||
               steerQueued.isPending
             }
-            onSteer={message =>
-              steerQueued.mutateAsync({
-                deliveryId: message.deliveryId,
-                targetAgentId: message.targetAgentId,
-              })
-            }
-            onEdit={(message, text) =>
-              editQueued.mutateAsync({
-                deliveryId: message.deliveryId,
-                targetAgentId: message.targetAgentId,
-                text,
-              })
-            }
-            onDelete={message => cancelQueued.mutateAsync(message.deliveryId)}
+            onSteer={steerQueuedMessage}
+            onEdit={editQueuedMessage}
+            onDelete={deleteQueuedMessage}
           />
         ) : null}
         {activeView === "main" && targetedNextRunReceipts.data ? (

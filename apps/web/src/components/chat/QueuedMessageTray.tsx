@@ -3,13 +3,13 @@ import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import SubdirectoryArrowRightIcon from "@mui/icons-material/SubdirectoryArrowRight";
 import { Box, Button, IconButton, Paper, Stack, TextField, Tooltip, Typography } from "@mui/material";
 import type { QueuedConversationMessageDto } from "@ponderosa/core";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { afterPaintBackgroundTask } from "../../afterPaintBackgroundTask";
 import { capturedSubmissionRunning, readCapturedSubmissions, submissionOutboxEvent } from "./submissionOutbox";
 import { composerSurfaceWidth } from "./Composer.styles";
 
-export function QueuedMessageTray({ messages, scope, attachmentNamesForMessage, agentNameForId, busy, onSteer, onEdit, onDelete }: {
+function QueuedMessageTrayComponent({ messages, scope, attachmentNamesForMessage, agentNameForId, busy, onSteer, onEdit, onDelete }: {
   messages: QueuedConversationMessageDto[];
   scope?: string;
   attachmentNamesForMessage?(message: QueuedConversationMessageDto): string[] | undefined;
@@ -157,3 +157,6 @@ export function QueuedMessageTray({ messages, scope, attachmentNamesForMessage, 
     </Stack>
   </Paper>;
 }
+
+// Parent runtime hydration does not change queue rows or their actions.
+export const QueuedMessageTray = memo(QueuedMessageTrayComponent);

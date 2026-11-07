@@ -206,14 +206,21 @@ function BranchesWorkspace({route,navigate,colorMode,onToggleColorMode}:Appearan
    if(route.branchId!==id){navigate({...route,branchId:id},true);return;}
    if(id===draft.branchId){setLoading(false);setOpeningLink(false);return;}
    setDeployedUpdate(undefined);
+   // Only the existing canonical owner read may overlap Branch metadata.
+   // Workspace reads still require the Branch result and all owner checks below.
+   const chatId=route.tab==="chats"&&!route.global?route.chatId:undefined;
+   const ownerRead=chatId&&(!route.workspace||route.workspace.kind==="conversation"&&route.workspace.conversationId===chatId)
+    ? client.fetchQuery({queryKey:["branch-chat-owner",chatId],queryFn:()=>requestJson<BranchContextDto>(`/api/branches/contexts/${chatId}`),retry:false}) : undefined;
+   // A failed Branch read can leave no consumer; retain the canonical query error
+   // for BranchChats without producing an unhandled rejection.
+   void ownerRead?.catch(()=>{});
    const branch=await requestJson<BranchDto>(`/api/branches/${encodeURIComponent(id)}`);
    if(!cancelled){
     const selected=select(branch,true),generation=selection.current;
     // Overlap existing owner/workspace reads with the workflow draft. Rendering
     // still waits for all existing BranchChats and ProjectShell checks.
-    const chatId=route.tab==='chats'&&!route.global?route.chatId:undefined;
-    if(chatId&&(!route.workspace||route.workspace.kind==='conversation'&&route.workspace.conversationId===chatId)){
-     void client.fetchQuery({queryKey:['branch-chat-owner',chatId],queryFn:()=>requestJson<BranchContextDto>(`/api/branches/contexts/${chatId}`),retry:false}).then(chat=>{
+    if(chatId&&ownerRead){
+     void ownerRead.then(chat=>{
       if(cancelled||selection.current!==generation||routeOwner.current!==route||chat.id!==chatId||chat.branchId!==id||(chat.executionId??undefined)!==(route.executionId??undefined)||route.workspace&&route.workspace.projectId!==chat.projectId)return;
       return Promise.all([client.prefetchQuery({queryKey:queryKeys.projects.detail(chat.projectId),queryFn:()=>realApi.getProject(chat.projectId)}),prefetchConversationWorkspace(client,chat.id,chat.projectId,realApi)]);
      }).catch(()=>{/* The existing owner query displays its normal error when the Chat opens. */});

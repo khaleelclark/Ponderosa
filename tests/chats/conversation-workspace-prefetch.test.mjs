@@ -121,3 +121,46 @@ test('a failed warm refresh preserves verified membership data and its existing 
   assert.equal(f.client.getQueryData(queryKeys.conversations.project('project-a'))[0].id,'chat-a');assert.equal(f.client.getQueryState(queryKeys.conversations.project('project-a')).error.message,'Exact refresh refused');
  }finally{f.close();}
 });
+
+const branchOpen=arrow('components/BranchesView.tsx',text=>text.includes('const executionBranchId=')&&text.includes('const ownerRead='));
+function invokeOpening(env){
+ const compiled=ts.transpileModule('const open='+branchOpen+'; open();',{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.None}}).outputText;
+ return vm.runInNewContext(compiled,env);
+}
+test('Branches starts only its canonical owner read alongside Branch metadata and waits for both before scoped warming',async()=>{
+ for(const order of ['owner-first','branch-first']){
+  const f=fixture();let resolveBranch,resolveOwner;const calls=[];
+  const route={branchId:'branch-a',tab:'chats',chatId:'chat-a',workspace:{kind:'conversation',conversationId:'chat-a',projectId:'project-a'}};
+  const owner={id:'chat-a',branchId:'branch-a',projectId:'project-a'};
+  const requestJson=path=>{calls.push(path);return new Promise(resolve=>{if(path==='/api/branches/branch-a')resolveBranch=resolve;else if(path==='/api/branches/contexts/chat-a')resolveOwner=resolve;else assert.fail('Unexpected '+path);});};
+  const selection={current:0};let selected=0;
+  const env={requestJson,route,cancelled:false,draft:{},navigate:()=>assert.fail('No redirect expected'),setLoading(){},setOpeningLink(){},setDeployedUpdate(){},client:f.client,selection,routeOwner:{current:route},realApi:f.api,queryKeys,prefetchConversationWorkspace:f.warm,select:()=>{selected++;selection.current++;return Promise.resolve(true);},markWorkspaceResourceUsed(){},setError:message=>assert.fail(message),encodeURIComponent};
+  try{
+   const opening=invokeOpening(env);await turn();assert.deepEqual(calls,['/api/branches/contexts/chat-a','/api/branches/branch-a']);assert.equal(selected,0);assert.equal(f.calls.length,0);
+   const observer=new QueryObserver(f.client,{queryKey:['branch-chat-owner','chat-a'],queryFn:()=>requestJson('/api/branches/contexts/chat-a'),retry:false});const stop=observer.subscribe(()=>{});assert.equal(calls.length,2,'Canonical subscriber shares the in-flight owner read');
+   if(order==='owner-first'){resolveOwner(owner);await turn();assert.equal(f.calls.length,0,'Owner alone cannot warm workspace');resolveBranch({id:'branch-a'});}
+   else{resolveBranch({id:'branch-a'});await turn();assert.equal(f.calls.length,0,'Branch alone cannot warm workspace');resolveOwner(owner);}
+   await opening;await turn();assert.equal(selected,1);assert.deepEqual(f.calls.map(c=>c.kind),['project','tail','conversations','agents']);
+   assert.equal(f.client.getQueryData(['branch-chat-owner','chat-a']).id,'chat-a');
+   f.resolve('project',{id:'project-a'});f.resolve('tail',{conversation:{id:'chat-a'},messages:[]});f.resolve('conversations',[{id:'chat-a'}]);f.resolve('agents',[]);await turn();stop();
+  }finally{f.close();}
+ }
+});
+test('Branches overlap retains execution resolution, route/cancellation guards and canonical owner errors on Branch failure',async()=>{
+ for(const scenario of ['execution-pending','cancelled','redirect','branch-failure','owner-failure','other-tab','other-workspace']){
+  const f=fixture(),calls=[];let executionResolve,branchResolve,branchReject,ownerResolve,ownerReject;const errors=[];
+  const route={branchId:'branch-a',tab:scenario==='other-tab'?'workflow':'chats',chatId:'chat-a',...(scenario==='execution-pending'?{executionId:'run-a'}:{}),...(scenario==='other-workspace'?{workspace:{kind:'agent',agentId:'agent-a',projectId:'project-a'}}:{})};
+  const env={route,cancelled:scenario==='cancelled',draft:{},selection:{current:0},routeOwner:{current:route},client:f.client,realApi:f.api,queryKeys,prefetchConversationWorkspace:f.warm,requestJson:path=>{calls.push(path);return new Promise((resolve,reject)=>{if(path.startsWith('/api/branch-executions/'))executionResolve=resolve;else if(path==='/api/branches/branch-a'){branchResolve=resolve;branchReject=reject;}else if(path==='/api/branches/contexts/chat-a'){ownerResolve=resolve;ownerReject=reject;}else assert.fail(path);});},navigate(){calls.push('redirect');},setLoading(){},setOpeningLink(){},setDeployedUpdate(){},select:()=>{env.selection.current++;return Promise.resolve(true);},markWorkspaceResourceUsed(){},setError:message=>errors.push(message),encodeURIComponent};
+  if(scenario==='redirect')env.route={...route,branchId:undefined,executionId:'run-a'};
+  try{
+   const opening=invokeOpening(env);await turn();
+   if(scenario==='execution-pending'){assert.deepEqual(calls,['/api/branch-executions/run-a']);env.cancelled=true;executionResolve({execution:{branchId:'branch-a'}});await opening;assert.equal(calls.length,1);continue;}
+   if(scenario==='cancelled'){await opening;assert.equal(calls.length,0);continue;}
+   if(scenario==='redirect'){executionResolve({execution:{branchId:'branch-a'}});await opening;assert.deepEqual(calls,['/api/branch-executions/run-a','redirect']);continue;}
+   if(scenario==='other-tab'||scenario==='other-workspace'){assert.deepEqual(calls,['/api/branches/branch-a']);branchResolve({id:'branch-a'});await opening;assert.equal(f.calls.length,0);continue;}
+   if(scenario==='branch-failure'){ownerReject(Error('Exact owner refused'));branchReject(Error('Exact Branch refused'));await opening;await turn();assert.deepEqual(errors,['Exact Branch refused']);assert.equal(f.client.getQueryState(['branch-chat-owner','chat-a']).error.message,'Exact owner refused');}
+   else{branchResolve({id:'branch-a'});ownerReject(Error('Exact owner refused'));await opening;await turn();assert.deepEqual(errors,[]);assert.equal(f.client.getQueryState(['branch-chat-owner','chat-a']).error.message,'Exact owner refused');}
+   assert.equal(f.calls.length,0,'No scoped workspace reads after a failed readiness read');
+  }finally{f.close();}
+ }
+});

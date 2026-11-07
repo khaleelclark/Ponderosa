@@ -83,3 +83,34 @@ export async function queuedTrayColdMountRegression():Promise<void>{
   removeCapturedSubmission(pendingId);removeCapturedSubmission(acceptedId);document.getSelection()?.removeAllRanges();
  }
 }
+
+/** Runtime/default hydration must not rebuild unchanged queue controls. */
+export async function queuedTrayParentHydrationRegression():Promise<void>{
+ const host=document.createElement('div');document.body.append(host);const root=createRoot(host);
+ const scope='queued-tray-memo-regression',pendingId='queued-tray-memo-pending';
+ const message:QueuedConversationMessageDto={deliveryId:'memo-delivery',messageId:'memo-message',conversationId:scope,targetAgentId:'memo-agent',position:1,text:'Exact queued text λ😀',createdAt:'2026-11-07T00:00:00Z',status:'queued'};
+ let reads=0,epoch=0;const actions:Array<{kind:string;id:string;text?:string}>=[];
+ const props={scope,messages:[message],agentNameForId:()=>{reads++;return 'Original Agent';},attachmentNamesForMessage:()=>['original.txt'],onSteer:(m:QueuedConversationMessageDto)=>{actions.push({kind:'steer',id:m.deliveryId});},onEdit:(m:QueuedConversationMessageDto,text:string)=>{actions.push({kind:'edit',id:m.deliveryId,text});},onDelete:(m:QueuedConversationMessageDto)=>{actions.push({kind:'delete',id:m.deliveryId});}};
+ const render=(extra:Partial<import('react').ComponentProps<typeof QueuedMessageTray>>={})=>flushSync(()=>root.render(<><CssBaseline/><div data-unrelated-runtime-hydration={++epoch}><QueuedMessageTray {...props} {...extra}/></div><input aria-label="Memo sibling draft" defaultValue="Retain draft λ😀"/></>));
+ const button=(name:string)=>host.querySelector<HTMLButtonElement>('[aria-label="'+name+'"]')!;
+ try{
+  render();const firstReads=reads;assert(firstReads===1,'Initial real tray renders its exact row');
+  for(let i=0;i<5;i++)render();assert(reads===firstReads,'Unrelated parent hydration with equal props skips all row rendering');
+  render({busy:true});assert(reads>firstReads&&button('Delete queued message 1').disabled,'Busy changes still render and disable actions');
+  render();assert(!button('Delete queued message 1').disabled,'Clearing busy restores existing controls');
+  button('Edit queued message 1').click();await until(()=>Boolean(host.querySelector('textarea')),'Memo does not block local edit state');
+  const field=host.querySelector<HTMLTextAreaElement>('textarea')!,focused=document.activeElement;
+  render();assert(host.querySelector('textarea')===field&&document.activeElement===focused,'Unchanged parent retains edit DOM and focus');
+  const setter=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value')!.set!;setter.call(field,'Updated queued λ😀');field.dispatchEvent(new Event('input',{bubbles:true}));await tick();
+  Array.from(host.querySelectorAll('button')).find(n=>n.textContent==='Save')!.click();await until(()=>actions.some(a=>a.kind==='edit'),'Local save still settles');
+  assert(actions[0].id===message.deliveryId&&actions[0].text==='Updated queued λ😀','Memo preserves exact edit payload');
+  const updated=[{...message,text:'Canonical row refresh λ😀'}];render({messages:updated,attachmentNamesForMessage:()=>['new.txt','second.txt'],agentNameForId:()=>{reads++;return 'Renamed Agent';}});
+  assert(host.textContent?.includes('Canonical row refresh λ😀')&&host.textContent?.includes('Renamed Agent')&&host.querySelector('[aria-label="2 attachments"]'),'Canonical text, names and attachment metadata remain live');
+  let latestDelete='';render({onDelete:m=>{latestDelete=m.deliveryId;}});button('Delete queued message 1').click();await until(()=>Boolean(latestDelete),'Changed action callback remains live');assert(latestDelete===message.deliveryId,'Latest callback receives exact delivery');
+  render();button('Steer queued message 1').click();await until(()=>actions.some(a=>a.kind==='steer'),'Existing steer callback remains live');
+  saveCapturedSubmission({version:1,scope,storageKey:'memo-draft',ownerId:'memo-owner',clientId:pendingId,createdAt:1,action:'queue',text:'Captured after memo λ😀',editorText:'Captured after memo λ😀',attachmentNames:[],mentionedAgents:[],newAgentRequested:false,pending:{idempotencyKey:pendingId,fingerprint:'a'.repeat(64)},status:'unknown'} as CapturedSubmission);
+  await until(()=>Boolean(host.querySelector('[data-operation-id="'+pendingId+'"]')),'External outbox event still updates a memoized tray');
+  removeCapturedSubmission(pendingId);await until(()=>!host.querySelector('[data-operation-id]'),'External outbox removal still updates');
+  assert(host.querySelector<HTMLInputElement>('[aria-label="Memo sibling draft"]')!.value==='Retain draft λ😀','Sibling draft bytes remain unchanged');
+ }finally{root.unmount();host.remove();removeCapturedSubmission(pendingId);}
+}
