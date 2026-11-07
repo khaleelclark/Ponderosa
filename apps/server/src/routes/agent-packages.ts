@@ -1359,7 +1359,7 @@ export function registerAgentPackageRoutes(
     return installed;
   };
 
-  const importedAgentProvenance=async(agent:{id:string;projectId:string;conversationId:string}):Promise<import('@ponderosa/core').ImportedAgentProvenanceDto|undefined>=>{
+  const importedAgentProvenance=async(agent:{id:string;title:string;projectId:string;conversationId:string}):Promise<import('@ponderosa/core').ImportedAgentProvenanceDto|undefined>=>{
     const chat=store.getConversation(agent.conversationId);if(!chat||chat.projectId!==agent.projectId)return;
     const product=chat.branchId?'branches':'dev';
     const owners=store.sqlite.prepare(`SELECT o.id,o.actor_scope,o.idempotency_key,o.payload_hash,o.created_at FROM agent_creation_operations o
@@ -1374,7 +1374,15 @@ export function registerAgentPackageRoutes(
       operation=await readQueuedIntentOperation(intent);
       if(!operation||operation.status!=='completed'||operation.payloadHash!==owner.payload_hash||!operation.result?.agentIds.includes(agent.id))return;
     }
+    const creation=store.getAgentCreationOperation(owner.id);
+    if(!creation||creation.status!=='completed'||!creation.agentIds.includes(agent.id))return;
+    const result=creation.result&&typeof creation.result==='object'?creation.result as Record<string,unknown>:undefined;
+    const applications=[result?.reviewedUserDataApplications,result?.reviewedMetadataApplications].flatMap(value=>Array.isArray(value)?value:[]);
+    const states=applications.map(value=>value&&typeof value==='object'?(value as {state?:unknown}).state:undefined);
+    const reviewedDataState=states.length&&states.every(state=>state==='applying'||state==='incomplete'||state==='completed')
+      ?states.includes('incomplete')?'incomplete':states.includes('applying')?'applying':'completed':undefined;
     return {actorScope:owner.actor_scope,destinationChatId:chat.id,destinationChatTitle:chat.title,createdAt:owner.created_at,
+      agentTitle:agent.title,agentCount:creation.agentIds.length,...(reviewedDataState?{reviewedDataState}:{}),
       creationOperationId:owner.id,requestId:owner.idempotency_key,...(operation?{operationId:operation.id,sourceLabel:operation.sourceLabel}:{})};
   };
   app.get<{Params:{id:string};Querystring:{offset?:string;limit?:string;archiveVersion?:string}}>('/api/agents/:id/imported-communications',async(request,reply)=>{
@@ -1400,7 +1408,7 @@ export function registerAgentPackageRoutes(
       const artifact=store.getProjectArtifact(agent.projectId,ref);
       return artifact?[{...artifact,downloadUrl:`/api/projects/${encodeURIComponent(agent.projectId)}/artifacts/${encodeURIComponent(ref)}/download`}]:[];
     });
-    const result={source:archive.source,importedAt:archive.importedAt,archiveVersion:availability.archiveVersion,messages,artifacts,...(importProvenance?{importProvenance}:{}),...(chatTitleHistory.length?{chatTitleHistory}:{}),hasMore:offset+pageLength<Math.max(archive.messages.length,titleHistory.length),nextOffset:offset+pageLength};
+    const result={source:archive.source,importedAt:archive.importedAt,archiveVersion:availability.archiveVersion,messageCount:archive.messages.length,messages,artifacts,...(importProvenance?{importProvenance}:{}),...(chatTitleHistory.length?{chatTitleHistory}:{}),hasMore:offset+pageLength<Math.max(archive.messages.length,titleHistory.length),nextOffset:offset+pageLength};
     if(agentPackageJsonUtf8Bytes(result)>2*1024*1024)return reply.code(413).send({error:'History page exceeds 2 MiB; request fewer messages or use bounded history retrieval'});
     return result;
   });

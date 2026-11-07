@@ -858,14 +858,14 @@ export class CoordinationV3ReadModel {
         } : undefined;
         add({
           id: `activation:${row.id}`, recordId: row.id, referenceIds: [row.id], kind: "activation", state: row.state,
-          title: row.kind === "coordination_late_result" ? "Late result needs audit" : "Queued wake-up",
+          title: row.kind === "coordination_late_result" ? "Late result needs audit" : "Queued work input",
           summary: providerRecovery
-            ? `Provider ${providerRecovery.classification === "capacity" ? "capacity" : "quota"} is unavailable; this wake-up is retained for retry.`
+            ? `Provider ${providerRecovery.classification === "capacity" ? "capacity" : "quota"} is unavailable; this work input is retained for retry.`
             : row.kind === "coordination_late_result"
               ? "A recipient finished after the original outcome became uncertain. Audit current state; do not redo the work."
               : ["pending", "retry_pending", "attached"].includes(row.state)
-                ? "Work is queued or being attached to a Run." : row.state === "consumed" ? "The wake-up was consumed by its Run."
-                  : `The wake-up ended ${row.state.replaceAll("_", " ")}.`,
+                ? "Work is queued or being attached to a Run." : row.state === "consumed" ? "The work input was assigned to a Run."
+                  : `The work input ended ${row.state.replaceAll("_", " ")}.`,
           agentIds: [row.agent_id], relatedItemIds: [],
           ...(providerRecovery ? { providerRecovery } : {}),
           createdAt: row.created_at, updatedAt: row.updated_at,

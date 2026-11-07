@@ -47,12 +47,12 @@ export async function postImportBrowserReviewRegression():Promise<void>{
 
 export async function importedAgentProvenanceRegression():Promise<void>{
  const originalFetch=globalThis.fetch,host=document.createElement('div');document.body.append(host);
- const root=createRoot(host),client=new QueryClient({defaultOptions:{queries:{retry:false}}});let legacy=false,writes=0;
+ const root=createRoot(host),client=new QueryClient({defaultOptions:{queries:{retry:false}}});let legacy=false,writes=0,messageCount:number|undefined,reviewedDataState:string|undefined;
  const operationId='import-operation-'+('b'.repeat(120));
  globalThis.fetch=async(input,init)=>{
   if(init?.method&&init.method!=='GET')writes++;
   assert(String(input).includes('/api/agents/imported/imported-communications?'),'only the owning Agent history route is requested');
-  return new Response(JSON.stringify({source:'',importedAt:'',messages:[],artifacts:[],hasMore:false,...(legacy?{}:{importProvenance:{actorScope:'user:local-operator',sourceLabel:'Synthetic source / Reusable expert',destinationChatId:'destination-chat',destinationChatTitle:'Reviewed destination',createdAt:'2026-11-07T13:00:00.000Z',creationOperationId:'canonical-creation',requestId:'actual-request',operationId}}),unexpectedPortableData:'DO_NOT_RENDER_TEST_VALUE'}),{status:200,headers:{'content-type':'application/json'}});
+  return new Response(JSON.stringify({source:'',importedAt:'',messages:[],artifacts:[],hasMore:false,...(messageCount===undefined?{}:{messageCount}),...(legacy?{}:{importProvenance:{actorScope:'user:local-operator',agentTitle:'Reusable expert',agentCount:2,...(reviewedDataState?{reviewedDataState}:{}),sourceLabel:'Synthetic source / Reusable expert',destinationChatId:'destination-chat',destinationChatTitle:'Reviewed destination',createdAt:'2026-11-07T13:00:00.000Z',creationOperationId:'canonical-creation',requestId:'actual-request',operationId}}),unexpectedPortableData:'DO_NOT_RENDER_TEST_VALUE'}),{status:200,headers:{'content-type':'application/json'}});
  };
  const render=(key:string)=>root.render(<QueryClientProvider client={client}><ImportedCommunications key={key} agentId="imported"/></QueryClientProvider>);
  const settle=async()=>{for(let i=0;i<6;i++)await tick();};
@@ -61,11 +61,16 @@ export async function importedAgentProvenanceRegression():Promise<void>{
   render('current');await settle();open();await settle();
   const record=host.querySelector('[aria-label="Import record"]')!;
   assert(record.textContent?.includes('Cause: Import request')&&record.textContent?.includes('Imported by: You (local operator)')&&record.textContent?.includes('Source: Synthetic source / Reusable expert')&&record.textContent?.includes('Imported into: Reviewed destination'),'empty historical messages retain the actual triggering import request, actor/source/destination');
-  assert(host.textContent?.includes('No imported messages.')&&!host.textContent?.includes('Imported from  ·'),'empty archive has a truthful separate summary');
+  assert(host.textContent?.includes('Status: Agent records created')&&host.textContent?.includes('Imported Agent: Reusable expert')&&host.textContent?.includes('Agent records in this import: 2'),'the record states what was imported and scopes status to Agent records');
+  assert(host.textContent?.includes('Message history: Not available in the retained record')&&!host.textContent?.includes('No message history was included'),'unavailable history never invents exclusion or zero messages');
   const details=record.querySelector('details')!;assert(!details.open,'technical import IDs are optional');details.querySelector('summary')!.click();await tick();
   assert(details.textContent?.includes(operationId)&&details.textContent?.includes('actual-request')&&details.textContent?.includes('canonical-creation'),'the exact operation/request/creation chain remains inspectable');
   const bounds=record.getBoundingClientRect();assert(bounds.left>=0&&bounds.right<=window.innerWidth+1,'full import identifiers wrap within the viewport');
   assert(!host.textContent?.includes('DO_NOT_RENDER_TEST_VALUE'),'the surface never dumps unselected portable fields');
+  messageCount=0;client.clear();render('zero-history');await settle();open();await settle();assert(host.textContent?.includes('No message history was included in the retained archive'),'known empty retained archive is explained');
+  messageCount=12;client.clear();render('empty-page');await settle();open();await settle();assert(host.textContent?.includes('12 messages included in the retained archive')&&host.textContent?.includes('No messages on this page.')&&!host.textContent?.includes('No message history was included'),'empty current page does not erase retained history');
+  for(const [state,label] of [['applying','Still applying'],['incomplete','Incomplete'],['completed','Completed']]){reviewedDataState=state;client.clear();render(state);await settle();open();await settle();assert(host.textContent?.includes('Reviewed data application: '+label)&&host.textContent?.includes('Status: Agent records created'),'reviewed data state stays separate from record creation');}
+  reviewedDataState=undefined;messageCount=undefined;
   legacy=true;client.clear();render('legacy');await settle();open();await settle();
   assert(host.textContent?.includes('No import record is available.')&&!host.textContent?.includes('Imported by: You'),'missing old provenance is not invented');
   assert(writes===0,'reading import provenance never resubmits an import or changes access');

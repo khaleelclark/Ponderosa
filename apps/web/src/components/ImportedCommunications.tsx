@@ -17,7 +17,11 @@ export function ImportedCommunications({agentId}:{agentId:string}):JSX.Element {
   {page.data&&<>
    {page.data.importProvenance?<Stack spacing={0.5} component="section" aria-label="Import record" sx={{overflowWrap:'anywhere'}}>
     <Typography variant="subtitle2">Import record</Typography>
+    <Typography variant="body2">Status: Agent records created</Typography>
+    <Typography variant="body2">Imported Agent: {page.data.importProvenance.agentTitle||'Not recorded'}</Typography>
+    <Typography variant="body2">Agent records in this import: {page.data.importProvenance.agentCount??'Not recorded'}</Typography>
     <Typography variant="body2">Cause: Import request</Typography>
+    {page.data.importProvenance.reviewedDataState&&<Typography variant="body2">Reviewed data application: {page.data.importProvenance.reviewedDataState==='applying'?'Still applying':page.data.importProvenance.reviewedDataState==='incomplete'?'Incomplete':'Completed'}</Typography>}
     <Typography variant="body2">Imported by: {page.data.importProvenance.actorScope==='user:local-operator'?'You (local operator)':page.data.importProvenance.actorScope.startsWith('agent:')?'Agent':page.data.importProvenance.actorScope.startsWith('system:')?'Ponderosa (system)':'Not recorded'}</Typography>
     <Typography variant="body2">Source: {page.data.importProvenance.sourceLabel||page.data.source||'Not recorded'}</Typography>
     <Typography variant="body2">Imported into: {page.data.importProvenance.destinationChatTitle}</Typography>
@@ -30,7 +34,8 @@ export function ImportedCommunications({agentId}:{agentId:string}):JSX.Element {
      <Typography variant="caption" sx={{display:'block',overflowWrap:'anywhere'}}>Destination Chat: {page.data.importProvenance.destinationChatId}</Typography>
     </Box>
    </Stack>:page.data.source?<Stack spacing={0.5}><Typography variant="body2">Imported from {page.data.source}{page.data.importedAt?` · ${page.data.importedAt}`:''}</Typography><Typography variant="body2">Import actor and operation: Not recorded</Typography></Stack>:<Typography>No import record is available.</Typography>}
-   {page.data.messages.length===0&&<Typography>No imported messages.</Typography>}
+   <Typography variant="body2">Message history: {page.data.messageCount===undefined?'Not available in the retained record':page.data.messageCount===0?'No message history was included in the retained archive':`${page.data.messageCount} message${page.data.messageCount===1?'':'s'} included in the retained archive`}</Typography>
+   {page.data.messages.length===0&&Boolean(page.data.messageCount)&&<Typography>No messages on this page.</Typography>}
    {page.data.chatTitleHistory?.map(item=><Box key={`${item.sourceInstanceId}:${item.projectId}:${item.conversationId}:${item.eventId}`} component="section" aria-label="Imported Chat title change" sx={{borderBottom:1,borderColor:'divider',pb:1,overflowWrap:'anywhere'}}>
     <Typography variant="subtitle2">Imported source Chat rename</Typography>
     <Typography variant="caption">Source record · {new Date(item.createdAt).toLocaleString()}</Typography>

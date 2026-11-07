@@ -507,6 +507,15 @@ test('empty-history staged import retains its exact actor and operation provenan
   assert.equal(record.sourceLabel,operation.sourceLabel);assert.equal(record.destinationChatId,f.destination.id);assert.equal(record.destinationChatTitle,f.destination.title);
   const canonical=f.store.getAgentCreationOperation(record.creationOperationId);assert.equal(canonical.actorScope,record.actorScope);assert.ok(canonical.agentIds.includes(agentId));
   assert.ok(!/payloadHash|requestFingerprint|dataBase64|restrictedCapabilityIds|snapshot/.test(JSON.stringify(record)),'selected provenance omits portable data and authorization records');
+  assert.equal(record.agentTitle,f.store.getAgent(agentId).title);assert.equal(record.agentCount,canonical.agentIds.length,'the exact completed creation owns the imported member count');
+  assert.equal(before.messageCount,before.archiveVersion?0:undefined,'only an actual retained archive establishes zero included history');
+  for(const state of ['applying','incomplete','completed']){
+    f.store.updateAgentCreationOperation(canonical.id,{result:{...canonical.result,reviewedUserDataApplications:[{state,path:'DO_NOT_EXPOSE_PRIVATE_PATH',observed:'DO_NOT_EXPOSE_PRIVATE_FACTS'}]}});
+    const selected=f.ok(await f.request({method:'GET',url}));assert.equal(selected.importProvenance.reviewedDataState,state,'record creation does not hide reviewed-data application state');
+    assert.equal(JSON.stringify(selected).includes('DO_NOT_EXPOSE'),false,'only the application state is projected');
+  }
+  f.store.updateAgentCreationOperation(canonical.id,{result:canonical.result});
+
   await f.restart();
   assert.deepEqual(f.ok(await f.request({method:'GET',url})).importProvenance,record,'canonical provenance survives restart');
   assert.equal((await f.request({method:'GET',url:`/api/agents/${randomUUID()}/imported-communications`})).statusCode,404);
@@ -531,6 +540,8 @@ test('staged access preview is mutation-free and imported provenance exposes onl
   assert.equal(result.accessSettingsToReview[0].source.savedBrowserAllowed,true);
   const page=f.ok(await f.request({method:'GET',url:`/api/agents/${result.rootAgentId}/imported-communications?limit=20`}));
   assert.ok(page.messages.some(m=>m.communication?.eventId===f.collaboration.eventId));
+  assert.equal(page.messageCount,pkg.agents.find(agent=>agent.ref===pkg.rootRef).history.length,'total retained messages are independent of page size');
+  const beyond=f.ok(await f.request({method:'GET',url:`/api/agents/${result.rootAgentId}/imported-communications?offset=999&limit=1`}));assert.deepEqual(beyond.messages,[]);assert.equal(beyond.messageCount,page.messageCount,'an empty page never becomes zero included history');
   for(const artifact of page.artifacts){assert.match(artifact.downloadUrl,/^\/api\/projects\//);assert.equal(f.store.agentCanReadProjectArtifact(f.project.id,artifact.id,result.rootAgentId),true);}
   assert.equal((await f.request({method:'GET',url:`/api/agents/${result.rootAgentId}/imported-communications?archiveVersion=stale`})).statusCode,409);
   assert.equal((await f.request({method:'GET',url:`/api/agents/${randomUUID()}/imported-communications`})).statusCode,404);

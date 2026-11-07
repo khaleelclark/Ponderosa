@@ -78,12 +78,12 @@ export class AgentWorkProjection {
         item.title = item.providerRecovery
           ? `${agentName(item.agentIds[0])} is provider-blocked`
           : ["pending", "retry_pending"].includes(item.state)
-          ? `${agentName(item.agentIds[0])} has a queued wake-up`
+          ? `${agentName(item.agentIds[0])} has queued work input`
           : ["leased", "attached"].includes(item.state)
-            ? `${agentName(item.agentIds[0])}'s wake-up is being attached`
+            ? `${agentName(item.agentIds[0])}'s work input is being assigned to a Run`
             : item.state === "consumed"
-              ? `${agentName(item.agentIds[0])}'s wake-up was consumed`
-              : `${agentName(item.agentIds[0])}'s wake-up ended ${item.state.replaceAll("_", " ")}`;
+              ? `${agentName(item.agentIds[0])}'s work input was assigned to a Run`
+              : `${agentName(item.agentIds[0])}'s work input ended ${item.state.replaceAll("_", " ")}`;
       } else if (item.kind === "run") {
         item.title = `${agentName(item.agentIds[0])} Run`;
         const details = this.failureDetails(input.projectId, item.recordId);

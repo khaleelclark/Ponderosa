@@ -693,12 +693,15 @@ export interface AgentHealthProjectionDto {
 export interface ImportedAgentProvenanceDto {
  actorScope:string;sourceLabel?:string;destinationChatId:string;destinationChatTitle:string;
  createdAt:string;creationOperationId:string;requestId:string;operationId?:string;
+  agentTitle?:string;agentCount?:number;reviewedDataState?:'applying'|'incomplete'|'completed';
 }
 /** Owning-Agent historical provenance only; source identities convey no destination authority. */
 export interface ImportedCommunicationsPageDto {
   importProvenance?:ImportedAgentProvenanceDto;
   chatTitleHistory?: PortableChatTitleChangeDto[];
   source:string; importedAt:string; archiveVersion?:string;
+  /** Total in the retained archive, never the current page length; absent when unavailable. */
+  messageCount?:number;
   messages:PortableAgentHistoryMessageDto[];
   artifacts:import('./artifacts.js').ArtifactDto[];
   hasMore:boolean; nextOffset?:number;

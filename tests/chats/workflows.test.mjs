@@ -612,6 +612,9 @@ test('operator Work details trace coalesced messages and every exact Run publica
   try{
    f.plans.set(agent.id,[{run:async initial=>assert.equal((await initial.tool('ponderosa_message',{text:'Earlier completed Run answer'})).success,true)}]);
    await f.send(agent.id,'Earlier completed requested work');const earlier=(await f.settled(agent.id)).runs.find(run=>run.status==='completed');assert.ok(earlier);
+   const work=f.ok(await f.api('GET',`/api/projects/${chat.projectId}/agent-work?conversationId=${chat.id}`));
+   const assigned=work.items.filter(item=>item.kind==='activation'&&item.state==='consumed');assert.ok(assigned.length);
+   assert.ok(assigned.every(item=>item.title.includes('work input was assigned to a Run')&&item.summary==='The work input was assigned to a Run.'),'consumed means Run assignment, not completion of the task');
    session=await f.hold(agent.id);const first=(await f.detail(agent.id)).runs.find(run=>run.status==='running');assert.ok(first);
    const queued=await f.createIdleAgent(chat,'Queued worker');await f.send(queued.id,'Waiting message with no admitted Run');
    const wake=await until(()=>store.sqlite.prepare("SELECT id FROM agent_activations WHERE agent_id=? AND kind='human_message' AND state='pending'").get(queued.id),'queued user message');
