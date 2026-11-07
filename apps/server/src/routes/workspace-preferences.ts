@@ -65,17 +65,12 @@ export function registerWorkspacePreferenceRoutes(
     store,
     workspace,
     engines,
-    activeRuns,
-    scheduledSessionRollovers,
     organizationEnvelopeStates,
     engineModelCatalogCache,
     cachedModelOptions,
     applyOperatorModelOptions,
     publishWorkspaceSince,
     setMaxConcurrentRuns,
-    clearAgentResumeSession,
-    persistentRuntimeForTermination,
-    teardownPersistentRuntime,
   } = context;
   const catalogOperatorAvatarIds = new Set([
     "default-user",
@@ -299,12 +294,8 @@ export function registerWorkspacePreferenceRoutes(
     publishWorkspaceSince(cursor);
     if (globalInstructionsChanged || profileChanged) for (const project of store.listProjects()) for (const agent of store.listAgents(project.id)) {
       organizationEnvelopeStates.delete(agent.id);
-      if (activeRuns.has(agent.id)) scheduledSessionRollovers.set(agent.id, new Date().toISOString());
-      else {
-        clearAgentResumeSession(agent.id, "request_context_rollover");
-        const runtime = persistentRuntimeForTermination(agent.id);
-        if (runtime) await teardownPersistentRuntime(agent.id, runtime, "workspace policy update", project.id);
-      }
+      // Keep the accepted context: scheduler admission bridges changed prompt
+      // guidance through the verified settings handoff before the next input.
     }
     return preferences;
   });

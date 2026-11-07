@@ -28,6 +28,22 @@ The accepted-session event selects that record. Old capability tokens, credentia
 and callback closures are never stored in the retained contract. Legacy sessions
 without this record cannot be reconstructed from current settings or Chat.
 
+## Workspace guidance and profile changes
+
+Changing global instructions or the operator display name/handle retains the
+accepted provider context, including when the edit occurs during a clean progress
+Run. Before the next eligible input, the existing prompt-transition admission
+uses the saved instructions and verified boundary to request a managed handoff.
+Unsupported adapters, missing models, changed restrictions or mismatched boundaries
+keep the original work queued for context review rather than silently reseeding it.
+
+A legacy accepted session whose exact saved instructions are missing is now held
+explicitly. Current settings and bounded Chat history cannot substitute for that
+missing evidence. This is a compatibility limit, not a claim that all legacy
+sessions retain their former admission behavior. An unknown or failed handoff is
+not replayed automatically; context, history and the original queued work remain
+retained under the existing recovery rules.
+
 ## Codex managed compaction
 
 Codex support is `managed_compaction` with crash policy `hold_without_native_query`.

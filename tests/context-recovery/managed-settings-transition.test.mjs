@@ -588,7 +588,7 @@ test('combined model and prompt change holds if target guidance changes before r
  },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,uniqueThreads:true})).adapter});
 });
 
-test('legacy exact prompt change without a contract holds the original task',{timeout:90000},async t=>{
+for(const missingPrompt of [false,true])test('legacy prompt boundary holds original task; missing prompt='+missingPrompt,{timeout:90000},async t=>{
  let store,native;
  await withFixture(t,async f=>{
   const chat=await f.createChat('Legacy prompt change'),agent=await f.createIdleAgent(chat,'Worker');
@@ -596,9 +596,10 @@ test('legacy exact prompt change without a contract holds the original task',{ti
   await until(async()=>(await native.requests()).some(x=>x.method==='turn/start'),'first turn');
   await native.sendTool('ponderosa_message',{text:'Initial work complete.'});await f.settled(agent.id);
   const accepted=store.resumeSessionState(agent.id),packet=store.acceptedProviderSessionInput(agent.id);assert.ok(packet?.exactSystemPrompt);
-  store.sqlite.prepare("UPDATE provider_inputs SET source_manifest_json=json_remove(source_manifest_json,'$.normalRuntimeContract') WHERE execution_id=?").run(packet.executionId);
+  store.sqlite.prepare("UPDATE provider_inputs SET source_manifest_json=json_remove(source_manifest_json,'$.normalRuntimeContract'), provider_system_prompt=CASE WHEN ? THEN '' ELSE provider_system_prompt END WHERE execution_id=?").run(Number(missingPrompt),packet.executionId);
   assert.equal(store.acceptedProviderSessionInput(agent.id).sourceManifest.normalRuntimeContract,undefined);
-  f.ok(await f.api('PATCH',`/api/conversations/${chat.id}`,{instructions:'Changed guidance after legacy session.'}));
+  if(missingPrompt)f.ok(await f.api('PATCH','/api/workspace/preferences',{globalInstructions:'Changed workspace guidance after legacy session.'}));
+  else f.ok(await f.api('PATCH',`/api/conversations/${chat.id}`,{instructions:'Changed guidance after legacy session.'}));
   await f.send(agent.id,'The original queued work.');
   await until(()=>store.sqlite.prepare("SELECT 1 FROM activation_sources h JOIN agent_activations a ON a.id=h.activation_id WHERE a.agent_id=? AND h.source_kind='settings_transition_reservation_wait' AND a.state IN ('pending','retry_pending')").get(agent.id),'legacy prompt review hold',20000);
   assert.equal(store.resumeSessionState(agent.id).sessionId,accepted.sessionId);
@@ -634,5 +635,93 @@ test('capability change after verified replacement holds the exact queued task',
   assert.ok(held);
   assert.ok(!(await native.requests()).filter(x=>x.method==='turn/start').some(x=>JSON.stringify(x).includes('The exact pending objective.')));
   assert.ok(!store.readEvents(agent.id).some(e=>e.event.type==='session_reset'&&e.event.reason==='tool_contract_changed'));
+ },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,uniqueThreads:true})).adapter});
+});
+
+
+for(const timing of ['idle','during-run'])test('workspace prompt refresh preserves native-only work across '+timing+' edit',{timeout:90000},async t=>{
+ let store,native;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Workspace prompt continuity'),agent=await f.createIdleAgent(chat,'Worker');
+  const finding='Synthetic private tool finding: violet relay is disconnected.';
+  const objective='Inspect the relay, preserve findings, and finish the original objective.';
+  const history=()=>store.sqlite.prepare('SELECT row_key,text FROM chat_search_messages WHERE project_id=? ORDER BY row_key').all(agent.projectId);
+  await f.send(agent.id,objective);
+  await until(async()=>(await native.requests()).some(x=>x.method==='turn/start'),'initial native work');
+  await native.sendWorkResult(finding);
+  await until(()=>store.readEvents(agent.id).some(x=>x.event.type==='tool_result'&&x.event.output===finding),'native-only tool result retained');
+  assert.ok(!JSON.stringify(history()).includes(finding),'tool work is not silently published as Communication');
+  const edit=async()=>{
+   const before=history(),accepted=store.resumeSessionState(agent.id);
+   const preferences=f.ok(await f.api('GET','/api/workspace/preferences'));
+   const patch=timing==='idle'?{globalInstructions:'Keep relay verification explicit.'}:{profile:{...preferences.profile,displayName:'Relay Reviewer'}};
+   f.ok(await f.api('PATCH','/api/workspace/preferences',patch));
+   assert.deepEqual(history(),before,'workspace edit leaves canonical history unchanged');
+   assert.equal(store.resumeSessionState(agent.id)?.sessionId,accepted?.sessionId,'edit retains accepted context until verified handoff');
+  };
+  if(timing==='during-run')await edit();
+  await native.sendTool('ponderosa_message',{text:'Inspection progressed; the original objective is not complete.'});await f.settled(agent.id);
+  assert.ok(store.resumeSessionState(agent.id)?.sessionId);
+  if(timing==='idle')await edit();
+  const followup='Continue the original relay objective.';
+  await f.send(agent.id,followup);
+  const starts=await until(async()=>{const rows=(await native.requests()).filter(x=>x.method==='turn/start');return rows.length>=2?rows:undefined;},'old-context handoff',20000);
+  assert.equal(starts[1].params.threadId,starts[0].params.threadId,'handoff inspects the context that observed tool work');
+  assert.ok(!JSON.stringify(starts[1]).includes(followup),'queued task is not replayed into old context');
+  const summary=objective+' '+finding+' The objective remains unfinished.';
+  await native.sendAnswer(summary);
+  const replacement=await until(async()=>{const rows=(await native.requests()).filter(x=>x.method==='turn/start');return rows.length>=3?rows:undefined;},'verified replacement input',20000);
+  assert.notEqual(replacement[2].params.threadId,starts[0].params.threadId);
+  assert.ok(JSON.stringify(replacement[2]).includes(summary),'actual handoff carries native-only finding and unfinished objective');
+  await native.sendAnswer('Continuity context received.');
+  const final=await until(async()=>{const rows=(await native.requests()).filter(x=>x.method==='turn/start');return rows.length>=4?rows:undefined;},'original queued input',20000);
+  assert.equal(final[3].params.threadId,replacement[2].params.threadId);
+  assert.ok(JSON.stringify(final[3]).includes(followup));
+  assert.equal(store.sqlite.prepare('SELECT count(*) n FROM context_rollovers WHERE agent_id=?').get(agent.id).n,1);
+  assert.equal(store.readEvents(agent.id).filter(x=>x.event.type==='session_reset').length,0,'no direct bounded fresh-seed reset');
+  await native.sendTool('ponderosa_message',{text:'The original objective is complete.'});await f.settled(agent.id);
+  assert.equal((await native.requests()).filter(x=>x.method==='turn/start').length,4,'no uncertain replay or extra provider turn');
+ },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,uniqueThreads:true})).adapter});
+});
+
+
+test('unchanged known prompt continues the accepted native session',{timeout:90000},async t=>{
+ let store,native;await withFixture(t,async f=>{
+  const chat=await f.createChat('Unchanged prompt'),agent=await f.createIdleAgent(chat,'Worker');
+  await f.send(agent.id,'The original objective remains unfinished.');
+  await until(async()=>(await native.requests()).some(x=>x.method==='turn/start'),'first native turn');
+  await native.sendTool('ponderosa_message',{text:'Progress only.'});await f.settled(agent.id);
+  const accepted=store.resumeSessionState(agent.id);assert.ok(store.acceptedProviderSessionInput(agent.id)?.exactSystemPrompt);
+  await f.send(agent.id,'Continue the same objective.');
+  const rows=await until(async()=>{const x=(await native.requests()).filter(x=>x.method==='turn/start');return x.length===2?x:undefined;},'compatible continuation');
+  assert.equal(rows[1].params.threadId,rows[0].params.threadId);
+  assert.equal(store.resumeSessionState(agent.id).sessionId,accepted.sessionId);
+  assert.equal(store.sqlite.prepare('SELECT count(*) n FROM context_rollovers WHERE agent_id=?').get(agent.id).n,0);
+  await native.sendTool('ponderosa_message',{text:'Objective complete.'});await f.settled(agent.id);
+ },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,uniqueThreads:true})).adapter});
+});
+
+test('fresh prompt lookup failure preserves its redacted cause and exact queued work',{timeout:90000},async t=>{
+ let store,native,fail=false;
+ const secret='synthetic-prompt-token-7342',name='PONDEROSA_TEST_PROMPT_TOKEN',prior=process.env[name];process.env[name]=secret;
+ t.after(()=>{if(prior===undefined)delete process.env[name];else process.env[name]=prior;});
+ const original=AgentStore.prototype.acceptedProviderSessionInput;
+ AgentStore.prototype.acceptedProviderSessionInput=function(...args){const packet=original.apply(this,args);return fail&&packet?{...packet,get exactSystemPrompt(){throw new Error('Synthetic saved prompt lookup failed '+secret);}}:packet;};
+ t.after(()=>{AgentStore.prototype.acceptedProviderSessionInput=original;});
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Prompt lookup failure'),agent=await f.createIdleAgent(chat,'Worker');
+  await f.send(agent.id,'Preserve original objective.');await until(async()=>(await native.requests()).some(x=>x.method==='turn/start'),'first turn');
+  await native.sendTool('ponderosa_message',{text:'Progress only.'});await f.settled(agent.id);
+  const accepted=store.resumeSessionState(agent.id);fail=true;
+  f.ok(await f.api('PATCH','/api/workspace/preferences',{globalInstructions:'Changed workspace instructions.'}));
+  await f.send(agent.id,'The exact queued objective.');
+  const held=await until(()=>store.sqlite.prepare("SELECT a.id FROM agent_activations a JOIN activation_sources h ON h.activation_id=a.id WHERE a.agent_id=? AND a.state='pending' AND h.source_kind='settings_transition_reservation_wait'").get(agent.id),'exact context hold',20000);
+  const notices=f.ok(await f.api('GET','/api/notifications'));
+  assert.ok(notices.items.some(x=>x.body.includes('Synthetic saved prompt lookup failed')));
+  assert.ok(!JSON.stringify(notices).includes(secret),'known secret is redacted from fresh cause');
+  assert.equal(store.resumeSessionState(agent.id).sessionId,accepted.sessionId);
+  assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(held.id).n,0);
+  assert.equal((await native.requests()).filter(x=>x.method==='turn/start').length,1,'failure does not dispatch or replay');
+  fail=false;
  },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,uniqueThreads:true})).adapter});
 });

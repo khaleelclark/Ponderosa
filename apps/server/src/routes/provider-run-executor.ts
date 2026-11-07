@@ -1821,20 +1821,9 @@ export function startProviderRunExecution(
             }, "context rollover retirement remains pending after Run finalization");
           }
         } else if (policyRefreshSucceeded) {
-          // Workspace/Project policy changes still invalidate the retained
-          // provider cache after the current clean Run. They do not represent
-          // unfinished work and therefore need no continuation Activation.
-          clearAgentResumeSession(agent.id, "request_context_rollover");
+          // A clean progress Run need not finish the whole objective. Retain
+          // its accepted context for the next pre-admission prompt handoff.
           organizationEnvelopeStates.delete(agent.id);
-          const staleRuntime = reusableRuntime(agent.id);
-          if (staleRuntime) {
-            activeRun.persistentRuntimeIdentity = undefined;
-            try {
-              await teardownPersistentRuntime(agent.id, staleRuntime, "policy context refresh", project.id);
-            } catch (error) {
-              app.log.error({ err: error, agentId: agent.id, runId }, "policy context refresh teardown remains pending");
-            }
-          }
         } else if (rolloverRequested && !coordinationV3.runPause(runId) &&
             (runError || controller.signal.aborted || schedulerCancelled || handoffActivationAcknowledged)) {
           const abandonedHandoff = store.continuationHandoffForRun(agent.id, runId);

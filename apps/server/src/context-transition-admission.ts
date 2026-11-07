@@ -1,3 +1,4 @@
+import { freshFailureDiagnostic } from './working-copy-diagnostic.js';
 import { createHash } from 'node:crypto';
 import { CapabilityPolicyStore, type AgentStore, type CoordinationV3Store, type WorkspaceStore } from '@ponderosa/agents';
 import { CAPABILITY_IDS, filterRuntimeToolsForCapabilities, runtimeRestrictions, PONDEROSA_HISTORY_TOOL, type Adapter, type ModelOption, type AgentDto, type ProjectDto } from '@ponderosa/core';
@@ -152,6 +153,17 @@ export async function requestSettingsTransition(input: {
    const boundary=agent&&store.providerCommandContextBoundary(agent.id),accepted=agent&&store.resumeSessionState(agent.id);
    const packet=agent&&store.acceptedProviderSessionInput(agent.id);
    const contract=packet?.sourceManifest.schemaVersion===3?packet.sourceManifest.normalRuntimeContract:undefined;
+   // Workspace guidance/profile edits must not bypass continuity merely because
+   // the accepted boundary cannot support a verified native handoff.
+   shouldHold=Boolean(row&&agent&&project&&accepted);
+   if(shouldHold&&typeof packet?.exactSystemPrompt!=='string')
+    return hold('The saved provider instructions are missing. The original work remains queued for context review.');
+   const acceptedPromptChanged=Boolean(row&&agent&&project&&accepted&&typeof packet?.exactSystemPrompt==='string'&&
+    await transitionSystemPromptHash(agent,project,workspace.getPreferences(),opts)!==createHash('sha256').update(packet.exactSystemPrompt).digest('hex'));
+   if(currentFingerprint!==transitionFingerprint(input,pending.projectId,pending.agentId,pending.id))return false;
+   shouldHold=acceptedPromptChanged;
+   const unchangedOrHold=(reason:string)=>acceptedPromptChanged?hold(reason+' The original work remains queued for context review.'):true;
+
    // Older accepted packets may have no runtime contract, while their Run
    // origin and a later explicit global-read removal are still available.
    // Treat that signal as a possible change, not proof of historical access.
@@ -188,14 +200,14 @@ export async function requestSettingsTransition(input: {
       typeof dispatch?.effort==='string' || typeof dispatch?.speed==='string'));
    if(requiresKnownBoundary&&(!boundary||!packet||!contract||contract.version!==1))
     return hold('The earlier provider session lacks a complete, verified context boundary. The original work remains queued for review.');
+   if(agent&&coordinationV3.activeContextRollover(agent.id))return true;
    if(!row||!agent||!project||!boundary||!accepted||!packet||!contract||contract.version!==1||
       agent.projectId!==pending.projectId||project.id!==pending.projectId||row.scope_key!==`conversation:${agent.conversationId}`||
       boundary.providerSessionId!==accepted.sessionId||boundary.toolContractHash!==contract.contractHash||
       contract.engineId!==agent.activeEngine||contract.workingCopyId!==agent.workingCopy.id||
       agent.workingCopy.state!=='ready'||contract.cwd!==agent.workingCopy.rootPath||
       typeof packet.exactSystemPrompt!=='string'||typeof packet.executionId!=='string'||
-      (typeof dispatch?.engine==='string'&&dispatch.engine!==agent.activeEngine)||
-      coordinationV3.activeContextRollover(agent.id))return true;
+      (typeof dispatch?.engine==='string'&&dispatch.engine!==agent.activeEngine))return unchangedOrHold('The saved provider boundary does not match the current Agent, Chat, runtime or queued work.');
    const memory=localMemoryFor(app);
    if(!memory){
     const known=hasKnownRetainedMemory(store,agent.id,packet.executionId,boundary.executionId,accepted.sessionId);
@@ -227,10 +239,10 @@ export async function requestSettingsTransition(input: {
      return hold('Access changed after the context handoff. The original work remains queued for review.');
    }
    const engine=engines.get(agent.activeEngine);
-   if(!engine||![CodexAdapter.prototype,ClaudeAdapter.prototype].includes(Object.getPrototypeOf(engine.adapter))||Object.hasOwn(engine.adapter,'openSession'))return true;
+   if(!engine||![CodexAdapter.prototype,ClaudeAdapter.prototype].includes(Object.getPrototypeOf(engine.adapter))||Object.hasOwn(engine.adapter,'openSession'))return unchangedOrHold('This provider adapter does not support the verified instruction-change handoff.');
    const initialFingerprint=transitionFingerprint(input,pending.projectId,pending.agentId,pending.id);
    const {targetModel,targetEffort,targetSpeed}=settingsTransitionTarget(agent,project,engine.adapter,workspace.getPreferences(),cachedModelOptions(engine.adapter,project.id),dispatch);
-   if(!targetModel?.trim()||!contract.model?.trim())return true;
+   if(!targetModel?.trim()||!contract.model?.trim())return unchangedOrHold('The saved or target model is missing, so the instruction-change handoff cannot be verified.');
    const changed=targetModel!==contract.model||targetEffort!==contract.effort||targetSpeed!==(contract.speed??'standard');
    // A same-scope instruction change must bridge the old provider context,
    // even when model settings themselves are unchanged.
@@ -266,7 +278,7 @@ export async function requestSettingsTransition(input: {
    const prior=contract.capabilityRestrictions;
    if(!prior||restrictions.filesystemWriteRestricted!==prior.filesystemWriteRestricted||
       JSON.stringify(restrictions.restrictedCapabilityIds)!==JSON.stringify(prior.restrictedCapabilityIds)||
-      JSON.stringify(restrictions.restrictedConnectorNames)!==JSON.stringify(prior.restrictedConnectorNames))return true;
+      JSON.stringify(restrictions.restrictedConnectorNames)!==JSON.stringify(prior.restrictedConnectorNames))return unchangedOrHold('Capability restrictions changed, so the retained context cannot be transferred under the current access policy.');
    const tools=filterRuntimeToolsForCapabilities([...providerDynamicTools(Boolean(opts.localMemory)),PONDEROSA_HISTORY_TOOL],policy);
    const communicationPrompt=communicationV3SessionPrompt(),preferences=workspace.getPreferences();
    // The old provider already has its accepted system prompt. Use its exact
@@ -294,13 +306,13 @@ export async function requestSettingsTransition(input: {
    return true;
    })();
    return reserved;
-  }catch{
+  }catch(cause){
    // If SQLite committed before a caller saw an exception, adopt the matching
    // durable rollover instead of replaying it or releasing the queued work.
    const existing=coordinationV3.activeContextRollover(pending.agentId);
    const owns=existing&&store.sqlite.prepare(`SELECT 1 FROM agent_activations WHERE kind='context_rollover_handoff'
     AND json_extract(payload_json,'$.rolloverId')=? AND json_extract(payload_json,'$.settingsTransition.activationId')=?`).get(existing.id,pending.id);
    if(owns)return false;
-   return shouldHold?hold('Ponderosa could not prepare the context handoff. The original work remains queued; review the Agent’s activity before retrying.'):true;
+   return shouldHold?hold(freshFailureDiagnostic(cause,'Ponderosa could not prepare the context handoff. The original work remains queued; review the Agent’s activity before retrying.')):true;
   }
 }
