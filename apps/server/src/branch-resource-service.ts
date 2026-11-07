@@ -10,7 +10,7 @@ import {createHash} from 'node:crypto';
 import {realpathSync,statSync} from 'node:fs';
 import {resolve} from 'node:path';
 import {retainedResourceCapture,receiptMatchesSource,resourceCaptureFrontierHash,stableJson,type AgentStore,type BranchStore,type BranchResourceProvision } from '@ponderosa/agents';
-import type { ImportAgentPackageResponse } from '@ponderosa/core';
+import { BRANCH_RESOURCE_RETIREMENT_ACTION_PROVENANCE, type ImportAgentPackageResponse } from '@ponderosa/core';
 export type BranchTemplateImporter = (input: BranchResourceProvision, hooks: {
   plan(agentIds: string[],creationOperationId?:string): void | Promise<void>; commit(result: ImportAgentPackageResponse): void;
   transaction?(operation:()=>void):void;
@@ -253,7 +253,18 @@ export class BranchResourceService {
       sourceAgentId:expert.sourceAgentId,sourceChatId:expert.sourceChatId,copyAgentId:expert.copyAgentId,copyChatId:expert.copyChatId,
       requestId:expert.requestId,attemptId:expert.attemptId,task:expert.task,result:attempt?.result_json?JSON.parse(attempt.result_json):null,
       historyAvailable:!!expert.finalSnapshotReceipt&&expert.finalVerifiedSha256===expert.finalSnapshotReceipt.sha256}:undefined;
-    const snapshot={...base,...(trace?{temporaryCopyTrace:trace}:{})};
+    let temporaryCopyActions:import('@ponderosa/core').TemporaryCopyActionHistoryDto|undefined;
+    if(expert){
+      const approvals=expert.approvalHistory?.map(a=>({actor:a.actor,origin:a.origin,requestId:a.requestId,createdAt:a.createdAt,reason:a.reason,
+        action:a.resolution.action,...(a.resolution.agentActions?{agentActions:a.resolution.agentActions}:{}),copySourceMemory:a.copySourceMemory,allowFindingsWriteback:a.allowFindingsWriteback}))??
+        (expert.accessChoice&&expert.consent?[{action:expert.accessChoice.action,...(expert.accessChoice.agentActions?{agentActions:expert.accessChoice.agentActions}:{}),copySourceMemory:expert.consent.copySourceMemory,allowFindingsWriteback:expert.consent.allowFindingsWriteback}]:[]);
+      const retired=this.store.sqlite.prepare("SELECT id,evidence_json,created_at FROM branch_checkpoints WHERE execution_id=? AND transition_key=? AND kind='resource_retired'")
+        .get(row!.execution_id,`resource-retired:${stepExecutionId}:${base.generation}`) as {id:number;evidence_json:string;created_at:string}|undefined;
+      if(retired&&![stableJson({stepExecutionId}),stableJson({stepExecutionId,actionProvenance:BRANCH_RESOURCE_RETIREMENT_ACTION_PROVENANCE})].includes(retired.evidence_json))throw Error('Resource retirement record identity differs');
+      const recorded=retired&&JSON.parse(retired.evidence_json) as {actionProvenance?:typeof BRANCH_RESOURCE_RETIREMENT_ACTION_PROVENANCE}|undefined;
+      temporaryCopyActions={approvals,...(retired?{retirement:{checkpointId:retired.id,createdAt:retired.created_at,...(recorded?.actionProvenance?{provenance:recorded.actionProvenance}:{})}}:{})};
+    }
+    const snapshot={...base,...(trace?{temporaryCopyTrace:trace}:{}),...(temporaryCopyActions?{temporaryCopyActions}:{})};
     const receipt=journal?.receipt??expert?.snapshotReceipt;
     if(!receipt||!snapshot.destinationChatId||!snapshot.destinationChatAvailable||snapshot.state!=='reserved'||snapshot.importState)return snapshot;
     let review:import('@ponderosa/core').AgentAccessImportReviewDto|null=null,withoutMemoryReview:import('@ponderosa/core').AgentAccessImportReviewDto|null=null,reviewError:string|undefined,sourceMemoryAvailable=false;
@@ -308,7 +319,7 @@ export class BranchResourceService {
     if(stableJson(readBranchExpertCopy(this.store.sqlite,resource!.execution_id,stepExecutionId))!==stableJson(r))throw Error('Temporary agent copy history changed; refresh');
     return {sourceAgentId:r.sourceAgentId,copyAgentId:r.copyAgentId,requestId:r.requestId,messages,runs,events};
   }
-  async reviewRestoreAccess(stepExecutionId:string,choice?:import('@ponderosa/core').ImportAgentPackageRequest['accessSettingsResolution'],consent?:{snapshotSha256:string;copySourceMemory:boolean;allowFindingsWriteback:boolean}) {
+  async reviewRestoreAccess(stepExecutionId:string,choice?:import('@ponderosa/core').ImportAgentPackageRequest['accessSettingsResolution'],consent?:{snapshotSha256:string;copySourceMemory:boolean;allowFindingsWriteback:boolean},approvalOrigin?:import("@ponderosa/core").BranchCopyApprovalOrigin) {
     if(!this.packages)throw Error('Checkpoint package service unavailable');
     const snapshot=this.branches.resourceInspection(stepExecutionId),journal=this.branches.resourceRestoreJournal(stepExecutionId);
     const row=this.store.sqlite.prepare('SELECT r.chat_id,r.execution_id,e.branch_id FROM branch_resources r JOIN branch_executions e ON e.id=r.execution_id WHERE r.step_execution_id=?').get(stepExecutionId) as {chat_id:string;execution_id:string;branch_id:string}|undefined;
@@ -323,7 +334,7 @@ export class BranchResourceService {
     if(stableJson(this.branches.resourceInspection(stepExecutionId))!==stableJson(snapshot)||stableJson(this.branches.resourceRestoreJournal(stepExecutionId))!==stableJson(journal)||stableJson(readBranchExpertCopy(this.store.sqlite,row.execution_id,stepExecutionId))!==stableJson(expert))throw Error('Resource destination changed; review again');
     if(expert){
       if(choice&&!consent)throw Error('Explicit expert copy memory choices are required');
-      this.branches.reviewExpertAccess(row.execution_id,stepExecutionId,review,choice,consent?{...consent,reviewSha256:review.reviewSha256}:undefined);
+      this.branches.reviewExpertAccess(row.execution_id,stepExecutionId,review,choice,consent?{...consent,reviewSha256:review.reviewSha256}:undefined,approvalOrigin);
     }else{
       if(consent)throw Error('Expert copy consent cannot apply to this resource');
       this.branches.resourceRestoreReview(stepExecutionId,review,choice);
@@ -551,7 +562,7 @@ export class BranchResourceService {
         }
         // The shared deletion authority has observed process and private-state cleanup.
         // The final SQLite check still rejects new members or an obsolete generation.
-        this.branches.resourceRetired(resource.stepExecutionId);
+        this.branches.resourceRetired(resource.stepExecutionId,undefined,BRANCH_RESOURCE_RETIREMENT_ACTION_PROVENANCE);
       } catch(error) { this.branches.resourceCleanupError(resource.stepExecutionId,describeBranchDeletionFailure(error,'resource')); }
     }
     for (const context of this.branches.resourceContextCleanupCandidates()) {

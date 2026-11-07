@@ -656,7 +656,7 @@ export function registerBranchRoutes(app: FastifyInstance, context: { dataDir?:s
         if(typeof body.snapshotSha256!=='string'||typeof body.copySourceMemory!=='boolean'||typeof body.allowFindingsWriteback!=='boolean')throw Error('Explicit expert copy memory choices required');
         consent={snapshotSha256:body.snapshotSha256,copySourceMemory:body.copySourceMemory,allowFindingsWriteback:body.allowFindingsWriteback};
       }
-      const result=await context.resources.reviewRestoreAccess(p.stepId,selection,consent);notify();return result;
+      const result=await context.resources.reviewRestoreAccess(p.stepId,selection,consent,{actor:{kind:'user',id:'local-operator'},origin:'operator_api',requestId:request.id});notify();return result;
     }catch(error){return reply.code(409).send({error:(error as Error).message});}
   });
   app.delete<{Params:{id:string;executionId:string;stepId:string};Body:import('@ponderosa/core').BranchResourceCustodyReleaseInput}>('/api/branches/:id/executions/:executionId/resources/:stepId/checkpoint-custody',async(request,reply)=>{

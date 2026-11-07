@@ -1344,13 +1344,32 @@ export function registerAgentPackageRoutes(
     return installed;
   };
 
+  const importedAgentProvenance=async(agent:{id:string;projectId:string;conversationId:string}):Promise<import('@ponderosa/core').ImportedAgentProvenanceDto|undefined>=>{
+    const chat=store.getConversation(agent.conversationId);if(!chat||chat.projectId!==agent.projectId)return;
+    const product=chat.branchId?'branches':'dev';
+    const owners=store.sqlite.prepare(`SELECT o.id,o.actor_scope,o.idempotency_key,o.payload_hash,o.created_at FROM agent_creation_operations o
+      JOIN agent_creation_operation_members m ON m.operation_id=o.id
+      WHERE m.agent_id=? AND o.project_id=? AND o.conversation_id=? AND o.product_scope=? AND o.kind='import' AND o.status='completed'
+      ORDER BY o.created_at LIMIT 2`).all(agent.id,agent.projectId,agent.conversationId,product) as Array<{id:string;actor_scope:string;idempotency_key:string;payload_hash:string;created_at:string}>;
+    if(owners.length!==1)return;
+    const owner=owners[0]!,intent=getImportIntent(agent.projectId,owner.idempotency_key);
+    let operation:AgentImportOperationDto|undefined;
+    if(intent){
+      if(intent.conversation_id!==agent.conversationId||intent.product_scope!==product||intent.state!=='queued')return;
+      operation=await readQueuedIntentOperation(intent);
+      if(!operation||operation.status!=='completed'||operation.payloadHash!==owner.payload_hash||!operation.result?.agentIds.includes(agent.id))return;
+    }
+    return {actorScope:owner.actor_scope,destinationChatId:chat.id,destinationChatTitle:chat.title,createdAt:owner.created_at,
+      creationOperationId:owner.id,requestId:owner.idempotency_key,...(operation?{operationId:operation.id,sourceLabel:operation.sourceLabel}:{})};
+  };
   app.get<{Params:{id:string};Querystring:{offset?:string;limit?:string;archiveVersion?:string}}>('/api/agents/:id/imported-communications',async(request,reply)=>{
     const agent=store.getAgent(request.params.id);
     if(!agent||store.agentCreationPending(agent.id)||!resourceInProduct(store,'agent',agent.id,requestProduct(request)))return reply.code(404).send({error:'Agent unavailable'});
     const offset=Number(request.query.offset??0),limit=Number(request.query.limit??10);
     if(!Number.isSafeInteger(offset)||offset<0||!Number.isSafeInteger(limit)||limit<1||limit>20)return reply.code(400).send({error:'Use nonnegative offset and limit 1–20'});
+    const importProvenance=await importedAgentProvenance(agent);
     const availability=store.getImportedHistoryAvailability(agent.id);
-    if(!availability.archiveVersion)return {source:'',importedAt:'',messages:[],artifacts:[],hasMore:false};
+    if(!availability.archiveVersion)return {source:'',importedAt:'',messages:[],artifacts:[],hasMore:false,...(importProvenance?{importProvenance}:{})};
     if(request.query.archiveVersion&&request.query.archiveVersion!==availability.archiveVersion)return reply.code(409).send({error:'Imported history changed; reload from the first page'});
     const {portable:archiveData}=await parsePortablePackageFile(importedAgentHistoryPath(context.dataDir,agent.projectId,agent.id),{packageOnly:true});
     if(!store.getAgent(agent.id)||deletingAgentIds.has(agent.id))return reply.code(404).send({error:'Agent unavailable'});
@@ -1364,7 +1383,7 @@ export function registerAgentPackageRoutes(
       const artifact=store.getProjectArtifact(agent.projectId,ref);
       return artifact?[{...artifact,downloadUrl:`/api/projects/${encodeURIComponent(agent.projectId)}/artifacts/${encodeURIComponent(ref)}/download`}]:[];
     });
-    const result={source:archive.source,importedAt:archive.importedAt,archiveVersion:availability.archiveVersion,messages,artifacts,hasMore:offset+messages.length<archive.messages.length,nextOffset:offset+messages.length};
+    const result={source:archive.source,importedAt:archive.importedAt,archiveVersion:availability.archiveVersion,messages,artifacts,...(importProvenance?{importProvenance}:{}),hasMore:offset+messages.length<archive.messages.length,nextOffset:offset+messages.length};
     if(agentPackageJsonUtf8Bytes(result)>2*1024*1024)return reply.code(413).send({error:'History page exceeds 2 MiB; request fewer messages or use bounded history retrieval'});
     return result;
   });

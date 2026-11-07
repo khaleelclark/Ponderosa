@@ -489,6 +489,36 @@ test('foreign source Chat bindings are refused before an organization is silentl
   const response=await f.request(f.importRequest(pkg));assert.equal(response.statusCode,400);assert.match(response.body,/source Chat bindings/i);
 }));
 
+test('empty-history staged import retains its exact actor and operation provenance after restart',options,t=>withPortability(t,async f=>{
+  const pkg=await f.exportAgent(f.a.id,'template');
+  assert.ok(pkg.agents.every(agent=>!agent.history?.length),'actual template export has no authored history');
+  const metadata={conversationId:f.destination.id,engineMapping:{codex:'codex'}};
+  const preview=f.ok(await f.request({method:'POST',url:`/api/projects/${f.project.id}/agent-access-preview`,headers:{'content-type':'application/vnd.ponderosa.agent-import'},payload:Buffer.from(JSON.stringify(metadata)+'\n'+JSON.stringify(pkg))}));
+  const requestId=randomUUID(),upload={...metadata,accessSettingsResolution:{action:'keep_destination',reviewSha256:preview.reviewSha256}};
+  const admitted=f.ok(await f.request({method:'POST',url:`/api/projects/${f.project.id}/agent-import-operations`,headers:{'idempotency-key':requestId,'content-type':'application/vnd.ponderosa.agent-import'},payload:Buffer.from(JSON.stringify(upload)+'\n'+JSON.stringify(pkg))}));
+  let operation=admitted;
+  const deadline=Date.now()+10000;
+  while(Date.now()<deadline&&operation.status==='pending'){await delay(10);operation=f.ok(await f.request({method:'GET',url:`/api/projects/${f.project.id}/agent-import-operations/${admitted.id}`}));}
+  assert.equal(operation.status,'completed',JSON.stringify(operation));
+  const agentId=operation.result.rootAgentId,url=`/api/agents/${agentId}/imported-communications`;
+  const before=f.ok(await f.request({method:'GET',url})),record=before.importProvenance;
+  assert.deepEqual(before.messages,[]);assert.ok(record,'an empty archive still has a canonical local import record');
+  assert.equal(record.actorScope,'user:local-operator');assert.equal(record.operationId,operation.id);assert.equal(record.requestId,requestId);
+  assert.equal(record.sourceLabel,operation.sourceLabel);assert.equal(record.destinationChatId,f.destination.id);assert.equal(record.destinationChatTitle,f.destination.title);
+  const canonical=f.store.getAgentCreationOperation(record.creationOperationId);assert.equal(canonical.actorScope,record.actorScope);assert.ok(canonical.agentIds.includes(agentId));
+  assert.ok(!/payloadHash|requestFingerprint|dataBase64|restrictedCapabilityIds|snapshot/.test(JSON.stringify(record)),'selected provenance omits portable data and authorization records');
+  await f.restart();
+  assert.deepEqual(f.ok(await f.request({method:'GET',url})).importProvenance,record,'canonical provenance survives restart');
+  assert.equal((await f.request({method:'GET',url:`/api/agents/${randomUUID()}/imported-communications`})).statusCode,404);
+  // A completed owner in another Chat must not be used for this Agent.
+  const foreign=f.store.beginAgentCreationOperation({projectId:f.project.id,conversationId:f.chat.id,actorScope:'user:local-operator',kind:'import',idempotencyKey:randomUUID(),payloadHash:'f'.repeat(64)}).operation;
+  f.store.addAgentCreationOperationMember(foreign.id,agentId,0);f.store.updateAgentCreationOperation(foreign.id,{status:'completed'});
+  assert.deepEqual(f.ok(await f.request({method:'GET',url})).importProvenance,record,'foreign owner cannot shadow the exact destination');
+  const ambiguous=f.store.beginAgentCreationOperation({projectId:f.project.id,conversationId:f.destination.id,actorScope:'user:local-operator',kind:'import',idempotencyKey:randomUUID(),payloadHash:'e'.repeat(64)}).operation;
+  f.store.addAgentCreationOperationMember(ambiguous.id,agentId,0);f.store.updateAgentCreationOperation(ambiguous.id,{status:'completed'});
+  assert.equal(f.ok(await f.request({method:'GET',url})).importProvenance,undefined,'ambiguous local ownership is not arbitrarily attributed');
+},{handlerDeadlineMs:5000,packageHandlerDeadlineMs:10000}));
+
 test('staged access preview is mutation-free and imported provenance exposes only authorized remapped originals',options,t=>withPortability(t,async f=>{
   const pkg=await f.exportAgent(f.a.id);
   Object.assign(pkg.agents[0].accessSettings,{readGlobalMemory:true,savedBrowserAllowed:true,browserMode:'trusted',sourceProfileName:'Historical label only'});

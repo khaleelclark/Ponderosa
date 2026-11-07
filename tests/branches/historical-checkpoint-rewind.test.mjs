@@ -3105,7 +3105,9 @@ test('final resource actual package engine captures later history and working fi
  }finally{if(service)await service.stop();await app.close();assets.close();}
 });
 
-for(const linkedFinal of [false,true,'dangling','cycle','compressed','multipart'])test(linkedFinal==='compressed'||linkedFinal==='multipart'?linkedFinal+' portable final originals continue with exact decoded bytes':linkedFinal==='dangling'?'dangling portable final symlink continues without creating its target':linkedFinal===true?'linked portable final resource continues with exact in-root file links':linkedFinal?'unsupported '+linkedFinal+' final links remain held':'completed portable final resource restores a fresh destination without replay',async t=>{
+for(const finalScenario of [false,'legacy-retirement',true,'dangling','cycle','compressed','multipart']){
+const legacyRetirement=finalScenario==='legacy-retirement',linkedFinal=legacyRetirement?false:finalScenario;
+test(legacyRetirement?'legacy completed portable final resource restores without provenance enrichment':linkedFinal==='compressed'||linkedFinal==='multipart'?linkedFinal+' portable final originals continue with exact decoded bytes':linkedFinal==='dangling'?'dangling portable final symlink continues without creating its target':linkedFinal===true?'linked portable final resource continues with exact in-root file links':linkedFinal?'unsupported '+linkedFinal+' final links remain held':'completed portable final resource restores a fresh destination without replay',async t=>{
  const Fastify=(await import('fastify')).default;
  const {AssetStore}=await import('../../apps/server/dist/assets.js');
  const {registerAgentPackageRoutes}=await import('../../apps/server/dist/routes/agent-packages.js');
@@ -3148,6 +3150,7 @@ for(const linkedFinal of [false,true,'dangling','cycle','compressed','multipart'
   coordination.updateRequest({requestId:opened.requestId,updateId:'actual-engine-result',kind:'completed',actor:{kind:'agent',id:opened.agentId},payload:{text:'known result'}});
   const suffix=await f.claim();f.settle(suffix);await f.branches.unitSaver.drain();
   let deleted=0;
+  if(legacyRetirement){const originalRetire=f.branches.resourceRetired.bind(f.branches);f.branches.resourceRetired=(stepId,now)=>originalRetire(stepId,now);}
   service=new BranchResourceService(f.branches,f.store,async ids=>{deleted++;const p=f.store.previewAgentDeletion(ids);f.store.deleteAgentSubtrees(ids,p.previewHash,id=>coordination.handleAgentDeletion(id));},async()=>assert.fail('unexpected Chat creation'),async id=>{const c=f.store.commitConversationDeletion(id);f.store.finishConversationDeletionStorageCleanup(c);f.store.markConversationDeletionServerCleanupComplete(id);});
   service.setPackageEngine(packageEngine);service.setGenerationExitDrain(async ids=>sealProviderNeverStarted(db,'fixture-runtime',ids));
   await service.tick(false);
@@ -3207,15 +3210,23 @@ for(const linkedFinal of [false,true,'dangling','cycle','compressed','multipart'
   assert.equal(proof.proof.finalExit.identity.executionId,f.source.id);
   assert.equal(proof.proof.selectedCustody.wireJson,bytes);
   const {retainedCompletedFinalResourceSource}=await import('../../packages/agents/dist/branch-final-resource-reconciliation.js');
-  for(const mutation of ['extra-audit','missing-intent','excluded-file','unavailable-custody']){
+  for(const mutation of ['extra-audit','missing-intent','excluded-file','unavailable-custody','retirement-actor','retirement-reason','retirement-extra','retirement-step']){
    const changed=structuredClone(owner);
    if(mutation==='extra-audit'){const fact=changed.facts.find(f=>f.kind==='transition');changed.facts.push({...fact,key:'extra',json:stableJson({...JSON.parse(fact.json),id:99999,kind:'script_started'})});}
+   if(mutation.startsWith('retirement-')){
+    const fact=changed.facts.find(f=>f.kind==='transition'&&JSON.parse(f.json).kind==='resource_retired'),value=JSON.parse(fact.json),evidence=JSON.parse(value.evidence_json);
+    if(mutation==='retirement-step')evidence.stepExecutionId=randomUUID();
+    else if(mutation==='retirement-extra')evidence.unrecognized=true;
+    else {evidence.actionProvenance={actor:{kind:'system',id:'ponderosa'},origin:'resource_cleanup',reason:'no_active_work_and_cleanup_completed'};if(mutation==='retirement-actor')evidence.actionProvenance.actor.kind='user';if(mutation==='retirement-reason')evidence.actionProvenance.reason='unverified_reason';}
+    value.evidence_json=stableJson(evidence);fact.json=stableJson(value);
+   }
    if(mutation==='missing-intent')changed.facts=changed.facts.filter(f=>!f.key.startsWith('final-package-intent:'));
    if(mutation==='excluded-file'){const fact=changed.facts.find(f=>f.kind==='custody'&&JSON.parse(f.json).receipt.custodyId===final.receipt.custodyId),value=JSON.parse(fact.json);value.package.agents[0].workingFolder.excludedPaths=['missing-user-data'];fact.json=stableJson(value);}
    if(mutation==='unavailable-custody'){const fact=changed.facts.find(f=>f.kind==='custody'&&JSON.parse(f.json).receipt.custodyId===final.receipt.custodyId),value=JSON.parse(fact.json);value.disposition='unavailable_held';fact.json=stableJson(value);}
    assert.throws(()=>retainedCompletedFinalResourceSource(changed,String(final.checkpointId),final.checkpointHash));
   }
 
+  assert.throws(()=>retainedCompletedFinalResourceSource(owner,String(final.checkpointId),'0'.repeat(64)),'retained checkpoint hash remains exact');
   assert.equal(retained.receipt.dispatched,false);
   assert.equal(db.prepare('SELECT COUNT(*) n FROM agents a JOIN conversations c ON c.id=a.conversation_id WHERE c.branch_id=?').get(imported.branchId).n,0);
   assert.equal(readFileSync(file,'utf8'),'after checkpoint exact content 😀\n');
@@ -3618,6 +3629,7 @@ for(const version of ['0045_agent_import_submission_intents.sql','0046_retained_
  const {restoredRequestUpdatePayload}=await import('../../packages/agents/dist/coordination-v3-cut-restoration-authority.js');
  for(const origin of origins){const update=f.store.sqlite.prepare('SELECT * FROM coordination_request_updates WHERE id=?').get(origin.update_id);assert.doesNotThrow(()=>restoredRequestUpdatePayload(f.store.sqlite,update));}
 });
+}
 
 test('runtime import compact bytes preserve exact legacy evidence and bound corrupt decoding',async()=>{
  const {gzipSync}=await import('node:zlib');

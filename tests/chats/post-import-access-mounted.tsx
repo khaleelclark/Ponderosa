@@ -2,6 +2,7 @@ import {openSelect} from '../shared/mounted-controls';
 // Deferred browser regression source; no new runner or execution.
 import {createRoot} from 'react-dom/client';
 import {QueryClient,QueryClientProvider} from '@tanstack/react-query';
+import {ImportedCommunications} from '../../apps/web/src/components/ImportedCommunications';
 import {PostImportAccessReview} from '../../apps/web/src/components/PostImportAccessReview';
 import {api} from '../../apps/web/src/api';
 const assert=(value:unknown,message:string)=>{if(!value)throw new Error(message);};
@@ -40,4 +41,31 @@ export async function postImportBrowserReviewRegression():Promise<void>{
   doneButton.click();await tick();(Array.from(document.querySelectorAll('button')).find(button=>button.textContent==='Discard choices')!).click();await tick();
   assert(done===1&&writes.length===1,'explicit discard finishes without applying the selected destination profile');
  }finally{releaseAccess();root.unmount();client.clear();host.remove();Object.assign(api,original);}
+}
+
+export async function importedAgentProvenanceRegression():Promise<void>{
+ const originalFetch=globalThis.fetch,host=document.createElement('div');document.body.append(host);
+ const root=createRoot(host),client=new QueryClient({defaultOptions:{queries:{retry:false}}});let legacy=false,writes=0;
+ const operationId='import-operation-'+('b'.repeat(120));
+ globalThis.fetch=async(input,init)=>{
+  if(init?.method&&init.method!=='GET')writes++;
+  assert(String(input).includes('/api/agents/imported/imported-communications?'),'only the owning Agent history route is requested');
+  return new Response(JSON.stringify({source:'',importedAt:'',messages:[],artifacts:[],hasMore:false,...(legacy?{}:{importProvenance:{actorScope:'user:local-operator',sourceLabel:'Synthetic source / Reusable expert',destinationChatId:'destination-chat',destinationChatTitle:'Reviewed destination',createdAt:'2026-11-07T13:00:00.000Z',creationOperationId:'canonical-creation',requestId:'actual-request',operationId}}),unexpectedPortableData:'DO_NOT_RENDER_TEST_VALUE'}),{status:200,headers:{'content-type':'application/json'}});
+ };
+ const render=(key:string)=>root.render(<QueryClientProvider client={client}><ImportedCommunications key={key} agentId="imported"/></QueryClientProvider>);
+ const settle=async()=>{for(let i=0;i<6;i++)await tick();};
+ const open=()=>Array.from(host.querySelectorAll('button')).find(button=>button.textContent==='Imported history')!.click();
+ try{
+  render('current');await settle();open();await settle();
+  const record=host.querySelector('[aria-label="Import record"]')!;
+  assert(record.textContent?.includes('Imported by: You (local operator)')&&record.textContent?.includes('Source: Synthetic source / Reusable expert')&&record.textContent?.includes('Imported into: Reviewed destination'),'empty historical messages do not erase actual local actor/source/destination');
+  assert(host.textContent?.includes('No imported messages.')&&!host.textContent?.includes('Imported from  ·'),'empty archive has a truthful separate summary');
+  const details=record.querySelector('details')!;assert(!details.open,'technical import IDs are optional');details.querySelector('summary')!.click();await tick();
+  assert(details.textContent?.includes(operationId)&&details.textContent?.includes('actual-request')&&details.textContent?.includes('canonical-creation'),'the exact operation/request/creation chain remains inspectable');
+  const bounds=record.getBoundingClientRect();assert(bounds.left>=0&&bounds.right<=window.innerWidth+1,'full import identifiers wrap within the viewport');
+  assert(!host.textContent?.includes('DO_NOT_RENDER_TEST_VALUE'),'the surface never dumps unselected portable fields');
+  legacy=true;client.clear();render('legacy');await settle();open();await settle();
+  assert(host.textContent?.includes('No import record is available.')&&!host.textContent?.includes('Imported by: You'),'missing old provenance is not invented');
+  assert(writes===0,'reading import provenance never resubmits an import or changes access');
+ }finally{root.unmount();client.clear();host.remove();globalThis.fetch=originalFetch;}
 }

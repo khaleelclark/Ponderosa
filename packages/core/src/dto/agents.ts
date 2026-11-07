@@ -686,8 +686,14 @@ export interface AgentHealthProjectionDto {
   agents: AgentHealthDto[];
 }
 
+/** Exact local import ownership; no portable source facts or authority are returned. */
+export interface ImportedAgentProvenanceDto {
+ actorScope:string;sourceLabel?:string;destinationChatId:string;destinationChatTitle:string;
+ createdAt:string;creationOperationId:string;requestId:string;operationId?:string;
+}
 /** Owning-Agent historical provenance only; source identities convey no destination authority. */
 export interface ImportedCommunicationsPageDto {
+  importProvenance?:ImportedAgentProvenanceDto;
   source:string; importedAt:string; archiveVersion?:string;
   messages:PortableAgentHistoryMessageDto[];
   artifacts:import('./artifacts.js').ArtifactDto[];

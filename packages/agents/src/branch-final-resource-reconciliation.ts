@@ -1,6 +1,6 @@
 import {posix} from 'node:path';
 import {createHash} from 'node:crypto';
-import {TERMINAL_REQUEST_STATES, type BranchPortableRuntimeData, type BranchPortableRuntimeOwner} from '@ponderosa/core';
+import {BRANCH_RESOURCE_RETIREMENT_ACTION_PROVENANCE,TERMINAL_REQUEST_STATES, type BranchPortableRuntimeData, type BranchPortableRuntimeOwner} from '@ponderosa/core';
 import {verifyBranchHostCut, type BranchHostCut} from './branch-host-cut.js';
 import {verifyHostProvenance} from './branch-host-provenance.js';
 import {verifyRetainedFinalExitCommand} from './branch-final-resource-exit.js';
@@ -95,7 +95,7 @@ export function retainedCompletedFinalResourceSource(owner:BranchPortableRuntime
  const prefix=exit.latestContinuation.audit,tail=audit.slice(prefix.length);
  if(stableJson(audit.slice(0,prefix.length))!==stableJson(prefix)||tail.length!==2
   ||tail[0].kind!=='resource_retired'||tail[0].transition_key!==`resource-retired:${i.stepId}:0`
-  ||tail[0].evidence_json!==stableJson({stepExecutionId:i.stepId})||tail[1].kind!=='completed'
+  ||![stableJson({stepExecutionId:i.stepId}),stableJson({stepExecutionId:i.stepId,actionProvenance:BRANCH_RESOURCE_RETIREMENT_ACTION_PROVENANCE})].includes(tail[0].evidence_json)||tail[1].kind!=='completed'
   ||tail[1].evidence_json!==stableJson({output:latest.execution[0].output_text}))
   throw Error('Final source has additional transitions');
  const custody=one('custody',selected.issuedResourceCustody.custodyId);

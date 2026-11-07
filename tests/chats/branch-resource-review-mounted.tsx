@@ -186,3 +186,32 @@ async function copyApprovalFeedback():Promise<void>{
   }finally{observer.disconnect();root.unmount();client.clear();host.remove();globalThis.fetch=originalFetch;}
  }
 }
+
+export async function temporaryCopyActionHistoryRegression():Promise<void>{
+ const originalFetch=globalThis.fetch,host=document.createElement('div');document.body.append(host);
+ const root=createRoot(host),client=new QueryClient({defaultOptions:{queries:{retry:false}}});let legacy=false,writes=0;
+ const requestId='operator-request-'+('a'.repeat(120)),createdAt='2026-11-07T13:00:00.000Z';
+ globalThis.fetch=async(_input,init)=>{
+  if(init?.method&&init.method!=='GET')writes++;
+  return new Response(JSON.stringify({branchId:'branch',executionId:'run',stepExecutionId:'audit-step',generation:0,state:'retired',destinationChatId:'deleted-chat',destinationChatAvailable:false,importState:'completed',custody:null,currentPolicyReview:null,accessChoiceCurrent:false,
+   temporaryCopyActions:{approvals:[legacy?{action:'keep_destination',copySourceMemory:false,allowFindingsWriteback:false}:{actor:{kind:'user',id:'local-operator'},origin:'operator_api',requestId,createdAt,reason:'run_reviewed_temporary_copy',action:'keep_destination',copySourceMemory:false,allowFindingsWriteback:false}],
+    retirement:{checkpointId:42,createdAt,...(legacy?{}:{provenance:{actor:{kind:'system',id:'ponderosa'},origin:'resource_cleanup',reason:'no_active_work_and_cleanup_completed'}})}}}),{status:200,headers:{'content-type':'application/json'}});
+ };
+ const render=(key:string)=>root.render(<QueryClientProvider client={client}><BranchResourceReview key={key} branchId="branch" executionId="run" stepId="audit-step" enabled onChanged={()=>{}}/></QueryClientProvider>);
+ try{
+  render('recorded');await settle();button('Review resource').click();await settle();
+  const history=document.querySelector('[aria-label="Copy action history"]')!;
+  assert(history.textContent?.includes('Approved by: You (local operator)')&&history.textContent?.includes('Actor: Ponderosa (system)'),'actual recorded operator and system roles are distinct');
+  assert(history.textContent?.includes('Run this workflow job in the reviewed temporary Agent copy.')&&history.textContent?.includes('No active work remained and temporary resource cleanup completed.'),'both recorded reasons are plain');
+  assert(history.textContent?.includes('Keep destination restrictions')&&history.textContent?.includes('Copy private/team memory: No'),'the actual choices remain inspectable');
+  const details=Array.from(history.querySelectorAll('details')).find(d=>d.querySelector('summary')?.textContent==='Approval details')!;
+  const id=details.querySelector('span')??details.querySelector('p');assert(!details.open&&!id!.checkVisibility(),'technical request identity starts behind a disclosure');
+  details.querySelector('summary')!.click();await tick();assert(details.open&&id!.checkVisibility()&&details.textContent?.includes(requestId),'the full operator request remains inspectable');
+  const bounds=history.getBoundingClientRect();assert(bounds.left>=0&&bounds.right<=window.innerWidth+1,'action facts stay inside the phone/desktop viewport');
+  legacy=true;client.clear();render('legacy');await settle();button('Review resource').click();await settle();
+  const old=document.querySelector('[aria-label="Copy action history"]')!;
+  assert(old.textContent?.includes('Approved by: Not recorded')&&old.textContent?.includes('Recorded: Not recorded')&&old.textContent?.includes('Actor: Not recorded')&&old.textContent?.includes('Reason: Not recorded'),'legacy data is never backfilled with guessed provenance');
+  assert(!old.textContent?.includes('You (local operator)')&&!old.textContent?.includes(requestId),'new action provenance is not carried into an older record');
+  assert(writes===0,'opening both audit records never approves, applies, releases or replays work');
+ }finally{root.unmount();client.clear();host.remove();globalThis.fetch=originalFetch;}
+}

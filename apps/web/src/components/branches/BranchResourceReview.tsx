@@ -110,6 +110,27 @@ export function BranchResourceReview({branchId,executionId,stepId,enabled,onChan
     {message&&<Alert severity="info">{message}</Alert>}
     {copyApproved&&<Button onClick={()=>{setOpen(false);onChanged();}}>View Run progress</Button>}
     {value&&!inspection.isError&&<>
+     {value.temporaryCopyActions&&<Stack spacing={1.5} component="section" aria-label="Copy action history" sx={{overflowWrap:'anywhere'}}>
+      {value.temporaryCopyActions.approvals.map((approval,index)=><Stack key={`${approval.requestId??'legacy'}:${index}`} spacing={0.5}>
+       <Typography variant="subtitle2">Copy approval</Typography>
+       <Typography variant="body2">Approved by: {approval.actor?.kind==='user'&&approval.actor.id==='local-operator'?'You (local operator)':'Not recorded'}</Typography>
+       <Typography variant="body2">Recorded: {approval.createdAt?new Date(approval.createdAt).toLocaleString():'Not recorded'}</Typography>
+       <Typography variant="body2">Reason: {approval.reason==='run_reviewed_temporary_copy'?'Run this workflow job in the reviewed temporary Agent copy.':'Not recorded'}</Typography>
+       <Typography variant="body2">Restrictions: {approval.agentActions?'Reviewed per-Agent choices':approval.action==='keep_destination'?'Keep destination restrictions':'Apply source restrictions'}</Typography>
+       <Typography variant="body2">Copy private/team memory: {approval.copySourceMemory?'Yes':'No'} · Save private findings: {approval.allowFindingsWriteback?'Yes':'No'}</Typography>
+       {(approval.requestId||approval.agentActions)&&<details><summary>Approval details</summary>
+        {approval.requestId&&<Typography variant="caption" sx={{display:'block',overflowWrap:'anywhere'}}>Operator request: {approval.requestId}</Typography>}
+        {Object.entries(approval.agentActions??{}).map(([id,choice])=><Typography key={id} variant="caption" sx={{display:'block',overflowWrap:'anywhere'}}>Agent {id}: {choice==='keep_destination'?'Keep destination restrictions':'Apply source restrictions'}</Typography>)}
+       </details>}
+      </Stack>)}
+      {value.temporaryCopyActions.retirement&&<Stack spacing={0.5}>
+       <Typography variant="subtitle2">Temporary copy retired</Typography>
+       <Typography variant="body2">Actor: {value.temporaryCopyActions.retirement.provenance?'Ponderosa (system)':'Not recorded'}</Typography>
+       <Typography variant="body2">Recorded: {new Date(value.temporaryCopyActions.retirement.createdAt).toLocaleString()}</Typography>
+       <Typography variant="body2">Reason: {value.temporaryCopyActions.retirement.provenance?.reason==='no_active_work_and_cleanup_completed'?'No active work remained and temporary resource cleanup completed.':'Not recorded'}</Typography>
+       <details><summary>Retirement identifier</summary><Typography variant="caption">Checkpoint {value.temporaryCopyActions.retirement.checkpointId}</Typography></details>
+      </Stack>}
+     </Stack>}
      <Typography>Generation {value.generation} · {value.state} · import {value.importState??'not started'}</Typography>
      <Typography sx={{overflowWrap:'anywhere'}}>Destination Chat: {value.destinationChatId??'not created'}{value.destinationChatId&&!value.destinationChatAvailable?' · unavailable':''}</Typography>
      {trace&&<Stack spacing={1}>

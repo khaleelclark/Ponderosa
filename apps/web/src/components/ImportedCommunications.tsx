@@ -14,7 +14,21 @@ export function ImportedCommunications({agentId}:{agentId:string}):JSX.Element {
  return <Box sx={{px:2,py:1}}><Button aria-expanded={open} onClick={()=>setOpen(value=>!value)}>Imported history</Button>{open&&<Stack spacing={1} sx={{maxHeight:'50vh',overflow:'auto'}}>
   {page.isPending&&<Typography role="status">Loading imported history…</Typography>}
   {page.isError&&<Alert severity="error" action={<Button onClick={()=>{setOffset(0);setVersion(undefined);void page.refetch();}}>Reload</Button>}>{page.error.message}</Alert>}
-  {page.data&&<><Typography variant="body2">Imported from {page.data.source} · {page.data.importedAt}</Typography>
+  {page.data&&<>
+   {page.data.importProvenance?<Stack spacing={0.5} component="section" aria-label="Import record" sx={{overflowWrap:'anywhere'}}>
+    <Typography variant="subtitle2">Import record</Typography>
+    <Typography variant="body2">Imported by: {page.data.importProvenance.actorScope==='user:local-operator'?'You (local operator)':page.data.importProvenance.actorScope.startsWith('agent:')?'Agent':page.data.importProvenance.actorScope.startsWith('system:')?'Ponderosa (system)':'Not recorded'}</Typography>
+    <Typography variant="body2">Source: {page.data.importProvenance.sourceLabel||page.data.source||'Not recorded'}</Typography>
+    <Typography variant="body2">Imported into: {page.data.importProvenance.destinationChatTitle}</Typography>
+    <Typography variant="body2">Recorded: {new Date(page.data.importProvenance.createdAt).toLocaleString()}</Typography>
+    <Box component="details"><Box component="summary">Import identifiers</Box>
+     <Typography variant="caption" sx={{display:'block',overflowWrap:'anywhere'}}>Actor: {page.data.importProvenance.actorScope}</Typography>
+     <Typography variant="caption" sx={{display:'block',overflowWrap:'anywhere'}}>Request: {page.data.importProvenance.requestId}</Typography>
+     <Typography variant="caption" sx={{display:'block',overflowWrap:'anywhere'}}>Creation operation: {page.data.importProvenance.creationOperationId}</Typography>
+     {page.data.importProvenance.operationId&&<Typography variant="caption" sx={{display:'block',overflowWrap:'anywhere'}}>Import operation: {page.data.importProvenance.operationId}</Typography>}
+     <Typography variant="caption" sx={{display:'block',overflowWrap:'anywhere'}}>Destination Chat: {page.data.importProvenance.destinationChatId}</Typography>
+    </Box>
+   </Stack>:page.data.source?<Stack spacing={0.5}><Typography variant="body2">Imported from {page.data.source}{page.data.importedAt?` · ${page.data.importedAt}`:''}</Typography><Typography variant="body2">Import actor and operation: Not recorded</Typography></Stack>:<Typography>No import record is available.</Typography>}
    {page.data.messages.length===0&&<Typography>No imported messages.</Typography>}
    {page.data.messages.map((message,index)=><Box key={`${offset}:${index}`} sx={{borderBottom:1,borderColor:'divider',pb:1}}>
     <Typography variant="caption">{message.role} · {message.communication?.intent??'Historical message'} · {message.createdAt??''}</Typography>

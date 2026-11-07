@@ -47,7 +47,7 @@ import { randomUUID, createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import {realpathSync,statSync,accessSync,constants as fsConstants} from "node:fs";
 import {
-  BranchValidationError, CAPABILITY_IDS,
+  BranchValidationError, CAPABILITY_IDS, BRANCH_RESOURCE_RETIREMENT_ACTION_PROVENANCE,
   TERMINAL_REQUEST_STATES, type ProjectSort, type BranchConfiguration, type BranchRuntimeOutcome, type BranchDefinition, type BranchStep, type BranchBindings, type BranchDto,
   type BranchExecutionDto, type BranchExecutionDetailDto, type BranchExecutionActionsDto, type BranchGateDto, type BranchStepExecutionDto, type BranchHomeExecutionDto, type BranchResult, type BranchVersionDto,
   type DeployBranchRequest, type RuntimeProcessIdentity, type CommunicationEvent,
@@ -1868,11 +1868,11 @@ export class BranchStore {
   reserveExpertImport(executionId:string,stepExecutionId:string,creationOperationId:string):void {
     reserveBranchExpertImport(this.sqlite,executionId,stepExecutionId,creationOperationId);
   }
-  reviewExpertAccess(executionId:string,stepExecutionId:string,review:import('@ponderosa/core').AgentAccessImportReviewDto,choice?:NonNullable<import('@ponderosa/core').ImportAgentPackageRequest['accessSettingsResolution']>,consent?:{snapshotSha256:string;reviewSha256:string;copySourceMemory:boolean;allowFindingsWriteback:boolean}):void {
+  reviewExpertAccess(executionId:string,stepExecutionId:string,review:import('@ponderosa/core').AgentAccessImportReviewDto,choice?:NonNullable<import('@ponderosa/core').ImportAgentPackageRequest['accessSettingsResolution']>,consent?:{snapshotSha256:string;reviewSha256:string;copySourceMemory:boolean;allowFindingsWriteback:boolean},approvalOrigin?:import("@ponderosa/core").BranchCopyApprovalOrigin):void {
     this.unitTransaction(()=>{
       const r=this.row("SELECT * FROM branch_resources WHERE execution_id=? AND step_execution_id=?",executionId,stepExecutionId);
       if(!r||r.state!=='reserved'||this.resourceOperation(stepExecutionId,'import'))throw Error('Expert copy access review is unavailable');
-      reviewBranchExpertAccess(this.sqlite,executionId,stepExecutionId,review,choice,consent);
+      reviewBranchExpertAccess(this.sqlite,executionId,stepExecutionId,review,choice,consent,approvalOrigin);
     })();
   }
   retryExpertSnapshot(executionId:string,stepExecutionId:string,previous:import('@ponderosa/core').CheckpointPackageSource):void {
@@ -2578,7 +2578,8 @@ export class BranchStore {
       }
     })();
   }
-  resourceRetired(stepExecutionId: string, now = new Date().toISOString()): void {
+  resourceRetired(stepExecutionId: string, now = new Date().toISOString(), actionProvenance?:typeof BRANCH_RESOURCE_RETIREMENT_ACTION_PROVENANCE): void {
+    if(actionProvenance&&stableJson(actionProvenance)!==stableJson(BRANCH_RESOURCE_RETIREMENT_ACTION_PROVENANCE))throw Error('Unknown resource retirement provenance');
     this.unitTransaction(()=>{
       const r=this.row("SELECT * FROM branch_resources WHERE step_execution_id=?",stepExecutionId); if(!r)return;
       if(r.state==='retired'){this.run('UPDATE branch_resources SET error=NULL WHERE step_execution_id=?',stepExecutionId);this.run('DELETE FROM branch_retirement_errors WHERE resource_id=?',r.chat_id);return;}
@@ -2605,7 +2606,7 @@ export class BranchStore {
       }else this.run("UPDATE branch_resources SET state='retired',error=NULL WHERE step_execution_id=?",stepExecutionId);
       this.run('DELETE FROM branch_retirement_errors WHERE resource_id=?',r.chat_id);
       this.selectedWrite(r.execution_id);
-      this.checkpoint(r.execution_id,`resource-retired:${stepExecutionId}:${r.generation}`,"resource_retired",{stepExecutionId},now);this.aggregate(r.execution_id,now);
+      this.checkpoint(r.execution_id,`resource-retired:${stepExecutionId}:${r.generation}`,"resource_retired",{stepExecutionId,...(actionProvenance?{actionProvenance}:{})},now);this.aggregate(r.execution_id,now);
     })();
   }
   execution(id: string): BranchExecutionDto | undefined {

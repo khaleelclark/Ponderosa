@@ -16,6 +16,7 @@ export interface BranchExpertCopyReceipt extends BranchExpertCopyIdentity {
   copyAgentId?:string; copyChatId?:string; copyProjectId?:string; creationOperationId?:string; requestId?:string; task?:{instructions:string;input:string};
   consent?:{snapshotSha256:string;reviewSha256:string;copySourceMemory:boolean;allowFindingsWriteback:boolean};
   finalSnapshotSource?:CheckpointPackageSource; finalSnapshotReceipt?:CheckpointPackageReceipt; finalFenceSha256?:string; finalVerifiedSha256?:string; finalSnapshotFailures?:Array<{source:CheckpointPackageSource;reason:"source_changed"}>;
+  approvalHistory?:import("@ponderosa/core").BranchCopyApprovalRecord[];
   accessReview?:import("@ponderosa/core").AgentAccessImportReviewDto;
   accessChoice?:NonNullable<import("@ponderosa/core").ImportAgentPackageRequest["accessSettingsResolution"]>;
 }
@@ -48,6 +49,14 @@ export function readBranchExpertCopy(db:Database.Database,executionId:string,ste
   if(r.consent&&(!r.snapshotReceipt||!r.accessChoice||r.consent.snapshotSha256!==r.snapshotReceipt.sha256||
     r.consent.reviewSha256!==r.accessChoice.reviewSha256||typeof r.consent.copySourceMemory!=="boolean"||typeof r.consent.allowFindingsWriteback!=="boolean"))
     throw Error("Expert copy consent integrity failure");
+  if(r.approvalHistory&&(!Array.isArray(r.approvalHistory)||r.approvalHistory.some(a=>
+    !a||a.reason!=='run_reviewed_temporary_copy'||a.actor?.kind!=='user'||a.actor.id!=='local-operator'||a.origin!=='operator_api'||
+    typeof a.requestId!=='string'||!a.requestId||a.requestId.length>200||!Number.isFinite(Date.parse(a.createdAt))||
+    !/^[a-f0-9]{64}$/.test(a.snapshotSha256)||!/^[a-f0-9]{64}$/.test(a.resolution?.reviewSha256)||
+    !['keep_destination','use_source'].includes(a.resolution.action)||
+    a.resolution.agentActions&&Object.values(a.resolution.agentActions).some(v=>!['keep_destination','use_source'].includes(v))||
+    typeof a.copySourceMemory!=='boolean'||typeof a.allowFindingsWriteback!=='boolean')))
+    throw Error('Expert copy approval history integrity failure');
   if(r.state==="active"&&(!r.snapshotReceipt||!r.creationOperationId||!r.copyAgentId||!r.copyChatId||!r.copyProjectId||!r.requestId||
     !r.consent||typeof r.task?.instructions!=="string"||typeof r.task?.input!=="string"))throw Error("Expert copy activation receipt incomplete");
   if(r.finalSnapshotSource&&(!r.finalFenceSha256||r.finalSnapshotSource.sourceChatId!==r.copyChatId||
@@ -104,13 +113,18 @@ export function reserveBranchExpertImport(db:Database.Database,executionId:strin
   if(r.creationOperationId&&r.creationOperationId!==creationOperationId)throw Error("Expert copy import identity changed");
   db.prepare("UPDATE branch_commands SET result_json=? WHERE execution_id=? AND command_key=?").run(stableJson({...r,creationOperationId}),executionId,key(stepId));
 }
-export function reviewBranchExpertAccess(db:Database.Database,executionId:string,stepId:string,review:import("@ponderosa/core").AgentAccessImportReviewDto,choice?:NonNullable<import("@ponderosa/core").ImportAgentPackageRequest["accessSettingsResolution"]>,consent?:{snapshotSha256:string;reviewSha256:string;copySourceMemory:boolean;allowFindingsWriteback:boolean}):void {
+export function reviewBranchExpertAccess(db:Database.Database,executionId:string,stepId:string,review:import("@ponderosa/core").AgentAccessImportReviewDto,choice?:NonNullable<import("@ponderosa/core").ImportAgentPackageRequest["accessSettingsResolution"]>,consent?:{snapshotSha256:string;reviewSha256:string;copySourceMemory:boolean;allowFindingsWriteback:boolean},approvalOrigin?:import("@ponderosa/core").BranchCopyApprovalOrigin):void {
   const r=readBranchExpertCopy(db,executionId,stepId);
   if(!r||r.state!=="reserved"||!r.copyChatId||!r.snapshotReceipt||r.creationOperationId)throw Error("Expert copy access review is unavailable");
   if(choice&&choice.reviewSha256!==review.reviewSha256)throw Error("Expert copy access review changed");
   if(consent&&(!choice||consent.reviewSha256!==review.reviewSha256||consent.snapshotSha256!==r.snapshotReceipt.sha256||typeof consent.copySourceMemory!=="boolean"||typeof consent.allowFindingsWriteback!=="boolean"))throw Error("Expert copy consent does not match this snapshot and review");
+  if(approvalOrigin&&(!choice||!consent||approvalOrigin.actor?.kind!=='user'||approvalOrigin.actor.id!=='local-operator'||approvalOrigin.origin!=='operator_api'||typeof approvalOrigin.requestId!=='string'||!approvalOrigin.requestId||approvalOrigin.requestId.length>200))throw Error('Copy approval requires actual operator request provenance');
   const {accessChoice:previous,consent:previousConsent,...unchosen}=r;
-  db.prepare("UPDATE branch_commands SET result_json=? WHERE execution_id=? AND command_key=?").run(stableJson({...unchosen,accessReview:review,...(choice?{accessChoice:choice}:{}),...(consent?{consent}:{})}),executionId,key(stepId));
+  const approvalHistory=approvalOrigin&&choice&&consent?[...(r.approvalHistory??[]),{
+    actor:approvalOrigin.actor,origin:approvalOrigin.origin,requestId:approvalOrigin.requestId,createdAt:new Date().toISOString(),
+    snapshotSha256:consent.snapshotSha256,reason:'run_reviewed_temporary_copy' as const,resolution:choice,copySourceMemory:consent.copySourceMemory,allowFindingsWriteback:consent.allowFindingsWriteback,
+  }]:r.approvalHistory;
+  db.prepare("UPDATE branch_commands SET result_json=? WHERE execution_id=? AND command_key=?").run(stableJson({...unchosen,accessReview:review,...(choice?{accessChoice:choice}:{}),...(consent?{consent}:{}),...(approvalHistory?{approvalHistory}:{})}),executionId,key(stepId));
 }
 export function bindBranchExpertCopy(db:Database.Database,executionId:string,stepId:string,copy:{copyAgentId:string;copyChatId:string;copyProjectId:string;requestId:string;task:{instructions:string;input:string}}):void {
   const r=readBranchExpertCopy(db,executionId,stepId);if(!r||r.state!=="reserved"||!r.snapshotReceipt||!r.accessChoice||!r.consent||r.consent.reviewSha256!==r.accessChoice.reviewSha256||r.consent.snapshotSha256!==r.snapshotReceipt.sha256)throw Error("Expert copy source snapshot or explicit consent unavailable");

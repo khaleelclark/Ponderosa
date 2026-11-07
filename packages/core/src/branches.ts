@@ -414,10 +414,31 @@ export type CheckpointPackageStatus=
   | {state:'failed';source:CheckpointPackageSource;boundaryId:string;reason:string}
   | {state:'released';receipt:CheckpointPackageReceipt};
 
+/** Non-authoritative provenance supplied only by the host cleanup producer. */
+export const BRANCH_RESOURCE_RETIREMENT_ACTION_PROVENANCE = {
+ actor:{kind:'system',id:'ponderosa'},origin:'resource_cleanup',reason:'no_active_work_and_cleanup_completed',
+} as const;
+export interface BranchCopyApprovalOrigin {
+ actor:{kind:'user';id:'local-operator'};origin:'operator_api';requestId:string;
+}
+export interface BranchCopyApprovalRecord extends BranchCopyApprovalOrigin {
+ createdAt:string;snapshotSha256:string;reason:'run_reviewed_temporary_copy';
+ resolution:NonNullable<import('./dto/agents.js').ImportAgentPackageRequest['accessSettingsResolution']>;
+ copySourceMemory:boolean;allowFindingsWriteback:boolean;
+}
+export interface TemporaryCopyActionHistoryDto {
+ approvals:Array<{
+  actor?:BranchCopyApprovalOrigin['actor'];origin?:'operator_api';requestId?:string;createdAt?:string;reason?:'run_reviewed_temporary_copy';
+  action:'keep_destination'|'use_source';agentActions?:Record<string,'keep_destination'|'use_source'>;
+  copySourceMemory:boolean;allowFindingsWriteback:boolean;
+ }>;
+ retirement?:{checkpointId:number;createdAt:string;provenance?:typeof BRANCH_RESOURCE_RETIREMENT_ACTION_PROVENANCE};
+}
 /** Operator-only resource identity; receiptSha256 hashes the complete canonical receipt. */
 export interface BranchResourceInspectionDto {
  branchId:string;executionId:string;stepExecutionId:string;generation:number;state:string;destinationChatId:string|null;destinationChatAvailable:boolean;importState:string|null;
  custody:null|{kind:'capture'|'restoration_source';state:'capturing'|'retained'|'releasing'|'released'|'restoration_source';custodyId:string|null;receiptSha256:string|null;checkpointId:string;packageSha256:string|null};
+ temporaryCopyActions?:TemporaryCopyActionHistoryDto;
  temporaryCopyTrace?:{sourceAgentId:string;sourceChatId:string;copyAgentId:string;copyChatId:string;requestId:string;attemptId:string;task:{instructions:string;input:string};result:unknown;historyAvailable:boolean};
  expertCopyReview?:{sourceAgentId:string;sourceChatId:string;copyChatId:string;snapshotSha256:string;consentCurrent:boolean;sourceMemoryAvailable:boolean;reviewWithoutMemorySha256:string;copySourceMemory:boolean;allowFindingsWriteback:boolean};
  currentPolicyReview:import('./dto/agents.js').AgentAccessImportReviewDto|null;
