@@ -528,13 +528,13 @@ export class LocalMemoryService{
   this.missingExistingScopes.delete(scope);this.knownScopes.add(scope);
  }
 
- private unusedMemorySignature(agentId:string,chatId:string,runId:string):string{
+ private unusedMemorySignature(agentId:string,chatId:string,runId:string,writeOnlyCopyWitness=false):string{
   this.live();const store=this.ports.store,agent=store.getAgent(agentId),owner=activeChatResourceOwner(store,'agent',agentId);
   if(!agent||!owner||agent.conversationId!==chatId)throw Error('Memory witness owner changed');
   const policies=new CapabilityPolicyStore(store.sqlite),policy=policies.resolveForAgent(agentId,runId);
   const expert=owner.executionId?this.expertChat(chatId):undefined;
   if(owner.executionId&&(!expert||expert.copyAgentId!==agentId||!expert.requestId||!this.expertSourceLive(expert)||
-     (!this.expertConsent(expert,'copySourceMemory')&&!this.expertConsent(expert,'allowFindingsWriteback'))||
+     (!writeOnlyCopyWitness&&!this.expertConsent(expert,'copySourceMemory')&&!this.expertConsent(expert,'allowFindingsWriteback'))||
      this.coordination.requestSteeringAdmission(runId,agentId,expert.requestId)!=='turn'))throw Error('Temporary agent copy memory witness is not authorized');
   const grant=expert?{readGlobal:false,writeGlobal:false}:this.getGrant(chatId,owner.branchId?'branches':'dev');
   const sourcePolicy=expert?policies.resolveForAgent(expert.sourceAgentId).layers.flatMap(layer=>{const saved=policies.get(layer.scopeKind,layer.scopeId);return saved?[[layer.scopeKind,layer.scopeId,saved]]:[];}):undefined;
@@ -547,7 +547,8 @@ export class LocalMemoryService{
    const cap=this.ports.capabilities.get(token),active=cap&&this.ports.activeRuns.get(cap.agentId);
    if(!cap||!active||!cap.conversationId||active.messageCapability!==token||!this.ports.ownsRun(cap,active))return;
    const agent=this.ports.store.getAgent(cap.agentId);if(!agent)return;
-   const signature=this.unusedMemorySignature(cap.agentId,cap.conversationId,cap.v3SchedulerRunId);
+   // Stamp write-only copy attempts too; reader/admission validators keep their consent fence.
+   const signature=this.unusedMemorySignature(cap.agentId,cap.conversationId,cap.v3SchedulerRunId,true);
    const db=this.ports.store.sqlite,hash=createHash('sha256').update(signature).digest('hex');
    db.prepare('INSERT OR IGNORE INTO memory_exposure_runs(run_id,agent_id,chat_id,fencing_token,authorization_hash) VALUES(?,?,?,?,?)')
     .run(cap.v3SchedulerRunId,cap.agentId,cap.conversationId,cap.v3FencingToken,hash);
@@ -900,7 +901,7 @@ export class LocalMemoryService{
   for(const e of this.speech.values())if(e.authority.chatId===chatId&&e.authority.readGlobal)this.invalidateSpeech(e,'global');
   return result;
  }
- private agentContext(token:string,tool:string,write:boolean,finding=false):HostContext{
+ private agentContext(token:string,tool:string,write:boolean,finding=false,globalCreate=false):HostContext{
   this.live();const capability=this.ports.capabilities.get(token);if(!capability)throw new MemoryDenied('Unknown Agent capability',401);
   const run=this.ports.activeRuns.get(capability.agentId),agent=this.ports.store.getAgent(capability.agentId);
   if(!run||run.messageCapability!==token||run.controller.signal.aborted||!this.ports.ownsRun(capability,run))throw new MemoryDenied('Revoked or expired canonical Run');
@@ -920,9 +921,9 @@ export class LocalMemoryService{
    for(const id of policies.resolveForAgent(source.id).restrictedCapabilityIds)denied.add(id);
   }
   if(denied.has(write?CAPABILITY_IDS.memoryWrite:CAPABILITY_IDS.memoryRead))throw new MemoryDenied('Live memory capability policy denies operation');
-  if(expert&&!this.expertConsent(expert,finding?'allowFindingsWriteback':'copySourceMemory'))throw new MemoryDenied('Temporary agent copy memory requires explicit access review',409);
+  if(expert&&!globalCreate&&!this.expertConsent(expert,finding?'allowFindingsWriteback':'copySourceMemory'))throw new MemoryDenied('Temporary agent copy memory requires explicit access review',409);
   const grant=expert?{readGlobal:false}:this.getGrant(agent.conversationId,product);
-  return {chatId:agent.conversationId,actor:{kind:'agent',id:agent.id},runId:capability.v3SchedulerRunId,fenceToken:String(capability.v3FencingToken),active:true,grants:{readChat:!denied.has(CAPABILITY_IDS.memoryRead),readGlobal:!denied.has(CAPABILITY_IDS.memoryRead)&&grant.readGlobal,writeChat:!denied.has(CAPABILITY_IDS.memoryWrite),writeGlobal:!expert&&!denied.has(CAPABILITY_IDS.memoryWrite)},sourceType:'ai_inference'};
+  return {chatId:agent.conversationId,actor:{kind:'agent',id:agent.id},runId:capability.v3SchedulerRunId,fenceToken:String(capability.v3FencingToken),active:true,grants:{readChat:!(expert&&globalCreate)&&!denied.has(CAPABILITY_IDS.memoryRead),readGlobal:!denied.has(CAPABILITY_IDS.memoryRead)&&grant.readGlobal,writeChat:!denied.has(CAPABILITY_IDS.memoryWrite),writeGlobal:(!expert||globalCreate)&&!denied.has(CAPABILITY_IDS.memoryWrite)},sourceType:'ai_inference'};
  }
  async executeAgent(token:string,operation:string,args:unknown){
   const observed=this.noteMemoryAttempt(token,operation);let completed=false,dispatched=false;
@@ -934,9 +935,14 @@ export class LocalMemoryService{
      WHERE linked.run_id=? AND activation.kind IN ('context_rollover_handoff','context_rollover_continuation')
        AND json_type(activation.payload_json,'$.settingsTransition')='object' LIMIT 1`).get(cap.v3SchedulerRunId))
     throw new MemoryDenied('Memory tools are unavailable during the isolated context handoff',403);
-  const parsed=validateMemoryCall(operation,args),tool='ponderosa_local_memory_'+operation,finding=parsed.recipient==='original';this.agentContext(token,tool,write,finding);await this.ready();const before=this.agentContext(token,tool,write,finding);if(!finding)await this.ensurePlannedChat(before.chatId);const initial=this.agentContext(token,tool,write,finding);
-  const expertFinding=parsed.recipient==='original'?this.expertChat(initial.chatId):undefined;if(parsed.recipient==='original'&&!expertFinding)throw new MemoryDenied('Only the active temporary agent copy can save a finding to its original',403);const expertIdentity=expertFinding&&JSON.stringify(expertFinding);
-  const globalWrite=write&&parsed.destination==='global';const usesGlobal=(globalWrite||!write&&parsed.source!=='chat')&&initial.grants.readGlobal;if(globalWrite&&parsed.visibility==='private')throw new MemoryDenied('Global private audience unsupported',400);if(globalWrite&&operation!=='save'&&!initial.grants.readGlobal)throw new MemoryDenied('Existing global source mutation requires read authority');const needsRead=!write||initial.grants.readChat;if(write&&operation!=='save'&&!initial.grants.readChat)throw new MemoryDenied('Existing source mutation requires read authority');const identity=JSON.stringify([initial.chatId,initial.actor,initial.runId,initial.fenceToken]);const guard=async()=>{const c=this.agentContext(token,tool,write,finding);if(JSON.stringify([c.chatId,c.actor,c.runId,c.fenceToken])!==identity)throw new MemoryDenied('Canonical memory binding changed');if(expertIdentity&&JSON.stringify(this.expertChat(c.chatId))!==expertIdentity)throw new MemoryDenied('Temporary agent copy binding changed');if((needsRead&&!c.grants.readChat)||(usesGlobal&&!c.grants.readGlobal)||(write&&!(globalWrite?c.grants.writeGlobal:c.grants.writeChat)))throw new MemoryDenied('Live memory grant revoked');};
+  const parsed=validateMemoryCall(operation,args),tool='ponderosa_local_memory_'+operation,finding=parsed.recipient==='original';
+  // New global notes need write policy, not consent to read/copy source memory.
+  const globalCreate=operation==='save'&&parsed.destination==='global'&&!finding;
+  this.agentContext(token,tool,write,finding,globalCreate);await this.ready();const before=this.agentContext(token,tool,write,finding,globalCreate);
+  if(!finding&&!(globalCreate&&this.expertChat(before.chatId)))await this.ensurePlannedChat(before.chatId);
+  const initial=this.agentContext(token,tool,write,finding,globalCreate);
+  const expertFinding=parsed.recipient==='original'?this.expertChat(initial.chatId):undefined;if(parsed.recipient==='original'&&!expertFinding)throw new MemoryDenied('Only the active temporary agent copy can save a finding to its original',403);const expertOwner=expertFinding??(globalCreate?this.expertChat(initial.chatId):undefined);const expertIdentity=expertOwner&&JSON.stringify(expertOwner);
+  const globalWrite=write&&parsed.destination==='global';const usesGlobal=(globalWrite||!write&&parsed.source!=='chat')&&initial.grants.readGlobal;if(globalWrite&&parsed.visibility==='private')throw new MemoryDenied('Global private audience unsupported',400);if(globalWrite&&operation!=='save'&&!initial.grants.readGlobal)throw new MemoryDenied('Existing global source mutation requires read authority');const needsRead=!write||initial.grants.readChat;if(write&&operation!=='save'&&!initial.grants.readChat)throw new MemoryDenied('Existing source mutation requires read authority');const identity=JSON.stringify([initial.chatId,initial.actor,initial.runId,initial.fenceToken]);const guard=async()=>{const c=this.agentContext(token,tool,write,finding,globalCreate);if(JSON.stringify([c.chatId,c.actor,c.runId,c.fenceToken])!==identity)throw new MemoryDenied('Canonical memory binding changed');if(expertIdentity&&JSON.stringify(this.expertChat(c.chatId))!==expertIdentity)throw new MemoryDenied('Temporary agent copy binding changed');if((needsRead&&!c.grants.readChat)||(usesGlobal&&!c.grants.readGlobal)||(write&&!(globalWrite?c.grants.writeGlobal:c.grants.writeChat)))throw new MemoryDenied('Live memory grant revoked');};
   if(write&&!(globalWrite?initial.grants.writeGlobal:initial.grants.writeChat))throw new MemoryDenied('Memory write denied');if(!write&&parsed.source==='global'&&!initial.grants.readGlobal)throw new MemoryDenied('Global read denied');
   if(usesGlobal||globalWrite){await this.ensureGlobalScope();await guard();}
   if(expertFinding){await this.ensurePlannedChat(expertFinding.sourceChatId);await guard();}
