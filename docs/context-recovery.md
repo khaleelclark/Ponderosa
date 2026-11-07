@@ -161,3 +161,21 @@ retained key permits only the existing status readback. A failed dismissal-key
 clear reports that dismissal returned and requires status review, without
 automatically repeating either mutation. This storage correction awaits the
 consolidated validation pass.
+
+
+## Claude idle native-process restart
+
+An unexpected idle Claude process exit retains the accepted provider session.
+Reopening uses that exact saved native ID with strict `--resume`, and waits for
+the correlated native initialize success and a live process before admitting a
+new task. Missing sessions, rejected initialization, exit and the existing finite
+startup timeout fail closed and await owned-process drain. There is no automatic
+fresh-session fallback, name/most-recent selection or task replay.
+
+The initialize response does not echo a session ID. This readiness check relies
+on Claude's documented specific-ID resume contract, qualified by a controlled
+native valid/missing-session check. The later native system/init identity must
+still match; it arrives after first input and is not a startup wait condition.
+Active or uncertain original work retains its separate scheduler fences and
+recovery rules. This is not a guarantee about arbitrary provider versions,
+legacy session names, external filesystem effects or lost native operation outcomes.

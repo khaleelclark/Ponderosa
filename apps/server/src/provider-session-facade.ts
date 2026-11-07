@@ -548,11 +548,15 @@ export function providerSessionFacade(value: unknown): RuntimeSession {
 export function providerProcessHandleFacade(value: unknown): RuntimeProcessHandle {
   let raw: object;
   let identity: RuntimeProcessIdentity | undefined;
+  let validatesResumeBeforeTurn: boolean | undefined;
   let isAliveMethod: (...args: unknown[]) => unknown;
   let closeMethod: (...args: unknown[]) => unknown;
   try {
     raw = target(value);
     identity = processIdentity(dataMember(raw, "processIdentity"));
+    const validation = dataMember(raw, "validatesResumeBeforeTurn");
+    if (validation !== undefined && typeof validation !== "boolean") throw new Error(INVALID_PROVIDER_STRUCTURE);
+    validatesResumeBeforeTurn = validation as boolean | undefined;
     isAliveMethod = method(raw, "isAlive")!;
     closeMethod = method(raw, "close")!;
   } catch (error) {
@@ -560,6 +564,7 @@ export function providerProcessHandleFacade(value: unknown): RuntimeProcessHandl
   }
   return Object.freeze({
     ...(identity ? { processIdentity: identity } : {}),
+    ...(validatesResumeBeforeTurn !== undefined ? { validatesResumeBeforeTurn } : {}),
     isAlive(): boolean {
       let alive: unknown;
       try { alive = Reflect.apply(isAliveMethod, raw, []); }

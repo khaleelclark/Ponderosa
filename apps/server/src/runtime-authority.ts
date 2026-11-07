@@ -543,7 +543,9 @@ export function createRuntimeAuthority(context: RuntimeAuthorityContext) {
       // A dead process is never reused. Only an adapter with a provider-verified
       // resume handshake may validate the saved session for a different Run.
       // Interrupted/uncertain work itself is still fenced and never replayed.
-      if(!observedHostOperation&&!session?.validatesResumeBeforeTurn){
+      const verifiedResumeOpening=matchedOpening && opening?.handle &&
+        "validatesResumeBeforeTurn" in opening.handle && opening.handle.validatesResumeBeforeTurn===true;
+      if(!observedHostOperation&&!session?.validatesResumeBeforeTurn&&!verifiedResumeOpening){
         try { clearAgentResumeSession(agentId, "provider_root_exit"); }
         catch(error){
           if(!(error instanceof AgentEventPersistenceError))throw error;

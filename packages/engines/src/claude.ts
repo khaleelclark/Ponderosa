@@ -263,13 +263,19 @@ export class ClaudeAdapter implements Adapter {
     };
   }
 
-  openSession(opts: OpenRuntimeSessionOptions): Promise<RuntimeSession> {
-    return Promise.resolve(new ClaudeStreamSession({
+  async openSession(opts: OpenRuntimeSessionOptions): Promise<RuntimeSession> {
+    const session = new ClaudeStreamSession({
       ...opts,
       bin: this.bin,
       permissionMode: this.permissionMode,
       killGraceMs: this.killGraceMs,
-    }));
+    });
+    try { await session.awaitResumeInitialization(); return session; }
+    catch (error) {
+      try { await session.close(); }
+      catch (closeError) { throw new AggregateError([error,closeError], "Claude saved-session opening failed and cleanup is unconfirmed"); }
+      throw error;
+    }
   }
 
   readProviderUsage(options: ProviderUsageReadOptions): Promise<ProviderUsage> {

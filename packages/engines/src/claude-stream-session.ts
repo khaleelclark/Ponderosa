@@ -66,9 +66,13 @@ export function claudeCapabilityRestrictionArgs(
   return disallowed.size ? ["--disallowedTools", [...disallowed].sort().join(",")] : [];
 }
 
+const CLAUDE_INITIALIZATION_TIMEOUT_MS = 5_000;
+
 const MODEL_REOPEN_COMPACT_REASON = "Claude model changed in this session; reopen the retained session before compaction to verify the model.";
 
 export class ClaudeStreamSession implements RuntimeSession {
+  // Saved IDs come from accepted provider session events, never CLI name lookup.
+  readonly validatesResumeBeforeTurn: boolean;
   private replayFraming?: ClaudeReplayFraming;
   readonly engineAgentId: string;
   readonly events: AsyncIterable<AgentEvent>;
@@ -88,6 +92,7 @@ export class ClaudeStreamSession implements RuntimeSession {
   private sessionInitializationReady!: () => void;
   private sessionInitializationWait = new Promise<void>(resolve => { this.sessionInitializationReady = resolve; });
   private initialized = false;
+  private initializationFailure?: Error;
   private nativeCompactAdvertised = false;
   private initializationReady!: () => void;
   private readonly initialization = new Promise<void>(resolve => { this.initializationReady = resolve; });
@@ -111,6 +116,7 @@ export class ClaudeStreamSession implements RuntimeSession {
   readonly processIdentity;
 
   constructor(private readonly opts: ClaudeStreamSessionOptions) {
+    this.validatesResumeBeforeTurn = !opts.transcriptFork;
     if (!opts.onRuntimeSpawned) {
       throw new Error("persistent runtime opening requires a spawn-time termination registrar");
     }
@@ -232,6 +238,21 @@ export class ClaudeStreamSession implements RuntimeSession {
     }
   }
 
+  /** Native --resume is strict by saved ID. The control acknowledgement proves
+   * startup readiness; system/init identity arrives only after the first input. */
+  async awaitResumeInitialization(): Promise<void> {
+    if (!this.opts.resumeSessionId || this.opts.transcriptFork) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([this.initialization, new Promise<never>((_resolve,reject) => {
+        timer = setTimeout(() => reject(new Error("Claude saved-session initialization timed out")), CLAUDE_INITIALIZATION_TIMEOUT_MS);
+      })]);
+      if (this.initializationFailure) throw this.initializationFailure;
+      if (!this.initialized || !this.isAlive()) throw new Error("Claude saved-session initialization ended without a live successful acknowledgement");
+      this.opts.assertRuntimeCurrent?.();
+    } finally { if (timer) clearTimeout(timer); }
+  }
+
   private settleVerifiedInput():void {
     const pending=this.verifiedInput;
     if(pending?.echoed && this.sessionInitialization && !pending.ready){pending.ready=true;pending.resolve();}
@@ -328,7 +349,7 @@ export class ClaudeStreamSession implements RuntimeSession {
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
         await Promise.race([this.initialization, new Promise<void>(resolve => {
-          timer = setTimeout(resolve, 5_000);
+          timer = setTimeout(resolve, CLAUDE_INITIALIZATION_TIMEOUT_MS);
         })]);
       } finally { if (timer) clearTimeout(timer); }
     }
@@ -687,7 +708,7 @@ export class ClaudeStreamSession implements RuntimeSession {
         const lifetimeEvents = this.taskLifetime.observe(raw);
         const projected = map(raw, { cwd: this.opts.cwd }).flatMap(event => this.taskLifetime.project(event, raw));
         for (const event of [...lifetimeEvents, ...projected]) {
-          if(event.type==='error')this.terminalEvent=event;
+          if(event.type==='error'){this.terminalEvent=event;if(!this.initialized){this.initializationFailure=new Error(event.message);this.initializationReady();}}
           if (event.type === "turn_done" || event.type === "error") {
             this.active = false;
             this.activeInputId = undefined;
@@ -739,12 +760,17 @@ export class ClaudeStreamSession implements RuntimeSession {
       response?: {
         subtype?: unknown;
         request_id?: unknown;
+        error?: unknown;
         response?: { models?: unknown; commands?: unknown };
       };
     };
-    if (envelope.type !== "control_response" ||
-        envelope.response?.subtype !== "success" ||
-        envelope.response.request_id !== this.modelInitializationRequestId) return;
+    if (envelope.type !== "control_response" || envelope.response?.request_id !== this.modelInitializationRequestId) return;
+    if (envelope.response.subtype !== "success") {
+      this.initializationFailure = new Error(typeof envelope.response.error === "string" && envelope.response.error.trim()
+        ? `Claude rejected saved-session initialization: ${envelope.response.error}` : "Claude rejected saved-session initialization");
+      this.initializationReady();
+      return;
+    }
     this.initialized = true;
     const commands = envelope.response.response?.commands;
     this.nativeCompactAdvertised = Array.isArray(commands) && commands.some(command =>

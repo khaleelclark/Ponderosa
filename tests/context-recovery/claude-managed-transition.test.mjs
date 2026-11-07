@@ -1,3 +1,4 @@
+import {providerProcessHandleFacade} from '../../apps/server/dist/provider-session-facade.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdtemp,rm} from 'node:fs/promises';
@@ -307,4 +308,78 @@ test('Claude same-model guidance change preserves the objective on a verified re
   await native.answer('The objective is complete.');await f.settled(agent.id);
   assert.equal(store.sqlite.prepare('SELECT count(*) n FROM context_rollovers WHERE agent_id=?').get(agent.id).n,1);
  },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertClaudeHandoff(root)).adapter});
+});
+
+
+test('Claude strict resume opens only after correlated initialization without a user frame',{timeout:30000},async t=>{
+ const root=await mkdtemp(path.join(tmpdir(),'claude-resume-ready-')),native=await inertClaudeHandoff(root,{startup:'hold'});
+ let session,openingHandle,ready=false;t.after(async()=>{await session?.close();await openingHandle?.close();await rm(root,{recursive:true,force:true});});
+ const opening=native.adapter.openSession({cwd:root,agentId:'controlled',resumeSessionId:randomUUID(),history:[],environment:{PATH:process.env.PATH},signal:new AbortController().signal,onRuntimeSpawned:s=>{openingHandle=s;}}).then(s=>{ready=true;return s;});
+ await until(async()=>(await native.frames()).some(x=>x.frame?.request?.subtype==='initialize'),'initialize requested');
+ assert.equal(ready,false);assert.equal((await userFrames(native)).length,0);
+ await native.releaseStartup();session=await opening;
+ assert.equal(session.validatesResumeBeforeTurn,true);assert.equal(providerProcessHandleFacade(openingHandle).validatesResumeBeforeTurn,true,'opening facade retains the safe data capability');assert.equal((await userFrames(native)).length,0);
+ await session.startTurn({prompt:'Only after readiness.',kind:'user_message'});
+ await until(async()=>(await userFrames(native)).length===1,'one post-readiness input');
+});
+
+for(const startup of ['error','result','exit','silent'])test('Claude strict resume rejects '+startup+' before any user input and drains',{timeout:30000},async t=>{
+ const root=await mkdtemp(path.join(tmpdir(),'claude-resume-refused-')),native=await inertClaudeHandoff(root,{startup});let handle;
+ t.after(async()=>{await handle?.close();await rm(root,{recursive:true,force:true});});
+ await assert.rejects(native.adapter.openSession({cwd:root,agentId:'controlled',resumeSessionId:randomUUID(),history:[],environment:{PATH:process.env.PATH},signal:new AbortController().signal,onRuntimeSpawned:s=>{handle=s;}}),startup==='error'?/Synthetic saved session load failed/:/initializ|missing|ended|stopped|exit/i);
+ assert.equal((await userFrames(native)).length,0);assert.equal(handle.isAlive(),false);
+});
+
+for(const restart of ['success','exit'])test('Claude between-task root termination retains native-only context across '+restart+' reopening',{timeout:90000},async t=>{
+ const reserve=net.createServer();await new Promise(resolve=>reserve.listen(0,'127.0.0.1',resolve));
+ const port=reserve.address().port;await new Promise(resolve=>reserve.close(resolve));
+ let store,native;await withFixture(t,async f=>{
+  await f.listen({host:'127.0.0.1',port});
+  const chat=f.ok(await f.api('POST','/api/chats',{label:'Claude idle restart',defaultEngine:'claude'},{'idempotency-key':randomUUID()}));
+  const agent=f.ok(await f.api('POST',`/api/projects/${chat.projectId}/agents`,{title:'Worker',engine:'claude',conversationId:chat.id,idempotencyKey:randomUUID()}));
+  const objective='Preserve the unfinished relay objective.',finding='Synthetic native-only finding: relay port is violet.';
+  await f.send(agent.id,objective);await until(async()=>(await userFrames(native)).length===1,'initial work');
+  await native.workResult(finding);await until(async()=>(await native.frames()).some(x=>x.kind==='native-only-result'),'native-only result');
+  await until(()=>store.readEvents(agent.id).some(x=>x.event.type==='tool_result'&&x.event.output.includes(finding)),'normalized native-only tool evidence');
+  await native.publishAnswer('Progress only; objective unfinished.');await f.settled(agent.id);
+  const accepted=store.resumeSessionState(agent.id),before=store.sqlite.prepare('SELECT row_key,text FROM chat_search_messages WHERE project_id=? ORDER BY row_key').all(agent.projectId);
+  assert.ok(!JSON.stringify(before).includes(finding));
+  assert.ok((await native.frames()).some(x=>x.kind==='publication'&&x.status===200),'actual progress reply resolves this delivery');
+  assert.equal(store.sqlite.prepare("SELECT count(*) n FROM scheduler_runs WHERE agent_id=? AND status IN ('leased','running')").get(agent.id).n,0,'exit begins from actual canonical idle state');
+  const originalRoot=(await native.frames()).find(x=>x.kind==='open');
+  const alive=()=>{try{process.kill(originalRoot.pid,0);return true;}catch(error){if(error.code==='ESRCH')return false;throw error;}};
+  const alreadyExited=!alive();
+  if(!alreadyExited)await native.exitIdle();
+  await until(()=>!alive(),'observed owned native root exit');
+  t.diagnostic('Between-task root termination: '+(alreadyExited?'already exited after acknowledged reply':'controlled process exit while canonically idle'));
+  assert.equal(store.sqlite.prepare("SELECT count(*) n FROM scheduler_runs WHERE agent_id=? AND status IN ('leased','running')").get(agent.id).n,0);
+  assert.equal(store.resumeSessionState(agent.id)?.sessionId,accepted.sessionId,'root termination retains the accepted generation');
+  if(restart==='exit')await native.setStartup('exit');
+  await f.send(agent.id,'Continue the same unfinished relay objective.');
+  if(restart==='exit'){
+   await until(()=>store.sqlite.prepare("SELECT 1 FROM scheduler_runs WHERE agent_id=? AND status='failed'").get(agent.id),'failed strict reopening settled',20000);
+   assert.equal((await userFrames(native)).length,1,'failed reopening submits no new task or replay');
+   assert.equal(store.resumeSessionState(agent.id)?.sessionId,accepted.sessionId,'failed opening retains accepted context');
+   assert.equal(store.readEvents(agent.id).filter(x=>x.event.type==='session_reset').length,0);
+   return;
+  }
+  const frames=await until(async()=>{const x=await userFrames(native);return x.length===2?x:undefined;},'same-context resumed input',20000);
+  assert.equal(frames[1].session,frames[0].session);assert.equal(frames[1].session,accepted.sessionId);
+  const opens=(await native.frames()).filter(x=>x.kind==='open');assert.equal(opens.length,2);assert.equal(opens[1].resume,true);
+  const restored=(await native.frames()).find(x=>x.kind==='restored-native-context');assert.equal(restored.finding,finding);assert.ok(JSON.stringify(restored.originalInput).includes(objective));
+  assert.equal(store.resumeSessionState(agent.id).sessionId,accepted.sessionId);
+  assert.equal(store.readEvents(agent.id).filter(x=>x.event.type==='session_reset').length,0);
+  // The provider retained its exact session; host does not republish tool output or replay the first input.
+  assert.equal(frames.filter(x=>prompt(x).includes(objective)).length,1);
+  await native.publishAnswer('The unfinished relay objective is now complete.');await f.settled(agent.id);
+  assert.equal((await userFrames(native)).length,2);
+ },{agentBaseUrl:`http://127.0.0.1:${port}`,storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertClaudeHandoff(root,{expectedOrigin:`http://127.0.0.1:${port}`})).adapter});
+});
+
+
+test('Claude transcript fork does not advertise strict saved-session validation',{timeout:30000},async t=>{
+ const root=await mkdtemp(path.join(tmpdir(),'claude-fork-capability-')),native=await inertClaudeHandoff(root);let session;
+ t.after(async()=>{await session?.close();await rm(root,{recursive:true,force:true});});
+ session=await native.adapter.openSession({cwd:root,agentId:'controlled',transcriptFork:{sourceSessionId:randomUUID(),newSessionId:randomUUID(),throughId:randomUUID()},history:[],environment:{PATH:process.env.PATH},signal:new AbortController().signal,onRuntimeSpawned(){}});
+ assert.equal(session.validatesResumeBeforeTurn,false);assert.equal(providerProcessHandleFacade(session).validatesResumeBeforeTurn,false);assert.equal((await userFrames(native)).length,0);
 });
