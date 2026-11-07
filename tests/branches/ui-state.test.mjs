@@ -665,7 +665,7 @@ async function chatDropdownFixture(){
  const queryClient={invalidateQueries:async()=>{}},exports={},imports={
   react,'react/jsx-runtime':await import('react/jsx-runtime'),'@mui/material':mui,
   '@tanstack/react-query':{useQueryClient:()=>queryClient,useQuery:options=>options.queryKey[0]==='branch-chat-owner'?{data:selected}:{},useInfiniteQuery:options=>{queries.push(options);return options.queryKey.includes('search')?search:page}},
-  '../../hooks/queries':{useWorkspacePreferences:()=>({}),useWorkspacePreferencesWriter:()=>({})},'./BranchNavigation':{useBranchNavigationGuard:()=>()=>true,useBranchDraftGuard(){}},
+  '../../hooks/queries':{useWorkspacePreferences:()=>({}),useWorkspacePreferencesWriter:()=>({}),useNotificationProjection:()=>({data:{conversations:{}}})},'./BranchNavigation':{useBranchNavigationGuard:()=>()=>true,useBranchDraftGuard(){}},
   '../chatCreationAttempts':{readCreationAttempts:()=>[],sameCreationOwner:()=>false},'../../clientId':{createClientId:()=> 'intent'},'../../collections':await import('../../apps/web/src/collections.ts'),
   '../../api/types':{ApiRequestError},'../../api/real':{requestCollectionPage:path=>requests.push(path)},'../../workspaceRecency':{markWorkspaceResourceUsed:async()=>{}}
  };
