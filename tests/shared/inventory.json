@@ -1577,6 +1577,14 @@
       "origin": "Transcript submenu local success, exact copy bytes, repeat and unmount safety with unchanged failures/downloads"
     },
     {
+      "path": "tests/chats/after-paint-background-task.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; controlled native frame/background/timer scheduling, no browser or provider",
+      "origin": "Shared finite cold-render scheduling, cancellation and truthful task failures"
+    },
+    {
       "path": "tests/chats/mutation-notifications.test.mjs",
       "feature": "chats",
       "lane": "web",

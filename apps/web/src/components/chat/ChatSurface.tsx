@@ -1,6 +1,7 @@
 import { Alert, Box, Stack } from "@mui/material";
 import { Children, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { flushSync } from "react-dom";
+import { afterPaintBackgroundTask } from "../../afterPaintBackgroundTask";
 import { readScrollPosition } from "../../chatState";
 import { ScrollToLatestButton } from "./scroll";
 import { ChatPagination } from "./ChatPagination";
@@ -100,24 +101,11 @@ export function ChatSurface({
 
   useEffect(() => {
     if (!transcriptLoading) return;
-    let firstFrame = 0, secondFrame = 0, timer = 0;
-    const abort = new AbortController();
-    const completeBatch = () => {
-      if (abort.signal.aborted) return;
+    const cancelBatch = afterPaintBackgroundTask(() => {
       // Capture immediately before this bounded commit, not before a yield in
       // which the reader could move. The existing scroll hook restores geometry.
       scroll.preparePrepend();
       flushSync(() => setMountedRows(count => count + 8));
-    };
-    firstFrame = requestAnimationFrame(() => {
-      secondFrame = requestAnimationFrame(() => {
-        const scheduler = (window as Window & { scheduler?: {
-          postTask(callback: () => void, options: { priority: "background"; signal: AbortSignal }): Promise<void>;
-        } }).scheduler;
-        if (scheduler) void scheduler.postTask(completeBatch, { priority: "background", signal: abort.signal })
-          .catch(error => { if (error?.name !== "AbortError") reportError(error); });
-        else timer = window.setTimeout(completeBatch, 0);
-      });
     });
     const findOrSelect = (event: KeyboardEvent) => {
       if (!event.ctrlKey && !event.metaKey) return;
@@ -134,8 +122,7 @@ export function ChatSurface({
     document.addEventListener("selectionchange", selected);
     window.addEventListener("beforeprint", revealTranscript);
     return () => {
-      abort.abort();
-      cancelAnimationFrame(firstFrame); cancelAnimationFrame(secondFrame); clearTimeout(timer);
+      cancelBatch();
       document.removeEventListener("keydown", findOrSelect, true);
       document.removeEventListener("selectionchange", selected);
       window.removeEventListener("beforeprint", revealTranscript);

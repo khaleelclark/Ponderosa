@@ -3,7 +3,9 @@ import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import SubdirectoryArrowRightIcon from "@mui/icons-material/SubdirectoryArrowRight";
 import { Box, Button, IconButton, Paper, Stack, TextField, Tooltip, Typography } from "@mui/material";
 import type { QueuedConversationMessageDto } from "@ponderosa/core";
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
+import { afterPaintBackgroundTask } from "../../afterPaintBackgroundTask";
 import { capturedSubmissionRunning, readCapturedSubmissions, submissionOutboxEvent } from "./submissionOutbox";
 import { composerSurfaceWidth } from "./Composer.styles";
 
@@ -28,6 +30,43 @@ export function QueuedMessageTray({ messages, scope, attachmentNamesForMessage, 
   const captured = scope ? readCapturedSubmissions(scope).filter(item =>
     !(item.status === "accepted" && item.acceptedDeliveryIds?.some(id => canonicalIds.has(id))) &&
     (item.action === "queue" || !capturedSubmissionRunning(item.pending.idempotencyKey))) : [];
+  // As in Main history, only the first cold mount is staged. Eight rows fill
+  // this at-most-160px tray; subsequent rows append without moving its controls.
+  const rootRef = useRef<HTMLDivElement>(null);
+  const initialIds = useRef<readonly string[]>();
+  if (initialIds.current === undefined && messages.length) initialIds.current = messages.map(message => message.deliveryId);
+  const sequenceChanged = initialIds.current !== undefined &&
+    (initialIds.current.length !== messages.length || initialIds.current.some((id, index) => id !== messages[index]?.deliveryId));
+  const [mountedRows, setMountedRows] = useState(8);
+  const shownRows = sequenceChanged ? messages.length : Math.min(mountedRows, messages.length);
+  const loading = shownRows < messages.length;
+  useLayoutEffect(() => {
+    if (sequenceChanged) setMountedRows(Infinity);
+  }, [sequenceChanged]);
+  const revealRows = () => { if (loading) flushSync(() => setMountedRows(Infinity)); };
+  useEffect(() => {
+    if (!loading) return;
+    const cancelBatch = afterPaintBackgroundTask(() => setMountedRows(count => count + 8));
+    const findOrSelect = (event: KeyboardEvent) => {
+      if (!event.ctrlKey && !event.metaKey) return;
+      const target = event.target, editable = target instanceof HTMLElement &&
+        (target.isContentEditable || Boolean(target.closest("input, textarea, select")));
+      if (event.key.toLowerCase() === "f" || event.key.toLowerCase() === "a" && !editable) revealRows();
+    };
+    const selected = () => {
+      const selection = document.getSelection();
+      if (selection && !selection.isCollapsed && rootRef.current?.contains(selection.anchorNode)) revealRows();
+    };
+    document.addEventListener("keydown", findOrSelect, true);
+    document.addEventListener("selectionchange", selected);
+    window.addEventListener("beforeprint", revealRows);
+    return () => {
+      cancelBatch();
+      document.removeEventListener("keydown", findOrSelect, true);
+      document.removeEventListener("selectionchange", selected);
+      window.removeEventListener("beforeprint", revealRows);
+    };
+  }, [loading, mountedRows, messages.length]);
   const [editingId, setEditingId] = useState<string>();
   const [editingText, setEditingText] = useState("");
   const run = (
@@ -38,8 +77,15 @@ export function QueuedMessageTray({ messages, scope, attachmentNamesForMessage, 
   };
   if (messages.length === 0 && captured.length === 0) return null;
   return <Paper
+    ref={rootRef}
     variant="outlined"
     aria-label="Queued messages"
+    aria-busy={loading || undefined}
+    onScroll={revealRows}
+    onKeyDownCapture={event => {
+      if (loading && event.key === "Tab" && !event.shiftKey &&
+          rootRef.current?.querySelector("[data-queue-row]:last-child")?.contains(event.target as Node)) revealRows();
+    }}
     sx={{
       width: composerSurfaceWidth,
       minWidth: 0,
@@ -72,7 +118,7 @@ export function QueuedMessageTray({ messages, scope, attachmentNamesForMessage, 
           {item.status === "failed" ? <Tooltip title="Discard definitely rejected input"><span><IconButton aria-label="Discard rejected message" disabled={inFlight || !navigator.locks} onClick={() => window.dispatchEvent(new CustomEvent("ponderosa-submission-discard", { detail: id }))}><DeleteOutlineIcon fontSize="small" /></IconButton></span></Tooltip> : null}
         </Box>;
       })}
-      {messages.map((message) => {
+      {messages.slice(0, shownRows).map((message) => {
         const attachmentNames = attachmentNamesForMessage?.(message) ?? [];
         const editing = editingId === message.deliveryId;
         return <Box key={message.deliveryId} data-queue-row sx={{ display: "flex", alignItems: "center", gap: 0.75, minHeight: 30, minWidth: 0 }}>
