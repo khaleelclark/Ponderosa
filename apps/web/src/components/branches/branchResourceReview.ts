@@ -1,7 +1,7 @@
 import type {BranchResourceInspectionDto,BranchResourceCustodyReleaseInput,BranchResourceCustodyReleaseStatus} from '@ponderosa/core';
 
 export type ExpertCopyReview={sourceAgentId:string;sourceChatId:string;copyChatId:string;snapshotSha256:string;sourceMemoryAvailable:boolean;reviewWithoutMemorySha256:string;consentCurrent:boolean;copySourceMemory:boolean;allowFindingsWriteback:boolean};
-export type TemporaryCopyTrace={sourceAgentId:string;sourceChatId:string;copyAgentId:string;copyChatId:string;requestId:string;attemptId:string;task:{instructions:string;input:string};result:unknown;historyAvailable:boolean};
+export type TemporaryCopyTrace=NonNullable<BranchResourceInspectionDto['temporaryCopyTrace']>;
 export type TemporaryCopyHistory={sourceAgentId:string;copyAgentId:string;requestId:string;messages:Array<{agentId:string;title:string;role:string;text:string;createdAt?:string}>;runs:Array<{agentId:string;id:string;status:string;created_at:string;started_at:string|null;terminal_at:string|null}>;events:Array<{agentId:string;seq:number;ts:string;event:unknown}>};
 export type ResourceReviewInspection=BranchResourceInspectionDto&{expertCopyReview?:ExpertCopyReview;temporaryCopyTrace?:TemporaryCopyTrace};
 

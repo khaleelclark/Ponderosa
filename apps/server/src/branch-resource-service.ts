@@ -249,10 +249,19 @@ export class BranchResourceService {
     const row=this.store.sqlite.prepare('SELECT execution_id FROM branch_resources WHERE step_execution_id=?').get(stepExecutionId) as {execution_id:string}|undefined;
     const expert=row&&readBranchExpertCopy(this.store.sqlite,row.execution_id,stepExecutionId);
     const attempt=expert&&this.store.sqlite.prepare('SELECT result_json FROM branch_attempts WHERE id=? AND step_execution_id=?').get(expert.attemptId,stepExecutionId) as {result_json:string|null}|undefined;
+    const completions=expert?.copyAgentId&&expert.requestId&&expert.copyProjectId?this.store.sqlite.prepare(`
+      SELECT update_record.id, update_record.actor_kind, update_record.actor_id, update_record.created_at
+      FROM coordination_requests request JOIN coordination_request_updates update_record ON update_record.request_id=request.id
+      WHERE request.id=? AND request.project_id=? AND request.recipient_agent_id=? AND request.state='completed'
+        AND update_record.kind='completed' AND update_record.resulting_state='completed'
+        AND update_record.resulting_version=request.version LIMIT 2
+    `).all(expert.requestId,expert.copyProjectId,expert.copyAgentId) as Array<{id:string;actor_kind:'agent'|'user'|'system'|'supervisor';actor_id:string|null;created_at:string}>:[];
+    const completion=completions.length===1?completions[0]:undefined;
     const trace=expert?.state==='active'&&expert.copyAgentId&&expert.copyChatId&&expert.requestId&&expert.task?{
       sourceAgentId:expert.sourceAgentId,sourceChatId:expert.sourceChatId,copyAgentId:expert.copyAgentId,copyChatId:expert.copyChatId,
       requestId:expert.requestId,attemptId:expert.attemptId,task:expert.task,result:attempt?.result_json?JSON.parse(attempt.result_json):null,
-      historyAvailable:!!expert.finalSnapshotReceipt&&expert.finalVerifiedSha256===expert.finalSnapshotReceipt.sha256}:undefined;
+      historyAvailable:!!expert.finalSnapshotReceipt&&expert.finalVerifiedSha256===expert.finalSnapshotReceipt.sha256,
+      ...(completion?{completion:{updateId:completion.id,actorKind:completion.actor_kind,...(completion.actor_id?{actorId:completion.actor_id}:{}),createdAt:completion.created_at}}:{})}:undefined;
     let temporaryCopyActions:import('@ponderosa/core').TemporaryCopyActionHistoryDto|undefined;
     if(expert){
       const approvals=expert.approvalHistory?.map(a=>({actor:{kind:a.actor.kind,id:a.actor.id},origin:a.origin,requestId:a.requestId,createdAt:a.createdAt,reason:a.reason,

@@ -189,13 +189,14 @@ async function copyApprovalFeedback():Promise<void>{
 
 export async function temporaryCopyActionHistoryRegression():Promise<void>{
  const originalFetch=globalThis.fetch,host=document.createElement('div');document.body.append(host);
- const root=createRoot(host),client=new QueryClient({defaultOptions:{queries:{retry:false}}});let legacy=false,writes=0;
+ const root=createRoot(host),client=new QueryClient({defaultOptions:{queries:{retry:false}}});let legacy=false,writes=0,systemCompletion=false;
  const requestId='operator-request-'+('a'.repeat(120)),createdAt='2026-11-07T13:00:00.000Z';
  globalThis.fetch=async(_input,init)=>{
   if(init?.method&&init.method!=='GET')writes++;
   return new Response(JSON.stringify({branchId:'branch',executionId:'run',stepExecutionId:'audit-step',generation:0,state:'retired',destinationChatId:'deleted-chat',destinationChatAvailable:false,importState:'completed',custody:null,currentPolicyReview:null,accessChoiceCurrent:false,
    temporaryCopyActions:{approvals:[legacy?{action:'keep_destination',copySourceMemory:false,allowFindingsWriteback:false}:{actor:{kind:'user',id:'local-operator'},origin:'operator_api',requestId,createdAt,reason:'run_reviewed_temporary_copy',action:'keep_destination',copySourceMemory:false,allowFindingsWriteback:false}],
-    retirement:{checkpointId:42,createdAt,...(legacy?{}:{provenance:{actor:{kind:'system',id:'ponderosa'},origin:'resource_cleanup',reason:'no_active_work_and_cleanup_completed'}})}}}),{status:200,headers:{'content-type':'application/json'}});
+    retirement:{checkpointId:42,createdAt,...(legacy?{}:{provenance:{actor:{kind:'system',id:'ponderosa'},origin:'resource_cleanup',reason:'no_active_work_and_cleanup_completed'}})}},
+   temporaryCopyTrace:{sourceAgentId:'source-agent',sourceChatId:'source-chat',copyAgentId:'copy-agent',copyChatId:'deleted-chat',requestId:'actual-copy-request',attemptId:'actual-attempt',task:{instructions:'Check the total',input:'Add 1 and 4'},result:{failed:false,output:'The total is 5.'},historyAvailable:false,...(legacy?{}:{completion:{updateId:'actual-update',actorKind:systemCompletion?'system':'agent',actorId:systemCompletion?'ponderosa':'copy-agent',createdAt}})}}),{status:200,headers:{'content-type':'application/json'}});
  };
  const render=(key:string)=>root.render(<QueryClientProvider client={client}><BranchResourceReview key={key} branchId="branch" executionId="run" stepId="audit-step" enabled onChanged={()=>{}}/></QueryClientProvider>);
  try{
@@ -208,10 +209,15 @@ export async function temporaryCopyActionHistoryRegression():Promise<void>{
   const id=details.querySelector('span')??details.querySelector('p');assert(!details.open&&!id!.checkVisibility(),'technical request identity starts behind a disclosure');
   details.querySelector('summary')!.click();await tick();assert(details.open&&id!.checkVisibility()&&details.textContent?.includes(requestId),'the full operator request remains inspectable');
   const bounds=history.getBoundingClientRect();assert(bounds.left>=0&&bounds.right<=window.innerWidth+1,'action facts stay inside the phone/desktop viewport');
+  const completion=document.querySelector('[aria-label="Request completion"]')!;
+  assert(completion.textContent?.includes('Completed by: Temporary Agent copy')&&completion.textContent?.includes('Cause: Assigned workflow task')&&document.body.innerText.includes('The total is 5.'),'exact completion actor/task/result are plain without raw events or structured-result expansion');
+  const completionIds=completion.querySelector('details')!;assert(!completionIds.open,'completion IDs are optional');completionIds.querySelector('summary')!.click();await tick();assert(completionIds.innerText.includes('actual-copy-request')&&completionIds.innerText.includes('actual-update'),'Request and actual update remain visibly connected');
+  systemCompletion=true;client.clear();render('system-completion');await settle();button('Review resource').click();await settle();assert(document.querySelector('[aria-label="Request completion"]')!.textContent?.includes('Completed by: Ponderosa (system)'),'a recorded system actor is never relabeled as the recipient Agent');
   legacy=true;client.clear();render('legacy');await settle();button('Review resource').click();await settle();
   const old=document.querySelector('[aria-label="Copy action history"]')!;
   assert(old.textContent?.includes('Approved by: Not recorded')&&old.textContent?.includes('Recorded: Not recorded')&&old.textContent?.includes('Actor: Not recorded')&&old.textContent?.includes('Reason: Not recorded'),'legacy data is never backfilled with guessed provenance');
   assert(!old.textContent?.includes('You (local operator)')&&!old.textContent?.includes(requestId),'new action provenance is not carried into an older record');
+  assert(document.body.textContent?.includes('Request completion: Not recorded')&&!document.querySelector('[aria-label="Request completion"]'),'an old result alone never invents a completion actor');
   assert(writes===0,'opening both audit records never approves, applies, releases or replays work');
  }finally{root.unmount();client.clear();host.remove();globalThis.fetch=originalFetch;}
 }

@@ -135,10 +135,20 @@ export function BranchResourceReview({branchId,executionId,stepId,enabled,onChan
      <Typography sx={{overflowWrap:'anywhere'}}>Destination Chat: {value.destinationChatId??'not created'}{value.destinationChatId&&!value.destinationChatAvailable?' · unavailable':''}</Typography>
      {trace&&<Stack spacing={1}>
       <Typography variant="subtitle2">Temporary copy record</Typography>
+      {trace.completion?<Stack spacing={0.5} component="section" aria-label="Request completion">
+       <Typography variant="subtitle2">Request completed</Typography>
+       <Typography variant="body2">Completed by: {trace.completion.actorKind==='agent'?trace.completion.actorId===trace.copyAgentId?'Temporary Agent copy':'Agent':trace.completion.actorKind==='user'?trace.completion.actorId==='local-operator'?'You (local operator)':'User':trace.completion.actorKind==='system'?'Ponderosa (system)':trace.completion.actorKind==='supervisor'?'Supervisor':'Not recorded'}</Typography>
+       <Typography variant="body2">Cause: Assigned workflow task</Typography>
+       <Typography variant="body2">Recorded: {new Date(trace.completion.createdAt).toLocaleString()}</Typography>
+       <details><summary>Completion identifiers</summary><Typography variant="caption" sx={{display:'block',overflowWrap:'anywhere'}}>Request: {trace.requestId} · Update: {trace.completion.updateId}</Typography><Typography variant="caption" sx={{display:'block',overflowWrap:'anywhere'}}>Actor: {trace.completion.actorKind}{trace.completion.actorId?` · ${trace.completion.actorId}`:''}</Typography></details>
+      </Stack>:<Typography variant="body2">Request completion: Not recorded</Typography>}
       <details><summary>Copy identifiers</summary><Typography sx={{overflowWrap:'anywhere'}}>Source Agent {trace.sourceAgentId} · Chat {trace.sourceChatId}</Typography>
       <Typography sx={{overflowWrap:'anywhere'}}>Copy Agent {trace.copyAgentId} · Chat {trace.copyChatId} · Request {trace.requestId} · Attempt {trace.attemptId}</Typography></details>
       <Typography variant="subtitle2">Task</Typography><Typography sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{trace.task.instructions}</Typography><Typography sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{trace.task.input}</Typography>
-      <Typography variant="subtitle2">Result</Typography>{trace.result!==null&&typeof trace.result==='object'?<details><summary>View structured result</summary><Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{JSON.stringify(trace.result,null,2)}</Typography></details>:<Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{trace.result===undefined||trace.result===null?'No recorded result':typeof trace.result==='string'?trace.result:JSON.stringify(trace.result)}</Typography>}
+      <Typography variant="subtitle2">Result</Typography>{trace.result!==null&&typeof trace.result==='object'?<>
+       {'output'in trace.result&&typeof trace.result.output==='string'&&'failed'in trace.result&&typeof trace.result.failed==='boolean'&&<><Typography variant="body2">Result status: {trace.result.failed?'Failed':'Succeeded'}</Typography><Typography sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{trace.result.output}</Typography></>}
+       <details><summary>View structured result</summary><Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{JSON.stringify(trace.result,null,2)}</Typography></details>
+      </>:<Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{trace.result===undefined||trace.result===null?'No recorded result':typeof trace.result==='string'?trace.result:JSON.stringify(trace.result)}</Typography>}
       {trace.historyAvailable?<Button onClick={()=>{setHistoryOpen(true);void history.refetch();}}>View retained history</Button>:<Typography>Retained history is unavailable.</Typography>}
       {historyOpen&&trace.historyAvailable&&<Stack spacing={1}>
        {history.isFetching&&<Typography role="status">Loading retained history…</Typography>}

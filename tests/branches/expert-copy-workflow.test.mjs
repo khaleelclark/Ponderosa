@@ -67,6 +67,22 @@ test('parallel temporary copies run independently without Local Memory after exp
    assert.ok(trace);assert.equal(trace.sourceAgentId,source.id);assert.equal(trace.sourceChatId,chat.id);
    assert.equal(trace.copyAgentId,r.copyAgentId);assert.equal(trace.requestId,r.requestId);assert.equal(trace.task.input,job.input);
    assert.ok(trace.result);assert.equal(trace.historyAvailable,true);
+   const request=store.sqlite.prepare('SELECT version,recipient_agent_id FROM coordination_requests WHERE id=?').get(r.requestId);
+   const completion=store.sqlite.prepare("SELECT id,actor_kind,actor_id,created_at FROM coordination_request_updates WHERE request_id=? AND kind='completed' AND resulting_state='completed' AND resulting_version=?").get(r.requestId,request.version);
+   assert.ok(completion,'real copy completion has a canonical terminal update');
+   assert.deepEqual(trace.completion,{updateId:completion.id,actorKind:completion.actor_kind,...(completion.actor_id?{actorId:completion.actor_id}:{}),createdAt:completion.created_at},'completion actor/time come from the exact actual update, not the recipient label');
+   try{
+    store.sqlite.prepare('UPDATE coordination_requests SET version=version+1 WHERE id=?').run(r.requestId);
+    assert.equal(f.ok(await f.api('GET',base)).temporaryCopyTrace.completion,undefined,'a historical terminal update cannot claim a newer Request version');
+   }finally{store.sqlite.prepare('UPDATE coordination_requests SET version=? WHERE id=?').run(request.version,r.requestId);}
+   try{
+    store.sqlite.prepare('UPDATE coordination_requests SET recipient_agent_id=? WHERE id=?').run(source.id,r.requestId);
+    assert.equal(f.ok(await f.api('GET',base)).temporaryCopyTrace.completion,undefined,'a different recipient cannot become this copy completion');
+   }finally{store.sqlite.prepare('UPDATE coordination_requests SET recipient_agent_id=? WHERE id=?').run(request.recipient_agent_id,r.requestId);}
+   try{
+    store.sqlite.prepare("UPDATE coordination_request_updates SET actor_kind='system',actor_id='ponderosa' WHERE id=?").run(completion.id);
+    assert.equal(f.ok(await f.api('GET',base)).temporaryCopyTrace.completion.actorKind,'system','the completion actor is never inferred from the copy recipient');
+   }finally{store.sqlite.prepare('UPDATE coordination_request_updates SET actor_kind=?,actor_id=? WHERE id=?').run(completion.actor_kind,completion.actor_id,completion.id);}
    const actions=inspection.temporaryCopyActions;
    assert.equal(actions.approvals.length,1);assert.deepEqual(actions.approvals[0].actor,{kind:'user',id:'local-operator'});
    assert.equal(actions.approvals[0].requestId,r.approvalHistory[0].requestId);assert.equal(actions.approvals[0].createdAt,r.approvalHistory[0].createdAt);

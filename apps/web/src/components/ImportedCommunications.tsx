@@ -17,6 +17,7 @@ export function ImportedCommunications({agentId}:{agentId:string}):JSX.Element {
   {page.data&&<>
    {page.data.importProvenance?<Stack spacing={0.5} component="section" aria-label="Import record" sx={{overflowWrap:'anywhere'}}>
     <Typography variant="subtitle2">Import record</Typography>
+    <Typography variant="body2">Cause: Import request</Typography>
     <Typography variant="body2">Imported by: {page.data.importProvenance.actorScope==='user:local-operator'?'You (local operator)':page.data.importProvenance.actorScope.startsWith('agent:')?'Agent':page.data.importProvenance.actorScope.startsWith('system:')?'Ponderosa (system)':'Not recorded'}</Typography>
     <Typography variant="body2">Source: {page.data.importProvenance.sourceLabel||page.data.source||'Not recorded'}</Typography>
     <Typography variant="body2">Imported into: {page.data.importProvenance.destinationChatTitle}</Typography>

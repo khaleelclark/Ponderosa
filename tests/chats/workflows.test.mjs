@@ -604,3 +604,38 @@ test('Chat change projection is bounded, project-and-Chat exact and rebuilt from
   workspace.close();workspace=new WorkspaceStore(root);assert.deepEqual(read(),selected);assert.equal(workspace.listConversationChanges({projectId:'missing',conversationId:'chat'}).items.length,0);
  }finally{workspace.close();rmSync(root,{recursive:true,force:true});}
 });
+
+test('operator Work details trace coalesced messages and every exact Run publication without latest-Run inference', {...options,timeout:90000},async t=>{
+ let store,session;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Canonical message trail'),agent=await f.createIdleAgent(chat,'Worker');
+  try{
+   session=await f.hold(agent.id);const first=(await f.detail(agent.id)).runs.find(run=>run.status==='running');assert.ok(first);
+   const queued=await f.createIdleAgent(chat,'Queued worker');await f.send(queued.id,'Waiting message with no admitted Run');
+   const wake=await until(()=>store.sqlite.prepare("SELECT id FROM agent_activations WHERE agent_id=? AND kind='human_message' AND state='pending'").get(queued.id),'queued user message');
+   const waiting=f.ok(await f.api('GET',`/api/projects/${chat.projectId}/agent-work/items/activation/${wake.id}?conversationId=${chat.id}`)).messageTrace;
+   assert.equal(waiting.inputs.length,1);assert.equal(waiting.inputs[0].text,'Waiting message with no admitted Run');assert.deepEqual(waiting.runIds,[]);assert.deepEqual(waiting.replies,[],'a queued input never invents a Run or reply');
+   const secret='fixture-secret-value-for-trail-redaction';await f.send(agent.id,`Second requested check. Authorization: Bearer ${secret}`);
+   await until(()=>store.sqlite.prepare('SELECT COUNT(*) n FROM scheduler_run_activations attached JOIN scheduler_runs run ON run.id=attached.run_id LEFT JOIN provider_inputs provider ON provider.scheduler_run_id=run.id WHERE (run.id=? OR provider.execution_id=?)').get(first.id,first.id).n===2,'both actual user inputs attached to the same Run');
+   assert.equal((await f.tool(session,'ponderosa_message',{text:'First published answer'})).status,200);
+   assert.equal((await f.tool(session,'ponderosa_message',{text:'Second published answer'})).status,200);
+   session.finish();await f.settled(agent.id);await f.settled(queued.id);
+   const before=(await f.detail(agent.id)).runs.map(run=>run.id);
+   f.plans.set(agent.id,[{run:async next=>assert.equal((await next.tool('ponderosa_message',{text:'Different later Run answer'})).success,true)}]);
+   await f.send(agent.id,'Unrelated later requested work');await f.settled(agent.id,before);
+   const endpoint=`/api/projects/${chat.projectId}/agent-work/items/run/${first.id}?conversationId=${chat.id}`;
+   const record=f.ok(await f.api('GET',endpoint)),trace=record.messageTrace;assert.ok(trace);
+   assert.equal(trace.inputs.length,2);assert.ok(trace.inputs.some(input=>input.text==='Controlled held task'));assert.ok(trace.inputs.some(input=>input.text.includes('Second requested check.')));
+   assert.ok(trace.inputs.every(input=>input.sender==='You (local operator)'&&input.recipient==='Worker'&&input.communicationEventId&&input.activationId),'actual intake IDs/source labels are selected, not inferred from text');
+   assert.deepEqual(trace.replies.map(reply=>reply.text).sort(),['First published answer','Second published answer']);
+   assert.ok(trace.replies.every(reply=>reply.runId===first.id&&reply.communicationEventId&&reply.messageId),'all publications retain exact Run/Communication/message identity');
+   assert.equal(JSON.stringify(trace).includes(secret),false,'plain cause excerpts preserve the existing diagnostic secret redaction');
+   assert.equal(JSON.stringify(trace).includes('Different later Run answer'),false,'a later same-Agent publication is never attached by recency');
+   assert.deepEqual(f.ok(await f.api('GET',endpoint)).messageTrace,trace,'reading the same evidence invents no action or changing linkage');
+   const foreign=await f.createChat('Foreign scope');assert.equal((await f.api('GET',`/api/projects/${foreign.projectId}/agent-work/items/run/${first.id}`)).status,404);
+   assert.equal((await f.api('GET',`/api/branches/engine/projects/${chat.projectId}/agent-work/items/run/${first.id}?conversationId=${chat.id}`)).status,404,'other-product inspector cannot expose the Chat');
+   const {AgentWorkProjection}=await import('../../apps/server/dist/routes/agent-work.js'),workspace=new WorkspaceStore(f.dataDir);
+   try{const projection=new AgentWorkProjection(store,new CoordinationV3Store(store.sqlite),workspace);assert.equal(projection.itemDetails({projectId:chat.projectId,conversationId:chat.id,kind:'run',recordId:first.id}).messageTrace,undefined,'shared callers never obtain host-only message content by default');}finally{workspace.close();}
+  }finally{session?.finish();}
+ },{storeFactory:dir=>(store=new AgentStore(dir)),schedulerMaxConcurrentRuns:1});
+});

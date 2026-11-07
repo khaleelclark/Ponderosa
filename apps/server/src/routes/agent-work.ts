@@ -433,6 +433,8 @@ export class AgentWorkProjection {
     conversationId?: string;
     kind: AgentWorkItemDto["kind"];
     recordId: string;
+    /** Host-only: never enabled by an Agent inspector call. */
+    includeMessageTrace?: true;
   }): AgentWorkItemDetailsDto | undefined {
     const focused = this.coordination.agentWorkItems({
       projectId: input.projectId,
@@ -528,9 +530,77 @@ export class AgentWorkProjection {
         itemId: `${input.kind}:${input.recordId}`,
         recordId: input.recordId,
         details,
+        ...(input.includeMessageTrace && focused ? { messageTrace: this.messageTrace(input, focused) } : {}),
         ...(requestLifecycle ? { requestLifecycle } : {}),
       }
       : undefined;
+  }
+
+  private messageTrace(input: {projectId: string; conversationId?: string}, item: AgentWorkItemDto): AgentWorkItemDetailsDto["messageTrace"] {
+    if (item.kind !== "activation" && item.kind !== "run") return;
+    // ponytail: one explicit Details read, at most 128 associations/publications;
+    // larger histories remain canonical and need explicit paging, not eager Chat work.
+    const limit = 128;
+    const runRows = this.store.sqlite.prepare(`
+      SELECT DISTINCT scheduler.id, scheduler.agent_id, scheduler.started_at, scheduler.created_at,
+        scheduler.terminal_at, provider.execution_id
+      FROM scheduler_runs scheduler
+      LEFT JOIN provider_inputs provider ON provider.scheduler_run_id = scheduler.id
+      WHERE scheduler.project_id = ? AND ${item.kind === "run"
+        ? "(scheduler.id = ? OR provider.execution_id = ?)"
+        : "EXISTS (SELECT 1 FROM scheduler_run_activations attached WHERE attached.run_id = scheduler.id AND attached.activation_id = ?)"}
+      ORDER BY scheduler.created_at, scheduler.id LIMIT 129
+    `).all(input.projectId, item.recordId, ...(item.kind === "run" ? [item.recordId] : [])) as Array<{
+      id: string; agent_id: string; started_at: string | null; created_at: string; terminal_at: string | null; execution_id: string | null;
+    }>;
+    const runIds = [...new Set(runRows.slice(0, limit).flatMap(run => [run.id, ...(run.execution_id ? [run.execution_id] : [])]))];
+    const activationIds = new Set(item.kind === "activation" ? [item.recordId] : []);
+    for (const run of runRows.slice(0, limit)) {
+      const rows = this.store.sqlite.prepare("SELECT activation_id FROM scheduler_run_activations WHERE run_id = ? ORDER BY activation_id LIMIT 129").all(run.id) as Array<{activation_id: string}>;
+      for (const row of rows) activationIds.add(row.activation_id);
+    }
+    const safe = (text: string) => redactKnownDiagnosticValues(redactProviderDiagnostic(redactKnownDiagnosticValues(text)));
+    const excerpt = (text: string) => ({text: safe(text).slice(0, 4000), ...(safe(text).length > 4000 ? {textTruncated: true as const} : {})});
+    const inputs: NonNullable<AgentWorkItemDetailsDto["messageTrace"]>["inputs"] = [];
+    for (const activationId of [...activationIds].slice(0, limit)) {
+      const fields = this.coordination.agentWorkItemDetails({...input, kind: "activation", recordId: activationId});
+      if (fields?.find(field => field.label === "Kind")?.value !== "human_message") continue;
+      let payload: unknown;
+      try { payload = JSON.parse(fields.find(field => field.label === "Payload")?.value ?? "null"); } catch { continue; }
+      const object = (value: unknown): Record<string, unknown> | undefined => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+      const communication = object(object(payload)?.communication), sender = object(communication?.sender);
+      if (!communication || !sender || typeof communication.eventId !== "string" || typeof communication.text !== "string") continue;
+      const intake = this.store.sqlite.prepare(`SELECT activation.agent_id FROM runtime_communication_activation_intake intake
+        JOIN agent_activations activation ON activation.id = intake.activation_id
+        WHERE intake.activation_id = ? AND intake.communication_id = ? AND activation.project_id = ?
+          AND intake.agent_id = activation.agent_id`).get(activationId, communication.eventId, input.projectId) as {agent_id: string} | undefined;
+      if (!intake) continue;
+      const senderLabel = sender.kind === "user" ? sender.userId === "local-operator" ? "You (local operator)" : "User"
+        : sender.kind === "agent" ? "Agent" : sender.kind === "system" ? "Ponderosa (system)" : "Not recorded";
+      inputs.push({activationId, communicationEventId: communication.eventId, sender: senderLabel,
+        recipient: safe(this.store.getAgent(intake.agent_id)?.title ?? "Deleted Agent"), ...excerpt(communication.text)});
+    }
+    const replies: NonNullable<AgentWorkItemDetailsDto["messageTrace"]>["replies"] = [];
+    let truncated = runRows.length > limit || activationIds.size > limit;
+    for (const run of runRows.slice(0, limit)) {
+      const remaining = limit - replies.length;
+      const rows = this.store.sqlite.prepare(`SELECT DISTINCT communication.id, communication.created_at,
+        message.id AS message_id, message.text, json_extract(communication.sender_json, '$.executionId') AS run_id
+        FROM runtime_communications communication JOIN messages message ON message.communication_event_id = communication.id
+          AND message.agent_id = ? AND message.role = 'assistant'
+        WHERE communication.project_id = ? AND communication.intent IN ('broadcast', 'user_dm')
+          AND json_extract(communication.sender_json, '$.agentId') = ?
+          AND json_extract(communication.sender_json, '$.executionId') IN (?, ?)
+          AND communication.created_at >= ? AND communication.created_at <= ?
+        ORDER BY communication.created_at, communication.id LIMIT ?
+      `).all(run.agent_id, input.projectId, run.agent_id, run.execution_id, run.id, run.started_at ?? run.created_at,
+        run.terminal_at ?? new Date().toISOString(), remaining + 1) as Array<{id: string; created_at: string; message_id: string; text: string; run_id: string}>;
+      for (const row of rows.slice(0, remaining)) replies.push({communicationEventId: row.id, messageId: row.message_id,
+        runId: row.run_id, sender: safe(this.store.getAgent(run.agent_id)?.title ?? "Deleted Agent"), createdAt: row.created_at, ...excerpt(row.text)});
+      if (rows.length > remaining) truncated = true;
+      if (replies.length === limit) { truncated = true; break; }
+    }
+    return {inputs, runIds, replies, ...(truncated ? {truncated: true} : {})};
   }
 }
 
@@ -610,6 +680,7 @@ export function registerAgentWorkRoutes(
     }
     const result = projection.itemDetails({
       projectId: project.id,
+      includeMessageTrace: true,
       ...(request.query.conversationId
         ? { conversationId: request.query.conversationId }
         : {}),

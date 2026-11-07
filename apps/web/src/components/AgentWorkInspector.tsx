@@ -79,27 +79,59 @@ export function AgentWorkTechnicalDetails({
   const query = useQuery({
     queryKey: queryKeys.agentWork.detail(projectId, conversationId, item.id),
     queryFn: () => api.getAgentWorkItemDetails(projectId, item.kind, item.recordId, { conversationId }),
-    enabled: expanded && item.details === undefined,
+    enabled: expanded && (item.details === undefined || item.kind === "activation" || item.kind === "run"),
     staleTime: 15_000,
   });
   const details = item.details ?? query.data?.details;
+  const messageTrace = query.data?.messageTrace;
+  const messageRecord = item.kind === "activation" || item.kind === "run";
   return <Box
     component="details"
     onToggle={(event) => setExpanded(event.currentTarget.open)}
     sx={{ mt: 0.75, "& > summary": { cursor: "pointer" } }}
   >
-    <Typography component="summary" variant="caption" color="text.secondary">Technical details</Typography>
+    <Typography component="summary" variant="caption" color="text.secondary">{messageRecord ? "Cause and result" : "Technical details"}</Typography>
     {query.isLoading ? <Stack direction="row" spacing={0.75} sx={{ alignItems: "center", mt: 0.75 }}>
       <CircularProgress size={14} /><Typography variant="caption">Loading technical details…</Typography>
     </Stack> : null}
     {query.isError ? <Alert severity="error" sx={{ mt: 0.75 }}>Technical details could not be loaded.</Alert> : null}
-    {details ? <Stack spacing={0.5} sx={{ mt: 0.75 }}>
+    {messageTrace ? <Stack spacing={1} component="section" aria-label="Message cause and result" sx={{mt: 1, overflowWrap: "anywhere"}}>
+      {messageTrace.inputs.length === 0 ? <Typography variant="body2">Message cause: Not recorded in this evidence window.</Typography> : null}
+      {messageTrace.inputs.map(input => <Stack key={input.activationId} spacing={0.5}>
+        <Typography variant="body2">Cause: Message from {input.sender}</Typography>
+        <Typography variant="body2">To: {input.recipient}</Typography>
+        <Typography variant="body2" sx={{whiteSpace: "pre-wrap"}}>Requested work{input.textTruncated ? " (excerpt)" : ""}: {input.text}</Typography>
+        <Box component="details"><Typography component="summary" variant="caption">Message identifiers</Typography>
+          <Typography variant="caption" component="div">Communication: {input.communicationEventId}</Typography>
+          <Typography variant="caption" component="div">Wake-up: {input.activationId}</Typography>
+        </Box>
+      </Stack>)}
+      {messageTrace.runIds.length ? <Box component="details"><Typography component="summary" variant="caption">Connected Run identifiers</Typography>
+        {messageTrace.runIds.map(id => <Typography key={id} variant="caption" component="div">Run: {id}</Typography>)}
+      </Box> : <Typography variant="body2">Connected Run: Not recorded in this evidence window.</Typography>}
+      <Typography variant="subtitle2">Published replies ({messageTrace.replies.length})</Typography>
+      {messageTrace.inputs.length > 1 || messageTrace.replies.length > 1 ? <Typography variant="caption">Link: Run-level. Individual message pairing is not recorded.</Typography> : null}
+      {messageTrace.replies.length === 0 ? <Typography variant="body2">No reply found in this evidence window.</Typography> : null}
+      {messageTrace.replies.map(reply => <Stack key={`${reply.communicationEventId}:${reply.messageId}`} spacing={0.5}>
+        <Typography variant="body2">From: {reply.sender} · {new Date(reply.createdAt).toLocaleString()}</Typography>
+        <Typography variant="body2" sx={{whiteSpace: "pre-wrap"}}>{reply.textTruncated ? "Excerpt: " : ""}{reply.text}</Typography>
+        <Box component="details"><Typography component="summary" variant="caption">Reply identifiers</Typography>
+          <Typography variant="caption" component="div">Communication: {reply.communicationEventId}</Typography>
+          <Typography variant="caption" component="div">Message: {reply.messageId}</Typography>
+          <Typography variant="caption" component="div">Run: {reply.runId}</Typography>
+        </Box>
+      </Stack>)}
+      {messageTrace.truncated ? <Typography variant="caption">Bounded evidence: more records may exist.</Typography> : null}
+    </Stack> : null}
+    {details ? <Box component={messageRecord ? "details" : "div"} sx={{mt: 0.75}}>
+      {messageRecord ? <Typography component="summary" variant="caption">Technical fields</Typography> : null}
+      <Stack spacing={0.5} sx={{ mt: 0.75 }}>
       {details.length === 0 ? <Typography variant="caption" color="text.secondary">No technical fields were recorded.</Typography> : null}
       {details.map((detail) => <Box key={`${detail.label}:${detail.value}`}>
         <Typography variant="caption" sx={{ fontWeight: 700 }}>{detail.label}</Typography>
         <Typography component="pre" variant="caption" sx={{ m: 0, whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontFamily: "monospace" }}>{detail.value}</Typography>
       </Box>)}
-    </Stack> : null}
+    </Stack></Box> : null}
   </Box>;
 }
 
