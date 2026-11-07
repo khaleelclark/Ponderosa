@@ -92,7 +92,7 @@ export function BranchChats({branchId,engines,executionId,branchRoute,onNavigate
   {choices.hasNextPage&&<Button disabled={choices.isFetching} onClick={()=>void choices.fetchNextPage()}>Load more Chats</Button>}
  </Stack>};
  return <Stack spacing={1} sx={{flex:1,minHeight:0,minWidth:0,overflow:'hidden'}}>
-  {!standalone&&<Stack direction="row" gap={1} alignItems="center" sx={{flexShrink:0,minWidth:0}}>
+  {!standalone&&<Stack direction="row" gap={1} alignItems="center" sx={{flexShrink:0,minWidth:0,pt:1}}>
    <Autocomplete options={choiceRows} value={chat??null} getOptionLabel={c=>c.title} getOptionKey={c=>c.id} isOptionEqualToValue={(a,b)=>a.id===b.id} filterOptions={options=>options} disableClearable={Boolean(chat)}
     open={picker} onOpen={()=>setPicker(true)} onClose={(event,reason)=>{if(reason==='selectOption'&&'defaultMuiPrevented'in event&&event.defaultMuiPrevented)return;setPicker(false);if(reason==='selectOption')setSearch('')}} onChange={(event,c)=>{if(c&&!chooseChat(c))(event as {defaultMuiPrevented?:boolean}).defaultMuiPrevented=true}}
     inputValue={picker?search:chat?.title??''} onInputChange={(_event,value,reason)=>{if(reason==='input')setSearch(value)}}
