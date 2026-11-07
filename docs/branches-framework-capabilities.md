@@ -1,6 +1,6 @@
 # Branch framework capability inventory
 
-Current integration source: c38b209b395dcf53744702758addf1c74944d0b2. Source navigation,
+Inventory origin: c38b209b395dcf53744702758addf1c74944d0b2. Source navigation,
 not an equivalence verdict. Released Python comparator baseline:
 [LangGraph 1.0.5](https://pypi.org/project/langgraph/1.0.5/) and
 [LangChain 1.0.8](https://pypi.org/project/langchain/1.0.8/).
@@ -16,7 +16,7 @@ not newer event-stream projections. Source compatibility remains unqualified.
 | State | `BranchDefinition.state`, declared Script/Agent partial writes, immutable revisioned seal projection, sum/append/replace reducers, public shared-state read | `state.ts` demonstrates parallel contributions and a custom aggregate through the existing Script after Join. Settlement-order semantics differ from LangGraph supersteps; message-ID reducers, manual state editing and implicit cross-Call state are not claimed. See branch-finite-contract-dispositions.md. |
 | Checkpoints and rewind | branch-unit-saver, script/parallel replay, host-cut and issued destination | inspect lists canonical retained checkpoints; no automatic rewind or disclosure. Reviewed issued destination supports standalone gen0 groups/maps2–32, one-resource serial/local-parallel history1–32, and one manual parent plus one called child with one gen0 serial resource each. Broader families remain outside the delivered bound; see implementation-coverage.md and U4 in phase2-remaining-implementation.md. |
 | Human-in-the-loop | human_gate, revisioned BranchGateResolution and public execution actions | Editable final review; resolve requires the current gate and an explicit caller choice. |
-| Streaming | BranchesClient.streamAgent, BranchLiveOutput and canonical shared streams | Exact current execution/Agent/Run filter; a disposable controlled-Agent fixture exercised ordered live SSE and full output retrieval. State updates are a separate GET snapshot; reconnect qualification is deferred. |
+| Streaming | BranchesClient.streamAgent/streamWorkspace, BranchLiveOutput and canonical shared streams | Agent output keeps the exact current execution/Agent/Run filter. The existing Branch checkpoint audit carries revisioned `step_settled.evidence.result.stateUpdate` partials. The public API regression verifies three actual append/sum/replace writes, terminal completion and strict delivered-cursor replay without rerunning the graph. Shared-state GET remains a separate snapshot; consumers own reconnect policy. Real-provider and whole-framework parity remain unqualified. |
 | Tools | native Adapter harness tool routing, Agent access settings, Script/action steps | Research/critic request existing permitted tools; no fake tool outputs or new grants. Tool availability/parity is not established by an instruction. |
 | Memory | unified memory catalog/search, portable memory and Branch bindings | Optional approved-answer mode asks the critic to search and write its permitted Chat memory; an isolated test used disposable Chroma and local memory models with a controlled Agent provider. No new grant or implicit global/private access; real-provider instruction compliance remains unqualified. |
 | Subgraphs | branch_call, branch refs, child execution lineage and limits | Child research workflow deployed first, parent binds its exact ID. No shadow scheduler. |
