@@ -1,3 +1,4 @@
+import {prefetchConversationWorkspace} from "../conversationWorkspacePrefetch";
 import {downloadPackageExport} from '../api/real';
 import {BranchPackageExportDialog} from './branches/BranchPackageExportDialog';
 import {restoreOverlayFocus} from '../overlayFocus';
@@ -214,7 +215,7 @@ function BranchesWorkspace({route,navigate,colorMode,onToggleColorMode}:Appearan
     if(chatId&&(!route.workspace||route.workspace.kind==='conversation'&&route.workspace.conversationId===chatId)){
      void client.fetchQuery({queryKey:['branch-chat-owner',chatId],queryFn:()=>requestJson<BranchContextDto>(`/api/branches/contexts/${chatId}`),retry:false}).then(chat=>{
       if(cancelled||selection.current!==generation||routeOwner.current!==route||chat.id!==chatId||chat.branchId!==id||(chat.executionId??undefined)!==(route.executionId??undefined)||route.workspace&&route.workspace.projectId!==chat.projectId)return;
-      return client.prefetchQuery({queryKey:queryKeys.projects.detail(chat.projectId),queryFn:()=>realApi.getProject(chat.projectId)});
+      return Promise.all([client.prefetchQuery({queryKey:queryKeys.projects.detail(chat.projectId),queryFn:()=>realApi.getProject(chat.projectId)}),prefetchConversationWorkspace(client,chat.id,chat.projectId,realApi)]);
      }).catch(()=>{/* The existing owner query displays its normal error when the Chat opens. */});
     }
     if(await selected&&!cancelled)markWorkspaceResourceUsed(client,'branch',id);

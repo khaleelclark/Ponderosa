@@ -69,6 +69,7 @@ import {
   serializeWorkspaceSidebarState,
 } from "./workspaceSidebarState";
 import { queryKeys } from "./queryKeys";
+import { prefetchConversationWorkspace } from "./conversationWorkspacePrefetch";
 import { MobileWorkspaceDrawer } from "./App.mobile";
 import { WorkspaceRouteOutlet } from "./App.workspace-content";
 import {
@@ -144,14 +145,12 @@ export default function App({
   });
   const { route, navigate } = useRoute();
   const routedConversationId = route.kind === "conversation" ? route.conversationId : undefined;
-  // The active Chat must not wait for a previously unopened navigation owner.
-  // Warm the existing canonical query without subscribing the whole App to it.
+  const routedProjectId = routeProjectId(route);
+  // Overlap the existing Chat and membership reads with Project metadata.
+  // ProjectShell still owns its membership, unavailable and error gates.
   useEffect(() => {
-    if (routedConversationId) void queryClient.prefetchQuery({
-      queryKey: queryKeys.conversations.detail(routedConversationId, 100),
-      queryFn: () => api.getConversation(routedConversationId, 100),
-    });
-  }, [queryClient, routedConversationId]);
+    if (routedConversationId) void prefetchConversationWorkspace(queryClient, routedConversationId, routedProjectId);
+  }, [queryClient, routedConversationId, routedProjectId]);
   const [pageVisible, setPageVisible] = useState(
     () => document.visibilityState === "visible",
   );
@@ -203,7 +202,6 @@ export default function App({
   });
   const projectsQuery = useProjects();
   const routedAgentQuery = useAgent(route.kind === "agent" ? route.agentId : undefined);
-  const routedProjectId = routeProjectId(route);
   const projectPage = projectsQuery.data ?? [];
   const routedProjectQuery = useQuery({
     queryKey: queryKeys.projects.detail(routedProjectId),

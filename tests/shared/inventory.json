@@ -1585,6 +1585,14 @@
       "origin": "Shared finite cold-render scheduling, cancellation and truthful task failures"
     },
     {
+      "path": "tests/chats/conversation-workspace-prefetch.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, installed web dependencies; real QueryClient with controlled scoped reads and actual route/membership closures",
+      "origin": "Core/Branches canonical startup read overlap without duplicate requests or weakened ownership gates"
+    },
+    {
       "path": "tests/chats/mutation-notifications.test.mjs",
       "feature": "chats",
       "lane": "web",
