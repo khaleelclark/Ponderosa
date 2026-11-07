@@ -3,6 +3,10 @@ import assert from 'node:assert/strict';
 import { withFixture, until } from '../shared/fixture.mjs';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
+import net from 'node:net';
+import { AgentStore } from '@ponderosa/agents';
+import { inertCodex } from '../shared/inert-codex.mjs';
+import { inertClaudeHandoff } from '../shared/inert-claude-handoff.mjs';
 import { createServer } from '../../apps/server/dist/app.js';
 import { processBirthMarker } from '@ponderosa/engines';
 
@@ -298,8 +302,30 @@ test('Claude probe start failures remain operation errors when process registrat
 });
 
 
-for (const engine of ['codex', 'claude']) test(`${engine}: reusable Agent Role creates idle once and updates only future session snapshots`, { timeout: 60000 }, t => withFixture(t, async f => {
-  const chat = await f.createChat('Standing role fixture');
+for (const engine of ['codex', 'claude']) test(`${engine}: reusable Agent Role creates idle once and updates only future session snapshots`, { timeout: 90000 }, async t => {
+ let store,native,port;
+ if(engine==='claude'){
+  const reservation=net.createServer();await new Promise((resolve,reject)=>{reservation.once('error',reject);reservation.listen(0,'127.0.0.1',resolve);});port=reservation.address().port;
+  await new Promise((resolve,reject)=>reservation.close(error=>error?reject(error):resolve()));
+ }
+ const origin=port?`http://127.0.0.1:${port}`:undefined;
+ await withFixture(t, async f => {
+  if(port)await f.listen({host:'127.0.0.1',port});
+  const inputs=async()=>engine==='codex'?(await native.requests()).filter(row=>row.method==='turn/start').map(row=>({session:row.params.threadId,input:row.params.input})):(await native.frames()).filter(row=>row.kind==='input'&&row.frame.type==='user').map(row=>({session:row.session,input:row.frame.message}));
+  const answer=text=>engine==='codex'?native.sendAnswer(text):native.answer(text);
+  const publish=async text=>{
+   if(engine==='codex'){
+    const checkpoint='Native role-task checkpoint: '+text;await native.sendWorkResult(checkpoint);
+    const work=await until(()=>store.readEvents(agent.id).find(row=>row.event.type==='tool_result'&&row.event.output===checkpoint),'native role checkpoint consumed',20000),generation=(await inputs()).at(-1).session;
+    await until(()=>store.readEvents(agent.id).some(row=>row.seq>work.seq&&row.event.type==='context_usage'&&row.event.providerSessionGeneration===generation),'normal Codex usage after role-task work',20000);
+    const count=(await native.requests()).filter(row=>row.toolResponse).length;await native.sendTool('ponderosa_message',{text});
+    const receipt=await until(async()=>{const rows=(await native.requests()).filter(row=>row.toolResponse);return rows.length>count?rows[count].toolResponse:undefined;},'native role reply receipt',20000);assert.equal(receipt.result.success,true,JSON.stringify(receipt.result));
+   }else{
+    const count=(await native.frames()).filter(row=>row.kind==='publication').length;await native.publishAnswer(text);
+    const receipt=await until(async()=>{const rows=(await native.frames()).filter(row=>row.kind==='publication');return rows.length>count?rows[count]:undefined;},'native Claude role publication',20000);assert.equal(receipt.status,200);
+   }
+  };
+  const chat=f.ok(await f.api('POST','/api/chats',{label:'Standing role fixture',defaultEngine:engine},{'idempotency-key':crypto.randomUUID()}));
   const url = `/api/projects/${chat.projectId}/agents`;
   const body = { title: 'Reusable Reviewer', engine, conversationId: chat.id, role: 'Review Cafe\u0301\r\nCarefully', idempotencyKey: crypto.randomUUID() };
   const agent = f.ok(await f.api('POST', url, body));
@@ -308,36 +334,62 @@ for (const engine of ['codex', 'claude']) test(`${engine}: reusable Agent Role c
   assert.equal((await f.api('POST', url, { ...body, role: 'A different role' })).status, 409);
   const exported = f.ok(await f.api('GET', `/api/agents/${agent.id}/export?mode=template`));
   assert.equal(exported.agents[0].initialInstructions, agent.role, 'Export lost the explicit standing role');
-  assert.equal(f.turns.length, 0, 'Standing setup dispatched task work');
+  assert.equal((await inputs()).length, 0, 'Standing setup dispatched task work');
   assert.equal((await f.detail(agent.id)).runs.length, 0);
   for (const role of [{ bad: true }, 'x'.repeat(8001)]) assert.equal((await f.api('PATCH', `/api/agents/${agent.id}`, { role })).status, 400);
   await f.send(agent.id, 'Perform first controlled task');
+  await until(async()=>(await inputs()).length===1,'first native role input',20000);
+  const finding='Earlier role-fixture evidence remains verified.';
+  if(engine==='codex')await native.sendWorkResult(finding);else await native.workResult(finding);
+  await until(()=>store.readEvents(agent.id).some(row=>row.event.type==='tool_result'&&row.event.output===finding),'retained native role finding');
+  await publish('First controlled task completed.');
   const first = await f.settled(agent.id), before = first.runs.map(run => run.id);
   const firstInput = f.ok(await f.api('GET', `/api/runs/${first.runs[0].id}/provider-input?exact=1`));
   assert.match(firstInput.exactSystemPrompt, /Review Café\nCarefully/u);
-  const session = await f.hold(agent.id);
+  await f.send(agent.id,'Controlled held task');await until(async()=>(await inputs()).length===2,'active native role task',20000);
   const active = (await f.detail(agent.id)).runs.find(run => !before.includes(run.id));
   const activeInput = f.ok(await f.api('GET', `/api/runs/${active.id}/provider-input?exact=1`));
   const changed = f.ok(await f.api('PATCH', `/api/agents/${agent.id}`, { role: 'Check Only Verified Evidence' }));
   assert.equal(changed.role, 'Check Only Verified Evidence');
   assert.deepEqual(f.ok(await f.api('GET', `/api/runs/${active.id}/provider-input?exact=1`)), activeInput, 'Role save rewrote accepted Run instructions');
-  assert.equal((await session.tool('ponderosa_message', { text: 'Finished the owned task' })).success, true); session.finish();
+  await publish('Finished the owned task');
   const completed = await f.settled(agent.id, before);
-  await f.send(agent.id, 'Perform next controlled task');
-  const next = await f.settled(agent.id, completed.runs.map(run => run.id));
-  const nextRun = next.runs.find(run => !completed.runs.some(previous => previous.id === run.id));
-  const nextInput = f.ok(await f.api('GET', `/api/runs/${nextRun.id}/provider-input?exact=1`));
+  const handoff=async(task,summary)=>{
+   const prior=(await inputs()),count=prior.length,old=prior.at(-1).session;
+   await f.send(agent.id,task);
+   const queued=await until(()=>store.sqlite.prepare('SELECT id FROM agent_activations WHERE agent_id=? AND instr(payload_json,?)>0').get(agent.id,task),'exact queued role task');
+   const source=await until(async()=>{const rows=await inputs();return rows.length===count+1?rows:undefined;},'old native role handoff',20000);
+   assert.equal(source[count].session,old);assert.ok(!JSON.stringify(source[count].input).includes(task),'Queued work is not replayed in the old context');
+   await answer(summary);
+   const replacement=await until(async()=>{const rows=await inputs();return rows.length===count+2?rows:undefined;},'verified native role replacement',20000);
+   assert.notEqual(replacement[count+1].session,old);assert.ok(JSON.stringify(replacement[count+1].input).includes(summary),'Replacement preserves the completed evidence and remaining objective');
+   await answer('Continuity context received.');
+   const final=await until(async()=>{const rows=await inputs();return rows.length===count+3?rows:undefined;},'same queued role task after handoff',20000);
+   assert.equal(final[count+2].session,replacement[count+1].session);assert.ok(JSON.stringify(final[count+2].input).includes(task));
+   assert.equal(final.filter(row=>JSON.stringify(row.input).includes(task)).length,1);
+   assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(queued.id).n,1);
+   const run=store.sqlite.prepare('SELECT run_id FROM scheduler_run_activations WHERE activation_id=?').get(queued.id);
+   return {runId:run.run_id,input:f.ok(await f.api('GET',`/api/runs/${run.run_id}/provider-input?exact=1`))};
+  };
+  const next=await handoff('Perform next controlled task',finding+' The first controlled task and owned held task are complete. Complete only the next queued objective under the current standing role.');
+  const nextInput=next.input;
   assert.match(nextInput.exactSystemPrompt, /Check Only Verified Evidence/u);
   assert.notEqual(nextInput.systemPromptHash, activeInput.systemPromptHash);
+  await publish('Next controlled task completed.');await f.settled(agent.id,completed.runs.map(run=>run.id));
+  assert.deepEqual(f.ok(await f.api('GET',`/api/runs/${active.id}/provider-input?exact=1`)),activeInput,'The verified handoff cannot rewrite the earlier role snapshot');
   f.ok(await f.api('PATCH', `/api/agents/${agent.id}`, { role: null }));
-  const previous = next.runs.map(run => run.id);
-  await f.send(agent.id, 'Perform task after clearing explicit role');
-  const cleared = await f.settled(agent.id, previous), clearedRun = cleared.runs.find(run => !previous.includes(run.id));
-  const clearedInput = f.ok(await f.api('GET', `/api/runs/${clearedRun.id}/provider-input?exact=1`));
+  const previous=(await f.detail(agent.id)).runs.map(run=>run.id);
+  const cleared=await handoff('Perform task after clearing explicit role',finding+' Earlier tasks are complete. Preserve their verified results without repeating effects; finish the next queued objective under current instructions.');
+  const clearedInput=cleared.input;
   assert.doesNotMatch(clearedInput.exactSystemPrompt, /Agent standing role|Check Only Verified Evidence/u);
+  await publish('Task after clearing explicit role completed.');await f.settled(agent.id,previous);
+  assert.deepEqual(f.ok(await f.api('GET',`/api/runs/${next.runId}/provider-input?exact=1`)),nextInput,'Removing the role cannot rewrite a previously accepted snapshot');
+  assert.equal((await inputs()).length,8);assert.equal(store.sqlite.prepare('SELECT count(*) n FROM context_rollovers WHERE agent_id=?').get(agent.id).n,2);
+  assert.equal(store.readEvents(agent.id).filter(row=>row.event.type==='session_reset').length,0);
   await f.reopen();
   assert.equal((await f.detail(agent.id)).agent.role, undefined);
-}, { diagnosticProvider: true }));
+ },{...(origin?{agentBaseUrl:origin}:{}),storeFactory:root=>store=new AgentStore(root),nativeAdapterForEngine:async root=>(native=engine==='codex'?await inertCodex(root,{advertiseModels:true,uniqueThreads:true}):await inertClaudeHandoff(root,{expectedOrigin:origin})).adapter});
+});
 
 
 test('adding standing roles preserves existing creation fingerprints when no role was requested', { timeout: 30000 }, async t => {
