@@ -27,6 +27,7 @@ function communicationV3Prompt(defaultReply?: import("@ponderosa/core").Coordina
 
 function communicationV3Instructions(): string[] {
   return [
+    "Ponderosa Chat/global facts live in Ponderosa's own memory store; other memory services are separate. For Ponderosa memory lookups, use ponderosa_local_memory_search (Claude: mcp__ponderosa__local_memory_search) when advertised; discover that exact tool if deferred. One search with source omitted covers the currently authorized Chat/global scopes together.",
     "Peer communication is concise: send the actionable ask or owned result, changed facts, exact decisions/blockers and evidence references. Include only needed context; do not repeat shared instructions, forward whole reports or add boilerplate. Keep full evidence in referenced artifacts. Preserve objective, acceptance criteria and handoff state.",
     "After work, ponderosa_reply_stream authorizes one final item on the default or selected Communication/document route or an exact attached Request. Finish other routes explicitly first; use publication.kind=request_update for a correlated result. If rejected, publish ordinarily. Never duplicate.",
     "For an explicitly marked voice Direct Message, ponderosa_voice_reply may authorize a short acknowledgement before work continues; only its matched native receipt authorizes provisional speech, never final delivery. After work call without acknowledgement before the final answer. If unavailable or rejected use ponderosa_message.",

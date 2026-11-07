@@ -15,7 +15,7 @@ const definitions=[
  ['search',{query:str,source:destination,top_k:{type:'integer',minimum:1,maximum:20},include_history:{type:'boolean'}},['query']],
  ['history',{chunk_id:str,source:destination},['chunk_id']],
 ] as const;
-export const localMemoryTools=definitions.map(([operation,properties,required])=>({name:`ponderosa_local_memory_${operation}`,description:`${guidance[operation]} Host stamps actor/Run/source provenance; never supply or invent it. Never capture hidden DM/provider context. Chat and global writes follow human capability settings. Use physical chunk_id/version lineage, not logical IDs, expectedRevision, commandKey or exactly-once receipts.`,inputSchema:{type:'object',properties,required:[...required],additionalProperties:false}}));
+export const localMemoryTools=definitions.map(([operation,properties,required])=>({name:`ponderosa_local_memory_${operation}`,description:`Ponderosa's Chat/global memory store, separate from other memory services. ${guidance[operation]} Host stamps actor/Run/source provenance; never supply or invent it. Never capture hidden DM/provider context. Chat and global writes follow human capability settings. Use physical chunk_id/version lineage, not logical IDs, expectedRevision, commandKey or exactly-once receipts.`,inputSchema:{type:'object',properties,required:[...required],additionalProperties:false}}));
 /** Fixed, value-free input errors keep model retries actionable without echoing
  * authored text, unknown field names or potentially sensitive arguments. */
 export class MemoryArgumentError extends Error{
