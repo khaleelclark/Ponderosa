@@ -43,14 +43,6 @@ function readJson<T>(file: string): T {
   return JSON.parse(readFileSync(file, "utf8")) as T;
 }
 
-function readJsonLines<T>(file: string): T[] {
-  if (!existsSync(file)) return [];
-  return readFileSync(file, "utf8")
-    .split("\n")
-    .filter((line) => line.trim() !== "")
-    .map((line) => JSON.parse(line) as T);
-}
-
 /** Remove rebuildable/stale files while retaining bytes referenced by canonical events. */
 function pruneArtifactDirectory(root: string, protectedPaths: ReadonlySet<string>, relative = ""): void {
   touchSourceMutation();
@@ -67,4 +59,4 @@ function pruneArtifactDirectory(root: string, protectedPaths: ReadonlySet<string
   }
 }
 
-export { fsyncDirectory, writeJson, readJson, readJsonLines, pruneArtifactDirectory };
+export { fsyncDirectory, writeJson, readJson, pruneArtifactDirectory };

@@ -28,7 +28,6 @@ export interface WorkingNativeMetadata {
  deferredMetadata:Map<string,{kind:'file'|'directory';mode:number;mtimeNs:string;apply:(held:{fd:number;expectedDevice:bigint;expectedInode:bigint;expectedLinkCount?:bigint})=>void|Promise<void>}>;
 }
 export type WorkingNativeMetadataEvidence=WorkingNativeMetadata;
-export type WorkingNativeMetadataSink=WorkingNativeMetadata;
 export function createWorkingNativeMetadataEvidence():WorkingNativeMetadata{return {files:new Map(),directories:new Map(),protectedFiles:new Map(),protectedDirectories:new Map(),deferredMetadata:new Map()};}
 function assertNativeMetadataProof(stat:{dev:bigint;ino:bigint;mode:bigint;mtimeNs:bigint;ctimeNs:bigint},proof:WorkingNativeDirectoryProof):void {
   if(!Number.isInteger(proof.mode)||proof.mode<0||proof.mode>0o7777||String(stat.dev)!==proof.device||String(stat.ino)!==proof.inode||Number(stat.mode&0o7777n)!==proof.mode||String(stat.mtimeNs)!==proof.mtimeNs||proof.ctimeNs!==undefined&&String(stat.ctimeNs)!==proof.ctimeNs)throw new Error('Native metadata proof no longer matches the held working original; preserve all aliases');

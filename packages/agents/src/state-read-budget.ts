@@ -78,19 +78,6 @@ export function stateReadBudget(db: Database.Database): StateReadBudget {
   if (invocation) budgets.set(db, selected);
   return selected;
 }
-/** Lazy consumers retain their internally owned snapshot through iterator close,
- * including early break/errors. No iterator/population cache is constructed. */
-export function* iterateStateReads<T>(db: Database.Database, action: (reads: StateReads) => Iterable<T>): Generator<T> {
-  const active = scopes.get(db);
-  if (active) { yield* action(active); return; }
-  if (db.inTransaction) fail("foreign-transaction");
-  const budget = stateReadBudget(db); budget.allocate(512);
-  const reads = new StateReads(db, budget);
-  reads.budget.reserve(2); db.exec("BEGIN"); scopes.set(db, reads);
-  let complete = false;
-  try { yield* action(reads); complete = true; }
-  finally { scopes.delete(db); db.exec(complete ? "COMMIT" : "ROLLBACK"); }
-}
 /** All measurement and consumption are in the same internally owned snapshot.
  * Nested helpers reuse this scope. A foreign transaction is never a witness. */
 export function withStateReads<T>(db: Database.Database, action: (reads: StateReads) => T, budget?: StateReadBudget): T {

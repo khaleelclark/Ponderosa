@@ -325,7 +325,6 @@ export interface AgentMessageCapability {
 
 export type Subscriber = (stored: StoredLogEvent) => void;
 
-export const MAX_TEXT_LENGTH = 64 * 1024;
 /** Scheduler packets are trusted, bounded separately from user-authored text. */
 export const MAX_INTERNAL_DISPATCH_UTF8_BYTES = 256 * 1024;
 export const MAX_SSE_SUBSCRIBERS_PER_STREAM = 20;
