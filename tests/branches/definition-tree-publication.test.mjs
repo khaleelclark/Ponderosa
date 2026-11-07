@@ -1,15 +1,29 @@
 // Deferred caller-flow source only. Do not execute while the runtime qualification hold is active.
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {mkdtempSync,mkdirSync,rmSync} from 'node:fs';
+import {mkdtempSync,mkdirSync,rmSync,writeFileSync,readFileSync,readdirSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {AgentStore,stableJson} from '@ponderosa/agents';
-import {createHash} from 'node:crypto';
+import {createHash,randomUUID} from 'node:crypto';
 import {createServer} from '../../apps/server/dist/app.js';
 const hash=v=>createHash('sha256').update(stableJson(v)).digest('hex');
-async function fixture(t,{cyclic=true,withOutput=false}={}){
+function userFolderSnapshot(directory){
+ return readdirSync(directory,{withFileTypes:true}).sort((a,b)=>a.name.localeCompare(b.name)).map(entry=>{
+  assert.ok(entry.isFile()||entry.isDirectory(),'Synthetic user workspace contains only regular files/directories');
+  const filename=path.join(directory,entry.name);
+  return entry.isDirectory()?{name:entry.name,entries:userFolderSnapshot(filename)}:{name:entry.name,bytes:readFileSync(filename)};
+ });
+}
+async function fixture(t,{cyclic=true,withOutput=false,withUserFiles=false}={}){
  const root=mkdtempSync(path.join(tmpdir(),'branch-definition-tree-')),childDirectory=path.join(root,'child');mkdirSync(childDirectory);
+ const workspace=withUserFiles?path.join(root,'user-workspace'):root;
+ if(withUserFiles){
+  mkdirSync(path.join(workspace,'nested','empty'),{recursive:true});
+  writeFileSync(path.join(workspace,'user-owned.txt'),`Branch user bytes ${randomUUID()}\n`);
+  writeFileSync(path.join(workspace,'nested','binary.dat'),Buffer.concat([Buffer.from([0,255,1,128]),Buffer.from(randomUUID())]));
+ }
+ const userFilesBefore=withUserFiles?userFolderSnapshot(workspace):undefined;
  let store,app;
  const inert=async function*(){throw Error('No provider execution belongs to definition publication')};
  const adapter={id:'codex',displayName:'Inert definition fixture',trustedSystemPromptChannel:'developer',listModels:()=>[{id:'fixture',label:'Fixture'}],listEfforts:()=>[{id:'medium',label:'Medium'}],defaultModel:()=>'fixture',defaultEffort:()=>'medium',seed:inert,continue:inert};
@@ -20,7 +34,7 @@ async function fixture(t,{cyclic=true,withOutput=false}={}){
  const pkg=name=>({schema:'ponderosa.branch-installation.v1',packageId:'fixture.'+name,mode:'template',exportedAt:new Date().toISOString(),definition:{schema:'ponderosa.branch.v1',name,trigger:{kind:'manual'},entry:'agent',steps:[{id:'agent',kind:'agent',target:{kind:'persistent_agent',ref:'worker'},instructions:'Inert fixture'}],controls:[],edges:[],policy:{maxConcurrentExecutions:1,failure:{action:'stop'}}},chats:[{ref:'chat',title:name+' template Chat',agents:[{ref:'worker',definition:{schema:'ponderosa.agent-package.v1',mode:'template',kind:'agent',exportedAt:new Date().toISOString(),sourceLabel:name,rootRef:'worker',agents:[{ref:'worker',title:name+' Worker',engine:'codex',model:'fixture',effort:'medium',initialInstructions:'Definition-only fixture',managementPermissions:{allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false}}]}}]}],agentBindings:{worker:{chatRef:'chat',agentRef:'worker'}}});
  const bindings=dir=>({agents:{},directories:{workspace:dir,work:dir},engines:{codex:'codex'}});
  const install=async(name,dir)=>{const p=await api('POST','/api/branches/install-preview',{package:pkg(name),bindings:bindings(dir)}),done=await api('POST',`/api/branches/installations/${p.id}/confirm`,{});assert.equal(done.state,'completed',done.error);return {branch:await api('GET',`/api/branches/${done.branchId}`),config:await api('GET',`/api/branches/${done.branchId}/configuration`)};};
- const parent=await install('Parent',root),child=await install('Child',childDirectory);
+ const parent=await install('Parent',workspace),child=await install('Child',childDirectory);
  const update=async(owner,name,steps,edges,targets)=>{
   const definition={...pkg(name).definition,steps:[...pkg(name).definition.steps,...steps],edges};
   owner.branch=await api('POST','/api/branches/deploy',{chatId:'',branchId:owner.branch.id,expectedVersionId:owner.branch.versionId,idempotencyKey:'graph-'+name,definition,bindings:{...owner.config,branches:targets}});
@@ -35,8 +49,8 @@ async function fixture(t,{cyclic=true,withOutput=false}={}){
  }
  const exported=await api('GET',`/api/branches/${parent.branch.id}/package?mode=full&includeValues=true`);
  assert.equal(exported.definitionTree.nodes.length,2,'shared tree traversal visits each Branch once');assert.equal(exported.chats.length,2);assert.equal(exported.runtimeData,undefined);
- const treeBindings={[parent.branch.id]:bindings(root),[child.branch.id]:bindings(childDirectory)};
- const preview=()=>api('POST','/api/branches/install-preview',{package:exported,bindings:bindings(root),treeBindings});
+ const treeBindings={[parent.branch.id]:bindings(workspace),[child.branch.id]:bindings(childDirectory)};
+ const preview=()=>api('POST','/api/branches/install-preview',{package:exported,bindings:bindings(workspace),treeBindings});
  const confirm=async(p)=>{
   const url=`/api/branches/installations/${p.id}`;
   let done=await api('POST',url+'/confirm',{acknowledgeFullImport:true,acknowledgeDefinitionTreeSha256:p.definitionTreeReview.reviewSha256});
@@ -48,7 +62,7 @@ async function fixture(t,{cyclic=true,withOutput=false}={}){
   }
   return done;
  };
- return {root,childDirectory,parent,child,exported,treeBindings,preview,confirm,api,get store(){return store},get app(){return app},async reopen(){await close();open();}};
+ return {root,workspace,userFilesBefore,childDirectory,parent,child,exported,treeBindings,preview,confirm,api,get store(){return store},get app(){return app},async reopen(){await close();open();}};
 }
 test('definition closure: actual exporter -> per-Branch preview -> actual composer -> atomic publication -> replay/restart readback',async t=>{
  const f=await fixture(t),p=await f.preview();assert.equal(p.definitionTreeReview.branches,2);
@@ -89,7 +103,7 @@ test('failure at the final child publication rolls back every version/dependency
 });
 
 for(const cyclic of [false,true])test(`published held ${cyclic?'cyclic':'acyclic'} tree preserves all Branches until recovery`,async t=>{
- const f=await fixture(t,{cyclic,withOutput:true}),p=await f.preview();
+ const f=await fixture(t,{cyclic,withOutput:true,withUserFiles:!cyclic}),p=await f.preview();
  f.store.sqlite.exec("CREATE TEMP TRIGGER held_tree_completion BEFORE UPDATE OF state ON branch_installation_plans WHEN NEW.state='completed' AND json_extract(OLD.preview_json,'$.published')=1 BEGIN SELECT RAISE(ABORT,'controlled held tree'); END");
  const done=await f.confirm(p);assert.equal(done.state,'applying',done.error);
  const plan=f.store.sqlite.prepare('SELECT package_json,preview_json,error,next_attempt_at FROM branch_installation_plans WHERE id=?').get(p.id),state=JSON.parse(plan.preview_json);
@@ -123,6 +137,17 @@ for(const cyclic of [false,true])test(`published held ${cyclic?'cyclic':'acyclic
  const rootAgents=agentIds.filter(id=>rootChats.includes(f.store.getAgent(id)?.conversationId));
  assert.ok(childChats.length&&childAgents.length);
  assert.ok(rootChats.length&&rootAgents.length,'root Branch owns a Chat and Agent to verify cleanup');
+ if(!cyclic){
+  assert.ok(f.workspace.startsWith(f.root+path.sep),'User workspace is contained in the disposable fixture');
+  for(const id of rootChats){
+   const chat=f.store.getConversation(id),project=f.store.getProject(chat.projectId);
+   assert.equal(chat.branchId,done.branchId);
+   assert.equal(chat.workingDirectory,f.workspace,'Installed root Chat uses the supplied original user folder');
+   assert.equal(project.hostPath,f.workspace,'Project association names the original user folder');
+  }
+  assert.ok(rootAgents.every(id=>rootChats.includes(f.store.getAgent(id).conversationId)));
+  assert.deepEqual(userFolderSnapshot(f.workspace),f.userFilesBefore,'Publication preserves the supplied user entries and exact bytes');
+ }
  const unrelated=f.store.sqlite.prepare('SELECT id FROM agents WHERE conversation_id IN (SELECT id FROM conversations WHERE branch_id IN (?,?))').all(f.parent.branch.id,f.child.branch.id).map(row=>row.id);
  assert.ok(unrelated.length);assert.ok(unrelated.every(id=>!agentIds.includes(id)));
  const stop=await f.app.inject({method:'POST',url:`/api/branches/installations/${p.id}/cancel`,payload:{}});
@@ -163,6 +188,7 @@ for(const cyclic of [false,true])test(`published held ${cyclic?'cyclic':'acyclic
   assert.equal(f.store.sqlite.prepare('SELECT 1 FROM branches WHERE id=?').get(done.branchId),undefined,'recovered root Branch is deleted');
   assert.ok(rootChats.every(id=>!f.store.getConversation(id)),'root-owned Chats are deleted');
   assert.ok(rootAgents.every(id=>!f.store.getAgent(id)),'root-owned Agents are deleted');
+  assert.deepEqual(userFolderSnapshot(f.workspace),f.userFilesBefore,'Branch/Chat/Agent removal preserves original user-folder entries and exact bytes');
   assert.ok(f.store.sqlite.prepare('SELECT 1 FROM branches WHERE id=?').get(childId),'child Branch remains independently owned');
   assert.ok(childChats.every(id=>f.store.getConversation(id)),'child Chats are preserved');
   assert.ok(childAgents.every(id=>f.store.getAgent(id)),'child Agents are preserved');
