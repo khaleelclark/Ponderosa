@@ -630,3 +630,52 @@ test('public Branch example streams live Agent output',{timeout:45000},async t=>
   console.log(JSON.stringify({transport:'loopback HTTP SSE',source:'controlled Agent Run',events:observed.map(item=>({event:item.event,id:item.id,type:item.data?.event?.type,text:item.data?.event?.text??item.data?.event?.delta})),wrongRunRefused:true,fullOutputRetrieved:true}));
  },{providerRunPlan:({agentId})=>agentId===criticId?{hold:true}:undefined});
 });
+
+test('public Branch workspace stream delivers graph checkpoints and replays missed events after reconnect',{timeout:45000},async t=>{
+ await withFixture(t,async f=>{
+  const {BranchesClient}=await import('../../packages/core/dist/branches-client.js');
+  const {createStateApplication}=await import('../../examples/branches-capabilities/state.ts');
+  const client=new BranchesClient(await f.listen());
+  const app=await createStateApplication(client,{directory:f.root,commandKey:randomUUID()});
+  const open=async(lastEventId,stopAfterFirst=false)=>{
+   const abort=new AbortController(),stream=client.streamWorkspace({lastEventId,signal:abort.signal}),events=[];
+   const status=await stream.next();assert.equal(status.done,false);assert.equal(status.value.event,'workspace_status');
+   const pumping=(async()=>{
+    try{for await(const message of stream){
+     if(message.event==='message'&&message.data?.event?.type==='branch_checkpoint'&&message.data.event.branchId===app.workflow.id){
+      events.push(message);if(stopAfterFirst){abort.abort();break;}
+     }
+    }}catch(error){if(error.name!=='AbortError'&&error.code!=='ABORT_ERR')throw error;}
+   })();
+   return {events,status:status.value,async close(){abort.abort();await pumping;await stream.return().catch(error=>{if(error.name!=='AbortError'&&error.code!=='ABORT_ERR')throw error;});}};
+  };
+  let first,replay;
+  try{
+   first=await open(undefined,true);
+   const execution=await app.start('synthetic input','public-state-stream-reconnect');
+   await until(()=>first.events.length===1,'first Branch checkpoint through the public workspace stream',5000);
+   await first.close();
+   const delivered=first.events[0];assert.ok(delivered.id);assert.equal(delivered.data.event.executionId,execution.id);
+   await until(async()=>{const detail=await client.state(execution.id);return detail.execution.state==='completed'&&detail;},'streamed state graph completion',20000);
+   const state=await app.read(execution.id);
+   assert.deepEqual([...state.values.observations].sort(),[2,3]);assert.equal(state.values.total,5);assert.deepEqual(state.values.summary,{maximum:3,total:5});assert.equal(state.revision,3);
+   replay=await open(delivered.id);
+   assert.equal(replay.status.data.reset,false,'ordinary reconnect replays the exact cursor');
+   const settledUpdates=()=>[...first.events,...replay.events].filter(message=>message.data.event.kind==='step_settled').map(message=>message.data.event.evidence.result.stateUpdate).filter(Boolean);
+   await until(()=>settledUpdates().length===3&&replay.events.some(message=>message.data.event.kind==='completed'),'all state updates and completion after public cursor reconnect',5000);
+   await replay.close();
+   const updates=settledUpdates();
+   assert.deepEqual(updates.map(update=>update.revision),[1,2,3],'actual streamed settlement revisions are complete and ordered');
+   assert.deepEqual(updates.flatMap(update=>update.updates.observations??[]).sort(),[2,3]);
+   assert.equal(updates.reduce((total,update)=>total+(update.updates.total??0),0),5);
+   assert.deepEqual(updates.find(update=>update.updates.summary)?.updates.summary,{maximum:3,total:5});
+   const ids=replay.events.map(message=>Number(message.id));
+   assert.ok(ids.every((id,index)=>Number.isSafeInteger(id)&&id>Number(delivered.id)&&(index===0||id>ids[index-1])),'replay cursor strictly advances past the last delivered event');
+   assert.ok(replay.events.every(message=>message.data.event.executionId===execution.id));
+   assert.equal(new Set(replay.events.map(message=>message.data.event.checkpointId)).size,replay.events.length,'reconnect does not duplicate checkpoint delivery');
+   assert.deepEqual((await app.read(execution.id)).values,state.values);
+   assert.equal((await client.executions(app.workflow.id)).length,1,'read/reconnect never starts another execution');
+   assert.equal(f.turns.length,0,'the maintained numeric graph uses no provider');
+  }finally{await replay?.close();await first?.close();}
+ });
+});

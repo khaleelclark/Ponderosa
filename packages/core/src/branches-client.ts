@@ -134,7 +134,7 @@ export class BranchesClient {
  agent(agentId:string,options?:BranchesRequestOptions){return this.json<AgentDetailDto>(`/api/branches/engine/agents/${part(agentId)}`,'GET',undefined,options);}
  fullOutput(agentId:string,seq:number,options?:BranchesRequestOptions){return this.json<RunOutputTextDto>(`/api/branches/engine/agents/${part(agentId)}/run-output/${seq}/text`,'GET',undefined,options);}
  streamAgent(agentId:string,options:BranchesRequestOptions&{lastEventId?:string}={}){return this.stream(`/api/branches/engine/agents/${part(agentId)}/stream`,options);}
- streamWorkspace(options:BranchesRequestOptions&{lastEventId?:string}={}){return this.stream('/api/workspace/stream',options);}
+ streamWorkspace(options:BranchesRequestOptions&{lastEventId?:string}={}){return this.stream('/api/branches/engine/workspace/stream',options);}
  /** One connection only. Consumers own reconnect policy, cursor persistence and reset/snapshot handling. */
  private async *stream(path:string,options:BranchesRequestOptions&{lastEventId?:string}):AsyncGenerator<BranchesStreamMessage> {
   const response=await this.response(path,'GET',undefined,options,{'accept':'text/event-stream',...(options.lastEventId?{'last-event-id':options.lastEventId}:{})});
