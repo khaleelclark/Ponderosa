@@ -93,7 +93,25 @@ test('opening review can retire only the exact idle source and leaves its uncert
  },{storeFactory:p=>(store=new AgentStore(p)),steeringResponse:async()=>{throw Error('Controlled unknown delivery');}});
 });
 
-for(const laterFailure of [false,true]) test(`qualified Codex continues the saved task and instruction with both files and the original reply root (later failed preparation=${laterFailure})`,{timeout:30000},async t=>{
+test('a later public instruction stays queued before preparation while the earlier steering is unknown',{timeout:30000},async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Queued after unknown steering'),agent=await f.createIdleAgent(chat,'Worker');
+  const old=await f.hold(agent.id),run=(await f.detail(agent.id)).runs[0].id;
+  await f.send(agent.id,'An unconfirmed correction',{activeRunDelivery:'steer'});
+  const injection=await until(()=>store.sqlite.prepare("SELECT id FROM scheduler_prompt_injections WHERE run_id=? AND kind='steer' AND state='outcome_unknown'").get(run),'unknown steering');
+  old.finish();await until(()=>store.sqlite.prepare("SELECT 1 FROM scheduler_runs WHERE id=? AND status='completed'").get(run),'source complete');
+  const turns=f.turns.length,runs=store.sqlite.prepare('SELECT COUNT(*) n FROM scheduler_runs WHERE agent_id=?').get(agent.id).n;
+  await f.send(agent.id,'A later separate instruction');
+  const held=await until(()=>store.sqlite.prepare("SELECT a.id,a.state,a.payload_json FROM agent_activations a JOIN activation_sources held ON held.activation_id=a.id WHERE a.agent_id=? AND held.source_kind='settings_transition_reservation_wait'").get(agent.id),'later instruction held before lease');
+  assert.equal(held.state,'pending');assert.ok(held.payload_json.includes('A later separate instruction'));
+  assert.equal(store.sqlite.prepare('SELECT COUNT(*) n FROM scheduler_runs WHERE agent_id=?').get(agent.id).n,runs,'Public intake must not invent a failed preparation Run');
+  assert.equal(f.turns.length,turns,'No later provider input may be sent');
+  assert.equal(store.sqlite.prepare('SELECT state FROM scheduler_prompt_injections WHERE id=?').get(injection.id).state,'outcome_unknown');
+ },{storeFactory:p=>(store=new AgentStore(p)),steeringResponse:async()=>{throw Error('Controlled unknown delivery');}});
+});
+
+for(const laterFailure of [false,true]) test(`qualified Codex continues the saved task and instruction with both files and the original reply root (direct later-unsubmitted authority fixture=${laterFailure})`,{timeout:30000},async t=>{
  let store, useNative=false, native;
  await withFixture(t,async f=>{
   native=await inertCodex(f.root);
@@ -112,8 +130,19 @@ for(const laterFailure of [false,true]) test(`qualified Codex continues the save
   let failed,failedActivations;
   if(laterFailure){
    const priorTurns=f.turns.length;
-   await f.send(agent.id,'A later separate instruction');
-   failed=await until(()=>store.sqlite.prepare("SELECT * FROM scheduler_runs WHERE agent_id=? AND id<>? AND status='failed' AND prompt_injection_state='not_injected' ORDER BY fencing_token DESC LIMIT 1").get(agent.id,run),'later unsubmitted failure');
+   // This is a canonical scheduler-authority fixture, not an attainable public
+   // send path: public intake now holds uncertain context before leasing.
+   // Preserve support for an already-recorded, truly unsubmitted preparation
+   // and the rejection matrix below without weakening that admission guard.
+   const event={schemaVersion:2,eventId:randomUUID(),projectId:chat.projectId,conversationId:chat.id,sender:{kind:'user',userId:'local-operator'},intent:'user_dm',audience:{kind:'user_agent',userId:'local-operator',agentId:agent.id},text:'A later separate instruction',createdAt:new Date().toISOString()};
+   store.appendCommunicationEvent(event);store.appendEvent(agent.id,{type:'communication_projection',communicationEventId:event.eventId,text:event.text,role:'user'});
+   const coordination=new CoordinationV3Store(store.sqlite),workerId='direct-later-preparation-fixture';
+   const activationId=coordination.enqueueMessageActivation({projectId:chat.projectId,agentId:agent.id,scopeKey:`conversation:${chat.id}`,messageId:event.eventId,kind:'human',dispatchPolicy:'next_run',payload:{text:event.text,communication:event}});
+   const lease=coordination.leaseNextRun({workerId,expectedActivationId:activationId});assert.ok(lease,'The authority fixture must obtain its exact scheduler lease');
+   assert.equal(lease.agentId,agent.id);
+   assert.equal(coordination.failRun({runId:lease.runId,fencingToken:lease.fencingToken,workerId,sameRunResumable:false,retryable:false,confirmedNotExecuted:true,error:'Controlled preparation refusal before provider input',failureDetail:{phase:'prepare',promptInjectionState:'not_injected'}}),'terminal');
+   failed=store.sqlite.prepare('SELECT * FROM scheduler_runs WHERE id=?').get(lease.runId);
+   assert.equal(failed.status,'failed');assert.equal(failed.prompt_injection_state,'not_injected');
    assert.equal(failed.started_at,null);assert.equal(failed.provider_session_id,null);assert.ok(failed.terminal_at);
    failedActivations=store.sqlite.prepare('SELECT a.id,a.state,a.payload_json FROM agent_activations a JOIN scheduler_run_activations attached ON attached.activation_id=a.id WHERE attached.run_id=? ORDER BY a.id').all(failed.id);
    assert.ok(JSON.stringify(failedActivations).includes('A later separate instruction'));

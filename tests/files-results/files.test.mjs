@@ -10,6 +10,7 @@ import {prepareAssetUpload} from '../../apps/server/dist/assets.js';
 import {hasSamsungImageTrailer} from '../../apps/server/dist/jpeg-container.js';
 import { managedArtifactContentPath } from '@ponderosa/agents';
 import { withFixture, until, runtimeAttachmentPaths, fixtureTestOptions as options } from '../shared/fixture.mjs';
+import { inertCodex } from '../shared/inert-codex.mjs';
 
 const exec = promisify(execFile);
 const upload = async (f, agent, name, bytes, media = 'text/plain') => f.ok(await f.api('POST', `/api/agents/${agent.id}/attachments`, bytes, { 'content-type': 'application/octet-stream', 'x-ponderosa-filename': name, 'x-ponderosa-media-type': media }));
@@ -365,7 +366,7 @@ test('Samsung capurl screenshots retain exact bytes through Agent, Chat and draf
   }
 }));
 
-import {AgentStore} from '@ponderosa/agents';
+import {AgentStore,CoordinationV3Store} from '@ponderosa/agents';
 import {AgentWorkingCopyService} from '../../apps/server/dist/agent-working-copy-service.js';
 test('rejected and no-op working-copy changes preserve compatible context; teardown errors cannot be swallowed as missing paths',options,async t=>{
  let store;await withFixture(t,async f=>{
@@ -381,29 +382,58 @@ test('rejected and no-op working-copy changes preserve compatible context; teard
  },{storeFactory:root=>store=new AgentStore(root)});
 });
 
-test('canonical history reuses authorized artifact full-file references without treating the inline preview as the document',options,async t=>{
- const {AgentStore}=await import('@ponderosa/agents');let store;
+test('canonical history reuses authorized artifact full-file references without treating the inline preview as the document',{...options,timeout:90000},async t=>{
+ let store,native;
  await withFixture(t,async f=>{
   const chat=await f.createChat('Retained document history'),agent=await f.createIdleAgent(chat,'Document reader'),other=await f.createIdleAgent(chat,'Other reader');
-  const body='Retained document 🧭\n'+'Exact Unicode 東京 😀\n'.repeat(3000),session=await f.hold(agent.id);
+  const starts=()=>native.requests().then(rows=>rows.filter(row=>row.method==='turn/start'));
+  const tool=async(name,args)=>{
+   const count=(await native.requests()).filter(row=>row.toolResponse).length;
+   await native.sendTool(name,args);
+   const response=await until(async()=>{const rows=(await native.requests()).filter(row=>row.toolResponse);return rows.length>count?rows[count].toolResponse:undefined;},'actual native artifact/history tool response',20000);
+   const body=JSON.parse(response.result.contentItems.map(item=>item.text??'').join(''));
+   return {status:response.result.success?200:body.statusCode,body};
+  };
+  const body='Retained document 🧭\n'+'Exact Unicode 東京 😀\n'.repeat(3000);
+  await f.send(agent.id,'Capture the document and publish its short private preview.');
+  await until(async()=>(await starts()).length===1,'original native artifact task',20000);
   await writeFile(path.join(chat.workingDirectory,'document.txt'),body);
-  const {artifact}=f.ok(await f.tool(session,'ponderosa_import_file',{path:'document.txt'}));
-  const sent=f.ok(await f.tool(session,'ponderosa_message',{intent:'direct_to_user',text:'Retained short document preview',artifactIds:[artifact.id]}));
-  session.finish();await f.settled(agent.id);await f.reopen();
+  const {artifact}=f.ok(await tool('ponderosa_import_file',{path:'document.txt'}));
+  const sent=f.ok(await tool('ponderosa_message',{intent:'direct_to_user',text:'Retained short document preview',artifactIds:[artifact.id]}));
+  await f.settled(agent.id);await f.reopen();
   for(let index=0;index<45;index++){const event={schemaVersion:2,eventId:randomUUID(),projectId:chat.projectId,conversationId:chat.id,sender:{kind:'user',userId:'local-operator'},intent:'user_dm',audience:{kind:'user_agent',userId:'local-operator',agentId:agent.id},text:'Newer bounded item '+index+' '+('Controlled held task evidence '.repeat(150)),createdAt:new Date().toISOString()};store.appendCommunicationEvent(event);store.appendEvent(agent.id,{type:'communication_projection',communicationEventId:event.eventId,text:event.text,role:'user'})}
-  // A fresh boundary, not a fabricated managed rollover, grants this canonical read.
-  // Leave room for the required runtime contract; the history assertion below still proves omission.
+  // Changing guidance preserves opaque context through the real old-session
+  // handoff and verified replacement; it must not silently reseed the Agent.
   f.ok(await f.api('PATCH','/api/workspace/preferences',{contextRolloverTokens:150000,globalInstructions:'Read omitted evidence through the canonical history tool'}));
-  const next=await f.hold(agent.id),run=(await f.detail(agent.id)).runs.find(item=>item.status==='running');
-  const packet=store.getProviderInput(run.id,true);
-  assert.equal(packet.sourceManifest.historyContext.fullyIncludedCommunicationEventIds.includes(sent.eventId),false,'Use a real policy-budget omission, independent of message-count cutoffs');
+  const followup='Read the complete captured document through its authorized historical reference.';
+  await f.send(agent.id,followup);
+  const handoff=await until(async()=>{const rows=await starts();return rows.length===2&&rows;},'old native document-context handoff',20000);
+  assert.equal(handoff[1].params.threadId,handoff[0].params.threadId);assert.ok(!JSON.stringify(handoff[1]).includes(followup),'The queued task must not run in the old handoff');
+  const summary='Preserve the captured-document verification objective. Original canonical artifact message: '+sent.eventId+'. Retrieve its exact referenced file through ponderosa_history.';
+  await native.sendAnswer(summary);
+  const replacement=await until(async()=>{const rows=await starts();return rows.length===3&&rows;},'verified native document-context replacement',20000);
+  assert.notEqual(replacement[2].params.threadId,handoff[0].params.threadId);assert.ok(JSON.stringify(replacement[2]).includes(summary));
+  const replacementPacket=store.getProviderInput(new CoordinationV3Store(store.sqlite).activeAgentRun(agent.id).id,true);
+  assert.equal(replacementPacket.sourceManifest.historyContext.fullyIncludedCommunicationEventIds.includes(sent.eventId),false,'The real bounded canonical tail must omit the older artifact message');
+  await native.sendAnswer('Document context received; the original verification task remains.');
+  const queued=await until(async()=>{const rows=await starts();return rows.length===4&&rows;},'original queued native document task',20000);
+  assert.equal(queued[3].params.threadId,replacement[2].params.threadId);assert.ok(JSON.stringify(queued[3]).includes(followup));
+  const run=new CoordinationV3Store(store.sqlite).activeAgentRun(agent.id),packet=store.getProviderInput(run.id,true);
   assert.equal(packet.exactPrompt.includes('Retained short document preview'),false);
-  const frozen=JSON.stringify(packet),result=f.ok(await f.tool(next,'ponderosa_history',{action:'read',communicationEventId:sent.eventId,before:0,after:0}));
+  const frozen=JSON.stringify(packet),found=f.ok(await tool('ponderosa_history',{action:'search',query:'Retained short document preview'}));
+  assert.ok(found.hits.some(hit=>hit.communicationEventId===sent.eventId),'The same native Run must discover the authorized historical artifact message');
+  const result=f.ok(await tool('ponderosa_history',{action:'read',communicationEventId:sent.eventId,before:0,after:0}));
   assert.equal(JSON.stringify(store.getProviderInput(run.id,true)),frozen,'Retrieval must not rewrite the accepted provider packet');
   const message=result.messages[0],reference=message.referencedFiles.find(file=>file.artifactId===artifact.id);assert.ok(reference.localPath);assert.equal(reference.sha256,createHash('sha256').update(body).digest('hex'));assert.equal(await readFile(reference.localPath,'utf8'),body);
   assert.equal(message.text,'Retained short document preview');assert.equal(message.complete,true);assert.match(result.notice,/inline.*referenced|referenced.*inline/i);
-  const foreign=await f.hold(other.id),denied=await f.tool(foreign,'ponderosa_history',{action:'read',communicationEventId:sent.eventId,before:0,after:0});assert.ok(denied.status>=400);assert.doesNotMatch(JSON.stringify(denied),new RegExp(artifact.id));
- },{storeFactory:root=>store=new AgentStore(root)});
+  f.ok(await tool('ponderosa_message',{text:'The exact captured document was verified.'}));await f.settled(agent.id);
+  // Drain the first Agent before using the single owned protocol mailbox for
+  // the foreign reader; the private artifact audience remains unchanged.
+  await f.reopen();await f.send(other.id,'Read only history authorized to this Agent.');
+  await until(async()=>(await starts()).length===5,'foreign native reader',20000);
+  const denied=await tool('ponderosa_history',{action:'read',communicationEventId:sent.eventId,before:0,after:0});assert.ok(denied.status>=400);assert.doesNotMatch(JSON.stringify(denied),new RegExp(artifact.id));
+  f.ok(await tool('ponderosa_message',{text:'No private document was disclosed.'}));await f.settled(other.id);
+ },{storeFactory:root=>store=new AgentStore(root),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,uniqueThreads:true,holdImportCompletion:true,holdHistoryCompletion:true})).adapter});
 });
 
 test('working-copy errors preserve fixed causes and withhold untrusted synthetic secrets', async () => {
