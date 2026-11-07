@@ -3,7 +3,7 @@ import test from 'node:test';
 import {randomUUID} from 'node:crypto';
 import {execFileSync} from 'node:child_process';
 import {existsSync} from 'node:fs';
-import {writeFile,readFile} from 'node:fs/promises';
+import {writeFile,readFile,mkdir,readdir} from 'node:fs/promises';
 import path from 'node:path';
 import {chatBrowserOwnerId} from '@ponderosa/core';
 import {AgentStore,BranchStore,CoordinationV3Store,WorkspaceStore} from '@ponderosa/agents';
@@ -43,14 +43,36 @@ test('recency limits and starred expansion only count canonical resources in the
 
 test('completed deletion receipts replay only in their canonical product without reopening deleted private history',async t=>withFixture(t,async f=>{
  const chat=await f.createChat('Replay deleted Chat');
+ const associated=f.ok(await f.api('GET',`/api/conversations/${chat.id}`)).conversation;
+ assert.equal(associated.projectId,chat.projectId);
+ assert.equal(associated.workingDirectory,chat.workingDirectory);
+ assert.ok(path.resolve(associated.workingDirectory).startsWith(path.resolve(f.root)+path.sep),'Only the product-associated disposable working folder is used');
+ const working=associated.workingDirectory,userFolder=path.join(working,'user-preservation');
+ await mkdir(path.join(userFolder,'empty'),{recursive:true});
+ await writeFile(path.join(working,'user-owned.txt'),`Project user bytes ${randomUUID()}\n`);
+ await writeFile(path.join(userFolder,'binary.dat'),Buffer.concat([Buffer.from([0,255,1,128]),Buffer.from(randomUUID())]));
+ const snapshot=async folder=>{
+  const entries=[];
+  for(const entry of (await readdir(folder,{withFileTypes:true})).sort((a,b)=>a.name.localeCompare(b.name))){
+   assert.ok(entry.isFile()||entry.isDirectory(),'Synthetic working folder has only regular files/directories');
+   entries.push(entry.isDirectory()?{name:entry.name,entries:await snapshot(path.join(folder,entry.name))}:{name:entry.name,bytes:await readFile(path.join(folder,entry.name))});
+  }
+  return entries;
+ };
+ const before=await snapshot(working);
+ const preserved=async stage=>assert.deepEqual(await snapshot(working),before,`Working-folder entries and exact bytes survive ${stage}`);
  assert.equal(f.ok(await f.api('DELETE',`/api/conversations/${chat.id}`)).deleted,true);
  assert.equal((await f.api('GET',`/api/conversations/${chat.id}`)).status,404);
  assert.equal(f.ok(await f.api('DELETE',`/api/conversations/${chat.id}`)).replayed,true);
  assert.equal((await f.api('DELETE',`/api/branches/engine/conversations/${chat.id}`)).status,404);
  assert.equal(f.ok(await f.api('DELETE',`/api/projects/${chat.projectId}`)).deleted,true);
+ await preserved('Project deletion');
  assert.equal(f.ok(await f.api('DELETE',`/api/projects/${chat.projectId}`)).replayed,true);
+ await preserved('Project deletion replay');
  assert.equal((await f.api('DELETE',`/api/branches/engine/projects/${chat.projectId}`)).status,404);
- await f.reopen();assert.equal(f.ok(await f.api('DELETE',`/api/projects/${chat.projectId}`)).replayed,true);assert.equal((await f.api('GET',`/api/projects/${chat.projectId}`)).status,404);
+ await f.reopen();await preserved('reopen');
+ assert.equal(f.ok(await f.api('DELETE',`/api/projects/${chat.projectId}`)).replayed,true);assert.equal((await f.api('GET',`/api/projects/${chat.projectId}`)).status,404);
+ await preserved('replay after reopen');
 }));
 
 test('pending Project deletion retry does not reopen Branch or mixed ownership',async t=>{
