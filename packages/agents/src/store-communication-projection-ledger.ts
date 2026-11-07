@@ -167,6 +167,14 @@ export class AgentCommunicationProjectionLedger {
     const tuple = `${projection.eventId}\u0000${projection.surface}\u0000${projection.projectionKey}`;
     const existing = index.byTuple.get(tuple);
     if (existing) {
+      const commitEnrichment = (enriched: CommunicationProjection): { projection: CommunicationProjection; replayed: boolean } => {
+        appendFsyncedJsonl(file, [enriched]);
+        const position = index.projections.findIndex((candidate) => candidate === existing);
+        if (position >= 0) index.projections[position] = enriched;
+        index.byTuple.set(tuple, enriched);
+        this.upsertGlobalChatSearchProjection(projectId, enriched);
+        return { projection: enriched, replayed: false };
+      };
       if (existing.message && projection.message) {
         const existingText = existing.message.renderedText ?? "";
         const projectionText = projection.message.renderedText ?? "";
@@ -193,12 +201,7 @@ export class AgentCommunicationProjectionLedger {
           revision: (existing.revision ?? 1) + 1,
           message: projection.message,
         };
-        appendFsyncedJsonl(file, [enriched]);
-        const position = index.projections.findIndex((candidate) => candidate === existing);
-        if (position >= 0) index.projections[position] = enriched;
-        index.byTuple.set(tuple, enriched);
-        this.upsertGlobalChatSearchProjection(projectId, enriched);
-        return { projection: enriched, replayed: false };
+        return commitEnrichment(enriched);
       }
       if (existing.message && projection.message) {
         const enrichedMessage = {
@@ -218,12 +221,7 @@ export class AgentCommunicationProjectionLedger {
         };
         if (JSON.stringify(enrichedMessage) !== JSON.stringify(existing.message)) {
           const enriched = { ...existing, revision: (existing.revision ?? 1) + 1, message: enrichedMessage };
-          appendFsyncedJsonl(file, [enriched]);
-          const position = index.projections.findIndex((candidate) => candidate === existing);
-          if (position >= 0) index.projections[position] = enriched;
-          index.byTuple.set(tuple, enriched);
-          this.upsertGlobalChatSearchProjection(projectId, enriched);
-          return { projection: enriched, replayed: false };
+          return commitEnrichment(enriched);
         }
       }
       // Delivery retries may create new runtime-local IDs and timestamps, and

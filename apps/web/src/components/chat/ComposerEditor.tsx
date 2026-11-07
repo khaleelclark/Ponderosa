@@ -434,6 +434,18 @@ function $isComposerProjectFileNode(
   return node instanceof ComposerProjectFileNode;
 }
 
+function $removeComposerNodeAndRestoreSelection(node: LexicalNode): void {
+  const parent = node.getParent();
+  const index = node.getIndexWithinParent();
+  node.remove();
+  if (parent) {
+    const selection = $createRangeSelection();
+    selection.anchor.set(parent.getKey(), index, "element");
+    selection.focus.set(parent.getKey(), index, "element");
+    $setSelection(selection);
+  }
+}
+
 function ComposerProjectFileToken({
   nodeKey,
   filename,
@@ -448,15 +460,7 @@ function ComposerProjectFileToken({
     editor.update(() => {
       const node = $getNodeByKey(nodeKey);
       if (!$isComposerProjectFileNode(node)) return;
-      const parent = node.getParent();
-      const index = node.getIndexWithinParent();
-      node.remove();
-      if (parent) {
-        const selection = $createRangeSelection();
-        selection.anchor.set(parent.getKey(), index, "element");
-        selection.focus.set(parent.getKey(), index, "element");
-        $setSelection(selection);
-      }
+      $removeComposerNodeAndRestoreSelection(node);
     });
     requestAnimationFrame(() => editor.focus());
   }, [editor, mutationLocked, nodeKey]);
@@ -573,15 +577,7 @@ function ComposerMentionToken({
     editor.update(() => {
       const node = $getNodeByKey(nodeKey);
       if (!$isComposerMentionNode(node)) return;
-      const parent = node.getParent();
-      const index = node.getIndexWithinParent();
-      node.remove();
-      if (parent) {
-        const selection = $createRangeSelection();
-        selection.anchor.set(parent.getKey(), index, "element");
-        selection.focus.set(parent.getKey(), index, "element");
-        $setSelection(selection);
-      }
+      $removeComposerNodeAndRestoreSelection(node);
     });
     requestAnimationFrame(() => editor.focus());
   }, [editor, mutationLocked, nodeKey, removeStructuralDestination, structural]);

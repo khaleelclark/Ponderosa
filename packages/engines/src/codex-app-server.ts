@@ -453,7 +453,7 @@ export function formatCodexStatus(input: {
 }): string {
   const parts = [`Codex session ${input.sessionId}`, `Model ${input.model ?? "provider default"}`];
   if (input.context?.modelContextWindow) {
-    const usedPercent = Math.min(100, (input.context.usedTokens / input.context.modelContextWindow) * 100);
+    const usedPercent = (input.context.usedTokens / input.context.modelContextWindow) * 100;
     parts.push(`Context ${Math.round(usedPercent)}% used (${input.context.usedTokens.toLocaleString()} of ${input.context.modelContextWindow.toLocaleString()} tokens)`);
   } else if (input.context) {
     parts.push(`Context occupancy ${input.context.usedTokens.toLocaleString()} tokens; context-window size not reported`);

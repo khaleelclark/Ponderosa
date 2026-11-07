@@ -337,6 +337,17 @@ export class WorkspaceStore {
     }
   }
 
+  private unlinkNotificationIndexes(current: WorkspaceNotificationDto): void {
+    this.updateNotificationSearchIndex(current, false);
+    this.removeActiveNotification(current);
+    if (current.dedupeKey && this.notificationsByDedupeKey.get(current.dedupeKey)?.id === current.id) {
+      this.notificationsByDedupeKey.delete(current.dedupeKey);
+    }
+    if (current.dedupeKey && this.openOperationalNotificationsByDedupeKey.get(current.dedupeKey)?.id === current.id) {
+      this.openOperationalNotificationsByDedupeKey.delete(current.dedupeKey);
+    }
+  }
+
   private setNotification(item: WorkspaceNotificationDto): void {
     // A cleared alert cannot hide its still-open canonical question. Derive
     // question visibility here so historical dismissals reconcile on reopen too.
@@ -348,14 +359,7 @@ export class WorkspaceStore {
     }
     const current = this.notifications.get(item.id);
     if (current) {
-      this.updateNotificationSearchIndex(current, false);
-      this.removeActiveNotification(current);
-      if (current.dedupeKey && this.notificationsByDedupeKey.get(current.dedupeKey)?.id === current.id) {
-        this.notificationsByDedupeKey.delete(current.dedupeKey);
-      }
-      if (current.dedupeKey && this.openOperationalNotificationsByDedupeKey.get(current.dedupeKey)?.id === current.id) {
-        this.openOperationalNotificationsByDedupeKey.delete(current.dedupeKey);
-      }
+      this.unlinkNotificationIndexes(current);
     }
     this.notifications.set(item.id, item);
     const workKey = notificationWorkKey(item);
@@ -379,14 +383,7 @@ export class WorkspaceStore {
   private deleteNotification(id: string): void {
     const current = this.notifications.get(id);
     if (current) {
-      this.updateNotificationSearchIndex(current, false);
-      this.removeActiveNotification(current);
-      if (current.dedupeKey && this.notificationsByDedupeKey.get(current.dedupeKey)?.id === current.id) {
-        this.notificationsByDedupeKey.delete(current.dedupeKey);
-      }
-      if (current.dedupeKey && this.openOperationalNotificationsByDedupeKey.get(current.dedupeKey)?.id === current.id) {
-        this.openOperationalNotificationsByDedupeKey.delete(current.dedupeKey);
-      }
+      this.unlinkNotificationIndexes(current);
     }
     this.notifications.delete(id);
     const workKey = current && notificationWorkKey(current);

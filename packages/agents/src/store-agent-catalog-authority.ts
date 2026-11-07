@@ -633,15 +633,8 @@ export class AgentCatalogAuthority {
     }));
   }
 
-  updateAgentWorkingCopy(
-    id: string,
-    workingCopy: AgentDto["workingCopy"],
-  ): AgentDto | undefined {
-    const row = this.db.select().from(agents).where(and(
-      eq(agents.id, id),
-      isNull(agents.deletedAt),
-    )).get();
-    if (!row) return undefined;
+  private persistSelectedAgentWorkingCopy(row: typeof agents.$inferSelect, workingCopy: AgentDto["workingCopy"]): void {
+    const id = row.id;
     const project = this.getProject(row.projectId);
     if (!project) throw new Error("Agent Project is unavailable");
     workingCopy = preserveStoredWorkingCopy(JSON.parse(row.workingCopyJson) as AgentDto["workingCopy"], workingCopy);
@@ -656,6 +649,18 @@ export class AgentCatalogAuthority {
       workingCopyJson: JSON.stringify(workingCopy),
       updatedAt: workingCopy.updatedAt,
     }).where(eq(agents.id, id)).run();
+  }
+
+  updateAgentWorkingCopy(
+    id: string,
+    workingCopy: AgentDto["workingCopy"],
+  ): AgentDto | undefined {
+    const row = this.db.select().from(agents).where(and(
+      eq(agents.id, id),
+      isNull(agents.deletedAt),
+    )).get();
+    if (!row) return undefined;
+    this.persistSelectedAgentWorkingCopy(row, workingCopy);
     return this.rowToAgentDto(id);
   }
 
@@ -667,20 +672,7 @@ export class AgentCatalogAuthority {
       eq(agents.id, id),
     )).get();
     if (!row || row.deletedAt === null) return false;
-    const project = this.getProject(row.projectId);
-    if (!project) throw new Error("Agent Project is unavailable");
-    workingCopy = preserveStoredWorkingCopy(JSON.parse(row.workingCopyJson) as AgentDto["workingCopy"], workingCopy);
-    validateWorkingCopy(project, workingCopy);
-    const json = readJson<AgentJson>(agentJsonPath(this.dataDir, row.projectId, id));
-    writeJson(agentJsonPath(this.dataDir, row.projectId, id), {
-      ...json,
-      workingCopy,
-      updatedAt: workingCopy.updatedAt,
-    });
-    this.db.update(agents).set({
-      workingCopyJson: JSON.stringify(workingCopy),
-      updatedAt: workingCopy.updatedAt,
-    }).where(eq(agents.id, id)).run();
+    this.persistSelectedAgentWorkingCopy(row, workingCopy);
     return true;
   }
 

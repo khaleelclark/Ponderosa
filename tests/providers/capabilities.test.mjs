@@ -137,6 +137,7 @@ test('Codex context snapshots and native status require a complete reported occu
     [{ totalTokens: 0 }, 0],
     [{ inputTokens: 0, outputTokens: 0 }, 0],
     [{ inputTokens: 7, outputTokens: 9, totalTokens: 20 }, 20],
+    [{ totalTokens: 240000 }, 240000],
   ];
   for (const [last, expected] of cases) {
     const tokenUsage = { last, total: { totalTokens: 900000 }, modelContextWindow: 200000 };
@@ -155,6 +156,7 @@ test('Codex context snapshots and native status require a complete reported occu
       assert.equal(session.contextUsage().usedTokens, expected);
       assert.ok(status.message.includes(`${expected.toLocaleString()} of ${(200000).toLocaleString()} tokens`));
       if (expected === 0) assert.match(status.message, /Context 0% used/);
+      if (expected === 240000) assert.match(status.message, /Context 120% used/);
     }
   }
   assert.deepEqual(rpcMethods, cases.map(() => 'account/rateLimits/read'));
