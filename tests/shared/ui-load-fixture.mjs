@@ -171,8 +171,33 @@ export function verifyQueuedLoadMessage(request,receipt,agents){
  return {messageId:receipt.messageId,deliveryId:delivery.deliveryId,agentId,state:delivery.state};
 }
 
+// The agreed stress population exists before navigation; setup uses the same canonical Queue API.
+export async function seedQueuedLoadMessages(f,product,receipts=[]){
+ assert.equal(product.agents.length,20);assert.equal(receipts.length,0);
+ const agent=product.agents.at(-1),seen=new Set();
+ for(let i=0;i<30;i++){
+  const request={text:'#'+agent.handle+' Timed short message',recipients:[{agentId:agent.id,attachmentIds:[]}],idempotencyKey:randomUUID(),activeRunDelivery:'queue',engine:'codex',model:'fixture',effort:'medium'};
+  const receipt=verifyQueuedLoadMessage(request,f.ok(await f.api('POST',product.prefix+'/conversations/'+product.chat.id+'/direct-messages',request)),product.agents);
+  assert(!seen.has(receipt.deliveryId)&&!seen.has(receipt.messageId));seen.add(receipt.deliveryId);seen.add(receipt.messageId);receipts.push(receipt);
+ }
+ await assertQueuedLoadMessages(f,product,receipts);return receipts;
+}
+
+// Count alone cannot establish that the same queued tasks and targets survived.
+export async function assertQueuedLoadMessages(f,product,receipts){
+ const pending=f.ok(await f.api('GET',product.prefix+'/conversations/'+product.chat.id+'/queued-messages'));
+ assert.equal(pending.length,receipts.length,receipts.length?'The canonical queued population must stay exact':'No disposable follow-up may remain for a later Run');
+ const expected=new Map(receipts.map(receipt=>[receipt.deliveryId,receipt]));assert.equal(expected.size,receipts.length);
+ assert.deepEqual(pending.map(item=>item.deliveryId).sort(),[...expected.keys()].sort(),'The exact retained queue IDs must survive');
+ for(const item of pending){assert.equal(item.status,'queued');assert.equal(item.targetAgentId,expected.get(item.deliveryId).agentId);}
+ return pending;
+}
+
 // Only cancel this disposable test's exact pending deliveries, after timing ends.
-export async function cancelQueuedLoadMessages(f,product,receipts){
+export async function cancelQueuedLoadMessages(f,product,receipts,remaining=[]){
+ const retained=new Set(remaining.map(receipt=>receipt.deliveryId));
+ assert.equal(new Set(receipts.map(receipt=>receipt.deliveryId)).size,receipts.length,'Cancel receipts must be distinct');
+ assert(receipts.every(receipt=>!retained.has(receipt.deliveryId)),'A cell cannot cancel retained baseline receipts');
  const cancelled=[];
  for(const receipt of receipts){
   const result=f.ok(await f.api('POST',product.prefix+'/conversations/'+product.chat.id+'/queued-messages/'+receipt.deliveryId+'/cancel',{idempotencyKey:randomUUID()}));
@@ -180,7 +205,6 @@ export async function cancelQueuedLoadMessages(f,product,receipts){
   assert.equal(result.status,'cancelled');
   cancelled.push({deliveryId:receipt.deliveryId,...result});
  }
- const pending=f.ok(await f.api('GET',product.prefix+'/conversations/'+product.chat.id+'/queued-messages'));
- assert.equal(pending.length,0,'No disposable follow-up may remain for a later Run');
+ await assertQueuedLoadMessages(f,product,remaining);
  return cancelled;
 }

@@ -1,5 +1,5 @@
 import {mkdtemp,writeFile,rm} from 'node:fs/promises';import {tmpdir} from 'node:os';import {join} from 'node:path';import {verifyAcceptedMethod,finalizeLedger,sha256,inputManifestDigest} from './qualification-ledger.mjs';
-import test from 'node:test';import assert from 'node:assert/strict';import {sendQualificationTask,readLeasedRun,readCanonicalProgress,workIdentity,assertProgressWindow,settleLoadAgents,sampleLoadOnce,verifyQualificationHistory,verifyQueuedLoadMessage,cancelQueuedLoadMessages} from '../shared/ui-load-fixture.mjs';
+import test from 'node:test';import assert from 'node:assert/strict';import {sendQualificationTask,readLeasedRun,readCanonicalProgress,workIdentity,assertProgressWindow,settleLoadAgents,sampleLoadOnce,verifyQualificationHistory,verifyQueuedLoadMessage,cancelQueuedLoadMessages,seedQueuedLoadMessages,assertQueuedLoadMessages} from '../shared/ui-load-fixture.mjs';
 test('normal asset maintenance retry uses one idempotency key and retains the actual refusal',async()=>{
  const attempts=[],keys=[];const f={api:async(_method,_path,body)=>{keys.push(body.idempotencyKey);return keys.length===1?{status:409,body:{error:'Agent asset maintenance is in progress; retry safely'}}:{status:200,body:{accepted:true}};},ok:response=>{assert.equal(response.status,200);return response.body;}};
  assert.deepEqual(await sendQualificationTask(f,'/api','agent','task',row=>attempts.push(row)),{accepted:true});assert.equal(new Set(keys).size,1);assert.equal(attempts[0].status,409);assert.equal(attempts[1].status,200);
@@ -121,4 +121,45 @@ test('controlled settlement uses each product endpoint and keeps cross-product a
   assert.deepEqual(events.map(event=>event.agentId),[core.id,worker.id]);
   assert(events.every(event=>event.event==='provider-settled'&&event.runs.length>0&&event.runs.every(run=>run.status==='completed')));
  }finally{await f.dispose(false);}
+});
+
+
+function queuedPopulationFixture(prefix='/api'){
+ const product={prefix,chat:{id:'chat'},agents:Array.from({length:20},(_,i)=>({id:'agent-'+i,handle:'Working'+i}))},pending=new Map(),calls=[];let serial=0;
+ const f={ok:value=>value,api:async(method,path,body)=>{
+  calls.push({method,path,body});const base=prefix+'/conversations/chat/';assert(path.startsWith(base));
+  if(method==='GET'){assert.equal(path,base+'queued-messages');return [...pending.values()];}
+  if(path===base+'direct-messages'){
+   const n=++serial,deliveryId='delivery-'+n,messageId='message-'+n,agentId=body.recipients[0].agentId;
+   pending.set(deliveryId,{deliveryId,messageId,targetAgentId:agentId,status:'queued'});
+   return {messageId,recipients:[{agentId,deliveryId,queued:true,state:'queued'}]};
+  }
+  const id=path.slice((base+'queued-messages/').length).split('/')[0];assert(path.endsWith('/cancel'));assert(pending.delete(id),'Cancel only an actual owned pending task');return {cancelled:true,status:'cancelled'};
+ }};return {f,product,pending,calls};
+}
+
+test('baseline queue setup creates thirty distinct canonical receipts before either product navigation',async()=>{
+ for(const prefix of ['/api','/api/branches/engine']){
+  const {f,product,pending,calls}=queuedPopulationFixture(prefix),receipts=[];assert.equal(await seedQueuedLoadMessages(f,product,receipts),receipts);assert.equal(receipts.length,30);assert.equal(pending.size,30);
+  const posts=calls.filter(c=>c.method==='POST');assert.equal(posts.length,30);assert(posts.every(c=>c.path===prefix+'/conversations/chat/direct-messages'&&c.body.activeRunDelivery==='queue'));
+  assert.equal(new Set(posts.map(c=>c.body.idempotencyKey)).size,30);assert(posts.every(c=>c.body.recipients[0].agentId==='agent-19'));
+ }
+});
+
+test('per-cell cleanup cancels only its two observed receipts and retains the exact baseline thirty',async()=>{
+ const {f,product,pending,calls}=queuedPopulationFixture(),baseline=await seedQueuedLoadMessages(f,product),added=[];
+ for(let i=0;i<2;i++){const request={text:'#Working0 Timed short message',recipients:[{agentId:'agent-0'}],activeRunDelivery:'queue'};added.push(verifyQueuedLoadMessage(request,await f.api('POST','/api/conversations/chat/direct-messages',request),product.agents));}
+ const before=calls.length;await assert.rejects(cancelQueuedLoadMessages(f,product,[baseline[0]],baseline),/retained baseline/);assert.equal(calls.length,before,'An overlapping cancellation fails before any API effect');
+ const start=calls.length;await cancelQueuedLoadMessages(f,product,added,baseline);assert.equal(pending.size,30);
+ assert.deepEqual(calls.slice(start).filter(c=>c.method==='POST').map(c=>c.path),added.map(r=>'/api/conversations/chat/queued-messages/'+r.deliveryId+'/cancel'));
+ assert.deepEqual((await assertQueuedLoadMessages(f,product,baseline)).map(r=>r.deliveryId).sort(),baseline.map(r=>r.deliveryId).sort());
+ await cancelQueuedLoadMessages(f,product,baseline);assert.equal(pending.size,0,'Final cleanup retains its original empty-queue guard');
+});
+
+test('baseline queue guard refuses same-count replacement, target changes and started deliveries',async()=>{
+ for(const mode of ['replacement','target','started']){
+  const {f,product,pending}=queuedPopulationFixture(),baseline=await seedQueuedLoadMessages(f,product),first=baseline[0],row=pending.get(first.deliveryId);
+  if(mode==='replacement'){pending.delete(first.deliveryId);pending.set('foreign',{...row,deliveryId:'foreign'});}else if(mode==='target')row.targetAgentId='foreign';else row.status='started';
+  await assert.rejects(assertQueuedLoadMessages(f,product,baseline));assert.equal(pending.size,30);
+ }
 });
