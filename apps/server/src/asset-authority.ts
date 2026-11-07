@@ -410,14 +410,18 @@ export class AssetAuthority {
     }
   }
 
+  private deleteDraftSurfaceRows(draftId: string): void {
+    this.db.prepare("DELETE FROM draft_asset_settlements WHERE draft_id=?").run(draftId);
+    this.db.prepare("DELETE FROM draft_asset_reservations WHERE draft_id=?").run(draftId);
+    this.db.prepare("DELETE FROM draft_asset_committed WHERE draft_id=?").run(draftId);
+    this.db.prepare("DELETE FROM draft_attachment_cleanups WHERE draft_id=?").run(draftId);
+    this.db.prepare("DELETE FROM draft_asset_rate_events WHERE draft_id=?").run(draftId);
+  }
+
   finishDraftSurfaceCleanup(draftId: string): void {
     try {
       return this.db.transaction(() => {
-        this.db.prepare("DELETE FROM draft_asset_settlements WHERE draft_id=?").run(draftId);
-        this.db.prepare("DELETE FROM draft_asset_reservations WHERE draft_id=?").run(draftId);
-        this.db.prepare("DELETE FROM draft_asset_committed WHERE draft_id=?").run(draftId);
-        this.db.prepare("DELETE FROM draft_attachment_cleanups WHERE draft_id=?").run(draftId);
-        this.db.prepare("DELETE FROM draft_asset_rate_events WHERE draft_id=?").run(draftId);
+        this.deleteDraftSurfaceRows(draftId);
       }).immediate();
     } catch (error) {
       throw this.mapped(error);
@@ -454,11 +458,7 @@ export class AssetAuthority {
           this.db.prepare("DELETE FROM asset_rate_events WHERE agent_id=?").run(agentId);
           this.db.prepare("DELETE FROM asset_audit WHERE agent_id=?").run(agentId);
           const draftId = `agent:${agentId}`;
-          this.db.prepare("DELETE FROM draft_asset_settlements WHERE draft_id=?").run(draftId);
-          this.db.prepare("DELETE FROM draft_asset_reservations WHERE draft_id=?").run(draftId);
-          this.db.prepare("DELETE FROM draft_asset_committed WHERE draft_id=?").run(draftId);
-          this.db.prepare("DELETE FROM draft_attachment_cleanups WHERE draft_id=?").run(draftId);
-          this.db.prepare("DELETE FROM draft_asset_rate_events WHERE draft_id=?").run(draftId);
+          this.deleteDraftSurfaceRows(draftId);
         }
       }).immediate();
     } catch (error) {
@@ -483,11 +483,7 @@ export class AssetAuthority {
         this.db.prepare("DELETE FROM asset_rate_events WHERE project_id=?").run(projectId);
         this.db.prepare("DELETE FROM asset_audit WHERE project_id=?").run(projectId);
         for (const draftId of new Set(draftSurfaceIds)) {
-          this.db.prepare("DELETE FROM draft_asset_settlements WHERE draft_id=?").run(draftId);
-          this.db.prepare("DELETE FROM draft_asset_reservations WHERE draft_id=?").run(draftId);
-          this.db.prepare("DELETE FROM draft_asset_committed WHERE draft_id=?").run(draftId);
-          this.db.prepare("DELETE FROM draft_attachment_cleanups WHERE draft_id=?").run(draftId);
-          this.db.prepare("DELETE FROM draft_asset_rate_events WHERE draft_id=?").run(draftId);
+          this.deleteDraftSurfaceRows(draftId);
         }
       }).immediate();
     } catch (error) {
@@ -684,6 +680,19 @@ export class AssetAuthority {
     try { this.db.prepare("DELETE FROM runtime_artifact_authority WHERE project_id=? AND id=?").run(projectId, id); }
     catch (error) { throw this.mapped(error); }
   }
+  private insertGeneratedArtifactRow(artifact: RegisteredGeneratedArtifact): void {
+    this.db.prepare(`
+      INSERT INTO generated_artifact_authority(
+        id,project_id,agent_id,origin_agent_id,execution_id,kind,artifact_path,
+        source_path,summary,created_at,media_type,byte_length,blob_hash
+      ) VALUES (?,?,?,?,?,'generated_file',?,?,?,?,?,?,?)
+    `).run(
+      artifact.id, artifact.projectId, artifact.agentId, artifact.originAgentId,
+      artifact.executionId ?? null, artifact.path, artifact.sourcePath ?? null,
+      artifact.summary, artifact.createdAt, artifact.mediaType, artifact.size, artifact.sha256,
+    );
+  }
+
   registerGeneratedArtifact(artifact: RegisteredGeneratedArtifact): RegisteredGeneratedArtifact {
     if (!generatedArtifactMetadataIsValid(artifact)) throw new AssetError(409, "generated artifact metadata is invalid");
     try {
@@ -692,16 +701,7 @@ export class AssetAuthority {
         if (prior && JSON.stringify(generatedArtifactIdentity(prior)) !== JSON.stringify(generatedArtifactIdentity(artifact))) {
           throw new AssetError(409, "generated artifact identity collision");
         }
-        if (!prior) this.db.prepare(`
-          INSERT INTO generated_artifact_authority(
-            id,project_id,agent_id,origin_agent_id,execution_id,kind,artifact_path,
-            source_path,summary,created_at,media_type,byte_length,blob_hash
-          ) VALUES (?,?,?,?,?,'generated_file',?,?,?,?,?,?,?)
-        `).run(
-          artifact.id, artifact.projectId, artifact.agentId, artifact.originAgentId,
-          artifact.executionId ?? null, artifact.path, artifact.sourcePath ?? null,
-          artifact.summary, artifact.createdAt, artifact.mediaType, artifact.size, artifact.sha256,
-        );
+        if (!prior) this.insertGeneratedArtifactRow(artifact);
         return this.generatedArtifact(artifact.projectId, artifact.id)!;
       }).immediate();
     } catch (error) {
@@ -767,16 +767,7 @@ export class AssetAuthority {
             JSON.stringify(generatedArtifactIdentity(artifact))) {
           throw new AssetError(409, "generated artifact identity collision");
         }
-        if (!registered) this.db.prepare(`
-          INSERT INTO generated_artifact_authority(
-            id,project_id,agent_id,origin_agent_id,execution_id,kind,artifact_path,
-            source_path,summary,created_at,media_type,byte_length,blob_hash
-          ) VALUES (?,?,?,?,?,'generated_file',?,?,?,?,?,?,?)
-        `).run(
-          artifact.id, artifact.projectId, artifact.agentId, artifact.originAgentId,
-          artifact.executionId ?? null, artifact.path, artifact.sourcePath ?? null,
-          artifact.summary, artifact.createdAt, artifact.mediaType, artifact.size, artifact.sha256,
-        );
+        if (!registered) this.insertGeneratedArtifactRow(artifact);
         this.db.prepare(`
           INSERT INTO generated_artifact_import_receipts(
             project_id,run_id,tool_call_id,request_hash,artifact_id,projected,created_at

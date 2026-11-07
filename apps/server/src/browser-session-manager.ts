@@ -751,6 +751,32 @@ export class BrowserSessionManager {
     }, affectsRestartReadiness);
   }
 
+  private async failReadiness(
+    scope: BrowserScope,
+    session: ManagedSession,
+    createdDriver: BrowserDriver | undefined,
+    error: unknown,
+  ): Promise<never> {
+    if (createdDriver) session.closingDriver = createdDriver;
+    let cleanupError: unknown;
+    try {
+      await this.closeRetainedHandles(session);
+    } catch (closeError) {
+      cleanupError = closeError;
+    }
+    if (session.driver === createdDriver) session.driver = undefined;
+    const failure = redactBrowserText(error instanceof Error ? error.message : String(error));
+    if (this.sessions.get(scope.agentId) === session && session.dto.status === "opening") {
+      session.dto = { ...session.dto, status: "failed", failure, updatedAt: new Date().toISOString() };
+      this.lifecycle(session, failure);
+    }
+    if (cleanupError) {
+      throw new AggregateError([error, cleanupError], "browser readiness and cleanup failed");
+    }
+    if (error instanceof BrowserSessionError) throw error;
+    throw new BrowserSessionError(failure, 503);
+  }
+
   open(scope: BrowserScope, url?: string, initialOwner: BrowserControlOwner = "agent", localFactory?: BrowserDriverFactory, nativeManual = false, connectOnOpen = false): Promise<BrowserSessionDto> {
     this.assertAdmission(scope);
     if (connectOnOpen && !nativeManual) throw new BrowserSessionError("An initial Chrome connection requires an owned native browser.", 409);
@@ -885,24 +911,7 @@ export class BrowserSessionManager {
       } catch (error) {
         publication.finish();
         if (!installed) throw error;
-        if (createdDriver) session.closingDriver = createdDriver;
-        let cleanupError: unknown;
-        try {
-          await this.closeRetainedHandles(session);
-        } catch (closeError) {
-          cleanupError = closeError;
-        }
-        if (session.driver === createdDriver) session.driver = undefined;
-        const failure = redactBrowserText(error instanceof Error ? error.message : String(error));
-        if (this.sessions.get(scope.agentId) === session && session.dto.status === "opening") {
-          session.dto = { ...session.dto, status: "failed", failure, updatedAt: new Date().toISOString() };
-          this.lifecycle(session, failure);
-        }
-        if (cleanupError) {
-          throw new AggregateError([error, cleanupError], "browser readiness and cleanup failed");
-        }
-        if (error instanceof BrowserSessionError) throw error;
-        throw new BrowserSessionError(failure, 503);
+        return await this.failReadiness(scope, session, createdDriver, error);
       } finally {
         if (session.opening === opening) session.opening = undefined;
         if (session.spawnPublication === publication) session.spawnPublication = undefined;
@@ -1000,24 +1009,7 @@ export class BrowserSessionManager {
         return publicDto(session);
       } catch (error) {
         publication.finish();
-        if (createdDriver) session.closingDriver = createdDriver;
-        let cleanupError: unknown;
-        try {
-          await this.closeRetainedHandles(session);
-        } catch (closeError) {
-          cleanupError = closeError;
-        }
-        if (session.driver === createdDriver) session.driver = undefined;
-        const failure = redactBrowserText(error instanceof Error ? error.message : String(error));
-        if (this.sessions.get(scope.agentId) === session && session.dto.status === "opening") {
-          session.dto = { ...session.dto, status: "failed", failure, updatedAt: new Date().toISOString() };
-          this.lifecycle(session, failure);
-        }
-        if (cleanupError) {
-          throw new AggregateError([error, cleanupError], "browser readiness and cleanup failed");
-        }
-        if (error instanceof BrowserSessionError) throw error;
-        throw new BrowserSessionError(failure, 503);
+        return await this.failReadiness(scope, session, createdDriver, error);
       } finally {
         if (session.opening === reconnecting) session.opening = undefined;
         if (session.spawnPublication === publication) session.spawnPublication = undefined;

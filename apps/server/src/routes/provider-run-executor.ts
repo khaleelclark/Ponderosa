@@ -813,6 +813,32 @@ export function startProviderRunExecution(
         assertSettingsTransitionPolicy?.();
         cap.inputVerificationPending=false;
       };
+      const consumePersistentEvents = async function* (): AsyncIterable<AgentEvent> {
+        while (true) {
+          let next: IteratorResult<AgentEvent>;
+          try {
+            next = await persistentRuntime!.iterator.next();
+          } catch (error) {
+            providerStreamBoundaryFailure = {
+              kind: isProviderRuntimeBoundaryError(error) &&
+                error.operation === "project provider event"
+                ? "event_projection"
+                : "iterator_rejection",
+              providerAccepted: v3PromptInjected,
+            };
+            throw error;
+          }
+          if (next.done) {
+            teardownPersistentRuntimeInBackground(agent.id, persistentRuntime!, "provider stream ended");
+            yield activeRun.observedProviderFailure ?? { type: "error", message: "persistent engine session stopped" };
+            return;
+          }
+          const event = next.value;
+          providerStreamBoundaryFailure = undefined;
+          yield event;
+          if (event.type === "turn_done" || event.type === "error") return;
+        }
+      };
       const startStream = (sessionId?: string): AsyncIterable<AgentEvent> => sessionId
         ? persistentRuntime
           ? {
@@ -867,30 +893,7 @@ export function startProviderRunExecution(
                   }
                   persistentTurnStarted = true;
                 }
-                while (true) {
-                  let next: IteratorResult<AgentEvent>;
-                  try {
-                    next = await persistentRuntime!.iterator.next();
-                  } catch (error) {
-                    providerStreamBoundaryFailure = {
-                      kind: isProviderRuntimeBoundaryError(error) &&
-                        error.operation === "project provider event"
-                        ? "event_projection"
-                        : "iterator_rejection",
-                      providerAccepted: v3PromptInjected,
-                    };
-                    throw error;
-                  }
-                  if (next.done) {
-                    teardownPersistentRuntimeInBackground(agent.id, persistentRuntime!, "provider stream ended");
-                    yield activeRun.observedProviderFailure ?? { type: "error", message: "persistent engine session stopped" };
-                    return;
-                  }
-                  const event = next.value;
-                  providerStreamBoundaryFailure = undefined;
-                  yield event;
-                  if (event.type === "turn_done" || event.type === "error") return;
-                }
+                yield* consumePersistentEvents();
               },
             }
           : projectProviderStream(providerEventStream(providerRuntimeValue(
@@ -959,30 +962,7 @@ export function startProviderRunExecution(
                   }
                   persistentTurnStarted = true;
                 }
-                while (true) {
-                  let next: IteratorResult<AgentEvent>;
-                  try {
-                    next = await persistentRuntime!.iterator.next();
-                  } catch (error) {
-                    providerStreamBoundaryFailure = {
-                      kind: isProviderRuntimeBoundaryError(error) &&
-                        error.operation === "project provider event"
-                        ? "event_projection"
-                        : "iterator_rejection",
-                      providerAccepted: v3PromptInjected,
-                    };
-                    throw error;
-                  }
-                  if (next.done) {
-                    teardownPersistentRuntimeInBackground(agent.id, persistentRuntime!, "provider stream ended");
-                    yield activeRun.observedProviderFailure ?? { type: "error", message: "persistent engine session stopped" };
-                    return;
-                  }
-                  const event = next.value;
-                  providerStreamBoundaryFailure = undefined;
-                  yield event;
-                  if (event.type === "turn_done" || event.type === "error") return;
-                }
+                yield* consumePersistentEvents();
               },
             }
           : projectProviderStream(providerEventStream(providerRuntimeValue(
