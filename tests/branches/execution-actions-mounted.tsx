@@ -16,6 +16,7 @@ export async function executionActionsRevisionSyncRegression():Promise<void>{
  const gate={id:'race-gate',executionId:'race-run',stepExecutionId:gateStep.id,revision:3,state:'waiting',purpose:'approval',prompt:'Review the result',proposal:'Original proposal',editable:true};
  const decision={id:'race-decision',projectId:'race-project',agentId:'race-agent',mode:'text',question:'Keep this separate Agent answer',options:[],allowOther:true,status:'pending'};
  const items=[{kind:'decision',decision},{kind:'gate',step:gateStep,gate},{kind:'attempt',step:failedStep,current:true,attempt:{id:'failed-attempt',stepExecutionId:failedStep.id,number:1,state:'failed',fence:1,error:'Original step failure'}}];
+ let terminal=false;
  let revision=1,mode:'ok'|'delay'|'503'|'wrong-id'|'malformed'='ok',release:(()=>void)|undefined;
  let draft={conversationId:'agent:race-agent',ownerId:decision.id,text:'',attachmentIds:[],attachments:[],revision:0};
  const json=(value:unknown,status=200)=>new Response(JSON.stringify(value),{status,headers:{'content-type':'application/json'}});
@@ -29,9 +30,9 @@ export async function executionActionsRevisionSyncRegression():Promise<void>{
   }
   assert(method==='GET','Only controlled projection reads are allowed');gets.push(url.pathname);
   if(url.pathname.includes('limits'))return json(DEFAULT_ASSET_LIMITS);
-  if(url.pathname.endsWith('/operations'))return json({executionId:'race-run',state:'waiting_human',label:'Waiting on a person',observedAt:detail.execution.updatedAt,counts:{completed:0,running:0,retrying:0,failed:1,waitingAgent:0,waitingHuman:1,needsReconciliation:0,mapItems:0,mapSettled:0},agentWaits:[],additionalAgentWaits:0});
+  if(url.pathname.endsWith('/operations'))return json({executionId:'race-run',state:terminal?'completed':'waiting_human',label:terminal?'Completed':'Waiting on a person',observedAt:detail.execution.updatedAt,counts:{completed:terminal?1:0,running:0,retrying:0,failed:terminal?0:1,waitingAgent:0,waitingHuman:terminal?0:1,needsReconciliation:0,mapItems:0,mapSettled:0},agentWaits:[],additionalAgentWaits:0});
   if(url.pathname.endsWith('/actions')){
-   const response={executionId:mode==='wrong-id'?'foreign-run':'race-run',revision,generation:'generation-'+revision,items};
+   const response={executionId:mode==='wrong-id'?'foreign-run':'race-run',revision,generation:'generation-'+revision,items:terminal?[]:items};
    if(mode==='503')return json({error:'Actions service temporarily unavailable'},503);
    if(mode==='malformed')return new Response('{not JSON',{headers:{'content-type':'application/json'}});
    if(mode==='delay')await new Promise<void>(resolve=>{release=resolve;});
@@ -44,7 +45,8 @@ export async function executionActionsRevisionSyncRegression():Promise<void>{
  const gateInput=()=>host.querySelector('textarea:not([aria-hidden="true"])') as HTMLTextAreaElement;
  const refresh=()=>client.invalidateQueries({queryKey:actionsKey,exact:true});
  try{
-  render();await until(()=>Boolean(button('Approve')&&button('Retry Step')&&!button('Retry Step').disabled),'Initial actions did not load');
+  render();await until(()=>Boolean(button('Approve')&&button('Retry Step')&&!button('Retry Step').disabled&&host.textContent?.includes('1 waiting for review')),'Initial actions did not load');
+  assert(host.textContent?.includes('Approval requested')&&host.textContent.includes('1 waiting for review'),'Fresh Gate shows its actual pending state');
   const proposal=gateInput();input(proposal,'Gate draft retained Ω');await until(()=>Boolean(button('Approve edited text')),'Gate edit not applied');
   button('Answer').click();await until(()=>Boolean(document.querySelector('[role="dialog"] textarea:not([aria-hidden="true"])')),'Decision dialog missing');
   const answer=document.querySelector('[role="dialog"] textarea:not([aria-hidden="true"])') as HTMLTextAreaElement;
@@ -56,10 +58,13 @@ export async function executionActionsRevisionSyncRegression():Promise<void>{
   assert(proposal===gateInput()&&proposal.value==='Gate draft retained Ω','Gate draft node and value retained');
   assert(answer.isConnected&&answer.value==='Separate Decision draft retained 🙂','Open shared Decision draft retained');
   assert(button('Approve edited text').disabled&&button('Retry Step').disabled,'Known stale Branch actions remain disabled');
+  assert(host.textContent?.includes('Refreshing review…')&&!host.textContent.includes('Approval requested'),'Stale Gate stays mounted with a neutral heading');
+  assert(host.textContent?.includes('Review status refreshing')&&!host.textContent.includes('1 waiting for review'),'Stale action status never presents a current waiting count');
   assert(button('Refresh Run'),'Manual refresh remains available during synchronization');
   mode='ok';detail={...detail,execution:{...detail.execution,revision:2}};render();
   await until(()=>Boolean(!button('Retry Step').disabled&&!host.textContent?.includes('Refreshing Run actions')),'Matching revisions did not converge');
   assert(gateInput()===proposal&&proposal.value==='Gate draft retained Ω'&&answer.value==='Separate Decision draft retained 🙂','Convergence cannot replace dirty forms');
+  assert(host.textContent?.includes('Approval requested')&&host.textContent.includes('1 waiting for review'),'Fresh convergence restores the actual approval heading and count');
   for(const failure of ['503','wrong-id','malformed'] as const){
    mode=failure;await refresh();await until(()=>Boolean(host.textContent?.includes('Decisions and failures could not refresh')),'Real '+failure+' failure must remain visible');
    assert(button('Refresh Run'),'Real failure keeps manual recovery');
@@ -69,6 +74,18 @@ export async function executionActionsRevisionSyncRegression():Promise<void>{
   }
   const cancel=Array.from(document.querySelectorAll('[role="dialog"] button')).find(node=>node.textContent==='Cancel') as HTMLButtonElement;assert(cancel,'Decision can be closed without submission');cancel.click();
   mode='ok';button('Refresh Run').click();await until(()=>!button('Retry Step').disabled,'Explicit recovery did not converge');
+  // Terminal execution/operations can update before the current action page.
+  // Preserve the mounted dirty Gate, but do not ask for stale approval or show0 waiting.
+  terminal=true;revision=3;mode='delay';release=undefined;
+  detail={...detail,execution:{...detail.execution,state:'completed',revision:3}};render();
+  await until(()=>Boolean(release),'Terminal action refresh did not start');
+  await client.invalidateQueries({queryKey:['branch-execution-operations','race-run'],exact:true});
+  await until(()=>Boolean(host.textContent?.includes('Completed')),'Terminal operations header did not arrive');
+  assert(gateInput()===proposal&&proposal.value==='Gate draft retained Ω'&&proposal.disabled,'Terminal refresh retains the same disabled dirty Gate');
+  assert(host.textContent?.includes('Refreshing review…')&&!host.textContent.includes('Approval requested'),'Terminal header never coexists with a stale approval request');
+  assert(host.textContent?.includes('Review status refreshing')&&!host.textContent.includes('0 waiting for review'),'Terminal action mismatch uses a neutral review-count cue');
+  mode='ok';release!();await until(()=>!host.textContent?.includes('Refreshing Run actions'),'Terminal actions did not converge');
+  assert(!gateInput()&&!host.textContent?.includes('Approval requested'),'Only the fresh empty action page removes the settled Gate');
   assert(posts.length===0,'Read synchronization and recovery cannot replay any POST');
   assert(gets.filter(url=>url.endsWith('/actions')).length>=6,'Exercise actual action reads across success, delay and real failures');
  }finally{
