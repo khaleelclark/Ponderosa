@@ -488,7 +488,7 @@ export interface AgentWorkItemDetailsDto {
   details: Array<{ label: string; value: string }>;
   /** Operator-only, bounded projection of canonical message/Run associations. */
   messageTrace?: {
-    inputs: Array<{ activationId: string; communicationEventId: string; sender: string; text: string; textTruncated?: true; recipient: string }>;
+    inputs: Array<{ activationId: string; communicationEventId: string; sender: string; text: string; textTruncated?: true; recipient: string; createdAt?: string }>;
     runIds: string[];
     replies: Array<{ communicationEventId: string; messageId: string; runId: string; sender: string; text: string; textTruncated?: true; createdAt: string }>;
     truncated?: true;

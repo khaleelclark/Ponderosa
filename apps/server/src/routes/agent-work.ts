@@ -579,6 +579,7 @@ export class AgentWorkProjection {
       const senderLabel = sender.kind === "user" ? sender.userId === "local-operator" ? "You (local operator)" : "User"
         : sender.kind === "agent" ? "Agent" : sender.kind === "system" ? "Ponderosa (system)" : "Not recorded";
       inputs.push({activationId, communicationEventId: communication.eventId, sender: senderLabel,
+        ...(typeof communication.createdAt === "string" && Number.isFinite(Date.parse(communication.createdAt)) ? {createdAt: communication.createdAt} : {}),
         recipient: safe(this.store.getAgent(intake.agent_id)?.title ?? "Deleted Agent"), ...excerpt(communication.text)});
     }
     const replies: NonNullable<AgentWorkItemDetailsDto["messageTrace"]>["replies"] = [];

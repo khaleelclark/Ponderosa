@@ -100,6 +100,7 @@ export function AgentWorkTechnicalDetails({
       {messageTrace.inputs.map(input => <Stack key={input.activationId} spacing={0.5}>
         <Typography variant="body2">Cause: Message from {input.sender}</Typography>
         <Typography variant="body2">To: {input.recipient}</Typography>
+        <Typography variant="caption">Received: {input.createdAt ? new Date(input.createdAt).toLocaleString() : "Not recorded"}</Typography>
         <Typography variant="body2" sx={{whiteSpace: "pre-wrap"}}>Requested work{input.textTruncated ? " (excerpt)" : ""}: {input.text}</Typography>
         <Box component="details"><Typography component="summary" variant="caption">Message identifiers</Typography>
           <Typography variant="caption" component="div">Communication: {input.communicationEventId}</Typography>
@@ -109,7 +110,7 @@ export function AgentWorkTechnicalDetails({
       {messageTrace.runIds.length ? <Box component="details"><Typography component="summary" variant="caption">Connected Run identifiers</Typography>
         {messageTrace.runIds.map(id => <Typography key={id} variant="caption" component="div">Run: {id}</Typography>)}
       </Box> : <Typography variant="body2">Connected Run: Not recorded in this evidence window.</Typography>}
-      <Typography variant="subtitle2">Published replies ({messageTrace.replies.length})</Typography>
+      <Typography variant="subtitle2">Messages from the recorded Runs ({messageTrace.replies.length})</Typography>
       {messageTrace.inputs.length > 1 || messageTrace.replies.length > 1 ? <Typography variant="caption">Link: Run-level. Individual message pairing is not recorded.</Typography> : null}
       {messageTrace.replies.length === 0 ? <Typography variant="body2">No reply found in this evidence window.</Typography> : null}
       {messageTrace.replies.map(reply => <Stack key={`${reply.communicationEventId}:${reply.messageId}`} spacing={0.5}>
