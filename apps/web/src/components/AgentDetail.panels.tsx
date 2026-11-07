@@ -275,7 +275,7 @@ export function AgentDetailPanels({
             minWidth: 0,
             overflow: tab === "technical" ? "hidden" : "auto",
             outlineOffset: -2,
-            display: "grid",
+            display: tab === "settings" ? "block" : "grid",
             gridTemplateRows: `${hasOlderTelemetry ? "auto " : ""}${olderTelemetryError ? "auto " : ""}minmax(0, 1fr)`,
           }}
         >

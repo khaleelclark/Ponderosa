@@ -76,6 +76,12 @@ export function AgentRoleSettings({ agent, onSaved }: { agent: AgentDto; onSaved
   </Stack>;
 }
 
+const workingCopyActionAlertSx={
+  flexWrap:"wrap",
+  "& .MuiAlert-message":{flex:"1 1 12rem",minWidth:0},
+  "& .MuiAlert-action":{flex:"0 0 auto",m:0,p:0},
+} as const;
+
 export function AgentWorkingCopySettings({ agent }: { agent: AgentDto }): JSX.Element {
   const queryClient = useQueryClient();
   const notify = useMutationNotification();
@@ -132,8 +138,8 @@ export function AgentWorkingCopySettings({ agent }: { agent: AgentDto }): JSX.El
       {status.isError?<Alert severity="error">{status.error instanceof Error?status.error.message:"Could not check the working-folder change. Try Check status."}</Alert>:null}
       {keepFolder.isError?<Alert severity="error">{keepFolder.error instanceof Error?keepFolder.error.message:'Could not keep the current folder.'}</Alert>:null}
       {change&&change.phase==='kept_current'?<Alert severity="success" sx={{mb:1.5}}>Kept the current working folder and existing context.</Alert>:null}
-      {change&&!['completed','kept_current'].includes(change.phase)?<Alert severity={change.phase==='held'?'error':'info'} sx={{mb:1.5}}
-        action={<Stack direction="row"><Button color="inherit" size="small" disabled={changeMode.isPending||keepFolder.isPending} onClick={()=>change.retryable?changeMode.mutate(change.mode):void status.refetch()}>{change.retryable?'Retry':'Check status'}</Button>{change.canKeepCurrent?<Button color="inherit" size="small" disabled={keepFolder.isPending||changeMode.isPending} onClick={()=>keepFolder.mutate(change.rolloverId)}>Keep current folder</Button>:null}</Stack>}>
+      {change&&!['completed','kept_current'].includes(change.phase)?<Alert severity={change.phase==='held'?'error':'info'} sx={{mb:1.5,...workingCopyActionAlertSx}}
+        action={<Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap"><Button color="inherit" size="small" sx={{minHeight:44,whiteSpace:"nowrap"}} disabled={changeMode.isPending||keepFolder.isPending} onClick={()=>change.retryable?changeMode.mutate(change.mode):void status.refetch()}>{change.retryable?'Retry':'Check status'}</Button>{change.canKeepCurrent?<Button color="inherit" size="small" sx={{minHeight:44,whiteSpace:"nowrap"}} disabled={keepFolder.isPending||changeMode.isPending} onClick={()=>keepFolder.mutate(change.rolloverId)}>Keep current folder</Button>:null}</Stack>}>
         {change.phase==='held'?(change.message??'Inspect Activity before another change.'):change.phase==='handoff'?'Saving: preserving this Agent’s context before changing folders.':change.phase==='verifying'?'Folder changed; verifying preserved context before queued work.':'Saving: preparing the selected working folder.'}
       </Alert>:null}
       <FormControl fullWidth size="small" disabled={changeMode.isPending||changing||change?.phase==='held'}>
@@ -163,11 +169,12 @@ export function AgentWorkingCopySettings({ agent }: { agent: AgentDto }): JSX.El
       {workingCopy.state === "unavailable" ? (
         <Alert
           severity="error"
-          sx={{ mt: 1.5 }}
+          sx={{ mt: 1.5,...workingCopyActionAlertSx }}
           action={workingCopy.mode === "separate_git" ? (
             <Button
               color="inherit"
               size="small"
+              sx={{minHeight:44,whiteSpace:"nowrap"}}
               disabled={changeMode.isPending}
               onClick={() => changeMode.mutate("separate_git")}
             >
