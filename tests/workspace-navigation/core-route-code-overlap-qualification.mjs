@@ -39,13 +39,13 @@ try{
     const selectedCode=page.waitForRequest(request=>new URL(request.url()).pathname===projectChunk);
     const selectedUrl=new URL(setup.normalUrl),parts=selectedUrl.pathname.split('/');
     assert.equal(parts[1],'projects');assert.equal(parts[3],'chats');
-    row.earlyDataPaths=[`/api/conversations/${parts[4]}`,`/api/projects/${parts[2]}/conversations`,`/api/projects/${parts[2]}/agents`];
+    row.earlyDataPaths=[`/api/conversations/${parts[4]}`,`/api/projects/${parts[2]}/conversations`,`/api/projects/${parts[2]}/agents`,`/api/projects/${parts[2]}`];
     const earlyData=row.earlyDataPaths.map(path=>page.waitForResponse(response=>new URL(response.url()).pathname===path&&response.ok()));
     await page.goto(setup.normalUrl,{waitUntil:'commit'});
     let gateTimer;try{await Promise.race([Promise.all([selectedCode,appHoldReady,...earlyData]),new Promise((_,reject)=>{gateTimer=setTimeout(()=>reject(new Error('Initial route code did not overlap held App code')),15000);})]);}finally{clearTimeout(gateTimer);}
     assert(appHeld,'App response must still be held when project code is requested');
     for(const path of row.earlyDataPaths)assert.equal(row.api.filter(request=>request===path).length,1,'Each canonical read starts once while App code remains held: '+path);
-    assert.deepEqual([...row.api].sort(),[...row.earlyDataPaths].sort(),'Only the three selected canonical browser API reads may start before App execution');
+    assert.deepEqual([...row.api].sort(),[...row.earlyDataPaths].sort(),'Only the four selected canonical browser API reads may start before App execution');
     assert(row.apiRequests.every(request=>request.method==='GET'),'Initial Root warm-up cannot send a mutation');
     assert.equal(new URLSearchParams(row.apiRequests.find(request=>request.path===row.earlyDataPaths[0]).search).get('limit'),'100','The exact existing canonical tail bound is retained');
     const held=await fetch(setup.origin+'/api/__qualification/state');assert(held.ok);row.providerTurnsWhileHeld=(await held.json()).providerTurnIds;assert(Array.isArray(row.providerTurnsWhileHeld),'Fixture must report a provider-turn array while App is held');

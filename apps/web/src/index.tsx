@@ -20,6 +20,8 @@ const BranchesView=lazy(()=>import('./components/BranchesView').then(module=>({d
 import { loadProjectShell } from "./projectShellLoader";
 import { parseRoute } from "./routing";
 import { prefetchConversationWorkspace } from "./conversationWorkspacePrefetch";
+import { api } from "./api";
+import { queryKeys } from "./queryKeys";
 import { isProjectRoute } from "./routeRegistry";
 import { WorkspaceErrorBoundary } from "./components/WorkspaceErrorBoundary";
 import { MutationNotificationProvider } from "./components/MutationNotifications";
@@ -54,6 +56,11 @@ function Root(): JSX.Element {
     const route = parseRoute(window.location.pathname, window.location.search);
     if (route.kind === "conversation") {
       void prefetchConversationWorkspace(queryClient, route.conversationId, route.projectId);
+      void queryClient.prefetchQuery({
+        queryKey: queryKeys.projects.detail(route.projectId),
+        queryFn: () => api.getProject(route.projectId),
+        retry: false,
+      });
     }
   }, []);
   const [colorMode, setColorMode] = useState<ColorMode>(loadColorMode);

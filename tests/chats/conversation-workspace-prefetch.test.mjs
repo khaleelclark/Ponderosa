@@ -29,7 +29,7 @@ const rootWarm=arrow('index.tsx',text=>text.includes('isBranchesPath(window.loca
 const parseRoute=module(source('routing.ts'),{'./routeRegistry.js':registry}).parseRoute;
 const productScope=module(source('api/productScope.ts'));
 function warmRoot(f,pathname,search=''){
- return invoke(rootWarm,{window:{location:{pathname,search}},parseRoute,...productScope,queryClient:f.client,prefetchConversationWorkspace:f.warm});
+ return invoke(rootWarm,{window:{location:{pathname,search}},parseRoute,...productScope,queryClient:f.client,prefetchConversationWorkspace:f.warm,api:f.api,queryKeys});
 }
 
 const branchWarm=arrow('components/BranchesView.tsx',text=>text.includes('chat.branchId!==id')&&text.includes('prefetchConversationWorkspace'));
@@ -176,19 +176,20 @@ test('Branches overlap retains execution resolution, route/cancellation guards a
 test('Root starts explicit Core Chat canonical data before App executes and mounted observers reuse the same reads',async()=>{
  const f=fixture();try{
   warmRoot(f,'/projects/project-a/chats/chat-a','?message=exact-focus');
-  assert.deepEqual(f.calls.map(c=>c.kind),['tail','conversations','agents'],'The actual Root effect starts all three existing reads before App warm-up');
+  assert.deepEqual(f.calls.map(c=>c.kind),['tail','conversations','agents','project'],'The actual Root effect starts all four existing reads before App warm-up');
   invoke(appWarm,{queryClient:f.client,routedConversationId:'chat-a',routedProjectId:'project-a',prefetchConversationWorkspace:f.warm});
   const observers=[
    new QueryObserver(f.client,{queryKey:queryKeys.conversations.detail('chat-a',100),queryFn:()=>f.api.getConversation('chat-a',100)}),
    new QueryObserver(f.client,{queryKey:queryKeys.conversations.project('project-a'),queryFn:()=>f.api.listConversations('project-a')}),
    new QueryObserver(f.client,{queryKey:queryKeys.agents.project('project-a'),queryFn:()=>f.api.listAgents('project-a')}),
+   new QueryObserver(f.client,{queryKey:queryKeys.projects.detail('project-a'),queryFn:()=>f.api.getProject('project-a'),retry:false}),
   ];
   const stops=observers.map(observer=>observer.subscribe(()=>{}));
   try{
-   assert.equal(f.calls.length,3,'App and mounted observers share Root in-flight promises');
-   f.resolve('tail',{conversation:{id:'chat-a'},messages:[]});f.resolve('conversations',[{id:'chat-a'}]);f.resolve('agents',[]);await turn();
+   assert.equal(f.calls.length,4,'App and mounted observers share Root in-flight promises');
+   f.resolve('tail',{conversation:{id:'chat-a'},messages:[]});f.resolve('conversations',[{id:'chat-a'}]);f.resolve('agents',[]);f.resolve('project',{id:'project-a'});await turn();
    warmRoot(f,'/projects/project-a/chats/chat-a');
-   assert.equal(f.calls.length,3,'Repeated initial effect retains existing freshness and deduplication');
+   assert.equal(f.calls.length,4,'Repeated initial effect retains existing freshness and deduplication');
    assert.equal(f.client.getQueryData(queryKeys.conversations.detail('chat-a',100)).conversation.id,'chat-a');
   }finally{stops.forEach(stop=>stop());}
  }finally{f.close();}
