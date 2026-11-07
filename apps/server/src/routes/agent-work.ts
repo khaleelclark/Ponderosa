@@ -530,14 +530,21 @@ export class AgentWorkProjection {
         itemId: `${input.kind}:${input.recordId}`,
         recordId: input.recordId,
         details,
-        ...(input.includeMessageTrace && focused ? { messageTrace: this.messageTrace(input, focused) } : {}),
+        ...(input.includeMessageTrace ? { messageTrace: this.messageTrace(input, input) } : {}),
         ...(requestLifecycle ? { requestLifecycle } : {}),
       }
       : undefined;
   }
 
-  private messageTrace(input: {projectId: string; conversationId?: string}, item: AgentWorkItemDto): AgentWorkItemDetailsDto["messageTrace"] {
+  private messageTrace(input: {projectId: string; conversationId?: string}, item: Pick<AgentWorkItemDto, "kind" | "recordId">): AgentWorkItemDetailsDto["messageTrace"] {
     if (item.kind !== "activation" && item.kind !== "run") return;
+    const scopeKey = input.conversationId ? `conversation:${input.conversationId}` : null;
+    const visibleAgent = (id: string) => this.store.getAgent(id)?.projectId === input.projectId && !this.store.agentCreationPending(id);
+    if (item.kind === "activation") {
+      const target = this.store.sqlite.prepare("SELECT agent_id FROM agent_activations WHERE id = ? AND project_id = ? AND (? IS NULL OR scope_key = ?)")
+        .get(item.recordId, input.projectId, scopeKey, scopeKey) as {agent_id: string} | undefined;
+      if (!target || !visibleAgent(target.agent_id)) return;
+    }
     // ponytail: one explicit Details read, at most 128 associations/publications;
     // larger histories remain canonical and need explicit paging, not eager Chat work.
     const limit = 128;
@@ -546,13 +553,14 @@ export class AgentWorkProjection {
         scheduler.terminal_at, provider.execution_id
       FROM scheduler_runs scheduler
       LEFT JOIN provider_inputs provider ON provider.scheduler_run_id = scheduler.id
-      WHERE scheduler.project_id = ? AND ${item.kind === "run"
+      WHERE scheduler.project_id = ? AND (? IS NULL OR scheduler.scope_key = ?) AND ${item.kind === "run"
         ? "(scheduler.id = ? OR provider.execution_id = ?)"
         : "EXISTS (SELECT 1 FROM scheduler_run_activations attached WHERE attached.run_id = scheduler.id AND attached.activation_id = ?)"}
       ORDER BY scheduler.created_at, scheduler.id LIMIT 129
-    `).all(input.projectId, item.recordId, ...(item.kind === "run" ? [item.recordId] : [])) as Array<{
+    `).all(input.projectId, scopeKey, scopeKey, item.recordId, ...(item.kind === "run" ? [item.recordId] : [])) as Array<{
       id: string; agent_id: string; started_at: string | null; created_at: string; terminal_at: string | null; execution_id: string | null;
     }>;
+    if (runRows.some(run => !visibleAgent(run.agent_id)) || item.kind === "run" && runRows.length === 0) return;
     const runIds = [...new Set(runRows.slice(0, limit).flatMap(run => [run.id, ...(run.execution_id ? [run.execution_id] : [])]))];
     const activationIds = new Set(item.kind === "activation" ? [item.recordId] : []);
     for (const run of runRows.slice(0, limit)) {
