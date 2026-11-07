@@ -618,14 +618,13 @@ test('operator Work details trace coalesced messages and every exact Run publica
    const waiting=f.ok(await f.api('GET',`/api/projects/${chat.projectId}/agent-work/items/activation/${wake.id}?conversationId=${chat.id}`)).messageTrace;
    assert.equal(waiting.inputs.length,1);assert.equal(waiting.inputs[0].text,'Waiting message with no admitted Run');assert.deepEqual(waiting.runIds,[]);assert.deepEqual(waiting.replies,[],'a queued input never invents a Run or reply');
    assert.equal((await f.tool(session,'ponderosa_message',{text:'First published answer'})).status,200);
-   assert.equal((await f.tool(session,'ponderosa_message',{text:'Second published answer'})).status,200);
    const secret='fixture-secret-value-for-trail-redaction';await f.send(agent.id,`Second requested check. Authorization: Bearer ${secret}`);
    await until(()=>store.sqlite.prepare('SELECT COUNT(*) n FROM scheduler_run_activations attached JOIN scheduler_runs run ON run.id=attached.run_id LEFT JOIN provider_inputs provider ON provider.scheduler_run_id=run.id WHERE (run.id=? OR provider.execution_id=?)').get(first.id,first.id).n===2,'both actual user inputs attached to the same active Run');
    const endpoint=`/api/projects/${chat.projectId}/agent-work/items/run/${first.id}?conversationId=${chat.id}`;
    const record=f.ok(await f.api('GET',endpoint)),trace=record.messageTrace;assert.ok(trace);
    assert.equal(trace.inputs.length,2);assert.ok(trace.inputs.some(input=>input.text==='Controlled held task'));assert.ok(trace.inputs.some(input=>input.text.includes('Second requested check.')));
    assert.ok(trace.inputs.every(input=>input.sender==='You (local operator)'&&input.recipient==='Worker'&&input.communicationEventId&&input.activationId),'actual intake IDs/source labels are selected, not inferred from text');
-   assert.deepEqual(trace.replies.map(reply=>reply.text).sort(),['First published answer','Second published answer']);
+   assert.deepEqual(trace.replies.map(reply=>reply.text),['First published answer'],'the one accepted canonical publication is returned; multiple-record rendering is qualified separately');
    assert.ok(trace.replies.every(reply=>reply.runId===first.id&&reply.communicationEventId&&reply.messageId),'all publications retain exact Run/Communication/message identity');
    assert.ok(trace.inputs.every(input=>input.createdAt)&&trace.inputs.some(input=>Date.parse(input.createdAt)>=Math.max(...trace.replies.map(reply=>Date.parse(reply.createdAt)))),'recorded timestamps expose that these Run-level messages precede the later input; no per-input reply is invented');
    assert.equal(JSON.stringify(trace).includes(secret),false,'plain cause excerpts preserve the existing diagnostic secret redaction');
