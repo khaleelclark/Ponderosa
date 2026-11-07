@@ -44,7 +44,7 @@ try{
    await page.getByLabel('Message',{exact:true}).waitFor();assert.equal(await page.getByLabel('Message',{exact:true}).innerText(),draft,'Same Chat draft retained across first-use/retry');
    assert.equal(row.moduleRequests,retry?2:1,'Exactly the first-use request and optional explicit retry');
    const after=await(await fetch(setup.origin+'/api/__qualification/state')).json();assert.deepEqual(after.providerTurnIds,state.providerTurnIds,'Opening/retrying panels never executes provider work');
-   assert.deepEqual(row.external,[]);if(retry)assert(row.pageErrors.every(x=>/chunk|loading|load/i.test(x)));else assert.deepEqual(row.pageErrors,[]);
+   assert.deepEqual(row.external,[]);assert.deepEqual(row.pageErrors,[]);
    row.draftRetained=true;row.providerTurnsUnchanged=true;row.status='pass';console.log('PASS',row.device,product,'retry='+retry);
   }catch(e){row.status='failed';row.error=e.stack;throw e;}
   finally{await context.close();context=undefined;await save();}
