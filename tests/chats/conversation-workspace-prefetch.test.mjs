@@ -50,9 +50,9 @@ function shell(f,route){
   '../retainedData':retained,'../routeRegistry':registry,'../queryKeys':{queryKeys},
   './ProjectBrowserContext':{useProjectBrowser:()=>({open(){}})},
   './WorkspaceRefreshContext':{useReportWorkspaceRefresh:(message)=>{f.refreshMessage=message;}},
-  './ConversationView':{ConversationView:'ConversationView'},'./AgentDetail':{AgentDetail:'AgentDetail'},
+  './ConversationView':{ConversationView:'ConversationView'},'./RecoverableLazyRoute':{RecoverableLazyRoute:'RecoverableLazyRoute'},'../api/productScope':productScope,
  };
- const {ProjectShell}=module(source('components/ProjectShell.tsx'),imports);
+ const {ProjectShell}=f.shellModule??=(module(source('components/ProjectShell.tsx'),imports));
  return ProjectShell({projectId:'project-a',project:{id:'project-a'},route,engines:[],preferences:{},onPreferences(){},navigate(){},onCreate(){}});
 }
 function* nodes(tree){if(!tree||typeof tree!=='object')return;if(Array.isArray(tree)){for(const child of tree)yield*nodes(child);}else if(tree.props){yield tree;yield*nodes(tree.props.children);}}
@@ -203,4 +203,22 @@ test('Root data warm excludes malformed and non-Core-Chat routes without global 
  ]){
   const f=fixture();try{warmRoot(f,pathname,search);assert.deepEqual(f.calls,[],pathname+' must not start Core reads');}finally{f.close();}
  }
+});
+
+
+test('actual Agent lazy route keeps its Agent key, loader and exact focus props across focus-only updates',()=>{
+ const f=fixture();try{
+  f.client.setQueryData(queryKeys.conversations.project('project-a'),[{id:'chat-a'}]);
+  f.client.setQueryData(queryKeys.agents.project('project-a'),[{id:'agent-a',projectId:'project-a',conversationId:'chat-a'}]);
+  const a={kind:'agent',projectId:'project-a',agentId:'agent-a',focusTelemetry:{stream:'activity',id:'agent-a:activity:1'}};
+  const first=[...nodes(shell(f,a))].find(node=>node.type==='RecoverableLazyRoute');assert(first);
+  const b={...a,focusTelemetry:{stream:'activity',id:'agent-a:activity:2'},technicalFocusId:'exact-run'};
+  const second=[...nodes(shell(f,b))].find(node=>node.type==='RecoverableLazyRoute');assert(second);
+  assert.equal(first.key,'agent-a');assert.equal(second.key,'agent-a','Focus changes cannot reset the Agent draft owner');
+  assert.equal(first.props.load,second.props.load,'The module-level loader preserves its existing route cache identity');
+  assert.equal(first.props.componentProps.focusTelemetry,a.focusTelemetry);
+  assert.equal(second.props.componentProps.focusTelemetry,b.focusTelemetry);
+  assert.equal(second.props.componentProps.technicalFocusId,'exact-run');
+  assert.equal(second.props.componentProps.agentId,'agent-a');assert.equal(second.props.componentProps.projectId,'project-a');
+ }finally{f.close();}
 });

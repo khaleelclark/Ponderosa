@@ -22,7 +22,7 @@ import { workspaceFileReturnFallback } from "../workspaceFileReturn";
 import { enginesWithModelCatalog } from "../conversationEngine";
 import { assertNeverRoute, nestedProjectRouteResources, routeToPath, type ProjectRoute } from "../routeRegistry";
 import { routeReturnTarget, routeReturnLabel, type Route } from "../routing";
-import { AgentDetail } from "./AgentDetail";
+import { RecoverableLazyRoute } from "./RecoverableLazyRoute";
 import { ConversationView } from "./ConversationView";
 import { AgentWorkInspector } from "./AgentWorkInspector";
 import { ProjectBrowserDialog } from "./ProjectBrowserDialog";
@@ -32,6 +32,8 @@ import { WorkspaceReviewPane } from "./files/WorkspaceReviewPane";
 import { WorkspaceFileView } from "./WorkspaceFileView";
 import { WorkspaceErrorBoundary } from "./WorkspaceErrorBoundary";
 import { useReportWorkspaceRefresh } from "./WorkspaceRefreshContext";
+
+const loadAgentDetail = () => import("./AgentDetail").then(module => ({ default: module.AgentDetail }));
 
 type RemovableWorkspaceResourceRoute = Extract<
   Route,
@@ -294,57 +296,60 @@ export function ProjectShell({
     );
   } else if (route.kind === "agent") {
     main = (
-      <AgentDetail
-        standalone={isOutputAppPath(window.location.pathname)}
-        decisionReviewAction={decisionReviewAction}
+      <RecoverableLazyRoute
         key={route.agentId}
-        agentId={route.agentId}
-        projectId={projectId}
-        focusMessageId={route.focusMessageId}
-        focusTelemetry={route.focusTelemetry}
-        technicalFocusId={route.technicalFocusId}
-        initialView={route.view ?? (route.urlDriven ? "chat" : undefined)}
-        onViewChange={(view) => navigate({ kind: "agent", projectId, agentId: route.agentId, view }, { replace: true })}
-        onOpenTechnicalDetails={(technicalFocusId) => navigate({
+        load={loadAgentDetail}
+        componentProps={{
+          standalone: isOutputAppPath(window.location.pathname),
+          decisionReviewAction: decisionReviewAction,
+          agentId: route.agentId,
+          projectId: projectId,
+          focusMessageId: route.focusMessageId,
+          focusTelemetry: route.focusTelemetry,
+          technicalFocusId: route.technicalFocusId,
+          initialView: route.view ?? (route.urlDriven ? "chat" : undefined),
+          onViewChange: (view) => navigate({ kind: "agent", projectId, agentId: route.agentId, view }, { replace: true }),
+          onOpenTechnicalDetails: (technicalFocusId) => navigate({
           kind: "agent", projectId, agentId: route.agentId, view: "technical",
           ...(technicalFocusId ? { technicalFocusId } : {}),
-        })}
-        engines={projectEngines}
-        modelCatalogLoading={modelCatalogQuery.isLoading}
-        engineCapabilities={engineCapabilities}
-        onRefreshCapabilities={refreshCapabilities}
-        projectedStatus={statusByAgentId.get(route.agentId)}
-        projectedHealth={healthByAgentId.get(route.agentId)}
-        statusByAgentId={statusByAgentId}
-        healthByAgentId={healthByAgentId}
-        agents={agents}
-        conversations={conversations}
-        onOpenProject={() => navigate({ kind: "home" })}
-        onOpenAgent={openAgent}
-        onOpenAgentSettings={(agentId) =>
-          navigate({ kind: "agent", projectId, agentId, view: "settings" })}
-        onOpenCommunicationSource={(conversationId, communicationEventId, channel) => navigate({
+        }),
+          engines: projectEngines,
+          modelCatalogLoading: modelCatalogQuery.isLoading,
+          engineCapabilities: engineCapabilities,
+          onRefreshCapabilities: refreshCapabilities,
+          projectedStatus: statusByAgentId.get(route.agentId),
+          projectedHealth: healthByAgentId.get(route.agentId),
+          statusByAgentId: statusByAgentId,
+          healthByAgentId: healthByAgentId,
+          agents: agents,
+          conversations: conversations,
+          onOpenProject: () => navigate({ kind: "home" }),
+          onOpenAgent: openAgent,
+          onOpenAgentSettings: (agentId) =>
+          navigate({ kind: "agent", projectId, agentId, view: "settings" }),
+          onOpenCommunicationSource: (conversationId, communicationEventId, channel) => navigate({
           kind: "conversation",
           projectId,
           conversationId,
           focusMessageId: communicationEventId,
           ...(channel === "collaboration" ? { channel } : {}),
-        })}
-        onOpenMaster={(conversationId) => {
+        }),
+          onOpenMaster: (conversationId) => {
           navigate({ kind: "conversation", projectId, conversationId });
+        },
+          onOpenArtifact: (artifactId) => openProjectArtifact(route.agentId, artifactId),
+          onOpenReview: (path, executionId) => navigate({ kind: "review", projectId, agentId: route.agentId, ...(path ? { path } : {}), ...(executionId ? { executionId } : {}), returnTo: routeToPath(route) }),
+          onOpenBrowser: (runId) => projectBrowser.openAgent?.(route.agentId, runId),
+          onNewSubagent: openNewSubagent,
+          onDeleted: (deletedAgentIds) =>
+          deletedAgentIds.forEach(agentId =>
+            onResourceDeleted?.({ kind: "agent", projectId, agentId }),
+          ),
+          onAgentsDeleted: (deletedAgentIds) =>
+          deletedAgentIds.forEach(agentId =>
+            onResourceDeleted?.({ kind: "agent", projectId, agentId }),
+          )
         }}
-        onOpenArtifact={(artifactId) => openProjectArtifact(route.agentId, artifactId)}
-        onOpenReview={(path, executionId) => navigate({ kind: "review", projectId, agentId: route.agentId, ...(path ? { path } : {}), ...(executionId ? { executionId } : {}), returnTo: routeToPath(route) })}
-        onOpenBrowser={(runId) => projectBrowser.openAgent?.(route.agentId, runId)}
-        onNewSubagent={openNewSubagent}
-        onDeleted={(deletedAgentIds) =>
-          deletedAgentIds.forEach(agentId =>
-            onResourceDeleted?.({ kind: "agent", projectId, agentId }),
-          )}
-        onAgentsDeleted={(deletedAgentIds) =>
-          deletedAgentIds.forEach(agentId =>
-            onResourceDeleted?.({ kind: "agent", projectId, agentId }),
-          )}
       />
     );
 } else if (route.kind === "browser") {

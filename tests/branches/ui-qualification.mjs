@@ -6,7 +6,9 @@ import {fileURLToPath} from 'node:url';
 import {randomUUID} from 'node:crypto';
 import {Readable} from 'node:stream';
 import {fixture} from '../shared/fixture.mjs';
-const f=await fixture(),requests=[];
+import {AgentStore} from '@ponderosa/agents';
+let store;
+const f=await fixture({storeFactory:root=>(store=new AgentStore(root))}),requests=[];
 const branch=f.ok(await f.api('POST','/api/branches',{name:'Current master Branch QA',idempotencyKey:randomUUID()}));
 const chat=f.ok(await f.api('POST',`/api/branches/${branch.id}/chats`,{label:'Scrollable Branch Chat',defaultEngine:'codex'},{'idempotency-key':randomUUID()}));
 const agents=[];
@@ -15,13 +17,18 @@ const second=f.ok(await f.api('POST','/api/branches',{name:'Folder companion',id
 const preferences=f.ok(await f.api('GET','/api/branches/engine/workspace/preferences'));
 f.ok(await f.api('PATCH','/api/branches/engine/workspace/preferences',{branchFolders:[{id:randomUUID(),name:'Qualification workflows',expanded:true,branchIds:[branch.id,second.id]}],branchFoldersRevision:preferences.revision}));
 await writeFile(path.join(chat.workingDirectory,'qualification.md'),'# Current master file preview\n\nSynthetic Branch evidence.\n');
-const normal=await f.createChat('Normal product compatibility');await f.createIdleAgent(normal,'Normal compatibility Agent');
+const normal=await f.createChat('Normal product compatibility');
+const normalAgent=await f.createIdleAgent(normal,'Normal compatibility Agent');
+const normalHistoryText='Retained loader qualification history.';
+store.appendEvent(normalAgent.id,{type:'error',message:normalHistoryText});
+const normalActivity=(await f.detail(normalAgent.id)).activity.find(item=>item.event.type==='error'&&item.event.message===normalHistoryText);
+if(!normalActivity)throw Error('Retained canonical Agent history was not created');
 let api=await f.listen();const web=path.resolve(fileURLToPath(new URL('../../apps/web/dist/',import.meta.url)));
 const mime={'.js':'text/javascript','.css':'text/css','.html':'text/html','.woff2':'font/woff2','.png':'image/png','.svg':'image/svg+xml','.json':'application/json'};
 const server=createServer(async(req,res)=>{
  try{
   const url=new URL(req.url,'http://localhost');
-  if(url.pathname==='/api/__qualification/state'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify({root:f.root,branch,chat,agents,normal,requests,providerTurnIds:f.turns.map(turn=>turn.turnId)}));return;}
+  if(url.pathname==='/api/__qualification/state'){res.setHeader('Content-Type','application/json');res.end(JSON.stringify({root:f.root,branch,chat,agents,normal,normalAgent,normalActivity,requests,providerTurnIds:f.turns.map(turn=>turn.turnId)}));return;}
   if(url.pathname==='/api/__qualification/reopen'&&req.method==='POST'){await f.reopen();api=await f.listen();res.writeHead(200,{'content-type':'application/json'});res.end('{"reopened":true}');return;}
   if(url.pathname.startsWith('/api/')){
    const chunks=[];for await(const chunk of req)chunks.push(chunk);const bytes=Buffer.concat(chunks);
@@ -39,7 +46,7 @@ const server=createServer(async(req,res)=>{
 });
 await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
 const origin=`http://127.0.0.1:${server.address().port}`,route=`/branches?branch=${branch.id}&tab=chats&chat=${chat.id}`;
-const manifest={origin,route,url:origin+route,normalUrl:origin+`/projects/${normal.projectId}/chats/${normal.id}`,root:f.root,branchId:branch.id,chatId:chat.id};
+const manifest={origin,route,url:origin+route,normalUrl:origin+`/projects/${normal.projectId}/chats/${normal.id}`,root:f.root,branchId:branch.id,chatId:chat.id,normalAgentId:normalAgent.id};
 await writeFile(path.join(f.root,'ui-fixture.json'),JSON.stringify(manifest,null,2));console.log(JSON.stringify(manifest));
 let stopping=false;async function stop(){if(stopping)return;stopping=true;server.closeAllConnections();server.close();await f.dispose(false);process.exit();}
 process.on('SIGTERM',()=>void stop());process.on('SIGINT',()=>void stop());
