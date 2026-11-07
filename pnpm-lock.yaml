@@ -24,9 +24,6 @@ importers:
         specifier: workspace:*
         version: link:../../packages/core
     devDependencies:
-      '@ponderosa/server':
-        specifier: workspace:*
-        version: link:../server
       typescript:
         specifier: ^5.7.2
         version: 5.9.3

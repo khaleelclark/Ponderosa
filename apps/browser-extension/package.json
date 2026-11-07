@@ -11,7 +11,6 @@
     "@ponderosa/core": "workspace:*"
   },
   "devDependencies": {
-    "@ponderosa/server": "workspace:*",
     "typescript": "^5.7.2"
   }
 }
