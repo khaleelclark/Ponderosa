@@ -26,7 +26,7 @@ function arrow(file,predicate){
 }
 const appWarm=arrow('App.tsx',text=>text.includes('if (routedConversationId)')&&text.includes('prefetchConversationWorkspace'));
 const rootWarm=arrow('index.tsx',text=>text.includes('isBranchesPath(window.location.pathname)')&&text.includes('prefetchConversationWorkspace'));
-const parseRoute=module(source('routing.ts'),{'./routeRegistry.js':registry}).parseRoute;
+const routing=module(source('routing.ts'),{'./routeRegistry.js':registry}),parseRoute=routing.parseRoute;
 const productScope=module(source('api/productScope.ts'));
 function warmRoot(f,pathname,search=''){
  return invoke(rootWarm,{window:{location:{pathname,search}},parseRoute,...productScope,queryClient:f.client,prefetchConversationWorkspace:f.warm,api:f.api,queryKeys});
@@ -50,6 +50,8 @@ function shell(f,route){
   './ProjectBrowserContext':{useProjectBrowser:()=>({open(){}})},
   './WorkspaceRefreshContext':{useReportWorkspaceRefresh:(message)=>{f.refreshMessage=message;}},
   './ConversationView':{ConversationView:'ConversationView'},'./RecoverableLazyRoute':{RecoverableLazyRoute:'RecoverableLazyRoute'},'../api/productScope':productScope,
+  '../routing':routing,'../workspaceFileReturn':module(source('workspaceFileReturn.ts')),
+  '../projectShellLoader':f.panelLoaders??=(module(source('projectShellLoader.ts'))),
  };
  const {ProjectShell}=f.shellModule??=(module(source('components/ProjectShell.tsx'),imports));
  return ProjectShell({projectId:'project-a',project:{id:'project-a'},route,engines:[],preferences:{},onPreferences(){},navigate(){},onCreate(){}});
@@ -235,5 +237,30 @@ test('actual Agent lazy route keeps its Agent key, loader and exact focus props 
   assert.equal(second.props.componentProps.focusTelemetry,b.focusTelemetry);
   assert.equal(second.props.componentProps.technicalFocusId,'exact-run');
   assert.equal(second.props.componentProps.agentId,'agent-a');assert.equal(second.props.componentProps.projectId,'project-a');
+ }finally{f.close();}
+});
+
+
+test('actual optional project views preserve family and keyed scope replacement identity',()=>{
+ const f=fixture();try{
+  f.client.setQueryData(queryKeys.conversations.project('project-a'),[{id:'chat-a',projectId:'project-a'},{id:'chat-b',projectId:'project-a'}]);
+  f.client.setQueryData(queryKeys.agents.project('project-a'),[{id:'agent-a',projectId:'project-a',conversationId:'chat-a'},{id:'agent-b',projectId:'project-a',conversationId:'chat-b'}]);
+  const view=route=>{const node=[...nodes(shell(f,route))].find(node=>node.type==='RecoverableLazyRoute');assert(node,'The admitted actual route must expose its recoverable view');return node;};
+  const fileA=view({kind:'workspaceFile',projectId:'project-a',conversationId:'chat-a',path:'first.md'});
+  const fileB=view({kind:'workspaceFile',projectId:'project-a',conversationId:'chat-a',path:'second.md'});
+  assert.equal(fileA.key,fileB.key,'Same-family unkeyed file views retain their existing local component identity');
+  assert.equal(fileA.props.componentProps.path,'first.md');assert.equal(fileB.props.componentProps.path,'second.md');
+  const review=view({kind:'review',projectId:'project-a',agentId:'agent-a',path:'review.md'});
+  const browser=view({kind:'browser',projectId:'project-a',conversationId:'chat-a'});
+  const workA=view({kind:'projectWork',projectId:'project-a',conversationId:'chat-a',focusId:'item-a'});
+  const workB=view({kind:'projectWork',projectId:'project-a',conversationId:'chat-a',focusId:'item-b'});
+  const agentA=view({kind:'browser',projectId:'project-a',agentId:'agent-a',runId:'run-a'});
+  const agentB=view({kind:'browser',projectId:'project-a',agentId:'agent-a',runId:'run-b'});
+  for(const a of [fileA,review,browser,workA,agentA])for(const b of [fileA,review,browser,workA,agentA])if(a!==b)assert.notEqual(a.key,b.key,'Different original component families cannot inherit a failed lazy boundary');
+  assert.notEqual(workA.key,workB.key,'The original project/chat/focus key still resets the OUTER work boundary');
+  assert.notEqual(agentA.key,agentB.key,'The original Agent/Run key still resets the OUTER browser boundary');
+  assert.equal(agentA.props.componentProps.agentId,'agent-a');assert.equal(agentB.props.componentProps.runId,'run-b');
+  assert.equal(workB.props.componentProps.focus.id,'item-b');
+  assert.equal(fileA.props.load,fileB.props.load);assert.equal(agentA.props.load,agentB.props.load);
  }finally{f.close();}
 });

@@ -351,7 +351,7 @@ export function ProjectShell({
 } else if (route.kind === "browser") {
   const browserAgent = route.agentId ? agents.find(agent => agent.id === route.agentId) : undefined;
   main = route.agentId && route.runId ? (
-    <RecoverableLazyRoute key={`${route.agentId}:${route.runId}`} load={loadAgentBrowserDialog} componentProps={{projectId: projectId,
+    <RecoverableLazyRoute key={"agent-browser:" + (`${route.agentId}:${route.runId}`)} load={loadAgentBrowserDialog} componentProps={{projectId: projectId,
 agentId: route.agentId,
 runId: route.runId,
 agentTitle: browserAgent?.title ?? "Agent",
@@ -360,7 +360,7 @@ onClose: () => navigate(route.conversationId
         ? { kind: "conversation", projectId, conversationId: route.conversationId }
         : { kind: "agent", projectId, agentId: route.agentId! })}} />
   ) : (
-    <RecoverableLazyRoute  load={loadProjectBrowserDialog} componentProps={{conversationId: route.conversationId ?? browserAgent?.conversationId,
+    <RecoverableLazyRoute key="project-browser" load={loadProjectBrowserDialog} componentProps={{conversationId: route.conversationId ?? browserAgent?.conversationId,
 projectId: projectId,
 open: true,
 embedded: true,
@@ -372,7 +372,7 @@ onClose: () => navigate({ kind: "home" })}} />
   } else if (route.kind === "review") {
     const detail = reviewAgentQuery.data;
     const running = Boolean(detail?.runs?.some((run) => run.status === "running" || run.status === "compacting"));
-    main = <RecoverableLazyRoute  load={loadWorkspaceReviewPane} componentProps={{projectRoot: project.hostPath,
+    main = <RecoverableLazyRoute key="review" load={loadWorkspaceReviewPane} componentProps={{projectRoot: project.hostPath,
 agentId: route.agentId,
 files: detail?.changedFiles ?? [],
 running: running,
@@ -383,14 +383,14 @@ onBack: () => navigate(routeReturnTarget(route.returnTo, { kind: "agent", projec
   } else if (route.kind === "workspaceFile") {
     const fallback = workspaceFileReturnFallback(route, agents, conversations);
     const returnTarget = routeReturnTarget(route.returnTo, fallback);
-    main = <RecoverableLazyRoute  load={loadWorkspaceFileView} componentProps={{projectId: projectId,
+    main = <RecoverableLazyRoute key="workspace-file" load={loadWorkspaceFileView} componentProps={{projectId: projectId,
 path: route.path,
 agentId: route.agentId,
 conversationId: route.conversationId,
 backLabel: routeReturnLabel(returnTarget),
 onBack: () => navigate(returnTarget)}} />;
   } else if (route.kind === "projectWork") {
-    main = <RecoverableLazyRoute key={`${projectId}:${route.conversationId ?? ""}:${route.focusId ?? ""}`} load={loadAgentWorkInspector} componentProps={{open: true,
+    main = <RecoverableLazyRoute key={"work-inspector:" + (`${projectId}:${route.conversationId ?? ""}:${route.focusId ?? ""}`)} load={loadAgentWorkInspector} componentProps={{open: true,
 projectId: projectId,
 conversationId: route.conversationId,
 focus: route.focusId ? { id: route.focusId } : undefined,

@@ -1,7 +1,7 @@
 import { RecoverableLazyRoute } from "../RecoverableLazyRoute";
 import { loadProjectBrowserDialog } from "../../projectShellLoader";
 import { Fragment, useEffect, useRef, useState } from "react";
-import { Alert, Divider, IconButton, ListSubheader, Menu, MenuItem, Snackbar, Tooltip, useMediaQuery } from "@mui/material";
+import { Alert, Box, Portal, Divider, IconButton, ListSubheader, Menu, MenuItem, Snackbar, Tooltip, useMediaQuery } from "@mui/material";
 import ViewQuiltIcon from "@mui/icons-material/ViewQuilt";
 import type { ProjectBrowserRequest } from "../ProjectBrowserContext";
 import { browserDockIsAvailable } from "./browserWindowSizing";
@@ -82,6 +82,7 @@ export function BrowserWorkspaceHost({ projectId, conversationId, agent, request
   useEffect(() => () => onDockWidth(0), [onDockWidth]);
   return <>
     {panels.map((panel, index) => <Fragment key={panel.key}>
+      <Portal><Box data-optional-browser-route-notice sx={{position:"fixed",top:16,right:16,width:{xs:"calc(100vw - 32px)",sm:420},maxWidth:"calc(100vw - 32px)",zIndex:theme=>theme.zIndex.drawer+2+index}}>
       <RecoverableLazyRoute  load={loadProjectBrowserDialog} componentProps={{projectId: panel.projectId,
 conversationId: panel.conversationId,
 agent: panel.agent,
@@ -100,6 +101,7 @@ onClose: () => {
           if (docked === panel.key) setDocked(undefined);
           if (panels.length === 1) onClose();
         }}} />
+      </Box></Portal>
     </Fragment>)}
     <Menu anchorEl={menu} open={Boolean(menu)} onClose={() => setMenu(null)} disableRestoreFocus>
       <ListSubheader>Open workspaces</ListSubheader>
