@@ -572,8 +572,9 @@ export class AgentWorkProjection {
       if (!communication || !sender || typeof communication.eventId !== "string" || typeof communication.text !== "string") continue;
       const intake = this.store.sqlite.prepare(`SELECT activation.agent_id FROM runtime_communication_activation_intake intake
         JOIN agent_activations activation ON activation.id = intake.activation_id
-        WHERE intake.activation_id = ? AND intake.communication_id = ? AND activation.project_id = ?
-          AND intake.agent_id = activation.agent_id`).get(activationId, communication.eventId, input.projectId) as {agent_id: string} | undefined;
+        JOIN runtime_communications delivery ON delivery.id = intake.communication_id AND delivery.project_id = activation.project_id
+        WHERE intake.activation_id = ? AND (delivery.id = ? OR json_extract(delivery.payload_json, '$.communication.eventId') = ?) AND activation.project_id = ?
+          AND intake.agent_id = activation.agent_id`).get(activationId, communication.eventId, communication.eventId, input.projectId) as {agent_id: string} | undefined;
       if (!intake) continue;
       const senderLabel = sender.kind === "user" ? sender.userId === "local-operator" ? "You (local operator)" : "User"
         : sender.kind === "agent" ? "Agent" : sender.kind === "system" ? "Ponderosa (system)" : "Not recorded";
