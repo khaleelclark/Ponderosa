@@ -1,7 +1,8 @@
+import { RecoverableLazyRoute } from "../RecoverableLazyRoute";
+import { loadProjectBrowserDialog } from "../../projectShellLoader";
 import { Fragment, useEffect, useRef, useState } from "react";
 import { Alert, Divider, IconButton, ListSubheader, Menu, MenuItem, Snackbar, Tooltip, useMediaQuery } from "@mui/material";
 import ViewQuiltIcon from "@mui/icons-material/ViewQuilt";
-import { ProjectBrowserDialog } from "../ProjectBrowserDialog";
 import type { ProjectBrowserRequest } from "../ProjectBrowserContext";
 import { browserDockIsAvailable } from "./browserWindowSizing";
 import { chatBrowserOwnerId, type ProjectDto } from "@ponderosa/core";
@@ -81,20 +82,24 @@ export function BrowserWorkspaceHost({ projectId, conversationId, agent, request
   useEffect(() => () => onDockWidth(0), [onDockWidth]);
   return <>
     {panels.map((panel, index) => <Fragment key={panel.key}>
-      <ProjectBrowserDialog projectId={panel.projectId} conversationId={panel.conversationId} agent={panel.agent} workspaceLabel={label(panel)} open={!mobile || index === panels.length - 1}
-        request={panel.request}
-        onRequestHandled={requestId => {
+      <RecoverableLazyRoute  load={loadProjectBrowserDialog} componentProps={{projectId: panel.projectId,
+conversationId: panel.conversationId,
+agent: panel.agent,
+workspaceLabel: label(panel),
+open: !mobile || index === panels.length - 1,
+request: panel.request,
+onRequestHandled: requestId => {
           setPanels(current => current.map(item => item.key === panel.key && item.request?.requestId === requestId ? { ...item, request: undefined } : item));
           onRequestHandled(requestId);
-        }}
-        onDockWidth={width => setWidths(current => current[panel.key] === width ? current : { ...current, [panel.key]: width })}
-        windowOptions={{ docked: docked === panel.key, onDock: () => { if (browserDockIsAvailable(window.innerWidth)) setDocked(panel.key); }, onUndock: () => setDocked(current => current === panel.key ? undefined : current), onActivate: () => activate(panel.key), layer: index, offset: index, label: `Browser · ${label(panel)}` }}
-        workspaceControls={<Tooltip title="Browser workspaces"><IconButton size="small" aria-label="Browser workspaces" onClick={event => setMenu(event.currentTarget)}><ViewQuiltIcon /></IconButton></Tooltip>}
-        onClose={() => {
+        },
+onDockWidth: width => setWidths(current => current[panel.key] === width ? current : { ...current, [panel.key]: width }),
+windowOptions: { docked: docked === panel.key, onDock: () => { if (browserDockIsAvailable(window.innerWidth)) setDocked(panel.key); }, onUndock: () => setDocked(current => current === panel.key ? undefined : current), onActivate: () => activate(panel.key), layer: index, offset: index, label: `Browser · ${label(panel)}` },
+workspaceControls: <Tooltip title="Browser workspaces"><IconButton size="small" aria-label="Browser workspaces" onClick={event => setMenu(event.currentTarget)}><ViewQuiltIcon /></IconButton></Tooltip>,
+onClose: () => {
           setPanels(current => current.filter(item => item.key !== panel.key));
           if (docked === panel.key) setDocked(undefined);
           if (panels.length === 1) onClose();
-        }} />
+        }}} />
     </Fragment>)}
     <Menu anchorEl={menu} open={Boolean(menu)} onClose={() => setMenu(null)} disableRestoreFocus>
       <ListSubheader>Open workspaces</ListSubheader>

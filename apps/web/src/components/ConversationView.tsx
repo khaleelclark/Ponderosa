@@ -1,3 +1,4 @@
+import { loadAgentWorkInspector } from "../projectShellLoader";
 import {useWorkspaceReadOnly} from "./WorkspaceReadOnlyContext";
 import {
   Alert,
@@ -54,7 +55,6 @@ import { ChatSurface } from "./chat/ChatSurface";
 import { OutgoingMessageProvider } from "./chat/OutgoingMessage";
 import { buildMarkdownTranscript } from "../chatTranscript";
 import { ComposerRuntimeSelector } from "./ComposerRuntimeSelector";
-import { AgentWorkInspector } from "./AgentWorkInspector";
 import { TargetedNextRunReceipts } from "./TargetedNextRunReceipts";
 import { queryKeys } from "../queryKeys";
 import type { AgentsTab } from "./AgentsTab";
@@ -1135,12 +1135,10 @@ export function ConversationView({
         ) : null}
 
         {agentWorkOpen ? (
-          <AgentWorkInspector
-            open
-            projectId={conversation.projectId}
-            conversationId={conversationId}
-            onClose={() => setAgentWorkOpen(false)}
-          />
+          <RecoverableLazyRoute  load={loadAgentWorkInspector} componentProps={{open: true,
+projectId: conversation.projectId,
+conversationId: conversationId,
+onClose: () => setAgentWorkOpen(false)}} />
         ) : activeView === "files" ? (
           <Box
             id="chat-workspace-files-panel"
