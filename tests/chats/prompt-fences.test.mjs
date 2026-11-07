@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { CoordinationV3Store } from '@ponderosa/agents';
+import { AgentStore, CoordinationV3Store } from '@ponderosa/agents';
 import { withFixture, until } from '../shared/fixture.mjs';
 import { openCurrentMemoryDatabase } from '../../packages/agents/dist/state-admission.js';
 
@@ -229,17 +229,39 @@ test('scheduler current-turn ID crosses the message route; unknown/wrong-Run and
   assert.equal(f.sessions.get(b.id).isAlive(),true,'Unrelated session was affected');
 }));
 
-test('cancelled Run and replaced session cannot use their old message capability', providerOptions, t => withFixture(t, async f => {
+test('cancelled Run and replaced session cannot use their old message capability', providerOptions, async t => {
+ let store;
+ await withFixture(t, async f => {
   const chat=await f.createChat('Cancelled prompt identity'), agent=await f.createIdleAgent(chat,'Owner'), session=await f.hold(agent.id);
   const turn=acknowledgedPrompt(f,agent.id).id;
   const run=(await f.detail(agent.id)).runs.find(x=>x.status==='running');
-  f.ok(await f.api('POST',`/api/agents/${agent.id}/cancel`,{targetRunId:run.id,idempotencyKey:randomUUID()}));
+  const cancellationKey=randomUUID();f.ok(await f.api('POST',`/api/agents/${agent.id}/cancel`,{targetRunId:run.id,idempotencyKey:cancellationKey}));
   const cancelled=await f.tool(session,'ponderosa_message',{intent:'direct_to_user',text:'Forbidden cancelled output',steeringInjectionId:turn,idempotencyKey:randomUUID()});
   assert.ok(cancelled.status>=400);
-  f.ok(await f.api('PATCH','/api/workspace/preferences',{globalInstructions:'Fresh controlled replacement policy'}));
-  const replacement=await f.hold(agent.id);
+  const turnsBefore=f.turns.length,previous=(await f.detail(agent.id)).runs.map(x=>x.id),task='Controlled replacement task';f.plans.set(agent.id,[{hold:true}]);await f.send(agent.id,task);
+  const queued=await until(()=>store.sqlite.prepare("SELECT a.id FROM agent_activations a JOIN activation_sources held ON held.activation_id=a.id AND held.source_kind='settings_transition_reservation_wait' WHERE a.agent_id=? AND instr(a.payload_json,?)>0").get(agent.id,task),'replacement task held before explicit recovery');
+  await until(()=>store.stoppedProviderSessionBoundary(agent.id)?.cleanupConfirmed,'cancelled root cleanup observed');
+  assert.equal(session.isAlive(),false);assert.equal(f.turns.length,turnsBefore);
+  const original=store.sqlite.prepare('SELECT * FROM scheduler_runs WHERE id=?').get(run.id),packet=JSON.stringify(store.getProviderInput(run.id,true));
+  const status=f.ok(await f.api('GET',`/api/agents/${agent.id}/context-recoveries`)),boundary=status.boundary;
+  assert.equal(boundary.sourceRunId,run.id);assert.equal(status.sourceEvidence.sourceRunStatus,'cancelled');
+  const commandsBefore=f.commands.length,body={idempotencyKey:randomUUID(),expectedSessionId:boundary.providerSessionId,expectedSourceRunId:run.id,expectedToolContractHash:boundary.toolContractHash,acknowledgeUnknownEffects:true};
+  const recovered=f.ok(await f.api('POST',`/api/agents/${agent.id}/context-recoveries`,body));
+  assert.equal(recovered.request.progress.phase,'context_accepted');assert.equal(f.commands.length,commandsBefore+1);assert.equal(f.commands.at(-1).name,'compact');assert.equal(f.commands.at(-1).sessionId,boundary.providerSessionId);
+  assert.equal(f.turns.length,turnsBefore,'Context-only recovery cannot replay either task');
+  f.ok(await f.api('POST',`/api/agents/${agent.id}/context-recoveries/${recovered.request.id}/dismiss`,{acknowledgeStillBlocked:true}));
+  await until(()=>f.turns.some(x=>x.agentId===agent.id&&x.input.prompt.includes(task)),'same replacement task admitted after reviewed recovery');
+  const replacement=f.sessions.get(agent.id);
   assert.notEqual(replacement,session);
+  assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(queued.id).n,1);assert.equal(f.turns.length,turnsBefore+1);
+  assert.deepEqual(store.sqlite.prepare('SELECT * FROM scheduler_runs WHERE id=?').get(run.id),original);assert.equal(JSON.stringify(store.getProviderInput(run.id,true)),packet);
   const stale=await f.tool(session,'ponderosa_message',{intent:'direct_to_user',text:'Forbidden old-session output',steeringInjectionId:turn,idempotencyKey:randomUUID()});
   assert.ok(stale.status>=400);
+  f.ok(await f.tool(replacement,'ponderosa_message',{intent:'direct_to_user',text:'Current replacement task completed',steeringInjectionId:acknowledgedPrompt(f,agent.id).id,idempotencyKey:randomUUID()}));
+  replacement.finish();const finished=await f.settled(agent.id,previous);
+  assert.equal(finished.runs.filter(x=>!previous.includes(x.id)&&x.status==='completed').length,1);assert.equal(f.turns.length,turnsBefore+1);
   assert.ok(!(await f.detail(agent.id)).messages.some(x=>x.text.startsWith('Forbidden')));
-}));
+ },{storeFactory:root=>store=new AgentStore(root),providerValidatesResumeBeforeTurn:true,
+  providerContextRecoverySupport:{status:'managed_compaction',crashReconciliation:'hold_without_native_query'},
+  providerCommandResult:({sessionId})=>({outcome:'completed',contextUsage:{usedTokens:1000,windowTokens:200000,providerSessionGeneration:sessionId}})});
+});
