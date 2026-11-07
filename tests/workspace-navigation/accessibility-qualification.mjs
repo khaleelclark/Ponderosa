@@ -78,6 +78,9 @@ try {
     assert.equal(row.metrics.dpr,1);assert.equal(row.metrics.colorScheme,theme);assert.ok(row.metrics.scrollWidth<=row.metrics.width,'App Text size Chat has no page-wide overflow');
     assert.ok(Math.abs(row.metrics.rootFont-row.baselineFonts.root*size/100)<0.1,'Selected root font survives Chat navigation');
     assert.ok(Math.abs(parseFloat(row.metrics.font)-row.baselineFonts.editor*size/100)<0.1,'Composer font follows selected app Text size');
+    row.actions.push({name:'Keyboard prepare empty composer',tabs:await tabTo(page,editor)});await page.keyboard.press('Control+A');await page.keyboard.press('Backspace');
+    await page.waitForFunction(()=>document.querySelector('[aria-label="Message"]')?.textContent.trim()==='');row.emptyComposerText=(await editor.textContent()).trim();assert.equal(row.emptyComposerText,'');
+    const emptyPlaceholder=page.getByText('Write a message…',{exact:true});await emptyPlaceholder.waitFor({state:'visible'});row.emptyPlaceholderVisible=await emptyPlaceholder.isVisible();assert.equal(row.emptyPlaceholderVisible,true,'Empty composer placeholder remains visible at selected app Text size');
    }
    if(product==='core'&&theme==='light'&&scale===1)assert.ok(await page.getByText('Write a message…',{exact:true}).isVisible(),'Empty composer placeholder is present for contrast verification');
    await page.addScriptTag({path:process.env.AXE_CORE_PATH});
