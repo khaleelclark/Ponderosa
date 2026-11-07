@@ -86,7 +86,7 @@ function QueuedMessageTrayComponent({ messages, scope, attachmentNamesForMessage
       if (loading && event.key === "Tab" && !event.shiftKey &&
           rootRef.current?.querySelector("[data-queue-row]:last-child")?.contains(event.target as Node)) revealRows();
     }}
-    sx={{
+    sx={theme => ({
       width: composerSurfaceWidth,
       minWidth: 0,
       maxWidth: "100%",
@@ -97,12 +97,16 @@ function QueuedMessageTrayComponent({ messages, scope, attachmentNamesForMessage
       px: 0.75,
       maxHeight: "min(30vh, 160px)",
       "& .MuiIconButton-root, & .MuiButton-root": { minHeight: 28, minWidth: 28, p: 0.5 },
+      "& .queued-message-row": { display: "flex", alignItems: "center", gap: 0.75, minHeight: 30, minWidth: 0 },
+      "& .queued-message-position": { ...theme.typography.caption, m: 0, fontVariantNumeric: "tabular-nums" },
+      "& .queued-message-text": { ...theme.typography.body2, m: 0, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+      "& .queued-message-agent": { ...theme.typography.caption, m: 0, color: "text.secondary", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: { xs: "none", md: "block" }, maxWidth: 160 },
       "@media (pointer: coarse)": { "& .MuiIconButton-root, & .MuiButton-root": { minHeight: 44, minWidth: 44 }, "& [data-queue-row]": { minHeight: 44 } },
       overflowY: "auto",
       borderRadius: "16px 16px 8px 8px",
       bgcolor: "background.paper",
       boxShadow: 2,
-    }}
+    })}
   >
     <Stack spacing={0.25}>
       {captured.map(item => {
@@ -121,8 +125,8 @@ function QueuedMessageTrayComponent({ messages, scope, attachmentNamesForMessage
       {messages.slice(0, shownRows).map((message) => {
         const attachmentNames = attachmentNamesForMessage?.(message) ?? [];
         const editing = editingId === message.deliveryId;
-        return <Box key={message.deliveryId} data-queue-row sx={{ display: "flex", alignItems: "center", gap: 0.75, minHeight: 30, minWidth: 0 }}>
-          <Typography variant="caption" aria-label={message.position ? `Queue position ${message.position}` : "Queue position pending"} sx={{ fontVariantNumeric: "tabular-nums" }}>{message.position ?? "…"}</Typography><SubdirectoryArrowRightIcon aria-hidden sx={{ color: "text.disabled", fontSize: 16, flex: "0 0 auto" }} />
+        return <div key={message.deliveryId} data-queue-row className="MuiBox-root queued-message-row">
+          <span className="MuiTypography-root MuiTypography-caption queued-message-position" aria-label={message.position ? `Queue position ${message.position}` : "Queue position pending"}>{message.position ?? "…"}</span><SubdirectoryArrowRightIcon aria-hidden sx={{ color: "text.disabled", fontSize: 16, flex: "0 0 auto" }} />
           {editing ? <TextField
             value={editingText}
             onChange={(event) => setEditingText(event.target.value)}
@@ -139,11 +143,11 @@ function QueuedMessageTrayComponent({ messages, scope, attachmentNamesForMessage
                 run(() => onEdit(message, editingText.trim()), () => setEditingId(undefined));
               }
             }}
-          /> : <Tooltip title={message.text}><Typography tabIndex={0} variant="body2" noWrap sx={{ flex: 1, minWidth: 0 }}>{message.text}</Typography></Tooltip>}
+          /> : <Tooltip title={message.text}><p tabIndex={0} className="MuiTypography-root MuiTypography-body2 MuiTypography-noWrap queued-message-text">{message.text}</p></Tooltip>}
           {!editing && attachmentNames.length ? <Tooltip title={attachmentNames.join(", ")}><Typography tabIndex={0} variant="caption" aria-label={`${attachmentNames.length} attachments`}>+{attachmentNames.length}</Typography></Tooltip> : null}
-          {!editing && agentNameForId ? <Typography variant="caption" color="text.secondary" noWrap sx={{ display: { xs: "none", md: "block" }, maxWidth: 160 }}>
+          {!editing && agentNameForId ? <span className="MuiTypography-root MuiTypography-caption MuiTypography-noWrap queued-message-agent">
             {agentNameForId(message.targetAgentId)}
-          </Typography> : null}
+          </span> : null}
           {editing ? <>
             <Button size="small" disabled={busy || !editingText.trim()} onClick={() => run(() => onEdit(message, editingText.trim()), () => setEditingId(undefined))}>Save</Button>
             <Button size="small" color="inherit" onClick={() => setEditingId(undefined)}>Cancel</Button>
@@ -152,7 +156,7 @@ function QueuedMessageTrayComponent({ messages, scope, attachmentNamesForMessage
             <Tooltip title="Edit Queued Message"><span><IconButton size="small" disabled={busy} aria-label={`Edit queued message ${message.position ?? "pending"}`} onClick={() => { setEditingId(message.deliveryId); setEditingText(message.text); }}><EditOutlinedIcon fontSize="small" /></IconButton></span></Tooltip>
             <Tooltip title="Delete Queued Message"><span><IconButton size="small" disabled={busy} aria-label={`Delete queued message ${message.position ?? "pending"}`} onClick={() => run(() => onDelete(message))}><DeleteOutlineIcon fontSize="small" /></IconButton></span></Tooltip>
           </>}
-        </Box>;
+        </div>;
       })}
     </Stack>
   </Paper>;
