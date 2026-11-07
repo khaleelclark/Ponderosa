@@ -2,13 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import path from 'node:path';
-import {AgentStore} from '../../packages/agents/dist/index.js';
+import {AgentStore,WorkspaceStore} from '../../packages/agents/dist/index.js';
 import {hasKnownRetainedMemory} from '../../apps/server/dist/context-transition-admission.js';
 import {withFixture,until} from '../shared/fixture.mjs';
 import {inertCodex} from '../shared/inert-codex.mjs';
 import {ownedChroma} from '../memory/portability-fixture.mjs';
 
-for(const mode of ['verified','generic-missing-origin']) test(`${mode} handoff retains earlier source evidence when memory is unavailable after restart`,{timeout:120000},async t=>{
+for(const mode of ['verified','generic-missing-origin']) test(mode==='generic-missing-origin'?'generic-missing-origin handoff holds missing instructions and retained source evidence after restart':`${mode} handoff retains earlier source evidence when memory is unavailable after restart`,{timeout:120000},async t=>{
  let store,native;
  await withFixture(t,async f=>{
   const chat=await f.createChat('Inherited source after restart'),agent=await f.createIdleAgent(chat,'Worker');
@@ -53,13 +53,22 @@ for(const mode of ['verified','generic-missing-origin']) test(`${mode} handoff r
    assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(held.id).n,0);
    assert.equal((await native.requests()).filter(x=>x.method==='turn/start').length,count,'no retained-session input is sent');
   } else {
-   const turns=await until(async()=>{const rows=(await native.requests()).filter(x=>x.method==='turn/start');return rows.length>count?rows:undefined;},'fresh generic continuation',20000);
-   const fresh=turns[count],payload=JSON.stringify(fresh.params.input);
-   assert.notEqual(fresh.params.threadId,session.sessionId,'the missing origin selects a fresh provider session');
-   assert.ok(payload.includes('Continue after memory service is unavailable.'));
-   assert.ok(!payload.includes('Synthetic retained source.'),'the prior memory source is not seeded');
-   assert.ok(!payload.includes('includes the retained source'),'the old handoff summary is not seeded');
-   await native.sendTool('ponderosa_message',{text:'Fresh continuation complete.'});await f.settled(agent.id);
+   const reads=()=>store.sqlite.prepare('SELECT s.* FROM memory_exposure_sources s JOIN scheduler_runs r ON r.id=s.run_id WHERE r.agent_id=?').all(agent.id);
+   const remainingReads=reads(),remainingInputs=store.sqlite.prepare('SELECT * FROM provider_inputs WHERE agent_id=? ORDER BY execution_id').all(agent.id);
+   const parents=store.sqlite.prepare('SELECT * FROM context_rollovers WHERE agent_id=? ORDER BY id').all(agent.id);
+   const runCount=store.sqlite.prepare('SELECT count(*) n FROM scheduler_runs WHERE agent_id=?').get(agent.id).n;
+   const held=await until(()=>store.sqlite.prepare(`SELECT a.id,a.payload_json FROM agent_activations a JOIN activation_sources h ON h.activation_id=a.id
+     WHERE a.agent_id=? AND a.state='pending' AND h.source_kind='settings_transition_reservation_wait'`).get(agent.id),'missing exact instructions held without fresh reseed',20000);
+   assert.ok(held.payload_json.includes('Continue after memory service is unavailable.'));
+   assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(held.id).n,0);
+   assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_runs WHERE agent_id=?').get(agent.id).n,runCount);
+   assert.equal((await native.requests()).filter(x=>x.method==='turn/start').length,count,'missing accepted instructions never authorize a fresh seed');
+   assert.equal(store.resumeSessionState(agent.id).sessionId,session.sessionId);
+   assert.deepEqual(reads(),remainingReads);assert.ok(remainingReads.length,'earlier memory-read evidence remains inspectable');
+   assert.deepEqual(store.sqlite.prepare('SELECT * FROM provider_inputs WHERE agent_id=? ORDER BY execution_id').all(agent.id),remainingInputs,'remaining input evidence is unchanged; the origin was deliberately deleted');
+   assert.deepEqual(store.sqlite.prepare('SELECT * FROM context_rollovers WHERE agent_id=? ORDER BY id').all(agent.id),parents);
+   const notices=new WorkspaceStore(f.dataDir);try{const notice=notices.getNotificationByDedupeKey('settings-transition:'+held.id);assert.match(notice.body,/saved provider instructions are missing/i);assert.deepEqual(notice.action,{kind:'open_agent',targetId:agent.id});}finally{notices.close();}
+
   }
  },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,holdMemoryCompletion:true,uniqueThreads:true})).adapter,
  localMemoryForRoot:async root=>({chromaUrl:await ownedChroma(),collectionPrefix:'inherit_'+randomUUID().replaceAll('-',''),modelDir:process.env.PONDEROSA_TEST_MEMORY_MODEL_DIR,stateDirectory:path.join(root,'memory-policy'),provision:true})});

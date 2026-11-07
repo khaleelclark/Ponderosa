@@ -21,6 +21,7 @@ import { registerAgentRuntimeToolRoutes } from '../../apps/server/dist/routes/ag
 import { providerDynamicTools } from '../../apps/server/dist/runtime-selection.js';
 import { validateMemoryCall } from '../../apps/server/dist/local-memory-catalog.js';
 import { withFixture, until } from '../shared/fixture.mjs';
+import {inertCodex} from '../shared/inert-codex.mjs';
 const bridge = fileURLToPath(new URL('../../packages/engines/dist/ponderosa-mcp.js', import.meta.url));
 const ts = createRequire(new URL('../../apps/web/package.json', import.meta.url))('typescript');
 const source = ts.createSourceFile('executor.ts', readFileSync(new URL('../../apps/server/src/routes/provider-run-executor.ts', import.meta.url), 'utf8'), ts.ScriptTarget.Latest, true);
@@ -442,35 +443,69 @@ test('ordinary accepted boundary supports complete Unicode chunks, concise direc
  assert.equal(audits[0].event.selected[0].complete,false);assert.equal(audits[0].event.selected[0].startCodePoint,0);
 }));
 
-test('context-budget omission reaches the actual prompt and a discarded session cannot hide its older history', {timeout:30000},async t=>{
- let store;
+test('verified workspace handoff preserves omitted history and compatible continuations', {timeout:90000},async t=>{
+ let store,native;
  await withFixture(t,async f=>{
   const chat=await f.createChat('Canonical context'),agent=await f.createIdleAgent(chat,'Retained reader');
   const authored=(text,number)=>{const event={schemaVersion:2,eventId:randomUUID(),projectId:chat.projectId,conversationId:chat.id,sender:{kind:'user',userId:'local-operator'},intent:'user_dm',audience:{kind:'user_agent',userId:'local-operator',agentId:agent.id},text,createdAt:new Date(Date.now()-100000+number*10).toISOString()};store.appendCommunicationEvent(event);store.appendEvent(agent.id,{type:'communication_projection',communicationEventId:event.eventId,text:event.text,role:'user'});return event};
-  const older=authored('Unique amber compass secret retained fact',0);
-  await f.send(agent.id,'Read initial context');await f.settled(agent.id);const oldSession=f.turns.at(-1).sessionId;
-  for(let index=1;index<=45;index++)authored('Recent bounded private item '+index+' · retained detail '.repeat(200),index);
-  f.ok(await f.api('PATCH','/api/workspace/preferences',{globalInstructions:'Genuine new instruction for a fresh canonical context'}));
-  const session=await f.hold(agent.id);assert.notEqual(session.engineAgentId,oldSession);assert.match(f.turns.at(-1).input.prompt,/BOUNDED HISTORICAL CONTEXT.*Additional older/s);
-  const found=f.ok(await f.tool(session,'ponderosa_history',{action:'search',query:'Unique amber compass'}));assert.ok(found.hits.some(hit=>hit.communicationEventId===older.eventId));
-  const exact=f.ok(await f.tool(session,'ponderosa_history',{action:'read',communicationEventId:older.eventId,before:0,after:0}));assert.equal(exact.messages[0].text,older.text);
-  // This compatibility fixture fills the fresh byte policy; provide actual
-  // generation-scoped checkpoints instead of assuming unmeasured context is zero.
-  const meter=s=>s.events.push({type:'context_usage',providerSessionId:s.engineAgentId,providerSessionGeneration:s.engineAgentId,usedTokens:25000,windowTokens:200000});
-  const meteredReply=async s=>{
-   let reply=await s.tool('ponderosa_update_request',{text:'Compatible continuation completed'});
-   if(!reply.success)reply=await s.tool('ponderosa_message',{text:'Compatible continuation completed'});
-   assert.equal(reply.success,true,reply.text);
-   meter(s);
+  const tool=async(_session,name,args)=>{
+   const count=(await native.requests()).filter(row=>row.toolResponse).length;
+   await native.sendTool(name,args);
+   const response=await until(async()=>{const rows=(await native.requests()).filter(row=>row.toolResponse);return rows.length>count?rows[count].toolResponse:undefined;},'actual native tool response',20000);
+   assert.equal(response.result.success,true,JSON.stringify(response.result));
+   return {status:200,body:JSON.parse(response.result.contentItems.map(item=>item.text??'').join(''))};
   };
-  const before=f.turns.length;meter(session);session.finish();await until(async()=>!(await f.detail(agent.id)).runs.some(run=>run.status==='running'),'settled retained turn');
-  // Cosmetic profile changes preserve the compatible accepted session.
+  const starts=()=>native.requests().then(rows=>rows.filter(row=>row.method==='turn/start'));
+  const older=authored('Unique amber compass secret retained fact',0);
+  await f.send(agent.id,'Read initial context');await until(async()=>(await starts()).length===1,'initial native context',20000);
+  const original=store.getProviderInput(new CoordinationV3Store(store.sqlite).activeAgentRun(agent.id).id,true),frozen=JSON.stringify(original);
+  assert.ok(original.exactPrompt.includes(older.text),'the original accepted input really received the fact');
+  const oldSession=(await starts())[0].params.threadId;
+  f.ok(await tool(null,'ponderosa_message',{text:'Initial context read.'}));await f.settled(agent.id);
+  const recent=[];for(let index=1;index<=45;index++)recent.push(authored('Recent bounded private item '+index+' · retained detail '.repeat(200),index));
+  const instructions='Genuine new instruction with a verified continuity handoff';
+  f.ok(await f.api('PATCH','/api/workspace/preferences',{globalInstructions:instructions}));
+  const followup='Continue the retained context-reading task.';
+  await f.send(agent.id,followup);
+  const old=await until(async()=>{const rows=await starts();return rows.length===2&&rows;},'old-context handoff',20000);
+  assert.equal(old[1].params.threadId,oldSession);assert.ok(!JSON.stringify(old[1]).includes(followup),'queued task is not replayed in the old context');
+  const summary='Preserve the earlier context-reading objective and exact canonical source '+older.eventId+'. Use ponderosa_history for its complete content.';
+  await native.sendAnswer(summary);
+  const replacement=await until(async()=>{const rows=await starts();return rows.length===3&&rows;},'verified replacement',20000);
+  assert.notEqual(replacement[2].params.threadId,oldSession);assert.ok(JSON.stringify(replacement[2]).includes(summary));
+  const replacementPacket=store.getProviderInput(new CoordinationV3Store(store.sqlite).activeAgentRun(agent.id).id,true);
+  assert.ok(replacementPacket.exactSystemPrompt.includes(instructions));
+  assert.ok(replacementPacket.sourceManifest.historyContext.fullyIncludedCommunicationEventIds.includes(older.eventId)&&replacementPacket.exactPrompt.includes(older.text),'the managed canonical tail preserves the old fact it actually resubmits');
+  assert.ok(JSON.stringify(replacement[2].params.input).includes(older.text),'the actual replacement wire also contains the complete preserved fact');
+  assert.match(replacementPacket.exactPrompt,/BOUNDED HISTORICAL CONTEXT.*Additional older/s,'actual omitted canonical context is disclosed');
+  // A managed replacement uses its frozen tail and handoff. Ordinary cold
+  // omission notices/budgets remain covered by the unchanged named budget tests.
+  await native.sendAnswer('Continuity context received.');
+  const queued=await until(async()=>{const rows=await starts();return rows.length===4&&rows;},'same queued native input',20000);
+  const generation=queued[3].params.threadId;assert.equal(generation,replacement[2].params.threadId);assert.ok(JSON.stringify(queued[3]).includes(followup));
+  const included=new Set(store.acceptedProviderSessionCommunicationEventIds(agent.id));const omitted=recent.find(event=>!included.has(event.eventId));assert.ok(omitted,'a source actually omitted from this native generation is the retrieval oracle');
+  const found=f.ok(await tool(null,'ponderosa_history',{action:'search',query:omitted.text.slice(0,38)}));assert.ok(found.hits.some(hit=>hit.communicationEventId===omitted.eventId));
+  const exact=f.ok(await tool(null,'ponderosa_history',{action:'read',communicationEventId:omitted.eventId,before:0,after:0}));assert.equal(exact.messages[0].text,omitted.text);
+  const meter=async label=>{
+   await native.sendWorkResult(label);
+   const work=await until(()=>store.readEvents(agent.id).find(row=>row.event.type==='tool_result'&&row.event.output===label),'native checkpoint consumed',20000);
+   await until(()=>store.readEvents(agent.id).some(row=>row.seq>work.seq&&row.event.type==='context_usage'&&row.event.providerSessionGeneration===generation),'fresh generation occupancy after native work',20000);
+  };
+  await meter('Historical lookup confirmed; compatible work can continue.');
+  f.ok(await tool(null,'ponderosa_message',{text:'Retained history verified.'}));await f.settled(agent.id);
   const prefs=f.ok(await f.api('GET','/api/workspace/preferences'));f.ok(await f.api('PATCH','/api/workspace/preferences',{profile:{avatarId:prefs.profile.avatarId==='river'?'sunset':'river',handle:'#'+prefs.profile.handle.toUpperCase(),displayName:' '+prefs.profile.displayName+' '}}));
-  const previous=(await f.detail(agent.id)).runs.map(run=>run.id);f.plans.set(agent.id,[{run:meteredReply}]);await f.send(agent.id,'Compatible continuation');await f.settled(agent.id,previous);assert.equal(f.turns.at(-1).sessionId,session.engineAgentId);
-  const count=f.turns.length,prior=(await f.detail(agent.id)).runs.map(run=>run.id),coordination=new CoordinationV3Store(store.sqlite);
-  f.plans.set(agent.id,[{run:meteredReply}]);coordination.coordinate({projectId:chat.projectId,conversationId:chat.id,actorScope:'user:local-operator',idempotencyKey:'same-scope-new-request',requests:[{recipientAgentId:agent.id,lifetime:{kind:'indefinite'},payload:{text:'A new compatible Request'}}]});
-  await until(()=>f.turns.length>count,'new compatible Request turn');await f.settled(agent.id,prior);assert.equal(f.turns.at(-1).sessionId,session.engineAgentId,'A new Request alone must not reset compatible working context');
- },{storeFactory:root=>store=new AgentStore(root)});
+  let prior=(await f.detail(agent.id)).runs.map(run=>run.id);await f.send(agent.id,'Compatible continuation');
+  const compatible=await until(async()=>{const rows=await starts();return rows.length===5&&rows;},'compatible continuation',20000);assert.equal(compatible[4].params.threadId,generation);
+  await meter('Compatible continuation sampled.');
+  f.ok(await tool(null,'ponderosa_message',{text:'Compatible continuation completed'}));await f.settled(agent.id,prior);
+  prior=(await f.detail(agent.id)).runs.map(run=>run.id);const coordination=new CoordinationV3Store(store.sqlite);
+  coordination.coordinate({projectId:chat.projectId,conversationId:chat.id,actorScope:'user:local-operator',idempotencyKey:'same-scope-new-request',requests:[{recipientAgentId:agent.id,lifetime:{kind:'indefinite'},payload:{text:'A new compatible Request'}}]});
+  const request=await until(async()=>{const rows=await starts();return rows.length===6&&rows;},'compatible Request',20000);assert.equal(request[5].params.threadId,generation,'a new Request alone preserves working context');
+  await meter('Compatible Request sampled.');
+  f.ok(await tool(null,'ponderosa_update_request',{text:'Compatible Request completed'}));await f.settled(agent.id,prior);
+  assert.equal(JSON.stringify(store.getProviderInput(original.executionId,true)),frozen,'handoff/retrieval cannot rewrite original accepted evidence');
+  assert.equal(store.readEvents(agent.id).filter(row=>row.event.type==='session_reset').length,0);
+ },{storeFactory:root=>store=new AgentStore(root),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,uniqueThreads:true,holdHistoryCompletion:true})).adapter});
 });
 
 test('accepted session tail evidence never promotes a later authored revision', {timeout:30000},async t=>{

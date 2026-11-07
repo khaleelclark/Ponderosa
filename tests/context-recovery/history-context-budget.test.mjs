@@ -7,6 +7,7 @@ import path from 'node:path';
 import { AgentStore, CoordinationV3Store } from '@ponderosa/agents';
 import { createServer } from '../../apps/server/dist/app.js';
 import { withFixture, until, fixtureTestOptions } from '../shared/fixture.mjs';
+import {inertCodex} from '../shared/inert-codex.mjs';
 
 test('ordinary one-shot sessions bind fresh acknowledgements and fence late cancelled session events', fixtureTestOptions, async t => {
   const root=await realpath(await mkdtemp(path.join(tmpdir(),'ponderosa-one-shot-budget-')));
@@ -273,13 +274,34 @@ test('continuation budgets charge proven completed-turn occupancy and reject for
     { hold: true },
   ]);
   await f.send(agent.id, 'Use the separately qualified fresh packet only after confirmed pre-sampling rejection');
-  await until(() => f.turns.length >= turnsBefore + 2, 'confirmed fresh fallback');
-  session = f.sessions.get(agent.id); value = budget(accepted(f.store, agent.id));
-  assert.equal(value.occupancyBasis, 'fresh_session'); assert.equal(value.basis, 'context_policy');
-  assert.equal(value.windowTokens, undefined, 'Foreign-generation capacity cannot leak into the precompiled fresh packet');
-  assert.equal(value.inputCeilingTokens, 90000);
-  await finish(f, agent, session);
-}));
+  const failed=await until(()=>f.store.sqlite.prepare("SELECT * FROM scheduler_runs WHERE agent_id=? AND status='outcome_unknown' ORDER BY fencing_token DESC LIMIT 1").get(agent.id),'retained unknown pre-sampling attempt');
+  const failedInput=f.store.getProviderInput(failed.id,true);assert.ok(failedInput);
+  assert.equal(f.turns.length,turnsBefore+1,'an injected context failure never triggers an automatic fresh replay');
+  const old=session;await until(()=>!old.isAlive(),'failed provider root drained');
+  await f.send(agent.id,'Separate later task after explicit context review.');
+  const queued=await until(()=>f.store.sqlite.prepare(`SELECT a.id,a.payload_json FROM agent_activations a JOIN activation_sources h ON h.activation_id=a.id
+    WHERE a.agent_id=? AND a.state='pending' AND h.source_kind='settings_transition_reservation_wait'`).get(agent.id),'later input held without automatic replay');
+  assert.equal(f.turns.length,turnsBefore+1);assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(queued.id).n,0);
+  const status=f.ok(await f.api('GET',`/api/agents/${agent.id}/context-recoveries`)),boundary=status.boundary;
+  assert.equal(boundary.sourceRunId,failed.id);assert.equal(boundary.providerSessionId,generation);
+  f.commandResults.set(agent.id,({sessionId})=>({outcome:'completed',contextUsage:{usedTokens:1000,windowTokens:200000,providerSessionGeneration:sessionId}}));
+  const repaired=await f.api('POST',`/api/agents/${agent.id}/context-recoveries`,{idempotencyKey:'budget-context-recovery',expectedSessionId:boundary.providerSessionId,expectedSourceRunId:failed.id,expectedToolContractHash:boundary.toolContractHash,acknowledgeUnknownEffects:true});
+  assert.equal(repaired.status,200,JSON.stringify(repaired.body));assert.equal(repaired.body.request.progress.phase,'context_accepted');assert.equal(f.turns.length,turnsBefore+1);
+  f.ok(await f.api('POST',`/api/agents/${agent.id}/context-recoveries/${repaired.body.request.id}/dismiss`,{acknowledgeStillBlocked:true}));
+  await until(()=>f.turns.length===turnsBefore+2,'same queued independent input after recovery');
+  session=f.sessions.get(agent.id);assert.equal(session.engineAgentId,generation);
+  assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(queued.id).n,1);
+  assert.equal(f.store.sqlite.prepare('SELECT payload_json FROM agent_activations WHERE id=?').get(queued.id).payload_json,queued.payload_json);
+  assert.deepEqual(f.store.getProviderInput(failed.id,true),failedInput);assert.deepEqual(f.store.sqlite.prepare('SELECT * FROM scheduler_runs WHERE id=?').get(failed.id),failed);
+  await finish(f,agent,session);
+  // Fresh-origin policy is a separate positive control, never a retry of the
+  // failed instruction or a discard of its accepted native context.
+  const fresh=await f.createIdleAgent(chat,'Fresh-origin capacity control');
+  f.usage.set(fresh.id,{usedTokens:140000,aggregateTokens:900000,windowTokens:200000,providerSessionGeneration:'foreign-generation'});
+  session=await f.hold(fresh.id);value=budget(accepted(f.store,fresh.id));
+  assert.equal(value.occupancyBasis,'fresh_session');assert.equal(value.basis,'context_policy');assert.equal(value.windowTokens,undefined);assert.equal(value.inputCeilingTokens,90000);
+  await finish(f,fresh,session);
+},{providerValidatesResumeBeforeTurn:true,providerContextRecoverySupport:{status:'managed_compaction',crashReconciliation:'hold_without_native_query'}}));
 
 test('warm continuation includes durable text following a partial checkpoint', fixtureTestOptions, t => withRuntimePoolBudgetFixture(t, 2, async f => {
   f.ok(await f.api('PATCH', '/api/workspace/preferences', { contextRolloverEnabled: false }));
@@ -351,27 +373,74 @@ test('third cold turn uses the latest acknowledged completed turn rather than th
   await finish(f, agent, session);
 }));
 
-test('fresh replacement ignores discarded occupancy and retrieves old submitted evidence omitted from the new input', fixtureTestOptions, t => withRuntimePoolBudgetFixture(t, 2, async f => {
-  f.ok(await f.api('PATCH', '/api/workspace/preferences', { contextRolloverEnabled: false }));
-  const chat = await f.createChat('Discarded context is not retained'), agent = await f.createIdleAgent(chat, 'Replacement reader');
-  const witness = authored(f.store, chat, agent, `DISCARDED_BUDGET_WITNESS ${'saved evidence '.repeat(1900)}`);
-  let session = await f.hold(agent.id); const generation = session.engineAgentId, previous = accepted(f.store, agent.id), frozen = JSON.stringify(previous);
-  assert.ok(previous.sourceManifest.historyContext.fullyIncludedCommunicationEventIds.includes(witness.eventId), 'Positive control: old session really received the complete witness');
-  await finish(f, agent, session);
-  f.usage.set(agent.id, { usedTokens: 140000, aggregateTokens: 900000, windowTokens: 200000, providerSessionGeneration: generation });
-  f.ok(await f.api('PATCH', '/api/workspace/preferences', { contextRolloverTokens: 150000, globalInstructions: `NEW_REPLACEMENT_RULES ${'Preserve the new required rules. '.repeat(240)}` }));
-  for (let i = 0; i < 70; i++) authored(f.store, chat, agent, `NEWER_REPLACEMENT_NOTE_${i} ${'recent detail '.repeat(110)}`, i + 1);
-  session = await f.hold(agent.id); assert.notEqual(session.engineAgentId, generation);
-  const packet = accepted(f.store, agent.id), value = budget(packet);
-  assert.equal(value.occupancyBasis, 'fresh_session'); assert.equal(value.occupancyTokens, 0);
-  assert.equal(packet.sourceManifest.historyContext.fullyIncludedCommunicationEventIds.includes(witness.eventId), false);
-  assert.equal(supplied(packet).includes('DISCARDED_BUDGET_WITNESS'), false);
-  const found = f.ok(await f.tool(session, 'ponderosa_history', { action: 'search', query: 'DISCARDED_BUDGET_WITNESS' }));
-  assert.ok(found.hits.some(hit => hit.communicationEventId === witness.eventId), 'Discarded session delivery cannot exclude evidence omitted from its replacement');
-  assert.equal(await readAll(f, session, witness.eventId), witness.text);
-  assert.equal(JSON.stringify(f.store.getProviderInput(previous.executionId, true)), frozen, 'A replacement cannot rewrite an earlier accepted prompt or manifest');
-  await finish(f, agent, session);
-}));
+test('verified replacement accounts fresh occupancy and preserves complete canonical history', {...fixtureTestOptions,timeout:90000},async t=>{
+ let native;
+ await withRuntimePoolBudgetFixture(t,2,async f=>{
+  f.ok(await f.api('PATCH','/api/workspace/preferences',{contextRolloverEnabled:false}));
+  const chat=await f.createChat('Verified replacement history'),agent=await f.createIdleAgent(chat,'Replacement reader');
+  const tool=async(_session,name,args)=>{
+   const count=(await native.requests()).filter(row=>row.toolResponse).length;
+   await native.sendTool(name,args);
+   const response=await until(async()=>{const rows=(await native.requests()).filter(row=>row.toolResponse);return rows.length>count?rows[count].toolResponse:undefined;},'actual native tool response',20000);
+   assert.equal(response.result.success,true,JSON.stringify(response.result));
+   return {status:200,body:JSON.parse(response.result.contentItems.map(item=>item.text??'').join(''))};
+  };
+  const starts=()=>native.requests().then(rows=>rows.filter(row=>row.method==='turn/start'));
+  const witness=authored(f.store,chat,agent,`DISCARDED_BUDGET_WITNESS ${'saved evidence '.repeat(1900)} 東京😀`);
+  await f.send(agent.id,'Preserve the submitted source and original context.');await until(async()=>(await starts()).length===1,'old accepted context',20000);
+  const previous=accepted(f.store,agent.id),frozen=JSON.stringify(previous),generation=(await starts())[0].params.threadId;
+  assert.ok(previous.sourceManifest.historyContext.fullyIncludedCommunicationEventIds.includes(witness.eventId));
+  assert.ok(JSON.stringify((await starts())[0].params.input).includes(witness.text),'the original native input really received all witness bytes');
+  const finding='Native-only finding: inspect the original retained source before finishing.';
+  await native.sendWorkResult(finding);await until(()=>f.store.readEvents(agent.id).some(row=>row.event.type==='context_usage'&&row.event.providerSessionGeneration===generation&&row.event.usedTokens>0),'actual old nonzero native occupancy',20000);
+  f.ok(await tool(null,'ponderosa_message',{text:'Earlier source retained; later verification remains.'}));await f.settled(agent.id);
+  const instructions=`NEW_REPLACEMENT_RULES ${'Preserve the new required rules. '.repeat(240)}`.trim();
+  f.ok(await f.api('PATCH','/api/workspace/preferences',{contextRolloverTokens:150000,globalInstructions:instructions}));
+  const omittedSource=authored(f.store,chat,agent,`OMITTED_UNICODE_SOURCE ${'later canonical evidence 東京😀 '.repeat(1900)}`,1);
+  for(let i=0;i<70;i++)authored(f.store,chat,agent,`NEWER_REPLACEMENT_NOTE_${i} ${'recent detail '.repeat(110)}`,i+2);
+  const followup='Continue the original source-verification task.';await f.send(agent.id,followup);
+  const old=await until(async()=>{const rows=await starts();return rows.length===2&&rows;},'old native handoff',20000);assert.equal(old[1].params.threadId,generation);assert.ok(!JSON.stringify(old[1]).includes(followup));
+  const summary=finding+' Original source reference: '+witness.eventId+'. Preserve the unfinished verification goal; read the complete canonical source with ponderosa_history.';
+  const handoffRun=new CoordinationV3Store(f.store.sqlite).activeAgentRun(agent.id);assert.ok(handoffRun);
+  assert.ok(f.store.sqlite.prepare("SELECT 1 FROM scheduler_run_activations x JOIN agent_activations a ON a.id=x.activation_id WHERE x.run_id=? AND a.kind='context_rollover_handoff'").get(handoffRun.id));
+  const acknowledgement='Controlled handoff input received by its current native turn.';
+  await native.sendWorkResult(acknowledgement);
+  const observed=await until(()=>f.store.readEvents(agent.id).find(row=>row.event.type==='tool_result'&&row.event.output===acknowledgement),'owned handoff work event consumed',20000);
+  await until(()=>f.store.sqlite.prepare("SELECT 1 FROM scheduler_prompt_injections WHERE run_id=? AND kind='turn' AND state='acknowledged'").get(handoffRun.id)&&f.store.readEvents(agent.id).some(row=>row.seq>observed.seq&&row.event.type==='context_usage'&&row.event.providerSessionGeneration===generation),'actual handoff input acknowledgement and generation usage',20000);
+  const admitted=f.store.sqlite.prepare("SELECT id,state,acknowledged_at FROM scheduler_prompt_injections WHERE run_id=? AND kind='turn'").get(handoffRun.id),usageEvent=f.store.readEvents(agent.id).find(row=>row.seq>observed.seq&&row.event.type==='context_usage'&&row.event.providerSessionGeneration===generation);
+  t.diagnostic('CANONICAL_HANDOFF_ACK '+JSON.stringify({runId:handoffRun.id,injectionId:admitted.id,state:admitted.state,acknowledgedAt:admitted.acknowledged_at,usageSequence:usageEvent.seq,providerSessionGeneration:usageEvent.event.providerSessionGeneration,usedTokens:usageEvent.event.usedTokens}));
+  await native.sendAnswer(summary);
+  const replacement=await until(async()=>{const rows=await starts();return rows.length===3&&rows;},'verified new native generation',20000);
+  assert.notEqual(replacement[2].params.threadId,generation);assert.ok(JSON.stringify(replacement[2]).includes(summary));
+  const replacementReceipt='Controlled replacement context received by its current native turn.';
+  await native.sendWorkResult(replacementReceipt);
+  const replacementObserved=await until(()=>f.store.readEvents(agent.id).find(row=>row.event.type==='tool_result'&&row.event.output===replacementReceipt),'replacement work event consumed',20000);
+  await until(()=>f.store.readEvents(agent.id).some(row=>row.seq>replacementObserved.seq&&row.event.type==='context_usage'&&row.event.providerSessionGeneration===replacement[2].params.threadId),'replacement generation usage recorded',20000);
+  const packet=await until(()=>{
+   const run=new CoordinationV3Store(f.store.sqlite).activeAgentRun(agent.id);
+   if(!run||run.id===handoffRun.id)return;
+   const row=f.store.sqlite.prepare('SELECT provider_session_id FROM scheduler_runs WHERE id=?').get(run.id);
+   const candidate=f.store.getProviderInput(run.id,true);
+   return row?.provider_session_id===replacement[2].params.threadId&&candidate?.executionId===run.id&&candidate;
+  },'exact current replacement Run owns its saved input',20000);
+  const value=budget(packet);assert.equal(value.occupancyBasis,'fresh_session');assert.equal(value.occupancyTokens,0);
+  assert.ok(packet.exactSystemPrompt.includes(instructions));
+  const witnessIncluded=packet.sourceManifest.historyContext.fullyIncludedCommunicationEventIds.includes(witness.eventId);
+  if(witnessIncluded){assert.ok(supplied(packet).includes(witness.text),'resubmitted source means complete original bytes, not a hidden prefix');assert.ok(JSON.stringify(replacement[2].params.input).includes(witness.text),'the actual replacement wire contains those complete bytes');}
+  else assert.equal(supplied(packet).includes('DISCARDED_BUDGET_WITNESS'),false,'an omitted old source is not silently claimed as complete');
+  await native.sendAnswer('Continuity context received.');
+  const final=await until(async()=>{const rows=await starts();return rows.length===4&&rows;},'same queued task after verified context',20000);assert.equal(final[3].params.threadId,replacement[2].params.threadId);assert.ok(JSON.stringify(final[3]).includes(followup));
+  const session={engineAgentId:final[3].params.threadId},nativeFixture={...f,tool};
+  const included=new Set(f.store.acceptedProviderSessionCommunicationEventIds(agent.id));
+  if(!included.has(witness.eventId))assert.equal(await readAll(nativeFixture,session,witness.eventId),witness.text,'an omitted previously submitted source remains complete and readable');
+  assert.equal(included.has(omittedSource.eventId),false,'the multi-page Unicode source was actually omitted from this generation');
+  const found=f.ok(await tool(session,'ponderosa_history',{action:'search',query:'OMITTED_UNICODE_SOURCE'}));assert.ok(found.hits.some(hit=>hit.communicationEventId===omittedSource.eventId));
+  assert.equal(await readAll(nativeFixture,session,omittedSource.eventId),omittedSource.text,'every advancing Unicode page is read under this same actual Run before final reply');
+  assert.equal(JSON.stringify(f.store.getProviderInput(previous.executionId,true)),frozen);
+  f.ok(await tool(session,'ponderosa_message',{text:'The source-verification task is complete.'}));await f.settled(agent.id);
+  assert.equal((await starts()).length,4);assert.equal(f.store.readEvents(agent.id).filter(row=>row.event.type==='session_reset').length,0);
+ },{nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,uniqueThreads:true,holdHistoryCompletion:true})).adapter});
+});
 
 for (const maxIdleSessions of [0, 2]) test(`Capulin ordinary continuation preserves unknown-window context with rollover disabled (${maxIdleSessions ? 'warm' : 'cold'})`, fixtureTestOptions, t => withRuntimePoolBudgetFixture(t, maxIdleSessions, async f => {
   f.ok(await f.api('PATCH', '/api/workspace/preferences', { contextRolloverTokens: 150000, contextRolloverEnabled: false }));
