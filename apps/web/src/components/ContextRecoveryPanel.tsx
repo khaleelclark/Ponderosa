@@ -15,7 +15,7 @@ export function ContextRecoveryPanel({agentId}:{agentId:string}):JSX.Element {
  const [starting,setStarting]=useState(false),[changing,setChanging]=useState(false),[notice,setNotice]=useState(''),[error,setError]=useState('');
  const startLock=useRef(false),changeLock=useRef(false);
  const status=useQuery({queryKey:['context-recovery',agentId,key],enabled:open,queryFn:()=>api.getContextRecovery(agentId,key),retry:false,
-  refetchInterval:query=>open&&query.state.data?.request?.state==='unsupported_fenced'&&['reserved','drained','native_started'].includes(query.state.data.request.progress?.phase??'')?1000:false});
+  refetchInterval:query=>open&&((starting&&Boolean(key))||query.state.data?.request?.state==='unsupported_fenced'&&['reserved','drained','native_started'].includes(query.state.data.request.progress?.phase??''))?1000:false});
  const boundary=status.data?.boundary,request=status.data?.request;
  const stopped=status.data?.sourceEvidence?.sourceRunStatus==='cancelled';
  const boundaryIdentity=boundary?JSON.stringify(boundary):'';
@@ -66,7 +66,8 @@ export function ContextRecoveryPanel({agentId}:{agentId:string}):JSX.Element {
     {!boundary&&!request&&<Typography>No eligible retained context boundary is available.</Typography>}
     {key&&!request&&<Alert severity="warning">Retained exact key · no recovery record returned · new recovery blocked here</Alert>}
     {request&&<>
-     <Typography>Recorded phase: {request.progress?.phase.replaceAll('_',' ')??'unsupported hold'} · {request.state==='dismissed'?'dismissed':'dispatch held'}</Typography>
+     <Typography>Recorded phase: {request.progress?.phase.replaceAll('_',' ')??'not recorded'} · {request.state==='dismissed'?'dismissed':'dispatch held'}</Typography>
+     {starting&&!request.progress&&<Typography role="status">Recovery request pending · reading exact operation status</Typography>}
      {request.progress?.message&&<Typography sx={{overflowWrap:'anywhere'}}>{request.progress.message}</Typography>}
      {request.progress?.phase==='context_accepted'&&<Alert severity="info"><Stack spacing={0.5}><Typography>{stopped?'Context measurement accepted · earlier task stays stopped':'Context measurement accepted · original work/effects unknown'}</Typography><Typography>New independent work · explicit hold dismissal + runtime admission required</Typography></Stack></Alert>}
      {active&&<Button disabled={changing||status.isError} onClick={()=>void change('stop')}>Stop exact recovery</Button>}
