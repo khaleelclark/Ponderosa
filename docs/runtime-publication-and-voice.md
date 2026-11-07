@@ -119,12 +119,18 @@ secure-environment qualification are deferred, not inferred from this dispositio
 
 ## Native external-contract limits
 
-This change introduces no native result-query, source-turn reconciliation, or
-Claude compaction method. Unknown native outcomes remain held without blind replay.
-Claude still has no mapped structured compaction operation; Codex's mapped resume
-response does not establish the original lost turn's terminal outcome. The exact
-external-contract requirements remain in `runtime-native-completion.md`; no provider
-call, parity verdict or recovery result is invented.
+This publication/voice change introduced no native result-query, source-turn
+reconciliation, or Claude compaction method. Its earlier missing-Claude-compaction
+observation is historical: the current adapter supports managed native compaction
+with correlated command completion and fresh matching-session occupancy. See
+[native recovery](runtime-native-recovery-contract.md) and
+[Claude native command recovery](claude-native-command-recovery.md).
+
+Unknown native outcomes remain held without blind replay. Codex's mapped resume
+response does not establish the original lost turn's terminal outcome. Both
+providers still lack integrated durable original-operation lookup after lost
+acknowledgement or identity; original source effects need their own exact canonical
+receipts. No provider call, parity verdict or recovery result is inferred here.
 
 Deferred regression source: `tests/speech/explicit-publication.test.mjs` covers
 mixed-route/document audience selection, attached Request recipient refusal and
