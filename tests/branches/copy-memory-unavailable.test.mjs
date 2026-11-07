@@ -187,7 +187,10 @@ test('shutdown retains an unrelated preflight failure that races a memory fence'
   const check=memory.assertCheckpointSourceSettled.bind(memory);let bypass=true,enteredResolve;
   const entered=new Promise(resolve=>{enteredResolve=resolve}),gate=new Promise(resolve=>{release=resolve});
   memory.assertCheckpointSourceSettled=()=>{if(bypass){bypass=false;return;}return check();};
-  const syntheticSecret='synthetic-bare-preflight-credential';
+  const syntheticSecret='synthetic-bare-preflight-credential',secretKey='PONDEROSA_TEST_PREFLIGHT_TOKEN';
+  // Model a known credential; an arbitrary unregistered string is not a secret field.
+  const previousSecret=process.env[secretKey];process.env[secretKey]=syntheticSecret;
+  t.after(()=>{if(previousSecret===undefined)delete process.env[secretKey];else process.env[secretKey]=previousSecret;});
   memory.checkpointSourceDatabases=async()=>{enteredResolve();await gate;throw Object.assign(Error(syntheticSecret),{code:'SQLITE_BUSY'});};
   new BranchStore(store.sqlite,new CoordinationV3Store(store.sqlite)).invalidateExpertPreflightHold(resource.step_execution_id);
   await Promise.race([entered,new Promise((_,reject)=>{const timer=setTimeout(()=>reject(Error('mixed preflight did not enter')),30000);timer.unref();})]);
