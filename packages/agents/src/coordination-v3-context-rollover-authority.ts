@@ -1,7 +1,9 @@
+import { CapabilityPolicyStore } from "./capability-policy-store.js";
 import { transitionUnsubmittedActivationSql } from "./coordination-v3-transition-unsubmitted.js";
 import { createHash, randomUUID } from "node:crypto";
 import {
   publicProviderFailureSummary,
+  isGrantOnlyRestrictionsChange, runtimeRestrictions,
   TERMINAL_REQUEST_STATES,
   type CoordinationReplyAuthority,
   type CoordinationRequestState,
@@ -225,6 +227,7 @@ export class CoordinationV3ContextRolloverAuthority {
     return this.sqlite.transaction(() => {
       if(input.settingsTransition){
         const t=input.settingsTransition;
+        const sameRuntimeSettings=t.model===t.targetModel && (t.effort??null)===(t.targetEffort??null) && (t.speed??'standard')===(t.targetSpeed??'standard');
         if(input.triggerKind==='human' || input.canonicalOnlyRefresh || t.sourceRunId!==input.sourceRunId ||
            !Number.isSafeInteger(t.sourceFence) || t.sourceFence<1 || !['codex','claude'].includes(t.engineId) ||
            !t.activationId || input.sourceActivationIds.includes(t.activationId) || !t.model?.trim() || !t.targetModel?.trim() ||
@@ -238,7 +241,7 @@ export class CoordinationV3ContextRolloverAuthority {
            (t.reason==='prompt' && (!/^[a-f0-9]{64}$/u.test(t.targetSystemPromptHash??'') ||
             t.model!==t.targetModel || (t.effort??null)!==(t.targetEffort??null) ||
             (t.speed??'standard')!==(t.targetSpeed??'standard'))) ||
-           (t.reason==='settings' && t.model===t.targetModel && (t.effort??null)===(t.targetEffort??null) && (t.speed??null)===(t.targetSpeed??null)))
+           (t.reason==='settings' && sameRuntimeSettings && !t.targetRestrictionsHash))
           throw new Error("Invalid exact settings transition");
         const pending=this.sqlite.prepare(`SELECT 1 FROM agent_activations a JOIN agents ag ON ag.id=a.agent_id
           WHERE a.id=? AND a.project_id=? AND a.agent_id=? AND a.scope_key=?
@@ -279,13 +282,20 @@ export class CoordinationV3ContextRolloverAuthority {
           AND NOT EXISTS (SELECT 1 FROM scheduler_runs later WHERE later.agent_id=r.agent_id AND later.id<>r.id
             AND (later.status IN ('leased','running') OR later.fencing_token>r.fencing_token AND later.prompt_injection_state<>'not_injected'))`)
           .get(input.sourceRunId,input.projectId,input.agentId,input.scopeKey,t.oldSessionId,t.sourceFence);
-        const packet=this.sqlite.prepare("SELECT source_manifest_json FROM provider_inputs WHERE execution_id=? AND scheduler_run_id=? AND agent_id=? AND project_id=?")
-          .get(input.sourceRunId,input.sourceRunId,input.agentId,input.projectId) as {source_manifest_json:string}|undefined;
+        const packet=this.sqlite.prepare("SELECT source_manifest_json,system_prompt_hash FROM provider_inputs WHERE execution_id=? AND scheduler_run_id=? AND agent_id=? AND project_id=?")
+          .get(input.sourceRunId,input.sourceRunId,input.agentId,input.projectId) as {source_manifest_json:string;system_prompt_hash:string}|undefined;
         let contract:any;
         try{const manifest=JSON.parse(packet?.source_manifest_json??'null');if(manifest?.schemaVersion===3)contract=manifest.normalRuntimeContract;}catch{/* hold */}
         if(!pending || !source || !contract || contract.contractHash!==t.oldContractHash || contract.engineId!==t.engineId ||
            (contract.model??null)!==t.model || (contract.effort??null)!==(t.effort??null) || (contract.speed??null)!==(t.speed??null))
           throw new Error("Settings transition source or pending work changed; original work remains queued");
+        if(t.reason==='settings' && sameRuntimeSettings){
+          const current=runtimeRestrictions(new CapabilityPolicyStore(this.sqlite).resolveForAgent(input.agentId),t.engineId);
+          if(!isGrantOnlyRestrictionsChange(contract.capabilityRestrictions,current) ||
+             t.targetRestrictionsHash!==createHash('sha256').update(JSON.stringify(current)).digest('hex') ||
+             t.targetSystemPromptHash!==packet?.system_prompt_hash)
+            throw new Error("Same-setting transition requires an exact capability grant with unchanged instructions");
+        }
       }
       let sourceActivationIds = input.sourceActivationIds;
       if (input.canonicalOnlyRefresh) {

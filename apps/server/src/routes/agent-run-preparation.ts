@@ -1,3 +1,4 @@
+import { isGrantOnlyRestrictionsChange } from "@ponderosa/core";
 import { settingsTransitionTarget } from "../context-transition-admission.js";
 import { activationInputAttachmentSource, currentArtifactInputFiles, runtimeInputAttachment, runtimeInputFilesContext } from "../runtime-input-files.js";
 import type { RuntimeAttachmentCopy } from "../runtime-attachments.js";
@@ -409,14 +410,20 @@ export async function prepareAgentRun(
   importedArchiveUnchanged();
   // Tools remain immutable for a persistent session; the existing contract hash
   // retires a session when its authorized tool set changes.
-  const capabilityPolicy=new CapabilityPolicyStore(store.sqlite).resolveForAgent(agent.id,runId);
+  const targetCapabilityPolicy=new CapabilityPolicyStore(store.sqlite).resolveForAgent(agent.id,runId);
+  const targetCapabilityRestrictions=runtimeRestrictions(targetCapabilityPolicy,runtimeEngineId);
+  const acceptedHandoffPacket=transitionActivation?.kind==='context_rollover_handoff'?store.acceptedProviderSessionInput(agent.id):undefined;
+  const acceptedHandoffRestrictions=acceptedHandoffPacket?.sourceManifest.schemaVersion===3?acceptedHandoffPacket.sourceManifest.normalRuntimeContract?.capabilityRestrictions:undefined;
+  const grantOnlyHandoff=Boolean(settingsTransition&&isGrantOnlyRestrictionsChange(acceptedHandoffRestrictions,targetCapabilityRestrictions));
+  const capabilityPolicy=grantOnlyHandoff?{...targetCapabilityPolicy,restrictedCapabilityIds:acceptedHandoffRestrictions!.restrictedCapabilityIds}:targetCapabilityPolicy;
   const capabilityRestrictions=runtimeRestrictions(capabilityPolicy,runtimeEngineId);
-  if(settingsTransition?.targetRestrictionsHash && createHash('sha256').update(JSON.stringify(capabilityRestrictions)).digest('hex')!==settingsTransition.targetRestrictionsHash)
+  if(settingsTransition?.targetRestrictionsHash && createHash('sha256').update(JSON.stringify(targetCapabilityRestrictions)).digest('hex')!==settingsTransition.targetRestrictionsHash)
     throw new Error('Access changed during context transition; the original work remains queued.');
   const availableRuntimeTools: RuntimeDynamicToolSpec[] = filterRuntimeToolsForCapabilities([
     ...providerDynamicTools(Boolean(opts.localMemory)),
     PONDEROSA_HISTORY_TOOL,
   ],capabilityPolicy);
+  const targetRuntimeTools=filterRuntimeToolsForCapabilities([...providerDynamicTools(Boolean(opts.localMemory)),PONDEROSA_HISTORY_TOOL],targetCapabilityPolicy);
   const communicationPrompt = communicationV3SessionPrompt();
   const environmentFacts = await runtimeEnvironmentFacts({ cwd: workingCopy.rootPath, agentId: agent.id, allowedImportRoots: runContext.opts.allowedImportRoots });
   const environmentPrompt = environmentFactsPrompt(environmentFacts);
@@ -571,7 +578,7 @@ export async function prepareAgentRun(
   // Check it before either branch can retire the accepted replacement.
   if(settingsTransition?.targetSystemPromptHash && createHash('sha256').update(currentSystemPrompt).digest('hex')!==settingsTransition.targetSystemPromptHash)
     throw new Error('The target instructions changed during context transition; the original work remains queued.');
-  if(settingsTransition?.targetRestrictionsHash && createHash('sha256').update(JSON.stringify(capabilityRestrictions)).digest('hex')!==settingsTransition.targetRestrictionsHash)
+  if(settingsTransition?.targetRestrictionsHash && createHash('sha256').update(JSON.stringify(targetCapabilityRestrictions)).digest('hex')!==settingsTransition.targetRestrictionsHash)
     throw new Error('Access changed during context transition; the original work remains queued.');
   const requestContextRollover = Boolean(
     internalV3Dispatch && (v3FreshProviderSession||voiceMemoryBoundary),
@@ -788,8 +795,8 @@ export async function prepareAgentRun(
        (currentProject.instructions?.trim()??'')!==projectInstructions ||
        preferences.globalInstructions.trim()!==globalInstructions ||
        JSON.stringify(preferences.profile)!==JSON.stringify(operatorProfile) ||
-       JSON.stringify(currentTools)!==JSON.stringify(availableRuntimeTools) ||
-       JSON.stringify(currentRestrictions)!==JSON.stringify(capabilityRestrictions) ||
+       JSON.stringify(currentTools)!==JSON.stringify(targetRuntimeTools) ||
+       JSON.stringify(currentRestrictions)!==JSON.stringify(targetCapabilityRestrictions) ||
        auth.billingMode!==runtimeAuthentication.billingMode || auth.state!==runtimeAuthentication.state ||
        auth.authenticated!==runtimeAuthentication.authenticated ||
        (v3SchedulerRunId && coordinationV3.runScopeKey(v3SchedulerRunId,agent.id)!==schedulerRunScopeKey))
@@ -798,7 +805,7 @@ export async function prepareAgentRun(
   const assertSettingsTransitionPolicy = settingsTransition ? () => {
     if(settingsTransition!.targetSystemPromptHash && createHash('sha256').update(currentSystemPrompt).digest('hex')!==settingsTransition!.targetSystemPromptHash)
       throw new Error('The target instructions changed during context transition; the original work remains queued.');
-    if(settingsTransition!.targetRestrictionsHash && createHash('sha256').update(JSON.stringify(capabilityRestrictions)).digest('hex')!==settingsTransition!.targetRestrictionsHash)
+    if(settingsTransition!.targetRestrictionsHash && createHash('sha256').update(JSON.stringify(targetCapabilityRestrictions)).digest('hex')!==settingsTransition!.targetRestrictionsHash)
       throw new Error('Access changed during context transition; the original work remains queued.');
     assertRetainedContextPolicy();
     const current=store.getAgent(agent.id),currentProject=current?store.getChatContext(current.conversationId):undefined;

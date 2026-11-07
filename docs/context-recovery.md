@@ -179,3 +179,19 @@ still match; it arrives after first input and is not a startup wait condition.
 Active or uncertain original work retains its separate scheduler fences and
 recovery rules. This is not a guarantee about arbitrary provider versions,
 legacy session names, external filesystem effects or lost native operation outcomes.
+
+
+## Capability grants without a context reset
+
+Removing a capability restriction can use the existing managed handoff when the
+Agent, Chat, working folder, model, effort, speed, instructions and memory-source
+authorization still match. The source session produces its handoff with its
+verified old, more restrictive tools and native limits. The verified replacement
+receives the human-approved expanded tools. The runtime never changes the saved
+human policy to reconstruct the old handoff contract.
+
+This path requires a provable strict expansion and an exact old-contract match.
+Combined settings drift, an unverifiable old contract or changing target access
+holds the original work for context review. Memory revocation and restrictions
+retain their existing independent safety checks; this is not permission to carry
+revoked information forward or to reuse an incompatible tool set silently.

@@ -725,3 +725,58 @@ test('fresh prompt lookup failure preserves its redacted cause and exact queued 
   fail=false;
  },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,uniqueThreads:true})).adapter});
 });
+
+
+test('human capability grant preserves native-only work through the old restrictive handoff',{timeout:90000},async t=>{
+ let store,native,selectedAgent,validatedGrant=false;
+ const requestTransition=CoordinationV3Store.prototype.requestContextRollover;
+ CoordinationV3Store.prototype.requestContextRollover=function(input){
+  if(input.agentId===selectedAgent&&input.settingsTransition){
+   for(const key of ['targetRestrictionsHash','targetSystemPromptHash'])assert.throws(()=>requestTransition.call(this,{...input,settingsTransition:{...input.settingsTransition,[key]:'0'.repeat(64)}}),/exact capability grant/,'canonical transaction rejects a substituted grant or instruction binding');
+   validatedGrant=true;
+  }
+  return requestTransition.call(this,input);
+ };
+ t.after(()=>{CoordinationV3Store.prototype.requestContextRollover=requestTransition;});
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Grant continuity'),agent=await f.createIdleAgent(chat,'Worker');
+  selectedAgent=agent.id;
+  const url=`/api/agents/${agent.id}/capabilities`,finding='Synthetic native-only result: amber relay requires verification.';
+  f.ok(await f.api('PUT',url,{revision:0,restrictedCapabilityIds:[CAPABILITY_IDS.hostFileImport]}));
+  await f.send(agent.id,'Preserve relay findings and finish the original objective.');
+  await until(async()=>(await native.requests()).some(x=>x.method==='turn/start'),'initial native turn');
+  await native.sendWorkResult(finding);
+  await until(()=>store.readEvents(agent.id).some(x=>x.event.type==='tool_result'&&x.event.output===finding),'native-only finding');
+  await native.sendTool('ponderosa_message',{text:'Research progressed; relay verification remains.'});await f.settled(agent.id);
+  const accepted=store.resumeSessionState(agent.id),before=store.sqlite.prepare('SELECT row_key,text FROM chat_search_messages WHERE project_id=? ORDER BY row_key').all(agent.projectId);
+  assert.ok(!JSON.stringify(before).includes(finding));
+  const granted=f.ok(await f.api('PUT',url,{revision:1,restrictedCapabilityIds:[]}));
+  assert.deepEqual(granted.effective.restrictedCapabilityIds,[]);
+  assert.deepEqual(store.sqlite.prepare('SELECT row_key,text FROM chat_search_messages WHERE project_id=? ORDER BY row_key').all(agent.projectId),before,'Save changes policy, never original history');
+  assert.equal(store.resumeSessionState(agent.id).sessionId,accepted.sessionId);
+  const followup='Continue relay verification with the newly approved tools.';await f.send(agent.id,followup);
+  const old=await until(async()=>{const x=(await native.requests()).filter(x=>x.method==='turn/start');return x.length>=2?x:undefined;},'owned old-restriction handoff',20000);
+  assert.equal(old[1].params.threadId,old[0].params.threadId);assert.ok(!JSON.stringify(old[1]).includes(followup));
+  const rollover=store.sqlite.prepare('SELECT * FROM context_rollovers WHERE agent_id=?').get(agent.id);assert.ok(rollover);assert.equal(validatedGrant,true);
+  const handoffRun=store.sqlite.prepare("SELECT x.run_id FROM scheduler_run_activations x JOIN agent_activations a ON a.id=x.activation_id WHERE a.kind='context_rollover_handoff' AND json_extract(a.payload_json,'$.rolloverId')=?").get(rollover.id);assert.ok(handoffRun);
+  const oldPacket=store.getProviderInput(handoffRun.run_id,true);assert.ok(oldPacket);
+  assert.deepEqual(oldPacket.sourceManifest.normalRuntimeContract.capabilityRestrictions.restrictedCapabilityIds,[CAPABILITY_IDS.hostFileImport]);
+  assert.ok(!oldPacket.sourceManifest.normalRuntimeContract.dynamicTools.some(x=>x.name==='ponderosa_import_file'));
+  const summary='The original relay objective is unfinished. '+finding;await native.sendAnswer(summary);
+  const replacement=await until(async()=>{const x=(await native.requests()).filter(x=>x.method==='turn/start');return x.length>=3?x:undefined;},'expanded replacement',20000);
+  assert.notEqual(replacement[2].params.threadId,old[0].params.threadId);assert.ok(JSON.stringify(replacement[2]).includes(summary));
+  const current=store.sqlite.prepare('SELECT * FROM context_rollovers WHERE id=?').get(rollover.id),packet=store.getProviderInput(current.replacement_run_id,true);
+  assert.deepEqual(packet.sourceManifest.normalRuntimeContract.capabilityRestrictions.restrictedCapabilityIds,[]);
+  assert.ok(packet.sourceManifest.normalRuntimeContract.dynamicTools.some(x=>x.name==='ponderosa_import_file'));
+  await native.sendAnswer('Continuity context received.');
+  const final=await until(async()=>{const x=(await native.requests()).filter(x=>x.method==='turn/start');return x.length>=4?x:undefined;},'original queued task',20000);
+  assert.equal(final[3].params.threadId,replacement[2].params.threadId);assert.ok(JSON.stringify(final[3]).includes(followup));
+  const pending=store.sqlite.prepare("SELECT id FROM agent_activations WHERE agent_id=? AND kind='human_message' AND payload_json LIKE ?").get(agent.id,'%'+followup+'%');
+  assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(pending.id).n,1);
+  assert.equal(store.sqlite.prepare('SELECT count(*) n FROM context_rollovers WHERE agent_id=?').get(agent.id).n,1);
+  assert.ok(!store.readEvents(agent.id).some(x=>x.event.type==='session_reset'&&x.event.reason==='tool_contract_changed'));
+  await native.sendTool('ponderosa_message',{text:'The relay objective is complete.'});await f.settled(agent.id);
+  const savedPolicy=f.ok(await f.api('GET',url));assert.equal(savedPolicy.policy.revision,2);assert.deepEqual(savedPolicy.effective.restrictedCapabilityIds,[],'handoff never restores old human policy');
+  assert.equal((await native.requests()).filter(x=>x.method==='turn/start').length,4);
+ },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,uniqueThreads:true})).adapter});
+});

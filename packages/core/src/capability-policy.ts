@@ -215,6 +215,15 @@ export function resolveCapabilityPolicy(layers: readonly CapabilityPolicyLayer[]
   };
 }
 
+/** Only removal of restrictions; no newly blocked capability or connector. */
+export function isGrantOnlyRestrictionsChange(prior:RuntimeCapabilityRestrictions|undefined,current:RuntimeCapabilityRestrictions):boolean {
+ return Boolean(prior && Array.isArray(prior.restrictedCapabilityIds) && Array.isArray(prior.restrictedConnectorNames) &&
+  current.restrictedCapabilityIds.length<prior.restrictedCapabilityIds.length &&
+  current.restrictedCapabilityIds.every(id=>prior.restrictedCapabilityIds.includes(id)) &&
+  (!current.filesystemWriteRestricted||prior.filesystemWriteRestricted) &&
+  current.restrictedConnectorNames.every(name=>prior.restrictedConnectorNames.includes(name)));
+}
+
 export function runtimeRestrictions(policy: EffectiveCapabilityPolicy, engineId: string): RuntimeCapabilityRestrictions {
   return {
     restrictedCapabilityIds: policy.restrictedCapabilityIds,
