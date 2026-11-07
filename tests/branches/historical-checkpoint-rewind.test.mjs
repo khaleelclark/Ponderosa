@@ -3265,6 +3265,7 @@ test(legacyRetirement?'legacy completed portable final resource restores without
   console.log('ACTUAL_FINAL_CAPTURE_OK',JSON.stringify({history:true,workingFile:true,bytes:final.receipt.byteLength,deleted}));
  }finally{if(service)await service.stop();await app.close();assets.close();}
 });
+}
 
 async function exerciseForeignFinalDestination(t,portable,originalExecutionId,final,originalIdentity,captureMode='prewrite',portableGeneration=1,maxGeneration=3){
  console.log('RUNTIME_GENERATION_BYTES',portableGeneration,Buffer.byteLength(stableJson(portable.runtimeData)),'PACKAGE_BYTES',Buffer.byteLength(stableJson(portable)));
@@ -3629,7 +3630,6 @@ for(const version of ['0045_agent_import_submission_intents.sql','0046_retained_
  const {restoredRequestUpdatePayload}=await import('../../packages/agents/dist/coordination-v3-cut-restoration-authority.js');
  for(const origin of origins){const update=f.store.sqlite.prepare('SELECT * FROM coordination_request_updates WHERE id=?').get(origin.update_id);assert.doesNotThrow(()=>restoredRequestUpdatePayload(f.store.sqlite,update));}
 });
-}
 
 test('runtime import compact bytes preserve exact legacy evidence and bound corrupt decoding',async()=>{
  const {gzipSync}=await import('node:zlib');

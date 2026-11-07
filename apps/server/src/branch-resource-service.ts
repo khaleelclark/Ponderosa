@@ -255,7 +255,7 @@ export class BranchResourceService {
       historyAvailable:!!expert.finalSnapshotReceipt&&expert.finalVerifiedSha256===expert.finalSnapshotReceipt.sha256}:undefined;
     let temporaryCopyActions:import('@ponderosa/core').TemporaryCopyActionHistoryDto|undefined;
     if(expert){
-      const approvals=expert.approvalHistory?.map(a=>({actor:a.actor,origin:a.origin,requestId:a.requestId,createdAt:a.createdAt,reason:a.reason,
+      const approvals=expert.approvalHistory?.map(a=>({actor:{kind:a.actor.kind,id:a.actor.id},origin:a.origin,requestId:a.requestId,createdAt:a.createdAt,reason:a.reason,
         action:a.resolution.action,...(a.resolution.agentActions?{agentActions:a.resolution.agentActions}:{}),copySourceMemory:a.copySourceMemory,allowFindingsWriteback:a.allowFindingsWriteback}))??
         (expert.accessChoice&&expert.consent?[{action:expert.accessChoice.action,...(expert.accessChoice.agentActions?{agentActions:expert.accessChoice.agentActions}:{}),copySourceMemory:expert.consent.copySourceMemory,allowFindingsWriteback:expert.consent.allowFindingsWriteback}]:[]);
       const retired=this.store.sqlite.prepare("SELECT id,evidence_json,created_at FROM branch_checkpoints WHERE execution_id=? AND transition_key=? AND kind='resource_retired'")
