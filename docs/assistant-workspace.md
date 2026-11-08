@@ -43,6 +43,26 @@ folder/Chat idempotency path. A Chat accepted before cancellation may finish
 creation; its same-key receipt recovers the result without starting extra work.
 Normal project/Chat deletion and provider admission remain authoritative.
 
+## Workspace navigation
+
+Assistant opens within the main workspace from the compact left navigation beside
+Inbox. The global `/assistant` bookmark enters `/branches?assistant=1`; designated
+individual Output Agent URLs at `/apps/<agentId>` keep their standalone purpose.
+Returning to the previous Core Chat retains its exact view and unsent draft.
+
+## Speaker roles and workflow scheduling
+
+Changing or removing a speaker role preserves workflow scheduling by default.
+Developers can explicitly set `policy.pauseOnSpeakerRemoval: true` in the workflow
+Settings and publish it to opt that workflow into pausing automatic intake on
+speaker removal. An absent or false value leaves its schedule intact. The setting
+is validated and preserved by portable workflow export and installation.
+
+Newly generated dedicated Assistant-check workflows explicitly opt in. Existing
+workflows and historical paused schedules are not rewritten or silently resumed.
+A speaker change does not enable or reschedule the new speaker's workflow.
+Explicitly disabling Assistant still pauses its automatic intake.
+
 ## Proactive checks
 
 Fresh default Assistant workflows run every ten minutes. Output Settings changes

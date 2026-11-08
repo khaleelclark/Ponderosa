@@ -236,6 +236,28 @@ timestamps establish a zero interval. These records cannot reconstruct elapsed
 time across a clock adjustment.
 The Engine's truncated log label reports the size of the returned tail, not the full log.
 
+### Assistant, calls and workflow details in current source
+
+Current source/private candidates open **Assistant** from the compact left
+navigation beside Inbox. The `/assistant` bookmark opens the same integrated
+workspace; an individual Output Agent's `/apps/<agentId>` link remains standalone.
+Returning to your previous Chat preserves its draft and view.
+
+The handset starts an eligible call. Use **Mute microphone** / **Unmute microphone**
+and **End call**; open **Transcript** for typed turns and manual **Finish turn** or
+**Send turn** controls. Read blocked, connecting and interrupted states before
+retrying. A call turn can steer active work with priority where supported; a saved
+or queued turn does not prove delivery. Unconfirmed instructions stay held instead
+of being duplicated, and the original unfinished task remains separate from the
+call reply. See [call drafts and retry](ui-detail-reference.md#call-drafts-and-retry).
+
+Workflow Step Settings open from the right on desktop and phone. Changing the
+speaker normally preserves workflow scheduling. A developer can explicitly opt a
+workflow into pausing when its speaker role is removed; newly generated dedicated
+Assistant checks opt in. Explicitly disabling Assistant still pauses its automatic
+intake. Existing paused workflows are never silently re-enabled. See
+[Assistant scheduling](assistant-workspace.md#speaker-roles-and-workflow-scheduling).
+
 ### Attachments and saved results
 
 Attach files through the composer or use `@` references to available working-folder

@@ -68,6 +68,10 @@ Live files in this chat’s folder. Browsing does not import files or add them t
 
 ## Call drafts and retry
 
+The eligible conversation handset starts a call. Mute/unmute and End are its primary controls; Transcript exposes manual Finish turn, Send turn and typed turns. Blocked or interrupted states keep their actual cause visible.
+
+Call turns can steer the active Run with priority where supported. Queued work is not presented as delivered steering. An uncertain turn stays held under its existing identity rather than being sent again; the original unfinished task remains distinct from the call reply.
+
 Read and type in Chat anytime. Calls require a visible foreground page. End stops browser audio and discards unsent words; accepted work continues. An unconfirmed send keeps its full private words only in this mounted call for deliberate retry. This tab stores only an identity marker. End, reopening or reload drops the call’s retry payload and requires Chat review; markers cannot reconstruct words. Retry expires after 24 hours, without promising physical browser or network memory erasure.
 
 ## Chat instructions
