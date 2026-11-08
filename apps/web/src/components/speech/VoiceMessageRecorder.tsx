@@ -11,12 +11,14 @@ import {recordingExtension,recordingMimeType} from './voiceRecording';
 export function VoiceMessageRecorder({onAttach,onClose,maxBytes}:{onAttach(file:File):string|undefined;onClose():void;maxBytes:number}):JSX.Element {
  const id=useId(),surface=useRef<HTMLDivElement>(null),alive=useRef(true),generation=useRef(0);
  const recorder=useRef<MediaRecorder>(),tracks=useRef<MediaStream>(),release=useRef<()=>void>(),unwatch=useRef<()=>void>();
+ const finishRequested=useRef(false),startRef=useRef<()=>Promise<void>>(async()=>{}),callbacks=useRef({onAttach,onClose});callbacks.current={onAttach,onClose};
  const chunks=useRef<Blob[]>([]),bytes=useRef(0),started=useRef(0);
  const [phase,setPhase]=useState<'ready'|'starting'|'recording'|'stopping'|'review'>('ready');
  const [file,setFile]=useState<File>(),[url,setUrl]=useState<string>(),[error,setError]=useState(''),[seconds,setSeconds]=useState(0);
  useUnsavedForm(id,phase==='starting'||phase==='recording'||phase==='stopping'||Boolean(file));
  const cleanup=()=>{tracks.current?.getTracks().forEach(track=>track.stop());tracks.current=undefined;release.current?.();release.current=undefined;unwatch.current?.();unwatch.current=undefined;};
- const stop=()=>{
+ const stop=(finish=false)=>{
+  finishRequested.current=finish;
   const active=recorder.current;
   if(active&&active.state!=='inactive'){setPhase('stopping');active.stop();}
   else cleanup();
@@ -24,7 +26,10 @@ export function VoiceMessageRecorder({onAttach,onClose,maxBytes}:{onAttach(file:
  const stopRef=useRef(stop);stopRef.current=stop;
  useEffect(()=>{
   alive.current=true;
-  return()=>{alive.current=false;generation.current++;const active=recorder.current;if(active&&active.state!=='inactive')active.stop();cleanup();};
+  const mountedGeneration=generation.current;
+  // StrictMode's discarded mount must not request microphone permission.
+  queueMicrotask(()=>{if(alive.current&&generation.current===mountedGeneration)void startRef.current();});
+  return()=>{alive.current=false;generation.current++;finishRequested.current=false;const active=recorder.current;if(active&&active.state!=='inactive')active.stop();cleanup();};
  },[]);
  useEffect(()=>{
   if(!file){setUrl(undefined);return;}
@@ -35,9 +40,14 @@ export function VoiceMessageRecorder({onAttach,onClose,maxBytes}:{onAttach(file:
   const timer=setInterval(()=>setSeconds(Math.floor((performance.now()-started.current)/1000)),1000);
   return()=>clearInterval(timer);
  },[phase]);
+ const stage=(recording:File)=>{
+  try{const failure=callbacks.current.onAttach(recording);if(failure){setError(failure);return;}}
+  catch(cause){setError(cause instanceof Error?cause.message:String(cause));return;}
+  callbacks.current.onClose();
+ };
  const start=async()=>{
   if(phase==='starting'||phase==='recording'||phase==='stopping')return;
-  const epoch=++generation.current;setError('');setFile(undefined);setSeconds(0);setPhase('starting');
+  const epoch=++generation.current;finishRequested.current=false;setError('');setFile(undefined);setSeconds(0);setPhase('starting');
   try{
    if(!navigator.mediaDevices?.getUserMedia||typeof MediaRecorder==='undefined')throw new Error('Voice recording is unavailable in this browser.');
    if(!stopSpeech())throw new Error('Stop browser audio before recording.');
@@ -60,14 +70,17 @@ export function VoiceMessageRecorder({onAttach,onClose,maxBytes}:{onAttach(file:
     const blob=new Blob(chunks.current,{type:mime});chunks.current=[];
     if(blob.size>maxBytes){setError('Recording exceeds the attachment size limit. Record a shorter message.');setPhase('ready');return;}
     if(!blob.size){setError('No audio was captured. Try recording again.');setPhase('ready');return;}
-    setFile(new File([blob],`Voice message ${new Date().toISOString().replace(/[:.]/g,'-')}.${recordingExtension(mime)}`,{type:mime}));setPhase('review');
+    const recording=new File([blob],`Voice message ${new Date().toISOString().replace(/[:.]/g,'-')}.${recordingExtension(mime)}`,{type:mime});
+    setFile(recording);setPhase('review');
+    if(finishRequested.current)stage(recording);
    };
-   release.current=claimPageCapture(()=>stopRef.current());
+   release.current=claimPageCapture(()=>{setError('Recording stopped because another audio capture started. Review any captured audio.');stopRef.current();});
    unwatch.current=monitorSpeechSurfaceAccessibility(()=>surface.current,()=>{setError('Recording stopped because this page became inactive.');stopRef.current();});
    started.current=performance.now();active.start(1000);setPhase('recording');
   }catch(cause){cleanup();if(alive.current&&epoch===generation.current){setError(cause instanceof Error?cause.message:String(cause));setPhase('ready');}}
  };
- const close=()=>{generation.current++;onClose();};
+ startRef.current=start;
+ const close=()=>{generation.current++;finishRequested.current=false;callbacks.current.onClose();};
  return <Dialog open fullWidth maxWidth="xs" aria-labelledby={`${id}-title`} onClose={phase==='recording'||phase==='stopping'||phase==='starting'?undefined:close}>
   <DialogTitle id={`${id}-title`}>Voice message</DialogTitle><DialogContent ref={surface}><Stack spacing={2}>
    {error&&<Alert severity="warning">{error}</Alert>}
@@ -75,9 +88,9 @@ export function VoiceMessageRecorder({onAttach,onClose,maxBytes}:{onAttach(file:
    {url&&<AudioMessagePlayer src={url} label="Voice message preview" preload="metadata"/>}
   </Stack></DialogContent><DialogActions sx={{flexWrap:'wrap',gap:1}}>
    <Button disabled={phase==='stopping'} onClick={close}>Discard</Button>
-   {phase==='recording'?<Button variant="contained" onClick={stop}>Finish recording</Button>:<Button disabled={phase==='starting'||phase==='stopping'} onClick={()=>void start()}>{file?'Record again':'Record'}</Button>}
+   {phase==='recording'?<Button variant="contained" onClick={()=>stop(true)}>Finish recording</Button>:<Button disabled={phase==='starting'||phase==='stopping'} onClick={()=>void start()}>{file?'Record again':'Record'}</Button>}
    {file&&url&&<Button href={url} download={file.name}>Save audio</Button>}
-   {file&&<Button variant="contained" onClick={()=>{try{const failure=onAttach(file);if(failure)setError(failure);else onClose();}catch(cause){setError(cause instanceof Error?cause.message:String(cause));}}}>Attach voice message</Button>}
+   {file&&<Button variant="contained" onClick={()=>stage(file)}>Use recording</Button>}
   </DialogActions>
  </Dialog>;
 }

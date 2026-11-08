@@ -384,7 +384,7 @@ export function RequestLifecycleCard({
           </Stack>
         </Box>
       </AccordionSummary>
-      <AccordionDetails id={detailsId} sx={{ pt: 0 }}>
+      <AccordionDetails sx={{ pt: 0 }}>
         {query.isLoading ? (
           <Stack direction="row" spacing={0.75} sx={{ alignItems: "center", py: 1 }}>
             <CircularProgress size={16} />

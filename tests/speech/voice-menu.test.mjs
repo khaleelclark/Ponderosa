@@ -26,10 +26,11 @@ const context={projectId:'project',conversationId:'chat',agents:[agent()],select
 function menuFixture(extra={}){
  const calls=[],dictation={status:'ready',start:()=>calls.push('start'),pause:()=>calls.push('pause'),resume:()=>calls.push('resume'),stop:()=>calls.push('stop')};let readOnly=false,handlers;
  function VoiceConversation(){}
- const f=fixture('DictationControls',{'./useDictation':{useDictation:(...args)=>{handlers=args;return dictation;}},'./speechStyles':{},'./VoiceConversation':{VoiceConversation},'./VoiceMessageRecorder':{VoiceMessageRecorder:()=>null},'../../api/productScope':{isOutputAppPath:()=>false},'../WorkspaceReadOnlyContext':{useWorkspaceReadOnly:()=>readOnly}},{window:{location:{pathname:'/'}}});
+ function VoiceMessageRecorder(){}
+ const f=fixture('DictationControls',{'./useDictation':{useDictation:(...args)=>{handlers=args;return dictation;}},'./speechStyles':{},'./VoiceConversation':{VoiceConversation},'./VoiceMessageRecorder':{VoiceMessageRecorder},'../../api/productScope':{isOutputAppPath:()=>false},'../WorkspaceReadOnlyContext':{useWorkspaceReadOnly:()=>readOnly}},{window:{location:{pathname:'/'}}});
  f.mount(f.exports.DictationControls,{disabled:false,voiceContext:context,onFinalTranscript:words=>calls.push(['words',words]),onSettlingChange:value=>calls.push(['settling',value]),...extra});
  const item=label=>f.find(n=>n.type==='MenuItem'&&f.all(n).some(child=>child.props.primary===label));
- return{...f,calls,dictation,item,VoiceConversation,handlers:()=>handlers,readOnly(value){readOnly=value;f.render();},open(){f.find(n=>n.props['aria-label']==='Voice options').props.onClick({currentTarget:{id:'trigger'}});f.render();}};
+ return{...f,calls,dictation,item,VoiceConversation,VoiceMessageRecorder,handlers:()=>handlers,readOnly(value){readOnly=value;f.render();},open(){f.find(n=>n.props['aria-label']==='Voice options').props.onClick({currentTarget:{id:'trigger'}});f.render();}};
 }
 test('Voice options opens a named MUI menu without capture or submission; call keeps the exact workspace owner',()=>{
  const f=menuFixture();f.open();assert.deepEqual(f.calls,[]);
@@ -37,6 +38,24 @@ test('Voice options opens a named MUI menu without capture or submission; call k
  f.item('Voice call').props.onClick();f.render();assert.equal(f.find(n=>n.type==='Menu').props.open,false);assert.deepEqual(f.calls,[]);
  const call=f.find(n=>n.type===f.VoiceConversation);assert.equal(call.props.projectId,'project');assert.equal(call.props.conversationId,'chat');assert.equal(call.props.selectedAgentId,'agent');assert.equal(call.props.lockAgent,true);
  call.props.onClose();f.render();assert.equal(f.all().some(n=>n.type===f.VoiceConversation),false);f.unmount();
+});
+test('voice recording opens directly from its distinct toolbar action without menu or staging',()=>{
+ const attached=[],f=menuFixture({onVoiceAttachment:file=>{attached.push(file);},maxRecordingBytes:1024});
+ const record=f.find(n=>n.props['aria-label']==='Record voice message');assert.equal(record.props.disabled,false);
+ record.props.onClick();f.render();assert.equal(f.find(n=>n.type==='Menu').props.open,false);
+ assert.equal(f.all().some(n=>n.type===f.VoiceMessageRecorder),true);assert.deepEqual(attached,[]);assert.deepEqual(f.calls,[]);
+ f.find(n=>n.type===f.VoiceMessageRecorder).props.onClose();f.render();f.open();
+ assert.equal(f.all().some(n=>n.type==='MenuItem'&&f.all(n).some(child=>child.props.primary==='Record voice message')),false,'recording must not require a second menu route');
+ f.dictation.status='listening';f.render();assert.equal(f.find(n=>n.props['aria-label']==='Record voice message').props.disabled,true);
+ f.dictation.status='ready';f.render();f.readOnly(true);assert.equal(f.find(n=>n.props['aria-label']==='Record voice message').props.disabled,true);f.unmount();
+});
+test('changing recording owner unmounts its recorder and never revives the previous capture',()=>{
+ const f=menuFixture({onVoiceAttachment:()=>undefined});
+ f.find(n=>n.props['aria-label']==='Record voice message').props.onClick();f.render();
+ assert.equal(f.all().some(n=>n.type===f.VoiceMessageRecorder),true);
+ f.update({voiceContext:{...context,selectedAgentId:'second',agents:[agent(),agent('second')]}});
+ assert.equal(f.all().some(n=>n.type===f.VoiceMessageRecorder),false,'owner change must remove the old recorder during render');
+ f.update({voiceContext:context});assert.equal(f.all().some(n=>n.type===f.VoiceMessageRecorder),false,'returning to the old owner must not reopen capture');f.unmount();
 });
 test('Dictation stays mounted outside the closing menu and retains insertion, settle, pause/resume/stop callbacks',()=>{
  const f=menuFixture();const controllerSurface=f.handlers()[2];f.open();f.item('Dictation').props.onClick();f.render();assert.deepEqual(f.calls,['start']);assert.equal(f.find(n=>n.type==='Menu').props.open,false);assert.equal(f.handlers()[2]===controllerSurface,true,'same recognition controller surface survives closing menu');
