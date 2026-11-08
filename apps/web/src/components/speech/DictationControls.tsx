@@ -1,3 +1,4 @@
+import {createPortal} from 'react-dom';
 import {VoiceMessageRecorder} from './VoiceMessageRecorder';
 import {isOutputAppPath} from '../../api/productScope';
 import GraphicEqIcon from "@mui/icons-material/GraphicEq";
@@ -23,6 +24,7 @@ export function DictationControls({
   onActiveChange,
   onVoiceAttachment,
   maxRecordingBytes=80*1024*1024,
+  recordingContainer,
 }: {
   disabled: boolean;
   voiceContext?: VoiceConversationContext;
@@ -31,10 +33,12 @@ export function DictationControls({
   onActiveChange?(active: boolean): void;
   onVoiceAttachment?(file:File):string|undefined;
   maxRecordingBytes?:number;
+  recordingContainer?:HTMLElement|null;
 }): JSX.Element {
   const disabled = useWorkspaceReadOnly() || suppliedDisabled;
   const rootRef = useRef<HTMLDivElement | null>(null);
   const buttonRef = useRef<HTMLButtonElement | null>(null);
+  const recordingButtonRef=useRef<HTMLButtonElement|null>(null),restoreRecordingFocus=useRef(false);
   const wasCallOpen = useRef(false);
   const menuId = useId();
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
@@ -42,7 +46,9 @@ export function DictationControls({
   const [openedCallOwner, setOpenedCallOwner] = useState<string>();
   const callOpen = openedCallOwner === callOwner;
   const [openedRecordingOwner,setOpenedRecordingOwner]=useState<string>();
-  const recordingOpen=openedRecordingOwner===callOwner;
+  const recordingOpen=Boolean(recordingContainer)&&openedRecordingOwner===callOwner;
+  useEffect(()=>{if(!recordingContainer)setOpenedRecordingOwner(undefined);},[recordingContainer]);
+  useEffect(()=>{if(!recordingOpen&&restoreRecordingFocus.current){restoreRecordingFocus.current=false;const focused=document.activeElement;if(focused===document.body||recordingContainer?.contains(focused))recordingButtonRef.current?.focus({preventScroll:true});}},[recordingOpen,recordingContainer]);
   useEffect(() => { setOpenedCallOwner(undefined);setOpenedRecordingOwner(undefined); }, [callOwner]);
   useEffect(() => {
     if (disabled) { setAnchor(null); setOpenedCallOwner(undefined);setOpenedRecordingOwner(undefined); }
@@ -61,8 +67,9 @@ export function DictationControls({
   );
   const paused = dictation.status === "paused";
   useEffect(() => {
-    onActiveChange?.(active || paused);
-  }, [active, paused, onActiveChange]);
+    onActiveChange?.(active || paused || recordingOpen);
+    return()=>onActiveChange?.(false);
+  }, [active, paused, recordingOpen, onActiveChange]);
   const busy = dictation.status === "pausing" || dictation.status === "stopping";
   const canStopForDisabled =
     dictation.status === "starting" ||
@@ -107,9 +114,10 @@ export function DictationControls({
   return (
     <Box ref={rootRef} sx={[speechControlGroupSx, dictation.error ? { flexDirection: { xs: "column", sm: "row" }, alignItems: { xs: "flex-start", sm: "center" } } : {}]}>
       {onVoiceAttachment&&<Tooltip title="Record voice message"><span><IconButton
+        ref={recordingButtonRef}
         aria-label="Record voice message"
-        disabled={disabled||callOpen||recordingOpen||active||paused||maxRecordingBytes<=0}
-        onClick={()=>{setAnchor(null);setOpenedRecordingOwner(callOwner);}}
+        disabled={disabled||callOpen||recordingOpen||active||paused||maxRecordingBytes<=0||!recordingContainer}
+        onClick={()=>{if(disabled||callOpen||recordingOpen||active||paused||maxRecordingBytes<=0||!recordingContainer)return;onActiveChange?.(true);setAnchor(null);setOpenedRecordingOwner(callOwner);}}
       ><MicNoneIcon/></IconButton></span></Tooltip>}
       <Tooltip title="Voice options">
         <span>
@@ -161,7 +169,7 @@ export function DictationControls({
           <ListItemText primary="Dictation" secondary={unavailable ?? (active || paused ? primaryLabel : undefined)} />
         </MenuItem>
       </Menu>
-      {recordingOpen&&!disabled&&onVoiceAttachment&&<VoiceMessageRecorder onAttach={onVoiceAttachment} maxBytes={maxRecordingBytes} onClose={()=>setOpenedRecordingOwner(undefined)}/>}
+      {recordingOpen&&!disabled&&onVoiceAttachment&&recordingContainer&&createPortal(<VoiceMessageRecorder onAttach={onVoiceAttachment} maxBytes={maxRecordingBytes} onClose={()=>{restoreRecordingFocus.current=recordingContainer.contains(document.activeElement);setOpenedRecordingOwner(undefined);}}/>,recordingContainer)}
       {voiceContext && callOpen && !disabled && <VoiceConversation {...voiceContext} standalone={voiceContext.standalone??isOutputAppPath(window.location.pathname)} open onClose={() => setOpenedCallOwner(undefined)} />}
       {active || paused ? (
         <Tooltip title="Stop voice dictation">

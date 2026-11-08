@@ -436,6 +436,9 @@ export function Composer({
   const draftMutationLockedRef = useRef(false);
   const [draftMutationLocked, setDraftMutationLocked] = useState(false);
   const draftContentGeneration = useRef(0);
+  const voiceCaptureActiveRef = useRef(false);
+  const [voiceCaptureActive,setVoiceCaptureActive]=useState(false);
+  const [voiceRecordingContainer,setVoiceRecordingContainer]=useState<HTMLDivElement|null>(null);
   const dictationSettlingRef = useRef(false);
   const [dictationSettling, setDictationSettling] = useState(false);
   const composerRoot = useRef<HTMLDivElement>(null);
@@ -651,6 +654,10 @@ export function Composer({
     },
     [],
   );
+  const handleVoiceCaptureActiveChange=useCallback((active:boolean)=>{
+    voiceCaptureActiveRef.current=active;
+    setVoiceCaptureActive(active);
+  },[]);
   const handleDictationSettlingChange = useCallback((settling: boolean) => {
     dictationSettlingRef.current = settling;
     setDictationSettling(settling);
@@ -1235,6 +1242,7 @@ export function Composer({
     !sending &&
     !preparingFolder &&
     !dictationSettling &&
+    !voiceCaptureActive &&
     (!destinationError || Boolean(durableRetryAction) || Boolean(pendingSubmissionRef.current?.request)) &&
     targetRequiredRecipientTagged &&
     draftUploadsReady &&
@@ -2470,9 +2478,11 @@ export function Composer({
     ) => Promise<unknown> | unknown,
     action: "send" | "queue",
   ) => {
-    if (dictationSettlingRef.current) {
+    if (dictationSettlingRef.current || voiceCaptureActiveRef.current) {
       setSendError(
-        "Stop voice dictation and wait for final text before sending.",
+        dictationSettlingRef.current
+          ? "Stop voice dictation and wait for final text before sending."
+          : "Finish voice input before sending.",
       );
       return;
     }
@@ -3145,6 +3155,7 @@ export function Composer({
         destinationError={destinationError}
         destinationMode={destinationMode}
       />
+      <Box ref={setVoiceRecordingContainer} sx={{px:1.5,pt:0.75,minWidth:0,"&:empty":{display:"none"}}}/>
       {!draftMutationLocked && <ComposerAttachmentList
         disabled={draftMutationLocked}
         draftUploadStates={draftUploadStates}
@@ -3768,6 +3779,8 @@ export function Composer({
           {enableVoiceDictation ? <DictationControls
             key={JSON.stringify([projectId, conversationDraftId, voiceContext?.conversationId])}
             voiceContext={voiceContext}
+            recordingContainer={voiceRecordingContainer}
+            onActiveChange={handleVoiceCaptureActiveChange}
             onVoiceAttachment={composerAttachmentsEnabled?file=>{if(draftMutationLockedRef.current)return "The draft is busy. Try attaching again.";const selection=selectComposerFiles(files,[file],assetLimits);if(selection.error)return selection.error;addFiles([file]);return undefined;}:undefined}
             maxRecordingBytes={Math.max(0,Math.min(assetLimits?.maxFileBytes??COMPOSER_MAX_FILE_BYTES,(assetLimits?.maxMessageBytes??COMPOSER_MAX_FILE_BYTES)-files.reduce((sum,file)=>sum+file.size,0)))}
             disabled={disabled || composerLocked || sending}
@@ -3895,7 +3908,7 @@ export function Composer({
           sendUnavailableReason={
             dictationSettling
               ? "Stop voice dictation and wait for final text before sending."
-              : sendUnavailableReason
+              : voiceCaptureActive ? "Finish voice input before sending." : sendUnavailableReason
           }
           send={send}
           showQueue={showQueue}

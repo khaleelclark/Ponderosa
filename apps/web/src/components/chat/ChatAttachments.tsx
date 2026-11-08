@@ -107,7 +107,7 @@ export function ChatAttachments({
                   {failed.has(attachment.id) && !attachment.unavailable ? <Button size="small" onClick={() => setFailed(current => { const next = new Set(current); next.delete(attachment.id); return next; })}>Retry preview</Button> : null}
                 </Stack>
               ) : attachment.mediaType.startsWith("audio/") && audioUrl ? (
-                <Stack spacing={0.5} sx={{maxWidth:"100%",width:300}}><Typography variant="caption" sx={{overflowWrap:"anywhere"}}>{attachment.name}</Typography><AudioMessagePlayer src={audioPlaybackUrl(audioUrl)} label={`Play ${attachment.name}`}/><Button href={audioUrl} download size="small">Download audio</Button></Stack>
+                <Stack spacing={0.5} sx={{maxWidth:"100%",width:300}}><Typography variant="caption" title={attachment.name} noWrap sx={{minWidth:0}}>{attachment.name}</Typography><AudioMessagePlayer src={audioPlaybackUrl(audioUrl)} downloadUrl={audioUrl} label={`Play ${attachment.name}`}/></Stack>
               ) : image && previewUrl ? (
                 <ButtonBase
                   aria-label={`Preview ${attachment.name}`}

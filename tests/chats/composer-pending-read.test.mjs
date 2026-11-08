@@ -153,3 +153,34 @@ test('uncertain captured-send failure retains its exact protected audio for reco
  assert.equal(f.state.saved.status,'unknown');assert.deepEqual(f.state.saved.pending,f.pending);
  assert.equal(f.state.attachments.files.length,0);assert.equal(f.c.submittedDraftWriteChain.pendingDeletionIds.size,0);
 });
+
+
+// The inline recorder no longer has a modal intercepting Enter. Exercise the
+// actual synchronous ref setter and the actual Submit entry guards, without a
+// provider or authored message being sent.
+let activeSetter,sendEligibility,submitEntry;
+function findVoiceAdmission(node){
+ if(sendTS.isVariableDeclaration(node)){
+  const name=node.name.getText(sendAst);
+  if(name==='handleVoiceCaptureActiveChange'&&sendTS.isCallExpression(node.initializer??node))activeSetter=node.initializer.arguments[0];
+  if(name==='canSend')sendEligibility=node.initializer;
+  if(name==='submit'&&node.initializer&&sendTS.isArrowFunction(node.initializer))submitEntry=node.initializer;
+ }
+ sendTS.forEachChild(node,findVoiceAdmission);
+}
+findVoiceAdmission(sendAst);
+test('pending inline capture blocks immediate Enter and Send eligibility without consuming the draft',()=>{
+ assert(activeSetter&&sendEligibility&&submitEntry,'Actual capture setter, eligibility and Submit must be present');
+ const guards=submitEntry.body.statements.slice(0,2).map(n=>n.getText(sendAst)).join('\n');
+ assert.match(guards,/voiceCaptureActiveRef\.current/);
+ const c={voiceCaptureActiveRef:{current:false},voiceCaptureActive:false,dictationSettlingRef:{current:false},dictationSettling:false,sendingRef:{current:false},canSend:true,admitted:0,error:undefined,
+  mentionBindingsReady:true,sending:false,preparingFolder:false,destinationError:undefined,durableRetryAction:undefined,pendingSubmissionRef:{current:undefined},targetRequiredRecipientTagged:true,draftUploadsReady:true,durableContentReady:true,textCanSend:true,disabled:false,submissionDisabled:false,composerLocked:false,allowUnmentionedSend:true,files:['existing-file'],text:'Keep my authored draft'};
+ c.setVoiceCaptureActive=value=>{c.voiceCaptureActive=value;};c.setSendError=value=>{c.error=value;};vm.createContext(c);
+ const run=s=>vm.runInContext(compile(s),c),setActive=run(`(${activeSetter.getText(sendAst)})`),eligible=run(`()=>(${sendEligibility.getText(sendAst)})`),attempt=run(`()=>{${guards}admitted++;}`);
+ assert.equal(eligible(),true);setActive(true);assert.equal(eligible(),false,'the Send button must become unavailable');
+ // A keyboard event can arrive before React renders its disabled state.
+ c.voiceCaptureActive=false;c.canSend=true;attempt();assert.equal(c.admitted,0);assert.equal(c.error,'Finish voice input before sending.');
+ assert.equal(c.text,'Keep my authored draft');assert.deepEqual(c.files,['existing-file']);
+ setActive(false);assert.equal(eligible(),true);attempt();assert.equal(c.admitted,1,'stage/discard releases the ordinary submission path');
+ c.dictationSettling=true;c.dictationSettlingRef.current=true;attempt();assert.equal(c.admitted,1,'the existing transcript-settling gate remains effective');assert.equal(c.error,'Stop voice dictation and wait for final text before sending.');
+});

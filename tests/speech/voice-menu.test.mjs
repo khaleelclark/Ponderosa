@@ -18,19 +18,20 @@ function fixture(module,imports,globals={}){
  const exports={};vm.runInNewContext(ts.transpileModule(readFileSync(new URL('../../apps/web/src/components/speech/'+module+'.tsx',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX,esModuleInterop:true}}).outputText,{exports,console,performance,Date,JSON,setTimeout,clearTimeout,setInterval,clearInterval,...globals,require:name=>name==='react'?react:name==='@mui/material'?mui:name in imports?imports[name]:name.startsWith('@mui/icons-material/')?{__esModule:true,default:name}:require(name)});
  const walk=node=>Array.isArray(node)?node.flatMap(walk):node&&typeof node==='object'&&'props'in node?[node,...walk(node.props.children)]:[];
  const all=(node=tree)=>walk(node);
- const render=()=>{let count=0;do{dirty=false;index=0;tree=component(props);for(const node of all()){if(node.ref&&typeof node.ref==='object'&&!node.ref.current)node.ref.current={focus(){},isConnected:true};}for(const run of effects.splice(0))run();assert.ok(++count<30,'component must settle');}while(dirty);return tree;};
+ const render=()=>{let count=0;do{dirty=false;index=0;tree=component(props);for(const node of all()){if(node.ref&&typeof node.ref==='object'&&!node.ref.current)node.ref.current=node.type==="audio"&&globals.audioElement?globals.audioElement:{focus(){},isConnected:true};}for(const run of effects.splice(0))run();assert.ok(++count<30,'component must settle');}while(dirty);return tree;};
  return{exports,mount(fn,p){component=fn;props=p;return render();},render,all,find(predicate){const n=all().find(predicate);assert.ok(Boolean(n),'expected control exists');return n;},update(next){props={...props,...next};return render();},unmount(){for(const slot of slots)slot?.cleanup?.();},async flush(){await new Promise(resolve=>setImmediate(resolve));return render();}};
 }
 const agent=(id='agent',conversationId='chat')=>({id,projectId:'project',conversationId,title:id,handle:id});
 const context={projectId:'project',conversationId:'chat',agents:[agent()],selectedAgentId:'agent',lockAgent:true};
 function menuFixture(extra={}){
+ const body={nodeType:1},recordingContainer={nodeType:1,contains:()=>false},portals=[];
  const calls=[],dictation={status:'ready',start:()=>calls.push('start'),pause:()=>calls.push('pause'),resume:()=>calls.push('resume'),stop:()=>calls.push('stop')};let readOnly=false,handlers;
  function VoiceConversation(){}
  function VoiceMessageRecorder(){}
- const f=fixture('DictationControls',{'./useDictation':{useDictation:(...args)=>{handlers=args;return dictation;}},'./speechStyles':{},'./VoiceConversation':{VoiceConversation},'./VoiceMessageRecorder':{VoiceMessageRecorder},'../../api/productScope':{isOutputAppPath:()=>false},'../WorkspaceReadOnlyContext':{useWorkspaceReadOnly:()=>readOnly}},{window:{location:{pathname:'/'}}});
- f.mount(f.exports.DictationControls,{disabled:false,voiceContext:context,onFinalTranscript:words=>calls.push(['words',words]),onSettlingChange:value=>calls.push(['settling',value]),...extra});
+ const f=fixture('DictationControls',{'react-dom':{createPortal:(node,container)=>{portals.push(container);return node;}},'./useDictation':{useDictation:(...args)=>{handlers=args;return dictation;}},'./speechStyles':{},'./VoiceConversation':{VoiceConversation},'./VoiceMessageRecorder':{VoiceMessageRecorder},'../../api/productScope':{isOutputAppPath:()=>false},'../WorkspaceReadOnlyContext':{useWorkspaceReadOnly:()=>readOnly}},{document:{body,activeElement:body},window:{location:{pathname:'/'}}});
+ f.mount(f.exports.DictationControls,{disabled:false,voiceContext:context,recordingContainer,onFinalTranscript:words=>calls.push(['words',words]),onSettlingChange:value=>calls.push(['settling',value]),...extra});
  const item=label=>f.find(n=>n.type==='MenuItem'&&f.all(n).some(child=>child.props.primary===label));
- return{...f,calls,dictation,item,VoiceConversation,VoiceMessageRecorder,handlers:()=>handlers,readOnly(value){readOnly=value;f.render();},open(){f.find(n=>n.props['aria-label']==='Voice options').props.onClick({currentTarget:{id:'trigger'}});f.render();}};
+ return{...f,calls,dictation,item,VoiceConversation,VoiceMessageRecorder,recordingContainer,portals,handlers:()=>handlers,readOnly(value){readOnly=value;f.render();},open(){f.find(n=>n.props['aria-label']==='Voice options').props.onClick({currentTarget:{id:'trigger'}});f.render();}};
 }
 test('Voice options opens a named MUI menu without capture or submission; call keeps the exact workspace owner',()=>{
  const f=menuFixture();f.open();assert.deepEqual(f.calls,[]);
@@ -40,11 +41,11 @@ test('Voice options opens a named MUI menu without capture or submission; call k
  call.props.onClose();f.render();assert.equal(f.all().some(n=>n.type===f.VoiceConversation),false);f.unmount();
 });
 test('voice recording opens directly from its distinct toolbar action without menu or staging',()=>{
- const attached=[],f=menuFixture({onVoiceAttachment:file=>{attached.push(file);},maxRecordingBytes:1024});
+ const attached=[],activity=[],f=menuFixture({onVoiceAttachment:file=>{attached.push(file);},onActiveChange:value=>activity.push(value),maxRecordingBytes:1024});
  const record=f.find(n=>n.props['aria-label']==='Record voice message');assert.equal(record.props.disabled,false);
- record.props.onClick();f.render();assert.equal(f.find(n=>n.type==='Menu').props.open,false);
+ record.props.onClick();assert.equal(activity.at(-1),true,'pending permission must synchronously block submission before effects');f.render();assert.equal(f.find(n=>n.type==='Menu').props.open,false);assert.equal(f.portals.at(-1),f.recordingContainer,'inline capture must use the explicit owned slot');
  assert.equal(f.all().some(n=>n.type===f.VoiceMessageRecorder),true);assert.deepEqual(attached,[]);assert.deepEqual(f.calls,[]);
- f.find(n=>n.type===f.VoiceMessageRecorder).props.onClose();f.render();f.open();
+ f.find(n=>n.type===f.VoiceMessageRecorder).props.onClose();f.render();assert.equal(activity.at(-1),false,'staging or discard releases capture gating');f.open();
  assert.equal(f.all().some(n=>n.type==='MenuItem'&&f.all(n).some(child=>child.props.primary==='Record voice message')),false,'recording must not require a second menu route');
  f.dictation.status='listening';f.render();assert.equal(f.find(n=>n.props['aria-label']==='Record voice message').props.disabled,true);
  f.dictation.status='ready';f.render();f.readOnly(true);assert.equal(f.find(n=>n.props['aria-label']==='Record voice message').props.disabled,true);f.unmount();
@@ -115,4 +116,58 @@ test('recognition permission failure pauses the call; a foreign canonical Chat n
 
 test('exiting menu items cannot start dictation or open a call after Escape/close',()=>{
  const f=menuFixture();f.open();f.find(n=>n.type==='Menu').props.onClose();f.render();assert.equal(f.item('Dictation').props.disabled,true);assert.equal(f.item('Voice call').props.disabled,true);f.item('Dictation').props.onClick();f.item('Voice call').props.onClick();f.render();assert.deepEqual(f.calls,[]);assert.equal(f.all().some(n=>n.type===f.VoiceConversation),false);f.unmount();
+});
+
+const capture=await import('../../apps/web/src/components/speech/captureCoordinator.ts');
+function audioFixture({allowSpeechStop=true,playError}={}){
+ const native={paused:true,currentTime:0,duration:NaN,volume:1,muted:false,playbackRate:1,error:null,plays:0,pauses:0,loads:0,
+  play(){this.plays++;if(playError)return Promise.reject(new Error(playError));this.paused=false;return Promise.resolve();},
+  pause(){this.pauses++;this.paused=true;},load(){this.loads++;}};
+ const f=fixture('AudioMessagePlayer',{'./captureCoordinator':capture,'./speechCoordinator':{stopSpeech:()=>allowSpeechStop}},{audioElement:native});
+ f.mount(f.exports.AudioMessagePlayer,{src:'/owned/playback?owner=one',downloadUrl:'/owned/download?owner=one',label:'Owned voice message'});
+ const media=()=>f.find(n=>n.type==='audio');
+ const button=name=>f.find(n=>n.type==='IconButton'&&n.props['aria-label']===name);
+ const elapsed=()=>f.find(n=>n.type==='Typography'&&n.props['aria-label']?.startsWith('Elapsed '));
+ const text=node=>Array.isArray(node)?node.map(text).join(''):node&&typeof node==='object'?text(node.props?.children):String(node??'');
+ return{...f,native,media,button,elapsed,text};
+}
+test('audio player honestly shows unknown duration without loading the file; native metadata enables seek',()=>{
+ const f=audioFixture();assert.equal(f.media().props.hidden,true);assert.equal(f.media().props.preload,'none');assert.equal(f.native.loads,0);assert.equal(f.native.plays,0);
+ assert.equal(f.text(f.elapsed()),'0:00 / —:—');assert.match(f.elapsed().props['aria-label'],/duration not yet available/);
+ assert.equal(f.find(n=>n.type==='Slider'&&n.props['aria-label']==='Audio position').props.disabled,true);
+ f.native.duration=125;f.native.currentTime=5;f.media().props.onLoadedMetadata({currentTarget:f.native});f.render();assert.equal(f.text(f.elapsed()),'0:05 / 2:05');
+ const seek=f.find(n=>n.type==='Slider'&&n.props['aria-label']==='Audio position');assert.equal(seek.props.disabled,false);assert.equal(seek.props.max,125);assert.equal(seek.props['aria-valuetext'],'0:05 of 2:05');seek.props.onChange({},61);f.render();assert.equal(f.native.currentTime,61);assert.equal(f.text(f.elapsed()),'1:01 / 2:05');f.unmount();
+});
+test('audio player uses the real page capture lease and late old pause cannot release a new owner',()=>{
+ let priorStopped=0,nextStopped=0;capture.claimPageCapture(()=>priorStopped++);
+ const f=audioFixture();f.button('Play audio').props.onClick();f.media().props.onPlay({currentTarget:f.native});f.media().props.onPlaying();f.render();assert.equal(priorStopped,1);assert.equal(f.native.plays,1);assert.equal(f.button('Pause audio').props.sx.width,44);assert.equal(f.button('Pause audio').props.sx.height,44);
+ capture.claimPageCapture(()=>nextStopped++);assert.equal(f.native.pauses,1);f.media().props.onPause();f.render();capture.abandonPageCapture();assert.equal(nextStopped,1,'old audio pause must not release the newer capture lease');
+ f.native.duration=NaN;f.native.currentTime=2.25;f.media().props.onEnded({currentTarget:f.native});f.render();assert.equal(f.text(f.elapsed()),'0:02 / 0:02','a genuinely observed file end can establish its duration');f.unmount();
+});
+test('audio playback options retain volume, mute, speed and exact owned download URL',()=>{
+ const f=audioFixture();const trigger={id:'owned-playback-options'};f.button('Playback options').props.onClick({currentTarget:trigger});f.render();
+ const popover=f.find(n=>n.type==='Popover');assert.equal(popover.props.open,true);assert.equal(popover.props.PaperProps.role,'dialog');assert.equal(f.button('Playback options').props['aria-controls'],popover.props.PaperProps.id);
+ const volume=f.find(n=>n.type==='Slider'&&n.props['aria-label']==='Audio volume');volume.props.onChange({},0.35);f.render();assert.equal(f.native.volume,0.35);assert.equal(f.native.muted,false);
+ f.button('Mute audio').props.onClick();f.render();assert.equal(f.native.muted,true);f.button('Unmute audio').props.onClick();f.render();assert.equal(f.native.muted,false);
+ const speed=f.find(n=>n.type==='Button'&&n.props['aria-pressed']!==undefined&&n.props.children[0]===1.5);speed.props.onClick();f.render();assert.equal(f.native.playbackRate,1.5);assert.equal(f.find(n=>n.type==='Button'&&n.props['aria-pressed']===true).props.children[0],1.5);
+ const download=f.find(n=>n.type==='Button'&&n.props.children==='Download audio');assert.equal(download.props.href,'/owned/download?owner=one');assert.equal(download.props.download,true);download.props.onClick();f.render();assert.equal(f.find(n=>n.type==='Popover').props.open,false);f.unmount();
+});
+test('audio playback errors keep actual causes and Retry resets metadata without autoplay',async()=>{
+ const f=audioFixture({playError:'Browser playback permission denied'});f.button('Play audio').props.onClick();await f.flush();assert.match(f.find(n=>n.type==='Alert').props.children,/Browser playback permission denied/);
+ const firstKey=f.media().key;f.find(n=>n.type==='Alert').props.action.props.onClick();f.render();assert.notEqual(f.media().key,firstKey);assert.equal(f.all().some(n=>n.type==='Alert'),false);assert.equal(f.native.plays,1,'Retry must not automatically play');assert.equal(f.text(f.elapsed()),'0:00 / —:—');
+ f.native.error={message:'Native decoder rejected the stream',code:3};f.media().props.onError();f.render();assert.match(f.find(n=>n.type==='Alert').props.children,/Native decoder rejected the stream/);f.unmount();
+});
+test('audio player cannot steal capture when browser speech refuses to stop; source cleanup pauses native audio',()=>{
+ let stopped=0;capture.claimPageCapture(()=>stopped++);const f=audioFixture({allowSpeechStop:false});f.native.paused=false;f.media().props.onPlay({currentTarget:f.native});f.render();assert.equal(f.native.paused,true);assert.match(f.find(n=>n.type==='Alert').props.children,/Browser speech could not be stopped/);capture.abandonPageCapture();assert.equal(stopped,1,'vetoed playback must leave the existing lease intact');
+ const before=f.native.pauses;f.update({src:'/owned/second'});assert(f.native.pauses>before);f.unmount();
+});
+
+test('audio attachment header keeps the exact filename and protected download URL without a separate download row',()=>{
+ function Player(){}
+ const f=fixture('../chat/ChatAttachments',{'../speech/AudioMessagePlayer':{AudioMessagePlayer:Player},'../filePreview/FilePreview':{FilePreview:()=>null},'../filePreview/mimeCapabilities':{previewCapability:()=>({kind:'audio'})},'../filePreview/readTextPreview':{readTextPreview:()=>{throw Error('Audio header must not fetch a text preview');}}});
+ const name='#Original voice λ; keep full metadata.webm',url='/owned/audio?owner=one&download=1#original';
+ f.mount(f.exports.ChatAttachments,{attachments:[{id:'audio',name,mediaType:'audio/webm',downloadUrl:url}]});
+ const player=f.find(n=>n.type===Player);assert.equal(player.props.downloadUrl,url);assert.equal(player.props.src,'/owned/audio?owner=one&download=1&playback=audio#original');
+ const title=f.find(n=>n.type==='Typography'&&n.props.title===name);assert.equal(title.props.children,name);assert.equal(title.props.noWrap,true);
+ assert.equal(f.all().some(n=>n.type==='Button'&&n.props.children==='Download audio'),false,'download remains one compact player option');f.unmount();
 });

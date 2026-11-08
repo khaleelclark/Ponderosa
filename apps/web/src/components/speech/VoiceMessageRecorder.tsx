@@ -1,6 +1,6 @@
 import {AudioMessagePlayer} from './AudioMessagePlayer';
 import {useEffect,useId,useRef,useState} from 'react';
-import {Alert,Button,Dialog,DialogActions,DialogContent,DialogTitle,Stack,Typography} from '@mui/material';
+import {Alert,Box,Button,Paper,Stack,Typography} from '@mui/material';
 import {claimPageCapture} from './captureCoordinator';
 import {stopSpeech} from './speechCoordinator';
 import {monitorSpeechSurfaceAccessibility} from './speechSurfaceAccessibility';
@@ -9,7 +9,7 @@ import {recordingExtension,recordingMimeType} from './voiceRecording';
 
 /** Recording becomes an ordinary durable draft attachment; it never auto-sends. */
 export function VoiceMessageRecorder({onAttach,onClose,maxBytes}:{onAttach(file:File):string|undefined;onClose():void;maxBytes:number}):JSX.Element {
- const id=useId(),surface=useRef<HTMLDivElement>(null),alive=useRef(true),generation=useRef(0);
+ const id=useId(),surface=useRef<HTMLDivElement>(null),finishButton=useRef<HTMLButtonElement>(null),useRecordingButton=useRef<HTMLButtonElement>(null),alive=useRef(true),generation=useRef(0);
  const recorder=useRef<MediaRecorder>(),tracks=useRef<MediaStream>(),release=useRef<()=>void>(),unwatch=useRef<()=>void>();
  const finishRequested=useRef(false),startRef=useRef<()=>Promise<void>>(async()=>{}),callbacks=useRef({onAttach,onClose});callbacks.current={onAttach,onClose};
  const chunks=useRef<Blob[]>([]),bytes=useRef(0),started=useRef(0);
@@ -19,6 +19,7 @@ export function VoiceMessageRecorder({onAttach,onClose,maxBytes}:{onAttach(file:
  const cleanup=()=>{tracks.current?.getTracks().forEach(track=>track.stop());tracks.current=undefined;release.current?.();release.current=undefined;unwatch.current?.();unwatch.current=undefined;};
  const stop=(finish=false)=>{
   finishRequested.current=finish;
+  if(surface.current?.contains(document.activeElement))surface.current.focus({preventScroll:true});
   const active=recorder.current;
   if(active&&active.state!=='inactive'){setPhase('stopping');active.stop();}
   else cleanup();
@@ -28,7 +29,7 @@ export function VoiceMessageRecorder({onAttach,onClose,maxBytes}:{onAttach(file:
   alive.current=true;
   const mountedGeneration=generation.current;
   // StrictMode's discarded mount must not request microphone permission.
-  queueMicrotask(()=>{if(alive.current&&generation.current===mountedGeneration)void startRef.current();});
+  queueMicrotask(()=>{if(alive.current&&generation.current===mountedGeneration){surface.current?.focus({preventScroll:true});void startRef.current();}});
   return()=>{alive.current=false;generation.current++;finishRequested.current=false;const active=recorder.current;if(active&&active.state!=='inactive')active.stop();cleanup();};
  },[]);
  useEffect(()=>{
@@ -40,6 +41,7 @@ export function VoiceMessageRecorder({onAttach,onClose,maxBytes}:{onAttach(file:
   const timer=setInterval(()=>setSeconds(Math.floor((performance.now()-started.current)/1000)),1000);
   return()=>clearInterval(timer);
  },[phase]);
+ useEffect(()=>{if(!surface.current?.contains(document.activeElement))return;if(phase==='recording')finishButton.current?.focus({preventScroll:true});else if(phase==='review')useRecordingButton.current?.focus({preventScroll:true});},[phase]);
  const stage=(recording:File)=>{
   try{const failure=callbacks.current.onAttach(recording);if(failure){setError(failure);return;}}
   catch(cause){setError(cause instanceof Error?cause.message:String(cause));return;}
@@ -47,6 +49,7 @@ export function VoiceMessageRecorder({onAttach,onClose,maxBytes}:{onAttach(file:
  };
  const start=async()=>{
   if(phase==='starting'||phase==='recording'||phase==='stopping')return;
+  if(surface.current?.contains(document.activeElement))surface.current.focus({preventScroll:true});
   const epoch=++generation.current;finishRequested.current=false;setError('');setFile(undefined);setSeconds(0);setPhase('starting');
   try{
    if(!navigator.mediaDevices?.getUserMedia||typeof MediaRecorder==='undefined')throw new Error('Voice recording is unavailable in this browser.');
@@ -81,16 +84,24 @@ export function VoiceMessageRecorder({onAttach,onClose,maxBytes}:{onAttach(file:
  };
  startRef.current=start;
  const close=()=>{generation.current++;finishRequested.current=false;callbacks.current.onClose();};
- return <Dialog open fullWidth maxWidth="xs" aria-labelledby={`${id}-title`} onClose={phase==='recording'||phase==='stopping'||phase==='starting'?undefined:close}>
-  <DialogTitle id={`${id}-title`}>Voice message</DialogTitle><DialogContent ref={surface}><Stack spacing={2}>
+ return <Paper ref={surface} tabIndex={-1} role="region" aria-labelledby={`${id}-title`} variant="outlined"
+  sx={{p:1.25,minWidth:0,borderRadius:2,bgcolor:'background.paper'}}>
+  <Stack spacing={1}>
+   <Stack direction="row" alignItems="center" justifyContent="space-between" useFlexGap flexWrap="wrap" gap={1}>
+    <Typography id={`${id}-title`} variant="body2" fontWeight={600}>Voice message</Typography>
+    <Stack direction="row" spacing={0.75} alignItems="center" role="status" aria-live="polite" aria-atomic={false}>
+     {phase==='recording'&&<Box aria-hidden sx={{width:8,height:8,borderRadius:'50%',bgcolor:'error.main',animation:'voiceCapturePulse 1.2s ease-in-out infinite','@keyframes voiceCapturePulse':{'0%,100%':{opacity:1},'50%':{opacity:0.4}},'@media (prefers-reduced-motion: reduce)':{animation:'none'}}}/>}
+     <Typography variant="body2">{phase==='recording'?<>Recording · <Box component="span" aria-live="off">{Math.floor(seconds/60)}:{String(seconds%60).padStart(2,'0')}</Box></>:phase==='starting'?'Opening microphone…':phase==='stopping'?'Finishing recording…':file?'Review recording':'Ready to record'}</Typography>
+    </Stack>
+   </Stack>
    {error&&<Alert severity="warning">{error}</Alert>}
-   <Typography role="status">{phase==='recording'?`Recording · ${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,'0')}`:phase==='starting'?'Opening microphone…':phase==='stopping'?'Finishing recording…':file?'Review recording':'Ready to record'}</Typography>
    {url&&<AudioMessagePlayer src={url} label="Voice message preview" preload="metadata"/>}
-  </Stack></DialogContent><DialogActions sx={{flexWrap:'wrap',gap:1}}>
-   <Button disabled={phase==='stopping'} onClick={close}>Discard</Button>
-   {phase==='recording'?<Button variant="contained" onClick={()=>stop(true)}>Finish recording</Button>:<Button disabled={phase==='starting'||phase==='stopping'} onClick={()=>void start()}>{file?'Record again':'Record'}</Button>}
-   {file&&url&&<Button href={url} download={file.name}>Save audio</Button>}
-   {file&&<Button variant="contained" onClick={()=>stage(file)}>Use recording</Button>}
-  </DialogActions>
- </Dialog>;
+   <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+    <Button sx={{minHeight:44}} disabled={phase==='stopping'} onClick={close}>Discard</Button>
+    {phase==='recording'?<Button ref={finishButton} sx={{minHeight:44}} variant="contained" onClick={()=>stop(true)}>Finish recording</Button>:<Button sx={{minHeight:44}} disabled={phase==='starting'||phase==='stopping'} onClick={()=>void start()}>{file?'Record again':'Record'}</Button>}
+    {file&&url&&<Button sx={{minHeight:44}} href={url} download={file.name}>Save audio</Button>}
+    {file&&<Button ref={useRecordingButton} sx={{minHeight:44}} variant="contained" onClick={()=>stage(file)}>Use recording</Button>}
+   </Stack>
+  </Stack>
+ </Paper>;
 }
