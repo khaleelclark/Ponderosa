@@ -1,7 +1,7 @@
 import {createClientId} from '../../clientId';
 import {useEffect,useRef,useState} from 'react';
 import {useMutation,useQuery,useQueryClient} from '@tanstack/react-query';
-import {Alert,Button,Dialog,DialogActions,DialogContent,DialogTitle,FormControlLabel,MenuItem,Paper,Stack,Switch,TextField,Typography} from '@mui/material';
+import {Alert,Box,Button,Dialog,DialogActions,DialogContent,DialogTitle,FormControlLabel,MenuItem,Paper,Stack,Switch,TextField,Typography} from '@mui/material';
 import type {BranchExecutionBudgetDto,BranchExecutionBudgetGrant,BranchExecutionBudgetPolicy,BranchExecutionBudgetUpdate} from '@ponderosa/core';
 import {requestJson} from '../../api/real';
 import {ApiRequestError} from '../../api/types';
@@ -13,7 +13,7 @@ const countedSources='Counted once at start · automatic executions + incoming B
 export function BranchExecutionBudget({branchId,settings=false,active=true}:{branchId:string;settings?:boolean;active?:boolean}):JSX.Element {
  const client=useQueryClient(),notify=useMutationNotification(),queryKey=['branch-execution-budget',branchId];
  const query=useQuery({queryKey,queryFn:()=>requestJson<BranchExecutionBudgetDto>(`/api/branches/${branchId}/execution-budget`),enabled:active,refetchInterval:active?5000:false});
- const [draft,setDraft]=useState<BranchExecutionBudgetPolicy|null>(),[base,setBase]=useState<BranchExecutionBudgetDto>(),[grantOpen,setGrantOpen]=useState(false),[additional,setAdditional]=useState('1');
+ const [draft,setDraft]=useState<BranchExecutionBudgetPolicy|null>(),[base,setBase]=useState<BranchExecutionBudgetDto>(),[grantOpen,setGrantOpen]=useState(false),[additional,setAdditional]=useState('1'),[editing,setEditing]=useState(false);
  const policyAttempt=useRef<BranchExecutionBudgetUpdate>(),grantAttempt=useRef<BranchExecutionBudgetGrant>(),grantResultLimit=useRef<number>();
  const dirty=draft!==undefined&&Boolean(base)&&JSON.stringify(draft)!==JSON.stringify(base?.policy);
  useBranchDraftGuard(`branch-execution-budget:${branchId}`,settings&&dirty||Boolean(policyAttempt.current)||Boolean(grantAttempt.current));
@@ -22,7 +22,7 @@ export function BranchExecutionBudget({branchId,settings=false,active=true}:{bra
  const save=useMutation({mutationFn:()=>{
    if(!policyAttempt.current){if(!base||draft===undefined)throw new Error('Load the current budget first');policyAttempt.current={commandKey:createClientId(),expectedRevision:base.revision,expectedPeriodId:base.periodId,policy:draft,acknowledgeNewPeriod:true}}
    return requestJson<BranchExecutionBudgetDto>(`/api/branches/${branchId}/execution-budget`,{method:'PUT',body:JSON.stringify(policyAttempt.current)});
- },onSuccess:result=>{policyAttempt.current=undefined;setDraft(result.policy);setBase(result);refresh();notify({key:`branch-execution-budget:${branchId}`,message:"Settings Saved"})},onError:error=>{if(error instanceof ApiRequestError&&error.status>=400&&error.status<500){policyAttempt.current=undefined;refresh()}}});
+ },onSuccess:result=>{policyAttempt.current=undefined;setEditing(false);setDraft(result.policy);setBase(result);refresh();notify({key:`branch-execution-budget:${branchId}`,message:"Settings Saved"})},onError:error=>{if(error instanceof ApiRequestError&&error.status>=400&&error.status<500){policyAttempt.current=undefined;refresh()}}});
  const grant=useMutation({mutationFn:()=>{
    if(!grantAttempt.current){const current=query.data;if(!current?.periodId)throw new Error('Load the current budget first');grantResultLimit.current=current.policy!.limit+current.allowance+Number(additional);grantAttempt.current={commandKey:createClientId(),expectedRevision:current.revision,expectedPeriodId:current.periodId,additional:Number(additional)}}
    return requestJson<BranchExecutionBudgetDto>(`/api/branches/${branchId}/execution-budget/allow`,{method:'POST',body:JSON.stringify(grantAttempt.current)});
@@ -32,22 +32,32 @@ export function BranchExecutionBudget({branchId,settings=false,active=true}:{bra
  const valid=draft===null||Boolean(draft&&validBudgetNumber(String(draft.limit)));
  const grantValid=validBudgetNumber(additional)&&Boolean(query.data?.policy&&query.data.policy.limit+query.data.allowance+Number(additional)<=1_000_000_000);
  const policyLocked=save.isPending||Boolean(policyAttempt.current);
- return <Paper variant="outlined" sx={{p:2}}><Stack spacing={2}>
-  <Typography variant="h6">Automatic execution budget</Typography>
-  <Typography variant="body2" color="text.secondary">{countedSources}</Typography>
-  {query.error?<Alert severity="error" action={<Button onClick={()=>void query.refetch()}>Retry budget</Button>}>Budget could not be refreshed. {query.error.message}</Alert>:<Typography role={!query.data?"status":undefined}>{presentation.message}</Typography>}
-  {!query.error&&query.data&&<><Typography>{query.data.heldCount} execution{query.data.heldCount===1?'':'s'} waiting for this budget.</Typography>{query.data.resetsAt?<Typography variant="body2">Next reset: {new Date(query.data.resetsAt).toLocaleString()} ({query.data.resetsAt}) · period measured from start, not calendar boundary</Typography>:query.data.policy&&<Typography variant="body2">Lifetime budget: no automatic reset.</Typography>}</>}
-  {settings&&draft!==undefined&&<>
-   <FormControlLabel label="Limit automatic executions" control={<Switch checked={draft!==null} disabled={policyLocked||unavailable} onChange={(_,enabled)=>{save.reset();setDraft(enabled?{limit:100,period:'month'}:null)}}/>}/>
-   {draft&&<><TextField label="Executions per period" type="number" value={draft.limit} disabled={policyLocked} error={!valid} helperText="A whole number from 1 to 1,000,000,000." onChange={e=>{save.reset();setDraft({...draft,limit:Number(e.target.value)})}}/><TextField select label="Budget period" value={draft.period} disabled={policyLocked} onChange={e=>{save.reset();setDraft({...draft,period:e.target.value as BranchExecutionBudgetPolicy['period']})}}>{(['day','week','month','lifetime'] as const).map(period=><MenuItem key={period} value={period}>{period}</MenuItem>)}</TextField></>}
+ const editorVisible=settings&&(editing||dirty||save.isPending||Boolean(save.error)||Boolean(policyAttempt.current));
+ return <Paper variant="outlined" sx={{p:2}}><Stack spacing={1}>
+  <Stack direction="row" spacing={1} useFlexGap sx={{alignItems:'center',justifyContent:'space-between',flexWrap:'wrap'}}>
+   <Typography variant="subtitle1" fontWeight={650}>Automatic execution budget</Typography>
+   {settings&&draft!==undefined&&<FormControlLabel sx={{m:0,flexShrink:0}} label="Limit" control={<Switch inputProps={{'aria-label':'Limit automatic executions'}} checked={draft!==null} disabled={policyLocked||unavailable} onChange={(_,enabled)=>{save.reset();setEditing(enabled);setDraft(enabled?{limit:100,period:'month'}:null)}}/>}/>}
+  </Stack>
+  {query.error?<Alert severity="error" action={<Button onClick={()=>void query.refetch()}>Retry budget</Button>}>Budget could not be refreshed. {query.error.message}</Alert>:<Stack direction="row" spacing={1} useFlexGap sx={{alignItems:'baseline',justifyContent:'space-between',flexWrap:'wrap'}}>
+   <Typography variant="body2" role={!query.data?"status":undefined}>{presentation.message}</Typography>
+   {query.data&&<Typography variant="caption" color={query.data.heldCount?'warning.main':'text.secondary'}>{query.data.heldCount} waiting</Typography>}
+  </Stack>}
+  {editorVisible&&draft!==undefined&&<Stack spacing={1.5}>
+   {draft&&<Stack direction={{xs:'column',sm:'row'}} spacing={1.5}><TextField fullWidth label="Executions per period" type="number" value={draft.limit} disabled={policyLocked} error={!valid} helperText="A whole number from 1 to 1,000,000,000." onChange={e=>{save.reset();setDraft({...draft,limit:Number(e.target.value)})}}/><TextField fullWidth select label="Budget period" value={draft.period} disabled={policyLocked} onChange={e=>{save.reset();setDraft({...draft,period:e.target.value as BranchExecutionBudgetPolicy['period']})}}>{(['day','week','month','lifetime'] as const).map(period=><MenuItem key={period} value={period}>{period}</MenuItem>)}</TextField></Stack>}
    {epochChange&&<Alert severity="warning">Saving a new period resets usage + extra allowance; limit-only changes preserve both</Alert>}
    {draft===null&&base?.policy&&<Alert severity="info">Removing budget releases waiting work; re-adding starts a new period</Alert>}
-   <Typography variant="body2">Workflow updates and Branch toggles do not reset this budget.</Typography>
    {save.error&&<Alert severity="error">{save.error.message}{policyAttempt.current?' Retry sends the same command safely.':' Refresh the budget and review your changes before saving again.'}</Alert>}
-   <Button sx={{alignSelf:'start'}} variant="contained" disabled={save.isPending||(!policyAttempt.current&&(unavailable||!dirty||!valid||base?.revision!==query.data?.revision))} onClick={()=>save.mutate()}>{save.isPending?'Saving…':policyAttempt.current?'Retry budget save':epochChange?'Save and start new period':'Save budget'}</Button>
+   <Stack direction="row" spacing={1} useFlexGap sx={{flexWrap:'wrap'}}><Button variant="contained" disabled={save.isPending||(!policyAttempt.current&&(unavailable||!dirty||!valid||base?.revision!==query.data?.revision))} onClick={()=>save.mutate()}>{save.isPending?'Saving…':policyAttempt.current?'Retry budget save':epochChange?'Save and start new period':'Save budget'}</Button>{!dirty&&!policyLocked&&<Button onClick={()=>setEditing(false)}>Done</Button>}</Stack>
    {dirty&&base?.revision!==query.data?.revision&&<Alert severity="warning" action={<Button disabled={policyLocked} onClick={()=>{setBase(query.data);setDraft(query.data?.policy);save.reset()}}>Load current budget</Button>}>Budget changed · load current budget before saving</Alert>}
-  </>}
-  {query.data?.policy&&<Button sx={{alignSelf:'start'}} disabled={unavailable} onClick={()=>{grant.reset();setGrantOpen(true)}}>Allow more executions</Button>}
+  </Stack>}
+  {(settings&&draft&&!editorVisible||query.data?.policy)?<Stack direction="row" spacing={1} useFlexGap sx={{flexWrap:'wrap'}}>{settings&&draft&&!editorVisible&&<Button onClick={()=>setEditing(true)}>Edit budget</Button>}{query.data?.policy&&<Button disabled={unavailable} onClick={()=>{grant.reset();setGrantOpen(true)}}>Allow more executions</Button>}</Stack>:null}
+  <Box component="details" sx={{'& > summary':{minHeight:44,alignContent:'center',cursor:'pointer',fontSize:'0.8125rem',color:'text.secondary'}}}>
+   <Box component="summary">How this budget works</Box>
+   <Stack spacing={1} sx={{pb:1}}><Typography variant="body2" color="text.secondary">{countedSources}</Typography>
+    {!query.error&&query.data&&(query.data.resetsAt?<Typography variant="body2">Next reset: {new Date(query.data.resetsAt).toLocaleString()} ({query.data.resetsAt}) · period measured from start, not calendar boundary</Typography>:query.data?.policy&&<Typography variant="body2">Lifetime budget: no automatic reset.</Typography>)}
+    <Typography variant="body2" color="text.secondary">Workflow updates and Branch toggles do not reset this budget.</Typography>
+   </Stack>
+  </Box>
   <Dialog open={grantOpen} onClose={()=>{if(!grant.isPending&&!grantAttempt.current)setGrantOpen(false)}} fullWidth maxWidth="sm"><DialogTitle>Allow more executions</DialogTitle><DialogContent><Stack component="form" id={`budget-grant-${branchId}`} onSubmit={e=>{e.preventDefault();if(!grant.isPending&&(grantAttempt.current||(!unavailable&&grantValid)))grant.mutate()}} spacing={2} mt={1}>
    <Stack spacing={0.5}><Typography>{budgetPresentation(query).message}</Typography><Typography>{query.data?.resetsAt?`Expires ${query.data.resetsAt}`:query.data?.policy?.period==='lifetime'?"Lifetime allowance · no automatic expiry":"Reset time unavailable"}</Typography><Typography>Confirming may start eligible waiting work immediately</Typography></Stack>
    <Typography>Extra allowance expires at rollover · started/canceled executions: no refund</Typography>
