@@ -250,7 +250,7 @@ test('native browser: rendered href, Open-link actions and whole-message/code co
       });
     };
     window.runTranscriptBatch=()=>{const task=window.transcriptTasks.find(task=>!task.signal?.aborted);if(!task)throw Error('No pending transcript task');window.transcriptTasks.splice(window.transcriptTasks.indexOf(task),1);task.run();};
-    function InitialTranscriptProbe({reveal,height,probe}){
+    function InitialTranscriptProbe({reveal,height,probe,hasEarlier}){
       const [items,setItems]=React.useState([]),[showAll,setShowAll]=React.useState(reveal);
       const key='initial-transcript-'+probe;
       window.installTranscript=()=>flushSync(()=>setItems(transcriptRows));
@@ -266,15 +266,15 @@ test('native browser: rendered href, Open-link actions and whole-message/code co
       return <QueryClientProvider client={memoClient}><div data-transcript-probe={probe}><section aria-label="Loaded transcript copy"><input aria-label="Outside transcript editor" defaultValue="Retained editor draft" /><CopyMessageButton text={items.map(item=>item.message.text).join('\\n')}/></section>
         <div style={{height,width:'100%',minHeight:0}}><ChatSurface label="Initial transcript" layout="project" layoutKey={items.map(item=>item.id).join(':')}
           initialTranscript={{rowIds:items.map(item=>item.id),reveal:showAll}} follow={{kind:'latest',storageKey:key,onPositionChange(element,latest){window.transcriptPositions.push({key,latest,top:element.scrollTop,height:element.scrollHeight,rows:element.querySelectorAll('article').length});}}}
-          history={{kind:'cursor',hasEarlier:true,loading:false,onLoadEarlier(){window.historySawComplete=document.querySelectorAll('article').length;}}}>
+          history={{kind:'cursor',hasEarlier,loading:false,onLoadEarlier(){window.historySawComplete=document.querySelectorAll('article').length;}}}>
           {firstMountedIndex=><div data-loaded-transcript><MainConversationTimeline mainTimeline={items} firstMountedIndex={firstMountedIndex} projectId="test" healthByAgentId={new Map()} agentTitle={memoTitle} agentIdForHandle={memoHandle} onOpenAgent={memoNoop} mentionAgent={memoNoop} markCommunicationVisible={memoNoop} notifications={[]}/></div>}
         </ChatSurface></div></div></QueryClientProvider>;
     }
-    window.mountInitialTranscript=({saved=false,reveal=false,height=1400}={})=>{
-      loadingProbe++;window.transcriptTasks=[];window.transcriptPositions=[];
+    window.mountInitialTranscript=({saved=false,reveal=false,height=1400,hasEarlier=false}={})=>{
+      loadingProbe++;window.transcriptTasks=[];window.transcriptPositions=[];window.historySawComplete=undefined;
       const key='initial-transcript-'+loadingProbe;
       if(saved)localStorage.setItem(key,'0');else localStorage.removeItem(key);
-      flushSync(()=>root.render(<MutationNotificationProvider><InitialTranscriptProbe key={loadingProbe} probe={loadingProbe} reveal={reveal} height={height}/></MutationNotificationProvider>));
+      flushSync(()=>root.render(<MutationNotificationProvider><InitialTranscriptProbe key={loadingProbe} probe={loadingProbe} reveal={reveal} height={height} hasEarlier={hasEarlier}/></MutationNotificationProvider>));
     };
     window.initialTranscriptSnapshot=()=>{
       const container=document.querySelector('[data-transcript-probe="'+loadingProbe+'"] .chat-scroll-region'),rows=container.querySelector('[data-loaded-transcript]');
@@ -517,7 +517,7 @@ test('native browser: rendered href, Open-link actions and whole-message/code co
   await page.keyboard.press('Control+f');
   initial=await page.evaluate(()=>window.initialTranscriptSnapshot());assert.equal(initial.count,100);assert.equal(initial.busy,null,'keyboard find reveals pending rows before browser default handling');
   await page.keyboard.press('Escape');
-  await page.evaluate(()=>{window.mountInitialTranscript({height:620});window.installTranscript();});
+  await page.evaluate(()=>{window.mountInitialTranscript({height:620,hasEarlier:true});window.installTranscript();});
   await page.getByRole('button',{name:/Earlier|older/i}).click();
   assert.equal(await page.evaluate(()=>window.historySawComplete),100,'earlier-history action sees all pending fetched rows first');
 
