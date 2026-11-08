@@ -38,7 +38,7 @@ test('Voice options opens a named MUI menu without capture or submission; call k
  const menu=f.find(n=>n.type==='Menu');assert.equal(menu.props.open,true);assert.equal(menu.props.MenuListProps['aria-label'],'Voice options');assert.equal(menu.props.container,f.handlers()[2].current,'menu must not hide its own live dictation surface');
  f.item('Voice call').props.onClick();f.render();assert.equal(f.find(n=>n.type==='Menu').props.open,false);assert.deepEqual(f.calls,[]);
  const call=f.find(n=>n.type===f.VoiceConversation);assert.equal(call.props.projectId,'project');assert.equal(call.props.conversationId,'chat');assert.equal(call.props.selectedAgentId,'agent');assert.equal(call.props.lockAgent,true);
- call.props.onClose();f.render();assert.equal(f.all().some(n=>n.type===f.VoiceConversation),false);f.unmount();
+ assert.equal(call.props.startOnOpen,true);call.props.onClose();f.render();assert.equal(f.all().some(n=>n.type===f.VoiceConversation),false);f.unmount();
 });
 test('voice recording opens directly from its distinct toolbar action without menu or staging',()=>{
  const attached=[],activity=[],f=menuFixture({onVoiceAttachment:file=>{attached.push(file);},onActiveChange:value=>activity.push(value),maxRecordingBytes:1024});
@@ -70,7 +70,7 @@ test('missing/foreign owner, unavailable recognition and read-only scopes do not
  f.item('Voice call').props.onClick();f.render();f.readOnly(true);assert.equal(f.all().some(n=>n.type===f.VoiceConversation),false);assert.equal(f.find(n=>n.props['aria-label']==='Voice options').props.disabled,true);f.readOnly(false);assert.equal(f.all().some(n=>n.type===f.VoiceConversation),false,'reenabling a surface must not reopen a call');f.unmount();
 });
 
-function callFixture({product='dev',selectedAgentId='agent',agents=[agent()],lockAgent=true}={}){
+function callFixture({product='dev',selectedAgentId='agent',agents=[agent()],lockAgent=true,startOnOpen=false}={}){
  const sent=[],spoken=[],events=[],timers=new Map();let id=0,closed=0,observer,stream,playback={status:'idle'},onInactive,queued;
  const dictation={status:'ready',start(){events.push('capture');dictation.status='listening';},abandon(){events.push('abandon');dictation.status='ready';},stop(){dictation.status='stopped';}};
  const detail={conversation:{id:'chat',projectId:'project',...(product==='branches'?{branchId:'branch'}:{})},agents,messages:[]};
@@ -79,8 +79,8 @@ function callFixture({product='dev',selectedAgentId='agent',agents=[agent()],loc
  class QueryObserver{constructor(_client,options){this.options=options;}subscribe(fn){observer=fn;return()=>events.push('observer-unsubscribed');}destroy(){events.push('observer-destroyed');}}
  const speech={subscribeSpeech:()=>()=>{},speechSnapshot:()=>playback,stopSpeech(){events.push('stop-speech');playback={status:'stopped'};return true;},startSpeech(){},startSpeechQueue(owner,_prefs,_surface,complete,started,before){playback={ownerId:owner,status:'loading'};queued={append(text){spoken.push(text);return true;},finish(){events.push('queue-finished');},stop(){events.push('queue-stopped');},complete,started,before};return queued;}};
  const attempt={VOICE_ATTEMPT_TTL:86400000,restoreVoiceCallAttempt:async()=>({}),retainVoiceCallAttempt:()=>true,settleVoiceCallAttempt:()=>events.push('settled'),voiceCallAttemptCanRetry:async()=>true,prepareVoiceCallAttempt:async(route,text)=>({marker:{route},request:{text,recipients:[{agentId:route.agentId}],voiceReply:true,idempotencyKey:'exact-turn',activeRunDelivery:'steer'}})};
- const f=fixture('VoiceConversation',{'../../clientId':{createClientId:()=> 'operation'},'@ponderosa/core':{DEFAULT_SPEECH_PREFERENCES:{speed:1}},'@tanstack/react-query':{QueryObserver,useQueryClient:()=>queryClient},'../../api':{api},'../../api/productScope':{productApiPath:path=>product==='branches'?'/api/branches/engine/'+path.slice(5):path,currentProductScope:()=>product},'../../hooks/queries':{useWorkspacePreferences:()=>({})},'../../queryKeys':{queryKeys:{conversations:{detail:()=>['conversation'],detailPrefix:()=>['conversation']}}},'../../conversationMessageReceipt':{publishConversationMessageReceipt:async()=>{}},'./browserSpeech':{dictationUnavailableReason:()=>undefined,speechSynthesisUnavailableReason:()=>undefined},'./speechCoordinator':speech,'./speechSurfaceAccessibility':{monitorSpeechSurfaceAccessibility(_surface,fn){onInactive=fn;return()=>{};}},'./speechText':{speakableMessageText},'./useDictation':{useDictation:()=>dictation},'./voiceReplyStream':{VoicePhraseBuffer,VoiceReplyBuffers,voiceTimingText},'./voiceReply':{voiceReplyInWindow},'./voiceCallAttempt':attempt},{window:Object.assign(new EventTarget(),{location:{origin:'https://test.invalid'}}),setInterval:fn=>{timers.set(++id,fn);return id;},clearInterval:key=>timers.delete(key),setTimeout:fn=>{timers.set(++id,fn);return id;},clearTimeout:key=>timers.delete(key)});
- const outer=f.exports.VoiceConversation({...context,agents,selectedAgentId,lockAgent,open:true,onClose:()=>closed++});const session=React.Children.toArray(outer.props.children)[0];
+ const f=fixture('VoiceConversation',{'../../clientId':{createClientId:()=> 'operation'},'@ponderosa/core':{DEFAULT_SPEECH_PREFERENCES:{speed:1}},'@tanstack/react-query':{QueryObserver,useQueryClient:()=>queryClient},'../../api':{api},'../../api/productScope':{productApiPath:path=>product==='branches'?'/api/branches/engine/'+path.slice(5):path,currentProductScope:()=>product},'../../hooks/queries':{useWorkspacePreferences:()=>({})},'../../queryKeys':{queryKeys:{conversations:{detail:()=>['conversation'],detailPrefix:()=>['conversation']}}},'../../conversationMessageReceipt':{publishConversationMessageReceipt:async()=>{}},'./browserSpeech':{dictationUnavailableReason:()=>undefined,speechSynthesisUnavailableReason:()=>undefined},'./speechCoordinator':speech,'./speechSurfaceAccessibility':{monitorSpeechSurfaceAccessibility(_surface,fn){onInactive=fn;return()=>{};}},'./speechText':{speakableMessageText},'./useDictation':{useDictation:()=>dictation},'./voiceReplyStream':{VoicePhraseBuffer,VoiceReplyBuffers,voiceTimingText},'./voiceReply':{voiceReplyInWindow},'./voiceCallAttempt':attempt},{document:{visibilityState:'visible'},window:Object.assign(new EventTarget(),{location:{origin:'https://test.invalid'}}),setInterval:fn=>{timers.set(++id,fn);return id;},clearInterval:key=>timers.delete(key),setTimeout:fn=>{timers.set(++id,fn);return id;},clearTimeout:key=>timers.delete(key)});
+ const outer=f.exports.VoiceConversation({...context,agents,selectedAgentId,lockAgent,startOnOpen,open:true,onClose:()=>closed++});const session=React.Children.toArray(outer.props.children)[0];
  f.mount(session.type,session.props);f.find(n=>n.type==='DialogContent').ref({isConnected:true,contains:()=>false});f.render();
  const findButton=name=>f.find(n=>n.type==='Button'&&(n.props.children===name||n.props['aria-label']===name));
  const sendTurn=async()=>{await f.flush();findButton('Transcript').props.onClick();f.render();f.find(n=>n.type==='TextField'&&n.props.label==='Type a turn').props.onChange({target:{value:'A private voice turn'}});f.render();findButton('Send turn').props.onClick();await f.flush();await f.flush();};
@@ -111,7 +111,7 @@ test('changing only a resolved call recipient preserves ordinary dictation but r
 
 test('recognition permission failure pauses the call; a foreign canonical Chat never enables capture',async()=>{
  const f=callFixture();await f.flush();f.findButton('Start call').props.onClick();f.render();f.dictation.status='error';f.dictation.error='Microphone permission was denied.';f.render();assert.equal(f.all().some(n=>n.type==='Alert'&&n.props.children==='Microphone permission was denied.'),true);assert.equal(f.sent.length,0);f.unmount();
- const foreign=callFixture();foreign.detail.conversation.id='foreign';await foreign.flush();assert.equal(foreign.findButton('Resume call').props.disabled,false);assert.equal(foreign.events.includes('capture'),false);assert.equal(foreign.sent.length,0);foreign.unmount();
+ const foreign=callFixture();foreign.detail.conversation.id='foreign';await foreign.flush();assert.equal(foreign.findButton('Reconnect call').props.disabled,false);assert.equal(foreign.events.includes('capture'),false);assert.equal(foreign.sent.length,0);foreign.unmount();
 });
 
 test('exiting menu items cannot start dictation or open a call after Escape/close',()=>{
@@ -214,4 +214,13 @@ test('re-record during finalization cannot replace the admitted stream or leave 
 });
 test('explicit re-record retires the prior capture before admitting a fresh live stream',async()=>{
  const f=recorderFixture({unavailable:true});await f.flush();f.finish();await f.flush();assert.equal(f.streams[0].getAudioTracks()[0].readyState,'ended');f.find(n=>n.type==='Button'&&n.props.children==='Record again').props.onClick();await f.flush();assert.equal(f.streams.length,2);assert.equal(f.streams[1].getAudioTracks()[0].readyState,'live','old lease release must not stop the replacement');f.unmount();assert.equal(f.streams[1].getAudioTracks()[0].readyState,'ended');
+});
+
+
+test('explicit handset opening starts eligible capture once; ordinary mounts and missing owner do not',async()=>{
+ const f=callFixture({startOnOpen:true});await f.flush();f.render();await f.flush();
+ assert.equal(f.events.filter(e=>e==='capture').length,1);
+ for(let i=0;i<3;i++)f.render();assert.equal(f.events.filter(e=>e==='capture').length,1);
+ f.inactive();f.render();await f.flush();assert.equal(f.events.filter(e=>e==='capture').length,1,'foreground interruption requires a deliberate reconnect');f.unmount();
+ const invalid=callFixture({startOnOpen:true,agents:[agent(),agent('second')],selectedAgentId:'',lockAgent:false});await invalid.flush();assert.equal(invalid.events.includes('capture'),false);invalid.unmount();
 });

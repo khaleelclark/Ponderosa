@@ -27,15 +27,18 @@ type Phase = "ready" | "capture" | "review" | "sending" | "queued" | "waiting" |
 export interface VoiceConversationContext {
   projectId: string; conversationId: string; agents: AgentDto[];
   selectedAgentId?: string; lockAgent?: boolean; standalone?: boolean;
+  /** Only an explicit handset opening gesture may request initial capture. */
+  startOnOpen?: boolean;
 }
 const member = (agent: AgentDto, projectId: string, conversationId: string) => agent.projectId === projectId && agent.conversationId === conversationId;
 export function VoiceConversation(props: VoiceConversationContext & { open: boolean; onClose(): void }): JSX.Element {
   const product = productApiPath("/api/conversations");
   return <>{props.open && <VoiceSession key={JSON.stringify([product, props.projectId, props.conversationId, props.selectedAgentId])} {...props} product={product} />}</>;
 }
-function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lockAgent, onClose, product, standalone }: VoiceConversationContext & { onClose(): void; product: string }): JSX.Element {
+function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lockAgent, onClose, product, standalone, startOnOpen }: VoiceConversationContext & { onClose(): void; product: string }): JSX.Element {
   const phone = useMediaQuery('(max-width:599.95px)');
   const ownerId = useId();
+  const openingCaptureAttempted=useRef(false);
   const root = useRef<HTMLDivElement | null>(null);
   const generation = useRef(0);
   const observationCleanup = useRef<() => void>();
@@ -507,6 +510,13 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
     return dispose;
   }, [ messageId, conversationId, agentId, ownerId, product, queryClient, changePhase, suspend, stopAutomatic]);
   useEffect(() => {
+    if (!startOnOpen || openingCaptureAttempted.current || !alive.current || !root.current?.isConnected ||
+        !live || !checked || recovering || blocked || attempt.current || sttUnavailable ||
+        phase !== "ready" || muted || document.visibilityState === "hidden") return;
+    openingCaptureAttempted.current=true;
+    startCall();
+  }, [startOnOpen, live, checked, recovering, blocked, sttUnavailable, phase, muted, surfaceEpoch]);
+  useEffect(() => {
     if (!muted && handsFree && phase === "ready") listenRef.current();
   }, [muted, handsFree, phase]);
   const recording = ["starting", "listening", "pausing", "stopping"].includes(dictation.status);
@@ -547,7 +557,7 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
         {!locked && availableAgents.length>1 && <TextField select SelectProps={{native:true}} label="Call Agent" value={agentId} disabled={recording||inFlight||Boolean(attempt.current)} onChange={e=>setAgentId(e.target.value)} sx={{mb:2}}>
           <option value="" disabled>Choose an Agent</option>{availableAgents.map(a=><option key={a.id} value={a.id}>{a.title}</option>)}
         </TextField>}
-        <Stack spacing={1} sx={{mb:2,"& .MuiAlert-root":{borderRadius:3,fontSize:13}}>
+        <Stack spacing={1} sx={{mb:2,"& .MuiAlert-root":{borderRadius:3,fontSize:13}}}>
           {sttUnavailable && <Alert severity="info">{sttUnavailable} Type a turn in Transcript.</Alert>}
           {ttsUnavailable && <Alert severity="info">{ttsUnavailable} Replies remain in Chat.</Alert>}
           {deliveryNotice && <Alert severity="info">{deliveryNotice}</Alert>}

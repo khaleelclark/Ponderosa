@@ -1,6 +1,7 @@
 // Deferred source: run only after the normal dependency build is authorized.
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import {requiredReplyRequest} from '../../apps/server/dist/required-reply-route.js';
 import {VoiceReplyStream} from '../../apps/server/dist/voice-reply-stream.js';
 import {parseReplyStreamArguments,replyStreamSource,replyStreamCommit} from '../../apps/server/dist/reply-stream-publication.js';
 
@@ -73,4 +74,18 @@ test('voice source follows only the latest acknowledged injection despite old ta
  assert.equal(replyStreamSource(store,coordination,scope,'voice').messageId,'call-new');
  selected='old-injection';assert.equal(replyStreamSource(store,coordination,scope,'voice'),undefined,'a satisfied earlier call cannot reauthorize');
  selected='new-injection';satisfied=true;assert.equal(replyStreamSource(store,coordination,scope,'voice'),undefined);
+});
+
+
+test('call response identity stays separate from an older task final while a delegated call retains its own final',()=>{
+ const route={intent:'direct_to_user'},base={agentId:'agent',replyAuthority:route,state:'pending',deliveryPhase:'final'};
+ const task={...base,sourceActivationId:'task'},call={...base,sourceActivationId:'call',state:'satisfied',deliveryPhase:'initial'};
+ const coordination={requiredReplyObligationsForRun:()=>[task,call],steeringInjectionIds:()=>['call-injection'],
+  promptInjectionForActivation:(_run,id)=>({id:id==='call'?'call-injection':'task-injection'}),
+  latestAcknowledgedPromptInjection:()=>({id:'call-injection'}),activationIdsForInjection:()=>['call'],
+  activationPayloads:()=>[{id:'call',payload:{dispatch:{voiceReply:true}}}],runtimeCommunication:()=>undefined};
+ const answer=requiredReplyRequest(coordination,'run',route),final=requiredReplyRequest(coordination,'run',route,'final');
+ assert.deepEqual(answer.sourceActivationIds,['call']);assert.deepEqual(final.sourceActivationIds,['task']);assert.notEqual(final.key,answer.key);
+ call.deliveryPhase='final';call.state='pending';
+ assert.deepEqual(requiredReplyRequest(coordination,'run',route,'final').sourceActivationIds,['call','task'],'a call that delegates work keeps its tracked final obligation');
 });

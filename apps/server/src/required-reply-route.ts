@@ -49,17 +49,18 @@ export function requiredReplyRequest(coordination: CoordinationV3Store, runId: s
   const newest = groups.filter(g => g.rank === newestRank).map(g => g.obligation);
   const latest = coordination.latestAcknowledgedPromptInjection(runId);
   const latestIds = latest ? coordination.activationIdsForInjection(latest.id,runId) : [];
-  const callSources = !taskDelivery && authority.intent === "direct_to_user" && latestIds.length === 1
+  const callSources = authority.intent === "direct_to_user" && latestIds.length === 1
     ? coordination.activationPayloads(obligations[0]?.agentId ?? "",latestIds,runId)
       .filter(a=>(a.payload as {dispatch?:{voiceReply?:boolean}}|undefined)?.dispatch?.voiceReply===true).map(a=>a.id) : [];
-  const callObligations = obligations.filter(o=>callSources.includes(o.sourceActivationId));
+  const callObligations = !taskDelivery ? obligations.filter(o=>callSources.includes(o.sourceActivationId)) : [];
+  const taskObligations = taskDelivery && callSources.length ? obligations.filter(o=>(!callSources.includes(o.sourceActivationId) || o.deliveryPhase==='final') && (o.state==='pending' || o.deliveryPhase==='final')) : undefined;
   // A call answer has a separate publication identity from the unfinished task
-  // sharing its Run. After that answer, ordinary task delivery resumes normally.
-  const identitySources = callObligations.length ? callObligations : [...new Map([...newest, ...obligations.filter(o => o.deliveryPhase === 'final')]
-    .map(o => [o.sourceActivationId, o])).values()];
+  // sharing its Run. Explicit task delivery selects the unfinished task instead.
+  const identitySources = taskObligations ?? (callObligations.length ? callObligations : [...new Map([...newest, ...obligations.filter(o => o.deliveryPhase === 'final')]
+    .map(o => [o.sourceActivationId, o])).values()]);
   const key = JSON.stringify({ route: routeKey, sources: identitySources.map(o => [o.sourceActivationId, o.deliveryPhase])
     .sort((a, b) => a[0]!.localeCompare(b[0]!)) });
-  const pending = (callObligations.length ? callObligations : obligations).filter(o=>o.state==='pending');
+  const pending = (taskObligations ?? (callObligations.length ? callObligations : obligations)).filter(o=>o.state==='pending');
   const receipts = identitySources.flatMap(o => {
     if (o.state !== 'satisfied' || !o.satisfiedCommunicationId) return [];
     const payload = coordination.runtimeCommunication(o.satisfiedCommunicationId)?.payload as {

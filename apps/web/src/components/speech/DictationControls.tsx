@@ -150,7 +150,7 @@ export function DictationControls({
           disabled={!anchor || disabled || active || paused || !voiceContext || !voiceContext.agents.some(agent =>
             agent.projectId === voiceContext.projectId && agent.conversationId === voiceContext.conversationId &&
             (!voiceContext.selectedAgentId || agent.id === voiceContext.selectedAgentId))}
-          onClick={() => { if (!anchor) return; setAnchor(null); setOpenedCallOwner(callOwner); }}
+          onClick={() => { if (!anchor || disabled || active || paused || !voiceContext || !voiceContext.agents.some(agent => agent.projectId===voiceContext.projectId && agent.conversationId===voiceContext.conversationId && (!voiceContext.selectedAgentId || agent.id===voiceContext.selectedAgentId))) return; setAnchor(null); setOpenedCallOwner(callOwner); }}
         >
           <ListItemIcon><PhoneIcon fontSize="small" /></ListItemIcon>
           <ListItemText primary="Voice call" secondary={active || paused ? "Stop dictation first" : !voiceContext ? "Choose a source Chat and Agent" : undefined} />
@@ -170,7 +170,7 @@ export function DictationControls({
         </MenuItem>
       </Menu>
       {recordingOpen&&!disabled&&onVoiceAttachment&&recordingContainer&&createPortal(<VoiceMessageRecorder onAttach={(file,transcript)=>{const failure=onVoiceAttachment(file);if(!failure&&transcript)onFinalTranscript(transcript);return failure;}} maxBytes={maxRecordingBytes} onClose={()=>{restoreRecordingFocus.current=recordingContainer.contains(document.activeElement);setOpenedRecordingOwner(undefined);}}/>,recordingContainer)}
-      {voiceContext && callOpen && !disabled && <VoiceConversation {...voiceContext} standalone={voiceContext.standalone??isOutputAppPath(window.location.pathname)} open onClose={() => setOpenedCallOwner(undefined)} />}
+      {voiceContext && callOpen && !disabled && <VoiceConversation {...voiceContext} startOnOpen standalone={voiceContext.standalone??isOutputAppPath(window.location.pathname)} open onClose={() => setOpenedCallOwner(undefined)} />}
       {active || paused ? (
         <Tooltip title="Stop voice dictation">
           <span>

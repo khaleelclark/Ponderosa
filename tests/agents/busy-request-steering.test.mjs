@@ -257,8 +257,18 @@ test('busy calls steer with priority and distinct source receipts; late old call
  let store;
  await withFixture(t,async f=>{
   const chat=await f.createChat('Priority call'),agent=await f.createIdleAgent(chat,'Call partner');
-  const session=await f.hold(agent.id),run=(await f.detail(agent.id)).runs[0].id;
+  let session=await f.hold(agent.id);const originalRun=(await f.detail(agent.id)).runs[0].id;
   const coord=new CoordinationV3Store(store.sqlite);
+  const worker=await f.createIdleAgent(chat,'Inert task worker');
+  const delegated=f.ok(await f.tool(session,'ponderosa_coordinate',{idempotencyKey:'call-task-delegation',requests:[{recipientAgentId:worker.id,text:'Complete synthetic task prerequisite',lifetime:{kind:'indefinite'}}]}));
+  await until(()=>coord.getRequest(delegated.requestIds[0])?.state==='completed','synthetic prerequisite completed');
+  // Consume the canonical outcome on the real continuation before claiming
+  // final delivery; a call must preserve this result-integration barrier.
+  f.plans.set(agent.id,[{hold:true}]);session.finish();
+  await until(()=>f.turns.filter(turn=>turn.agentId===agent.id).length===2,'task continuation consumes prerequisite');
+  session=f.sessions.get(agent.id);
+  const run=coord.activeAgentRun(agent.id).id;assert.notEqual(run,originalRun);
+  assert.ok(coord.requiredReplyObligationsForRun(run).some(o=>o.deliveryPhase==='final'&&o.state==='pending'),'tracked delegation preserves original final delivery');
   const send=async key=>f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{
    text:`Synthetic call ${key}`,idempotencyKey:key,recipients:[{agentId:agent.id}],activeRunDelivery:'steer',voiceReply:true}));
   const first=await send('call-one');
@@ -278,7 +288,9 @@ test('busy calls steer with priority and distinct source receipts; late old call
   const secondActivation=coord.runtimeCommunicationForEvent(secondId,agent.id).activations[0].id;
   const later=await until(()=>{const i=coord.promptInjectionForActivation(run,secondActivation);return i?.state==='acknowledged'&&i;},'second call steering acknowledged');
   assert.notEqual(later.id,injection.id);
-  assert.notEqual((await f.tool(session,'ponderosa_message',oldArgs)).status,200,'stale first call response is fenced');
+  const oldReplay=f.ok(await f.tool(session,'ponderosa_message',oldArgs));
+  assert.equal(oldReplay.eventId,answer.eventId,'an exact old replay returns only its existing receipt');
+  assert.notEqual((await f.tool(session,'ponderosa_message',{...oldArgs,text:'Late unpublished first-call answer'})).status,200,'an unpublished stale first-call response is fenced');
   assert.equal(coord.requiredReplyObligationsForRun(run).find(o=>o.sourceActivationId===secondActivation).state,'pending');
   let status=f.ok(await f.api('GET',`/api/conversations/${chat.id}/voice-replies/${secondId}/${agent.id}`));
   assert.equal(status.canonicalReplyEventId,undefined,'first reply cannot satisfy second call');
@@ -291,6 +303,6 @@ test('busy calls steer with priority and distinct source receipts; late old call
   assert.ok(coord.requiredReplyObligationsForRun(run).some(o=>o.sourceActivationId!==firstActivation&&o.sourceActivationId!==secondActivation&&o.state==='pending'));
   f.ok(await f.tool(session,'ponderosa_message',{intent:'direct_to_user',text:'Original task complete',taskDelivery:'final',steeringInjectionId:later.id}));
   const replay=await send('call-two');assert.equal(replay.message.communicationEventId,secondId);
-  assert.equal((await f.detail(agent.id)).runs.length,1,'calls steer the existing Run');
+  assert.equal((await f.detail(agent.id)).runs.length,2,'both calls steer the existing continuation without another Run');
  },{storeFactory:dataDir=>(store=new AgentStore(dataDir))});
 });
