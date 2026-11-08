@@ -16,7 +16,7 @@ export function useQueuedMessageCommandMutation<Variables extends string | { del
   attempts: MutableRefObject<QueuedMessageCommandAttemptRegistry>;
   input(variables: Variables): QueuedMessageCommandInput;
   dispatch(variables: Variables, request: { idempotencyKey: string; canonicalText?: string }): Promise<Response>;
-  invalidate(): void;
+  invalidate(): void | Promise<unknown>;
   onFailure(failure?: QueuedMessageCommandFailure): void;
   onSuccess?(response: Response, variables: Variables): void;
 }) {
@@ -28,7 +28,12 @@ export function useQueuedMessageCommandMutation<Variables extends string | { del
         request => dispatch(variables, request));
     },
     onMutate: () => onFailure(undefined),
-    onSuccess: (response, variables) => { invalidate(); onSuccess?.(response, variables); },
+    onSuccess: async (response, variables) => {
+      onSuccess?.(response, variables);
+      // Keep the accepted edit visible until the canonical queue is refreshed.
+      // Refresh failure must never turn a committed command into a retry.
+      try { await invalidate(); } catch {}
+    },
     onError: (error, variables) => {
       onFailure({ error: error instanceof Error ? error : new Error(String(error)),
         deliveryId: typeof variables === "string" ? variables : variables.deliveryId, retry: () => mutation.mutate(variables) });

@@ -254,6 +254,11 @@ html {
     max-width: 100%;
   }
 
+  /* Edge SVGs overflow a zero-width world-coordinate container. */
+  #main-content .react-flow__edges svg {
+    max-width: none;
+  }
+
   .chat-scroll-region pre,
   .chat-scroll-region table,
   [data-preview-capability] pre,

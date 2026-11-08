@@ -1,3 +1,5 @@
+import {QueryClient,QueryClientProvider} from '@tanstack/react-query';
+import {useQueuedConversationMessagesController} from '../../apps/web/src/components/useQueuedConversationMessagesController';
 import {createRoot} from 'react-dom/client';
 import {flushSync} from 'react-dom';
 import {CssBaseline} from '@mui/material';
@@ -113,4 +115,42 @@ export async function queuedTrayParentHydrationRegression():Promise<void>{
   removeCapturedSubmission(pendingId);await until(()=>!host.querySelector('[data-operation-id]'),'External outbox removal still updates');
   assert(host.querySelector<HTMLInputElement>('[aria-label="Memo sibling draft"]')!.value==='Retain draft λ😀','Sibling draft bytes remain unchanged');
  }finally{root.unmount();host.remove();removeCapturedSubmission(pendingId);}
+}
+
+
+export async function queuedTrayAcceptedEditRegression():Promise<void>{
+ const host=document.createElement('div');document.body.append(host);const root=createRoot(host),nativeFetch=globalThis.fetch;
+ const client=new QueryClient({defaultOptions:{queries:{retry:false,refetchOnWindowFocus:false,gcTime:Infinity},mutations:{retry:false}}});
+ const original:QueuedConversationMessageDto={deliveryId:'accepted-delivery',messageId:'accepted-message',conversationId:'accepted-chat',targetAgentId:'accepted-agent',position:1,text:'Queued note original',createdAt:'2026-11-08T00:00:00Z',status:'queued'};
+ let canonical=[original],writes=0,refetches=0,accepted=false,release:(()=>void)|undefined;
+ const json=(value:unknown)=>new Response(JSON.stringify(value),{headers:{'content-type':'application/json'}});
+ globalThis.fetch=async(raw,init)=>{
+  const url=new URL(String(raw),location.origin),method=init?.method??'GET';
+  if(method==='PATCH'){writes++;const body=JSON.parse(String(init?.body));canonical=[{...original,text:body.text}];accepted=true;return json({edited:true,replayed:false,status:'edited'});}
+  if(method==='GET'&&url.pathname==='/api/conversations/accepted-chat/queued-messages'){refetches++;if(accepted)await new Promise<void>(resolve=>{release=resolve;});return json(canonical);}
+  if(method==='POST'&&url.pathname.endsWith('/cancel')){writes++;canonical=[];return json({cancelled:true,replayed:false,status:'cancelled'});}
+  throw Error('Unexpected queue regression request '+method+' '+url.pathname);
+ };
+ function Surface(){const queue=useQueuedConversationMessagesController('accepted-chat');return <><CssBaseline/><QueuedMessageTray messages={queue.query.data??[]} busy={queue.edit.isPending||queue.cancel.isPending} onEdit={(message,text)=>queue.edit.mutateAsync({deliveryId:message.deliveryId,targetAgentId:message.targetAgentId,text})} onDelete={message=>queue.cancel.mutateAsync(message.deliveryId)} onSteer={()=>{}}/></>;}
+ const tray=()=>host.querySelector<HTMLElement>('[aria-label="Queued messages"]')!;
+ const field=()=>host.querySelector<HTMLTextAreaElement>('textarea[aria-label^="Edit queued message"]');
+ const button=(name:string)=>host.querySelector<HTMLButtonElement>('[aria-label="'+name+'"]')!;
+ const checkpoint=async(name:string)=>{await (window as Window&{phase2UiCheckpoint?:(name:string)=>Promise<void>}).phase2UiCheckpoint?.(name);};
+ try{
+  root.render(<QueryClientProvider client={client}><Surface/></QueryClientProvider>);
+  await until(()=>Boolean(tray()),'Canonical original queue loads');
+  button('Edit queued message 1').click();await until(()=>Boolean(field()),'Edit opens');
+  const input=field()!;Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value')!.set!.call(input,'Queued note edited');input.dispatchEvent(new Event('input',{bubbles:true}));await tick();
+  Array.from(tray().querySelectorAll('button')).find(button=>button.textContent==='Save')!.click();
+  await until(()=>accepted&&Boolean(release),'Accepted edit starts canonical refresh');
+  assert(field()?.value==='Queued note edited','Accepted edit remains visible while the server projection refreshes');
+  assert(field()?.disabled,'Pending accepted edit cannot be changed or submitted twice');
+  assert(Array.from(tray().querySelectorAll('button')).find(button=>button.textContent==='Cancel')!.disabled,'Pending refresh cannot expose obsolete text through Cancel');
+  await checkpoint('queue-accepted-refresh-pending');
+  release!();await until(()=>!field()&&tray().textContent?.includes('Queued note edited')===true,'Canonical refresh replaces editor with accepted text');
+  assert(!tray().textContent?.includes('Queued note original'),'Original text never reappears after acceptance');
+  await checkpoint('queue-accepted-refreshed');
+  accepted=false;button('Delete queued message 1').click();await until(()=>!host.querySelector('[aria-label="Queued messages"]'),'Delete follows the accepted edit without reverting text');
+  assert(writes===2&&refetches===3,'Exactly one edit, one delete and their canonical refreshes');
+ }finally{release?.();root.unmount();client.clear();globalThis.fetch=nativeFetch;host.remove();}
 }

@@ -394,7 +394,7 @@ export function AgentCreateForm({
   }
 
   return (
-    <Stack spacing={2.25}>
+    <Stack spacing={2.25} sx={{ "& .MuiInputLabel-root": { transition: "none" } }}>
       {!fixedProjectId ? (
         <FormControl fullWidth>
           <InputLabel id="create-agent-project-label">Project</InputLabel>

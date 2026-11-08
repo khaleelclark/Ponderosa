@@ -2,6 +2,14 @@
   "baseline": "d12fcb42d5e92ac4b01668293669ab7bf4650f9c",
   "tests": [
     {
+      "path": "tests/branches/deployment-effects.test.mjs",
+      "feature": "branches",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; actual publication consequence presentation; no runtime/provider",
+      "origin": "Publication review preserves consequential effects as concise labeled facts"
+    },
+    {
       "oldPath": "apps/server/test/delegation.test.mjs",
       "path": "tests/agents/delegation.test.mjs",
       "feature": "agents",

@@ -129,6 +129,7 @@ function QueuedMessageTrayComponent({ messages, scope, attachmentNamesForMessage
           <span className="MuiTypography-root MuiTypography-caption queued-message-position" aria-label={message.position ? `Queue position ${message.position}` : "Queue position pending"}>{message.position ?? "…"}</span><SubdirectoryArrowRightIcon aria-hidden sx={{ color: "text.disabled", fontSize: 16, flex: "0 0 auto" }} />
           {editing ? <TextField
             value={editingText}
+            disabled={busy}
             onChange={(event) => setEditingText(event.target.value)}
             size="small"
             fullWidth
@@ -150,7 +151,7 @@ function QueuedMessageTrayComponent({ messages, scope, attachmentNamesForMessage
           </span> : null}
           {editing ? <>
             <Button size="small" disabled={busy || !editingText.trim()} onClick={() => run(() => onEdit(message, editingText.trim()), () => setEditingId(undefined))}>Save</Button>
-            <Button size="small" color="inherit" onClick={() => setEditingId(undefined)}>Cancel</Button>
+            <Button size="small" color="inherit" disabled={busy} onClick={() => setEditingId(undefined)}>Cancel</Button>
           </> : <>
             <Tooltip title="Steer now"><span><IconButton size="small" disabled={busy} aria-label={`Steer queued message ${message.position ?? "pending"}`} onClick={() => run(() => onSteer(message))}><SubdirectoryArrowRightIcon fontSize="small" /></IconButton></span></Tooltip>
             <Tooltip title="Edit Queued Message"><span><IconButton size="small" disabled={busy} aria-label={`Edit queued message ${message.position ?? "pending"}`} onClick={() => { setEditingId(message.deliveryId); setEditingText(message.text); }}><EditOutlinedIcon fontSize="small" /></IconButton></span></Tooltip>

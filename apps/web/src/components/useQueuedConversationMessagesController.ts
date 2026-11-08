@@ -68,7 +68,7 @@ export function useQueuedConversationMessagesController(
 
   const invalidate = () => {
     if (!conversationId) return;
-    void queryClient.invalidateQueries({
+    return queryClient.invalidateQueries({
       queryKey: queryKeys.queuedMessages.conversation(conversationId),
     });
   };

@@ -96,7 +96,7 @@ export function useAgentMessageController({
     }
   }, [queuedMessageFailure, queuedMessagesQuery.data, queuedMessagesQuery.isFetching]);
   const invalidateQueuedMessages = () =>
-    void queryClient.invalidateQueries({
+    queryClient.invalidateQueries({
       queryKey: queryKeys.queuedMessages.agent(agentId),
     });
   const commandOptions = { attempts: queuedCommandAttempts, invalidate: invalidateQueuedMessages, onFailure: setQueuedMessageFailure };
