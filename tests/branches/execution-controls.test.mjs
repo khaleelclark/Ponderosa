@@ -33,7 +33,7 @@ function budgetOwner(){
  vm.runInNewContext(compile('../../apps/web/src/components/branches/BranchExecutionBudget.tsx'),{exports:module.exports,JSON,Number,Boolean,String,Date,Error,require:name=>{
   if(name==='react')return react;
   if(name==='react/jsx-runtime')return require(name);
-  if(name==='@mui/material')return Object.fromEntries(['Alert','Button','Dialog','DialogActions','DialogContent','DialogTitle','FormControlLabel','MenuItem','Paper','Stack','Switch','TextField','Typography'].map(name=>[name,name]));
+  if(name==='@mui/material')return Object.fromEntries(['Alert','Box','Button','Dialog','DialogActions','DialogContent','DialogTitle','FormControlLabel','MenuItem','Paper','Stack','Switch','TextField','Typography'].map(name=>[name,name]));
   if(name==='@tanstack/react-query')return {useQuery:options=>{scope.queryOptions=options;return scope.query},useQueryClient:()=>({invalidateQueries:input=>{invalidations.push(input);return Promise.resolve()}}),useMutation};
   if(name==='../../clientId')return {createClientId:()=>`command-${++key}`};
   if(name==='../../api/types')return {ApiRequestError};
@@ -58,7 +58,14 @@ test('loaded budget presentation stays unchanged during ordinary background refr
 });
 
 test('background budget refresh preserves edits and available actions without dropping real authority guards',()=>{
- const f=budgetOwner();f.render();f.field('Executions per period').onChange({target:{value:'25'}});
+ const unlimited=budgetOwner();unlimited.scope.query.data={...budget(),policy:null,used:0,allowance:0,heldCount:0,periodId:null,resetsAt:undefined};
+ assert.match(text(unlimited.render()),/Unlimited automatic executions/);assert.equal(nodes(unlimited.render()).some(node=>node.type==='TextField'&&['Executions per period','Budget period'].includes(node.props.label)),false);assert.equal(nodes(unlimited.render()).some(node=>node.type==='Button'&&text(node.props.children)==='Save budget'),false);
+ assert.equal(unlimited.find('Switch',()=>true).checked,false);unlimited.find('Switch',()=>true).onChange(null,true);
+ assert.equal(unlimited.field('Executions per period').value,100);assert.equal(unlimited.field('Budget period').value,'month');assert.equal(unlimited.button('Save and start new period').disabled,false);
+ assert.equal(unlimited.guards.get('branch-execution-budget:owner'),true);assert.equal(unlimited.writes.length,0,'Enabling a draft does not save a budget');assert.equal(unlimited.scope.query.data.policy,null);
+ unlimited.find('Switch',()=>true).onChange(null,false);assert.equal(nodes(unlimited.render()).some(node=>node.type==='TextField'&&['Executions per period','Budget period'].includes(node.props.label)),false);assert.equal(unlimited.guards.get('branch-execution-budget:owner'),false);assert.equal(unlimited.writes.length,0);
+ const f=budgetOwner();f.render();assert.equal(nodes(f.render()).some(node=>node.type==='TextField'&&['Executions per period','Budget period'].includes(node.props.label)),false);assert.equal(f.guards.get('branch-execution-budget:owner'),false);
+ f.button('Edit budget').onClick();assert.equal(f.field('Executions per period').value,10);assert.equal(f.button('Save budget').disabled,true);assert.equal(f.guards.get('branch-execution-budget:owner'),false);f.field('Executions per period').onChange({target:{value:'25'}});
  const initial=f.render();assert.equal(f.button('Save budget').disabled,false);assert.equal(f.button('Allow more executions').disabled,false);
  f.scope.query={...f.scope.query,isFetching:true};const refreshing=f.render();
  assert.equal(text(refreshing),text(initial));assert.equal(f.field('Executions per period').value,25);
@@ -72,7 +79,7 @@ test('background budget refresh preserves edits and available actions without dr
 });
 
 test('budget saves preserve exact revision, period and command identity after an uncertain response',async()=>{
- const f=budgetOwner();f.render();f.field('Budget period').onChange({target:{value:'week'}});
+ const f=budgetOwner();f.render();f.button('Edit budget').onClick();f.field('Budget period').onChange({target:{value:'week'}});
  f.scope.failure=new Error('Controlled response loss');f.button('Save and start new period').onClick();await assert.rejects(f.mutation(0).promise,/response loss/);
  assert.equal(f.writes.length,1);assert.equal(f.writes[0].body.expectedRevision,3);assert.equal(f.writes[0].body.expectedPeriodId,'period-3');assert.equal(f.writes[0].body.acknowledgeNewPeriod,true);assert.equal(f.writes[0].body.policy.period,'week');
  assert.equal(f.button('Retry budget save').disabled,false);assert.equal(f.field('Budget period').disabled,true);assert.equal(f.guards.get('branch-execution-budget:owner'),true);
@@ -93,11 +100,11 @@ test('allowance retains period limits, queue warning and exact safe retry while 
 });
 
 test('pending and rejected budget updates retain their locks and require current authority before saving again',async()=>{
- const f=budgetOwner();f.render();f.field('Executions per period').onChange({target:{value:'20'}});
+ const f=budgetOwner();f.render();f.button('Edit budget').onClick();f.field('Executions per period').onChange({target:{value:'20'}});
  let finish;f.scope.response=new Promise(resolve=>{finish=resolve});f.button('Save budget').onClick();
  assert.equal(f.button('Saving…').disabled,true);assert.equal(f.field('Executions per period').disabled,true);
  finish({...budget(),revision:4,policy:{limit:20,period:'day'}});await f.mutation(0).promise;
- f.scope.query={...f.scope.query,data:{...budget(),revision:4,policy:{limit:20,period:'day'}}};f.render();f.field('Executions per period').onChange({target:{value:'30'}});
+ f.scope.query={...f.scope.query,data:{...budget(),revision:4,policy:{limit:20,period:'day'}}};f.render();assert.equal(nodes(f.render()).some(node=>node.type==='TextField'&&['Executions per period','Budget period'].includes(node.props.label)),false,'A successful save closes the editor');f.button('Edit budget').onClick();assert.equal(f.field('Executions per period').value,20);f.field('Executions per period').onChange({target:{value:'30'}});
  f.scope.failure=new f.ApiRequestError(409,'Controlled revision conflict');f.button('Save budget').onClick();await assert.rejects(f.mutation(0).promise,/revision conflict/);
  f.scope.query={...f.scope.query,data:{...budget(),revision:5,periodId:'period-5'}};f.render();
  assert.equal(f.field('Executions per period').value,30);assert.equal(f.field('Executions per period').disabled,false);assert.equal(f.button('Save budget').disabled,true);
