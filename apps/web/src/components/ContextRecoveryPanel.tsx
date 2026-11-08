@@ -60,6 +60,7 @@ export function ContextRecoveryPanel({agentId}:{agentId:string}):JSX.Element {
    {(restored.error||error||status.error)&&<Alert severity="error">{restored.error||error||status.error?.message}</Alert>}
    {notice&&<Alert severity="info">{notice}</Alert>}
    {status.data&&<>
+    {status.isError&&<Typography color="warning.main" fontWeight={600}>Last loaded result</Typography>}
     {!boundary&&!request&&<Typography fontWeight={600}>No eligible retained context boundary is available.</Typography>}
     {request&&<>
      <Typography fontWeight={600}>Recorded phase: {request.progress?.phase.replaceAll('_',' ')??'not recorded'} · {request.state==='dismissed'?'dismissed':'dispatch held'}</Typography>
@@ -82,7 +83,7 @@ export function ContextRecoveryPanel({agentId}:{agentId:string}):JSX.Element {
      <FormControlLabel control={<Checkbox checked={acknowledged===boundaryIdentity} onChange={event=>setAcknowledged(event.target.checked?boundaryIdentity:'')}/>} label="I understand prior effects remain unknown and this may compact retained native context"/>
      <Button disabled={starting||changing||status.isFetching||status.isError||acknowledged!==boundaryIdentity} onClick={()=>void start()}>Request context recovery</Button>
     </>}
-    <details><summary style={{minHeight:44,cursor:'pointer',overflowWrap:'anywhere'}}>Source evidence</summary><Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{JSON.stringify({boundary,request,sourceEvidence:status.data.sourceEvidence},null,2)}</Typography></details>
+    <details><summary style={{minHeight:44,cursor:'pointer',overflowWrap:'anywhere'}}>Source evidence{status.isError?' · last loaded':''}</summary><Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{JSON.stringify({boundary,request,sourceEvidence:status.data.sourceEvidence},null,2)}</Typography></details>
    </>}
   </>}
  </Stack></Paper>;

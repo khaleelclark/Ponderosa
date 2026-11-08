@@ -12,8 +12,9 @@ export async function contextRecoveryControlsRegression():Promise<void>{
  let state:Awaited<ReturnType<typeof api.getContextRecovery>>={support:{status:'managed_compaction',crashReconciliation:'hold_without_native_query'},boundary:{providerSessionId:'session',sourceRunId:'source-run',toolContractHash:'a'.repeat(64),sourceFence:7},request:null};
  const reads:Array<string|undefined>=[],starts:Parameters<typeof api.recoverContext>[1][]=[],stops:string[]=[],dismissals:string[]=[];
  const snapshots:Array<{key:string|undefined;requestId:string|undefined;phase:string|undefined}>=[];
+ let readFailure=false;
  let finish:(value:unknown)=>void=()=>{};
- api.getContextRecovery=async(_agent,key)=>{reads.push(key);snapshots.push({key,requestId:state.request?.id,phase:state.request?.progress?.phase});return structuredClone(state);};
+ api.getContextRecovery=async(_agent,key)=>{reads.push(key);if(readFailure)throw Error('Recovery status read failed');snapshots.push({key,requestId:state.request?.id,phase:state.request?.progress?.phase});return structuredClone(state);};
  api.recoverContext=async(_agent,input)=>{starts.push(input);state={...state,request:{id:starts.length===1?'exact-recovery':'stopped-recovery',agentId:'fixture-agent',projectId:'project',scopeKey:'scope',sourceRunId:'source-run',providerSessionId:'session',toolContractHash:'a'.repeat(64),sourceFence:7,state:'unsupported_fenced',code:'provider_context_recovery_source_work_held',createdAt:'now',...(starts.length===1?{}:{progress:{phase:'native_started' as const,updatedAt:'now',sourceWork:'held_unknown' as const}})}};return new Promise(resolve=>{finish=resolve;});};
  api.stopContextRecovery=async(_agent,id)=>{stops.push(id);state={...state,request:{...state.request!,progress:{phase:'held',updatedAt:'now',sourceWork:'held_unknown',nativeInvoked:true}}};return {stopRequested:true};};
  api.dismissContextRecovery=async(_agent,id)=>{dismissals.push(id);state={...state,request:null,boundary:null};return {recovered:false};};
@@ -52,9 +53,23 @@ export async function contextRecoveryControlsRegression():Promise<void>{
   assert(stops.join()==='stopped-recovery','Stop stays available during pending recovery and targets exact operation');
   assert(button('Dismiss settled hold').disabled,'settled hold cannot dismiss while initial request is pending');
   finish({});await flush();
+  const heldRequest=state.request;
   const acknowledgement=Array.from(host.querySelectorAll('label')).find(item=>item.textContent?.includes('dismissal leaves original work unresolved'))!;
   acknowledgement.querySelector<HTMLInputElement>('input')!.click();await flush();button('Dismiss settled hold').click();await flush();
   assert(dismissals.join()==='exact-recovery,stopped-recovery','explicit dismissals target their own settled operations');
   assert(starts.length===2,'status polling, Stop and dismissal never replay either recovery or original work');
+  const stale=()=>host.textContent?.includes('Last loaded result');
+  assert(host.textContent?.includes('No eligible retained context boundary is available.')&&!stale(),'fresh no-boundary evidence is not marked stale');
+  readFailure=true;button('Reload recovery status').click();await flush();
+  assert(host.textContent?.includes('Recovery status read failed')&&stale(),'failed GET labels retained result while preserving its exact error');
+  assert(host.textContent?.includes('No eligible retained context boundary is available.')&&host.textContent?.includes('Source evidence · last loaded'),'prior result and source evidence remain clearly historical');
+  readFailure=false;button('Reload recovery status').click();await flush();
+  assert(!stale()&&!host.textContent?.includes('Source evidence · last loaded'),'successful retry restores fresh result labels');
+  state={...state,request:heldRequest};button('Reload recovery status').click();await flush();
+  assert(host.textContent?.includes('Recorded phase: held')&&button('Dismiss settled hold').disabled,'recorded request and dismissal acknowledgement guards remain intact');
+  api.stopContextRecovery=async()=>{throw Error('Exact recovery stop failed');};
+  button('Stop exact recovery').click();await flush();
+  assert(host.textContent?.includes('Exact recovery stop failed')&&!stale(),'mutation error alone does not mark the successful status GET stale');
+
  }finally{finish({});root.unmount();client.clear();host.remove();Object.assign(api,original);if(saved===null)localStorage.removeItem(storageKey);else localStorage.setItem(storageKey,saved);}
 }
