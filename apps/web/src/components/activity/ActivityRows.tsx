@@ -247,6 +247,9 @@ function GroupedActivityRow({
             </>
       ) : null}
       {entry.kind === "tool" ? <Box sx={{ pl: 1, borderLeft: 2, borderColor: "divider" }}>
+        <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 0.25, fontWeight: 700 }}>
+          Input:
+        </Typography>
         <CollapsibleCode value={toolInput || "null"} maxLines={4} />
       </Box> : null}
       {entry.kind === "file" && (entry.additions !== undefined || entry.deletions !== undefined) ? <Typography sx={{ fontSize: 10.5 }}>

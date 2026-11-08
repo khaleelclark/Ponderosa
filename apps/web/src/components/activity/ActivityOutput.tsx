@@ -6,6 +6,21 @@ import { api } from "../../api";
 import { queryKeys } from "../../queryKeys";
 import type { ActivityStreamResult } from "./activityStream";
 
+const INLINE_OUTPUT_DISPLAY_LIMIT = 800;
+
+function displayOutputText(raw: string): string {
+  // ponytail: larger/paged output stays raw; format only exact inline JSON within the existing display ceiling.
+  if (raw.length > INLINE_OUTPUT_DISPLAY_LIMIT || raw[0] !== "{" && raw[0] !== "[") return raw;
+  try {
+    const value: unknown = JSON.parse(raw);
+    if (JSON.stringify(value) !== raw) return raw;
+    const formatted = JSON.stringify(value, null, 2);
+    return formatted.length <= INLINE_OUTPUT_DISPLAY_LIMIT ? formatted : raw;
+  } catch {
+    return raw;
+  }
+}
+
 function byteLabel(bytes: number): string {
   if (bytes < 1_024) return `${bytes} B`;
   if (bytes < 1_024 * 1_024) return `${(bytes / 1_024).toFixed(1)} KB`;
@@ -45,8 +60,10 @@ export function ActivityOutput({
   const loadedBytes = pages.reduce((sum, page) => sum + page.pageUtf8Bytes, 0);
   const canonicalOutput = pages.map((page) => page.output).join("");
   const output = open && canonicalOutput ? canonicalOutput : result.output;
-  const lineCount = result.output.split("\n").length;
-  const collapsible = lineCount > collapsedLines || result.output.length > 800 || Boolean(reference);
+  const displayOutput = reference ? output : displayOutputText(output);
+  const rawLineCount = result.output.split("\n").length;
+  const lineCount = reference ? rawLineCount : Math.max(rawLineCount, displayOutput.split("\n").length);
+  const collapsible = lineCount > collapsedLines || result.output.length > INLINE_OUTPUT_DISPLAY_LIMIT || Boolean(reference);
   const totalBytes = reference?.totalUtf8Bytes ?? new TextEncoder().encode(result.output).byteLength;
 
   return <Box sx={{ mt: 0.75 }}>
@@ -70,7 +87,7 @@ export function ActivityOutput({
               variant="caption"
               color={result.isError ? "error.main" : "text.secondary"}
               sx={{ m: 0, whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontFamily: "monospace", lineHeight: 1.45, userSelect: "text" }}
-            >{output || "(no output)"}</Typography>}
+            >{displayOutput || "(no output)"}</Typography>}
     </Box>
     {collapsible ? <Stack direction="row" spacing={1} sx={{ alignItems: "center", mt: 0.25 }}>
       <Button size="small" color="inherit" onClick={() => setOpen((value) => !value)}>

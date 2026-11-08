@@ -398,3 +398,32 @@ test('valid same-Run action revision drift is neutral while malformed, foreign a
  f.setQuery('branch-execution-actions',{error:outage});assert.match(f.render(),/Decisions and failures could not refresh.*Actions service unavailable/);
  assert.equal(f.button('Retry Step').disabled,true);
 });
+
+async function activityQueryModule(){
+ const {pathToFileURL}=await import('node:url'),file=require.resolve('@tanstack/react-query/package.json');
+ const metadata=JSON.parse(await readFile(file,'utf8'));
+ return import(new URL(metadata.exports['.'].import.default,pathToFileURL(file)).href);
+}
+
+test('tool output formats only bounded exact inline JSON and preserves canonical fallbacks',async()=>{
+ const {ActivityOutput}=await import('../../apps/web/src/components/activity/ActivityOutput.tsx');
+ const {QueryClient,QueryClientProvider}=await activityQueryModule();
+ const render=(raw,reference)=>{const result=Object.freeze({activityId:'result',agentId:'agent',seq:1,completedAt:'2026-11-08T00:00:00Z',output:raw,isError:false,...(reference?{outputPreview:reference}:{})});const client=new QueryClient({defaultOptions:{queries:{retry:false}}});try{const html=renderToStaticMarkup(React.createElement(QueryClientProvider,{client},React.createElement(ActivityOutput,{result,collapsedLines:2})));assert.equal(result.output,raw);const match=/<pre\b[^>]*>([\s\S]*?)<\/pre>/.exec(html);assert.ok(match,'Actual output text is rendered');return{html,text:match[1]};}finally{client.clear();}};
+ const escaped=text=>renderToStaticMarkup(React.createElement('pre',null,text)).slice(5,-6);
+ for(const [raw,display]of[
+  ['{"ok":true,"items":[1,2]}','{\n  "ok": true,\n  "items": [\n    1,\n    2\n  ]\n}'],
+  ['[1,{"ok":false}]','[\n  1,\n  {\n    "ok": false\n  }\n]'],
+ ]){const view=render(raw);assert.equal(view.text,escaped(display));assert.match(view.html,/Show more/,'Formatted lines retain the existing bounded disclosure');}
+ for(const raw of['Ordinary tool text','42','null','{"duplicate":1,"duplicate":2}','{"n":9007199254740993}','{"n":-0}','{"n":1e2}',String.raw`{"value":"\u0061"}`,' {"ok":true}','{\n "ok":true\n}','{"broken":',JSON.stringify({long:'x'.repeat(810)}),'['.repeat(40)+'0'+']'.repeat(40)]){
+  assert.equal(render(raw).text,escaped(raw),'Canonical text must remain exact: '+raw.slice(0,60));
+ }
+ const large=JSON.stringify({long:'x'.repeat(810)}),largeView=render(large);assert.match(largeView.html,/Show more/);assert.ok(largeView.html.includes(new TextEncoder().encode(large).byteLength+' B'),'Byte count describes raw canonical bytes');
+ const raw='{"paged":true}',paged=render(raw,{sha256:'fixed',totalUtf8Bytes:1000,retrievalUrl:'/api/agents/agent/activity/1/output'});assert.equal(paged.text,escaped(raw));assert.match(paged.html,/Show more/,'Existing canonical-page disclosure remains available');
+});
+
+test('real expanded tool activity labels its existing input and output without changing their values',async()=>{
+ const {ActionGroupRow}=await import('../../apps/web/src/components/activity/ActivityRows.tsx');
+ const {QueryClient,QueryClientProvider}=await activityQueryModule();
+ const input=Object.freeze({agentId:'owned-agent'}),output='{"name":"Synthetic Agent","status":"running"}',entry={id:'tool-call',seq:1,createdAt:'2026-11-08T00:00:00Z',kind:'tool',name:'ponderosa_team_directory',input,result:{activityId:'tool-result',agentId:'owned-agent',seq:2,completedAt:'2026-11-08T00:00:01Z',output,isError:false}};
+ const client=new QueryClient({defaultOptions:{queries:{retry:false}}});try{const html=renderToStaticMarkup(React.createElement(QueryClientProvider,{client},React.createElement(ActionGroupRow,{entries:[entry],focusId:entry.id})));assert.ok(html.includes('Input:'));assert.ok(html.includes('Output:'));assert.ok(html.includes('owned-agent'));assert.ok(html.includes('&quot;name&quot;: &quot;Synthetic Agent&quot;'));assert.equal(entry.input,input);assert.equal(entry.result.output,output);}finally{client.clear();}
+});
