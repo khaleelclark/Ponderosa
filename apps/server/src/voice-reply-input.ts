@@ -15,11 +15,15 @@ export function canonicalVoiceReplyInput(
 ): { input: CommunicationEvent; activationId: string } | undefined {
   if (presentation === "text") return canonicalTextReplyInput(store, coordination, scope, publication);
   const { runId, agentId, conversationId } = scope;
-  if (!conversationId || coordination.requestIdsAttachedToRun(runId, agentId).length ||
-      canonicalDefaultReplyRoute(coordination, runId, agentId)?.intent !== "direct_to_user" ||
-      coordination.requiredReplyObligationsForRun(runId).some(o => o.state === "satisfied")) return undefined;
-  const ids = coordination.activationIdsAttachedToRun(runId, agentId);
+  if (!conversationId) return undefined;
+  // A steering packet owns its own source. Older attached work and satisfied
+  // call turns cannot authorize this turn or borrow its response.
+  const latest = coordination.latestAcknowledgedPromptInjection(runId);
+  const ids = latest ? coordination.activationIdsForInjection(latest.id, runId)
+    : coordination.activationIdsAttachedToRun(runId, agentId);
   if (ids.length !== 1) return undefined;
+  if (coordination.requiredReplyObligationsForRun(runId).some(o =>
+      o.sourceActivationId === ids[0] && o.state !== "pending")) return undefined;
   const activations = coordination.activationPayloads(agentId, ids, runId);
   if (activations.length !== 1 || activations[0]!.kind !== "human_message" ||
       activations[0]!.promptClass !== "human") return undefined;
@@ -43,7 +47,7 @@ export function canonicalVoiceReplyInput(
       input.audience.userId !== input.sender.userId || !Array.isArray(input.audience.agentIds) ||
       input.audience.agentIds.length !== 1 || input.audience.agentIds[0] !== agentId ||
       input.conversationId !== conversationId || input.document !== undefined ||
-      dispatch?.voiceReply !== true || dispatch.activeRunDelivery !== "queue" || dispatch.conversationId !== conversationId ||
+      dispatch?.voiceReply !== true || dispatch.activeRunDelivery !== "steer" || dispatch.conversationId !== conversationId ||
       !Array.isArray(dispatch.recipients) || dispatch.recipients.length !== 1 || dispatch.recipients[0]?.agentId !== agentId ||
       !agent || !activeChatResourceOwner(store,"agent",agent.id) || !chat || !activeChatResourceOwner(store,"conversation",chat.id) || agent.projectId !== input.projectId ||
       chat.projectId !== input.projectId || canonical.projectId !== input.projectId || agent.conversationId !== chat.id ||

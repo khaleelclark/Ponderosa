@@ -36,6 +36,8 @@ export interface VoiceReplyEvent { type: "voice_reply"; reply: VoiceReplySnapsho
 export interface VoiceReplyStatus {
   messageId: string; acceptedAt: string;
   runId?: string; leasedAt?: string; runStartedAt?: string; runStatus?: string;
+  /** Exact canonical reply bound to this source obligation, including shared Runs. */
+  canonicalReplyEventId?: string;
   memoryExposure?: { state: "disabled" | "pending" | "valid" | "invalid"; runId?: string; sessionResetSeq?: number; projectGeneration?: number; globalGeneration?: number };
   reply?: VoiceReplySnapshot;
 }

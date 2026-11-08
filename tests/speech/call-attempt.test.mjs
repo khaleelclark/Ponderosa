@@ -12,13 +12,13 @@ const prepare = (name, now=100) => prepareVoiceCallAttempt(route(name), words, (
 const slot = r => `ponderosa.voice.pending.v1:${JSON.stringify(r)}`;
 const legacy = a => { const {idempotencyKey, ...identity}=a.marker;return {...identity,version:1,request:a.request}; };
 const prepareLegacy = async name => {
-  const a=await prepare(name);const {voiceReply,...request}=a.request;
+  const a=await prepare(name);const {voiceReply,...base}=a.request;const request={...base,activeRunDelivery:"queue"};
   return {request,marker:{...a.marker,fingerprint:await durableSubmissionFingerprint(request)}};
 };
 test('mounted immutable request stays exact; only marker persists and reopening cannot reconstruct words', async () => {
   data.set('ponderosa.workspace.instance.v1','server-one');
   const a=await prepare('one'); assert.equal(retainVoiceCallAttempt(a),true);
-  assert.deepEqual(a.request,{text:words,voiceReply:true,idempotencyKey:'key-one',recipients:[{agentId:'agent'}],activeRunDelivery:'queue'});
+  assert.deepEqual(a.request,{text:words,voiceReply:true,idempotencyKey:'key-one',recipients:[{agentId:'agent'}],activeRunDelivery:'steer'});
   assert.equal(await voiceCallAttemptCanRetry(a,a.marker.route,101),true);
   assert.throws(()=>{a.request.text='changed';},TypeError);assert.throws(()=>{a.request.recipients[0].agentId='changed';},TypeError);
   const raw=data.get(slot(a.marker.route));assert.equal(raw.includes(words),false);assert.equal(raw.includes('request'),false);assert.equal(raw.includes('recipients'),false);
@@ -33,10 +33,10 @@ test('foreign origin/product/Project/Chat/Agent neither scans nor restores anoth
   }
   assert.equal(data.has(slot(a.marker.route)),true);settleVoiceCallAttempt(a.marker);
 });
-test('changed body/recipient/key/queue/fingerprint and instance cannot retry',async()=>{
+test('changed body/recipient/key/steer/fingerprint and instance cannot retry',async()=>{
   const a=await prepare('immutable');retainVoiceCallAttempt(a);
   assert.equal(await voiceCallAttemptCanRetry(a,a.marker.route,101),true);
-  for(const patch of [{text:'changed'},{idempotencyKey:'changed'},{recipients:[{agentId:'other'}]},{activeRunDelivery:'steer'},{engine:'claude'}]) {
+  for(const patch of [{text:'changed'},{idempotencyKey:'changed'},{recipients:[{agentId:'other'}]},{activeRunDelivery:'queue'},{engine:'claude'}]) {
     assert.equal(await voiceCallAttemptCanRetry({...a,request:{...a.request,...patch}},a.marker.route,101),false);
     assert.equal(await voiceCallAttemptCanRetry(a,a.marker.route,101),true);
   }

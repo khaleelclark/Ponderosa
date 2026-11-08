@@ -62,7 +62,7 @@ export function replyStreamSource(store:AgentStore,coordination:CoordinationV3St
     return source?{messageId:request.id,projectId:request.projectId,conversationId,acceptedAt:source.created_at,publication:selected}:undefined;
   }
   const source=canonicalVoiceReplyInput(store,coordination,scope,presentation,selected);
-  const route=selected??canonicalDefaultReplyRoute(coordination,runId,agentId);
+  const route=selected??(presentation==="voice" ? {intent:"direct_to_user" as const} : canonicalDefaultReplyRoute(coordination,runId,agentId));
   if(!source || !route || (route.intent==="broadcast" && store.getAgent(agentId)?.managerAgentId))return undefined;
   const publication:ReplyStreamPublication=selected??{kind:"message",...route};
   return {messageId:source.input.eventId,projectId:source.input.projectId,conversationId:source.input.conversationId!,acceptedAt:source.input.createdAt,publication};

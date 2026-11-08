@@ -58,3 +58,19 @@ test('acknowledgement exposes actual provider bytes only after exact native succ
 test('tool schema rejects authority borrowing and out-of-scope acknowledgement',()=>{
  for(const [value,presentation] of [[{acknowledgement:'hello'},'text'],[{acknowledgement:'x'.repeat(501)},'voice'],[{publication:{kind:'message',intent:'direct_to_user',recipientAgentIds:['peer']}},'text'],[{publication:{kind:'request_update',requestId:'request',updateKind:'answer'}},'text'],[{publication:{kind:'message',intent:'broadcast'}},'voice']])assert.throws(()=>parseReplyStreamArguments(value,presentation,[]));
 });
+
+
+test('voice source follows only the latest acknowledged injection despite old tasks and calls',()=>{
+ const {store,coordination}=fixture();
+ const voice={...privateInput,document:undefined,eventId:'call-new'};
+ let selected='new-injection',satisfied=false;
+ coordination.latestAcknowledgedPromptInjection=()=>({id:selected,kind:'steer'});
+ coordination.activationIdsForInjection=id=>id==='new-injection'?['new-call']:['old-call'];
+ coordination.activationPayloads=(_agent,ids)=>ids.map(id=>({id,kind:'human_message',promptClass:'human',payload:{communication:id==='new-call'?voice:{...voice,eventId:'call-old'},dispatch:{voiceReply:true}}}));
+ coordination.runtimeCommunicationForEvent=id=>({projectId:'project',payload:{communication:{...voice,eventId:id},dispatch:{voiceReply:true,activeRunDelivery:'steer',conversationId:'chat',recipients:[{agentId:'agent'}]}},activations:[{id:id==='call-new'?'new-call':'old-call',agentId:'agent'}]});
+ coordination.voiceReplyRunTiming=()=>({runId:'run'});
+ coordination.requiredReplyObligationsForRun=()=>[{sourceActivationId:'old-call',state:'satisfied',replyAuthority:{intent:'direct_to_user'}},{sourceActivationId:'new-call',state:satisfied?'satisfied':'pending',replyAuthority:{intent:'direct_to_user'}}];
+ assert.equal(replyStreamSource(store,coordination,scope,'voice').messageId,'call-new');
+ selected='old-injection';assert.equal(replyStreamSource(store,coordination,scope,'voice'),undefined,'a satisfied earlier call cannot reauthorize');
+ selected='new-injection';satisfied=true;assert.equal(replyStreamSource(store,coordination,scope,'voice'),undefined);
+});

@@ -248,7 +248,13 @@ export class CoordinationV3SteeringAuthority {
       // boundary; never combine it with another activation in one submission.
       const isBranchGuidance=(id:string)=>Boolean(this.sqlite.prepare("SELECT 1 FROM activation_sources WHERE activation_id=? AND source_kind='branch_guidance'").get(id));
       const candidateGuidance=isBranchGuidance(candidate.activation_id);
-      const isolatedEligible=eligibleActivations.filter(a=>candidateGuidance?a.id===candidate.activation_id:!isBranchGuidance(a.id));
+      // Each call turn owns one immutable source and reply obligation. Never
+      // coalesce it with another call, ordinary work, or a Request.
+      const isVoiceCall=(a: ActivationRow)=>JSON.parse(a.payload_json)?.dispatch?.voiceReply===true;
+      const candidateVoice=eligibleActivations.find(a=>a.id===candidate.activation_id);
+      const isolatedEligible=eligibleActivations.filter(a=>
+        candidateVoice && isVoiceCall(candidateVoice) ? a.id===candidate.activation_id
+        : !isVoiceCall(a) && (candidateGuidance?a.id===candidate.activation_id:!isBranchGuidance(a.id)));
       // Human interruptions and peer messages or Requests have different recovery
       // obligations. Keep each kind in a separate provider submission so a
       // single uncertain submission cannot combine human and peer work.

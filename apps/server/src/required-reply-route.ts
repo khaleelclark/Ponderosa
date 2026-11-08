@@ -34,7 +34,7 @@ export function requiredReplyAuthorityKey(
 
 /** The newest request group on this route owns its reply identity. A steer
  * without a new reply obligation cannot reopen an already answered request. */
-export function requiredReplyRequest(coordination: CoordinationV3Store, runId: string, authority: CoordinationReplyAuthority): {
+export function requiredReplyRequest(coordination: CoordinationV3Store, runId: string, authority: CoordinationReplyAuthority, taskDelivery?: "final" | "blocked"): {
   key: string;
   sourceActivationIds: string[];
   publishedReplyFingerprint?: string;
@@ -47,11 +47,19 @@ export function requiredReplyRequest(coordination: CoordinationV3Store, runId: s
     coordination.promptInjectionForActivation(runId, obligation.sourceActivationId)?.id ?? '') }));
   const newestRank = Math.max(-1, ...groups.map(g => g.rank));
   const newest = groups.filter(g => g.rank === newestRank).map(g => g.obligation);
-  const identitySources = [...new Map([...newest, ...obligations.filter(o => o.deliveryPhase === 'final')]
+  const latest = coordination.latestAcknowledgedPromptInjection(runId);
+  const latestIds = latest ? coordination.activationIdsForInjection(latest.id,runId) : [];
+  const callSources = !taskDelivery && authority.intent === "direct_to_user" && latestIds.length === 1
+    ? coordination.activationPayloads(obligations[0]?.agentId ?? "",latestIds,runId)
+      .filter(a=>(a.payload as {dispatch?:{voiceReply?:boolean}}|undefined)?.dispatch?.voiceReply===true).map(a=>a.id) : [];
+  const callObligations = obligations.filter(o=>callSources.includes(o.sourceActivationId));
+  // A call answer has a separate publication identity from the unfinished task
+  // sharing its Run. After that answer, ordinary task delivery resumes normally.
+  const identitySources = callObligations.length ? callObligations : [...new Map([...newest, ...obligations.filter(o => o.deliveryPhase === 'final')]
     .map(o => [o.sourceActivationId, o])).values()];
   const key = JSON.stringify({ route: routeKey, sources: identitySources.map(o => [o.sourceActivationId, o.deliveryPhase])
     .sort((a, b) => a[0]!.localeCompare(b[0]!)) });
-  const pending = obligations.filter(o => o.state === 'pending');
+  const pending = (callObligations.length ? callObligations : obligations).filter(o=>o.state==='pending');
   const receipts = identitySources.flatMap(o => {
     if (o.state !== 'satisfied' || !o.satisfiedCommunicationId) return [];
     const payload = coordination.runtimeCommunication(o.satisfiedCommunicationId)?.payload as {

@@ -203,7 +203,7 @@ async function fixture(options={},runCheck){
  }
  if(options.restricted)new CapabilityPolicyStore(store.sqlite).put({scopeKind:'agent',scopeId:agent.id,expectedRevision:0,restrictedCapabilityIds:[CAPABILITY_IDS.memoryRead]});
  if(options.exposureFull)for(let i=0;i<128;i++)localMemoryFor(app).speech.set('occupied-'+i,{authority:{actor:{id:'occupied-'+i},runId:'occupied-'+i},refs:new Map(),invalid:false,started:false,expires:Date.now()+3600000});
- const input={text:'Synthetic voice input' ,idempotencyKey:'turn',recipients:[{agentId:agent.id}],activeRunDelivery:'queue',...(!options.ordinary&&!options.textStream?{voiceReply:true}:{})};
+ const input={text:'Synthetic voice input' ,idempotencyKey:'turn',recipients:[{agentId:agent.id}],activeRunDelivery:!options.ordinary&&!options.textStream?'steer':'queue',...(!options.ordinary&&!options.textStream?{voiceReply:true}:{})};
  const sendUrl=options.agentDispatch?`/api/branches/engine/agents/${agent.id}/messages`:`/api/branches/engine/conversations/${chat.id}/direct-messages`;
  const payload=options.agentDispatch?{text:input.text,idempotencyKey:input.idempotencyKey,activeRunDelivery:'queue'}:input;
  const sent=await app.inject({method:'POST',url:sendUrl,headers,payload});assert.ok(options.agentDispatch?[200,202].includes(sent.statusCode):sent.statusCode===200,sent.body);
@@ -507,7 +507,7 @@ test('memory exposure capacity recovers for a fresh Run without rearming the mis
  for(const entry of memory.speech.values())entry.expires=Date.now()-1;
  assert.throws(()=>memory.beginSpeech(token),/exposure|capacity/i,'the same live Run remains denied after expiry');
  const first=await completeFallback(f);assert.equal(first.memoryExposure.state,'invalid');
- const sent=await f.app.inject({method:'POST',url:'/api/branches/engine/conversations/'+f.chat.id+'/direct-messages',headers:f.headers,payload:{text:'Fresh voice Run after capacity recovery',idempotencyKey:'after-exposure-expiry',recipients:[{agentId:f.agent.id}],activeRunDelivery:'queue',voiceReply:true}});
+ const sent=await f.app.inject({method:'POST',url:'/api/branches/engine/conversations/'+f.chat.id+'/direct-messages',headers:f.headers,payload:{text:'Fresh voice Run after capacity recovery',idempotencyKey:'after-exposure-expiry',recipients:[{agentId:f.agent.id}],activeRunDelivery:'steer',voiceReply:true}});
  assert.equal(sent.statusCode,200,sent.body);
  await boundedWait(()=>f.starts===2&&f.coord.activeAgentRun(f.agent.id)===undefined,'fresh fallback completed');
  const messageId=sent.json().message.communicationEventId;
@@ -556,7 +556,7 @@ test('retained-context boundary '+JSON.stringify({memory,voice,streaming}),()=>f
   assert.ok(source?.content_hash,'the earlier Run actually read this exact global source');
   const changed=await f.app.inject({method:'PUT',url:'/api/branches/engine/local-memory/grants/'+f.chat.id,headers:f.headers,payload:{readGlobal:false,expectedRevision:1}});assert.equal(changed.statusCode,200,changed.body);
  }
- const second=await f.app.inject({method:'POST',url:'/api/branches/engine/conversations/'+f.chat.id+'/direct-messages',headers:f.headers,payload:{text:'What do you remember?',idempotencyKey:'retained-voice',recipients:[{agentId:f.agent.id}],activeRunDelivery:'queue',...(voice?{voiceReply:true}:{})}});
+ const second=await f.app.inject({method:'POST',url:'/api/branches/engine/conversations/'+f.chat.id+'/direct-messages',headers:f.headers,payload:{text:'What do you remember?',idempotencyKey:'retained-voice',recipients:[{agentId:f.agent.id}],activeRunDelivery:voice?'steer':'queue',...(voice?{voiceReply:true}:{})}});
  assert.equal(second.statusCode,200,second.body);
  const messageId=second.json().message.communicationEventId;
  if(memory){

@@ -556,12 +556,15 @@ return new CoordinationV3Scheduler(
       // Steering bypasses ordinary Run preparation. Resolve its references
       // before the scheduler records the exact injection, too.
       const defaultReply = canonicalDefaultReplyRoute(coordinationV3, lease.runId, lease.agentId);
+      const callInput=lease.activations.length===1 && (lease.activations[0]?.payload as {dispatch?:{voiceReply?:boolean}}|undefined)?.dispatch?.voiceReply===true;
+
       let prompt = appendReadableArtifactReferences({
         prompt: `${compilation.prompt}\n\n${communicationV3Prompt(defaultReply).join("\n")}`, projectId: lease.projectId,
         artifactIds: [...collectReachableArtifactIds(lease.activations.map(({ payload }) =>
           (payload as { communication?: CommunicationEvent } | undefined)?.communication))],
         agentId: lease.agentId, store, assets,
       });
+      if(callInput) prompt += `\n\n[CURRENT CALL TURN · HOST PROJECTION]\nThis priority voice Direct Message owns activation ${lease.activations[0]!.id} and injection ${lease.injectionId}. Address it now while preserving unfinished work. Request ponderosa_voice_reply({steeringInjectionId:${JSON.stringify(lease.injectionId)}}) before your spoken answer; only a successful exact-source authorization allows streaming. If unavailable, publish ponderosa_message({intent:"direct_to_user",text,steeringInjectionId:${JSON.stringify(lease.injectionId)}}). Never reuse an earlier call answer or mark unrelated tasks finished.`;
       const inputFiles: RuntimeInputFile[] = [];
       const active = activeRuns.get(lease.agentId);
       if (active?.runtimeSession && active.v3SchedulerRunId === lease.runId && active.v3FencingToken === lease.fencingToken) {

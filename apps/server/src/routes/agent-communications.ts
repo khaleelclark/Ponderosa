@@ -473,7 +473,7 @@ export function registerAgentCommunicationRoutes(
       }
     }
     const suppliedSteeringFence = request.body?.steeringInjectionId?.trim();
-    const replyRequest = requiredReplyRequest(coordinationV3, capability.runId, selectedReplyAuthority);
+    const replyRequest = requiredReplyRequest(coordinationV3, capability.runId, selectedReplyAuthority, taskDelivery);
     const candidateRequiredReplyFingerprint = createHash("sha256").update(JSON.stringify({
       intent, text, recipientAgentIds: inferredRecipientAgentIds,
       artifactIds: artifactIds ?? [],

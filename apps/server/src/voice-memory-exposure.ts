@@ -30,7 +30,21 @@ export async function voiceMemoryExposure(ports:VoiceExposurePorts,input:{agentI
     WHERE attached.run_id=? AND lineage.request_id=? AND request.recipient_agent_id=? AND request.project_id=? AND request.conversation_id=?
     AND lineage.activation_id IN (SELECT value FROM json_each(?)) LIMIT 1`)
     .get(input.runId,input.messageId,input.agentId,input.projectId,input.conversationId,JSON.stringify(m.activationIds)))return invalid;
-  }else if(!Array.isArray(m.communicationEventIds)||!m.communicationEventIds.includes(input.messageId))return invalid;
+  }else if(!Array.isArray(m.communicationEventIds)||!m.communicationEventIds.includes(input.messageId)){
+   // Steering is absent from the initial provider-input manifest. Admit only
+   // this exact canonical source on an acknowledged, hash-verified injection;
+   // all original memory/session checks above and below still apply.
+   const injected=db.prepare(`SELECT injection.exact_prompt AS prompt,injection.prompt_hash FROM scheduler_prompt_injections injection
+    JOIN scheduler_run_activations attached ON attached.run_id=injection.run_id
+    JOIN agent_activations activation ON activation.id=attached.activation_id
+    JOIN json_each(injection.activation_ids_json) member ON member.value=activation.id
+    WHERE injection.run_id=? AND injection.kind='steer' AND injection.state='acknowledged'
+      AND activation.agent_id=? AND activation.project_id=?
+      AND json_extract(activation.payload_json,'$.communication.eventId')=?
+      AND json_extract(activation.payload_json,'$.dispatch.voiceReply')=1 LIMIT 1`)
+    .get(input.runId,input.agentId,input.projectId,input.messageId) as {prompt:string;prompt_hash:string}|undefined;
+   if(!injected || createHash('sha256').update(injected.prompt).digest('hex')!==injected.prompt_hash)return invalid;
+  }
   if(ports.opts.localMemory){if(!ports.validateMemory)return invalid;const valid=await ports.validateMemory(input.runId);if(valid===undefined)return {state:'pending',runId:input.runId};if(!valid)return invalid;return {state:'valid',runId:input.runId,sessionResetSeq:seq};}
   return {state:'disabled',runId:input.runId,sessionResetSeq:seq};
  }catch{return invalid}

@@ -5,6 +5,7 @@ export function voiceReply(
   sent: ConversationMessageDto,
   messages: ConversationMessageDto[],
   agentId: string,
+  canonicalReplyEventId?: string,
 ): { text: string } | { error: string } | undefined {
   const receipts = sent.deliveryReceipts?.filter(item => item.targetAgentId === agentId) ?? [];
   if (!receipts.length) return undefined;
@@ -13,10 +14,15 @@ export function voiceReply(
   if (["failed", "cancelled", "undelivered", "retry_exhausted", "unconfirmed"].includes(receipt.state)) {
     return { error: "This turn needs attention in the Chat. Voice conversation is paused." };
   }
-  if (receipt.state !== "processed" && receipt.state !== "recovered") return undefined;
+  if (receipt.state !== "processed" && receipt.state !== "recovered" &&
+      !(canonicalReplyEventId && receipt.providerAcknowledged && ["started", "delivered"].includes(receipt.state))) return undefined;
   const executionId = receipt.state === "recovered" ? receipt.recoveryExecutionId : receipt.executionId;
   if (!executionId) return undefined;
-  const replies = messages.filter(message => message.conversationId === sent.conversationId &&
+  // Steering can share a Run with previous calls. Only the exact obligation
+  // receipt can select its answer; never reuse another answer from that Run.
+  if (receipt.injectionKind === "steer" && !canonicalReplyEventId) return undefined;
+  const replies = messages.filter(message =>
+    (!canonicalReplyEventId || message.communicationEventId === canonicalReplyEventId || message.id === canonicalReplyEventId) && message.conversationId === sent.conversationId &&
     message.role === "assistant" && message.communicationIntent === "user_dm" &&
     message.authorAgentId === agentId && message.executionId === executionId);
   if (!replies.length) return undefined;
@@ -30,8 +36,8 @@ export function voiceReply(
 }
 
 /** A contiguous latest page must still contain the sent turn before claiming uniqueness. */
-export function voiceReplyInWindow(messageId: string, messages: ConversationMessageDto[], agentId: string) {
+export function voiceReplyInWindow(messageId: string, messages: ConversationMessageDto[], agentId: string, canonicalReplyEventId?: string) {
   const sent = messages.find(item => item.id === messageId || item.communicationEventId === messageId);
   if (!sent) return { error: "This turn is outside the recent voice window. Continue in the Chat." };
-  return voiceReply(sent, messages, agentId);
+  return voiceReply(sent, messages, agentId, canonicalReplyEventId);
 }

@@ -251,3 +251,46 @@ test('an uncertain human steer remains held separately from a queued peer Reques
     return {status:'accepted'};
   }});} finally {release?.();}
 });
+
+
+test('busy calls steer with priority and distinct source receipts; late old call cannot answer the next turn', {timeout:30000},async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Priority call'),agent=await f.createIdleAgent(chat,'Call partner');
+  const session=await f.hold(agent.id),run=(await f.detail(agent.id)).runs[0].id;
+  const coord=new CoordinationV3Store(store.sqlite);
+  const send=async key=>f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{
+   text:`Synthetic call ${key}`,idempotencyKey:key,recipients:[{agentId:agent.id}],activeRunDelivery:'steer',voiceReply:true}));
+  const first=await send('call-one');
+  const firstId=first.message.communicationEventId;
+  const firstActivation=coord.runtimeCommunicationForEvent(firstId,agent.id).activations[0].id;
+  const firstRow=store.sqlite.prepare('SELECT priority,dispatch_policy FROM agent_activations WHERE id=?').get(firstActivation);
+  assert.equal(firstRow.priority,110);assert.equal(firstRow.dispatch_policy,'steer_or_run');
+  const injection=await until(()=>{const i=coord.promptInjectionForActivation(run,firstActivation);return i?.state==='acknowledged'&&i;},'first call steering acknowledged');
+  assert.deepEqual(coord.activationIdsForInjection(injection.id,run),[firstActivation]);
+  assert.match(f.steers.at(-1).input.prompt,/CURRENT CALL TURN/);
+  const oldArgs={intent:'direct_to_user',text:'First exact answer',steeringInjectionId:injection.id};
+  const answer=f.ok(await f.tool(session,'ponderosa_message',oldArgs));
+  const firstObligation=coord.requiredReplyObligationsForRun(run).find(o=>o.sourceActivationId===firstActivation);
+  assert.equal(firstObligation.satisfiedCommunicationId,answer.eventId);
+  assert.ok(coord.requiredReplyObligationsForRun(run).some(o=>o.sourceActivationId!==firstActivation&&o.state==='pending'),'original task remains unfinished');
+  const second=await send('call-two'),secondId=second.message.communicationEventId;
+  const secondActivation=coord.runtimeCommunicationForEvent(secondId,agent.id).activations[0].id;
+  const later=await until(()=>{const i=coord.promptInjectionForActivation(run,secondActivation);return i?.state==='acknowledged'&&i;},'second call steering acknowledged');
+  assert.notEqual(later.id,injection.id);
+  assert.notEqual((await f.tool(session,'ponderosa_message',oldArgs)).status,200,'stale first call response is fenced');
+  assert.equal(coord.requiredReplyObligationsForRun(run).find(o=>o.sourceActivationId===secondActivation).state,'pending');
+  let status=f.ok(await f.api('GET',`/api/conversations/${chat.id}/voice-replies/${secondId}/${agent.id}`));
+  assert.equal(status.canonicalReplyEventId,undefined,'first reply cannot satisfy second call');
+  const secondAnswer=f.ok(await f.tool(session,'ponderosa_message',{intent:'direct_to_user',text:'Second exact answer',steeringInjectionId:later.id}));
+  status=f.ok(await f.api('GET',`/api/conversations/${chat.id}/voice-replies/${secondId}/${agent.id}`));
+  assert.equal(status.canonicalReplyEventId,secondAnswer.eventId);
+  assert.notEqual(status.canonicalReplyEventId,answer.eventId);
+  const repeated=f.ok(await f.tool(session,'ponderosa_message',{intent:'direct_to_user',text:'Second exact answer',steeringInjectionId:later.id}));
+  assert.equal(repeated.eventId,secondAnswer.eventId,'same call response remains idempotent');
+  assert.ok(coord.requiredReplyObligationsForRun(run).some(o=>o.sourceActivationId!==firstActivation&&o.sourceActivationId!==secondActivation&&o.state==='pending'));
+  f.ok(await f.tool(session,'ponderosa_message',{intent:'direct_to_user',text:'Original task complete',taskDelivery:'final',steeringInjectionId:later.id}));
+  const replay=await send('call-two');assert.equal(replay.message.communicationEventId,secondId);
+  assert.equal((await f.detail(agent.id)).runs.length,1,'calls steer the existing Run');
+ },{storeFactory:dataDir=>(store=new AgentStore(dataDir))});
+});

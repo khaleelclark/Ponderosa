@@ -699,8 +699,8 @@ export function registerConversationDeliveryRoutes(
         }
       }
       if (request.body.voiceReply !== undefined && (request.body.voiceReply !== true ||
-          recipients.length !== 1 || activeRunDelivery !== "queue")) {
-        return reply.code(400).send({ error: "voiceReply requires one queued recipient" });
+          recipients.length !== 1 || activeRunDelivery !== "steer")) {
+        return reply.code(400).send({ error: "voiceReply requires one priority steering recipient" });
       }
       const receiptKey = `multi-direct:${request.params.id}:${idempotencyKey}`;
       const eventId = `user-dm-${createHash("sha256").update(receiptKey).digest("hex")}`;
@@ -894,7 +894,7 @@ export function registerConversationDeliveryRoutes(
           activations: recipients.map((recipient, index) => ({
             agentId: recipient.agentId,
             kind: "human_message",
-            priority: 100,
+            priority: request.body.voiceReply ? 110 : 100,
             dispatchPolicy: activeRunDelivery === "steer" ? "steer_or_run" : "next_run",
             promptClass: "human",
             dedupeKey: `communication:${eventId}:${recipient.agentId}:${index}`,

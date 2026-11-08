@@ -2,8 +2,10 @@ import {createClientId} from '../../clientId';
 import PhoneIcon from "@mui/icons-material/Phone";
 import CallEndIcon from "@mui/icons-material/CallEnd";
 import MicOffIcon from "@mui/icons-material/MicOff";
+import NotesRoundedIcon from "@mui/icons-material/NotesRounded";
+import SendRoundedIcon from "@mui/icons-material/SendRounded";
 import MicNoneIcon from "@mui/icons-material/MicNone";
-import { Alert, Box, Button, Dialog, DialogContent, DialogTitle, Stack, TextField, Typography, useMediaQuery } from "@mui/material";
+import { Alert, Box, Button, Dialog, DialogContent, Stack, TextField, Typography, useMediaQuery } from "@mui/material";
 import { DEFAULT_SPEECH_PREFERENCES, type AgentDto, type ConversationDetailDto, type ConversationMessageDto } from "@ponderosa/core";
 import { QueryObserver, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
@@ -83,6 +85,8 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
   const [provisionalReply, setProvisionalReply] = useState("");
   const [acknowledgement, setAcknowledgement] = useState("");
   const observedRun = useRef<string>();
+  const canonicalReplyId = useRef<string>();
+  const [deliveryNotice,setDeliveryNotice]=useState<string>();
   const [transcript, setTranscript] = useState<ConversationMessageDto[]>([]);
   const [playText, setPlayText] = useState<string>();
   const attempt = useRef<VoiceCallAttempt>();
@@ -111,7 +115,7 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
   }, [ownerId]);
   const suspend = useCallback(() => {
     stopAutomatic(); abandon(); changePhase("paused"); setChecked(false);
-    setNotice("Call suspended. Unfinished words were discarded; accepted work continues in Chat. Resume deliberately.");
+    setNotice("Call interrupted. Unfinished words were discarded. Accepted work continues in Chat; reconnect when ready.");
   }, [abandon, changePhase, stopAutomatic]);
   const end = () => { stopAutomatic(); alive.current = false; attempt.current = undefined; setText(""); abandon(); onClose(); };
   const validateDetail = (detail: ConversationDetailDto) => {
@@ -224,7 +228,7 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
       attempt.current = undefined; setText(""); stopAutomatic(); setBlocked(true); setError("The unconfirmed turn expired. Review Chat before sending again."); return;
     }
     if (!attempt.current && !textRef.current.trim()) return;
-    if (!attempt.current) { timing.current = { settled: recognitionSettled.current }; recognitionSettled.current = undefined; setLatency(undefined); setAcknowledgement(""); setRenderReply(undefined); setProvisionalReply(""); observedRun.current = undefined; }
+    if (!attempt.current) { timing.current = { settled: recognitionSettled.current }; recognitionSettled.current = undefined; setLatency(undefined); setAcknowledgement(""); setRenderReply(undefined); setProvisionalReply(""); observedRun.current = undefined; canonicalReplyId.current = undefined; setDeliveryNotice(undefined); }
     // Set synchronously before hashing/storage/HTTP so two clicks cannot create two keys.
     changePhase("sending"); setLocked(true); setError(undefined);
     const current = ++generation.current;
@@ -263,7 +267,7 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
       setMessageId(response.message?.communicationEventId ?? response.messageId);
       setReplyPending(true);
       if (response.message) setTranscript(items => [...items.filter(i => i.id !== response.message!.id), response.message!].slice(-20));
-      changePhase(response.recipients[0]?.queued ? "queued" : "waiting");
+      changePhase("queued");
     } catch (failure) {
       if (!alive.current || generation.current !== current) return;
       stopAutomatic(); changePhase("paused");
@@ -277,7 +281,7 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
   useEffect(() => {
     if (!handsFreeRef.current || phaseRef.current !== "capture" || dictation.status !== "stopped") return;
     if (!textRef.current.trim()) {
-      stopAutomatic(); changePhase("paused"); setNotice("No finalized speech. Resume the call or type deliberately."); return;
+      stopAutomatic(); changePhase("paused"); setNotice("No speech was finalized. Tap Call again or type a turn."); return;
     }
     recognitionSettled.current = performance.now();
     changePhase("review"); void send();
@@ -375,6 +379,10 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
       const version = validationVersion;
       const request = api.getVoiceReplyStatus(conversationId, messageId, agentId).then(status => {
         if (!valid() || status.messageId !== messageId || version !== validationVersion) return false;
+        if (status.canonicalReplyEventId && canonicalReplyId.current!==status.canonicalReplyEventId) {
+          canonicalReplyId.current=status.canonicalReplyEventId;
+          void queryClient.invalidateQueries({queryKey:queryKeys.conversations.detailPrefix(conversationId)});
+        }
         if (timing.current) {
           Object.assign(timing.current, { acceptedAt: status.acceptedAt, leasedAt: status.leasedAt, runStartedAt: status.runStartedAt,
             submittedAt: status.reply?.purpose === "acknowledgement" ? timing.current.submittedAt : status.reply?.submittedAt ?? timing.current.submittedAt, firstModelTextAt: status.reply?.purpose === "acknowledgement" ? timing.current.firstModelTextAt : status.reply?.firstModelTextAt ?? timing.current.firstModelTextAt,
@@ -447,7 +455,7 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
       const detail = result.data;
       refreshStatus();
       if (!validateDetail(detail)) { suspend(); setError("The call’s Agent or Chat is unavailable."); return; }
-      const reply = voiceReplyInWindow(messageId, detail.messages, agentId);
+      const reply = voiceReplyInWindow(messageId, detail.messages, agentId, canonicalReplyId.current);
       if (reply) {
         if ("error" in reply) { fail(reply.error); return; }
         clearTimeout(deadline);
@@ -456,7 +464,7 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
         const execution = receipt.state === "recovered" ? receipt.recoveryExecutionId : receipt.executionId;
         if (observedRun.current && observedRun.current !== execution) { fail("This turn moved to another Run. Continue in Chat."); return; }
         observedRun.current = execution;
-        const answer = detail.messages.find(i => i.conversationId === conversationId && i.role === "assistant" && i.communicationIntent === "user_dm" && i.authorAgentId === agentId && i.executionId === execution)!;
+        const answer = detail.messages.find(i => (!canonicalReplyId.current || i.id===canonicalReplyId.current || i.communicationEventId===canonicalReplyId.current) && i.conversationId === conversationId && i.role === "assistant" && i.communicationIntent === "user_dm" && i.authorAgentId === agentId && i.executionId === execution)!;
         setTranscript(items => [...items.filter(i => i.id !== sent.id && i.id !== answer.id), sent, answer].slice(-20));
         const spoken = speakableMessageText(reply.text);
         setPlayText(spoken || undefined); setProvisionalReply("");
@@ -479,6 +487,15 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
         return;
       }
       const sent = detail.messages.find(i => i.id === messageId || i.communicationEventId === messageId);
+      const receipt=sent?.deliveryReceipts?.find(i=>i.targetAgentId===agentId);
+      if(receipt?.steeringWaitReason) {
+        const reason=receipt.steeringWaitReason;
+        setDeliveryNotice(reason==="provider_unsupported" ? "This connection cannot interrupt the current work. Your priority turn is waiting; follow it in Chat."
+          : reason==="provider_not_ready" || reason==="run_starting" ? "Connecting your priority turn…"
+          : reason==="context_refresh" ? "Refreshing the connection before your turn…"
+          : "Waiting for the current instruction to reach the connection…");
+      } else if(receipt?.state==="unconfirmed") setDeliveryNotice("Delivery is unconfirmed. Review this turn in Chat before trying again.");
+      else setDeliveryNotice(undefined);
       if (!queue && sent?.deliveryReceipts?.some(i => i.targetAgentId === agentId && ["started", "delivered", "processed", "recovering", "recovered"].includes(i.state))) changePhase("waiting");
     };
     const unsubscribe = observer.subscribe(observe);
@@ -489,70 +506,86 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
     observationCleanup.current = dispose;
     return dispose;
   }, [ messageId, conversationId, agentId, ownerId, product, queryClient, changePhase, suspend, stopAutomatic]);
+  useEffect(() => {
+    if (!muted && handsFree && phase === "ready") listenRef.current();
+  }, [muted, handsFree, phase]);
   const recording = ["starting", "listening", "pausing", "stopping"].includes(dictation.status);
   const inFlight = replyPending || ["sending", "queued", "waiting", "loading", "speaking"].includes(phase);
-  const status = phase === "capture" ? dictation.status === "starting" ? "Starting microphone…" : dictation.status === "stopping" ? "Finishing transcript…" : "Listening…"
-    : phase === "queued" ? (standalone ? "Your turn is queued…" : "Queued for the Agent…") : phase === "waiting" ? (standalone ? "Thinking…" : "Waiting for the Agent… Agent working") : phase === "loading" ? "Loading speech…" : phase === "speaking" ? "Speaking…" : phase === "sending" ? "Sending…" : muted ? "Microphone muted" : phase === "paused" ? "Call paused" : "Microphone off";
+  const status = muted && phase === "capture" ? "Microphone muted" : phase === "capture" ? dictation.status === "starting" ? "Opening microphone…" : dictation.status === "stopping" ? "Finishing your words…" : "Listening to you"
+    : phase === "queued" ? "Connecting your turn…" : phase === "waiting" ? "Thinking about your turn…" : phase === "loading" ? "Preparing voice…" : phase === "speaking" ? "Speaking to you" : phase === "sending" ? "Sending your turn…" : muted ? "Microphone muted" : phase === "paused" ? "Call interrupted" : phase === "review" ? "Your turn, ready to send" : handsFree ? "Ready to listen" : "Ready when you are";
   const availableAgents = agents.filter(a => member(a, projectId, conversationId));
   const agentName = availableAgents.find(a => a.id === agentId)?.title ?? "Choose an Agent";
+  const initials=agentName.split(/\s+/u).filter(Boolean).slice(0,2).map(word=>word[0]).join("").toLocaleUpperCase();
   const cannotStart = !live || !checked || muted || Boolean(sttUnavailable) || recording || inFlight || recovering || Boolean(attempt.current) || blocked || Boolean(text.trim());
-  return <Dialog open fullWidth fullScreen={Boolean(standalone && phone)} maxWidth="xs" aria-labelledby={`${ownerId}-title`} onClose={end}
-    PaperProps={{ sx: standalone && phone ? { m: 0, width: "100%", borderRadius: 0, maxHeight: "100%" } : { m: { xs: 1, sm: 4 }, width: { xs: "calc(100% - 16px)", sm: "100%" }, borderRadius: 3, maxHeight: "calc(100% - 32px)" } }}
-    sx={{ "& .MuiDialog-container": { alignItems: { xs: "flex-end", sm: "center" } } }}>
-    <DialogTitle id={`${ownerId}-title`} sx={{ textAlign: "center", pb: 0 }}>{agentName}</DialogTitle>
-    <DialogContent ref={mountSurface}><Stack spacing={2} sx={{ pt: 2 }}>
-      {!locked && availableAgents.length > 1 && <TextField select SelectProps={{ native: true }} label="Call Agent" value={agentId} disabled={recording || inFlight || Boolean(attempt.current)} onChange={e => setAgentId(e.target.value)}>
-        <option value="" disabled>Choose an Agent</option>
-        {availableAgents.map(a => <option key={a.id} value={a.id}>{a.title}</option>)}
-      </TextField>}
-      <Box role="status" aria-live="polite" sx={{ textAlign: "center", py: 2 }}>
-        <Box aria-hidden sx={{ width: 56, height: 56, borderRadius: "50%", bgcolor: recording || phase === "speaking" ? "primary.main" : "action.hover", color: recording || phase === "speaking" ? "primary.contrastText" : "text.secondary", display: "grid", placeItems: "center", mx: "auto", mb: 1.5 }}><PhoneIcon /></Box>
-        <Typography>{phase === "ready" && !muted ? sttUnavailable ? "Calling unavailable · typing is available" : "Ready to call" : status}</Typography>
-        {handsFree && <Typography variant="caption" color="text.secondary">Hands-free call active · automatic finalized turns</Typography>}
-      </Box>
-      {(phase === "ready" || phase === "paused") && !handsFree && !sttUnavailable && <Typography variant="caption" color="text.secondary" sx={{ textAlign: "center" }}>Browser speech may use remote processing.</Typography>}
-      {sttUnavailable && <Alert severity="info">{sttUnavailable} {standalone ? "Type your turn below. Replies use native speech when available." : "Use Chat or expand Transcript & typing."}</Alert>}
-      {ttsUnavailable && <Alert severity="info">{ttsUnavailable} Read replies in Chat.</Alert>}
-      {notice && <Alert severity="info">{notice}</Alert>}
-      {error && <Alert severity="warning">{error}</Alert>}
-      <Stack direction="row" spacing={1} justifyContent="center" sx={{ flexWrap: "wrap", gap: 1, "& button": { minHeight: 48 } }}>
-        {(phase === "loading" || phase === "speaking") ? <Button variant="contained" disabled={muted || Boolean(sttUnavailable)} onClick={() => {
-          const settled = stopSpeech(ownerId);
-          abandon();
-          if (!settled) { stopAutomatic(); changePhase("paused"); setError(speechSnapshot().error); return; }
-          changePhase("ready"); listenRef.current();
-        }}>Talk now</Button> : phase === "paused" ? <Button variant="contained" disabled={recovering || blocked || Boolean(attempt.current)} onClick={() => { void resume(); }}>Resume call</Button>
-          : !recording && !inFlight && <Button variant="contained" disabled={cannotStart} onClick={startCall}>Start call</Button>}
-        <Button disabled={Boolean(sttUnavailable) || (!handsFree && !recording && !muted)} aria-pressed={muted} startIcon={muted ? <MicOffIcon /> : <MicNoneIcon />} onClick={() => { if (!muted) { stopAutomatic(); abandon(); changePhase("paused"); setNotice("Microphone muted. Unfinished words were discarded."); } setMuted(!muted); }}>{muted ? "Unmute microphone" : "Mute microphone"}</Button>
-        <Button color="error" startIcon={<CallEndIcon />} onClick={end}>End call</Button>
+  const interruptReply = () => {
+    const settled=stopSpeech(ownerId); abandon();
+    if(!settled){stopAutomatic();changePhase("paused");setError(speechSnapshot().error);return;}
+    changePhase("ready");listenRef.current();
+  };
+  const toggleMute = () => {
+    if(!muted && recording){dictation.abandon();setText("");changePhase("ready");setNotice("Microphone muted. Unfinished words were discarded.");}
+    setMuted(value=>!value);
+  };
+  const roundControl={minWidth:64,width:64,height:64,borderRadius:"50%",p:0,transition:"background-color 180ms ease, transform 180ms ease", "& svg":{fontSize:27}, "&:active":{transform:"scale(.95)"}, "@media (prefers-reduced-motion: reduce)":{transition:"none"}};
+  return <Dialog open fullWidth fullScreen={phone} maxWidth="sm" aria-labelledby={`${ownerId}-title`} onClose={end}
+    PaperProps={{sx:{m:{xs:0,sm:3},width:{xs:"100%",sm:480},height:{xs:"100%",sm:"min(780px, calc(100dvh - 48px))"},maxHeight:{xs:"100%",sm:"calc(100dvh - 48px)"},borderRadius:{xs:0,sm:6},overflow:"hidden",backgroundImage:"none",bgcolor:"background.default",boxShadow:{sm:"0 28px 100px rgba(18,28,22,.2)"}}}}
+    sx={{"& .MuiDialog-container":{alignItems:"center"}}}>
+    <DialogContent ref={mountSurface} sx={{p:0,display:"flex",flexDirection:"column",height:"100%",overflow:"hidden"}}>
+      <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{px:3,pt:"max(24px, env(safe-area-inset-top))",pb:1,flexShrink:0}}>
+        <Stack direction="row" spacing={1} alignItems="center"><PhoneIcon sx={{fontSize:16,color:"text.secondary"}}/><Typography variant="caption" color="text.secondary" sx={{fontWeight:600,letterSpacing:".04em"}}>PONDEROSA CALL</Typography></Stack>
+        <Button size="small" aria-label="Transcript" aria-expanded={expanded} aria-controls={`${ownerId}-details`} onClick={()=>setExpanded(value=>!value)} sx={{minHeight:44,minWidth:44,borderRadius:3,color:expanded?"primary.main":"text.secondary"}}><NotesRoundedIcon/><Box component="span" sx={{ml:.75}}>Transcript</Box></Button>
       </Stack>
-      {attempt.current && <Typography variant="caption">Retry expires after 24 hours; ending or reloading discards these words.</Typography>}
-      {attempt.current && <Button disabled={!live || !checked || recording || inFlight || recovering || blocked || !retryable} onClick={() => { void send(); }}>Retry same turn</Button>}
-      {playText && error && !inFlight && !recording && !ttsUnavailable && !expanded && <Button onClick={() => play(playText)}>Play reply</Button>}
-      <Button size="small" sx={{ minHeight: 44 }} aria-expanded={expanded} aria-controls={`${ownerId}-details`} onClick={() => setExpanded(value => !value)}>Transcript &amp; typing</Button>
-      {expanded && <Stack id={`${ownerId}-details`} spacing={2}>
-        {latency && <Box component="details"><Box component="summary" sx={{cursor:"pointer"}}>Call timing</Box><Typography aria-label="Call timing" variant="caption">{latency}</Typography></Box>}
-        {acknowledgement && <Typography aria-label="Agent acknowledgement" sx={{ whiteSpace: "pre-wrap" }}>{acknowledgement}</Typography>}
-        {provisionalReply && <Typography ref={replyElement} aria-label="Streaming reply" sx={{ whiteSpace: "pre-wrap" }}>{provisionalReply}</Typography>}
-        <Box aria-label="Call transcript">{transcript.map(message => <Box key={message.id} sx={{ mb: 1 }}><Typography variant="caption">{message.role === "user" ? "You" : "Agent"}</Typography><Typography ref={renderReply?.canonicalId === message.id ? replyElement : undefined} sx={{ whiteSpace: "pre-wrap" }}>{message.document ? "Full message available in Chat." : message.text}</Typography></Box>)}</Box>
-        <TextField label="Your next turn" InputLabelProps={{shrink:true}} multiline minRows={2} value={text} disabled={recording || inFlight || recovering || Boolean(attempt.current) || blocked} onChange={e => setText(e.target.value)} />
-        {text.trim() && !recording && !inFlight && <Typography variant="caption">Send or clear your draft before starting a call.</Typography>}
-        {replyPending && observedRun.current && <Button onClick={async () => {
-          const targetRunId = observedRun.current; if (!targetRunId) return;
-          stopAutomatic(); abandon(); changePhase("paused");
-          try { await api.cancelRun(agentId, { targetRunId, idempotencyKey: createClientId() }); setNotice("Reply cancelled. Resume deliberately."); }
-          catch { setError("Cancellation could not be confirmed. Check Chat; audio is stopped."); }
-        }}>Cancel reply</Button>}
-        <Stack direction="row" spacing={1} sx={{ flexWrap: "wrap", gap: 1, "& button": { minHeight: 48 } }}>
-          {(phase === "loading" || phase === "speaking") && <Button onClick={() => { stopAutomatic(); abandon(); changePhase("ready"); }}>Stop speaking</Button>}
-          {playText && !inFlight && !recording && !ttsUnavailable && <Button onClick={() => play(playText)}>Play reply</Button>}
-          {recording && <Button disabled={dictation.status === "stopping"} onClick={dictation.stop}>Finish turn</Button>}
-          {handsFree && recording && <Button onClick={() => { stopAutomatic(); dictation.abandon(); changePhase("review"); }}>Review / type instead</Button>}
-          <Button disabled={!live || !checked || muted || Boolean(sttUnavailable) || recording || inFlight || recovering || Boolean(attempt.current) || blocked} onClick={() => { stopAutomatic(); listen(); }}>Listen</Button>
-          <Button disabled={!live || !checked || !text.trim() || recording || inFlight || recovering || blocked || Boolean(attempt.current)} onClick={() => { void send(); }}>Send turn</Button>
+      <Box sx={{flex:1,minHeight:0,overflowY:"auto",px:{xs:3,sm:4},display:"flex",flexDirection:"column"}}>
+        <Stack alignItems="center" sx={{pt:expanded?2:{xs:5,sm:5},pb:3,transition:"padding 180ms ease","@media (prefers-reduced-motion: reduce)":{transition:"none"}}}>
+          <Box aria-hidden sx={{width:expanded?88:128,height:expanded?88:128,borderRadius:"50%",display:"grid",placeItems:"center",bgcolor:"primary.main",color:"primary.contrastText",fontSize:expanded?30:44,fontWeight:600,letterSpacing:"-.04em",boxShadow:"0 12px 40px rgba(24,55,41,.10)",mb:3,transition:"width 180ms ease, height 180ms ease","@media (prefers-reduced-motion: reduce)":{transition:"none"}}}>{initials}</Box>
+          <Typography id={`${ownerId}-title`} component="h1" sx={{fontSize:{xs:30,sm:32},fontWeight:600,letterSpacing:"-.04em",textAlign:"center",lineHeight:1.2}}>{agentName}</Typography>
+          <Box role="status" aria-live="polite" sx={{display:"flex",alignItems:"center",gap:1,mt:1.5,color:"text.secondary",textAlign:"center"}}>
+            {recording && !muted && <Box aria-hidden sx={{width:7,height:7,borderRadius:"50%",bgcolor:"success.main"}}/>}<Typography sx={{fontSize:15}}>{recovering?"Checking your connection…":status}</Typography>
+          </Box>
+          {handsFree && !error && <Typography variant="caption" color="text.secondary" sx={{mt:1}}>Speak naturally. Finalized turns send automatically.</Typography>}
         </Stack>
-        <Typography variant="caption" color="text.secondary">Keep page visible · ending/reloading discards unsent words · accepted work continues</Typography>
-      </Stack>}
-    </Stack></DialogContent>
+        {!locked && availableAgents.length>1 && <TextField select SelectProps={{native:true}} label="Call Agent" value={agentId} disabled={recording||inFlight||Boolean(attempt.current)} onChange={e=>setAgentId(e.target.value)} sx={{mb:2}}>
+          <option value="" disabled>Choose an Agent</option>{availableAgents.map(a=><option key={a.id} value={a.id}>{a.title}</option>)}
+        </TextField>}
+        <Stack spacing={1} sx={{mb:2,"& .MuiAlert-root":{borderRadius:3,fontSize:13}}>
+          {sttUnavailable && <Alert severity="info">{sttUnavailable} Type a turn in Transcript.</Alert>}
+          {ttsUnavailable && <Alert severity="info">{ttsUnavailable} Replies remain in Chat.</Alert>}
+          {deliveryNotice && <Alert severity="info">{deliveryNotice}</Alert>}
+          {notice && <Alert severity="info">{notice}</Alert>}
+          {error && <Alert severity="warning">{error}</Alert>}
+        </Stack>
+        {text.trim() && !expanded && <Box sx={{p:2.5,borderRadius:4,bgcolor:"background.paper",mb:2}}><Typography variant="caption" color="text.secondary">{recording?"Your words":"Review your turn"}</Typography><Typography sx={{mt:.5,whiteSpace:"pre-wrap",maxHeight:140,overflowY:"auto",fontSize:16,lineHeight:1.5}}>{text}</Typography></Box>}
+        {acknowledgement && !expanded && <Typography aria-label="Agent acknowledgement" sx={{textAlign:"center",fontSize:16,lineHeight:1.6,mb:2}}>{acknowledgement}</Typography>}
+        {expanded && <Stack id={`${ownerId}-details`} spacing={2} sx={{pb:2}}>
+          {provisionalReply && <Box sx={{p:2,borderRadius:3,bgcolor:"background.paper"}}><Typography variant="caption" color="text.secondary">Replying</Typography><Typography ref={replyElement} aria-label="Streaming reply" sx={{whiteSpace:"pre-wrap",mt:.5,lineHeight:1.6}}>{provisionalReply}</Typography></Box>}
+          <Stack aria-label="Call transcript" spacing={1.5}>{transcript.map(message=><Box key={message.id} sx={{p:2,borderRadius:3,bgcolor:message.role==="user"?"action.hover":"background.paper",ml:message.role==="user"?3:0,mr:message.role==="user"?0:3}}><Typography variant="caption" color="text.secondary">{message.role==="user"?"You":agentName}</Typography><Typography ref={renderReply?.canonicalId===message.id?replyElement:undefined} sx={{whiteSpace:"pre-wrap",mt:.5,lineHeight:1.6}}>{message.document?"Full reply available in Chat.":message.text}</Typography></Box>)}</Stack>
+          <TextField label="Type a turn" InputLabelProps={{shrink:true}} multiline minRows={2} value={text} disabled={recording||inFlight||recovering||Boolean(attempt.current)||blocked} onChange={e=>setText(e.target.value)} sx={{"& .MuiOutlinedInput-root":{borderRadius:3}}}/>
+          <Stack direction="row" spacing={1} sx={{flexWrap:"wrap",gap:1,"& button":{minHeight:44}}}>
+            {text.trim()&&!recording&&!inFlight && <Button disabled={Boolean(attempt.current)||blocked} onClick={()=>setText("")}>Clear draft</Button>}
+            {handsFree&&recording&&<Button onClick={()=>{stopAutomatic();dictation.abandon();changePhase("review");}}>Review before sending</Button>}
+            {playText&&!inFlight&&!recording&&!ttsUnavailable&&<Button onClick={()=>play(playText)}>Play reply</Button>}
+            {replyPending&&observedRun.current&&<Button color="error" onClick={async()=>{const targetRunId=observedRun.current;if(!targetRunId)return;stopAutomatic();abandon();changePhase("paused");try{await api.cancelRun(agentId,{targetRunId,idempotencyKey:createClientId()});setNotice("Reply cancelled. Reconnect when ready.");}catch{setError("Cancellation could not be confirmed. Check Chat; audio is stopped.");}}}>Cancel reply</Button>}
+          </Stack>
+          {latency&&<Box component="details"><Box component="summary" sx={{cursor:"pointer",minHeight:44,display:"flex",alignItems:"center",fontSize:12,color:"text.secondary"}}>Call timing</Box><Typography aria-label="Call timing" variant="caption">{latency}</Typography></Box>}
+        </Stack>}
+        <Box sx={{flex:1}}/>
+        {attempt.current&&<Stack alignItems="center" spacing={1} sx={{pb:2}}><Typography variant="caption" color="text.secondary">This turn is unconfirmed. Retry keeps the same identity.</Typography><Button variant="outlined" disabled={!live||!checked||recording||inFlight||recovering||blocked||!retryable} onClick={()=>{void send();}} sx={{minHeight:44,borderRadius:8}}>Retry same turn</Button></Stack>}
+        {!recording&&!inFlight&&phase!=="paused"&&!text.trim()&&!attempt.current&&!handsFree&&<Typography variant="caption" color="text.secondary" sx={{textAlign:"center",pb:2}}>Browser speech may use remote processing.</Typography>}
+      </Box>
+      <Box sx={{flexShrink:0,px:3,pt:2,pb:"max(24px, env(safe-area-inset-bottom))",borderTop:"1px solid",borderColor:"divider",bgcolor:"background.paper"}}>
+        <Stack direction="row" justifyContent="center" alignItems="flex-start" spacing={4}>
+          <Stack spacing={1} alignItems="center"><Button aria-label={muted?"Unmute microphone":"Mute microphone"} aria-pressed={muted} disabled={Boolean(sttUnavailable)||(!handsFree&&!recording&&!muted)} onClick={toggleMute} sx={{...roundControl,bgcolor:muted?"text.primary":"action.hover",color:muted?"background.paper":"text.primary","&:hover":{bgcolor:muted?"text.secondary":"action.selected"}}}>{muted?<MicOffIcon/>:<MicNoneIcon/>}</Button><Typography variant="caption" color="text.secondary">{muted?"Unmute":"Mute"}</Typography></Stack>
+          <Stack spacing={1} alignItems="center">
+            {phase==="loading"||phase==="speaking"?<Button aria-label="Talk now" disabled={muted||Boolean(sttUnavailable)} onClick={interruptReply} sx={{...roundControl,bgcolor:"primary.main",color:"primary.contrastText","&:hover":{bgcolor:"primary.dark"}}}><MicNoneIcon/></Button>
+              :phase==="paused"?<Button aria-label="Reconnect call" disabled={recovering||blocked||Boolean(attempt.current)} onClick={()=>{void resume();}} sx={{...roundControl,bgcolor:"primary.main",color:"primary.contrastText","&:hover":{bgcolor:"primary.dark"}}}><PhoneIcon/></Button>
+              :recording?<Button aria-label="Finish turn" disabled={dictation.status==="stopping"} onClick={dictation.stop} sx={{...roundControl,bgcolor:"primary.main",color:"primary.contrastText","&:hover":{bgcolor:"primary.dark"}}}><SendRoundedIcon/></Button>
+              :text.trim()?<Button aria-label="Send turn" disabled={!live||!checked||inFlight||recovering||blocked||Boolean(attempt.current)} onClick={()=>{void send();}} sx={{...roundControl,bgcolor:"primary.main",color:"primary.contrastText","&:hover":{bgcolor:"primary.dark"}}}><SendRoundedIcon/></Button>
+              :<Button aria-label={handsFree?"Listen":"Start call"} disabled={cannotStart} onClick={startCall} sx={{...roundControl,bgcolor:"primary.main",color:"primary.contrastText","&:hover":{bgcolor:"primary.dark"}}}><PhoneIcon/></Button>}
+            <Typography variant="caption" color="text.secondary">{phase==="loading"||phase==="speaking"?"Talk now":phase==="paused"?"Reconnect":recording?"Finish turn":text.trim()?"Send turn":handsFree?"Listen":"Call"}</Typography>
+          </Stack>
+          <Stack spacing={1} alignItems="center"><Button aria-label="End call" onClick={end} sx={{...roundControl,bgcolor:"error.main",color:"error.contrastText","&:hover":{bgcolor:"error.dark"}}}><CallEndIcon/></Button><Typography variant="caption" color="text.secondary">End</Typography></Stack>
+        </Stack>
+      </Box>
+    </DialogContent>
   </Dialog>;
 }

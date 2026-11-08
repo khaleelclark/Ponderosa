@@ -35,8 +35,7 @@ export function registerVoiceReplyRoutes(app: FastifyInstance, c: Context): void
     if (injection && args.steeringInjectionId !== injection) return reply.code(409).send({ error: "reply steering fence changed" });
     const publicationTool=args.publication?.kind==="request_update"?"ponderosa_update_request":"ponderosa_message";
     if (!cap.availableToolNames.includes(presentation === "voice" ? "ponderosa_voice_reply" : "ponderosa_reply_stream") ||
-        !cap.availableToolNames.includes(publicationTool) || !run.voiceReplyStreamSupported ||
-        (presentation === "voice" && cap.defaultReply?.intent !== "direct_to_user")) {
+        !cap.availableToolNames.includes(publicationTool) || !run.voiceReplyStreamSupported) {
       return reply.code(409).send({ error: "reply stream unavailable; use ordinary explicit publication" });
     }
     const source = replyStreamSource(c.store,c.coordinationV3,cap,presentation,args.publication);
@@ -47,6 +46,13 @@ export function registerVoiceReplyRoutes(app: FastifyInstance, c: Context): void
     }
     try{localMemoryFor(app)?.beginSpeech(token!);}catch{return reply.code(409).send({error:'Memory changed before voice authorization; start a fresh turn'});}
     const purpose=args.acknowledgement?"acknowledgement":"answer";
+    // Successful exact-source authorization after a new acknowledged steering
+    // fence replaces the old stream; persist its invalidation before releasing it.
+    if (run.voiceReply && run.voiceReply.snapshot.messageId !== source.messageId &&
+        run.voiceReply.snapshot.steeringInjectionId !== injection) {
+      if (run.voiceReply.invalidate()) c.publish(cap.agentId,c.store.appendEvent(cap.agentId,{type:"voice_reply",reply:{...run.voiceReply.snapshot}}));
+      run.voiceReply=undefined;
+    }
     // A received acknowledgement can hand off to a separately authorized final answer.
     if(run.voiceReply?.snapshot.purpose==="acknowledgement" && purpose==="answer" && run.voiceReply.receiptAccepted())run.voiceReply=undefined;
     if(run.voiceReply && (run.voiceReply.snapshot.presentation!==presentation || run.voiceReply.snapshot.purpose!==purpose ||
@@ -92,7 +98,11 @@ export function registerVoiceReplyRoutes(app: FastifyInstance, c: Context): void
         s = { ...s, state: "failed", sequence: s.sequence + 1 };
         // The durable Run outcome owns this projection; reading status adds no event.
       }
-      return { messageId, acceptedAt: reportSource?.created_at??input!.createdAt, ...t,
+      const activationId=runtime?.activations?.find(a=>a.agentId===agentId)?.id;
+      const obligation=t?.runId && activationId ? c.coordinationV3.requiredReplyObligationsForRun(t.runId)
+        .find(o=>o.sourceActivationId===activationId) : undefined;
+      const canonicalReplyEventId=obligation?.satisfiedCommunicationId ?? obligation?.interimCommunicationId;
+      return { messageId, acceptedAt: reportSource?.created_at??input!.createdAt, ...t, ...(canonicalReplyEventId ? {canonicalReplyEventId} : {}),
         memoryExposure:await voiceMemoryExposure({...c.memoryPorts,validateMemory:async runId=>localMemoryFor(app)?.speechStatus(runId)??false}, { agentId, projectId: chat.projectId, conversationId: id, messageId, runId: t?.runId,sourceKind:reportSource?'request':'communication' }),
         ...(s?.messageId === messageId && s.runId === t?.runId ? { reply: { ...s } } : {}) } satisfies VoiceReplyStatus;
     });

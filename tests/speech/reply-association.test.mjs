@@ -45,3 +45,13 @@ test('a latest window missing the accepted turn never claims a unique reply', ()
 test('canonical authored bytes reconcile provisional text while display routing labels remain in Chat',()=>{
  assert.deepEqual(voiceReply(sent(),[{...reply(),text:'#user Display label',authoredText:'Authored reply.'}],'agent'),{text:'Authored reply.'});
 });
+
+
+test('two call turns on one Run require their exact canonical obligation receipt',()=>{
+ const item=sent();Object.assign(item.deliveryReceipts[0],{injectionKind:'steer',providerAcknowledged:true,state:'delivered'});
+ const old={...reply(),id:'old-call',text:'Old call answer'},fresh={...reply(),id:'new-call',text:'New call answer'};
+ assert.equal(voiceReply(item,[old],'agent'),undefined);
+ assert.equal(voiceReply(item,[old],'agent','new-call'),undefined,'an old answer cannot finish a new call');
+ assert.deepEqual(voiceReply(item,[old,fresh],'agent','new-call'),{text:'New call answer'});
+ item.deliveryReceipts[0].state='unconfirmed';assert.ok(voiceReply(item,[fresh],'agent','new-call').error);
+});
