@@ -13,7 +13,10 @@ test('stable protocol instructions occur once per session; each injection still 
   assert.match(injection[0],route?/one authorized default reply route/:/no authorized default reply route/);
  }
  const text=session.join('\n');
- for(const required of ['ponderosa_update_request','ponderosa_coordinate','ponderosa_decision','ponderosa_create_managed_agent','Prior turns do not confer','terminal Request result','Do not poll or sleep','ponderosa_import_file','voice Direct Message'])assert.ok(text.includes(required),required);
+ const requiredNames=['ponderosa_update_request','ponderosa_coordinate','ponderosa_decision','ponderosa_create_managed_agent','Prior turns do not confer','ponderosa_import_file','voice Direct Message'];
+ for(const required of requiredNames)assert.ok(text.includes(required),required);
+ assert.match(text,/terminal Request results? are final handoffs/i);
+ assert.match(text,/(?:do not|never) poll(?: or |\/)sleep for another Agent, Request, Join or background state/i);
  assert.notEqual(providerToolContractHash(providerDynamicTools(),session),providerToolContractHash(providerDynamicTools(),session.slice(1)),'Protocol changes invalidate provider session reuse');
 });
 

@@ -944,8 +944,8 @@ test('runtime question guidance permits the native bridge without duplicating qu
   const { communicationV3SessionPrompt }=await import('../../apps/server/dist/runtime-selection.js');
   const prompt=communicationV3SessionPrompt().join('\n');
   assert.match(prompt,/Supported provider-native AskUserQuestion\/request_user_input callbacks also reach the human/);
-  assert.match(prompt,/do not ask the same question twice/);
-  assert.match(prompt,/Questions never grant permissions/);
+  assert.match(prompt,/(?:do not ask the same question twice|never ask twice)/i);
+  assert.match(prompt,/Questions (?:never grant|grant no) permissions/i);
   assert.doesNotMatch(prompt,/only user-question path|never call a provider-native AskUserQuestion/);
 });
 
