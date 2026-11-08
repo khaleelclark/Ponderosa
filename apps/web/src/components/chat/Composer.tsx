@@ -2700,7 +2700,11 @@ export function Composer({
       if (draftStorageKey) writeChatState(draftStorageKey, nextDraftText);
       replacePastedText(undefined);
       pastedTextAttachmentId.current = undefined;
+      // Captured payloads remain protected by the outbox, not editable again
+      // when a metadata-only save hydrates the older server body.
+      const retiredAttachmentIds = new Set([...locallyRemovedDraftAttachmentIds.current, ...stagedIds]);
       clearDraftAttachments();
+      locallyRemovedDraftAttachmentIds.current = retiredAttachmentIds;
       setKnownMentionBindings(retainedAgentDestination ? [retainedAgentDestination.binding] : []);
       setActiveDefaultDestination(retainedAgentDestination ? undefined : safeDefaultDestination);
       inputRef.current?.resetDocument(nextDraftText);

@@ -90,3 +90,66 @@ test('failed Send preserves the original attachment for explicit recovery',async
 test('failed old Send cannot replace genuinely newer draft text or attachments',async()=>{
  const f=sendHydrationFixture();await f.start();f.c.replaceText('newer draft');f.state.files=['new.webm'];await f.fail();assert.equal(f.state.clears,0);assert.deepEqual(f.state.files,['new.webm']);assert.equal(f.state.text,'newer draft');
 });
+
+// The normal App takes the captured-outbox path, which retires the editable
+// snapshot immediately. Metadata CAS responses can still contain that old body.
+const attachmentSource=readFileSync(new URL('../../apps/web/src/components/chat/useComposerDraftAttachments.ts',import.meta.url),'utf8');
+const attachmentAst=sendTS.createSourceFile('useComposerDraftAttachments.ts',attachmentSource,sendTS.ScriptTarget.Latest,true,sendTS.ScriptKind.TS);
+const attachmentCallbacks=new Map();
+function findAttachmentCallbacks(node){
+ if(sendTS.isVariableDeclaration(node)&&['clear','mergeRestored'].includes(node.name.getText(attachmentAst))&&sendTS.isCallExpression(node.initializer??node))attachmentCallbacks.set(node.name.getText(attachmentAst),node.initializer.arguments[0].getText(attachmentAst));
+ sendTS.forEachChild(node,findAttachmentCallbacks);
+}
+findAttachmentCallbacks(attachmentAst);assert.equal(attachmentCallbacks.size,2);
+const reducerSource=helperAst.statements.find(n=>sendTS.isFunctionDeclaration(n)&&n.name?.text==='composerAttachmentReducer').getText(helperAst).replace(/^export /,'');
+const captureCall=sendSource.indexOf('      executeCaptured(item, handler, submittedDraftWriteChain, [...files]);');assert(captureCall>0);
+const captureRetirementStart=sendSource.indexOf('      continuationSeedIntent.current = selectionIntent.current;',captureCall);
+const captureRetirementEnd=sendSource.indexOf('      return;',captureRetirementStart);assert(captureRetirementEnd>captureRetirementStart);
+const captureRetirement=sendSource.slice(captureRetirementStart,captureRetirementEnd);
+let capturedFailure;
+function findCapturedFailure(node){
+ if(sendTS.isCallExpression(node)&&node.expression.getText(sendAst)==='runCapturedSubmission'&&node.arguments[2]?.getText(sendAst).includes('const accepted = item.status === "accepted"'))capturedFailure=node.arguments[2].getText(sendAst);
+ sendTS.forEachChild(node,findCapturedFailure);
+}
+findCapturedFailure(sendAst);assert(capturedFailure,'Actual captured failure callback must be found');
+function capturedRetirementFixture(){
+ const sent=new File(['original voice'],'sent.webm',{type:'audio/webm'}),attachment={id:'sent',name:'sent.webm'};
+ const state={attachments:{files:[sent]},text:'#Agent ',saved:undefined};
+ const ids={current:new Map([[sent,'sent']])},removed={current:new Set(['earlier-capture'])};
+ const pending={idempotencyKey:'captured-send',draftAttachmentIds:['sent'],editableDraftAttachmentIds:['sent']};
+ const chain={clientId:'owned-client',pendingDeletionIds:new Set(),ownedRevision:2};
+ const c={File,console,stagedIds:['sent'],continuationSeedIntent:{current:undefined},selectionIntent:{current:undefined},draftGeneration:{current:1},draftEditVersion:{current:0},draftLocallyEdited:{current:true},draftAttachmentsLocallyEdited:{current:true},unrestoredDraftAttachmentIds:{current:[]},pendingSelection:{current:undefined},
+  retainedAgentDestination:undefined,safeDefaultDestination:undefined,draftStorageKey:undefined,submittedRecovery:undefined,submittedDraftWriteChain:chain,draftRecoveryCaptureId:()=>undefined,
+  draftContentGeneration:{current:1},textRef:{current:state.text},setTextState:text=>state.text=text,replacePastedText(){},pastedTextAttachmentId:{current:undefined},setKnownMentionBindings(){},setActiveDefaultDestination(){},inputRef:{current:{resetDocument(){}}},setCaret(){},setSendError(){},
+  draftHydrationGeneration:{current:0},metadata:{current:new Map([['sent',attachment]])},attachmentIds:ids,locallyRemovedIds:removed,locallyRemovedDraftAttachmentIds:removed,locallyRemovedFiles:{current:new WeakSet()},pendingUploads:{current:[]},activeUploads:{current:0},generation:{current:0},setUploadStates(){},setAttachmentVersion(){},
+  dispatch:action=>{state.attachments=c.reducer(state.attachments,action);},
+  item:{scope:'owned-chat',ownerId:'owned-owner',status:'pending',dispatchStarted:true,pending},loadedUnderLock:true,previouslyDispatched:true,ApiRequestError:class extends Error{},CapturedSubmissionOrderError:class extends Error{},durableSubmissionMayBeReleased:()=>{throw Error('Uncertain transport must not use definitive rejection');},saveCapturedSubmission:item=>{state.saved=structuredClone(item);},
+ };
+ vm.createContext(c);const run=s=>vm.runInContext(compile(s),c);
+ c.reducer=run('('+reducerSource.replace(/^function composerAttachmentReducer/,'function')+')');
+ c.replaceText=run('('+replaceDraftText.getText(sendAst)+')');c.onBeforeClear=run('('+invalidateHydration.getText(sendAst)+')');
+ c.clearDraftAttachments=run('('+attachmentCallbacks.get('clear')+')');c.mergeRestored=run('('+attachmentCallbacks.get('mergeRestored')+')');
+ return{c,state,sent,attachment,pending,ids,removed,retire:()=>run(`(()=>{${captureRetirement}})()`),hydrate:(rows)=>c.mergeRestored(rows),fail:()=>run('('+capturedFailure+')(new Error("connection lost after dispatch"),item)')};
+}
+test('captured Send retirement cannot rehydrate its old staged audio from a metadata-only response',()=>{
+ const f=capturedRetirementFixture();f.retire();assert.equal(f.state.attachments.files.length,0);
+ f.hydrate([{attachment:f.attachment,file:new File(['downloaded original voice'],'restored.webm')}]);
+ assert.equal(f.state.attachments.files.length,0,'old captured staging must not become an editable draft again');
+ assert.equal(f.ids.current.size,0,'the next editable autosave contains no captured attachment ID');
+ assert(f.removed.current.has('sent'));assert(f.removed.current.has('earlier-capture'));
+ assert.equal(f.c.submittedDraftWriteChain.pendingDeletionIds.size,0,'captured payload protection is not a deletion request');
+});
+test('late captured metadata preserves newer audio and successive captures retain older consumption fences',()=>{
+ const f=capturedRetirementFixture();f.retire();
+ const newer=new File(['new voice'],'new.webm'),meta={id:'new',name:'new.webm'};
+ f.state.attachments={files:[newer]};f.ids.current.set(newer,'new');
+ f.hydrate([{attachment:f.attachment,file:new File(['old voice'],'old.webm')}]);
+ assert.equal(f.state.attachments.files.length,1);assert.equal(f.state.attachments.files[0],newer);assert.equal(f.ids.current.get(newer),'new');
+ f.c.stagedIds=['new'];f.retire();f.hydrate([{attachment:f.attachment,file:f.sent},{attachment:meta,file:newer}]);
+ assert.equal(f.state.attachments.files.length,0);for(const id of ['earlier-capture','sent','new'])assert(f.removed.current.has(id));
+});
+test('uncertain captured-send failure retains its exact protected audio for recovery without reviving the editable draft',()=>{
+ const f=capturedRetirementFixture();f.retire();f.fail();
+ assert.equal(f.state.saved.status,'unknown');assert.deepEqual(f.state.saved.pending,f.pending);
+ assert.equal(f.state.attachments.files.length,0);assert.equal(f.c.submittedDraftWriteChain.pendingDeletionIds.size,0);
+});

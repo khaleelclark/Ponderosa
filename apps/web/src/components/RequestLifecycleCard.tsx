@@ -347,6 +347,7 @@ export function RequestLifecycleCard({
       }}
     >
       <AccordionSummary
+        id={`${detailsId}-summary`}
         aria-controls={detailsId}
         aria-label={`${expanded ? "Collapse" : "Expand"} updates for request from ${requester} to ${recipient}`}
         sx={{ minWidth: 0, "& .MuiAccordionSummary-content": { minWidth: 0 } }}
