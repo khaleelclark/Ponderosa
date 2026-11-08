@@ -487,7 +487,7 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
     }
   };
   return <><Dialog open={open} onClose={onClose} fullScreen={fullScreen} fullWidth maxWidth="md" aria-labelledby="notifications-title" PaperProps={{ sx: { overflow: "hidden", maxHeight: fullScreen ? "100%" : "85dvh" } }}>
-    <Box component="header" sx={{ px: 3, pt: 2, pb: 1, flexShrink: 0 }}>
+    <Box component="header" sx={{ px: { xs: 2, sm: 3 }, pt: "max(16px, env(safe-area-inset-top, 0px))", pb: 1, flexShrink: 0 }}>
       <Typography
         id="notifications-title"
         component="h2"
@@ -507,19 +507,19 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
       <Tab value="attention" label={`Needs Action (${openActionCount})`} sx={{ minHeight: 42 }} />
       <Tab value="updates" label={`Updates (${unreadUpdateCount})`} sx={{ minHeight: 42 }} />
     </Tabs>
-    <DialogContent dividers sx={{ px: { xs: 1, sm: 2 }, py: 1.5, overflowX: "hidden", minWidth: 0 }}>
+    <DialogContent dividers sx={{ px: { xs: 1, sm: 2 }, py: 1.5, overflowX: "hidden", overscrollBehavior: "contain", minWidth: 0 }}>
       {error ? <Alert severity="error" sx={{ mb: 1 }}>{error}</Alert> : null}
       {externalError&&<Alert severity="error" sx={{mb:1}} action={onRetryExternal?<Button onClick={onRetryExternal}>Retry</Button>:undefined}>{externalError}</Alert>}
       {loadFailed ? <Alert severity="warning" sx={{ mb: 1 }} action={onRetry ? <Button color="inherit" onClick={onRetry}>Retry</Button> : undefined}>{firstPage ? "Notifications could not refresh. Showing the last loaded notifications." : "Notifications could not be loaded. Try again."}</Alert> : !firstPage && loading ? <Typography role="status">Loading notifications…</Typography> : null}
       <Stack spacing={1}>
         {groups.map((group) => {
           const project = projects.find((candidate) => candidate.id === group.projectId);
-          return <Box key={group.key} sx={{ border: 1, borderColor: "divider", borderRadius: 2, overflow: "hidden", bgcolor: "background.paper" }}>
-            <Stack direction="row" sx={{ alignItems: "center", bgcolor: "action.hover", borderBottom: 1, borderColor: "divider" }}>
+          return <Box key={group.key} sx={{ borderBottom: 1, borderColor: "divider", overflow: "hidden" }}>
+            <Stack direction="row" sx={{ alignItems: "center", borderBottom: 1, borderColor: "divider" }}>
             <Button fullWidth disabled={!project} onClick={() => { if (project) { onClose(); onNavigate({ kind: "home" }); } }} sx={{ justifyContent: "flex-start", px: 1.5, py: 1.1, textAlign: "left", borderRadius: 0 }}>
               <Box sx={{ width: 32, height: 32, mr: 1.25, borderRadius: 1, bgcolor: "action.selected", color: "secondary.main", display: "grid", placeItems: "center", flex: "0 0 auto" }}><FolderOutlinedIcon fontSize="small" /></Box>
               <Stack spacing={.1} sx={{ minWidth: 0, flex: 1 }}>
-                <Typography variant="overline" color="text.secondary" fontWeight={800} lineHeight={1.25} noWrap>{project?.label ?? (group.projectId ? "Unknown project" : "Ponderosa")}</Typography>
+                <Typography variant="overline" color="text.secondary" fontWeight={650} lineHeight={1.25} noWrap>{project?.label ?? (group.projectId ? "Unknown project" : "Ponderosa")}</Typography>
                 <Typography variant="subtitle2" noWrap>{group.items.length} {filter === "attention" ? (group.items.length === 1 ? "open action" : "open actions") : (group.items.length === 1 ? "unread update" : "unread updates")}</Typography>
               </Stack>
             </Button>
@@ -529,12 +529,12 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
                 const attention = isOpenAttention(item) ? attentionPresentation(item) : undefined;
                 return <ListItem key={item.id} disablePadding sx={{ "& > [data-notification-id]": { flex: 1, minWidth: 0 } }}>
                 <Box data-notification-id={item.id}>
-                <ListItemButton selected={filter === "updates" ? !item.readAt : !item.acknowledgedAt} onClick={() => navigateToNotification(item)} alignItems="flex-start" sx={{ gap: 1, mx: .75, my: .45, py: 1, borderRadius: 1.5 }}>
+                <ListItemButton selected={filter === "updates" ? !item.readAt : !item.acknowledgedAt} onClick={() => navigateToNotification(item)} alignItems="flex-start" sx={{ gap: 1, mx: .75, my: .5, py: 1.5, borderRadius: "10px" }}>
                   <Box aria-hidden sx={{ width: 8, height: 8, mt: .75, borderRadius: "50%", bgcolor: filter === "updates" ? "primary.main" : item.acknowledgedAt ? "action.disabled" : item.severity === "urgent" ? "error.main" : "warning.main", flex: "0 0 auto" }} />
                   <ListItemText
                     sx={{ minWidth: 0, overflowWrap: "anywhere" }}
-                    primary={<Stack direction="row" spacing={1} sx={{ minWidth: 0, alignItems: "center" }}><Typography variant="body2" fontWeight={(filter === "attention" ? item.acknowledgedAt : item.readAt) ? 600 : 800} noWrap sx={{ minWidth: 0, flex: 1 }}>{attention?.title ?? item.title}</Typography>{filter === "attention" && !item.acknowledgedAt ? <Chip size="small" color="primary" label="New" /> : item.severity && item.severity !== "info" ? <Chip size="small" color={item.severity === "urgent" ? "error" : "warning"} label={item.severity === "urgent" ? "Urgent" : "Issue"} /> : null}<Typography variant="caption" color="text.secondary" sx={{ flex: "0 0 auto" }}>{notificationTime(attention?.occurredAt ?? item.createdAt)}</Typography></Stack>}
-                    secondary={<Stack spacing={0.5}>{!attention && item.conversationTitle ? <Typography variant="caption" color="text.secondary">Chat: {item.conversationTitle}</Typography> : null}{(attention?.task ?? item.contextPreview) ? <Typography variant="body2" sx={{ fontWeight: 600, overflowWrap: "anywhere" }}>“{attention?.task ?? item.contextPreview}”</Typography> : null}{item.category === "communication" && item.communicationEventId ? <Typography variant="caption" color="text.secondary">Message reference: {item.communicationEventId.slice(-8)}</Typography> : null}<Typography variant="body2" color="text.secondary" sx={{ display: "-webkit-box", overflow: "hidden", overflowWrap: "anywhere", WebkitBoxOrient: "vertical", WebkitLineClamp: 3 }}>{attention?.explanation ?? item.body}</Typography>{item.kind === "decision" && item.decision && (item.status ?? "open") === "open"
+                    primary={<Stack direction="row" spacing={1} sx={{ minWidth: 0, alignItems: "center" }}><Typography variant="body2" fontWeight={(filter === "attention" ? item.acknowledgedAt : item.readAt) ? 500 : 650} noWrap sx={{ minWidth: 0, flex: 1 }}>{attention?.title ?? item.title}</Typography>{filter === "attention" && !item.acknowledgedAt ? <Chip size="small" color="primary" label="New" /> : item.severity && item.severity !== "info" ? <Chip size="small" color={item.severity === "urgent" ? "error" : "warning"} label={item.severity === "urgent" ? "Urgent" : "Issue"} /> : null}<Typography variant="caption" color="text.secondary" sx={{ flex: "0 0 auto" }}>{notificationTime(attention?.occurredAt ?? item.createdAt)}</Typography></Stack>}
+                    secondary={<Stack spacing={0.5}>{!attention && item.conversationTitle ? <Typography variant="caption" color="text.secondary">Chat: {item.conversationTitle}</Typography> : null}{(attention?.task ?? item.contextPreview) ? <Typography variant="body2" sx={{ fontWeight: 600, overflowWrap: "anywhere" }}>“{attention?.task ?? item.contextPreview}”</Typography> : null}{item.category === "communication" && item.communicationEventId ? <Typography variant="caption" color="text.secondary">Message reference: {item.communicationEventId.slice(-8)}</Typography> : null}<Typography variant="body2" color="text.secondary" sx={{ overflowWrap: "anywhere" }}>{attention?.explanation ?? item.body}</Typography>{item.kind === "decision" && item.decision && (item.status ?? "open") === "open"
                       ? <DecisionActions decision={notificationDecision(item)!} compact />
                       : item.status && item.status !== "open" ? <Typography variant="caption" color="text.secondary">{item.status}</Typography> : null}
                     <Box sx={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: .5 }}>
@@ -562,7 +562,7 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
             </List>
           </Box>;
         })}
-        {firstPage && !loadFailed && !loading && visibleNotifications.length === 0 && totalForFilter === 0 ? <Box sx={{ py: 5, textAlign: "center" }}><Typography fontWeight={750}>{filter === "attention" ? "Nothing needs attention" : "No unread updates"}</Typography><Typography variant="body2" color="text.secondary">{filter === "attention" ? "Questions remain until answered or skipped; other alerts can be dismissed." : "New Agent responses and broadcasts will appear here."}</Typography></Box> : null}
+        {firstPage && !loadFailed && !loading && visibleNotifications.length === 0 && totalForFilter === 0 ? <Box sx={{ py: 3, textAlign: "center" }}><Typography fontWeight={650}>{filter === "attention" ? "Nothing needs attention" : "No unread updates"}</Typography><Typography variant="body2" color="text.secondary">{filter === "attention" ? "Questions remain until answered or skipped; other alerts can be dismissed." : "New Agent responses and broadcasts will appear here."}</Typography></Box> : null}
         {reconcilingOlder ? <Typography variant="caption" color="text.secondary" role="status">
           Refreshing loaded notification history…
         </Typography> : null}
@@ -578,7 +578,7 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
         </Button> : null}
       </Stack>
     </DialogContent>
-    <DialogActions sx={{ px: { xs: 2, sm: 3 }, py: 1, flexShrink: 0 }}>
+    <DialogActions sx={{ px: { xs: 2, sm: 3 }, pt: 1, pb: "max(12px, env(safe-area-inset-bottom, 0px))", flexShrink: 0 }}>
       <Button disabled={clearing || totalForFilter === 0} onClick={() => void clearAll()}>
         {clearing ? "Clearing…" : filter === "attention" ? "Clear alerts" : "Clear updates"}
       </Button>

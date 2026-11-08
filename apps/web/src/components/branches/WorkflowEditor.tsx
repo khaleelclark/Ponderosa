@@ -119,6 +119,8 @@ export function WorkflowExecutionSettings({definition,onDefinition,bindings,onBi
     const invalid=!Number.isSafeInteger(value)||value<1||value>maximum;
     return <TextField key={field} label={label} type="number" size="small" inputProps={{min:1,max:maximum,step:1}} error={invalid} helperText={field==='maxConcurrentExecutions'&&invalid?'Enter a whole number from 1 to 1,000.':undefined} value={value} onChange={e=>onDefinition({...definition,policy:{...definition.policy,[field]:Number(e.target.value)}})}/>;
    })}
+  <FormControlLabel label="Pause automatic runs when speaker role is removed" control={<Switch checked={definition.policy.pauseOnSpeakerRemoval===true} onChange={(_,pauseOnSpeakerRemoval)=>onDefinition({...definition,policy:{...definition.policy,pauseOnSpeakerRemoval}})}/>}/>
+  <Typography variant="body2" color="text.secondary">Off by default. Publish this setting to apply it to automatic runs.</Typography>
   <FailureEditor value={definition.policy.failure} onChange={failure=>onDefinition({...definition,policy:{...definition.policy,failure:failure??{action:'stop'}}})} bindings={bindings} onBindings={onBindings} agents={agents} contexts={contexts}/>
  </Stack>;
 }
