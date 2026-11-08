@@ -11,10 +11,20 @@ const createRequest=(coordination,chat,sender,target)=>coordination.coordinate({
 const messageActivation=(store,eventId)=>store.sqlite.prepare("SELECT * FROM agent_activations WHERE dedupe_key LIKE ?").get(`communication:${eventId}:%`);
 
 test('agent tool guidance describes tracked steering and visible noninterrupting progress',()=>{
- assert.match(PONDEROSA_COORDINATE_TOOL.description,/steer a busy Agent/);
- assert.doesNotMatch(PONDEROSA_COORDINATE_TOOL.description,/never steer/);
- assert.match(PONDEROSA_MESSAGE_TOOL.description,/messagePurpose instruction or question/);
- assert.match(PONDEROSA_MESSAGE_TOOL.description,/progress or fyi/);
+ const coordinate=PONDEROSA_COORDINATE_TOOL.description;
+ assert.match(coordinate,/steer[\s\S]*busy Agents?/i);
+ assert.match(coordinate,/when supported[\s\S]*otherwise wait[\s\S]*next Run/i);
+ assert.doesNotMatch(coordinate,/never steer/i);
+ const purpose=PONDEROSA_MESSAGE_TOOL.inputSchema.properties.messagePurpose;
+ assert.equal(purpose.type,'string');
+ assert.deepEqual(purpose.enum,['instruction','question','progress','fyi']);
+ // Providers receive descriptions and field guidance together; wording may move
+ // between those advertised locations without losing the behavioral contract.
+ const messageGuidance=[PONDEROSA_MESSAGE_TOOL.description,purpose.description].join('\n');
+ assert.match(messageGuidance,/instruction(?:\s+or\s+|\/)question[\s\S]*steer/i);
+ assert.match(messageGuidance,/progress(?:\s+or\s+|\/)fyi[\s\S]*(?:noninterrupting|without interruption)/i);
+ assert.match(messageGuidance,/(?:omission|unmarked|default)[\s\S]*steer/i);
+ assert.match(messageGuidance,/coordinate for tracked work[\s\S]*update_request for correlated results/i);
 });
 
 test('actionable collaboration steers by default while marked progress and FYIs remain visible and noninterrupting',{timeout:30000},async t=>{
