@@ -1,4 +1,4 @@
-import {AssistantEntry} from './components/AssistantEntry';
+import {useInitializeAssistant} from './components/AssistantEntry';
 import { useEffect } from "react";
 import { loadProjectShell } from "./projectShellLoader";
 import { Alert, Box, Button } from "@mui/material";
@@ -106,6 +106,7 @@ export function WorkspaceRouteOutlet({
   onResourceDeleted,
   onToggleColorMode,
 }: WorkspaceRouteOutletProps): JSX.Element {
+  useInitializeAssistant();
   // Fetch the existing route chunk while its Project metadata resolves. The
   // route boundary still owns its loading, failure and explicit retry states.
   const projectRoute = isProjectRoute(route);
@@ -135,7 +136,6 @@ export function WorkspaceRouteOutlet({
         </Alert>
       ) : null}
       <Box sx={{ minHeight: 0, minWidth: 0, display: "flex", flexDirection:"column" }}>
-      <AssistantEntry/>
       <Box sx={{flex:1,minHeight:0,display:"grid"}}>
       {loadError ? (
         <Box sx={{ p: 2 }}>

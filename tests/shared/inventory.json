@@ -116,7 +116,10 @@
       "feature": "agents",
       "lane": "server",
       "moduleBase": "apps/server/package.json",
-      "additionalFeatures": ["providers", "chats"],
+      "additionalFeatures": [
+        "providers",
+        "chats"
+      ],
       "requirements": "Opt-in PONDEROSA_REGRESSION_REAL_CLAUDE=1; Node24 and built native server workspaces; existing permitted normal Claude CLI/account; disposable owned loopback listener, data and working folder",
       "origin": "One native Claude READY user_dm/private Agent projection, local-only context and tagged operator Chat projection, one managed message with optional exact-tool discovery, completed Run and observed owned runtime drain; no broad provider/platform parity claim"
     },
@@ -1916,7 +1919,9 @@
     {
       "path": "tests/memory/real-provider-recall.test.mjs",
       "feature": "memory",
-      "additionalFeatures": ["branches"],
+      "additionalFeatures": [
+        "branches"
+      ],
       "lane": "server",
       "moduleBase": "apps/server/package.json",
       "requirements": "Separate Core PONDEROSA_REGRESSION_REAL_MEMORY=1 and Branches PONDEROSA_REGRESSION_BRANCHES_REAL_MEMORY=1 opt-ins; Node24/built native server, permitted Codex/Claude accounts, explicit PONDEROSA_TEST_CHROMA_BIN and read-only PONDEROSA_TEST_MEMORY_MODEL_DIR; fresh owned Chroma/data/cache; at most two native turns per selected case",
@@ -2911,6 +2916,14 @@
       "moduleBase": "apps/server/package.json",
       "requirements": "Node24, built server workspaces and disposable local fixtures; no provider account",
       "origin": "Large working-file transport and retained portability"
+    },
+    {
+      "path": "tests/branches/assistant-navigation.test.mjs",
+      "feature": "branches",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; real web routing and product-scope helpers; no provider/runtime",
+      "origin": "Integrated Assistant safe exact return and canonical authored file navigation"
     }
   ],
   "retainedReleasePayload": [
@@ -3363,6 +3376,14 @@
       "lane": "manual",
       "moduleBase": "apps/server/package.json",
       "requirements": "Owned disposable desktop/phone inactive-panel first-use and explicit chunk retry; normal built web/server/packages and sandboxed Chrome; no provider account, load or timing",
+      "classification": "manual-qualification-entrypoint"
+    },
+    {
+      "path": "tests/branches/assistant-navigation-qualification.mjs",
+      "feature": "branches",
+      "lane": "manual",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Owned disposable real-server UI check; built web/server/packages and installed Chrome; synthetic content and inert provider; no performance/load qualification",
       "classification": "manual-qualification-entrypoint"
     }
   ],

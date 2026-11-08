@@ -7,6 +7,8 @@ export type BranchTab = typeof branchTabs[number];
 export type BranchGlobalView = 'general' | 'providers' | 'notifications' | 'activity' | 'profile' | 'usage' | 'status';
 export const branchSettingsSection=(view:BranchGlobalView):NonNullable<Extract<Route,{kind:'settings'}>['section']>=>view==='status'?'providers':view==='usage'?'activity':view;
 export interface BranchRoute {
+  assistant?: boolean;
+  assistantReturnTo?: string;
   branchId?: string;
   tab: BranchTab;
   executionId?: string;
@@ -34,6 +36,7 @@ export function parseBranchRoute(search: string): BranchRoute {
   const location = nested?.startsWith('/projects/') ? new URL(nested, 'http://ponderosa.invalid') : undefined;
   const workspace: Route | undefined = location ? parseRoute(location.pathname, location.search) : undefined;
   return {
+    ...(query.get('assistant') === '1' ? {assistant:true,assistantReturnTo:assistantReturnPath(query.get('returnTo'))} : {}),
     tab: tab === 'parameters' ? 'settings' : branchTabs.includes(tab as BranchTab) ? tab as BranchTab : executionId ? 'executions' : 'workflow',
     ...(tab === 'parameters' ? {settingsSection:'variables' as const} : tab === 'settings' && ['variables','execution-controls'].includes(query.get('section') ?? '') ? {settingsSection:query.get('section') as NonNullable<BranchRoute['settingsSection']>} : {}),
     ...(query.get('branch') ? { branchId: query.get('branch')! } : {}),
@@ -48,6 +51,7 @@ export function parseBranchRoute(search: string): BranchRoute {
 
 export function branchRoutePath(route: BranchRoute): string {
   const query = new URLSearchParams();
+  if (route.assistant) {query.set('assistant','1');if(route.assistantReturnTo)query.set('returnTo',route.assistantReturnTo);}
   if (route.branchId) query.set('branch', route.branchId);
   if (route.tab !== 'workflow' || route.executionId) query.set('tab', route.tab);
   if (route.executionId) query.set('execution', route.executionId);
@@ -64,4 +68,14 @@ export function branchRoutePath(route: BranchRoute): string {
 export function branchWorkspaceRoute(context:Pick<BranchContextDto,'id'|'projectId'|'branchId'|'executionId'>,workspace:ProjectRoute):BranchRoute {
   if(!context.branchId||workspace.projectId!==context.projectId||('conversationId'in workspace&&workspace.conversationId&&workspace.conversationId!==context.id))throw new Error('The destination does not belong to this Branch Chat.');
   return {branchId:context.branchId,tab:'chats',...(context.executionId?{executionId:context.executionId}:{}),chatId:context.id,workspace};
+}
+
+/** Assistant can return to an exact Core view; only same-origin app paths qualify. */
+export function assistantReturnPath(value:string|null|undefined):string|undefined {
+ if(!value?.startsWith('/')||value.startsWith('//'))return undefined;
+ try{
+  const target=new URL(value,'http://ponderosa.invalid');
+  if(target.origin!=='http://ponderosa.invalid'||/^\/(?:assistant|apps|branches)(?:\/|$)/.test(target.pathname))return undefined;
+  return target.pathname+target.search+target.hash;
+ }catch{return undefined;}
 }

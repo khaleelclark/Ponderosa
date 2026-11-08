@@ -1,3 +1,4 @@
+import {AssistantEntry} from "./AssistantEntry";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import ForumOutlinedIcon from "@mui/icons-material/ForumOutlined";
@@ -135,14 +136,14 @@ export function ProjectRail({
           pb: 0.75,
         }}
       >
+        <AssistantEntry wide={drawer}/>
         {!drawer ? <ButtonBase
           aria-label="Inbox"
           aria-current={route.kind === "inbox" ? "page" : undefined}
           onClick={onOpenInbox}
           sx={{
-            gridColumn: "1 / -1",
             minWidth: 0,
-            minHeight: 36,
+            minHeight: 44,
             justifyContent: "center",
             gap: 1,
             px: 1,
@@ -153,7 +154,7 @@ export function ProjectRail({
           }}
         >
           <ForumOutlinedIcon sx={{ fontSize: 18, flex: "0 0 auto" }} />
-          <Typography component="span" noWrap sx={{ minWidth: 0, fontSize: "0.75rem", fontWeight: 700 }}>
+          <Typography component="span" noWrap sx={{ minWidth: 0, fontSize: "0.8125rem", fontWeight: 600 }}>
             Inbox
           </Typography>
         </ButtonBase> : null}
@@ -206,7 +207,7 @@ export function ProjectRail({
             }}
           >
             {mode.icon}
-            <Typography component="span" noWrap sx={{ minWidth: 0, fontSize: "0.75rem", fontWeight: 700 }}>
+            <Typography component="span" noWrap sx={{ minWidth: 0, fontSize: "0.8125rem", fontWeight: 600 }}>
               {mode.label}
             </Typography>
             {mode.id === "agents" ? <SidebarActivityBadge activity={sections.agentsActivity} fresh={sections.agentsActivityFresh} /> : null}

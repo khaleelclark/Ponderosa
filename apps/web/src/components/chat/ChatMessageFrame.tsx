@@ -1,3 +1,4 @@
+import "./conversation.css";
 import { Avatar, ButtonBase, Tooltip } from "@mui/material";
 import { useEffect, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
 import type { ChatMessagePresentation } from "./contracts";
@@ -13,7 +14,7 @@ import { observeNotificationVisibility } from "../../notificationVisibility";
 
 export function ChatMessageFrame({
   message,
-  maxAgentWidth = 960,
+  maxAgentWidth = 800,
 }: {
   message: ChatMessagePresentation;
   maxAgentWidth?: number;
@@ -107,7 +108,7 @@ export function ChatMessageFrame({
           ? <Tooltip title={`Open ${senderName}`}><ButtonBase
               aria-label={`Open agent ${senderName} from profile image`}
               onClick={(event) => { event.stopPropagation(); openAuthor(); }}
-              sx={{ borderRadius: "50%", flex: "0 0 auto" }}
+              sx={{ borderRadius: "50%", flex: "0 0 auto", minWidth:44,minHeight:44,alignItems:"flex-start",pt:.5 }}
             >{avatar}</ButtonBase></Tooltip>
           : avatar
         : null}
@@ -117,7 +118,7 @@ export function ChatMessageFrame({
               {openAuthor ? <ButtonBase
                 aria-label={`Open agent ${senderName} from name`}
                 onClick={(event) => { event.stopPropagation(); openAuthor(); }}
-                sx={{ minHeight: 28, borderRadius: 0.75, textAlign: "left", "& [data-message-sender]": { mb: 0, fontSize: "0.875rem" } }}
+                sx={{ minHeight: 32, borderRadius: 0.75, textAlign: "left", "& [data-message-sender]": { mb: 0, fontSize: "0.875rem" } }}
               ><MessageSenderLabel name={senderName} /></ButtonBase>
                 : <div className="MuiBox-root chat-message-agent-name"><MessageSenderLabel name={senderName} /></div>}
               {message.source}
@@ -167,7 +168,7 @@ export function ChatMessageFrame({
                       event.stopPropagation();
                       openAuthor();
                     }}
-                    sx={{ borderRadius: "50%", flex: "0 0 auto" }}
+                    sx={{ borderRadius: "50%", flex: "0 0 auto", minWidth:44,minHeight:44,alignItems:"flex-start",pt:.5 }}
                   >
                     {avatar}
                   </ButtonBase>

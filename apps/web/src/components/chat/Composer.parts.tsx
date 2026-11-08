@@ -310,6 +310,7 @@ export function ComposerSendActions({
               color="primary"
               disabled={!canSend}
               onClick={send}
+              sx={{width:44,height:44,bgcolor:"primary.main",color:"primary.contrastText","&:hover":{bgcolor:"primary.dark"},"&.Mui-disabled":{bgcolor:"action.disabledBackground",color:"action.disabled"}}}
               aria-label={mentionedBusyHandles.length > 0
                 ? "Queue message"
                 : "Send message"}

@@ -29,8 +29,8 @@ import { messageProseTagTokens, resolveMessageMentionText } from "./messageMenti
 
 /** Live and completed prose keep the same responsive geometry. */
 export const messageProseTypography = {
-  normal: { fontSize: { xs: "0.875rem", sm: "1rem", md: "0.9375rem" }, lineHeight: 1.48 },
-  small: { fontSize: { xs: "0.9375rem", md: "0.82rem" }, lineHeight: 1.42 },
+  normal: { fontSize: "1rem", lineHeight: 1.65 },
+  small: { fontSize: "0.9375rem", lineHeight: 1.55 },
 } as const;
 
 function isLoopbackLink(url: URL): boolean {
@@ -93,6 +93,7 @@ export function communicationVisibleText(input: {
   intent?: CommunicationIntent;
   fromAgent: boolean;
   agentMentions?: readonly AgentMentionBindingDto[];
+  fixedRecipientAgentId?:string;
 }): string {
   if (input.intent === "collaboration") return input.text;
   const routedText = input.intent === "broadcast"
@@ -100,6 +101,7 @@ export function communicationVisibleText(input: {
     : input.text;
   const resolvedText = resolveMessageMentionText(routedText, input.agentMentions);
   const prefix = !input.fromAgent &&
+    (!input.fixedRecipientAgentId || input.agentMentions?.some(mention=>mention.agentId!==input.fixedRecipientAgentId)) &&
     (input.intent === "user_dm" ||
       input.agentMentions?.some(mention => mention.handle === "new-agent"))
     ? canonicalRecipientPrefix(input.text, input.agentMentions)

@@ -37,6 +37,7 @@ type RemovableWorkspaceResourceRoute = Extract<
 >;
 
 export function ProjectShell({
+  directConversation=false,
   projectId,
   project,
   route,
@@ -50,6 +51,7 @@ export function ProjectShell({
   onResourceDeleted,
   onCreate,
 }: {
+  directConversation?: boolean;
   projectId: string;
   project: ProjectDto;
   route: ProjectRoute;
@@ -296,7 +298,7 @@ export function ProjectShell({
         key={route.agentId}
         load={loadAgentDetail}
         componentProps={{
-          standalone: isOutputAppPath(window.location.pathname),
+          standalone: directConversation || isOutputAppPath(window.location.pathname),
           decisionReviewAction: decisionReviewAction,
           agentId: route.agentId,
           projectId: projectId,

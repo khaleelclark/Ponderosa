@@ -1,5 +1,11 @@
+import {ConversationChromeContext} from './ConversationChromeContext';
+import {PrimaryHeaderActionsOutlet} from './PrimaryHeaderActions';
+import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
+import ArrowBackIosNewIcon from '@mui/icons-material/ArrowBackIosNew';
+import {IconButton,Tooltip,CircularProgress} from '@mui/material';
+import {MobileNavigationButton} from './MobileNavigationContext';
 import {nextIntervalTime} from "@ponderosa/core";
-import {useUnsavedForm} from '../reloadSafety';
+import {confirmUnsavedNavigation,useUnsavedForm} from '../reloadSafety';
 import {ConfirmDialog} from './ConfirmationDialogs';
 import {useAppViewport} from '../hooks/useAppViewport';
 import {setStandaloneWorkspaceOwner} from '../api/productScope';
@@ -17,10 +23,18 @@ import {useWorkspacePreferences} from '../hooks/queries';
 import {useWorkspaceFont} from '../hooks/useWorkspaceFont';
 import {TextSizeSetting} from './TextSizeSetting';
 
+function ConversationNotice({title,cause,onRetry}:{title:string;cause:string;onRetry?():void}):JSX.Element{
+ return <Alert severity="error" sx={{mx:{xs:1,sm:2},my:1,py:.25,flexShrink:0}} action={onRetry?<Button onClick={onRetry}>Retry</Button>:undefined}>
+  <Typography variant="body2">{title}</Typography>
+  <Box component="details" sx={{fontSize:'.8125rem',lineHeight:1.5,'& summary':{cursor:'pointer',py:.5,minHeight:44},'& pre':{m:0,maxHeight:'20vh',overflow:'auto',whiteSpace:'pre-wrap',overflowWrap:'anywhere',font:'inherit'}}}><summary>Details</summary><pre>{cause}</pre></Box>
+ </Alert>;
+}
 /** Output apps use canonical Agent chat, attachments, voice, calls and streams. */
-export function OutputAgentApp({colorMode,onToggleColorMode}:{colorMode:ColorMode;onToggleColorMode():void}):JSX.Element{
+export function OutputAgentApp({colorMode,onToggleColorMode,embedded=false,returnTo}:{colorMode:ColorMode;onToggleColorMode():void;embedded?:boolean;returnTo?:string}):JSX.Element{
  useAppViewport();
- const assistant=window.location.pathname==='/assistant';
+ const [statusHost,setStatusHost]=useState<HTMLDivElement|null>(null);
+ const [callActionsHost,setCallActionsHost]=useState<HTMLDivElement|null>(null);
+ const assistant=embedded||window.location.pathname==='/assistant';
  const id=assistant?undefined:decodeURIComponent(window.location.pathname.split('/')[2]??'');
  const connection=useWorkspaceStream();
  const preferences=useWorkspacePreferences();
@@ -104,17 +118,21 @@ export function OutputAgentApp({colorMode,onToggleColorMode}:{colorMode:ColorMod
   if(!app||!scheduleBase||!validInterval)return;
   void act(()=>requestJson<OutputAgentAppDto>(`/api/branches/output-apps/${encodeURIComponent(app.agentId)}/schedule`,{method:'PUT',body:JSON.stringify({expectedVersionId:scheduleBase.versionId,expectedSettingsRevision:scheduleBase.settingsRevision,automatic,...(intervalChanged||(scheduleBase.triggerKind==='manual'&&automatic)?{everyMs:interval*60000}:{})})}),'Schedule saved',value=>setScheduleBase(value));
  };
- return <WorkspaceConnectionProvider value={connection}><Box component="main" sx={{height:'var(--ponderosa-app-viewport-block-size, 100dvh)',display:'flex',flexDirection:'column',minHeight:0,minWidth:0,pb:'env(safe-area-inset-bottom)'}}>
-  <Stack direction="row" alignItems="center" spacing={1} useFlexGap flexWrap="wrap" sx={{p:1,pt:'max(8px, env(safe-area-inset-top))',borderBottom:1,borderColor:'divider',flexShrink:0}}>
-   <Typography component="h1" variant="h6" sx={{flex:'1 1 8rem',minWidth:0,overflowWrap:'anywhere'}}>{app?.title??(assistant?'Assistant':'Chat')}</Typography>
+ return <ConversationChromeContext.Provider value={{statusHost,callActionsHost}}><WorkspaceConnectionProvider value={connection}><Box component={embedded?'section':'main'} data-assistant-conversation={assistant||undefined} sx={{height:embedded?'100%':'var(--ponderosa-app-viewport-block-size, 100dvh)',flex:1,display:'flex',flexDirection:'column',minHeight:0,minWidth:0,pb:'env(safe-area-inset-bottom)'}}>
+  <Stack component="header" direction="row" alignItems="center" spacing={1} sx={{px:{xs:1,sm:2.5},minHeight:{xs:76,sm:64},pt:embedded?0:'env(safe-area-inset-top)',borderBottom:1,borderColor:'divider',flexShrink:0}}>
+   {embedded?<><MobileNavigationButton/>{returnTo&&<Tooltip title="Back to your Chat"><IconButton href={returnTo} aria-label="Back to your Chat" onClick={event=>{if(!confirmUnsavedNavigation())event.preventDefault();}} sx={{width:44,height:44}}><ArrowBackIosNewIcon sx={{fontSize:20}}/></IconButton></Tooltip>}</>:<Button href="/home" color="inherit" sx={{minHeight:44}}>Ponderosa</Button>}
+   <Box sx={{flex:1,minWidth:0}}><Typography component="h1" sx={{fontWeight:650,fontSize:'1rem',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{assistant?'Assistant':app?.title??'Chat'}</Typography>
+    <Box ref={setStatusHost} sx={{minWidth:0,maxWidth:260,'& .MuiStack-root':{flexWrap:'nowrap'},'& .MuiTypography-root':{overflow:'hidden',textOverflow:'ellipsis'}}}/></Box>
    {app&&route&&(route.workspace?.kind!=='agent'||route.workspace.agentId!==app.agentId)&&<Button onClick={()=>setRoute({branchId:app.branchId,tab:'chats',chatId:app.chatId,workspace:{kind:'agent',projectId:app.projectId,agentId:app.agentId,view:'chat'}})}>Back to chat</Button>}
-   <Button href="/home">Ponderosa</Button><Button onClick={()=>{setError('');setSaved('');setSettings(true);}}>Settings</Button>
+   <Box ref={setCallActionsHost} sx={{display:'flex',alignItems:'center',flexShrink:0,'&:empty':{display:'none'}}}/>
+   <Box sx={{display:{xs:'none',sm:'flex'}}}><PrimaryHeaderActionsOutlet/></Box>
+   <Tooltip title="Conversation settings"><IconButton aria-label="Settings" onClick={()=>{setError('');setSaved('');setSettings(true);}} sx={{width:44,height:44}}><SettingsOutlinedIcon sx={{fontSize:21}}/></IconButton></Tooltip>
   </Stack>
-  {error&&!settings&&<Alert severity="error">{error}</Alert>}
-  {(status.isError||output.isError)&&<Alert severity="error" action={<Button onClick={()=>void retryRefresh()}>Retry</Button>}>{((status.error??output.error) as Error)?.message??'Chat unavailable'}</Alert>}
-  {!app&&assistant&&status.data?.setupError&&<Alert severity="error">{status.data.setupError.message}</Alert>}
-  {!app&&assistant&&status.data?.initialized&&<Stack spacing={1} sx={{p:2}}><Typography>Assistant is disabled</Typography><Button disabled={busy} onClick={()=>void configure(true)}>Enable Assistant</Button></Stack>}
-  {!app&&(assistant?status.isPending||busy:output.isPending)&&<Typography role="status" sx={{p:2}}>Loading…</Typography>}
+  {error&&!settings&&<ConversationNotice title="Conversation settings need attention." cause={error} onRetry={()=>void retryRefresh()}/>}
+  {(status.isError||output.isError)&&<ConversationNotice title={app?'Conversation updates are temporarily unavailable.':assistant?'Assistant could not be opened.':'This conversation could not be opened.'} cause={((status.error??output.error) as Error)?.message??'Chat unavailable'} onRetry={()=>void retryRefresh()}/>}
+  {!app&&assistant&&status.data?.setupError&&<ConversationNotice title="Assistant needs attention before it can open." cause={status.data.setupError.message} onRetry={()=>void retryRefresh()}/>}
+  {!app&&assistant&&status.data?.initialized&&<Stack spacing={1.5} alignItems="center" justifyContent="center" sx={{flex:1,p:3,textAlign:'center'}}><Typography component="h2" sx={{fontSize:'1.5rem',fontWeight:600}}>Your Assistant is paused</Typography><Typography color="text.secondary">Enable Assistant to continue your conversation.</Typography><Button disabled={busy} onClick={()=>void configure(true)}>Enable Assistant</Button></Stack>}
+  {!app&&(assistant?status.isPending||busy:output.isPending)&&<Stack role="status" alignItems="center" justifyContent="center" spacing={2} sx={{flex:1,p:3}}><CircularProgress size={24}/><Typography color="text.secondary">Opening your conversation…</Typography></Stack>}
   {app&&route&&<Box sx={{flex:1,minHeight:0,minWidth:0,display:'flex'}}><BranchChats standalone branchId={app.branchId} engines={engines.data??[]} enginesLoaded={Boolean(engines.data)} branchRoute={route} onNavigate={next=>{
    setRoute(next);return true;
   }}/></Box>}
@@ -122,7 +140,7 @@ export function OutputAgentApp({colorMode,onToggleColorMode}:{colorMode:ColorMod
    <DialogTitle id="output-app-settings-title">Settings</DialogTitle><DialogContent><Stack spacing={2} sx={{pt:1}}>
     {error&&<Alert severity="error">{error}</Alert>}
     <Typography role="status" variant="body2" sx={{minHeight:"1.5em"}}>{pendingAction==='reloading'?'Reloading…':busy?'Saving…':saved}</Typography>
-    <Button onClick={onToggleColorMode}>Use {colorMode==='dark'?'Light':'Dark'} Mode</Button><TextSizeSetting/>
+    <Button onClick={onToggleColorMode}>Use {colorMode==='dark'?'Light':'Dark'} Mode</Button><TextSizeSetting/><Button href="/branches?settings=activity">Provider activity</Button>
     {app&&<><FormControlLabel control={<Switch disabled={busy} checked={automatic} onChange={(_,value)=>{setSaved('');setAutomatic(value);}}/>} label="Run automatically"/>
      {editableInterval?<TextField disabled={busy} label="Check every (minutes)" type="number" value={minutes} onChange={event=>{setSaved('');setMinutes(event.target.value);}} error={!validInterval} helperText={intervalError} inputProps={{min:1,step:'any'}}/>:<Typography>{scheduleSource?.schedule?.scheduleKind==='cron'?`Cron schedule: ${scheduleSource?.schedule.expression} (${scheduleSource?.schedule.timezone})`:scheduleSource?.schedule?.scheduleKind==='once'?`Once at ${scheduleSource?.schedule.at}`:scheduleSource?.triggerKind==='filesystem'?'When files change':'When a webhook event arrives'}</Typography>}
      <Button disabled={busy||!validInterval} onClick={saveSchedule}>Save schedule</Button>
@@ -142,5 +160,5 @@ export function OutputAgentApp({colorMode,onToggleColorMode}:{colorMode:ColorMod
    </Stack></DialogContent><DialogActions><Button disabled={busy} onClick={closeSettings}>Done</Button></DialogActions>
   </Dialog>
   <ConfirmDialog open={discardSettings} title="Unsaved settings" confirmLabel="Discard changes" cancelLabel="Keep editing" onCancel={()=>setDiscardSettings(false)} onConfirm={()=>{setDiscardSettings(false);setSettings(false);}}>Discard unsaved schedule or model changes?</ConfirmDialog>
- </Box></WorkspaceConnectionProvider>;
+ </Box></WorkspaceConnectionProvider></ConversationChromeContext.Provider>;
 }

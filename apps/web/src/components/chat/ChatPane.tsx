@@ -1,4 +1,6 @@
-import { Alert, Box, Button, ButtonBase, Chip } from "@mui/material";
+import {ConversationChromeContext} from "../ConversationChromeContext";
+import {AssistantIcon} from "../AssistantIcon";
+import { Alert, Box, Button, ButtonBase, Chip, Typography } from "@mui/material";
 import type {
   AgentActivityDto,
   ConversationDecisionEventDto,
@@ -10,7 +12,7 @@ import type {
   RunOutputDto,
 } from "@ponderosa/core";
 import { DecisionCard } from "../decisions/DecisionCard";
-import { Fragment, memo, useMemo } from "react";
+import { Fragment, memo, useMemo, useContext } from "react";
 import { CopyMessageButton } from "../CopyMessageButton";
 import { MessageDeliveryStatus } from "../MessageDeliveryStatus";
 import { MessageRequestAction } from "../MessageRequestAction";
@@ -91,7 +93,7 @@ function CommunicationSourceLink({
   );
 }
 
-function visibleAgentMessageText(message: MessageDto): string {
+function visibleAgentMessageText(message: MessageDto, fixedRecipientAgentId?:string): string {
   const text = stripDocumentPrefixText(
     message.text,
     Boolean(message.document),
@@ -101,6 +103,7 @@ function visibleAgentMessageText(message: MessageDto): string {
     intent: message.communicationIntent,
     fromAgent: Boolean(message.authorAgentId),
     agentMentions: message.agentMentions,
+    fixedRecipientAgentId,
   });
 }
 
@@ -164,6 +167,7 @@ function ChatPaneComponent({
   onLoadOlder?(): void;
   historyError?: string;
 }): JSX.Element {
+  const conversationChrome=useContext(ConversationChromeContext);
   const agentChat = useMemo(
     () => projectAgentChat(messages, runs),
     [messages, runs],
@@ -361,7 +365,11 @@ function ChatPaneComponent({
           {historyError}
         </Alert>
       ) : null}
-      empty="Send a message to this agent to start the conversation."
+      empty={conversationChrome?<Box sx={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:1.5,p:3,pb:8,textAlign:'center'}}>
+       <AssistantIcon sx={{fontSize:36,color:'primary.main',mb:.5}}/>
+       <Typography component="h2" sx={{fontSize:{xs:'1.5rem',sm:'1.875rem'},fontWeight:550,letterSpacing:'-.035em'}}>What’s on your mind?</Typography>
+       <Typography color="text.secondary" sx={{maxWidth:340,fontSize:'.9375rem',lineHeight:1.65}}>Ask a question, make a plan, or start something new.</Typography>
+      </Box>:"Send a message to this agent to start the conversation."}
     >
       {timeline.map(item => {
         if (item.kind === "decision") return <Box key={item.id} id={item.id} tabIndex={-1}
@@ -369,6 +377,7 @@ function ChatPaneComponent({
         if (item.kind === "decision-response") return <DecisionResponseMessage key={item.id}
           event={item.event} operatorProfile={operatorProfile} onOpenAgent={onOpenAgent} />;
         if (item.kind === "run") {
+          if(conversationChrome&&item.run.status==='completed'&&!focusId)return null;
           return (
             <AgentWorkReceipt
               key={item.id}
@@ -385,6 +394,7 @@ function ChatPaneComponent({
           );
         }
         if (item.kind === "unscoped") {
+          if(conversationChrome&&!focusId)return null;
           return (
             <AgentWorkReceipt
               key={item.id}
@@ -423,12 +433,12 @@ function ChatPaneComponent({
               message.authorAgentId !== message.agentId,
           );
         const receivedInput = fromUser || receivedFromAgent;
-        const visibleText = visibleAgentMessageText(message);
+        const visibleText = visibleAgentMessageText(message,conversationChrome?fileOwnerAgentId:undefined);
         const readAloudText = resolveMessageMentionText(
           visibleText,
           message.agentMentions,
         );
-        const attachedRuns = runPlacement.afterMessage.get(message.id) ?? [];
+        const attachedRuns = (runPlacement.afterMessage.get(message.id) ?? []).filter(run=>!conversationChrome||run.status!=='completed'||Boolean(focusId));
         return (
           <Fragment key={item.id}>
             <ChatMessageFrame
@@ -542,7 +552,7 @@ function ChatPaneComponent({
                 ) : undefined,
               actions: (
                 <>
-                  <CopyMessageButton text={message.communicationIntent === "collaboration" ? message.text : visibleAgentMessageText(message)} />
+                  <CopyMessageButton text={message.communicationIntent === "collaboration" ? message.text : visibleAgentMessageText(message,conversationChrome?fileOwnerAgentId:undefined)} />
                   <MessageRequestAction
                     projectId={projectId}
                     conversationId={message.conversationId}

@@ -755,3 +755,11 @@ test('all native command result owners use a focusable bounded line-preserving v
   assert.equal(providerCommandResultSx['& .MuiAlert-message'].whiteSpace,'pre-wrap');
   assert.equal(providerCommandResultSx['& .MuiAlert-message'].overflowWrap,'anywhere');
 });
+
+
+test('fixed direct conversation omits only its implicit canonical recipient label',()=>{
+ const own=[binding(agent.handle)];
+ assert.equal(communicationVisibleText({text:'Hello',intent:'user_dm',fromAgent:false,agentMentions:own,fixedRecipientAgentId:agentId}),'Hello');
+ assert.equal(communicationVisibleText({text:'#Build-Coordinator Hello',intent:'user_dm',fromAgent:false,agentMentions:own,fixedRecipientAgentId:agentId}),'#Build-Coordinator Hello','explicit authored tags remain text');
+ assert.equal(communicationVisibleText({text:'Hello',intent:'user_dm',fromAgent:false,agentMentions:own,fixedRecipientAgentId:'different-agent'}),visible('Hello',own),'another explicit recipient remains visible');
+});

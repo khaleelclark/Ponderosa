@@ -1,3 +1,5 @@
+import {ConversationChromeContext} from './ConversationChromeContext';
+import {createPortal} from 'react-dom';
 import {useWorkspaceReadOnly} from "./WorkspaceReadOnlyContext";
 import AccountTreeOutlinedIcon from "@mui/icons-material/AccountTreeOutlined";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
@@ -12,7 +14,7 @@ import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
 import StopCircleOutlinedIcon from "@mui/icons-material/StopCircleOutlined";
 import { Box, Button, IconButton, Link, Popover, Stack, Tooltip, Typography, useMediaQuery } from "@mui/material";
-import { useState } from "react";
+import { useContext, useState } from "react";
 import type { AgentDto, AgentHealthDto } from "@ponderosa/core";
 import { copyText } from "../clipboard";
 import {
@@ -202,13 +204,14 @@ export function AgentDetailHeader({
   onTabChange,
 }: AgentDetailHeaderProps): JSX.Element {
   const auditOnly=useWorkspaceReadOnly();
+  const conversationChrome=useContext(ConversationChromeContext);
   const notify=useMutationNotification();
-  if(standalone)return <Stack direction="row" spacing={1} sx={{alignItems:'center',px:1,minWidth:0,flexWrap:'wrap'}}>
-    <Box sx={{flex:1,minWidth:0}}><AgentRunState status={status} paused={paused} accessRestricted={accessRestricted} health={health} connectionStatus={connectionStatus} phaseEvidenceFresh={phaseEvidenceFresh} startedAt={startedAt} agentNameForId={agentNameForId} visibleMobileLabel/></Box>
+  if(standalone)return <><Stack direction="row" spacing={1} sx={{alignItems:'center',px:1,minWidth:0,flexWrap:'wrap',...(conversationChrome?.statusHost&&!running&&!paused&&tab==='chat'?{height:0,minHeight:0,overflow:'hidden'}:{})}}>
+    {!conversationChrome?.statusHost&&<Box sx={{flex:1,minWidth:0}}><AgentRunState status={status} paused={paused} accessRestricted={accessRestricted} health={health} connectionStatus={connectionStatus} phaseEvidenceFresh={phaseEvidenceFresh} startedAt={startedAt} agentNameForId={agentNameForId} visibleMobileLabel/></Box>}
     {tab!=='chat'&&<Button onClick={()=>onTabChange('chat')}>Back to chat</Button>}
     {(running||paused)&&!accessRestricted&&!auditOnly&&onPauseResume&&<Button disabled={pausePending} onClick={onPauseResume}>{pausePending?'Waiting…':paused?'Resume':'Pause'}</Button>}
     {running&&!auditOnly&&<Button color="error" disabled={stopping} onClick={onStop}>{stopping?'Stopping…':'Stop'}</Button>}
-  </Stack>;
+  </Stack>{conversationChrome?.statusHost&&createPortal(<AgentRunState status={status} paused={paused} accessRestricted={accessRestricted} health={health} connectionStatus={connectionStatus} phaseEvidenceFresh={phaseEvidenceFresh} startedAt={startedAt} agentNameForId={agentNameForId} visibleMobileLabel/>,conversationChrome.statusHost)}</>;
   return (
     <TabbedWorkspaceFrame
       compactMobile

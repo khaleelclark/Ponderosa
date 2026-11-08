@@ -16,10 +16,10 @@ export function productApiPath(path:string):string {
 export function productWorkspacePath(path:string):string {
   if(typeof window==='undefined'||currentProductScope()!=='branches'||!path.startsWith('/projects/'))return path;
   const query=new URLSearchParams(isBranchesPath(window.location.pathname)?window.location.search:undefined);
-  if(!isBranchesPath(window.location.pathname)&&standaloneWorkspaceOwner){
+  if((!isBranchesPath(window.location.pathname)||query.get('assistant')==='1')&&standaloneWorkspaceOwner){
     query.set('branch',standaloneWorkspaceOwner.branchId);query.set('chat',standaloneWorkspaceOwner.chatId);
   }
-  query.set('tab','chats');query.set('workspace',path);query.delete('settings');
+  query.set('tab','chats');query.set('workspace',path);query.delete('settings');query.delete('assistant');query.delete('returnTo');
   return `/branches?${query}`;
 }
 
