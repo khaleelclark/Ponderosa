@@ -276,18 +276,22 @@ test('provider-attention Settings link stays in Branches and retains its executi
 });
 
 
-test('both products share ordered accessible sidebar controls and preserve normal mobile messages',async()=>{
+test('both products share ordered accessible sidebar controls and preserve normal mobile messages',async t=>{
  const React=await import('react'),{renderToStaticMarkup}=await import('react-dom/server');
+ const {QueryClient,QueryClientProvider}=await import('@tanstack/react-query');
+ const client=new QueryClient({defaultOptions:{queries:{retry:false,gcTime:Infinity}}});t.after(()=>client.clear());
+ const previousWindow=globalThis.window;globalThis.window={location:{pathname:'/',search:'',hash:''}};
+ t.after(()=>{if(previousWindow===undefined)delete globalThis.window;else globalThis.window=previousWindow;});
  const {ProjectRail}=await import('../../apps/web/src/components/ProjectNavigation.tsx');
  const {BranchesSidebar}=await import('../../apps/web/src/components/branches/BranchesSidebar.tsx');
  const {createPonderosaTheme}=await import('../../apps/web/src/theme.ts');
  const {ThemeProvider}=await import('@mui/material');
  const noop=()=>{},profile={displayName:'Operator',handle:'operator'};
  for(const mode of ['light','dark'])for(const drawer of [false,true]){
-  const render=element=>renderToStaticMarkup(React.createElement(ThemeProvider,{theme:createPonderosaTheme(mode)},element));
+  const render=element=>renderToStaticMarkup(React.createElement(QueryClientProvider,{client},React.createElement(ThemeProvider,{theme:createPonderosaTheme(mode)},element)));
   const normal=render(React.createElement(ProjectRail,{drawer,route:{kind:'home'},profile,sections:{onSelect:noop},attentionNotifications:7,unreadNotificationUpdates:0,onOpenHome:noop,onOpenInbox:noop,onManageSection:noop,onOpenSearch:noop,onOpenNotifications:noop,onOpenSettings:noop,onCollapse:noop,onClose:noop}));
-  const branches=render(React.createElement(BranchesSidebar,{drawer,panel:null,notifications:React.createElement('button',{'aria-label':'Branches notifications, 7 unread'}),onHome:noop,onSearch:noop,onGlobal:noop,onDismiss:noop,onCollapsedChange:noop}));
-  for(const [html,home,search,bell]of [[normal,'Ponderosa home','Search','Notifications, 7 unread'],[branches,'Ponderosa Branches home','Search Branch Chats','Branches notifications, 7 unread']]){
+  const branches=render(React.createElement(BranchesSidebar,{drawer,panel:null,notifications:React.createElement('button',{'aria-label':'Branches notifications, 7 unread'}),onHome:noop,onAssistant:noop,onSearch:noop,onGlobal:noop,onDismiss:noop,onCollapsedChange:noop}));
+  for(const [html,home,search,bell]of [[normal,'Ponderosa home','Search','Notifications, 7 unread'],[branches,'Ponderosa home','Search Branch Chats','Branches notifications, 7 unread']]){
    const end=drawer?'Close workspace navigation':'Collapse sidebar';
    const labels=[home,search,bell,end].map(label=>html.indexOf('aria-label="'+label+'"'));
    assert.ok(labels.every(i=>i>=0));assert.deepEqual([...labels].sort((a,b)=>a-b),labels);
@@ -1249,10 +1253,12 @@ test('authoring outline describes condition outcomes without introducing executi
 
 test('execution settings edits return a draft definition without mutating its published snapshot',async()=>{
  const {WorkflowExecutionSettings}=await import('../../apps/web/src/components/branches/WorkflowEditor.tsx'),{newDefinition,addNode}=await import('../../apps/web/src/components/branches/model.ts');
+ const {FailureEditor}=await import('../../apps/web/src/components/branches/NodeEditor.tsx');
  const published=addNode(newDefinition(),'agent').definition,changes=[],props={definition:published,bindings:{agents:{},directories:{}},agents:[],contexts:[],onDefinition:value=>changes.push(value),onBindings(){}};
- const surface=WorkflowExecutionSettings(props),fields=surface.props.children[1];fields[0].props.onChange({target:{value:'5'}});assert.equal(changes[0].policy.maxConcurrentExecutions,5);assert.equal(published.policy.maxConcurrentExecutions,2);assert.equal(changes[0].steps,published.steps);
- const failure=surface.props.children[2];failure.props.onChange({action:'retry',maxAttempts:4,delayMs:2000});assert.deepEqual(changes[1].policy.failure,{action:'retry',maxAttempts:4,delayMs:2000});assert.deepEqual(published.policy.failure,{action:'stop'});
- const concurrency=value=>WorkflowExecutionSettings({...props,definition:{...published,policy:{...published.policy,maxConcurrentExecutions:value}}}).props.children[1][0];
+ const fields=definition=>React.Children.toArray(WorkflowExecutionSettings({...props,definition}).props.children);
+ const concurrency=value=>fields({...published,policy:{...published.policy,maxConcurrentExecutions:value}}).find(field=>field.props.label==='Concurrent Executions');
+ concurrency(published.policy.maxConcurrentExecutions).props.onChange({target:{value:'5'}});assert.equal(changes[0].policy.maxConcurrentExecutions,5);assert.equal(published.policy.maxConcurrentExecutions,2);assert.equal(changes[0].steps,published.steps);
+ const failure=fields(published).find(field=>field.type===FailureEditor);failure.props.onChange({action:'retry',maxAttempts:4,delayMs:2000});assert.deepEqual(changes[1].policy.failure,{action:'retry',maxAttempts:4,delayMs:2000});assert.deepEqual(published.policy.failure,{action:'stop'});
  for(const value of [0,1.5,1001]){const field=concurrency(value);assert.equal(field.props.error,true);assert.equal(field.props.helperText,'Enter a whole number from 1 to 1,000.');}
  for(const value of [1,3,1000]){const field=concurrency(value);assert.equal(field.props.error,false);assert.equal(field.props.helperText,undefined);}
  const invalid=renderToStaticMarkup(React.createElement(WorkflowExecutionSettings,{...props,definition:{...published,policy:{...published.policy,maxConcurrentExecutions:0}}}));

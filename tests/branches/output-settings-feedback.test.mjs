@@ -20,7 +20,7 @@ function fixture(pathname='/assistant',overrides={},behavior={}){
  function render(){do{changed=false;index=0;tree=exports.OutputAgentApp({colorMode:'light',onToggleColorMode(){}});for(const effect of pending.splice(0))effect();}while(changed);return tree;}
  function* walk(node){if(!node||typeof node!=='object')return;if(Array.isArray(node)){for(const child of node)yield* walk(child);return;}if(node.props){yield node;yield* walk(node.props.children);yield* walk(node.props.control);}}
  const nodes=()=>[...walk(render())],dialog=()=>nodes().find(n=>n.type==='Dialog');
- const button=name=>nodes().find(n=>n.type==='Button'&&n.props.children===name);
+ const button=name=>nodes().find(n=>['Button','IconButton'].includes(n.type)&&(n.props['aria-label']??n.props.children)===name);
  return {nodes,dialog,button,requests,modelRequests,app};
 }
 for(const pathname of ['/assistant','/apps/speaker']){

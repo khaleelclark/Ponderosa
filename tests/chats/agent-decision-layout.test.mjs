@@ -1,5 +1,7 @@
 import '../shared/web-typescript-loader.mjs';
 const {ApiRequestError}=await import('../../apps/web/src/api/types.ts');
+const ConversationChrome=await import('../../apps/web/src/components/ConversationChromeContext.tsx');
+const AssistantIcon=await import('../../apps/web/src/components/AssistantIcon.tsx');
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
@@ -35,6 +37,8 @@ test('an empty canonical pending set hides the decision notice without a separat
 test('canonical question cards share the ordinary ChatSurface timeline, deduplicate pending rows and retain resolved history',()=>{
  const exports={},surfaces=[],cards=[],noop=()=>null;
  const imports={react:React,'@mui/material':{Box:({children,id,tabIndex})=>React.createElement('article',{id,tabIndex},children)},'../decisions/DecisionCard':{DecisionCard:p=>{cards.push(p.decision);return React.createElement('p',null,p.decision.question);}},'../CopyMessageButton':{},'../MessageDeliveryStatus':{},'../MessageRequestAction':{},'../activity/activityStream':{buildActivityStream:()=>[]},'./AgentWorkReceipt':{},'./receiptActivityEntries':{},'./ChatMessageFrame':{},'./DirectReplyPreview':{DirectReplyPreview:noop},'./LiveAgentProgress':{},'./ChatSurface':{ChatSurface:p=>{surfaces.push(p);return React.createElement('section',null,p.beforeMessages,p.children);}},'./ChatMessages':{chatMessageLayoutKey:()=>''},'./agentChatProjection':{projectAgentChat:()=>({messages:[],runs:[]})},'../speech/ReadAloudControls':{},'../decisions/DecisionResponseMessage':{DecisionResponseMessage:noop}};
+ imports['../ConversationChromeContext']=ConversationChrome;
+ imports['../AssistantIcon']=AssistantIcon;
  vm.runInNewContext(ts.transpileModule(readFileSync(new URL('../../apps/web/src/components/chat/ChatPane.tsx',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX}}).outputText,{exports,require:name=>imports[name]??require(name)});
  const created={...one,createdAt:'2026-10-23T12:00:00Z'},resolved={...created,status:'resolved'},outside={...created,id:'outside-page'};
  const render=(decision,pending)=>renderToStaticMarkup(React.createElement(exports.ChatPane,{messages:[],decisionEvents:[{kind:'decision',id:'creation-a',createdAt:decision.createdAt,decision}],pendingDecisions:pending}));

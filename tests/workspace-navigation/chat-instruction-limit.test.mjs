@@ -27,7 +27,7 @@ function screen(initial) {
     const nodes = [];
     const visit = node => { if (!node || typeof node !== 'object') return; if (Array.isArray(node)) return node.forEach(visit); nodes.push(node); visit(node.props?.children); };
     visit(tree);
-    return { input: nodes.find(node => node.props?.label === 'Instructions').props, save: nodes.find(node => node.type === 'Button' && node.props.children === 'Save').props };
+    return { input: nodes.find(node => node.props?.label === 'Instructions').props, save: nodes.find(node => node.type === 'Button' && node.props.children === 'Save changes').props };
   }
   return { render, sent: () => sent };
 }

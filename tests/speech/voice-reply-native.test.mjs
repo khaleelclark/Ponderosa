@@ -716,7 +716,7 @@ test('text streaming selects canonical shared/private/peer routes and refuses co
  const openingInput={eventId:`agent-opening:${f.agent.id}`,projectId:f.project.id,conversationId:f.chat.id,createdAt:'2026-10-10T00:00:00Z',text:'First task',intent:'broadcast',sender:{kind:'user',userId:'local-operator'},audience:{kind:'organization',organizationId:f.project.id}};
  const opening=(patch={})=>{
   const input={...openingInput,...patch.input},source={id:'opening',kind:'managed_agent_opening',promptClass:patch.promptClass??'human',payload:{communication:input}};
-  const fake={requestIdsAttachedToRun:()=>[],requiredReplyObligationsForRun:()=>[],activationIdsAttachedToRun:(run,agent)=>patch.detached!==true&&run==='run'&&agent===f.agent.id?['opening']:[],activationPayloads:(_agent,ids)=>ids.length?[source]:[],runtimeCommunicationForEvent:()=>({projectId:f.project.id,payload:{communication:input},activations:[{id:patch.acceptedActivationId??'opening',agentId:patch.acceptedAgentId??f.agent.id}]})};
+  const fake={requestIdsAttachedToRun:()=>[],requiredReplyObligationsForRun:()=>[],latestAcknowledgedPromptInjection:()=>undefined,activationIdsAttachedToRun:(run,agent)=>patch.detached!==true&&run==='run'&&agent===f.agent.id?['opening']:[],activationPayloads:(_agent,ids)=>ids.length?[source]:[],runtimeCommunicationForEvent:()=>({projectId:f.project.id,payload:{communication:input},activations:[{id:patch.acceptedActivationId??'opening',agentId:patch.acceptedAgentId??f.agent.id}]})};
   return canonicalVoiceReplyInput(f.store,fake,{runId:'run',agentId:f.agent.id,conversationId:f.chat.id,...patch.scope},patch.presentation??'text',patch.publication);
  };
  assert.equal(opening().input.eventId,openingInput.eventId);
