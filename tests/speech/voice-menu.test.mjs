@@ -111,7 +111,16 @@ test('changing only a resolved call recipient preserves ordinary dictation but r
 });
 
 test('recognition permission failure pauses the call; a foreign canonical Chat never enables capture',async()=>{
- const f=callFixture();await f.flush();f.findButton('Start call').props.onClick();f.render();f.dictation.status='error';f.dictation.error='Microphone permission was denied.';f.render();assert.equal(f.all().some(n=>n.type==='Alert'&&n.props.children==='Microphone permission was denied.'),true);assert.equal(f.sent.length,0);f.unmount();
+ const f=callFixture();await f.flush();f.findButton('Start call').props.onClick();f.render();f.dictation.status='error';f.dictation.error='Microphone permission was denied.';f.render();
+ const text=node=>Array.isArray(node)?node.map(text).join(''):React.isValidElement(node)?text(node.props.children):typeof node==='string'?node:'';
+ const warning=f.find(n=>n.type==='Alert'&&n.props.severity==='warning');
+ assert.match(text(warning),/Microphone access denied\. Allow access in browser settings, then reconnect\./);
+ assert.match(text(warning),/Some speech may be missing\. Review Transcript before sending\./);
+ const details=f.all(warning).find(n=>n.type==='Box'&&n.props.component==='details');assert.ok(details,'Original permission failure remains available in Details');
+ assert.equal(f.all(details).find(n=>n.type==='Typography').props.children,f.dictation.error);
+ assert.equal(text(f.find(n=>n.props.role==='status')),'Call interrupted');assert.equal(f.findButton('Reconnect call').props.disabled,false);
+ assert.equal(f.events.includes('stop-speech'),true,'Permission failure stops automatic local playback');
+ assert.equal(f.sent.length,0);f.unmount();
  const foreign=callFixture();foreign.detail.conversation.id='foreign';await foreign.flush();assert.equal(foreign.findButton('Reconnect call').props.disabled,false);assert.equal(foreign.events.includes('capture'),false);assert.equal(foreign.sent.length,0);foreign.unmount();
 });
 
