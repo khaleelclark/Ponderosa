@@ -1,6 +1,6 @@
 import {useEffect,useState} from 'react';
 import {useInfiniteQuery} from '@tanstack/react-query';
-import {Alert,Button,MenuItem,Paper,Stack,TextField,Typography} from '@mui/material';
+import {Alert,Box,Button,MenuItem,Stack,TextField,Typography} from '@mui/material';
 import type {LifecycleDiscoveryPage,LifecycleImportEntry,LifecycleDestinationEntry,LifecycleCaptureEntry,LifecycleGroupCaptureEntry} from '@ponderosa/core';
 import {currentProductScope} from '../../api/productScope';
 import {requestJson} from '../../api/real';
@@ -24,13 +24,14 @@ function Inventory({kind}:{kind:Kind}):JSX.Element {
   retry:false,refetchOnWindowFocus:false,refetchOnReconnect:false,staleTime:Infinity,gcTime:0});
  useEffect(()=>{if(query.isError)setSelected('');},[query.isError]);
  const pages=query.data?.pages??[],items=query.isError?[]:pages.flatMap(page=>page.items),target=items.find(item=>identity(item)===selected),revision=pages[0]?.revision;
- return <Paper variant="outlined" sx={{p:2}}><Stack spacing={2}>
-  <Typography component="h3" variant="subtitle1">{titles[kind]}</Typography>
+ return <Box component="details" sx={{minWidth:0,borderBottom:'1px solid',borderColor:'divider','& > summary':{cursor:'pointer',minHeight:44,py:1.5,overflowWrap:'anywhere'}}}>
+  <Box component="summary"><Typography component="span" fontWeight={600}>{titles[kind]}</Typography><Typography component="span" variant="body2" color={query.isError?'warning.main':'text.secondary'} sx={{display:'block'}}>{query.isError?`Unavailable · ${query.error.message} · restart required`:query.isPending?'Reading first page…':`${items.length} loaded · ${query.isFetching?'reading… · ':''}${query.hasNextPage?'more available':'end of inventory'}`}{!query.isError&&Boolean(pages[0]?.unverifiedEvidenceCount)&&` · ${pages[0]?.unverifiedEvidenceCount} unverified evidence files`}</Typography></Box>
+  <Stack spacing={2} sx={{pb:2,minWidth:0}}>
   <Button disabled={query.isFetching} onClick={()=>{setSelected('');setGeneration(value=>value+1);}}>Restart {titles[kind].toLowerCase()}</Button>
   {query.isFetching&&<Typography role="status">Reading canonical inventory…</Typography>}
-  {query.error&&<Alert severity="warning">{query.error.message} · selections + confirmations cleared · explicitly restart inventory</Alert>}
+  {query.error&&<Alert severity="warning">{titles[kind]}: {query.error.message} · selections + confirmations cleared · explicitly restart inventory</Alert>}
   {!query.isError&&<>
-   <Typography variant="caption">Loaded {items.length} · {query.isPending?'reading first page':query.hasNextPage?'more entries available':'end of inventory'}</Typography><details><summary>Inventory revision</summary><Typography variant="caption" sx={{overflowWrap:'anywhere'}}>{revision??'pending'}</Typography></details>
+   <details><summary>Inventory revision</summary><Typography variant="caption" sx={{overflowWrap:'anywhere'}}>{revision??'pending'}</Typography></details>
    {Boolean(pages[0]?.unverifiedEvidenceCount)&&<Alert severity="warning">{pages[0]?.unverifiedEvidenceCount} unverified evidence files · quarantined/unrecognized · no selectable operation IDs</Alert>}
    <TextField select label={titles[kind]} value={target?selected:''} disabled={query.isFetching} onChange={event=>setSelected(event.target.value)}><MenuItem value="">Choose canonical identity</MenuItem>{items.map(item=><MenuItem key={identity(item)} value={identity(item)}>{label(item)}</MenuItem>)}</TextField>
    {query.hasNextPage&&<Button disabled={query.isFetching} onClick={()=>void query.fetchNextPage()}>Load more {titles[kind].toLowerCase()}</Button>}
@@ -55,10 +56,10 @@ function Inventory({kind}:{kind:Kind}):JSX.Element {
    <Typography variant="caption" sx={{overflowWrap:'anywhere'}}>Evidence SHA256 {target.evidenceSha256}</Typography>
    <Alert severity="info">Retained identity · audit only · no deletion/drain/authority/eligibility proof · current review required</Alert>
   </Stack>}
- </Stack></Paper>;
+ </Stack></Box>;
 }
 export function LifecycleDiscovery():JSX.Element {
- return <Stack spacing={2}>
+ return <Stack spacing={1} sx={{minWidth:0}}>
   <Typography>Review saved records · load all pages · current review required</Typography>
   <Inventory kind="imports"/>
   <Inventory kind="destinations"/>

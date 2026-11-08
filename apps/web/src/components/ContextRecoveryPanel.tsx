@@ -56,19 +56,23 @@ export function ContextRecoveryPanel({agentId}:{agentId:string}):JSX.Element {
  return <Paper variant="outlined" sx={{m:1,p:1.5}}><Stack spacing={1}>
   <Button onClick={()=>setOpen(value=>!value)} aria-expanded={open}>Context recovery</Button>
   {open&&<>
-   <Typography variant="body2">{stopped?'Task stopped · new work only · effects unknown':'Retained context inspection · original outcome/effects unknown · no original-work retry'}</Typography>
    {status.isFetching&&<Typography role="status">Reading recovery status…</Typography>}
    {(restored.error||error||status.error)&&<Alert severity="error">{restored.error||error||status.error?.message}</Alert>}
    {notice&&<Alert severity="info">{notice}</Alert>}
+   {status.data&&<>
+    {!boundary&&!request&&<Typography fontWeight={600}>No eligible retained context boundary is available.</Typography>}
+    {request&&<>
+     <Typography fontWeight={600}>Recorded phase: {request.progress?.phase.replaceAll('_',' ')??'not recorded'} · {request.state==='dismissed'?'dismissed':'dispatch held'}</Typography>
+     {request.progress?.message&&<Typography sx={{overflowWrap:'anywhere'}}>{request.progress.message}</Typography>}
+    </>}
+    <Typography>Native recovery: {status.data.support.status==='managed_compaction'?'managed compaction':'unsupported'}</Typography>
+   </>}
+   <Typography variant="body2">{stopped?'Task stopped · new work only · effects unknown':'Retained context inspection · original outcome/effects unknown · no original-work retry'}</Typography>
    <Button disabled={status.isFetching} onClick={()=>void status.refetch()}>Reload recovery status</Button>
    {status.data&&<>
-    <Typography>Native recovery: {status.data.support.status==='managed_compaction'?'managed compaction':'unsupported'}</Typography>
-    {!boundary&&!request&&<Typography>No eligible retained context boundary is available.</Typography>}
     {key&&!request&&<Alert severity="warning">Retained exact key · no recovery record returned · new recovery blocked here</Alert>}
     {request&&<>
-     <Typography>Recorded phase: {request.progress?.phase.replaceAll('_',' ')??'not recorded'} · {request.state==='dismissed'?'dismissed':'dispatch held'}</Typography>
      {starting&&!request.progress&&<Typography role="status">Recovery request pending · reading exact operation status</Typography>}
-     {request.progress?.message&&<Typography sx={{overflowWrap:'anywhere'}}>{request.progress.message}</Typography>}
      {request.progress?.phase==='context_accepted'&&<Alert severity="info"><Stack spacing={0.5}><Typography>{stopped?'Context measurement accepted · earlier task stays stopped':'Context measurement accepted · original work/effects unknown'}</Typography><Typography>New independent work · explicit hold dismissal + runtime admission required</Typography></Stack></Alert>}
      {active&&<Button disabled={changing||status.isError} onClick={()=>void change('stop')}>Stop exact recovery</Button>}
      {settled&&<><FormControlLabel control={<Checkbox checked={dismissAck===request.id} onChange={event=>setDismissAck(event.target.checked?request.id:'')}/>} label={stopped?"I understand the earlier task stays stopped and dismissal does not replay it":"I understand dismissal leaves original work unresolved and does not replay it"}/><Button disabled={changing||starting||status.isError||dismissAck!==request.id} onClick={()=>void change('dismiss')}>Dismiss settled hold</Button></>}
@@ -78,7 +82,7 @@ export function ContextRecoveryPanel({agentId}:{agentId:string}):JSX.Element {
      <FormControlLabel control={<Checkbox checked={acknowledged===boundaryIdentity} onChange={event=>setAcknowledged(event.target.checked?boundaryIdentity:'')}/>} label="I understand prior effects remain unknown and this may compact retained native context"/>
      <Button disabled={starting||changing||status.isFetching||status.isError||acknowledged!==boundaryIdentity} onClick={()=>void start()}>Request context recovery</Button>
     </>}
-    <details><summary>Source evidence</summary><Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{JSON.stringify({boundary,request,sourceEvidence:status.data.sourceEvidence},null,2)}</Typography></details>
+    <details><summary style={{minHeight:44,cursor:'pointer',overflowWrap:'anywhere'}}>Source evidence</summary><Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{JSON.stringify({boundary,request,sourceEvidence:status.data.sourceEvidence},null,2)}</Typography></details>
    </>}
   </>}
  </Stack></Paper>;
