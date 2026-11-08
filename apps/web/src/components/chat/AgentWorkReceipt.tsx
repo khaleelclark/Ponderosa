@@ -52,11 +52,21 @@ function receiptTitle(
     : `${agentName} finished working`;
 }
 
-function receiptStatus(run: AgentRunDto): {
+function receiptStatus(run: AgentRunDto, paused: boolean): {
   label: string;
   status: ReturnType<typeof semanticAgentStatus>;
+  detail?: string;
+  accessibleLabel?: string;
 } | undefined {
   if (run.status === "failed") return { label: "Failed", status: "failed" };
+  if (paused && run.status === "cancelled") {
+    return {
+      label: "Paused",
+      status: "waiting",
+      detail: "Run status: cancelled",
+      accessibleLabel: "Paused. Run status: cancelled",
+    };
+  }
   if (run.status === "cancelled") return { label: "Cancelled", status: "failed" };
   if (run.status === "interrupted") return { label: "Interrupted", status: "blocked" };
   if (run.status === "stalled" || run.status === "blocked") {
@@ -104,7 +114,7 @@ export function AgentWorkReceipt({
   );
   const hasVisibleActivity = displayEntries.length > 0;
   const activityCount = visibleEntries.length;
-  const status = run ? receiptStatus(run) : undefined;
+  const status = run ? receiptStatus(run, paused) : undefined;
   const activitySummary = activityCount === 1
     ? "1 activity"
     : `${activityCount} activities`;
@@ -214,6 +224,8 @@ export function AgentWorkReceipt({
             <SemanticStatus
               status={status.status}
               label={status.label}
+              detail={status.detail}
+              accessibleLabel={status.accessibleLabel}
             />
           ) : null}
         </Stack>

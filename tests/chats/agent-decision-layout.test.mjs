@@ -142,12 +142,20 @@ test('Agent detail reserves each visible status notice before its bounded conten
  }
 });
 
-test('paused work receipts do not promise Resume and preserve the stopped Run status',()=>{
+test('paused work receipts show waiting only for the exact cancelled Run and preserve canonical evidence',()=>{
  const exports={},primitive=({children})=>React.createElement('div',null,children),mui=Object.fromEntries(['Box','Button','Stack','Typography'].map(name=>[name,primitive]));
- const imports={react:React,'@mui/material':mui,'../../telemetryFocus':{telemetryElementId:(kind,id)=>kind+id},'../../time':{formatFinalizedWorkDuration:()=> '1s'},'../activity/ActivityStreamPane':{groupConsecutiveActions:entries=>entries},'../activity/ActivityRows':{ActionGroupRow:primitive,CompactActivityRow:primitive,ResponseRow:primitive,ThinkingRow:primitive},'../SemanticStatus':{semanticAgentStatus:state=>state,SemanticStatus:({label})=>React.createElement('span',null,label)},'./receiptActivityEntries':{receiptActivityEntries:entries=>entries}};
+ const imports={react:React,'@mui/material':mui,'../../telemetryFocus':{telemetryElementId:(kind,id)=>kind+id},'../../time':{formatFinalizedWorkDuration:()=> '1s'},'../activity/ActivityStreamPane':{groupConsecutiveActions:entries=>entries},'../activity/ActivityRows':{ActionGroupRow:primitive,CompactActivityRow:primitive,ResponseRow:primitive,ThinkingRow:primitive},'../SemanticStatus':{semanticAgentStatus:state=>state,SemanticStatus:({label,status,detail,accessibleLabel})=>React.createElement('span',{'data-status':status,title:detail,'aria-label':accessibleLabel},label)},'./receiptActivityEntries':{receiptActivityEntries:entries=>entries}};
  vm.runInNewContext(ts.transpileModule(readFileSync(new URL('../../apps/web/src/components/chat/AgentWorkReceipt.tsx',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX}}).outputText,{exports,require:name=>imports[name]??require(name)});
- const html=renderToStaticMarkup(React.createElement(exports.AgentWorkReceipt,{agentName:'Restricted worker',run:{id:'run',status:'cancelled',startedAt:'2026-11-06T12:00:00Z',completedAt:'2026-11-06T12:00:01Z'},paused:true,entries:[]}));
- assert.match(html,/work is paused/);assert.match(html,/Cancelled/);assert.doesNotMatch(html,/Resume to continue/);
+ const run=Object.freeze({id:'paused-run',status:'cancelled',startedAt:'2026-11-06T12:00:00Z',completedAt:'2026-11-06T12:00:01Z'}),before=JSON.stringify(run);
+ const render=(current,pausedRunId)=>renderToStaticMarkup(React.createElement(exports.AgentWorkReceipt,{agentName:'Restricted worker',run:current,paused:current.id===pausedRunId,entries:[]}));
+ const html=render(run,run.id);
+ assert.match(html,/work is paused/);assert.match(html,/>Paused<\/span>/);assert.match(html,/data-status="waiting"/);assert.match(html,/title="Run status: cancelled"/);assert.match(html,/aria-label="Paused\. Run status: cancelled"/);assert.doesNotMatch(html,/Resume to continue/);
+ for(const pausedRunId of [undefined,'unrelated-current-run']){
+  const stopped=render(run,pausedRunId);assert.match(stopped,/>Cancelled<\/span>/);assert.match(stopped,/data-status="failed"/);assert.doesNotMatch(stopped,/>Paused<\/span>|work is paused/);
+ }
+ const failed=render({...run,status:'failed'},run.id);assert.match(failed,/>Failed<\/span>/);assert.match(failed,/data-status="failed"/);assert.doesNotMatch(failed,/>Paused<\/span>/);
+ const resumed=render({...run,status:'running'},undefined);assert.match(resumed,/is working/);assert.doesNotMatch(resumed,/>Paused<\/span>|>Cancelled<\/span>|>Failed<\/span>/);
+ assert.equal(JSON.stringify(run),before,'Receipt presentation never rewrites the canonical Run');
 });
 
 
