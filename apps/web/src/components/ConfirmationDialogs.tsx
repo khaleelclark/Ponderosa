@@ -25,6 +25,7 @@ interface FormDialogShellProps {
   maxWidth?: DialogProps["maxWidth"];
   secondaryAction?: { label: string; onClick(): void; disabled?: boolean };
   onCancel(): void;
+  onExited?(): void;
   onConfirm(): void | Promise<unknown>;
 }
 
@@ -42,6 +43,7 @@ function FormDialogShell({
   maxWidth = "xs",
   secondaryAction,
   onCancel,
+  onExited,
   onConfirm,
 }: FormDialogShellProps): JSX.Element {
   // Mutation pending arrives on a later render; fence the first click now.
@@ -56,6 +58,7 @@ function FormDialogShell({
       fullWidth
       maxWidth={maxWidth}
       aria-busy={pending || undefined}
+      slotProps={{ transition: { onExited } }}
     >
       <DialogTitle>{title}</DialogTitle>
       <DialogContent>
@@ -106,6 +109,7 @@ export interface ConfirmDialogProps {
   secondaryAction?: FormDialogShellProps["secondaryAction"];
   maxWidth?: DialogProps["maxWidth"];
   onCancel(): void;
+  onExited?(): void;
   onConfirm(): void | Promise<unknown>;
 }
 

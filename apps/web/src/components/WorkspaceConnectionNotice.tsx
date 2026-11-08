@@ -17,7 +17,7 @@ export function WorkspaceConnectionNotice({ connection, hasSavedData = false }: 
       size="small" color="inherit" startIcon={<SyncProblemOutlinedIcon fontSize="small" />}
       aria-haspopup="dialog" aria-expanded={Boolean(anchor)} aria-controls={anchor ? detailsId : undefined}
       onClick={event => setAnchor(event.currentTarget)}
-      sx={{ whiteSpace: "nowrap", minHeight: { xs: 44, sm: 32 }, px: 1, color: "text.secondary", "@media (pointer: coarse)": { minHeight: 44 } }}
+      sx={theme => ({ whiteSpace: "nowrap", minHeight: { xs: 44, sm: 32 }, px: 1, color: "text.secondary", [theme.breakpoints.down("sm")]: { px: 0.5, fontSize: "0.75rem", "& .MuiButton-startIcon": { mr: 0.5 } }, "@media (pointer: coarse)": { minHeight: 44 } })}
     >Updates delayed</Button> : null}
     <Popover open={visible && Boolean(anchor)} anchorEl={anchor} onClose={() => setAnchor(null)}
       anchorOrigin={{ vertical: "bottom", horizontal: "right" }} transformOrigin={{ vertical: "top", horizontal: "right" }}>

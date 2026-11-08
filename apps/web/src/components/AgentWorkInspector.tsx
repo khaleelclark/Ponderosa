@@ -152,9 +152,9 @@ function TechnicalRecord({ projectId, conversationId, item, elementId, focused =
     tabIndex={focused ? -1 : undefined}
     sx={{ minWidth: 0, p: 1.25, borderRadius: 1.5, bgcolor: focused ? "action.selected" : "action.hover", outline: focused ? 2 : 0, outlineColor: "primary.main" }}
   >
-    <Stack direction="row" spacing={0.75} sx={{ alignItems: "center", minWidth: 0 }}>
+    <Stack direction={{ xs: "column", sm: "row" }} spacing={0.75} sx={{ alignItems: { xs: "flex-start", sm: "center" }, minWidth: 0 }}>
       <Chip size="small" variant="outlined" label={kindLabel(item.kind)} />
-      <Typography variant="subtitle2" sx={{ flex: 1, minWidth: 0, overflowWrap: "anywhere" }}>{item.title}</Typography>
+      <Typography variant="subtitle2" sx={{ flex: 1, minWidth: 0, width: { xs: "100%", sm: "auto" }, overflowWrap: "anywhere" }}>{item.title}</Typography>
       <Chip size="small" label={agentWorkStateLabel(item.state)} />
     </Stack>
     <Typography variant="body2" color="text.secondary" sx={{ mt: 0.75, overflowWrap: "anywhere" }}>{item.summary}</Typography>
