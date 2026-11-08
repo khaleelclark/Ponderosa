@@ -294,13 +294,19 @@ test('native browser: rendered href, Open-link actions and whole-message/code co
   await rsbuild.build();
   preview = await rsbuild.preview();
   browser = await chromium.launch({ executablePath: process.env.PONDEROSA_BROWSER_EXECUTABLE || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true });
-  const page = await browser.newPage();
   const origin = `http://127.0.0.1:${preview.port}`;
-  await page.context().grantPermissions(['clipboard-read', 'clipboard-write'], { origin });
-  // External navigation is intercepted locally: tests do not visit WynnBuilder.
-  await page.context().route('https://wynnbuilder.github.io/**', route => route.fulfill({ body: '<title>Captured destination</title>' }));
-  await page.goto(origin);
-  const pageErrors = []; page.on('pageerror', error => pageErrors.push(error.message));
+  const pageErrors = [];
+  const openPage = async () => {
+    const context = await browser.newContext();
+    await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin });
+    // External navigation is intercepted locally: tests do not visit WynnBuilder.
+    await context.route('https://wynnbuilder.github.io/**', route => route.fulfill({ body: '<title>Captured destination</title>' }));
+    const next = await context.newPage();
+    next.on('pageerror', error => pageErrors.push(error.message));
+    await next.goto(origin);
+    return next;
+  };
+  let page = await openPage();
   assert.equal(await page.evaluate(() => window.transcriptPreparations), 0);
   for (const kind of ['Copy', 'Download']) {
     await page.getByRole('button', {name: 'Transcript failure test', exact: true}).click();
@@ -415,15 +421,16 @@ test('native browser: rendered href, Open-link actions and whole-message/code co
   assert.equal(await appDialog.getByRole('button',{name:'Open Live App Preview',exact:true}).count(),0,'A stopped or replaced Run must not retain its old preview grant');
   await appDialog.getByRole('button',{name:'Cancel',exact:true}).click();assert.deepEqual(pageErrors,[]);
 
-  // Reset the earlier deliberate clipboard/execCommand failure injections.
-  await page.reload();
+  // Start the cold transcript phase without earlier dialog, focus, selection or clipboard state.
+  await page.context().close();
+  page = await openPage();
   // Real shared surface: fetched data stays complete during a finite cold mount.
   await page.evaluate(()=>{window.holdTranscriptTasks=true;window.mountInitialTranscript();});
   await page.evaluate(()=>{const region=document.querySelector('.chat-scroll-region');region.dispatchEvent(new Event('scroll'));window.installTranscript();});
   let initial=await page.evaluate(()=>window.initialTranscriptSnapshot());
+  t.diagnostic('Cold transcript measured before background work: '+JSON.stringify(initial));
   assert.equal(initial.data,100);assert(initial.count>0&&initial.count<100,'empty/loading -> first response must actually progress');
   assert.equal(initial.busy,'true');assert(initial.rowsHeight>=initial.height,'actual mounted rows fill the viewport before paint');
-  t.diagnostic('Cold transcript measured before background work: '+JSON.stringify(initial));
   await page.getByRole('region',{name:'Loaded transcript copy'}).getByRole('button',{name:'Copy whole message'}).click();
   const allCopied=await page.evaluate(()=>navigator.clipboard.readText());
   assert.equal(allCopied,await page.evaluate(()=>window.transcriptData.map(item=>item.message.text).join('\n')),'all100 fetched entries remain exactly copyable while rows are pending');
