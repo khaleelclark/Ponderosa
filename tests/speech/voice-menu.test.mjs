@@ -174,13 +174,13 @@ test('audio attachment header keeps the exact filename and protected download UR
 
 
 function recorderFixture({unavailable=false,attachmentError,recordedBytes='actual-controlled-recorded-bytes'}={}){
- const attached=[],events=[],track={readyState:'live',stop(){this.readyState='ended';events.push('track-stop');}},stream={getTracks:()=>[track],getAudioTracks:()=>[track]};let recorder,handlers;
+ const attached=[],events=[],streams=[];let recorder,handlers;const getUserMedia=async()=>{const track={readyState:'live',stop(){this.readyState='ended';events.push('track-stop');}},stream={getTracks:()=>[track],getAudioTracks:()=>[track]};streams.push(stream);return stream;};
  const recognition={status:'ready',unavailableReason:unavailable?'Voice dictation is not supported by this browser.':undefined,start(){events.push('recognize');if(!unavailable){this.status='listening';handlers[1](true);}},stop(){events.push('recognition-stop');if(!unavailable)this.status='stopping';},abandon(){events.push('recognition-abandon');handlers?.[1](false);this.status='stopped';}};
  class Recorder{static isTypeSupported=()=>true;state='inactive';mimeType='audio/webm';constructor(){recorder=this;}start(){this.state='recording';}stop(){this.state='inactive';queueMicrotask(()=>{this.ondataavailable?.({data:new Blob([recordedBytes],{type:'audio/webm'})});this.onstop?.();});}}
- const f=fixture('VoiceMessageRecorder',{'./AudioMessagePlayer':{AudioMessagePlayer:()=>null},'./useDictation':{useDictation:(...args)=>{handlers=args;return recognition;}},'./captureCoordinator':{claimPageCapture:()=>()=>{}},'./speechCoordinator':{stopSpeech:()=>true},'./speechSurfaceAccessibility':{monitorSpeechSurfaceAccessibility:()=>()=>{}},'../../reloadSafety':{useUnsavedForm:()=>{}},'./voiceRecording':{recordingExtension:()=> 'webm',recordingMimeType:()=> 'audio/webm'}},{File,Blob,MediaRecorder:Recorder,queueMicrotask,navigator:{mediaDevices:{getUserMedia:async()=>stream}},document:{activeElement:{}},URL:{createObjectURL:()=> 'blob:recording',revokeObjectURL(){}}});
+ const f=fixture('VoiceMessageRecorder',{'./AudioMessagePlayer':{AudioMessagePlayer:()=>null},'./useDictation':{useDictation:(...args)=>{handlers=args;return recognition;}},'./captureCoordinator':capture,'./speechCoordinator':{stopSpeech:()=>true},'./speechSurfaceAccessibility':{monitorSpeechSurfaceAccessibility:()=>()=>{}},'../../reloadSafety':{useUnsavedForm:()=>{}},'./voiceRecording':{recordingExtension:()=> 'webm',recordingMimeType:()=> 'audio/webm'}},{File,Blob,MediaRecorder:Recorder,queueMicrotask,navigator:{mediaDevices:{getUserMedia}},document:{activeElement:{}},URL:{createObjectURL:()=> 'blob:recording',revokeObjectURL(){}}});
  let closed=0;f.mount(f.exports.VoiceMessageRecorder,{maxBytes:1000,onAttach:(file,transcript)=>{attached.push({file,transcript});return attachmentError;},onClose(){closed++;}});
  const finish=()=>{f.find(n=>n.type==='Button'&&n.props.children==='Finish recording').props.onClick();f.render();};
- return{...f,events,attached,recognition,closed:()=>closed,finish,emit(words){handlers[0](words);f.render();},settle(){recognition.status='stopped';handlers[1](false);f.render();},fail(message){recognition.error=message;handlers[1](false);f.render();},recorder:()=>recorder};
+ return{...f,events,attached,recognition,streams,closed:()=>closed,finish,emit(words){handlers[0](words);f.render();},settle(){recognition.status='stopped';handlers[1](false);f.render();},fail(message){recognition.error=message;handlers[1](false);f.render();},recorder:()=>recorder};
 }
 test('recorded voice waits for final speech then stages the real audio with editable transcript, without a Send',async()=>{
  const f=recorderFixture();await f.flush();assert.equal(f.events.includes('recognize'),true);f.finish();await f.flush();assert.equal(f.attached.length,0,'recording completion alone is not speech understanding');assert.equal(f.events.includes('track-stop'),false,'keep the admitted input through native finalization');
@@ -207,4 +207,11 @@ test('empty recording abandons recognition and releases the admitted track inste
 });
 test('discard abandons pending recognition and never stages its retained audio',async()=>{
  const f=recorderFixture();await f.flush();f.find(n=>n.type==='Button'&&n.props.children==='Discard').props.onClick();assert.equal(f.closed(),1);f.unmount();await new Promise(resolve=>setImmediate(resolve));assert.equal(f.attached.length,0);assert.equal(f.events.includes('track-stop'),true);
+});
+
+test('re-record during finalization cannot replace the admitted stream or leave an old capture live',async()=>{
+ const f=recorderFixture();await f.flush();f.finish();await f.flush();const again=f.find(n=>n.type==='Button'&&n.props.children==='Record again');assert.equal(again.props.disabled,true,'wait for final recognition before replacing recording');again.props.onClick();await f.flush();assert.equal(f.streams.length,1,'the callback itself must fence disabled re-record');assert.equal(f.streams[0].getAudioTracks()[0].readyState,'live');f.settle();assert.equal(f.streams[0].getAudioTracks()[0].readyState,'ended');f.unmount();
+});
+test('explicit re-record retires the prior capture before admitting a fresh live stream',async()=>{
+ const f=recorderFixture({unavailable:true});await f.flush();f.finish();await f.flush();assert.equal(f.streams[0].getAudioTracks()[0].readyState,'ended');f.find(n=>n.type==='Button'&&n.props.children==='Record again').props.onClick();await f.flush();assert.equal(f.streams.length,2);assert.equal(f.streams[1].getAudioTracks()[0].readyState,'live','old lease release must not stop the replacement');f.unmount();assert.equal(f.streams[1].getAudioTracks()[0].readyState,'ended');
 });

@@ -54,9 +54,9 @@ export function VoiceMessageRecorder({onAttach,onClose,maxBytes}:{onAttach(file:
   callbacks.current.onClose();
  };
  const start=async()=>{
-  if(phase==='starting'||phase==='recording'||phase==='stopping')return;
+  if(phase==='starting'||phase==='recording'||phase==='stopping'||recognitionSettling.current)return;
   if(surface.current?.contains(document.activeElement))surface.current.focus({preventScroll:true});
-  const epoch=++generation.current;finishRequested.current=false;transcriptionRef.current.abandon();setTranscript('');setError('');setFile(undefined);setSeconds(0);setPhase('starting');
+  const epoch=++generation.current;finishRequested.current=false;transcriptionRef.current.abandon();cleanup();setTranscript('');setError('');setFile(undefined);setSeconds(0);setPhase('starting');
   try{
    if(!navigator.mediaDevices?.getUserMedia||typeof MediaRecorder==='undefined')throw new Error('Voice recording is unavailable in this browser.');
    if(!stopSpeech())throw new Error('Stop browser audio before recording.');
@@ -118,7 +118,7 @@ export function VoiceMessageRecorder({onAttach,onClose,maxBytes}:{onAttach(file:
    {url&&<AudioMessagePlayer src={url} label="Voice message preview" preload="metadata"/>}
    <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
     <Button sx={{minHeight:44}} disabled={phase==='stopping'} onClick={close}>Discard</Button>
-    {phase==='recording'?<Button ref={finishButton} sx={{minHeight:44}} variant="contained" onClick={()=>stop(true)}>Finish recording</Button>:<Button sx={{minHeight:44}} disabled={phase==='starting'||phase==='stopping'} onClick={()=>void start()}>{file?'Record again':'Record'}</Button>}
+    {phase==='recording'?<Button ref={finishButton} sx={{minHeight:44}} variant="contained" onClick={()=>stop(true)}>Finish recording</Button>:<Button sx={{minHeight:44}} disabled={phase==='starting'||phase==='stopping'||transcriptionSettling} onClick={()=>void start()}>{file?'Record again':'Record'}</Button>}
     {file&&url&&<Button sx={{minHeight:44}} href={url} download={file.name}>Save audio</Button>}
     {file&&<Button ref={useRecordingButton} sx={{minHeight:44}} variant="contained" disabled={transcriptionSettling} onClick={()=>stage(file)}>Use recording</Button>}
    </Stack>
