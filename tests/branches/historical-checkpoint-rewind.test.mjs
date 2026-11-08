@@ -3105,9 +3105,9 @@ test('final resource actual package engine captures later history and working fi
  }finally{if(service)await service.stop();await app.close();assets.close();}
 });
 
-for(const finalScenario of [false,'legacy-retirement',true,'dangling','cycle','compressed','multipart']){
+for(const finalScenario of [false,'legacy-retirement',true,'directory','dangling','cycle','compressed','multipart']){
 const legacyRetirement=finalScenario==='legacy-retirement',linkedFinal=legacyRetirement?false:finalScenario;
-test(legacyRetirement?'legacy completed portable final resource restores without provenance enrichment':linkedFinal==='compressed'||linkedFinal==='multipart'?linkedFinal+' portable final originals continue with exact decoded bytes':linkedFinal==='dangling'?'dangling portable final symlink continues without creating its target':linkedFinal===true?'linked portable final resource continues with exact in-root file links':linkedFinal?'unsupported '+linkedFinal+' final links remain held':'completed portable final resource restores a fresh destination without replay',async t=>{
+test(legacyRetirement?'legacy completed portable final resource restores without provenance enrichment':linkedFinal==='compressed'||linkedFinal==='multipart'?linkedFinal+' portable final originals continue with exact decoded bytes':linkedFinal==='dangling'?'dangling portable final symlink continues without creating its target':linkedFinal==='directory'?'directory-linked portable final resource continues with exact captured topology':linkedFinal===true?'linked portable final resource continues with exact in-root file links':linkedFinal?'unsupported '+linkedFinal+' final links remain held':'completed portable final resource restores a fresh destination without replay',async t=>{
  const Fastify=(await import('fastify')).default;
  const {AssetStore}=await import('../../apps/server/dist/assets.js');
  const {registerAgentPackageRoutes}=await import('../../apps/server/dist/routes/agent-packages.js');
@@ -3143,6 +3143,7 @@ test(legacyRetirement?'legacy completed portable final resource restores without
   assert.equal(earlierPackage.agents[0].workingFiles?.some(entry=>entry.path==='final-work.txt')??false,false,'ordinary issued checkpoint keeps its original file selection');
   writeFileSync(file,'after checkpoint exact content 😀\n');
   if(linkedFinal===true||linkedFinal==='dangling'||linkedFinal==='cycle'){symlinkSync(linkedFinal==='dangling'?'missing-file':linkedFinal==='cycle'?'captured-link':'final-work.txt',join(root,'captured-link'));if(linkedFinal===true)linkSync(file,join(root,'z-hardlink'));}
+  if(linkedFinal==='directory'){mkdirSync(join(root,'captured-directory'));writeFileSync(join(root,'captured-directory','nested.txt'),'captured directory original\n');symlinkSync('captured-directory',join(root,'captured-link'));}
   const transported=linkedFinal==='compressed'||linkedFinal==='multipart';
   const transportBytes=transported?Buffer.alloc(linkedFinal==='multipart'?64*1024*1024+17:96*1024,0x61):undefined;
   if(transportBytes)writeFileSync(join(root,'transport-original.bin'),transportBytes);
@@ -3237,11 +3238,12 @@ test(legacyRetirement?'legacy completed portable final resource restores without
    await exerciseForeignFinalDestination(t,portable,f.source.id,final,exit.identity,'prewrite',1,1);
    assert.deepEqual(readFileSync(join(root,'transport-original.bin')),transportBytes,'source original remains unchanged');return;
   }
-  if(linkedFinal===true||linkedFinal==='dangling'){
+  if(linkedFinal===true||linkedFinal==='dangling'||linkedFinal==='directory'){
    await exerciseForeignFinalDestination(t,portable,f.source.id,final,exit.identity,'prewrite',1,2);
-   assert.equal(readlinkSync(join(root,'captured-link')),linkedFinal==='dangling'?'missing-file':'final-work.txt');
+   assert.equal(readlinkSync(join(root,'captured-link')),linkedFinal==='directory'?'captured-directory':linkedFinal==='dangling'?'missing-file':'final-work.txt');
+   if(linkedFinal==='directory')assert.equal(readFileSync(join(root,'captured-link','nested.txt'),'utf8'),'captured directory original\n');
    if(linkedFinal===true)assert.equal(lstatSync(file).ino,lstatSync(join(root,'z-hardlink')).ino);
-   else assert.equal(existsSync(join(root,'missing-file')),false);
+   else if(linkedFinal==='dangling')assert.equal(existsSync(join(root,'missing-file')),false);
    assert.equal(readFileSync(file,'utf8'),'after checkpoint exact content 😀\n');
    return;
   }
@@ -3376,7 +3378,7 @@ async function exerciseForeignFinalDestination(t,portable,originalExecutionId,fi
   const verifyLinks=()=>{
    for(const root of [stagedLiveRoot,recoveryRoot])for(const link of expectedLinks){
     const entry=join(root,link.path);
-    if(link.kind==='symlink')assert.equal(readlinkSync(entry),link.target);
+    if(link.kind==='symlink'){assert.equal(readlinkSync(entry),link.target);if(link.target==='captured-directory')assert.equal(readFileSync(join(entry,'nested.txt'),'utf8'),'captured directory original\n');}
     else {assert.equal(lstatSync(entry).ino,lstatSync(join(root,link.target)).ino);assert.equal(lstatSync(entry).dev,lstatSync(join(root,link.target)).dev);}
    }
   };

@@ -92,7 +92,8 @@ export class BranchIssuedDestinationService {
       if(link.kind==='symlink'){
        if(!entry.isSymbolicLink()||readlinkSync(name)!==link.target||link.mtime!==undefined&&entry.mtime.toISOString()!==link.mtime)
         throw Error('Final imported symlink changed; preserve current data and review');
-       const included=(node.workingFiles??[]).some(file=>file.path===target);
+       const included=(node.workingFiles??[]).some(file=>file.path===target)
+        ||(node.workingFolder?.directories??[]).some(dir=>dir.path===target);
        if(included){
         if(realpathSync(name)!==join(path,target))throw Error('Final imported symlink target changed; preserve current data and review');
        }else{

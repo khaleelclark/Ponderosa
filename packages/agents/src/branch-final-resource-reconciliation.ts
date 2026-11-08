@@ -115,14 +115,15 @@ export function retainedCompletedFinalResourceSource(owner:BranchPortableRuntime
  const roots=[...new Set(pkg.agents.map((a:any)=>a.workingRootRef))];
  if(roots.length!==1)throw Error('One complete final Shared root is required');
  const owners=pkg.agents.filter((a:any)=>a.workingFolder);
- // ponytail: admit direct captured-file links and simple missing sibling targets;
+ // ponytail: admit links to captured files/directories and simple missing siblings;
  // mapped, chained and cyclic links need wider staged-root verification.
  if(owners.length!==1||owners[0].workingFolder.excludedPaths?.length||owners[0].workingFolder.links?.some((link:any)=>{
    if(link.targetRootRef!==undefined||!['symlink','hardlink'].includes(link.kind)||typeof link.target!=='string'||posix.isAbsolute(link.target))return true;
    const target=link.kind==='symlink'?posix.normalize(posix.join(posix.dirname(link.path),link.target)):link.target;
-   if((owners[0].workingFiles??[]).some((file:any)=>file.path===target))return false;
+   if((owners[0].workingFiles??[]).some((file:any)=>file.path===target)
+    ||link.kind==='symlink'&&(owners[0].workingFolder.directories??[]).some((dir:any)=>dir.path===target))return false;
    // A missing sibling is unambiguous only in a complete root with no
-   // captured file, directory or link at that path. Directory/chained links
+   // captured file, directory or link at that path. Uncaptured directory/chained links
    // remain outside this bounded continuation.
    if(link.kind!=='symlink'||link.sourceTarget!==undefined||link.target.includes('/')||link.target==='.'||link.target==='..')return true;
    return [...(owners[0].workingFolder.directories??[]),...(owners[0].workingFolder.links??[])].some((entry:any)=>entry.path===target);
