@@ -660,25 +660,31 @@ test('a stale Branch panel cannot start creation for a new selection or temporar
 });
 
 // Exercise the real BranchChats props/closures while controlling only hook scheduling and transport.
-async function chatDropdownFixture(){
+async function chatDropdownFixture({viewportWidth=1365}={}){
  const fs=await import('node:fs/promises'),vm=await import('node:vm'),ts=await import('typescript'),source=await fs.readFile(new URL('../../apps/web/src/components/branches/BranchChats.tsx',import.meta.url),'utf8');
  const cells=[],queries=[],requests=[],navigations=[];let cursor=0;
  const state=initial=>{const i=cursor++;cells[i]??={value:typeof initial==='function'?initial():initial};return[cells[i].value,next=>{cells[i].value=typeof next==='function'?next(cells[i].value):next}];};
- const react={...React,useState:state,useRef:initial=>state(()=>({current:initial}))[0],useEffect(){},useLayoutEffect(){}},mui=new Proxy({},{get:(_o,key)=>String(key)});
+ const react={...React,useState:state,useRef:initial=>state(()=>({current:initial}))[0],useEffect(){},useLayoutEffect(){}},mui=new Proxy({useMediaQuery:query=>{
+  const maximum=/^\(max-width:\s*([\d.]+)px\)$/.exec(query);assert.ok(maximum,'Fixture declares its supported viewport query');return viewportWidth<=Number(maximum[1]);
+ }},{get:(target,key)=>target[key]??String(key)});
  const selected={id:'selected-outside-page',title:'Selected Chat',branchId:'owner',projectId:'p'},rows=[{...selected,id:'one',title:'Duplicate'},{...selected,id:'two',title:'Duplicate'},{...selected,id:'three',title:'Unique'}];
  const page={data:{pages:[{items:rows}]},isSuccess:true,hasNextPage:true,fetchNextPage:()=>requests.push('next'),refetch:()=>requests.push('retry')},search={...page,data:{pages:[{items:[]}]}};
  const queryClient={invalidateQueries:async()=>{}},exports={},imports={
   react,'react/jsx-runtime':await import('react/jsx-runtime'),'@mui/material':mui,
-  '@tanstack/react-query':{useQueryClient:()=>queryClient,useQuery:options=>options.queryKey[0]==='branch-chat-owner'?{data:selected}:{},useInfiniteQuery:options=>{queries.push(options);return options.queryKey.includes('search')?search:page}},
-  '../../hooks/queries':{useWorkspacePreferences:()=>({}),useWorkspacePreferencesWriter:()=>({}),useNotificationProjection:()=>({data:{conversations:{}}})},'./BranchNavigation':{useBranchNavigationGuard:()=>()=>true,useBranchDraftGuard(){}},
+  '@tanstack/react-query':{useQueryClient:()=>queryClient,useQuery:options=>options.queryKey[0]==='branch-chat-owner'?{data:selected}:options.queryKey[0]==='project'?{data:{id:'p',name:'Fixture project',hostPath:'/synthetic/project'}}:{},useInfiniteQuery:options=>{queries.push(options);return options.queryKey.includes('search')?search:page}},
+  '../ResourceSettingsContext':await import('../../apps/web/src/components/ResourceSettingsContext.tsx'),
+  '../WorkspaceReadOnlyContext':await import('../../apps/web/src/components/WorkspaceReadOnlyContext.tsx'),
+  '../ProjectBrowserContext':await import('../../apps/web/src/components/ProjectBrowserContext.tsx'),
+  '../PrimaryHeaderActions':await import('../../apps/web/src/components/PrimaryHeaderActions.tsx'),'../ProjectShell':{ProjectShell:'ProjectShell'},
+  '../../hooks/queries':{useWorkspacePreferences:()=>({data:{}}),useWorkspacePreferencesWriter:()=>({}),useNotificationProjection:()=>({data:{conversations:{}}})},'./BranchNavigation':{useBranchNavigationGuard:()=>()=>true,useBranchDraftGuard(){}},
   '../chatCreationAttempts':{readCreationAttempts:()=>[],sameCreationOwner:()=>false},'../../clientId':{createClientId:()=> 'intent'},'../../collections':await import('../../apps/web/src/collections.ts'),
   '../../api/types':{ApiRequestError},'../../api/real':{requestCollectionPage:path=>requests.push(path)},'../../workspaceRecency':{markWorkspaceResourceUsed:async()=>{}}
  };
  vm.runInNewContext(ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX,esModuleInterop:true}}).outputText,{exports,require:name=>imports[name]??new Proxy({},{get:(_o,key)=>key==='__esModule'?true:String(key)})});
- const props={branchId:'owner',branchRoute:{branchId:'owner',tab:'chats',chatId:selected.id},engines:[],onNavigate:next=>{navigations.push(next);return true}},walk=node=>Array.isArray(node)?node.flatMap(walk):React.isValidElement(node)?[node,...walk(node.props.children),...walk(node.props.action)]:[];
+ const props={branchId:'owner',branchRoute:{branchId:'owner',tab:'chats',chatId:selected.id},engines:[],onNavigate:next=>{navigations.push(next);return true}},walk=node=>Array.isArray(node)?node.flatMap(walk):React.isValidElement(node)?[node,...walk(node.props.children),...walk(node.props.action),...walk(node.props.conversationTitleControl),...walk(node.props.slotProps?.paper?.footer)]:[];
  let nodes;const render=()=>{cursor=0;queries.length=0;nodes=walk(exports.BranchChats(props));};render();
  const control=()=>nodes.find(n=>n.type==='Autocomplete').props;
- return{page,search,selected,rows,props,queries,requests,navigations,render,control,button:label=>nodes.find(n=>n.type==='Button'&&n.props.children===label).props};
+ return{page,search,selected,rows,props,queries,requests,navigations,render,control,workspace:()=>nodes.find(n=>n.type==='ProjectShell').props,button:label=>nodes.find(n=>n.type==='Button'&&n.props.children===label).props};
 }
 
 test('Chat dropdown retains an unloaded selected owner, uses server search and disambiguates only duplicate names',async()=>{
@@ -695,6 +701,13 @@ test('Chat dropdown preserves guarded selection, pagination, loading/error feedb
  f.control().slotProps.listbox.onScroll({currentTarget:{scrollHeight:200,scrollTop:90,clientHeight:100}});f.control().onHighlightChange({},f.rows.at(-1),'keyboard');assert.deepEqual(f.requests,['next','next']);f.page.isFetching=true;f.render();f.control().onHighlightChange({},f.rows.at(-1),'keyboard');assert.equal(f.requests.length,2);
  f.page.isFetching=false;f.page.error=Error('Offline');f.render();assert.equal(f.control().noOptionsText,'Chats could not be loaded.');f.control().onOpen();f.render();f.control().onInputChange({},'failed search','input');f.search.error=Error('Search unavailable');f.render();f.control().onClose({},'blur');f.render();assert.equal(f.control().open,false);assert.ok(f.button('Retry search'),'Retry remains mounted outside the popup after keyboard blur');f.button('Retry search').onClick();assert.equal(f.requests.at(-1),'retry');f.requests.pop();f.control().onHighlightChange({},f.rows.at(-1),'keyboard');assert.equal(f.requests.length,2,'Failed paging waits for explicit retry');
  f.button('New Chat').onClick();f.button('New Chat').onClick();assert.equal(f.navigations.at(-1).creationKey,'intent');assert.equal(f.navigations.filter(n=>n.creationKey).length,1);
+});
+
+test('mobile Chat title hosts the same owner, guarded picker and exact one-click creation',async()=>{
+ const f=await chatDropdownFixture({viewportWidth:390});assert.ok(React.isValidElement(f.workspace().conversationTitleControl));assert.equal(f.control().value.id,f.selected.id);
+ const input=f.control().renderInput({inputProps:{},InputProps:{}});assert.equal(input.props.label,'Current Chat');
+ f.control().onOpen();f.props.onNavigate=()=>false;f.render();const event={};f.control().onChange(event,f.rows[0]);f.control().onClose(event,'selectOption');f.render();assert.equal(f.control().open,true,'The compact title preserves declined navigation');
+ f.props.onNavigate=next=>{f.navigations.push(next);return true};f.render();f.button('New Chat').onClick();f.button('New Chat').onClick();f.render();assert.equal(f.control().open,false);assert.equal(f.navigations.filter(next=>next.creationKey==='intent').length,1);
 });
 
 test('BR010 picker uses current owner/execution and keeps the chooser open when navigation is refused',async()=>{
@@ -747,8 +760,11 @@ test('BR011 shared Chat settings closes only after its scoped draft guard accept
 });
 
 test('BR011 scoped workspace adapter returns the shared navigation decision and replacement semantics',async()=>{
- const fs=await import('node:fs/promises'),vm=await import('node:vm'),ts=await import('typescript'),source=await fs.readFile(new URL('../../apps/web/src/components/branches/BranchChats.tsx',import.meta.url),'utf8'),handler=source.slice(source.indexOf(' const navigate='),source.indexOf(' const pickerPaperProps:'));const calls=[],scope={chat:{id:'c',projectId:'p'},executionId:undefined,setRoute:(...args)=>{calls.push(args);return false},route:undefined,setChatId:()=>false,setError(){}};
- vm.runInNewContext(ts.transpileModule(handler.replace('const navigate=','globalThis.navigate='),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,scope);assert.equal(scope.navigate({kind:'agent',projectId:'p',agentId:'a',view:'settings'},{replace:true}),false);assert.equal(calls[0][1],true);scope.executionId='temporary';assert.equal(scope.navigate({kind:'trigger',projectId:'p',triggerId:'t'}),false);assert.equal(calls.length,1);
+ for(const viewportWidth of [1365,390]){
+  const f=await chatDropdownFixture({viewportWidth}),calls=[];f.props.onNavigate=(...args)=>{calls.push(args);return false};f.render();
+  assert.equal(f.workspace().navigate({kind:'agent',projectId:'p',agentId:'a',view:'settings'},{replace:true}),false);assert.equal(calls[0][1],true);assert.equal(calls[0][0].workspace.view,'settings');
+  f.props.executionId='temporary';f.props.branchRoute.executionId='temporary';f.selected.executionId='temporary';f.render();assert.equal(f.workspace().navigate({kind:'trigger',projectId:'p',triggerId:'t'}),false);assert.equal(calls.length,1);
+ }
 });
 
 test('BR011 shared Chat settings exposes scoped capability content without changing ordinary callers',async()=>{
