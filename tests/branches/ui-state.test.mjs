@@ -815,11 +815,14 @@ test('workflow Rename uses the clicked owner, preserves canceled navigation and 
 test('an external publication cannot unmount and erase an open workflow Rename draft',async()=>{
  const fs=await import('node:fs/promises'),vm=await import('node:vm'),ts=await import('typescript'),source=await fs.readFile(new URL('../../apps/web/src/components/BranchesView.tsx',import.meta.url),'utf8');
  const effect=source.split('\n').find(line=>line.includes('current.versionId===draft.expectedVersionId'));
- const refreshed=[],updates=[],scope={current:{id:'a',versionId:'new'},draft:{branchId:'a',expectedVersionId:'old'},renameId:'a',dirty:false,deployedUpdate:undefined,draftRevision:{current:'baseline'},useEffect:fn=>fn(),setDeployedUpdate:value=>updates.push(value),select:(...args)=>refreshed.push(args)};
+ const refreshed=[],updates=[],scope={loading:false,current:{id:'a',versionId:'new'},draft:{branchId:'a',expectedVersionId:'old'},renameId:'a',dirty:false,deployedUpdate:undefined,draftRevision:{current:'baseline'},useEffect:fn=>fn(),setDeployedUpdate:value=>updates.push(value),select:(...args)=>refreshed.push(args)};
  const run=()=>vm.runInNewContext(ts.transpile(effect,{target:ts.ScriptTarget.ES2022}),scope);
  run();assert.equal(refreshed.length,0,'Dialog remains mounted with its local input');assert.equal(updates.length,0);
  scope.renameId=undefined;run();assert.equal(refreshed.length,1,'Cancel allows canonical refresh');
  scope.dirty=true;run();assert.equal(refreshed.length,1,'Apply preserves the edited definition');assert.equal(updates.at(-1).reason,'dirty');
+ updates.length=0;scope.loading=true;run();assert.equal(updates.length,0,'An owned canonical read is still reconciling the version change');assert.equal(refreshed.length,1);
+ scope.loading=false;run();assert.equal(updates.at(-1).reason,'dirty','A real newer version remains a conflict after the owned read settles');
+ updates.length=0;scope.draft.expectedVersionId='new';run();assert.equal(updates.length,0,'A reconciled own publication is not a conflict');
 });
 
 test('Branch execution status distinguishes confirmed zero, active, unresolved and failed cached counts',()=>{
@@ -1438,6 +1441,24 @@ test('Save Workflow renders the existing guarded review action with pending and 
  const attempt={input:{branchId:'owner',idempotencyKey:'same-attempt'},draftRevision:s.draftRevision.current};s.deploy.variables=attempt;s.publicationUnconfirmed=true;s.preview=undefined;s.renderSave().props.onClick();assert.equal(s.preview,attempt,'Uncertain publication reuses its exact existing review attempt');
 });
 
+test('a closing deployment review retains its content without retaining publication authority',async()=>{
+ const f=await discardActionFixture(),s=f.scope,{createRequire}=await import('node:module'),require=createRequire(new URL('../../apps/web/package.json',import.meta.url)),mui=require('@mui/material');
+ const names=['Dialog','DialogTitle','DialogContent','DialogActions','Stack','Alert','Typography','Accordion','AccordionSummary','AccordionDetails','Chip','Divider','Button'];
+ Object.assign(s,{exports:{},require,...Object.fromEntries(names.map(name=>[name,mui[name]])),publishedVersion:{data:undefined},advancedDirty:false,publicationUnconfirmed:false});
+ let state,published=0;s.setReviewDialog=update=>{state=update(state);s.preview=state?.active;s.reviewPresentation=s.preview??state?.retained;};
+ f.load('setPreview');f.load('clearReviewPresentation');f.load('deploymentOperationLabel');
+ const attempt={...s.preview,result:{operations:[{kind:'change',resource:'Execution settings',ref:'Concurrency',before:'2',after:'3'}],notes:['Exact reviewed policy remains visible.']}};
+ s.setPreview(attempt);s.deploy.mutate=()=>{published++};
+ const matches=[];function walk(node){if(f.ts.isJsxElement(node)&&node.openingElement.tagName.getText(f.file)==='Dialog'&&node.getText(f.file).includes('<DialogTitle>Review deployment</DialogTitle>'))matches.push(node);f.ts.forEachChild(node,walk)}walk(f.file);assert.equal(matches.length,1);
+ f.vm.runInContext(f.ts.transpileModule('globalThis.renderReview=()=>('+matches[0].getText(f.file)+')',{compilerOptions:{module:f.ts.ModuleKind.CommonJS,target:f.ts.ScriptTarget.ES2022,jsx:f.ts.JsxEmit.ReactJSX}}).outputText,s);
+ const opened=s.renderReview(),body=renderToStaticMarkup(opened.props.children[1]);assert.equal(opened.props.open,true);assert.ok(body.includes('Local rename')&&body.includes('Exact reviewed policy remains visible.'));
+ s.setPreview(undefined);const closing=s.renderReview();assert.equal(closing.props.open,false);assert.equal(s.preview,undefined,'Logical review validity is cleared immediately');assert.equal(s.reviewPresentation,attempt);assert.equal(renderToStaticMarkup(closing.props.children[1]),body,'The exiting Dialog keeps the same reviewed content');
+ const publish=closing.props.children[2].props.children[2];assert.equal(publish.props.disabled,true);publish.props.onClick();assert.equal(published,0,'A retained render snapshot cannot authorize publication');
+ const oldExit=closing.props.slotProps.transition.onExited,newer={...attempt,input:{...attempt.input,idempotencyKey:'new-reviewed-attempt'}};
+ s.setPreview(newer);oldExit();assert.equal(s.preview,newer);assert.equal(s.reviewPresentation,newer,'An older exit cannot erase a new active review');
+ s.setPreview(undefined);s.renderReview().props.slotProps.transition.onExited();assert.equal(s.reviewPresentation,undefined,'Closed presentation is released only after exit');assert.equal(published,0);
+});
+
 test('review and publication failures retain the draft and its canonical baseline',async()=>{
  const f=await discardActionFixture(),s=f.scope,before=s.draft,baseline=s.savedDraft.current;
  Object.assign(s,{contexts:{data:[]},trigger:{data:undefined},bindDefinitionDirectories:value=>value,createClientId:()=> 'same-intent'});s.pendingAdvanced.current=false;s.advancedDirty=false;
@@ -1458,7 +1479,11 @@ async function workflowLeaveFixture(){
 test('Save And Leave waits for the existing review, publication and verified current baseline',async()=>{
  const f=await workflowLeaveFixture(),s=f.scope,before=s.draft;
  await f.leave();assert.equal(f.outcomes.length,0);assert.equal(s.preview.input.definition,before.definition);assert.equal(s.workflowLeave.current.attempt,s.preview);
- const attempt=s.preview;s.publishChanges();s.publishChanges();await s.deploy.pending;
+ const effect=f.source.split('\n').find(line=>line.includes('current.versionId===draft.expectedVersionId'));let readbacks=0;
+ Object.assign(s,{renameId:undefined,deployedUpdate:undefined,useEffect:fn=>fn()});const cache=s.client.setQueryData;s.client.setQueryData=(key,value)=>{cache(key,value);if(key[0]==='branch'){s.current=value;reconcile();assert.equal(s.deployedUpdate,undefined,'Synchronous cache notification already sees owned readback loading');}};
+ const reconcile=()=>f.vm.runInContext(f.ts.transpile(effect,{target:f.ts.ScriptTarget.ES2022}),s);
+ s.onRead=async(_path,init)=>{if(init?.method==='POST')return;readbacks++;assert.equal(s.loading,true);reconcile();assert.equal(s.deployedUpdate,undefined,'The own publication is not called a conflict while canonical readback is pending');};
+ const attempt=s.preview;s.publishChanges();s.publishChanges();await s.deploy.pending;reconcile();assert.equal(readbacks,2);assert.equal(s.deployedUpdate,undefined);
  assert.deepEqual(f.outcomes,[true]);assert.equal(s.workflowLeave.current,undefined);assert.equal(s.savedDraft.current,s.draftRevision.current);assert.equal(s.draft.expectedVersionId,'v2');assert.equal(f.notices.length,1);assert.equal(f.notices[0].message,'Workflow Saved');assert.equal(f.notices[0].key,'workflow-save:owner');
  assert.equal(f.requests.filter(row=>row.path==='/api/branches/deploy').length,1,'Publication remains fenced by the existing synchronous intent');
 });
