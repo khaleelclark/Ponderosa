@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import '../shared/web-typescript-loader.mjs';
-const {parseBranchRoute,branchRoutePath,assistantReturnPath,retainedBranchDrafts}=await import('../../apps/web/src/branchesRouting.ts');
-const {setStandaloneWorkspaceOwner,productWorkspacePath}=await import('../../apps/web/src/api/productScope.ts');
+const {parseBranchRoute,branchRoutePath,retainedBranchDrafts}=await import('../../apps/web/src/branchesRouting.ts');
+const {assistantReturnPath,integratedAssistantPath}=await import('../../apps/web/src/assistantRouting.ts');
+const {setStandaloneWorkspaceOwner,productWorkspacePath,isOutputAppPath}=await import('../../apps/web/src/api/productScope.ts');
 
 test('Assistant is a main-workspace route with an exact safe return to the current Core Chat',()=>{
  const source='/projects/project/chats/chat?focusMessage=message#reply';
@@ -25,4 +26,16 @@ test('Assistant file links leave the Assistant surface with exact canonical Bran
   assert.equal(target.searchParams.get('branch'),'assistant-branch');assert.equal(target.searchParams.get('chat'),'assistant-chat');
   assert.equal(target.searchParams.get('workspace'),nested);
  }finally{setStandaloneWorkspaceOwner(undefined);if(previous===undefined)delete globalThis.window;else globalThis.window=previous;}
+});
+
+
+test('legacy global Assistant entry selects the integrated workspace while per-Agent output URLs stay standalone',()=>{
+ assert.equal(integratedAssistantPath('/assistant',''),'/branches?assistant=1');
+ const source='/projects/project/chats/chat?focusMessage=message#reply';
+ assert.equal(parseBranchRoute(integratedAssistantPath('/assistant','?returnTo='+encodeURIComponent(source)).split('?')[1]).assistantReturnTo,source);
+ for(const unsafe of ['//outside.invalid/','https://outside.invalid/','/apps/agent','/assistant'])assert.equal(integratedAssistantPath('/assistant','?returnTo='+encodeURIComponent(unsafe)),'/branches?assistant=1');
+ assert.equal(integratedAssistantPath('/assistant','?embedded=1&branch=wrong&workspace=wrong'),'/branches?assistant=1','legacy entry does not import arbitrary scope flags');
+ assert.equal(isOutputAppPath('/assistant'),false);
+ assert.equal(isOutputAppPath('/apps/designated-agent'),true);
+ assert.equal(integratedAssistantPath('/apps/designated-agent',''),undefined);
 });

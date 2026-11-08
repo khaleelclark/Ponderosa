@@ -1,3 +1,4 @@
+import {assistantReturnPath} from './assistantRouting';
 import type {BranchContextDto} from "@ponderosa/core";
 import { parseRoute, navigationPreservesSettings, type Route } from './routing.js';
 import { routeToPath, type ProjectRoute } from './routeRegistry.js';
@@ -68,14 +69,4 @@ export function branchRoutePath(route: BranchRoute): string {
 export function branchWorkspaceRoute(context:Pick<BranchContextDto,'id'|'projectId'|'branchId'|'executionId'>,workspace:ProjectRoute):BranchRoute {
   if(!context.branchId||workspace.projectId!==context.projectId||('conversationId'in workspace&&workspace.conversationId&&workspace.conversationId!==context.id))throw new Error('The destination does not belong to this Branch Chat.');
   return {branchId:context.branchId,tab:'chats',...(context.executionId?{executionId:context.executionId}:{}),chatId:context.id,workspace};
-}
-
-/** Assistant can return to an exact Core view; only same-origin app paths qualify. */
-export function assistantReturnPath(value:string|null|undefined):string|undefined {
- if(!value?.startsWith('/')||value.startsWith('//'))return undefined;
- try{
-  const target=new URL(value,'http://ponderosa.invalid');
-  if(target.origin!=='http://ponderosa.invalid'||/^\/(?:assistant|apps|branches)(?:\/|$)/.test(target.pathname))return undefined;
-  return target.pathname+target.search+target.hash;
- }catch{return undefined;}
 }

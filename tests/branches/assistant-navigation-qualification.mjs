@@ -22,6 +22,24 @@ try{
   const page=await context.newPage();page.setDefaultTimeout(20000);
   page.on('pageerror',error=>row.errors.push(error.message));
   page.on('response',response=>{if(response.url().includes('/api/')&&response.status()>=400)row.failedApi.push({url:response.url(),status:response.status()});});
+  if(process.env.ASSISTANT_ENTRY_ALIAS_ONLY==='1'){
+   const startupApi=[];page.on('request',request=>{const url=new URL(request.url());if(url.pathname.startsWith('/api/'))startupApi.push(url.pathname);});
+   await page.goto(origin+'/assistant?returnTo='+encodeURIComponent(corePath));
+   await page.getByRole('heading',{name:'Assistant',exact:true}).waitFor();await page.getByLabel('Message',{exact:true}).waitFor();
+   const target=new URL(page.url());assert.equal(target.pathname,'/branches');assert.equal(target.searchParams.get('assistant'),'1');assert.equal(target.searchParams.get('returnTo'),corePath);
+   assert.equal(startupApi.some(path=>/^\/api\/(?:projects|conversations|agents)(?:\/|$)/.test(path)),false,'legacy bookmark never starts Core resource queries');
+   if(phone)await page.getByRole('button',{name:'Open workspace navigation',exact:true}).click();
+   const navigation=page.locator('aside[aria-label="Branches navigation"]:visible');await navigation.waitFor();
+   if(phone)await page.waitForFunction(()=>{const element=Array.from(document.querySelectorAll('aside[aria-label="Branches navigation"]')).find(element=>element.getClientRects().length);const rect=element?.getBoundingClientRect();return rect&&rect.left>=-.5&&rect.right<=innerWidth+.5;});
+   await navigation.getByRole('button',{name:'Assistant',exact:true}).waitFor();await navigation.getByRole('link',{name:'Inbox',exact:true}).waitFor();
+   assert.equal(await page.locator('iframe').count(),0);row.directAliasIntegrated=true;await page.screenshot({path:path.join(output,label+'-direct-assistant-navigation.png')});
+   if(phone){await page.getByRole('button',{name:'Close workspace navigation',exact:true}).click();await navigation.waitFor({state:'hidden'});await page.screenshot({path:path.join(output,label+'-direct-assistant.png')});}
+   await page.goto(origin+corePath);await page.getByLabel('Message',{exact:true}).waitFor();
+   await page.goto(origin+'/assistant');await page.getByRole('heading',{name:'Assistant',exact:true}).waitFor();
+   await page.goBack();await page.getByLabel('Message',{exact:true}).waitFor();assert.equal(new URL(page.url()).pathname,corePath);row.noAliasHistoryEntry=true;
+   await page.goto(origin+app.url);await page.getByLabel('Message',{exact:true}).waitFor();assert.equal(new URL(page.url()).pathname,app.url);assert.equal(await page.locator('aside[aria-label="Branches navigation"]').count(),0);row.designatedAppStandalone=true;
+   await page.screenshot({path:path.join(output,label+'-designated-output-app.png')});assert.deepEqual(row.errors,[]);assert.deepEqual(row.failedApi,[]);await context.close();continue;
+  }
   await page.goto(origin+corePath);const editor=page.getByLabel('Message',{exact:true});await editor.waitFor();
   await editor.fill('Keep this Core draft');await page.screenshot({path:path.join(output,label+'-core-before.png')});
   if(phone)await page.getByRole('button',{name:'Open workspace navigation',exact:true}).click();

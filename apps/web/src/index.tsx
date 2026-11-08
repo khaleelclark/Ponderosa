@@ -1,3 +1,4 @@
+import {integratedAssistantPath} from './assistantRouting';
 import {TEXT_SIZE_EVENT,readTextSize} from './textSize';
 import {isBranchesPath,isOutputAppPath,setStandaloneProductScope} from "./api/productScope.js";
 import {applyBrowserTheme} from "./browserTheme";
@@ -7,6 +8,9 @@ import { ThemeProvider } from "@mui/material/styles";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { StrictMode, Suspense, lazy, useEffect, useLayoutEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
+// Replace the bookmark entry before choosing a product scope or starting queries.
+const assistantEntryPath=integratedAssistantPath(window.location.pathname,window.location.search);
+if(assistantEntryPath)window.history.replaceState(window.history.state,'',assistantEntryPath);
 const OutputAgentApp=lazy(()=>import('./components/OutputAgentApp').then(module=>({default:module.OutputAgentApp})));
 if(isOutputAppPath(window.location.pathname))setStandaloneProductScope('branches');
 const App = lazy(() => {
@@ -36,6 +40,8 @@ installServiceWorkerReloadGuard();
 navigator.serviceWorker?.addEventListener('message',(event:MessageEvent)=>{
   if(event.data?.type!=='ponderosa:open-route'||typeof event.data.url!=='string')return;
   const target=new URL(event.data.url,window.location.origin);
+  const assistantPath=integratedAssistantPath(target.pathname,target.search);
+  if(target.origin===window.location.origin&&assistantPath){event.stopImmediatePropagation();window.location.assign(assistantPath);return;}
   if(target.origin===window.location.origin&&isBranchesPath(target.pathname)!==isBranchesPath(window.location.pathname))window.location.assign(target.href);
 });
 

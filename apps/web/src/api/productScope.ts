@@ -23,4 +23,4 @@ export function productWorkspacePath(path:string):string {
   return `/branches?${query}`;
 }
 
-export const isOutputAppPath=(path:string):boolean=>path==='/assistant'||/^\/apps\/[^/]+\/?$/.test(path);
+export const isOutputAppPath=(path:string):boolean=>/^\/apps\/[^/]+\/?$/.test(path);
