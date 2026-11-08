@@ -14,7 +14,7 @@ function fixture(module,imports,globals={}){
  const slots=[],effects=[];let index=0,dirty=false,tree,component,props,uid=0;
  const state=initial=>{const i=index++;slots[i]??={value:typeof initial==='function'?initial():initial};return[slots[i].value,next=>{slots[i].value=typeof next==='function'?next(slots[i].value):next;dirty=true;}];};
  const effect=(fn,deps)=>{const i=index++,old=slots[i];if(!old||!deps||deps.some((v,j)=>!Object.is(v,old.deps?.[j]))){slots[i]={deps,cleanup:old?.cleanup};effects.push(()=>{slots[i].cleanup?.();slots[i].cleanup=fn();});}};
- const react={...React,useState:state,useRef:value=>state(()=>({current:value}))[0],useEffect:effect,useLayoutEffect:effect,useId:()=>state(()=>`voice-${uid++}`)[0],useCallback:(fn,deps)=>react.useMemo(()=>fn,deps),useMemo(fn,deps){const i=index++,old=slots[i];if(!old||deps.some((v,j)=>!Object.is(v,old.deps[j])))slots[i]={deps,value:fn()};return slots[i].value;},useSyncExternalStore:(_subscribe,snapshot)=>snapshot()};
+ const react={...React,useContext:context=>context._fixtureValue??context._currentValue,useState:state,useRef:value=>state(()=>({current:value}))[0],useEffect:effect,useLayoutEffect:effect,useId:()=>state(()=>`voice-${uid++}`)[0],useCallback:(fn,deps)=>react.useMemo(()=>fn,deps),useMemo(fn,deps){const i=index++,old=slots[i];if(!old||deps.some((v,j)=>!Object.is(v,old.deps[j])))slots[i]={deps,value:fn()};return slots[i].value;},useSyncExternalStore:(_subscribe,snapshot)=>snapshot()};
  const exports={};vm.runInNewContext(ts.transpileModule(readFileSync(new URL('../../apps/web/src/components/speech/'+module+'.tsx',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX,esModuleInterop:true}}).outputText,{exports,console,performance,Date,JSON,setTimeout,clearTimeout,setInterval,clearInterval,...globals,require:name=>name==='react'?react:name==='@mui/material'?mui:name in imports?imports[name]:name.startsWith('@mui/icons-material/')?{__esModule:true,default:name}:require(name)});
  const walk=node=>Array.isArray(node)?node.flatMap(walk):node&&typeof node==='object'&&'props'in node?[node,...walk(node.props.children)]:[];
  const all=(node=tree)=>walk(node);
@@ -23,15 +23,16 @@ function fixture(module,imports,globals={}){
 }
 const agent=(id='agent',conversationId='chat')=>({id,projectId:'project',conversationId,title:id,handle:id});
 const context={projectId:'project',conversationId:'chat',agents:[agent()],selectedAgentId:'agent',lockAgent:true};
-function menuFixture(extra={}){
- const body={nodeType:1},recordingContainer={nodeType:1,contains:()=>false},portals=[];
+function menuFixture(extra={},callActionsHost=null){
+ const body={nodeType:1,isConnected:true},recordingContainer={nodeType:1,contains:()=>false},portals=[];
+ const doc={body,activeElement:body};
  const calls=[],dictation={status:'ready',start:()=>calls.push('start'),pause:()=>calls.push('pause'),resume:()=>calls.push('resume'),stop:()=>calls.push('stop')};let readOnly=false,handlers;
  function VoiceConversation(){}
  function VoiceMessageRecorder(){}
- const f=fixture('DictationControls',{'react-dom':{createPortal:(node,container)=>{portals.push(container);return node;}},'./useDictation':{useDictation:(...args)=>{handlers=args;return dictation;}},'./speechStyles':{},'./VoiceConversation':{VoiceConversation},'./VoiceMessageRecorder':{VoiceMessageRecorder},'../../api/productScope':{isOutputAppPath:()=>false},'../WorkspaceReadOnlyContext':{useWorkspaceReadOnly:()=>readOnly}},{document:{body,activeElement:body},window:{location:{pathname:'/'}}});
+ const f=fixture('DictationControls',{'react-dom':{flushSync:fn=>fn(),createPortal:(node,container)=>{portals.push(container);return node;}},'./useDictation':{useDictation:(...args)=>{handlers=args;return dictation;}},'./speechStyles':{},'./VoiceConversation':{VoiceConversation},'./VoiceMessageRecorder':{VoiceMessageRecorder},'../../api/productScope':{isOutputAppPath:()=>false},'../WorkspaceReadOnlyContext':{useWorkspaceReadOnly:()=>readOnly},'../ConversationChromeContext':{ConversationChromeContext:{_fixtureValue:{statusHost:null,callActionsHost}}}},{document:doc,window:{location:{pathname:'/'}}});
  f.mount(f.exports.DictationControls,{disabled:false,voiceContext:context,recordingContainer,onFinalTranscript:words=>calls.push(['words',words]),onSettlingChange:value=>calls.push(['settling',value]),...extra});
  const item=label=>f.find(n=>n.type==='MenuItem'&&f.all(n).some(child=>child.props.primary===label));
- return{...f,calls,dictation,item,VoiceConversation,VoiceMessageRecorder,recordingContainer,portals,handlers:()=>handlers,readOnly(value){readOnly=value;f.render();},open(){f.find(n=>n.props['aria-label']==='Voice options').props.onClick({currentTarget:{id:'trigger'}});f.render();}};
+ return{...f,doc,calls,dictation,item,VoiceConversation,VoiceMessageRecorder,recordingContainer,portals,handlers:()=>handlers,readOnly(value){readOnly=value;f.render();},open(){f.find(n=>n.props['aria-label']==='Voice options').props.onClick({currentTarget:{id:'trigger'}});f.render();}};
 }
 test('Voice options opens a named MUI menu without capture or submission; call keeps the exact workspace owner',()=>{
  const f=menuFixture();f.open();assert.deepEqual(f.calls,[]);
@@ -223,4 +224,26 @@ test('explicit handset opening starts eligible capture once; ordinary mounts and
  for(let i=0;i<3;i++)f.render();assert.equal(f.events.filter(e=>e==='capture').length,1);
  f.inactive();f.render();await f.flush();assert.equal(f.events.filter(e=>e==='capture').length,1,'foreground interruption requires a deliberate reconnect');f.unmount();
  const invalid=callFixture({startOnOpen:true,agents:[agent(),agent('second')],selectedAgentId:'',lockAgent:false});await invalid.flush();assert.equal(invalid.events.includes('capture'),false);invalid.unmount();
+});
+
+
+test('contact header reuses the guarded call action, hides its menu duplicate, and restores only its invoker',()=>{
+ const host={nodeType:1},f=menuFixture({},host);
+ assert.equal(f.portals.includes(host),true);
+ let focuses=0;const handset={isConnected:true,focus(){focuses++;f.doc.activeElement=handset;}};
+ const button=f.find(n=>n.type==='IconButton'&&n.props['aria-label']==='Call');
+ assert.equal(button.props.sx.width,44);assert.equal(button.props.disabled,false);
+ f.open();assert.equal(f.all().some(n=>n.type==='MenuItem'&&f.all(n).some(child=>child.props.primary==='Voice call')),false);
+ button.props.onClick({currentTarget:handset});f.render();const call=f.find(n=>n.type===f.VoiceConversation);
+ assert.equal(call.props.startOnOpen,true);assert.equal(call.props.selectedAgentId,'agent');
+ f.doc.activeElement={isConnected:true,closest:()=>({})};call.props.onClose();f.doc.activeElement=f.doc.body;f.render();assert.equal(focuses,1,'End returns focus to the real header handset');
+ f.find(n=>n.type==='IconButton'&&n.props['aria-label']==='Call').props.onClick({currentTarget:handset});f.render();
+ const newer={isConnected:true};f.doc.activeElement=newer;f.find(n=>n.type===f.VoiceConversation).props.onClose();f.render();assert.equal(focuses,1,'closing must not steal focus from a newer interaction');assert.equal(f.doc.activeElement,newer);
+ f.readOnly(true);assert.equal(f.find(n=>n.type==='IconButton'&&n.props['aria-label']==='Call').props.disabled,true);f.unmount();
+});
+test('header handset cannot open while native capture or recording is active, or from a foreign owner',()=>{
+ const f=menuFixture({onVoiceAttachment:()=>undefined},{nodeType:1});const open=()=>f.find(n=>n.type==='IconButton'&&n.props['aria-label']==='Call');
+ f.dictation.status='starting';f.render();assert.equal(open().props.disabled,true);open().props.onClick({currentTarget:{}});f.render();assert.equal(f.all().some(n=>n.type===f.VoiceConversation),false);
+ f.dictation.status='ready';f.render();f.find(n=>n.props['aria-label']==='Record voice message').props.onClick();f.render();assert.equal(open().props.disabled,true);
+ f.find(n=>n.type===f.VoiceMessageRecorder).props.onClose();f.render();f.update({voiceContext:{...context,selectedAgentId:'foreign'}});assert.equal(open().props.disabled,true);f.unmount();
 });

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {randomUUID} from 'node:crypto';
 import {AgentStore,CoordinationV3Store} from '@ponderosa/agents';
+import {mapCodexAppServerNotification} from '@ponderosa/engines';
 import {withFixture,until} from '../shared/fixture.mjs';
 
 const createRequest=(coordination,chat,sender,target,id=randomUUID())=>coordination.coordinate({
@@ -279,6 +280,8 @@ test('busy calls steer with priority and distinct source receipts; late old call
   const injection=await until(()=>{const i=coord.promptInjectionForActivation(run,firstActivation);return i?.state==='acknowledged'&&i;},'first call steering acknowledged');
   assert.deepEqual(coord.activationIdsForInjection(injection.id,run),[firstActivation]);
   assert.match(f.steers.at(-1).input.prompt,/CURRENT CALL TURN/);
+  const firstNative=await session.tool('ponderosa_voice_reply',{steeringInjectionId:injection.id},'first-call-native-operation');
+  assert.equal(firstNative.success,true,firstNative.text);const firstAuthorization=JSON.parse(firstNative.text);
   const oldArgs={intent:'direct_to_user',text:'First exact answer',steeringInjectionId:injection.id};
   const answer=f.ok(await f.tool(session,'ponderosa_message',oldArgs));
   const firstObligation=coord.requiredReplyObligationsForRun(run).find(o=>o.sourceActivationId===firstActivation);
@@ -294,6 +297,22 @@ test('busy calls steer with priority and distinct source receipts; late old call
   assert.equal(coord.requiredReplyObligationsForRun(run).find(o=>o.sourceActivationId===secondActivation).state,'pending');
   let status=f.ok(await f.api('GET',`/api/conversations/${chat.id}/voice-replies/${secondId}/${agent.id}`));
   assert.equal(status.canonicalReplyEventId,undefined,'first reply cannot satisfy second call');
+  const staleEmpty=await session.tool('ponderosa_voice_reply',{},'late-old-empty-native-operation');
+  assert.equal(staleEmpty.success,false);assert.equal(JSON.parse(staleEmpty.text).statusCode,409);
+  const rejectedNative=mapCodexAppServerNotification({method:'item/completed',params:{item:{type:'dynamicToolCall',id:'late-old-empty-native-operation',tool:'ponderosa_voice_reply',success:staleEmpty.success,contentItems:[{type:'inputText',text:staleEmpty.text}]}}},f.root);
+  assert.ok(rejectedNative.every(event=>!event.voiceReplyStreamId),'rejected native empty tool cannot mint a stream receipt');
+  assert.equal(f.ok(await f.api('GET',`/api/conversations/${chat.id}/voice-replies/${secondId}/${agent.id}`)).reply,undefined,'old empty invocation never arms the new call');
+  const secondNative=await session.tool('ponderosa_voice_reply',{steeringInjectionId:later.id},'second-call-native-operation');
+  assert.equal(secondNative.success,true,secondNative.text);const secondAuthorization=JSON.parse(secondNative.text);
+  assert.notEqual(secondAuthorization.streamId,firstAuthorization.streamId);
+  const lateOldReceipt=mapCodexAppServerNotification({method:'item/completed',params:{item:{type:'dynamicToolCall',id:'first-call-native-operation',tool:'ponderosa_voice_reply',success:true,contentItems:[{type:'inputText',text:firstNative.text}]}}},f.root);
+  assert.ok(lateOldReceipt.some(event=>event.voiceReplyStreamId===firstAuthorization.streamId));
+  for(const event of lateOldReceipt)session.events.push(event);
+  await until(()=>store.sqlite.prepare("SELECT 1 FROM events WHERE agent_id=? AND type='tool_result' AND json_extract(payload_json,'$.id')=?").get(agent.id,'first-call-native-operation'),'late native receipt observed');
+  const newStream=f.ok(await f.api('GET',`/api/conversations/${chat.id}/voice-replies/${secondId}/${agent.id}`)).reply;
+  assert.equal(newStream.messageId,secondId);assert.equal(newStream.streamId,secondAuthorization.streamId);assert.equal(newStream.state,'failed','a foreign operation receipt fails the unauthorized stream closed');assert.equal(newStream.text,'','an old normalized native receipt cannot authorize new-call candidate text');
+  assert.equal(coord.requiredReplyObligationsForRun(run).find(o=>o.sourceActivationId===secondActivation).state,'pending');
+
   const secondAnswer=f.ok(await f.tool(session,'ponderosa_message',{intent:'direct_to_user',text:'Second exact answer',steeringInjectionId:later.id}));
   status=f.ok(await f.api('GET',`/api/conversations/${chat.id}/voice-replies/${secondId}/${agent.id}`));
   assert.equal(status.canonicalReplyEventId,secondAnswer.eventId);
@@ -304,5 +323,5 @@ test('busy calls steer with priority and distinct source receipts; late old call
   f.ok(await f.tool(session,'ponderosa_message',{intent:'direct_to_user',text:'Original task complete',taskDelivery:'final',steeringInjectionId:later.id}));
   const replay=await send('call-two');assert.equal(replay.message.communicationEventId,secondId);
   assert.equal((await f.detail(agent.id)).runs.length,2,'both calls steer the existing continuation without another Run');
- },{storeFactory:dataDir=>(store=new AgentStore(dataDir))});
+ },{storeFactory:dataDir=>(store=new AgentStore(dataDir)),supportsVoiceReplyStream:true});
 });

@@ -1,4 +1,5 @@
-import {createPortal} from 'react-dom';
+import {createPortal,flushSync} from 'react-dom';
+import {ConversationChromeContext} from '../ConversationChromeContext';
 import {VoiceMessageRecorder} from './VoiceMessageRecorder';
 import {isOutputAppPath} from '../../api/productScope';
 import GraphicEqIcon from "@mui/icons-material/GraphicEq";
@@ -6,7 +7,7 @@ import PhoneIcon from "@mui/icons-material/Phone";
 import MicNoneIcon from "@mui/icons-material/MicNone";
 import StopIcon from "@mui/icons-material/Stop";
 import { Box, IconButton, ListItemIcon, ListItemText, Menu, MenuItem, Tooltip, Typography } from "@mui/material";
-import { useEffect, useId, useRef, useState } from "react";
+import { useContext, useEffect, useId, useRef, useState } from "react";
 import {
   speechControlGroupSx,
   speechStatusSx,
@@ -36,10 +37,12 @@ export function DictationControls({
   recordingContainer?:HTMLElement|null;
 }): JSX.Element {
   const disabled = useWorkspaceReadOnly() || suppliedDisabled;
+  const callActionsHost=useContext(ConversationChromeContext)?.callActionsHost;
   const rootRef = useRef<HTMLDivElement | null>(null);
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const recordingButtonRef=useRef<HTMLButtonElement|null>(null),restoreRecordingFocus=useRef(false);
-  const wasCallOpen = useRef(false);
+  const callInvoker=useRef<{node:HTMLButtonElement;owner:string}>();
+  const restoreCallFocus=useRef<{node:HTMLButtonElement;owner:string}>();
   const menuId = useId();
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
   const callOwner = JSON.stringify([voiceContext?.projectId, voiceContext?.conversationId, voiceContext?.selectedAgentId, voiceContext?.lockAgent]);
@@ -54,9 +57,12 @@ export function DictationControls({
     if (disabled) { setAnchor(null); setOpenedCallOwner(undefined);setOpenedRecordingOwner(undefined); }
   }, [disabled]);
   useEffect(() => {
-    if (wasCallOpen.current && !callOpen) buttonRef.current?.focus({preventScroll: true});
-    wasCallOpen.current = callOpen;
-  }, [callOpen]);
+    if(callOpen || !restoreCallFocus.current)return;
+    const target=restoreCallFocus.current;restoreCallFocus.current=undefined;
+    const focused=document.activeElement;
+    if(target.owner===callOwner && target.node.isConnected &&
+        (focused===document.body || !focused?.isConnected || focused===target.node)) target.node.focus({preventScroll:true});
+  }, [callOpen,callOwner]);
   const dictation = useDictation(
     onFinalTranscript,
     onSettlingChange,
@@ -103,6 +109,21 @@ export function DictationControls({
               : dictation.status === "stopped"
                 ? "Dictation stopped"
                 : undefined;
+  const callEligible=Boolean(voiceContext?.agents.some(agent=>agent.projectId===voiceContext.projectId && agent.conversationId===voiceContext.conversationId && (!voiceContext.selectedAgentId || agent.id===voiceContext.selectedAgentId)));
+  const callDisabled=disabled || callOpen || recordingOpen || active || paused || !callEligible;
+  const openCall=(invoker:HTMLButtonElement|null)=>{
+    if(callDisabled || !invoker)return;
+    callInvoker.current={node:invoker,owner:callOwner};
+    setAnchor(null);setOpenedCallOwner(callOwner);
+  };
+  const closeCall=()=>{
+    const focused=document.activeElement as HTMLElement|null;
+    if(callInvoker.current?.owner===callOwner && (focused===document.body || focused?.closest?.('[data-ponderosa-call]')))
+      restoreCallFocus.current=callInvoker.current;
+    // Finish dismissing the focus trap before the next user interaction.
+    flushSync(()=>setOpenedCallOwner(undefined));
+  };
+  const calledAgent=voiceContext?.agents.find(agent=>agent.id===voiceContext.selectedAgentId)?.title;
   const [noticeDismissed, setNoticeDismissed] = useState(false);
   useEffect(() => {
     setNoticeDismissed(false);
@@ -113,6 +134,7 @@ export function DictationControls({
 
   return (
     <Box ref={rootRef} sx={[speechControlGroupSx, dictation.error ? { flexDirection: { xs: "column", sm: "row" }, alignItems: { xs: "flex-start", sm: "center" } } : {}]}>
+      {callActionsHost&&createPortal(<Tooltip title={calledAgent?`Call ${calledAgent}`:"Call"}><span><IconButton aria-label="Call" disabled={callDisabled} onClick={event=>openCall(event.currentTarget)} sx={{width:44,height:44,borderRadius:"50%",color:"primary.main"}}><PhoneIcon/></IconButton></span></Tooltip>,callActionsHost)}
       {onVoiceAttachment&&<Tooltip title="Record voice message"><span><IconButton
         ref={recordingButtonRef}
         aria-label="Record voice message"
@@ -146,15 +168,13 @@ export function DictationControls({
         disableRestoreFocus={callOpen}
         disableScrollLock
       >
-        <MenuItem
-          disabled={!anchor || disabled || active || paused || !voiceContext || !voiceContext.agents.some(agent =>
-            agent.projectId === voiceContext.projectId && agent.conversationId === voiceContext.conversationId &&
-            (!voiceContext.selectedAgentId || agent.id === voiceContext.selectedAgentId))}
-          onClick={() => { if (!anchor || disabled || active || paused || !voiceContext || !voiceContext.agents.some(agent => agent.projectId===voiceContext.projectId && agent.conversationId===voiceContext.conversationId && (!voiceContext.selectedAgentId || agent.id===voiceContext.selectedAgentId))) return; setAnchor(null); setOpenedCallOwner(callOwner); }}
+        {!callActionsHost&&<MenuItem
+          disabled={!anchor || callDisabled}
+          onClick={() => { if (!anchor) return; openCall(buttonRef.current); }}
         >
           <ListItemIcon><PhoneIcon fontSize="small" /></ListItemIcon>
           <ListItemText primary="Voice call" secondary={active || paused ? "Stop dictation first" : !voiceContext ? "Choose a source Chat and Agent" : undefined} />
-        </MenuItem>
+        </MenuItem>}
         <MenuItem
           disabled={!anchor || disabled || Boolean(unavailable) || busy}
           onClick={() => {
@@ -170,7 +190,7 @@ export function DictationControls({
         </MenuItem>
       </Menu>
       {recordingOpen&&!disabled&&onVoiceAttachment&&recordingContainer&&createPortal(<VoiceMessageRecorder onAttach={(file,transcript)=>{const failure=onVoiceAttachment(file);if(!failure&&transcript)onFinalTranscript(transcript);return failure;}} maxBytes={maxRecordingBytes} onClose={()=>{restoreRecordingFocus.current=recordingContainer.contains(document.activeElement);setOpenedRecordingOwner(undefined);}}/>,recordingContainer)}
-      {voiceContext && callOpen && !disabled && <VoiceConversation {...voiceContext} startOnOpen standalone={voiceContext.standalone??isOutputAppPath(window.location.pathname)} open onClose={() => setOpenedCallOwner(undefined)} />}
+      {voiceContext && callOpen && !disabled && <VoiceConversation {...voiceContext} startOnOpen standalone={voiceContext.standalone??isOutputAppPath(window.location.pathname)} open onClose={closeCall} />}
       {active || paused ? (
         <Tooltip title="Stop voice dictation">
           <span>

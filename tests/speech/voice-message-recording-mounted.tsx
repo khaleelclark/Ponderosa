@@ -1,5 +1,12 @@
 // Controlled component lifecycle regression; no provider or message Send is invoked.
 import {StrictMode} from 'react';
+import {ThemeProvider} from '@mui/material/styles';
+import {QueryClient,QueryClientProvider} from '@tanstack/react-query';
+import {ConversationChromeContext} from '../../apps/web/src/components/ConversationChromeContext';
+import {createPonderosaTheme} from '../../apps/web/src/theme';
+import {api} from '../../apps/web/src/api';
+import {queryKeys} from '../../apps/web/src/queryKeys';
+import {DEFAULT_SPEECH_PREFERENCES} from '@ponderosa/core';
 import {createRoot} from 'react-dom/client';
 import {VoiceMessageRecorder} from '../../apps/web/src/components/speech/VoiceMessageRecorder';
 import {DictationControls} from '../../apps/web/src/components/speech/DictationControls';
@@ -123,4 +130,36 @@ export async function voiceMessageRecordingRegression():Promise<void> {
   root.unmount();host.remove();recordingSlot.remove();nextEditor.remove();window.MediaRecorder=nativeRecorder;if(nativeRecognition)speechWindow.SpeechRecognition=nativeRecognition;else delete speechWindow.SpeechRecognition;
   if(devicesDescriptor)Object.defineProperty(navigator,'mediaDevices',devicesDescriptor);else delete (navigator as unknown as {mediaDevices?:MediaDevices}).mediaDevices;
  }
+}
+
+
+export async function voiceCallHeaderFocusRegression():Promise<void>{
+ const speechWindow=window as unknown as {SpeechRecognition?:new()=>unknown};const originalRecognition=speechWindow.SpeechRecognition;
+ let captureStarts=0,sends=0;
+ class Recognition {continuous=true;interimResults=false;lang='en-US';maxAlternatives=1;onstart?:()=>void;onend?:()=>void;start(){captureStarts++;queueMicrotask(()=>this.onstart?.());}stop(){queueMicrotask(()=>this.onend?.());}abort(){queueMicrotask(()=>this.onend?.());}}
+ speechWindow.SpeechRecognition=Recognition;
+ const host=document.createElement('div'),header=document.createElement('header'),slot=document.createElement('div'),newer=document.createElement('input');header.textContent='Controlled contact';header.append(slot);document.body.append(header,host,newer);
+ const root=createRoot(host),client=new QueryClient({defaultOptions:{queries:{retry:false}}}),agent={id:'call-focus-agent',projectId:'call-focus-project',conversationId:'call-focus-chat',title:'Controlled contact'};
+ const originals={getConversation:api.getConversation,getWorkspacePreferences:api.getWorkspacePreferences,sendMultiAgentDirectMessage:api.sendMultiAgentDirectMessage};
+ Object.assign(api,{getConversation:async()=>({conversation:{id:agent.conversationId,projectId:agent.projectId},agents:[agent],messages:[]}),getWorkspacePreferences:async()=>({speech:DEFAULT_SPEECH_PREFERENCES}),sendMultiAgentDirectMessage:async()=>{sends++;throw Error('Call focus fixture must never submit');}});
+ client.setQueryData(queryKeys.workspacePreferences.all,{speech:DEFAULT_SPEECH_PREFERENCES});
+ const render=(disabled=false)=>root.render(<StrictMode><ThemeProvider theme={createPonderosaTheme('light')}><QueryClientProvider client={client}><ConversationChromeContext.Provider value={{statusHost:null,callActionsHost:slot}}><DictationControls disabled={disabled} voiceContext={{projectId:agent.projectId,conversationId:agent.conversationId,agents:[agent as never],selectedAgentId:agent.id,lockAgent:true}} onFinalTranscript={()=>{throw Error('No final speech in call focus fixture');}} onSettlingChange={()=>{}}/></ConversationChromeContext.Provider></QueryClientProvider></ThemeProvider></StrictMode>);
+ try{
+  render();const handset=await until(()=>slot.querySelector<HTMLButtonElement>('button[aria-label="Call"]')??undefined,'Contact handset did not portal into the real header');
+  assert(handset.getBoundingClientRect().width>=44&&handset.getBoundingClientRect().height>=44,'Header handset must provide a 44px target');
+  handset.focus();handset.click();await until(()=>document.querySelector('[role="dialog"]')??undefined,'Header Call did not open the actual call stage');
+  await until(()=>captureStarts===1?true:undefined,'Explicit header opening did not start capture exactly once');
+  await tick();assert(captureStarts===1,'StrictMode must not request duplicate capture');
+  const mute=document.querySelector<HTMLButtonElement>('button[aria-label="Mute microphone"]');assert(mute,'Call mute control missing');mute!.click();
+  await until(()=>document.querySelector('button[aria-label="Unmute microphone"]')??undefined,'Call did not enter its truthful muted state');
+  const end=document.querySelector<HTMLButtonElement>('button[aria-label="End call"]');assert(end,'Call End control missing');end!.focus();end!.click();
+  await until(()=>!document.querySelector('[role="dialog"]')?true:undefined,'End did not close the call');
+  await until(()=>document.activeElement===handset?true:undefined,'End after mute did not restore the actual header handset');
+  assert(sends===0,'Opening, muting and ending cannot submit a call turn');
+  handset.click();await until(()=>captureStarts===2?true:undefined,'Second deliberate handset opening did not capture once');
+  const secondEnd=await until(()=>document.querySelector<HTMLButtonElement>('button[aria-label="End call"]')??undefined,'Second End missing');
+  secondEnd.focus();secondEnd.click();newer.focus();await until(()=>!document.querySelector('[role="dialog"]')?true:undefined,'Second End did not close');await tick();
+  assert(document.activeElement===newer,'Ending a call must not steal focus from a newer editor interaction');
+  newer.focus();render(true);await tick();assert(document.activeElement===newer,'A later read-only render must preserve newer focus');assert(handset.disabled,'Read-only/supplied-disabled gating must disable the header handset');
+ }finally{root.unmount();client.clear();Object.assign(api,originals);host.remove();header.remove();newer.remove();if(originalRecognition)speechWindow.SpeechRecognition=originalRecognition;else delete speechWindow.SpeechRecognition;}
 }

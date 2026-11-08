@@ -48,7 +48,7 @@ export function runtimeAttachmentPaths(value) {
 // The child is real but inert: no shell, network, provider account or user data.
 // Inert Windows roots cannot spawn descendants and are assigned to an exact
 // kill-on-close Job before publication; POSIX roots keep their detached group.
-export async function fixture({ onProviderOpen, onProviderSession, agentBaseUrl, diagnosticProvider = false, beforeRuntimeClose, providerAuthStatus, providerInstalled, steeringResponse, modelCatalog, modelValidator, capabilityCatalog, socketIdleTimeoutMs, storeFactory, authToken, resourceAdmissionObservation, providerContextUsage, providerCommandResult, providerContextRecoverySupport, providerValidatesResumeBeforeTurn = false, schedulerMaxConcurrentRuns = 4, nativeAdapterForOpen, nativeAdapterForEngine, localMemoryForRoot, providerRunPlan, webDist } = {}) {
+export async function fixture({ onProviderOpen, onProviderSession, agentBaseUrl, diagnosticProvider = false, beforeRuntimeClose, providerAuthStatus, providerInstalled, steeringResponse, modelCatalog, modelValidator, capabilityCatalog, socketIdleTimeoutMs, storeFactory, authToken, resourceAdmissionObservation, providerContextUsage, providerCommandResult, providerContextRecoverySupport, providerValidatesResumeBeforeTurn = false, schedulerMaxConcurrentRuns = 4, nativeAdapterForOpen, nativeAdapterForEngine, localMemoryForRoot, providerRunPlan, webDist, supportsVoiceReplyStream = false } = {}) {
   const root = await mkdtemp(path.join(tmpdir(), 'ponderosa-regression-'));
   const dataDir = path.join(root, 'data');
   const plans = new Map(), sessions = new Map(), turns = [], children = [], failures = [], openingSessions = new Set(), commands = [], steers = [];
@@ -56,7 +56,7 @@ export async function fixture({ onProviderOpen, onProviderSession, agentBaseUrl,
   const capabilities = { steering: true, persistentSessions: true, commands: [], mcpServers: [], composerCapabilities: [] };
   const providerProbes = [], capabilityDiscoveries = [], knownProviderSessions = new Map();
   const adapter = {
-    id: 'codex', displayName: 'Controlled regression adapter', trustedSystemPromptChannel: 'developer',
+    id: 'codex', displayName: 'Controlled regression adapter', trustedSystemPromptChannel: 'developer', supportsVoiceReplyStream,
     ...(providerContextRecoverySupport ? { contextRecoverySupport: providerContextRecoverySupport } : {}),
     ...(modelValidator ? { validateModel: modelValidator } : {}),
     ...(modelCatalog ? { discoverModelCatalog: modelCatalog, modelSpecificEfforts: true } : {}),

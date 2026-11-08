@@ -90,8 +90,8 @@ try{
    await page.goto(origin+(surface==='branches'?'/branches/fixture':'/?surface=standalone'));
    await page.waitForFunction(()=>window.incrementalFixture);await page.getByRole('dialog').waitFor();
    if(scenario==='post-final-forget')for(const mode of ['stop','replacement'])assert.deepEqual(await page.evaluate(mode=>window.incrementalFixture.guardRace(mode),mode),{checks:1,queued:0},'serialized valid async guard after '+mode+' never starts old speech');
-   await page.getByRole('button',{name:'Transcript & typing',exact:true}).click();
-   await page.getByLabel('Your next turn').fill('Synthetic voice input');await page.getByRole('button',{name:'Send turn',exact:true}).click();
+   await page.getByRole('button',{name:'Transcript',exact:true}).click();
+   await page.getByLabel('Type a turn').fill('Synthetic voice input');await page.getByRole('button',{name:'Send turn',exact:true}).click();
    if(process.env.VOICE_LIFETIME_ONLY){
     if(scenario!=='fallback-forget')await page.waitForFunction(()=>window.incrementalFixture.receipts.some(x=>x.stage==='onstart_mock'),null,{timeout:7000});
     release();await done;
@@ -120,7 +120,7 @@ try{
      assert.equal(await page.evaluate(()=>window.incrementalFixture.receipts.filter(x=>x.stage==='onstart_mock').at(-1).text),finalText);
      await page.evaluate(()=>window.incrementalFixture.complete());
      await page.waitForFunction(()=>window.incrementalFixture.handlers()===0);
-     await page.getByLabel('Your next turn').fill('Synthetic deliberate turn after native stop');await page.getByRole('button',{name:'Send turn',exact:true}).click();
+     await page.getByLabel('Type a turn').fill('Synthetic deliberate turn after native stop');await page.getByRole('button',{name:'Send turn',exact:true}).click();
      await page.waitForFunction(()=>window.incrementalFixture.receipts.filter(x=>x.stage==='onstart_mock').length>2);
      const nextEnd=Date.now()+7000;while(coord.activeAgentRun(agent.id)&&Date.now()<nextEnd)await new Promise(r=>setTimeout(r,10));assert.equal(coord.activeAgentRun(agent.id),undefined);
      await page.evaluate(()=>window.incrementalFixture.wake());
@@ -138,7 +138,7 @@ try{
      assert.equal((await page.evaluate(()=>window.incrementalFixture.receipts.filter(x=>x.stage==='onstart_mock').map(x=>x.text).join(' '))),finalText);
      const firstPacket=store.getProviderInput(coord.voiceReplyRunTiming(coord.runtimeCommunications(project.id).find(x=>x.payload.communication?.sender.kind==='user').id,agent.id).runId,true);
      const changed=await app.inject({method:'POST',url:memoryUrl,headers,payload:{operation:'forget',chunk_id:memory.chunk_id,destination:'global'}});assert.equal(changed.statusCode,200,changed.body);
-     await page.getByLabel('Your next turn').fill('Synthetic fresh empty-memory turn');await page.getByRole('button',{name:'Send turn',exact:true}).click();
+     await page.getByLabel('Type a turn').fill('Synthetic fresh empty-memory turn');await page.getByRole('button',{name:'Send turn',exact:true}).click();
      await page.waitForFunction(()=>window.incrementalFixture.receipts.filter(x=>x.stage==='onstart_mock').length>3);
      const limit=Date.now()+7000;while(coord.activeAgentRun(agent.id)&&Date.now()<limit)await new Promise(r=>setTimeout(r,10));assert.equal(coord.activeAgentRun(agent.id),undefined);
      const packets=store.sqlite.prepare('SELECT source_manifest_json,provider_prompt FROM provider_inputs WHERE agent_id=? ORDER BY created_at').all(agent.id);assert.equal(packets.length,2);const fresh=JSON.parse(packets[1].source_manifest_json);

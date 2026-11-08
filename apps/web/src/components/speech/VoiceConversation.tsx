@@ -537,7 +537,7 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
     setMuted(value=>!value);
   };
   const roundControl={minWidth:64,width:64,height:64,borderRadius:"50%",p:0,transition:"background-color 180ms ease, transform 180ms ease", "& svg":{fontSize:27}, "&:active":{transform:"scale(.95)"}, "@media (prefers-reduced-motion: reduce)":{transition:"none"}};
-  return <Dialog open fullWidth fullScreen={phone} maxWidth="sm" aria-labelledby={`${ownerId}-title`} onClose={end}
+  return <Dialog data-ponderosa-call open disableRestoreFocus fullWidth fullScreen={phone} maxWidth="sm" aria-labelledby={`${ownerId}-title`} onClose={end}
     PaperProps={{sx:{m:{xs:0,sm:3},width:{xs:"100%",sm:480},height:{xs:"100%",sm:"min(780px, calc(100dvh - 48px))"},maxHeight:{xs:"100%",sm:"calc(100dvh - 48px)"},borderRadius:{xs:0,sm:6},overflow:"hidden",backgroundImage:"none",bgcolor:"background.default",boxShadow:{sm:"0 28px 100px rgba(18,28,22,.2)"}}}}
     sx={{"& .MuiDialog-container":{alignItems:"center"}}}>
     <DialogContent ref={mountSurface} sx={{p:0,display:"flex",flexDirection:"column",height:"100%",overflow:"hidden"}}>
@@ -573,6 +573,7 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
           <Stack direction="row" spacing={1} sx={{flexWrap:"wrap",gap:1,"& button":{minHeight:44}}}>
             {text.trim()&&!recording&&!inFlight && <Button disabled={Boolean(attempt.current)||blocked} onClick={()=>setText("")}>Clear draft</Button>}
             {handsFree&&recording&&<Button onClick={()=>{stopAutomatic();dictation.abandon();changePhase("review");}}>Review before sending</Button>}
+            {(phase==="loading"||phase==="speaking")&&<Button onClick={()=>{stopAutomatic();abandon();changePhase("ready");}}>Stop speaking</Button>}
             {playText&&!inFlight&&!recording&&!ttsUnavailable&&<Button onClick={()=>play(playText)}>Play reply</Button>}
             {replyPending&&observedRun.current&&<Button color="error" onClick={async()=>{const targetRunId=observedRun.current;if(!targetRunId)return;stopAutomatic();abandon();changePhase("paused");try{await api.cancelRun(agentId,{targetRunId,idempotencyKey:createClientId()});setNotice("Reply cancelled. Reconnect when ready.");}catch{setError("Cancellation could not be confirmed. Check Chat; audio is stopped.");}}}>Cancel reply</Button>}
           </Stack>
