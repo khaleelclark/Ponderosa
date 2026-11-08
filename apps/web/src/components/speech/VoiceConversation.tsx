@@ -536,14 +536,16 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
     if(!muted && recording){dictation.abandon();setText("");changePhase("ready");setNotice("Microphone muted. Unfinished words were discarded.");}
     setMuted(value=>!value);
   };
+  const permissionError = error?.startsWith("Microphone permission was denied.");
+  const showCallControl = phase === "paused" || phase === "loading" || phase === "speaking" || (!handsFree && !recording && !text.trim());
   const roundControl={minWidth:64,width:64,height:64,borderRadius:"50%",p:0,transition:"background-color 180ms ease, transform 180ms ease", "& svg":{fontSize:27}, "&:active":{transform:"scale(.95)"}, "@media (prefers-reduced-motion: reduce)":{transition:"none"}};
   return <Dialog data-ponderosa-call open disableRestoreFocus fullWidth fullScreen={phone} maxWidth="sm" aria-labelledby={`${ownerId}-title`} onClose={end}
     PaperProps={{sx:{m:{xs:0,sm:3},width:{xs:"100%",sm:480},height:{xs:"100%",sm:"min(780px, calc(100dvh - 48px))"},maxHeight:{xs:"100%",sm:"calc(100dvh - 48px)"},borderRadius:{xs:0,sm:6},overflow:"hidden",backgroundImage:"none",bgcolor:"background.default",boxShadow:{sm:"0 28px 100px rgba(18,28,22,.2)"}}}}
     sx={{"& .MuiDialog-container":{alignItems:"center"}}}>
     <DialogContent ref={mountSurface} sx={{p:0,display:"flex",flexDirection:"column",height:"100%",overflow:"hidden"}}>
-      <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{px:3,pt:"max(24px, env(safe-area-inset-top))",pb:1,flexShrink:0}}>
-        <Stack direction="row" spacing={1} alignItems="center"><PhoneIcon sx={{fontSize:16,color:"text.secondary"}}/><Typography variant="caption" color="text.secondary" sx={{fontWeight:600,letterSpacing:".04em"}}>PONDEROSA CALL</Typography></Stack>
-        <Button size="small" aria-label="Transcript" aria-expanded={expanded} aria-controls={`${ownerId}-details`} onClick={()=>setExpanded(value=>!value)} sx={{minHeight:44,minWidth:44,borderRadius:3,color:expanded?"primary.main":"text.secondary"}}><NotesRoundedIcon/><Box component="span" sx={{ml:.75}}>Transcript</Box></Button>
+      <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{px:3,pt:"max(24px, env(safe-area-inset-top))",pb:1,flexShrink:0,flexWrap:"wrap",gap:1}}>
+        <Stack direction="row" spacing={1} alignItems="center"><PhoneIcon sx={{fontSize:16,color:"text.secondary"}}/><Typography variant="caption" color="text.secondary" sx={{fontWeight:600,letterSpacing:".04em"}}>Call</Typography></Stack>
+        <Button size="small" aria-label="Transcript" aria-expanded={expanded} aria-controls={`${ownerId}-details`} onClick={()=>setExpanded(value=>!value)} sx={{minHeight:44,minWidth:44,maxWidth:"100%",flexWrap:"wrap",borderRadius:3,color:expanded?"primary.main":"text.secondary"}}><NotesRoundedIcon/><Box component="span" sx={{ml:.75}}>Transcript</Box></Button>
       </Stack>
       <Box sx={{flex:1,minHeight:0,overflowY:"auto",px:{xs:3,sm:4},display:"flex",flexDirection:"column"}}>
         <Stack alignItems="center" sx={{pt:expanded?2:{xs:5,sm:5},pb:3,transition:"padding 180ms ease","@media (prefers-reduced-motion: reduce)":{transition:"none"}}}>
@@ -562,7 +564,11 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
           {ttsUnavailable && <Alert severity="info">{ttsUnavailable} Replies remain in Chat.</Alert>}
           {deliveryNotice && <Alert severity="info">{deliveryNotice}</Alert>}
           {notice && <Alert severity="info">{notice}</Alert>}
-          {error && <Alert severity="warning">{error}</Alert>}
+          {error && <Alert severity="warning">{permissionError ? <>
+            Microphone access denied. Allow access in browser settings, then reconnect.
+            <Typography component="p" variant="inherit" sx={{mt:1}}>Some speech may be missing. Review Transcript before sending.</Typography>
+            <Box component="details"><Box component="summary" sx={{cursor:"pointer",minHeight:44,display:"flex",alignItems:"center"}}>Details</Box><Typography variant="inherit" sx={{overflowWrap:"anywhere"}}>{error}</Typography></Box>
+          </> : error}</Alert>}
         </Stack>
         {text.trim() && !expanded && <Box sx={{p:2.5,borderRadius:4,bgcolor:"background.paper",mb:2}}><Typography variant="caption" color="text.secondary">{recording?"Your words":"Review your turn"}</Typography><Typography sx={{mt:.5,whiteSpace:"pre-wrap",maxHeight:140,overflowY:"auto",fontSize:16,lineHeight:1.5}}>{text}</Typography></Box>}
         {acknowledgement && !expanded && <Typography aria-label="Agent acknowledgement" sx={{textAlign:"center",fontSize:16,lineHeight:1.6,mb:2}}>{acknowledgement}</Typography>}
@@ -571,6 +577,8 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
           <Stack aria-label="Call transcript" spacing={1.5}>{transcript.map(message=><Box key={message.id} sx={{p:2,borderRadius:3,bgcolor:message.role==="user"?"action.hover":"background.paper",ml:message.role==="user"?3:0,mr:message.role==="user"?0:3}}><Typography variant="caption" color="text.secondary">{message.role==="user"?"You":agentName}</Typography><Typography ref={renderReply?.canonicalId===message.id?replyElement:undefined} sx={{whiteSpace:"pre-wrap",mt:.5,lineHeight:1.6}}>{message.document?"Full reply available in Chat.":message.text}</Typography></Box>)}</Stack>
           <TextField label="Type a turn" InputLabelProps={{shrink:true}} multiline minRows={2} value={text} disabled={recording||inFlight||recovering||Boolean(attempt.current)||blocked} onChange={e=>setText(e.target.value)} sx={{"& .MuiOutlinedInput-root":{borderRadius:3}}}/>
           <Stack direction="row" spacing={1} sx={{flexWrap:"wrap",gap:1,"& button":{minHeight:44}}}>
+            {recording && <Button disabled={dictation.status==="stopping"} onClick={dictation.stop}>Finish turn</Button>}
+            {text.trim()&&!recording && <Button startIcon={<SendRoundedIcon/>} disabled={!live||!checked||inFlight||recovering||blocked||Boolean(attempt.current)} onClick={()=>{void send();}}>Send turn</Button>}
             {text.trim()&&!recording&&!inFlight && <Button disabled={Boolean(attempt.current)||blocked} onClick={()=>setText("")}>Clear draft</Button>}
             {handsFree&&recording&&<Button onClick={()=>{stopAutomatic();dictation.abandon();changePhase("review");}}>Review before sending</Button>}
             {(phase==="loading"||phase==="speaking")&&<Button onClick={()=>{stopAutomatic();abandon();changePhase("ready");}}>Stop speaking</Button>}
@@ -584,16 +592,14 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
         {!recording&&!inFlight&&phase!=="paused"&&!text.trim()&&!attempt.current&&!handsFree&&<Typography variant="caption" color="text.secondary" sx={{textAlign:"center",pb:2}}>Browser speech may use remote processing.</Typography>}
       </Box>
       <Box sx={{flexShrink:0,px:3,pt:2,pb:"max(24px, env(safe-area-inset-bottom))",borderTop:"1px solid",borderColor:"divider",bgcolor:"background.paper"}}>
-        <Stack direction="row" justifyContent="center" alignItems="flex-start" spacing={4}>
+        <Stack direction="row" justifyContent="center" alignItems="flex-start" sx={{flexWrap:"wrap",gap:3}}>
           <Stack spacing={1} alignItems="center"><Button aria-label={muted?"Unmute microphone":"Mute microphone"} aria-pressed={muted} disabled={Boolean(sttUnavailable)||(!handsFree&&!recording&&!muted)} onClick={toggleMute} sx={{...roundControl,bgcolor:muted?"text.primary":"action.hover",color:muted?"background.paper":"text.primary","&:hover":{bgcolor:muted?"text.secondary":"action.selected"}}}>{muted?<MicOffIcon/>:<MicNoneIcon/>}</Button><Typography variant="caption" color="text.secondary">{muted?"Unmute":"Mute"}</Typography></Stack>
-          <Stack spacing={1} alignItems="center">
+          {showCallControl && <Stack spacing={1} alignItems="center">
             {phase==="loading"||phase==="speaking"?<Button aria-label="Talk now" disabled={muted||Boolean(sttUnavailable)} onClick={interruptReply} sx={{...roundControl,bgcolor:"primary.main",color:"primary.contrastText","&:hover":{bgcolor:"primary.dark"}}}><MicNoneIcon/></Button>
               :phase==="paused"?<Button aria-label="Reconnect call" disabled={recovering||blocked||Boolean(attempt.current)} onClick={()=>{void resume();}} sx={{...roundControl,bgcolor:"primary.main",color:"primary.contrastText","&:hover":{bgcolor:"primary.dark"}}}><PhoneIcon/></Button>
-              :recording?<Button aria-label="Finish turn" disabled={dictation.status==="stopping"} onClick={dictation.stop} sx={{...roundControl,bgcolor:"primary.main",color:"primary.contrastText","&:hover":{bgcolor:"primary.dark"}}}><SendRoundedIcon/></Button>
-              :text.trim()?<Button aria-label="Send turn" disabled={!live||!checked||inFlight||recovering||blocked||Boolean(attempt.current)} onClick={()=>{void send();}} sx={{...roundControl,bgcolor:"primary.main",color:"primary.contrastText","&:hover":{bgcolor:"primary.dark"}}}><SendRoundedIcon/></Button>
               :<Button aria-label={handsFree?"Listen":"Start call"} disabled={cannotStart} onClick={startCall} sx={{...roundControl,bgcolor:"primary.main",color:"primary.contrastText","&:hover":{bgcolor:"primary.dark"}}}><PhoneIcon/></Button>}
-            <Typography variant="caption" color="text.secondary">{phase==="loading"||phase==="speaking"?"Talk now":phase==="paused"?"Reconnect":recording?"Finish turn":text.trim()?"Send turn":handsFree?"Listen":"Call"}</Typography>
-          </Stack>
+            <Typography variant="caption" color="text.secondary">{phase==="loading"||phase==="speaking"?"Talk now":phase==="paused"?"Reconnect":handsFree?"Listen":"Call"}</Typography>
+          </Stack>}
           <Stack spacing={1} alignItems="center"><Button aria-label="End call" onClick={end} sx={{...roundControl,bgcolor:"error.main",color:"error.contrastText","&:hover":{bgcolor:"error.dark"}}}><CallEndIcon/></Button><Typography variant="caption" color="text.secondary">End</Typography></Stack>
         </Stack>
       </Box>
