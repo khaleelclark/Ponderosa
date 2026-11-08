@@ -264,6 +264,7 @@ function ConversationMessageComponent({
 const ConversationMessage = memo(ConversationMessageComponent);
 
 function ConversationHeader({
+  titleControl,
   onChatSettings,
   activeView,
   agentWorkOpen,
@@ -280,6 +281,7 @@ function ConversationHeader({
   setDeleteOpen,
   setActiveView,
 }: {
+  titleControl?: ReactNode;
   activeView: "main" | "collaboration" | "files" | "agents";
   onChatSettings(): void;
   agentWorkOpen: boolean;
@@ -350,6 +352,7 @@ function ConversationHeader({
       compactMobile
       icon={<ChatBubbleOutlineIcon />}
       title={conversation.title}
+      titleControl={titleControl}
       context={
         <ProjectRelationshipLink
           projectLabel={projectLabel}

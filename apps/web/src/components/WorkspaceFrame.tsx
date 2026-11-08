@@ -96,6 +96,7 @@ export function useWorkspaceHeaderCollapse(): {
 export interface TabbedWorkspaceFrameProps<T extends string> {
   icon: ReactElement;
   title: string;
+  titleControl?: ReactNode;
   context?: ReactNode;
   meta?: ReactNode;
   status?: ReactNode;
@@ -190,6 +191,7 @@ export function WorkspaceTabBar<T extends string>({ value, items, onChange, labe
 export function CompactWorkspaceHeader({
   icon,
   title,
+  titleControl,
   context,
   action,
   hideIcon = false,
@@ -201,6 +203,7 @@ export function CompactWorkspaceHeader({
 }: {
   icon: ReactElement;
   title: string;
+  titleControl?: ReactNode;
   context?: ReactNode;
   action?: ReactNode;
   hideIcon?: boolean;
@@ -267,7 +270,7 @@ export function CompactWorkspaceHeader({
           >
             {icon}
           </Box>
-          <Typography
+          {titleControl ?? <Typography
             variant="body2"
             component="h1"
             title={title}
@@ -276,7 +279,7 @@ export function CompactWorkspaceHeader({
             sx={{ minWidth: 0, flexShrink: 1 }}
           >
             {title}
-          </Typography>
+          </Typography>}
           {status}
           {context ? (
             <Typography
@@ -308,6 +311,7 @@ export function CompactWorkspaceHeader({
 export function TabbedWorkspaceFrame<T extends string>({
   icon,
   title,
+  titleControl,
   context,
   meta,
   status,
@@ -330,7 +334,7 @@ export function TabbedWorkspaceFrame<T extends string>({
   const activeLabel =
     tabs.activeLabel ??
     tabs.items.find(item => item.value === tabs.value)?.label;
-  const identity = compact || statusBeforePrimaryActions ? <Typography component="h1" variant="body2" fontWeight={800} noWrap title={title}>{title}</Typography> : <IconTitle icon={icon} title={title} component="h1" />;
+  const identity = titleControl ?? (compact || statusBeforePrimaryActions ? <Typography component="h1" variant="body2" fontWeight={800} noWrap title={title}>{title}</Typography> : <IconTitle icon={icon} title={title} component="h1" />);
   const handleToggleCollapsed = () => {
     restoreToggleFocusRef.current =
       document.activeElement === toggleButtonRef.current;
@@ -353,7 +357,7 @@ export function TabbedWorkspaceFrame<T extends string>({
     const retainedActions = collapsedActions !== undefined || compact || retainCollapsedActions ? <Stack direction="row" spacing={0.25} sx={{alignItems:"center",flexShrink:0}}>
       {statusBeforePrimaryActions ? null : status}{actionsInMobileTabs ? null : collapsedActions === undefined ? actions : collapsedActions}
     </Stack> : null;
-    return <CompactWorkspaceHeader icon={icon} title={title} hideIcon={compact} singleRow={collapsedSingleRow}
+    return <CompactWorkspaceHeader icon={icon} title={title} titleControl={titleControl} hideIcon={compact} singleRow={collapsedSingleRow}
       status={statusBeforePrimaryActions ? status : undefined}
       context={collapsedIconTabs ? undefined : activeLabel}
       tabs={collapsedIconTabs ? <WorkspaceTabBar {...tabs} compact /> : undefined}

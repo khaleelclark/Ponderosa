@@ -25,6 +25,7 @@ import { normalizeResetPages } from "../collections";
 import { providerAvailabilityMessage } from "../providerAvailability";
 import {
   type ComponentProps,
+  type ReactNode,
   useCallback,
   useEffect,
   useMemo,
@@ -106,6 +107,7 @@ function ConversationAgentsPanel(props: ComponentProps<typeof AgentsTab>): JSX.E
 }
 
 export function ConversationView({
+  titleControl,
   conversationId,
   focusMessageId,
   initialView,
@@ -127,6 +129,7 @@ export function ConversationView({
   onNewAgent,
   onDeleted,
 }: {
+  titleControl?: ReactNode;
   conversationId: string;
   focusMessageId?: string;
   initialView?: ConversationDetailView;
@@ -902,6 +905,7 @@ export function ConversationView({
       }}
     >
       <ConversationHeader
+        titleControl={titleControl}
         activeView={activeView}
         agentWorkOpen={agentWorkOpen}
         conversation={conversation}

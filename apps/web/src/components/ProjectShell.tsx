@@ -38,6 +38,7 @@ type RemovableWorkspaceResourceRoute = Extract<
 
 export function ProjectShell({
   directConversation=false,
+  conversationTitleControl,
   projectId,
   project,
   route,
@@ -52,6 +53,7 @@ export function ProjectShell({
   onCreate,
 }: {
   directConversation?: boolean;
+  conversationTitleControl?: ReactNode;
   projectId: string;
   project: ProjectDto;
   route: ProjectRoute;
@@ -251,6 +253,7 @@ export function ProjectShell({
   if (route.kind === "conversation") {
     main = (
       <ConversationView
+        titleControl={conversationTitleControl}
         key={route.conversationId}
         conversationId={route.conversationId}
         focusMessageId={route.focusMessageId}

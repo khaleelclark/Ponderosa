@@ -14,7 +14,7 @@ import {useBranchDraftGuard,useBranchNavigationGuard} from './BranchNavigation';
 import {ResourceSettingsContext} from '../ResourceSettingsContext';
 import {useEffect,useLayoutEffect,useRef,useState,type ReactNode} from 'react';
 import {useQuery,useQueryClient,useInfiniteQuery} from '@tanstack/react-query';
-import {Alert,Box,Button,Dialog,DialogContent,DialogTitle,Autocomplete,CircularProgress,Paper,type PaperProps,Stack,TextField,Typography} from '@mui/material';
+import {Alert,Box,Button,Dialog,DialogContent,DialogTitle,Autocomplete,CircularProgress,Paper,type PaperProps,Stack,TextField,Typography,useMediaQuery} from '@mui/material';
 import type {BranchContextDto,EngineDto} from '@ponderosa/core';
 import {realApi,requestJson,requestCollectionPage} from '../../api/real';
 import type {ProjectRoute} from '../../routeRegistry';
@@ -32,6 +32,7 @@ function ChatOptionsPaper({children,footer,...props}:ChatOptionsPaperProps):JSX.
 /** Shared interaction surfaces receive scoped transport and navigation from their product shell. */
 export function BranchChats({branchId,engines,executionId,branchRoute,onNavigate,notificationAction,enginesLoaded=true,standalone=false}:{branchId:string;engines:EngineDto[];enginesLoaded?:boolean;standalone?:boolean;executionId?:string;branchRoute:BranchRoute;onNavigate(route:BranchRoute,replace?:boolean):boolean;notificationAction?:ReactNode}):JSX.Element {
  const guard=useBranchNavigationGuard();
+ const mobile=useMediaQuery('(max-width: 899.95px)');
  const active=useRef(false);useLayoutEffect(()=>{active.current=true;return()=>{active.current=false}},[]);
  const [picker,setPicker]=useState(false),[search,setSearch]=useState('');
  const searchText=search.trim();
@@ -87,21 +88,24 @@ export function BranchChats({branchId,engines,executionId,branchRoute,onNavigate
    if(next.kind==='home')return chat&&route?.kind==='browser'?setRoute({kind:'conversation',projectId:chat.projectId,conversationId:chat.id}):setChatId('');
    setError('This view belongs outside the selected Branch Chat.');return false;
  };
+ const composedChatTitle=mobile&&!standalone&&!executionId&&!creationKey&&Boolean(chat)&&workspaceRoute?.kind==='conversation';
  const pickerPaperProps:ChatOptionsPaperProps={footer:<Stack spacing={0.5} onMouseDown={event=>event.preventDefault()}>
+  {composedChatTitle&&<Button startIcon={<AddIcon/>} onClick={()=>{setPicker(false);startChat()}}>New Chat</Button>}
   {choices.isFetchingNextPage&&<Typography role="status" sx={{px:2,py:1}}>Loading more Chats…</Typography>}
   {choices.hasNextPage&&<Button disabled={choices.isFetching} onClick={()=>void choices.fetchNextPage()}>Load more Chats</Button>}
  </Stack>};
- return <Stack spacing={1} sx={{flex:1,minHeight:0,minWidth:0,overflow:'hidden'}}>
-  {!standalone&&<Stack direction="row" gap={1} alignItems="center" sx={{flexShrink:0,minWidth:0,pt:1}}>
-   <Autocomplete options={choiceRows} value={chat??null} getOptionLabel={c=>c.title} getOptionKey={c=>c.id} isOptionEqualToValue={(a,b)=>a.id===b.id} filterOptions={options=>options} disableClearable={Boolean(chat)}
+ const chatPicker=<Autocomplete options={choiceRows} value={chat??null} getOptionLabel={c=>c.title} getOptionKey={c=>c.id} isOptionEqualToValue={(a,b)=>a.id===b.id} filterOptions={options=>options} disableClearable={Boolean(chat)}
     open={picker} onOpen={()=>setPicker(true)} onClose={(event,reason)=>{if(reason==='selectOption'&&'defaultMuiPrevented'in event&&event.defaultMuiPrevented)return;setPicker(false);if(reason==='selectOption')setSearch('')}} onChange={(event,c)=>{if(c&&!chooseChat(c))(event as {defaultMuiPrevented?:boolean}).defaultMuiPrevented=true}}
     inputValue={picker?search:chat?.title??''} onInputChange={(_event,value,reason)=>{if(reason==='input')setSearch(value)}}
     loading={choices.isPending} loadingText="Loading Chats…" noOptionsText={choices.error?'Chats could not be loaded.':searchText?'No Chats match this search.':'No Chats in this scope.'}
     onHighlightChange={(_event,c,reason)=>{if(reason==='keyboard'&&c?.id===choiceRows.at(-1)?.id&&choices.hasNextPage&&!choices.isFetching&&!choices.error)void choices.fetchNextPage()}}
     slots={{paper:ChatOptionsPaper}} slotProps={{paper:pickerPaperProps,listbox:{onScroll:event=>{const list=event.currentTarget;if(list.scrollHeight-list.scrollTop-list.clientHeight<32&&choices.hasNextPage&&!choices.isFetching&&!choices.error)void choices.fetchNextPage()}}}}
     renderOption={({key,...props},c)=><Box component="li" key={key} {...props}><Box sx={{minWidth:0}}><Typography sx={{overflowWrap:'anywhere',fontWeight:chatUnread(c.id)?800:400}}>{c.title}</Typography>{(titleCounts.get(c.title)??0)>1&&<Typography variant="caption" color="text.secondary" sx={{overflowWrap:'anywhere'}}>{c.id}</Typography>}</Box></Box>}
-    renderInput={params=><TextField {...params} size="small" label={executionId?'Execution Chat':'Chat'} placeholder="Search Chats" slotProps={{htmlInput:{...params.inputProps,maxLength:200}}} InputProps={{...params.InputProps,sx:{'& input':{fontWeight:chatId&&chatUnread(chatId)?800:400}},endAdornment:<>{choices.isFetching&&<CircularProgress size={16} aria-label="Loading Chats"/>}{params.InputProps.endAdornment}</>}}/>}
-    sx={{flex:1,minWidth:0,maxWidth:360}}/>
+    renderInput={params=><TextField {...params} size="small" label={executionId?'Execution Chat':composedChatTitle?'Current Chat':'Chat'} placeholder="Search Chats" slotProps={{htmlInput:{...params.inputProps,maxLength:200,title:chat?.title}}} InputProps={{...params.InputProps,sx:{...(composedChatTitle?{minHeight:44}:{}),'& input':{fontWeight:chatId&&chatUnread(chatId)?800:400}},endAdornment:<>{choices.isFetching&&<CircularProgress size={16} aria-label="Loading Chats"/>}{params.InputProps.endAdornment}</>}}/>}
+    sx={{flex:1,minWidth:0,maxWidth:360,width:composedChatTitle?'100%':undefined}}/>;
+ return <Stack spacing={1} sx={{flex:1,minHeight:0,minWidth:0,overflow:'hidden'}}>
+  {!standalone&&!composedChatTitle&&<Stack direction="row" gap={1} alignItems="center" sx={{flexShrink:0,minWidth:0,pt:1}}>
+   {chatPicker}
    {!executionId&&<Button size="small" startIcon={<AddIcon/>} disabled={Boolean(creationKey)} onClick={startChat} sx={{flexShrink:0,whiteSpace:'nowrap'}}>New Chat</Button>}
    {executionId&&<Button size="small" onClick={()=>onNavigate({...branchRoute,executionId:undefined,chatId:undefined,workspace:undefined})}>Persistent Chats</Button>}{notificationAction}
   </Stack>}
@@ -121,7 +125,7 @@ export function BranchChats({branchId,engines,executionId,branchRoute,onNavigate
   {chats.isSuccess&&(chats.data?.length??0)>1&&!chatId&&<Typography color="text.secondary">Choose a Chat to inspect or work with its Agents.</Typography>}
   {owner.data?.branchId&&(owner.data.branchId!==branchId||(owner.data.executionId??undefined)!==(executionId??undefined))&&<Typography>Opening the Chat’s owning workflow execution…</Typography>}
   {chat&&project.data&&preferences.data&&<>
-   <Box sx={{flex:1,minHeight:0,minWidth:0,display:'flex',flexDirection:'column',overflow:'hidden'}}><WorkspaceReadOnlyContext.Provider value={Boolean(executionId)}><ProjectBrowserContext.Provider value={{projectId:chat.projectId,open:url=>{setBrowserRequest({url,requestId:++browserRequestSequence.current});setRoute({kind:'browser',projectId:chat.projectId,conversationId:chat.id})},openAgent:(agentId,runId)=>setRoute({kind:'browser',projectId:chat.projectId,agentId,runId})}}><ResourceSettingsContext.Provider value={executionId?{}:{render:(kind,id)=><>{kind==='agent'&&<OutputAgentDesignation agentId={id}/>}<CapabilityPolicyEditor key={`${kind}:${id}`} scopeKind={kind} onDirtyChange={setCapabilityDirty} endpoint={`/api/branches/${branchId}/${kind==='chat'?'chats':'agents'}/${id}/capabilities`}/></>,confirmClose:()=>!capabilityDirty||guard(()=>{})}}><PrimaryHeaderActionsScope><ProjectShell directConversation={standalone} projectId={chat.projectId} project={project.data} route={workspaceRoute!} engines={engines} preferences={preferences.data}
+   <Box sx={{flex:1,minHeight:0,minWidth:0,display:'flex',flexDirection:'column',overflow:'hidden'}}><WorkspaceReadOnlyContext.Provider value={Boolean(executionId)}><ProjectBrowserContext.Provider value={{projectId:chat.projectId,open:url=>{setBrowserRequest({url,requestId:++browserRequestSequence.current});setRoute({kind:'browser',projectId:chat.projectId,conversationId:chat.id})},openAgent:(agentId,runId)=>setRoute({kind:'browser',projectId:chat.projectId,agentId,runId})}}><ResourceSettingsContext.Provider value={executionId?{}:{render:(kind,id)=><>{kind==='agent'&&<OutputAgentDesignation agentId={id}/>}<CapabilityPolicyEditor key={`${kind}:${id}`} scopeKind={kind} onDirtyChange={setCapabilityDirty} endpoint={`/api/branches/${branchId}/${kind==='chat'?'chats':'agents'}/${id}/capabilities`}/></>,confirmClose:()=>!capabilityDirty||guard(()=>{})}}><PrimaryHeaderActionsScope><ProjectShell directConversation={standalone} conversationTitleControl={composedChatTitle?<Box sx={{flex:1,minWidth:0,py:.5}}>{chatPicker}</Box>:undefined} projectId={chat.projectId} project={project.data} route={workspaceRoute!} engines={engines} preferences={preferences.data}
     onPreferences={patch=>{void preferenceWriter.enqueueAndWait(patch).catch((e:Error)=>setError(e.message))}}
     decisionReviewAction={<BranchNotifications onNavigate={onNavigate} presentation="button" label="View decision"/>}
     browserRequest={browserRequest} onBrowserRequestHandled={id=>setBrowserRequest(current=>consumeProjectBrowserRequest(current,id))}
