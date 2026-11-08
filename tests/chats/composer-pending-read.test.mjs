@@ -27,3 +27,66 @@ test('continuation hydration respects interaction with the cleared next draft',(
  assert.equal(composerShouldSeedContinuationDestination({...empty,retainedSelectionKey:'chosen:agent'}),false);
  assert.equal(composerShouldSeedContinuationDestination({...empty,previousSelectionKey:'reply:new'}),false);
 });
+
+// A hydration begun before Send must not become a new editable draft.
+const sendTS=require('typescript');
+const sendSource=readFileSync(new URL('../../apps/web/src/components/chat/Composer.tsx',import.meta.url),'utf8');
+const sendAst=sendTS.createSourceFile('Composer.tsx',sendSource,sendTS.ScriptTarget.Latest,true,sendTS.ScriptKind.TSX);
+let hydrate,success,failure,invalidateHydration,replaceDraftText;
+function visit(node){
+ if(sendTS.isVariableDeclaration(node)&&sendTS.isCallExpression(node.initializer??node)){
+  if(node.name.getText(sendAst)==='invalidateDraftHydration')invalidateHydration=node.initializer.arguments[0];
+  if(node.name.getText(sendAst)==='replaceText')replaceDraftText=node.initializer.arguments[0];
+ }
+ if(sendTS.isVariableDeclaration(node)&&node.name.getText(sendAst)==='apply'&&node.initializer&&node.initializer.getText(sendAst).includes('const restoredResults = await Promise.allSettled'))hydrate=node.initializer;
+ if(sendTS.isCallExpression(node)&&sendTS.isPropertyAccessExpression(node.expression)){
+  const fn=node.arguments[0];
+  if(fn&&sendTS.isArrowFunction(fn)&&fn.body.getText(sendAst).includes('const submissionMayClearDraft = composerSubmissionMayClearDraft'))success=fn;
+  if(node.expression.name.text==='catch'&&fn&&sendTS.isArrowFunction(fn)&&fn.body.getText(sendAst).includes('const intentUnchanged ='))failure=fn;
+ }
+ sendTS.forEachChild(node,visit);
+}
+visit(sendAst);assert(hydrate&&success&&failure&&invalidateHydration&&replaceDraftText,'Actual Composer hydration, mutation and Send callbacks must be found');
+const hydrationEnd=hydrate.body.statements.findIndex(n=>n.getText(sendAst)==='draftContentGeneration.current += 1;');assert(hydrationEnd>0);
+// Execute the real asynchronous hydration through its first content mutation.
+// Remaining rendering is irrelevant: this mutation alone invalidates Send's guard.
+const hydration=`async()=>{${hydrate.body.statements.slice(0,hydrationEnd+1).map(n=>n.getText(sendAst)).join('\n')}}`;
+const admittedStart=sendSource.indexOf('    sendingRef.current = true;');
+const admittedEnd=sendSource.indexOf('    const outgoingId =',admittedStart);assert(admittedStart>0&&admittedEnd>admittedStart);
+const admission=sendSource.slice(admittedStart,admittedEnd);
+const helperSource=readFileSync(new URL('../../apps/web/src/components/chat/composerUtils.ts',import.meta.url),'utf8');
+const helperAst=sendTS.createSourceFile('composerUtils.ts',helperSource,sendTS.ScriptTarget.Latest,true,sendTS.ScriptKind.TS);
+const helperNames=['shouldAdoptHydratedDraft','ownedDraftRevisionAfterObservation','composerSubmissionMayClearDraft','draftWriteContinuationStillOwned'];
+const helpers=helperAst.statements.filter(n=>sendTS.isFunctionDeclaration(n)&&helperNames.includes(n.name?.text)).map(n=>n.getText(helperAst).replace(/^export /,''));assert.equal(helpers.length,4);
+const compile=s=>sendTS.transpileModule(s,{compilerOptions:{target:sendTS.ScriptTarget.ES2022,module:sendTS.ModuleKind.None}}).outputText;
+const deferred=()=>{let resolve;const promise=new Promise(r=>resolve=r);return{promise,resolve};};
+function sendHydrationFixture(){
+ const download=deferred(),state={files:['sent.webm'],text:'',stored:['sent'],error:undefined,clears:0};
+ const chain={ownedRevision:1,clientId:'owned-client',pendingDeletionIds:new Set(),tail:Promise.resolve()};
+ const c={Error,Set,Map,Promise,console,cancelled:false,hydrationGeneration:7,draftHydrationGeneration:{current:7},draftRevision:{current:1},draft:{revision:2,attachmentIds:['sent'],attachments:[{id:'sent'}]},
+  api:{downloadDraftAttachment:()=>download.promise,putConversationDraft:async(_scope,body)=>{state.stored=[...body.attachmentIds];return{revision:3};},deleteDraftAttachment:async()=>{}},
+  locallyRemovedDraftAttachmentIds:{current:new Set()},pendingText:undefined,draftStorageKey:undefined,inputRef:{current:{isFocused:()=>false}},draftLocallyEdited:{current:true},draftWriteChain:{current:chain},
+  draftContentGeneration:{current:3},sendingRef:{current:false},setSending(){},textRef:{current:''},setTextState:s=>state.text=s,
+  submittedScopeStillActive:()=>true,setPreparedRetry(){},submittedContentGeneration:3,submittedDraftWriteChain:chain,runtimeCommandSubmission:false,submittedDraftScope:'owned-chat',submittedRecovery:undefined,
+  submittedText:'',submittedMentionBindings:[],submittedOwnedDraftRevision:1,retireSubmittedDraftText(){},continuationSeedIntent:{current:undefined},selectionIntent:{current:undefined},draftGeneration:{current:1},draftEditVersion:{current:0},draftAttachmentsLocallyEdited:{current:true},unrestoredDraftAttachmentIds:{current:['sent']},
+  setKnownMentionBindings(){},retainedAgentDestination:undefined,setActiveDefaultDestination(){},replacePastedText(){},clearDraftAttachments(){state.files=[];state.clears++;c.invalidateDraftHydration();},
+  activeDraftScopeRef:{current:'owned-chat'},draftOwnerId:'owned-agent',withCapturedDraftSubmissions:(_scope,body)=>body,queryClient:{getQueryData(){},setQueryData(){}},queryKeys:{conversationDraft:{detail:()=>[]}},pendingSubmissionRef:{current:undefined},stagedIds:['sent'],submittedSupersededPastedTextAttachmentIds:[],submittedPastedTextAttachmentId:undefined,pastedTextAttachmentId:{current:undefined},setCaret(){},
+  ApiRequestError:class extends Error{},userDraftMutationGeneration:{current:0},submittedUserMutationGeneration:0,activeSubmissionIntentKeyRef:{current:'send'},submissionIntentKey:'send',action:'send',setSendError:e=>state.error=e,submittedPastedText:undefined,
+ };
+ vm.createContext(c);vm.runInContext(compile(helpers.join('\n')),c);
+ const run=s=>vm.runInContext(compile(s),c);
+ c.invalidateDraftHydration=run(`(${invalidateHydration.getText(sendAst)})`);c.replaceText=run(`(${replaceDraftText.getText(sendAst)})`);
+ return{c,state,download,run,async start(){const pending=run(`(${hydration})()`);run(admission);download.resolve(new File(['owned audio'],'sent.webm'));await pending;},async succeed(){run(`(${success.getText(sendAst)})()`);await chain.tail;},async fail(){await run(`(${failure.getText(sendAst)})(new Error('offline'))`);}};
+}
+test('Send invalidates an earlier delayed hydration before it can retain an already-sent attachment',async()=>{
+ const f=sendHydrationFixture();await f.start();await f.succeed();assert.equal(f.state.clears,1);assert.deepEqual(f.state.files,[]);assert.deepEqual(f.state.stored,[],'successful Send retires the same canonical staged draft too');
+});
+test('a successful old Send still preserves an actually newer draft incarnation',async()=>{
+ const f=sendHydrationFixture();await f.start();f.c.replaceText('newer draft');f.state.files=['new.webm'];await f.succeed();assert.equal(f.state.clears,0);assert.deepEqual(f.state.files,['new.webm']);assert.equal(f.state.text,'newer draft');assert.deepEqual(f.state.stored,['sent']);
+});
+test('failed Send preserves the original attachment for explicit recovery',async()=>{
+ const f=sendHydrationFixture();await f.start();await f.fail();assert.equal(f.state.clears,0);assert.deepEqual(f.state.files,['sent.webm']);assert.deepEqual(f.state.stored,['sent']);assert.equal(f.state.error,'offline');
+});
+test('failed old Send cannot replace genuinely newer draft text or attachments',async()=>{
+ const f=sendHydrationFixture();await f.start();f.c.replaceText('newer draft');f.state.files=['new.webm'];await f.fail();assert.equal(f.state.clears,0);assert.deepEqual(f.state.files,['new.webm']);assert.equal(f.state.text,'newer draft');
+});

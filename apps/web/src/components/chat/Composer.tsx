@@ -2712,6 +2712,7 @@ export function Composer({
       return;
     }
     sendingRef.current = true;
+    invalidateDraftHydration();
     setSending(true);
     // Render before fingerprinting, durable draft persistence or upload prep.
     // Runtime commands are not authored messages and must not get an echo.
