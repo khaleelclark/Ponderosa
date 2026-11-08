@@ -116,7 +116,7 @@ export function AgentWorkingCopySettings({ agent }: { agent: AgentDto }): JSX.El
   return (
     <Paper variant="outlined" sx={{ p: 2 }}>
       <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center", mb: 0.75 }}>
-        <Typography variant="subtitle1" fontWeight={800} sx={{ flex: 1 }}>Working Folder</Typography>
+        <Typography variant="subtitle1" fontWeight={650} sx={{ flex: 1 }}>Working Folder</Typography>
         <Chip
           size="small"
           color={change?.phase==='held'?'error':changing?'info':workingCopy.state === "ready" ? "success" : "error"}
@@ -235,7 +235,7 @@ function AgentBrowserProfileSettings({ agent }: { agent: AgentDto }): JSX.Elemen
   const error = updatePreference.error ?? createProfile.error ?? deleteProfile.error ?? profiles.error ?? preference.error;
   return (
     <Paper variant="outlined" sx={{ p: 2 }}>
-      <Typography variant="subtitle1" fontWeight={800}>Hosted Browser</Typography>
+      <Typography variant="subtitle1" fontWeight={650}>Hosted Browser</Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
         Trusted profiles keep sign-ins on this host.
       </Typography>
@@ -419,7 +419,7 @@ export function AgentSettingsPane({
       </Stack>
       {freshSessionError ? <Alert severity="error">{freshSessionError}</Alert> : freshSessionNotice ? <Alert severity={freshSessionPending ? "info" : "success"} role="status">{freshSessionNotice}</Alert> : null}
       <Paper variant="outlined" sx={{ p: 2 }}>
-        <Typography variant="subtitle1" fontWeight={800}>
+        <Typography variant="subtitle1" fontWeight={650}>
           Works In Chat
         </Typography>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
@@ -443,7 +443,7 @@ export function AgentSettingsPane({
       <Paper variant="outlined" sx={{ p: 2 }}><ResourceNotificationSettings kind="agent" id={agent.id} /></Paper>
       <AgentBrowserProfileSettings agent={agent} />
       <Paper variant="outlined" sx={{ p: 2 }}>
-        <Typography variant="subtitle1" fontWeight={800}>
+        <Typography variant="subtitle1" fontWeight={650}>
           Organization And Automatic Child Management
         </Typography>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
@@ -522,7 +522,7 @@ export function AgentSettingsPane({
         </Stack>
       </Paper>
       <Paper variant="outlined" sx={{ p: 2 }}>
-        <Typography variant="subtitle1" fontWeight={800}>
+        <Typography variant="subtitle1" fontWeight={650}>
           Runtime Capabilities
         </Typography>
         <Tooltip

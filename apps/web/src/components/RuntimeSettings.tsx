@@ -21,7 +21,7 @@ export function RuntimeSettings({ value, onChange }: { value: string; onChange(v
       onChange={(event) => onChange(event.target.value)}
       error={!valid}
       helperText={valid
-        ? "Applies immediately; active Runs finish normally."
+        ? "Applied when you save Agent defaults; active Runs finish normally."
         : `Enter a whole number from ${MIN_AGENT_RUN_CONCURRENCY} to ${MAX_AGENT_RUN_CONCURRENCY}.`}
       inputProps={{ min: MIN_AGENT_RUN_CONCURRENCY, max: MAX_AGENT_RUN_CONCURRENCY, step: 1 }}
       fullWidth

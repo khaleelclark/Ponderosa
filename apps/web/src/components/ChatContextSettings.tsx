@@ -36,6 +36,6 @@ export function ChatContextSettings({ chat, open, onClose }: {
       {save.isError ? <Alert severity="error">{String(save.error)}</Alert> : null}
     </Stack></DialogContent>
     <DialogActions><Button onClick={close} disabled={save.isPending}>Cancel</Button>
-      <Button onClick={()=>save.mutate()} disabled={save.isPending || instructionsTooLong}>Save</Button></DialogActions>
+      <Button variant="contained" onClick={()=>save.mutate()} disabled={save.isPending || instructionsTooLong}>{save.isPending ? "Saving…" : "Save changes"}</Button></DialogActions>
   </Dialog>;
 }

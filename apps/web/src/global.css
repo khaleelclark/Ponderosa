@@ -339,3 +339,39 @@ code {
 @media (prefers-reduced-motion: reduce) {
   [data-notification-focus="true"] { animation-duration: 0.01ms; outline: 2px solid #c88a18; }
 }
+
+/* Settings read as a page of sections; controls keep their own local surfaces. */
+.workspace-settings .settings-appearance.MuiPaper-root {
+  padding: 0 0 28px;
+  border: 0;
+  border-bottom: 1px solid var(--ponderosa-border);
+  border-radius: 0;
+  background: transparent;
+}
+.workspace-settings .settings-group.MuiAccordion-root {
+  padding-block: 4px;
+}
+.workspace-settings .settings-group > .MuiAccordionSummary-root {
+  padding-block: 12px;
+}
+.workspace-settings .settings-group > .MuiAccordionDetails-root > .MuiPaper-root,
+.workspace-settings .settings-group > .MuiAccordionDetails-root > .MuiStack-root > .MuiPaper-root {
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  background: transparent;
+}
+.workspace-settings .settings-groups .MuiFormControl-root {
+  min-width: 0;
+}
+.branch-settings > .MuiPaper-outlined {
+  border-radius: 12px;
+}
+.chat-message-frame.chat-message-end > .chat-message-row > .chat-message-column > .chat-message-body {
+  color: var(--ponderosa-message-bubble-text, #fff);
+}
+.chat-message-frame.chat-message-end .chat-prose {
+  --ponderosa-prose-link: inherit;
+  --ponderosa-prose-hover: rgba(255, 255, 255, .16);
+  --ponderosa-prose-divider: rgba(255, 255, 255, .3);
+}

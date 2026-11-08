@@ -1,6 +1,6 @@
 export type ColorMode = "light" | "dark";
 export const COLOR_MODE_STORAGE_KEY = "ponderosa-color-mode";
-export const THEME_BACKGROUNDS = {light: "#FBFCFB", dark: "#101312"} as const;
+export const THEME_BACKGROUNDS = {light: "#FAF9F6", dark: "#141713"} as const;
 
 export function resolveColorMode(saved: unknown, prefersDark: boolean): ColorMode {
   return saved === "light" || saved === "dark" ? saved : prefersDark ? "dark" : "light";

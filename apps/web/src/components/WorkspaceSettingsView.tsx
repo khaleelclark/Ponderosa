@@ -6,10 +6,15 @@ import { useEngineModelCatalogs } from "../hooks/useEngineModelCatalogs";
 import {useMutationNotification} from "./MutationNotifications";
 import {CapabilityPolicyEditor} from "./CapabilityPolicyEditor";
 import {currentProductScope} from "../api/productScope";
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
+import type { ReactNode } from "react";
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
 import { BrowserVoiceSettings } from "./speech/BrowserVoiceSettings";
 import PersonOutlineIcon from "@mui/icons-material/PersonOutline";
 import {
+  Accordion,
+  AccordionDetails,
+  AccordionSummary,
   Alert,
   Box,
   Button,
@@ -93,8 +98,8 @@ function SettingsHeader({
       sx={{
         flexWrap: { xs: "wrap", sm: "nowrap" },
         alignItems: "center",
-        px: { xs: 2, md: 4 },
-        py: 2.5,
+        px: { xs: 2, md: 3 },
+        py: { xs: 1.5, md: 2 },
         borderBottom: 1,
         borderColor: "divider",
       }}
@@ -116,6 +121,16 @@ function SettingsHeader({
       <PrimaryHeaderActionsOutlet showMobileUsageLabel />
     </Stack>
   );
+}
+
+/** Keep draft owners mounted when a settings group is folded. */
+function SettingsGroup({title,description,children,open=false}:{title:string;description:string;children:ReactNode;open?:boolean}):JSX.Element {
+  return <Accordion className="settings-group" defaultExpanded={open} disableGutters>
+    <AccordionSummary expandIcon={<ExpandMoreIcon/>} aria-label={title}>
+      <Box><Typography component="h2" variant="h6">{title}</Typography><Typography variant="body2" color="text.secondary" sx={{mt:.5}}>{description}</Typography></Box>
+    </AccordionSummary>
+    <AccordionDetails>{children}</AccordionDetails>
+  </Accordion>;
 }
 
 function GeneralSettingsSection({
@@ -185,14 +200,9 @@ function GeneralSettingsSection({
   const rolloverValuesValid =
     rolloverTokensError === undefined && rolloverFractionError === undefined;
   return (
-    <Stack spacing={2.5}>
-      <Paper variant="outlined" sx={{p:2.5}}><Typography component="h2" variant="h6">Assistant</Typography><AssistantSettings/></Paper>
-      <BrowserVoiceSettings preferences={preferences} onPreferences={onPreferences} />
-      <GlobalMemoryTransfer />
-      <LifecyclePanel />
-      {currentProductScope()!=="branches"&&<Paper variant="outlined" sx={{p:2.5}}><CapabilityPolicyEditor endpoint="/api/workspace/capabilities" scopeKind="product" title="Default tool permissions" description="Defaults for Core Chats and Agents; Branches has separate policies." immediateSave/></Paper>}
-      <Paper variant="outlined" sx={{ p: 2.5 }}>
-        <Typography variant="h6" component="h2" fontWeight={800} sx={{ mb: 1.5 }}>
+    <Stack spacing={0} className="settings-groups">
+      <Paper component="section" variant="outlined" className="settings-appearance" sx={{ p: 2.5 }}>
+        <Typography variant="h6" component="h2" fontWeight={650} sx={{ mb: 1.5 }}>
           Appearance
         </Typography>
         <Stack direction={{ xs: "column", md: "row" }} spacing={1.5}>
@@ -220,14 +230,7 @@ function GeneralSettingsSection({
           <TextSizeSetting/>
         </Stack>
       </Paper>
-      <Paper variant="outlined" sx={{ p: 2.5 }}>
-        <Typography variant="h6" component="h2" fontWeight={800}>
-          Agent Defaults
-        </Typography>
-        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-          These apply across Ponderosa unless a Chat or Agent
-          overrides them.
-        </Typography>
+      <SettingsGroup title="Agent defaults" description="Instructions and runtime limits for Chats and Agents." open>
         <Stack spacing={2}>
           <RuntimeSettings value={limit} onChange={onLimit} />
           <TextField
@@ -264,11 +267,12 @@ function GeneralSettingsSection({
             </Alert>
           ) : null}
         </Stack>
-      </Paper>
-      <Paper variant="outlined" sx={{ p: 2.5 }}>
-        <Typography variant="h6" component="h2" fontWeight={800}>
-          Provider Session Rollover
-        </Typography>
+      </SettingsGroup>
+      <SettingsGroup title="Assistant" description="Model, schedule and behavior for your personal Assistant."><AssistantSettings/></SettingsGroup>
+      <SettingsGroup title="Voice & audio" description="Speaking, listening and audio message preferences."><BrowserVoiceSettings preferences={preferences} onPreferences={onPreferences}/></SettingsGroup>
+      <SettingsGroup title="Memory" description="Import, export and manage saved knowledge."><GlobalMemoryTransfer/></SettingsGroup>
+      {currentProductScope()!=="branches"&&<SettingsGroup title="Tool permissions" description="Default access for Core Chats and Agents."><CapabilityPolicyEditor endpoint="/api/workspace/capabilities" scopeKind="product" title="Default tool permissions" description="Defaults for Core Chats and Agents; Branches has separate policies." immediateSave/></SettingsGroup>}
+      <SettingsGroup title="Provider session rollover" description="Choose when Agents move to a fresh provider session.">
         <Stack spacing={2}>
           <FormControlLabel
             control={
@@ -321,7 +325,8 @@ function GeneralSettingsSection({
           </Stack>
           {rolloverSaveError ? <Alert severity="error">{rolloverSaveError}</Alert> : null}
         </Stack>
-      </Paper>
+      </SettingsGroup>
+      <SettingsGroup title="Data & lifecycle" description="Review retained data, cleanup and resource ownership."><LifecyclePanel/></SettingsGroup>
     </Stack>
   );
 }
@@ -356,7 +361,7 @@ function NotificationSettingsSection({
       : "info" as const;
   return (
     <Paper variant="outlined" sx={{ p: 2.5 }}>
-      <Typography variant="h6" component="h2" fontWeight={800}>
+      <Typography variant="h6" component="h2" fontWeight={650}>
         Notifications
       </Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
@@ -679,7 +684,7 @@ function ProviderSettingsSection({
       ) : null}
       {usageProviders.length > 1 ? (
         <Paper variant="outlined" sx={{ p: 2.5 }}>
-          <Typography variant="h6" component="h2" fontWeight={800}>
+          <Typography variant="h6" component="h2" fontWeight={650}>
             Provider Usage
           </Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
@@ -736,7 +741,7 @@ function ProviderSettingsSection({
               }
               label={
                 <Box sx={{ minWidth: 0, maxWidth: "100%" }}>
-                  <Typography fontWeight={800}>{engine.displayName}</Typography>
+                  <Typography fontWeight={650}>{engine.displayName}</Typography>
                   <Typography
                     variant="caption"
                     color={engine.intakeReady || engine.installed === false ? "text.secondary" : "warning.main"}
@@ -1084,9 +1089,9 @@ export function WorkspaceSettingsView({
       .finally(() => setPushBusy(false));
   };
   return (
-    <Box className="ponderosa-scroll" sx={{ minHeight: 0, overflow: "auto" }}>
+    <Box className="ponderosa-scroll workspace-settings" sx={{ minHeight: 0, overflow: "auto", overscrollBehavior: "contain" }}>
       {showHeader&&<SettingsHeader onReturn={onReturn} returnLabel={returnLabel} />}
-      <Box sx={{ maxWidth: section === "general" ? undefined : 900, mx: "auto", p: { xs: 2, md: 4 } }}>
+      <Box sx={{ maxWidth: 920, width: "100%", mx: "auto", p: { xs: 2, md: 4 }, pb: "max(32px, env(safe-area-inset-bottom, 0px))" }}>
         {section === "profile" ? (
           <OperatorProfileSettingsSection
             preferences={preferences}
@@ -1206,7 +1211,7 @@ export function WorkspaceSettingsView({
         {section === "activity" ? (
           <Stack spacing={2.5}>
             <Paper variant="outlined" sx={{ p: 2.5 }}>
-              <Typography variant="h6" component="h2" fontWeight={800}>Provider Status</Typography>
+              <Typography variant="h6" component="h2" fontWeight={650}>Provider Status</Typography>
               <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
                 Sign-in, runtime access, and network availability for configured AI providers.
               </Typography>
