@@ -6,6 +6,7 @@ import {renderToStaticMarkup} from 'react-dom/server';
 const {BranchWorkspaceHeader}=await import('../../apps/web/src/components/branches/BranchWorkspaceHeader.tsx');
 const {BranchInstallationUpdateStatus,BranchDeletionStatus}=await import('../../apps/web/src/components/branches/BranchOperations.tsx');
 const {MutationNotificationProvider}=await import('../../apps/web/src/components/MutationNotifications.tsx');
+const {PublishingEffects}=await import('../../apps/web/src/components/branches/deployment-effects.tsx');
 const renderBranchHeader=props=>renderToStaticMarkup(React.createElement(MutationNotificationProvider,null,React.createElement(BranchWorkspaceHeader,props)));
 
 test('Branch deletion status exposes the saved cleanup cause without implying completion',()=>{
@@ -1444,7 +1445,7 @@ test('Save Workflow renders the existing guarded review action with pending and 
 test('a closing deployment review retains its content without retaining publication authority',async()=>{
  const f=await discardActionFixture(),s=f.scope,{createRequire}=await import('node:module'),require=createRequire(new URL('../../apps/web/package.json',import.meta.url)),mui=require('@mui/material');
  const names=['Dialog','DialogTitle','DialogContent','DialogActions','Stack','Alert','Typography','Accordion','AccordionSummary','AccordionDetails','Chip','Divider','Button'];
- Object.assign(s,{exports:{},require,...Object.fromEntries(names.map(name=>[name,mui[name]])),publishedVersion:{data:undefined},advancedDirty:false,publicationUnconfirmed:false});
+ Object.assign(s,{exports:{},require,PublishingEffects,...Object.fromEntries(names.map(name=>[name,mui[name]])),publishedVersion:{data:undefined},advancedDirty:false,publicationUnconfirmed:false});
  let state,published=0;s.setReviewDialog=update=>{state=update(state);s.preview=state?.active;s.reviewPresentation=s.preview??state?.retained;};
  f.load('setPreview');f.load('clearReviewPresentation');f.load('deploymentOperationLabel');
  const attempt={...s.preview,result:{operations:[{kind:'change',resource:'Execution settings',ref:'Concurrency',before:'2',after:'3'}],notes:['Exact reviewed policy remains visible.']}};
