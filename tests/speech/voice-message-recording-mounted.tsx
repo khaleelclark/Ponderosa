@@ -12,12 +12,16 @@ async function until<T>(read:()=>T|undefined,message:string):Promise<T>{
  throw new Error(message);
 }
 export async function voiceMessageRecordingRegression():Promise<void> {
- const nativeRecorder=window.MediaRecorder,devicesDescriptor=Object.getOwnPropertyDescriptor(navigator,'mediaDevices');
+ const speechWindow=window as unknown as {SpeechRecognition?:new()=>unknown};
+ const nativeRecognition=speechWindow.SpeechRecognition,nativeRecorder=window.MediaRecorder,devicesDescriptor=Object.getOwnPropertyDescriptor(navigator,'mediaDevices');
+ const recognitionInstances:Recognition[]=[];
+ class Recognition {constructor(){recognitionInstances.push(this);}continuous=true;interimResults=false;lang='en-US';maxAlternatives=1;onstart?:()=>void;onresult?:(event:unknown)=>void;onend?:()=>void;onerror?:()=>void;start(){queueMicrotask(()=>this.onstart?.());}stop(){queueMicrotask(()=>{this.onresult?.({results:[{isFinal:true,0:{transcript:'Controlled recorded speech'},length:1}]});this.onend?.();});}abort(){} }
+ speechWindow.SpeechRecognition=Recognition;
  const host=document.createElement('div'),recordingSlot=document.createElement('div'),nextEditor=document.createElement('input');nextEditor.value='Keep this newer editor interaction';document.body.append(host,recordingSlot,nextEditor);const root=createRoot(host);
- let stopped=0,closed=0,attached:File|undefined,refuse=true,permissionCalls=0,attachmentCalls=0;
+ let stopped=0,closed=0,attached:File|undefined,attachedTranscript:string|undefined,refuse=true,permissionCalls=0,attachmentCalls=0;const insertedTranscripts:string[]=[];
  let permission:((stream:MediaStream)=>void)|undefined,rejectPermission:((reason:Error)=>void)|undefined;
  let currentRecorder:{onerror?:()=>void}|undefined;
- const stream={getTracks:()=>[{stop:()=>stopped++}]} as unknown as MediaStream;
+ const stream={getTracks:()=>[{stop:()=>stopped++}],getAudioTracks:()=>[{readyState:'live'}]} as unknown as MediaStream;
  class Recorder {
   static isTypeSupported=(mime:string)=>mime==='audio/webm;codecs=opus';
   state='inactive';mimeType='audio/webm;codecs=opus';
@@ -32,7 +36,7 @@ export async function voiceMessageRecordingRegression():Promise<void> {
   ()=>Array.from(document.querySelectorAll('button')).find(node=>node.textContent===text),
   'Missing '+text+' button',
  );
- const mount=(maxBytes=1024)=>{permission=undefined;rejectPermission=undefined;root.render(<StrictMode><VoiceMessageRecorder maxBytes={maxBytes} onClose={()=>{closed++;root.render(null);}} onAttach={file=>{attachmentCalls++;if(refuse)return 'Draft is full';attached=file;return undefined;}}/></StrictMode>);};
+ const mount=(maxBytes=1024)=>{permission=undefined;rejectPermission=undefined;root.render(<StrictMode><VoiceMessageRecorder maxBytes={maxBytes} onClose={()=>{closed++;root.render(null);}} onAttach={(file,transcript)=>{attachmentCalls++;if(refuse)return 'Draft is full';attached=file;attachedTranscript=transcript;return undefined;}}/></StrictMode>);};
  const recordingSurface=()=>host.querySelector('[role="region"][aria-labelledby]')??recordingSlot.querySelector('[role="region"][aria-labelledby]');
  const closedRecorder=()=>until(()=>!recordingSurface()?true:undefined,'Inline recorder did not unmount');
  try{
@@ -48,7 +52,7 @@ export async function voiceMessageRecordingRegression():Promise<void> {
   assert((await button('Record again'))!==undefined,'Refused audio must remain re-recordable');
   refuse=false;(await button('Use recording')).click();
   await until(()=>closed===1&&attached?true:undefined,'Accepted staging did not close');
-  assert(attached?.type==='audio/webm'&&attached.name.endsWith('.webm'),'staged audio retains the actual container');
+  assert(attached?.type==='audio/webm'&&attached.name.endsWith('.webm'),'staged audio retains the actual container');assert(attachedTranscript==='Controlled recorded speech','recognized words must accompany the admitted audio');
   await closedRecorder();
 
   const priorAttachmentCalls=attachmentCalls;mount();
@@ -85,7 +89,7 @@ export async function voiceMessageRecordingRegression():Promise<void> {
   let owner='first',captureBlocked=false,refuseOwnedDraft=true;
   const renderOwner=()=>root.render(<StrictMode><DictationControls disabled={false} recordingContainer={recordingSlot} onActiveChange={value=>{captureBlocked=value;}}
    voiceContext={{projectId:'owned-project',conversationId:'owned-chat',selectedAgentId:owner,agents:[],lockAgent:true}}
-   onFinalTranscript={()=>{}} onSettlingChange={()=>{}}
+   onFinalTranscript={words=>insertedTranscripts.push(words)} onSettlingChange={()=>{}}
    onVoiceAttachment={file=>{if(refuseOwnedDraft)return 'Owned draft busy';attachmentCalls++;attached=file;return undefined;}}/></StrictMode>);
   const recordButton=()=>until(()=>document.querySelector<HTMLButtonElement>('button[aria-label="Record voice message"]')??undefined,'Direct recording action missing');
   permission=undefined;renderOwner();(await recordButton()).click();assert(captureBlocked,'pending permission must synchronously gate submission');
@@ -97,10 +101,11 @@ export async function voiceMessageRecordingRegression():Promise<void> {
   owner='first';renderOwner();await tick();assert(!recordingSurface(),'Returning to old owner must not reopen recording');
   permission=undefined;(await recordButton()).click();
   (await until(()=>permission,'Active owned recording did not request permission'))(stream);
-  await button('Finish recording');const activeOwnerStopped=stopped;
+  await button('Finish recording');const activeOwnerStopped=stopped,lateOldOwnerResult=recognitionInstances.at(-1)?.onresult,transcriptsBeforeOwnerChange=insertedTranscripts.length;
   owner='third';renderOwner();await closedRecorder();
   await until(()=>stopped>activeOwnerStopped?true:undefined,'Owner change did not stop active capture');
-  assert(attachmentCalls===stagedBeforeOwnerChange,'An owner change must not stage partial audio or a late stop callback');
+  lateOldOwnerResult?.({results:[{isFinal:true,0:{transcript:'Late old-owner speech'},length:1}]});await tick();
+  assert(attachmentCalls===stagedBeforeOwnerChange&&insertedTranscripts.length===transcriptsBeforeOwnerChange,'An owner change must not stage partial audio or late transcript/stop callbacks');
 
   assert(!captureBlocked,'retiring an owner releases its capture gate');
   permission=undefined;(await recordButton()).click();
@@ -115,7 +120,7 @@ export async function voiceMessageRecordingRegression():Promise<void> {
   (await button('Finish recording')).click();nextEditor.focus();await closedRecorder();await tick();
   assert(document.activeElement===nextEditor&&nextEditor.value==='Keep this newer editor interaction','Finishing must not steal focus or content from a newer editor interaction');
  }finally{
-  root.unmount();host.remove();recordingSlot.remove();nextEditor.remove();window.MediaRecorder=nativeRecorder;
+  root.unmount();host.remove();recordingSlot.remove();nextEditor.remove();window.MediaRecorder=nativeRecorder;if(nativeRecognition)speechWindow.SpeechRecognition=nativeRecognition;else delete speechWindow.SpeechRecognition;
   if(devicesDescriptor)Object.defineProperty(navigator,'mediaDevices',devicesDescriptor);else delete (navigator as unknown as {mediaDevices?:MediaDevices}).mediaDevices;
  }
 }

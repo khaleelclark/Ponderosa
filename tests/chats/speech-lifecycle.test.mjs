@@ -37,19 +37,19 @@ function playback() {
   const api = b.load('speechCoordinator', { './speechSurfaceAccessibility': b.accessibility });
   return { ...b, ...api, spoken, cancels: () => cancels, start: id => api.startSpeech(id, 'Exact spoken text', { speed: 1.25 }, () => b.surface) };
 }
-function dictation() {
+function dictation(recordingInput) {
   const b = browser(), instances = [], transcripts = [], settling = [], state = [], cleanups = [];
   let index = 0, mounted = false;
   const useState = initial => { const i = index++; if (!(i in state)) state[i] = typeof initial === 'function' ? initial() : initial; return [state[i], next => { state[i] = typeof next === 'function' ? next(state[i]) : next; }]; };
   const react = { useState, useRef: value => useState(() => ({ current: value }))[0], useCallback: fn => fn, useEffect(fn) { if (!mounted) cleanups.push(fn()); } };
   b.window.SpeechRecognition = class {
     constructor() { instances.push(this); this.aborts = 0; this.stops = 0; }
-    start() {} stop() { this.stops++; } abort() { this.aborts++; }
+    start(track) { this.inputTrack=track; if(recordingInput?.rejectStart)throw Error("Recorded input not supported"); } stop() { this.stops++; } abort() { this.aborts++; }
   };
   const support = b.load('browserSpeech');
   const api = b.load('useDictation', { react, './browserSpeech': support, './speechSurfaceAccessibility': b.accessibility });
   const ref = { current: b.surface };
-  const render = () => { index = 0; const result = api.useDictation(text => transcripts.push(text), value => settling.push(value), ref); mounted = true; return result; };
+  const render = () => { index = 0; const result = api.useDictation(text => transcripts.push(text), value => settling.push(value), ref, true, false, recordingInput); mounted = true; return result; };
   return { ...b, render, instances, transcripts, settling, unmount() { for (const cleanup of cleanups) cleanup?.(); } };
 }
 const result = (text, isFinal = true) => ({ isFinal, 0: { transcript: text }, length: 1 });
@@ -173,4 +173,18 @@ test('ordinary dictation and calls share one capture lease; a stale release cann
   const first=capture.claimPageCapture(()=>ended.push('dictation'));
   const second=capture.claimPageCapture(()=>ended.push('call'));
   assert.deepEqual(ended,['dictation']);first();capture.abandonPageCapture();assert.deepEqual(ended,['dictation','call']);second();
+});
+
+
+test('recorded-note recognition uses the admitted live audio track without replacing the recorder capture lease', () => {
+  const track={readyState:'live'},b=dictation({track:()=>track}),capture=b.load('captureCoordinator');let interrupted=0;
+  const release=capture.claimPageCapture(()=>interrupted++);
+  b.render().start();const r=b.instances[0];assert.equal(r.inputTrack,track);assert.equal(interrupted,0);
+  r.onstart();r.onresult(recognitionEvent(result('spoken request')));r.onresult(recognitionEvent(result('spoken request')));
+  b.render().stop();r.onend();assert.deepEqual(b.transcripts,['spoken request']);assert.equal(b.settling.at(-1),false);
+  capture.abandonPageCapture();assert.equal(interrupted,1,'recognition completion must not release its recorder owner');release();b.unmount();
+});
+for(const unavailable of ['ended','unsupported'])test(`recorded-note ${unavailable} input reports actionable failure and fences late transcripts`,()=>{
+ const track={readyState:unavailable==='ended'?'ended':'live'},b=dictation({track:()=>track,rejectStart:unavailable==='unsupported'});
+ b.render().start();const r=b.instances[0];assert.equal(b.render().status,'error');assert.match(b.render().error,/could not start/);assert.equal(b.settling.at(-1),false);assert.equal(r.aborts,1);assert.equal(r.onresult,null);b.unmount();
 });

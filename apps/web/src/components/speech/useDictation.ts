@@ -35,6 +35,7 @@ export function useDictation(
   surfaceRef: RefObject<HTMLElement | null>,
   continuous = true,
   endOnSpeechEnd: boolean | (() => boolean) = false,
+  recordingInput?: { track(): MediaStreamTrack | undefined },
 ): DictationController {
   const unavailableReason = dictationUnavailableReason();
   const [status, setStatus] = useState<DictationStatus>("ready");
@@ -207,7 +208,8 @@ export function useDictation(
       }
       const activeRecognition = recognition;
       recognitionRef.current = activeRecognition;
-      captureCleanupRef.current = claimPageCapture(abandonForSurfaceLoss);
+      // A recording owns the capture lease and supplies its already admitted input.
+      captureCleanupRef.current = recordingInput ? undefined : claimPageCapture(abandonForSurfaceLoss);
       activeRecognition.continuous = continuous;
       activeRecognition.interimResults = Boolean(endOnSpeechEnd);
       activeRecognition.lang = navigator.language || "en-US";
@@ -288,7 +290,11 @@ export function useDictation(
         settleTimerRef.current = undefined;
         abandonGeneration(activeRecognition, generation, "Voice dictation did not start in time.");
       }, DICTATION_SETTLE_TIMEOUT_MS);
-      activeRecognition.start();
+      if (recordingInput) {
+        const track = recordingInput.track();
+        if (!track || track.readyState !== "live") throw new Error("The recording audio input is no longer available.");
+        activeRecognition.start(track);
+      } else activeRecognition.start();
     } catch (startError) {
       const detail =
         startError instanceof Error && startError.message.trim()
@@ -309,6 +315,7 @@ export function useDictation(
     endOnSpeechEnd,
     scheduleSettleTimeout,
     releaseRecognition,
+    recordingInput,
     surfaceRef,
     unavailableReason,
     updateSettling,

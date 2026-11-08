@@ -2,7 +2,7 @@
 
 Ponderosa carries authorized current attachments and explicitly referenced managed artifacts in `RuntimeTurnInput.inputFiles`. This is an input transport seam behind `Adapter`, not a provider HTTP client, credential store, upload endpoint, permission grant, or historical-media replay mechanism.
 
-The UI continues to send ordinary attachment/artifact identities through its existing Chat, Agent, output-agent and Assistant communication routes. It must retain the original attachment and its download action. An image preview is a separately digested representation, never an original replacement. Voice recording/transcription remains the existing explicit voice flow; a transcript or file path must not be described as native audio understanding.
+The UI continues to send ordinary attachment/artifact identities through its existing Chat, Agent, output-agent and Assistant communication routes. It must retain the original attachment and its download action. An image preview is a separately digested representation, never an original replacement. Voice recording reuses browser speech recognition on the admitted recording input where available. Finish waits for finalization, then stages the original audio plus recognized text in the editable ordinary draft; Send stays explicit. Unsupported, failed or empty recognition retains the audio for review with an explicit message-text/Dictation fallback. A transcript or file path must not be described as native audio understanding.
 
 ## Callable flow
 
@@ -20,7 +20,7 @@ The UI continues to send ordinary attachment/artifact identities through its exi
 | PNG/JPEG/WebP/GIF | `localImage` | Base64 `image` | Original digest/path retained; existing preview policy may choose a PNG representation |
 | HEIC/AVIF or oversized image | Verified existing PNG preview as `localImage` | Verified existing PNG preview as `image` | Original separately retained; this does not claim animation or all-frame parity |
 | PDF | Original-file reference for native tools | Base64 `document` | Codex RPC documentation supplies no PDF item; encrypted/page/model limits remain provider errors |
-| Audio recording | Original-file reference | Original-file reference | No invented native audio wire type; existing transcript/voice flow is distinct |
+| Audio recording | Original-file reference, with recognized transcript in ordinary text when available | Original-file reference, with recognized transcript in ordinary text when available | Original audio is retained; review/edit transcript before Send. Unsupported/failed recognition is disclosed, not a claim of audio comprehension. No invented native audio wire type. |
 | Text/JSON/ZIP/DOCX/other file | Original-file reference | Original-file reference | Native tools may inspect originals; no claim of typed document/image understanding |
 | Explicit current managed image/PDF | Same media mapping after current Agent access check | Same media mapping after current Agent access check | Private inaccessible IDs are never materialized; references do not expand access |
 | Historical attachment or artifact | Existing bounded history references | Existing bounded history references | No automatic media replay from retained context |

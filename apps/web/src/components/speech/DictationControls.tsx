@@ -169,7 +169,7 @@ export function DictationControls({
           <ListItemText primary="Dictation" secondary={unavailable ?? (active || paused ? primaryLabel : undefined)} />
         </MenuItem>
       </Menu>
-      {recordingOpen&&!disabled&&onVoiceAttachment&&recordingContainer&&createPortal(<VoiceMessageRecorder onAttach={onVoiceAttachment} maxBytes={maxRecordingBytes} onClose={()=>{restoreRecordingFocus.current=recordingContainer.contains(document.activeElement);setOpenedRecordingOwner(undefined);}}/>,recordingContainer)}
+      {recordingOpen&&!disabled&&onVoiceAttachment&&recordingContainer&&createPortal(<VoiceMessageRecorder onAttach={(file,transcript)=>{const failure=onVoiceAttachment(file);if(!failure&&transcript)onFinalTranscript(transcript);return failure;}} maxBytes={maxRecordingBytes} onClose={()=>{restoreRecordingFocus.current=recordingContainer.contains(document.activeElement);setOpenedRecordingOwner(undefined);}}/>,recordingContainer)}
       {voiceContext && callOpen && !disabled && <VoiceConversation {...voiceContext} standalone={voiceContext.standalone??isOutputAppPath(window.location.pathname)} open onClose={() => setOpenedCallOwner(undefined)} />}
       {active || paused ? (
         <Tooltip title="Stop voice dictation">

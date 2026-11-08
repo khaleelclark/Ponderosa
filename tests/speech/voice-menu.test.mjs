@@ -18,7 +18,7 @@ function fixture(module,imports,globals={}){
  const exports={};vm.runInNewContext(ts.transpileModule(readFileSync(new URL('../../apps/web/src/components/speech/'+module+'.tsx',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX,esModuleInterop:true}}).outputText,{exports,console,performance,Date,JSON,setTimeout,clearTimeout,setInterval,clearInterval,...globals,require:name=>name==='react'?react:name==='@mui/material'?mui:name in imports?imports[name]:name.startsWith('@mui/icons-material/')?{__esModule:true,default:name}:require(name)});
  const walk=node=>Array.isArray(node)?node.flatMap(walk):node&&typeof node==='object'&&'props'in node?[node,...walk(node.props.children)]:[];
  const all=(node=tree)=>walk(node);
- const render=()=>{let count=0;do{dirty=false;index=0;tree=component(props);for(const node of all()){if(node.ref&&typeof node.ref==='object'&&!node.ref.current)node.ref.current=node.type==="audio"&&globals.audioElement?globals.audioElement:{focus(){},isConnected:true};}for(const run of effects.splice(0))run();assert.ok(++count<30,'component must settle');}while(dirty);return tree;};
+ const render=()=>{let count=0;do{dirty=false;index=0;tree=component(props);for(const node of all()){if(node.ref&&typeof node.ref==='object'&&!node.ref.current)node.ref.current=node.type==="audio"&&globals.audioElement?globals.audioElement:{focus(){},contains(){return false;},isConnected:true};}for(const run of effects.splice(0))run();assert.ok(++count<30,'component must settle');}while(dirty);return tree;};
  return{exports,mount(fn,p){component=fn;props=p;return render();},render,all,find(predicate){const n=all().find(predicate);assert.ok(Boolean(n),'expected control exists');return n;},update(next){props={...props,...next};return render();},unmount(){for(const slot of slots)slot?.cleanup?.();},async flush(){await new Promise(resolve=>setImmediate(resolve));return render();}};
 }
 const agent=(id='agent',conversationId='chat')=>({id,projectId:'project',conversationId,title:id,handle:id});
@@ -170,4 +170,41 @@ test('audio attachment header keeps the exact filename and protected download UR
  const player=f.find(n=>n.type===Player);assert.equal(player.props.downloadUrl,url);assert.equal(player.props.src,'/owned/audio?owner=one&download=1&playback=audio#original');
  const title=f.find(n=>n.type==='Typography'&&n.props.title===name);assert.equal(title.props.children,name);assert.equal(title.props.noWrap,true);
  assert.equal(f.all().some(n=>n.type==='Button'&&n.props.children==='Download audio'),false,'download remains one compact player option');f.unmount();
+});
+
+
+function recorderFixture({unavailable=false,attachmentError,recordedBytes='actual-controlled-recorded-bytes'}={}){
+ const attached=[],events=[],track={readyState:'live',stop(){this.readyState='ended';events.push('track-stop');}},stream={getTracks:()=>[track],getAudioTracks:()=>[track]};let recorder,handlers;
+ const recognition={status:'ready',unavailableReason:unavailable?'Voice dictation is not supported by this browser.':undefined,start(){events.push('recognize');if(!unavailable){this.status='listening';handlers[1](true);}},stop(){events.push('recognition-stop');if(!unavailable)this.status='stopping';},abandon(){events.push('recognition-abandon');handlers?.[1](false);this.status='stopped';}};
+ class Recorder{static isTypeSupported=()=>true;state='inactive';mimeType='audio/webm';constructor(){recorder=this;}start(){this.state='recording';}stop(){this.state='inactive';queueMicrotask(()=>{this.ondataavailable?.({data:new Blob([recordedBytes],{type:'audio/webm'})});this.onstop?.();});}}
+ const f=fixture('VoiceMessageRecorder',{'./AudioMessagePlayer':{AudioMessagePlayer:()=>null},'./useDictation':{useDictation:(...args)=>{handlers=args;return recognition;}},'./captureCoordinator':{claimPageCapture:()=>()=>{}},'./speechCoordinator':{stopSpeech:()=>true},'./speechSurfaceAccessibility':{monitorSpeechSurfaceAccessibility:()=>()=>{}},'../../reloadSafety':{useUnsavedForm:()=>{}},'./voiceRecording':{recordingExtension:()=> 'webm',recordingMimeType:()=> 'audio/webm'}},{File,Blob,MediaRecorder:Recorder,queueMicrotask,navigator:{mediaDevices:{getUserMedia:async()=>stream}},document:{activeElement:{}},URL:{createObjectURL:()=> 'blob:recording',revokeObjectURL(){}}});
+ let closed=0;f.mount(f.exports.VoiceMessageRecorder,{maxBytes:1000,onAttach:(file,transcript)=>{attached.push({file,transcript});return attachmentError;},onClose(){closed++;}});
+ const finish=()=>{f.find(n=>n.type==='Button'&&n.props.children==='Finish recording').props.onClick();f.render();};
+ return{...f,events,attached,recognition,closed:()=>closed,finish,emit(words){handlers[0](words);f.render();},settle(){recognition.status='stopped';handlers[1](false);f.render();},fail(message){recognition.error=message;handlers[1](false);f.render();},recorder:()=>recorder};
+}
+test('recorded voice waits for final speech then stages the real audio with editable transcript, without a Send',async()=>{
+ const f=recorderFixture();await f.flush();assert.equal(f.events.includes('recognize'),true);f.finish();await f.flush();assert.equal(f.attached.length,0,'recording completion alone is not speech understanding');assert.equal(f.events.includes('track-stop'),false,'keep the admitted input through native finalization');
+ f.emit('Use the silver notebook');assert.equal(f.attached.length,0,'wait for recognition end, not an interim settlement assumption');f.settle();assert.equal(f.attached.length,1);assert.equal(f.attached[0].transcript,'Use the silver notebook');assert.equal(await f.attached[0].file.text(),'actual-controlled-recorded-bytes');assert.equal(f.closed(),1);assert.equal(f.events.includes('track-stop'),true);f.unmount();
+});
+for(const mode of ['unavailable','failed','empty'])test(`recorded voice ${mode} transcription retains audio for explicit review and text fallback`,async()=>{
+ const f=recorderFixture({unavailable:mode==='unavailable'});await f.flush();f.finish();await f.flush();if(mode==='failed')f.fail('The browser speech service could not connect.');else if(mode==='empty')f.settle();
+ assert.equal(f.attached.length,0);assert.equal(f.closed(),0);assert.equal(f.all().some(n=>n.type==='Alert'),true,'failure/no-speech must be visible');const use=f.find(n=>n.type==='Button'&&n.props.children==='Use recording');assert.equal(Boolean(use.props.disabled),false);use.props.onClick();assert.equal(f.attached.length,1);assert.equal(f.attached[0].transcript,undefined);f.unmount();
+});
+test('recorded transcript staging refusal preserves the words and original audio for retry',async()=>{
+ const f=recorderFixture({attachmentError:'Draft is busy'});await f.flush();f.emit('Keep these exact words');f.finish();await f.flush();f.settle();assert.equal(f.closed(),0);assert.equal(f.attached.length,1);assert.equal(f.attached[0].transcript,'Keep these exact words');assert(f.all().some(n=>n.type==='Alert'&&n.props.children==='Draft is busy'));f.unmount();
+});
+test('toolbar inserts a recorded transcript only after the same owned attachment is admitted',()=>{
+ let reject=true;const files=[],f=menuFixture({onVoiceAttachment:file=>{files.push(file);return reject?'Draft busy':undefined;}});f.find(n=>n.props['aria-label']==='Record voice message').props.onClick();f.render();const recorder=f.find(n=>n.type===f.VoiceMessageRecorder);
+ assert.equal(recorder.props.onAttach('recording','Spoken instruction'),'Draft busy');assert.deepEqual(f.calls,[]);reject=false;assert.equal(recorder.props.onAttach('recording','Spoken instruction'),undefined);assert.deepEqual(f.calls,[['words','Spoken instruction']]);f.unmount();
+});
+
+test('recognition ending before recording does not silently stage an incomplete transcript',async()=>{
+ const f=recorderFixture();await f.flush();f.emit('Only the beginning');f.settle();assert(f.all().some(n=>n.type==='Alert'&&String(n.props.children).includes('Transcription stopped before recording finished')));f.finish();await f.flush();f.settle();assert.equal(f.attached.length,0,'partial recognition requires explicit review');f.unmount();
+});
+
+test('empty recording abandons recognition and releases the admitted track instead of waiting forever',async()=>{
+ const f=recorderFixture({recordedBytes:''});await f.flush();f.finish();await f.flush();assert.equal(f.attached.length,0);assert.equal(f.events.includes('track-stop'),true);assert(f.all().some(n=>n.type==='Alert'&&String(n.props.children).includes('No audio was captured')));f.unmount();
+});
+test('discard abandons pending recognition and never stages its retained audio',async()=>{
+ const f=recorderFixture();await f.flush();f.find(n=>n.type==='Button'&&n.props.children==='Discard').props.onClick();assert.equal(f.closed(),1);f.unmount();await new Promise(resolve=>setImmediate(resolve));assert.equal(f.attached.length,0);assert.equal(f.events.includes('track-stop'),true);
 });

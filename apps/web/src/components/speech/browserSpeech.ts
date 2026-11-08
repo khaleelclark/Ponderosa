@@ -45,7 +45,7 @@ export interface BrowserSpeechRecognition {
   onresult: ((event: BrowserSpeechRecognitionEvent) => void) | null;
   onstart: (() => void) | null;
   abort(): void;
-  start(): void;
+  start(audioTrack?: MediaStreamTrack): void;
   stop(): void;
 }
 
