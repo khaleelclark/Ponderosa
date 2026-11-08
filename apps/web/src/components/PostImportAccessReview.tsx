@@ -21,7 +21,7 @@ function MemoryChoice({chatId,suggestions,onStateChange,chatTitle,agentTitle}:{c
   <Typography variant="body2">Source suggestions: {suggestions.map(item=>`${agentTitle(item.agentId)}: ${item.source.readGlobalMemory?'allow':'deny'}`).join(', ')}</Typography>
   <Typography variant="body2">Current: {current.data?(current.data.readGlobal?'allowed':'denied'):'unavailable'} · This choice affects every Agent in this Chat.</Typography>
   {(current.error||save.error)&&<Alert severity="error">{current.error?.message||save.error?.message}</Alert>}
-  <TextField select label="Destination Chat global-memory read access" value={choice} disabled={save.isPending||!current.data||current.isFetching} onChange={event=>setChoice(event.target.value)}><MenuItem value="">Keep current access</MenuItem><MenuItem value="allow">Allow</MenuItem><MenuItem value="deny">Deny</MenuItem></TextField>
+  <TextField select label="Global-memory read access" value={choice} disabled={save.isPending||!current.data||current.isFetching} onChange={event=>setChoice(event.target.value)}><MenuItem value="">Keep current access</MenuItem><MenuItem value="allow">Allow</MenuItem><MenuItem value="deny">Deny</MenuItem></TextField>
   <Stack direction="row" spacing={1}><Button disabled={!choice||save.isPending||!current.data||current.isFetching} onClick={()=>save.mutate()}>Apply memory choice</Button><Button disabled={save.isPending} onClick={()=>void current.refetch()}>Reload</Button></Stack>
  </Stack></Paper>;
 }
