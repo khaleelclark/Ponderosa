@@ -368,7 +368,7 @@ function ChatPaneComponent({
       empty={conversationChrome?<Box sx={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:1.5,p:3,pb:8,textAlign:'center'}}>
        <AssistantIcon sx={{fontSize:36,color:'primary.main',mb:.5}}/>
        <Typography component="h2" sx={{fontSize:{xs:'1.5rem',sm:'1.875rem'},fontWeight:550,letterSpacing:'-.035em'}}>What’s on your mind?</Typography>
-       <Typography color="text.secondary" sx={{maxWidth:340,fontSize:'.9375rem',lineHeight:1.65}}>Ask a question, make a plan, or start something new.</Typography>
+       <Typography color="text.secondary" sx={{maxWidth:340,fontSize:'.9375rem',lineHeight:1.65}}>Send a message.</Typography>
       </Box>:"Send a message to this agent to start the conversation."}
     >
       {timeline.map(item => {

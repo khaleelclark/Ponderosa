@@ -1595,8 +1595,11 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
         }}
         sx={{
           position: "relative",
+          display: "grid",
           minWidth: 0,
           "& .composer-editor-input": {
+            gridArea: "1 / 1",
+            minWidth: 0,
             minHeight: "1.375rem",
             maxHeight: 110,
             overflowY: "auto",
@@ -1650,9 +1653,13 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
             <Typography
               component="span"
               sx={{
-                position: "absolute",
-                top: 6,
-                left: 2,
+                // Share the editor's cell so wrapped hints reserve their full height.
+                gridArea: "1 / 1",
+                minWidth: 0,
+                px: 0.25,
+                pt: 0.75,
+                pb: 0.5,
+                overflowWrap: "anywhere",
                 color: "text.secondary",
                 fontSize: isIOSComposer ? "1rem" : "0.9375rem",
                 lineHeight: "1.375rem",

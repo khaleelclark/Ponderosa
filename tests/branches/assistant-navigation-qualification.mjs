@@ -22,6 +22,45 @@ try{
   const page=await context.newPage();page.setDefaultTimeout(20000);
   page.on('pageerror',error=>row.errors.push(error.message));
   page.on('response',response=>{if(response.url().includes('/api/')&&response.status()>=400)row.failedApi.push({url:response.url(),status:response.status()});});
+  if(process.env.COMPOSER_SCALE_ONLY==='1'){
+   row.composerScales=[];
+   await page.goto(origin+'/assistant');const editor=page.getByLabel('Message',{exact:true});await editor.waitFor();
+   const inspect=async(stage,scale)=>{
+    const geometry=await page.locator('.ponderosa-composer').evaluate(root=>{
+     const box=element=>{if(!element)return null;const r=element.getBoundingClientRect();return {top:r.top,bottom:r.bottom,left:r.left,right:r.right,width:r.width,height:r.height};};
+     const editor=root.querySelector('.composer-editor-input'),placeholder=Array.from(root.querySelectorAll('span')).find(element=>element.textContent==='Message Assistant directly');
+     const toolbar=root.querySelector('[data-composer-toolbar]');
+     const toolbarButtons=Array.from(toolbar.querySelectorAll('button')).map(box).filter(rect=>rect.width&&rect.height);
+     const toolbarBox=toolbarButtons.length?{top:Math.min(...toolbarButtons.map(rect=>rect.top)),bottom:Math.max(...toolbarButtons.map(rect=>rect.bottom))}:box(toolbar);
+     return {editor:box(editor),placeholder:box(placeholder),toolbar:toolbarBox,rootFont:getComputedStyle(document.documentElement).fontSize,editorFont:getComputedStyle(editor).fontSize,editorScrollHeight:editor.scrollHeight,buttons:Array.from(root.querySelectorAll('button[aria-label]')).filter(button=>button.getClientRects().length).map(button=>({label:button.getAttribute('aria-label'),...box(button)}))};
+    });
+    row.composerScales.push({stage,scale,geometry});await writeFile(path.join(output,label+'-geometry.json'),JSON.stringify(row.composerScales,null,2));
+    await page.screenshot({path:path.join(output,`${label}-${scale}-${stage}.png`)});
+    assert.equal(geometry.rootFont,scale===200?'32px':'16px','User font scaling remains intact');
+    assert(geometry.editor.bottom<=geometry.toolbar.top+.5,'Editor and toolbar occupy separate rows');
+    if(geometry.placeholder)assert(geometry.placeholder.bottom<=geometry.toolbar.top+.5,'Wrapped placeholder reserves its full height before the toolbar');
+    for(const button of geometry.buttons)assert(button.width>=44&&button.height>=44,`${button.label} keeps a 44px target`);
+    return geometry;
+   };
+   for(const scale of [100,200]){
+    await page.evaluate(scale=>{localStorage.setItem('ponderosa.text-size.v1',String(scale));window.dispatchEvent(new Event('ponderosa:text-size'));},scale);
+    await page.waitForFunction(scale=>getComputedStyle(document.documentElement).fontSize===(scale===200?'32px':'16px'),scale);
+    await editor.click();await page.keyboard.press('Control+A');await page.keyboard.press('Backspace');await page.getByText('Message Assistant directly',{exact:true}).waitFor();
+    await inspect('empty',scale);
+    const before=f.turns.length;await page.keyboard.type('First line');await page.keyboard.press('Shift+Enter');await page.keyboard.type('Second line');await page.keyboard.press('Shift+Enter');await page.keyboard.type('Third line');
+    await editor.dispatchEvent('keydown',{key:'Enter',code:'Enter',isComposing:true});assert.equal(f.turns.length,before,'IME Enter does not send the draft');
+    await page.waitForFunction(()=>document.querySelector('[aria-label="Message"]')?.textContent?.includes('Third line'));
+    await inspect('multiline',scale);
+    await page.waitForFunction(()=>Object.keys(localStorage).some(key=>key.startsWith('ponderosa.chat.v1.draft.')&&localStorage.getItem(key)?.includes('Third line')));
+    await page.reload();await editor.waitFor();await page.waitForFunction(()=>document.querySelector('[aria-label="Message"]')?.textContent?.includes('Third line'));row.draftPreserved=true;
+    await editor.click();await page.keyboard.press('Control+A');await page.keyboard.press('Backspace');await page.getByText('Message Assistant directly',{exact:true}).waitFor();await inspect('cleared',scale);
+    if(phone&&scale===200){
+     f.plans.set(app.agentId,[{run:async session=>{assert.equal((await session.tool('ponderosa_message',{text:'Scaled composer message received.'})).success,true);}}]);
+     await editor.click();await page.keyboard.type('Send from the scaled composer');await page.getByRole('button',{name:'Send message',exact:true}).click();await page.getByText('Scaled composer message received.',{exact:true}).waitFor();await page.getByText('Message Assistant directly',{exact:true}).waitFor();row.scaledSend=true;
+    }
+   }
+   assert.deepEqual(row.errors,[]);assert.deepEqual(row.failedApi,[]);await context.close();continue;
+  }
   if(process.env.ASSISTANT_ENTRY_ALIAS_ONLY==='1'){
    const startupApi=[];page.on('request',request=>{const url=new URL(request.url());if(url.pathname.startsWith('/api/'))startupApi.push(url.pathname);});
    await page.goto(origin+'/assistant?returnTo='+encodeURIComponent(corePath));
