@@ -83,6 +83,26 @@ export async function branchTreePackageRecoveryRegression(){
   await click('Review changes');const confirm=()=>Array.from(document.querySelectorAll('button')).find(b=>b.textContent==='Confirm import')!;assert(confirm().disabled,'independent consents required');
   await acknowledge('every Branch definition');assert(confirm().disabled,'definition alone is insufficient');await acknowledge('all private runtime facts');assert(confirm().disabled,'runtime hashes do not replace full context');await acknowledge('imported Agent context and files');await click('Confirm import');assert(posts===1&&Boolean(await readPackageCommand(key)),'unknown original retained');assert(opened===0,'unknown cannot open');
   root.unmount();root=createRoot(host);known=true;await mount();assert(posts===1&&previews===1&&statusReads>0,'remount original status GET without preview/confirm replay');assert(opened===0,'completion does not adopt or open runtime data');await click('Acknowledge saved definition-tree receipt');assert(opened===0,'definition receipt alone cannot open');await click('Read saved runtime data');assert(reads===1&&document.body.textContent?.includes('complete retained generation'),'exact tree facts available');await click('Acknowledge held runtime receipt');assert(opened===1&&posts===1,'deliberate exact saved receipts permit navigation only');
+  for(const target of [undefined,'existing-caption-target']){
+   root.unmount();root=createRoot(host);
+   const planId=target?'caption-update':'caption-import',destination=target??'fresh-caption-target';let confirmations=0,captionOpened=0;
+   const template:any={schema:'ponderosa.branch-installation.v1',packageId:'caption-'+crypto.randomUUID(),mode:'template',exportedAt:'2026-11-08T00:00:00Z',definition:{schema:'ponderosa.branch.v1',name:'Caption workflow',trigger:{kind:'manual'},entry:'review',steps:[{id:'review',kind:'human_gate',prompt:'Review'}],controls:[],edges:[],policy:{maxConcurrentExecutions:1,failure:{action:'stop'}}},chats:[],agentBindings:{},limits:{},engines:{default:'codex'}};
+   globalThis.fetch=async(input,init)=>{
+    const url=String(input);
+    if(url.endsWith('/install-preview')){const body=JSON.parse(String(init?.body));assert(body.branchId===target,'Preview uses the actual requested target, independent of result identity');return new Response(JSON.stringify({id:planId,operations:[]}));}
+    if(url.endsWith(`/installations/${planId}/confirm`)){assert(init?.method==='POST','Explicit component confirmation');confirmations++;return new Response(JSON.stringify({state:'completed',branchId:destination}));}
+    if(url.endsWith(`/installations/${planId}`))return new Response(JSON.stringify({state:'completed',branchId:destination}));
+    if(url.endsWith(`/branches/${destination}`))return new Response(JSON.stringify({id:destination,name:'Caption workflow',enabled:false}));
+    throw Error(`Unexpected caption request ${url}`);
+   };
+   const client=new QueryClient({defaultOptions:{queries:{retry:false},mutations:{retry:false}}});
+   root.render(<QueryClientProvider client={client}><BranchPackageDialog pkg={template} branchId={target} branches={[]} engines={[{id:'codex'}] as any} onClose={()=>{}} onInstalled={branch=>{assert(branch.id===destination,'Completed destination remains exact');captionOpened++;return true}}/></QueryClientProvider>);await settle();
+   const label=Array.from(document.querySelectorAll('label')).find(l=>l.textContent==='Default working directory');assert(label,'Directory review field retained');const field=document.getElementById(label!.htmlFor) as HTMLInputElement;assert(field,'Owned synthetic directory field');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value')!.set!.call(field,'/synthetic-caption-workspace');field.dispatchEvent(new Event('input',{bubbles:true}));await settle();
+   await click('Review changes');await click(target?'Confirm update':'Confirm import');
+   const noun=target?'update':'import',other=target?'import':'update';assert(document.body.textContent?.includes(`Workflow ${noun} completed. Review the mapped Settings and retained folders before opening it.`),'Completed caption matches the original target and keeps review guidance');assert(!document.body.textContent?.includes(`Workflow ${other} completed.`),'Result branchId cannot turn a fresh import into an update');assert(confirmations===1&&captionOpened>0,'One explicit confirmation per mode and completed readback reached');
+   root.unmount();client.clear();root=createRoot(host);
+  }
+
  }finally{root.unmount();host.remove();globalThis.fetch=original;if(prior===null)localStorage.removeItem(key);else localStorage.setItem(key,prior);}
 }
 

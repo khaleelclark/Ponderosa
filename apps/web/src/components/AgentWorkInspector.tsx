@@ -459,10 +459,12 @@ export function AgentWorkInspector({
             <Typography id="execution-history" variant="overline" color="text.secondary">Execution History</Typography>
             <Stack spacing={0.75}>
               {executionItems.map((item) => <Accordion key={item.id} disableGutters variant="outlined" sx={{ "&:before": { display: "none" } }}>
-                <AccordionSummary expandIcon={<ExpandMoreIcon />}><Stack direction="row" spacing={1} sx={{ alignItems: "center", width: "100%" }}>
-                  <Typography variant="subtitle2" sx={{ flex: 1 }}>{item.title}</Typography>
-                  <Chip size="small" label={agentWorkStateLabel(item.state)} />
-                  <Typography variant="caption" color="text.secondary">{new Date(item.createdAt).toLocaleString()}</Typography>
+                <AccordionSummary expandIcon={<ExpandMoreIcon />}><Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ alignItems: { xs: "stretch", sm: "center" }, width: "100%", minWidth: 0 }}>
+                  <Typography variant="subtitle2" sx={{ flex: 1, minWidth: 0, whiteSpace: "normal", overflowWrap: "anywhere" }}>{item.title}</Typography>
+                  <Stack direction="row" spacing={1} sx={{ alignItems: "center", flexWrap: { xs: "wrap", sm: "nowrap" }, flexShrink: { sm: 0 }, minWidth: 0 }}>
+                    <Chip size="small" label={agentWorkStateLabel(item.state)} />
+                    <Typography variant="caption" color="text.secondary" sx={{ minWidth: 0, overflowWrap: "anywhere" }}>{new Date(item.createdAt).toLocaleString()}</Typography>
+                  </Stack>
                 </Stack></AccordionSummary>
                 <AccordionDetails><TechnicalRecord projectId={projectId} conversationId={conversationId} item={item} /></AccordionDetails>
               </Accordion>)}
