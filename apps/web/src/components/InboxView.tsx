@@ -1537,7 +1537,7 @@ export function InboxView({
                         mt: 0.5,
                         justifyContent: fromUser ? "flex-end" : "flex-start",
                         alignItems: "center",
-                        color: "text.secondary",
+                        color: fromUser ? "inherit" : "text.secondary",
                       }}
                     >
                       <ButtonBase
@@ -1546,9 +1546,17 @@ export function InboxView({
                           onNavigate(inboxSourceRoute(item));
                         }}
                         sx={{
-                          borderRadius: 0.75,
+                          minHeight: 44,
+                          minWidth: 44,
+                          borderRadius: "8px",
                           typography: "caption",
-                          px: 0.25,
+                          px: 1,
+                          textDecoration: "underline",
+                          textUnderlineOffset: "0.18em",
+                          "&.Mui-focusVisible": {
+                            outline: "2px solid currentColor",
+                            outlineOffset: 2,
+                          },
                         }}
                       >
                         {item.source.title}
