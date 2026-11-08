@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {randomUUID} from 'node:crypto';
 import {setTimeout as delay} from 'node:timers/promises';
-import {AgentStore} from '@ponderosa/agents';
+import {AgentStore,WorkspaceStore} from '@ponderosa/agents';
 import {CAPABILITY_IDS,AGENT_PACKAGE_MAX_BYTES,AGENT_PACKAGE_METADATA_MAX_BYTES} from '@ponderosa/core';
 import {pushPayload} from '../../apps/server/dist/web-push-delivery.js';
 import {withFixture,until} from '../shared/fixture.mjs';
@@ -262,7 +262,7 @@ test('Assistant bootstrap is single-flight, persistent, editable and disabled un
   const [one,two]=await Promise.all([enable(),enable()]);const first=f.ok(one),second=f.ok(two);
   assert.equal(first.enabled,true,JSON.stringify(first));assert.equal(first.app.agentId,second.app.agentId);
   const app=first.app,agent=store.getAgent(app.agentId),history=f.ok(await f.api('GET',`/api/branches/engine/agents/${app.agentId}`)).messages;
-  assert.equal(app.url,`/apps/${app.agentId}`);assert.equal(app.everyMs,600000);assert.equal(app.automatic,true);
+  assert.equal(app.url,`/apps/${app.agentId}`);assert.equal(app.everyMs,600000);assert.equal(app.automatic,true);assert.equal(app.pauseOnSpeakerRemoval,true,'the generated speaker-only check explicitly declares its lifecycle coupling');
   assert.equal(store.sqlite.prepare('SELECT count(*) n FROM branches').get().n,1);
   const renamed=f.ok(await f.api('PATCH',`/api/branches/engine/agents/${app.agentId}`,{title:'My Assistant',model:'fixture'}));assert.equal(renamed.id,app.agentId);
   assert.equal(f.ok(await f.api('GET','/api/branches/assistant')).app.agentId,app.agentId);
@@ -744,3 +744,96 @@ test('public Agent-result checkpoints retain actual bound Chat ownership across 
   assert.equal((await client.executions(workflow.id)).length,beforeRebind);assert.equal(f.turns.length,1);assert.equal(store.sqlite.prepare('SELECT snapshot_json FROM branch_unit_snapshots WHERE id=?').get(selected.id).snapshot_json,saved);
  },{storeFactory:dir=>(store=new AgentStore(dir)),onProviderSession:session=>roots.push(session.processIdentity),providerRunPlan:()=>{throw Error('Unexpected replay of completed Agent work');}});
 });
+
+const speakerWorkflow=async(f,pauseOnSpeakerRemoval,automatic=true)=>{
+ const owner=await branch(f,'Speaker workflow'),owned=await chat(f,owner);
+ const agent=f.ok(await f.api('POST',`/api/branches/engine/projects/${owned.projectId}/agents`,{title:'Speaker candidate',engine:'codex',conversationId:owned.id,idempotencyKey:randomUUID()}));
+ const definition={schema:'ponderosa.branch.v1',name:owner.name,trigger:{kind:'schedule',configRef:'timer'},entry:'worker',steps:[{id:'worker',kind:'agent',target:{kind:'persistent_agent',ref:'worker'},instructions:'Controlled future check',requireUserCommunication:false}],controls:[],edges:[],policy:{maxConcurrentExecutions:1,failure:{action:'stop'},...(pauseOnSpeakerRemoval===undefined?{}:{pauseOnSpeakerRemoval})}};
+ f.ok(await f.api('POST','/api/branches/deploy',{chatId:'',branchId:owner.id,expectedVersionId:'',idempotencyKey:randomUUID(),definition,bindings:{agents:{worker:agent.id},directories:{},triggers:{timer:{enabled:automatic,sourceConfig:{scheduleKind:'interval',everyMs:600000,startsAt:'2099-01-01T00:00:00.000Z',whenRunning:'run_latest'}}}}}));
+ f.ok(await f.api('PUT',`/api/branches/output-apps/${agent.id}`,{enabled:true}));
+ return {owner,owned,agent,definition,trigger:()=>f.api('GET',`/api/branches/${owner.id}/trigger`).then(f.ok)};
+};
+for(const coupling of [undefined,false,true])test(`speaker replacement preserves workflow settings unless developer coupling is ${coupling}`,async t=>withFixture(t,async f=>{
+ f.ok(await f.api('POST','/api/branches/assistant',{enabled:false}));
+ const previous=await speakerWorkflow(f,coupling),next=await speakerWorkflow(f);
+ f.ok(await f.api('PUT',`/api/branches/output-apps/${previous.agent.id}`,{enabled:true,speaker:true}));
+ const before=await previous.trigger(),nextBefore=await next.trigger();
+ assert.equal(f.ok(await f.api('GET',`/api/branches/output-apps/${previous.agent.id}`)).pauseOnSpeakerRemoval,coupling===true);
+ assert.equal((await f.api('PUT',`/api/branches/output-apps/${next.agent.id}`,{enabled:true,speaker:true})).status,409,'one global speaker');
+ assert.equal((await f.api('POST','/api/branches/assistant/speaker',{agentId:next.agent.id,expectedSpeakerId:null})).status,409,'stale reviewed role is rejected');
+ const core=await f.createChat('Foreign role'),foreign=await f.createAgent(core,'Foreign owner');
+ assert.equal((await f.api('POST','/api/branches/assistant/speaker',{agentId:foreign.id,expectedSpeakerId:previous.agent.id})).status,409,'Core Agent cannot own output role');
+ assert.deepEqual(await previous.trigger(),before,'rejected moves preserve the old workflow');
+ const moved=f.ok(await f.api('POST','/api/branches/assistant/speaker',{agentId:next.agent.id,expectedSpeakerId:previous.agent.id}));
+ assert.equal(moved.app.agentId,next.agent.id);
+ assert.equal(f.ok(await f.api('GET',`/api/branches/output-apps/${previous.agent.id}`)).speaker,false);
+ const after=await previous.trigger();assert.deepEqual(after,coupling===true&&before.enabled?{...before,enabled:false,updatedAt:after.updatedAt}:before);
+ assert.deepEqual(await next.trigger(),nextBefore,'a role move never enables or reschedules the new workflow');
+ assert.equal(f.ok(await f.api('GET',`/api/branches/${previous.owner.id}`)).enabled,true);
+ await f.reopen();assert.equal(f.ok(await f.api('GET','/api/branches/assistant')).app.agentId,next.agent.id);
+ assert.deepEqual(await previous.trigger(),after);
+ f.ok(await f.api('POST','/api/branches/assistant',{enabled:false}));
+ const disabled=await next.trigger();assert.deepEqual(disabled,{...nextBefore,enabled:false,updatedAt:disabled.updatedAt},'explicit Assistant disable still pauses automatic intake');
+}));
+
+for(const coupling of [undefined,true])test(`speaker replacement leaves an already disabled workflow disabled (coupling ${coupling})`,async t=>withFixture(t,async f=>{
+ f.ok(await f.api('POST','/api/branches/assistant',{enabled:false}));
+ const previous=await speakerWorkflow(f,coupling,false),next=await speakerWorkflow(f,undefined,false);
+ f.ok(await f.api('PUT',`/api/branches/output-apps/${previous.agent.id}`,{enabled:true,speaker:true}));
+ f.ok(await f.api('PUT',`/api/branches/${previous.owner.id}/availability`,{enabled:false}));
+ const before=await previous.trigger(),nextBefore=await next.trigger();
+ f.ok(await f.api('POST','/api/branches/assistant/speaker',{agentId:next.agent.id,expectedSpeakerId:previous.agent.id}));
+ assert.deepEqual(await previous.trigger(),before);assert.deepEqual(await next.trigger(),nextBefore);
+ assert.equal(f.ok(await f.api('GET',`/api/branches/${previous.owner.id}`)).enabled,false);
+}));
+
+for(const removal of ['speaker','output','import'])for(const coupling of [undefined,true])test(`${removal} role removal respects developer workflow coupling ${coupling}`,async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  f.ok(await f.api('POST','/api/branches/assistant',{enabled:false}));
+  const previous=await speakerWorkflow(f,coupling);
+  f.ok(await f.api('PUT',`/api/branches/output-apps/${previous.agent.id}`,{enabled:true,speaker:true}));
+  const before=await previous.trigger();
+  if(removal==='import'){
+   const {OutputAgentApps}=await import('../../apps/server/dist/output-agent-apps.js');
+   const {BranchStore,CoordinationV3Store}=await import('../../packages/agents/dist/index.js');
+   let preferences={outputApps:{agentIds:[previous.agent.id],speakerAgentId:previous.agent.id,initialized:true}};
+   const owner=new OutputAgentApps(store,new BranchStore(store.sqlite,new CoordinationV3Store(store.sqlite)),{cursor:()=>0,getPreferences:()=>preferences,updatePreferences:patch=>(preferences={...preferences,...patch})},()=>{throw Error('Unexpected chat creation');},{},()=> 'codex');
+   const mapping={worker:previous.agent.id},review=owner.reviewImport([{ref:'worker',output:true,speaker:false}],'exact-package',true,mapping);
+   owner.claimImport(review.id,'exact-package','import-operation');
+   owner.finalizeImport(review.id,'exact-package','import-operation',mapping);
+   assert.equal(owner.status().enabled,false);
+  }else{
+   f.ok(await f.api('PUT',`/api/branches/output-apps/${previous.agent.id}`,{enabled:removal==='speaker',speaker:false}));
+   assert.equal(f.ok(await f.api('GET','/api/branches/assistant')).enabled,false);
+  }
+  const after=await previous.trigger();assert.deepEqual(after,coupling===true?{...before,enabled:false,updatedAt:after.updatedAt}:before);
+ },{storeFactory:dataDir=>(store=new AgentStore(dataDir))});
+});
+
+test('developer speaker coupling is validated and survives portable workflow export and installation',async t=>withFixture(t,async f=>{
+ f.ok(await f.api('POST','/api/branches/assistant',{enabled:false}));
+ const previous=await speakerWorkflow(f,true),portable=f.ok(await f.api('GET',`/api/branches/${previous.owner.id}/package?mode=template`));
+ assert.equal(portable.definition.policy.pauseOnSpeakerRemoval,true);
+ const plan=f.ok(await f.api('POST','/api/branches/install-preview',{package:portable,bindings:{agents:{},directories:{workspace:f.root},engines:{codex:'codex'}}}));
+ const installed=f.ok(await f.api('POST',`/api/branches/installations/${plan.id}/confirm`,{}));assert.equal(installed.state,'completed',installed.error);
+ const exported=f.ok(await f.api('GET',`/api/branches/${installed.branchId}/package?mode=template`));assert.equal(exported.definition.policy.pauseOnSpeakerRemoval,true);
+ const {validateBranchDefinition}=await import('../../packages/agents/dist/index.js');
+ for(const invalid of ['true',1,null,{}])assert.throws(()=>validateBranchDefinition({...previous.definition,policy:{...previous.definition.policy,pauseOnSpeakerRemoval:invalid}}),/pauseOnSpeakerRemoval must be a boolean/);
+}));
+
+for(const coupling of [undefined,true])test(`failed speaker move preserves role authority and workflow cadence (coupling ${coupling})`,async t=>withFixture(t,async f=>{
+ f.ok(await f.api('POST','/api/branches/assistant',{enabled:false}));
+ const previous=await speakerWorkflow(f,coupling),next=await speakerWorkflow(f);
+ f.ok(await f.api('PUT',`/api/branches/output-apps/${previous.agent.id}`,{enabled:true,speaker:true}));
+ const before=await previous.trigger(),nextBefore=await next.trigger(),update=WorkspaceStore.prototype.updatePreferences;
+ WorkspaceStore.prototype.updatePreferences=function(patch){if(patch.outputApps?.speakerAgentId===next.agent.id)throw Error('Controlled role journal rejection');return update.call(this,patch);};
+ try{
+  const failure=await f.api('POST','/api/branches/assistant/speaker',{agentId:next.agent.id,expectedSpeakerId:previous.agent.id});
+  assert.equal(failure.status,409);assert.match(failure.body.error,/Controlled role journal rejection/);
+ }finally{WorkspaceStore.prototype.updatePreferences=update;}
+ assert.equal(f.ok(await f.api('GET','/api/branches/assistant')).app.agentId,previous.agent.id);
+ assert.equal(f.ok(await f.api('GET',`/api/branches/output-apps/${next.agent.id}`)).speaker,false);
+ const after=await previous.trigger();assert.deepEqual(after,coupling===true?{...before,updatedAt:after.updatedAt}:before);
+ assert.deepEqual(await next.trigger(),nextBefore);
+}));

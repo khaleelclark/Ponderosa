@@ -83,7 +83,8 @@ function validateDefinition(value: unknown): BranchDefinition {
     try { branchKey(ref); validateBranchTemplate(template); }
     catch (error) { const step = Array.isArray(d.steps) ? d.steps.find(raw => raw && typeof raw === 'object' && raw.kind === 'agent' && raw.target?.templateRef === ref) : undefined; throw new BranchValidationError((error as Error).message, {section:'agent_setup',field:'templates',...(error instanceof BranchValidationError?error.issue:{}),...(step?{nodeId:String(step.id)}:{})}); }
   }
-  const policy = keys(d.policy, ["maxConcurrentExecutions", "maxPathInstances", "maxStepInvocations", "maxEphemeralAgents", "failure"]);
+  const policy = keys(d.policy, ["maxConcurrentExecutions", "maxPathInstances", "maxStepInvocations", "maxEphemeralAgents", "pauseOnSpeakerRemoval", "failure"]);
+  if (policy.pauseOnSpeakerRemoval !== undefined && typeof policy.pauseOnSpeakerRemoval !== "boolean") throw new BranchValidationError("pauseOnSpeakerRemoval must be a boolean", {section:"settings",field:"pauseOnSpeakerRemoval"});
   boundedInteger(policy.maxConcurrentExecutions, 1, 1000, "Branch concurrency");
   try { failurePolicy(policy.failure); } catch (error) { throw new BranchValidationError((error as Error).message, { ...(error instanceof BranchValidationError ? error.issue : {}), section: 'settings' }); }
   for (const key of ["maxPathInstances", "maxStepInvocations", "maxEphemeralAgents"]) if (policy[key] !== undefined) boundedInteger(policy[key], 1, 100_000, key);

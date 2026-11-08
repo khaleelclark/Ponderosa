@@ -63,7 +63,7 @@ export class OutputAgentApps {
       const local=mapping[target.ref];if(!local)throw new Error('Imported output role mapping is incomplete');this.owner(local,operationId);
       agentEpochs[local]=(agentEpochs[local]??0)+1;
       if(target.output)ids.add(local);else ids.delete(local);
-      if(speaker===local&&!target.speaker){this.pause(this.get(local));speaker=null;}
+      if(speaker===local&&!target.speaker){this.pauseOnSpeakerRemoval(this.get(local));speaker=null;}
       if(target.speaker&&entry.review.speaker==='activate'){
         const current=this.status().app?.agentId;if(current&&current!==local)throw Object.assign(new Error('Ponderosa speaker changed; review the package again'),{statusCode:409});speaker=local;
       }
@@ -132,11 +132,14 @@ export class OutputAgentApps {
     return {agentId:id,branchId:branch.id,projectId:chat.projectId,chatId:chat.id,title:agent.title,url:`/apps/${encodeURIComponent(id)}`,
       speaker:this.roles().speakerAgentId===id,versionId:branch.versionId,bindingRevisionId:branch.bindingRevisionId,settingsRevision,model:agent.model??undefined,engine:agent.activeEngine,
       runtimeSettings:{activeEngine:agent.activeEngine,model:agent.model??null,effort:agent.effort??null,speed:agent.speed??null},
-      automatic:Boolean(trigger?.enabled&&branch.enabled),triggerKind:trigger?.sourceKind??'manual',...(config?{schedule:config}:{}),...(config?.scheduleKind==='interval'?{everyMs:config.everyMs}:{})};
+      pauseOnSpeakerRemoval:Boolean(branch.versionId&&this.branches.version(branch.id,branch.versionId)?.definition.policy.pauseOnSpeakerRemoval),automatic:Boolean(trigger?.enabled&&branch.enabled),triggerKind:trigger?.sourceKind??'manual',...(config?{schedule:config}:{}),...(config?.scheduleKind==='interval'?{everyMs:config.everyMs}:{})};
   }
   private pause(app:OutputAgentAppDto){
     const trigger=this.branches.trigger(app.branchId);
-    if(trigger)this.branches.triggers.updateTriggerDefinition(trigger.id,{enabled:false});
+    if(trigger?.enabled)this.branches.triggers.updateTriggerDefinition(trigger.id,{enabled:false});
+  }
+  private pauseOnSpeakerRemoval(app:OutputAgentAppDto){
+    if(app.versionId&&this.branches.version(app.branchId,app.versionId)?.definition.policy.pauseOnSpeakerRemoval===true)this.pause(app);
   }
   designate(id:string,enabled:boolean,speaker=false):OutputAgentAppDto|undefined{
     this.owner(id);
@@ -147,7 +150,7 @@ export class OutputAgentApps {
       try{existing=this.get(roles.speakerAgentId);}catch(error){if(!(error instanceof OutputAppUnavailableError))throw error;}
       if(existing)throw new Error('A Ponderosa speaker already exists. Remove its speaker role first.');
     }
-    if(roles.speakerAgentId===id&&!speaker)this.pause(this.get(id));
+    if(roles.speakerAgentId===id&&!speaker)this.pauseOnSpeakerRemoval(this.get(id));
     this.write({agentEpochs:{...roles.agentEpochs,[id]:(roles.agentEpochs?.[id]??0)+1},agentIds:enabled?[...new Set([...roles.agentIds,id])]:roles.agentIds.filter(value=>value!==id),
       speakerAgentId:speaker?id:roles.speakerAgentId===id?null:roles.speakerAgentId,initialized:speaker||roles.initialized,...(speaker?{setupError:undefined}:{})});
     if(speaker)this.initializeReportScan(id);
@@ -172,13 +175,13 @@ export class OutputAgentApps {
     if((current?.agentId??null)!==expectedSpeakerId)throw Object.assign(new Error('Ponderosa speaker changed. Reload settings.'),{statusCode:409});
     if(current?.agentId===id)return this.status();
     const prior=current?this.branches.trigger(current.branchId):undefined;
-    if(current)this.pause(current);
+    if(current)this.pauseOnSpeakerRemoval(current);
     try{
       this.initializeReportScan(id);
       this.write({agentIds:[...new Set([...roles.agentIds,id])],speakerAgentId:id,initialized:true,setup:undefined,setupError:undefined,
         agentEpochs:{...roles.agentEpochs,[id]:(roles.agentEpochs?.[id]??0)+1,...(current?{[current.agentId]:(roles.agentEpochs?.[current.agentId]??0)+1}:{})}});
     }catch(error){
-      if(prior)try{this.branches.triggers.updateTriggerDefinition(prior.id,{enabled:prior.enabled});}catch(cleanup){throw new AggregateError([error,cleanup],'Speaker move failed and prior schedule restoration failed');}
+      if(prior&&this.branches.trigger(current!.branchId)?.enabled!==prior.enabled)try{this.branches.triggers.updateTriggerDefinition(prior.id,{enabled:prior.enabled});}catch(cleanup){throw new AggregateError([error,cleanup],'Speaker move failed and prior schedule restoration failed');}
       throw error;
     }
     return this.status();
@@ -214,7 +217,7 @@ export class OutputAgentApps {
     if(!branch.versionId){
       const config={scheduleKind:'interval' as const,everyMs:600000,startsAt:new Date(Date.now()+600000).toISOString(),whenRunning:'run_latest' as const};
       const normalized=normalizeTriggerSourceConfig('schedule',config);
-      this.branches.deploy({chatId:'',branchId,expectedVersionId:'',idempotencyKey:`assistant-workflow-${key}`,definition:{schema:'ponderosa.branch.v1',name:'Assistant',trigger:{kind:'schedule',configRef:'check'},entry:'speaker',steps:[{id:'speaker',kind:'agent',target:{kind:'persistent_agent',ref:'speaker'},instructions:'Call ponderosa_assistant_check to check granted Projects for explicit completed work and issues. It publishes a bounded deduplicated report through notification settings. If it reports no changes or deferred, stay quiet. Do not repeat its published digest. Complete this workflow Request with ponderosa_update_request after checking.',requireUserCommunication:false}],controls:[],edges:[],policy:{maxConcurrentExecutions:1,failure:{action:'stop'}}},bindings:{agents:{speaker:imported.rootAgentId},directories:{},triggers:{check:{sourceConfig:config,enabled:true}}}},new Date().toISOString(),{sourceConfig:normalized.config,nextFireAt:normalized.nextFireAt});
+      this.branches.deploy({chatId:'',branchId,expectedVersionId:'',idempotencyKey:`assistant-workflow-${key}`,definition:{schema:'ponderosa.branch.v1',name:'Assistant',trigger:{kind:'schedule',configRef:'check'},entry:'speaker',steps:[{id:'speaker',kind:'agent',target:{kind:'persistent_agent',ref:'speaker'},instructions:'Call ponderosa_assistant_check to check granted Projects for explicit completed work and issues. It publishes a bounded deduplicated report through notification settings. If it reports no changes or deferred, stay quiet. Do not repeat its published digest. Complete this workflow Request with ponderosa_update_request after checking.',requireUserCommunication:false}],controls:[],edges:[],policy:{pauseOnSpeakerRemoval:true,maxConcurrentExecutions:1,failure:{action:'stop'}}},bindings:{agents:{speaker:imported.rootAgentId},directories:{},triggers:{check:{sourceConfig:config,enabled:true}}}},new Date().toISOString(),{sourceConfig:normalized.config,nextFireAt:normalized.nextFireAt});
     }
     this.designate(imported.rootAgentId,true,true);this.write({setup:undefined});return this.status();
   }

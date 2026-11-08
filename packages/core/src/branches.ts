@@ -91,7 +91,8 @@ export interface BranchDefinition {
   steps: BranchStep[];
   controls: BranchControl[];
   edges: Array<{ id: string; from: string; to: string; on: "success" | "failure" | "approved" | "rejected" | "selected" | "canceled"; choice?: string; loop?: boolean; input?: { kind: "literal"; text: string } | { kind: "output" } }>;
-  policy: { maxConcurrentExecutions: number; maxPathInstances?: number; maxStepInvocations?: number; maxEphemeralAgents?: number; failure: BranchFailurePolicy };
+  /** pauseOnSpeakerRemoval opts automatic intake into pausing when an Agent loses the speaker role; absent/false preserves it. */
+  policy: { pauseOnSpeakerRemoval?: boolean; maxConcurrentExecutions: number; maxPathInstances?: number; maxStepInvocations?: number; maxEphemeralAgents?: number; failure: BranchFailurePolicy };
 }
 /** Local-only bindings. Portable definitions contain refs, never host paths/Agent IDs. */
 export interface BranchBindings {
@@ -328,7 +329,7 @@ export interface OutputAgentAppDto {
   agentId: string; branchId: string; projectId: string; chatId: string; title: string;
   url: string; speaker: boolean; versionId: string; bindingRevisionId:string; settingsRevision:string; model?: string; engine: string;
   runtimeSettings: import('./dto/agents.js').AgentRuntimeSettingsSnapshot;
-  automatic: boolean; triggerKind: 'manual' | TriggerSourceKind; schedule?: TriggerScheduleConfig; everyMs?: number;
+  pauseOnSpeakerRemoval?: boolean; automatic: boolean; triggerKind: 'manual' | TriggerSourceKind; schedule?: TriggerScheduleConfig; everyMs?: number;
 }
 export interface AssistantStatusDto { enabled: boolean; initialized: boolean; app?: OutputAgentAppDto; setupError?:{message:string;at:string} }
 
