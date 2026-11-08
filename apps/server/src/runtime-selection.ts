@@ -2,7 +2,6 @@ import {localMemoryTools} from "./local-memory-catalog.js";
 import { createHash } from "node:crypto";
 import {
   PONDEROSA_RUNTIME_TOOLS,
-  REQUEST_UPDATE_TOOL_KINDS,
   type RuntimeDynamicToolSpec,
   type Adapter,
   type ModelOption,
@@ -28,19 +27,19 @@ function communicationV3Prompt(defaultReply?: import("@ponderosa/core").Coordina
 function communicationV3Instructions(): string[] {
   return [
     "Ponderosa Chat/global facts live in Ponderosa's own memory store; other memory services are separate. For Ponderosa memory lookups, use ponderosa_local_memory_search (Claude: mcp__ponderosa__local_memory_search) when advertised; discover that exact tool if deferred. One search with source omitted covers the currently authorized Chat/global scopes together.",
-    "Peer communication is concise: send the actionable ask or owned result, changed facts, exact decisions/blockers and evidence references. Include only needed context; do not repeat shared instructions, forward whole reports or add boilerplate. Keep full evidence in referenced artifacts. Preserve objective, acceptance criteria and handoff state.",
-    "After work, ponderosa_reply_stream authorizes one final item on the default or selected Communication/document route or an exact attached Request. Finish other routes explicitly first; use publication.kind=request_update for a correlated result. If rejected, publish ordinarily. Never duplicate.",
-    "For an explicitly marked voice Direct Message, ponderosa_voice_reply may authorize a short acknowledgement before work continues; only its matched native receipt authorizes provisional speech, never final delivery. After work call without acknowledgement before the final answer. If unavailable or rejected use ponderosa_message.",
+    "Send concise actionable asks/owned results, changed facts, exact decisions/blockers and evidence references. Include needed context without repeating shared instructions, whole reports or boilerplate; keep full evidence in referenced artifacts. Preserve objective, acceptance criteria and handoff state.",
+    "After work, ponderosa_reply_stream authorizes one final item on the default/selected Communication/document route or exact attached Request. Finish other routes first; publication.kind=request_update reports correlated results. On rejection publish ordinarily; never duplicate.",
+    "For explicitly marked voice Direct Messages, ponderosa_voice_reply may authorize a short acknowledgement before continuing work; only its matched native receipt permits provisional speech, never final delivery. After work call without acknowledgement before the final answer. Use ponderosa_message if unavailable/rejected.",
     "Immediate recipientAgentIds requires intent collaboration; correlated results use ponderosa_update_request. For capability discovery load Ponderosa message specifically, never generic or provider-native SendMessage: only ponderosa_message creates the canonical reply.",
-    "Common delegation: ponderosa_coordinate({recipientAgentId,text}), or delegations for fan-out, creates one aggregate Join waking on each result while preserving the parent workflow.",
-    "Passive one-way information: ponderosa_message({delivery:\"next_run\",text,recipientAgentIds}) omits intent and creates no chat message, Activation, Run, Request, Join, reply obligation or acknowledgement. Omit delivery for immediate communication; coordinate when a result or lifecycle is needed.",
-    "Finish the whole human objective, preserving later steering and its requested work/verification order. A completed batch is progress. Wait only on a real dependency with a durable wake; create an actionable blocking Decision for a needed human answer. Never promise later work without a confirmed durable wake.",
-    "ponderosa_update_request({text}) completes the sole attached Request with a canonical handoff; {question} asks its original requester and preserves update identity. Request kind values: " + REQUEST_UPDATE_TOOL_KINDS.join(", ") + ". Use waiting_dependency, not waiting.",
-    "Use ponderosa_decision({question}) for a user question; add options for a choice or mode approval for permission. Supported provider-native AskUserQuestion/request_user_input callbacks also reach the human; do not ask the same question twice. Questions never grant permissions.",
-    "Use explicit message intent, request IDs, lifetimes, join modes, update kinds and idempotency keys for advanced or ambiguous cases. A terminal Request result is the final handoff; do not send a duplicate message or acknowledgment afterward.",
-    "Do not poll or sleep while waiting for another Agent, Request, Join or background state. A short bounded delay explicitly requested by the operator is allowed when it is the task. End the turn after creating a Join when no independent work remains.",
-    "Create visible workers/reviewers/Agents only with ponderosa_create_managed_agent. Provider-native/internal subagents are disabled and never satisfy a request for a Ponderosa Agent or team. Discover stable teammate IDs with ponderosa_team_directory({}).",
-    "To expose a host-created file in Project files or attach it in the browser, call ponderosa_import_file({path}) first, then pass the returned artifact ID to ponderosa_browser_upload. Browser upload never accepts host paths.",
+    "Delegate via ponderosa_coordinate({recipientAgentId,text}) or delegations fan-out: one aggregate Join, each_result wakes, parent workflow preserved.",
+    "ponderosa_message({delivery:\"next_run\",text,recipientAgentIds}) sends passive one-way information: omit intent; no chat message, Activation, Run, Request, Join, reply obligation or acknowledgement. Omit delivery for immediate communication; coordinate for results/lifecycle.",
+    "Finish the whole human objective, respecting later steering and work/verification order. Batch completion is progress. Wait only on real dependencies with a durable wake; create an actionable blocking Decision for a human answer. Never promise later work without a confirmed durable wake.",
+    "ponderosa_update_request({text}) completes the sole attached Request with a canonical handoff; {question} asks its original requester, preserving update identity. Use schema kind values: waiting_dependency, never waiting.",
+    "Ask the user via ponderosa_decision({question}); options add choices, mode:approval requests permission. Supported provider-native AskUserQuestion/request_user_input callbacks also reach the human; never ask twice. Questions grant no permissions.",
+    "For advanced/ambiguous cases provide explicit message intent, request IDs, lifetimes, Join modes, update kinds and idempotency keys. Terminal Request results are final handoffs; no duplicate message/acknowledgment afterward.",
+    "Never poll/sleep for another Agent, Request, Join or background state. A short bounded operator-requested delay is allowed as the task. End the turn after creating a Join if no independent work remains.",
+    "Create visible workers/reviewers/Agents only via ponderosa_create_managed_agent; disabled provider-native/internal subagents never satisfy Ponderosa Agent/team requests. Discover stable teammate IDs via ponderosa_team_directory({}).",
+    "Expose/attach a host-created file through ponderosa_import_file({path}) first; pass its returned artifact ID to ponderosa_browser_upload. Upload never accepts host paths.",
   ];
 }
 

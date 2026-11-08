@@ -30,7 +30,7 @@ export const PONDEROSA_WORKSPACE_TOOLS: RuntimeDynamicToolSpec[] = [
  * lifetimes, quorum conditions, and exact recovery. */
 export const PONDEROSA_COORDINATE_TOOL: RuntimeDynamicToolSpec = {
   name: "ponderosa_coordinate",
-  description: "Delegate tracked work with {recipientAgentId,text} or atomic {delegations:[...]}. New Requests steer a busy Agent when supported; the existing work remains active. If steering is unsupported, the Request waits for the next Run. A new Request does not pause or cancel existing work. Do not create another Request to stop a busy Agent. To stop work you requested, cancel your exact original outbound Request with ponderosa_update_request({requestId,kind:\"cancelled\"}); to stop a whole active descendant Run use ponderosa_manage stop_agent. Defaults: stable idempotency, indefinite lifetime, and one all-results Join waking each_result while preserving the parent workflow. For a deadline use lifetime:{kind:\"deadline\",at:\"<ISO timestamp>\"}. For final-only fan-out use completionMode:\"join\", wakePolicy:\"final_only\". Use record only for fire-and-observe; callback wakes once per unjoined result. Advanced requests/join supports quorum/any, different lifetimes, existing-request recovery and custom outcomes. Returned joinId already exists.",
+  description: "Delegate tracked work with {recipientAgentId,text} or atomic {delegations:[...]}. New Requests steer busy Agents when supported, otherwise wait for their next Run; existing work is neither paused nor cancelled. Never create a Request to stop work: cancel your exact outbound Request with ponderosa_update_request({requestId,kind:\"cancelled\"}), or stop a whole active descendant Run with ponderosa_manage stop_agent. Defaults: stable idempotency and one all-results Join preserving the parent workflow. Advanced requests/join adds any/quorum, differing lifetimes, existing-request recovery and custom outcomes. Returned joinId already exists.",
   inputSchema: {
     type: "object",
     additionalProperties: false,
@@ -40,12 +40,12 @@ export const PONDEROSA_COORDINATE_TOOL: RuntimeDynamicToolSpec = {
       { required: ["requests"] },
     ],
     properties: {
-      idempotencyKey: { type: "string", minLength: 1, maxLength: 200, description: "Advanced override. The server derives a stable key for the common delegation form." },
-      recipientAgentId: { type: "string", minLength: 1, maxLength: 200, description: "Common delegation recipient stable Agent ID." },
+      idempotencyKey: { type: "string", minLength: 1, maxLength: 200, description: "Optional override; common delegation gets a stable server-derived key." },
+      recipientAgentId: { type: "string", minLength: 1, maxLength: 200, description: "Recipient's stable Agent ID." },
       text: { type: "string", minLength: 1, description: "Common self-contained assignment, question, or consultation." },
       delegations: {
         type: "array", minItems: 1, maxItems: 100,
-        description: "Common parallel fan-out. Every item becomes one Request in the same aggregate all-results Join.",
+        description: "Parallel fan-out: one Request per item, one aggregate all-results Join.",
         items: {
           type: "object", additionalProperties: false, required: ["recipientAgentId", "text"],
           properties: {
@@ -56,19 +56,19 @@ export const PONDEROSA_COORDINATE_TOOL: RuntimeDynamicToolSpec = {
       },
       completionMode: {
         type: "string", enum: ["join", "callback", "record"],
-        description: "Common delegation defaults join. join uses one aggregate Join; callback wakes once per unjoined result; record stores and displays results without an Agent wake.",
+        description: "Defaults join: one aggregate Join. callback wakes per unjoined result; record stores/displays results without an Agent wake.",
       },
       wakePolicy: {
         type: "string", enum: ["each_result", "final_only"],
-        description: "For completionMode join, defaults each_result. each_result wakes on newly terminal members and again only as needed until the Join is terminal; final_only wakes only when the Join condition ends.",
+        description: "Join delivery defaults each_result: wake for newly terminal members and as needed until terminal. final_only wakes only when the Join condition ends.",
       },
       lifetime: {
         ...REQUEST_LIFETIME_SCHEMA,
-        description: "Optional common lifetime applied to every delegation. Omit for indefinite; for a deadline use {kind:\"deadline\",at:\"<ISO timestamp>\"}.",
+        description: "Applies to every delegation; defaults indefinite. Deadline: {kind:\"deadline\",at:\"<ISO timestamp>\"}.",
       },
       requests: {
         type: "array", minItems: 0, maxItems: 100,
-        description: "New requests. Use an empty array only when join.requestIds names existing requests owned by you.",
+        description: "New Requests; [] requires join.requestIds naming existing Requests you own.",
         items: {
           type: "object", additionalProperties: false,
           required: ["recipientAgentId", "text", "lifetime"],
@@ -76,7 +76,7 @@ export const PONDEROSA_COORDINATE_TOOL: RuntimeDynamicToolSpec = {
             requestId: { type: "string", minLength: 1, maxLength: 200 },
             recoveryOfRequestId: { type: "string", minLength: 1, maxLength: 200, description: "Exact recoverable terminal Request this successor replaces. The server validates requester, recipient, Project, Team Chat, actor, state, and lineage." },
             recipientAgentId: { type: "string", minLength: 1, maxLength: 200, description: "Stable recipient agent ID." },
-            text: { type: "string", minLength: 1, description: "Complete bounded, self-contained request. Include exact constraints, values, artifact paths, and requested output; the recipient cannot see your hidden prompt. Do not split it into objective/context fields." },
+            text: { type: "string", minLength: 1, description: "Self-contained request: include exact constraints, values, artifact paths and output. Recipients cannot see your hidden prompt. Do not split objective/context fields." },
             lifetime: REQUEST_LIFETIME_SCHEMA,
           },
         },
@@ -92,11 +92,11 @@ export const PONDEROSA_COORDINATE_TOOL: RuntimeDynamicToolSpec = {
             type: "array", minItems: 1, uniqueItems: true,
             items: { type: "string", enum: ["completed", "blocked", "failed", "cancelled", "superseded", "recipient_unavailable", "outcome_unknown", "expired"] },
           },
-          wakePolicy: { type: "string", enum: ["each_result", "final_only"], description: "Advanced Join delivery policy. Defaults final_only." },
+          wakePolicy: { type: "string", enum: ["each_result", "final_only"], description: "Defaults final_only." },
           requestIds: {
             type: "array", minItems: 0, maxItems: 100, uniqueItems: true,
             items: { type: "string", minLength: 1, maxLength: 200 },
-            description: "Existing requests owned by you to include in this immutable join. Omit or use [] when joining requests created in the same call; at least one ID is required when requests is empty.",
+            description: "Your existing Requests for this immutable Join. Omit/[] for same-call Requests; at least one ID when requests is empty.",
           },
         },
       },
@@ -181,22 +181,22 @@ export const PONDEROSA_HISTORY_TOOL: RuntimeDynamicToolSpec = {
 
 export const PONDEROSA_UPDATE_REQUEST_TOOL: RuntimeDynamicToolSpec = {
   name: "ponderosa_update_request",
-  description: "Report a correlated Request result with {text}, or ask its requester a blocking follow-up with {question}. The sole attached Request and stable idempotency are inferred; text defaults to completed. Kinds: progress, waiting_dependency, dependency_resolved, question, answer, completed, blocked, failed, cancelled, superseded; not waiting. To stop requested work cancel its exact outbound Request with {requestId,kind:\"cancelled\"}; cancellation is urgent control. Supply exact requestId and steeringInjectionId for a steered Request; also supply requestId for multiple attached Requests or an authorized historical outbound Request.",
+  description: "Report a correlated Request with {text} (defaults completed), or ask its requester a blocking follow-up with {question}. The sole attached Request and stable idempotency are inferred. Use exact requestId and steeringInjectionId for a steered Request; requestId is also required for multiple attached Requests or authorized historical outbound Requests. Cancel exact outbound work with {requestId,kind:\"cancelled\"}; cancellation is urgent control. Kinds are listed in the schema; waiting is invalid.",
   inputSchema: {
     type: "object",
     additionalProperties: false,
     anyOf: [{ required: ["text"] }, { required: ["question"] }, { required: ["kind"] }],
     properties: {
-      steeringInjectionId: { type: "string", description: "After a steer, copy the exact latest prompt injection fence shown in that prompt." },
+      steeringInjectionId: { type: "string", description: "After a steer, copy the latest prompt's exact injection fence." },
       requestId: {
         type: "string", minLength: 1, maxLength: 200,
-        description: "Required for a Request steered into this Run and when multiple Requests are attached; otherwise optional when exactly one correlated Request is attached.",
+        description: "Required for steered or multiple attached Requests; optional with one correlated attached Request.",
       },
-      updateId: { type: "string", minLength: 1, maxLength: 200, description: "Advanced override. The server derives a stable update ID for the common report form." },
+      updateId: { type: "string", minLength: 1, maxLength: 200, description: "Optional override; common reports get a stable server-derived update ID." },
       kind: {
         type: "string",
         enum: REQUEST_UPDATE_TOOL_KINDS,
-        description: "Use completed for the recipient's result/reply. Use question only for a recipient's blocking follow-up; use answer only for the original requester's correlated response.",
+        description: "completed: recipient result/reply; question: recipient blocking follow-up; answer: original requester's correlated response.",
       },
       text: { type: "string", description: `Canonical report text. UTF-8 content above 10,000 Unicode code points is stored as a durable artifact; maximum ${LONG_TEXT_MAX_UTF8_BYTES} bytes.` },
       question: { type: "string", minLength: 1, description: `Common blocking follow-up to the original requester. Long UTF-8 content is artifact-backed; maximum ${LONG_TEXT_MAX_UTF8_BYTES} bytes.` },
@@ -236,7 +236,7 @@ export const PONDEROSA_REPLY_STREAM_TOOL: RuntimeDynamicToolSpec = {
 
 export const PONDEROSA_MESSAGE_TOOL: RuntimeDynamicToolSpec = {
   name: "ponderosa_message",
-  description: "Send immediately, or delivery:next_run for one-way information to explicit recipientAgentIds. {text} alone requires one authorized default reply route; otherwise supply intent. Immediate recipientAgentIds requires intent collaboration, including peer replies. For immediate collaboration, use messagePurpose instruction or question for actionable asks; use progress or fyi for visible information that must not interrupt. Unmarked immediate collaboration defaults to steering. Include the facts recipients need; they cannot see your hidden context. next_run omits intent and creates no chat message, Run, Request, Join, reply obligation or acknowledgement. Use coordinate for tracked work; update_request for correlated results.",
+  description: "Send immediately, or delivery:next_run for one-way information to explicit recipientAgentIds. {text} alone needs one authorized default reply route; otherwise set intent. Immediate recipients (including peer replies) require intent:collaboration. Include needed facts: recipients cannot see hidden context. next_run omits intent and creates no chat message, Run, Request, Join, reply obligation or acknowledgement. Use coordinate for tracked work and update_request for correlated results.",
   inputSchema: {
     type: "object",
     additionalProperties: false,
@@ -268,35 +268,35 @@ export const PONDEROSA_MESSAGE_TOOL: RuntimeDynamicToolSpec = {
     properties: {
       intent: {
         type: "string", enum: ["broadcast", "direct_to_user", "collaboration"],
-        description: "Exact routing enum. Use direct_to_user for a private user reply; user_dm is not a tool value.",
+        description: "direct_to_user routes a private user reply; user_dm is invalid.",
       },
       delivery: {
         const: "next_run",
-        description: "Optional passive delivery. Omit for immediate communication.",
+        description: "Omit for immediate communication.",
       },
       text: { type: "string", minLength: 1, description: `Complete message text. Content above 10,000 Unicode code points is stored as one durable artifact; maximum ${LONG_TEXT_MAX_UTF8_BYTES} UTF-8 bytes.` },
-      taskDelivery: { type: "string", enum: ["final", "blocked"], description: "Explicit operator-task outcome. Use final only when the whole human objective is complete and all tracked results are integrated. Use blocked only after creating an actionable blocking Decision; the task stays waiting for its answer. Batch completion or remaining implementation is progress, not a blocker: continue working. Does not grant permissions or cancel delegated work." },
+      taskDelivery: { type: "string", enum: ["final", "blocked"], description: "Operator-task outcome: final requires the whole human objective complete and all tracked results integrated. blocked requires an actionable blocking Decision; the task waits for its answer. Batch completion or remaining implementation is progress: continue. Grants no permissions and cancels no delegated work." },
       artifactIds: {
         type: "array", minItems: 1, maxItems: 20, uniqueItems: true,
         items: { type: "string", pattern: "^[A-Za-z0-9_-]{1,128}$" },
-        description: "Existing Project-managed artifact IDs to attach. The active Run, sender, audience, Project, and artifact bytes are re-authorized atomically when the message commits.",
+        description: "Existing Project-managed artifact IDs. Run, sender, audience, Project and artifact bytes are atomically re-authorized on commit.",
       },
       steeringInjectionId: {
         type: "string", minLength: 1,
-        description: "When the current Run has received steering, copy the exact steeringInjectionId from the newest Ponderosa activation prompt for immediate or next_run delivery. Ponderosa rejects output fenced behind an acknowledged steer.",
+        description: "After steering, copy the newest Ponderosa activation prompt's exact steeringInjectionId for either delivery mode. Output behind an acknowledged steer is rejected.",
       },
       recipientAgentIds: {
         type: "array", minItems: 1, maxItems: 100, uniqueItems: true,
         items: { type: "string", minLength: 1, maxLength: 200 },
-        description: "Stable Agent IDs. Immediate recipients require explicit intent collaboration. Required for collaboration and next_run, including one recipient; next_run omits intent.",
+        description: "Stable Agent IDs, required even for one collaboration/next_run recipient. Immediate recipients require intent:collaboration; next_run omits intent.",
       },
-      messagePurpose: { type: "string", enum: ["instruction", "question", "progress", "fyi"], description: "Immediate collaboration purpose: instruction/question steers; progress/fyi is visible without interrupting. If omitted, immediate collaboration steers." },
+      messagePurpose: { type: "string", enum: ["instruction", "question", "progress", "fyi"], description: "Immediate collaboration: instruction/question steers; progress/fyi is visible without interruption. Omission steers." },
       urgency: { type: "string", enum: ["ordinary", "urgent"] },
       expiresAt: {
         type: "string", minLength: 1, maxLength: 100, format: "date-time",
         description: "Optional future expiry for next_run only.",
       },
-      idempotencyKey: { type: "string", minLength: 1, maxLength: 200, description: "Advanced override. The server derives a stable key for an inferred reply." },
+      idempotencyKey: { type: "string", minLength: 1, maxLength: 200, description: "Optional override; inferred replies get a stable server-derived key." },
       document: {
         type: "object", additionalProperties: false, required: ["title", "content"],
         properties: {
