@@ -43,7 +43,16 @@ export async function voiceMemoryExposure(ports:VoiceExposurePorts,input:{agentI
       AND json_extract(activation.payload_json,'$.communication.eventId')=?
       AND json_extract(activation.payload_json,'$.dispatch.voiceReply')=1 LIMIT 1`)
     .get(input.runId,input.agentId,input.projectId,input.messageId) as {prompt:string;prompt_hash:string}|undefined;
-   if(!injected || createHash('sha256').update(injected.prompt).digest('hex')!==injected.prompt_hash)return invalid;
+   if(!injected){
+    const awaiting=db.prepare(`SELECT 1 FROM agent_activations activation JOIN scheduler_run_activations attached ON attached.activation_id=activation.id
+     WHERE attached.run_id=? AND activation.agent_id=? AND activation.project_id=?
+       AND json_extract(activation.payload_json,'$.communication.eventId')=?
+       AND json_extract(activation.payload_json,'$.dispatch.voiceReply')=1
+       AND activation.state IN ('pending','retry_pending','attached') LIMIT 1`)
+      .get(input.runId,input.agentId,input.projectId,input.messageId);
+    return awaiting ? {state:'pending',runId:input.runId} : invalid;
+   }
+   if(createHash('sha256').update(injected.prompt).digest('hex')!==injected.prompt_hash)return invalid;
   }
   if(ports.opts.localMemory){if(!ports.validateMemory)return invalid;const valid=await ports.validateMemory(input.runId);if(valid===undefined)return {state:'pending',runId:input.runId};if(!valid)return invalid;return {state:'valid',runId:input.runId,sessionResetSeq:seq};}
   return {state:'disabled',runId:input.runId,sessionResetSeq:seq};
