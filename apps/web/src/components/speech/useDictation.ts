@@ -20,6 +20,7 @@ const DICTATION_SETTLE_TIMEOUT_MS = 3_000;
 
 export interface DictationController {
   abandon(): void;
+  endReason?: "natural" | "no-speech" | "network";
   error?: string;
   status: DictationStatus;
   unavailableReason?: string;
@@ -36,10 +37,12 @@ export function useDictation(
   continuous = true,
   endOnSpeechEnd: boolean | (() => boolean) = false,
   recordingInput?: { track(): MediaStreamTrack | undefined },
+  recoverableErrors: readonly string[] = [],
 ): DictationController {
   const unavailableReason = dictationUnavailableReason();
   const [status, setStatus] = useState<DictationStatus>("ready");
   const [error, setError] = useState<string>();
+  const [endReason, setEndReason] = useState<DictationController["endReason"]>();
   const recognitionRef = useRef<BrowserSpeechRecognition>();
   const generationRef = useRef(0);
   const settlingRef = useRef(false);
@@ -193,6 +196,7 @@ export function useDictation(
     errorRef.current = false;
     updateSettling(true);
     setError(undefined);
+    setEndReason(undefined);
     setStatus("starting");
 
     let recognition: BrowserSpeechRecognition | undefined;
@@ -258,6 +262,25 @@ export function useDictation(
       activeRecognition.onerror = event => {
         if (generationRef.current !== generation) return;
         if (event.error === "aborted" && requestedEndRef.current) return;
+        if (recoverableErrors.includes(event.error)) {
+          // A call may outlive a browser recognizer session. Detach before
+          // reporting completion; some browsers send a late onend afterward.
+          generationRef.current += 1;
+          clearSettleTimer();
+          releaseRecognition(activeRecognition);
+          requestedEndRef.current = undefined;
+          updateSettling(false);
+          try { activeRecognition.abort(); }
+          catch {
+            errorRef.current = true;
+            setError("Browser microphone cleanup could not be confirmed. Check browser microphone controls and review the draft.");
+            setStatus("error");
+            return;
+          }
+          setEndReason(event.error as "no-speech" | "network");
+          setStatus("stopped");
+          return;
+        }
         abandonGeneration(
           activeRecognition,
           generation,
@@ -273,6 +296,7 @@ export function useDictation(
         requestedEndRef.current = undefined;
         updateSettling(false);
         if (!mountedRef.current || errorRef.current) return;
+        setEndReason("natural");
         setStatus(requestedEnd === "pause" ? "paused" : "stopped");
       };
       if (generationRef.current !== generation) return;
@@ -316,6 +340,7 @@ export function useDictation(
     scheduleSettleTimeout,
     releaseRecognition,
     recordingInput,
+    recoverableErrors,
     surfaceRef,
     unavailableReason,
     updateSettling,
@@ -440,6 +465,7 @@ export function useDictation(
 
   return {
     abandon,
+    endReason,
     error,
     status,
     unavailableReason,

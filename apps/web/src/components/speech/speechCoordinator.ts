@@ -72,7 +72,7 @@ function fail(owner: Owner): void {
 }
 export interface SpeechQueue { append(text: string): boolean; finish(): void; stop(): void }
 /** One owner across all phrases, including gaps; capture never resumes between them. */
-export function startSpeechQueue(id: string, preferences: SpeechPreferencesDto, surface: () => HTMLElement | null, onComplete?: () => void, onStart?: (text: string) => void, beforePhrase?: () => Promise<boolean>): SpeechQueue {
+export function startSpeechQueue(id: string, preferences: SpeechPreferencesDto, surface: () => HTMLElement | null, onComplete?: () => void, onStart?: (text: string) => void, beforePhrase?: () => Promise<boolean | "skip">, onSkipped?: () => void): SpeechQueue {
   abandonPageCapture(); stopSpeech();
   if (active) return { append: () => false, finish() {}, stop() {} };
   const owner: Owner = { id, queue: [], finished: false };
@@ -88,10 +88,11 @@ export function startSpeechQueue(id: string, preferences: SpeechPreferencesDto, 
     try {
       if (beforePhrase) {
         owner.checking = true;
-        let permitted = false;
+        let permitted: boolean | "skip" = false;
         try { permitted = await beforePhrase(); } finally { owner.checking = false; }
         // A stopped/replaced owner never gains authority from a delayed response.
         if (active !== owner) return;
+        if (permitted === "skip") { onSkipped?.(); void pump(); return; }
         if (!permitted) { fail(owner); return; }
       }
       if (active !== owner) return;
