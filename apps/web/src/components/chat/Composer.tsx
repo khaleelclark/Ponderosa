@@ -31,6 +31,7 @@ import type {
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   useCallback,
+  useContext,
   useEffect,
   useId,
   useMemo,
@@ -151,7 +152,8 @@ import {
   useComposerInsertTextRequest,
   useComposerMentionedHandlesChange,
 } from "./useComposerTextEffects";
-import { composerSurfaceSx } from "./Composer.styles";
+import { assistantComposerSurfaceSx, composerSurfaceSx } from "./Composer.styles";
+import { ConversationChromeContext } from "../ConversationChromeContext";
 import { DictationControls } from "../speech/DictationControls";
 import { insertSpeechText } from "../speech/speechText";
 import { CapturedSubmissionOrderError, withCapturedSubmissionLock, capturedSubmissionRunning, readCapturedSubmissions, runCapturedSubmission, saveCapturedSubmission, removeCapturedSubmission, type CapturedSubmission } from "./submissionOutbox";
@@ -463,6 +465,7 @@ export function Composer({
   const anchorRef = useRef<HTMLDivElement | null>(null);
   const appliedInsertRequest = useRef<string>();
   const appliedRemoveRequest = useRef<string>();
+  const assistantChrome = useContext(ConversationChromeContext);
   const appliedDefaultDestination = useRef<ComposerDefaultDestination>();
   const [activeDefaultDestination, setActiveDefaultDestination] =
     useState<ComposerDefaultDestination>();
@@ -3119,7 +3122,7 @@ export function Composer({
       data-compact="false"
       data-file-drag-active={fileDragActive && fileDropEnabled}
       elevation={0}
-      sx={composerSurfaceSx}
+      sx={assistantChrome ? assistantComposerSurfaceSx : composerSurfaceSx}
       onDragEnterCapture={event => {
         if (!Array.from(event.dataTransfer.types).includes("Files")) return;
         event.preventDefault();

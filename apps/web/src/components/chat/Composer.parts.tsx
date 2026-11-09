@@ -10,7 +10,8 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import { memo } from "react";
+import { memo, useContext } from "react";
+import { ConversationChromeContext } from "../ConversationChromeContext";
 import { ComposerAttachment } from "./ComposerAttachment";
 import type { DraftUploadStatus } from "./ComposerAttachment";
 import type { ComposerProps } from "./Composer.types";
@@ -234,6 +235,7 @@ export function ComposerSendActions({
   steer,
   targetRequiredRecipientTagged,
 }: ComposerSendActionsProps): JSX.Element {
+  const assistantChrome = useContext(ConversationChromeContext);
   return (
     <>
       {canCancel ? (
@@ -310,7 +312,7 @@ export function ComposerSendActions({
               color="primary"
               disabled={!canSend}
               onClick={send}
-              sx={{width:44,height:44,bgcolor:"primary.main",color:"primary.contrastText","&:hover":{bgcolor:"primary.dark"},"&.Mui-disabled":{bgcolor:"action.disabledBackground",color:"action.disabled"}}}
+              sx={assistantChrome ? {width:44,height:44,bgcolor:"primary.main",color:"primary.contrastText","&:hover":{bgcolor:"primary.dark"},"&.Mui-disabled":{bgcolor:"action.disabledBackground",color:"action.disabled"}} : {width:44,height:44}}
               aria-label={mentionedBusyHandles.length > 0
                 ? "Queue message"
                 : "Send message"}

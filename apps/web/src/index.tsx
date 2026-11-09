@@ -75,7 +75,7 @@ function Root(): JSX.Element {
     apply();window.addEventListener(TEXT_SIZE_EVENT,apply);window.addEventListener('storage',apply);
     return()=>{window.removeEventListener(TEXT_SIZE_EVENT,apply);window.removeEventListener('storage',apply);};
   },[]);
-  const theme = useMemo(() => createPonderosaTheme(colorMode), [colorMode]);
+  const theme = useMemo(() => createPonderosaTheme(colorMode, isOutputAppPath(window.location.pathname) ? "assistant" : "standard"), [colorMode]);
 
   useLayoutEffect(() => {
     writeBrowserStorage("localStorage", COLOR_MODE_STORAGE_KEY, colorMode);

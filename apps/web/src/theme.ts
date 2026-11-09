@@ -95,6 +95,88 @@ const ponderosaColorTokens = {
   },
 } as const;
 
+const classicColorTokens = {
+  light: {
+    background: THEME_BACKGROUNDS.light,
+    rail: "#17221E",
+    topbar: "#1D2A26",
+    railBorder: "#354542",
+    railForeground: "#B2BBB4",
+    railForegroundActive: "#7CBF8A",
+    sidebar: "#E5ECE8",
+    surface: "#F1F5F2",
+    surfaceSecondary: "#E8EFEB",
+    inputSurface: "#FFFFFF",
+    delegatedSurface: "#DFE9E3",
+    delegatedHover: "#D2E0D8",
+    elevated: "#FFFFFF",
+    hover: "#E2EAE5",
+    selected: "#D5E3DB",
+    border: "#C6D1CB",
+    textPrimary: "#10231C",
+    textSecondary: "#455B51",
+    textMuted: "#66796F",
+    brand: "#123126",
+    brandHover: "#1B4536",
+    accent: "#47785D",
+    highlight: "#5E9B6B",
+    activityLabel: "#47785D",
+    star: "#987400",
+    userMessage: "#EFF2F0",
+  },
+  dark: {
+    background: THEME_BACKGROUNDS.dark,
+    rail: "#151A18",
+    topbar: "#181D1B",
+    railBorder: "#343B38",
+    railForeground: "#B5BCB8",
+    railForegroundActive: "#7CBF8A",
+    sidebar: "#171C1A",
+    surface: "#1C211F",
+    surfaceSecondary: "#222725",
+    inputSurface: "#1C211F",
+    delegatedSurface: "#26302B",
+    delegatedHover: "#303D36",
+    elevated: "#292E2C",
+    hover: "#303633",
+    selected: "#263A30",
+    border: "#383F3C",
+    textPrimary: "#E7E9E6",
+    textSecondary: "#B4BAB6",
+    textMuted: "#818A85",
+    brand: "#315C48",
+    brandHover: "#4D8065",
+    accent: "#4D8065",
+    highlight: "#7CBF8A",
+    activityLabel: "#68A97C",
+    star: "#BFA34A",
+    userMessage: "#252B28",
+  },
+} as const;
+
+/** CSS properties inherited by Assistant and Output content within the standard workspace. */
+export function assistantSurfaceVariables(mode: ColorMode) {
+  const colors = ponderosaColorTokens[mode];
+  return {
+    "--ponderosa-canvas": colors.background,
+    "--ponderosa-surface": colors.surface,
+    "--ponderosa-border": colors.border,
+    "--ponderosa-accent": mode === "dark" ? colors.highlight : colors.brand,
+    "--ponderosa-surface-secondary": colors.surfaceSecondary,
+    "--ponderosa-input-surface": colors.inputSurface,
+    "--ponderosa-elevated": colors.elevated,
+    "--ponderosa-text-primary": colors.textPrimary,
+    "--ponderosa-text-secondary": colors.textSecondary,
+    "--ponderosa-message-bubble": colors.userMessage,
+    "--ponderosa-message-bubble-text": "#FFFFFF",
+    "--ponderosa-outgoing-bubble": colors.userMessage,
+    "--ponderosa-primary": colors.brand,
+    "--ponderosa-prose-divider": colors.border,
+    "--ponderosa-prose-hover": colors.hover,
+    "--ponderosa-prose-link": mode === "dark" ? colors.highlight : colors.brand,
+  };
+}
+
 export function loadColorMode(): ColorMode {
   if (typeof window === "undefined") {
     return "light";
@@ -104,10 +186,11 @@ export function loadColorMode(): ColorMode {
   return resolveColorMode(savedMode, window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false);
 }
 
-export function createPonderosaTheme(mode: ColorMode) {
-  const colors = ponderosaColorTokens[mode];
+export function createPonderosaTheme(mode: ColorMode, variant: "standard" | "assistant" = "standard") {
+  const assistant = variant === "assistant";
+  const colors = assistant ? ponderosaColorTokens[mode] : classicColorTokens[mode];
   const dark = mode === "dark";
-  const focusIndicator = ponderosaFocusIndicator[mode];
+  const focusIndicator = assistant ? ponderosaFocusIndicator[mode] : (dark ? "#9ED4AA" : "#123126");
 
   return createTheme({
     palette: {
@@ -118,8 +201,8 @@ export function createPonderosaTheme(mode: ColorMode) {
         // must be a readable foreground rather than the much darker brand surface.
         main: dark ? colors.highlight : colors.brand,
         dark: dark ? colors.brand : colors.brandHover,
-        light: "#92B7FF",
-        contrastText: dark ? "#132440" : "#FFFFFF",
+        light: assistant ? "#92B7FF" : dark ? "#9ED4AA" : colors.highlight,
+        contrastText: assistant ? dark ? "#132440" : "#FFFFFF" : dark ? "#10231C" : "#F8F6EF",
       },
       secondary: {
         main: dark ? "#91AAB6" : "#607A87",
@@ -144,21 +227,22 @@ export function createPonderosaTheme(mode: ColorMode) {
         disabledBackground: dark
           ? "rgba(126,139,132,.14)"
           : "rgba(135,148,142,.14)",
-        focus: dark ? "rgba(146,183,255,.20)" : "rgba(37,99,235,.16)",
+        focus: assistant ? dark ? "rgba(146,183,255,.20)" : "rgba(37,99,235,.16)" : dark ? "rgba(124,191,138,.20)" : "rgba(92,138,101,.16)",
       },
       success: { main: dark ? "#57C77A" : "#2E8B57" },
       info: { main: dark ? "#79B8D1" : "#356F8B" },
       warning: { main: dark ? "#D8B85A" : "#8A6C22" },
       error: { main: dark ? "#D66A5C" : "#B74D43" },
     },
-    transitions: {
+    ...(assistant ? { transitions: {
       duration: { shortest: 160, shorter: 180, short: 200, standard: 200, complex: 220, enteringScreen: 220, leavingScreen: 180 },
       easing: { easeInOut: "cubic-bezier(0.2, 0, 0, 1)", easeOut: "cubic-bezier(0.2, 0, 0, 1)", easeIn: "cubic-bezier(0.4, 0, 1, 1)", sharp: "cubic-bezier(0.2, 0, 0, 1)" },
     },
+    } : {}),
     shape: {
       borderRadius: 12,
     },
-    typography: {
+    typography: assistant ? {
       fontFamily:
         'var(--ponderosa-font-family, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif)',
       h1: { letterSpacing: "-0.025em" },
@@ -170,6 +254,18 @@ export function createPonderosaTheme(mode: ColorMode) {
       button: { textTransform: "none", fontWeight: 600, letterSpacing: 0 },
       body1: { fontSize: "0.9375rem", lineHeight: 1.55 },
       body2: { fontSize: "0.875rem", lineHeight: 1.5 },
+    } : {
+      fontFamily:
+        'var(--ponderosa-font-family, Inter, Geist, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif)',
+      h1: { letterSpacing: "-0.025em" },
+      h2: { letterSpacing: "-0.022em" },
+      h3: { letterSpacing: "-0.02em" },
+      h4: { letterSpacing: "-0.018em" },
+      h5: { letterSpacing: "-0.014em" },
+      h6: { letterSpacing: "-0.01em" },
+      button: { textTransform: "none", fontWeight: 650, letterSpacing: 0 },
+      body1: { fontSize: "0.875rem", lineHeight: 1.55 },
+      body2: { fontSize: "0.8125rem", lineHeight: 1.5 },
     },
     components: {
       MuiCssBaseline: {
@@ -199,8 +295,8 @@ export function createPonderosaTheme(mode: ColorMode) {
             "--ponderosa-touch-target": `${ponderosaLayoutTokens.touchTarget}px`,
             "--ponderosa-text-primary": colors.textPrimary,
             "--ponderosa-text-secondary": colors.textSecondary,
-            "--ponderosa-message-bubble": colors.userMessage,
-            "--ponderosa-message-bubble-text": "#FFFFFF",
+            "--ponderosa-message-bubble": assistant ? colors.userMessage : dark ? "#27332F" : "#EFF0EB",
+            "--ponderosa-message-bubble-text": assistant ? "#FFFFFF" : colors.textPrimary,
             "--ponderosa-prose-divider": colors.border,
             "--ponderosa-prose-hover": colors.hover,
             "--ponderosa-prose-link": dark ? colors.highlight : colors.brand,
@@ -209,8 +305,8 @@ export function createPonderosaTheme(mode: ColorMode) {
           "a:hover, a:focus-visible": { textDecoration: "none" },
           "::selection": {
             backgroundColor: dark
-              ? "rgba(146,183,255,.28)"
-              : "rgba(37,99,235,.22)",
+              ? assistant ? "rgba(146,183,255,.28)" : "rgba(124,191,138,.28)"
+              : assistant ? "rgba(37,99,235,.22)" : "rgba(92,138,101,.22)",
           },
         },
       },
@@ -243,13 +339,13 @@ export function createPonderosaTheme(mode: ColorMode) {
       },
       MuiButton: {
         styleOverrides: {
-          root: { minHeight: 44, borderRadius: 10, paddingInline: 16, transition: "background-color 180ms ease, border-color 180ms ease, color 180ms ease" },
+          root: assistant ? { minHeight: 44, borderRadius: 10, paddingInline: 16, transition: "background-color 180ms ease, border-color 180ms ease, color 180ms ease" } : { minHeight: 44, borderRadius: 8 },
           containedPrimary: {
-            backgroundColor: colors.brand,
-            color: "#FFFFFF",
+            backgroundColor: assistant ? colors.brand : dark ? "#EDE9DD" : colors.brand,
+            color: assistant ? "#FFFFFF" : dark ? "#123126" : "#F8F6EF",
             boxShadow: "none",
             "&:hover": {
-              backgroundColor: colors.brandHover,
+              backgroundColor: assistant ? colors.brandHover : dark ? "#F8F6EF" : colors.brandHover,
               boxShadow: "none",
             },
           },
@@ -280,6 +376,7 @@ export function createPonderosaTheme(mode: ColorMode) {
           },
         },
       },
+      ...(assistant ? {
       MuiDialog: {
         defaultProps: { transitionDuration: { enter: 220, exit: 180 } },
         styleOverrides: {
@@ -321,6 +418,7 @@ export function createPonderosaTheme(mode: ColorMode) {
       MuiAccordionDetails: { styleOverrides: { root: { padding: "0 0 24px" } } },
       MuiTooltip: { styleOverrides: { tooltip: { borderRadius: 8, padding: "8px 12px", fontSize: "0.75rem" } } },
       MuiTabs: { styleOverrides: { indicator: { height: 2, borderRadius: 2 } } },
+      } : {}),
       MuiInputLabel: {
         styleOverrides: {
           root: {
@@ -372,7 +470,7 @@ export function createPonderosaTheme(mode: ColorMode) {
             "&.Mui-selected": {
               backgroundColor: colors.selected,
               color: colors.textPrimary,
-              boxShadow: "none",
+              boxShadow: assistant || dark ? "none" : `inset 3px 0 0 ${colors.accent}`,
               "&:hover": { backgroundColor: colors.hover },
             },
           },

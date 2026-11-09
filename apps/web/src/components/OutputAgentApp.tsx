@@ -9,13 +9,14 @@ import {confirmUnsavedNavigation,useUnsavedForm} from '../reloadSafety';
 import {ConfirmDialog} from './ConfirmationDialogs';
 import {useAppViewport} from '../hooks/useAppViewport';
 import {setStandaloneWorkspaceOwner} from '../api/productScope';
-import {useEffect,useLayoutEffect,useRef,useState} from 'react';
+import {useEffect,useLayoutEffect,useMemo,useRef,useState} from 'react';
+import {ThemeProvider} from '@mui/material/styles';
 import {useQuery} from '@tanstack/react-query';
 import {Alert,Box,Button,Dialog,DialogActions,DialogContent,DialogTitle,FormControlLabel,Stack,Switch,MenuItem,TextField,Typography} from '@mui/material';
 import type {AssistantStatusDto,OutputAgentAppDto} from '@ponderosa/core';
 import {realApi,requestJson} from '../api/real';
 import type {BranchRoute} from '../branchesRouting';
-import type {ColorMode} from '../theme';
+import {assistantSurfaceVariables,createPonderosaTheme,type ColorMode} from '../theme';
 import {BranchChats} from './branches/BranchChats';
 import {WorkspaceConnectionProvider} from './WorkspaceConnectionContext';
 import {useWorkspaceStream} from '../hooks/useWorkspaceStream';
@@ -32,6 +33,7 @@ function ConversationNotice({title,cause,onRetry}:{title:string;cause:string;onR
 /** Output apps use canonical Agent chat, attachments, voice, calls and streams. */
 export function OutputAgentApp({colorMode,onToggleColorMode,embedded=false,returnTo}:{colorMode:ColorMode;onToggleColorMode():void;embedded?:boolean;returnTo?:string}):JSX.Element{
  useAppViewport();
+ const assistantTheme=useMemo(()=>createPonderosaTheme(colorMode,"assistant"),[colorMode]);
  const [statusHost,setStatusHost]=useState<HTMLDivElement|null>(null);
  const [callActionsHost,setCallActionsHost]=useState<HTMLDivElement|null>(null);
  const assistant=embedded||window.location.pathname==='/assistant';
@@ -118,7 +120,7 @@ export function OutputAgentApp({colorMode,onToggleColorMode,embedded=false,retur
   if(!app||!scheduleBase||!validInterval)return;
   void act(()=>requestJson<OutputAgentAppDto>(`/api/branches/output-apps/${encodeURIComponent(app.agentId)}/schedule`,{method:'PUT',body:JSON.stringify({expectedVersionId:scheduleBase.versionId,expectedSettingsRevision:scheduleBase.settingsRevision,automatic,...(intervalChanged||(scheduleBase.triggerKind==='manual'&&automatic)?{everyMs:interval*60000}:{})})}),'Schedule saved',value=>setScheduleBase(value));
  };
- return <ConversationChromeContext.Provider value={{statusHost,callActionsHost}}><WorkspaceConnectionProvider value={connection}><Box component={embedded?'section':'main'} data-assistant-conversation={assistant||undefined} sx={{height:embedded?'100%':'var(--ponderosa-app-viewport-block-size, 100dvh)',flex:1,display:'flex',flexDirection:'column',minHeight:0,minWidth:0,pb:'env(safe-area-inset-bottom)'}}>
+ return <ThemeProvider theme={assistantTheme}><ConversationChromeContext.Provider value={{statusHost,callActionsHost}}><WorkspaceConnectionProvider value={connection}><Box component={embedded?'section':'main'} data-assistant-conversation sx={{...assistantSurfaceVariables(colorMode),bgcolor:"background.default",height:embedded?'100%':'var(--ponderosa-app-viewport-block-size, 100dvh)',flex:1,display:'flex',flexDirection:'column',minHeight:0,minWidth:0,pb:'env(safe-area-inset-bottom)'}}>
   <Stack component="header" direction="row" alignItems="center" spacing={1} sx={{px:{xs:1,sm:2.5},minHeight:{xs:76,sm:64},pt:embedded?0:'env(safe-area-inset-top)',borderBottom:1,borderColor:'divider',flexShrink:0}}>
    {embedded?<><MobileNavigationButton/>{returnTo&&<Tooltip title="Back to your Chat"><IconButton href={returnTo} aria-label="Back to your Chat" onClick={event=>{if(!confirmUnsavedNavigation())event.preventDefault();}} sx={{width:44,height:44}}><ArrowBackIosNewIcon sx={{fontSize:20}}/></IconButton></Tooltip>}</>:<Button href="/home" color="inherit" sx={{minHeight:44}}>Ponderosa</Button>}
    <Box sx={{flex:1,minWidth:0}}><Typography component="h1" sx={{fontWeight:650,fontSize:'1rem',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{assistant?'Assistant':app?.title??'Chat'}</Typography>
@@ -160,5 +162,5 @@ export function OutputAgentApp({colorMode,onToggleColorMode,embedded=false,retur
    </Stack></DialogContent><DialogActions><Button disabled={busy} onClick={closeSettings}>Done</Button></DialogActions>
   </Dialog>
   <ConfirmDialog open={discardSettings} title="Unsaved settings" confirmLabel="Discard changes" cancelLabel="Keep editing" onCancel={()=>setDiscardSettings(false)} onConfirm={()=>{setDiscardSettings(false);setSettings(false);}}>Discard unsaved schedule or model changes?</ConfirmDialog>
- </Box></WorkspaceConnectionProvider></ConversationChromeContext.Provider>;
+ </Box></WorkspaceConnectionProvider></ConversationChromeContext.Provider></ThemeProvider>;
 }
