@@ -1711,9 +1711,10 @@ export class WorkspaceStore {
 
   findNotification(
     predicate: (item: WorkspaceNotificationDto) => boolean,
+    includeDismissed = false,
   ): WorkspaceNotificationDto | undefined {
     for (const item of this.notifications.values()) {
-      if (item.kind === "collaboration" || (item.status ?? "open") === "dismissed") continue;
+      if (item.kind === "collaboration" || (!includeDismissed && (item.status ?? "open") === "dismissed")) continue;
       if (predicate(item)) return item;
     }
     return undefined;

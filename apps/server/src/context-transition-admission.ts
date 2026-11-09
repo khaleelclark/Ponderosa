@@ -60,7 +60,7 @@ function transitionIncidentKey(ctx:TransitionContext,projectId:string,agentId:st
   recovery?.sourceRunId??boundary?.executionId,recovery?.sourceFence??boundary?.fencingToken);
 }
 function transitionNotice(ctx:TransitionContext,projectId:string,agentId:string,activationId:string,reason:string,internal=false){
- const previous=ctx.workspace.findNotification(n=>n.agentId===agentId&&n.projectId===projectId&&(n.status??'open')==='open'&&Boolean(n.workContext?.activationIds?.includes(activationId)));
+ const previous=ctx.workspace.findNotification(n=>n.agentId===agentId&&n.projectId===projectId&&n.status!=='resolved'&&!n.recoveredAt&&Boolean(n.workContext?.activationIds?.includes(activationId)),true);
  const boundaryKey=previous?.workContext?.traceId??transitionIncidentKey(ctx,projectId,agentId,activationId);
  const existing=ctx.workspace.notificationForWork({category:'coordination',projectId,workContext:{kind:'activation',recordId:activationId,traceId:boundaryKey,state:'blocked',occurredAt:''}})
   ??ctx.workspace.getNotificationByDedupeKey(`settings-transition:${activationId}`)

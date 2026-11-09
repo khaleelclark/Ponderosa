@@ -433,14 +433,14 @@ function quietRecoveryFixture(t) {
  let store=new AgentStore(root),workspace=new WorkspaceStore(root),coordinationV3;
  const project=store.createProject({label:'Recovery project',hostPath:root,defaultEngine:'codex'});
  const chat=store.createConversation(project.id,{title:'Affected Chat'}),agent=store.createAgent(project.id,{title:'Affected Agent',engine:'codex',conversationId:chat.id});
- const failures=new Map(),receipts=new Map();let source,owner,ops,ctx;
+ const failures=new Map(),receipts=new Map();let source,boundary,owner,ops,ctx;
  function bind() {
   coordinationV3=new CoordinationV3Store(store.sqlite);
   coordinationV3.communicationAttentionActivations=()=>[...failures.values()];
   coordinationV3.deliveryReceiptsForCommunication=(_project,event)=>receipts.has(event)?[receipts.get(event)]:[];
   store.getCommunicationEvent=()=>({text:'Canonical blocked instruction'});
   store.resumeSessionState=()=>({sessionId:'retained-session',toolContractHash:'a'.repeat(64)});
-  store.providerCommandContextBoundary=()=>source&&({executionId:source.runId,fencingToken:source.fencingToken,providerSessionId:'retained-session'});
+  store.providerCommandContextBoundary=()=>boundary??(source&&({executionId:source.runId,fencingToken:source.fencingToken,providerSessionId:'retained-session'}));
   coordinationV3.activeContextRollover=()=>owner;
   ops=createOperationalNotifications({store,workspace,coordinationV3,publishWorkspaceSince(){},logError(meta){throw meta;}});
   ctx={app:{},store,workspace,coordinationV3,...ops};
@@ -462,6 +462,7 @@ function quietRecoveryFixture(t) {
   get store(){return store;},get workspace(){return workspace;},get c(){return coordinationV3;},get ops(){return ops;},
   reconcile(){reconcileSettingsTransitionReservations(ctx);},
   owner(value){owner=value;},
+  boundary(value){boundary=value;},
   reopen(){workspace.close();store.close();store=new AgentStore(root);workspace=new WorkspaceStore(root);bind();},
   notices(){return workspace.listNotificationPage({limit:100}).items;}};
 }
@@ -477,6 +478,8 @@ test('UI002 one context boundary survives fingerprints, queued work, dismissal a
  for(const id of ids)await f.hold(id);
  assert.equal(f.notices()[0].id,identity);assert.equal(f.workspace.listPushDeliveries().length,1);
  f.workspace.setNotificationStatus(identity,'dismissed');const fourth=f.create('Fourth blocked instruction');await f.hold(fourth);ids.push(fourth);
+ f.boundary({executionId:randomUUID(),fencingToken:f.source.fencingToken+1,providerSessionId:'replacement-session'});
+ await f.hold(ids[0]);assert.equal(f.workspace.listPushDeliveries().length,0,'boundary advancement cannot renew dismissed work before verified admission');
  f.reopen();f.reconcile();assert.equal(f.workspace.getNotification(identity).status,'dismissed');assert.equal(f.workspace.listPushDeliveries().length,0,'dismissal removes its pending push without renewing the incident');
  for(const id of ids.slice(0,-1))f.store.sqlite.prepare("UPDATE agent_activations SET state='consumed' WHERE id=?").run(id);
  f.reconcile();assert.equal(f.workspace.getNotification(identity).recoveredAt,undefined,'one still-blocked member prevents recovery');
