@@ -91,7 +91,7 @@ export function ChatAttachments({
           const unavailable = attachment.unavailable || failed.has(attachment.id) ||
             (!previewUrl && !downloadUrl);
           return (
-            <Box key={attachment.id} sx={{ maxWidth: "100%" }}>
+            <Box key={attachment.id} className="chat-attachment-card" sx={{ maxWidth: "100%" }}>
               {unavailable ? (
                 <Stack
                   spacing={0.35}

@@ -1,3 +1,4 @@
+import {assistantSubmissionError} from '../chat/composerUtils';
 import {createClientId} from '../../clientId';
 import PhoneIcon from "@mui/icons-material/Phone";
 import CallEndIcon from "@mui/icons-material/CallEnd";
@@ -27,6 +28,8 @@ type Phase = "ready" | "resting" | "capture" | "review" | "sending" | "queued" |
 export interface VoiceConversationContext {
   projectId: string; conversationId: string; agents: AgentDto[];
   selectedAgentId?: string; lockAgent?: boolean; standalone?: boolean;
+  /** Assistant intake preserves steering and holds native next-Run commands. */
+  steeringOnly?: boolean;
   /** Only an explicit handset opening gesture may request initial capture. */
   startOnOpen?: boolean;
 }
@@ -38,7 +41,7 @@ export function VoiceConversation(props: VoiceConversationContext & { open: bool
   const product = productApiPath("/api/conversations");
   return <>{props.open && <VoiceSession key={JSON.stringify([product, props.projectId, props.conversationId, props.selectedAgentId])} {...props} product={product} />}</>;
 }
-function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lockAgent, onClose, product, standalone, startOnOpen }: VoiceConversationContext & { onClose(): void; product: string }): JSX.Element {
+function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lockAgent, onClose, product, standalone, startOnOpen, steeringOnly=false }: VoiceConversationContext & { onClose(): void; product: string }): JSX.Element {
   const phone = useMediaQuery('(max-width:599.95px)');
   const ownerId = useId();
   const openingCaptureAttempted=useRef(false);
@@ -252,6 +255,10 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
   };
   const send = async () => {
     if (!live || !checked || recovering || blocked || replyPendingRef.current || ["sending", "queued", "waiting", "loading", "speaking", "capture"].includes(phaseRef.current)) return;
+    if (steeringOnly) {
+      const admissionError = assistantSubmissionError(attempt.current?.request.text ?? textRef.current.trim(), attempt.current?.request.activeRunDelivery === "queue");
+      if (admissionError) { stopAutomatic(); changePhase("review"); setError(admissionError); return; }
+    }
     if (attempt.current && Date.now() - attempt.current.marker.createdAt >= VOICE_ATTEMPT_TTL) {
       attempt.current = undefined; setText(""); stopAutomatic(); setBlocked(true); setError("The unconfirmed turn expired. Review Chat before sending again."); return;
     }

@@ -1,3 +1,4 @@
+import { assistantSubmissionError } from "./chat/composerUtils";
 import type { AssetDto, DraftPendingSubmissionDto, EngineDto, SendMessageRequest, SendMessageResponse } from "@ponderosa/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
@@ -33,6 +34,7 @@ import {
 import { useQueuedMessageCommandMutation } from "./useQueuedMessageCommandMutation";
 
 interface AgentMessageControllerInput {
+  steeringOnly?: boolean;
   agentId: string;
   projectId?: string;
   engine?: EngineDto;
@@ -56,6 +58,7 @@ interface AgentMessageSubmissionPrepared {
 }
 
 export function useAgentMessageController({
+  steeringOnly = false,
   agentId,
   projectId,
   engine,
@@ -134,6 +137,10 @@ export function useAgentMessageController({
       },
     ) => {
       const sent = (async () => {
+        if (steeringOnly) {
+          const error = assistantSubmissionError(text, activeRunDelivery === "queue" || context?.pendingSubmission?.request?.runtime.activeRunDelivery === "queue");
+          if (error) throw new Error(error);
+        }
         let pendingSubmission = context?.pendingSubmission;
         if (pendingSubmission && !pendingSubmission.request && context?.persistPendingSubmission) {
           pendingSubmission = withPendingRequest(pendingSubmission, {

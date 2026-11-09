@@ -101,6 +101,7 @@ import {
   type ComposerProjectFileDescriptor,
 } from "./ComposerEditor";
 import {
+  assistantSubmissionError,
   selectComposerFiles,
   canSubmitComposerText,
   COMPOSER_MAX_FILE_BYTES,
@@ -284,6 +285,8 @@ function providerCommandInput(
 }
 
 export function Composer({
+  assistantMessages = false,
+  queueReviewHref,
   disabled,
   running,
   allowSendWhileRunning = false,
@@ -1257,7 +1260,7 @@ export function Composer({
         files.length > 0));
   // A retained Send must be retried through Send, never redirected by the
   // queue shortcut into a potentially completed operation of another kind.
-  const canQueue = Boolean(onQueue) && canSend && durableRetryAction !== "send";
+  const canQueue = !assistantMessages && Boolean(onQueue) && canSend && durableRetryAction !== "send";
   const canCancel = running && Boolean(onCancel);
   const composerAttachmentsEnabled = attachmentsEnabled;
   const composerAttachmentsUnavailableReason = attachmentsUnavailableReason;
@@ -2303,6 +2306,10 @@ export function Composer({
     writeChain: DraftWriteChain,
     selectedFiles: File[] = [],
   ) => {
+    if (assistantMessages) {
+      const error = assistantSubmissionError(item.text, item.action === "queue" || item.pending.request?.runtime.activeRunDelivery === "queue");
+      if (error) { setSendError(error); return; }
+    }
     let previouslyDispatched = item.dispatchStarted === true;
     let loadedUnderLock = false;
     let outgoingId: string | undefined;
@@ -2493,6 +2500,10 @@ export function Composer({
       return;
     }
     if (sendingRef.current || !canSend) return;
+    if (assistantMessages && (action === "queue" || durableRetryAction === "queue" || pendingSubmissionRef.current?.request?.runtime.activeRunDelivery === "queue")) {
+      setSendError(assistantSubmissionError(textRef.current, true));
+      return;
+    }
     if (
       durableRetryAction && durableRetryAction !== action
     ) {
@@ -2548,6 +2559,10 @@ export function Composer({
       routingMentionHandles,
     );
     if (normalizedDraft !== textRef.current) update(normalizedDraft);
+    if (assistantMessages) {
+      const error = assistantSubmissionError(safeSubmissionText, false);
+      if (error) { setSendError(error); return; }
+    }
     const commandSubmission = providerCommandInput(
       safeSubmissionText,
       commandTargetHandle,
@@ -3095,7 +3110,7 @@ export function Composer({
   };
   const steer = () => submit(onSend, "send");
   const queue = () => {
-    if (!onQueue) return;
+    if (assistantMessages || !onQueue) return;
     submit(onQueue, "queue");
   };
   const send = steer;
@@ -3115,21 +3130,53 @@ export function Composer({
   if (queueActivity.current.key !== queueTargetKey) queueActivity.current = { key: queueTargetKey, active: liveQueueActivity };
   else if (liveQueueActivity) queueActivity.current.active = true;
   else if (!acceptancePendingForTarget) queueActivity.current.active = false;
-  const showQueue = Boolean(onQueue) && !destinationError &&
+  const showQueue = !assistantMessages && Boolean(onQueue) && !destinationError &&
     targetRequiredRecipientTagged &&
     shouldShowQueueControl({
       text: submissionText, hasAttachments: files.length > 0,
       agentResponding: liveQueueActivity || (queueActivity.current.active && acceptancePendingForTarget),
       disabled,
     });
+  const capabilityPicker = (
+    <ComposerCapabilityPicker
+          fileInput={fileInput}
+          disabled={disabled || composerLocked || draftMutationLocked || preparingFolder}
+          menuAnchor={capabilityMenuAnchor}
+          listId={capabilityListId}
+          filter={capabilityFilter}
+          attachmentsEnabled={composerAttachmentsEnabled}
+          attachmentsUnavailableReason={composerAttachmentsUnavailableReason}
+          fileCount={files.length}
+          assetLimits={assetLimits}
+          capabilities={capabilities}
+          menuActions={menuActions}
+          buttonRef={capabilityButtonRef}
+          visibleCapabilities={visibleCapabilities}
+          onFiles={addFiles}
+          onFolderFiles={files => { void importAttachments(files); }}
+          onOpen={anchor => {
+            setCapabilityFilter("");
+            setCapabilityMenuAnchor(anchor);
+            void Promise.resolve(onCapabilitiesOpen?.()).catch(() => undefined);
+          }}
+          onClose={() => {
+            setCapabilityMenuAnchor(null);
+            setCapabilityFilter("");
+          }}
+          onFilterChange={setCapabilityFilter}
+          onApplyCapability={applyCapability}
+        />
+  );
   return (
     <Paper
       ref={composerRoot}
       className="ponderosa-composer"
       data-compact="false"
+      data-assistant-composer={assistantMessages||undefined}
+      data-narrow={narrowComposer}
       data-file-drag-active={fileDragActive && fileDropEnabled}
       elevation={0}
-      sx={composerSurfaceSx}
+      sx={assistantMessages ? {...composerSurfaceSx,border:0,borderRadius:0,px:0,pt:0,pb:0,bgcolor:"transparent",boxShadow:"none",overflow:"visible"} : composerSurfaceSx}
       onDragEnterCapture={event => {
         if (!Array.from(event.dataTransfer.types).includes("Files")) return;
         event.preventDefault();
@@ -3160,6 +3207,7 @@ export function Composer({
       }}
     >
       <Box sx={{ display: "contents" }}>
+      {assistantMessages && queueReviewHref && durableRetryAction === "queue" && <Button href={queueReviewHref} size="small">Review retained Queue submission in Agent chat</Button>}
       {preparingFolder ? <Typography role="status" variant="caption" sx={{ px: 1.5, pt: 0.5 }}>Preparing folder ZIP…</Typography> : null}
       <ComposerDestinationBar
         destinationError={destinationError}
@@ -3719,44 +3767,23 @@ export function Composer({
       </Dialog>
       <Stack
         direction="row"
-        spacing={{ xs: 0.25, sm: 0.5 }}
+        spacing={assistantMessages ? 1 : { xs: 0.25, sm: 0.5 }}
         useFlexGap
-        sx={{ alignItems: "center", flexWrap: "wrap" }}
+        sx={{ alignItems: assistantMessages ? "flex-end" : "center", flexWrap: assistantMessages ? "nowrap" : "wrap" }}
       >
+        {assistantMessages && capabilityPicker}
+        <Box data-composer-input-shell sx={assistantMessages ? {
+          display:"flex",alignItems:"flex-end",flexWrap:"wrap",gap:.25,flex:1,minWidth:0,
+          border:1,borderColor:"divider",borderRadius:"28px",bgcolor:"background.paper",p:.5,pl:1.5,
+          "&:focus-within":{borderColor:"primary.main"},
+        } : {display:"contents"}}>
         <Box data-composer-toolbar sx={{
-          display: { xs: "flex", md: "contents" },
+          display: assistantMessages ? "contents" : { xs: "flex", md: "contents" },
           alignItems: "center", gap: 0.25, flex: "1 1 0", minWidth: 0,
           overflowX: narrowComposer ? "visible" : { xs: "auto", md: "visible" },
           "& > *": { flexShrink: { xs: 0, md: undefined } },
         }}>
-        <ComposerCapabilityPicker
-          fileInput={fileInput}
-          disabled={disabled || composerLocked || draftMutationLocked || preparingFolder}
-          menuAnchor={capabilityMenuAnchor}
-          listId={capabilityListId}
-          filter={capabilityFilter}
-          attachmentsEnabled={composerAttachmentsEnabled}
-          attachmentsUnavailableReason={composerAttachmentsUnavailableReason}
-          fileCount={files.length}
-          assetLimits={assetLimits}
-          capabilities={capabilities}
-          menuActions={menuActions}
-          buttonRef={capabilityButtonRef}
-          visibleCapabilities={visibleCapabilities}
-          onFiles={addFiles}
-          onFolderFiles={files => { void importAttachments(files); }}
-          onOpen={anchor => {
-            setCapabilityFilter("");
-            setCapabilityMenuAnchor(anchor);
-            void Promise.resolve(onCapabilitiesOpen?.()).catch(() => undefined);
-          }}
-          onClose={() => {
-            setCapabilityMenuAnchor(null);
-            setCapabilityFilter("");
-          }}
-          onFilterChange={setCapabilityFilter}
-          onApplyCapability={applyCapability}
-        />
+        {!assistantMessages && capabilityPicker}
         {destinationMode === "project-chat" ? (
           <ComposerProjectDestinationAction
             disabled={draftMutationLocked}
@@ -3780,6 +3807,7 @@ export function Composer({
           flexShrink: 0,
           gap: 0.25,
           ml: "auto",
+          ...(assistantMessages?{order:1}:{}),
         }}>
           {controls ? (
             <Box sx={{ minWidth: narrowComposer ? 44 : 0, maxWidth: "100%" }}>
@@ -3787,8 +3815,9 @@ export function Composer({
             </Box>
           ) : null}
           {enableVoiceDictation ? <DictationControls
+            inlineVoiceOptions={assistantMessages}
             key={JSON.stringify([projectId, conversationDraftId, voiceContext?.conversationId])}
-            voiceContext={voiceContext}
+            voiceContext={voiceContext && {...voiceContext, steeringOnly:assistantMessages}}
             recordingContainer={voiceRecordingContainer}
             onActiveChange={handleVoiceCaptureActiveChange}
             onVoiceAttachment={composerAttachmentsEnabled?file=>{if(draftMutationLockedRef.current)return "The draft is busy. Try attaching again.";const selection=selectComposerFiles(files,[file],assetLimits);if(selection.error)return selection.error;addFiles([file]);return undefined;}:undefined}
@@ -3799,13 +3828,13 @@ export function Composer({
           /> : null}
         </Box>
         </Box>
-        <Box ref={anchorRef} sx={{ order: -1, flex: "1 0 100%", minWidth: 0 }}>
+        <Box ref={anchorRef} sx={{ order: assistantMessages ? 0 : -1, flex: assistantMessages ? "1 1 80px" : "1 0 100%", minWidth: 0 }}>
           <ComposerTextInput
             text={draftMutationLocked ? "" : text}
             inputRef={inputRef}
             disabled={disabled || draftMutationLocked}
             locked={composerLocked}
-            placeholder={assistantChrome ? "" : placeholder}
+            placeholder={assistantMessages || assistantChrome ? "" : placeholder}
             comboboxEnabled={Boolean(mentionHandles || commands?.length || projectId)}
             menuOpen={menuOpen}
             listId={mentionListId}
@@ -3833,7 +3862,7 @@ export function Composer({
             mentionedHandles={mentionedHandles}
             canSend={canSend}
             canQueue={canQueue}
-            onQueue={onQueue ? queue : undefined}
+            onQueue={!assistantMessages && onQueue ? queue : undefined}
             onTextChange={(value, nextCaret) => {
               // Blank presentation during intake must not rewrite the durable
               // submitted draft or its mutation/CAS authority.
@@ -3904,8 +3933,9 @@ export function Composer({
             }}
           />
         </Box>
-        <Box data-composer-send-actions sx={{ display: { xs: "flex", md: "contents" }, alignItems: "center", gap: 0.25, flexShrink: 0 }}>
+        <Box data-composer-send-actions sx={{ display: assistantMessages ? "flex" : { xs: "flex", md: "contents" }, alignItems: "center", gap: 0.25, flexShrink: 0, ...(assistantMessages?{order:2}:{}) }}>
         <ComposerSendActions
+          steeringOnly={assistantMessages}
           allowSendWhileRunning={allowSendWhileRunning}
           canCancel={canCancel}
           cancelPending={cancelPending}
@@ -3927,6 +3957,7 @@ export function Composer({
           steer={steer}
           targetRequiredRecipientTagged={targetRequiredRecipientTagged}
         />
+        </Box>
         </Box>
       </Stack>
     </Paper>

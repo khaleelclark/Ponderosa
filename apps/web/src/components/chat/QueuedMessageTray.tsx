@@ -9,9 +9,10 @@ import { afterPaintBackgroundTask } from "../../afterPaintBackgroundTask";
 import { capturedSubmissionRunning, readCapturedSubmissions, submissionOutboxEvent } from "./submissionOutbox";
 import { composerSurfaceWidth } from "./Composer.styles";
 
-function QueuedMessageTrayComponent({ messages, scope, attachmentNamesForMessage, agentNameForId, busy, onSteer, onEdit, onDelete }: {
+function QueuedMessageTrayComponent({ messages, scope, attachmentNamesForMessage, agentNameForId, busy, onSteer, onEdit, onDelete, queueReviewHref }: {
   messages: QueuedConversationMessageDto[];
   scope?: string;
+  queueReviewHref?: string;
   attachmentNamesForMessage?(message: QueuedConversationMessageDto): string[] | undefined;
   agentNameForId?(agentId: string): string;
   busy?: boolean;
@@ -118,7 +119,9 @@ function QueuedMessageTrayComponent({ messages, scope, attachmentNamesForMessage
           </Tooltip>
           <Tooltip title={item.error ?? (inFlight ? "Awaiting acceptance; not confirmed queued." : "Retry reconciles this exact operation.")}><Typography tabIndex={0} variant="caption" color={item.status === "failed" ? "error" : "text.secondary"}>{inFlight ? "Pending" : item.status === "accepted" ? "Saved" : item.status === "failed" ? "Failed" : "Unconfirmed"}</Typography></Tooltip>
           {item.attachmentNames.length ? <Typography variant="caption" aria-label={`${item.attachmentNames.length} attachments`}>+{item.attachmentNames.length}</Typography> : null}
-          <Button size="small" disabled={inFlight} onClick={() => window.dispatchEvent(new CustomEvent("ponderosa-submission-retry", { detail: id }))}>Retry</Button>
+          {queueReviewHref && (item.action === "queue" || item.pending.request?.runtime.activeRunDelivery === "queue")
+            ? <Button size="small" href={queueReviewHref}>Review in Agent chat</Button>
+            : <Button size="small" disabled={inFlight} onClick={() => window.dispatchEvent(new CustomEvent("ponderosa-submission-retry", { detail: id }))}>Retry</Button>}
           {item.status === "failed" ? <Tooltip title="Discard definitely rejected input"><span><IconButton aria-label="Discard rejected message" disabled={inFlight || !navigator.locks} onClick={() => window.dispatchEvent(new CustomEvent("ponderosa-submission-discard", { detail: id }))}><DeleteOutlineIcon fontSize="small" /></IconButton></span></Tooltip> : null}
         </Box>;
       })}

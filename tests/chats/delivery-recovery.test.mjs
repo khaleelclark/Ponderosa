@@ -313,6 +313,7 @@ test('ordinary outgoing Chat identity works without Web Crypto and matches serve
     react: h.react,
     '../../clientId': { createClientId: () => 'sending-fixture' },
     '../idempotentAttempt': { sha256Bytes },
+    '../ConversationChromeContext': { ConversationChromeContext: React.createContext(undefined) },
     './ChatMessageFrame': { ChatMessageFrame: widget('Frame') },
     './ChatMessages': { ChatMessageBody: widget('Body') },
   }, { crypto: {}, TextEncoder });

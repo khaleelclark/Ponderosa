@@ -1,3 +1,4 @@
+import { ConversationChromeContext } from "../ConversationChromeContext";
 import { Box, Typography } from "@mui/material";
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import type { AgentDto, OperatorProfileDto } from "@ponderosa/core";
@@ -67,7 +68,8 @@ export function OutgoingMessageRow({ canonicalCommunicationIds = [] }: { canonic
 function OutgoingRow({ message }: { message: OutgoingMessage }) {
   const outgoing = useOutgoingMessage()!;
   const agent = message.createdAgent;
-  return <ChatMessageFrame message={{
+  const assistantMessages=useContext(ConversationChromeContext)?.assistantAgentId===message.scope;
+  return <ChatMessageFrame assistantMessages={assistantMessages} message={{
     id: message.id,
     ariaLabel: message.accepted ? "Accepted message" : "Sending message",
     author: { kind: "operator", profile: outgoing.profile },

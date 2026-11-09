@@ -26,7 +26,7 @@ async function fixture(run:(f:{
  accepted:()=>void;setAccepted:(value:boolean)=>void;publish:(index:number,text:string)=>void;
  emit:(event:AgentEvent)=>boolean;
  button:(name:string)=>Promise<HTMLButtonElement>;client:QueryClient;host:HTMLDivElement;
-})=>Promise<void>):Promise<void>{
+})=>Promise<void>,steeringOnly=false):Promise<void>{
  const speechWindow=window as unknown as {SpeechRecognition?:typeof Recognition;SpeechSynthesisUtterance?:typeof Utterance};
  const nativeRecognition=speechWindow.SpeechRecognition,nativeUtterance=speechWindow.SpeechSynthesisUtterance;
  const synthesisDescriptor=Object.getOwnPropertyDescriptor(window,'speechSynthesis');
@@ -79,7 +79,7 @@ async function fixture(run:(f:{
   void client.invalidateQueries({queryKey:queryKeys.conversations.detailPrefix(agent.conversationId)});
  };
  try{
-  root.render(<StrictMode><ThemeProvider theme={createPonderosaTheme('light')}><QueryClientProvider client={client}><VoiceConversation {...agent} agents={[agent as never]} selectedAgentId={agent.id} lockAgent open startOnOpen onClose={()=>root.render(null)}/></QueryClientProvider></ThemeProvider></StrictMode>);
+  root.render(<StrictMode><ThemeProvider theme={createPonderosaTheme('light')}><QueryClientProvider client={client}><VoiceConversation {...agent} steeringOnly={steeringOnly} agents={[agent as never]} selectedAgentId={agent.id} lockAgent open startOnOpen onClose={()=>root.render(null)}/></QueryClientProvider></ThemeProvider></StrictMode>);
   await until(()=>recognitions.length===1?true:undefined,'Opening Call did not start one real dictation cycle');
   await run({recognitions,utterances,calls,accepted:()=>{accepted=true;},setAccepted:value=>{accepted=value;},publish,button,client,host,
    emit:event=>{for(const handlers of subscribers)handlers.onEvent?.({agentId:agent.id,seq:1,ts:new Date().toISOString(),event});return subscribers.size>0;}});
@@ -269,4 +269,24 @@ export async function voiceCallMountedLateAcceptanceRegression():Promise<void>{
   assert(f.calls[0]!.conversationId===f.calls[1]!.conversationId&&f.calls[0]!.request.idempotencyKey!==f.calls[1]!.request.idempotencyKey,'Reconnect reused the interrupted submission identity or changed conversation');
   (await f.button('End call')).click();
  });
+}
+
+
+export async function voiceCallMountedAssistantSteeringRegression():Promise<void>{
+ await fixture(async f=>{
+  const markers=()=>Object.keys(sessionStorage).filter(key=>key.startsWith('ponderosa.voice.pending.v1:')).sort().map(key=>[key,sessionStorage.getItem(key)]);
+  const before=JSON.stringify(markers()),recognition=f.recognitions[0]!;
+  recognition.result('/goal-resume');recognition.onspeechend?.();recognition.end();
+  await until(()=>document.querySelector('[data-ponderosa-call]')?.textContent?.includes('requires a new Run')?true:undefined,'Assistant voice native command was not held');
+  assert(f.calls.length===0&&JSON.stringify(markers())===before,'Native voice work must not retain a delivery marker or reach HTTP');
+  (await f.button('Transcript')).click();
+  const editor=await until(()=>document.querySelector<HTMLTextAreaElement>('[data-ponderosa-call] textarea')??undefined,'Held voice transcript remains reviewable');
+  assert(editor.value==='/goal-resume'&&!editor.disabled,'Rejected native voice words remain editable');
+  const setValue=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value')!.set!;
+  setValue.call(editor,'An ordinary Assistant voice follow-up');editor.dispatchEvent(new Event('input',{bubbles:true}));await tick();
+  const send=Array.from(document.querySelectorAll<HTMLButtonElement>('[data-ponderosa-call] button')).find(button=>button.textContent?.trim()==='Send');assert(send&&!send.disabled,'Edited voice follow-up can be deliberately sent');
+  f.accepted();send.click();await until(()=>f.calls.length===1?true:undefined,'Ordinary Assistant voice follow-up did not use shared Send');
+  assert(f.calls[0]!.request.text==='An ordinary Assistant voice follow-up'&&f.calls[0]!.request.activeRunDelivery==='steer','Assistant voice keeps exact words and existing steering path');
+  (await f.button('End call')).click();
+ },true);
 }

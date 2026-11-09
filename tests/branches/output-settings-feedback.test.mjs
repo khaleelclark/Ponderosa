@@ -13,6 +13,7 @@ function fixture(pathname='/assistant',overrides={},behavior={}){
   '@tanstack/react-query':{useQuery(options){const snapshot={...app};return {data:options.queryKey[0]==='assistant-status'?{initialized:true,enabled:true,app:snapshot}:options.queryKey[0]==='output-app'?snapshot:[],refetch:async()=>behavior.refresh?behavior.refresh(options.queryKey[0],app):({data:options.queryKey[0]==='assistant-status'?{initialized:true,enabled:true,app}:app})};}},
   '../api/real':{realApi:{updateAgent:async(id,patch)=>{modelRequests.push({id,patch});if(behavior.model)return behavior.model(patch,app,modelRequests.length);throw Error('Model update refused');}},requestJson:async(url,options)=>{requests.push({url,options});if(behavior.schedule)return behavior.schedule(JSON.parse(options.body),app,requests.length);throw Error('Workflow version changed');}},
   '../hooks/queries':{useWorkspacePreferences:()=>({data:{}})},
+  '../theme':{createPonderosaTheme:()=>({palette:{primary:{main:'#137553',contrastText:'#fff'}}}),ponderosaSurfaceVariables:()=>({})},
   '../api/productScope':{setStandaloneWorkspaceOwner(){}},'../hooks/useWorkspaceStream':{useWorkspaceStream:()=>({})}};
  imports.react.useLayoutEffect=imports.react.useEffect;
  const ui=new Proxy({},{get:(_,name)=>String(name)});

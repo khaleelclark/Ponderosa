@@ -4,7 +4,7 @@ import '../shared/web-typescript-loader.mjs';
 const {ponderosaSurfaceVariables,createPonderosaTheme}=await import('../../apps/web/src/theme.ts');
 const {composerSurfaceWidth,composerSurfaceSx}=await import('../../apps/web/src/components/chat/Composer.styles.ts');
 
-test('Assistant and Output reuse the standard green composer colors, focus and readable bubbles',()=>{
+test('Assistant and Output retain Ponderosa green tokens while presentation is scoped',()=>{
  assert.equal(composerSurfaceWidth.md,'min(1180px, calc(100% - 48px))');
  assert.equal(composerSurfaceWidth.xl,'min(1240px, calc(100% - 64px))');
  assert.deepEqual(composerSurfaceSx.borderRadius,{xs:2,sm:2.25});

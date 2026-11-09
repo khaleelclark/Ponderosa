@@ -198,6 +198,7 @@ export function ComposerMentionStatus({
 }
 
 interface ComposerSendActionsProps {
+  steeringOnly?: boolean;
   allowSendWhileRunning: boolean;
   canCancel: boolean;
   cancelPending: boolean;
@@ -217,6 +218,7 @@ interface ComposerSendActionsProps {
 }
 
 export function ComposerSendActions({
+  steeringOnly = false,
   allowSendWhileRunning,
   canCancel,
   cancelPending,
@@ -311,7 +313,7 @@ export function ComposerSendActions({
               disabled={!canSend}
               onClick={send}
               sx={{width:44,height:44}}
-              aria-label={mentionedBusyHandles.length > 0
+              aria-label={!steeringOnly && mentionedBusyHandles.length > 0
                 ? "Queue message"
                 : "Send message"}
             >

@@ -3,6 +3,10 @@ import type { ChatComposerContract } from "./composerContracts";
 import type { AgentMentionBindingDto } from "@ponderosa/core";
 
 export interface ComposerProps extends ChatComposerContract {
+  /** Designated Assistant presentation and steering-only intake; ordinary Outputs omit this. */
+  assistantMessages?: boolean;
+  /** Ordinary Agent surface for reviewing retained Queue intents without rewriting them. */
+  queueReviewHref?: string;
   /** Blocks submission while retaining editable text, selection and paste. */
   submissionDisabled?: boolean;
   /** Keep the composer available while other Agents in this shared chat are working. */

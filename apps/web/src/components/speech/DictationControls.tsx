@@ -26,6 +26,7 @@ export function DictationControls({
   onVoiceAttachment,
   maxRecordingBytes=80*1024*1024,
   recordingContainer,
+  inlineVoiceOptions = false,
 }: {
   disabled: boolean;
   voiceContext?: VoiceConversationContext;
@@ -35,6 +36,7 @@ export function DictationControls({
   onVoiceAttachment?(file:File):string|undefined;
   maxRecordingBytes?:number;
   recordingContainer?:HTMLElement|null;
+  inlineVoiceOptions?:boolean;
 }): JSX.Element {
   const disabled = useWorkspaceReadOnly() || suppliedDisabled;
   const callActionsHost=useContext(ConversationChromeContext)?.callActionsHost;
@@ -51,7 +53,7 @@ export function DictationControls({
   const [openedRecordingOwner,setOpenedRecordingOwner]=useState<string>();
   const recordingOpen=Boolean(recordingContainer)&&openedRecordingOwner===callOwner;
   useEffect(()=>{if(!recordingContainer)setOpenedRecordingOwner(undefined);},[recordingContainer]);
-  useEffect(()=>{if(!recordingOpen&&restoreRecordingFocus.current){restoreRecordingFocus.current=false;const focused=document.activeElement;if(focused===document.body||recordingContainer?.contains(focused))recordingButtonRef.current?.focus({preventScroll:true});}},[recordingOpen,recordingContainer]);
+  useEffect(()=>{if(!recordingOpen&&restoreRecordingFocus.current){restoreRecordingFocus.current=false;const focused=document.activeElement;if(focused===document.body||recordingContainer?.contains(focused))(recordingButtonRef.current??buttonRef.current)?.focus({preventScroll:true});}},[recordingOpen,recordingContainer]);
   useEffect(() => { setOpenedCallOwner(undefined);setOpenedRecordingOwner(undefined); }, [callOwner]);
   useEffect(() => {
     if (disabled) { setAnchor(null); setOpenedCallOwner(undefined);setOpenedRecordingOwner(undefined); }
@@ -132,14 +134,18 @@ export function DictationControls({
     return () => clearTimeout(timer);
   }, [statusLabel, active, paused, dictation.error]);
 
+  const openRecording = () => {
+    if(disabled||callOpen||recordingOpen||active||paused||maxRecordingBytes<=0||!recordingContainer)return;
+    onActiveChange?.(true);setAnchor(null);setOpenedRecordingOwner(callOwner);
+  };
   return (
     <Box ref={rootRef} sx={[speechControlGroupSx, dictation.error ? { flexDirection: { xs: "column", sm: "row" }, alignItems: { xs: "flex-start", sm: "center" } } : {}]}>
       {callActionsHost&&createPortal(<Tooltip title={calledAgent?`Call ${calledAgent}`:"Call"}><span><IconButton aria-label="Call" disabled={callDisabled} onClick={event=>openCall(event.currentTarget)} sx={{width:44,height:44,borderRadius:"50%",color:"primary.main"}}><PhoneIcon/></IconButton></span></Tooltip>,callActionsHost)}
-      {onVoiceAttachment&&<Tooltip title="Record voice message"><span><IconButton
+      {onVoiceAttachment&&!inlineVoiceOptions&&<Tooltip title="Record voice message"><span><IconButton
         ref={recordingButtonRef}
         aria-label="Record voice message"
         disabled={disabled||callOpen||recordingOpen||active||paused||maxRecordingBytes<=0||!recordingContainer}
-        onClick={()=>{if(disabled||callOpen||recordingOpen||active||paused||maxRecordingBytes<=0||!recordingContainer)return;onActiveChange?.(true);setAnchor(null);setOpenedRecordingOwner(callOwner);}}
+        onClick={openRecording}
       ><MicNoneIcon/></IconButton></span></Tooltip>}
       <Tooltip title="Voice options">
         <span>
@@ -168,12 +174,15 @@ export function DictationControls({
         disableRestoreFocus={callOpen}
         disableScrollLock
       >
-        {!callActionsHost&&<MenuItem
+        {(!callActionsHost||inlineVoiceOptions)&&<MenuItem
           disabled={!anchor || callDisabled}
           onClick={() => { if (!anchor) return; openCall(buttonRef.current); }}
         >
           <ListItemIcon><PhoneIcon fontSize="small" /></ListItemIcon>
-          <ListItemText primary="Voice call" secondary={active || paused ? "Stop dictation first" : !voiceContext ? "Choose a source Chat and Agent" : undefined} />
+          <ListItemText primary={inlineVoiceOptions?"Voice conversation":"Voice call"} secondary={active || paused ? "Stop dictation first" : !voiceContext ? "Choose a source Chat and Agent" : undefined} />
+        </MenuItem>}
+        {inlineVoiceOptions&&onVoiceAttachment&&<MenuItem disabled={!anchor||disabled||callOpen||recordingOpen||active||paused||maxRecordingBytes<=0||!recordingContainer} onClick={openRecording}>
+          <ListItemIcon><MicNoneIcon fontSize="small"/></ListItemIcon><ListItemText primary="Record voice message"/>
         </MenuItem>}
         <MenuItem
           disabled={!anchor || disabled || Boolean(unavailable) || busy}

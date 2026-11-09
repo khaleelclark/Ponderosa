@@ -102,7 +102,7 @@ export async function transcriptWidthMountedRegression(): Promise<void> {
 }
 
 /** Actual rendered parity, including the scoped CSS which theme-only checks miss. */
-export async function assistantComposerStyleMountedRegression(): Promise<void> {
+export async function outputComposerStyleMountedRegression(): Promise<void> {
   const host = document.createElement('div'); document.body.append(host);
   const root = createRoot(host), client = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false } } });
   const binding = { projectId: 'style-project', agentId: 'style-assistant', handle: 'Assistant', currentHandle: 'Assistant', currentTitle: 'Assistant' };
@@ -115,18 +115,18 @@ export async function assistantComposerStyleMountedRegression(): Promise<void> {
   try {
     for (const mode of ['light', 'dark'] as const) for (const state of ['empty', 'focused', 'typed', 'disabled', 'attachment', 'sending'] as const) {
       let standard: unknown;
-      for (const assistant of [false, true]) {
-        const label = `${mode}/${state}/assistant=${assistant}`;
+      for (const output of [false, true]) {
+        const label = `${mode}/${state}/output=${output}`;
         let sent = false;
         flushSync(() => root.render(
-          <ThemeProvider theme={createPonderosaTheme(mode, assistant ? 'assistant' : 'standard')}><CssBaseline />
+          <ThemeProvider theme={createPonderosaTheme(mode, output ? 'assistant' : 'standard')}><CssBaseline />
             <QueryClientProvider client={client}><MutationNotificationProvider>
-              <ConversationChromeContext.Provider value={assistant ? { statusHost: null, callActionsHost: null } : undefined}>
-                <Box data-assistant-conversation={assistant ? '' : undefined} sx={{ ...(assistant ? ponderosaSurfaceVariables(mode) : {}), width: 'min(1200px, 100%)', minWidth: 0 }}>
+              <ConversationChromeContext.Provider value={output ? { statusHost: null, callActionsHost: null } : undefined}>
+                <Box data-assistant-conversation={output ? '' : undefined} sx={{ ...(output ? ponderosaSurfaceVariables(mode) : {}), width: 'min(1200px, 100%)', minWidth: 0 }}>
                   <ChatMessageFrame message={{ id: 'style-bubble', author: { kind: 'operator' }, createdAt: '2026-11-09T00:00:00Z', body: <ChatMessageBody text="A short reply with [a link](https://example.invalid) and `code`." /> }} />
                   <Composer key={label} disabled={state === 'disabled'} running={false}
                     destinationMode="fixed" defaultDestination={{ handle: binding.handle, binding, selectionKey: binding.agentId }}
-                    placeholder={assistant ? 'Message Assistant directly' : undefined}
+                    placeholder={output ? 'Message Assistant directly' : undefined}
                     insertTextRequest={['typed', 'sending'].includes(state) ? { id: label, text: 'A controlled message' } : undefined}
                     onSend={() => { sent = true; return new Promise<void>(resolve => { finish = resolve; }); }} />
                 </Box>
@@ -139,8 +139,8 @@ export async function assistantComposerStyleMountedRegression(): Promise<void> {
         const editor = composer.querySelector<HTMLElement>('[aria-label="Message"]')!;
         assert(editor, `${label}: accessible Message editor`);
         assert(!composer.querySelector('[data-composer-mention="true"]'), `${label}: fixed recipient has no destination chip`);
-        assert(!/Message Assistant directly|Reply to|New Agent/.test(composer.textContent ?? ''), `${label}: no Assistant hint or recipient switching`);
-        if (assistant && state === 'empty') assert(!composer.textContent?.includes('Send a message'), `${label}: explicit empty placeholder`);
+        assert(!/Message Assistant directly|Reply to|New Agent/.test(composer.textContent ?? ''), `${label}: no direct-conversation hint or recipient switching`);
+        if (output && state === 'empty') assert(!composer.textContent?.includes('Send a message'), `${label}: explicit empty placeholder`);
         if (state === 'focused') { editor.focus(); await settle(); }
         if (state === 'attachment') {
           const files = new DataTransfer(); files.items.add(new File(['contained attachment'], 'style.txt', { type: 'text/plain' }));
@@ -159,13 +159,13 @@ export async function assistantComposerStyleMountedRegression(): Promise<void> {
           editor: style(editor), bubble: style(bubble), link: style(bubble.querySelector('a')!), code: style(bubble.querySelector('code')!),
           controls: [...composer.querySelectorAll<HTMLButtonElement>('button')].map(button => ({ label: button.getAttribute('aria-label'), disabled: button.disabled, ...style(button), width: pixels(button.getBoundingClientRect().width), height: pixels(button.getBoundingClientRect().height) })),
         };
-        if (!assistant) standard = snapshot;
+        if (!output) standard = snapshot;
         else assert(JSON.stringify(snapshot) === JSON.stringify(standard), `${label}: standard rendered surface, editor, controls and outgoing prose match ${JSON.stringify({ standard, actual: snapshot })}`);
         evidence.push({ label, ...snapshot });
-        await (window as unknown as { assistantStyleCheckpoint?: (label: string) => Promise<void> }).assistantStyleCheckpoint?.(label);
+        await (window as unknown as { outputStyleCheckpoint?: (label: string) => Promise<void> }).outputStyleCheckpoint?.(label);
         if (finish) { finish(); finish = undefined; await settle(); }
       }
     }
-    (window as unknown as { assistantStyleEvidence: unknown[] }).assistantStyleEvidence = evidence;
+    (window as unknown as { outputStyleEvidence: unknown[] }).outputStyleEvidence = evidence;
   } finally { finish?.(); root.unmount(); client.clear(); host.remove(); }
 }

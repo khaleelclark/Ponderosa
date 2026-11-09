@@ -1,3 +1,4 @@
+import { parseNativeTurnCommand } from "@ponderosa/core";
 import {
   ASSET_MEDIA_TYPES,
   INLINE_TEXT_MAX_CODE_POINTS,
@@ -725,4 +726,13 @@ export function composerAttachmentReducer(
         : state.files,
     error: selection.error,
   };
+}
+
+/** Assistant uses ordinary steering, never a Queue gesture or native next-Run command. */
+export function assistantSubmissionError(text: string, queued: boolean): string | undefined {
+  if (queued) return "This saved Queue submission cannot be sent from Assistant. Review it in the Agent chat; its original operation is preserved.";
+  try {
+    if (parseNativeTurnCommand(text)) return "This command requires a new Run. Open the Agent chat to use it; Assistant follow-ups use steering.";
+  } catch (error) { return error instanceof Error ? error.message : "Invalid native action"; }
+  return undefined;
 }

@@ -15,14 +15,16 @@ import { observeNotificationVisibility } from "../../notificationVisibility";
 export function ChatMessageFrame({
   message,
   maxAgentWidth = 800,
+  assistantMessages = false,
 }: {
   message: ChatMessagePresentation;
   maxAgentWidth?: number;
+  assistantMessages?: boolean;
 }): JSX.Element {
   const [mobileTimestampRevealed, setMobileTimestampRevealed] = useState(false);
   const articleRef = useRef<HTMLElement | null>(null);
   const author = message.author;
-  const fromOperator = author.kind !== "agent";
+  const fromOperator = author.kind !== "agent" && (!assistantMessages || author.kind !== "inbound_agent");
   const operatorProfile = author.kind === "operator" ? author.profile : undefined;
   const senderName = author.kind === "operator"
     ? author.profile?.displayName ?? "You"
@@ -86,7 +88,7 @@ export function ChatMessageFrame({
     <article
       ref={articleRef}
       id={message.id}
-      className={`MuiBox-root chat-message chat-message-frame${fromOperator ? " chat-message-end" : ""}${message.status ? " chat-message-has-status" : ""}${selectable ? " chat-message-selectable" : ""}`}
+      className={`MuiBox-root chat-message chat-message-frame${assistantMessages ? " chat-message-assistant" : ""}${fromOperator ? " chat-message-end" : ""}${message.status ? " chat-message-has-status" : ""}${selectable ? " chat-message-selectable" : ""}`}
       style={{ "--chat-agent-max-width": `${maxAgentWidth}px` } as CSSProperties}
       aria-label={message.ariaLabel ?? `${senderName} message`}
       onClick={selectable
@@ -113,7 +115,7 @@ export function ChatMessageFrame({
           : avatar
         : null}
         <div className="MuiBox-root chat-message-column">
-          {author.kind === "agent" ? (
+          {author.kind === "agent" || assistantMessages && author.kind === "inbound_agent" ? (
             <div className="MuiStack-root chat-message-agent-header">
               {openAuthor ? <ButtonBase
                 aria-label={`Open agent ${senderName} from name`}

@@ -72,6 +72,7 @@ export function AgentDetailComposer({
       ) : null}
       <QueuedMessageTray
         messages={queuedMessages}
+        queueReviewHref={composer.assistantMessages?composer.queueReviewHref:undefined}
         scope={composer.conversationDraftId}
         attachmentNamesForMessage={attachmentNamesForQueuedMessage}
         busy={queuedBusy}

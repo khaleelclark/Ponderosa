@@ -93,8 +93,8 @@ export async function voiceMessageRecordingRegression():Promise<void> {
   assert(attachmentCalls===beforeLimit,'Active discard must not stage final recording callbacks');
 
   // Exercise the real toolbar owner fence, not a manually keyed recorder surrogate.
-  let owner='first',captureBlocked=false,refuseOwnedDraft=true;
-  const renderOwner=()=>root.render(<StrictMode><DictationControls disabled={false} recordingContainer={recordingSlot} onActiveChange={value=>{captureBlocked=value;}}
+  let owner='first',captureBlocked=false,refuseOwnedDraft=true,inlineVoiceOptions=false;
+  const renderOwner=()=>root.render(<StrictMode><DictationControls disabled={false} inlineVoiceOptions={inlineVoiceOptions} recordingContainer={recordingSlot} onActiveChange={value=>{captureBlocked=value;}}
    voiceContext={{projectId:'owned-project',conversationId:'owned-chat',selectedAgentId:owner,agents:[],lockAgent:true}}
    onFinalTranscript={words=>insertedTranscripts.push(words)} onSettlingChange={()=>{}}
    onVoiceAttachment={file=>{if(refuseOwnedDraft)return 'Owned draft busy';attachmentCalls++;attached=file;return undefined;}}/></StrictMode>);
@@ -126,6 +126,19 @@ export async function voiceMessageRecordingRegression():Promise<void> {
   permission=undefined;(await recordButton()).click();(await until(()=>permission,'Final focus-preservation recording did not request permission'))(stream);
   (await button('Finish recording')).click();nextEditor.focus();await closedRecorder();await tick();
   assert(document.activeElement===nextEditor&&nextEditor.value==='Keep this newer editor interaction','Finishing must not steal focus or content from a newer editor interaction');
+
+  // Assistant reuses this same recorder through its single waveform menu.
+  inlineVoiceOptions=true;renderOwner();await tick();
+  assert(!document.querySelector('button[aria-label="Record voice message"]'),'Inline Assistant controls have no second microphone button');
+  const waveform=await until(()=>document.querySelector<HTMLButtonElement>('button[aria-label="Voice options"]')??undefined,'Assistant waveform trigger missing');
+  waveform.focus();waveform.click();
+  const recordChoice=await until(()=>Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]')).find(node=>node.textContent?.includes('Record voice message')),'Waveform recording choice missing');
+  permission=undefined;recordChoice.click();assert(captureBlocked,'Waveform recording synchronously gates submission');
+  (await until(()=>permission,'Waveform recording did not request permission'))(stream);
+  const beforeWaveAttachment=attachmentCalls;(await button('Finish recording')).click();await closedRecorder();
+  assert(attachmentCalls===beforeWaveAttachment+1,'Waveform recording stages through the existing draft attachment callback once');
+  await until(()=>document.activeElement===waveform?true:undefined,'Closing waveform recording restores its actual trigger');
+
  }finally{
   root.unmount();host.remove();recordingSlot.remove();nextEditor.remove();window.MediaRecorder=nativeRecorder;if(nativeRecognition)speechWindow.SpeechRecognition=nativeRecognition;else delete speechWindow.SpeechRecognition;
   if(devicesDescriptor)Object.defineProperty(navigator,'mediaDevices',devicesDescriptor);else delete (navigator as unknown as {mediaDevices?:MediaDevices}).mediaDevices;

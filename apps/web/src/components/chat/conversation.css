@@ -22,3 +22,37 @@
 
 .chat-message-frame .chat-prose { font-size: 1rem; line-height: 1.65; --chat-prose-paragraph-margin: .5em; --chat-prose-list-margin: .5em; --chat-prose-list-gap: .2em; }
 .chat-message-frame .chat-prose.chat-prose-small { font-size: .9375rem; line-height: 1.55; }
+
+/* Assistant Messages keeps the shared lane and each canonical row/action intact. */
+.chat-message-frame.chat-message-assistant { padding-block: 11px; }
+.chat-message-assistant:not(.chat-message-end) > .chat-message-row { display: grid; grid-template-columns: 44px minmax(0, min(78%, calc(100% - 54px))); align-items: start; }
+.chat-message-assistant:not(.chat-message-end) > .chat-message-row > :not(.chat-message-column) { grid-column: 1; grid-row: 2; align-self: end; }
+.chat-message-assistant:not(.chat-message-end) > .chat-message-row > .chat-message-column { display: contents; }
+.chat-message-assistant:not(.chat-message-end) > .chat-message-row > .chat-message-column > * { grid-column: 2; }
+.chat-message-assistant:not(.chat-message-end) .chat-message-agent-header { grid-row: 1; }
+.chat-message-assistant:not(.chat-message-end) .chat-message-body { grid-row: 2; width: fit-content; }
+.chat-message-assistant:not(.chat-message-end) > .chat-message-row > .chat-message-column { width: fit-content; max-width: min(78%, calc(100% - 54px)); }
+.chat-message-assistant > .chat-message-row > .chat-message-column > .chat-message-body { padding: 11px 15px; border-radius: 21px; background: var(--ponderosa-message-bubble); }
+.chat-message-assistant:not(.chat-message-end) > .chat-message-row > .chat-message-column > .chat-message-body { border-bottom-left-radius: 6px; }
+.chat-message-frame.chat-message-assistant.chat-message-end > .chat-message-row > .chat-message-column { width: fit-content; max-width: 78%; }
+.chat-message-frame.chat-message-assistant.chat-message-end > .chat-message-row > .chat-message-column > .chat-message-body { background: var(--assistant-outgoing, var(--ponderosa-accent)); color: var(--assistant-on-outgoing, var(--ponderosa-text-primary)); border-bottom-right-radius: 6px; --ponderosa-prose-link: currentColor; }
+.chat-message-assistant .chat-message-agent-header [data-message-sender] { font-size: .8125rem; }
+.ponderosa-composer[data-assistant-composer] [aria-label="Add attachment or capability"] { width: 44px; height: 44px; border-radius: 50%; background: var(--ponderosa-surface); border: 1px solid var(--ponderosa-border); }
+.ponderosa-composer[data-assistant-composer] [data-composer-runtime] { border-radius: 999px; min-height: 44px; }
+.ponderosa-composer[data-assistant-composer][data-narrow="true"] [data-runtime-icon] { display: block; }
+.ponderosa-composer[data-assistant-composer][data-narrow="true"] [data-runtime-label] { display: none; }
+@media (max-width: 599px) {
+ .chat-message-assistant:not(.chat-message-end) > .chat-message-row { grid-template-columns: 44px minmax(0, calc(100% - 48px)); }
+ .chat-message-frame.chat-message-assistant.chat-message-end > .chat-message-row > .chat-message-column { max-width: 90%; }
+}
+
+.chat-message-assistant.chat-message-end .chat-code-block { background: var(--ponderosa-surface); color: var(--ponderosa-text-primary); }
+.chat-message-assistant.chat-message-end .chat-text-navigation { color: inherit; }
+
+.ponderosa-composer[data-assistant-composer] [data-composer-send-actions] [aria-label="Send message"] { border-radius: 50%; }
+.ponderosa-composer[data-assistant-composer] [data-composer-send-actions] [aria-label="Send message"]:not(:disabled) { background: var(--assistant-outgoing, var(--ponderosa-accent)); color: var(--assistant-on-outgoing, var(--ponderosa-text-primary)); }
+.chat-message-assistant .chat-operator-avatar, .chat-message-assistant .chat-operator-sender { display: none; }
+.chat-message-assistant .chat-operator-label { min-height: 0; margin-bottom: 0; }
+.chat-message-assistant .chat-message-operator-header { min-height: 0; }
+
+.chat-message-assistant.chat-message-end .chat-attachment-card { background: var(--ponderosa-surface); color: var(--ponderosa-text-primary); padding: 4px; border-radius: 8px; }

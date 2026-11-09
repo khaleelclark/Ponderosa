@@ -184,3 +184,15 @@ test('pending inline capture blocks immediate Enter and Send eligibility without
  setActive(false);assert.equal(eligible(),true);attempt();assert.equal(c.admitted,1,'stage/discard releases the ordinary submission path');
  c.dictationSettling=true;c.dictationSettlingRef.current=true;attempt();assert.equal(c.admitted,1,'the existing transcript-settling gate remains effective');assert.equal(c.error,'Stop voice dictation and wait for final text before sending.');
 });
+
+const {assistantSubmissionError}=await import('../../apps/web/src/components/chat/composerUtils.ts');
+test('Assistant rejects retained Queue and native next-Run commands without reinterpreting authored text',()=>{
+ assert.match(assistantSubmissionError('Original exact λ😀',true),/original operation is preserved/);
+ for(const text of ['/goal-resume','/goal-create {"objective":"Scoped goal"}','/review {"type":"uncommittedChanges"}','/plan {"prompt":"Scoped plan"}','/structured {"prompt":"Scoped prompt","schema":{"type":"object"}}'])
+  assert.match(assistantSubmissionError(text,false),/requires a new Run/);
+ assert.equal(assistantSubmissionError('A normal follow-up',false),undefined);
+ assert.equal(assistantSubmissionError('Please explain /goal-resume',false),undefined);
+ assert.equal(assistantSubmissionError('/unknown literal text',false),undefined);
+ assert.equal(assistantSubmissionError('#Someone /goal-resume',false),undefined,'Only exact native-turn commands receive native semantics');
+ assert.ok(assistantSubmissionError('/review invalid-json',false),'Malformed native work stays a draft too');
+});

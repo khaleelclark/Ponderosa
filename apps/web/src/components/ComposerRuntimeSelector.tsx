@@ -267,6 +267,7 @@ export function ComposerRuntimeSelector({
 
   return <>
     <ButtonBase
+      data-composer-runtime
       aria-label={selectedModelLabel + " · " + selectedEffortLabel + (selectedSpeed && selectedSpeed.id !== "standard" ? " · " + selectedSpeed.label : "") + ". " + (scopeLabel ? scopeLabel + ". " : "") + "Choose engine, model, reasoning, and speed"}
       aria-haspopup="dialog"
       aria-controls={anchor ? menuId : undefined}
@@ -294,8 +295,8 @@ export function ComposerRuntimeSelector({
         "&:focus-visible": { outline: "2px solid", outlineColor: "primary.main", outlineOffset: 2 },
       }}
     >
-      <SpeedOutlinedIcon sx={{ display: { xs: "block", sm: "none" } }} />
-      <Stack direction="row" spacing={0.6} sx={{ display: { xs: "none", sm: "flex" }, alignItems: "baseline", minWidth: 0 }}>
+      <SpeedOutlinedIcon data-runtime-icon sx={{ display: { xs: "block", sm: "none" } }} />
+      <Stack data-runtime-label direction="row" spacing={0.6} sx={{ display: { xs: "none", sm: "flex" }, alignItems: "baseline", minWidth: 0 }}>
         <Typography variant="body2" noWrap sx={{ fontWeight: 700 }}>{selectedModelLabel}</Typography>
         <Typography
           variant="body2"

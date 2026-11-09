@@ -442,6 +442,7 @@ function ChatPaneComponent({
         return (
           <Fragment key={item.id}>
             <ChatMessageFrame
+              assistantMessages={Boolean(conversationChrome?.assistantAgentId && conversationChrome.assistantAgentId===fileOwnerAgentId)}
               message={{
               id: `message-${message.id}`,
               author: fromUser

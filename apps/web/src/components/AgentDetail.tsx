@@ -1,3 +1,5 @@
+import {productWorkspacePath} from "../api/productScope";
+import {ConversationChromeContext} from './ConversationChromeContext';
 import {ContextRecoveryPanel} from './ContextRecoveryPanel';
 import {ImportedCommunications} from './ImportedCommunications';
 import { createClientId } from "../clientId";
@@ -125,6 +127,7 @@ export function AgentDetail({
 }: AgentDetailProps): JSX.Element {
   const auditOnly=useWorkspaceReadOnly();
   const settingsExtension=useContext(ResourceSettingsContext);
+  const assistantMessages=useContext(ConversationChromeContext)?.assistantAgentId===agentId;
   const queryClient = useQueryClient();
   const agentQuery = useAgent(agentId);
   const browserChatId = agentQuery.data?.agent.conversationId;
@@ -441,6 +444,7 @@ export function AgentDetail({
     steerQueuedMessage,
     submitAgentMessage,
   } = useAgentMessageController({
+    steeringOnly: assistantMessages,
     agentId,
     projectId: detail?.agent.projectId,
     engine,
@@ -909,7 +913,7 @@ export function AgentDetail({
   </>);
 
   return (
-    <OutgoingMessageProvider scope={agentId} profile={preferencesQuery.data?.profile}><Box
+    <OutgoingMessageProvider scope={agentId} profile={preferencesQuery.data?.profile}><Box data-assistant-messages={assistantMessages||undefined}
       sx={{
         width: "100%",
         maxWidth: "100%",
@@ -1119,17 +1123,19 @@ export function AgentDetail({
             speed,
           ]),
           submissionRuntimeIntentKey: String(submissionRuntimeIntent),
-          controls: standalone?undefined:agentRuntimeControls,
+          controls: !standalone||assistantMessages?agentRuntimeControls:undefined,
+          assistantMessages,
+          queueReviewHref: assistantMessages?productWorkspacePath(`/projects/${encodeURIComponent(detail.agent.projectId)}/agents/${encodeURIComponent(agentId)}?view=chat`):undefined,
           disabled: false,
           submissionDisabled: runtimeSaving,
           running: false,
-          placeholder: runtimeActivity
+          placeholder: assistantMessages?"":runtimeActivity
             ? `Steer ${detail.agent.title}'s active response · Queue sends next`
             : `Message ${detail.agent.title} directly`,
           agentResponding: Boolean(runtimeActivity),
           onSend: submitAgentMessage("steer"),
           onCommand: invokeAgentCommand,
-          onQueue: submitAgentMessage("queue"),
+          onQueue: assistantMessages?undefined:submitAgentMessage("queue"),
           onCancel: stopActiveRun,
         }}
       />}

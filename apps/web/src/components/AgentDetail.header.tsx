@@ -58,12 +58,13 @@ function AgentRunState({
   phaseEvidenceFresh,
   startedAt,
   agentNameForId,
-  paused, accessRestricted, visibleMobileLabel = false,
+  paused, accessRestricted, visibleMobileLabel = false, contact = false,
 }: {
   status: AgentStatus;
   paused?: boolean;
   accessRestricted?: boolean;
   visibleMobileLabel?: boolean;
+  contact?: boolean;
   health?: AgentHealthDto;
   connectionStatus: WorkspaceConnectionStatus;
   phaseEvidenceFresh: boolean;
@@ -108,6 +109,10 @@ function AgentRunState({
   const visibleLabel = connectionStatus === "live" && phaseEvidenceFresh
     ? `${runState} · Live` : `${delayed ? "Last known: " : ""}${runState}`;
   const accessibleDetail = `${presentation.accessibleLabel}${elapsed ? `; ${elapsed}` : ""}; ${connectionState.toLocaleLowerCase()}. ${details}`;
+  if (contact) return <Tooltip title={accessibleDetail}><Box component="span" role="status" tabIndex={0} aria-label={accessibleDetail} sx={{display:'flex',alignItems:'center',justifyContent:'center',gap:.75,minWidth:0,minHeight:24,color:'text.secondary'}}>
+    <Typography component="span" variant="caption" noWrap>{`${delayed ? "Last known: " : ""}${presentation.label}`}</Typography>
+    <Box component="span" aria-hidden="true" sx={{width:7,height:7,flex:'0 0 7px',borderRadius:'50%',bgcolor:theme=>semanticStatusColorToken(presentation.status,theme.palette.mode)}}/>
+  </Box></Tooltip>;
   if (mobile && !paused) return <>
     <Tooltip title={accessibleDetail}><IconButton size="small" aria-label={accessibleDetail}
       onClick={event => setDetailAnchor(event.currentTarget)} sx={{ width: visibleMobileLabel ? "auto" : 44, minWidth: 44, height: 44, gap: 0.5, borderRadius: visibleMobileLabel ? 1 : "50%" }}>
@@ -207,11 +212,11 @@ export function AgentDetailHeader({
   const conversationChrome=useContext(ConversationChromeContext);
   const notify=useMutationNotification();
   if(standalone)return <><Stack direction="row" spacing={1} sx={{alignItems:'center',px:1,minWidth:0,flexWrap:'wrap',...(conversationChrome?.statusHost&&!running&&!paused&&tab==='chat'?{height:0,minHeight:0,overflow:'hidden'}:{})}}>
-    {!conversationChrome?.statusHost&&<Box sx={{flex:1,minWidth:0}}><AgentRunState status={status} paused={paused} accessRestricted={accessRestricted} health={health} connectionStatus={connectionStatus} phaseEvidenceFresh={phaseEvidenceFresh} startedAt={startedAt} agentNameForId={agentNameForId} visibleMobileLabel/></Box>}
+    {!conversationChrome?.statusHost&&<Box sx={{flex:1,minWidth:0}}><AgentRunState contact={conversationChrome?.assistantAgentId===agent.id} status={status} paused={paused} accessRestricted={accessRestricted} health={health} connectionStatus={connectionStatus} phaseEvidenceFresh={phaseEvidenceFresh} startedAt={startedAt} agentNameForId={agentNameForId} visibleMobileLabel/></Box>}
     {tab!=='chat'&&<Button onClick={()=>onTabChange('chat')}>Back to chat</Button>}
     {(running||paused)&&!accessRestricted&&!auditOnly&&onPauseResume&&<Button disabled={pausePending} onClick={onPauseResume}>{pausePending?'Waiting…':paused?'Resume':'Pause'}</Button>}
     {running&&!auditOnly&&<Button color="error" disabled={stopping} onClick={onStop}>{stopping?'Stopping…':'Stop'}</Button>}
-  </Stack>{conversationChrome?.statusHost&&createPortal(<AgentRunState status={status} paused={paused} accessRestricted={accessRestricted} health={health} connectionStatus={connectionStatus} phaseEvidenceFresh={phaseEvidenceFresh} startedAt={startedAt} agentNameForId={agentNameForId} visibleMobileLabel/>,conversationChrome.statusHost)}</>;
+  </Stack>{conversationChrome?.statusHost&&createPortal(<AgentRunState contact={conversationChrome?.assistantAgentId===agent.id} status={status} paused={paused} accessRestricted={accessRestricted} health={health} connectionStatus={connectionStatus} phaseEvidenceFresh={phaseEvidenceFresh} startedAt={startedAt} agentNameForId={agentNameForId} visibleMobileLabel/>,conversationChrome.statusHost)}</>;
   return (
     <TabbedWorkspaceFrame
       compactMobile
