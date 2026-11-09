@@ -2651,6 +2651,10 @@ export function Composer({
     );
     const runtimeCommandSubmission =
       slash?.command.invocation === "runtime";
+    if (runtimeCommandSubmission && action === "queue") {
+      setSendError("Provider actions cannot be queued. Send this command to run it.");
+      return;
+    }
     if (conversationDraftId && draftStorageKey && !runtimeCommandSubmission && !durableRetryAction) {
       const recipientBindings = destinationMode === "fixed" && defaultDestination?.binding
         ? [defaultDestination.binding]

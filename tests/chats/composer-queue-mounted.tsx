@@ -65,11 +65,14 @@ export async function composerQueueSubmissionMountedRegression(): Promise<void> 
   const binding = { projectId: 'synthetic', agentId: 'queue-agent', handle: 'Queue-Agent', currentHandle: 'Queue-Agent', currentTitle: 'Queue Agent' };
   let epoch = 0, failQueue = false, failSend = false;
   const queues: Array<{ text: string; files: File[]; recipients: string[]; retry: boolean }> = [], sends: string[] = [];
+  const providerActions: string[] = [];
   function Probe({ busy, available = true, blocked = false, text = '#Queue-Agent Queued exact λ😀' }: { busy: boolean; available?: boolean; blocked?: boolean; text?: string }) {
     const [rows, setRows] = useState<QueuedConversationMessageDto[]>([]);
     return <><Composer disabled={false} submissionDisabled={blocked} running={busy} allowSendWhileRunning allowUnmentionedSend agentResponding={busy}
       destinationMode="project-chat" defaultDestination={{ handle: binding.handle, binding, selectionKey: binding.agentId }} mentionHandles={[binding.handle]} mentionBindings={[binding]}
       insertTextRequest={text ? { id: String(epoch), text } : undefined}
+      commands={[{ name: 'status', description: 'Synthetic runtime action', invocation: 'runtime', status: 'available', source: 'adapter-implemented', acceptsArguments: true, insertText: '/status ' }, { name: 'prompt', description: 'Synthetic prompt command', invocation: 'prompt', status: 'available', source: 'adapter-implemented', acceptsArguments: true, insertText: '/prompt ' }]}
+      onCommand={(command, args) => { providerActions.push(command.name + ':' + (args ?? '')); }}
       onSend={body => { sends.push(body); if (failSend) throw Error('Controlled Send failure'); }}
       onQueue={available ? (body, files, _ids, _owner, context) => {
         queues.push({ text: body, files: [...files], recipients: context?.mentionedAgents?.map(item => item.agentId) ?? [], retry: Boolean(context?.retryPreparedAttempt) });
@@ -105,5 +108,28 @@ export async function composerQueueSubmissionMountedRegression(): Promise<void> 
     const sent = sends.length; await key(editor, true); assert(sends.length === sent && queues.length === before && editor.textContent?.includes('Queued exact'), 'Ctrl+Enter cannot retry a frozen Send'); failSend = false;
     editor = await render({ busy: true }); host.querySelector<HTMLButtonElement>('[aria-label="Queue message"]')!.click(); await until(() => queues.length === before + 1, 'Existing Queue button remains functional');
     assert(queues.at(-1)!.text === queues[0].text, 'Button and shortcut use identical queue submission text');
+    for (const text of ['#Queue-Agent /status', '/status with arguments']) {
+      editor = await render({ busy: false, text }); const count = queues.length, sent = sends.length, actions = providerActions.length;
+      await key(editor, true); await until(() => host.textContent?.includes('Provider actions cannot be queued') === true, 'Queue rejects a runtime action');
+      assert(queues.length === count && sends.length === sent && providerActions.length === actions && editor.textContent?.includes('/status'), 'Ctrl+Enter retains runtime command without executing or accepting suggestions');
+      host.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!.click(); await until(() => providerActions.length === actions + 1, 'Explicit Send still executes the provider action');
+    }
+    if (!mobile) {
+      editor = await render({ busy: false, text: '#Queue-Agent /status' }); const actions = providerActions.length;
+      await key(editor, false); assert(providerActions.length === actions && editor.textContent?.includes('/status'), 'Ordinary Enter first accepts the highlighted command');
+      await key(editor, false); await until(() => providerActions.length === actions + 1, 'Ordinary Enter executes the selected runtime command once');
+    }
+    editor = await render({ busy: true, text: '#Queue-Agent /status' }); const actions = providerActions.length, count = queues.length;
+    host.querySelector<HTMLButtonElement>('[aria-label="Queue message"]')!.click(); await until(() => host.textContent?.includes('Provider actions cannot be queued') === true, 'Queue button uses the same runtime-action validation');
+    assert(providerActions.length === actions && queues.length === count, 'Queue never becomes a provider action');
+    for (const text of ['#Queue-Agent /prompt with arguments', '#Queue-Agent /unknown literal']) {
+      editor = await render({ busy: false, text }); const before = queues.length; await key(editor, true); await until(() => queues.length === before + 1, 'Prompt commands and unknown slash text retain ordinary queue semantics');
+      assert(providerActions.length === actions, 'Queued authored text does not execute a provider action');
+    }
+    editor = await render({ busy: false, text: '#Queue-Agent /status' }); const attached = new DataTransfer(); attached.items.add(new File(['literal command attachment'], 'literal.txt', { type: 'text/plain' }));
+    const attachmentInput = host.querySelector<HTMLInputElement>('[aria-label="Choose files"]')!; attachmentInput.files = attached.files; attachmentInput.dispatchEvent(new Event('change', { bubbles: true }));
+    await until(() => host.textContent?.includes('literal.txt') === true, 'Command-like message attachment settles'); const before = queues.length;
+    await key(editor, true); await until(() => queues.length === before + 1, 'Command-like text with attachment remains an authored queued message');
+    assert(providerActions.length === actions && queues.at(-1)!.files[0].name === 'literal.txt', 'Attachment follows existing message semantics');
   } finally { root.unmount(); client.clear(); host.remove(); }
 }
