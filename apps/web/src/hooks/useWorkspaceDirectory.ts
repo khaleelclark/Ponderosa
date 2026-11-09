@@ -76,7 +76,7 @@ export function useWorkspaceDirectory<T extends WorkspaceDirectoryItemDto>(
     ...(options.folders ? ["folders"] : [])] as const;
   const query = useInfiniteQuery({
     queryKey,
-    queryFn: ({ pageParam }) =>
+    queryFn: ({ pageParam, signal }) =>
       api.getWorkspaceDirectory<T>(kind, {
         limit: WORKSPACE_DIRECTORY_PAGE_SIZE,
         cursor: pageParam as string | undefined,
@@ -89,7 +89,7 @@ export function useWorkspaceDirectory<T extends WorkspaceDirectoryItemDto>(
         outcomes: options.recentOutcomes,
         summary: options.summary,
         folders: options.folders,
-      }),
+      }, signal),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (
       lastPage: WorkspaceDirectoryPageDto<T>,

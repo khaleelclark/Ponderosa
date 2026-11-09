@@ -437,8 +437,8 @@ export const realApi = {
   getProjectDeletionPreview(projectId: string): Promise<ProjectDeletionPreviewDto> {
     return requestJson<ProjectDeletionPreviewDto>(`/api/projects/${encodeURIComponent(projectId)}/deletion-preview`);
   },
-  getAgentHealth(projectId: string): Promise<AgentHealthProjectionDto> {
-    return requestJson<AgentHealthProjectionDto>(`/api/projects/${encodeURIComponent(projectId)}/agent-health`);
+  getAgentHealth(projectId: string, signal?: AbortSignal): Promise<AgentHealthProjectionDto> {
+    return requestJson<AgentHealthProjectionDto>(`/api/projects/${encodeURIComponent(projectId)}/agent-health`, signal ? { signal } : undefined);
   },
   getAgentWork(projectId: string, filter: { conversationId?: string; agentId?: string; focusId?: string; limit?: number } = {}): Promise<AgentWorkInspectorDto> {
     return requestJson(`/api/projects/${encodeURIComponent(projectId)}/agent-work${toQuery({
@@ -615,6 +615,7 @@ export const realApi = {
       summary?: boolean;
       folders?: boolean;
     } = {},
+    signal?: AbortSignal,
   ): Promise<WorkspaceDirectoryPageDto<T>> {
     const path = `/api/workspace/directory/${encodeURIComponent(kind)}${toQuery({
         limit: options.limit,
@@ -629,9 +630,9 @@ export const realApi = {
         summary: options.summary ? "true" : undefined,
         folders: options.folders ? "true" : undefined,
       })}`;
-    return requestJson<WorkspaceDirectoryPageDto<T>>(path).catch(async (error) => {
+    return requestJson<WorkspaceDirectoryPageDto<T>>(path, signal ? { signal } : undefined).catch(async (error) => {
       if (!(error instanceof ApiRequestError) || error.status !== 409 || !options.cursor) throw error;
-      const fresh = await requestJson<WorkspaceDirectoryPageDto<T>>(withoutCursor(path));
+      const fresh = await requestJson<WorkspaceDirectoryPageDto<T>>(withoutCursor(path), signal ? { signal } : undefined);
       return { ...fresh, reset: true };
     });
   },

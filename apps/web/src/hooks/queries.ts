@@ -184,7 +184,7 @@ export function useConversations(projectId: string | undefined, enabled = true) 
 export function useAgentHealth(projectId: string | undefined, enabled = true) {
   return useQuery({
     queryKey: queryKeys.agents.health(projectId),
-    queryFn: () => api.getAgentHealth(projectId ?? ""),
+    queryFn: ({ signal }) => api.getAgentHealth(projectId ?? "", signal),
     enabled: Boolean(projectId) && enabled,
     refetchInterval: (query) => {
       const agents = query.state.data?.agents ?? [];

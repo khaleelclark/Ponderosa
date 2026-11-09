@@ -260,8 +260,8 @@ export function GlobalChatSearch({ open, onClose, onExited, onSelect, initialSea
   const agentTitleSearchEnabled = open && Boolean(debouncedQuery) && (scope === "all" || scope === "agents");
   const matchingAgents = useInfiniteQuery({
     queryKey: queryKeys.workspaceDirectory.list("agent", debouncedQuery, undefined, undefined, undefined, undefined, undefined, undefined),
-    queryFn: ({ pageParam }) => api.getWorkspaceDirectory<WorkspaceAgentDirectoryItemDto>(
-      "agent", { search: debouncedQuery, limit: 25, cursor: pageParam },
+    queryFn: ({ pageParam, signal }) => api.getWorkspaceDirectory<WorkspaceAgentDirectoryItemDto>(
+      "agent", { search: debouncedQuery, limit: 25, cursor: pageParam }, signal,
     ),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: page => page.history.cursor,
