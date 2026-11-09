@@ -424,7 +424,7 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
       }
       if (reply.failureReason === "context_changed") {
         setProvisionalReply(""); setRenderReply(undefined); setPlayText(undefined);
-        fail("Memory changed during this reply. Check Chat before continuing."); return;
+        fail("The reply context changed. Check Chat before continuing."); return;
       }
       if (reply.state === "failed") {
         // This intentional queue stop still awaits the exact canonical fallback.
@@ -495,7 +495,7 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
         if (!valid() || envelope.agentId !== agentId) return;
         const event = envelope.event;
         if (event.type === "memory_changed" && event.projectId === projectId) {
-          if (event.runId === observedRun.current && event.conversationId === conversationId) fail("Memory changed during this reply. Check Chat before continuing.");
+          if (event.runId === observedRun.current && event.conversationId === conversationId) fail("The reply context changed. Check Chat before continuing.");
           else { validationVersion++; void refreshStatus(); }
         } else if (event.type === "session_reset") {
           if (exposure?.sessionResetSeq !== undefined && envelope.seq > exposure.sessionResetSeq) fail("The session changed during this reply. Check Chat before continuing.");

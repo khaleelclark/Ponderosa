@@ -4,7 +4,7 @@ import {StrictMode} from 'react';
 import {createRoot} from 'react-dom/client';
 import {ThemeProvider} from '@mui/material/styles';
 import {QueryClient,QueryClientProvider} from '@tanstack/react-query';
-import {DEFAULT_SPEECH_PREFERENCES} from '@ponderosa/core';
+import {DEFAULT_SPEECH_PREFERENCES, type AgentEvent} from '@ponderosa/core';
 import {api} from '../../apps/web/src/api';
 import {queryKeys} from '../../apps/web/src/queryKeys';
 import {VoiceConversation} from '../../apps/web/src/components/speech/VoiceConversation';
@@ -24,6 +24,7 @@ interface UtteranceHarness{text:string;finish():void}
 async function fixture(run:(f:{
  recognitions:RecognitionHarness[];utterances:UtteranceHarness[];calls:Array<{conversationId:string;request:Record<string,unknown>}>;
  accepted:()=>void;setAccepted:(value:boolean)=>void;publish:(index:number,text:string)=>void;
+ emit:(event:AgentEvent)=>boolean;
  button:(name:string)=>Promise<HTMLButtonElement>;client:QueryClient;host:HTMLDivElement;
 })=>Promise<void>):Promise<void>{
  const speechWindow=window as unknown as {SpeechRecognition?:typeof Recognition;SpeechSynthesisUtterance?:typeof Utterance};
@@ -51,6 +52,7 @@ async function fixture(run:(f:{
   finish(){this.onend?.();}
  }
  let accepted=false;const messages:Array<Record<string,unknown>>=[];
+ const subscribers=new Set<Parameters<typeof api.subscribeAgent>[2]>();
  const original={getConversation:api.getConversation,getWorkspacePreferences:api.getWorkspacePreferences,sendMultiAgentDirectMessage:api.sendMultiAgentDirectMessage,getVoiceReplyStatus:api.getVoiceReplyStatus,subscribeAgent:api.subscribeAgent};
  const detail=()=>({conversation:{id:agent.conversationId,projectId:agent.projectId},agents:[agent],messages:messages.map(message=>({...message,deliveryReceipts:(message.deliveryReceipts as unknown[]|undefined)?.map(receipt=>({...receipt}))}))});
  const currentStatus=()=>{const last=calls.length-1,reply=messages.find(message=>message.id==='answer-'+last);return {messageId:'input-'+last,runId:'run-one',runStatus:'running',memoryExposure:{state:'disabled',runId:'run-one'},...(reply?{canonicalReplyEventId:reply.id}:{})};};
@@ -62,7 +64,7 @@ async function fixture(run:(f:{
    const message={id,communicationEventId:id,conversationId,role:'user',text:request.text,createdAt:new Date().toISOString(),deliveryReceipts:[{targetAgentId:agent.id,state:'started',executionId:'run-one',injectionKind:'steer',providerAcknowledged:true}]};
    messages.push(message);return {messageId:id,message,unavailableRecipients:[]};
   },
-  getVoiceReplyStatus:async()=>currentStatus(),subscribeAgent:()=>({close(){}}),
+  getVoiceReplyStatus:async()=>currentStatus(),subscribeAgent:(_id:string,_seq:unknown,handlers:Parameters<typeof api.subscribeAgent>[2])=>{subscribers.add(handlers);return {close(){subscribers.delete(handlers);}};},
  });
  speechWindow.SpeechRecognition=Recognition;
  speechWindow.SpeechSynthesisUtterance=Utterance;
@@ -79,7 +81,8 @@ async function fixture(run:(f:{
  try{
   root.render(<StrictMode><ThemeProvider theme={createPonderosaTheme('light')}><QueryClientProvider client={client}><VoiceConversation {...agent} agents={[agent as never]} selectedAgentId={agent.id} lockAgent open startOnOpen onClose={()=>root.render(null)}/></QueryClientProvider></ThemeProvider></StrictMode>);
   await until(()=>recognitions.length===1?true:undefined,'Opening Call did not start one real dictation cycle');
-  await run({recognitions,utterances,calls,accepted:()=>{accepted=true;},setAccepted:value=>{accepted=value;},publish,button,client,host});
+  await run({recognitions,utterances,calls,accepted:()=>{accepted=true;},setAccepted:value=>{accepted=value;},publish,button,client,host,
+   emit:event=>{for(const handlers of subscribers)handlers.onEvent?.({agentId:agent.id,seq:1,ts:new Date().toISOString(),event});return subscribers.size>0;}});
  }finally{
   root.unmount();client.clear();host.remove();Object.assign(api,original);
   if(nativeRecognition)speechWindow.SpeechRecognition=nativeRecognition;else delete speechWindow.SpeechRecognition;
@@ -143,6 +146,24 @@ export async function voiceCallMountedFatalRegression():Promise<void>{
   (await f.button('Reconnect call')).click();
   await until(()=>f.recognitions.length===count+1?true:undefined,'Reconnect after pagehide did not safely resume listening');
   assert(f.calls.length===0,'Reconnect sent discarded words');
+  (await f.button('End call')).click();
+ });
+}
+
+export async function voiceCallContextAttributionRegression():Promise<void>{
+ for(const hint of ['context_changed','memory_changed'] as const)await fixture(async f=>{
+  f.accepted();
+  const recognition=f.recognitions[0]!;recognition.result('Synthetic context check');recognition.onspeechend?.();recognition.end();
+  await until(()=>f.calls.length===1?true:undefined,'Call input was not accepted');
+  const reply={projectId:agent.projectId,conversationId:agent.conversationId,agentId:agent.id,messageId:'input-0',runId:'run-one',streamId:'stream',sequence:1,text:'',state:'open' as const,acceptedAt:new Date().toISOString()};
+  await until(()=>f.emit({type:'voice_reply',reply})?true:undefined,'Call stream was not attached');
+  if(hint==='context_changed')f.emit({type:'voice_reply',reply:{...reply,state:'failed',failureReason:'context_changed'}});
+  else f.emit({type:'memory_changed',projectId:agent.projectId,conversationId:agent.conversationId,runId:'run-one',scope:'chat'});
+  await until(()=>document.querySelector('[data-ponderosa-call]')?.textContent?.includes('The reply context changed. Check Chat before continuing.')?true:undefined,'Context invalidation must report the actual breadth of its signal');
+  assert(!document.querySelector('[data-ponderosa-call]')?.textContent?.includes('Memory changed during this reply'),'General authority invalidation falsely blamed a memory mutation');
+  (await f.button('Reconnect call')).click();
+  await until(()=>f.recognitions.length===2?true:undefined,'Explicit reconnect did not resume capture');
+  assert(f.calls.length===1,'Reconnect replayed the interrupted turn');
   (await f.button('End call')).click();
  });
 }
