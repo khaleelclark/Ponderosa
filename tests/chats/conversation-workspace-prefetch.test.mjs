@@ -7,7 +7,7 @@ const require=createRequire(new URL('../../apps/web/package.json',import.meta.ur
 const ts=require('typescript'),{QueryClient,QueryObserver}=require('@tanstack/react-query');
 const source=name=>readFileSync(new URL('../../apps/web/src/'+name,import.meta.url),'utf8');
 function module(text,imports={}){
- const exports={};vm.runInNewContext(ts.transpileModule(text,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX}}).outputText,{exports,Error,Promise,Map,Set,URLSearchParams,window:{location:{pathname:'/home'}},require:name=>name in imports?imports[name]:name==='react/jsx-runtime'?require(name):new Proxy({},{get:(_,key)=>String(key)})});return exports;
+ const exports={};vm.runInNewContext(ts.transpileModule(text,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX}}).outputText,{exports,Error,Promise,Map,Set,URL,URLSearchParams,window:{location:{pathname:'/home'}},require:name=>name in imports?imports[name]:name==='react/jsx-runtime'?require(name):new Proxy({},{get:(_,key)=>String(key)})});return exports;
 }
 const queryKeys=module(source('queryKeys.ts'),{'./agentHistoryPagination.js':{AGENT_DETAIL_PAGE_SIZE:100}}).queryKeys;
 const retained=module(source('retainedData.ts'));
@@ -26,7 +26,8 @@ function arrow(file,predicate){
 }
 const appWarm=arrow('App.tsx',text=>text.includes('if (routedConversationId)')&&text.includes('prefetchConversationWorkspace'));
 const rootWarm=arrow('index.tsx',text=>text.includes('isBranchesPath(window.location.pathname)')&&text.includes('prefetchConversationWorkspace'));
-const routing=module(source('routing.ts'),{'./routeRegistry.js':registry}),parseRoute=routing.parseRoute;
+const assistantRouting=module(source('assistantRouting.ts'));
+const routing=module(source('routing.ts'),{'./routeRegistry.js':registry,'./assistantRouting':assistantRouting}),parseRoute=routing.parseRoute;
 const productScope=module(source('api/productScope.ts'));
 function warmRoot(f,pathname,search=''){
  return invoke(rootWarm,{window:{location:{pathname,search}},parseRoute,...productScope,queryClient:f.client,prefetchConversationWorkspace:f.warm,api:f.api,queryKeys});
