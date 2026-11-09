@@ -56,7 +56,7 @@ try{
    await page.locator('[aria-label="Queued messages"]').filter({hasText:marker}).waitFor();assert.equal(f.steers.length,steers);assert.equal(f.turns.length,turns,'busy recipient does not receive an extra provider turn');
    cell.checks.push('trusted Ctrl+Enter once, busy exact recipient/attachment, canonical queue UI, no steer');
    await type('soft-keyboard check');const count=requests.length;await page.keyboard.press('Enter');
-   await page.waitForTimeout(200);assert.equal(requests.length,count+(phone?0:1),'desktop Enter sends; phone Return remains newline');
+   if(phone)await page.waitForTimeout(200);else await until(()=>requests.length===count+1,'desktop Enter submits once');assert.equal(requests.length,count+(phone?0:1),'desktop Enter sends; phone Return remains newline');
    if(phone){assert((await editor.innerText()).endsWith('\n'));cell.checks.push('mobile Enter remains newline with physical key injection');}else cell.checks.push('desktop Enter sends once');
    await type('shift newline');const shiftCount=requests.length;await page.keyboard.press('Shift+Enter');
    assert.equal(requests.length,shiftCount,'Shift+Enter never submits');assert((await editor.innerText()).endsWith('\n'),'native Shift+Enter retains newline');cell.checks.push('trusted Shift+Enter newline');
