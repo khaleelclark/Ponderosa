@@ -116,8 +116,8 @@ export async function composerQueueSubmissionMountedRegression(): Promise<void> 
     }
     if (!mobile) {
       editor = await render({ busy: false, text: '#Queue-Agent /status' }); const actions = providerActions.length;
-      await key(editor, false); assert(providerActions.length === actions && editor.textContent?.includes('/status'), 'Ordinary Enter first accepts the highlighted command');
-      await key(editor, false); await until(() => providerActions.length === actions + 1, 'Ordinary Enter executes the selected runtime command once');
+      assert(editor.getAttribute('aria-expanded') !== 'true', 'Programmatic runtime draft has no highlighted suggestion');
+      await key(editor, false); await until(() => providerActions.length === actions + 1, 'Ordinary Enter executes the runtime command once when suggestions are closed');
     }
     editor = await render({ busy: true, text: '#Queue-Agent /status' }); const actions = providerActions.length, count = queues.length;
     host.querySelector<HTMLButtonElement>('[aria-label="Queue message"]')!.click(); await until(() => host.textContent?.includes('Provider actions cannot be queued') === true, 'Queue button uses the same runtime-action validation');
@@ -128,8 +128,8 @@ export async function composerQueueSubmissionMountedRegression(): Promise<void> 
     }
     editor = await render({ busy: false, text: '#Queue-Agent /status' }); const attached = new DataTransfer(); attached.items.add(new File(['literal command attachment'], 'literal.txt', { type: 'text/plain' }));
     const attachmentInput = host.querySelector<HTMLInputElement>('[aria-label="Choose files"]')!; attachmentInput.files = attached.files; attachmentInput.dispatchEvent(new Event('change', { bubbles: true }));
-    await until(() => host.textContent?.includes('literal.txt') === true, 'Command-like message attachment settles'); const before = queues.length;
-    await key(editor, true); await until(() => queues.length === before + 1, 'Command-like text with attachment remains an authored queued message');
+    await until(() => host.textContent?.includes('literal.txt') === true, 'Command-like message attachment settles'); const attachmentCount = queues.length;
+    await key(editor, true); await until(() => queues.length === attachmentCount + 1, 'Command-like text with attachment remains an authored queued message');
     assert(providerActions.length === actions && queues.at(-1)!.files[0].name === 'literal.txt', 'Attachment follows existing message semantics');
   } finally { root.unmount(); client.clear(); host.remove(); }
 }
