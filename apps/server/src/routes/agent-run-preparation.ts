@@ -1,3 +1,4 @@
+import {proveRetainedCodexVoiceContext} from '../retained-codex-voice-context.js';
 import { isGrantOnlyRestrictionsChange } from "@ponderosa/core";
 import {prepareWorkingCopyTransition} from "../working-copy-context-transition.js";
 import { settingsTransitionTarget } from "../context-transition-admission.js";
@@ -631,11 +632,24 @@ export async function prepareAgentRun(
   // offered Ponderosa Local Memory tools. Voice may reuse an unchanged contract; ordinary
   // turns may also change only the explicit model. Other cases keep their
   // existing scope and voice boundaries.
+  let strictRetainedVoiceContext=false;
   let retainedVerifiedContext=false,retainedMemoryProof:(()=>boolean)|undefined;
   const canRetainVerifiedContext=(kind:'voice'|'model')=>{
     if(runtimeEngineId!=='codex' || Object.getPrototypeOf(engine.adapter)!==CodexAdapter.prototype ||
        Object.hasOwn(engine.adapter,'openSession') || !resumeSessionState?.toolContractHash ||
        !effectiveModel?.trim())return false;
+    if(kind==='voice'&&memory&&routingConversationId){
+      const runtime=reusableRuntime(agent.id);
+      if(runtime&&(!runtime.nativeCodexModelChange||!runtime.session.isAlive()||readProviderSessionIdentifier(runtime.session)!==resumeSessionState.sessionId))return false;
+      const latest=store.sqlite.prepare(`SELECT id FROM scheduler_runs WHERE agent_id=? AND provider_session_id=?
+        AND status='completed' AND prompt_injection_state='injected' AND fencing_token<(SELECT fencing_token FROM scheduler_runs WHERE id=?)
+        ORDER BY fencing_token DESC LIMIT 1`).get(agent.id,resumeSessionState.sessionId,runId) as {id:string}|undefined;
+      const proof=latest&&proveRetainedCodexVoiceContext({store,memory,agentId:agent.id,chatId:routingConversationId,
+        sessionId:resumeSessionState.sessionId,sourceRunId:latest.id,currentRunId:runId,contractHash:effectiveRuntimeSessionContractHash,systemPromptHash});
+      if(proof?.isCurrent()){
+        retainedMemoryProof=proof.isCurrent;retainedVerifiedContext=true;strictRetainedVoiceContext=true;return true;
+      }
+    }
     const runtime=reusableRuntime(agent.id),packet=store.acceptedProviderSessionInput(agent.id);
     const contract=packet?.sourceManifest.schemaVersion===3?packet.sourceManifest.normalRuntimeContract:undefined;
     // Only the Agent's first accepted generation is eligible. A later
@@ -839,7 +853,7 @@ export async function prepareAgentRun(
     if(opts.localMemory && (!memory || !settingsTransition.authorizationSignatureHash || !settingsTransition.authorizationOriginRunId ||
        !memory.transitionAuthorizationStillValid(agent.id,current.conversationId,settingsTransition.authorizationOriginRunId,settingsTransition.sourceRunId,runId,settingsTransition.authorizationSignatureHash)))
       throw new Error('Memory access changed during context transition; the original context remains retained.');
-  } : undefined;
+  } : strictRetainedVoiceContext ? assertRetainedContextPolicy : undefined;
   assertSettingsTransitionPolicy?.();
   const validateSettingsTransitionSources = settingsTransition || folderTransition ? async () => {
     await folderTransition?.validateSources();

@@ -860,6 +860,24 @@ export class LocalMemoryService{
   state.pending++;if(operation!=='search'&&operation!=='get')state.unsafe=true;
   return {state,entry,runId:cap.v3SchedulerRunId};
  }
+ /** Durable no-use receipts qualify only the exact generation selected by the caller.
+  * Rechecking the complete receipt set also fences an empty search or late tool attempt. */
+ prepareUnusedRetainedGenerationProof(input:{agentId:string;chatId:string;runIds:string[];signatureRunId:string}):{isCurrent:()=>boolean}|undefined{
+  const check=()=>{try{
+   const db=this.ports.store.sqlite,signature=createHash('sha256').update(this.unusedMemorySignature(input.agentId,input.chatId,input.signatureRunId)).digest('hex');
+   if(!input.runIds.length||new Set(input.runIds).size!==input.runIds.length)return false;
+   for(const id of input.runIds){
+    const row=db.prepare(`SELECT r.agent_id,r.fencing_token,e.agent_id receipt_agent,e.chat_id,e.fencing_token receipt_fence,
+      e.authorization_hash,e.attempted,e.pending,e.uncertain,e.unverified FROM scheduler_runs r
+      LEFT JOIN memory_exposure_runs e ON e.run_id=r.id WHERE r.id=?`).get(id) as any;
+    if(!row||row.agent_id!==input.agentId||row.receipt_agent!==input.agentId||row.chat_id!==input.chatId||
+      row.receipt_fence!==row.fencing_token||row.authorization_hash!==signature||row.attempted!==0||row.pending!==0||
+      row.uncertain!==0||row.unverified!==0||db.prepare('SELECT 1 FROM memory_exposure_sources WHERE run_id=? LIMIT 1').get(id))return false;
+   }
+   return true;
+  }catch{return false;}};
+  return check()?{isCurrent:check}:undefined;
+ }
  canRetainUnusedMemory(agentId:string,chatId:string,sessionId:string,originRunId:string,currentRunId:string):boolean{
   try{
    const db=this.ports.store.sqlite,entry=this.unusedMemoryRuns.get(agentId);

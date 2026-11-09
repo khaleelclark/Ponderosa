@@ -448,6 +448,7 @@ export function startProviderRunExecution(
         if (v3FencingToken !== undefined) coordinationV3.assertRunReviewedSteeringLease(agent.projectId,runId,v3FencingToken);
         if (controller.signal.aborted || isClosed() || deletingAgentIds.has(agent.id) || deletingProjectIds.has(project.id) || !ownsActiveRun(agent.id, activeRun) || !renewExecutionLease(agent.id, activeRun)) throw new Error("Native session lost current Run authority");
         assertCurrentCodexAccess();
+        assertSettingsTransitionPolicy?.();
         const rawSession = await providerRuntimeOperation("open provider session", () => engine.adapter.openSession!({
           agentId: agent.id,
           ...(v3FencingToken !== undefined ? {providerRun:{runId,fence:v3FencingToken}} : {}),
@@ -456,6 +457,7 @@ export function startProviderRunExecution(
                 deletingProjectIds.has(project.id) || !ownsActiveRun(agent.id, activeRun) || !renewExecutionLease(agent.id, activeRun))
               throw new Error("Native session lost current Run authority");
             assertCurrentCodexAccess();
+            assertSettingsTransitionPolicy?.();
           },
           cwd: workingCopy.rootPath,
           resumeSessionId: sessionResumeId,

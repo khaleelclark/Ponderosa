@@ -241,7 +241,7 @@ for(const access of ['restricted','unused'])for(const mode of ['model','voice'])
   }else{
    const text='Continue the objective aloud.';
    voiceInput=f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{
-    text,idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'queue',voiceReply:true}));
+    text,idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'steer',voiceReply:true}));
    const moved=await managedTask({store,native,agent,originalText:text});
    runId=moved.runId;
    assert.equal(moved.source.params.threadId,old.sessionId);
@@ -273,7 +273,7 @@ test('a thread that once had memory tools is not reused for a later voice reques
   await f.settled(agent.id);
   new CapabilityPolicyStore(store.sqlite).put({scopeKind:'agent',scopeId:agent.id,expectedRevision:0,restrictedCapabilityIds:[CAPABILITY_IDS.memoryRead,CAPABILITY_IDS.memoryWrite]});
   const prior=(await f.detail(agent.id)).runs.map(run=>run.id);
-  f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text:'Continue aloud.',idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'queue',voiceReply:true}));
+  f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text:'Continue aloud.',idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'steer',voiceReply:true}));
   await until(async()=>(await native.requests()).filter(x=>x.method==='turn/start').length===2,'fresh voice turn');
   const calls=await native.requests();
   assert.equal(calls.filter(x=>x.method==='thread/start').length,2,'prior memory exposure cannot use the exception');
@@ -296,7 +296,7 @@ test('memory capability changed while voice thread resume is paused prevents sub
   await native.sendTool('ponderosa_message',{text:'First task complete.'});
   await f.settled(agent.id);
   const old=store.resumeSessionState(agent.id),prior=(await f.detail(agent.id)).runs.map(run=>run.id);
-  f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text:'Continue aloud.',idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'queue',voiceReply:true}));
+  f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text:'Continue aloud.',idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'steer',voiceReply:true}));
   await until(async()=>(await native.requests()).some(x=>x.method==='thread/resume'),'paused voice thread resume');
   policies.put({scopeKind:'agent',scopeId:agent.id,expectedRevision:1,restrictedCapabilityIds:[CAPABILITY_IDS.memoryWrite]});
   await native.releaseThread();
@@ -321,7 +321,7 @@ test('malformed native-history fork evidence is not used to authorize the origin
   const key=randomUUID(),malformed={kind:'fork',targetAgentId:agent.id,state:null};
   store.sqlite.prepare("INSERT INTO coordination_idempotency(project_id,actor_scope,operation,idempotency_key,payload_hash,result_json,created_at) VALUES (?,?,'native_history',?,?,?,?)").run(chat.projectId,'operator:native-history:synthetic-source',key,'synthetic',JSON.stringify(malformed),new Date().toISOString());
   const text='Continue aloud.';
-  const voice=f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text,idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'queue',voiceReply:true}));
+  const voice=f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text,idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'steer',voiceReply:true}));
   const moved=await managedTask({store,native,agent,originalText:text});
   assert.deepEqual(JSON.parse(store.sqlite.prepare("SELECT result_json FROM coordination_idempotency WHERE actor_scope=? AND idempotency_key=?").get('operator:native-history:synthetic-source',key).result_json),malformed);
   await native.sendTool('ponderosa_voice_reply',{});
@@ -342,7 +342,7 @@ for(const scenario of ['mismatched','stop'])test(`voice ${scenario} during threa
   await until(async()=>(await native.requests()).some(x=>x.method==='turn/start'),'first native turn');
   await native.sendTool('ponderosa_message',{text:'First task complete.'});await f.settled(agent.id);
   const old=store.resumeSessionState(agent.id),prior=(await f.detail(agent.id)).runs.map(run=>run.id);
-  f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text:'Continue aloud.',idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'queue',voiceReply:true}));
+  f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text:'Continue aloud.',idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'steer',voiceReply:true}));
   await until(async()=>(await native.requests()).some(x=>x.method==='thread/resume'),'voice resume');
   if(scenario==='stop'){
    const run=await until(()=>store.sqlite.prepare("SELECT id FROM scheduler_runs WHERE agent_id=? AND id NOT IN (SELECT value FROM json_each(?)) AND status IN ('leased','running')").get(agent.id,JSON.stringify(prior)),'voice Run');
@@ -373,7 +373,7 @@ test('two ordinary no-call Runs hand off context before the original voice task'
    await f.settled(agent.id,before);
   }
   const text='Continue aloud.';
-  const voice=f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text,idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'queue',voiceReply:true}));
+  const voice=f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text,idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'steer',voiceReply:true}));
   const moved=await managedTask({store,native,agent,originalText:text,initialTurns:2});
   await native.sendTool('ponderosa_voice_reply',{});
   await until(()=>store.sqlite.prepare("SELECT 1 FROM scheduler_runs WHERE id=? AND status='completed'").get(moved.runId),'voice task completed',20000);
@@ -408,7 +408,7 @@ for(const operation of ['search','save','invalid'])test(`a prior ${operation} me
   if(operation==='invalid')assert.equal(response.result.success,false);else assert.equal(response.result.success,true);
   await native.sendTool('ponderosa_message',{text:'First task complete.'});await f.settled(agent.id);
   const prior=(await f.detail(agent.id)).runs.map(run=>run.id);
-  f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text:'Continue aloud.',idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'queue',voiceReply:true}));
+  f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text:'Continue aloud.',idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'steer',voiceReply:true}));
   await finishVoiceThroughManagedHandoff(f,native,agent,prior);
  },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,emitVoiceReply:true,holdMemoryCompletion:true,uniqueThreads:true})).adapter,
    localMemoryForRoot:async root=>({chromaUrl:await ownedChroma(),collectionPrefix:'context_'+randomUUID().replaceAll('-',''),modelDir:process.env.PONDEROSA_TEST_MEMORY_MODEL_DIR,stateDirectory:path.join(root,'memory-policy'),provision:true})});
@@ -427,7 +427,7 @@ test('re-registering the same Run cannot erase a memory attempt',{timeout:30000}
   assert.ok(active?.messageCapability);memory.beginUnusedMemoryWitness(active.messageCapability);
   await native.sendTool('ponderosa_message',{text:'First task complete.'});await f.settled(agent.id);
   const prior=(await f.detail(agent.id)).runs.map(run=>run.id);
-  f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text:'Continue aloud.',idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'queue',voiceReply:true}));
+  f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text:'Continue aloud.',idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'steer',voiceReply:true}));
   await finishVoiceThroughManagedHandoff(f,native,agent,prior);
  },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,emitVoiceReply:true,holdMemoryCompletion:true,uniqueThreads:true})).adapter,
    localMemoryForRoot:async root=>({chromaUrl:await ownedChroma(),collectionPrefix:'context_'+randomUUID().replaceAll('-',''),modelDir:process.env.PONDEROSA_TEST_MEMORY_MODEL_DIR,stateDirectory:path.join(root,'memory-policy'),provision:true})});
@@ -443,7 +443,7 @@ for(const change of ['grant','restart'])test(`${change} after a no-call Run pres
   if(change==='grant')f.ok(await f.api('PUT',`/api/local-memory/grants/${chat.id}`,{readGlobal:true,expectedRevision:0}));
   else await f.reopen();
   const text='Continue aloud.';
-  const voice=f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text,idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'queue',voiceReply:true}));
+  const voice=f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text,idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'steer',voiceReply:true}));
   const moved=await managedTask({store,native,agent,originalText:text});
   await native.sendTool('ponderosa_voice_reply',{});
   await until(()=>store.sqlite.prepare("SELECT 1 FROM scheduler_runs WHERE id=? AND status='completed'").get(moved.runId),'voice task completed',20000);
@@ -461,7 +461,7 @@ test('grant change while no-call voice resume is paused prevents provider submis
   await until(async()=>(await native.requests()).some(x=>x.method==='turn/start'),'first native turn');
   await native.sendTool('ponderosa_message',{text:'First task complete.'});await f.settled(agent.id);
   const old=store.resumeSessionState(agent.id),prior=(await f.detail(agent.id)).runs.map(run=>run.id);
-  f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text:'Continue aloud.',idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'queue',voiceReply:true}));
+  f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text:'Continue aloud.',idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'steer',voiceReply:true}));
   await until(async()=>(await native.requests()).some(x=>x.method==='thread/resume'),'paused voice resume');
   f.ok(await f.api('PUT',`/api/local-memory/grants/${chat.id}`,{readGlobal:true,expectedRevision:0}));
   await native.releaseThread();
@@ -483,7 +483,7 @@ test('a newly discovered prior unknown Run blocks no-call voice submission',{tim
   await native.sendTool('ponderosa_message',{text:'First task complete.'});await f.settled(agent.id);
   const old=store.resumeSessionState(agent.id),prior=(await f.detail(agent.id)).runs.map(run=>run.id);
   const first=store.sqlite.prepare('SELECT fencing_token,scope_key FROM scheduler_runs WHERE id=?').get(prior[0]);assert.equal(first.fencing_token,2);
-  f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text:'Continue aloud.',idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'queue',voiceReply:true}));
+  f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text:'Continue aloud.',idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'steer',voiceReply:true}));
   await until(async()=>(await native.requests()).some(x=>x.method==='thread/resume'),'paused voice resume');
   const now=new Date().toISOString();
   store.sqlite.prepare("INSERT INTO scheduler_runs(id,project_id,agent_id,status,lease_owner,lease_expires_at,fencing_token,prompt_injection_state,heartbeat_at,created_at,updated_at,scope_key) VALUES (?,?,?,'outcome_unknown','synthetic',?,1,'injecting',?,?,?,?)").run(randomUUID(),chat.projectId,agent.id,now,now,now,now,first.scope_key);
@@ -547,7 +547,7 @@ test('memory revoked after the original managed voice turn begins invalidates th
   await until(async()=>(await native.requests()).some(x=>x.method==='turn/start'),'first native turn');
   await native.sendTool('ponderosa_message',{text:'First task complete.'});await f.settled(agent.id);
   const prior=(await f.detail(agent.id)).runs.map(run=>run.id),text='Continue aloud.';
-  f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text,idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'queue',voiceReply:true}));
+  f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text,idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'steer',voiceReply:true}));
   const moved=await managedTask({store,native,agent,originalText:text}),run={id:moved.runId};
   await native.sendTool('ponderosa_local_memory_search',{query:'Synthetic search'});
   const search=await until(async()=>{const calls=(await native.requests()).filter(x=>x.toolResponse);return calls.length>=2?calls.at(-1).toolResponse:undefined;},'memory search response');

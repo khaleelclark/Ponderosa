@@ -410,9 +410,9 @@ export class CoordinationV3ContextRolloverAuthority {
               event?.audience?.kind!=='user_agents' || event?.audience?.userId!=='local-operator' ||
               !Array.isArray(event?.audience?.agentIds) || event.audience.agentIds.length!==1 ||
               event.audience.agentIds[0]!==input.agentId || event.document!==undefined ||
-              dispatch?.voiceReply!==true || dispatch.activeRunDelivery!=='queue' || dispatch.conversationId!==input.conversationId ||
+              dispatch?.voiceReply!==true || !['queue','steer'].includes(dispatch.activeRunDelivery) || dispatch.conversationId!==input.conversationId ||
               !Array.isArray(dispatch.recipients) || dispatch.recipients.length!==1 || dispatch.recipients[0]?.agentId!==input.agentId)
-            throw new Error("Settings transition requires exact canonical queued voice work");
+            throw new Error("Settings transition requires exact canonical unsubmitted voice work");
         }
         const source=this.sqlite.prepare(`SELECT 1 FROM scheduler_runs r WHERE r.id=? AND r.project_id=? AND r.agent_id=? AND r.scope_key=?
           AND r.status='completed' AND r.terminal_at IS NOT NULL AND r.prompt_injection_state='injected'

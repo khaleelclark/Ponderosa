@@ -28,7 +28,7 @@ test('memory-enabled voice preserves earlier work through an isolated managed ha
   const response=await until(async()=>(await native.requests()).find(x=>x.toolResponse)?.toolResponse,'memory result');
   assert.equal(response.result.success,true);
   await native.sendTool('ponderosa_message',{text:'Research complete.'});await f.settled(agent.id);
-  const voice=f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text:'Continue the original objective aloud.',idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'queue',voiceReply:true}));
+  const voice=f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text:'Continue the original objective aloud.',idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'steer',voiceReply:true}));
   const transition=await until(()=>store.sqlite.prepare("SELECT * FROM context_rollovers WHERE agent_id=? AND state='requested'").get(agent.id),'settings handoff requested',20000);
   const pending=store.sqlite.prepare("SELECT id FROM agent_activations WHERE agent_id=? AND kind='human_message' AND state='pending' ORDER BY created_at DESC LIMIT 1").get(agent.id);
   assert.ok(pending,'the voice task remains queued');
@@ -67,7 +67,7 @@ test('revoking memory during a managed handoff prevents the old summary from bei
   await native.sendTool('ponderosa_local_memory_search',{query:'Synthetic search'});
   await until(async()=>(await native.requests()).some(x=>x.toolResponse),'memory result');
   await native.sendTool('ponderosa_message',{text:'Research complete.'});await f.settled(agent.id);
-  f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text:'Continue aloud.',idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'queue',voiceReply:true}));
+  f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text:'Continue aloud.',idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'steer',voiceReply:true}));
   const rollover=await until(()=>store.sqlite.prepare("SELECT * FROM context_rollovers WHERE agent_id=? AND state='requested'").get(agent.id),'handoff requested',20000);
   await until(async()=>(await native.requests()).filter(x=>x.method==='turn/start').length>=2,'old-session handoff',20000);
   f.ok(await f.api('PUT',`/api/local-memory/grants/${chat.id}`,{readGlobal:false,expectedRevision:1}));
@@ -93,7 +93,7 @@ test('revoking memory while replacement opens prevents the handoff from being su
   await native.sendTool('ponderosa_local_memory_search',{query:'Synthetic search'});
   await until(async()=>(await native.requests()).some(x=>x.toolResponse),'memory result');
   await native.sendTool('ponderosa_message',{text:'Research complete.'});await f.settled(agent.id);
-  f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text:'Continue aloud.',idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'queue',voiceReply:true}));
+  f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text:'Continue aloud.',idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'steer',voiceReply:true}));
   await until(async()=>(await native.requests()).filter(x=>x.method==='turn/start').length>=2,'old handoff',20000);
   const rollover=store.sqlite.prepare("SELECT id FROM context_rollovers WHERE agent_id=? AND state='requested'").get(agent.id);assert.ok(rollover);
   await native.sendAnswer('Synthetic source summary, permitted before revocation.');
@@ -123,7 +123,7 @@ test('revoking memory while the managed voice reply streams invalidates publicat
   await native.sendTool('ponderosa_local_memory_search',{query:'Synthetic search'});
   await until(async()=>(await native.requests()).some(x=>x.toolResponse),'memory result');
   await native.sendTool('ponderosa_message',{text:'Research complete.'});await f.settled(agent.id);
-  const voice=f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text:'Continue aloud.',idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'queue',voiceReply:true}));
+  const voice=f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text:'Continue aloud.',idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'steer',voiceReply:true}));
   await until(async()=>(await native.requests()).filter(x=>x.method==='turn/start').length>=2,'handoff turn',20000);
   await native.sendAnswer('Original objective retained.');
   await until(async()=>(await native.requests()).filter(x=>x.method==='turn/start').length>=3,'replacement confirmation',20000);
@@ -153,7 +153,7 @@ test('interrupted managed handoff is not automatically replayed after restart',{
   await native.sendTool('ponderosa_local_memory_search',{query:'Synthetic search'});
   await until(async()=>(await native.requests()).some(x=>x.toolResponse),'memory result');
   await native.sendTool('ponderosa_message',{text:'Research complete.'});await f.settled(agent.id);
-  f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text:'Continue aloud.',idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'queue',voiceReply:true}));
+  f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text:'Continue aloud.',idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'steer',voiceReply:true}));
   const rollover=await until(()=>store.sqlite.prepare("SELECT * FROM context_rollovers WHERE agent_id=? AND state='requested'").get(agent.id),'handoff requested',20000);
   await until(async()=>(await native.requests()).filter(x=>x.method==='turn/start').length>=2,'old handoff submitted',20000);
   await until(()=>store.sqlite.prepare("SELECT 1 FROM scheduler_prompt_injections i JOIN scheduler_run_activations a ON a.run_id=i.run_id JOIN agent_activations x ON x.id=a.activation_id WHERE x.kind='context_rollover_handoff' AND i.state='acknowledged'").get(),'handoff acknowledged',20000);
@@ -177,7 +177,7 @@ test('interrupted transition exposes retry-pending review after restart',{timeou
   await native.sendTool('ponderosa_local_memory_search',{query:'Synthetic search'});
   await until(async()=>(await native.requests()).some(x=>x.toolResponse),'memory result');
   await native.sendTool('ponderosa_message',{text:'Research complete.'});await f.settled(agent.id);
-  f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text:'Continue aloud.',idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'queue',voiceReply:true}));
+  f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text:'Continue aloud.',idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'steer',voiceReply:true}));
   const rollover=await until(()=>store.sqlite.prepare("SELECT * FROM context_rollovers WHERE agent_id=? AND state='requested'").get(agent.id),'handoff requested',20000);
   await until(async()=>(await native.requests()).filter(x=>x.method==='turn/start').length>=2,'old handoff submitted',20000);
   await until(()=>store.sqlite.prepare("SELECT 1 FROM scheduler_prompt_injections i JOIN scheduler_run_activations a ON a.run_id=i.run_id JOIN agent_activations x ON x.id=a.activation_id WHERE x.kind='context_rollover_handoff' AND i.state='acknowledged'").get(),'handoff acknowledged',20000);
@@ -240,7 +240,7 @@ test('forgetting a previously read source during handoff prevents stale summary 
   const response=await until(async()=>(await native.requests()).find(x=>x.toolResponse)?.toolResponse,'memory read');
   assert.ok(JSON.stringify(response).includes('Synthetic coral lighthouse source.'));
   await native.sendTool('ponderosa_message',{text:'Research complete.'});await f.settled(agent.id);
-  f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text:'Continue aloud.',idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'queue',voiceReply:true}));
+  f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text:'Continue aloud.',idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'steer',voiceReply:true}));
   const rollover=await until(()=>store.sqlite.prepare("SELECT * FROM context_rollovers WHERE agent_id=? AND state='requested'").get(agent.id),'handoff requested',20000);
   await until(async()=>(await native.requests()).filter(x=>x.method==='turn/start').length>=2,'old handoff submitted',20000);
   f.ok(await f.api('POST','/api/local-memory/global',{operation:'forget',chunk_id:id,destination:'global'}));

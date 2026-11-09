@@ -1,3 +1,4 @@
+import {proveRetainedCodexVoiceContext} from './retained-codex-voice-context.js';
 import { freshFailureDiagnostic } from './working-copy-diagnostic.js';
 import { createHash } from 'node:crypto';
 import { CapabilityPolicyStore, type AgentStore, type CoordinationV3Store, type WorkspaceStore } from '@ponderosa/agents';
@@ -46,7 +47,7 @@ export function transitionFingerprint(ctx:Pick<TransitionContext,"app"|"store"|"
  let grant:unknown;try{grant=memory&&agent?memory.getGrant(agent.conversationId,chat?.branchId?'branches':'dev'):undefined;}catch{grant='unavailable';}
  let policies:unknown;try{const p=new CapabilityPolicyStore(store.sqlite),resolved=p.resolveForAgent(agentId);policies=resolved.layers.map(layer=>[layer.scopeKind,layer.scopeId,p.get(layer.scopeKind,layer.scopeId)??null]);}catch{policies='unavailable';}
  const recovery=store.sqlite.prepare('SELECT id,state,progress_json FROM provider_context_recovery_requests WHERE agent_id=? ORDER BY created_at DESC,id DESC LIMIT 1').get(agentId);
- return createHash('sha256').update(JSON.stringify([row,session,agent,project,workspace.getPreferences(),grant,policies,recovery,store.stoppedProviderSessionBoundary(agentId)])).digest('hex');
+ return createHash('sha256').update(JSON.stringify(['retained-codex-voice.v1',row,session,agent,project,workspace.getPreferences(),grant,policies,recovery,store.stoppedProviderSessionBoundary(agentId)])).digest('hex');
 }
 function transitionNotice(ctx:TransitionContext,projectId:string,agentId:string,activationId:string,reason:string){
  const existing=ctx.workspace.getNotificationByDedupeKey(`settings-transition:${activationId}`);
@@ -280,6 +281,26 @@ export async function requestSettingsTransition(input: {
       AND json_extract(h.payload_json,'$.settingsTransition.targetSpeed') IS ? LIMIT 1`)
     .get(agent.id,pending.projectId,boundary.executionId,accepted.sessionId,pending.id,targetModel,targetEffort??null,targetSpeed??null));
    const voiceBoundary=Boolean(opts.localMemory&&dispatch?.voiceReply===true&&!verifiedVoice);
+   if(voiceBoundary&&!stopped&&!changed&&!promptChanged&&!grantExpansion&&memory&&
+      agent.activeEngine==='codex'&&Object.getPrototypeOf(engine.adapter)===CodexAdapter.prototype&&!Object.hasOwn(engine.adapter,'openSession')&&
+      prior&&restrictions.filesystemWriteRestricted===prior.filesystemWriteRestricted&&
+      JSON.stringify(restrictions.restrictedCapabilityIds)===JSON.stringify(prior.restrictedCapabilityIds)&&
+      JSON.stringify(restrictions.restrictedConnectorNames)===JSON.stringify(prior.restrictedConnectorNames)){
+    assertRetainedNativeAuthentication(contract,engineAuthStatuses.snapshot(agent.activeEngine));
+    const tools=filterRuntimeToolsForCapabilities([...providerDynamicTools(Boolean(opts.localMemory)),PONDEROSA_HISTORY_TOOL],policy);
+    const ordinary=providerToolContractHash(tools,communicationV3SessionPrompt());
+    const toolHash=policy.restrictedCapabilityIds.length?createHash('sha256').update(JSON.stringify({tools:ordinary,restrictions})).digest('hex'):ordinary;
+    const runtimeHash=providerRuntimeSessionContractHash({runtimeSessionContractHash:providerSessionContractHash(agent.activeEngine,agent.workingCopy.id,targetModel,targetEffort,toolHash),
+      speed:targetSpeed,...(contract.observedBillingMode?{billingMode:contract.observedBillingMode}:{}),systemPromptHash:targetSystemPromptHash,scopeKey:row.scope_key},contract.contractHash);
+    if(runtimeHash===contract.contractHash){
+     const retained=proveRetainedCodexVoiceContext({store,memory,agentId:agent.id,chatId:agent.conversationId,sessionId:accepted.sessionId,
+       sourceRunId:boundary.executionId,contractHash:runtimeHash,systemPromptHash:targetSystemPromptHash});
+     if(retained?.isCurrent()){
+      store.sqlite.prepare("DELETE FROM activation_sources WHERE activation_id=? AND source_kind='settings_transition_retry_pending'").run(pending.id);
+      return true;
+     }
+    }
+   }
    if(stopped&&(changed||voiceBoundary||promptChanged||grantExpansion))
     return hold('Recovered context from the stopped task is retained, but the requested settings or voice transition lacks a verified handoff. The new instruction remains queued for review.');
    if(grantExpansion&&(changed||voiceBoundary||promptChanged))return hold('Access expanded together with other runtime settings. The original work remains queued for context review.');
