@@ -7,7 +7,7 @@ import {fileURLToPath} from 'node:url';
 import {fixture} from '../shared/fixture.mjs';
 const root=fileURLToPath(new URL('../../',import.meta.url));
 const {chromium}=createRequire(new URL('../../apps/server/package.json',import.meta.url))('playwright-core');
-const output='/tmp/p2-chat-composer-captures-20261109';await mkdir(output,{recursive:true});
+const output=process.env.SMOKE_DIRECTORY??'/tmp/p2-chat-composer-captures-20261109';await mkdir(output,{recursive:true});
 const f=await fixture({webDist:path.join(root,'apps/web/dist')});let browser;
 try{
  const core=await f.createChat('Core route scope');await f.createIdleAgent(core,'Core Agent');
