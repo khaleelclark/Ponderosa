@@ -478,6 +478,7 @@ export async function prepareAgentRun(
   const schedulerRunScopeKey = v3SchedulerRunId
     ? coordinationV3.runScopeKey(v3SchedulerRunId, agent.id) : undefined;
   const runtimeAuthentication = runContext.engineAuthStatuses.snapshot(runtimeEngineId);
+  const authenticationUnchanged = runContext.engineAuthStatuses.captureAuthentication(runtimeEngineId);
   const effectiveRuntimeSessionContractHash = providerRuntimeSessionContractHash({
     runtimeSessionContractHash,
     speed: effectiveSpeed,
@@ -801,7 +802,7 @@ export async function prepareAgentRun(
     const currentPolicy=new CapabilityPolicyStore(store.sqlite).resolveForAgent(agent.id,runId);
     const currentTools=filterRuntimeToolsForCapabilities([...providerDynamicTools(Boolean(opts.localMemory)),PONDEROSA_HISTORY_TOOL],currentPolicy);
     const currentRestrictions=runtimeRestrictions(currentPolicy,runtimeEngineId);
-    const auth=runContext.engineAuthStatuses.snapshot(runtimeEngineId),saved=store.resumeSessionState(agent.id);
+    const saved=store.resumeSessionState(agent.id);
     if(retainedMemoryProof&&!retainedMemoryProof())throw new Error('Memory access changed before the saved Codex thread could continue.');
     if(!current || !currentProject || current.projectId!==agent.projectId || current.conversationId!==agent.conversationId ||
        currentProject.id!==project.id || currentProject.hostPath!==project.hostPath || current.activeEngine!==agent.activeEngine ||
@@ -817,8 +818,7 @@ export async function prepareAgentRun(
        JSON.stringify(preferences.profile)!==JSON.stringify(operatorProfile) ||
        JSON.stringify(currentTools)!==JSON.stringify(targetRuntimeTools) ||
        JSON.stringify(currentRestrictions)!==JSON.stringify(targetCapabilityRestrictions) ||
-       auth.billingMode!==runtimeAuthentication.billingMode || auth.state!==runtimeAuthentication.state ||
-       auth.authenticated!==runtimeAuthentication.authenticated ||
+       !authenticationUnchanged() ||
        (v3SchedulerRunId && coordinationV3.runScopeKey(v3SchedulerRunId,agent.id)!==schedulerRunScopeKey))
       throw new Error('Settings or access changed before the saved Codex thread could continue. The original context remains retained.');
   };

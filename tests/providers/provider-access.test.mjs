@@ -1058,3 +1058,28 @@ test('provider secondary iterator cleanup log redacts current-run capability and
         async return(){throw Error(marker+' '+capability);},
       };}};}});
 });
+
+
+test('admitted Run authentication fence ignores diagnostic expiry but retains observed changes',async()=>{
+ const cache=new EngineAuthStatusCache(),signedIn={authenticated:true,billingMode:'subscription'};
+ await cache.get('codex',async()=>signedIn);
+ const current=cache.captureAuthentication('codex');assert.equal(current(),true);
+ const expire=()=>{cache.entries.get('codex').expiresAt=Date.now()-1;};
+ expire();assert.equal(cache.snapshot('codex').state,'unknown');assert.equal(current(),true);
+ let release;const refresh=cache.get('codex',()=>new Promise(resolve=>{release=resolve;}));
+ await Promise.resolve();assert.equal(cache.snapshot('codex').state,'unknown');assert.equal(current(),true);
+ release(signedIn);await refresh;assert.equal(current(),true,'same successful observation keeps the Run');
+ expire();await cache.get('codex',async()=>({authenticated:false,status:'unknown',reason:'probe_pending'}));
+ assert.equal(current(),true,'unknown diagnostics are not evidence of sign-out');
+ expire();await assert.rejects(cache.get('codex',async()=>{throw Error('controlled probe failure')}));assert.equal(current(),true);
+ expire();await cache.get('codex',async()=>({authenticated:false}));assert.equal(current(),false,'observed sign-out fences the Run');
+ expire();await cache.get('codex',async()=>signedIn);assert.equal(current(),false,'changing back never revives an old fence');
+ const billing=cache.captureAuthentication('codex');expire();await cache.get('codex',async()=>({...signedIn,billingMode:'api'}));
+ assert.equal(billing(),false,'observed billing mode changes remain fenced');
+ const invalidated=cache.captureAuthentication('codex');cache.invalidate('codex');assert.equal(invalidated(),false);
+ await cache.get('codex',async()=>signedIn);const pendingInvalidated=cache.captureAuthentication('codex');expire();
+ const pending=cache.get('codex',()=>new Promise(resolve=>{release=resolve;}));await Promise.resolve();
+ cache.invalidate('codex');assert.equal(pendingInvalidated(),false,'explicit invalidation fences authority while diagnostic cleanup remains owned');
+ assert.equal(cache.get('codex',async()=>{throw Error('must retain existing pending slot')}),pending);
+ release(signedIn);await pending;assert.equal(pendingInvalidated(),false,'the same refreshed credentials cannot revive invalidated work');
+});

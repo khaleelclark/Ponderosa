@@ -1,3 +1,4 @@
+import {EngineAuthStatusCache} from '../../apps/server/dist/engine-auth-cache.js';
 import {proveRetainedCodexVoiceContext} from '../../apps/server/dist/retained-codex-voice-context.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -70,7 +71,9 @@ test('retained memory admission proof fences exact access and source changes whi
 
 
 test('accepted old generation remains eligible for a new voice call after rejected replacement preparation', {timeout:90000}, async t=>{
- let store,native;
+ let store,native,authCache;
+ const snapshot=EngineAuthStatusCache.prototype.snapshot;
+ t.mock.method(EngineAuthStatusCache.prototype,'snapshot',function(id){if(id==='codex')authCache=this;return snapshot.call(this,id);});
  await withFixture(t,async f=>{
   const chat=await f.createChat('Rejected replacement retained generation'),agent=await f.createIdleAgent(chat,'Worker');
   await f.send(agent.id,'Synthetic original objective.');
@@ -186,6 +189,19 @@ test('accepted old generation remains eligible for a new voice call after reject
   assert.equal(JSON.stringify(store.sqlite.prepare('SELECT * FROM context_rollovers WHERE id=?').get(prepared.id)),historical);
   assert.equal(store.sqlite.prepare('SELECT count(*) n FROM context_rollovers WHERE agent_id=?').get(agent.id).n,1);
   await native.sendTool('ponderosa_voice_reply',{});
+  await until(()=>store.sqlite.prepare("SELECT 1 FROM events WHERE agent_id=? AND type='voice_reply' AND json_extract(payload_json,'$.reply.messageId')=? AND json_extract(payload_json,'$.reply.state')='streaming'").get(agent.id,sent.message.communicationEventId),'voice streaming before completion');
+  if(index===0){
+   assert.equal(authCache.snapshot('codex').state,'known');
+   // Expire only the diagnostic cache clock, not Run leases or user authority.
+   const entry=authCache.entries.get('codex'),value=entry.value;entry.expiresAt=Date.now()-1;
+   let release;const refresh=authCache.get('codex',()=>new Promise(resolve=>{release=resolve;}));
+   await Promise.resolve();t.after(()=>release(value));
+   assert.equal(authCache.snapshot('codex').state,'unknown');
+   await native.releaseVoice();
+   const terminal=await until(()=>{const row=store.sqlite.prepare('SELECT status FROM scheduler_runs WHERE id=(SELECT run_id FROM scheduler_run_activations WHERE activation_id=?)').get(voice.id);return row&&!['running','leased'].includes(row.status)?row:undefined;},'voice completion while authentication refresh is pending');
+   assert.equal(terminal.status,'completed','authentication cache expiry must not stop the active voice turn');
+   release(value);await refresh;
+  }else await native.releaseVoice();
   await until(()=>store.sqlite.prepare("SELECT 1 FROM scheduler_runs r JOIN scheduler_run_activations x ON x.run_id=r.id WHERE x.activation_id=? AND r.status='completed'").get(voice.id),'new voice completed');
   }
   // Many normal scheduler/reconciliation polls must not re-deliver any call.
@@ -196,6 +212,6 @@ test('accepted old generation remains eligible for a new voice call after reject
     assert.equal(JSON.stringify(store.sqlite.prepare('SELECT * FROM context_rollovers WHERE id=?').get(prepared.id)),historical);
   }
 
- },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,emitVoiceReply:true,holdMemoryCompletion:true,uniqueThreads:true,holdReplacementStart:true,emitVoiceContextUsage:true})).adapter,
+ },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,emitVoiceReply:true,holdMemoryCompletion:true,holdVoiceCompletion:true,uniqueThreads:true,holdReplacementStart:true,emitVoiceContextUsage:true})).adapter,
   localMemoryForRoot:async root=>({chromaUrl:await ownedChroma(),collectionPrefix:'callreg_'+randomUUID().replaceAll('-',''),modelDir:process.env.PONDEROSA_TEST_MEMORY_MODEL_DIR,stateDirectory:path.join(root,'memory-policy'),provision:true})});
 });

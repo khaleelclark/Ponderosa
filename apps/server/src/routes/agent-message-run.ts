@@ -155,7 +155,7 @@ export type AgentMessageRunContext =
   Pick<CommunicationDocumentAuthority, "agentCanReadRuntimeArtifact" | "authoritativeCommunicationDocument"> &
   Pick<OperationalNotifications,
     "createOperationalNotification" | "resolveOperationalNotification"> & {
-    engineAuthStatuses: Pick<import("../engine-auth-cache.js").EngineAuthStatusCache, "snapshot">;
+    engineAuthStatuses: Pick<import("../engine-auth-cache.js").EngineAuthStatusCache, "snapshot" | "captureAuthentication">;
     opts: CreateServerOptions;
     store: AgentStore;
     workspace: WorkspaceStore;

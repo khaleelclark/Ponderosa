@@ -9,6 +9,8 @@ export async function inertCodex(root,{holdThreadStart=false,holdSecondAccountRe
  // tool turn. Missing-usage fixtures retain their existing fail-closed behavior.
  if(emitVoiceContextUsage)script=script.replace("  emit({method:'turn/completed',params:{threadId:'inert-reviewed-thread',turn:{id:'inert-reviewed-turn',status:'completed'}}});", "  if(lastTool==='ponderosa_voice_reply')emit({method:'thread/tokenUsage/updated',params:{threadId:'inert-reviewed-thread',turnId:'inert-reviewed-turn',tokenUsage:{total:{totalTokens:1200},last:{totalTokens:1200},modelContextWindow:200000}}});\n  emit({method:'turn/completed',params:{threadId:'inert-reviewed-thread',turn:{id:'inert-reviewed-turn',status:'completed'}}});");
 
+ if(emitVoiceContextUsage)script=script.replace("if(instruction.releaseVoice && heldVoice){", "if(instruction.releaseVoice && heldVoice){emit({method:'thread/tokenUsage/updated',params:{...heldVoice,tokenUsage:{total:{totalTokens:1200},last:{totalTokens:1200},modelContextWindow:200000}}});");
+
  if(uniqueThreads){
   script=script.replace("let heldThread, heldVoice, accountReads=0, lastTool;","let heldThread, heldVoice, accountReads=0, lastTool, currentThread='inert-reviewed-thread';");
   script=script.replaceAll("'inert-reviewed-thread'","currentThread");

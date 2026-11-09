@@ -17,6 +17,7 @@ interface CachedStatus {
  */
 export class EngineAuthStatusCache {
   private readonly entries = new Map<string, CachedStatus>();
+  private readonly authentication = new Map<string, { authenticated: boolean; billingMode?: EngineAuthStatus["billingMode"] }>();
   constructor(private readonly changed: (id: string) => void = () => {}) {}
 
   get(id: string, load: () => Promise<EngineAuthStatus>): Promise<EngineAuthStatus> {
@@ -41,6 +42,12 @@ export class EngineAuthStatusCache {
           return failed(error);
         }
         if (this.entries.get(id) === entry) {
+          if (value.status !== "unknown") {
+            const prior = this.authentication.get(id);
+            if (!prior || prior.authenticated !== value.authenticated || prior.billingMode !== value.billingMode) {
+              this.authentication.set(id, { authenticated: value.authenticated, billingMode: value.billingMode });
+            }
+          }
           const observedAt = Date.now();
           this.entries.set(id, { value, observedAt, expiresAt: observedAt + (value.status === "unknown" ? 5_000 : 30_000),
             ...(value.status === "unknown" ? lastKnown ? { lastKnown } : {} : { lastKnown: { authenticated: value.authenticated, observedAt } }) });
@@ -80,9 +87,17 @@ export class EngineAuthStatusCache {
       ? { lastKnown: { authenticated: known.authenticated, observedAt: new Date(known.observedAt).toISOString() } } : {}) };
   }
 
+  /** Fence an admitted Run on an observed authentication change, not diagnostic
+   * cache expiry or a pending/failed refresh. This never authorizes new intake. */
+  captureAuthentication(id: string): () => boolean {
+    const initial = this.authentication.get(id);
+    return () => this.authentication.get(id) === initial;
+  }
+
   invalidate(id: string): void {
     // Recheck cannot release a diagnostic/cleanup slot that is still owned.
     const current = this.entries.get(id);
     if (!current?.pending) this.entries.delete(id);
+    this.authentication.delete(id);
   }
 }
