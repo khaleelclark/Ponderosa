@@ -251,7 +251,7 @@ export function ComposerSendActions({
         </Tooltip>
       ) : null}
       {showQueue ? (
-        <Tooltip title="Queue after the active response">
+        <Tooltip title="Queue after the active response (Ctrl+Enter)">
           <span>
             <IconButton
               disabled={!canSend}

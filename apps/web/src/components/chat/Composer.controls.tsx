@@ -203,6 +203,7 @@ export function ComposerTextInput({
   mentionedBusyHandles,
   mentionedHandles,
   canSend,
+  canQueue,
   onTextChange,
   onFiles,
   onPastedText,
@@ -212,6 +213,7 @@ export function ComposerTextInput({
   onApplySuggestion,
   onClearRequiredRecipient,
   onSend,
+  onQueue,
 }: {
   text: string;
   inputRef: RefObject<ComposerEditorHandle>;
@@ -238,6 +240,7 @@ export function ComposerTextInput({
   mentionedBusyHandles: string[];
   mentionedHandles: string[];
   canSend: boolean;
+  canQueue?: boolean;
   onTextChange(value: string, caret: number): void;
   onFiles(files: File[]): void;
   onPastedText(value: string): void;
@@ -247,6 +250,7 @@ export function ComposerTextInput({
   onApplySuggestion(suggestion: ComposerMenuSuggestion): void;
   onClearRequiredRecipient(): void;
   onSend(): void;
+  onQueue?(): void;
 }): JSX.Element {
   return (
     <>
@@ -269,6 +273,7 @@ export function ComposerTextInput({
         mentionDescriptors={mentionTokens}
         mentionBindings={mentionBindings}
         canSend={canSend}
+        canQueue={canQueue}
         onTextChange={onTextChange}
         onFiles={onFiles}
         onPastedText={onPastedText}
@@ -278,6 +283,7 @@ export function ComposerTextInput({
         onApplySuggestion={onApplySuggestion}
         onClearRequiredRecipient={onClearRequiredRecipient}
         onSend={onSend}
+        onQueue={onQueue}
       />
       <ComposerMentionStatus
         destinationMode={destinationMode}

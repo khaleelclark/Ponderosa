@@ -64,6 +64,7 @@ import {
   shouldExtractLongPaste,
   shouldIgnoreComposerKey,
   shouldConsumeComposerKey,
+  shouldConsumeComposerQueueKey,
   shouldSendComposerKey,
 } from "./composerUtils";
 import type { ComposerMenuSuggestion } from "./Composer.controls";
@@ -164,6 +165,7 @@ export interface ComposerEditorHandle {
   placeCaretAfterLoneMention(): void;
   focus(): void;
   isFocused(): boolean;
+  isComposing(): boolean;
   getCanonicalText(): string;
   getSelectionOffsets(): ComposerSelectionOffsets;
   setSelectionOffsets(start: number, end: number): void;
@@ -940,8 +942,13 @@ function EditorBridge({
     }, COMMAND_PRIORITY_HIGH);
   }, [editor]);
   useEffect(() => editor.registerCommand(KEY_ENTER_COMMAND, event => {
-    if (!event || disabled || editor.isComposing() ||
+    if (!event || editor.isComposing() ||
         shouldIgnoreComposerKey({ isComposing: event.isComposing, keyCode: event.keyCode })) return false;
+    if (shouldConsumeComposerQueueKey(event)) {
+      event.preventDefault();
+      return true;
+    }
+    if (disabled) return false;
     if (isMobileComposer || (event.shiftKey && window.matchMedia("(max-width: 899.95px)").matches)) return false;
     // Lexical's native listener runs before React's bubbled keydown. Suppress
     // its default paragraph mutation; React owns desktop Send/menu/Shift+Return.
@@ -1024,6 +1031,7 @@ function EditorBridge({
     },
     focus: () => editor.focus(),
     isFocused: () => editor.getRootElement()?.contains(document.activeElement) ?? false,
+    isComposing: () => editor.isComposing(),
     // Native input can be queued before the update-listener cache catches up.
     getCanonicalText: () => editor.read("pending", $canonicalText),
     getSelectionOffsets: () =>
@@ -1393,6 +1401,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
   mentionDescriptors: ComposerMentionDescriptor[];
   mentionBindings: AgentMentionBindingDto[];
   canSend: boolean;
+  canQueue?: boolean;
   onTextChange(value: string, caret: number): void;
   onFiles(files: File[]): void;
   onPastedText(value: string): void;
@@ -1402,6 +1411,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
   onApplySuggestion(suggestion: ComposerMenuSuggestion): void;
   onClearRequiredRecipient(): void;
   onSend(): void;
+  onQueue?(): void;
 }>(function ComposerEditor({
   text,
   disabled,
@@ -1420,6 +1430,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
   mentionDescriptors,
   mentionBindings,
   canSend,
+  canQueue = false,
   onTextChange,
   onFiles,
   onPastedText,
@@ -1429,6 +1440,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
   onApplySuggestion,
   onClearRequiredRecipient,
   onSend,
+  onQueue,
 }, ref): JSX.Element {
   const bridgeRef = useRef<ComposerEditorHandle | null>(null);
   const assignBridgeRef = useCallback((handle: ComposerEditorHandle | null) => {
@@ -1473,12 +1485,17 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
 
   const handleKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     if (
-      shouldIgnoreComposerKey({
+      bridgeRef.current?.isComposing() || shouldIgnoreComposerKey({
         isComposing: event.nativeEvent.isComposing,
         keyCode: event.nativeEvent.keyCode,
       })
     ) {
       event.stopPropagation();
+      return;
+    }
+    if (shouldConsumeComposerQueueKey({ ...event, isComposing: event.nativeEvent.isComposing })) {
+      event.preventDefault();
+      if (!disabled && !locked && canQueue && !event.repeat && !event.metaKey && !event.altKey) onQueue?.();
       return;
     }
     if (event.key.length === 1 && !event.metaKey && !event.ctrlKey && !event.altKey) {
@@ -1571,6 +1588,7 @@ export const ComposerEditor = forwardRef<ComposerEditorHandle, {
     }
     const sendKey = {
       key: event.key,
+      ctrlKey: event.ctrlKey,
       shiftKey: event.shiftKey,
       isComposing: event.nativeEvent.isComposing,
       repeat: event.repeat,

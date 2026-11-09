@@ -78,6 +78,7 @@ export async function cleanupReleasedDraftAttachmentIds(
 
 export function shouldSendComposerKey(event: {
   key: string;
+  ctrlKey?: boolean;
   shiftKey: boolean;
   isComposing: boolean;
   repeat: boolean;
@@ -87,10 +88,22 @@ export function shouldSendComposerKey(event: {
 
 export function shouldConsumeComposerKey(event: {
   key: string;
+  ctrlKey?: boolean;
   shiftKey: boolean;
   isComposing: boolean;
 }): boolean {
-  return event.key === "Enter" && !event.shiftKey && !event.isComposing;
+  return event.key === "Enter" && !event.ctrlKey && !event.shiftKey && !event.isComposing;
+}
+
+/** Consume Ctrl+Enter even when Queue is unavailable; it must never become
+ * ordinary Send, a suggestion selection, or a mobile newline. */
+export function shouldConsumeComposerQueueKey(event: {
+  key: string;
+  ctrlKey?: boolean;
+  shiftKey: boolean;
+  isComposing: boolean;
+}): boolean {
+  return event.key === "Enter" && Boolean(event.ctrlKey) && !event.shiftKey && !event.isComposing;
 }
 
 export function shouldIgnoreComposerKey(event: {

@@ -1255,6 +1255,9 @@ export function Composer({
         !composerLocked &&
         allowUnmentionedSend &&
         files.length > 0));
+  // A retained Send must be retried through Send, never redirected by the
+  // queue shortcut into a potentially completed operation of another kind.
+  const canQueue = Boolean(onQueue) && canSend && durableRetryAction !== "send";
   const canCancel = running && Boolean(onCancel);
   const composerAttachmentsEnabled = attachmentsEnabled;
   const composerAttachmentsUnavailableReason = attachmentsUnavailableReason;
@@ -3825,6 +3828,8 @@ export function Composer({
             mentionedBusyHandles={mentionedBusyHandles}
             mentionedHandles={mentionedHandles}
             canSend={canSend}
+            canQueue={canQueue}
+            onQueue={onQueue ? queue : undefined}
             onTextChange={(value, nextCaret) => {
               // Blank presentation during intake must not rewrite the durable
               // submitted draft or its mutation/CAS authority.
