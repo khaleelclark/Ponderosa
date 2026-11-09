@@ -43,12 +43,15 @@ try{
    const stagedAttachment=await (await uploaded).json();assert.equal(stagedAttachment.name,'queue-native.txt');
    await page.getByRole('button',{name:'Remove queue-native.txt'}).waitFor();await until(async()=>!(await queueButton.isDisabled()),'uploaded queue attachment');await editor.focus();
    const before=requests.length,steers=f.steers.length,turns=f.turns.length;
-   const materialized=page.waitForResponse(response=>response.request().method()==='POST'&&/\/attachments$/.test(new URL(response.url()).pathname)&&response.ok());
    await page.keyboard.press('Control+Enter');
-   const exactAttachment=await (await materialized).json();assert.equal(exactAttachment.name,stagedAttachment.name);
    const rows=await until(async()=>{const rows=await queued();return rows.some(row=>row.text.includes(marker))?rows:false;},'canonical queued message');
    assert.equal(requests.length,before+1,'one physical shortcut submits once');assert.equal(requests.at(-1).activeRunDelivery,'queue','existing queue submission policy');
-   assert.deepEqual(surface==='shared'?requests.at(-1).recipients[0].attachmentIds:requests.at(-1).attachmentIds,[exactAttachment.id],'shortcut submits the exact materialized attachment');
+   const message=(await f.detail(agent.id)).messages.find(message=>message.text.includes(marker));
+   assert.equal(message?.attachments?.length,1,'canonical queued Communication retains one attachment');
+   const exactAttachment=message.attachments[0];assert.equal(exactAttachment.name,stagedAttachment.name);
+   if(surface==='shared')assert.deepEqual(requests.at(-1).recipients[0].attachmentIds,[exactAttachment.id]);
+   else assert.deepEqual(requests.at(-1).draftAttachmentIds,[stagedAttachment.id],'direct queue uses existing server-side draft materialization');
+   const attachment=await fetch(origin+exactAttachment.downloadUrl);assert(attachment.ok);assert.equal(await attachment.text(),'Exact synthetic queued attachment','canonical attachment retains exact uploaded bytes');
    const row=rows.find(row=>row.text.includes(marker));assert.equal(row.targetAgentId,agent.id);assert(!row.text.includes('\n'),'Ctrl+Enter inserts no newline');
    await page.locator('[aria-label="Queued messages"]').filter({hasText:marker}).waitFor();assert.equal(f.steers.length,steers);assert.equal(f.turns.length,turns,'busy recipient does not receive an extra provider turn');
    cell.checks.push('trusted Ctrl+Enter once, busy exact recipient/attachment, canonical queue UI, no steer');
