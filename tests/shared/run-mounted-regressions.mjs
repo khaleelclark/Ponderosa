@@ -12,7 +12,10 @@ import {runMountedCase,withinMountedDeadline} from './mounted-regression-lifetim
 
 const root=fileURLToPath(new URL('../../',import.meta.url));
 const require=createRequire(new URL('../../apps/server/package.json',import.meta.url));
-const {chromium}=require('playwright-core');
+const {chromium,webkit,devices}=require('playwright-core');
+const browserName=process.env.PONDEROSA_MOUNTED_BROWSER??'chromium';
+assert(['chromium','webkit'].includes(browserName),'Select an existing Chromium or WebKit runner');
+const browserType=browserName==='webkit'?webkit:chromium;
 const inventory=mountedRegressionInventory(),expected=inventory.flatMap(row=>row.names).sort();
 assert.deepEqual(mountedRegressionEntryImports(),inventory.map(row=>row.file),'Every mounted source must be included exactly once');
 assert.equal(new Set(expected).size,expected.length,'Mounted case names must be unique');assert.ok(expected.length>0);
@@ -32,8 +35,8 @@ console.log(`Mounted regression evidence: ${out}`);
 const record=async()=>writeFile(path.join(out,'results.json'),JSON.stringify({inventory,expected,selected,cells:results,errors:globalErrors},null,2)+'\n');
 const describe=error=>error?.stack??String(error);
 const launchOwnedBrowser=async()=>{
- browserServer=await withinMountedDeadline(()=>chromium.launchServer({executablePath:process.env.PONDEROSA_CHROME_PATH||'/usr/bin/google-chrome',headless:true,args:['--no-sandbox'],timeout:15_000}),20_000,'owned browser launch');
- browser=await withinMountedDeadline(()=>chromium.connect(browserServer.wsEndpoint()),10_000,'owned browser connection');
+ browserServer=await withinMountedDeadline(()=>browserType.launchServer({executablePath:browserName==='webkit'?process.env.PONDEROSA_WEBKIT_PATH:process.env.PONDEROSA_CHROME_PATH||'/usr/bin/google-chrome',headless:true,...(browserName==='chromium'?{args:['--no-sandbox']}:{}),timeout:15_000}),20_000,'owned browser launch');
+ browser=await withinMountedDeadline(()=>browserType.connect(browserServer.wsEndpoint()),10_000,'owned browser connection');
 };
 const closeOwnedBrowser=async()=>{
  const owned=browserServer,client=browser,pid=owned?.process()?.pid;browser=undefined;browserServer=undefined;
@@ -67,7 +70,7 @@ try{
   const startedAt=Date.now(),checkpoint=()=>{if(stopped)throw Error('Mounted cell ended; no late browser action is allowed');};
   const outcome=await runMountedCase({timeout,stop:()=>{stopped=true;},
    run:async()=>{
-    context=await browser.newContext({viewport:mobile?{width:390,height:844}:{width:1440,height:962},isMobile:mobile,hasTouch:mobile,...(process.env.PONDEROSA_MOUNTED_VIDEO==='1'?{recordVideo:{dir:path.join(out,cell+'-video')}}:{})});checkpoint();
+    context=await browser.newContext({...(mobile&&browserName==='webkit'?devices['iPhone 13']:{viewport:mobile?{width:390,height:844}:{width:1440,height:962},isMobile:mobile,hasTouch:mobile}),...(process.env.PONDEROSA_MOUNTED_VIDEO==='1'?{recordVideo:{dir:path.join(out,cell+'-video')}}:{})});checkpoint();
     await context.route('**/*',route=>{
      const url=new URL(route.request().url());
      if(url.origin!==origin||url.pathname.startsWith('/api/')){network.push({url:url.href,method:route.request().method()});return route.abort('blockedbyclient');}
@@ -85,7 +88,7 @@ try{
    close:async()=>{if(context)await context.close();},
   });
   if(!outcome.failure&&(pageErrors.length||network.length))outcome.failure=Error('Late browser errors or unmocked effects invalidated the mounted cell');
-  const result={cell,name,status:outcome.failure||outcome.secondary.length?'FAIL':'PASS',durationMs:Date.now()-startedAt,...(outcome.failure?{error:describe(outcome.failure)}:{}),secondary:outcome.secondary.map(row=>({stage:row.stage,error:describe(row.error)})),pageErrors,network};results.push(result);await persist();console.log(`${result.status} ${cell} ${name}`);
+  const result={cell,browser:browserName,name,status:outcome.failure||outcome.secondary.length?'FAIL':'PASS',durationMs:Date.now()-startedAt,...(outcome.failure?{error:describe(outcome.failure)}:{}),secondary:outcome.secondary.map(row=>({stage:row.stage,error:describe(row.error)})),pageErrors,network};results.push(result);await persist();console.log(`${result.status} ${cell} ${name}`);
   if(outcome.timedOut||outcome.secondary.some(row=>row.stage==='context cleanup')||!browser.isConnected()){
    // A timeout can leave a late context-creation/evaluate promise. Reclaim only
    // this owned browser before later independent cells; never replay this case.

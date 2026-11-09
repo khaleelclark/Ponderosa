@@ -8,7 +8,7 @@ import { appendLiveRunText, closeLiveRunText, boundLiveAgentTelemetry } from "..
 import type { StreamSubscription } from "../api/types";
 import { compactDefined } from "../collections";
 import { queryKeys } from "../queryKeys";
-import { invalidateForBrowserPage } from "../queryVisibility";
+import { browserPageIsVisible, createForegroundTimer, invalidateForBrowserPage } from "../queryVisibility";
 import { registerLiveAgentStream } from "./agentStreamRegistry";
 import { reconcileCursor } from "./streamCursor";
 import { removeBrowserStorage } from "../browserStorage";
@@ -18,6 +18,7 @@ import { createBoundedRefresh } from "../boundedRefresh";
 export interface StreamState {
   connected: boolean;
   connectionStatus: WorkspaceConnectionStatus;
+  retry?(): void;
 }
 
 const initialStreamState: StreamState = {
@@ -415,6 +416,7 @@ export function useAgentStream(
 ): StreamState {
   const queryClient = useQueryClient();
   const [state, setState] = useState<StreamState>(initialStreamState);
+  const [retryGeneration, setRetryGeneration] = useState(0);
   const lastSeqRef = useRef<number | undefined>(undefined);
   const projectIdRef = useRef(knownProjectId);
   const retryProjectReconciliationRef = useRef<() => void>(() => undefined);
@@ -448,14 +450,27 @@ export function useAgentStream(
     let unregisterLiveStream: (() => void) | undefined;
     let disconnected = false;
     let connectedOnce = false;
-    let reconnectNoticeTimer: ReturnType<typeof setTimeout> | undefined;
-    let staleNoticeTimer: ReturnType<typeof setTimeout> | undefined;
-    const clearConnectionTimers = () => {
-      if (reconnectNoticeTimer) clearTimeout(reconnectNoticeTimer);
-      if (staleNoticeTimer) clearTimeout(staleNoticeTimer);
-      reconnectNoticeTimer = undefined;
-      staleNoticeTimer = undefined;
+    let catchUpCursor: number | undefined;
+    let awaitingCatchUp = true;
+    const foregroundWarning = createForegroundTimer(() => {
+      if (!stopped && (disconnected || awaitingCatchUp)) setState(current => ({ ...current,
+        connectionStatus: connectedOnce ? "stale" : "unavailable" }));
+    }, 8_000);
+    const clearConnectionTimers = () => foregroundWarning.clear();
+    const confirmCatchUp = () => {
+      if (catchUpCursor === undefined || (lastSeqRef.current ?? 0) < catchUpCursor) return;
+      awaitingCatchUp = false;
+      clearConnectionTimers();
+      setState(current => ({ ...current, connected: true, connectionStatus: "live" }));
     };
+    const visibility = () => {
+      awaitingCatchUp = true;
+      catchUpCursor = undefined;
+      setState(current => ({ ...current, connectionStatus: connectedOnce ? "reconnecting" : "connecting" }));
+      if (browserPageIsVisible()) foregroundWarning.start();
+    };
+    document.addEventListener("visibilitychange", visibility);
+    foregroundWarning.start();
     let reconcileTimer: ReturnType<typeof setTimeout> | undefined;
     let reconcileDueAt = 0;
     let nextCoordinationUrgentAt = 0;
@@ -549,35 +564,36 @@ export function useAgentStream(
         onOpen() {
           disconnected = false;
           connectedOnce = true;
-          clearConnectionTimers();
+          awaitingCatchUp = true;
+          catchUpCursor = undefined;
+          foregroundWarning.start();
           markStreamDisconnected();
           unregisterLiveStream = registerLiveAgentStream(agentId);
-          setState((current) => ({ ...current, connected: true, connectionStatus: "live" }));
+          setState((current) => ({ ...current, connected: true, connectionStatus: "reconnecting" }));
         },
         onError() {
           markStreamDisconnected();
           setState((current) => ({ ...current, connected: false }));
           if (disconnected) return;
           disconnected = true;
-          reconnectNoticeTimer = setTimeout(() => {
-            if (!stopped && disconnected) setState(current => ({ ...current,
-              connectionStatus: connectedOnce ? "reconnecting" : "connecting" }));
-          }, 1_000);
-          staleNoticeTimer = setTimeout(() => {
-            if (!stopped && disconnected) setState(current => ({ ...current,
-              connectionStatus: connectedOnce ? "stale" : "unavailable" }));
-          }, 8_000);
+          awaitingCatchUp = true;
+          catchUpCursor = undefined;
+          foregroundWarning.start();
+          setState(current => ({ ...current, connectionStatus: connectedOnce ? "reconnecting" : "connecting" }));
         },
         onStatus(status) {
           flushText();
           const changedInstance = Boolean(cursor.instanceId && cursor.instanceId !== status.instanceId);
           if (changedInstance) {
+            awaitingCatchUp = true;
+            catchUpCursor = undefined;
+            foregroundWarning.start();
             const baseline = status.snapshot ? status.cursor : 0;
             lastSeqRef.current = baseline;
             cursor.lastSeq = baseline;
             cursor.instanceId = status.instanceId;
             rememberCursor(agentId, cursor);
-            setState({ ...initialStreamState, connected: true, connectionStatus: "live" });
+            setState({ ...initialStreamState, connected: false, connectionStatus: "reconnecting" });
             scheduleReconciliation({ detail: true, roster: true, health: true, usage: true });
             markStreamDisconnected();
             nextSubscription.close();
@@ -594,11 +610,12 @@ export function useAgentStream(
             }
             return;
           }
+          catchUpCursor = status.cursor;
           instanceMismatchDelay = INSTANCE_MISMATCH_INITIAL_DELAY_MS;
           if (status.snapshot || status.reset || (lastSeqRef.current ?? 0) > status.cursor) {
             lastSeqRef.current = status.snapshot ? status.cursor : 0;
             cursor.lastSeq = lastSeqRef.current;
-            setState({ ...initialStreamState, connected: true, connectionStatus: "live" });
+            setState({ ...initialStreamState, connected: true, connectionStatus: "reconnecting" });
             const urgent = Date.now() >= nextSnapshotUrgentAt;
             if (urgent) nextSnapshotUrgentAt = Date.now() + 5_000;
             scheduleReconciliation({ detail: true, roster: true, health: true, usage: true },
@@ -606,6 +623,7 @@ export function useAgentStream(
           }
           cursor.instanceId = status.instanceId;
           rememberCursor(agentId, cursor);
+          confirmCatchUp();
         },
         onEvent(envelope) {
           const reconciliation = reconcileCursor(
@@ -617,6 +635,7 @@ export function useAgentStream(
           lastSeqRef.current = reconciliation.cursor;
           cursor.lastSeq = reconciliation.cursor;
           rememberCursor(agentId, cursor);
+          confirmCatchUp();
 
           if (reconciliation.gap) {
             scheduleReconciliation({ detail: true, roster: true, health: true, usage: true });
@@ -634,11 +653,7 @@ export function useAgentStream(
             return;
           }
 
-          setState((current) => {
-            return current.connected && current.connectionStatus === "live"
-              ? current
-              : { ...current, connected: true, connectionStatus: "live" };
-          });
+
 
           // Preserve every delta in order, but publish at most once per frame-sized
           // interval. Tools and lifecycle changes flush text before their own update.
@@ -688,18 +703,19 @@ export function useAgentStream(
       flushText();
       subscription?.close();
       markStreamDisconnected();
-      clearConnectionTimers();
+      foregroundWarning.dispose();
+      document.removeEventListener("visibilitychange", visibility);
       retryProjectReconciliationRef.current = () => undefined;
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (reconcileTimer) clearTimeout(reconcileTimer);
       publicProgressRefresh.dispose();
     };
-  }, [queryClient, agentId]);
+  }, [queryClient, agentId, retryGeneration]);
 
   useEffect(() => {
     projectIdRef.current = knownProjectId;
     retryProjectReconciliationRef.current();
   }, [knownProjectId]);
 
-  return useMemo(() => state, [state]);
+  return useMemo(() => ({ ...state, retry: () => setRetryGeneration(value => value + 1) }), [state]);
 }

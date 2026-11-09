@@ -1302,13 +1302,15 @@ export const realApi = {
       })}`)),
       onOpen: () => handlers.onOpen?.(),
       onError: (event) => handlers.onError?.(event),
-      configure(source) {
+      configure(source, isCurrent) {
         source.addEventListener("message", (event) => {
+          if (!isCurrent()) return;
           const envelope = JSON.parse(event.data as string) as SseEventEnvelope;
           cursor = Math.max(cursor ?? 0, envelope.seq);
           handlers.onEvent(envelope);
         });
         source.addEventListener("agent_status", (event) => {
+          if (!isCurrent()) return;
           const status = JSON.parse(event.data as string) as AgentStreamStatusDto;
           if (status.snapshot) cursor = status.cursor;
           else if (status.reset) cursor = 0;
@@ -1325,13 +1327,15 @@ export const realApi = {
       createSource: () => new EventSource(productApiPath(`/api/workspace/stream${toQuery({ lastEventId: cursor })}`)),
       onOpen: () => handlers.onOpen?.(),
       onError: (event) => handlers.onError?.(event),
-      configure(source) {
+      configure(source, isCurrent) {
         source.addEventListener("message", (event) => {
+          if (!isCurrent()) return;
           const envelope = JSON.parse(event.data as string) as WorkspaceEventEnvelope;
           cursor = Math.max(cursor ?? 0, envelope.id);
           handlers.onEvent(envelope);
         });
         source.addEventListener("workspace_status", (event) => {
+          if (!isCurrent()) return;
           const status = JSON.parse(event.data as string) as WorkspaceStreamStatusDto;
           if (status.snapshot) cursor = status.cursor;
           else if (status.reset) cursor = 0;

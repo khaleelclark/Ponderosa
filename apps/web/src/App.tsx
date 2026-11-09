@@ -759,7 +759,7 @@ export default function App({
               <PrimaryHeaderActionsProvider
                 suppressChrome={route.kind === "assistant"}
                 workspaceStatus={<>
-                  <WorkspaceConnectionNotice connection={workspaceConnection} hasSavedData={projectsQuery.data !== undefined && enginesQuery.data !== undefined} />
+                  {route.kind !== "assistant" && <WorkspaceConnectionNotice connection={workspaceConnection} hasSavedData={projectsQuery.data !== undefined && enginesQuery.data !== undefined} />}
                   <ChatCreationRecovery key={JSON.stringify(route)}
                     activeCreationKey={route.kind === "create" && route.resource === "chat" ? route.creationKey : undefined}
                     onCreated={(projectId, conversationId) => navigateWorkspace({ kind: "conversation", projectId, conversationId })} />

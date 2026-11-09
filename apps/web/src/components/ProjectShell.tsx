@@ -208,7 +208,7 @@ export function ProjectShell({
     conversationsFailure === "refresh" ||
     agentsFailure === "refresh"
   );
-  useReportWorkspaceRefresh(retainedResourceError ? "Some workspace data could not refresh. The last loaded data remains available." : undefined, () => {
+  useReportWorkspaceRefresh(retainedResourceError ? `${[conversationsFailure === "refresh" ? "Chats" : undefined, agentsFailure === "refresh" ? "Agents" : undefined].filter(Boolean).join(" and ")} could not refresh. The last loaded data remains available.` : undefined, () => {
     if (conversationsFailure === "refresh") void conversationsQuery.refetch();
     if (agentsFailure === "refresh") void agentsQuery.refetch();
   });

@@ -32,6 +32,7 @@ import {
   useWorkspacePreferences,
 } from "../hooks/queries";
 import { useAgentStream } from "../hooks/useAgentStream";
+import { useReportWorkspaceRefresh } from "./WorkspaceRefreshContext";
 import { useWorkspaceConnection } from "./WorkspaceConnectionContext";
 import { agentIdForMentionHandle } from "../mentions";
 import { chatStateKey, readChatState, writeChatState } from "../chatState";
@@ -142,6 +143,9 @@ export function AgentDetail({
   const focusedTelemetryRef = useRef<string>();
   const stream = useAgentStream(agentId, projectId);
   const workspaceConnection = useWorkspaceConnection();
+  useReportWorkspaceRefresh(stream.connectionStatus !== "live"
+    ? `${agentQuery.data?.agent.title ?? "This Agent"} live activity is reconnecting. Its last known status remains visible.` : undefined,
+    () => stream.retry?.());
   const agentConnectionStatus = workspaceConnection.status === "live"
     ? stream.connectionStatus
     : workspaceConnection.status;

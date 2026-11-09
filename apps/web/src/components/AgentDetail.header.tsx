@@ -88,8 +88,9 @@ function AgentRunState({
   const runState = elapsed
     ? `${presentation.label} · ${elapsed}`
     : presentation.label;
-  const connectionState = connectionStatus === "live"
+  const connectionState = connectionStatus === "live" && phaseEvidenceFresh
     ? "Live"
+    : connectionStatus === "live" ? "Refreshing status"
     : connectionStatus === "stale"
       ? "Stale"
       : connectionStatus === "unavailable"
@@ -104,12 +105,14 @@ function AgentRunState({
     health?.attention ? "Needs attention: " + agentStatusLabel(health.attention.status) : undefined,
   ].filter(Boolean).join(" · ");
   const delayed = connectionStatus === "stale" || connectionStatus === "unavailable";
+  const visibleLabel = connectionStatus === "live" && phaseEvidenceFresh
+    ? `${runState} · Live` : `${delayed ? "Last known: " : ""}${runState}`;
   const accessibleDetail = `${presentation.accessibleLabel}${elapsed ? `; ${elapsed}` : ""}; ${connectionState.toLocaleLowerCase()}. ${details}`;
   if (mobile && !paused) return <>
     <Tooltip title={accessibleDetail}><IconButton size="small" aria-label={accessibleDetail}
       onClick={event => setDetailAnchor(event.currentTarget)} sx={{ width: visibleMobileLabel ? "auto" : 44, minWidth: 44, height: 44, gap: 0.5, borderRadius: visibleMobileLabel ? 1 : "50%" }}>
       <Box component="span" sx={{ width: 10, height: 10, borderRadius: "50%", bgcolor: theme => semanticStatusColorToken(presentation.status, theme.palette.mode) }} />
-      {visibleMobileLabel && <Typography component="span" variant="caption" noWrap>{runState} · {connectionState}</Typography>}
+      {visibleMobileLabel && <Typography component="span" variant="caption" noWrap>{visibleLabel}</Typography>}
     </IconButton></Tooltip>
     <Popover open={Boolean(detailAnchor)} anchorEl={detailAnchor} onClose={() => setDetailAnchor(null)}
       anchorOrigin={{ vertical: "bottom", horizontal: "right" }} transformOrigin={{ vertical: "top", horizontal: "right" }}>
@@ -120,13 +123,10 @@ function AgentRunState({
     <Stack direction="row" gap={0.5} flexWrap="wrap" alignItems="center" sx={{ minWidth: 0, flexShrink: 1 }}>
       <SemanticStatus
         status={presentation.status}
-        label={connectionStatus === "live" ? `${runState} · Live` : `${delayed ? "Last known: " : ""}${runState}`}
+        label={visibleLabel}
         detail={`${presentation.accessibleLabel}${elapsed ? `; ${elapsed}` : ""}; ${connectionState.toLocaleLowerCase()}. ${details}`}
       />
-      {connectionStatus !== "live" && <SemanticStatus status={delayed ? "blocked" : "idle"}
-        label={connectionStatus === "stale" ? "Updates delayed" : connectionStatus === "unavailable"
-          ? "Updates unavailable" : `${connectionState} updates`}
-        detail="Connection to live updates on this device. This does not stop the Agent's work." />}
+
     </Stack>
   );
 }
