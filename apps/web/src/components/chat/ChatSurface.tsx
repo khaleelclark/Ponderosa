@@ -1,5 +1,5 @@
 import { Alert, Box, Stack } from "@mui/material";
-import { Children, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { Children, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { afterPaintBackgroundTask } from "../../afterPaintBackgroundTask";
 import { readScrollPosition } from "../../chatState";
@@ -8,6 +8,8 @@ import { ChatPagination } from "./ChatPagination";
 import type { ChatFollowLatest, ChatHistoryPage } from "./contracts";
 import { useChatScroll } from "./useChatScroll";
 import { OutgoingMessageRow, useOutgoingMessage } from "./OutgoingMessage";
+import { ConversationChromeContext } from "../ConversationChromeContext";
+import { composerSurfaceWidth } from "./Composer.styles";
 
 export type ChatSurfaceLayout = "agent" | "project" | "workspace";
 
@@ -37,6 +39,8 @@ export function ChatSurface({
   /** Only the first cold transcript render is scheduled; fetched data is unchanged. */
   initialTranscript?: { rowIds: readonly string[]; reveal?: boolean };
 }): JSX.Element {
+  const assistantChrome = useContext(ConversationChromeContext);
+  const regularChat = layout === "project" && !assistantChrome;
   const outgoing = useOutgoingMessage();
   const pendingId = showOutgoingMessage ? outgoing?.message?.id : undefined;
   // This is a finite aria-busy loading phase: native menu Find may not see
@@ -156,7 +160,8 @@ export function ChatSurface({
         onScroll={scroll.onScroll}
         sx={{
           position: "relative",
-          px: padding,
+          px: regularChat ? { ...padding, md: 0, lg: 0 } : padding,
+          "--chat-message-frame-width": regularChat ? { md: "100%" } : undefined,
           py: { xs: 1, sm: 1.5 },
           pb: 3,
           height: "100%",
@@ -171,7 +176,9 @@ export function ChatSurface({
           ref={scroll.contentRef}
           spacing={0}
           sx={{
-            width: `min(${contentWidth}px, 100%)`,
+            width: regularChat
+              ? { xs: `min(${contentWidth}px, 100%)`, md: composerSurfaceWidth.md, xl: composerSurfaceWidth.xl }
+              : `min(${contentWidth}px, 100%)`,
             minHeight: "100%",
             minWidth: 0,
             flexShrink: 0,

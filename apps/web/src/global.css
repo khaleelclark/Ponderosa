@@ -34,7 +34,7 @@ body {
 
 /* Static message geometry avoids resolving the same responsive sx objects for
    every row of the canonical page. Interactive controls remain unchanged. */
-.chat-message-frame { align-self: center; width: min(1120px, 100%); max-width: 100%; min-width: 0; padding-block: 6px; }
+.chat-message-frame { align-self: center; width: min(var(--chat-message-frame-width, 880px), 100%); max-width: 100%; min-width: 0; padding-block: 6px; }
 .chat-message-selectable { cursor: pointer; }
 .chat-message-before-header { min-width: 0; padding-left: 40px; }
 .chat-message-row { display: flex; flex-direction: row; align-items: flex-start; justify-content: flex-start; min-width: 0; gap: 8px; }

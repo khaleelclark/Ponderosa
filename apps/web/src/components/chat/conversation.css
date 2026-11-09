@@ -1,5 +1,5 @@
 /* One readable conversation rhythm across Chat, direct Agent chat and Assistant. */
-.chat-message-frame { width: min(880px, 100%); padding-block: 10px; }
+.chat-message-frame { padding-block: 10px; }
 .chat-message-row { gap: 10px; }
 .chat-message-row > .MuiAvatar-root { margin-top: 4px; }
 .chat-message-column { line-height: 1.65; }
