@@ -147,13 +147,38 @@ export async function voiceCallMountedFatalRegression():Promise<void>{
  });
 }
 
+export async function voiceCallMountedProlongedSilenceRegression():Promise<void>{
+ await fixture(async f=>{
+  // Repeated quiet cycles must never grow into a multi-second deaf interval.
+  for(let cycle=0;cycle<7;cycle++){
+   const started=performance.now();
+   if(cycle%2===0)f.recognitions[cycle]!.silence();
+   else f.recognitions[cycle]!.end();
+   await new Promise(resolve=>setTimeout(resolve,160));
+   assert(f.recognitions.length===cycle+1,'Quiet browser endings restarted capture too rapidly');
+   await until(()=>f.recognitions.length===cycle+2?true:undefined,'Quiet Call stopped listening or entered a long cooldown',1300);
+   const delay=performance.now()-started;
+   assert(delay<1300,'Quiet Call left a long microphone gap: '+Math.round(delay)+'ms');
+   assert(f.calls.length===0,'Quiet Call sent an empty turn');
+  }
+  (await f.button('End call')).click();
+  const count=f.recognitions.length;
+  await new Promise(resolve=>setTimeout(resolve,850));
+  assert(f.recognitions.length===count,'End allowed a delayed quiet-cycle restart');
+ });
+}
+
 export async function voiceCallMountedBackoffRegression():Promise<void>{
  await fixture(async f=>{
   for(let cycle=0;cycle<4;cycle++){
+   const started=performance.now();
    f.recognitions[cycle]!.network();
    await new Promise(resolve=>setTimeout(resolve,150));
    assert(f.recognitions.length===cycle+1,'Network retry spun without a cooldown');
-   if(cycle<3)await until(()=>f.recognitions.length===cycle+2?true:undefined,'Recoverable network error lost the open Call',7500);
+   if(cycle<3){
+    await until(()=>f.recognitions.length===cycle+2?true:undefined,'Recoverable network error lost the open Call',7500);
+    assert(performance.now()-started>=[550,1150,2600][cycle]!,'Network retry did not back off after repeated failures');
+   }
   }
   await f.button('Reconnect call');
   assert(f.calls.length===0,'Repeated browser network errors submitted work');

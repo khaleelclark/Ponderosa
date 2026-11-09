@@ -31,7 +31,8 @@ export interface VoiceConversationContext {
   startOnOpen?: boolean;
 }
 const CALL_RECOVERABLE_ERRORS = ["no-speech", "network"] as const;
-const CALL_RETRY_DELAYS_MS = [700, 1_400, 3_000, 5_000, 15_000] as const;
+const CALL_SILENCE_RETRY_MS = 600;
+const CALL_NETWORK_RETRY_DELAYS_MS = [700, 1_400, 3_000] as const;
 const member = (agent: AgentDto, projectId: string, conversationId: string) => agent.projectId === projectId && agent.conversationId === conversationId;
 export function VoiceConversation(props: VoiceConversationContext & { open: boolean; onClose(): void }): JSX.Element {
   const product = productApiPath("/api/conversations");
@@ -59,7 +60,6 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
   const [handsFree, setHandsFree] = useState(false);
   const handsFreeRef = useRef(false);
   const retryTimer = useRef<ReturnType<typeof setTimeout>>();
-  const emptyEnds = useRef(0);
   const networkFailures = useRef(0);
   const cancelListenRetry = useCallback(() => {
     if (retryTimer.current !== undefined) clearTimeout(retryTimer.current);
@@ -69,7 +69,6 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
     cancelListenRetry();
     handsFreeRef.current = false;
     setHandsFree(false);
-    emptyEnds.current = 0;
     networkFailures.current = 0;
   }, [cancelListenRetry]);
   const listenRef = useRef<() => void>(() => {});
@@ -318,7 +317,7 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
     } finally { pending = undefined; }
   };
   // A recognizer session may end during silence. Keep the call open and retry
-  // after a delay, capped at a cooldown so browser no-speech churn stays bounded.
+  // after a short delay. Only actual network failures use increasing backoff.
   useEffect(() => {
     if (!handsFreeRef.current || phaseRef.current !== "capture" || dictation.status !== "stopped") return;
     if (textRef.current.trim()) {
@@ -327,7 +326,7 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
         setError("Recognition stopped before this turn finished. Review your words, then send or clear the draft.");
         return;
       }
-      emptyEnds.current = 0; networkFailures.current = 0; setNotice(undefined);
+      networkFailures.current = 0; setNotice(undefined);
       recognitionSettled.current = performance.now();
       changePhase("review"); void send();
       return;
@@ -337,10 +336,12 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
       setError("The browser speech service could not reconnect. Check your connection, then reconnect the call.");
       return;
     }
+    const delay = dictation.endReason === "network"
+      ? CALL_NETWORK_RETRY_DELAYS_MS[networkFailures.current - 1]!
+      : CALL_SILENCE_RETRY_MS;
     if (dictation.endReason !== "network") networkFailures.current = 0;
-    const delay = CALL_RETRY_DELAYS_MS[Math.min(emptyEnds.current++, CALL_RETRY_DELAYS_MS.length - 1)]!;
     changePhase("resting");
-    setNotice(delay >= 15_000 ? "The microphone is resting after repeated silence. This call is still open." : undefined);
+    setNotice(undefined);
     cancelListenRetry();
     retryTimer.current = setTimeout(() => {
       retryTimer.current = undefined;
