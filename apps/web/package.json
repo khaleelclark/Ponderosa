@@ -7,8 +7,8 @@
     "node": ">=24 <25"
   },
   "scripts": {
-    "build": "rsbuild build",
-    "dev": "rsbuild dev",
+    "build": "rsbuild build && rsbuild build --config rsbuild.assistant.config.ts",
+    "dev": "rsbuild build --config rsbuild.assistant.config.ts && rsbuild dev",
     "preview": "rsbuild preview",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test:built": "node ../../tests/shared/run-tests.mjs --lane web"

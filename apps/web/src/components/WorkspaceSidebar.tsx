@@ -1,4 +1,5 @@
 import { SidebarResourceRow } from "./SidebarResourceRow";
+import {assistantReturnPath} from "../assistantRouting";
 import AddIcon from "@mui/icons-material/Add";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import KeyboardArrowDownIcon from "@mui/icons-material/KeyboardArrowDown";
@@ -351,6 +352,7 @@ export function WorkspaceSidebar({
       unreadNotificationUpdates={counts.updates}
       onOpenHome={() => showNavigation({ kind: "home" })}
       onOpenInbox={() => showNavigation({ kind: "inbox" })}
+      onOpenAssistant={() => showNavigation({kind:"assistant",returnTo:route.kind==="assistant"?route.returnTo:assistantReturnPath(routeToPath(route))})}
       onManageSection={section => showNavigation(
         section === "agents"
           ? { kind: "manageAgents" }

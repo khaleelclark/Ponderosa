@@ -1,4 +1,3 @@
-import {assistantReturnPath} from './assistantRouting';
 import type {BranchContextDto} from "@ponderosa/core";
 import { parseRoute, navigationPreservesSettings, type Route } from './routing.js';
 import { routeToPath, type ProjectRoute } from './routeRegistry.js';
@@ -8,8 +7,6 @@ export type BranchTab = typeof branchTabs[number];
 export type BranchGlobalView = 'general' | 'providers' | 'notifications' | 'activity' | 'profile' | 'usage' | 'status';
 export const branchSettingsSection=(view:BranchGlobalView):NonNullable<Extract<Route,{kind:'settings'}>['section']>=>view==='status'?'providers':view==='usage'?'activity':view;
 export interface BranchRoute {
-  assistant?: boolean;
-  assistantReturnTo?: string;
   branchId?: string;
   tab: BranchTab;
   executionId?: string;
@@ -37,7 +34,6 @@ export function parseBranchRoute(search: string): BranchRoute {
   const location = nested?.startsWith('/projects/') ? new URL(nested, 'http://ponderosa.invalid') : undefined;
   const workspace: Route | undefined = location ? parseRoute(location.pathname, location.search) : undefined;
   return {
-    ...(query.get('assistant') === '1' ? {assistant:true,assistantReturnTo:assistantReturnPath(query.get('returnTo'))} : {}),
     tab: tab === 'parameters' ? 'settings' : branchTabs.includes(tab as BranchTab) ? tab as BranchTab : executionId ? 'executions' : 'workflow',
     ...(tab === 'parameters' ? {settingsSection:'variables' as const} : tab === 'settings' && ['variables','execution-controls'].includes(query.get('section') ?? '') ? {settingsSection:query.get('section') as NonNullable<BranchRoute['settingsSection']>} : {}),
     ...(query.get('branch') ? { branchId: query.get('branch')! } : {}),
@@ -52,7 +48,6 @@ export function parseBranchRoute(search: string): BranchRoute {
 
 export function branchRoutePath(route: BranchRoute): string {
   const query = new URLSearchParams();
-  if (route.assistant) {query.set('assistant','1');if(route.assistantReturnTo)query.set('returnTo',route.assistantReturnTo);}
   if (route.branchId) query.set('branch', route.branchId);
   if (route.tab !== 'workflow' || route.executionId) query.set('tab', route.tab);
   if (route.executionId) query.set('execution', route.executionId);

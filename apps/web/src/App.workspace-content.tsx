@@ -1,4 +1,5 @@
 import {useInitializeAssistant} from './components/AssistantEntry';
+import {AssistantSurface} from './AssistantSurface';
 import { useEffect } from "react";
 import { loadProjectShell } from "./projectShellLoader";
 import { Alert, Box, Button } from "@mui/material";
@@ -73,6 +74,7 @@ interface WorkspaceRouteOutletProps {
   onBrowserRequestHandled(requestId: number): void;
   onResourceDeleted(route: RemovableWorkspaceResourceRoute): void;
   onToggleColorMode(): void;
+  onOpenAssistantNavigation(): void;
 }
 
 export function WorkspaceRouteOutlet({
@@ -105,6 +107,7 @@ export function WorkspaceRouteOutlet({
   onBrowserRequestHandled,
   onResourceDeleted,
   onToggleColorMode,
+  onOpenAssistantNavigation,
 }: WorkspaceRouteOutletProps): JSX.Element {
   useInitializeAssistant();
   // Fetch the existing route chunk while its Project metadata resolves. The
@@ -180,6 +183,8 @@ export function WorkspaceRouteOutlet({
           load={loadManageChatsWorkspace}
           componentProps={{ onNavigate }}
         />
+      ) : route.kind === "assistant" ? (
+        <AssistantSurface colorMode={colorMode} returnTo={route.returnTo} onOpenNavigation={onOpenAssistantNavigation} onToggleColorMode={onToggleColorMode} onOpenProviderSettings={() => onNavigate({kind:"settings",section:"providers"})}/>
       ) : route.kind === "manageAgents" ? (
         <RecoverableLazyRoute
           key="manage-agents"

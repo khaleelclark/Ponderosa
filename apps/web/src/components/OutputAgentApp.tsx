@@ -32,7 +32,7 @@ function ConversationNotice({title,cause,onRetry}:{title:string;cause:string;onR
 }
 /** Output apps use canonical Agent chat, attachments, voice, calls and streams. */
 export function OutputAgentApp({colorMode,onToggleColorMode,embedded=false,returnTo}:{colorMode:ColorMode;onToggleColorMode():void;embedded?:boolean;returnTo?:string}):JSX.Element{
- useAppViewport();
+ useAppViewport(!embedded);
  const assistantTheme=useMemo(()=>createPonderosaTheme(colorMode,"assistant"),[colorMode]);
  const [statusHost,setStatusHost]=useState<HTMLDivElement|null>(null);
  const [callActionsHost,setCallActionsHost]=useState<HTMLDivElement|null>(null);
@@ -142,7 +142,7 @@ export function OutputAgentApp({colorMode,onToggleColorMode,embedded=false,retur
    <DialogTitle id="output-app-settings-title">Settings</DialogTitle><DialogContent><Stack spacing={2} sx={{pt:1}}>
     {error&&<Alert severity="error">{error}</Alert>}
     <Typography role="status" variant="body2" sx={{minHeight:"1.5em"}}>{pendingAction==='reloading'?'Reloading…':busy?'Saving…':saved}</Typography>
-    <Button onClick={onToggleColorMode}>Use {colorMode==='dark'?'Light':'Dark'} Mode</Button><TextSizeSetting/><Button href="/branches?settings=activity">Provider activity</Button>
+    <Button onClick={onToggleColorMode}>Use {colorMode==='dark'?'Light':'Dark'} Mode</Button><TextSizeSetting/><Button href={assistant?'/settings/activity':'/branches?settings=activity'}>Provider activity</Button>
     {app&&<><FormControlLabel control={<Switch disabled={busy} checked={automatic} onChange={(_,value)=>{setSaved('');setAutomatic(value);}}/>} label="Run automatically"/>
      {editableInterval?<TextField disabled={busy} label="Check every (minutes)" type="number" value={minutes} onChange={event=>{setSaved('');setMinutes(event.target.value);}} error={!validInterval} helperText={intervalError} inputProps={{min:1,step:'any'}}/>:<Typography>{scheduleSource?.schedule?.scheduleKind==='cron'?`Cron schedule: ${scheduleSource?.schedule.expression} (${scheduleSource?.schedule.timezone})`:scheduleSource?.schedule?.scheduleKind==='once'?`Once at ${scheduleSource?.schedule.at}`:scheduleSource?.triggerKind==='filesystem'?'When files change':'When a webhook event arrives'}</Typography>}
      <Button disabled={busy||!validInterval} onClick={saveSchedule}>Save schedule</Button>

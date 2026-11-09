@@ -11,6 +11,9 @@ const {chromium}=createRequire(new URL('../../apps/server/package.json',import.m
 const output=process.env.QUALIFICATION_DIRECTORY??'/tmp/ponderosa-assistant-navigation';await mkdir(output,{recursive:true});
 const f=await fixture({webDist:path.join(root,'apps/web/dist')});let browser;
 const results=[];
+async function waitForClosedDrawer(page){
+ await page.waitForFunction(()=>Array.from(document.querySelectorAll('.MuiBackdrop-root')).every(node=>{const style=getComputedStyle(node);return style.opacity==='0'||style.visibility==='hidden'||style.pointerEvents==='none';})&&Array.from(document.querySelectorAll('.MuiDrawer-paper')).every(node=>{const rect=node.getBoundingClientRect();return rect.right<=.5||getComputedStyle(node).visibility==='hidden';}));
+}
 try{
  const core=await f.createChat('Weekend planning');await f.createIdleAgent(core,'Planning partner');
  const app=f.ok(await f.api('POST','/api/branches/assistant',{initialize:true})).app;
@@ -65,14 +68,15 @@ try{
    const startupApi=[];page.on('request',request=>{const url=new URL(request.url());if(url.pathname.startsWith('/api/'))startupApi.push(url.pathname);});
    await page.goto(origin+'/assistant?returnTo='+encodeURIComponent(corePath));
    await page.getByRole('heading',{name:'Assistant',exact:true}).waitFor();await page.getByLabel('Message',{exact:true}).waitFor();
-   const target=new URL(page.url());assert.equal(target.pathname,'/branches');assert.equal(target.searchParams.get('assistant'),'1');assert.equal(target.searchParams.get('returnTo'),corePath);
-   assert.equal(startupApi.some(path=>/^\/api\/(?:projects|conversations|agents)(?:\/|$)/.test(path)),false,'legacy bookmark never starts Core resource queries');
+   const target=new URL(page.url());assert.equal(target.pathname,'/assistant');assert.equal(target.searchParams.get('returnTo'),corePath);
+   assert.equal(startupApi.some(path=>/^\/api\/(?:projects|conversations|agents)(?:\/|$)/.test(path)),true,'Ponderosa navigation keeps its Core resource queries');
+   assert.equal(startupApi.some(path=>path.startsWith('/api/branches/engine/')),true,'Assistant keeps its canonical Branch engine transport');
    if(phone)await page.getByRole('button',{name:'Open workspace navigation',exact:true}).click();
-   const navigation=page.locator('aside[aria-label="Branches navigation"]:visible');await navigation.waitFor();
-   if(phone)await page.waitForFunction(()=>{const element=Array.from(document.querySelectorAll('aside[aria-label="Branches navigation"]')).find(element=>element.getClientRects().length);const rect=element?.getBoundingClientRect();return rect&&rect.left>=-.5&&rect.right<=innerWidth+.5;});
-   await navigation.getByRole('button',{name:'Assistant',exact:true}).waitFor();await navigation.getByRole('link',{name:'Inbox',exact:true}).waitFor();
+   const navigation=page.locator('aside[aria-label="Workspace navigation"]:visible');await navigation.waitFor();
+   if(phone)await page.waitForFunction(()=>{const element=Array.from(document.querySelectorAll('aside[aria-label="Workspace navigation"]')).find(element=>element.getClientRects().length);const rect=element?.getBoundingClientRect();return rect&&rect.left>=-.5&&rect.right<=innerWidth+.5;});
+   await navigation.getByRole('link',{name:'Assistant',exact:true}).waitFor();await navigation.getByRole('button',{name:'Inbox',exact:true}).waitFor();
    assert.equal(await page.locator('iframe').count(),0);row.directAliasIntegrated=true;await page.screenshot({path:path.join(output,label+'-direct-assistant-navigation.png')});
-   if(phone){await page.getByRole('button',{name:'Close workspace navigation',exact:true}).click();await navigation.waitFor({state:'hidden'});await page.screenshot({path:path.join(output,label+'-direct-assistant.png')});}
+   if(phone){await page.getByRole('button',{name:'Close workspace navigation',exact:true}).click();await navigation.waitFor({state:'hidden'});await waitForClosedDrawer(page);await page.screenshot({path:path.join(output,label+'-direct-assistant.png')});}
    await page.goto(origin+corePath);await page.getByLabel('Message',{exact:true}).waitFor();
    await page.goto(origin+'/assistant');await page.getByRole('heading',{name:'Assistant',exact:true}).waitFor();
    await page.goBack();await page.getByLabel('Message',{exact:true}).waitFor();assert.equal(new URL(page.url()).pathname,corePath);row.noAliasHistoryEntry=true;
@@ -84,12 +88,16 @@ try{
   if(phone)await page.getByRole('button',{name:'Open workspace navigation',exact:true}).click();
   const assistant=page.getByRole('link',{name:'Assistant',exact:true});await assistant.waitFor();
   const nav=await assistant.boundingBox();assert(nav&&nav.height>=44,'Assistant has a full touch target');
-  if(!phone){const inbox=await page.getByRole('button',{name:'Inbox',exact:true}).boundingBox();assert(Math.abs(nav.y-inbox.y)<1,'Assistant is aligned with Inbox');}
+  if(!phone){const inbox=await page.getByRole('button',{name:'Inbox',exact:true}).boundingBox();assert(nav.width>inbox.width*2,'Assistant owns a full-width navigation row');}
+  if(phone)await page.waitForFunction(()=>{const node=Array.from(document.querySelectorAll('aside[aria-label="Workspace navigation"]')).find(el=>el.getClientRects().length);const rect=node?.getBoundingClientRect();return rect&&rect.left>=-.5&&rect.right<=innerWidth+.5;});
   await page.screenshot({path:path.join(output,label+'-navigation.png')});await assistant.click();
+  if(phone)await waitForClosedDrawer(page);
   await page.getByRole('heading',{name:'Assistant',exact:true}).waitFor();
   const direct=page.getByLabel('Message',{exact:true});await direct.waitFor();
-  assert.equal(new URL(page.url()).pathname,'/branches');assert.equal(new URL(page.url()).searchParams.get('assistant'),'1');
+  assert.equal(new URL(page.url()).pathname,'/assistant');
   assert.equal(await page.locator('iframe').count(),0,'Assistant is actual React in the main workspace');
+  assert.equal(await page.locator('aside[aria-label="Branches navigation"]').count(),0,'Assistant never mounts the Branches drawer');
+  assert.equal(await page.getByText('Provider usage',{exact:true}).count(),phone?0:1,'Assistant owns the desktop provider usage control without a duplicate Core header');
   assert.equal(await page.getByRole('tab',{name:'Workflow',exact:true}).count(),0,'Assistant has no workflow editor tabs');
   assert.equal(await page.getByRole('tab',{name:'Subagents',exact:true}).count(),0,'Assistant has no Agent audit tabs');
   if(!phone){
@@ -102,21 +110,29 @@ try{
   const geometry=await direct.boundingBox();assert(geometry.y>=(phone?650:680),'Composer remains grounded near the bottom of the viewport');
   if(phone){const heading=await page.getByRole('heading',{name:'Assistant',exact:true}).boundingBox();assert(heading.width>=70,'Phone contact title is readable');}
   assert.equal(await page.getByText(/Assistant worked for/).count(),0,'Completed work receipts do not interrupt a simple direct conversation');await page.screenshot({path:path.join(output,label+'-assistant.png')});
+  if(phone){
+   await page.getByRole('button',{name:'Open workspace navigation',exact:true}).click();
+   await page.waitForFunction(()=>{const node=Array.from(document.querySelectorAll('aside[aria-label="Workspace navigation"]')).find(el=>el.getClientRects().length);const rect=node?.getBoundingClientRect();return rect&&rect.left>=-.5&&rect.right<=innerWidth+.5;});
+   const active=page.getByRole('link',{name:'Assistant',exact:true});assert.equal(await active.getAttribute('aria-current'),'page');
+   await page.screenshot({path:path.join(output,label+'-assistant-navigation.png')});
+   await page.getByRole('button',{name:'Close workspace navigation',exact:true}).click();await waitForClosedDrawer(page);
+  }
   await page.getByRole('link',{name:'Back to your Chat',exact:true}).click();await editor.waitFor();
   await page.waitForFunction(()=>document.querySelector('[aria-label="Message"]')?.textContent==='Keep this Core draft');
   assert.equal(new URL(page.url()).pathname,corePath);row.exactReturn=true;
   // Open again, then native browser Back. Both scoped drafts must remain separate.
   if(phone)await page.getByRole('button',{name:'Open workspace navigation',exact:true}).click();
   await page.getByRole('link',{name:'Assistant',exact:true}).click();await direct.waitFor();
+  if(phone)await waitForClosedDrawer(page);
   await page.waitForFunction(()=>document.querySelector('[aria-label="Message"]')?.textContent==='Keep this Assistant draft');row.assistantDraft=true;
   await page.goBack();await editor.waitFor();await page.waitForFunction(()=>document.querySelector('[aria-label="Message"]')?.textContent==='Keep this Core draft');row.browserBack=true;
   await page.screenshot({path:path.join(output,label+'-returned-chat.png')});
   assert.deepEqual(row.errors,[]);assert.deepEqual(row.failedApi,[]);
   // The full cause remains reachable without turning a transient failure into a wall of text.
   await page.route('**/api/branches/assistant',route=>route.fulfill({status:503,contentType:'application/json',body:JSON.stringify({message:'Synthetic Assistant refresh failure. '+('Full controlled cause. '.repeat(100)),error:'Synthetic Assistant refresh failure. '+('Full controlled cause. '.repeat(100))})}));
-  await page.goto(origin+'/branches?assistant=1');
+  await page.goto(origin+'/branches?assistant=1');assert.equal(new URL(page.url()).pathname,'/assistant','Legacy Assistant bookmark stays in Ponderosa');
   await page.getByText('Assistant could not be opened.',{exact:true}).waitFor();
-  const details=page.locator('details').filter({hasText:'Full controlled cause'});await details.waitFor();assert.equal(await details.getAttribute('open'),null);
+  const details=page.locator('#main-content details').filter({hasText:'Full controlled cause'});await details.waitFor();assert.equal(await details.getAttribute('open'),null);
   await details.locator('summary').click();await details.locator('pre').waitFor();row.fullErrorReachable=true;
   await details.locator('summary').click();await page.screenshot({path:path.join(output,label+'-assistant-retry.png')});
   row.expectedRetryFailures=row.failedApi.splice(0);await context.close();

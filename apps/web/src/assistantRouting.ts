@@ -8,11 +8,9 @@ export function assistantReturnPath(value:string|null|undefined):string|undefine
  }catch{return undefined;}
 }
 
-/** Legacy global-role bookmarks enter the same main workspace as Assistant navigation. */
+/** Old Branches Assistant bookmarks enter the Core workspace before its queries start. */
 export function integratedAssistantPath(pathname:string,search:string):string|undefined {
- if(pathname!=='/assistant')return undefined;
- const source=new URLSearchParams(search),target=new URLSearchParams({assistant:'1'});
- const returnTo=assistantReturnPath(source.get('returnTo'));
- if(returnTo)target.set('returnTo',returnTo);
- return `/branches?${target}`;
+ if(pathname!=='/branches'||new URLSearchParams(search).get('assistant')!=='1')return undefined;
+ const returnTo=assistantReturnPath(new URLSearchParams(search).get('returnTo'));
+ return `/assistant${returnTo?`?returnTo=${encodeURIComponent(returnTo)}`:''}`;
 }

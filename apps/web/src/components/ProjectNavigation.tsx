@@ -1,4 +1,6 @@
 import {AssistantEntry} from "./AssistantEntry";
+import {assistantReturnPath} from "../assistantRouting";
+import {routeToPath} from "../routeRegistry";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import ForumOutlinedIcon from "@mui/icons-material/ForumOutlined";
@@ -41,6 +43,7 @@ export function ProjectRail({
   unreadNotificationUpdates,
   onOpenHome,
   onOpenInbox,
+  onOpenAssistant,
   onManageSection,
   onOpenSearch,
   onOpenNotifications,
@@ -56,6 +59,7 @@ export function ProjectRail({
   unreadNotificationUpdates: number;
   onOpenHome(): void;
   onOpenInbox(): void;
+  onOpenAssistant(): void;
   onManageSection(section: ProjectSidebarSection): void;
   onOpenSearch(): void;
   onOpenNotifications(): void;
@@ -98,13 +102,11 @@ export function ProjectRail({
   return (
     <>
       <SidebarHeader drawer={drawer} hideTitle={drawer} selected={route.kind === "home"} onHome={onOpenHome} onCollapse={drawer ? onClose : onCollapse} actions={<>
-        {drawer ? (
-          <Tooltip title="Inbox">
+        {<Tooltip title="Inbox">
             <IconButton aria-label="Inbox" aria-current={route.kind === "inbox" ? "page" : undefined} onClick={onOpenInbox}>
               <ForumOutlinedIcon fontSize="small" />
             </IconButton>
-          </Tooltip>
-        ) : null}
+          </Tooltip>}
         {drawer ? <Box aria-hidden sx={{ flex: 1 }} /> : null}
         <Tooltip title="Search">
           <IconButton aria-label="Search" onClick={onOpenSearch}>
@@ -136,28 +138,7 @@ export function ProjectRail({
           pb: 0.75,
         }}
       >
-        <AssistantEntry wide={drawer}/>
-        {!drawer ? <ButtonBase
-          aria-label="Inbox"
-          aria-current={route.kind === "inbox" ? "page" : undefined}
-          onClick={onOpenInbox}
-          sx={{
-            minWidth: 0,
-            minHeight: 44,
-            justifyContent: "center",
-            gap: 1,
-            px: 1,
-            borderRadius: 1.5,
-            color: "text.secondary",
-            bgcolor: "transparent",
-            "&:hover": { bgcolor: "action.hover" },
-          }}
-        >
-          <ForumOutlinedIcon sx={{ fontSize: 18, flex: "0 0 auto" }} />
-          <Typography component="span" noWrap sx={{ minWidth: 0, fontSize: "0.8125rem", fontWeight: 600 }}>
-            Inbox
-          </Typography>
-        </ButtonBase> : null}
+        <AssistantEntry wide selected={route.kind==="assistant"} href={route.kind==="assistant"?routeToPath(route):routeToPath({kind:"assistant",returnTo:assistantReturnPath(routeToPath(route))})} onOpen={onOpenAssistant}/>
         {PROJECT_MODES.map(mode => (
           <ButtonBase
             key={mode.id}

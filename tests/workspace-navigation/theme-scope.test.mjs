@@ -17,7 +17,8 @@ test('ordinary Ponderosa keeps its historical green composer while Assistant and
   assert.equal(assistant.palette.primary.main,mode==='light'?'#2563EB':'#92B7FF');
   assert.equal(standard.components.MuiDialog,undefined,'iOS-style dialogs are outside ordinary Ponderosa');
   assert.ok(assistant.components.MuiDialog);
-  assert.equal(standard.components.MuiButton.styleOverrides.root.borderRadius,8);
+  assert.equal(standard.components.MuiButton.styleOverrides.root.borderRadius,10);
+  assert.equal(standard.typography.body1.fontSize,'0.9375rem');
   assert.equal(assistant.components.MuiButton.styleOverrides.root.borderRadius,10);
   assert.equal(assistantSurfaceVariables(mode)['--ponderosa-message-bubble'],'#2563EB');
   assert.equal(assistantSurfaceVariables(mode)['--ponderosa-prose-link'],assistant.palette.primary.main);

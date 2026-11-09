@@ -99,6 +99,7 @@ function routeDocumentTitle(route: Route): string {
     case "home": return "Home";
     case "create": return route.resource === "chat" ? "New Chat" : "New Agent";
     case "inbox": return "Inbox";
+    case "assistant": return "Assistant";
     case "manageChats": return "Manage Chats";
     case "manageAgents": return "Manage Agents";
     case "settings": return "Settings";
@@ -756,6 +757,7 @@ export default function App({
               >
               <WorkspaceConnectionProvider value={workspaceConnection}>
               <PrimaryHeaderActionsProvider
+                suppressChrome={route.kind === "assistant"}
                 workspaceStatus={<>
                   <WorkspaceConnectionNotice connection={workspaceConnection} hasSavedData={projectsQuery.data !== undefined && enginesQuery.data !== undefined} />
                   <ChatCreationRecovery key={JSON.stringify(route)}
@@ -844,6 +846,10 @@ export default function App({
                     }
                     onResourceDeleted={removeWorkspaceView}
                     onToggleColorMode={onToggleColorMode}
+                    onOpenAssistantNavigation={() => {
+                      if (mobileWorkspace) setMobileNavigationOpen(true);
+                      else setSidebarPresentation(current => ({...current,collapsed:false}));
+                    }}
                   />
                 </WorkspaceErrorBoundary>
               </PrimaryHeaderActionsProvider>

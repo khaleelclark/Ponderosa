@@ -76,6 +76,11 @@ const ROUTE_REGISTRY = {
     scope: "global",
     initialSidebarSection: "home",
   },
+  assistant: {
+    toPath: route => `/assistant${route.returnTo ? `?returnTo=${encodeURIComponent(route.returnTo)}` : ""}`,
+    scope: "global",
+    initialSidebarSection: "chats",
+  },
   manageChats: {
     toPath: () => "/manage/chats",
     scope: "global",

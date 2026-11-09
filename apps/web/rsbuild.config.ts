@@ -150,6 +150,8 @@ export default defineConfig({
     },
   },
   server: {
+    // The dev command builds Assistant first; serve its independent assets alongside the live Core bundle.
+    publicDir: [{ name: "public" }, { name: "dist", copyOnBuild: false }],
     port: 3000,
   },
 });

@@ -1,4 +1,6 @@
 import { useEffect } from "react";
+import { currentProductScope } from "./api/productScope";
+import type { AssistantMountWindow } from "./assistantMount";
 
 const blockers = new Set<string>();
 
@@ -8,7 +10,9 @@ export function setReloadBlocker(id: string, blocked: boolean): void {
 }
 
 export function reloadBlockers(): string[] {
-  return [...blockers].sort();
+  const own=[...blockers];
+  if(typeof window!=="undefined"&&currentProductScope()==="dev")own.push(...((window as AssistantMountWindow).__ponderosaAssistantMount?.blockers()??[]));
+  return [...new Set(own)].sort();
 }
 
 /** Prevents a service-worker activation from interrupting an unsaved form or
@@ -42,5 +46,6 @@ export function useUnsavedForm(id: string, dirty: boolean): void {
 }
 
 export function confirmUnsavedNavigation(): boolean {
-  return unsavedForms.size === 0 || window.confirm("Discard unsaved Settings edits and leave this page?");
+  if(unsavedForms.size>0&&!window.confirm("Discard unsaved Settings edits and leave this page?"))return false;
+  return currentProductScope()!=="dev"||(window as AssistantMountWindow).__ponderosaAssistantMount?.canLeave()!==false;
 }

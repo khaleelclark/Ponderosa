@@ -28,10 +28,12 @@ const PrimaryHeaderActionsContext = createContext<
 export function PrimaryHeaderActionsProvider({
   preferredProvider,
   onOpenProviderSettings,
+  suppressChrome = false,
   children,
   workspaceStatus,
 }: {
   preferredProvider?: string;
+  suppressChrome?: boolean;
   onOpenProviderSettings(): void;
   children: ReactNode;
   workspaceStatus?: ReactNode;
@@ -52,6 +54,18 @@ export function PrimaryHeaderActionsProvider({
   const activeRegistration = outlets.reduce<HeaderActionOutlet | undefined>((active, next) => !active || next.depth >= active.depth ? next : active, undefined);
   const activeOutlet = activeRegistration?.element;
   const value = useMemo(() => ({register, activeOutlet}), [register, activeOutlet]);
+
+  if (suppressChrome) return (
+    <PrimaryHeaderActionsContext.Provider value={value}>
+      {children}
+      <Box ref={setFallbackOutlet} data-core-workspace-status sx={{
+        position: "fixed", top: { xs: 76, sm: 76 }, right: 12,
+        zIndex: theme.zIndex.snackbar, display: "flex", alignItems: "center", gap: 1,
+        "&:empty": { display: "none" },
+      }} />
+      {workspaceStatus && fallbackOutlet ? createPortal(workspaceStatus, fallbackOutlet) : null}
+    </PrimaryHeaderActionsContext.Provider>
+  );
 
   return (
     <PrimaryHeaderActionsContext.Provider value={value}>

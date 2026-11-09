@@ -10,6 +10,7 @@
 // persisted locally; all real data still comes from the server.
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { assistantReturnPath } from "./assistantRouting";
 import type { AgentTelemetryStream, ConversationChannel } from "@ponderosa/core";
 import { confirmUnsavedNavigation, reloadBlockers } from "./reloadSafety.js";
 import { routeToPath } from "./routeRegistry.js";
@@ -58,6 +59,7 @@ export type Route =
       creationKey?: string;
     }
   | { kind: "inbox" }
+  | { kind: "assistant"; returnTo?: string }
   | { kind: "manageChats" }
   | { kind: "manageAgents" }
   | { kind: "settings"; returnTo?: string; section?: "profile" | "general" | "providers" | "notifications" | "activity" }
@@ -124,6 +126,7 @@ function parseRoutePath(pathname: string, search = ""): Route {
     };
   }
   if (parts.length === 1 && parts[0] === "messages") return { kind: "inbox" };
+  if (parts.length === 1 && parts[0] === "assistant") return { kind: "assistant", ...(assistantReturnPath(query.get("returnTo")) ? { returnTo: assistantReturnPath(query.get("returnTo")) } : {}) };
   if (parts.length === 2 && parts[0] === "manage" && parts[1] === "chats") {
     return { kind: "manageChats" };
   }

@@ -234,15 +234,14 @@ export function createPonderosaTheme(mode: ColorMode, variant: "standard" | "ass
       warning: { main: dark ? "#D8B85A" : "#8A6C22" },
       error: { main: dark ? "#D66A5C" : "#B74D43" },
     },
-    ...(assistant ? { transitions: {
+    transitions: {
       duration: { shortest: 160, shorter: 180, short: 200, standard: 200, complex: 220, enteringScreen: 220, leavingScreen: 180 },
       easing: { easeInOut: "cubic-bezier(0.2, 0, 0, 1)", easeOut: "cubic-bezier(0.2, 0, 0, 1)", easeIn: "cubic-bezier(0.4, 0, 1, 1)", sharp: "cubic-bezier(0.2, 0, 0, 1)" },
     },
-    } : {}),
     shape: {
       borderRadius: 12,
     },
-    typography: assistant ? {
+    typography: {
       fontFamily:
         'var(--ponderosa-font-family, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif)',
       h1: { letterSpacing: "-0.025em" },
@@ -254,18 +253,6 @@ export function createPonderosaTheme(mode: ColorMode, variant: "standard" | "ass
       button: { textTransform: "none", fontWeight: 600, letterSpacing: 0 },
       body1: { fontSize: "0.9375rem", lineHeight: 1.55 },
       body2: { fontSize: "0.875rem", lineHeight: 1.5 },
-    } : {
-      fontFamily:
-        'var(--ponderosa-font-family, Inter, Geist, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif)',
-      h1: { letterSpacing: "-0.025em" },
-      h2: { letterSpacing: "-0.022em" },
-      h3: { letterSpacing: "-0.02em" },
-      h4: { letterSpacing: "-0.018em" },
-      h5: { letterSpacing: "-0.014em" },
-      h6: { letterSpacing: "-0.01em" },
-      button: { textTransform: "none", fontWeight: 650, letterSpacing: 0 },
-      body1: { fontSize: "0.875rem", lineHeight: 1.55 },
-      body2: { fontSize: "0.8125rem", lineHeight: 1.5 },
     },
     components: {
       MuiCssBaseline: {
@@ -339,13 +326,13 @@ export function createPonderosaTheme(mode: ColorMode, variant: "standard" | "ass
       },
       MuiButton: {
         styleOverrides: {
-          root: assistant ? { minHeight: 44, borderRadius: 10, paddingInline: 16, transition: "background-color 180ms ease, border-color 180ms ease, color 180ms ease" } : { minHeight: 44, borderRadius: 8 },
+          root: { minHeight: 44, borderRadius: 10, paddingInline: 16, transition: "background-color 180ms ease, border-color 180ms ease, color 180ms ease" },
           containedPrimary: {
-            backgroundColor: assistant ? colors.brand : dark ? "#EDE9DD" : colors.brand,
-            color: assistant ? "#FFFFFF" : dark ? "#123126" : "#F8F6EF",
+            backgroundColor: colors.brand,
+            color: "#FFFFFF",
             boxShadow: "none",
             "&:hover": {
-              backgroundColor: assistant ? colors.brandHover : dark ? "#F8F6EF" : colors.brandHover,
+              backgroundColor: colors.brandHover,
               boxShadow: "none",
             },
           },
@@ -405,6 +392,7 @@ export function createPonderosaTheme(mode: ColorMode, variant: "standard" | "ass
         defaultProps: { transitionDuration: { enter: 220, exit: 180 } },
         styleOverrides: { paper: { backgroundColor: colors.surface, backgroundImage: "none", overscrollBehavior: "contain" } },
       },
+      } : {}),
       MuiMenu: {
         defaultProps: { transitionDuration: { enter: 160, exit: 120 } },
         styleOverrides: {
@@ -418,7 +406,6 @@ export function createPonderosaTheme(mode: ColorMode, variant: "standard" | "ass
       MuiAccordionDetails: { styleOverrides: { root: { padding: "0 0 24px" } } },
       MuiTooltip: { styleOverrides: { tooltip: { borderRadius: 8, padding: "8px 12px", fontSize: "0.75rem" } } },
       MuiTabs: { styleOverrides: { indicator: { height: 2, borderRadius: 2 } } },
-      } : {}),
       MuiInputLabel: {
         styleOverrides: {
           root: {
@@ -470,7 +457,7 @@ export function createPonderosaTheme(mode: ColorMode, variant: "standard" | "ass
             "&.Mui-selected": {
               backgroundColor: colors.selected,
               color: colors.textPrimary,
-              boxShadow: assistant || dark ? "none" : `inset 3px 0 0 ${colors.accent}`,
+              boxShadow: "none",
               "&:hover": { backgroundColor: colors.hover },
             },
           },
