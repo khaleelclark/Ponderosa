@@ -84,7 +84,7 @@ function callFixture({product='dev',selectedAgentId='agent',agents=[agent()],loc
  const outer=f.exports.VoiceConversation({...context,agents,selectedAgentId,lockAgent,startOnOpen,open:true,onClose:()=>closed++});const session=React.Children.toArray(outer.props.children)[0];
  f.mount(session.type,session.props);f.find(n=>n.type==='DialogContent').ref({isConnected:true,contains:()=>false});f.render();
  const findButton=name=>f.find(n=>n.type==='Button'&&(n.props.children===name||n.props['aria-label']===name));
- const sendTurn=async()=>{await f.flush();findButton('Transcript').props.onClick();f.render();f.find(n=>n.type==='TextField'&&n.props.label==='Type a turn').props.onChange({target:{value:'A private voice turn'}});f.render();findButton('Send turn').props.onClick();await f.flush();await f.flush();};
+ const sendTurn=async()=>{await f.flush();findButton('Transcript').props.onClick();f.render();f.find(n=>n.type==='TextField'&&n.props.label==='Type a message').props.onChange({target:{value:'A private voice turn'}});f.render();findButton('Send').props.onClick();await f.flush();await f.flush();};
  const canonical=text=>{detail.messages=[{id:'input',conversationId:'chat',role:'user',text:'A private voice turn',deliveryReceipts:[{targetAgentId:'agent',state:'processed',executionId:'run'}]},{id:'answer',conversationId:'chat',role:'assistant',communicationIntent:'user_dm',authorAgentId:'agent',executionId:'run',text,createdAt:new Date().toISOString()}];observer({isSuccess:true,isFetching:false,isFetchedAfterMount:true,data:detail});f.render();};
  return{...f,dictation,events,sent,spoken,detail,sendTurn,canonical,findButton,timers,closed:()=>closed,inactive:()=>onInactive(),stream:()=>stream,queued:()=>queued};
 }

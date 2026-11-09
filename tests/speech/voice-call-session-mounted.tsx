@@ -202,7 +202,7 @@ export async function voiceCallMountedPartialErrorRegression():Promise<void>{
   await until(()=>document.querySelector<HTMLTextAreaElement>('[data-ponderosa-call] textarea')?.value.includes('Keep this partial utterance for review')?true:undefined,'Finalized partial words were lost after a network error');
   await new Promise(resolve=>setTimeout(resolve,1000));
   assert(f.calls.length===0&&f.recognitions.length===1,'Partial error silently submitted or restarted capture');
-  assert(document.querySelector('[data-ponderosa-call]')?.textContent?.includes('Send turn'),'Partial words did not remain reviewable');
+  assert(Array.from(document.querySelectorAll<HTMLButtonElement>('[data-ponderosa-call] button')).some(button=>button.textContent?.trim()==='Send'&&!button.disabled),'Partial words did not remain reviewable');
   (await f.button('End call')).click();
  });
 }
@@ -222,7 +222,7 @@ export async function voiceCallMountedMutedReceiptRegression():Promise<void>{
   const recognition=f.recognitions[0]!;recognition.result('Muted synthetic request');recognition.onspeechend?.();recognition.end();
   await until(()=>f.calls.length===1?true:undefined,'Muted-receipt turn did not reach pending POST');
   (await f.button('Mute microphone')).click();f.accepted();
-  await until(()=>document.querySelector('[data-ponderosa-call]')?.textContent?.includes('Thinking about your turn')?true:undefined,'Accepted muted turn did not await its reply');
+  await until(()=>document.querySelector('[data-ponderosa-call]')?.textContent?.includes('Waiting for a reply')?true:undefined,'Accepted muted turn did not await its reply');
   await new Promise(resolve=>setTimeout(resolve,300));
   assert(f.utterances.length===0,'Muted accepted turn spoke an unwanted receipt');
   (await f.button('End call')).click();

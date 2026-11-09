@@ -1684,6 +1684,14 @@
       "origin": "Native write-active restart and incomplete history tails; metadata, SQL, V3 and saved-decision preservation"
     },
     {
+      "path": "tests/workspace-navigation/theme-scope.test.mjs",
+      "feature": "workspace-navigation",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, built core; actual shared Ponderosa and Assistant theme/composer definitions; no provider account",
+      "origin": "Ordinary Ponderosa composer and palette remain scoped apart from Assistant and Output"
+    },
+    {
       "path": "tests/workspace-navigation/browser-theme.test.mjs",
       "feature": "workspace-navigation",
       "lane": "web",

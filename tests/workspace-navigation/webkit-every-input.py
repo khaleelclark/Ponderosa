@@ -146,7 +146,7 @@ def conditional(product,theme,row):
   elif kind.startswith('queue'):click(button('Save'))
   elif kind=='runtime-string':click(button('Submit'))
   elif kind.startswith('runtime-'):click(button('Send to Agent'))
-  elif kind.startswith('call'):wait(lambda:not js('return arguments[0].disabled;',button('Send turn')),'call typing ready');click(button('Send turn'))
+  elif kind.startswith('call'):wait(lambda:not js('return arguments[0].disabled;',button('Send')),'call typing ready');click(button('Send'))
   else:click(button('Send Response'))
   wait(lambda:any(marker in json.dumps(r.get('body',{})) for r in http('GET',FIX['origin']+'/api/__qualification/accepted')),'conditional accepted')
   cases.append({'marker':marker,'product':product,'kind':kind,'row':row['id'],'payload':payload,'expected':expected,'agentId':info['agent']['id'] if kind!='initial' else None,'agentHandle':info['agent']['handle'],'decisionId':info.get('decision',{}).get('id'),'prefix':info['prefix'],'pasteEvent':paste});row['checks'].append('Exact conditional '+kind);snapshot(row,kind);collect(row)

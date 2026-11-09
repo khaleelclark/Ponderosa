@@ -268,7 +268,7 @@ function GeneralSettingsSection({
           ) : null}
         </Stack>
       </SettingsGroup>
-      <SettingsGroup title="Assistant" description="Model, schedule and behavior for your personal Assistant."><AssistantSettings/></SettingsGroup>
+      {currentProductScope()!=="branches"&&<SettingsGroup title="Assistant" description="Model, schedule and behavior for your personal Assistant."><AssistantSettings/></SettingsGroup>}
       <SettingsGroup title="Voice & audio" description="Speaking, listening and audio message preferences."><BrowserVoiceSettings preferences={preferences} onPreferences={onPreferences}/></SettingsGroup>
       <SettingsGroup title="Memory" description="Import, export and manage saved knowledge."><GlobalMemoryTransfer/></SettingsGroup>
       {currentProductScope()!=="branches"&&<SettingsGroup title="Tool permissions" description="Default access for Core Chats and Agents."><CapabilityPolicyEditor endpoint="/api/workspace/capabilities" scopeKind="product" title="Default tool permissions" description="Defaults for Core Chats and Agents; Branches has separate policies." immediateSave/></SettingsGroup>}
