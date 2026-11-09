@@ -11,6 +11,8 @@ export function createWebPushConfiguration(
   workspace: WorkspaceStore,
   publishWorkspaceSince: (cursor: number) => void,
   owners:Pick<AgentStore,"getConversation"|"getAgent">,
+  reconcileNotifications?: () => void,
+  onReconciliationError?: (error: unknown) => void,
 ) {
   const resolved = resolveWebPushVapid(dataDir);
   const vapid = resolved.vapid;
@@ -42,6 +44,8 @@ export function createWebPushConfiguration(
     store: workspace,
     sender: webPushSender,
     owners,
+    reconcileNotifications,
+    onReconciliationError,
     onWorkspaceEvents: publishWorkspaceSince,
   }) : undefined;
   return {

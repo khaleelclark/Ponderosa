@@ -51,7 +51,7 @@ type CanonicalWorkspaceEvent = WorkspaceEventEnvelope & {
     | { kind: "draft_deleted"; draftId: string }
     | { kind: "quiet_activity"; item: WorkspaceNotificationDto }
     | { kind: "quiet_activity_read"; communicationEventIds: string[] }
-    | { kind: "notification"; notification: WorkspaceNotificationDto; pushTargets?: Array<{ deviceId: string; subscriptionUpdatedAt: string }> }
+    | { kind: "notification"; notification: WorkspaceNotificationDto; renewedFromNotificationId?: string; pushTargets?: Array<{ deviceId: string; subscriptionUpdatedAt: string }> }
     | { kind: "notifications_read"; conversationId: string; readAt: string }
     | { kind: "notifications_read_ids"; notificationIds: string[]; readAt: string }
     | { kind: "notifications_acknowledged_ids"; notificationIds: string[]; acknowledgedAt: string }
@@ -136,7 +136,12 @@ export function draftRevisionConflicts(
 
 /** Coordination traces regroup; the canonical Request/Join owns its notice. */
 function notificationWorkKey(item: Pick<WorkspaceNotificationDto, "category" | "projectId" | "workContext">): string | undefined {
-  return item.category === "coordination" && item.projectId && item.workContext && ["request", "join"].includes(item.workContext.kind)
+  if (!item.projectId || !item.workContext) return undefined;
+  if (item.category === "communication" && item.workContext.kind === "activation")
+    return JSON.stringify([item.projectId, "communication", item.workContext.recordId]);
+  if (item.category === "coordination" && item.workContext.kind === "activation" && item.workContext.traceId?.startsWith("settings-transition:"))
+    return JSON.stringify([item.projectId, item.workContext.traceId]);
+  return item.category === "coordination" && ["request", "join"].includes(item.workContext.kind)
     ? JSON.stringify([item.projectId, item.workContext.kind, item.workContext.recordId]) : undefined;
 }
 
@@ -312,10 +317,11 @@ export class WorkspaceStore {
     return notificationLiveKind(item) === "update";
   }
 
-  notificationAllowed(item: Pick<WorkspaceNotificationDto, "agentId" | "sourceAgentId" | "conversationId" | "kind" | "severity" | "category" | "projectId" | "workContext">): boolean {
+  notificationAllowed(item: Pick<WorkspaceNotificationDto, "agentId" | "sourceAgentId" | "conversationId" | "kind" | "severity" | "category" | "projectId" | "workContext">, recoveredIncidentId?: string): boolean {
     const workKey = notificationWorkKey(item);
     const owner = workKey ? this.notificationsByWork.get(workKey) : undefined;
-    if (owner && (!("id" in item) || item.id !== owner.id)) return false;
+    if (owner && (!("id" in item) || item.id !== owner.id) &&
+        !(owner.id === recoveredIncidentId && (owner.status === "resolved" || owner.recoveredAt))) return false;
     const scopes = this.preferences.notificationScopes ?? {};
     const agentId = item.sourceAgentId ?? item.agentId;
     const mode = (agentId ? scopes[`agent:${agentId}`] : undefined)
@@ -364,6 +370,8 @@ export class WorkspaceStore {
     }
     const current = this.notifications.get(item.id);
     if (current) {
+      const previousKey = notificationWorkKey(current);
+      if (previousKey && previousKey !== notificationWorkKey(item) && this.notificationsByWork.get(previousKey)?.id === current.id) this.notificationsByWork.delete(previousKey);
       this.unlinkNotificationIndexes(current);
     }
     this.notifications.set(item.id, item);
@@ -576,6 +584,8 @@ export class WorkspaceStore {
           resolvedAt: canonicalDecision.updatedAt,
         };
       }
+      const workKey = notificationWorkKey(notification), prior = workKey ? this.notificationsByWork.get(workKey) : undefined;
+      if (workKey && prior && prior.id === record.mutation.renewedFromNotificationId && (prior.status === "resolved" || prior.recoveredAt)) this.notificationsByWork.delete(workKey);
       this.setNotification(notification);
       for (const target of record.mutation.pushTargets ?? []) {
         if ((notification.status ?? "open") !== "open") continue;
@@ -1617,6 +1627,7 @@ export class WorkspaceStore {
   }
 
   createNotification(input: Omit<WorkspaceNotificationDto, "id" | "createdAt">, queueWebPush = false, renewAfterRecovery = false): WorkspaceNotificationDto {
+    let renewedFromNotificationId: string | undefined;
     // Operational notifications may point at the same Communication while
     // representing different retry attempts. Their explicit dedupe key is the
     // identity; communicationEventId remains navigation metadata. Ordinary
@@ -1628,8 +1639,19 @@ export class WorkspaceStore {
     if (input.dedupeKey) {
       const workKey = notificationWorkKey(input);
       const existing = (workKey ? this.notificationsByWork.get(workKey) : undefined) ?? this.notificationsByDedupeKey.get(input.dedupeKey);
+      if (existing && renewAfterRecovery && (existing.status === "resolved" || existing.recoveredAt)) renewedFromNotificationId = existing.id;
       if (existing && !(renewAfterRecovery && (existing.status === "resolved" || existing.recoveredAt))) {
-        if ((existing.status ?? "open") !== "open") return existing;
+        if ((existing.status ?? "open") !== "open") {
+          if (existing.status === "dismissed" && input.workContext?.activationIds) {
+            const workContext = { ...input.workContext, ...existing.workContext,
+              activationIds: [...new Set([...(existing.workContext?.activationIds ?? []), ...input.workContext.activationIds])] };
+            const updated = { ...existing, workContext };
+            if (JSON.stringify(updated) !== JSON.stringify(existing)) this.append(
+              { type: "notification_changed", notificationId: existing.id, action: "updated" }, { kind: "notification", notification: updated });
+            return this.notifications.get(existing.id)!;
+          }
+          return existing;
+        }
         const updated: WorkspaceNotificationDto = {
           ...existing,
           ...input,
@@ -1667,12 +1689,12 @@ export class WorkspaceStore {
       id: randomUUID(),
       createdAt: new Date().toISOString(),
     };
-    const pushTargets = queueWebPush && this.notificationAllowed(notification)
+    const pushTargets = queueWebPush && this.notificationAllowed(notification, renewedFromNotificationId)
       ? [...this.pushSubscriptions.values()].map(({ deviceId, updatedAt }) => ({ deviceId, subscriptionUpdatedAt: updatedAt }))
       : undefined;
     this.append(
       { type: "notification_changed", notificationId: notification.id, conversationId: notification.conversationId, action: "created" },
-      { kind: "notification", notification, ...(pushTargets?.length ? { pushTargets } : {}) },
+      { kind: "notification", notification, ...(renewedFromNotificationId ? { renewedFromNotificationId } : {}), ...(pushTargets?.length ? { pushTargets } : {}) },
     );
     return this.notifications.get(notification.id)!;
   }
@@ -1680,9 +1702,9 @@ export class WorkspaceStore {
   /** Iterate operator notifications without materializing the complete
    * historical collection. Collaboration remains agent-only, and dismissed
    * rows remain outside every operator notification surface. */
-  forEachNotification(visitor: (item: WorkspaceNotificationDto) => void): void {
+  forEachNotification(visitor: (item: WorkspaceNotificationDto) => void, includeDismissed = false): void {
     for (const item of this.notifications.values()) {
-      if (item.kind === "collaboration" || (item.status ?? "open") === "dismissed") continue;
+      if (item.kind === "collaboration" || (!includeDismissed && (item.status ?? "open") === "dismissed")) continue;
       visitor(item);
     }
   }
@@ -1700,9 +1722,9 @@ export class WorkspaceStore {
   /** Keep coordination evidence without presenting an internal repair as a human action. */
   classifyNotificationAsInternal(id: string): void {
     const current = this.notifications.get(id);
-    if (!current || current.kind !== "operational" || current.category !== "coordination" || (current.status ?? "open") !== "open") return;
+    if (!current || !["operational", "information"].includes(current.kind) || !["coordination", "communication"].includes(current.category ?? "") || (current.status ?? "open") !== "open") return;
     const notification = { ...current, kind: "information" as const, severity: "info" as const, readAt: current.createdAt };
-    this.append({ type: "notification_changed", notificationId: id, conversationId: current.conversationId, action: "updated" }, { kind: "notification", notification });
+    if (JSON.stringify(notification) !== JSON.stringify(current)) this.append({ type: "notification_changed", notificationId: id, conversationId: current.conversationId, action: "updated" }, { kind: "notification", notification });
     for (const delivery of this.pushDeliveries.values()) if (delivery.notificationId === id && delivery.status === "pending") {
       this.updatePushDelivery({ notificationId: id, deviceId: delivery.deviceId, status: "abandoned", lastError: "Coordination repair is owned by an Agent" });
     }
@@ -1713,6 +1735,18 @@ export class WorkspaceStore {
   }
 
   getNotificationByDedupeKey(key: string) { return this.notificationsByDedupeKey.get(key); }
+
+  notificationForWork(item: Pick<WorkspaceNotificationDto, "category" | "projectId" | "workContext">) {
+    const key = notificationWorkKey(item);
+    return key ? this.notificationsByWork.get(key) : undefined;
+  }
+
+  /** Adopt retained notification aliases into their canonical work identity. */
+  reconcileNotificationWork(id: string, workContext: NonNullable<WorkspaceNotificationDto["workContext"]>): void {
+    const current = this.notifications.get(id);
+    if (!current || JSON.stringify(current.workContext) === JSON.stringify(workContext)) return;
+    this.append({ type: "notification_changed", notificationId: id, action: "updated" }, { kind: "notification", notification: { ...current, workContext } });
+  }
 
   openOperationalNotification(dedupeKey: string): WorkspaceNotificationDto | undefined {
     return this.openOperationalNotificationsByDedupeKey.get(dedupeKey);
@@ -2221,18 +2255,21 @@ export class WorkspaceStore {
   }
 
   duePushDeliveries(now = new Date()): Array<{ delivery: PushDeliveryRecord; notification: WorkspaceNotificationDto; subscription: WebPushSubscriptionDto }> {
-    const due = now.toISOString();
     const result: Array<{ delivery: PushDeliveryRecord; notification: WorkspaceNotificationDto; subscription: WebPushSubscriptionDto }> = [];
     for (const delivery of this.pushDeliveries.values()) {
-      if (delivery.status !== "pending" || delivery.nextAttemptAt > due) continue;
-      const notification = this.notifications.get(delivery.notificationId);
-      const subscription = this.pushSubscriptions.get(delivery.deviceId);
-      // A replaced/rotated subscription must not receive work queued for the
-      // old endpoint. Its new subscription begins with the next notification.
-      if (!notification || !notificationLiveKind(notification) || !this.notificationAllowed(notification) || !subscription || subscription.updatedAt !== delivery.subscriptionUpdatedAt) continue;
-      result.push({ delivery, notification, subscription });
+      const current = this.eligiblePushDelivery(delivery.notificationId, delivery.deviceId, now);
+      if (current) result.push(current);
     }
     return result;
+  }
+
+  /** Recheck canonical notification and device state at the send boundary. */
+  eligiblePushDelivery(notificationId: string, deviceId: string, now?: Date) {
+    const delivery = this.pushDeliveries.get(this.pushDeliveryKey(notificationId, deviceId));
+    if (!delivery || delivery.status !== "pending" || (now && delivery.nextAttemptAt > now.toISOString())) return undefined;
+    const notification = this.notifications.get(notificationId), subscription = this.pushSubscriptions.get(deviceId);
+    if (!notification || !notificationLiveKind(notification) || !this.notificationAllowed(notification) || !subscription || subscription.updatedAt !== delivery.subscriptionUpdatedAt) return undefined;
+    return { delivery, notification, subscription };
   }
 
   updatePushDelivery(input: {
@@ -2268,8 +2305,7 @@ export class WorkspaceStore {
     return [...this.pushDeliveries.values()]
       .filter((delivery) => {
         if (delivery.status !== "pending") return false;
-        const subscription = this.pushSubscriptions.get(delivery.deviceId);
-        return subscription?.updatedAt === delivery.subscriptionUpdatedAt && this.notifications.has(delivery.notificationId);
+        return Boolean(this.eligiblePushDelivery(delivery.notificationId, delivery.deviceId));
       })
       .map((delivery) => delivery.nextAttemptAt)
       .sort()[0];

@@ -49,6 +49,7 @@ import { createCommunicationArtifactAuthority } from "./communication-artifacts.
 import { createCommunicationJournal } from "./communication-journal.js";
 import { createCommunicationProjectionReconciler } from "./communication-projection-reconciler.js";
 import { ContextCursorStore } from "./context-cursors.js";
+import { reconcileSettingsTransitionReservations } from "./context-transition-admission.js";
 import { createCoordinationScheduler } from "./coordination-scheduler-service.js";
 import { createDeploymentControl } from "./deployment-control.js";
 import { EngineAuthStatusCache } from "./engine-auth-cache.js";
@@ -280,7 +281,10 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     reconcileProjectDeletionsWorkspace(store, workspace, publishWorkspace);
   };
   const { vapid, webPushConfiguration, webPushConfigurationDetail, webPushConfigured, webPushDelivery } =
-    createWebPushConfiguration(opts.dataDir, workspace, publishWorkspaceSince, store);
+    createWebPushConfiguration(opts.dataDir, workspace, publishWorkspaceSince, store, () => {
+      reconcileCommunicationFailureNotifications();
+      reconcileSettingsTransitionReservations({ app, store, coordinationV3, workspace, createOperationalNotification, resolveOperationalNotification });
+    }, error => app.log.error({ err: error }, "notification reconciliation before push failed"));
   store.recoverInterruptedExecutions();
   let closed = false;
   const diagnosticOperations = new Set<Promise<unknown>>();

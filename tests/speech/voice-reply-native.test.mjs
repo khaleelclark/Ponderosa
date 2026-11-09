@@ -570,7 +570,7 @@ test('retained-context boundary '+JSON.stringify({memory,voice,streaming}),()=>f
   assert.equal(f.store.sqlite.prepare("SELECT count(*) n FROM runtime_communications WHERE payload_json LIKE '%Remembered revoked memory.%'").get().n,0,'no revoked result becomes canonical communication');
   assert.ok(!f.store.readEvents(f.agent.id).some(row=>row.event.type==='voice_reply'&&row.event.reply.messageId===messageId),'held work does not publish a voice stream');
   const notices=await f.app.inject({method:'GET',url:'/api/branches/engine/notifications',headers:f.headers});assert.equal(notices.statusCode,200,notices.body);
-  assert.ok(notices.json().items.some(n=>n.agentId===f.agent.id&&n.title==='Agent context needs review'&&n.body.includes('revoked or changed')),'the exact Agent context hold is visible');
+  assert.ok(notices.json().items.some(n=>n.agentId===f.agent.id&&n.title.includes('context needs review')&&n.body.includes('revoked or changed')),'the exact Agent context hold is visible');
   if(voice){
    const status=await f.app.inject({method:'GET',url:'/api/branches/engine/conversations/'+f.chat.id+'/voice-replies/'+messageId+'/'+f.agent.id,headers:f.headers});
    assert.equal(status.statusCode,200,status.body);assert.equal(status.json().memoryExposure.state,'pending');assert.equal(status.json().reply,undefined,'held voice input cannot publish a reply');

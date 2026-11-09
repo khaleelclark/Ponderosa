@@ -36,6 +36,7 @@ export function createOperationalNotifications(context: OperationalNotifications
   const createOperationalNotification = (input: {
     dedupeKey: string;
     informational?: boolean;
+    internal?: boolean;
     renewAfterRecovery?: boolean;
     push?:boolean;
     branchId?:string;
@@ -51,20 +52,23 @@ export function createOperationalNotifications(context: OperationalNotifications
     conversationIds?: string[];
     agentId?: string;
     agentIds?: string[];
+    communicationEventId?: string;
     action?: WorkspaceNotificationDto["action"];
     resolution?: WorkspaceNotificationDto["resolution"];
   }): WorkspaceNotificationDto => {
     const cursor = workspace.cursor();
-    const { informational, push, renewAfterRecovery, ...notificationInput } = input;
-    const notification = workspace.createNotification({ kind: informational ? "information" : "operational", status: "open", ...notificationInput }, push ?? input.severity !== "info", renewAfterRecovery);
+    const { informational, internal, push, renewAfterRecovery, ...notificationInput } = input;
+    const notification = workspace.createNotification({ kind: internal || informational ? "information" : "operational", status: "open", ...notificationInput,
+      ...(internal ? { severity: "info", readAt: workspace.getNotificationByDedupeKey(input.dedupeKey)?.createdAt ?? new Date().toISOString() } : {}) }, !internal && (push ?? input.severity !== "info"), renewAfterRecovery);
+    if (internal) workspace.classifyNotificationAsInternal(notification.id);
     publishWorkspaceSince(cursor);
-    return notification;
+    return workspace.getNotification(notification.id)!;
   };
-  const resolveOperationalNotification = (dedupeKey: string): void => {
+  const resolveOperationalNotification = (dedupeKey: string, confirmedRecovery = false): void => {
     const current = workspace.getNotificationByDedupeKey(dedupeKey);
-    if (!current || !["operational", "information"].includes(current.kind) || (current.status ?? "open") !== "open") return;
+    if (!current || !["operational", "information"].includes(current.kind) || ((current.status ?? "open") !== "open" && !(confirmedRecovery && current.status === "dismissed"))) return;
     const cursor = workspace.cursor();
-    workspace.setNotificationStatus(current.id, "resolved");
+    workspace.setNotificationStatus(current.id, "resolved", confirmedRecovery);
     publishWorkspaceSince(cursor);
   };
   const projectWorkspaceNotificationKey = (projectId: string): string =>
@@ -104,56 +108,53 @@ export function createOperationalNotifications(context: OperationalNotifications
     return issue;
   };
   const reconcileCommunicationFailureNotifications = (): void => {
+    const rootActivation = (id:string):string => (store.sqlite.prepare('SELECT root_activation_id FROM activation_delivery_retry_lineage WHERE successor_activation_id=?').get(id) as {root_activation_id:string}|undefined)?.root_activation_id ?? id;
+    const receiptFor = (projectId:string,eventId:string,agentId:string) => coordinationV3.deliveryReceiptsForCommunication(projectId,eventId).find(r=>r.targetAgentId===agentId);
+    const recovering = (receipt:ReturnType<typeof receiptFor>) => Boolean(receipt && !['unconfirmed','run_unconfirmed'].includes(receipt.state) && !receipt.settingsTransitionHold && !receipt.taskDecisionRepairHold && !receipt.contextRolloverHold &&
+      (['retrying','waiting_for_run','recovery_queued','recovering'].includes(receipt.state) || ['scheduled','retrying'].includes(receipt.providerFailure?.recovery??'')));
+    const adoptionCursor=workspace.cursor();
+    workspace.forEachNotification(notification=>{
+      if(!notification.dedupeKey?.startsWith('communication-delivery:')||notification.workContext?.kind!=='activation')return;
+      const root=rootActivation(notification.workContext.recordId);
+      if(root!==notification.workContext.recordId)workspace.reconcileNotificationWork(notification.id,{...notification.workContext,recordId:root});
+    },true);
+    publishWorkspaceSince(adoptionCursor);
     for (const failure of communicationAttentionActivations()) {
-      const key = `communication-delivery:${failure.id}:${failure.terminalOutcome ?? failure.state}`;
-      if (failure.supersededByRetry) continue;
-      if (!["human_message", "urgent_message", "ordinary_message"].includes(failure.kind)) continue;
-      // Intent, not priority or rendered text, keeps internal Collaboration out
-      // of the operator notification tree.
-      if (!failure.communicationEventId || failure.communicationIntent === "collaboration") continue;
-      const conversationId = failure.scopeKey?.startsWith("conversation:")
-        ? failure.scopeKey.slice("conversation:".length)
-        : undefined;
-      const conversation = conversationId ? store.getConversation(conversationId) : undefined;
-      const agent = store.getAgent(failure.agentId);
-      const communication = store.getCommunicationEvent(failure.projectId, failure.communicationEventId);
-      const excerpt = communication?.text.replace(/\s+/gu, " ").trim().slice(0, 120);
-      const outcomeUnknown = failure.state === "outcome_unknown";
-      const requiredReplyExhausted = failure.terminalOutcome === "retry_exhausted";
-      const issue = failure.lastDeliveryError
-        ?? (failure.terminalOutcome ?? failure.state).replaceAll("_", " ");
-      createOperationalNotification({
-        dedupeKey: key,
-        category: "communication",
-        severity: "urgent",
-        title: `${agent?.title ?? "Agent"} · ${requiredReplyExhausted ? "reply needs review" : outcomeUnknown ? "message result needs review" : "message delivery needs help"}`,
-        body: requiredReplyExhausted
-          ? `Ponderosa did not publish the required Chat reply after ${failure.deliveryFailures} Agent ${failure.deliveryFailures === 1 ? "attempt" : "attempts"}. Review the Agent's work before retrying; earlier work may exist.`
-          : outcomeUnknown
-          ? "Ponderosa cannot confirm this message's result. Review the Agent's work before retrying; earlier changes may exist."
-          : `Ponderosa could not deliver this message after ${failure.deliveryFailures} ${failure.deliveryFailures === 1 ? "attempt" : "attempts"}. ${issue}`,
-        ...(excerpt ? { contextPreview: excerpt } : {}),
-        workContext: { kind: "activation", recordId: failure.id,
-          state: failure.terminalOutcome ?? failure.state, occurredAt: failure.updatedAt,
-          ...(excerpt ? { assignment: excerpt } : {}) },
-        projectId: failure.projectId,
-        ...(conversation ? { conversationId: conversation.id } : {}),
-        ...(failure.communicationEventId ? { communicationEventId: failure.communicationEventId } : {}),
-        action: conversation
-          ? { kind: "open_conversation", targetId: conversation.id }
-          : { kind: "open_project", targetId: failure.projectId },
-      });
+      if (failure.supersededByRetry || !['human_message','urgent_message','ordinary_message'].includes(failure.kind) || !failure.communicationEventId || failure.communicationIntent==='collaboration') continue;
+      const root=rootActivation(failure.id),key=`communication-delivery:${root}`;
+      const receipt=receiptFor(failure.projectId,failure.communicationEventId,failure.agentId);
+      if(receipt&&['processed','recovered','cancelled'].includes(receipt.state))continue;
+      const internal=recovering(receipt);
+      const existing=workspace.notificationForWork({category:'communication',projectId:failure.projectId,workContext:{kind:'activation',recordId:root,state:failure.state,occurredAt:failure.updatedAt}})??workspace.getNotificationByDedupeKey(key);
+      if(internal&&!existing)continue;
+      const conversationId=failure.scopeKey?.startsWith('conversation:')?failure.scopeKey.slice('conversation:'.length):undefined;
+      const conversation=conversationId?store.getConversation(conversationId):undefined,agent=store.getAgent(failure.agentId);
+      const communication=store.getCommunicationEvent(failure.projectId,failure.communicationEventId);
+      const excerpt=communication?.text.replace(/\s+/gu,' ').trim().slice(0,120);
+      const outcomeUnknown=failure.state==='outcome_unknown',requiredReplyExhausted=failure.terminalOutcome==='retry_exhausted';
+      const issue=failure.lastDeliveryError??(failure.terminalOutcome??failure.state).replaceAll('_',' ');
+      createOperationalNotification({dedupeKey:existing?.dedupeKey??key,renewAfterRecovery:true,internal,category:'communication',severity:'urgent',
+        title:`${agent?.title??'Agent'}${conversation?.title?` · ${conversation.title}`:''} · ${requiredReplyExhausted?'reply needs review':outcomeUnknown?'message result needs review':'message delivery needs help'}`,
+        body:internal?'Ponderosa is recovering this delivery. Earlier uncertain work remains retained.'
+          :requiredReplyExhausted?`Ponderosa did not publish the required Chat reply after ${failure.deliveryFailures} Agent ${failure.deliveryFailures===1?'attempt':'attempts'}. Review the Agent’s activity before retrying; earlier work may exist.`
+          :outcomeUnknown?'Ponderosa cannot confirm this message’s result. Review Context recovery and the Agent’s activity before retrying; earlier changes may exist.'
+          :`Ponderosa could not deliver this message after ${failure.deliveryFailures} ${failure.deliveryFailures===1?'attempt':'attempts'}. ${issue}`,
+        ...(excerpt?{contextPreview:excerpt}:{}),
+        workContext:{kind:'activation',recordId:root,state:internal?receipt!.state:failure.terminalOutcome??failure.state,occurredAt:failure.updatedAt,...(excerpt?{assignment:excerpt}:{})},
+        projectId:failure.projectId,agentId:failure.agentId,...(conversation?{conversationId:conversation.id}:{}),communicationEventId:failure.communicationEventId,
+        action:agent?{kind:'open_agent',targetId:agent.id}:{kind:'open_project',targetId:failure.projectId}});
     }
-    workspace.forEachOpenOperationalNotification("communication-delivery:", (notification) => {
-      const key = notification.dedupeKey;
-      if (!key) return;
-      const activationId = /^communication-delivery:([^:]+):/u.exec(key)?.[1];
-      if (!activationId) return;
-      const disposition = coordinationV3.terminalActivationDisposition(activationId);
-      if (!disposition
-        || (!disposition.supersededByRetry && disposition.state !== "cancelled")) return;
-      resolveOperationalNotification(key);
-    });
+    workspace.forEachNotification(notification=>{
+      const key=notification.dedupeKey;
+      if(!key?.startsWith('communication-delivery:')||notification.status==='resolved'||notification.recoveredAt||!notification.projectId)return;
+      const activationId=notification.workContext?.recordId??/^communication-delivery:([^:]+)(?::|$)/u.exec(key)?.[1];
+      if(!activationId)return;
+      const activation=coordinationV3.activation(activationId,notification.projectId);
+      if(!activation)return;
+      const receipt=notification.communicationEventId?receiptFor(notification.projectId,notification.communicationEventId,activation.agentId):undefined;
+      if(activation.state==='cancelled'||receipt&&['processed','recovered','cancelled'].includes(receipt.state))resolveOperationalNotification(key,true);
+      else if(recovering(receipt)){const cursor=workspace.cursor();workspace.classifyNotificationAsInternal(notification.id);publishWorkspaceSince(cursor);}
+    },true);
   };
   const agentWorkProjection = new AgentWorkProjection(store, coordinationV3, workspace);
   const dirtyCoordinationProjects = new Set<string>();

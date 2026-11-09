@@ -3,6 +3,9 @@ import test from 'node:test';
 import vm from 'node:vm';
 import {readFile} from 'node:fs/promises';
 import {pushPayload} from '../../apps/server/dist/web-push-delivery.js';
+import '../shared/resolve-typescript.mjs';
+const {parseRoute}=await import('../../apps/web/src/routing.ts');
+const {notificationNavigationRoute}=await import('../../apps/web/src/notificationNavigation.ts');
 
 const workerSource=await readFile(new URL('../../apps/web/public/push-handler.js',import.meta.url),'utf8');
 function device(view,visibilityState='visible') {
@@ -32,6 +35,19 @@ function device(view,visibilityState='visible') {
 const notification=(id,overrides={})=>({
   id,kind:'direct_responses',projectId:'project',conversationId:'chat',agentId:'agent',
   communicationEventId:'message:'+id,title:'Agent response',body:'Reply',...overrides,
+});
+test('UI002 recovery push click and in-app notification open the same exact Agent technical action',async()=>{
+ const item=notification('recovery',{kind:'operational',category:'coordination',workContext:{kind:'activation',recordId:'held-work',activationIds:['held-work'],state:'blocked',occurredAt:'2026-11-09T00:00:00Z'},action:{kind:'open_agent',targetId:'agent'}});
+ const payload=pushPayload(item),url=new URL(payload.url,'https://fixture.invalid');
+ const route=parseRoute(url.pathname,url.search),inApp=notificationNavigationRoute(item);
+ assert.equal(route.kind,'agent');assert.equal(route.agentId,'agent');assert.equal(route.view,'technical');assert.equal(route.technicalFocusId,'activation:held-work');
+ assert.deepEqual({...route,urlDriven:undefined},{...inApp,urlDriven:undefined});
+ const d=device();await d.push(payload);await d.click(d.visible.get(item.id));assert.equal(d.opened[0].url,url.href);
+ const ordinary=notification('ordinary',{action:{kind:'open_agent',targetId:'agent'}});
+ assert.equal(notificationNavigationRoute(ordinary).kind,'conversation');assert.match(pushPayload(ordinary).url,/\/chats\/chat/);
+ const branch=pushPayload({...item,branchId:'branch'}),branchUrl=new URL(branch.url,'https://fixture.invalid');
+ const nested=new URL(branchUrl.searchParams.get('workspace'),'https://fixture.invalid');
+ assert.equal(parseRoute(nested.pathname,nested.search).technicalFocusId,'activation:held-work');
 });
 test('repeated ordinary Chat activity replaces one visible notification while retaining per-message receipts',async()=>{
   const d=device({kind:'conversation',projectId:'elsewhere',conversationId:'other'});

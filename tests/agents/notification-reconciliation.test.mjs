@@ -8,6 +8,9 @@ import { setImmediate as immediate } from 'node:timers/promises';
 import Database from 'better-sqlite3';
 import { AgentStore, WorkspaceStore, CoordinationV3Store } from '@ponderosa/agents';
 import { createOperationalNotifications } from '../../apps/server/dist/operational-notifications.js';
+import { WebPushDeliveryManager, pushPayload } from '../../apps/server/dist/web-push-delivery.js';
+import { requestSettingsTransition, reconcileSettingsTransitionReservations } from '../../apps/server/dist/context-transition-admission.js';
+import { EngineAuthStatusCache } from '../../apps/server/dist/engine-auth-cache.js';
 import { createRuntimeEventAuthority } from '../../apps/server/dist/runtime-event-authority.js';
 import { createServerReadModels } from '../../apps/server/dist/server-read-models.js';
 import { AgentWorkProjection } from '../../apps/server/dist/routes/agent-work.js';
@@ -422,4 +425,155 @@ test('runtime event-consumer stall surfaces at 30 seconds and clears only after 
  run.ownershipState='cancelling';assert.equal(authority.receiveRuntimeEvent(agent.id,run),false);
  assert.equal(await authority.persistRuntimeEvent(agent.id,run,{type:'text',text:'late',executionId:'execution'}),undefined);
  assert.equal(persisted.length,1);
+});
+
+// Offline canonical stores and a fake sender; no provider or push service.
+function quietRecoveryFixture(t) {
+ const root=mkdtempSync(path.join(tmpdir(),'ui002-notices-'));
+ let store=new AgentStore(root),workspace=new WorkspaceStore(root),coordinationV3;
+ const project=store.createProject({label:'Recovery project',hostPath:root,defaultEngine:'codex'});
+ const chat=store.createConversation(project.id,{title:'Affected Chat'}),agent=store.createAgent(project.id,{title:'Affected Agent',engine:'codex',conversationId:chat.id});
+ const failures=new Map(),receipts=new Map();let source,owner,ops,ctx;
+ function bind() {
+  coordinationV3=new CoordinationV3Store(store.sqlite);
+  coordinationV3.communicationAttentionActivations=()=>[...failures.values()];
+  coordinationV3.deliveryReceiptsForCommunication=(_project,event)=>receipts.has(event)?[receipts.get(event)]:[];
+  store.getCommunicationEvent=()=>({text:'Canonical blocked instruction'});
+  store.resumeSessionState=()=>({sessionId:'retained-session',toolContractHash:'a'.repeat(64)});
+  store.providerCommandContextBoundary=()=>source&&({executionId:source.runId,fencingToken:source.fencingToken,providerSessionId:'retained-session'});
+  coordinationV3.activeContextRollover=()=>owner;
+  ops=createOperationalNotifications({store,workspace,coordinationV3,publishWorkspaceSince(){},logError(meta){throw meta;}});
+  ctx={app:{},store,workspace,coordinationV3,...ops};
+ }
+ bind();
+ const create=(text='Canonical blocked instruction')=>coordinationV3.createActivation({projectId:project.id,agentId:agent.id,kind:'human_message',priority:1,promptClass:'human',dedupeKey:randomUUID(),scopeKey:'conversation:'+chat.id,payload:{text},sourceKind:'fixture',sourceId:randomUUID(),now:new Date().toISOString()});
+ const initial=create();source=coordinationV3.leaseNextRun({workerId:'offline-source'});assert.ok(source);assert.ok(source.activationIds.includes(initial));
+ store.sqlite.prepare("UPDATE scheduler_runs SET status='completed',prompt_injection_state='injected',provider_session_id='retained-session',started_at=?,terminal_at=? WHERE id=?").run(at,at,source.runId);
+ store.sqlite.prepare("UPDATE agent_activations SET state='consumed' WHERE id=?").run(initial);
+ workspace.putPushSubscription({deviceId:'device',endpoint:'https://invalid.example/push',expirationTime:null,keys:{p256dh:'synthetic',auth:'synthetic'}});
+ const hold=async id=>requestSettingsTransition({...ctx,opts:{},engines:new Map(),engineAuthStatuses:new EngineAuthStatusCache(),cachedModelOptions:()=>undefined,excludedAgentIds:[],candidate:{activationId:id,agentId:agent.id,projectId:project.id,scopeKey:'conversation:'+chat.id}});
+ const failure=(id,state='outcome_unknown',terminalOutcome=state==='outcome_unknown'?null:state)=>{
+  store.sqlite.prepare('UPDATE agent_activations SET state=?,terminal_outcome=?,updated_at=? WHERE id=?').run(state,terminalOutcome,new Date().toISOString(),id);
+  failures.set(id,{id,projectId:project.id,agentId:agent.id,kind:'human_message',state,terminalOutcome,scopeKey:'conversation:'+chat.id,communicationEventId:id,communicationIntent:'user_dm',deliveryFailures:1,updatedAt:new Date().toISOString()});
+  receipts.set(id,{activationId:id,targetAgentId:agent.id,state:state==='outcome_unknown'?'run_unconfirmed':'failed',attemptCount:1,updatedAt:at});
+ };
+ t.after(()=>{workspace.close();store.close();rmSync(root,{recursive:true,force:true});});
+ return {project,chat,agent,create,hold,failure,failures,receipts,source,
+  get store(){return store;},get workspace(){return workspace;},get c(){return coordinationV3;},get ops(){return ops;},
+  reconcile(){reconcileSettingsTransitionReservations(ctx);},
+  owner(value){owner=value;},
+  reopen(){workspace.close();store.close();store=new AgentStore(root);workspace=new WorkspaceStore(root);bind();},
+  notices(){return workspace.listNotificationPage({limit:100}).items;}};
+}
+
+test('UI002 one context boundary survives fingerprints, queued work, dismissal and restart until verified recovery',async t=>{
+ const f=quietRecoveryFixture(t),ids=[f.create('First blocked instruction'),f.create('Second blocked instruction'),f.create('Third blocked instruction')];
+ for(const id of ids)assert.equal(await f.hold(id),false);
+ let notice=f.notices()[0];assert.equal(f.notices().length,1);assert.equal(f.workspace.listPushDeliveries().length,1);
+ assert.deepEqual(new Set(notice.workContext.activationIds),new Set(ids));assert.match(notice.title,/Affected Agent.*Affected Chat/);assert.match(notice.workContext.assignment,/blocked instruction/);
+ const identity=notice.id;
+ f.workspace.updatePreferences({globalInstructions:'Changed guidance'});f.reconcile();
+ assert.equal(f.workspace.getNotification(identity).status,'open','a fingerprint only schedules admission recheck');
+ for(const id of ids)await f.hold(id);
+ assert.equal(f.notices()[0].id,identity);assert.equal(f.workspace.listPushDeliveries().length,1);
+ f.workspace.setNotificationStatus(identity,'dismissed');const fourth=f.create('Fourth blocked instruction');await f.hold(fourth);ids.push(fourth);
+ f.reopen();f.reconcile();assert.equal(f.workspace.getNotification(identity).status,'dismissed');assert.equal(f.workspace.listPushDeliveries().length,0,'dismissal removes its pending push without renewing the incident');
+ for(const id of ids.slice(0,-1))f.store.sqlite.prepare("UPDATE agent_activations SET state='consumed' WHERE id=?").run(id);
+ f.reconcile();assert.equal(f.workspace.getNotification(identity).recoveredAt,undefined,'one still-blocked member prevents recovery');
+ f.store.sqlite.prepare("UPDATE agent_activations SET state='consumed' WHERE id=?").run(fourth);f.reconcile();
+ assert.equal(f.workspace.getNotification(identity).status,'dismissed');assert.ok(f.workspace.getNotification(identity).recoveredAt);
+ assert.equal(f.workspace.duePushDeliveries().length,0);assert.equal(f.workspace.nextPushDeliveryAt(),undefined);
+ const next=f.create('New incident after verified recovery');await f.hold(next);
+ assert.notEqual(f.notices()[0].id,identity);assert.equal(f.workspace.duePushDeliveries().length,1);
+});
+
+test('UI002 owned context recovery stays quiet while rechecks and revoked holds cannot masquerade as recovery',async t=>{
+ const f=quietRecoveryFixture(t),id=f.create();await f.hold(id);const notice=f.notices()[0];
+ f.store.sqlite.prepare("DELETE FROM activation_sources WHERE activation_id=? AND source_kind='settings_transition_reservation_wait'").run(id);
+ f.owner({id:'owned-rollover',state:'requested',scopeKey:'conversation:'+f.chat.id,oldProviderSessionId:'retained-session',sourceRunId:f.source.runId});
+ f.reconcile();assert.equal(f.workspace.listNotificationPage({limit:100}).openActionCount,0);assert.equal(f.workspace.activeNotificationIds([notice.id]).length,0);assert.equal(f.workspace.duePushDeliveries().length,0);
+ const cursor=f.workspace.cursor();f.reconcile();assert.equal(f.workspace.cursor(),cursor,'unchanged owned recovery creates no notification churn');
+ const active=f.c.contextRecovery.active;
+ f.c.contextRecovery.active=()=>({state:'unsupported_fenced',progress:{phase:'held',sourceWork:'held_unknown'}});
+ f.reconcile();assert.equal(f.workspace.listNotificationPage({limit:100}).openActionCount,1,'unsupported/unknown source work immediately outranks an owned context repair');
+ f.c.contextRecovery.active=active;
+ f.owner(undefined);f.c.holdSettingsTransitionReservation({projectId:f.project.id,agentId:f.agent.id,activationId:id,fingerprint:'b'.repeat(64)});
+ await f.hold(id);assert.equal(f.notices()[0].id,notice.id);assert.equal(f.notices()[0].kind,'operational');assert.equal(f.workspace.listPushDeliveries().length,1,'same unresolved incident cannot push twice');
+ f.owner({id:'owned-rollover',state:'requested',scopeKey:'conversation:'+f.chat.id,oldProviderSessionId:'retained-session',sourceRunId:f.source.runId});
+ f.reconcile();await f.hold(id);assert.equal(f.workspace.listNotificationPage({limit:100}).openActionCount,1,'an access/context hold outranks a live owner');
+});
+
+test('UI002 communication recovery is quiet; outcome changes and restart retain one incident and push',async t=>{
+ const f=quietRecoveryFixture(t),id=f.create();f.failure(id,'failed','permanent_failure');
+ f.receipts.set(id,{activationId:id,targetAgentId:f.agent.id,state:'retrying',attemptCount:1,updatedAt:at,providerFailure:{recovery:'scheduled'}});
+ f.ops.reconcileCommunicationFailureNotifications();assert.equal(f.notices().length,0);assert.equal(f.workspace.duePushDeliveries().length,0);
+ f.failure(id);f.ops.reconcileCommunicationFailureNotifications();const notice=f.notices()[0];
+ assert.match(notice.title,/Affected Agent.*Affected Chat/);assert.equal(notice.action.kind,'open_agent');assert.match(notice.body,/cannot confirm/);
+ f.failure(id,'failed','permanent_failure');f.ops.reconcileCommunicationFailureNotifications();assert.equal(f.notices().length,1);assert.equal(f.notices()[0].id,notice.id);assert.equal(f.workspace.listPushDeliveries().length,1);
+ f.reopen();f.ops.reconcileCommunicationFailureNotifications();assert.equal(f.notices()[0].id,notice.id);
+ f.receipts.set(id,{activationId:id,targetAgentId:f.agent.id,state:'recovered',attemptCount:1,updatedAt:at});f.ops.reconcileCommunicationFailureNotifications();
+ assert.equal(f.workspace.getNotification(notice.id).status,'resolved');assert.equal(f.workspace.nextPushDeliveryAt(),undefined);
+ const sent=[];const manager=new WebPushDeliveryManager({store:f.workspace,sender:{async send(_sub,payload){sent.push(JSON.parse(payload));}},onWorkspaceEvents(){}});t.after(()=>manager.stop());await manager.drain();assert.deepEqual(sent,[]);
+ f.failure(id);f.ops.reconcileCommunicationFailureNotifications();await manager.drain();assert.equal(sent.length,1);assert.notEqual(sent[0].notificationId,notice.id);assert.match(sent[0].url,/\/agents\/.*view=technical&focus=activation/);
+ assert.equal(f.store.sqlite.prepare('SELECT state FROM agent_activations WHERE id=?').get(id).state,'outcome_unknown','notification reconciliation never rewrites uncertain work');
+});
+
+test('UI002 Web Push rechecks stale snapshot eligibility immediately before each fake send',async t=>{
+ const f=quietRecoveryFixture(t),one=f.ops.createOperationalNotification({dedupeKey:'one',category:'communication',severity:'urgent',title:'One',body:'Review one'}),two=f.ops.createOperationalNotification({dedupeKey:'two',category:'communication',severity:'urgent',title:'Two',body:'Review two'});
+ const sent=[];const manager=new WebPushDeliveryManager({store:f.workspace,sender:{async send(_sub,payload){sent.push(JSON.parse(payload));f.workspace.setNotificationStatus(two.id,'resolved',true);}},onWorkspaceEvents(){}});t.after(()=>manager.stop());
+ await manager.drain();assert.deepEqual(sent.map(x=>x.notificationId),[one.id]);assert.equal(f.workspace.duePushDeliveries().length,0);assert.equal(f.workspace.nextPushDeliveryAt(),undefined);
+});
+
+test('UI002 retained outcome and retry-lineage aliases converge without a third push, including dismissal',async t=>{
+ const f=quietRecoveryFixture(t),root=f.create(),successor=f.create();f.failure(root);f.failure(successor,'failed','permanent_failure');
+ f.failures.get(root).supersededByRetry=true;f.failures.get(root).communicationEventId='same-message';f.failures.get(successor).communicationEventId='same-message';
+ f.store.sqlite.prepare('INSERT INTO activation_delivery_retry_lineage VALUES(?,?,?,?,?)').run(root,successor,root,1,at);
+ f.receipts.set('same-message',{activationId:successor,targetAgentId:f.agent.id,state:'failed',attemptCount:2,updatedAt:at});
+ for(const [id,state] of [[root,'outcome_unknown'],[successor,'permanent_failure']])f.workspace.createNotification({kind:'operational',category:'communication',severity:'urgent',dedupeKey:`communication-delivery:${id}:${state}`,projectId:f.project.id,agentId:f.agent.id,conversationId:f.chat.id,communicationEventId:'same-message',workContext:{kind:'activation',recordId:id,state,occurredAt:at},title:'Previous failure',body:'Earlier uncertain work retained'},true);
+ assert.equal(f.workspace.listPushDeliveries().length,2);
+ f.reopen();f.ops.reconcileCommunicationFailureNotifications();
+ const notice=f.notices()[0];assert.equal(f.notices().length,1);assert.equal(notice.workContext.recordId,root);assert.equal(f.workspace.listPushDeliveries().length,2,'adoption cannot queue a third delivery');assert.equal(f.workspace.duePushDeliveries().length,1);
+ f.workspace.setNotificationStatus(notice.id,'dismissed');f.reopen();f.ops.reconcileCommunicationFailureNotifications();assert.equal(f.notices().length,0);assert.equal(f.workspace.duePushDeliveries().length,0);
+ f.receipts.set('same-message',{activationId:successor,targetAgentId:f.agent.id,state:'recovered',attemptCount:2,updatedAt:at});f.ops.reconcileCommunicationFailureNotifications();assert.ok(f.workspace.getNotification(notice.id).recoveredAt);
+ assert.equal(f.store.sqlite.prepare('SELECT state FROM agent_activations WHERE id=?').get(root).state,'outcome_unknown');
+});
+
+test('UI002 fake sender delivers one incident across unknown-to-permanent and restart',async t=>{
+ const f=quietRecoveryFixture(t),id=f.create(),sent=[];
+ const sender={async send(_subscription,payload){sent.push(JSON.parse(payload));}};
+ let manager=new WebPushDeliveryManager({store:f.workspace,sender,onWorkspaceEvents(){}});t.after(()=>manager.stop());
+ f.failure(id);f.ops.reconcileCommunicationFailureNotifications();await manager.drain();assert.equal(sent.length,1);
+ f.failure(id,'failed','permanent_failure');f.ops.reconcileCommunicationFailureNotifications();await manager.drain();assert.equal(sent.length,1);
+ await manager.stop();f.reopen();f.ops.reconcileCommunicationFailureNotifications();manager=new WebPushDeliveryManager({store:f.workspace,sender,onWorkspaceEvents(){}});
+ await manager.drain();assert.equal(sent.length,1);assert.equal(f.notices()[0].id,sent[0].notificationId);
+});
+
+test('UI002 push reconciles canonical recovery before its first drain without recursive sends',async t=>{
+ const f=quietRecoveryFixture(t),id=f.create(),sent=[];
+ f.failure(id);f.ops.reconcileCommunicationFailureNotifications();const notice=f.notices()[0];
+ f.receipts.set(id,{activationId:id,targetAgentId:f.agent.id,state:'recovered',attemptCount:1,updatedAt:at});
+ let reconciliations=0;
+ const manager=new WebPushDeliveryManager({store:f.workspace,sender:{async send(_sub,payload){sent.push(JSON.parse(payload));}},
+  reconcileNotifications(){reconciliations++;f.ops.reconcileCommunicationFailureNotifications();manager.notify();},onWorkspaceEvents(){}});
+ t.after(()=>manager.stop());await manager.drain();
+ assert.equal(reconciliations,1);assert.deepEqual(sent,[]);assert.equal(f.workspace.getNotification(notice.id).status,'resolved');
+ assert.equal(f.workspace.nextPushDeliveryAt(),undefined);assert.equal(f.store.sqlite.prepare('SELECT state FROM agent_activations WHERE id=?').get(id).state,'outcome_unknown');
+});
+
+test('UI002 stopping a deferred push drain prevents dispatch',async t=>{
+ const f=quietRecoveryFixture(t),id=f.create(),sent=[];f.failure(id);f.ops.reconcileCommunicationFailureNotifications();
+ let reconciliations=0;
+ const manager=new WebPushDeliveryManager({store:f.workspace,sender:{async send(_sub,payload){sent.push(payload);}},
+  reconcileNotifications(){reconciliations++;},onWorkspaceEvents(){}});
+ const draining=manager.drain();await manager.stop();await draining;
+ assert.equal(reconciliations,0);assert.deepEqual(sent,[]);assert.equal(f.workspace.duePushDeliveries().length,1);
+});
+
+test('UI002 failed canonical reconciliation keeps push pending and reports its error',async t=>{
+ const f=quietRecoveryFixture(t),id=f.create(),sent=[],errors=[];f.failure(id);f.ops.reconcileCommunicationFailureNotifications();
+ const failure=new Error('Synthetic canonical read failure');
+ const manager=new WebPushDeliveryManager({store:f.workspace,sender:{async send(_sub,payload){sent.push(payload);}},
+  reconcileNotifications(){throw failure;},onReconciliationError(error){errors.push(error);},onWorkspaceEvents(){}});
+ t.after(()=>manager.stop());await manager.drain();
+ assert.deepEqual(sent,[]);assert.deepEqual(errors,[failure]);assert.equal(f.workspace.duePushDeliveries().length,1);
 });

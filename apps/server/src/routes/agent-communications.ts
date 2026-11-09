@@ -1053,7 +1053,7 @@ export function registerAgentCommunicationRoutes(
             return reply.code(409).send({error:"request participants are no longer available"});
           const result=coordinationV3.retryHeldSettingsTransitionRequest({projectId:original.projectId,requestId:original.id,idempotencyKey:key});
           if(!result.accepted||!result.activationId)return reply.code(409).send({error:"The original Request is no longer safely retryable"});
-          if(!result.replayed)try{resolveOperationalNotification(`settings-transition:${result.activationId}`);}catch{/* durable result remains authoritative */}
+          // An accepted retry is a recheck, not verified context recovery.
           try{
             for(const id of participants)publishCoordinationV3Changed(id,{conversationIds:original.conversationId?[original.conversationId]:[]});
             notifyScheduler();

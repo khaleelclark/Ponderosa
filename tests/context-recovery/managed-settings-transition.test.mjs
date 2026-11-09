@@ -30,6 +30,7 @@ test('memory-enabled voice preserves earlier work through an isolated managed ha
   await native.sendTool('ponderosa_message',{text:'Research complete.'});await f.settled(agent.id);
   const voice=f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text:'Continue the original objective aloud.',idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'steer',voiceReply:true}));
   const transition=await until(()=>store.sqlite.prepare("SELECT * FROM context_rollovers WHERE agent_id=? AND state='requested'").get(agent.id),'settings handoff requested',20000);
+  assert.equal(f.ok(await f.api('GET','/api/notifications')).items.some(item=>(item.kind==='operational'||['attention','urgent'].includes(item.severity))&&(item.agentId===agent.id||item.conversationId===chat.id)),false,'requested automatic handoff is quiet');
   const pending=store.sqlite.prepare("SELECT id FROM agent_activations WHERE agent_id=? AND kind='human_message' AND state='pending' ORDER BY created_at DESC LIMIT 1").get(agent.id);
   assert.ok(pending,'the voice task remains queued');
   const starts=await until(async()=>{const x=(await native.requests()).filter(x=>x.method==='turn/start');return x.length>=2?x:undefined;},'old-session handoff',20000);
@@ -46,6 +47,7 @@ test('memory-enabled voice preserves earlier work through an isolated managed ha
   await native.sendAnswer('Continuity context received.');
   await until(()=>store.sqlite.prepare("SELECT 1 FROM context_rollovers WHERE id=? AND state='completed' AND completion_reason='replacement_verified'").get(transition.id),'replacement verified',20000);
   const final=await until(async()=>{const x=(await native.requests()).filter(x=>x.method==='turn/start');return x.length>=4?x:undefined;},'queued voice task',20000);
+  assert.equal(f.ok(await f.api('GET','/api/notifications')).items.some(item=>(item.kind==='operational'||['attention','urgent'].includes(item.severity))&&(item.agentId===agent.id||item.conversationId===chat.id)),false,'verified replacement and admitted task stay quiet');
   assert.equal(final[3].params.threadId,continuation[2].params.threadId);
   assert.ok(JSON.stringify(final[3]).includes('Continue the original objective aloud.'));
   assert.equal(store.sqlite.prepare('SELECT count(*) n FROM context_rollovers WHERE agent_id=?').get(agent.id).n,1,'one managed transition serves this voice task');
@@ -53,6 +55,8 @@ test('memory-enabled voice preserves earlier work through an isolated managed ha
   await native.sendTool('ponderosa_voice_reply',{});await f.settled(agent.id);
   const reply=f.ok(await f.api('GET',`/api/conversations/${chat.id}/voice-replies/${voice.message.communicationEventId}/${agent.id}`));
   assert.equal(reply.reply.state,'completed');
+  const notices=f.ok(await f.api('GET','/api/notifications'));
+  assert.equal(notices.items.some(item=>(item.kind==='operational'||['attention','urgent'].includes(item.severity))&&(item.agentId===agent.id||item.conversationId===chat.id)),false,'owned automatic handoff never interrupts the user');
  },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,emitVoiceReply:true,holdMemoryCompletion:true,uniqueThreads:true})).adapter,
    localMemoryForRoot:async root=>({chromaUrl:await ownedChroma(),collectionPrefix:'context_'+randomUUID().replaceAll('-',''),modelDir:process.env.PONDEROSA_TEST_MEMORY_MODEL_DIR,stateDirectory:path.join(root,'memory-policy'),provision:true})});
 });
@@ -187,7 +191,7 @@ test('interrupted transition exposes retry-pending review after restart',{timeou
   store.sqlite.prepare("UPDATE agent_activations SET state='retry_pending' WHERE id=?").run(original.id);
   await f.reopen();
   await until(()=>store.sqlite.prepare("SELECT 1 FROM context_rollovers WHERE id=? AND state IN ('failed','outcome_unknown')").get(rollover.id),'interrupted handoff recorded',20000);
-  await until(async()=>f.ok(await f.api('GET','/api/notifications')).items.some(item=>item.title==='Agent context needs review'&&item.body.includes('handoff did not finish')),'retry-pending review notice',20000);
+  await until(async()=>f.ok(await f.api('GET','/api/notifications')).items.some(item=>item.title.includes('context needs review')&&item.body.includes('handoff did not finish')),'retry-pending review notice',20000);
   assert.equal(store.sqlite.prepare('SELECT state FROM agent_activations WHERE id=?').get(original.id).state,'retry_pending');
   const rows=store.sqlite.prepare("SELECT state FROM agent_activations WHERE kind='context_rollover_handoff' AND json_extract(payload_json,'$.rolloverId')=?").all(rollover.id);
   assert.equal(rows.length,1,'an uncertain handoff must not be scheduled a second time');
@@ -309,7 +313,7 @@ test('ordinary text after a real global-memory revocation waits for safe context
    WHERE a.agent_id=? AND a.state='pending'`).get(agent.id),'context-review hold',20000);
   assert.ok(held.payload_json.includes('Continue the original user objective in text.'));
   const notices=f.ok(await f.api('GET','/api/notifications'));
-  assert.ok(notices.items.some(item=>item.title==='Agent context needs review'&&item.body.includes('revoked or changed')));
+  assert.ok(notices.items.some(item=>item.title.includes('context needs review')&&item.body.includes('revoked or changed')));
   await new Promise(resolve=>setTimeout(resolve,300));
   assert.equal((await native.requests()).filter(x=>x.method==='turn/start').length,1,'no old or fresh thread receives unsafe seed text');
   assert.equal(store.resumeSessionState(agent.id)?.sessionId,accepted.sessionId,'accepted context remains intact for review');
@@ -338,7 +342,7 @@ test('a failed handoff reservation keeps the exact task queued and does not retr
    WHERE a.agent_id=? AND a.state='pending' AND s.source_kind='settings_transition_reservation_wait'`).get(agent.id),'durable exact hold',20000);
   assert.equal(attempts,1);
   const notices=f.ok(await f.api('GET','/api/notifications'));
-  assert.ok(notices.items.some(item=>item.title==='Agent context needs review'&&item.body.includes('could not prepare')));
+  assert.ok(notices.items.some(item=>item.title.includes('context needs review')&&item.body.includes('could not prepare')));
   await new Promise(resolve=>setTimeout(resolve,300));assert.equal(attempts,1,'same failure is not retried automatically');
   assert.equal((await native.requests()).filter(x=>x.method==='turn/start').length,1);
   assert.equal(store.resumeSessionState(agent.id)?.sessionId,accepted.sessionId);
@@ -347,12 +351,14 @@ test('a failed handoff reservation keeps the exact task queued and does not retr
   assert.equal(attempts,1,'restart must preserve the same hold without replay');
   assert.equal(store.sqlite.prepare("SELECT state FROM agent_activations WHERE id=?").get(held.id).state,'pending');
   assert.equal(store.resumeSessionState(agent.id)?.sessionId,accepted.sessionId);
+  const incident=notices.items.find(item=>item.title.includes('context needs review'));
   const key=randomUUID(),retry=f.ok(await f.api('POST',`/api/projects/${chat.projectId}/message-deliveries/${held.id}/retry`,{idempotencyKey:key}));
   assert.equal(retry.activationId,held.id,'retry preserves the exact original message');
   await until(()=>attempts===2,'one human-requested retry');
   await until(()=>store.sqlite.prepare("SELECT 1 FROM activation_sources WHERE activation_id=? AND source_kind='settings_transition_reservation_wait'").get(held.id),'second failed hold');
   const again=f.ok(await f.api('GET','/api/notifications'));
-  assert.ok(again.items.some(item=>item.title==='Agent context needs review'&&(item.status??'open')==='open'),'a later failure reopens the notice');
+  assert.ok(again.items.some(item=>item.title.includes('context needs review')&&(item.status??'open')==='open'),'a later failure retains the notice');
+  assert.equal(again.items.find(item=>item.title.includes('context needs review')).id,incident.id,'accepted retry never resolves/reopens the same incident');
   const replay=f.ok(await f.api('POST',`/api/projects/${chat.projectId}/message-deliveries/${held.id}/retry`,{idempotencyKey:key}));
   assert.equal(replay.replayed,true,'replaying the same retry response cannot dispatch again');
   await new Promise(resolve=>setTimeout(resolve,300));assert.equal(attempts,2);

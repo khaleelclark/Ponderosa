@@ -535,6 +535,8 @@ export interface WorkspaceNotificationDto {
   workContext?: {
     kind: "request" | "join" | "activation";
     recordId: string;
+    /** Exact queued work sharing one retained context-boundary incident. */
+    activationIds?: string[];
     traceId?: string;
     state: string;
     occurredAt: string;
