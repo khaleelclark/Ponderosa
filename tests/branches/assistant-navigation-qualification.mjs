@@ -86,10 +86,10 @@ try{
   // The shared settings view must expose Assistant configuration only in Ponderosa.
   await page.goto(origin+'/settings/general');
   await page.getByRole('heading',{name:'Settings',exact:true}).waitFor();
-  await page.getByRole('heading',{name:'Assistant',exact:true}).waitFor();row.coreAssistantSettings=true;
+  await page.locator('.settings-group').getByRole('button',{name:'Assistant',exact:true}).waitFor();row.coreAssistantSettings=true;
   await page.goto(origin+'/branches?settings=general');
   await page.getByRole('heading',{name:'Settings',exact:true}).waitFor();
-  assert.equal(await page.getByRole('heading',{name:'Assistant',exact:true}).count(),0,'Branches General Settings must not mount Ponderosa Assistant controls');row.branchAssistantSettingsAbsent=true;
+  assert.equal(await page.locator('.settings-group').getByRole('button',{name:'Assistant',exact:true}).count(),0,'Branches General Settings must not mount Ponderosa Assistant controls');row.branchAssistantSettingsAbsent=true;
   await page.goto(origin+corePath);const editor=page.getByLabel('Message',{exact:true});await editor.waitFor();
   await editor.fill('Keep this Core draft');await page.screenshot({path:path.join(output,label+'-core-before.png')});
   if(phone)await page.getByRole('button',{name:'Open workspace navigation',exact:true}).click();
