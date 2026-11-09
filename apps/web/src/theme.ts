@@ -6,8 +6,8 @@ import {COLOR_MODE_STORAGE_KEY, THEME_BACKGROUNDS, resolveColorMode, type ColorM
 export {COLOR_MODE_STORAGE_KEY, type ColorMode} from "./browserTheme";
 
 const ponderosaFocusIndicator = {
-  light: "#2563EB",
-  dark: "#92B7FF",
+  light: "#123126",
+  dark: "#9ED4AA",
 } as const;
 
 /** Shared geometry for navigation and collection surfaces. */
@@ -39,65 +39,6 @@ export function workspaceHeaderSurfaceSx(
 const ponderosaColorTokens = {
   light: {
     background: THEME_BACKGROUNDS.light,
-    rail: "#F3F2EE",
-    topbar: "#FAF9F6",
-    railBorder: "#DEDCD6",
-    railForeground: "#686A66",
-    railForegroundActive: "#2563EB",
-    sidebar: "#F3F2EE",
-    surface: "#FFFFFF",
-    surfaceSecondary: "#F2F1ED",
-    inputSurface: "#FFFFFF",
-    delegatedSurface: "#EBEFEB",
-    delegatedHover: "#E0E7E1",
-    elevated: "#FFFFFF",
-    hover: "#EEEDE9",
-    selected: "#E9EFFD",
-    border: "#DEDCD6",
-    textPrimary: "#202621",
-    textSecondary: "#656A64",
-    textMuted: "#777C75",
-    brand: "#2563EB",
-    brandHover: "#1D4ED8",
-    accent: "#2563EB",
-    highlight: "#92B7FF",
-    activityLabel: "#547763",
-    star: "#987400",
-    userMessage: "#2563EB",
-  },
-  dark: {
-    background: THEME_BACKGROUNDS.dark,
-    rail: "#171A18",
-    topbar: "#1C1F1C",
-    railBorder: "#343B38",
-    railForeground: "#B5BCB8",
-    railForegroundActive: "#92B7FF",
-    sidebar: "#191C19",
-    surface: "#202420",
-    surfaceSecondary: "#272B26",
-    inputSurface: "#202420",
-    delegatedSurface: "#2A332C",
-    delegatedHover: "#333E35",
-    elevated: "#292E29",
-    hover: "#30362F",
-    selected: "#263750",
-    border: "#3A4039",
-    textPrimary: "#F0F0E9",
-    textSecondary: "#B8BDB4",
-    textMuted: "#959D91",
-    brand: "#2563EB",
-    brandHover: "#1D4ED8",
-    accent: "#92B7FF",
-    highlight: "#92B7FF",
-    activityLabel: "#68A97C",
-    star: "#BFA34A",
-    userMessage: "#2563EB",
-  },
-} as const;
-
-const classicColorTokens = {
-  light: {
-    background: THEME_BACKGROUNDS.light,
     rail: "#17221E",
     topbar: "#1D2A26",
     railBorder: "#354542",
@@ -122,7 +63,7 @@ const classicColorTokens = {
     highlight: "#5E9B6B",
     activityLabel: "#47785D",
     star: "#987400",
-    userMessage: "#EFF2F0",
+    userMessage: "#EFF0EB",
   },
   dark: {
     background: THEME_BACKGROUNDS.dark,
@@ -150,14 +91,15 @@ const classicColorTokens = {
     highlight: "#7CBF8A",
     activityLabel: "#68A97C",
     star: "#BFA34A",
-    userMessage: "#252B28",
+    userMessage: "#27332F",
   },
 } as const;
 
-/** CSS properties inherited by Assistant and Output content within the standard workspace. */
-export function assistantSurfaceVariables(mode: ColorMode) {
+/** Shared conversation colors for the workspace and embedded Assistant/Output roots. */
+export function ponderosaSurfaceVariables(mode: ColorMode) {
   const colors = ponderosaColorTokens[mode];
   return {
+    "--ponderosa-focus-ring": ponderosaFocusIndicator[mode],
     "--ponderosa-canvas": colors.background,
     "--ponderosa-surface": colors.surface,
     "--ponderosa-border": colors.border,
@@ -168,9 +110,7 @@ export function assistantSurfaceVariables(mode: ColorMode) {
     "--ponderosa-text-primary": colors.textPrimary,
     "--ponderosa-text-secondary": colors.textSecondary,
     "--ponderosa-message-bubble": colors.userMessage,
-    "--ponderosa-message-bubble-text": "#FFFFFF",
-    "--ponderosa-outgoing-bubble": colors.userMessage,
-    "--ponderosa-primary": colors.brand,
+    "--ponderosa-message-bubble-text": colors.textPrimary,
     "--ponderosa-prose-divider": colors.border,
     "--ponderosa-prose-hover": colors.hover,
     "--ponderosa-prose-link": mode === "dark" ? colors.highlight : colors.brand,
@@ -188,9 +128,9 @@ export function loadColorMode(): ColorMode {
 
 export function createPonderosaTheme(mode: ColorMode, variant: "standard" | "assistant" = "standard") {
   const assistant = variant === "assistant";
-  const colors = assistant ? ponderosaColorTokens[mode] : classicColorTokens[mode];
+  const colors = ponderosaColorTokens[mode];
   const dark = mode === "dark";
-  const focusIndicator = assistant ? ponderosaFocusIndicator[mode] : (dark ? "#9ED4AA" : "#123126");
+  const focusIndicator = ponderosaFocusIndicator[mode];
 
   return createTheme({
     palette: {
@@ -201,8 +141,8 @@ export function createPonderosaTheme(mode: ColorMode, variant: "standard" | "ass
         // must be a readable foreground rather than the much darker brand surface.
         main: dark ? colors.highlight : colors.brand,
         dark: dark ? colors.brand : colors.brandHover,
-        light: assistant ? "#92B7FF" : dark ? "#9ED4AA" : colors.highlight,
-        contrastText: assistant ? dark ? "#132440" : "#FFFFFF" : dark ? "#10231C" : "#F8F6EF",
+        light: dark ? "#9ED4AA" : colors.highlight,
+        contrastText: dark ? "#10231C" : "#F8F6EF",
       },
       secondary: {
         main: dark ? "#91AAB6" : "#607A87",
@@ -227,7 +167,7 @@ export function createPonderosaTheme(mode: ColorMode, variant: "standard" | "ass
         disabledBackground: dark
           ? "rgba(126,139,132,.14)"
           : "rgba(135,148,142,.14)",
-        focus: assistant ? dark ? "rgba(146,183,255,.20)" : "rgba(37,99,235,.16)" : dark ? "rgba(124,191,138,.20)" : "rgba(92,138,101,.16)",
+        focus: dark ? "rgba(124,191,138,.20)" : "rgba(92,138,101,.16)",
       },
       success: { main: dark ? "#57C77A" : "#2E8B57" },
       info: { main: dark ? "#79B8D1" : "#356F8B" },
@@ -260,11 +200,7 @@ export function createPonderosaTheme(mode: ColorMode, variant: "standard" | "ass
           body: {
             backgroundColor: colors.background,
             color: colors.textPrimary,
-            "--ponderosa-focus-ring": focusIndicator,
-            "--ponderosa-canvas": colors.background,
-            "--ponderosa-surface": colors.surface,
-            "--ponderosa-border": colors.border,
-            "--ponderosa-accent": dark ? colors.highlight : colors.brand,
+            ...ponderosaSurfaceVariables(mode),
             "--ponderosa-motion-duration": "200ms",
             "--ponderosa-rail": colors.rail,
             "--ponderosa-topbar": colors.topbar,
@@ -274,26 +210,16 @@ export function createPonderosaTheme(mode: ColorMode, variant: "standard" | "ass
             "--ponderosa-sidebar": colors.sidebar,
             "--ponderosa-activity-label": colors.activityLabel,
             "--ponderosa-star": colors.star,
-            "--ponderosa-surface-secondary": colors.surfaceSecondary,
-            "--ponderosa-input-surface": colors.inputSurface,
             "--ponderosa-delegated-surface": colors.delegatedSurface,
             "--ponderosa-delegated-hover": colors.delegatedHover,
-            "--ponderosa-elevated": colors.elevated,
             "--ponderosa-touch-target": `${ponderosaLayoutTokens.touchTarget}px`,
-            "--ponderosa-text-primary": colors.textPrimary,
-            "--ponderosa-text-secondary": colors.textSecondary,
-            "--ponderosa-message-bubble": assistant ? colors.userMessage : dark ? "#27332F" : "#EFF0EB",
-            "--ponderosa-message-bubble-text": assistant ? "#FFFFFF" : colors.textPrimary,
-            "--ponderosa-prose-divider": colors.border,
-            "--ponderosa-prose-hover": colors.hover,
-            "--ponderosa-prose-link": dark ? colors.highlight : colors.brand,
           },
           a: { textDecoration: "none" },
           "a:hover, a:focus-visible": { textDecoration: "none" },
           "::selection": {
             backgroundColor: dark
-              ? assistant ? "rgba(146,183,255,.28)" : "rgba(124,191,138,.28)"
-              : assistant ? "rgba(37,99,235,.22)" : "rgba(92,138,101,.22)",
+              ? "rgba(124,191,138,.28)"
+              : "rgba(92,138,101,.22)",
           },
         },
       },

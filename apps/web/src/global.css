@@ -367,11 +367,3 @@ code {
 .branch-settings > .MuiPaper-outlined {
   border-radius: 12px;
 }
-[data-assistant-conversation] .chat-message-frame.chat-message-end > .chat-message-row > .chat-message-column > .chat-message-body {
-  color: var(--ponderosa-message-bubble-text, #fff);
-}
-[data-assistant-conversation] .chat-message-frame.chat-message-end .chat-prose {
-  --ponderosa-prose-link: inherit;
-  --ponderosa-prose-hover: rgba(255, 255, 255, .16);
-  --ponderosa-prose-divider: rgba(255, 255, 255, .3);
-}

@@ -6,10 +6,6 @@
 .chat-message-agent-header { margin-bottom: 4px; gap: 8px; }
 .chat-message-agent-header [data-message-sender] { font-weight: 600; }
 .chat-message-frame .chat-message-body { font-size: 1rem; line-height: 1.65; }
-[data-assistant-conversation] .chat-message-frame .chat-message-body { border-radius: 20px; }
-[data-assistant-conversation] .chat-message-frame.chat-message-end > .chat-message-row > .chat-message-column > .chat-message-body { padding: 11px 16px; border-radius: 22px 22px 6px 22px; background: var(--ponderosa-outgoing-bubble, #2563eb); color: #fff; }
-[data-assistant-conversation] .chat-message-end .chat-message-body a { color: inherit; text-decoration-color: currentColor; }
-[data-assistant-conversation] .chat-message-end .chat-message-body code { color: inherit; background: rgba(255,255,255,.14); }
 .chat-message-frame .chat-message-actions .MuiIconButton-root { min-width: 36px; min-height: 36px; }
 .chat-message-frame .chat-message-actions { margin-top: 3px; }
 @media (max-width: 599px) {
@@ -17,7 +13,6 @@
  .chat-message-frame .chat-message-row { gap: 4px; }
  .chat-message-frame .chat-message-row > .MuiAvatar-root { width: 28px; height: 28px; font-size: .75rem; }
  .chat-message-frame.chat-message-end > .chat-message-row > .chat-message-column { max-width: 90%; }
- [data-assistant-conversation] .chat-message-frame.chat-message-end > .chat-message-row > .chat-message-column > .chat-message-body { padding: 10px 14px; }
  .chat-message-frame .chat-message-actions .MuiIconButton-root { min-width: 44px; min-height: 44px; }
 }
 @media (prefers-reduced-motion: no-preference) {

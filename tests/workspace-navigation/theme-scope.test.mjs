@@ -1,26 +1,32 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import '../shared/web-typescript-loader.mjs';
-const {assistantSurfaceVariables,createPonderosaTheme}=await import('../../apps/web/src/theme.ts');
-const {composerSurfaceWidth,composerSurfaceSx,assistantComposerSurfaceWidth,assistantComposerSurfaceSx}=await import('../../apps/web/src/components/chat/Composer.styles.ts');
+const {ponderosaSurfaceVariables,createPonderosaTheme}=await import('../../apps/web/src/theme.ts');
+const {composerSurfaceWidth,composerSurfaceSx}=await import('../../apps/web/src/components/chat/Composer.styles.ts');
 
-test('ordinary Ponderosa keeps its historical green composer while Assistant and Output keep their own controls',()=>{
+test('Assistant and Output reuse the standard green composer colors, focus and readable bubbles',()=>{
  assert.equal(composerSurfaceWidth.md,'min(1180px, calc(100% - 48px))');
  assert.equal(composerSurfaceWidth.xl,'min(1240px, calc(100% - 64px))');
  assert.deepEqual(composerSurfaceSx.borderRadius,{xs:2,sm:2.25});
  assert.equal(composerSurfaceSx['&:focus-within'],undefined);
- assert.equal(assistantComposerSurfaceWidth.md,'min(880px, calc(100% - 48px))');
- assert.ok(assistantComposerSurfaceSx['&:focus-within']);
  for(const mode of ['light','dark']){
   const standard=createPonderosaTheme(mode),assistant=createPonderosaTheme(mode,'assistant');
   assert.equal(standard.palette.primary.main,mode==='light'?'#123126':'#7CBF8A');
-  assert.equal(assistant.palette.primary.main,mode==='light'?'#2563EB':'#92B7FF');
+  for(const name of ['primary','secondary','background','text','action','success','info','warning','error'])
+   assert.deepEqual(assistant.palette[name],standard.palette[name],`${mode}/${name}: one palette across roots and portals`);
   assert.equal(standard.components.MuiDialog,undefined,'iOS-style dialogs are outside ordinary Ponderosa');
   assert.ok(assistant.components.MuiDialog);
   assert.equal(standard.components.MuiButton.styleOverrides.root.borderRadius,10);
   assert.equal(standard.typography.body1.fontSize,'0.9375rem');
   assert.equal(assistant.components.MuiButton.styleOverrides.root.borderRadius,10);
-  assert.equal(assistantSurfaceVariables(mode)['--ponderosa-message-bubble'],'#2563EB');
-  assert.equal(assistantSurfaceVariables(mode)['--ponderosa-prose-link'],assistant.palette.primary.main);
+  const variables=ponderosaSurfaceVariables(mode);
+  assert.equal(variables['--ponderosa-message-bubble'],mode==='light'?'#EFF0EB':'#27332F');
+  assert.equal(variables['--ponderosa-message-bubble-text'],standard.palette.text.primary);
+  assert.equal(variables['--ponderosa-prose-link'],standard.palette.primary.main);
+  for(const [name,value] of Object.entries(variables))for(const theme of [standard,assistant])
+   assert.equal(theme.components.MuiCssBaseline.styleOverrides.body[name],value,`${mode}/${name}: scoped content and body share tokens`);
+  assert.deepEqual(assistant.components.MuiCssBaseline.styleOverrides['::selection'],standard.components.MuiCssBaseline.styleOverrides['::selection']);
+  assert.deepEqual(assistant.components.MuiButtonBase.styleOverrides,standard.components.MuiButtonBase.styleOverrides);
+  assert.deepEqual(assistant.components.MuiMenu.styleOverrides,standard.components.MuiMenu.styleOverrides);
  }
 });

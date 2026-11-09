@@ -10,7 +10,7 @@ import { ChatMessageFrame } from '../../apps/web/src/components/chat/ChatMessage
 import { ChatMessageBody } from '../../apps/web/src/components/chat/ChatMessages';
 import { Composer } from '../../apps/web/src/components/chat/Composer';
 import { OutgoingMessageProvider, useOutgoingMessage } from '../../apps/web/src/components/chat/OutgoingMessage';
-import { createPonderosaTheme } from '../../apps/web/src/theme';
+import { createPonderosaTheme, ponderosaSurfaceVariables } from '../../apps/web/src/theme';
 import '../../apps/web/src/global.css';
 
 function assert(value: unknown, message: string): asserts value { if (!value) throw Error(message); }
@@ -90,13 +90,82 @@ export async function transcriptWidthMountedRegression(): Promise<void> {
       await settle();
       await measure(`regular/${sidebar}/${narrow}/refreshed`, true);
     }
-    for (const [layout, assistant] of [['project', true], ['agent', false], ['workspace', false]] as const) {
+    for (const [layout, assistant] of [['project', true], ['agent', true], ['agent', false], ['workspace', false]] as const) {
       render(layout, assistant, 0, false);
       await settle();
-      await measure(`${layout}/assistant=${assistant}`, false);
+      await measure(`${layout}/assistant=${assistant}`, assistant);
     }
     (window as unknown as { transcriptWidthEvidence: unknown[] }).transcriptWidthEvidence = evidence;
   } finally {
     root.unmount(); client.clear(); host.remove();
   }
+}
+
+/** Actual rendered parity, including the scoped CSS which theme-only checks miss. */
+export async function assistantComposerStyleMountedRegression(): Promise<void> {
+  const host = document.createElement('div'); document.body.append(host);
+  const root = createRoot(host), client = new QueryClient({ defaultOptions: { queries: { enabled: false, retry: false } } });
+  const binding = { projectId: 'style-project', agentId: 'style-assistant', handle: 'Assistant', currentHandle: 'Assistant', currentTitle: 'Assistant' };
+  const evidence: unknown[] = [];
+  const properties = ['backgroundColor', 'color', 'borderColor', 'borderWidth', 'borderRadius', 'boxShadow', 'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft', 'fontSize', 'lineHeight'] as const;
+  const style = (element: Element) => { const computed = getComputedStyle(element); return Object.fromEntries(properties.map(name => [name, computed[name]])); };
+  // Animated ancestors can introduce native DOMRect noise below 1/100px.
+  const pixels = (value: number) => Math.round(value * 100) / 100;
+  let finish: (() => void) | undefined;
+  try {
+    for (const mode of ['light', 'dark'] as const) for (const state of ['empty', 'focused', 'typed', 'disabled', 'attachment', 'sending'] as const) {
+      let standard: unknown;
+      for (const assistant of [false, true]) {
+        const label = `${mode}/${state}/assistant=${assistant}`;
+        let sent = false;
+        flushSync(() => root.render(
+          <ThemeProvider theme={createPonderosaTheme(mode, assistant ? 'assistant' : 'standard')}><CssBaseline />
+            <QueryClientProvider client={client}><MutationNotificationProvider>
+              <ConversationChromeContext.Provider value={assistant ? { statusHost: null, callActionsHost: null } : undefined}>
+                <Box data-assistant-conversation={assistant ? '' : undefined} sx={{ ...(assistant ? ponderosaSurfaceVariables(mode) : {}), width: 'min(1200px, 100%)', minWidth: 0 }}>
+                  <ChatMessageFrame message={{ id: 'style-bubble', author: { kind: 'operator' }, createdAt: '2026-11-09T00:00:00Z', body: <ChatMessageBody text="A short reply with [a link](https://example.invalid) and `code`." /> }} />
+                  <Composer key={label} disabled={state === 'disabled'} running={false}
+                    destinationMode="fixed" defaultDestination={{ handle: binding.handle, binding, selectionKey: binding.agentId }}
+                    placeholder={assistant ? 'Message Assistant directly' : undefined}
+                    insertTextRequest={['typed', 'sending'].includes(state) ? { id: label, text: 'A controlled message' } : undefined}
+                    onSend={() => { sent = true; return new Promise<void>(resolve => { finish = resolve; }); }} />
+                </Box>
+              </ConversationChromeContext.Provider>
+            </MutationNotificationProvider></QueryClientProvider>
+          </ThemeProvider>,
+        ));
+        await settle();
+        const composer = host.querySelector<HTMLElement>('.ponderosa-composer')!;
+        const editor = composer.querySelector<HTMLElement>('[aria-label="Message"]')!;
+        assert(editor, `${label}: accessible Message editor`);
+        assert(!composer.querySelector('[data-composer-mention="true"]'), `${label}: fixed recipient has no destination chip`);
+        assert(!/Message Assistant directly|Reply to|New Agent/.test(composer.textContent ?? ''), `${label}: no Assistant hint or recipient switching`);
+        if (assistant && state === 'empty') assert(!composer.textContent?.includes('Send a message'), `${label}: explicit empty placeholder`);
+        if (state === 'focused') { editor.focus(); await settle(); }
+        if (state === 'attachment') {
+          const files = new DataTransfer(); files.items.add(new File(['contained attachment'], 'style.txt', { type: 'text/plain' }));
+          const input = composer.querySelector<HTMLInputElement>('[aria-label="Choose files"]')!;
+          input.files = files.files; input.dispatchEvent(new Event('change', { bubbles: true })); await settle();
+          assert(composer.textContent?.includes('style.txt'), `${label}: attachment is retained`);
+        }
+        if (state === 'sending') {
+          const send = composer.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!;
+          assert(send && !send.disabled, `${label}: typed fixed-recipient message can send`); send.click(); await settle();
+          assert(sent, `${label}: send handler invoked`);
+        }
+        const bubble = host.querySelector('#style-bubble .chat-message-body')!;
+        const snapshot = {
+          surface: { ...style(composer), width: pixels(composer.getBoundingClientRect().width) },
+          editor: style(editor), bubble: style(bubble), link: style(bubble.querySelector('a')!), code: style(bubble.querySelector('code')!),
+          controls: [...composer.querySelectorAll<HTMLButtonElement>('button')].map(button => ({ label: button.getAttribute('aria-label'), disabled: button.disabled, ...style(button), width: pixels(button.getBoundingClientRect().width), height: pixels(button.getBoundingClientRect().height) })),
+        };
+        if (!assistant) standard = snapshot;
+        else assert(JSON.stringify(snapshot) === JSON.stringify(standard), `${label}: standard rendered surface, editor, controls and outgoing prose match ${JSON.stringify({ standard, actual: snapshot })}`);
+        evidence.push({ label, ...snapshot });
+        await (window as unknown as { assistantStyleCheckpoint?: (label: string) => Promise<void> }).assistantStyleCheckpoint?.(label);
+        if (finish) { finish(); finish = undefined; await settle(); }
+      }
+    }
+    (window as unknown as { assistantStyleEvidence: unknown[] }).assistantStyleEvidence = evidence;
+  } finally { finish?.(); root.unmount(); client.clear(); host.remove(); }
 }

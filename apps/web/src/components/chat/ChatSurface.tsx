@@ -40,7 +40,7 @@ export function ChatSurface({
   initialTranscript?: { rowIds: readonly string[]; reveal?: boolean };
 }): JSX.Element {
   const assistantChrome = useContext(ConversationChromeContext);
-  const regularChat = layout === "project" && !assistantChrome;
+  const composerLane = layout === "project" || Boolean(assistantChrome);
   const outgoing = useOutgoingMessage();
   const pendingId = showOutgoingMessage ? outgoing?.message?.id : undefined;
   // This is a finite aria-busy loading phase: native menu Find may not see
@@ -160,8 +160,8 @@ export function ChatSurface({
         onScroll={scroll.onScroll}
         sx={{
           position: "relative",
-          px: regularChat ? { ...padding, md: 0, lg: 0 } : padding,
-          "--chat-message-frame-width": regularChat ? { md: "100%" } : undefined,
+          px: composerLane ? { ...padding, md: 0, lg: 0 } : padding,
+          "--chat-message-frame-width": composerLane ? { md: "100%" } : undefined,
           py: { xs: 1, sm: 1.5 },
           pb: 3,
           height: "100%",
@@ -176,7 +176,7 @@ export function ChatSurface({
           ref={scroll.contentRef}
           spacing={0}
           sx={{
-            width: regularChat
+            width: composerLane
               ? { xs: `min(${contentWidth}px, 100%)`, md: composerSurfaceWidth.md, xl: composerSurfaceWidth.xl }
               : `min(${contentWidth}px, 100%)`,
             minHeight: "100%",

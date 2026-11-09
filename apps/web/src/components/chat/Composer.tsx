@@ -152,7 +152,7 @@ import {
   useComposerInsertTextRequest,
   useComposerMentionedHandlesChange,
 } from "./useComposerTextEffects";
-import { assistantComposerSurfaceSx, composerSurfaceSx } from "./Composer.styles";
+import { composerSurfaceSx } from "./Composer.styles";
 import { ConversationChromeContext } from "../ConversationChromeContext";
 import { DictationControls } from "../speech/DictationControls";
 import { insertSpeechText } from "../speech/speechText";
@@ -3122,7 +3122,7 @@ export function Composer({
       data-compact="false"
       data-file-drag-active={fileDragActive && fileDropEnabled}
       elevation={0}
-      sx={assistantChrome ? assistantComposerSurfaceSx : composerSurfaceSx}
+      sx={composerSurfaceSx}
       onDragEnterCapture={event => {
         if (!Array.from(event.dataTransfer.types).includes("Files")) return;
         event.preventDefault();
@@ -3798,7 +3798,7 @@ export function Composer({
             inputRef={inputRef}
             disabled={disabled || draftMutationLocked}
             locked={composerLocked}
-            placeholder={placeholder}
+            placeholder={assistantChrome ? "" : placeholder}
             comboboxEnabled={Boolean(mentionHandles || commands?.length || projectId)}
             menuOpen={menuOpen}
             listId={mentionListId}
