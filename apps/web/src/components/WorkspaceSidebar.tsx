@@ -146,6 +146,7 @@ export function WorkspaceSidebar({
     collapsedSidebarAgentIds,
     setCollapsedSidebarAgentIds,
     filter,
+    filters,
     setFilter,
   } = navigation;
   const [draggedResource, setDraggedResource] = useState<{
@@ -208,7 +209,6 @@ export function WorkspaceSidebar({
   const currentMessageResults = messageSearchTerm === filter.trim() ? messageSearch.data : undefined;
   const messageSearchPending = Boolean(filter.trim()) &&
     (messageSearchTerm !== filter.trim() || messageSearch.isPending);
-  const directorySearch = filter;
   useEffect(() => {
     if (route.kind === "inbox" || route.kind === "home" || route.kind === "manageChats") setProjectSection("chats");
     if (route.kind === "manageAgents") setProjectSection("agents");
@@ -216,14 +216,14 @@ export function WorkspaceSidebar({
   const projectDirectoryQuery = useProjectRailDirectory();
   const chatDirectoryQuery =
     useWorkspaceDirectory<WorkspaceConversationDirectoryItemDto>("conversation", {
-      search: directorySearch,
+      search: filters.chats,
       folders: true,
       projectId: undefined,
       enabled: projectContext && showingChats && sidebarVisible,
     });
   const agentDirectoryQuery =
     useWorkspaceDirectory<WorkspaceAgentDirectoryItemDto>("agent", {
-      search: showingAgents ? directorySearch : "",
+      search: filters.agents,
       projectId: undefined,
       enabled: projectContext && showingAgents,
     });

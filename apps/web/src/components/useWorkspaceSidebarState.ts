@@ -68,6 +68,7 @@ export function useWorkspaceSidebarNavigation(route: Route, globalLists = false)
     projectSection,
     setProjectSection,
     filter,
+    filters,
     setFilter,
   };
 }
