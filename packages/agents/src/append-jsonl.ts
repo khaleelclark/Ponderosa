@@ -6,7 +6,6 @@ import {
   ftruncateSync,
   mkdirSync,
   openSync,
-  readFileSync,
   renameSync,
   rmSync,
   writeSync,
@@ -44,34 +43,60 @@ export function readRepairableJsonl<T>(file: string, label: string, repair = fal
   if (!existsSync(file)) return [];
   const fd = openSync(file, repair ? "r+" : "r");
   try {
-    const bytes = readFileSync(fd);
-    if (bytes.length === 0) return [];
-    const text = bytes.toString("utf8");
-    const lines = text.split("\n");
-    const count = text.endsWith("\n") ? lines.length - 1 : lines.length;
     const records: T[] = [];
     let validBytes = 0;
-    for (let index = 0; index < count; index += 1) {
-      const line = lines[index]!;
-      if (!line.trim()) { validBytes += Buffer.byteLength(line) + 1; continue; }
+    let position = 0;
+    let pieces: Buffer[] = [];
+    let pendingBytes = 0;
+    const readLine = (bytes: Buffer, end: number, terminated: boolean): void => {
+      // Decode outside the parse catch: resource/read failures must never repair history.
+      const line = bytes.toString("utf8");
+      if (!line.trim()) { validBytes = end; return; }
+      let record: T;
       try {
-        records.push(JSON.parse(line) as T);
-        validBytes += Buffer.byteLength(line) + (index < lines.length - 1 ? 1 : 0);
-        if (repair && index === count - 1 && !text.endsWith("\n")) {
-          touchSourceMutation();
-          writeSync(fd, "\n");
-          fsyncSync(fd);
-        }
+        record = JSON.parse(line) as T;
       } catch (error) {
-        const tornTail = index === count - 1 && !text.endsWith("\n");
-        if (!tornTail) throw new Error(`${label} contains non-tail corruption`, { cause: error });
+        if (!(error instanceof SyntaxError)) throw error;
+        if (terminated) throw new Error(`${label} contains non-tail corruption`, { cause: error });
         if (repair) {
           touchSourceMutation();
           ftruncateSync(fd, validBytes);
           fsyncSync(fd);
         }
+        return;
       }
+      records.push(record);
+      validBytes = end;
+      if (repair && !terminated) {
+        touchSourceMutation();
+        if (writeSync(fd, "\n", end, "utf8") !== 1) throw new Error("JSONL tail repair made no progress");
+        fsyncSync(fd);
+      }
+    };
+    // Read raw LF-delimited bytes so total log size never becomes one JS string.
+    // Cross-chunk records are joined once, preserving UTF-8 and exact repair offsets.
+    for (;;) {
+      const chunk = Buffer.allocUnsafe(1024 * 1024);
+      const size = fs.readSync(fd, chunk, 0, chunk.length, position);
+      if (size === 0) break;
+      const input = chunk.subarray(0, size);
+      let start = 0;
+      for (let index = input.indexOf(10, start); index !== -1; index = input.indexOf(10, start)) {
+        const fragment = chunk.subarray(start, index);
+        const bytes = pieces.length ? Buffer.concat([...pieces, fragment], pendingBytes + fragment.length) : fragment;
+        readLine(bytes, position + index + 1, true);
+        pieces = [];
+        pendingBytes = 0;
+        start = index + 1;
+      }
+      if (start < size) {
+        const fragment = chunk.subarray(start, size);
+        pieces.push(fragment);
+        pendingBytes += fragment.length;
+      }
+      position += size;
     }
+    if (pendingBytes) readLine(Buffer.concat(pieces, pendingBytes), position, false);
     return records;
   } finally {
     closeSync(fd);
