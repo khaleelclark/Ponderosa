@@ -1,3 +1,6 @@
+import {useMutationNotification} from "./MutationNotifications";
+import {createClientId} from "../clientId";
+import {productApiPath} from "../api/productScope";
 import type { AgentDto, ConversationDto, EngineDto } from "@ponderosa/core";
 import { effortSelectionIsCompatible } from "../conversationEngine";
 import { api } from "../api";
@@ -74,7 +77,12 @@ export function AgentDetailSettingsController({
   onUpdateManagementPermissions,
   onChangeReportingLine,
 }: AgentDetailSettingsControllerProps): JSX.Element {
-  const freshSession = useMutation({ mutationKey: ["fresh-provider-session", agent.id], mutationFn: () => api.compactSession(agent.id) });
+  const notify=useMutationNotification();
+  const feedbackKey=JSON.stringify([productApiPath("/api/agents"),agent.id,"fresh-session"]);
+  const freshSession = useMutation({ mutationKey: ["fresh-provider-session", agent.id], mutationFn: () => api.compactSession(agent.id),
+    onError:error=>notify({key:feedbackKey,incident:createClientId("session-feedback-"),severity:"error",message:"Provider Session Needs Review",description:"Review the original Agent session before trying again.",details:error instanceof Error?error.message:String(error)}),
+    onSuccess:()=>notify({key:feedbackKey,message:"",dismiss:true}),
+  });
   return (
     <AgentSettingsPane
       agent={agent}

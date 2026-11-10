@@ -102,7 +102,7 @@ export function useAgentMessageController({
     queryClient.invalidateQueries({
       queryKey: queryKeys.queuedMessages.agent(agentId),
     });
-  const commandOptions = { attempts: queuedCommandAttempts, invalidate: invalidateQueuedMessages, onFailure: setQueuedMessageFailure };
+  const commandOptions = { owner:`agent:${agentId}`, attempts: queuedCommandAttempts, invalidate: invalidateQueuedMessages, onFailure: setQueuedMessageFailure };
   const cancelQueuedMessage = useQueuedMessageCommandMutation({
     ...commandOptions,
     input: (deliveryId: string) => ({ command: "cancel", deliveryId }),

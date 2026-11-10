@@ -72,7 +72,7 @@ try{
      return route.continue();
     });
     await page.reload({waitUntil:'domcontentloaded'});
-    const failedRestore=page.getByRole('alert').filter({hasText:'project.zip could not be restored from this draft.'});await failedRestore.waitFor();
+    const failedRestore=page.locator('details').filter({has:page.locator('summary',{hasText:'project.zip Needs Restoration'})});await failedRestore.waitFor();
     await reviewButton.waitFor();await reviewButton.click();
     const retainedReview=page.getByRole('dialog',{name:'Review Excluded Items',exact:true});await retainedReview.getByText('project/design.key',{exact:true}).waitFor();
     assert(await retainedReview.getByRole('button',{name:'Select Folder Again',exact:true}).isDisabled(),'Canonical failed download keeps explanation and blocks rebuild until restored');

@@ -95,7 +95,7 @@ export async function composerQueueSubmissionMountedRegression(): Promise<void> 
     editor = await render({ busy: true }); const files = new DataTransfer(); const file = new File(['attachment bytes'], 'queue-note.txt', { type: 'text/plain' }); files.items.add(file);
     const input = host.querySelector<HTMLInputElement>('[aria-label="Choose Files"]')!; input.files = files.files; input.dispatchEvent(new Event('change', { bubbles: true }));
     await until(() => host.textContent?.includes('queue-note.txt') === true, 'Attachment is visible');
-    failQueue = true; await key(editor, true); await until(() => host.textContent?.includes('Controlled Queue failure') === true, 'Queue failure is surfaced');
+    failQueue = true; await key(editor, true); await until(() => Boolean(host.querySelector('[aria-label="Review Message Error"]')), 'Queue failure is surfaced');
     assert(queues.length === 2 && queues[1].files[0] === file && queues[1].recipients.join() === binding.agentId && sends.length === 0, 'Busy shortcut submits exact attachment/recipient through queue');
     assert(editor.textContent?.includes('Queued exact') && host.textContent?.includes('queue-note.txt'), 'Failed enqueue retains draft and attachment');
     failQueue = false; await key(editor, true); await until(() => queues.length === 3 && Boolean(host.querySelector('[aria-label="Queued Messages"]')), 'Queue retry succeeds');
@@ -104,7 +104,7 @@ export async function composerQueueSubmissionMountedRegression(): Promise<void> 
     assert(queues.length === before && sends.length === 0 && editor.textContent?.includes('Queued exact'), 'No queue callback retains eligible draft');
     for (const options of [{ busy: true, blocked: true }, { busy: true, text: '' }]) { editor = await render(options); await key(editor, true); assert(queues.length === before && sends.length === 0, 'Disabled/empty draft does not submit'); }
     editor = await render({ busy: true }); failSend = true;
-    host.querySelector<HTMLButtonElement>('[aria-label="Steer Active Response"]')!.click(); await until(() => host.textContent?.includes('Controlled Send failure') === true, 'Frozen Send failure retained');
+    host.querySelector<HTMLButtonElement>('[aria-label="Steer Active Response"]')!.click(); await until(() => Boolean(host.querySelector('[aria-label="Review Message Error"]')), 'Frozen Send failure retained');
     const sent = sends.length; await key(editor, true); assert(sends.length === sent && queues.length === before && editor.textContent?.includes('Queued exact'), 'Ctrl+Enter cannot retry a frozen Send'); failSend = false;
     editor = await render({ busy: true }); host.querySelector<HTMLButtonElement>('[aria-label="Queue Message"]')!.click(); await until(() => queues.length === before + 1, 'Existing Queue button remains functional');
     assert(queues.at(-1)!.text === queues[0].text, 'Button and shortcut use identical queue submission text');

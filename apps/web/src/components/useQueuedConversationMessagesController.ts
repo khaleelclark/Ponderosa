@@ -73,6 +73,7 @@ export function useQueuedConversationMessagesController(
     });
   };
   const commandOptions = {
+    owner: `chat:${conversationId}`,
     attempts: commandAttempts,
     invalidate,
     onFailure: (failure?: QueuedMessageCommandFailure) => setCommandFailure(failure

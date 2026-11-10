@@ -91,7 +91,7 @@ test('Q01 partial Stop retries only the unresolved observed Run with its origina
   const h = hooks(), calls = []; let retry = false, id = 0;
   const health = new Map(['a','b'].map(agentId => [agentId, { runtimeActivity: { executionId: 'old-' + agentId } }]));
   const module = load('components/useActiveOperationController.ts', {
-    react: h.react, '@tanstack/react-query': { useQueryClient: () => client, useQuery: () => ({}) }, '../api': { api: { cancelRun: async (agentId, body) => {
+    react: h.react, './MutationNotifications':{useMutationNotification:()=>()=>{}},'../api/productScope':{productApiPath:path=>path}, '@tanstack/react-query': { useQueryClient: () => client, useQuery: () => ({}) }, '../api': { api: { cancelRun: async (agentId, body) => {
       calls.push({ agentId, ...body }); if (agentId === 'b') { if (!retry) throw Error('Cancel acknowledgement lost'); throw new ApiRequestError(409, 'Observed Run is no longer active'); }
     } } }, '../api/types': { ApiRequestError }, '../api/backgroundCooldown': { backgroundCooldownRemaining: () => 0 }, '../clientId': { createClientId: () => 'stop-key-' + ++id }, '../queryKeys': { queryKeys }, './activeOperationTracker': tracker,
   });

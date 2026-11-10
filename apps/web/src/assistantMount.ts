@@ -1,4 +1,5 @@
 import type {ColorMode} from './theme';
+import type {MutationNotifier} from './components/MutationNotifications';
 
 /** Plain data and callbacks cross the two independent React runtimes. */
 export interface AssistantMountProps {
@@ -7,6 +8,7 @@ export interface AssistantMountProps {
   onOpenNavigation():void;
   onToggleColorMode():void;
   onOpenProviderSettings():void;
+  notify?:MutationNotifier;
 }
 export interface AssistantMountApi {
   mount(host:HTMLElement,props:AssistantMountProps):void;

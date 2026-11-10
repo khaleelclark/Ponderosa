@@ -15,9 +15,13 @@ export type MutationNoticeSeverity = "success" | "error" | "warning" | "info";
 
 export interface MutationNoticeInput {
   message: string;
+  description?: string;
+  details?: string;
   severity?: MutationNoticeSeverity;
   /** Stable operation key used to replace/coalesce repeated feedback. */
   key?: string;
+  /** Exact action attempt/meaningful outcome; repeats stay dismissed. Not a retry authority. */
+  incident?: string;
   /** Errors and durable background outcomes stay visible until dismissed. */
   persistent?: boolean;
   /** Retire only feedback for a confirmed operation; never clear action state. */
@@ -31,29 +35,42 @@ interface MutationNotice extends MutationNoticeInput {
   severity: MutationNoticeSeverity;
 }
 
-type MutationNotifier = (notice: MutationNoticeInput | string) => void;
+export type MutationNotifier = (notice: MutationNoticeInput | string) => void;
 
 const MutationNotificationContext = createContext<MutationNotifier | undefined>(undefined);
 
 export function MutationNotificationProvider({
   children,
+  notifier,
 }: {
   children: ReactNode;
+  /** Embedded roots forward into the host's existing queue and Portal. */
+  notifier?: MutationNotifier;
 }): JSX.Element {
   const nextId = useRef(1);
+  const incidents = useRef(new Map<string, true>());
   const [notices, setNotices] = useState<MutationNotice[]>([]);
   const active = notices[0];
   const notify = useCallback<MutationNotifier>((input) => {
     const normalized = typeof input === "string" ? { message: input } : input;
     const severity = normalized.severity ?? "success";
-    const key = normalized.key ?? `${severity}:${normalized.message}`;
+    const id=normalized.dismiss?0:nextId.current++;
+    const key = normalized.key ?? (severity === "error" || severity === "warning" ? `${severity}:${id}` : `${severity}:${normalized.message}`);
+    if (!normalized.dismiss && normalized.incident) {
+      const identity=JSON.stringify([key,normalized.incident]);
+      if (incidents.current.has(identity)) return;
+      incidents.current.set(identity,true);
+      // ponytail: retain the last 512 operation outcomes per mounted host; a
+      // persistent multi-session inbox belongs to canonical notifications.
+      if (incidents.current.size > 512) incidents.current.delete(incidents.current.keys().next().value!);
+    }
     setNotices((current) => {
       if(normalized.dismiss)return current.filter(notice=>notice.key!==key);
       const notice: MutationNotice = {
         ...normalized,
         key,
         severity,
-        id: nextId.current++,
+        id,
       };
       const matching = current.findIndex((candidate) => candidate.key === key);
       if (matching < 0) return normalized.progress ? [notice, ...current] : [...current, notice];
@@ -63,8 +80,9 @@ export function MutationNotificationProvider({
       return next;
     });
   }, []);
-  const value = useMemo(() => notify, [notify]);
+  const value = useMemo(() => notifier ?? notify, [notify, notifier]);
   useEffect(() => {
+    if (notifier) return;
     const pending = new Map<string, { controller: AbortController; report(message?: string): void }>();
     let mounted = true;
     const announceDownload = (event: MouseEvent) => {
@@ -126,13 +144,13 @@ export function MutationNotificationProvider({
     };
     document.addEventListener("click", announceDownload, true);
     return () => { mounted = false; document.removeEventListener("click", announceDownload, true); for (const download of pending.values()) download.controller.abort(); };
-  }, [notify]);
+  }, [notify, notifier]);
   const dismiss = () => setNotices((current) => current.slice(1));
 
   return (
     <MutationNotificationContext.Provider value={value}>
       {children}
-      <Portal><Snackbar
+      {!notifier && <Portal><Snackbar
         key={active?.id}
         open={Boolean(active)}
         autoHideDuration={active?.persistent || active?.severity === "error" ? null : 3_000}
@@ -140,6 +158,10 @@ export function MutationNotificationProvider({
           if (reason !== "clickaway" && !active?.progress) dismiss();
         }}
         anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
+        sx={{
+          bottom: {xs: "calc(max(0px, 100% - var(--ponderosa-app-viewport-block-size, 100%) - var(--ponderosa-app-viewport-top, 0px)) + max(8px, env(safe-area-inset-bottom)))", sm: "calc(max(0px, 100% - var(--ponderosa-app-viewport-block-size, 100%) - var(--ponderosa-app-viewport-top, 0px)) + max(24px, env(safe-area-inset-bottom)))"},
+          maxHeight: "calc(var(--ponderosa-app-viewport-block-size, 100dvh) - 16px)",
+        }}
       >
         {active ? (
           <Alert
@@ -151,6 +173,9 @@ export function MutationNotificationProvider({
               width: "auto",
               minWidth: "min(88vw, 260px)",
               maxWidth: "min(92vw, 480px)",
+              maxHeight: "inherit",
+              overflowY: "auto",
+              overflowWrap: "anywhere",
               px: 1.25,
               py: 0.25,
               display: "grid",
@@ -166,15 +191,27 @@ export function MutationNotificationProvider({
             }}
           >
             {active.message}
+            {active.description ? <Box sx={{mt:0.25}}>{active.description}</Box> : null}
+            {active.details ? <Box component="details" sx={{textAlign:"start",mt:0.25}}><summary>Details</summary><Box component="pre" sx={{m:0,whiteSpace:"pre-wrap",overflowWrap:"anywhere",font:"inherit",maxHeight:180,overflowY:"auto"}}>{active.details}</Box></Box> : null}
             {active.progress ? <Box sx={{ mt: 0.75 }}><LinearProgress aria-label="Download Preparation Progress"
               variant={active.progress.totalBytes ? "determinate" : "indeterminate"}
               value={active.progress.totalBytes ? Math.min(100, 100 * active.progress.receivedBytes / active.progress.totalBytes) : undefined}
               color="inherit" /></Box> : null}
           </Alert>
         ) : undefined}
-      </Snackbar></Portal>
+      </Snackbar></Portal>}
     </MutationNotificationContext.Provider>
   );
+}
+
+/** Persistent recovery explanation only; announcing/dismissing feedback never owns the action. */
+export function MutationErrorDetails({title, error, children}: {title:string; error:unknown; children?:ReactNode}): JSX.Element | null {
+  if (!error) return null;
+  return <Box component="details" sx={{fontSize:".8125rem",minWidth:0,"& > summary":{minHeight:44,alignContent:"center",cursor:"pointer"}}}>
+    <summary>{title}</summary>
+    <Box sx={{overflowWrap:"anywhere",whiteSpace:"pre-wrap",maxHeight:180,overflowY:"auto"}}>{error instanceof Error ? error.message : String(error)}</Box>
+    {children}
+  </Box>;
 }
 
 export function useMutationNotification(): MutationNotifier {

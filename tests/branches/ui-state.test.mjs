@@ -288,7 +288,7 @@ test('both products share ordered accessible sidebar controls and preserve norma
  const {ThemeProvider}=await import('@mui/material');
  const noop=()=>{},profile={displayName:'Operator',handle:'operator'};
  for(const mode of ['light','dark'])for(const drawer of [false,true]){
-  const render=element=>renderToStaticMarkup(React.createElement(QueryClientProvider,{client},React.createElement(ThemeProvider,{theme:createPonderosaTheme(mode)},element)));
+  const render=element=>renderToStaticMarkup(React.createElement(QueryClientProvider,{client},React.createElement(ThemeProvider,{theme:createPonderosaTheme(mode)},React.createElement(MutationNotificationProvider,null,element))));
   const normal=render(React.createElement(ProjectRail,{drawer,route:{kind:'home'},profile,sections:{onSelect:noop},attentionNotifications:7,unreadNotificationUpdates:0,onOpenHome:noop,onOpenInbox:noop,onManageSection:noop,onOpenSearch:noop,onOpenNotifications:noop,onOpenSettings:noop,onCollapse:noop,onClose:noop}));
   const branches=render(React.createElement(BranchesSidebar,{drawer,panel:null,notifications:React.createElement('button',{'aria-label':'Branches notifications, 7 unread'}),onHome:noop,onAssistant:noop,onSearch:noop,onGlobal:noop,onDismiss:noop,onCollapsedChange:noop}));
   for(const [html,home,search,bell]of [[normal,'Ponderosa Home','Search','Notifications, 7 Unread'],[branches,'Ponderosa Home','Search Branch Chats','Branches notifications, 7 unread']]){
@@ -427,10 +427,13 @@ test('manual capability callers still stage edits and responses stay scoped to t
 async function settingsFeedbackFixture(component, names, overrides={}){
  const fs=await import('node:fs/promises'),vm=await import('node:vm'),ts=await import('typescript'),{draftChangedSinceSubmission}=await import('../../apps/web/src/components/settingsDrafts.ts');
  const source=await fs.readFile(new URL('../../apps/web/src/components/WorkspaceSettingsView.tsx',import.meta.url),'utf8'),ast=ts.createSourceFile('settings.tsx',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX),owner=ast.statements.find(node=>ts.isFunctionDeclaration(node)&&node.name?.text===component),declarations=owner.body.statements.flatMap(node=>ts.isVariableStatement(node)?[...node.declarationList.declarations]:[]),notices=[],writes=[];
- const scope={Error,notify:notice=>notices.push(notice),useMutation:options=>({isSuccess:false,isError:false,...options}),draftChangedSinceSubmission,onSavePreferences:async patch=>{writes.push(patch);return patch},instructionsRef:{current:'Saved instructions'},limitRef:{current:'3'},rolloverTokensRef:{current:'150000'},rolloverFractionRef:{current:'0.75'},currentProfile:{current:{displayName:'Owner',handle:'owner',avatarId:'pine'}},
+ const scope={Error,notify:notice=>{if(!notice.dismiss)notices.push(notice);},useMutation:options=>({isSuccess:false,isError:false,...options}),draftChangedSinceSubmission,onSavePreferences:async patch=>{writes.push(patch);return patch},instructionsRef:{current:'Saved instructions'},limitRef:{current:'3'},rolloverTokensRef:{current:'150000'},rolloverFractionRef:{current:'0.75'},currentProfile:{current:{displayName:'Owner',handle:'owner',avatarId:'pine'}},
   instructionsDirty:false,limitDirty:false,rolloverTokensDirty:false,rolloverFractionDirty:false,
   get instructions(){return scope.instructionsRef.current},get limit(){return scope.limitRef.current},get rolloverTokens(){return scope.rolloverTokensRef.current},get rolloverFraction(){return scope.rolloverFractionRef.current},
   setInstructionsDirty:value=>{scope.instructionsDirty=value},setLimitDirty:value=>{scope.limitDirty=value},setRolloverTokensDirty:value=>{scope.rolloverTokensDirty=value},setRolloverFractionDirty:value=>{scope.rolloverFractionDirty=value},...overrides};
+ let feedbackId=0;scope.useMutationNotification=()=>scope.notify;scope.productApiPath=path=>path;scope.createClientId=()=>`settings-feedback-${++feedbackId}`;
+ const helper=ast.statements.find(node=>ts.isFunctionDeclaration(node)&&node.name?.text==='useSettingsSaveFeedback');assert.ok(helper);
+ vm.runInNewContext(ts.transpileModule(helper.getText(ast)+'\nglobalThis.saveFeedback=useSettingsSaveFeedback();',{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,scope);
  for(const name of names){const expression=declarations.find(node=>node.name.getText(ast)===name)?.initializer;assert.ok(expression,'Exercise actual '+component+'.'+name+' mutation');vm.runInNewContext(ts.transpileModule('globalThis.'+name+'='+expression.getText(ast),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,scope);}
  const feedbackProps=new Map();
  function visit(node){if(ts.isJsxAttribute(node)&&node.initializer&&ts.isJsxExpression(node.initializer)&&node.initializer.expression)feedbackProps.set(node.name.getText(ast),node.initializer.expression);ts.forEachChild(node,visit);}
@@ -462,7 +465,7 @@ test('workspace inline confirmations require settled exact values while newer ed
   assert.equal(f.feedback(confirmation),false,'A failed write must never show saved confirmation');assert.equal(f.feedback(error),failure.message,'The actual inline error retains its cause');
  }
  assert.equal(f.scope.limitRef.current,'4');assert.equal(f.scope.limitDirty,true);assert.equal(f.scope.rolloverTokensRef.current,'160000');assert.equal(f.scope.rolloverTokensDirty,true,'Failed saving does not retire the newer dirty draft');
- assert.deepEqual(f.notices,[],'These local confirmations must not reintroduce the overlapping shared toast');
+ assert.deepEqual(f.notices.map(n=>[n.severity,n.message]),[['error','Agent Defaults Not Saved'],['error','Rollover Limits Not Saved']],'Success confirmations stay inline; explicit failed Saves use shared feedback');
 });
 
 test('profile success requires the submitted profile to remain current and repeated saves use the same shared operation key',async()=>{

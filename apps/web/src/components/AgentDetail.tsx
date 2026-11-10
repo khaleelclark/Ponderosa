@@ -1,3 +1,5 @@
+import {useMutationNotification} from "./MutationNotifications";
+import {productApiPath} from "../api/productScope";
 import {WorkspaceQueryError} from "./WorkspaceQueryError";
 import {workspaceRead} from "../workspaceAvailability";
 import {productWorkspacePath} from "../api/productScope";
@@ -543,7 +545,12 @@ export function AgentDetail({
     runtimeActivity?.executionId ?? detail?.coordinationV3?.pause?.runId,
   );
   const pause=detail?.coordinationV3?.pause;
+  const notify=useMutationNotification();
+  const controlFeedbackKey=JSON.stringify([productApiPath("/api/conversations"),agentId,"run-control",pause?.id??runtimeActivity?.executionId]);
   const pauseResume=useMutation({
+    mutationKey:["run-control",controlFeedbackKey],
+    onError:error=>notify({key:controlFeedbackKey,incident:createClientId("control-feedback-"),severity:"error",message:"Run Control Needs Review",description:"Review the original Agent and Run before trying again.",details:error instanceof Error?error.message:String(error)}),
+    onSuccess:()=>notify({key:controlFeedbackKey,message:"",dismiss:true}),
     mutationFn:()=>api.controlRun(agentId,pause?'resume':'pause',pause?{pauseId:pause.id,idempotencyKey:createClientId()}:{targetRunId:runtimeActivity?.executionId,idempotencyKey:createClientId()}),
     onSettled:()=>{void queryClient.invalidateQueries({queryKey:queryKeys.agents.detailPrefix(agentId)});void queryClient.invalidateQueries({queryKey:queryKeys.agents.healthAll});},
   });

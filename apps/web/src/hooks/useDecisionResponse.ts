@@ -1,3 +1,6 @@
+import {useMutationNotification} from "../components/MutationNotifications";
+import {productApiPath} from "../api/productScope";
+import {createClientId} from "../clientId";
 import type { InboxPageDto, ConversationDecisionEventDto, DecisionDto, ResolveDecisionRequest, WorkspaceNotificationPageDto } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
@@ -19,8 +22,11 @@ const DECISION_REFRESH_KEYS = [
 
 export function useDecisionResponse(onSuccess?: () => void) {
   const queryClient = useQueryClient();
+  const notify=useMutationNotification();
   return useMutation({
     retry: false,
+    onMutate:({decision})=>({key:JSON.stringify([productApiPath("/api/decisions"),decision.projectId,decision.agentId,decision.conversationId,decision.id]),incident:createClientId("decision-feedback-")}),
+    onError:(error,_variables,feedback)=>{if(feedback)notify({...feedback,severity:"error",message:"Decision Response Needs Review",description:"Your response is retained. Review the original Decision before retrying.",details:error instanceof Error?error.message:String(error)});},
     mutationFn: async ({ decision, response }: {
       decision: DecisionPrompt;
       response: ResolveDecisionRequest;
@@ -51,7 +57,8 @@ export function useDecisionResponse(onSuccess?: () => void) {
         throw new Error(current ? "This question is still pending. Your response is kept; try again." : uncertain);
       }
     },
-    onSuccess: decision => {
+    onSuccess: (decision,_variables,feedback) => {
+      if(feedback)notify({key:feedback.key,message:"",dismiss:true});
       const update = <T extends { decision: DecisionDto }>(items: T[]) => items.map(item => item.decision.id === decision.id ? { ...item, decision } : item);
       // Cancel reads started before the save before replacing their old data.
       for (const queryKey of [queryKeys.decisions.all, queryKeys.agents.detailAll, queryKeys.conversations.detailAll, queryKeys.inboxAll, queryKeys.notifications.all]) {

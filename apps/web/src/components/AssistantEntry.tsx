@@ -1,19 +1,40 @@
+import {useEffect} from "react";
+import {createClientId} from "../clientId";
+import {MutationErrorDetails,useMutationNotification} from "./MutationNotifications";
+import {WorkspaceQueryError} from "./WorkspaceQueryError";
+import {workspaceRead} from "../workspaceAvailability";
 import {AssistantIcon} from './AssistantIcon';
 import {useQuery} from '@tanstack/react-query';
-import {Alert,Box,ButtonBase,Button,Typography} from '@mui/material';
+import {Box,Button,ButtonBase,Typography} from '@mui/material';
 import type {AssistantStatusDto} from '@ponderosa/core';
 import {requestJson} from '../api/real';
 import {isUnmodifiedPrimaryClick} from '../nativeNavigation';
 
 /** Opening Ponderosa initializes the default once; removed speakers stay disabled. */
 export function useInitializeAssistant(){
- return useQuery({queryKey:['assistant-initialize'],staleTime:Infinity,retry:false,
+ return useQuery({queryKey:['assistant-initialize'],staleTime:Infinity,retry:false,retryOnMount:false,refetchOnMount:false,refetchOnWindowFocus:false,refetchOnReconnect:false,
   queryFn:()=>requestJson<AssistantStatusDto>('/api/branches/assistant',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({initialize:true})})});
 }
 export function AssistantEntry({wide=false,selected=false,href,onOpen}:{wide?:boolean;selected?:boolean;href:string;onOpen():void}):JSX.Element{
- const query=useInitializeAssistant();
+ const query=useInitializeAssistant(),notify=useMutationNotification();
+ const feedbackKey=JSON.stringify(["/api/branches/assistant","setup"]);
+ // Initialization is a POST, not a shared refresh participant. Reconcile its
+ // outcome through the existing canonical GET before offering explicit setup retry.
+ const status=useQuery({queryKey:['assistant-setup-status'],enabled:query.isError,retry:false,
+  queryFn:()=>requestJson<AssistantStatusDto>('/api/branches/assistant')});
+ useEffect(()=>{if(status.isSuccess&&status.data.initialized&&!status.data.setupError)notify({key:feedbackKey,message:"",dismiss:true});},[status.isSuccess,status.data,notify,feedbackKey]);
+ const retrySetup=async()=>{
+  const key=feedbackKey,incident=createClientId("assistant-setup-feedback-");
+  const result=await query.refetch();
+  if(result.isError)notify({key,incident,severity:"error",message:"Assistant Setup Needs Review",description:"Check Assistant setup before trying again.",details:result.error instanceof Error?result.error.message:String(result.error)});
+  else if(result.data?.initialized&&!result.data.setupError)notify({key,message:"",dismiss:true});
+ };
  return <Box sx={{minWidth:0,gridColumn:wide?'1 / -1':undefined}}>
   <ButtonBase href={href} aria-current={selected?'page':undefined} onClick={event=>{if(isUnmodifiedPrimaryClick(event)){event.preventDefault();onOpen();}}} sx={{width:'100%',minHeight:44,gap:1,px:1,borderRadius:1.5,color:selected?'primary.main':'text.secondary',bgcolor:selected?'action.selected':'transparent','&:hover':{bgcolor:'action.hover'}}}><AssistantIcon sx={{fontSize:19}}/><Typography component="span" sx={{fontSize:'.8125rem',fontWeight:600}}>Assistant</Typography></ButtonBase>
-  {query.isError&&<Alert severity="error" action={<Button onClick={()=>void query.refetch()}>Retry</Button>}>Assistant could not be opened.<Box component="details" sx={{fontSize:'.8125rem','& summary':{minHeight:44,py:1,cursor:'pointer'},'& pre':{m:0,maxHeight:'20vh',overflow:'auto',whiteSpace:'pre-wrap',overflowWrap:'anywhere',font:'inherit'}}}><summary>Details</summary><pre>{(query.error as Error).message}</pre></Box></Alert>}
+  <WorkspaceQueryError compact active={query.isError} read={workspaceRead("workspace","Assistant Setup",status)}/>
+  {query.isError&&status.isSuccess&&(!status.data.initialized||status.data.setupError)&&<MutationErrorDetails title="Assistant Setup Needs Review" error={status.data.setupError?.message??query.error}>
+   <Button disabled={query.isFetching} onClick={()=>void retrySetup()}>Retry Assistant Setup</Button>
+  </MutationErrorDetails>}
+
  </Box>;
 }

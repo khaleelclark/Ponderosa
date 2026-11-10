@@ -1,6 +1,8 @@
 import AddIcon from "@mui/icons-material/Add";
 import ArticleIcon from "@mui/icons-material/Article";
 import CloseIcon from "@mui/icons-material/Close";
+import ErrorOutlineIcon from "@mui/icons-material/ErrorOutline";
+import { MutationErrorDetails } from "../MutationNotifications";
 import {
   Alert,
   Box,
@@ -8,6 +10,10 @@ import {
   Chip,
   ClickAwayListener,
   Divider,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   IconButton,
   ListSubheader,
   MenuItem,
@@ -125,17 +131,13 @@ export function ComposerNotices({
           </IconButton>
         </Paper>
       ) : null}
-      {error&&compactError ? <Box component="details" sx={{fontSize:".8125rem",mb:1}}><summary>Message Needs Attention</summary><Typography variant="caption">{error}</Typography><Button size="small" onClick={onClearError}>Close</Button></Box> : error ? (
-        <Alert severity="error" sx={{ mb: 1 }} onClose={onClearError}>
-          {attachmentError ? error : `Message not sent. ${error}`}
-        </Alert>
-      ) : null}
+      {!compactError && <MutationErrorDetails title={attachmentError ? "Attachment Needs Attention" : "Draft Needs Attention"} error={error}><Button size="small" onClick={onClearError}>Close</Button></MutationErrorDetails>}
       {failedDraftContents.map(item => (
-        <Alert
+        <MutationErrorDetails
           key={item.id}
-          severity="warning"
-          sx={{ mb: 1 }}
-          action={
+          title={`${item.name} Needs Restoration`}
+          error="This item could not be restored from the saved draft."
+        >
             <Stack direction="row" spacing={0.5}>
               <Button size="small" disabled={mutationLocked} onClick={() => onRetryDraftContent(item.id)}>
                 Retry
@@ -144,10 +146,7 @@ export function ComposerNotices({
                 Remove
               </Button>
             </Stack>
-          }
-        >
-          {item.name} could not be restored from this draft.
-        </Alert>
+        </MutationErrorDetails>
       ))}
       {draftConflict ? (
         <Alert
@@ -183,6 +182,14 @@ export function ComposerNotices({
       ) : null}
     </>
   );
+}
+
+/** Fits the existing control row; opening Details never sends or clears a draft. */
+export function ComposerErrorReview({error}: {error?:string}): JSX.Element | null {
+  const [open,setOpen]=useState(false);
+  if(!error)return null;
+  return <><Tooltip title="Review Message Error"><IconButton color="warning" aria-label="Review Message Error" onClick={()=>setOpen(true)} sx={{width:44,height:44}}><ErrorOutlineIcon/></IconButton></Tooltip>
+    <Dialog open={open} onClose={()=>setOpen(false)} fullWidth maxWidth="sm"><DialogTitle>Message Needs Attention</DialogTitle><DialogContent sx={{overflowWrap:"anywhere",whiteSpace:"pre-wrap"}}>{error}</DialogContent><DialogActions><Button onClick={()=>setOpen(false)}>Close</Button></DialogActions></Dialog></>;
 }
 
 export function ComposerTextInput({

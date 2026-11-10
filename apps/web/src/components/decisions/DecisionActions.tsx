@@ -1,4 +1,5 @@
-import { Alert, Button, Stack } from "@mui/material";
+import {MutationErrorDetails} from "../MutationNotifications";
+import { Button, Stack } from "@mui/material";
 import { useEffect, useState } from "react";
 import type { DecisionPrompt, DecisionResponse } from "../../decisions";
 import { decisionAcceptsText, decisionTextActionLabel } from "../../decisions";
@@ -9,7 +10,6 @@ import { settleDecisionResponse } from "./decisionResponse";
 
 export function DecisionActions({
   decision,
-  compact = false,
   onResolved,
   onRetentionChange,
 }: {
@@ -94,11 +94,7 @@ export function DecisionActions({
         ) : null}
         {!grouped && skipButton}
       </Stack>
-      {error ? (
-        <Alert severity="error" sx={compact ? { mt: 0.75 } : undefined}>
-          {error}
-        </Alert>
-      ) : null}
+      {!textDialogOpen&&<MutationErrorDetails title="Decision Response Needs Review" error={error}/>}
       <DecisionResponseDialog
         key={decision.id}
         decision={decision}

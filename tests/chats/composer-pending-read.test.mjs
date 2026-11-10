@@ -63,7 +63,7 @@ const deferred=()=>{let resolve;const promise=new Promise(r=>resolve=r);return{p
 function sendHydrationFixture(){
  const download=deferred(),state={files:['sent.webm'],text:'',stored:['sent'],error:undefined,clears:0};
  const chain={ownedRevision:1,clientId:'owned-client',pendingDeletionIds:new Set(),tail:Promise.resolve()};
- const c={notify(){},submittedDraftScope:"owned-scope",Error,Set,Map,Promise,console,cancelled:false,hydrationGeneration:7,draftHydrationGeneration:{current:7},draftRevision:{current:1},draft:{revision:2,attachmentIds:['sent'],attachments:[{id:'sent'}]},
+ const c={feedbackKey:()=>"test-feedback",feedbackAttempt:"test-attempt",notify(){},submittedDraftScope:"owned-scope",Error,Set,Map,Promise,console,cancelled:false,hydrationGeneration:7,draftHydrationGeneration:{current:7},draftRevision:{current:1},draft:{revision:2,attachmentIds:['sent'],attachments:[{id:'sent'}]},
   api:{downloadDraftAttachment:()=>download.promise,putConversationDraft:async(_scope,body)=>{state.stored=[...body.attachmentIds];return{revision:3};},deleteDraftAttachment:async()=>{}},
   locallyRemovedDraftAttachmentIds:{current:new Set()},pendingText:undefined,draftStorageKey:undefined,inputRef:{current:{isFocused:()=>false}},draftLocallyEdited:{current:true},draftWriteChain:{current:chain},
   draftContentGeneration:{current:3},sendingRef:{current:false},setSending(){},textRef:{current:''},setTextState:s=>state.text=s,
@@ -123,7 +123,7 @@ function capturedRetirementFixture(){
   draftContentGeneration:{current:1},textRef:{current:state.text},setTextState:text=>state.text=text,replacePastedText(){},pastedTextAttachmentId:{current:undefined},setKnownMentionBindings(){},setActiveDefaultDestination(){},inputRef:{current:{resetDocument(){}}},setCaret(){},setSendError(){},
   draftHydrationGeneration:{current:0},metadata:{current:new Map([['sent',attachment]])},attachmentIds:ids,locallyRemovedIds:removed,locallyRemovedDraftAttachmentIds:removed,locallyRemovedFiles:{current:new WeakSet()},pendingUploads:{current:[]},activeUploads:{current:0},generation:{current:0},setUploadStates(){},setAttachmentVersion(){},
   dispatch:action=>{state.attachments=c.reducer(state.attachments,action);},
-  item:{scope:'owned-chat',ownerId:'owned-owner',status:'pending',dispatchStarted:true,pending},loadedUnderLock:true,previouslyDispatched:true,notify(){},ApiRequestError:class extends Error{},CapturedSubmissionOrderError:class extends Error{},durableSubmissionMayBeReleased:()=>{throw Error('Uncertain transport must not use definitive rejection');},saveCapturedSubmission:item=>{state.saved=structuredClone(item);},
+  item:{scope:'owned-chat',ownerId:'owned-owner',status:'pending',dispatchStarted:true,pending},loadedUnderLock:true,previouslyDispatched:true,feedbackKey:"captured-feedback",feedbackAttempt:"captured-attempt",notify(){},ApiRequestError:class extends Error{},CapturedSubmissionOrderError:class extends Error{},durableSubmissionMayBeReleased:()=>{throw Error('Uncertain transport must not use definitive rejection');},saveCapturedSubmission:item=>{state.saved=structuredClone(item);},
  };
  vm.createContext(c);const run=s=>vm.runInContext(compile(s),c);
  c.reducer=run('('+reducerSource.replace(/^function composerAttachmentReducer/,'function')+')');

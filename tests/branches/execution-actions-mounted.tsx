@@ -1,4 +1,5 @@
 // Actual ExecutionPanel, React Query and MUI; controlled reads only, no provider.
+import {MutationNotificationProvider} from '../../apps/web/src/components/MutationNotifications';
 import {createRoot} from 'react-dom/client';
 import {QueryClient,QueryClientProvider} from '@tanstack/react-query';
 import {DEFAULT_ASSET_LIMITS} from '@ponderosa/core';
@@ -40,7 +41,7 @@ export async function executionActionsRevisionSyncRegression():Promise<void>{
   }
   throw Error('Unexpected projection read '+url.pathname);
  };
- const render=()=>root.render(<QueryClientProvider client={client}><ExecutionPanel detail={detail} viewStates={viewStates}/></QueryClientProvider>);
+ const render=()=>root.render(<QueryClientProvider client={client}><MutationNotificationProvider><ExecutionPanel detail={detail} viewStates={viewStates}/></MutationNotificationProvider></QueryClientProvider>);
  const button=(text:string)=>Array.from(host.querySelectorAll('button')).find(node=>node.textContent===text)!;
  const gateInput=()=>host.querySelector('textarea:not([aria-hidden="true"])') as HTMLTextAreaElement;
  const refresh=()=>client.invalidateQueries({queryKey:actionsKey,exact:true});

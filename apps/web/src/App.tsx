@@ -1,8 +1,8 @@
 import {availabilityFailure,distinctDiagnostics,workspaceRead} from "./workspaceAvailability";
 import { restoreOverlayFocus } from "./overlayFocus";
-import { PreferenceSaveFeedback } from "./preferenceSaveFeedback";
+import { PreferenceSaveFeedback, preferenceSaveReporter } from "./preferenceSaveFeedback";
 import {useWorkspaceFont} from "./hooks/useWorkspaceFont";
-import {isBranchesPath} from "./api/productScope.js";
+import {isBranchesPath,productApiPath} from "./api/productScope.js";
 import { stopSpeech } from "./components/speech/speechCoordinator";
 import {
   Box,
@@ -495,18 +495,14 @@ export default function App({
         engine.enabled !== false && Boolean(engine.providerUsageCommand)
       )?.id;
   const preferenceFeedback = useRef(new PreferenceSaveFeedback());
-  const reportPreferenceSave = (field: string, error?: string) => notify({
-    key: `workspace-preferences:${field}`,
-    message: error ?? "Settings Saved",
-    severity: error ? "error" : "success",
-  });
+  const reportPreferenceSave = () => preferenceSaveReporter({notify,namespace:productApiPath("/api/workspace/preferences"),incident:createClientId("preference-feedback-"),acknowledge:true});
   const savePreferences = (patch: Partial<typeof preferences>) => {
     void preferenceFeedback.current.track(patch,
-      preferencesWriter.current!.enqueueAndWait(patch), reportPreferenceSave, true, preferences).catch(() => {});
+      preferencesWriter.current!.enqueueAndWait(patch), reportPreferenceSave(), true, preferences).catch(() => {});
   };
   const savePreferencesAndWait = (patch: Partial<typeof preferences>) =>
     preferenceFeedback.current.track(patch,
-      preferencesWriter.current!.enqueueAndWait(patch), reportPreferenceSave, false, preferences);
+      preferencesWriter.current!.enqueueAndWait(patch), reportPreferenceSave(), false, preferences);
   useWorkspaceFont(preferences.fontFamily);
 
   useEffect(() => {
@@ -616,6 +612,7 @@ export default function App({
     navigateWorkspace({ kind: "settings", section: "general" });
   };
   return (
+    <WorkspaceRefreshProvider connection={workspaceConnection}>
     <ProjectBrowserContext.Provider
       value={{ projectId: selectedProjectId, open: openProjectBrowser, openAgent: (id, runId) => {
         if (!selectedProjectId) return;
@@ -747,7 +744,6 @@ export default function App({
                 position: "relative",
               }}
             >
-              <WorkspaceRefreshProvider connection={workspaceConnection}>
               <Box
                 sx={{
                   gridRow: 2,
@@ -857,7 +853,6 @@ export default function App({
               </PrimaryHeaderActionsProvider>
               </WorkspaceConnectionProvider>
               </Box>
-              </WorkspaceRefreshProvider>
             </Box>
           </Box>
         </Box>
@@ -947,5 +942,6 @@ export default function App({
         /> : null}
       </MobileNavigationProvider>
     </ProjectBrowserContext.Provider>
+    </WorkspaceRefreshProvider>
   );
 }

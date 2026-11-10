@@ -133,7 +133,7 @@ export async function folderImportComposerPickerDropMountedRegression(): Promise
     await until(() => host.textContent?.includes('Individual files are attached as selected') === true, 'Direct credential-named selection remains usable with an honest advisory');
     assert(host.querySelectorAll('button').length > 0 && !host.querySelector('.MuiAlert-standardError'), 'Successful partial imports do not become send errors');
     host.querySelector<HTMLButtonElement>('[aria-label="Send Message"]')!.click();
-    await until(() => host.textContent?.includes('Controlled submit failure') === true, 'Failed submit uses existing error path');
+    await until(() => Boolean(host.querySelector('[aria-label="Review Message Error"]')), 'Failed submit keeps the existing recovery state with compact Review');host.querySelector<HTMLButtonElement>('[aria-label="Review Message Error"]')!.click();await until(()=>document.querySelector('[role="dialog"]')?.textContent?.includes('Controlled submit failure')===true,'Original failure explanation remains reachable');[...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].find(b=>b.textContent==='Close')!.click();await until(()=>!document.querySelector('[role="dialog"]'),'Review closes without replay');
     assert(sent.length === 1 && sent[0].map(file => file.name).join() === 'picker.zip,dropped.zip,fallback.zip,.env', 'Both import methods enter the existing submission once');
     assert(host.textContent?.includes('picker.zip') && host.textContent?.includes('dropped.zip') && host.textContent?.includes('Items Excluded'), 'Failed send retains archive files and local review explanations');
   } finally { root.unmount(); client.clear(); host.remove(); }
@@ -150,9 +150,9 @@ export async function folderImportDecisionOwnerMountedRegression(): Promise<void
   api.getConversationDraft = async (conversationId, ownerId) => ({ conversationId, ownerId, revision: 0, text: '', attachmentIds: [], attachments: [], updatedAt: '2026-11-10T00:00:00Z' });
   api.putConversationDraft = async (scope, draft) => { writes.push(draft); return { ...draft, conversationId: scope, revision: 1, updatedAt: '2026-11-10T00:00:00Z' }; };
   api.uploadDraftAttachment = async (scope, owner, file) => { uploaded.push(file); return { id: 'asset-' + uploaded.length, conversationId: scope, ownerId: owner, name: file.name } as any; };
-  const render = async (open = true) => { flushSync(() => root.render(<ThemeProvider theme={createPonderosaTheme('dark')}><CssBaseline /><QueryClientProvider client={client}>
+  const render = async (open = true) => { flushSync(() => root.render(<ThemeProvider theme={createPonderosaTheme('dark')}><CssBaseline /><QueryClientProvider client={client}><MutationNotificationProvider>
     <DecisionResponseDialog decision={decision} open={open} onClose={() => {}} onRespond={() => {}} />
-  </QueryClientProvider></ThemeProvider>)); await settle(); };
+  </MutationNotificationProvider></QueryClientProvider></ThemeProvider>)); await settle(); };
   try {
     await render(); await until(() => !document.querySelector<HTMLButtonElement>('button')?.disabled && Boolean(document.querySelector('[aria-label="Choose Folder"]')), 'Decision draft loads');
     const transfer = new DataTransfer();

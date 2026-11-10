@@ -1,3 +1,4 @@
+import type {MutationNotifier} from "../MutationNotifications";
 import { DEFAULT_ASSET_LIMITS, decisionAnswersError, type DecisionAnswerDto } from "@ponderosa/core";
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useReducer, useRef, useState } from "react";
@@ -9,7 +10,7 @@ import { composerAttachmentReducer } from "../chat/composerUtils";
 import { useComposerDraftAttachments } from "../chat/useComposerDraftAttachments";
 
 /** The existing draft store/upload queue, owned by this Decision alone. */
-export function useDecisionAnswerDraft(decision: DecisionPrompt, open: boolean) {
+export function useDecisionAnswerDraft(decision: DecisionPrompt, open: boolean, notify?:MutationNotifier) {
   const scope = decision.agentId && !decision.runtimeAction ? `agent:${decision.agentId}` : undefined;
   const [text, setText] = useState("");
   const [answers, setAnswers] = useState<DecisionAnswerDto[] | undefined>(() => decision.questions?.map(question => ({ questionId: question.id, status: "answered", text: "", attachmentIds: [] })));
@@ -24,7 +25,7 @@ export function useDecisionAnswerDraft(decision: DecisionPrompt, open: boolean) 
   const { data: limits = DEFAULT_ASSET_LIMITS } = useQuery({ queryKey: queryKeys.assetLimits.all,
     queryFn: () => api.getAssetLimits(), staleTime: 5 * 60_000, enabled: open && Boolean(scope) });
   const uploads = useComposerDraftAttachments({ assetLimits: limits, conversationDraftId: scope, draftOwnerId: decision.id,
-    files: attachments.files, dispatch, onEdit() {}, onBeforeClear() {} });
+    files: attachments.files, dispatch, notify, fileOwner:file=>questionByFile.current.get(file), onEdit() {}, onBeforeClear() {} });
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   useEffect(() => {
     if (!open || !scope || loaded.current) return;

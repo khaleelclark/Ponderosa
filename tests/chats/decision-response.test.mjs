@@ -17,12 +17,15 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
 function setup(t, fetch) {
   t.mock.method(globalThis, 'fetch', fetch);
   const client = new QueryClient({ defaultOptions: { mutations: { retry: false, gcTime: Infinity }, queries: { retry: false, gcTime: Infinity } } });
-  let observer, completed = 0;
+  let observer, completed = 0, feedbackId=0, namespace='dev';const notices=[];
   const exports = {};
   vm.runInNewContext(ts.transpileModule(readFileSync(new URL('../../apps/web/src/hooks/useDecisionResponse.ts', import.meta.url), 'utf8'), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
   }).outputText, { exports, Error, AbortSignal, console, performance, require: name => {
     if (name === '@tanstack/react-query') return { useQueryClient: () => client, useMutation(options) { observer = new MutationObserver(client, options); return observer; } };
+    if (name === '../components/MutationNotifications') return {useMutationNotification:()=>notice=>notices.push(notice)};
+    if (name === '../api/productScope') return {productApiPath:path=>namespace+path};
+    if (name === '../clientId') return {createClientId:()=>String(++feedbackId)};
     if (name === '../api') return { api };
     if (name === '../api/types') return { ApiRequestError };
     if (name === '../queryKeys') return { queryKeys };
@@ -31,7 +34,7 @@ function setup(t, fetch) {
   exports.useDecisionResponse(() => completed++);
   const unsubscribe = observer.subscribe(() => {});
   t.after(() => { unsubscribe(); client.clear(); });
-  return { client, observer, completed: () => completed, respond: (decision = pending, response = { text: 'typed answer' }) => observer.mutate({ decisionId: decision.id, decision, response }) };
+  return { client, observer, notices, setNamespace:value=>{namespace=value;}, completed: () => completed, respond: (decision = pending, response = { text: 'typed answer' }) => observer.mutate({ decisionId: decision.id, decision, response }) };
 }
 
 test('confirmed save finishes before held refreshes, updating only the exact cached decision', async t => {
@@ -195,4 +198,16 @@ test('UI019 a notification detail collection and ordinary lists update together 
  const f=setup(t,async()=>Response.json(answered));const detail=[...queryKeys.decisions.all,'detail',pending.id];
  f.client.setQueryData(detail,[pending]);f.client.setQueryData(queryKeys.decisions.project(pending.projectId),[pending,{...pending,id:'other'}]);
  await f.respond();assert.equal(f.completed(),1);assert.equal(f.observer.getCurrentResult().isSuccess,true);assert.equal(f.client.getQueryData(detail)[0].status,'resolved');assert.equal(f.client.getQueryData(queryKeys.decisions.project(pending.projectId))[1].status,'pending');
+});
+
+
+test('late Decision failure retains the dispatch product/owner and confirmed explicit retry retires its feedback',async t=>{
+ let release,fail=true;const requests=[];
+ const f=setup(t,async(url,init)=>{requests.push({url:String(url),body:init?.body});if(fail)return new Promise(resolve=>{release=()=>resolve(Response.json({error:'Exact refusal'},{status:400}));});return Response.json(answered);});
+ const first=f.respond();await tick();f.setNamespace('branches');release();await assert.rejects(first);
+ assert.equal(f.notices.length,1);assert.equal(f.notices[0].message,'Decision Response Needs Review');
+ assert.equal(JSON.parse(f.notices[0].key)[0],'dev/api/decisions');assert.ok(f.notices[0].key.includes(pending.id));
+ f.setNamespace('dev');fail=false;await f.respond();
+ assert.equal(f.notices.at(-1).key,f.notices[0].key);assert.equal(f.notices.at(-1).dismiss,true);
+ assert.equal(requests.length,2);assert.equal(requests[0].url,requests[1].url);assert.equal(requests[0].body,requests[1].body,'feedback never replaces the existing Decision response route or payload');
 });

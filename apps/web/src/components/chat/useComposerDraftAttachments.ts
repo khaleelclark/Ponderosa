@@ -1,3 +1,5 @@
+import type {MutationNotifier} from "../MutationNotifications";
+import {productApiPath} from "../../api/productScope";
 import type { AssetLimitsDto, DraftAttachmentDto } from "@ponderosa/core";
 import {
   useCallback,
@@ -8,6 +10,7 @@ import {
   type MutableRefObject,
 } from "react";
 import { api } from "../../api";
+import { createClientId } from "../../clientId";
 import type { DraftUploadStatus } from "./ComposerAttachment";
 import {
   selectComposerFiles,
@@ -50,6 +53,8 @@ export function useComposerDraftAttachments({
   files,
   onEdit,
   onBeforeClear,
+  notify,
+  fileOwner,
 }: {
   assetLimits?: AssetLimitsDto;
   conversationDraftId?: string;
@@ -58,7 +63,15 @@ export function useComposerDraftAttachments({
   files: File[];
   onEdit(removedAttachmentId?: string): void;
   onBeforeClear(): void;
+  notify?: MutationNotifier;
+  fileOwner?(file:File):string | undefined;
 }): ComposerDraftAttachments {
+  const feedbackKeys=useRef(new WeakMap<File,string>());
+  const feedbackKey=(file:File)=>{
+    let key=feedbackKeys.current.get(file);
+    if(!key){key=JSON.stringify([productApiPath("/api/conversations"),conversationDraftId,draftOwnerId,fileOwner?.(file),"upload",createClientId("file-feedback-")]);feedbackKeys.current.set(file,key);}
+    return key;
+  };
   const metadata = useRef(new Map<string, DraftAttachmentDto>());
   const attachmentIds = useRef(new Map<File, string>());
   const locallyRemovedIds = useRef(new Set<string>());
@@ -92,6 +105,7 @@ export function useComposerDraftAttachments({
         continue;
       }
       activeUploads.current += 1;
+      const attempt = createClientId("upload-feedback-"),noticeKey=feedbackKey(file);
       const uploadGeneration = generation.current;
       setUploadStates(current =>
         new Map(current).set(file, { status: "uploading" }),
@@ -121,6 +135,7 @@ export function useComposerDraftAttachments({
             new Map(current).set(file, { status: "complete" }),
           );
           setAttachmentVersion(value => value + 1);
+          notify?.({key:noticeKey,message:"",dismiss:true});
         })
         .catch((error: unknown) => {
           if (!mounted.current || uploadGeneration !== generation.current || locallyRemovedFiles.current.has(file))
@@ -131,6 +146,7 @@ export function useComposerDraftAttachments({
               error: error instanceof Error ? error.message : "Upload failed.",
             }),
           );
+          notify?.({key:noticeKey,incident:attempt,severity:"error",message:"Attachment Upload Failed",description:"The original file is retained. Use its Details, Retry or Remove controls.",details:error instanceof Error?error.message:String(error)});
         })
         .finally(() => {
           if (!mounted.current || uploadGeneration !== generation.current)
@@ -192,9 +208,10 @@ export function useComposerDraftAttachments({
       return next;
     });
     dispatch({ type: "remove", index });
+    notify?.({key:feedbackKey(file),message:"",dismiss:true});
     onEdit(id);
     setAttachmentVersion(value => value + 1);
-  }, [dispatch, files, onEdit]);
+  }, [dispatch, files, onEdit, notify]);
 
   // Replace only this File identity. In-flight completion of the old upload is
   // fenced by the same local removal guard as ordinary attachment removal.

@@ -14,7 +14,7 @@ function fixture(pathname='/assistant',overrides={},behavior={}){
   '../api/real':{realApi:{updateAgent:async(id,patch)=>{modelRequests.push({id,patch});if(behavior.model)return behavior.model(patch,app,modelRequests.length);throw Error('Model update refused');}},requestJson:async(url,options)=>{requests.push({url,options});if(behavior.schedule)return behavior.schedule(JSON.parse(options.body),app,requests.length);throw Error('Workflow version changed');}},
   '../hooks/queries':{useWorkspacePreferences:()=>({data:{}})},
   '../theme':{createPonderosaTheme:()=>({palette:{primary:{main:'#137553',contrastText:'#fff'}}}),ponderosaSurfaceVariables:()=>({})},
-  '../api/productScope':{setStandaloneWorkspaceOwner(){}},'../hooks/useWorkspaceStream':{useWorkspaceStream:()=>({})}};
+  '../api/productScope':{setStandaloneWorkspaceOwner(){},productApiPath:path=>path},'../hooks/useWorkspaceStream':{useWorkspaceStream:()=>({})}};
  imports.react.useLayoutEffect=imports.react.useEffect;
  const ui=new Proxy({},{get:(_,name)=>String(name)});
  const exports={};vm.runInNewContext(ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX}}).outputText,{exports,window:{location:{pathname}},Error,require:name=>name in imports?imports[name]:name==='@mui/material'?ui:name==='react/jsx-runtime'?require(name):new Proxy({},{get:()=>()=>null})});

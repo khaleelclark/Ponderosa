@@ -1,3 +1,4 @@
+import {productApiPath} from "../api/productScope";
 import {WorkspaceQueryError} from "./WorkspaceQueryError";
 import {workspaceRead} from "../workspaceAvailability";
 import { loadAgentWorkInspector } from "../projectShellLoader";
@@ -87,7 +88,7 @@ import { useConversationNotificationVisibility } from "./useConversationNotifica
 import { useConversationHistory } from "./useConversationHistory";
 import { useConversationMessagingController } from "./useConversationMessagingController";
 import { ProviderFailureBanner } from "./ProviderFailureBanner";
-import { useMutationNotification } from "./MutationNotifications";
+import { useMutationNotification, MutationErrorDetails } from "./MutationNotifications";
 import { deletionCleanupNotice } from "./deletionCleanupNotice";
 import { MasterRespondingIndicator } from "./ConversationComposerStatus";
 import {
@@ -101,7 +102,7 @@ import { ChatContextSettings } from "./ChatContextSettings";
 
 import { chatStateKey } from "../chatState";
 import { publishUpdatedAgent, refreshAgentRuntime } from "../conversationAgentCache";
-import { pendingRuntimeSelection, runtimeMutationOptions, useRuntimeControls, useRuntimeSaving } from "../hooks/useRuntimeControls";
+import { pendingRuntimeSelection, runtimeMutationKey, runtimeMutationOptions, runtimeFeedbackKey, useRuntimeControls, useRuntimeSaving } from "../hooks/useRuntimeControls";
 
 const loadConversationAgents = () => import("./AgentsTab").then(module => ({ default: module.AgentsTab }));
 function ConversationAgentsPanel(props: ComponentProps<typeof AgentsTab>): JSX.Element {
@@ -166,6 +167,7 @@ export function ConversationView({
   const auditOnly=useWorkspaceReadOnly();
   const queryClient = useQueryClient();
   const notify = useMutationNotification();
+  const runtimeNamespace=productApiPath("/api/conversations");
   const [storedView, setActiveView] = useConversationActiveViewState(
     conversationId,
     initialView,
@@ -364,7 +366,7 @@ export function ConversationView({
   const runtimeOwner = commandTargetAgent ? `agent:${commandTargetAgent.id}` : `conversation:${conversationId}`;
   const runtimeSaving = useRuntimeSaving(runtimeOwner);
   const persistDefaults = useMutation({
-    ...runtimeMutationOptions(`conversation:${conversationId}`),
+    ...runtimeMutationOptions(`conversation:${conversationId}`,notify),
     mutationFn: ({ conversationId, ...patch }: {
       conversationId: string;
       defaultEngine?: EngineDto["id"];
@@ -373,6 +375,7 @@ export function ConversationView({
       defaultSpeed?: string | null;
     }) => api.updateConversation(conversationId, patch),
     onSuccess: updated => {
+      notify({key:runtimeFeedbackKey(`conversation:${updated.id}`,runtimeNamespace),message:"",dismiss:true});
       queryClient.setQueriesData<unknown>(
         { queryKey: queryKeys.conversations.detailPrefix(updated.id) },
         (current: unknown) => current && typeof current === "object" && "conversation" in current
@@ -392,13 +395,13 @@ export function ConversationView({
     // engine save fails, a later effort save still represents the user's intent
     // without pinning fields they left inherited.
     const queued = queryClient.getMutationCache().findAll({
-      mutationKey: queryKeys.runtimeSelection(`conversation:${conversationId}`), exact: true, status: "pending",
+      mutationKey: runtimeMutationKey(`conversation:${conversationId}`,runtimeNamespace), exact: true, status: "pending",
     });
     persistDefaults.mutate(Object.assign({}, ...queued.map(item => item.state.variables), { conversationId, ...patch }));
   };
 
   const persistTargetRuntime = useMutation({
-    ...runtimeMutationOptions(`agent:${runtimeTargetAgentId ?? ""}`),
+    ...runtimeMutationOptions(`agent:${runtimeTargetAgentId ?? ""}`,notify),
     mutationFn: ({
       agentId,
       activeEngine,
@@ -413,6 +416,7 @@ export function ConversationView({
       speed: string | null;
     }) => api.updateAgent(agentId, { activeEngine, model, effort, speed }),
     onSuccess: updated => {
+      notify({key:runtimeFeedbackKey(`agent:${updated.id}`,runtimeNamespace),message:"",dismiss:true});
       publishUpdatedAgent(queryClient, updated);
       void queryClient.invalidateQueries({
         queryKey: queryKeys.agents.project(updated.projectId),
@@ -1197,16 +1201,8 @@ onClose: () => setAgentWorkOpen(false)}} />
             {queuedMessageNotice}
           </Alert>
         ) : null}
-        {persistTargetRuntime.error || persistDefaults.error ? (
-          <Alert severity="error" sx={{ mx: 1.5, mt: 1 }}>
-            Runtime selection was not saved. The last saved selection was restored.
-          </Alert>
-        ) : null}
-        {cancelOperationError ? (
-          <Alert severity="error" sx={{ mx: 1.5, mt: 1 }}>
-            Cancellation failed. {cancelOperationError.message}
-          </Alert>
-        ) : null}
+        <MutationErrorDetails title="Runtime Selection Needs Attention" error={persistTargetRuntime.error ?? persistDefaults.error}/>
+        <MutationErrorDetails title="Stop Needs Review" error={cancelOperationError}/>
         <WorkspaceQueryError read={workspaceRead(`chat:${conversationId}`,"Queued Messages",queuedMessagesQuery)}/>
         {queuedMessageFailure&&<details><summary>Queue Action Needs Attention</summary>{queuedMessageFailure.error.message}<Button onClick={queuedMessageFailure.retry}>Retry Action</Button></details>}
 

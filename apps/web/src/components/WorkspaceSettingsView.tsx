@@ -1,11 +1,12 @@
+import {createClientId} from "../clientId";
 import {LifecyclePanel} from './lifecycle/LifecyclePanel';
 import {AssistantSettings} from './AssistantSettings';
 import {TextSizeSetting} from './TextSizeSetting';
 import {GlobalMemoryTransfer} from './GlobalMemoryTransfer';
 import { useEngineModelCatalogs } from "../hooks/useEngineModelCatalogs";
-import {useMutationNotification} from "./MutationNotifications";
+import {useMutationNotification,MutationErrorDetails} from "./MutationNotifications";
 import {CapabilityPolicyEditor} from "./CapabilityPolicyEditor";
-import {currentProductScope} from "../api/productScope";
+import {currentProductScope,productApiPath} from "../api/productScope";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import type { ReactNode } from "react";
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
@@ -261,11 +262,7 @@ function GeneralSettingsSection({
             </Button>
             {agentDefaultsSaved ? <Typography role="status" variant="body2" color="text.secondary">Settings Saved</Typography> : null}
           </Stack>
-          {agentDefaultsSaveError ? (
-            <Alert severity="error" role="alert">
-              {agentDefaultsSaveError}
-            </Alert>
-          ) : null}
+          <MutationErrorDetails title="Agent Defaults Need Review" error={agentDefaultsSaveError}/>
         </Stack>
       </SettingsGroup>
       {currentProductScope()!=="branches"&&<SettingsGroup title="Assistant" description="Model, schedule and behavior for your personal Assistant."><AssistantSettings/></SettingsGroup>}
@@ -323,7 +320,7 @@ function GeneralSettingsSection({
             </Button>
             {rolloverSaved ? <Typography role="status" variant="body2" color="text.secondary">Settings Saved</Typography> : null}
           </Stack>
-          {rolloverSaveError ? <Alert severity="error">{rolloverSaveError}</Alert> : null}
+          <MutationErrorDetails title="Rollover Limits Need Review" error={rolloverSaveError}/>
         </Stack>
       </SettingsGroup>
       <SettingsGroup title="Data & Lifecycle" description="Review retained data, cleanup and resource ownership."><LifecyclePanel/></SettingsGroup>
@@ -883,6 +880,16 @@ function ProviderSettingsSection({
   );
 }
 
+// Called only by explicit Save actions; background preference writes keep their existing policy.
+function useSettingsSaveFeedback(){
+  const notify=useMutationNotification();
+  return async<T,>(operation:string,title:string,work:()=>Promise<T>):Promise<T>=>{
+    const key=JSON.stringify([productApiPath("/api/workspace/preferences"),operation]),incident=createClientId("settings-save-feedback-");
+    try{const saved=await work();notify({key,message:"",dismiss:true});return saved;}
+    catch(error){notify({key,incident,severity:"error",message:title,description:"Your original settings draft remains available for review.",details:error instanceof Error?error.message:String(error)});throw error;}
+  };
+}
+
 export function WorkspaceSettingsView({
   showHeader=true,
   preferences,
@@ -915,6 +922,7 @@ export function WorkspaceSettingsView({
   returnLabel?: string;
 }): JSX.Element {
   const queryClient = useQueryClient();
+  const saveFeedback=useSettingsSaveFeedback();
   const validationProject = projects[0];
   const modelCatalogQuery = useEngineModelCatalogs(validationProject?.id, engines);
   const readinessQuery = useQuery({
@@ -1063,7 +1071,7 @@ export function WorkspaceSettingsView({
     mutationFn: (patch: {
       globalInstructions: string;
       maxConcurrentAgentRuns: number;
-    }) => onSavePreferences(patch),
+    }) => saveFeedback("agent-defaults","Agent Defaults Not Saved",()=>onSavePreferences(patch)),
     onSuccess: (_preferences, submitted) => {
       setInstructionsDirty(draftChangedSinceSubmission(
         instructionsRef.current,
@@ -1076,7 +1084,7 @@ export function WorkspaceSettingsView({
     },
   });
   const saveRollover = useMutation({
-    mutationFn: (patch: { contextRolloverTokens: number; contextRolloverWindowFraction: number }) => onSavePreferences(patch),
+    mutationFn: (patch: { contextRolloverTokens: number; contextRolloverWindowFraction: number }) => saveFeedback("rollover-limits","Rollover Limits Not Saved",()=>onSavePreferences(patch)),
     onSuccess: (_saved, submitted) => {
       setRolloverTokensDirty(rolloverTokensRef.current !== String(submitted.contextRolloverTokens));
       setRolloverFractionDirty(rolloverFractionRef.current !== String(submitted.contextRolloverWindowFraction));
@@ -1266,10 +1274,11 @@ function OperatorProfileSettingsSection({
 }): JSX.Element {
   const form = useOperatorProfileForm(preferences.profile);
   const notify = useMutationNotification();
+  const saveFeedback=useSettingsSaveFeedback();
   const currentProfile = useRef(form.profile);
   currentProfile.current = form.profile;
   const save = useMutation({
-    mutationFn: (profile: WorkspacePreferencesDto["profile"]) => onSavePreferences({ profile }),
+    mutationFn: (profile: WorkspacePreferencesDto["profile"]) => saveFeedback("operator-profile","Profile Not Saved",()=>onSavePreferences({ profile })),
     onMutate: () => form.beginSave(),
     onError: (_error, submitted) => form.finishSave(submitted, false),
     onSuccess: (_saved, submitted) => {
@@ -1298,7 +1307,7 @@ function OperatorProfileSettingsSection({
       >
         {save.isPending ? "Saving…" : "Save Profile"}
       </Button>
-      {save.isError ? <Alert severity="error" sx={{ mt: 1 }}>{save.error instanceof Error ? save.error.message : "Profile could not be saved. Try again."}</Alert> : null}
+      <MutationErrorDetails title="Profile Needs Review" error={save.error}/>
     </Paper>
   );
 }

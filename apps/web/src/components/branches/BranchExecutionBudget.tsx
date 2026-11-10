@@ -7,7 +7,8 @@ import {Alert,Box,Button,Dialog,DialogActions,DialogContent,DialogTitle,FormCont
 import type {BranchExecutionBudgetDto,BranchExecutionBudgetGrant,BranchExecutionBudgetPolicy,BranchExecutionBudgetUpdate} from '@ponderosa/core';
 import {requestJson} from '../../api/real';
 import {ApiRequestError} from '../../api/types';
-import {useMutationNotification} from '../MutationNotifications';
+import {useMutationNotification,MutationErrorDetails} from '../MutationNotifications';
+import {productApiPath} from '../../api/productScope';
 import {useBranchDraftGuard} from './BranchNavigation';
 import {budgetPresentation,validBudgetNumber} from './budgetPresentation';
 
@@ -23,11 +24,13 @@ export function BranchExecutionBudget({branchId,settings=false,active=true}:{bra
  const refresh=()=>{void client.invalidateQueries({queryKey});void client.invalidateQueries({queryKey:['branch-executions',branchId]});void client.invalidateQueries({queryKey:['branch-execution']})};
  const save=useMutation({mutationFn:()=>{
    if(!policyAttempt.current){if(!base||draft===undefined)throw new Error('Load the current budget first');policyAttempt.current={commandKey:createClientId(),expectedRevision:base.revision,expectedPeriodId:base.periodId,policy:draft,acknowledgeNewPeriod:true}}
-   return requestJson<BranchExecutionBudgetDto>(`/api/branches/${branchId}/execution-budget`,{method:'PUT',body:JSON.stringify(policyAttempt.current)});
+   const key=JSON.stringify([productApiPath("/api/branches"),branchId,"save-budget",policyAttempt.current.expectedPeriodId,policyAttempt.current.policy]),incident=createClientId("budget-feedback-");
+   return requestJson<BranchExecutionBudgetDto>(`/api/branches/${branchId}/execution-budget`,{method:'PUT',body:JSON.stringify(policyAttempt.current)}).then(result=>{notify({key,message:"",dismiss:true});return result;},error=>{notify({key,incident,severity:"error",message:"Budget Not Saved",description:"Your original budget command is retained where its outcome is unconfirmed. Review it before retrying.",details:error instanceof Error?error.message:String(error)});throw error;});
  },onSuccess:result=>{policyAttempt.current=undefined;setEditing(false);setDraft(result.policy);setBase(result);refresh();notify({key:`branch-execution-budget:${branchId}`,message:"Settings Saved"})},onError:error=>{if(error instanceof ApiRequestError&&error.status>=400&&error.status<500){policyAttempt.current=undefined;refresh()}}});
  const grant=useMutation({mutationFn:()=>{
    if(!grantAttempt.current){const current=query.data;if(!current?.periodId)throw new Error('Load the current budget first');grantResultLimit.current=current.policy!.limit+current.allowance+Number(additional);grantAttempt.current={commandKey:createClientId(),expectedRevision:current.revision,expectedPeriodId:current.periodId,additional:Number(additional)}}
-   return requestJson<BranchExecutionBudgetDto>(`/api/branches/${branchId}/execution-budget/allow`,{method:'POST',body:JSON.stringify(grantAttempt.current)});
+   const key=JSON.stringify([productApiPath("/api/branches"),branchId,"grant-budget",grantAttempt.current.expectedPeriodId,grantAttempt.current.additional]),incident=createClientId("budget-feedback-");
+   return requestJson<BranchExecutionBudgetDto>(`/api/branches/${branchId}/execution-budget/allow`,{method:'POST',body:JSON.stringify(grantAttempt.current)}).then(result=>{notify({key,message:"",dismiss:true});return result;},error=>{notify({key,incident,severity:"error",message:"Allowance Needs Review",description:"Your original budget command is retained where its outcome is unconfirmed. Review it before retrying.",details:error instanceof Error?error.message:String(error)});throw error;});
  },onSuccess:()=>{grantAttempt.current=undefined;grantResultLimit.current=undefined;setGrantOpen(false);setAdditional('1');refresh()},onError:error=>{if(error instanceof ApiRequestError&&error.status>=400&&error.status<500){grantAttempt.current=undefined;grantResultLimit.current=undefined;refresh()}}});
  const presentation=budgetPresentation(query),unavailable=!query.data||Boolean(query.error);
  const epochChange=draft!==undefined&&draft!==null&&(!base?.policy||base.policy.period!==draft.period);
@@ -48,7 +51,7 @@ export function BranchExecutionBudget({branchId,settings=false,active=true}:{bra
    {draft&&<Stack direction={{xs:'column',sm:'row'}} spacing={1.5}><TextField fullWidth label="Executions Per Period" type="number" value={draft.limit} disabled={policyLocked} error={!valid} helperText="A whole number from 1 to 1,000,000,000." onChange={e=>{save.reset();setDraft({...draft,limit:Number(e.target.value)})}}/><TextField fullWidth select label="Budget Period" value={draft.period} disabled={policyLocked} onChange={e=>{save.reset();setDraft({...draft,period:e.target.value as BranchExecutionBudgetPolicy['period']})}}>{(['day','week','month','lifetime'] as const).map(period=><MenuItem key={period} value={period}>{period}</MenuItem>)}</TextField></Stack>}
    {epochChange&&<Alert severity="warning">Saving a new period resets usage + extra allowance; limit-only changes preserve both</Alert>}
    {draft===null&&base?.policy&&<Alert severity="info">Removing budget releases waiting work; re-adding starts a new period</Alert>}
-   {save.error&&<Alert severity="error">{save.error.message}{policyAttempt.current?' Retry sends the same command safely.':' Refresh the budget and review your changes before saving again.'}</Alert>}
+   <MutationErrorDetails title="Budget Save Needs Review" error={save.error}>{policyAttempt.current?'Retry sends the same command safely.':'Refresh the budget and review your changes before saving again.'}</MutationErrorDetails>
    <Stack direction="row" spacing={1} useFlexGap sx={{flexWrap:'wrap'}}><Button variant="contained" disabled={save.isPending||(!policyAttempt.current&&(unavailable||!dirty||!valid||base?.revision!==query.data?.revision))} onClick={()=>save.mutate()}>{save.isPending?'Saving…':policyAttempt.current?'Retry Budget Save':epochChange?'Save And Start New Period':'Save Budget'}</Button>{!dirty&&!policyLocked&&<Button onClick={()=>setEditing(false)}>Done</Button>}</Stack>
    {dirty&&base?.revision!==query.data?.revision&&<Alert severity="warning" action={<Button disabled={policyLocked} onClick={()=>{setBase(query.data);setDraft(query.data?.policy);save.reset()}}>Load Current Budget</Button>}>Budget changed · load current budget before saving</Alert>}
   </Stack>}
@@ -65,7 +68,7 @@ export function BranchExecutionBudget({branchId,settings=false,active=true}:{bra
    <Typography>Extra allowance expires at rollover · started/canceled executions: no refund</Typography>
    <TextField autoFocus label="Additional Executions" type="number" value={additional} disabled={grant.isPending||Boolean(grantAttempt.current)} error={!grantValid} helperText="A positive whole number; base plus extra allowance may not exceed 1,000,000,000." onChange={e=>{setAdditional(e.target.value);grant.reset()}}/>
    {(grantAttempt.current||grantValid)&&query.data?.policy&&<Typography>Resulting effective limit: {grantAttempt.current?grantResultLimit.current:query.data.policy.limit+query.data.allowance+Number(additional)} executions.</Typography>}
-   {grant.error&&<Alert severity="error">{grant.error.message}{grantAttempt.current?' Retry sends the same command safely.':' The current budget is being refreshed; review it before trying again.'}</Alert>}
+   <MutationErrorDetails title="Allowance Needs Review" error={grant.error}>{grantAttempt.current?'Retry sends the same command safely.':'The current budget is being refreshed; review it before trying again.'}</MutationErrorDetails>
   </Stack></DialogContent><DialogActions><Button disabled={grant.isPending||Boolean(grantAttempt.current)} onClick={()=>setGrantOpen(false)}>Back</Button><Button variant="contained" disabled={grant.isPending||(!grantAttempt.current&&(unavailable||!grantValid))} type="submit" form={`budget-grant-${branchId}`}>{grant.isPending?'Allowing…':grantAttempt.current?'Retry Allowance':'Allow Executions'}</Button></DialogActions></Dialog>
  </Stack></Paper>;
 }

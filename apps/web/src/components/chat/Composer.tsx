@@ -95,6 +95,7 @@ import {
   ComposerAutocompleteMenu,
   ComposerCapabilityPicker,
   ComposerNotices,
+  ComposerErrorReview,
   ComposerTextInput,
   type ComposerMenuSuggestion,
 } from "./Composer.controls";
@@ -769,6 +770,7 @@ export function Composer({
     files,
     onEdit: markDraftAttachmentsEdited,
     onBeforeClear: invalidateDraftHydration,
+    notify,
   });
   const {
     addFiles: addDraftFiles,
@@ -2288,6 +2290,8 @@ export function Composer({
       const error = assistantSubmissionError(item.text, item.action === "queue" || item.pending.request?.runtime.activeRunDelivery === "queue");
       if (error) { setSendError(error); return; }
     }
+    const feedbackKey=JSON.stringify([productApiPath("/api/conversations"),item.scope,item.ownerId,"submit",item.pending.idempotencyKey]);
+    const feedbackAttempt=createClientId("submission-feedback-");
     let previouslyDispatched = item.dispatchStarted === true;
     let loadedUnderLock = false;
     let outgoingId: string | undefined;
@@ -2329,7 +2333,7 @@ export function Composer({
       loadedUnderLock = true;
       if (item.status === "accepted") {
         await persist(item.pending, true);
-        notify({key:`submit:${item.scope}:${item.pending.idempotencyKey}`,message:"",dismiss:true});
+        notify({key:feedbackKey,message:"",dismiss:true});
         if (item.scope.startsWith("local:")) removeCapturedSubmission(item.pending.idempotencyKey);
         return;
       }
@@ -2381,7 +2385,7 @@ export function Composer({
       const receipt = result as { communicationEventId?: string; message?: { communicationEventId?: string }; deliveryId?: string; recipients?: Array<{ deliveryId?: string }>; deliveryIds?: string[] } | undefined;
       if (outgoingId) outgoing?.accepted(outgoingId, receipt?.communicationEventId ?? receipt?.message?.communicationEventId);
       const acceptedDeliveryIds = receipt?.deliveryIds ?? receipt?.recipients?.flatMap(recipient => recipient.deliveryId ? [recipient.deliveryId] : []) ?? (receipt?.deliveryId ? [receipt.deliveryId] : []);
-      notify({key:`submit:${item.scope}:${item.pending.idempotencyKey}`,message:"",dismiss:true});
+      notify({key:feedbackKey,message:"",dismiss:true});
       item = { ...item, status: "accepted", acceptedDeliveryIds, error: undefined };
       saveCapturedSubmission(item);
       // The server receipt owns accepted/queued state. Retire only this browser
@@ -2403,9 +2407,9 @@ export function Composer({
         ? "This message was saved. Retry to finish clearing its recovery record."
         : error instanceof Error ? error.message : "Acceptance could not be confirmed. Retry this captured message." };
       try { saveCapturedSubmission(item); } catch { /* Existing captured bytes remain recoverable. */ }
-      notify({key:`submit:${item.scope}:${item.pending.idempotencyKey}`,severity:"error",message:accepted?"Message saved; recovery cleanup needs attention.":"Message acceptance could not be confirmed. Your captured message remains in recovery; check it before retrying."});
+      notify({key:feedbackKey,incident:`${feedbackAttempt}:${item.status}`,severity:"error",message:accepted?"Message Saved · Cleanup Needs Attention":definitive?"Message Not Sent":"Message Needs Review",description:accepted?"Review the saved message in the original Chat to finish cleanup.":"Your captured message is preserved in the original Chat. Review its status before retrying.",details:item.error});
     }).catch(error => {
-      setSendError(error instanceof Error ? error.message : "Captured message recovery is unavailable.");
+      notify({key:feedbackKey,incident:feedbackAttempt+":recovery",severity:"error",message:"Message Recovery Unavailable",description:"Your captured message remains in the original Chat. Review it before retrying.",details:error instanceof Error?error.message:String(error)});
     }).finally(() => { if (outgoingId) outgoing?.finish(outgoingId); });
     // Register transport before optimistic rendering can expose the captured send in the recovery tray.
     outgoingId = item.action === "send" && item.status !== "accepted" ? outgoing?.begin(item.text, item.attachmentNames) : undefined;
@@ -2746,10 +2750,16 @@ export function Composer({
       setCapabilityMenuAnchor(null);
       setSuppressMenu(true);
     }
+    const feedbackScope=[productApiPath("/api/conversations"),submittedDraftScope??draftStorageKey,draftOwnerId,"submit"];
+    const feedbackAttempt=createClientId("submission-feedback-");
+    let feedbackPendingId=pendingSubmissionRef.current?.idempotencyKey;
+    const feedbackKey=()=>JSON.stringify([...feedbackScope,feedbackPendingId??"editable-draft"]);
+    const resolveFeedback=()=>{notify({key:feedbackKey(),message:"",dismiss:true});notify({key:JSON.stringify([...feedbackScope,"editable-draft"]),message:"",dismiss:true});};
     const persistPendingSubmission = async (
       value: DraftPendingSubmissionDto | undefined,
       retainOnFailure = false,
     ): Promise<void> => {
+      if(value)feedbackPendingId=value.idempotencyKey;
       if (!submittedDraftScope) return;
       if (!submittedScopeStillActive()) {
         throw new Error("The draft destination changed before it could be sent.");
@@ -3051,8 +3061,9 @@ export function Composer({
         }
         if (submissionMayClearDraft && scopeStillActive) setCaret(0);
       })
-      .then(()=>notify({key:`submit:${submittedDraftScope??draftStorageKey??"composer"}`,message:"",dismiss:true}))
+      .then(resolveFeedback)
       .catch(async (error: unknown) => {
+        notify({key:feedbackKey(),incident:feedbackAttempt,severity:"error",message:runtimeCommandSubmission?"Provider Action Needs Review":"Message Needs Review",description:"Your original draft and attachments are retained. Review them in the original Chat before retrying.",details:error instanceof Error?error.message:String(error)});
         if (!submittedScopeStillActive()) return;
         if (error instanceof ApiRequestError && pendingSubmissionRef.current &&
             durableSubmissionMayBeReleased(
@@ -3082,7 +3093,7 @@ export function Composer({
             : error instanceof Error ? error.message : "Upload failed; try again.",
           true,
         );
-        notify({key:`submit:${submittedDraftScope??draftStorageKey??"composer"}`,severity:"error",message:"Message could not be confirmed. Your draft and attachments remain available; check before retrying."});
+
       })
       .finally(() => {
         if (outgoingId) outgoing?.finish(outgoingId);
@@ -3155,6 +3166,7 @@ export function Composer({
     <Paper
       ref={composerRoot}
       className="ponderosa-composer"
+      aria-busy={Boolean(conversationDraftId && !draftReady.current || sending || draftMutationLocked) || undefined}
       data-compact="false"
       data-assistant-composer={assistantMessages||undefined}
       data-narrow={narrowComposer}
@@ -3920,6 +3932,7 @@ export function Composer({
           />
         </Box>
         <Box data-composer-send-actions sx={{ display: assistantMessages ? "flex" : { xs: "flex", md: "contents" }, alignItems: "center", gap: 0.25, flexShrink: 0, ...(assistantMessages?{order:2}:{}) }}>
+        <ComposerErrorReview key={attachmentImportScope} error={submissionError?sendError:undefined}/>
         <ComposerSendActions
           steeringOnly={assistantMessages}
           allowSendWhileRunning={allowSendWhileRunning}

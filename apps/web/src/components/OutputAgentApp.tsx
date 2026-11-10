@@ -1,6 +1,8 @@
+import {createClientId} from "../clientId";
+import {productApiPath} from "../api/productScope";
 import {useMutationNotification} from "./MutationNotifications";
 import {WorkspaceQueryError} from "./WorkspaceQueryError";
-import {workspaceRead} from "../workspaceAvailability";
+import {workspaceRead,availabilityFailure} from "../workspaceAvailability";
 import {ConversationChromeContext} from './ConversationChromeContext';
 import {PrimaryHeaderActionsOutlet} from './PrimaryHeaderActions';
 import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
@@ -92,14 +94,16 @@ export function OutputAgentApp({colorMode,onToggleColorMode,embedded=false,retur
   inFlight.current=false;if(mounted.current)setPendingAction(false);
   if(mounted.current&&generation===ownerGeneration.current){setSaved('');if(!cause)setError('');}
  };
- const act=async<T,>(work:()=>Promise<T>,savedLabel='',onCommitted?:(value:T)=>void)=>{
+ const act=async<T,>(work:()=>Promise<T>,savedLabel='',onCommitted?:(value:T)=>void,operation='configure',announce=true)=>{
   if(inFlight.current)return;
   const generation=ownerGeneration.current;
+  const key=JSON.stringify([productApiPath("/api/branches"),ownerKey||(assistant?"assistant":id),operation]);
+  const incident=createClientId("settings-feedback-");
   const current=()=>mounted.current&&generation===ownerGeneration.current;
   inFlight.current=true;setPendingAction('saving');setError('');setSaved('');
   try{
    const committed=await work();
-   if(current())notify({key:assistant?"assistant-settings":`output-settings:${id}`,message:"",dismiss:true});
+   if(announce)notify({key,message:"",dismiss:true});
    // Only this mutation can advance its draft baseline; a later read may contain another editor's work.
    if(current())onCommitted?.(committed);
    const cause=await refresh();
@@ -107,11 +111,11 @@ export function OutputAgentApp({colorMode,onToggleColorMode,embedded=false,retur
     setSaved(cause?'Changes saved. Current settings are still being checked.':savedLabel);
     setError('');
    }
-  }catch(cause){if(current()){setSaved('');setError(cause instanceof Error?cause.message:String(cause));notify({key:assistant?'assistant-settings':`output-settings:${id}`,severity:'error',message:'Conversation settings could not be confirmed. Review settings before retrying.'});}}
+  }catch(cause){if(current()&&(announce||!availabilityFailure(cause))){setSaved('');setError(cause instanceof Error?cause.message:String(cause));}if(announce)notify({key,incident,severity:'error',message:'Conversation Settings Not Saved',description:'Review the original conversation settings before retrying.',details:cause instanceof Error?cause.message:String(cause)});}
   finally{inFlight.current=false;if(mounted.current)setPendingAction(false);}
  };
  const configure=(enabled:boolean)=>act(()=>requestJson('/api/branches/assistant',{method:'POST',body:JSON.stringify({enabled})}));
- useEffect(()=>{if(assistant&&status.data&&!status.data.initialized)void act(()=>requestJson('/api/branches/assistant',{method:'POST',body:JSON.stringify({initialize:true})}));},[assistant,status.data?.initialized]);
+ useEffect(()=>{if(assistant&&status.data&&!status.data.initialized)void act(()=>requestJson('/api/branches/assistant',{method:'POST',body:JSON.stringify({initialize:true})}),'',undefined,'initialize',false);},[assistant,status.data?.initialized]);
  const scheduleSource=settings?scheduleBase:app;
  const editableInterval=scheduleSource?.triggerKind==='manual'||scheduleSource?.schedule?.scheduleKind==='interval';
  const intervalChanged=Boolean(editableInterval&&scheduleSource&&Number(minutes)!==(scheduleSource.everyMs??600000)/60000);
@@ -127,7 +131,7 @@ export function OutputAgentApp({colorMode,onToggleColorMode,embedded=false,retur
  const closeSettings=()=>{if(busy)return;if(settingsDirty)setDiscardSettings(true);else setSettings(false);};
  const saveSchedule=()=>{
   if(!app||!scheduleBase||!validInterval)return;
-  void act(()=>requestJson<OutputAgentAppDto>(`/api/branches/output-apps/${encodeURIComponent(app.agentId)}/schedule`,{method:'PUT',body:JSON.stringify({expectedVersionId:scheduleBase.versionId,expectedSettingsRevision:scheduleBase.settingsRevision,automatic,...(intervalChanged||(scheduleBase.triggerKind==='manual'&&automatic)?{everyMs:interval*60000}:{})})}),'Schedule saved',value=>setScheduleBase(value));
+  void act(()=>requestJson<OutputAgentAppDto>(`/api/branches/output-apps/${encodeURIComponent(app.agentId)}/schedule`,{method:'PUT',body:JSON.stringify({expectedVersionId:scheduleBase.versionId,expectedSettingsRevision:scheduleBase.settingsRevision,automatic,...(intervalChanged||(scheduleBase.triggerKind==='manual'&&automatic)?{everyMs:interval*60000}:{})})}),'Schedule saved',value=>setScheduleBase(value),'schedule');
  };
  const descriptorRead=workspaceRead(assistant?"assistant":`output:${id}`,assistant?"Assistant":"Conversation",assistant?status:output,Boolean(app));
  return <ThemeProvider theme={assistantTheme}><ConversationChromeContext.Provider value={{assistantAgentId:assistant?app?.agentId:undefined,statusHost,callActionsHost}}><WorkspaceConnectionProvider value={connection}><WorkspaceRefreshProvider connection={connection}><Box component={embedded?'section':'main'} data-assistant-conversation data-assistant-layout={assistant||undefined} sx={{...ponderosaSurfaceVariables(colorMode),"--assistant-outgoing":assistantTheme.palette.primary.main,"--assistant-on-outgoing":assistantTheme.palette.primary.contrastText,containerType:assistant?"inline-size":undefined,bgcolor:"background.default",height:embedded?'100%':'var(--ponderosa-app-viewport-block-size, 100dvh)',flex:1,display:'flex',flexDirection:'column',minHeight:0,minWidth:0,pb:'env(safe-area-inset-bottom)'}}>
@@ -171,7 +175,7 @@ export function OutputAgentApp({colorMode,onToggleColorMode,embedded=false,retur
      <TextField disabled={busy||engines.isPending} select label="Model" SelectProps={{displayEmpty:true}} InputLabelProps={{shrink:true}} value={model} onChange={event=>{setSaved('');setModel(event.target.value);}}>
       <MenuItem value="">Provider Default</MenuItem>{model&&!engines.data?.find(item=>item.id===engine)?.models.some(item=>item.id===model)&&<MenuItem value={model}>{model}</MenuItem>}{engines.data?.find(item=>item.id===engine)?.models.filter(item=>item.id).map(item=><MenuItem key={item.id} value={item.id}>{item.label}</MenuItem>)}
      </TextField>
-     <Button disabled={busy||!engine||!runtimeBase?.runtimeSettings} onClick={()=>void act(()=>realApi.updateAgent(app.agentId,{activeEngine:engine,model:model.trim()||null,expectedRuntimeSettings:runtimeBase!.runtimeSettings}),'Model saved',value=>setRuntimeBase({...runtimeBase!,engine:value.activeEngine,model:value.model??undefined,runtimeSettings:{activeEngine:value.activeEngine,model:value.model??null,effort:value.effort??null,speed:value.speed??null}}))}>Save Model</Button>
+     <Button disabled={busy||!engine||!runtimeBase?.runtimeSettings} onClick={()=>void act(()=>realApi.updateAgent(app.agentId,{activeEngine:engine,model:model.trim()||null,expectedRuntimeSettings:runtimeBase!.runtimeSettings}),'Model saved',value=>setRuntimeBase({...runtimeBase!,engine:value.activeEngine,model:value.model??undefined,runtimeSettings:{activeEngine:value.activeEngine,model:value.model??null,effort:value.effort??null,speed:value.speed??null}}),'runtime')}>Save Model</Button>
      <Button href={`/branches?branch=${encodeURIComponent(app.branchId)}&tab=workflow`}>More Options</Button>
      <Button disabled={busy} onClick={()=>void retryRefresh(true)}>Discard Draft And Reload</Button>
     </>}

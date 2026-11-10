@@ -155,9 +155,9 @@ test('automatic runtime changes are quiet; explicit Settings saves share feedbac
   const mutations = [], notices = [], published = [], refreshed = [], exports = {};
   const imports = {
     '@tanstack/react-query': { useMutation: options => { mutations.push(options); return options; }, useQueryClient: () => ({ setQueriesData() {} }) },
-    '../api': {}, '../conversationAgentCache': { publishUpdatedAgent: (_client, agent) => published.push(agent.id), refreshAgentRuntime: (_client, id) => refreshed.push(id) }, '../hooks/useRuntimeControls': { runtimeMutationOptions: () => ({}) },
+    '../api/productScope':{productApiPath:path=>path},'../clientId':{createClientId:()=> 'feedback'},'../api': {}, '../conversationAgentCache': { publishUpdatedAgent: (_client, agent) => published.push(agent.id), refreshAgentRuntime: (_client, id) => refreshed.push(id) }, '../hooks/useRuntimeControls': { runtimeMutationOptions: () => ({}),runtimeFeedbackKey:owner=>owner },
     '../queryKeys': { queryKeys: { agents: { detailPrefix: () => [], all: [] }, conversations: { detailAll: [] } } },
-    './MutationNotifications': { useMutationNotification: () => notice => notices.push(notice) },
+    './MutationNotifications': { useMutationNotification: () => notice => {if(!notice.dismiss)notices.push(notice);} },
   };
   vm.runInNewContext(transpile(source('components/useAgentDetailAdministration.ts')), { exports, require: name => imports[name] });
   exports.useAgentDetailAdministration({ agentId: 'a' });
@@ -173,7 +173,7 @@ test('automatic runtime changes are quiet; explicit Settings saves share feedbac
   runtime.onSettled(updated, null, { agentId: 'a' });
   assert.deepEqual(refreshed, ['a'], 'Saved runtime state is still rechecked at its existing owner');
   mutations[2].onSuccess(updated);
-  assert.equal(notices.at(-1).key, 'agent-permissions:a');
+  assert.deepEqual(JSON.parse(notices.at(-1).key),['/api/agents','a','permissions']);
   assert.equal(notices.at(-1).message, 'Settings Saved');
 });
 
@@ -262,6 +262,7 @@ function declaration(name, key) {
   assert.ok(found, key); return found;
 }
 function moduleExports(name, imports) {
+  imports={...{'../api/productScope':{productApiPath:path=>path},'../clientId':{createClientId:()=> 'feedback'}},...imports};
   const exports = {}; vm.runInNewContext(transpile(source(name)), { exports, require: key => { assert.ok(key in imports, key); return imports[key]; } }); return exports;
 }
 function queueHarness() {
@@ -288,7 +289,7 @@ function queueHarness() {
   });
   function agent(id) { index = 0; refIndex = 0; return admin.useAgentDetailAdministration({ agentId: id, settingsEngine: 'fixture', settingsModel: 'M0', settingsEffort: 'low' }).updateRuntimeSettings; }
   function view(name, key, extra) {
-    index = 8; const context = vm.createContext({ useMutation, api, queryClient: client, queryKeys: keys, ...cache, ...controls, ...extra });
+    index = 8; const context = vm.createContext({ notify(){},runtimeNamespace:'/api/conversations',useMutation, api, queryClient: client, queryKeys: keys, ...cache, ...controls, ...extra });
     vm.runInContext(transpile('const ' + declaration('components/' + name + '.tsx', key) + '; exports.result = ' + key), Object.assign(context, { exports: {} }));
     if (name === 'ConversationView') vm.runInContext(transpile('const ' + declaration('components/ConversationView.tsx', 'saveRuntimeDefaults') + '; exports.save = saveRuntimeDefaults'), context);
     return context.exports;
@@ -426,4 +427,20 @@ for (const name of ['AgentDetail', 'ConversationView', 'InboxView']) test(`${nam
   await until(() => h.calls.length === 1); h.gates[0].resolve(); await Promise.all(h.promises);
   assert.equal(h.controls.useRuntimeSaving('agent:a'), false);
   assert.equal(h.client.getQueryData(key).items[0].model, 'M1', 'HTTP failure cannot make a confirmed server selection look reverted');
+});
+
+test('runtime observers detach across product namespaces while retaining each exact owner queue and feedback', async t => {
+ const client=new QueryClient({defaultOptions:{mutations:{retry:false,gcTime:Infinity}}});t.after(()=>client.clear());
+ let namespace='/api/conversations';const notices=[];
+ const keys=moduleExports('queryKeys.ts',{'./agentHistoryPagination.js':{AGENT_DETAIL_PAGE_SIZE:50}}).queryKeys;
+ const controls=moduleExports('hooks/useRuntimeControls.ts',{'@tanstack/react-query':{useIsMutating:filter=>client.isMutating(filter)},'../queryKeys':{queryKeys:keys},'../conversationEngine':{},'../api/productScope':{productApiPath:()=>namespace}});
+ const gate=Promise.withResolvers(),core=controls.runtimeMutationOptions('agent:same',notice=>notices.push(notice));
+ const observer=new MutationObserver(client,{...core,mutationFn:()=>gate.promise});const unsubscribe=observer.subscribe(()=>{});t.after(unsubscribe);
+ const pending=observer.mutate({model:'Core Choice'}).catch(()=>{});await until(()=>controls.useRuntimeSaving('agent:same'));
+ assert.equal(controls.pendingRuntimeSelection(client,'agent:same').model,'Core Choice');
+ namespace='/api/branches/engine/conversations';const branch=controls.runtimeMutationOptions('agent:same',notice=>notices.push(notice));observer.setOptions({...branch,mutationFn:async()=>({})});
+ assert.notDeepEqual([...core.mutationKey],[...branch.mutationKey]);assert.notEqual(core.scope.id,branch.scope.id);
+ assert.equal(observer.getCurrentResult().status,'idle','Namespace change detaches the pending original MutationObserver');assert.equal(controls.useRuntimeSaving('agent:same'),false);assert.deepEqual({...controls.pendingRuntimeSelection(client,'agent:same')},{});
+ gate.reject(Error('Original Core failure'));await pending;assert.equal(notices.length,1);assert.deepEqual(JSON.parse(notices[0].key),['/api/conversations','agent:same','runtime-selection']);
+ namespace='/api/conversations';assert.equal(controls.useRuntimeSaving('agent:same'),false);
 });

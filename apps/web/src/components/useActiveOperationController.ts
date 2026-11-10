@@ -6,6 +6,8 @@ import { ApiRequestError } from "../api/types";
 import { backgroundCooldownRemaining } from "../api/backgroundCooldown";
 import { createClientId } from "../clientId";
 import { queryKeys } from "../queryKeys";
+import {useMutationNotification} from "./MutationNotifications";
+import {productApiPath} from "../api/productScope";
 import {
   activeOperationExecutionTargets,
   activeOperationAgentPhase,
@@ -41,6 +43,7 @@ export function useActiveOperationController({
   invalidate(): void;
 }) {
   const queryClient = useQueryClient();
+  const notify=useMutationNotification();
   const [activeOperations, setActiveOperations] =
     useState<ActiveOperationTracker[]>([]);
   const [stopConfirmation, setStopConfirmation] = useState<{
@@ -50,6 +53,8 @@ export function useActiveOperationController({
   const [cancelOperationPending, setCancelOperationPending] = useState(false);
   const [cancelOperationError, setCancelOperationError] = useState<Error>();
   const stopOperationRequestIds = useRef<Map<string, string>>(new Map());
+  const feedbackGroups=useRef(new Map<string,{scope:string;targets:string[]}>());
+  const currentScope=useRef(activeScopeId);currentScope.current=activeScopeId;
   const stopOperationPending = useRef(false);
   const scopedOperations = activeOperationsForScope(
     activeOperations,
@@ -176,6 +181,11 @@ export function useActiveOperationController({
       stopOperationRequestIds.current.set(targetKey, idempotencyKey);
       return { target, targetKey, idempotencyKey };
     });
+    const scope=JSON.stringify([productApiPath("/api/conversations"),activeScopeId]);
+    const targetKeys=attempts.map(attempt=>attempt.targetKey);
+    const prior=[...feedbackGroups.current].find(([,group])=>group.scope===scope&&targetKeys.every(key=>group.targets.includes(key)));
+    const feedbackKey=prior?.[0]??JSON.stringify([scope,"stop",attempts.map(attempt=>[attempt.targetKey,attempt.idempotencyKey]).sort()]);
+    const incident=createClientId("stop-feedback-");
     try {
       const results = await Promise.allSettled(
         attempts.map(({ target, idempotencyKey }) =>
@@ -203,16 +213,20 @@ export function useActiveOperationController({
           : new Error(String(result.reason));
       });
       if (unresolved.length === 0) {
-        setStopConfirmation(undefined);
-        setCancelOperationError(undefined);
+        if(currentScope.current===activeScopeId){setStopConfirmation(undefined);setCancelOperationError(undefined);}
       } else {
-        setStopConfirmation(current => current
+        feedbackGroups.current.set(feedbackKey,prior?.[1]??{scope,targets:targetKeys});
+        notify({key:feedbackKey,incident,severity:"error",message:"Stop Needs Review",description:"Review the original Chat and Runs before trying again.",details:unresolvedError?.message});
+        if(currentScope.current===activeScopeId){setStopConfirmation(current => current
           ? {
               targets: unresolved,
               names: unresolved.map(({ agentId }) => agentTitle(agentId)).join(", "),
             }
           : current);
-        setCancelOperationError(unresolvedError);
+        setCancelOperationError(unresolvedError);}
+      }
+      for(const [key,group] of feedbackGroups.current){
+        if(group.targets.every(target=>!stopOperationRequestIds.current.has(target))){notify({key,message:"",dismiss:true});feedbackGroups.current.delete(key);}
       }
     } finally {
       stopOperationPending.current = false;

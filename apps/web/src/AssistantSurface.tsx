@@ -1,4 +1,5 @@
 import {Alert,Box,Button} from '@mui/material';
+import {useMutationNotification} from './components/MutationNotifications';
 import {useEffect,useRef,useState} from 'react';
 import {currentProductScope} from './api/productScope';
 import type {AssistantMountApi,AssistantMountProps,AssistantMountWindow} from './assistantMount';
@@ -30,8 +31,10 @@ async function loadAssistantRuntime():Promise<AssistantMountApi>{
 
 /** Keeps the live Core sidebar and the canonical Branch-owned Assistant together without sharing API module state. */
 export function AssistantSurface(props:AssistantMountProps):JSX.Element{
+ const notify=useMutationNotification();
+ const mountProps={...props,notify};
  const host=useRef<HTMLDivElement|null>(null),api=useRef<AssistantMountApi>();
- const latest=useRef(props);latest.current=props;
+ const latest=useRef(mountProps);latest.current=mountProps;
  const [error,setError]=useState(''),[attempt,setAttempt]=useState(0);
  const [opening,setOpening]=useState(true);
  useEffect(()=>{
@@ -43,7 +46,7 @@ export function AssistantSurface(props:AssistantMountProps):JSX.Element{
   }).catch(cause=>{if(active){setOpening(false);setError(cause instanceof Error?cause.message:String(cause));}});
   return()=>{active=false;api.current?.unmount();api.current=undefined;};
  },[attempt]);
- useEffect(()=>{api.current?.update(props);},[props]);
+ useEffect(()=>{api.current?.update({...props,notify});},[props,notify]);
  return <Box sx={{height:'100%',minHeight:0,minWidth:0,display:'flex',flexDirection:'column'}}>
   {opening&&!error&&<Box role="status" sx={{p:2,color:"text.secondary"}}>Opening Assistant…</Box>}
   {error&&<Alert severity="error" action={<Button onClick={()=>{setError('');setOpening(true);setAttempt(value=>value+1);}}>Retry</Button>}>{error}</Alert>}

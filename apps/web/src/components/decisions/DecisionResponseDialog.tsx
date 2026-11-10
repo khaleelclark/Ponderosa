@@ -1,3 +1,4 @@
+import {useMutationNotification,MutationErrorDetails} from "../MutationNotifications";
 import {
   Alert,
   Box,
@@ -43,7 +44,8 @@ function DecisionAnswerDialog({
   onRespond(response: DecisionResponse): Promise<unknown> | unknown;
 }): JSX.Element {
   const titleId = useId();
-  const draft = useDecisionAnswerDraft(decision, open);
+  const notify=useMutationNotification();
+  const draft = useDecisionAnswerDraft(decision, open, notify);
   const [activeQuestion, setActiveQuestion] = useState(0), [validationError, setValidationError] = useState<string>();
   const question = decision.questions?.[activeQuestion];
   const prompt = question ?? decision;
@@ -99,7 +101,7 @@ function DecisionAnswerDialog({
               {answer?.status === "skipped" ? "Answer Instead" : "Skip This Question"}</Button>
             {answer?.status === "skipped" ? <Typography>No answer or approval will be supplied for this question.</Typography> : null}
           </Stack> : null}
-          {draft.loadError ? <Alert severity="error" action={<Button onClick={draft.retry}>Retry</Button>}>{draft.loadError}</Alert> : null}
+          <MutationErrorDetails title="Decision Draft Needs Review" error={draft.loadError}><Button onClick={draft.retry}>Retry</Button></MutationErrorDetails>
           {questionFiles.length ? <Typography variant="caption">Remove attached files before skipping or choosing an option.</Typography> : null}
           {answer?.status !== "skipped" ? <Box onDragOver={event => {
             if (!Array.from(event.dataTransfer.types).includes("Files")) return;
@@ -145,8 +147,8 @@ function DecisionAnswerDialog({
           {preparing ? <Typography role="status">Preparing files…</Typography> : null}
           <FolderImportReview imports={folderImports} files={questionFiles.map(item => item.file)} disabled={!canEdit.current || preparing} />
           {draft.attachments.error ? <Alert severity="error">{draft.attachments.error}</Alert> : null}
-          {draft.saveError ? <Alert severity="warning" action={<Button onClick={draft.retry}>Retry Draft Save</Button>}>{draft.saveError}</Alert> : null}
-          {validationError || error ? <Alert severity="error">{validationError || error}</Alert> : null}
+          <MutationErrorDetails title="Decision Draft Save Needs Review" error={draft.saveError}><Button onClick={draft.retry}>Retry Draft Save</Button></MutationErrorDetails>
+          {validationError?<Alert severity="error">{validationError}</Alert>:<MutationErrorDetails title="Decision Response Needs Review" error={error}/>}
         </Stack>
       </DialogContent>
       <DialogActions>

@@ -38,10 +38,11 @@ function budgetOwner(){
   if(name==='react/jsx-runtime')return require(name);
   if(name==='@mui/material')return Object.fromEntries(['Alert','Box','Button','Dialog','DialogActions','DialogContent','DialogTitle','FormControlLabel','MenuItem','Paper','Stack','Switch','TextField','Typography'].map(name=>[name,name]));
   if(name==='@tanstack/react-query')return {useQuery:options=>{scope.queryOptions=options;return scope.query},useQueryClient:()=>({invalidateQueries:input=>{invalidations.push(input);return Promise.resolve()}}),useMutation};
+  if(name==='../../api/productScope')return {productApiPath:path=>path};
   if(name==='../../clientId')return {createClientId:()=>`command-${++key}`};
   if(name==='../../api/types')return {ApiRequestError};
   if(name==='../../api/real')return {requestJson:async(path,init)=>{writes.push({path,...init,body:JSON.parse(init.body)});if(scope.failure)throw scope.failure;return scope.response??{...scope.query.data,revision:scope.query.data.revision+1,policy:writes.at(-1).body.policy??scope.query.data.policy}}};
-  if(name==='../MutationNotifications')return {useMutationNotification:()=>notice=>notices.push(notice)};
+  if(name==='../MutationNotifications')return {useMutationNotification:()=>notice=>notices.push(notice),MutationErrorDetails:'MutationErrorDetails'};
   if(name==='./BranchNavigation')return {useBranchDraftGuard:(id,dirty)=>guards.set(id,dirty)};
   if(name==='./budgetPresentation')return presentation.exports;
   throw Error(name);
@@ -87,7 +88,7 @@ test('budget saves preserve exact revision, period and command identity after an
  assert.equal(f.writes.length,1);assert.equal(f.writes[0].body.expectedRevision,3);assert.equal(f.writes[0].body.expectedPeriodId,'period-3');assert.equal(f.writes[0].body.acknowledgeNewPeriod,true);assert.equal(f.writes[0].body.policy.period,'week');
  assert.equal(f.button('Retry Budget Save').disabled,false);assert.equal(f.field('Budget Period').disabled,true);assert.equal(f.guards.get('branch-execution-budget:owner'),true);
  f.scope.query={...f.scope.query,isFetching:true};f.scope.failure=undefined;f.button('Retry Budget Save').onClick();await f.mutation(0).promise;
- assert.deepEqual(f.writes[1].body,f.writes[0].body);assert.equal(f.notices[0].message,'Settings Saved');
+ assert.deepEqual(f.writes[1].body,f.writes[0].body);assert.equal(f.notices.filter(n=>!n.dismiss&&n.severity!=='error').at(-1).message,'Settings Saved');
 });
 
 test('allowance retains period limits, queue warning and exact safe retry while pending actions stay locked',async()=>{

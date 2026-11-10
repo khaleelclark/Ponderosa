@@ -1,5 +1,5 @@
+import {MutationErrorDetails} from "./MutationNotifications";
 import {
-  Alert,
   Button,
   Dialog,
   DialogActions,
@@ -164,11 +164,7 @@ function AgentRenameDialog({
             onChange={event => setRenameValue(event.target.value)}
             sx={{ mt: 1 }}
           />
-          {rename.isError ? (
-            <Alert severity="error" sx={{ mt: 1 }}>
-              {String(rename.error)}
-            </Alert>
-          ) : null}
+          <MutationErrorDetails title="Agent Name Needs Review" error={rename.error}/>
         </DialogContent>
         <DialogActions>
           <Button
@@ -241,11 +237,7 @@ function AgentOrganizationDialog({
         <Typography variant="body2" color="text.secondary" sx={{ mt: 1.5 }}>
           History stays with this Agent.
         </Typography>
-        {updateOrganization.isError ? (
-          <Alert severity="error" sx={{ mt: 1 }}>
-            {String(updateOrganization.error)}
-          </Alert>
-        ) : null}
+        <MutationErrorDetails title="Reporting Line Needs Review" error={updateOrganization.error}/>
       </DialogContent>
       <DialogActions>
         <Button

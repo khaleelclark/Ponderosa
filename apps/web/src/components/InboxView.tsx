@@ -1,3 +1,4 @@
+import {productApiPath} from "../api/productScope";
 import {WorkspaceQueryError} from "./WorkspaceQueryError";
 import {workspaceRead} from "../workspaceAvailability";
 import {
@@ -61,7 +62,7 @@ import { copyText } from "../clipboard";
 import { ChatMessageFrame } from "./chat/ChatMessageFrame";
 import { LiveAgentProgress } from "./chat/LiveAgentProgress";
 import { MessageDeliveryStatus } from "./MessageDeliveryStatus";
-import { useMutationNotification } from "./MutationNotifications";
+import { useMutationNotification, MutationErrorDetails } from "./MutationNotifications";
 import { MessageRequestAction } from "./MessageRequestAction";
 import { TimedChatLiveBanner } from "./chat/ChatLiveBanner";
 import { ChatSurface } from "./chat/ChatSurface";
@@ -92,7 +93,7 @@ import { DecisionResponseMessage } from "./decisions/DecisionResponseMessage";
 import { AgentRuntimeControls } from "./AgentDetail.parts";
 import { chatStateKey, readChatState, writeChatState } from "../chatState";
 import { resolveRuntimeSelection } from "../conversationEngine";
-import { pendingRuntimeSelection, runtimeMutationOptions, useRuntimeControls, useRuntimeSaving } from "../hooks/useRuntimeControls";
+import { pendingRuntimeSelection, runtimeMutationOptions, runtimeFeedbackKey, useRuntimeControls, useRuntimeSaving } from "../hooks/useRuntimeControls";
 import { decisionChoice } from "./ConversationView.helpers";
 import { CompactWorkspaceHeader } from "./WorkspaceFrame";
 import { useConversationNotificationVisibility } from "./useConversationNotificationVisibility";
@@ -263,6 +264,7 @@ export function InboxView({
   const [submissionRuntimeIntent, setSubmissionRuntimeIntent] = useState(0);
   const [runtimeAgentId, setRuntimeAgentId] = useState<string>();
   const notify = useMutationNotification();
+  const runtimeNamespace=productApiPath("/api/conversations");
   const [commandResult, setCommandResult] = useState<string>();
   const [pendingUploadCleanups, setPendingUploadCleanups] = useState(0);
   const {
@@ -648,7 +650,7 @@ export function InboxView({
     runtimeSaving,
   ]);
   const updateRuntimeEngine = useMutation({
-    ...runtimeMutationOptions(`agent:${selectedAgentId ?? ""}`),
+    ...runtimeMutationOptions(`agent:${selectedAgentId ?? ""}`,notify),
     mutationFn: ({
       agentId,
       activeEngine,
@@ -669,6 +671,7 @@ export function InboxView({
         speed: nextSpeed,
       }),
     onSuccess: updated => {
+      notify({key:runtimeFeedbackKey(`agent:${updated.id}`,runtimeNamespace),message:"",dismiss:true});
       publishUpdatedAgent(queryClient, updated);
       void queryClient.invalidateQueries({
         queryKey: queryKeys.agents.project(updated.projectId),
@@ -1661,19 +1664,7 @@ export function InboxView({
             {commandResult}
           </Alert>
         ) : null}
-        {updateRuntimeEngine.isError ? (
-          <Alert
-            severity="error"
-            action={
-              <Button color="inherit" size="small" onClick={() => updateRuntimeEngine.reset()}>
-                Dismiss
-              </Button>
-            }
-            sx={{ mx: 1.5, mt: 1 }}
-          >
-            Provider selection not saved · last selection restored · choose a provider to retry
-          </Alert>
-        ) : null}
+        <MutationErrorDetails title="Runtime Selection Needs Attention" error={updateRuntimeEngine.error}/>
         {queuedMessages.notice ? (
           <Alert severity="info" sx={{ mx: 1.5, mt: 1 }}>
             {queuedMessages.notice}
@@ -1685,11 +1676,7 @@ export function InboxView({
             being cleaned up automatically.
           </Alert>
         ) : null}
-        {cancelOperationError ? (
-          <Alert severity="error" sx={{ mx: 1.5, mt: 1 }}>
-            Cancellation failed. {cancelOperationError.message}
-          </Alert>
-        ) : null}
+        <MutationErrorDetails title="Stop Needs Review" error={cancelOperationError}/>
         <WorkspaceQueryError read={workspaceRead(`chat:${composerConversationId}`,"Queued Messages",queuedMessages.query)}/>
         {queuedMessages.failure&&<details><summary>Queue Action Needs Attention</summary>{queuedMessages.failure.error.message}<Button onClick={queuedMessages.failure.retry}>Retry Action</Button></details>}
         <QueuedMessageTray

@@ -1,4 +1,18 @@
 import type {WorkspacePreferencesDto} from "@ponderosa/core";
+import type {MutationNotifier} from "./components/MutationNotifications";
+
+/** Format only the exact leaf outcomes admitted by PreferenceSaveFeedback. */
+export function preferenceSaveReporter({notify,namespace,incident,report,acknowledge=false}: {
+  notify:MutationNotifier; namespace:string; incident:string;
+  report?(field:string,error?:string):void; acknowledge?:boolean;
+}): (field:string,error?:string)=>void {
+  return (field,error)=>{
+    report?.(field,error);
+    const key=JSON.stringify([namespace,"workspace-settings",field]);
+    if(error)notify({key,incident,severity:"error",message:"Settings Not Saved",description:"Your original setting remains available for review before retrying.",details:error});
+    else notify({key,message:acknowledge?"Settings Saved":"",...(!acknowledge?{dismiss:true}:{})});
+  };
+}
 
 /** Feedback follows each saved field, independently of the canonical write queue. */
 export class PreferenceSaveFeedback {

@@ -1,3 +1,4 @@
+import {MutationErrorDetails} from "./MutationNotifications";
 import type {WorkspaceReadIssue} from "../workspaceAvailability";
 import {WorkspaceQueryError} from "./WorkspaceQueryError";
 import { Alert, Button } from "@mui/material";
@@ -53,11 +54,7 @@ export function AgentDetailComposer({
   return (
     <ChatComposerDock visible={visible}>
       {queuedMessageNotice ? <Alert severity="info" role="status" aria-live="polite" tabIndex={0} sx={providerCommandResultSx}>{queuedMessageNotice}</Alert> : null}
-      {cancellationError ? (
-        <Alert severity="error" sx={{ mx: 1.5, mt: 1 }}>
-          {cancellationError}
-        </Alert>
-      ) : null}
+      <MutationErrorDetails title="Run Control Needs Review" error={cancellationError}/>
       {queuedRead&&<WorkspaceQueryError read={queuedRead}/>}
       {queuedMessageFailure&&<details><summary>Queue Action Needs Attention</summary>{queuedMessageFailure.error.message}<Button onClick={queuedMessageFailure.retry}>Retry Action</Button></details>}
       {providerUsageState ? (

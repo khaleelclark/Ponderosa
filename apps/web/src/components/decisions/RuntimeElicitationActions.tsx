@@ -1,3 +1,4 @@
+import {MutationErrorDetails} from "../MutationNotifications";
 import LaunchIcon from "@mui/icons-material/Launch";
 import {
   Alert,
@@ -206,7 +207,7 @@ export function RuntimeElicitationActions({
           The {secureConnection ? "secure" : "local"} connection opens in a new tab. Return here and confirm when it is complete.
         </Typography>
         {otherResponse}
-        {error ? <Alert severity="error">{error}</Alert> : null}
+        <MutationErrorDetails title="Decision Response Needs Review" error={error}/>
       </Stack>
     );
   }
@@ -305,7 +306,7 @@ export function RuntimeElicitationActions({
         Run approval applies only to this exact {provider} confirmation until this Agent run ends.
       </Typography> : null}
       {otherResponse}
-      {error ? <Alert severity="error">{error}</Alert> : null}
+      <MutationErrorDetails title="Decision Response Needs Review" error={error}/>
     </Stack>
   );
 }
