@@ -72,12 +72,23 @@ test('text preview follows only its exact recovering Run while voice retains ori
   const readRetry=async()=>f.ok(await f.api('GET',`/api/conversations/${chat.id}/reply-streams/${retryMessage}/${agent.id}`));
   assert.equal((await readRetry()).runId,recoveryRun,'Ordinary retry selects its exact current Run instead of original intake');
   for(const [run,source,event] of [[originalRun,retrySource.activationId,'prior-publication'],[recoveryRun,retry.activationId,'current-publication']])db.prepare("INSERT INTO required_reply_obligations(run_id,source_activation_id,project_id,agent_id,scope_key,reply_authority_json,attempt_count,state,satisfied_communication_id,created_at,updated_at,delivery_phase) VALUES(?,?,?,?,?,?,0,'satisfied',?,?,?,'final')").run(run,source,chat.projectId,agent.id,scope,JSON.stringify({intent:'direct_to_user'}),event,stamp,stamp);
-  assert.equal((await readRetry()).canonicalReplyEventId,'current-publication','Canonical publication follows current source, never original attempt');
+  assert.equal((await readRetry()).canonicalReplyEventId,undefined,'A required-reply obligation cannot substitute for exact stream publication');
   db.prepare('INSERT INTO scheduler_run_activations(run_id,activation_id,attached_at) VALUES(?,?,?)').run(recoveryRun,retrySource.activationId,stamp);
   db.prepare("INSERT INTO required_reply_obligations(run_id,source_activation_id,project_id,agent_id,scope_key,reply_authority_json,attempt_count,state,satisfied_communication_id,created_at,updated_at,delivery_phase) VALUES(?,?,?,?,?,?,0,'satisfied',?,?,?,'final')").run(recoveryRun,retrySource.activationId,chat.projectId,agent.id,scope,JSON.stringify({intent:'direct_to_user'}),'earlier-same-run-publication',stamp,stamp);
-  assert.equal((await readRetry()).canonicalReplyEventId,'current-publication','Two attempt obligations on one Run retain exact source identity');
+  assert.equal((await readRetry()).canonicalReplyEventId,undefined,'Two attempt obligations on one Run cannot guess the stream result');
   db.prepare('DELETE FROM scheduler_run_activations WHERE run_id=? AND activation_id=?').run(recoveryRun,retry.activationId);
   assert.equal((await readRetry()).runId,undefined,'Missing exact current attachment cannot fall back to an older attempt');assert.equal(f.turns.length,0);
 
  },{storeFactory:data=>(store=new AgentStore(data))});
+});
+
+test('host publication token binds exact source, stream, Run, fence, steering and route',async()=>{
+ const {textReplyPublicationCorrelation:bind}=await import('../../apps/server/dist/reply-stream-publication.js');
+ const publication={kind:'message',intent:'direct_to_user'},snapshot={presentation:'text',purpose:'answer',state:'streaming',agentId:'agent',conversationId:'chat',runId:'run',fence:4,streamId:'stream',messageId:'source',steeringInjectionId:'steer',publication};
+ const run={voiceReply:{snapshot},textReplyPublication:{token:'opaque',streamId:'stream',sourceId:'source'}},cap={agentId:'agent',conversationId:'chat',runId:'run',v3FencingToken:4};
+ assert.equal(bind(undefined,run,cap,publication,'steer'),undefined,'Ordinary publication does not inherit the active stream');
+ assert.deepEqual(bind('opaque',run,cap,publication,'steer'),{streamId:'stream',sourceId:'source',runId:'run',fence:4,steeringInjectionId:'steer'});
+ for(const patch of [{agentId:'other'},{conversationId:'other'},{runId:'other'},{v3FencingToken:5}])assert.throws(()=>bind('opaque',run,{...cap,...patch},publication,'steer'));
+ for(const patch of [{sourceId:'other'},{streamId:'other'},{token:'other'}])assert.throws(()=>bind('opaque',{...run,textReplyPublication:{...run.textReplyPublication,...patch}},cap,publication,'steer'));
+ assert.throws(()=>bind('opaque',run,cap,{kind:'message',intent:'broadcast'},'steer'));assert.throws(()=>bind('opaque',run,cap,publication,'old-steer'));
 });

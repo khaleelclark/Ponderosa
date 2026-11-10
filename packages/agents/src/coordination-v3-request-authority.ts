@@ -2,6 +2,7 @@ import { currentRequestAttachmentSql } from "./coordination-v3-request-lineage.j
 import type Database from "better-sqlite3";
 import {
   TERMINAL_REQUEST_STATES,
+  isReplyStreamCorrelation,
   evaluateCoordinationJoin,
   joinTransitionNeedsActivation,
   reduceCoordinationRequest,
@@ -70,6 +71,7 @@ export class CoordinationV3RequestAuthority {
     input: UpdateRequestV3Input,
     artifacts: RuntimeArtifactInputV3[],
   ): string {
+    if(input.payload&&typeof input.payload==='object'&&Object.hasOwn(input.payload,'__replyStream'))throw Error('Request stream correlation is host metadata');
     return payloadHash({
       requestId: input.requestId,
       kind: input.kind,
@@ -167,6 +169,8 @@ export class CoordinationV3RequestAuthority {
   }
 
   updateRequest(input: UpdateRequestV3Input): RequestUpdateV3Result {
+    if(input.replyStream&&(!isReplyStreamCorrelation(input.replyStream)||!['completed','blocked','failed'].includes(input.kind)||input.replyStream.steeringInjectionId!==input.steeringInjectionId||input.replyStream.sourceId!==input.requestId||input.actor.kind!=='agent'||
+       !input.runAuthorization||input.runAuthorization.agentId!==input.actor.id||input.runAuthorization.runId!==input.replyStream.runId||input.runAuthorization.fencingToken!==input.replyStream.fence))throw Error('Invalid host Request stream correlation');
     const now = input.now ?? new Date().toISOString();
     const initialRequest = this.support.getRequestRow(input.requestId);
     const { artifacts, hash } = this.resolvedUpdate(input, initialRequest.project_id);
@@ -400,7 +404,7 @@ export class CoordinationV3RequestAuthority {
         input.actor.kind,
         input.actor.id ?? null,
         input.inReplyToUpdateId ?? null,
-        stableJson(input.payload ?? null),
+        stableJson(input.replyStream?{...(input.payload as Record<string,unknown>),__replyStream:input.replyStream}:input.payload??null),
         hash,
         next.state,
         next.version,

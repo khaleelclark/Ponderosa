@@ -24,7 +24,30 @@ export function useChatScroll(
   const firstLayout = useRef(true);
   const restoredStorageKey = useRef<string>();
   const restoreDistance = useRef<number>();
+  const readingAnchor=useRef<{node:HTMLElement;offset:number}>();
+  const adjustedTop=useRef<number>();
   const [showScrollToLatest, setShowScrollToLatest] = useState(false);
+
+  const captureAnchor=useCallback(()=>{
+    const region=scrollRef.current;
+    if(!region||followLatest.current){readingAnchor.current=undefined;return;}
+    const top=region.getBoundingClientRect().top;
+    const node=[...region.querySelectorAll<HTMLElement>('.chat-message-body')].find(node=>{const rect=node.getBoundingClientRect();return rect.bottom>top&&rect.top<region.getBoundingClientRect().bottom;});
+    readingAnchor.current=node?{node,offset:node.getBoundingClientRect().top-top}:undefined;
+  },[]);
+  const preserveAnchor=useCallback(()=>{
+    const region=scrollRef.current,anchor=readingAnchor.current;
+    if(!region||followLatest.current)return;
+    if(anchor?.node.isConnected&&region.contains(anchor.node)){
+      const delta=anchor.node.getBoundingClientRect().top-region.getBoundingClientRect().top-anchor.offset;
+      if(Math.abs(delta)>.5){adjustedTop.current=Math.max(0,region.scrollTop+delta);region.scrollTop=adjustedTop.current;adjustedTop.current=region.scrollTop;}
+    }
+    captureAnchor();
+  },[captureAnchor]);
+
+  // Keep the reader's mounted message in place when progress above it disappears
+  // or an earlier streaming body grows. Following latest uses the existing path.
+  useLayoutEffect(()=>{preserveAnchor();});
 
   useLayoutEffect(() => {
     const element = scrollRef.current;
@@ -41,12 +64,14 @@ export function useChatScroll(
         setShowScrollToLatest(!followLatest.current);
         follow.onPositionChange?.(element, followLatest.current);
         firstLayout.current = false;
+        captureAnchor();
         return;
       }
     }
     if (restoreDistance.current !== undefined) {
       element.scrollTop = element.scrollHeight - restoreDistance.current;
       restoreDistance.current = undefined;
+      captureAnchor();
       return;
     }
     if (firstLayout.current || followLatest.current) {
@@ -73,11 +98,12 @@ export function useChatScroll(
       return;
     const observer = new ResizeObserver(() => {
       if (followLatest.current) scrollChatToBottom(element);
+      else preserveAnchor();
     });
     observer.observe(content);
     observer.observe(element);
     return () => observer.disconnect();
-  }, [follow.followResizes]);
+  }, [follow.followResizes,preserveAnchor]);
 
   useLayoutEffect(() => {
     const element = scrollRef.current;
@@ -97,6 +123,7 @@ export function useChatScroll(
           target instanceof HTMLElement && (target.isContentEditable || Boolean(target.closest("input, textarea, select")))) return;
       }
       messageNavigationAway.current = false;
+      adjustedTop.current=undefined;
       followLatest.current = isChatNearBottom(element, follow.bottomThreshold);
       setShowScrollToLatest(!followLatest.current);
     };
@@ -115,17 +142,21 @@ export function useChatScroll(
     const atLatest = isChatNearBottom(element, follow.bottomThreshold);
     // A queued event can still report the old bottom before smooth navigation
     // has moved. Do not let it reclaim following and cancel that navigation.
-    if (!messageNavigationAway.current || !atLatest) {
+    const adjusted=adjustedTop.current!==undefined&&Math.abs(element.scrollTop-adjustedTop.current)<1;
+    adjustedTop.current=undefined;
+    if (!adjusted&&(!messageNavigationAway.current || !atLatest)) {
       messageNavigationAway.current = false;
       followLatest.current = atLatest;
     }
     setShowScrollToLatest(!followLatest.current);
+    captureAnchor();
     follow.onPositionChange?.(element, followLatest.current);
     if (follow.storageKey) writeChatState(follow.storageKey, String(element.scrollTop));
   }, [
     follow.bottomThreshold,
     follow.storageKey,
     follow.onPositionChange,
+    captureAnchor,
   ]);
 
   const scrollToLatest = useCallback(() => {
@@ -133,6 +164,7 @@ export function useChatScroll(
     if (!element) return;
     messageNavigationAway.current = false;
     followLatest.current = true;
+    readingAnchor.current=undefined;
     scrollChatToBottom(element);
     setShowScrollToLatest(false);
     follow.onPositionChange?.(element, true);

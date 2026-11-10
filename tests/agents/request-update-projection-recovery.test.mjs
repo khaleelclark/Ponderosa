@@ -365,3 +365,49 @@ test('a no-op passive replay refreshes cached drift after a completed metadata w
   assert.equal(replay.replayed,true);assert.equal(replay.recovering,undefined);
   await until(async()=>(await cachedMigration()).ok,'a true no-op replay refreshes cached drift without a diagnostic GET');
 }));
+
+test('private streamed Request first insert binds exact source/Run/fence without changing replay identity',options,async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Private stream correlation'),manager=await f.createIdleAgent(chat,'Manager'),worker=await f.createIdleAgent(chat,'Worker');
+  const managerSession=await f.hold(manager.id);f.plans.set(worker.id,[{hold:true}]);
+  const requestId=f.ok(await f.tool(managerSession,'ponderosa_coordinate',{idempotencyKey:randomUUID(),requests:[{recipientAgentId:worker.id,text:'Controlled private result',lifetime:{kind:'indefinite'}}]})).requestIds[0];
+  await until(()=>f.sessions.has(worker.id),'Exact worker Request Run');
+  const v3=new CoordinationV3Store(store.sqlite),run=await until(()=>{const r=v3.activeAgentRun(worker.id);return r?.promptInjectionState==='injected'?r:false;},'Exact injected Run');
+  const correlation={streamId:randomUUID(),sourceId:requestId,runId:run.id,fence:run.fencingToken};
+  const input={requestId,updateId:randomUUID(),kind:'completed',actor:{kind:'agent',id:worker.id},payload:{text:'Exact private result'},runAuthorization:{runId:run.id,agentId:worker.id,fencingToken:run.fencingToken}};
+  for(const patch of [{fence:correlation.fence+1},{sourceId:'other-request'},{runId:'other-run'}])assert.throws(()=>v3.updateRequest({...input,replyStream:{...correlation,...patch}}),/Invalid host Request stream correlation/);
+  assert.throws(()=>v3.updateRequest({...input,payload:{...input.payload,__replyStream:correlation}}),/host metadata/);
+  assert.equal(v3.updateRequest({...input,replyStream:correlation}).replayed,false);
+  const read=()=>v3.requestLifecycleDetails({projectId:chat.projectId,conversationId:chat.id,recordId:requestId}).updates.find(update=>update.id===input.updateId);
+  assert.deepEqual(read().replyStream,correlation);
+  assert.equal(v3.updateRequest(input).replayed,true,'Existing semantic key replays without transient host metadata');
+  assert.equal(v3.updateRequest({...input,replyStream:{...correlation,streamId:randomUUID()}}).replayed,true);
+  assert.deepEqual(read().replyStream,correlation,'Replay cannot rebind the first canonical publication');
+  assert.equal(store.sqlite.prepare('SELECT count(*) n FROM coordination_request_updates WHERE id=?').get(input.updateId).n,1);
+ },{storeFactory:data=>(store=new AgentStore(data))});
+});
+
+for(const engine of ['codex','claude'])test(engine+' private Request stream adopts exact canonical update without entering main Chat',options,async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Private streamed result'),manager=await f.createIdleAgent(chat,'Manager');
+  const worker=f.ok(await f.api('POST',`/api/projects/${chat.projectId}/agents`,{title:'Worker',engine,conversationId:chat.id,idempotencyKey:randomUUID()}));
+  const managerSession=await f.hold(manager.id);f.plans.set(worker.id,[{hold:true}]);
+  const requestId=f.ok(await f.tool(managerSession,'ponderosa_coordinate',{idempotencyKey:randomUUID(),requests:[{recipientAgentId:worker.id,text:'Controlled private stream',lifetime:{kind:'indefinite'}}]})).requestIds[0];
+  const session=await until(()=>f.sessions.get(worker.id),'Exact worker runtime'),v3=new CoordinationV3Store(store.sqlite);
+  await until(()=>v3.activeAgentRun(worker.id)?.promptInjectionState==='injected','Worker prompt admitted');
+  const auth=await session.tool('ponderosa_reply_stream',{publication:{kind:'request_update',requestId,updateKind:'completed'}},'private-authorize');assert.equal(auth.success,true,auth.text);const armed=JSON.parse(auth.text);
+  session.events.push({type:'tool_result',id:'private-authorize',output:auth.text,isError:false,voiceReplyStreamId:armed.streamId});
+  const run=v3.activeAgentRun(worker.id);
+  const response=(kind,text='')=>({type:'response_text',kind,text,phase:'final_answer',providerTurnId:'private-turn',itemId:'private-answer'});
+  session.events.push(response('start'));session.events.push(response('delta','Private **first** chunk. '));
+  await until(()=>store.latestVoiceReply(worker.id,requestId,run.id)?.text==='Private **first** chunk. ','Authorized private text');
+  const url=`/api/conversations/${chat.id}/reply-streams/${requestId}/${worker.id}`,early=f.ok(await f.api('GET',url));assert.equal(early.reply.publication.kind,'request_update');
+  session.events.push(response('delta','Final chunk.'));session.events.push(response('complete','Private **first** chunk. Final chunk.'));session.finish();
+  await until(()=>!v3.activeAgentRun(worker.id),'Exact Request stream finalized');
+  const final=f.ok(await f.api('GET',url)),update=v3.requestLifecycleDetails({projectId:chat.projectId,conversationId:chat.id,recordId:requestId}).updates.find(item=>item.id===final.reply?.canonicalRequestUpdateId);
+  assert.ok(update,'Final snapshot names exact committed private update');assert.equal(update.text,'Private **first** chunk. Final chunk.');assert.equal(update.replyStream.streamId,armed.streamId);assert.equal(update.replyStream.sourceId,requestId);assert.equal(update.replyStream.runId,run.id);assert.equal(update.replyStream.fence,run.fencingToken);
+  assert.equal(f.ok(await f.api('GET',`/api/conversations/${chat.id}`)).messages.some(message=>message.text?.includes('Private **first** chunk')),false,'Private Request result is not Broadcast');
+ },{storeFactory:data=>(store=new AgentStore(data)),supportsVoiceReplyStream:true,diagnosticProvider:engine==='claude'});
+});

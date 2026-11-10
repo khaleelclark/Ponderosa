@@ -135,6 +135,8 @@ export interface ActiveRun {
   nativeGoalActive?: boolean;
   nativeGoalPauseOperation?: Promise<void>;
   voiceReply?: import("./voice-reply-stream.js").VoiceReplyStream;
+  /** Opaque, short-lived correlation token for this host-originated text commit. */
+  textReplyPublication?: {token:string;streamId:string;sourceId:string};
   voiceReplyStreamSupported?: boolean;
   voiceReplyTiming?: { submittedAt?: string; firstModelTextAt?: string };
   /** Synchronous host-only guard, also checked at canonical publication. */

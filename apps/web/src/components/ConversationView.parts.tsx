@@ -1,5 +1,5 @@
 import { OutgoingMessageRow } from "./chat/OutgoingMessage";
-import {DirectReplyPreview} from './chat/DirectReplyPreview';
+import {useTextReplyProjection,ReplyReadFeedback} from './chat/useTextReplyProjection';
 import {useWorkspaceReadOnly} from "./WorkspaceReadOnlyContext";
 import AddIcon from "@mui/icons-material/Add";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
@@ -84,7 +84,8 @@ function ConversationMessageComponent({
   projectId,
   projectRoot,
   activeRunId,
-  replyMessages,
+  provisional=false,
+  replyFeedback,
   operatorProfile,
 }: {
   message: ConversationMessageDto;
@@ -103,7 +104,8 @@ function ConversationMessageComponent({
   projectId: string;
   projectRoot?: string;
   activeRunId?: string;
-  replyMessages?:ConversationMessageDto[];
+  provisional?:boolean;
+  replyFeedback?:JSX.Element;
   operatorProfile?: OperatorProfileDto;
 }): JSX.Element {
   const reportVisibility = useCallback((visible: boolean) =>
@@ -159,7 +161,7 @@ function ConversationMessageComponent({
           ) ? (
             <Chip size="small" variant="outlined" label="Broadcast" />
           ) : undefined,
-        onVisible: onVisible ? reportVisibility : undefined,
+        onVisible: !provisional&&onVisible ? reportVisibility : undefined,
         body: (
           <ChatMessageBody
             text={visibleText}
@@ -212,7 +214,7 @@ function ConversationMessageComponent({
           </>
         ),
         attachments: message.attachments,
-        belowBody: message.role === "user" ? <><LiveAgentProgress receipts={message.deliveryReceipts} onOpenAgent={onOpenAgent} />{conversation==='main'&&replyMessages&&message.communicationIntent==='broadcast'&&[...new Set(message.deliveryReceipts?.map(item=>item.targetAgentId)??[])].map(agentId=><DirectReplyPreview key={agentId} sent={message} agentTitle={agentTitle(agentId)} agentId={agentId} messages={replyMessages} projectId={projectId}/>)}</> : undefined,
+        belowBody: <>{message.role === "user" ? <LiveAgentProgress receipts={message.deliveryReceipts} onOpenAgent={onOpenAgent} /> : null}{replyFeedback}</>,
         status:
           (message.role === "user" || message.communicationIntent === "collaboration") && message.deliveryReceipts?.length ? (
             <MessageDeliveryStatus
@@ -223,7 +225,7 @@ function ConversationMessageComponent({
               compactSuccess={message.communicationIntent === "user_dm"}
             />
           ) : undefined,
-        actions: (
+        actions: !provisional&& (
           <>
             <CopyMessageButton text={resolvedCopyText} />
             {conversation === "collaboration" ? <MessageRequestAction
@@ -446,11 +448,13 @@ function MainConversationTimeline({
   notifications: WorkspaceNotificationDto[];
 }): JSX.Element {
   const replySources=mainTimeline.flatMap(item=>item.kind==='message'?[item.message]:[]);
-  const latestReplySource=[...replySources].reverse().find(item=>item.role==='user'&&item.communicationIntent==='broadcast');
+  const replyRows=useTextReplyProjection(replySources,projectId,JSON.stringify([projectId,'main',replySources[0]?.conversationId]));
+  const visibleIds=new Set(mainTimeline.slice(firstMountedIndex).map(entry=>entry.id));
+  const timeline=[...mainTimeline.flatMap(entry=>entry.kind!=='message'&&visibleIds.has(entry.id)?[entry]:[]),...replyRows.filter(row=>row.provisional||visibleIds.has(`message:${row.message.id}`)).map(row=>({kind:'message' as const,id:row.key,at:row.at,message:row.message,provisional:row.provisional,feedback:row.feedback}))].sort((a,b)=>a.at.localeCompare(b.at)||a.id.localeCompare(b.id));
   return (
     <Stack spacing={0} sx={{ mb: 2 }}>
       <OutgoingMessageRow empty={<Typography variant="body2" color="text.secondary">No messages yet · send a message or mention an Agent</Typography>}
-        entries={mainTimeline.slice(firstMountedIndex).map(entry => ({
+        entries={timeline.map(entry => ({
         id: entry.id, createdAt: entry.at,
         ...(entry.kind === "message" ? {communicationEventId:entry.message.communicationEventId,creationIdempotencyKey:entry.message.creationIdempotencyKey,projectId} : {}),
         render: createdAt => {
@@ -466,12 +470,13 @@ function MainConversationTimeline({
           return <DecisionResponseMessage key={entry.id} event={entry.event}
             operatorProfile={operatorProfile} onOpenAgent={onOpenAgent} />;
         }
-        const message = entry.message.createdAt===createdAt?entry.message:{...entry.message,createdAt};
+        const message = entry.provisional||entry.message.replyStream||entry.message.createdAt===createdAt?entry.message:{...entry.message,createdAt};
         return <ConversationMessage
           key={entry.id}
           message={message}
           conversation="main"
-          replyMessages={entry.message===latestReplySource?replySources:undefined}
+          provisional={entry.provisional}
+          replyFeedback={entry.feedback?.length?<ReplyReadFeedback entry={entry.feedback} agentTitle={agentTitle}/>:undefined}
           projectId={projectId}
           projectRoot={projectRoot}
           activeRunId={
@@ -523,6 +528,7 @@ function CollaborationTimeline({
   onOpenReview?(agentId: string, executionId?: string): void;
   onOpenFileActivity?(agentId: string, file: ResponseFileActivityDto): void;
 }): JSX.Element {
+  const replyRows=useTextReplyProjection(collaborationMessages,projectId,JSON.stringify([projectId,'collaboration',collaborationMessages[0]?.conversationId]));
   const loadedCommunicationIds = new Set(
     collaborationMessages.flatMap(message =>
       message.communicationEventId ? [message.communicationEventId] : [],
@@ -547,11 +553,8 @@ function CollaborationTimeline({
     ),
   );
   const timeline = [
-    ...collaborationMessages.map(message => ({
-      kind: "message" as const,
-      id: `message:${message.id}`,
-      at: message.createdAt,
-      message,
+    ...replyRows.map(row => ({
+      kind: "message" as const,id:row.key,at:row.at,message:row.message,provisional:row.provisional,feedback:row.feedback,
     })),
     ...visibleOperations
       .map(event => ({
@@ -713,7 +716,9 @@ function CollaborationTimeline({
           <Box key={entry.id}>
             <ConversationMessage
               message={message}
-              conversation="collaboration"
+              provisional={entry.provisional}
+            replyFeedback={entry.feedback?.length?<ReplyReadFeedback entry={entry.feedback} agentTitle={agentTitle}/>:undefined}
+            conversation="collaboration"
               projectId={projectId}
               projectRoot={projectRoot}
               activeRunId={

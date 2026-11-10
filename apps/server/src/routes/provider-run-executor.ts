@@ -1405,23 +1405,31 @@ export function startProviderRunExecution(
       }
       if (activeRun.voiceReply && activeRun.voiceReply.snapshot.purpose !== "acknowledgement" && ownsActiveRun(agent.id, activeRun) && !controller.signal.aborted && !runError &&
           activeRun.observedProviderTerminalStatus === "completed") {
-        const answer = await validateVoiceReplyContext() && coordinationV3.latestAcknowledgedSteeringInjection(runId) === activeRun.voiceReply.snapshot.steeringInjectionId
-          ? activeRun.voiceReply.finalText() : undefined;
+        const committingStream=activeRun.voiceReply;
+        const answer = await validateVoiceReplyContext() && activeRun.voiceReply===committingStream && coordinationV3.latestAcknowledgedSteeringInjection(runId) === committingStream.snapshot.steeringInjectionId
+          ? committingStream.finalText() : undefined;
         if (answer) {
           const fence = coordinationV3.latestAcknowledgedSteeringInjection(runId);
-          const publication=activeRun.voiceReply.snapshot.publication;
+          const publication=committingStream.snapshot.publication;
           const commit=publication?replyStreamCommit(publication,answer,fence):{url:"/api/agent-messages",payload:{text:answer,...(fence?{steeringInjectionId:fence}:{})}};
-          const response = await app.inject({ method: "POST", url:commit.url,
-            headers: { authorization: `Bearer ${messageCapability}` },payload:commit.payload });
-          const result = response.json() as { eventId?: string; requestId?:string; committed?: boolean };
+          const correlation=committingStream.snapshot.presentation==='text'?{token:randomUUID(),streamId:committingStream.snapshot.streamId,sourceId:committingStream.snapshot.messageId}:undefined;
+          if(correlation)activeRun.textReplyPublication=correlation;
+          let response;
+          try{response=await app.inject({ method: "POST", url:commit.url,
+            headers: { authorization: `Bearer ${messageCapability}`,...(correlation?{'x-ponderosa-text-publication':correlation.token}:{}) },payload:commit.payload });}
+          finally{if(activeRun.textReplyPublication===correlation)activeRun.textReplyPublication=undefined;}
+          const result = response.json() as { eventId?: string; requestId?:string;updateId?:string; committed?: boolean };
           if (response.statusCode >= 200 && response.statusCode < 300 && (result.eventId || result.requestId)) {
             const canonical = result.eventId?coordinationV3.runtimeCommunication(result.eventId):undefined;
-            if ((canonical || (publication?.kind==="request_update" && result.requestId===publication.requestId && coordinationV3.getRequest(result.requestId)?.state===publication.updateKind)) && await validateVoiceReplyContext())
-              activeRun.voiceReply.complete(canonical?.createdAt??new Date().toISOString());
-            else activeRun.voiceReply.invalidate();
-          } else activeRun.voiceReply.invalidate();
-        } else activeRun.voiceReply.invalidate();
-        await persistRuntimeEvent(agent.id, activeRun, { type: "voice_reply", reply: { ...activeRun.voiceReply.snapshot } });
+            const requestUpdate=publication?.kind==='request_update'&&result.updateId?coordinationV3.requestLifecycleDetails({projectId:project.id,conversationId:agent.conversationId,recordId:publication.requestId})?.updates.find(update=>update.id===result.updateId):undefined;
+            const binding=canonical?(canonical.payload as {communication?:import('@ponderosa/core').CommunicationEvent})?.communication?.replyStream:requestUpdate?.replyStream;
+            const exact= !correlation || binding?.streamId===correlation.streamId&&binding.sourceId===correlation.sourceId&&binding.runId===runId&&binding.fence===committingStream.snapshot.fence&&binding.steeringInjectionId===committingStream.snapshot.steeringInjectionId;
+            if (activeRun.voiceReply===committingStream&&exact&&(canonical || (publication?.kind==="request_update" && result.requestId===publication.requestId && requestUpdate?.kind===publication.updateKind)) && await validateVoiceReplyContext() && activeRun.voiceReply===committingStream)
+              committingStream.complete(canonical?.createdAt??requestUpdate?.createdAt??new Date().toISOString(),correlation?{eventId:result.eventId,updateId:result.updateId}:undefined);
+            else committingStream.invalidate();
+          } else committingStream.invalidate();
+        } else committingStream.invalidate();
+        await persistRuntimeEvent(agent.id, activeRun, { type: "voice_reply", reply: { ...committingStream.snapshot } });
       }
       if (activeRun.v3SchedulerRunId && !v3PromptInjected && !runError) {
         runError = "provider ended before prompt injection could be confirmed";

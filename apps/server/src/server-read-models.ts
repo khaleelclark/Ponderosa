@@ -255,6 +255,7 @@ export function createServerReadModels(context: ReadModelContext) {
         ...message,
         ...(creationKeys.has(message.communicationEventId) ? {creationIdempotencyKey:creationKeys.get(message.communicationEventId)} : {}),
         ...(communication ? {
+          ...(communication.replyStream?{replyStream:communication.replyStream}:{}),
           communicationIntent: communication.intent,
           authoredText: communication.text,
           communicationSender: communication.sender,

@@ -1,3 +1,4 @@
+import {textReplyPublicationCorrelation} from "../reply-stream-publication.js";
 import {
   PONDEROSA_UPDATE_REQUEST_TOOL,
   LONG_TEXT_MAX_UTF8_BYTES,
@@ -189,12 +190,17 @@ export function registerAgentRequestCommandRoutes(
           executionId: capability.runId,
         })
       : undefined;
+    let replyStream;
+    try { replyStream=textReplyPublicationCorrelation(request.headers['x-ponderosa-text-publication'],active,capability,
+      {kind:'request_update',requestId,updateKind:kind as 'completed'|'blocked'|'failed'},request.body.steeringInjectionId?.trim()); }
+    catch(error){return reply.code(409).send({error:(error as Error).message});}
     const requestUpdateInput = (
       backingArtifact: ReturnType<typeof communicationArtifactIdentity> | undefined,
     ) => ({
       requestId,
       updateId,
       kind,
+      ...(replyStream?{replyStream}:{}),
       actor: { kind: "agent" as const, id: capability.agentId },
       runAuthorization: runAuthorization(capability),
       ...(request.body.steeringInjectionId?.trim() ? { steeringInjectionId: request.body.steeringInjectionId.trim() } : {}),
@@ -381,13 +387,14 @@ export function registerAgentRequestCommandRoutes(
         publishCoordinationV3Changed(changedRequest.recipientAgentId, { conversationIds });
       }
       notifyScheduler();
-      return { ...result, ...(resultArtifactId ? { resultRef: `ponderosa://artifact/${resultArtifactId}` } : {}) };
+      return { ...result, updateId, ...(resultArtifactId ? { resultRef: `ponderosa://artifact/${resultArtifactId}` } : {}) };
     } catch (error) {
       if (durableResult) {
         // The Request is committed. Passive views can be completed by an
         // exact idempotent replay or startup recovery; no new Run is queued.
         return reply.code(202).send({
           ...durableResult,
+          updateId,
           committed: true,
           recovering: true,
           ...(resultArtifactId ? { resultRef: `ponderosa://artifact/${resultArtifactId}` } : {}),

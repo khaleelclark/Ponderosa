@@ -1,3 +1,11 @@
+/** Host-authored link between a text stream and its exact canonical publication.
+ * Presentation metadata only; never a delivery receipt or publication grant. */
+export interface ReplyStreamCorrelation { streamId:string;sourceId:string;runId:string;fence:number;steeringInjectionId?:string }
+export function isReplyStreamCorrelation(value:unknown):value is ReplyStreamCorrelation {
+ if(!value||typeof value!=='object'||Array.isArray(value))return false;
+ const v=value as Record<string,unknown>;
+ return Object.keys(v).every(k=>['streamId','sourceId','runId','fence','steeringInjectionId'].includes(k))&&(v.steeringInjectionId===undefined||typeof v.steeringInjectionId==='string'&&v.steeringInjectionId.length>0&&v.steeringInjectionId.length<=512)&&['streamId','sourceId','runId'].every(k=>typeof v[k]==='string'&&v[k].length>0&&v[k].length<=512)&&Number.isSafeInteger(v.fence)&&Number(v.fence)>0;
+}
 /** Exact publication selected by an explicit native tool, never by generated prose. */
 export type ReplyStreamPublication =
   | { kind: "message"; intent: "broadcast" | "direct_to_user" | "collaboration";
@@ -25,6 +33,9 @@ export interface VoiceReplySnapshot {
   state: "open" | "streaming" | "completed" | "failed";
   acceptedAt: string; leasedAt?: string; runStartedAt?: string; firstTextAt?: string;
   completedAt?: string;
+  /** Set only after the exact canonical publication is committed. */
+  canonicalReplyEventId?: string;
+  canonicalRequestUpdateId?: string;
   /** Host receipt clocks, never browser monotonic timestamps. */
   submittedAt?: string; firstModelTextAt?: string;
   /** Memory authority changed; automatic canonical fallback must stay silent. */

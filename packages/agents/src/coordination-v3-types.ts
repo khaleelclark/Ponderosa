@@ -67,6 +67,8 @@ export interface CoordinateV3Result {
 }
 
 export interface UpdateRequestV3Input {
+  /** Host-only presentation metadata, excluded from semantic update identity. */
+  replyStream?: import("@ponderosa/core").ReplyStreamCorrelation;
   requestId: string;
   updateId: string;
   kind: CoordinationRequestUpdateKind;

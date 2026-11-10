@@ -104,7 +104,7 @@ export function registerVoiceReplyRoutes(app: FastifyInstance, c: Context): void
       const activationId=presentation==="text" ? sourceActivationId : runtime?.activations?.find(a=>a.agentId===agentId)?.id;
       const obligation=t?.runId && activationId ? c.coordinationV3.requiredReplyObligationsForRun(t.runId)
         .find(o=>o.sourceActivationId===activationId) : undefined;
-      const canonicalReplyEventId=obligation?.satisfiedCommunicationId ?? obligation?.interimCommunicationId;
+      const canonicalReplyEventId=presentation==="text"?s?.canonicalReplyEventId:obligation?.satisfiedCommunicationId ?? obligation?.interimCommunicationId;
       return { messageId, acceptedAt: reportSource?.created_at??input!.createdAt, ...t, ...(canonicalReplyEventId ? {canonicalReplyEventId} : {}),
         memoryExposure:await voiceMemoryExposure({...c.memoryPorts,validateMemory:async runId=>localMemoryFor(app)?.speechStatus(runId)??false}, { agentId, projectId: chat.projectId, conversationId: id, messageId, runId: t?.runId,sourceKind:reportSource?'request':'communication' }),
         ...(s?.messageId === messageId && s.runId === t?.runId ? { reply: { ...s } } : {}) } satisfies VoiceReplyStatus;

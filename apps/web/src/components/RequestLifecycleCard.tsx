@@ -1,4 +1,4 @@
-import {DirectReplyPreview} from './chat/DirectReplyPreview';
+import {useRequestReplyProjection,ReplyReadFeedback} from './chat/useTextReplyProjection';
 import {
   Accordion,
   AccordionDetails,
@@ -121,12 +121,14 @@ function ResultArtifact({
 
 function RequestUpdate({
   update,
+  provisional=false,
   questionNumber,
   answeredQuestionNumber,
   agentTitle,
   onOpenWork,
 }: {
   update: CoordinationRequestUpdateDto;
+  provisional?:boolean;
   questionNumber?: number;
   answeredQuestionNumber?: number;
   agentTitle: (agentId: string | undefined) => string;
@@ -158,10 +160,10 @@ function RequestUpdate({
         borderLeft: 3,
         borderColor: answeredQuestionNumber ? "primary.main" : "divider",
       }}
-      aria-label={`${updateKindLabel(update.kind)} Update By ${updateActor(update, agentTitle)}`}
+      aria-label={`${provisional?"Result In Progress":updateKindLabel(update.kind)} Update By ${updateActor(update, agentTitle)}`}
     >
       <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ alignItems: "center" }}>
-        <Chip size="small" variant="outlined" label={updateKindLabel(update.kind)} />
+        <Chip size="small" variant="outlined" label={provisional?"Result In Progress":updateKindLabel(update.kind)} />
         <Typography variant="subtitle2" sx={{ flex: 1 }}>
           {updateActor(update, agentTitle)}
         </Typography>
@@ -279,6 +281,7 @@ export function RequestLifecycleCard({
     staleTime: 15_000,
   });
   const lifecycle = query.data?.requestLifecycle;
+  const {rows:replyRows,feedback:replyFeedback}=useRequestReplyProjection(lifecycle?.updates??[],projectId,conversationId,lifecycle?.request,expanded&&lifecycle?.request.id===requestId&&lifecycle?.request.recipientAgentId===recipientAgentId);
   const readOnly = useWorkspaceReadOnly();
   const queryClient = useQueryClient();
   const [confirmRetry, setConfirmRetry] = useState(false);
@@ -419,19 +422,18 @@ export function RequestLifecycleCard({
                 </Typography>
               )}
             </Box>
-            {expanded && conversationId && lifecycle.request.id === requestId && lifecycle.request.recipientAgentId === recipientAgentId ? (
-              <DirectReplyPreview projectId={projectId} agentTitle={agentTitle(recipientAgentId)} agentId={recipientAgentId} request={{id:requestId,conversationId,state:lifecycle.request.state}} />
-            ) : null}
+            {replyFeedback.length?<ReplyReadFeedback entry={replyFeedback} agentTitle={agentTitle}/>:null}
             {lifecycle.updatesTruncated ? (
               <Alert severity="info">
                 Earlier Request updates are omitted from this bounded view.
               </Alert>
             ) : null}
             <Box component="ol" sx={{ p: 0, m: 0 }} aria-label="Request Update History">
-              {lifecycle.updates.map((update) => (
+              {replyRows.map(({update,key,provisional}) => (
                 <RequestUpdate
-                  key={update.id}
+                  key={key}
                   update={update}
+                  provisional={provisional}
                   questionNumber={questions.get(update.id)}
                   answeredQuestionNumber={
                     update.inReplyToUpdateId
@@ -443,7 +445,7 @@ export function RequestLifecycleCard({
                 />
               ))}
             </Box>
-            {lifecycle.updates.length === 0 ? (
+            {replyRows.length === 0 ? (
               <Typography variant="body2" color="text.secondary">
                 The recipient has not posted an update yet.
               </Typography>

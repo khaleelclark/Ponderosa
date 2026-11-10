@@ -1,3 +1,4 @@
+import type {ReplyStreamCorrelation} from "../voice-reply.js";
 import type { EngineId } from "../adapter.js";
 import type {
   CommunicationActor,
@@ -117,6 +118,8 @@ export interface CollaborationRecipientDto {
 
 /** A message in the project-level conversation (a team group chat). */
 export interface ConversationMessageDto {
+  /** Exact host-authored stream binding; not provisional Communication. */
+  replyStream?: ReplyStreamCorrelation;
   /** Existing committed human-creation key; correlation only, never dispatch authority. */
   creationIdempotencyKey?: string;
   /** Exact bounded authored communication text before display-only scope tags. */
@@ -512,6 +515,8 @@ export interface CoordinationRequestArtifactDto {
 }
 
 export interface CoordinationRequestUpdateDto {
+  /** Exact host-authored stream binding; not provisional Communication. */
+  replyStream?: ReplyStreamCorrelation;
   id: string;
   kind: CoordinationStoredRequestUpdateKind;
   historicalOrigin?: {restorationId:string;sourceRequestId:string;sourceUpdateId:string;sourceKind:string;sourceVersion:number};
@@ -748,6 +753,8 @@ export interface SteerQueuedMessageResponse {
 
 /** A Chat-pane message (SPEC §7 `messages`). Intent/conversation only. */
 export interface MessageDto {
+  /** Exact host-authored stream binding; not provisional Communication. */
+  replyStream?: ReplyStreamCorrelation;
   /** Existing committed human-creation key; correlation only, never dispatch authority. */
   creationIdempotencyKey?: string;
   id: string;

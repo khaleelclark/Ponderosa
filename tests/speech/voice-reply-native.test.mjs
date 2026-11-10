@@ -158,6 +158,7 @@ async function fixture(options={},runCheck){
  // host's pressure. Admission holds/recovery are tested with explicit samples.
  app=createServer({resourceAdmissionObservation:{sample:async()=>({availableBytes:8*1024**3,memoryFullPercent:0,ioFullPercent:0,source:'linux_host'})},dataDir:path.join(dir,'data'),store,authToken:token,engines:[{adapter,authStatus:async()=>({authenticated:true})}],logger:false,...(options.memory?{localMemory:{chromaUrl:await isolatedChroma(),collectionPrefix:'voice_'+branch.id.replaceAll('-',''),modelDir:process.env.PONDEROSA_TEST_MEMORY_MODEL_DIR ?? path.join(tmpdir(),'unconfigured-memory-models'),stateDirectory:path.join(dir,'memory-policy'),provision:true}}:{}),communicationV3:{pollMs:10}});
  app.addHook('onSend',async(request,reply,payload)=>{if(request.url===replyUrl)armed={statusCode:reply.statusCode,body:typeof payload==='string'?payload:JSON.stringify(payload)};return payload;});
+ if(options.observePublication)app.addHook('onSend',async(request,reply,payload)=>{if(request.url==='/api/agent-messages'&&reply.statusCode===200)await options.observePublication({app,store,coord,payload:typeof payload==='string'?JSON.parse(payload):payload});return payload;});
  const memoryUrl='/api/agent-local-memory';
  if(options.publicationAckRace){
   let changed=false;
@@ -210,7 +211,7 @@ async function fixture(options={},runCheck){
  const messageId=options.agentDispatch?sent.json().communicationEventId:sent.json().message.communicationEventId;assert.ok(messageId);
  await boundedWait(()=>options.noVoiceTool?reached:armed,'provider ready');
  await boundedWait(()=>options.unsupported||options.ordinary||reached,'candidate processed');
- const url=`/api/branches/engine/conversations/${chat.id}/voice-replies/${messageId}/${agent.id}`;
+ const url=`/api/branches/engine/conversations/${chat.id}/${options.textStream?"reply-streams":"voice-replies"}/${messageId}/${agent.id}`;
  await runCheck({app,store,coord,agent,chat,project,headers,messageId,url,release,done,installation,get armed(){return armed;},get reauthorization(){return reauthorization;},get fallbackResult(){return fallbackResult;},get modes(){return modes;},get starts(){return starts;},memoryRecord,globalRecord,memoryUrl,memoryHeaders,submitted});
  }finally{PonderosaMemory.prototype.bindChat=originalBindChat;release();if(app){if(starts)await done;app.prepareForShutdown();await app.close();assert.equal(app.server.listening,false);console.log('OWN SERVER CLOSED');}store.close();await rm(dir,{recursive:true,force:true});
   await new Promise(resolve=>setImmediate(resolve));
@@ -666,16 +667,24 @@ test('Claude-native normalized authorization and partials use the actual server 
 }));
 
 
-for (const claudeNative of [false,true]) test('explicit nonvoice publication streams before canonical commit '+JSON.stringify({claudeNative}),async()=>fixture({textStream:true,claudeNative},async f=>{
- assert.equal(f.armed.statusCode,200,f.armed.body);
- const early=await f.app.inject({method:'GET',url:f.url,headers:f.headers});
- assert.equal(early.json().reply.presentation,'text');assert.equal(early.json().reply.text,'First stable phrase. ');
- assert.equal(f.coord.runtimeCommunications(f.project.id).filter(row=>row.payload.communication?.sender.kind==='agent').length,0);
- f.release();await f.done;await boundedWait(()=>f.coord.activeAgentRun(f.agent.id)===undefined,'text completion');
- const replies=f.coord.runtimeCommunications(f.project.id).filter(row=>row.payload.communication?.sender.kind==='agent');
- assert.equal(replies.length,1);assert.equal(replies[0].payload.communication.text,'First stable phrase. Second phrase.');
- const final=await f.app.inject({method:'GET',url:f.url,headers:f.headers});assert.equal(final.json().reply.presentation,'text');assert.equal(final.json().reply.state,'completed');
-}));
+for (const claudeNative of [false,true]) test('explicit nonvoice publication streams before canonical commit '+JSON.stringify({claudeNative}),async()=>{
+ let firstInsert;
+ await fixture({textStream:true,claudeNative,observePublication:({coord,payload})=>{firstInsert=coord.runtimeCommunication(payload.eventId)?.payload.communication?.replyStream;assert.ok(firstInsert,'Exact correlation exists at canonical insertion, before final snapshot');}},async f=>{
+  assert.equal(f.armed.statusCode,200,f.armed.body);
+  const early=(await f.app.inject({method:'GET',url:f.url,headers:f.headers})).json();
+  assert.equal(early.reply.presentation,'text');assert.equal(early.reply.text,'First stable phrase. ');
+  const forged=await f.app.inject({method:'POST',url:'/api/agent-messages',headers:{...f.memoryHeaders,'x-ponderosa-text-publication':'forged'},payload:{text:'Forged correlation'}});assert.equal(forged.statusCode,409);
+  assert.equal(f.coord.runtimeCommunications(f.project.id).filter(row=>row.payload.communication?.sender.kind==='agent').length,0);
+  f.release();await f.done;await boundedWait(()=>f.coord.activeAgentRun(f.agent.id)===undefined,'text completion');
+  const replies=f.coord.runtimeCommunications(f.project.id).filter(row=>row.payload.communication?.sender.kind==='agent');
+  assert.equal(replies.length,1);assert.equal(replies[0].payload.communication.text,'First stable phrase. Second phrase.');
+  const final=(await f.app.inject({method:'GET',url:f.url,headers:f.headers})).json();assert.equal(final.reply.state,'completed');
+  assert.deepEqual(firstInsert,{streamId:early.reply.streamId,sourceId:f.messageId,runId:early.runId,fence:early.reply.fence});
+  assert.equal(final.canonicalReplyEventId,replies[0].id);assert.equal(final.reply.canonicalReplyEventId,replies[0].id);
+  const detail=(await f.app.inject({method:'GET',url:`/api/branches/engine/agents/${f.agent.id}`,headers:f.headers})).json();
+  assert.deepEqual(detail.messages.find(m=>m.communicationEventId===replies[0].id).replyStream,firstInsert,'Normal Agent read model carries exact binding');
+ });
+});
 
 test('Agent direct dispatch resolves scoped text streaming by canonical event identity',async()=>fixture({textStream:true,agentDispatch:true},async f=>{
  assert.equal(f.armed.statusCode,200,f.armed.body);

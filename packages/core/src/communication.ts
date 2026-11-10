@@ -1,5 +1,6 @@
 /** Canonical communication contracts shared by persistence, routing, and UI. */
 
+import {isReplyStreamCorrelation,type ReplyStreamCorrelation} from "./voice-reply.js";
 import type { AssetDto, CommunicationAttachmentDto } from "./dto.js";
 
 export interface MessageTagToken {
@@ -62,6 +63,8 @@ export interface VerifiedCitationRecord {
 }
 
 interface CommunicationEventBase {
+  /** Host-only correlation, attached by the exact canonical stream commit. */
+  replyStream?: ReplyStreamCorrelation;
   eventId: string;
   schemaVersion: 2;
   projectId: string;
@@ -162,6 +165,7 @@ export function isCommunicationEvent(value: unknown): value is CommunicationEven
   if (!event || event.schemaVersion !== 2 ||
       !nonEmptyString(event.eventId) || !nonEmptyString(event.projectId) ||
       (event.conversationId !== undefined && !nonEmptyString(event.conversationId)) ||
+      (event.replyStream!==undefined&&(!isReplyStreamCorrelation(event.replyStream)||!isCommunicationActor(event.sender)||event.sender.kind!=="agent"||event.sender.executionId!==event.replyStream.runId)) ||
       !isCommunicationActor(event.sender) || !nonEmptyString(event.intent) ||
       !communicationIntentValues.has(event.intent) || !isCommunicationAudience(event.audience) ||
       typeof event.text !== "string" || !nonEmptyString(event.createdAt) ||

@@ -22,7 +22,7 @@ import type { ActivityStreamEntry } from "../activity/activityStream";
 import { AgentWorkReceipt } from "./AgentWorkReceipt";
 import { hasVisibleReceiptActivity } from "./receiptActivityEntries";
 import { ChatMessageFrame } from "./ChatMessageFrame";
-import {DirectReplyPreview} from "./DirectReplyPreview";
+import {useTextReplyProjection,ReplyReadFeedback} from "./useTextReplyProjection";
 import { LiveAgentProgress } from "./LiveAgentProgress";
 import { ChatSurface } from "./ChatSurface";
 import {
@@ -176,9 +176,7 @@ function ChatPaneComponent({
     [messages, runs],
   );
   const chatMessages = agentChat.messages;
-  const latestDirectInput=[...chatMessages].reverse().find(message=>message.role==='user'&&message.communicationIntent==='user_dm');
-  const latestPeerInput=[...chatMessages].reverse().find(message=>message.communicationIntent==='collaboration'&&message.communicationSender?.kind==='agent'&&message.authorAgentId!==message.agentId&&!message.coordinationRequests?.length);
-  const latestBroadcastInput=[...chatMessages].reverse().find(message=>message.role==='user'&&message.communicationIntent==='broadcast');
+  const replyRows=useTextReplyProjection(chatMessages,projectId??'',JSON.stringify([projectId,fileOwnerAgentId,scrollStorageKey]),{active:active!==false&&Boolean(projectId),agentId:fileOwnerAgentId});
   const visibleRunIds = useMemo(
     () => new Set(agentChat.runs.map(run => run.id)),
     [agentChat.runs],
@@ -297,11 +295,13 @@ function ChatPaneComponent({
         ...decisionEvents.filter(event => event.kind === "decision_response").map(event => ({
           kind: "decision-response" as const, id: event.id, createdAt: event.createdAt, event,
         })),
-        ...chatMessages.map(message => ({
+        ...replyRows.map(row => ({
           kind: "message" as const,
-          id: `message:${message.id}`,
-          createdAt: message.createdAt,
-          message,
+          id: row.key,
+          createdAt: row.at,
+          message:row.message,
+          provisional:row.provisional,
+          feedback:row.feedback,
         })),
         ...runPlacement.standalone.map(run => ({
           kind: "run" as const,
@@ -325,7 +325,7 @@ function ChatPaneComponent({
               ? -1
               : 1),
       ),
-    [chatMessages, decisionCards, decisionEvents, runPlacement.standalone, unscopedActivity],
+    [replyRows, decisionCards, decisionEvents, runPlacement.standalone, unscopedActivity],
   );
   const latestTimelineItem = timeline.at(-1);
   const latestActivity = activityEntries.at(-1);
@@ -415,7 +415,7 @@ function ChatPaneComponent({
             />
           );
         }
-        const message = item.message.createdAt===createdAt?item.message:{...item.message,createdAt};
+        const message = item.provisional||item.message.replyStream||item.message.createdAt===createdAt?item.message:{...item.message,createdAt};
         const visibleAgentName = message.authorAgentId
           ? (agentNameForId?.(message.authorAgentId) ?? "Agent")
           : agentName;
@@ -477,7 +477,7 @@ function ChatPaneComponent({
                       : {}),
                   },
               createdAt: message.createdAt,
-              onVisible: onCommunicationVisible
+              onVisible: !item.provisional&&onCommunicationVisible
                 ? (visible) =>
                     onCommunicationVisible(
                       message.communicationEventId,
@@ -543,7 +543,7 @@ function ChatPaneComponent({
                 </>
               ),
               attachments: message.attachments,
-              belowBody: item.message===latestPeerInput&&projectId?<DirectReplyPreview active={active} agentTitle={agentNameForId?.(message.agentId)??agentName} sent={message} agentId={message.agentId} peerAgentId={message.agentId} messages={chatMessages} projectId={projectId}/>:message.role === "user" ? <><LiveAgentProgress receipts={message.deliveryReceipts} onOpenAgent={onOpenAgent} />{(item.message===latestDirectInput||item.message===latestBroadcastInput)&&projectId&&[...new Set(message.deliveryReceipts?.map(receipt=>receipt.targetAgentId)??[])].map(agentId=><DirectReplyPreview active={active} key={`${message.id}:${agentId}`} sent={message} agentTitle={agentNameForId?.(agentId)??agentName} agentId={agentId} messages={chatMessages} projectId={projectId}/>)}</> : undefined,
+              belowBody: <>{message.role === "user" ? <LiveAgentProgress receipts={message.deliveryReceipts} onOpenAgent={onOpenAgent} /> : null}{item.feedback?.length?<ReplyReadFeedback entry={item.feedback} agentTitle={id=>agentNameForId?.(id)??agentName}/>:null}</>,
               attachmentDensity: "compact",
               status:
                 (message.role === "user" || message.communicationIntent === "collaboration") && message.deliveryReceipts?.length ? (
@@ -559,7 +559,7 @@ function ChatPaneComponent({
                     compactSuccessTooltip={false}
                   />
                 ) : undefined,
-              actions: (
+              actions: !item.provisional&& (
                 <>
                   <CopyMessageButton text={message.communicationIntent === "collaboration" ? message.text : visibleAgentMessageText(message,conversationChrome?fileOwnerAgentId:undefined)} />
                   <MessageRequestAction

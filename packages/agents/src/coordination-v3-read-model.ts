@@ -5,7 +5,7 @@ import type {
   CoordinationRequestState,
   CoordinationStoredRequestUpdateKind as CoordinationRequestUpdateKind,
 } from "@ponderosa/core";
-import { outcomeCauseExplanation, outcomeCauseFromPayload, publicProviderFailureSummary } from "@ponderosa/core";
+import { isReplyStreamCorrelation, outcomeCauseExplanation, outcomeCauseFromPayload, publicProviderFailureSummary } from "@ponderosa/core";
 import { inspectorDetails, inspectorJson, inspectorWakePolicy } from "./coordination-v3-inspector.js";
 import {
   providerSafeActivationPayload,
@@ -1155,6 +1155,7 @@ export class CoordinationV3ReadModel {
           return {
             id: row.id,
             kind: row.kind,
+            ...(row.actor_kind==='agent'&&payload&&typeof payload==='object'&&isReplyStreamCorrelation((payload as any).__replyStream)&&((payload as any).__replyStream.sourceId===request.id)?{replyStream:(payload as any).__replyStream}:{}),
             ...(origin ? {historicalOrigin:{restorationId:origin.restoration_id,sourceRequestId:origin.source_request_id,sourceUpdateId:origin.source_update_id,sourceKind:origin.source_kind,sourceVersion:origin.source_resulting_version}} : {}),
             actorKind: row.actor_kind,
             ...(row.actor_id ? { actorId: row.actor_id } : {}),

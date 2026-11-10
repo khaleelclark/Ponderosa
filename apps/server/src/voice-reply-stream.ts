@@ -87,5 +87,5 @@ export class VoiceReplyStream {
     this.snapshot.sequence++; return true;
   }
   finalText(): string | undefined { return this.broken ? undefined : this.completeText?.trim(); }
-  complete(at: string): void { if (this.broken) return; this.snapshot.state = "completed"; this.snapshot.completedAt = at; this.snapshot.sequence++; }
+  complete(at: string, publication?: {eventId?:string;updateId?:string}): void { if (this.broken) return; if(publication?.eventId)this.snapshot.canonicalReplyEventId=publication.eventId;if(publication?.updateId)this.snapshot.canonicalRequestUpdateId=publication.updateId;this.snapshot.state = "completed"; this.snapshot.completedAt = at; this.snapshot.sequence++; }
 }

@@ -1,3 +1,4 @@
+import {textReplyPublicationCorrelation} from "../reply-stream-publication.js";
 import { createHash, randomUUID } from "node:crypto";
 import {
   PONDEROSA_MESSAGE_TOOL,
@@ -473,6 +474,11 @@ export function registerAgentCommunicationRoutes(
       }
     }
     const suppliedSteeringFence = request.body?.steeringInjectionId?.trim();
+    let replyStream;
+    try { replyStream=textReplyPublicationCorrelation(request.headers['x-ponderosa-text-publication'],active,capability,
+      {kind:'message',intent,...(inferredRecipientAgentIds.length?{recipientAgentIds:inferredRecipientAgentIds}:{}),
+       ...(documentTitle?{documentTitle}:{}),...(taskDelivery?{taskDelivery}:{})},suppliedSteeringFence); }
+    catch(error){return reply.code(409).send({error:(error as Error).message});}
     const replyRequest = requiredReplyRequest(coordinationV3, capability.runId, selectedReplyAuthority, taskDelivery);
     const candidateRequiredReplyFingerprint = createHash("sha256").update(JSON.stringify({
       intent, text, recipientAgentIds: inferredRecipientAgentIds,
@@ -744,6 +750,7 @@ export function registerAgentCommunicationRoutes(
     if (intent === "direct_to_user") {
       const proposedCommunication: CommunicationEvent = {
         eventId: communicationEventId,
+        ...(replyStream?{replyStream}:{}),
         schemaVersion: 2,
         projectId: currentAuthor.projectId,
         ...(capability.conversationId ? { conversationId: capability.conversationId } : {}),
@@ -871,6 +878,7 @@ export function registerAgentCommunicationRoutes(
     const channel = intent === "broadcast" ? "main" : "collaboration";
     const proposedCommunication: CommunicationEvent = intent === "broadcast" ? {
       eventId: communicationEventId,
+      ...(replyStream?{replyStream}:{}),
       schemaVersion: 2,
       projectId: currentAuthor.projectId,
       conversationId: capability.conversationId,
@@ -885,6 +893,7 @@ export function registerAgentCommunicationRoutes(
       ...(idempotencyKey ? { idempotencyKey } : {}),
     } : {
       eventId: communicationEventId,
+      ...(replyStream?{replyStream}:{}),
       schemaVersion: 2,
       projectId: currentAuthor.projectId,
       conversationId: capability.conversationId,

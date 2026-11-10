@@ -1,3 +1,5 @@
+import type {ActiveRun,AgentMessageCapability} from "./app-contracts.js";
+import type {ReplyStreamCorrelation} from "@ponderosa/core";
 import { canonicalizeProviderText, unicodeCodePointLength, TERMINAL_REQUEST_STATES,
   type ReplyStreamArguments, type ReplyStreamPublication } from "@ponderosa/core";
 import type { AgentStore, CoordinationV3Store } from "@ponderosa/agents";
@@ -76,4 +78,17 @@ export function replyStreamCommit(publication:ReplyStreamPublication,text:string
     ...(publication.taskDelivery?{taskDelivery:publication.taskDelivery}:{}),
     ...(publication.documentTitle?{document:{title:publication.documentTitle,content:text,mediaType:"text/markdown"}}:{}),
     ...(steeringInjectionId?{steeringInjectionId}:{})}};
+}
+
+/** Ordinary provider publications cannot claim a stream by supplying an ID.
+ * Only the host's exact in-flight commit carries this opaque correlation token;
+ * all existing canonical routing, context and idempotency checks still apply. */
+export function textReplyPublicationCorrelation(token:unknown,run:ActiveRun|undefined,cap:AgentMessageCapability,
+ publication:ReplyStreamPublication,steeringInjectionId?:string):ReplyStreamCorrelation|undefined {
+ if(token===undefined)return;
+ const owned=run?.textReplyPublication,s=run?.voiceReply?.snapshot;
+ if(typeof token!=='string'||!owned||token!==owned.token||!s||s.presentation!=='text'||s.state==='failed'||s.purpose==='acknowledgement'||
+   owned.streamId!==s.streamId||owned.sourceId!==s.messageId||s.agentId!==cap.agentId||s.conversationId!==cap.conversationId||s.runId!==cap.runId||s.fence!==cap.v3FencingToken||
+   s.steeringInjectionId!==steeringInjectionId||JSON.stringify(s.publication)!==JSON.stringify(publication))throw Error('Text reply publication correlation changed');
+ return {streamId:s.streamId,sourceId:s.messageId,runId:s.runId,fence:s.fence,...(s.steeringInjectionId?{steeringInjectionId:s.steeringInjectionId}:{})};
 }
