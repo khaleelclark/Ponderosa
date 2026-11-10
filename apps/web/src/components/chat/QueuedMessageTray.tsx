@@ -2,6 +2,7 @@ import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import SubdirectoryArrowRightIcon from "@mui/icons-material/SubdirectoryArrowRight";
 import { Box, Button, IconButton, Paper, Stack, TextField, Tooltip, Typography } from "@mui/material";
+import { alpha } from "@mui/material/styles";
 import type { QueuedConversationMessageDto } from "@ponderosa/core";
 import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
@@ -88,7 +89,10 @@ function QueuedMessageTrayComponent({ messages, scope, attachmentNamesForMessage
           rootRef.current?.querySelector("[data-queue-row]:last-child")?.contains(event.target as Node)) revealRows();
     }}
     sx={theme => ({
-      width: composerSurfaceWidth,
+      width: Object.fromEntries(Object.entries(composerSurfaceWidth).map(([breakpoint, width]) =>
+        [breakpoint, `calc(${width} - ${breakpoint === "xs" ? 8 : 16}px)`])),
+      position: "relative",
+      zIndex: 2,
       minWidth: 0,
       maxWidth: "100%",
       mx: "auto",
@@ -99,14 +103,19 @@ function QueuedMessageTrayComponent({ messages, scope, attachmentNamesForMessage
       maxHeight: "min(30vh, 160px)",
       "& .MuiIconButton-root, & .MuiButton-root": { minHeight: 28, minWidth: 28, p: 0.5 },
       "& .queued-message-row": { display: "flex", alignItems: "center", gap: 0.75, minHeight: 30, minWidth: 0 },
-      "& .queued-message-position": { ...theme.typography.caption, m: 0, fontVariantNumeric: "tabular-nums" },
+      "& [data-queue-row] + [data-queue-row]": { borderTop: 1, borderColor: alpha(theme.palette.divider, 0.4) },
+      "& .queued-message-position": { ...theme.typography.caption, m: 0, color: "text.secondary", fontVariantNumeric: "tabular-nums" },
       "& .queued-message-text": { ...theme.typography.body2, m: 0, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
       "& .queued-message-agent": { ...theme.typography.caption, m: 0, color: "text.secondary", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: { xs: "none", md: "block" }, maxWidth: 160 },
       "@media (pointer: coarse)": { "& .MuiIconButton-root, & .MuiButton-root": { minHeight: 44, minWidth: 44 }, "& [data-queue-row]": { minHeight: 44 } },
       overflowY: "auto",
-      borderRadius: "16px 16px 8px 8px",
-      bgcolor: "background.paper",
-      boxShadow: 2,
+      borderRadius: "14px 14px 8px 8px",
+      borderColor: alpha(theme.palette.divider, 0.55),
+      // Reserve the overlap outside the scrollport, including while mid-scroll.
+      borderBottomWidth: 12,
+      borderBottomColor: "transparent",
+      bgcolor: `var(--ponderosa-surface-secondary, ${theme.palette.background.paper})`,
+      boxShadow: "none",
     })}
   >
     <Stack spacing={0.25}>
