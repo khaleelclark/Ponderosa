@@ -192,6 +192,8 @@ export interface MessageDeliveryReceiptDto {
   state: MessageDeliveryReceiptState;
   /** Exact queued work held by a failed or uncertain settings handoff. */
   settingsTransitionHold?: "retry_available" | "review_required";
+  /** This saved input is blocked by this Agent's exact uncertain retained session. */
+  contextRecoveryRequired?: { sourceRunId: string; recoveryId?: string };
   /** Exact task whose Decision accounting cannot currently be verified. */
   taskDecisionRepairHold?: true;
   /** Exact unfinished task held by an unverified context rollover. */

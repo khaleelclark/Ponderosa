@@ -39,6 +39,7 @@ async function transitionSystemPromptHash(agent:AgentDto,project:ProjectDto,pref
 const unrecordedHolds=new WeakMap<CoordinationV3Store,Map<string,string>>();
 type TransitionNotices=ReturnType<typeof createOperationalNotifications>;
 type TransitionContext={app:PonderosaServer;store:AgentStore;coordinationV3:CoordinationV3Store;workspace:WorkspaceStore;
+ contextRecoveryRunning?:(agentId:string)=>boolean;
  createOperationalNotification:TransitionNotices['createOperationalNotification'];resolveOperationalNotification:TransitionNotices['resolveOperationalNotification']};
 export function transitionFingerprint(ctx:Pick<TransitionContext,"app"|"store"|"workspace">,projectId:string,agentId:string,activationId:string):string{
  const {app,store,workspace}=ctx,agent=store.getAgent(agentId),chat=agent&&store.getConversation(agent.conversationId),
@@ -60,6 +61,17 @@ function transitionIncidentKey(ctx:TransitionContext,projectId:string,agentId:st
   recovery?.sourceRunId??boundary?.executionId,recovery?.sourceFence??boundary?.fencingToken);
 }
 function transitionNotice(ctx:TransitionContext,projectId:string,agentId:string,activationId:string,reason:string,internal=false){
+ const recovery=ctx.coordinationV3.contextRecovery.active(agentId);
+ const uncertain=recovery??ctx.store.uncertainProviderContextRecoveryBoundary(agentId);
+ if(uncertain) {
+  const running=Boolean(ctx.contextRecoveryRunning?.(agentId));
+  internal ||= running;
+  // Every producer describes this same boundary, not its current admission pass.
+  reason=running?'The retained session is recovering. New messages are saved; earlier uncertain work is not replayed.'
+   : recovery?.progress?.nativeInvoked&&recovery.progress.phase!=='context_accepted'
+    ? 'The native recovery result is unconfirmed. New messages are saved. Review the exact recovery in Agent Chat; compaction and earlier work will not be replayed.'
+    : 'The earlier session was interrupted. New messages are saved. Open Agent Chat to recover the retained session; the earlier task and its effects remain unconfirmed.';
+ }
  const previous=ctx.workspace.findNotification(n=>n.agentId===agentId&&n.projectId===projectId&&n.status!=='resolved'&&!n.recoveredAt&&Boolean(n.workContext?.activationIds?.includes(activationId)),true);
  const boundaryKey=previous?.workContext?.traceId??transitionIncidentKey(ctx,projectId,agentId,activationId);
  const existing=ctx.workspace.notificationForWork({category:'coordination',projectId,workContext:{kind:'activation',recordId:activationId,traceId:boundaryKey,state:'blocked',occurredAt:''}})
@@ -74,7 +86,7 @@ function transitionNotice(ctx:TransitionContext,projectId:string,agentId:string,
  const assignment=(continuing&&existing.workContext?.assignment?existing.workContext.assignment:source?ctx.store.getCommunicationEvent(projectId,source.event_id)?.text:typeof work?.text==='string'?work.text:undefined)?.replace(/\s+/gu,' ').trim().slice(0,220);
  const activationIds=[...new Set([...(existing&&(existing.status??'open')==='open'?existing.workContext?.activationIds??[existing.workContext?.recordId??activationId]:[]),activationId])];
  const notice=ctx.createOperationalNotification({dedupeKey:existing?.dedupeKey??boundaryKey,renewAfterRecovery:true,internal,category:'coordination',severity:'attention',
-  title:`${agent?.title??'Agent'}${chat?.title?` · ${chat.title}`:''} · Context Needs Review`,body:reason.slice(0,1000),projectId,agentId,...(agent?.conversationId?{conversationId:agent.conversationId}:{}),
+  title:`${agent?.title??'Agent'}${chat?.title?` · ${chat.title}`:''} · ${uncertain?'Needs Recovery':'Context Needs Review'}`,body:reason.slice(0,1000),projectId,agentId,...(agent?.conversationId?{conversationId:agent.conversationId}:{}),
   ...(assignment?{contextPreview:assignment.slice(0,120)}:{}),
   workContext:{kind:'activation',recordId:continuing?existing.workContext?.recordId??activationId:activationId,activationIds,traceId:boundaryKey,state:internal?'recovering':'blocked',occurredAt:continuing?existing.workContext?.occurredAt??new Date().toISOString():new Date().toISOString(),...(assignment?{assignment}:{})},
   action:{kind:'open_agent',targetId:agentId}});

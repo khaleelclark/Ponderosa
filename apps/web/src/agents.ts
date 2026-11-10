@@ -163,7 +163,8 @@ export function agentStatusPresentation(
   const status = health.status;
   const displayStatus = agentDisplayStatus(health);
   const blocker = health && "admissionBlocker" in health ? health.admissionBlocker : undefined;
-  const coarseLabel = AGENT_DISPLAY_STATUS_LABELS[displayStatus];
+  const coarseLabel = health.reason==='context_recovery_required'?'Needs Recovery'
+    : health.reason==='context_recovery_cleanup'?'Recovery Cleanup Pending':AGENT_DISPLAY_STATUS_LABELS[displayStatus];
   const coarse = {
     status: displayStatus,
     label: coarseLabel,

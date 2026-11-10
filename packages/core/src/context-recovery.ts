@@ -54,3 +54,14 @@ export interface ProviderContextRecoveryEvidence {
   priorEffects: "unknown";
   historyDisposition: "retained";
 }
+
+export interface ProviderContextRecoveryStatus {
+  support: ProviderContextRecoverySupport;
+  boundary: Pick<ProviderContextRecoveryRequest, "providerSessionId" | "sourceRunId" | "toolContractHash" | "sourceFence"> | null;
+  request: ProviderContextRecoveryRequest | null;
+  sourceEvidence?: ProviderContextRecoveryEvidence;
+  /** A durable phase alone does not prove a native operation is still running. */
+  operationState?: "running" | "cleanup_pending" | "idle";
+  engineId?: string;
+  blocker?: {kind:"authentication"|"access_changed"|"context_unavailable";message:string};
+}

@@ -26,3 +26,10 @@ test('denied storage reads and quota/readback failures never masquerade as saved
  assert.throws(()=>mismatch.writeRecoveryKey('agent',''),/Dismissal returned/);
  assert.equal(mismatch.readRecoveryKey('agent').key,undefined);
 });
+test('recovery persists the same operation key with its frozen boundary and product scope',()=>{
+ const entries=new Map(),f=fixture({getItem:key=>entries.get(key)??null,setItem:(key,value)=>entries.set(key,value)});
+ const boundary={providerSessionId:'session',sourceRunId:'source',toolContractHash:'a'.repeat(64),sourceFence:7};
+ f.writeRecoveryKey('agent','same-key',{boundary,productPath:'/api/branches/engine/agents/agent/context-recoveries'});
+ const restored=f.readRecoveryKey('agent');assert.equal(restored.key,'same-key');assert.equal(restored.boundary.sourceFence,7);assert.match(restored.productPath,/branches/);
+ entries.set('agent','{"key":"same-key","boundary":{}}');assert.match(f.readRecoveryKey('agent').error,/unavailable/);
+});

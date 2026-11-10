@@ -11,6 +11,7 @@ import { AgentWorkProjection } from "./routes/agent-work.js";
 import { setImmediate } from "node:timers/promises";
 
 interface OperationalNotificationsContext {
+  contextRecoveryRunning?(agentId:string):boolean;
   store: AgentStore;
   coordinationV3: CoordinationV3Store;
   workspace: WorkspaceStore;
@@ -124,7 +125,7 @@ export function createOperationalNotifications(context: OperationalNotifications
       const root=rootActivation(failure.id),key=`communication-delivery:${root}`;
       const receipt=receiptFor(failure.projectId,failure.communicationEventId,failure.agentId);
       if(receipt&&['processed','recovered','cancelled'].includes(receipt.state))continue;
-      const internal=recovering(receipt);
+      const internal=recovering(receipt)||Boolean(context.contextRecoveryRunning?.(failure.agentId));
       const existing=workspace.notificationForWork({category:'communication',projectId:failure.projectId,workContext:{kind:'activation',recordId:root,state:failure.state,occurredAt:failure.updatedAt}})??workspace.getNotificationByDedupeKey(key);
       if(internal&&!existing)continue;
       const conversationId=failure.scopeKey?.startsWith('conversation:')?failure.scopeKey.slice('conversation:'.length):undefined;

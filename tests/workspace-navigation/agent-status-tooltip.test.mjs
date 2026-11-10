@@ -14,6 +14,8 @@ test('individual Agent status is concise for every canonical phase, unknown and 
     [{ status: 'running' }, 'Waiting'],
     [{ status: 'needs_decision' }, 'Needs Decision'],
     [{ status: 'compacting' }, 'Recovering'],
+    [{ status: 'blocked',reason:'context_recovery_required' }, 'Needs Recovery'],
+    [{ status: 'blocked',reason:'context_recovery_cleanup' }, 'Recovery Cleanup Pending'],
     [{ status: 'failed', reason: 'private_diagnostic_code' }, 'Error'],
     [{ status: 'idle' }, 'Idle'],
     [undefined, 'Unknown'],

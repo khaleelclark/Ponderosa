@@ -1,10 +1,11 @@
 import { Box, Tooltip } from "@mui/material";
 import { agentDisplayStatus, AGENT_DISPLAY_STATUS_LABELS, type AgentHealthDto, type WorkspaceActivityCountDto } from "@ponderosa/core";
 import { SemanticStatusCircle, semanticStatusColorToken } from "./SemanticStatus";
+import { agentStatusPresentation } from "../agents";
 
 export function SidebarActivityBadge({ activity, agent, fresh = false, showLabel = false }: { activity?: WorkspaceActivityCountDto; agent?: { title: string; health?: AgentHealthDto }; fresh?: boolean; showLabel?: boolean }) {
   const status = agent ? agent.health ? agentDisplayStatus(agent.health) : "unknown" : activity?.status ?? "unknown";
-  const label = status === "unknown" ? "Unknown" : AGENT_DISPLAY_STATUS_LABELS[status];
+  const label = agent ? agentStatusPresentation(agent.health).label : status === "unknown" ? "Unknown" : AGENT_DISPLAY_STATUS_LABELS[status];
   const detail = agent ? `${agent.title} · ${label}${fresh ? "" : " · Status Updates Delayed"}` : activity
     ? `${label}; ${activity.runningCount} working, ${activity.waitingCount} waiting, ${activity.decisionCount} need decision, ${activity.recoveryCount} recovering, ${activity.errorCount} errors, ${activity.idleCount} idle, ${activity.unknownCount} unknown. Last confirmed ${activity.lastConfirmedAt ?? "unavailable"}${fresh ? "" : "; updates may be delayed"}.`
     : "Agent status unknown; no confirmed status available.";

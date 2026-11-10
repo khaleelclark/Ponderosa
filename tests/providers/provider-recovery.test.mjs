@@ -787,6 +787,8 @@ test('recovery reservation crash never repeats a native command and explicit sto
   assert.equal(reopened.byKey(agent.id,'reserved-before-crash').progress.phase,'native_started');
   assert.equal(reopened.reserveOperation(agent.id,r.id),false);
   assert.throws(()=>reopened.dismiss(agent.id,r.id));
+  const reconcile=await f.api('POST',`/api/agents/${agent.id}/context-recoveries`,{idempotencyKey:'reserved-before-crash',expectedSessionId:boundary.providerSessionId,expectedSourceRunId:boundary.sourceRunId,expectedToolContractHash:boundary.toolContractHash,expectedSourceFence:boundary.sourceFence,acknowledgeUnknownEffects:true,settleRecoveredContext:true});
+  assert.equal(reconcile.status,409);assert.equal(reconcile.body.request.state,'unsupported_fenced');assert.equal(reconcile.body.request.progress.phase,'native_started');assert.equal(f.commands.length,0,'guided reconciliation never repeats unknown native input');
   const stopped=f.ok(await f.api('POST',`/api/agents/${agent.id}/context-recoveries/${r.id}/stop`,{}));
   assert.equal(stopped.stopRequested,true);assert.equal(stopped.request.progress.phase,'held');
   assert.equal(stopped.request.progress.nativeInvoked,true);assert.equal(f.commands.length,0);
@@ -839,7 +841,7 @@ test('human Stop fences an in-flight recovery acceptance without replaying sourc
   await f.send(agent.id,'Unknown source remains preserved');
   const boundary=await until(()=>store.uncertainProviderContextRecoveryBoundary(agent.id),'unknown source');
   const body={idempotencyKey:'stop-exact-recovery',expectedSessionId:boundary.providerSessionId,expectedSourceRunId:boundary.sourceRunId,
-   expectedToolContractHash:boundary.toolContractHash,acknowledgeUnknownEffects:true};
+   expectedToolContractHash:boundary.toolContractHash,acknowledgeUnknownEffects:true,expectedSourceFence:boundary.sourceFence,settleRecoveredContext:true};
   const recovery=f.api('POST',`/api/agents/${agent.id}/context-recoveries`,body);
   await until(()=>entered,'controlled compaction started');
   try {
@@ -979,6 +981,113 @@ test('Stop retains native context for one queued independent task without revivi
   assert.deepEqual(store.sqlite.prepare('SELECT * FROM scheduler_runs WHERE id=?').get(running.id),original);
   assert.deepEqual(store.sqlite.prepare('SELECT * FROM required_reply_obligations WHERE run_id=? ORDER BY source_activation_id').all(running.id),obligations);
  },{storeFactory:root=>store=new AgentStore(root),providerValidatesResumeBeforeTurn:true,
+  providerContextRecoverySupport:{status:'managed_compaction',crashReconciliation:'hold_without_native_query'},
+  providerCommandResult:({sessionId})=>({outcome:'completed',contextUsage:{usedTokens:1000,windowTokens:200000,providerSessionGeneration:sessionId}})});
+});
+
+for(const engine of ['codex','claude'])test(`guided recovery settles exact context and admits saved input once without retrying the interrupted task (${engine})`,{timeout:45000},async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Guided recovery'),agent=await f.createIdleAgent(chat,'Assistant recovery fixture');
+  if(engine==='claude')f.ok(await f.api('PATCH',`/api/agents/${agent.id}`,{activeEngine:'claude'}));
+  f.plans.set(agent.id,[{output:false,run:session=>session.exitWithDetail({exitCode:9})},{}]);
+  await f.send(agent.id,'Interrupted original work');
+  const boundary=await until(()=>store.uncertainProviderContextRecoveryBoundary(agent.id),'interrupted exact session');
+  await f.send(agent.id,'Saved later instruction');
+  const held=await until(()=>store.sqlite.prepare(`SELECT a.* FROM agent_activations a JOIN activation_sources held
+   ON held.activation_id=a.id AND held.source_kind='settings_transition_reservation_wait'
+   WHERE a.agent_id=? AND a.state IN ('pending','retry_pending')`).get(agent.id),'new input held before provider submission');
+  const original=store.sqlite.prepare('SELECT * FROM scheduler_runs WHERE id=?').get(boundary.sourceRunId);
+  const retry=await f.api('POST',`/api/projects/${agent.projectId}/message-deliveries/${held.id}/retry`,{idempotencyKey:'ineffective-delivery-retry'});
+  assert.equal(retry.status,409);assert.equal(retry.body.code,'context_recovery_required');
+  assert.ok(store.sqlite.prepare("SELECT 1 FROM activation_sources WHERE activation_id=? AND source_kind='settings_transition_reservation_wait'").get(held.id));
+  const blockedHealth=f.ok(await f.api('GET',`/api/projects/${agent.projectId}/agent-health`)).agents.find(row=>row.agentId===agent.id);assert.equal(blockedHealth.status,'blocked');assert.equal(blockedHealth.reason,'context_recovery_required');
+  const detail=f.ok(await f.api('GET',`/api/agents/${agent.id}`));
+  const receipt=JSON.stringify(detail);assert.match(receipt,/contextRecoveryRequired/);
+  const body={idempotencyKey:'guided-exact-operation',expectedSessionId:boundary.providerSessionId,expectedSourceRunId:boundary.sourceRunId,
+   expectedToolContractHash:boundary.toolContractHash,expectedSourceFence:boundary.sourceFence,acknowledgeUnknownEffects:true,settleRecoveredContext:true};
+  assert.equal((await f.api('POST',`/api/agents/${agent.id}/context-recoveries`,{...body,expectedSourceFence:boundary.sourceFence+1})).status,409);
+  const result=f.ok(await f.api('POST',`/api/agents/${agent.id}/context-recoveries`,body));
+  assert.equal(result.request.state,'dismissed');assert.equal(result.request.progress.phase,'context_accepted');assert.equal(result.sourceWork,'held_unknown');
+  const commands=f.commands.length;assert.equal(commands,1);
+  await until(()=>store.sqlite.prepare("SELECT 1 FROM scheduler_run_activations attached JOIN scheduler_runs r ON r.id=attached.run_id WHERE attached.activation_id=? AND r.prompt_injection_state='injected'").get(held.id),'same saved activation admitted');
+  assert.equal(store.sqlite.prepare('SELECT payload_json FROM agent_activations WHERE id=?').get(held.id).payload_json,held.payload_json);
+  assert.deepEqual(store.sqlite.prepare('SELECT * FROM scheduler_runs WHERE id=?').get(boundary.sourceRunId),original);
+  assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(held.id).n,1);
+  await until(()=>store.sqlite.prepare("SELECT 1 FROM scheduler_run_activations a JOIN scheduler_runs r ON r.id=a.run_id WHERE a.activation_id=? AND r.status='completed'").get(held.id),'independent input completes before no-change publication check');
+  await new Promise(resolve=>setImmediate(resolve));
+  const deliveries=async()=> (await readFile(path.join(f.dataDir,'workspace-events.jsonl'),'utf8')).trim().split('\n').filter(Boolean).map(line=>JSON.parse(line).event).filter(event=>event.type==='message_delivery_changed'&&event.agentId===agent.id).length;
+  const beforeReplayEvents=await deliveries();assert(beforeReplayEvents>0,'real recovery publishes canonical state changes');
+  const replay=f.ok(await f.api('POST',`/api/agents/${agent.id}/context-recoveries`,body));
+  assert.equal(replay.replayed,true);assert.equal(replay.request.id,result.request.id);assert.equal(f.commands.length,commands);
+  for(let i=0;i<4;i++)f.ok(await f.api('GET','/api/notifications'));
+  assert.equal(await deliveries(),beforeReplayEvents,'unchanged exact-key replay and scheduler reconciliation emit no duplicate delivery events');
+  await f.reopen();
+  const restored=f.ok(await f.api('GET',`/api/agents/${agent.id}/context-recoveries?idempotencyKey=${body.idempotencyKey}`));
+  assert.equal(restored.request.id,result.request.id);assert.equal(restored.request.state,'dismissed');
+  assert.equal((await f.api('POST',`/api/agents/${agent.id}/context-recoveries`,body)).body.replayed,true);
+  assert.equal(f.commands.length,commands);assert.deepEqual(store.sqlite.prepare('SELECT * FROM scheduler_runs WHERE id=?').get(boundary.sourceRunId),original);
+ },{storeFactory:root=>store=new AgentStore(root),providerValidatesResumeBeforeTurn:true,diagnosticProvider:true,
+   providerContextRecoverySupport:{status:'managed_compaction',crashReconciliation:'hold_without_native_query'},
+   providerCommandResult:({sessionId})=>({outcome:'completed',contextUsage:{usedTokens:1000,windowTokens:200000,providerSessionGeneration:sessionId}})});
+});
+
+import {restrictedInternalExceptionDiagnostic} from '../../apps/server/dist/provider-exception-properties.js';
+test('internal exception diagnostics preserve bounded safe class/callsites without messages, credentials or accessors',()=>{
+ const native=new ReferenceError('private native prompt and token=SECRET');
+ const nativeDiagnostic=restrictedInternalExceptionDiagnostic(native);
+ assert.equal(nativeDiagnostic.kind,'ReferenceError');assert.doesNotMatch(JSON.stringify(nativeDiagnostic),/private native|SECRET/);
+ // Node 24 native stacks are accessors. The Run boundary supplies authored
+ // caughtAt/ownership metadata; diagnostics must never invoke a stack getter.
+ const error=new TypeError('private prompt and token=SECRET',{cause:new ReferenceError('private cause')});
+ error.code='ERR_INVALID_ARG_TYPE';Object.defineProperty(error,'stack',{value:'TypeError: private prompt and token=SECRET\n at operation (/private/root/apps/server/dist/routes/provider-run-executor.js:123:4)\n at secret (https://token=SECRET)'});
+ const diagnostic=restrictedInternalExceptionDiagnostic(error);assert.equal(diagnostic.kind,'TypeError');assert.equal(diagnostic.cause.kind,'ReferenceError');
+ assert.equal(diagnostic.code,'ERR_INVALID_ARG_TYPE');assert.deepEqual(diagnostic.frames,['apps/server/dist/routes/provider-run-executor.js:123:4']);
+ assert.doesNotMatch(JSON.stringify(diagnostic),/private prompt|private cause|SECRET|\/private\/root/);
+ const injected=new Error('private prompt\n at fake (/apps/server/dist/private-token.js:1:1)');Object.defineProperty(injected,'stack',{value:'Error: '+injected.message+'\n at real (/apps/server/dist/real.js:2:3)'});assert.deepEqual(restrictedInternalExceptionDiagnostic(injected).frames,['apps/server/dist/real.js:2:3'],'multiline message text cannot become logged callsites');
+ let called=0;const hostile=Object.defineProperties({},Object.fromEntries(['stack','message','cause','code'].map(name=>[name,{get(){called++;throw Error('must not run')}}])));
+ assert.equal(restrictedInternalExceptionDiagnostic(hostile).kind,'Unknown');assert.equal(called,0);
+ assert.equal(restrictedInternalExceptionDiagnostic(new Proxy({}, {getPrototypeOf(){throw Error('trap')}})).kind,'Unknown');
+});
+
+test('completed native recovery with failed cleanup exposes cleanup pending without an explicit Stop',{timeout:30000},async t=>{
+ let store,failCleanup=false;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Recovery cleanup'),agent=await f.createIdleAgent(chat,'Cleanup owner');
+  f.plans.set(agent.id,[{output:false,run:session=>session.exitWithDetail({exitCode:9})}]);await f.send(agent.id,'Retain original uncertain task');
+  const boundary=await until(()=>store.uncertainProviderContextRecoveryBoundary(agent.id),'unknown source');
+  const body={idempotencyKey:'cleanup-exact',expectedSessionId:boundary.providerSessionId,expectedSourceRunId:boundary.sourceRunId,expectedToolContractHash:boundary.toolContractHash,expectedSourceFence:boundary.sourceFence,acknowledgeUnknownEffects:true,settleRecoveredContext:true};
+  try{
+   const result=await f.api('POST',`/api/agents/${agent.id}/context-recoveries`,body);assert.equal(result.status,503);
+   const status=f.ok(await f.api('GET',`/api/agents/${agent.id}/context-recoveries?idempotencyKey=${body.idempotencyKey}`));
+   assert.equal(status.operationState,'cleanup_pending');assert.equal(status.request.state,'unsupported_fenced');assert.equal(status.request.progress.phase,'native_started');assert.equal(f.commands.length,1);
+   assert.equal(store.sqlite.prepare('SELECT status FROM scheduler_runs WHERE id=?').get(boundary.sourceRunId).status,'outcome_unknown');
+  }finally{failCleanup=false;}
+  await until(async()=>f.ok(await f.api('GET',`/api/agents/${agent.id}/context-recoveries?idempotencyKey=${body.idempotencyKey}`)).operationState==='idle','observed cleanup eventually settles');
+  assert.equal(f.commands.length,1);
+ },{storeFactory:directory=>store=new AgentStore(directory),providerValidatesResumeBeforeTurn:true,
+  providerContextRecoverySupport:{status:'managed_compaction',crashReconciliation:'hold_without_native_query'},
+  beforeRuntimeClose:async()=>{if(failCleanup)throw Error('Controlled cleanup failure');},
+  providerCommandResult:({sessionId})=>{failCleanup=true;return {outcome:'completed',contextUsage:{usedTokens:1000,windowTokens:200000,providerSessionGeneration:sessionId}};}});
+});
+
+for(const change of ['authentication','access'])test(`guided settlement refuses changed ${change} after accepted native measurement`,{timeout:30000},async t=>{
+ let store,billingMode='subscription';
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Recovery authority change'),agent=await f.createIdleAgent(chat,'Exact owner');
+  f.plans.set(agent.id,[{output:false,run:session=>session.exitWithDetail({exitCode:9})}]);await f.send(agent.id,'Unresolved original effects');
+  const boundary=await until(()=>store.uncertainProviderContextRecoveryBoundary(agent.id),'unknown native source');
+  const original=store.sqlite.prepare('SELECT * FROM scheduler_runs WHERE id=?').get(boundary.sourceRunId);
+  const body={idempotencyKey:'accepted-before-change',expectedSessionId:boundary.providerSessionId,expectedSourceRunId:boundary.sourceRunId,expectedToolContractHash:boundary.toolContractHash,acknowledgeUnknownEffects:true};
+  const accepted=f.ok(await f.api('POST',`/api/agents/${agent.id}/context-recoveries`,body));assert.equal(accepted.request.progress.phase,'context_accepted');
+  if(change==='authentication'){billingMode='api';f.ok(await f.api('POST','/api/engines/codex/recheck'));}
+  else{const {CapabilityPolicyStore}=await import('@ponderosa/agents');const {CAPABILITY_IDS}=await import('@ponderosa/core');new CapabilityPolicyStore(store.sqlite).put({scopeKind:'agent',scopeId:agent.id,expectedRevision:0,restrictedCapabilityIds:[CAPABILITY_IDS.browserRead]});}
+  const status=f.ok(await f.api('GET',`/api/agents/${agent.id}/context-recoveries?idempotencyKey=${body.idempotencyKey}`));assert.equal(status.blocker.kind,change==='authentication'?'authentication':'access_changed');
+  const refused=await f.api('POST',`/api/agents/${agent.id}/context-recoveries`,{...body,expectedSourceFence:boundary.sourceFence,settleRecoveredContext:true});assert.equal(refused.status,409);
+  assert.equal(store.sqlite.prepare('SELECT state FROM provider_context_recovery_requests WHERE id=?').get(accepted.request.id).state,'unsupported_fenced');
+  assert.equal(f.commands.length,1);assert.deepEqual(store.sqlite.prepare('SELECT * FROM scheduler_runs WHERE id=?').get(boundary.sourceRunId),original);
+ },{storeFactory:directory=>store=new AgentStore(directory),providerValidatesResumeBeforeTurn:true,
+  providerAuthStatus:async()=>({authenticated:true,billingMode,source:'cli_status'}),
   providerContextRecoverySupport:{status:'managed_compaction',crashReconciliation:'hold_without_native_query'},
   providerCommandResult:({sessionId})=>({outcome:'completed',contextUsage:{usedTokens:1000,windowTokens:200000,providerSessionGeneration:sessionId}})});
 });

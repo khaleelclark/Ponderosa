@@ -381,7 +381,7 @@ test('settings handoff receipt exposes retry only for a provably unstarted hold'
     {retryMessageDelivery:async (...args)=>calls.push(args)});
   const nodes=render(),announcement=nodes.find(node=>node.props.role==='status');
   assert.match(text(announcement),/original message remains queued/u);
-  assert.ok(nodes.some(node=>node.type===mui.Typography&&text(node)==='Context Handoff Held'));
+  assert.ok(nodes.some(node=>node.type===mui.Typography&&text(node)==='Waiting For Context'));
   const retry=nodes.find(node=>node.type===mui.Button&&text(node)==='Try Delivery Again');
   assert.ok(retry);retry.props.onClick();
   await new Promise(resolve=>setImmediate(resolve));
@@ -427,4 +427,12 @@ test('UI012 exact retirement preserves canonical siblings/newer draft and retrie
  const result=await module.persistCapturedDraftSubmission('chat','owner','old-tab',pending,true,8);
  assert.equal(result.draft.text,'Even newer text');assert.deepEqual(Array.from(result.draft.attachmentIds),['newer-attachment']);assert.deepEqual(Array.from(result.draft.pendingSubmissions,item=>item.idempotencyKey),['canonical-earlier']);assert.deepEqual(Array.from(writes[1].retirePendingSubmissionIds),['remove-exact']);assert.equal(result.mayAdvanceDraftRevision,false);
  current={...current,retiredPendingSubmissionIds:[{idempotencyKey:pending.idempotencyKey}]};const count=writes.length;assert.equal((await module.persistCapturedDraftSubmission('chat','owner','old-tab',pending,true,8)).retired,true);assert.equal(writes.length,count,'Already-settled exact retirement issues no replacement write');
+});
+
+test('exact context recovery blocker replaces delivery Retry and directs the user to the recipient Agent Chat',()=>{
+ const nodes=status({state:'unconfirmed',settingsTransitionHold:'retry_available',contextRecoveryRequired:{sourceRunId:'earlier'},canRetry:true})();
+ assert.ok(!nodes.some(node=>node.type===mui.Button&&/Try Delivery Again|Try Work Again/.test(text(node))));
+ assert.match(text(nodes.find(node=>node.props.role==='status')),/new message.*saved.*Open.*Agent Chat/u);
+ assert.ok(nodes.some(node=>node.type===mui.Typography&&text(node)==='Message Saved'));
+ assert.ok(!nodes.some(node=>text(node).includes('Context Handoff Held')));
 });

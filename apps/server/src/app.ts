@@ -280,10 +280,13 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   const reconcileCommittedProjectDeletions = (): void => {
     reconcileProjectDeletionsWorkspace(store, workspace, publishWorkspace);
   };
+  const activeContextRecoveries=new Map<string,import("./routes/provider-commands.js").ContextRecoveryOperation>();
+  const contextRecoveryActivity=(agentId:string):"running"|"cleanup_pending"|"idle"=>{const operation=activeContextRecoveries.get(agentId);return operation?operation.phase==='cleanup_pending'?'cleanup_pending':'running':'idle';};
+  const contextRecoveryRunning=(agentId:string)=>contextRecoveryActivity(agentId)==='running';
   const { vapid, webPushConfiguration, webPushConfigurationDetail, webPushConfigured, webPushDelivery } =
     createWebPushConfiguration(opts.dataDir, workspace, publishWorkspaceSince, store, () => {
       reconcileCommunicationFailureNotifications();
-      reconcileSettingsTransitionReservations({ app, store, coordinationV3, workspace, createOperationalNotification, resolveOperationalNotification });
+      reconcileSettingsTransitionReservations({ app, store, coordinationV3, workspace, createOperationalNotification, resolveOperationalNotification,contextRecoveryRunning });
     }, error => app.log.error({ err: error }, "notification reconciliation before push failed"));
   store.recoverInterruptedExecutions();
   let closed = false;
@@ -456,6 +459,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     reconcileProjectWorkspace,
     resolveOperationalNotification,
   } = createOperationalNotifications({
+    contextRecoveryRunning,
     store,
     coordinationV3,
     workspace,
@@ -752,6 +756,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     publishMessageDeliveryChanged,
     teamDirectory,
   } = createServerReadModels({
+    contextRecoveryActivity,
     runtimeCleanupPending: (agentId) => {
       const authority = runtimeAuthority(agentId);
       return Boolean(authority?.closing || authority?.opening?.lastError ||
@@ -940,6 +945,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     coordinationV3,
     workspace,
     activeRuns,
+    contextRecoveryRunning,
     runtimeAuthorities,
     deletingAgentIds,
     engines,
@@ -1237,6 +1243,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     engines,
     applyOperatorModelOptions,
     activeRuns,
+    activeContextRecoveries,
     closeLinkPreviewsForAgent,
     registerLinkPreviewRoutes,
     runtimeAuthorities,

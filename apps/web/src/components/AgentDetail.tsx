@@ -1035,7 +1035,10 @@ export function AgentDetail({
         onOpenArtifact={onOpenArtifact}
       />
 
-      {tab!=="chat"&&!auditOnly&&<ContextRecoveryPanel key={`recovery:${detail.agent.id}`} agentId={detail.agent.id}/>}
+      {!auditOnly&&<ContextRecoveryPanel key={`recovery:${detail.agent.id}:${tab==='chat'?'guided':'audit'}`} agentId={detail.agent.id} projectId={detail.agent.projectId}
+        guided={tab==='chat'} assistant={assistantMessages}
+        required={visibleChatMessages.some(message=>message.deliveryReceipts?.some(receipt=>receipt.targetAgentId===detail.agent.id&&Boolean(receipt.contextRecoveryRequired)))}
+        onReview={()=>openTechnicalDetails()}/>}
       {tab!=="chat"&&<ImportedCommunications key={detail.agent.id} agentId={detail.agent.id}/>}
 
       {auditOnly?<Alert severity="info" sx={{m:1}}>Workflow Agent · control work from its execution view</Alert>:<AgentDetailComposer

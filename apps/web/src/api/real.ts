@@ -382,15 +382,10 @@ function browserPath(projectId: string, agentId: string, runId: string): string 
 
 export const realApi = {
   listBranchAgents(branchId:string):Promise<import('@ponderosa/core').BranchAgentChoiceDto[]>{return collectCollectionPages(`/api/branches/${encodeURIComponent(branchId)}/agents`);},
-  getContextRecovery(agentId:string,idempotencyKey?:string):Promise<{
-    support:import('@ponderosa/core').ProviderContextRecoverySupport;
-    boundary:Pick<import('@ponderosa/core').ProviderContextRecoveryRequest,'providerSessionId'|'sourceRunId'|'toolContractHash'|'sourceFence'>|null;
-    request:import('@ponderosa/core').ProviderContextRecoveryRequest|null;
-    sourceEvidence?:import('@ponderosa/core').ProviderContextRecoveryEvidence;
-  }>{
+  getContextRecovery(agentId:string,idempotencyKey?:string):Promise<import('@ponderosa/core').ProviderContextRecoveryStatus>{
     return requestJson(`/api/agents/${encodeURIComponent(agentId)}/context-recoveries${toQuery({idempotencyKey})}`,{cache:'no-store'});
   },
-  recoverContext(agentId:string,input:{idempotencyKey:string;expectedSessionId:string;expectedSourceRunId:string;expectedToolContractHash:string;acknowledgeUnknownEffects:true}):Promise<unknown>{
+  recoverContext(agentId:string,input:{idempotencyKey:string;expectedSessionId:string;expectedSourceRunId:string;expectedToolContractHash:string;expectedSourceFence?:number;acknowledgeUnknownEffects:true;settleRecoveredContext?:boolean}):Promise<unknown>{
     return requestJson(`/api/agents/${encodeURIComponent(agentId)}/context-recoveries`,{method:'POST',body:JSON.stringify(input)});
   },
   stopContextRecovery(agentId:string,recoveryId:string):Promise<{stopRequested:boolean}>{

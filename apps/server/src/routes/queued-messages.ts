@@ -696,6 +696,11 @@ export function registerQueuedMessageRoutes(
             currentConversation.projectId !== projectId))) {
         return reply.code(409).send({ error: "message delivery participants are no longer available" });
       }
+      const recoveryBoundary=coordinationV3.contextRecovery.active(agent.id)??store.uncertainProviderContextRecoveryBoundary(agent.id);
+      const scope=store.sqlite.prepare('SELECT scope_key FROM agent_activations WHERE id=? AND agent_id=? AND project_id=?').get(activationId,agent.id,projectId) as {scope_key:string}|undefined;
+      if(recoveryBoundary && scope?.scope_key===recoveryBoundary.scopeKey && ["pending","retry_pending"].includes(activation.state)) {
+        return reply.code(409).send({code:"context_recovery_required",error:"The earlier session was interrupted. Your message is saved. Recover the Agent before continuing.",retryable:false});
+      }
       const result = coordinationV3.retryMessageDelivery({ projectId, activationId, idempotencyKey, expectedRolloverAttemptId });
       if (!result.accepted || !result.targetAgentId) {
         const status = result.rejectionReason === "not_found" ? 404 : 409;

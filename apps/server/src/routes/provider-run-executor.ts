@@ -1,4 +1,5 @@
 import { newlyRestrictedCodexAccess } from "../codex-access-restrictions.js";
+import { restrictedInternalExceptionDiagnostic } from "../provider-exception-properties.js";
 import { hasKnownRetainedMemory } from "../context-transition-admission.js";
 import { pauseOwnedNativeGoal } from "../native-goal-stop.js";
 import { requireCurrentRuntimeInputAccess } from "../runtime-input-files.js";
@@ -1473,6 +1474,9 @@ export function startProviderRunExecution(
           runId, agentId: agent.id,
           category: conflict ? "context_rollover_conflict" : exactBoundary ? "context_rollover_boundary" : "run_orchestration",
           ...(err instanceof AgentEventPersistenceError ? { persistenceFailure: err.diagnostic } : {}),
+          exception: restrictedInternalExceptionDiagnostic(err),
+          caughtAt: "provider-run-executor:execution",
+          runtimeOwnershipState: activeRun.ownershipState,
           diagnostic: conflict ? "generation cycle rejected a changed canonical boundary"
             : exactBoundary ? "exact canonical boundary unavailable"
               : "unclassified internal exception",

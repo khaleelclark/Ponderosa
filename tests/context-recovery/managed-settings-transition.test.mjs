@@ -191,7 +191,8 @@ test('interrupted transition exposes retry-pending review after restart',{timeou
   store.sqlite.prepare("UPDATE agent_activations SET state='retry_pending' WHERE id=?").run(original.id);
   await f.reopen();
   await until(()=>store.sqlite.prepare("SELECT 1 FROM context_rollovers WHERE id=? AND state IN ('failed','outcome_unknown')").get(rollover.id),'interrupted handoff recorded',20000);
-  await until(async()=>f.ok(await f.api('GET','/api/notifications')).items.some(item=>item.title.includes('Context Needs Review')&&item.body.includes('handoff did not finish')),'retry-pending review notice',20000);
+  const notice=await until(async()=>f.ok(await f.api('GET','/api/notifications')).items.find(item=>item.title.includes('Needs Recovery')&&item.body.includes('earlier session was interrupted')),'canonical interrupted-session review notice',20000);
+  for(let i=0;i<4;i++)assert.equal(f.ok(await f.api('GET','/api/notifications')).items.find(item=>item.id===notice.id)?.body,notice.body,'repeated reconciliation preserves one canonical reason instead of alternating handoff failures');
   assert.equal(store.sqlite.prepare('SELECT state FROM agent_activations WHERE id=?').get(original.id).state,'retry_pending');
   const rows=store.sqlite.prepare("SELECT state FROM agent_activations WHERE kind='context_rollover_handoff' AND json_extract(payload_json,'$.rolloverId')=?").all(rollover.id);
   assert.equal(rows.length,1,'an uncertain handoff must not be scheduled a second time');

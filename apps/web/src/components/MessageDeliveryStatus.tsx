@@ -35,6 +35,7 @@ function deliveryLabel(
   pausedRunId?: string,
 ): string {
   if (receipt.taskDecisionRepairHold) return `Ponderosa could not verify the Decision status for ${recipientName}'s work. Task recovery is held until it can be checked.${receipt.contextRolloverHold || receipt.settingsTransitionHold ? ' Context refresh also could not safely continue.' : ''}`;
+  if (receipt.contextRecoveryRequired) return `The earlier session was interrupted. Your new message to ${recipientName} is saved. Open ${recipientName}’s Agent Chat for recovery; the earlier work stays unconfirmed.`;
   if (receipt.settingsTransitionHold === "retry_available") return `Ponderosa could not prepare the context handoff for ${recipientName}. Your original message remains queued; you can try again.`;
   if (receipt.settingsTransitionHold === "review_required") return `Ponderosa could not verify the context handoff for ${recipientName}. Your original message is held; review the Agent’s activity before recovery.`;
   if (receipt.contextRolloverHold === "retry_available") return `Context refresh stopped before the replacement started. ${recipientName}'s unfinished work is held; review activity before trying again.`;
@@ -75,7 +76,8 @@ function deliveryLabel(
 
 function compactDeliveryLabel(receipt: MessageDeliveryReceiptDto, pausedRunId?: string): string {
   if (receipt.taskDecisionRepairHold) return "Task Check Held";
-  if (receipt.settingsTransitionHold) return "Context Handoff Held";
+  if (receipt.contextRecoveryRequired) return "Message Saved";
+  if (receipt.settingsTransitionHold) return "Waiting For Context";
   const waiting = deliveryWaitLabel(receipt);
   if (waiting) return waiting.compact;
   const phase = messageDeliveryPhase(receipt);
@@ -363,7 +365,7 @@ export function MessageDeliveryStatus({
           onClick={() => void letRunFinish(receipt)}
           sx={{ minHeight: 28, py: 0.25 }}
         >Let Current Run Finish</Button> : null}
-        {!readOnly && !receipt.taskDecisionRepairHold && receipt.settingsTransitionHold !== "review_required" && receipt.canRetry && projectId ? <Button
+        {!readOnly && !receipt.contextRecoveryRequired && !receipt.taskDecisionRepairHold && receipt.settingsTransitionHold !== "review_required" && receipt.canRetry && projectId ? <Button
           color="error"
           variant="text"
           size="small"

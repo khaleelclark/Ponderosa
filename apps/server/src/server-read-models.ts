@@ -39,6 +39,7 @@ import {
 } from "./request-update-communication.js";
 
 interface ReadModelContext {
+  contextRecoveryActivity?(agentId:string):"running"|"cleanup_pending"|"idle";
   runtimeCleanupPending?(agentId: string): boolean;
   admissionBlocker?(agent: AgentDto): import("@ponderosa/core").QueuedAdmissionBlockerDto | undefined;
   store: AgentStore;
@@ -113,6 +114,20 @@ export function createServerReadModels(context: ReadModelContext) {
 
   function deliveryReceiptsForCommunications(projectId: string, communicationEventIds: string[]) {
     const receipts = coordinationV3.deliveryReceiptsForCommunications(projectId, communicationEventIds);
+    const recoveryBoundaries=new Map<string,ReturnType<AgentStore["uncertainProviderContextRecoveryBoundary"]>>();
+    for(const rows of receipts.values()) for(const receipt of rows) {
+      if(!receipt.settingsTransitionHold&&!["queued","retrying","unconfirmed"].includes(receipt.state)) continue;
+      const agent=store.getAgent(receipt.targetAgentId);
+      if(agent?.projectId!==projectId) continue;
+      if(!recoveryBoundaries.has(agent.id)) recoveryBoundaries.set(agent.id,store.uncertainProviderContextRecoveryBoundary(agent.id));
+      const recovery=coordinationV3.contextRecovery.active(agent.id),boundary=recovery??recoveryBoundaries.get(agent.id);
+      const activation=coordinationV3.activation(receipt.activationId,projectId);
+      const scope=store.sqlite.prepare('SELECT scope_key FROM agent_activations WHERE id=? AND agent_id=? AND project_id=?').get(receipt.activationId,agent.id,projectId) as {scope_key:string}|undefined;
+      if(!boundary || activation?.agentId!==agent.id || scope?.scope_key!==boundary.scopeKey ||
+          !["pending","retry_pending"].includes(activation.state)) continue;
+      receipt.contextRecoveryRequired={sourceRunId:boundary.sourceRunId,...(recovery?{recoveryId:recovery.id}:{})};
+      delete receipt.canRetry;
+    }
     const waiting = (receipt: import("@ponderosa/core").MessageDeliveryReceiptDto) =>
       (receipt.state === "queued" || receipt.state === "retrying") && !receipt.steeringWaitReason;
     const ids = new Set([...receipts.values()].flatMap(rows => rows.filter(waiting).map(row => row.targetAgentId)));
@@ -781,6 +796,15 @@ export function createServerReadModels(context: ReadModelContext) {
       preparingRuns,
       compactingAgents: new Map([...scheduledSessionRollovers, ...durableRolloverAgents]),
       availability: (agentId) => coordinationV3.getAgentAvailability(agentId),
+      contextRecovery:agentId=>{
+        const recovery=coordinationV3.contextRecovery.active(agentId),boundary=recovery??store.uncertainProviderContextRecoveryBoundary(agentId);
+        if(!boundary)return undefined;
+        if(!recovery&&!store.sqlite.prepare("SELECT 1 FROM agent_activations WHERE agent_id=? AND project_id=? AND scope_key=? AND state IN ('pending','retry_pending') AND kind IN ('human_message','coordination_request') LIMIT 1").get(agentId,boundary.projectId,boundary.scopeKey))return undefined;
+        const source=store.sqlite.prepare('SELECT terminal_at FROM scheduler_runs WHERE id=? AND agent_id=?').get(boundary.sourceRunId,agentId) as {terminal_at:string|null}|undefined;
+        const observedAt=recovery?.progress?.updatedAt??recovery?.createdAt??source?.terminal_at??agentsById.get(agentId)?.updatedAt;
+        const activity=context.contextRecoveryActivity?.(agentId)??'idle';
+        return observedAt?{state:activity==='idle'?'needs_action':activity,observedAt}:undefined;
+      },
       pendingDecisionAt: (agentId) => pendingDecisionAt.get(agentId),
       providerBlocked: (agentId) => coordinationV3.providerBlockedState(agentId),
       admissionBlocker: (agentId) => {

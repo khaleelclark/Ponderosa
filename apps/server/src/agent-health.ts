@@ -20,6 +20,7 @@ export interface PreparingRunObservation {
   promptInjectionState: "not_injected" | "injecting" | "injected";
 }
 export interface AgentHealthProjectionInput {
+  contextRecovery?(agentId:string): {state:"running"|"cleanup_pending"|"needs_action";observedAt:string}|undefined;
   scope: AgentHealthProjectionDto["scope"];
   agents: AgentDto[];
   activeRuns: ReadonlyMap<string, ActiveRunObservation>;
@@ -67,6 +68,7 @@ export function projectAgentHealth(input: AgentHealthProjectionInput): AgentHeal
     const availability = input.availability?.(agent.id);
     const pendingDecisionAt = input.pendingDecisionAt?.(agent.id);
     const providerBlocked = input.providerBlocked?.(agent.id);
+    const recovery=input.contextRecovery?.(agent.id);
     const admissionBlocker = availability === "runnable" && !active && !preparing && !pendingDecisionAt && !compactingAt && !providerBlocked
       ? input.admissionBlocker?.(agent.id) : undefined;
     const latestEvent = input.latestEvent(agent.id);
@@ -97,6 +99,8 @@ export function projectAgentHealth(input: AgentHealthProjectionInput): AgentHeal
     else if (preparing) observation = preparing.promptInjectionState === "injected" || preparing.status === "running"
       ? { status: "running", statusTimestamp: preparing.leaseStartedAt, reason: "active_run" }
       : { status: "preparing", statusTimestamp: preparing.leaseStartedAt, reason: "run_preparing" };
+    else if (recovery) observation={status:recovery.state==='running'?'compacting':'blocked',statusTimestamp:recovery.observedAt,
+      reason:recovery.state==='running'?'context_recovery_running':recovery.state==='cleanup_pending'?'context_recovery_cleanup':'context_recovery_required'};
     else if (providerBlocked) observation = {
       status: "blocked",
       statusTimestamp: providerBlocked.blockedAt,

@@ -407,8 +407,8 @@ test('runtime event-consumer stall surfaces at 30 seconds and clears only after 
  const authority=createRuntimeEventAuthority({opts:{},activeRuns,store:{appendEvent:(id,event)=>{persisted.push({id,event});return {...event,ts:new Date().toISOString()}}},
   ownsActiveRunForAuditDrain:(id,current)=>activeRuns.get(id)===current,publish:(id,event)=>published.push({id,event})});
  const models=createServerReadModels({activeRuns,scheduledSessionRollovers:new Map(),runtimeStallAfterMs:30000,
-  workspace:{listDecisions:()=>[]},store:{latestHealthObservation:()=>undefined,getRunHealthSummaries:()=>[],activeExecutionPhase:()=>undefined},
-  coordinationV3:{activeContextRollovers:()=>[],getAgentAvailability:()=> 'running',providerBlockedState:()=>undefined},
+  workspace:{listDecisions:()=>[]},store:{latestHealthObservation:()=>undefined,getRunHealthSummaries:()=>[],activeExecutionPhase:()=>undefined,uncertainProviderContextRecoveryBoundary:()=>undefined},
+  coordinationV3:{contextRecovery:{active:()=>undefined},activeContextRollovers:()=>[],getAgentAvailability:()=> 'running',providerBlockedState:()=>undefined},
   transitionRun:authority.transitionRun,reusableRuntime:()=>undefined});
  const health=()=>models.agentHealth({type:'project',id:'project'},[agent]).agents[0];
  assert.equal(authority.receiveRuntimeEvent(agent.id,run),true);

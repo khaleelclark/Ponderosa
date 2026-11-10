@@ -139,10 +139,12 @@ export class CoordinationV3ContextRecoveryAuthority {
     })();
   }
   /** Recover only the local event-to-phase commit gap, never a missing native result. */
-  reconcileRecordedCompletion(agentId:string,id:string):boolean {
+  reconcileRecordedCompletion(agentId:string,id:string,verifyAccepted=false):boolean {
     return this.sqlite.transaction(()=>{
       const row=this.sqlite.prepare("SELECT * FROM provider_context_recovery_requests WHERE id=? AND agent_id=? AND state='unsupported_fenced'").get(id,agentId) as Row|undefined;
-      if(!row||!row.progress_json||JSON.parse(row.progress_json).phase!=='native_started')return false;
+      const progress=row?.progress_json?JSON.parse(row.progress_json) as ProviderContextRecoveryProgress:undefined;
+      if(!row||!progress||!['native_started','context_accepted'].includes(progress.phase))return false;
+      if(progress.phase==='context_accepted'&&!verifyAccepted)return false;
       this.assertSource(row);
       if(this.sqlite.prepare('SELECT 1 FROM provider_process_authority WHERE agent_id=? LIMIT 1').get(agentId))return false;
       const events=this.sqlite.prepare(`SELECT seq,payload_json FROM events WHERE agent_id=? AND type='context_usage'
@@ -153,6 +155,11 @@ export class CoordinationV3ContextRecoveryAuthority {
       if(!events.length)return false;
       if(events.length!==1)throw new ContextRecoveryConflictError('Recovery completion evidence is ambiguous');
       const event=events[0]!,usage=JSON.parse(event.payload_json);
+      if(progress.phase==='context_accepted') {
+        if(progress.contextUsageEventSequence!==event.seq || progress.usedTokens!==usage.usedTokens ||
+            progress.windowTokens!==usage.windowTokens) throw new ContextRecoveryConflictError('Accepted recovery evidence changed');
+        return true;
+      }
       this.advanceOperation(agentId,id,'native_started','context_accepted',{usedTokens:usage.usedTokens,
         ...(usage.windowTokens!==undefined?{windowTokens:usage.windowTokens}:{}),contextUsageEventSequence:event.seq});
       return true;
