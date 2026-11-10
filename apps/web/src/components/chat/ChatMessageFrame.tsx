@@ -1,6 +1,6 @@
 import "./conversation.css";
 import { Avatar, ButtonBase, Tooltip } from "@mui/material";
-import { useEffect, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
+import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import type { ChatMessagePresentation } from "./contracts";
 import { MessageSenderLabel } from "../MessageSenderLabel";
 import { MessageActionsAndTimestamp, MessageTimestamp } from "../MessageTimestamp";
@@ -14,11 +14,9 @@ import { observeNotificationVisibility } from "../../notificationVisibility";
 
 export function ChatMessageFrame({
   message,
-  maxAgentWidth = 800,
   assistantMessages = false,
 }: {
   message: ChatMessagePresentation;
-  maxAgentWidth?: number;
   assistantMessages?: boolean;
 }): JSX.Element {
   const [mobileTimestampRevealed, setMobileTimestampRevealed] = useState(false);
@@ -89,7 +87,6 @@ export function ChatMessageFrame({
       ref={articleRef}
       id={message.id}
       className={`MuiBox-root chat-message chat-message-frame${assistantMessages ? " chat-message-assistant" : ""}${fromOperator ? " chat-message-end" : ""}${message.status ? " chat-message-has-status" : ""}${selectable ? " chat-message-selectable" : ""}`}
-      style={{ "--chat-agent-max-width": `${maxAgentWidth}px` } as CSSProperties}
       aria-label={message.ariaLabel ?? `${senderName} Message`}
       onClick={selectable
         ? event => {

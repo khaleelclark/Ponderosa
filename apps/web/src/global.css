@@ -43,7 +43,7 @@ body {
 .chat-message-operator-header > :not(style) ~ :not(style),
 .chat-message-inbound-header > :not(style) ~ :not(style) { margin: 0; }
 .chat-message-frame.chat-message-end > .chat-message-row { justify-content: flex-end; }
-.chat-message-column { min-width: 0; width: min(100%, var(--chat-agent-max-width, 960px)); max-width: 100%; }
+.chat-message-column { min-width: 0; width: fit-content; max-width: 100%; }
 .chat-message-frame.chat-message-end > .chat-message-row > .chat-message-column { width: fit-content; max-width: 94%; }
 .chat-message-frame.chat-message-end.chat-message-has-status > .chat-message-row > .chat-message-column { width: 100%; max-width: 100%; }
 .chat-message-agent-header, .chat-message-operator-header, .chat-message-inbound-header { display: flex; flex-direction: row; align-items: center; gap: 6px; margin-bottom: 2px; }

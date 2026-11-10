@@ -72,8 +72,12 @@ export async function broadcastAndCollaborationPreviewRegression():Promise<void>
 export async function replyPreviewRateLimitRegression():Promise<void>{await fixture(async(f:any)=>{
  const sent=source(),status=snapshot();f.statuses.set('input:agent',status);f.pane([sent]);await until(()=>Boolean(row(f.host)),'Authorized snapshot shown');const node=row(f.host);
  f.setError(new ApiRequestError(503,'Temporary read failure'));f.wake();await settle();assert(row(f.host)===node&&node?.textContent?.includes('First bold chunk'),'Recoverable read failure retains verified content');
- f.setError(undefined);f.statuses.set('input:agent',{...status,reply:{...status.reply,sequence:2,text:'Newer chunk'}});f.wake();await until(()=>node?.textContent?.includes('Newer chunk')===true,'Reconnect continues from verified snapshot');f.statuses.set('input:agent',status);f.wake();await settle();assert(node?.textContent?.includes('Newer chunk'),'Older status sequence cannot regress text');
- f.pane([sent,canonical({...status,reply:{...status.reply,text:'Canonical arrived first'}},'early')]);await settle();assert(f.host.querySelector('#message-early')===node&&node?.textContent?.includes('Canonical arrived first'),'Canonical before last stream chunk adopts without duplicate or replay');
+ const continued='Newer chunk\n\n'+'A long streamed reply uses the available conversation lane. '.repeat(100);
+ f.setError(undefined);f.statuses.set('input:agent',{...status,reply:{...status.reply,sequence:2,text:continued}});f.wake();await until(()=>node?.textContent?.includes('Newer chunk')===true,'Reconnect continues from verified snapshot');f.statuses.set('input:agent',status);f.wake();await settle();assert(node?.textContent?.includes('Newer chunk'),'Older status sequence cannot regress text');
+ const body=node!.querySelector('.chat-message-body')!,width=body.getBoundingClientRect().width;
+ assert(Math.abs(body.getBoundingClientRect().right-node!.getBoundingClientRect().right)<1,'Streaming long reply fills its lane after the avatar');
+ f.pane([sent,canonical({...status,reply:{...status.reply,text:continued+'\n\nCanonical arrived first'}},'early')]);await settle();assert(f.host.querySelector('#message-early')===node&&node?.textContent?.includes('Canonical arrived first'),'Canonical before last stream chunk adopts without duplicate or replay');
+ assert(node!.querySelector('.chat-message-body')===body&&Math.abs(body.getBoundingClientRect().width-width)<1,'Canonical completion preserves the mounted body and available reply width');
 });}
 
 export async function requestLifecyclePreviewOwnerRegression():Promise<void>{await fixture(async(f:any)=>{

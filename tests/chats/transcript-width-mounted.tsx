@@ -15,6 +15,7 @@ import '../../apps/web/src/global.css';
 
 function assert(value: unknown, message: string): asserts value { if (!value) throw Error(message); }
 const settle = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+const wideReply = '## Grand Teton\n\n' + 'Grand Teton offers mountain views, lakes and trails. '.repeat(40) + '\n\n| Trail | Distance | Elevation | Time | Notes | Access | Conditions |\n| --- | --- | --- | --- | --- | --- | --- |\n| Cascade Canyon | Nine miles | Moderate gain | Half day | Lake and mountain views | Jenny Lake | Check current conditions |\n\n```ts\n' + 'grand_teton_'.repeat(160) + '\n```';
 
 export async function transcriptWidthMountedRegression(): Promise<void> {
   const host = document.createElement('div');
@@ -37,10 +38,11 @@ export async function transcriptWidthMountedRegression(): Promise<void> {
             <Box sx={{ width: narrow ? 'min(620px, 100%)' : `calc(100% - ${sidebar}px)`, ml: `${sidebar}px`, height: 820, display: 'grid', gridTemplateRows: 'minmax(0, 1fr) auto', minWidth: 0 }}>
               <OutgoingMessageProvider key={`${layout}:${assistant}:${sidebar}:${narrow}:${refresh}`}>
                 <PendingControl />
-                <ChatSurface layout={layout} layoutKey="width-fixture" showOutgoingMessage initialTranscript={{ rowIds: ['incoming', 'short', 'long'], reveal: true }}>
-                  <ChatMessageFrame message={{ id: 'incoming', author: { kind: 'agent', name: 'Agent' }, createdAt: '2026-11-09T00:00:00Z', body: <ChatMessageBody text="Incoming reply" />, attachments: [{ id: 'attachment', agentId: 'agent', name: 'contained.txt', mediaType: 'text/plain', size: 12, url: '#attachment' }] }} />
+                <ChatSurface layout={layout} layoutKey="width-fixture" showOutgoingMessage initialTranscript={{ rowIds: ['incoming', 'short', 'long', 'incoming-short'], reveal: true }}>
+                  <ChatMessageFrame message={{ id: 'incoming', author: { kind: 'agent', name: 'Agent' }, createdAt: '2026-11-09T00:00:00Z', body: <ChatMessageBody text={wideReply} />, attachments: [{ id: 'attachment', agentId: 'agent', name: 'contained.txt', mediaType: 'text/plain', size: 12, url: '#attachment' }] }} />
                   <ChatMessageFrame message={{ id: 'short', author: { kind: 'operator' }, createdAt: '2026-11-09T00:00:00Z', body: <ChatMessageBody text={refresh ? 'Refreshed short message' : 'Short message'} /> }} />
                   <ChatMessageFrame message={{ id: 'long', author: { kind: 'operator' }, createdAt: '2026-11-09T00:00:00Z', body: <ChatMessageBody text={'Long prose stays contained. '.repeat(40) + '\n\n```ts\n' + 'long_code_'.repeat(160) + '\n```'} /> }} />
+                  <ChatMessageFrame message={{ id: 'incoming-short', author: { kind: 'agent', name: 'Agent' }, createdAt: '2026-11-09T00:00:00Z', body: <ChatMessageBody text="Short reply" /> }} />
                 </ChatSurface>
                 <Composer disabled={false} running={false} onSend={() => { throw Error('Geometry check must not send'); }} />
               </OutgoingMessageProvider>
@@ -72,6 +74,9 @@ export async function transcriptWidthMountedRegression(): Promise<void> {
     assert(scroll.scrollWidth <= scroll.clientWidth + 1, `${label}: no horizontal transcript overflow`);
     const avatar = host.querySelector('#incoming .MuiAvatar-root')!.getBoundingClientRect();
     assert(Math.abs(avatar.left - bounds[0].left) <= 1, `${label}: incoming avatar stays at lane edge`);
+    const incoming = host.querySelector('#incoming .chat-message-body')!.getBoundingClientRect();
+    assert(Math.abs(incoming.right - bounds[0].right) <= 1, `${label}: long reply uses the lane after the avatar and gap`);
+    assert(host.querySelector('#incoming-short .chat-message-body')!.getBoundingClientRect().width < bounds[0].width * .8, `${label}: short incoming reply stays content-sized`);
     const outgoing = host.querySelector('#short .chat-message-body')!.getBoundingClientRect();
     assert(Math.abs(outgoing.right - bounds[1].right) <= 1, `${label}: outgoing bubble stays at lane edge`);
     evidence.push({ label, viewport: innerWidth, composer: { left: box.left, right: box.right }, gutter, rows: bounds });
