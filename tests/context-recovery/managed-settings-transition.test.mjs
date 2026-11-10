@@ -7,6 +7,7 @@ import { ownedChroma } from '../memory/portability-fixture.mjs';
 import { randomUUID } from 'node:crypto';
 import { CAPABILITY_IDS } from '@ponderosa/core';
 import path from 'node:path';
+import {localMemoryFor} from '../../apps/server/dist/local-memory.js';
 
 async function accessRevocationPause(store,agentId,phase,kind){
  const pause=await until(()=>store.sqlite.prepare(`SELECT p.id,p.run_id,p.state,p.rollover_id,p.checkpoint_json,r.status,r.side_effects_fenced_at
@@ -18,10 +19,11 @@ async function accessRevocationPause(store,agentId,phase,kind){
  return pause;
 }
 
-test('memory-enabled voice preserves earlier work through an isolated managed handoff',{timeout:90000},async t=>{
+for(const concurrentChange of ['access','prompt'])test(`memory-enabled voice preserves earlier work through an isolated managed handoff (${concurrentChange})`,{timeout:90000},async t=>{
  let store,native;
  await withFixture(t,async f=>{
   const chat=await f.createChat('Managed voice transition'),agent=await f.createIdleAgent(chat,'Worker');
+  f.ok(await f.api('PUT',`/api/local-memory/grants/${chat.id}`,{readGlobal:true,expectedRevision:0}));
   await f.send(agent.id,'Preserve the original objective and its completed research.');
   await until(async()=>(await native.requests()).some(x=>x.method==='turn/start'),'first native turn');
   await native.sendTool('ponderosa_local_memory_search',{query:'Synthetic search'});
@@ -55,9 +57,38 @@ test('memory-enabled voice preserves earlier work through an isolated managed ha
   await native.sendTool('ponderosa_voice_reply',{});await f.settled(agent.id);
   const reply=f.ok(await f.api('GET',`/api/conversations/${chat.id}/voice-replies/${voice.message.communicationEventId}/${agent.id}`));
   assert.equal(reply.reply.state,'completed');
+  for(const text of ['A second compatible voice turn.','A third compatible voice turn.']){
+   const before=(await native.requests()).filter(x=>x.method==='turn/start').length;
+   f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text,idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'steer',voiceReply:true}));
+   const turns=await until(async()=>{const rows=(await native.requests()).filter(x=>x.method==='turn/start');return rows.length>before?rows:undefined;},'compatible voice continuation',20000);
+   assert.equal(turns.length,before+1,'compatible voice does not submit another handoff');
+   assert.equal(turns.at(-1).params.threadId,continuation[2].params.threadId,'completed managed generation is retained');
+   assert.ok(JSON.stringify(turns.at(-1)).includes(text));
+   await native.sendTool('ponderosa_local_memory_search',{query:'Synthetic later memory search'});
+   await native.sendTool('ponderosa_voice_reply',{});await f.settled(agent.id);
+   assert.equal(store.sqlite.prepare('SELECT count(*) n FROM context_rollovers WHERE agent_id=?').get(agent.id).n,1,'successive compatible turns reuse one verified transition');
+  }
   const notices=f.ok(await f.api('GET','/api/notifications'));
   assert.equal(notices.items.some(item=>(item.kind==='operational'||['attention','urgent'].includes(item.severity))&&(item.agentId===agent.id||item.conversationId===chat.id)),false,'owned automatic handoff never interrupts the user');
- },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,emitVoiceReply:true,holdMemoryCompletion:true,uniqueThreads:true})).adapter,
+  const beforeRevocation=(await native.requests()).filter(x=>x.method==='turn/start').length;
+  const memory=localMemoryFor(f.app),validate=memory.validateTransitionReads;
+  const retainedOrigin=store.acceptedProviderSessionInput(agent.id).executionId;
+  let reached=false,release;const paused=new Promise(resolve=>release=resolve);
+  memory.validateTransitionReads=async function(...args){
+   if(args[2]===retainedOrigin&&!reached){reached=true;await paused;}
+   return validate.apply(this,args);
+  };
+  try{
+   f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text:'Access changed; do not reuse old memory.',idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'steer',voiceReply:true}));
+   await until(()=>reached,'retained generation read validation paused');
+   if(concurrentChange==='access')f.ok(await f.api('PUT',`/api/local-memory/grants/${chat.id}`,{readGlobal:false,expectedRevision:1}));
+   else f.ok(await f.api('PATCH',`/api/conversations/${chat.id}`,{instructions:'Guidance changed while retained voice memory was being verified.'}));
+  }finally{release();memory.validateTransitionReads=validate;}
+  await until(()=>store.sqlite.prepare('SELECT 1 FROM context_rollovers WHERE agent_id=? AND id<>?').get(agent.id,transition.id),'changed access requires a new verified boundary',20000);
+  const afterRevocation=(await native.requests()).filter(x=>x.method==='turn/start').slice(beforeRevocation);
+  assert.ok(afterRevocation.every(turn=>!JSON.stringify(turn).includes('Access changed; do not reuse old memory.')),'changed access cannot reuse the old task context');
+  assert.ok(store.sqlite.prepare("SELECT 1 FROM agent_activations WHERE agent_id=? AND kind='human_message' AND state='pending' AND json_extract(payload_json,'$.dispatch.text')=?").get(agent.id,'Access changed; do not reuse old memory.'),'new work remains pending until its new boundary is verified');
+ },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,emitVoiceReply:true,emitVoiceContextUsage:true,holdMemoryCompletion:true,uniqueThreads:true})).adapter,
    localMemoryForRoot:async root=>({chromaUrl:await ownedChroma(),collectionPrefix:'context_'+randomUUID().replaceAll('-',''),modelDir:process.env.PONDEROSA_TEST_MEMORY_MODEL_DIR,stateDirectory:path.join(root,'memory-policy'),provision:true})});
 });
 

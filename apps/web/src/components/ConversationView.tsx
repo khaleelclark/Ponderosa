@@ -1229,6 +1229,7 @@ onClose: () => setAgentWorkOpen(false)}} />
         <Composer
           enableVoiceDictation
           voiceContext={activeView === "main" && !agentWorkOpen ? {
+            onOpenRecovery: id => onOpenAgent(id),
             projectId: conversation.projectId,
             conversationId,
             agents: routingAgents,

@@ -148,6 +148,8 @@ export async function voiceMessageRecordingRegression():Promise<void> {
 
 export async function voiceCallHeaderFocusRegression():Promise<void>{
  const speechWindow=window as unknown as {SpeechRecognition?:new()=>unknown};const originalRecognition=speechWindow.SpeechRecognition;
+ const devicesDescriptor=Object.getOwnPropertyDescriptor(navigator,'mediaDevices');
+ Object.defineProperty(navigator,'mediaDevices',{configurable:true,value:{getUserMedia:async()=>{const track={kind:'audio',readyState:'live',stop(){track.readyState='ended';}};return {getAudioTracks:()=>[track],getTracks:()=>[track]};}}});
  let captureStarts=0,sends=0;
  class Recognition {continuous=true;interimResults=false;lang='en-US';maxAlternatives=1;onstart?:()=>void;onend?:()=>void;start(){captureStarts++;queueMicrotask(()=>this.onstart?.());}stop(){queueMicrotask(()=>this.onend?.());}abort(){queueMicrotask(()=>this.onend?.());}}
  speechWindow.SpeechRecognition=Recognition;
@@ -174,5 +176,5 @@ export async function voiceCallHeaderFocusRegression():Promise<void>{
   secondEnd.focus();secondEnd.click();newer.focus();await until(()=>!document.querySelector('[role="dialog"]')?true:undefined,'Second End did not close');await tick();
   assert(document.activeElement===newer,'Ending a call must not steal focus from a newer editor interaction');
   newer.focus();render(true);await tick();assert(document.activeElement===newer,'A later read-only render must preserve newer focus');assert(handset.disabled,'Read-only/supplied-disabled gating must disable the header handset');
- }finally{root.unmount();client.clear();Object.assign(api,originals);host.remove();header.remove();newer.remove();if(originalRecognition)speechWindow.SpeechRecognition=originalRecognition;else delete speechWindow.SpeechRecognition;}
+ }finally{if(devicesDescriptor)Object.defineProperty(navigator,'mediaDevices',devicesDescriptor);else delete (navigator as unknown as {mediaDevices?:unknown}).mediaDevices;root.unmount();client.clear();Object.assign(api,originals);host.remove();header.remove();newer.remove();if(originalRecognition)speechWindow.SpeechRecognition=originalRecognition;else delete speechWindow.SpeechRecognition;}
 }

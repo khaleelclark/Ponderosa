@@ -1,9 +1,9 @@
 import type { SpeechPreferencesDto } from "@ponderosa/core";
-import { abandonPageCapture } from "./captureCoordinator";
+import { abandonPageCapture, ownsPageCapture } from "./captureCoordinator";
 import { monitorSpeechSurfaceAccessibility } from "./speechSurfaceAccessibility";
 
 export type PlaybackStatus = "idle" | "loading" | "speaking" | "paused" | "stopped" | "error";
-interface Snapshot { ownerId?: string; status: PlaybackStatus; error?: string }
+interface Snapshot { ownerId?: string; status: PlaybackStatus; error?: string; lastPhraseEndedAt?: number }
 interface Owner {
   id: string;
   utterance?: SpeechSynthesisUtterance;
@@ -14,6 +14,8 @@ interface Owner {
   queue?: string[];
   finished?: boolean;
   checking?: boolean;
+  captureOwner?: object;
+  lastPhraseEndedAt?: number;
 }
 let active: Owner | undefined;
 let snapshot: Snapshot = { status: "idle" };
@@ -21,6 +23,7 @@ const listeners = new Set<() => void>();
 const publish = (next: Snapshot) => { snapshot = next; for (const listener of listeners) listener(); };
 export const subscribeSpeech = (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; };
 export const speechSnapshot = () => snapshot;
+export const speechSharesCapture = (owner: object): boolean => active?.captureOwner === owner && ownsPageCapture(owner);
 
 function release(owner: Owner): boolean {
   let failed = false;
@@ -39,8 +42,9 @@ function release(owner: Owner): boolean {
 export function stopSpeech(ownerId?: string): boolean {
   if (!active || (ownerId && active.id !== ownerId)) return true;
   const owner = active;
+  if(owner.started&&owner.utterance)owner.lastPhraseEndedAt=Date.now();
   const failed = release(owner);
-  publish({ ownerId: owner.id, status: "stopped", ...(failed ? { error: "Browser audio cleanup could not be confirmed. Check browser audio controls." } : {}) });
+  publish({ ownerId: owner.id, status: "stopped", lastPhraseEndedAt: owner.lastPhraseEndedAt, ...(failed ? { error: "Browser audio cleanup could not be confirmed. Check browser audio controls." } : {}) });
   return !failed;
 }
 export function releaseSpeechSurface(ownerId: string): void {
@@ -72,17 +76,19 @@ function fail(owner: Owner): void {
 }
 export interface SpeechQueue { append(text: string): boolean; finish(): void; stop(): void }
 /** One owner across all phrases, including gaps; capture never resumes between them. */
-export function startSpeechQueue(id: string, preferences: SpeechPreferencesDto, surface: () => HTMLElement | null, onComplete?: () => void, onStart?: (text: string) => void, beforePhrase?: () => Promise<boolean | "skip">, onSkipped?: () => void): SpeechQueue {
-  abandonPageCapture(); stopSpeech();
+export function startSpeechQueue(id: string, preferences: SpeechPreferencesDto, surface: () => HTMLElement | null, onComplete?: () => void, onStart?: (text: string) => void, beforePhrase?: () => Promise<boolean | "skip">, onSkipped?: () => void, captureOwner?: object): SpeechQueue {
+  if (captureOwner && !ownsPageCapture(captureOwner)) return { append: () => false, finish() {}, stop() {} };
+  abandonPageCapture(captureOwner); stopSpeech();
   if (active) return { append: () => false, finish() {}, stop() {} };
-  const owner: Owner = { id, queue: [], finished: false };
+  const owner: Owner = { id, queue: [], finished: false, captureOwner };
   active = owner; publish({ ownerId: id, status: "loading" });
   const pump = async () => {
     if (active !== owner || owner.utterance || owner.checking) return;
+    if (captureOwner && !ownsPageCapture(captureOwner)) { stopSpeech(id); return; }
     const text = owner.queue!.shift();
     if (!text) {
       if (owner.finished) { const settled = stopSpeech(id); if (settled) onComplete?.(); }
-      else publish({ ownerId: id, status: "loading" });
+      else publish({ ownerId: id, status: "loading",lastPhraseEndedAt:owner.lastPhraseEndedAt });
       return;
     }
     try {
@@ -92,6 +98,7 @@ export function startSpeechQueue(id: string, preferences: SpeechPreferencesDto, 
         try { permitted = await beforePhrase(); } finally { owner.checking = false; }
         // A stopped/replaced owner never gains authority from a delayed response.
         if (active !== owner) return;
+        if (captureOwner && !ownsPageCapture(captureOwner)) { stopSpeech(id); return; }
         if (permitted === "skip") { onSkipped?.(); void pump(); return; }
         if (!permitted) { fail(owner); return; }
       }
@@ -99,13 +106,14 @@ export function startSpeechQueue(id: string, preferences: SpeechPreferencesDto, 
       const utterance = new SpeechSynthesisUtterance(text); owner.utterance = utterance; owner.started = false; owner.audioUsed = true;
       utterance.lang = navigator.language || "en-US"; utterance.rate = preferences.speed;
       const current = () => active === owner && owner.utterance === utterance;
-      utterance.onstart = () => { if (!current()) return; owner.started = true; clearTimeout(owner.startTimer); if (snapshot.status !== "paused") publish({ ownerId: id, status: "speaking" }); onStart?.(text); };
+      utterance.onstart = () => { if (!current()) return; owner.started = true; clearTimeout(owner.startTimer); onStart?.(text); if (current() && snapshot.status !== "paused") publish({ ownerId: id, status: "speaking" }); };
       utterance.onend = () => {
         if (!current()) return;
         if (!owner.started) { fail(owner); return; }
         clearTimeout(owner.startTimer);
         utterance.onstart = null; utterance.onend = null; utterance.onerror = null;
-        owner.utterance = undefined; pump();
+        owner.lastPhraseEndedAt=Date.now();owner.utterance = undefined;owner.started=false;
+        publish({ownerId:id,status:"loading",lastPhraseEndedAt:owner.lastPhraseEndedAt});pump();
       };
       utterance.onerror = () => { if (current()) fail(owner); };
       owner.startTimer = setTimeout(() => fail(owner), 3_000);
@@ -127,7 +135,7 @@ export function startSpeechQueue(id: string, preferences: SpeechPreferencesDto, 
     stop() { if (active === owner) stopSpeech(id); },
   };
 }
-export function startSpeech(id: string, text: string, preferences: SpeechPreferencesDto, surface: () => HTMLElement | null, onComplete?: () => void, onStart?: () => void): void {
-  const queue = startSpeechQueue(id, preferences, surface, onComplete, onStart);
+export function startSpeech(id: string, text: string, preferences: SpeechPreferencesDto, surface: () => HTMLElement | null, onComplete?: () => void, onStart?: () => void, captureOwner?: object): void {
+  const queue = startSpeechQueue(id, preferences, surface, onComplete, onStart, undefined, undefined, captureOwner);
   queue.append(text); queue.finish();
 }

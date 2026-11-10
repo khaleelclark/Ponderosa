@@ -12,8 +12,8 @@ import {
   speechSurfaceIsAccessible,
 } from "./speechSurfaceAccessibility";
 
-import { claimPageCapture } from "./captureCoordinator";
-import { stopSpeech } from "./speechCoordinator";
+import { claimPageCapture, ownsPageCapture } from "./captureCoordinator";
+import { speechSharesCapture, stopSpeech } from "./speechCoordinator";
 
 type RequestedEnd = "pause" | "stop";
 const DICTATION_SETTLE_TIMEOUT_MS = 3_000;
@@ -38,6 +38,7 @@ export function useDictation(
   endOnSpeechEnd: boolean | (() => boolean) = false,
   recordingInput?: { track(): MediaStreamTrack | undefined },
   recoverableErrors: readonly string[] = [],
+  callCapture?: { owner: object; acceptResult(words: string, final: boolean): boolean; onStart?(): void },
 ): DictationController {
   const unavailableReason = dictationUnavailableReason();
   const [status, setStatus] = useState<DictationStatus>("ready");
@@ -56,6 +57,7 @@ export function useDictation(
   const settlingHandlerRef = useRef(onSettlingChange);
   transcriptHandlerRef.current = onFinalTranscript;
   settlingHandlerRef.current = onSettlingChange;
+  const callCaptureRef = useRef(callCapture); callCaptureRef.current = callCapture;
 
   const updateSettling = useCallback((next: boolean) => {
     if (settlingRef.current === next) return;
@@ -95,6 +97,7 @@ export function useDictation(
       try {
         recognition.onend = null;
         recognition.onspeechend = null;
+        recognition.onspeechstart = null;
       } catch {
         // Continue fencing even if a browser implementation rejects cleanup.
       }
@@ -181,7 +184,11 @@ export function useDictation(
       setStatus("error");
       return;
     }
-    stopSpeech();
+    const call = callCaptureRef.current;
+    // React may not yet expose starting while the owned native call is live.
+    if(call&&recognitionRef.current)return;
+    if (call && !ownsPageCapture(call.owner)) { setError("This call no longer owns microphone capture."); setStatus("error"); return; }
+    if (!call || !speechSharesCapture(call.owner)) stopSpeech();
     clearSettleTimer();
     const existingRecognition = recognitionRef.current;
     if (existingRecognition) releaseRecognition(existingRecognition);
@@ -213,9 +220,9 @@ export function useDictation(
       const activeRecognition = recognition;
       recognitionRef.current = activeRecognition;
       // A recording owns the capture lease and supplies its already admitted input.
-      captureCleanupRef.current = recordingInput ? undefined : claimPageCapture(abandonForSurfaceLoss);
+      captureCleanupRef.current = recordingInput || call ? undefined : claimPageCapture(abandonForSurfaceLoss);
       activeRecognition.continuous = continuous;
-      activeRecognition.interimResults = Boolean(endOnSpeechEnd);
+      activeRecognition.interimResults = Boolean(endOnSpeechEnd) || Boolean(call);
       activeRecognition.lang = navigator.language || "en-US";
       activeRecognition.maxAlternatives = 1;
       // Newer browsers can infer punctuation from speech without spoken commands.
@@ -225,21 +232,36 @@ export function useDictation(
       // Results contain the session's final-result history, not only new words.
       // Track consumed positions so a replayed result cannot duplicate the draft.
       let nextFinalResultIndex = 0;
+      let acceptedCallSpeech = false, speechEnded = false;
+      const finishUtterance = () => {
+        if (generationRef.current !== generation || requestedEndRef.current) return;
+        requestedEndRef.current = "stop";setStatus("stopping");scheduleSettleTimeout(activeRecognition,generation);
+        try { activeRecognition.stop(); } catch { abandonGeneration(activeRecognition,generation,"Voice dictation could not finish this turn."); }
+      };
+      const finishOnSpeechEnd = typeof endOnSpeechEnd === "function" ? endOnSpeechEnd() : endOnSpeechEnd;
       if (generationRef.current !== generation) return;
       activeRecognition.onstart = () => {
+        if (call && !ownsPageCapture(call.owner)) { abandonForSurfaceLoss(); return; }
         if (generationRef.current === generation && mountedRef.current && !requestedEndRef.current) {
           clearSettleTimer();
+          callCaptureRef.current?.onStart?.();
           setStatus("listening");
         }
       };
       activeRecognition.onresult = event => {
         if (generationRef.current !== generation) return;
+        if (call && !ownsPageCapture(call.owner)) { abandonForSurfaceLoss(); return; }
         const finalTranscripts: string[] = [];
         for (let index = nextFinalResultIndex; index < event.results.length; index += 1) {
           const result = event.results[index];
-          if (!result?.isFinal) break;
-          nextFinalResultIndex = index + 1;
           const transcript = result?.[0]?.transcript;
+          if (!result?.isFinal) {
+            if (transcript?.trim() && callCaptureRef.current?.acceptResult(transcript.trim(), false)) acceptedCallSpeech=true;
+            break;
+          }
+          nextFinalResultIndex = index + 1;
+          if (transcript?.trim() && callCaptureRef.current && !callCaptureRef.current.acceptResult(transcript.trim(), true)) continue;
+          if(transcript?.trim()&&call)acceptedCallSpeech=true;
           if (transcript?.trim()) {
             finalTranscripts.push(transcript.trim());
           }
@@ -247,17 +269,14 @@ export function useDictation(
         if (finalTranscripts.length) {
           transcriptHandlerRef.current(finalTranscripts.join(" "));
         }
+        if(call&&finishOnSpeechEnd&&speechEnded&&acceptedCallSpeech)finishUtterance();
       };
       // Calls finish on a browser speech boundary, then await final results/onend.
       // Ordinary dictation retains its existing continuous/manual behavior.
-      activeRecognition.onspeechend = (typeof endOnSpeechEnd === "function" ? endOnSpeechEnd() : endOnSpeechEnd) ? () => {
-        if (generationRef.current !== generation || requestedEndRef.current) return;
-        requestedEndRef.current = "stop";
-        setStatus("stopping");
-        scheduleSettleTimeout(activeRecognition, generation);
-        try { activeRecognition.stop(); } catch {
-          abandonGeneration(activeRecognition, generation, "Voice dictation could not finish this turn.");
-        }
+      activeRecognition.onspeechstart=call?()=>{if(generationRef.current===generation)speechEnded=false;}:null;
+      activeRecognition.onspeechend = finishOnSpeechEnd ? () => {
+        speechEnded=true;
+        if(!call||acceptedCallSpeech)finishUtterance();
       } : null;
       activeRecognition.onerror = event => {
         if (generationRef.current !== generation) return;
@@ -317,6 +336,7 @@ export function useDictation(
       if (recordingInput) {
         const track = recordingInput.track();
         if (!track || track.readyState !== "live") throw new Error("The recording audio input is no longer available.");
+        if (call && !ownsPageCapture(call.owner)) throw new Error("This call no longer owns microphone capture.");
         activeRecognition.start(track);
       } else activeRecognition.start();
     } catch (startError) {

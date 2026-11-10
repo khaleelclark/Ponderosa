@@ -1,4 +1,4 @@
-import {proveRetainedCodexVoiceContext} from './retained-codex-voice-context.js';
+import {proveRetainedCodexVoiceContext,proveRetainedManagedVoiceContext} from './retained-codex-voice-context.js';
 import { freshFailureDiagnostic } from './working-copy-diagnostic.js';
 import { createHash } from 'node:crypto';
 import { CapabilityPolicyStore, type AgentStore, type CoordinationV3Store, type WorkspaceStore } from '@ponderosa/agents';
@@ -345,7 +345,6 @@ export async function requestSettingsTransition(input: {
     .get(agent.id,pending.projectId,boundary.executionId,accepted.sessionId,pending.id,targetModel,targetEffort??null,targetSpeed??null));
    const voiceBoundary=Boolean(opts.localMemory&&dispatch?.voiceReply===true&&!verifiedVoice);
    if(voiceBoundary&&!stopped&&!changed&&!promptChanged&&!grantExpansion&&memory&&
-      agent.activeEngine==='codex'&&Object.getPrototypeOf(engine.adapter)===CodexAdapter.prototype&&!Object.hasOwn(engine.adapter,'openSession')&&
       prior&&restrictions.filesystemWriteRestricted===prior.filesystemWriteRestricted&&
       JSON.stringify(restrictions.restrictedCapabilityIds)===JSON.stringify(prior.restrictedCapabilityIds)&&
       JSON.stringify(restrictions.restrictedConnectorNames)===JSON.stringify(prior.restrictedConnectorNames)){
@@ -356,8 +355,10 @@ export async function requestSettingsTransition(input: {
     const runtimeHash=providerRuntimeSessionContractHash({runtimeSessionContractHash:providerSessionContractHash(agent.activeEngine,agent.workingCopy.id,targetModel,targetEffort,toolHash),
       speed:targetSpeed,...(contract.observedBillingMode?{billingMode:contract.observedBillingMode}:{}),systemPromptHash:targetSystemPromptHash,scopeKey:row.scope_key},contract.contractHash);
     if(runtimeHash===contract.contractHash){
-     const retained=proveRetainedCodexVoiceContext({store,memory,agentId:agent.id,chatId:agent.conversationId,sessionId:accepted.sessionId,
-       sourceRunId:boundary.executionId,contractHash:runtimeHash,systemPromptHash:targetSystemPromptHash});
+     const proofInput={store,memory,agentId:agent.id,chatId:agent.conversationId,sessionId:accepted.sessionId,
+       sourceRunId:boundary.executionId,contractHash:runtimeHash,systemPromptHash:targetSystemPromptHash};
+     const retained=await proveRetainedManagedVoiceContext(proofInput)??proveRetainedCodexVoiceContext(proofInput);
+     if(initialFingerprint!==transitionFingerprint(input,pending.projectId,pending.agentId,pending.id))return false;
      if(retained?.isCurrent()){
       store.sqlite.prepare("DELETE FROM activation_sources WHERE activation_id=? AND source_kind='settings_transition_retry_pending'").run(pending.id);
       return true;

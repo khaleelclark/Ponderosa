@@ -5,6 +5,47 @@ import type {LocalMemoryService} from './local-memory.js';
 const hash=(value:string)=>createHash('sha256').update(value).digest('hex');
 type Input={store:AgentStore;memory:LocalMemoryService;agentId:string;chatId:string;sessionId:string;
  sourceRunId:string;currentRunId?:string;contractHash:string;systemPromptHash:string};
+/** Reuse a completed managed generation, not the original task's transition
+ * marker. Extend its memory proof through every subsequently completed turn. */
+export async function proveRetainedManagedVoiceContext(input:Input):Promise<{isCurrent:()=>boolean}|undefined>{
+ const inspect=():{snapshot:string;origin:string;signature:string}|undefined=>{try{
+  const {store,memory,agentId,chatId,sessionId,sourceRunId,currentRunId}=input,db=store.sqlite;
+  const agent=store.getAgent(agentId),accepted=store.resumeSessionState(agentId),seed=store.acceptedProviderSessionInput(agentId);
+  const contract=seed?.sourceManifest.schemaVersion===3?seed.sourceManifest.normalRuntimeContract:undefined;
+  if(!agent||agent.conversationId!==chatId||accepted?.sessionId!==sessionId||accepted.toolContractHash!==input.contractHash||
+    !seed||!contract||contract.contractHash!==input.contractHash||contract.engineId!==agent.activeEngine||
+    contract.workingCopyId!==agent.workingCopy.id||contract.cwd!==agent.workingCopy.rootPath||agent.workingCopy.state!=='ready'||
+    typeof seed.exactSystemPrompt!=='string'||hash(seed.exactSystemPrompt)!==input.systemPromptHash||seed.systemPromptHash!==input.systemPromptHash)return;
+  const rows=db.prepare(`SELECT r.*,h.payload_json FROM context_rollovers r
+    JOIN activation_sources x ON x.source_kind='context_rollover' AND x.source_id=r.id
+    JOIN agent_activations h ON h.id=x.activation_id AND h.kind='context_rollover_handoff'
+    WHERE r.agent_id=? AND r.project_id=? AND r.conversation_id=? AND r.scope_key=?
+      AND r.state='completed' AND r.completion_reason='replacement_verified'
+      AND r.replacement_run_id=? AND r.replacement_session_id=?`).all(agentId,agent.projectId,chatId,`conversation:${chatId}`,seed.executionId,sessionId) as any[];
+  if(rows.length!==1)return;const rollover=rows[0],marker=JSON.parse(rollover.payload_json)?.settingsTransition;
+  if(!marker||marker.oldSessionId!==rollover.old_provider_session_id||marker.sourceRunId!==rollover.source_run_id||
+     !marker.authorizationOriginRunId||!marker.authorizationSignatureHash||marker.targetModel!==contract.model||
+     marker.targetEffort!==contract.effort||marker.targetSpeed!==(contract.speed??'standard')||
+     marker.targetSystemPromptHash&&marker.targetSystemPromptHash!==input.systemPromptHash)return;
+  const source=db.prepare(`SELECT id,fencing_token,scope_key,status,prompt_injection_state,provider_session_id FROM scheduler_runs
+    WHERE id=? AND agent_id=?`).get(sourceRunId,agentId) as any;
+  if(!source||source.scope_key!==rollover.scope_key||source.status!=='completed'||source.prompt_injection_state!=='injected'||source.provider_session_id!==sessionId)return;
+  const current=currentRunId?db.prepare(`SELECT id,fencing_token,scope_key,status,prompt_injection_state FROM scheduler_runs WHERE id=? AND agent_id=?`).get(currentRunId,agentId) as any:undefined;
+  if(currentRunId&&(!current||!['leased','running'].includes(current.status)||current.scope_key!==source.scope_key||
+    current.fencing_token<=source.fencing_token||!['not_injected','injecting','injected'].includes(current.prompt_injection_state)))return;
+  if(db.prepare(`SELECT 1 FROM scheduler_runs WHERE agent_id=? AND id<>? AND fencing_token>? LIMIT 1`)
+    .get(agentId,currentRunId??'',source.fencing_token))return;
+  const authorization=memory.transitionAuthorization(agentId,chatId,sessionId,seed.executionId,sourceRunId);
+  if(!authorization||authorization.signature!==marker.authorizationSignatureHash)return;
+  return {snapshot:JSON.stringify([accepted,agent.workingCopy,seed.promptHash,contract,rollover,source,current&&[current.id,current.fencing_token,current.scope_key]]),origin:seed.executionId,signature:authorization.signature};
+ }catch{return;}};
+ const initial=inspect();if(!initial)return;
+ if(!await input.memory.validateTransitionReads(input.agentId,input.chatId,initial.origin,input.sourceRunId,
+   input.currentRunId??input.sourceRunId,initial.signature))return;
+ const isCurrent=()=>inspect()?.snapshot===initial.snapshot&&input.memory.transitionAuthorizationStillValid(input.agentId,input.chatId,
+   initial.origin,input.sourceRunId,input.currentRunId??input.sourceRunId,initial.signature);
+ return isCurrent()?{isCurrent}:undefined;
+}
 /** This proves only the accepted first generation. A separate failed fresh
  * replacement keeps its own uncertainty and is never resumed or replayed here. */
 export function proveRetainedCodexVoiceContext(input:Input):{isCurrent:()=>boolean}|undefined{

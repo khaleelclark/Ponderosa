@@ -1743,6 +1743,7 @@ export function InboxView({
           }
           enableVoiceDictation
           voiceContext={activeReplyTarget && composerConversationId ? {
+            onOpenRecovery: id => onNavigate({kind:'agent',projectId:activeReplyTarget.projectId,agentId:id}),
             projectId: activeReplyTarget.projectId,
             conversationId: composerConversationId,
             agents: projectAgentsQuery.data ?? [],

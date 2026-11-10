@@ -7,8 +7,9 @@ import vm from 'node:vm';
 import {VoicePhraseBuffer,VoiceReplyBuffers,voiceTimingText} from '../../apps/web/src/components/speech/voiceReplyStream.ts';
 import {voiceReplyInWindow} from '../../apps/web/src/components/speech/voiceReply.ts';
 import {assistantSubmissionError} from '../../apps/web/src/components/chat/composerUtils.ts';
-import {speakableMessageText} from '../../apps/web/src/components/speech/speechText.ts';
+import {speakableMessageText,isSpokenEcho} from '../../apps/web/src/components/speech/speechText.ts';
 const require=createRequire(new URL('../../apps/web/package.json',import.meta.url)),React=require('react'),ts=require('typescript');
+const capture=await import('../../apps/web/src/components/speech/captureCoordinator.ts');
 const mui=new Proxy({useMediaQuery:()=>false},{get:(o,k)=>o[k]??String(k)});
 // Exercise actual component closures. Only React scheduling, native speech and transport are controlled.
 function fixture(module,imports,globals={}){
@@ -72,27 +73,42 @@ test('missing/foreign owner, unavailable recognition and read-only scopes do not
  f.item('Voice Call').props.onClick();f.render();f.readOnly(true);assert.equal(f.all().some(n=>n.type===f.VoiceConversation),false);assert.equal(f.find(n=>n.props['aria-label']==='Voice Options').props.disabled,true);f.readOnly(false);assert.equal(f.all().some(n=>n.type===f.VoiceConversation),false,'reenabling a surface must not reopen a call');f.unmount();
 });
 
-function callFixture({product='dev',selectedAgentId='agent',agents=[agent()],lockAgent=true,startOnOpen=false}={}){
- const sent=[],spoken=[],events=[],timers=new Map();let id=0,closed=0,observer,stream,playback={status:'idle'},onInactive,queued;
+function callFixture({product='dev',selectedAgentId='agent',agents=[agent()],lockAgent=true,startOnOpen=false,mediaPermission}={}){
+ const sent=[],spoken=[],events=[],timers=new Map();let id=0,closed=0,observer,stream,playback={status:'idle'},onInactive,queued,dictationArgs,speechStops=true;
  const dictation={status:'ready',start(){events.push('capture');dictation.status='listening';},abandon(){events.push('abandon');dictation.status='ready';},stop(){dictation.status='stopped';}};
  const detail={conversation:{id:'chat',projectId:'project',...(product==='branches'?{branchId:'branch'}:{})},agents,messages:[]};
  const queryClient={invalidateQueries:async()=>{}};
  const api={getConversation:async()=>detail,getVoiceReplyStatus:async()=>({messageId:'input',runId:'run',runStatus:'running',memoryExposure:{state:'disabled',runId:'run'}}),sendMultiAgentDirectMessage:async(chat,request)=>{sent.push({chat,request});return {messageId:'input',message:{id:'input',communicationEventId:'input',conversationId:chat,role:'user',text:request.text,createdAt:new Date().toISOString()},recipients:[{queued:true}]};},subscribeAgent(_id,_cursor,handlers){stream=handlers;return{close(){events.push('stream-closed');}};},cancelRun:async()=>events.push('cancel-run')};
  class QueryObserver{constructor(_client,options){this.options=options;}subscribe(fn){observer=fn;return()=>events.push('observer-unsubscribed');}destroy(){events.push('observer-destroyed');}}
- const speech={subscribeSpeech:()=>()=>{},speechSnapshot:()=>playback,stopSpeech(){events.push('stop-speech');playback={status:'stopped'};return true;},startSpeech(){},startSpeechQueue(owner,_prefs,_surface,complete,started,before){playback={ownerId:owner,status:'loading'};queued={append(text){spoken.push(text);return true;},finish(){events.push('queue-finished');},stop(){events.push('queue-stopped');},complete,started,before};return queued;}};
+ const speech={subscribeSpeech:()=>()=>{},speechSnapshot:()=>playback,stopSpeech(){events.push('stop-speech');playback={status:'stopped',...(!speechStops?{error:'Synthetic cleanup refusal'}:{})};return speechStops;},startSpeech(){},startSpeechQueue(owner,_prefs,_surface,complete,started,before){playback={ownerId:owner,status:'loading'};queued={append(text){spoken.push(text);return true;},finish(){events.push('queue-finished');},stop(){events.push('queue-stopped');},complete,started,before};return queued;}};
  const attempt={VOICE_ATTEMPT_TTL:86400000,restoreVoiceCallAttempt:async()=>({}),retainVoiceCallAttempt:()=>true,settleVoiceCallAttempt:()=>events.push('settled'),voiceCallAttemptCanRetry:async()=>true,prepareVoiceCallAttempt:async(route,text)=>({marker:{route},request:{text,recipients:[{agentId:route.agentId}],voiceReply:true,idempotencyKey:'exact-turn',activeRunDelivery:'steer'}})};
- const f=fixture('VoiceConversation',{'../chat/composerUtils':{assistantSubmissionError},'../../clientId':{createClientId:()=> 'operation'},'@ponderosa/core':{DEFAULT_SPEECH_PREFERENCES:{speed:1}},'@tanstack/react-query':{QueryObserver,useQueryClient:()=>queryClient},'../../api':{api},'../../api/productScope':{productApiPath:path=>product==='branches'?'/api/branches/engine/'+path.slice(5):path,currentProductScope:()=>product},'../../hooks/queries':{useWorkspacePreferences:()=>({})},'../../queryKeys':{queryKeys:{conversations:{detail:()=>['conversation'],detailPrefix:()=>['conversation']}}},'../../conversationMessageReceipt':{publishConversationMessageReceipt:async()=>{}},'./browserSpeech':{dictationUnavailableReason:()=>undefined,speechSynthesisUnavailableReason:()=>undefined},'./speechCoordinator':speech,'./speechSurfaceAccessibility':{monitorSpeechSurfaceAccessibility(_surface,fn){onInactive=fn;return()=>{};}},'./speechText':{speakableMessageText},'./useDictation':{useDictation:()=>dictation},'./voiceReplyStream':{VoicePhraseBuffer,VoiceReplyBuffers,voiceTimingText},'./voiceReply':{voiceReplyInWindow},'./voiceCallAttempt':attempt},{document:{visibilityState:'visible'},window:Object.assign(new EventTarget(),{location:{origin:'https://test.invalid'}}),setInterval:fn=>{timers.set(++id,fn);return id;},clearInterval:key=>timers.delete(key),setTimeout:fn=>{timers.set(++id,fn);return id;},clearTimeout:key=>timers.delete(key)});
+ const f=fixture('VoiceConversation',{'../chat/composerUtils':{assistantSubmissionError},'../../clientId':{createClientId:()=> 'operation'},'@ponderosa/core':{DEFAULT_SPEECH_PREFERENCES:{speed:1}},'@tanstack/react-query':{QueryObserver,useQueryClient:()=>queryClient},'../../api':{api},'../../api/productScope':{productApiPath:path=>product==='branches'?'/api/branches/engine/'+path.slice(5):path,currentProductScope:()=>product},'../../hooks/queries':{useWorkspacePreferences:()=>({})},'../../queryKeys':{queryKeys:{conversations:{detail:()=>['conversation'],detailPrefix:()=>['conversation']}}},'../../conversationMessageReceipt':{publishConversationMessageReceipt:async()=>{}},'./browserSpeech':{dictationUnavailableReason:()=>undefined,speechSynthesisUnavailableReason:()=>undefined},'./captureCoordinator':capture,'./speechCoordinator':speech,'./speechSurfaceAccessibility':{speechSurfaceIsAccessible:()=>true,monitorSpeechSurfaceAccessibility(_surface,fn){onInactive=fn;return()=>{};}},'./speechText':{speakableMessageText,isSpokenEcho},'./useDictation':{useDictation:(...args)=>{dictationArgs=args;return dictation;}},'./voiceReplyStream':{VoicePhraseBuffer,VoiceReplyBuffers,voiceTimingText},'./voiceReply':{voiceReplyInWindow},'./voiceCallAttempt':attempt},{navigator:{mediaDevices:{getUserMedia:mediaPermission??(async()=>{const track={readyState:'live',stop(){track.readyState='ended';events.push('track-stopped');}};return {getAudioTracks:()=>[track],getTracks:()=>[track]};})}},document:{visibilityState:'visible'},window:Object.assign(new EventTarget(),{location:{origin:'https://test.invalid'}}),setInterval:fn=>{timers.set(++id,fn);return id;},clearInterval:key=>timers.delete(key),setTimeout:fn=>{timers.set(++id,fn);return id;},clearTimeout:key=>timers.delete(key)});
  const outer=f.exports.VoiceConversation({...context,agents,selectedAgentId,lockAgent,startOnOpen,open:true,onClose:()=>closed++});const session=React.Children.toArray(outer.props.children)[0];
  f.mount(session.type,session.props);f.find(n=>n.type==='DialogContent').ref({isConnected:true,contains:()=>false});f.render();
  const findButton=name=>f.find(n=>n.type==='Button'&&(n.props.children===name||n.props['aria-label']===name));
  const sendTurn=async()=>{await f.flush();findButton('Transcript').props.onClick();f.render();f.find(n=>n.type==='TextField'&&n.props.label==='Type A Message').props.onChange({target:{value:'A private voice turn'}});f.render();findButton('Send').props.onClick();await f.flush();await f.flush();};
  const canonical=text=>{detail.messages=[{id:'input',conversationId:'chat',role:'user',text:'A private voice turn',deliveryReceipts:[{targetAgentId:'agent',state:'processed',executionId:'run'}]},{id:'answer',conversationId:'chat',role:'assistant',communicationIntent:'user_dm',authorAgentId:'agent',executionId:'run',text,createdAt:new Date().toISOString()}];observer({isSuccess:true,isFetching:false,isFetchedAfterMount:true,data:detail});f.render();};
- return{...f,dictation,events,sent,spoken,detail,sendTurn,canonical,findButton,timers,closed:()=>closed,inactive:()=>onInactive(),stream:()=>stream,queued:()=>queued};
+ return{...f,dictation,events,sent,spoken,detail,sendTurn,setSpeechStops:value=>speechStops=value,words:words=>dictationArgs[0](words),canonical,findButton,timers,closed:()=>closed,inactive:()=>onInactive(),stream:()=>stream,queued:()=>queued};
 }
 for(const product of ['dev','branches'])test(`${product}: opening a call does not capture/send; explicit Start, mute, End and unmount fence local audio`,async()=>{
  const f=callFixture({product});await f.flush();assert.deepEqual(f.sent,[]);assert.equal(f.events.includes('capture'),false);assert.equal(f.findButton('Start Call').props.disabled,false);
- f.findButton('Start Call').props.onClick();f.render();assert.equal(f.events.filter(e=>e==='capture').length,1);
+ f.findButton('Start Call').props.onClick();await f.flush();assert.equal(f.events.filter(e=>e==='capture').length,1);
  f.find(n=>n.type==='Button'&&Array.isArray(n.props.children)===false&&n.props['aria-pressed']===false).props.onClick();f.render();assert.equal(f.dictation.status,'ready');assert.equal(f.sent.length,0);f.findButton('End Call').props.onClick();assert.equal(f.closed(),1);f.unmount();assert.equal(f.timers.size,0);assert.equal(f.events.includes('cancel-run'),false);
+});
+test('late microphone permission cannot revive an ended call',async()=>{
+ let release;const track={readyState:'live',stop(){track.readyState='ended';}};
+ const f=callFixture({mediaPermission:()=>new Promise(resolve=>release=resolve)});await f.flush();
+ f.findButton('Start Call').props.onClick();f.render();assert.equal(f.events.includes('capture'),false);
+ f.findButton('End Call').props.onClick();release({getAudioTracks:()=>[track],getTracks:()=>[track]});await f.flush();
+ assert.equal(track.readyState,'ended');assert.equal(f.events.includes('capture'),false);assert.equal(f.sent.length,0);f.unmount();
+});
+test('failed audio cleanup preserves a completed unsent utterance for review',async()=>{
+ const f=callFixture();await f.flush();f.findButton('Start Call').props.onClick();await f.flush();
+ f.words('Keep these unsent opening words.');f.render();f.setSpeechStops(false);
+ f.dictation.status='stopped';f.dictation.endReason='natural';f.render();
+ assert.equal(f.sent.length,0);f.findButton('Transcript').props.onClick();f.render();
+ assert.ok(f.all().some(n=>n.props.children==='Keep these unsent opening words.'),'Completed draft must survive failed local cleanup');
+ assert.equal(f.dictation.status,'ready');f.unmount();
 });
 test('Chat chooser uses canonical members; fixed Agent owner has no chooser',async()=>{
  const f=callFixture({agents:[agent(),agent('second')],selectedAgentId:'',lockAgent:false});await f.flush();assert.equal(f.findButton('Start Call').props.disabled,true);const picker=f.find(n=>n.type==='TextField'&&n.props.label==='Call Agent');picker.props.onChange({target:{value:'second'}});f.render();await f.flush();assert.equal(f.findButton('Start Call').props.disabled,false);f.unmount();
@@ -119,7 +135,7 @@ test('recognition permission failure pauses the call; a foreign canonical Chat n
  assert.match(text(warning),/Some speech may be missing\. Review Transcript before sending\./);
  const details=f.all(warning).find(n=>n.type==='Box'&&n.props.component==='details');assert.ok(details,'Original permission failure remains available in Details');
  assert.equal(f.all(details).find(n=>n.type==='Typography').props.children,f.dictation.error);
- assert.equal(text(f.find(n=>n.props.role==='status')),'Call interrupted');assert.equal(f.findButton('Reconnect Call').props.disabled,false);
+ assert.equal(text(f.find(n=>n.props.role==='status')),'Call Interrupted');assert.equal(f.findButton('Reconnect Call').props.disabled,false);
  assert.equal(f.events.includes('stop-speech'),true,'Permission failure stops automatic local playback');
  assert.equal(f.sent.length,0);f.unmount();
  const foreign=callFixture();foreign.detail.conversation.id='foreign';await foreign.flush();assert.equal(foreign.findButton('Reconnect Call').props.disabled,false);assert.equal(foreign.events.includes('capture'),false);assert.equal(foreign.sent.length,0);foreign.unmount();
@@ -129,7 +145,7 @@ test('exiting menu items cannot start dictation or open a call after Escape/clos
  const f=menuFixture();f.open();f.find(n=>n.type==='Menu').props.onClose();f.render();assert.equal(f.item('Dictation').props.disabled,true);assert.equal(f.item('Voice Call').props.disabled,true);f.item('Dictation').props.onClick();f.item('Voice Call').props.onClick();f.render();assert.deepEqual(f.calls,[]);assert.equal(f.all().some(n=>n.type===f.VoiceConversation),false);f.unmount();
 });
 
-const capture=await import('../../apps/web/src/components/speech/captureCoordinator.ts');
+
 function audioFixture({allowSpeechStop=true,playError}={}){
  const native={paused:true,currentTime:0,duration:NaN,volume:1,muted:false,playbackRate:1,error:null,plays:0,pauses:0,loads:0,
   play(){this.plays++;if(playError)return Promise.reject(new Error(playError));this.paused=false;return Promise.resolve();},

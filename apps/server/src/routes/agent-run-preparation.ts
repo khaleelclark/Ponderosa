@@ -1,4 +1,4 @@
-import {proveRetainedCodexVoiceContext} from '../retained-codex-voice-context.js';
+import {proveRetainedCodexVoiceContext,proveRetainedManagedVoiceContext} from '../retained-codex-voice-context.js';
 import { isGrantOnlyRestrictionsChange } from "@ponderosa/core";
 import {prepareWorkingCopyTransition} from "../working-copy-context-transition.js";
 import { settingsTransitionTarget } from "../context-transition-admission.js";
@@ -635,7 +635,16 @@ export async function prepareAgentRun(
   // existing scope and voice boundaries.
   let strictRetainedVoiceContext=false;
   let retainedVerifiedContext=false,retainedMemoryProof:(()=>boolean)|undefined;
+  const managedVoiceSource=voiceMemoryBoundary&&memory&&resumeSessionState&&!settingsTransition&&!v3FreshProviderSession
+    ?store.sqlite.prepare(`SELECT id FROM scheduler_runs WHERE agent_id=? AND provider_session_id=? AND status='completed'
+      AND prompt_injection_state='injected' AND fencing_token<(SELECT fencing_token FROM scheduler_runs WHERE id=?)
+      ORDER BY fencing_token DESC LIMIT 1`).get(agent.id,resumeSessionState.sessionId,runId) as {id:string}|undefined:undefined;
+  const managedVoiceProof=managedVoiceSource&&memory&&resumeSessionState&&
+    [CodexAdapter.prototype,ClaudeAdapter.prototype].includes(Object.getPrototypeOf(engine.adapter))&&!Object.hasOwn(engine.adapter,'openSession')
+    ?await proveRetainedManagedVoiceContext({store,memory,agentId:agent.id,chatId:agent.conversationId,sessionId:resumeSessionState.sessionId,
+      sourceRunId:managedVoiceSource.id,currentRunId:runId,contractHash:effectiveRuntimeSessionContractHash,systemPromptHash}):undefined;
   const canRetainVerifiedContext=(kind:'voice'|'model')=>{
+    if(kind==='voice'&&managedVoiceProof?.isCurrent()){retainedMemoryProof=managedVoiceProof.isCurrent;retainedVerifiedContext=true;strictRetainedVoiceContext=true;return true;}
     if(runtimeEngineId!=='codex' || Object.getPrototypeOf(engine.adapter)!==CodexAdapter.prototype ||
        Object.hasOwn(engine.adapter,'openSession') || !resumeSessionState?.toolContractHash ||
        !effectiveModel?.trim())return false;

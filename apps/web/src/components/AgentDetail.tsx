@@ -1101,6 +1101,7 @@ export function AgentDetail({
             agents: [detail.agent],
             selectedAgentId: detail.agent.id,
             lockAgent: true,
+            onOpenRecovery: () => setTab('chat'),
           } : undefined,
           onCapabilitiesOpen: () =>
             onRefreshCapabilities({ engineId: engine?.id, model, agentId }),

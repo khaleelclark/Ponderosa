@@ -18,13 +18,15 @@ import { publishConversationMessageReceipt } from "../../conversationMessageRece
 import { dictationUnavailableReason, speechSynthesisUnavailableReason } from "./browserSpeech";
 import { speechSnapshot, startSpeech, startSpeechQueue, stopSpeech, subscribeSpeech, type SpeechQueue } from "./speechCoordinator";
 import { monitorSpeechSurfaceAccessibility, speechSurfaceIsAccessible } from "./speechSurfaceAccessibility";
-import { speakableMessageText } from "./speechText";
+import { isSpokenEcho, speakableMessageText } from "./speechText";
+import { claimPageCapture, ownsPageCapture } from "./captureCoordinator";
 import { useDictation } from "./useDictation";
 import { VoiceReplyBuffers, voiceTimingText, type VoiceTiming } from "./voiceReplyStream";
 import { voiceReplyInWindow } from "./voiceReply";
 import { VOICE_ATTEMPT_TTL, prepareVoiceCallAttempt, restoreVoiceCallAttempt, retainVoiceCallAttempt, settleVoiceCallAttempt, voiceCallAttemptCanRetry, type VoiceCallAttempt, type VoiceRoute } from "./voiceCallAttempt";
 
-type Phase = "ready" | "resting" | "capture" | "review" | "sending" | "queued" | "waiting" | "loading" | "speaking" | "paused";
+type Phase = "ready" | "capture" | "review" | "sending" | "queued" | "waiting" | "loading" | "speaking" | "paused";
+type CallDraft = {text:string;voice:boolean;settled?:number};
 export interface VoiceConversationContext {
   projectId: string; conversationId: string; agents: AgentDto[];
   selectedAgentId?: string; lockAgent?: boolean; standalone?: boolean;
@@ -32,6 +34,7 @@ export interface VoiceConversationContext {
   steeringOnly?: boolean;
   /** Only an explicit handset opening gesture may request initial capture. */
   startOnOpen?: boolean;
+  onOpenRecovery?(agentId:string):void;
 }
 const CALL_RECOVERABLE_ERRORS = ["no-speech", "network"] as const;
 const CALL_SILENCE_RETRY_MS = 600;
@@ -41,7 +44,7 @@ export function VoiceConversation(props: VoiceConversationContext & { open: bool
   const product = productApiPath("/api/conversations");
   return <>{props.open && <VoiceSession key={JSON.stringify([product, props.projectId, props.conversationId, props.selectedAgentId])} {...props} product={product} />}</>;
 }
-function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lockAgent, onClose, product, standalone, startOnOpen, steeringOnly=false }: VoiceConversationContext & { onClose(): void; product: string }): JSX.Element {
+function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lockAgent, onClose, product, standalone, startOnOpen, steeringOnly=false,onOpenRecovery }: VoiceConversationContext & { onClose(): void; product: string }): JSX.Element {
   const phone = useMediaQuery('(max-width:599.95px)');
   const ownerId = useId();
   const openingCaptureAttempted=useRef(false);
@@ -50,6 +53,22 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
   const observationCleanup = useRef<() => void>();
   const tombstoned = useRef<number>();
   const alive = useRef(true);
+  const captureOwner = useRef({});
+  const captureLease = useRef<() => void>();
+  const microphone = useRef<MediaStream>();
+  const microphoneEpoch = useRef(0);
+  const microphoneOpening = useRef(false);
+  const [openingMicrophone, setOpeningMicrophone] = useState(false);
+  const callInput = useRef({ track: () => microphone.current?.getAudioTracks()[0] });
+  const closeMicrophone = useCallback(() => {
+    microphoneEpoch.current++; microphoneOpening.current = false;
+    const stream = microphone.current; microphone.current = undefined;
+    stream?.getTracks().forEach(track => track.stop());
+    if (alive.current) setOpeningMicrophone(false);
+  }, []);
+  const releaseCapture = useCallback(() => {
+    closeMicrophone(); captureLease.current?.(); captureLease.current = undefined;
+  }, [closeMicrophone]);
   const [agentId, setAgentId] = useState(() => {
     const eligible = agents.filter(a => member(a, projectId, conversationId));
     return selectedAgentId ?? (eligible.length === 1 ? eligible[0]!.id : "");
@@ -62,6 +81,7 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
   const textRef = useRef(text); textRef.current = text;
   const [handsFree, setHandsFree] = useState(false);
   const handsFreeRef = useRef(false);
+  const resumeCaptureRequested=useRef(false);
   const retryTimer = useRef<ReturnType<typeof setTimeout>>();
   const networkFailures = useRef(0);
   const cancelListenRetry = useCallback(() => {
@@ -70,10 +90,11 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
   }, []);
   const stopAutomatic = useCallback(() => {
     cancelListenRetry();
-    handsFreeRef.current = false;
+    handsFreeRef.current = false;resumeCaptureRequested.current=false;
     setHandsFree(false);
     networkFailures.current = 0;
-  }, [cancelListenRetry]);
+    dictationRef.current.abandon(); releaseCapture();
+  }, [cancelListenRetry, releaseCapture]);
   const listenRef = useRef<() => void>(() => {});
   const timing = useRef<VoiceTiming>();
   const recognitionSettled = useRef<number>();
@@ -111,7 +132,17 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
   const [acknowledgement, setAcknowledgement] = useState("");
   const observedRun = useRef<string>();
   const canonicalReplyId = useRef<string>();
-  const [deliveryNotice,setDeliveryNotice]=useState<string>();
+  const [delivery,setDelivery]=useState<{messageId:string;receipt:NonNullable<ConversationMessageDto['deliveryReceipts']>[number]}>();
+  const [audioPurpose,setAudioPurpose]=useState<"answer"|"acknowledgement"|"receipt">();
+  const suppressedAudio = useRef<number>();
+  const spokenSpans = useRef<string[]>([]);
+  const interruptRef = useRef<() => boolean>(() => true);
+  const submissionPending = useRef(false);
+  const deliveryBlocked = useRef(false);
+  const [replyNeedsReview,setReplyNeedsReview]=useState(false);
+  const finishedDrafts = useRef<CallDraft[]>([]);
+  const [unsentDrafts,setUnsentDrafts]=useState<CallDraft[]>([]);
+  const sendRef = useRef<() => Promise<void>>(async () => {});
   const [transcript, setTranscript] = useState<ConversationMessageDto[]>([]);
   const [playText, setPlayText] = useState<string>();
   const attempt = useRef<VoiceCallAttempt>();
@@ -127,11 +158,20 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
   const live = agents.some(a => a.id === agentId && member(a, projectId, conversationId));
   const liveRef = useRef(live); liveRef.current = live;
   const dictation = useDictation(words => {
-    if (alive.current && liveRef.current && phaseRef.current === "capture") {
+    if (alive.current && liveRef.current && handsFreeRef.current && !mutedRef.current) {
       voiceDraft.current = true;
-      setText(current => [current, words].filter(Boolean).join(" "));
+      textRef.current = [textRef.current, words].filter(Boolean).join(" "); setText(textRef.current);
     }
-  }, () => {}, root, false, () => handsFreeRef.current, undefined, CALL_RECOVERABLE_ERRORS);
+  }, () => {}, root, true, () => handsFreeRef.current, callInput.current, CALL_RECOVERABLE_ERRORS, {
+    owner:captureOwner.current,
+    onStart:()=>{const state=speechSnapshot();if(state.ownerId!==ownerId||!['loading','speaking'].includes(state.status))spokenSpans.current=[];},
+    acceptResult:words=>{
+      if(!alive.current||!liveRef.current||!handsFreeRef.current||mutedRef.current||!ownsPageCapture(captureOwner.current))return false;
+      const audio=speechSnapshot();
+      if((audio.ownerId===ownerId&&(audio.status==="speaking"||audio.lastPhraseEndedAt!==undefined&&Date.now()-audio.lastPhraseEndedAt<500))&&isSpokenEcho(words,spokenSpans.current))return false;
+      return interruptRef.current();
+    },
+  });
   const dictationRef = useRef(dictation); dictationRef.current = dictation;
   const abandon = useCallback(() => {
     generation.current++;
@@ -140,12 +180,14 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
     setAcknowledgement("");
     dictationRef.current.abandon();
     stopSpeech(ownerId);
-  }, [ownerId]);
+    releaseCapture(); setAudioPurpose(undefined);
+  }, [ownerId,releaseCapture]);
   const suspend = useCallback(() => {
     stopAutomatic(); abandon(); voiceDraft.current = false; setText(""); changePhase("paused"); setChecked(false);
-    setNotice("Call interrupted. Unfinished words were discarded. Accepted work continues in Chat; reconnect when ready.");
+    textRef.current='';finishedDrafts.current=[];setUnsentDrafts([]);
+    setNotice("Call interrupted. Unsent words were discarded. Accepted work continues in Chat; reconnect when ready.");
   }, [abandon, changePhase, stopAutomatic]);
-  const end = () => { stopAutomatic(); alive.current = false; attempt.current = undefined; voiceDraft.current = false; setText(""); abandon(); onClose(); };
+  const end = () => { stopAutomatic(); alive.current = false; attempt.current = undefined; finishedDrafts.current=[];voiceDraft.current = false; setText(""); abandon(); onClose(); };
   const validateDetail = (detail: ConversationDetailDto) => {
     const chat = detail.conversation;
     return chat.id === conversationId && chat.projectId === projectId &&
@@ -185,24 +227,42 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
   }, [suspend, surfaceEpoch]);
   useEffect(() => { alive.current = true; return () => { alive.current = false; attempt.current = undefined; cancelListenRetry(); abandon(); }; }, [abandon, cancelListenRetry]);
   useEffect(() => {
-    if (dictation.status === "error") { stopAutomatic(); changePhase("paused"); setError(dictation.error); }
+    if (dictation.status === "error") { stopAutomatic(); abandon(); changePhase("paused"); setError(dictation.error); }
     else if (dictation.status === "stopped" && phaseRef.current === "capture" && !handsFreeRef.current) changePhase("review");
-  }, [dictation.status, dictation.error, changePhase, stopAutomatic]);
+  }, [dictation.status, dictation.error, changePhase, stopAutomatic, abandon]);
   useEffect(() => {
     if (!["loading", "speaking"].includes(phaseRef.current)) return;
+    if (suppressedAudio.current === generation.current) return;
     if (playback.ownerId !== ownerId) { stopAutomatic(); abandon(); changePhase("ready"); return; }
     if (playback.status === "speaking") changePhase("speaking");
     else if (playback.status === "error" || playback.status === "stopped") {
-      stopAutomatic(); abandon(); changePhase("ready"); if (playback.error) setError(`${playback.error} Use Play reply or read the transcript.`);
+      stopAutomatic(); abandon(); changePhase("paused"); if (playback.error) setError(`${playback.error} Use Play reply or read the transcript.`);
     }
   }, [playback, ownerId, changePhase, stopAutomatic, abandon]);
-  const listen = () => {
-    if (!live || !checked || muted || blocked || recovering || replyPendingRef.current || attempt.current || phaseRef.current === "capture") return;
-    if (!stopSpeech()) { stopAutomatic(); setError(speechSnapshot().error); return; }
-    setLocked(true); setError(undefined); setNotice(undefined); changePhase("capture"); dictation.start();
+  const listen = async () => {
+    if (!live || !checked || mutedRef.current || blocked || deliveryBlocked.current || recovering || !handsFreeRef.current || microphoneOpening.current ||
+        ['starting','listening','pausing','stopping'].includes(dictationRef.current.status)) return;
+    if (!speechSurfaceIsAccessible(root.current)) { suspend(); return; }
+    if (!captureLease.current || !ownsPageCapture(captureOwner.current)) captureLease.current=claimPageCapture(suspend,captureOwner.current);
+    const epoch=++microphoneEpoch.current;
+    microphoneOpening.current=true;setOpeningMicrophone(true);
+    try {
+      if(!microphone.current?.getAudioTracks().some(track=>track.readyState==='live')){
+        if(!navigator.mediaDevices?.getUserMedia)throw Error('Microphone capture is unavailable in this browser.');
+        const stream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}});
+        if(!alive.current||epoch!==microphoneEpoch.current||mutedRef.current||!handsFreeRef.current||!ownsPageCapture(captureOwner.current)||!speechSurfaceIsAccessible(root.current)){stream.getTracks().forEach(track=>track.stop());return;}
+        microphone.current=stream;
+      }
+      if(epoch!==microphoneEpoch.current||!ownsPageCapture(captureOwner.current))return;
+      setLocked(true); setError(undefined); setNotice(undefined);
+      if(!replyPendingRef.current&&!submissionPending.current&&!['loading','speaking'].includes(phaseRef.current))changePhase('capture');
+      dictationRef.current.start();
+    } catch(cause) {
+      if(alive.current&&epoch===microphoneEpoch.current){stopAutomatic();abandon();changePhase('paused');setError(cause instanceof Error?cause.message:'Microphone capture failed.');}
+    } finally {if(epoch===microphoneEpoch.current){microphoneOpening.current=false;setOpeningMicrophone(false);}}
   };
   listenRef.current = listen;
-  const startCall = () => { if (textRef.current.trim()) return; handsFreeRef.current = true; setHandsFree(true); listen(); };
+  const startCall = () => { if (textRef.current.trim()||attempt.current||submissionPending.current) return; handsFreeRef.current = true; setHandsFree(true); void listen(); };
   const resume = async () => {
     const current = ++generation.current;
     try {
@@ -210,8 +270,8 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
       if (!alive.current || current !== generation.current) return;
       if (!validateDetail(detail)) throw new Error("This Agent or Chat is unavailable.");
       setSurfaceEpoch(value => value + 1); setChecked(true); setError(undefined);
-      const hasDraft = Boolean(textRef.current.trim() || attempt.current);
-      if (!hasDraft && !sttUnavailable) { handsFreeRef.current = true; setHandsFree(true); }
+      const hasDraft = Boolean(textRef.current.trim() || attempt.current || finishedDrafts.current.length);
+      if (!hasDraft && !sttUnavailable) { resumeCaptureRequested.current=true;handsFreeRef.current = true; setHandsFree(true); }
       changePhase(hasDraft ? "review" : "ready");
     } catch (failure) { if (alive.current && current === generation.current) setError(String(failure)); }
   };
@@ -243,30 +303,56 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
   const play = (spoken: string, current = generation.current) => {
     if (!alive.current || !liveRef.current || current !== generation.current || tombstoned.current === current || phaseRef.current === "capture") return;
     if (ttsUnavailable) { stopAutomatic(); changePhase("ready"); setNotice("Read the reply in Chat, then start the call deliberately."); return; }
+    suppressedAudio.current=undefined;setAudioPurpose("answer");
     changePhase("loading");
     startSpeech(ownerId, spoken, preferencesRef.current, () => root.current, () => {
       if (alive.current && current === generation.current) {
+        setAudioPurpose(undefined);
         changePhase("ready");
         if (handsFreeRef.current) listenRef.current();
       }
     }, () => {
+      spokenSpans.current=[...spokenSpans.current,spoken].slice(-8);setAudioPurpose('answer');
       audioStarted(current);
-    });
+    },ownsPageCapture(captureOwner.current)?captureOwner.current:undefined);
   };
+  const interruptLocalSpeech = () => {
+    suppressedAudio.current=generation.current;
+    const settled=stopSpeech(ownerId);setAudioPurpose(undefined);
+    if(!settled){stopAutomatic();abandon();changePhase("paused");setError(speechSnapshot().error??"Audio cleanup could not be confirmed. Review Transcript before continuing.");return false;}
+    return true;
+  };
+  interruptRef.current=interruptLocalSpeech;
   const send = async () => {
-    if (!live || !checked || recovering || blocked || replyPendingRef.current || ["sending", "queued", "waiting", "loading", "speaking", "capture"].includes(phaseRef.current)) return;
+    if (!live || !checked || recovering || blocked || deliveryBlocked.current || submissionPending.current ||
+        (!finishedDrafts.current.length&&!attempt.current&&['starting','listening','pausing','stopping'].includes(dictationRef.current.status))) return;
     if (steeringOnly) {
-      const admissionError = assistantSubmissionError(attempt.current?.request.text ?? textRef.current.trim(), attempt.current?.request.activeRunDelivery === "queue");
-      if (admissionError) { stopAutomatic(); changePhase("review"); setError(admissionError); return; }
+      const admissionError = assistantSubmissionError(attempt.current?.request.text ?? finishedDrafts.current[0]?.text ?? textRef.current.trim(), attempt.current?.request.activeRunDelivery === "queue");
+      if (admissionError) {
+        stopAutomatic();dictationRef.current.abandon();closeMicrophone();
+        textRef.current=[...finishedDrafts.current.map(draft=>draft.text),textRef.current].filter(Boolean).join('\n');setText(textRef.current);finishedDrafts.current=[];setUnsentDrafts([]);
+        changePhase("review"); setError(admissionError); return;
+      }
     }
     if (attempt.current && Date.now() - attempt.current.marker.createdAt >= VOICE_ATTEMPT_TTL) {
-      attempt.current = undefined; setText(""); stopAutomatic(); setBlocked(true); setError("The unconfirmed turn expired. Review Chat before sending again."); return;
+      attempt.current = undefined; stopAutomatic(); setBlocked(true); setError("The unconfirmed turn expired. Review Chat before sending again."); return;
     }
-    if (!attempt.current && !textRef.current.trim()) return;
-    if (!attempt.current) { receiptEligible.current = voiceDraft.current; receiptForMessage.current = undefined; timing.current = { settled: recognitionSettled.current }; recognitionSettled.current = undefined; setLatency(undefined); setAcknowledgement(""); setRenderReply(undefined); setProvisionalReply(""); observedRun.current = undefined; canonicalReplyId.current = undefined; setDeliveryNotice(undefined); }
+    if (!attempt.current && !finishedDrafts.current.length && !textRef.current.trim()) return;
+    if(!interruptLocalSpeech())return;
+    let draft:CallDraft|undefined;
+    if(!attempt.current){
+      draft=finishedDrafts.current.shift();setUnsentDrafts([...finishedDrafts.current]);
+      if(!draft){draft={text:textRef.current.trim(),voice:voiceDraft.current,settled:recognitionSettled.current};textRef.current='';setText('');voiceDraft.current=false;}
+    }
+    if (!attempt.current) { receiptEligible.current = draft!.voice; receiptForMessage.current = undefined; timing.current = { settled: draft!.settled }; recognitionSettled.current = undefined; setLatency(undefined); setAcknowledgement(""); setRenderReply(undefined); setProvisionalReply(""); observedRun.current = undefined; canonicalReplyId.current = undefined; setDelivery(undefined); }
+    observationCleanup.current?.();
+    setReplyPending(false);setMessageId(undefined);setDelivery(undefined);
+    let capturedText=draft?.text;draft=undefined;
+    submissionPending.current=true;
     // Set synchronously before hashing/storage/HTTP so two clicks cannot create two keys.
-    changePhase("sending"); setLocked(true); setError(undefined);
+    changePhase("sending"); setLocked(true); setError(undefined);setReplyNeedsReview(false);
     const current = ++generation.current;
+    suppressedAudio.current=undefined;
     let pending = attempt.current;
     try {
       if (pending && (!retryable || !await voiceCallAttemptCanRetry(pending, route))) {
@@ -277,8 +363,8 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
       if (!pending) {
         const restored = await restoreVoiceCallAttempt(route);
         if (!alive.current || current !== generation.current) return;
-        if (restored.notice) { stopAutomatic(); setBlocked(true); setText(""); setNotice(restored.notice); changePhase("paused"); return; }
-        pending = await prepareVoiceCallAttempt(route, textRef.current.trim(), () => createClientId());
+        if (restored.notice) { stopAutomatic(); setBlocked(true); setNotice(restored.notice); changePhase("paused"); return; }
+        pending = await prepareVoiceCallAttempt(route, capturedText!, () => createClientId());
         if (!alive.current || current !== generation.current) return;
         const stored = retainVoiceCallAttempt(pending);
         attempt.current = pending; setRetryable(true);
@@ -289,7 +375,7 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
       const responsePromise = api.sendMultiAgentDirectMessage(marker.route.conversationId, pending.request);
       // The in-flight transport owns its bytes; this coroutine retains only the
       // marker. End/unmount releases the mounted retry payload reference.
-      pending = undefined;
+      pending = undefined;capturedText=undefined;
       const response = await responsePromise;
       // Settlement is independent of the view generation. Never erase another attempt.
       const acceptedVoiceUtterance = receiptEligible.current;
@@ -297,36 +383,40 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
       if (attempt.current?.marker === marker) {
         attempt.current = undefined;
         receiptEligible.current = false;
-        voiceDraft.current = false;
-        textRef.current = "";
-        if (alive.current) { setRetryable(false); setText(""); }
+        if (alive.current) setRetryable(false);
       }
       void publishConversationMessageReceipt(queryClient, marker.route.conversationId, response.message);
       void queryClient.invalidateQueries({ queryKey: queryKeys.conversations.detailPrefix(marker.route.conversationId) });
       if (!alive.current || generation.current !== current) return;
       if (timing.current) { timing.current.acceptedObserved = performance.now(); timing.current.acceptedAt = response.message?.createdAt; publishTiming(); }
-      attempt.current = undefined; setRetryable(false); setText("");
+      attempt.current = undefined; setRetryable(false);
       if (response.unavailableRecipients?.length) throw new Error("This Agent is unavailable. Check Chat.");
       const acceptedMessageId = response.message?.communicationEventId ?? response.messageId;
       if (!acceptedMessageId) throw new Error("The accepted message could not be identified. Check Chat.");
       receiptForMessage.current = acceptedVoiceUtterance ? acceptedMessageId : undefined;
-      receiptEligible.current = false; voiceDraft.current = false;
+      receiptEligible.current = false;
       setMessageId(acceptedMessageId);
       setReplyPending(true);
       if (response.message) setTranscript(items => [...items.filter(i => i.id !== response.message!.id), response.message!].slice(-20));
       changePhase("queued");
     } catch (failure) {
       if (!alive.current || generation.current !== current) return;
+      dictationRef.current.abandon();closeMicrophone();
       stopAutomatic(); changePhase("paused");
       const status = (failure as { status?: number }).status;
       if (status && status >= 400 && status < 500) setBlocked(true);
       setError(`Could not confirm delivery. Your message may have arrived; check Chat before trying again. ${failure instanceof Error ? failure.message : ""}`);
-    } finally { pending = undefined; }
+    } finally {
+      if(capturedText&&alive.current&&generation.current===current&&!attempt.current){textRef.current=[capturedText,...finishedDrafts.current.map(draft=>draft.text),textRef.current].filter(Boolean).join('\n');setText(textRef.current);finishedDrafts.current=[];setUnsentDrafts([]);}
+      pending = undefined;capturedText=undefined;submissionPending.current=false;
+      if(alive.current&&handsFreeRef.current&&!mutedRef.current&&finishedDrafts.current.length&&!attempt.current)void sendRef.current();
+    }
   };
+  sendRef.current=send;
   // A recognizer session may end during silence. Keep the call open and retry
   // after a short delay. Only actual network failures use increasing backoff.
   useEffect(() => {
-    if (!handsFreeRef.current || phaseRef.current !== "capture" || dictation.status !== "stopped") return;
+    if (!handsFreeRef.current || mutedRef.current || dictation.status !== "stopped") {cancelListenRetry();return;}
     if (textRef.current.trim()) {
       if (dictation.endReason !== "natural") {
         stopAutomatic(); changePhase("review");
@@ -335,7 +425,12 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
       }
       networkFailures.current = 0; setNotice(undefined);
       recognitionSettled.current = performance.now();
-      changePhase("review"); void send();
+      finishedDrafts.current.push({text:textRef.current.trim(),voice:voiceDraft.current,settled:recognitionSettled.current});setUnsentDrafts([...finishedDrafts.current]);
+      textRef.current='';setText('');voiceDraft.current=false;
+      // Bound private, not-yet-submitted speech; this is not an accepted-work queue.
+      if(finishedDrafts.current.length>=8){stopAutomatic();closeMicrophone();changePhase('review');setNotice('Review Your Unsent Messages in Transcript.');return;}
+      if(!submissionPending.current&&!attempt.current)void send();
+      listenRef.current();
       return;
     }
     if (dictation.endReason === "network" && ++networkFailures.current >= 4) {
@@ -347,18 +442,16 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
       ? CALL_NETWORK_RETRY_DELAYS_MS[networkFailures.current - 1]!
       : CALL_SILENCE_RETRY_MS;
     if (dictation.endReason !== "network") networkFailures.current = 0;
-    changePhase("resting");
     setNotice(undefined);
     cancelListenRetry();
     retryTimer.current = setTimeout(() => {
       retryTimer.current = undefined;
-      if (!alive.current || !handsFreeRef.current || phaseRef.current !== "resting" ||
+      if (!alive.current || !handsFreeRef.current ||
           !liveRef.current || !root.current) return;
       if (!speechSurfaceIsAccessible(root.current)) { suspend(); return; }
-      changePhase("ready");
       listenRef.current();
     }, delay);
-  }, [dictation.status, dictation.endReason, phase, handsFree, cancelListenRetry, changePhase, stopAutomatic]);
+  }, [dictation.status, dictation.endReason, handsFree, muted, cancelListenRetry, changePhase, stopAutomatic]);
   useEffect(() => {
     if (!replyPendingRef.current || !messageId) return;
     let cancelled = false;
@@ -366,7 +459,7 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
     const valid = () => !cancelled && tombstoned.current !== current && alive.current && liveRef.current && current === generation.current;
     let dispose = () => {};
     const fail = (message: string) => { if (valid()) {
-      tombstoned.current = current; cancelled = true; setReplyPending(false); stopSpeech(ownerId); stopAutomatic();
+      tombstoned.current = current; cancelled = true; setReplyPending(false);setReplyNeedsReview(true); stopSpeech(ownerId); stopAutomatic();
       setAcknowledgement(""); setProvisionalReply(""); setPlayText(undefined); changePhase("paused"); setError(message); dispose();
     } };
     const buffers = new VoiceReplyBuffers();
@@ -380,18 +473,20 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
     let canonicalSeen = false;
     let validationVersion = 0;
     const append = (phrases: string[], purpose: "answer" | "acknowledgement" | "receipt" = "answer") => {
-      if (!valid() || !phrases.length) return;
+      if (!valid() || !phrases.length || suppressedAudio.current===current) return;
       if (purpose === "answer" && timing.current) { timing.current.firstSpeakable ??= performance.now(); publishTiming(); }
       if (ttsUnavailable) return;
       if (!queue) {
         changePhase("loading");
         queue = startSpeechQueue(ownerId, preferencesRef.current, () => root.current, () => {
           if (!alive.current || current !== generation.current) return;
-          dispose();
+          dispose();setAudioPurpose(undefined);
           changePhase("ready");
           if (handsFreeRef.current) listenRef.current();
-        }, () => {
-          const purpose = queuedPurposes.shift();
+        }, text => {
+          if(!valid()||suppressedAudio.current===current)return;
+              const purpose = queuedPurposes.shift();
+          setAudioPurpose(purpose);spokenSpans.current=[...spokenSpans.current,text].slice(-8);
           if (purpose === "acknowledgement") buffers.acknowledgement.started();
           else if (purpose === "answer") { buffer.started(); audioStarted(current); }
         }, async () => {
@@ -406,7 +501,7 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
           if (!valid()) return false;
           if (!permitted) fail("Memory context could not be validated. Check Chat before continuing.");
           return permitted && valid();
-        }, () => { queuedPurposes.shift(); });
+        }, () => { queuedPurposes.shift(); },ownsPageCapture(captureOwner.current)?captureOwner.current:undefined);
       }
       for (const phrase of phrases) {
         const queuedAt = performance.now();
@@ -449,6 +544,7 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
         return;
       }
       setRenderReply({ generation: current, inputId: messageId, runId: reply.runId, text: reply.text });
+      setDelivery(undefined);
       setProvisionalReply(reply.text);
       streaming = reply.state === "streaming";
       try { append(buffers.accept(reply).phrases); } catch (error) { fail((error as Error).message); }
@@ -516,8 +612,7 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
     refreshStatus();
     const phraseTimer = setInterval(() => { if (valid() && streaming) { try { append(buffer.flush()); } catch (error) { fail((error as Error).message); } } }, 100);
     // Nominal backstop only: network/event-loop delay is unbounded; no physical-onset atomicity.
-    const exposureTimer = setInterval(() => { void refreshStatus(); }, 250);
-    const deadline = setTimeout(() => fail("The Agent is still working after 120 seconds. Open Chat for its reply."), 120_000);
+    const exposureTimer = setInterval(() => { const audio=speechSnapshot();if(audio.ownerId===ownerId&&['loading','speaking'].includes(audio.status))void refreshStatus(); }, 250);
     // Reuse the existing authenticated workspace/Agent SSE → Query invalidations.
     // An active, product-specific observer wakes on those same Chat prefixes.
     // Canonical publication still settles the turn; 5s reads cover missed SSE wakeups.
@@ -543,7 +638,6 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
       const reply = voiceReplyInWindow(messageId, detail.messages, agentId, canonicalReplyId.current);
       if (reply) {
         if ("error" in reply) { fail(reply.error); return; }
-        clearTimeout(deadline);
         const sent = detail.messages.find(i => i.id === messageId || i.communicationEventId === messageId)!;
         const receipt = sent.deliveryReceipts!.find(i => i.targetAgentId === agentId)!;
         const execution = receipt.state === "recovered" ? receipt.recoveryExecutionId : receipt.executionId;
@@ -565,27 +659,24 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
             return;
           }
           setReplyPending(false);
-          if (queue) queue.finish();
-          else { dispose(); stopAutomatic(); changePhase("ready"); setNotice("Read the final reply in the transcript or Chat."); }
+          setDelivery(undefined);deliveryBlocked.current=false;
+          if (queue && suppressedAudio.current!==current) queue.finish();
+          else { dispose(); changePhase("ready"); if(suppressedAudio.current!==current){stopAutomatic();setNotice("Read the final reply in the transcript or Chat.");} }
         } catch (error) { fail((error as Error).message); return; }
         setReplyPending(false);
         return;
       }
       const sent = detail.messages.find(i => i.id === messageId || i.communicationEventId === messageId);
       const receipt=sent?.deliveryReceipts?.find(i=>i.targetAgentId===agentId);
-      if(receipt?.steeringWaitReason) {
-        const reason=receipt.steeringWaitReason;
-        setDeliveryNotice(reason==="provider_unsupported" ? "This connection cannot interrupt the current work. Your priority message is waiting; follow it in Chat."
-          : reason==="provider_not_ready" || reason==="run_starting" ? "Delivering your priority message…"
-          : reason==="context_refresh" ? "Refreshing the connection before sending your message…"
-          : "Waiting for the current instruction to reach the connection…");
-      } else if(receipt?.state==="unconfirmed") setDeliveryNotice("Delivery is unconfirmed. Check Chat before trying again.");
-      else setDeliveryNotice(undefined);
+      setDelivery(receipt?{messageId,receipt}:undefined);
+      const needsAction=Boolean(receipt&&(receipt.contextRecoveryRequired||receipt.settingsTransitionHold||receipt.contextRolloverHold||receipt.taskDecisionRepairHold||['unconfirmed','waiting_for_run','run_unconfirmed','retry_exhausted','undelivered','failed'].includes(receipt.state)));
+      if(needsAction&&!deliveryBlocked.current){deliveryBlocked.current=true;stopAutomatic();dictationRef.current.abandon();closeMicrophone();}
+      else if(!needsAction)deliveryBlocked.current=false;
       if (!queue && sent?.deliveryReceipts?.some(i => i.targetAgentId === agentId && ["started", "delivered", "processed", "recovering", "recovered"].includes(i.state))) changePhase("waiting");
     };
     const unsubscribe = observer.subscribe(observe);
     dispose = () => {
-      cancelled = true; stream.close(); clearInterval(phraseTimer); clearInterval(exposureTimer); unsubscribe(); observer.destroy(); clearTimeout(deadline);
+      cancelled = true; stream.close(); clearInterval(phraseTimer); clearInterval(exposureTimer); unsubscribe(); observer.destroy();
       if (observationCleanup.current === dispose) observationCleanup.current = undefined;
     };
     observationCleanup.current = dispose;
@@ -599,29 +690,38 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
     startCall();
   }, [startOnOpen, live, checked, recovering, blocked, sttUnavailable, phase, muted, surfaceEpoch]);
   useEffect(() => {
-    if (!muted && handsFree && phase === "ready") listenRef.current();
-  }, [muted, handsFree, phase]);
-  const recording = ["starting", "listening", "pausing", "stopping"].includes(dictation.status);
+    // Only a deliberate Reconnect waits for its fresh eligibility render.
+    // Automatic utterance/silence cycles restart through their own native end.
+    if(resumeCaptureRequested.current&&checked&&!muted&&handsFree&&phase==='ready'&&
+       !textRef.current.trim()&&!finishedDrafts.current.length&&!submissionPending.current&&!attempt.current){
+      resumeCaptureRequested.current=false;listenRef.current();
+    }
+  }, [checked,muted,handsFree,phase]);
+  const recording = openingMicrophone || ["starting", "listening", "pausing", "stopping"].includes(dictation.status);
   const inFlight = replyPending || ["sending", "queued", "waiting", "loading", "speaking"].includes(phase);
-  const status = muted && phase === "capture" ? "Microphone muted" : phase === "capture" ? dictation.status === "starting" ? "Opening microphone…" : dictation.status === "stopping" ? "Finishing your words…" : "Listening to you"
-    : phase === "resting" ? "Listening again shortly…" : phase === "queued" ? "Delivering your message…" : phase === "waiting" ? "Waiting for a reply…" : phase === "loading" ? "Preparing voice…" : phase === "speaking" ? "Speaking to you" : phase === "sending" ? "Sending your message…" : muted ? "Microphone muted" : phase === "paused" ? "Call interrupted" : phase === "review" ? "Ready to send" : handsFree ? "Ready to listen" : "Ready when you are";
+  const currentReceipt=delivery&&delivery.messageId===messageId?delivery.receipt:undefined;
+  const hasAnswer=Boolean(renderReply&&renderReply.inputId===messageId&&renderReply.canonicalId&&renderReply.text.trim());
+  const needsRecovery=!hasAnswer&&Boolean(currentReceipt?.contextRecoveryRequired||currentReceipt?.settingsTransitionHold||currentReceipt?.contextRolloverHold||currentReceipt?.taskDecisionRepairHold);
+  const needsReview=!hasAnswer&&Boolean(currentReceipt&&['unconfirmed','waiting_for_run','run_unconfirmed','retry_exhausted','undelivered','failed'].includes(currentReceipt.state));
+  const speaking=playback.ownerId===ownerId&&playback.status==='speaking'&&suppressedAudio.current!==generation.current;
+  const status = phase==='paused'?'Call Interrupted':needsRecovery?'Session Needs Recovery':needsReview?'Message Needs Review'
+    : text.trim()&&recording?'Listening to You':speaking?audioPurpose==='receipt'?'Message Received':audioPurpose==='acknowledgement'?'Acknowledging Your Message':audioPurpose==='answer'?'Speaking to You':'Preparing Audio'
+    : submissionPending.current?'Sending Your Message':replyPending?'Waiting for a Reply':muted?'Microphone Muted'
+    : openingMicrophone||dictation.status==='starting'?'Opening Microphone':recording?dictation.status==='stopping'?'Finishing Your Words':'Listening to You'
+    : unsentDrafts.length||text.trim()?'Ready to Send':handsFree?'Listening Again Shortly':'Ready When You Are';
   const availableAgents = agents.filter(a => member(a, projectId, conversationId));
   const agentName = availableAgents.find(a => a.id === agentId)?.title ?? "Choose an Agent";
   const initials=agentName.split(/\s+/u).filter(Boolean).slice(0,2).map(word=>word[0]).join("").toLocaleUpperCase();
   const cannotStart = !live || !checked || muted || Boolean(sttUnavailable) || recording || inFlight || recovering || Boolean(attempt.current) || blocked || Boolean(text.trim());
-  const interruptReply = () => {
-    const settled=stopSpeech(ownerId); abandon();
-    if(!settled){stopAutomatic();changePhase("paused");setError(speechSnapshot().error);return;}
-    changePhase("ready");listenRef.current();
-  };
   const toggleMute = () => {
     mutedRef.current = !muted;
-    if(!muted) { cancelListenRetry(); if (phaseRef.current === "resting") changePhase("ready"); }
-    if(!muted && recording){dictation.abandon();voiceDraft.current = false;setText("");changePhase("ready");setNotice("Microphone muted. Unfinished words were discarded.");}
+    if(!muted) cancelListenRetry();
+    if(!muted){dictation.abandon();closeMicrophone();voiceDraft.current = false;textRef.current='';setText('');}
     setMuted(value=>!value);
+    if(muted){if(handsFreeRef.current&&finishedDrafts.current.length&&!attempt.current&&!submissionPending.current)void sendRef.current();void listen();}
   };
   const permissionError = error?.startsWith("Microphone permission was denied.");
-  const showCallControl = phase === "paused" || phase === "loading" || phase === "speaking" || (!handsFree && !recording && !text.trim());
+  const showCallControl = phase === "paused" || (!handsFree && !recording && !text.trim()&&!unsentDrafts.length);
   const roundControl={minWidth:64,width:64,height:64,borderRadius:"50%",p:0,transition:"background-color 180ms ease, transform 180ms ease", "& svg":{fontSize:27}, "&:active":{transform:"scale(.95)"}, "@media (prefers-reduced-motion: reduce)":{transition:"none"}};
   return <Dialog data-ponderosa-call open disableRestoreFocus fullWidth fullScreen={phone} maxWidth="sm" aria-labelledby={`${ownerId}-title`} onClose={end}
     PaperProps={{sx:{m:{xs:0,sm:3},width:{xs:"100%",sm:480},height:{xs:"100%",sm:"min(780px, calc(100dvh - 48px))"},maxHeight:{xs:"100%",sm:"calc(100dvh - 48px)"},borderRadius:{xs:0,sm:6},overflow:"hidden",backgroundImage:"none",bgcolor:"background.default",boxShadow:{sm:"0 28px 100px rgba(18,28,22,.2)"}}}}
@@ -636,7 +736,7 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
           <Box aria-hidden sx={{width:expanded?88:128,height:expanded?88:128,borderRadius:"50%",display:"grid",placeItems:"center",bgcolor:"primary.main",color:"primary.contrastText",fontSize:expanded?30:44,fontWeight:600,letterSpacing:"-.04em",boxShadow:"0 12px 40px rgba(24,55,41,.10)",mb:3,transition:"width 180ms ease, height 180ms ease","@media (prefers-reduced-motion: reduce)":{transition:"none"}}}>{initials}</Box>
           <Typography id={`${ownerId}-title`} component="h1" sx={{fontSize:{xs:30,sm:32},fontWeight:600,letterSpacing:"-.04em",textAlign:"center",lineHeight:1.2}}>{agentName}</Typography>
           <Box role="status" aria-live="polite" sx={{display:"flex",alignItems:"center",gap:1,mt:1.5,color:"text.secondary",textAlign:"center"}}>
-            {recording && !muted && <Box aria-hidden sx={{width:7,height:7,borderRadius:"50%",bgcolor:"success.main"}}/>}<Typography sx={{fontSize:15}}>{recovering?"Checking your connection…":status}</Typography>
+            {recording && !muted && <Box aria-hidden sx={{width:7,height:7,borderRadius:"50%",bgcolor:"success.main"}}/>}<Typography sx={{fontSize:15}}>{recovering?"Checking Your Chat":status}</Typography>
           </Box>
           {handsFree && !error && <Typography variant="caption" color="text.secondary" sx={{mt:1}}>Speak naturally. Your message sends when you finish speaking.</Typography>}
         </Stack>
@@ -646,7 +746,8 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
         <Stack spacing={1} sx={{mb:2,"& .MuiAlert-root":{borderRadius:3,fontSize:13}}}>
           {sttUnavailable && <Alert severity="info">{sttUnavailable} Type a message in Transcript.</Alert>}
           {ttsUnavailable && <Alert severity="info">{ttsUnavailable} Replies remain in Chat.</Alert>}
-          {deliveryNotice && <Alert severity="info">{deliveryNotice}</Alert>}
+          {(needsRecovery||needsReview||replyNeedsReview)&&<Button onClick={()=>{end();onOpenRecovery?.(agentId);}} sx={{minHeight:44}}>Review Recovery in Chat</Button>}
+          {currentReceipt&&(needsRecovery||needsReview)&&<Box component="details"><Box component="summary" sx={{minHeight:44,cursor:'pointer',alignContent:'center'}}>Delivery Details</Box><Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{JSON.stringify(currentReceipt,null,2)}</Typography></Box>}
           {notice && <Alert severity="info">{notice}</Alert>}
           {error && <Alert severity="warning">{permissionError ? <>
             Microphone access denied. Allow access in browser settings, then reconnect.
@@ -659,30 +760,30 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
         {expanded && <Stack id={`${ownerId}-details`} spacing={2} sx={{pb:2}}>
           {provisionalReply && <Box sx={{p:2,borderRadius:3,bgcolor:"background.paper"}}><Typography variant="caption" color="text.secondary">Replying</Typography><Typography ref={replyElement} aria-label="Streaming Reply" sx={{whiteSpace:"pre-wrap",mt:.5,lineHeight:1.6}}>{provisionalReply}</Typography></Box>}
           <Stack aria-label="Call Transcript" spacing={1.5}>{transcript.map(message=><Box key={message.id} sx={{p:2,borderRadius:3,bgcolor:message.role==="user"?"action.hover":"background.paper",ml:message.role==="user"?3:0,mr:message.role==="user"?0:3}}><Typography variant="caption" color="text.secondary">{message.role==="user"?"You":agentName}</Typography><Typography ref={renderReply?.canonicalId===message.id?replyElement:undefined} sx={{whiteSpace:"pre-wrap",mt:.5,lineHeight:1.6}}>{message.document?"Full reply available in Chat.":message.text}</Typography></Box>)}</Stack>
-          <TextField label="Type A Message" InputLabelProps={{shrink:true}} multiline minRows={2} value={text} disabled={recording||inFlight||recovering||Boolean(attempt.current)||blocked} onChange={e=>setText(e.target.value)} sx={{"& .MuiOutlinedInput-root":{borderRadius:3}}}/>
+          {unsentDrafts.map((draft,index)=><Box key={index} sx={{p:2,borderRadius:3,bgcolor:'background.paper'}}><Typography variant="caption">Unsent Message</Typography><Typography sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{draft.text}</Typography></Box>)}
+          <TextField label="Type A Message" InputLabelProps={{shrink:true}} multiline minRows={2} value={text} disabled={recording||submissionPending.current||recovering||Boolean(attempt.current)||blocked} onChange={e=>{textRef.current=e.target.value;setText(e.target.value);}} sx={{"& .MuiOutlinedInput-root":{borderRadius:3}}}/>
           <Stack direction="row" spacing={1} sx={{flexWrap:"wrap",gap:1,"& button":{minHeight:44}}}>
             {recording && <Button disabled={dictation.status==="stopping"} onClick={dictation.stop}>Done Speaking</Button>}
-            {text.trim()&&!recording && <Button startIcon={<SendRoundedIcon/>} disabled={!live||!checked||inFlight||recovering||blocked||Boolean(attempt.current)} onClick={()=>{void send();}}>Send</Button>}
+            {(text.trim()||unsentDrafts.length>0)&&!recording && <Button startIcon={<SendRoundedIcon/>} disabled={!live||!checked||submissionPending.current||recovering||blocked||Boolean(attempt.current)} onClick={()=>{void send();}}>Send</Button>}
             {text.trim()&&!recording&&!inFlight && <Button disabled={Boolean(attempt.current)||blocked} onClick={()=>{voiceDraft.current=false;setText("");}}>Clear Draft</Button>}
             {handsFree&&recording&&<Button onClick={()=>{stopAutomatic();dictation.abandon();changePhase("review");}}>Review Before Sending</Button>}
-            {(phase==="loading"||phase==="speaking")&&<Button onClick={()=>{stopAutomatic();abandon();changePhase("ready");}}>Stop Speaking</Button>}
+            {(phase==="loading"||phase==="speaking")&&<Button onClick={interruptLocalSpeech}>Stop Speaking</Button>}
             {playText&&!inFlight&&!recording&&!ttsUnavailable&&<Button onClick={()=>play(playText)}>Play Reply</Button>}
             {replyPending&&observedRun.current&&<Button color="error" onClick={async()=>{const targetRunId=observedRun.current;if(!targetRunId)return;stopAutomatic();abandon();changePhase("paused");try{await api.cancelRun(agentId,{targetRunId,idempotencyKey:createClientId()});setNotice("Reply cancelled. Reconnect when ready.");}catch{setError("Cancellation could not be confirmed. Check Chat; audio is stopped.");}}}>Cancel Reply</Button>}
           </Stack>
           {latency&&<Box component="details"><Box component="summary" sx={{cursor:"pointer",minHeight:44,display:"flex",alignItems:"center",fontSize:12,color:"text.secondary"}}>Call timing</Box><Typography aria-label="Call Timing" variant="caption">{latency}</Typography></Box>}
         </Stack>}
         <Box sx={{flex:1}}/>
-        {attempt.current&&<Stack alignItems="center" spacing={1} sx={{pb:2}}><Typography variant="caption" color="text.secondary">Delivery is unconfirmed. Retry uses the same message to avoid duplicates.</Typography><Button variant="outlined" disabled={!live||!checked||recording||inFlight||recovering||blocked||!retryable} onClick={()=>{void send();}} sx={{minHeight:44,borderRadius:8}}>Retry Sending</Button></Stack>}
+        {attempt.current&&!submissionPending.current&&<Stack alignItems="center" spacing={1} sx={{pb:2}}><Typography variant="caption" color="text.secondary">Delivery is unconfirmed. Retry uses the same message to avoid duplicates.</Typography><Typography sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere',maxHeight:140,overflowY:'auto'}}>{attempt.current.request.text}</Typography><Button variant="outlined" disabled={!live||!checked||recording||recovering||blocked||!retryable} onClick={()=>{void send();}} sx={{minHeight:44,borderRadius:8}}>Retry Sending</Button></Stack>}
         {!recording&&!inFlight&&phase!=="paused"&&!text.trim()&&!attempt.current&&!handsFree&&<Typography variant="caption" color="text.secondary" sx={{textAlign:"center",pb:2}}>Browser speech may use remote processing.</Typography>}
       </Box>
       <Box sx={{flexShrink:0,px:3,pt:2,pb:"max(24px, env(safe-area-inset-bottom))",borderTop:"1px solid",borderColor:"divider",bgcolor:"background.paper"}}>
         <Stack direction="row" justifyContent="center" alignItems="flex-start" sx={{flexWrap:"wrap",gap:3}}>
           <Stack spacing={1} alignItems="center"><Button aria-label={muted?"Unmute Microphone":"Mute Microphone"} aria-pressed={muted} disabled={Boolean(sttUnavailable)||(!handsFree&&!recording&&!muted)} onClick={toggleMute} sx={{...roundControl,bgcolor:muted?"text.primary":"action.hover",color:muted?"background.paper":"text.primary","&:hover":{bgcolor:muted?"text.secondary":"action.selected"}}}>{muted?<MicOffIcon/>:<MicNoneIcon/>}</Button><Typography variant="caption" color="text.secondary">{muted?"Unmute":"Mute"}</Typography></Stack>
           {showCallControl && <Stack spacing={1} alignItems="center">
-            {phase==="loading"||phase==="speaking"?<Button aria-label="Talk Now" disabled={muted||Boolean(sttUnavailable)} onClick={interruptReply} sx={{...roundControl,bgcolor:"primary.main",color:"primary.contrastText","&:hover":{bgcolor:"primary.dark"}}}><MicNoneIcon/></Button>
-              :phase==="paused"?<Button aria-label="Reconnect Call" disabled={recovering||blocked} onClick={()=>{void resume();}} sx={{...roundControl,bgcolor:"primary.main",color:"primary.contrastText","&:hover":{bgcolor:"primary.dark"}}}><PhoneIcon/></Button>
+            {phase==="paused"?<Button aria-label="Reconnect Call" disabled={recovering||blocked} onClick={()=>{void resume();}} sx={{...roundControl,bgcolor:"primary.main",color:"primary.contrastText","&:hover":{bgcolor:"primary.dark"}}}><PhoneIcon/></Button>
               :<Button aria-label={handsFree?"Listen":"Start Call"} disabled={cannotStart} onClick={startCall} sx={{...roundControl,bgcolor:"primary.main",color:"primary.contrastText","&:hover":{bgcolor:"primary.dark"}}}><PhoneIcon/></Button>}
-            <Typography variant="caption" color="text.secondary">{phase==="loading"||phase==="speaking"?"Talk now":phase==="paused"?"Reconnect":handsFree?"Listen":"Call"}</Typography>
+            <Typography variant="caption" color="text.secondary">{phase==="paused"?"Reconnect":handsFree?"Listen":"Call"}</Typography>
           </Stack>}
           <Stack spacing={1} alignItems="center"><Button aria-label="End Call" onClick={end} sx={{...roundControl,bgcolor:"error.main",color:"error.contrastText","&:hover":{bgcolor:"error.dark"}}}><CallEndIcon/></Button><Typography variant="caption" color="text.secondary">End</Typography></Stack>
         </Stack>

@@ -8,6 +8,7 @@ import {DEFAULT_SPEECH_PREFERENCES, type AgentEvent} from '@ponderosa/core';
 import {api} from '../../apps/web/src/api';
 import {queryKeys} from '../../apps/web/src/queryKeys';
 import {VoiceConversation} from '../../apps/web/src/components/speech/VoiceConversation';
+import {claimPageCapture} from '../../apps/web/src/components/speech/captureCoordinator';
 import {createPonderosaTheme} from '../../apps/web/src/theme';
 
 function assert(value:unknown,message:string):asserts value{if(!value)throw Error(message);}
@@ -18,29 +19,34 @@ async function until<T>(read:()=>T|undefined,message:string,timeout=8000):Promis
  throw Error(message);
 }
 const agent={id:'mounted-call-agent',projectId:'mounted-call-project',conversationId:'mounted-call-chat',title:'Synthetic Agent'};
-interface RecognitionHarness{onspeechend:(()=>void)|null;abortFailure:boolean;result(words:string):void;end():void;silence():()=>void;network():void;permission():void}
+interface RecognitionHarness{onspeechend:(()=>void)|null;abortFailure:boolean;result(words:string):void;interim(words:string):void;end():void;silence():()=>void;network():void;permission():void}
 interface UtteranceHarness{text:string;finish():void}
 
 async function fixture(run:(f:{
  recognitions:RecognitionHarness[];utterances:UtteranceHarness[];calls:Array<{conversationId:string;request:Record<string,unknown>}>;
  accepted:()=>void;setAccepted:(value:boolean)=>void;publish:(index:number,text:string)=>void;
+ status:(patch:Record<string,unknown>)=>void;receipt:(index:number,patch:Record<string,unknown>)=>void;tracks:Array<{readyState:string}>;recovery:string[];
  emit:(event:AgentEvent)=>boolean;
  button:(name:string)=>Promise<HTMLButtonElement>;client:QueryClient;host:HTMLDivElement;
 })=>Promise<void>,steeringOnly=false):Promise<void>{
  const speechWindow=window as unknown as {SpeechRecognition?:typeof Recognition;SpeechSynthesisUtterance?:typeof Utterance};
  const nativeRecognition=speechWindow.SpeechRecognition,nativeUtterance=speechWindow.SpeechSynthesisUtterance;
+ const tracks:Array<{readyState:string}>=[],recovery:string[]=[];
+ const mediaDescriptor=Object.getOwnPropertyDescriptor(navigator,'mediaDevices');
+ Object.defineProperty(navigator,'mediaDevices',{configurable:true,value:{getUserMedia:async()=>{const track={kind:'audio',readyState:'live',stop(){track.readyState='ended';}};tracks.push(track);return {getAudioTracks:()=>[track],getTracks:()=>[track]};}}});
  const synthesisDescriptor=Object.getOwnPropertyDescriptor(window,'speechSynthesis');
  const recognitions:Recognition[]=[],utterances:Utterance[]=[],calls:Array<{conversationId:string;request:Record<string,unknown>}>=[];
  class Recognition {
   continuous=true;interimResults=false;lang='en-US';maxAlternatives=1;
   onstart:(()=>void)|null=null;onend:(()=>void)|null=null;onspeechend:(()=>void)|null=null;
   onresult:((event:unknown)=>void)|null=null;onerror:((event:unknown)=>void)|null=null;
-  stopped=0;aborted=0;abortFailure=false;
+  stopped=0;aborted=0;abortFailure=false;history:Array<unknown>=[];
   constructor(){recognitions.push(this);}
-  start(){queueMicrotask(()=>this.onstart?.());}
+  start(track:MediaStreamTrack){assert(track?.kind==='audio'&&track.readyState==='live','Call recognition must use its owned live track');queueMicrotask(()=>this.onstart?.());}
   stop(){this.stopped++;}
   abort(){this.aborted++;if(this.abortFailure)throw Error('Synthetic browser abort failure');}
-  result(words:string){const history=[{isFinal:true,0:{transcript:words},length:1}];this.onresult?.({resultIndex:0,results:history});this.onresult?.({resultIndex:0,results:history});}
+  interim(words:string){this.onresult?.({resultIndex:this.history.length,results:[...this.history,{isFinal:false,0:{transcript:words},length:1}]});}
+  result(words:string){const resultIndex=this.history.length;this.history.push({isFinal:true,0:{transcript:words},length:1});const event={resultIndex,results:this.history};this.onresult?.(event);this.onresult?.(event);}
   end(){this.onend?.();}
   silence(){const staleEnd=this.onend,staleResult=this.onresult;this.onerror?.({error:'no-speech'});staleEnd?.();return ()=>{staleResult?.({resultIndex:0,results:[{isFinal:true,0:{transcript:'Stale private words'},length:1}]});staleEnd?.();};}
   network(){const staleEnd=this.onend;this.onerror?.({error:'network'});staleEnd?.();}
@@ -51,11 +57,11 @@ async function fixture(run:(f:{
   constructor(text:string){this.text=text;}
   finish(){this.onend?.();}
  }
- let accepted=false;const messages:Array<Record<string,unknown>>=[];
+ let accepted=false;const statusPatch:Record<string,unknown>={};const messages:Array<Record<string,unknown>>=[];
  const subscribers=new Set<Parameters<typeof api.subscribeAgent>[2]>();
  const original={getConversation:api.getConversation,getWorkspacePreferences:api.getWorkspacePreferences,sendMultiAgentDirectMessage:api.sendMultiAgentDirectMessage,getVoiceReplyStatus:api.getVoiceReplyStatus,subscribeAgent:api.subscribeAgent};
  const detail=()=>({conversation:{id:agent.conversationId,projectId:agent.projectId},agents:[agent],messages:messages.map(message=>({...message,deliveryReceipts:(message.deliveryReceipts as unknown[]|undefined)?.map(receipt=>({...receipt}))}))});
- const currentStatus=()=>{const last=calls.length-1,reply=messages.find(message=>message.id==='answer-'+last);return {messageId:'input-'+last,runId:'run-one',runStatus:'running',memoryExposure:{state:'disabled',runId:'run-one'},...(reply?{canonicalReplyEventId:reply.id}:{})};};
+ const currentStatus=()=>{const last=calls.length-1,reply=messages.find(message=>message.id==='answer-'+last);return {messageId:'input-'+last,runId:'run-one',runStatus:'running',memoryExposure:{state:'disabled',runId:'run-one'},...(reply?{canonicalReplyEventId:reply.id}:{}),...statusPatch};};
  Object.assign(api,{
   getConversation:async()=>detail(),getWorkspacePreferences:async()=>({speech:DEFAULT_SPEECH_PREFERENCES}),
   sendMultiAgentDirectMessage:async(conversationId:string,request:Record<string,unknown>)=>{
@@ -79,12 +85,13 @@ async function fixture(run:(f:{
   void client.invalidateQueries({queryKey:queryKeys.conversations.detailPrefix(agent.conversationId)});
  };
  try{
-  root.render(<StrictMode><ThemeProvider theme={createPonderosaTheme('light')}><QueryClientProvider client={client}><VoiceConversation {...agent} steeringOnly={steeringOnly} agents={[agent as never]} selectedAgentId={agent.id} lockAgent open startOnOpen onClose={()=>root.render(null)}/></QueryClientProvider></ThemeProvider></StrictMode>);
+  root.render(<StrictMode><ThemeProvider theme={createPonderosaTheme('light')}><QueryClientProvider client={client}><VoiceConversation {...agent} steeringOnly={steeringOnly} agents={[agent as never]} selectedAgentId={agent.id} lockAgent open startOnOpen onOpenRecovery={id=>recovery.push(id)} onClose={()=>root.render(null)}/></QueryClientProvider></ThemeProvider></StrictMode>);
   await until(()=>recognitions.length===1?true:undefined,'Opening Call did not start one real dictation cycle');
-  await run({recognitions,utterances,calls,accepted:()=>{accepted=true;},setAccepted:value=>{accepted=value;},publish,button,client,host,
+  await run({recognitions,utterances,calls,tracks,recovery,status:patch=>{Object.assign(statusPatch,patch);for(const handlers of subscribers)handlers.onOpen?.();},receipt:(index,patch)=>{const message=messages.find(m=>m.id==='input-'+index);assert(message,'Receipt requires accepted message');Object.assign((message.deliveryReceipts as Array<Record<string,unknown>>)[0]!,patch);void client.invalidateQueries({queryKey:queryKeys.conversations.detailPrefix(agent.conversationId)});},accepted:()=>{accepted=true;},setAccepted:value=>{accepted=value;},publish,button,client,host,
    emit:event=>{for(const handlers of subscribers)handlers.onEvent?.({agentId:agent.id,seq:1,ts:new Date().toISOString(),event});return subscribers.size>0;}});
- }finally{
+ }catch(error){throw new Error(String(error)+' '+JSON.stringify({recognitions:recognitions.map(r=>({stopped:r.stopped,aborted:r.aborted})),calls:calls.length,utterances:utterances.map(u=>u.text),surface:document.querySelector('[data-ponderosa-call]')?.textContent}),{cause:error});}finally{
   root.unmount();client.clear();host.remove();Object.assign(api,original);
+  if(mediaDescriptor)Object.defineProperty(navigator,'mediaDevices',mediaDescriptor);else delete (navigator as unknown as {mediaDevices?:unknown}).mediaDevices;
   if(nativeRecognition)speechWindow.SpeechRecognition=nativeRecognition;else delete speechWindow.SpeechRecognition;
   if(nativeUtterance)speechWindow.SpeechSynthesisUtterance=nativeUtterance;else delete speechWindow.SpeechSynthesisUtterance;
   if(synthesisDescriptor)Object.defineProperty(window,'speechSynthesis',synthesisDescriptor);else delete (window as unknown as {speechSynthesis?:unknown}).speechSynthesis;
@@ -123,6 +130,118 @@ export async function voiceCallMountedSessionRegression():Promise<void>{
   const count=f.recognitions.length;await new Promise(resolve=>setTimeout(resolve,350));assert(f.recognitions.length===count,'Muted call restarted microphone');
   (await f.button('End Call')).click();await until(()=>!document.querySelector('[data-ponderosa-call]')?true:undefined,'End did not close Call');
   assert(f.calls.length===2,'Mute or End submitted extra speech');
+ });
+}
+
+export async function voiceCallNaturalInterruptionRegression():Promise<void>{
+ await fixture(async f=>{
+  const finish=(recognition:RecognitionHarness,words:string)=>{recognition.interim(words);recognition.result(words);recognition.onspeechend?.();recognition.end();};
+  finish(f.recognitions[0]!,'Keep my opening words.');
+  await until(()=>f.calls.length===1&&f.recognitions.length===2?true:undefined,'Call must keep listening while POST is pending');
+  finish(f.recognitions[1]!,'Steer while the first response is pending.');
+  await until(()=>f.recognitions.length===3?true:undefined,'Call did not preserve listening after a second complete utterance');
+  assert(f.calls.length===1,'Unsettled immutable submission must remain single flight');
+  f.accepted();
+  await until(()=>f.calls.length===2?true:undefined,'Completed second utterance was lost during first HTTP settlement');
+  assert(f.calls[0]!.request.text==='Keep my opening words.'&&f.calls[1]!.request.text==='Steer while the first response is pending.','HTTP settlement erased or combined separate utterances');
+  assert(f.calls[0]!.request.idempotencyKey!==f.calls[1]!.request.idempotencyKey,'Separate finished utterances need separate identities');
+  await until(()=>f.utterances.some(u=>u.text==='Got your message.')?true:undefined,'Accepted voice receipt did not play');
+  const active=f.recognitions.at(-1)!;
+  active.interim('Got your message.');active.result('Got your message.');active.onspeechend?.();
+  await tick();assert(f.calls.length===2,'Own receipt audio created a self-reply');
+  for(const utterance of f.utterances)utterance.finish();
+  f.publish(1,'Yes, here is the answer.');
+  await until(()=>f.utterances.some(u=>u.text==='Yes, here is the answer.')?true:undefined,'Canonical answer did not play');
+  assert(document.querySelector('[data-ponderosa-call] [role="status"]')?.textContent==='Speaking to You','Answer playback needs its own truthful status');
+  const answer=f.utterances.find(u=>u.text==='Yes, here is the answer.')!;
+  active.interim('Actually keep this beginning');
+  active.result('Actually keep this beginning and change direction.');active.onspeechend?.();active.end();
+  await until(()=>f.calls.length===3?true:undefined,'Natural speech did not interrupt and steer during audio');
+  assert(f.calls[2]!.request.text==='Actually keep this beginning and change direction.','Barge-in dropped opening words or duplicated final history');
+  assert(f.calls[2]!.request.activeRunDelivery==='steer','Natural follow-up bypassed existing steering');
+  answer.finish();await tick();assert(f.calls.length===3,'Late prior playback callback resent speech');
+  assert(!Array.from(document.querySelectorAll('[data-ponderosa-call] button')).some(b=>/Talk Now/i.test(b.textContent??'')),'Obsolete Talk Now control remains');
+  (await f.button('End Call')).click();
+  assert(f.tracks.every(t=>t.readyState==='ended'),'End left an admitted microphone live');
+ });
+}
+
+export async function voiceCallQuietDeliveryRegression():Promise<void>{
+ await fixture(async f=>{
+  f.accepted();const recognition=f.recognitions[0]!;
+  recognition.result('Synthetic quiet transition.');recognition.onspeechend?.();recognition.end();
+  await until(()=>f.utterances.length===1?true:undefined,'Receipt did not play');
+  await until(()=>document.querySelector('[data-ponderosa-call] [role="status"]')?.textContent==='Message Received'?true:undefined,'Receipt falsely claimed an Agent answer');
+  f.receipt(0,{state:'queued',steeringWaitReason:'context_refresh'});
+  await tick();f.utterances[0]!.finish();
+  await until(()=>document.querySelector('[data-ponderosa-call] [role="status"]')?.textContent==='Waiting for a Reply'?true:undefined,'Context preparation must use one compact factual status');
+  assert(!document.querySelector('[data-ponderosa-call] [role="alert"]'),'Routine context preparation raised an Alert');
+  const reply={projectId:agent.projectId,conversationId:agent.conversationId,agentId:agent.id,messageId:'input-0',runId:'run-one',fence:1,streamId:'stream',itemId:'answer-item',providerTurnId:'provider-turn',sequence:1,text:'An incomplete answer. ',state:'streaming' as const};
+  assert(f.emit({type:'voice_reply',reply}),'Stream was not attached');
+  await until(()=>f.utterances.some(u=>u.text==='An incomplete answer.')?true:undefined,'Streamed answer did not play');
+  assert(document.querySelector('[data-ponderosa-call] [role="status"]')?.textContent==='Speaking to You','Stale waiting status survived streamed audio');
+  f.receipt(0,{contextRecoveryRequired:true,state:'waiting_for_run'});
+  await until(()=>Array.from(document.querySelectorAll('[data-ponderosa-call] button')).find(b=>b.textContent==='Review Recovery in Chat')??undefined,'Partial streamed output hid the canonical recovery action');
+  assert(!document.querySelector('[data-ponderosa-call]')?.textContent?.includes('Refreshing the connection'),'Internal transition was mislabeled a connection refresh');
+  assert(f.tracks.every(t=>t.readyState==='ended'),'Recovery blocker left microphone capture live');
+  const recovery=Array.from(document.querySelectorAll<HTMLButtonElement>('[data-ponderosa-call] button')).find(b=>b.textContent==='Review Recovery in Chat')!;
+  recovery.click();await tick();assert(f.recovery[0]===agent.id,'Recovery did not open the exact Agent Chat');
+  assert(f.calls.length===1,'Recovery navigation resent the accepted message');
+ });
+}
+
+export async function voiceCallEchoOwnershipRegression():Promise<void>{
+ await fixture(async f=>{
+  f.accepted();const first=f.recognitions[0]!;first.result('Synthetic echo boundary.');first.onspeechend?.();first.end();
+  await until(()=>f.utterances.length===1&&f.recognitions.length===2?true:undefined,'Call did not admit concurrent owned input and audio');
+  f.utterances[0]!.finish();
+  const reply={projectId:agent.projectId,conversationId:agent.conversationId,agentId:agent.id,messageId:'input-0',runId:'run-one',fence:1,streamId:'stream',itemId:'answer-item',providerTurnId:'provider-turn',sequence:1,text:'Yes, here is the answer. ',state:'streaming' as const};
+  assert(f.emit({type:'voice_reply',reply}),'Reply stream missing');
+  await until(()=>f.utterances.length===2?true:undefined,'Streaming phrase did not start');
+  f.utterances[1]!.finish();
+  const active=f.recognitions.at(-1)!;active.result('Yes, here is the answer.');active.onspeechend?.();await tick();
+  assert(f.calls.length===1,'Delayed own phrase in an unfinished queue created a self-reply');
+  await new Promise(resolve=>setTimeout(resolve,550));
+  active.result('Yes');active.onspeechend?.();active.end();
+  await until(()=>f.calls.length===2?true:undefined,'Expired echo history swallowed a later genuine short answer');
+  assert(f.calls[1]!.request.text==='Yes','Echo filter damaged the real short answer');
+  const release=claimPageCapture(()=>{});
+  await f.button('Reconnect Call');
+  assert(f.tracks.every(t=>t.readyState==='ended'),'Competing ordinary capture did not revoke the duplex call');
+  const before=f.calls.length;active.result('Late revoked input');active.end();await tick();assert(f.calls.length===before,'Revoked call callback sent work');
+  release();(await f.button('End Call')).click();
+ });
+}
+
+export async function voiceCallUnknownRecoveryRegression():Promise<void>{
+ await fixture(async f=>{
+  f.accepted();const first=f.recognitions[0]!;first.result('Synthetic unknown reply.');first.onspeechend?.();first.end();
+  await until(()=>f.utterances.length===1?true:undefined,'Receipt missing');f.utterances[0]!.finish();
+  f.emit({type:'voice_reply',reply:{projectId:agent.projectId,conversationId:agent.conversationId,agentId:agent.id,messageId:'input-0',runId:'run-one',fence:1,streamId:'stream',itemId:'answer-item',providerTurnId:'provider-turn',sequence:1,text:'Partial answer. ',state:'streaming'}});
+  await until(()=>f.utterances.length===2?true:undefined,'Partial answer missing');
+  f.status({runStatus:'outcome_unknown'});
+  await f.button('Reconnect Call');
+  f.receipt(0,{state:'run_unconfirmed',contextRecoveryRequired:true});await tick();
+  const buttons=Array.from(document.querySelectorAll<HTMLButtonElement>('[data-ponderosa-call] button')).filter(b=>b.textContent==='Review Recovery in Chat');
+  assert(buttons.length===1,'Unknown outcome lost or duplicated recovery navigation after a late receipt');
+  assert(f.tracks.every(t=>t.readyState==='ended'),'Unknown outcome left microphone active');
+  buttons[0]!.click();await tick();assert(f.recovery[0]===agent.id&&f.calls.length===1,'Recovery navigation replayed accepted work or opened a foreign Agent');
+ });
+}
+
+export async function voiceCallDeliberateReplayRegression():Promise<void>{
+ await fixture(async f=>{
+  f.accepted();const first=f.recognitions[0]!;first.result('Synthetic deliberate replay.');first.onspeechend?.();first.end();
+  await until(()=>f.utterances.length===1&&f.recognitions.length===2?true:undefined,'Concurrent input and receipt missing');f.utterances[0]!.finish();
+  f.emit({type:'voice_reply',reply:{projectId:agent.projectId,conversationId:agent.conversationId,agentId:agent.id,messageId:'input-0',runId:'run-one',fence:1,streamId:'stream',itemId:'answer-item',providerTurnId:'provider-turn',sequence:1,text:'An answer to replay. ',state:'streaming'}});
+  await until(()=>f.utterances.length===2?true:undefined,'Answer playback missing');
+  f.recognitions.at(-1)!.interim('Interrupt without submitting');
+  (await f.button('Mute Microphone')).click();f.publish(0,'An answer to replay.');
+  (await f.button('Transcript')).click();
+  const play=await until(()=>Array.from(document.querySelectorAll<HTMLButtonElement>('[data-ponderosa-call] button')).find(b=>b.textContent==='Play Reply')??undefined,'Canonical answer must remain available after local interruption');
+  play.click();await until(()=>f.utterances.length===3?true:undefined,'Deliberate replay did not speak');
+  await until(()=>document.querySelector('[data-ponderosa-call] [role="status"]')?.textContent==='Speaking to You'?true:undefined,'Suppressed automatic audio hid the deliberate replay status');
+  assert(f.calls.length===1,'Manual playback repeated accepted work');(await f.button('End Call')).click();
  });
 }
 
@@ -243,7 +362,7 @@ export async function voiceCallMountedMutedReceiptRegression():Promise<void>{
   const recognition=f.recognitions[0]!;recognition.result('Muted synthetic request');recognition.onspeechend?.();recognition.end();
   await until(()=>f.calls.length===1?true:undefined,'Muted-receipt turn did not reach pending POST');
   (await f.button('Mute Microphone')).click();f.accepted();
-  await until(()=>document.querySelector('[data-ponderosa-call]')?.textContent?.includes('Waiting for a reply')?true:undefined,'Accepted muted turn did not await its reply');
+  await until(()=>document.querySelector('[data-ponderosa-call]')?.textContent?.includes('Waiting for a Reply')?true:undefined,'Accepted muted turn did not await its reply');
   await new Promise(resolve=>setTimeout(resolve,300));
   assert(f.utterances.length===0,'Muted accepted turn spoke an unwanted receipt');
   (await f.button('End Call')).click();
@@ -254,17 +373,19 @@ export async function voiceCallMountedLateAcceptanceRegression():Promise<void>{
  await fixture(async f=>{
   const first=f.recognitions[0]!;first.result('First request awaiting acceptance');first.onspeechend?.();first.end();
   await until(()=>f.calls.length===1?true:undefined,'First request never reached its pending POST');
+  await until(()=>f.recognitions.length===2?true:undefined,'Pending POST must retain a listening call');
+  const beforeInterrupt=f.recognitions.length;
   window.dispatchEvent(new Event('pagehide'));
   (await f.button('Reconnect Call')).click();
   const heldStart=await f.button('Start Call');
-  assert(heldStart.disabled&&f.recognitions.length===1&&f.calls.length===1,'Reconnect replayed or replaced an unconfirmed pending turn');
+  assert(heldStart.disabled&&f.recognitions.length===beforeInterrupt&&f.calls.length===1,'Reconnect replayed or replaced an unconfirmed pending turn');
   f.accepted();
   await new Promise(resolve=>setTimeout(resolve,150));
-  assert(f.utterances.length===0&&f.recognitions.length===1,'Late acceptance replayed speech or capture after interruption');
+  assert(f.utterances.length===0&&f.recognitions.length===beforeInterrupt,'Late acceptance replayed speech or capture after interruption');
   await until(()=>!heldStart.disabled?true:undefined,'Exact late acceptance did not retire its pending Call identity');
   heldStart.click();
-  await until(()=>f.recognitions.length===2?true:undefined,'Late acceptance kept the Call from reconnecting');
-  const second=f.recognitions[1]!;second.result('Fresh request after reconnect');second.onspeechend?.();second.end();
+  await until(()=>f.recognitions.length===beforeInterrupt+1?true:undefined,'Late acceptance kept the Call from reconnecting');
+  const second=f.recognitions.at(-1)!;second.result('Fresh request after reconnect');second.onspeechend?.();second.end();
   await until(()=>f.calls.length===2?true:undefined,'Reconnect could not send a fresh turn after exact late acceptance');
   assert(f.calls[0]!.conversationId===f.calls[1]!.conversationId&&f.calls[0]!.request.idempotencyKey!==f.calls[1]!.request.idempotencyKey,'Reconnect reused the interrupted submission identity or changed conversation');
   (await f.button('End Call')).click();
