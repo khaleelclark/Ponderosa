@@ -147,7 +147,7 @@ export function DictationControls({
         disabled={disabled||callOpen||recordingOpen||active||paused||maxRecordingBytes<=0||!recordingContainer}
         onClick={openRecording}
       ><MicNoneIcon/></IconButton></span></Tooltip>}
-      <Tooltip title="Voice Options">
+      <Tooltip title="Voice Options" disableInteractive>
         <span>
           <IconButton
             ref={buttonRef}
