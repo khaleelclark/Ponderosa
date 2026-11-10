@@ -92,3 +92,49 @@ export async function assistantMessagesLayoutMountedRegression():Promise<void>{
   (window as Window&{assistantMessagesEvidence?:unknown[]}).assistantMessagesEvidence=evidence;
  }finally{root.unmount();client.clear();host.remove();}
 }
+
+/** A held Core read must not restore the old name after the isolated runtime saves. */
+export async function assistantNameRefreshMountedRegression():Promise<void>{
+ const [{AssistantEntry},{AssistantSurface}]=await Promise.all([import('../../apps/web/src/components/AssistantEntry'),import('../../apps/web/src/AssistantSurface')]);
+ const oldStatus={initialized:true,enabled:true,app:{agentId:'named-assistant',title:'Original Assistant'}};
+ const host=document.createElement('div');document.body.append(host);const root=createRoot(host),client=new QueryClient({defaultOptions:{queries:{retry:false}}});
+ const originalFetch=window.fetch,bridge=window as typeof window&{__ponderosaAssistantMount?:import('../../apps/web/src/assistantMount').AssistantMountApi};
+ const previousBridge=bridge.__ponderosaAssistantMount;let props:import('../../apps/web/src/assistantMount').AssistantMountProps|undefined,release:(()=>void)|undefined,reads=0,posts=0,aborted=false;
+ window.fetch=async(input,init)=>{
+  const url=new URL(typeof input==='string'?input:input instanceof URL?input.href:input.url,location.href);
+  if(url.pathname!=='/api/branches/assistant')throw Error('Unexpected name refresh fixture request: '+url.pathname);
+  if(init?.method==='POST'){posts++;return Response.json(oldStatus);}
+  reads++;
+  if(reads===1)return new Promise<Response>((resolve,reject)=>{
+   release=()=>resolve(Response.json(oldStatus));
+   init?.signal?.addEventListener('abort',()=>{aborted=true;reject(new DOMException('Old read cancelled','AbortError'));},{once:true});
+  });
+  return Response.json({...oldStatus,app:{...oldStatus.app,title:'Saved Pine Partner'}});
+ };
+ bridge.__ponderosaAssistantMount={productScope:()=> 'branches',mount(_host,next){props=next;},update(next){props=next;},unmount(){},canLeave:()=>true,blockers:()=>[]};
+ client.setQueryData(['assistant-status'],oldStatus);
+ try{
+  flushSync(()=>root.render(<ThemeProvider theme={createPonderosaTheme('light')}><QueryClientProvider client={client}><MutationNotificationProvider><AssistantEntry href="/assistant" onOpen={()=>{}}/><AssistantSurface colorMode="light" onOpenNavigation={()=>{}} onToggleColorMode={()=>{}} onOpenProviderSettings={()=>{}}/></MutationNotificationProvider></QueryClientProvider></ThemeProvider>));
+  await until(()=>Boolean(release&&props?.onIdentityChanged),'The old Core read is held while the runtime is mounted');
+  props!.onIdentityChanged!();
+  await until(()=>host.textContent?.includes('Saved Pine Partner')===true,'Sidebar adopts the fresh canonical name');
+  assert(aborted&&reads===2,'The pre-rename GET is physically cancelled and replaced exactly once');
+  release!();await settle();assert(host.textContent?.includes('Saved Pine Partner')&&!host.textContent?.includes('Original Assistant'),'Late old data cannot restore a stale name');
+  assert(posts===1,'Identity refresh never replays the initialization mutation');
+ }finally{root.unmount();client.clear();window.fetch=originalFetch;if(previousBridge)bridge.__ponderosaAssistantMount=previousBridge;else delete bridge.__ponderosaAssistantMount;host.remove();}
+}
+
+export async function sidebarScrollRetentionMountedRegression():Promise<void>{
+ const {SharedSidebarPanel}=await import('../../apps/web/src/components/WorkspaceSidebar.parts');
+ const host=document.createElement('div');document.body.append(host);const root=createRoot(host),memory={scrollTop:140,starsCollapsed:false};
+ const render=async(ready:boolean,busy:boolean,count:number,key='chats')=>{
+  flushSync(()=>root.render(<ThemeProvider theme={createPonderosaTheme('light')}><Box sx={{height:260,width:300,display:'flex'}}><SharedSidebarPanel key={key} title="Chats" icon={null} drawer={false} presentation={memory} scrollReady={ready} busy={busy} searchLabel="Search Chats" searchValue="" onSearchValueChange={()=>{}} starredRows={null} allRows={Array.from({length:count},(_,index)=><Box key={index} sx={{height:40}}>Chat {index}</Box>)}/></Box></ThemeProvider>));await settle();return host.querySelector<HTMLElement>('.ponderosa-scroll')!;
+ };
+ try{
+  let list=await render(false,true,0);assert(list.scrollTop===0&&memory.scrollTop===140,'Unresolved empty geometry cannot erase a retained offset');
+  list=await render(true,false,20);assert(Math.abs(list.scrollTop-140)<2,'Initial verified rows restore the saved offset');
+  list=await render(true,true,20);list.scrollTop=240;list.dispatchEvent(new Event('scroll',{bubbles:true}));await settle();assert(memory.scrollTop===240,'Populated background refresh keeps actual user scrolling');
+  list=await render(true,false,30);assert(Math.abs(list.scrollTop-240)<2,'Finishing background refresh cannot jump back to an older offset');
+  await render(false,true,0,'other');assert(memory.scrollTop===240,'Remount during unresolved loading keeps the current offset');list=await render(true,false,30,'other');assert(Math.abs(list.scrollTop-240)<2,'Remounted list restores after its rows become available');
+ }finally{root.unmount();host.remove();}
+}

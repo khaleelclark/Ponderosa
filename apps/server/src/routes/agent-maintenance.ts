@@ -131,7 +131,7 @@ export function registerAgentMaintenanceRoutes(
       const current = store.getAgent(request.params.id);
       if (!current) return reply.code(404).send({ error: "agent not found" });
       const body = request.body ?? {};
-      const allowedFields = new Set(["title", "role", "activeEngine", "model", "effort", "speed", "workingCopyMode", "managementPermissions", "expectedRuntimeSettings"]);
+      const allowedFields = new Set(["title", "expectedTitle", "role", "activeEngine", "model", "effort", "speed", "workingCopyMode", "managementPermissions", "expectedRuntimeSettings"]);
       if (Object.keys(body).some((key) => !allowedFields.has(key))) {
         return reply.code(400).send({ error: "unknown agent field" });
       }
@@ -148,6 +148,10 @@ export function registerAgentMaintenanceRoutes(
           || expected.effort !== (current.effort ?? null) || expected.speed !== (current.speed ?? null)) {
           return reply.code(409).send({ error: "Model settings changed. Reload settings before saving." });
         }
+      }
+      if (body.expectedTitle !== undefined) {
+        if (typeof body.expectedTitle !== "string" || typeof body.title !== "string") return reply.code(400).send({error:"An exact saved name and a name change are required"});
+        if (body.expectedTitle !== current.title) return reply.code(409).send({error:"Name changed. Reload saved settings before saving."});
       }
       if (body.role !== undefined) {
         try { body.role = normalizeAgentRole(body.role) ?? null; }
@@ -253,7 +257,7 @@ export function registerAgentMaintenanceRoutes(
         if (speedError) return reply.code(400).send({ error: speedError });
         runtimePatch = { activeEngine, model: model ?? null, effort: effort ?? null, speed: speed ?? null };
       }
-      const { expectedRuntimeSettings: _baseline, ...patch } = body;
+      const { expectedRuntimeSettings: _baseline, expectedTitle: _titleBaseline, ...patch } = body;
       const agent = store.updateAgent(request.params.id, {
         ...patch,
         workingCopyMode: undefined,

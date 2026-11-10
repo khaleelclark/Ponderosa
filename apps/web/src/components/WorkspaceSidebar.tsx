@@ -59,7 +59,7 @@ import { clampWorkspaceSidebarWidth } from "../workspaceSidebarState";
 import { SidebarActivityBadge } from "./SidebarActivityBadge";
 import { useWorkspaceActivity } from "../hooks/useWorkspaceActivity";
 import { isUnmodifiedPrimaryClick } from "../nativeNavigation";
-import { ResourceContextMenu, type ResourceContextMenuAction } from "./ResourceContextMenu";
+import { ResourceContextMenu, type ResourceContextMenuAction, type ResourceContextMenuState } from "./ResourceContextMenu";
 import { TextInputDialog } from "./ConfirmationDialogs";
 import { AgentDeletionDialog } from "./AgentDeletionDialog";
 import {
@@ -87,6 +87,7 @@ import { SearchSnippet, routeForGlobalSearchSelection } from "./GlobalChatSearch
 
 export function WorkspaceSidebar({
   projects,
+  navigation,
   preferences,
   route,
   notifications,
@@ -105,6 +106,7 @@ export function WorkspaceSidebar({
   onCollapsedChange,
   onWidthChange,
 }: {
+  navigation: ReturnType<typeof useWorkspaceSidebarNavigation>;
   projects: ProjectDto[];
   preferences: WorkspacePreferencesDto;
   route: Route;
@@ -138,16 +140,31 @@ export function WorkspaceSidebar({
     setSidebarSection,
     projectSection,
     setProjectSection,
+    activeItem,
+    setActiveItem,
+    panelPresentation,
+    collapsedSidebarAgentIds,
+    setCollapsedSidebarAgentIds,
     filter,
     setFilter,
-    draggedResource,
-    setDraggedResource,
-    menu,
-    setMenu,
-    openResourceMenu,
-  } = useWorkspaceSidebarNavigation(route, true);
-  const [collapsedSidebarAgentIds, setCollapsedSidebarAgentIds] =
-    useState<Set<string>>(() => new Set());
+  } = navigation;
+  const [draggedResource, setDraggedResource] = useState<{
+    kind: "home" | "chat" | "agent";
+    id: string;
+  }>();
+  type SidebarMenuResource = { route: Route; conversation?: ConversationDto };
+  const [menu, setMenu] =
+    useState<ResourceContextMenuState<SidebarMenuResource>>();
+  const openResourceMenu = (
+    anchor: HTMLElement,
+    route: Route,
+    conversation?: ConversationDto,
+  ) =>
+    setMenu({
+      anchor,
+      resource: { route, ...(conversation ? { conversation } : {}) },
+    });
+
 
   const routedProjectId = routeProjectId(route);
   const [drawerProjectId, setDrawerProjectId] = useState(routedProjectId);
@@ -321,7 +338,7 @@ export function WorkspaceSidebar({
   const showNavigation = (next: Route) => {
     setDrawerProjectId(undefined);
     setSidebarSection("home");
-    setFilter("");
+    if(next.kind!=="assistant")setFilter("");
     onNavigate(next);
   };
   const openChat = (
@@ -339,12 +356,12 @@ export function WorkspaceSidebar({
   const selectSidebar = (section: typeof projectSection) => {
     setSidebarSection("home");
     setProjectSection(section);
-    setFilter("");
+    setActiveItem(section);
     if (collapsed) onCollapsedChange?.(false);
   };
   const rail = (
     <ProjectRail
-      sections={{ active: showingSettings ? undefined : projectSection, agentsActivity, agentsActivityFresh: workspaceConnection.phaseEvidenceFresh && !activeWorkspaceAgentQuery.isError, onSelect: selectSidebar }}
+      sections={{ active: showingSettings ? undefined : activeItem, agentsActivity, agentsActivityFresh: workspaceConnection.phaseEvidenceFresh && !activeWorkspaceAgentQuery.isError, onSelect: selectSidebar }}
       drawer={drawer}
       route={route}
       profile={preferences.profile}
@@ -352,7 +369,7 @@ export function WorkspaceSidebar({
       unreadNotificationUpdates={counts.updates}
       onOpenHome={() => showNavigation({ kind: "home" })}
       onOpenInbox={() => showNavigation({ kind: "inbox" })}
-      onOpenAssistant={() => showNavigation({kind:"assistant",returnTo:route.kind==="assistant"?route.returnTo:assistantReturnPath(routeToPath(route))})}
+      onOpenAssistant={() => {setActiveItem("assistant");showNavigation({kind:"assistant",returnTo:route.kind==="assistant"?route.returnTo:assistantReturnPath(routeToPath(route))});}}
       onManageSection={section => showNavigation(
         section === "agents"
           ? { kind: "manageAgents" }
@@ -456,6 +473,8 @@ export function WorkspaceSidebar({
     <SharedSidebarPanel
       header={panelHeader}
       icon={<ChatBubbleOutlineIcon />}
+      presentation={panelPresentation.current.chats}
+      scrollReady={chatDirectoryQuery.requestState.hasResolved}
       title="Chats"
       total={chatDirectoryQuery.requestState.hasResolved ? chatDirectory.total : undefined}
       busy={chatDirectoryQuery.requestState.isInitialLoading || chatDirectoryQuery.requestState.isRefreshing || chatDirectoryQuery.requestState.isFetchingNextPage}
@@ -653,6 +672,8 @@ export function WorkspaceSidebar({
     <SharedSidebarPanel
       header={panelHeader}
       icon={<SmartToyOutlinedIcon />}
+      presentation={panelPresentation.current.agents}
+      scrollReady={agentDirectoryQuery.requestState.hasResolved}
       title="Agents"
       total={agentDirectoryQuery.requestState.hasResolved ? agentDirectory.total : undefined}
       busy={agentDirectoryQuery.requestState.isInitialLoading || agentDirectoryQuery.requestState.isRefreshing || agentDirectoryQuery.requestState.isFetchingNextPage}

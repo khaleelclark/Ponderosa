@@ -9,6 +9,8 @@ export interface AssistantMountProps {
   onToggleColorMode():void;
   onOpenProviderSettings():void;
   notify?:MutationNotifier;
+  /** Request a fresh canonical identity projection in the host runtime. */
+  onIdentityChanged?():void;
 }
 export interface AssistantMountApi {
   mount(host:HTMLElement,props:AssistantMountProps):void;

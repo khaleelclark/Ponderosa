@@ -858,6 +858,7 @@ export function useWorkspaceStream(
       if (event.type === "provider_status_changed") { engineStatusRefresh.schedule(); return; }
       if (event.type === "preferences_updated") return;
       if (event.type === "project_changed") {
+        if (event.action !== "used") { invalidate(["assistant-status"]); invalidate(["output-app"]); }
         invalidate(queryKeys.projects.all);
         if (event.action !== "used") {
           invalidate(queryKeys.agents.project(event.projectId));

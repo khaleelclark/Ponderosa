@@ -15,6 +15,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import { createClientId } from "./clientId";
 import { ApiRequestError } from "./api/types";
+import {useWorkspaceSidebarNavigation} from "./components/useWorkspaceSidebarState";
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
 import { WorkspaceErrorBoundary } from "./components/WorkspaceErrorBoundary";
 import { WorkspaceConnectionNotice } from "./components/WorkspaceConnectionNotice";
@@ -146,6 +147,7 @@ export default function App({
     },
   });
   const { route, navigate } = useRoute();
+  const sidebarNavigation=useWorkspaceSidebarNavigation(route,true);
   const routedConversationId = route.kind === "conversation" ? route.conversationId : undefined;
   const routedProjectId = routeProjectId(route);
   // Overlap the existing Chat and membership reads with Project metadata.
@@ -245,7 +247,7 @@ export default function App({
     // Conversation and Agent views own their resolved entity titles. Skipping
     // them here prevents a later Project-list refresh from restoring a generic
     // "chat" or "Agent" title over the resolved title.
-    if (route.kind === "conversation" || route.kind === "agent") return;
+    if (route.kind === "conversation" || route.kind === "agent" || route.kind === "assistant") return;
     document.title = `${routeDocumentTitle(route)} · Ponderosa`;
   }, [route]);
   useEffect(() => {
@@ -698,6 +700,7 @@ export default function App({
             }}
           >
             {(!mobileWorkspace || desktopNavigationMounted) && <WorkspaceSidebar
+              navigation={sidebarNavigation}
               projects={projects}
               preferences={preferences}
               route={route}
@@ -858,6 +861,7 @@ export default function App({
         </Box>
 
         <MobileWorkspaceDrawer
+          navigation={sidebarNavigation}
           open={mobileWorkspace && mobileNavOpen}
           projects={projects}
           preferences={preferences}

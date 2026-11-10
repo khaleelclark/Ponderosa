@@ -17,7 +17,7 @@ import {
   Typography,
 } from "@mui/material";
 import type { ProjectSort } from "@ponderosa/core";
-import { Children, useState, type ReactNode } from "react";
+import { Children, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { useInfiniteScrollSentinel } from "../hooks/useInfiniteScrollSentinel";
 import { IconTitle } from "./IconTitle";
 import { LoadingState } from "./LoadingState";
@@ -111,7 +111,11 @@ function SharedSidebarPanel({
   createLabel,
   onCreate,
   drawer,
+  presentation,
+  scrollReady = true,
 }: {
+  presentation?: {scrollTop:number;starsCollapsed:boolean};
+  scrollReady?: boolean;
   icon: ReactNode;
   title: string;
   header?: ReactNode;
@@ -144,10 +148,12 @@ function SharedSidebarPanel({
   onCreate?(): void;
   drawer: boolean;
 }): JSX.Element {
+  const scrollHost=useRef<HTMLDivElement|null>(null),scrollPositions=useRef<Record<string,number>>({});
+  useLayoutEffect(()=>{if(scrollHost.current&&scrollReady)scrollHost.current.scrollTop=presentation?.scrollTop??scrollPositions.current[title]??0;},[title,presentation,scrollReady,allRows]);
   const hasStarredRows = Children.count(starredRows) > 0;
   const [collapsedStars, setCollapsedStars] = useState<Record<string, boolean>>({});
   const [sortAnchor, setSortAnchor] = useState<HTMLElement>();
-  const starsCollapsed = Boolean(collapsedStars[title]);
+  const starsCollapsed = presentation?.starsCollapsed??Boolean(collapsedStars[title]);
   const sortLabel = sort === "last_used"
     ? "Recent"
     : sort === "alphabetical"
@@ -211,6 +217,8 @@ function SharedSidebarPanel({
         />
       </Box>}
       <Box
+        ref={scrollHost}
+        onScroll={event=>{if(!scrollReady||!event.currentTarget.getClientRects().length)return;scrollPositions.current[title]=event.currentTarget.scrollTop;if(presentation)presentation.scrollTop=event.currentTarget.scrollTop;}}
         aria-busy={busy}
         className="ponderosa-scroll"
         sx={{
@@ -226,7 +234,7 @@ function SharedSidebarPanel({
         {topContent}
         {hasStarredRows ? (
           <Box component="section" sx={{ mb: drawer ? 1 : 2 }}>
-            <ButtonBase aria-label="Starred" aria-expanded={!starsCollapsed} onClick={() => setCollapsedStars(current => ({ ...current, [title]: !current[title] }))}
+            <ButtonBase aria-label="Starred" aria-expanded={!starsCollapsed} onClick={() => {if(presentation)presentation.starsCollapsed=!starsCollapsed;setCollapsedStars(current=>({...current,[title]:!starsCollapsed}));}}
               sx={{ width: "100%", justifyContent: "flex-start", minHeight: drawer ? 36 : 28, px: .5, gap: .5, color: "text.secondary", borderRadius: 1 }}>
               {starsCollapsed ? <KeyboardArrowRightIcon sx={{ fontSize: 16 }} /> : <KeyboardArrowDownIcon sx={{ fontSize: 16 }} />}
               <Typography sx={{ fontSize: "0.6875rem", fontWeight: 700, letterSpacing: ".06em", textTransform: "uppercase" }}>Starred</Typography>

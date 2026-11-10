@@ -20,8 +20,8 @@ export function AssistantEntry({wide=false,selected=false,href,onOpen}:{wide?:bo
  const feedbackKey=JSON.stringify(["/api/branches/assistant","setup"]);
  // Initialization is a POST, not a shared refresh participant. Reconcile its
  // outcome through the existing canonical GET before offering explicit setup retry.
- const status=useQuery({queryKey:['assistant-setup-status'],enabled:query.isError,retry:false,
-  queryFn:()=>requestJson<AssistantStatusDto>('/api/branches/assistant')});
+ const status=useQuery({queryKey:['assistant-status'],retry:false,refetchInterval:15000,
+  queryFn:({signal})=>requestJson<AssistantStatusDto>('/api/branches/assistant',{signal})});
  useEffect(()=>{if(status.isSuccess&&status.data.initialized&&!status.data.setupError)notify({key:feedbackKey,message:"",dismiss:true});},[status.isSuccess,status.data,notify,feedbackKey]);
  const retrySetup=async()=>{
   const key=feedbackKey,incident=createClientId("assistant-setup-feedback-");
@@ -30,8 +30,8 @@ export function AssistantEntry({wide=false,selected=false,href,onOpen}:{wide?:bo
   else if(result.data?.initialized&&!result.data.setupError)notify({key,message:"",dismiss:true});
  };
  return <Box sx={{minWidth:0,gridColumn:wide?'1 / -1':undefined}}>
-  <ButtonBase href={href} aria-current={selected?'page':undefined} onClick={event=>{if(isUnmodifiedPrimaryClick(event)){event.preventDefault();onOpen();}}} sx={{width:'100%',minHeight:44,gap:1,px:1,borderRadius:1.5,color:selected?'primary.main':'text.secondary',bgcolor:selected?'action.selected':'transparent','&:hover':{bgcolor:'action.hover'}}}><AssistantIcon sx={{fontSize:19}}/><Typography component="span" sx={{fontSize:'.8125rem',fontWeight:600}}>Assistant</Typography></ButtonBase>
-  <WorkspaceQueryError compact active={query.isError} read={workspaceRead("workspace","Assistant Setup",status)}/>
+  <ButtonBase href={href} aria-current={selected?'page':undefined} onClick={event=>{if(isUnmodifiedPrimaryClick(event)){event.preventDefault();onOpen();}}} sx={{width:'100%',minHeight:44,gap:1,px:1,borderRadius:1.5,color:selected?'primary.main':'text.secondary',bgcolor:selected?'action.selected':'transparent','&:hover':{bgcolor:'action.hover'}}}><AssistantIcon sx={{fontSize:19,flexShrink:0}}/><Typography component="span" noWrap sx={{minWidth:0,fontSize:'.8125rem',fontWeight:600}}>{status.data?.app?.title??query.data?.app?.title??'Assistant'}</Typography></ButtonBase>
+  <WorkspaceQueryError compact read={workspaceRead("workspace","Assistant Setup",status)}/>
   {query.isError&&status.isSuccess&&(!status.data.initialized||status.data.setupError)&&<MutationErrorDetails title="Assistant Setup Needs Review" error={status.data.setupError?.message??query.error}>
    <Button disabled={query.isFetching} onClick={()=>void retrySetup()}>Retry Assistant Setup</Button>
   </MutationErrorDetails>}

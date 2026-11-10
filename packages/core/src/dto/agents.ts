@@ -471,6 +471,8 @@ export interface UpdateAgentRequest {
   /** Optional human edit baseline; stale runtime changes fail before any write. */
   expectedRuntimeSettings?: AgentRuntimeSettingsSnapshot;
   title?: string;
+  /** Optional exact saved name; stale human edits fail before any write. */
+  expectedTitle?: string;
   /** Applies at the next Run; null clears the explicit standing role. */
   role?: string | null;
   /** Provider used when the next Run starts. Does not reconfigure an active Run. */

@@ -51,7 +51,7 @@ export function ProjectRail({
   onCollapse,
   onClose,
 }: {
-  sections: { active?: ProjectSidebarSection; agentsActivity?: WorkspaceActivityCountDto; agentsActivityFresh?: boolean; onSelect(section: ProjectSidebarSection): void };
+  sections: { active?: ProjectSidebarSection|"assistant"; agentsActivity?: WorkspaceActivityCountDto; agentsActivityFresh?: boolean; onSelect(section: ProjectSidebarSection): void };
   drawer: boolean;
   route: Route;
   profile: OperatorProfileDto;
@@ -138,7 +138,7 @@ export function ProjectRail({
           pb: 0.75,
         }}
       >
-        <AssistantEntry wide selected={route.kind==="assistant"} href={route.kind==="assistant"?routeToPath(route):routeToPath({kind:"assistant",returnTo:assistantReturnPath(routeToPath(route))})} onOpen={onOpenAssistant}/>
+        <AssistantEntry wide selected={sections.active==="assistant"} href={route.kind==="assistant"?routeToPath(route):routeToPath({kind:"assistant",returnTo:assistantReturnPath(routeToPath(route))})} onOpen={onOpenAssistant}/>
         {PROJECT_MODES.map(mode => (
           <ButtonBase
             key={mode.id}

@@ -11,6 +11,7 @@ import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
 import { type Route } from "./routing";
 
 interface MobileWorkspaceDrawerProps {
+  navigation: React.ComponentProps<typeof WorkspaceSidebar>["navigation"];
   open: boolean;
   projects: ProjectDto[];
   preferences: WorkspacePreferencesDto;
@@ -37,6 +38,7 @@ interface MobileWorkspaceDrawerProps {
 }
 
 export function MobileWorkspaceDrawer({
+  navigation,
   open,
   projects,
   preferences,
@@ -81,6 +83,7 @@ export function MobileWorkspaceDrawer({
     >
       {(open || contentsMounted) && <Box sx={{ position: "relative", height: "100%", minHeight: 0 }}>
         <WorkspaceSidebar
+          navigation={navigation}
           drawer
           projects={projects}
           preferences={preferences}

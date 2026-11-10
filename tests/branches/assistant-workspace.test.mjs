@@ -110,6 +110,7 @@ for(const enabled of [false,true,'muted','attention'])test(`Assistant check aggr
  let store;return withFixture(t,async f=>{
   const app=await assistant(f),chat=await f.createChat('Launch'),completed=await f.createIdleAgent(chat,'Delivery'),broken=await f.createIdleAgent(chat,'Inspection');
   f.ok(await f.api('PATCH','/api/workspace/preferences',{notifications:{directResponses:enabled!==false,broadcasts:false}}));
+  f.ok(await f.api('PATCH',`/api/branches/engine/agents/${app.agentId}`,{title:'Pine Partner',expectedTitle:app.title}));
   const alerts=enabled===true;
   if(typeof enabled==='string')f.ok(await f.api('PUT',`/api/branches/engine/notification-settings/agent/${app.agentId}`,{mode:enabled}));
   // These are real tracked task outcomes, not fabricated successful Run statuses.
@@ -139,7 +140,7 @@ for(const enabled of [false,true,'muted','attention'])test(`Assistant check aggr
   await until(()=>store.sqlite.prepare("SELECT 1 FROM branch_executions WHERE branch_id=? AND state='completed'").get(app.branchId),'scheduled report execution completes',20000);
   const report=JSON.parse(store.sqlite.prepare('SELECT payload_json FROM runtime_communications WHERE id=?').get(digest.communicationId).payload_json);
   assert.match(report.communication.text,/Completed.*Report delivered and verified/s);assert.match(report.communication.text,/Issue.*Planted issue: release checklist is missing/s);assert.equal(report.assistantSources.length,3);assert.match(report.communication.text,/Same Project work is also finished/);
-  const notices=f.ok(await f.api('GET','/api/branches/engine/notifications')).items.filter(n=>n.communicationEventId===digest.communicationId);assert.equal(notices.length,alerts?1:0);
+  const notices=f.ok(await f.api('GET','/api/branches/engine/notifications')).items.filter(n=>n.communicationEventId===digest.communicationId);assert.equal(notices.length,alerts?1:0);if(alerts)assert.equal(notices[0].title,'Pine Partner');
   const projection=f.ok(await f.api('POST','/api/branches/engine/notifications/projection',{projectIds:[app.projectId],conversationIds:[app.chatId]}));assert.equal(projection.conversations[app.chatId].quietUnreadCount??0,alerts?0:1,'quiet unread activity is preserved without alert tags');
 
   assert.equal(store.sqlite.prepare('SELECT count(*) n FROM assistant_report_sources WHERE speaker_agent_id=?').get(app.agentId).n,3);
@@ -223,4 +224,19 @@ test('Assistant exists before page initialization; explicit speaker move is comp
  assert.equal(f.ok(await f.api('GET',`/api/branches/${original.branchId}/trigger`)).enabled,false);
  await f.reopen();assert.equal(f.ok(await f.api('GET','/api/branches/assistant')).app.agentId,agent.id);
  f.ok(await f.api('PATCH',`/api/branches/engine/agents/${agent.id}`,{model:null}));assert.equal(f.ok(await f.api('GET','/api/branches/assistant')).app.agentId,agent.id);
+}));
+
+
+test('Assistant Name uses canonical validation, exact independent conflict checks and survives reinitialization/restart',options,t=>withFixture(t,async f=>{
+ const app=await assistant(f),path=`/api/branches/engine/agents/${app.agentId}`;
+ const old=f.ok(await f.api('GET',path)).agent;
+ for(const title of ['', '   ', 'Bad\u0001Name', 'Line\nBreak'])assert.equal((await f.api('PATCH',path,{title,expectedTitle:old.title})).status,400);
+ const name='Pine Partner Λ '+ 'Long Name '.repeat(30).trim();
+ const renamed=f.ok(await f.api('PATCH',path,{title:name,expectedTitle:old.title}));assert.equal(renamed.title,name);assert.equal(renamed.id,app.agentId);assert.notEqual(renamed.handle,old.handle);
+ const rejected=await f.api('PATCH',path,{title:'Stale Editor',expectedTitle:old.title});assert.equal(rejected.status,409);
+ assert.equal((await f.api('PATCH',path,{expectedTitle:name})).status,400);
+ const restored=f.ok(await f.api('PATCH',path,{title:old.title,expectedTitle:name}));assert.notEqual(restored.handle,old.handle,'Old mention handles remain reserved');
+ f.ok(await f.api('PATCH',path,{title:'Pine Partner',expectedTitle:restored.title}));
+ assert.equal((await assistant(f)).title,'Pine Partner');await f.reopen();
+ const reopened=await assistant(f);assert.equal(reopened.title,'Pine Partner');assert.equal(reopened.agentId,app.agentId);assert.equal(reopened.chatId,app.chatId);
 }));
