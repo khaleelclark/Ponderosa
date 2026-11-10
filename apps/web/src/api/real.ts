@@ -152,6 +152,7 @@ import {
 } from "../agentHistoryPagination.js";
 import {
   ApiRequestError,
+  ApiTransportError,
   type CreateAgentOptions,
   type StreamHandlers,
   type StreamSubscription,
@@ -235,6 +236,9 @@ export function requestJson<T>(path: string, init?: RequestInit, acceptedErrorSt
     const response = await fetch(`${API_BASE}${path}`, {
       ...init,
       headers,
+    }).catch(error => {
+      if (error instanceof Error && error.name === 'AbortError') throw error;
+      throw new ApiTransportError(error instanceof Error ? error.message : 'The connection was interrupted.');
     });
 
     if (!response.ok && !acceptedErrorStatuses.includes(response.status)) {
@@ -244,7 +248,10 @@ export function requestJson<T>(path: string, init?: RequestInit, acceptedErrorSt
     if (response.status === 204 || response.headers.get("content-length") === "0") {
       return undefined as T;
     }
-    const body = await response.text();
+    const body = await response.text().catch((error:unknown)=>{
+      if(error instanceof Error&&error.name==='AbortError')throw error;
+      throw new ApiTransportError(error instanceof Error?error.message:'The connection was interrupted.');
+    });
     return (body ? JSON.parse(body) : undefined) as T;
   };
   return isBackground && init === undefined && acceptedErrorStatuses.length === 0

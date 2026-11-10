@@ -1,3 +1,5 @@
+import {WorkspaceQueryError} from "./WorkspaceQueryError";
+import {workspaceRead} from "../workspaceAvailability";
 import {
   Alert,
   Box,
@@ -1394,22 +1396,7 @@ export function InboxView({
                 <CircularProgress size={28} />
               </Stack>
             ) : null}
-            {query.isError ? (
-              <Alert
-                severity="error"
-                action={
-                  <Button
-                    color="inherit"
-                    size="small"
-                    onClick={() => void query.refetch()}
-                  >
-                    Retry
-                  </Button>
-                }
-              >
-                Messages could not be loaded.
-              </Alert>
-            ) : null}
+            <WorkspaceQueryError initial={query.data===undefined} read={workspaceRead("inbox","Messages",query)}/>
             {olderError ? (
               <Alert
                 severity="error"
@@ -1703,21 +1690,8 @@ export function InboxView({
             Cancellation failed. {cancelOperationError.message}
           </Alert>
         ) : null}
-        {queuedMessages.failure ? (
-          <Alert
-            severity="error"
-            sx={{ mx: 1.5, mt: 1 }}
-            action={<Button
-              color="inherit"
-              size="small"
-              onClick={queuedMessages.failure.retry}
-            >
-              Retry
-            </Button>}
-          >
-            Queued messages could not be updated. {queuedMessages.failure.error.message}
-          </Alert>
-        ) : null}
+        <WorkspaceQueryError read={workspaceRead(`chat:${composerConversationId}`,"Queued messages",queuedMessages.query)}/>
+        {queuedMessages.failure&&<details><summary>Queue action needs attention</summary>{queuedMessages.failure.error.message}<Button onClick={queuedMessages.failure.retry}>Retry action</Button></details>}
         <QueuedMessageTray
           messages={queuedMessages.query.data ?? []}
           scope={composerConversationId}

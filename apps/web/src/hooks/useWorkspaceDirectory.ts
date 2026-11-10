@@ -110,6 +110,10 @@ export function useWorkspaceDirectory<T extends WorkspaceDirectoryItemDto>(
   const hasResolved = Boolean(query.data);
   return {
     data: query.data,
+    error: query.error,
+    isSuccess: query.isSuccess,
+    fetchStatus: query.fetchStatus,
+    refetch: query.refetch,
     fetchNextPage: query.fetchNextPage,
     hasNextPage: query.isPlaceholderData ? false : query.hasNextPage,
     isError: query.isError,

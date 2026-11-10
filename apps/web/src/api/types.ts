@@ -32,3 +32,6 @@ export class ApiRequestError extends Error {
     super(message);
   }
 }
+
+/** Physical transport failure; preserves mutation uncertainty (no HTTP status). */
+export class ApiTransportError extends Error {}

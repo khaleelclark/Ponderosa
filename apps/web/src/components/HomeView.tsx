@@ -1,3 +1,5 @@
+import {WorkspaceQueryError,WorkspaceQueryErrors} from "./WorkspaceQueryError";
+import {workspaceRead} from "../workspaceAvailability";
 import { HomeLayout, HomeFirstItem, HomeSection as Section, HomeSummaryCard as SummaryCard, HomeItemCard as ItemCard, homeItemsGridSx, homeSummaryGridSx } from "./HomeView.parts";
 import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutline";
 import FolderOutlinedIcon from "@mui/icons-material/FolderOutlined";
@@ -88,10 +90,13 @@ export function HomeView({
   const homeRefreshError = activeAgentQuery.requestState.isRefreshError || outcomeQuery.requestState.isRefreshError;
   const homeRefreshing = activeAgentQuery.requestState.isRefreshing || outcomeQuery.requestState.isRefreshing;
 
+  const homeReads=[workspaceRead("workspace","Active Agents",activeAgentQuery),workspaceRead("workspace","Recent outcomes",outcomeQuery)];
   return (
     <HomeLayout context="Across your chats" loading={homeLoading} status={homeLoading ? "Loading Home summary" : homeInitialError ? "Home summary could not be fully loaded" :
       homeRefreshError ? "Home refresh failed. Last loaded results are still available." :
       homeRefreshing ? "Refreshing Home summary" : "Home summary loaded"}>
+      {homeInitialError&&<WorkspaceQueryError initial read={homeReads.find(read=>read.error)!}/>}
+      <WorkspaceQueryErrors reportOnly reads={homeReads}/>
           <Box sx={homeSummaryGridSx}>
             <SummaryCard label="Active Agents" value={activeCount} />
             <SummaryCard label="Needs Attention" value={attentionLoading ? notificationsLoadFailed ? "Unavailable" : "Loading" : attentionCount} onClick={onOpenInbox} />
@@ -156,11 +161,7 @@ export function HomeView({
             title="Working Now"
             description="Active and waiting Agent work across the organization."
           >
-            {activeAgentQuery.requestState.isRefreshError ? (
-              <Alert severity="warning" action={<Button aria-label="Retry refresh of active Agents" aria-busy={activeAgentQuery.requestState.isRefreshing} onClick={() => void activeAgentQuery.requestState.retry()}>Retry</Button>}>
-                Could not refresh active Agents. Last loaded results are still available.
-              </Alert>
-            ) : null}
+            <WorkspaceQueryError reportOnly={homeInitialError} read={workspaceRead("workspace","Active Agents",activeAgentQuery)}/>
             {working.length ? (
               <Box sx={homeItemsGridSx}>
                 {working.slice(0, 8).map(item => {
@@ -185,9 +186,7 @@ export function HomeView({
                 })}
               </Box>
             ) : activeAgentQuery.requestState.isInitialError ? (
-              <Alert severity="error" action={<Button onClick={() => void activeAgentQuery.requestState.retry()}>Retry</Button>}>
-                Could not load active Agents.
-              </Alert>
+              <Typography color="text.secondary">Unavailable</Typography>
             ) : activeAgentQuery.requestState.isInitialLoading ? (
               <Paper variant="outlined" sx={{ p: 2 }}><Typography color="text.secondary">Loading active Agents…</Typography></Paper>
             ) : (
@@ -196,11 +195,7 @@ export function HomeView({
           </Section>
 
           <Section title="Recent Outcomes" description="Recently finished assigned work across chats.">
-            {outcomeQuery.requestState.isRefreshError ? (
-              <Alert severity="warning" action={<Button aria-label="Retry refresh of recent outcomes" aria-busy={outcomeQuery.requestState.isRefreshing} onClick={() => void outcomeQuery.requestState.retry()}>Retry</Button>}>
-                Could not refresh recent outcomes. Last loaded results are still available.
-              </Alert>
-            ) : null}
+            <WorkspaceQueryError reportOnly={homeInitialError} read={workspaceRead("workspace","Recent outcomes",outcomeQuery)}/>
             {recentOutcomes.length ? (
               <Box sx={homeItemsGridSx}>
                 {recentOutcomes.map(item => (
@@ -216,9 +211,7 @@ export function HomeView({
                 ))}
               </Box>
             ) : outcomeQuery.requestState.isInitialError ? (
-              <Alert severity="error" action={<Button onClick={() => void outcomeQuery.requestState.retry()}>Retry</Button>}>
-                Could not load recent outcomes.
-              </Alert>
+              <Typography color="text.secondary">Unavailable</Typography>
             ) : outcomeQuery.requestState.isInitialLoading ? (
               <Paper variant="outlined" sx={{ p: 2 }}><Typography color="text.secondary">Loading recent outcomes…</Typography></Paper>
             ) : (

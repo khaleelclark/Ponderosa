@@ -1,3 +1,5 @@
+import {WorkspaceQueryError} from "../WorkspaceQueryError";
+import {workspaceRead} from "../../workspaceAvailability";
 import {createClientId} from '../../clientId';
 import {useEffect,useRef,useState} from 'react';
 import {useMutation,useQuery,useQueryClient} from '@tanstack/react-query';
@@ -38,7 +40,7 @@ export function BranchExecutionBudget({branchId,settings=false,active=true}:{bra
    <Typography variant="subtitle1" fontWeight={650}>Automatic execution budget</Typography>
    {settings&&draft!==undefined&&<FormControlLabel sx={{m:0,flexShrink:0}} label="Limit" control={<Switch inputProps={{'aria-label':'Limit automatic executions'}} checked={draft!==null} disabled={policyLocked||unavailable} onChange={(_,enabled)=>{save.reset();setEditing(enabled);setDraft(enabled?{limit:100,period:'month'}:null)}}/>}/>}
   </Stack>
-  {query.error?<Alert severity="error" action={<Button onClick={()=>void query.refetch()}>Retry budget</Button>}>Budget could not be refreshed. {query.error.message}</Alert>:<Stack direction="row" spacing={1} useFlexGap sx={{alignItems:'baseline',justifyContent:'space-between',flexWrap:'wrap'}}>
+  <WorkspaceQueryError read={workspaceRead(`branch:${branchId}`,"Execution budget",query)}/>{!query.error&&<Stack direction="row" spacing={1} useFlexGap sx={{alignItems:'baseline',justifyContent:'space-between',flexWrap:'wrap'}}>
    <Typography variant="body2" role={!query.data?"status":undefined}>{presentation.message}</Typography>
    {query.data&&<Typography variant="caption" color={query.data.heldCount?'warning.main':'text.secondary'}>{query.data.heldCount} waiting</Typography>}
   </Stack>}

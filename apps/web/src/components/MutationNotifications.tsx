@@ -1,4 +1,4 @@
-import { Alert, Box, Button, LinearProgress, Snackbar } from "@mui/material";
+import { Alert, Box, Button, LinearProgress, Portal, Snackbar } from "@mui/material";
 import { prepareDownload, type DownloadProgress } from "../downloads";
 import {
   createContext,
@@ -20,6 +20,8 @@ export interface MutationNoticeInput {
   key?: string;
   /** Errors and durable background outcomes stay visible until dismissed. */
   persistent?: boolean;
+  /** Retire only feedback for a confirmed operation; never clear action state. */
+  dismiss?: boolean;
   progress?: DownloadProgress;
   onCancel?(): void;
 }
@@ -46,6 +48,7 @@ export function MutationNotificationProvider({
     const severity = normalized.severity ?? "success";
     const key = normalized.key ?? `${severity}:${normalized.message}`;
     setNotices((current) => {
+      if(normalized.dismiss)return current.filter(notice=>notice.key!==key);
       const notice: MutationNotice = {
         ...normalized,
         key,
@@ -129,7 +132,7 @@ export function MutationNotificationProvider({
   return (
     <MutationNotificationContext.Provider value={value}>
       {children}
-      <Snackbar
+      <Portal><Snackbar
         key={active?.id}
         open={Boolean(active)}
         autoHideDuration={active?.persistent || active?.severity === "error" ? null : 3_000}
@@ -169,7 +172,7 @@ export function MutationNotificationProvider({
               color="inherit" /></Box> : null}
           </Alert>
         ) : undefined}
-      </Snackbar>
+      </Snackbar></Portal>
     </MutationNotificationContext.Provider>
   );
 }

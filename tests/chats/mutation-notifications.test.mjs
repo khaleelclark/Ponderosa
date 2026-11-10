@@ -24,12 +24,12 @@ function provider() {
     exports, require: name => {
       if (name === 'react') return react;
       if (name === 'react/jsx-runtime') return require(name);
-      if (name === '@mui/material') return Object.fromEntries(['Alert', 'Box', 'Button', 'LinearProgress', 'Snackbar'].map(name => [name, name]));
+      if (name === '@mui/material') return Object.fromEntries(['Alert', 'Box', 'Button', 'LinearProgress', 'Portal', 'Snackbar'].map(name => [name, name]));
       if (name === '../downloads') return {};
       throw Error(name);
     },
   });
-  const render = () => { cursor = 0; const tree = exports.MutationNotificationProvider({ children: null }); return { notify: tree.props.value, snackbar: tree.props.children[1] }; };
+  const render = () => { cursor = 0; const tree = exports.MutationNotificationProvider({ children: null }); const portal = tree.props.children[1]; assert.equal(portal.type, 'Portal', 'feedback must escape route stacking contexts to stay dismissible above dialogs'); return { notify: tree.props.value, snackbar: portal.props.children }; };
   return { render, notify: input => render().notify(input) };
 }
 

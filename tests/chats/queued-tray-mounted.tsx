@@ -1,3 +1,4 @@
+import {MutationNotificationProvider} from "../../apps/web/src/components/MutationNotifications";
 import {QueryClient,QueryClientProvider} from '@tanstack/react-query';
 import {useQueuedConversationMessagesController} from '../../apps/web/src/components/useQueuedConversationMessagesController';
 import {createRoot} from 'react-dom/client';
@@ -137,7 +138,7 @@ export async function queuedTrayAcceptedEditRegression():Promise<void>{
  const button=(name:string)=>host.querySelector<HTMLButtonElement>('[aria-label="'+name+'"]')!;
  const checkpoint=async(name:string)=>{await (window as Window&{phase2UiCheckpoint?:(name:string)=>Promise<void>}).phase2UiCheckpoint?.(name);};
  try{
-  root.render(<QueryClientProvider client={client}><Surface/></QueryClientProvider>);
+  root.render(<QueryClientProvider client={client}><MutationNotificationProvider><Surface/></MutationNotificationProvider></QueryClientProvider>);
   await until(()=>Boolean(tray()),'Canonical original queue loads');
   button('Edit queued message 1').click();await until(()=>Boolean(field()),'Edit opens');
   const input=field()!;Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value')!.set!.call(input,'Queued note edited');input.dispatchEvent(new Event('input',{bubbles:true}));await tick();

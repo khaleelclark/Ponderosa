@@ -1,3 +1,4 @@
+import {availabilityFailure,distinctDiagnostics,workspaceRead} from "./workspaceAvailability";
 import { restoreOverlayFocus } from "./overlayFocus";
 import { PreferenceSaveFeedback } from "./preferenceSaveFeedback";
 import {useWorkspaceFont} from "./hooks/useWorkspaceFont";
@@ -746,7 +747,7 @@ export default function App({
                 position: "relative",
               }}
             >
-              <WorkspaceRefreshProvider>
+              <WorkspaceRefreshProvider connection={workspaceConnection}>
               <Box
                 sx={{
                   gridRow: 2,
@@ -789,6 +790,7 @@ export default function App({
                     preferencesLoaded={preferencesQuery.data !== undefined}
                     colorMode={colorMode}
                     projectBrowserRequest={projectBrowserRequest}
+                    workspaceReads={[workspaceRead("workspace","Engines",enginesQuery),workspaceRead("workspace","Chats",projectsQuery),workspaceRead("workspace","Preferences",preferencesQuery),workspaceRead(`project:${selectedProjectId}`,"Project",routedProjectQuery)]}
                     loadError={
                       retainedDataFailure(
                         enginesQuery.data !== undefined,
@@ -804,11 +806,11 @@ export default function App({
                           preferencesQuery.isError,
                         ) === "initial")
                     }
-                    loadErrorDetails={[
+                    loadErrorDetails={distinctDiagnostics([
                       enginesQuery.data === undefined && enginesQuery.isError ? enginesQuery.error.message : undefined,
                       !isProjectRoute(route) && projectsQuery.data === undefined && projectsQuery.isError ? projectsQuery.error.message : undefined,
                       route.kind === "settings" && preferencesQuery.data === undefined && preferencesQuery.isError ? preferencesQuery.error.message : undefined,
-                    ].filter(Boolean).join(" ")}
+                    ]).join(" ")}
                     refreshError={
                       retainedDataFailure(
                         enginesQuery.data !== undefined,
@@ -823,11 +825,11 @@ export default function App({
                         preferencesQuery.isError,
                       ) === "refresh"
                     }
-                    refreshErrorDetails={[
+                    refreshErrorDetails={distinctDiagnostics([
                       enginesQuery.data !== undefined && enginesQuery.isError ? enginesQuery.error.message : undefined,
                       projectsQuery.data !== undefined && projectsQuery.isError ? projectsQuery.error.message : undefined,
                       preferencesQuery.data !== undefined && preferencesQuery.isError ? preferencesQuery.error.message : undefined,
-                    ].filter(Boolean).join(" ")}
+                    ]).join(" ")}
                     onRetryLoad={() => {
                       void projectsQuery.refetch();
                       void enginesQuery.refetch();
@@ -910,7 +912,7 @@ export default function App({
           request={creationRequest}
           projects={projects}
           projectsLoaded={projectsQuery.data !== undefined}
-          projectsError={projectsQuery.isError && projectsQuery.data === undefined ? projectsQuery.error.message : undefined}
+          projectsError={projectsQuery.isError && projectsQuery.data === undefined && !availabilityFailure(projectsQuery.error) ? projectsQuery.error.message : undefined}
           onRetryProjects={() => void projectsQuery.refetch()}
           engines={engines}
           enginesLoaded={enginesQuery.data !== undefined}

@@ -9,7 +9,7 @@ const source=readFileSync(new URL('../../apps/web/src/components/OutputAgentApp.
 function fixture(pathname='/assistant',overrides={},behavior={}){
  const state=[],deps=[],pending=[];let index=0,tree,changed=false;const requests=[],modelRequests=[];
  const app={agentId:'speaker',branchId:'branch',chatId:'chat',projectId:'project',title:'VeryLongOutputTitle'.repeat(20),engine:'codex',versionId:'version',automatic:true,triggerKind:'schedule',schedule:{scheduleKind:'interval',everyMs:600000,startsAt:'2099-01-01T00:00:00.000Z'},everyMs:600000,settingsRevision:'revision',runtimeSettings:{activeEngine:'codex',model:null,effort:null,speed:null},...overrides};
- const imports={'@ponderosa/core':require('@ponderosa/core'),react:{useState(initial){const i=index++;if(!(i in state))state[i]=initial;return [state[i],value=>{if(state[i]!==value){state[i]=value;changed=true;}}];},useRef(value){const i=index++;return state[i]??=( {current:value});},useMemo:factory=>factory(),useEffect(effect,next){const i=index++;if(!deps[i]||next.some((value,j)=>value!==deps[i][j])){deps[i]=next;pending.push(effect);}}},
+ const imports={'./MutationNotifications':{useMutationNotification:()=>()=>{}},'@ponderosa/core':require('@ponderosa/core'),react:{useState(initial){const i=index++;if(!(i in state))state[i]=initial;return [state[i],value=>{if(state[i]!==value){state[i]=value;changed=true;}}];},useRef(value){const i=index++;return state[i]??=( {current:value});},useMemo:factory=>factory(),useEffect(effect,next){const i=index++;if(!deps[i]||next.some((value,j)=>value!==deps[i][j])){deps[i]=next;pending.push(effect);}}},
   '@tanstack/react-query':{useQuery(options){const snapshot={...app};return {data:options.queryKey[0]==='assistant-status'?{initialized:true,enabled:true,app:snapshot}:options.queryKey[0]==='output-app'?snapshot:[],refetch:async()=>behavior.refresh?behavior.refresh(options.queryKey[0],app):({data:options.queryKey[0]==='assistant-status'?{initialized:true,enabled:true,app}:app})};}},
   '../api/real':{realApi:{updateAgent:async(id,patch)=>{modelRequests.push({id,patch});if(behavior.model)return behavior.model(patch,app,modelRequests.length);throw Error('Model update refused');}},requestJson:async(url,options)=>{requests.push({url,options});if(behavior.schedule)return behavior.schedule(JSON.parse(options.body),app,requests.length);throw Error('Workflow version changed');}},
   '../hooks/queries':{useWorkspacePreferences:()=>({data:{}})},
@@ -25,20 +25,20 @@ function fixture(pathname='/assistant',overrides={},behavior={}){
  return {nodes,dialog,button,requests,modelRequests,app};
 }
 for(const pathname of ['/assistant','/apps/speaker']){
- test(`${pathname}: settings has a linked title and keeps schedule/model failures inside the modal`,async()=>{
+ test(`${pathname}: settings has a linked title and keeps schedule/model recovery compact inside the modal`,async()=>{
   const f=fixture(pathname);f.button('Settings').props.onClick();
   const d=f.dialog();assert.equal(d.props.open,true);const title=f.nodes().find(n=>n.type==='DialogTitle');assert.equal(d.props['aria-labelledby'],title.props.id);assert.equal(title.props.children,'Settings');
   for(const [action,message] of [['Save schedule','Workflow version changed'],['Save model','Model update refused']]){
    f.button(action).props.onClick();
    // The UI callback intentionally returns void while act awaits the mutation.
    await new Promise(setImmediate);
-   const alerts=f.nodes().filter(n=>n.type==='Alert'&&n.props.children===message);
+   const alerts=f.nodes().filter(n=>n.type==='Typography'&&n.props.children===message);
    assert.equal(alerts.length,1,'One visible error, no hidden duplicate');
    const inside=[...function* walk(n){if(!n||typeof n!=='object')return;if(Array.isArray(n)){for(const c of n)yield* walk(c);}else if(n.props){yield n;yield* walk(n.props.children);}}(f.dialog())];
-   assert.ok(inside.some(n=>n.type==='Alert'&&n.props.children===message),'Error is inside the active modal');
+   assert.ok(inside.some(n=>n.type==='Typography'&&n.props.children===message),'Error is inside the active modal');
   }
   assert.equal(f.requests.length,1);assert.equal(JSON.parse(f.requests[0].options.body).expectedVersionId,'version');
-  f.dialog().props.onClose();assert.equal(f.dialog().props.open,false);assert.ok(f.nodes().some(n=>n.type==='Alert'&&n.props.children==='Model update refused'),'Failure remains visible after closing settings');
+  f.dialog().props.onClose();assert.equal(f.dialog().props.open,false);assert.ok(f.nodes().some(n=>n.type==='Typography'&&n.props.children==='Model update refused'),'Failure remains visible after closing settings');
  });
 }
 
@@ -117,7 +117,7 @@ for(const pathname of ['/assistant','/apps/speaker'])for(const section of ['mode
  }else{
   assert.equal(JSON.parse(f.requests[1].options.body).expectedSettingsRevision,'committed-revision');assert.equal(f.app.automatic,true);assert.equal(f.app.settingsRevision,'external-revision');
  }
- assert.ok(f.nodes().some(n=>n.type==='Alert'&&/changed/.test(n.props.children)),'The later edit remains protected by the original successful mutation result');
+ assert.ok(f.nodes().some(n=>n.type==='Typography'&&/changed/.test(n.props.children)),'The later edit remains protected by the original successful mutation result');
 });
 
 
@@ -143,4 +143,11 @@ for(const pathname of ['/assistant','/apps/speaker'])test(pathname+': deferred d
  releaseRefresh();await new Promise(setImmediate);
  assert.equal(status(),'Model saved');assert.equal(model().props.value,'saved-model');assert.equal(f.app.model,'saved-model');
  assert.equal(f.requests.length,0);assert.deepEqual(refreshes,[pathname==='/assistant'?'assistant-status':'output-app',pathname==='/assistant'?'assistant-status':'output-app']);
+});
+
+test('a confirmed settings write with failed readback stays saved and leaves read failures to the query owner',async()=>{
+ const f=fixture('/assistant',{}, {schedule:async(_input,app)=>({...app}),refresh:async()=>({error:new Error('Controlled readback failure')})});
+ f.button('Settings').props.onClick();f.nodes().find(n=>n.type==='Switch').props.onChange(null,false);f.button('Save schedule').props.onClick();await new Promise(setImmediate);
+ assert.equal(f.requests.length,1,'one explicit settings write');assert.ok(f.nodes().some(n=>n.type==='Typography'&&n.props.role==='status'&&n.props.children==='Changes saved. Current settings are still being checked.'),'confirmed write is not relabeled as a failed action');
+ assert.equal(f.nodes().filter(n=>n.type==='Typography'&&typeof n.props.children==='string'&&/Controlled readback failure|Changes saved, but/.test(n.props.children)).length,0,'readback does not become a duplicate string action banner');
 });

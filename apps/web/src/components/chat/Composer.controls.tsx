@@ -52,6 +52,7 @@ export function ComposerNotices({
   pastedTextBytes,
   error,
   attachmentError = false,
+  compactError = false,
   draftConflict,
   failedDraftContents,
   onShowPastedText,
@@ -68,6 +69,7 @@ export function ComposerNotices({
   pastedTextBytes: number;
   error?: string;
   attachmentError?: boolean;
+  compactError?: boolean;
   draftConflict?: ConversationDraftConflictDto;
   failedDraftContents: Array<{ id: string; name: string }>;
   onShowPastedText(): void;
@@ -122,7 +124,7 @@ export function ComposerNotices({
           </IconButton>
         </Paper>
       ) : null}
-      {error ? (
+      {error&&compactError ? <Box component="details" sx={{fontSize:".8125rem",mb:1}}><summary>Message needs attention</summary><Typography variant="caption">{error}</Typography><Button size="small" onClick={onClearError}>Close</Button></Box> : error ? (
         <Alert severity="error" sx={{ mb: 1 }} onClose={onClearError}>
           {attachmentError ? error : `Message not sent. ${error}`}
         </Alert>

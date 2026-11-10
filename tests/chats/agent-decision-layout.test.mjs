@@ -138,7 +138,7 @@ test('Agent detail reserves each visible status notice before its bounded conten
  function walk(node){if(ts.isPropertyAssignment(node)&&node.name.getText(ast)==='gridTemplateRows'&&node.initializer.getText(ast).includes('activeBrowser'))matches.push(node.initializer);ts.forEachChild(node,walk)}walk(ast);assert.equal(matches.length,1);
  for(const activeBrowser of [undefined,{status:'opening'}])for(const detailRefreshFailed of [false,true])for(const pause of [undefined,{reason:'user'},{reason:'access_restricted'}]){
   const rows=vm.runInNewContext(matches[0].getText(ast),{activeBrowser,detailRefreshFailed,pause}),before=rows.split('minmax(0, 1fr)')[0].trim().split(/\s+/);
-  assert.equal(before.length,1+Number(Boolean(activeBrowser||detailRefreshFailed))+Number(pause?.reason==='access_restricted'),'Only the content panel may take the flexible row');assert(before.every(row=>row==='auto'));assert.match(rows,/minmax\(0, 1fr\) auto$/);
+  assert.equal(before.length,2+Number(Boolean(activeBrowser))+Number(pause?.reason==='access_restricted'),'Only the content panel may take the flexible row');assert(before.every(row=>row==='auto'));assert.match(rows,/minmax\(0, 1fr\) auto$/);
  }
 });
 

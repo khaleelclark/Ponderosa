@@ -1,3 +1,5 @@
+import {WorkspaceQueryError,WorkspaceQueryErrors} from "./components/WorkspaceQueryError";
+import type {WorkspaceReadIssue} from "./workspaceAvailability";
 import {useInitializeAssistant} from './components/AssistantEntry';
 import {AssistantSurface} from './AssistantSurface';
 import { useEffect } from "react";
@@ -51,6 +53,7 @@ interface WorkspaceRouteOutletProps {
   preferencesLoaded: boolean;
   colorMode: ColorMode;
   projectBrowserRequest?: ProjectBrowserRequest;
+  workspaceReads?:WorkspaceReadIssue[];
   loadError: boolean;
   loadErrorDetails?: string;
   refreshError: boolean;
@@ -93,10 +96,9 @@ export function WorkspaceRouteOutlet({
   preferencesLoaded,
   colorMode,
   projectBrowserRequest,
+  workspaceReads=[],
   loadError,
   loadErrorDetails,
-  refreshError,
-  refreshErrorDetails,
   onRetryLoad,
   onNavigate,
   onPreferences,
@@ -123,36 +125,17 @@ export function WorkspaceRouteOutlet({
         maxHeight: "100%",
         minHeight: 0,
         minWidth: 0,
-        display: "grid",
-        gridTemplateRows: refreshError && !loadError
-          ? "auto minmax(0, 1fr)"
-          : "minmax(0, 1fr)",
+        display: "flex", flexDirection:"column",
       }}
     >
-      {refreshError && !loadError ? (
-        <Alert
-          severity="warning"
-          action={<Button color="inherit" size="small" onClick={onRetryLoad}>Retry</Button>}
-          sx={{ m: 1 }}
-        >
-          Some workspace data could not be refreshed. {refreshErrorDetails} The last loaded data remains available.
-        </Alert>
-      ) : null}
-      <Box sx={{ minHeight: 0, minWidth: 0, display: "flex", flexDirection:"column" }}>
+      <WorkspaceQueryErrors reads={workspaceReads} reportOnly={loadError&&route.kind!=="assistant"}/>
+      <Box sx={{ flex:1,minHeight: 0, minWidth: 0, display: "flex", flexDirection:"column" }}>
       <Box sx={{flex:1,minHeight:0,display:"grid"}}>
-      {loadError ? (
+      {loadError && route.kind!=="assistant" ? (
         <Box sx={{ p: 2 }}>
           <MobileNavigationButton />
-          <Alert
-            severity="error"
-            action={
-              <Button color="inherit" size="small" onClick={onRetryLoad}>
-                Retry
-              </Button>
-            }
-          >
-            Ponderosa could not load its workspace data. {loadErrorDetails || "Check the server connection and try again."}
-          </Alert>
+          {workspaceReads.some(read=>read.error)?<WorkspaceQueryError initial read={workspaceReads.find(read=>read.error)!}/>:<Alert severity="error" action={<Button onClick={onRetryLoad}>Retry</Button>}>Ponderosa could not load its workspace data. {loadErrorDetails}</Alert>}
+
         </Box>
       ) : routeWaitsForWorkspacePreferences(route, preferencesLoaded) ? (
         <LoadingState resource="settings" variant="route" />

@@ -27,7 +27,9 @@ import { RecoverableLazyRoute } from "./RecoverableLazyRoute";
 import { ConversationView } from "./ConversationView";
 import { useProjectBrowser, type ProjectBrowserRequest } from "./ProjectBrowserContext";
 import { WorkspaceErrorBoundary } from "./WorkspaceErrorBoundary";
-import { useReportWorkspaceRefresh } from "./WorkspaceRefreshContext";
+import { useReportWorkspaceRead } from "./WorkspaceRefreshContext";
+import {WorkspaceQueryError,WorkspaceQueryErrors} from "./WorkspaceQueryError";
+import {workspaceRead} from "../workspaceAvailability";
 
 const loadAgentDetail = () => import("./AgentDetail").then(module => ({ default: module.AgentDetail }));
 
@@ -204,49 +206,20 @@ export function ProjectShell({
     (Boolean(routeAgentId) && agentsQuery.isSuccess && !agents.some(agent => agent.id === routeAgentId)) ||
     (Boolean(routeConversationId) && conversationsQuery.isSuccess && !conversations.some(conversation => conversation.id === routeConversationId));
 
-  const retainedResourceError = (
-    conversationsFailure === "refresh" ||
-    agentsFailure === "refresh"
-  );
-  useReportWorkspaceRefresh(retainedResourceError ? `${[conversationsFailure === "refresh" ? "Chats" : undefined, agentsFailure === "refresh" ? "Agents" : undefined].filter(Boolean).join(" and ")} could not refresh. The last loaded data remains available.` : undefined, () => {
-    if (conversationsFailure === "refresh") void conversationsQuery.refetch();
-    if (agentsFailure === "refresh") void agentsQuery.refetch();
-  });
+  useReportWorkspaceRead(workspaceRead(`project:${project.id}`,"Chats",conversationsQuery));
+  useReportWorkspaceRead(workspaceRead(`project:${project.id}`,"Agents",agentsQuery));
 
 
   if (routeResourceLoading) return <LinearProgress aria-label="Loading requested resource" />;
   if (routeResourceError) {
-    return <Box sx={{ p: 2 }}><Alert severity="error" action={<Button onClick={() => {
-      if (routeAgentId) void agentsQuery.refetch();
-      if (routeConversationId) void conversationsQuery.refetch();
-    }}>Retry</Button>}>The requested resource could not be checked.</Alert></Box>;
+    return <WorkspaceQueryError initial read={workspaceRead(`project:${project.id}`,routeAgentId?"Agents":"Chats",routeAgentId?agentsQuery:conversationsQuery)}/>;
   }
   if (routeResourceUnavailable) {
     return <Box sx={{ p: 2 }}><Alert severity="warning" action={<Button onClick={() => navigate({ kind: "home" })}>Go Home</Button>}>This resource is unavailable in this Project.</Alert></Box>;
   }
 
   if (conversationsFailure === "initial" || agentsFailure === "initial") {
-    return (
-      <Box sx={{ p: 2 }}>
-        <Alert
-          severity="error"
-          action={
-            <Button
-              color="inherit"
-              size="small"
-              onClick={() => {
-                void conversationsQuery.refetch();
-                void agentsQuery.refetch();
-              }}
-            >
-              Retry
-            </Button>
-          }
-        >
-          This project could not be loaded. Check the server connection and try again.
-        </Alert>
-      </Box>
-    );
+    return <WorkspaceQueryError initial read={workspaceRead(`project:${project.id}`,conversationsQuery.error?"Chats":"Agents",conversationsQuery.error?conversationsQuery:agentsQuery)}/>;
   }
 
   let main: JSX.Element;
@@ -411,15 +384,17 @@ onClose: () => navigate(route.conversationId ? { kind: "conversation", projectId
   // and its title/engine chat-creation form must never become a second flow.
   if (isMobile) {
     return (
-      <Box sx={{ width: "100%", maxWidth: "100%", height: "100%", maxHeight: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid", gridTemplateRows: "auto minmax(0, 1fr)" }}>
+      <Box sx={{ width: "100%", maxWidth: "100%", height: "100%", maxHeight: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid", gridTemplateRows: "auto auto minmax(0, 1fr)" }}>
         {loading ? <LinearProgress /> : <Box />}
+        <Box><WorkspaceQueryErrors reads={[workspaceRead(`project:${project.id}`,"Chats",conversationsQuery),workspaceRead(`project:${project.id}`,"Agents",agentsQuery)]}/></Box>
         <Box sx={{ height: "100%", minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "minmax(0, 1fr)" }}><WorkspaceErrorBoundary resetKey={routeToPath(route)} title="This Project view could not be displayed.">{main}</WorkspaceErrorBoundary></Box>
       </Box>
     );
   }
 
   return (
-    <Box sx={{ width: "100%", maxWidth: "100%", height: "100%", maxHeight: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid", gridTemplateRows: "minmax(0, 1fr)" }}>
+    <Box sx={{ width: "100%", maxWidth: "100%", height: "100%", maxHeight: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid", gridTemplateRows: "auto minmax(0, 1fr)" }}>
+      <Box><WorkspaceQueryErrors reads={[workspaceRead(`project:${project.id}`,"Chats",conversationsQuery),workspaceRead(`project:${project.id}`,"Agents",agentsQuery)]}/></Box>
       <Box component="section" aria-label="Project workspace" sx={{ height: "100%", minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "minmax(0, 1fr)", bgcolor: "background.default" }}><WorkspaceErrorBoundary resetKey={routeToPath(route)} title="This Project view could not be displayed.">{main}</WorkspaceErrorBoundary></Box>
     </Box>
   );

@@ -11,6 +11,7 @@ function module(text,imports={}){
 }
 const queryKeys=module(source('queryKeys.ts'),{'./agentHistoryPagination.js':{AGENT_DETAIL_PAGE_SIZE:100}}).queryKeys;
 const retained=module(source('retainedData.ts'));
+const availability=module(source('workspaceAvailability.ts'),{'./api/types':module(source('api/types.ts'))});
 const registry=module(source('routeRegistry.ts'),{'./api/productScope.js':{productWorkspacePath:path=>path}});
 function fixture(){
  const client=new QueryClient({defaultOptions:{queries:{staleTime:15000,retry:false,gcTime:Infinity}}}),calls=[],pending=[];
@@ -49,7 +50,8 @@ function shell(f,route){
   '../conversationEngine':{enginesWithModelCatalog:engines=>engines},
   '../retainedData':retained,'../routeRegistry':registry,'../queryKeys':{queryKeys},
   './ProjectBrowserContext':{useProjectBrowser:()=>({open(){}})},
-  './WorkspaceRefreshContext':{useReportWorkspaceRefresh:(message)=>{f.refreshMessage=message;}},
+  '../workspaceAvailability':availability,
+  './WorkspaceRefreshContext':{useReportWorkspaceRead:read=>{if(read.error)f.refreshMessage=read.error.message;}},
   './ConversationView':{ConversationView:'ConversationView'},'./RecoverableLazyRoute':{RecoverableLazyRoute:'RecoverableLazyRoute'},'../api/productScope':productScope,
   '../routing':routing,'../workspaceFileReturn':module(source('workspaceFileReturn.ts')),
   '../projectShellLoader':f.panelLoaders??=(module(source('projectShellLoader.ts'))),
@@ -99,7 +101,7 @@ test('actual ProjectShell keeps pending, failed, foreign and deleted membership 
    const tree=shell(f,route);
    assert.equal(contains(tree,'ConversationView'),kind==='valid','Only verified membership may render the Chat: '+kind);
    if(kind==='pending')assert(contains(tree,'LinearProgress'));
-   if(kind==='failure')assert.match(text(tree),/requested resource could not be checked/);
+   if(kind==='failure')assert.equal(tree.props.initial,true);
    if(kind==='foreign'||kind==='deleted')assert.match(text(tree),/unavailable in this Project/);
   }finally{f.close();}
  }
@@ -109,7 +111,7 @@ test('a failed warm refresh preserves verified membership data and its existing 
   const first=f.warm(f.client,'chat-a','project-a');f.resolve('tail',{conversation:{id:'chat-a'},messages:[]});f.resolve('conversations',[{id:'chat-a'}]);f.resolve('agents',[]);await first;
   await f.client.invalidateQueries({queryKey:queryKeys.conversations.project('project-a'),refetchType:'none'});
   const refresh=f.warm(f.client,'chat-a','project-a');f.pending.filter(p=>p.kind==='conversations').at(-1).reject(Error('Exact refresh refused'));await refresh;
-  const tree=shell(f,{kind:'conversation',projectId:'project-a',conversationId:'chat-a'});assert(contains(tree,'ConversationView'));assert.match(f.refreshMessage,/could not refresh/);
+  const tree=shell(f,{kind:'conversation',projectId:'project-a',conversationId:'chat-a'});assert(contains(tree,'ConversationView'));assert.equal(f.refreshMessage,'Exact refresh refused');
   assert.equal(f.client.getQueryData(queryKeys.conversations.project('project-a'))[0].id,'chat-a');assert.equal(f.client.getQueryState(queryKeys.conversations.project('project-a')).error.message,'Exact refresh refused');
  }finally{f.close();}
 });
@@ -123,14 +125,14 @@ const openingEffect=arrow('components/BranchesView.tsx',text=>text.includes('let
 const realTransportText=source('api/real.ts'),transportAst=ts.createSourceFile('real.ts',realTransportText,ts.ScriptTarget.Latest,true);
 const transportFunctions=['backgroundRead','coalesceBackgroundRead','decodeHttpError','requestJson'].map(name=>transportAst.statements.find(n=>ts.isFunctionDeclaration(n)&&n.name?.text===name).getText(transportAst)).join('\n');
 function realRequestTransport(fetch){
- const env={exports:{},Headers,Map,JSON,Promise,fetch,productApiPath:path=>path,waitForBackgroundCooldown:()=>Promise.resolve(),ApiRequestError:module(source('api/types.ts')).ApiRequestError,parseRetryAfter:()=>undefined,noteBackgroundRateLimit:()=>assert.fail('403 does not set rate cooldown'),API_BASE:'',pendingBackgroundReads:new Map()};
+ const env={exports:{},Error,ApiTransportError:module(source('api/types.ts')).ApiTransportError,Headers,Map,JSON,Promise,fetch,productApiPath:path=>path,waitForBackgroundCooldown:()=>Promise.resolve(),ApiRequestError:module(source('api/types.ts')).ApiRequestError,parseRetryAfter:()=>undefined,noteBackgroundRateLimit:()=>assert.fail('403 does not set rate cooldown'),API_BASE:'',pendingBackgroundReads:new Map()};
  vm.runInNewContext(ts.transpileModule(transportFunctions,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText,env);return env.exports.requestJson;
 }
 function openingFixture(options={}){
  const f=fixture(),requests=[],pending=[],errors=[],state={draft:{},baseline:0},route={branchId:'branch-a',tab:'chats',chatId:'chat-a',...options.route};
  const requestJson=realRequestTransport((path,init)=>{requests.push(path);return new Promise((resolve,reject)=>{const row={path,signal:init?.signal,respond:resolve,resolve:value=>resolve(new Response(JSON.stringify(value),{status:200,headers:{'content-type':'application/json'}})),reject};pending.push(row);init?.signal?.addEventListener('abort',()=>{row.aborted=true;reject(init.signal.reason);},{once:true});});});
  const env={QueryObserver,route,draft:state.draft,selection:{current:0},routeOwner:{current:route},client:f.client,realApi:f.api,queryKeys,prefetchConversationWorkspace:f.warm,requestJson,
-  navigate(next){env.routeOwner.current=next;},setLoading(){},setOpeningLink(){},setDeployedUpdate(){},setError:message=>errors.push(message),setInput(){},setRunOpen(){},run:{reset(){}},setOccurrenceKey(){},createClientId:()=> 'synthetic-id',currentDraft:{current:{}},draftRevision:{current:''},pendingAdvanced:{current:false},
+  navigate(next){env.routeOwner.current=next;},setLoading(){},setOpeningLink(){},setDeployedUpdate(){},setError:message=>errors.push(message),setWorkflowReadError:value=>errors.push(value.error.message),setInput(){},setRunOpen(){},run:{reset(){}},setOccurrenceKey(){},createClientId:()=> 'synthetic-id',currentDraft:{current:{}},draftRevision:{current:''},pendingAdvanced:{current:false},
   resetWorkflowBaseline(next){state.draft=next;state.baseline++;},newDefinition:()=>({steps:[]}),markWorkspaceResourceUsed(){},encodeURIComponent};
  if(options.cache)f.client.setQueryData(['branch-chat-owner','chat-a'],options.cache);
  const code=ts.transpileModule(declaration('readWorkflowDraft')+'\n'+declaration('select')+'\nconst cleanup=('+openingEffect+')();',{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.None}}).outputText;

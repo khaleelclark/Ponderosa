@@ -1,3 +1,5 @@
+import type {WorkspaceReadIssue} from "../workspaceAvailability";
+import {WorkspaceQueryError} from "./WorkspaceQueryError";
 import { Alert, Button } from "@mui/material";
 import { providerCommandResultSx } from "../providerCommandResult";
 import type {
@@ -13,6 +15,7 @@ import { AgentProviderUsageCard } from "./ProviderUsageCenter";
 interface AgentDetailComposerProps {
   visible: boolean;
   queuedMessageNotice?: string;
+  queuedRead?: WorkspaceReadIssue;
   queuedMessageFailure?: { error: Error; retry(): void };
   cancellationError?: string;
   providerUsageState?: ProviderUsageStateDto;
@@ -33,6 +36,7 @@ interface AgentDetailComposerProps {
 export function AgentDetailComposer({
   visible,
   queuedMessageNotice,
+  queuedRead,
   queuedMessageFailure,
   cancellationError,
   providerUsageState,
@@ -54,15 +58,8 @@ export function AgentDetailComposer({
           {cancellationError}
         </Alert>
       ) : null}
-      {queuedMessageFailure ? (
-        <Alert
-          severity="error"
-          sx={{ mx: 1.5, mt: 1 }}
-          action={<Button color="inherit" size="small" onClick={queuedMessageFailure.retry}>Retry</Button>}
-        >
-          Queued messages could not be updated. {queuedMessageFailure.error.message}
-        </Alert>
-      ) : null}
+      {queuedRead&&<WorkspaceQueryError read={queuedRead}/>}
+      {queuedMessageFailure&&<details><summary>Queue action needs attention</summary>{queuedMessageFailure.error.message}<Button onClick={queuedMessageFailure.retry}>Retry action</Button></details>}
       {providerUsageState ? (
         <AgentProviderUsageCard
           agentId={agentId}

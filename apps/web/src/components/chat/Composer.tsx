@@ -1,3 +1,4 @@
+import {useMutationNotification} from "../MutationNotifications";
 import {productApiPath} from "../../api/productScope.js";
 import {
   Box,
@@ -366,7 +367,10 @@ export function Composer({
     staleTime: 5 * 60_000,
   });
   const assetLimits = assetLimitsQuery.data;
-  const [sendError, setSendError] = useState<string>();
+  const notify=useMutationNotification();
+  const [sendError, writeSendError] = useState<string>();
+  const [submissionError,setSubmissionError]=useState(false);
+  const setSendError=(value:string|undefined,submission=false)=>{writeSendError(value);setSubmissionError(submission);};
   const [preparedRetry, setPreparedRetry] = useState<{
     action: "send" | "queue";
     submissionIntentKey?: string;
@@ -2351,6 +2355,7 @@ export function Composer({
       loadedUnderLock = true;
       if (item.status === "accepted") {
         await persist(item.pending, true);
+        notify({key:`submit:${item.scope}:${item.pending.idempotencyKey}`,message:"",dismiss:true});
         if (item.scope.startsWith("local:")) removeCapturedSubmission(item.pending.idempotencyKey);
         return;
       }
@@ -2402,6 +2407,7 @@ export function Composer({
       const receipt = result as { communicationEventId?: string; message?: { communicationEventId?: string }; deliveryId?: string; recipients?: Array<{ deliveryId?: string }>; deliveryIds?: string[] } | undefined;
       if (outgoingId) outgoing?.accepted(outgoingId, receipt?.communicationEventId ?? receipt?.message?.communicationEventId);
       const acceptedDeliveryIds = receipt?.deliveryIds ?? receipt?.recipients?.flatMap(recipient => recipient.deliveryId ? [recipient.deliveryId] : []) ?? (receipt?.deliveryId ? [receipt.deliveryId] : []);
+      notify({key:`submit:${item.scope}:${item.pending.idempotencyKey}`,message:"",dismiss:true});
       item = { ...item, status: "accepted", acceptedDeliveryIds, error: undefined };
       saveCapturedSubmission(item);
       // The server receipt owns accepted/queued state. Retire only this browser
@@ -2423,6 +2429,7 @@ export function Composer({
         ? "This message was saved. Retry to finish clearing its recovery record."
         : error instanceof Error ? error.message : "Acceptance could not be confirmed. Retry this captured message." };
       try { saveCapturedSubmission(item); } catch { /* Existing captured bytes remain recoverable. */ }
+      notify({key:`submit:${item.scope}:${item.pending.idempotencyKey}`,severity:"error",message:accepted?"Message saved; recovery cleanup needs attention.":"Message acceptance could not be confirmed. Your captured message remains in recovery; check it before retrying."});
     }).catch(error => {
       setSendError(error instanceof Error ? error.message : "Captured message recovery is unavailable.");
     }).finally(() => { if (outgoingId) outgoing?.finish(outgoingId); });
@@ -3070,6 +3077,7 @@ export function Composer({
         }
         if (submissionMayClearDraft && scopeStillActive) setCaret(0);
       })
+      .then(()=>notify({key:`submit:${submittedDraftScope??draftStorageKey??"composer"}`,message:"",dismiss:true}))
       .catch(async (error: unknown) => {
         if (!submittedScopeStillActive()) return;
         if (error instanceof ApiRequestError && pendingSubmissionRef.current &&
@@ -3098,7 +3106,9 @@ export function Composer({
           error instanceof ApiRequestError && error.status === 429
             ? `Message not sent. Your draft and attachments remain here; retry in about ${Math.ceil((error.retryAfterMs ?? 1_000) / 1_000)} seconds.`
             : error instanceof Error ? error.message : "Upload failed; try again.",
+          true,
         );
+        notify({key:`submit:${submittedDraftScope??draftStorageKey??"composer"}`,severity:"error",message:"Message could not be confirmed. Your draft and attachments remain available; check before retrying."});
       })
       .finally(() => {
         if (outgoingId) outgoing?.finish(outgoingId);
@@ -3225,6 +3235,7 @@ export function Composer({
         pastedText={draftMutationLocked ? undefined : pastedText}
         pastedTextBytes={pastedText ? utf8ByteLength(pastedText) : 0}
         error={attachments.error ?? sendError}
+        compactError={!attachments.error&&submissionError}
         attachmentError={Boolean(attachments.error)}
         draftConflict={draftConflict?.conflict}
         failedDraftContents={failedDraftContents}

@@ -289,14 +289,7 @@ export function useAgentMessageController({
     cancelQueuedMessage,
     editQueuedMessage,
     queuedMessagesQuery,
-    queuedMessageFailure: queuedMessageFailure ?? (queuedMessagesQuery.error
-      ? {
-          error: queuedMessagesQuery.error instanceof Error
-            ? queuedMessagesQuery.error
-            : new Error(String(queuedMessagesQuery.error)),
-          retry: () => { void queuedMessagesQuery.refetch(); },
-        }
-      : undefined),
+    queuedMessageFailure,
     sendMessage,
     steerQueuedMessage,
     submitAgentMessage,

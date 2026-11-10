@@ -1,3 +1,5 @@
+import {WorkspaceQueryError,WorkspaceQueryErrors} from "../WorkspaceQueryError";
+import {workspaceRead} from "../../workspaceAvailability";
 import {OutputAgentDesignation} from '../OutputAgentDesignation';
 import {markWorkspaceResourceUsed} from "../../workspaceRecency";
 import {normalizeResetPages,uniqueBy} from "../../collections";
@@ -60,6 +62,7 @@ export function BranchChats({branchId,engines,executionId,branchRoute,onNavigate
  const preferences=useWorkspacePreferences(),preferenceWriter=useWorkspacePreferencesWriter();
  useEffect(()=>{if(!branchRoute.creationKey&&!routeAgentId&&!chatId&&chats.data?.length===1){const c=chats.data[0]!;openChat(c.id,c.projectId,true)}},[chatId,chats.data,branchRoute.creationKey,routeAgentId]);
  useEffect(()=>{const context=owner.data,targetExecution=context?.executionId??undefined;if(!branchRoute.creationKey&&chatId&&context?.branchId&&(context.branchId!==branchId||targetExecution!==(executionId??undefined)||branchRoute.chatId!==context.id))onNavigate({branchId:context.branchId,tab:'chats',executionId:targetExecution,chatId:context.id,workspace:route?.projectId===context.projectId?route:{kind:'conversation',projectId:context.projectId,conversationId:context.id}},true)},[branchId,chatId,executionId,owner.data,branchRoute.chatId,branchRoute.creationKey,route]);
+ const missingRead=routeAgentId&&!routedAgent.data?workspaceRead(`agent:${routeAgentId}`,"Agent",routedAgent,false):chatId&&!chat?workspaceRead(`chat:${chatId}`,"Chat",owner,false):chat&&!project.data?workspaceRead(`project:${chat.projectId}`,"Project",project,false):chat&&!preferences.data?workspaceRead("workspace","Preferences",preferences,false):undefined;
  const creationOwner={product:'branches' as const,branchId};
  const creationAttempts=readCreationAttempts();
  const pendingAttempt=creationAttempts.find(item=>isOrdinaryPendingChatAttempt(item,creationOwner));
@@ -109,17 +112,13 @@ export function BranchChats({branchId,engines,executionId,branchRoute,onNavigate
    {!executionId&&<Button size="small" startIcon={<AddIcon/>} disabled={Boolean(creationKey)} onClick={startChat} sx={{flexShrink:0,whiteSpace:'nowrap'}}>New Chat</Button>}
    {executionId&&<Button size="small" onClick={()=>onNavigate({...branchRoute,executionId:undefined,chatId:undefined,workspace:undefined})}>Persistent Chats</Button>}{notificationAction}
   </Stack>}
-  {searchText&&searches.error&&<Alert severity="error" action={<Button onClick={()=>void searches.refetch()}>Retry search</Button>}>Chats could not be searched. {searches.error.message}</Alert>}
+  {searchText&&<WorkspaceQueryError read={workspaceRead(`branch:${branchId}:search:${searchText}`,"Chat search",searches)}/>}
   {creationKey&&<NewChatComposer key={creationKey} creationKey={creationKey} owner={creationOwner} inline engines={engines} enginesLoaded={enginesLoaded} onCreated={created} onCancel={()=>onNavigate({...branchRoute,creationKey:undefined},true)} onConfigureProvider={()=>onNavigate({...branchRoute,global:'providers'})}/>}
   {!creationKey&&creationAllowed&&pendingAttempt&&<Button onClick={startChat}>Retry opening Chat</Button>}
   {!creationKey&&creationAllowed&&pendingImportAttempts.length>0&&<ChatCreationRecovery key={pendingImportAttempts.map(item=>item.key).join(':')} owner={creationOwner} importOnly onCreated={(projectId,conversationId)=>{void client.invalidateQueries({queryKey:['branch-chats',branchId]});openChat(conversationId,projectId);}}/>}
-  {routedAgent.error&&<Alert severity="error" action={<Button onClick={()=>void routedAgent.refetch()}>Retry Agent</Button>}>The linked Agent is unavailable in Branches.</Alert>}
+  <WorkspaceQueryErrors reportOnly={Boolean(missingRead?.error)} reads={[workspaceRead(`agent:${routeAgentId}`,"Agent",routedAgent),workspaceRead(`branch:${branchId}`,"Unread status",unread),workspaceRead(`branch:${branchId}`,"Chats",chats),workspaceRead(`chat:${chatId}`,"Chat",owner,Boolean(chat)),workspaceRead(`project:${chat?.projectId}`,"Project",project),workspaceRead("workspace","Preferences",preferences)]}/>
   {error&&<Alert severity="error" onClose={()=>setError('')}>{error}</Alert>}
-  {unread.error&&<Alert severity="error" action={<Button onClick={()=>void unread.refetch()}>Retry unread status</Button>}>Unread status could not be loaded.</Alert>}
-  {chats.error&&<Alert severity="error" action={<Button onClick={()=>void chats.refetch()}>Retry Chats</Button>}>Chats could not be loaded. {chats.error.message}</Alert>}
-  {chatId&&owner.error&&!listedChat&&<Alert severity="error" action={<Button onClick={()=>setChatId('')}>Choose another Chat</Button>}>This Chat is unavailable or no longer belongs to a Branch.</Alert>}
-  {chat&&project.error&&<Alert severity="error" action={<Button onClick={()=>void project.refetch()}>Retry Chat workspace</Button>}>The Chat workspace could not be loaded. {project.error.message}</Alert>}
-  {chat&&preferences.error&&<Alert severity="error" action={<Button onClick={()=>void preferences.refetch()}>Retry preferences</Button>}>Workspace preferences could not be loaded. {preferences.error.message}</Alert>}
+  {missingRead&&Boolean(missingRead.error)&&<WorkspaceQueryError initial read={missingRead}/>}
   {chats.isPending&&<Typography>Loading Chats…</Typography>}{chatId&&owner.isPending&&!listedChat&&<Typography>Locating Chat…</Typography>}
   {chats.isSuccess&&!chats.data?.length&&<Typography color="text.secondary">{executionId?'No temporary Chats. See Persistent Chats for standing Agents.':'No persistent Chats. Script-only workflows need none.'}</Typography>}
   {chats.isSuccess&&(chats.data?.length??0)>1&&!chatId&&<Typography color="text.secondary">Choose a Chat to inspect or work with its Agents.</Typography>}

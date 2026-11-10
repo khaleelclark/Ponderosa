@@ -1,3 +1,5 @@
+import {WorkspaceQueryError} from "./WorkspaceQueryError";
+import {workspaceRead} from "../workspaceAvailability";
 import { loadAgentWorkInspector } from "../projectShellLoader";
 import {useWorkspaceReadOnly} from "./WorkspaceReadOnlyContext";
 import {
@@ -686,27 +688,7 @@ export function ConversationView({
     );
   }
 
-  if (detailQuery.isError && !detailQuery.data) {
-    return (
-      <Box sx={{ p: 2 }}>
-        <Alert
-          severity="error"
-          action={
-            <Button
-              color="inherit"
-              size="small"
-              onClick={() => void detailQuery.refetch()}
-            >
-              Retry
-            </Button>
-          }
-        >
-          This Chat could not be loaded. Check the server connection and
-          try again.
-        </Alert>
-      </Box>
-    );
-  }
+  if (detailQuery.isError && !detailQuery.data) return <WorkspaceQueryError initial read={workspaceRead(`chat:${conversationId}`,"Chat",detailQuery)}/>;
 
   if (!detailQuery.data || !conversation) {
     return (
@@ -738,7 +720,6 @@ export function ConversationView({
     collaborationQuery.isPending &&
     collaborationMessages.length === 0 &&
     operationalEvents.length === 0;
-  const detailRefreshFailed = detailQuery.isError && detailQuery.data !== undefined;
 
   const transcriptTitle =
     activeView === "collaboration"
@@ -899,9 +880,7 @@ export function ConversationView({
         minHeight: 0,
         minWidth: 0,
         display: "grid",
-        gridTemplateRows: detailRefreshFailed
-          ? "auto auto minmax(0, 1fr) auto"
-          : "auto minmax(0, 1fr) auto",
+        gridTemplateRows: "auto minmax(0, 1fr) auto",
       }}
     >
       <ConversationHeader
@@ -927,15 +906,7 @@ export function ConversationView({
       />
 
       {contextSettingsOpen ? <ChatContextSettings key={conversation.id} chat={conversation} open onClose={()=>setContextSettingsOpen(false)} /> : null}
-      {detailRefreshFailed ? (
-        <Alert
-          severity="warning"
-          action={<Button color="inherit" size="small" onClick={() => void detailQuery.refetch()}>Retry</Button>}
-          sx={{ m: 1 }}
-        >
-          This Chat could not be refreshed. The last loaded messages remain available.
-        </Alert>
-      ) : null}
+
 
       <Box
         sx={{
@@ -981,6 +952,7 @@ export function ConversationView({
             }}
             beforeMessages={
               <>
+                <WorkspaceQueryError read={workspaceRead(`chat:${conversationId}`,"Chat",detailQuery)}/>
                 {olderError ? (
                   <Alert
                     severity="error"
@@ -1235,17 +1207,9 @@ onClose: () => setAgentWorkOpen(false)}} />
             Cancellation failed. {cancelOperationError.message}
           </Alert>
         ) : null}
-        {queuedMessageFailure ? (
-          <Alert
-            severity="error"
-            sx={{ mx: 1.5, mt: 1 }}
-            action={<Button color="inherit" size="small" onClick={queuedMessageFailure.retry}>
-              Retry
-            </Button>}
-          >
-            Queued messages could not be updated. {queuedMessageFailure.error.message}
-          </Alert>
-        ) : null}
+        <WorkspaceQueryError read={workspaceRead(`chat:${conversationId}`,"Queued messages",queuedMessagesQuery)}/>
+        {queuedMessageFailure&&<details><summary>Queue action needs attention</summary>{queuedMessageFailure.error.message}<Button onClick={queuedMessageFailure.retry}>Retry action</Button></details>}
+
         {activeView === "main" ? (
           <QueuedMessageTray
             messages={reconciledQueuedMessages.queuedMessages}

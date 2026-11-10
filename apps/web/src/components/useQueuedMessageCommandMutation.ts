@@ -1,3 +1,4 @@
+import {useMutationNotification} from "./MutationNotifications";
 import { useMutation } from "@tanstack/react-query";
 import type { MutableRefObject } from "react";
 import { createClientId } from "../clientId";
@@ -20,12 +21,20 @@ export function useQueuedMessageCommandMutation<Variables extends string | { del
   onFailure(failure?: QueuedMessageCommandFailure): void;
   onSuccess?(response: Response, variables: Variables): void;
 }) {
+  const notify=useMutationNotification();
   const mutation = useMutation({
     mutationFn: (variables: Variables) => {
       const command = input(variables);
       return runQueuedMessageCommand(attempts.current, command,
         () => command.command === "edit" ? createClientId() : `${command.command}:${command.deliveryId}`,
-        request => dispatch(variables, request));
+        request => {
+          const key=JSON.stringify([command.command,command.deliveryId,request.idempotencyKey]);
+          return dispatch(variables, request).then(response=>{
+            notify({key,message:"",dismiss:true});return response;
+          },error=>{
+            notify({key,severity:"error",message:"Queue action could not be confirmed. Review the queued message before retrying."});throw error;
+          });
+        });
     },
     onMutate: () => onFailure(undefined),
     onSuccess: async (response, variables) => {

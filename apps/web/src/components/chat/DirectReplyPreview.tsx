@@ -1,7 +1,8 @@
+import {WorkspaceQueryError} from "../WorkspaceQueryError";
 import {matchesRequestTextReplyRoute,matchesTextReplyRoute,type ReplySource} from './textReplyRoute';
-import {Alert,Box} from '@mui/material';
+import {Box} from '@mui/material';
 import {TERMINAL_REQUEST_STATES,type CoordinationRequestState,type VoiceReplySnapshot,type VoiceReplyStatus} from '@ponderosa/core';
-import {useEffect,useState} from 'react';
+import {useEffect,useRef,useState} from 'react';
 import {api} from '../../api';
 
 /** Provisional host-authorized human reply; never authored Communication or audio. */
@@ -12,6 +13,8 @@ type PreviewProps={agentId:string;projectId:string}&(
 export function DirectReplyPreview({sent,request,agentId,messages=[],projectId,peerAgentId}:PreviewProps):JSX.Element|null {
  const [reply,setReply]=useState<VoiceReplySnapshot>();
  const [error,setError]=useState('');
+ const [read,setRead]=useState<{error?:unknown;success:boolean}>({success:false});
+ const refreshRef=useRef<()=>Promise<void>>(async()=>{});
  const messageId=request?.id??sent!.communicationEventId??sent!.id;
  const conversationId=request?.conversationId??sent!.conversationId;
  const receipt=sent?.deliveryReceipts?.find(item=>item.targetAgentId===agentId);
@@ -21,7 +24,7 @@ export function DirectReplyPreview({sent,request,agentId,messages=[],projectId,p
  const peerSenderId=sender?.kind==='agent'?sender.agentId:undefined;
  const canonical=request?TERMINAL_REQUEST_STATES.has(request.state):Boolean(reply?.runId??executionId)&&messages.some(item=>item.role==='assistant'&&item.communicationIntent===sent?.communicationIntent&&item.authorAgentId===agentId&&item.executionId===(reply?.runId??executionId)&&(replyIntent!=='collaboration'||(item.collaborationRecipients?.length===1&&item.collaborationRecipients[0]?.id===peerSenderId)));
  useEffect(()=>{
-  setReply(undefined);setError('');
+  setReply(undefined);setError('');setRead({success:false});
   if(!conversationId||canonical||(!request&&!receipt&&!peerAgentId)||['failed','cancelled','undelivered','retry_exhausted','unconfirmed'].includes(receipt?.state??''))return;
   let disposed=false,busy=false,version=0,blocked=false;
   let exposure:VoiceReplyStatus['memoryExposure'];
@@ -33,6 +36,7 @@ export function DirectReplyPreview({sent,request,agentId,messages=[],projectId,p
    try{
     const status=await api.getTextReplyStatus(conversationId,messageId,agentId);
     if(disposed||current!==version)return;
+    setRead({success:true});
     const next=status.reply,context=status.memoryExposure;
     if(status.messageId!==messageId||!context||!['valid','disabled'].includes(context.state)||['failed','cancelled','outcome_unknown'].includes(status.runStatus??'')) {if(observed)blocked=true;clear();return;}
     if(exposure&&(exposure.state!==context.state||exposure.sessionResetSeq!==context.sessionResetSeq||exposure.projectGeneration!==context.projectGeneration||exposure.globalGeneration!==context.globalGeneration)){blocked=true;clear();setError('Reply context changed. Read the completed reply in Chat.');return;}
@@ -42,9 +46,10 @@ export function DirectReplyPreview({sent,request,agentId,messages=[],projectId,p
     if(observed&&(observed.runId!==next.runId||observed.fence!==next.fence||observed.streamId!==next.streamId||observed.steeringInjectionId!==next.steeringInjectionId)){blocked=true;clear();return;}
     if(observed&&next.sequence<observed.sequence)return;
     observed=next;setError('');setReply(next);
-   }catch(cause){if(!disposed&&current===version){clear();setError(cause instanceof Error?cause.message:'Reply unavailable');}}
+   }catch(cause){if(!disposed&&current===version){clear();setRead({error:cause,success:false});}}
    finally{busy=false;}
   };
+  refreshRef.current=refresh;
   const stream=api.subscribeAgent(agentId,undefined,{
    onEvent:envelope=>{
     if(envelope.agentId!==agentId)return;
@@ -54,8 +59,8 @@ export function DirectReplyPreview({sent,request,agentId,messages=[],projectId,p
    },onOpen:()=>void refresh(),onStatus:()=>void refresh(),
   });
   void refresh();const timer=setInterval(()=>void refresh(),500);
-  return()=>{disposed=true;version++;clearInterval(timer);stream.close();};
+  return()=>{refreshRef.current=async()=>{};disposed=true;version++;clearInterval(timer);stream.close();};
  },[projectId,conversationId,messageId,agentId,executionId,canonical,receipt?.state,replyIntent,peerAgentId,peerSenderId,request?.id]);
  if(canonical||reply&&(reply.projectId!==projectId||reply.conversationId!==conversationId||reply.agentId!==agentId||!(request?matchesRequestTextReplyRoute(request.id,reply):matchesTextReplyRoute(sent!,reply,peerAgentId))))return null;
- return <>{error&&<Alert severity="warning">{error}</Alert>}{reply?.text&&<Box aria-label={request?"Request result in progress":"Reply in progress"} sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere',py:1}}>{reply.text}</Box>}</>;
+ return <><WorkspaceQueryError read={{owner:`reply:${projectId}:${messageId}:${agentId}`,resource:"Reply preview",error:error||read.error,success:read.success&&!error,hasData:Boolean(reply),retry:()=>refreshRef.current()}}/>{reply?.text&&<Box aria-label={request?"Request result in progress":"Reply in progress"} sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere',py:1}}>{reply.text}</Box>}</>;
 }

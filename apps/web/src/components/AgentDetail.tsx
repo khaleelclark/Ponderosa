@@ -1,3 +1,5 @@
+import {WorkspaceQueryError} from "./WorkspaceQueryError";
+import {workspaceRead} from "../workspaceAvailability";
 import {productWorkspacePath} from "../api/productScope";
 import {ConversationChromeContext} from './ConversationChromeContext';
 import {ContextRecoveryPanel} from './ContextRecoveryPanel';
@@ -714,21 +716,7 @@ export function AgentDetail({
   if (agentQuery.isError && !agentQuery.data) {
     return (
       <Box sx={{ p: 2 }}>
-        <Alert
-          severity="error"
-          action={
-            <Button
-              color="inherit"
-              size="small"
-              onClick={() => void agentQuery.refetch()}
-            >
-              Retry
-            </Button>
-          }
-        >
-          This agent could not be loaded. Check the server connection and try
-          again.
-        </Alert>
+        <WorkspaceQueryError initial read={workspaceRead(`agent:${agentId}`,"Agent",agentQuery,false)}/>
       </Box>
     );
   }
@@ -745,7 +733,6 @@ export function AgentDetail({
   const hasOlderTelemetry = activeTelemetryStreams.some(
     stream => detail.telemetryHistory?.[stream]?.hasMore,
   );
-  const detailRefreshFailed = agentQuery.isError && agentQuery.data !== undefined;
 
   const models = selectedRuntime.models;
   const efforts = selectedRuntime.efforts;
@@ -923,7 +910,7 @@ export function AgentDetail({
         minWidth: 0,
         overflow: "hidden",
         display: "grid",
-        gridTemplateRows: `auto ${activeBrowser || detailRefreshFailed ? "auto " : ""}${pause?.reason === "access_restricted" ? "auto " : ""}minmax(0, 1fr) auto`,
+        gridTemplateRows: `auto auto ${activeBrowser ? "auto " : ""}${pause?.reason === "access_restricted" ? "auto " : ""}minmax(0, 1fr) auto`,
       }}
     >
       <AgentDetailHeader
@@ -971,16 +958,9 @@ export function AgentDetail({
         onTabChange={changeTab}
       />
 
-      {activeBrowser || detailRefreshFailed ? (
+      <Box><WorkspaceQueryError read={workspaceRead(`agent:${agentId}`,"Agent",agentQuery,detail.agent.id===agentId)}/></Box>
+      {activeBrowser ? (
         <Stack spacing={1} sx={{ mx: { xs: 1, sm: 2 }, mt: 1 }}>
-          {detailRefreshFailed ? (
-            <Alert
-              severity="warning"
-              action={<Button color="inherit" size="small" onClick={() => void agentQuery.refetch()}>Retry</Button>}
-            >
-              This Agent could not be refreshed. The last loaded details remain available.
-            </Alert>
-          ) : null}
           {activeBrowser ? (
             <Alert
               severity="info"
@@ -1054,6 +1034,7 @@ export function AgentDetail({
       {auditOnly?<Alert severity="info" sx={{m:1}}>Workflow Agent · control work from its execution view</Alert>:<AgentDetailComposer
         visible={tab === "chat"}
         queuedMessageNotice={queuedMessageNotice}
+        queuedRead={workspaceRead(`agent:${agentId}`,"Queued messages",queuedMessagesQuery)}
         queuedMessageFailure={queuedMessageFailure}
         cancellationError={[
           pause?.error,

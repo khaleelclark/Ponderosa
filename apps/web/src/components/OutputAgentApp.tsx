@@ -1,3 +1,6 @@
+import {useMutationNotification} from "./MutationNotifications";
+import {WorkspaceQueryError} from "./WorkspaceQueryError";
+import {workspaceRead} from "../workspaceAvailability";
 import {ConversationChromeContext} from './ConversationChromeContext';
 import {PrimaryHeaderActionsOutlet} from './PrimaryHeaderActions';
 import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
@@ -27,7 +30,9 @@ import {useWorkspaceFont} from '../hooks/useWorkspaceFont';
 import {TextSizeSetting} from './TextSizeSetting';
 
 function ConversationNotice({title,cause,onRetry}:{title:string;cause:string;onRetry?():void}):JSX.Element{
- return <Alert severity="error" sx={{mx:{xs:1,sm:2},my:1,py:.25,flexShrink:0}} action={onRetry?<Button onClick={onRetry}>Retry</Button>:undefined}>
+ const [expanded,setExpanded]=useState(true);
+ if(!expanded)return <Box component="details" sx={{mx:1,fontSize:".8125rem"}}><summary>{title}</summary><Typography variant="caption">{cause}</Typography>{onRetry&&<Button onClick={onRetry}>Retry</Button>}</Box>;
+ return <Alert severity="error" onClose={()=>setExpanded(false)} sx={{mx:{xs:1,sm:2},my:1,py:.25,flexShrink:0}} action={onRetry?<Button onClick={onRetry}>Retry</Button>:undefined}>
   <Typography variant="body2">{title}</Typography>
   <Box component="details" sx={{fontSize:'.8125rem',lineHeight:1.5,'& summary':{cursor:'pointer',py:.5,minHeight:44},'& pre':{m:0,maxHeight:'20vh',overflow:'auto',whiteSpace:'pre-wrap',overflowWrap:'anywhere',font:'inherit'}}}><summary>Details</summary><pre>{cause}</pre></Box>
  </Alert>;
@@ -44,6 +49,7 @@ export function OutputAgentApp({colorMode,onToggleColorMode,embedded=false,retur
  const preferences=useWorkspacePreferences();
  useWorkspaceFont(preferences.data?.fontFamily);
  const [discardSettings,setDiscardSettings]=useState(false);
+ const notify=useMutationNotification();
  const [settings,setSettings]=useState(false),[error,setError]=useState(''),[pendingAction,setPendingAction]=useState<false|'saving'|'reloading'>(false),[saved,setSaved]=useState('');
  const busy=Boolean(pendingAction);
  const inFlight=useRef(false);
@@ -84,7 +90,7 @@ export function OutputAgentApp({colorMode,onToggleColorMode,embedded=false,retur
   const generation=ownerGeneration.current;
   const cause=await refresh(value=>{if(reloadDraft&&mounted.current&&generation===ownerGeneration.current)loadDraft(value);});
   inFlight.current=false;if(mounted.current)setPendingAction(false);
-  if(mounted.current&&generation===ownerGeneration.current){setSaved('');setError(cause?`Could not refresh settings: ${cause.message}`:'');}
+  if(mounted.current&&generation===ownerGeneration.current){setSaved('');if(!cause)setError('');}
  };
  const act=async<T,>(work:()=>Promise<T>,savedLabel='',onCommitted?:(value:T)=>void)=>{
   if(inFlight.current)return;
@@ -93,14 +99,15 @@ export function OutputAgentApp({colorMode,onToggleColorMode,embedded=false,retur
   inFlight.current=true;setPendingAction('saving');setError('');setSaved('');
   try{
    const committed=await work();
+   if(current())notify({key:assistant?"assistant-settings":`output-settings:${id}`,message:"",dismiss:true});
    // Only this mutation can advance its draft baseline; a later read may contain another editor's work.
    if(current())onCommitted?.(committed);
    const cause=await refresh();
    if(current()){
-    setSaved(cause?'':savedLabel);
-    setError(cause?`Changes saved, but settings could not be refreshed: ${cause.message}`:'');
+    setSaved(cause?'Changes saved. Current settings are still being checked.':savedLabel);
+    setError('');
    }
-  }catch(cause){if(current()){setSaved('');setError(cause instanceof Error?cause.message:String(cause));}}
+  }catch(cause){if(current()){setSaved('');setError(cause instanceof Error?cause.message:String(cause));notify({key:assistant?'assistant-settings':`output-settings:${id}`,severity:'error',message:'Conversation settings could not be confirmed. Review settings before retrying.'});}}
   finally{inFlight.current=false;if(mounted.current)setPendingAction(false);}
  };
  const configure=(enabled:boolean)=>act(()=>requestJson('/api/branches/assistant',{method:'POST',body:JSON.stringify({enabled})}));
@@ -122,10 +129,12 @@ export function OutputAgentApp({colorMode,onToggleColorMode,embedded=false,retur
   if(!app||!scheduleBase||!validInterval)return;
   void act(()=>requestJson<OutputAgentAppDto>(`/api/branches/output-apps/${encodeURIComponent(app.agentId)}/schedule`,{method:'PUT',body:JSON.stringify({expectedVersionId:scheduleBase.versionId,expectedSettingsRevision:scheduleBase.settingsRevision,automatic,...(intervalChanged||(scheduleBase.triggerKind==='manual'&&automatic)?{everyMs:interval*60000}:{})})}),'Schedule saved',value=>setScheduleBase(value));
  };
- return <ThemeProvider theme={assistantTheme}><ConversationChromeContext.Provider value={{assistantAgentId:assistant?app?.agentId:undefined,statusHost,callActionsHost}}><WorkspaceConnectionProvider value={connection}><WorkspaceRefreshProvider><Box component={embedded?'section':'main'} data-assistant-conversation data-assistant-layout={assistant||undefined} sx={{...ponderosaSurfaceVariables(colorMode),"--assistant-outgoing":assistantTheme.palette.primary.main,"--assistant-on-outgoing":assistantTheme.palette.primary.contrastText,containerType:assistant?"inline-size":undefined,bgcolor:"background.default",height:embedded?'100%':'var(--ponderosa-app-viewport-block-size, 100dvh)',flex:1,display:'flex',flexDirection:'column',minHeight:0,minWidth:0,pb:'env(safe-area-inset-bottom)'}}>
+ const descriptorRead=workspaceRead(assistant?"assistant":`output:${id}`,assistant?"Assistant":"Conversation",assistant?status:output,Boolean(app));
+ return <ThemeProvider theme={assistantTheme}><ConversationChromeContext.Provider value={{assistantAgentId:assistant?app?.agentId:undefined,statusHost,callActionsHost}}><WorkspaceConnectionProvider value={connection}><WorkspaceRefreshProvider connection={connection}><Box component={embedded?'section':'main'} data-assistant-conversation data-assistant-layout={assistant||undefined} sx={{...ponderosaSurfaceVariables(colorMode),"--assistant-outgoing":assistantTheme.palette.primary.main,"--assistant-on-outgoing":assistantTheme.palette.primary.contrastText,containerType:assistant?"inline-size":undefined,bgcolor:"background.default",height:embedded?'100%':'var(--ponderosa-app-viewport-block-size, 100dvh)',flex:1,display:'flex',flexDirection:'column',minHeight:0,minWidth:0,pb:'env(safe-area-inset-bottom)'}}>
   <Stack component="header" direction="row" alignItems="center" spacing={assistant?0:1} sx={{px:{xs:1,sm:2.5},minHeight:{xs:76,sm:64},pt:embedded?0:'env(safe-area-inset-top)',borderBottom:1,borderColor:'divider',flexShrink:0,...(assistant?{display:'grid',gridTemplateColumns:'repeat(3, minmax(0, 1fr))'}:{})}}>
    <Box sx={{display:'flex',alignItems:'center',minWidth:0}}>
     {embedded?<><MobileNavigationButton/>{returnTo&&<Tooltip title="Back to your Chat"><IconButton href={returnTo} aria-label="Back to your Chat" onClick={event=>{if(!confirmUnsavedNavigation())event.preventDefault();}} sx={{width:44,height:44}}><ArrowBackIosNewIcon sx={{fontSize:20}}/></IconButton></Tooltip>}</>:<Button href="/home" color="inherit" sx={{minHeight:44}}>Ponderosa</Button>}
+    {assistant&&<WorkspaceConnectionNotice connection={connection} hasSavedData={Boolean(app)}/>}
    </Box>
    <Box data-conversation-contact sx={{flex:1,minWidth:0,textAlign:assistant?'center':undefined}}><Typography component="h1" sx={{fontWeight:650,fontSize:'1rem',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{assistant?'Assistant':app?.title??'Chat'}</Typography>
     <Box ref={setStatusHost} sx={{minWidth:0,maxWidth:assistant?'100%':260,'& .MuiStack-root':{flexWrap:'nowrap'},'& .MuiTypography-root':{overflow:'hidden',textOverflow:'ellipsis'}}}/></Box>
@@ -137,9 +146,8 @@ export function OutputAgentApp({colorMode,onToggleColorMode,embedded=false,retur
     <Tooltip title="Conversation settings"><IconButton aria-label="Settings" onClick={()=>{setError('');setSaved('');setSettings(true);}} sx={{width:44,height:44}}><SettingsOutlinedIcon sx={{fontSize:21}}/></IconButton></Tooltip>
    </Box>
   </Stack>
-  {assistant&&<WorkspaceConnectionNotice connection={connection} hasSavedData={Boolean(app)}/>}
-  {error&&!settings&&<ConversationNotice title="Conversation settings need attention." cause={error} onRetry={()=>void retryRefresh()}/>}
-  {(status.isError||output.isError)&&<ConversationNotice title={app?'Conversation updates are temporarily unavailable.':assistant?'Assistant could not be opened.':'This conversation could not be opened.'} cause={((status.error??output.error) as Error)?.message??'Chat unavailable'} onRetry={()=>void retryRefresh()}/>}
+  {error&&!settings&&<Box component="details" sx={{mx:1,fontSize:".8125rem"}}><summary>Conversation settings need attention</summary><Typography variant="caption">{error}</Typography><Button onClick={()=>setSettings(true)}>Open settings</Button></Box>}
+  <WorkspaceQueryError initial={!app} reportOnly={settings} read={descriptorRead}/>
   {!app&&assistant&&status.data?.setupError&&<ConversationNotice title="Assistant needs attention before it can open." cause={status.data.setupError.message} onRetry={()=>void retryRefresh()}/>}
   {!app&&assistant&&status.data?.initialized&&<Stack spacing={1.5} alignItems="center" justifyContent="center" sx={{flex:1,p:3,textAlign:'center'}}><Typography component="h2" sx={{fontSize:'1.5rem',fontWeight:600}}>Your Assistant is paused</Typography><Typography color="text.secondary">Enable Assistant to continue your conversation.</Typography><Button disabled={busy} onClick={()=>void configure(true)}>Enable Assistant</Button></Stack>}
   {!app&&(assistant?status.isPending||busy:output.isPending)&&<Stack role="status" alignItems="center" justifyContent="center" spacing={2} sx={{flex:1,p:3}}><CircularProgress size={24}/><Typography color="text.secondary">Opening your conversation…</Typography></Stack>}
@@ -148,13 +156,14 @@ export function OutputAgentApp({colorMode,onToggleColorMode,embedded=false,retur
   }}/></Box>}
   <Dialog open={settings} onClose={closeSettings} aria-labelledby="output-app-settings-title" fullWidth maxWidth="xs">
    <DialogTitle id="output-app-settings-title">Settings</DialogTitle><DialogContent><Stack spacing={2} sx={{pt:1}}>
-    {error&&<Alert severity="error">{error}</Alert>}
+    {settings&&<WorkspaceQueryError read={descriptorRead}/>}
+    {error&&<Box component="details"><summary>Settings action needs attention</summary><Typography variant="caption">{error}</Typography></Box>}
     <Typography role="status" variant="body2" sx={{minHeight:"1.5em"}}>{pendingAction==='reloading'?'Reloading…':busy?'Saving…':saved}</Typography>
     <Button onClick={onToggleColorMode}>Use {colorMode==='dark'?'Light':'Dark'} Mode</Button><TextSizeSetting/><Button href={assistant?'/settings/activity':'/branches?settings=activity'}>Provider activity</Button>
     {app&&<><FormControlLabel control={<Switch disabled={busy} checked={automatic} onChange={(_,value)=>{setSaved('');setAutomatic(value);}}/>} label="Run automatically"/>
      {editableInterval?<TextField disabled={busy} label="Check every (minutes)" type="number" value={minutes} onChange={event=>{setSaved('');setMinutes(event.target.value);}} error={!validInterval} helperText={intervalError} inputProps={{min:1,step:'any'}}/>:<Typography>{scheduleSource?.schedule?.scheduleKind==='cron'?`Cron schedule: ${scheduleSource?.schedule.expression} (${scheduleSource?.schedule.timezone})`:scheduleSource?.schedule?.scheduleKind==='once'?`Once at ${scheduleSource?.schedule.at}`:scheduleSource?.triggerKind==='filesystem'?'When files change':'When a webhook event arrives'}</Typography>}
      <Button disabled={busy||!validInterval} onClick={saveSchedule}>Save schedule</Button>
-     {engines.isError&&<Alert severity="error" action={<Button onClick={()=>void engines.refetch()}>Retry</Button>}>{engines.error.message}</Alert>}
+     <WorkspaceQueryError read={workspaceRead("workspace","Engines",engines)}/>
      <TextField disabled={busy||engines.isPending} select label="Provider" value={engine} onChange={event=>{setSaved('');setEngine(event.target.value);setModel(engines.data?.find(item=>item.id===event.target.value)?.defaultModel??'');}}>
       {engine&&!engines.data?.some(item=>item.id===engine)&&<MenuItem value={engine}>{engine}</MenuItem>}
       {engines.data?.map(item=><MenuItem key={item.id} value={item.id}>{item.displayName}</MenuItem>)}

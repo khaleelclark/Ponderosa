@@ -10,6 +10,7 @@ const compile=path=>ts.transpileModule(readFileSync(new URL(path,import.meta.url
 const presentation={exports:{}};
 vm.runInNewContext(compile('../../apps/web/src/components/branches/budgetPresentation.ts'),{exports:presentation.exports});
 const {budgetPresentation}=presentation.exports;
+const availability=await import('../../apps/web/src/workspaceAvailability.ts');
 const budget=()=>({branchId:'owner',revision:3,periodId:'period-3',policy:{limit:10,period:'day'},used:4,allowance:2,heldCount:1,resetsAt:'2026-11-01T00:00:00.000Z'});
 
 function nodes(tree){if(!tree||typeof tree!=='object')return [];if(Array.isArray(tree))return tree.flatMap(nodes);return [tree,...nodes(tree.props?.children),...nodes(tree.props?.control),...nodes(tree.props?.action)];}
@@ -31,6 +32,8 @@ function budgetOwner(){
  };
  const module={exports:{}};
  vm.runInNewContext(compile('../../apps/web/src/components/branches/BranchExecutionBudget.tsx'),{exports:module.exports,JSON,Number,Boolean,String,Date,Error,require:name=>{
+  if(name==='../../workspaceAvailability')return availability;
+  if(name==='../WorkspaceQueryError')return {WorkspaceQueryError:'WorkspaceQueryError'};
   if(name==='react')return react;
   if(name==='react/jsx-runtime')return require(name);
   if(name==='@mui/material')return Object.fromEntries(['Alert','Box','Button','Dialog','DialogActions','DialogContent','DialogTitle','FormControlLabel','MenuItem','Paper','Stack','Switch','TextField','Typography'].map(name=>[name,name]));
@@ -75,7 +78,7 @@ test('background budget refresh preserves edits and available actions without dr
  f.render({active:true});assert.equal(f.scope.queryOptions.refetchInterval,5000);assert.equal(f.field('Executions per period').value,25,'Returning to Settings retains the mounted draft');
  f.scope.query={...f.scope.query,data:{...budget(),revision:4,periodId:'new-period'}};f.render();
  assert.equal(f.field('Executions per period').value,25,'New authority cannot replace a dirty draft');assert.equal(f.button('Save budget').disabled,true);assert.match(text(f.render()),/Budget changed/);
- f.scope.query={...f.scope.query,error:new Error('Controlled refresh failure')};assert.equal(f.button('Allow more executions').disabled,true);assert.match(text(f.render()),/Budget could not be refreshed/);
+ f.scope.query={...f.scope.query,error:new Error('Controlled refresh failure')};assert.equal(f.button('Allow more executions').disabled,true);assert.equal(nodes(f.render()).find(node=>node.type==='WorkspaceQueryError').props.read.error.message,'Controlled refresh failure');
 });
 
 test('budget saves preserve exact revision, period and command identity after an uncertain response',async()=>{

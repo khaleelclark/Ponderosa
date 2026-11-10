@@ -121,16 +121,7 @@ export function useQueuedConversationMessagesController(
     noticeBaseline.current = query.dataUpdatedAt;
     invalidate();
   };
-  const failure = commandFailure?.conversationId === conversationId
-    ? commandFailure
-    : query.error
-    ? {
-        error: query.error instanceof Error
-          ? query.error
-          : new Error(String(query.error)),
-        retry: () => { void query.refetch(); },
-      }
-    : undefined;
+  const failure = commandFailure?.conversationId === conversationId ? commandFailure : undefined;
 
   return {
     query,

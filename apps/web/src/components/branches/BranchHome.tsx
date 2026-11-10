@@ -1,3 +1,5 @@
+import {WorkspaceQueryError,WorkspaceQueryErrors} from "../WorkspaceQueryError";
+import {workspaceRead} from "../../workspaceAvailability";
 import AccountTreeOutlinedIcon from '@mui/icons-material/AccountTreeOutlined';
 import AddIcon from '@mui/icons-material/Add';
 import FileUploadOutlinedIcon from '@mui/icons-material/FileUploadOutlined';
@@ -14,7 +16,7 @@ import {branchOperationalStatusKinds} from './executionPresentation';
 import {BranchNotifications} from './BranchNotifications';
 
 
-export function BranchHome({engines, enginesLoaded, enginesError, onRetryEngines, onNavigate, onCreate, onImport, creating}: {
+export function BranchHome({engines, enginesLoaded, enginesError, onNavigate, onCreate, onImport, creating}: {
  engines: EngineDto[]; enginesLoaded: boolean; enginesError?: string; onRetryEngines():void;
  onNavigate(route:BranchRoute):void; onCreate():void; onImport():void; creating:boolean;
 }):JSX.Element {
@@ -25,7 +27,7 @@ export function BranchHome({engines, enginesLoaded, enginesError, onRetryEngines
  const refreshError=Boolean(data&&((active.isRefetchError&&!active.isFetchNextPageError)||(outcomes.isRefetchError&&!outcomes.isFetchNextPageError)));
  const loading=(!data&&!initialError)||(!active.data&&active.isPending)||(!outcomes.data&&outcomes.isPending);
  const partialError=(!active.data&&active.isError)||(!outcomes.data&&outcomes.isError);
- const retry=()=>{void active.refetch({cancelRefetch:false});void outcomes.refetch({cancelRefetch:false})};
+ const reads=[workspaceRead("branches","Active executions",active),workspaceRead("branches","Recent outcomes",outcomes)];
  const executionSection=(section:'activeExecutions'|'recentOutcomes')=>{
   const query=section==='activeExecutions'?active:outcomes;
   const rows=branchHomeItems(query.data?.pages,section);
@@ -35,7 +37,7 @@ export function BranchHome({engines, enginesLoaded, enginesError, onRetryEngines
     detail={`Execution ${item.id.slice(0,8)} · ${new Date(section==='activeExecutions'?item.createdAt:item.updatedAt).toLocaleString()}${item.parentExecutionId?` · Child of ${item.parentExecutionId.slice(0,8)}`:''}`}
     status={branchOperationalStatusKinds[item.operational.state]} statusLabel={item.operational.label} statusBelow multilineDetail
     onClick={()=>onNavigate({branchId:item.branchId,tab:'executions',executionId:item.id})}/>)}</Box>
-    :!query.data&&query.isError?<Alert severity="error" action={<Button color="inherit" onClick={()=>void query.refetch({cancelRefetch:false})}>Retry</Button>}>{section==='activeExecutions'?'Active executions':'Recent outcomes'} could not be loaded.</Alert>
+    :!query.data&&query.isError?<Typography color="text.secondary">Unavailable</Typography>
     :!query.data?<Typography color="text.secondary">Loading {section==='activeExecutions'?'active executions':'recent outcomes'}…</Typography>
     :<Paper variant="outlined" sx={{p:2}}><Typography color="text.secondary">{section==='activeExecutions'?'No executions are active right now.':'Finished workflow executions will appear here.'}</Typography></Paper>}
    {query.isFetchNextPageError?<Alert severity="warning">Next page unavailable · current results retained</Alert>:null}
@@ -48,9 +50,9 @@ export function BranchHome({engines, enginesLoaded, enginesError, onRetryEngines
     <HomeSummaryCard label="Needs Attention" value={data?.openActionCount??(initialError?'Unavailable':'Loading')} onClick={openInbox}/>
     <HomeSummaryCard label="Provider Health" value={enginesLoaded?provider.label:enginesError?'Unavailable':'Loading'} compactValue={enginesLoaded&&provider.label==='Engine ready'?'Ready':undefined} onClick={()=>onNavigate({tab:'workflow',global:'providers'})}/>
    </Box>
-   {initialError||refreshError?<Alert severity={initialError?'error':'warning'} action={<Button color="inherit" aria-label="Retry workflow Home" onClick={retry}>Retry</Button>}>{initialError?'Workflow Home could not be loaded.':'Home could not refresh. Last loaded counts and cards are still available.'}</Alert>:null}
-   {enginesError?<Alert severity="warning" action={<Button color="inherit" onClick={onRetryEngines}>Retry</Button>}>Provider health could not refresh. {enginesLoaded?'Showing the last loaded provider state. ':''}Script-only workflows can still run.</Alert>
-    :enginesLoaded&&provider.severity==='warning'?<Alert severity="warning" action={<Button color="inherit" onClick={()=>onNavigate({tab:'workflow',global:'providers'})}>Provider Settings</Button>}>Agent provider access needs attention · Script-only workflows available</Alert>:null}
+   <WorkspaceQueryErrors reads={reads} reportOnly={Boolean(initialError)}/>
+   {initialError&&<WorkspaceQueryError initial read={reads.find(read=>read.error)!}/>}
+   {!enginesError&&enginesLoaded&&provider.severity==='warning'?<Alert severity="warning" action={<Button color="inherit" onClick={()=>onNavigate({tab:'workflow',global:'providers'})}>Provider Settings</Button>}>Agent provider access needs attention · Script-only workflows available</Alert>:null}
    {data?.workflowCount===0?<HomeFirstItem icon={<AccountTreeOutlinedIcon color="action" sx={{fontSize:42,mb:1}}/>} title="Start Your First Workflow" description="Build a repeatable workflow or import a Branch package.">
     <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" justifyContent="center"><Button variant="contained" startIcon={<AddIcon/>} disabled={creating} onClick={onCreate}>{creating?'Creating workflow…':'New workflow'}</Button><Button startIcon={<FileUploadOutlinedIcon/>} onClick={onImport}>Import workflow</Button></Stack>
    </HomeFirstItem>:null}
