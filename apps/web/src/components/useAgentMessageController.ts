@@ -129,6 +129,7 @@ export function useAgentMessageController({
       context?: {
         retryPreparedAttempt?: boolean;
         capturedSubmission?: boolean;
+        beforeDispatch?(identity?: {prefix:string;seed:string}): Promise<void>;
         pendingSubmission?: DraftPendingSubmissionDto;
         persistPendingSubmission?(
           value: DraftPendingSubmissionDto,
@@ -254,6 +255,7 @@ export function useAgentMessageController({
         const response = await sendMessage.mutateAsync(
           {
             agentId: prepared.agentId,
+            beforeDispatch: () => context?.beforeDispatch?.(projectId?{prefix:"user-message",seed:`${projectId}\0${prepared.agentId}\0${attempt.idempotencyKey}`}:undefined) ?? Promise.resolve(),
             request: {
               ...prepared.request,
               idempotencyKey: attempt.idempotencyKey,

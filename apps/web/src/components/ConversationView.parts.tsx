@@ -1,3 +1,4 @@
+import { OutgoingMessageRow } from "./chat/OutgoingMessage";
 import {DirectReplyPreview} from './chat/DirectReplyPreview';
 import {useWorkspaceReadOnly} from "./WorkspaceReadOnlyContext";
 import AddIcon from "@mui/icons-material/Add";
@@ -448,12 +449,11 @@ function MainConversationTimeline({
   const latestReplySource=[...replySources].reverse().find(item=>item.role==='user'&&item.communicationIntent==='broadcast');
   return (
     <Stack spacing={0} sx={{ mb: 2 }}>
-      {mainTimeline.length === 0 ? (
-        <Typography variant="body2" color="text.secondary">
-          No messages yet · send a message or mention an Agent
-        </Typography>
-      ) : null}
-      {mainTimeline.slice(firstMountedIndex).map(entry => {
+      <OutgoingMessageRow empty={<Typography variant="body2" color="text.secondary">No messages yet · send a message or mention an Agent</Typography>}
+        entries={mainTimeline.slice(firstMountedIndex).map(entry => ({
+        id: entry.id, createdAt: entry.at,
+        ...(entry.kind === "message" ? {communicationEventId:entry.message.communicationEventId,creationIdempotencyKey:entry.message.creationIdempotencyKey,projectId} : {}),
+        render: createdAt => {
         if (entry.kind === "decision") {
           const notification = notifications.find((item) =>
             item.decision?.id === entry.event.decision.id && (item.status ?? "open") === "open");
@@ -466,12 +466,12 @@ function MainConversationTimeline({
           return <DecisionResponseMessage key={entry.id} event={entry.event}
             operatorProfile={operatorProfile} onOpenAgent={onOpenAgent} />;
         }
-        const message = entry.message;
+        const message = entry.message.createdAt===createdAt?entry.message:{...entry.message,createdAt};
         return <ConversationMessage
           key={entry.id}
           message={message}
           conversation="main"
-          replyMessages={message===latestReplySource?replySources:undefined}
+          replyMessages={entry.message===latestReplySource?replySources:undefined}
           projectId={projectId}
           projectRoot={projectRoot}
           activeRunId={
@@ -489,7 +489,7 @@ function MainConversationTimeline({
           onMentionAgent={mentionAgent}
           onVisible={markCommunicationVisible}
         />;
-      })}
+      }}))}/>
     </Stack>
   );
 }

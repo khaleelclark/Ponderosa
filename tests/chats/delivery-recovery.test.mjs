@@ -310,6 +310,11 @@ test('ordinary outgoing Chat identity works without Web Crypto and matches serve
   const h = hooks();
   h.react.useCallback = fn => fn;
   const module = load('components/chat/OutgoingMessage.tsx', {
+    './ChatAttachments': { ChatAttachments: widget('Attachments') },
+    '@tanstack/react-query': { useQuery: () => ({}) },
+    '../../api': { api: {} },
+    '../../queryKeys': { queryKeys },
+    './submissionOutbox': { readCapturedSubmissions: () => [] },
     react: h.react,
     '../../clientId': { createClientId: () => 'sending-fixture' },
     '../idempotentAttempt': { sha256Bytes },
@@ -330,8 +335,11 @@ test('ordinary outgoing Chat identity works without Web Crypto and matches serve
     const expected = prefix + '-' + createHash('sha256').update(seed, 'utf8').digest('hex');
     assert.equal(render().messages[0].communicationId, expected);
     render().accepted(id);
-    render().reconcile([expected]);
-    assert.equal(render().messages.length, 0, 'the canonical row replaces the optimistic message');
+    render().reconcile([{communicationEventId:expected}]);
+    assert.equal(render().messages[0].reconciled,true,'Canonical observation adopts the exact optimistic operation');
+    assert.equal(render().messages[0].text,'','Adopted anchors retain no second message text');
+    render().reconcile([]);
+    assert.equal(render().messages.length,0,'Presentation anchor leaves with its canonical row');
   }
 });
 
@@ -387,4 +395,36 @@ test('settings handoff receipt exposes retry only for a provably unstarted hold'
   const uncertain=status({state:'unconfirmed',settingsTransitionHold:'review_required',canRetry:true})();
   assert.match(text(uncertain.find(node=>node.props.role==='status')),/review the Agent’s activity/u);
   assert.ok(!uncertain.some(node=>node.type===mui.Button&&/Try Delivery Again|Review Interrupted Work|Cancel Delivery/u.test(text(node))));
+});
+
+
+test('UI012 observed acceptance survives stale metadata writers and removal bypasses only send order',async t=>{
+ const previous=globalThis.window,previousNavigator=Object.getOwnPropertyDescriptor(globalThis,'navigator');
+ const window=Object.assign(new EventTarget(),{localStorage:new Storage()});globalThis.window=window;
+ Object.defineProperty(globalThis,'navigator',{configurable:true,value:{locks:{request:async(_key,run)=>run()}}});
+ t.after(()=>{if(previous===undefined)delete globalThis.window;else globalThis.window=previous;if(previousNavigator)Object.defineProperty(globalThis,'navigator',previousNavigator);else delete globalThis.navigator;});
+ const module=load('components/chat/submissionOutbox.ts',{'../../chatState.js':chatState},{window,navigator:globalThis.navigator});
+ const first={version:1,scope:'chat',storageKey:'draft',ownerId:'owner',clientId:'tab',createdAt:1,action:'send',text:'Earlier uncertain input',editorText:'Earlier uncertain input',attachmentNames:[],mentionedAgents:[],newAgentRequested:false,pending:{fingerprint:'a'.repeat(64),idempotencyKey:'earlier'},status:'unknown',dispatchStarted:true};
+ const later={...first,createdAt:2,text:'Definitely rejected later',status:'failed',dispatchStarted:false,pending:{...first.pending,idempotencyKey:'later'}};
+ module.saveCapturedSubmission(first);module.saveCapturedSubmission(later);
+ assert.equal(module.earlierCapturedSubmission(later).pending.idempotencyKey,'earlier');
+ let calls=0;await assert.rejects(module.runCapturedSubmission(later,async()=>calls++),/earlier captured/);assert.equal(calls,0);
+ await assert.rejects(module.removeRejectedCapturedSubmission(first,async()=>calls++),/Acceptance is unconfirmed/);assert.equal(calls,0);
+ let release;const gate=new Promise(resolve=>release=resolve);
+ const removing=module.removeRejectedCapturedSubmission(later,async current=>{await gate;module.removeCapturedSubmission(current.pending.idempotencyKey);});
+ assert.equal(module.capturedSubmissionActivity('later'),'remove');release();await removing;
+ assert.deepEqual(Array.from(module.readCapturedSubmissions('chat'),item=>item.pending.idempotencyKey),['earlier']);
+ module.saveCapturedSubmission({...first,status:'accepted',communicationId:'canonical-exact',acceptedDeliveryIds:['observed-delivery']});
+ module.saveCapturedSubmission({...first,status:'pending'});module.saveCapturedSubmission({...first,status:'failed'});
+ const observed=module.readCapturedSubmissions('chat')[0];assert.equal(observed.status,'accepted');assert.equal(observed.communicationId,'canonical-exact');assert.deepEqual(Array.from(observed.acceptedDeliveryIds),['observed-delivery']);
+});
+
+test('UI012 exact retirement preserves canonical siblings/newer draft and retries CAS without merging stale local captures',async()=>{
+ const pending={idempotencyKey:'remove-exact',fingerprint:'a'.repeat(64)},earlier={idempotencyKey:'canonical-earlier',fingerprint:'b'.repeat(64)};
+ let current={conversationId:'chat',ownerId:'owner',revision:8,clientId:'newer-tab',text:'Newer exact editable text',attachmentIds:['newer-attachment'],pendingSubmissions:[earlier,pending]},conflict=true;const writes=[];
+ const module=load('components/chat/capturedDraftSubmissions.ts',{'../../api':{api:{getConversationDraft:async()=>current,putConversationDraft:async(_scope,body)=>{writes.push(body);if(conflict){conflict=false;current={...current,revision:9,text:'Even newer text'};throw new ApiRequestError(409,'CAS conflict');}return current={...current,...body,revision:current.revision+1};}}},'./submissionOutbox':{readCapturedSubmissions:()=>[{pending:{idempotencyKey:'invalid-local-earlier',uploads:[{scope:'broadcast',recipients:[{agentId:'invalid-chat-owner',attachmentIds:['original']}]}]}}]}});
+ await assert.rejects(module.persistCapturedDraftSubmission('chat','owner','old-tab',pending,true,8),/CAS conflict/);
+ const result=await module.persistCapturedDraftSubmission('chat','owner','old-tab',pending,true,8);
+ assert.equal(result.draft.text,'Even newer text');assert.deepEqual(Array.from(result.draft.attachmentIds),['newer-attachment']);assert.deepEqual(Array.from(result.draft.pendingSubmissions,item=>item.idempotencyKey),['canonical-earlier']);assert.deepEqual(Array.from(writes[1].retirePendingSubmissionIds),['remove-exact']);assert.equal(result.mayAdvanceDraftRevision,false);
+ current={...current,retiredPendingSubmissionIds:[{idempotencyKey:pending.idempotencyKey}]};const count=writes.length;assert.equal((await module.persistCapturedDraftSubmission('chat','owner','old-tab',pending,true,8)).retired,true);assert.equal(writes.length,count,'Already-settled exact retirement issues no replacement write');
 });

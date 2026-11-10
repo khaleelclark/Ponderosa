@@ -66,7 +66,7 @@ import { useMutationNotification, MutationErrorDetails } from "./MutationNotific
 import { MessageRequestAction } from "./MessageRequestAction";
 import { TimedChatLiveBanner } from "./chat/ChatLiveBanner";
 import { ChatSurface } from "./chat/ChatSurface";
-import { OutgoingMessageProvider } from "./chat/OutgoingMessage";
+import { OutgoingMessageProvider, OutgoingMessageRow } from "./chat/OutgoingMessage";
 import { publishCreatedAgent, publishUpdatedAgent, refreshAgentRuntime } from "../conversationAgentCache";
 import { uniqueBy } from "../collections";
 import TagIcon from "@mui/icons-material/Tag";
@@ -747,6 +747,7 @@ export function InboxView({
       retryPreparedAttempt,
       capturedSubmission,
       capturedProjectId,
+      beforeDispatch,
       submissionEpoch,
       submissionSourceKey,
       submissionTargetId,
@@ -764,6 +765,7 @@ export function InboxView({
       retryPreparedAttempt: boolean;
       capturedSubmission: boolean;
       capturedProjectId?: string;
+      beforeDispatch?(identity?: {prefix:string;seed:string}): Promise<void>;
       activeRunDelivery: "steer" | "queue";
       submissionEpoch: number;
       submissionSourceKey?: string;
@@ -924,6 +926,7 @@ export function InboxView({
         }
         createdNames.push(title);
         createdTitles.push(title);
+        await beforeDispatch?.();
         const created = await api.createAgent(prepared.projectId, creationConversationId!, {
           title,
           engine: submittedRuntime.engine ?? "codex",
@@ -1005,6 +1008,7 @@ export function InboxView({
         );
         let response;
         try {
+          await beforeDispatch?.({prefix:"user-dm",seed:`multi-direct:${conversationId}:${requestId}:${conversationId}`});
           response = await api.sendMultiAgentDirectMessage(conversationId, {
             text: submittedBody.trim(),
             recipients: recipientIds.map((agentId) => ({
@@ -1380,6 +1384,7 @@ export function InboxView({
       />
       <ChatSurface
         showOutgoingMessage
+        outgoingInTimeline
         canonicalCommunicationIds={items.map(item => item.communicationEventId)}
         layout="workspace"
         layoutKey={layoutKey}
@@ -1419,7 +1424,10 @@ export function InboxView({
           spacing={1.75}
           sx={{ width: "100%", maxWidth: 1280, mx: "auto", py: 1 }}
         >
-          {timeline.map(entry => {
+          <OutgoingMessageRow empty={!query.isLoading&&!query.isError?<Alert severity="info">No authored chat messages yet.</Alert>:null} entries={timeline.map(entry => ({
+            id:entry.id,createdAt:entry.at,
+            ...(entry.kind === "message" ? {communicationEventId:entry.item.communicationEventId,creationIdempotencyKey:entry.item.creationIdempotencyKey,projectId:entry.item.project.id} : {}),
+            render:createdAt => {
             if (entry.kind === "decision") {
               const notification = notifications.find((item) =>
                 item.decision?.id === entry.item.decision.id && (item.status ?? "open") === "open");
@@ -1438,7 +1446,7 @@ export function InboxView({
                 operatorProfile={workspacePreferences.data?.profile}
                 onOpenAgent={agentId => onNavigate({ kind: "agent", projectId: entry.item.decision.projectId, agentId })} />;
             }
-            const item = entry.item;
+            const item = entry.item.createdAt===createdAt?entry.item:{...entry.item,createdAt};
             const fromUser = item.author.kind === "user";
             return (
               <ChatMessageFrame
@@ -1624,10 +1632,7 @@ export function InboxView({
                 }}
               />
             );
-          })}
-          {!query.isLoading && !query.isError && items.length === 0 ? (
-            <Alert severity="info">No authored chat messages yet.</Alert>
-          ) : null}
+          }}))}/>
         </Stack>
       </ChatSurface>
       <ChatComposerDock
@@ -1801,6 +1806,7 @@ export function InboxView({
               retryPreparedAttempt: context?.retryPreparedAttempt ?? false,
               capturedSubmission: context?.capturedSubmission ?? false,
               capturedProjectId: context?.capturedProjectId,
+              beforeDispatch: context?.beforeDispatch,
               submissionEpoch: submissionIntent.epoch,
               submissionSourceKey: submissionIntent.sourceKey,
               submissionTargetId: activeReplyTarget?.id,
@@ -1821,6 +1827,7 @@ export function InboxView({
               retryPreparedAttempt: context?.retryPreparedAttempt ?? false,
               capturedSubmission: context?.capturedSubmission ?? false,
               capturedProjectId: context?.capturedProjectId,
+              beforeDispatch: context?.beforeDispatch,
               submissionEpoch: submissionIntent.epoch,
               submissionSourceKey: submissionIntent.sourceKey,
               submissionTargetId: activeReplyTarget?.id,

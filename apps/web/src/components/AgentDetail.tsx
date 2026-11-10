@@ -907,7 +907,7 @@ export function AgentDetail({
   </>);
 
   return (
-    <OutgoingMessageProvider scope={agentId} profile={preferencesQuery.data?.profile}><Box data-assistant-messages={assistantMessages||undefined}
+    <OutgoingMessageProvider scope={agentId} draftScope={`agent:${agentId}`} profile={preferencesQuery.data?.profile}><Box data-assistant-messages={assistantMessages||undefined}
       sx={{
         width: "100%",
         maxWidth: "100%",

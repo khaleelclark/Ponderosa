@@ -23,6 +23,8 @@ export function ChatSurface({
   children,
   beforeMessages,
   showOutgoingMessage = false,
+  outgoingInTimeline = false,
+  renderedRowCount,
   canonicalCommunicationIds,
   initialTranscript,
 }: {
@@ -35,6 +37,9 @@ export function ChatSurface({
   children: ReactNode | ((firstMountedIndex: number) => ReactNode);
   beforeMessages?: ReactNode;
   showOutgoingMessage?: boolean;
+  outgoingInTimeline?: boolean;
+  /** Canonical rows inside a shared timeline renderer, including non-message rows. */
+  renderedRowCount?: number;
   canonicalCommunicationIds?: readonly (string | undefined)[];
   /** Only the first cold transcript render is scheduled; fetched data is unchanged. */
   initialTranscript?: { rowIds: readonly string[]; reveal?: boolean };
@@ -134,7 +139,7 @@ export function ChatSurface({
   }, [transcriptLoading, firstMountedIndex]);
 
   const renderedChildren = typeof children === "function" ? children(firstMountedIndex) : children;
-  const isEmpty = !pendingId && Children.count(renderedChildren) === 0;
+  const isEmpty = !pendingId && (renderedRowCount ?? Children.count(renderedChildren)) === 0;
   const contentWidth = layout === "workspace" ? 1280 : layout === "project" ? 1180 : 1120;
   const padding = layout === "agent"
     ? { xs: 1, sm: 2, md: 3, lg: 4 }
@@ -196,7 +201,7 @@ export function ChatSurface({
             },
           } : undefined} />
           {initialTranscript ? <div ref={rowsRef} style={{ minWidth: 0 }}>{renderedChildren}</div> : renderedChildren}
-          {showOutgoingMessage ? <OutgoingMessageRow canonicalCommunicationIds={canonicalCommunicationIds} /> : null}
+          {showOutgoingMessage && !outgoingInTimeline ? <OutgoingMessageRow canonicalCommunicationIds={canonicalCommunicationIds} /> : null}
           {isEmpty && empty ? typeof empty === "string" ? <Alert severity="info">{empty}</Alert> : empty : null}
         </Stack>
       </Stack>

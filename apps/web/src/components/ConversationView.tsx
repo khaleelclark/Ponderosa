@@ -936,6 +936,7 @@ export function ConversationView({
         >
           <ChatSurface
             showOutgoingMessage
+            outgoingInTimeline
             canonicalCommunicationIds={messages.map(message => message.communicationEventId)}
             layout="project"
             layoutKey={`main:${visibleMessageLayoutKey}`}
@@ -1311,6 +1312,7 @@ onClose: () => setAgentWorkOpen(false)}} />
               context?.persistPendingSubmission,
               context?.onAgentCreated,
               context?.capturedSubmission,
+              context?.beforeDispatch,
             )
           }
           onQueue={(text, files, stagedIds, draftOwnerId, context) =>
@@ -1327,6 +1329,7 @@ onClose: () => setAgentWorkOpen(false)}} />
               context?.persistPendingSubmission,
               context?.onAgentCreated,
               context?.capturedSubmission,
+              context?.beforeDispatch,
             )
           }
           agentResponding={false}

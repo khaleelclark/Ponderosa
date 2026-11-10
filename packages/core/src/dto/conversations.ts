@@ -117,6 +117,8 @@ export interface CollaborationRecipientDto {
 
 /** A message in the project-level conversation (a team group chat). */
 export interface ConversationMessageDto {
+  /** Existing committed human-creation key; correlation only, never dispatch authority. */
+  creationIdempotencyKey?: string;
   /** Exact bounded authored communication text before display-only scope tags. */
   authoredText?: string;
   id: string;
@@ -744,6 +746,8 @@ export interface SteerQueuedMessageResponse {
 
 /** A Chat-pane message (SPEC §7 `messages`). Intent/conversation only. */
 export interface MessageDto {
+  /** Existing committed human-creation key; correlation only, never dispatch authority. */
+  creationIdempotencyKey?: string;
   id: string;
   /** Canonical cross-surface event identity, absent only on pre-migration history. */
   communicationEventId?: string;
@@ -986,6 +990,8 @@ export type InboxSourceDto =
 
 /** One canonical authored communication in the workspace-wide aggregate view. */
 export interface InboxItemDto {
+  /** Existing committed human-creation key; correlation only, never dispatch authority. */
+  creationIdempotencyKey?: string;
   communicationEventId: string;
   messageId: string;
   communicationIntent: CommunicationIntent;

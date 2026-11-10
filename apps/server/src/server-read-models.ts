@@ -1,3 +1,4 @@
+import {creationMessageKeys} from "./creation-message-identity.js";
 import { decisionQuestionPayload } from "./decision-payload.js";
 import {
   collaborationPresentation,
@@ -140,6 +141,7 @@ export function createServerReadModels(context: ReadModelContext) {
     const projectAgents = store.listAgents(projectId);
     const communicationEventIds = messages.flatMap((message) =>
       message.communicationEventId ? [message.communicationEventId] : []);
+    const creationKeys = creationMessageKeys(store,projectId,communicationEventIds);
     const communicationsByEvent = new Map(communicationEventIds.flatMap((eventId) => {
       const communication = store.getCommunicationEvent(projectId, eventId);
       return communication ? [[eventId, communication] as const] : [];
@@ -236,6 +238,7 @@ export function createServerReadModels(context: ReadModelContext) {
       ].map((candidate) => [candidate.recordId, candidate] as const)).values()];
       return {
         ...message,
+        ...(creationKeys.has(message.communicationEventId) ? {creationIdempotencyKey:creationKeys.get(message.communicationEventId)} : {}),
         ...(communication ? {
           communicationIntent: communication.intent,
           authoredText: communication.text,

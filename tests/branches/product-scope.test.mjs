@@ -1,3 +1,4 @@
+import {creationMessageKeys} from '../../apps/server/dist/creation-message-identity.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {randomUUID} from 'node:crypto';
@@ -309,8 +310,10 @@ test('workspace projection failure closes the subscriber so reconnect replays th
   try{f.ok(await f.api('PATCH','/api/branches/engine/workspace/preferences',{globalInstructions:'capture workspace'}));}
   finally{WorkspaceStore.prototype.updatePreferences=update;}
   workspace.updatePreferences({outputApps:{agentIds:[agent.id],speakerAgentId:null,initialized:true}});
+  // Deliberate stream teardown must not return a half-closed socket to the
+  // Node fetch pool. Each observation uses a fresh connection, like EventSource.
   const origin=await f.listen(),abort=new AbortController(),record={text:'',closed:false};
-  const response=await fetch(origin+'/api/branches/engine/workspace/stream',{signal:abort.signal});assert.equal(response.status,200);
+  const response=await fetch(origin+'/api/branches/engine/workspace/stream',{signal:abort.signal,headers:{connection:'close'}}).catch(error=>{t.diagnostic('Initial fixture SSE connection failed');throw error;});assert.equal(response.status,200);
   const reading=(async()=>{try{for await(const bytes of response.body)record.text+=Buffer.from(bytes).toString('utf8');}catch(error){if(!abort.signal.aborted&&!(error instanceof TypeError))throw error;}finally{record.closed=true;}})();
   let replayAbort,replayReading;const prepare=store.sqlite.prepare;
   try{
@@ -321,7 +324,7 @@ test('workspace projection failure closes the subscriber so reconnect replays th
    finally{store.sqlite.prepare=prepare;}
    assert.equal(injected,true);await until(()=>record.closed,'failed workspace subscriber closed');
    assert.equal(record.text.includes(marker),false);
-   replayAbort=new AbortController();const replay=await fetch(origin+'/api/branches/engine/workspace/stream?lastEventId='+cursor,{signal:replayAbort.signal});assert.equal(replay.status,200);
+   replayAbort=new AbortController();const replay=await fetch(origin+'/api/branches/engine/workspace/stream?lastEventId='+cursor,{signal:replayAbort.signal,headers:{connection:'close'}}).catch(error=>{t.diagnostic('Replay fixture SSE connection failed');throw error;});assert.equal(replay.status,200);
    const replayRecord={text:''};replayReading=(async()=>{try{for await(const bytes of replay.body)replayRecord.text+=Buffer.from(bytes).toString('utf8');}catch(error){if(!replayAbort.signal.aborted)throw error;}})();
    await until(()=>replayRecord.text.includes(marker),'replayed event after projection failure');
    const event=replayRecord.text.split('\n').filter(line=>line.startsWith('data: ')).map(line=>{try{return JSON.parse(line.slice(6));}catch{return null;}}).find(value=>value?.event?.preferences?.globalInstructions===marker);
@@ -601,5 +604,66 @@ test('mixed Project admits only the original Core Chat deleted-copy cleanup', {t
   assert.equal(existsSync(copyRoot),false);assert.equal(await readFile(path.join(source,'original.txt'),'utf8'),'mixed source bytes');
   assert.equal(existsSync(branchCopyRoot),true,'Core cleanup preserves the Branch-owned copy');
   assert.ok(store.getConversation(branchChat.id),'the Branch-owned sibling is preserved');
+ },{storeFactory:dir=>(store=new AgentStore(dir))});
+});
+
+// UI012: a Chat is the canonical storage owner of an unaddressed Broadcast,
+// even though the existing attachment wire/journal calls that owner agentId.
+test('UI012 Chat-owned Broadcast assets survive captured draft admission, readback, original-key replay and exact retirement',async t=>withFixture(t,async f=>{
+ const chat=await f.createChat('UI012 empty Photo Culler Chat'),root=`/api/conversations/${chat.id}`,ownerId='ui012-browser',clientId='ui012-tab';
+ const assets=[],staged=[];
+ for(let i=0;i<4;i++){
+  const bytes=Buffer.from(`Original Photo Culler fixture bytes ${i} λ😀`),headers={'content-type':'application/x-ponderosa-attachment','x-ponderosa-media-type':'text/plain','x-ponderosa-filename':`photo-${i}.txt`};
+  assets.push(f.ok(await f.api('POST',`${root}/attachments`,bytes,headers)));
+  staged.push(f.ok(await f.api('POST',`${root}/draft-attachments`,bytes,{...headers,'x-ponderosa-draft-owner':ownerId})));
+ }
+ const current=f.ok(await f.api('GET',`${root}/draft?ownerId=${ownerId}`)),idempotencyKey=randomUUID();
+ const pending={idempotencyKey,fingerprint:'a'.repeat(64),intentFingerprint:'a'.repeat(64),captureRevision:current.revision,text:'#broadcast Sort these photos',editorText:'#broadcast Sort these photos',draftAttachmentIds:staged.map(file=>file.id),editableDraftAttachmentIds:staged.map(file=>file.id),request:{conversationId:chat.id,recipientAgentIds:[],broadcastAttachmentOwnerAgentId:chat.id,runtime:{activeRunDelivery:'steer',engine:'codex'}},uploads:[{scope:'broadcast',recipients:[{agentId:chat.id,attachmentIds:assets.map(file=>file.id)}]}]};
+ const saved=f.ok(await f.api('PUT',`${root}/draft`,{ownerId,clientId,text:'A newer editable draft',attachmentIds:[],pendingSubmissions:[pending],expectedRevision:current.revision}));
+ assert.deepEqual(saved.pendingSubmissions,[pending],'PUT projection preserves the authorized Chat upload owner');
+ const check=async()=>{const value=f.ok(await f.api('GET',`${root}/draft?ownerId=${ownerId}`));assert.deepEqual(value.pendingSubmissions,[pending]);assert.deepEqual(value.pendingSubmissionAttachments.map(file=>file.id).sort(),staged.map(file=>file.id).sort(),'All four original staged references stay protected');return value;};
+ await check();await f.reopen();await check();
+ const wire={text:'#broadcast Sort these photos',idempotencyKey,attachments:assets.map(file=>({id:file.id,agentId:chat.id,conversationId:chat.id}))};
+ const accepted=f.ok(await f.api('POST',`${root}/messages`,wire));const replay=f.ok(await f.api('POST',`${root}/messages`,wire));assert.equal(replay.communicationEventId,accepted.communicationEventId,'Original-key replay returns the exact observed communication');
+ const draft=await check(),retired=f.ok(await f.api('PUT',`${root}/draft`,{ownerId,clientId,text:draft.text,attachmentIds:draft.attachmentIds,pendingSubmissions:[],retirePendingSubmissionIds:[idempotencyKey],expectedRevision:draft.revision}));assert.equal(retired.text,'A newer editable draft');assert.deepEqual(retired.pendingSubmissions??[],[]);
+ const fresh=f.ok(await f.api('GET',`${root}/draft?ownerId=${ownerId}`));
+ const invalidJournal=async value=>f.api('PUT',`${root}/draft`,{ownerId,clientId,text:fresh.text,attachmentIds:fresh.attachmentIds,pendingSubmissions:[value],expectedRevision:fresh.revision});
+ for(const request of [{...pending.request,conversationId:undefined},{...pending.request,conversationId:randomUUID()},{...pending.request,broadcastAttachmentOwnerAgentId:undefined},{...pending.request,broadcastAttachmentOwnerAgentId:randomUUID()}])assert.equal((await invalidJournal({...pending,request})).status,404,'Missing/mismatched frozen Chat owner cannot authorize a Chat-as-Agent reference');
+ assert.equal((await invalidJournal({...pending,uploads:[{...pending.uploads[0],scope:'direct'}]})).status,404,'Non-Broadcast journals still require real Agents');
+ const foreign=await f.createChat('Different canonical Chat');const forged={...wire,idempotencyKey:randomUUID(),attachments:wire.attachments.map(file=>({...file,agentId:foreign.id,conversationId:foreign.id}))};assert.equal((await f.api('POST',`${root}/messages`,forged)).status,404,'Another Chat is never this Broadcast storage owner');
+ const foreignAsset=f.ok(await f.api('POST',`/api/conversations/${foreign.id}/attachments`,Buffer.from('foreign exact bytes'),{'content-type':'application/x-ponderosa-attachment','x-ponderosa-media-type':'text/plain','x-ponderosa-filename':'foreign.txt'}));
+ assert.equal((await f.api('POST',`${root}/messages`,{...wire,idempotencyKey:randomUUID(),attachments:[{id:foreignAsset.id,agentId:chat.id,conversationId:chat.id}]})).status,404,'Forging this Chat owner cannot grant another Chat asset');
+ const branch=f.ok(await f.api('POST','/api/branches',{name:'UI012 foreign Agent',idempotencyKey:randomUUID()})),branchChat=f.ok(await f.api('POST',`/api/branches/${branch.id}/chats`,{label:'Foreign Chat',defaultEngine:'codex'},{'idempotency-key':randomUUID()}));
+ const foreignAgent=f.ok(await f.api('POST',`/api/branches/engine/projects/${branchChat.projectId}/agents`,{title:'Foreign product Agent',engine:'codex',conversationId:branchChat.id,idempotencyKey:randomUUID()}));
+ assert.equal((await invalidJournal({...pending,request:{...pending.request,recipientAgentIds:[foreignAgent.id]}})).status,404,'A valid Chat upload owner does not exempt other real Agent references');
+ assert.equal((await f.api('POST',`/api/branches/engine/conversations/${chat.id}/messages`,{...wire,idempotencyKey:randomUUID()})).status,404,'A product prefix does not grant ownership');
+}));
+
+
+test('UI012 new-Agent opening projects only the exact committed human creation key across readback/restart',async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('UI012 opening correlation'),other=await f.createChat('UI012 foreign opening owner'),key=randomUUID()+':new-agent:0';
+  const body={title:'UI012 created once',engine:'codex',conversationId:chat.id,initialMessage:'Exact UI012 opening input',idempotencyKey:key};
+  const created=f.ok(await f.api('POST',`/api/projects/${chat.projectId}/agents`,body)),eventId=`agent-opening:${created.id}`;
+  const check=async()=>{
+   const detail=f.ok(await f.api('GET',`/api/conversations/${chat.id}`));
+   assert.equal(detail.messages.find(message=>message.communicationEventId===eventId)?.creationIdempotencyKey,key,'Chat readback binds exact opening to its original creation request');
+   const inbox=f.ok(await f.api('GET','/api/inbox'));assert.equal(inbox.items.find(item=>item.communicationEventId===eventId)?.creationIdempotencyKey,key,'Inbox uses the same read-only ledger projection');
+  };
+  await check();await f.reopen();await check();
+  const replay=f.ok(await f.api('POST',`/api/projects/${chat.projectId}/agents`,body));assert.equal(replay.id,created.id,'Original-key retry never creates a second Agent');
+  const operation=store.sqlite.prepare('SELECT * FROM agent_creation_operations WHERE project_id=? AND idempotency_key=?').get(chat.projectId,key);
+  assert.ok(operation);const exact=()=>creationMessageKeys(store,chat.projectId,[eventId]).get(eventId);
+  assert.equal(exact(),key);assert.equal(creationMessageKeys(store,other.projectId,[eventId]).size,0);
+  for(const [column,value] of [['status','preparing'],['status','rolling_back'],['status','rolled_back'],['actor_scope','user:someone-else'],['kind','managed'],['kind','import'],['conversation_id',chat.id],['conversation_id',other.id],['product_scope','dev'],['product_scope','branches'],['result_json',JSON.stringify({...created,conversationId:other.id})],['result_json',null],['result_json','null'],['result_json','[]'],['result_json','broken-json'],...['id','projectId','conversationId'].flatMap(field=>[{},[],false,''].map(value=>['result_json',JSON.stringify({...created,[field]:value})]))]){
+   store.sqlite.prepare(`UPDATE agent_creation_operations SET ${column}=? WHERE id=?`).run(value,operation.id);
+   try{assert.equal(exact(),undefined,`${column}=${value} is not exact committed human creation evidence`);}finally{store.sqlite.prepare(`UPDATE agent_creation_operations SET ${column}=? WHERE id=?`).run(operation[column],operation.id);}
+  }
+  store.sqlite.prepare("UPDATE agent_creation_operations SET status='canonical_committed' WHERE id=?").run(operation.id);assert.equal(exact(),key,'Canonical commit can reconcile an early opening before HTTP completes');store.sqlite.prepare('UPDATE agent_creation_operations SET status=? WHERE id=?').run(operation.status,operation.id);
+  const duplicate={...operation,id:randomUUID(),idempotency_key:randomUUID()};const columns=Object.keys(duplicate);
+  store.sqlite.prepare(`INSERT INTO agent_creation_operations(${columns.join(',')}) VALUES(${columns.map(()=>'?').join(',')})`).run(...columns.map(column=>duplicate[column]));
+  assert.equal(exact(),undefined,'Ambiguous creation ledger evidence fails closed');store.sqlite.prepare('DELETE FROM agent_creation_operations WHERE id=?').run(duplicate.id);
+  assert.equal(exact(),key);
  },{storeFactory:dir=>(store=new AgentStore(dir))});
 });

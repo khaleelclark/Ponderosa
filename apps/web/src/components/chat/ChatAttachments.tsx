@@ -26,6 +26,7 @@ import { readTextPreview } from "../filePreview/readTextPreview";
 // Keep the download URL while asking the verified attachment route for inline
 // audio. Preserve any existing query and fragment.
 const audioPlaybackUrl = (url: string) => {
+  if (url.startsWith("blob:")) return url;
   const [path = "", ...fragment] = url.split("#");
   return path + (path.includes("?") ? "&" : "?") + "playback=audio" + (fragment.length ? "#" + fragment.join("#") : "");
 };

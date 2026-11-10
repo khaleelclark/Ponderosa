@@ -30,7 +30,7 @@ function QueuedMessageTrayComponent({ messages, scope, attachmentNamesForMessage
   const canonicalIds = new Set(messages.map(message => message.deliveryId));
   const captured = scope ? readCapturedSubmissions(scope).filter(item =>
     !(item.status === "accepted" && item.acceptedDeliveryIds?.some(id => canonicalIds.has(id))) &&
-    (item.action === "queue" || !capturedSubmissionRunning(item.pending.idempotencyKey))) : [];
+    (item.action === "queue" || item.pending.request?.runtime.activeRunDelivery === "queue")) : [];
   // As in Main history, only the first cold mount is staged. Eight rows fill
   // this at-most-160px tray; subsequent rows append without moving its controls.
   const rootRef = useRef<HTMLDivElement>(null);

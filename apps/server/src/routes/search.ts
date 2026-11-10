@@ -1,3 +1,4 @@
+import {creationMessageKeys} from "../creation-message-identity.js";
 import {requestProduct,resourceInProduct,decisionInProduct} from '../product-scope.js';
 import { collaborationPresentation, type InboxPageDto } from "@ponderosa/core";
 import type { FastifyInstance } from "fastify";
@@ -83,7 +84,10 @@ export function registerSearchRoutes(
           ),
         ),
       ] as const));
-      const messageItems = messagePage.items.map(item => {
+      const creationKeys = new Map([...new Set(messagePage.items.map(item=>item.project.id))].map(projectId=>[projectId,creationMessageKeys(store,projectId,messagePage.items.filter(item=>item.project.id===projectId).map(item=>item.communicationEventId))]));
+      const messageItems = messagePage.items.map(rawItem => {
+        const creationIdempotencyKey=creationKeys.get(rawItem.project.id)?.get(rawItem.communicationEventId);
+        const item=creationIdempotencyKey?{...rawItem,creationIdempotencyKey}:rawItem;
         const communication = store.getCommunicationEvent(
           item.project.id,
           item.communicationEventId,

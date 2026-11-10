@@ -17,7 +17,10 @@ export async function queuedTrayColdMountRegression():Promise<void>{
  const checkpoint=async(name:string)=>{await probe.queuedTrayCheckpoint?.(name);};
  const host=document.createElement('div');document.body.append(host);const root=createRoot(host);
  const scope='queued-tray-regression',pendingId='queued-tray-pending',acceptedId='queued-tray-accepted';
- const scheduler=(window as unknown as {scheduler:{postTask:(run:()=>void,options:{signal:AbortSignal;priority:string})=>Promise<void>}}).scheduler;
+ const schedulerWindow=window as unknown as {scheduler?:{postTask?:(run:()=>void,options:{signal:AbortSignal;priority:string})=>Promise<void>}};
+ const schedulerDescriptor=Object.getOwnPropertyDescriptor(window,'scheduler');
+ const scheduler=schedulerWindow.scheduler??{};
+ if(!schedulerWindow.scheduler)Object.defineProperty(window,'scheduler',{configurable:true,value:scheduler});
  const nativePostTask=scheduler.postTask;
  const tasks:Array<{signal:AbortSignal;run():void;done:boolean}>=[];
  scheduler.postTask=(run,options)=>new Promise<void>((resolve,reject)=>{
@@ -82,7 +85,7 @@ export async function queuedTrayColdMountRegression():Promise<void>{
 
   await fresh();const stale=await nextTask();root.unmount();assert(stale.signal.aborted,'Unmount aborts queued background work');stale.run();await tick();assert(!host.childNodes.length,'Cancelled work cannot restore an unmounted tray');
  }finally{
-  try{root.unmount();}catch{}host.remove();scheduler.postTask=nativePostTask;window.removeEventListener('ponderosa-submission-retry',retry);
+  try{root.unmount();}catch{}host.remove();scheduler.postTask=nativePostTask;if(!schedulerDescriptor)delete schedulerWindow.scheduler;else if(!schedulerDescriptor.get)Object.defineProperty(window,'scheduler',schedulerDescriptor);window.removeEventListener('ponderosa-submission-retry',retry);
   removeCapturedSubmission(pendingId);removeCapturedSubmission(acceptedId);document.getSelection()?.removeAllRanges();
  }
 }

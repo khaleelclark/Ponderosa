@@ -35,7 +35,7 @@ export async function persistCapturedDraftSubmission(scope: string, ownerId: str
     }
     return { draft: current, mayAdvanceDraftRevision: false, retired: true };
   }
-  const pendingSubmissions = capturedDraftSubmissions(scope, ownerId, current)
+  const pendingSubmissions = (retire ? current.pendingSubmissions ?? [] : capturedDraftSubmissions(scope, ownerId, current))
     .filter(item => item.idempotencyKey !== pending.idempotencyKey);
   if (!retire) pendingSubmissions.push(pending);
   const draft = await api.putConversationDraft(scope, {

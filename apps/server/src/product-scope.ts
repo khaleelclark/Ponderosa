@@ -228,6 +228,29 @@ function browserHandleInProduct(store:AgentStore,request:FastifyRequest,id:strin
  const owner=browserOwnerFromId(id);
  return Boolean(owner&&(owner.kind==='saved'||resourceInProduct(store,'chat',owner.conversationId,product)));
 }
+/** These two wire types use agentId as an asset storage owner. Only the
+ * already-authorized canonical route Chat can be that owner; actual asset
+ * admission/read/delete remains under AssetStore, including absent cleanup. */
+function chatStorageOwnerObjects(request:FastifyRequest,value:unknown,chatId:string):Set<object> {
+  const owners=new Set<object>();
+  if(!value||typeof value!=="object"||Array.isArray(value))return owners;
+  const body=value as Record<string,unknown>,route=request.routeOptions.url;
+  if(route==="/api/conversations/:id/messages"&&request.method==="POST"&&Array.isArray(body.attachments)){
+    for(const asset of body.attachments)if(asset&&typeof asset==="object"&&asset.agentId===chatId&&asset.conversationId===chatId)owners.add(asset);
+  }
+  if(route==="/api/conversations/:id/draft"&&["GET","PUT"].includes(request.method)){
+    for(const pending of [...(body.pendingSubmission?[body.pendingSubmission]:[]),...(Array.isArray(body.pendingSubmissions)?body.pendingSubmissions:[])]){
+      if(!pending||typeof pending!=="object")continue;
+      const captured=pending as {request?:{conversationId?:string;broadcastAttachmentOwnerAgentId?:string};uploads?:Array<{scope?:string;recipients?:Array<{agentId?:string}>}>};
+      if(captured.request?.conversationId!==chatId||captured.request.broadcastAttachmentOwnerAgentId!==chatId)continue;
+      for(const upload of Array.isArray(captured.uploads)?captured.uploads:[]){
+        if(upload?.scope!=="broadcast")continue;
+        for(const recipient of Array.isArray(upload.recipients)?upload.recipients:[])if(recipient&&recipient.agentId===chatId)owners.add(recipient);
+      }
+    }
+  }
+  return owners;
+}
 export function registerProductScope(app:FastifyInstance,store:AgentStore,workspace:WorkspaceStore,
   runtimeOwner:(request:FastifyRequest)=>string|RuntimeProductOwner|undefined):void {
   const ordinaryBelongs=(id:string,kind:string,product:ProductScope):boolean=>{
@@ -375,6 +398,10 @@ export function registerProductScope(app:FastifyInstance,store:AgentStore,worksp
         }
       }
     }
+    const params=request.params as Record<string,string>;
+    const storageChat=!draftOwner&&params.id?store.getConversation(params.id):undefined;
+    const storageOwners=storageChat&&resourceMutable(storageChat.id)&&resourceMutable(storageChat.projectId)&&belongs(storageChat.id,"conversation",product)&&belongs(storageChat.projectId,"project",product)
+      ?chatStorageOwnerObjects(request,request.body,storageChat.id):new Set<object>();
     const scopeKinds:Record<string,string>={projectId:'project',conversationId:'conversation',chatId:'chat',agentId:'agent',rootAgentId:'agent',managerAgentId:'agent',sourceAgentId:'agent',recipientAgentId:'agent',targetAgentId:'agent',triggerId:'trigger',notificationId:'notification',decisionId:'decision'};
     const inspect=(value:unknown,depth=0):boolean=>{
       if(depth>12)return false;
@@ -395,7 +422,7 @@ export function registerProductScope(app:FastifyInstance,store:AgentStore,worksp
               reviewed.id===native.id&&reviewed.branchId===native.branch_id&&reviewed.projectId===''&&reviewed.conversationId==='')
             return inspect({...reviewed,projectId:undefined,conversationId:undefined},depth+1);
         }
-        if(scopeKinds[key]&&typeof v==='string')return resourceMutable(v)&&belongs(v,scopeKinds[key]!,product);
+        if(scopeKinds[key]&&typeof v==='string')return key==='agentId'&&storageOwners.has(value)||resourceMutable(v)&&belongs(v,scopeKinds[key]!,product);
         if(key.endsWith('Ids')&&Array.isArray(v)&&scopeKinds[key.slice(0,-1)]){
           if(v.some(id=>typeof id!=='string'||!id||id.length>200))return true;
           return v.every(id=>resourceMutable(id)&&belongs(id,scopeKinds[key.slice(0,-1)]!,product));
@@ -409,7 +436,6 @@ export function registerProductScope(app:FastifyInstance,store:AgentStore,worksp
     // Nested :id belongs to its declared resource, not the outer Project.
     const resource=/\/(projects|agents|conversations|chats|triggers|notifications|decisions)\/:id(?:\/|$)/.exec(request.routeOptions.url??'')
       ?? /^\/api\/(projects|agents|conversations|chats|triggers|notifications|decisions)\/([^/?]+)/.exec(request.url);
-    const params=request.params as Record<string,string>;
     if(params.projectId&&params.aid&&!artifactInProduct(store,params.projectId,params.aid,product))return reply.code(404).send({error:'Resource is unavailable in this product'});
     const pathAvailable=deletedCopyRoute
       ? deletedCopyAvailable
@@ -432,6 +458,10 @@ export function registerProductScope(app:FastifyInstance,store:AgentStore,worksp
     const belongs=(id:string,kind:string,scope:ProductScope):boolean=>
       (scope==='branches'&&['agent','conversation','chat','project'].includes(kind)&&retained.has(id))||(kind==='project'&&browserHandleInProduct(store,request,id,scope))||ordinaryBelongs(id,kind,scope);
     if(['/api/workspace/preferences','/api/notification-settings/:kind/:id'].includes(request.routeOptions.url??'')&&payload&&typeof payload==='object'&&'projectOrder' in payload)return productPreferences(store,payload as WorkspacePreferencesDto,product);
+    const responseChatId=(request.params as {id?:string}).id;
+    const responseChat=!draftOwner&&responseChatId?store.getConversation(responseChatId):undefined;
+    const storageOwners=responseChat&&belongs(responseChat.id,"conversation",product)&&belongs(responseChat.projectId,"project",product)
+      ?chatStorageOwnerObjects(request,payload,responseChat.id):new Set<object>();
     const filter=(value:unknown,answer?:DecisionDto):unknown=>{
       if(Array.isArray(value))return value.map(item=>filter(item,answer)).filter(v=>v!==undefined);
       if(!value||typeof value!=='object'||Buffer.isBuffer(value))return value;
@@ -457,7 +487,7 @@ export function registerProductScope(app:FastifyInstance,store:AgentStore,worksp
       // Propagate that exact response owner; a matching filename or URL grants nothing.
       const savedFile=answer?.response?.attachments?.find(file=>file.id===object.id&&file.agentId===object.agentId&&file.sha256===object.sha256&&file.size===object.size);
       const decisionAttachment=Boolean(savedFile&&answer&&decisionInProduct(store,answer,product));
-      if(!scopedArtifact&&!chatAttachment&&!decisionAttachment&&typeof object.agentId==='string'&&!belongs(object.agentId,'agent',product)&&
+      if(!scopedArtifact&&!chatAttachment&&!decisionAttachment&&!storageOwners.has(object)&&typeof object.agentId==='string'&&!belongs(object.agentId,'agent',product)&&
         !(typeof object.conversationId==='string'&&decisionInProduct(store,{agentId:object.agentId,conversationId:object.conversationId},product)))return undefined;
       if(!scopedArtifact&&typeof object.originAgentId==='string'&&!belongs(object.originAgentId,'agent',product))return undefined;
       if(typeof object.conversationId==='string'&&!(draftOwner&&object.conversationId===draftOwner.surfaceId

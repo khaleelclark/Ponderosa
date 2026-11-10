@@ -1,3 +1,4 @@
+import { OutgoingMessageRow } from "./OutgoingMessage";
 import {ConversationChromeContext} from "../ConversationChromeContext";
 import {AssistantIcon} from "../AssistantIcon";
 import { Alert, Box, Button, ButtonBase, Chip, Typography } from "@mui/material";
@@ -344,6 +345,8 @@ function ChatPaneComponent({
   return (
     <ChatSurface
       showOutgoingMessage
+      outgoingInTimeline
+      renderedRowCount={timeline.length}
       canonicalCommunicationIds={chatMessages.map(message => message.communicationEventId)}
       layout="agent"
       layoutKey={messageLayoutKey}
@@ -373,7 +376,10 @@ function ChatPaneComponent({
        <Typography color="text.secondary" sx={{maxWidth:340,fontSize:'.9375rem',lineHeight:1.65}}>Send a message.</Typography>
       </Box>:"Send a message to this agent to start the conversation."}
     >
-      {timeline.map(item => {
+      <OutgoingMessageRow entries={timeline.map(item => ({
+        id:item.id,createdAt:item.createdAt,
+        ...(item.kind === "message" ? {communicationEventId:item.message.communicationEventId,creationIdempotencyKey:item.message.creationIdempotencyKey,projectId:projectId??previewScope?.projectId} : {}),
+        render:createdAt => {
         if (item.kind === "decision") return <Box key={item.id} id={item.id} tabIndex={-1}
           sx={{ minWidth: 0, mb: 1.5, outlineOffset: 2 }}><DecisionCard decision={item.decision} /></Box>;
         if (item.kind === "decision-response") return <DecisionResponseMessage key={item.id}
@@ -409,7 +415,7 @@ function ChatPaneComponent({
             />
           );
         }
-        const message = item.message;
+        const message = item.message.createdAt===createdAt?item.message:{...item.message,createdAt};
         const visibleAgentName = message.authorAgentId
           ? (agentNameForId?.(message.authorAgentId) ?? "Agent")
           : agentName;
@@ -537,7 +543,7 @@ function ChatPaneComponent({
                 </>
               ),
               attachments: message.attachments,
-              belowBody: message===latestPeerInput&&projectId?<DirectReplyPreview active={active} agentTitle={agentNameForId?.(message.agentId)??agentName} sent={message} agentId={message.agentId} peerAgentId={message.agentId} messages={chatMessages} projectId={projectId}/>:message.role === "user" ? <><LiveAgentProgress receipts={message.deliveryReceipts} onOpenAgent={onOpenAgent} />{(message===latestDirectInput||message===latestBroadcastInput)&&projectId&&[...new Set(message.deliveryReceipts?.map(receipt=>receipt.targetAgentId)??[])].map(agentId=><DirectReplyPreview active={active} key={`${message.id}:${agentId}`} sent={message} agentTitle={agentNameForId?.(agentId)??agentName} agentId={agentId} messages={chatMessages} projectId={projectId}/>)}</> : undefined,
+              belowBody: item.message===latestPeerInput&&projectId?<DirectReplyPreview active={active} agentTitle={agentNameForId?.(message.agentId)??agentName} sent={message} agentId={message.agentId} peerAgentId={message.agentId} messages={chatMessages} projectId={projectId}/>:message.role === "user" ? <><LiveAgentProgress receipts={message.deliveryReceipts} onOpenAgent={onOpenAgent} />{(item.message===latestDirectInput||item.message===latestBroadcastInput)&&projectId&&[...new Set(message.deliveryReceipts?.map(receipt=>receipt.targetAgentId)??[])].map(agentId=><DirectReplyPreview active={active} key={`${message.id}:${agentId}`} sent={message} agentTitle={agentNameForId?.(agentId)??agentName} agentId={agentId} messages={chatMessages} projectId={projectId}/>)}</> : undefined,
               attachmentDensity: "compact",
               status:
                 (message.role === "user" || message.communicationIntent === "collaboration") && message.deliveryReceipts?.length ? (
@@ -573,7 +579,7 @@ function ChatPaneComponent({
             />
           </Fragment>
         );
-      })}
+      }}))}/>
     </ChatSurface>
   );
 }

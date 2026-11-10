@@ -81,6 +81,7 @@ import {
 } from "./composerDestination";
 import type { ComposerProps } from "./Composer.types";
 import {
+  sha256Bytes,
   durableSubmissionMayBeReleased,
   durableSubmissionFingerprint,
   selectDurableSubmission,
@@ -161,7 +162,7 @@ import { composerSurfaceSx } from "./Composer.styles";
 import { ConversationChromeContext } from "../ConversationChromeContext";
 import { DictationControls } from "../speech/DictationControls";
 import { insertSpeechText } from "../speech/speechText";
-import { CapturedSubmissionOrderError, withCapturedSubmissionLock, capturedSubmissionRunning, readCapturedSubmissions, runCapturedSubmission, saveCapturedSubmission, removeCapturedSubmission, type CapturedSubmission } from "./submissionOutbox";
+import { CapturedSubmissionOrderError, removeRejectedCapturedSubmission, capturedSubmissionRunning, readCapturedSubmissions, runCapturedSubmission, saveCapturedSubmission, removeCapturedSubmission, type CapturedSubmission } from "./submissionOutbox";
 import { persistCapturedDraftSubmission, withCapturedDraftSubmissions } from "./capturedDraftSubmissions";
 import { useOutgoingMessage } from "./OutgoingMessage";
 
@@ -2294,6 +2295,7 @@ export function Composer({
     const feedbackAttempt=createClientId("submission-feedback-");
     let previouslyDispatched = item.dispatchStarted === true;
     let loadedUnderLock = false;
+    let dispatchedThisAttempt = false;
     let outgoingId: string | undefined;
     const persist = async (pending: DraftPendingSubmissionDto, retire = false) => {
       item = { ...item, pending };
@@ -2329,7 +2331,7 @@ export function Composer({
     };
     void runCapturedSubmission(item, async current => {
       item = current;
-      previouslyDispatched = current.dispatchStarted === true;
+      previouslyDispatched = current.dispatchStarted === true && current.status !== "failed";
       loadedUnderLock = true;
       if (item.status === "accepted") {
         await persist(item.pending, true);
@@ -2357,18 +2359,6 @@ export function Composer({
           return api.downloadDraftAttachment(metadata);
         }));
       }
-      if (outgoingId && !item.newAgentRequested) {
-        const conversationId = item.pending.request?.conversationId;
-        const key = item.pending.idempotencyKey;
-        if (conversationId) {
-          await outgoing?.identify(outgoingId, hasBroadcastMention(item.text) ? "broadcast" : "user-dm",
-            hasBroadcastMention(item.text) ? `${conversationId}\0${key}` : `multi-direct:${conversationId}:${key}`);
-        } else if (item.projectId && item.scope.startsWith("agent:")) {
-          await outgoing?.identify(outgoingId, "user-message", `${item.projectId}\0${item.scope.slice(6)}\0${key}`);
-        }
-      }
-      item = { ...item, dispatchStarted: true };
-      saveCapturedSubmission(item);
       const result = await handler(
         item.text, exactFiles, item.pending.draftAttachmentIds ?? [], item.ownerId,
         {
@@ -2378,15 +2368,30 @@ export function Composer({
           retryPreparedAttempt: true,
           capturedSubmission: true,
           capturedProjectId: item.projectId,
+          beforeDispatch: async identity => {
+            if(identity)item={...item,communicationId:`${identity.prefix}-${await sha256Bytes(new TextEncoder().encode(identity.seed))}`};
+            const observed=readCapturedSubmissions(item.scope,item.ownerId).find(value=>value.pending.idempotencyKey===item.pending.idempotencyKey);
+            if(observed?.status==="accepted"){item={...item,status:"accepted"};throw new Error("The canonical message is already accepted. Finish its recovery cleanup.");}
+            // Uploads and journal CAS are preparation. Only the actual work
+            // mutation crosses this durable, cross-tab recovery boundary.
+            if (dispatchedThisAttempt) previouslyDispatched = true;
+            item = { ...item, dispatchStarted: true };
+            saveCapturedSubmission(item);
+            dispatchedThisAttempt = true;
+          },
           persistPendingSubmission: async value => { await persist(value); },
-          onAgentCreated: agent => { if (outgoingId) outgoing?.agentCreated(outgoingId, agent); },
+          onAgentCreated: agent => {
+            item={...item,communicationId:`agent-opening:${agent.id}`};
+            try{saveCapturedSubmission(item);}catch{/* Correlation hint only; the original dispatch boundary remains retained. */}
+            if(outgoingId)outgoing?.agentCreated(outgoingId,agent);
+          },
         },
       );
       const receipt = result as { communicationEventId?: string; message?: { communicationEventId?: string }; deliveryId?: string; recipients?: Array<{ deliveryId?: string }>; deliveryIds?: string[] } | undefined;
       if (outgoingId) outgoing?.accepted(outgoingId, receipt?.communicationEventId ?? receipt?.message?.communicationEventId);
       const acceptedDeliveryIds = receipt?.deliveryIds ?? receipt?.recipients?.flatMap(recipient => recipient.deliveryId ? [recipient.deliveryId] : []) ?? (receipt?.deliveryId ? [receipt.deliveryId] : []);
       notify({key:feedbackKey,message:"",dismiss:true});
-      item = { ...item, status: "accepted", acceptedDeliveryIds, error: undefined };
+      item = { ...item, status: "accepted", acceptedDeliveryIds, communicationId:receipt?.communicationEventId??receipt?.message?.communicationEventId??item.communicationId, error: undefined };
       saveCapturedSubmission(item);
       // The server receipt owns accepted/queued state. Retire only this browser
       // intent and its protection metadata; never clear the active draft here.
@@ -2396,12 +2401,14 @@ export function Composer({
     }, (error, current) => {
       if (!loadedUnderLock) {
         item = current;
-        previouslyDispatched = current.dispatchStarted === true;
+        previouslyDispatched = current.dispatchStarted === true && current.status !== "failed";
       }
+      const observed=readCapturedSubmissions(item.scope,item.ownerId).find(value=>value.pending.idempotencyKey===item.pending.idempotencyKey);
+      if(observed?.status==="accepted")item={...item,status:"accepted",communicationId:observed.communicationId??item.communicationId};
       const accepted = item.status === "accepted";
       // A later rejection cannot prove that an earlier uncertain send had no effect.
-      const definitive = !accepted && !previouslyDispatched &&
-        (error instanceof CapturedSubmissionOrderError || (error instanceof ApiRequestError &&
+      const definitive = !accepted && !previouslyDispatched && !item.pending.agentCreationCommitted &&
+        (!dispatchedThisAttempt || error instanceof CapturedSubmissionOrderError || (error instanceof ApiRequestError &&
         durableSubmissionMayBeReleased(item.pending, error.status, error.message)));
       item = { ...item, status: accepted ? "accepted" : definitive ? "failed" : "unknown", error: accepted
         ? "This message was saved. Retry to finish clearing its recovery record."
@@ -2411,8 +2418,8 @@ export function Composer({
     }).catch(error => {
       notify({key:feedbackKey,incident:feedbackAttempt+":recovery",severity:"error",message:"Message Recovery Unavailable",description:"Your captured message remains in the original Chat. Review it before retrying.",details:error instanceof Error?error.message:String(error)});
     }).finally(() => { if (outgoingId) outgoing?.finish(outgoingId); });
-    // Register transport before optimistic rendering can expose the captured send in the recovery tray.
-    outgoingId = item.action === "send" && item.status !== "accepted" ? outgoing?.begin(item.text, item.attachmentNames) : undefined;
+    // Register transport before rendering can expose the captured send in its timeline.
+    outgoingId = item.action === "send" && item.status !== "accepted" ? outgoing?.begin(item.text, item.attachmentNames, item, selectedFiles) : undefined;
   };
   useEffect(() => {
     const retry = (event: Event) => {
@@ -2428,28 +2435,40 @@ export function Composer({
       const item = readCapturedSubmissions(conversationDraftId, draftOwnerId).find(value => value.pending.idempotencyKey === id);
       if (!item || item.status !== "failed" || capturedSubmissionRunning(id) || !navigator.locks) return;
       const writeChain = draftWriteChain.current;
-      void withCapturedSubmissionLock(item, async () => {
-        const current = readCapturedSubmissions(item.scope, item.ownerId).find(value => value.pending.idempotencyKey === id);
-        if (!current || current.status !== "failed") return;
+      const key=JSON.stringify([productApiPath("/api/conversations"),item.scope,item.ownerId,"remove",id]),incident=createClientId("remove-feedback-");
+      void removeRejectedCapturedSubmission(item, async current => {
+        // Verify the exact canonical draft owner before interpreting a missing
+        // upload as settled. Product/access/deletion failures remain actionable.
+        if(!item.scope.startsWith("local:"))await api.getConversationDraft(item.scope,item.ownerId);
         // Only definite rejection permits disposal. Unknown/committed outcomes
         // must reconcile via Retry before edit/delete/steer becomes meaningful.
         for (const upload of current.pending.uploads ?? []) {
           for (const recipient of upload.recipients) {
             for (const attachmentId of recipient.attachmentIds) {
-              if (recipient.agentId === item.scope) await api.deleteConversationAttachment(item.scope, attachmentId);
-              else await api.deleteAttachment(recipient.agentId, attachmentId);
+              try {
+                if (recipient.agentId === item.scope) await api.deleteConversationAttachment(item.scope, attachmentId);
+                else await api.deleteAttachment(recipient.agentId, attachmentId);
+              } catch(error) {
+                const settled=error instanceof ApiRequestError&&(error.status===404&&error.message==="asset not found"||error.status===409&&error.message==="sent assets cannot be deleted");
+                if(!settled)throw error;
+              }
             }
           }
         }
+        if(current.scope.startsWith("local:")){removeCapturedSubmission(id);return;}
         const write = settledDraftWriteContinuation(writeChain.tail, async () => {
-          const result = await persistCapturedDraftSubmission(item.scope, item.ownerId, item.clientId, item.pending, true, writeChain.ownedRevision);
+          const result = await persistCapturedDraftSubmission(current.scope, current.ownerId, current.clientId, current.pending, true, writeChain.ownedRevision);
           if (result.mayAdvanceDraftRevision) writeChain.ownedRevision = result.draft.revision;
           queryClient.setQueryData(queryKeys.conversationDraft.detail(item.scope, item.ownerId), result.draft);
           removeCapturedSubmission(id);
         });
         writeChain.tail = write;
         await write;
-      }).catch(error => saveCapturedSubmission({ ...item, error: error instanceof Error ? error.message : "Rejected input could not be discarded; retry." }));
+      }).then(()=>notify({key,message:"",dismiss:true})).catch(error => {
+        const retained=readCapturedSubmissions(item.scope,item.ownerId).find(value=>value.pending.idempotencyKey===id);
+        try{if(retained)saveCapturedSubmission({...retained,error:error instanceof Error?error.message:"Rejected input could not be removed; retry."});}catch{/* The original capture remains retained; feedback still exposes the failure. */}
+        notify({key,incident,severity:"error",message:"Message Removal Needs Review",description:"The original captured message remains available. Review its Details before retrying removal.",details:error instanceof Error?error.message:String(error)});
+      });
     };
     window.addEventListener("ponderosa-submission-discard", discard);
     window.addEventListener("ponderosa-submission-retry", retry);
@@ -2694,7 +2713,7 @@ export function Composer({
         },
       };
       if (readCapturedSubmissions(conversationDraftId, draftOwnerId).length >= 32) {
-        setSendError("Resolve captured messages in the tray before submitting more (32 per Chat).");
+        setSendError("Resolve captured messages before submitting more (32 per Chat).");
         return;
       }
       try { saveCapturedSubmission(item); } catch (error) {

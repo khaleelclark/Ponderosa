@@ -60,7 +60,7 @@ export async function branchTreePackageRecoveryRegression(){
  const receipt:any={schema:'ponderosa.branch-runtime-tree-import.v1',planId:'tree-plan',rootBranchId:'fresh-root',manifestSha256:sha,held:true,currentAuthority:false,dispatched:false,branchMap:{'root-source':'fresh-root','child-source':'fresh-child'},executionMap:{'source-owner':'fresh-owner'},chatMap:{},agentMap:{},frontiers:{'source-owner':{disposition:'evidence_only',reason:'Unknown native effects',idMap:{}}},reservedFrontiers:{'source-owner':{}},ownerPins:{'source-owner':{versionId:'fresh-v',bindingRevisionId:'fresh-b'}}};
  const key=`branch-package-command:${JSON.stringify([window.location.origin,currentProductScope(),pkg.packageId,null,treeSha,sha])}`,prior=localStorage.getItem(key);localStorage.removeItem(key);
  let posts=0,previews=0,statusReads=0,reads=0,opened=0,known=false,reviewed:any,definitionReceipt:any;
- const click=async(text:string)=>{const button=Array.from(document.querySelectorAll('button')).find(b=>b.textContent===text);assert(button,text);button!.click();await settle();};
+ const click=async(text:string)=>{const deadline=performance.now()+6000;let button:HTMLButtonElement|undefined;while(performance.now()<deadline){button=Array.from(document.querySelectorAll('button')).find(b=>b.textContent===text&&!b.disabled);if(button)break;await new Promise(resolve=>requestAnimationFrame(resolve));}assert(button,text);button!.click();await settle();};
  const acknowledge=async(text:string)=>{const label=Array.from(document.querySelectorAll('label')).find(l=>l.textContent?.includes(text));assert(label,text);(label!.querySelector('input') as HTMLInputElement).click();await settle();};
  globalThis.fetch=async(input,init)=>{
   const url=String(input);

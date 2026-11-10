@@ -180,7 +180,8 @@ test('audio attachment header keeps the exact filename and protected download UR
  f.mount(f.exports.ChatAttachments,{attachments:[{id:'audio',name,mediaType:'audio/webm',downloadUrl:url}]});
  const player=f.find(n=>n.type===Player);assert.equal(player.props.downloadUrl,url);assert.equal(player.props.src,'/owned/audio?owner=one&download=1&playback=audio#original');
  const title=f.find(n=>n.type==='Typography'&&n.props.title===name);assert.equal(title.props.children,name);assert.equal(title.props.noWrap,true);
- assert.equal(f.all().some(n=>n.type==='Button'&&n.props.children==='Download Audio'),false,'download remains one compact player option');f.unmount();
+ assert.equal(f.all().some(n=>n.type==='Button'&&n.props.children==='Download Audio'),false,'download remains one compact player option');
+ const local='blob:http://localhost/exact-local-audio';f.update({attachments:[{id:'local',name,mediaType:'audio/webm',downloadUrl:local}]});assert.equal(f.find(n=>n.type===Player).props.src,local,'UI012 captured local audio keeps its exact playable object URL');f.unmount();
 });
 
 
