@@ -123,7 +123,7 @@ function capturedRetirementFixture(){
   draftContentGeneration:{current:1},textRef:{current:state.text},setTextState:text=>state.text=text,replacePastedText(){},pastedTextAttachmentId:{current:undefined},setKnownMentionBindings(){},setActiveDefaultDestination(){},inputRef:{current:{resetDocument(){}}},setCaret(){},setSendError(){},
   draftHydrationGeneration:{current:0},metadata:{current:new Map([['sent',attachment]])},attachmentIds:ids,locallyRemovedIds:removed,locallyRemovedDraftAttachmentIds:removed,locallyRemovedFiles:{current:new WeakSet()},pendingUploads:{current:[]},activeUploads:{current:0},generation:{current:0},setUploadStates(){},setAttachmentVersion(){},
   dispatch:action=>{state.attachments=c.reducer(state.attachments,action);},
-  item:{scope:'owned-chat',ownerId:'owned-owner',status:'pending',dispatchStarted:true,pending},loadedUnderLock:true,previouslyDispatched:true,dispatchedThisAttempt:true,readCapturedSubmissions:()=>[],feedbackKey:"captured-feedback",feedbackAttempt:"captured-attempt",notify(){},ApiRequestError:class extends Error{},CapturedSubmissionOrderError:class extends Error{},durableSubmissionMayBeReleased:()=>{throw Error('Uncertain transport must not use definitive rejection');},saveCapturedSubmission:item=>{state.saved=structuredClone(item);},
+  item:{scope:'owned-chat',ownerId:'owned-owner',status:'pending',dispatchStarted:true,pending},loadedUnderLock:true,previouslyDispatched:true,dispatchedThisAttempt:true,readCapturedSubmissions:()=>[],capturedSubmissionRetired:()=>false,feedbackKey:"captured-feedback",feedbackAttempt:"captured-attempt",notify(){},ApiRequestError:class extends Error{},CapturedSubmissionOrderError:class extends Error{},durableSubmissionMayBeReleased:()=>{throw Error('Uncertain transport must not use definitive rejection');},saveCapturedSubmission:item=>{state.saved=structuredClone(item);},
  };
  vm.createContext(c);const run=s=>vm.runInContext(compile(s),c);
  c.reducer=run('('+reducerSource.replace(/^function composerAttachmentReducer/,'function')+')');
@@ -195,4 +195,20 @@ test('Assistant rejects retained Queue and native next-Run commands without rein
  assert.equal(assistantSubmissionError('/unknown literal text',false),undefined);
  assert.equal(assistantSubmissionError('#Someone /goal-resume',false),undefined,'Only exact native-turn commands receive native semantics');
  assert.ok(assistantSubmissionError('/review invalid-json',false),'Malformed native work stays a draft too');
+});
+
+test('UI018 a product switch during reply correlation hashing cannot cross the dispatch boundary',async()=>{
+ let source;
+ function visit(node){if(sendTS.isPropertyAssignment(node)&&node.name.getText(sendAst)==='beforeDispatch'&&node.initializer.getText(sendAst).includes('namespace!==productApiPath'))source=node.initializer.getText(sendAst);sendTS.forEachChild(node,visit);}visit(sendAst);assert(source);
+ let namespace='/api/conversations',release,writes=0;const item={scope:'chat',ownerId:'owner',pending:{idempotencyKey:'exact'}};
+ const context={Error,TextEncoder,item,namespace,productApiPath:()=>namespace,sha256Bytes:()=>new Promise(resolve=>release=resolve),saveCapturedSubmission:()=>writes++,readCapturedSubmissions:()=>[],capturedSubmissionRetired:()=>false,dispatchedThisAttempt:false,previouslyDispatched:false};vm.createContext(context);
+ const callback=vm.runInContext(compile('('+source+')'),context),attempt=callback({prefix:'reply',seed:'exact-source'});namespace='/api/branches/engine/conversations';release('a'.repeat(64));await assert.rejects(attempt,/destination is no longer active/);assert.equal(writes,0);assert.equal(context.dispatchedThisAttempt,false);
+});
+
+test('UI018 legacy Remove freezes its product before waiting for the exact owner lock',async()=>{
+ let source;
+ function visit(node){if(sendTS.isVariableDeclaration(node)&&node.name.getText(sendAst)==='discard'&&node.initializer?.getText(sendAst).includes('removeRejectedCapturedSubmission'))source=node.initializer.getText(sendAst);sendTS.forEachChild(node,visit);}visit(sendAst);assert(source);
+ let namespace='/api/conversations',remove,writes=0;const item={scope:'chat',ownerId:'owner',status:'failed',pending:{idempotencyKey:'legacy-exact'}};
+ const context={Error,readCapturedSubmissions:()=>[item],conversationDraftId:'chat',draftOwnerId:'owner',capturedSubmissionRunning:()=>false,navigator:{locks:{}},draftWriteChain:{current:{}},productApiPath:()=>namespace,createClientId:()=> 'feedback',removeRejectedCapturedSubmission:(_item,callback)=>{remove=callback;return new Promise(()=>{});},persistCapturedDraftSubmission:async()=>writes++,removeCapturedSubmission:()=>{},notify:()=>{},queryClient:{setQueryData:()=>{}},queryKeys:{}};vm.createContext(context);
+ vm.runInContext(compile('('+source+')'),context)({detail:'legacy-exact'});assert(remove);namespace='/api/branches/engine/conversations';await assert.rejects(remove(item),/destination is not active/);assert.equal(writes,0);
 });

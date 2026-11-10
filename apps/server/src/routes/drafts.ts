@@ -55,6 +55,7 @@ const DRAFT_UPDATE_FIELDS = new Set([
   "pendingSubmission",
   "pendingSubmissions",
   "retirePendingSubmissionIds",
+  "captureMetadataOnly",
   "expectedRevision",
   "clientId",
   "ownerId",
@@ -119,6 +120,7 @@ export function draftUpdateBodyError(
     const error = draftPendingSubmissionError(body.pendingSubmission, maxAttachmentsPerMessage, Number(body.expectedRevision));
     if (error) return error;
   }
+  if(body.captureMetadataOnly!==undefined&&typeof body.captureMetadataOnly!=="boolean")return "captureMetadataOnly must be a boolean";
   if (body.retirePendingSubmissionIds !== undefined &&
     (!Array.isArray(body.retirePendingSubmissionIds) || body.retirePendingSubmissionIds.length > 32 ||
       body.retirePendingSubmissionIds.some(id => typeof id !== "string" || !id.trim() || id.length > 200) ||
@@ -772,6 +774,7 @@ export function registerDraftRoutes(
   >,
   maxAttachmentsPerMessage: number,
   publishWorkspaceSince: (cursor: number) => unknown,
+  assetReconciliationInProgress: (ownerId: string) => boolean = () => false,
 ): void {
   app.get<{
     Params: { id: string };
@@ -822,6 +825,12 @@ export function registerDraftRoutes(
         if (!service.canEditOwner(request.params.id, ownerId)) return reply.code(409).send({ error: "The Decision answer draft is no longer editable" });
         const current = workspace.getDraft(request.params.id, ownerId);
         const persist = async () => {
+          // No new upload reference may commit after maintenance snapshots
+          // this asset owner. Existing references and exact retirement remain safe.
+          const latest=workspace.getDraft(request.params.id,ownerId);
+          const retained=new Set([...(latest.pendingSubmission?[latest.pendingSubmission]:[]),...(latest.pendingSubmissions??[])].flatMap(pending=>(pending.uploads??[]).flatMap(upload=>upload.recipients.flatMap(recipient=>recipient.attachmentIds.map(id=>JSON.stringify([recipient.agentId,id]))))));
+          const incoming=[...(body.pendingSubmission?[body.pendingSubmission]:[]),...(body.pendingSubmissions??[])].filter(pending=>!body.retirePendingSubmissionIds?.includes(pending.idempotencyKey)&&!draftPendingSubmissionRetired(latest,pending));
+          if(incoming.some(pending=>(pending.uploads??[]).some(upload=>upload.recipients.some(recipient=>assetReconciliationInProgress(recipient.agentId)&&recipient.attachmentIds.some(id=>!retained.has(JSON.stringify([recipient.agentId,id])))))))return reply.code(409).send({error:"Attachment maintenance is in progress; retry the original message."});
           const cursor = workspace.cursor();
           try {
             workspace.putDraft(request.params.id, { ...body, ownerId });
@@ -829,6 +838,7 @@ export function registerDraftRoutes(
             return service.hydrate(request.params.id, ownerId);
           } catch (error) {
             if ((error as { code?: string }).code === "DRAFT_SUBMISSION_INVALID") return reply.code(400).send({ error: (error as Error).message });
+            if((error as {code?:string}).code==='DRAFT_METADATA_CONFLICT')return reply.code(409).send({code:'DRAFT_METADATA_CONFLICT',error:'Captured message metadata changed; recheck the current draft.'});
             if ((error as { code?: string }).code === "DRAFT_CONFLICT") {
               const conflictError = error as {
                 conflict?: { id?: string };
@@ -862,9 +872,9 @@ export function registerDraftRoutes(
           return persist();
         }
         const referencedIds = [
-          ...body.attachmentIds,
-          ...(body.pastedTextAttachmentId ? [body.pastedTextAttachmentId] : []),
-          ...(body.pendingSubmissions ?? []).filter(pending => !draftPendingSubmissionRetired(current, pending)).flatMap(pending => [
+          ...(body.captureMetadataOnly ? current.attachmentIds : body.attachmentIds),
+          ...((body.captureMetadataOnly ? current.pastedTextAttachmentId : body.pastedTextAttachmentId) ? [body.captureMetadataOnly ? current.pastedTextAttachmentId! : body.pastedTextAttachmentId!] : []),
+          ...(body.pendingSubmissions ?? []).filter(pending => !body.retirePendingSubmissionIds?.includes(pending.idempotencyKey) && !draftPendingSubmissionRetired(current, pending)).flatMap(pending => [
             ...(pending.draftAttachmentIds ?? []), ...(pending.editableDraftAttachmentIds ?? []),
             ...[pending.pastedTextAttachmentId, pending.editablePastedTextAttachmentId].filter((id): id is string => Boolean(id)),
           ]),

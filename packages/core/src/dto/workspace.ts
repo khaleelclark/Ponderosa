@@ -491,6 +491,8 @@ export interface PutConversationDraftRequest {
   pastedTextAttachmentId?: string;
   mentionBindings?: AgentMentionBindingDto[];
   pendingSubmission?: DraftPendingSubmissionDto;
+  /** Strict CAS for capture bookkeeping; editable content and its ownership are preserved. */
+  captureMetadataOnly?: boolean;
   expectedRevision: number;
   clientId: string;
   ownerId?: string;

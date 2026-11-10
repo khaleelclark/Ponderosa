@@ -739,6 +739,7 @@ registerDraftRoutes(
   workspace,
   MAX_ATTACHMENTS_PER_MESSAGE,
   publishWorkspaceSince,
+  ownerId => reconcilingAssetAgentIds.has(ownerId),
 );
 
 const notificationRoutesOptions = {

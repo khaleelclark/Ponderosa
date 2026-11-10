@@ -48,11 +48,12 @@ export function MessageActionsAndTimestamp({
   status?: ReactNode;
   value: string;
   showTimestamp?: boolean;
-}): JSX.Element {
+}): JSX.Element | null {
   const [touchRevealed, setTouchRevealed] = useState(false);
   const revealOnTouch = (event: PointerEvent<HTMLDivElement>) => {
     if (event.pointerType === "touch") setTouchRevealed(true);
   };
+  if(!actions&&!footer&&!status&&!showTimestamp&&!mobileTimestampRevealed)return null;
   const actionButtons = <div className="MuiBox-root chat-message-action-buttons">{actions}</div>;
   return <div className={`MuiBox-root chat-message-actions${touchRevealed ? " revealed" : ""}`} onPointerDown={revealOnTouch}>
     {mobileTimestampRevealed ? <div className="MuiBox-root chat-message-mobile-time">

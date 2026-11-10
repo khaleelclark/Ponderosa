@@ -126,12 +126,12 @@ const DEFAULT_PREFERENCES: WorkspacePreferencesDto = {
 
 export function draftRevisionConflicts(
   current: Pick<ConversationDraftDto, "revision" | "clientId">,
-  input: { expectedRevision: number; clientId: string },
+  input: { expectedRevision: number; clientId: string; captureMetadataOnly?: boolean },
 ): boolean {
   const provenSameIncarnation =
     /^page:[^:]+:draft:[^:]+$/u.test(input.clientId)
     && current.clientId === input.clientId;
-  return current.revision !== input.expectedRevision && !provenSameIncarnation;
+  return current.revision !== input.expectedRevision && (input.captureMetadataOnly === true || !provenSameIncarnation);
 }
 
 /** Coordination traces regroup; the canonical Request/Join owns its notice. */
@@ -1344,6 +1344,12 @@ export class WorkspaceStore {
   putDraft(conversationId: string, input: PutConversationDraftRequest): ConversationDraftDto {
     const ownerId = input.ownerId ?? "legacy";
     const current = this.getDraft(conversationId, ownerId);
+    if(input.captureMetadataOnly){
+      // Capture bookkeeping cannot borrow the editable writer's revision bypass,
+      // overwrite newer text, or manufacture a displaced editable conflict.
+      if(current.revision!==input.expectedRevision)throw Object.assign(new Error('Captured message metadata changed; recheck the current draft.'),{code:'DRAFT_METADATA_CONFLICT'});
+      input={...input,text:current.text,attachmentIds:current.attachmentIds,pastedTextAttachmentId:current.pastedTextAttachmentId,mentionBindings:current.mentionBindings,decisionAnswers:current.decisionAnswers,pendingSubmission:current.pendingSubmission&&!input.retirePendingSubmissionIds?.includes(current.pendingSubmission.idempotencyKey)?current.pendingSubmission:undefined,clientId:current.clientId||input.clientId};
+    }
     if (input.decisionAnswers !== undefined) {
       const decision = this.getDecision(ownerId);
       const error = !decision?.questions || decision.status !== "pending" || conversationId !== `agent:${decision.agentId}`

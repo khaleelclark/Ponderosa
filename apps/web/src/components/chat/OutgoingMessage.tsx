@@ -1,9 +1,12 @@
+import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
+import {CopyMessageButton} from "../CopyMessageButton";
+import {reconcileAcceptedCapture} from "./capturedDraftSubmissions";
 import {ChatAttachments} from "./ChatAttachments";
-import {useQuery} from "@tanstack/react-query";
+import {useQuery,useQueryClient} from "@tanstack/react-query";
 import {api} from "../../api";
 import {queryKeys} from "../../queryKeys";
 import { ConversationChromeContext } from "../ConversationChromeContext";
-import { Box, Button, Link, Stack, Typography } from "@mui/material";
+import { Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, IconButton, Link, Tooltip, Typography } from "@mui/material";
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import type { AgentDto, OperatorProfileDto, CommunicationAttachmentDto } from "@ponderosa/core";
 import { createClientId } from "../../clientId";
@@ -57,8 +60,20 @@ function adoptionRow(message:OutgoingMessage,rows:readonly Pick<OutgoingCanonica
  * canonical query data or Agent context. Accepted anchors last only while their
  * exact canonical row is in this view; they contain no second message history. */
 export function OutgoingMessageProvider({children,profile,scope="new-chat",draftScope=scope,onOpenAgent}:{children:ReactNode;profile?:OperatorProfileDto;scope?:string;draftScope?:string;onOpenAgent?(agentId:string,projectId:string):void}) {
+  const queryClient=useQueryClient();
   const [messages,setMessages]=useState<OutgoingMessage[]>([]),[outboxRevision,refresh]=useState(0);
-  useEffect(()=>{const changed=()=>refresh(value=>value+1);window.addEventListener(submissionOutboxEvent,changed);window.addEventListener("storage",changed);return()=>{window.removeEventListener(submissionOutboxEvent,changed);window.removeEventListener("storage",changed);};},[]);
+  useEffect(()=>{
+    const changed=()=>refresh(value=>value+1);
+    const resume=()=>{
+      const confirmed=new Map(readCapturedSubmissions(draftScope).filter(item=>item.status==="accepted").map(item=>[item.pending.idempotencyKey,item]));
+      for(const message of messages)if(message.captured?.status==="accepted")confirmed.set(message.id,message.captured);
+      for(const item of confirmed.values())void reconcileAcceptedCapture(queryClient,item,true).catch(()=>undefined);
+      changed();
+    };
+    window.addEventListener(submissionOutboxEvent,changed);window.addEventListener("storage",changed);window.addEventListener("online",resume);window.addEventListener("focus",resume);
+    return()=>{window.removeEventListener(submissionOutboxEvent,changed);window.removeEventListener("storage",changed);window.removeEventListener("online",resume);window.removeEventListener("focus",resume);};
+  },[draftScope,messages,queryClient]);
+  useEffect(()=>{for(const item of readCapturedSubmissions(draftScope))if(item.status==="accepted")void reconcileAcceptedCapture(queryClient,item).catch(()=>undefined);},[queryClient,draftScope,outboxRevision]);
   const begin=useCallback((text:string,fileNames:string[],captured?:CapturedSubmission,files?:File[])=>{
     const id=captured?.pending.idempotencyKey??createClientId("sending-");
     setMessages(current=>current.some(message=>message.id===id)?current:[...current,captured?{...projection(captured,scope),files}: {id,scope,text,fileNames:[...fileNames],createdAt:new Date().toISOString()}]);return id;
@@ -74,24 +89,28 @@ export function OutgoingMessageProvider({children,profile,scope="new-chat",draft
       // A compound creation plus other recipients still needs its exact-key
       // reconciliation; an opening alone cannot settle the remaining work.
       const compound=item.newAgentRequested&&Boolean(item.pending.request?.recipientAgentIds.length);
-      if(item.status!=="accepted"&&!compound)try{saveCapturedSubmission({...item,status:"accepted",communicationId:row.communicationEventId});}catch{/* Original captured input and dispatch boundary remain recoverable. */}
+      if(item.status!=="accepted"&&!compound){
+        const confirmed={...item,status:"accepted" as const,communicationId:row.communicationEventId};
+        try{saveCapturedSubmission(confirmed);}catch{/* Exact canonical acceptance still owns this presentation. */}
+        void reconcileAcceptedCapture(queryClient,confirmed).catch(()=>undefined);
+      }
     }
     setMessages(current=>{
       let changed=false;const next=current.flatMap(message=>{
         const row=adoptionRow(message,rows);
         if(message.reconciled&&!row){changed=true;return [];}
-        if(row?.communicationEventId&&(!message.reconciled||message.communicationId!==row.communicationEventId)){changed=true;return [{...message,reconciled:true,accepted:true,communicationId:row.communicationEventId,text:"",fileNames:[]}];}
+        if(row?.communicationEventId&&(!message.reconciled||message.communicationId!==row.communicationEventId||message.captured&&message.captured.status!=="accepted"&&!(message.captured.newAgentRequested&&message.captured.pending.request?.recipientAgentIds.length))){changed=true;return [{...message,reconciled:true,accepted:true,...(message.captured&&!(message.captured.newAgentRequested&&message.captured.pending.request?.recipientAgentIds.length)?{captured:{...message.captured,status:"accepted" as const}}:{}),communicationId:row.communicationEventId,text:"",fileNames:[]}];}
         return [message];
       });
-      for(const {item,row} of observed)if(!next.some(message=>message.id===item.pending.idempotencyKey)){changed=true;next.push({...projection(item,scope),reconciled:true,accepted:true,communicationId:row.communicationEventId,text:"",fileNames:[]});}
+      for(const {item,row} of observed)if(!next.some(message=>message.id===item.pending.idempotencyKey)){changed=true;next.push({...projection(item.newAgentRequested&&item.pending.request?.recipientAgentIds.length?item:{...item,status:"accepted"},scope),reconciled:true,accepted:true,communicationId:row.communicationEventId,text:"",fileNames:[]});}
       return changed?next:current;
     });
-  },[draftScope,scope]);
+  },[draftScope,scope,queryClient]);
   const visibleMessages=useMemo(()=>{
     const captures=readCapturedSubmissions(draftScope).filter(isTimelineCapture),ids=new Set(captures.map(item=>item.pending.idempotencyKey));
     const byId=new Map(messages.filter(message=>message.scope===scope&&(!message.captured||ids.has(message.id)||message.accepted||message.reconciled)).map(message=>[message.id,message.captured&&!ids.has(message.id)?{...message,captured:undefined}:message]));
     for(const item of captures){
-      const retained=byId.get(item.pending.idempotencyKey);byId.set(item.pending.idempotencyKey,{...retained,...projection(item,scope),communicationId:item.communicationId??retained?.communicationId});
+      const retained=byId.get(item.pending.idempotencyKey);byId.set(item.pending.idempotencyKey,{...retained,...projection(retained?.captured?.status==="accepted"?{...item,status:"accepted"}:item,scope),communicationId:item.communicationId??retained?.communicationId});
     }
     return [...byId.values()].sort((a,b)=>a.createdAt.localeCompare(b.createdAt)||a.id.localeCompare(b.id));
   },[messages,scope,draftScope,outboxRevision]);
@@ -117,21 +136,26 @@ export function OutgoingMessageRow({entries,canonicalCommunicationIds=[],empty}:
   return <>{merged.length===0?empty:null}{merged.map(row=><Box key={row.key} id={row.anchor} sx={{minWidth:0}}>{row.render()}</Box>)}</>;
 }
 function CapturedRecovery({item,canonicalObserved=false}:{item:CapturedSubmission;canonicalObserved?:boolean}) {
+  const [details,setDetails]=useState(false);
   const activity=capturedSubmissionActivity(item.pending.idempotencyKey),earlier=earlierCapturedSubmission(item);
-  const accepted=item.status==="accepted",running=Boolean(activity);
-  const status=activity==="remove"?"Removing":earlier?"Waiting For Earlier Message":running?"Sending":accepted?"Accepted":item.status==="unknown"||item.dispatchStarted&&item.status!=="failed"?"Unconfirmed":"Not Sent";
-  const removable=!canonicalObserved&&!accepted&&item.status==="failed";
-  const explanation=item.error??(status==="Unconfirmed"?"The response was interrupted after dispatch. Acceptance is unconfirmed. Retry reconciles the original operation; this message cannot safely be removed yet.":undefined);
-  return <Stack spacing={0.5} sx={{minWidth:0,alignItems:"flex-end",mb:1}}>
-    <Typography role="status" variant="caption" color="text.secondary">{status}</Typography>
-    {earlier?<Link href={`#${encodeURIComponent(capturedMessageAnchor(earlier.pending.idempotencyKey))}`} variant="caption">Earlier Message</Link>:null}
-    {explanation?<Box component="details" sx={{fontSize:".8125rem",maxWidth:"100%","& summary":{minHeight:44,alignContent:"center",cursor:"pointer"}}}><summary>Message Details</summary><Box sx={{maxHeight:180,overflowY:"auto",whiteSpace:"pre-wrap",overflowWrap:"anywhere"}}>{explanation}</Box></Box>:null}
-    <Stack direction="row" spacing={0.5}>
-      <Button size="small" disabled={running||Boolean(earlier)} onClick={()=>window.dispatchEvent(new CustomEvent("ponderosa-submission-retry",{detail:item.pending.idempotencyKey}))}>{accepted?"Finish Cleanup":"Retry"}</Button>
-      {removable?<Button size="small" disabled={running||!navigator.locks} onClick={()=>window.dispatchEvent(new CustomEvent("ponderosa-submission-discard",{detail:item.pending.idempotencyKey}))}>Remove</Button>:null}
-    </Stack>
-    {removable&&!navigator.locks?<Typography variant="caption">Safe removal needs Web Locks in this browser. The original message is retained.</Typography>:null}
-  </Stack>;
+  if(item.status==="accepted")return null;
+  const running=Boolean(activity),unknown=item.status==="unknown"||item.dispatchStarted&&item.status!=="failed";
+  const status=activity==="remove"?"Removing":earlier?"Waiting":running?(unknown?"Checking Delivery":"Sending"):unknown?"Delivery Not Confirmed":"Message Not Sent";
+  const removable=!canonicalObserved&&item.status==="failed";
+  const explanation=unknown?"Delivery has not been confirmed. Retry checks the original message without creating another send.":"Your message wasn’t sent. Retry to send it, or remove it.";
+  return <Box sx={{display:"flex",alignItems:"center",flexWrap:"wrap",gap:.5,minWidth:0}}>
+    {earlier&&activity!=="remove"?<Link role="status" href={`#${encodeURIComponent(capturedMessageAnchor(earlier.pending.idempotencyKey))}`} variant="caption">Waiting</Link>:<Typography role="status" variant="caption" color="text.secondary">{status}</Typography>}
+    {!earlier&&!running?<Button size="small" onClick={()=>window.dispatchEvent(new CustomEvent("ponderosa-submission-retry",{detail:item.pending.idempotencyKey}))}>Retry</Button>:null}
+    {removable?<Button size="small" disabled={running||!navigator.locks} onClick={()=>window.dispatchEvent(new CustomEvent("ponderosa-submission-discard",{detail:item.pending.idempotencyKey}))}>Remove</Button>:null}
+    {!running&&!earlier?<Tooltip title="Technical Details"><IconButton size="small" aria-label="Technical Details" onClick={()=>setDetails(true)}><InfoOutlinedIcon fontSize="inherit"/></IconButton></Tooltip>:null}
+    <Dialog open={details} onClose={()=>setDetails(false)} fullWidth maxWidth="sm">
+      <DialogTitle>Technical Details</DialogTitle><DialogContent>
+        <Typography>{explanation}</Typography>
+        {item.error?<Typography component="pre" variant="body2" sx={{whiteSpace:"pre-wrap",overflowWrap:"anywhere",mt:2}}>{item.error}</Typography>:null}
+        {removable&&!navigator.locks?<Typography sx={{mt:2}}>Safe removal needs Web Locks in this browser. The original message is retained.</Typography>:null}
+      </DialogContent><DialogActions><Button onClick={()=>setDetails(false)}>Close</Button></DialogActions>
+    </Dialog>
+  </Box>;
 }
 function OutgoingRow({message}:{message:OutgoingMessage}) {
   const outgoing=useOutgoingMessage()!,agent=message.createdAgent;
@@ -139,8 +163,8 @@ function OutgoingRow({message}:{message:OutgoingMessage}) {
   return <Box sx={{minWidth:0}}><ChatMessageFrame assistantMessages={assistantMessages} message={{
     id:message.id,ariaLabel:message.captured?"Captured Message":message.accepted?"Accepted Message":"Sending Message",author:{kind:"operator",profile:outgoing.profile},createdAt:message.createdAt,
     body:<Box sx={{overflowWrap:"anywhere"}}><ChatMessageBody text={message.text} compactMarkdown agentMentionForHandle={handle=>agent&&handle.toLocaleLowerCase()==="new-agent"?{agentId:agent.id,label:agent.handle}:undefined} onOpenAgent={agent&&outgoing.onOpenAgent?id=>outgoing.onOpenAgent?.(id,agent.projectId):undefined}/>{message.captured?<CapturedAttachments message={message}/>:message.fileNames.length?<Box sx={{mt:0.5}}>{message.fileNames.map((name,index)=><Typography key={index} component="div" variant="caption">{name}</Typography>)}</Box>:null}</Box>,
-    status:message.captured?undefined:<Typography role="status" variant="caption" color="text.secondary">{message.accepted?"Accepted":"Sending"}</Typography>,
-    belowBody:message.captured?<CapturedRecovery item={message.captured}/>:undefined,
+    actions:<CopyMessageButton text={message.text}/>,
+    status:message.captured?<CapturedRecovery item={message.captured}/>:<Typography role="status" variant="caption" color="text.secondary">{message.accepted?"Accepted":"Sending"}</Typography>,
   }}/></Box>;
 }
 

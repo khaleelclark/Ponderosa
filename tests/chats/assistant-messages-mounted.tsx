@@ -79,7 +79,7 @@ export async function assistantMessagesLayoutMountedRegression():Promise<void>{
    const avatar=host.querySelector('[aria-label="Actual Assistant Avatar"]')!.getBoundingClientRect(),incomingBody=host.querySelector('#assistant-incoming .chat-message-body')!.getBoundingClientRect();
    assert(avatar.bottom<=incomingBody.bottom+1&&avatar.bottom>=incomingBody.bottom-8&&avatar.top<incomingBody.bottom,'Agent avatar sits beside the bubble tail, independently of its actions');
 
-   const card=host.querySelector<HTMLElement>('#assistant-user .chat-attachment-card')!,download=card.querySelector<HTMLElement>('[aria-label="Download readable.txt"]')!;
+   const card=host.querySelector<HTMLElement>('#assistant-user .chat-attachment-card')!,download=card.querySelector<HTMLElement>('[aria-label="File Options For readable.txt"]')!;
    assert(getComputedStyle(card).backgroundColor!==getComputedStyle(host.querySelector('#assistant-user .chat-message-body')!).backgroundColor&&getComputedStyle(download).color!==getComputedStyle(card).backgroundColor,'Outgoing attachment controls use a readable standard surface');
 
    const label=runtime.querySelector<HTMLElement>('[data-runtime-label]')!,icon=runtime.querySelector<HTMLElement>('[data-runtime-icon]')!;

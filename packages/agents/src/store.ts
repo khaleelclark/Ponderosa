@@ -1622,6 +1622,10 @@ export class AgentStore extends AgentEventSessionFacade {
     return this.conversationProjection.getMessageByReceiptKey(conversationId, receiptKey);
   }
 
+  getConversationAttachmentIds(conversationId: string): Set<string> {
+    return this.conversationProjection.getAttachmentIds(conversationId);
+  }
+
   getConversationMessages(
     conversationId: string,
     channel: ConversationChannel = "main",

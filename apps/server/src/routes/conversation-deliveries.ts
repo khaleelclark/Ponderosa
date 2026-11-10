@@ -412,7 +412,7 @@ export function registerConversationDeliveryRoutes(
           attachmentDeletionInProgress(entry.agentId, id)))) {
       return reply.code(409).send({ error: "Asset deletion is in progress" });
     }
-    if (attachmentUserIds.some(assetReconciliationInProgress)) {
+    if (attachmentUserIds.some(assetReconciliationInProgress)||requestedAssets.some(asset=>asset.conversationId&&assetReconciliationInProgress(asset.conversationId))) {
       return reply.code(409).send({ error: "Asset cleanup is in progress" });
     }
     if (leasedAgentIds.some(agentDeletionInProgress)) {

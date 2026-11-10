@@ -1,4 +1,6 @@
 import {AudioMessagePlayer} from '../speech/AudioMessagePlayer';
+import InsertDriveFileOutlinedIcon from "@mui/icons-material/InsertDriveFileOutlined";
+import MoreVertIcon from "@mui/icons-material/MoreVert";
 import CloseIcon from "@mui/icons-material/Close";
 import ChevronLeftIcon from "@mui/icons-material/ChevronLeft";
 import ChevronRightIcon from "@mui/icons-material/ChevronRight";
@@ -13,6 +15,8 @@ import {
   DialogContent,
   DialogTitle,
   IconButton,
+  Menu,
+  MenuItem,
   Stack,
   Tooltip,
   Typography,
@@ -44,6 +48,7 @@ export function ChatAttachments({
 }: {
   attachments: CommunicationAttachmentDto[];
 }): JSX.Element | null {
+  const [menu,setMenu]=useState<{anchor:HTMLElement;id:string}>();
   const [preview, setPreview] = useState<CommunicationAttachmentDto>();
   const [failed, setFailed] = useState<Set<string>>(() => new Set());
   const [textPreview, setTextPreview] = useState<{ attachmentId: string; content?: string; truncated?: boolean; error?: string }>();
@@ -70,8 +75,10 @@ export function ChatAttachments({
   useEffect(() => {
     setFailed(new Set());
     setPreview(undefined);
+    setMenu(undefined);
   }, [availabilityKey]);
   if (!attachments.length) return null;
+  const menuAttachment=attachments.find(item=>item.id===menu?.id);
   const previewIndex = attachments.findIndex(attachment => attachment.id === preview?.id);
   const previewUnavailable = preview && (preview.unavailable || failed.has(preview.id) ||
     !(preview.previewUrl ?? preview.url ?? preview.downloadUrl));
@@ -92,24 +99,10 @@ export function ChatAttachments({
           const unavailable = attachment.unavailable || failed.has(attachment.id) ||
             (!previewUrl && !downloadUrl);
           return (
-            <Box key={attachment.id} className="chat-attachment-card" sx={{ maxWidth: "100%" }}>
-              {unavailable ? (
-                <Stack
-                  spacing={0.35}
-                  role="status"
-                  sx={{ p: 1, minWidth: 190, border: 1, borderColor: "divider", borderRadius: 1 }}
-                >
-                  <Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>
-                    {attachment.name || "Attachment unavailable"}
-                  </Typography>
-                  <Typography variant="caption" color="text.secondary">
-                    {failed.has(attachment.id) && !attachment.unavailable ? "Preview could not load." : "Attachment unavailable"}
-                  </Typography>
-                  {failed.has(attachment.id) && !attachment.unavailable ? <Button size="small" onClick={() => setFailed(current => { const next = new Set(current); next.delete(attachment.id); return next; })}>Retry Preview</Button> : null}
-                </Stack>
-              ) : attachment.mediaType.startsWith("audio/") && audioUrl ? (
+            <Box key={attachment.id} className="chat-attachment-card" sx={{ maxWidth: "100%",minWidth:0 }}>
+              {!unavailable && attachment.mediaType.startsWith("audio/") && audioUrl ? (
                 <Stack spacing={0.5} sx={{maxWidth:"100%",width:300}}><Typography variant="caption" title={attachment.name} noWrap sx={{minWidth:0}}>{attachment.name}</Typography><AudioMessagePlayer src={audioPlaybackUrl(audioUrl)} downloadUrl={audioUrl} label={`Play ${attachment.name}`}/></Stack>
-              ) : image && previewUrl ? (
+              ) : !unavailable && image && previewUrl ? (
                 <ButtonBase
                   aria-label={`Preview ${attachment.name}`}
                   onClick={() => setPreview(attachment)}
@@ -145,43 +138,19 @@ export function ChatAttachments({
                   />
                 </ButtonBase>
               ) : (
-                <Stack spacing={0.5} sx={{ p: 0.75, border: 1, borderColor: "divider", borderRadius: 1 }}>
-                  <Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>{attachment.name}</Typography>
-                  <Typography variant="caption" color="text.secondary">{attachment.mediaType === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ? "Word document" : attachment.mediaType === "application/octet-stream" ? previewCapability({ mediaType: attachment.mediaType, path: attachment.name }).label : attachment.mediaType} · {attachment.size} bytes</Typography>
-                  <Stack direction="row" spacing={0.5}>
-                    {(textPreviewSupported(attachment) || documentPreviewSupported(attachment)) && (downloadUrl || previewUrl) ? <Button
-                      size="small"
-                      onClick={() => setPreview(attachment)}
-                      aria-label={`Preview ${attachment.name}`}
-                      startIcon={<VisibilityOutlinedIcon />}
-                    >
-                      Preview
-                    </Button> : attachment.previewUrl && attachment.previewUrl !== downloadUrl ? <Button
-                      size="small"
-                      component="a"
-                      href={attachment.previewUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      aria-label={`Preview ${attachment.name}`}
-                      startIcon={<VisibilityOutlinedIcon />}
-                    >Preview</Button> : null}
-                    {downloadUrl ? <Button
-                      size="small"
-                      component="a"
-                      href={downloadUrl}
-                      download
-                      aria-label={`Download ${attachment.name}`}
-                      startIcon={<DownloadOutlinedIcon />}
-                    >
-                      Download
-                    </Button> : null}
-                  </Stack>
+                <Stack direction="row" alignItems="center" className="chat-file-chip" onContextMenu={event=>{event.preventDefault();event.stopPropagation();setMenu({anchor:event.currentTarget,id:attachment.id});}} onKeyDown={event=>{if(event.key==='ContextMenu'||event.shiftKey&&event.key==='F10'){event.preventDefault();event.stopPropagation();setMenu({anchor:event.currentTarget,id:attachment.id});}}} sx={{maxWidth:'100%',minWidth:0,border:1,borderColor:'divider',borderRadius:1.5,bgcolor:'background.paper',color:'text.primary'}}>
+                  <Tooltip title={attachment.name||'Attachment Unavailable'}><ButtonBase aria-label={`Preview ${attachment.name||'Unavailable Attachment'}`} onClick={()=>setPreview(attachment)} sx={{gap:.75,px:1,minWidth:0,minHeight:32,maxWidth:'100%',borderRadius:1.5,'@media (pointer: coarse)':{minHeight:44}}}><InsertDriveFileOutlinedIcon sx={{fontSize:18,flexShrink:0}}/><Typography variant="body2" noWrap sx={{minWidth:0,maxWidth:{xs:210,sm:300}}}>{attachment.name||'Attachment Unavailable'}</Typography></ButtonBase></Tooltip>
+                  <Tooltip title="File Options"><IconButton size="small" aria-label={`File Options For ${attachment.name||'Unavailable Attachment'}`} aria-haspopup="menu" aria-expanded={menu?.id===attachment.id||undefined} onClick={event=>setMenu({anchor:event.currentTarget,id:attachment.id})} sx={{width:32,height:32,flexShrink:0,'@media (pointer: coarse)':{width:44,height:44}}}><MoreVertIcon sx={{fontSize:18}}/></IconButton></Tooltip>
                 </Stack>
               )}
             </Box>
           );
         })}
       </Stack>
+      <Menu anchorEl={menu?.anchor} open={Boolean(menu)} onClose={()=>setMenu(undefined)}>
+        <MenuItem onClick={()=>{const attachment=attachments.find(item=>item.id===menu?.id);setMenu(undefined);if(attachment)setPreview(attachment);}}><VisibilityOutlinedIcon fontSize="small" sx={{mr:1}}/>Preview</MenuItem>
+        <MenuItem component="a" href={menuAttachment?.downloadUrl??menuAttachment?.url} download={menuAttachment?.name} disabled={!menuAttachment||menuAttachment.unavailable||!(menuAttachment.downloadUrl??menuAttachment.url)} onClick={()=>setMenu(undefined)}><DownloadOutlinedIcon fontSize="small" sx={{mr:1}}/>Download</MenuItem>
+      </Menu>
       <Dialog
         open={Boolean(preview)}
         onClose={() => setPreview(undefined)}
@@ -213,16 +182,7 @@ export function ChatAttachments({
             {preview?.name}
           </Typography>
           {preview && !preview.unavailable && (preview.downloadUrl ?? preview.url) ? (
-            <Tooltip title="Download">
-              <IconButton
-                component="a"
-                href={preview.downloadUrl ?? preview.url}
-                download
-                aria-label={`Download ${preview.name}`}
-              >
-                <DownloadOutlinedIcon />
-              </IconButton>
-            </Tooltip>
+            <Button component="a" href={preview.downloadUrl??preview.url} download={preview.name} aria-label={`Download ${preview.name}`} startIcon={<DownloadOutlinedIcon/>}>Download</Button>
           ) : null}
           <Tooltip title="Close">
             <IconButton aria-label="Close Attachment Preview" onClick={() => setPreview(undefined)}>
@@ -238,7 +198,7 @@ export function ChatAttachments({
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
-            bgcolor: preview && (textPreviewSupported(preview) || documentPreviewSupported(preview)) ? "background.paper" : "#0b0e0d",
+            bgcolor: !previewUnavailable && preview && (!preview.mediaType||preview.mediaType.startsWith("image/")) ? "#0b0e0d" : "background.paper",
             overflow: "auto",
           }}
         >
@@ -286,14 +246,7 @@ export function ChatAttachments({
               }}
             />
           ) : preview ? (
-            <Stack spacing={1} sx={{ p: 2, minWidth: 0, alignItems: "center" }}>
-              <Typography sx={{ overflowWrap: "anywhere" }}>{preview.name}</Typography>
-              <Typography color="text.secondary">Preview unavailable for this file type.</Typography>
-              {preview.downloadUrl ?? preview.url ? <Button
-                component="a" href={preview.downloadUrl ?? preview.url} download
-                startIcon={<DownloadOutlinedIcon />}
-              >Download File</Button> : null}
-            </Stack>
+            <Box sx={{p:2,width:'100%',minWidth:0}}><FilePreview title={preview.name} path={preview.name} mediaType={preview.mediaType} downloadUrl={preview.downloadUrl??preview.url} hideHeader/></Box>
           ) : null}
         </DialogContent>
         {attachments.length > 1 ? (

@@ -10,11 +10,13 @@ import * as chatState from '../../apps/web/src/chatState.ts';
 import { messageDeliveryPhase } from '../../apps/web/src/components/messageDeliveryPhase.ts';
 import { projectMessageDeliveryReceipts } from '../../apps/web/src/components/messageDeliveryReceipts.ts';
 import * as tracker from '../../apps/web/src/components/activeOperationTracker.ts';
-import { ApiRequestError } from '../../apps/web/src/api/types.ts';
+import { draftPendingSubmissionRetired } from '@ponderosa/core';
+import { ApiRequestError, ApiTransportError } from '../../apps/web/src/api/types.ts';
 import { queryKeys } from '../../apps/web/src/queryKeys.ts';
 import { sha256Bytes } from '../../apps/web/src/components/idempotentAttempt.ts';
 const require = createRequire(new URL('../../apps/web/package.json', import.meta.url));
 const ts = require('typescript'), React = require('react');
+class CapturedRetirementStorageError extends Error {}
 const widget = name => Object.assign(() => null, { displayName: name });
 const mui = new Proxy({}, { get: (target, name) => target[name] ??= widget(name) });
 function load(relative, imports = {}, globals = {}) {
@@ -22,7 +24,11 @@ function load(relative, imports = {}, globals = {}) {
   vm.runInNewContext(ts.transpileModule(readFileSync(new URL('../../apps/web/src/' + relative, import.meta.url), 'utf8'), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true },
   }).outputText, { exports, Error, Event, ...globals, require: name => {
-    if (name in imports) return imports[name];
+    if (name in imports) return name==='./submissionOutbox'?{CapturedRetirementStorageError,...imports[name]}:imports[name];
+    if(name==='../../api/productScope')return {productApiPath:path=>path};
+    if(name==='../../api/types')return {ApiRequestError,ApiTransportError};
+    if(name==='../../api/queryRetry')return {queryRetryDelay:()=>0};
+    if(name==='@ponderosa/core')return {draftPendingSubmissionRetired};
     if (name === './WorkspaceReadOnlyContext') return { useWorkspaceReadOnly: () => false };
     if (name === './messageDeliveryPhase') return { messageDeliveryPhase };
     if (name === './ReviewedContinuationDialog') return { ReviewedContinuationDialog: widget('ReviewedContinuationDialog') };
@@ -130,7 +136,7 @@ test('Q01 captured unknown submissions survive module reload with exact scope/or
   await final.runCapturedSubmission(second, async () => { calls++; final.removeCapturedSubmission(second.pending.idempotencyKey); });
   assert.equal(final.readCapturedSubmissions('chat-a', 'owner').length, 0); assert.equal(final.readCapturedSubmissions('chat-b', 'owner').length, 1);
   window.localStorage.setItem = () => { throw Error('Quota refused'); };
-  assert.throws(() => final.saveCapturedSubmission(first), /could not be saved for recovery/u);
+  assert.throws(() => final.saveCapturedSubmission({...first,pending:{...first.pending,idempotencyKey:'storage-refused'}}), /could not be saved for recovery/u);
 });
 test('Q01 mounted queue-edit retries retain their exact key and a stale completion cannot retire a newer intent', async () => {
   const registry = new Map(), requests = []; let id = 0;
@@ -311,7 +317,9 @@ test('ordinary outgoing Chat identity works without Web Crypto and matches serve
   h.react.useCallback = fn => fn;
   const module = load('components/chat/OutgoingMessage.tsx', {
     './ChatAttachments': { ChatAttachments: widget('Attachments') },
-    '@tanstack/react-query': { useQuery: () => ({}) },
+    '../CopyMessageButton':{CopyMessageButton:widget('Copy')},
+    './capturedDraftSubmissions':{reconcileAcceptedCapture:async()=>true},
+    '@tanstack/react-query': { useQuery: () => ({}),useQueryClient:()=>({}) },
     '../../api': { api: {} },
     '../../queryKeys': { queryKeys },
     './submissionOutbox': { readCapturedSubmissions: () => [] },
@@ -422,7 +430,7 @@ test('UI012 observed acceptance survives stale metadata writers and removal bypa
 test('UI012 exact retirement preserves canonical siblings/newer draft and retries CAS without merging stale local captures',async()=>{
  const pending={idempotencyKey:'remove-exact',fingerprint:'a'.repeat(64)},earlier={idempotencyKey:'canonical-earlier',fingerprint:'b'.repeat(64)};
  let current={conversationId:'chat',ownerId:'owner',revision:8,clientId:'newer-tab',text:'Newer exact editable text',attachmentIds:['newer-attachment'],pendingSubmissions:[earlier,pending]},conflict=true;const writes=[];
- const module=load('components/chat/capturedDraftSubmissions.ts',{'../../api':{api:{getConversationDraft:async()=>current,putConversationDraft:async(_scope,body)=>{writes.push(body);if(conflict){conflict=false;current={...current,revision:9,text:'Even newer text'};throw new ApiRequestError(409,'CAS conflict');}return current={...current,...body,revision:current.revision+1};}}},'./submissionOutbox':{readCapturedSubmissions:()=>[{pending:{idempotencyKey:'invalid-local-earlier',uploads:[{scope:'broadcast',recipients:[{agentId:'invalid-chat-owner',attachmentIds:['original']}]}]}}]}});
+ const module=load('components/chat/capturedDraftSubmissions.ts',{'../../api':{api:{getConversationDraft:async()=>current,putConversationDraft:async(_scope,body)=>{writes.push(body);if(conflict){conflict=false;current={...current,revision:9,text:'Even newer text'};throw new ApiRequestError(409,'CAS conflict');}return current={...current,...body,revision:current.revision+1,retiredPendingSubmissionIds:body.retirePendingSubmissionIds.map(idempotencyKey=>({idempotencyKey}))};}}},'./submissionOutbox':{capturedSubmissionRetired:()=>false,removeCapturedSubmission:()=>{},readCapturedSubmissions:()=>[{pending:{idempotencyKey:'invalid-local-earlier',uploads:[{scope:'broadcast',recipients:[{agentId:'invalid-chat-owner',attachmentIds:['original']}]}]}}]}});
  await assert.rejects(module.persistCapturedDraftSubmission('chat','owner','old-tab',pending,true,8),/CAS conflict/);
  const result=await module.persistCapturedDraftSubmission('chat','owner','old-tab',pending,true,8);
  assert.equal(result.draft.text,'Even newer text');assert.deepEqual(Array.from(result.draft.attachmentIds),['newer-attachment']);assert.deepEqual(Array.from(result.draft.pendingSubmissions,item=>item.idempotencyKey),['canonical-earlier']);assert.deepEqual(Array.from(writes[1].retirePendingSubmissionIds),['remove-exact']);assert.equal(result.mayAdvanceDraftRevision,false);
@@ -435,4 +443,54 @@ test('exact context recovery blocker replaces delivery Retry and directs the use
  assert.match(text(nodes.find(node=>node.props.role==='status')),/new message.*saved.*Open.*Agent Chat/u);
  assert.ok(nodes.some(node=>node.type===mui.Typography&&text(node)==='Message Saved'));
  assert.ok(!nodes.some(node=>text(node).includes('Context Handoff Held')));
+});
+
+test('UI018 verified retirement fences a stale tab body write and preserves another operation',async t=>{
+ const previous=globalThis.window,window=Object.assign(new EventTarget(),{localStorage:new Storage()});globalThis.window=window;t.after(()=>previous===undefined?delete globalThis.window:globalThis.window=previous);
+ const open=()=>load('components/chat/submissionOutbox.ts',{'../../chatState.js':chatState},{window});
+ const item={version:1,scope:'chat',ownerId:'owner',storageKey:'draft',clientId:'tab',createdAt:1,action:'send',text:'Frozen original',editorText:'Frozen original',attachmentNames:[],mentionedAgents:[],newAgentRequested:false,pending:{idempotencyKey:'retired-exact',fingerprint:'a'.repeat(64),captureRevision:4},status:'failed'};
+ const first=open();first.saveCapturedSubmission(item);first.removeCapturedSubmission(item.pending.idempotencyKey,item);
+ chatState.writeChatState('ponderosa.submission.v1.retired-exact',JSON.stringify(item));
+ const stale=open();assert.equal(stale.readCapturedSubmissions().length,0);stale.saveCapturedSubmission(item);let calls=0;await stale.runCapturedSubmission(item,async()=>calls++);assert.equal(calls,0,'Late callback cannot re-execute a retired key');
+ const other={...item,pending:{...item.pending,idempotencyKey:'different-key'}};stale.saveCapturedSubmission(other);assert.equal(stale.readCapturedSubmissions()[0].pending.idempotencyKey,'different-key');
+ const wrongOwner={...item,ownerId:'another-owner'};assert.equal(stale.capturedSubmissionRetired(item.pending.idempotencyKey,wrongOwner),false,'Marker has exact owner boundary');
+});
+
+test('UI018 Retry adopts server preparation instead of replacing it with the browser snapshot',async()=>{
+ const pending={idempotencyKey:'prepared',fingerprint:'0'.repeat(64),captureRevision:0};
+ const prepared={...pending,fingerprint:'b'.repeat(64),intentFingerprint:'a'.repeat(64),agentTitle:'Prepared Title',uploads:[{scope:'agent',recipients:[{agentId:'agent',attachmentIds:['file']}]}]};
+ const current={conversationId:'chat',ownerId:'owner',revision:2,clientId:'editor',text:'New editable text',attachmentIds:[],pendingSubmissions:[prepared]};let sent;
+ const module=load('components/chat/capturedDraftSubmissions.ts',{'../../api':{api:{getConversationDraft:async()=>current,putConversationDraft:async(_scope,body)=>{sent=body;return {...current,...body,revision:3};}}},'./submissionOutbox':{capturedSubmissionRetired:()=>false,removeCapturedSubmission:()=>{},readCapturedSubmissions:()=>[{scope:'chat',ownerId:'owner',pending,status:'failed'}]}});
+ const result=await module.persistCapturedDraftSubmission('chat','owner','old-tab',pending);assert.equal(sent.captureMetadataOnly,true);assert.equal(result.pendingSubmission.agentTitle,'Prepared Title');assert.equal(result.pendingSubmission.fingerprint,prepared.fingerprint);assert.equal(result.pendingSubmission.uploads[0].recipients[0].attachmentIds[0],'file');assert.equal(sent.text,current.text);
+});
+
+test('UI018 metadata retirement stops before a product-changing GET can become a different product PUT',async()=>{
+ let namespace='/api/conversations',writes=0;
+ const pending={idempotencyKey:'exact',fingerprint:'a'.repeat(64),captureRevision:0};
+ const module=load('components/chat/capturedDraftSubmissions.ts',{'../../api/productScope':{productApiPath:()=>namespace},'../../api':{api:{getConversationDraft:async()=>{namespace='/api/branches/engine/conversations';return {revision:1,pendingSubmissions:[pending]};},putConversationDraft:async()=>writes++}},'./submissionOutbox':{capturedSubmissionRetired:()=>false,removeCapturedSubmission:()=>{},readCapturedSubmissions:()=>[]}});
+ await assert.rejects(module.persistCapturedDraftSubmission('chat','owner','tab',pending,true),/destination changed/);assert.equal(writes,0);
+});
+
+test('UI018 accepted housekeeping has one bounded cycle per eligible lifecycle, never canonical rerender loops',async()=>{
+ const {QueryClient}=require('@tanstack/react-query');const client=new QueryClient({defaultOptions:{queries:{retry:false,gcTime:0}}});let status=403,writes=0;
+ const pending={idempotencyKey:'accepted-cycle',fingerprint:'a'.repeat(64),captureRevision:0},item={scope:'chat',ownerId:'owner',clientId:'tab',status:'accepted',pending};
+ const current={conversationId:'chat',ownerId:'owner',revision:1,clientId:'tab',text:'Unrelated editor',attachmentIds:[],pendingSubmissions:[pending]};
+ const module=load('components/chat/capturedDraftSubmissions.ts',{'../../api':{api:{getConversationDraft:async()=>current,putConversationDraft:async(_scope,body)=>{writes++;if(status)throw new ApiRequestError(status,'Controlled retirement error');return {...current,...body,revision:2,pendingSubmissions:[],retiredPendingSubmissionIds:[{idempotencyKey:pending.idempotencyKey}]};}}},'./submissionOutbox':{removeCapturedSubmission:()=>{},readCapturedSubmissions:()=>[item]}});
+ try{await assert.rejects(module.reconcileAcceptedCapture(client,item));for(let i=0;i<5;i++)await assert.rejects(module.reconcileAcceptedCapture(client,item));await assert.rejects(module.reconcileAcceptedCapture(client,item,true));assert.equal(writes,1,'Permanent rejection cannot hot loop on render/focus');
+ client.removeQueries();status=503;await assert.rejects(module.reconcileAcceptedCapture(client,item));assert.equal(writes,5,'Transient failures use bounded native retry');for(let i=0;i<5;i++)await assert.rejects(module.reconcileAcceptedCapture(client,item));assert.equal(writes,5);status=0;await module.reconcileAcceptedCapture(client,item,true);assert.equal(writes,6,'Meaningful reconnect can resume an eligible failed cycle');await module.reconcileAcceptedCapture(client,item);assert.equal(writes,6,'Verified success stays deduplicated');
+ }finally{client.clear();}
+});
+
+test('UI018 a new capture registers independently of an accepted sibling retirement',async()=>{
+ const accepted={status:'accepted',scope:'chat',ownerId:'owner',pending:{idempotencyKey:'accepted-a',fingerprint:'a'.repeat(64),captureRevision:0}},pending={idempotencyKey:'new-b',fingerprint:'b'.repeat(64),captureRevision:0};let writes=0;
+ const current={conversationId:'chat',ownerId:'owner',revision:2,text:'Newer editor',attachmentIds:[],pendingSubmissions:[accepted.pending]};
+ const module=load('components/chat/capturedDraftSubmissions.ts',{'../../api':{api:{getConversationDraft:async()=>current,putConversationDraft:async(_scope,body)=>{writes++;assert.equal(body.retirePendingSubmissionIds,undefined,'Ordinary registration never carries unrelated retirement');return {...current,...body,revision:3};}}},'./submissionOutbox':{removeCapturedSubmission:()=>{},readCapturedSubmissions:()=>[accepted]}});
+ const result=await module.persistCapturedDraftSubmission('chat','owner','tab',pending);assert.equal(writes,1);assert.deepEqual(Array.from(result.draft.pendingSubmissions,item=>item.idempotencyKey),['accepted-a','new-b']);
+});
+
+test('UI018 deferred accepted retirement resumes on original-scope focus and restored storage without replay',async()=>{
+ const {QueryClient}=require('@tanstack/react-query'),client=new QueryClient({defaultOptions:{queries:{gcTime:Infinity}}});let namespace='/api/branches/engine/conversations',writes=0,storageFails=false,retired=false;
+ const pending={idempotencyKey:'deferred-retirement',fingerprint:'a'.repeat(64),captureRevision:0},item={scope:'chat',ownerId:'owner',clientId:'tab',apiNamespace:'/api/conversations',status:'accepted',pending};
+ const module=load('components/chat/capturedDraftSubmissions.ts',{'../../api/productScope':{productApiPath:()=>namespace},'../../api':{api:{getConversationDraft:async()=>({conversationId:'chat',ownerId:'owner',revision:1,text:'Newer editable',attachmentIds:[],pendingSubmissions:retired?[]:[pending],retiredPendingSubmissionIds:retired?[{idempotencyKey:pending.idempotencyKey}]:[]}),putConversationDraft:async(_scope,body)=>{writes++;retired=true;return {...body,pendingSubmissions:[],revision:2,retiredPendingSubmissionIds:[{idempotencyKey:pending.idempotencyKey}]};}}},'./submissionOutbox':{readCapturedSubmissions:()=>[item],removeCapturedSubmission:()=>{if(storageFails)throw new CapturedRetirementStorageError('Controlled storage refusal');}}});
+ try{await assert.rejects(module.reconcileAcceptedCapture(client,item));await assert.rejects(module.reconcileAcceptedCapture(client,item,true));assert.equal(writes,0,'Foreign focus never performs a write');namespace='/api/conversations';storageFails=true;await assert.rejects(module.reconcileAcceptedCapture(client,item,true),/storage refusal/);assert.equal(writes,1);storageFails=false;await module.reconcileAcceptedCapture(client,item,true);assert.equal(writes,1,'Restored storage settles from canonical retirement without replay or a second PUT');}finally{client.clear();}
 });

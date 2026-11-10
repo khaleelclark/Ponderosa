@@ -1086,6 +1086,8 @@ app.server.on("upgrade", linkPreviewUpgrade);
     runtimeAuthorities,
     agentMessageCapabilities,
     agentDeliveryLeases,
+    conversationDeliveryLeases,
+    deletingConversationIds,
     deletingAgentIds,
     initialAgentCreations,
     attachmentDeletionInProgress: agentId => [...deletingAttachmentKeys]

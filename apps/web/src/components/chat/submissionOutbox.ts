@@ -8,6 +8,8 @@ export interface CapturedSubmission {
   scope: string;
   storageKey: string;
   ownerId: string;
+  /** Product boundary captured before asynchronous preparation/retirement. */
+  apiNamespace?: string;
   projectId?: string;
   clientId: string;
   createdAt: number;
@@ -30,6 +32,17 @@ export interface CapturedSubmission {
 }
 const prefix = "ponderosa.submission.v1.";
 const keyFor = (id: string) => `${prefix}${id}`;
+const retiredKeyFor=(id:string)=>`${prefix}retired.${id}`;
+/** A mirror of verified canonical retirement, never delivery or acceptance authority. */
+type RetirementIdentity=Pick<CapturedSubmission,"scope"|"ownerId"|"apiNamespace"|"pending">;
+export function capturedSubmissionRetired(id:string,identity?:RetirementIdentity):boolean {
+  try{
+    const marker=JSON.parse(readChatState(retiredKeyFor(id))??'null');
+    const item=identity??JSON.parse(readChatState(keyFor(id))??'null');
+    if(!item)return marker?.idempotencyKey===id;
+    return Boolean(marker&&item&&marker.idempotencyKey===id&&marker.scope===item.scope&&marker.ownerId===item.ownerId&&marker.apiNamespace===item.apiNamespace&&marker.captureRevision===item.pending?.captureRevision);
+  }catch{return false;}
+}
 export const submissionOutboxEvent = "ponderosa-submission-outbox";
 
 export function readCapturedSubmissions(scope?: string, ownerId?: string): CapturedSubmission[] {
@@ -48,11 +61,12 @@ export function readCapturedSubmissions(scope?: string, ownerId?: string): Captu
           !["send", "queue"].includes(item.action) || !["pending", "failed", "unknown", "accepted"].includes(item.status) ||
           (scope !== undefined && item.scope !== scope) ||
           (ownerId !== undefined && item.ownerId !== ownerId)) return [];
-      return [item];
+      return capturedSubmissionRetired(item.pending.idempotencyKey,item)?[]:[item];
     } catch { return []; }
   }).sort((a, b) => a.createdAt - b.createdAt || a.pending.idempotencyKey.localeCompare(b.pending.idempotencyKey));
 }
 export function saveCapturedSubmission(item: CapturedSubmission): void {
+  if(capturedSubmissionRetired(item.pending.idempotencyKey,item))return;
   // Canonical observation can arrive while an original-key attempt is preparing.
   // A delayed metadata/error writer must never demote that observed acceptance.
   const accepted=readCapturedSubmissions(item.scope,item.ownerId).find(current=>current.pending.idempotencyKey===item.pending.idempotencyKey&&current.status==="accepted");
@@ -62,11 +76,17 @@ export function saveCapturedSubmission(item: CapturedSubmission): void {
   }
   globalThis.window?.dispatchEvent(new Event(submissionOutboxEvent));
 }
-export function removeCapturedSubmission(id: string): void {
-  if (!writeChatState(keyFor(id), "")) throw new Error("The accepted message recovery record could not be retired. Retry uses the same identity.");
+export class CapturedRetirementStorageError extends Error {}
+export function removeCapturedSubmission(id: string,identity?:RetirementIdentity): void {
+  const item=identity??readCapturedSubmissions().find(item=>item.pending.idempotencyKey===id);
+  if(!item)return;
+  // Commit the canonical tombstone projection first. A stale tab may still
+  // write the old body key; it cannot erase this separate terminal marker.
+  if(!writeChatState(retiredKeyFor(id),JSON.stringify({version:1,idempotencyKey:id,scope:item.scope,ownerId:item.ownerId,apiNamespace:item.apiNamespace,captureRevision:item.pending.captureRevision})))throw new CapturedRetirementStorageError('The retired message could not be reconciled with browser storage. Its original record is retained.');
+  writeChatState(keyFor(id), "");
   globalThis.window?.dispatchEvent(new Event(submissionOutboxEvent));
 }
-export function capturedSubmissionExists(id: string): boolean { return readChatState(keyFor(id)) !== undefined; }
+export function capturedSubmissionExists(id: string): boolean { return !capturedSubmissionRetired(id)&&readChatState(keyFor(id)) !== undefined; }
 
 export class CapturedSubmissionOrderError extends Error {}
 export async function withCapturedSubmissionLock<T>(item: CapturedSubmission, run: () => Promise<T>): Promise<T> {

@@ -240,6 +240,8 @@ type ServerLifecycleContext =
     runtimeAuthorities: Map<string, AgentRuntimeAuthority>;
     agentMessageCapabilities: Map<string, AgentMessageCapability>;
     agentDeliveryLeases: ReadonlyMap<string, number>;
+    conversationDeliveryLeases: ReadonlyMap<string, number>;
+    deletingConversationIds: ReadonlySet<string>;
     deletingAgentIds: Set<string>;
     initialAgentCreations: Array<{id:string; projectId:string; agentIds:string[]}>;
     attachmentDeletionInProgress(agentId: string): boolean;
@@ -305,6 +307,8 @@ export function registerServerLifecycle(
     runtimeAuthorities,
     agentMessageCapabilities,
     agentDeliveryLeases,
+    conversationDeliveryLeases,
+    deletingConversationIds,
     deletingAgentIds,
     initialAgentCreations,
     attachmentDeletionInProgress,
@@ -868,14 +872,7 @@ export function registerServerLifecycle(
     webPushDelivery?.start();
     const reconcileAssets = async () => {
       await drafts.reconcileAttachmentCleanup();
-      const pendingDraftUploads = new Map<string, Set<string>>();
-      for (const item of workspace.draftRecoveryInventory()) {
-        for (const upload of item.pendingUploads) {
-          const ids = pendingDraftUploads.get(upload.agentId) ?? new Set<string>();
-          for (const id of upload.attachmentIds) ids.add(id);
-          pendingDraftUploads.set(upload.agentId, ids);
-        }
-      }
+      const retainedUploads=(ownerId:string):Set<string>=>new Set(workspace.draftRecoveryInventory().flatMap(item=>item.pendingUploads.filter(upload=>upload.agentId===ownerId).flatMap(upload=>upload.attachmentIds)));
       let processedAgents = 0;
       for (const project of store.listProjects()) {
         for (const agent of store.listAgents(project.id)) {
@@ -894,7 +891,7 @@ export function registerServerLifecycle(
               agent.id,
               associated,
               Date.now(),
-              pendingDraftUploads.get(agent.id),
+              retainedUploads(agent.id),
             );
           } finally {
             releaseAssetReconciliation();
@@ -902,6 +899,16 @@ export function registerServerLifecycle(
           processedAgents += 1;
           await new Promise<void>((resolve) => setImmediate(resolve));
           if (isClosed()) return;
+        }
+        // Broadcast uploads are owned by the Chat rather than an Agent. The
+        // same durable staged TTL and deletion receipts retry their collection.
+        for(const conversation of store.listConversations(project.id)){
+          const release=leaseAgentAssetReconciliation(conversationDeliveryLeases,deletingConversationIds,attachmentDeletionInProgress,reconcilingAssetAgentIds,conversation.id);
+          if(!release)continue;
+          try{await assets.reconcile(project.id,conversation.id,store.getConversationAttachmentIds(conversation.id),Date.now(),retainedUploads(conversation.id));}
+          finally{release();}
+          await new Promise<void>(resolve=>setImmediate(resolve));
+          if(isClosed())return;
         }
       }
     };

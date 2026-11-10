@@ -92,6 +92,7 @@ export function registerAttachmentRoutes(
       if (!conversation || conversationDeletionInProgress(conversation.id)) {
         return reply.code(404).send({ error: "Chat not found" });
       }
+      if(reconcilingAssetAgentIds.has(conversation.id))return reply.code(409).send({error:"Asset cleanup is in progress"});
       conversationDeliveryLeases.set(conversation.id, (conversationDeliveryLeases.get(conversation.id) ?? 0) + 1);
       try {
         const asset = await assets.stage({
@@ -142,6 +143,7 @@ export function registerAttachmentRoutes(
     const conversation = store.getConversation(request.params.id);
     if (!conversation || conversationDeletionInProgress(conversation.id)) return reply.code(404).send({ error: "asset not found" });
     if ((conversationDeliveryLeases.get(conversation.id) ?? 0) > 0) return reply.code(409).send({ error: "Chat message delivery is in progress" });
+    if(reconcilingAssetAgentIds.has(conversation.id))return reply.code(409).send({error:"Asset cleanup is in progress"});
     const key = attachmentDeletionKey(conversation.id, request.params.attachmentId);
     if (deletingAttachmentKeys.has(key)) return reply.code(409).send({ error: "Asset deletion is already in progress" });
     deletingAttachmentKeys.add(key);

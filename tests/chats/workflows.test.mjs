@@ -641,3 +641,49 @@ test('operator Work details trace coalesced messages and every exact Run publica
   }finally{session?.finish();}
  },{storeFactory:dir=>(store=new AgentStore(dir)),schedulerMaxConcurrentRuns:1});
 });
+
+
+test('UI018 metadata-only capture retirement preserves editors, legacy recovery and strict CAS across restart', options, t=>withFixture(t,async f=>{
+ const chat=await f.createChat('Metadata retirement'),ownerId='capture-owner',clientId='page:ui018:draft:one',url=`/api/conversations/${chat.id}/draft`;
+ const legacy={idempotencyKey:randomUUID(),fingerprint:'b'.repeat(64),text:'Legacy recovery',request:{conversationId:chat.id,recipientAgentIds:[],runtime:{activeRunDelivery:'steer'}}};
+ const initial=f.ok(await f.api('PUT',url,{ownerId,clientId,expectedRevision:0,text:'Newest editor text',attachmentIds:[],pendingSubmission:legacy}));
+ const target={idempotencyKey:randomUUID(),fingerprint:'a'.repeat(64),text:'Browser-only rejection',captureRevision:0,draftAttachmentIds:[randomUUID()],request:{conversationId:chat.id,recipientAgentIds:[],runtime:{activeRunDelivery:'steer'}}};
+ const body={ownerId,clientId,captureMetadataOnly:true,text:'Stale text must never overwrite',attachmentIds:[],pendingSubmissions:[target],retirePendingSubmissionIds:[target.idempotencyKey]};
+ const conflictsBefore=f.ok(await f.api('GET',`${url}-conflicts?ownerId=${ownerId}`));
+ const stale=await f.api('PUT',url,{...body,expectedRevision:0});assert.equal(stale.status,409);assert.equal(stale.body.code,'DRAFT_METADATA_CONFLICT');
+ assert.deepEqual(f.ok(await f.api('GET',`${url}-conflicts?ownerId=${ownerId}`)),conflictsBefore,'Bookkeeping CAS creates no editable conflict');
+ const retired=f.ok(await f.api('PUT',url,{...body,expectedRevision:initial.revision}));
+ assert.equal(retired.text,'Newest editor text');assert.deepEqual(retired.pendingSubmission,legacy,'Legacy recovery cannot be overwritten/cleared by metadata');assert.equal(retired.clientId,clientId);
+ assert.ok(retired.retiredPendingSubmissionIds.some(item=>item.idempotencyKey===target.idempotencyKey));assert.ok(!retired.pendingSubmissions?.some(item=>item.idempotencyKey===target.idempotencyKey));
+ const again=f.ok(await f.api('PUT',url,{...body,expectedRevision:retired.revision}));assert.equal(again.text,retired.text);assert.ok(!again.pendingSubmissions?.length);
+ await f.reopen();const saved=f.ok(await f.api('GET',`${url}?ownerId=${ownerId}`));assert.equal(saved.text,retired.text);assert.deepEqual(saved.pendingSubmission,legacy);assert.ok(saved.retiredPendingSubmissionIds.some(item=>item.idempotencyKey===target.idempotencyKey));
+}));
+
+test('UI018 maintenance excludes new upload references and retirement survives deferred/restarted GC', options,async()=>{
+ const {createRequire}=await import('node:module'),Fastify=createRequire(new URL('../../apps/server/package.json',import.meta.url))('fastify');
+ const {registerDraftRoutes}=await import('../../apps/server/dist/routes/drafts.js');
+ const {leaseAgentAssetReconciliation}=await import('../../apps/server/dist/server-lifecycle.js');
+ const {AssetStore}=await import('../../apps/server/dist/assets.js');
+ const root=mkdtempSync(path.join(tmpdir(),'ponderosa-ui018-retirement-')),workspace=new WorkspaceStore(root),app=Fastify();let assets=new AssetStore(root);
+ const projectId=randomUUID(),chat=randomUUID(),ownerId='one',agentOwner=randomUUID(),reconciling=new Set();
+ const body=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=','base64');
+ const staged=await assets.stage({projectId,agentId:chat,conversationId:chat,body,name:'owned.png',declaredType:'image/png'});
+ const shared=await assets.stage({projectId,agentId:chat,conversationId:chat,body,name:'shared.png',declaredType:'image/png'});
+ const sent=await assets.stage({projectId,agentId:chat,conversationId:chat,body,name:'sent.png',declaredType:'image/png'});await assets.associate(projectId,chat,[sent.id]);
+ const agentFile=await assets.stage({projectId,agentId:agentOwner,body,name:'agent.png',declaredType:'image/png'});
+ const pending=(id,ids,assetOwner=chat)=>({idempotencyKey:id,fingerprint:'a'.repeat(64),text:'Frozen original',captureRevision:0,request:{conversationId:chat,recipientAgentIds:[],runtime:{activeRunDelivery:'steer'}},uploads:[{scope:'broadcast',recipients:[{agentId:assetOwner,attachmentIds:ids}]}]});
+ const target=pending(randomUUID(),[staged.id,shared.id]),other=pending(randomUUID(),[shared.id]);
+ const service={validId:()=>true,normalizedOwner:x=>x,acquireMutationLease:()=>()=>{},withMutationLock:(_id,_owner,fn)=>fn(),canEditOwner:()=>true,hydrate:async(id,owner)=>workspace.getDraft(id,owner),read:async()=>undefined,enqueueReleasedAttachments:()=>{},reconcileAttachmentCleanup:async()=>{}};
+ registerDraftRoutes(app,service,workspace,8,()=>{},id=>reconciling.has(id));
+ const put=async(owner,pendingSubmissions,extra={})=>{const current=workspace.getDraft(chat,owner);return app.inject({method:'PUT',url:`/api/conversations/${chat}/draft`,payload:{ownerId:owner,clientId:'tab',text:current.text,attachmentIds:[],expectedRevision:current.revision,pendingSubmissions,...extra}});};
+ try{
+  const release=leaseAgentAssetReconciliation(new Map(),new Set(),()=>false,reconciling,chat);assert.ok(release);assert.equal(leaseAgentAssetReconciliation(new Map([[chat,1]]),new Set(),()=>false,new Set(),chat),undefined,'In-flight delivery excludes maintenance');
+  const rejected=await put(ownerId,[target]);assert.equal(rejected.statusCode,409);assert.equal(workspace.getDraft(chat,ownerId).pendingSubmissions?.length??0,0,'Paused GC cannot admit an untracked old upload');release();
+  assert.equal((await put(ownerId,[target])).statusCode,200);assert.equal((await put('another-owner',[other])).statusCode,200);
+  const retirement=await put(ownerId,[target],{captureMetadataOnly:true,retirePendingSubmissionIds:[target.idempotencyKey]});assert.equal(retirement.statusCode,200);assert.ok(!retirement.json().pendingSubmissions?.length,'Logical removal completes before GC');
+  const retained=new Set(workspace.draftRecoveryInventory().flatMap(item=>item.pendingUploads.filter(upload=>upload.agentId===chat).flatMap(upload=>upload.attachmentIds)));assert.ok(retained.has(shared.id));assert.ok(!retained.has(staged.id));
+  const complete=assets.completeDeletion;assets.completeDeletion=async()=>{throw Error('Controlled delayed cleanup');};await assert.rejects(assets.reconcile(projectId,chat,new Set([sent.id]),Date.now()+600000,retained),/delayed cleanup/);assets.completeDeletion=complete;assets.close();assets=new AssetStore(root);
+  await assets.reconcile(projectId,chat,new Set([sent.id]),Date.now()+600000,retained);assert.equal(await assets.read(projectId,chat,staged.id),undefined,'Restart resumes exact durable deletion receipt');assert.ok(await assets.read(projectId,chat,shared.id),'Another draft owner keeps shared upload');assert.ok(await assets.read(projectId,chat,sent.id),'Sent assets are preserved');
+  await assets.reconcile(projectId,agentOwner,new Set(),Date.now()+600000);assert.equal(await assets.read(projectId,agentOwner,agentFile.id),undefined,'Existing Agent TTL path remains supported');assert.ok(workspace.getDraft(chat,ownerId).retiredPendingSubmissionIds.some(item=>item.idempotencyKey===target.idempotencyKey),'Cleanup never resurrects retired input');
+ }finally{await app.close();assets.close();workspace.close();rmSync(root,{recursive:true,force:true});}
+});
