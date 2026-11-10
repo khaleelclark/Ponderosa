@@ -38,7 +38,7 @@ test('Branching preserves the canonical insertion target and successful insertio
  const openAdd=owner('openAdd',scope),target={kind:'edge',edgeId:'failure-connection'},control=button(JSON.stringify(target),{x:310,y:512,width:44,height:44},{querySelectorAll:()=>[]});
  openAdd(target,control);assert.equal(insertionTarget,target);assert.equal(branching,false);assert.equal(dismissedInsertion.current,null);
  branching=true; // The existing Branching menu replaces options without opening another menu or target.
- const add=owner('add',{...scope,addAnchor,definition,insertionTarget,insertGuidedStep:(value,kind,actual)=>{assert.equal(value,definition);assert.equal(kind,'condition');assert.equal(actual,target);return {ok:true,definition:{entry:'new'},selected:'new'}},onDraft:value=>{published=value},setSelected:value=>{selected=value},setEditorOpen:value=>{open=value},setFocusRequest:update=>{focusRequest=update(focusRequest)}});
+ const add=owner('add',{...scope,addAnchor,definition,insertionTarget,insertGuidedStep:(value,kind,actual)=>{assert.equal(value,definition);assert.equal(kind,'condition');assert.equal(actual,target);return {ok:true,definition:{entry:'new'},selected:'new'}},onDraft:value=>{published=value},openEditor:owner('openEditor',{setSelected:value=>{selected=value},setEditorOpen:value=>{open=value},setExpanded(){},setEditorReveal(){}}),setFocusRequest:update=>{focusRequest=update(focusRequest)}});
  add('condition');assert.equal(published.definition.entry,'new');assert.equal(selected,'new');assert.equal(open,true);assert.equal(focusRequest,1);assert.equal(addAnchor,null);assert.equal(dismissedInsertion.current,null);
 });
 

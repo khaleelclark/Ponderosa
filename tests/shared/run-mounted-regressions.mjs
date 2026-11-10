@@ -33,7 +33,7 @@ assert(Number.isSafeInteger(timeout)&&timeout>=1000&&timeout<=120_000,'Case time
 const results=[],globalErrors=[];let server,browser,browserServer,origin,forceExit=false;
 console.log(`Mounted regression evidence: ${out}`);
 const record=async()=>writeFile(path.join(out,'results.json'),JSON.stringify({inventory,expected,selected,cells:results,errors:globalErrors},null,2)+'\n');
-const describe=error=>error?.stack??String(error);
+const describe=error=>error?.stack||String(error);
 const launchOwnedBrowser=async()=>{
  browserServer=await withinMountedDeadline(()=>browserType.launchServer({executablePath:browserName==='webkit'?process.env.PONDEROSA_WEBKIT_PATH:process.env.PONDEROSA_CHROME_PATH||'/usr/bin/google-chrome',headless:true,...(browserName==='chromium'?{args:['--no-sandbox']}:{}),timeout:15_000}),20_000,'owned browser launch');
  browser=await withinMountedDeadline(()=>browserType.connect(browserServer.wsEndpoint()),10_000,'owned browser connection');

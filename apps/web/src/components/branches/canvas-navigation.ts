@@ -15,10 +15,9 @@ export function frameWorkflowCanvas(layout:CanvasLayout,entryId:string,startSize
  return {bounds:{x:left-32,y:top-32,width:right-left+64,height:bottom-top+64},start,...(entry?{entry:box(entry)}:{}),...(firstStep?{firstStep}:{})};
 }
 
-/** A finite native-scroll scene keeps readable scale; Fit is an explicit separate action. */
-export function guidedWorkflowScene(frame:WorkflowCanvasFrame,available:CanvasSize):{width:number;height:number;viewport:Viewport}{
- const width=Math.max(frame.bounds.width,positive(available.width,1)),height=Math.max(frame.bounds.height,positive(available.height,1));
- return {width,height,viewport:{x:(width-frame.bounds.width)/2-frame.bounds.x,y:-frame.bounds.y,zoom:1}};
+/** Keep the visible world center and zoom when the actual canvas viewport changes. */
+export function resizeWorkflowViewport(viewport:Viewport,before:CanvasSize,after:CanvasSize):Viewport{
+ return {...viewport,x:viewport.x+(positive(after.width,1)-positive(before.width,1))/2,y:viewport.y+(positive(after.height,1)-positive(before.height,1))/2};
 }
 
 /** Expand only to the currently visible world rectangle, so a small graph can center without blank acres. */
@@ -27,7 +26,7 @@ export function workflowTranslateExtent(frame:WorkflowCanvasFrame,available:Canv
  return [[x,y],[x+width,y+height]];
 }
 
-/** Imperative viewport restoration and resizes use the same bounds as interactive Explore panning. */
+/** Imperative viewport restoration and resizes use the same bounds as interactive panning. */
 export function clampWorkflowViewport(frame:WorkflowCanvasFrame,available:CanvasSize,viewport:Viewport):Viewport{
  const zoom=positive(viewport.zoom,1),[[left,top],[right,bottom]]=workflowTranslateExtent(frame,available,zoom);
  const clamp=(value:number,min:number,max:number)=>Math.max(min,Math.min(max,Number.isFinite(value)?value:(min+max)/2));

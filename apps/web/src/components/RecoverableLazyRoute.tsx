@@ -184,6 +184,7 @@ export function RecoverableLazyRoute<Props extends object>({
       <Suspense fallback={<RouteLoading />}>
         <Box
           sx={{
+            width: "100%",
             height: "100%",
             maxHeight: "100%",
             minHeight: 0,

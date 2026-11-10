@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import '../shared/web-typescript-loader.mjs';
-const {frameWorkflowCanvas,guidedWorkflowScene,workflowTranslateExtent,clampWorkflowViewport}=await import('../../apps/web/src/components/branches/canvas-navigation.ts');
+const {frameWorkflowCanvas,resizeWorkflowViewport,workflowTranslateExtent,clampWorkflowViewport}=await import('../../apps/web/src/components/branches/canvas-navigation.ts');
 const node=(id,x,y,width=320,height=128)=>({id,kind:'workflow',workflowNodeId:id,x,y,width,height,ports:[]});
 const layout=(nodes,width=400,height=400,edges=[])=>({key:'test',nodes,edges,width,height,groups:[]});
 const inside=(outer,inner)=>inner.x>=outer.x&&inner.y>=outer.y&&inner.x+inner.width<=outer.x+outer.width&&inner.y+inner.height<=outer.y+outer.height;
@@ -23,16 +23,16 @@ test('empty workflows show only connected presentation Start and Add First Step 
  const wrapped=frameWorkflowCanvas(graph,'',{width:320,height:180});assert.equal(wrapped.firstStep.y,244);assert.equal(wrapped.bounds.height,372);
 });
 
-test('guided scene centers horizontally, starts at the top and scrolls long or wide workflows without fitting',()=>{
- for(const [width,height,available] of [[400,400,{width:1200,height:900}],[400,12000,{width:1200,height:700}],[12000,600,{width:720,height:700}]]){
-  const graph=layout([node('entry',40,28)],width,height),frame=frameWorkflowCanvas(graph,'entry',{width:320,height:72}),scene=guidedWorkflowScene(frame,available);
-  assert.equal(scene.viewport.zoom,1);assert.equal(scene.width,Math.max(available.width,frame.bounds.width));assert.equal(scene.height,Math.max(available.height,frame.bounds.height));
-  assert.ok(inside({x:0,y:0,width:scene.width,height:scene.height},{...frame.bounds,x:frame.bounds.x+scene.viewport.x,y:frame.bounds.y+scene.viewport.y}));
-  close(frame.bounds.x+scene.viewport.x+(frame.bounds.width/2),scene.width/2);close(frame.bounds.y+scene.viewport.y,0);assert.equal(frame.start.y+scene.viewport.y,32);
+test('resizing preserves zoom and the visible world center before applying finite bounds',()=>{
+ const view={x:-250,y:-500,zoom:.65},before={width:1200,height:700};
+ for(const after of [{width:840,height:700},{width:390,height:844},{width:1500,height:900}]){
+  const next=resizeWorkflowViewport(view,before,after);assert.equal(next.zoom,view.zoom);
+  close((before.width/2-view.x)/view.zoom,(after.width/2-next.x)/next.zoom);close((before.height/2-view.y)/view.zoom,(after.height/2-next.y)/next.zoom);
+  assert.deepEqual(resizeWorkflowViewport(next,after,before),view);
  }
 });
 
-test('Explore extent stays finite and allows centering without screens of blank panning at every scale',()=>{
+test('Camera extent stays finite and allows centering without screens of blank panning at every scale',()=>{
  const frame=frameWorkflowCanvas(layout([node('entry',40,28)]),'entry',{width:320,height:72}),available={width:390,height:700};
  for(const zoom of [.1,.5,1,2]){
   const [[left,top],[right,bottom]]=workflowTranslateExtent(frame,available,zoom);
@@ -43,7 +43,7 @@ test('Explore extent stays finite and allows centering without screens of blank 
  }
 });
 
-test('restoration and resize use the same Explore bounds while preserving valid views',()=>{
+test('restoration and resize use the same camera bounds while preserving valid views',()=>{
  const frame=frameWorkflowCanvas(layout([node('entry',100,28)],1200,5000),'entry',{width:320,height:72}),available={width:800,height:600},original={x:-100,y:-500,zoom:1};
  assert.deepEqual(clampWorkflowViewport(frame,available,original),original);
  const resized=clampWorkflowViewport(frame,{width:1900,height:800},{x:-9000,y:9000,zoom:1});assert.ok(resized.x>-9000&&resized.y<9000);
@@ -69,17 +69,18 @@ async function canvasOwner(predicate,scope){
 
 test('returning keyboard focus after sheet close never moves the mobile canvas',async()=>{
  const focused=[],element={dataset:{id:'entry'},classList:{contains:name=>name==='react-flow__node'},focus:options=>focused.push(options.preventScroll)},lastFocusRequest={current:1};
- const run=await canvasOwner((node,ts,ast)=>ts.isArrowFunction(node)&&ts.isCallExpression(node.parent)&&node.parent.expression.getText(ast)==='useEffect'&&node.getText(ast).includes('lastFocusRequest.current=focusRequest'),{selectedExists:true,focusRequest:2,lastFocusRequest,selected:'entry',active:true,region:{current:{querySelectorAll:()=>[element]}},requestAnimationFrame:fn=>{fn();return 1},cancelAnimationFrame(){},reveal(){throw Error('Focus return must not move or zoom the canvas')}});
+ const run=await canvasOwner((node,ts,ast)=>ts.isArrowFunction(node)&&ts.isCallExpression(node.parent)&&node.parent.expression.getText(ast)==='useEffect'&&node.getText(ast).includes('lastFocusRequest.current=focusRequest'),{selectedExists:true,focusRequest:2,lastFocusRequest,restoringFocus:{current:false},selected:'entry',active:true,region:{current:{querySelectorAll:()=>[element]}},requestAnimationFrame:fn=>{fn();return 1},cancelAnimationFrame(){},reveal(){throw Error('Focus return must not move or zoom the canvas')}});
  run();assert.deepEqual(focused,[true]);assert.equal(lastFocusRequest.current,2);run();assert.equal(focused.length,1,'A rerender cannot replay the completed focus request');
 });
 
-test('restoring an Explore view with an already open dock does not reveal or enlarge the selection',async()=>{
- const graph=layout([node('entry',40,28)],1200,4000),frame=frameWorkflowCanvas(graph,'entry',{width:320,height:44}),view={x:-200,y:-500,zoom:.2},restored=[],revealed=[],applied={current:{mode:'explore',layout:graph,selected:'entry',docked:true}};
- const scope={flow:{getViewport:()=>view},layout:graph,frame,active:true,available:{width:800,height:600},applied,canvasViews:new Map([['branch',{explore:view}]]),branchId:'branch',selected:'entry',nativeGuided:false,mode:'explore',enterExplore:{current:undefined},fitPending:{current:false},settingsDocked:true,setFree:value=>restored.push(value),reveal:id=>revealed.push(id),requestAnimationFrame:fn=>{fn();return 1},cancelAnimationFrame(){}};
+test('restoring or resizing a camera never reveals a selection unless a node was inserted',async()=>{
+ const graph=layout([node('entry',40,28)]),view={x:-200,y:-400,zoom:.35},restored=[],revealed=[],available={width:800,height:600};
+ const applied={current:{branchId:'branch',layout:graph,selected:'entry',available:{...available}}};
+ const scope={region:{current:{clientWidth:available.width,clientHeight:available.height}},flow:{getViewport:()=>view},layout:graph,frame:frameWorkflowCanvas(graph,'entry',{width:320,height:44}),active:true,available,applied,canvasViews:new Map([['branch',{viewport:view}]]),branchId:'branch',selected:'entry',selectedExists:true,revealRequest:0,lastRevealRequest:{current:0},scroll:{current:{get clientWidth(){return available.width},get clientHeight(){return available.height}}},fitPending:{current:false},resizeWorkflowViewport,setFree:value=>restored.push(value),reveal:(id,force)=>revealed.push({id,force}),requestAnimationFrame:fn=>{fn();return 1},cancelAnimationFrame(){}};
  const run=await canvasOwner((node,ts,ast)=>ts.isArrowFunction(node)&&ts.isCallExpression(node.parent)&&node.parent.expression.getText(ast)==='useLayoutEffect'&&node.getText(ast).includes('applied.current='),scope);
- run();assert.deepEqual(restored,[view]);assert.deepEqual(revealed,[],'Tab return, resize and Explore entry must keep the saved overview');
- applied.current.docked=false;run();assert.deepEqual(revealed,['entry'],'Actually opening the dock still corrects selected-card visibility');
- applied.current={mode:'explore',layout:{...graph,key:'before-insertion',nodes:[]},selected:undefined,docked:true};scope.reveal=(id,force)=>revealed.push({id,force});const inserted=await canvasOwner((node,ts,ast)=>ts.isArrowFunction(node)&&ts.isCallExpression(node.parent)&&node.parent.expression.getText(ast)==='useLayoutEffect'&&node.getText(ast).includes('applied.current='),scope);inserted();assert.deepEqual(revealed.at(-1),{id:'entry',force:true},'A newly inserted card must leave a tiny overview even if it was already onscreen');
+ run();assert.deepEqual(restored,[view]);assert.deepEqual(revealed,[],'Existing selection cannot override an overview after pane changes');
+ available.width=1160;run();assert.equal(restored.at(-1).x,view.x+180);assert.equal(restored.at(-1).zoom,view.zoom);assert.deepEqual(revealed,[]);
+ applied.current={branchId:'branch',layout:{...graph,key:'before-insertion',nodes:[]},available:{...available}};run();assert.deepEqual(revealed.at(-1),{id:'entry',force:true});
 });
 
 test('all insertion controls retain their exact clicked anchor, with Outline as focus-return fallback',async()=>{
@@ -90,12 +91,28 @@ test('all insertion controls retain their exact clicked anchor, with Outline as 
 });
 
 
-test('Fit follows measured insertion-action reflow until an explicit camera action',async()=>{
- const graph=layout([node('entry',40,28)],400,700),frame=frameWorkflowCanvas(graph,'entry',{width:320,height:44}),fits=[],views=[],fitPending={current:true},available={width:390,height:263};
- const scope={flow:{getViewport:()=>({x:0,y:0,zoom:.4})},layout:graph,frame,active:true,available,applied:{current:{mode:'explore',layout:graph,selected:'entry',docked:true}},canvasViews:new Map(),branchId:'branch',selected:'entry',nativeGuided:false,mode:'explore',enterExplore:{current:undefined},fitPending,settingsDocked:true,setFree:view=>views.push(view),reveal(){assert.fail('Reflow must not reveal or enlarge the selected card')},getViewportForBounds:(_bounds,width,height)=>{fits.push({width,height});return {x:0,y:0,zoom:height/1000}},requestAnimationFrame:fn=>{fn();return 1},cancelAnimationFrame(){}};
+test('Fit follows toolbar reflow but ends when the workspace or camera moves',async()=>{
+ const graph=layout([node('entry',40,28)],400,700),frame=frameWorkflowCanvas(graph,'entry',{width:320,height:44}),fits=[],views=[],fitPending={current:{width:390,height:600,key:graph.key}},available={width:390,height:263};
+ const scope={region:{current:{clientWidth:390,clientHeight:600}},flow:{getViewport:()=>({x:0,y:0,zoom:.4})},layout:graph,frame,active:true,available,applied:{current:{branchId:'branch',layout:graph,selected:'entry',available:{...available}}},canvasViews:new Map(),branchId:'branch',selected:'entry',selectedExists:true,revealRequest:0,lastRevealRequest:{current:0},selectedExists:true,revealRequest:0,lastRevealRequest:{current:0},scroll:{current:{get clientWidth(){return available.width},get clientHeight(){return available.height}}},resizeWorkflowViewport,fitPending,setFree:view=>views.push(view),reveal(){assert.fail('Reflow must not reveal or enlarge the selected card')},getViewportForBounds:(_bounds,width,height)=>{fits.push({width,height});return {x:0,y:0,zoom:height/1000}},requestAnimationFrame:fn=>{fn();return 1},cancelAnimationFrame(){}};
  const run=await canvasOwner((node,ts,ast)=>ts.isArrowFunction(node)&&ts.isCallExpression(node.parent)&&node.parent.expression.getText(ast)==='useLayoutEffect'&&node.getText(ast).includes('applied.current='),scope);
  run();available.height=163;run();assert.deepEqual(fits,[{width:390,height:263},{width:390,height:163}]);assert.equal(views.at(-1).zoom,.163);
+ fitPending.current={width:390,height:600,key:graph.key};scope.region.current.clientWidth=450;available.width=450;run();assert.equal(fitPending.current,false,'Workspace resizing ends Fit reflow and preserves its zoom');assert.equal(fits.length,2);
  const zoomBy=await canvasOwner((node,ts)=>ts.isArrowFunction(node)&&ts.isVariableDeclaration(node.parent)&&node.parent.name.getText()==='zoomBy',{flow:scope.flow,fitPending,available,setFree:view=>views.push(view)});
  zoomBy(1.2);assert.equal(fitPending.current,false);run();assert.equal(fits.length,2,'Manual zoom must end automatic Fit reflow');
- const changeWorkflow=await canvasOwner((node,ts,ast)=>ts.isArrowFunction(node)&&ts.isCallExpression(node.parent)&&node.parent.expression.getText(ast)==='useLayoutEffect'&&node.getText(ast).includes('fitPending.current=false'),{fitPending});fitPending.current=true;changeWorkflow();assert.equal(fitPending.current,false,'Fit intent must not override a different workflow’s saved camera');
+ const changeWorkflow=await canvasOwner((node,ts,ast)=>ts.isArrowFunction(node)&&ts.isCallExpression(node.parent)&&node.parent.expression.getText(ast)==='useLayoutEffect'&&node.parent.arguments[1]?.getText(ast)==='[branchId]',{fitPending});fitPending.current=true;changeWorkflow();assert.equal(fitPending.current,false,'Fit intent must not override a different workflow’s saved camera');
+});
+
+
+test('card measurements retain border-box dimensions when ResizeObserver omits a sequence',async()=>{
+ const element={offsetWidth:320,offsetHeight:104},sizes=[];let report;
+ const mount=await canvasOwner((node,ts,ast)=>ts.isArrowFunction(node)&&ts.isCallExpression(node.parent)&&node.parent.expression.getText(ast)==='useLayoutEffect'&&node.getText(ast).includes('measure(kind,id,'),{ref:{current:element},kind:'nodes',id:'entry',measure:(...size)=>sizes.push(size),ResizeObserver:class{constructor(callback){report=callback}observe(){}disconnect(){}}});
+ mount();for(const borderBoxSize of [undefined,{inlineSize:320,blockSize:104},[{inlineSize:320,blockSize:104}]])report([{borderBoxSize,contentRect:{width:286,height:70}}]);
+ assert.deepEqual(sizes.map(size=>Array.from(size)),Array.from({length:3},()=>['nodes','entry',320,104]));
+});
+
+test('Fit waits for every rendered node and connection measurement and its matching layout',async()=>{
+ const graph=layout([node('entry',0,0)],400,400,[{id:'edge'}]),scope={arranging:false,layout:graph,key:'test',measurements:{}};
+ const {readFileSync}=await import('node:fs'),{createRequire}=await import('node:module'),vm=await import('node:vm'),ts=createRequire(new URL('../../apps/web/package.json',import.meta.url))('typescript');
+ const source=readFileSync(new URL('../../apps/web/src/components/branches/WorkflowCanvas.tsx',import.meta.url),'utf8'),ast=ts.createSourceFile('canvas.tsx',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);let expression;function walk(n){if(ts.isVariableDeclaration(n)&&n.name.getText(ast)==='measuring')expression=n.initializer.getText(ast);ts.forEachChild(n,walk)}walk(ast);assert(expression);
+ const run=()=>vm.runInNewContext(expression,scope);assert.equal(run(),true);scope.measurements.nodes={entry:{width:320,height:104}};assert.equal(run(),true);scope.measurements.labels={edge:{width:100,height:26}};assert.equal(run(),false);scope.key='new measurement';assert.equal(run(),true);
 });
