@@ -23,7 +23,7 @@ export function ChatContextSettings({ chat, open, onClose }: {
     },
   });
   return <Dialog open={open} onClose={save.isPending ? undefined : close} fullWidth maxWidth="sm">
-    <DialogTitle>Chat settings</DialogTitle>
+    <DialogTitle>Chat Settings</DialogTitle>
     <DialogContent><Stack spacing={2} sx={{pt:1}}>
       <ResourceNotificationSettings kind="conversation" id={chat.id} />
       <TextField label="Instructions" multiline minRows={5} value={instructions}
@@ -31,11 +31,11 @@ export function ChatContextSettings({ chat, open, onClose }: {
         error={instructionsTooLong}
         helperText={instructionsTooLong ? "Use 100,000 characters or fewer." : "Only this Chat and its Agents."} />
       {extension.render?.("chat",chat.id)}
-      <TextField label="Working folder" value={chat.workingDirectory ?? ""} slotProps={{input:{readOnly:true}}}
+      <TextField label="Working Folder" value={chat.workingDirectory ?? ""} slotProps={{input:{readOnly:true}}}
         helperText="Working folder · Not a filesystem sandbox." />
       {save.isError ? <Alert severity="error">{String(save.error)}</Alert> : null}
     </Stack></DialogContent>
     <DialogActions><Button onClick={close} disabled={save.isPending}>Cancel</Button>
-      <Button variant="contained" onClick={()=>save.mutate()} disabled={save.isPending || instructionsTooLong}>{save.isPending ? "Saving…" : "Save changes"}</Button></DialogActions>
+      <Button variant="contained" onClick={()=>save.mutate()} disabled={save.isPending || instructionsTooLong}>{save.isPending ? "Saving…" : "Save Changes"}</Button></DialogActions>
   </Dialog>;
 }

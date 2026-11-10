@@ -21,9 +21,9 @@ export function NativeRuntimeControls({agentId, savedModel}: {agentId: string; s
     {load.data?.operations.includes("model") && savedModel ? <Button disabled={apply.isPending} onClick={() => apply.mutate("model")}>Apply Saved Model To Idle Runtime</Button> : null}
     {load.data?.operations.includes("permission-mode") ? <>
       <TextField select label="New Native Permission Mode" value={mode} onChange={event => setMode(event.target.value)} disabled={apply.isPending}>
-        <MenuItem value="default">Ask when required</MenuItem><MenuItem value="acceptEdits">Allow native file edits</MenuItem>
-        <MenuItem value="plan">Plan mode</MenuItem><MenuItem value="auto">Native automatic review</MenuItem><MenuItem value="dontAsk">Deny requests that require permission</MenuItem>
-        <MenuItem value="bypassPermissions">Bypass native permission prompts</MenuItem>
+        <MenuItem value="default">Ask When Required</MenuItem><MenuItem value="acceptEdits">Allow Native File Edits</MenuItem>
+        <MenuItem value="plan">Plan Mode</MenuItem><MenuItem value="auto">Native Automatic Review</MenuItem><MenuItem value="dontAsk">Deny Requests That Require Permission</MenuItem>
+        <MenuItem value="bypassPermissions">Bypass Native Permission Prompts</MenuItem>
       </TextField>
       <Button onClick={() => apply.mutate("permission-mode")} disabled={apply.isPending}>Apply Permission Mode</Button>
     </> : null}

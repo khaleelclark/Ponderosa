@@ -196,13 +196,13 @@ export function ResourceFolders<Item extends FolderResource>({ resourceKind, res
           <FolderOutlinedIcon fontSize="small" sx={{ color: "info.main" }} />
           <ListItemText primary={folder.name} primaryTypographyProps={{ noWrap: true, fontSize: 12.5, fontWeight: 750, letterSpacing: ".015em" }} sx={{ minWidth: 0 }} />
           {renderFolderStatus ? renderFolderStatus(folder) : active ? <SemanticStatus status="running" /> : null}
-          {!renderFolderStatus && !active && !filtering && members.length < folder.memberIds.length ? <Typography component="span" role="img" aria-label="Activity not yet available" variant="caption">?</Typography> : null}
+          {!renderFolderStatus && !active && !filtering && members.length < folder.memberIds.length ? <Typography component="span" role="img" aria-label="Activity Not Yet Available" variant="caption">?</Typography> : null}
           {unread ? <SidebarNotificationBadge unread={unread} /> : notificationState ?
-            <Typography component="span" role="img" aria-label={notificationState === "loading" ? "Folder notifications loading" : "Folder notifications unavailable"} variant="caption">…</Typography> : null}
+            <Typography component="span" role="img" aria-label={notificationState === "loading" ? "Folder Notifications Loading" : "Folder Notifications Unavailable"} variant="caption">…</Typography> : null}
           <Typography variant="caption" color="text.secondary">{folder.memberIds.length}</Typography>
         </ListItemButton>
         <IconButton className={folder.starred ? undefined : "sidebar-secondary"} size="small"
-          aria-label={`${folder.starred ? "Unstar" : "Star"} folder ${folder.name}`}
+          aria-label={`${folder.starred ? "Unstar" : "Star"} Folder ${folder.name}`}
           onClick={() => toggleFolderStar(folder.id)}
           sx={{ width: { xs: 44, sm: 32 }, minWidth: { xs: 44, sm: 32 }, height: { xs: 44, sm: 32 }, minHeight: { xs: 44, sm: 32 }, flexShrink: 0 }}>
           {folder.starred ? <StarRoundedIcon fontSize="small" sx={{ color: starColor }} /> : <StarBorderRoundedIcon fontSize="small" />}
@@ -219,7 +219,7 @@ export function ResourceFolders<Item extends FolderResource>({ resourceKind, res
     ? recentResourceRows(visibleFolders, items, loose).map(entry => entry.folder ? folderRow(entry.folder, "all") : row(entry.item!))
     : [...visibleFolders.map(folder => folderRow(folder, "all")), ...loose.map(row)];
   const pickerContent = <>
-    <TextField id="move-folder-search" autoFocus={!moveAnchor} fullWidth size="small" label="Search folders" value={folderSearch} onChange={event => setFolderSearch(event.target.value)} sx={{ mt: .5 }} />
+    <TextField id="move-folder-search" autoFocus={!moveAnchor} fullWidth size="small" label="Search Folders" value={folderSearch} onChange={event => setFolderSearch(event.target.value)} sx={{ mt: .5 }} />
     <List sx={{ mt: 1, maxHeight: "min(45dvh, 320px)", overflowY: "auto", overflowX: "hidden" }}>
       {destinations.map(folder => <Box component="li" key={folder.id}><ListItemButton onClick={() => { if (moving) move(moving.id, folder.id); closeMenu(); }} sx={{ minHeight: 44, gap: 1 }}>
         <FolderOutlinedIcon fontSize="small" /><ListItemText primary={folder.name} primaryTypographyProps={{ sx: { overflowWrap: "anywhere" } }} />
@@ -231,7 +231,7 @@ export function ResourceFolders<Item extends FolderResource>({ resourceKind, res
     {children({ openRows: openItems.map(row), starredRows: [...sortResourceFolders(visibleFolders.filter(folder => folder.starred), starredItems, sort).map(folder => folderRow(folder, "starred")), ...starredItems.filter(starred).map(row)], allRows })}
     <Menu open={Boolean(menu)} anchorEl={menu?.anchor} onClose={closeMenu} disableEnforceFocus={Boolean(moveAnchor)}>
       {menu?.item ? [
-        ...(onOpenInNewTab ? [<MenuItem key="open-tab" onClick={() => action(() => onOpenInNewTab(menu.item!))}>Open in new tab</MenuItem>] : []),
+        ...(onOpenInNewTab ? [<MenuItem key="open-tab" onClick={() => action(() => onOpenInNewTab(menu.item!))}>Open In New Tab</MenuItem>] : []),
         ...(onRename ? [<MenuItem key="rename" onClick={() => action(() => onRename(menu.item!))}>{renameLabel}</MenuItem>] : []),
         <MenuItem key="create" onClick={() => action(() => onChange([...remove(menu.item!.id), { id: createClientId(), name: "New folder", expanded: true, memberIds: [menu.item!.id] }]))}>Create Folder</MenuItem>,
         <MenuItem key="move" aria-haspopup="dialog" aria-expanded={Boolean(moving)}
@@ -239,7 +239,7 @@ export function ResourceFolders<Item extends FolderResource>({ resourceKind, res
           onMouseLeave={() => { if (desktopHover) leavePicker(); }}
           onKeyDown={event => { if (event.key === "ArrowRight") { event.preventDefault(); openPicker(event.currentTarget, true); } }}
           onClick={event => openPicker(event.currentTarget, true)}>Move To<Box sx={{ flex: 1, minWidth: 24 }} /><KeyboardArrowRightIcon fontSize="small" /></MenuItem>,
-        ...(folderFor(menu.item.id) ? [<MenuItem key="remove" onClick={() => action(() => move(menu.item!.id))}>Remove from Folder</MenuItem>] : []),
+        ...(folderFor(menu.item.id) ? [<MenuItem key="remove" onClick={() => action(() => move(menu.item!.id))}>Remove From Folder</MenuItem>] : []),
         ...(onDelete ? [<MenuItem key="delete" sx={{ color: "error.main" }} onClick={() => action(() => onDelete(menu.item!))}>Delete</MenuItem>] : []),
       ] : menu?.folder ? [
         <MenuItem key="rename" onClick={() => action(() => setRenaming(menu.folder))}>Rename Folder</MenuItem>,
@@ -260,7 +260,7 @@ export function ResourceFolders<Item extends FolderResource>({ resourceKind, res
       </DialogContent>
       <DialogActions><Button onClick={closePicker}>Cancel</Button></DialogActions>
     </Dialog>
-    <TextInputDialog open={Boolean(renaming)} title="Rename Folder" label="Folder name" initialValue={renaming?.name ?? ""} confirmLabel="Rename"
+    <TextInputDialog open={Boolean(renaming)} title="Rename Folder" label="Folder Name" initialValue={renaming?.name ?? ""} confirmLabel="Rename"
       onCancel={() => setRenaming(undefined)} onConfirm={name => { if (renaming) onChange(folders.map(folder => folder.id === renaming.id ? { ...folder, name: name.trim().slice(0, 100) || folder.name } : folder)); setRenaming(undefined); }} />
   </>;
 }

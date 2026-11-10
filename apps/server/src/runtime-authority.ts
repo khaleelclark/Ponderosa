@@ -187,7 +187,7 @@ export function createRuntimeAuthority(context: RuntimeAuthorityContext) {
           informational: true,
           category: "system",
           severity: "info",
-          title: "Automatic cleanup is still blocked",
+          title: "Automatic Cleanup Is Still Blocked",
           body: "New provider work for this Agent is waiting for its previous process to exit. Ponderosa is retrying automatically. No user action is required; Agent activity has recovery details.",
           projectId,
           agentId,

@@ -22,8 +22,8 @@ function ArtifactProvenance({
   agentTitle: string;
 }): JSX.Element {
   return <Stack direction="row" spacing={.75} useFlexGap flexWrap="wrap" sx={{ alignItems: "center", mb: 1 }}>
-    <Chip size="small" label={`Created by ${agentTitle}`} />
-    <Chip size="small" variant="outlined" label={artifact.visibility === "published" ? "Published" : "Project scope"} />
+    <Chip size="small" label={`Created By ${agentTitle}`} />
+    <Chip size="small" variant="outlined" label={artifact.visibility === "published" ? "Published" : "Project Scope"} />
   </Stack>;
 }
 
@@ -81,7 +81,7 @@ export function AgentArtifactPreview({
     <ArtifactProvenance artifact={artifact} agentTitle={agentTitle} />
     {canViewCurrentFile ? <ButtonGroup
       size="small"
-      aria-label="Choose file view"
+      aria-label="Choose File View"
       sx={{ mb: 1 }}
     >
       <Button
@@ -89,14 +89,14 @@ export function AgentArtifactPreview({
         aria-pressed={view === "current"}
         onClick={() => setView("current")}
       >
-        Current file
+        Current File
       </Button>
       <Button
         variant={view === "diff" ? "contained" : "outlined"}
         aria-pressed={view === "diff"}
         onClick={() => setView("diff")}
       >
-        Recorded diff
+        Recorded Diff
       </Button>
     </ButtonGroup> : null}
     {view === "current" && canViewCurrentFile ? <FilePreview

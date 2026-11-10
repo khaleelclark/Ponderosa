@@ -211,7 +211,7 @@ function ConversationMessageComponent({
           </>
         ),
         attachments: message.attachments,
-        belowBody: message.role === "user" ? <><LiveAgentProgress receipts={message.deliveryReceipts} onOpenAgent={onOpenAgent} />{conversation==='main'&&replyMessages&&message.communicationIntent==='broadcast'&&[...new Set(message.deliveryReceipts?.map(item=>item.targetAgentId)??[])].map(agentId=><DirectReplyPreview key={agentId} sent={message} agentId={agentId} messages={replyMessages} projectId={projectId}/>)}</> : undefined,
+        belowBody: message.role === "user" ? <><LiveAgentProgress receipts={message.deliveryReceipts} onOpenAgent={onOpenAgent} />{conversation==='main'&&replyMessages&&message.communicationIntent==='broadcast'&&[...new Set(message.deliveryReceipts?.map(item=>item.targetAgentId)??[])].map(agentId=><DirectReplyPreview key={agentId} sent={message} agentTitle={agentTitle(agentId)} agentId={agentId} messages={replyMessages} projectId={projectId}/>)}</> : undefined,
         status:
           (message.role === "user" || message.communicationIntent === "collaboration") && message.deliveryReceipts?.length ? (
             <MessageDeliveryStatus
@@ -300,7 +300,7 @@ function ConversationHeader({
 }): JSX.Element {
   const auditOnly=useWorkspaceReadOnly();
   const chatActions = useMemo<ChatOverflowAction[]>(()=>[
-    { label: "Chat settings", onSelect: onChatSettings },
+    { label: "Chat Settings", onSelect: onChatSettings },
     {
       label: "Work",
       icon: <AccountTreeOutlinedIcon fontSize="small" />,
@@ -339,7 +339,7 @@ function ConversationHeader({
       actions={[
         ...(auditOnly ? [] : chatActions),
         ...(!fullTrigger ? [
-          {label:"Provider usage",icon:<DataUsageOutlinedIcon fontSize="small"/>,onSelect:openUsage},
+          {label:"Provider Usage",icon:<DataUsageOutlinedIcon fontSize="small"/>,onSelect:openUsage},
           ...(!auditOnly ? [{label:"Browser",icon:<LanguageIcon fontSize="small"/>,onSelect:onOpenProjectBrowser}] : []),
         ] : []),
       ]}
@@ -363,7 +363,7 @@ function ConversationHeader({
         <>
           {browserAction}
           <ChatOverflowMenu
-            label={`${activeView === "collaboration" ? "Team Chat" : "Chat"} settings and actions`}
+            label={`${activeView === "collaboration" ? "Team Chat" : "Chat"} Settings And Actions`}
             transcriptMarkdown={transcriptMarkdown}
             transcriptFileName={transcriptFileName(transcriptTitle)}
             actions={chatActions}
@@ -373,7 +373,7 @@ function ConversationHeader({
       tabs={{
         idPrefix: "chat-workspace",
         activeLabel: agentWorkOpen ? "Work" : undefined,
-        label: "Chat views",
+        label: "Chat Views",
         value: agentWorkOpen ? false : activeView,
         onChange: next => {
           setAgentWorkOpen(false);

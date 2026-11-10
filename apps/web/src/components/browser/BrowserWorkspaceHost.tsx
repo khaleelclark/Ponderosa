@@ -95,7 +95,7 @@ onRequestHandled: requestId => {
         },
 onDockWidth: width => setWidths(current => current[panel.key] === width ? current : { ...current, [panel.key]: width }),
 windowOptions: { docked: docked === panel.key, onDock: () => { if (browserDockIsAvailable(window.innerWidth)) setDocked(panel.key); }, onUndock: () => setDocked(current => current === panel.key ? undefined : current), onActivate: () => activate(panel.key), layer: index, offset: index, label: `Browser · ${label(panel)}` },
-workspaceControls: <Tooltip title="Browser workspaces"><IconButton size="small" aria-label="Browser workspaces" onClick={event => setMenu(event.currentTarget)}><ViewQuiltIcon /></IconButton></Tooltip>,
+workspaceControls: <Tooltip title="Browser Workspaces"><IconButton size="small" aria-label="Browser Workspaces" onClick={event => setMenu(event.currentTarget)}><ViewQuiltIcon /></IconButton></Tooltip>,
 onClose: () => {
           setPanels(current => current.filter(item => item.key !== panel.key));
           if (docked === panel.key) setDocked(undefined);
@@ -104,11 +104,11 @@ onClose: () => {
       </Box></Portal>
     </Fragment>)}
     <Menu anchorEl={menu} open={Boolean(menu)} onClose={() => setMenu(null)} disableRestoreFocus>
-      <ListSubheader>Open workspaces</ListSubheader>
+      <ListSubheader>Open Workspaces</ListSubheader>
       {panels.map(panel => <MenuItem key={panel.key} selected={panels.at(-1)?.key === panel.key} onClick={() => { setMenu(null); activate(panel.key); }}>{label(panel)}</MenuItem>)}
       <Divider />
-      <ListSubheader>{panels.length >= 4 ? "Close a panel to open another" : "Open another chat browser"}</ListSubheader>
-      {projects.filter(project => project.id !== projectId && !panels.some(panel => panel.projectId === project.id) && project.id !== menuProjectId).map(project => <MenuItem key={project.id} disabled={panels.length >= 4} onClick={() => setMenuProjectId(project.id)}>Chats in {project.label}</MenuItem>)}
+      <ListSubheader>{panels.length >= 4 ? "Close A Panel To Open Another" : "Open Another Chat Browser"}</ListSubheader>
+      {projects.filter(project => project.id !== projectId && !panels.some(panel => panel.projectId === project.id) && project.id !== menuProjectId).map(project => <MenuItem key={project.id} disabled={panels.length >= 4} onClick={() => setMenuProjectId(project.id)}>Chats In {project.label}</MenuItem>)}
       {chatQueries.flatMap(query => query.data ?? []).filter(chat => !chat.deletedAt && !panels.some(panel => panel.key === keyFor(chat.projectId, undefined, chat.id))).map(chat => <MenuItem key={chat.id} disabled={panels.length >= 4} onClick={() => { setMenu(null); openPanel({ key: keyFor(chat.projectId, undefined, chat.id), projectId: chat.projectId, conversationId: chat.id }); }}>{workspaceName(chat.projectId, chat.id)}</MenuItem>)}
     </Menu>
     <Snackbar open={limitNotice} onClose={() => setLimitNotice(false)}><Alert severity="info" onClose={() => setLimitNotice(false)}>Four browser panels open · close one to open another · its browser and tabs keep running</Alert></Snackbar>

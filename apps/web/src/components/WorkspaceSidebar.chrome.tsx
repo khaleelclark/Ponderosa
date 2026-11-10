@@ -124,14 +124,14 @@ export function SettingsSidebarPanel({
 }
 
 /** Product-neutral horizontal chrome; directory contents remain product-owned. */
-export function SidebarHeader({title='Ponderosa',drawer=false,homeLabel=`${title} home`,selected=false,hideTitle=false,onHome,onCollapse,actions}:{title?:string;drawer?:boolean;homeLabel?:string;selected?:boolean;hideTitle?:boolean;onHome():void;onCollapse?():void;actions?:ReactNode}):JSX.Element {
- return <Stack component="nav" aria-label="Workspace navigation" data-workspace-sidebar-header direction="row" alignItems="center" gap={.25} sx={{gridRow:1,px:1.25,py:.75,minWidth:0,borderBottom:1,borderColor:'divider','& > .MuiIconButton-root':{flexShrink:0}}}>
+export function SidebarHeader({title='Ponderosa',drawer=false,homeLabel=`${title} Home`,selected=false,hideTitle=false,onHome,onCollapse,actions}:{title?:string;drawer?:boolean;homeLabel?:string;selected?:boolean;hideTitle?:boolean;onHome():void;onCollapse?():void;actions?:ReactNode}):JSX.Element {
+ return <Stack component="nav" aria-label="Workspace Navigation" data-workspace-sidebar-header direction="row" alignItems="center" gap={.25} sx={{gridRow:1,px:1.25,py:.75,minWidth:0,borderBottom:1,borderColor:'divider','& > .MuiIconButton-root':{flexShrink:0}}}>
   <ButtonBase aria-label={homeLabel} aria-current={selected?'page':undefined} onClick={onHome} sx={{flex:hideTitle?'0 0 44px':1,minWidth:0,minHeight:44,justifyContent:hideTitle?'center':'flex-start',gap:.75,borderRadius:1.5,px:.5,py:.25,bgcolor:selected?'action.selected':'transparent','&:hover':{bgcolor:'action.hover'}}}>
    <Box component="img" src="/icons/app-icon.png" alt="" sx={{width:32,height:32,flex:'0 0 32px',borderRadius:1,objectFit:'cover'}}/>
    {!hideTitle&&<Typography noWrap sx={{minWidth:0,fontSize:"1rem",fontWeight:750}}>{title}</Typography>}
   </ButtonBase>
   {actions}
-  {onCollapse&&<Tooltip title={drawer?'Close navigation':'Collapse sidebar'}><IconButton aria-label={drawer?'Close workspace navigation':'Collapse sidebar'} onClick={onCollapse}>{drawer?<CloseIcon fontSize="small"/>:<MenuIcon/>}</IconButton></Tooltip>}
+  {onCollapse&&<Tooltip title={drawer?'Close Navigation':'Collapse Sidebar'}><IconButton aria-label={drawer?'Close Workspace Navigation':'Collapse Sidebar'} onClick={onCollapse}>{drawer?<CloseIcon fontSize="small"/>:<MenuIcon/>}</IconButton></Tooltip>}
  </Stack>;
 }
 
@@ -150,7 +150,7 @@ export function SidebarOperatorFooter({profile,onSettings,drawer=false}:{profile
         }}
       >
         <ButtonBase
-          aria-label={(profile.displayName || "Operator") + (profile.handle ? " #" + profile.handle.replace(/^[@#]/, "") : "") + ". Open settings"}
+          aria-label={(profile.displayName || "Operator") + (profile.handle ? " #" + profile.handle.replace(/^[@#]/, "") : "") + ". Open Settings"}
           onClick={onSettings}
           sx={{
             width: "100%",
@@ -185,6 +185,6 @@ export function SharedSidebarFrame({children,drawer=false,collapsed=false,width=
  if(collapsed&&!drawer)return null;
  return <Box component="aside" aria-label={label} sx={{position:'relative',width:drawer?'min(92vw, 390px)':width,maxWidth:'100vw',height:'100%',minWidth:0,minHeight:0,borderRight:1,borderColor:'divider',display:'grid',gridTemplateColumns:'minmax(0,1fr)',gridTemplateRows:'auto auto minmax(0,1fr) auto',bgcolor:sidebarSurface,overflow:'hidden',transition:resizing?'none':'width 180ms cubic-bezier(0.2, 0, 0, 1)','@media (prefers-reduced-motion: reduce)':{transition:'none'}}}>
   {children}
-  {!drawer&&onWidthChange&&<Box role="separator" aria-label="Resize sidebar" aria-orientation="vertical" aria-valuenow={width} tabIndex={0} onPointerDown={resizeStart} onKeyDown={e=>{if(e.key==='ArrowLeft'||e.key==='ArrowRight'){e.preventDefault();onWidthChange(clampWorkspaceSidebarWidth(width+(e.key==='ArrowRight'?16:-16)))}}} sx={{position:'absolute',zIndex:2,insetBlock:0,right:0,width:12,cursor:'col-resize',touchAction:'none','&::after':{content:'""',position:'absolute',insetBlock:0,left:5,width:2},'&:hover::after,&:focus-visible::after':{bgcolor:'primary.main'}}}/>}
+  {!drawer&&onWidthChange&&<Box role="separator" aria-label="Resize Sidebar" aria-orientation="vertical" aria-valuenow={width} tabIndex={0} onPointerDown={resizeStart} onKeyDown={e=>{if(e.key==='ArrowLeft'||e.key==='ArrowRight'){e.preventDefault();onWidthChange(clampWorkspaceSidebarWidth(width+(e.key==='ArrowRight'?16:-16)))}}} sx={{position:'absolute',zIndex:2,insetBlock:0,right:0,width:12,cursor:'col-resize',touchAction:'none','&::after':{content:'""',position:'absolute',insetBlock:0,left:5,width:2},'&:hover::after,&:focus-visible::after':{bgcolor:'primary.main'}}}/>}
  </Box>;
 }

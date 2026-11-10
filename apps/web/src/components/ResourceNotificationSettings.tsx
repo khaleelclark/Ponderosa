@@ -17,9 +17,9 @@ export function ResourceNotificationSettings({ kind, id }: { kind: "agent" | "co
     <TextField select fullWidth size="small" label="Notifications" disabled={!preferences.data || save.isPending}
       value={preferences.data?.notificationScopes?.[`${kind}:${id}`] ?? (kind === "agent" ? "inherit" : "all")}
       onChange={event => save.mutate(event.target.value as "all" | "attention" | "muted" | "inherit")}>
-      {kind === "agent" && <MenuItem value="inherit">Use chat setting</MenuItem>}
+      {kind === "agent" && <MenuItem value="inherit">Use Chat Setting</MenuItem>}
       <MenuItem value="all">All</MenuItem>
-      <MenuItem value="attention">Needs attention only</MenuItem>
+      <MenuItem value="attention">Needs Attention Only</MenuItem>
       <MenuItem value="muted">Muted</MenuItem>
     </TextField>
     <Typography variant="caption" color="text.secondary">Notification changes save immediately.</Typography>

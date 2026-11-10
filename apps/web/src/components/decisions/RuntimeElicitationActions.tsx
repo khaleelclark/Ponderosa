@@ -155,12 +155,12 @@ export function RuntimeElicitationActions({
         fullWidth
         multiline
         minRows={2}
-        label="Tell the Agent what you want instead"
+        label="Tell The Agent What You Want Instead"
         value={otherText}
         onChange={(event) => setOtherText(event.target.value)}
       />
       <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">
-        <Button size="small" variant="contained" disabled={pending || !otherText.trim()} onClick={() => void submitOther()}>Send to Agent</Button>
+        <Button size="small" variant="contained" disabled={pending || !otherText.trim()} onClick={() => void submitOther()}>Send To Agent</Button>
         <Button size="small" color="inherit" disabled={pending} onClick={() => { setOtherOpen(false); setOtherText(""); }}>Cancel</Button>
       </Stack>
       <Typography variant="caption" color="text.secondary">
@@ -288,16 +288,16 @@ export function RuntimeElicitationActions({
           onClick={() => void submit()}
         >
           {action.data.nativeApproval?.kind === "question"
-            ? "Send answers"
+            ? "Send Answers"
             : action.data.nativeApproval
-            ? "Respond to native request"
+            ? "Respond To Native Request"
             : fields.length > 0
             ? "Submit"
             : bareConfirmation
-              ? "Allow once"
+              ? "Allow Once"
               : "Submit"}
         </Button>
-        {allowForRun ? <Button size="small" variant="outlined" disabled={pending} onClick={() => void onRespond({ optionId: "allow_run" })}>Allow for this run</Button> : null}
+        {allowForRun ? <Button size="small" variant="outlined" disabled={pending} onClick={() => void onRespond({ optionId: "allow_run" })}>Allow For This Run</Button> : null}
         <Button size="small" color="inherit" disabled={pending} onClick={() => void onRespond({ optionId: "decline" })}>Not Now</Button>
         <Button size="small" color="inherit" disabled={pending} onClick={() => setOtherOpen(true)}>Other</Button>
       </Stack>

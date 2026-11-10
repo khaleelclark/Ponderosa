@@ -640,7 +640,7 @@ return new CoordinationV3Scheduler(
           dedupeKey: `native-goal-pause-unknown:${run.runId}`,
           category: "provider",
           severity: "attention",
-          title: "Native goal pause needs review",
+          title: "Native Goal Pause Needs Review",
           body: "The provider did not confirm whether the native goal paused. Its process is being stopped; earlier work may have completed. Review the goal before resuming it.",
           ...(agent?.projectId ? { projectId: agent.projectId } : {}),
           ...(agent?.conversationId ? { conversationId: agent.conversationId } : {}),

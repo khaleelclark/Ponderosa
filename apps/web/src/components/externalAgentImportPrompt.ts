@@ -11,7 +11,7 @@ export function externalAgentImportPrompt(exportedAt: string): string {
     rootRef: "external-chat",
     agents: [{
       ref: "external-chat",
-      title: "Imported conversation",
+      title: "Imported Conversation",
       engine: "external",
       managementPermissions: {
         allowAutomaticDescendantDeletion: false,

@@ -75,7 +75,7 @@ export function BrowserWindow({ children, onDockWidth, onClose, docked, onDock, 
   };
   const controls = !mobile ? <>
     {([ ["docked", "Dock browser", <VerticalSplitIcon />], ["floating", "Float browser", <PictureInPictureAltIcon />], ["expanded", "Expand browser", <OpenInFullIcon />] ] as const).map(([value, label, icon]) =>
-      <Tooltip key={value} title={value === "docked" && !dockAvailable ? "Docking needs a wider window" : label}><span><IconButton size="small" aria-label={label} aria-pressed={mode === value} disabled={value === "docked" && !dockAvailable} color={mode === value ? "primary" : "default"} onClick={() => { setMode(value); if (value === "docked") onDock?.(); else onUndock?.(); }}>{icon}</IconButton></span></Tooltip>)}
+      <Tooltip key={value} title={value === "docked" && !dockAvailable ? "Docking Needs A Wider Window" : label}><span><IconButton size="small" aria-label={label} aria-pressed={mode === value} disabled={value === "docked" && !dockAvailable} color={mode === value ? "primary" : "default"} onClick={() => { setMode(value); if (value === "docked") onDock?.(); else onUndock?.(); }}>{icon}</IconButton></span></Tooltip>)}
   </> : null;
   const full = mobile || mode === "expanded";
   return <Portal><Paper ref={surface} tabIndex={-1} role="dialog" aria-modal="false" aria-label={label} elevation={mode === "floating" ? 18 : 4}
@@ -96,11 +96,11 @@ export function BrowserWindow({ children, onDockWidth, onClose, docked, onDock, 
     sx={{ position: "fixed", zIndex: theme => theme.zIndex.drawer + 1 + layer, display: "flex", flexDirection: "column", overflow: "hidden", border: 1, borderColor: "divider", borderRadius: mode === "floating" && !mobile ? 2 : 0,
       ...(full ? { inset: 0 } : mode === "docked" ? { top: 0, right: 0, bottom: 0, width: dockWidth } : { left: bounds.x, top: bounds.y, width: bounds.width, height: bounds.height }) }}>
     {children(controls)}
-    {!mobile && mode === "docked" ? <Box role="separator" aria-label="Resize browser panel" aria-orientation="vertical" aria-valuenow={dockWidth} aria-valuemin={MIN_BROWSER_DOCK_WIDTH} aria-valuemax={maximumBrowserDockWidth(viewportWidth)} aria-valuetext={`${dockWidth} pixels`} tabIndex={0}
+    {!mobile && mode === "docked" ? <Box role="separator" aria-label="Resize Browser Panel" aria-orientation="vertical" aria-valuenow={dockWidth} aria-valuemin={MIN_BROWSER_DOCK_WIDTH} aria-valuemax={maximumBrowserDockWidth(viewportWidth)} aria-valuetext={`${dockWidth} pixels`} tabIndex={0}
       onPointerDown={event => start(event, "dock")}
       onKeyDown={event => { if (event.key === "ArrowLeft" || event.key === "ArrowRight") { event.preventDefault(); setDockWidth(value => clampBrowserDockWidth(value + (event.key === "ArrowLeft" ? 32 : -32), window.innerWidth)); } }}
       sx={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 6, cursor: "col-resize", touchAction: "none", "&:hover, &:focus-visible": { bgcolor: "primary.main" } }} /> : null}
-    {!mobile && mode === "floating" ? <Box role="button" aria-label="Resize floating browser" tabIndex={0}
+    {!mobile && mode === "floating" ? <Box role="button" aria-label="Resize Floating Browser" tabIndex={0}
       onPointerDown={event => start(event, "resize")}
       onKeyDown={event => { if (event.key.startsWith("Arrow")) { event.preventDefault(); setBounds(value => fit({ ...value, width: value.width + (event.key === "ArrowRight" ? 32 : event.key === "ArrowLeft" ? -32 : 0), height: value.height + (event.key === "ArrowDown" ? 32 : event.key === "ArrowUp" ? -32 : 0) })); } }}
       sx={{ position: "absolute", right: 0, bottom: 0, width: 20, height: 20, cursor: "nwse-resize", touchAction: "none", borderRight: "4px solid", borderBottom: "4px solid", borderColor: "text.secondary", borderRadius: "0 0 6px 0" }} /> : null}

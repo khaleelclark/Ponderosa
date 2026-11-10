@@ -1204,7 +1204,7 @@ for(const mode of ['async','sync','exit'])test(`standalone human gate ${mode}: i
  const dir=mkdtempSync(join(tmpdir(),'human-rewind-'));const store=new AgentStore(dir),branches=new BranchStore(store.sqlite,new CoordinationV3Store(store.sqlite));
  t.after(async()=>{await branches.unitSaver.drain();store.close();rmSync(dir,{recursive:true,force:true});});
  const branch=branches.create('Review frontier',randomUUID());
- const definition={schema:'ponderosa.branch.v1',name:'Review frontier',trigger:{kind:'manual'},entry:'review',steps:[{id:'review',kind:'human_gate',prompt:'Review the supplied state',editable:true},{id:'next',kind:'human_gate',prompt:'Review again',editable:true}],controls:[],edges:[{id:'approved',from:'review',to:'next',on:'approved'}],policy:{maxConcurrentExecutions:1,failure:{action:'stop'}}};
+ const definition={schema:'ponderosa.branch.v1',name:'Review frontier',trigger:{kind:'manual'},entry:'review',steps:[{id:'review',kind:'human_gate',prompt:'Review the supplied state',editable:true},{id:'next',kind:'human_gate',prompt:'Review Again',editable:true}],controls:[],edges:[{id:'approved',from:'review',to:'next',on:'approved'}],policy:{maxConcurrentExecutions:1,failure:{action:'stop'}}};
  branches.deploy({chatId:'',branchId:branch.id,expectedVersionId:'',idempotencyKey:randomUUID(),definition,bindings:{agents:{},directories:{}}});
  if(mode!=='async')branches.configure(branch.id,{...branches.configuration(branch.id),checkpointMode:mode},0);
  const source=branches.accept(branch.id,randomUUID(),'original state');

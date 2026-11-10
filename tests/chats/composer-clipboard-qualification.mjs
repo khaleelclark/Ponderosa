@@ -40,9 +40,9 @@ try {
       const editor=page.getByLabel('Message',{exact:true});
       await editor.waitFor();
       if (surface==='core-shared') {
-        await page.getByRole('button',{name:'Add attachment or capability'}).click();
+        await page.getByRole('button',{name:'Add Attachment Or Capability'}).click();
         const chooser=page.waitForEvent('filechooser');
-        await page.getByRole('menu',{name:'Add attachment or runtime capability'}).getByRole('menuitem',{name:/^Files/}).click();
+        await page.getByRole('menu',{name:'Add Attachment Or Runtime Capability'}).getByRole('menuitem',{name:/^Files/}).click();
         await (await chooser).setFiles({name:'synthetic-note.txt',mimeType:'text/plain',buffer:Buffer.from('Synthetic attachment')});
         const remove=page.getByRole('button',{name:'Remove synthetic-note.txt'});await remove.waitFor();
         const bounds=await remove.evaluate(button=>{
@@ -56,15 +56,15 @@ try {
       }
       if (surface.endsWith('shared')) {
         if (!mobile && surface.startsWith('core')) {
-          const resize=page.getByRole('separator',{name:'Resize sidebar',exact:true});
+          const resize=page.getByRole('separator',{name:'Resize Sidebar',exact:true});
           const width=Number(await resize.getAttribute('aria-valuenow'));
           assert.ok(width>=320&&width<=520,'Current sidebar width exposed');
           await resize.focus(); await page.keyboard.press('ArrowRight');
-          await page.waitForFunction(old=>Number(document.querySelector('[role=separator][aria-label="Resize sidebar"]').getAttribute('aria-valuenow'))===Math.min(520,old+16),width);
+          await page.waitForFunction(old=>Number(document.querySelector('[role=separator][aria-label="Resize Sidebar"]').getAttribute('aria-valuenow'))===Math.min(520,old+16),width);
         }
         await page.getByRole('button',{name:'Chat settings and actions',exact:true}).click();
         await page.getByRole('menuitem',{name:'Rename',exact:true}).click();
-        const name=page.getByLabel('Chat name',{exact:true});
+        const name=page.getByLabel('Chat Name',{exact:true});
         await name.fill(`Renamed ${surface} ${mobile}`);
         await name.dispatchEvent('keydown',{key:'Enter',code:'Enter',isComposing:true});
         assert.ok(await name.isVisible(),'IME Enter does not save');
@@ -114,12 +114,12 @@ try {
         assert.equal(sends.length,before,'Shift+Enter never sends');
         assert.equal(normalize(await editor.innerText()),expectedDraft+'\nSHIFT_TAIL','Exact draft after Shift+Enter');
         const expected=normalize(text)+'\nSHIFT_TAIL';
-        await page.waitForFunction(()=>[...document.querySelectorAll('button')].some(button=>button.getAttribute('aria-label')==='Send message'&&!button.disabled));
+        await page.waitForFunction(()=>[...document.querySelectorAll('button')].some(button=>button.getAttribute('aria-label')==='Send Message'&&!button.disabled));
         if (ending === '\r\n') {
           await page.keyboard.press('Enter'); await page.waitForTimeout(250);
           assert.equal(sends.length,before+(mobile?0:1),'Desktop Enter sends; Android Return adds newline');
         }
-        if (sends.length===before) await page.getByRole('button',{name:'Send message',exact:true}).click();
+        if (sends.length===before) await page.getByRole('button',{name:'Send Message',exact:true}).click();
         await page.waitForTimeout(700);
         assert.equal(sends.length,before+1,'One explicit send');
         assert.equal(normalize(sends.at(-1)),(destination?destination+' ':'')+expected,'Exact whole submitted message including explicit Inbox recipient');

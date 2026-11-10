@@ -18,7 +18,7 @@ function formatDuration(value = 0): string {
 }
 
 function runsLabel(value: number): string {
-  return `${value} run${value === 1 ? "" : "s"}`;
+  return `${value} Run${value === 1 ? "" : "s"}`;
 }
 
 function metricLabel(key: string): string {
@@ -56,10 +56,10 @@ export function TokenUsageDetails({ data }: { data: TokenUsageSummaryDto }): JSX
       </Stack>
     </Box>
     <Box>
-      <Typography variant="subtitle2" sx={{ mb: 1 }}>Reported Usage by Provider</Typography>
+      <Typography variant="subtitle2" sx={{ mb: 1 }}>Reported Usage By Provider</Typography>
       {providerUsage.length ? <Stack spacing={1}>{providerUsage.map((provider) => <Stack key={provider.engine} direction="row" spacing={2} sx={{ alignItems: "baseline", justifyContent: "space-between" }}><Box><Typography variant="body2" sx={{ textTransform: "capitalize", fontWeight: 700 }}>{provider.engine}</Typography><Typography variant="caption" color="text.secondary">{provider.models.size ? [...provider.models].join(", ") : "Runtime default"}</Typography></Box><Box sx={{ textAlign: "right" }}><Typography variant="body2">{formatTokens(provider.totalTokens)} tokens</Typography><Typography variant="caption" color="text.secondary">{runsLabel(provider.runs)}</Typography></Box></Stack>)}</Stack> : <Typography variant="body2" color="text.secondary">No total token reports in this range.</Typography>}
     </Box>
-    {data.wakeCauses.length ? <Box><Typography variant="subtitle2" sx={{ mb: 0.75 }}>Why Runs Started</Typography><Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">{data.wakeCauses.map((item) => <Chip key={item.cause} size="small" variant="outlined" label={`${item.cause.replaceAll("_", " ")} · ${item.runs} ${item.runs === 1 ? "Run" : "Runs"}${item.activations !== item.runs ? ` · ${item.activations} wake-ups` : ""}`} />)}</Stack></Box> : null}
-    {data.breakdown?.length ? <Box><Typography variant="subtitle2" sx={{ mb: 1 }}>Reported Usage by Chat and Agent</Typography>{data.breakdown.map((item) => <Stack key={`${item.projectId}:${item.conversationId ?? ""}:${item.agentId}:${item.engine}:${item.model ?? ""}`} direction="row" justifyContent="space-between" spacing={2} sx={{ py: .5 }}><Typography variant="body2" noWrap>{item.agentTitle} · {item.engine}{item.model ? ` / ${item.model}` : ""} · {runsLabel(item.runs)}</Typography><Typography variant="caption" color="text.secondary">{formatTokens(item.usage.totalTokens)} tokens</Typography></Stack>)}</Box> : null}
+    {data.wakeCauses.length ? <Box><Typography variant="subtitle2" sx={{ mb: 0.75 }}>Why Runs Started</Typography><Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">{data.wakeCauses.map((item) => <Chip key={item.cause} size="small" variant="outlined" label={`${item.cause.replaceAll("_", " ")} · ${item.runs} ${item.runs === 1 ? "Run" : "Runs"}${item.activations !== item.runs ? ` · ${item.activations} Wake-Ups` : ""}`} />)}</Stack></Box> : null}
+    {data.breakdown?.length ? <Box><Typography variant="subtitle2" sx={{ mb: 1 }}>Reported Usage By Chat And Agent</Typography>{data.breakdown.map((item) => <Stack key={`${item.projectId}:${item.conversationId ?? ""}:${item.agentId}:${item.engine}:${item.model ?? ""}`} direction="row" justifyContent="space-between" spacing={2} sx={{ py: .5 }}><Typography variant="body2" noWrap>{item.agentTitle} · {item.engine}{item.model ? ` / ${item.model}` : ""} · {runsLabel(item.runs)}</Typography><Typography variant="caption" color="text.secondary">{formatTokens(item.usage.totalTokens)} tokens</Typography></Stack>)}</Box> : null}
   </Stack>;
 }

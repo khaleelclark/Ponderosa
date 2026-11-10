@@ -108,6 +108,7 @@ function visibleAgentMessageText(message: MessageDto, fixedRecipientAgentId?:str
 }
 
 function ChatPaneComponent({
+  active=true,
   messages,
   decisionEvents = [],
   pendingDecisions = [],
@@ -136,6 +137,7 @@ function ChatPaneComponent({
   onLoadOlder,
   historyError,
 }: {
+  active?:boolean;
   messages: MessageDto[];
   decisionEvents?: ConversationDecisionEventDto[];
   pendingDecisions?: DecisionDto[];
@@ -367,7 +369,7 @@ function ChatPaneComponent({
       ) : null}
       empty={conversationChrome?<Box sx={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:1.5,p:3,pb:8,textAlign:'center'}}>
        <AssistantIcon sx={{fontSize:36,color:'primary.main',mb:.5}}/>
-       <Typography component="h2" sx={{fontSize:{xs:'1.5rem',sm:'1.875rem'},fontWeight:550,letterSpacing:'-.035em'}}>What’s on your mind?</Typography>
+       <Typography component="h2" sx={{fontSize:{xs:'1.5rem',sm:'1.875rem'},fontWeight:550,letterSpacing:'-.035em'}}>What’s On Your Mind?</Typography>
        <Typography color="text.secondary" sx={{maxWidth:340,fontSize:'.9375rem',lineHeight:1.65}}>Send a message.</Typography>
       </Box>:"Send a message to this agent to start the conversation."}
     >
@@ -535,7 +537,7 @@ function ChatPaneComponent({
                 </>
               ),
               attachments: message.attachments,
-              belowBody: message===latestPeerInput&&projectId?<DirectReplyPreview sent={message} agentId={message.agentId} peerAgentId={message.agentId} messages={chatMessages} projectId={projectId}/>:message.role === "user" ? <><LiveAgentProgress receipts={message.deliveryReceipts} onOpenAgent={onOpenAgent} />{(message===latestDirectInput||message===latestBroadcastInput)&&projectId&&[...new Set(message.deliveryReceipts?.map(receipt=>receipt.targetAgentId)??[])].map(agentId=><DirectReplyPreview key={`${message.id}:${agentId}`} sent={message} agentId={agentId} messages={chatMessages} projectId={projectId}/>)}</> : undefined,
+              belowBody: message===latestPeerInput&&projectId?<DirectReplyPreview active={active} agentTitle={agentNameForId?.(message.agentId)??agentName} sent={message} agentId={message.agentId} peerAgentId={message.agentId} messages={chatMessages} projectId={projectId}/>:message.role === "user" ? <><LiveAgentProgress receipts={message.deliveryReceipts} onOpenAgent={onOpenAgent} />{(message===latestDirectInput||message===latestBroadcastInput)&&projectId&&[...new Set(message.deliveryReceipts?.map(receipt=>receipt.targetAgentId)??[])].map(agentId=><DirectReplyPreview active={active} key={`${message.id}:${agentId}`} sent={message} agentTitle={agentNameForId?.(agentId)??agentName} agentId={agentId} messages={chatMessages} projectId={projectId}/>)}</> : undefined,
               attachmentDensity: "compact",
               status:
                 (message.role === "user" || message.communicationIntent === "collaboration") && message.deliveryReceipts?.length ? (

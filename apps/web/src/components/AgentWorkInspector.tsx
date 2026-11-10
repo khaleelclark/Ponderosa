@@ -32,16 +32,16 @@ export interface AgentWorkFocus {
 }
 
 function kindLabel(kind: AgentWorkItemDto["kind"]): string {
-  if (kind === "activation") return "Work input";
+  if (kind === "activation") return "Work Input";
   if (kind === "join") return "Waiting";
-  if (kind === "request") return "Assigned work";
+  if (kind === "request") return "Assigned Work";
   if (kind === "run") return "Run";
   return "Decision";
 }
 
 function agentWorkStateLabel(state: string): string {
-  if (state === "consumed") return "Assigned to a Run";
-  if (state === "outcome_unknown") return "Result unconfirmed";
+  if (state === "consumed") return "Assigned To A Run";
+  if (state === "outcome_unknown") return "Result Unconfirmed";
   return state.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toLocaleUpperCase());
 }
 
@@ -96,7 +96,7 @@ export function AgentWorkTechnicalDetails({
       <CircularProgress size={14} /><Typography variant="caption">Loading technical details…</Typography>
     </Stack> : null}
     {query.isError ? <Alert severity="error" sx={{ mt: 0.75 }}>Technical details could not be loaded.</Alert> : null}
-    {messageTrace ? <Stack spacing={1} component="section" aria-label="Message cause and result" sx={{mt: 1, overflowWrap: "anywhere"}}>
+    {messageTrace ? <Stack spacing={1} component="section" aria-label="Message Cause And Result" sx={{mt: 1, overflowWrap: "anywhere"}}>
       {messageTrace.inputs.length === 0 ? <Typography variant="body2">Message cause: Not recorded in this evidence window.</Typography> : null}
       {messageTrace.inputs.map(input => <Stack key={input.activationId} spacing={0.5}>
         <Typography variant="body2">Cause: Message from {input.sender}</Typography>
@@ -111,7 +111,7 @@ export function AgentWorkTechnicalDetails({
       {messageTrace.runIds.length ? <Box component="details"><Typography component="summary" variant="caption">Connected Run identifiers</Typography>
         {messageTrace.runIds.map(id => <Typography key={id} variant="caption" component="div">Run: {id}</Typography>)}
       </Box> : <Typography variant="body2">Connected Run: Not recorded in this evidence window.</Typography>}
-      <Typography variant="subtitle2">Messages from the recorded Runs ({messageTrace.replies.length})</Typography>
+      <Typography variant="subtitle2">Messages From The Recorded Runs ({messageTrace.replies.length})</Typography>
       {messageTrace.inputs.length > 1 || messageTrace.replies.length > 1 ? <Typography variant="caption">Link: Run-level. Individual message pairing is not recorded.</Typography> : null}
       {messageTrace.replies.length === 0 ? <Typography variant="body2">No reply found in this evidence window.</Typography> : null}
       {messageTrace.replies.map(reply => <Stack key={`${reply.communicationEventId}:${reply.messageId}`} spacing={0.5}>
@@ -329,7 +329,7 @@ export function AgentWorkInspector({
           </Box> : focus?.id ? <Alert severity="warning">The focused technical record is not available in this bounded evidence window.</Alert> : null}
 
           {query.data.chatChanges ? <Box component="section" aria-labelledby="chat-changes">
-            <Typography id="chat-changes" variant="overline" color="text.secondary">Chat changes</Typography>
+            <Typography id="chat-changes" variant="overline" color="text.secondary">Chat Changes</Typography>
             <Stack spacing={1}>
               {query.data.chatChanges.truncated ? <Typography variant="caption" color="text.secondary">Showing recent Chat changes. Older events remain preserved.</Typography> : null}
               {query.data.chatChanges.items.length === 0 ? <Typography variant="body2" color="text.secondary">No recorded Chat changes in this window.</Typography> : null}
@@ -380,9 +380,9 @@ export function AgentWorkInspector({
                     size="small"
                     color={trace.coordinationRecovery ? "warning" : trace.state === "attention" ? "warning" : trace.state === "active" ? "info" : "default"}
                     label={trace.coordinationRecovery?.state === "synthesis_pending"
-                      ? "Synthesis pending"
-                      : trace.coordinationRecovery ? "Provider blocked"
-                        : trace.state === "attention" ? "Needs attention" : trace.state === "active" ? "Active" : "Finished"}
+                      ? "Synthesis Pending"
+                      : trace.coordinationRecovery ? "Provider Blocked"
+                        : trace.state === "attention" ? "Needs Attention" : trace.state === "active" ? "Active" : "Finished"}
                   />
                   <Box sx={{ flex: 1, width: { xs: "100%", sm: "auto" }, minWidth: 0 }}>
                     <Typography variant="subtitle2" fontWeight={750} noWrap sx={{ whiteSpace: { xs: "normal", sm: "nowrap" }, overflowWrap: "anywhere" }}>{trace.title}</Typography>
@@ -502,7 +502,7 @@ export function AgentWorkInspector({
       </Box>
       <ScrollToLatestButton
         visible={showScrollToLatest}
-        label="Jump to latest workflow"
+        label="Jump To Latest Workflow"
         onClick={() => {
           const region = scrollRegionRef.current;
           if (!region) return;

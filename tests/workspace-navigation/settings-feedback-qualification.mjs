@@ -44,7 +44,7 @@ try{
    await page.route(prefs,reject);response=page.waitForResponse(r=>r.url()===prefs&&r.request().method()==='PATCH');await save.click();assert.equal((await response).status(),503);await page.getByRole('alert').filter({hasText:'Qualification settings outage'}).first().waitFor();
    assert.equal(await saved.count(),0);assert.equal(await input.inputValue(),'newer unsaved draft');await page.unroute(prefs,reject);
    response=page.waitForResponse(r=>r.url()===prefs&&r.request().method()==='PATCH');await save.click();assert.equal((await response).status(),200);await saved.waitFor();row.checks.push('Failed save keeps the draft and error; successful retry alone restores confirmation');
-   const tokens=page.getByRole('spinbutton',{name:'Roll over above (context tokens)',exact:true});await tokens.fill('160000');
+   const tokens=page.getByRole('spinbutton',{name:'Roll Over Above (Context Tokens)',exact:true});await tokens.fill('160000');
    response=page.waitForResponse(r=>r.url()===prefs&&r.request().method()==='PATCH');await rollover.click();assert.equal((await response).status(),200);await rolloverSaved.waitFor();
    assert.equal(overlaps(await rollover.boundingBox(),await rolloverSaved.boundingBox()),false);await page.screenshot({path:path.join(output,product+'-'+(mobile?'phone':'desktop')+'-rollover-saved.png')});
    await tokens.fill('170000');await rolloverSaved.waitFor({state:'hidden'});row.checks.push('Rollover confirmation is local to its successful save and clears on editing');
@@ -55,9 +55,9 @@ try{
    await page.getByRole('tab',{name:'Agents',exact:true}).click();await page.getByText(product==='core'?'Normal compatibility Agent':'Branch roster 001',{exact:true}).first().click();
    const heading=page.getByRole('heading',{name:product==='core'?'Normal compatibility Agent':'Branch roster 001',exact:true});await heading.waitFor();
    const header=page.locator('[data-workspace-header]').filter({has:heading});
-   const expand=header.getByRole('button',{name:'Expand workspace header',exact:true});if(await expand.count())await expand.click();
-   const collapse=header.getByRole('button',{name:'Collapse workspace header',exact:true});await collapse.hover();
-   await page.getByRole('tooltip').filter({hasText:'Collapse workspace header'}).waitFor();
+   const expand=header.getByRole('button',{name:'Expand Workspace Header',exact:true});if(await expand.count())await expand.click();
+   const collapse=header.getByRole('button',{name:'Collapse Workspace Header',exact:true});await collapse.hover();
+   await page.getByRole('tooltip').filter({hasText:'Collapse Workspace Header'}).waitFor();
    const actions=header.getByRole('button',{name:'Agent Chat Actions',exact:true});
    assert.equal(await actions.evaluate(el=>{const b=el.getBoundingClientRect();return el.contains(document.elementFromPoint(b.x+b.width/2,b.y+b.height/2));}),true,'Hover label must not intercept the Agent action');
    await actions.click({timeout:1500});await page.getByRole('menu').waitFor();await page.keyboard.press('Escape');

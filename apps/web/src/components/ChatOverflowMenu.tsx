@@ -138,7 +138,7 @@ export function ChatOverflowMenu({
       transformOrigin={{ vertical: "top", horizontal: "right" }}
       slotProps={{ paper: { sx: { minWidth: 260, maxWidth: "min(360px, calc(100vw - 24px))", "& .MuiMenuItem-root": { minHeight: { xs: 44, sm: 36 }, py: 0.75 } } } }}
     >
-      <MenuList dense aria-label={`${exportMenu?.kind === "download" ? "Download" : "Copy"} options`}>
+      <MenuList dense aria-label={`${exportMenu?.kind === "download" ? "Download" : "Copy"} Options`}>
         {(exportMenu?.kind === "download" ? downloadActions : copyActions).map((action) => <MenuItem
           key={action.label}
           sx={menuRowSx}

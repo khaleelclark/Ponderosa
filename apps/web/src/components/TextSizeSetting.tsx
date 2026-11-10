@@ -10,7 +10,7 @@ export function TextSizeSetting():JSX.Element {
   window.addEventListener(TEXT_SIZE_EVENT,update);window.addEventListener('storage',update);
   return()=>{window.removeEventListener(TEXT_SIZE_EVENT,update);window.removeEventListener('storage',update);};
  },[]);
- return <TextField select fullWidth label="Text size" value={size} onChange={event=>saveTextSize(Number(event.target.value))}>
+ return <TextField select fullWidth label="Text Size" value={size} onChange={event=>saveTextSize(Number(event.target.value))}>
   {TEXT_SIZES.map(value=><MenuItem key={value} value={value}>{value}%</MenuItem>)}
  </TextField>;
 }

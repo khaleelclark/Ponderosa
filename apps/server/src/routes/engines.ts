@@ -239,7 +239,7 @@ export function registerEngineRoutes(
           dedupeKey: `provider:${request.params.id}:unavailable`,
           category: "provider",
           severity: "attention",
-          title: `${registration.adapter.displayName} is unavailable`,
+          title: `${registration.adapter.displayName} Is Unavailable`,
           body: providerUnavailableNotificationBody(evidence.detail, evidence.failureCategory),
           action: { kind: "open_settings", targetId: request.params.id },
         });

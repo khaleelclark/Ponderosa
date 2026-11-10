@@ -87,7 +87,10 @@ export function registerVoiceReplyRoutes(app: FastifyInstance, c: Context): void
           input.audience.agentIds.length !== 1 || input.audience.agentIds[0] !== agentId))) {
         return reply.code(404).send({ error: "voice turn not found" });
       }
-      const t = reportSource?c.coordinationV3.requestReplyRunTiming(messageId,agentId):c.coordinationV3.voiceReplyRunTiming(messageId, agentId);
+      const timing: Partial<NonNullable<ReturnType<typeof c.coordinationV3.voiceReplyRunTiming>>> =
+        (reportSource ? c.coordinationV3.requestReplyRunTiming(messageId,agentId)
+          : c.coordinationV3.voiceReplyRunTiming(messageId,agentId,presentation)) ?? {};
+      const {sourceActivationId,...t}=timing;
       const active = c.activeRuns.get(agentId)?.voiceReply?.snapshot;
       let s = active?.messageId === messageId && active.runId === t?.runId ? active
         : t?.runId ? c.store.latestVoiceReply(agentId, messageId, t.runId) : undefined;
@@ -98,7 +101,7 @@ export function registerVoiceReplyRoutes(app: FastifyInstance, c: Context): void
         s = { ...s, state: "failed", sequence: s.sequence + 1 };
         // The durable Run outcome owns this projection; reading status adds no event.
       }
-      const activationId=runtime?.activations?.find(a=>a.agentId===agentId)?.id;
+      const activationId=presentation==="text" ? sourceActivationId : runtime?.activations?.find(a=>a.agentId===agentId)?.id;
       const obligation=t?.runId && activationId ? c.coordinationV3.requiredReplyObligationsForRun(t.runId)
         .find(o=>o.sourceActivationId===activationId) : undefined;
       const canonicalReplyEventId=obligation?.satisfiedCommunicationId ?? obligation?.interimCommunicationId;

@@ -25,20 +25,20 @@ export async function foreignContinuationRegression(mode:'normal'|'quota'|'secur
  try{
   await mount();const input=host.querySelector('input')!;Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value')!.set!.call(input,beforeEntry?'frontier:current':'checkpoint:cut');
   // MUI selects are controlled through their actual option buttons.
-  const select=host.querySelector('[role="combobox"]')!;select.dispatchEvent(new MouseEvent('mousedown',{bubbles:true}));await settle();(Array.from(document.querySelectorAll('[role="option"]')).find(e=>e.textContent?.startsWith(beforeEntry?'Check whether source never started':'cut')) as HTMLElement).click();await settle();
+  const select=host.querySelector('[role="combobox"]')!;select.dispatchEvent(new MouseEvent('mousedown',{bubbles:true}));await settle();(Array.from(document.querySelectorAll('[role="option"]')).find(e=>e.textContent?.startsWith(beforeEntry?'Check Whether Source Never Started':'cut')) as HTMLElement).click();await settle();
   assert(reviews===0&&posts===0&&!host.querySelector('input[type="checkbox"]'),'unverified source offers no authority');
-  await click('Review current continuation authority');assert(posts===0,'review grants no authority');
+  await click('Review Current Continuation Authority');assert(posts===0,'review grants no authority');
   if(mode==='before_entry_missing'||mode==='before_entry_tampered'){
    assert(!host.querySelector('input[type="checkbox"]'),'unavailable or changed source cannot be confirmed');
    assert(host.textContent?.includes(mode==='before_entry_missing'?'Original source unavailable; held':'Current review differs; held'),'specific refusal remains visible');
    return {mode,posts,gets,reviews};
   }
-  const confirm=()=>Array.from(host.querySelectorAll('button')).find(b=>b.textContent==='Accept current authority and continue')!;
+  const confirm=()=>Array.from(host.querySelectorAll('button')).find(b=>b.textContent==='Accept Current Authority And Continue')!;
   assert(confirm().disabled,'fresh explicit consent required');(host.querySelector('input[type="checkbox"]') as HTMLInputElement).click();await settle();
   if(mode==='quota'||mode==='security')Storage.prototype.setItem=function(k,v){if(k===key)throw new DOMException('Controlled storage failure',mode==='quota'?'QuotaExceededError':'SecurityError');return setItem.call(this,k,v)};
-  await click('Accept current authority and continue');
+  await click('Accept Current Authority And Continue');
   if(mode==='normal'||mode==='before_entry'){
-   assert(posts===1&&localStorage.getItem(key),'one lost-result mutation retained');root.unmount();root=createRoot(host);await mount();assert(reviews===2&&posts===1,'remount cannot review or POST');assert(gets===1&&host.textContent?.includes('Fresh continuation accepted'),'remount uses only the original-key read');await click('Refresh saved result');assert(gets===2&&posts===1&&host.textContent?.includes('Fresh continuation accepted'),'manual refresh only reads the original-key receipt');
+   assert(posts===1&&localStorage.getItem(key),'one lost-result mutation retained');root.unmount();root=createRoot(host);await mount();assert(reviews===2&&posts===1,'remount cannot review or POST');assert(gets===1&&host.textContent?.includes('Fresh continuation accepted'),'remount uses only the original-key read');await click('Refresh Saved Result');assert(gets===2&&posts===1&&host.textContent?.includes('Fresh continuation accepted'),'manual refresh only reads the original-key receipt');
   }else if(mode==='stale')assert(posts===0&&!(host.querySelector('input[type="checkbox"]') as HTMLInputElement|null)?.checked,'authority drift invalidates consent before mutation');
   else assert(posts===0&&localStorage.getItem(key)===null&&host.textContent?.includes('Controlled storage failure'),'storage exception stops mutation');
   return {mode,posts,gets,reviews};

@@ -13,11 +13,11 @@ export type AgentSetupRequest={kind:'agent'|'organization'|'edit';nodeId:string;
 type Choice={id:string;label:string;kind:Extract<BranchStep,{kind:'agent'}>['target']['kind']|'new_agent'|'new_organization';agent?:AgentDto&Partial<BranchAgentChoiceDto>};
 export function AgentJobHandlingField({value,onChange}:{value?:AgentJobHandling;onChange(value:AgentJobHandling):void}):JSX.Element{
  const hint=value===undefined?'Steer when busy; otherwise start work.':value==='queue'?'Queued jobs keep separate results; schedules may combine triggers before the queue.':value==='steer'?'Guide current work without a separate result.':'Use a fresh workspace and separate result without source working-folder files.';
- return <TextField data-branch-field="jobHandling" select size="small" label="Job handling" value={value??''} helperText={hint} SelectProps={{displayEmpty:true}} InputLabelProps={{shrink:true}} onChange={event=>{if(event.target.value)onChange(event.target.value as AgentJobHandling)}}>
-  {value===undefined&&<MenuItem value="" disabled>Existing behavior · steer or run</MenuItem>}
-  <MenuItem value="queue">Wait its turn</MenuItem>
-  <MenuItem value="steer">Steer current work</MenuItem>
-  <MenuItem value="copy">Make a temporary Agent copy</MenuItem>
+ return <TextField data-branch-field="jobHandling" select size="small" label="Job Handling" value={value??''} helperText={hint} SelectProps={{displayEmpty:true}} InputLabelProps={{shrink:true}} onChange={event=>{if(event.target.value)onChange(event.target.value as AgentJobHandling)}}>
+  {value===undefined&&<MenuItem value="" disabled>Existing Behavior · Steer Or Run</MenuItem>}
+  <MenuItem value="queue">Wait Its Turn</MenuItem>
+  <MenuItem value="steer">Steer Current Work</MenuItem>
+  <MenuItem value="copy">Make A Temporary Agent Copy</MenuItem>
  </TextField>;
 }
 /** One scoped picker; creation is owned above the responsive editor so switching surfaces cannot lose it. */

@@ -500,10 +500,10 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
           <Typography variant="h6" component="span" aria-hidden="true">Notifications</Typography>
           <Typography variant="body2" color="text.secondary">{!firstPage ? loadFailed ? "Notifications unavailable" : "Loading notifications…" : notificationSummaryText(openActionCount, unacknowledgedActionCount, unreadUpdateCount)}</Typography>
         </Box>
-        <IconButton aria-label="Close notifications" onClick={onClose}><CloseIcon /></IconButton>
+        <IconButton aria-label="Close Notifications" onClick={onClose}><CloseIcon /></IconButton>
       </Stack>
     </Box>
-    <Tabs value={filter} onChange={(_event, value) => setFilter(value as NotificationFilter)} aria-label="Notification filters" sx={{ px: { xs: 1, sm: 2 }, minHeight: 42 }}>
+    <Tabs value={filter} onChange={(_event, value) => setFilter(value as NotificationFilter)} aria-label="Notification Filters" sx={{ px: { xs: 1, sm: 2 }, minHeight: 42 }}>
       <Tab value="attention" label={`Needs Action (${openActionCount})`} sx={{ minHeight: 42 }} />
       <Tab value="updates" label={`Updates (${unreadUpdateCount})`} sx={{ minHeight: 42 }} />
     </Tabs>
@@ -519,12 +519,12 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
             <Button fullWidth disabled={!project} onClick={() => { if (project) { onClose(); onNavigate({ kind: "home" }); } }} sx={{ justifyContent: "flex-start", px: 1.5, py: 1.1, textAlign: "left", borderRadius: 0 }}>
               <Box sx={{ width: 32, height: 32, mr: 1.25, borderRadius: 1, bgcolor: "action.selected", color: "secondary.main", display: "grid", placeItems: "center", flex: "0 0 auto" }}><FolderOutlinedIcon fontSize="small" /></Box>
               <Stack spacing={.1} sx={{ minWidth: 0, flex: 1 }}>
-                <Typography variant="overline" color="text.secondary" fontWeight={650} lineHeight={1.25} noWrap>{project?.label ?? (group.projectId ? "Unknown project" : "Ponderosa")}</Typography>
-                <Typography variant="subtitle2" noWrap>{group.items.length} {filter === "attention" ? (group.items.length === 1 ? "open action" : "open actions") : (group.items.length === 1 ? "unread update" : "unread updates")}</Typography>
+                <Typography variant="overline" color="text.secondary" fontWeight={650} lineHeight={1.25} noWrap>{project?.label ?? (group.projectId ? "Unknown Project" : "Ponderosa")}</Typography>
+                <Typography variant="subtitle2" noWrap>{group.items.length} {filter === "attention" ? (group.items.length === 1 ? "Open Action" : "Open Actions") : (group.items.length === 1 ? "Unread Update" : "Unread Updates")}</Typography>
               </Stack>
             </Button>
             </Stack>
-            <List dense disablePadding aria-label={`Notifications for ${project?.label ?? "Ponderosa"}`}>
+            <List dense disablePadding aria-label={`Notifications For ${project?.label ?? "Ponderosa"}`}>
               {group.items.map((item) => {
                 const attention = isOpenAttention(item) ? attentionPresentation(item) : undefined;
                 return <ListItem key={item.id} disablePadding sx={{ "& > [data-notification-id]": { flex: 1, minWidth: 0 } }}>
@@ -548,7 +548,7 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
                         onClose();
                         onNavigate(route);
                       }
-                    }}>Open activity</Button> : null}
+                    }}>Open Activity</Button> : null}
                     {item.decision?.status !== "pending" ? <Button size="small" color="inherit" sx={{ ml: "auto" }} onClick={(event) => {
                       event.stopPropagation();
                       void setStatus(item, "dismissed");
@@ -562,25 +562,25 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
             </List>
           </Box>;
         })}
-        {firstPage && !loadFailed && !loading && visibleNotifications.length === 0 && totalForFilter === 0 ? <Box sx={{ py: 3, textAlign: "center" }}><Typography fontWeight={650}>{filter === "attention" ? "Nothing needs attention" : "No unread updates"}</Typography><Typography variant="body2" color="text.secondary">{filter === "attention" ? "Questions remain until answered or skipped; other alerts can be dismissed." : "New Agent responses and broadcasts will appear here."}</Typography></Box> : null}
+        {firstPage && !loadFailed && !loading && visibleNotifications.length === 0 && totalForFilter === 0 ? <Box sx={{ py: 3, textAlign: "center" }}><Typography fontWeight={650}>{filter === "attention" ? "Nothing Needs Attention" : "No Unread Updates"}</Typography><Typography variant="body2" color="text.secondary">{filter === "attention" ? "Questions remain until answered or skipped; other alerts can be dismissed." : "New Agent responses and broadcasts will appear here."}</Typography></Box> : null}
         {reconcilingOlder ? <Typography variant="caption" color="text.secondary" role="status">
           Refreshing loaded notification history…
         </Typography> : null}
         {historyReconcileFailed ? <Button onClick={() => {
           setError(undefined);
           setHistoryReconcileNonce((current) => current + 1);
-        }}>Retry notification refresh</Button> : null}
+        }}>Retry Notification Refresh</Button> : null}
         {nextCursor ? <Button disabled={loadingOlder || reconcilingOlder || revisionUnreconciled || historyOperationActive || historyReconcileFailed} onClick={() => void loadOlder()}>
-          {loadingOlder ? "Loading older notifications…" : reconcilingOlder
-            ? "Refreshing loaded notifications…" : remainingForFilter
-            ? `Load older (${remainingForFilter} ${filter === "attention" ? "attention" : "updates"} remaining)`
-            : "Load older notifications"}
+          {loadingOlder ? "Loading Older Notifications…" : reconcilingOlder
+            ? "Refreshing Loaded Notifications…" : remainingForFilter
+            ? `Load Older (${remainingForFilter} ${filter === "attention" ? "Attention" : "Updates"} Remaining)`
+            : "Load Older Notifications"}
         </Button> : null}
       </Stack>
     </DialogContent>
     <DialogActions sx={{ px: { xs: 2, sm: 3 }, pt: 1, pb: "max(12px, env(safe-area-inset-bottom, 0px))", flexShrink: 0 }}>
       <Button disabled={clearing || totalForFilter === 0} onClick={() => void clearAll()}>
-        {clearing ? "Clearing…" : filter === "attention" ? "Clear alerts" : "Clear updates"}
+        {clearing ? "Clearing…" : filter === "attention" ? "Clear Alerts" : "Clear Updates"}
       </Button>
     </DialogActions>
   </Dialog>

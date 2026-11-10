@@ -59,7 +59,7 @@ try{
     await editor.click();await page.keyboard.press('Control+A');await page.keyboard.press('Backspace');await page.getByText('Message Assistant directly',{exact:true}).waitFor();await inspect('cleared',scale);
     if(phone&&scale===200){
      f.plans.set(app.agentId,[{run:async session=>{assert.equal((await session.tool('ponderosa_message',{text:'Scaled composer message received.'})).success,true);}}]);
-     await editor.click();await page.keyboard.type('Send from the scaled composer');await page.getByRole('button',{name:'Send message',exact:true}).click();await page.getByText('Scaled composer message received.',{exact:true}).waitFor();await page.getByText('Message Assistant directly',{exact:true}).waitFor();row.scaledSend=true;
+     await editor.click();await page.keyboard.type('Send from the scaled composer');await page.getByRole('button',{name:'Send Message',exact:true}).click();await page.getByText('Scaled composer message received.',{exact:true}).waitFor();await page.getByText('Message Assistant directly',{exact:true}).waitFor();row.scaledSend=true;
     }
    }
    assert.deepEqual(row.errors,[]);assert.deepEqual(row.failedApi,[]);await context.close();continue;
@@ -71,16 +71,16 @@ try{
    const target=new URL(page.url());assert.equal(target.pathname,'/assistant');assert.equal(target.searchParams.get('returnTo'),corePath);
    assert.equal(startupApi.some(path=>/^\/api\/(?:projects|conversations|agents)(?:\/|$)/.test(path)),true,'Ponderosa navigation keeps its Core resource queries');
    assert.equal(startupApi.some(path=>path.startsWith('/api/branches/engine/')),true,'Assistant keeps its canonical Branch engine transport');
-   if(phone)await page.getByRole('button',{name:'Open workspace navigation',exact:true}).click();
-   const navigation=page.locator('aside[aria-label="Workspace navigation"]:visible');await navigation.waitFor();
-   if(phone)await page.waitForFunction(()=>{const element=Array.from(document.querySelectorAll('aside[aria-label="Workspace navigation"]')).find(element=>element.getClientRects().length);const rect=element?.getBoundingClientRect();return rect&&rect.left>=-.5&&rect.right<=innerWidth+.5;});
+   if(phone)await page.getByRole('button',{name:'Open Workspace Navigation',exact:true}).click();
+   const navigation=page.locator('aside[aria-label="Workspace Navigation"]:visible');await navigation.waitFor();
+   if(phone)await page.waitForFunction(()=>{const element=Array.from(document.querySelectorAll('aside[aria-label="Workspace Navigation"]')).find(element=>element.getClientRects().length);const rect=element?.getBoundingClientRect();return rect&&rect.left>=-.5&&rect.right<=innerWidth+.5;});
    await navigation.getByRole('link',{name:'Assistant',exact:true}).waitFor();await navigation.getByRole('button',{name:'Inbox',exact:true}).waitFor();
    assert.equal(await page.locator('iframe').count(),0);row.directAliasIntegrated=true;await page.screenshot({path:path.join(output,label+'-direct-assistant-navigation.png')});
-   if(phone){await page.getByRole('button',{name:'Close workspace navigation',exact:true}).click();await navigation.waitFor({state:'hidden'});await waitForClosedDrawer(page);await page.screenshot({path:path.join(output,label+'-direct-assistant.png')});}
+   if(phone){await page.getByRole('button',{name:'Close Workspace Navigation',exact:true}).click();await navigation.waitFor({state:'hidden'});await waitForClosedDrawer(page);await page.screenshot({path:path.join(output,label+'-direct-assistant.png')});}
    await page.goto(origin+corePath);await page.getByLabel('Message',{exact:true}).waitFor();
    await page.goto(origin+'/assistant');await page.getByRole('heading',{name:'Assistant',exact:true}).waitFor();
    await page.goBack();await page.getByLabel('Message',{exact:true}).waitFor();assert.equal(new URL(page.url()).pathname,corePath);row.noAliasHistoryEntry=true;
-   await page.goto(origin+app.url);await page.getByLabel('Message',{exact:true}).waitFor();assert.equal(new URL(page.url()).pathname,app.url);assert.equal(await page.locator('aside[aria-label="Branches navigation"]').count(),0);row.designatedAppStandalone=true;
+   await page.goto(origin+app.url);await page.getByLabel('Message',{exact:true}).waitFor();assert.equal(new URL(page.url()).pathname,app.url);assert.equal(await page.locator('aside[aria-label="Branches Navigation"]').count(),0);row.designatedAppStandalone=true;
    await page.screenshot({path:path.join(output,label+'-designated-output-app.png')});assert.deepEqual(row.errors,[]);assert.deepEqual(row.failedApi,[]);await context.close();continue;
   }
   // The shared settings view must expose Assistant configuration only in Ponderosa.
@@ -92,43 +92,43 @@ try{
   assert.equal(await page.locator('.settings-group').getByRole('button',{name:'Assistant',exact:true}).count(),0,'Branches General Settings must not mount Ponderosa Assistant controls');row.branchAssistantSettingsAbsent=true;
   await page.goto(origin+corePath);const editor=page.getByLabel('Message',{exact:true});await editor.waitFor();
   await editor.fill('Keep this Core draft');await page.screenshot({path:path.join(output,label+'-core-before.png')});
-  if(phone)await page.getByRole('button',{name:'Open workspace navigation',exact:true}).click();
+  if(phone)await page.getByRole('button',{name:'Open Workspace Navigation',exact:true}).click();
   const assistant=page.getByRole('link',{name:'Assistant',exact:true});await assistant.waitFor();
   const nav=await assistant.boundingBox();assert(nav&&nav.height>=44,'Assistant has a full touch target');
   if(!phone){const inbox=await page.getByRole('button',{name:'Inbox',exact:true}).boundingBox();assert(nav.width>inbox.width*2,'Assistant owns a full-width navigation row');}
-  if(phone)await page.waitForFunction(()=>{const node=Array.from(document.querySelectorAll('aside[aria-label="Workspace navigation"]')).find(el=>el.getClientRects().length);const rect=node?.getBoundingClientRect();return rect&&rect.left>=-.5&&rect.right<=innerWidth+.5;});
+  if(phone)await page.waitForFunction(()=>{const node=Array.from(document.querySelectorAll('aside[aria-label="Workspace Navigation"]')).find(el=>el.getClientRects().length);const rect=node?.getBoundingClientRect();return rect&&rect.left>=-.5&&rect.right<=innerWidth+.5;});
   await page.screenshot({path:path.join(output,label+'-navigation.png')});await assistant.click();
   if(phone)await waitForClosedDrawer(page);
   await page.getByRole('heading',{name:'Assistant',exact:true}).waitFor();
   const direct=page.getByLabel('Message',{exact:true});await direct.waitFor();
   assert.equal(new URL(page.url()).pathname,'/assistant');
   assert.equal(await page.locator('iframe').count(),0,'Assistant is actual React in the main workspace');
-  assert.equal(await page.locator('aside[aria-label="Branches navigation"]').count(),0,'Assistant never mounts the Branches drawer');
-  assert.equal(await page.getByText('Provider usage',{exact:true}).count(),phone?0:1,'Assistant owns the desktop provider usage control without a duplicate Core header');
+  assert.equal(await page.locator('aside[aria-label="Branches Navigation"]').count(),0,'Assistant never mounts the Branches drawer');
+  assert.equal(await page.getByText('Provider Usage',{exact:true}).count(),phone?0:1,'Assistant owns the desktop provider usage control without a duplicate Core header');
   assert.equal(await page.getByRole('tab',{name:'Workflow',exact:true}).count(),0,'Assistant has no workflow editor tabs');
   assert.equal(await page.getByRole('tab',{name:'Subagents',exact:true}).count(),0,'Assistant has no Agent audit tabs');
   if(!phone){
    f.plans.set(app.agentId,[{run:async session=>{assert.equal((await session.tool('ponderosa_message',{text:'Let’s keep it simple. A walk in the morning, lunch somewhere familiar, and an open afternoon. What would you most like to make time for?'})).success,true);}}]);
    await direct.fill('Help me plan a quiet weekend. I’d like a little time outside.');
-   await page.getByRole('button',{name:'Send message',exact:true}).click();
+   await page.getByRole('button',{name:'Send Message',exact:true}).click();
    await page.getByText('Let’s keep it simple.',{exact:false}).waitFor();
   }
   await direct.fill('Keep this Assistant draft');
   const geometry=await direct.boundingBox();assert(geometry.y>=(phone?650:680),'Composer remains grounded near the bottom of the viewport');
   if(phone){const heading=await page.getByRole('heading',{name:'Assistant',exact:true}).boundingBox();assert(heading.width>=70,'Phone contact title is readable');}
-  assert.equal(await page.getByText(/Assistant worked for/).count(),0,'Completed work receipts do not interrupt a simple direct conversation');await page.screenshot({path:path.join(output,label+'-assistant.png')});
+  assert.equal(await page.getByText(/Assistant Worked For/).count(),0,'Completed work receipts do not interrupt a simple direct conversation');await page.screenshot({path:path.join(output,label+'-assistant.png')});
   if(phone){
-   await page.getByRole('button',{name:'Open workspace navigation',exact:true}).click();
-   await page.waitForFunction(()=>{const node=Array.from(document.querySelectorAll('aside[aria-label="Workspace navigation"]')).find(el=>el.getClientRects().length);const rect=node?.getBoundingClientRect();return rect&&rect.left>=-.5&&rect.right<=innerWidth+.5;});
+   await page.getByRole('button',{name:'Open Workspace Navigation',exact:true}).click();
+   await page.waitForFunction(()=>{const node=Array.from(document.querySelectorAll('aside[aria-label="Workspace Navigation"]')).find(el=>el.getClientRects().length);const rect=node?.getBoundingClientRect();return rect&&rect.left>=-.5&&rect.right<=innerWidth+.5;});
    const active=page.getByRole('link',{name:'Assistant',exact:true});assert.equal(await active.getAttribute('aria-current'),'page');
    await page.screenshot({path:path.join(output,label+'-assistant-navigation.png')});
-   await page.getByRole('button',{name:'Close workspace navigation',exact:true}).click();await waitForClosedDrawer(page);
+   await page.getByRole('button',{name:'Close Workspace Navigation',exact:true}).click();await waitForClosedDrawer(page);
   }
-  await page.getByRole('link',{name:'Back to your Chat',exact:true}).click();await editor.waitFor();
+  await page.getByRole('link',{name:'Back To Your Chat',exact:true}).click();await editor.waitFor();
   await page.waitForFunction(()=>document.querySelector('[aria-label="Message"]')?.textContent==='Keep this Core draft');
   assert.equal(new URL(page.url()).pathname,corePath);row.exactReturn=true;
   // Open again, then native browser Back. Both scoped drafts must remain separate.
-  if(phone)await page.getByRole('button',{name:'Open workspace navigation',exact:true}).click();
+  if(phone)await page.getByRole('button',{name:'Open Workspace Navigation',exact:true}).click();
   await page.getByRole('link',{name:'Assistant',exact:true}).click();await direct.waitFor();
   if(phone)await waitForClosedDrawer(page);
   await page.waitForFunction(()=>document.querySelector('[aria-label="Message"]')?.textContent==='Keep this Assistant draft');row.assistantDraft=true;

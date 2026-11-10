@@ -34,18 +34,18 @@ export async function queuedTrayColdMountRegression():Promise<void>{
   <CssBaseline/><input aria-label="Synthetic retained draft" defaultValue="Keep this draft λ😀"/>
   <QueuedMessageTray key={epoch} scope={scope} messages={rows} onSteer={m=>{steers.push(m.deliveryId);}} onEdit={(m,text)=>{edits.push({id:m.deliveryId,text});}} onDelete={m=>{deletes.push(m.deliveryId);}} agentNameForId={()=>'Synthetic Agent'}/>
  </>));
- const tray=()=>host.querySelector<HTMLElement>('[aria-label="Queued messages"]')!;
+ const tray=()=>host.querySelector<HTMLElement>('[aria-label="Queued Messages"]')!;
  const rows=()=>Array.from(tray().querySelectorAll<HTMLElement>('[data-queue-row]:not([data-operation-id])'));
  const capturedRows=()=>tray().querySelectorAll('[data-operation-id]');
  const button=(name:string)=>tray().querySelector<HTMLButtonElement>('[aria-label="'+name+'"]')!;
- const field=()=>tray().querySelector<HTMLTextAreaElement>('textarea[aria-label^="Edit queued message"]')!;
+ const field=()=>tray().querySelector<HTMLTextAreaElement>('textarea[aria-label^="Edit Queued Message"]')!;
  const nextTask=async()=>{await until(()=>tasks.some(t=>!t.done&&!t.signal.aborted),'Missing background batch');return tasks.find(t=>!t.done&&!t.signal.aborted)!;};
  const fresh=async()=>{epoch++;render([]);assert(rows().length===0&&capturedRows().length===2,'Empty server state retains both browser intents until an exact canonical receipt deduplicates acceptance');render();await nextTask();assert(rows().length===8,'Only the first eight canonical rows mount while background work is held');assert(capturedRows().length===1,'Unconfirmed intent is immediate and accepted duplicate is excluded');assert(tray().getAttribute('aria-busy')==='true','Finite loading is announced');};
  const changeText=(input:HTMLTextAreaElement,value:string)=>{Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value')!.set!.call(input,value);input.dispatchEvent(new Event('input',{bubbles:true}));};
  try{
   saveCapturedSubmission(captured(pendingId,'unknown'));saveCapturedSubmission(captured(acceptedId,'accepted',['delivery-1']));
   await fresh();await checkpoint('initial-eight');
-  if(probe.queuedTrayNativeAction)await probe.queuedTrayNativeAction('edit-first');else button('Edit queued message 1').click();await until(()=>Boolean(field())&&document.activeElement===field(),'Early edit must focus normally');
+  if(probe.queuedTrayNativeAction)await probe.queuedTrayNativeAction('edit-first');else button('Edit Queued Message 1').click();await until(()=>Boolean(field())&&document.activeElement===field(),'Early edit must focus normally');
   assert(rows().length===8,'Early pointer edit must not synchronously mount the offscreen remainder');
   await checkpoint('early-edit-eight');
   changeText(field(),'Early edit λ😀');await tick();
@@ -55,20 +55,20 @@ export async function queuedTrayColdMountRegression():Promise<void>{
   await checkpoint('complete-thirty');
   assert(tray().getAttribute('aria-busy')!=='true','All canonical rows finish without interaction');
   assert(rows().map(n=>n.querySelector<HTMLElement>('[tabindex="0"]')?.textContent).join('|')===messages.map(m=>m.text).join('|'),'All exact texts and order survive');
-  button('Steer queued message 30').click();button('Delete queued message 30').click();
+  button('Steer Queued Message 30').click();button('Delete Queued Message 30').click();
   await until(()=>steers.length===1&&deletes.length===1,'Tail actions settle');assert(steers[0]==='delivery-30'&&deletes[0]==='delivery-30','Tail actions keep exact identity');
   Array.from(tray().querySelectorAll('button')).find(n=>n.textContent==='Retry')!.click();assert(retries[0]===pendingId,'Unconfirmed retry keeps exact operation');
   assert(host.querySelector<HTMLInputElement>('[aria-label="Synthetic retained draft"]')!.value==='Keep this draft λ😀','The sibling draft is unchanged');
 
   await fresh();const prefix={...messages[0],deliveryId:'new-prefix',messageId:'new-prefix',position:0,text:'Transient prefix'};
   render([prefix,...messages]);assert(rows().length===31,'ID mutation reveals every current row before paint');
-  button('Edit queued message 30').click();await until(()=>Boolean(field())&&document.activeElement===field(),'Tail edit focuses');
+  button('Edit Queued Message 30').click();await until(()=>Boolean(field())&&document.activeElement===field(),'Tail edit focuses');
   changeText(field(),'Tail edit retained λ😀');await tick();const focused=field();render(messages);
   assert(rows().length===30,'A→B→A never stages an already revealed list again');assert(field()===focused&&document.activeElement===focused&&field().value==='Tail edit retained λ😀','Mutation roundtrip retains exact edit and focus');
 
   await checkpoint('mutation-roundtrip-tail-edit');
   await fresh();if(probe.queuedTrayNativeAction)await probe.queuedTrayNativeAction('scroll');else{tray().scrollTop=60;tray().dispatchEvent(new Event('scroll'));}assert(rows().length===30,'Scrolling exposes the complete canonical range');assert(tray().scrollTop===60,'Appending retains the reader scroll position');
-  await fresh();const last=button('Delete queued message 8');last.focus({preventScroll:true});assert(rows().length===8,'Keyboard focus alone must not mount the hidden remainder');if(probe.queuedTrayNativeAction)await probe.queuedTrayNativeAction('Tab');else last.dispatchEvent(new KeyboardEvent('keydown',{key:'Tab',bubbles:true}));assert(rows().length===30,'Forward Tab reveals remaining rows');assert(probe.queuedTrayNativeAction?rows()[8].contains(document.activeElement):document.activeElement===last,'Tab keeps the next queue row in keyboard order');await checkpoint('native-tab-revealed');
+  await fresh();const last=button('Delete Queued Message 8');last.focus({preventScroll:true});assert(rows().length===8,'Keyboard focus alone must not mount the hidden remainder');if(probe.queuedTrayNativeAction)await probe.queuedTrayNativeAction('Tab');else last.dispatchEvent(new KeyboardEvent('keydown',{key:'Tab',bubbles:true}));assert(rows().length===30,'Forward Tab reveals remaining rows');assert(probe.queuedTrayNativeAction?rows()[8].contains(document.activeElement):document.activeElement===last,'Tab keeps the next queue row in keyboard order');await checkpoint('native-tab-revealed');
   await fresh();if(probe.queuedTrayNativeAction)await probe.queuedTrayNativeAction('Control+f');else document.dispatchEvent(new KeyboardEvent('keydown',{key:'f',ctrlKey:true,bubbles:true}));assert(rows().length===30,'Native Find receives every fetched row');if(probe.queuedTrayNativeAction)await probe.queuedTrayNativeAction('Escape');
   await fresh();const text=rows()[0].querySelector<HTMLElement>('[tabindex="0"]')!,selection=document.getSelection()!,range=document.createRange();range.selectNodeContents(text);selection.removeAllRanges();selection.addRange(range);const selected=selection.toString();document.dispatchEvent(new Event('selectionchange'));assert(rows().length===30&&selection.toString()===selected,'Selection reveals all rows without losing selected bytes');selection.removeAllRanges();
   await fresh();window.dispatchEvent(new Event('beforeprint'));assert(rows().length===30,'Print receives every fetched row');
@@ -99,18 +99,18 @@ export async function queuedTrayParentHydrationRegression():Promise<void>{
  try{
   render();const firstReads=reads;assert(firstReads===1,'Initial real tray renders its exact row');
   for(let i=0;i<5;i++)render();assert(reads===firstReads,'Unrelated parent hydration with equal props skips all row rendering');
-  render({busy:true});assert(reads>firstReads&&button('Delete queued message 1').disabled,'Busy changes still render and disable actions');
-  render();assert(!button('Delete queued message 1').disabled,'Clearing busy restores existing controls');
-  button('Edit queued message 1').click();await until(()=>Boolean(host.querySelector('textarea')),'Memo does not block local edit state');
+  render({busy:true});assert(reads>firstReads&&button('Delete Queued Message 1').disabled,'Busy changes still render and disable actions');
+  render();assert(!button('Delete Queued Message 1').disabled,'Clearing busy restores existing controls');
+  button('Edit Queued Message 1').click();await until(()=>Boolean(host.querySelector('textarea')),'Memo does not block local edit state');
   const field=host.querySelector<HTMLTextAreaElement>('textarea')!,focused=document.activeElement;
   render();assert(host.querySelector('textarea')===field&&document.activeElement===focused,'Unchanged parent retains edit DOM and focus');
   const setter=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value')!.set!;setter.call(field,'Updated queued λ😀');field.dispatchEvent(new Event('input',{bubbles:true}));await tick();
   Array.from(host.querySelectorAll('button')).find(n=>n.textContent==='Save')!.click();await until(()=>actions.some(a=>a.kind==='edit'),'Local save still settles');
   assert(actions[0].id===message.deliveryId&&actions[0].text==='Updated queued λ😀','Memo preserves exact edit payload');
   const updated=[{...message,text:'Canonical row refresh λ😀'}];render({messages:updated,attachmentNamesForMessage:()=>['new.txt','second.txt'],agentNameForId:()=>{reads++;return 'Renamed Agent';}});
-  assert(host.textContent?.includes('Canonical row refresh λ😀')&&host.textContent?.includes('Renamed Agent')&&host.querySelector('[aria-label="2 attachments"]'),'Canonical text, names and attachment metadata remain live');
-  let latestDelete='';render({onDelete:m=>{latestDelete=m.deliveryId;}});button('Delete queued message 1').click();await until(()=>Boolean(latestDelete),'Changed action callback remains live');assert(latestDelete===message.deliveryId,'Latest callback receives exact delivery');
-  render();button('Steer queued message 1').click();await until(()=>actions.some(a=>a.kind==='steer'),'Existing steer callback remains live');
+  assert(host.textContent?.includes('Canonical row refresh λ😀')&&host.textContent?.includes('Renamed Agent')&&host.querySelector('[aria-label="2 Attachments"]'),'Canonical text, names and attachment metadata remain live');
+  let latestDelete='';render({onDelete:m=>{latestDelete=m.deliveryId;}});button('Delete Queued Message 1').click();await until(()=>Boolean(latestDelete),'Changed action callback remains live');assert(latestDelete===message.deliveryId,'Latest callback receives exact delivery');
+  render();button('Steer Queued Message 1').click();await until(()=>actions.some(a=>a.kind==='steer'),'Existing steer callback remains live');
   saveCapturedSubmission({version:1,scope,storageKey:'memo-draft',ownerId:'memo-owner',clientId:pendingId,createdAt:1,action:'queue',text:'Captured after memo λ😀',editorText:'Captured after memo λ😀',attachmentNames:[],mentionedAgents:[],newAgentRequested:false,pending:{idempotencyKey:pendingId,fingerprint:'a'.repeat(64)},status:'unknown'} as CapturedSubmission);
   await until(()=>Boolean(host.querySelector('[data-operation-id="'+pendingId+'"]')),'External outbox event still updates a memoized tray');
   removeCapturedSubmission(pendingId);await until(()=>!host.querySelector('[data-operation-id]'),'External outbox removal still updates');
@@ -133,14 +133,14 @@ export async function queuedTrayAcceptedEditRegression():Promise<void>{
   throw Error('Unexpected queue regression request '+method+' '+url.pathname);
  };
  function Surface(){const queue=useQueuedConversationMessagesController('accepted-chat');return <><CssBaseline/><QueuedMessageTray messages={queue.query.data??[]} busy={queue.edit.isPending||queue.cancel.isPending} onEdit={(message,text)=>queue.edit.mutateAsync({deliveryId:message.deliveryId,targetAgentId:message.targetAgentId,text})} onDelete={message=>queue.cancel.mutateAsync(message.deliveryId)} onSteer={()=>{}}/></>;}
- const tray=()=>host.querySelector<HTMLElement>('[aria-label="Queued messages"]')!;
- const field=()=>host.querySelector<HTMLTextAreaElement>('textarea[aria-label^="Edit queued message"]');
+ const tray=()=>host.querySelector<HTMLElement>('[aria-label="Queued Messages"]')!;
+ const field=()=>host.querySelector<HTMLTextAreaElement>('textarea[aria-label^="Edit Queued Message"]');
  const button=(name:string)=>host.querySelector<HTMLButtonElement>('[aria-label="'+name+'"]')!;
  const checkpoint=async(name:string)=>{await (window as Window&{phase2UiCheckpoint?:(name:string)=>Promise<void>}).phase2UiCheckpoint?.(name);};
  try{
   root.render(<QueryClientProvider client={client}><MutationNotificationProvider><Surface/></MutationNotificationProvider></QueryClientProvider>);
   await until(()=>Boolean(tray()),'Canonical original queue loads');
-  button('Edit queued message 1').click();await until(()=>Boolean(field()),'Edit opens');
+  button('Edit Queued Message 1').click();await until(()=>Boolean(field()),'Edit opens');
   const input=field()!;Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value')!.set!.call(input,'Queued note edited');input.dispatchEvent(new Event('input',{bubbles:true}));await tick();
   Array.from(tray().querySelectorAll('button')).find(button=>button.textContent==='Save')!.click();
   await until(()=>accepted&&Boolean(release),'Accepted edit starts canonical refresh');
@@ -151,7 +151,7 @@ export async function queuedTrayAcceptedEditRegression():Promise<void>{
   release!();await until(()=>!field()&&tray().textContent?.includes('Queued note edited')===true,'Canonical refresh replaces editor with accepted text');
   assert(!tray().textContent?.includes('Queued note original'),'Original text never reappears after acceptance');
   await checkpoint('queue-accepted-refreshed');
-  accepted=false;button('Delete queued message 1').click();await until(()=>!host.querySelector('[aria-label="Queued messages"]'),'Delete follows the accepted edit without reverting text');
+  accepted=false;button('Delete Queued Message 1').click();await until(()=>!host.querySelector('[aria-label="Queued Messages"]'),'Delete follows the accepted edit without reverting text');
   assert(writes===2&&refetches===3,'Exactly one edit, one delete and their canonical refreshes');
  }finally{release?.();root.unmount();client.clear();globalThis.fetch=nativeFetch;host.remove();}
 }

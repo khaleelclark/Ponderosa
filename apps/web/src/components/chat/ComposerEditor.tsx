@@ -592,10 +592,10 @@ function ComposerMentionToken({
       contentEditable={false}
       role="group"
       aria-label={kind === "special"
-        ? `${title} tag`
+        ? `${title} Tag`
         : valid
-          ? `Agent mention ${title}`
-          : `Unavailable Agent mention ${title}`}
+          ? `Agent Mention ${title}`
+          : `Unavailable Agent Mention ${title}`}
       sx={{
         display: "inline-flex",
         alignItems: "center",

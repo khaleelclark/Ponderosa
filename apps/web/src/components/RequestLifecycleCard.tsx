@@ -28,19 +28,19 @@ import { ConfirmDialog } from "./ConfirmationDialogs";
 const UPDATE_PREVIEW_CHARACTERS = 900;
 
 function stateLabel(state: string): string {
-  if (state === "outcome_unknown") return "Result unconfirmed";
+  if (state === "outcome_unknown") return "Result Unconfirmed";
   return state
     .replaceAll("_", " ")
     .replace(/\b\w/gu, (letter) => letter.toLocaleUpperCase());
 }
 
 function updateKindLabel(kind: CoordinationRequestUpdateDto["kind"]): string {
-  if (kind === "historical_question") return "Historical question";
-  if (kind === "historical_answer") return "Historical answer";
-  if (kind === "waiting_dependency") return "Waiting on dependency";
-  if (kind === "dependency_resolved") return "Dependency resolved";
-  if (kind === "recipient_unavailable") return "Recipient unavailable";
-  if (kind === "outcome_unknown") return "Result unconfirmed";
+  if (kind === "historical_question") return "Historical Question";
+  if (kind === "historical_answer") return "Historical Answer";
+  if (kind === "waiting_dependency") return "Waiting On Dependency";
+  if (kind === "dependency_resolved") return "Dependency Resolved";
+  if (kind === "recipient_unavailable") return "Recipient Unavailable";
+  if (kind === "outcome_unknown") return "Result Unconfirmed";
   return stateLabel(kind);
 }
 
@@ -82,7 +82,7 @@ function ResultArtifact({
         sx={{ alignItems: { xs: "stretch", sm: "center" } }}
       >
         <Box sx={{ flex: 1, minWidth: 0 }}>
-          <Typography variant="subtitle2">{artifact.title || "Request result"}</Typography>
+          <Typography variant="subtitle2">{artifact.title || "Request Result"}</Typography>
           <Typography variant="caption" color="text.secondary">
             {artifact.mediaType} · {artifact.byteLength.toLocaleString()} bytes
           </Typography>
@@ -94,9 +94,9 @@ function ResultArtifact({
             target="_blank"
             rel="noreferrer"
             size="small"
-            aria-label={`Open result ${artifact.title || artifact.id}`}
+            aria-label={`Open Result ${artifact.title || artifact.id}`}
           >
-            Open result
+            Open Result
           </Button>
         ) : null}
         {artifact.downloadUrl ? (
@@ -104,7 +104,7 @@ function ResultArtifact({
             component="a"
             href={artifact.downloadUrl}
             size="small"
-            aria-label={`Download result ${artifact.title || artifact.id}`}
+            aria-label={`Download Result ${artifact.title || artifact.id}`}
           >
             Download
           </Button>
@@ -142,10 +142,10 @@ function RequestUpdate({
     ref.startsWith("ponderosa://artifact/")
     && !update.artifacts.some((artifact) => ref.endsWith(`/${artifact.id}`)));
   const actionLabel = (update.kind === "question" || update.kind === "historical_question")
-    ? "View full question"
+    ? "View Full Question"
     : ["answer", "historical_answer", "completed", "blocked", "failed"].includes(update.kind)
-      ? "View full result"
-      : "View full update";
+      ? "View Full Result"
+      : "View Full Update";
 
   return (
     <Box
@@ -158,7 +158,7 @@ function RequestUpdate({
         borderLeft: 3,
         borderColor: answeredQuestionNumber ? "primary.main" : "divider",
       }}
-      aria-label={`${updateKindLabel(update.kind)} update by ${updateActor(update, agentTitle)}`}
+      aria-label={`${updateKindLabel(update.kind)} Update By ${updateActor(update, agentTitle)}`}
     >
       <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ alignItems: "center" }}>
         <Chip size="small" variant="outlined" label={updateKindLabel(update.kind)} />
@@ -189,7 +189,7 @@ function RequestUpdate({
       ) : null}
       {update.outcomeCause?.runId && onOpenWork ? (
         <Button size="small" onClick={() => onOpenWork(`run:${update.outcomeCause!.runId}`)}>
-          Review Agent activity
+          Review Agent Activity
         </Button>
       ) : null}
       {update.outcomeCause?.incidentId ? (
@@ -209,7 +209,7 @@ function RequestUpdate({
           aria-expanded={showFullText}
           onClick={() => setShowFullText((current) => !current)}
         >
-          {showFullText ? "Show bounded preview" : actionLabel}
+          {showFullText ? "Show Bounded Preview" : actionLabel}
         </Button>
       ) : null}
       {update.artifacts.map((artifact) => (
@@ -349,7 +349,7 @@ export function RequestLifecycleCard({
       <AccordionSummary
         id={`${detailsId}-summary`}
         aria-controls={detailsId}
-        aria-label={`${expanded ? "Collapse" : "Expand"} updates for request from ${requester} to ${recipient}`}
+        aria-label={`${expanded ? "Collapse" : "Expand"} Updates For Request From ${requester} To ${recipient}`}
         sx={{ minWidth: 0, "& .MuiAccordionSummary-content": { minWidth: 0 } }}
       >
         <Box sx={{ width: "100%", minWidth: 0 }}>
@@ -420,14 +420,14 @@ export function RequestLifecycleCard({
               )}
             </Box>
             {expanded && conversationId && lifecycle.request.id === requestId && lifecycle.request.recipientAgentId === recipientAgentId ? (
-              <DirectReplyPreview projectId={projectId} agentId={recipientAgentId} request={{id:requestId,conversationId,state:lifecycle.request.state}} />
+              <DirectReplyPreview projectId={projectId} agentTitle={agentTitle(recipientAgentId)} agentId={recipientAgentId} request={{id:requestId,conversationId,state:lifecycle.request.state}} />
             ) : null}
             {lifecycle.updatesTruncated ? (
               <Alert severity="info">
                 Earlier Request updates are omitted from this bounded view.
               </Alert>
             ) : null}
-            <Box component="ol" sx={{ p: 0, m: 0 }} aria-label="Request update history">
+            <Box component="ol" sx={{ p: 0, m: 0 }} aria-label="Request Update History">
               {lifecycle.updates.map((update) => (
                 <RequestUpdate
                   key={update.id}
@@ -452,24 +452,24 @@ export function RequestLifecycleCard({
               <Button
                 size="small"
                 onClick={() => onOpenWork(`request:${requestId}`)}
-                aria-label={`Open Work details for request ${requestId}`}
+                aria-label={`Open Work Details For Request ${requestId}`}
                 sx={{ alignSelf: "flex-start" }}
               >
-                Open Work details
+                Open Work Details
               </Button>
             ) : null}
             {heldContext ? <Alert severity="warning">{heldContext==="retry_available"
               ? "Context handoff stopped before this assignment started. The original assignment remains queued."
               : "The context handoff could not be verified. This assignment remains held; review activity before recovery."}</Alert> : null}
-            {expanded && retryAvailable ? <Button size="small" disabled={retry.isPending} sx={{ alignSelf: "flex-start" }} onClick={event => { event.stopPropagation(); retry.reset(); setConfirmRetry(true); }}>{heldContext==="retry_available" ? "Retry context handoff…" : "Retry assignment…"}</Button> : null}
+            {expanded && retryAvailable ? <Button size="small" disabled={retry.isPending} sx={{ alignSelf: "flex-start" }} onClick={event => { event.stopPropagation(); retry.reset(); setConfirmRetry(true); }}>{heldContext==="retry_available" ? "Retry Context Handoff…" : "Retry Assignment…"}</Button> : null}
           </Stack>
         ) : null}
         <Box onClick={event => event.stopPropagation()}>
           <ConfirmDialog
             open={confirmRetry}
             title={heldContext==="retry_available" ? "Retry context handoff?" : "Retry this assignment?"}
-            cancelLabel="Not now"
-            confirmLabel={heldContext==="retry_available" ? "Retry handoff" : "Retry assignment"}
+            cancelLabel="Not Now"
+            confirmLabel={heldContext==="retry_available" ? "Retry Handoff" : "Retry Assignment"}
             pendingLabel="Starting…"
             pending={retry.isPending}
             confirmDisabled={!retryAvailable}

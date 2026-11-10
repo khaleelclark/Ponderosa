@@ -119,9 +119,9 @@ export async function voiceCallMountedSessionRegression():Promise<void>{
   await until(()=>f.utterances.some(item=>item.text==='Second canonical answer.')?true:undefined,'Second canonical answer did not play');
   for(const item of f.utterances.slice(2))item.finish();
   await until(()=>f.recognitions.length===4?true:undefined,'Second answer did not return to capture');
-  (await f.button('Mute microphone')).click();await f.button('Unmute microphone');
+  (await f.button('Mute Microphone')).click();await f.button('Unmute Microphone');
   const count=f.recognitions.length;await new Promise(resolve=>setTimeout(resolve,350));assert(f.recognitions.length===count,'Muted call restarted microphone');
-  (await f.button('End call')).click();await until(()=>!document.querySelector('[data-ponderosa-call]')?true:undefined,'End did not close Call');
+  (await f.button('End Call')).click();await until(()=>!document.querySelector('[data-ponderosa-call]')?true:undefined,'End did not close Call');
   assert(f.calls.length===2,'Mute or End submitted extra speech');
  });
 }
@@ -129,24 +129,24 @@ export async function voiceCallMountedSessionRegression():Promise<void>{
 export async function voiceCallMountedFatalRegression():Promise<void>{
  await fixture(async f=>{
   f.recognitions[0]!.permission();
-  await f.button('Reconnect call');
+  await f.button('Reconnect Call');
   await new Promise(resolve=>setTimeout(resolve,700));
   assert(f.recognitions.length===1&&f.calls.length===0,'Permission denial silently restarted capture or sent work');
-  (await f.button('Reconnect call')).click();
+  (await f.button('Reconnect Call')).click();
   await until(()=>f.recognitions.length===2?true:undefined,'Explicit reconnect did not resume capture in same Call');
   assert(f.calls.length===0,'Reconnect replayed an unaccepted turn');
   f.recognitions[1]!.result('Discard this interrupted private phrase');
   window.dispatchEvent(new Event('pagehide'));
-  await f.button('Reconnect call');
+  await f.button('Reconnect Call');
   const count=f.recognitions.length;await new Promise(resolve=>setTimeout(resolve,700));
   assert(f.recognitions.length===count&&f.calls.length===0,'Backgrounded Call silently restarted or sent');
   (await f.button('Transcript')).click();
   await until(()=>document.querySelector<HTMLTextAreaElement>('[data-ponderosa-call] textarea')??undefined,'Transcript editor did not open');
   assert(!document.querySelector<HTMLTextAreaElement>('[data-ponderosa-call] textarea')?.value.includes('Discard this interrupted private phrase'),'Interrupted words remained in the draft despite the discard notice');
-  (await f.button('Reconnect call')).click();
+  (await f.button('Reconnect Call')).click();
   await until(()=>f.recognitions.length===count+1?true:undefined,'Reconnect after pagehide did not safely resume listening');
   assert(f.calls.length===0,'Reconnect sent discarded words');
-  (await f.button('End call')).click();
+  (await f.button('End Call')).click();
  });
 }
 
@@ -161,10 +161,10 @@ export async function voiceCallContextAttributionRegression():Promise<void>{
   else f.emit({type:'memory_changed',projectId:agent.projectId,conversationId:agent.conversationId,runId:'run-one',scope:'chat'});
   await until(()=>document.querySelector('[data-ponderosa-call]')?.textContent?.includes('The reply context changed. Check Chat before continuing.')?true:undefined,'Context invalidation must report the actual breadth of its signal');
   assert(!document.querySelector('[data-ponderosa-call]')?.textContent?.includes('Memory changed during this reply'),'General authority invalidation falsely blamed a memory mutation');
-  (await f.button('Reconnect call')).click();
+  (await f.button('Reconnect Call')).click();
   await until(()=>f.recognitions.length===2?true:undefined,'Explicit reconnect did not resume capture');
   assert(f.calls.length===1,'Reconnect replayed the interrupted turn');
-  (await f.button('End call')).click();
+  (await f.button('End Call')).click();
  });
 }
 
@@ -182,7 +182,7 @@ export async function voiceCallMountedProlongedSilenceRegression():Promise<void>
    assert(delay<1300,'Quiet Call left a long microphone gap: '+Math.round(delay)+'ms');
    assert(f.calls.length===0,'Quiet Call sent an empty turn');
   }
-  (await f.button('End call')).click();
+  (await f.button('End Call')).click();
   const count=f.recognitions.length;
   await new Promise(resolve=>setTimeout(resolve,850));
   assert(f.recognitions.length===count,'End allowed a delayed quiet-cycle restart');
@@ -201,15 +201,15 @@ export async function voiceCallMountedBackoffRegression():Promise<void>{
     assert(performance.now()-started>=[550,1150,2600][cycle]!,'Network retry did not back off after repeated failures');
    }
   }
-  await f.button('Reconnect call');
+  await f.button('Reconnect Call');
   assert(f.calls.length===0,'Repeated browser network errors submitted work');
-  (await f.button('Reconnect call')).click();
+  (await f.button('Reconnect Call')).click();
   await until(()=>f.recognitions.length===5?true:undefined,'Explicit reconnect did not reset the network retry budget');
   f.recognitions[4]!.end();
-  (await f.button('Mute microphone')).click();
+  (await f.button('Mute Microphone')).click();
   await new Promise(resolve=>setTimeout(resolve,950));
   assert(f.recognitions.length===5,'Mute failed to cancel the natural-end cooldown');
-  (await f.button('End call')).click();
+  (await f.button('End Call')).click();
   await new Promise(resolve=>setTimeout(resolve,950));
   assert(f.recognitions.length===5&&f.calls.length===0,'End allowed a delayed microphone restart or empty POST');
  });
@@ -224,17 +224,17 @@ export async function voiceCallMountedPartialErrorRegression():Promise<void>{
   await new Promise(resolve=>setTimeout(resolve,1000));
   assert(f.calls.length===0&&f.recognitions.length===1,'Partial error silently submitted or restarted capture');
   assert(Array.from(document.querySelectorAll<HTMLButtonElement>('[data-ponderosa-call] button')).some(button=>button.textContent?.trim()==='Send'&&!button.disabled),'Partial words did not remain reviewable');
-  (await f.button('End call')).click();
+  (await f.button('End Call')).click();
  });
 }
 
 export async function voiceCallMountedAbortFailureRegression():Promise<void>{
  await fixture(async f=>{
   f.recognitions[0]!.abortFailure=true;f.recognitions[0]!.network();
-  await f.button('Reconnect call');
+  await f.button('Reconnect Call');
   await new Promise(resolve=>setTimeout(resolve,1000));
   assert(f.recognitions.length===1&&f.calls.length===0,'Unconfirmed browser abort silently restarted capture');
-  (await f.button('End call')).click();
+  (await f.button('End Call')).click();
  });
 }
 
@@ -242,11 +242,11 @@ export async function voiceCallMountedMutedReceiptRegression():Promise<void>{
  await fixture(async f=>{
   const recognition=f.recognitions[0]!;recognition.result('Muted synthetic request');recognition.onspeechend?.();recognition.end();
   await until(()=>f.calls.length===1?true:undefined,'Muted-receipt turn did not reach pending POST');
-  (await f.button('Mute microphone')).click();f.accepted();
+  (await f.button('Mute Microphone')).click();f.accepted();
   await until(()=>document.querySelector('[data-ponderosa-call]')?.textContent?.includes('Waiting for a reply')?true:undefined,'Accepted muted turn did not await its reply');
   await new Promise(resolve=>setTimeout(resolve,300));
   assert(f.utterances.length===0,'Muted accepted turn spoke an unwanted receipt');
-  (await f.button('End call')).click();
+  (await f.button('End Call')).click();
  });
 }
 
@@ -255,8 +255,8 @@ export async function voiceCallMountedLateAcceptanceRegression():Promise<void>{
   const first=f.recognitions[0]!;first.result('First request awaiting acceptance');first.onspeechend?.();first.end();
   await until(()=>f.calls.length===1?true:undefined,'First request never reached its pending POST');
   window.dispatchEvent(new Event('pagehide'));
-  (await f.button('Reconnect call')).click();
-  const heldStart=await f.button('Start call');
+  (await f.button('Reconnect Call')).click();
+  const heldStart=await f.button('Start Call');
   assert(heldStart.disabled&&f.recognitions.length===1&&f.calls.length===1,'Reconnect replayed or replaced an unconfirmed pending turn');
   f.accepted();
   await new Promise(resolve=>setTimeout(resolve,150));
@@ -267,7 +267,7 @@ export async function voiceCallMountedLateAcceptanceRegression():Promise<void>{
   const second=f.recognitions[1]!;second.result('Fresh request after reconnect');second.onspeechend?.();second.end();
   await until(()=>f.calls.length===2?true:undefined,'Reconnect could not send a fresh turn after exact late acceptance');
   assert(f.calls[0]!.conversationId===f.calls[1]!.conversationId&&f.calls[0]!.request.idempotencyKey!==f.calls[1]!.request.idempotencyKey,'Reconnect reused the interrupted submission identity or changed conversation');
-  (await f.button('End call')).click();
+  (await f.button('End Call')).click();
  });
 }
 
@@ -287,6 +287,6 @@ export async function voiceCallMountedAssistantSteeringRegression():Promise<void
   const send=Array.from(document.querySelectorAll<HTMLButtonElement>('[data-ponderosa-call] button')).find(button=>button.textContent?.trim()==='Send');assert(send&&!send.disabled,'Edited voice follow-up can be deliberately sent');
   f.accepted();send.click();await until(()=>f.calls.length===1?true:undefined,'Ordinary Assistant voice follow-up did not use shared Send');
   assert(f.calls[0]!.request.text==='An ordinary Assistant voice follow-up'&&f.calls[0]!.request.activeRunDelivery==='steer','Assistant voice keeps exact words and existing steering path');
-  (await f.button('End call')).click();
+  (await f.button('End Call')).click();
  },true);
 }

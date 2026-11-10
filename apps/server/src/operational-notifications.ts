@@ -98,7 +98,7 @@ export function createOperationalNotifications(context: OperationalNotifications
       dedupeKey: notificationKey,
       category: "system",
       severity: "urgent",
-      title: "Project folder is unavailable",
+      title: "Project Folder Is Unavailable",
       body: `${issue} Restore the folder before retrying this message. Ponderosa did not start the provider and will not retry automatically.`,
       projectId: project.id,
       ...(agent.conversationId ? { conversationId: agent.conversationId } : {}),
@@ -134,7 +134,7 @@ export function createOperationalNotifications(context: OperationalNotifications
       const outcomeUnknown=failure.state==='outcome_unknown',requiredReplyExhausted=failure.terminalOutcome==='retry_exhausted';
       const issue=failure.lastDeliveryError??(failure.terminalOutcome??failure.state).replaceAll('_',' ');
       createOperationalNotification({dedupeKey:existing?.dedupeKey??key,renewAfterRecovery:true,internal,category:'communication',severity:'urgent',
-        title:`${agent?.title??'Agent'}${conversation?.title?` · ${conversation.title}`:''} · ${requiredReplyExhausted?'reply needs review':outcomeUnknown?'message result needs review':'message delivery needs help'}`,
+        title:`${agent?.title??'Agent'}${conversation?.title?` · ${conversation.title}`:''} · ${requiredReplyExhausted?'Reply Needs Review':outcomeUnknown?'Message Result Needs Review':'Message Delivery Needs Help'}`,
         body:internal?'Ponderosa is recovering this delivery. Earlier uncertain work remains retained.'
           :requiredReplyExhausted?`Ponderosa did not publish the required Chat reply after ${failure.deliveryFailures} Agent ${failure.deliveryFailures===1?'attempt':'attempts'}. Review the Agent’s activity before retrying; earlier work may exist.`
           :outcomeUnknown?'Ponderosa cannot confirm this message’s result. Review Context recovery and the Agent’s activity before retrying; earlier changes may exist.'
@@ -258,7 +258,7 @@ export function createOperationalNotifications(context: OperationalNotifications
           dedupeKey: key,
           category: "coordination",
           severity: "attention",
-          title: operatorRecovery ? "Assignment recovery needs your review" : "Assignment has no available recovery owner",
+          title: operatorRecovery ? "Assignment Recovery Needs Your Review" : "Assignment Has No Available Recovery Owner",
           body: operatorRecovery
             ? "The recovery attempt did not finish. Review its activity before deciding whether to repeat work."
             : `${outcomeExplanation} Review the activity and choose who should continue this work.`,
@@ -386,7 +386,7 @@ export function createOperationalNotifications(context: OperationalNotifications
         demotedCleanupIds.add(notification.id);
         createOperationalNotification({
           dedupeKey: key, informational: true, category: "system", severity: "info",
-          title: "Previous automatic cleanup status",
+          title: "Previous Automatic Cleanup Status",
           body: "The previous host recorded delayed provider cleanup. Agent activity shows current recovery details. This status does not establish a work outcome or require a user decision.",
           projectId: notification.projectId,
           conversationId: notification.conversationId,
@@ -421,7 +421,7 @@ export function createOperationalNotifications(context: OperationalNotifications
         dedupeKey: `project-deletion:${receipt.projectId}`,
         category: "system",
         severity: "attention",
-        title: "Project deletion cleanup needs attention",
+        title: "Project Deletion Cleanup Needs Attention",
         body: `The Project was deleted, but filesystem cleanup is still retrying. ${receipt.lastError ?? "Retry deletion to continue cleanup."}`.slice(0, 1_000),
       });
     }

@@ -33,13 +33,13 @@ try{
    const page=await context.newPage();page.setDefaultTimeout(15_000);page.on('pageerror',()=>cell.pageErrors++);
    const route=surface==='agent'?`/projects/${chat.projectId}/agents/${agent.id}?view=chat`:`/projects/${chat.projectId}/chats/${chat.id}`;
    await page.goto(origin+route,{waitUntil:'domcontentloaded'});const editor=page.getByRole('textbox',{name:'Message',exact:true});await editor.waitFor();
-   const type=async text=>{await editor.fill((surface==='shared'?'#'+agent.handle+' ':'')+text);await editor.focus();const action=page.getByRole('button',{name:'Queue message',exact:true});await action.waitFor();await until(async()=>!(await action.isDisabled()),'eligible typed draft');};
+   const type=async text=>{await editor.fill((surface==='shared'?'#'+agent.handle+' ':'')+text);await editor.focus();const action=page.getByRole('button',{name:'Queue Message',exact:true});await action.waitFor();await until(async()=>!(await action.isDisabled()),'eligible typed draft');};
    const queued=()=>f.api('GET',`/api/agents/${agent.id}/queued-messages`).then(f.ok);
    const marker=`queue-${engine}-${phone}-${surface} λ😀`;
-   await type(marker);const queueButton=page.getByRole('button',{name:'Queue message',exact:true});await queueButton.waitFor();await until(async()=>!(await queueButton.isDisabled()),'eligible busy queue');
+   await type(marker);const queueButton=page.getByRole('button',{name:'Queue Message',exact:true});await queueButton.waitFor();await until(async()=>!(await queueButton.isDisabled()),'eligible busy queue');
    if(!phone){await queueButton.hover();await page.getByRole('tooltip').filter({hasText:'Ctrl+Enter'}).waitFor();await editor.focus();}
    const uploaded=page.waitForResponse(response=>response.request().method()==='POST'&&/\/draft-attachments$/.test(new URL(response.url()).pathname)&&response.ok());
-   const chooser=page.waitForEvent('filechooser');await page.getByRole('button',{name:'Add attachment or capability'}).click();await page.getByRole('menuitem',{name:/^Files/}).click();await (await chooser).setFiles({name:'queue-native.txt',mimeType:'text/plain',buffer:Buffer.from('Exact synthetic queued attachment')});
+   const chooser=page.waitForEvent('filechooser');await page.getByRole('button',{name:'Add Attachment Or Capability'}).click();await page.getByRole('menuitem',{name:/^Files/}).click();await (await chooser).setFiles({name:'queue-native.txt',mimeType:'text/plain',buffer:Buffer.from('Exact synthetic queued attachment')});
    const stagedAttachment=await (await uploaded).json();assert.equal(stagedAttachment.name,'queue-native.txt');
    await page.getByRole('button',{name:'Remove queue-native.txt'}).waitFor();await until(async()=>!(await queueButton.isDisabled()),'uploaded queue attachment');await editor.focus();
    const before=requests.length,steers=f.steers.length,turns=f.turns.length;
@@ -53,7 +53,7 @@ try{
    else assert.deepEqual(requests.at(-1).draftAttachmentIds,[stagedAttachment.id],'direct queue uses existing server-side draft materialization');
    const attachment=await fetch(origin+exactAttachment.downloadUrl);assert(attachment.ok);assert.equal(await attachment.text(),'Exact synthetic queued attachment','canonical attachment retains exact uploaded bytes');
    const row=rows.find(row=>row.text.includes(marker));assert.equal(row.targetAgentId,agent.id);assert(!row.text.includes('\n'),'Ctrl+Enter inserts no newline');
-   await page.locator('[aria-label="Queued messages"]').filter({hasText:marker}).waitFor();assert.equal(f.steers.length,steers);assert.equal(f.turns.length,turns,'busy recipient does not receive an extra provider turn');
+   await page.locator('[aria-label="Queued Messages"]').filter({hasText:marker}).waitFor();assert.equal(f.steers.length,steers);assert.equal(f.turns.length,turns,'busy recipient does not receive an extra provider turn');
    cell.checks.push('trusted Ctrl+Enter once, busy exact recipient/attachment, canonical queue UI, no steer');
    await type('soft-keyboard check');const count=requests.length;await page.keyboard.press('Enter');
    if(phone)await page.waitForTimeout(200);else await until(()=>requests.length===count+1,'desktop Enter submits once');assert.equal(requests.length,count+(phone?0:1),'desktop Enter sends; phone Return remains newline');

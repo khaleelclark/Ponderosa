@@ -63,14 +63,14 @@ export function ChatCreationRecovery({ activeCreationKey, owner, importOnly = fa
   };
   if (!retained.length) return null;
   return <>
-    <Button size="small" onClick={() => setOpen(true)}>{importOnly ? "Recover import destination" : "Recover earlier Chat"}</Button>
+    <Button size="small" onClick={() => setOpen(true)}>{importOnly ? "Recover Import Destination" : "Recover Earlier Chat"}</Button>
     <Dialog open={open} onClose={() => setOpen(false)} fullWidth maxWidth="sm">
-      <DialogTitle>Recover earlier Chat</DialogTitle>
+      <DialogTitle>Recover Earlier Chat</DialogTitle>
       <DialogContent>
         <Stack spacing={2}>
           {error ? <Alert severity="error">{error}</Alert> : null}
           {retained.map(item => <Button key={item.key} disabled={busy}
-            onClick={() => void recover(item)}>Open unconfirmed Chat: {item.input.label}</Button>)}
+            onClick={() => void recover(item)}>Open Unconfirmed Chat: {item.input.label}</Button>)}
         </Stack>
       </DialogContent>
       <DialogActions><Button onClick={() => setOpen(false)}>Close</Button></DialogActions>

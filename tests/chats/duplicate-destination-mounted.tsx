@@ -28,7 +28,7 @@ export async function duplicateIntoCurrentChatRegression():Promise<void>{
  const clickOption=async(label:string)=>{await flush();const option=Array.from(document.querySelectorAll<HTMLElement>('[role=option]')).find(item=>item.textContent?.trim()===label);assert(option,'Missing option '+label);option!.click();await flush();};
  try{
   root.render(<QueryClientProvider client={client}><MutationNotificationProvider><AddAgentsFlow open fixedProjectId="target-project" initialConversation={destination} conversations={[destination]} engines={[]} onCreate={()=>{}} onClose={()=>{}} onCreated={(projectId,agentId)=>{created={projectId,agentId};}}/></MutationNotificationProvider></QueryClientProvider>);
-  await flush();button('Duplicate existing Agent')!.click();await flush();
+  await flush();button('Duplicate Existing Agent')!.click();await flush();
   const projectSelect=document.querySelector('[role=combobox][aria-labelledby*="duplicate-source-project-label"]');
   assert(projectSelect,'Source Chat selector was not offered');openSelect(projectSelect);await clickOption('Source Chat');
   const sourceInput=document.querySelector<HTMLInputElement>('input[role=combobox]');assert(sourceInput,'Source Agent selector missing');
@@ -37,10 +37,10 @@ export async function duplicateIntoCurrentChatRegression():Promise<void>{
   button('Continue')!.click();await flush();
   assert(document.body.textContent?.includes('Destination Chat'),'Current destination Chat is not shown');
   const contents=document.querySelector('[role=combobox][aria-labelledby*="agent-package-contents-label"]');openSelect(contents);
-  await clickOption('Setup, private history, and managed artifacts');
+  await clickOption('Setup, Private History, And Managed Artifacts');
   assert(document.body.textContent?.includes('Chat instructions differ'),'Source and destination instructions must be reviewed');
   const instructionSelect=document.querySelector('[role=combobox][aria-labelledby*="import-chat-instructions-choice"]');openSelect(instructionSelect);
-  await clickOption('Keep existing Chat instructions');
+  await clickOption('Keep Existing Chat Instructions');
   Object.defineProperty(window.crypto,'subtle',{value:undefined,configurable:true});
   const confirm=button('Duplicate Agent');assert(confirm&&!confirm.disabled,'Duplicate confirmation unavailable');confirm!.click();await flush();
   assert(copies.length===1,'Expected one copy request');

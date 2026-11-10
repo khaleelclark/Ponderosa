@@ -88,31 +88,31 @@ export async function composerQueueSubmissionMountedRegression(): Promise<void> 
     const editor = host.querySelector<HTMLElement>('[aria-label="Message"]')!; editor.focus(); await settle(); return editor;
   };
   try {
-    let editor = await render({ busy: false }); assert(!host.querySelector('[aria-label="Queue message"]'), 'Idle has no Queue button');
+    let editor = await render({ busy: false }); assert(!host.querySelector('[aria-label="Queue Message"]'), 'Idle has no Queue button');
     await key(editor, true); await until(() => queues.length === 1, 'Idle shortcut invokes existing queue callback');
-    await until(() => Boolean(host.querySelector('[aria-label="Queued messages"]')?.textContent?.includes('Queued exact')), 'Accepted queue appears in existing tray');
+    await until(() => Boolean(host.querySelector('[aria-label="Queued Messages"]')?.textContent?.includes('Queued exact')), 'Accepted queue appears in existing tray');
     assert(sends.length === 0 && queues[0].recipients.join() === binding.agentId, 'Shortcut retains designated recipient');
     editor = await render({ busy: true }); const files = new DataTransfer(); const file = new File(['attachment bytes'], 'queue-note.txt', { type: 'text/plain' }); files.items.add(file);
-    const input = host.querySelector<HTMLInputElement>('[aria-label="Choose files"]')!; input.files = files.files; input.dispatchEvent(new Event('change', { bubbles: true }));
+    const input = host.querySelector<HTMLInputElement>('[aria-label="Choose Files"]')!; input.files = files.files; input.dispatchEvent(new Event('change', { bubbles: true }));
     await until(() => host.textContent?.includes('queue-note.txt') === true, 'Attachment is visible');
     failQueue = true; await key(editor, true); await until(() => host.textContent?.includes('Controlled Queue failure') === true, 'Queue failure is surfaced');
     assert(queues.length === 2 && queues[1].files[0] === file && queues[1].recipients.join() === binding.agentId && sends.length === 0, 'Busy shortcut submits exact attachment/recipient through queue');
     assert(editor.textContent?.includes('Queued exact') && host.textContent?.includes('queue-note.txt'), 'Failed enqueue retains draft and attachment');
-    failQueue = false; await key(editor, true); await until(() => queues.length === 3 && Boolean(host.querySelector('[aria-label="Queued messages"]')), 'Queue retry succeeds');
+    failQueue = false; await key(editor, true); await until(() => queues.length === 3 && Boolean(host.querySelector('[aria-label="Queued Messages"]')), 'Queue retry succeeds');
     assert(queues[2].retry && queues[2].text === queues[1].text && queues[2].files[0] === file, 'Retry preserves queue action and exact inputs');
     editor = await render({ busy: true, available: false }); const before = queues.length; await key(editor, true);
     assert(queues.length === before && sends.length === 0 && editor.textContent?.includes('Queued exact'), 'No queue callback retains eligible draft');
     for (const options of [{ busy: true, blocked: true }, { busy: true, text: '' }]) { editor = await render(options); await key(editor, true); assert(queues.length === before && sends.length === 0, 'Disabled/empty draft does not submit'); }
     editor = await render({ busy: true }); failSend = true;
-    host.querySelector<HTMLButtonElement>('[aria-label="Steer active response"]')!.click(); await until(() => host.textContent?.includes('Controlled Send failure') === true, 'Frozen Send failure retained');
+    host.querySelector<HTMLButtonElement>('[aria-label="Steer Active Response"]')!.click(); await until(() => host.textContent?.includes('Controlled Send failure') === true, 'Frozen Send failure retained');
     const sent = sends.length; await key(editor, true); assert(sends.length === sent && queues.length === before && editor.textContent?.includes('Queued exact'), 'Ctrl+Enter cannot retry a frozen Send'); failSend = false;
-    editor = await render({ busy: true }); host.querySelector<HTMLButtonElement>('[aria-label="Queue message"]')!.click(); await until(() => queues.length === before + 1, 'Existing Queue button remains functional');
+    editor = await render({ busy: true }); host.querySelector<HTMLButtonElement>('[aria-label="Queue Message"]')!.click(); await until(() => queues.length === before + 1, 'Existing Queue button remains functional');
     assert(queues.at(-1)!.text === queues[0].text, 'Button and shortcut use identical queue submission text');
     for (const text of ['#Queue-Agent /status', '/status with arguments']) {
       editor = await render({ busy: false, text }); const count = queues.length, sent = sends.length, actions = providerActions.length;
       await key(editor, true); await until(() => host.textContent?.includes('Provider actions cannot be queued') === true, 'Queue rejects a runtime action');
       assert(queues.length === count && sends.length === sent && providerActions.length === actions && editor.textContent?.includes('/status'), 'Ctrl+Enter retains runtime command without executing or accepting suggestions');
-      host.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!.click(); await until(() => providerActions.length === actions + 1, 'Explicit Send still executes the provider action');
+      host.querySelector<HTMLButtonElement>('[aria-label="Send Message"]')!.click(); await until(() => providerActions.length === actions + 1, 'Explicit Send still executes the provider action');
     }
     if (!mobile) {
       editor = await render({ busy: false, text: '#Queue-Agent /status' }); const actions = providerActions.length;
@@ -120,14 +120,14 @@ export async function composerQueueSubmissionMountedRegression(): Promise<void> 
       await key(editor, false); await until(() => providerActions.length === actions + 1, 'Ordinary Enter executes the runtime command once when suggestions are closed');
     }
     editor = await render({ busy: true, text: '#Queue-Agent /status' }); const actions = providerActions.length, count = queues.length;
-    host.querySelector<HTMLButtonElement>('[aria-label="Queue message"]')!.click(); await until(() => host.textContent?.includes('Provider actions cannot be queued') === true, 'Queue button uses the same runtime-action validation');
+    host.querySelector<HTMLButtonElement>('[aria-label="Queue Message"]')!.click(); await until(() => host.textContent?.includes('Provider actions cannot be queued') === true, 'Queue button uses the same runtime-action validation');
     assert(providerActions.length === actions && queues.length === count, 'Queue never becomes a provider action');
     for (const text of ['#Queue-Agent /prompt with arguments', '#Queue-Agent /unknown literal']) {
       editor = await render({ busy: false, text }); const before = queues.length; await key(editor, true); await until(() => queues.length === before + 1, 'Prompt commands and unknown slash text retain ordinary queue semantics');
       assert(providerActions.length === actions, 'Queued authored text does not execute a provider action');
     }
     editor = await render({ busy: false, text: '#Queue-Agent /status' }); const attached = new DataTransfer(); attached.items.add(new File(['literal command attachment'], 'literal.txt', { type: 'text/plain' }));
-    const attachmentInput = host.querySelector<HTMLInputElement>('[aria-label="Choose files"]')!; attachmentInput.files = attached.files; attachmentInput.dispatchEvent(new Event('change', { bubbles: true }));
+    const attachmentInput = host.querySelector<HTMLInputElement>('[aria-label="Choose Files"]')!; attachmentInput.files = attached.files; attachmentInput.dispatchEvent(new Event('change', { bubbles: true }));
     await until(() => host.textContent?.includes('literal.txt') === true, 'Command-like message attachment settles'); const attachmentCount = queues.length;
     await key(editor, true); await until(() => queues.length === attachmentCount + 1, 'Command-like text with attachment remains an authored queued message');
     assert(providerActions.length === actions && queues.at(-1)!.files[0].name === 'literal.txt', 'Attachment follows existing message semantics');

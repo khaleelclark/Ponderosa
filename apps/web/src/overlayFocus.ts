@@ -1,4 +1,4 @@
-export function restoreOverlayFocus(previous: HTMLElement | undefined, fallbackSelector = '[aria-label="Open workspace navigation"], nav[aria-label="Workspace sections"] [aria-label="Open All Chats"]'): void {
+export function restoreOverlayFocus(previous: HTMLElement | undefined, fallbackSelector = '[aria-label="Open Workspace Navigation"], nav[aria-label="Workspace Sections"] [aria-label="Open All Chats"]'): void {
   window.requestAnimationFrame(() => {
     if (
       previous?.isConnected &&

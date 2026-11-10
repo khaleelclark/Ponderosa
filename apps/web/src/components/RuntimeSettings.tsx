@@ -15,7 +15,7 @@ export function RuntimeSettings({ value, onChange }: { value: string; onChange(v
   return <Stack spacing={1}>
     <Typography variant="subtitle2" component="h3">Runtime</Typography>
     <TextField
-      label="Maximum concurrent Agent Runs"
+      label="Maximum Concurrent Agent Runs"
       type="number"
       value={value}
       onChange={(event) => onChange(event.target.value)}

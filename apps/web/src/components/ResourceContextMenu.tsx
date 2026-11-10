@@ -92,7 +92,7 @@ export function ResourceContextMenu<T>({
       <MenuList
         ref={menuListRef}
         tabIndex={-1}
-        aria-label="Resource actions"
+        aria-label="Resource Actions"
         onKeyDown={event => {
           if (event.key !== "Escape") return;
           event.preventDefault();

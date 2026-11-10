@@ -65,7 +65,7 @@ export function ProviderFailureBanner({ messages, agents, projectId, hasMore, on
       {status}
     </Box>
     <Dialog open={open} onClose={() => setOpen(false)} maxWidth="sm" fullWidth>
-      <DialogTitle>Provider interruptions</DialogTitle>
+      <DialogTitle>Provider Interruptions</DialogTitle>
       <DialogContent dividers sx={{ overflowWrap: "anywhere" }}>
         <Stack spacing={2}>
           {hasMore ? <Alert severity="warning">Showing up to 100 affected messages. More affected work remains available in Agent activity and Inbox.</Alert> : null}
@@ -90,13 +90,13 @@ export function ProviderFailureBanner({ messages, agents, projectId, hasMore, on
               <Typography variant="body2" sx={{ my: 0.5 }}>Message: {text.length > 240 ? `${text.slice(0, 240)}…` : text}</Typography>
               {onOpenError ? <Button onClick={() => {
                 setOpen(false); onOpenError(receipt.targetAgentId, failure.runId, failure.activityId);
-              }}>{failure.activityId ? "View full error" : "View failed Run"}</Button> : null}
+              }}>{failure.activityId ? "View Full Error" : "View Failed Run"}</Button> : null}
               <MessageDeliveryStatus projectId={projectId} receipts={[receipt]} recipientName={name} onOpenAgent={onOpenAgent} hideCancelAction />
             </Box>;
           })}
           {open ? providers.map(provider => <Stack key={provider} direction="row" useFlexGap flexWrap="wrap" spacing={1}>
-            <ProviderQuotaIndicator preferredProvider={provider} renderTrigger={show => <Button onClick={event => show(event.currentTarget)}>View {provider} usage</Button>} />
-            {!readOnly ? <Button disabled={Boolean(checking)} onClick={() => void recheck(provider)}>{checking === provider ? "Checking provider…" : `Recheck ${provider}`}</Button> : null}
+            <ProviderQuotaIndicator preferredProvider={provider} renderTrigger={show => <Button onClick={event => show(event.currentTarget)}>View {provider} Usage</Button>} />
+            {!readOnly ? <Button disabled={Boolean(checking)} onClick={() => void recheck(provider)}>{checking === provider ? "Checking Provider…" : `Recheck ${provider}`}</Button> : null}
           </Stack>) : null}
           {notice ? <Alert severity="info">{notice}</Alert> : null}
         </Stack>

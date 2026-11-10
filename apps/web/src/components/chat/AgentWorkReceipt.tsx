@@ -33,9 +33,9 @@ function receiptTitle(
   agentName: string,
   run: AgentRunDto | undefined,
 ): string {
-  if (!run) return "Unscoped work";
+  if (!run) return "Unscoped Work";
   if (run.status === "running" || run.status === "compacting") {
-    return `${agentName} is working`;
+    return `${agentName} Is Working`;
   }
   if (
     run.status === "failed" ||
@@ -44,12 +44,12 @@ function receiptTitle(
     run.status === "stalled" ||
     run.status === "blocked"
   ) {
-    return `${agentName}'s work stopped`;
+    return `${agentName}'s Work Stopped`;
   }
   const duration = workDuration(run);
   return duration
-    ? `${agentName} worked for ${duration}`
-    : `${agentName} finished working`;
+    ? `${agentName} Worked For ${duration}`
+    : `${agentName} Finished Working`;
 }
 
 function receiptStatus(run: AgentRunDto, paused: boolean): {
@@ -70,7 +70,7 @@ function receiptStatus(run: AgentRunDto, paused: boolean): {
   if (run.status === "cancelled") return { label: "Cancelled", status: "failed" };
   if (run.status === "interrupted") return { label: "Interrupted", status: "blocked" };
   if (run.status === "stalled" || run.status === "blocked") {
-    return { label: "Needs attention", status: semanticAgentStatus(run.status) };
+    return { label: "Needs Attention", status: semanticAgentStatus(run.status) };
   }
   return undefined;
 }
@@ -123,7 +123,7 @@ export function AgentWorkReceipt({
     <Box
       id={run ? telemetryElementId("runs", run.id) : "unscoped-work"}
       component="article"
-      aria-label={run ? `${agentName} work details` : "Unscoped work details"}
+      aria-label={run ? `${agentName} Work Details` : "Unscoped Work Details"}
       tabIndex={run?.id === focusId ? -1 : undefined}
       sx={{
         width: inline ? "100%" : "min(1120px, 100%)",

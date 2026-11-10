@@ -351,7 +351,7 @@ export function ContextualCreateDialog({
       <ConfirmDialog
         open={confirmDiscard}
         title={`Discard this unfinished ${route ? resourcePresentation[route.resource].title.replace("Create ", "") : "item"}?`}
-        confirmLabel="Discard and Close"
+        confirmLabel="Discard And Close"
         onCancel={() => setConfirmDiscard(false)}
         onConfirm={() => {
           setConfirmDiscard(false);

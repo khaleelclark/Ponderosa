@@ -84,7 +84,7 @@ export async function transcriptWidthMountedRegression(): Promise<void> {
       await measure(`regular/${sidebar}/${narrow}/history`, true);
       flushSync(() => begin!());
       await settle();
-      assert(host.querySelector('[aria-label="Sending message"]'), 'New outgoing presentation rendered');
+      assert(host.querySelector('[aria-label="Sending Message"]'), 'New outgoing presentation rendered');
       await measure(`regular/${sidebar}/${narrow}/new`, true);
       render('project', false, sidebar, narrow, true);
       await settle();
@@ -139,17 +139,17 @@ export async function outputComposerStyleMountedRegression(): Promise<void> {
         const editor = composer.querySelector<HTMLElement>('[aria-label="Message"]')!;
         assert(editor, `${label}: accessible Message editor`);
         assert(!composer.querySelector('[data-composer-mention="true"]'), `${label}: fixed recipient has no destination chip`);
-        assert(!/Message Assistant directly|Reply to|New Agent/.test(composer.textContent ?? ''), `${label}: no direct-conversation hint or recipient switching`);
+        assert(!/Message Assistant directly|Reply To|New Agent/.test(composer.textContent ?? ''), `${label}: no direct-conversation hint or recipient switching`);
         if (output && state === 'empty') assert(!composer.textContent?.includes('Send a message'), `${label}: explicit empty placeholder`);
         if (state === 'focused') { editor.focus(); await settle(); }
         if (state === 'attachment') {
           const files = new DataTransfer(); files.items.add(new File(['contained attachment'], 'style.txt', { type: 'text/plain' }));
-          const input = composer.querySelector<HTMLInputElement>('[aria-label="Choose files"]')!;
+          const input = composer.querySelector<HTMLInputElement>('[aria-label="Choose Files"]')!;
           input.files = files.files; input.dispatchEvent(new Event('change', { bubbles: true })); await settle();
           assert(composer.textContent?.includes('style.txt'), `${label}: attachment is retained`);
         }
         if (state === 'sending') {
-          const send = composer.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!;
+          const send = composer.querySelector<HTMLButtonElement>('[aria-label="Send Message"]')!;
           assert(send && !send.disabled, `${label}: typed fixed-recipient message can send`); send.click(); await settle();
           assert(sent, `${label}: send handler invoked`);
         }

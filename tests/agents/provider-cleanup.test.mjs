@@ -261,6 +261,6 @@ test('goal resume availability recognizes only an accepted retained Codex sessio
  assert.equal(acceptedGoalResumeCommand(command,false).status,'unavailable');
  const accepted=acceptedGoalResumeCommand(command,true);
  assert.equal(accepted.status,'available');assert.equal(accepted.unavailableReason,undefined);
- assert.equal(acceptedGoalResumeCommand({...command,unavailableReason:'Provider disabled'},true).status,'unavailable');
+ assert.equal(acceptedGoalResumeCommand({...command,unavailableReason:'Provider Disabled'},true).status,'unavailable');
  assert.equal(acceptedGoalResumeCommand({...command,name:'goal-pause'},true).status,'unavailable');
 });

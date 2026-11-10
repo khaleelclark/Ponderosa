@@ -80,7 +80,7 @@ for (const extension of ['docx', 'pdf', 'png', 'ttf']) test(`canonical recorded 
   const html = renderToStaticMarkup(preview);
   assert.match(html, /data-preview-capability="diff"/);
   assert.match(html, /saved before/); assert.match(html, /saved after/);
-  assert.doesNotMatch(html, /Loading Word document|Loading PDF viewer|<img /);
+  assert.doesNotMatch(html, /Loading Word Document|Loading PDF viewer|<img /);
 });
 test('DOCX byte reader does not inherit a cached generic binary-text truncation warning', t => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });

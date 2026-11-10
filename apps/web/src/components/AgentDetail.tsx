@@ -708,7 +708,7 @@ export function AgentDetail({
   if (agentQuery.isLoading) {
     return (
       <Box sx={{ p: 3 }} role="status" aria-live="polite">
-        <CircularProgress size={24} aria-label="Loading agent" />
+        <CircularProgress size={24} aria-label="Loading Agent" />
       </Box>
     );
   }
@@ -965,7 +965,7 @@ export function AgentDetail({
             <Alert
               severity="info"
               role="region"
-              aria-label="Agent browser status"
+              aria-label="Agent Browser Status"
               action={
                 <Button color="inherit" size="small" onClick={() => onOpenBrowser(activeBrowser.runId)}>
                   View Browser
@@ -987,7 +987,7 @@ export function AgentDetail({
       ) : null}
 
       {pause?.reason === "access_restricted" && <Alert severity="warning" sx={{ mx: { xs: 1, sm: 2 }, mt: 1 }}
-        action={<Stack direction="row" spacing={1}><Button color="inherit" size="small" onClick={() => changeTab("chat")}>View Chat</Button><Button color="inherit" size="small" onClick={() => openTechnicalDetails()}>View Work log</Button></Stack>}>
+        action={<Stack direction="row" spacing={1}><Button color="inherit" size="small" onClick={() => changeTab("chat")}>View Chat</Button><Button color="inherit" size="small" onClick={() => openTechnicalDetails()}>View Work Log</Button></Stack>}>
         Work is paused because an access restriction was requested. Resume is unavailable while earlier context and uncertain effects require review. Review the existing Chat and Work log.
       </Alert>}
 
@@ -1034,7 +1034,7 @@ export function AgentDetail({
       {auditOnly?<Alert severity="info" sx={{m:1}}>Workflow Agent · control work from its execution view</Alert>:<AgentDetailComposer
         visible={tab === "chat"}
         queuedMessageNotice={queuedMessageNotice}
-        queuedRead={workspaceRead(`agent:${agentId}`,"Queued messages",queuedMessagesQuery)}
+        queuedRead={workspaceRead(`agent:${agentId}`,"Queued Messages",queuedMessagesQuery)}
         queuedMessageFailure={queuedMessageFailure}
         cancellationError={[
           pause?.error,

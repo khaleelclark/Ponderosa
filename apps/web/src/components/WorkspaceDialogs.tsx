@@ -54,7 +54,7 @@ export function SidebarConversationDialogs({
       <TextInputDialog
         open={action?.kind === "rename"}
         title="Rename Chat"
-        label="Chat name"
+        label="Chat Name"
         initialValue={action?.conversation.title ?? ""}
         confirmLabel="Save"
         pendingLabel="Saving…"

@@ -787,7 +787,7 @@ export class CoordinationV3ReadModel {
         const id = `request:${row.id}`;
         add({
           id, recordId: row.id, referenceIds: [row.id, ...(row.communication_event_id ? [row.communication_event_id] : [])],
-          kind: "request", state: row.state, title: "Assigned work",
+          kind: "request", state: row.state, title: "Assigned Work",
           summary: boundedRequestPreview(row.payload_json) ??
             (row.state === "completed" ? "The assigned work was reported finished."
             : ["open", "in_progress", "waiting_dependency", "awaiting_answer"].includes(row.state)
@@ -819,7 +819,7 @@ export class CoordinationV3ReadModel {
       }>);
       for (const row of joinRows) add({
         id: `join:${row.id}`, recordId: row.id, referenceIds: [row.id], kind: "join", state: row.state,
-        title: "Waiting for work", summary: row.state === "open" ? "The Agent is holding until enough assigned work returns."
+        title: "Waiting For Work", summary: row.state === "open" ? "The Agent is holding until enough assigned work returns."
           : row.state === "satisfied" ? "The required results arrived." : `The wait ended ${row.state}.`,
         agentIds: [row.owner_agent_id], relatedItemIds: [],
         createdAt: row.created_at, updatedAt: row.updated_at,
@@ -858,7 +858,7 @@ export class CoordinationV3ReadModel {
         } : undefined;
         add({
           id: `activation:${row.id}`, recordId: row.id, referenceIds: [row.id], kind: "activation", state: row.state,
-          title: row.kind === "coordination_late_result" ? "Late result needs audit" : "Queued work input",
+          title: row.kind === "coordination_late_result" ? "Late Result Needs Audit" : "Queued Work Input",
           summary: providerRecovery
             ? `Provider ${providerRecovery.classification === "capacity" ? "capacity" : "quota"} is unavailable; this work input is retained for retry.`
             : row.kind === "coordination_late_result"

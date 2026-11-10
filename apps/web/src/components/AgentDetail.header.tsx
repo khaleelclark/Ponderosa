@@ -102,7 +102,7 @@ function AgentRunState({
   const details = [
     "Current: " + presentation.detail,
     health?.latestRun ? "Latest Run: " + agentStatusLabel(health.latestRun.status) : undefined,
-    health?.assignedWorkOutcome ? "Assigned work: " + agentStatusLabel(health.assignedWorkOutcome.status) : undefined,
+    health?.assignedWorkOutcome ? "Assigned Work: " + agentStatusLabel(health.assignedWorkOutcome.status) : undefined,
     health?.attention ? "Needs attention: " + agentStatusLabel(health.attention.status) : undefined,
   ].filter(Boolean).join(" · ");
   const delayed = connectionStatus === "stale" || connectionStatus === "unavailable";
@@ -213,7 +213,7 @@ export function AgentDetailHeader({
   const notify=useMutationNotification();
   if(standalone)return <><Stack direction="row" spacing={1} sx={{alignItems:'center',px:1,minWidth:0,flexWrap:'wrap',...(conversationChrome?.statusHost&&!running&&!paused&&tab==='chat'?{height:0,minHeight:0,overflow:'hidden'}:{})}}>
     {!conversationChrome?.statusHost&&<Box sx={{flex:1,minWidth:0}}><AgentRunState contact={conversationChrome?.assistantAgentId===agent.id} status={status} paused={paused} accessRestricted={accessRestricted} health={health} connectionStatus={connectionStatus} phaseEvidenceFresh={phaseEvidenceFresh} startedAt={startedAt} agentNameForId={agentNameForId} visibleMobileLabel/></Box>}
-    {tab!=='chat'&&<Button onClick={()=>onTabChange('chat')}>Back to chat</Button>}
+    {tab!=='chat'&&<Button onClick={()=>onTabChange('chat')}>Back To Chat</Button>}
     {(running||paused)&&!accessRestricted&&!auditOnly&&onPauseResume&&<Button disabled={pausePending} onClick={onPauseResume}>{pausePending?'Waiting…':paused?'Resume':'Pause'}</Button>}
     {running&&!auditOnly&&<Button color="error" disabled={stopping} onClick={onStop}>{stopping?'Stopping…':'Stop'}</Button>}
   </Stack>{conversationChrome?.statusHost&&createPortal(<AgentRunState contact={conversationChrome?.assistantAgentId===agent.id} status={status} paused={paused} accessRestricted={accessRestricted} health={health} connectionStatus={connectionStatus} phaseEvidenceFresh={phaseEvidenceFresh} startedAt={startedAt} agentNameForId={agentNameForId} visibleMobileLabel/>,conversationChrome.statusHost)}</>;
@@ -329,19 +329,19 @@ export function AgentDetailHeader({
                   ]
                 : []),
               {
-                label: "Export Agent package…",
+                label: "Export Agent Package…",
                 icon: <DownloadOutlinedIcon fontSize="small" />,
                 onSelect: onExportPackage,
               },
               {
-                label: "Copy chat transcript",
+                label: "Copy Chat Transcript",
                 icon: <ContentCopyOutlinedIcon fontSize="small" />,
                 onSelect: () => void copyText(transcriptMarkdown)
                   .then(() => notify({ key: "copy-transcript", message: "Copied" }))
                   .catch(error => notify({ key: "copy-transcript", message: error instanceof Error ? error.message : "Chat transcript could not be copied.", severity: "error" })),
               },
               {
-                label: "Download chat transcript",
+                label: "Download Chat Transcript",
                 icon: <DownloadOutlinedIcon fontSize="small" />,
                 onSelect: () => downloadMarkdownTranscript(transcriptMarkdown, transcriptFileName(transcriptTitle)),
               },
@@ -361,8 +361,8 @@ export function AgentDetailHeader({
         </Stack>
       }
       tabs={{
-        activeLabel: tab === "technical" ? "Technical details" : undefined,
-        label: "Agent details",
+        activeLabel: tab === "technical" ? "Technical Details" : undefined,
+        label: "Agent Details",
         value: tab === "technical" ? false : tab,
         onChange: onTabChange,
         items: AGENT_DETAIL_TABS.filter(item =>

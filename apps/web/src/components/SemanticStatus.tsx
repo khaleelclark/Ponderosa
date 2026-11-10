@@ -31,7 +31,7 @@ const STATUS_PRESENTATION: Record<SemanticStatusKind, {
   waiting: { label: AGENT_DISPLAY_STATUS_LABELS.waiting, color: "warning" },
   idle: { label: AGENT_DISPLAY_STATUS_LABELS.idle, color: "default" },
   completed: { label: "Completed", color: "success" },
-  needs_attention: { label: "Needs attention", color: "error" },
+  needs_attention: { label: "Needs Attention", color: "error" },
   blocked: { label: "Blocked", color: "warning" },
   failed: { label: "Failed", color: "error" },
   disabled: { label: "Disabled", color: "default" },

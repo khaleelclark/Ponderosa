@@ -336,7 +336,7 @@ export function ActionGroupRow({
       >
         {summary}
       </Button>
-      {failureCount ? <Chip size="small" color="error" label={`${failureCount} failed`} sx={{ height: 20, fontSize: 10.5 }} /> : null}
+      {failureCount ? <Chip size="small" color="error" label={`${failureCount} Failed`} sx={{ height: 20, fontSize: 10.5 }} /> : null}
       <Box sx={{ flex: 1 }} />
       {entries[0] ? <ActivityTimestamp value={entries[0].createdAt} /> : null}
     </Stack>
@@ -375,7 +375,7 @@ function CollapsibleCode({ value, maxLines }: { value: string; maxLines: number 
       color="inherit"
       startIcon={expanded ? <ExpandLessIcon /> : <ExpandMoreIcon />}
       onClick={() => setExpanded((value) => !value)}
-    >{expanded ? "Show less" : "Show more"}</Button> : null}
+    >{expanded ? "Show Less" : "Show More"}</Button> : null}
   </Box>;
 }
 
@@ -394,7 +394,7 @@ function ThinkingText({ text }: { text: string }): JSX.Element {
       } : {}),
     }}>{text}</Typography>
     {collapsible ? <Button size="small" color="inherit" onClick={() => setExpanded((value) => !value)}>
-      {expanded ? "Show less" : "Show more"}
+      {expanded ? "Show Less" : "Show More"}
     </Button> : null}
   </Box>;
 }
@@ -477,7 +477,7 @@ function browserDescription(entry: Extract<ActivityStreamEntry, { kind: "browser
   }
   if (event.type === "browser_action") return { title: `Browser · ${event.action}`, detail: event.summary };
   if (event.type === "browser_console") return { title: `Browser console · ${event.level}`, detail: event.text };
-  return { title: "Browser screenshot", detail: `${event.path} · ${event.width}×${event.height}` };
+  return { title: "Browser Screenshot", detail: `${event.path} · ${event.width}×${event.height}` };
 }
 
 export function CompactActivityRow({
@@ -509,6 +509,6 @@ export function CompactActivityRow({
     {content.detail ? <Typography variant="body2" color="text.secondary" sx={{ mt: 0.25, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
       {content.detail}
     </Typography> : null}
-    {entry.kind === "notice" && entry.result ? <ActivityOutput result={entry.result} label="Tool output" collapsedLines={2} /> : null}
+    {entry.kind === "notice" && entry.result ? <ActivityOutput result={entry.result} label="Tool Output" collapsedLines={2} /> : null}
   </Row>;
 }

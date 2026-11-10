@@ -641,7 +641,7 @@ export function AgentsTab({
       sx={{ alignItems: "center" }}
     >
       <Button color="inherit" size="small" disabled={!selectionReady} onClick={toggleVisibleSelection}>
-        {!selectionReady ? "Loading all Agents…" : allVisibleSelected ? "Clear all" : "Select all"}
+        {!selectionReady ? "Loading All Agents…" : allVisibleSelected ? "Clear All" : "Select All"}
       </Button>
       <Button
         color="error"
@@ -711,7 +711,7 @@ export function AgentsTab({
     </Stack>
   );
   const compactHeaderActions = selectionMode ? (
-    <Tooltip title="Selection actions"><IconButton aria-label="Selection actions" onClick={() => setCompactFiltersOpen(true)}><MoreVertIcon /></IconButton></Tooltip>
+    <Tooltip title="Selection Actions"><IconButton aria-label="Selection Actions" onClick={() => setCompactFiltersOpen(true)}><MoreVertIcon /></IconButton></Tooltip>
   ) : (
     <Tooltip title="Add Agents"><IconButton aria-label="Add Agents" onClick={() => setAddAgentsOpen(true)}><AddIcon /></IconButton></Tooltip>
   );
@@ -732,24 +732,24 @@ export function AgentsTab({
           reorderHint={
             organizationView === "flat" && Boolean(onReorder)
           }
-          compactControls={<Button color="inherit" size="small" startIcon={<FilterListOutlinedIcon />} onClick={() => setCompactFiltersOpen(true)} aria-label="Agent filters and view" sx={{ minHeight: 40, minWidth: 44, px: 1 }}>Filters{statusFilters.length || effectiveMasterFilter !== "all" ? ` (${statusFilters.length + (effectiveMasterFilter !== "all" ? 1 : 0)})` : ""}</Button>}
+          compactControls={<Button color="inherit" size="small" startIcon={<FilterListOutlinedIcon />} onClick={() => setCompactFiltersOpen(true)} aria-label="Agent Filters And View" sx={{ minHeight: 40, minWidth: 44, px: 1 }}>Filters{statusFilters.length || effectiveMasterFilter !== "all" ? ` (${statusFilters.length + (effectiveMasterFilter !== "all" ? 1 : 0)})` : ""}</Button>}
         >
           {toolbarControls}
               <Stack
                 direction="row"
                 role="group"
-                aria-label="Agent organization view"
+                aria-label="Agent Organization View"
                 sx={{ border: 1, borderColor: "divider", borderRadius: 1 }}
               >
                 <Tooltip
                   title={
                     organizationScopeFiltered && onLoadOrganizationData
-                      ? "Clear search and Chat filters to load hierarchy"
+                      ? "Clear Search And Chat Filters To Load Hierarchy"
                       : organizationDataComplete
                         ? "Hierarchy"
                         : loadingOrganizationData
-                          ? "Loading complete hierarchy…"
-                          : "Load complete hierarchy"
+                          ? "Loading Complete Hierarchy…"
+                          : "Load Complete Hierarchy"
                   }
                 >
                   <IconButton
@@ -758,8 +758,8 @@ export function AgentsTab({
                     aria-pressed={organizationView === "hierarchy"}
                     aria-label={
                       organizationDataComplete
-                        ? "Show Agent hierarchy"
-                        : "Load and show complete Agent hierarchy"
+                        ? "Show Agent Hierarchy"
+                        : "Load And Show Complete Agent Hierarchy"
                     }
                     disabled={
                       loadingOrganizationData ||
@@ -775,7 +775,7 @@ export function AgentsTab({
                     size="small"
                     color={organizationView === "flat" ? "primary" : "default"}
                     aria-pressed={organizationView === "flat"}
-                    aria-label="Show flat Agent list"
+                    aria-label="Show Flat Agent List"
                     onClick={() => setOrganizationView("flat")}
                   >
                     <ViewListOutlinedIcon fontSize="small" />
@@ -787,7 +787,7 @@ export function AgentsTab({
                 variant={statusFilters.length ? "outlined" : "text"}
                 startIcon={<FilterListOutlinedIcon />}
                 onClick={event => setStatusAnchor(event.currentTarget)}
-                aria-label="Filter Agents by status"
+                aria-label="Filter Agents By Status"
                 sx={{ minHeight: 40, whiteSpace: "nowrap" }}
               >
                 {statusFilters.length
@@ -802,7 +802,7 @@ export function AgentsTab({
                 >
                   <MenuItem onClick={() => setStatusFilters([])}>
                     <Checkbox checked={statusFilters.length === 0} />
-                    All ({scopedAgents.length}{statusCollectionComplete ? "" : " loaded"})
+                    All ({scopedAgents.length}{statusCollectionComplete ? "" : " Loaded"})
                   </MenuItem>
                   {statusOptions
                     .filter(option => option.value !== "all")
@@ -822,7 +822,7 @@ export function AgentsTab({
                             option.value as StatusFilter,
                           )}
                         />
-                        {option.label} ({option.count}{statusCollectionComplete ? "" : " loaded"})
+                        {option.label} ({option.count}{statusCollectionComplete ? "" : " Loaded"})
                       </MenuItem>
                     ))}
                 </Menu>
@@ -864,10 +864,10 @@ export function AgentsTab({
                         disabled={conversationFilterRequest.isFetchingNextPage}
                       >
                         {conversationFilterRequest.isPaginationError
-                          ? "Retry loading Chats"
+                          ? "Retry Loading Chats"
                           : conversationFilterRequest.isFetchingNextPage
-                            ? "Loading more Chats..."
-                            : "Load more Chats..."}
+                            ? "Loading More Chats..."
+                            : "Load More Chats..."}
                       </MenuItem>
                     ) : null}
                   </Select>
@@ -878,19 +878,19 @@ export function AgentsTab({
         <Drawer anchor="bottom" open={compactFiltersOpen} onClose={() => setCompactFiltersOpen(false)} PaperProps={{ sx: { borderRadius: "16px 16px 0 0", maxHeight: "min(80dvh, 680px)", overflowY: "auto", p: 2, pb: "calc(16px + env(safe-area-inset-bottom, 0px))" } }}>
           <Stack spacing={2} sx={{ maxWidth: 520, width: "100%", mx: "auto" }}>
             <Stack direction="row" sx={{ alignItems: "center", justifyContent: "space-between" }}>
-              <Typography variant="h6" fontWeight={750}>Filters and view</Typography>
+              <Typography variant="h6" fontWeight={750}>Filters And View</Typography>
               <Button onClick={() => setCompactFiltersOpen(false)}>Done</Button>
             </Stack>
-            <Stack direction="row" role="group" aria-label="Agent organization view" sx={{ border: 1, borderColor: "divider", borderRadius: 1, alignSelf: "flex-start" }}>
-              <IconButton aria-label="Show Agent hierarchy" aria-pressed={organizationView === "hierarchy"} disabled={loadingOrganizationData || (Boolean(onLoadOrganizationData) && organizationScopeFiltered)} onClick={() => void showCompleteHierarchy()}><AccountTreeOutlinedIcon /></IconButton>
-              <IconButton aria-label="Show flat Agent list" aria-pressed={organizationView === "flat"} onClick={() => setOrganizationView("flat")}><ViewListOutlinedIcon /></IconButton>
+            <Stack direction="row" role="group" aria-label="Agent Organization View" sx={{ border: 1, borderColor: "divider", borderRadius: 1, alignSelf: "flex-start" }}>
+              <IconButton aria-label="Show Agent Hierarchy" aria-pressed={organizationView === "hierarchy"} disabled={loadingOrganizationData || (Boolean(onLoadOrganizationData) && organizationScopeFiltered)} onClick={() => void showCompleteHierarchy()}><AccountTreeOutlinedIcon /></IconButton>
+              <IconButton aria-label="Show Flat Agent List" aria-pressed={organizationView === "flat"} onClick={() => setOrganizationView("flat")}><ViewListOutlinedIcon /></IconButton>
             </Stack>
             {toolbarControls}
             <Box>
               <Typography fontWeight={700} sx={{ mb: 0.5 }}>Status</Typography>
-              <MenuItem onClick={() => setStatusFilters([])}><Checkbox checked={statusFilters.length === 0} />All ({scopedAgents.length}{statusCollectionComplete ? "" : " loaded"})</MenuItem>
+              <MenuItem onClick={() => setStatusFilters([])}><Checkbox checked={statusFilters.length === 0} />All ({scopedAgents.length}{statusCollectionComplete ? "" : " Loaded"})</MenuItem>
               {statusOptions.filter(option => option.value !== "all").map(option => <MenuItem key={option.value} onClick={() => setStatusFilters(current => current.includes(option.value as StatusFilter) ? current.filter(value => value !== option.value) : [...current, option.value as StatusFilter])}>
-                <Checkbox checked={statusFilters.includes(option.value as StatusFilter)} />{option.label} ({option.count}{statusCollectionComplete ? "" : " loaded"})
+                <Checkbox checked={statusFilters.includes(option.value as StatusFilter)} />{option.label} ({option.count}{statusCollectionComplete ? "" : " Loaded"})
               </MenuItem>)}
             </Box>
             {!embeddedCollection ? <FormControl size="small" fullWidth>
@@ -901,7 +901,7 @@ export function AgentsTab({
               }}>
                 <MenuItem value="all">All Chats</MenuItem>
                 {conversations.map(master => <MenuItem key={master.id} value={master.id}>{master.title}</MenuItem>)}
-                {conversationFilterRequest?.hasNextPage || conversationFilterRequest?.isPaginationError ? <MenuItem value="__load_more__" disabled={conversationFilterRequest.isFetchingNextPage}>{conversationFilterRequest.isPaginationError ? "Retry loading Chats" : conversationFilterRequest.isFetchingNextPage ? "Loading more Chats..." : "Load more Chats..."}</MenuItem> : null}
+                {conversationFilterRequest?.hasNextPage || conversationFilterRequest?.isPaginationError ? <MenuItem value="__load_more__" disabled={conversationFilterRequest.isFetchingNextPage}>{conversationFilterRequest.isPaginationError ? "Retry Loading Chats" : conversationFilterRequest.isFetchingNextPage ? "Loading More Chats..." : "Load More Chats..."}</MenuItem> : null}
               </Select>
             </FormControl> : null}
             {selectionMode ? selectionControls : <>
@@ -967,7 +967,7 @@ export function AgentsTab({
                 ? organizationRootAgentId
                   ? "No Delegated Agents Yet"
                   : "No Agents Yet"
-                : "No Agents match these filters"
+                : "No Agents Match These Filters"
             }
             detail={
               scopedAgents.length === 0 && !filtersActive
@@ -990,7 +990,7 @@ export function AgentsTab({
             }
           />
         ) : (
-          <Stack spacing={0.75} role="tree" aria-label="Agent organization">
+          <Stack spacing={0.75} role="tree" aria-label="Agent Organization">
             {visibleFiltered.map(({ agent, depth }, index) => {
               const status = statusByAgentId.get(agent.id) ?? "idle";
               const health = healthByAgentId.get(agent.id);
@@ -1085,7 +1085,7 @@ export function AgentsTab({
                             aria-label={
                               childAgents.length
                                 ? `${expanded ? "Collapse" : "Expand"} ${agent.title}`
-                                : `${agent.title} has no delegated agents`
+                                : `${agent.title} Has No Delegated Agents`
                             }
                             onClick={event => {
                               event.stopPropagation();
@@ -1195,7 +1195,7 @@ export function AgentsTab({
                         <IconButton
                           data-resource-menu-trigger
                           size="small"
-                          aria-label={`Actions for ${agent.title}`}
+                          aria-label={`Actions For ${agent.title}`}
                           aria-haspopup="menu"
                           aria-expanded={agentMenu?.resource === agent.id}
                           onClick={event =>
@@ -1285,7 +1285,7 @@ export function AgentsTab({
       <TextInputDialog
         open={Boolean(pendingRename)}
         title="Rename Agent"
-        label="Agent name"
+        label="Agent Name"
         initialValue={pendingRename?.title ?? ""}
         confirmLabel="Save"
         pendingLabel="Saving…"
@@ -1348,7 +1348,7 @@ export function AgentsTab({
                 ...(organizationDataComplete && childrenByManager.has(agentMenu.resource)
                   ? [{
                       id: "export-organization",
-                      label: "Export organization…",
+                      label: "Export Organization…",
                       icon: <DownloadOutlinedIcon fontSize="small" />,
                       onSelect: (agentId: string) => setExportAgent(agentsById.get(agentId)),
                     }]

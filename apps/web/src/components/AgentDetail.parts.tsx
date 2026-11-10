@@ -153,13 +153,13 @@ function AgentRenameDialog({
           submit();
         }}
       >
-        <DialogTitle>Rename agent</DialogTitle>
+        <DialogTitle>Rename Agent</DialogTitle>
         <DialogContent>
           <TextField
             autoFocus
             fullWidth
             inputRef={inputRef}
-            label="Agent name"
+            label="Agent Name"
             value={renameValue}
             onChange={event => setRenameValue(event.target.value)}
             sx={{ mt: 1 }}
@@ -214,18 +214,18 @@ function AgentOrganizationDialog({
       fullWidth
       maxWidth="xs"
     >
-      <DialogTitle>Agent organization</DialogTitle>
+      <DialogTitle>Agent Organization</DialogTitle>
       <DialogContent>
         <FormControl fullWidth sx={{ mt: 1 }}>
           <InputLabel id="agent-organizational-parent-label" shrink>
-            Delegated under
+            Delegated Under
           </InputLabel>
           <Select
             labelId="agent-organizational-parent-label"
             displayEmpty
             renderValue={value => value ? eligibleOrganizationParents(agent, agents).find(candidate => candidate.id === value)?.title ?? "Unavailable Agent" : "Top Level"}
             value={organizationParentId}
-            label="Delegated under"
+            label="Delegated Under"
             onChange={event => setOrganizationParentId(event.target.value)}
           >
             <MenuItem value="">Top Level</MenuItem>

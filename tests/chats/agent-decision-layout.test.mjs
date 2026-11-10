@@ -20,7 +20,7 @@ function fixture(decisions=[one],overrides={}){
 }
 test('pending canonical questions belong to ChatPane, never the separately scrolling attention preview',()=>{
  const f=fixture();assert.deepEqual([...f.chats[0].pendingDecisions],[one]);assert.equal(f.attention.length,0);
- assert.match(f.html,/Vicksburg has a decision/);assert.doesNotMatch(f.html,/BOUNDED PREVIEW|still open|FULL CANONICAL QUESTION/);assert.match(f.html,/View decision/);
+ assert.match(f.html,/Vicksburg has a decision/);assert.doesNotMatch(f.html,/BOUNDED PREVIEW|still open|FULL CANONICAL QUESTION/);assert.match(f.html,/View Decision/);
 });
 test('the compact count deduplicates Decision IDs, counts a question bundle once and ignores resolved/foreign records',()=>{
  const grouped={...one,questions:[{id:'a'},{id:'b'},{id:'c'}]},second={...one,id:'decision-b'};
@@ -71,39 +71,39 @@ function requestFixture(t,{expanded=true,readOnly=false,retryAvailable=true,stat
 
 test('assignment Retry exists only inside expanded canonical eligible recovery, never read-only or superseded work',t=>{
  for(const options of [{expanded:false},{readOnly:true},{retryAvailable:false},{retryAvailable:false,state:'completed'}]){
-  const f=requestFixture(t,options);f.render();assert.equal(f.button('Retry assignment…'),undefined);assert.equal(f.calls.length,0);
+  const f=requestFixture(t,options);f.render();assert.equal(f.button('Retry Assignment…'),undefined);assert.equal(f.calls.length,0);
  }
- const f=requestFixture(t,{state:'outcome_unknown'});f.render();assert.ok(f.button('Retry assignment…'));assert.equal(f.queries[0].enabled,true);assert.deepEqual([...f.queries[0].queryKey],['agent-work','project-a','chat-a','request:request-a']);
+ const f=requestFixture(t,{state:'outcome_unknown'});f.render();assert.ok(f.button('Retry Assignment…'));assert.equal(f.queries[0].enabled,true);assert.deepEqual([...f.queries[0].queryKey],['agent-work','project-a','chat-a','request:request-a']);
 });
 
 test('Retry requires explicit side-effect confirmation, preserves exact scope and hides after canonical acceptance',async t=>{
  let release;const f=requestFixture(t,{retryCommand:()=>new Promise(resolve=>{release=resolve;})});
- f.render();f.button('Retry assignment…').onClick({stopPropagation(){}});let html=f.render();assert.match(html,/Exact canonical assignment/);assert.match(html,/may duplicate changes/);assert.equal(f.calls.length,0);
- f.button('Not now').onClick();f.render();assert.equal(f.dialogs[0].open,false);assert.equal(f.calls.length,0);
- f.button('Retry assignment…').onClick({stopPropagation(){}});f.render();const confirm=f.button('Retry assignment').onClick,saving=confirm();assert.equal(confirm(),undefined,'The shared shell fences a second click before pending renders');f.dialogs[0].onClose({},'escapeKeyDown');assert.equal(f.dialogs[0].open,true);await new Promise(resolve=>setImmediate(resolve));f.render();
- assert.equal(f.button('Starting…').disabled,true);assert.equal(f.dialogs[0]['aria-busy'],true);for(const reason of ['escapeKeyDown','backdropClick'])f.dialogs[0].onClose({},reason);f.button('Not now').onClick();f.render();assert.equal(f.dialogs[0].open,true);assert.equal(f.button('Not now').disabled,true);assert.equal(f.calls.length,1);assert.equal(f.calls[0][0],'request-a');assert.equal(f.calls[0][1].idempotencyKey,'operator-retry:request-a');
- release({requestIds:['successor'],retryOfRequestId:'request-a'});await saving;f.render();assert.equal(f.dialogs[0].open,false);assert.equal(f.button('Retry assignment…'),undefined,'stale eligible detail must not offer a second retry');assert.deepEqual(f.invalidations.sort(),[['agent-work'],['notifications']]);
+ f.render();f.button('Retry Assignment…').onClick({stopPropagation(){}});let html=f.render();assert.match(html,/Exact canonical assignment/);assert.match(html,/may duplicate changes/);assert.equal(f.calls.length,0);
+ f.button('Not Now').onClick();f.render();assert.equal(f.dialogs[0].open,false);assert.equal(f.calls.length,0);
+ f.button('Retry Assignment…').onClick({stopPropagation(){}});f.render();const confirm=f.button('Retry Assignment').onClick,saving=confirm();assert.equal(confirm(),undefined,'The shared shell fences a second click before pending renders');f.dialogs[0].onClose({},'escapeKeyDown');assert.equal(f.dialogs[0].open,true);await new Promise(resolve=>setImmediate(resolve));f.render();
+ assert.equal(f.button('Starting…').disabled,true);assert.equal(f.dialogs[0]['aria-busy'],true);for(const reason of ['escapeKeyDown','backdropClick'])f.dialogs[0].onClose({},reason);f.button('Not Now').onClick();f.render();assert.equal(f.dialogs[0].open,true);assert.equal(f.button('Not Now').disabled,true);assert.equal(f.calls.length,1);assert.equal(f.calls[0][0],'request-a');assert.equal(f.calls[0][1].idempotencyKey,'operator-retry:request-a');
+ release({requestIds:['successor'],retryOfRequestId:'request-a'});await saving;f.render();assert.equal(f.dialogs[0].open,false);assert.equal(f.button('Retry Assignment…'),undefined,'stale eligible detail must not offer a second retry');assert.deepEqual(f.invalidations.sort(),[['agent-work'],['notifications']]);
 });
 
 test('failed Retry retains the same command identity and error; changed canonical eligibility blocks submission',async t=>{
  let attempt=0;const f=requestFixture(t,{retryCommand:async()=>{if(++attempt===1)throw Error('Connection lost');return{requestIds:['successor'],retryOfRequestId:'request-a'};}});
- f.render();f.button('Retry assignment…').onClick({stopPropagation(){}});f.render();await assert.rejects(f.button('Retry assignment').onClick(),/Could not confirm whether the retry started/);assert.match(f.render(),/Could not confirm whether the retry started/);assert.equal(f.dialogs[0].open,true);
- await f.button('Retry assignment').onClick();f.render();assert.equal(f.calls.length,2);assert.equal(f.calls[0][1].idempotencyKey,f.calls[1][1].idempotencyKey);assert.equal(f.button('Retry assignment…'),undefined);
- const stale=requestFixture(t);stale.render();stale.button('Retry assignment…').onClick({stopPropagation(){}});stale.lifecycle.request.retryAvailable=false;stale.render();assert.equal(stale.button('Retry assignment').disabled,true);assert.equal(stale.button('Retry assignment').onClick(),undefined);await assert.rejects(stale.observer().mutate(),/cannot be retried/);assert.equal(stale.calls.length,0);
+ f.render();f.button('Retry Assignment…').onClick({stopPropagation(){}});f.render();await assert.rejects(f.button('Retry Assignment').onClick(),/Could not confirm whether the retry started/);assert.match(f.render(),/Could not confirm whether the retry started/);assert.equal(f.dialogs[0].open,true);
+ await f.button('Retry Assignment').onClick();f.render();assert.equal(f.calls.length,2);assert.equal(f.calls[0][1].idempotencyKey,f.calls[1][1].idempotencyKey);assert.equal(f.button('Retry Assignment…'),undefined);
+ const stale=requestFixture(t);stale.render();stale.button('Retry Assignment…').onClick({stopPropagation(){}});stale.lifecycle.request.retryAvailable=false;stale.render();assert.equal(stale.button('Retry Assignment').disabled,true);assert.equal(stale.button('Retry Assignment').onClick(),undefined);await assert.rejects(stale.observer().mutate(),/cannot be retried/);assert.equal(stale.calls.length,0);
 });
 
 
 for(const result of [undefined,{requestIds:[]},{requestIds:['next'],retryOfRequestId:'foreign'}])test('unconfirmed Retry success retains confirmation and stable identity',async t=>{
- const f=requestFixture(t,{retryCommand:async()=>result});f.render();f.button('Retry assignment…').onClick({stopPropagation(){}});f.render();await assert.rejects(f.button('Retry assignment').onClick(),/Could not confirm/);f.render();assert.equal(f.dialogs[0].open,true);assert.equal(f.invalidations.length,0);assert.ok(f.button('Retry assignment…'));
+ const f=requestFixture(t,{retryCommand:async()=>result});f.render();f.button('Retry Assignment…').onClick({stopPropagation(){}});f.render();await assert.rejects(f.button('Retry Assignment').onClick(),/Could not confirm/);f.render();assert.equal(f.dialogs[0].open,true);assert.equal(f.invalidations.length,0);assert.ok(f.button('Retry Assignment…'));
 });
 test('definite Retry rejection preserves the actionable server explanation',async t=>{
- const f=requestFixture(t,{retryCommand:async()=>{throw new ApiRequestError(409,'Request participants are no longer available');}});f.render();f.button('Retry assignment…').onClick({stopPropagation(){}});f.render();await assert.rejects(f.button('Retry assignment').onClick(),/participants/);assert.doesNotMatch(f.render(),/Could not confirm/);
+ const f=requestFixture(t,{retryCommand:async()=>{throw new ApiRequestError(409,'Request participants are no longer available');}});f.render();f.button('Retry Assignment…').onClick({stopPropagation(){}});f.render();await assert.rejects(f.button('Retry Assignment').onClick(),/participants/);assert.doesNotMatch(f.render(),/Could not confirm/);
 });
 
 
 test('shared assignment confirmation stops parent-card clicks when opening and interacting',t=>{
- const f=requestFixture(t);f.render();let stopped=0;const event={stopPropagation(){stopped++;}};f.button('Retry assignment…').onClick(event);f.render();assert.equal(stopped,1);assert.equal(f.clickOwners.length,1);f.clickOwners[0].onClick(event);assert.equal(stopped,2);assert.equal(f.button('Retry assignment').autoFocus,true);assert.equal(f.dialogs[0].maxWidth,'xs');
- for(const reason of ['escapeKeyDown','backdropClick']){f.dialogs[0].onClose({},reason);f.render();assert.equal(f.dialogs[0].open,false);f.button('Retry assignment…').onClick(event);f.render();}
+ const f=requestFixture(t);f.render();let stopped=0;const event={stopPropagation(){stopped++;}};f.button('Retry Assignment…').onClick(event);f.render();assert.equal(stopped,1);assert.equal(f.clickOwners.length,1);f.clickOwners[0].onClick(event);assert.equal(stopped,2);assert.equal(f.button('Retry Assignment').autoFocus,true);assert.equal(f.dialogs[0].maxWidth,'xs');
+ for(const reason of ['escapeKeyDown','backdropClick']){f.dialogs[0].onClose({},reason);f.render();assert.equal(f.dialogs[0].open,false);f.button('Retry Assignment…').onClick(event);f.render();}
 });
 
 
@@ -115,11 +115,11 @@ test('held peer handoff retries the original assignment with one stable command 
  }});
  f.lifecycle.request.settingsTransitionHold='retry_available';
  let html=f.render();assert.match(html,/original assignment remains queued/u);
- assert.ok(f.button('Retry context handoff…'));assert.equal(f.button('Retry assignment…'),undefined);
- f.button('Retry context handoff…').onClick({stopPropagation(){}});html=f.render();
+ assert.ok(f.button('Retry Context Handoff…'));assert.equal(f.button('Retry Assignment…'),undefined);
+ f.button('Retry Context Handoff…').onClick({stopPropagation(){}});html=f.render();
  assert.match(html,/same queued assignment/u);assert.doesNotMatch(html,/may duplicate changes/u);
- await assert.rejects(f.button('Retry handoff').onClick(),/Could not confirm whether the handoff retry/u);
- f.render();await f.button('Retry handoff').onClick();f.render();
+ await assert.rejects(f.button('Retry Handoff').onClick(),/Could not confirm whether the handoff retry/u);
+ f.render();await f.button('Retry Handoff').onClick();f.render();
  assert.equal(f.calls.length,2);
  assert.equal(f.calls[0][0],'request-a');assert.equal(f.calls[0][1].retryHeldContext,true);
  assert.equal(f.calls[0][1].idempotencyKey,'held-attempt-id');
@@ -127,9 +127,9 @@ test('held peer handoff retries the original assignment with one stable command 
  const u=requestFixture(t,{state:'open',retryAvailable:true});
  u.lifecycle.request.settingsTransitionHold='review_required';
  assert.match(u.render(),/assignment remains held/u);
- assert.equal(u.button('Retry assignment…'),undefined);assert.equal(u.button('Retry context handoff…'),undefined);
+ assert.equal(u.button('Retry Assignment…'),undefined);assert.equal(u.button('Retry Context Handoff…'),undefined);
  const ro=requestFixture(t,{state:'open',retryAvailable:false,readOnly:true});
- ro.lifecycle.request.settingsTransitionHold='retry_available';ro.render();assert.equal(ro.button('Retry context handoff…'),undefined);
+ ro.lifecycle.request.settingsTransitionHold='retry_available';ro.render();assert.equal(ro.button('Retry Context Handoff…'),undefined);
 });
 
 
@@ -154,7 +154,7 @@ test('paused work receipts show waiting only for the exact cancelled Run and pre
   const stopped=render(run,pausedRunId);assert.match(stopped,/>Cancelled<\/span>/);assert.match(stopped,/data-status="failed"/);assert.doesNotMatch(stopped,/>Paused<\/span>|work is paused/);
  }
  const failed=render({...run,status:'failed'},run.id);assert.match(failed,/>Failed<\/span>/);assert.match(failed,/data-status="failed"/);assert.doesNotMatch(failed,/>Paused<\/span>/);
- const resumed=render({...run,status:'running'},undefined);assert.match(resumed,/is working/);assert.doesNotMatch(resumed,/>Paused<\/span>|>Cancelled<\/span>|>Failed<\/span>/);
+ const resumed=render({...run,status:'running'},undefined);assert.match(resumed,/Is Working/);assert.doesNotMatch(resumed,/>Paused<\/span>|>Cancelled<\/span>|>Failed<\/span>/);
  assert.equal(JSON.stringify(run),before,'Receipt presentation never rewrites the canonical Run');
 });
 
@@ -168,8 +168,8 @@ test('only exact paused Run delivery displays Paused without changing canonical 
  assert.equal(owners.compactDeliveryLabel(receipt,'paused-run'),'Paused');assert.match(owners.deliveryLabel(receipt,'Worker','paused-run'),/delivered.*paused/);assert.doesNotMatch(owners.deliveryLabel(receipt,'Worker','paused-run'),/active|Resume|continue/);
  for(const pausedRunId of [undefined,'foreign-run'])assert.equal(owners.compactDeliveryLabel(receipt,pausedRunId),'Working');
  assert.equal(owners.compactDeliveryLabel({...receipt,state:'processed'},'paused-run'),'Processed');
- assert.equal(owners.compactDeliveryLabel({...receipt,taskDecisionRepairHold:true},'paused-run'),'Task check held');
- assert.equal(owners.compactDeliveryLabel({...receipt,settingsTransitionHold:'review_required'},'paused-run'),'Context handoff held');
+ assert.equal(owners.compactDeliveryLabel({...receipt,taskDecisionRepairHold:true},'paused-run'),'Task Check Held');
+ assert.equal(owners.compactDeliveryLabel({...receipt,settingsTransitionHold:'review_required'},'paused-run'),'Context Handoff Held');
  assert.match(owners.deliveryLabel({...receipt,contextRolloverHold:'review_required'},'Worker','paused-run'),/Context refresh could not safely continue/);
  assert.equal(JSON.stringify(receipt),before,'No delivery/task/Run authority is rewritten');
 });
@@ -183,7 +183,7 @@ test('Work shows recorded Chat renames and system titles while keeping generic l
  const imports={react:React,'@tanstack/react-query':{useQuery:()=>({data,isLoading:false,isFetching:false,isError:false,refetch:noop})},'../api':{api:{}},'../queryKeys':{queryKeys:{agentWork:{list:()=>['work']}}},'../clipboard':{copyText:noop},'./MutationNotifications':{useMutationNotification:()=>noop},'./PrimaryHeaderActions':{PrimaryHeaderActionsOutlet:({children})=>React.createElement('div',null,children)},'./RequestLifecycleCard':{RequestLifecycleCard:()=>null},'./chat/scroll':{isChatNearBottom:()=>true,scrollChatToBottom:noop,ScrollToLatestButton:()=>null}};
  vm.runInNewContext(ts.transpileModule(readFileSync(new URL('../../apps/web/src/components/AgentWorkInspector.tsx',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX}}).outputText,{exports,require:name=>imports[name]??require(name)});
  const html=renderToStaticMarkup(React.createElement(exports.AgentWorkInspector,{open:true,projectId:'p',conversationId:'chat',onClose:noop}));
- assert.match(html,/Chat changes/u);assert.equal((html.match(/>Chat renamed</gu)??[]).length,2);assert.match(html,/Chat settings changed/u);
+ assert.match(html,/Chat Changes/u);assert.equal((html.match(/>Chat renamed</gu)??[]).length,2);assert.match(html,/Chat settings changed/u);
  assert.match(html,/Original orchard/u);assert.match(html,/Reviewed orchard/u);assert.match(html,/Operator request/u);assert.match(html,/System automatic title/u);assert.match(html,/actual-recorded-request/u);assert.match(html,/Not recorded/u);assert.match(html,/Older events remain preserved/u);
  assert.doesNotMatch(html,/Authenticated operator|Recovered rename|Unknown rename/u);
 });

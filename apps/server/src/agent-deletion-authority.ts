@@ -271,7 +271,7 @@ export function createAgentDeletionAuthority(
           dedupeKey: `agent-deletion:${receipt.id}:cleanup-pending`,
           category: "system",
           severity: "attention",
-          title: "Agent deletion cleanup needs attention",
+          title: "Agent Deletion Cleanup Needs Attention",
           body: `The Agents were deleted, but runtime or background cleanup ${errors.some(isMemoryCleanupHold)?"is held for review":"is still retrying"}. ${errors.join("; ").slice(0, 1_000)}`,
           projectId: receipt.projectId,
         });

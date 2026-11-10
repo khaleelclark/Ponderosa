@@ -37,7 +37,7 @@
 .chat-message-frame.chat-message-assistant.chat-message-end > .chat-message-row > .chat-message-column { width: fit-content; max-width: 78%; }
 .chat-message-frame.chat-message-assistant.chat-message-end > .chat-message-row > .chat-message-column > .chat-message-body { background: var(--assistant-outgoing, var(--ponderosa-accent)); color: var(--assistant-on-outgoing, var(--ponderosa-text-primary)); border-bottom-right-radius: 6px; --ponderosa-prose-link: currentColor; }
 .chat-message-assistant .chat-message-agent-header [data-message-sender] { font-size: .8125rem; }
-.ponderosa-composer[data-assistant-composer] [aria-label="Add attachment or capability"] { width: 44px; height: 44px; border-radius: 50%; background: var(--ponderosa-surface); border: 1px solid var(--ponderosa-border); }
+.ponderosa-composer[data-assistant-composer] [aria-label="Add Attachment Or Capability"] { width: 44px; height: 44px; border-radius: 50%; background: var(--ponderosa-surface); border: 1px solid var(--ponderosa-border); }
 .ponderosa-composer[data-assistant-composer] [data-composer-runtime] { border-radius: 999px; min-height: 44px; }
 .ponderosa-composer[data-assistant-composer][data-narrow="true"] [data-runtime-icon] { display: block; }
 .ponderosa-composer[data-assistant-composer][data-narrow="true"] [data-runtime-label] { display: none; }
@@ -49,8 +49,8 @@
 .chat-message-assistant.chat-message-end .chat-code-block { background: var(--ponderosa-surface); color: var(--ponderosa-text-primary); }
 .chat-message-assistant.chat-message-end .chat-text-navigation { color: inherit; }
 
-.ponderosa-composer[data-assistant-composer] [data-composer-send-actions] [aria-label="Send message"] { border-radius: 50%; }
-.ponderosa-composer[data-assistant-composer] [data-composer-send-actions] [aria-label="Send message"]:not(:disabled) { background: var(--assistant-outgoing, var(--ponderosa-accent)); color: var(--assistant-on-outgoing, var(--ponderosa-text-primary)); }
+.ponderosa-composer[data-assistant-composer] [data-composer-send-actions] [aria-label="Send Message"] { border-radius: 50%; }
+.ponderosa-composer[data-assistant-composer] [data-composer-send-actions] [aria-label="Send Message"]:not(:disabled) { background: var(--assistant-outgoing, var(--ponderosa-accent)); color: var(--assistant-on-outgoing, var(--ponderosa-text-primary)); }
 .chat-message-assistant .chat-operator-avatar, .chat-message-assistant .chat-operator-sender { display: none; }
 .chat-message-assistant .chat-operator-label { min-height: 0; margin-bottom: 0; }
 .chat-message-assistant .chat-message-operator-header { min-height: 0; }

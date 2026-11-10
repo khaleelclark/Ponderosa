@@ -14,7 +14,7 @@ import type {
 } from "@ponderosa/core";
 
 const stateLabel = (state: TargetedNextRunDeliveryState): string => {
-  if (state === "pending") return "Pending · delivers on next run";
+  if (state === "pending") return "Pending · Delivers On Next Run";
   if (state === "delivered") return "Delivered";
   if (state === "expired") return "Expired";
   return "Unavailable";
@@ -51,7 +51,7 @@ export function TargetedNextRunReceipts({
             Passive delivery · no Run · no reply requested
           </Typography>
         </Box>
-        {receipts.length > 1 ? <Chip size="small" label={`${receipts.length} receipts`} /> : null}
+        {receipts.length > 1 ? <Chip size="small" label={`${receipts.length} Receipts`} /> : null}
       </Stack>
     </AccordionSummary>
     <AccordionDetails id="targeted-next-run-receipts">

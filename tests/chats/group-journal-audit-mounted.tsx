@@ -29,16 +29,16 @@ export async function groupJournalAuditRegression():Promise<void>{
  };
  try{
   const detail={execution:{id:'current-source',branchId:'branch',state:'completed'},resources:[],paths:[],steps:[],attempts:[],gates:[]};
-  root.render(<QueryClientProvider client={client}><BranchGroupReview detail={detail as never} enabled onChanged={()=>{}}/></QueryClientProvider>);await settle();button('Review resource group').click();await settle();
-  button('Restart admission discovery').click();await settle();button('Read discovered admission command').click();await settle();
-  assert(document.body.textContent?.includes('Source owner unavailable'),'scoped current-authority refusal preserved');assert(Boolean(button('Read historical group audit')),'audit selector remains after scoped refusal');
-  button('Read historical group audit').click();await settle();
+  root.render(<QueryClientProvider client={client}><BranchGroupReview detail={detail as never} enabled onChanged={()=>{}}/></QueryClientProvider>);await settle();button('Review Resource Group').click();await settle();
+  button('Restart Admission Discovery').click();await settle();button('Read Discovered Admission Command').click();await settle();
+  assert(document.body.textContent?.includes('Source owner unavailable'),'scoped current-authority refusal preserved');assert(Boolean(button('Read Historical Group Audit')),'audit selector remains after scoped refusal');
+  button('Read Historical Group Audit').click();await settle();
   assert(document.body.textContent?.includes('currentAuthority: false')&&document.body.textContent?.includes('actionEligible: false')&&document.body.textContent?.includes('held: true'),'audit envelope always nonauthorizing');
   assert(document.body.textContent?.includes('new1')&&document.body.textContent?.includes('import1'),'full non-first maps and import statuses visible');
-  assert(!button('Approve whole-group disclosure')&&!button('Admit whole group')&&Boolean(button('Prepare held group')?.disabled),'historical audit cannot create a current target');
-  stale=true;button('Read historical group audit').click();await settle();assert(!button('Read historical group audit'),'stale409 removes selector and requires rediscovery');assert(!document.body.textContent?.includes('new1'),'stale audit evidence cleared');assert(reads===2,'no automatic retry');
-  stale=false;button('Restart capture discovery').click();await settle();assert(document.body.textContent?.includes('Unsupported legacy capture'),'legacy ordinary command unsupported');
-  assert(!button('Read discovered capture command'),'no plaintext key guessed');button('Read historical group audit').click();await settle();assert(document.body.textContent?.includes('package1'),'legacy retained capture audit works without plaintext key');
+  assert(!button('Approve Whole-Group Disclosure')&&!button('Admit Whole Group')&&Boolean(button('Prepare Held Group')?.disabled),'historical audit cannot create a current target');
+  stale=true;button('Read Historical Group Audit').click();await settle();assert(!button('Read Historical Group Audit'),'stale409 removes selector and requires rediscovery');assert(!document.body.textContent?.includes('new1'),'stale audit evidence cleared');assert(reads===2,'no automatic retry');
+  stale=false;button('Restart Capture Discovery').click();await settle();assert(document.body.textContent?.includes('Unsupported legacy capture'),'legacy ordinary command unsupported');
+  assert(!button('Read Discovered Capture Command'),'no plaintext key guessed');button('Read Historical Group Audit').click();await settle();assert(document.body.textContent?.includes('package1'),'legacy retained capture audit works without plaintext key');
   assert(calls.filter(url=>url.includes('/journal?')).length===3,'audit uses only deliberate exact GET reads');
  }finally{root.unmount();client.clear();host.remove();globalThis.fetch=originalFetch;}
 }

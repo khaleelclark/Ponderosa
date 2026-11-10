@@ -171,7 +171,7 @@ export function registerAgentDecisionRoutes(
       status: "open",
       dedupeKey: `decision:${decision.id}`,
       action: { kind: "open_decision", targetId: decision.id },
-      title: `${agent.title} needs a decision`,
+      title: `${agent.title} Needs A Decision`,
       body: decision.question,
       decision: { ...(decision.questions ? { questionCount: decision.questions.length } : {}), id: decision.id, mode: decision.mode, options: decision.options, allowOther: decision.allowOther, status: decision.status },
     }, true);

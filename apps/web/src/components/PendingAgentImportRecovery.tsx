@@ -53,22 +53,22 @@ export function PendingAgentImportRecovery({entry,initialBlob,disabled=false,onA
   finally{setBusy(false);}
  };
  return <Paper variant="outlined" sx={{p:2}}><Stack spacing={1}>
-  <Typography variant="subtitle1">Import awaiting confirmation</Typography>
+  <Typography variant="subtitle1">Import Awaiting Confirmation</Typography>
   <Alert severity="warning">The original request may still be running. Check its status or retry the exact same package; no new import will be started automatically.</Alert>
   {notice&&<Alert severity="info">{notice}</Alert>}
-  <Button disabled={busy||disabled} onClick={()=>void check()}>Check import status</Button>
+  <Button disabled={busy||disabled} onClick={()=>void check()}>Check Import Status</Button>
   {held?.state==='reserved'&&<><Alert severity="warning">If the server can prove this request never began an import, you can retire it. The old request cannot be used again; its files stay preserved. A new import would require your separate choice.</Alert>
-   <Button disabled={busy||disabled} onClick={()=>void retire()}>Retire held request</Button></>}
-  {held?.state==='retired'&&<Button disabled={busy||disabled} onClick={dismissRetired}>Dismiss retired request</Button>}
+   <Button disabled={busy||disabled} onClick={()=>void retire()}>Retire Held Request</Button></>}
+  {held?.state==='retired'&&<Button disabled={busy||disabled} onClick={dismissRetired}>Dismiss Retired Request</Button>}
   {held?.state==='destination_deleted'&&<><Alert severity="warning">The import outcome and any effects remain unknown. Any retained evidence stays on the server. Review any existing files before starting another import.</Alert>
    <Typography variant="body2">Request reference: {entry.requestId}</Typography>
-   <Button disabled={busy||disabled} onClick={()=>{try{onDeleted(entry);}catch{setNotice('Could not update the saved browser notice. Keep browser data and try again.');}}}>Dismiss saved notice</Button></>}
+   <Button disabled={busy||disabled} onClick={()=>{try{onDeleted(entry);}catch{setNotice('Could not update the saved browser notice. Keep browser data and try again.');}}}>Dismiss Saved Notice</Button></>}
 
 
-  <Button component="label" disabled={busy||disabled}>Choose original package
+  <Button component="label" disabled={busy||disabled}>Choose Original Package
    <input hidden type="file" accept="application/json,.json" onChange={event=>{const selected=event.target.files?.[0];event.target.value='';setFile(selected);setFileName(selected?.name??'');setNotice('');}}/>
   </Button>
   {fileName&&<Typography variant="body2">{fileName}</Typography>}
-  <Button disabled={busy||disabled||!file||Boolean(held)} onClick={()=>void retry()}>{busy?'Checking…':'Retry exact import'}</Button>
+  <Button disabled={busy||disabled||!file||Boolean(held)} onClick={()=>void retry()}>{busy?'Checking…':'Retry Exact Import'}</Button>
  </Stack></Paper>;
 }

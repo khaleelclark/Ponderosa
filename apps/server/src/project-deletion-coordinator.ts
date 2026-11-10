@@ -298,7 +298,7 @@ export function registerProjectDeletionRoutes(
             dedupeKey: `project-deletion:${refreshed.projectId}`,
             category: "system",
             severity: "attention",
-            title: "Project deletion cleanup needs attention",
+            title: "Project Deletion Cleanup Needs Attention",
             body: `The Project was deleted, but filesystem cleanup is still retrying. ${refreshed.lastError ?? "Retry deletion to continue cleanup."}`.slice(0, 1_000),
           });
         }
@@ -511,7 +511,7 @@ export function registerProjectDeletionRoutes(
             dedupeKey: `project-deletion:${project.id}`,
             category: "system",
             severity: "attention",
-            title: "Project deletion cleanup needs attention",
+            title: "Project Deletion Cleanup Needs Attention",
             body: `The Project was deleted, but filesystem cleanup is still retrying. ${refreshed.lastError ?? "Retry deletion to continue cleanup."}`.slice(0, 1_000),
           });
         }
@@ -530,7 +530,7 @@ export function registerProjectDeletionRoutes(
           dedupeKey: `project-deletion:${project.id}`,
           category: "system",
           severity: "urgent",
-          title: "Project deletion needs attention",
+          title: "Project Deletion Needs Attention",
           body: `Ponderosa quarantined ${project.label} and revoked Agent authority, but cleanup has not completed. ${isMemoryCleanupHold(error)?'Memory cleanup is held for review.':'Retry deletion after the cleanup problem is resolved.'} ${error instanceof Error ? error.message : String(error)}`.slice(0, 1_000),
           projectId: project.id,
         });

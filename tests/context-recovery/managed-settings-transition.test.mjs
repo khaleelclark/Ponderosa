@@ -191,7 +191,7 @@ test('interrupted transition exposes retry-pending review after restart',{timeou
   store.sqlite.prepare("UPDATE agent_activations SET state='retry_pending' WHERE id=?").run(original.id);
   await f.reopen();
   await until(()=>store.sqlite.prepare("SELECT 1 FROM context_rollovers WHERE id=? AND state IN ('failed','outcome_unknown')").get(rollover.id),'interrupted handoff recorded',20000);
-  await until(async()=>f.ok(await f.api('GET','/api/notifications')).items.some(item=>item.title.includes('context needs review')&&item.body.includes('handoff did not finish')),'retry-pending review notice',20000);
+  await until(async()=>f.ok(await f.api('GET','/api/notifications')).items.some(item=>item.title.includes('Context Needs Review')&&item.body.includes('handoff did not finish')),'retry-pending review notice',20000);
   assert.equal(store.sqlite.prepare('SELECT state FROM agent_activations WHERE id=?').get(original.id).state,'retry_pending');
   const rows=store.sqlite.prepare("SELECT state FROM agent_activations WHERE kind='context_rollover_handoff' AND json_extract(payload_json,'$.rolloverId')=?").all(rollover.id);
   assert.equal(rows.length,1,'an uncertain handoff must not be scheduled a second time');
@@ -313,7 +313,7 @@ test('ordinary text after a real global-memory revocation waits for safe context
    WHERE a.agent_id=? AND a.state='pending'`).get(agent.id),'context-review hold',20000);
   assert.ok(held.payload_json.includes('Continue the original user objective in text.'));
   const notices=f.ok(await f.api('GET','/api/notifications'));
-  assert.ok(notices.items.some(item=>item.title.includes('context needs review')&&item.body.includes('revoked or changed')));
+  assert.ok(notices.items.some(item=>item.title.includes('Context Needs Review')&&item.body.includes('revoked or changed')));
   await new Promise(resolve=>setTimeout(resolve,300));
   assert.equal((await native.requests()).filter(x=>x.method==='turn/start').length,1,'no old or fresh thread receives unsafe seed text');
   assert.equal(store.resumeSessionState(agent.id)?.sessionId,accepted.sessionId,'accepted context remains intact for review');
@@ -342,7 +342,7 @@ test('a failed handoff reservation keeps the exact task queued and does not retr
    WHERE a.agent_id=? AND a.state='pending' AND s.source_kind='settings_transition_reservation_wait'`).get(agent.id),'durable exact hold',20000);
   assert.equal(attempts,1);
   const notices=f.ok(await f.api('GET','/api/notifications'));
-  assert.ok(notices.items.some(item=>item.title.includes('context needs review')&&item.body.includes('could not prepare')));
+  assert.ok(notices.items.some(item=>item.title.includes('Context Needs Review')&&item.body.includes('could not prepare')));
   await new Promise(resolve=>setTimeout(resolve,300));assert.equal(attempts,1,'same failure is not retried automatically');
   assert.equal((await native.requests()).filter(x=>x.method==='turn/start').length,1);
   assert.equal(store.resumeSessionState(agent.id)?.sessionId,accepted.sessionId);
@@ -351,14 +351,14 @@ test('a failed handoff reservation keeps the exact task queued and does not retr
   assert.equal(attempts,1,'restart must preserve the same hold without replay');
   assert.equal(store.sqlite.prepare("SELECT state FROM agent_activations WHERE id=?").get(held.id).state,'pending');
   assert.equal(store.resumeSessionState(agent.id)?.sessionId,accepted.sessionId);
-  const incident=notices.items.find(item=>item.title.includes('context needs review'));
+  const incident=notices.items.find(item=>item.title.includes('Context Needs Review'));
   const key=randomUUID(),retry=f.ok(await f.api('POST',`/api/projects/${chat.projectId}/message-deliveries/${held.id}/retry`,{idempotencyKey:key}));
   assert.equal(retry.activationId,held.id,'retry preserves the exact original message');
   await until(()=>attempts===2,'one human-requested retry');
   await until(()=>store.sqlite.prepare("SELECT 1 FROM activation_sources WHERE activation_id=? AND source_kind='settings_transition_reservation_wait'").get(held.id),'second failed hold');
   const again=f.ok(await f.api('GET','/api/notifications'));
-  assert.ok(again.items.some(item=>item.title.includes('context needs review')&&(item.status??'open')==='open'),'a later failure retains the notice');
-  assert.equal(again.items.find(item=>item.title.includes('context needs review')).id,incident.id,'accepted retry never resolves/reopens the same incident');
+  assert.ok(again.items.some(item=>item.title.includes('Context Needs Review')&&(item.status??'open')==='open'),'a later failure retains the notice');
+  assert.equal(again.items.find(item=>item.title.includes('Context Needs Review')).id,incident.id,'accepted retry never resolves/reopens the same incident');
   const replay=f.ok(await f.api('POST',`/api/projects/${chat.projectId}/message-deliveries/${held.id}/retry`,{idempotencyKey:key}));
   assert.equal(replay.replayed,true,'replaying the same retry response cannot dispatch again');
   await new Promise(resolve=>setTimeout(resolve,300));assert.equal(attempts,2);

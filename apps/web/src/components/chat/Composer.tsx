@@ -3217,7 +3217,7 @@ export function Composer({
       }}
     >
       <Box sx={{ display: "contents" }}>
-      {assistantMessages && queueReviewHref && durableRetryAction === "queue" && <Button href={queueReviewHref} size="small">Review retained Queue submission in Agent chat</Button>}
+      {assistantMessages && queueReviewHref && durableRetryAction === "queue" && <Button href={queueReviewHref} size="small">Review Retained Queue Submission In Agent Chat</Button>}
       {preparingFolder ? <Typography role="status" variant="caption" sx={{ px: 1.5, pt: 0.5 }}>Preparing folder ZIP…</Typography> : null}
       <ComposerDestinationBar
         destinationError={destinationError}
@@ -3747,7 +3747,7 @@ export function Composer({
         fullWidth
         maxWidth="md"
       >
-        <DialogTitle>View or edit pasted text</DialogTitle>
+        <DialogTitle>View Or Edit Pasted Text</DialogTitle>
         <DialogContent>
           <TextField
             disabled={draftMutationLocked}

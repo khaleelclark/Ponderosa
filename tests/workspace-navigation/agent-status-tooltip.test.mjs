@@ -12,7 +12,7 @@ test('individual Agent status is concise for every canonical phase, unknown and 
   for (const [health, label] of [
     [{ status: 'running', executionId: 'run' }, 'Working'],
     [{ status: 'running' }, 'Waiting'],
-    [{ status: 'needs_decision' }, 'Needs decision'],
+    [{ status: 'needs_decision' }, 'Needs Decision'],
     [{ status: 'compacting' }, 'Recovering'],
     [{ status: 'failed', reason: 'private_diagnostic_code' }, 'Error'],
     [{ status: 'idle' }, 'Idle'],
@@ -20,7 +20,7 @@ test('individual Agent status is concise for every canonical phase, unknown and 
   ]) {
     for (const fresh of [true, false]) {
       const html = render({ agent: { title: 'Boston', health }, activity: summarizeWorkspaceActivity([health], '2026-10-23T12:00:00Z'), fresh, showLabel: true });
-      assert.ok(html.includes(`aria-label="Boston · ${label}${fresh ? '' : ' · Status updates delayed'}"`), label);
+      assert.ok(html.includes(`aria-label="Boston · ${label}${fresh ? '' : ' · Status Updates Delayed'}"`), label);
       assert.doesNotMatch(html, /Last confirmed|2026-10-23|private_diagnostic_code|0 waiting|1 working/);
     }
   }
@@ -40,5 +40,5 @@ test('row navigation and status have separate tooltip/focus regions', () => {
   assert.match(html, /href="\/agents\/one"/);
   assert.match(html, /aria-label="Open Boston in First Chat"/);
   assert.ok(html.indexOf('</a>') < html.indexOf('data-agent-status='), 'status must not nest inside the identity tooltip');
-  assert.match(html, /aria-label="Boston · Needs decision" tabindex="0"/);
+  assert.match(html, /aria-label="Boston · Needs Decision" tabindex="0"/);
 });

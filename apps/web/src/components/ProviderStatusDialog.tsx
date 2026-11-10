@@ -22,7 +22,7 @@ export function ProviderStatusDetails({
   return (
       <Stack spacing={1.5} sx={{ pt: 1 }}>
         <Box>
-          <Typography variant="subtitle1" fontWeight={650}>Network access</Typography>
+          <Typography variant="subtitle1" fontWeight={650}>Network Access</Typography>
           {networkSecurity ? <Alert severity={networkSecurity.warning ? "warning" : "success"} sx={{ mt: 1 }}>
             <Typography variant="body2" fontWeight={600}>
               User-managed Network
@@ -42,7 +42,7 @@ export function ProviderStatusDetails({
             <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center" }}>
               <Typography variant="subtitle1" fontWeight={650} sx={{ flex: 1 }}>{engine.displayName}</Typography>
               <Chip size="small" label={disabled ? "Disabled" : "Enabled"} color={disabled ? "default" : "success"} variant="outlined" />
-              <Chip size="small" label={accessRejected ? "Access rejected" : engine.authentication === "authenticated" ? "Sign-in information found" : engine.authentication === "checking" ? "Checking sign-in" : engine.authentication === "error" ? "Sign-in check failed" : "Sign-in needed"} color={accessRejected ? "warning" : engine.authentication === "authenticated" ? "success" : engine.authentication === "checking" ? "default" : "warning"} variant="outlined" />
+              <Chip size="small" label={accessRejected ? "Access Rejected" : engine.authentication === "authenticated" ? "Sign-In Information Found" : engine.authentication === "checking" ? "Checking Sign-In" : engine.authentication === "error" ? "Sign-In Check Failed" : "Sign-In Needed"} color={accessRejected ? "warning" : engine.authentication === "authenticated" ? "success" : engine.authentication === "checking" ? "default" : "warning"} variant="outlined" />
               <Chip size="small" label={status.label} color={status.color} />
             </Stack>
             <Typography variant="body2" sx={{ mt: 1 }}>{disabled ? "Provider access is inactive while disabled by the operator." : engine.availabilityDetail ?? (engine.intakeReady ? "Provider intake is ready." : "Provider intake is unavailable.")}</Typography>

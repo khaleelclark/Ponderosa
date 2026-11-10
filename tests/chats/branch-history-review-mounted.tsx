@@ -22,18 +22,18 @@ export async function branchHistoryReviewRegression():Promise<void>{
  };
  try{
   root.render(<QueryClientProvider client={client}><BranchHistoryReview branchId="branch" executionId="execution" enabled onChanged={()=>{}}/></QueryClientProvider>);await settle();
-  button('Review saved work').click();await settle();
+  button('Review Saved Work').click();await settle();
   openSelect(document.querySelectorAll('[role=combobox]')[0]);await tick();
   (Array.from(document.querySelectorAll('[role=option]')).find(item=>item.textContent?.startsWith('4 ·')) as HTMLElement).click();await tick();
   openSelect(document.querySelectorAll('[role=combobox]')[1]);await tick();
-  (Array.from(document.querySelectorAll('[role=option]')).find(item=>item.textContent==='Restore Request graph') as HTMLElement).click();await tick();
-  button('Review current scope').click();await settle();assert(sent.length===0,'review cannot restore or activate a graph');
-  (document.querySelector('input[type=checkbox]') as HTMLInputElement).click();await tick();button('Continue').click();await tick();button('Apply reviewed action').click();await settle();
+  (Array.from(document.querySelectorAll('[role=option]')).find(item=>item.textContent==='Restore Request Graph') as HTMLElement).click();await tick();
+  button('Review Current Scope').click();await settle();assert(sent.length===0,'review cannot restore or activate a graph');
+  (document.querySelector('input[type=checkbox]') as HTMLInputElement).click();await tick();button('Continue').click();await tick();button('Apply Reviewed Action').click();await settle();
   assert(reviewCount===2,'409 refreshes review once');assert(sent.length===1,'409 does not resubmit');
   assert((button('Continue') as HTMLButtonElement).disabled,'fresh review requires renewed acknowledgement');
-  (document.querySelector('input[type=checkbox]') as HTMLInputElement).click();await tick();button('Continue').click();await tick();button('Apply reviewed action').click();await settle();
+  (document.querySelector('input[type=checkbox]') as HTMLInputElement).click();await tick();button('Continue').click();await tick();button('Apply Reviewed Action').click();await settle();
   assert(localStorage.getItem(storageKey),'uncertain outcome retains the exact command');
-  button('Reconcile submission').click();await settle();
+  button('Reconcile Submission').click();await settle();
   assert(JSON.stringify(sent[1])===JSON.stringify(sent[2]),'reconciliation reuses the exact input and command key');
   assert(sent[1].reviewHash==='opaque-2'&&sent[1].reconcileEffects===true,'only the fresh opaque review authorizes restoration');
   assert(localStorage.getItem(storageKey)===null,'confirmed receipt clears the retained command');

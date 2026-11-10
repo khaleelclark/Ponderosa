@@ -3,10 +3,10 @@ import type { AgentPortablePackageDto, BranchBindings, BranchExecutionDetailDto,
 export type WorkflowNode=BranchStep|BranchControl;
 export const nodeName=(node:WorkflowNode)=>node.label||node.id;
 export const nodeKind=(node:WorkflowNode)=>node.kind==='agent'?({persistent_agent:'Agent',persistent_organization:'Organization',ephemeral_agent:'Temporary Agent',ephemeral_organization:'Temporary organization'}[node.target.kind]):({script:'Script',human_gate:'Human approval',condition:'Condition',route:'Choose route',fork:'Parallel paths',map:'For Each',join:'Join',action:'Notify me',branch_call:'Run Branch'}[node.kind]);
-export const makeScript=(id:string):BranchStep=>({id,label:'Transform input',kind:'script',runtime:'node',source:"let input = '';\nfor await (const chunk of process.stdin) input += chunk;\nprocess.stdout.write(input);\n",cwdRef:'workspace',timeoutMs:30000});
+export const makeScript=(id:string):BranchStep=>({id,label:'Transform Input',kind:'script',runtime:'node',source:"let input = '';\nfor await (const chunk of process.stdin) input += chunk;\nprocess.stdout.write(input);\n",cwdRef:'workspace',timeoutMs:30000});
 export function makeTemplate(organization:boolean):AgentPortablePackageDto{
  const permissions={allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false};
- return {schema:'ponderosa.agent-package.v1',mode:'template',kind:organization?'organization':'agent',exportedAt:new Date().toISOString(),sourceLabel:'Workflow team',rootRef:'lead',agents:[{ref:'lead',title:organization?'Team Lead':'Agent',engine:'default',managementPermissions:permissions},...(organization?[{ref:'worker',title:'Specialist',engine:'default',managerRef:'lead',managementPermissions:permissions}]:[])]};
+ return {schema:'ponderosa.agent-package.v1',mode:'template',kind:organization?'organization':'agent',exportedAt:new Date().toISOString(),sourceLabel:'Workflow Team',rootRef:'lead',agents:[{ref:'lead',title:organization?'Team Lead':'Agent',engine:'default',managementPermissions:permissions},...(organization?[{ref:'worker',title:'Specialist',engine:'default',managerRef:'lead',managementPermissions:permissions}]:[])]};
 }
 export function newDefinition():BranchDefinition{return {schema:'ponderosa.branch.v1',name:'Untitled workflow',trigger:{kind:'manual'},entry:'',steps:[],controls:[],edges:[],policy:{maxConcurrentExecutions:2,maxPathInstances:1000,maxStepInvocations:1000,maxEphemeralAgents:100,failure:{action:'stop'}}}}
 export function addNode(definition:BranchDefinition,kind:BranchStep['kind']|'parallel'|'for_each',after?:string):{definition:BranchDefinition;selected:string}{
@@ -17,15 +17,15 @@ export function addNode(definition:BranchDefinition,kind:BranchStep['kind']|'par
  if(forward)d.edges=d.edges.filter(e=>e.id!==forward.id);
  const link=(from:string,to:string,on:BranchDefinition['edges'][number]['on']='success')=>d.edges.push({id:'edge_'+createClientId(),from,to,on});
  if(kind==='parallel'){
-  const join=id+'_join',a=id+'_a',b=id+'_b';d.controls.push({id,kind:'fork',label:'Parallel work',joinId:join},{id:join,kind:'join',label:'Combine results',forkId:id,mode:'all',remainder:'finish',inputOrder:[id+'_left',id+'_right']});
-  d.steps.push({...makeScript(a),label:'First path'},{...makeScript(b),label:'Second path'});d.edges.push({id:id+'_left',from:id,to:a,on:'selected'},{id:id+'_right',from:id,to:b,on:'selected'});link(a,join);link(b,join);if(forward)link(join,forward.to);
+  const join=id+'_join',a=id+'_a',b=id+'_b';d.controls.push({id,kind:'fork',label:'Parallel Work',joinId:join},{id:join,kind:'join',label:'Combine Results',forkId:id,mode:'all',remainder:'finish',inputOrder:[id+'_left',id+'_right']});
+  d.steps.push({...makeScript(a),label:'First Path'},{...makeScript(b),label:'Second Path'});d.edges.push({id:id+'_left',from:id,to:a,on:'selected'},{id:id+'_right',from:id,to:b,on:'selected'});link(a,join);link(b,join);if(forward)link(join,forward.to);
  }else if(kind==='for_each'){
   const join=id+'_join',worker=id+'_worker';
-  d.controls.push({id,kind:'map',label:'For Each item',joinId:join,workerId:worker,source:'interpret',maxItems:100,maxConcurrentItems:4},{id:join,kind:'join',label:'Wait for items',forkId:id,mode:'all',remainder:'finish',inputOrder:[]});
-  d.steps.push({id:worker,label:'Review item',kind:'agent',target:{kind:'persistent_agent',ref:worker},jobHandling:'queue',instructions:''} as ReusableAgentStep);
+  d.controls.push({id,kind:'map',label:'For Each Item',joinId:join,workerId:worker,source:'interpret',maxItems:100,maxConcurrentItems:4},{id:join,kind:'join',label:'Wait For Items',forkId:id,mode:'all',remainder:'finish',inputOrder:[]});
+  d.steps.push({id:worker,label:'Review Item',kind:'agent',target:{kind:'persistent_agent',ref:worker},jobHandling:'queue',instructions:''} as ReusableAgentStep);
   d.edges.push({id:id+'_item',from:id,to:worker,on:'selected'});link(worker,join);if(forward)link(join,forward.to);
  }else{
-  const node:BranchStep=kind==='branch_call'?{id,label:'Run Branch',kind,branchRef:id}:kind==='script'?makeScript(id):kind==='human_gate'?{id,label:'Review result',kind,prompt:'Review the proposed result.',editable:true}:kind==='action'?{id,label:'Notify me',kind,action:'notify',configRefs:[]}:{id,label:'Agent work',kind:'agent',target:{kind:'persistent_agent',ref:id},jobHandling:'queue',instructions:''} as ReusableAgentStep;
+  const node:BranchStep=kind==='branch_call'?{id,label:'Run Branch',kind,branchRef:id}:kind==='script'?makeScript(id):kind==='human_gate'?{id,label:'Review Result',kind,prompt:'Review the proposed result.',editable:true}:kind==='action'?{id,label:'Notify Me',kind,action:'notify',configRefs:[]}:{id,label:'Agent Work',kind:'agent',target:{kind:'persistent_agent',ref:id},jobHandling:'queue',instructions:''} as ReusableAgentStep;
   d.steps.push(node);if(forward)link(id,forward.to,kind==='human_gate'?'approved':'success');
  }
  if(previous&&!['fork','map','condition','route'].includes(previous.kind))link(previous.id,id,outcome);
@@ -34,7 +34,7 @@ export function addNode(definition:BranchDefinition,kind:BranchStep['kind']|'par
 export function conditionBefore(definition:BranchDefinition,nodeId:string):{definition:BranchDefinition;selected:string}{
  const d=structuredClone(definition),id='condition_'+createClientId(),skip='skip_'+createClientId();
  // Both explicit routes remain authorable. The fallback is a separate identity with a valid terminal result.
- d.steps.push({...makeScript(skip),label:'Otherwise'});d.controls.push({id,label:'Choose a path',kind:'condition',predicate:{source:'input',equals:'yes'},otherwise:skip});
+ d.steps.push({...makeScript(skip),label:'Otherwise'});d.controls.push({id,label:'Choose A Path',kind:'condition',predicate:{source:'input',equals:'yes'},otherwise:skip});
  for(const edge of d.edges)if(edge.to===nodeId)edge.to=id;
  if(d.entry===nodeId)d.entry=id;
  const next=d.edges.find(e=>e.from===nodeId&&(e.on==='success'||e.on==='approved'));if(next)d.edges.push({id:skip+'_next',from:skip,to:next.to,on:'success'});
@@ -44,7 +44,7 @@ export function conditionBefore(definition:BranchDefinition,nodeId:string):{defi
 export function routeBefore(definition:BranchDefinition,nodeId:string):{definition:BranchDefinition;selected:string}{
  const d=structuredClone(definition),id='route_'+createClientId(),fallback='fallback_'+createClientId();
  d.steps.push({...makeScript(fallback),label:'Otherwise'});
- d.controls.push({id,label:'Ask which route to take',kind:'route',otherwise:fallback});
+ d.controls.push({id,label:'Ask Which Route To Take',kind:'route',otherwise:fallback});
  for(const edge of d.edges)if(edge.to===nodeId)edge.to=id;
  if(d.entry===nodeId)d.entry=id;
  const next=d.edges.find(e=>e.from===nodeId&&(e.on==='success'||e.on==='approved'));

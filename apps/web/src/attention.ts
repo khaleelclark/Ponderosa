@@ -8,10 +8,10 @@ export function attentionPresentation(item: WorkspaceNotificationDto) {
   const agent = item.agentTitle ?? resolution?.recipientTitle;
   const state = work?.state ?? resolution?.outcome;
   const task = work?.assignment ?? resolution?.assignment ?? item.contextPreview;
-  const knownTask = task && !["Coordinated assignment", "Assignment description unavailable"].includes(task)
+  const knownTask = task && !["Coordinated assignment", "Assignment Description Unavailable"].includes(task)
     ? markdownPreviewText(task).slice(0, 800) : undefined;
   const genericTitle = item.title === "A coordinated assignment needs a decision";
-  const title = genericTitle ? `${agent ?? "Assigned work"} needs review` : item.title;
+  const title = genericTitle ? `${agent ?? "Assigned Work"} Needs Review` : item.title;
   const uncertainty = state === "outcome_unknown"
     ? "Ponderosa cannot confirm whether this work finished or what changes it made. Check its activity before retrying; retrying may duplicate changes."
     : work?.kind === "join"
@@ -31,7 +31,7 @@ export function attentionPresentation(item: WorkspaceNotificationDto) {
     : explanation;
   const compactScope = item.conversationId
     ? `Chat: ${item.conversationTitle ?? `Name unavailable (${item.conversationId.slice(-8)})`}`
-    : item.projectId ? `Project: ${item.projectLabel ?? `Name unavailable (${item.projectId.slice(-8)})`}` : "Ponderosa workspace";
+    : item.projectId ? `Project: ${item.projectLabel ?? `Name unavailable (${item.projectId.slice(-8)})`}` : "Ponderosa Workspace";
   return {
     title,
     explanation,
@@ -43,12 +43,12 @@ export function attentionPresentation(item: WorkspaceNotificationDto) {
     uncertainty,
     detailWarning: state === "outcome_unknown" ? undefined : uncertainty,
     scopes: [
-      item.projectId ? `Project: ${item.projectLabel ?? `Name unavailable (${item.projectId.slice(-8)})`}` : "Ponderosa workspace",
+      item.projectId ? `Project: ${item.projectLabel ?? `Name unavailable (${item.projectId.slice(-8)})`}` : "Ponderosa Workspace",
       item.conversationId ? `Chat: ${item.conversationTitle ?? `Name unavailable (${item.conversationId.slice(-8)})`}` : undefined,
       agent ? `Agent: ${agent}` : item.agentId ? `Agent: Name unavailable (${item.agentId.slice(-8)})` : undefined,
     ].filter((label): label is string => Boolean(label)),
     occurredAt: work?.occurredAt ?? item.createdAt,
-    reference: `${work?.kind === "join" ? "Wait" : work?.kind === "activation" ? "Message delivery" : work?.kind === "request" || resolution ? "Assignment" : "Notice"} ${
+    reference: `${work?.kind === "join" ? "Wait" : work?.kind === "activation" ? "Message Delivery" : work?.kind === "request" || resolution ? "Assignment" : "Notice"} ${
       (work?.recordId ?? resolution?.requestId ?? item.id).slice(-12)}`,
     evidenceUnavailable: !work && !resolution && item.kind !== "decision"
       && (item.category === "coordination" || item.category === "communication" || genericTitle),

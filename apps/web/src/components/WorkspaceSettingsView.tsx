@@ -117,7 +117,7 @@ function SettingsHeader({
             : "Workspace appearance, notifications, providers, and Agent defaults"}
         </Typography>
       </Box>
-      {onReturn ? <Button onClick={onReturn}>{returnLabel ?? "Back to Home"}</Button> : null}
+      {onReturn ? <Button onClick={onReturn}>{returnLabel ?? "Back To Home"}</Button> : null}
       <PrimaryHeaderActionsOutlet showMobileUsageLabel />
     </Stack>
   );
@@ -230,7 +230,7 @@ function GeneralSettingsSection({
           <TextSizeSetting/>
         </Stack>
       </Paper>
-      <SettingsGroup title="Agent defaults" description="Instructions and runtime limits for Chats and Agents." open>
+      <SettingsGroup title="Agent Defaults" description="Instructions and runtime limits for Chats and Agents." open>
         <Stack spacing={2}>
           <RuntimeSettings value={limit} onChange={onLimit} />
           <TextField
@@ -269,10 +269,10 @@ function GeneralSettingsSection({
         </Stack>
       </SettingsGroup>
       {currentProductScope()!=="branches"&&<SettingsGroup title="Assistant" description="Model, schedule and behavior for your personal Assistant."><AssistantSettings/></SettingsGroup>}
-      <SettingsGroup title="Voice & audio" description="Speaking, listening and audio message preferences."><BrowserVoiceSettings preferences={preferences} onPreferences={onPreferences}/></SettingsGroup>
+      <SettingsGroup title="Voice & Audio" description="Speaking, listening and audio message preferences."><BrowserVoiceSettings preferences={preferences} onPreferences={onPreferences}/></SettingsGroup>
       <SettingsGroup title="Memory" description="Import, export and manage saved knowledge."><GlobalMemoryTransfer/></SettingsGroup>
-      {currentProductScope()!=="branches"&&<SettingsGroup title="Tool permissions" description="Default access for Core Chats and Agents."><CapabilityPolicyEditor endpoint="/api/workspace/capabilities" scopeKind="product" title="Default tool permissions" description="Defaults for Core Chats and Agents; Branches has separate policies." immediateSave/></SettingsGroup>}
-      <SettingsGroup title="Provider session rollover" description="Choose when Agents move to a fresh provider session.">
+      {currentProductScope()!=="branches"&&<SettingsGroup title="Tool Permissions" description="Default access for Core Chats and Agents."><CapabilityPolicyEditor endpoint="/api/workspace/capabilities" scopeKind="product" title="Default Tool Permissions" description="Defaults for Core Chats and Agents; Branches has separate policies." immediateSave/></SettingsGroup>}
+      <SettingsGroup title="Provider Session Rollover" description="Choose when Agents move to a fresh provider session.">
         <Stack spacing={2}>
           <FormControlLabel
             control={
@@ -283,11 +283,11 @@ function GeneralSettingsSection({
                 }
               />
             }
-            label="Proactive context rollover"
+            label="Proactive Context Rollover"
           />
           <TextField
             type="number"
-            label="Roll over above (context tokens)"
+            label="Roll Over Above (Context Tokens)"
             value={rolloverTokens}
             onChange={event => onRolloverTokens(event.target.value)}
             inputProps={{ min: 75_000, max: 2_000_000, step: 10_000 }}
@@ -299,7 +299,7 @@ function GeneralSettingsSection({
           />
           <TextField
             type="number"
-            label="Or at this share of the provider's context window"
+            label="Or At This Share Of The Provider's Context Window"
             value={rolloverFraction}
             onChange={event => onRolloverFraction(event.target.value)}
             inputProps={{ min: 0.3, max: 0.95, step: 0.05 }}
@@ -326,7 +326,7 @@ function GeneralSettingsSection({
           {rolloverSaveError ? <Alert severity="error">{rolloverSaveError}</Alert> : null}
         </Stack>
       </SettingsGroup>
-      <SettingsGroup title="Data & lifecycle" description="Review retained data, cleanup and resource ownership."><LifecyclePanel/></SettingsGroup>
+      <SettingsGroup title="Data & Lifecycle" description="Review retained data, cleanup and resource ownership."><LifecyclePanel/></SettingsGroup>
     </Stack>
   );
 }
@@ -334,8 +334,8 @@ function GeneralSettingsSection({
 const NOTIFICATION_LABELS: Array<
   [keyof WorkspacePreferencesDto["notifications"], string]
 > = [
-  ["directResponses", "Direct Agent responses"],
-  ["broadcasts", "Project broadcasts"],
+  ["directResponses", "Direct Agent Responses"],
+  ["broadcasts", "Project Broadcasts"],
 ];
 
 function NotificationSettingsSection({
@@ -402,7 +402,7 @@ function NotificationSettingsSection({
             onClick={onDisablePush}
             variant="contained"
           >
-            Disable on This Device
+            Disable On This Device
           </Button>
         ) : (
           <Tooltip title={enableBlockReason ?? ""}>
@@ -558,7 +558,7 @@ function ClaudeModelOptionsSettings({
         <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
           <TextField
             fullWidth
-            label="Model id"
+            label="Model ID"
             value={modelId}
             onChange={event => {
               setModelId(event.target.value);
@@ -617,7 +617,7 @@ function ProviderModelCheck({ engine, projectId, model }: { engine: EngineDto; p
     <Button variant="outlined" sx={{ alignSelf: { xs: "stretch", sm: "flex-start" } }}
       disabled={!projectId || !model || !engineCanDiscover(engine) || check.isPending}
       onClick={() => check.mutate({ projectId: projectId!, modelId: model })}>
-      {check.isPending ? "Testing model…" : "Test selected model"}
+      {check.isPending ? "Testing Model…" : "Test Selected Model"}
     </Button>
     {current && check.data ? <Alert severity={check.data.valid ? "success" : "warning"} sx={{ overflowWrap: "anywhere" }}>
       {check.data.valid ? `${model} completed the test request.` : check.data.error}
@@ -771,11 +771,11 @@ function ProviderSettingsSection({
             <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
               <FormControl fullWidth>
                 <InputLabel id={`settings-model-${engine.id}`}>
-                  Saved Model for New Agents
+                  Saved Model For New Agents
                 </InputLabel>
                 <Select
                   labelId={`settings-model-${engine.id}`}
-                  label="Saved Model for New Agents"
+                  label="Saved Model For New Agents"
                   value={resolved.model}
                   renderValue={() => selectedModel?.label ?? resolved.model}
                   onChange={event => {
@@ -806,11 +806,11 @@ function ProviderSettingsSection({
               </FormControl>
               <FormControl fullWidth>
                 <InputLabel id={`settings-effort-${engine.id}`}>
-                  Saved Reasoning for New Agents
+                  Saved Reasoning For New Agents
                 </InputLabel>
                 <Select
                   labelId={`settings-effort-${engine.id}`}
-                  label="Saved Reasoning for New Agents"
+                  label="Saved Reasoning For New Agents"
                   value={resolved.effort}
                   onChange={event =>
                     onPreferences({
@@ -860,7 +860,7 @@ function ProviderSettingsSection({
                   >
                     {recheckPendingEngineId === engine.id
                       ? "Checking…"
-                      : "Recheck sign-in"}
+                      : "Recheck Sign-In"}
                   </Button>
                 }
               >

@@ -54,7 +54,7 @@ try{
     }else{
      await tab('Workflow');
      if(kind==='editor-retry'){
-      await page.getByText('This view could not be loaded.',{exact:true}).waitFor();assert.equal(await page.locator('#branch-workflow-panel .react-flow').count(),0);
+      await page.getByText('This View Could Not Be Loaded.',{exact:true}).waitFor();assert.equal(await page.locator('#branch-workflow-panel .react-flow').count(),0);
       assert.equal(row.blockedEditorRequests,1,'A rejected view does not retry automatically');await picture('explicit-retry');allowEditor=true;await page.getByRole('button',{name:'Try Again',exact:true}).click();row.retry='explicit';
      }
      await page.getByRole('button',{name:'Add Your First Step',exact:true}).waitFor();assert(row.requests.some(request=>request.path===editorChunk));if(kind==='editor-retry')assert.equal(row.editorRequests,2,'Exactly one explicit retry downloads the view');

@@ -5,6 +5,20 @@ export function availabilityFailure(error: unknown): boolean {
   return error instanceof ApiTransportError || error instanceof ApiRequestError && error.status>=500&&error.status<=504;
 }
 export const errorDetail = (error: unknown): string => error instanceof Error ? error.message : String(error ?? '');
+/** Authored UI summary; exact diagnostic text remains available through errorDetail. */
+export function errorSummary(error:unknown, resource:string):string {
+  if(error instanceof ApiRequestError){
+    switch(error.status){
+      case 401:return 'Sign-In Required';
+      case 403:return 'Access Denied';
+      case 404:return 'Resource Not Found';
+      case 409:return 'Review Required';
+      case 429:return 'Request Rate Limit Exceeded';
+    }
+    if(error.status>=500&&error.status<=504)return 'Service Unavailable';
+  }
+  return error instanceof ApiTransportError?'Connection Interrupted':`${resource} Unavailable`;
+}
 export const distinctDiagnostics = (values: readonly (string | undefined)[]): string[] => [...new Set(values.filter((value): value is string => Boolean(value)))];
 
 export interface WorkspaceReadIssue {

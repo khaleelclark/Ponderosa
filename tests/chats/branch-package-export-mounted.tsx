@@ -15,13 +15,13 @@ export async function branchPackageAllFoldersRegression():Promise<void>{
  try{
   root.render(<QueryClientProvider client={client}><BranchPackageExportDialog source={{branchId:'branch',name:'Workflow'}} pending={false} onCancel={()=>{}} onConfirm={async files=>{exports.push(files);}}/></QueryClientProvider>);await flush();
   assert(exports.length===0,'opening export does not publish working files');
-  Array.from(document.querySelectorAll('label')).find(label=>label.textContent?.includes('Include all workflow Agent working folders'))!.querySelector<HTMLInputElement>('input')!.click();await flush();
-  const button=Array.from(document.querySelectorAll('button')).find(item=>item.textContent==='Export full')!;button.click();await flush();
+  Array.from(document.querySelectorAll('label')).find(label=>label.textContent?.includes('Include All Workflow Agent Working Folders'))!.querySelector<HTMLInputElement>('input')!.click();await flush();
+  const button=Array.from(document.querySelectorAll('button')).find(item=>item.textContent==='Export Full')!;button.click();await flush();
   assert(JSON.stringify(exports[0])===JSON.stringify({'local-root':{wholeWorkingFolder:true},'local-child':{wholeWorkingFolder:true}}),'all-folders selection covers exact local Agent IDs without subtree duplication');
-  Array.from(document.querySelectorAll('label')).find(label=>label.textContent==='Git history, branches and staged files')!.querySelector<HTMLInputElement>('input')!.click();await flush();
-  const details=Array.from(document.querySelectorAll('summary')).find(item=>item.textContent==='Mapped Git folders')!;details.click();await flush();
-  Array.from(document.querySelectorAll('button')).find(item=>item.textContent==='Add Git folder mapping')!.click();await flush();
-  const storage=Array.from(document.querySelectorAll('label')).find(label=>label.textContent?.startsWith('Storage-folder Agent'))!;openSelect(document.getElementById(storage.htmlFor));await flush();
+  Array.from(document.querySelectorAll('label')).find(label=>label.textContent==='Git History, Branches And Staged Files')!.querySelector<HTMLInputElement>('input')!.click();await flush();
+  const details=Array.from(document.querySelectorAll('summary')).find(item=>item.textContent==='Mapped Git Folders')!;details.click();await flush();
+  Array.from(document.querySelectorAll('button')).find(item=>item.textContent==='Add Git Folder Mapping')!.click();await flush();
+  const storage=Array.from(document.querySelectorAll('label')).find(label=>label.textContent?.startsWith('Storage-Folder Agent'))!;openSelect(document.getElementById(storage.htmlFor));await flush();
   (Array.from(document.querySelectorAll('[role=option]')).find(item=>item.textContent==='Team · Child') as HTMLElement).click();await flush();
   button.click();await flush();
   const selections=Object.values(exports[1]!);assert(selections.length===2,'global mapping preserves complete workflow root selection');

@@ -35,12 +35,12 @@ try{
    await page.goto(product==='core'?setup.normalUrl:branchUrl);await page.getByLabel('Message',{exact:true}).waitFor();
    assert.equal(row.moduleRequests,0,'Cold Chat does not request inactive panel code');await page.getByLabel('Message',{exact:true}).fill(draft);
    if(product==='core')await page.getByRole('tab',{name:'Agents',exact:true}).click();
-   else{if(mobile)await page.getByRole('button',{name:'Open workspace navigation',exact:true}).first().click();await page.locator('[aria-label$=". Open settings"]:visible').first().click();}
-   if(retry){await page.getByText('This view could not be loaded.',{exact:true}).waitFor();assert.equal(row.moduleRequests,1,'No automatic chunk retry');await page.screenshot({path:path.join(out,`${row.device}-${product}-retry.png`)});allow=true;await page.getByRole('button',{name:'Try Again',exact:true}).click();}
+   else{if(mobile)await page.getByRole('button',{name:'Open Workspace Navigation',exact:true}).first().click();await page.locator('[aria-label$=". Open Settings"]:visible').first().click();}
+   if(retry){await page.getByText('This View Could Not Be Loaded.',{exact:true}).waitFor();assert.equal(row.moduleRequests,1,'No automatic chunk retry');await page.screenshot({path:path.join(out,`${row.device}-${product}-retry.png`)});allow=true;await page.getByRole('button',{name:'Try Again',exact:true}).click();}
    if(product==='core'){
     await page.locator('#chat-workspace-agents-panel').getByText(state.normalAgent.title,{exact:true}).first().waitFor();
     assert.equal(await page.getByRole('tab',{name:'Agents',exact:true}).getAttribute('aria-selected'),'true');await page.getByRole('tab',{name:'Chat',exact:true}).click();
-   }else{await page.getByText('Appearance',{exact:true}).waitFor();await page.getByRole('button',{name:'Back to Branches',exact:true}).click();}
+   }else{await page.getByText('Appearance',{exact:true}).waitFor();await page.getByRole('button',{name:'Back To Branches',exact:true}).click();}
    await page.getByLabel('Message',{exact:true}).waitFor();assert.equal(await page.getByLabel('Message',{exact:true}).innerText(),draft,'Same Chat draft retained across first-use/retry');
    assert.equal(row.moduleRequests,retry?2:1,'Exactly the first-use request and optional explicit retry');
    const after=await(await fetch(setup.origin+'/api/__qualification/state')).json();assert.deepEqual(after.providerTurnIds,state.providerTurnIds,'Opening/retrying panels never executes provider work');

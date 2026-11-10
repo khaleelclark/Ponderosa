@@ -86,7 +86,7 @@ export function ConversationDialogs({
       <TextInputDialog
         open={renameOpen}
         title="Rename Chat"
-        label="Chat name"
+        label="Chat Name"
         initialValue={renameValue}
         confirmLabel="Save"
         pendingLabel="Saving…"

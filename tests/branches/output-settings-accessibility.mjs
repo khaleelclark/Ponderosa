@@ -43,7 +43,7 @@ try{
   await page.goto(origin+entry);const settings=page.getByRole('button',{name:'Settings',exact:true}).first();await settings.waitFor();
   await settings.focus();await page.keyboard.press('Enter');const dialog=page.getByRole('dialog',{name:'Settings',exact:true});await dialog.waitFor();
   await page.route('**/api/branches/output-apps/*/schedule',route=>route.fulfill({status:409,contentType:'application/json',body:JSON.stringify({error:'Controlled workflow version conflict'})}));
-  const save=dialog.getByRole('button',{name:'Save schedule',exact:true});
+  const save=dialog.getByRole('button',{name:'Save Schedule',exact:true});
   for(let i=0;i<30&&!await save.evaluate(el=>el===document.activeElement);i++)await page.keyboard.press('Tab');
   assert.ok(await save.evaluate(el=>el===document.activeElement),'Keyboard reaches schedule save');await page.keyboard.press('Enter');
   const error=dialog.getByRole('alert');await error.filter({hasText:'Controlled workflow version conflict'}).waitFor();

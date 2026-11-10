@@ -74,7 +74,7 @@ test('selected run keeps canonical status, results and all focused decisions out
  const html=f.render();
  assert.equal(f.disclosures.length,1);assert.equal(f.disclosures[0].open,false);assert.match(html,/Needs Your Review/);assert.match(html,/Approve the original result/);assert.match(html,/Exact proposed result/);assert.match(html,/Outcome Needs Reconciliation/);assert.match(html,/Result with the complete original wording/);assert.match(html,/Second line/);assert.match(html,/Review Document/);
  assert.ok(html.indexOf('Exact proposed result')<html.indexOf('<details'));assert.ok(html.indexOf('Original failure summary')<html.indexOf('<details'));assert.ok(html.indexOf('Result with the complete original wording')<html.indexOf('<details'));
- assert.doesNotMatch(html,/Pinned Run Graph|Load Older Evidence|Run ID:|For Each items/);
+ assert.doesNotMatch(html,/Pinned Run Graph|Load Older Evidence|Run ID:|For Each Items/);
  assert.equal(f.queries.get('branch-step-evidence').enabled,false);assert.equal(f.queries.get('branch-map-item-search').enabled,false);assert.equal(f.queries.get('branch-execution-input').enabled,false);
  assert.ok(f.queries.get('branch-execution-actions'));assert.ok(f.queries.get('branch-execution-operations'));
  assert.deepEqual(f.reviewChildren.map(child=>child.name),['BranchHistoryReview','BranchGroupReview','BranchDisclosureReview']);
@@ -106,7 +106,7 @@ test('focused action pages reject foreign or mixed revisions and retain explicit
 
 test('required action and status loading never become an empty or completed assertion',()=>{
  const f=fixture();f.setQuery('branch-execution-actions',{data:undefined,isPending:true});f.setQuery('branch-execution-operations',{data:undefined,isPending:true});const html=f.render();
- assert.match(html,/Loading current decisions and failures/);assert.match(html,/Loading run status/);assert.doesNotMatch(html.replace(/<style[^>]*>[\s\S]*?<\/style>/g,''),/No decisions|All done|100%/);
+ assert.match(html,/Loading current decisions and failures/);assert.match(html,/Loading Run Status/);assert.doesNotMatch(html.replace(/<style[^>]*>[\s\S]*?<\/style>/g,''),/No decisions|All done|100%/);
 });
 
 test('budget and provider controls use canonical run ownership without changing or starting work',()=>{
@@ -183,9 +183,9 @@ test('Merge discovers paged canonical candidates only on demand, independently o
  const f=fixture();f.props.executions=[];f.render();assert.equal(f.queries.get('branch-merge-targets').enabled,false);assert.ok(f.button('Merge Into Another Run'));assert.equal(f.button('Merge Into Another Run').disabled,false);
  f.button('Merge Into Another Run').onClick();let html=f.render();assert.equal(f.queries.get('branch-merge-targets').enabled,true);assert.match(html,/Loading eligible runs/);
  const completed={...f.execution,id:'completed-target',state:'completed',createdAt:'2026-10-25T01:00:00Z'};f.setQuery('branch-merge-targets',{data:{pages:[[completed]],pageParams:[undefined]},isPending:false,hasNextPage:true});html=f.render();assert.match(html,/completed/);assert.ok(f.button('Load Older Runs'));
- const field=f.fields.find(field=>field.label==='Keep this execution');field.onChange({target:{value:'completed-target'}});f.render();assert.equal(f.fields.find(field=>field.label==='Keep this execution').value,'completed-target');
+ const field=f.fields.find(field=>field.label==='Keep This Execution');field.onChange({target:{value:'completed-target'}});f.render();assert.equal(f.fields.find(field=>field.label==='Keep This Execution').value,'completed-target');
  const query=f.queries.get('branch-merge-targets');f.setTransport(async path=>{assert.equal(path,'/api/branches/branch-a/executions?mergeFor=run-a&before=older-cursor');return [completed]});assert.equal((await query.queryFn({pageParam:'older-cursor'}))[0].id,'completed-target');assert.equal(query.getNextPageParam(Array.from({length:100},(_,i)=>({...completed,id:'candidate-'+i}))),'candidate-99');assert.equal(query.getNextPageParam([completed]),undefined);
- f.setQuery('branch-merge-targets',{data:{pages:[[completed]]},error:Error('Candidate list unavailable'),isPending:false});html=f.render();assert.match(html,/Eligible runs could not be loaded/);assert.match(html,/Candidate list unavailable/);assert.ok(f.button('Retry Eligible Runs'));assert.equal(f.fields.find(field=>field.label==='Keep this execution').value,'completed-target','A failed refresh cannot silently erase a selected or uncertain intervention target');
+ f.setQuery('branch-merge-targets',{data:{pages:[[completed]]},error:Error('Candidate list unavailable'),isPending:false});html=f.render();assert.match(html,/Eligible runs could not be loaded/);assert.match(html,/Candidate list unavailable/);assert.ok(f.button('Retry Eligible Runs'));assert.equal(f.fields.find(field=>field.label==='Keep This Execution').value,'completed-target','A failed refresh cannot silently erase a selected or uncertain intervention target');
  const empty=fixture();empty.render();empty.button('Merge Into Another Run').onClick();empty.setQuery('branch-merge-targets',{data:{pages:[[]]},isPending:false});assert.match(empty.render(),/No eligible runs are currently available/);
 });
 
@@ -263,8 +263,8 @@ for(const action of ['retry','resolve_script','resolve_schedule_update','resolve
 
 test('known intervention rejection permits review against the current revision while 5xx retains the original intent',async t=>{
  const known=await interventionIntentFixture(t,'retry',{failure:new ApiRequestError(409,'Stale revision')}),first=known.submit();await new Promise(resolve=>setImmediate(resolve));known.release();await assert.rejects(first,/Stale revision/);known.scope.execution.revision=9;
- const view=known.render();assert.equal(known.scope.interventionUnconfirmed,false);assert.equal(known.scope.interventionLocked,false);assert.equal(view.nodes.find(node=>node.type==='TextField'&&node.props.label==='Reason for this decision').props.disabled,false);
- view.nodes.find(node=>node.type==='TextField'&&node.props.label==='Reason for this decision').props.onChange({target:{value:'Reviewed the current revision'}});await known.submit();assert.equal(JSON.parse(known.bodies[1].body).expectedRevision,9);assert.equal(JSON.parse(known.bodies[1].body).reason,'Reviewed the current revision');assert.equal(JSON.parse(known.bodies[1].body).commandKey,'new-command');
+ const view=known.render();assert.equal(known.scope.interventionUnconfirmed,false);assert.equal(known.scope.interventionLocked,false);assert.equal(view.nodes.find(node=>node.type==='TextField'&&node.props.label==='Reason For This Decision').props.disabled,false);
+ view.nodes.find(node=>node.type==='TextField'&&node.props.label==='Reason For This Decision').props.onChange({target:{value:'Reviewed the current revision'}});await known.submit();assert.equal(JSON.parse(known.bodies[1].body).expectedRevision,9);assert.equal(JSON.parse(known.bodies[1].body).reason,'Reviewed the current revision');assert.equal(JSON.parse(known.bodies[1].body).commandKey,'new-command');
  const uncertain=await interventionIntentFixture(t,'skip',{failure:new ApiRequestError(503,'Response unavailable')}),second=uncertain.submit();await new Promise(resolve=>setImmediate(resolve));uncertain.release();await assert.rejects(second,/Response unavailable/);uncertain.refresh();assert.equal(uncertain.scope.interventionUnconfirmed,true);uncertain.scope.execution.revision=14;await uncertain.submit();assert.equal(uncertain.bodies[1].body,uncertain.bodies[0].body);
 });
 
@@ -273,7 +273,7 @@ test('an uncertain scheduled update remains actionable without opening Technical
  const update={kind:'schedule_update',occurrenceId:'own-occurrence',injectionId:'uncertain-injection',eventCount:3,lastScheduledAt:'2026-10-27T12:00:00.000Z'};
  const f=fixture({actions:[update]}),html=f.render();assert.match(html,/Scheduled Update Needs Reconciliation/);assert.match(html,/3 scheduled events/);assert.ok(html.indexOf('Reconcile Scheduled Update')<html.indexOf('<details'));assert.equal(f.disclosures[0].open,false);
  assert.equal(f.queries.get('branch-step-evidence').enabled,false);assert.equal(f.requests.length,0);f.button('Reconcile Scheduled Update').onClick();const dialog=f.render();assert.match(dialog,/Both choices · no Agent cancellation\/restart/);assert.match(dialog,/retains one latest delivery while schedule active/);
- const selector=f.fields.find(field=>field.label==='Observed scheduled update outcome');assert.equal(selector.value,'');assert.equal(selector.disabled,true,'No outcome can be selected before inspecting actual effects');selector.onChange({target:{value:'applied'}});f.render();assert.equal(f.fields.find(field=>field.label===selector.label).value,'');assert.equal(f.requests.length,0);
+ const selector=f.fields.find(field=>field.label==='Observed Scheduled Update Outcome');assert.equal(selector.value,'');assert.equal(selector.disabled,true,'No outcome can be selected before inspecting actual effects');selector.onChange({target:{value:'applied'}});f.render();assert.equal(f.fields.find(field=>field.label===selector.label).value,'');assert.equal(f.requests.length,0);
  f.props.authorityFresh=false;f.render();assert.equal(f.button('Reconcile Scheduled Update').disabled,true,'Stale run data cannot authorize reconciliation');
  const page={executionId:f.execution.id,revision:f.execution.revision,generation:'current',items:[update]};assert.equal(presentation.currentExecutionActions(f.execution,[page,page]).length,1);
  const changed={...update,injectionId:'replacement-injection'};assert.equal(presentation.currentExecutionActions(f.execution,[page,{...page,items:[changed]}]).length,2,'Different uncertainty evidence must never be collapsed into the old injection');
@@ -283,10 +283,10 @@ test('an uncertain scheduled update remains actionable without opening Technical
 test('scheduled update reconciliation requires an observed outcome, checked effects and reason while reusing the shared dialog',async t=>{
  const f=await interventionIntentFixture(t,'resolve_schedule_update');f.scope.updateApplied='';f.scope.reconciled=false;f.scope.reason='';
  let view=f.render();assert.equal(view.root.props.title,'Reconcile Scheduled Update');assert.equal(view.root.props.confirmDisabled,true);assert.equal(f.bodies.length,0);
- const outcome=()=>view.nodes.find(node=>node.type==='TextField'&&node.props.label==='Observed scheduled update outcome');assert.equal(outcome().props.disabled,true);outcome().props.onChange({target:{value:'applied'}});assert.equal(f.scope.updateApplied,'');
+ const outcome=()=>view.nodes.find(node=>node.type==='TextField'&&node.props.label==='Observed Scheduled Update Outcome');assert.equal(outcome().props.disabled,true);outcome().props.onChange({target:{value:'applied'}});assert.equal(f.scope.updateApplied,'');
  const confirmation=view.nodes.find(node=>node.type==='FormControlLabel'&&node.props.label==='I have checked and reconciled the scheduled update’s effects');assert.ok(confirmation);confirmation.props.control.props.onChange(null,true);
  view=f.render();assert.equal(outcome().props.disabled,false);outcome().props.onChange({target:{value:'applied'}});view=f.render();assert.equal(view.root.props.confirmDisabled,true,'A reason is still required');
- view.nodes.find(node=>node.type==='TextField'&&node.props.label==='Reason for this decision').props.onChange({target:{value:'Verified actual Agent output and external effects'}});view=f.render();assert.equal(view.root.props.confirmDisabled,false);
+ view.nodes.find(node=>node.type==='TextField'&&node.props.label==='Reason For This Decision').props.onChange({target:{value:'Verified actual Agent output and external effects'}});view=f.render();assert.equal(view.root.props.confirmDisabled,false);
  const pending=view.root.props.onConfirm();await new Promise(resolve=>setImmediate(resolve));view=f.render();assert.equal(view.root.props.pending,true);assert.equal(outcome().props.disabled,true);assert.equal(await f.submit(),undefined,'Pending decisions cannot submit twice');
  f.release();await assert.rejects(pending,/Response lost/);f.scope.execution.revision=19;view=f.render();assert.equal(view.root.props.confirmDisabled,false);assert.equal(outcome().props.disabled,true);await f.submit();assert.equal(f.bodies[1].body,f.bodies[0].body);
  const intent=JSON.parse(f.bodies[0].body);assert.equal(intent.action,'resolve_schedule_update');assert.equal(intent.occurrenceId,'exact-occurrence');assert.equal(intent.updateApplied,true);assert.equal(intent.externalEffectsReconciled,true);assert.equal(intent.reason,'Verified actual Agent output and external effects');assert.equal(intent.expectedRevision,7);
@@ -347,7 +347,7 @@ test('uncertain guidance is actionable with exact evidence and no invented resul
  assert.match(html,/Guidance Delivery Needs Review/);assert.ok(html.indexOf('Review Guidance Delivery')<html.indexOf('<details'));assert.equal(f.requests.length,0);
  f.button('Review Guidance Delivery').onClick();const dialog=f.render();
  assert.match(dialog,/keeps this guidance held without automatic resend/);assert.match(dialog,/not an Agent result/);
- const selector=f.fields.find(field=>field.label==='Observed guidance delivery');assert.equal(selector.value,'');assert.equal(selector.disabled,true);
+ const selector=f.fields.find(field=>field.label==='Observed Guidance Delivery');assert.equal(selector.value,'');assert.equal(selector.disabled,true);
  selector.onChange({target:{value:'applied'}});f.render();assert.equal(f.fields.find(field=>field.label===selector.label).value,'');
  f.props.authorityFresh=false;f.render();assert.equal(f.button('Review Guidance Delivery').disabled,true);
  const page={executionId:f.execution.id,revision:f.execution.revision,generation:'current',items:[guidance]};
@@ -358,11 +358,11 @@ test('uncertain guidance is actionable with exact evidence and no invented resul
 for(const applied of [true,false])test('guidance review requires observed delivery, checked effects and reason: '+applied,async t=>{
  const f=await interventionIntentFixture(t,'resolve_guidance');f.scope.updateApplied='';f.scope.reconciled=false;f.scope.reason='';
  let view=f.render();assert.equal(view.root.props.title,'Review Guidance Delivery');assert.equal(view.root.props.confirmDisabled,true);
- const outcome=()=>view.nodes.find(node=>node.type==='TextField'&&node.props.label==='Observed guidance delivery');
+ const outcome=()=>view.nodes.find(node=>node.type==='TextField'&&node.props.label==='Observed Guidance Delivery');
  assert.equal(outcome().props.disabled,true);outcome().props.onChange({target:{value:'applied'}});assert.equal(f.scope.updateApplied,'');
  const confirmation=view.nodes.find(node=>node.type==='FormControlLabel'&&node.props.label==='I have checked and reconciled this guidance’s effects');assert.ok(confirmation);
  confirmation.props.control.props.onChange(null,true);view=f.render();outcome().props.onChange({target:{value:applied?'applied':'not_applied'}});view=f.render();assert.equal(view.root.props.confirmDisabled,true);
- view.nodes.find(node=>node.type==='TextField'&&node.props.label==='Reason for this decision').props.onChange({target:{value:'Checked original delivery and effects'}});
+ view.nodes.find(node=>node.type==='TextField'&&node.props.label==='Reason For This Decision').props.onChange({target:{value:'Checked original delivery and effects'}});
  view=f.render();assert.equal(view.root.props.confirmDisabled,false);const pending=view.root.props.onConfirm();await new Promise(resolve=>setImmediate(resolve));assert.equal(await f.submit(),undefined);
  f.release();await assert.rejects(pending,/Response lost/);f.scope.execution.revision=19;await f.submit();assert.equal(f.bodies[1].body,f.bodies[0].body);
  const intent=JSON.parse(f.bodies[0].body);assert.equal(intent.action,'resolve_guidance');assert.equal(intent.attemptId,'exact-attempt');assert.equal(intent.injectionId,'exact-injection');assert.equal(intent.updateApplied,applied);assert.equal(intent.externalEffectsReconciled,true);assert.equal(intent.expectedRevision,7);assert.equal(intent.result,undefined);
@@ -371,10 +371,10 @@ for(const applied of [true,false])test('guidance review requires observed delive
 test('only confirmed current prepared copy exposes the scoped preparation retry',()=>{
  const action=olderAttempt();action.attempt.state='prepared';action.attempt.snapshotRetryAvailable=true;
  const f=fixture({actions:[action]});assert.match(f.render(),/Copy Preparation Needs Retry/);
- f.button('Retry preparing copy').onClick();const dialog=f.render();assert.match(dialog,/same temporary copy reservation/);assert.match(dialog,/no copy was published/);assert.doesNotMatch(dialog,/Starts · new Step invocation/);assert.equal(f.requests.length,0);
- f.props.authorityFresh=false;f.render();assert.equal(f.button('Retry preparing copy').disabled,true);
- const ordinary=olderAttempt();ordinary.attempt.state='prepared';const held=fixture({actions:[ordinary]});held.render();assert.equal(held.button('Retry preparing copy'),undefined);assert.equal(held.button('Retry Step'),undefined);
- const unknown=olderAttempt({unknown:true});unknown.attempt.snapshotRetryAvailable=true;const uncertain=fixture({actions:[unknown]});uncertain.render();assert.equal(uncertain.button('Retry preparing copy'),undefined);assert.ok(uncertain.button('Retry Anyway'));
+ f.button('Retry Preparing Copy').onClick();const dialog=f.render();assert.match(dialog,/same temporary copy reservation/);assert.match(dialog,/no copy was published/);assert.doesNotMatch(dialog,/Starts · new Step invocation/);assert.equal(f.requests.length,0);
+ f.props.authorityFresh=false;f.render();assert.equal(f.button('Retry Preparing Copy').disabled,true);
+ const ordinary=olderAttempt();ordinary.attempt.state='prepared';const held=fixture({actions:[ordinary]});held.render();assert.equal(held.button('Retry Preparing Copy'),undefined);assert.equal(held.button('Retry Step'),undefined);
+ const unknown=olderAttempt({unknown:true});unknown.attempt.snapshotRetryAvailable=true;const uncertain=fixture({actions:[unknown]});uncertain.render();assert.equal(uncertain.button('Retry Preparing Copy'),undefined);assert.ok(uncertain.button('Retry Anyway'));
 });
 
 
@@ -413,12 +413,12 @@ test('tool output formats only bounded exact inline JSON and preserves canonical
  for(const [raw,display]of[
   ['{"ok":true,"items":[1,2]}','{\n  "ok": true,\n  "items": [\n    1,\n    2\n  ]\n}'],
   ['[1,{"ok":false}]','[\n  1,\n  {\n    "ok": false\n  }\n]'],
- ]){const view=render(raw);assert.equal(view.text,escaped(display));assert.match(view.html,/Show more/,'Formatted lines retain the existing bounded disclosure');}
+ ]){const view=render(raw);assert.equal(view.text,escaped(display));assert.match(view.html,/Show More/,'Formatted lines retain the existing bounded disclosure');}
  for(const raw of['Ordinary tool text','42','null','{"duplicate":1,"duplicate":2}','{"n":9007199254740993}','{"n":-0}','{"n":1e2}',String.raw`{"value":"\u0061"}`,' {"ok":true}','{\n "ok":true\n}','{"broken":',JSON.stringify({long:'x'.repeat(810)}),'['.repeat(40)+'0'+']'.repeat(40)]){
   assert.equal(render(raw).text,escaped(raw),'Canonical text must remain exact: '+raw.slice(0,60));
  }
- const large=JSON.stringify({long:'x'.repeat(810)}),largeView=render(large);assert.match(largeView.html,/Show more/);assert.ok(largeView.html.includes(new TextEncoder().encode(large).byteLength+' B'),'Byte count describes raw canonical bytes');
- const raw='{"paged":true}',paged=render(raw,{sha256:'fixed',totalUtf8Bytes:1000,retrievalUrl:'/api/agents/agent/activity/1/output'});assert.equal(paged.text,escaped(raw));assert.match(paged.html,/Show more/,'Existing canonical-page disclosure remains available');
+ const large=JSON.stringify({long:'x'.repeat(810)}),largeView=render(large);assert.match(largeView.html,/Show More/);assert.ok(largeView.html.includes(new TextEncoder().encode(large).byteLength+' B'),'Byte count describes raw canonical bytes');
+ const raw='{"paged":true}',paged=render(raw,{sha256:'fixed',totalUtf8Bytes:1000,retrievalUrl:'/api/agents/agent/activity/1/output'});assert.equal(paged.text,escaped(raw));assert.match(paged.html,/Show More/,'Existing canonical-page disclosure remains available');
 });
 
 test('real expanded tool activity labels its existing input and output without changing their values',async()=>{

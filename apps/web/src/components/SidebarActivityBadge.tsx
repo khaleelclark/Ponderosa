@@ -5,7 +5,7 @@ import { SemanticStatusCircle, semanticStatusColorToken } from "./SemanticStatus
 export function SidebarActivityBadge({ activity, agent, fresh = false, showLabel = false }: { activity?: WorkspaceActivityCountDto; agent?: { title: string; health?: AgentHealthDto }; fresh?: boolean; showLabel?: boolean }) {
   const status = agent ? agent.health ? agentDisplayStatus(agent.health) : "unknown" : activity?.status ?? "unknown";
   const label = status === "unknown" ? "Unknown" : AGENT_DISPLAY_STATUS_LABELS[status];
-  const detail = agent ? `${agent.title} · ${label}${fresh ? "" : " · Status updates delayed"}` : activity
+  const detail = agent ? `${agent.title} · ${label}${fresh ? "" : " · Status Updates Delayed"}` : activity
     ? `${label}; ${activity.runningCount} working, ${activity.waitingCount} waiting, ${activity.decisionCount} need decision, ${activity.recoveryCount} recovering, ${activity.errorCount} errors, ${activity.idleCount} idle, ${activity.unknownCount} unknown. Last confirmed ${activity.lastConfirmedAt ?? "unavailable"}${fresh ? "" : "; updates may be delayed"}.`
     : "Agent status unknown; no confirmed status available.";
   const count = agent ? 0 : activity?.activeCount ?? 0;

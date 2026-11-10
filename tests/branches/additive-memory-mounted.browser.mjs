@@ -52,23 +52,23 @@ test('additive memory production dialog and real install routes on desktop and e
   const activate=async name=>{await focusByTab(button(name));await page.keyboard.press('Enter');};
   const keyboardCheck=async locator=>{await focusByTab(locator);await page.keyboard.press('Space');assert(await locator.isChecked());};
   const choose=async()=>{
-   await activate('Open update');await checkbox('Select additive memory update').waitFor();await keyboardCheck(checkbox('Select additive memory update'));
+   await activate('Open update');await checkbox('Select Additive Memory Update').waitFor();await keyboardCheck(checkbox('Select Additive Memory Update'));
    const team=checkbox('Team memory: Preserved Chat');assert(await team.isDisabled());
    assert.equal(await checkbox('Private memory: Preserved Chat · Included').count(),0,'Existing Agent private memory cannot be selected');
    await keyboardCheck(checkbox('Private memory: Preserved Chat · Excluded'));assert(await team.isEnabled());await keyboardCheck(team);
-   await page.getByLabel('Default working directory',{exact:true}).fill(f.root);
+   await page.getByLabel('Default Working Directory',{exact:true}).fill(f.root);
    await page.getByRole('combobox',{name:'Engine: fixture',exact:true}).click();await page.getByRole('option',{name:'fixture',exact:true}).click();
   };
-  const review=async()=>{await activate('Review changes');await button('Confirm update').waitFor();};
+  const review=async()=>{await activate('Review Changes');await button('Confirm Update').waitFor();};
   const acknowledge=async()=>{
-   assert(await button('Confirm update').isDisabled());await keyboardCheck(checkbox('I reviewed the selected incoming and existing destination memory.'));assert(await button('Confirm update').isDisabled());
-   await keyboardCheck(checkbox('I reviewed the imported Agent context and files and want to continue with this full import.'));assert(await button('Confirm update').isEnabled());
+   assert(await button('Confirm Update').isDisabled());await keyboardCheck(checkbox('I reviewed the selected incoming and existing destination memory.'));assert(await button('Confirm Update').isDisabled());
+   await keyboardCheck(checkbox('I reviewed the imported Agent context and files and want to continue with this full import.'));assert(await button('Confirm Update').isEnabled());
   };
    await page.goto('http://127.0.0.1:'+server.address().port);await choose();
-   await activate('Review changes');await page.getByText('Controlled review service unavailable',{exact:true}).waitFor();assert(await checkbox('Team memory: Preserved Chat').isChecked());await x.unchanged();
-   reviewGate=new Promise(resolve=>{releaseReview=resolve;});await activate('Review changes');
-   await page.waitForFunction(()=>[...document.querySelectorAll('label')].find(label=>label.textContent.includes('Select additive memory update'))?.querySelector('input')?.disabled);
-   assert(await checkbox('Select additive memory update').isDisabled());assert(await checkbox('Private memory: Preserved Chat · Excluded').isDisabled());assert(await page.getByLabel('Default working directory',{exact:true}).isDisabled());assert(await button('Review changes').isDisabled());
+   await activate('Review Changes');await page.getByText('Controlled review service unavailable',{exact:true}).waitFor();assert(await checkbox('Team memory: Preserved Chat').isChecked());await x.unchanged();
+   reviewGate=new Promise(resolve=>{releaseReview=resolve;});await activate('Review Changes');
+   await page.waitForFunction(()=>[...document.querySelectorAll('label')].find(label=>label.textContent.includes('Select Additive Memory Update'))?.querySelector('input')?.disabled);
+   assert(await checkbox('Select Additive Memory Update').isDisabled());assert(await checkbox('Private memory: Preserved Chat · Excluded').isDisabled());assert(await page.getByLabel('Default Working Directory',{exact:true}).isDisabled());assert(await button('Review Changes').isDisabled());
    // Dismiss pending review by keyboard; a late response cannot reopen the dialog or confirm.
    await page.keyboard.press('Escape');await page.getByRole('dialog').waitFor({state:'hidden'});const lateResponse=page.waitForResponse(r=>r.url().endsWith('/install-preview'));releaseReview();reviewGate=undefined;
    await lateResponse;assert.equal(await page.getByRole('dialog').count(),0);assert.equal(requests.filter(r=>r.url.endsWith('/confirm')).length,0);await x.unchanged();
@@ -83,12 +83,12 @@ test('additive memory production dialog and real install routes on desktop and e
    await activate('Back');await keyboardCheck(checkbox('Team memory: Preserved Chat'));await review();await acknowledge();
    const raw=f.memory.core.database.raw,c=await raw.client.getCollection({name:raw.names('chat:'+x.chat.id).memory}),id=x.before[0].ids[0];
    await c.update({ids:[id],documents:['Explicit destination memory edit'],embeddings:[vector]});const edited=await rows(f,x.chat.id);
-   await activate('Confirm update');await page.getByText('Destination memory changed; review a new additive preview',{exact:true}).waitFor();await button('Review again').waitFor();assert.deepEqual(await rows(f,x.chat.id),edited);await x.authority();
-   await page.screenshot({path:out+'/'+cell+'-stale.png'});await activate('Review again');await review();assert(!(await checkbox('I reviewed the selected incoming and existing destination memory.').isChecked()));await acknowledge();
-   blockPublication=true;await activate('Confirm update');await page.getByText('Controlled publication unavailable',{exact:true}).waitFor();await button('Stop update').waitFor();
-   statusError=true;await page.waitForResponse(r=>r.url().includes('/installations/')&&r.request().method()==='GET'&&r.status()===503);await activate('Retry status');await button('Stop update').waitFor();
-   await activate('Stop update');await page.getByText(/This update is canceled/).waitFor();assert.deepEqual(await rows(f,x.chat.id),edited,'Cancel compensates only staged additions');await x.authority();
-   blockPublication=false;await activate('Review again');await review();await acknowledge();await activate('Confirm update');await page.getByText('Installed successfully',{exact:true}).waitFor();assert.equal(await page.getByRole('dialog').count(),0);
+   await activate('Confirm Update');await page.getByText('Destination memory changed; review a new additive preview',{exact:true}).waitFor();await button('Review Again').waitFor();assert.deepEqual(await rows(f,x.chat.id),edited);await x.authority();
+   await page.screenshot({path:out+'/'+cell+'-stale.png'});await activate('Review Again');await review();assert(!(await checkbox('I reviewed the selected incoming and existing destination memory.').isChecked()));await acknowledge();
+   blockPublication=true;await activate('Confirm Update');await page.getByText('Controlled publication unavailable',{exact:true}).waitFor();await button('Stop Update').waitFor();
+   statusError=true;await page.waitForResponse(r=>r.url().includes('/installations/')&&r.request().method()==='GET'&&r.status()===503);await activate('Retry Status');await button('Stop Update').waitFor();
+   await activate('Stop Update');await page.getByText(/This update is canceled/).waitFor();assert.deepEqual(await rows(f,x.chat.id),edited,'Cancel compensates only staged additions');await x.authority();
+   blockPublication=false;await activate('Review Again');await review();await acknowledge();await activate('Confirm Update');await page.getByText('Installed successfully',{exact:true}).waitFor();assert.equal(await page.getByRole('dialog').count(),0);
    preserve(edited,await rows(f,x.chat.id));await x.authority();assert.equal(f.store.sqlite.prepare("SELECT COUNT(*) n FROM branch_installation_resources WHERE branch_id=? AND agent_ref='new' AND state='active'").get(x.branchId).n,1);
    assert.deepEqual(errors,[]);passed={cell,status:'PASS',errors,requests,checks:['real dialog/server/Chroma','keyboard selection/acknowledgements','existing private excluded','full incoming/destination snapshots','pending keyboard dismissal ignores late response','review failure/retry','Back/selection reset/fresh review','stale refusal/no mutation','status error/retry','staged cancellation/compensation','new review/success','destination permissions/policies/grants preserved']};
    }

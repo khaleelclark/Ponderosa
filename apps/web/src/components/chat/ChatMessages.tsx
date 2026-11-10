@@ -220,16 +220,16 @@ function ChatLink({ href, children, previewScope, projectId, fileScope }: { href
     finally { setOpening(false); }
   };
   return <>
-    <Box className="chat-text-navigation" component="a" href={href} target={link.loopback ? undefined : "_blank"} rel={link.loopback ? undefined : "noreferrer"} onClick={activate} onContextMenu={event => { event.preventDefault(); setChooserOpen(true); setError(undefined); }} aria-label={`Open link to ${link.destination}`} sx={{ display: "inline-flex", alignItems: "center", gap: .45, maxWidth: "100%", px: .5, borderRadius: .75, bgcolor: "action.hover", textDecoration: "none !important", verticalAlign: "middle" }}>
+    <Box className="chat-text-navigation" component="a" href={href} target={link.loopback ? undefined : "_blank"} rel={link.loopback ? undefined : "noreferrer"} onClick={activate} onContextMenu={event => { event.preventDefault(); setChooserOpen(true); setError(undefined); }} aria-label={`Open Link To ${link.destination}`} sx={{ display: "inline-flex", alignItems: "center", gap: .45, maxWidth: "100%", px: .5, borderRadius: .75, bgcolor: "action.hover", textDecoration: "none !important", verticalAlign: "middle" }}>
       <Box component="span" title={link.url.href} sx={{ minWidth: 0, maxWidth: "18rem", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{children}</Box>
       <OpenInNewIcon aria-hidden sx={{ fontSize: 14, flex: "0 0 auto" }} />
     </Box>
     <Dialog open={chooserOpen} onClose={() => setChooserOpen(false)} aria-labelledby="link-open-title" maxWidth="xs" fullWidth>
-      <DialogTitle id="link-open-title">Open link</DialogTitle>
+      <DialogTitle id="link-open-title">Open Link</DialogTitle>
       <DialogContent><Typography variant="body2" sx={{ overflowWrap: "anywhere" }}>{link.url.href}</Typography>{error ? <Alert severity="error" sx={{ mt: 2 }}>{error}</Alert> : null}</DialogContent>
       <DialogActions>
         <Button onClick={() => setChooserOpen(false)}>Cancel</Button>
-        {projectBrowser.projectId ? <Button onClick={() => { projectBrowser.open(link.url.href); setChooserOpen(false); }}>Open in Ponderosa</Button> : null}
+        {projectBrowser.projectId ? <Button onClick={() => { projectBrowser.open(link.url.href); setChooserOpen(false); }}>Open In Ponderosa</Button> : null}
         {link.loopback && previewScope ? <Button disabled={opening} onClick={() => void openInside()}>Open Live App Preview</Button> : null}
         <Button component="a" href={link.url.href} target="_blank" rel="noopener noreferrer" onClick={() => setChooserOpen(false)} endIcon={<OpenInNewIcon />}>Open Externally</Button>
       </DialogActions>
@@ -329,7 +329,7 @@ function CopyableCodeBlock({ children }: { children?: ReactNode }): JSX.Element 
       sx={{ px: 2, py: 0.75, borderBottom: 1, borderColor: "divider", color: "text.secondary" }}
     >
       <Typography variant="caption">Syntax highlighting unavailable · plain code retained</Typography>
-      <Button size="small" color="inherit" onClick={retry}>Retry highlighting</Button>
+      <Button size="small" color="inherit" onClick={retry}>Retry Highlighting</Button>
     </Stack> : null}
     <Box
       component="pre"
@@ -341,8 +341,8 @@ function CopyableCodeBlock({ children }: { children?: ReactNode }): JSX.Element 
     <Box className="chat-code-block" sx={{ my: 1, maxWidth: "100%", minWidth: 0, overflow: "hidden", borderRadius: 2, bgcolor: "action.hover", border: 1, borderColor: "divider" }}>
       <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ minHeight: 38, px: 1.5, color: "text.secondary", borderBottom: 1, borderColor: "divider" }}>
         <Typography variant="caption" sx={{ fontFamily: "monospace", textTransform: "lowercase" }}>{language}</Typography>
-        <Tooltip title="Copy code">
-          <IconButton aria-label="Copy code" size="small" onClick={() => void copyCode()}>
+        <Tooltip title="Copy Code">
+          <IconButton aria-label="Copy Code" size="small" onClick={() => void copyCode()}>
             <ContentCopyIcon fontSize="inherit" />
           </IconButton>
         </Tooltip>
@@ -408,7 +408,7 @@ export function AgentMention({ agentId, label, title, onOpenAgent }: {
 }): JSX.Element {
   if (!onOpenAgent) return <Box component="span" title={title} sx={messageHandleSx}>#{label}</Box>;
   return <Box className="chat-text-navigation" component="button" type="button" title={title}
-    aria-label={`Open agent ${label}${title ? `. ${title}` : ""}`} onClick={() => onOpenAgent(agentId)}
+    aria-label={`Open Agent ${label}${title ? `. ${title}` : ""}`} onClick={() => onOpenAgent(agentId)}
     sx={{ ...messageHandleSx, cursor: "pointer", maxWidth: "100%", overflowWrap: "anywhere" }}>#{label}</Box>;
 }
 
@@ -495,7 +495,7 @@ const ChatMarkdown = memo(function ChatMarkdown({
             if (src && isLocalWorkspaceHref(src) && !projectPreview) return <Box component="span">{alt ?? "Image unavailable"}</Box>;
             const image = <Box component="img" src={projectPreview ?? src} alt={alt ?? "Agent-provided image"} loading="lazy" sx={{ display: "block", width: "auto", maxWidth: "100%", maxHeight: { xs: 320, md: 520 }, objectFit: "contain", borderRadius: 1.5 }} />;
             return projectPreview
-              ? <Box component="a" href={projectPreview} target="_blank" rel="noreferrer" aria-label={`Open ${alt ?? "agent-provided image"} full size`} sx={{ display: "inline-block", maxWidth: "100%" }}>{image}</Box>
+              ? <Box component="a" href={projectPreview} target="_blank" rel="noreferrer" aria-label={`Open ${alt ?? "Agent-Provided Image"} Full Size`} sx={{ display: "inline-block", maxWidth: "100%" }}>{image}</Box>
               : image;
           },
           a: ({ href, children: label, node }) => {
@@ -504,7 +504,7 @@ const ChatMarkdown = memo(function ChatMarkdown({
             const recipientId = node?.properties["data-ponderosa-recipient"];
             const recipient = collaborationRecipients?.find(candidate => candidate.id === recipientId);
             if (recipient) return recipient.handle ? <AgentMention agentId={recipient.id} label={recipient.handle}
-              title={!recipient.available ? "Agent no longer available" : recipient.currentTitle && recipient.currentTitle !== recipient.title ? `Currently ${recipient.currentTitle}` : undefined}
+              title={!recipient.available ? "Agent No Longer Available" : recipient.currentTitle && recipient.currentTitle !== recipient.title ? `Currently ${recipient.currentTitle}` : undefined}
               onOpenAgent={recipient.available ? onOpenAgent : undefined} /> : <Box component="span" sx={messageHandleSx}>Unavailable recipient</Box>;
             const fileReference = parseChatProjectFileHref(href);
             if (fileReference) {
@@ -557,7 +557,7 @@ const ChatMarkdown = memo(function ChatMarkdown({
             const handle = messageTagHandle(href);
             if (!handle) return <Box component="span">{label}</Box>;
             if (handle.toLocaleLowerCase() === "broadcast" && onOpenBroadcast) {
-              return <Box className="chat-text-navigation" component="button" type="button" aria-label="Open originating broadcast in Chat" onClick={onOpenBroadcast} sx={{ display: "inline", p: 0, border: 0, bgcolor: "transparent", color: "inherit", font: "inherit", fontWeight: 600, textDecoration: "none", cursor: "pointer" }}>{label}</Box>;
+              return <Box className="chat-text-navigation" component="button" type="button" aria-label="Open Originating Broadcast In Chat" onClick={onOpenBroadcast} sx={{ display: "inline", p: 0, border: 0, bgcolor: "transparent", color: "inherit", font: "inherit", fontWeight: 600, textDecoration: "none", cursor: "pointer" }}>{label}</Box>;
             }
             const boundMention = agentMentionForHandle?.(handle);
             const agentId = boundMention?.agentId ?? agentIdForHandle?.(handle);

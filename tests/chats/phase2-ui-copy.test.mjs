@@ -39,3 +39,11 @@ test('short copy retains consequential warnings beside exact evidence',()=>{
  assert.ok(retry.includes('retry may duplicate file changes or external effects'));
  assert.ok(retry.includes('earlier side effects remain and may repeat'));
 });
+
+
+test('HTTP summaries use structured status and preserve diagnostic casing',async()=>{
+ await import('../shared/web-typescript-loader.mjs');const {errorSummary,errorDetail}=await import('../../apps/web/src/workspaceAvailability.ts'),{ApiRequestError,ApiTransportError}=await import('../../apps/web/src/api/types.ts');
+ const raw='request rate limit exceeded RAW miXeD gpt-5.2 /Users/ExactPath ID_abC';
+ assert.equal(errorSummary(new ApiRequestError(429,raw),'Reply'),'Request Rate Limit Exceeded');assert.equal(errorSummary(new ApiRequestError(403,raw),'Reply'),'Access Denied');assert.equal(errorSummary(new ApiTransportError(raw),'Reply'),'Connection Interrupted');assert.equal(errorSummary(new Error(raw),'Reply'),'Reply Unavailable');
+ for(const error of [new ApiRequestError(429,raw),new ApiTransportError(raw),new Error(raw)])assert.equal(errorDetail(error),raw,'Raw diagnostics, model names, paths and identifiers remain exact');
+});

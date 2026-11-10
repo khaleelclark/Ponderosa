@@ -66,7 +66,7 @@ try {
   assert.equal(await page.getByRole('combobox',{name:'Chat',exact:true}).inputValue(),filled.title,'Nested Agent retains its original Chat selector');assert.equal(await page.getByRole('combobox',{name:'Current Chat',exact:true}).count(),0);
   await page.screenshot({path:path.join(output,label+'-nested-agent.png')});
   const returnChat=page.getByRole('button',{name:'Open Chat '+filled.title,exact:true});
-  if(!await returnChat.isVisible())await page.getByRole('button',{name:'Expand workspace header',exact:true}).last().click();
+  if(!await returnChat.isVisible())await page.getByRole('button',{name:'Expand Workspace Header',exact:true}).last().click();
   await returnChat.click();await page.getByLabel('Message',{exact:true}).waitFor();await capture('agent-return',filled);row.agentReturn=true;
   await page.goto(origin+'/assistant');await page.getByRole('heading',{name:'Assistant',exact:true}).waitFor();await page.getByLabel('Message',{exact:true}).waitFor();assert.equal(await page.getByRole('combobox',{name:'Current Chat',exact:true}).count(),0);row.assistantUnchanged=true;
   assert.deepEqual(row.errors,[]);assert.deepEqual(row.failedApi,[]);await context.close();

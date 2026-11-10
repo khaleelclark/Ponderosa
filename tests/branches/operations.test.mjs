@@ -95,7 +95,7 @@ test('Branch waits explain host pressure and pending checks without telling sign
 
 test('focused Run actions retain old pending gates beyond newer resolved history and bind bounded cursors to the Run revision',async t=>{
  const f=fixture(t),width=122,values=Array.from({length:width},(_,i)=>`Complete proposal ${i}`);
- const definition={schema:'ponderosa.branch.v1',name:'Many decisions',trigger:{kind:'manual'},entry:'map',steps:[{id:'worker',kind:'agent',label:'Review item',target:{kind:'persistent_organization',ref:'worker'},instructions:'Return the item result'}],
+ const definition={schema:'ponderosa.branch.v1',name:'Many decisions',trigger:{kind:'manual'},entry:'map',steps:[{id:'worker',kind:'agent',label:'Review Item',target:{kind:'persistent_organization',ref:'worker'},instructions:'Return the item result'}],
   controls:[{id:'map',kind:'map',joinId:'join',workerId:'worker',source:'list',maxItems:200,maxConcurrentItems:200},{id:'join',kind:'join',forkId:'map',mode:'all',remainder:'finish',inputOrder:[]}],
   edges:[{id:'item',from:'map',to:'worker',on:'selected'},{id:'return',from:'worker',to:'join',on:'success'}],policy:{maxConcurrentExecutions:1,maxPathInstances:1000,maxStepInvocations:1000,failure:{action:'ask_human'}}};
  const branch=f.branches.deploy({chatId:f.chat.id,idempotencyKey:'gate-pages',definition,bindings:{agents:{worker:f.agent.id},directories:{}}});

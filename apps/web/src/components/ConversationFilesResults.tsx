@@ -148,7 +148,7 @@ export function ConversationFilesResults({
   return (
     <Box
       role="tabpanel"
-      aria-label="Chat files and results"
+      aria-label="Chat Files And Results"
       sx={{
         height: "100%",
         minHeight: 0,
@@ -183,7 +183,7 @@ export function ConversationFilesResults({
           value={filter}
           onChange={event => setFilter(event.target.value)}
           placeholder="Search files, results, or agents"
-          inputProps={{ "aria-label": "Search Chat files and results" }}
+          inputProps={{ "aria-label": "Search Chat Files And Results" }}
           InputProps={{
             startAdornment: (
               <InputAdornment position="start">
@@ -196,13 +196,13 @@ export function ConversationFilesResults({
       </Stack>
 
       <Box className="ponderosa-scroll" sx={{ minHeight: 0, overflowY: "auto", p: { xs: 1, sm: 1.5 } }}>
-        {!search ? <ConversationWorkspaceFiles key={conversationId} conversationId={conversationId} projectId={projectId} /> : <Box component="section" aria-label="Working-folder matches" sx={{ mb: 2 }}>
-          <Typography variant="overline">Working-folder files</Typography>
+        {!search ? <ConversationWorkspaceFiles key={conversationId} conversationId={conversationId} projectId={projectId} /> : <Box component="section" aria-label="Working-Folder Matches" sx={{ mb: 2 }}>
+          <Typography variant="overline">Working-Folder Files</Typography>
           {workspaceMatches.isLoading ? <Typography>Searching this Chat’s folder…</Typography> : null}
           {workspaceMatches.isError ? <Alert severity="error">Working-folder search is unavailable. Managed results remain below.</Alert> : null}
           <List dense>{workspaceMatches.results.map(file => <ListItemButton key={file.path} component="a" href={routeLinkPath({ kind: "workspaceFile", projectId, conversationId, path: file.path })}
             onClick={event => { if (isUnmodifiedPrimaryClick(event)) { event.preventDefault(); setWorkspaceFile(file.path); } }}><ListItemText primary={file.path} secondary={`Working folder · ${file.project.label}`} /></ListItemButton>)}</List>
-          {workspaceMatches.hasNextPage ? <Button disabled={workspaceMatches.isFetching} onClick={() => void workspaceMatches.fetchNextPage()}>{workspaceMatches.isFetchingNextPage ? "Loading…" : "Load more working-folder files"}</Button> : null}
+          {workspaceMatches.hasNextPage ? <Button disabled={workspaceMatches.isFetching} onClick={() => void workspaceMatches.fetchNextPage()}>{workspaceMatches.isFetchingNextPage ? "Loading…" : "Load More Working-Folder Files"}</Button> : null}
           {workspaceMatches.truncated ? <Alert severity="info">Folder search reached its limit. Narrow the search to find more files.</Alert> : null}
           {workspaceMatches.unavailableRoots ? <Alert severity="warning">This Chat’s folder could not be fully searched.</Alert> : null}
         </Box>}
@@ -233,7 +233,7 @@ export function ConversationFilesResults({
               <Typography variant="overline" color="text.secondary" sx={{ display: "block", px: 0.5, mb: 0.5 }}>
                 {group.label}
               </Typography>
-              <List disablePadding aria-label={`${group.label} items`} sx={{ display: "grid", gap: 0.75 }}>
+              <List disablePadding aria-label={`${group.label} Items`} sx={{ display: "grid", gap: 0.75 }}>
                 {group.artifacts.map(artifact => {
                   const ownerId = artifact.originAgentId ?? artifact.agentId;
                   const owner = artifact.origin?.kind === "operator" ? undefined : agentById.get(ownerId);
@@ -258,7 +258,7 @@ export function ConversationFilesResults({
                     >
                       <ListItemButton
                         component="a" href={artifact.previewUrl ?? artifact.downloadUrl}
-                        aria-label={`Preview ${label} from ${producer}`}
+                        aria-label={`Preview ${label} From ${producer}`}
                         title={displayPath}
                         onClick={event => { if (isUnmodifiedPrimaryClick(event)) { event.preventDefault(); setPreviewArtifact(artifact); } }}
                         sx={{ minWidth: 0 }}
@@ -344,7 +344,7 @@ export function ConversationFilesResults({
                   )
                 : "Preview"}
             </Typography>
-            <IconButton aria-label="Close preview" onClick={() => setPreviewArtifact(undefined)}>
+            <IconButton aria-label="Close Preview" onClick={() => setPreviewArtifact(undefined)}>
               <CloseIcon />
             </IconButton>
           </Stack>

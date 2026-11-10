@@ -50,7 +50,7 @@ try{
   assert.equal((await session.tool('ponderosa_message',{text:'OUTPUT_UI_REPLY\n\n[Working report](output-report.md)'})).success,true);
  }}]);
  await page.locator('[contenteditable="true"]').first().fill('Create a Chat and start the report task');
- await page.getByRole('button',{name:'Send message',exact:true}).click();
+ await page.getByRole('button',{name:'Send Message',exact:true}).click();
  await page.getByText('OUTPUT_UI_REPLY',{exact:true}).waitFor({timeout:20000});
  assert.notEqual(workspaceActions.chat.chat.projectId,initial.app.projectId);assert.equal(workspaceActions.work.sourceAgentId,initial.app.agentId);
  await until(()=>f.turns.some(turn=>turn.agentId===workspaceActions.work.agentId&&JSON.stringify(turn.input).includes('Build the report requested through the Assistant composer')),'cross-project UI request reaches target provider');
@@ -77,8 +77,8 @@ try{
  await page.getByText(/Idle · Live/).first().waitFor();
  await page.screenshot({path:path.join(out,'assistant-desktop.png'),fullPage:true});
  await page.getByRole('button',{name:'Settings',exact:true}).first().click();
- await page.getByLabel('Check every (minutes)').fill('20');await Promise.all([page.waitForResponse(response=>response.url().endsWith('/schedule')&&response.status()===200),page.getByRole('button',{name:'Save schedule',exact:true}).click()]);
- await Promise.all([page.waitForResponse(response=>response.request().method()==='PATCH'&&response.url().includes('/agents/')&&response.status()===200),page.getByRole('button',{name:'Save model',exact:true}).click()]);
+ await page.getByLabel('Check Every (Minutes)').fill('20');await Promise.all([page.waitForResponse(response=>response.url().endsWith('/schedule')&&response.status()===200),page.getByRole('button',{name:'Save Schedule',exact:true}).click()]);
+ await Promise.all([page.waitForResponse(response=>response.request().method()==='PATCH'&&response.url().includes('/agents/')&&response.status()===200),page.getByRole('button',{name:'Save Model',exact:true}).click()]);
  await page.screenshot({path:path.join(out,'assistant-settings.png'),fullPage:true});
  await page.keyboard.press('Escape');
  const status=f.ok(await f.api('GET','/api/branches/assistant'));assert.equal(status.app.everyMs,1200000);

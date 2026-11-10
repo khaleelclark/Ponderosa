@@ -23,7 +23,7 @@ test('checks 103, 104 (4 on Linux): host Chrome acts, reads the selected upload 
     response.setHeader('Content-Type', 'text/html; charset=utf-8');
     response.end(`<!doctype html><title>Owned browser qualification</title>
       <main><label>Message <input id="message"></label><button id="apply" onclick="console.log('Owned browser fixture applied');document.getElementById('result').textContent=document.getElementById('message').value">Apply</button><output id="result"></output>
-      <form action="/submit" method="post"><label>Selected file <input id="chosen" type="file" accept="text/plain"></label><label>Other file <input id="other" type="file"></label><output id="upload-result"></output><button type="submit">Submit</button></form></main>
+      <form action="/submit" method="post"><label>Selected File <input id="chosen" type="file" accept="text/plain"></label><label>Other file <input id="other" type="file"></label><output id="upload-result"></output><button type="submit">Submit</button></form></main>
       <script>document.getElementById('chosen').onchange=async e=>{const f=e.target.files[0];document.getElementById('upload-result').textContent=f?await f.text():''};</script>`);
   });
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });

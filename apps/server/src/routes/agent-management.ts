@@ -373,7 +373,7 @@ export function registerAgentManagementRoutes(app: FastifyInstance, context: Age
         workspace.createNotification({ projectId: decision.projectId, conversationId: decision.conversationId,
           conversationIds: [owner.conversationId], agentId: decision.agentId, agentIds: [decision.agentId], kind: "decision",
           category: "decision", severity: "urgent", status: "open", dedupeKey: `decision:${decision.id}`,
-          action: { kind: "open_decision", targetId: decision.id }, title: `${owner.title} needs a destructive-operation decision`,
+          action: { kind: "open_decision", targetId: decision.id }, title: `${owner.title} Needs A Destructive-Operation Decision`,
           body: decision.question, decision: { id: decision.id, mode: decision.mode, options: decision.options,
             allowOther: decision.allowOther, status: decision.status } }, true);
         publishWorkspaceSince(cursor);

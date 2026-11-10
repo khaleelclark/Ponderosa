@@ -108,7 +108,7 @@ function routeDocumentTitle(route: Route): string {
     case "workspaceFile": return "File";
     case "projectWork": return "Agent Work";
     case "browser": return "Browser";
-    case "conversation": return "Chat";
+    case "conversation": return "chat";
     case "agent": return "Agent";
     case "review": return "Review";
   }
@@ -244,7 +244,7 @@ export default function App({
   useEffect(() => {
     // Conversation and Agent views own their resolved entity titles. Skipping
     // them here prevents a later Project-list refresh from restoring a generic
-    // "Chat" or "Agent" title over the resolved title.
+    // "chat" or "Agent" title over the resolved title.
     if (route.kind === "conversation" || route.kind === "agent") return;
     document.title = `${routeDocumentTitle(route)} · Ponderosa`;
   }, [route]);
@@ -634,7 +634,7 @@ export default function App({
           }
           setSidebarPresentation(current => ({ ...current, collapsed: false }));
           window.requestAnimationFrame(() => {
-            document.querySelector<HTMLElement>('[aria-label="Collapse sidebar"]')?.focus();
+            document.querySelector<HTMLElement>('[aria-label="Collapse Sidebar"]')?.focus();
           });
         }}
       >

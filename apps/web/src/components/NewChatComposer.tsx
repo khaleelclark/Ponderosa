@@ -110,7 +110,7 @@ export function NewChatComposer({ creationKey, engines, enginesLoaded = true, on
       <Alert severity="error">{error}</Alert>
       <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
         <Button disabled={busy || !enginesLoaded} onClick={() => void create()}>{busy ? "Opening…" : "Retry"}</Button>
-        {onConfigureProvider ? <Button disabled={busy} onClick={onConfigureProvider}>Provider settings</Button> : null}
+        {onConfigureProvider ? <Button disabled={busy} onClick={onConfigureProvider}>Provider Settings</Button> : null}
       </Stack>
     </Stack>}
     {onCancel ? <Button onClick={onCancel}>Back</Button> : null}

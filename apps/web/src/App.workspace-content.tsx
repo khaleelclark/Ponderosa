@@ -232,7 +232,7 @@ export function WorkspaceRouteOutlet({
               engines,
               preferences,
               onPreferences,
-              decisionReviewAction: <Button color="inherit" size="small" onClick={onOpenInbox}>View decision</Button>,
+              decisionReviewAction: <Button color="inherit" size="small" onClick={onOpenInbox}>View Decision</Button>,
               navigate: onNavigate,
               browserRequest: projectBrowserRequest,
               onBrowserRequestHandled,

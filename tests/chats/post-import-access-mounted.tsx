@@ -27,20 +27,20 @@ export async function postImportBrowserReviewRegression():Promise<void>{
   assert(writes.length===0,'imported suggestions must not mutate destination grants or profiles');
   const doneButton=Array.from(host.querySelectorAll('button')).find(button=>button.textContent==='Done')!;
   assert(Array.from(host.querySelectorAll('button')).filter(button=>button.textContent==='Done').length===1&&Boolean(doneButton.compareDocumentPosition(host.querySelector('.MuiPaper-root')!)&Node.DOCUMENT_POSITION_FOLLOWING),'one completion action precedes the optional settings cards');
-  const apply=Array.from(host.querySelectorAll('button')).find(button=>button.textContent==='Apply saved-browser choice')!;
+  const apply=Array.from(host.querySelectorAll('button')).find(button=>button.textContent==='Apply Saved-Browser Choice')!;
   assert(apply.disabled,'applying access requires an explicit choice');
   openSelect(host.querySelector('[role=combobox]'));await tick();
   const allow=Array.from(document.querySelectorAll('[role=option]')).find(option=>option.textContent==='Allow') as HTMLElement;
   allow.click();for(let index=0;index<3;index++)await tick();doneButton.click();await tick();
-  assert(document.body.textContent?.includes('Unapplied settings')&&done===0&&writes.length===0,'top Done preserves dirty confirmation without applying choices');
-  (Array.from(document.querySelectorAll('button')).find(button=>button.textContent==='Keep editing')!).click();await tick();
+  assert(document.body.textContent?.includes('Unapplied Settings')&&done===0&&writes.length===0,'top Done preserves dirty confirmation without applying choices');
+  (Array.from(document.querySelectorAll('button')).find(button=>button.textContent==='Keep Editing')!).click();await tick();
   apply.click();for(let index=0;index<3;index++)await tick();assert(doneButton.disabled,'top Done stays disabled during a manual permission write');releaseAccess();for(let index=0;index<4;index++)await tick();
   assert(writes.length===1&&JSON.stringify(writes[0]).includes('"agentId":"imported"'),'explicit access choice targets the mapped imported Agent');
   assert(!writes.some(write=>JSON.stringify(write).includes('Foreign source profile')),'foreign profile labels never become destination IDs');
   const profileSelect=host.querySelectorAll<HTMLElement>('[role=combobox]')[1];openSelect(profileSelect);await tick();
   (Array.from(document.querySelectorAll('[role=option]')).find(option=>option.textContent===profileName) as HTMLElement).click();for(let index=0;index<3;index++)await tick();
   assert(profileSelect.textContent?.includes(profileName)&&getComputedStyle(profileSelect).whiteSpace==='normal'&&getComputedStyle(profileSelect).overflowWrap==='anywhere','the full selected destination profile can wrap: '+JSON.stringify({text:profileSelect.textContent,connected:profileSelect.isConnected,whiteSpace:getComputedStyle(profileSelect).whiteSpace,overflowWrap:getComputedStyle(profileSelect).overflowWrap}));
-  doneButton.click();await tick();(Array.from(document.querySelectorAll('button')).find(button=>button.textContent==='Discard choices')!).click();await tick();
+  doneButton.click();await tick();(Array.from(document.querySelectorAll('button')).find(button=>button.textContent==='Discard Choices')!).click();await tick();
   assert(done===1&&writes.length===1,'explicit discard finishes without applying the selected destination profile');
  }finally{releaseAccess();root.unmount();client.clear();host.remove();Object.assign(api,original);}
 }
@@ -56,10 +56,10 @@ export async function importedAgentProvenanceRegression():Promise<void>{
  };
  const render=(key:string)=>root.render(<QueryClientProvider client={client}><ImportedCommunications key={key} agentId="imported"/></QueryClientProvider>);
  const settle=async()=>{for(let i=0;i<6;i++)await tick();};
- const open=()=>Array.from(host.querySelectorAll('button')).find(button=>button.textContent==='Imported history')!.click();
+ const open=()=>Array.from(host.querySelectorAll('button')).find(button=>button.textContent==='Imported History')!.click();
  try{
   render('current');await settle();open();await settle();
-  const record=host.querySelector('[aria-label="Import record"]')!;
+  const record=host.querySelector('[aria-label="Import Record"]')!;
   assert(record.textContent?.includes('Cause: Import request')&&record.textContent?.includes('Imported by: You (local operator)')&&record.textContent?.includes('Source: Synthetic source / Reusable expert')&&record.textContent?.includes('Imported into: Reviewed destination'),'empty historical messages retain the actual triggering import request, actor/source/destination');
   assert(host.textContent?.includes('Status: Agent records created')&&host.textContent?.includes('Imported Agent: Reusable expert')&&host.textContent?.includes('Agent records in this import: 2'),'the record states what was imported and scopes status to Agent records');
   assert(host.textContent?.includes('Message history: Not available in the retained record')&&!host.textContent?.includes('No message history was included'),'unavailable history never invents exclusion or zero messages');
@@ -91,8 +91,8 @@ export async function messageCauseAndResultRegression():Promise<void>{
   assert(!visible.includes('OPTIONAL_RAW_DETAILS'),'technical payloads are optional to the plain trail');
   for(const details of host.querySelectorAll('details'))if(details!==host.firstElementChild)assert(!details.open,'technical IDs begin behind disclosures');
   const reply=Array.from(host.querySelectorAll('details')).find(d=>d.querySelector('summary')?.textContent==='Reply identifiers')!;reply.querySelector('summary')!.click();await tick();assert(reply.innerText.includes('reply-one')&&reply.innerText.includes('message-one')&&reply.innerText.includes('recorded-run'),'specific publication, projected message and canonical Run are visibly connected');
-  const bounds=host.querySelector('[aria-label="Message cause and result"]')!.getBoundingClientRect();assert(bounds.left>=0&&bounds.right<=window.innerWidth+1,'plain facts/identifiers stay within phone and desktop widths');
-  legacy=true;client.clear();render('legacy');await settle();host.querySelector('summary')!.click();await settle();assert(!host.querySelector('[aria-label="Message cause and result"]')&&!host.innerText.includes('First requested check'),'missing old causes are not invented or inherited from a different record');
+  const bounds=host.querySelector('[aria-label="Message Cause And Result"]')!.getBoundingClientRect();assert(bounds.left>=0&&bounds.right<=window.innerWidth+1,'plain facts/identifiers stay within phone and desktop widths');
+  legacy=true;client.clear();render('legacy');await settle();host.querySelector('summary')!.click();await settle();assert(!host.querySelector('[aria-label="Message Cause And Result"]')&&!host.innerText.includes('First requested check'),'missing old causes are not invented or inherited from a different record');
   assert(calls===2,'only two explicit existing Details reads occur');
  }finally{root.unmount();client.clear();host.remove();api.getAgentWorkItemDetails=original;}
 }

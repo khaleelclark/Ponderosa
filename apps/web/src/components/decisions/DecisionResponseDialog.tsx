@@ -86,7 +86,7 @@ function DecisionAnswerDialog({
           {decision.questions && decision.questions.length > 1 ? <Stack spacing={0.5}>
             <Typography role="status">Question {activeQuestion + 1} of {decision.questions.length}</Typography>
             <Stack direction="row" spacing={0.5}>{decision.questions.map((item, index) => <Button key={item.id} size="small" disabled={pending}
-              aria-label={`Go to question ${index + 1}`} aria-current={index === activeQuestion ? "step" : undefined} onClick={() => setActiveQuestion(index)}>{index + 1}</Button>)}</Stack>
+              aria-label={`Go To Question ${index + 1}`} aria-current={index === activeQuestion ? "step" : undefined} onClick={() => setActiveQuestion(index)}>{index + 1}</Button>)}</Stack>
           </Stack> : null}
           <DecisionQuestionContent question={prompt.question} context={prompt.context} projectId={decision.projectId} />
           {question ? <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
@@ -95,7 +95,7 @@ function DecisionAnswerDialog({
               onClick={() => draft.setAnswer({ questionId: question.id, status: "answered", optionId: option.id })}>{option.label}</Button>)}
             <Button disabled={!draft.ready || pending || Boolean(questionFiles.length)} onClick={() => draft.setAnswer(answer?.status === "skipped"
               ? { questionId: question.id, status: "answered", text: "" } : { questionId: question.id, status: "skipped" })}>
-              {answer?.status === "skipped" ? "Answer instead" : "Skip this question"}</Button>
+              {answer?.status === "skipped" ? "Answer Instead" : "Skip This Question"}</Button>
             {answer?.status === "skipped" ? <Typography>No answer or approval will be supplied for this question.</Typography> : null}
           </Stack> : null}
           {draft.loadError ? <Alert severity="error" action={<Button onClick={draft.retry}>Retry</Button>}>{draft.loadError}</Alert> : null}
@@ -113,7 +113,7 @@ function DecisionAnswerDialog({
             fullWidth
             multiline
             minRows={3}
-            label={prompt.mode === "text" ? "Your answer" : "Alternative direction"}
+            label={prompt.mode === "text" ? "Your Answer" : "Alternative Direction"}
             disabled={!draft.ready || pending}
             helperText={draft.canAttach ? "Paste or drop images and files into your answer." : undefined}
             onPaste={event => {
@@ -133,7 +133,7 @@ function DecisionAnswerDialog({
           </Box> : null}
           {preparing ? <Typography role="status">Preparing files…</Typography> : null}
           {fileError || draft.attachments.error ? <Alert severity="error">{fileError || draft.attachments.error}</Alert> : null}
-          {draft.saveError ? <Alert severity="warning" action={<Button onClick={draft.retry}>Retry draft save</Button>}>{draft.saveError}</Alert> : null}
+          {draft.saveError ? <Alert severity="warning" action={<Button onClick={draft.retry}>Retry Draft Save</Button>}>{draft.saveError}</Alert> : null}
           {validationError || error ? <Alert severity="error">{validationError || error}</Alert> : null}
         </Stack>
       </DialogContent>
@@ -143,7 +143,7 @@ function DecisionAnswerDialog({
         {decision.questions && activeQuestion < decision.questions.length - 1
           ? <Button disabled={pending} onClick={() => setActiveQuestion(index => index + 1)}>Next</Button>
           : <Button variant="contained" disabled={pending || !draft.ready || preparing || !draft.uploadsComplete || (!decision.questions && !text.trim() && !draft.attachmentIds.length)} onClick={() => void submit()}>
-              {pending ? "Sending…" : decision.questions ? "Submit answers" : "Send Response"}
+              {pending ? "Sending…" : decision.questions ? "Submit Answers" : "Send Response"}
             </Button>}
 
       </DialogActions>
@@ -161,8 +161,8 @@ export function DecisionResponseDialog(props: Parameters<typeof DecisionAnswerDi
       return [result];
     }, enabled: props.open && props.decision.question === undefined, retry: false });
   const decision = props.decision.question !== undefined ? props.decision : canonical.data?.find(item => item.id === props.decision.id);
-  if (decision && decision.status !== "pending") return <Dialog onClick={event => event.stopPropagation()} open={props.open} onClose={props.onClose} fullWidth maxWidth="sm" aria-label="Decision completed">
-    <DialogTitle>Decision completed</DialogTitle><DialogContent><Alert severity="info">This Decision was answered or closed elsewhere. Your response will not replace it.</Alert></DialogContent>
+  if (decision && decision.status !== "pending") return <Dialog onClick={event => event.stopPropagation()} open={props.open} onClose={props.onClose} fullWidth maxWidth="sm" aria-label="Decision Completed">
+    <DialogTitle>Decision Completed</DialogTitle><DialogContent><Alert severity="info">This Decision was answered or closed elsewhere. Your response will not replace it.</Alert></DialogContent>
     <DialogActions><Button onClick={props.onClose}>Close</Button></DialogActions></Dialog>;
   if (decision) return <DecisionAnswerDialog {...props} decision={decision} />;
   return <Dialog onClick={event => event.stopPropagation()} open={props.open} onClose={props.onClose} fullWidth maxWidth="sm" aria-label="Load Decision">

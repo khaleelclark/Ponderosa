@@ -106,7 +106,7 @@ export function AgentDeletionDialog({
         <Alert severity="error" sx={{ mb: 2 }}>
           This permanently removes {affected.length} {affected.length === 1 ? "Agent" : "Agents"} and their private execution history, including runs, work logs, provider inputs, and private attachments. Active work is stopped before cleanup. Shared Chat messages, shared files and coordination outcomes, and your working folders remain intact.
         </Alert>
-        <Typography variant="subtitle2" sx={{ mb: 0.5 }}>Agents that will be deleted</Typography>
+        <Typography variant="subtitle2" sx={{ mb: 0.5 }}>Agents That Will Be Deleted</Typography>
         <Stack spacing={0.25} sx={{ mb: confirmationText ? 2 : 0 }}>
           {shown.map((agent) => <Typography key={agent.id} variant="body2">• {agent.title}</Typography>)}
           {affected.length > shown.length ? <Typography variant="body2" color="text.secondary">and {affected.length - shown.length} more</Typography> : null}

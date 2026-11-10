@@ -13,8 +13,8 @@ export function CopyMessageButton({ text }: { text: string }): JSX.Element {
       notify({ key: "copy-message", message: "Copy failed; select the message text instead", severity: "error" });
     }
   };
-  return <Tooltip title="Copy whole message">
-    <IconButton size="small" aria-label="Copy whole message" onClick={() => void copy()}>
+  return <Tooltip title="Copy Whole Message">
+    <IconButton size="small" aria-label="Copy Whole Message" onClick={() => void copy()}>
       <ContentCopyIcon fontSize="inherit" />
     </IconButton>
   </Tooltip>;

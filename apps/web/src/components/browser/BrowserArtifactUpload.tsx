@@ -96,7 +96,7 @@ export function BrowserArtifactUpload({
             disabled={disabled || pending || !artifactId}
             onClick={() => onUpload(artifactId)}
           >
-            {chooser ? "Choose file" : "Upload"}
+            {chooser ? "Choose File" : "Upload"}
           </Button>
           {!artifacts.isPending && choices.length === 0 ? (
             <Typography variant="caption" color="text.secondary">No files are available in Files & Results.</Typography>

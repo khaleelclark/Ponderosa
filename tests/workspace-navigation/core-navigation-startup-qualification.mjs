@@ -13,11 +13,11 @@ const {chromium}=createRequire(new URL('../../apps/server/package.json',import.m
 const output=process.env.QUALIFICATION_DIRECTORY;assert(output);await mkdir(output,{recursive:true});
 const fixture=spawn(process.execPath,['--import','./tests/shared/workspace-resolution.mjs','tests/branches/ui-qualification.mjs'],{cwd:root,stdio:['ignore','pipe','inherit']});
 const fixtureExit=once(fixture,'exit'),rows=[];let browser;
-const navigation=page=>page.getByRole('navigation',{name:'Workspace navigation',exact:true,includeHidden:true});
-const search=page=>page.getByRole('textbox',{name:'Search chats',exact:true});
-const open=page=>page.getByRole('button',{name:'Open workspace navigation',exact:true}).click();
+const navigation=page=>page.getByRole('navigation',{name:'Workspace Navigation',exact:true,includeHidden:true});
+const search=page=>page.getByRole('textbox',{name:'Search Chats',exact:true});
+const open=page=>page.getByRole('button',{name:'Open Workspace Navigation',exact:true}).click();
 const close=async page=>{
- const button=page.getByRole('button',{name:'Close workspace navigation',exact:true});
+ const button=page.getByRole('button',{name:'Close Workspace Navigation',exact:true});
  await button.click();await button.waitFor({state:'hidden'});
 };
 const draft=editor=>editor.evaluate(element=>element.value??element.textContent);
@@ -62,7 +62,7 @@ try{
       await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(resolve)));
      }
      assert.equal(await navigation(page).count(),1,'First drag must mount drawer contents before touchend/onOpen');
-     const bounds=await page.locator('aside[aria-label="Workspace navigation"]').evaluate(element=>{const r=element.getBoundingClientRect();return {left:r.left,right:r.right,width:r.width};});
+     const bounds=await page.locator('aside[aria-label="Workspace Navigation"]').evaluate(element=>{const r=element.getBoundingClientRect();return {left:r.left,right:r.right,width:r.width};});
      assert(bounds.width>0&&bounds.right>0&&bounds.left<412,'First swipe must expose a populated drawer while dragging');
      await page.screenshot({path:path.join(output,'phone-first-swipe-in-progress.png')});
      await touch.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
@@ -73,7 +73,7 @@ try{
     await noteDraft('after drawer close and reopen');
     assert.equal(await search(page).inputValue(),'Keep mobile filter','Closing the drawer must retain its local state');
     await page.setViewportSize({width:1365,height:768});
-    await page.getByRole('button',{name:'Close workspace navigation',exact:true}).waitFor({state:'hidden'});
+    await page.getByRole('button',{name:'Close Workspace Navigation',exact:true}).waitFor({state:'hidden'});
     await search(page).waitFor();
     assert.equal(await navigation(page).count(),2,'Desktop first use must not unmount the existing drawer owner');
     await search(page).fill('Keep desktop filter');

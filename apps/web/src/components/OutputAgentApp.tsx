@@ -133,23 +133,23 @@ export function OutputAgentApp({colorMode,onToggleColorMode,embedded=false,retur
  return <ThemeProvider theme={assistantTheme}><ConversationChromeContext.Provider value={{assistantAgentId:assistant?app?.agentId:undefined,statusHost,callActionsHost}}><WorkspaceConnectionProvider value={connection}><WorkspaceRefreshProvider connection={connection}><Box component={embedded?'section':'main'} data-assistant-conversation data-assistant-layout={assistant||undefined} sx={{...ponderosaSurfaceVariables(colorMode),"--assistant-outgoing":assistantTheme.palette.primary.main,"--assistant-on-outgoing":assistantTheme.palette.primary.contrastText,containerType:assistant?"inline-size":undefined,bgcolor:"background.default",height:embedded?'100%':'var(--ponderosa-app-viewport-block-size, 100dvh)',flex:1,display:'flex',flexDirection:'column',minHeight:0,minWidth:0,pb:'env(safe-area-inset-bottom)'}}>
   <Stack component="header" direction="row" alignItems="center" spacing={assistant?0:1} sx={{px:{xs:1,sm:2.5},minHeight:{xs:76,sm:64},pt:embedded?0:'env(safe-area-inset-top)',borderBottom:1,borderColor:'divider',flexShrink:0,...(assistant?{display:'grid',gridTemplateColumns:'repeat(3, minmax(0, 1fr))'}:{})}}>
    <Box sx={{display:'flex',alignItems:'center',minWidth:0}}>
-    {embedded?<><MobileNavigationButton/>{returnTo&&<Tooltip title="Back to your Chat"><IconButton href={returnTo} aria-label="Back to your Chat" onClick={event=>{if(!confirmUnsavedNavigation())event.preventDefault();}} sx={{width:44,height:44}}><ArrowBackIosNewIcon sx={{fontSize:20}}/></IconButton></Tooltip>}</>:<Button href="/home" color="inherit" sx={{minHeight:44}}>Ponderosa</Button>}
+    {embedded?<><MobileNavigationButton/>{returnTo&&<Tooltip title="Back To Your Chat"><IconButton href={returnTo} aria-label="Back To Your Chat" onClick={event=>{if(!confirmUnsavedNavigation())event.preventDefault();}} sx={{width:44,height:44}}><ArrowBackIosNewIcon sx={{fontSize:20}}/></IconButton></Tooltip>}</>:<Button href="/home" color="inherit" sx={{minHeight:44}}>Ponderosa</Button>}
     {assistant&&<WorkspaceConnectionNotice connection={connection} hasSavedData={Boolean(app)}/>}
    </Box>
    <Box data-conversation-contact sx={{flex:1,minWidth:0,textAlign:assistant?'center':undefined}}><Typography component="h1" sx={{fontWeight:650,fontSize:'1rem',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{assistant?'Assistant':app?.title??'Chat'}</Typography>
     <Box ref={setStatusHost} sx={{minWidth:0,maxWidth:assistant?'100%':260,'& .MuiStack-root':{flexWrap:'nowrap'},'& .MuiTypography-root':{overflow:'hidden',textOverflow:'ellipsis'}}}/></Box>
    <Box sx={{display:'flex',alignItems:'center',justifyContent:'flex-end',minWidth:0}}>
-    {app&&route&&(route.workspace?.kind!=='agent'||route.workspace.agentId!==app.agentId)&&<Button onClick={()=>setRoute({branchId:app.branchId,tab:'chats',chatId:app.chatId,workspace:{kind:'agent',projectId:app.projectId,agentId:app.agentId,view:'chat'}})}>Back to chat</Button>}
+    {app&&route&&(route.workspace?.kind!=='agent'||route.workspace.agentId!==app.agentId)&&<Button onClick={()=>setRoute({branchId:app.branchId,tab:'chats',chatId:app.chatId,workspace:{kind:'agent',projectId:app.projectId,agentId:app.agentId,view:'chat'}})}>Back To Chat</Button>}
     {!assistant&&<WorkspaceConnectionNotice connection={connection} hasSavedData={Boolean(app)}/>}
     <Box ref={setCallActionsHost} sx={{display:'flex',alignItems:'center',flexShrink:0,'&:empty':{display:'none'}}}/>
     <Box sx={{display:{xs:'none',sm:'flex'},...(assistant?{"@container (max-width: 700px)":{display:"none"}}:{})}}><PrimaryHeaderActionsOutlet/></Box>
-    <Tooltip title="Conversation settings"><IconButton aria-label="Settings" onClick={()=>{setError('');setSaved('');setSettings(true);}} sx={{width:44,height:44}}><SettingsOutlinedIcon sx={{fontSize:21}}/></IconButton></Tooltip>
+    <Tooltip title="Conversation Settings"><IconButton aria-label="Settings" onClick={()=>{setError('');setSaved('');setSettings(true);}} sx={{width:44,height:44}}><SettingsOutlinedIcon sx={{fontSize:21}}/></IconButton></Tooltip>
    </Box>
   </Stack>
-  {error&&!settings&&<Box component="details" sx={{mx:1,fontSize:".8125rem"}}><summary>Conversation settings need attention</summary><Typography variant="caption">{error}</Typography><Button onClick={()=>setSettings(true)}>Open settings</Button></Box>}
+  {error&&!settings&&<Box component="details" sx={{mx:1,fontSize:".8125rem"}}><summary>Conversation Settings Need Attention</summary><Typography variant="caption">{error}</Typography><Button onClick={()=>setSettings(true)}>Open Settings</Button></Box>}
   <WorkspaceQueryError initial={!app} reportOnly={settings} read={descriptorRead}/>
   {!app&&assistant&&status.data?.setupError&&<ConversationNotice title="Assistant needs attention before it can open." cause={status.data.setupError.message} onRetry={()=>void retryRefresh()}/>}
-  {!app&&assistant&&status.data?.initialized&&<Stack spacing={1.5} alignItems="center" justifyContent="center" sx={{flex:1,p:3,textAlign:'center'}}><Typography component="h2" sx={{fontSize:'1.5rem',fontWeight:600}}>Your Assistant is paused</Typography><Typography color="text.secondary">Enable Assistant to continue your conversation.</Typography><Button disabled={busy} onClick={()=>void configure(true)}>Enable Assistant</Button></Stack>}
+  {!app&&assistant&&status.data?.initialized&&<Stack spacing={1.5} alignItems="center" justifyContent="center" sx={{flex:1,p:3,textAlign:'center'}}><Typography component="h2" sx={{fontSize:'1.5rem',fontWeight:600}}>Your Assistant Is Paused</Typography><Typography color="text.secondary">Enable Assistant to continue your conversation.</Typography><Button disabled={busy} onClick={()=>void configure(true)}>Enable Assistant</Button></Stack>}
   {!app&&(assistant?status.isPending||busy:output.isPending)&&<Stack role="status" alignItems="center" justifyContent="center" spacing={2} sx={{flex:1,p:3}}><CircularProgress size={24}/><Typography color="text.secondary">Opening your conversation…</Typography></Stack>}
   {app&&route&&<Box sx={{flex:1,minHeight:0,minWidth:0,display:'flex'}}><BranchChats standalone branchId={app.branchId} engines={engines.data??[]} enginesLoaded={Boolean(engines.data)} branchRoute={route} onNavigate={next=>{
    setRoute(next);return true;
@@ -157,27 +157,27 @@ export function OutputAgentApp({colorMode,onToggleColorMode,embedded=false,retur
   <Dialog open={settings} onClose={closeSettings} aria-labelledby="output-app-settings-title" fullWidth maxWidth="xs">
    <DialogTitle id="output-app-settings-title">Settings</DialogTitle><DialogContent><Stack spacing={2} sx={{pt:1}}>
     {settings&&<WorkspaceQueryError read={descriptorRead}/>}
-    {error&&<Box component="details"><summary>Settings action needs attention</summary><Typography variant="caption">{error}</Typography></Box>}
+    {error&&<Box component="details"><summary>Settings Action Needs Attention</summary><Typography variant="caption">{error}</Typography></Box>}
     <Typography role="status" variant="body2" sx={{minHeight:"1.5em"}}>{pendingAction==='reloading'?'Reloading…':busy?'Saving…':saved}</Typography>
-    <Button onClick={onToggleColorMode}>Use {colorMode==='dark'?'Light':'Dark'} Mode</Button><TextSizeSetting/><Button href={assistant?'/settings/activity':'/branches?settings=activity'}>Provider activity</Button>
-    {app&&<><FormControlLabel control={<Switch disabled={busy} checked={automatic} onChange={(_,value)=>{setSaved('');setAutomatic(value);}}/>} label="Run automatically"/>
-     {editableInterval?<TextField disabled={busy} label="Check every (minutes)" type="number" value={minutes} onChange={event=>{setSaved('');setMinutes(event.target.value);}} error={!validInterval} helperText={intervalError} inputProps={{min:1,step:'any'}}/>:<Typography>{scheduleSource?.schedule?.scheduleKind==='cron'?`Cron schedule: ${scheduleSource?.schedule.expression} (${scheduleSource?.schedule.timezone})`:scheduleSource?.schedule?.scheduleKind==='once'?`Once at ${scheduleSource?.schedule.at}`:scheduleSource?.triggerKind==='filesystem'?'When files change':'When a webhook event arrives'}</Typography>}
-     <Button disabled={busy||!validInterval} onClick={saveSchedule}>Save schedule</Button>
+    <Button onClick={onToggleColorMode}>Use {colorMode==='dark'?'Light':'Dark'} Mode</Button><TextSizeSetting/><Button href={assistant?'/settings/activity':'/branches?settings=activity'}>Provider Activity</Button>
+    {app&&<><FormControlLabel control={<Switch disabled={busy} checked={automatic} onChange={(_,value)=>{setSaved('');setAutomatic(value);}}/>} label="Run Automatically"/>
+     {editableInterval?<TextField disabled={busy} label="Check Every (Minutes)" type="number" value={minutes} onChange={event=>{setSaved('');setMinutes(event.target.value);}} error={!validInterval} helperText={intervalError} inputProps={{min:1,step:'any'}}/>:<Typography>{scheduleSource?.schedule?.scheduleKind==='cron'?`Cron schedule: ${scheduleSource?.schedule.expression} (${scheduleSource?.schedule.timezone})`:scheduleSource?.schedule?.scheduleKind==='once'?`Once at ${scheduleSource?.schedule.at}`:scheduleSource?.triggerKind==='filesystem'?'When files change':'When a webhook event arrives'}</Typography>}
+     <Button disabled={busy||!validInterval} onClick={saveSchedule}>Save Schedule</Button>
      <WorkspaceQueryError read={workspaceRead("workspace","Engines",engines)}/>
      <TextField disabled={busy||engines.isPending} select label="Provider" value={engine} onChange={event=>{setSaved('');setEngine(event.target.value);setModel(engines.data?.find(item=>item.id===event.target.value)?.defaultModel??'');}}>
       {engine&&!engines.data?.some(item=>item.id===engine)&&<MenuItem value={engine}>{engine}</MenuItem>}
       {engines.data?.map(item=><MenuItem key={item.id} value={item.id}>{item.displayName}</MenuItem>)}
      </TextField>
      <TextField disabled={busy||engines.isPending} select label="Model" SelectProps={{displayEmpty:true}} InputLabelProps={{shrink:true}} value={model} onChange={event=>{setSaved('');setModel(event.target.value);}}>
-      <MenuItem value="">Provider default</MenuItem>{model&&!engines.data?.find(item=>item.id===engine)?.models.some(item=>item.id===model)&&<MenuItem value={model}>{model}</MenuItem>}{engines.data?.find(item=>item.id===engine)?.models.filter(item=>item.id).map(item=><MenuItem key={item.id} value={item.id}>{item.label}</MenuItem>)}
+      <MenuItem value="">Provider Default</MenuItem>{model&&!engines.data?.find(item=>item.id===engine)?.models.some(item=>item.id===model)&&<MenuItem value={model}>{model}</MenuItem>}{engines.data?.find(item=>item.id===engine)?.models.filter(item=>item.id).map(item=><MenuItem key={item.id} value={item.id}>{item.label}</MenuItem>)}
      </TextField>
-     <Button disabled={busy||!engine||!runtimeBase?.runtimeSettings} onClick={()=>void act(()=>realApi.updateAgent(app.agentId,{activeEngine:engine,model:model.trim()||null,expectedRuntimeSettings:runtimeBase!.runtimeSettings}),'Model saved',value=>setRuntimeBase({...runtimeBase!,engine:value.activeEngine,model:value.model??undefined,runtimeSettings:{activeEngine:value.activeEngine,model:value.model??null,effort:value.effort??null,speed:value.speed??null}}))}>Save model</Button>
-     <Button href={`/branches?branch=${encodeURIComponent(app.branchId)}&tab=workflow`}>More options</Button>
-     <Button disabled={busy} onClick={()=>void retryRefresh(true)}>Discard draft and reload</Button>
+     <Button disabled={busy||!engine||!runtimeBase?.runtimeSettings} onClick={()=>void act(()=>realApi.updateAgent(app.agentId,{activeEngine:engine,model:model.trim()||null,expectedRuntimeSettings:runtimeBase!.runtimeSettings}),'Model saved',value=>setRuntimeBase({...runtimeBase!,engine:value.activeEngine,model:value.model??undefined,runtimeSettings:{activeEngine:value.activeEngine,model:value.model??null,effort:value.effort??null,speed:value.speed??null}}))}>Save Model</Button>
+     <Button href={`/branches?branch=${encodeURIComponent(app.branchId)}&tab=workflow`}>More Options</Button>
+     <Button disabled={busy} onClick={()=>void retryRefresh(true)}>Discard Draft And Reload</Button>
     </>}
     {assistant&&<Button disabled={busy||status.isPending} onClick={()=>void configure(!status.data?.enabled)}>{status.data?.enabled?'Disable Assistant':'Enable Assistant'}</Button>}
    </Stack></DialogContent><DialogActions><Button disabled={busy} onClick={closeSettings}>Done</Button></DialogActions>
   </Dialog>
-  <ConfirmDialog open={discardSettings} title="Unsaved settings" confirmLabel="Discard changes" cancelLabel="Keep editing" onCancel={()=>setDiscardSettings(false)} onConfirm={()=>{setDiscardSettings(false);setSettings(false);}}>Discard unsaved schedule or model changes?</ConfirmDialog>
+  <ConfirmDialog open={discardSettings} title="Unsaved Settings" confirmLabel="Discard Changes" cancelLabel="Keep Editing" onCancel={()=>setDiscardSettings(false)} onConfirm={()=>{setDiscardSettings(false);setSettings(false);}}>Discard unsaved schedule or model changes?</ConfirmDialog>
  </Box></WorkspaceRefreshProvider></WorkspaceConnectionProvider></ConversationChromeContext.Provider></ThemeProvider>;
 }

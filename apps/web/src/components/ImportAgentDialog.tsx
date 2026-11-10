@@ -451,7 +451,7 @@ export function ImportAgentForm({
       if(savedIntentRef.current?.requestId===failedImport.requestId)savedIntentRef.current=undefined;
       setFailedImport(undefined);setPartialResult(undefined);setLifecycleOperationId(undefined);setError(undefined);
       importRequestId.current=createClientId();refreshSaved();clearPackageDraft();
-    }}>Finish reviewing</Button>
+    }}>Finish Reviewing</Button>
     <Button onClick={closeForm}>Close</Button>
   </Stack>;
   if(savedImports.error)return <Stack spacing={2}><Alert severity="error">{savedImports.error}</Alert><Button onClick={closeForm}>Close</Button></Stack>;
@@ -470,7 +470,7 @@ export function ImportAgentForm({
     {partialResult&&<NativeApplications result={partialResult}/>}
     {lifecycleOperationId&&<LifecycleReview key={lifecycleOperationId} kind="import" id={lifecycleOperationId}/>}
       <Alert severity="info">History stays private; credentials are excluded.</Alert>
-      <Paper component="section" variant="outlined" aria-label="Import an external AI chat" sx={{ p: 1.5 }}>
+      <Paper component="section" variant="outlined" aria-label="Import An External AI Chat" sx={{ p: 1.5 }}>
         <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} alignItems={{ xs: "flex-start", sm: "center" }} justifyContent="space-between">
           <Stack spacing={0.25} sx={{ minWidth: 0 }}>
             <Typography variant="subtitle2">Import a Codex or Claude chat</Typography>
@@ -479,7 +479,7 @@ export function ImportAgentForm({
             </Typography>
           </Stack>
           <Button size="small" variant="outlined" startIcon={<ContentCopyOutlinedIcon />} onClick={() => void copyExternalPrompt()} sx={{ flexShrink: 0 }}>
-            Copy conversion prompt
+            Copy Conversion Prompt
           </Button>
         </Stack>
       </Paper>
@@ -495,7 +495,7 @@ export function ImportAgentForm({
         </Button>
         {fileName && packageBlob && !jsonText ? <Paper
           role="group"
-          aria-label="Selected JSON package"
+          aria-label="Selected JSON Package"
           variant="outlined"
           sx={{ display: "flex", alignItems: "center", gap: 1, px: 1, py: 0.5, minWidth: 0, maxWidth: "100%", flex: 1 }}
         >
@@ -517,7 +517,7 @@ export function ImportAgentForm({
         </>}
       </Stack>
       <TextField
-        label="Or paste Agent JSON"
+        label="Or Paste Agent JSON"
         placeholder="Paste exported JSON here"
         value={jsonText}
         onPasteCapture={(event) => {
@@ -554,26 +554,26 @@ export function ImportAgentForm({
         Choose or paste Agent / organization package
       </Typography> : null}
       {!fixedConversationId&&!createdChat&&<Paper variant="outlined" sx={{p:2}}><Stack spacing={1}>
-        <Typography variant="subtitle1">Import into a new Chat and workspace</Typography>
+        <Typography variant="subtitle1">Import Into A New Chat And Workspace</Typography>
         <Typography variant="body2">Create new empty managed folder · retained if import canceled</Typography>
-        <TextField disabled={createDestination.isPending||Boolean(creationAttempt)} label="New Chat name" value={newChatLabel} onChange={event=>{setNewChatLabel(event.target.value);createChatRequestId.current=createClientId();}}/>
-        <TextField disabled={createDestination.isPending||Boolean(creationAttempt)} label="New managed folder name" value={newFolderName} onChange={event=>{setNewFolderName(event.target.value);createChatRequestId.current=createClientId();}}/>
-        <TextField select disabled={createDestination.isPending||Boolean(creationAttempt)} label="New Chat engine" value={newChatEngine} onChange={event=>{setNewChatEngine(event.target.value);createChatRequestId.current=createClientId();}}>{engines.map(engine=><MenuItem key={engine.id} value={engine.id} disabled={!engineIsAvailable(engine)}>{engine.displayName}</MenuItem>)}</TextField>
-        <Button disabled={createDestination.isPending||importAgents.isPending||Boolean(roleOperation)||!newChatLabel.trim()||!newFolderName.trim()||!newChatEngine} onClick={()=>{if(pendingRef.current)return;pendingRef.current=true;onPendingChange?.(true);createDestination.mutate();}}>{creationAttempt?"Retry destination creation":"Create new destination"}</Button>
+        <TextField disabled={createDestination.isPending||Boolean(creationAttempt)} label="New Chat Name" value={newChatLabel} onChange={event=>{setNewChatLabel(event.target.value);createChatRequestId.current=createClientId();}}/>
+        <TextField disabled={createDestination.isPending||Boolean(creationAttempt)} label="New Managed Folder Name" value={newFolderName} onChange={event=>{setNewFolderName(event.target.value);createChatRequestId.current=createClientId();}}/>
+        <TextField select disabled={createDestination.isPending||Boolean(creationAttempt)} label="New Chat Engine" value={newChatEngine} onChange={event=>{setNewChatEngine(event.target.value);createChatRequestId.current=createClientId();}}>{engines.map(engine=><MenuItem key={engine.id} value={engine.id} disabled={!engineIsAvailable(engine)}>{engine.displayName}</MenuItem>)}</TextField>
+        <Button disabled={createDestination.isPending||importAgents.isPending||Boolean(roleOperation)||!newChatLabel.trim()||!newFolderName.trim()||!newChatEngine} onClick={()=>{if(pendingRef.current)return;pendingRef.current=true;onPendingChange?.(true);createDestination.mutate();}}>{creationAttempt?"Retry Destination Creation":"Create New Destination"}</Button>
       </Stack></Paper>}
       {createdChat&&<Alert severity="info">New destination created: {createdChat.title} · {createdChat.workingDirectory} · Chat/workspace retained if import canceled</Alert>}
       {conversations.length === 0 ? <Alert severity="warning">No destination Chats · create above or choose another workspace</Alert> : fixedConversationId || conversations.length === 1 ? <Typography variant="body2" color="text.secondary">
         Destination chat: {conversations.find(conversation => conversation.id === fixedConversationId)?.title ?? conversations[0]!.title}
       </Typography> : <FormControl fullWidth>
-        <InputLabel id="import-chat-label">Destination chat</InputLabel>
-        <Select labelId="import-chat-label" label="Destination chat" value={conversationId} disabled={Boolean(creationAttempt)||createDestination.isPending} onChange={(event: SelectChangeEvent) => {importRequestId.current=createClientId();setConversationId(event.target.value);}}>
+        <InputLabel id="import-chat-label">Destination Chat</InputLabel>
+        <Select labelId="import-chat-label" label="Destination Chat" value={conversationId} disabled={Boolean(creationAttempt)||createDestination.isPending} onChange={(event: SelectChangeEvent) => {importRequestId.current=createClientId();setConversationId(event.target.value);}}>
           {conversations.map((conversation) => <MenuItem key={conversation.id} value={conversation.id}>{conversation.title}</MenuItem>)}
         </Select>
       </FormControl>}
-      {workingRoots.length>0?<><Typography>Recovery · one new folder per shared source root · live population: explicit activation required</Typography>{workingRoots.map(root=><TextField key={root.ref} label={`New folder: ${root.agents.join(', ')}`} value={workingRootDestinations[root.ref]??''} onChange={event=>{importRequestId.current=createClientId();setWorkingRootDestinations(current=>({...current,[root.ref]:event.target.value}));}} helperText="New absolute host path; distinct from and outside every other destination."/>)}</>:<TextField label="New folder for included working files" value={workingFilesDestination} onChange={event=>{setWorkingFilesDestination(event.target.value);importRequestId.current=createClientId();}} helperText="Included files: new absolute host folder · no existing-folder overwrite"/>}
-      <TextField select label="Working folder mode" value={workingCopyMode} onChange={event=>{setWorkingCopyMode(event.target.value as typeof workingCopyMode);importRequestId.current=createClientId();}}><MenuItem value="">Keep source mode</MenuItem><MenuItem value="shared">Shared folder</MenuItem><MenuItem value="separate_git">Separate Git copy</MenuItem></TextField>
-      <FormControlLabel control={<Checkbox checked={activateWorkingFiles} disabled={packagePreview?.mode!=='full'||!packagePreview.hasWorkingFiles||importAgents.isPending||Boolean(roleOperation)} onChange={event=>{importRequestId.current=createClientId();setActivateWorkingFiles(event.target.checked);}}/>} label="Use restored files in live Agent working folders"/>
-      {activateWorkingFiles&&(createdChat?<FormControlLabel control={<Checkbox checked={confirmSharedRoot} onChange={event=>{importRequestId.current=createClientId();setConfirmSharedRoot(event.target.checked);}}/>} label={`Confirm new workspace folder: ${createdChat.workingDirectory??'unavailable'}`}/>:<Alert severity="info"><Stack spacing={0.5}><Typography>Existing workspace · Separate Git copy only · existing Git repository required</Typography><Typography>Shared activation · new managed destination required</Typography></Stack></Alert>)}
+      {workingRoots.length>0?<><Typography>Recovery · one new folder per shared source root · live population: explicit activation required</Typography>{workingRoots.map(root=><TextField key={root.ref} label={`New Folder: ${root.agents.join(', ')}`} value={workingRootDestinations[root.ref]??''} onChange={event=>{importRequestId.current=createClientId();setWorkingRootDestinations(current=>({...current,[root.ref]:event.target.value}));}} helperText="New absolute host path; distinct from and outside every other destination."/>)}</>:<TextField label="New Folder For Included Working Files" value={workingFilesDestination} onChange={event=>{setWorkingFilesDestination(event.target.value);importRequestId.current=createClientId();}} helperText="Included files: new absolute host folder · no existing-folder overwrite"/>}
+      <TextField select label="Working Folder Mode" value={workingCopyMode} onChange={event=>{setWorkingCopyMode(event.target.value as typeof workingCopyMode);importRequestId.current=createClientId();}}><MenuItem value="">Keep Source Mode</MenuItem><MenuItem value="shared">Shared Folder</MenuItem><MenuItem value="separate_git">Separate Git Copy</MenuItem></TextField>
+      <FormControlLabel control={<Checkbox checked={activateWorkingFiles} disabled={packagePreview?.mode!=='full'||!packagePreview.hasWorkingFiles||importAgents.isPending||Boolean(roleOperation)} onChange={event=>{importRequestId.current=createClientId();setActivateWorkingFiles(event.target.checked);}}/>} label="Use Restored Files In Live Agent Working Folders"/>
+      {activateWorkingFiles&&(createdChat?<FormControlLabel control={<Checkbox checked={confirmSharedRoot} onChange={event=>{importRequestId.current=createClientId();setConfirmSharedRoot(event.target.checked);}}/>} label={`Confirm New Workspace Folder: ${createdChat.workingDirectory??'Unavailable'}`}/>:<Alert severity="info"><Stack spacing={0.5}><Typography>Existing workspace · Separate Git copy only · existing Git repository required</Typography><Typography>Shared activation · new managed destination required</Typography></Stack></Alert>)}
       {activateWorkingFiles&&<Stack spacing={0.5}><Typography>Recovery folders · required + separate from live folder · retained on failure</Typography><Typography>Credentials and source runtime ownership remain excluded</Typography><Typography>Root membership · server validation required</Typography></Stack>}
       <NativePortableImportChoices summary={packagePreview?.nativeData} value={nativeChoices} onChange={value=>{importRequestId.current=createClientId();setNativeChoices(value);}} disabled={importAgents.isPending||Boolean(roleOperation)} destinations={rootDestinations}/>
       <ChatInstructionsImportChoice source={sourceInstructions} destination={destinationInstructions}
@@ -609,14 +609,14 @@ export function ImportAgentForm({
         </Typography>
         <FormControlLabel
           control={<Checkbox checked={acknowledgeElevatedPermissions} onChange={(event) => {importRequestId.current=createClientId();setAcknowledgeElevatedPermissions(event.target.checked);}} />}
-          label="Import these elevated management permissions"
+          label="Import These Elevated Management Permissions"
         />
       </Alert> : null}
       {error ? <Alert severity="error">{error}</Alert> : null}
-      {accessReview&&<Paper variant="outlined" sx={{p:2}}><Typography component="h3" variant="subtitle1">Capability restrictions</Typography>
+      {accessReview&&<Paper variant="outlined" sx={{p:2}}><Typography component="h3" variant="subtitle1">Capability Restrictions</Typography>
         {accessReview.source.map(item=><Typography key={item.ref} variant="body2" sx={{overflowWrap:"anywhere"}}>{sourceAgentNames.get(item.ref)??`Imported Agent (${item.ref})`}: {item.settings?.restrictedCapabilityIds?.join(', ')||'No source restrictions'}</Typography>)}
         <Typography variant="body2" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>Current destination policy: {accessReview.destination.restrictedCapabilityIds.join(', ')||'No capability restrictions'}</Typography>
-        <TextField select fullWidth label="Restrictions for imported Agents" value={accessAction} onChange={event=>{setAccessAction(event.target.value as typeof accessAction);importRequestId.current=createClientId();}} sx={{mt:1}}><MenuItem value="keep_destination">Keep destination restrictions</MenuItem><MenuItem value="use_source">Apply source restrictions to new Agents</MenuItem></TextField>
+        <TextField select fullWidth label="Restrictions For Imported Agents" value={accessAction} onChange={event=>{setAccessAction(event.target.value as typeof accessAction);importRequestId.current=createClientId();}} sx={{mt:1}}><MenuItem value="keep_destination">Keep Destination Restrictions</MenuItem><MenuItem value="use_source">Apply Source Restrictions To New Agents</MenuItem></TextField>
         <Typography variant="body2">Memory and saved-browser access require separate choices in Settings.</Typography>
       </Paper>}
       {roleReview?.warning&&<Alert severity="warning">{roleReview.warning}</Alert>}
@@ -636,7 +636,7 @@ export function ImportAgentForm({
           borderColor: "divider",
         } : {}),
       }}>
-      {roleOperation?.outputRoleRecoveryId&&<><Button onClick={async()=>{try{const result=await api.recoverAgentOutputRoles(operationProjectId??projectId,roleOperation.outputRoleRecoveryId!);if('id'in result)setRecoveryReview(result);void operationQuery.refetch();}catch(cause){setError((cause as Error).message);}}}>Review output roles again</Button>{recoveryReview&&<><Alert severity="warning">{recoveryReview.warning??'Apply the reviewed output roles.'}</Alert><Button onClick={async()=>{try{await api.recoverAgentOutputRoles(operationProjectId??projectId,roleOperation.outputRoleRecoveryId!,recoveryReview.id);setRecoveryReview(undefined);void operationQuery.refetch();}catch(cause){setError((cause as Error).message);}}}>Confirm output roles</Button></>}</>}
+      {roleOperation?.outputRoleRecoveryId&&<><Button onClick={async()=>{try{const result=await api.recoverAgentOutputRoles(operationProjectId??projectId,roleOperation.outputRoleRecoveryId!);if('id'in result)setRecoveryReview(result);void operationQuery.refetch();}catch(cause){setError((cause as Error).message);}}}>Review Output Roles Again</Button>{recoveryReview&&<><Alert severity="warning">{recoveryReview.warning??'Apply the reviewed output roles.'}</Alert><Button onClick={async()=>{try{await api.recoverAgentOutputRoles(operationProjectId??projectId,roleOperation.outputRoleRecoveryId!,recoveryReview.id);setRecoveryReview(undefined);void operationQuery.refetch();}catch(cause){setError((cause as Error).message);}}}>Confirm Output Roles</Button></>}</>}
 
       <Button disabled={createDestination.isPending||importAgents.isPending} onClick={closeForm}>Cancel</Button>
       <Button variant="contained" disabled={Boolean(nativeImportChoiceError(nativeChoices,packagePreview?.nativeData))||!activationAllowed||createDestination.isPending||!validRootDestinations||Boolean(accessReview&&!accessAction)||Boolean(roleOperation)||!packageBlob || !packagePreview || inspecting || destinationAgentsQuery.isFetching || (instructionsConflict && !instructionsAction) || invalidPermissionShape || !conversationId || sourceEngines.some((source) => {
@@ -648,7 +648,7 @@ export function ImportAgentForm({
         onPendingChange?.(true);
         importAgents.mutate();
       }}>
-        {importAgents.isPending ? "Importing…" : !accessReview ? "Review access settings" : packagePreview?.hasOutputRoles&&!roleReview ? "Review output roles" : "Import"}
+        {importAgents.isPending ? "Importing…" : !accessReview ? "Review Access Settings" : packagePreview?.hasOutputRoles&&!roleReview ? "Review Output Roles" : "Import"}
       </Button>
       </Stack>
   </Stack>;
@@ -710,14 +710,14 @@ export function ImportAgentDialog({
       maxWidth="md"
       slotProps={{ paper: { "aria-busy": pending || undefined } }}
     >
-      <DialogTitle>Import Agent package</DialogTitle>
+      <DialogTitle>Import Agent Package</DialogTitle>
       <DialogContent sx={{ pt: "12px !important" }}>
         {!projectId ? (
           <FormControl fullWidth size="small" sx={{ mb: 2 }}>
-            <InputLabel id="import-package-project-label">Destination workspace</InputLabel>
+            <InputLabel id="import-package-project-label">Destination Workspace</InputLabel>
             <Select
               labelId="import-package-project-label"
-              label="Destination workspace"
+              label="Destination Workspace"
               value={selectedProjectId}
               disabled={pending}
               onChange={event => setSelectedProjectId(event.target.value)}

@@ -80,7 +80,7 @@ function QueuedMessageTrayComponent({ messages, scope, attachmentNamesForMessage
   return <Paper
     ref={rootRef}
     variant="outlined"
-    aria-label="Queued messages"
+    aria-label="Queued Messages"
     aria-busy={loading || undefined}
     onScroll={revealRows}
     onKeyDownCapture={event => {
@@ -118,18 +118,18 @@ function QueuedMessageTrayComponent({ messages, scope, attachmentNamesForMessage
             <Typography tabIndex={0} noWrap variant="body2" sx={{ flex: 1, minWidth: 0 }}>{item.text || item.attachmentNames.join(", ")}</Typography>
           </Tooltip>
           <Tooltip title={item.error ?? (inFlight ? "Awaiting acceptance; not confirmed queued." : "Retry reconciles this exact operation.")}><Typography tabIndex={0} variant="caption" color={item.status === "failed" ? "error" : "text.secondary"}>{inFlight ? "Pending" : item.status === "accepted" ? "Saved" : item.status === "failed" ? "Failed" : "Unconfirmed"}</Typography></Tooltip>
-          {item.attachmentNames.length ? <Typography variant="caption" aria-label={`${item.attachmentNames.length} attachments`}>+{item.attachmentNames.length}</Typography> : null}
+          {item.attachmentNames.length ? <Typography variant="caption" aria-label={`${item.attachmentNames.length} Attachments`}>+{item.attachmentNames.length}</Typography> : null}
           {queueReviewHref && (item.action === "queue" || item.pending.request?.runtime.activeRunDelivery === "queue")
-            ? <Button size="small" href={queueReviewHref}>Review in Agent chat</Button>
+            ? <Button size="small" href={queueReviewHref}>Review In Agent Chat</Button>
             : <Button size="small" disabled={inFlight} onClick={() => window.dispatchEvent(new CustomEvent("ponderosa-submission-retry", { detail: id }))}>Retry</Button>}
-          {item.status === "failed" ? <Tooltip title="Discard definitely rejected input"><span><IconButton aria-label="Discard rejected message" disabled={inFlight || !navigator.locks} onClick={() => window.dispatchEvent(new CustomEvent("ponderosa-submission-discard", { detail: id }))}><DeleteOutlineIcon fontSize="small" /></IconButton></span></Tooltip> : null}
+          {item.status === "failed" ? <Tooltip title="Discard Definitely Rejected Input"><span><IconButton aria-label="Discard Rejected Message" disabled={inFlight || !navigator.locks} onClick={() => window.dispatchEvent(new CustomEvent("ponderosa-submission-discard", { detail: id }))}><DeleteOutlineIcon fontSize="small" /></IconButton></span></Tooltip> : null}
         </Box>;
       })}
       {messages.slice(0, shownRows).map((message) => {
         const attachmentNames = attachmentNamesForMessage?.(message) ?? [];
         const editing = editingId === message.deliveryId;
         return <div key={message.deliveryId} data-queue-row className="MuiBox-root queued-message-row">
-          <span className="MuiTypography-root MuiTypography-caption queued-message-position" aria-label={message.position ? `Queue position ${message.position}` : "Queue position pending"}>{message.position ?? "…"}</span><SubdirectoryArrowRightIcon aria-hidden sx={{ color: "text.disabled", fontSize: 16, flex: "0 0 auto" }} />
+          <span className="MuiTypography-root MuiTypography-caption queued-message-position" aria-label={message.position ? `Queue Position ${message.position}` : "Queue Position Pending"}>{message.position ?? "…"}</span><SubdirectoryArrowRightIcon aria-hidden sx={{ color: "text.disabled", fontSize: 16, flex: "0 0 auto" }} />
           {editing ? <TextField
             value={editingText}
             disabled={busy}
@@ -139,7 +139,7 @@ function QueuedMessageTrayComponent({ messages, scope, attachmentNamesForMessage
             autoFocus
             multiline
             maxRows={4}
-            inputProps={{ "aria-label": `Edit queued message ${message.position ?? "pending"}` }}
+            inputProps={{ "aria-label": `Edit Queued Message ${message.position ?? "pending"}` }}
             onKeyDown={(event) => {
               if (event.key === "Escape") setEditingId(undefined);
               if (event.key === "Enter" && !event.shiftKey && editingText.trim()) {
@@ -148,7 +148,7 @@ function QueuedMessageTrayComponent({ messages, scope, attachmentNamesForMessage
               }
             }}
           /> : <Tooltip title={message.text}><p tabIndex={0} className="MuiTypography-root MuiTypography-body2 MuiTypography-noWrap queued-message-text">{message.text}</p></Tooltip>}
-          {!editing && attachmentNames.length ? <Tooltip title={attachmentNames.join(", ")}><Typography tabIndex={0} variant="caption" aria-label={`${attachmentNames.length} attachments`}>+{attachmentNames.length}</Typography></Tooltip> : null}
+          {!editing && attachmentNames.length ? <Tooltip title={attachmentNames.join(", ")}><Typography tabIndex={0} variant="caption" aria-label={`${attachmentNames.length} Attachments`}>+{attachmentNames.length}</Typography></Tooltip> : null}
           {!editing && agentNameForId ? <span className="MuiTypography-root MuiTypography-caption MuiTypography-noWrap queued-message-agent">
             {agentNameForId(message.targetAgentId)}
           </span> : null}
@@ -156,9 +156,9 @@ function QueuedMessageTrayComponent({ messages, scope, attachmentNamesForMessage
             <Button size="small" disabled={busy || !editingText.trim()} onClick={() => run(() => onEdit(message, editingText.trim()), () => setEditingId(undefined))}>Save</Button>
             <Button size="small" color="inherit" disabled={busy} onClick={() => setEditingId(undefined)}>Cancel</Button>
           </> : <>
-            <Tooltip title="Steer now"><span><IconButton size="small" disabled={busy} aria-label={`Steer queued message ${message.position ?? "pending"}`} onClick={() => run(() => onSteer(message))}><SubdirectoryArrowRightIcon fontSize="small" /></IconButton></span></Tooltip>
-            <Tooltip title="Edit Queued Message"><span><IconButton size="small" disabled={busy} aria-label={`Edit queued message ${message.position ?? "pending"}`} onClick={() => { setEditingId(message.deliveryId); setEditingText(message.text); }}><EditOutlinedIcon fontSize="small" /></IconButton></span></Tooltip>
-            <Tooltip title="Delete Queued Message"><span><IconButton size="small" disabled={busy} aria-label={`Delete queued message ${message.position ?? "pending"}`} onClick={() => run(() => onDelete(message))}><DeleteOutlineIcon fontSize="small" /></IconButton></span></Tooltip>
+            <Tooltip title="Steer Now"><span><IconButton size="small" disabled={busy} aria-label={`Steer Queued Message ${message.position ?? "Pending"}`} onClick={() => run(() => onSteer(message))}><SubdirectoryArrowRightIcon fontSize="small" /></IconButton></span></Tooltip>
+            <Tooltip title="Edit Queued Message"><span><IconButton size="small" disabled={busy} aria-label={`Edit Queued Message ${message.position ?? "Pending"}`} onClick={() => { setEditingId(message.deliveryId); setEditingText(message.text); }}><EditOutlinedIcon fontSize="small" /></IconButton></span></Tooltip>
+            <Tooltip title="Delete Queued Message"><span><IconButton size="small" disabled={busy} aria-label={`Delete Queued Message ${message.position ?? "Pending"}`} onClick={() => run(() => onDelete(message))}><DeleteOutlineIcon fontSize="small" /></IconButton></span></Tooltip>
           </>}
         </div>;
       })}

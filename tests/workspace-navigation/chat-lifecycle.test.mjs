@@ -31,7 +31,7 @@ test('workflow-owned Chat offers its owning settings, never an independent delet
   const view = render({id:'chat',title:'Owned',branchId:'branch /?&'});
   assert.equal(view.query.enabled, false);
   assert.equal(view.nodes.some(n => n.type === 'ResourceDeletionDialog'), false);
-  const link = view.nodes.find(n => n.type === 'Button' && n.props.children === 'Open workflow settings');
+  const link = view.nodes.find(n => n.type === 'Button' && n.props.children === 'Open Workflow Settings');
   assert.equal(link.props.href, '/branches?branch=branch%20%2F%3F%26&tab=settings');
   const notes = view.nodes.filter(n => n.type === 'Typography').map(n => n.props.children).join(' ');
   assert.match(notes, /cannot be deleted separately/);

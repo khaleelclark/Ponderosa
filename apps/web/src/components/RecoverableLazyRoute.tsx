@@ -107,7 +107,7 @@ class LazyRouteErrorBoundary extends Component<{
       <Box sx={{ p: { xs: 2, md: 3 } }}>
         <Alert severity="error" icon={<ErrorOutlineIcon />}>
           <Stack spacing={1}>
-            <Typography fontWeight={800}>This view could not be loaded.</Typography>
+            <Typography fontWeight={800}>This View Could Not Be Loaded.</Typography>
             <Typography variant="body2">
               {canRetry
                 ? "The downloaded view may be stale or temporarily unavailable."

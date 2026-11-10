@@ -13,7 +13,7 @@ const output=process.env.QUALIFICATION_DIRECTORY;assert(output);await mkdir(outp
 const assets=path.join(root,'apps/web/dist/static/js/async');
 const chunks=await Promise.all((await readdir(assets)).filter(name=>name.endsWith('.js')).map(async name=>({name,text:await readFile(path.join(assets,name),'utf8')})));
 function chunkWith(text){const matches=chunks.filter(chunk=>chunk.text.includes(text));assert.equal(matches.length,1,`Unique built route marker: ${text}`);return '/static/js/async/'+matches[0].name;}
-const appChunk=chunkWith('This workspace view could not be displayed.');
+const appChunk=chunkWith('This Workspace View Could Not Be Displayed.');
 const projectChunk=chunkWith('This Project view could not be displayed.');
 const agentChunk=chunkWith('Earlier Agent records could not be loaded.');
 assert.notEqual(agentChunk,projectChunk,'Agent detail must not be in the cold Chat Project chunk');
@@ -56,12 +56,12 @@ try{
     row.overlapBeforeAppExecution=true;row.dataBeforeAppExecution=true;releaseApp();
    }else if(kind==='home-first-use'){
     const projectRequests=[];page.on('request',request=>{if(new URL(request.url()).pathname===projectChunk)projectRequests.push(request.url());});
-    await page.goto(setup.origin+'/home');await page.getByRole('button',{name:'Open workspace navigation',exact:true}).click();
+    await page.goto(setup.origin+'/home');await page.getByRole('button',{name:'Open Workspace Navigation',exact:true}).click();
     const chat=page.getByText('Normal product compatibility',{exact:true}).first();await chat.waitFor();
     assert.equal(projectRequests.length,0,'Home must not warm an unselected Project route');await chat.click();
     await page.waitForURL(setup.normalUrl);row.firstUseProjectRequests=projectRequests;
    }else if(kind==='chunk-retry'){
-    await page.goto(setup.normalUrl);await page.getByText('This view could not be loaded.',{exact:true}).waitFor();
+    await page.goto(setup.normalUrl);await page.getByText('This View Could Not Be Loaded.',{exact:true}).waitFor();
     allowProject=true;await page.getByRole('button',{name:'Try Again',exact:true}).click();row.retry='explicit';
    }
    if(kind==='agent-first-use'||kind==='agent-retry'){
@@ -76,7 +76,7 @@ try{
     const readAgent=async()=>{const response=await fetch(setup.origin+`/api/agents/${state.normalAgent.id}`);assert(response.ok);const value=await response.json();return{activity:value.activity.map(item=>({id:item.id,event:item.event})),messages:value.messages,runs:value.runs.map(run=>run.id)};};
     const initialHistory=await readAgent();assert(initialHistory.activity.some(item=>item.id===state.normalActivity.id),'Use real nonempty canonical history');
     const navigate=async(section,destination)=>{
-     await page.getByRole('button',{name:'Open workspace navigation',exact:true}).click();
+     await page.getByRole('button',{name:'Open Workspace Navigation',exact:true}).click();
      await page.getByRole('button',{name:section,exact:true}).click();
      await page.locator(`a[href="${destination}"]:visible`).first().click();
      await page.waitForURL(setup.origin+destination);
@@ -88,7 +88,7 @@ try{
     await navigate('Chats',chatPath);await page.getByLabel('Message',{exact:true}).waitFor();assert.equal(await page.getByLabel('Message',{exact:true}).innerText(),chatDraft);
     if(kind==='agent-retry'){
      await page.reload();await page.getByLabel('Message',{exact:true}).waitFor();allowAgent=false;
-     await navigate('Agents',agentPath);await page.getByText('This view could not be loaded.',{exact:true}).waitFor();
+     await navigate('Agents',agentPath);await page.getByText('This View Could Not Be Loaded.',{exact:true}).waitFor();
      assert.equal(await page.evaluate(key=>localStorage.getItem(key),agentKey),agentDraft);assert.equal(await page.evaluate(key=>localStorage.getItem(key),chatKey),chatDraft);
      assert.deepEqual(await readAgent(),initialHistory,'Module failure cannot change canonical history or Runs');
      allowAgent=true;await page.getByRole('button',{name:'Try Again',exact:true}).click();row.agentRetry='explicit';

@@ -359,7 +359,7 @@ export function BrowserViewport<Session extends BrowserSession>({
       }}
     >
       {viewport}
-      {!operatorControl && metadata?.activity && metadata.pageId === pageId && Date.now() - metadata.activity.at < 2_500 ? <Box aria-label={metadata.activity.kind === "fill" ? "Agent filling field" : "Agent click"}
+      {!operatorControl && metadata?.activity && metadata.pageId === pageId && Date.now() - metadata.activity.at < 2_500 ? <Box aria-label={metadata.activity.kind === "fill" ? "Agent Filling Field" : "Agent Click"}
         sx={{ pointerEvents: "none", position: "absolute", zIndex: 1,
           left: imageBounds.left + metadata.activity.x / metadata.viewport.width * imageBounds.width,
           top: metadata.activity.y / metadata.viewport.height * imageBounds.height,

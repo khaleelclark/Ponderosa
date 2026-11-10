@@ -11,12 +11,12 @@ export function ImportedCommunications({agentId}:{agentId:string}):JSX.Element {
  const page=useQuery({queryKey:['imported-communications',agentId,offset,version],enabled:open,retry:false,
   queryFn:()=>requestJson<ImportedCommunicationsPageDto>(`/api/agents/${encodeURIComponent(agentId)}/imported-communications?offset=${offset}&limit=10${version?`&archiveVersion=${encodeURIComponent(version)}`:''}`)});
  const artifacts=new Map(page.data?.artifacts.map(item=>[item.id,item]));
- return <Box sx={{px:2,py:1}}><Button aria-expanded={open} onClick={()=>setOpen(value=>!value)}>Imported history</Button>{open&&<Stack spacing={1} sx={{maxHeight:'50vh',overflow:'auto'}}>
+ return <Box sx={{px:2,py:1}}><Button aria-expanded={open} onClick={()=>setOpen(value=>!value)}>Imported History</Button>{open&&<Stack spacing={1} sx={{maxHeight:'50vh',overflow:'auto'}}>
   {page.isPending&&<Typography role="status">Loading imported history…</Typography>}
   {page.isError&&<Alert severity="error" action={<Button onClick={()=>{setOffset(0);setVersion(undefined);void page.refetch();}}>Reload</Button>}>{page.error.message}</Alert>}
   {page.data&&<>
-   {page.data.importProvenance?<Stack spacing={0.5} component="section" aria-label="Import record" sx={{overflowWrap:'anywhere'}}>
-    <Typography variant="subtitle2">Import record</Typography>
+   {page.data.importProvenance?<Stack spacing={0.5} component="section" aria-label="Import Record" sx={{overflowWrap:'anywhere'}}>
+    <Typography variant="subtitle2">Import Record</Typography>
     <Typography variant="body2">Status: Agent records created</Typography>
     <Typography variant="body2">Imported Agent: {page.data.importProvenance.agentTitle||'Not recorded'}</Typography>
     <Typography variant="body2">Agent records in this import: {page.data.importProvenance.agentCount??'Not recorded'}</Typography>
@@ -36,8 +36,8 @@ export function ImportedCommunications({agentId}:{agentId:string}):JSX.Element {
    </Stack>:page.data.source?<Stack spacing={0.5}><Typography variant="body2">Imported from {page.data.source}{page.data.importedAt?` · ${page.data.importedAt}`:''}</Typography><Typography variant="body2">Import actor and operation: Not recorded</Typography></Stack>:<Typography>No import record is available.</Typography>}
    <Typography variant="body2">Message history: {page.data.messageCount===undefined?'Not available in the retained record':page.data.messageCount===0?'No message history was included in the retained archive':`${page.data.messageCount} message${page.data.messageCount===1?'':'s'} included in the retained archive`}</Typography>
    {page.data.messages.length===0&&Boolean(page.data.messageCount)&&<Typography>No messages on this page.</Typography>}
-   {page.data.chatTitleHistory?.map(item=><Box key={`${item.sourceInstanceId}:${item.projectId}:${item.conversationId}:${item.eventId}`} component="section" aria-label="Imported Chat title change" sx={{borderBottom:1,borderColor:'divider',pb:1,overflowWrap:'anywhere'}}>
-    <Typography variant="subtitle2">Imported source Chat rename</Typography>
+   {page.data.chatTitleHistory?.map(item=><Box key={`${item.sourceInstanceId}:${item.projectId}:${item.conversationId}:${item.eventId}`} component="section" aria-label="Imported Chat Title Change" sx={{borderBottom:1,borderColor:'divider',pb:1,overflowWrap:'anywhere'}}>
+    <Typography variant="subtitle2">Imported Source Chat Rename</Typography>
     <Typography variant="caption">Source record · {new Date(item.createdAt).toLocaleString()}</Typography>
     <Typography variant="body2">Previous title: {item.change.previousTitle}</Typography><Typography variant="body2">New title: {item.change.title}</Typography>
     <Typography variant="body2">Recorded source: {item.change.origin==='automatic_title'?'System automatic title':'Operator API request'}</Typography>

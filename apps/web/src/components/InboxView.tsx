@@ -1571,7 +1571,7 @@ export function InboxView({
                       <Tooltip title="Copy">
                         <IconButton
                           size="small"
-                          aria-label="Copy message"
+                          aria-label="Copy Message"
                           onClick={event => {
                             event.stopPropagation();
                             void copyText(item.communicationIntent === "collaboration" ? item.text : communicationVisibleText({
@@ -1602,11 +1602,11 @@ export function InboxView({
                       ) : null}
                       {!fromUser && item.directMessageAgent ? (
                         <Tooltip
-                          title={`Reply to ${item.directMessageAgent.title}`}
+                          title={`Reply To ${item.directMessageAgent.title}`}
                         >
                           <IconButton
                             size="small"
-                            aria-label={`Reply to ${item.directMessageAgent.title}`}
+                            aria-label={`Reply To ${item.directMessageAgent.title}`}
                             onClick={event => {
                               event.stopPropagation();
                               mentionItem(item);
@@ -1690,8 +1690,8 @@ export function InboxView({
             Cancellation failed. {cancelOperationError.message}
           </Alert>
         ) : null}
-        <WorkspaceQueryError read={workspaceRead(`chat:${composerConversationId}`,"Queued messages",queuedMessages.query)}/>
-        {queuedMessages.failure&&<details><summary>Queue action needs attention</summary>{queuedMessages.failure.error.message}<Button onClick={queuedMessages.failure.retry}>Retry action</Button></details>}
+        <WorkspaceQueryError read={workspaceRead(`chat:${composerConversationId}`,"Queued Messages",queuedMessages.query)}/>
+        {queuedMessages.failure&&<details><summary>Queue Action Needs Attention</summary>{queuedMessages.failure.error.message}<Button onClick={queuedMessages.failure.retry}>Retry Action</Button></details>}
         <QueuedMessageTray
           messages={queuedMessages.query.data ?? []}
           scope={composerConversationId}

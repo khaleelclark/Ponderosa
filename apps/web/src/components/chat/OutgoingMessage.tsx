@@ -71,7 +71,7 @@ function OutgoingRow({ message }: { message: OutgoingMessage }) {
   const assistantMessages=useContext(ConversationChromeContext)?.assistantAgentId===message.scope;
   return <ChatMessageFrame assistantMessages={assistantMessages} message={{
     id: message.id,
-    ariaLabel: message.accepted ? "Accepted message" : "Sending message",
+    ariaLabel: message.accepted ? "Accepted Message" : "Sending Message",
     author: { kind: "operator", profile: outgoing.profile },
     createdAt: message.createdAt,
     body: <Box sx={{ overflowWrap: "anywhere" }}><ChatMessageBody

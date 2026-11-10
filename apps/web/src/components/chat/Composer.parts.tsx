@@ -50,14 +50,14 @@ export function ComposerProjectDestinationAction({
 }: ComposerProjectDestinationActionProps): JSX.Element {
   if (replyDestination) {
     return (
-      <Tooltip title="Switch to a new Agent">
+      <Tooltip title="Switch To A New Agent">
         <Button
           disabled={disabled}
           size="small"
           variant="text"
           color="primary"
           onClick={toggleNewAgent}
-          aria-label={`Reply to ${replyDestination}; switch to a new Agent`}
+          aria-label={`Reply To ${replyDestination}; switch to a new Agent`}
           sx={{
             minWidth: { xs: 58, md: 64 },
             gap: { xs: 0.5, md: 0 },
@@ -82,8 +82,8 @@ export function ComposerProjectDestinationAction({
       color={newAgentSelected ? "primary" : "inherit"}
       startIcon={<PersonAddAltOutlinedIcon />}
       aria-pressed={newAgentSelected}
-      aria-label="New Agent — send this message to create one"
-      title="Send your message to create a new Agent in this Chat"
+      aria-label="New Agent — Send This Message To Create One"
+      title="Send Your Message To Create A New Agent In This Chat"
       onClick={toggleNewAgent}
       sx={{
         minWidth: { xs: 58, md: 64 },
@@ -245,7 +245,7 @@ export function ComposerSendActions({
               color="error"
               disabled={cancelPending}
               onClick={onCancel}
-              aria-label={cancelPending ? "Cancelling…" : "Cancel run"}
+              aria-label={cancelPending ? "Cancelling…" : "Cancel Run"}
             >
               <StopCircleIcon />
             </IconButton>
@@ -253,12 +253,12 @@ export function ComposerSendActions({
         </Tooltip>
       ) : null}
       {showQueue ? (
-        <Tooltip title="Queue after the active response (Ctrl+Enter)">
+        <Tooltip title="Queue After The Active Response (Ctrl+Enter)">
           <span>
             <IconButton
               disabled={!canSend}
               onClick={queue}
-              aria-label="Queue message"
+              aria-label="Queue Message"
             >
               <ScheduleSendOutlinedIcon />
             </IconButton>
@@ -266,14 +266,14 @@ export function ComposerSendActions({
         </Tooltip>
       ) : null}
       {showQueue ? (
-        <Tooltip title="Steer the active response">
+        <Tooltip title="Steer The Active Response">
           <span>
             {compact ? (
               <IconButton
                 color="primary"
                 disabled={!canSend}
                 onClick={steer}
-                aria-label="Steer active response"
+                aria-label="Steer Active Response"
               >
                 <ArrowUpwardIcon />
               </IconButton>
@@ -283,7 +283,7 @@ export function ComposerSendActions({
                 variant="contained"
                 disabled={!canSend}
                 onClick={steer}
-                aria-label="Steer active response"
+                aria-label="Steer Active Response"
                 endIcon={<ArrowUpwardIcon sx={{ fontSize: 18 }} />}
                 sx={{ minHeight: 40, px: 1.5, borderRadius: 999, boxShadow: "none" }}
               >
@@ -314,8 +314,8 @@ export function ComposerSendActions({
               onClick={send}
               sx={{width:44,height:44}}
               aria-label={!steeringOnly && mentionedBusyHandles.length > 0
-                ? "Queue message"
-                : "Send message"}
+                ? "Queue Message"
+                : "Send Message"}
             >
               <ArrowUpwardIcon />
             </IconButton>

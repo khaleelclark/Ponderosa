@@ -31,7 +31,7 @@ export async function workspaceOutageIncidentMountedRegression():Promise<void>{
  const failure=()=>new ApiRequestError(502,'Proxy unavailable');
  const read=(resource:string,error:unknown=undefined,owner='current'):WorkspaceReadIssue=>({owner,resource,error,hasData:true,success:!error,retry:()=>{calls.set(resource,(calls.get(resource)??0)+1);return held&&resource==='Chat'?new Promise<void>(resolve=>{finishRetry=resolve}):Promise.resolve();}});
  let secondaryReads:WorkspaceReadIssue[]=[];
- let reads=[read('Chat'),read('Agent'),read('Preferences'),read('Unread status'),read('Queued messages')];
+ let reads=[read('Chat'),read('Agent'),read('Preferences'),read('Unread Status'),read('Queued Messages')];
  let control!:ReturnType<typeof useWorkspaceRefresh>,initial=false;
  function Probe(){control=useWorkspaceRefresh();return <><WorkspaceConnectionNotice connection={connection} hasSavedData/><WorkspaceQueryErrors reads={reads} reportOnly={initial}/><WorkspaceQueryErrors reads={secondaryReads}/>{initial&&<WorkspaceQueryError initial read={reads[0]!}/>}<div data-transcript style={{height:100,overflow:'auto'}}><div style={{height:500}}>cached transcript</div></div><textarea defaultValue="unsubmitted draft"/></>;}
  const render=async()=>{flushSync(()=>root.render(<ThemeProvider theme={createPonderosaTheme('light')}><WorkspaceRefreshProvider connection={connection}><Probe/></WorkspaceRefreshProvider></ThemeProvider>));await settle();};
@@ -42,10 +42,10 @@ export async function workspaceOutageIncidentMountedRegression():Promise<void>{
   reads=reads.map(r=>read(r.resource,failure()));await render();const incident=control.incident;
   assert(control.shared,'independent resource failures corroborate backend outage');assert(host.querySelectorAll('[role=alert]').length===0,'no stack of derivative alerts');assert(compact().length===0,'brief failed reads remain quiet');
   await time.tick(8000);assert(compact().length===1,'one compact outage indication');await click('Reconnecting');
-  const details=document.querySelector('[aria-label="Workspace update details"]')!;assert(details.textContent?.includes('Queued messages')&&details.textContent?.includes('Preferences'),'details identify affected resources');assert(details.textContent?.split('Proxy unavailable').length===2,'proxy diagnostics deduplicated');
+  const details=document.querySelector('[aria-label="Workspace Update Details"]')!;assert(details.textContent?.includes('Queued Messages')&&details.textContent?.includes('Preferences'),'details identify affected resources');assert(details.textContent?.split('Proxy unavailable').length===2,'proxy diagnostics deduplicated');
   held=true;control.retry();control.retry();await settle();assert(calls.get('stream')===1&&calls.get('Chat')===1,'coordinated retry latches synchronously');finishRetry();held=false;await settle();
   await click('Close');reads=reads.map(r=>read(r.resource,failure()));await render();await time.tick(9000);
-  assert(!document.querySelector('[aria-label="Workspace update details"]'),'failed polling does not reopen dismissed details');assert(control.incident===incident,'changing error objects retain incident');
+  assert(!document.querySelector('[aria-label="Workspace Update Details"]'),'failed polling does not reopen dismissed details');assert(control.incident===incident,'changing error objects retain incident');
   reads=[read('Chat'),...reads.slice(1)];await render();assert(control.shared&&host.querySelectorAll('[role=alert]').length===0,'partial recovery never recreates derivative banners');
   reads=reads.map(r=>read(r.resource));connection={...connection,phaseEvidenceFresh:false};await render();assert(control.shared,'socket/reads without canonical catch-up do not close incident');
   connection={...connection,phaseEvidenceFresh:true};await render();assert(!control.shared&&compact().length===0,'verified recovery clears compact warning promptly');
@@ -66,7 +66,7 @@ export async function workspaceOutageIncidentMountedRegression():Promise<void>{
   control.report('synthetic-priority-stream');connection={...connection,phaseEvidenceFresh:true};await render();assert(!control.shared,'priority replay still requires verified recovery');
   reads=[read('Chat',failure(),'duplicate'),read('Agent',failure(),'duplicate')];secondaryReads=[read('Chat',undefined,'duplicate'),read('Agent',undefined,'duplicate')];await render();const duplicateIncident=control.incident;await time.tick(1000);assert(control.shared&&control.incident===duplicateIncident,'successful duplicate readers cannot clear failed claims or create a recovery render loop');
   reads=reads.map(read=>({...read,error:undefined,success:true}));await render();assert(!control.shared,'all active duplicate claims must verify recovery');secondaryReads=[];
-  initial=true;reads=[{...read('Assistant',failure()),hasData:false},read('Preferences',failure())];await render();assert(host.textContent?.includes('Assistant could not be loaded.')&&host.querySelectorAll('[role=alert]').length===0,'no-cache view has one contained unavailable state');
+  initial=true;reads=[{...read('Assistant',failure()),hasData:false},read('Preferences',failure())];await render();assert(host.textContent?.includes('Assistant Could Not Be Loaded')&&host.querySelectorAll('[role=alert]').length===0,'no-cache view has one contained unavailable state');
   await time.tick(8000);await click('Reconnecting');assert(!document.body.textContent?.includes('never synced'),'a remounted hook does not claim browser has never loaded');
  }finally{flushSync(()=>root.unmount());time.restore();host.remove();}
 }

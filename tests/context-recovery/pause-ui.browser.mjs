@@ -86,7 +86,7 @@ try {
             try {
                 await page.goto(origin + `/projects/${chat.projectId}/agents/${agent.id}`);
                 if (mobile)
-                    await page.getByRole('button', { name: 'Expand workspace header', exact: true }).tap();
+                    await page.getByRole('button', { name: 'Expand Workspace Header', exact: true }).tap();
                 const pauseButton = page.getByRole('button', { name: 'Pause', exact: true });
                 await pauseButton.waitFor();
                 let tabs = 0;
@@ -102,7 +102,7 @@ try {
                 await snap('paused');
                 await page.reload();
                 if (mobile)
-                    await page.getByRole('button', { name: 'Expand workspace header', exact: true }).tap();
+                    await page.getByRole('button', { name: 'Expand Workspace Header', exact: true }).tap();
                 await page.getByRole('button', { name: 'Resume', exact: true }).waitFor();
                 assert.equal((await f.detail(agent.id)).coordinationV3.pause.id, row.pause.id);
                 assert((await f.detail(agent.id)).messages.some(m => m.text === 'Controlled held task'));
@@ -120,7 +120,7 @@ try {
                 assert.equal(row.unknownReceipt.state, 'outcome_unknown');
                 await page.reload();
                 if (mobile)
-                    await page.getByRole('button', { name: 'Expand workspace header', exact: true }).tap();
+                    await page.getByRole('button', { name: 'Expand Workspace Header', exact: true }).tap();
                 await page.getByRole('button', { name: 'Resume', exact: true }).waitFor();
                 await page.getByRole('alert').filter({ hasText: 'Controlled provider connection lost' }).waitFor();
                 const response = page.waitForResponse(r => r.url().endsWith('/resume') && r.request().method() === 'POST');

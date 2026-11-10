@@ -8,10 +8,10 @@ import {serveFixture} from '../shared/serve-ui-fixture.mjs';
 const out=process.env.PONDEROSA_UI_EVIDENCE;assert(out,'Owned evidence directory required');await mkdir(out,{recursive:true});
 const result={kind:'Branch navigation first visibility/open and retained resize state',requests:[],pageErrors:[],cleanup:[]};
 let f,web,browser,context,page;
-const navigation=()=>page.locator('aside[aria-label="Branches navigation"]');
-const search=()=>page.getByRole('textbox',{name:'Find a workflow',exact:true});
-const open=()=>page.getByRole('tabpanel',{name:'Chats',exact:true}).getByRole('button',{name:'Open workspace navigation',exact:true}).click();
-const close=async()=>{const button=page.getByRole('button',{name:'Close workspace navigation',exact:true});await button.click();await button.waitFor({state:'hidden'});};
+const navigation=()=>page.locator('aside[aria-label="Branches Navigation"]');
+const search=()=>page.getByRole('textbox',{name:'Find A Workflow',exact:true});
+const open=()=>page.getByRole('tabpanel',{name:'Chats',exact:true}).getByRole('button',{name:'Open Workspace Navigation',exact:true}).click();
+const close=async()=>{const button=page.getByRole('button',{name:'Close Workspace Navigation',exact:true});await button.click();await button.waitFor({state:'hidden'});};
 const draft=editor=>editor.evaluate(element=>element.value??element.textContent);
 try{
  f=await fixture();
@@ -49,12 +49,12 @@ try{
  assert.equal(await search().inputValue(),'Navigation');assert.equal(await navigation().count(),1);
  result.firstSwipeAndReopen=true;
  await page.setViewportSize({width:1365,height:768});
- await page.getByRole('button',{name:'Close workspace navigation',exact:true}).waitFor({state:'hidden'});
+ await page.getByRole('button',{name:'Close Workspace Navigation',exact:true}).waitFor({state:'hidden'});
  await search().waitFor();assert.equal(await navigation().count(),2,'First desktop use retains the existing drawer owner');
  assert.equal(await search().inputValue(),'Navigation','Existing shared Branch search remains intact');
- assert.equal(await page.getByRole('separator',{name:'Resize sidebar',exact:true}).getAttribute('aria-valuenow'),'438');
+ assert.equal(await page.getByRole('separator',{name:'Resize Sidebar',exact:true}).getAttribute('aria-valuenow'),'438');
  await search().fill('Navigation startup');
- await page.getByRole('button',{name:'Collapse sidebar',exact:true}).click();await search().waitFor({state:'hidden'});
+ await page.getByRole('button',{name:'Collapse Sidebar',exact:true}).click();await search().waitFor({state:'hidden'});
  assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('ponderosa.branchesSidebar.v1')).collapsed),true);
  await page.setViewportSize({width:412,height:823});await open();await search().waitFor();
  assert.equal(await search().inputValue(),'Navigation startup');await close();
@@ -62,9 +62,9 @@ try{
  assert.equal(await page.evaluate(()=>JSON.parse(localStorage.getItem('ponderosa.branchesSidebar.v1')).collapsed),true,'Desktop collapse remains intact across phone use');
  await open();await search().waitFor();
  assert.equal(await search().inputValue(),'Navigation startup');
- assert.equal(await page.getByRole('separator',{name:'Resize sidebar',exact:true}).getAttribute('aria-valuenow'),'438');
+ assert.equal(await page.getByRole('separator',{name:'Resize Sidebar',exact:true}).getAttribute('aria-valuenow'),'438');
  // Resizing the existing phone context must close its retained drawer on desktop.
- assert.equal(await page.getByRole('button',{name:'Close workspace navigation',exact:true}).isVisible(),false);
+ assert.equal(await page.getByRole('button',{name:'Close Workspace Navigation',exact:true}).isVisible(),false);
  assert.equal(await draft(editor),'Keep Branch draft');assert.equal(f.turns.length,0);
  result.desktopWidthCollapseAndFilterRetained=true;result.desktopDrawerClosed=true;result.notificationRequestBeforeOpen=true;
  assert.deepEqual(result.pageErrors,[]);await page.screenshot({path:out+'/retained-navigation.png'});result.passed=true;

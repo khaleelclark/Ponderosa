@@ -30,10 +30,10 @@ export function MobileNavigationButton(): JSX.Element | null {
   const navigation = useContext(MobileNavigationContext);
   if (!navigation) return null;
   return (
-    <Tooltip title="Open navigation">
+    <Tooltip title="Open Navigation">
       <IconButton
         ref={navigation.buttonRef}
-        aria-label="Open workspace navigation"
+        aria-label="Open Workspace Navigation"
         onClick={navigation.onOpen}
         sx={{
           display: { xs: "inline-flex", md: navigation.desktopVisible ? "inline-flex" : "none" },

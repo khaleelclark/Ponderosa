@@ -64,12 +64,12 @@ export async function importRequestRecoveryRegression():Promise<void>{
   }
   assert(listPendingAgentImports(product).length===0,'fresh browser context has no retained import');
   render('first');await settle();choose(packageText,'original.json');await settle();
-  button('Review access settings').click();await settle();
+  button('Review Access Settings').click();await settle();
   assert(host.textContent?.includes('Clear source: No source restrictions')&&!host.textContent?.includes('source-c: No source restrictions'),'review uses exact ref/name binding rather than source order');
   for(const label of ['Repeated (source-a)','Repeated (source-b)','Imported Agent (source-empty)','Imported Agent (source-missing)'])assert(host.textContent?.includes(label+': No source restrictions'),'ambiguous or missing source names retain their exact ref');
-  const label=Array.from(host.querySelectorAll('label')).find(item=>item.textContent?.startsWith('Restrictions for imported Agents'))!;
+  const label=Array.from(host.querySelectorAll('label')).find(item=>item.textContent?.startsWith('Restrictions For Imported Agents'))!;
   openSelect(document.getElementById(label.htmlFor));await settle();
-  (Array.from(document.querySelectorAll('[role=option]')).find(item=>item.textContent==='Keep destination restrictions') as HTMLElement).click();await settle();
+  (Array.from(document.querySelectorAll('[role=option]')).find(item=>item.textContent==='Keep Destination Restrictions') as HTMLElement).click();await settle();
   button('Import').click();await until(()=>calls.length===1,'original import not sent');await settle();
   assert(calls.length===1,'original import sent once');
   let saved=listPendingAgentImports(product);assert(saved.length===1&&saved[0].requestId===calls[0].requestId,'uncertain import retains its exact request ID');
@@ -77,26 +77,26 @@ export async function importRequestRecoveryRegression():Promise<void>{
   assert(!savedBytes.includes('private-synthetic')&&!savedBytes.includes(packageText),'package contents are not stored in browser storage');
 
   root.render(null);await settle();render('reload');await settle();
-  assert(host.textContent?.includes('Import awaiting confirmation'),'pending request is recovered after reload');
-  button('Check import status').click();await settle();
+  assert(host.textContent?.includes('Import Awaiting Confirmation'),'pending request is recovered after reload');
+  button('Check Import Status').click();await settle();
   assert(statusChecks===1&&calls.length===1&&listPendingAgentImports(product).length===1,'404 neither clears nor retries an uncertain request');
-  choose('{"private-synthetic":"different bytes"}','wrong.json');await settle();button('Retry exact import').click();await until(()=>Boolean(host.textContent?.includes('not the original package')),'changed file not rejected');await settle();
+  choose('{"private-synthetic":"different bytes"}','wrong.json');await settle();button('Retry Exact Import').click();await until(()=>Boolean(host.textContent?.includes('not the original package')),'changed file not rejected');await settle();
   assert(calls.length===1&&host.textContent?.includes('not the original package'),'changed file never reaches the server');
-  choose(packageText,'original.json');await settle();button('Retry exact import').click();await until(()=>calls.length===2,'exact import not retried');await settle();
+  choose(packageText,'original.json');await settle();button('Retry Exact Import').click();await until(()=>calls.length===2,'exact import not retried');await settle();
   assert(calls.length===2&&calls[1].requestId===calls[0].requestId&&calls[1].metadata===calls[0].metadata&&calls[1].fingerprint===calls[0].fingerprint&&calls[1].body===calls[0].body,'explicit retry sends the exact original request and identity');
   saved=listPendingAgentImports(product);assert(saved.length===1&&saved[0].requestId===calls[0].requestId,'pending 202 keeps recovery identity through reload');
   assert(host.textContent?.includes('Import in progress'),'accepted pending import is visible');
   operation={...operation,status:'completed'};
-  await until(()=>Boolean(host.textContent?.includes('Import awaiting confirmation')),'missing result was not retained for recovery');
+  await until(()=>Boolean(host.textContent?.includes('Import Awaiting Confirmation')),'missing result was not retained for recovery');
   assert(listPendingAgentImports(product).length===1,'completed status without a result does not discard the saved identity');
   operation={...operation,status:'failed',error:'Import stopped after partial work',result:{reviewedMetadataApplications:[]}};lookupFound=true;
-  button('Check import status').click();await until(()=>Boolean(host.textContent?.includes('Finish reviewing')),'failed result not shown');
+  button('Check Import Status').click();await until(()=>Boolean(host.textContent?.includes('Finish Reviewing')),'failed result not shown');
   assert(listPendingAgentImports(product).length===1&&calls.length===2,'failed result stays saved without retry');
   root.render(null);await settle();render('failed-reload');await settle();
-  assert(host.textContent?.includes('Import awaiting confirmation'),'failed result remains recoverable after reload');
-  button('Check import status').click();await until(()=>Boolean(host.textContent?.includes('Finish reviewing')),'failed result not recovered');
+  assert(host.textContent?.includes('Import Awaiting Confirmation'),'failed result remains recoverable after reload');
+  button('Check Import Status').click();await until(()=>Boolean(host.textContent?.includes('Finish Reviewing')),'failed result not recovered');
   assert(host.textContent?.includes('Partial files')&&listPendingAgentImports(product).length===1,'partial effects and saved identity remain visible until review');
-  button('Finish reviewing').click();await settle();
+  button('Finish Reviewing').click();await settle();
   assert(listPendingAgentImports(product).length===0&&calls.length===2,'explicit review dismisses the receipt without another import');
  }finally{
   for(const entry of listPendingAgentImports(product))if(entry.projectId===chat.projectId)for(let i=localStorage.length-1;i>=0;i--){const k=localStorage.key(i);if(k?.startsWith('ponderosa-agent-import-v1:')&&k.endsWith(':'+entry.requestId))localStorage.removeItem(k);}
@@ -119,15 +119,15 @@ export async function heldImportRetirementRegression():Promise<void>{
  try{
   retainPendingAgentImport(entry);
   root.render(<PendingAgentImportRecovery entry={entry} onAccepted={()=>{throw Error('unexpected import');}} onRetired={value=>{releasePendingAgentImport(value);dismissed++;}} onDeleted={value=>{releasePendingAgentImport(value);dismissed++;}}/>);await settle();
-  button('Check import status').click();await settle();
-  assert(!button('Retire held request')&&listPendingAgentImports(product).some(item=>item.requestId===entry.requestId),'mismatched status cannot authorize retirement');
-  current={...status};button('Check import status').click();await settle();
-  assert(Boolean(button('Retire held request')),'exact held request offers an explicit retirement choice');
-  button('Retire held request').click();await settle();
+  button('Check Import Status').click();await settle();
+  assert(!button('Retire Held Request')&&listPendingAgentImports(product).some(item=>item.requestId===entry.requestId),'mismatched status cannot authorize retirement');
+  current={...status};button('Check Import Status').click();await settle();
+  assert(Boolean(button('Retire Held Request')),'exact held request offers an explicit retirement choice');
+  button('Retire Held Request').click();await settle();
   assert(sent===1&&dismissed===0&&listPendingAgentImports(product).some(item=>item.requestId===entry.requestId)&&host.textContent?.includes('Retirement is unconfirmed'),'lost retirement reply retains identity and does not start another import');
-  button('Check import status').click();await settle();
-  assert(Boolean(button('Dismiss retired request'))&&dismissed===0,'exact retired status is recovered before dismissal');
-  button('Dismiss retired request').click();await settle();
+  button('Check Import Status').click();await settle();
+  assert(Boolean(button('Dismiss Retired Request'))&&dismissed===0,'exact retired status is recovered before dismissal');
+  button('Dismiss Retired Request').click();await settle();
   assert(dismissed===1&&!listPendingAgentImports(product).some(item=>item.requestId===entry.requestId)&&sent===1,'confirmed retirement is dismissed without a new upload');
  }finally{try{releasePendingAgentImport(entry);}catch{}root.unmount();host.remove();Object.assign(api,original);}
 }
@@ -144,12 +144,12 @@ export async function deletedImportNoticeRegression():Promise<void>{
  try{
   retainPendingAgentImport(entry);
   root.render(<PendingAgentImportRecovery entry={entry} onAccepted={()=>{throw Error('deleted result must not be returned');}} onRetired={()=>{throw Error('not a retired request');}} onDeleted={value=>{releasePendingAgentImport(value);dismissed++;}}/>);await settle();
-  button('Check import status').click();await settle();
-  assert(!button('Dismiss saved notice')&&listPendingAgentImports(product).some(item=>item.requestId===entry.requestId),'mismatched deleted status cannot clear the request');
-  current={state:'destination_deleted',...identity};button('Check import status').click();await settle();
-  assert(host.textContent?.includes('outcome and any effects remain unknown')&&Boolean(button('Dismiss saved notice')),'exact deletion receipt shows unresolved outcome and explicit choice');
+  button('Check Import Status').click();await settle();
+  assert(!button('Dismiss Saved Notice')&&listPendingAgentImports(product).some(item=>item.requestId===entry.requestId),'mismatched deleted status cannot clear the request');
+  current={state:'destination_deleted',...identity};button('Check Import Status').click();await settle();
+  assert(host.textContent?.includes('outcome and any effects remain unknown')&&Boolean(button('Dismiss Saved Notice')),'exact deletion receipt shows unresolved outcome and explicit choice');
   assert(dismissed===0&&listPendingAgentImports(product).some(item=>item.requestId===entry.requestId),'the receipt never clears automatically');
-  button('Dismiss saved notice').click();await settle();
+  button('Dismiss Saved Notice').click();await settle();
   assert(dismissed===1&&sends===0&&!listPendingAgentImports(product).some(item=>item.requestId===entry.requestId),'explicit dismissal clears only browser notice without retry');
  }finally{try{releasePendingAgentImport(entry);}catch{}root.unmount();host.remove();Object.assign(api,original);}
 }
@@ -167,8 +167,8 @@ export async function lostImportPollingRegression():Promise<void>{
  try{
   retainPendingAgentImport(entry);
   root.render(<QueryClientProvider client={client}><MutationNotificationProvider><ImportAgentForm projectId={entry.projectId} engines={[]} conversations={[]} onCancel={()=>{}}/></MutationNotificationProvider></QueryClientProvider>);await settle();
-  button('Check import status').click();await until(()=>polls>0&&Boolean(host.textContent?.includes('Import awaiting confirmation')),'poll error did not return to saved request');await settle();
-  assert(host.textContent?.includes('Import awaiting confirmation'),'saved request remains accessible after the failed poll');
+  button('Check Import Status').click();await until(()=>polls>0&&Boolean(host.textContent?.includes('Import Awaiting Confirmation')),'poll error did not return to saved request');await settle();
+  assert(host.textContent?.includes('Import Awaiting Confirmation'),'saved request remains accessible after the failed poll');
   assert(listPendingAgentImports(product).some(item=>item.requestId===entry.requestId),'polling failure retains request for scoped check');
  }finally{try{releasePendingAgentImport(entry);}catch{}root.unmount();client.clear();host.remove();Object.assign(api,original);}
 }

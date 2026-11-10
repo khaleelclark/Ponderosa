@@ -413,10 +413,10 @@ export function AgentCreateForm({
         </FormControl>
       ) : null}
       {!workflowSetup ? <FormControl fullWidth size="small">
-        <InputLabel id="create-agent-preset-label">Preset (optional)</InputLabel>
+        <InputLabel id="create-agent-preset-label">Preset (Optional)</InputLabel>
         <Select
           labelId="create-agent-preset-label"
-          label="Preset (optional)"
+          label="Preset (Optional)"
           value={presetId}
           onChange={(event: SelectChangeEvent) => {
             const id = event.target.value;
@@ -507,10 +507,10 @@ export function AgentCreateForm({
         />
       )}
       <FormControl fullWidth size="small">
-        <InputLabel id="create-agent-manager-label">{workflowSetup ? "Delegated Under" : "Delegated under"}</InputLabel>
+        <InputLabel id="create-agent-manager-label">{workflowSetup ? "Delegated Under" : "Delegated Under"}</InputLabel>
         <Select
           labelId="create-agent-manager-label"
-          label={workflowSetup ? "Delegated Under" : "Delegated under"}
+          label={workflowSetup ? "Delegated Under" : "Delegated Under"}
           value={managerAgentId}
           onChange={(event: SelectChangeEvent) => {
             managerEditedRef.current = true;
@@ -531,7 +531,7 @@ export function AgentCreateForm({
         </Select>
       </FormControl>
       {!workflowSetup ? <TextField
-        label="Initial message (optional)"
+        label="Initial Message (Optional)"
         helperText="Give the Agent a task, role, or introduction—or leave it idle."
         value={initialMessage}
         onChange={event => setInitialMessage(event.target.value)}
@@ -682,7 +682,7 @@ function ScopedAgentCreateSurface({
           sx={{ alignItems: {xs:"flex-start",sm:"center"}, justifyContent: "space-between" }}
         >
           <div style={{minWidth:0}}>
-            <Typography variant="h6">Import Agent package</Typography>
+            <Typography variant="h6">Import Agent Package</Typography>
             <Typography variant="body2" color="text.secondary">
               Import one Agent or an organization into a chat.
             </Typography>
@@ -694,7 +694,7 @@ function ScopedAgentCreateSurface({
             disabled={pending}
             onClick={() => setMode("create")}
           >
-            Create new Agent
+            Create New Agent
           </Button>
         </Stack>
         {!fixedProjectId ? (
@@ -764,7 +764,7 @@ function ScopedAgentCreateSurface({
           disabled={pending}
           onClick={() => setMode("import")}
         >
-          Import Agent package
+          Import Agent Package
         </Button>
       </Stack>
       <AgentCreateForm

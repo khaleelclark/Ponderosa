@@ -518,7 +518,7 @@ export function registerAgentPackageRoutes(
         dedupeKey: `agent-import-corrupt:${id}`,
         category: "system",
         severity: "urgent",
-        title: "Agent import recovery needs attention",
+        title: "Agent Import Recovery Needs Attention",
         body: `Import operation ${id} was quarantined; its payload was preserved. ${
           error instanceof Error ? error.message : String(error)
         }`.slice(0, 1_000),
@@ -2675,7 +2675,7 @@ export function registerAgentPackageRoutes(
           dedupeKey: `agent-import:${operationId}`,
           category: "system",
           severity: "info",
-          title: "Agent import in progress",
+          title: "Agent Import In Progress",
           body: next.replaceAll("_", " "),
           projectId: operation!.projectId,
           conversationId:operation!.conversationId,
@@ -2746,7 +2746,7 @@ export function registerAgentPackageRoutes(
           dedupeKey: `agent-import:${operationId}`,
           category: "system",
           severity: "info",
-          title: "Import complete",
+          title: "Import Complete",
           informational: true,
           body: `${operation.sourceLabel} was imported successfully. Reviewing its preserved history is optional; the Agent is ready to use.`,
           projectId: operation.projectId,
@@ -2761,7 +2761,7 @@ export function registerAgentPackageRoutes(
       if(committedCreationId&&store.getAgentCreationOperation(committedCreationId)?.status==='completed'&&!committedResult){
         retainPayloadForRecovery=true;
         await update({phase:'finalizing',status:'pending',error:message.slice(0,1000),outputRoleRecoveryId:committedCreationId});
-        try{createOperationalNotification({dedupeKey:'import-role-recovery:'+committedCreationId,category:'system',severity:'attention',title:'Imported output roles need review',body:message.slice(0,1000),projectId:operation.projectId,conversationId:operation.conversationId,action:{kind:'open_project',targetId:operation.projectId}});}catch{/* Durable role recovery remains visible on the import operation. */}
+        try{createOperationalNotification({dedupeKey:'import-role-recovery:'+committedCreationId,category:'system',severity:'attention',title:'Imported Output Roles Need Review',body:message.slice(0,1000),projectId:operation.projectId,conversationId:operation.conversationId,action:{kind:'open_project',targetId:operation.projectId}});}catch{/* Durable role recovery remains visible on the import operation. */}
         return;
       }
       if (committedResult) {
@@ -2787,7 +2787,7 @@ export function registerAgentPackageRoutes(
           dedupeKey: `agent-import:${operationId}`,
           category: "system",
           severity: "urgent",
-          title: "Agent import failed",
+          title: "Agent Import Failed",
           body: `${operation.sourceLabel}: ${message}`.slice(0, 1_000),
           projectId: operation.projectId,
           conversationId:operation.conversationId,
@@ -2972,7 +2972,7 @@ export function registerAgentPackageRoutes(
           dedupeKey: `agent-import:${id}`,
           category: "system",
           severity: "info",
-          title: "Agent import queued",
+          title: "Agent Import Queued",
           body: "The import continues in the background.",
           projectId: operation.projectId,
           conversationId:operation.conversationId,
@@ -3334,7 +3334,7 @@ export function registerAgentPackageRoutes(
   );
   app.addHook('onReady',async()=>{
     for(const row of store.sqlite.prepare("SELECT id FROM agent_creation_operations WHERE status='completed' AND json_type(result_json,'$.outputRoleFinalization')='object' AND COALESCE(json_extract(result_json,'$.outputRoleFinalization.done'),0)=0 LIMIT 64").all() as Array<{id:string}>){
-      try{finishRoles(row.id);}catch(error){try{createOperationalNotification({dedupeKey:'import-role-recovery:'+row.id,category:'system',severity:'attention',title:'Imported output roles need review',body:(error as Error).message,projectId:store.getAgentCreationOperation(row.id)!.projectId,conversationId:store.getAgentCreationOperation(row.id)!.conversationId,action:{kind:'open_agent',targetId:(store.getAgentCreationOperation(row.id)!.result as ImportAgentPackageResponse).rootAgentId}});}catch{/* Durable receipt remains pending role recovery. */}}
+      try{finishRoles(row.id);}catch(error){try{createOperationalNotification({dedupeKey:'import-role-recovery:'+row.id,category:'system',severity:'attention',title:'Imported Output Roles Need Review',body:(error as Error).message,projectId:store.getAgentCreationOperation(row.id)!.projectId,conversationId:store.getAgentCreationOperation(row.id)!.conversationId,action:{kind:'open_agent',targetId:(store.getAgentCreationOperation(row.id)!.result as ImportAgentPackageResponse).rootAgentId}});}catch{/* Durable receipt remains pending role recovery. */}}
     }
   });
   const checkExpertSnapshotSource=(frozen:CheckpointPackageSource,sourceProjectId:string)=>{

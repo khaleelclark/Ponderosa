@@ -14,7 +14,7 @@ const render=extra=>renderToStaticMarkup(React.createElement(BranchRunHistory,{.
 
 test('Run History distinguishes initial, filtered, loading and unavailable states without claiming unknown is empty',()=>{
  assert.match(render(),/No Runs yet/);assert.match(render({filter:'failed'}),/No Runs match this filter/);
- assert.match(render({loading:true}),/Loading Run history/);assert.doesNotMatch(render({loading:true}),/No Runs yet/);
+ assert.match(render({loading:true}),/Loading Run History/);assert.doesNotMatch(render({loading:true}),/No Runs yet/);
  const unavailable=render({error:Error('Backend offline')});assert.match(unavailable,/Run history unavailable/);assert.doesNotMatch(unavailable,/No Runs yet/);
 });
 

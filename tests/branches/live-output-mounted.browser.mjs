@@ -71,7 +71,7 @@ try{
    await page.screenshot({path:out+'/'+cell+'-canonical-error.png'});
    canonicalFailure=false;output=[entry('current-run','Complete replacement snapshot','snapshot')];snapshot();
    await page.getByText('Complete replacement snapshot',{exact:true}).waitFor();
-   assert(!(await text()).includes('Bounded canonical preview'));assert(!(await text()).includes('could not be loaded'));assert.equal(await page.getByRole('button',{name:/Load full text|Show preview/}).count(),0);
+   assert(!(await text()).includes('Bounded canonical preview'));assert(!(await text()).includes('could not be loaded'));assert.equal(await page.getByRole('button',{name:/Load full text|Show Preview/}).count(),0);
    output=[entry('replacement-run','New exact Run','new'),entry('current-run','OLD CANONICAL RUN','old')];
    await page.getByRole('button',{name:'Replace Run'}).click();assert(!(await text()).includes('First incremental'));
    send('current-run','OLD LATE CHUNK');send('replacement-run','New live Run');await page.getByText('New live Run',{exact:true}).waitFor();assert(!/OLD|FOREIGN|STALE/.test(await text()));

@@ -20,7 +20,7 @@ for(const[category,expected]of[['quota_exhausted','Codex usage limit reached'],[
  let nodes=h.render();assert.equal(nodes.find(n=>n.type===Banner).props.singleLine,true);assert.match(text(nodes.find(n=>n.type===Banner)),new RegExp(expected));
  assert.equal(nodes.find(n=>n.type===mui.Dialog).props.open,false);
  nodes.find(n=>n.type===mui.ButtonBase).props.onClick();nodes=h.render();assert.equal(nodes.find(n=>n.type===mui.Dialog).props.open,true);
- assert.match(nodes.map(text).join(' '),/Full multiword Agent name|Exact retained request/);
+ assert.match(nodes.map(text).join(' '),/Full multiword Agent Name|Exact retained request/);
  const delivery=nodes.find(n=>n.type===Delivery);assert.equal(delivery.props.hideCancelAction,true);assert.equal(delivery.props.receipts[0],r,'Use existing exact-ID retry/duplicate-work controls');
  assert.equal(nodes.find(n=>n.type===Usage).props.preferredProvider,'codex');
  if(category==='quota_exhausted')assert.match(nodes.map(text).join(' '),/provider did not report a reset time/);
@@ -49,7 +49,7 @@ test('UI014 all represented interruption rows open exact canonical errors, with 
   const opened=[],h=harness([{text:'Exact retained request',deliveryReceipts:[receipt(category,{activityId})]}],{onOpenError:(...args)=>opened.push(args)});
   h.render().find(node=>node.type===mui.ButtonBase).props.onClick();let nodes=h.render();
   const words=nodes.map(text).join(' ');if(category==='unavailable'){assert.match(words,/provider.*unavailable/iu);assert.match(words,/Earlier changes may remain\./);assert.match(words,/Review the full error before manual retry\./);assert.doesNotMatch(words,/limited this request|Review usage/);}
-  const full=nodes.find(node=>node.type===mui.Button&&text(node)===(activityId?'View full error':'View failed Run'));assert(full);
+  const full=nodes.find(node=>node.type===mui.Button&&text(node)===(activityId?'View Full Error':'View Failed Run'));assert(full);
   await nodes.find(node=>node.type===mui.Button&&text(node)==='Recheck codex').props.onClick();await new Promise(setImmediate);nodes=h.render();
   assert.match(nodes.map(text).join(' '),category==='unavailable'?/Provider checked; retained work is unchanged\./:/does not confirm that its usage allowance has reset/);
   full.props.onClick();assert.deepEqual(opened,[['a','failed-run',activityId]]);assert.equal(h.render().find(node=>node.type===mui.Dialog).props.open,false);

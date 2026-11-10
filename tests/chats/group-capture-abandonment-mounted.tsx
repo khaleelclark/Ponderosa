@@ -39,14 +39,14 @@ export async function groupCaptureAbandonmentRegression():Promise<void>{
  const select=async(captureKey=entry.captureKey)=>{(document.querySelectorAll('[role=combobox]')[0] as HTMLElement).dispatchEvent(new MouseEvent('mousedown',{bubbles:true,button:0}));await settle();(Array.from(document.querySelectorAll('[role=option]')).find(o=>o.textContent?.includes(captureKey)) as HTMLElement).click();await settle();};
  try{
   render();await settle();assert(gets.some(url=>url.includes('/checkpoint-capture-groups?')),'fourth inventory independent of destination failure');
-  button('Load more whole-group capture intents').click();await settle();await select();button('Review whole-group capture abandonment').click();await settle();
-  button('Refresh whole-group abandonment review').click();await settle();assert(button('Abandon reviewed whole-group capture').disabled,'second member hold blocks all');
-  held=false;button('Refresh whole-group abandonment review').click();await settle();await acknowledge();button('Abandon reviewed whole-group capture').click();await settle();button('Confirm whole-group abandonment').click();await settle();
+  button('Load More whole-group capture intents').click();await settle();await select();button('Review Whole-Group Capture Abandonment').click();await settle();
+  button('Refresh Whole-Group Abandonment Review').click();await settle();assert(button('Abandon Reviewed Whole-Group Capture').disabled,'second member hold blocks all');
+  held=false;button('Refresh Whole-Group Abandonment Review').click();await settle();await acknowledge();button('Abandon Reviewed Whole-Group Capture').click();await settle();button('Confirm Whole-Group Abandonment').click();await settle();
   assert(Boolean(localStorage.getItem(key)),'FS/SQL409 retains original command');assert(posts.filter(p=>p.url.endsWith('/abandon')).length===1,'no automatic replay');
-  button('Close').click();await settle();button('Restart whole-group capture intents').click();await settle();await select('issued-group-capture:'+'0'.repeat(64));stalePage=true;button('Load more whole-group capture intents').click();await settle();assert(!button('Review whole-group capture abandonment'),'cursor409 unmounts stale review and confirmation');
-  ownerRemoved=true;root.unmount();root=createRoot(host);client.clear();render();await settle();button('Recover retained whole-group command').click();await settle();
+  button('Close').click();await settle();button('Restart whole-group capture intents').click();await settle();await select('issued-group-capture:'+'0'.repeat(64));stalePage=true;button('Load More whole-group capture intents').click();await settle();assert(!button('Review Whole-Group Capture Abandonment'),'cursor409 unmounts stale review and confirmation');
+  ownerRemoved=true;root.unmount();root=createRoot(host);client.clear();render();await settle();button('Recover Retained Whole-Group Command').click();await settle();
   assert(document.body.textContent?.includes('1 captured / 1 uncaptured'),'all original member counts retained through remount');
-  button('Recover exact whole-group command').click();await settle();button('Confirm whole-group abandonment').click();await settle();
+  button('Recover Exact Whole-Group Command').click();await settle();button('Confirm Whole-Group Abandonment').click();await settle();
   const mutations=posts.filter(p=>p.url.endsWith('/abandon'));assert(mutations.length===2&&JSON.stringify(mutations[0].body)===JSON.stringify(mutations[1].body),'explicit recovery uses byte-identical original POST');
   assert(!localStorage.getItem(key),'only exact exhaustive receipt clears pending');assert(!document.body.textContent?.includes('PRIVATE RAW SNAPSHOT'),'raw Branch snapshot undisplayed');
   assert(document.body.textContent?.includes('disk space and history were not reclaimed'),'retained bytes do not claim disk reclamation');

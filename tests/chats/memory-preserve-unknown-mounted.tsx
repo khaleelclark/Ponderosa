@@ -32,27 +32,27 @@ export async function memoryPreserveUnknownRegression():Promise<void>{
  const stage=async()=>{
   const field=document.querySelector('textarea')!;
   Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value')!.set!.call(field,'Completion cannot be verified');field.dispatchEvent(new Event('input',{bubbles:true}));await settle();
-  (document.querySelector('input[type=checkbox]') as HTMLInputElement).click();await settle();button('Record Preserve unknown').click();await settle();
-  assert(posts.length===0,'separate confirmation before effect');button('Confirm Preserve unknown').click();await settle();
+  (document.querySelector('input[type=checkbox]') as HTMLInputElement).click();await settle();button('Record Preserve Unknown').click();await settle();
+  assert(posts.length===0,'separate confirmation before effect');button('Confirm Preserve Unknown').click();await settle();
  };
  try{
-  render('legacy');await settle();button('Preserve unknown').click();await settle();await stage();
+  render('legacy');await settle();button('Preserve Unknown').click();await settle();await stage();
   assert(posts.length===1&&localStorage.getItem(key)&&getReviews===0,'legacy inventory works independently; lost response held');
-  render('remount');await settle();button('Preserve unknown').click();await settle();
+  render('remount');await settle();button('Preserve Unknown').click();await settle();
   assert(posts.length===1,'remount never repeats mutation');
   const exact=receipt;receipt={...exact,commandKey:'substituted'};
-  button('Inspect original disposition').click();await settle();assert(localStorage.getItem(key)&&posts.length===1,'wrong receipt cannot clear original');
-  receipt=exact;button('Inspect original disposition').click();await settle();assert(!localStorage.getItem(key)&&posts.length===1,'exact GET clears without replay');
+  button('Inspect Original Disposition').click();await settle();assert(localStorage.getItem(key)&&posts.length===1,'wrong receipt cannot clear original');
+  receipt=exact;button('Inspect Original Disposition').click();await settle();assert(!localStorage.getItem(key)&&posts.length===1,'exact GET clears without replay');
   assert(document.body.textContent?.includes('hold unsettled'),'receipt never releases hold');
   // Known effect + unavailable backend: Preserve unknown still reads inventory only.
   hold.legacy=false;hold.effect={scope:'collection',operation:'upsert',log:false};receipt=undefined;posts=[];conflict=true;
-  render('known');await settle();button('Preserve unknown').click();await settle();await stage();
+  render('known');await settle();button('Preserve Unknown').click();await settle();await stage();
   const original=localStorage.getItem(key);assert(original&&posts.length===1,'409 original retained');
   hold.sha256='d'.repeat(64);hold.preserveUnknownReviewSha256='e'.repeat(64);
-  button('Inspect original disposition').click();await settle();assert(localStorage.getItem(key)===original&&posts.length===1,'changed hash cannot replace pending input');
-  button('Repeat exact Preserve unknown command').click();await settle();assert(posts.length===1,'explicit repeat still requires separate confirmation');
-  button('Confirm Preserve unknown').click();await settle();assert(posts.length===2&&JSON.stringify(posts[0])===JSON.stringify(posts[1]),'explicit repeat sends unchanged command only');
-  root.render(<QueryClientProvider client={client}><LifecycleReview kind="memory" id={id}/></QueryClientProvider>);await settle();button('Review memory hold').click();await settle();assert(button('Reconcile and preserve evidence').disabled,'preserve action does not enable Reconcile');
+  button('Inspect Original Disposition').click();await settle();assert(localStorage.getItem(key)===original&&posts.length===1,'changed hash cannot replace pending input');
+  button('Repeat Exact Preserve Unknown Command').click();await settle();assert(posts.length===1,'explicit repeat still requires separate confirmation');
+  button('Confirm Preserve Unknown').click();await settle();assert(posts.length===2&&JSON.stringify(posts[0])===JSON.stringify(posts[1]),'explicit repeat sends unchanged command only');
+  root.render(<QueryClientProvider client={client}><LifecycleReview kind="memory" id={id}/></QueryClientProvider>);await settle();button('Review Memory Hold').click();await settle();assert(button('Reconcile And Preserve Evidence').disabled,'preserve action does not enable Reconcile');
   assert(getReviews===1,'no ordinary review needed by preserve path');
  }finally{root.unmount();client.clear();host.remove();globalThis.fetch=originalFetch;if(saved===null)localStorage.removeItem(key);else localStorage.setItem(key,saved);}
 }
@@ -96,17 +96,17 @@ export async function memoryPreserveStorageFeedbackRegression():Promise<void>{
   Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value')!.set!.call(field,'Completion cannot be verified');
   field.dispatchEvent(new Event('input',{bubbles:true}));await settle();
   (document.querySelector('input[type=checkbox]') as HTMLInputElement).click();await settle();
-  button('Record Preserve unknown').click();await settle();
+  button('Record Preserve Unknown').click();await settle();
  };
  try{
-  render('pre-dispatch');await settle();button('Preserve unknown').click();await settle();await stage();
-  failSave=true;button('Confirm Preserve unknown').click();await settle();
+  render('pre-dispatch');await settle();button('Preserve Unknown').click();await settle();await stage();
+  failSave=true;button('Confirm Preserve Unknown').click();await settle();
   assert(posts.length===0&&!localStorage.getItem(key),'a failed initial save sends no request and retains no new command');
   assert(document.body.textContent?.includes('No request was sent this time'),'unsent decision is explained');
   assert(!document.body.textContent?.includes('Outcome unconfirmed · exact command held'),'unsent attempt is not misreported as dispatched');
 
-  failSave=false;render('post-response');await settle();button('Preserve unknown').click();await settle();await stage();
-  failRemove=true;button('Confirm Preserve unknown').click();await settle();
+  failSave=false;render('post-response');await settle();button('Preserve Unknown').click();await settle();await stage();
+  failRemove=true;button('Confirm Preserve Unknown').click();await settle();
   const retained=localStorage.getItem(key);
   assert(posts.length===1&&retained,'verified receipt with failed local removal retains original input');
   assert(document.body.textContent?.includes('The preserve decision was confirmed'),'only the preservation decision is confirmed');
@@ -114,13 +114,13 @@ export async function memoryPreserveStorageFeedbackRegression():Promise<void>{
   assert(document.body.textContent?.includes('Exact command retained'),'new decisions stay locked');
 
   returnedReceipt={...remoteReceipt,commandKey:'different'};
-  button('Inspect original disposition').click();await settle();
+  button('Inspect Original Disposition').click();await settle();
   assert(localStorage.getItem(key)===retained&&document.body.textContent?.includes('Disposition unconfirmed'),'a mismatched receipt remains unconfirmed');
   returnedReceipt=remoteReceipt;
-  button('Inspect original disposition').click();await settle();
+  button('Inspect Original Disposition').click();await settle();
   assert(localStorage.getItem(key)===retained&&document.body.textContent?.includes('The preserve decision was confirmed'),'matching lookup reports local cleanup failure');
   assert(posts.length===1,'receipt inspection never repeats the mutation');
-  failRemove=false;button('Inspect original disposition').click();await settle();
+  failRemove=false;button('Inspect Original Disposition').click();await settle();
   assert(!localStorage.getItem(key)&&posts.length===1,'matching lookup clears after storage recovers without replay');
   assert(document.body.textContent?.includes('hold unsettled'),'verified disposition never clears the original memory hold');
  }finally{

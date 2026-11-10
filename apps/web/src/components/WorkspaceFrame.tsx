@@ -129,7 +129,7 @@ export interface TabbedWorkspaceFrameProps<T extends string> {
 function WorkspaceTabScrollButton(props: TabScrollButtonProps): JSX.Element {
   return <TabScrollButton {...props} role="button" tabIndex={props.disabled ? -1 : 0}
     aria-disabled={props.disabled || undefined}
-    aria-label={props.direction === "left" ? "Scroll tabs left" : "Scroll tabs right"} />;
+    aria-label={props.direction === "left" ? "Scroll Tabs Left" : "Scroll Tabs Right"} />;
 }
 
 // Tabs must clone selection/keyboard props onto the Tab itself, not onto Tooltip.
@@ -347,8 +347,8 @@ export function TabbedWorkspaceFrame<T extends string>({
   }, [collapsed]);
 
   if (collapsed) {
-    const toggle = <Tooltip title="Expand workspace header" disableInteractive>
-      <IconButton ref={toggleButtonRef} size="small" aria-label="Expand workspace header"
+    const toggle = <Tooltip title="Expand Workspace Header" disableInteractive>
+      <IconButton ref={toggleButtonRef} size="small" aria-label="Expand Workspace Header"
         aria-expanded={false} onClick={handleToggleCollapsed}
         sx={{flexShrink:0,width:{xs:44,sm:36},height:{xs:44,sm:36}}}>
         <KeyboardArrowDownIcon />
@@ -418,11 +418,11 @@ export function TabbedWorkspaceFrame<T extends string>({
             {statusBeforePrimaryActions ? null : status}
             {compact && actionsInMobileTabs ? null : actions}
           </Stack>
-          <Tooltip title="Collapse workspace header" disableInteractive>
+          <Tooltip title="Collapse Workspace Header" disableInteractive>
             <IconButton
               ref={toggleButtonRef}
               size="small"
-              aria-label="Collapse workspace header"
+              aria-label="Collapse Workspace Header"
               aria-expanded
               onClick={handleToggleCollapsed}
               sx={{

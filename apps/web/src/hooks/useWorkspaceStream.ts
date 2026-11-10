@@ -577,8 +577,8 @@ export function useWorkspaceStream(
     const activePhaseQueries = () => phaseQueries().filter(query => query.isActive());
     let observedActivePhaseQueries = new Set(activePhaseQueries());
     const resourceName = (query: Query) => query.queryKey[0] === queryKeys.agents.healthAll[0]
-      ? "Agent statuses" : query.queryKey[0] === queryKeys.agents.organizationAll[0]
-        ? "Agent organization" : "Agent directory";
+      ? "Agent Statuses" : query.queryKey[0] === queryKeys.agents.organizationAll[0]
+        ? "Agent Organization" : "Agent Directory";
     const markPhaseEvidenceStale = (projectId?: string) => {
       const matches = (query: Query) => phaseQueryMatchesProject(query.queryKey, projectId);
       for (const [query, boundary] of capturePhaseQueryBoundaries(activePhaseQueries().filter(matches))) {

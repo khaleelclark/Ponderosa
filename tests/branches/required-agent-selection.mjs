@@ -36,9 +36,9 @@ try{
  const pending=page.waitForResponse(response=>new URL(response.url()).pathname==='/api/branches/preview'&&response.request().method()==='POST');
  await page.getByRole('button',{name:'Save Workflow',exact:true}).click();
  const preview=await pending;assert(preview.ok(),'A valid owned Agent must pass preview');result.previewStatus=preview.status();
- await page.getByRole('dialog',{name:'Review deployment',exact:true}).waitFor();
+ await page.getByRole('dialog',{name:'Review Deployment',exact:true}).waitFor();
  const publishing=page.waitForResponse(response=>new URL(response.url()).pathname==='/api/branches/deploy'&&response.request().method()==='POST');
- await page.getByRole('button',{name:'Publish workflow',exact:true}).click();
+ await page.getByRole('button',{name:'Publish Workflow',exact:true}).click();
  const published=await publishing;assert(published.ok(),'A valid choice must publish');result.publishStatus=published.status();
  const stored=f.ok(await f.api('GET','/api/branches/'+branch.id)),bindings=f.ok(await f.api('GET','/api/branches/'+branch.id+'/configuration'));
  assert(stored.versionId);assert(Object.values(bindings.agents).includes(worker.id));

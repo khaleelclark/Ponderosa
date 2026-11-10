@@ -23,9 +23,9 @@ export function ScrollToLatestButton({ visible, onClick, label = "Jump to latest
     zIndex: 2,
     boxShadow: 3,
   } as const;
-  if (label === "Jump to latest message") return <Tooltip title="Jump to Latest Message">
+  if (label === "Jump to latest message") return <Tooltip title="Jump To Latest Message">
     <IconButton
-      aria-label="Jump to latest message"
+      aria-label="Jump To Latest Message"
       onClick={onClick}
       sx={{
         ...sharedSx,

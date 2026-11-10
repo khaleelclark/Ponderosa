@@ -6,4 +6,4 @@ import {confirmUnsavedNavigation} from '../reloadSafety';
 export const ResourceSettingsContext=createContext<{
  render?(kind:'chat'|'agent',id:string):ReactNode;
  confirmClose?():boolean;
-}>({render:(kind,id)=><CapabilityPolicyEditor scopeKind={kind} endpoint={`/api/${kind==='chat'?'conversations':'agents'}/${id}/capabilities`} title="Tool permissions" immediateSave/>,confirmClose:confirmUnsavedNavigation});
+}>({render:(kind,id)=><CapabilityPolicyEditor scopeKind={kind} endpoint={`/api/${kind==='chat'?'conversations':'agents'}/${id}/capabilities`} title="Tool Permissions" immediateSave/>,confirmClose:confirmUnsavedNavigation});

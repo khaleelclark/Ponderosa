@@ -21,7 +21,7 @@ export function BranchWorkspaceHeader({name,tab,published,dirty,runCounts,execut
  onTab(tab:BranchTab):void;onExport(mode:'template'|'full'):void;onUpdate():void;onRename():void;onHistory?():void;onEditJson?():void;onDiscard?():void;discardDisabled?:boolean;
 }):JSX.Element{
  const tabItems={workflow:{label:'Workflow',icon:<AccountTreeOutlined/>},executions:{label:'Executions',icon:<PlayCircleOutline/>,disabled:!published},chats:{label:'Chats',icon:<ChatBubbleOutline/>},settings:{label:'Settings',icon:<SettingsOutlined/>}};
- const tabs={idPrefix:'branch',value:tab,label:'Branch views',onChange:onTab,items:branchTabs.map(value=>({value,...tabItems[value]}))};
+ const tabs={idPrefix:'branch',value:tab,label:'Branch Views',onChange:onTab,items:branchTabs.map(value=>({value,...tabItems[value]}))};
  const activity=branchRunStatus(runCounts,executionsUnavailable),executionStatus=activity.status,executionLabel=activity.label;
  const executionTooltip=<>{activity.lines.map(line=><Box key={line}>{line}</Box>)}</>;
  const runLabel=dirty&&published?'Run Published Workflow':'Run Workflow';
@@ -33,15 +33,15 @@ export function BranchWorkspaceHeader({name,tab,published,dirty,runCounts,execut
 
 /** The existing global usage observer renders into the Branch's own menu. */
 function BranchHeaderActions({onRename,onDiscard,discardDisabled,onExport,onUpdate,onHistory,onEditJson}:Pick<Parameters<typeof BranchWorkspaceHeader>[0],'onRename'|'onDiscard'|'discardDisabled'|'onExport'|'onUpdate'|'onHistory'|'onEditJson'>):JSX.Element{
- const renderMenu=useCallback((openUsage?: (anchor:HTMLElement)=>void,fullTrigger?:ReactNode)=><Box sx={{display:"flex",alignItems:"center",gap:.5}}>{fullTrigger}<ChatOverflowMenu label="Branch actions" showExports={false} transcriptMarkdown="" transcriptFileName="" actions={[
-  ...(openUsage&&!fullTrigger?[{label:'Provider usage',icon:<DataUsageOutlined fontSize="small"/>,onSelect:openUsage}]:[]),
+ const renderMenu=useCallback((openUsage?: (anchor:HTMLElement)=>void,fullTrigger?:ReactNode)=><Box sx={{display:"flex",alignItems:"center",gap:.5}}>{fullTrigger}<ChatOverflowMenu label="Branch Actions" showExports={false} transcriptMarkdown="" transcriptFileName="" actions={[
+  ...(openUsage&&!fullTrigger?[{label:'Provider Usage',icon:<DataUsageOutlined fontSize="small"/>,onSelect:openUsage}]:[]),
   {label:'Rename…',onSelect:onRename},
-  ...(onHistory?[{label:'Version history',onSelect:onHistory}]:[]),
-  ...(onEditJson?[{label:'Edit workflow JSON…',onSelect:onEditJson}]:[]),
-  {label:'Discard changes',onSelect:()=>onDiscard?.(),disabled:discardDisabled},
-  {label:'Export template',onSelect:()=>onExport('template')},
-  {label:'Export full',onSelect:()=>onExport('full')},
-  {label:'Apply package update…',onSelect:onUpdate},
+  ...(onHistory?[{label:'Version History',onSelect:onHistory}]:[]),
+  ...(onEditJson?[{label:'Edit Workflow JSON…',onSelect:onEditJson}]:[]),
+  {label:'Discard Changes',onSelect:()=>onDiscard?.(),disabled:discardDisabled},
+  {label:'Export Template',onSelect:()=>onExport('template')},
+  {label:'Export Full',onSelect:()=>onExport('full')},
+  {label:'Apply Package Update…',onSelect:onUpdate},
  ]}/></Box>,[onRename,onDiscard,discardDisabled,onExport,onUpdate,onHistory,onEditJson]);
  return <PrimaryHeaderActionsOutlet renderTrigger={renderMenu} fallback={renderMenu()}/>;
 }

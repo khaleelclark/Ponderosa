@@ -469,7 +469,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       dedupeKey: `provider:${engineId}:unavailable`,
       category: "provider",
       severity: "attention",
-      title: `${engines.get(engineId)?.adapter.displayName ?? engineId} is unavailable`,
+      title: `${engines.get(engineId)?.adapter.displayName ?? engineId} Is Unavailable`,
       body: providerUnavailableNotificationBody(denial.detail, denial.failureCategory),
       action: { kind: "open_settings", targetId: engineId },
     });
@@ -1439,7 +1439,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
       const key = episode ? `${prefix}:${episode}` : prefix;
       createOperationalNotification({dedupeKey:key,renewAfterRecovery:kind==='schedule_polling',...(trigger?.branchId?{branchId:trigger.branchId}:{}),
         informational:kind==='schedule'||kind==='schedule_polling',...(kind==='schedule'||kind==='schedule_polling'?{push:false}:{}),category:'system',severity:kind==='schedule'||kind==='schedule_polling'?'info':'attention',
-        title:kind==='schedule'||kind==='schedule_polling'?'Schedule Check Delayed':'Branch discovery needs attention',body:cause===undefined?error:freshFailureDiagnostic(cause,error),
+        title:kind==='schedule'||kind==='schedule_polling'?'Schedule Check Delayed':'Branch Discovery Needs Attention',body:cause===undefined?error:freshFailureDiagnostic(cause,error),
         ...(trigger?.branchId?{action:{kind:'open_branch' as const,targetId:trigger.branchId}}:{})});
     },
     onSourceRecovered:(id,kind,episode)=>{

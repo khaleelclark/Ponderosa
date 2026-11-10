@@ -265,10 +265,10 @@ export function ProviderActivitySettingsSection({ projects, projectId, workflows
         renderInput={params => <TextField {...params} label="Scope" placeholder={workflows ? "Search workflows, Chats, Agents, and folders" : "Search Chats, Agents, and folders"} />} />
       <FormControl size="small" sx={{ minWidth: 160 }}><InputLabel id="usage-range">Time Range</InputLabel><Select labelId="usage-range" label="Time Range" value={rangeKey} onChange={event => setRangeKey(event.target.value as typeof rangeKey)}><MenuItem value="24h">Last 24 Hours</MenuItem><MenuItem value="7d">Last 7 Days</MenuItem><MenuItem value="30d">Last 30 Days</MenuItem><MenuItem value="all">All Time</MenuItem></Select></FormControl>
     </Stack>
-    <Box aria-label="Activity scope results">
-      {workflows&&<Stack spacing={1}>{workflowQuery.isPending&&<Typography role="status">Loading workflow scopes…</Typography>}{workflowQuery.error&&<Alert severity="error" action={<Button onClick={()=>void workflowQuery.refetch()}>Retry workflows</Button>}>Workflow scopes could not be loaded.</Alert>}{workflowQuery.hasNextPage&&<Button disabled={workflowQuery.isFetchingNextPage} onClick={()=>void workflowQuery.fetchNextPage()}>Load more workflows</Button>}</Stack>}
-      <CollectionStateFeedback request={chatQuery.requestState} itemCount={chats.length} filtersActive={Boolean(scopeSearch.trim())} resourceLabel="Chat scopes" emptyTitle="No Chat scopes" compact autoLoadMore={false} />
-      <CollectionStateFeedback request={agentQuery.requestState} itemCount={agents.length} filtersActive={Boolean(scopeSearch.trim())} resourceLabel="Agent scopes" emptyTitle="No Agent scopes" compact autoLoadMore={false} />
+    <Box aria-label="Activity Scope Results">
+      {workflows&&<Stack spacing={1}>{workflowQuery.isPending&&<Typography role="status">Loading workflow scopes…</Typography>}{workflowQuery.error&&<Alert severity="error" action={<Button onClick={()=>void workflowQuery.refetch()}>Retry Workflows</Button>}>Workflow scopes could not be loaded.</Alert>}{workflowQuery.hasNextPage&&<Button disabled={workflowQuery.isFetchingNextPage} onClick={()=>void workflowQuery.fetchNextPage()}>Load More Workflows</Button>}</Stack>}
+      <CollectionStateFeedback request={chatQuery.requestState} itemCount={chats.length} filtersActive={Boolean(scopeSearch.trim())} resourceLabel="Chat Scopes" emptyTitle="No Chat scopes" compact autoLoadMore={false} />
+      <CollectionStateFeedback request={agentQuery.requestState} itemCount={agents.length} filtersActive={Boolean(scopeSearch.trim())} resourceLabel="Agent Scopes" emptyTitle="No Agent scopes" compact autoLoadMore={false} />
     </Box>
     <Box>{usage.isError ? <Alert severity="error">Provider activity could not be loaded.</Alert> : !usage.data ? <LinearProgress /> : <TokenUsageDetails data={usage.data} />}</Box>
   </Paper>;

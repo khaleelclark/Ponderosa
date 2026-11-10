@@ -777,7 +777,7 @@ export function registerAgentRuntimeToolRoutes(
           status: "open",
           dedupeKey: `decision:${decision.id}`,
           action: { kind: "open_decision", targetId: decision.id },
-          title: `${agent.title} needs saved-browser access`,
+          title: `${agent.title} Needs Saved-Browser Access`,
           body: question,
           decision: { id: decision.id, mode: decision.mode, options: decision.options, allowOther: decision.allowOther, status: decision.status },
         }, true);

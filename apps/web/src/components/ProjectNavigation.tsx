@@ -114,7 +114,7 @@ export function ProjectRail({
           </IconButton>
         </Tooltip>
         <Tooltip title="Notifications">
-          <IconButton aria-label={notificationBadge ? `Notifications, ${notificationBadge} unread` : "Notifications"} onClick={onOpenNotifications}>
+          <IconButton aria-label={notificationBadge ? `Notifications, ${notificationBadge} Unread` : "Notifications"} onClick={onOpenNotifications}>
             <Badge color="error" badgeContent={notificationBadge} max={99} invisible={!notificationBadge} slotProps={{ badge: { "aria-hidden": true } }} sx={{ "& .MuiBadge-badge": { color: "#fff", fontWeight: 800 } }}>
               <NotificationsOutlinedIcon fontSize="small" />
             </Badge>
@@ -124,7 +124,7 @@ export function ProjectRail({
 
       <Box
         component="nav"
-        aria-label="Workspace sections"
+        aria-label="Workspace Sections"
         data-workspace-sidebar-sections
         sx={{
           gridRow: 2,

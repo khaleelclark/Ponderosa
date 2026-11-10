@@ -576,10 +576,10 @@ export function startProviderRunExecution(
               dedupeKey: `decision:${decision.id}`,
               action: { kind: "open_decision", targetId: decision.id },
               title: request.mode === "url"
-                ? `${agent.title} needs you to connect ${providerName}`
+                ? `${agent.title} Needs You To Connect ${providerName}`
                 : rememberableConfirmation
-                  ? `${agent.title} needs permission for ${providerName}`
-                : `${agent.title} needs information for ${providerName}`,
+                  ? `${agent.title} Needs Permission For ${providerName}`
+                : `${agent.title} Needs Information For ${providerName}`,
               body: decision.question,
               decision: {
                 id: decision.id,
@@ -1257,7 +1257,7 @@ export function startProviderRunExecution(
                   dedupeKey: `context-rollover:${observed.id}:seed-overflow`,
                   category: "coordination",
                   severity: "attention",
-                  title: `${agent.title} could not refresh context safely`,
+                  title: `${agent.title} Could Not Refresh Context Safely`,
                   body: observed.lastError ?? "Fresh context did not restore enough headroom.",
                   projectId: agent.projectId,
                   conversationId: routingConversationId,
@@ -1330,7 +1330,7 @@ export function startProviderRunExecution(
                       dedupeKey: `context-rollover:${agent.id}:boundary-invalid`,
                       category: "coordination",
                       severity: "attention",
-                      title: `${agent.title} could not freeze a safe context boundary`,
+                      title: `${agent.title} Could Not Freeze A Safe Context Boundary`,
                       body: error instanceof Error ? error.message : "The canonical rollover boundary was unavailable.",
                       projectId: agent.projectId,
                       conversationId: routingConversationId,
@@ -1672,7 +1672,7 @@ export function startProviderRunExecution(
           dedupeKey: `context-rollover:${replacementRunRollover.id}:confirmation-missing`,
           category: "coordination",
           severity: "attention",
-          title: `${agent.title} could not confirm refreshed context`,
+          title: `${agent.title} Could Not Confirm Refreshed Context`,
           body: replacementFailed
             ? "The replacement context remained above the safe threshold. Ponderosa retained the old provider session and stopped automatic rollover instead of looping."
             : replacementCancelled
@@ -1808,7 +1808,7 @@ export function startProviderRunExecution(
               dedupeKey: `provider:${runtimeEngineId}:unavailable`,
               category: "provider",
               severity: "attention",
-              title: `${engines.get(runtimeEngineId)?.adapter.displayName ?? runtimeEngineId} stopped accepting work`,
+              title: `${engines.get(runtimeEngineId)?.adapter.displayName ?? runtimeEngineId} Stopped Accepting Work`,
               body: providerUnavailableNotificationBody(runError, runFailureKind),
               projectId: agent.projectId,
               conversationId: agent.conversationId,
@@ -1832,7 +1832,7 @@ export function startProviderRunExecution(
           try { createOperationalNotification({
             dedupeKey: `native-goal-pause-unknown:${runId}`,
             category: "provider", severity: "attention",
-            title: "Native goal pause needs review",
+            title: "Native Goal Pause Needs Review",
             body: "The provider did not confirm whether the native goal paused. Its process is being stopped; earlier work may have completed. Review the goal before resuming it.",
             projectId: agent.projectId, conversationId: agent.conversationId, agentId: agent.id,
           }); } catch (error) {

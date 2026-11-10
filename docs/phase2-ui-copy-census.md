@@ -1,5 +1,31 @@
 # Phase 2 UI copy census — inventory M5 / Bible 29
 
+## Product-Wide Title Case
+
+Ponderosa-authored headings, navigation, field labels, buttons, menu items,
+compact status summaries, notification titles and error summaries use Title Case.
+Capitalize the authored words in short labels, including short words, consistently
+with existing controls such as “Insert Before The First Step.” Preserve product
+names and acronyms such as Ponderosa, Chat, Agent, Run, Request, Git, JSON and API.
+Use “Work Unconfirmed,” “Delivery Unconfirmed,” “Reply Unavailable” and
+“Request Rate Limit Exceeded.” Future UI specifications should follow this rule.
+
+Supporting prose, consequential consent sentences, quoted provider/user output,
+raw diagnostics, model/provider names, paths, technical identifiers and retained
+historical evidence keep their exact casing. Change authored copy at its source;
+do not use CSS capitalization or transform arbitrary strings at runtime. Known
+HTTP summaries come from structured status; keep the original diagnostic in
+Details. A failed background read never establishes delivery failure or grants
+permission to retry work. Each message/recipient keeps its canonical work status
+and exact recovery actions; independent user-action failures remain distinguishable.
+
+UI009 audits static semantic headings, control/field labels and shared status/error
+boundaries across the product, plus literal notification producers. Historical
+notification records and user-authored titles remain verbatim. These guidance
+rules supersede the older source-only census's copy convention; the historical
+qualification statements below describe their original snapshots.
+
+
 Source-only successor to `ad0f26bd4a95abc378e49497e82980ebd70eca6d`.
 Request basis: `docs/phase2-remaining-implementation.md`, snapshot
 `391d682c0cf4c209d3d7a0040716708b6a99e0f5`, M5.

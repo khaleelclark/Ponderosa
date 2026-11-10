@@ -36,7 +36,7 @@ export function WorkspaceConnectionNotice({ connection, hasSavedData }: { connec
   const phaseIssues = connection.refreshErrorResources ?? [];
   const visible = foreground && (disconnected || phaseIssues.length > 0 || (matureIssues && issues.length > 0));
   const label = disconnected || refresh.shared ? (!online ? "Offline" : "Reconnecting")
-    : phaseIssues.length ? `${phaseIssues.join(" / ")} delayed` : "Refresh delayed";
+    : phaseIssues.length ? `${phaseIssues.join(" / ")} Delayed` : "Refresh Delayed";
   useEffect(() => { if (!visible) setAnchor(null); }, [visible]);
   return <>
     {visible ? <Button
@@ -47,7 +47,7 @@ export function WorkspaceConnectionNotice({ connection, hasSavedData }: { connec
     ><Box component="span" sx={{minWidth:0,overflow:"hidden",textOverflow:"ellipsis"}}>{label}</Box></Button> : null}
     <Popover open={visible && Boolean(anchor)} anchorEl={anchor} onClose={() => setAnchor(null)}
       anchorOrigin={{ vertical: "bottom", horizontal: "right" }} transformOrigin={{ vertical: "top", horizontal: "right" }}>
-      <Box id={detailsId} role="dialog" aria-label="Workspace update details" sx={{ p: 2, width: 340, maxWidth: "calc(100vw - 24px)", overflowWrap: "anywhere" }}>
+      <Box id={detailsId} role="dialog" aria-label="Workspace Update Details" sx={{ p: 2, width: 340, maxWidth: "calc(100vw - 24px)", overflowWrap: "anywhere" }}>
         <Typography variant="subtitle2">{label}</Typography>
         <Typography variant="body2" sx={{ mt: 1 }}>{disconnected
           ? saved ? "Saved data remains visible. Messages and Agent statuses may be out of date." : "Workspace data has not loaded yet."

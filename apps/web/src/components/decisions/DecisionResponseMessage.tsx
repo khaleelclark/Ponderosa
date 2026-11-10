@@ -42,11 +42,11 @@ export function DecisionResponseMessage({ event, operatorProfile, onOpenAgent }:
           </Box>;
         }) : decision.response?.attachments?.length ? <ChatAttachments attachments={decision.response.attachments} /> : null}
         {!automatic ? <Button className="chat-text-navigation" size="small" aria-haspopup="dialog" aria-controls={questionOpen ? questionId : undefined}
-          onClick={() => setQuestionOpen(true)} sx={{ mt: .25 }}>View question</Button> : null}
+          onClick={() => setQuestionOpen(true)} sx={{ mt: .25 }}>View Question</Button> : null}
       </Box> }} />
     <Dialog onClick={event => event.stopPropagation()} id={questionId} open={questionOpen} onClose={() => setQuestionOpen(false)} aria-labelledby={titleId}
       fullWidth maxWidth="sm" data-decision-id={decision.id}>
-      <DialogTitle id={titleId}>Original question</DialogTitle>
+      <DialogTitle id={titleId}>Original Question</DialogTitle>
       <DialogContent data-decision-id={decision.id} sx={{ overflowWrap: "anywhere" }}>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>From {label}</Typography>
         {(decision.questions ?? [{ id: decision.id, question: decision.question, context: decision.context, options: decision.options }]).map((question, index) => <Box key={question.id} sx={{ mt: index ? 2 : 0 }}>
@@ -54,7 +54,7 @@ export function DecisionResponseMessage({ event, operatorProfile, onOpenAgent }:
           <DecisionQuestionContent {...question} projectId={decision.projectId} />
         </Box>)}
       </DialogContent>
-      <DialogActions><Button onClick={() => setQuestionOpen(false)}>Close question</Button></DialogActions>
+      <DialogActions><Button onClick={() => setQuestionOpen(false)}>Close Question</Button></DialogActions>
     </Dialog>
   </>;
 }

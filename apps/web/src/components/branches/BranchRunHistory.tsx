@@ -74,14 +74,14 @@ export function BranchRunHistory({runs,selectedId,selectedRun,filter,onFilter,on
      </TextField>
      {triggerEvents}
      {read?<WorkspaceQueryError active={active} read={read}/>:error&&<Alert severity="error" action={<Button onClick={onRetry}>Retry</Button>}>Run history unavailable. {error.message}</Alert>}
-     {loading&&!runs.length?<Stack role="status" aria-label="Loading Run history"><Skeleton height={24}/><Skeleton height={64}/><Skeleton height={64}/></Stack>:!error&&!runs.length?<Stack><Typography color="text.secondary">{filter?'No Runs match this filter.':'No Runs yet. Use Run Workflow to begin.'}</Typography>{filter&&<Button sx={{alignSelf:'start'}} onClick={()=>onFilter('')}>Clear Filter</Button>}</Stack>:null}
+     {loading&&!runs.length?<Stack role="status" aria-label="Loading Run History"><Skeleton height={24}/><Skeleton height={64}/><Skeleton height={64}/></Stack>:!error&&!runs.length?<Stack><Typography color="text.secondary">{filter?'No Runs match this filter.':'No Runs yet. Use Run Workflow to begin.'}</Typography>{filter&&<Button sx={{alignSelf:'start'}} onClick={()=>onFilter('')}>Clear Filter</Button>}</Stack>:null}
     </Stack>
     <List aria-label="Workflow Runs" disablePadding sx={{mt:1}}>{retained&&renderRun(retained,true)}{runs.map(run=>renderRun(run))}</List>
     {hasMore&&<Button disabled={loadingMore} onClick={onMore} sx={{mt:1,flexShrink:0}}>{loadingMore?'Loading…':'Load Older Runs'}</Button>}
    </Box>
    <Box ref={detailScroll} onScroll={event=>{scroll.current.detail=event.currentTarget.scrollTop}} component="section" aria-label="Selected Run" sx={{display:showHistory?'none':'block',minWidth:0,minHeight:0,overflow:'auto',p:{xs:1.5,sm:2},[desktopLayout]:{display:hasDetails?'block':'none'}}}>
     <Button startIcon={<ArrowBackIcon/>} onClick={()=>setShowHistory(true)} sx={{mb:1,minHeight:44,[desktopLayout]:{display:'none'}}}>Run History</Button>
-    {selectedId?children:loading?<Stack role="status" aria-label="Loading Run details"><Skeleton height={32}/><Skeleton height={80}/><Skeleton height={80}/></Stack>:runs.length?<Typography color="text.secondary">Choose a Run from history to view its result.</Typography>:null}
+    {selectedId?children:loading?<Stack role="status" aria-label="Loading Run Details"><Skeleton height={32}/><Skeleton height={80}/><Skeleton height={80}/></Stack>:runs.length?<Typography color="text.secondary">Choose a Run from history to view its result.</Typography>:null}
    </Box>
   </Box>
  </Box>;

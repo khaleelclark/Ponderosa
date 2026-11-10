@@ -75,15 +75,15 @@ function PackageChoices({
       <Select labelId="agent-package-scope-label" label="Scope" value={organization ? "organization" : "agent"}
         onChange={event => onOrganizationChange(event.target.value === "organization")}>
         <MenuItem value="agent">This Agent</MenuItem>
-        <MenuItem value="organization">This Agent and descendants</MenuItem>
+        <MenuItem value="organization">This Agent And Descendants</MenuItem>
       </Select>
     </FormControl>
     <FormControl fullWidth size="small">
       <InputLabel id="agent-package-contents-label">Contents</InputLabel>
       <Select labelId="agent-package-contents-label" label="Contents" value={mode}
         onChange={event => onModeChange(event.target.value as PackageMode)}>
-        <MenuItem value="template">Setup only</MenuItem>
-        <MenuItem value="full">Setup, private history, and managed artifacts</MenuItem>
+        <MenuItem value="template">Setup Only</MenuItem>
+        <MenuItem value="full">Setup, Private History, And Managed Artifacts</MenuItem>
       </Select>
     </FormControl>
     <Typography variant="body2" color="text.secondary">
@@ -132,17 +132,17 @@ export function AgentPackageExportDialog({
   }, [open, source.id, initialOrganization]);
   const agentCount = selectedAgents(source, agents, organization).length;
   return <Dialog open={open} onClose={copying ? undefined : onClose} fullWidth maxWidth="sm" aria-busy={copying || undefined}>
-    <DialogTitle>Export Agent package</DialogTitle>
+    <DialogTitle>Export Agent Package</DialogTitle>
     <DialogContent>
       <Typography variant="body2" color="text.secondary">Choose what to export from {source.title}.</Typography>
       <PackageChoices organization={organization} mode={mode} agentCount={agentCount}
         onOrganizationChange={setOrganization} onModeChange={setMode} />
-      {mode==='full'&&organization&&<FormControlLabel control={<Checkbox checked={organizationWorkingFolders} onChange={event=>setOrganizationWorkingFolders(event.target.checked)}/>} label="Include every distinct organization working folder"/>}
-      {mode==='full'&&!allFolders&&<FormControlLabel control={<Checkbox checked={wholeWorkingFolder} onChange={event=>setWholeWorkingFolder(event.target.checked)}/>} label="Include the whole root Agent working folder"/>}
+      {mode==='full'&&organization&&<FormControlLabel control={<Checkbox checked={organizationWorkingFolders} onChange={event=>setOrganizationWorkingFolders(event.target.checked)}/>} label="Include Every Distinct Organization Working Folder"/>}
+      {mode==='full'&&!allFolders&&<FormControlLabel control={<Checkbox checked={wholeWorkingFolder} onChange={event=>setWholeWorkingFolder(event.target.checked)}/>} label="Include The Whole Root Agent Working Folder"/>}
       {mode==='full'&&<NativePortableExportChoices available={reviewAvailable} disabled={copying} value={nativeSelection} onChange={setNativeSelection}/>}
       {mode==='full'&&<GitStorageBindingsEditor agents={bindingAgents} value={gitBindings} onChange={setGitBindings} available={bindingsAvailable} disabled={copying}/>}
       {bindingError&&<Alert severity="warning">{bindingError}</Alert>}
-      {mode==='full'&&!wholeWorkingFolder&&!allFolders&&<TextField fullWidth multiline minRows={2} label="Working files to include" value={workingFiles} onChange={event=>setWorkingFiles(event.target.value)} error={invalidPaths} helperText="Optional: one path per line, relative to the Agent working folder · selected files may contain sensitive information" sx={{mt:2}}/>}
+      {mode==='full'&&!wholeWorkingFolder&&!allFolders&&<TextField fullWidth multiline minRows={2} label="Working Files To Include" value={workingFiles} onChange={event=>setWorkingFiles(event.target.value)} error={invalidPaths} helperText="Optional: one path per line, relative to the Agent working folder · selected files may contain sensitive information" sx={{mt:2}}/>}
     </DialogContent>
     <DialogActions sx={{ flexWrap: "wrap", p: 2 }}>
       <Button onClick={onClose} disabled={copying}>Close</Button>
@@ -244,8 +244,8 @@ export function AgentDuplicateDialog({
       setPending(false);
     }
   };
-  return <ConfirmDialog open={open} title={organization ? "Duplicate organization" : "Duplicate Agent"}
-    confirmLabel={organization ? "Duplicate organization" : "Duplicate Agent"}
+  return <ConfirmDialog open={open} title={organization ? "Duplicate Organization" : "Duplicate Agent"}
+    confirmLabel={organization ? "Duplicate Organization" : "Duplicate Agent"}
     pendingLabel="Duplicating…" pending={pending} error={error}
     confirmDisabled={(instructionsConflict && !instructionsAction) || !destinationChat || !rootTitle.trim() || rootTitle.trim().length > 80 || (elevated && !acknowledged)} onCancel={onClose}
     onConfirm={() => void duplicate()}>
@@ -255,15 +255,15 @@ export function AgentDuplicateDialog({
       <PackageChoices organization={organization} mode={mode} agentCount={included.length}
         onOrganizationChange={setOrganization} onModeChange={setMode} />
       <FormControl fullWidth size="small">
-        <InputLabel id="duplicate-agent-chat-label">Destination chat</InputLabel>
-        <Select labelId="duplicate-agent-chat-label" label="Destination chat" value={conversationId}
+        <InputLabel id="duplicate-agent-chat-label">Destination Chat</InputLabel>
+        <Select labelId="duplicate-agent-chat-label" label="Destination Chat" value={conversationId}
           onChange={event => setConversationId(event.target.value)}>
           {availableChats.map(chat => <MenuItem key={chat.id} value={chat.id}>{chat.title}</MenuItem>)}
         </Select>
       </FormControl>
       <ChatInstructionsImportChoice source={sourceInstructions} destination={destinationInstructions}
         value={instructionsAction} onChange={setInstructionsAction} />
-      <TextField label="New root Agent name" value={rootTitle} onChange={event => setRootTitle(event.target.value)}
+      <TextField label="New Root Agent Name" value={rootTitle} onChange={event => setRootTitle(event.target.value)}
         inputProps={{ maxLength: 80 }} fullWidth size="small"
         error={Boolean(rootTitle && !rootTitle.trim())}
         helperText="Descendant names stay the same." />
@@ -274,7 +274,7 @@ export function AgentDuplicateDialog({
       {elevated ? <Alert severity="warning">
         This selection contains elevated organization permissions.
         <FormControlLabel control={<Checkbox checked={acknowledged} onChange={event => setAcknowledged(event.target.checked)} />}
-          label="Keep these elevated permissions in the duplicate" />
+          label="Keep These Elevated Permissions In The Duplicate" />
       </Alert> : null}
       <Typography variant="caption" color="text.secondary">
         Nothing is submitted to an external service.

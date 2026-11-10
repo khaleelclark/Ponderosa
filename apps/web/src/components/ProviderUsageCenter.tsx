@@ -161,8 +161,8 @@ export function ProviderUsageCard({
       <Stack direction="row" justifyContent="space-between" spacing={1} sx={{ alignItems: "center" }}>
         <Box sx={{ minWidth: 0 }}>
           <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
-            <Typography variant="subtitle2" fontWeight={800}>{state.displayName} usage</Typography>
-            {state.refreshing ? <CircularProgress size={14} aria-label={`Refreshing ${state.displayName} usage`} /> : null}
+            <Typography variant="subtitle2" fontWeight={800}>{state.displayName} Usage</Typography>
+            {state.refreshing ? <CircularProgress size={14} aria-label={`Refreshing ${state.displayName} Usage`} /> : null}
           </Stack>
           {reading?.accountLabel ? (
             <Typography variant="caption" color="text.secondary" noWrap>{reading.accountLabel}</Typography>
@@ -180,7 +180,7 @@ export function ProviderUsageCard({
             </Button>
           ) : null}
           {onClose ? (
-            <Button size="small" aria-label="Close provider usage" onClick={onClose}>
+            <Button size="small" aria-label="Close Provider Usage" onClick={onClose}>
               <CloseIcon fontSize="small" />
             </Button>
           ) : null}
@@ -340,12 +340,12 @@ export function ProviderQuotaIndicator({
     ? maximum !== undefined && maximum >= 0
       ? `${selected.displayName} · ${Math.round(maximum)}%`
       : selected.refreshing
-        ? `${selected.displayName} · loading`
-        : "Provider usage"
-    : query.isLoading ? "Provider usage" : "Provider usage unavailable";
-  const accessibleLabel = label === "Provider usage"
-    ? "Open provider usage"
-    : `Open provider usage: ${label}`;
+        ? `${selected.displayName} · Loading`
+        : "Provider Usage"
+    : query.isLoading ? "Provider Usage" : "Provider Usage Unavailable";
+  const accessibleLabel = label === "Provider Usage"
+    ? "Open Provider Usage"
+    : `Open Provider Usage: ${label}`;
 
   const open = (element: HTMLElement) => {
     setAnchor(element);
@@ -451,7 +451,7 @@ export function ProviderQuotaIndicator({
         }}
       >
         <Box sx={{ p: 1.5 }}>
-          <Typography variant="overline" color="text.secondary">Provider usage</Typography>
+          <Typography variant="overline" color="text.secondary">Provider Usage</Typography>
           <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ mb: 1.25 }}>
             {[...providers]
               .sort((left, right) =>

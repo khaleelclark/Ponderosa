@@ -16,14 +16,14 @@ export function ChatInstructionsImportChoice({ source, destination, value, onCha
   return <Alert severity="warning">
     <Stack spacing={1}>
       <Typography variant="body2">Chat instructions differ · choose which to use after import</Typography>
-      <TextField label="Existing Chat instructions" value={destination} multiline maxRows={3} fullWidth InputProps={{ readOnly: true }} />
-      <TextField label="Imported Chat instructions" value={source} multiline maxRows={3} fullWidth InputProps={{ readOnly: true }} />
+      <TextField label="Existing Chat Instructions" value={destination} multiline maxRows={3} fullWidth InputProps={{ readOnly: true }} />
+      <TextField label="Imported Chat Instructions" value={source} multiline maxRows={3} fullWidth InputProps={{ readOnly: true }} />
       <FormControl fullWidth>
-        <InputLabel id="import-chat-instructions-choice">Chat instructions</InputLabel>
-        <Select labelId="import-chat-instructions-choice" label="Chat instructions" value={value}
+        <InputLabel id="import-chat-instructions-choice">Chat Instructions</InputLabel>
+        <Select labelId="import-chat-instructions-choice" label="Chat Instructions" value={value}
           onChange={event => onChange(event.target.value as ChatInstructionsAction)}>
-          <MenuItem value="keep_destination">Keep existing Chat instructions</MenuItem>
-          <MenuItem value="use_source">Use imported Chat instructions</MenuItem>
+          <MenuItem value="keep_destination">Keep Existing Chat Instructions</MenuItem>
+          <MenuItem value="use_source">Use Imported Chat Instructions</MenuItem>
         </Select>
       </FormControl>
     </Stack>

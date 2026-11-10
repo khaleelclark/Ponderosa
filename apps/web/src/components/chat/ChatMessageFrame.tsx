@@ -70,7 +70,7 @@ export function ChatMessageFrame({
   }, [message.id, message.onVisible]);
   const avatar = (
     <Avatar
-      aria-label={`${senderName} avatar`}
+      aria-label={`${senderName} Avatar`}
       sx={{
         width: { xs: 32, sm: 36 },
         height: { xs: 32, sm: 36 },
@@ -90,7 +90,7 @@ export function ChatMessageFrame({
       id={message.id}
       className={`MuiBox-root chat-message chat-message-frame${assistantMessages ? " chat-message-assistant" : ""}${fromOperator ? " chat-message-end" : ""}${message.status ? " chat-message-has-status" : ""}${selectable ? " chat-message-selectable" : ""}`}
       style={{ "--chat-agent-max-width": `${maxAgentWidth}px` } as CSSProperties}
-      aria-label={message.ariaLabel ?? `${senderName} message`}
+      aria-label={message.ariaLabel ?? `${senderName} Message`}
       onClick={selectable
         ? event => {
             if (!messageSelectionTargetIsInteractive(event.target, event.currentTarget) &&
@@ -108,7 +108,7 @@ export function ChatMessageFrame({
       <div className="MuiStack-root chat-message-row">
         {!fromOperator ? openAuthor
           ? <Tooltip title={`Open ${senderName}`}><ButtonBase
-              aria-label={`Open agent ${senderName} from profile image`}
+              aria-label={`Open Agent ${senderName} From Profile Image`}
               onClick={(event) => { event.stopPropagation(); openAuthor(); }}
               sx={{ borderRadius: "50%", flex: "0 0 auto", minWidth:44,minHeight:44,alignItems:"flex-start",pt:.5 }}
             >{avatar}</ButtonBase></Tooltip>
@@ -118,7 +118,7 @@ export function ChatMessageFrame({
           {author.kind === "agent" || assistantMessages && author.kind === "inbound_agent" ? (
             <div className="MuiStack-root chat-message-agent-header">
               {openAuthor ? <ButtonBase
-                aria-label={`Open agent ${senderName} from name`}
+                aria-label={`Open Agent ${senderName} From Name`}
                 onClick={(event) => { event.stopPropagation(); openAuthor(); }}
                 sx={{ minHeight: 32, borderRadius: 0.75, textAlign: "left", "& [data-message-sender]": { mb: 0, fontSize: "0.875rem" } }}
               ><MessageSenderLabel name={senderName} /></ButtonBase>
@@ -143,7 +143,7 @@ export function ChatMessageFrame({
               </div>
               {openAuthor ? (
                 <ButtonBase
-                  aria-label={`Open agent ${senderName} from name`}
+                  aria-label={`Open Agent ${senderName} From Name`}
                   onClick={(event) => {
                     event.stopPropagation();
                     openAuthor();
@@ -165,7 +165,7 @@ export function ChatMessageFrame({
               {openAuthor ? (
                 <Tooltip title={`Open ${senderName}`}>
                   <ButtonBase
-                    aria-label={`Open agent ${senderName} from profile image`}
+                    aria-label={`Open Agent ${senderName} From Profile Image`}
                     onClick={(event) => {
                       event.stopPropagation();
                       openAuthor();

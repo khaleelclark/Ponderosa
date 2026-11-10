@@ -42,21 +42,21 @@ export async function lifecycleDiscoveryRegression():Promise<void>{
  const render=()=>root.render(<QueryClientProvider client={client}><LifecycleDiscovery/></QueryClientProvider>);
  try{
   render();await settle();assert(gets.some(url=>url.includes('/checkpoint-captures?')),'source collection loads independently');
-  button('Load more import operations').click();await settle();assert(gets.some(url=>url.includes('cursor=opaque%20%26%20cursor')),'cursor encoded exactly');
+  button('Load More import operations').click();await settle();assert(gets.some(url=>url.includes('cursor=opaque%20%26%20cursor')),'cursor encoded exactly');
   await choose(0,'operation-50');assert(document.body.textContent?.includes('retained_lifecycle'),'historical import origin visible');
-  await choose(1,'Group group');button('Review group retirement').click();await settle();assert(document.body.textContent?.includes('Second destination deletion proof missing'),'group review refusal shown');
-  button('Close').click();await settle();await choose(2,'original capture key');button('Review Branch evidence').click();await settle();
+  await choose(1,'Group group');button('Review Group Retirement').click();await settle();assert(document.body.textContent?.includes('Second destination deletion proof missing'),'group review refusal shown');
+  button('Close').click();await settle();await choose(2,'original capture key');button('Review Branch Evidence').click();await settle();
   assert(document.body.textContent?.includes('Canonical discovered capture key: original capture key'),'full source and actual key reach independent Branch review');
-  button('Close').click();await settle();destinationRefuses=false;button('Review group retirement').click();await settle();button('Refresh current review').click();await settle();
+  button('Close').click();await settle();destinationRefuses=false;button('Review Group Retirement').click();await settle();button('Refresh Current Review').click();await settle();
   assert(document.body.textContent?.includes('destination1'),'every group slot is reviewable');
   const acknowledge=Array.from(document.querySelectorAll('label')).find(l=>l.textContent==='I reviewed this exact scope and evidence')!.querySelector('input')!;acknowledge.click();await settle();
-  button('Approve retirement choice').click();await settle();button('Confirm exact command').click();await settle();
+  button('Approve Retirement Choice').click();await settle();button('Confirm Exact Command').click();await settle();
   assert(posts.filter(p=>p.url.endsWith('/retire')).length===0,'group approval never auto-retires');
-  button('Confirm retirement').click();await settle();button('Retire destination').click();await settle();
+  button('Confirm Retirement').click();await settle();button('Retire Destination').click();await settle();
   const mutations=posts.filter(p=>p.url.endsWith('/approve')||p.url.endsWith('/retire'));assert(JSON.stringify(mutations[0].body)===JSON.stringify(mutations[1].body),'group approval/retire same stable choice');
-  root.unmount();root=createRoot(host);render();await settle();await choose(1,'Group group');button('Review group retirement').click();await settle();button('Inspect retirement receipt').click();await settle();
+  root.unmount();root=createRoot(host);render();await settle();await choose(1,'Group group');button('Review Group Retirement').click();await settle();button('Inspect Retirement Receipt').click();await settle();
   assert(posts.filter(p=>p.url.endsWith('/retire')).length===1&&!localStorage.getItem(storageKey),'remount receipt is pure GET');
-  button('Close').click();await settle();button('Restart import operations').click();await settle();await choose(0,'operation-0');button('Review import custody').click();await settle();
-  button('Close').click();await settle();staleImports=true;button('Load more import operations').click();await settle();assert(!button('Review import custody'),'paging409 removes stale selection and dialogs');
+  button('Close').click();await settle();button('Restart import operations').click();await settle();await choose(0,'operation-0');button('Review Import Custody').click();await settle();
+  button('Close').click();await settle();staleImports=true;button('Load More import operations').click();await settle();assert(!button('Review Import Custody'),'paging409 removes stale selection and dialogs');
  }finally{root.unmount();client.clear();host.remove();globalThis.fetch=originalFetch;if(saved===null)localStorage.removeItem(storageKey);else localStorage.setItem(storageKey,saved);}
 }

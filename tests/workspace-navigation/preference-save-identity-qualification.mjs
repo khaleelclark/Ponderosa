@@ -30,7 +30,7 @@ try{
    const rejectFont=async route=>{if(route.request().method()==='PATCH'&&route.request().postDataJSON()?.fontFamily){arrived();await held;await route.fulfill({status:503,contentType:'application/json',body:JSON.stringify({error:fault})});}else await route.continue();};
    await page.route(prefs,rejectFont);
    await page.getByRole('combobox',{name:'Font',exact:true}).click();await page.getByRole('option',{name:fontLabel,exact:true}).click();await intercepted;
-   await page.getByRole('checkbox',{name:'Proactive context rollover',exact:true}).click();
+   await page.getByRole('checkbox',{name:'Proactive Context Rollover',exact:true}).click();
    const contextSaved=page.waitForResponse(r=>r.url()===prefs&&r.request().method()==='PATCH'&&r.request().postDataJSON()?.contextRolloverEnabled!==undefined);
    release();await page.getByRole('alert').filter({hasText:fault}).waitFor();assert.equal((await contextSaved).status(),200);
    assert.equal(await page.getByRole('alert').filter({hasText:fault}).count(),1,'Overlapping unrelated success keeps Font error');
@@ -54,7 +54,7 @@ try{
    let rejected=page.waitForResponse(r=>r.url()===prefs&&r.status()===503&&r.request().postDataJSON()?.fontFamily);
    await page.getByRole('combobox',{name:'Font',exact:true}).click();await page.getByRole('option',{name:otherFont,exact:true}).click();await rejected;
    rejected=page.waitForResponse(r=>r.url()===prefs&&r.status()===503&&r.request().postDataJSON()?.contextRolloverEnabled!==undefined);
-   await page.getByRole('checkbox',{name:'Proactive context rollover',exact:true}).click();await rejected;
+   await page.getByRole('checkbox',{name:'Proactive Context Rollover',exact:true}).click();await rejected;
    await page.getByRole('alert').filter({hasText:fault}).waitFor();
    await page.unroute(prefs,rejectBoth);
    const recovered=page.waitForResponse(r=>r.url()===prefs&&r.status()===200&&r.request().method()==='PATCH'&&r.request().postDataJSON()?.fontFamily);
@@ -64,7 +64,7 @@ try{
    row.checks.push('Two distinct failures: matching Font retry preserves exact Rollover failure');
    await page.screenshot({path:path.join(output,`${product}-${theme}-second-failure-retained.png`),fullPage:true});
    const rolloverRecovered=page.waitForResponse(r=>r.url()===prefs&&r.status()===200&&r.request().method()==='PATCH'&&r.request().postDataJSON()?.contextRolloverEnabled!==undefined);
-   await page.getByRole('checkbox',{name:'Proactive context rollover',exact:true}).click();await rolloverRecovered;
+   await page.getByRole('checkbox',{name:'Proactive Context Rollover',exact:true}).click();await rolloverRecovered;
    await page.getByRole('alert').filter({hasText:secondFault}).waitFor({state:'hidden'});
    row.checks.push('Matching Rollover retry clears remaining failure');
    row.status='pass';console.log(`PASS ${product} ${theme}: ${row.checks.length} checks`);

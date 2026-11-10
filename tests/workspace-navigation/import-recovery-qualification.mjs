@@ -43,14 +43,14 @@ try{
     await route.continue();
    });
    page=await context.newPage();page.setDefaultTimeout(20000);page.on('pageerror',error=>row.pageErrors.push(error.message));
-   await page.goto(origin+'/create/agent');await page.getByRole('button',{name:'Import Agent package',exact:true}).click();
+   await page.goto(origin+'/create/agent');await page.getByRole('button',{name:'Import Agent Package',exact:true}).click();
    const project=page.getByRole('combobox',{name:'Project',exact:true});if(await project.count()){await project.click();await page.getByRole('option',{name:`Recovered import ${device}`,exact:true}).click();}
    await page.getByText(`Destination chat: Recovered import ${device}`,{exact:true}).waitFor();
    await page.locator('input[type=file]').setInputFiles({name:'synthetic-expert-template.json',mimeType:'application/json',buffer:packageBytes});
    const engine=page.getByRole('combobox',{name:'Default Engine',exact:true});await engine.click();await page.getByRole('option',{name:'Controlled regression adapter',exact:true}).click();
    await picture('package-reviewed');
-   await page.getByRole('button',{name:'Review access settings',exact:true}).click();
-   const restrictions=page.getByRole('combobox',{name:'Restrictions for imported Agents',exact:true});await restrictions.click();await page.getByRole('option',{name:'Keep destination restrictions',exact:true}).click();
+   await page.getByRole('button',{name:'Review Access Settings',exact:true}).click();
+   const restrictions=page.getByRole('combobox',{name:'Restrictions For Imported Agents',exact:true});await restrictions.click();await page.getByRole('option',{name:'Keep Destination Restrictions',exact:true}).click();
    for(const title of [sourceAgent.title,child.title])assert.equal(await page.getByText(`${title}: No source restrictions`,{exact:true}).count(),1,'actual source Agent names are readable and bound to their package refs');
    await picture('explicit-destination-restrictions');
    await page.getByRole('button',{name:'Import',exact:true}).click();
@@ -59,10 +59,10 @@ try{
    await page.getByText('Importing Agent… Keep this window open.',{exact:true}).waitFor({state:'hidden'});
    await picture('acceptance-unconfirmed');
    row.requestsBeforeReload=row.requests.length;
-   await page.reload();await page.getByRole('button',{name:'Import Agent package',exact:true}).click();
-   await page.getByRole('button',{name:'Check import status',exact:true}).waitFor();await picture('saved-request-after-reload');
-   await page.getByRole('button',{name:'Check import status',exact:true}).click();
-   await page.getByRole('heading',{name:'Import complete',exact:true}).waitFor().catch(async()=>{await page.getByText('Import complete',{exact:true}).waitFor();});
+   await page.reload();await page.getByRole('button',{name:'Import Agent Package',exact:true}).click();
+   await page.getByRole('button',{name:'Check Import Status',exact:true}).waitFor();await picture('saved-request-after-reload');
+   await page.getByRole('button',{name:'Check Import Status',exact:true}).click();
+   await page.getByRole('heading',{name:'Import Complete',exact:true}).waitFor().catch(async()=>{await page.getByText('Import Complete',{exact:true}).waitFor();});
    const operation=await (await fetch(`${origin}/api/projects/${dest.projectId}/agent-import-operations/${accepted.id}`)).json();
    assert.equal(operation.status,'completed');assert.equal(operation.requestId,accepted.requestId);assert(operation.result);assert.equal(operation.result.agentIds.length,2);
    row.completedOperation=operation;
@@ -70,7 +70,7 @@ try{
    assert(doneBounds&&doneBounds.y>=0&&doneBounds.y+doneBounds.height<=viewport.height,'completion Done is visible without scrolling');row.doneBounds={...doneBounds,viewport};
    await picture('import-complete');
    await page.getByRole('button',{name:'Done',exact:true}).click();
-   assert.equal(await page.getByRole('button',{name:'Check import status',exact:true}).count(),0);
+   assert.equal(await page.getByRole('button',{name:'Check Import Status',exact:true}).count(),0);
    const imported=store.listAgents(dest.projectId);assert.equal(imported.length,beforeIds.length+2);
    assert.deepEqual([...operation.result.agentIds].sort(),imported.filter(agent=>!beforeIds.includes(agent.id)).map(agent=>agent.id).sort());
    const root=imported.find(agent=>agent.id===operation.result.rootAgentId),helper=imported.find(agent=>operation.result.agentIds.includes(agent.id)&&agent.id!==root.id);
@@ -79,8 +79,8 @@ try{
    assert.deepEqual(store.listAgents(dest.projectId).map(agent=>agent.id).sort(),retainedIds);
    await page.goto(`${origin}/projects/${dest.projectId}/chats/${dest.id}?view=agents`);
    await page.getByText(sourceAgent.title,{exact:true}).first().waitFor();await page.getByText(child.title,{exact:true}).first().waitFor();await picture('reopened-imported-agents');
-   await page.goto(origin+'/create/agent');await page.getByRole('button',{name:'Import Agent package',exact:true}).click();
-   assert.equal(await page.getByRole('button',{name:'Check import status',exact:true}).count(),0,'Done must release the completed browser notice');
+   await page.goto(origin+'/create/agent');await page.getByRole('button',{name:'Import Agent Package',exact:true}).click();
+   assert.equal(await page.getByRole('button',{name:'Check Import Status',exact:true}).count(),0,'Done must release the completed browser notice');
    const posts=row.requests.filter(request=>request.method==='POST'&&request.path===`/api/projects/${dest.projectId}/agent-import-operations`);
    const checks=row.requests.filter(request=>request.method==='GET'&&request.path.includes('/agent-import-operations/by-request/'));
    assert.equal(posts.length,1);assert(checks.length>=1);assert.deepEqual(f.turns.map(turn=>turn.turnId),beforeTurns);

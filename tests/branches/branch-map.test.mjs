@@ -167,7 +167,7 @@ test('a restarted Map keeps settled workers and dispatches only its remaining se
 
 test('Map worker may call a child Branch and cancellation targets the exact child execution',async t=>{
  const f=fixture(t,{steps:[script('worker')]});
- const child=f.branches.deploy({chatId:f.chat.id,idempotencyKey:'child',definition:{schema:'ponderosa.branch.v1',name:'Item service',trigger:{kind:'manual'},entry:'gate',steps:[{id:'gate',kind:'human_gate',prompt:'Inspect item',editable:false}],controls:[],edges:[],policy:{maxConcurrentExecutions:1,failure:{action:'stop'}}},bindings:{agents:{},directories:{}}});
+ const child=f.branches.deploy({chatId:f.chat.id,idempotencyKey:'child',definition:{schema:'ponderosa.branch.v1',name:'Item service',trigger:{kind:'manual'},entry:'gate',steps:[{id:'gate',kind:'human_gate',prompt:'Inspect Item',editable:false}],controls:[],edges:[],policy:{maxConcurrentExecutions:1,failure:{action:'stop'}}},bindings:{agents:{},directories:{}}});
  const parentDefinition={...f.definition,name:'Map calls',steps:[{id:'worker',kind:'branch_call',branchRef:'child'}]};
  const parent=f.branches.deploy({chatId:f.chat.id,branchId:f.branch.id,expectedVersionId:f.branch.versionId,idempotencyKey:'parent-call',definition:parentDefinition,bindings:{agents:{},directories:{root:f.dir},branches:{child:child.id}}});
  const execution=f.branches.accept(parent.id,'map-call','["A","B"]');f.branches.advance();f.branches.advance();
@@ -378,7 +378,7 @@ test('Map cancellation closes its audit state after exact Agent cleanup while th
  // A persistent worker is created only inside this disposable store; no provider executes.
  const f=fixture(t,{controls,steps:[script('worker')],maxItems:2,maxConcurrentItems:2});
  const worker=f.store.createAgent(f.project.id,{title:'Map worker',engine:'codex',conversationId:f.chat.id});
- const branch=f.branches.deploy({chatId:f.chat.id,branchId:f.branch.id,expectedVersionId:f.branch.versionId,idempotencyKey:'agent-map',definition:{...f.definition,steps:[{id:'worker',kind:'agent',target:{kind:'persistent_agent',ref:'worker'},instructions:'Review item'}]},bindings:{agents:{worker:worker.id},directories:{root:f.dir}}});
+ const branch=f.branches.deploy({chatId:f.chat.id,branchId:f.branch.id,expectedVersionId:f.branch.versionId,idempotencyKey:'agent-map',definition:{...f.definition,steps:[{id:'worker',kind:'agent',target:{kind:'persistent_agent',ref:'worker'},instructions:'Review Item'}]},bindings:{agents:{worker:worker.id},directories:{root:f.dir}}});
  const execution=f.branches.accept(branch.id,'agent-map-run','["slow","winner"]');f.branches.advance();f.branches.advance();
  const lease=f.coordination.leaseNextRun({workerId:'provider'});assert.ok(lease);
  const requests=f.coordination.requestIdsAttachedToRun(lease.runId,worker.id);assert.equal(requests.length,2);

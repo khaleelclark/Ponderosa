@@ -845,11 +845,33 @@ export class CoordinationV3Store {
   }
 
   /** Exact paired server clocks for voice latency; this read grants no authority. */
-  voiceReplyRunTiming(communicationId: string, agentId: string): {
-    runId: string; leasedAt: string; runStartedAt?: string; runStatus: string;
+  voiceReplyRunTiming(communicationId: string, agentId: string, presentation: "voice" | "text" = "voice"): {
+    runId: string; leasedAt: string; runStartedAt?: string; runStatus: string; sourceActivationId?: string;
   } | undefined {
-    const activation = this.runtimeCommunicationForEvent(communicationId, agentId)?.activations?.find(a => a.agentId === agentId);
-    if (!activation) return undefined;
+    const communication = this.runtimeCommunicationForEvent(communicationId, agentId);
+    const activation = communication?.activations?.find(a => a.agentId === agentId);
+    if (!communication || !activation) return undefined;
+    if (presentation === "text") {
+      const receipt = this.deliveryReceiptsForCommunication(communication.projectId, communicationId)
+        .find(item => item.targetAgentId === agentId);
+      const recovering = receipt?.state === "recovering" || receipt?.state === "recovered";
+      const executionId = recovering ? receipt.recoveryExecutionId : receipt?.executionId;
+      const sourceActivationId = recovering ? receipt.recoveryActivationId : receipt?.activationId;
+      if (!executionId || !sourceActivationId) return undefined;
+      // ponytail: reply capabilities use Run IDs; execution aliases need an explicit DTO mapping before previewing.
+      const current = this.sqlite.prepare(`SELECT r.id, r.created_at, r.started_at, r.status
+        FROM provider_inputs p JOIN scheduler_runs r ON r.id=p.scheduler_run_id
+        JOIN scheduler_run_activations attached ON attached.run_id=r.id
+        JOIN agent_activations a ON a.id=attached.activation_id
+        WHERE p.execution_id=? AND p.execution_id=r.id AND p.agent_id=? AND p.project_id=?
+          AND r.agent_id=? AND r.project_id=? AND a.id=? AND a.agent_id=r.agent_id AND a.project_id=r.project_id
+          AND r.scope_key=a.scope_key AND a.scope_key=(SELECT scope_key FROM agent_activations WHERE id=?)
+        LIMIT 1`).get(executionId, agentId, communication.projectId,
+          agentId, communication.projectId, sourceActivationId, activation.id) as
+        {id:string;created_at:string;started_at:string|null;status:string}|undefined;
+      return current ? {runId:current.id,leasedAt:current.created_at,sourceActivationId,
+        ...(current.started_at?{runStartedAt:current.started_at}:{}),runStatus:current.status} : undefined;
+    }
     const row = this.sqlite.prepare(`SELECT r.id, r.created_at, r.started_at, r.status
       FROM scheduler_runs r JOIN scheduler_run_activations a ON a.run_id=r.id
       WHERE a.activation_id=? AND r.agent_id=? ORDER BY r.created_at DESC LIMIT 1`)

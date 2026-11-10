@@ -28,7 +28,7 @@ for(const pathname of ['/assistant','/apps/speaker']){
  test(`${pathname}: settings has a linked title and keeps schedule/model recovery compact inside the modal`,async()=>{
   const f=fixture(pathname);f.button('Settings').props.onClick();
   const d=f.dialog();assert.equal(d.props.open,true);const title=f.nodes().find(n=>n.type==='DialogTitle');assert.equal(d.props['aria-labelledby'],title.props.id);assert.equal(title.props.children,'Settings');
-  for(const [action,message] of [['Save schedule','Workflow version changed'],['Save model','Model update refused']]){
+  for(const [action,message] of [['Save Schedule','Workflow version changed'],['Save Model','Model update refused']]){
    f.button(action).props.onClick();
    // The UI callback intentionally returns void while act awaits the mutation.
    await new Promise(setImmediate);
@@ -51,29 +51,29 @@ for(const pathname of ['/assistant','/apps/speaker'])for(const [overrides,label,
  [{triggerKind:'webhook',schedule:undefined,everyMs:undefined},'When a webhook event arrives',false],
 ])test(`${pathname}: ${label??overrides.triggerKind??'interval'} displays its actual cadence and omits unchanged intervals`,async()=>{
  const f=fixture(pathname,overrides);f.button('Settings').props.onClick();
- assert.equal(Boolean(f.nodes().find(n=>n.type==='TextField'&&n.props.label==='Check every (minutes)')),hasInterval);
+ assert.equal(Boolean(f.nodes().find(n=>n.type==='TextField'&&n.props.label==='Check Every (Minutes)')),hasInterval);
  if(label)assert.ok(f.nodes().some(n=>n.type==='Typography'&&n.props.children===label));
- f.nodes().find(n=>n.type==='Switch').props.onChange(null,false);f.button('Save schedule').props.onClick();await new Promise(setImmediate);
+ f.nodes().find(n=>n.type==='Switch').props.onChange(null,false);f.button('Save Schedule').props.onClick();await new Promise(setImmediate);
  const body=JSON.parse(f.requests[0].options.body);assert.equal(body.automatic,false);assert.equal('everyMs'in body,false);assert.equal(body.expectedSettingsRevision,'revision');
 });
 
 for(const triggerKind of ['manual','schedule'])test(`${triggerKind}: an explicitly selected interval is submitted`,async()=>{
  const f=fixture('/apps/speaker',triggerKind==='manual'?{triggerKind,schedule:undefined,everyMs:undefined,automatic:false}:{});f.button('Settings').props.onClick();
- f.nodes().find(n=>n.type==='TextField'&&n.props.label==='Check every (minutes)').props.onChange({target:{value:'20'}});
- f.nodes().find(n=>n.type==='Switch').props.onChange(null,true);f.button('Save schedule').props.onClick();await new Promise(setImmediate);
+ f.nodes().find(n=>n.type==='TextField'&&n.props.label==='Check Every (Minutes)').props.onChange({target:{value:'20'}});
+ f.nodes().find(n=>n.type==='Switch').props.onChange(null,true);f.button('Save Schedule').props.onClick();await new Promise(setImmediate);
  assert.equal(JSON.parse(f.requests[0].options.body).everyMs,1200000);
 });
 
 for(const pathname of ['/assistant','/apps/speaker'])test(pathname+': interval validation accepts 730 days and blocks unsafe or unrepresentable dates',async()=>{
  const f=fixture(pathname);f.button('Settings').props.onClick();
- const field=()=>f.nodes().find(n=>n.type==='TextField'&&n.props.label==='Check every (minutes)');
+ const field=()=>f.nodes().find(n=>n.type==='TextField'&&n.props.label==='Check Every (Minutes)');
  field().props.onChange({target:{value:String(730*24*60)}});assert.equal(field().props.error,false);
- f.button('Save schedule').props.onClick();await new Promise(setImmediate);
+ f.button('Save Schedule').props.onClick();await new Promise(setImmediate);
  assert.equal(JSON.parse(f.requests[0].options.body).everyMs,730*86400000);
  const count=f.requests.length;
  for(const value of ['1.000001',String(Number.MAX_SAFE_INTEGER),String(8640000000000000/60000)]){
   field().props.onChange({target:{value}});assert.equal(field().props.error,true);
-  f.button('Save schedule').props.onClick();await new Promise(setImmediate);assert.equal(f.requests.length,count);
+  f.button('Save Schedule').props.onClick();await new Promise(setImmediate);assert.equal(f.requests.length,count);
  }
 });
 
@@ -81,10 +81,10 @@ for(const pathname of ['/assistant','/apps/speaker'])test(pathname+': background
  const f=fixture(pathname);f.button('Settings').props.onClick();f.nodes();
  f.app.versionId='other-version';f.app.settingsRevision='other-revision';
  f.app.runtimeSettings={activeEngine:'claude',model:'other-model',effort:null,speed:null};
- f.button('Save schedule').props.onClick();await new Promise(setImmediate);
+ f.button('Save Schedule').props.onClick();await new Promise(setImmediate);
  const schedule=JSON.parse(f.requests[0].options.body);
  assert.equal(schedule.expectedVersionId,'version');assert.equal(schedule.expectedSettingsRevision,'revision');
- f.button('Save model').props.onClick();await new Promise(setImmediate);
+ f.button('Save Model').props.onClick();await new Promise(setImmediate);
  assert.deepEqual(JSON.parse(JSON.stringify(f.modelRequests[0].patch.expectedRuntimeSettings)),{activeEngine:'codex',model:null,effort:null,speed:null});
 });
 
@@ -109,7 +109,7 @@ for(const pathname of ['/assistant','/apps/speaker'])for(const section of ['mode
  const f=fixture(pathname,{},behavior);f.button('Settings').props.onClick();
  if(section==='model')f.nodes().find(n=>n.type==='TextField'&&n.props.label==='Model').props.onChange({target:{value:'saved-model'}});
  else f.nodes().find(n=>n.type==='Switch').props.onChange(null,false);
- const label=section==='model'?'Save model':'Save schedule';f.button(label).props.onClick();await new Promise(setImmediate);f.nodes();
+ const label=section==='model'?'Save Model':'Save Schedule';f.button(label).props.onClick();await new Promise(setImmediate);f.nodes();
  f.button(label).props.onClick();await new Promise(setImmediate);f.nodes();
  if(section==='model'){
   assert.deepEqual(JSON.parse(JSON.stringify(f.modelRequests[1].patch.expectedRuntimeSettings)),committed);
@@ -130,12 +130,12 @@ for(const pathname of ['/assistant','/apps/speaker'])test(pathname+': deferred d
  const model=()=>f.nodes().find(n=>n.type==='TextField'&&n.props.label==='Model');
  const status=()=>f.nodes().find(n=>n.type==='Typography'&&n.props.role==='status'&&n.props.variant==='body2').props.children;
  f.button('Settings').props.onClick();model().props.onChange({target:{value:'unsaved-draft'}});
- f.button('Discard draft and reload').props.onClick();
+ f.button('Discard Draft And Reload').props.onClick();
  assert.equal(status(),'Reloading…');assert.equal(model().props.value,'unsaved-draft');assert.equal(model().props.disabled,true);
  assert.equal(f.app.model,'stored-model');assert.equal(f.modelRequests.length,0);assert.equal(f.requests.length,0);
  releaseRefresh();await new Promise(setImmediate);
  assert.equal(status(),'');assert.equal(model().props.value,'stored-model');assert.equal(f.app.model,'stored-model');
- model().props.onChange({target:{value:'saved-model'}});f.button('Save model').props.onClick();
+ model().props.onChange({target:{value:'saved-model'}});f.button('Save Model').props.onClick();
  assert.equal(status(),'Saving…');assert.equal(f.app.model,'stored-model');assert.equal(f.modelRequests.length,1);
  assert.equal(f.modelRequests[0].patch.expectedRuntimeSettings.model,'stored-model');
  releaseSave();await new Promise(setImmediate);
@@ -147,7 +147,7 @@ for(const pathname of ['/assistant','/apps/speaker'])test(pathname+': deferred d
 
 test('a confirmed settings write with failed readback stays saved and leaves read failures to the query owner',async()=>{
  const f=fixture('/assistant',{}, {schedule:async(_input,app)=>({...app}),refresh:async()=>({error:new Error('Controlled readback failure')})});
- f.button('Settings').props.onClick();f.nodes().find(n=>n.type==='Switch').props.onChange(null,false);f.button('Save schedule').props.onClick();await new Promise(setImmediate);
+ f.button('Settings').props.onClick();f.nodes().find(n=>n.type==='Switch').props.onChange(null,false);f.button('Save Schedule').props.onClick();await new Promise(setImmediate);
  assert.equal(f.requests.length,1,'one explicit settings write');assert.ok(f.nodes().some(n=>n.type==='Typography'&&n.props.role==='status'&&n.props.children==='Changes saved. Current settings are still being checked.'),'confirmed write is not relabeled as a failed action');
  assert.equal(f.nodes().filter(n=>n.type==='Typography'&&typeof n.props.children==='string'&&/Controlled readback failure|Changes saved, but/.test(n.props.children)).length,0,'readback does not become a duplicate string action banner');
 });

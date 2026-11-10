@@ -364,7 +364,7 @@ export function WorkspaceSidebar({
       onCollapse={!drawer && onCollapsedChange ? () => {
         onCollapsedChange(true);
         window.requestAnimationFrame(() => {
-          document.querySelector<HTMLElement>('[aria-label="Open workspace navigation"]')?.focus();
+          document.querySelector<HTMLElement>('[aria-label="Open Workspace Navigation"]')?.focus();
         });
       } : undefined}
       onClose={onDismiss}
@@ -459,7 +459,7 @@ export function WorkspaceSidebar({
       title="Chats"
       total={chatDirectoryQuery.requestState.hasResolved ? chatDirectory.total : undefined}
       busy={chatDirectoryQuery.requestState.isInitialLoading || chatDirectoryQuery.requestState.isRefreshing || chatDirectoryQuery.requestState.isFetchingNextPage}
-      searchLabel="Search chats"
+      searchLabel="Search Chats"
       searchValue={filter}
       onSearchValueChange={setProjectFilter}
       topContent={activeChatRow ? (
@@ -471,13 +471,13 @@ export function WorkspaceSidebar({
       starredRows={starredRows}
       allRows={allRows}
       collectionFeedback={<>
-        {filter.trim() ? <Box component="section" aria-label="Found in messages" sx={{ mt: 1 }}>
+        {filter.trim() ? <Box component="section" aria-label="Found In Messages" sx={{ mt: 1 }}>
           <SidebarSectionHeading>Found in messages</SidebarSectionHeading>
           {messageSearchPending ? <Typography variant="caption" role="status">Searching messages…</Typography> :
             messageSearch.isError ? <Typography variant="caption" role="status">Message results are unavailable. Chat-name results are still shown.</Typography> :
             currentMessageResults?.results.map(result => <ListItemButton key={result.chat.id}
               component="a" href={routeToPath(routeForGlobalSearchSelection({ projectId: result.project.id, chat: result.chat, messageId: result.messageId }))}
-              aria-label={`Open ${result.chat.title} at matching message`}
+              aria-label={`Open ${result.chat.title} At Matching Message`}
               onClick={event => { if (isUnmodifiedPrimaryClick(event)) { event.preventDefault(); showNavigation(routeForGlobalSearchSelection({ projectId: result.project.id, chat: result.chat, messageId: result.messageId })); } }}
               sx={{ display: "block", borderRadius: 1 }}>
               <Typography variant="body2" fontWeight={600}>{result.chat.title}</Typography>
@@ -485,7 +485,7 @@ export function WorkspaceSidebar({
               <Box><SearchSnippet snippet={result.snippet} ranges={result.highlights} query={filter.trim()} /></Box>
             </ListItemButton>)}
           {currentMessageResults?.truncated ? <Typography variant="caption">Older matches may not be shown.</Typography> : null}
-          <Button size="small" onClick={() => onSearch?.({ query: filter.trim(), scope: "chats" })}>View more in full search</Button>
+          <Button size="small" onClick={() => onSearch?.({ query: filter.trim(), scope: "chats" })}>View More In Full Search</Button>
         </Box> : null}
         <CollectionStateFeedback request={chatDirectoryQuery.requestState} itemCount={chatRows.length} filtersActive={Boolean(filter.trim())} resourceLabel="Chats" emptyTitle="No Chats Yet" noMatchTitle={"No Chats match “" + filter.trim() + "”."} onClearFilters={() => setFilter("")} compact
           suppressEmpty={Boolean(filter.trim()) && (messageSearchPending || messageSearch.isError || Boolean(currentMessageResults?.results.length))} />
@@ -640,7 +640,7 @@ export function WorkspaceSidebar({
               </Tooltip>
             ) : null}
           </Box>
-          <SidebarResourceRow href={routeToPath({ kind: "agent", projectId: agentProject.id, agentId: agent.id })} id={`sidebar-agent:${agent.id}`} label={`Open agent ${agent.title}, #${agent.handle}, in Chat ${ownerTitle}, ${projectDisambiguator(agentProject, projects)}`} title={agent.title}
+          <SidebarResourceRow href={routeToPath({ kind: "agent", projectId: agentProject.id, agentId: agent.id })} id={`sidebar-agent:${agent.id}`} label={`Open Agent ${agent.title}, #${agent.handle}, In Chat ${ownerTitle}, ${projectDisambiguator(agentProject, projects)}`} title={agent.title}
             detail={`${ownerTitle} · #${agent.handle} · ${agent.activeEngine}`} subtitle={duplicateAgentNames.has(agent.title) ? `#${agent.handle} · ${ownerTitle}` : ownerTitle} icon={<SmartToyOutlinedIcon fontSize="small" />}
             starred={starred} nested={Boolean(agent.managerAgentId)} selected={route.kind === "agent" && route.agentId === agent.id}
             onOpen={() => onNavigate({ kind: "agent", projectId: agentProject.id, agentId: agent.id })} onStar={() => toggleStar("agent", agent.id)}
@@ -656,7 +656,7 @@ export function WorkspaceSidebar({
       title="Agents"
       total={agentDirectoryQuery.requestState.hasResolved ? agentDirectory.total : undefined}
       busy={agentDirectoryQuery.requestState.isInitialLoading || agentDirectoryQuery.requestState.isRefreshing || agentDirectoryQuery.requestState.isFetchingNextPage}
-      searchLabel="Search agents"
+      searchLabel="Search Agents"
       searchValue={filter}
       onSearchValueChange={setProjectFilter}
       topContent={activeAgentRow ? (
@@ -700,11 +700,11 @@ export function WorkspaceSidebar({
     : undefined;
   const menuActions: ResourceContextMenuAction<{ route: Route; conversation?: ConversationDto }>[] =
     menu?.resource.conversation ? [
-      { id: "open-tab", label: "Open in new tab", onSelect: resource => { window.open(routeToPath(resource.route), "_blank", "noopener,noreferrer"); } },
+      { id: "open-tab", label: "Open In New Tab", onSelect: resource => { window.open(routeToPath(resource.route), "_blank", "noopener,noreferrer"); } },
       { id: "rename", label: "Rename", onSelect: resource => onRenameConversation(resource.conversation!) },
       { id: "delete", label: "Delete", color: "error", onSelect: resource => onDeleteConversation(resource.conversation!) },
     ] : menuRoute?.kind === "agent" && menuAgent ? [
-      { id: "open-tab", label: "Open in new tab", onSelect: resource => { window.open(routeToPath(resource.route), "_blank", "noopener,noreferrer"); } },
+      { id: "open-tab", label: "Open In New Tab", onSelect: resource => { window.open(routeToPath(resource.route), "_blank", "noopener,noreferrer"); } },
       { id: "rename", label: "Rename", onSelect: () => setRenamingAgent(menuAgent.agent) },
       { id: "delete", label: "Delete", color: "error", onSelect: () => setDeletingAgent(menuAgent.agent) },
     ] : [];
@@ -726,7 +726,7 @@ export function WorkspaceSidebar({
   return (
     <Box
       component="aside"
-      aria-label="Workspace navigation"
+      aria-label="Workspace Navigation"
       sx={{
         position: "relative",
         width: drawer ? "min(92vw, 390px)" : width,
@@ -755,7 +755,7 @@ export function WorkspaceSidebar({
       {!drawer && showPanel && onWidthChange ? (
         <Box
           role="separator"
-          aria-label="Resize sidebar"
+          aria-label="Resize Sidebar"
           aria-orientation="vertical"
           aria-valuenow={width}
           aria-valuemin={clampWorkspaceSidebarWidth(0)}
@@ -791,7 +791,7 @@ export function WorkspaceSidebar({
       <TextInputDialog
         open={Boolean(renamingAgent)}
         title="Rename Agent"
-        label="Agent name"
+        label="Agent Name"
         initialValue={renamingAgent?.title ?? ""}
         confirmLabel="Save"
         pendingLabel="Saving…"

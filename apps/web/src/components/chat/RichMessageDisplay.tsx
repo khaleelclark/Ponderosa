@@ -52,7 +52,7 @@ export function RichMessageDisplay({ block }: { block: RichMessageBlock }): JSX.
             <Box sx={{ height: "100%", width: `${max === 0 ? 0 : point.value / max * 100}%`, bgcolor: "primary.main" }} />
           </Box>
         </Box>)}
-      </Stack> : <Box role="region" tabIndex={0} aria-label={`${block.title} chart`} sx={{ color: "primary.main", overflowX: "auto", overscrollBehaviorX: "contain" }}>
+      </Stack> : <Box role="region" tabIndex={0} aria-label={`${block.title} Chart`} sx={{ color: "primary.main", overflowX: "auto", overscrollBehaviorX: "contain" }}>
         <svg viewBox="0 0 480 180" role="img" aria-label={`${block.title} (${block.unit}); values follow the table order`} style={{ display: "block", width: "100%", minWidth: 480, height: "auto" }}>
           <title>{`${block.title} (${block.unit})`}</title>
           <path d="M72 16V144H464" stroke="currentColor" opacity="0.3" fill="none" />
@@ -64,7 +64,7 @@ export function RichMessageDisplay({ block }: { block: RichMessageBlock }): JSX.
           {points.length > 1 ? <text x="464" y="172" textAnchor="end" fill="currentColor" fontSize="12">{shortLabel(points.at(-1)!.label)}</text> : null}
         </svg>
       </Box>}
-      {block.type === "line" ? <ScrollableMessageTable aria-label={`${block.title} data`}><thead><tr><th scope="col">Label</th><th scope="col" style={{ textAlign: "right" }}>Value ({block.unit})</th></tr></thead>
+      {block.type === "line" ? <ScrollableMessageTable aria-label={`${block.title} Data`}><thead><tr><th scope="col">Label</th><th scope="col" style={{ textAlign: "right" }}>Value ({block.unit})</th></tr></thead>
           <tbody>{points.map((point, index) => <tr key={index}><td>{point.label}</td><td style={{ textAlign: "right" }}>{point.value}</td></tr>)}</tbody>
       </ScrollableMessageTable> : null}
     </>;

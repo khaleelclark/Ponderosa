@@ -31,10 +31,10 @@ function Inventory({kind}:{kind:Kind}):JSX.Element {
   {query.isFetching&&<Typography role="status">Reading canonical inventory…</Typography>}
   {query.error&&<Alert severity="warning">{titles[kind]}: {query.error.message} · selections + confirmations cleared · explicitly restart inventory</Alert>}
   {!query.isError&&<>
-   <details><summary>Inventory revision</summary><Typography variant="caption" sx={{overflowWrap:'anywhere'}}>{revision??'pending'}</Typography></details>
+   <details><summary>Inventory Revision</summary><Typography variant="caption" sx={{overflowWrap:'anywhere'}}>{revision??'pending'}</Typography></details>
    {Boolean(pages[0]?.unverifiedEvidenceCount)&&<Alert severity="warning">{pages[0]?.unverifiedEvidenceCount} unverified evidence files · quarantined/unrecognized · no selectable operation IDs</Alert>}
-   <TextField select label={titles[kind]} value={target?selected:''} disabled={query.isFetching} onChange={event=>setSelected(event.target.value)}><MenuItem value="">Choose canonical identity</MenuItem>{items.map(item=><MenuItem key={identity(item)} value={identity(item)}>{label(item)}</MenuItem>)}</TextField>
-   {query.hasNextPage&&<Button disabled={query.isFetching} onClick={()=>void query.fetchNextPage()}>Load more {titles[kind].toLowerCase()}</Button>}
+   <TextField select label={titles[kind]} value={target?selected:''} disabled={query.isFetching} onChange={event=>setSelected(event.target.value)}><MenuItem value="">Choose Canonical Identity</MenuItem>{items.map(item=><MenuItem key={identity(item)} value={identity(item)}>{label(item)}</MenuItem>)}</TextField>
+   {query.hasNextPage&&<Button disabled={query.isFetching} onClick={()=>void query.fetchNextPage()}>Load More {titles[kind].toLowerCase()}</Button>}
   </>}
   {target&&<Stack key={JSON.stringify([generation,revision,identity(target)])} spacing={2}>
    {'operationId' in target?<>
@@ -46,11 +46,11 @@ function Inventory({kind}:{kind:Kind}):JSX.Element {
     <LifecycleReview kind={target.group?'group':'destination'} id={target.admissionId}/>
    </>:'sources' in target?<>
     <Typography sx={{overflowWrap:'anywhere'}}>Whole-group capture {target.captureKey} · source Run {target.executionId} · owner {target.sourceOwner} · {target.state}</Typography>
-    <details><summary>Full canonical group sources and captured checkpoint identities</summary><Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere',fontSize:12}}>{JSON.stringify({sources:target.sources,capturedCheckpointIds:target.capturedCheckpointIds},null,2)}</Typography></details>
+    <details><summary>Full Canonical Group Sources And Captured Checkpoint Identities</summary><Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere',fontSize:12}}>{JSON.stringify({sources:target.sources,capturedCheckpointIds:target.capturedCheckpointIds},null,2)}</Typography></details>
     <GroupCaptureAbandonmentReview entry={target}/>
    </>:<>
     <Typography sx={{overflowWrap:'anywhere'}}>Capture {target.captureKey} · source owner {target.sourceOwner} · Branch {target.branchId??'retained identity only'} · {target.state}</Typography>
-    <details><summary>Full canonical capture source</summary><Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere',fontSize:12}}>{JSON.stringify(target.source,null,2)}</Typography></details>
+    <details><summary>Full Canonical Capture Source</summary><Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere',fontSize:12}}>{JSON.stringify(target.source,null,2)}</Typography></details>
     <BranchLifecycleReview source={target.source} captureKey={target.captureKey}/>
    </>}
    <Typography variant="caption" sx={{overflowWrap:'anywhere'}}>Evidence SHA256 {target.evidenceSha256}</Typography>

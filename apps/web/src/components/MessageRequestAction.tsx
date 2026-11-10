@@ -32,12 +32,12 @@ export function MessageRequestAction({ projectId, conversationId, requests, reci
     </Tooltip>
     {open ? <Dialog open onClose={() => setOpen(false)} fullWidth maxWidth="md"
       aria-labelledby={titleId}
-      aria-label={recipients?.length ? "Message details" : linkedRequests.length === 1 ? "Request details" : "Request details for this message"}
+      aria-label={recipients?.length ? "Message Details" : linkedRequests.length === 1 ? "Request Details" : "Request Details For This Message"}
       onClick={event => event.stopPropagation()}
     >
       <DialogTitle id={`${titleId}-container`} sx={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <span id={titleId}>{recipients?.length ? "Message details" : "Request details"}</span>
-        <IconButton aria-label={recipients?.length ? "Close message details" : "Close request details"} onClick={() => setOpen(false)}><CloseIcon /></IconButton>
+        <IconButton aria-label={recipients?.length ? "Close Message Details" : "Close Request Details"} onClick={() => setOpen(false)}><CloseIcon /></IconButton>
       </DialogTitle>
       <DialogContent>
         <Stack spacing={1}>

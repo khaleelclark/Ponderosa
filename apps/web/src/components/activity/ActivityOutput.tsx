@@ -91,7 +91,7 @@ export function ActivityOutput({
     </Box>
     {collapsible ? <Stack direction="row" spacing={1} sx={{ alignItems: "center", mt: 0.25 }}>
       <Button size="small" color="inherit" onClick={() => setOpen((value) => !value)}>
-        {open ? "Show less" : `Show more · ${byteLabel(totalBytes)}`}
+        {open ? "Show Less" : `Show More · ${byteLabel(totalBytes)}`}
       </Button>
       {open && reference && canonicalOutput ? <Typography variant="caption" color="text.secondary">
         Loaded {loadedBytes.toLocaleString()} of {reference.totalUtf8Bytes.toLocaleString()} bytes
@@ -130,9 +130,9 @@ export function RunOutputFullText({
   if (!reference) return render(segment.text);
   return <Box>
     <Button size="small" color="inherit" onClick={() => setOpen((value) => !value)} sx={{ mt: 0.5 }}>
-      {open ? "Show preview" : `Load full text · ${byteLabel(reference.totalUtf8Bytes)}`}
+      {open ? "Show Preview" : `Load Full Text · ${byteLabel(reference.totalUtf8Bytes)}`}
     </Button>
-    {open && query.isLoading ? <CircularProgress size={18} role="status" aria-label="Loading full text" sx={{ ml: 1 }} /> : null}
+    {open && query.isLoading ? <CircularProgress size={18} role="status" aria-label="Loading Full Text" sx={{ ml: 1 }} /> : null}
     {open && query.isError ? <Alert severity="error" sx={{ mt: 0.75 }}>The complete canonical segment could not be loaded.</Alert> : null}
     {render(open && query.data ? query.data.text : segment.text)}
   </Box>;

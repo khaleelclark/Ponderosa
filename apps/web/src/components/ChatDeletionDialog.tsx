@@ -30,13 +30,13 @@ export function ChatDeletionDialog({
     a.title.localeCompare(b.title) || a.id.localeCompare(b.id));
 
   if (conversation?.branchId) return <Dialog open={open} onClose={onClose} fullWidth maxWidth="xs">
-    <DialogTitle>Workflow-owned Chat</DialogTitle>
+    <DialogTitle>Workflow-Owned Chat</DialogTitle>
     <DialogContent>
       <Typography>Workflow Chat: cannot be deleted separately</Typography><Typography>Deleting the workflow also removes its other Chats and Agents</Typography>
     </DialogContent>
     <DialogActions>
       <Button onClick={onClose}>Cancel</Button>
-      <Button href={`/branches?branch=${encodeURIComponent(conversation.branchId)}&tab=settings`}>Open workflow settings</Button>
+      <Button href={`/branches?branch=${encodeURIComponent(conversation.branchId)}&tab=settings`}>Open Workflow Settings</Button>
     </DialogActions>
   </Dialog>;
 
@@ -66,7 +66,7 @@ export function ChatDeletionDialog({
     </Alert> : null}
     {agentsQuery.data ? <>
       <Typography variant="subtitle2" sx={{ mt: 1.5, mb: 0.5 }}>
-        Agents that will be deleted ({agents.length})
+        Agents That Will Be Deleted ({agents.length})
       </Typography>
       {agents.length ? <Box component="ul" sx={{ maxHeight: 180, overflowY: "auto", mt: 0, mb: 0, pl: 2.5 }}>
         {agents.map(agent => <Typography component="li" variant="body2" key={agent.id}>

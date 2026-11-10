@@ -88,7 +88,7 @@ test('Chat distinguishes pending search, successful no match, and unfiltered ros
   assert.doesNotMatch(pending, /No Agents Yet|No Agents match|Unfiltered reader/);
   client.setQueryData(queryKeys.conversations.members(chat.id, 'needle'), data([]));
   const empty = render('needle').html;
-  assert.match(empty, /No Agents match these filters/);
+  assert.match(empty, /No Agents Match These Filters/);
   assert.doesNotMatch(empty, /No Agents Yet|Could not load Agents|Unfiltered reader/);
   client.setQueryData(queryKeys.conversations.members(chat.id, ''), data([agent]));
   const unfiltered = render().html;
@@ -184,7 +184,7 @@ function searchSetup(t, activeIndex = -1) {
     for (const child of React.Children.toArray(node.props.children)) yield* walk(child);
   }
   const loadMore = async () => {
-    const button = [...walk(render().tree)].find(node => node.props.children === 'Load more Agents');
+    const button = [...walk(render().tree)].find(node => node.props.children === 'Load More Agents');
     assert.ok(button, 'A cursor must offer continuation even without authored message matches');
     button.props.onClick();
     await client.getQueryCache().find({ queryKey: key, exact: true }).promise;
@@ -203,7 +203,7 @@ test('F10: Agent titles continue past 25 with owning Chat, handle and stable rou
   const next = f.render();
   assert.equal((next.html.match(/role="option"/g) ?? []).length, 26);
   assert.match(next.html, /Owning Chat 25/); assert.match(next.html, /#handle-25/);
-  assert.doesNotMatch(next.html, /Load more Agents/);
+  assert.doesNotMatch(next.html, /Load More Agents/);
   const last = [...f.walk(next.tree)].find(node => node.props.result?.chat.id === 'agent-25');
   last.props.onSelect();
   assert.equal(f.selected[0].chat.id, 'agent-25'); assert.equal(f.selected[0].projectId, 'project');

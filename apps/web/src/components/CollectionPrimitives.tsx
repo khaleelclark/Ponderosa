@@ -110,7 +110,7 @@ export function CollectionProgressiveFooter({
   return (
     <Box sx={{ display: "flex", justifyContent: "center", py: 1 }}>
       <Button size="small" color="inherit" onClick={onShowMore}>
-        {`Show ${nextCount} more ${resourceLabel} · ${remaining} remaining`}
+        {`Show ${nextCount} More ${resourceLabel} · ${remaining} Remaining`}
       </Button>
     </Box>
   );
@@ -281,7 +281,7 @@ export function CollectionToolbar({
   const compact = useContext(CollectionCompactContext);
   return <Box
     component="section"
-    aria-label="Collection controls"
+    aria-label="Collection Controls"
     sx={{
       px: compact ? 2 : { xs: 2, md: 3 },
       py: compact ? 1 : 1.5,
@@ -484,7 +484,7 @@ export function CollectionStateFeedback({
     {empty && !suppressEmpty ? <CollectionEmptyState
       title={filtersActive ? (noMatchTitle ?? "No matching " + resourceLabel) : emptyTitle}
       detail={filtersActive ? noMatchDetail : emptyDetail}
-      action={filtersActive && onClearFilters ? { label: "Clear filters", onClick: onClearFilters } : undefined}
+      action={filtersActive && onClearFilters ? { label: "Clear Filters", onClick: onClearFilters } : undefined}
     /> : null}
     {!empty ? <CollectionPagination request={request} resourceLabel={resourceLabel} autoLoadMore={autoLoadMore} /> : null}
   </>;

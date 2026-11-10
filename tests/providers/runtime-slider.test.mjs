@@ -56,21 +56,21 @@ test('runtime picker accessible name includes displayed model, reasoning and non
 
 test('slider maps advertised stops and accessible labels to exact IDs; preview does not save', t => {
   const p = picker(); t.after(p.close);
-  let slider = p.find('Reasoning effort');
+  let slider = p.find('Reasoning Effort');
   assert.deepEqual(Array.from(slider.props.marks, stop => stop.value), [0, 1, 2]);
   assert.equal(slider.props.step, 1, 'contiguous indices use integer stepping so MUI Home/End reach endpoints');
   assert.equal(slider.props.getAriaValueText(2), 'Ultra');
   slider.props.onChange({}, 2); p.render(); assert.deepEqual(p.callbacks, []);
-  p.find('Reasoning effort').props.onChangeCommitted({}, 2);
+  p.find('Reasoning Effort').props.onChangeCommitted({}, 2);
   assert.deepEqual(p.callbacks, [['effort', 'deep-id']]);
   assert.equal(p.render().find(node => node.type === p.mui.Popper).props.open, true);
-  p.find('Reasoning effort').props.onChangeCommitted({}, 2);
+  p.find('Reasoning Effort').props.onChangeCommitted({}, 2);
   assert.equal(p.callbacks.length, 1);
 });
 for (const boundary of ['close', 'model', 'catalog', 'owner', 'effort', 'pending-cycle']) test(`stale drag cannot save after ${boundary}`, t => {
   const p = picker(); t.after(p.close);
-  const late = p.find('Reasoning effort').props.onChangeCommitted;
-  p.find('Reasoning effort').props.onChange({}, 2);
+  const late = p.find('Reasoning Effort').props.onChangeCommitted;
+  p.find('Reasoning Effort').props.onChange({}, 2);
   if (boundary === 'close') p.trigger().props.onClick({ detail: 0, currentTarget: {} });
   else if (boundary === 'model') p.props.model = 'replacement';
   else if (boundary === 'catalog') p.props.efforts = [{ id: 'new', label: 'New' }];
@@ -81,18 +81,18 @@ for (const boundary of ['close', 'model', 'catalog', 'owner', 'effort', 'pending
 });
 for (const efforts of [[], [{ id: 'only', label: 'Only' }]]) test(`reasoning with ${efforts.length} stop(s) is read-only`, t => {
   const p = picker({ efforts, effort: efforts[0]?.id ?? '' }); t.after(p.close);
-  assert.equal(p.find('Reasoning effort').props.disabled, true);
+  assert.equal(p.find('Reasoning Effort').props.disabled, true);
 });
 test('an external availability lock keeps the picker open with controls disabled', t => {
   const p = picker(); t.after(p.close); p.props.disabled = true;
-  assert.equal(p.find('Reasoning effort').props.disabled, true);
+  assert.equal(p.find('Reasoning Effort').props.disabled, true);
   assert.equal(p.render().find(node => node.type === p.mui.Popper).props.open, true);
 });
 test('speed saves advertised tier and never writes an effort; reset is one owner action', t => {
   const p = picker(); t.after(p.close);
   p.find('Engine Fast mode off. Live CLI description').props.onClick();
   assert.deepEqual(p.callbacks, [['speed', 'advertised-fast-id']]);
-  p.find('Reset to default').props.onClick();
+  p.find('Reset To Default').props.onClick();
   assert.deepEqual(p.callbacks.at(-1), ['reset']);
 });
 test('Escape closes inline choices before the popover and stops editor propagation', t => {
@@ -109,10 +109,10 @@ test('keyboard slider focus resumes after its pending save without stealing a ne
   const input = { isConnected: true, focus() { focused++; } };
   p.document.getElementById = () => ({ contains: element => element === input });
   p.document.activeElement = input;
-  p.find('Reasoning effort').props.onChangeCommitted({}, 2);
+  p.find('Reasoning Effort').props.onChangeCommitted({}, 2);
   p.props.disabled = true; p.render(); p.document.activeElement = p.document.body;
   p.props.disabled = false; p.render(); assert.equal(focused, 1);
-  p.document.activeElement = input; p.find('Reasoning effort').props.onChangeCommitted({}, 0);
+  p.document.activeElement = input; p.find('Reasoning Effort').props.onChangeCommitted({}, 0);
   p.props.disabled = true; p.render(); p.document.activeElement = {};
   p.props.disabled = false; p.render(); assert.equal(focused, 1);
 });
@@ -125,9 +125,9 @@ test('MUI thumb focus during touch restores the editor and exact saved caret wit
   p.document.activeElement = editor;
   p.trigger().props.onPointerDown({ pointerType: 'touch' });
   p.trigger().props.onClick({ detail: 1, currentTarget: { ownerDocument: p.document } });
-  const slider = p.find('Reasoning effort'); slider.props.onFocusCapture();
+  const slider = p.find('Reasoning Effort'); slider.props.onFocusCapture();
   assert.equal(focused, 1); assert.equal(restored, range);
-  slider.props.onChange({}, 2); p.find('Reasoning effort').props.onChangeCommitted({}, 2);
+  slider.props.onChange({}, 2); p.find('Reasoning Effort').props.onChangeCommitted({}, 2);
   assert.deepEqual(p.callbacks, [['effort', 'deep-id']]);
 });
 
@@ -179,22 +179,22 @@ test('automatic runtime changes are quiet; explicit Settings saves share feedbac
 
 test('effort casing is presentation only and ordinary model rows omit subtext', t => {
   const p = picker({ effort: 'xhigh', efforts: [{ id: 'low', label: 'low' }, { id: 'xhigh', label: 'xhigh' }], models: [{ id: 'live-id', label: 'Live label', detail: 'Latest · stores live-id' }] }); t.after(p.close);
-  const slider = p.find('Reasoning effort'); assert.equal(slider.props.getAriaValueText(0), 'Low'); assert.equal(slider.props.getAriaValueText(1), 'Extra High');
+  const slider = p.find('Reasoning Effort'); assert.equal(slider.props.getAriaValueText(0), 'Low'); assert.equal(slider.props.getAriaValueText(1), 'Extra High');
   p.find('Model: Live label').props.onClick();
   assert.ok(!p.render().some(node => node.props.children === 'Latest · stores live-id'));
-  p.find('Back to runtime settings').props.onClick();
-  p.find('Reasoning effort').props.onChangeCommitted({}, 0); assert.deepEqual(p.callbacks, [['effort', 'low']]);
+  p.find('Back To Runtime Settings').props.onClick();
+  p.find('Reasoning Effort').props.onChangeCommitted({}, 0); assert.deepEqual(p.callbacks, [['effort', 'low']]);
 });
 
 for (const boundary of ['owner', 'pending-cycle', 'effort']) test(`MUI latest commit callback rejects an old pointer gesture after ${boundary}`, t => {
   const p = picker(); t.after(p.close);
-  p.find('Reasoning effort').props.onPointerDownCapture();
-  p.find('Reasoning effort').props.onChange({ type: 'mousemove' }, 2);
+  p.find('Reasoning Effort').props.onPointerDownCapture();
+  p.find('Reasoning Effort').props.onChange({ type: 'mousemove' }, 2);
   if (boundary === 'owner') p.props.selectionKey = 'owner-b';
   else if (boundary === 'effort') p.props.effort = 'tiny-id';
   else { p.props.disabled = true; p.render(); p.props.disabled = false; }
-  p.render(); p.find('Reasoning effort').props.onChange({ type: 'mousemove' }, 2);
-  p.find('Reasoning effort').props.onChangeCommitted({ type: 'mouseup' }, 2);
+  p.render(); p.find('Reasoning Effort').props.onChange({ type: 'mousemove' }, 2);
+  p.find('Reasoning Effort').props.onChangeCommitted({ type: 'mouseup' }, 2);
   assert.deepEqual(p.callbacks, []);
 });
 test('inline options remain disabled during catalog loading and retained selection handlers cannot save', t => {
@@ -206,12 +206,12 @@ test('inline options remain disabled during catalog loading and retained selecti
 
 test('cancelled pointer cannot save, and later keyboard input remains usable', t => {
   const p = picker(); t.after(p.close);
-  p.find('Reasoning effort').props.onPointerDownCapture(); p.find('Reasoning effort').props.onPointerCancel();
-  p.find('Reasoning effort').props.onChangeCommitted({ type: 'mouseup' }, 2); assert.deepEqual(p.callbacks, []);
-  p.find('Reasoning effort').props.onPointerDownCapture(); p.props.selectionKey = 'owner-b'; p.render();
-  p.find('Reasoning effort').props.onChange({ type: 'change' }, 0); p.find('Reasoning effort').props.onChangeCommitted({ type: 'change' }, 0);
+  p.find('Reasoning Effort').props.onPointerDownCapture(); p.find('Reasoning Effort').props.onPointerCancel();
+  p.find('Reasoning Effort').props.onChangeCommitted({ type: 'mouseup' }, 2); assert.deepEqual(p.callbacks, []);
+  p.find('Reasoning Effort').props.onPointerDownCapture(); p.props.selectionKey = 'owner-b'; p.render();
+  p.find('Reasoning Effort').props.onChange({ type: 'change' }, 0); p.find('Reasoning Effort').props.onChangeCommitted({ type: 'change' }, 0);
   assert.deepEqual(p.callbacks, [['effort', 'tiny-id']]);
-  p.find('Reasoning effort').props.onChangeCommitted({ type: 'mouseup' }, 2); assert.equal(p.callbacks.length, 1);
+  p.find('Reasoning Effort').props.onChangeCommitted({ type: 'mouseup' }, 2); assert.equal(p.callbacks.length, 1);
 });
 
 test('inherited reset uses the real resolver, including a provider Fast default', () => {
@@ -226,23 +226,23 @@ test('inherited reset uses the real resolver, including a provider Fast default'
 test('model selection is a separate compact list; Back restores runtime controls without saving', t => {
   const p = picker(); t.after(p.close);
   p.find('Model: Live label').props.onClick();
-  for (const label of ['Reasoning effort', 'Engine: Engine', 'Reset to default', 'Engine Fast mode off. Live CLI description']) assert.equal(p.find(label), undefined);
-  assert.ok(p.find('model options')); assert.ok(p.find('Back to runtime settings'));
-  p.find('Back to runtime settings').props.onClick();
-  assert.ok(p.find('Reasoning effort')); assert.ok(p.find('Model: Live label'));
+  for (const label of ['Reasoning Effort', 'Engine: Engine', 'Reset To Default', 'Engine Fast mode off. Live CLI description']) assert.equal(p.find(label), undefined);
+  assert.ok(p.find('Model Options')); assert.ok(p.find('Back To Runtime Settings'));
+  p.find('Back To Runtime Settings').props.onClick();
+  assert.ok(p.find('Reasoning Effort')); assert.ok(p.find('Model: Live label'));
   assert.deepEqual(p.callbacks, []); assert.equal(p.render().find(node => node.type === p.mui.Popper).props.open, true);
 });
 test('selecting a model returns to the runtime view and saves the exact advertised ID once', t => {
   const p = picker({ models: [{ id: 'live-id', label: 'Live label' }, { id: 'another-exact-id', label: 'Another' }] }); t.after(p.close);
   p.find('Model: Live label').props.onClick();
   p.render().find(node => node.type === p.mui.MenuItem && node.props.selected === false).props.onClick();
-  assert.deepEqual(p.callbacks, [['model', 'another-exact-id']]); assert.ok(p.find('Reasoning effort')); assert.equal(p.find('Back to runtime settings'), undefined);
+  assert.deepEqual(p.callbacks, [['model', 'another-exact-id']]); assert.ok(p.find('Reasoning Effort')); assert.equal(p.find('Back To Runtime Settings'), undefined);
 });
 test('entering and leaving the model view fences an unfinished drag', t => {
   const p = picker(); t.after(p.close);
-  p.find('Reasoning effort').props.onPointerDownCapture(); p.find('Reasoning effort').props.onChange({ type: 'mousemove' }, 2);
-  p.find('Model: Live label').props.onClick(); p.find('Back to runtime settings').props.onClick();
-  p.find('Reasoning effort').props.onChangeCommitted({ type: 'mouseup' }, 2); assert.deepEqual(p.callbacks, []);
+  p.find('Reasoning Effort').props.onPointerDownCapture(); p.find('Reasoning Effort').props.onChange({ type: 'mousemove' }, 2);
+  p.find('Model: Live label').props.onClick(); p.find('Back To Runtime Settings').props.onClick();
+  p.find('Reasoning Effort').props.onChangeCommitted({ type: 'mouseup' }, 2); assert.deepEqual(p.callbacks, []);
 });
 
 test('the model panel focuses its enabled Back action even when every model is unavailable', t => {
@@ -250,7 +250,7 @@ test('the model panel focuses its enabled Back action even when every model is u
   p.find('Model: Unavailable pin').props.onClick();
   const panel = p.render().find(node => node.type === p.mui.Box && typeof node.ref === 'function');
   let focused = 0; panel.ref({ querySelector: () => ({ focus() { focused++; } }) });
-  assert.equal(focused, 1); assert.ok(p.find('Back to runtime settings'));
+  assert.equal(focused, 1); assert.ok(p.find('Back To Runtime Settings'));
 });
 
 // Real TanStack observers/queues and actual view mutation + hydration callbacks.

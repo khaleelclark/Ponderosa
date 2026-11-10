@@ -20,7 +20,7 @@ function diffLineKind(line: string): "addition" | "deletion" | "neutral" {
 }
 
 export function UnifiedDiffViewer({ diff }: { diff: string }): JSX.Element {
-  return <Box component="pre" aria-label="Unified diff" sx={{ m: 0, py: .75, overflowX: "auto", bgcolor: "background.paper", fontFamily: "monospace", fontSize: 12.5, lineHeight: 1.55 }}>
+  return <Box component="pre" aria-label="Unified Diff" sx={{ m: 0, py: .75, overflowX: "auto", bgcolor: "background.paper", fontFamily: "monospace", fontSize: 12.5, lineHeight: 1.55 }}>
     {diff.split("\n").map((line, index) => {
       const kind = diffLineKind(line);
       return <Box
@@ -112,7 +112,7 @@ export function FilePreview(props: FilePreviewProps): JSX.Element {
     body = props.content ? <MarkdownPreview content={props.content} projectId={props.projectId} path={props.path} agentId={props.agentId} conversationId={props.conversationId} /> : <Alert severity="info">This document is empty.</Alert>;
   } else if (capability.kind === "text" && props.content !== undefined) {
     body = props.content
-      ? <Box component="pre" aria-label={`Text preview for ${props.title}`} sx={{ m: 0, whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontFamily: "monospace", fontSize: 13 }}>{props.content}</Box>
+      ? <Box component="pre" aria-label={`Text Preview For ${props.title}`} sx={{ m: 0, whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontFamily: "monospace", fontSize: 13 }}>{props.content}</Box>
       : <Alert severity="info">This file is empty.</Alert>;
   } else {
     body = <Alert severity="info">{props.emptyMessage ?? (capability.inline ? "A preview is not available yet." : props.downloadUrl ? "This file type cannot be displayed safely in Ponderosa. Download it to open it with a compatible application." : "This file type cannot be displayed safely in Ponderosa.")}</Alert>;

@@ -53,7 +53,7 @@ export async function workspaceFreshnessMountedRegression(): Promise<void> {
   let id = 0;
   const event = (projectId: string, replayed = false) => handlers.onEvent({ id: ++id, replayed, event: { type: 'coordination_changed', projectId, agentId: 'agent', conversationIds: [] }, at: '2026-11-09T00:00:00Z' } as never);
   const visible = async (value: string) => { visibility = value; document.dispatchEvent(new Event('visibilitychange')); await settle(); if (value === 'visible') { agentHandlers.onOpen?.(); agentHandlers.onStatus?.({ cursor: 0, instanceId: 'agent-ui004' }); await settle(); } };
-  const warning = () => [...host.querySelectorAll('button')].find(button => /Reconnecting|Offline|delayed/.test(button.textContent ?? ''));
+  const warning = () => [...host.querySelectorAll('button')].find(button => /Reconnecting|Offline|Delayed/.test(button.textContent ?? ''));
   try {
     localStorage.removeItem('ponderosa.workspace.cursor.v2'); localStorage.removeItem('ponderosa.workspace.instance.v1');
     flushSync(() => root.render(<ThemeProvider theme={createPonderosaTheme('light')}><QueryClientProvider client={client}><WorkspaceRefreshProvider><Fixture /></WorkspaceRefreshProvider></QueryClientProvider></ThemeProvider>));
@@ -93,11 +93,11 @@ export async function workspaceFreshnessMountedRegression(): Promise<void> {
     agentHandlers.onOpen?.(); agentHandlers.onStatus?.({ cursor: 0, instanceId: 'agent-ui004' }); await time.tick(0);
     assert(!warning(), 'verified Agent catch-up clears its local warning');
     holdA = true; event('a'); await time.tick(5_000); await time.tick(8_000);
-    assert(warning()?.textContent?.includes('Agent statuses'), 'hung visible read produces a resource-specific warning without a transport outage');
+    assert(warning()?.textContent?.includes('Agent Statuses'), 'hung visible read produces a resource-specific warning without a transport outage');
     holdA = false; resolveA!(); await time.tick(0); assert(!warning(), 'completed verified read clears stalled-resource warning');
     const confirmed = connection.lastSuccessfulSyncAt;
     failA = true; event('a'); await time.tick(5_000); await time.tick(8_000);
-    assert(warning()?.textContent?.includes('Agent statuses'), 'resource failure names affected data');
+    assert(warning()?.textContent?.includes('Agent Statuses'), 'resource failure names affected data');
     assert(connection.lastSuccessfulSyncAt === confirmed, 'failed resource never advances confirmed time');
     failA = false; await time.tick(5_000); assert(!warning(), 'verified resource recovery clears warning');
     handlers.onError?.(new Event('error')); await time.tick(7_999); assert(!warning(), 'brief foreground reconnect stays quiet');

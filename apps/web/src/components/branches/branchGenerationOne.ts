@@ -2,7 +2,7 @@ import type {BranchGenerationOnePreview,BranchGenerationHistoryPreview,BranchIss
 /** Recovery copies only the original canonical cut and verified saved budget. */
 export type GenerationPreviewEvidence=Pick<BranchGenerationHistoryPreview,'generation'|'reviewHash'|'historicalReviewHash'|'historicalPartition'>&Partial<Pick<BranchGenerationHistoryPreview,'consumedAttempts'|'maxAttempts'>>&Pick<BranchIssuedResourceCaptureDto,'retryBudget'|'checkpointId'|'checkpointHash'|'historyKind'>;
 export function generationHistoryKindMatches(value:unknown):boolean {return value===undefined||value==='serial'||value==='local_parallel';}
-export function generationHistoryKindLabel(value:GenerationPreviewEvidence['historyKind']):string {return value===undefined?'History classification unavailable in legacy evidence; no workflow shape inferred':`Server history classification: ${value}`;}
+export function generationHistoryKindLabel(value:GenerationPreviewEvidence['historyKind']):string {return value===undefined?'History classification unavailable in legacy evidence; no workflow shape inferred':`Server History Classification: ${value}`;}
 export function generationCaptureBudgetMatches(value:BranchIssuedResourceCaptureDto):boolean {
  if(!generationHistoryKindMatches(value.historyKind)||value.historyKind!==undefined&&value.retryBudget?.state!=='verified')return false;
  const b=value.retryBudget;
@@ -18,7 +18,7 @@ export function generationCaptureEvidence(value:BranchIssuedResourceCaptureDto):
 export function generationCaptureBudgetLabel(value:BranchIssuedResourceCaptureDto):string {
  if(!generationCaptureBudgetMatches(value))return 'Malformed saved retry-budget evidence; held.';
  const b=value.retryBudget;
- return b?.state==='verified'?`Verified saved budget · consumed attempts ${b.consumedAttempts} · pinned maximum attempts ${b.maxAttempts} · evidence hash ${b.evidenceHash}`:'Saved retry budget unavailable · missing original proof · no numbers/reset inferred';
+ return b?.state==='verified'?`Verified Saved Budget · Consumed Attempts ${b.consumedAttempts} · Pinned Maximum Attempts ${b.maxAttempts} · Evidence Hash ${b.evidenceHash}`:'Saved retry budget unavailable · missing original proof · no numbers/reset inferred';
 }
 export function generationHistorySelectionsMatch(selections:CoordinationHistoricalGenerationSelection[],generation:number,executionId:string,stepId:string):boolean {
  return Number.isSafeInteger(generation)&&generation>=1&&generation<=32&&Array.isArray(selections)&&selections.length===generation&&new Set(selections.map(s=>s?.checkpointId)).size===generation&&new Set(selections.map(s=>s?.envelopeSha256)).size===generation&&new Set(selections.map(s=>s?.intakeFence?.identity)).size===generation&&selections.every((x,index)=>x?.executionId===executionId&&x.stepId===stepId&&x.generation===index&&Number.isSafeInteger(x.checkpointId)&&x.checkpointId>0&&/^[a-f0-9]{64}$/.test(x.checkpointHash)&&/^[a-f0-9]{64}$/.test(x.envelopeSha256)&&Boolean(x.intakeFence?.identity)&&/^[a-f0-9]{64}$/.test(x.intakeFence.sha256)&&Array.isArray(x.discloseTo)&&x.discloseTo.length>0&&new Set(x.discloseTo).size===x.discloseTo.length&&x.discloseTo.every(id=>typeof id==='string'&&id.length>0)&&JSON.stringify(x.discloseTo)===JSON.stringify(selections[0]?.discloseTo));

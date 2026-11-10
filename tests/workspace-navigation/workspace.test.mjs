@@ -123,7 +123,7 @@ test('check 90: scope token totals require every finalized Run to report each me
   const markup=renderToStaticMarkup(React.createElement(TokenUsageDetails,{data:usage})).replace(/<style[^>]*>[\s\S]*?<\/style>/g,'').replace(/<[^>]+>/g,' ').replace(/\s+/g,' ');
   assert.match(markup,/Input Unavailable/,'The real usage view must not show a partial input as a total');
   assert.match(markup,/Output 16/,'The complete metric stays visible');
-  assert.match(markup,/Reported Usage by Provider/);
+  assert.match(markup,/Reported Usage By Provider/);
   assert.match(markup,/Total-token Coverage 2 \/ 2 Runs/);
   const incomplete=renderToStaticMarkup(React.createElement(TokenUsageDetails,{data:{...usage,reportedRuns:199,finalizedRuns:200,coverage:199/200}})).replace(/<style[^>]*>[\s\S]*?<\/style>/g,'').replace(/<[^>]+>/g,' ').replace(/\s+/g,' ');
   assert.match(incomplete,/Total-token Coverage 199 \/ 200 Runs/,'Incomplete coverage must never round up to 100%');

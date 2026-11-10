@@ -28,7 +28,7 @@ export function BrowserPageStrip({
   if (pages.length === 0) return null;
   return (
     <Stack direction="row" spacing={0.25} sx={{ minWidth: 0, overflow: "hidden", height: 26 }}>
-      <Stack direction="row" spacing={0.25} role="tablist" aria-label="Browser pages"
+      <Stack direction="row" spacing={0.25} role="tablist" aria-label="Browser Pages"
         sx={{ flex: 1, minWidth: 0, overflow: "hidden" }}>
       {pages.map((page) => {
         const active = activePageId ? page.id === activePageId : page.active;
@@ -53,11 +53,11 @@ export function BrowserPageStrip({
               bgcolor: active ? "action.selected" : "action.hover", border: 1,
               borderColor: active ? "primary.main" : "divider",
               cursor: !active ? "pointer" : "default" }}>
-            {page.loading || loadingPageId === page.id ? <CircularProgress className="tab-icon" size={13} aria-label="Loading page" /> : <LanguageIcon className="tab-icon" sx={{ fontSize: 14 }} color={active ? "primary" : "disabled"} />}
+            {page.loading || loadingPageId === page.id ? <CircularProgress className="tab-icon" size={13} aria-label="Loading Page" /> : <LanguageIcon className="tab-icon" sx={{ fontSize: 14 }} color={active ? "primary" : "disabled"} />}
             <Typography variant="body2" noWrap sx={{ flex: 1, minWidth: 0, fontSize: 12 }}>{label}</Typography>
-            {agentPageId === page.id ? <Tooltip title="Agent is working in this tab"><Box aria-label="Agent working tab" sx={{ width: 7, height: 7, borderRadius: "50%", bgcolor: "info.main", flexShrink: 0 }} /></Tooltip> : null}
+            {agentPageId === page.id ? <Tooltip title="Agent Is Working In This Tab"><Box aria-label="Agent Working Tab" sx={{ width: 7, height: 7, borderRadius: "50%", bgcolor: "info.main", flexShrink: 0 }} /></Tooltip> : null}
             {canManage && page.closable ? (
-              <Tooltip title="Close page"><span className="tab-close">
+              <Tooltip title="Close Page"><span className="tab-close">
                 <IconButton size="small" sx={{ p: .25, fontSize: 14 }} aria-label={"Close " + label} disabled={busy}
                   onClick={(event) => { event.stopPropagation(); onClose(page.id); }}>
                   <CloseIcon fontSize="inherit" />
@@ -68,7 +68,7 @@ export function BrowserPageStrip({
         );
       })}
       </Stack>
-      {onNew ? <Tooltip title={canManage ? "New tab" : "Take control to open a tab"}><span style={{ flexShrink: 0 }}><IconButton size="small" sx={{ p: .5, "& svg": { fontSize: 16 } }} aria-label="New browser tab" disabled={!canManage || busy || pages.length >= 30} onClick={onNew}><AddIcon /></IconButton></span></Tooltip> : null}
+      {onNew ? <Tooltip title={canManage ? "New Tab" : "Take Control To Open A Tab"}><span style={{ flexShrink: 0 }}><IconButton size="small" sx={{ p: .5, "& svg": { fontSize: 16 } }} aria-label="New Browser Tab" disabled={!canManage || busy || pages.length >= 30} onClick={onNew}><AddIcon /></IconButton></span></Tooltip> : null}
     </Stack>
   );
 }

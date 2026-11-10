@@ -21,10 +21,10 @@ export function BranchWorkingDataFiles({pkg,value,onChange,disabled}:{pkg:Instal
   onChange(next);
  };
  return <Stack spacing={1}>
-  <Typography variant="h6">Included working folders</Typography>
+  <Typography variant="h6">Included Working Folders</Typography>
   <Typography variant="caption">Each captured folder is restored once; Chat histories stay separate.</Typography>
   {roots.map(root=><TextField key={root.ref} disabled={disabled||Boolean(root.boundary)} label={'Recovery folder · '+(pkg.chats.find(chat=>chat.ref===root.owner.chatRef)?.title??root.owner.chatRef)+' · '+root.node.title} value={destinations[root.ref]??''} onChange={event=>recovery(root.ref,event.target.value)} helperText={root.boundary?'Inside the selected parent folder: '+root.boundary.path:'New absolute host folder; existing files are never overwritten.'}/>)}
-  <FormControlLabel control={<Checkbox disabled={disabled} checked={live} onChange={event=>setLive(event.target.checked)}/>} label="Use restored folders for the imported Chats"/>
+  <FormControlLabel control={<Checkbox disabled={disabled} checked={live} onChange={event=>setLive(event.target.checked)}/>} label="Use Restored Folders For The Imported Chats"/>
   {live&&pkg.chats.filter(chat=>Object.values(data.owners).some(owner=>owner.chatRef===chat.ref)).map(chat=>{const root=chat.agents.find(agent=>!agent.managerRef)??chat.agents[0]!,key=workingOwnerKey(chat.ref,root.ref),derived=branchWorkingDataDerivedChat(pkg,chat.ref);if(derived)return <Typography key={chat.ref} variant="caption">{chat.title}: {derived.kind==='shared'?'shares the restored folder with ':'inside the restored folder for '}{pkg.chats.find(source=>source.ref===derived.sourceChatRef)?.title??derived.sourceChatRef}{derived.path?' / '+derived.path:''}</Typography>;return <TextField key={chat.ref} disabled={disabled} label={'New working-folder name · '+chat.title} value={value[key]?.newManagedChatFolderName??''} onChange={event=>onChange({...value,[key]:{...value[key],newManagedChatFolderName:event.target.value}})}/>;})}
   {live&&<Alert severity="info">Confirm actual managed folder paths after creation.</Alert>}
   {primary&&<NativePortableImportChoices summary={summary} value={value[primary]??{}} disabled={disabled||!summary} destinations={destinations} onChange={choices=>onChange({...value,[primary]:{...value[primary],...choices}})}/>}

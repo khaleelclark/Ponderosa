@@ -24,7 +24,7 @@ export function OperatorAvatar({ profile, size = 36, compactOnMobile = false, fa
 }): JSX.Element {
   const name = profile?.displayName ?? "Operator";
   return <Avatar
-    aria-label={`${name} avatar`}
+    aria-label={`${name} Avatar`}
     src={operatorAvatarUrl(profile?.avatarId)}
     imgProps={{ alt: "", referrerPolicy: "no-referrer" }}
     sx={{

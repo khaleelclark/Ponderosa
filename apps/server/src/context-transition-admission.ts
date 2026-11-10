@@ -74,7 +74,7 @@ function transitionNotice(ctx:TransitionContext,projectId:string,agentId:string,
  const assignment=(continuing&&existing.workContext?.assignment?existing.workContext.assignment:source?ctx.store.getCommunicationEvent(projectId,source.event_id)?.text:typeof work?.text==='string'?work.text:undefined)?.replace(/\s+/gu,' ').trim().slice(0,220);
  const activationIds=[...new Set([...(existing&&(existing.status??'open')==='open'?existing.workContext?.activationIds??[existing.workContext?.recordId??activationId]:[]),activationId])];
  const notice=ctx.createOperationalNotification({dedupeKey:existing?.dedupeKey??boundaryKey,renewAfterRecovery:true,internal,category:'coordination',severity:'attention',
-  title:`${agent?.title??'Agent'}${chat?.title?` · ${chat.title}`:''} · context needs review`,body:reason.slice(0,1000),projectId,agentId,...(agent?.conversationId?{conversationId:agent.conversationId}:{}),
+  title:`${agent?.title??'Agent'}${chat?.title?` · ${chat.title}`:''} · Context Needs Review`,body:reason.slice(0,1000),projectId,agentId,...(agent?.conversationId?{conversationId:agent.conversationId}:{}),
   ...(assignment?{contextPreview:assignment.slice(0,120)}:{}),
   workContext:{kind:'activation',recordId:continuing?existing.workContext?.recordId??activationId:activationId,activationIds,traceId:boundaryKey,state:internal?'recovering':'blocked',occurredAt:continuing?existing.workContext?.occurredAt??new Date().toISOString():new Date().toISOString(),...(assignment?{assignment}:{})},
   action:{kind:'open_agent',targetId:agentId}});

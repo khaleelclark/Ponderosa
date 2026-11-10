@@ -9,7 +9,7 @@ for (const ids of [[], ['codex'], ['claude'], ['codex', 'claude']]) test('option
   const engines = ['codex', 'claude'].map(id => ({ ...provider(id), installed: ids.includes(id) }));
   assert.equal(soleAvailableEngineId(engines), ids.length === 1 ? ids[0] : undefined);
   const summary = engineAvailabilityPresentation(engines);
-  assert.equal(summary.label, ids.length ? 'Engine ready' : 'Inactive');
+  assert.equal(summary.label, ids.length ? 'Engine Ready' : 'Inactive');
   for (const engine of engines) {
     assert.equal(engineCanDiscover(engine), engine.installed);
     assert.equal(engineIsAvailable(engine), engine.installed);
@@ -143,5 +143,5 @@ test('native multi-select renders each choice explanation in the shared human fo
   visit(tree);
   assert.ok(rendered.includes('Explain the context before the findings'));
   assert.ok(rendered.includes('Summarize the resulting decision'));
-  assert.ok(rendered.includes('Send answers'));
+  assert.ok(rendered.includes('Send Answers'));
 });

@@ -126,7 +126,7 @@ export function createCommunicationJournal(context: CommunicationJournalContext)
             : {}),
           communicationEventId: stored.event.eventId,
           kind,
-          title: store.getAgent(stored.event.sender.agentId)?.title ?? "Agent response",
+          title: store.getAgent(stored.event.sender.agentId)?.title ?? "Agent Response",
           body: notificationPreviewText(stored.event.text),
         }, webPushConfigured);
         publishWorkspaceSince(cursor);

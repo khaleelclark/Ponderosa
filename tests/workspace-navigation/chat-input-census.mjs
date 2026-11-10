@@ -16,11 +16,11 @@ const rows=[];async function scan(dir){for(const entry of await readdir(dir,{wit
  ['VoiceConversation.tsx','Expanded typed call turn in shared Chat, Agent private Chat, Inbox and standalone routes'],
 ]);
 for(const row of rows){const name=row.file.split('/').at(-1),attrs=row.attributes.join(' ');let chat=chatFiles.has(name);
- if(name==='AgentCreateDialog.tsx')chat=attrs.includes('Initial message (optional)');
+ if(name==='AgentCreateDialog.tsx')chat=attrs.includes('Initial Message (Optional)');
  if(name==='Composer.controls.tsx')chat=row.tag==='ComposerEditor';
  if(name==='VoiceConversation.tsx')chat=attrs.includes('Your next turn');
- if(name==='RuntimeElicitationActions.tsx')chat=attrs.includes('Tell the Agent what you want instead');
- const adjacent=name==='RuntimeElicitationActions.tsx'&&attrs.includes('key={field.name}')||name==='ExecutionPanel.tsx'&&/label="(Proposed result|Observed output|Reason for this decision)"/.test(attrs);
+ if(name==='RuntimeElicitationActions.tsx')chat=attrs.includes('Tell The Agent What You Want Instead');
+ const adjacent=name==='RuntimeElicitationActions.tsx'&&attrs.includes('key={field.name}')||name==='ExecutionPanel.tsx'&&/label="(Proposed Result|Observed Output|Reason For This Decision)"/.test(attrs);
  row.classification=adjacent?'adjacent human text':chat?'chat input or shared editor':'non-chat input';
  row.disposition=adjacent?'Qualified separately: free provider string or workflow gate/intervention value; complete endpoint and provider/canonical-value evidence, not Chat Communication':chat?chatFiles.get(name):row.file.includes('/browser/')?'Remote browser keyboard/control; not an authored Ponderosa message':attrs.includes('type="file"')?'Attachment/package file selector, not a text editor':'Settings, search, navigation, structured provider/workflow field or read-only preview; not chat composition';
 }

@@ -121,6 +121,7 @@ export function AgentDetailPanels({
         sx={{ height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden" }}
       >
           <ChatPane
+          active={tab === "chat"}
           pendingDecisions={pendingDecisions}
           decisionEvents={detail.decisionEvents}
           messages={chatMessages}
@@ -179,7 +180,7 @@ export function AgentDetailPanels({
               color="inherit"
               onClick={() => setVisibleSubagentCount(count => count + 25)}
             >
-              Load older Agents
+              Load Older Agents
             </Button>
           ) : null}
         collection={{
@@ -215,7 +216,7 @@ export function AgentDetailPanels({
         agentId={detail.agent.id}
         focus={agentWorkFocus ? { id: agentWorkFocus } : undefined}
         onClose={onCloseTechnical}
-        backLabel="Back to Agent"
+        backLabel="Back To Agent"
       />
     ),
   };
@@ -236,7 +237,7 @@ export function AgentDetailPanels({
     >
       <Box
         role="tabpanel"
-        aria-label="Chat panel"
+        aria-label="Chat Panel"
         tabIndex={tab === "chat" ? 0 : -1}
         hidden={tab !== "chat"}
         sx={{
@@ -253,7 +254,7 @@ export function AgentDetailPanels({
         <Box sx={{ minWidth: 0 }}>
           {pendingDecisions.length ? <Alert severity="warning"
             action={pendingDecisions.length > 1 && decisionReviewAction ? decisionReviewAction
-              : <Button color="inherit" size="small" onClick={viewDecision}>View decision</Button>}
+              : <Button color="inherit" size="small" onClick={viewDecision}>View Decision</Button>}
             sx={{ mx: { xs: 1.5, md: 2.5 }, mt: 1, alignItems: "center", "& .MuiAlert-message": { minWidth: 0, overflowWrap: "anywhere" } }}>
             {detail.agent.title} has {pendingDecisions.length === 1 ? "a decision" : `${pendingDecisions.length} decisions`}
           </Alert> : null}
@@ -266,7 +267,7 @@ export function AgentDetailPanels({
       {tab !== "chat" ? (
         <Box
           role="tabpanel"
-          aria-label={`${panelLabel} panel`}
+          aria-label={`${panelLabel} Panel`}
           tabIndex={0}
           sx={{
             height: "100%",

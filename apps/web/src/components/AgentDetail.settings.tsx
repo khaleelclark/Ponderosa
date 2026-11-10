@@ -120,7 +120,7 @@ export function AgentWorkingCopySettings({ agent }: { agent: AgentDto }): JSX.El
         <Chip
           size="small"
           color={change?.phase==='held'?'error':changing?'info':workingCopy.state === "ready" ? "success" : "error"}
-          label={change?.phase==='held'?`${label} · Context review`:changing?`${label} · Saving…`:workingCopy.state === "ready" ? `${label} · Ready` : `${label} · Needs attention`}
+          label={change?.phase==='held'?`${label} · Context Review`:changing?`${label} · Saving…`:workingCopy.state === "ready" ? `${label} · Ready` : `${label} · Needs Attention`}
         />
       </Stack>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
@@ -132,21 +132,21 @@ export function AgentWorkingCopySettings({ agent }: { agent: AgentDto }): JSX.El
         </Typography>
         <HostPathPresentation
           path={workingCopy.rootPath}
-          label={workingCopy.mode === "separate_git" ? "Agent working copy" : "Project Shared folder"}
+          label={workingCopy.mode === "separate_git" ? "Agent Working Copy" : "Project Shared Folder"}
         />
       </Box>
       {status.isError?<Alert severity="error">{status.error instanceof Error?status.error.message:"Could not check the working-folder change. Try Check status."}</Alert>:null}
       {keepFolder.isError?<Alert severity="error">{keepFolder.error instanceof Error?keepFolder.error.message:'Could not keep the current folder.'}</Alert>:null}
       {change&&change.phase==='kept_current'?<Alert severity="success" sx={{mb:1.5}}>Kept the current working folder and existing context.</Alert>:null}
       {change&&!['completed','kept_current'].includes(change.phase)?<Alert severity={change.phase==='held'?'error':'info'} sx={{mb:1.5,...workingCopyActionAlertSx}}
-        action={<Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap"><Button color="inherit" size="small" sx={{minHeight:44,whiteSpace:"nowrap"}} disabled={changeMode.isPending||keepFolder.isPending} onClick={()=>change.retryable?changeMode.mutate(change.mode):void status.refetch()}>{change.retryable?'Retry':'Check status'}</Button>{change.canKeepCurrent?<Button color="inherit" size="small" sx={{minHeight:44,whiteSpace:"nowrap"}} disabled={keepFolder.isPending||changeMode.isPending} onClick={()=>keepFolder.mutate(change.rolloverId)}>Keep current folder</Button>:null}</Stack>}>
+        action={<Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap"><Button color="inherit" size="small" sx={{minHeight:44,whiteSpace:"nowrap"}} disabled={changeMode.isPending||keepFolder.isPending} onClick={()=>change.retryable?changeMode.mutate(change.mode):void status.refetch()}>{change.retryable?'Retry':'Check Status'}</Button>{change.canKeepCurrent?<Button color="inherit" size="small" sx={{minHeight:44,whiteSpace:"nowrap"}} disabled={keepFolder.isPending||changeMode.isPending} onClick={()=>keepFolder.mutate(change.rolloverId)}>Keep Current Folder</Button>:null}</Stack>}>
         {change.phase==='held'?(change.message??'Inspect Activity before another change.'):change.phase==='handoff'?'Saving: preserving this Agent’s context before changing folders.':change.phase==='verifying'?'Folder changed; verifying preserved context before queued work.':'Saving: preparing the selected working folder.'}
       </Alert>:null}
       <FormControl fullWidth size="small" disabled={changeMode.isPending||changing||change?.phase==='held'}>
-        <InputLabel id={`working-copy-${agent.id}`}>Working folder</InputLabel>
+        <InputLabel id={`working-copy-${agent.id}`}>Working Folder</InputLabel>
         <Select
           labelId={`working-copy-${agent.id}`}
-          label="Working folder"
+          label="Working Folder"
           value={changing&&change?change.mode:workingCopy.mode}
           onChange={event => {
             const nextMode = event.target.value as AgentWorkingCopyMode;
@@ -157,8 +157,8 @@ export function AgentWorkingCopySettings({ agent }: { agent: AgentDto }): JSX.El
             changeMode.mutate(nextMode);
           }}
         >
-          <MenuItem value="shared">Shared folder</MenuItem>
-          <MenuItem value="separate_git">Separate Git copy</MenuItem>
+          <MenuItem value="shared">Shared Folder</MenuItem>
+          <MenuItem value="separate_git">Separate Git Copy</MenuItem>
         </Select>
       </FormControl>
       {workingCopy.mode === "separate_git" && workingCopy.state === "ready" ? (
@@ -240,14 +240,14 @@ function AgentBrowserProfileSettings({ agent }: { agent: AgentDto }): JSX.Elemen
         Trusted profiles keep sign-ins on this host.
       </Typography>
       <FormControl fullWidth size="small" disabled={preference.isLoading || updatePreference.isPending}>
-        <InputLabel id={`browser-profile-${agent.id}`}>Browser profile</InputLabel>
+        <InputLabel id={`browser-profile-${agent.id}`}>Browser Profile</InputLabel>
         <Select
           labelId={`browser-profile-${agent.id}`}
-          label="Browser profile"
+          label="Browser Profile"
           value={selected}
           onChange={event => updatePreference.mutate(event.target.value)}
         >
-          <MenuItem value="disposable">Disposable · clean each Run</MenuItem>
+          <MenuItem value="disposable">Disposable · Clean Each Run</MenuItem>
           {(profiles.data ?? []).map(profile => (
             <MenuItem key={profile.id} value={profile.id}>Trusted · {profile.name}</MenuItem>
           ))}
@@ -257,7 +257,7 @@ function AgentBrowserProfileSettings({ agent }: { agent: AgentDto }): JSX.Elemen
         <TextField
           size="small"
           fullWidth
-          label="New trusted profile"
+          label="New Trusted Profile"
           value={newProfileName}
           onChange={event => setNewProfileName(event.target.value)}
           inputProps={{ maxLength: 80 }}
@@ -267,7 +267,7 @@ function AgentBrowserProfileSettings({ agent }: { agent: AgentDto }): JSX.Elemen
           disabled={!newProfileName.trim() || createProfile.isPending}
           onClick={() => createProfile.mutate(newProfileName)}
         >
-          Create and use
+          Create And Use
         </Button>
       </Stack>
       {(profiles.data ?? []).length ? (
@@ -297,7 +297,7 @@ function AgentBrowserProfileSettings({ agent }: { agent: AgentDto }): JSX.Elemen
         aria-labelledby="delete-browser-profile-title"
       >
         <DialogTitle id="delete-browser-profile-title">
-          Delete trusted profile “{profileToDelete?.name}”?
+          Delete Trusted Profile “{profileToDelete?.name}”?
         </DialogTitle>
         <DialogContent>
           <DialogContentText component="div"><Stack spacing={1}><Typography>Cookies, logins and site storage: permanently deleted</Typography><Typography>Assigned Agents: return to disposable browser profiles</Typography></Stack></DialogContentText>
@@ -391,7 +391,7 @@ export function AgentSettingsPane({
   return (
     <Stack
       spacing={2}
-      aria-label="Agent settings"
+      aria-label="Agent Settings"
       className="ponderosa-scroll"
       sx={{ p: { xs: 1.5, sm: 2.5 }, pb: 4, overflowY: "auto", minHeight: 0 }}
     >
@@ -414,7 +414,7 @@ export function AgentSettingsPane({
           disabled={freshSessionPending}
           sx={{ alignSelf: { xs: "stretch", sm: "center" } }}
         >
-          {freshSessionPending ? "Scheduling fresh session…" : "Start Fresh Provider Session For Next Run"}
+          {freshSessionPending ? "Scheduling Fresh Session…" : "Start Fresh Provider Session For Next Run"}
         </Button>
       </Stack>
       {freshSessionError ? <Alert severity="error">{freshSessionError}</Alert> : freshSessionNotice ? <Alert severity={freshSessionPending ? "info" : "success"} role="status">{freshSessionNotice}</Alert> : null}

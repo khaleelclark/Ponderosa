@@ -146,7 +146,7 @@ export function MutationNotificationProvider({
             severity={active.severity}
             variant="filled"
             onClose={active.progress ? undefined : dismiss}
-            action={active.onCancel ? <Button color="inherit" size="small" onClick={active.onCancel}>Cancel download</Button> : undefined}
+            action={active.onCancel ? <Button color="inherit" size="small" onClick={active.onCancel}>Cancel Download</Button> : undefined}
             sx={{
               width: "auto",
               minWidth: "min(88vw, 260px)",
@@ -166,7 +166,7 @@ export function MutationNotificationProvider({
             }}
           >
             {active.message}
-            {active.progress ? <Box sx={{ mt: 0.75 }}><LinearProgress aria-label="Download preparation progress"
+            {active.progress ? <Box sx={{ mt: 0.75 }}><LinearProgress aria-label="Download Preparation Progress"
               variant={active.progress.totalBytes ? "determinate" : "indeterminate"}
               value={active.progress.totalBytes ? Math.min(100, 100 * active.progress.receivedBytes / active.progress.totalBytes) : undefined}
               color="inherit" /></Box> : null}

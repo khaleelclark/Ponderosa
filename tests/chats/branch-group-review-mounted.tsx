@@ -54,28 +54,28 @@ export async function branchGroupReviewRegression(scope:'standalone'|'owner_tree
  const detail=()=>({execution:{id:'source',branchId:'branch',state:sourceState},resources:sources.map(s=>({stepExecutionId:s.resourceStepId,state:'active',agentIds:[]})),paths:[{id:'parallel0'},{id:'parallel1'}],attempts:[],steps:[],gates:[]});
  const definition={controls:[],steps:[]};
  const render=()=>root.render(<QueryClientProvider client={client}><BranchGroupReview detail={detail() as never} definition={definition as never} enabled onChanged={()=>{}}/></QueryClientProvider>);
- const open=async()=>{render();await settle();button('Review resource group').click();await settle();};
- const confirm=async()=>{await settle();button('Confirm exact group action').click();await settle();};
+ const open=async()=>{render();await settle();button('Review Resource Group').click();await settle();};
+ const confirm=async()=>{await settle();button('Confirm Exact Group Action').click();await settle();};
  const acknowledge=async()=>{check('I reviewed every original fact, actor, audience, mapped recipient, resource identity, saved owner evidence and current policy');await settle();};
  try{
   await open();assert(document.body.textContent?.includes('Shared existing Project directory · no separate workspace or working copy'),'visible directory reuse warning');assert(document.body.textContent?.includes('Each owner · original Project audit access · current policy · fresh acceptance budget'),'per-owner consent prerequisites remain visible');
-  button(scope==='owner_tree'?'Preview called owner tree':'Preview authoritative capture cut').click();await settle();assert(button('Capture exact resource cut').disabled,'stale preview cannot capture');
-  button(scope==='owner_tree'?'Preview called owner tree':'Preview authoritative capture cut').click();await settle();check('I reviewed the complete server capture inventory and exact cut hashes');await settle();check('I reconciled original external effects; unknown effects remain held');await settle();button('Capture exact resource cut').click();await confirm();
+  button(scope==='owner_tree'?'Preview Called Owner Tree':'Preview Authoritative Capture Cut').click();await settle();assert(button('Capture Exact Resource Cut').disabled,'stale preview cannot capture');
+  button(scope==='owner_tree'?'Preview Called Owner Tree':'Preview Authoritative Capture Cut').click();await settle();check('I reviewed the complete server capture inventory and exact cut hashes');await settle();check('I reconciled original external effects; unknown effects remain held');await settle();button('Capture Exact Resource Cut').click();await confirm();
   assert(sent.length===1,'one capture attempt');if(scope==='owner_tree')assert(JSON.parse(localStorage.getItem(storageKey)!).capture.preview.owners[1].executionId==='child-source','whole original tree saved before capture');assert(localStorage.getItem(storageKey)?.includes('pending'),'lost capture retained');
-  root.unmount();root=createRoot(host);await open();button('Read retained group commands').click();await settle();assert(sent.length===1,'remount GET does not recapture');
-  sourceState='completed';render();await settle();check('I reconciled original external effects; unknown effects remain held');await settle();button('Prepare held group').click();await confirm();
-  assert(sent.length===2,'one prepare attempt');button('Read retained group commands').click();await settle();assert(sent.length===2,'pure prepare lookup');if(scope==='owner_tree')assert(document.body.textContent?.includes('fresh-child')&&document.body.textContent?.includes('fresh-call-attempt'),'both owners and exact saved Call attempt ancestry displayed');
-  assert(document.body.textContent?.includes('Prospective ancestry'),'reserved ancestry is labelled before FK commit');assert(document.body.textContent?.includes('Selected usage'),'numeric selected usage shown');button('Review whole-group disclosure').click();await settle();assert(document.body.textContent?.includes('Exact whole-group private fact'),'whole private inventory shown');
-  await acknowledge();button('Approve whole-group disclosure').click();await confirm();
-  assert(!button('Admit whole group')||button('Admit whole group').disabled,'stale policy clears approval');
-  button('Read retained group commands').click();await settle();button('Review whole-group disclosure').click();await settle();await acknowledge();button('Approve whole-group disclosure').click();await confirm();
-  const count=sent.length;button('Read retained group commands').click();await settle();assert(sent.length===count,'choice recovery uses GET only');
-  button('Review whole-group disclosure').click();await settle();await acknowledge();button('Admit whole group').click();await confirm();
-  button('Read retained group commands').click();await settle();assert(sent.filter(s=>s.url.endsWith('/admit')).length===1,'lost admission never replayed');assert(document.body.textContent?.includes('Committed ancestry'),'admitted readback marks actual parent FK proof');
+  root.unmount();root=createRoot(host);await open();button('Read Retained Group Commands').click();await settle();assert(sent.length===1,'remount GET does not recapture');
+  sourceState='completed';render();await settle();check('I reconciled original external effects; unknown effects remain held');await settle();button('Prepare Held Group').click();await confirm();
+  assert(sent.length===2,'one prepare attempt');button('Read Retained Group Commands').click();await settle();assert(sent.length===2,'pure prepare lookup');if(scope==='owner_tree')assert(document.body.textContent?.includes('fresh-child')&&document.body.textContent?.includes('fresh-call-attempt'),'both owners and exact saved Call attempt ancestry displayed');
+  assert(document.body.textContent?.includes('Prospective ancestry'),'reserved ancestry is labelled before FK commit');assert(document.body.textContent?.includes('Selected usage'),'numeric selected usage shown');button('Review Whole-Group Disclosure').click();await settle();assert(document.body.textContent?.includes('Exact whole-group private fact'),'whole private inventory shown');
+  await acknowledge();button('Approve Whole-Group Disclosure').click();await confirm();
+  assert(!button('Admit Whole Group')||button('Admit Whole Group').disabled,'stale policy clears approval');
+  button('Read Retained Group Commands').click();await settle();button('Review Whole-Group Disclosure').click();await settle();await acknowledge();button('Approve Whole-Group Disclosure').click();await confirm();
+  const count=sent.length;button('Read Retained Group Commands').click();await settle();assert(sent.length===count,'choice recovery uses GET only');
+  button('Review Whole-Group Disclosure').click();await settle();await acknowledge();button('Admit Whole Group').click();await confirm();
+  button('Read Retained Group Commands').click();await settle();assert(sent.filter(s=>s.url.endsWith('/admit')).length===1,'lost admission never replayed');assert(document.body.textContent?.includes('Committed ancestry'),'admitted readback marks actual parent FK proof');
   // Source status/preview refusal cannot suppress current persisted-choice revocation.
-  state='awaiting_disclosure';captureUnavailable=true;previewUnavailable=true;button('Read retained group commands').click();await settle();
-  assert(!button('Revoke whole-group disclosure').disabled,'independent destination read permits revoke without capture proof');
-  button('Revoke whole-group disclosure').click();await confirm();button('Read retained group commands').click();await settle();
+  state='awaiting_disclosure';captureUnavailable=true;previewUnavailable=true;button('Read Retained Group Commands').click();await settle();
+  assert(!button('Revoke Whole-Group Disclosure').disabled,'independent destination read permits revoke without capture proof');
+  button('Revoke Whole-Group Disclosure').click();await confirm();button('Read Retained Group Commands').click();await settle();
   assert(gets.some(url=>url.includes('/disclosure?commandKey=')),'exact choice readback');
   assert(sent.filter(s=>s.body.action==='revoke').length===1,'no revocation replay');
  }finally{root.unmount();client.clear();host.remove();globalThis.fetch=originalFetch;if(saved===null)localStorage.removeItem(storageKey);else localStorage.setItem(storageKey,saved);}
@@ -100,13 +100,13 @@ export async function branchGroupDiscoveryRegression():Promise<void>{
  };
  try{
   const detail={execution:{id:'source',branchId:'branch',state:'completed'},resources:[],paths:[],attempts:[],steps:[],gates:[]};
-  root.render(<QueryClientProvider client={client}><BranchGroupReview detail={detail as never} enabled onChanged={()=>{}}/></QueryClientProvider>);await settle();button('Review resource group').click();await settle();
-  button('Restart capture discovery').click();await settle();assert(document.body.textContent?.includes('Unsupported legacy capture'),'legacy key explicitly unsupported');
-  button('Load more group commands').click();await settle();button('Read discovered capture command').click();await settle();
+  root.render(<QueryClientProvider client={client}><BranchGroupReview detail={detail as never} enabled onChanged={()=>{}}/></QueryClientProvider>);await settle();button('Review Resource Group').click();await settle();
+  button('Restart Capture Discovery').click();await settle();assert(document.body.textContent?.includes('Unsupported legacy capture'),'legacy key explicitly unsupported');
+  button('Load More Group Commands').click();await settle();button('Read Discovered Capture Command').click();await settle();
   assert(localStorage.getItem(key)?.includes('server-original'),'cross-device canonical exact key retained');assert(document.body.textContent?.includes('package31'),'32nd source seal visible');
-  button('Restart capture discovery').click();await settle();invalid=true;button('Load more group commands').click();await settle();
-  assert(!document.body.textContent?.includes('Every exact source seal'),'stale capture selection cleared');assert(!button('Read discovered capture command'),'stale selectable row removed');
-  assert(button('Capture exact resource cut').disabled,'stale confirmation cannot authorize capture');assert(gets.some(url=>url.includes('cursor=opaque-current-revision')),'exact opaque pagination');
+  button('Restart Capture Discovery').click();await settle();invalid=true;button('Load More Group Commands').click();await settle();
+  assert(!document.body.textContent?.includes('Every Exact Source Seal'),'stale capture selection cleared');assert(!button('Read Discovered Capture Command'),'stale selectable row removed');
+  assert(button('Capture Exact Resource Cut').disabled,'stale confirmation cannot authorize capture');assert(gets.some(url=>url.includes('cursor=opaque-current-revision')),'exact opaque pagination');
  }finally{root.unmount();client.clear();host.remove();globalThis.fetch=originalFetch;if(saved===null)localStorage.removeItem(key);else localStorage.setItem(key,saved);}
 }
 
@@ -122,8 +122,8 @@ export async function calledTreeCanonicalDiscoveryRegression():Promise<void>{
  globalThis.fetch=async(input,init)=>{assert(!init?.method||init.method==='GET','tree recovery never POSTs');const url=String(input);calls.push(url);if(url.endsWith('/tree-captures'))return json({items:[row]});if(url.includes('/tree-capture?commandKey=server%20tree%20%2F%20original'))return stale?json({error:'selection changed'},409):json(row);throw Error('unexpected '+url);};
  try{
   const detail={execution:{id:'source',branchId:'branch',state:'completed'},resources:[],paths:[],attempts:[],steps:[],gates:[]};
-  root.render(<QueryClientProvider client={client}><BranchGroupReview detail={detail as never} enabled onChanged={()=>{}}/></QueryClientProvider>);await settle();button('Review resource group').click();await settle();
-  button('Discover called-tree captures').click();await settle();button('Read exact called-tree capture').click();await settle();assert(!button('Read exact called-tree capture'),'stale selector removed');assert(!localStorage.getItem(key),'refused selection not persisted');assert(calls.length===2,'no automatic retry');
-  stale=false;button('Discover called-tree captures').click();await settle();button('Read exact called-tree capture').click();await settle();assert(localStorage.getItem(key)?.includes('server tree / original'),'canonical original key persisted');assert(document.body.textContent?.includes('child'),'both exact original source owners visible');assert(calls.length===4,'only explicit canonical GETs');
+  root.render(<QueryClientProvider client={client}><BranchGroupReview detail={detail as never} enabled onChanged={()=>{}}/></QueryClientProvider>);await settle();button('Review Resource Group').click();await settle();
+  button('Discover Called-Tree Captures').click();await settle();button('Read Exact Called-Tree Capture').click();await settle();assert(!button('Read Exact Called-Tree Capture'),'stale selector removed');assert(!localStorage.getItem(key),'refused selection not persisted');assert(calls.length===2,'no automatic retry');
+  stale=false;button('Discover Called-Tree Captures').click();await settle();button('Read Exact Called-Tree Capture').click();await settle();assert(localStorage.getItem(key)?.includes('server tree / original'),'canonical original key persisted');assert(document.body.textContent?.includes('child'),'both exact original source owners visible');assert(calls.length===4,'only explicit canonical GETs');
  }finally{root.unmount();client.clear();host.remove();globalThis.fetch=originalFetch;if(old===null)localStorage.removeItem(key);else localStorage.setItem(key,old);}
 }

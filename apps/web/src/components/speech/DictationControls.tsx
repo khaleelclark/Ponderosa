@@ -141,18 +141,18 @@ export function DictationControls({
   return (
     <Box ref={rootRef} sx={[speechControlGroupSx, dictation.error ? { flexDirection: { xs: "column", sm: "row" }, alignItems: { xs: "flex-start", sm: "center" } } : {}]}>
       {callActionsHost&&createPortal(<Tooltip title={calledAgent?`Call ${calledAgent}`:"Call"}><span><IconButton aria-label="Call" disabled={callDisabled} onClick={event=>openCall(event.currentTarget)} sx={{width:44,height:44,borderRadius:"50%",color:"primary.main"}}><PhoneIcon/></IconButton></span></Tooltip>,callActionsHost)}
-      {onVoiceAttachment&&!inlineVoiceOptions&&<Tooltip title="Record voice message"><span><IconButton
+      {onVoiceAttachment&&!inlineVoiceOptions&&<Tooltip title="Record Voice Message"><span><IconButton
         ref={recordingButtonRef}
-        aria-label="Record voice message"
+        aria-label="Record Voice Message"
         disabled={disabled||callOpen||recordingOpen||active||paused||maxRecordingBytes<=0||!recordingContainer}
         onClick={openRecording}
       ><MicNoneIcon/></IconButton></span></Tooltip>}
-      <Tooltip title="Voice options">
+      <Tooltip title="Voice Options">
         <span>
           <IconButton
             ref={buttonRef}
             color={active || paused ? "primary" : "inherit"}
-            aria-label="Voice options"
+            aria-label="Voice Options"
             aria-haspopup="menu"
             aria-expanded={Boolean(anchor)}
             aria-controls={anchor ? menuId : undefined}
@@ -170,7 +170,7 @@ export function DictationControls({
         onClose={() => setAnchor(null)}
         // Keep the dictation surface accessible while its own menu is open.
         container={rootRef.current}
-        MenuListProps={{"aria-label": "Voice options"}}
+        MenuListProps={{"aria-label": "Voice Options"}}
         disableRestoreFocus={callOpen}
         disableScrollLock
       >
@@ -179,10 +179,10 @@ export function DictationControls({
           onClick={() => { if (!anchor) return; openCall(buttonRef.current); }}
         >
           <ListItemIcon><PhoneIcon fontSize="small" /></ListItemIcon>
-          <ListItemText primary={inlineVoiceOptions?"Voice conversation":"Voice call"} secondary={active || paused ? "Stop dictation first" : !voiceContext ? "Choose a source Chat and Agent" : undefined} />
+          <ListItemText primary={inlineVoiceOptions?"Voice Conversation":"Voice Call"} secondary={active || paused ? "Stop dictation first" : !voiceContext ? "Choose a source Chat and Agent" : undefined} />
         </MenuItem>}
         {inlineVoiceOptions&&onVoiceAttachment&&<MenuItem disabled={!anchor||disabled||callOpen||recordingOpen||active||paused||maxRecordingBytes<=0||!recordingContainer} onClick={openRecording}>
-          <ListItemIcon><MicNoneIcon fontSize="small"/></ListItemIcon><ListItemText primary="Record voice message"/>
+          <ListItemIcon><MicNoneIcon fontSize="small"/></ListItemIcon><ListItemText primary="Record Voice Message"/>
         </MenuItem>}
         <MenuItem
           disabled={!anchor || disabled || Boolean(unavailable) || busy}
@@ -201,10 +201,10 @@ export function DictationControls({
       {recordingOpen&&!disabled&&onVoiceAttachment&&recordingContainer&&createPortal(<VoiceMessageRecorder onAttach={(file,transcript)=>{const failure=onVoiceAttachment(file);if(!failure&&transcript)onFinalTranscript(transcript);return failure;}} maxBytes={maxRecordingBytes} onClose={()=>{restoreRecordingFocus.current=recordingContainer.contains(document.activeElement);setOpenedRecordingOwner(undefined);}}/>,recordingContainer)}
       {voiceContext && callOpen && !disabled && <VoiceConversation {...voiceContext} startOnOpen standalone={voiceContext.standalone??isOutputAppPath(window.location.pathname)} open onClose={closeCall} />}
       {active || paused ? (
-        <Tooltip title="Stop voice dictation">
+        <Tooltip title="Stop Voice Dictation">
           <span>
             <IconButton
-              aria-label="Stop voice dictation"
+              aria-label="Stop Voice Dictation"
               disabled={busy}
               onClick={dictation.stop}
             >

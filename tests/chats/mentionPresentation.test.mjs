@@ -60,21 +60,21 @@ test('literal/no-tag messages skip Markdown parsing and a supplied tree is reuse
     assert.equal(parses, 1, 'Only the normal rich renderer parses unbound prose/fragment handles');
     assert.match(ordinary, /<strong>Bold<\/strong>/u);
     assert.match(ordinary, /<del>before<\/del>/u);
-    assert.ok(!ordinary.includes('Open agent'));
+    assert.ok(!ordinary.includes('Open Agent'));
     parses = 0;
-    assert.match(render('#Original-Builder', [binding('Original-Builder')]), /Open agent Build-Coordinator/u);
+    assert.match(render('#Original-Builder', [binding('Original-Builder')]), /Open Agent Build-Coordinator/u);
     assert.equal(parses, 2, 'Bound mention projection retains the full opaque-region parse');
     const renderOptions = props => renderToStaticMarkup(React.createElement(MutationNotificationProvider, null, React.createElement(ChatMessageBody, {collapseLongMessage: false, ...props})));
     for (const handle of ['user', 'pto', 'broadcast', 'everyone', 'new-agent', 'My-Operator']) {
       parses = 0;
       const html = renderOptions({text: '#'+handle, operatorHandle: 'My-Operator', onOpenBroadcast() {}});
       assert.equal(parses, 2, handle+' retains reserved/operator projection');
-      if (handle === 'broadcast') assert.match(html, /Open originating broadcast/u);
+      if (handle === 'broadcast') assert.match(html, /Open Originating Broadcast/u);
     }
     parses = 0;
     const recipients = renderOptions({text: '`#Original-Builder`', agentMentions: [binding('Original-Builder')], collaborationRecipients: [{id: agentId, handle: 'Original-Builder', title: 'Builder', currentTitle: 'Builder', available: true}], onOpenAgent() {}});
     assert.equal(parses, 2, 'Canonical recipient prefix keeps full authored/opaque accounting');
-    assert.match(recipients, /Open agent Original-Builder/u);
+    assert.match(recipients, /Open Agent Original-Builder/u);
   } finally { prototype.parse = original; }
 });
 
@@ -147,11 +147,11 @@ test('prose mentions stay clickable beside decoded entities and escapes without 
     '> A &amp; B\n> #Original-Builder',
   ]) {
     const html = render(resolveMessageMentionText(text, mentions), mentions);
-    assert.equal([...html.matchAll(/aria-label="Open agent Build-Coordinator/gu)].length, 1, text);
+    assert.equal([...html.matchAll(/aria-label="Open Agent Build-Coordinator/gu)].length, 1, text);
   }
   const numeric = [binding('35')];
   assert.equal(resolveMessageMentionText('A &#35; B', numeric), 'A &#35; B');
-  assert.ok(!render('A &#35; B', numeric).includes('Open agent Build-Coordinator'));
+  assert.ok(!render('A &#35; B', numeric).includes('Open Agent Build-Coordinator'));
 });
 
 test('opaque Markdown cannot leak JSON scanner state into a later literal payload', () => {
@@ -162,7 +162,7 @@ test('opaque Markdown cannot leak JSON scanner state into a later literal payloa
     const resolved = resolveMessageMentionText(text, mentions);
     assert.equal(resolved, `${prefix}\n\n${payload}\n\nNext: #Build-Coordinator`, prefix);
     const html = render(resolved, mentions);
-    assert.equal([...html.matchAll(/aria-label="Open agent Build-Coordinator/gu)].length, 1, prefix);
+    assert.equal([...html.matchAll(/aria-label="Open Agent Build-Coordinator/gu)].length, 1, prefix);
   }
 });
 
@@ -335,19 +335,19 @@ test('native browser: rendered href, Open-link actions and whole-message/code co
   assert.equal(await longBody.getByRole('button', {name: 'Show Full Message', exact: true}).getAttribute('aria-expanded'), 'false');
   assert.deepEqual(await geometry(), collapsed);
 
-  await page.getByRole('button', { name: /^Open agent Build-Coordinator/u }).click();
+  await page.getByRole('button', { name: /^Open Agent Build-Coordinator/u }).click();
   assert.equal(await page.evaluate(() => window.openedAgent), agentId);
-  const links = page.locator('a[aria-label^="Open link to"]');
+  const links = page.locator('a[aria-label^="Open Link To"]');
   assert.equal(await links.count(), 2);
   assert.equal(await links.nth(0).getAttribute('href'), url);
   assert.equal(await links.nth(1).getAttribute('href'), `${url}&second=2`);
   await links.nth(0).click();
   assert.equal(await page.evaluate(() => window.openedInside), url);
   await links.nth(0).click({ button: 'right' });
-  const dialog = page.getByRole('dialog', { name: 'Open link' });
+  const dialog = page.getByRole('dialog', { name: 'Open Link' });
   await dialog.waitFor();
   assert.equal(await dialog.getByRole('link', { name: 'Open Externally' }).getAttribute('href'), url);
-  await dialog.getByRole('button', { name: 'Open in Ponderosa' }).click();
+  await dialog.getByRole('button', { name: 'Open In Ponderosa' }).click();
   assert.equal(await page.evaluate(() => window.openedInside), url);
   await links.nth(1).click({ button: 'right' });
   const popupPromise = page.waitForEvent('popup');
@@ -357,29 +357,29 @@ test('native browser: rendered href, Open-link actions and whole-message/code co
   assert.equal(popup.url(), `${url}&second=2`);
   assert.equal(await popup.title(), 'Captured destination', 'the popup navigation was fulfilled locally');
   await popup.close();
-  await page.getByRole('button', { name: 'Copy whole message' }).click();
+  await page.getByRole('button', { name: 'Copy Whole Message' }).click();
   const expectedCopy = visible(text, mentions);
   assert.ok(expectedCopy.includes(payload), 'copy preserves the later literal JSON payload');
   assert.equal(await page.evaluate(() => navigator.clipboard.readText()), expectedCopy);
   const feedback = page.getByRole('alert').filter({ hasText: /^Copied$/u });
   await feedback.waitFor();
   await page.waitForTimeout(1800);
-  await page.getByRole('button', { name: 'Copy whole message' }).click();
+  await page.getByRole('button', { name: 'Copy Whole Message' }).click();
   await page.waitForTimeout(1500);
   assert.equal(await feedback.isVisible(), true, 'a repeated copy receives a fresh shared dismissal timer');
   await feedback.waitFor({ state: 'hidden', timeout: 2200 });
   await page.evaluate(() => window.rerender());
   assert.equal(await feedback.isVisible(), false, 'rerendering does not recreate settled feedback');
-  await page.getByRole('button', { name: 'Copy code', exact: true }).click();
+  await page.getByRole('button', { name: 'Copy Code', exact: true }).click();
   assert.equal(await page.evaluate(() => navigator.clipboard.readText()), url);
   await feedback.waitFor();
   await feedback.waitFor({ state: 'hidden', timeout: 4000 });
   // Exercise the existing selection/execCommand clipboard fallback as well.
   await page.evaluate(() => Object.defineProperty(navigator.clipboard, 'writeText', { value: async () => { throw new Error('test fallback'); } }));
-  await page.getByRole('button', { name: 'Copy whole message' }).click();
+  await page.getByRole('button', { name: 'Copy Whole Message' }).click();
   assert.equal(await page.evaluate(() => navigator.clipboard.readText()), expectedCopy);
   await page.evaluate(() => { document.execCommand = () => false; });
-  await page.getByRole('button', { name: 'Copy whole message' }).click();
+  await page.getByRole('button', { name: 'Copy Whole Message' }).click();
   const error = page.getByRole('alert').filter({ hasText: 'Copy failed; select the message text instead' });
   await error.waitFor();
   await page.waitForTimeout(3300);
@@ -390,7 +390,7 @@ test('native browser: rendered href, Open-link actions and whole-message/code co
   // Count the real unified parser in the existing mounted browser harness.
   await page.evaluate(()=>window.mountMarkdownMemo());
   const memo = page.getByRole('region',{name:'Memo timeline',exact:true}), collaboration = page.getByRole('region',{name:'Memo collaboration',exact:true});
-  await memo.getByRole('button',{name:/^Open agent Build-Coordinator/u}).waitFor();
+  await memo.getByRole('button',{name:/^Open Agent Build-Coordinator/u}).waitFor();
   await page.waitForFunction(()=>window.markdownMemoStep===0);
   const settleMemo = () => page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
   const parses = () => page.evaluate(()=>window.markdownParses);
@@ -400,7 +400,7 @@ test('native browser: rendered href, Open-link actions and whole-message/code co
   await patchMemo({receipt:1});assert.equal(await parses(),initialParses,'Receipt-only message updates must not reparse unchanged prose');
   await patchMemo({health:1});assert.equal(await parses(),initialParses,'Unrelated health updates must not reparse unchanged prose');
   t.diagnostic('Mounted parser calls: initial='+initialParses+', after receipt/health='+await parses());
-  await memo.getByRole('button',{name:/^Open agent Build-Coordinator/u}).click();assert.equal((await page.evaluate(()=>window.memoOpened)).id,agentId);
+  await memo.getByRole('button',{name:/^Open Agent Build-Coordinator/u}).click();assert.equal((await page.evaluate(()=>window.memoOpened)).id,agentId);
   const previous=await parses();
   await patchMemo({bindings:[{...mentions[0],currentHandle:'Renamed-Builder',currentTitle:'Renamed Builder',available:true}]});
   assert((await parses())>previous,'A meaningful mention rename must re-render Markdown');
@@ -415,7 +415,7 @@ test('native browser: rendered href, Open-link actions and whole-message/code co
   const afterOwner=await file.getAttribute('href');assert.notEqual(afterOwner,beforeOwner);assert(afterOwner.includes('next-chat'));
   await patchMemo({ownerAgent:agentId,ownerChat:'fixture-chat',activeRun:'fixture-run'});
   const appLink=memo.getByRole('link',{name:'Open link to 127.0.0.1:3000',exact:true});
-  await appLink.click();const appDialog=page.getByRole('dialog',{name:'Open link',exact:true});await appDialog.waitFor();
+  await appLink.click();const appDialog=page.getByRole('dialog',{name:'Open Link',exact:true});await appDialog.waitFor();
   assert.equal(await appDialog.getByRole('button',{name:'Open Live App Preview',exact:true}).count(),1);await appDialog.getByRole('button',{name:'Cancel',exact:true}).click();await appDialog.waitFor({state:'hidden'});
   await patchMemo({activeRun:undefined});await appLink.click();await appDialog.waitFor();
   assert.equal(await appDialog.getByRole('button',{name:'Open Live App Preview',exact:true}).count(),0,'A stopped or replaced Run must not retain its old preview grant');
@@ -431,7 +431,7 @@ test('native browser: rendered href, Open-link actions and whole-message/code co
   t.diagnostic('Cold transcript measured before background work: '+JSON.stringify(initial));
   assert.equal(initial.data,100);assert(initial.count>0&&initial.count<100,'empty/loading -> first response must actually progress');
   assert.equal(initial.busy,'true');assert(initial.rowsHeight>=initial.height,'actual mounted rows fill the viewport before paint');
-  await page.getByRole('region',{name:'Loaded transcript copy'}).getByRole('button',{name:'Copy whole message'}).click();
+  await page.getByRole('region',{name:'Loaded transcript copy'}).getByRole('button',{name:'Copy Whole Message'}).click();
   const allCopied=await page.evaluate(()=>navigator.clipboard.readText());
   assert.equal(allCopied,await page.evaluate(()=>window.transcriptData.map(item=>item.message.text).join('\n')),'all100 fetched entries remain exactly copyable while rows are pending');
   await page.waitForFunction(()=>window.transcriptTasks.some(task=>!task.signal?.aborted));
@@ -491,7 +491,7 @@ test('native browser: rendered href, Open-link actions and whole-message/code co
   assert.deepEqual(await page.evaluate(()=>window.navigationBottomWrites),[],'resize delivery must not overwrite explicit away-navigation with bottom');
   await page.evaluate(()=>{window.navigationCommandActive=false;window.restoreFocusInstrumentation();});
 
-  await page.getByRole('button',{name:'Jump to latest message',exact:true}).click();
+  await page.getByRole('button',{name:'Jump To Latest Message',exact:true}).click();
   await page.waitForFunction(()=>{const root=document.querySelector('.chat-scroll-region');return root.scrollHeight-root.clientHeight-root.scrollTop<=48;});
   await page.locator('#master-message-row-99 button[aria-expanded]').click();
   await settleMemo();

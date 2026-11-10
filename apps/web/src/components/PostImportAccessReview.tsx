@@ -17,12 +17,12 @@ function MemoryChoice({chatId,suggestions,onStateChange,chatTitle,agentTitle}:{c
  useEffect(()=>{onStateChange(`memory:${chatId}`,Boolean(choice),save.isPending);return()=>onStateChange(`memory:${chatId}`,false,false);},[chatId,choice,save.isPending,onStateChange]);
  useUnsavedForm(`import-memory:${chatId}`,Boolean(choice));
  return <Paper variant="outlined" sx={{p:2}}><Stack spacing={1}>
-  <Typography variant="subtitle1">Global memory · {chatTitle}</Typography>
+  <Typography variant="subtitle1">Global Memory · {chatTitle}</Typography>
   <Typography variant="body2">Source suggestions: {suggestions.map(item=>`${agentTitle(item.agentId)}: ${item.source.readGlobalMemory?'allow':'deny'}`).join(', ')}</Typography>
   <Typography variant="body2">Current: {current.data?(current.data.readGlobal?'allowed':'denied'):'unavailable'} · This choice affects every Agent in this Chat.</Typography>
   {(current.error||save.error)&&<Alert severity="error">{current.error?.message||save.error?.message}</Alert>}
-  <TextField select label="Global-memory read access" value={choice} disabled={save.isPending||!current.data||current.isFetching} onChange={event=>setChoice(event.target.value)}><MenuItem value="">Keep current access</MenuItem><MenuItem value="allow">Allow</MenuItem><MenuItem value="deny">Deny</MenuItem></TextField>
-  <Stack direction="row" spacing={1}><Button disabled={!choice||save.isPending||!current.data||current.isFetching} onClick={()=>save.mutate()}>Apply memory choice</Button><Button disabled={save.isPending} onClick={()=>void current.refetch()}>Reload</Button></Stack>
+  <TextField select label="Global-Memory Read Access" value={choice} disabled={save.isPending||!current.data||current.isFetching} onChange={event=>setChoice(event.target.value)}><MenuItem value="">Keep Current Access</MenuItem><MenuItem value="allow">Allow</MenuItem><MenuItem value="deny">Deny</MenuItem></TextField>
+  <Stack direction="row" spacing={1}><Button disabled={!choice||save.isPending||!current.data||current.isFetching} onClick={()=>save.mutate()}>Apply Memory Choice</Button><Button disabled={save.isPending} onClick={()=>void current.refetch()}>Reload</Button></Stack>
  </Stack></Paper>;
 }
 function BrowserChoice({suggestion,onStateChange,title}:{suggestion:Suggestion;onStateChange:StateChange;title:string}):JSX.Element {
@@ -39,11 +39,11 @@ function BrowserChoice({suggestion,onStateChange,title}:{suggestion:Suggestion;o
   <Typography variant="body2">Source: saved access {source.savedBrowserAllowed===undefined?'unspecified':source.savedBrowserAllowed?'allowed':'denied'} · {source.browserMode??'unspecified'}{source.sourceProfileName?` · ${source.sourceProfileName} (source label)`:''}</Typography>
   <Typography variant="body2">Destination: saved access {current.data?(current.data.saved.agentIds.includes(agentId)?'allowed':'denied'):'unavailable'} · {current.data?.preference.profileName??current.data?.preference.mode??'unavailable'}</Typography>
   {(current.error||profiles.error||saveAccess.error||saveProfile.error)&&<Alert severity="error">{current.error?.message||profiles.error?.message||saveAccess.error?.message||saveProfile.error?.message}</Alert>}
-  <TextField select fullWidth SelectProps={{SelectDisplayProps:{style:{whiteSpace:"normal",overflowWrap:"anywhere"}}}} label="Destination saved-browser access" value={saved} disabled={!current.data||saveAccess.isPending} onChange={event=>setSaved(event.target.value)}><MenuItem value="">Keep current access</MenuItem><MenuItem value="allow">Allow</MenuItem><MenuItem value="deny">Deny</MenuItem></TextField>
-  <Button disabled={!saved||!current.data||saveAccess.isPending} onClick={()=>saveAccess.mutate()}>Apply saved-browser choice</Button>
-  <TextField select fullWidth SelectProps={{SelectDisplayProps:{style:{whiteSpace:"normal",overflowWrap:"anywhere"}}}} label="Destination browser profile" value={profile} disabled={!current.data||!profiles.data||saveProfile.isPending} onChange={event=>setProfile(event.target.value)}><MenuItem value="">Keep current profile</MenuItem><MenuItem value="disposable">Disposable browser</MenuItem>{profiles.data?.map(item=><MenuItem key={item.id} value={item.id}>{item.name}</MenuItem>)}</TextField>
-  <Button disabled={!profile||!current.data||saveProfile.isPending} onClick={()=>saveProfile.mutate()}>Apply profile choice</Button>
-  <Button onClick={()=>{void current.refetch();void profiles.refetch();}}>Reload browser settings</Button>
+  <TextField select fullWidth SelectProps={{SelectDisplayProps:{style:{whiteSpace:"normal",overflowWrap:"anywhere"}}}} label="Destination Saved-Browser Access" value={saved} disabled={!current.data||saveAccess.isPending} onChange={event=>setSaved(event.target.value)}><MenuItem value="">Keep Current Access</MenuItem><MenuItem value="allow">Allow</MenuItem><MenuItem value="deny">Deny</MenuItem></TextField>
+  <Button disabled={!saved||!current.data||saveAccess.isPending} onClick={()=>saveAccess.mutate()}>Apply Saved-Browser Choice</Button>
+  <TextField select fullWidth SelectProps={{SelectDisplayProps:{style:{whiteSpace:"normal",overflowWrap:"anywhere"}}}} label="Destination Browser Profile" value={profile} disabled={!current.data||!profiles.data||saveProfile.isPending} onChange={event=>setProfile(event.target.value)}><MenuItem value="">Keep Current Profile</MenuItem><MenuItem value="disposable">Disposable Browser</MenuItem>{profiles.data?.map(item=><MenuItem key={item.id} value={item.id}>{item.name}</MenuItem>)}</TextField>
+  <Button disabled={!profile||!current.data||saveProfile.isPending} onClick={()=>saveProfile.mutate()}>Apply Profile Choice</Button>
+  <Button onClick={()=>{void current.refetch();void profiles.refetch();}}>Reload Browser Settings</Button>
  </Stack></Paper>;
 }
 export function PostImportAccessReview({result,onDone,projectId}:{result:ImportSettingsResult;onDone():void;projectId?:string}):JSX.Element {
@@ -60,7 +60,7 @@ export function PostImportAccessReview({result,onDone,projectId}:{result:ImportS
  const agentTitle=(id:string)=>(agents.data??mappedAgents.data)?.find(item=>item.id===id)?.title??`Imported Agent ${id}`;
  const memory=new Map<string,Suggestion[]>();
  for(const item of suggestions)if(item.source.readGlobalMemory!==undefined)memory.set(item.conversationId,[...(memory.get(item.conversationId)??[]),item]);
- return <Stack spacing={2}><Stack direction="row" spacing={1} sx={{alignItems:"center",justifyContent:"space-between"}}><Typography variant="h6">Import complete</Typography><Button variant="contained" disabled={busy} onClick={()=>dirty?setDiscard(true):onDone()}>Done</Button></Stack>
+ return <Stack spacing={2}><Stack direction="row" spacing={1} sx={{alignItems:"center",justifyContent:"space-between"}}><Typography variant="h6">Import Complete</Typography><Button variant="contained" disabled={busy} onClick={()=>dirty?setDiscard(true):onDone()}>Done</Button></Stack>
   {(mappedAgents.error||mappedChats.error)&&<Alert severity="error">{mappedAgents.error?.message||mappedChats.error?.message}</Alert>}
   <NativeApplications result={result}/>
   {result.workingFilesDestination&&<Typography>Restored folder: {result.workingFilesDestination}</Typography>}
@@ -68,11 +68,11 @@ export function PostImportAccessReview({result,onDone,projectId}:{result:ImportS
   {result.liveWorkingRoots?.map(root=><Typography key={JSON.stringify([root.ref,root.path])}>Live working folder: {root.path} · {root.agentIds.map(agentTitle).join(', ')}</Typography>)}
   {[...memory].map(([chatId,items])=><MemoryChoice key={chatId} chatId={chatId} suggestions={items} chatTitle={(chats.data??mappedChats.data)?.find(item=>item.id===chatId)?.title??'Destination Chat'} agentTitle={agentTitle} onStateChange={onStateChange}/>)}
   {suggestions.filter(item=>item.source.savedBrowserAllowed!==undefined||item.source.browserMode!==undefined).map(item=><BrowserChoice key={item.agentId} suggestion={item} title={agentTitle(item.agentId)} onStateChange={onStateChange}/>)}
-  <ConfirmDialog open={discard} title="Unapplied settings" confirmLabel="Discard choices" cancelLabel="Keep editing" onCancel={()=>setDiscard(false)} onConfirm={onDone}>Discard unapplied choices?</ConfirmDialog>
+  <ConfirmDialog open={discard} title="Unapplied Settings" confirmLabel="Discard Choices" cancelLabel="Keep Editing" onCancel={()=>setDiscard(false)} onConfirm={onDone}>Discard unapplied choices?</ConfirmDialog>
  </Stack>;
 }
 
 /** A partial native write is evidence to inspect, never permission to repeat it. */
 export function NativeApplications({result}:{result:Pick<ImportAgentPackageResponse,'reviewedMetadataApplications'|'reviewedUserDataApplications'>}):JSX.Element {
- return <Stack spacing={1}>{[...(result.reviewedMetadataApplications??[]).map(item=>({...item,family:'File metadata'})),...(result.reviewedUserDataApplications??[]).map(item=>({...item,family:'Git and provider settings'}))].map(item=><Alert key={item.family+':'+item.ref+':'+item.path} severity={item.state==='completed'?'success':'warning'}><Typography variant="body2" sx={{overflowWrap:'anywhere'}}>{item.family}: {item.state==='completed'?'restored':item.state==='applying'?'completion unconfirmed':'incomplete'} · {item.path}</Typography>{item.error&&<><Typography variant="body2">{item.error.code??'Native application failed'}{item.error.partialStatePossible?' · partial files retained · do not repeat automatically':''}</Typography><details><summary>Observed result</summary><Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{JSON.stringify(item.error.observed,null,2)}</Typography></details></>}</Alert>)}</Stack>;
+ return <Stack spacing={1}>{[...(result.reviewedMetadataApplications??[]).map(item=>({...item,family:'File metadata'})),...(result.reviewedUserDataApplications??[]).map(item=>({...item,family:'Git and provider settings'}))].map(item=><Alert key={item.family+':'+item.ref+':'+item.path} severity={item.state==='completed'?'success':'warning'}><Typography variant="body2" sx={{overflowWrap:'anywhere'}}>{item.family}: {item.state==='completed'?'restored':item.state==='applying'?'completion unconfirmed':'incomplete'} · {item.path}</Typography>{item.error&&<><Typography variant="body2">{item.error.code??'Native application failed'}{item.error.partialStatePossible?' · partial files retained · do not repeat automatically':''}</Typography><details><summary>Observed Result</summary><Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{JSON.stringify(item.error.observed,null,2)}</Typography></details></>}</Alert>)}</Stack>;
 }

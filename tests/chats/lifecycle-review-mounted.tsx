@@ -6,7 +6,7 @@ import {currentProductScope} from '../../apps/web/src/api/productScope';
 const assert=(value:unknown,message:string)=>{if(!value)throw Error(message);};
 const settle=async()=>{for(let i=0;i<6;i++)await new Promise(resolve=>setTimeout(resolve,0));};
 const button=(text:string)=>Array.from(document.querySelectorAll('button')).find(item=>item.textContent===text)!;
-const check=()=>{(Array.from(document.querySelectorAll('input[type=checkbox]')).find(item=>!item.closest('label')?.textContent?.includes('Release source pins')) as HTMLInputElement).click();};
+const check=()=>{(Array.from(document.querySelectorAll('input[type=checkbox]')).find(item=>!item.closest('label')?.textContent?.includes('Release Source Pins')) as HTMLInputElement).click();};
 export async function lifecycleReviewRegression():Promise<void>{
  const host=document.createElement('div');document.body.append(host);const root=createRoot(host),client=new QueryClient({defaultOptions:{queries:{retry:false},mutations:{retry:false}}});
  const originalFetch=globalThis.fetch,path='/api/lifecycle/destinations/admission';
@@ -29,17 +29,17 @@ export async function lifecycleReviewRegression():Promise<void>{
  };
  const render=(key:string,kind:'destination'|'custody'|'memory',id:string)=>root.render(<QueryClientProvider client={client}><LifecycleReview key={key} kind={kind} id={id}/></QueryClientProvider>);
  try{
-  render('first','destination','admission');await settle();button('Review destination retirement').click();await settle();
+  render('first','destination','admission');await settle();button('Review Destination Retirement').click();await settle();
   assert(posts.length===0,'review cannot approve or retire');assert(document.body.textContent?.includes('permanent'),'show permanent preserve-only disposition');
-  assert((Array.from(document.querySelectorAll('input[type=checkbox]')).find(item=>item.closest('label')?.textContent?.includes('Release source pins')) as HTMLInputElement).disabled,'referenced source pins cannot release');
-  check();await settle();button('Approve retirement choice').click();await settle();button('Confirm exact command').click();await settle();
+  assert((Array.from(document.querySelectorAll('input[type=checkbox]')).find(item=>item.closest('label')?.textContent?.includes('Release Source Pins')) as HTMLInputElement).disabled,'referenced source pins cannot release');
+  check();await settle();button('Approve Retirement Choice').click();await settle();button('Confirm Exact Command').click();await settle();
   assert(posts.length===1&&posts[0].url.endsWith('/approve'),'approval cannot retire automatically');
-  button('Confirm retirement').click();await settle();button('Retire destination').click();await settle();assert(posts.length===2&&localStorage.getItem(storageKey),'lost response retains exact choice');
+  button('Confirm Retirement').click();await settle();button('Retire Destination').click();await settle();assert(posts.length===2&&localStorage.getItem(storageKey),'lost response retains exact choice');
   assert(JSON.stringify(posts[0].body)===JSON.stringify(posts[1].body),'approval and retirement use identical body and key');
-  render('remount','destination','admission');await settle();button('Review destination retirement').click();await settle();button('Inspect retirement receipt').click();await settle();
+  render('remount','destination','admission');await settle();button('Review Destination Retirement').click();await settle();button('Inspect Retirement Receipt').click();await settle();
   assert(posts.length===2&&!localStorage.getItem(storageKey),'pure exact receipt lookup clears without replay');
-  phase='memory';render('legacy','memory','legacy');await settle();button('Review memory hold').click();await settle();assert((button('Reconcile and preserve evidence') as HTMLButtonElement).disabled,'legacy unknown effects stay held');
-  phase='custody';render('stale','custody','custody');await settle();button('Review checkpoint evidence').click();await settle();check();await settle();button('Reconcile and preserve evidence').click();await settle();button('Confirm exact command').click();await settle();
+  phase='memory';render('legacy','memory','legacy');await settle();button('Review Memory Hold').click();await settle();assert((button('Reconcile And Preserve Evidence') as HTMLButtonElement).disabled,'legacy unknown effects stay held');
+  phase='custody';render('stale','custody','custody');await settle();button('Review Checkpoint Evidence').click();await settle();check();await settle();button('Reconcile And Preserve Evidence').click();await settle();button('Confirm Exact Command').click();await settle();
   assert(posts.length===3,'stale response cannot retry automatically');assert(document.body.textContent?.includes('Exact command retained'),'stale outcome retains original command');
  }finally{root.unmount();client.clear();host.remove();globalThis.fetch=originalFetch;localStorage.removeItem(JSON.stringify(['lifecycle-command',window.location.origin,currentProductScope(),'/api/lifecycle/checkpoint-custody/custody']));if(saved===null)localStorage.removeItem(storageKey);else localStorage.setItem(storageKey,saved);}
 }
@@ -74,36 +74,36 @@ export async function lifecycleNoteValidationRegression():Promise<void>{
  };
  const approve=async()=>{check();await settle();};
  try{
-  render('memory','memory');await settle();button('Review memory hold').click();await settle();
+  render('memory','memory');await settle();button('Review Memory Hold').click();await settle();
   await write(' 123456789012345 ');await approve();
-  assert(button('Reconcile and preserve evidence').disabled,'15 trimmed characters cannot submit memory reconciliation');
+  assert(button('Reconcile And Preserve Evidence').disabled,'15 trimmed characters cannot submit memory reconciliation');
   assert(posts.length===0&&!localStorage.getItem(key(memoryPath)),'invalid input creates no retained command');
   await write('1234567890123456');await approve();
-  assert(!button('Reconcile and preserve evidence').disabled,'16 characters can proceed');
+  assert(!button('Reconcile And Preserve Evidence').disabled,'16 characters can proceed');
   await write('  '+ 'x'.repeat(4096) +'  ');await approve();
-  assert(!button('Reconcile and preserve evidence').disabled,'4096 trimmed characters can proceed');
+  assert(!button('Reconcile And Preserve Evidence').disabled,'4096 trimmed characters can proceed');
   await write('x'.repeat(4097));await approve();
-  assert(button('Reconcile and preserve evidence').disabled,'more than 4096 characters cannot submit');
+  assert(button('Reconcile And Preserve Evidence').disabled,'more than 4096 characters cannot submit');
   await write('1234567890123456');await approve();
-  button('Reconcile and preserve evidence').click();await settle();
+  button('Reconcile And Preserve Evidence').click();await settle();
   assert(posts.length===0,'confirmation is required before dispatch');
-  button('Confirm exact command').click();await settle();
+  button('Confirm Exact Command').click();await settle();
   assert(posts.length===1&&posts[0].body.backendDrainEvidence==='1234567890123456','send the exact valid note');
   const retained=localStorage.getItem(key(memoryPath));
   assert(retained&&document.body.textContent?.includes('Exact command retained'),'unknown result keeps command locked');
-  render('memory','memory-remount');await settle();button('Review memory hold').click();await settle();
+  render('memory','memory-remount');await settle();button('Review Memory Hold').click();await settle();
   assert(localStorage.getItem(key(memoryPath))===retained&&posts.length===1,'remount never clears or replays an uncertain command');
-  button('Retry exact command').click();await settle();button('Confirm exact command').click();await settle();
+  button('Retry Exact Command').click();await settle();button('Confirm Exact Command').click();await settle();
   assert(posts.length===2&&JSON.stringify(posts[0].body)===JSON.stringify(posts[1].body),'only an explicit retry resends the unchanged command');
   assert(localStorage.getItem(key(memoryPath))===retained,'another lost response retains the original command');
 
-  render('import','import');await settle();button('Review import custody').click();await settle();
+  render('import','import');await settle();button('Review Import Custody').click();await settle();
   await write('1234567');await approve();
-  assert(button('Preserve unresolved operation').disabled,'7 characters cannot submit import reconciliation');
+  assert(button('Preserve Unresolved Operation').disabled,'7 characters cannot submit import reconciliation');
   await write('12345678');await approve();
-  assert(!button('Preserve unresolved operation').disabled,'8 characters can proceed for imports');
+  assert(!button('Preserve Unresolved Operation').disabled,'8 characters can proceed for imports');
   await write('x'.repeat(4097));await approve();
-  assert(button('Preserve unresolved operation').disabled&&button('Retire mutation-free import').disabled,'oversize notes block both import decisions');
+  assert(button('Preserve Unresolved Operation').disabled&&button('Retire Mutation-Free Import').disabled,'oversize notes block both import decisions');
   assert(!localStorage.getItem(key(importPath))&&posts.length===2,'invalid import note creates no retained command');
  }finally{
   root.unmount();client.clear();host.remove();globalThis.fetch=originalFetch;
@@ -148,23 +148,23 @@ export async function lifecycleStorageFailureRegression():Promise<void>{
   field.dispatchEvent(new Event('input',{bubbles:true}));await settle();
  };
  try{
-  render('memory','memory');await settle();button('Review memory hold').click();await settle();
-  await note();check();await settle();button('Reconcile and preserve evidence').click();await settle();
-  failBefore=true;button('Confirm exact command').click();await settle();
+  render('memory','memory');await settle();button('Review Memory Hold').click();await settle();
+  await note();check();await settle();button('Reconcile And Preserve Evidence').click();await settle();
+  failBefore=true;button('Confirm Exact Command').click();await settle();
   assert(posts.length===0&&!localStorage.getItem(key(memoryPath)),'storage failure before dispatch sends and retains nothing');
   assert(document.body.textContent?.includes('No request was sent this time'),'pre-dispatch failure is explained accurately');
   assert(!document.body.textContent?.includes('Outcome unconfirmed'),'pre-dispatch failure is not called an unknown outcome');
-  failBefore=false;check();await settle();button('Reconcile and preserve evidence').click();await settle();button('Confirm exact command').click();await settle();
+  failBefore=false;check();await settle();button('Reconcile And Preserve Evidence').click();await settle();button('Confirm Exact Command').click();await settle();
   const retained=localStorage.getItem(key(memoryPath));
   assert(posts.length===1&&retained,'successful storage precedes the attempted POST');
   assert(document.body.textContent?.includes('Outcome unconfirmed')&&document.body.textContent?.includes('Exact command retained'),'lost response stays uncertain and locked');
   assert(!document.body.textContent?.includes('No request was sent this time'),'post-dispatch failure is never described as unsent');
 
-  render('destination','destination');await settle();button('Review destination retirement').click();await settle();
-  check();await settle();button('Approve retirement choice').click();await settle();button('Confirm exact command').click();await settle();
+  render('destination','destination');await settle();button('Review Destination Retirement').click();await settle();
+  check();await settle();button('Approve Retirement Choice').click();await settle();button('Confirm Exact Command').click();await settle();
   assert(posts.length===2&&posts[1].url.endsWith('/approve'),'approval reached the server');
   assert(document.body.textContent?.includes('Outcome unconfirmed')&&!document.body.textContent?.includes('The decision was confirmed'),'a mismatched receipt remains uncertain');
-  mismatchedApproval=false;failApprovalSave=true;button('Retry exact command').click();await settle();button('Confirm exact command').click();await settle();
+  mismatchedApproval=false;failApprovalSave=true;button('Retry Exact Command').click();await settle();button('Confirm Exact Command').click();await settle();
   assert(posts.length===3&&JSON.stringify(posts[1].body)===JSON.stringify(posts[2].body),'only the exact approval was retried');
   const stored=JSON.parse(localStorage.getItem(key(destinationPath))!);
   assert(stored.body.commandKey===posts[1].body.commandKey&&!stored.approved,'original command survives failed post-response save');
@@ -206,27 +206,27 @@ export async function lifecycleReceiptRemovalFailureRegression():Promise<void>{
  };
  const render=(kind:'memory'|'destination',mount:string)=>root.render(<QueryClientProvider client={client}><LifecycleReview key={mount} kind={kind} id="removal-failure"/></QueryClientProvider>);
  try{
-  render('memory','memory');await settle();button('Review memory hold').click();await settle();
+  render('memory','memory');await settle();button('Review Memory Hold').click();await settle();
   const field=document.querySelector('textarea:not([aria-hidden="true"])') as HTMLTextAreaElement;
   assert(field,'memory note field exists');
   Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value')!.set!.call(field,'Provider requests have stopped');
   field.dispatchEvent(new Event('input',{bubbles:true}));await settle();check();await settle();
-  button('Reconcile and preserve evidence').click();await settle();failClear=true;button('Confirm exact command').click();await settle();
+  button('Reconcile And Preserve Evidence').click();await settle();failClear=true;button('Confirm Exact Command').click();await settle();
   const retained=localStorage.getItem(key(memoryPath));
   assert(posts.length===1&&retained,'verified result with failed removal retains original command');
   assert(document.body.textContent?.includes('The decision was confirmed')&&document.body.textContent?.includes('Exact command retained'),'confirmed result and local failure are visible');
-  failClear=false;button('Retry exact command').click();await settle();button('Confirm exact command').click();await settle();
+  failClear=false;button('Retry Exact Command').click();await settle();button('Confirm Exact Command').click();await settle();
   assert(posts.length===2&&JSON.stringify(posts[0].body)===JSON.stringify(posts[1].body),'explicit retry uses identical original command');
   assert(!localStorage.getItem(key(memoryPath)),'matching receipt clears retained command after storage recovers');
 
   const pending={path:destinationPath,id:'removal-failure',action:'retire',body:{commandKey:'retire-key',expectedReviewHash:'review-1',releaseSourcePins:false,authorizeDeletedOwner:true}};
   localStorage.setItem(key(destinationPath),JSON.stringify(pending));
-  render('destination','destination');await settle();button('Review destination retirement').click();await settle();
-  failClear=true;button('Inspect retirement receipt').click();await settle();
+  render('destination','destination');await settle();button('Review Destination Retirement').click();await settle();
+  failClear=true;button('Inspect Retirement Receipt').click();await settle();
   assert(localStorage.getItem(key(destinationPath))===JSON.stringify(pending),'failed receipt lookup cleanup preserves original command');
   assert(document.body.textContent?.includes('The decision was confirmed')&&document.body.textContent?.includes('Exact command retained'),'verified lookup distinguishes the local storage error');
   assert(posts.length===2,'receipt lookup sends no mutation');
-  failClear=false;button('Inspect retirement receipt').click();await settle();
+  failClear=false;button('Inspect Retirement Receipt').click();await settle();
   assert(!localStorage.getItem(key(destinationPath))&&posts.length===2,'matching receipt lookup clears without replay after storage recovers');
  }finally{
   Storage.prototype.removeItem=originalRemoveItem;root.unmount();client.clear();host.remove();globalThis.fetch=originalFetch;

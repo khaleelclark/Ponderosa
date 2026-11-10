@@ -19,7 +19,7 @@ export function AssistantSettings():JSX.Element {
   finally{pending.current=false;setBusy(false);}
  };
  return <Stack spacing={1}>
-  <FormControlLabel label={status.data?.enabled?'Assistant enabled':'Assistant disabled'} control={<Switch checked={status.data?.enabled??false} disabled={busy||status.isPending||status.isError} onChange={(_,value)=>void change(value)}/>}/>
+  <FormControlLabel label={status.data?.enabled?'Assistant Enabled':'Assistant Disabled'} control={<Switch checked={status.data?.enabled??false} disabled={busy||status.isPending||status.isError} onChange={(_,value)=>void change(value)}/>}/>
   <Button href="/assistant" sx={{alignSelf:'start'}}>Open Assistant</Button>
   {(error||status.isError)&&<Alert severity="error" action={status.isError?<Button onClick={()=>void status.refetch()}>Retry</Button>:undefined}>{error||status.error?.message}</Alert>}
  </Stack>;

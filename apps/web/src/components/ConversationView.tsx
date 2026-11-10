@@ -935,7 +935,7 @@ export function ConversationView({
             canonicalCommunicationIds={messages.map(message => message.communicationEventId)}
             layout="project"
             layoutKey={`main:${visibleMessageLayoutKey}`}
-            label="Chat messages"
+            label="Chat Messages"
             initialTranscript={{ rowIds: visibleMainTimeline.map(entry => entry.id), reveal: Boolean(focusMessageId || agentWorkOpen || activeView !== "main") }}
             follow={{
               kind: "latest",
@@ -971,7 +971,7 @@ export function ConversationView({
                         key={session.id}
                         severity="info"
                         role="region"
-                        aria-label={`${agentTitle} browser status`}
+                        aria-label={`${agentTitle} Browser Status`}
                         action={
                           <Button
                             color="inherit"
@@ -1035,7 +1035,7 @@ export function ConversationView({
             <ChatSurface
               layout="project"
               layoutKey={`collaboration:${collaborationLayoutKey}:${operationalLayoutKey}`}
-              label="Team chat messages"
+              label="Team Chat Messages"
               follow={{
                 kind: "latest",
                 storageKey: chatStateKey(
@@ -1207,8 +1207,8 @@ onClose: () => setAgentWorkOpen(false)}} />
             Cancellation failed. {cancelOperationError.message}
           </Alert>
         ) : null}
-        <WorkspaceQueryError read={workspaceRead(`chat:${conversationId}`,"Queued messages",queuedMessagesQuery)}/>
-        {queuedMessageFailure&&<details><summary>Queue action needs attention</summary>{queuedMessageFailure.error.message}<Button onClick={queuedMessageFailure.retry}>Retry action</Button></details>}
+        <WorkspaceQueryError read={workspaceRead(`chat:${conversationId}`,"Queued Messages",queuedMessagesQuery)}/>
+        {queuedMessageFailure&&<details><summary>Queue Action Needs Attention</summary>{queuedMessageFailure.error.message}<Button onClick={queuedMessageFailure.retry}>Retry Action</Button></details>}
 
         {activeView === "main" ? (
           <QueuedMessageTray

@@ -17,12 +17,12 @@ export async function nativeTasksUiRegression(){
   return new Response(JSON.stringify({...boundary,tasks:[{taskKey:'exact-key',taskId:'actual-native',kind:'background',cancellable:true},{taskKey:'cron-key',taskId:'actual-cron',kind:'cron',cancellable:false}]}),{headers:{'content-type':'application/json'}});
  };
  try{
-  root.render(<NativeTaskControls agent={agent}/>);await settle();await click('Inspect native tasks');await click('Refresh live inventory');
-  assert(Array.from(document.querySelectorAll('button')).some(b=>b.textContent==='Native stop unavailable'&&b.disabled),'cron cannot stop');
-  await click('Stop native task');await click('Stop task');assert(posts===1,'one POST');
-  root.unmount();root=createRoot(host);root.render(<NativeTaskControls agent={agent}/>);await settle();await click('Inspect native tasks');await click('Read original receipt');
+  root.render(<NativeTaskControls agent={agent}/>);await settle();await click('Inspect Native Tasks');await click('Refresh Live Inventory');
+  assert(Array.from(document.querySelectorAll('button')).some(b=>b.textContent==='Native Stop Unavailable'&&b.disabled),'cron cannot stop');
+  await click('Stop Native Task');await click('Stop Task');assert(posts===1,'one POST');
+  root.unmount();root=createRoot(host);root.render(<NativeTaskControls agent={agent}/>);await settle();await click('Inspect Native Tasks');await click('Read Original Receipt');
   assert(posts===1&&gets.some(url=>url.includes(`/stops/${body.idempotencyKey}`)&&url.includes('sourceFence=9')),'remount GET original key/boundary only');
   assert(document.body.textContent?.includes('acknowledged')&&document.body.textContent?.includes('processDrainObserved: false'),'honest acknowledgment');
-  boundary={runId:'replacement-run',sourceFence:10,sessionId:'new-session'};await click('Refresh live inventory');await click('Read original receipt');assert(posts===1,'drift recovery never sends native stop');
+  boundary={runId:'replacement-run',sourceFence:10,sessionId:'new-session'};await click('Refresh Live Inventory');await click('Read Original Receipt');assert(posts===1,'drift recovery never sends native stop');
  }finally{root.unmount();host.remove();globalThis.fetch=original;if(prior===null)localStorage.removeItem(key);else localStorage.setItem(key,prior);}
 }

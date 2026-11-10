@@ -10,13 +10,13 @@ test('publication facts preserve execution, history, lifecycle and host authorit
  'Agents and Scripts use the host account’s authority. A human gate controls workflow order, not other host activity.',
  ]);
  const values=Object.fromEntries(facts.map(fact=>[fact.label,fact.value]));
- assert.equal(values['Accepted executions'],'Version and binding revision retained');
+ assert.equal(values['Accepted Executions'],'Version and binding revision retained');
  assert.equal(values['Persistent Agents'],'Owned by this workflow via their Chat');
- assert.equal(values['Agent history'],'Preserved');
- assert.equal(values['Removed bindings'],'Agents and user folders preserved');
+ assert.equal(values['Agent History'],'Preserved');
+ assert.equal(values['Removed Bindings'],'Agents and user folders preserved');
  assert.equal(values['Template Agents'],'Created per invocation · deleted after cleanup');
- assert.equal(values['Agents and Scripts'],'Host account authority');
- assert.equal(values['Human gates'],'Workflow order only · other host activity unaffected');
+ assert.equal(values['Agents And Scripts'],'Host account authority');
+ assert.equal(values['Human Gates'],'Workflow order only · other host activity unaffected');
 });
 test('publication facts retain traversal warnings, queued backlog and unknown future consequences',()=>{
  for(const [note,expected]of [

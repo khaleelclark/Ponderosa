@@ -47,7 +47,7 @@ export function DecisionActions({
   const grouped = Boolean(decision.questions || decision.questionCount);
   const skipButton = <Button size="small" color="inherit" disabled={response.isPending}
     onClick={(event) => { event.stopPropagation(); void respond({ skip: true }); }}>
-    Skip question
+    Skip Question
   </Button>;
   if (decision.runtimeAction) {
     return (

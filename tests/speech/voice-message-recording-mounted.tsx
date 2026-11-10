@@ -50,14 +50,14 @@ export async function voiceMessageRecordingRegression():Promise<void> {
   mount();
   const firstPermission=await until(()=>permission,'Opening recording did not request microphone permission');assert(document.activeElement===recordingSurface(),'Opening inline capture must focus its named surface while permission is pending');firstPermission(stream);
   assert(permissionCalls===1,'StrictMode discarded mount must not request duplicate microphone permission');
-  const firstFinish=await button('Finish recording');await until(()=>document.activeElement===firstFinish?true:undefined,'Keyboard focus did not advance to Finish');
+  const firstFinish=await button('Finish Recording');await until(()=>document.activeElement===firstFinish?true:undefined,'Keyboard focus did not advance to Finish');
   assert(recordingSurface()?.querySelector('[role="status"]')?.getAttribute('aria-atomic')==='false'&&recordingSurface()?.querySelector('[aria-live="off"]'),'Elapsed timer must not be live-announced every second');
   firstFinish.click();
   await until(()=>stopped>0?true:undefined,'Finishing did not release microphone tracks');
   await until(()=>document.body.textContent?.includes('Draft is full')?true:undefined,'Finish staging refusal was not shown');
   assert(!closed&&!attached&&attachmentCalls===1,'rejected Finish must retain review and never send');
-  assert((await button('Record again'))!==undefined,'Refused audio must remain re-recordable');
-  refuse=false;(await button('Use recording')).click();
+  assert((await button('Record Again'))!==undefined,'Refused audio must remain re-recordable');
+  refuse=false;(await button('Use Recording')).click();
   await until(()=>closed===1&&attached?true:undefined,'Accepted staging did not close');
   assert(attached?.type==='audio/webm'&&attached.name.endsWith('.webm'),'staged audio retains the actual container');assert(attachedTranscript==='Controlled recorded speech','recognized words must accompany the admitted audio');
   await closedRecorder();
@@ -73,21 +73,21 @@ export async function voiceMessageRecordingRegression():Promise<void> {
   await until(()=>document.body.textContent?.includes('Microphone permission denied for this test')?true:undefined,'Permission failure was not visible');
   (await button('Record')).click();
   (await until(()=>permission,'Explicit permission retry was not requested'))(stream);
-  await button('Finish recording');currentRecorder?.onerror?.();
+  await button('Finish Recording');currentRecorder?.onerror?.();
   await until(()=>document.body.textContent?.includes('Microphone recording failed. Review any captured audio.')?true:undefined,'Capture failure was not visible');
-  await button('Use recording');
+  await button('Use Recording');
   assert(attachmentCalls===priorAttachmentCalls,'Capture failure must retain partial review instead of automatically staging');
-  (await button('Use recording')).click();await closedRecorder();
+  (await button('Use Recording')).click();await closedRecorder();
 
   const beforeLimit=attachmentCalls;mount(4);
   (await until(()=>permission,'Limited recording did not request permission'))(stream);
-  (await button('Finish recording')).click();
+  (await button('Finish Recording')).click();
   await until(()=>document.body.textContent?.includes('Recording exceeds the attachment size limit. Record a shorter message.')?true:undefined,'Oversized capture did not explain recovery');
   assert(attachmentCalls===beforeLimit,'Oversized audio must never enter the draft');
   (await button('Discard')).click();await closedRecorder();
 
   mount();(await until(()=>permission,'Active-discard recording did not request permission'))(stream);
-  await button('Finish recording');const beforeDiscard=stopped;
+  await button('Finish Recording');const beforeDiscard=stopped;
   (await button('Discard')).click();await closedRecorder();
   await until(()=>stopped>beforeDiscard?true:undefined,'Active discard did not stop microphone tracks');
   assert(attachmentCalls===beforeLimit,'Active discard must not stage final recording callbacks');
@@ -98,7 +98,7 @@ export async function voiceMessageRecordingRegression():Promise<void> {
    voiceContext={{projectId:'owned-project',conversationId:'owned-chat',selectedAgentId:owner,agents:[],lockAgent:true}}
    onFinalTranscript={words=>insertedTranscripts.push(words)} onSettlingChange={()=>{}}
    onVoiceAttachment={file=>{if(refuseOwnedDraft)return 'Owned draft busy';attachmentCalls++;attached=file;return undefined;}}/></StrictMode>);
-  const recordButton=()=>until(()=>document.querySelector<HTMLButtonElement>('button[aria-label="Record voice message"]')??undefined,'Direct recording action missing');
+  const recordButton=()=>until(()=>document.querySelector<HTMLButtonElement>('button[aria-label="Record Voice Message"]')??undefined,'Direct recording action missing');
   permission=undefined;renderOwner();(await recordButton()).click();assert(captureBlocked,'pending permission must synchronously gate submission');
   const oldOwnerPermission=await until(()=>permission,'Owned recording did not request permission');
   const beforeOwnerChange=stopped,stagedBeforeOwnerChange=attachmentCalls;
@@ -108,7 +108,7 @@ export async function voiceMessageRecordingRegression():Promise<void> {
   owner='first';renderOwner();await tick();assert(!recordingSurface(),'Returning to old owner must not reopen recording');
   permission=undefined;(await recordButton()).click();
   (await until(()=>permission,'Active owned recording did not request permission'))(stream);
-  await button('Finish recording');const activeOwnerStopped=stopped,lateOldOwnerResult=recognitionInstances.at(-1)?.onresult,transcriptsBeforeOwnerChange=insertedTranscripts.length;
+  await button('Finish Recording');const activeOwnerStopped=stopped,lateOldOwnerResult=recognitionInstances.at(-1)?.onresult,transcriptsBeforeOwnerChange=insertedTranscripts.length;
   owner='third';renderOwner();await closedRecorder();
   await until(()=>stopped>activeOwnerStopped?true:undefined,'Owner change did not stop active capture');
   lateOldOwnerResult?.({results:[{isFinal:true,0:{transcript:'Late old-owner speech'},length:1}]});await tick();
@@ -117,25 +117,25 @@ export async function voiceMessageRecordingRegression():Promise<void> {
   assert(!captureBlocked,'retiring an owner releases its capture gate');
   permission=undefined;(await recordButton()).click();
   (await until(()=>permission,'Partial-review recording did not request permission'))(stream);
-  (await button('Finish recording')).click();
+  (await button('Finish Recording')).click();
   await until(()=>document.body.textContent?.includes('Owned draft busy')?true:undefined,'Inline staging refusal was not retained');
   assert(captureBlocked&&recordingSlot.contains(recordingSurface()),'unresolved partial audio remains inline and blocks submission');
-  refuseOwnedDraft=false;const usePartial=await button('Use recording');usePartial.focus();usePartial.click();await closedRecorder();
+  refuseOwnedDraft=false;const usePartial=await button('Use Recording');usePartial.focus();usePartial.click();await closedRecorder();
   await until(()=>!captureBlocked?true:undefined,'Staging the retained recording did not release the Send gate');
-  await until(()=>document.activeElement===document.querySelector('button[aria-label="Record voice message"]')?true:undefined,'Closing inline capture did not restore its toolbar trigger');
+  await until(()=>document.activeElement===document.querySelector('button[aria-label="Record Voice Message"]')?true:undefined,'Closing inline capture did not restore its toolbar trigger');
   permission=undefined;(await recordButton()).click();(await until(()=>permission,'Final focus-preservation recording did not request permission'))(stream);
-  (await button('Finish recording')).click();nextEditor.focus();await closedRecorder();await tick();
+  (await button('Finish Recording')).click();nextEditor.focus();await closedRecorder();await tick();
   assert(document.activeElement===nextEditor&&nextEditor.value==='Keep this newer editor interaction','Finishing must not steal focus or content from a newer editor interaction');
 
   // Assistant reuses this same recorder through its single waveform menu.
   inlineVoiceOptions=true;renderOwner();await tick();
-  assert(!document.querySelector('button[aria-label="Record voice message"]'),'Inline Assistant controls have no second microphone button');
-  const waveform=await until(()=>document.querySelector<HTMLButtonElement>('button[aria-label="Voice options"]')??undefined,'Assistant waveform trigger missing');
+  assert(!document.querySelector('button[aria-label="Record Voice Message"]'),'Inline Assistant controls have no second microphone button');
+  const waveform=await until(()=>document.querySelector<HTMLButtonElement>('button[aria-label="Voice Options"]')??undefined,'Assistant waveform trigger missing');
   waveform.focus();waveform.click();
-  const recordChoice=await until(()=>Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]')).find(node=>node.textContent?.includes('Record voice message')),'Waveform recording choice missing');
+  const recordChoice=await until(()=>Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]')).find(node=>node.textContent?.includes('Record Voice Message')),'Waveform recording choice missing');
   permission=undefined;recordChoice.click();assert(captureBlocked,'Waveform recording synchronously gates submission');
   (await until(()=>permission,'Waveform recording did not request permission'))(stream);
-  const beforeWaveAttachment=attachmentCalls;(await button('Finish recording')).click();await closedRecorder();
+  const beforeWaveAttachment=attachmentCalls;(await button('Finish Recording')).click();await closedRecorder();
   assert(attachmentCalls===beforeWaveAttachment+1,'Waveform recording stages through the existing draft attachment callback once');
   await until(()=>document.activeElement===waveform?true:undefined,'Closing waveform recording restores its actual trigger');
 
@@ -163,14 +163,14 @@ export async function voiceCallHeaderFocusRegression():Promise<void>{
   handset.focus();handset.click();await until(()=>document.querySelector('[role="dialog"]')??undefined,'Header Call did not open the actual call stage');
   await until(()=>captureStarts===1?true:undefined,'Explicit header opening did not start capture exactly once');
   await tick();assert(captureStarts===1,'StrictMode must not request duplicate capture');
-  const mute=document.querySelector<HTMLButtonElement>('button[aria-label="Mute microphone"]');assert(mute,'Call mute control missing');mute!.click();
-  await until(()=>document.querySelector('button[aria-label="Unmute microphone"]')??undefined,'Call did not enter its truthful muted state');
-  const end=document.querySelector<HTMLButtonElement>('button[aria-label="End call"]');assert(end,'Call End control missing');end!.focus();end!.click();
+  const mute=document.querySelector<HTMLButtonElement>('button[aria-label="Mute Microphone"]');assert(mute,'Call mute control missing');mute!.click();
+  await until(()=>document.querySelector('button[aria-label="Unmute Microphone"]')??undefined,'Call did not enter its truthful muted state');
+  const end=document.querySelector<HTMLButtonElement>('button[aria-label="End Call"]');assert(end,'Call End control missing');end!.focus();end!.click();
   await until(()=>!document.querySelector('[role="dialog"]')?true:undefined,'End did not close the call');
   await until(()=>document.activeElement===handset?true:undefined,'End after mute did not restore the actual header handset');
   assert(sends===0,'Opening, muting and ending cannot submit a call turn');
   handset.click();await until(()=>captureStarts===2?true:undefined,'Second deliberate handset opening did not capture once');
-  const secondEnd=await until(()=>document.querySelector<HTMLButtonElement>('button[aria-label="End call"]')??undefined,'Second End missing');
+  const secondEnd=await until(()=>document.querySelector<HTMLButtonElement>('button[aria-label="End Call"]')??undefined,'Second End missing');
   secondEnd.focus();secondEnd.click();newer.focus();await until(()=>!document.querySelector('[role="dialog"]')?true:undefined,'Second End did not close');await tick();
   assert(document.activeElement===newer,'Ending a call must not steal focus from a newer editor interaction');
   newer.focus();render(true);await tick();assert(document.activeElement===newer,'A later read-only render must preserve newer focus');assert(handset.disabled,'Read-only/supplied-disabled gating must disable the header handset');

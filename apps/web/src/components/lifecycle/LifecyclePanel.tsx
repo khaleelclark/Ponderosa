@@ -31,30 +31,30 @@ export function LifecyclePanel():JSX.Element {
  const disclosureSx={minWidth:0,borderBottom:'1px solid',borderColor:'divider','& > summary':{cursor:'pointer',minHeight:44,py:1.5,overflowWrap:'anywhere'}};
  const target=items.find(item=>JSON.stringify([item.kind,item.id])===selected);
  return <Paper variant="outlined" sx={{p:2.5}}><Stack spacing={2}>
-  <Typography component="h2" variant="h6">Recovery records</Typography>
-  <Button sx={{alignSelf:'flex-start'}} onClick={()=>setOpen(value=>!value)} aria-expanded={open}>{open?'Close lifecycle inventory':'Review lifecycle inventory'}</Button>
+  <Typography component="h2" variant="h6">Recovery Records</Typography>
+  <Button sx={{alignSelf:'flex-start'}} onClick={()=>setOpen(value=>!value)} aria-expanded={open}>{open?'Close Lifecycle Inventory':'Review Lifecycle Inventory'}</Button>
   {open&&<>
    <LifecycleDiscovery/>
-   <Button disabled={custody.isFetching||memory.isFetching||provisioning.isFetching||orphans.isFetching} onClick={()=>{setSelected('');setGeneration(value=>value+1);void memory.refetch();void provisioning.refetch();}}>Refresh inventories</Button>
+   <Button disabled={custody.isFetching||memory.isFetching||provisioning.isFetching||orphans.isFetching} onClick={()=>{setSelected('');setGeneration(value=>value+1);void memory.refetch();void provisioning.refetch();}}>Refresh Inventories</Button>
    <Typography variant="body2" color={provisioning.isError?'warning.main':'text.secondary'} sx={{overflowWrap:'anywhere'}}>Memory provisioning holds · {inventoryState(provisioning,provisioning.data?.length??0)}</Typography>
    {!provisioning.isError&&provisioning.data?.map((hold,index)=><Alert severity="warning" key={(hold.chatId??hold.scope)+':'+index}>Memory operation held · {hold.scope==='global'?'Global':hold.scope==='unknown'?'Unknown scope':`Chat ${hold.chatId}`} · {hold.reason} Review memory mutation holds and backend status before taking action.</Alert>)}
    <Box component="details" sx={disclosureSx}>
-    <Box component="summary"><Typography component="span" fontWeight={600}>Checkpoint evidence and memory holds</Typography><Typography component="span" variant="body2" color={custody.isError?'warning.main':'text.secondary'} sx={{display:'block'}}>Checkpoint evidence · {inventoryState(custody,custodyIds.length,Boolean(custody.hasNextPage))}</Typography><Typography component="span" variant="body2" color={memory.isError?'warning.main':'text.secondary'} sx={{display:'block'}}>Memory mutation holds · {inventoryState(memory,memory.data?.length??0)}</Typography></Box>
+    <Box component="summary"><Typography component="span" fontWeight={600}>Checkpoint Evidence And Memory Holds</Typography><Typography component="span" variant="body2" color={custody.isError?'warning.main':'text.secondary'} sx={{display:'block'}}>Checkpoint evidence · {inventoryState(custody,custodyIds.length,Boolean(custody.hasNextPage))}</Typography><Typography component="span" variant="body2" color={memory.isError?'warning.main':'text.secondary'} sx={{display:'block'}}>Memory mutation holds · {inventoryState(memory,memory.data?.length??0)}</Typography></Box>
     <Stack spacing={2} sx={{pb:2,minWidth:0}}>
      {custody.error&&<Alert severity="warning">Checkpoint evidence: {custody.error.message} · refresh inventories</Alert>}
      {memory.error&&<Alert severity="warning">Memory mutation holds: {memory.error.message} · refresh inventories</Alert>}
-     {custody.hasNextPage&&!custody.isError&&<Button disabled={custody.isFetching} onClick={()=>void custody.fetchNextPage()}>Load more checkpoint evidence</Button>}
-     <TextField select label="Canonical retained identity" value={target?selected:''} onChange={event=>setSelected(event.target.value)}><MenuItem value="">Choose evidence</MenuItem>{items.map(item=><MenuItem key={JSON.stringify([item.kind,item.id])} value={JSON.stringify([item.kind,item.id])}>{item.label}</MenuItem>)}</TextField>
+     {custody.hasNextPage&&!custody.isError&&<Button disabled={custody.isFetching} onClick={()=>void custody.fetchNextPage()}>Load More Checkpoint Evidence</Button>}
+     <TextField select label="Canonical Retained Identity" value={target?selected:''} onChange={event=>setSelected(event.target.value)}><MenuItem value="">Choose Evidence</MenuItem>{items.map(item=><MenuItem key={JSON.stringify([item.kind,item.id])} value={JSON.stringify([item.kind,item.id])}>{item.label}</MenuItem>)}</TextField>
      {target?.kind==='memory'&&<MemoryPreserveUnknown key={`preserve:${selected}`} id={target.id}/>}
      {target&&<LifecycleReview key={selected} kind={target.kind as LifecycleKind} id={target.id}/>}
     </Stack>
    </Box>
    <Box component="details" sx={disclosureSx}>
-    <Box component="summary"><Typography component="span" fontWeight={600}>Preserved orphan staging evidence</Typography><Typography component="span" variant="body2" color={orphans.isError?'warning.main':'text.secondary'} sx={{display:'block'}}>{inventoryState(orphans,orphanEntries.length,Boolean(orphans.hasNextPage))}</Typography></Box>
+    <Box component="summary"><Typography component="span" fontWeight={600}>Preserved Orphan Staging Evidence</Typography><Typography component="span" variant="body2" color={orphans.isError?'warning.main':'text.secondary'} sx={{display:'block'}}>{inventoryState(orphans,orphanEntries.length,Boolean(orphans.hasNextPage))}</Typography></Box>
     <Stack spacing={2} sx={{pb:2,minWidth:0}}>
      {orphans.error&&<Alert severity="warning">Preserved orphan staging evidence: {orphans.error.message} · refresh inventories</Alert>}
      {orphans.data&&!orphans.isError&&<Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere',fontSize:12}}>{JSON.stringify(orphanEntries,null,2)}</Typography>}
-     {orphans.hasNextPage&&!orphans.isError&&<Button disabled={orphans.isFetching} onClick={()=>void orphans.fetchNextPage()}>Load more orphan evidence</Button>}
+     {orphans.hasNextPage&&!orphans.isError&&<Button disabled={orphans.isFetching} onClick={()=>void orphans.fetchNextPage()}>Load More Orphan Evidence</Button>}
     </Stack>
    </Box>
    <Typography variant="caption">Original bytes preserved · discovery: exact identities · current review: eligibility</Typography>

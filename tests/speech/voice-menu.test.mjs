@@ -33,28 +33,28 @@ function menuFixture(extra={},callActionsHost=null){
  const f=fixture('DictationControls',{'react-dom':{flushSync:fn=>fn(),createPortal:(node,container)=>{portals.push(container);return node;}},'./useDictation':{useDictation:(...args)=>{handlers=args;return dictation;}},'./speechStyles':{},'./VoiceConversation':{VoiceConversation},'./VoiceMessageRecorder':{VoiceMessageRecorder},'../../api/productScope':{isOutputAppPath:()=>false},'../WorkspaceReadOnlyContext':{useWorkspaceReadOnly:()=>readOnly},'../ConversationChromeContext':{ConversationChromeContext:{_fixtureValue:{statusHost:null,callActionsHost}}}},{document:doc,window:{location:{pathname:'/'}}});
  f.mount(f.exports.DictationControls,{disabled:false,voiceContext:context,recordingContainer,onFinalTranscript:words=>calls.push(['words',words]),onSettlingChange:value=>calls.push(['settling',value]),...extra});
  const item=label=>f.find(n=>n.type==='MenuItem'&&f.all(n).some(child=>child.props.primary===label));
- return{...f,doc,calls,dictation,item,VoiceConversation,VoiceMessageRecorder,recordingContainer,portals,handlers:()=>handlers,readOnly(value){readOnly=value;f.render();},open(){f.find(n=>n.props['aria-label']==='Voice options').props.onClick({currentTarget:{id:'trigger'}});f.render();}};
+ return{...f,doc,calls,dictation,item,VoiceConversation,VoiceMessageRecorder,recordingContainer,portals,handlers:()=>handlers,readOnly(value){readOnly=value;f.render();},open(){f.find(n=>n.props['aria-label']==='Voice Options').props.onClick({currentTarget:{id:'trigger'}});f.render();}};
 }
 test('Voice options opens a named MUI menu without capture or submission; call keeps the exact workspace owner',()=>{
  const f=menuFixture();f.open();assert.deepEqual(f.calls,[]);
- const menu=f.find(n=>n.type==='Menu');assert.equal(menu.props.open,true);assert.equal(menu.props.MenuListProps['aria-label'],'Voice options');assert.equal(menu.props.container,f.handlers()[2].current,'menu must not hide its own live dictation surface');
- f.item('Voice call').props.onClick();f.render();assert.equal(f.find(n=>n.type==='Menu').props.open,false);assert.deepEqual(f.calls,[]);
+ const menu=f.find(n=>n.type==='Menu');assert.equal(menu.props.open,true);assert.equal(menu.props.MenuListProps['aria-label'],'Voice Options');assert.equal(menu.props.container,f.handlers()[2].current,'menu must not hide its own live dictation surface');
+ f.item('Voice Call').props.onClick();f.render();assert.equal(f.find(n=>n.type==='Menu').props.open,false);assert.deepEqual(f.calls,[]);
  const call=f.find(n=>n.type===f.VoiceConversation);assert.equal(call.props.projectId,'project');assert.equal(call.props.conversationId,'chat');assert.equal(call.props.selectedAgentId,'agent');assert.equal(call.props.lockAgent,true);
  assert.equal(call.props.startOnOpen,true);call.props.onClose();f.render();assert.equal(f.all().some(n=>n.type===f.VoiceConversation),false);f.unmount();
 });
 test('voice recording opens directly from its distinct toolbar action without menu or staging',()=>{
  const attached=[],activity=[],f=menuFixture({onVoiceAttachment:file=>{attached.push(file);},onActiveChange:value=>activity.push(value),maxRecordingBytes:1024});
- const record=f.find(n=>n.props['aria-label']==='Record voice message');assert.equal(record.props.disabled,false);
+ const record=f.find(n=>n.props['aria-label']==='Record Voice Message');assert.equal(record.props.disabled,false);
  record.props.onClick();assert.equal(activity.at(-1),true,'pending permission must synchronously block submission before effects');f.render();assert.equal(f.find(n=>n.type==='Menu').props.open,false);assert.equal(f.portals.at(-1),f.recordingContainer,'inline capture must use the explicit owned slot');
  assert.equal(f.all().some(n=>n.type===f.VoiceMessageRecorder),true);assert.deepEqual(attached,[]);assert.deepEqual(f.calls,[]);
  f.find(n=>n.type===f.VoiceMessageRecorder).props.onClose();f.render();assert.equal(activity.at(-1),false,'staging or discard releases capture gating');f.open();
- assert.equal(f.all().some(n=>n.type==='MenuItem'&&f.all(n).some(child=>child.props.primary==='Record voice message')),false,'recording must not require a second menu route');
- f.dictation.status='listening';f.render();assert.equal(f.find(n=>n.props['aria-label']==='Record voice message').props.disabled,true);
- f.dictation.status='ready';f.render();f.readOnly(true);assert.equal(f.find(n=>n.props['aria-label']==='Record voice message').props.disabled,true);f.unmount();
+ assert.equal(f.all().some(n=>n.type==='MenuItem'&&f.all(n).some(child=>child.props.primary==='Record Voice Message')),false,'recording must not require a second menu route');
+ f.dictation.status='listening';f.render();assert.equal(f.find(n=>n.props['aria-label']==='Record Voice Message').props.disabled,true);
+ f.dictation.status='ready';f.render();f.readOnly(true);assert.equal(f.find(n=>n.props['aria-label']==='Record Voice Message').props.disabled,true);f.unmount();
 });
 test('changing recording owner unmounts its recorder and never revives the previous capture',()=>{
  const f=menuFixture({onVoiceAttachment:()=>undefined});
- f.find(n=>n.props['aria-label']==='Record voice message').props.onClick();f.render();
+ f.find(n=>n.props['aria-label']==='Record Voice Message').props.onClick();f.render();
  assert.equal(f.all().some(n=>n.type===f.VoiceMessageRecorder),true);
  f.update({voiceContext:{...context,selectedAgentId:'second',agents:[agent(),agent('second')]}});
  assert.equal(f.all().some(n=>n.type===f.VoiceMessageRecorder),false,'owner change must remove the old recorder during render');
@@ -63,13 +63,13 @@ test('changing recording owner unmounts its recorder and never revives the previ
 test('Dictation stays mounted outside the closing menu and retains insertion, settle, pause/resume/stop callbacks',()=>{
  const f=menuFixture();const controllerSurface=f.handlers()[2];f.open();f.item('Dictation').props.onClick();f.render();assert.deepEqual(f.calls,['start']);assert.equal(f.find(n=>n.type==='Menu').props.open,false);assert.equal(f.handlers()[2]===controllerSurface,true,'same recognition controller surface survives closing menu');
  f.handlers()[0]('final words');f.handlers()[1](true);assert.deepEqual(f.calls.slice(1),[['words','final words'],['settling',true]]);
- f.dictation.status='listening';f.render();f.open();assert.equal(f.item('Voice call').props.disabled,true);f.item('Dictation').props.onClick();f.render();
- f.dictation.status='paused';f.render();f.open();f.item('Dictation').props.onClick();f.render();f.find(n=>n.props['aria-label']==='Stop voice dictation').props.onClick();assert.deepEqual(f.calls.slice(-3),['pause','resume','stop']);f.unmount();
+ f.dictation.status='listening';f.render();f.open();assert.equal(f.item('Voice Call').props.disabled,true);f.item('Dictation').props.onClick();f.render();
+ f.dictation.status='paused';f.render();f.open();f.item('Dictation').props.onClick();f.render();f.find(n=>n.props['aria-label']==='Stop Voice Dictation').props.onClick();assert.deepEqual(f.calls.slice(-3),['pause','resume','stop']);f.unmount();
 });
 test('missing/foreign owner, unavailable recognition and read-only scopes do not enable unsafe actions',()=>{
- for(const voiceContext of [undefined,{...context,agents:[agent('other','foreign')]},{...context,selectedAgentId:'foreign'}]){const f=menuFixture({voiceContext});f.open();assert.equal(f.item('Voice call').props.disabled,true);f.unmount();}
- const f=menuFixture();f.dictation.unavailableReason='Speech recognition unavailable';f.render();f.open();assert.equal(f.item('Dictation').props.disabled,true);assert.equal(f.item('Voice call').props.disabled,false,'typing in the existing call remains available');
- f.item('Voice call').props.onClick();f.render();f.readOnly(true);assert.equal(f.all().some(n=>n.type===f.VoiceConversation),false);assert.equal(f.find(n=>n.props['aria-label']==='Voice options').props.disabled,true);f.readOnly(false);assert.equal(f.all().some(n=>n.type===f.VoiceConversation),false,'reenabling a surface must not reopen a call');f.unmount();
+ for(const voiceContext of [undefined,{...context,agents:[agent('other','foreign')]},{...context,selectedAgentId:'foreign'}]){const f=menuFixture({voiceContext});f.open();assert.equal(f.item('Voice Call').props.disabled,true);f.unmount();}
+ const f=menuFixture();f.dictation.unavailableReason='Speech recognition unavailable';f.render();f.open();assert.equal(f.item('Dictation').props.disabled,true);assert.equal(f.item('Voice Call').props.disabled,false,'typing in the existing call remains available');
+ f.item('Voice Call').props.onClick();f.render();f.readOnly(true);assert.equal(f.all().some(n=>n.type===f.VoiceConversation),false);assert.equal(f.find(n=>n.props['aria-label']==='Voice Options').props.disabled,true);f.readOnly(false);assert.equal(f.all().some(n=>n.type===f.VoiceConversation),false,'reenabling a surface must not reopen a call');f.unmount();
 });
 
 function callFixture({product='dev',selectedAgentId='agent',agents=[agent()],lockAgent=true,startOnOpen=false}={}){
@@ -85,17 +85,17 @@ function callFixture({product='dev',selectedAgentId='agent',agents=[agent()],loc
  const outer=f.exports.VoiceConversation({...context,agents,selectedAgentId,lockAgent,startOnOpen,open:true,onClose:()=>closed++});const session=React.Children.toArray(outer.props.children)[0];
  f.mount(session.type,session.props);f.find(n=>n.type==='DialogContent').ref({isConnected:true,contains:()=>false});f.render();
  const findButton=name=>f.find(n=>n.type==='Button'&&(n.props.children===name||n.props['aria-label']===name));
- const sendTurn=async()=>{await f.flush();findButton('Transcript').props.onClick();f.render();f.find(n=>n.type==='TextField'&&n.props.label==='Type a message').props.onChange({target:{value:'A private voice turn'}});f.render();findButton('Send').props.onClick();await f.flush();await f.flush();};
+ const sendTurn=async()=>{await f.flush();findButton('Transcript').props.onClick();f.render();f.find(n=>n.type==='TextField'&&n.props.label==='Type A Message').props.onChange({target:{value:'A private voice turn'}});f.render();findButton('Send').props.onClick();await f.flush();await f.flush();};
  const canonical=text=>{detail.messages=[{id:'input',conversationId:'chat',role:'user',text:'A private voice turn',deliveryReceipts:[{targetAgentId:'agent',state:'processed',executionId:'run'}]},{id:'answer',conversationId:'chat',role:'assistant',communicationIntent:'user_dm',authorAgentId:'agent',executionId:'run',text,createdAt:new Date().toISOString()}];observer({isSuccess:true,isFetching:false,isFetchedAfterMount:true,data:detail});f.render();};
  return{...f,dictation,events,sent,spoken,detail,sendTurn,canonical,findButton,timers,closed:()=>closed,inactive:()=>onInactive(),stream:()=>stream,queued:()=>queued};
 }
 for(const product of ['dev','branches'])test(`${product}: opening a call does not capture/send; explicit Start, mute, End and unmount fence local audio`,async()=>{
- const f=callFixture({product});await f.flush();assert.deepEqual(f.sent,[]);assert.equal(f.events.includes('capture'),false);assert.equal(f.findButton('Start call').props.disabled,false);
- f.findButton('Start call').props.onClick();f.render();assert.equal(f.events.filter(e=>e==='capture').length,1);
- f.find(n=>n.type==='Button'&&Array.isArray(n.props.children)===false&&n.props['aria-pressed']===false).props.onClick();f.render();assert.equal(f.dictation.status,'ready');assert.equal(f.sent.length,0);f.findButton('End call').props.onClick();assert.equal(f.closed(),1);f.unmount();assert.equal(f.timers.size,0);assert.equal(f.events.includes('cancel-run'),false);
+ const f=callFixture({product});await f.flush();assert.deepEqual(f.sent,[]);assert.equal(f.events.includes('capture'),false);assert.equal(f.findButton('Start Call').props.disabled,false);
+ f.findButton('Start Call').props.onClick();f.render();assert.equal(f.events.filter(e=>e==='capture').length,1);
+ f.find(n=>n.type==='Button'&&Array.isArray(n.props.children)===false&&n.props['aria-pressed']===false).props.onClick();f.render();assert.equal(f.dictation.status,'ready');assert.equal(f.sent.length,0);f.findButton('End Call').props.onClick();assert.equal(f.closed(),1);f.unmount();assert.equal(f.timers.size,0);assert.equal(f.events.includes('cancel-run'),false);
 });
 test('Chat chooser uses canonical members; fixed Agent owner has no chooser',async()=>{
- const f=callFixture({agents:[agent(),agent('second')],selectedAgentId:'',lockAgent:false});await f.flush();assert.equal(f.findButton('Start call').props.disabled,true);const picker=f.find(n=>n.type==='TextField'&&n.props.label==='Call Agent');picker.props.onChange({target:{value:'second'}});f.render();await f.flush();assert.equal(f.findButton('Start call').props.disabled,false);f.unmount();
+ const f=callFixture({agents:[agent(),agent('second')],selectedAgentId:'',lockAgent:false});await f.flush();assert.equal(f.findButton('Start Call').props.disabled,true);const picker=f.find(n=>n.type==='TextField'&&n.props.label==='Call Agent');picker.props.onChange({target:{value:'second'}});f.render();await f.flush();assert.equal(f.findButton('Start Call').props.disabled,false);f.unmount();
  const locked=callFixture();await locked.flush();assert.equal(locked.all().some(n=>n.props.label==='Call Agent'),false);locked.unmount();
 });
 for(const streaming of [false,true])test(`${streaming?'streamed':'non-streaming canonical'} reply speaks only its exact remaining text once`,async()=>{
@@ -108,25 +108,25 @@ test('background and unmount close observations and ignore late streaming callba
 });
 
 test('changing only a resolved call recipient preserves ordinary dictation but retires the old call',()=>{
- const f=menuFixture();f.dictation.status='listening';f.render();const controller=f.handlers()[2];f.update({voiceContext:{...context,selectedAgentId:'second',agents:[agent(),agent('second')]}});assert.equal(f.handlers()[2]===controller,true);assert.deepEqual(f.calls,[]);f.dictation.status='stopped';f.render();f.open();f.item('Voice call').props.onClick();f.render();assert.equal(f.all().some(n=>n.type===f.VoiceConversation),true);f.update({voiceContext:context});assert.equal(f.all().some(n=>n.type===f.VoiceConversation),false);f.update({voiceContext:{...context,selectedAgentId:'second',agents:[agent(),agent('second')]}});assert.equal(f.all().some(n=>n.type===f.VoiceConversation),false);f.unmount();
+ const f=menuFixture();f.dictation.status='listening';f.render();const controller=f.handlers()[2];f.update({voiceContext:{...context,selectedAgentId:'second',agents:[agent(),agent('second')]}});assert.equal(f.handlers()[2]===controller,true);assert.deepEqual(f.calls,[]);f.dictation.status='stopped';f.render();f.open();f.item('Voice Call').props.onClick();f.render();assert.equal(f.all().some(n=>n.type===f.VoiceConversation),true);f.update({voiceContext:context});assert.equal(f.all().some(n=>n.type===f.VoiceConversation),false);f.update({voiceContext:{...context,selectedAgentId:'second',agents:[agent(),agent('second')]}});assert.equal(f.all().some(n=>n.type===f.VoiceConversation),false);f.unmount();
 });
 
 test('recognition permission failure pauses the call; a foreign canonical Chat never enables capture',async()=>{
- const f=callFixture();await f.flush();f.findButton('Start call').props.onClick();f.render();f.dictation.status='error';f.dictation.error='Microphone permission was denied.';f.render();
+ const f=callFixture();await f.flush();f.findButton('Start Call').props.onClick();f.render();f.dictation.status='error';f.dictation.error='Microphone permission was denied.';f.render();
  const text=node=>Array.isArray(node)?node.map(text).join(''):React.isValidElement(node)?text(node.props.children):typeof node==='string'?node:'';
  const warning=f.find(n=>n.type==='Alert'&&n.props.severity==='warning');
  assert.match(text(warning),/Microphone access denied\. Allow access in browser settings, then reconnect\./);
  assert.match(text(warning),/Some speech may be missing\. Review Transcript before sending\./);
  const details=f.all(warning).find(n=>n.type==='Box'&&n.props.component==='details');assert.ok(details,'Original permission failure remains available in Details');
  assert.equal(f.all(details).find(n=>n.type==='Typography').props.children,f.dictation.error);
- assert.equal(text(f.find(n=>n.props.role==='status')),'Call interrupted');assert.equal(f.findButton('Reconnect call').props.disabled,false);
+ assert.equal(text(f.find(n=>n.props.role==='status')),'Call interrupted');assert.equal(f.findButton('Reconnect Call').props.disabled,false);
  assert.equal(f.events.includes('stop-speech'),true,'Permission failure stops automatic local playback');
  assert.equal(f.sent.length,0);f.unmount();
- const foreign=callFixture();foreign.detail.conversation.id='foreign';await foreign.flush();assert.equal(foreign.findButton('Reconnect call').props.disabled,false);assert.equal(foreign.events.includes('capture'),false);assert.equal(foreign.sent.length,0);foreign.unmount();
+ const foreign=callFixture();foreign.detail.conversation.id='foreign';await foreign.flush();assert.equal(foreign.findButton('Reconnect Call').props.disabled,false);assert.equal(foreign.events.includes('capture'),false);assert.equal(foreign.sent.length,0);foreign.unmount();
 });
 
 test('exiting menu items cannot start dictation or open a call after Escape/close',()=>{
- const f=menuFixture();f.open();f.find(n=>n.type==='Menu').props.onClose();f.render();assert.equal(f.item('Dictation').props.disabled,true);assert.equal(f.item('Voice call').props.disabled,true);f.item('Dictation').props.onClick();f.item('Voice call').props.onClick();f.render();assert.deepEqual(f.calls,[]);assert.equal(f.all().some(n=>n.type===f.VoiceConversation),false);f.unmount();
+ const f=menuFixture();f.open();f.find(n=>n.type==='Menu').props.onClose();f.render();assert.equal(f.item('Dictation').props.disabled,true);assert.equal(f.item('Voice Call').props.disabled,true);f.item('Dictation').props.onClick();f.item('Voice Call').props.onClick();f.render();assert.deepEqual(f.calls,[]);assert.equal(f.all().some(n=>n.type===f.VoiceConversation),false);f.unmount();
 });
 
 const capture=await import('../../apps/web/src/components/speech/captureCoordinator.ts');
@@ -144,27 +144,27 @@ function audioFixture({allowSpeechStop=true,playError}={}){
 }
 test('audio player honestly shows unknown duration without loading the file; native metadata enables seek',()=>{
  const f=audioFixture();assert.equal(f.media().props.hidden,true);assert.equal(f.media().props.preload,'none');assert.equal(f.native.loads,0);assert.equal(f.native.plays,0);
- assert.equal(f.text(f.elapsed()),'0:00 / —:—');assert.match(f.elapsed().props['aria-label'],/duration not yet available/);
- assert.equal(f.find(n=>n.type==='Slider'&&n.props['aria-label']==='Audio position').props.disabled,true);
+ assert.equal(f.text(f.elapsed()),'0:00 / —:—');assert.match(f.elapsed().props['aria-label'],/Duration Not Yet Available/);
+ assert.equal(f.find(n=>n.type==='Slider'&&n.props['aria-label']==='Audio Position').props.disabled,true);
  f.native.duration=125;f.native.currentTime=5;f.media().props.onLoadedMetadata({currentTarget:f.native});f.render();assert.equal(f.text(f.elapsed()),'0:05 / 2:05');
- const seek=f.find(n=>n.type==='Slider'&&n.props['aria-label']==='Audio position');assert.equal(seek.props.disabled,false);assert.equal(seek.props.max,125);assert.equal(seek.props['aria-valuetext'],'0:05 of 2:05');seek.props.onChange({},61);f.render();assert.equal(f.native.currentTime,61);assert.equal(f.text(f.elapsed()),'1:01 / 2:05');f.unmount();
+ const seek=f.find(n=>n.type==='Slider'&&n.props['aria-label']==='Audio Position');assert.equal(seek.props.disabled,false);assert.equal(seek.props.max,125);assert.equal(seek.props['aria-valuetext'],'0:05 of 2:05');seek.props.onChange({},61);f.render();assert.equal(f.native.currentTime,61);assert.equal(f.text(f.elapsed()),'1:01 / 2:05');f.unmount();
 });
 test('audio player uses the real page capture lease and late old pause cannot release a new owner',()=>{
  let priorStopped=0,nextStopped=0;capture.claimPageCapture(()=>priorStopped++);
- const f=audioFixture();f.button('Play audio').props.onClick();f.media().props.onPlay({currentTarget:f.native});f.media().props.onPlaying();f.render();assert.equal(priorStopped,1);assert.equal(f.native.plays,1);assert.equal(f.button('Pause audio').props.sx.width,44);assert.equal(f.button('Pause audio').props.sx.height,44);
+ const f=audioFixture();f.button('Play Audio').props.onClick();f.media().props.onPlay({currentTarget:f.native});f.media().props.onPlaying();f.render();assert.equal(priorStopped,1);assert.equal(f.native.plays,1);assert.equal(f.button('Pause Audio').props.sx.width,44);assert.equal(f.button('Pause Audio').props.sx.height,44);
  capture.claimPageCapture(()=>nextStopped++);assert.equal(f.native.pauses,1);f.media().props.onPause();f.render();capture.abandonPageCapture();assert.equal(nextStopped,1,'old audio pause must not release the newer capture lease');
  f.native.duration=NaN;f.native.currentTime=2.25;f.media().props.onEnded({currentTarget:f.native});f.render();assert.equal(f.text(f.elapsed()),'0:02 / 0:02','a genuinely observed file end can establish its duration');f.unmount();
 });
 test('audio playback options retain volume, mute, speed and exact owned download URL',()=>{
- const f=audioFixture();const trigger={id:'owned-playback-options'};f.button('Playback options').props.onClick({currentTarget:trigger});f.render();
- const popover=f.find(n=>n.type==='Popover');assert.equal(popover.props.open,true);assert.equal(popover.props.PaperProps.role,'dialog');assert.equal(f.button('Playback options').props['aria-controls'],popover.props.PaperProps.id);
- const volume=f.find(n=>n.type==='Slider'&&n.props['aria-label']==='Audio volume');volume.props.onChange({},0.35);f.render();assert.equal(f.native.volume,0.35);assert.equal(f.native.muted,false);
- f.button('Mute audio').props.onClick();f.render();assert.equal(f.native.muted,true);f.button('Unmute audio').props.onClick();f.render();assert.equal(f.native.muted,false);
+ const f=audioFixture();const trigger={id:'owned-playback-options'};f.button('Playback Options').props.onClick({currentTarget:trigger});f.render();
+ const popover=f.find(n=>n.type==='Popover');assert.equal(popover.props.open,true);assert.equal(popover.props.PaperProps.role,'dialog');assert.equal(f.button('Playback Options').props['aria-controls'],popover.props.PaperProps.id);
+ const volume=f.find(n=>n.type==='Slider'&&n.props['aria-label']==='Audio Volume');volume.props.onChange({},0.35);f.render();assert.equal(f.native.volume,0.35);assert.equal(f.native.muted,false);
+ f.button('Mute Audio').props.onClick();f.render();assert.equal(f.native.muted,true);f.button('Unmute Audio').props.onClick();f.render();assert.equal(f.native.muted,false);
  const speed=f.find(n=>n.type==='Button'&&n.props['aria-pressed']!==undefined&&n.props.children[0]===1.5);speed.props.onClick();f.render();assert.equal(f.native.playbackRate,1.5);assert.equal(f.find(n=>n.type==='Button'&&n.props['aria-pressed']===true).props.children[0],1.5);
- const download=f.find(n=>n.type==='Button'&&n.props.children==='Download audio');assert.equal(download.props.href,'/owned/download?owner=one');assert.equal(download.props.download,true);download.props.onClick();f.render();assert.equal(f.find(n=>n.type==='Popover').props.open,false);f.unmount();
+ const download=f.find(n=>n.type==='Button'&&n.props.children==='Download Audio');assert.equal(download.props.href,'/owned/download?owner=one');assert.equal(download.props.download,true);download.props.onClick();f.render();assert.equal(f.find(n=>n.type==='Popover').props.open,false);f.unmount();
 });
 test('audio playback errors keep actual causes and Retry resets metadata without autoplay',async()=>{
- const f=audioFixture({playError:'Browser playback permission denied'});f.button('Play audio').props.onClick();await f.flush();assert.match(f.find(n=>n.type==='Alert').props.children,/Browser playback permission denied/);
+ const f=audioFixture({playError:'Browser playback permission denied'});f.button('Play Audio').props.onClick();await f.flush();assert.match(f.find(n=>n.type==='Alert').props.children,/Browser playback permission denied/);
  const firstKey=f.media().key;f.find(n=>n.type==='Alert').props.action.props.onClick();f.render();assert.notEqual(f.media().key,firstKey);assert.equal(f.all().some(n=>n.type==='Alert'),false);assert.equal(f.native.plays,1,'Retry must not automatically play');assert.equal(f.text(f.elapsed()),'0:00 / —:—');
  f.native.error={message:'Native decoder rejected the stream',code:3};f.media().props.onError();f.render();assert.match(f.find(n=>n.type==='Alert').props.children,/Native decoder rejected the stream/);f.unmount();
 });
@@ -180,7 +180,7 @@ test('audio attachment header keeps the exact filename and protected download UR
  f.mount(f.exports.ChatAttachments,{attachments:[{id:'audio',name,mediaType:'audio/webm',downloadUrl:url}]});
  const player=f.find(n=>n.type===Player);assert.equal(player.props.downloadUrl,url);assert.equal(player.props.src,'/owned/audio?owner=one&download=1&playback=audio#original');
  const title=f.find(n=>n.type==='Typography'&&n.props.title===name);assert.equal(title.props.children,name);assert.equal(title.props.noWrap,true);
- assert.equal(f.all().some(n=>n.type==='Button'&&n.props.children==='Download audio'),false,'download remains one compact player option');f.unmount();
+ assert.equal(f.all().some(n=>n.type==='Button'&&n.props.children==='Download Audio'),false,'download remains one compact player option');f.unmount();
 });
 
 
@@ -190,7 +190,7 @@ function recorderFixture({unavailable=false,attachmentError,recordedBytes='actua
  class Recorder{static isTypeSupported=()=>true;state='inactive';mimeType='audio/webm';constructor(){recorder=this;}start(){this.state='recording';}stop(){this.state='inactive';queueMicrotask(()=>{this.ondataavailable?.({data:new Blob([recordedBytes],{type:'audio/webm'})});this.onstop?.();});}}
  const f=fixture('VoiceMessageRecorder',{'./AudioMessagePlayer':{AudioMessagePlayer:()=>null},'./useDictation':{useDictation:(...args)=>{handlers=args;return recognition;}},'./captureCoordinator':capture,'./speechCoordinator':{stopSpeech:()=>true},'./speechSurfaceAccessibility':{monitorSpeechSurfaceAccessibility:()=>()=>{}},'../../reloadSafety':{useUnsavedForm:()=>{}},'./voiceRecording':{recordingExtension:()=> 'webm',recordingMimeType:()=> 'audio/webm'}},{File,Blob,MediaRecorder:Recorder,queueMicrotask,navigator:{mediaDevices:{getUserMedia}},document:{activeElement:{}},URL:{createObjectURL:()=> 'blob:recording',revokeObjectURL(){}}});
  let closed=0;f.mount(f.exports.VoiceMessageRecorder,{maxBytes:1000,onAttach:(file,transcript)=>{attached.push({file,transcript});return attachmentError;},onClose(){closed++;}});
- const finish=()=>{f.find(n=>n.type==='Button'&&n.props.children==='Finish recording').props.onClick();f.render();};
+ const finish=()=>{f.find(n=>n.type==='Button'&&n.props.children==='Finish Recording').props.onClick();f.render();};
  return{...f,events,attached,recognition,streams,closed:()=>closed,finish,emit(words){handlers[0](words);f.render();},settle(){recognition.status='stopped';handlers[1](false);f.render();},fail(message){recognition.error=message;handlers[1](false);f.render();},recorder:()=>recorder};
 }
 test('recorded voice waits for final speech then stages the real audio with editable transcript, without a Send',async()=>{
@@ -199,13 +199,13 @@ test('recorded voice waits for final speech then stages the real audio with edit
 });
 for(const mode of ['unavailable','failed','empty'])test(`recorded voice ${mode} transcription retains audio for explicit review and text fallback`,async()=>{
  const f=recorderFixture({unavailable:mode==='unavailable'});await f.flush();f.finish();await f.flush();if(mode==='failed')f.fail('The browser speech service could not connect.');else if(mode==='empty')f.settle();
- assert.equal(f.attached.length,0);assert.equal(f.closed(),0);assert.equal(f.all().some(n=>n.type==='Alert'),true,'failure/no-speech must be visible');const use=f.find(n=>n.type==='Button'&&n.props.children==='Use recording');assert.equal(Boolean(use.props.disabled),false);use.props.onClick();assert.equal(f.attached.length,1);assert.equal(f.attached[0].transcript,undefined);f.unmount();
+ assert.equal(f.attached.length,0);assert.equal(f.closed(),0);assert.equal(f.all().some(n=>n.type==='Alert'),true,'failure/no-speech must be visible');const use=f.find(n=>n.type==='Button'&&n.props.children==='Use Recording');assert.equal(Boolean(use.props.disabled),false);use.props.onClick();assert.equal(f.attached.length,1);assert.equal(f.attached[0].transcript,undefined);f.unmount();
 });
 test('recorded transcript staging refusal preserves the words and original audio for retry',async()=>{
  const f=recorderFixture({attachmentError:'Draft is busy'});await f.flush();f.emit('Keep these exact words');f.finish();await f.flush();f.settle();assert.equal(f.closed(),0);assert.equal(f.attached.length,1);assert.equal(f.attached[0].transcript,'Keep these exact words');assert(f.all().some(n=>n.type==='Alert'&&n.props.children==='Draft is busy'));f.unmount();
 });
 test('toolbar inserts a recorded transcript only after the same owned attachment is admitted',()=>{
- let reject=true;const files=[],f=menuFixture({onVoiceAttachment:file=>{files.push(file);return reject?'Draft busy':undefined;}});f.find(n=>n.props['aria-label']==='Record voice message').props.onClick();f.render();const recorder=f.find(n=>n.type===f.VoiceMessageRecorder);
+ let reject=true;const files=[],f=menuFixture({onVoiceAttachment:file=>{files.push(file);return reject?'Draft busy':undefined;}});f.find(n=>n.props['aria-label']==='Record Voice Message').props.onClick();f.render();const recorder=f.find(n=>n.type===f.VoiceMessageRecorder);
  assert.equal(recorder.props.onAttach('recording','Spoken instruction'),'Draft busy');assert.deepEqual(f.calls,[]);reject=false;assert.equal(recorder.props.onAttach('recording','Spoken instruction'),undefined);assert.deepEqual(f.calls,[['words','Spoken instruction']]);f.unmount();
 });
 
@@ -221,10 +221,10 @@ test('discard abandons pending recognition and never stages its retained audio',
 });
 
 test('re-record during finalization cannot replace the admitted stream or leave an old capture live',async()=>{
- const f=recorderFixture();await f.flush();f.finish();await f.flush();const again=f.find(n=>n.type==='Button'&&n.props.children==='Record again');assert.equal(again.props.disabled,true,'wait for final recognition before replacing recording');again.props.onClick();await f.flush();assert.equal(f.streams.length,1,'the callback itself must fence disabled re-record');assert.equal(f.streams[0].getAudioTracks()[0].readyState,'live');f.settle();assert.equal(f.streams[0].getAudioTracks()[0].readyState,'ended');f.unmount();
+ const f=recorderFixture();await f.flush();f.finish();await f.flush();const again=f.find(n=>n.type==='Button'&&n.props.children==='Record Again');assert.equal(again.props.disabled,true,'wait for final recognition before replacing recording');again.props.onClick();await f.flush();assert.equal(f.streams.length,1,'the callback itself must fence disabled re-record');assert.equal(f.streams[0].getAudioTracks()[0].readyState,'live');f.settle();assert.equal(f.streams[0].getAudioTracks()[0].readyState,'ended');f.unmount();
 });
 test('explicit re-record retires the prior capture before admitting a fresh live stream',async()=>{
- const f=recorderFixture({unavailable:true});await f.flush();f.finish();await f.flush();assert.equal(f.streams[0].getAudioTracks()[0].readyState,'ended');f.find(n=>n.type==='Button'&&n.props.children==='Record again').props.onClick();await f.flush();assert.equal(f.streams.length,2);assert.equal(f.streams[1].getAudioTracks()[0].readyState,'live','old lease release must not stop the replacement');f.unmount();assert.equal(f.streams[1].getAudioTracks()[0].readyState,'ended');
+ const f=recorderFixture({unavailable:true});await f.flush();f.finish();await f.flush();assert.equal(f.streams[0].getAudioTracks()[0].readyState,'ended');f.find(n=>n.type==='Button'&&n.props.children==='Record Again').props.onClick();await f.flush();assert.equal(f.streams.length,2);assert.equal(f.streams[1].getAudioTracks()[0].readyState,'live','old lease release must not stop the replacement');f.unmount();assert.equal(f.streams[1].getAudioTracks()[0].readyState,'ended');
 });
 
 
@@ -243,7 +243,7 @@ test('contact header reuses the guarded call action, hides its menu duplicate, a
  let focuses=0;const handset={isConnected:true,focus(){focuses++;f.doc.activeElement=handset;}};
  const button=f.find(n=>n.type==='IconButton'&&n.props['aria-label']==='Call');
  assert.equal(button.props.sx.width,44);assert.equal(button.props.disabled,false);
- f.open();assert.equal(f.all().some(n=>n.type==='MenuItem'&&f.all(n).some(child=>child.props.primary==='Voice call')),false);
+ f.open();assert.equal(f.all().some(n=>n.type==='MenuItem'&&f.all(n).some(child=>child.props.primary==='Voice Call')),false);
  button.props.onClick({currentTarget:handset});f.render();const call=f.find(n=>n.type===f.VoiceConversation);
  assert.equal(call.props.startOnOpen,true);assert.equal(call.props.selectedAgentId,'agent');
  f.doc.activeElement={isConnected:true,closest:()=>({})};call.props.onClose();f.doc.activeElement=f.doc.body;f.render();assert.equal(focuses,1,'End returns focus to the real header handset');
@@ -254,6 +254,6 @@ test('contact header reuses the guarded call action, hides its menu duplicate, a
 test('header handset cannot open while native capture or recording is active, or from a foreign owner',()=>{
  const f=menuFixture({onVoiceAttachment:()=>undefined},{nodeType:1});const open=()=>f.find(n=>n.type==='IconButton'&&n.props['aria-label']==='Call');
  f.dictation.status='starting';f.render();assert.equal(open().props.disabled,true);open().props.onClick({currentTarget:{}});f.render();assert.equal(f.all().some(n=>n.type===f.VoiceConversation),false);
- f.dictation.status='ready';f.render();f.find(n=>n.props['aria-label']==='Record voice message').props.onClick();f.render();assert.equal(open().props.disabled,true);
+ f.dictation.status='ready';f.render();f.find(n=>n.props['aria-label']==='Record Voice Message').props.onClick();f.render();assert.equal(open().props.disabled,true);
  f.find(n=>n.type===f.VoiceMessageRecorder).props.onClose();f.render();f.update({voiceContext:{...context,selectedAgentId:'foreign'}});assert.equal(open().props.disabled,true);f.unmount();
 });

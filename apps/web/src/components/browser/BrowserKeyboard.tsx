@@ -24,7 +24,7 @@ export function BrowserKeyboard({ disabled, onText, onKey, portalTarget }: { dis
   };
   const control = <>
     <Tooltip title="Keyboard"><span><IconButton size="small" aria-label="Keyboard" disabled={disabled} onClick={() => { clear(); input.current?.focus({ preventScroll: true }); input.current?.setSelectionRange(1, 1); }}><KeyboardIcon fontSize="small" /></IconButton></span></Tooltip>
-    <Box component="textarea" ref={input} aria-label="Browser mobile keyboard" defaultValue={"\u200b"} disabled={disabled}
+    <Box component="textarea" ref={input} aria-label="Browser Mobile Keyboard" defaultValue={"\u200b"} disabled={disabled}
       autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false}
       onCompositionStart={() => { composing.current = true; }}
       onCompositionEnd={event => { composing.current = false; flush(event.currentTarget); }}

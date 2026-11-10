@@ -59,7 +59,7 @@ export function AgentDetailComposer({
         </Alert>
       ) : null}
       {queuedRead&&<WorkspaceQueryError read={queuedRead}/>}
-      {queuedMessageFailure&&<details><summary>Queue action needs attention</summary>{queuedMessageFailure.error.message}<Button onClick={queuedMessageFailure.retry}>Retry action</Button></details>}
+      {queuedMessageFailure&&<details><summary>Queue Action Needs Attention</summary>{queuedMessageFailure.error.message}<Button onClick={queuedMessageFailure.retry}>Retry Action</Button></details>}
       {providerUsageState ? (
         <AgentProviderUsageCard
           agentId={agentId}

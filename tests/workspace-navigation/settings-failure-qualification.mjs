@@ -63,7 +63,7 @@ try{
    row.checks.push('Immediate save shows exact error once; successful retry clears it');
    await page.goto(product==='core'?fixture.normalUrl:fixture.url);
    await page.getByLabel('Message',{exact:true}).waitFor();await page.getByRole('button',{name:'Chat settings and actions',exact:true}).click();await page.getByRole('menuitem',{name:'Rename',exact:true}).click();
-   const name=page.getByLabel('Chat name',{exact:true});await name.waitFor();const title=`${product}-${theme} retry title`;await name.fill(title);
+   const name=page.getByLabel('Chat Name',{exact:true});await name.waitFor();const title=`${product}-${theme} retry title`;await name.fill(title);
    let failures=0;const fault='**/api/**/conversations/*';await page.route(fault,async route=>{if(route.request().method()==='PATCH'&&route.request().postDataJSON()?.title){failures++;await route.fulfill({status:503,contentType:'application/json',body:JSON.stringify({error:'Qualification rename outage'})});}else await route.continue();});
    await name.press('Enter');await page.getByRole('alert').filter({hasText:'Qualification rename outage'}).waitFor();assert.equal(failures,1);assert.equal(await name.inputValue(),title);row.checks.push('Rename Enter failure is visible and preserves exact draft');
    await page.screenshot({path:path.join(output,`${product}-${theme}-rename-failure.png`)});

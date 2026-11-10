@@ -95,15 +95,15 @@ export function AddAgentsFlow({
       <DialogContent>
         <Stack spacing={1.5} sx={{ pt: 1 }}>
           <Button variant="outlined" startIcon={<AddIcon />} onClick={() => { onClose(); onCreate(); }}>
-            Create new Agent
+            Create New Agent
           </Button>
           <Button variant="outlined" startIcon={<ContentCopyOutlinedIcon />} disabled={!fixedProjectId && !projects.length}
             onClick={() => setStep("pick-source")}>
-            Duplicate existing Agent
+            Duplicate Existing Agent
           </Button>
           <Button variant="outlined" startIcon={<FileUploadOutlinedIcon />} disabled={!fixedProjectId && !projects.length}
             onClick={() => setStep("import")}>
-            Import Agent package
+            Import Agent Package
           </Button>
           <Typography variant="body2" color="text.secondary">
             Duplicate an Agent or import a JSON package.
@@ -125,12 +125,12 @@ export function AddAgentsFlow({
     />
 
     <Dialog open={open && step === "pick-source"} onClose={() => setStep("choose")} fullWidth maxWidth="sm">
-      <DialogTitle>Duplicate existing Agent</DialogTitle>
+      <DialogTitle>Duplicate Existing Agent</DialogTitle>
       <DialogContent>
         <Stack spacing={2} sx={{ pt: 1 }}>
           {sourceProjects.length > 0 ? <FormControl fullWidth size="small">
-            <InputLabel id="duplicate-source-project-label">Source workspace</InputLabel>
-            <Select labelId="duplicate-source-project-label" label="Source workspace" value={selectedProjectId}
+            <InputLabel id="duplicate-source-project-label">Source Workspace</InputLabel>
+            <Select labelId="duplicate-source-project-label" label="Source Workspace" value={selectedProjectId}
               onChange={event => { setSelectedProjectId(event.target.value); setSourceId(""); }}>
               {sourceProjects.map(project => <MenuItem key={project.id} value={project.id}>{project.label}</MenuItem>)}
             </Select>

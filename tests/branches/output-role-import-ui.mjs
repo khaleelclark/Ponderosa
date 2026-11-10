@@ -45,15 +45,15 @@ try{
  await page.goto(origin+`/branches?branch=${destination.id}&tab=chats&chat=${chat.id}`);
  await page.getByRole('button',{name:'Chat settings and actions',exact:true}).click();
  await page.getByRole('menuitem',{name:'Add Agents…',exact:true}).click();
- await page.getByRole('button',{name:'Import Agent package',exact:true}).click();
- const dialog=page.getByRole('dialog',{name:'Import Agent package',exact:true});await dialog.waitFor();
+ await page.getByRole('button',{name:'Import Agent Package',exact:true}).click();
+ const dialog=page.getByRole('dialog',{name:'Import Agent Package',exact:true});await dialog.waitFor();
  await dialog.locator('input[type="file"]').setInputFiles({name:'organization.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(organization))});
- await dialog.getByRole('button',{name:'Review output roles',exact:true}).waitFor();
+ await dialog.getByRole('button',{name:'Review Output Roles',exact:true}).waitFor();
  // One available engine may still need explicit human mapping in the existing import form.
  const selects=dialog.getByRole('combobox');
  for(let i=0;i<await selects.count();i++){const select=selects.nth(i);const label=await select.getAttribute('aria-labelledby');if(label?.includes('engine')){await select.click();await page.getByRole('option',{name:/Controlled regression adapter/}).click();}}
- await dialog.getByRole('button',{name:'Review output roles',exact:true}).click();
- await dialog.getByText('You already have a Ponderosa speaker. The imported speaker will be disabled.',{exact:true}).waitFor();
+ await dialog.getByRole('button',{name:'Review Output Roles',exact:true}).click();
+ await dialog.getByText('You already have a Ponderosa Speaker. The imported speaker will be disabled.',{exact:true}).waitFor();
  await page.screenshot({path:path.join(out,'organization-collision.png'),fullPage:true});
  const operationResponse=page.waitForResponse(r=>r.url().endsWith('/agent-import-operations')&&r.request().method()==='POST'&&r.status()===202);
  await dialog.getByRole('button',{name:'Import',exact:true}).click();
@@ -62,13 +62,13 @@ try{
  assert.equal(imported.agentIds.length,2);for(const id of imported.agentIds)assert.equal(f.ok(await f.api('GET',`/api/branches/output-apps/${id}`)).speaker,false);
  assert.equal(f.ok(await f.api('GET','/api/branches/assistant')).app.agentId,speaker.app.agentId);
  await page.goto(origin+'/branches');
- const chooserPromise=page.waitForEvent('filechooser');await page.getByRole('button',{name:'Import workflow',exact:true}).first().click();
+ const chooserPromise=page.waitForEvent('filechooser');await page.getByRole('button',{name:'Import Workflow',exact:true}).first().click();
  await (await chooserPromise).setFiles({name:'workflow.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(workflow))});
- const branchDialog=page.getByRole('dialog',{name:'Import as a new Branch',exact:true});await branchDialog.waitFor();
- await branchDialog.getByLabel('Default working directory',{exact:true}).fill(f.root);
+ const branchDialog=page.getByRole('dialog',{name:'Import As A New Branch',exact:true});await branchDialog.waitFor();
+ await branchDialog.getByLabel('Default Working Directory',{exact:true}).fill(f.root);
  await branchDialog.getByLabel('Engine: codex',{exact:true}).click();await page.getByRole('option',{name:'codex',exact:true}).click();
- await branchDialog.getByRole('button',{name:'Review changes',exact:true}).click();
- await branchDialog.getByText('You already have a Ponderosa speaker. The imported speaker will be disabled.',{exact:true}).waitFor();
+ await branchDialog.getByRole('button',{name:'Review Changes',exact:true}).click();
+ await branchDialog.getByText('You already have a Ponderosa Speaker. The imported speaker will be disabled.',{exact:true}).waitFor();
  await page.screenshot({path:path.join(out,'branch-collision.png'),fullPage:true});
  const confirmed=page.waitForResponse(r=>r.url().endsWith('/confirm')&&r.request().method()==='POST'&&r.status()===200);
  await branchDialog.getByRole('button',{name:'Confirm import',exact:true}).click();

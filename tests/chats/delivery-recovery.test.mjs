@@ -52,12 +52,12 @@ function status(extra, api = {}) {
   return () => [...walk(h.render(() => module.MessageDeliveryStatus({ projectId: 'project', receipts: [receipt(extra)], recipientName: () => 'Reader' })))];
 }
 for (const [extra, expected, compact] of [
-  [{ state: 'unconfirmed', taskDecisionRepairHold: true }, /could not verify the Decision status for Reader.s work/u, 'Task check held'],
-  [{ state: 'run_unconfirmed', providerAcknowledged: true }, /lost contact before confirming whether the work finished/u, 'Work unconfirmed'],
-  [{ state: 'retry_exhausted', providerAcknowledged: true }, /after 6 attempts; automatic recovery stopped/u, 'Reply exhausted'],
+  [{ state: 'unconfirmed', taskDecisionRepairHold: true }, /could not verify the Decision status for Reader.s work/u, 'Task Check Held'],
+  [{ state: 'run_unconfirmed', providerAcknowledged: true }, /lost contact before confirming whether the work finished/u, 'Work Unconfirmed'],
+  [{ state: 'retry_exhausted', providerAcknowledged: true }, /after 6 attempts; automatic recovery stopped/u, 'Reply Exhausted'],
   [{ state: 'cancelled', providerAcknowledged: false }, /cancelled/u, 'Cancelled'],
   [{ state: 'cancelled', providerAcknowledged: true, runStopState: 'stopping' }, /termination has not been confirmed/u, 'Delivered · Stopping'],
-  [{ state: 'cancelled', providerAcknowledged: true, runStopState: 'unconfirmed' }, /whether its work stopped is unconfirmed/u, 'Delivered · Stop unconfirmed'],
+  [{ state: 'cancelled', providerAcknowledged: true, runStopState: 'unconfirmed' }, /whether its work stopped is unconfirmed/u, 'Delivered · Stop Unconfirmed'],
 ]) test(`Q01 actual delivery view distinguishes ${compact}`, () => {
   const nodes = status(extra)(), announcement = nodes.find(node => node.props.role === 'status');
   assert.equal(announcement.props['aria-live'], 'polite'); assert.match(text(announcement), expected);
@@ -71,7 +71,7 @@ test('a Decision-accounting hold and context-refresh hold are both disclosed', (
 test('Decision-accounting hold does not expose a steering recovery action', () => {
  const nodes=status({state:'unconfirmed',taskDecisionRepairHold:true,injectionKind:'steer',injectionId:'old-injection',canRetry:true,canLetCurrentRunFinish:true})();
  assert.ok(nodes.some(node=>node.props.role==='status'&&text(node).includes('could not verify')));
- assert.ok(!nodes.some(node=>node.type===mui.Button&&['Review interrupted work','Try Work Again','Try Delivery Again','Let Current Run Finish'].includes(text(node))));
+ assert.ok(!nodes.some(node=>node.type===mui.Button&&['Review Interrupted Work','Try Work Again','Try Delivery Again','Let Current Run Finish'].includes(text(node))));
 });
 test('Q01 uncertain-work retry requires explicit confirmation and retains its identity after a lost response', async () => {
   const calls = []; let fail = true;
@@ -176,7 +176,7 @@ test('UI004 routine phases require this exact acknowledged turn, preserving term
   for (const state of ['processed', 'cancelled', 'run_unconfirmed', 'recovered', 'failed', 'unconfirmed']) assert.equal(messageDeliveryPhase({ ...acknowledged, state }), undefined);
 });
 test('UI013 an exact steering wait reason stays visible ahead of generic Waiting', () => {
-  for (const [reason, label] of Object.entries({ context_refresh: 'Waiting for context refresh', prior_steering: 'Waiting for earlier steer', revision_pending: 'Saving message edit', provider_not_ready: 'Waiting for provider', provider_unsupported: 'Provider cannot steer', preparation_retry: 'Retrying steer preparation', run_starting: 'Waiting for Run startup', scheduler_pending: 'Steer pending' })) {
+  for (const [reason, label] of Object.entries({ context_refresh: 'Waiting For Context Refresh', prior_steering: 'Waiting For Earlier Steer', revision_pending: 'Saving Message Edit', provider_not_ready: 'Waiting For Provider', provider_unsupported: 'Provider Cannot Steer', preparation_retry: 'Retrying Steer Preparation', run_starting: 'Waiting For Run Startup', scheduler_pending: 'Steer Pending' })) {
     for (const state of ['queued', 'retrying']) {
       const nodes = status({ state, steeringWaitReason: reason })();
       assert.ok(nodes.some(node => node.type === mui.Typography && text(node) === label), `${state}: ${reason}`);
@@ -184,7 +184,7 @@ test('UI013 an exact steering wait reason stays visible ahead of generic Waiting
   }
 });
 test('UI013 current queue blockers explain Waiting without borrowing another turn acknowledgement', () => {
-  for (const [reason, label] of Object.entries({ host_resource_pressure: 'Waiting for host resources', provider_disabled: 'Provider disabled', authentication_unknown: 'Checking provider sign-in', authentication_required: 'Provider sign-in required', provider_unavailable: 'Waiting for provider', provider_retry: 'Waiting to retry provider', current_run: 'Waiting for current Run' })) {
+  for (const [reason, label] of Object.entries({ host_resource_pressure: 'Waiting For Host Resources', provider_disabled: 'Provider Disabled', authentication_unknown: 'Checking Provider Sign-In', authentication_required: 'Provider Sign-In Required', provider_unavailable: 'Waiting For Provider', provider_retry: 'Waiting To Retry Provider', current_run: 'Waiting For Current Run' })) {
     const nodes = status({ state: 'queued', queueWaitReason: reason })();
     assert.ok(nodes.some(node => node.type === mui.Typography && text(node) === label), reason);
     assert.ok(!nodes.some(node => node.type === mui.Typography && text(node) === 'Working'));
@@ -373,7 +373,7 @@ test('settings handoff receipt exposes retry only for a provably unstarted hold'
     {retryMessageDelivery:async (...args)=>calls.push(args)});
   const nodes=render(),announcement=nodes.find(node=>node.props.role==='status');
   assert.match(text(announcement),/original message remains queued/u);
-  assert.ok(nodes.some(node=>node.type===mui.Typography&&text(node)==='Context handoff held'));
+  assert.ok(nodes.some(node=>node.type===mui.Typography&&text(node)==='Context Handoff Held'));
   const retry=nodes.find(node=>node.type===mui.Button&&text(node)==='Try Delivery Again');
   assert.ok(retry);retry.props.onClick();
   await new Promise(resolve=>setImmediate(resolve));
@@ -383,8 +383,8 @@ test('settings handoff receipt exposes retry only for a provably unstarted hold'
   assert.ok(!nodes.some(node=>node.type===mui.Button&&text(node)==='Cancel Delivery'));
   const both=status({state:'unconfirmed',settingsTransitionHold:'review_required',taskDecisionRepairHold:true,canRetry:true})();
   assert.match(text(both.find(node=>node.props.role==='status')),/Decision status.*Context refresh also could not safely continue/u);
-  assert.ok(!both.some(node=>node.type===mui.Button&&/Try Delivery Again|Review interrupted work|Cancel Delivery/u.test(text(node))));
+  assert.ok(!both.some(node=>node.type===mui.Button&&/Try Delivery Again|Review Interrupted Work|Cancel Delivery/u.test(text(node))));
   const uncertain=status({state:'unconfirmed',settingsTransitionHold:'review_required',canRetry:true})();
   assert.match(text(uncertain.find(node=>node.props.role==='status')),/review the Agent’s activity/u);
-  assert.ok(!uncertain.some(node=>node.type===mui.Button&&/Try Delivery Again|Review interrupted work|Cancel Delivery/u.test(text(node))));
+  assert.ok(!uncertain.some(node=>node.type===mui.Button&&/Try Delivery Again|Review Interrupted Work|Cancel Delivery/u.test(text(node))));
 });

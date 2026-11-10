@@ -19,7 +19,7 @@ test('Branch deletion status exposes the saved cleanup cause without implying co
 test('Branch package status distinguishes an actual retry, a held error, and stopping',()=>{
  const render=update=>renderToStaticMarkup(React.createElement(BranchInstallationUpdateStatus,{update,onCancelUpdate(){}}));
  const scheduled=render({id:'p',state:'applying',retry:'scheduled',error:'temporary provider failure'});
- assert.match(scheduled,/Package update retry scheduled/);assert.match(scheduled,/temporary provider failure/);assert.match(scheduled,/Stop update/);
+ assert.match(scheduled,/Package update retry scheduled/);assert.match(scheduled,/temporary provider failure/);assert.match(scheduled,/Stop Update/);
  const held=render({id:'p',state:'applying',retry:'held',error:'review the uncertain result'});
  assert.match(held,/Package update is held/);assert.match(held,/review the uncertain result/);assert.doesNotMatch(held,/retry scheduled/);
  const waiting=render({id:'p',state:'applying',retry:'held',notice:'Choose a working folder to continue.'});
@@ -29,7 +29,7 @@ test('Branch package status distinguishes an actual retry, a held error, and sto
   assert.match(withError,/saved diagnostic/);assert.ok(withError.includes(notice),'Required next action remains visible alongside the saved error');assert.doesNotMatch(withError,/retry scheduled/);
  }
  const canceling=render({id:'p',state:'canceling',retry:'none',error:'cleanup unavailable'});
- assert.match(canceling,/Stopping package update/);assert.match(canceling,/cleanup unavailable/);assert.doesNotMatch(canceling,/Stop update|retry scheduled|is applying/);
+ assert.match(canceling,/Stopping package update/);assert.match(canceling,/cleanup unavailable/);assert.doesNotMatch(canceling,/Stop Update|retry scheduled|is applying/);
  const ordinary=render({id:'p',state:'applying',retry:'none'});
  assert.match(ordinary,/Package update is applying/);assert.doesNotMatch(ordinary,/will retry|is held/);
 });
@@ -47,8 +47,8 @@ test('Branch header reuses ordered shared icon tabs and unpublished status witho
 
 test('selected nested Chat retains the owning Branch identity and guarded actions',()=>{
  const html=renderBranchHeader({name:'Owning workflow',tab:'chats',published:true,dirty:false,onTab(){},onExport(){},onUpdate(){}});
- assert.ok(html.includes('aria-label="Branch views"'),'Branch navigation remains reachable');assert.ok(/aria-selected="true"[^>]*>.*ChatBubbleOutline/.test(html),'Chats is the selected shared icon tab');
- for(const label of ['Owning workflow','Branch actions'])assert.ok(html.includes(label),'Branch owner remains visible beside its nested Chat');
+ assert.ok(html.includes('aria-label="Branch Views"'),'Branch navigation remains reachable');assert.ok(/aria-selected="true"[^>]*>.*ChatBubbleOutline/.test(html),'Chats is the selected shared icon tab');
+ for(const label of ['Owning workflow','Branch Actions'])assert.ok(html.includes(label),'Branch owner remains visible beside its nested Chat');
  assert.equal((html.match(/role="tablist"/g)??[]).length,1,'One Branch navigation owner');
 });
 const {WorkspacePreferencesWriter}=await import('../../apps/web/src/workspacePreferencesWriter.ts');
@@ -151,7 +151,7 @@ test('an empty Agent search reports no matches without falsely claiming the Chat
  const props={agents:[],engines:[],conversations:[],projectId:'project',scopeConversationId:'chat',statusByAgentId:new Map(),healthByAgentId:new Map(),onOpenAgent(){},onNewAgent(){},searchValue:'missing',onSearchValueChange(){}};
  try{
   const html=renderToStaticMarkup(React.createElement(QueryClientProvider,{client},React.createElement(MutationNotificationProvider,null,React.createElement(AgentsTab,props))));
-  assert.match(html,/No Agents match these filters/);assert.doesNotMatch(html,/No Agents Yet|Create an Agent to get started/);
+  assert.match(html,/No Agents Match These Filters/);assert.doesNotMatch(html,/No Agents Yet|Create an Agent to get started/);
  }finally{client.clear();}
 });
 
@@ -190,8 +190,8 @@ test('the shared browser panel only offers new tabs when its session supports th
   const session={id:'session',projectId:'p',status:'ready',controlOwner:'operator',controlEpoch:1,pages:[{id:'one',url:'about:blank',title:'Existing tab',active:true,closable:false}],activePageId:'one',capabilities:{multiPage:false,fileUpload:false},location:'hosted'};
   const key=projectBrowserAdapter(chatBrowserOwnerId('c')).queryKey;
   const render=multiPage=>{client.setQueryData(key,{...session,capabilities:{...session.capabilities,multiPage}});return renderToStaticMarkup(React.createElement(QueryClientProvider,{client},React.createElement(ProjectBrowserDialog,{projectId:'p',conversationId:'c',open:true,embedded:true,onClose(){}})));};
-  assert.match(render(true),/aria-label="New browser tab"/);
-  assert.doesNotMatch(render(false),/aria-label="New browser tab"/);
+  assert.match(render(true),/aria-label="New Browser Tab"/);
+  assert.doesNotMatch(render(false),/aria-label="New Browser Tab"/);
  }finally{client.clear();globalThis.window=previousWindow;}
 });
 
@@ -212,7 +212,7 @@ test('shared Settings entry is one direct accessible button in desktop and drawe
  const {SidebarOperatorFooter}=await import('../../apps/web/src/components/WorkspaceSidebar.chrome.tsx');
  for(const drawer of [false,true]){
   const html=renderToStaticMarkup(React.createElement(SidebarOperatorFooter,{profile:{displayName:'Multiword Operator',handle:'operator'},drawer,onSettings(){}}));
-  assert.equal((html.match(/aria-label="Multiword Operator #operator. Open settings"/g)??[]).length,1);
+  assert.equal((html.match(/aria-label="Multiword Operator #operator. Open Settings"/g)??[]).length,1);
   assert.match(html,/Multiword Operator/);assert.match(html,/#operator/);
   assert.doesNotMatch(html,/aria-haspopup|aria-expanded|Open operator menu/);
  }
@@ -291,15 +291,15 @@ test('both products share ordered accessible sidebar controls and preserve norma
   const render=element=>renderToStaticMarkup(React.createElement(QueryClientProvider,{client},React.createElement(ThemeProvider,{theme:createPonderosaTheme(mode)},element)));
   const normal=render(React.createElement(ProjectRail,{drawer,route:{kind:'home'},profile,sections:{onSelect:noop},attentionNotifications:7,unreadNotificationUpdates:0,onOpenHome:noop,onOpenInbox:noop,onManageSection:noop,onOpenSearch:noop,onOpenNotifications:noop,onOpenSettings:noop,onCollapse:noop,onClose:noop}));
   const branches=render(React.createElement(BranchesSidebar,{drawer,panel:null,notifications:React.createElement('button',{'aria-label':'Branches notifications, 7 unread'}),onHome:noop,onAssistant:noop,onSearch:noop,onGlobal:noop,onDismiss:noop,onCollapsedChange:noop}));
-  for(const [html,home,search,bell]of [[normal,'Ponderosa home','Search','Notifications, 7 unread'],[branches,'Ponderosa home','Search Branch Chats','Branches notifications, 7 unread']]){
-   const end=drawer?'Close workspace navigation':'Collapse sidebar';
+  for(const [html,home,search,bell]of [[normal,'Ponderosa Home','Search','Notifications, 7 Unread'],[branches,'Ponderosa Home','Search Branch Chats','Branches notifications, 7 unread']]){
+   const end=drawer?'Close Workspace Navigation':'Collapse Sidebar';
    const labels=[home,search,bell,end].map(label=>html.indexOf('aria-label="'+label+'"'));
    assert.ok(labels.every(i=>i>=0));assert.deepEqual([...labels].sort((a,b)=>a-b),labels);
    assert.match(html,/width:32px;height:32px/);
    assert.match(html,drawer?/data-testid="CloseIcon"/:/data-testid="MenuIcon"/);
    assert.doesNotMatch(html,/data-testid="ChevronLeftIcon"/);
   }
-  assert.match(normal,/aria-label="Ponderosa home" aria-current="page"/);
+  assert.match(normal,/aria-label="Ponderosa Home" aria-current="page"/);
   assert.ok(normal.includes('aria-label="Inbox"'));
  }
 });
@@ -312,18 +312,18 @@ test('workflow Settings sections load without parameter configuration and keep l
  client.setQueryData(['branch-dependencies',branch.id],{calls:[],callers:[{id:'billing-workflow',ref:'reports-alias'}]});
  client.setQueryData(['capability-policy',`/api/branches/${branch.id}/capabilities`],{policy:{scopeId:branch.id,revision:0,restrictedCapabilityIds:[]},effective:{restrictionSources:{}},catalog:[]});
  const render=(extra={})=>renderToStaticMarkup(React.createElement(QueryClientProvider,{client},React.createElement(MutationNotificationProvider,null,React.createElement(BranchSettings,{branch,definition,...extra}))));
- const html=render(),labels=['Branch capabilities','Dependencies','Delete workflow'];
+ const html=render(),labels=['Branch Capabilities','Dependencies','Delete Workflow'];
  assert.ok(labels.every(label=>html.includes(label)),'All workflow Settings sections must render while configuration is unavailable');
  assert.ok(labels.every((label,index)=>!index||html.indexOf(label)>html.indexOf(labels[index-1])),'Settings section order must remain capabilities, dependencies, delete');
- assert.ok(!html.includes('Workflow settings sections'),'No nested Settings navigation');assert.ok(html.indexOf('Loading configuration')>html.indexOf('Advanced local execution limits')&&html.indexOf('Loading configuration')<html.indexOf('Branch capabilities'),'Local limits load independently inside Execution Controls without gating the other sections');
+ assert.ok(!html.includes('Workflow settings sections'),'No nested Settings navigation');assert.ok(html.indexOf('Loading configuration')>html.indexOf('Advanced local execution limits')&&html.indexOf('Loading configuration')<html.indexOf('Branch Capabilities'),'Local limits load independently inside Execution Controls without gating the other sections');
  assert.ok(client.getQueryCache().find({queryKey:['branch-settings',branch.id]}),'The sole configuration editor stays mounted without blocking other Settings sections');
  client.setQueryData(['branch-lifecycle-summary',branch.id],{deleting:false,activeExecutions:0,chats:0,callers:[{id:'billing-workflow',name:'Billing workflow'}],updates:[],pendingRemoval:[]});
  const named=render();assert.ok(named.includes('Billing workflow')&&!named.includes('reports-alias'),'Called by must show the calling workflow name, never its alias for this target');
  const lifecycle=client.getQueryCache().find({queryKey:['branch-lifecycle-summary',branch.id]});lifecycle.setState({status:'error',error:new Error('Controlled lifecycle failure'),fetchStatus:'idle'});
  const failed=render();assert.ok(failed.includes('Controlled lifecycle failure'),'Unknown lifecycle must not allow deletion');
- assert.ok(/<button[^>]*disabled=""[^>]*>Delete workflow/.test(failed),'Deletion remains disabled after failed lifecycle loading');
+ assert.ok(/<button[^>]*disabled=""[^>]*>Delete Workflow/.test(failed),'Deletion remains disabled after failed lifecycle loading');
  assert.ok(render({definition:{parameters:{note:{type:'text'}}}}).includes('Loading configuration'),'Published variables retain their independent configuration load');
- assert.ok(!html.includes('Workflow variables')&&!html.includes('Save variables'),'Zero variables creates no empty form or Save action');
+ assert.ok(!html.includes('Workflow Variables')&&!html.includes('Save Variables'),'Zero variables creates no empty form or Save action');
 });
 
 test('shared Provider Activity offers bounded workflow pages only in the Branches opt-in view',async t=>{
@@ -332,8 +332,8 @@ test('shared Provider Activity offers bounded workflow pages only in the Branche
  const client=new QueryClient({defaultOptions:{queries:{retry:false,retryOnMount:false,gcTime:Infinity}}});t.after(()=>client.clear());
  const key=['branches','activity',''];client.setQueryData(key,{pages:[{items:[{id:'off-sidebar',name:'A workflow outside the sidebar'}],hasMore:true,cursor:'next-workflows'}],pageParams:[undefined]});
  const render=workflows=>renderToStaticMarkup(React.createElement(QueryClientProvider,{client},React.createElement(ProviderActivitySettingsSection,{projects:[],workflows})));
- const ordinary=render(false);assert.ok(!ordinary.includes('Load more workflows')&&!ordinary.includes('All Branches'),'Normal Ponderosa must not consume cached Branches scopes');
- const branch=render(true);assert.ok(branch.includes('Load more workflows')&&branch.includes('All Branches'),'Branch activity keeps bounded pagination and its product label');
+ const ordinary=render(false);assert.ok(!ordinary.includes('Load More Workflows')&&!ordinary.includes('All Branches'),'Normal Ponderosa must not consume cached Branches scopes');
+ const branch=render(true);assert.ok(branch.includes('Load More Workflows')&&branch.includes('All Branches'),'Branch activity keeps bounded pagination and its product label');
  const query=client.getQueryCache().find({queryKey:key});assert.equal(query.options.maxPages,1,'Scope search retains a bounded page');
  const original=globalThis.fetch,urls=[];globalThis.fetch=async url=>{urls.push(String(url));return new Response('[]',{headers:{'content-type':'application/json','x-collection-has-more':'false'}})};t.after(()=>{globalThis.fetch=original});
  await query.options.queryFn({pageParam:'opaque-cursor'});
@@ -481,7 +481,7 @@ test('immediate-save capability presentation removes manual actions while preser
  const {QueryClient,QueryClientProvider}=await import('@tanstack/react-query'),{CapabilityPolicyEditor}=await import('../../apps/web/src/components/CapabilityPolicyEditor.tsx');
  const client=new QueryClient({defaultOptions:{queries:{staleTime:Infinity,gcTime:Infinity,retry:false}}}),endpoint='/api/branches/b/capabilities';
  client.setQueryData(['capability-policy',endpoint],{policy:{scopeId:'b',revision:1,restrictedCapabilityIds:[]},effective:{restrictionSources:{inherited:{scopeKind:'global',scopeId:'global',label:'Global'}}},catalog:[{id:'inherited',label:'Inherited',description:'Broader restriction',categoryLabel:'Tools',available:true},{id:'unavailable',label:'Unavailable',description:'Not installed',categoryLabel:'Tools',available:false}]});
- try{for(const immediateSave of [false,true]){const html=renderToStaticMarkup(React.createElement(QueryClientProvider,{client},React.createElement(MutationNotificationProvider,null,React.createElement(CapabilityPolicyEditor,{endpoint,scopeKind:'branch',immediateSave}))));assert.equal(html.includes('Save capabilities'),!immediateSave);assert.ok(html.includes('Restricted by Global')&&html.includes('Not installed'));assert.equal((html.match(/type="checkbox"[^>]*disabled=""|disabled=""[^>]*type="checkbox"/g)??[]).length,2,'Inherited/unavailable switches stay disabled');}}finally{client.clear()}
+ try{for(const immediateSave of [false,true]){const html=renderToStaticMarkup(React.createElement(QueryClientProvider,{client},React.createElement(MutationNotificationProvider,null,React.createElement(CapabilityPolicyEditor,{endpoint,scopeKind:'branch',immediateSave}))));assert.equal(html.includes('Save Capabilities'),!immediateSave);assert.ok(html.includes('Restricted by Global')&&html.includes('Not installed'));assert.equal((html.match(/type="checkbox"[^>]*disabled=""|disabled=""[^>]*type="checkbox"/g)??[]).length,2,'Inherited/unavailable switches stay disabled');}}finally{client.clear()}
 });
 
 test('canceled query refresh cannot retire an uncertain capability write before HTTP readback completes',async()=>{
@@ -636,7 +636,7 @@ test('Branch creation URL survives reload and completion refuses another owner, 
 
 test('ordinary recovery excludes Branch attempts instead of using the generic endpoint',async()=>{
  const original=globalThis.window,storage=creationStorage();globalThis.window={sessionStorage:storage};const {QueryClient,QueryClientProvider}=await import('@tanstack/react-query'),{ChatCreationRecovery}=await import('../../apps/web/src/components/ChatCreationRecovery.tsx'),client=new QueryClient();
- try{storage.value=JSON.stringify([{key:'branch',owner:{product:'branches',branchId:'owner'},input:{label:'Branch',defaultEngine:'codex'}}]);const render=()=>renderToStaticMarkup(React.createElement(QueryClientProvider,{client},React.createElement(ChatCreationRecovery,{onCreated(){}})));assert.equal(render(),'');storage.value=JSON.stringify([{key:'legacy',input:{label:'Ordinary',defaultEngine:'codex'}}]);assert.match(render(),/Recover earlier Chat/);}finally{client.clear();globalThis.window=original;}
+ try{storage.value=JSON.stringify([{key:'branch',owner:{product:'branches',branchId:'owner'},input:{label:'Branch',defaultEngine:'codex'}}]);const render=()=>renderToStaticMarkup(React.createElement(QueryClientProvider,{client},React.createElement(ChatCreationRecovery,{onCreated(){}})));assert.equal(render(),'');storage.value=JSON.stringify([{key:'legacy',input:{label:'Ordinary',defaultEngine:'codex'}}]);assert.match(render(),/Recover Earlier Chat/);}finally{client.clear();globalThis.window=original;}
 });
 
 
@@ -700,7 +700,7 @@ test('Chat dropdown preserves guarded selection, pagination, loading/error feedb
  const f=await chatDropdownFixture();f.control().onOpen();f.render();f.props.onNavigate=()=>false;f.render();const event={};f.control().onChange(event,f.rows[0]);f.control().onClose(event,'selectOption');f.render();assert.equal(f.control().open,true,'Declined navigation keeps the chooser open');
  f.props.onNavigate=next=>{f.navigations.push(next);return true};f.render();f.control().onChange({},f.rows[1]);f.render();assert.equal(f.control().open,false);assert.equal(f.navigations.at(-1).chatId,'two');assert.equal(f.navigations.at(-1).workspace.projectId,'p');
  f.control().slotProps.listbox.onScroll({currentTarget:{scrollHeight:200,scrollTop:90,clientHeight:100}});f.control().onHighlightChange({},f.rows.at(-1),'keyboard');assert.deepEqual(f.requests,['next','next']);f.page.isFetching=true;f.render();f.control().onHighlightChange({},f.rows.at(-1),'keyboard');assert.equal(f.requests.length,2);
- f.page.isFetching=false;f.page.error=Error('Offline');f.render();assert.equal(f.control().noOptionsText,'Chats could not be loaded.');f.control().onOpen();f.render();f.control().onInputChange({},'failed search','input');f.search.error=Error('Search unavailable');f.render();f.control().onClose({},'blur');f.render();assert.equal(f.control().open,false);assert.ok(f.readError('Chat search'),'Retry remains mounted outside the popup after keyboard blur');f.readError('Chat search').retry();assert.equal(f.requests.at(-1),'retry');f.requests.pop();f.control().onHighlightChange({},f.rows.at(-1),'keyboard');assert.equal(f.requests.length,2,'Failed paging waits for explicit retry');
+ f.page.isFetching=false;f.page.error=Error('Offline');f.render();assert.equal(f.control().noOptionsText,'Chats could not be loaded.');f.control().onOpen();f.render();f.control().onInputChange({},'failed search','input');f.search.error=Error('Search unavailable');f.render();f.control().onClose({},'blur');f.render();assert.equal(f.control().open,false);assert.ok(f.readError('Chat Search'),'Retry remains mounted outside the popup after keyboard blur');f.readError('Chat Search').retry();assert.equal(f.requests.at(-1),'retry');f.requests.pop();f.control().onHighlightChange({},f.rows.at(-1),'keyboard');assert.equal(f.requests.length,2,'Failed paging waits for explicit retry');
  f.button('New Chat').onClick();f.button('New Chat').onClick();assert.equal(f.navigations.at(-1).creationKey,'intent');assert.equal(f.navigations.filter(n=>n.creationKey).length,1);
 });
 
@@ -771,7 +771,7 @@ test('BR011 scoped workspace adapter returns the shared navigation decision and 
 test('BR011 shared Chat settings exposes scoped capability content without changing ordinary callers',async()=>{
  const {QueryClient,QueryClientProvider}=await import('@tanstack/react-query'),{ThemeProvider,createTheme}=await import('@mui/material/styles'),{ChatContextSettings}=await import('../../apps/web/src/components/ChatContextSettings.tsx'),{ResourceSettingsContext}=await import('../../apps/web/src/components/ResourceSettingsContext.tsx');
  const theme=createTheme({components:{MuiDialog:{defaultProps:{disablePortal:true}}}}),client=new QueryClient({defaultOptions:{queries:{retry:false,gcTime:Infinity}}});
- try{for(const scoped of [false,true]){const value=scoped?{render:(kind,id)=>React.createElement('section',{'aria-label':'Scoped capabilities'},`${kind}:${id}`)}:{};const html=renderToStaticMarkup(React.createElement(QueryClientProvider,{client},React.createElement(ThemeProvider,{theme},React.createElement(ResourceSettingsContext.Provider,{value},React.createElement(ChatContextSettings,{chat:{id:'c',instructions:'kept',workingDirectory:'/managed/kept'},open:true,onClose(){}})))));assert.equal(html.includes('Scoped capabilities'),scoped);assert.ok(html.includes('Instructions')&&html.includes('Working folder')&&html.includes('kept'));}}finally{client.clear()}
+ try{for(const scoped of [false,true]){const value=scoped?{render:(kind,id)=>React.createElement('section',{'aria-label':'Scoped capabilities'},`${kind}:${id}`)}:{};const html=renderToStaticMarkup(React.createElement(QueryClientProvider,{client},React.createElement(ThemeProvider,{theme},React.createElement(ResourceSettingsContext.Provider,{value},React.createElement(ChatContextSettings,{chat:{id:'c',instructions:'kept',workingDirectory:'/managed/kept'},open:true,onClose(){}})))));assert.equal(html.includes('Scoped capabilities'),scoped);assert.ok(html.includes('Instructions')&&html.includes('Working Folder')&&html.includes('kept'));}}finally{client.clear()}
 });
 
 
@@ -790,8 +790,8 @@ test('shared permissions expose Included tools, friendly effective states and im
   {id:'unavailable',label:'Read memory',description:'Read granted memory',categoryLabel:'Memory',available:false,unavailableReason:'Local Memory is not configured',includedTools:[]},
  ];
  const endpoint='/api/conversations/normal/capabilities';client.setQueryData(['capability-policy',endpoint],{policy,effective:{restrictionSources:{ancestor:{scopeKind:'product',scopeId:'interactive',label:'Ponderosa defaults'}}},catalog});
- try{const html=renderToStaticMarkup(React.createElement(QueryClientProvider,{client},React.createElement(MutationNotificationProvider,null,React.createElement(CapabilityPolicyEditor,{endpoint,scopeKind:'chat',immediateSave:true}))));assert.ok(html.includes('<summary>Included tools')&&html.includes('ponderosa_import_file')&&html.includes('Import an authorized file'));for(const text of ['Allowed','Restricted here','Restricted by Ponderosa defaults','Unavailable','Local Memory is not configured','next Run','Activity'])assert.ok(html.includes(text),text);assert.equal(html.includes('Save capabilities'),false);assert.ok(html.includes('Allow Import files'));assert.match(html,/<h3[^>]*>Files<\/h3>/,'Capability groups follow the section heading');
-  const Probe=()=>React.useContext(ResourceSettingsContext).render('chat','normal');const ordinary=renderToStaticMarkup(React.createElement(QueryClientProvider,{client},React.createElement(MutationNotificationProvider,null,React.createElement(Probe))));assert.ok(ordinary.includes('Tool permissions')&&ordinary.includes('ponderosa_import_file'));assert.equal(ordinary.includes('Save capabilities'),false);
+ try{const html=renderToStaticMarkup(React.createElement(QueryClientProvider,{client},React.createElement(MutationNotificationProvider,null,React.createElement(CapabilityPolicyEditor,{endpoint,scopeKind:'chat',immediateSave:true}))));assert.ok(html.includes('<summary>Included Tools')&&html.includes('ponderosa_import_file')&&html.includes('Import an authorized file'));for(const text of ['Allowed','Restricted here','Restricted by Ponderosa defaults','Unavailable','Local Memory is not configured','next Run','Activity'])assert.ok(html.includes(text),text);assert.equal(html.includes('Save Capabilities'),false);assert.ok(html.includes('Allow Import files'));assert.match(html,/<h3[^>]*>Files<\/h3>/,'Capability groups follow the section heading');
+  const Probe=()=>React.useContext(ResourceSettingsContext).render('chat','normal');const ordinary=renderToStaticMarkup(React.createElement(QueryClientProvider,{client},React.createElement(MutationNotificationProvider,null,React.createElement(Probe))));assert.ok(ordinary.includes('Tool Permissions')&&ordinary.includes('ponderosa_import_file'));assert.equal(ordinary.includes('Save Capabilities'),false);
  }finally{client.clear()}
 });
 
@@ -1135,7 +1135,7 @@ test('Editing label has the Unpublished Changes tooltip and disappears at every 
 
 test('compact shared tabs keep canonical IDs, selection, disabled eligibility and names while omitting visible labels',async()=>{
  const {WorkspaceTabBar}=await import('../../apps/web/src/components/WorkspaceFrame.tsx');const items=[{value:'workflow',label:'Workflow',icon:React.createElement('svg',{'data-icon':'workflow'})},{value:'chats',label:'Chats',icon:React.createElement('svg',{'data-icon':'chats'})},{value:'executions',label:'Executions',disabled:true,icon:React.createElement('svg',{'data-icon':'executions'})},{value:'settings',label:'Settings',icon:React.createElement('svg',{'data-icon':'settings'})}];
- const render=value=>renderToStaticMarkup(React.createElement(WorkspaceTabBar,{compact:true,idPrefix:'branch',label:'Branch views',items,value,onChange(){}}));
+ const render=value=>renderToStaticMarkup(React.createElement(WorkspaceTabBar,{compact:true,idPrefix:'branch',label:'Branch Views',items,value,onChange(){}}));
  const html=render('chats'),tabs=[...html.matchAll(/<button[^>]*role="tab"[^>]*>[\s\S]*?<\/button>/g)].map(m=>m[0]);assert.equal(tabs.length,4);assert.equal((html.match(/role="tablist"/g)??[]).length,1);
  for(let i=0;i<items.length;i++){const item=items[i];assert.ok(tabs[i].includes(`id="branch-${item.value}-tab"`));assert.ok(tabs[i].includes(`aria-controls="branch-${item.value}-panel"`));assert.ok(tabs[i].includes(`aria-label="${item.label}"`));assert.ok(tabs[i].includes(`aria-selected="${item.value==='chats'}"`));assert.ok(tabs[i].includes(`data-icon="${item.value}"`));assert.ok(!tabs[i].includes(`>${item.label}<`),'Compact labels remain accessible instead of consuming row width')}
  assert.ok(tabs[2].includes('disabled=""'));assert.ok(!html.includes('<span aria-disabled="true"'),'Disabled tab remains a direct semantic child of tablist');assert.equal((render(false).match(/aria-selected="true"/g)??[]).length,0,'Work-open false value must not falsely select Chat');
@@ -1176,11 +1176,11 @@ test('Chat menu actions receive the persistent menu button and ignore closed or 
 test('collapsed Chat reuses its actions and usage callback while audit-only menus remain read-only',async()=>{
  const fs=await import('node:fs/promises'),vm=await import('node:vm'),ts=await import('typescript'),source=await fs.readFile(new URL('../../apps/web/src/components/ConversationView.parts.tsx',import.meta.url),'utf8'),ast=ts.createSourceFile('chat.tsx',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);
  let renderer;function find(node){if(ts.isVariableDeclaration(node)&&node.name.getText(ast)==='renderCollapsedMenu')renderer=node.initializer.getText(ast);ts.forEachChild(node,find)}find(ast);assert.ok(renderer);
- const calls=[],scope={React,Stack:()=>null,useCallback:fn=>fn,ChatOverflowMenu:()=>null,DataUsageOutlinedIcon:()=>null,LanguageIcon:()=>null,menuLabel:'Chat settings and actions',transcriptMarkdown:'kept transcript',transcriptTitle:'Chat',transcriptFileName:value=>value+'.md',auditOnly:false,chatActions:[{label:'Chat settings',onSelect(){}}],onOpenProjectBrowser:()=>calls.push('browser')};
+ const calls=[],scope={React,Stack:()=>null,useCallback:fn=>fn,ChatOverflowMenu:()=>null,DataUsageOutlinedIcon:()=>null,LanguageIcon:()=>null,menuLabel:'Chat settings and actions',transcriptMarkdown:'kept transcript',transcriptTitle:'Chat',transcriptFileName:value=>value+'.md',auditOnly:false,chatActions:[{label:'Chat Settings',onSelect(){}}],onOpenProjectBrowser:()=>calls.push('browser')};
  scope.browserAction=React.createElement('button',{onClick:scope.onOpenProjectBrowser},'Browser');
- const read=()=>vm.runInNewContext(ts.transpile(renderer,{target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.React}),scope),open=anchor=>calls.push(anchor),button={isConnected:true};let menu=read()(open).props.children[2];assert.deepEqual(Array.from(menu.props.actions,action=>action.label),['Chat settings','Provider usage','Browser']);menu.props.actions[1].onSelect(button);menu.props.actions[2].onSelect(button);assert.deepEqual(calls,[button,'browser']);assert.equal(menu.props.showExports,true);
- const full=React.createElement('button',null,'Full usage'),wide=read()(open,full);assert.equal(wide.props.children[0],full);assert.equal(wide.props.children[1],scope.browserAction,'Wide collapsed and expanded Chat reuse the same Browser action');assert.deepEqual(Array.from(wide.props.children[2].props.actions,action=>action.label),['Chat settings'],'Roomy inline actions are not duplicated in the menu');
- scope.auditOnly=true;menu=read()(open).props.children[2];assert.deepEqual(Array.from(menu.props.actions,action=>action.label),['Provider usage']);assert.equal(menu.props.showExports,false,'Execution inspection exposes neither Browser, mutation nor export actions');const readOnlyWide=read()(open,full);assert.equal(readOnlyWide.props.children[0],full);assert.equal(readOnlyWide.props.children[1],null);assert.equal(readOnlyWide.props.children[2],null,'Roomy read-only views do not expose an empty or mutating menu');
+ const read=()=>vm.runInNewContext(ts.transpile(renderer,{target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.React}),scope),open=anchor=>calls.push(anchor),button={isConnected:true};let menu=read()(open).props.children[2];assert.deepEqual(Array.from(menu.props.actions,action=>action.label),['Chat Settings','Provider Usage','Browser']);menu.props.actions[1].onSelect(button);menu.props.actions[2].onSelect(button);assert.deepEqual(calls,[button,'browser']);assert.equal(menu.props.showExports,true);
+ const full=React.createElement('button',null,'Full usage'),wide=read()(open,full);assert.equal(wide.props.children[0],full);assert.equal(wide.props.children[1],scope.browserAction,'Wide collapsed and expanded Chat reuse the same Browser action');assert.deepEqual(Array.from(wide.props.children[2].props.actions,action=>action.label),['Chat Settings'],'Roomy inline actions are not duplicated in the menu');
+ scope.auditOnly=true;menu=read()(open).props.children[2];assert.deepEqual(Array.from(menu.props.actions,action=>action.label),['Provider Usage']);assert.equal(menu.props.showExports,false,'Execution inspection exposes neither Browser, mutation nor export actions');const readOnlyWide=read()(open,full);assert.equal(readOnlyWide.props.children[0],full);assert.equal(readOnlyWide.props.children[1],null);assert.equal(readOnlyWide.props.children[2],null,'Roomy read-only views do not expose an empty or mutating menu');
 });
 
 
@@ -1198,9 +1198,9 @@ test('Branch usage reuses its canonical menu and forwards the persistent usage a
  let renderer;function find(node){if(ts.isVariableDeclaration(node)&&node.name.getText(ast)==='renderMenu')renderer=node.initializer.getText(ast);ts.forEachChild(node,find)}find(ast);assert.ok(renderer);
  const calls=[],scope={React,Box:()=>null,useCallback:fn=>fn,ChatOverflowMenu:()=>null,DataUsageOutlined:()=>null,onHistory:undefined,onEditJson:undefined,onRename:()=>calls.push('rename'),onDiscard:()=>calls.push('discard'),discardDisabled:true,onExport:mode=>calls.push(mode),onUpdate:()=>calls.push('update')};
  const render=vm.runInNewContext(ts.transpile(renderer,{target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.React}),scope),open=anchor=>calls.push(anchor),menu=render(open).props.children[1],anchor={isConnected:true};
- assert.equal(menu.props.label,'Branch actions');assert.equal(menu.props.showExports,false);assert.deepEqual(Array.from(menu.props.actions,item=>item.label),['Provider usage','Rename…','Discard changes','Export template','Export full','Apply package update…']);assert.equal(menu.props.actions[2].disabled,true);
+ assert.equal(menu.props.label,'Branch Actions');assert.equal(menu.props.showExports,false);assert.deepEqual(Array.from(menu.props.actions,item=>item.label),['Provider Usage','Rename…','Discard Changes','Export Template','Export Full','Apply Package Update…']);assert.equal(menu.props.actions[2].disabled,true);
  for(const action of menu.props.actions)action.onSelect(anchor);assert.deepEqual(calls,[anchor,'rename','discard','template','full','update']);
- const inactive=render().props.children[1];const full=React.createElement('button',null,'Full usage'),wide=render(open,full);assert.equal(wide.props.children[0],full);assert.deepEqual(Array.from(wide.props.children[1].props.actions,item=>item.label),['Rename…','Discard changes','Export template','Export full','Apply package update…']);assert.deepEqual(Array.from(inactive.props.actions,item=>item.label),['Rename…','Discard changes','Export template','Export full','Apply package update…'],'A nested usage owner cannot remove the retained Branch authoring menu');
+ const inactive=render().props.children[1];const full=React.createElement('button',null,'Full usage'),wide=render(open,full);assert.equal(wide.props.children[0],full);assert.deepEqual(Array.from(wide.props.children[1].props.actions,item=>item.label),['Rename…','Discard Changes','Export Template','Export Full','Apply Package Update…']);assert.deepEqual(Array.from(inactive.props.actions,item=>item.label),['Rename…','Discard Changes','Export Template','Export Full','Apply Package Update…'],'A nested usage owner cannot remove the retained Branch authoring menu');
  const header=BranchWorkspaceHeader({name:'Workflow',tab:'workflow',published:true,dirty:false,onTab(){},onRename(){},onExport(){},onUpdate(){}}).props.children;
  assert.equal(header.props.primaryActions.type.name,'BranchHeaderActions','Expanded and collapsed frames reuse the same owner outlet');
 });
@@ -1264,7 +1264,7 @@ test('branching insertion retains condition fallback, named choices, parallel pa
 test('authoring outline describes condition outcomes without introducing execution state',async()=>{
  const {newDefinition,addNode,conditionBefore}=await import('../../apps/web/src/components/branches/model.ts'),{BranchGraph}=await import('../../apps/web/src/components/branches/BranchGraph.tsx');
  const first=addNode(newDefinition(),'agent'),definition=conditionBefore(first.definition,first.selected).definition;
- const html=renderToStaticMarkup(React.createElement(BranchGraph,{definition,onSelect(){}}));assert.ok(html.includes('Workflow outline'));assert.ok(html.includes('Matches'));assert.ok(html.includes('Otherwise'));assert.ok(!html.includes('not run'));assert.ok(!html.includes('failure →'),'Non-matching conditions are not presented as failures');
+ const html=renderToStaticMarkup(React.createElement(BranchGraph,{definition,onSelect(){}}));assert.ok(html.includes('Workflow outline'));assert.ok(html.includes('Matches'));assert.ok(html.includes('Otherwise'));assert.ok(!html.includes('Not Run'));assert.ok(!html.includes('failure →'),'Non-matching conditions are not presented as failures');
  const execution=renderToStaticMarkup(React.createElement(BranchGraph,{definition,onSelect(){},controlStates:{[definition.entry]:'completed'}}));assert.ok(execution.includes('completed'),'Execution consumers retain their supplied state');
 });
 
@@ -1473,7 +1473,7 @@ test('a closing deployment review retains its content without retaining publicat
  f.load('setPreview');f.load('clearReviewPresentation');f.load('deploymentOperationLabel');
  const attempt={...s.preview,result:{operations:[{kind:'change',resource:'Execution settings',ref:'Concurrency',before:'2',after:'3'}],notes:['Exact reviewed policy remains visible.']}};
  s.setPreview(attempt);s.deploy.mutate=()=>{published++};
- const matches=[];function walk(node){if(f.ts.isJsxElement(node)&&node.openingElement.tagName.getText(f.file)==='Dialog'&&node.getText(f.file).includes('<DialogTitle>Review deployment</DialogTitle>'))matches.push(node);f.ts.forEachChild(node,walk)}walk(f.file);assert.equal(matches.length,1);
+ const matches=[];function walk(node){if(f.ts.isJsxElement(node)&&node.openingElement.tagName.getText(f.file)==='Dialog'&&node.getText(f.file).includes('<DialogTitle>Review Deployment</DialogTitle>'))matches.push(node);f.ts.forEachChild(node,walk)}walk(f.file);assert.equal(matches.length,1);
  f.vm.runInContext(f.ts.transpileModule('globalThis.renderReview=()=>('+matches[0].getText(f.file)+')',{compilerOptions:{module:f.ts.ModuleKind.CommonJS,target:f.ts.ScriptTarget.ES2022,jsx:f.ts.JsxEmit.ReactJSX}}).outputText,s);
  const opened=s.renderReview(),body=renderToStaticMarkup(opened.props.children[1]);assert.equal(opened.props.open,true);assert.ok(body.includes('Local rename')&&body.includes('Exact reviewed policy remains visible.'));
  s.setPreview(undefined);const closing=s.renderReview();assert.equal(closing.props.open,false);assert.equal(s.preview,undefined,'Logical review validity is cleared immediately');assert.equal(s.reviewPresentation,attempt);assert.equal(renderToStaticMarkup(closing.props.children[1]),body,'The exiting Dialog keeps the same reviewed content');
@@ -1656,15 +1656,15 @@ async function interventionFixture(t,action,{unknown=false,submit=async()=>({})}
 
 for(const action of ['retry','resolve_script','merge','skip'])test(`shared execution confirmation retains ${action} payload, fields and pending/error ownership`,async t=>{
  let release;const f=await interventionFixture(t,action,{unknown:['retry','resolve_script'].includes(action),submit:()=>new Promise((resolve,reject)=>{release={resolve,reject};})});
- f.render();assert.equal(f.dialogs[0].maxWidth,'sm');assert.equal(f.button('Back').disabled,false);assert.equal(f.button('Apply decision').disabled,true);assert.equal(f.button('Apply decision').autoFocus,true);
- f.field('Reason for this decision').onChange({target:{value:'Verified recovery'}});f.render();if(f.scope.intervention.unknown){assert.equal(f.button('Apply decision').disabled,true);f.switches()[0].onChange(null,true);}
- if(action==='merge'){assert.equal(f.button('Apply decision').disabled,true);f.field('Keep this execution').onChange({target:{value:'target'}});}
- if(action==='resolve_script'){f.field('Observed output').onChange({target:{value:'Observed output retained'}});f.switches()[1].onChange(null,true);}
- f.render();assert.equal(f.button('Apply decision').disabled,false);const key=f.scope.commandKey,confirm=f.button('Apply decision').onClick,saving=confirm();assert.equal(confirm(),undefined,'A second click before pending renders is fenced');f.dialogs[0].onClose({},'escapeKeyDown');assert.ok(f.scope.intervention,'Dismissal is fenced immediately after the first click');await new Promise(resolve=>setImmediate(resolve));f.render();assert.equal(f.dialogs[0]['aria-busy'],true);assert.equal(f.button('Applying…').disabled,true);assert.equal(f.button('Back').disabled,true);if(f.scope.intervention.unknown)assert.equal(f.button('Inspect evidence before deciding').disabled,true);
+ f.render();assert.equal(f.dialogs[0].maxWidth,'sm');assert.equal(f.button('Back').disabled,false);assert.equal(f.button('Apply Decision').disabled,true);assert.equal(f.button('Apply Decision').autoFocus,true);
+ f.field('Reason For This Decision').onChange({target:{value:'Verified recovery'}});f.render();if(f.scope.intervention.unknown){assert.equal(f.button('Apply Decision').disabled,true);f.switches()[0].onChange(null,true);}
+ if(action==='merge'){assert.equal(f.button('Apply Decision').disabled,true);f.field('Keep This Execution').onChange({target:{value:'target'}});}
+ if(action==='resolve_script'){f.field('Observed Output').onChange({target:{value:'Observed output retained'}});f.switches()[1].onChange(null,true);}
+ f.render();assert.equal(f.button('Apply Decision').disabled,false);const key=f.scope.commandKey,confirm=f.button('Apply Decision').onClick,saving=confirm();assert.equal(confirm(),undefined,'A second click before pending renders is fenced');f.dialogs[0].onClose({},'escapeKeyDown');assert.ok(f.scope.intervention,'Dismissal is fenced immediately after the first click');await new Promise(resolve=>setImmediate(resolve));f.render();assert.equal(f.dialogs[0]['aria-busy'],true);assert.equal(f.button('Applying…').disabled,true);assert.equal(f.button('Back').disabled,true);if(f.scope.intervention.unknown)assert.equal(f.button('Inspect Evidence Before Deciding').disabled,true);
  for(const why of ['escapeKeyDown','backdropClick'])f.dialogs[0].onClose({},why);f.button('Back').onClick();f.render();assert.equal(f.dialogs[0].open,true);assert.equal(f.calls.length,1,'Pending buttons cannot dispatch another submission');
  const expected={commandKey:key,expectedRevision:7,action,reason:'Verified recovery',...(['retry','resolve_script'].includes(action)?{attemptId:'attempt-a'}:{}),...(f.scope.intervention.unknown?{externalEffectsReconciled:true}:{}),...(action==='resolve_script'?{result:{failed:true,output:'Observed output retained'}}:{}),...(action==='merge'?{mergedInto:'target'}:{})};assert.deepEqual(JSON.parse(JSON.stringify(f.calls[0])),{path:'/api/branch-executions/execution-a/intervene',body:expected});
- release.reject(new f.scope.ApiRequestError(409,'Recovery conflict'));await assert.rejects(saving,/Recovery conflict/);assert.match(f.render(),/Recovery conflict/);assert.equal(f.field('Reason for this decision').value,'Verified recovery');if(action==='resolve_script')assert.equal(f.field('Observed output').value,'Observed output retained');assert.equal(f.scope.commandKey,key);assert.equal(f.button('Back').disabled,false);
- const retry=f.button('Apply decision').onClick();await new Promise(resolve=>setImmediate(resolve));assert.deepEqual(f.calls[1],f.calls[0],'Retry preserves the same intervention identity and fields');release.resolve({});await retry;f.render();assert.equal(f.scope.intervention,undefined);assert.equal(f.refreshes.length,1);
+ release.reject(new f.scope.ApiRequestError(409,'Recovery conflict'));await assert.rejects(saving,/Recovery conflict/);assert.match(f.render(),/Recovery conflict/);assert.equal(f.field('Reason For This Decision').value,'Verified recovery');if(action==='resolve_script')assert.equal(f.field('Observed Output').value,'Observed output retained');assert.equal(f.scope.commandKey,key);assert.equal(f.button('Back').disabled,false);
+ const retry=f.button('Apply Decision').onClick();await new Promise(resolve=>setImmediate(resolve));assert.deepEqual(f.calls[1],f.calls[0],'Retry preserves the same intervention identity and fields');release.resolve({});await retry;f.render();assert.equal(f.scope.intervention,undefined);assert.equal(f.refreshes.length,1);
 });
 
 test('shared confirmation fences async submissions until settlement without trapping synchronous declined actions',async()=>{
@@ -1691,7 +1691,7 @@ test('shared confirmation fences async submissions until settlement without trap
 test('shared Browser voice settings use a section heading without skipping levels',async()=>{
  const {BrowserVoiceSettings}=await import('../../apps/web/src/components/speech/BrowserVoiceSettings.tsx');
  const html=renderToStaticMarkup(React.createElement(BrowserVoiceSettings,{preferences:{speech:{speed:1}},onPreferences(){}}));
- assert.match(html,/<h2[^>]*>Browser voice<\/h2>/);
+ assert.match(html,/<h2[^>]*>Browser Voice<\/h2>/);
 });
 
 test('shared permission Settings expose durable before/after audit records for both products',async()=>{
@@ -1712,11 +1712,11 @@ test('reusable expert job handling distinguishes legacy behavior, results and gu
  const {AgentJobHandlingField}=await import('../../apps/web/src/components/branches/AgentStepFields.tsx');
  const render=value=>renderToStaticMarkup(React.createElement(AgentJobHandlingField,{value,onChange(){}}));
  const legacy=render(undefined);
- assert.match(legacy,/Existing behavior · steer or run/);assert.match(legacy,/Steer when busy; otherwise start work/);
+ assert.match(legacy,/Existing Behavior · Steer Or Run/);assert.match(legacy,/Steer when busy; otherwise start work/);
  assert.match(render('queue'),/Queued jobs keep separate results/);
  assert.match(render('queue'),/schedules may combine triggers before the queue/);
  const steer=render('steer');assert.match(steer,/without a separate result/);
- const copy=render('copy');assert.match(copy,/Make a temporary Agent copy/);assert.match(copy,/fresh workspace and separate result/);assert.match(copy,/without source working-folder files/);
+ const copy=render('copy');assert.match(copy,/Make A Temporary Agent Copy/);assert.match(copy,/fresh workspace and separate result/);assert.match(copy,/without source working-folder files/);
 });
 test('new expert jobs queue explicitly while editing legacy and switching targets preserves intended semantics',async()=>{
  const {newDefinition,addNode,changeAgentTarget,changeAgentJobHandling}=await import('../../apps/web/src/components/branches/model.ts');
@@ -1750,7 +1750,7 @@ test('steering exposes no result selector and preserves existing dependent edges
  const snapshot=structuredClone(second.edges),changed=changeAgentJobHandling(second,second.steps[0],'steer');
  assert.deepEqual(changed.edges,snapshot,'choosing guidance cannot silently discard authored downstream work');
  const render=(input,noResult)=>renderToStaticMarkup(React.createElement(StepInputField,{input,noResult,onChange(){}}));
- assert.match(render(undefined,true),/Unavailable — steering has no output/);
+ assert.match(render(undefined,true),/Unavailable — Steering Has No Output/);
  assert.match(render(undefined,true),/aria-invalid="true"/);
  assert.match(render({kind:'literal',text:'Independent input'},true),/aria-invalid="false"/);
  assert.match(render(undefined,false),/This Step’s Output/);

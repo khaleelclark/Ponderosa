@@ -108,7 +108,7 @@ export function ComposerNotices({
               sx={{ p: 0, minWidth: 0, textTransform: "none" }}
               onClick={onShowPastedText}
             >
-              View or edit
+              View Or Edit
             </Button>
           </Box>
           <Typography variant="caption" color="text.secondary">
@@ -117,14 +117,14 @@ export function ComposerNotices({
           <IconButton
             disabled={mutationLocked}
             size="small"
-            aria-label="Remove pasted text"
+            aria-label="Remove Pasted Text"
             onClick={onRemovePastedText}
           >
             <CloseIcon fontSize="small" />
           </IconButton>
         </Paper>
       ) : null}
-      {error&&compactError ? <Box component="details" sx={{fontSize:".8125rem",mb:1}}><summary>Message needs attention</summary><Typography variant="caption">{error}</Typography><Button size="small" onClick={onClearError}>Close</Button></Box> : error ? (
+      {error&&compactError ? <Box component="details" sx={{fontSize:".8125rem",mb:1}}><summary>Message Needs Attention</summary><Typography variant="caption">{error}</Typography><Button size="small" onClick={onClearError}>Close</Button></Box> : error ? (
         <Alert severity="error" sx={{ mb: 1 }} onClose={onClearError}>
           {attachmentError ? error : `Message not sent. ${error}`}
         </Alert>
@@ -341,10 +341,10 @@ export function ComposerCapabilityPicker({
   const folderInput = useRef<HTMLInputElement | null>(null);
   const folderPickerSupported = "webkitdirectory" in HTMLInputElement.prototype;
   const capabilityGroups = [
-    { label: "Available skills", items: visibleCapabilities.filter(item => item.status === "available" && item.kind === "skill") },
-    { label: "Installed plugins", items: visibleCapabilities.filter(item => item.status === "available" && item.kind === "plugin") },
-    { label: "Connected apps", items: visibleCapabilities.filter(item => item.status === "available" && item.kind === "connector") },
-    { label: "Unavailable options", items: visibleCapabilities.filter(item => item.status !== "available") },
+    { label: "Available Skills", items: visibleCapabilities.filter(item => item.status === "available" && item.kind === "skill") },
+    { label: "Installed Plugins", items: visibleCapabilities.filter(item => item.status === "available" && item.kind === "plugin") },
+    { label: "Connected Apps", items: visibleCapabilities.filter(item => item.status === "available" && item.kind === "connector") },
+    { label: "Unavailable Options", items: visibleCapabilities.filter(item => item.status !== "available") },
   ].filter(group => group.items.length > 0);
   const mobile = useMediaQuery(useTheme().breakpoints.down("md"));
   const [browseCapabilities, setBrowseCapabilities] = useState(false);
@@ -377,7 +377,7 @@ export function ComposerCapabilityPicker({
     <>
       <input
         ref={fileInput}
-        aria-label="Choose files"
+        aria-label="Choose Files"
         hidden
         type="file"
         multiple
@@ -387,12 +387,12 @@ export function ComposerCapabilityPicker({
         }}
       />
       <input ref={element => { folderInput.current = element; if (element) element.webkitdirectory = true; }}
-        aria-label="Choose folder" hidden type="file" multiple onChange={event => {
+        aria-label="Choose Folder" hidden type="file" multiple onChange={event => {
           onFolderFiles(Array.from(event.target.files ?? [])); event.target.value = "";
         }} />
       <input
         ref={photoInput}
-        aria-label="Choose photos"
+        aria-label="Choose Photos"
         hidden
         type="file"
         accept="image/*"
@@ -402,11 +402,11 @@ export function ComposerCapabilityPicker({
           event.target.value = "";
         }}
       />
-      <Tooltip title={mobile ? "" : "Add an image, file, skill, plugin, or connector"}>
+      <Tooltip title={mobile ? "" : "Add An Image, File, Skill, Plugin, Or Connector"}>
         <span>
           <IconButton
             ref={buttonRef}
-            aria-label="Add attachment or capability"
+            aria-label="Add Attachment Or Capability"
             aria-haspopup="menu"
             aria-expanded={Boolean(menuAnchor)}
             aria-controls={menuAnchor ? listId : undefined}
@@ -454,14 +454,14 @@ export function ComposerCapabilityPicker({
                 value={filter}
                 onChange={event => onFilterChange(event.target.value)}
                 placeholder={mobile ? "Search skills & connectors" : "Find a skill, plugin, or connector"}
-                inputProps={{ "aria-label": "Filter runtime capabilities" }}
+                inputProps={{ "aria-label": "Filter Runtime Capabilities" }}
                 sx={isIOSDevice() ? { "& input": { fontSize: "1rem" } } : undefined}
               />
             </Box>}
             <MenuList
               dense
               id={listId}
-              aria-label="Add attachment or runtime capability"
+              aria-label="Add Attachment Or Runtime Capability"
               sx={{
                 maxHeight: mobile ? 260 : "min(38vh, 300px)",
                 minHeight: 0,
@@ -517,7 +517,7 @@ export function ComposerCapabilityPicker({
                   </Typography> : null}
                 </Box>
               </MenuItem>)}
-              {mobile && !browseCapabilities && <MenuItem sx={{ minHeight: 48 }} onClick={() => setBrowseCapabilities(true)}>Skills &amp; connectors</MenuItem>}
+              {mobile && !browseCapabilities && <MenuItem sx={{ minHeight: 48 }} onClick={() => setBrowseCapabilities(true)}>Skills &amp; Connectors</MenuItem>}
               {!mobile && <Divider />}
               {showCapabilities && ((capabilities ?? []).length === 0 ? (
                 <MenuItem disabled sx={{ whiteSpace: "normal" }}>
@@ -671,7 +671,7 @@ export function ComposerAutocompleteMenu({
               hasCommands
                 ? "Commands"
                 : hasMentions
-                  ? "Agent tags"
+                  ? "Agent Tags"
                   : "Project Files & Results"
             }
             sx={{

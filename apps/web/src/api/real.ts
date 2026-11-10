@@ -403,8 +403,8 @@ export const realApi = {
     return requestJson(`/api/conversations/${encodeURIComponent(conversationId)}/voice-replies/${encodeURIComponent(messageId)}/${encodeURIComponent(agentId)}`, {cache:"no-store"});
   },
 
-  getTextReplyStatus(conversationId:string,messageId:string,agentId:string):Promise<import("@ponderosa/core").VoiceReplyStatus>{
-    return requestJson(`/api/conversations/${encodeURIComponent(conversationId)}/reply-streams/${encodeURIComponent(messageId)}/${encodeURIComponent(agentId)}`,{cache:"no-store"});
+  getTextReplyStatus(conversationId:string,messageId:string,agentId:string,signal?:AbortSignal):Promise<import("@ponderosa/core").VoiceReplyStatus>{
+    return requestJson(`/api/conversations/${encodeURIComponent(conversationId)}/reply-streams/${encodeURIComponent(messageId)}/${encodeURIComponent(agentId)}`,{cache:"no-store",signal});
   },
 
   getAssetLimits(): Promise<AssetLimitsDto> { return requestJson<AssetLimitsDto>("/api/asset-limits"); },

@@ -107,10 +107,10 @@ test('rich rendering requires a complete matching fence; fallback remains copyab
     fence({ ...metric, version: 2 }), fence(metric).replace('ponderosa', 'ponderosa extra'), '```ponderosa\n{\n```']) {
     const html = render(source);
     assert.equal(richCount(html), 0, source);
-    assert.match(html, /Copy code/);
+    assert.match(html, /Copy Code/);
   }
   assert.equal(richCount(render(Array(9).fill(fence(metric)).join('\n\n'))), 8);
-  assert.match(render(Array(9).fill(fence(metric)).join('\n\n')), /Copy code/);
+  assert.match(render(Array(9).fill(fence(metric)).join('\n\n')), /Copy Code/);
   assert.equal(richCount(render('> ' + fence(metric).replaceAll('\n', '\n> '))), 1);
 });
 
@@ -139,7 +139,7 @@ test('rich labels remain inert text and line values have a keyboard-accessible t
   assert.ok(!html.includes('<script>') && !html.includes('<img '));
   assert.match(html, /&lt;script&gt;Trend&lt;\/script&gt;/);
   assert.match(html, /role="region" tabindex="0"/);
-  assert.match(html, /aria-label="&lt;script&gt;Trend&lt;\/script&gt; data"/);
+  assert.match(html, /aria-label="&lt;script&gt;Trend&lt;\/script&gt; Data"/);
   assert.ok(!/\b(?:NaN|Infinity)\b/.test(html));
 });
 

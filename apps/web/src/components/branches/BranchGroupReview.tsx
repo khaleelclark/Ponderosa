@@ -157,35 +157,35 @@ export function BranchGroupReview({detail,definition,enabled,onChanged}:{detail:
   else return;fence.current=true;submit.mutate(command);
  };
  return <>
-  <Button onClick={()=>{discard();setOpen(true);}}>Review resource group</Button>
+  <Button onClick={()=>{discard();setOpen(true);}}>Review Resource Group</Button>
   <Dialog open={open} fullWidth maxWidth="md" disableEscapeKeyDown={busy} onClose={()=>{if(!busy){discard();setOpen(false);}}}>
-   <DialogTitle>Resource group</DialogTitle><DialogContent><Stack spacing={2} sx={{pt:1}}>
+   <DialogTitle>Resource Group</DialogTitle><DialogContent><Stack spacing={2} sx={{pt:1}}>
     <Alert severity="warning"><Stack spacing={0.5}><Typography>Shared existing Project directory · no separate workspace or working copy</Typography><Typography>Creates · fresh Project · default Chat · one resource Chat per resource</Typography></Stack></Alert>
     <Stack spacing={0.5}><Typography>Server preview required · exact cut, packages, ownership, drain and policies</Typography><Typography>Standalone · 2–32 generation-zero resources · serial / local parallel / server-validated multi-item map</Typography><Typography>Called tree · separate tree preview · manual parent + one called child · one generation-zero resource each · serial ASYNC/SYNC</Typography><Typography>Refused trees · larger · parallel · later generation</Typography><Typography>Each owner · original Project audit access · current policy · fresh acceptance budget</Typography></Stack>
     <Alert severity="info"><Stack spacing={0.5}><Typography>Discovery · current + retained owners · retained identity supplies no eligibility</Typography><Typography>Stale pagination after write/restart · restart discovery explicitly</Typography><Typography>Missing owner · scoped readback may refuse</Typography><Typography>Missing legacy key · recovery unavailable</Typography></Stack></Alert>
-    <Stack direction="row" spacing={1}><Button disabled={busy} onClick={()=>discover.mutate({kind:'captures'})}>Restart capture discovery</Button><Button disabled={busy} onClick={()=>discover.mutate({kind:'admissions'})}>Restart admission discovery</Button></Stack>
-    <Button disabled={busy} onClick={()=>treeDiscovery.mutate()}>Discover called-tree captures</Button>
+    <Stack direction="row" spacing={1}><Button disabled={busy} onClick={()=>discover.mutate({kind:'captures'})}>Restart Capture Discovery</Button><Button disabled={busy} onClick={()=>discover.mutate({kind:'admissions'})}>Restart Admission Discovery</Button></Stack>
+    <Button disabled={busy} onClick={()=>treeDiscovery.mutate()}>Discover Called-Tree Captures</Button>
     {treeDiscovery.error&&<Alert severity="error">{treeDiscovery.error.message} · restart tree discovery explicitly</Alert>}
-    {treeInventory?.map(row=><Stack key={row.commandKey}><Evidence title="Canonical owner-tree capture; evidence only" value={row}/><Button disabled={busy||Boolean(journal.pending)||Boolean(storageError)} onClick={()=>treeRecovery.mutate(row)}>Read exact called-tree capture</Button></Stack>)}
+    {treeInventory?.map(row=><Stack key={row.commandKey}><Evidence title="Canonical owner-tree capture; evidence only" value={row}/><Button disabled={busy||Boolean(journal.pending)||Boolean(storageError)} onClick={()=>treeRecovery.mutate(row)}>Read Exact Called-Tree Capture</Button></Stack>)}
     {discover.error&&<Alert severity="error">{discover.error.message} · stale selection + confirmation cleared · restart explicitly</Alert>}
-    {inventory&&<><Typography>{inventory.kind} · canonical records (all source Runs)</Typography>{inventory.items.map((row,i)=><Stack key={`${row.branchId}:${row.executionId}:${row.commandKey??i}`}><Evidence title={`${row.state} · ${row.resourceCount} resources · source owner ${row.ownerPresent?'current':'retained / absent'}`} value={row}/><GroupJournalAudit key={JSON.stringify(row.auditSelection)} row={row} api={api} onRead={discard} onStale={()=>{discard();setInventory(undefined);setAudit(undefined);setTarget(undefined);setCapture(undefined);setNotice('Historical selector/evidence refused · restart group discovery explicitly · no inferred audit/action');}}/>{row.discovery==='unsupported_legacy_key'?<Typography>Unsupported legacy capture: original key unavailable; no guessed recovery.</Typography>:<Button disabled={busy||Boolean(journal.pending)||Boolean(storageError)} onClick={()=>recover.mutate(row)}>Read discovered {row.kind==='captures'?'capture':'admission'} command</Button>}{(row.branchId!==branchId||row.executionId!==executionId)&&<Typography>Other source Run · audit only here · disclosure: open source Run · lifecycle: Settings</Typography>}</Stack>)}{inventory.nextCursor&&<Button disabled={busy} onClick={()=>discover.mutate({kind:inventory.kind,more:true})}>Load more group commands</Button>}</>}
+    {inventory&&<><Typography>{inventory.kind} · canonical records (all source Runs)</Typography>{inventory.items.map((row,i)=><Stack key={`${row.branchId}:${row.executionId}:${row.commandKey??i}`}><Evidence title={`${row.state} · ${row.resourceCount} Resources · Source Owner ${row.ownerPresent?'Current':'retained / absent'}`} value={row}/><GroupJournalAudit key={JSON.stringify(row.auditSelection)} row={row} api={api} onRead={discard} onStale={()=>{discard();setInventory(undefined);setAudit(undefined);setTarget(undefined);setCapture(undefined);setNotice('Historical selector/evidence refused · restart group discovery explicitly · no inferred audit/action');}}/>{row.discovery==='unsupported_legacy_key'?<Typography>Unsupported legacy capture: original key unavailable; no guessed recovery.</Typography>:<Button disabled={busy||Boolean(journal.pending)||Boolean(storageError)} onClick={()=>recover.mutate(row)}>Read Discovered {row.kind==='captures'?'Capture':'Admission'} Command</Button>}{(row.branchId!==branchId||row.executionId!==executionId)&&<Typography>Other source Run · audit only here · disclosure: open source Run · lifecycle: Settings</Typography>}</Stack>)}{inventory.nextCursor&&<Button disabled={busy} onClick={()=>discover.mutate({kind:inventory.kind,more:true})}>Load More Group Commands</Button>}</>}
     {Boolean(audit)&&<Evidence title="Canonical readback from another source Run; no action authorization" value={audit}/>}
     {recover.error&&<Alert severity="error">{recover.error.message}</Alert>}
     {(storageError||notice)&&<Alert severity="warning">{storageError||notice}</Alert>}
     {!enabled&&<Alert severity="warning">Refresh this Run before applying changes.</Alert>}
     {journal.pending&&<Alert severity="warning">Unconfirmed {journal.pending.kind} · original input retained · read exact command · no mutation replay</Alert>}
-    <Button disabled={busy||Boolean(storageError)||!journal.capture&&!journal.prepare} onClick={()=>refresh.mutate()}>Read retained group commands</Button>
+    <Button disabled={busy||Boolean(storageError)||!journal.capture&&!journal.prepare} onClick={()=>refresh.mutate()}>Read Retained Group Commands</Button>
     {refresh.error&&<Alert severity="error">{refresh.error.message}</Alert>}
-    <Evidence title="Retained command and readback identities" value={journal}/>
-    {capture&&<><Typography>Capture {capture.state} · cleanup held {'cleanupHeld' in capture?String(capture.cleanupHeld):'not supplied; tree journals still hold owner deletion'} · checkpoint {capture.checkpointId} · {capture.checkpointHash}</Typography><Evidence title="Every exact source seal" value={capture}/></>}
+    <Evidence title="Retained Command And Readback Identities" value={journal}/>
+    {capture&&<><Typography>Capture {capture.state} · cleanup held {'cleanupHeld' in capture?String(capture.cleanupHeld):'not supplied; tree journals still hold owner deletion'} · checkpoint {capture.checkpointId} · {capture.checkpointHash}</Typography><Evidence title="Every Exact Source Seal" value={capture}/></>}
     {!journal.capture&&<>
-     <Button disabled={!fresh||Boolean(journal.prepare)} onClick={()=>capturePreview.mutate(undefined)}>Preview authoritative capture cut</Button><Button disabled={!fresh||Boolean(journal.prepare)} onClick={()=>capturePreview.mutate('owner_tree')}>Preview called owner tree</Button>
+     <Button disabled={!fresh||Boolean(journal.prepare)} onClick={()=>capturePreview.mutate(undefined)}>Preview Authoritative Capture Cut</Button><Button disabled={!fresh||Boolean(journal.prepare)} onClick={()=>capturePreview.mutate('owner_tree')}>Preview Called Owner Tree</Button>
      {capturePreview.error&&<Alert severity="error">{capturePreview.error.message}</Alert>}
-     {cut&&<><Evidence title="Exact capture preview: every resource, participant and cut hash" value={cut}/><FormControlLabel control={<Checkbox checked={cutReviewed} disabled={!fresh} onChange={(_,v)=>setCutReviewed(v)}/>} label="I reviewed the complete server capture inventory and exact cut hashes"/></>}
+     {cut&&<><Evidence title="Exact Capture Preview: Every Resource, Participant And Cut Hash" value={cut}/><FormControlLabel control={<Checkbox checked={cutReviewed} disabled={!fresh} onChange={(_,v)=>setCutReviewed(v)}/>} label="I reviewed the complete server capture inventory and exact cut hashes"/></>}
     </>}
     {!journal.prepare&&<><FormControlLabel control={<Checkbox checked={effects} disabled={!fresh} onChange={(_,v)=>setEffects(v)}/>} label="I reconciled original external effects; unknown effects remain held"/>
-     <Button disabled={!captureReady} onClick={()=>setConfirm('capture')}>Capture exact resource cut</Button>
-     <Button disabled={!prepareReady} onClick={()=>setConfirm('prepare')}>Prepare held group</Button></>}
+     <Button disabled={!captureReady} onClick={()=>setConfirm('capture')}>Capture Exact Resource Cut</Button>
+     <Button disabled={!prepareReady} onClick={()=>setConfirm('prepare')}>Prepare Held Group</Button></>}
     {target&&<>
      <Typography>Admission {target.admissionId} · {target.state} · persisted disclosure {target.disclosure.state}, revision {target.disclosure.revision}</Typography>
      <Typography>Destination scope · {target.scope??'legacy standalone evidence'} · separate parent/child executions + resource Chats</Typography>{target.reviewEvidence?.state==='verified'?<Stack spacing={1}>
@@ -196,37 +196,37 @@ export function BranchGroupReview({detail,definition,enabled,onChanged}:{detail:
        <Typography sx={{overflowWrap:'anywhere'}}>Branch {owner.branchId} · original execution {owner.sourceExecutionId} → fresh execution {owner.destinationExecutionId}</Typography>
        <Typography sx={{overflowWrap:'anywhere'}}>Original parent execution / Call attempt · {owner.sourceParentExecutionId??'none'} / {owner.sourceParentAttemptId??'none'} · fresh parent execution / Call attempt · {owner.destinationParentExecutionId??'none'} / {owner.destinationParentAttemptId??'none'}</Typography>
        <Typography>Counters · traversals {owner.counters.traversals} · loop iterations {owner.counters.loopIterations} · recovery traversals {owner.counters.recoveryTraversals} · Call depth {owner.counters.callDepth} · depth ceiling {owner.counters.depthCeiling}</Typography>
-       <Evidence title="Exact saved per-path, per-Step invocation and per-loop counters" value={owner.counters}/>
+       <Evidence title="Exact Saved Per-Path, Per-Step Invocation And Per-Loop Counters" value={owner.counters}/>
        <Typography>Saved capacity · concurrent executions {owner.capacity.maxConcurrentExecutions} · paths {owner.capacity.maxPathInstances} · Step invocations {owner.capacity.maxStepInvocations} · ephemeral Agents {owner.capacity.maxEphemeralAgents}</Typography>
        <Typography>Selected usage · paths {owner.selectedUsage.paths} · Step invocations {owner.selectedUsage.stepInvocations} · requested Agents {owner.selectedUsage.requestedAgents}</Typography>
-       <Evidence title="Pinned limits and policy · resolved numeric capacity · exact selected usage" value={{limits:owner.limits,policy:owner.policy,capacity:owner.capacity,selectedUsage:owner.selectedUsage}}/>
+       <Evidence title="Pinned Limits And Policy · Resolved Numeric Capacity · Exact Selected Usage" value={{limits:owner.limits,policy:owner.policy,capacity:owner.capacity,selectedUsage:owner.selectedUsage}}/>
        <Typography>Fresh acceptance · {owner.acceptance.kind} · {owner.acceptance.source} · {owner.acceptance.admittedAt} · saved budget {owner.acceptance.budget.policy===null?'unlimited':`${owner.acceptance.budget.policy.limit} base / ${owner.acceptance.budget.policy.period}`} · used {owner.acceptance.budget.used} · extra allowance {owner.acceptance.budget.allowance} · held {owner.acceptance.budget.heldCount}</Typography>
-       <Evidence title="Exact saved fresh acceptance and numeric execution budget receipt" value={owner.acceptance}/>
+       <Evidence title="Exact Saved Fresh Acceptance And Numeric Execution Budget Receipt" value={owner.acceptance}/>
       </Stack>)}
-     </Stack>:<Typography>Saved maps / ancestry / counters / numeric acceptance budget · unavailable in legacy evidence</Typography>}{target.scope==='owner_tree'&&target.ownerMap&&<Typography sx={{overflowWrap:'anywhere'}}>Original root {executionId} → fresh parent {target.ownerMap[executionId]} · {Object.entries(target.ownerMap).filter(([id])=>id!==executionId).map(([id,fresh])=>`Original called child ${id} → fresh child ${fresh}`).join(' · ')}</Typography>}<Evidence title="Exact original owner to fresh owner map; no flattening" value={target.ownerMap??'not supplied by legacy server'}/><Evidence title="All packages and exact fresh resource identities" value={target.resources}/>
+     </Stack>:<Typography>Saved maps / ancestry / counters / numeric acceptance budget · unavailable in legacy evidence</Typography>}{target.scope==='owner_tree'&&target.ownerMap&&<Typography sx={{overflowWrap:'anywhere'}}>Original root {executionId} → fresh parent {target.ownerMap[executionId]} · {Object.entries(target.ownerMap).filter(([id])=>id!==executionId).map(([id,fresh])=>`Original called child ${id} → fresh child ${fresh}`).join(' · ')}</Typography>}<Evidence title="Exact original owner to fresh owner map; no flattening" value={target.ownerMap??'not supplied by legacy server'}/><Evidence title="All Packages And Exact Fresh Resource Identities" value={target.resources}/>
      {['reserved','import_unknown'].includes(target.state)&&<Alert severity="warning">Unknown/reserved slots held · no reimport or separate member admission</Alert>}
-     <Button disabled={!fresh||!['awaiting_disclosure','admitted'].includes(target.state)} onClick={()=>preview.mutate()}>Review whole-group disclosure</Button>
-     <Button color="error" disabled={!revokeReady} onClick={()=>setConfirm('revoke')}>Revoke whole-group disclosure</Button>
+     <Button disabled={!fresh||!['awaiting_disclosure','admitted'].includes(target.state)} onClick={()=>preview.mutate()}>Review Whole-Group Disclosure</Button>
+     <Button color="error" disabled={!revokeReady} onClick={()=>setConfirm('revoke')}>Revoke Whole-Group Disclosure</Button>
     </>}
     {preview.error&&<Alert severity="error">{preview.error.message}</Alert>}
     {review&&exact&&<>
      <Typography sx={{overflowWrap:'anywhere'}}>Whole review {review.reviewHash} · host cut {review.hostCutSha256} · policy hash {review.policyRevision} · revision {review.revision}</Typography>
-     <Evidence title="Exact reservation, all packages, fresh maps and every current owner policy" value={{reservation:review.review.reservation,stage:review.review.stage,policies:review.policy}}/>
+     <Evidence title="Exact Reservation, All Packages, Fresh Maps And Every Current Owner Policy" value={{reservation:review.review.reservation,stage:review.review.stage,policies:review.policy}}/>
      {review.facts.map(f=><Stack key={`${f.kind}:${f.id}`} spacing={.5}>
       <Typography>{f.kind} {f.id} · {f.sha256}</Typography>
       <Typography sx={{overflowWrap:'anywhere'}}>Original participants {f.originalAgentIds.join(', ')} · fresh recipients {f.destinationAgentIds.join(', ')}</Typography>
-      <Evidence title="Original actor, audience and exact private fact" value={{actor:f.originalActor,audience:f.originalAudience,content:f.content}}/>
+      <Evidence title="Original Actor, Audience And Exact Private Fact" value={{actor:f.originalActor,audience:f.originalAudience,content:f.content}}/>
      </Stack>)}
      <FormControlLabel control={<Checkbox checked={reviewed} disabled={!fresh} onChange={(_,v)=>setReviewed(v)}/>} label="I reviewed every original fact, actor, audience, mapped recipient, resource identity, saved owner evidence and current policy"/>
-     <Button disabled={!approveReady} onClick={()=>setConfirm('approve')}>Approve whole-group disclosure</Button>
-     <Button disabled={!admitReady} onClick={()=>setConfirm('admit')}>Admit whole group</Button>
+     <Button disabled={!approveReady} onClick={()=>setConfirm('approve')}>Approve Whole-Group Disclosure</Button>
+     <Button disabled={!admitReady} onClick={()=>setConfirm('admit')}>Admit Whole Group</Button>
     </>}
     {receipt&&<Evidence title="Historical choice receipt; current approval requires fresh review" value={receipt}/>}
-    {target?.receipt&&<Evidence title="Canonical admitted group provenance and owner receipts" value={target.receipt}/>}
+    {target?.receipt&&<Evidence title="Canonical Admitted Group Provenance And Owner Receipts" value={target.receipt}/>}
     <Typography variant="caption">Unavailable here · partial abandonment · custody release · group retirement · unresolved members held</Typography>
    </Stack></DialogContent><DialogActions><Button disabled={busy} onClick={()=>{discard();setOpen(false);}}>Close</Button></DialogActions>
   </Dialog>
-  <ConfirmDialog open={Boolean(confirm)} title={confirm==='capture'?'Capture this whole cut?':confirm==='prepare'?'Prepare held group?':confirm==='approve'?'Approve all listed facts?':confirm==='revoke'?'Revoke whole-group disclosure?':'Admit all resources atomically?'} confirmLabel="Confirm exact group action" cancelLabel="Back" pending={submit.isPending} confirmDisabled={!ready} onCancel={()=>setConfirm(undefined)} onConfirm={apply}>
+  <ConfirmDialog open={Boolean(confirm)} title={confirm==='capture'?'Capture this whole cut?':confirm==='prepare'?'Prepare held group?':confirm==='approve'?'Approve all listed facts?':confirm==='revoke'?'Revoke whole-group disclosure?':'Admit all resources atomically?'} confirmLabel="Confirm Exact Group Action" cancelLabel="Back" pending={submit.isPending} confirmDisabled={!ready} onCancel={()=>setConfirm(undefined)} onConfirm={apply}>
    <Typography>{confirm==='capture'?'Captures every private package; partial capture keeps all cleanup pins, with no abandonment here':confirm==='prepare'?'Creates held fresh identities in the current Project directory; no separate workspace':confirm==='approve'?'Authorizes every listed fact for exact fresh recipients under all reviewed policies, without starting work':confirm==='revoke'?'Revokes exact persisted revision without package bytes; previously disclosed facts remain':'Commits whole mapped graph + all imports and permits eligible new work, without original-effect replay'}</Typography>
    <Typography sx={{overflowWrap:'anywhere'}}>Capture cut {cut?.reviewHash} · version {cut?.versionId} · resources {cut?captureResourceIds(cut).length:undefined} · Checkpoint {capture?.checkpointId??target?.checkpointId} · {capture?.checkpointHash??target?.checkpointHash} · admission {target?.admissionId} · review {confirm==='revoke'?target?.disclosure.reviewHash:review?.reviewHash}</Typography>
   </ConfirmDialog>

@@ -65,7 +65,7 @@ try {
    if(appTextSizeMode){
     row.baselineFonts=await page.evaluate(()=>({root:parseFloat(getComputedStyle(document.documentElement).fontSize),editor:parseFloat(getComputedStyle(document.querySelector('[aria-label="Message"]')).fontSize)}));
     await page.goto(settingsUrl);
-    const textSize=page.getByRole('combobox',{name:/^Text size (?:100|115|130|150|175|200)%$/});await textSize.waitFor();
+    const textSize=page.getByRole('combobox',{name:/^Text Size (?:100|115|130|150|175|200)%$/});await textSize.waitFor();
     // An intermediate real choice makes even the 100% cell exercise onChange.
     for(const choice of [115,size]){await textSize.click();await page.getByRole('option',{name:`${choice}%`,exact:true}).click();await page.waitForFunction(choice=>document.documentElement.style.fontSize===`${choice}%`,choice);}
     assert.equal((await textSize.innerText()).trim(),`${size}%`);
@@ -97,7 +97,7 @@ try {
    await page.keyboard.press('Control+A');await page.keyboard.press('Backspace');
    const marker=`a11y-${caseId}`;
    await page.keyboard.type(marker);await page.keyboard.press('Shift+Enter');await page.keyboard.type('tail');
-   const send=page.getByRole('button',{name:'Send message',exact:true});
+   const send=page.getByRole('button',{name:'Send Message',exact:true});
    row.actions.push({name:'Tab to Send',tabs:await tabTo(page,send)});
    const sent=appTextSizeMode?page.waitForResponse(r=>r.request().method()==='POST'&&r.request().postData()?.includes(marker)):page.waitForRequest(r=>r.method()==='POST'&&r.postData()?.includes(marker));
    await page.keyboard.press('Enter');const sentResult=await sent;if(appTextSizeMode){row.sendStatus=sentResult.status();assert.equal(row.sendStatus,200,'Actual keyboard Send succeeds');}
@@ -110,7 +110,7 @@ try {
    if(!await rename.evaluate(el=>document.activeElement?.closest('[role=menu]'))){await page.keyboard.press('Tab');row.actions.push({name:'Tab from menu surface to first item',pass:true});}
    for(let i=0;i<30&&!await rename.evaluate(el=>el===document.activeElement);i++)await page.keyboard.press('ArrowDown');
    assert.ok(await rename.evaluate(el=>el===document.activeElement));await page.keyboard.press('Enter');
-   const name=page.getByLabel('Chat name',{exact:true});await name.waitFor();assert.ok(await name.evaluate(el=>el===document.activeElement));
+   const name=page.getByLabel('Chat Name',{exact:true});await name.waitFor();assert.ok(await name.evaluate(el=>el===document.activeElement));
    await page.keyboard.press('Control+A');await page.keyboard.type(marker+' renamed');await page.keyboard.press('Enter');await name.waitFor({state:'hidden'});
    if(appTextSizeMode){await page.getByText(marker+' renamed',{exact:true}).first().waitFor({state:'visible'});row.chatAfter=await page.evaluate(()=>({width:innerWidth,scrollWidth:document.documentElement.scrollWidth,dpr:devicePixelRatio}));assert.equal(row.chatAfter.dpr,1);assert.ok(row.chatAfter.scrollWidth<=row.chatAfter.width,'App Text size Chat remains usable after keyboard flows');}
    row.actions.push({name:'Keyboard rename Enter',pass:true});
@@ -119,7 +119,7 @@ try {
    await captureDesktop(`${caseId}-chat.png`);
    await page.goto(settingsUrl);
    const instructions=page.getByLabel('Global Agent Instructions',{exact:true});await instructions.waitFor();
-   if(appTextSizeMode){assert.equal((await page.getByRole('combobox',{name:/^Text size (?:100|115|130|150|175|200)%$/}).innerText()).trim(),`${size}%`);const geometry=await page.evaluate(()=>({width:innerWidth,scrollWidth:document.documentElement.scrollWidth,dpr:devicePixelRatio}));assert.equal(geometry.dpr,1);assert.ok(geometry.scrollWidth<=geometry.width,'App Text size remains usable after keyboard flows');row.settingsAfter=geometry;}
+   if(appTextSizeMode){assert.equal((await page.getByRole('combobox',{name:/^Text Size (?:100|115|130|150|175|200)%$/}).innerText()).trim(),`${size}%`);const geometry=await page.evaluate(()=>({width:innerWidth,scrollWidth:document.documentElement.scrollWidth,dpr:devicePixelRatio}));assert.equal(geometry.dpr,1);assert.ok(geometry.scrollWidth<=geometry.width,'App Text size remains usable after keyboard flows');row.settingsAfter=geometry;}
    row.actions.push({name:'Tab to instructions',tabs:await tabTo(page,instructions)});
    await page.keyboard.press('Control+A');await page.keyboard.type(marker+' instructions');
    assert.equal(await instructions.inputValue(),marker+' instructions');

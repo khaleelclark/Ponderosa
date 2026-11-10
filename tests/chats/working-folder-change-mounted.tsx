@@ -36,12 +36,12 @@ async function fixture(run:(args:{host:HTMLDivElement;client:QueryClient;button(
 }
 export async function workingFolderPendingCompletionRegression(){await fixture(async({host,button,setRead})=>{
  let writes=0;const pending=choice('handoff');api.updateAgent=async(_id,input)=>{writes++;assert(input.workingCopyMode==='separate_git','selected mode is the explicit request');setRead(pending);return pending;};
- openSelect(host.querySelector('[role=combobox]'));await tick();(Array.from(document.querySelectorAll('[role=option]')).find(x=>x.textContent==='Separate Git copy') as HTMLElement).click();await settle();
+ openSelect(host.querySelector('[role=combobox]'));await tick();(Array.from(document.querySelectorAll('[role=option]')).find(x=>x.textContent==='Separate Git Copy') as HTMLElement).click();await settle();
  assert(writes===1&&host.textContent?.includes('preserving this Agent’s context'),'202 projection displays genuine pending Save');
-  assertActionLayout(button('Check status'));
+  assertActionLayout(button('Check Status'));
  assert(host.querySelector('[role=combobox]')?.getAttribute('aria-disabled')==='true','pending mode cannot be edited');
  assert(host.textContent?.includes('/synthetic/shared')&&!document.body.textContent?.includes('Agent working folder updated.'),'pending mode retains actual folder and never announces saved');
- setRead({...choice('completed'),workingCopy:{id:'new-copy',mode:'separate_git',rootPath:'/synthetic/new-copy',state:'ready'}} as AgentDto);button('Check status').click();await settle();
+ setRead({...choice('completed'),workingCopy:{id:'new-copy',mode:'separate_git',rootPath:'/synthetic/new-copy',state:'ready'}} as AgentDto);button('Check Status').click();await settle();
  assert(host.textContent?.includes('Separate Git copy · Ready')&&host.textContent.includes('/synthetic/new-copy'),'verified completion displays the actual canonical folder');
  assert(host.querySelector('[role=combobox]')?.getAttribute('aria-disabled')!=='true'&&!host.textContent?.includes('Saving…'),'only completed Save re-enables mode selection');
 });}
@@ -54,15 +54,15 @@ export async function workingFolderHeldRetryAndKeepRegression(){await fixture(as
  setRead(held);await client.invalidateQueries({queryKey:['agent-working-folder-change',base.id]});await settle();
  let release!:()=>void;const gate=new Promise<void>(resolve=>release=resolve);let kept=0;
  api.keepCurrentWorkingCopy=async(id,intent)=>{assert(id===base.id&&intent==='intent-one','Keep binds exact Agent and intent');kept++;await gate;const value=choice('kept_current');setRead(value);return value;};
- button('Keep current folder').click();await settle();assert(button('Keep current folder').disabled&&button('Retry').disabled,'pending Keep cannot conflict with Retry');release();await settle();
+ button('Keep Current Folder').click();await settle();assert(button('Keep Current Folder').disabled&&button('Retry').disabled,'pending Keep cannot conflict with Retry');release();await settle();
  assert(kept===1&&host.textContent?.includes('Kept the current working folder and existing context.')&&host.textContent.includes('/synthetic/shared'),'explicit Keep shows unchanged canonical folder');
  assert(host.querySelector('[role=combobox]')?.getAttribute('aria-disabled')!=='true','safe Keep restores normal folder controls');
 });}
 export async function workingFolderStatusErrorsAndUnknownHoldRegression(){await fixture(async({host,button,setRead,client})=>{
  setRead(choice('held',{message:'Provider input delivery is unconfirmed; inspect Activity before retrying.'}));await client.invalidateQueries({queryKey:['agent-working-folder-change',base.id]});await settle();
- assert(!Array.from(host.querySelectorAll('button')).some(x=>['Retry','Keep current folder'].includes(x.textContent??'')),'unknown/applied intent exposes no unsafe Retry or Keep');
- setRead(Error('Status unavailable: synthetic response failed. Try Check status.'));button('Check status').click();await settle();
+ assert(!Array.from(host.querySelectorAll('button')).some(x=>['Retry','Keep Current Folder'].includes(x.textContent??'')),'unknown/applied intent exposes no unsafe Retry or Keep');
+ setRead(Error('Status unavailable: synthetic response failed. Try Check status.'));button('Check Status').click();await settle();
  assert(host.textContent?.includes('Status unavailable: synthetic response failed.')&&host.textContent.includes('delivery is unconfirmed'),'real status failure remains visible beside retained hold');
-  assertActionLayout(button('Check status'));
+  assertActionLayout(button('Check Status'));
  assert(host.querySelector('[role=combobox]')?.getAttribute('aria-disabled')==='true'&&!document.body.textContent?.includes('Agent working folder updated.'),'status failure never releases or claims Save');
 });}

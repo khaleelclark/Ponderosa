@@ -235,15 +235,15 @@ export function ManageChatsWorkspace({
           disabled={!selected.size}
           onClick={openDelete}
         >
-          {selected.size ? `Delete selected (${selected.size})` : "Delete selected"}
+          {selected.size ? `Delete Selected (${selected.size})` : "Delete Selected"}
         </Button>
       }
       compactPrimaryAction={
-        <Tooltip title={selected.size ? `Delete ${selected.size} selected Chats` : "Select Chats to delete"}>
+        <Tooltip title={selected.size ? `Delete ${selected.size} Selected Chats` : "Select Chats To Delete"}>
           <span>
             <IconButton
               color="error"
-              aria-label={selected.size ? `Delete ${selected.size} selected Chats` : "Delete selected Chats"}
+              aria-label={selected.size ? `Delete ${selected.size} Selected Chats` : "Delete Selected Chats"}
               disabled={!selected.size}
               onClick={openDelete}
             >
@@ -256,7 +256,7 @@ export function ManageChatsWorkspace({
         <CollectionToolbar
           search={search}
           onSearch={setSearch}
-          searchLabel="Search Chats to manage"
+          searchLabel="Search Chats To Manage"
         >
           <Stack
             data-collection-toolbar-actions
@@ -281,7 +281,7 @@ export function ManageChatsWorkspace({
                 />
               }
             >
-              Select all
+              Select All
             </Button>
             <Typography variant="body2" color="text.secondary" noWrap>
               {directoryQuery.requestState.hasNextPage || directoryQuery.requestState.isFetchingNextPage
@@ -296,7 +296,7 @@ export function ManageChatsWorkspace({
           </Stack>
         </CollectionToolbar>
       }
-      listLabel="Chats available for bulk management"
+      listLabel="Chats Available For Bulk Management"
       busy={
         directoryQuery.requestState.isInitialLoading ||
         directoryQuery.requestState.isRefreshing ||
@@ -405,7 +405,7 @@ export function ManageChatsWorkspace({
           ))}
         </Box>
         <Typography variant="subtitle2" sx={{ mt: 1.5, mb: 0.5 }}>
-          Agents that will be deleted ({previewAgents.length})
+          Agents That Will Be Deleted ({previewAgents.length})
         </Typography>
         {previewAgents.length ? (
           <Box component="ul" sx={{ maxHeight: 180, overflowY: "auto", mt: 0, mb: 0, pl: 2.5 }}>

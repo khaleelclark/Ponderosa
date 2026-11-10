@@ -58,28 +58,28 @@ export function MemoryPreserveUnknown({id}:{id:string}):JSX.Element {
  };
  const close=()=>{if(!busy){setOpen(false);setAck(false);setConfirm(undefined);}};
  return <>
-  <Button size="small" onClick={()=>{setOpen(true);setAck(false);}}>Preserve unknown</Button>
-  <Dialog open={open} fullWidth maxWidth="sm" onClose={close} disableEscapeKeyDown={busy}><DialogTitle>Preserve unknown memory outcome</DialogTitle><DialogContent><Stack spacing={2} sx={{pt:1}}>
+  <Button size="small" onClick={()=>{setOpen(true);setAck(false);}}>Preserve Unknown</Button>
+  <Dialog open={open} fullWidth maxWidth="sm" onClose={close} disableEscapeKeyDown={busy}><DialogTitle>Preserve Unknown Memory Outcome</DialogTitle><DialogContent><Stack spacing={2} sx={{pt:1}}>
    <Alert severity="warning">Outcome unknown · hold remains unsettled · capture stays blocked · backend unchanged</Alert>
    <Typography sx={{overflowWrap:'anywhere'}}>{id}</Typography>
    {(restored.error||storageError)&&<Alert severity="error">{restored.error||storageError}</Alert>}
    {inventory.error&&<Alert severity="error">{inventory.error.message}</Alert>}
    {notice&&<Alert severity="info">{notice}</Alert>}
-   <Button disabled={busy||inventory.isFetching} onClick={()=>{setAck(false);setConfirm(undefined);void inventory.refetch();}}>Refresh original hold</Button>
+   <Button disabled={busy||inventory.isFetching} onClick={()=>{setAck(false);setConfirm(undefined);void inventory.refetch();}}>Refresh Original Hold</Button>
    {inventory.isFetching&&<Typography role="status">Reading original hold…</Typography>}
-   {hold&&!inventory.isError&&<details><summary>Exact original hold and disposition</summary><Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere',fontSize:12}}>{JSON.stringify(hold,null,2)}</Typography></details>}
+   {hold&&!inventory.isError&&<details><summary>Exact Original Hold And Disposition</summary><Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere',fontSize:12}}>{JSON.stringify(hold,null,2)}</Typography></details>}
    {!pending&&!receipt&&!hold?.disposition&&<>
-    <TextField multiline minRows={2} label="Reason for preserving uncertainty" value={reason} disabled={busy||!valid} onChange={event=>{setReason(event.target.value);setAck(false);setConfirm(undefined);}}/>
+    <TextField multiline minRows={2} label="Reason For Preserving Uncertainty" value={reason} disabled={busy||!valid} onChange={event=>{setReason(event.target.value);setAck(false);setConfirm(undefined);}}/>
     <FormControlLabel control={<Checkbox checked={ack} disabled={busy||!valid} onChange={(_,checked)=>setAck(checked)}/>} label="Keep the original hold; completion and backend drain are unverified"/>
-    <Button disabled={busy||!valid||!ack||reason.trim().length<16||reason.length>4096} onClick={stage}>Record Preserve unknown</Button>
+    <Button disabled={busy||!valid||!ack||reason.trim().length<16||reason.length>4096} onClick={stage}>Record Preserve Unknown</Button>
    </>}
    {pending&&<><Alert severity="warning">Exact command retained · no automatic retry · new input locked</Alert><Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere',fontSize:12}}>{JSON.stringify(pending,null,2)}</Typography>
-    <Button disabled={busy||inventory.isFetching} onClick={()=>lookup.mutate()}>Inspect original disposition</Button>
-    <Button disabled={busy||readOnly} onClick={()=>setConfirm(pending)}>Repeat exact Preserve unknown command</Button>
+    <Button disabled={busy||inventory.isFetching} onClick={()=>lookup.mutate()}>Inspect Original Disposition</Button>
+    <Button disabled={busy||readOnly} onClick={()=>setConfirm(pending)}>Repeat Exact Preserve Unknown Command</Button>
    </>}
    {(receipt||!pending&&!inventory.isError&&hold?.disposition)&&<Alert severity="warning">Preserve unknown recorded · hold unsettled · no completion or drain proof</Alert>}
-   {receipt&&<details><summary>Exact Preserve unknown receipt</summary><Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere',fontSize:12}}>{JSON.stringify(receipt,null,2)}</Typography></details>}
+   {receipt&&<details><summary>Exact Preserve Unknown Receipt</summary><Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere',fontSize:12}}>{JSON.stringify(receipt,null,2)}</Typography></details>}
   </Stack></DialogContent><DialogActions><Button disabled={busy} onClick={close}>Close</Button></DialogActions></Dialog>
-  <ConfirmDialog open={Boolean(confirm)} title="Preserve this unknown outcome?" confirmLabel="Confirm Preserve unknown" pending={send.isPending} confirmDisabled={readOnly||fence.current} onCancel={()=>setConfirm(undefined)} onConfirm={()=>{if(!confirm||fence.current)return;fence.current=true;send.mutate(confirm);}}><Typography sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>Hold stays unsettled · no backend mutation · {confirm?JSON.stringify(confirm,null,2):''}</Typography></ConfirmDialog>
+  <ConfirmDialog open={Boolean(confirm)} title="Preserve this unknown outcome?" confirmLabel="Confirm Preserve Unknown" pending={send.isPending} confirmDisabled={readOnly||fence.current} onCancel={()=>setConfirm(undefined)} onConfirm={()=>{if(!confirm||fence.current)return;fence.current=true;send.mutate(confirm);}}><Typography sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>Hold stays unsettled · no backend mutation · {confirm?JSON.stringify(confirm,null,2):''}</Typography></ConfirmDialog>
  </>;
 }

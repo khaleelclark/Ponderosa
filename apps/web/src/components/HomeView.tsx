@@ -90,7 +90,7 @@ export function HomeView({
   const homeRefreshError = activeAgentQuery.requestState.isRefreshError || outcomeQuery.requestState.isRefreshError;
   const homeRefreshing = activeAgentQuery.requestState.isRefreshing || outcomeQuery.requestState.isRefreshing;
 
-  const homeReads=[workspaceRead("workspace","Active Agents",activeAgentQuery),workspaceRead("workspace","Recent outcomes",outcomeQuery)];
+  const homeReads=[workspaceRead("workspace","Active Agents",activeAgentQuery),workspaceRead("workspace","Recent Outcomes",outcomeQuery)];
   return (
     <HomeLayout context="Across your chats" loading={homeLoading} status={homeLoading ? "Loading Home summary" : homeInitialError ? "Home summary could not be fully loaded" :
       homeRefreshError ? "Home refresh failed. Last loaded results are still available." :
@@ -100,7 +100,7 @@ export function HomeView({
           <Box sx={homeSummaryGridSx}>
             <SummaryCard label="Active Agents" value={activeCount} />
             <SummaryCard label="Needs Attention" value={attentionLoading ? notificationsLoadFailed ? "Unavailable" : "Loading" : attentionCount} onClick={onOpenInbox} />
-            <SummaryCard label="Provider Health" value={provider.label} compactValue={provider.label === "Engine ready" ? "Ready" : provider.label} onClick={() => onNavigate({ kind: "settings", section: "providers" })} />
+            <SummaryCard label="Provider Health" value={provider.label} compactValue={provider.label === "Engine Ready" ? "Ready" : provider.label} onClick={() => onNavigate({ kind: "settings", section: "providers" })} />
           </Box>
           {enginesLoaded && provider.severity === "warning" ? <Alert severity="warning" action={<Button color="inherit" onClick={() => onNavigate({ kind: "settings", section: "providers" })}>Provider Settings</Button>}>
             Provider access needs attention. {provider.detail} This is separate from work waiting for your response.
@@ -115,7 +115,7 @@ export function HomeView({
           <Section
             title="Needs Attention"
             description="Decisions, blockers, and failures that still need you."
-            action={!attentionLoading && attentionCount ? <Button onClick={onOpenInbox}>View all</Button> : undefined}
+            action={!attentionLoading && attentionCount ? <Button onClick={onOpenInbox}>View All</Button> : undefined}
           >
             {attention.length ? (
               <Box sx={homeItemsGridSx}>
@@ -195,7 +195,7 @@ export function HomeView({
           </Section>
 
           <Section title="Recent Outcomes" description="Recently finished assigned work across chats.">
-            <WorkspaceQueryError reportOnly={homeInitialError} read={workspaceRead("workspace","Recent outcomes",outcomeQuery)}/>
+            <WorkspaceQueryError reportOnly={homeInitialError} read={workspaceRead("workspace","Recent Outcomes",outcomeQuery)}/>
             {recentOutcomes.length ? (
               <Box sx={homeItemsGridSx}>
                 {recentOutcomes.map(item => (

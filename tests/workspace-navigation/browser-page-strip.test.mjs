@@ -34,10 +34,10 @@ test('Browser page tabs own only tabs; adjacent add action preserves selection, 
   const context=await browser.newContext({viewport:mobile?{width:390,height:844}:{width:1440,height:962},deviceScaleFactor:mobile?3:1,isMobile:mobile,hasTouch:mobile});
   const page=await context.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));
   await page.goto(`http://127.0.0.1:${preview.port}/?theme=${theme}`);
-  const tabs=page.getByRole('tablist',{name:'Browser pages'}),add=page.getByRole('button',{name:'New browser tab'});
+  const tabs=page.getByRole('tablist',{name:'Browser Pages'}),add=page.getByRole('button',{name:'New Browser Tab'});
   await tabs.waitFor();await add.waitFor();await page.evaluate(()=>document.fonts.ready);
   await page.waitForFunction(()=>getComputedStyle(document.querySelector('[role=tablist]')).display==='flex');
-  const structure=await tabs.evaluate(el=>({children:[...el.children].map(x=>({role:x.getAttribute('role'),name:x.getAttribute('aria-label')})),nestedAdd:!!el.querySelector('[aria-label="New browser tab"]')}));
+  const structure=await tabs.evaluate(el=>({children:[...el.children].map(x=>({role:x.getAttribute('role'),name:x.getAttribute('aria-label')})),nestedAdd:!!el.querySelector('[aria-label="New Browser Tab"]')}));
   const id=`${mobile?'mobile':'desktop'}-${theme}`;
   if(evidence){await page.screenshot({path:path.join(evidence,id+'.png')});await writeFile(path.join(evidence,id+'.html'),await page.content());await writeFile(path.join(evidence,id+'.json'),JSON.stringify({structure,errors},null,2));}
   assert.equal(structure.nestedAdd,false,'New browser tab must be outside tablist');
@@ -52,7 +52,7 @@ test('Browser page tabs own only tabs; adjacent add action preserves selection, 
   assert.deepEqual(await page.evaluate(()=>window.events),['activate:b','activate:a','close:a','new']);
   await page.getByRole('button',{name:'Close Beta',exact:true}).click();
   assert.deepEqual(await page.evaluate(()=>window.events),['activate:b','activate:a','close:a','new','close:b']);
-  for(const guard of ['readonly','busy','limit']){await page.evaluate(g=>window.setGuard(g),guard);await page.waitForFunction(()=>document.querySelector('[aria-label="New browser tab"]')?.disabled);assert.equal(await add.isDisabled(),true);}
+  for(const guard of ['readonly','busy','limit']){await page.evaluate(g=>window.setGuard(g),guard);await page.waitForFunction(()=>document.querySelector('[aria-label="New Browser Tab"]')?.disabled);assert.equal(await add.isDisabled(),true);}
   await page.evaluate(()=>window.setGuard('noadd'));await add.waitFor({state:'detached'});assert.equal(await tabs.getByRole('tab').count(),2);
   await page.evaluate(()=>window.setGuard('empty'));await tabs.waitFor({state:'detached'});
   assert.deepEqual(errors,[]);results.push({id,status:'pass',structure,viewport:await page.evaluate(()=>({width:innerWidth,height:innerHeight,dpr:devicePixelRatio})),errors});await context.close();

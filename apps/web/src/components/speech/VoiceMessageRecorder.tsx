@@ -115,12 +115,12 @@ export function VoiceMessageRecorder({onAttach,onClose,maxBytes}:{onAttach(file:
    {phase==='review'&&!transcriptionSettling&&!transcript.trim()&&!transcription.error&&!transcription.unavailableReason&&<Alert severity="warning">No transcript was captured. Audio is kept. Add message text or use Dictation before sending.</Alert>}
    {transcriptionSettling&&phase==='review'&&<Typography role="status" variant="body2">Finishing transcript…</Typography>}
    {transcript&&<Typography variant="body2" sx={{whiteSpace:'pre-wrap'}}>Transcript: {transcript}</Typography>}
-   {url&&<AudioMessagePlayer src={url} label="Voice message preview" preload="metadata"/>}
+   {url&&<AudioMessagePlayer src={url} label="Voice Message Preview" preload="metadata"/>}
    <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
     <Button sx={{minHeight:44}} disabled={phase==='stopping'} onClick={close}>Discard</Button>
-    {phase==='recording'?<Button ref={finishButton} sx={{minHeight:44}} variant="contained" onClick={()=>stop(true)}>Finish recording</Button>:<Button sx={{minHeight:44}} disabled={phase==='starting'||phase==='stopping'||transcriptionSettling} onClick={()=>void start()}>{file?'Record again':'Record'}</Button>}
-    {file&&url&&<Button sx={{minHeight:44}} href={url} download={file.name}>Save audio</Button>}
-    {file&&<Button ref={useRecordingButton} sx={{minHeight:44}} variant="contained" disabled={transcriptionSettling} onClick={()=>stage(file)}>Use recording</Button>}
+    {phase==='recording'?<Button ref={finishButton} sx={{minHeight:44}} variant="contained" onClick={()=>stop(true)}>Finish Recording</Button>:<Button sx={{minHeight:44}} disabled={phase==='starting'||phase==='stopping'||transcriptionSettling} onClick={()=>void start()}>{file?'Record Again':'Record'}</Button>}
+    {file&&url&&<Button sx={{minHeight:44}} href={url} download={file.name}>Save Audio</Button>}
+    {file&&<Button ref={useRecordingButton} sx={{minHeight:44}} variant="contained" disabled={transcriptionSettling} onClick={()=>stage(file)}>Use Recording</Button>}
    </Stack>
   </Stack>
  </Paper>;

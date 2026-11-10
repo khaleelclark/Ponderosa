@@ -171,7 +171,7 @@ export function AgentBrowserDialog({
               onNew={() => browser.newPage.mutate()}
               onClose={(pageId) => browser.closePage.mutate(pageId)}
             />
-          {!operator && session?.status === "ready" ? <Button size="small" aria-pressed={browser.followAgent} onClick={() => browser.setFollowAgent(!browser.followAgent)}>{browser.followAgent ? "Following agent" : "Follow agent"}</Button> : null}
+          {!operator && session?.status === "ready" ? <Button size="small" aria-pressed={browser.followAgent} onClick={() => browser.setFollowAgent(!browser.followAgent)}>{browser.followAgent ? "Following Agent" : "Follow Agent"}</Button> : null}
           <BrowserViewport
             adapter={adapter}
             session={session}
@@ -203,7 +203,7 @@ export function AgentBrowserDialog({
                 disabled={browser.control.isPending}
                 onClick={() => browser.control.mutate({ owner: "agent" })}
               >
-                Return control to {agentTitle}
+                Return Control To {agentTitle}
               </Button>
             </Stack>
           ) : (

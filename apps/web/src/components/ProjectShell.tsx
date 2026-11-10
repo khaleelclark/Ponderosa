@@ -210,7 +210,7 @@ export function ProjectShell({
   useReportWorkspaceRead(workspaceRead(`project:${project.id}`,"Agents",agentsQuery));
 
 
-  if (routeResourceLoading) return <LinearProgress aria-label="Loading requested resource" />;
+  if (routeResourceLoading) return <LinearProgress aria-label="Loading Requested Resource" />;
   if (routeResourceError) {
     return <WorkspaceQueryError initial read={workspaceRead(`project:${project.id}`,routeAgentId?"Agents":"Chats",routeAgentId?agentsQuery:conversationsQuery)}/>;
   }
@@ -333,7 +333,7 @@ export function ProjectShell({
 agentId: route.agentId,
 runId: route.runId,
 agentTitle: browserAgent?.title ?? "Agent",
-backLabel: route.conversationId ? "Back to Chat" : "Back to Agent",
+backLabel: route.conversationId ? "Back To Chat" : "Back To Agent",
 onClose: () => navigate(route.conversationId
         ? { kind: "conversation", projectId, conversationId: route.conversationId }
         : { kind: "agent", projectId, agentId: route.agentId! })}} />
@@ -344,7 +344,7 @@ open: true,
 embedded: true,
 request: browserRequest,
 onRequestHandled: onBrowserRequestHandled,
-backLabel: "Back to Chats",
+backLabel: "Back To Chats",
 onClose: () => navigate({ kind: "home" })}} />
   );
   } else if (route.kind === "review") {
@@ -372,7 +372,7 @@ onBack: () => navigate(returnTarget)}} />;
 projectId: projectId,
 conversationId: route.conversationId,
 focus: route.focusId ? { id: route.focusId } : undefined,
-backLabel: route.conversationId ? "Back to Chat" : "Back to Chats",
+backLabel: route.conversationId ? "Back To Chat" : "Back To Chats",
 onClose: () => navigate(route.conversationId ? { kind: "conversation", projectId, conversationId: route.conversationId } : { kind: "home" })}} />;
   } else {
     main = assertNeverRoute(route);
@@ -395,7 +395,7 @@ onClose: () => navigate(route.conversationId ? { kind: "conversation", projectId
   return (
     <Box sx={{ width: "100%", maxWidth: "100%", height: "100%", maxHeight: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", display: "grid", gridTemplateRows: "auto minmax(0, 1fr)" }}>
       <Box><WorkspaceQueryErrors reads={[workspaceRead(`project:${project.id}`,"Chats",conversationsQuery),workspaceRead(`project:${project.id}`,"Agents",agentsQuery)]}/></Box>
-      <Box component="section" aria-label="Project workspace" sx={{ height: "100%", minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "minmax(0, 1fr)", bgcolor: "background.default" }}><WorkspaceErrorBoundary resetKey={routeToPath(route)} title="This Project view could not be displayed.">{main}</WorkspaceErrorBoundary></Box>
+      <Box component="section" aria-label="Project Workspace" sx={{ height: "100%", minHeight: 0, minWidth: 0, display: "grid", gridTemplateRows: "minmax(0, 1fr)", bgcolor: "background.default" }}><WorkspaceErrorBoundary resetKey={routeToPath(route)} title="This Project view could not be displayed.">{main}</WorkspaceErrorBoundary></Box>
     </Box>
   );
 }

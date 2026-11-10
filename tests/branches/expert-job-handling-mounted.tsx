@@ -12,11 +12,11 @@ export async function expertJobHandlingRegression():Promise<void>{
  const render=()=>{const current=definition.steps[0] as typeof node;root.render(<AgentJobHandlingField value={current.jobHandling} onChange={mode=>{writes++;definition=changeAgentJobHandling(definition,current,mode);render();}}/>);};
  try{
   render();await settle();assert(writes===0,'opening legacy step never rewrites saved behavior');
-  assert(host.textContent?.includes('Existing behavior · steer or run'),'legacy behavior remains visible');
+  assert(host.textContent?.includes('Existing Behavior · Steer Or Run'),'legacy behavior remains visible');
   for(const [value,label,meaning] of [
-   ['queue','Wait its turn','Queued jobs keep separate results'],
-   ['steer','Steer current work','without a separate result'],
-   ['copy','Make a temporary Agent copy','fresh workspace and separate result'],
+   ['queue','Wait Its Turn','Queued jobs keep separate results'],
+   ['steer','Steer Current Work','without a separate result'],
+   ['copy','Make A Temporary Agent Copy','fresh workspace and separate result'],
   ] as const){
    const select=host.querySelector('[role="combobox"]');assert(select,'job handling picker');
    select!.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,button:0}));await settle();
@@ -38,7 +38,7 @@ export async function steeringNoResultRegression():Promise<void>{
  try{
   render();await settle();assert(writes===0&&input===undefined,'saved output dependency is not silently rewritten');
   assert(host.querySelector('[aria-invalid="true"]'),'incompatible output dependency is visibly invalid');
-  await open();const unavailable=Array.from(document.querySelectorAll('[role="option"]')).find(item=>item.textContent?.includes('steering has no output'))!;
+  await open();const unavailable=Array.from(document.querySelectorAll('[role="option"]')).find(item=>item.textContent?.includes('Steering Has No Output'))!;
   assert(unavailable?.getAttribute('aria-disabled')==='true','steering output is unavailable');
   (Array.from(document.querySelectorAll('[role="option"]')).find(item=>item.textContent==='Explicit Text') as HTMLElement).click();await settle();
   assert(writes===1&&input?.kind==='literal','only explicit correction changes edge input');
