@@ -3831,7 +3831,7 @@ export function Composer({
           /> : null}
         </Box>
         </Box>
-        <Box ref={anchorRef} sx={{ order: assistantMessages ? 0 : -1, flex: assistantMessages ? "1 1 80px" : "1 0 100%", minWidth: 0 }}>
+        <Box ref={anchorRef} sx={{ order: assistantMessages ? 0 : -1, flex: assistantMessages ? "1 1 80px" : "1 0 100%", minWidth: 0, alignSelf: assistantMessages ? "center" : undefined }}>
           <ComposerTextInput
             text={draftMutationLocked ? "" : text}
             inputRef={inputRef}

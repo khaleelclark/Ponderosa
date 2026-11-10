@@ -38,6 +38,7 @@
 .chat-message-frame.chat-message-assistant.chat-message-end > .chat-message-row > .chat-message-column > .chat-message-body { background: var(--assistant-outgoing, var(--ponderosa-accent)); color: var(--assistant-on-outgoing, var(--ponderosa-text-primary)); border-bottom-right-radius: 6px; --ponderosa-prose-link: currentColor; }
 .chat-message-assistant .chat-message-agent-header [data-message-sender] { font-size: .8125rem; }
 .ponderosa-composer[data-assistant-composer] [aria-label="Add Attachment Or Capability"] { width: 44px; height: 44px; border-radius: 50%; background: var(--ponderosa-surface); border: 1px solid var(--ponderosa-border); }
+.ponderosa-composer[data-assistant-composer] .composer-editor-input { padding-block: 5px; }
 .ponderosa-composer[data-assistant-composer] [data-composer-runtime] { border-radius: 999px; min-height: 44px; }
 .ponderosa-composer[data-assistant-composer][data-narrow="true"] [data-runtime-icon] { display: block; }
 .ponderosa-composer[data-assistant-composer][data-narrow="true"] [data-runtime-label] { display: none; }
