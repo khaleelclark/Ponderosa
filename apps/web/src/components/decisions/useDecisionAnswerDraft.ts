@@ -94,6 +94,11 @@ export function useDecisionAnswerDraft(decision: DecisionPrompt, open: boolean) 
       if (questionId) for (const file of files) questionByFile.current.set(file, questionId);
       uploads.addFiles(files);
     },
+    replaceFile: (previous: File, replacement: File) => {
+      const questionId = questionByFile.current.get(previous);
+      uploads.replaceFile(previous, replacement);
+      if (questionId) questionByFile.current.set(replacement, questionId);
+    },
     questionByFile: questionByFile.current,
     attachments, uploads, limits, ready, loadError, saveError, canAttach: Boolean(scope),
     retry: () => setRetry(value => value + 1),

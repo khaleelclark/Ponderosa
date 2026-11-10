@@ -113,13 +113,33 @@ test('UI019 dialogs own notification clicks and exact reads retain the shared co
  const mui=Object.fromEntries(['Alert','Box','Button','DialogActions','DialogContent','DialogTitle','Stack','TextField','Typography'].map(name=>[name,({children})=>React.createElement('div',null,children)]));
  mui.Dialog=props=>{roots.push(props);return React.createElement('section',null,props.children);};
  function load(name,imports){const exports={};vm.runInNewContext(ts.transpileModule(readFileSync(new URL('../../apps/web/src/components/decisions/'+name,import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX}}).outputText,{exports,AbortSignal,require:specifier=>imports[specifier]??require(specifier)});return exports;}
- const stubDraft={text:'Retained answer',setText(){},attachments:{files:[]},uploads:{uploadStates:new Map()},ready:true,limits:core.DEFAULT_ASSET_LIMITS,attachmentIds:[],uploadsComplete:true,questionByFile:new Map()};
+ const stubDraft={text:'Retained answer',setText(){},attachments:{files:[]},uploads:{uploadStates:new Map(),attachmentIds:{current:new Map()}},ready:true,limits:core.DEFAULT_ASSET_LIMITS,attachmentIds:[],uploadsComplete:true,questionByFile:new Map()};
  const common={react,'@mui/material':mui,'@ponderosa/core':core};
- const {DecisionResponseDialog}=load('DecisionResponseDialog.tsx',{...common,'@tanstack/react-query':{useQuery:options=>{queries.push(options);return{};}},'../../api':{api:{listDecisions:async()=>[base]}},'../../queryKeys':{queryKeys:{decisions:{all:[]}}},'../../decisions':{validateDecisionResponse:()=>({text:'answer'})},'./DecisionQuestionContent':{DecisionQuestionContent:()=>null},'../chat/ComposerAttachment':{ComposerAttachment:()=>null},'../chat/composerUtils':utils,'../chat/folderAttachments':{},'./useDecisionAnswerDraft':{useDecisionAnswerDraft:()=>stubDraft},'../../conversationRouting':{fileSelectionFingerprint:()=>[]}});
+ const {DecisionResponseDialog}=load('DecisionResponseDialog.tsx',{...common,'@tanstack/react-query':{useQuery:options=>{queries.push(options);return{};}},'../../api':{api:{listDecisions:async()=>[base]}},'../../api/productScope.js':{productApiPath:path=>path},'../../queryKeys':{queryKeys:{decisions:{all:[]}}},'../../decisions':{validateDecisionResponse:()=>({text:'answer'})},'./DecisionQuestionContent':{DecisionQuestionContent:()=>null},'../chat/ComposerAttachment':{ComposerAttachment:()=>null},'../chat/composerUtils':utils,'../chat/folderAttachments':{},'../chat/useFolderImports':{useFolderImports:()=>({reports:[],preparing:false,importFiles(){}})},'../chat/FolderImportReview':{FolderImportReview:()=>null},'./useDecisionAnswerDraft':{useDecisionAnswerDraft:()=>stubDraft},'../../conversationRouting':{fileSelectionFingerprint:()=>[]}});
  const base={id:'d',mode:'text',question:'Full question',options:[],status:'pending',allowOther:true};
  const check=element=>{roots.length=0;renderToStaticMarkup(element);assert.equal(roots.length,1);let stopped=false,navigated=0;roots[0].onClick?.({stopPropagation(){stopped=true;}});if(!stopped)navigated++;assert.equal(navigated,0,'A child dialog click must not reach the notification navigation action');};
  for(const decision of [base,{...base,question:undefined},{...base,status:'resolved'}])check(React.createElement(DecisionResponseDialog,{decision,open:true,onClose(){},onRespond(){}}));
  for(const query of queries){const data=await query.queryFn();assert.ok(Array.isArray(data),'Exact Decision queries must remain arrays for shared cache updates');assert.equal(data[0],base);}
  const {DecisionResponseMessage}=load('DecisionResponseMessage.tsx',{...common,'../chat/ChatMessageFrame':{ChatMessageFrame:({message})=>message.body},'../chat/ChatMessages':{AgentMention:()=>null},'../chat/ChatAttachments':{ChatAttachments:()=>null},'./DecisionQuestionContent':{DecisionQuestionContent:()=>null},'./decisionResponse':{decisionResponseChoice:()=> 'Answer',decisionResponseSummary:()=> 'Answered',decisionResponseVerb:()=> 'Answered'}});
  check(React.createElement(DecisionResponseMessage,{event:{id:'e',createdAt:'now',decision:{...base,response:{text:'Answer'}},recipientAgent:null}}));
+});
+
+test('folder review replaces only its exact archive and keeps question ownership, other uploads and failed rebuilds', async () => {
+ const f=fixture({}, {questions});await f.start();
+ const old=new File(['old archive'],'project.zip',{type:'application/zip'}),other=new File(['unrelated'],'other.txt',{type:'text/plain'});
+ f.value.addFiles([old],'one');await f.flush();f.value.addFiles([other],'two');await f.flush();
+ const oldId=f.value.uploads.attachmentIds.current.get(old),otherId=f.value.uploads.attachmentIds.current.get(other);
+ assert.throws(()=>f.value.replaceFile(old,new File([],'empty.zip',{type:'application/zip'})),/empty/);
+ assert.equal(f.value.attachments.files[0],old,'Validation failure keeps original archive');
+ const replacement=new File(['rebuilt bytes'],'project.zip',{type:'application/zip'});
+ f.value.replaceFile(old,replacement);await f.flush();await f.debounce();
+ assert.deepEqual([...f.value.attachments.files],[replacement,other]);
+ assert.equal(f.value.questionByFile.get(replacement),'one');assert.equal(f.value.questionByFile.get(other),'two');
+ assert.equal(f.value.uploads.attachmentIds.current.get(other),otherId);
+ assert.ok(f.value.uploads.locallyRemovedIds.current.has(oldId));
+ assert.equal(f.value.uploads.attachmentIds.current.has(old),false);
+ assert.equal(f.calls.upload.length,3,'Only the new archive starts another upload');
+ const answers=f.calls.put.at(-1)[1].decisionAnswers;
+ assert.deepEqual([...answers[0].attachmentIds],[f.value.uploads.attachmentIds.current.get(replacement)]);
+ assert.deepEqual([...answers[1].attachmentIds],[otherId]);f.unmount();
 });

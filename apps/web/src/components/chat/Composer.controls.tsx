@@ -30,6 +30,7 @@ import type {
   ArtifactDto,
 } from "@ponderosa/core";
 import { type RefObject, useEffect, useRef, useState } from "react";
+import { FOLDER_PICKER_NOTE } from "./folderAttachments";
 import { isIOSDevice } from "../../browserPlatform";
 import type { ComposerMenuAction } from "./composerContracts";
 import { compactPreviewText } from "./Composer.helpers";
@@ -485,7 +486,7 @@ export function ComposerCapabilityPicker({
               >
                 <Box>
                   <Typography variant="body2">{label}</Typography>
-                  {(!mobile || !attachmentsEnabled || fileCount >= maximumFiles || (label === "Folder" && !folderPickerSupported)) && <Typography variant="caption" color="text.secondary">
+                  {(!mobile || label === "Folder" || !attachmentsEnabled || fileCount >= maximumFiles) && <Typography variant="caption" color="text.secondary">
                     {!attachmentsEnabled
                       ? (attachmentsUnavailableReason ??
                         "Attachments are not supported in this chat.")
@@ -493,7 +494,7 @@ export function ComposerCapabilityPicker({
                         ? "Remove an attachment before adding another."
                         : label === "Photos"
                           ? `PNG, JPEG, WebP, HEIC, GIF, or AVIF · ${Math.floor((assetLimits?.maxFileBytes ?? COMPOSER_MAX_FILE_BYTES) / 1024 / 1024)} MiB each`
-                          : label === "Folder" ? folderPickerSupported ? "ZIP preserving folder paths; hidden/sensitive files excluded · up to 2,048 entries" : "Folder selection is unavailable in this browser. Attach a ZIP instead."
+                          : label === "Folder" ? folderPickerSupported ? `ZIP with paths · up to 2,048 entries. ${FOLDER_PICKER_NOTE}` : "Folder selection is unavailable in this browser. Attach a ZIP instead."
                           : `Up to ${maximumFiles} files, including fonts, documents, code, media and archives · ${Math.floor((assetLimits?.maxFileBytes ?? COMPOSER_MAX_FILE_BYTES) / 1024 / 1024)} MiB each`}
                   </Typography>}
                 </Box>

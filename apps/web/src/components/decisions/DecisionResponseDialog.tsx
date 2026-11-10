@@ -13,15 +13,18 @@ import {
 import { useQuery } from "@tanstack/react-query";
 import { decisionAnswersError } from "@ponderosa/core";
 import { api } from "../../api";
+import { productApiPath } from "../../api/productScope.js";
 import { queryKeys } from "../../queryKeys";
 import { DecisionQuestionContent } from "./DecisionQuestionContent";
-import { useEffect, useId, useRef, useState } from "react";
+import { useId, useRef, useState } from "react";
 import type { DecisionPrompt, DecisionResponse } from "../../decisions";
 import { validateDecisionResponse } from "../../decisions";
 import { ComposerAttachment } from "../chat/ComposerAttachment";
 import { filesFromClipboard } from "../chat/composerUtils";
-import { collectAttachments, droppedAttachmentEntries } from "../chat/folderAttachments";
+import { droppedAttachmentEntries, FOLDER_PICKER_NOTE } from "../chat/folderAttachments";
 import { useDecisionAnswerDraft } from "./useDecisionAnswerDraft";
+import { useFolderImports } from "../chat/useFolderImports";
+import { FolderImportReview } from "../chat/FolderImportReview";
 import { fileSelectionFingerprint } from "../../conversationRouting";
 
 function DecisionAnswerDialog({
@@ -48,23 +51,21 @@ function DecisionAnswerDialog({
   const text = question ? answer?.text ?? "" : draft.text;
   const setText = (text: string) => question ? draft.setAnswer({ questionId: question.id, status: "answered", text }) : draft.setText(text);
   const questionFiles = draft.attachments.files.flatMap((file, index) => !question || draft.questionByFile.get(file) === question.id ? [{ file, index }] : []);
-  const [preparing, setPreparing] = useState(false), [fileError, setFileError] = useState<string>();
-  const mounted = useRef(true), canEdit = useRef(false), importBusy = useRef(false);
-  canEdit.current = draft.ready && !pending;
-  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
-  const importFiles = async (entries: Array<FileSystemEntry | File>) => {
-    if (!canEdit.current || !draft.canAttach || importBusy.current) return;
-    importBusy.current = true;
-    setPreparing(true); setFileError(undefined);
-    const check = () => { if (!mounted.current || !canEdit.current) throw new Error("File preparation stopped because this answer is no longer editable."); };
-    try {
-      const remaining = draft.limits.maxMessageBytes - draft.attachments.files.reduce((sum, file) => sum + file.size, 0);
-      const result = await collectAttachments(entries, Math.min(draft.limits.maxFileBytes, remaining), check);
-      check(); draft.addFiles(result.files, question?.id);
-      if (result.skipped) setFileError(`Skipped ${result.skipped} hidden, sensitive, or dependency items.`);
-    } catch (error) { if (mounted.current) setFileError(error instanceof Error ? error.message : "The files could not be prepared."); }
-    finally { importBusy.current = false; if (mounted.current) setPreparing(false); }
-  };
+  const fileInput = useRef<HTMLInputElement>(null), folderInput = useRef<HTMLInputElement | null>(null);
+  const canEdit = useRef(false);
+  canEdit.current = open && draft.ready && !pending && answer?.status !== "skipped" && !answer?.optionId;
+  const folderImportScope = JSON.stringify([productApiPath("/api/conversations"), decision.id, decision.agentId]);
+  const folderImports = useFolderImports({
+    scope: folderImportScope, storageKey: draft.canAttach ? `ponderosa.folder-imports.v1.${folderImportScope}` : undefined,
+    attachmentIds: draft.uploads.attachmentIds.current, attachmentVersion: draft.uploads.attachmentVersion, ready: draft.ready,
+    destination: question?.id,
+    cancellationKey: JSON.stringify([open, answer?.status, answer?.optionId]),
+    enabled: canEdit.current && draft.canAttach, files: draft.attachments.files, limits: draft.limits,
+    addFiles: files => draft.addFiles(files, question?.id),
+    replaceFile: draft.replaceFile, removeFile: draft.uploads.removeFile,
+  });
+  const preparing = folderImports.preparing;
+  const importFiles = folderImports.importFiles;
 
   const submit = async () => {
     setValidationError(undefined);
@@ -115,7 +116,7 @@ function DecisionAnswerDialog({
             minRows={3}
             label={prompt.mode === "text" ? "Your Answer" : "Alternative Direction"}
             disabled={!draft.ready || pending}
-            helperText={draft.canAttach ? "Paste or drop images and files into your answer." : undefined}
+            helperText={draft.canAttach ? `Paste or drop images and files into your answer. ${FOLDER_PICKER_NOTE}` : undefined}
             onPaste={event => {
               const files = filesFromClipboard(event.clipboardData.items, event.clipboardData.files);
               if (!files.length) return;
@@ -126,13 +127,24 @@ function DecisionAnswerDialog({
             onChange={(event) => setText(event.target.value)}
             inputProps={{ maxLength: 10_000 }}
           />
+          {draft.canAttach ? <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
+            <Button disabled={!canEdit.current || preparing} onClick={() => fileInput.current?.click()}>Attach Files</Button>
+            {"webkitdirectory" in HTMLInputElement.prototype ? <Button disabled={!canEdit.current || preparing} onClick={() => folderInput.current?.click()}>Attach Folder</Button> : null}
+            <input ref={fileInput} hidden multiple type="file" aria-label="Choose Files" onChange={event => {
+              void importFiles(Array.from(event.target.files ?? [])); event.target.value = "";
+            }} />
+            <input ref={element => { folderInput.current = element; if (element) element.webkitdirectory = true; }} hidden multiple type="file" aria-label="Choose Folder" onChange={event => {
+              void importFiles(Array.from(event.target.files ?? [])); event.target.value = "";
+            }} />
+          </Stack> : null}
           <Stack direction="row" useFlexGap flexWrap="wrap" spacing={1} sx={{ mt: 1 }}>
             {questionFiles.map(({file, index}) => <ComposerAttachment key={JSON.stringify(fileSelectionFingerprint([file]))} file={file}
               {...draft.uploads.uploadStates.get(file)} disabled={pending} onRetry={() => draft.uploads.retryUpload(file)} onRemove={() => draft.uploads.removeFile(index)} />)}
           </Stack>
           </Box> : null}
           {preparing ? <Typography role="status">Preparing files…</Typography> : null}
-          {fileError || draft.attachments.error ? <Alert severity="error">{fileError || draft.attachments.error}</Alert> : null}
+          <FolderImportReview imports={folderImports} files={questionFiles.map(item => item.file)} disabled={!canEdit.current || preparing} />
+          {draft.attachments.error ? <Alert severity="error">{draft.attachments.error}</Alert> : null}
           {draft.saveError ? <Alert severity="warning" action={<Button onClick={draft.retry}>Retry Draft Save</Button>}>{draft.saveError}</Alert> : null}
           {validationError || error ? <Alert severity="error">{validationError || error}</Alert> : null}
         </Stack>

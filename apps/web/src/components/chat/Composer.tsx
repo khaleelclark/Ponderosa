@@ -42,7 +42,9 @@ import {
 } from "react";
 import { api } from "../../api";
 import { ApiRequestError } from "../../api/types";
-import { collectAttachments, droppedAttachmentEntries } from "./folderAttachments";
+import { droppedAttachmentEntries } from "./folderAttachments";
+import { useFolderImports } from "./useFolderImports";
+import { FolderImportReview } from "./FolderImportReview";
 import { readChatState, readChatStateEntries, writeChatState } from "../../chatState";
 import { acknowledgeDraftTextRecovery, discardDraftTextRecovery, draftRecoveryCaptureId, hasDraftRecoveryContent, observeDraftTextRecovery, readDraftTextRecovery, recoverDraftText, retireSubmittedDraftText, writeDraftTextRecovery, type DraftRecoveryFence, type DraftTextRecovery } from "./draftTextRecovery";
 import { readDraftSelection, writeDraftSelection } from "./draftSelection";
@@ -430,18 +432,7 @@ export function Composer({
   const [draftReadyVersion, setDraftReadyVersion] = useState(0);
   const sendingRef = useRef(false);
   const [sending, setSending] = useState(false);
-  const [preparingFolder, setPreparingFolder] = useState(false);
-  const attachmentImportGeneration = useRef(0);
-  const attachmentImportBusy = useRef(false);
-  const attachmentImportScope = JSON.stringify([conversationDraftId, draftStorageKey]);
-  const attachmentImportScopeRef = useRef(attachmentImportScope);
-  attachmentImportScopeRef.current = attachmentImportScope;
-  const attachmentImportAllowedRef = useRef(false);
-  useEffect(() => {
-    setPreparingFolder(false);
-    attachmentImportBusy.current = false;
-    return () => { attachmentImportGeneration.current++; attachmentImportBusy.current = false; };
-  }, [attachmentImportScope]);
+  const attachmentImportScope = JSON.stringify([productApiPath("/api/conversations"), conversationDraftId, draftStorageKey, draftOwnerId]);
   const draftMutationLockedRef = useRef(false);
   const [draftMutationLocked, setDraftMutationLocked] = useState(false);
   const draftContentGeneration = useRef(0);
@@ -796,33 +787,17 @@ export function Composer({
   const addFiles = useCallback((candidates: File[]) => {
     if (!draftMutationLockedRef.current) addDraftFiles(candidates);
   }, [addDraftFiles]);
-  const importAttachments = async (entries: Array<FileSystemEntry | File>) => {
-    if (!attachmentImportAllowedRef.current || draftMutationLockedRef.current || attachmentImportBusy.current) return;
-    attachmentImportBusy.current = true;
-    const generation = ++attachmentImportGeneration.current;
-    const scope = attachmentImportScope;
-    const checkActive = () => {
-      if (generation !== attachmentImportGeneration.current || scope !== attachmentImportScopeRef.current ||
-          !attachmentImportAllowedRef.current || draftMutationLockedRef.current) throw new Error("Folder preparation was cancelled because the destination is no longer available.");
-    };
-    setPreparingFolder(true);
-    try {
-      const maxBytes = Math.min(assetLimits?.maxFileBytes ?? COMPOSER_MAX_FILE_BYTES,
-        (assetLimits?.maxMessageBytes ?? COMPOSER_MAX_FILE_BYTES) - files.reduce((sum, file) => sum + file.size, 0));
-      const result = await collectAttachments(entries, maxBytes, checkActive);
-      checkActive();
-      addFiles(result.files);
-      if (result.skipped) dispatchAttachments({ type: "set_error", error: `Skipped ${result.skipped} hidden, sensitive, or dependency items while preparing the folder ZIP.` });
-    } catch (error) {
-      if (generation === attachmentImportGeneration.current && scope === attachmentImportScopeRef.current) {
-        dispatchAttachments({ type: "set_error", error: error instanceof Error ? error.message : "The folder could not be prepared. Nothing was attached." });
-      }
-    } finally {
-      if (generation === attachmentImportGeneration.current && scope === attachmentImportScopeRef.current) {
-        attachmentImportBusy.current = false; setPreparingFolder(false);
-      }
-    }
-  };
+  const folderImports = useFolderImports({
+    scope: attachmentImportScope,
+    storageKey: conversationDraftId ? `ponderosa.folder-imports.v1.${JSON.stringify([productApiPath("/api/conversations"), conversationDraftId, draftOwnerId])}` : undefined,
+    attachmentIds: draftAttachmentIds.current, attachmentVersion: draftAttachmentVersion,
+    ready: !conversationDraftId || draftReady.current, retainedAttachmentIds: unrestoredDraftAttachmentIds.current,
+    enabled: attachmentsEnabled && !disabled && !(running && !allowSendWhileRunning) && !draftMutationLocked,
+    files, limits: assetLimits, addFiles,
+    replaceFile: draftAttachments.replaceFile, removeFile: removeDraftFile,
+  });
+  const preparingFolder = folderImports.preparing;
+  const importAttachments = folderImports.importFiles;
   const removeFile = useCallback((index: number) => {
     if (!draftMutationLockedRef.current) removeDraftFile(index);
   }, [removeDraftFile]);
@@ -1268,8 +1243,7 @@ export function Composer({
   const canCancel = running && Boolean(onCancel);
   const composerAttachmentsEnabled = attachmentsEnabled;
   const composerAttachmentsUnavailableReason = attachmentsUnavailableReason;
-  attachmentImportAllowedRef.current = attachmentsEnabled && !disabled && !composerLocked && !draftMutationLocked;
-  const fileDropEnabled = attachmentImportAllowedRef.current && !preparingFolder;
+  const fileDropEnabled = attachmentsEnabled && !disabled && !composerLocked && !draftMutationLocked && !preparingFolder;
   useEffect(() => {
     fileDragDepth.current = 0;
     setFileDragActive(false);
@@ -3212,7 +3186,7 @@ export function Composer({
         setFileDragActive(false);
         if (!fileDropEnabled || draftMutationLockedRef.current) return;
         const entries = droppedAttachmentEntries(event.dataTransfer);
-        if (entries.some(entry => !(entry instanceof File) && entry.isDirectory)) void importAttachments(entries);
+        if (entries.some(entry => entry instanceof File ? Boolean(entry.webkitRelativePath) : entry.isDirectory)) void importAttachments(entries);
         else addFiles(Array.from(event.dataTransfer.files));
       }}
     >
@@ -3231,6 +3205,7 @@ export function Composer({
         removeFile={removeFile}
         retryDraftUpload={retryDraftUpload}
       />}
+      <FolderImportReview imports={folderImports} files={files} disabled={!fileDropEnabled} />
       <ComposerNotices
         pastedText={draftMutationLocked ? undefined : pastedText}
         pastedTextBytes={pastedText ? utf8ByteLength(pastedText) : 0}

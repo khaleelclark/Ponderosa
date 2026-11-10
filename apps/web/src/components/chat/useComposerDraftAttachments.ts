@@ -28,6 +28,7 @@ export interface ComposerDraftAttachments {
   locallyRemovedIds: MutableRefObject<Set<string>>;
   mergeRestored(restored: RestoredDraftAttachment[]): void;
   removeFile(index: number): void;
+  replaceFile(previous: File, replacement: File): void;
   replaceRestored(restored: RestoredDraftAttachment[]): void;
   replaceSnapshot(restored: Array<{ file: File; attachmentId: string }>): void;
   retryUpload(file: File): void;
@@ -181,7 +182,7 @@ export function useComposerDraftAttachments({
       locallyRemovedIds.current.add(id);
       metadata.current.delete(id);
     }
-    else locallyRemovedFiles.current.add(file);
+    locallyRemovedFiles.current.add(file);
     pendingUploads.current = pendingUploads.current.filter(
       candidate => candidate !== file,
     );
@@ -194,6 +195,19 @@ export function useComposerDraftAttachments({
     onEdit(id);
     setAttachmentVersion(value => value + 1);
   }, [dispatch, files, onEdit]);
+
+  // Replace only this File identity. In-flight completion of the old upload is
+  // fenced by the same local removal guard as ordinary attachment removal.
+  const replaceFile = useCallback((previous: File, replacement: File) => {
+    const index = files.indexOf(previous);
+    if (index < 0) throw new Error("The folder attachment was removed. Select it again.");
+    const selection = selectComposerFiles(files.filter(file => file !== previous), [replacement], assetLimits);
+    if (selection.error) throw new Error(selection.error);
+    removeFile(index);
+    const next = [...files]; next[index] = replacement;
+    dispatch({ type: "replace", files: next });
+    queueUploads([replacement]);
+  }, [files, assetLimits, removeFile, dispatch, queueUploads]);
 
   const mergeRestored = useCallback((restored: RestoredDraftAttachment[]) => {
     const existingIds = new Set(attachmentIds.current.values());
@@ -292,6 +306,7 @@ export function useComposerDraftAttachments({
     locallyRemovedIds,
     mergeRestored,
     removeFile,
+    replaceFile,
     replaceRestored,
     replaceSnapshot,
     retryUpload,
