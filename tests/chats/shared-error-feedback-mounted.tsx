@@ -30,10 +30,10 @@ function frame(children:React.ReactNode,client?:QueryClient){return <ThemeProvid
 
 export async function sharedSnackbarBridgeMountedRegression():Promise<void>{
  const host=document.createElement('div');document.body.append(host);const root=createRoot(host),windowMount=window as AssistantMountWindow,original=windowMount.__ponderosaAssistantMount;
- let core!:MutationNotifier,assistant!:MutationNotifier,child:ReturnType<typeof createRoot>|undefined;
+ let core!:MutationNotifier,assistant!:MutationNotifier,child:ReturnType<typeof createRoot>|undefined,dialogCloseRequests=0;
  const metrics=document.documentElement.style.getPropertyValue('--ponderosa-app-viewport-block-size');
  function Core(){core=useMutationNotification();return <Box data-retained-layout sx={{height:240}}>Retained Chat Layout<AssistantSurface colorMode="light" onOpenNavigation={()=>{}} onToggleColorMode={()=>{}} onOpenProviderSettings={()=>{}}/></Box>;}
- function Embedded(){assistant=useMutationNotification();const [draft,setDraft]=useState('Unsaved Assistant Settings');return <Dialog open onClose={()=>{}}><DialogContent><input aria-label="Retained Settings Draft" value={draft} onChange={e=>setDraft(e.target.value)}/></DialogContent></Dialog>;}
+ function Embedded(){assistant=useMutationNotification();const [draft,setDraft]=useState('Unsaved Assistant Settings');return <Dialog open onClose={()=>{dialogCloseRequests++;}}><DialogContent><input aria-label="Retained Settings Draft" value={draft} onChange={e=>setDraft(e.target.value)}/></DialogContent></Dialog>;}
  windowMount.__ponderosaAssistantMount={mount(node,props){assert(props.notify,'Core forwards the existing notifier across the actual mount boundary');child=createRoot(node);child.render(<ThemeProvider theme={theme}><MutationNotificationProvider notifier={props.notify}><Embedded/></MutationNotificationProvider></ThemeProvider>);},update(){},unmount(){child?.unmount();child=undefined;},canLeave:()=>true,blockers:()=>[],productScope:()=> 'branches'};
  try{
   flushSync(()=>root.render(frame(<Core/>)));await until(()=>Boolean(assistant),'Embedded root mounts');
@@ -48,9 +48,11 @@ export async function sharedSnackbarBridgeMountedRegression():Promise<void>{
   assert(!document.querySelector('.MuiSnackbar-root'),'Closed incidents do not reappear on repeat reporting');
   assert(document.querySelector<HTMLInputElement>('[aria-label="Retained Settings Draft"]')?.value==='Unsaved Assistant Settings','Snackbar Close retains the Settings draft and dialog');
   core({...notice,incident:'explicit-retry'});await until(()=>Boolean(document.querySelector('.MuiSnackbar-root')),'Explicit retry can report again');
-  document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',code:'Escape',bubbles:true,cancelable:true}));
+  const focused=document.querySelector<HTMLInputElement>('[aria-label="Retained Settings Draft"]')!;focused.focus();focused.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',code:'Escape',bubbles:true,cancelable:true}));
   await until(()=>!document.querySelector('.MuiSnackbar-root'),'Keyboard dismissal closes feedback');
   assert(document.querySelector<HTMLInputElement>('[aria-label="Retained Settings Draft"]')?.value==='Unsaved Assistant Settings','Keyboard dismissal never discards Settings');
+  assert(dialogCloseRequests===0,'Escape from the real focused embedded input dismisses feedback before either root can close Settings');
+  focused.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',code:'Escape',repeat:true,bubbles:true,cancelable:true}));await settle();assert(dialogCloseRequests===0,'Held Escape cannot reach Settings after the last snackbar has disappeared');focused.dispatchEvent(new KeyboardEvent('keyup',{key:'Escape',code:'Escape',bubbles:true,cancelable:true}));
   document.documentElement.style.setProperty('--ponderosa-app-viewport-block-size',`${Math.max(280,innerHeight-240)}px`);
   core({...notice,incident:'keyboard-open'});await until(()=>Boolean(document.querySelector('.MuiSnackbar-root')),'Keyboard geometry feedback renders');
   const snack=document.querySelector<HTMLElement>('.MuiSnackbar-root')!,rect=snack.getBoundingClientRect();

@@ -145,7 +145,38 @@ export function MutationNotificationProvider({
     document.addEventListener("click", announceDownload, true);
     return () => { mounted = false; document.removeEventListener("click", announceDownload, true); for (const download of pending.values()) download.controller.abort(); };
   }, [notify, notifier]);
-  const dismiss = () => setNotices((current) => current.slice(1));
+  const dismiss = useCallback(() => setNotices((current) => current.slice(1)), []);
+  const activeNotice = useRef(active);
+  activeNotice.current = active;
+  const escapeHeld = useRef(false);
+  useEffect(() => {
+    if (notifier) return;
+    // Embedded dialogs have their own React root. Own this Escape gesture
+    // through keyup, even after the last notice disappears, before either
+    // root can interpret feedback dismissal as closing a draft.
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.isComposing) return;
+      const notice = activeNotice.current;
+      if (!escapeHeld.current && (!notice || notice.progress)) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      if (!escapeHeld.current && !event.repeat) {
+        escapeHeld.current = true;
+        dismiss();
+      }
+    };
+    const release = (event: KeyboardEvent) => { if (event.key === "Escape") escapeHeld.current = false; };
+    const blur = () => { escapeHeld.current = false; };
+    document.addEventListener("keydown", escape, true);
+    document.addEventListener("keyup", release, true);
+    window.addEventListener("blur", blur);
+    return () => {
+      document.removeEventListener("keydown", escape, true);
+      document.removeEventListener("keyup", release, true);
+      window.removeEventListener("blur", blur);
+      escapeHeld.current = false;
+    };
+  }, [notifier, dismiss]);
 
   return (
     <MutationNotificationContext.Provider value={value}>
