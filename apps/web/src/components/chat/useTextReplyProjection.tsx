@@ -76,21 +76,26 @@ function useReplyStreams(projectId:string,owner:string,sources:Source[],canonica
      if(!liveSource||changedAttempt(entry.attempt,sourceAttempt(liveSource),entry.reply)||!sourceAllowed(liveSource,Boolean(entry.reply))){invalidate();return;}
      const run=expectedRun(liveSource),next=status.reply,context=status.memoryExposure;
      entry.error=undefined;entry.success=true;
-     if(status.messageId!==source.sourceId||run&&status.runId!==run){rejectSnapshot();return;}
-     if(['failed','cancelled','outcome_unknown'].includes(status.runStatus??'')||context?.state==='invalid'){invalidate();return;}
-     if(!context||!['valid','disabled'].includes(context.state)){if(entry.reply)invalidate();else render();return;}
+     if(status.messageId!==source.sourceId||run&&status.runId&&status.runId!==run){rejectSnapshot();return;}
+     if(['failed','cancelled','outcome_unknown'].includes(status.runStatus??'')||context?.state==='invalid'||next?.state==='failed'||next?.failureReason==='context_changed'){invalidate();return;}
+     if(entry.reply && (status.runId && status.runId!==entry.reply.runId || context?.runId && context.runId!==entry.reply.runId ||
+       next && ['projectId','conversationId','agentId','messageId','runId','fence','streamId','steeringInjectionId'].some(k=>next[k as keyof typeof next]!==undefined && next[k as keyof typeof next]!==entry.reply![k as keyof typeof next]) ||
+       context && ['sessionResetSeq','projectGeneration','globalGeneration'].some(k=>context[k as keyof typeof context]!==undefined && context[k as keyof typeof context]!==entry.exposure?.[k as keyof typeof context]))){invalidate();return;}
+     // Pending/missing evidence cannot authorize new text or revoke an already
+     // verified snapshot. Explicit invalidation above still fences immediately.
+     if(!status.runId||!context||!['valid','disabled'].includes(context.state)){render();return;}
      if(entry.exposure&&['state','sessionResetSeq','projectGeneration','globalGeneration'].some(k=>entry.exposure?.[k as keyof typeof context]!==context[k as keyof typeof context])){invalidate();return;}
      entry.exposure=context;
      // A status read can precede the stream snapshot or lag its last SSE wake.
      if(!next){render();return;}
-     if((status.runStatus==='completed'||next.state==='completed')&&!(liveSource.request?next.canonicalRequestUpdateId:next.canonicalReplyEventId)){invalidate();return;}
      if(liveSource.request&&TERMINAL_REQUEST_STATES.has(liveSource.request.state)&&(!next.canonicalRequestUpdateId||next.state!=='completed'||next.publication?.kind!=='request_update'||next.publication.updateKind!==liveSource.request.state)){invalidate();return;}
      const receipt=liveSource.sent?.deliveryReceipts?.find(item=>item.targetAgentId===source.agentId);
      const steering=receipt?.state!=='recovering'&&receipt?.state!=='recovered'&&receipt?.injectionKind==='steer'?receipt.injectionId:undefined;
      if(!(liveSource.request?matchesRequestTextReplyRoute(source.sourceId,next):matchesTextReplyRoute(liveSource.sent!,next,liveSource.sent?.communicationIntent==='collaboration'?source.agentId:undefined))||
-       next.projectId!==projectId||next.conversationId!==source.conversationId||next.messageId!==source.sourceId||next.agentId!==source.agentId||next.runId!==status.runId||context.runId&&context.runId!==next.runId||run&&run!==next.runId||steering&&steering!==next.steeringInjectionId||next.state==='failed'||next.failureReason==='context_changed'){rejectSnapshot();return;}
+       next.projectId!==projectId||next.conversationId!==source.conversationId||next.messageId!==source.sourceId||next.agentId!==source.agentId||next.runId!==status.runId||context.runId&&context.runId!==next.runId||run&&run!==next.runId||steering&&steering!==next.steeringInjectionId){rejectSnapshot();return;}
      if(entry.reply&&(replyPresentationKey(snapshotBinding(entry.reply),source.agentId)!==replyPresentationKey(snapshotBinding(next),source.agentId)||entry.reply.steeringInjectionId!==next.steeringInjectionId)){invalidate();return;}
      if(entry.reply&&next.sequence===entry.reply.sequence&&next.text!==entry.reply.text){invalidate();return;}
+     if((status.runStatus==='completed'||next.state==='completed')&&!(liveSource.request?next.canonicalRequestUpdateId:next.canonicalReplyEventId)){if(entry.reply)render();else invalidate();return;}
      if(!entry.reply||next.sequence>=entry.reply.sequence){entry.reply=next;entry.authorityRun=next.runId;}
      render();
     }catch(error){if(!disposed&&current.current.owner===owner){entry.error=error;entry.success=false;if(error instanceof ApiRequestError&&[401,403,404].includes(error.status))invalidate('access');else render();}}

@@ -1,3 +1,4 @@
+import {qualifyAssistantHandoff} from './assistant-handoff-qualification.mjs';
 // Built product with disposable canonical data and intercepted presentation reads.
 // Inert providers only. No DEV outage, real work retry, or provider connection.
 import '../shared/workspace-resolution.mjs';
@@ -27,8 +28,10 @@ try{
  const origin=await f.listen(),views={chat:`/projects/${chat.projectId}/chats/${chat.id}`,agent:`/projects/${chat.projectId}/agents/${a.id}`,assistant:'/assistant',output:assistant.url};
  for(const engine of (process.env.PONDEROSA_REPLY_BROWSERS??'chromium,webkit').split(',')){
   browser=await(engine==='webkit'?webkit:chromium).launch({headless:true,...(engine==='webkit'?{executablePath:process.env.PONDEROSA_WEBKIT_PATH}:{executablePath:'/usr/bin/google-chrome',args:['--no-sandbox']})});
-  for(const size of [1440,390])for(const mode of ['light','dark'])for(const view of (process.env.PONDEROSA_REPLY_VIEWS??'chat,agent,assistant,output').split(',')){
-   const row={engine,size,mode,view,passed:false,errors:[],checks:[]};rows.push(row);let phase='uncertain',readMode='limit',reads=[],writes=[],limited=new Set();
+  for(const size of (process.env.PONDEROSA_REPLY_SIZES??'1440,390').split(',').map(Number))for(const mode of (process.env.PONDEROSA_REPLY_MODES??'light,dark').split(','))for(const view of (process.env.PONDEROSA_REPLY_VIEWS??'chat,agent,assistant,output').split(',')){
+   const row={engine,size,mode,view,passed:false,errors:[],checks:[]};rows.push(row);
+   if(process.env.PONDEROSA_REPLY_SCENARIO==='assistant-handoff'){assert.equal(view,'assistant');await qualifyAssistantHandoff({f,browser,engine,size,mode,out,origin,assistant,source:privateSource,projectId:privateProjectId,devices,row});await save();console.log(`${row.passed?'PASS':'FAIL'} ${engine} ${size} ${mode} Assistant Handoff${row.error?' '+row.error.split('\n')[0]:''}`);continue;}
+   let phase='uncertain',readMode='limit',reads=[],writes=[],limited=new Set();
    context=await browser.newContext({...(size===390&&engine==='webkit'?devices['iPhone 13']:{viewport:{width:size,height:size===390?844:962},isMobile:size===390,hasTouch:size===390}),serviceWorkers:'block'});
    await context.addInitScript(mode=>localStorage.setItem('ponderosa-color-mode',mode),mode);
    const mapReceipts=value=>{

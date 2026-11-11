@@ -15,7 +15,7 @@ import type {
   RunOutputDto,
 } from "@ponderosa/core";
 import { DecisionCard } from "../decisions/DecisionCard";
-import { Fragment, memo, useMemo, useContext } from "react";
+import { Fragment, memo, useMemo, useContext, useRef } from "react";
 import { CopyMessageButton } from "../CopyMessageButton";
 import { MessageDeliveryStatus } from "../MessageDeliveryStatus";
 import { MessageRequestAction } from "../MessageRequestAction";
@@ -175,6 +175,7 @@ function ChatPaneComponent({
   historyError?: string;
 }): JSX.Element {
   const conversationChrome=useContext(ConversationChromeContext);
+  const assistantMessages=Boolean(conversationChrome?.assistantAgentId && conversationChrome.assistantAgentId===fileOwnerAgentId);
   const agentChat = useMemo(
     () => projectAgentChat(messages, runs),
     [messages, runs],
@@ -244,14 +245,22 @@ function ChatPaneComponent({
       ),
     [chatMessages],
   );
+  const workOwner=JSON.stringify([projectId,fileOwnerAgentId,scrollStorageKey,assistantMessages]);
+  const workAnchors=useRef({owner:workOwner,rows:new Map<string,string>()});
+  if(workAnchors.current.owner!==workOwner)workAnchors.current={owner:workOwner,rows:new Map()};
   const runPlacement = useMemo(() => {
     const lastResponseByRunId = new Map<string, MessageDto>();
-    for (const message of chatMessages) {
-      if (message.role !== "assistant" || !message.executionId) continue;
+    const candidates=assistantMessages ? replyRows.map(row=>({...row.message,id:row.key,createdAt:row.at})) : chatMessages;
+    const candidateKeys=new Set(candidates.map(message=>message.id));
+    for(const [run,key] of workAnchors.current.rows)if(!candidateKeys.has(key))workAnchors.current.rows.delete(run);
+    for (const message of candidates) {
+      if (message.role !== "assistant" || !message.executionId || assistantMessages && message.authorAgentId!==fileOwnerAgentId) continue;
       const current = lastResponseByRunId.get(message.executionId);
       if (
         !current ||
-        current.createdAt.localeCompare(message.createdAt) <= 0
+        (assistantMessages
+          ? message.id===workAnchors.current.rows.get(message.executionId) || current.id!==workAnchors.current.rows.get(message.executionId) && current.createdAt.localeCompare(message.createdAt)>0
+          : current.createdAt.localeCompare(message.createdAt)<=0)
       ) {
         lastResponseByRunId.set(message.executionId, message);
       }
@@ -265,6 +274,7 @@ function ChatPaneComponent({
         ? messageByCommunicationId.get(run.communicationEventId)
         : undefined;
       if (response) {
+        if(assistantMessages)workAnchors.current.rows.set(run.id,response.id);
         const placedRuns = afterMessage.get(response.id);
         if (placedRuns) placedRuns.push(run);
         else afterMessage.set(response.id, [run]);
@@ -272,16 +282,17 @@ function ChatPaneComponent({
       }
 
       const runEntries = activityByRun.get(run.id) ?? [];
-      const hasVisibleActivity = hasVisibleReceiptActivity(runEntries, run.status);
+      const hasVisibleActivity = hasVisibleReceiptActivity(runEntries, run.status, assistantMessages);
       const representedByDeliveryStatus =
         request?.role === "user" &&
         Boolean(request.deliveryReceipts?.length) &&
         !hasVisibleActivity;
-      if (!representedByDeliveryStatus) standalone.push(run);
+      if (!representedByDeliveryStatus && (!assistantMessages || Boolean(focusId))) standalone.push(run);
     }
     return { afterMessage, standalone };
   }, [
     activityByRun,
+    assistantMessages, replyRows, focusId, fileOwnerAgentId, workOwner,
     agentChat.runs,
     chatMessages,
     messageByCommunicationId,
@@ -391,7 +402,7 @@ function ChatPaneComponent({
         if (item.kind === "decision-response") return <DecisionResponseMessage key={item.id}
           event={item.event} operatorProfile={operatorProfile} onOpenAgent={onOpenAgent} />;
         if (item.kind === "run") {
-          if(conversationChrome&&item.run.status==='completed'&&!focusId)return null;
+          if(conversationChrome&&!assistantMessages&&item.run.status==='completed'&&!focusId)return null;
           return (
             <AgentWorkReceipt
               key={item.id}
@@ -403,6 +414,7 @@ function ChatPaneComponent({
               projectRoot={projectRoot}
               onOpenFile={onOpenFile}
               focusId={focusId}
+              assistantMessages={assistantMessages}
               active={item.run.id === activeExecutionId}
             />
           );
@@ -452,11 +464,12 @@ function ChatPaneComponent({
           visibleText,
           message.agentMentions,
         );
-        const attachedRuns = (runPlacement.afterMessage.get(message.id) ?? []).filter(run=>!conversationChrome||run.status!=='completed'||Boolean(focusId));
+        const attachedRuns = (runPlacement.afterMessage.get(assistantMessages?item.id:message.id) ?? []).filter(run=>assistantMessages||!conversationChrome||run.status!=='completed'||Boolean(focusId));
+        const workReceipt=attachedRuns.length ? <>{attachedRuns.map(run=><AgentWorkReceipt key={`run:${run.id}`} agentName={agentName} run={run} paused={run.id===pausedRunId} entries={activityByRun.get(run.id)??[]} projectId={projectId} projectRoot={projectRoot} onOpenFile={onOpenFile} focusId={focusId} active={run.id===activeExecutionId} assistantMessages={assistantMessages} inline/>)}</>:undefined;
         return (
           <Fragment key={item.id}>
             <ChatMessageFrame
-              assistantMessages={Boolean(conversationChrome?.assistantAgentId && conversationChrome.assistantAgentId===fileOwnerAgentId)}
+              assistantMessages={assistantMessages}
               message={{
               id: `message-${message.id}`,
               author: fromUser
@@ -490,25 +503,7 @@ function ChatPaneComponent({
                       visible,
                     )
                 : undefined,
-              beforeHeader: attachedRuns.length ? (
-                <>
-                  {attachedRuns.map(run => (
-                    <AgentWorkReceipt
-                      key={`run:${run.id}`}
-                      agentName={agentName}
-                      run={run}
-                      paused={run.id === pausedRunId}
-                      entries={activityByRun.get(run.id) ?? []}
-                      projectId={projectId}
-                      projectRoot={projectRoot}
-                      onOpenFile={onOpenFile}
-                      focusId={focusId}
-                      active={run.id === activeExecutionId}
-                      inline
-                    />
-                  ))}
-                </>
-              ) : undefined,
+              beforeHeader: assistantMessages?undefined:workReceipt,
               source: fromSourceChat ? (
                 <CommunicationSourceLink
                   message={message}
@@ -550,7 +545,7 @@ function ChatPaneComponent({
                 </>
               ),
               attachments: attachmentsOutsideVisualizations({...message,text:visibleText,projectId,fromAgent:message.role==="assistant"||Boolean(message.authorAgentId)}),
-              belowBody: <>{message.role === "user" ? <LiveAgentProgress receipts={message.deliveryReceipts} onOpenAgent={onOpenAgent} /> : null}{item.feedback?.length?<ReplyReadFeedback entry={item.feedback} agentTitle={id=>agentNameForId?.(id)??agentName}/>:null}</>,
+              belowBody: <>{assistantMessages?workReceipt:null}{message.role === "user" ? <LiveAgentProgress receipts={message.deliveryReceipts} onOpenAgent={onOpenAgent} /> : null}{item.feedback?.length?<ReplyReadFeedback entry={item.feedback} agentTitle={id=>agentNameForId?.(id)??agentName}/>:null}</>,
               attachmentDensity: "compact",
               status:
                 (message.role === "user" || message.communicationIntent === "collaboration") && message.deliveryReceipts?.length ? (

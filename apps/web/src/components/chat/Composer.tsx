@@ -320,6 +320,7 @@ export function Composer({
   agentResponding = false,
   onCancel,
   cancelPending = false,
+  runControl,
   draftStorageKey,
   conversationDraftId,
   leadingControls,
@@ -3939,6 +3940,7 @@ export function Composer({
         <Box data-composer-send-actions sx={{ display: assistantMessages ? "flex" : { xs: "flex", md: "contents" }, alignItems: "center", gap: 0.25, flexShrink: 0, ...(assistantMessages?{order:2}:{}) }}>
         <ComposerErrorReview key={attachmentImportScope} error={submissionError?sendError:undefined}/>
         <ComposerSendActions
+          runControl={assistantMessages?runControl:undefined}
           steeringOnly={assistantMessages}
           allowSendWhileRunning={allowSendWhileRunning}
           canCancel={canCancel}

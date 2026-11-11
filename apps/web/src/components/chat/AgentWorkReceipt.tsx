@@ -86,6 +86,7 @@ export function AgentWorkReceipt({
   onOpenFile,
   focusId,
   inline = false,
+  assistantMessages = false,
 }: {
   agentName: string;
   run?: AgentRunDto;
@@ -97,16 +98,17 @@ export function AgentWorkReceipt({
   onOpenFile?(file: ResponseFileActivityDto): void;
   focusId?: string;
   inline?: boolean;
-}): JSX.Element {
+  assistantMessages?: boolean;
+}): JSX.Element | null {
   const containsFocus =
     run?.id === focusId || entries.some(entry => entry.id === focusId);
-  const [expanded, setExpanded] = useState(containsFocus || active);
+  const [expanded, setExpanded] = useState(containsFocus || (!assistantMessages && active));
   useEffect(() => {
-    if (containsFocus || active) setExpanded(true);
-  }, [active, containsFocus]);
+    if (containsFocus || (!assistantMessages && active)) setExpanded(true);
+  }, [active, containsFocus, assistantMessages]);
   const visibleEntries = useMemo(
-    () => receiptActivityEntries(entries, run?.status),
-    [entries, run?.status],
+    () => receiptActivityEntries(entries, run?.status, assistantMessages),
+    [entries, run?.status, assistantMessages],
   );
   const displayEntries = useMemo(
     () => groupConsecutiveActions(visibleEntries),
@@ -119,6 +121,7 @@ export function AgentWorkReceipt({
     ? "1 activity"
     : `${activityCount} activities`;
 
+  if(assistantMessages && !hasVisibleActivity) return null;
   return (
     <Box
       id={run ? telemetryElementId("runs", run.id) : "unscoped-work"}

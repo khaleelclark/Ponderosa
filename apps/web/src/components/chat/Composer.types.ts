@@ -34,6 +34,8 @@ export interface ComposerProps extends ChatComposerContract {
   agentResponding?: boolean;
   onCancel?(): void;
   cancelPending?: boolean;
+  /** Canonical Assistant Run controls; editable steering remains independent. */
+  runControl?: {paused:boolean;pending:boolean;resumeDisabled:boolean;onPauseResume():void};
   draftStorageKey?: string;
   conversationDraftId?: string;
   insertTextRequest?: { id: string; text: string };

@@ -1,3 +1,4 @@
+import {PONDEROSA_REPLY_STREAM_TOOL} from '@ponderosa/core';
 import {createRoot} from 'react-dom/client';
 import {flushSync} from 'react-dom';
 import {QueryClient,QueryClientProvider} from '@tanstack/react-query';
@@ -27,7 +28,7 @@ async function fixture(run:(f:any)=>Promise<void>){
  api.getTextReplyStatus=async(_chat,input,agent)=>{reads++;if(error)throw error;const state=statuses.get(input+':'+agent);assert(state,'Exact source lookup '+input+':'+agent);return structuredClone(state);};
  api.subscribeAgent=((agent:any,cursor:any,callbacks:any)=>{opened++;const handler={agent,cursor,callbacks,closed:false};handlers.add(handler);return {close(){if(!handler.closed){handler.closed=true;closed++;handlers.delete(handler);}}};}) as any;
  const render=(element:JSX.Element)=>{flushSync(()=>root.render(<ThemeProvider theme={createPonderosaTheme('light')}><QueryClientProvider client={client}><MutationNotificationProvider>{element}</MutationNotificationProvider></QueryClientProvider></ThemeProvider>));};
- const pane=(messages:any[],assistant=false,owner='agent')=>render(<ConversationChromeContext.Provider value={assistant?{assistantAgentId:owner,statusHost:null,callActionsHost:null}:undefined}><div style={{height:480,display:'flex',flexDirection:'column'}}><ChatPane messages={messages} projectId="project" fileOwnerAgentId={owner} agentNameForId={id=>'Real '+id} onOpenAgent={()=>{}} scrollStorageKey={'stable-'+owner}/></div></ConversationChromeContext.Provider>);
+ const pane=(messages:any[],assistant=false,owner='agent',work:any={})=>render(<ConversationChromeContext.Provider value={assistant?{assistantAgentId:owner,statusHost:null,callActionsHost:null}:undefined}><div style={{height:480,display:'flex',flexDirection:'column'}}><ChatPane {...work} messages={messages} projectId="project" fileOwnerAgentId={owner} agentNameForId={id=>'Real '+id} onOpenAgent={()=>{}} scrollStorageKey={'stable-'+owner}/></div></ConversationChromeContext.Provider>);
  const wake=(agent='agent')=>{for(const handler of [...handlers])if(handler.agent===agent)handler.callbacks.onStatus?.();};
  try{await run({host,client,render,pane,wake,statuses,handlers,setError:(value:unknown)=>{error=value;},counts:()=>({opened,closed,reads})});}
  finally{root.unmount();host.remove();client.clear();api.getTextReplyStatus=oldRead;api.subscribeAgent=oldSubscribe;api.getWorkspacePreferences=oldPreferences;}
@@ -113,3 +114,45 @@ export async function replyStreamColdHistoryRegression():Promise<void>{await fix
  const fresh={...sent,deliveryReceipts:[{...sent.deliveryReceipts[0],injectionKind:'steer',injectionId:'new-steering'}]};const next=snapshot('input','agent','run','new-stream','Fresh same-Run work');next.reply.steeringInjectionId='new-steering';f.statuses.set('input:agent',next);f.pane([fresh,final]);await until(()=>f.host.textContent?.includes('Fresh same-Run work')===true,'Old canonical source does not suppress new steering attempt in same Run');
  f.setError(new ApiRequestError(503,'Temporary read failure'));f.wake();await settle();assert(f.host.textContent?.includes('Actual progress remains visible'),'Read feedback composes with canonical progress');
 });}
+
+export async function assistantActiveReplyContinuityRegression():Promise<void>{await fixture(async(f:any)=>{
+ const sent=source(),status=snapshot();f.statuses.set('input:agent',status);
+ let run:any={id:'run',agentId:'agent',status:'running',startedAt:stamp,communicationEventId:'input'};
+ const activity:any[]=[{id:'call',agentId:'agent',executionId:'run',seq:2,createdAt:stamp,event:{type:'tool_call',id:'transport',name:PONDEROSA_REPLY_STREAM_TOOL.name,input:{}}},{id:'result',agentId:'agent',executionId:'run',seq:3,createdAt:stamp,event:{type:'tool_result',id:'transport',output:JSON.stringify({text:'First **bold** chunk'})}}];
+ const earlier:any[]=[];
+ const render=(messages:any[],meaningful=false)=>f.pane([...earlier,...messages],true,'agent',{runs:[run],activeExecutionId:run.status==='running'?'run':undefined,activity:meaningful?[...activity,{id:'test',agentId:'agent',executionId:'run',seq:4,createdAt:stamp,event:{type:'test_result',passed:true,summary:'Useful verified work'}}]:activity,runOutput:[{id:'answer',executionId:'run',seq:5,createdAt:stamp,kind:'response',text:'First **bold** chunk'}]});
+ render([sent]);await until(()=>Boolean(row(f.host)),'Active Assistant renders its authorized reply');const node=row(f.host)!,body=node.querySelector('.chat-message-body'),avatar=node.querySelector('[aria-label$=" Avatar"]');
+ assert(!f.host.querySelector('article[aria-label="Agent Work Details"]'),'Transport-only greeting has no work disclosure');
+ let disconnected=false;const observer=new MutationObserver(records=>{if(!node.isConnected||records.some(record=>[...record.removedNodes].some(removed=>removed===node||removed.contains(node))))disconnected=true;});observer.observe(f.host,{childList:true,subtree:true});
+ try{
+ render([sent],true);await settle();let details=f.host.querySelector<HTMLElement>('article[aria-label="Agent Work Details"]');assert(details&&node.contains(details),'Meaningful work is attached beneath the provisional reply');assert(details.querySelector('[aria-expanded="false"]'),'Active Assistant disclosure starts collapsed');assert(body!.getBoundingClientRect().bottom<=details.getBoundingClientRect().top+1,'Work never precedes the reply body');
+ details.querySelector<HTMLButtonElement>('button')!.click();await settle();assert(!f.host.textContent?.includes(PONDEROSA_REPLY_STREAM_TOOL.name),'Internal reply transport stays out of ordinary work details');assert(details.textContent?.includes('Useful verified work')&&!details.textContent?.includes('First bold chunk'),'Meaningful work excludes duplicated answer output');details.querySelector<HTMLButtonElement>('button')!.click();
+ const oldReply=canonical(snapshot('older-source','agent','run','older-stream','Earlier result in the same Run'),'older-final');oldReply.createdAt='2026-11-10T11:59:00.000Z';earlier.push(oldReply);render([sent],true);await settle();assert(node.contains(details)&&row(f.host)!.id==='message-older-final','A delayed earlier same-Run reply does not steal the established disclosure');
+ for(const state of ['queued','started','delivered']){render([{...sent,deliveryReceipts:[receipt(state)]}],true);await settle();assert(node.isConnected,'Normal delivery transition keeps the same active reply');}
+ status.reply={...status.reply,sequence:2,text:'First **bold** chunk\n\nSecond paragraph'};f.statuses.set('input:agent',status);f.wake();await until(()=>node.textContent?.includes('Second paragraph')===true,'Multiple active chunks grow in place');
+ render([sent,canonical(status)],true);await settle();assert(f.host.querySelector('#message-final')===node&&node.querySelector('.chat-message-body')===body&&node.querySelector('[aria-label$=" Avatar"]')===avatar,'Canonical publication while active preserves frame, body and avatar');assert(node.contains(details)&&f.host.querySelector('article[aria-label="Agent Work Details"]')===details,'Publication keeps the same disclosure below the same reply');
+ run={...run,status:'completed',completedAt:'2026-11-10T12:00:09.000Z'};render([sent,canonical(status)],true);await settle();assert(node.contains(details)&&details!.isConnected,'Completion retains useful collapsed work beneath the reply');assert(f.host.querySelector('#message-final')===node&&!disconnected,'No disconnected interval during publication or completion');
+ activity[1].event.isError=true;render([sent,canonical(status)],true);await settle();details!.querySelector<HTMLButtonElement>('button')!.click();await settle();assert(details!.textContent?.includes('Reply Delivery Needs Review')&&!details!.textContent?.includes(PONDEROSA_REPLY_STREAM_TOOL.name),'Failed transport retains a compact review notice while the raw tool remains in advanced audit');
+ }finally{observer.disconnect();}
+});}
+
+export async function replyPendingEvidenceContinuityRegression():Promise<void>{await fixture(async(f:any)=>{
+ const sent=source(),status=snapshot();f.statuses.set('input:agent',status);f.pane([sent],true);await until(()=>Boolean(row(f.host)),'Verified reply initially visible');const node=row(f.host);
+ for(const pending of [{...status,memoryExposure:{state:'pending',runId:'run'},reply:{...status.reply,sequence:2,text:'Unverified text must stay hidden'}},{...status,memoryExposure:undefined},{...status,runId:undefined,reply:undefined}]){f.statuses.set('input:agent',pending);f.wake();await settle();assert(row(f.host)===node&&node?.textContent?.includes('First bold chunk'),'Incomplete authority read retains prior verified text without accepting unverified chunks');}
+ f.statuses.set('input:agent',{...status,runStatus:'completed',reply:{...status.reply,state:'completed'}});f.wake();await settle();assert(row(f.host)===node,'Missing final binding does not discard a previously authorized reply');
+ f.statuses.set('input:agent',{...status,memoryExposure:{...status.memoryExposure,state:'invalid'}});f.wake();await until(()=>!row(f.host),'Verified authority invalidation still fences the visible reply');
+});}
+
+export async function replyPendingContradictionRegression():Promise<void>{
+ for(const patch of [
+  {runId:'replacement-run',memoryExposure:{state:'pending',runId:'replacement-run'}},
+  {memoryExposure:{state:'pending',runId:'run',sessionResetSeq:2}},
+  {memoryExposure:{state:'pending',runId:'run',projectGeneration:4}},
+  {memoryExposure:{state:'pending',runId:'run',globalGeneration:4}},
+  {memoryExposure:{state:'pending',runId:'run'},reply:{...snapshot().reply,streamId:'replacement-stream'}},
+  {memoryExposure:{state:'pending',runId:'run'},reply:{...snapshot().reply,state:'failed'}},
+ ])await fixture(async(f:any)=>{
+  const sent=source(),status=snapshot();f.statuses.set('input:agent',status);f.pane([sent],true);await until(()=>Boolean(row(f.host)),'Verified reply admitted before pending contradiction');
+  const noRun={...sent,deliveryReceipts:[{...receipt(),executionId:undefined}]};f.pane([noRun],true);await settle();f.statuses.set('input:agent',{...status,...patch});f.wake();await until(()=>!row(f.host),'Supplied conflicting authority fences even when other evidence is pending or missing');
+ });
+}

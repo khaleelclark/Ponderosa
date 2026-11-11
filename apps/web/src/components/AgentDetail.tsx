@@ -535,20 +535,37 @@ export function AgentDetail({
   const status = projectedHealth?.status ?? projectedStatus ?? deriveAgentStatus(detail);
   const mcp = mcpPresentation(engineCapability?.mcpServers);
 
-  const { cancelRun, stopActiveRun } = useAgentRunCancellation(
+  const { cancelRun, stopActiveRun, commandPending, commandOwner, stopping } = useAgentRunCancellation(
     agentId,
     runtimeActivity?.executionId ?? detail?.coordinationV3?.pause?.runId,
+    detail?.coordinationV3?.pause?.id,
   );
   const pause=detail?.coordinationV3?.pause;
   const notify=useMutationNotification();
-  const controlFeedbackKey=JSON.stringify([productApiPath("/api/conversations"),agentId,"run-control",pause?.id??runtimeActivity?.executionId]);
+  const controlNamespace=productApiPath("/api/conversations");
+  const controlIdentity=JSON.stringify([controlNamespace,agentId,pause?"resume":"pause",pause?.id??runtimeActivity?.executionId]);
+  const controlEligibility=JSON.stringify([controlIdentity,pause?.state,pause?.reason]);
+  const currentControl=useRef<string|undefined>(controlEligibility);currentControl.current=controlEligibility;
+  useEffect(()=>{currentControl.current=controlEligibility;return()=>{currentControl.current=undefined;};},[controlEligibility]);
+  const controlRequest=useRef<{identity:string;idempotencyKey:string}>();
   const pauseResume=useMutation({
-    mutationKey:["run-control",controlFeedbackKey],
-    onError:error=>notify({key:controlFeedbackKey,incident:createClientId("control-feedback-"),severity:"error",message:"Run Control Needs Review",description:"Review the original Agent and Run before trying again.",details:error instanceof Error?error.message:String(error)}),
-    onSuccess:()=>notify({key:controlFeedbackKey,message:"",dismiss:true}),
-    mutationFn:()=>api.controlRun(agentId,pause?'resume':'pause',pause?{pauseId:pause.id,idempotencyKey:createClientId()}:{targetRunId:runtimeActivity?.executionId,idempotencyKey:createClientId()}),
-    onSettled:()=>{void queryClient.invalidateQueries({queryKey:queryKeys.agents.detailPrefix(agentId)});void queryClient.invalidateQueries({queryKey:queryKeys.agents.healthAll});},
+    mutationKey:["run-control",controlIdentity],
+    mutationFn:(target:{agentId:string;namespace:string;owner:string;identity:string;eligibility:string;action:'pause'|'resume';targetRunId?:string;pauseId?:string;idempotencyKey:string;feedbackKey:string})=>{
+      if(currentControl.current!==target.eligibility||productApiPath("/api/conversations")!==target.namespace)throw new Error("The active Run or pause changed before this action could be applied.");
+      return api.controlRun(target.agentId,target.action,{targetRunId:target.targetRunId,pauseId:target.pauseId,idempotencyKey:target.idempotencyKey});
+    },
+    onError:(error,target)=>notify({key:target.feedbackKey,incident:createClientId("control-feedback-"),severity:"error",message:"Run Control Needs Review",description:"Review the original Agent and Run before trying again.",details:error instanceof Error?error.message:String(error)}),
+    onSuccess:(_data,target)=>{if(controlRequest.current?.idempotencyKey===target.idempotencyKey)controlRequest.current=undefined;notify({key:target.feedbackKey,message:"",dismiss:true});},
+    onSettled:(_data,_error,target)=>{if(commandPending.current?.idempotencyKey===target.idempotencyKey)commandPending.current=undefined;void queryClient.invalidateQueries({queryKey:queryKeys.agents.detailPrefix(target.agentId)});void queryClient.invalidateQueries({queryKey:queryKeys.agents.healthAll});},
   });
+  const pausePending=(pauseResume.isPending&&pauseResume.variables?.owner===commandOwner)||pause?.state==='resume_requested';
+  const controlPending=pausePending||stopping;
+  const onPauseResume=()=>{
+    if(commandPending.current?.owner===commandOwner||controlPending||currentControl.current!==controlEligibility||productApiPath("/api/conversations")!==controlNamespace||pause?.reason==='access_restricted'||(!pause&&!runtimeActivity?.executionId))return;
+    const idempotencyKey=controlRequest.current?.identity===controlIdentity?controlRequest.current.idempotencyKey:createClientId();
+    controlRequest.current={identity:controlIdentity,idempotencyKey};commandPending.current={owner:commandOwner,idempotencyKey};
+    pauseResume.mutate({agentId,namespace:controlNamespace,owner:commandOwner,identity:controlIdentity,eligibility:controlEligibility,action:pause?'resume':'pause',targetRunId:pause?undefined:runtimeActivity?.executionId,pauseId:pause?.id,idempotencyKey,feedbackKey:JSON.stringify([controlNamespace,agentId,"run-control",pause?.id??runtimeActivity?.executionId])});
+  };
   const recheckEngine = useMutation({
     mutationFn: (engineId: string) => api.recheckEngine(engineId),
     onSuccess: updated => {
@@ -930,7 +947,7 @@ export function AgentDetail({
         startedAt={status === "running" ? runtimeActivity?.startedAt : undefined}
         agentNameForId={agentNameForId}
         running={running||Boolean(pause)}
-        stopping={cancelRun.isPending}
+        stopping={stopping}
         tab={auditOnly&&['subagents','settings'].includes(tab)?'chat':tab}
         showSubagents={showSubagents}
         transcriptMarkdown={transcriptMarkdown}
@@ -941,8 +958,8 @@ export function AgentDetail({
         onStop={stopActiveRun}
         paused={Boolean(pause)}
         accessRestricted={pause?.reason === "access_restricted"}
-        pausePending={pauseResume.isPending||pause?.state==='resume_requested'}
-        onPauseResume={()=>pauseResume.mutate()}
+        pausePending={controlPending}
+        onPauseResume={onPauseResume}
 
         onExportPackage={() => setExportOpen(true)}
         onDuplicate={conversations.length ? () => setDuplicateOpen(true) : undefined}
@@ -1039,10 +1056,10 @@ export function AgentDetail({
         queuedMessageFailure={queuedMessageFailure}
         cancellationError={[
           pause?.error,
-          pauseResume.isError
+          pauseResume.isError&&pauseResume.variables?.identity===controlIdentity
             ? `Pause or Resume failed. ${pauseResume.error instanceof Error ? pauseResume.error.message : String(pauseResume.error)}`
             : undefined,
-          cancelRun.isError
+          cancelRun.isError&&cancelRun.variables?.agentId===agentId&&cancelRun.variables?.targetRunId===(runtimeActivity?.executionId??pause?.runId)
             ? `Stop failed. ${cancelRun.error instanceof Error ? cancelRun.error.message : String(cancelRun.error)}`
             : undefined,
         ].filter(Boolean).join("\n") || undefined}
@@ -1112,7 +1129,10 @@ export function AgentDetail({
           queueReviewHref: assistantMessages?productWorkspacePath(`/projects/${encodeURIComponent(detail.agent.projectId)}/agents/${encodeURIComponent(agentId)}?view=chat`):undefined,
           disabled: false,
           submissionDisabled: runtimeSaving,
-          running: false,
+          running: assistantMessages && Boolean(runtimeActivity?.executionId || pause?.runId),
+          allowSendWhileRunning: assistantMessages,
+          cancelPending: stopping,
+          runControl: assistantMessages ? {paused:Boolean(pause),pending:pausePending,resumeDisabled:pause?.reason==='access_restricted',onPauseResume} : undefined,
           placeholder: assistantMessages?"":runtimeActivity
             ? `Steer ${detail.agent.title}'s active response · Queue sends next`
             : `Message ${detail.agent.title} directly`,

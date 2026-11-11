@@ -1,3 +1,5 @@
+import {useAgentRunCancellation} from '../../apps/web/src/components/useAgentRunCancellation';
+import {setStandaloneProductScope} from '../../apps/web/src/api/productScope';
 import {useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import {flushSync} from 'react-dom';
@@ -161,4 +163,27 @@ export async function sidebarScrollRetentionMountedRegression():Promise<void>{
   list=await render(true,false,30);assert(Math.abs(list.scrollTop-240)<2,'Finishing background refresh cannot jump back to an older offset');
   await render(false,true,0,'other');assert(memory.scrollTop===240,'Remount during unresolved loading keeps the current offset');list=await render(true,false,30,'other');assert(Math.abs(list.scrollTop-240)<2,'Remounted list restores after its rows become available');
  }finally{root.unmount();host.remove();}
+}
+
+export async function assistantRunControlsMountedRegression():Promise<void>{
+ const host=document.createElement('div');document.body.append(host);const root=createRoot(host),client=new QueryClient({defaultOptions:{queries:{enabled:false,retry:false},mutations:{retry:false}}});
+ const oldCancel=api.cancelRun,calls:any[]=[];let finish:(value:any)=>void=()=>{},fail:(error:Error)=>void=()=>{},oldStop:()=>void=()=>{},sends=0,queues=0,pauses=0;
+ api.cancelRun=(agent,request)=>{calls.push({agent,...request});return new Promise((resolve,reject)=>{finish=resolve;fail=reject;});};
+ let current={agent:'assistant-agent',run:'run-one' as string|undefined,paused:false,restricted:false};
+ function Harness(){const {stopActiveRun,stopping}=useAgentRunCancellation(current.agent,current.run,current.paused?'pause-one':undefined);oldStop=stopActiveRun;return <Composer assistantMessages running={Boolean(current.run)} allowSendWhileRunning disabled={false} cancelPending={stopping} runControl={{paused:current.paused,pending:stopping,resumeDisabled:current.restricted,onPauseResume:()=>{pauses++;}}} onCancel={stopActiveRun} destinationMode="fixed" defaultDestination={{handle:binding.handle,binding,selectionKey:binding.agentId}} insertTextRequest={{id:'draft-once',text:'Retained steering draft'}} onSend={()=>{sends++;}} onQueue={()=>{queues++;}}/>;}
+ const render=()=>flushSync(()=>root.render(<ThemeProvider theme={createPonderosaTheme('light')}><QueryClientProvider client={client}><MutationNotificationProvider><Harness/></MutationNotificationProvider></QueryClientProvider></ThemeProvider>));
+ const button=(name:string)=>host.querySelector<HTMLButtonElement>('button[aria-label="'+name+'"]');
+ try{
+ render();await until(()=>host.querySelector('[aria-label="Message"]')?.textContent?.includes('Retained steering draft')===true,'Active Run keeps editable draft');const editor=host.querySelector<HTMLElement>('[aria-label="Message"]')!,draft=editor.textContent;
+ await until(()=>Boolean(button('Pause')&&button('Stop')&&button('Send Message')&&!button('Send Message')!.disabled),'Pause and Stop coexist with editable steering Send');assert(!button('Queue Message'),'Assistant never exposes Queue');await enter(editor,true);assert(sends===0&&queues===0&&editor.textContent===draft,'Ctrl+Enter cannot queue or discard the Assistant draft during active work');
+ button('Pause')!.click();assert(pauses===1,'Pause delegates to its existing owner callback');button('Stop')!.click();button('Stop')!.click();await until(()=>calls.length===1,'Double Stop dispatches exactly once');assert(calls[0].agent===current.agent&&calls[0].targetRunId==='run-one','Stop binds observed Agent and Run');assert(editor.getAttribute('contenteditable')==='true'&&editor.textContent===draft,'Pending Stop keeps draft editable');
+ fail(Error('Controlled stop failure'));await until(()=>Boolean(button('Stop'))&&!button('Stop')!.disabled,'Failed Stop becomes retryable');assert(editor.textContent===draft&&document.body.textContent?.includes('Stop Needs Review'),'Failed command retains draft and shared actionable feedback');button('Stop')!.click();await until(()=>calls.length===2,'Explicit retry dispatches');assert(calls[0].idempotencyKey===calls[1].idempotencyKey,'Unconfirmed Stop retry retains operation identity');finish({accepted:true});await until(()=>Boolean(button('Stop'))&&!button('Stop')!.disabled,'Stop response settles without inventing a completed Run');
+ current={...current,paused:true};render();assert(button('Resume')&&button('Stop'),'Paused Run keeps Resume and Stop');current={...current,restricted:true};render();assert(button('Resume')!.disabled&&!button('Stop')!.disabled,'Access-restricted pause denies Resume and retains Stop');
+ const fileInput=host.querySelector<HTMLInputElement>('[aria-label="Choose Files"]');assert(fileInput&&!fileInput.disabled,'Attachments remain available while Assistant work is active');await enter(editor);await until(()=>sends===1,'Active Assistant Enter uses steering Send');assert(queues===0,'Active Assistant Send never falls back to Queue');
+ const stale=oldStop;current={agent:'other-agent',run:'run-two',paused:false,restricted:false};render();stale();await settle();assert(calls.length===2,'Stale owner closure cannot stop the replacement Run');
+ setStandaloneProductScope('branches');oldStop();await settle();assert(calls.length===2,'Changed product cannot reuse old control authority');setStandaloneProductScope(undefined);
+ button('Stop')!.click();await until(()=>calls.length===3,'Original target dispatches before navigation');const oldFinish=finish;
+ current={agent:'replacement-agent',run:'run-three',paused:false,restricted:false};render();button('Stop')!.click();await until(()=>calls.length===4,'Replacement owner has its own command gate');const newFinish=finish;assert(calls[3].agent==='replacement-agent'&&calls[3].targetRunId==='run-three','New command targets only its own Run');oldFinish({accepted:true});await settle();assert(button('Stopping…')?.disabled,'Late old completion cannot unlock the replacement command');newFinish({accepted:true});await until(()=>Boolean(button('Stop'))&&!button('Stop')!.disabled,'Replacement command settles independently');
+ current={...current,run:undefined};render();assert(!button('Pause')&&!button('Stop')&&!button('Resume')&&button('Send Message'),'Completed work removes Run controls and leaves Send');
+ }finally{root.unmount();host.remove();client.clear();api.cancelRun=oldCancel;setStandaloneProductScope(undefined);}
 }

@@ -1,3 +1,6 @@
+import PauseIcon from "@mui/icons-material/Pause";
+import PlayArrowIcon from "@mui/icons-material/PlayArrow";
+import {CircularProgress} from "@mui/material";
 import ArrowUpwardIcon from "@mui/icons-material/ArrowUpward";
 import PersonAddAltOutlinedIcon from "@mui/icons-material/PersonAddAltOutlined";
 import ScheduleSendOutlinedIcon from "@mui/icons-material/ScheduleSendOutlined";
@@ -198,6 +201,7 @@ export function ComposerMentionStatus({
 }
 
 interface ComposerSendActionsProps {
+  runControl?: ComposerProps["runControl"];
   steeringOnly?: boolean;
   allowSendWhileRunning: boolean;
   canCancel: boolean;
@@ -218,6 +222,7 @@ interface ComposerSendActionsProps {
 }
 
 export function ComposerSendActions({
+  runControl,
   steeringOnly = false,
   allowSendWhileRunning,
   canCancel,
@@ -238,16 +243,19 @@ export function ComposerSendActions({
 }: ComposerSendActionsProps): JSX.Element {
   return (
     <>
+      {canCancel && runControl ? <Tooltip disableInteractive title={runControl.resumeDisabled ? "Resume Unavailable While Access Is Restricted" : runControl.pending ? "Waiting…" : runControl.paused ? "Resume" : "Pause"}><span><IconButton disabled={runControl.pending||cancelPending||runControl.resumeDisabled} onClick={runControl.onPauseResume} aria-label={runControl.paused?"Resume":"Pause"}>
+        {runControl.pending?<CircularProgress size={20}/>:runControl.paused?<PlayArrowIcon/>:<PauseIcon/>}
+      </IconButton></span></Tooltip> : null}
       {canCancel ? (
-        <Tooltip disableInteractive title={cancelPending ? "Cancelling…" : "Cancel Run"}>
+        <Tooltip disableInteractive title={cancelPending ? (runControl?"Stopping…":"Cancelling…") : runControl?"Stop":"Cancel Run"}>
           <span>
             <IconButton
               color="error"
-              disabled={cancelPending}
+              disabled={cancelPending||runControl?.pending}
               onClick={onCancel}
-              aria-label={cancelPending ? "Cancelling…" : "Cancel Run"}
+              aria-label={cancelPending ? (runControl?"Stopping…":"Cancelling…") : runControl?"Stop":"Cancel Run"}
             >
-              <StopCircleIcon />
+              {cancelPending&&runControl?<CircularProgress size={20}/>:<StopCircleIcon />}
             </IconButton>
           </span>
         </Tooltip>
