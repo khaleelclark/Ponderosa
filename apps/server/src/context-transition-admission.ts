@@ -47,8 +47,10 @@ export function transitionFingerprint(ctx:Pick<TransitionContext,"app"|"store"|"
  const row=store.sqlite.prepare('SELECT payload_json,state,scope_key FROM agent_activations WHERE id=? AND project_id=? AND agent_id=?').get(activationId,projectId,agentId);
  let grant:unknown;try{grant=memory&&agent?memory.getGrant(agent.conversationId,chat?.branchId?'branches':'dev'):undefined;}catch{grant='unavailable';}
  let policies:unknown;try{const p=new CapabilityPolicyStore(store.sqlite),resolved=p.resolveForAgent(agentId);policies=resolved.layers.map(layer=>[layer.scopeKind,layer.scopeId,p.get(layer.scopeKind,layer.scopeId)??null]);}catch{policies='unavailable';}
- const packet=store.acceptedProviderSessionInput(agentId);
- const contractEvidence=packet&&[packet.executionId,packet.systemPromptHash,typeof packet.exactSystemPrompt==='string'?createHash('sha256').update(packet.exactSystemPrompt).digest('hex'):null,packet.sourceManifest.schemaVersion===3?packet.sourceManifest.normalRuntimeContract:null];
+ let contractEvidence:unknown;
+ try{const packet=store.acceptedProviderSessionInput(agentId);
+  contractEvidence=packet&&[packet.executionId,packet.systemPromptHash,typeof packet.exactSystemPrompt==='string'?createHash('sha256').update(packet.exactSystemPrompt).digest('hex'):null,packet.sourceManifest.schemaVersion===3?packet.sourceManifest.normalRuntimeContract:null];
+ }catch{contractEvidence='saved_contract_unavailable';}
  const currentTools=providerToolContractHash([...providerDynamicTools(Boolean(memory)),PONDEROSA_HISTORY_TOOL],communicationV3SessionPrompt());
  const recovery=store.sqlite.prepare('SELECT id,state,progress_json FROM provider_context_recovery_requests WHERE agent_id=? ORDER BY created_at DESC,id DESC LIMIT 1').get(agentId);
  return createHash('sha256').update(JSON.stringify(['settings-transition.v2',currentTools,contractEvidence,row,session,agent,project,workspace.getPreferences(),grant,policies,recovery,store.stoppedProviderSessionBoundary(agentId)])).digest('hex');
@@ -235,7 +237,9 @@ export async function requestSettingsTransition(input: {
    const boundary=agent&&(store.providerCommandContextBoundary(agent.id)??recovered);
    // Only the existing accepted measurement after explicit hold dismissal may
    // expose a formerly interrupted packet here; this is not ordinary resume permission.
-   const packet=agent&&(store.acceptedProviderSessionInput(agent.id)??(recovered?store.acceptedProviderSessionInput(agent.id,true):undefined));
+   let packet:ReturnType<AgentStore['acceptedProviderSessionInput']>;
+   try{packet=agent?(store.acceptedProviderSessionInput(agent.id)??(recovered?store.acceptedProviderSessionInput(agent.id,true):undefined)):undefined;void packet?.exactSystemPrompt;}
+   catch(cause){return hold(freshFailureDiagnostic(cause,'Saved context evidence is unavailable; automatic reconciliation retains the original work.'),true);}
    const contract=packet?.sourceManifest.schemaVersion===3?packet.sourceManifest.normalRuntimeContract:undefined;
    // Workspace guidance/profile edits must not bypass continuity merely because
    // the accepted boundary cannot support a verified native handoff.

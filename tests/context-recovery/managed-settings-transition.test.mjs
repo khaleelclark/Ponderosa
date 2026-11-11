@@ -752,13 +752,15 @@ test('fresh prompt lookup failure preserves its redacted cause and exact queued 
   const chat=await f.createChat('Prompt lookup failure'),agent=await f.createIdleAgent(chat,'Worker');
   await f.send(agent.id,'Preserve original objective.');await until(async()=>(await native.requests()).some(x=>x.method==='turn/start'),'first turn');
   await native.sendTool('ponderosa_message',{text:'Progress only.'});await f.settled(agent.id);
+  const diagnostics=[],log=f.app.log,info=log.info;log.info=(...args)=>{diagnostics.push(JSON.stringify(args));};t.after(()=>{log.info=info;});
   const accepted=store.resumeSessionState(agent.id);fail=true;
   f.ok(await f.api('PATCH','/api/workspace/preferences',{globalInstructions:'Changed workspace instructions.'}));
   await f.send(agent.id,'The exact queued objective.');
   const held=await until(()=>store.sqlite.prepare("SELECT a.id FROM agent_activations a JOIN activation_sources h ON h.activation_id=a.id WHERE a.agent_id=? AND a.state='pending' AND h.source_kind='settings_transition_reservation_wait'").get(agent.id),'exact context hold',20000);
   const notices=f.ok(await f.api('GET','/api/notifications'));
-  assert.ok(notices.items.some(x=>x.body.includes('Synthetic saved prompt lookup failed')));
-  assert.ok(!JSON.stringify(notices).includes(secret),'known secret is redacted from fresh cause');
+  assert.equal(notices.items.some(x=>x.agentId===agent.id&&['attention','urgent'].includes(x.severity)),false,'Unreadable saved evidence is retained quietly');
+  assert.ok(diagnostics.some(value=>value.includes('Synthetic saved prompt lookup failed')),'Fresh bounded cause remains in developer diagnostics');
+  assert.ok(!JSON.stringify([notices,diagnostics]).includes(secret),'Known secret is redacted from private diagnostic and public presentation');
   assert.equal(store.resumeSessionState(agent.id).sessionId,accepted.sessionId);
   assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(held.id).n,0);
   assert.equal((await native.requests()).filter(x=>x.method==='turn/start').length,1,'failure does not dispatch or replay');
