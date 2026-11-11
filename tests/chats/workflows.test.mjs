@@ -10,6 +10,20 @@ import { processBirthMarker } from '@ponderosa/engines';
 import { transitionFingerprint } from '../../apps/server/dist/context-transition-admission.js';
 import { withFixture, until, runtimeAttachmentPaths, fixtureTestOptions as options } from '../shared/fixture.mjs';
 
+async function assertAutomaticContextRecovery(f,store,agent,source,commandsBefore) {
+ const recovery=await until(()=>store.sqlite.prepare("SELECT * FROM provider_context_recovery_requests WHERE agent_id=? AND source_run_id=? AND state='dismissed'").get(agent.id,source.id),'verified automatic context recovery');
+ const progress=JSON.parse(recovery.progress_json);
+ assert.equal(recovery.provider_session_id,source.provider_session_id);assert.equal(recovery.source_fence,source.fencing_token);
+ assert.equal(recovery.project_id,agent.projectId);assert.equal(recovery.scope_key,source.scope_key);assert.equal(recovery.tool_contract_hash,store.getProviderInput(source.id,true).sourceManifest.normalRuntimeContract.contractHash);
+ assert.equal(progress.automaticMaintenance,true);assert.equal(progress.nativeInvoked,true);assert.equal(progress.nativeOutcome,'completed');
+ assert.equal(progress.phase,'context_accepted');assert.equal(progress.sourceWork,'held_unknown');
+ const measured=store.readEvents(agent.id).find(row=>row.seq===progress.contextUsageEventSequence);
+ assert.ok(measured);assert.equal(measured.event.type,'context_usage');assert.equal(progress.usedTokens,1000);assert.equal(progress.windowTokens,200000);assert.equal(measured.event.usedTokens,progress.usedTokens);assert.equal(measured.event.windowTokens,progress.windowTokens);assert.equal(measured.event.providerSessionId,recovery.provider_session_id);
+ assert.deepEqual(measured.event.providerCommand,{name:'compact',executionId:source.id,fencingToken:source.fencing_token,invocationId:recovery.id});
+ assert.equal(f.commands.length,commandsBefore+1);assert.equal(f.commands.at(-1).name,'compact');assert.equal(f.commands.at(-1).sessionId,source.provider_session_id);
+ return recovery;
+}
+
 test('checks 14, 15: server drafts use revision fencing, owner isolation and durable recovery', options, t => withFixture(t, async f => {
   const chat = await f.createChat('Drafts'), ownerId = 'browser-a';
   const url = `/api/conversations/${chat.id}/draft`;
@@ -64,15 +78,11 @@ test('checks 26, 35, 36: unknown commands and wrong Run cancellation fail; cance
       freshSession = next.engineAgentId;
       assert.equal((await next.tool('ponderosa_message', { text: 'Fresh independent work completed' })).success, true);
     } }]);
+    const original=store.sqlite.prepare('SELECT * FROM scheduler_runs WHERE id=?').get(run.id),obligations=store.sqlite.prepare('SELECT * FROM required_reply_obligations WHERE run_id=? ORDER BY source_activation_id').all(run.id),commandsBefore=f.commands.length;
     const task='New work after cancellation';await f.send(agent.id, task);
-    const queued=await until(()=>store.sqlite.prepare("SELECT a.id FROM agent_activations a JOIN activation_sources held ON held.activation_id=a.id AND held.source_kind='settings_transition_reservation_wait' WHERE a.agent_id=? AND instr(a.payload_json,?)>0").get(agent.id,task),'independent task held before reviewed recovery');
-    await until(()=>store.stoppedProviderSessionBoundary(agent.id)?.cleanupConfirmed,'exact cancelled root cleanup');assert.equal(f.turns.length,turnsBefore);
-    const original=store.sqlite.prepare('SELECT * FROM scheduler_runs WHERE id=?').get(run.id),obligations=store.sqlite.prepare('SELECT * FROM required_reply_obligations WHERE run_id=? ORDER BY source_activation_id').all(run.id);
-    const status=f.ok(await f.api('GET',`/api/agents/${agent.id}/context-recoveries`)),boundary=status.boundary;assert.equal(boundary.sourceRunId,run.id);
-    const commandsBefore=f.commands.length,recoveryBody={idempotencyKey:randomUUID(),expectedSessionId:boundary.providerSessionId,expectedSourceRunId:run.id,expectedToolContractHash:boundary.toolContractHash,acknowledgeUnknownEffects:true};
-    const recovered=f.ok(await f.api('POST',`/api/agents/${agent.id}/context-recoveries`,recoveryBody));
-    assert.equal(recovered.request.progress.phase,'context_accepted');assert.equal(f.commands.length,commandsBefore+1);assert.equal(f.commands.at(-1).name,'compact');assert.equal(f.commands.at(-1).sessionId,boundary.providerSessionId);assert.equal(f.turns.length,turnsBefore,'Context repair sends no task input');
-    f.ok(await f.api('POST',`/api/agents/${agent.id}/context-recoveries/${recovered.request.id}/dismiss`,{acknowledgeStillBlocked:true}));
+    const queued=await until(()=>store.sqlite.prepare("SELECT id FROM agent_activations WHERE agent_id=? AND kind='human_message' AND instr(payload_json,?)>0").get(agent.id,task),'exact independent instruction retained');
+    await until(()=>store.stoppedProviderSessionBoundary(agent.id)?.cleanupConfirmed,'exact cancelled root cleanup');
+    await assertAutomaticContextRecovery(f,store,agent,original,commandsBefore);
     const next = await f.settled(agent.id, before);
     assert.equal(next.runs.filter(x => !before.includes(x.id)).length, 1);
     assert.ok(next.runs.some(x => !before.includes(x.id) && x.status === 'completed'));
@@ -122,6 +132,7 @@ test('cancelled cache is retained across failed cleanup and retired only after e
         assert.equal((await next.tool('ponderosa_message', { text: 'Separate work after cleanup' })).success, true);
       } }]);
       const before = (await f.detail(agent.id)).runs.map(x => x.id);
+      const original=store.sqlite.prepare('SELECT * FROM scheduler_runs WHERE id=?').get(run.id),obligations=store.sqlite.prepare('SELECT * FROM required_reply_obligations WHERE run_id=? ORDER BY source_activation_id').all(run.id),commandsBefore=f.commands.length;
       const task='Separate independent task waiting for cancellation cleanup';await f.send(agent.id, task);
       await until(() => refusals > 1 || !session.isAlive(), 'retained exact-root cleanup retry or recovered native exit');
       if (store.resumeSessionId(agent.id) === undefined) {
@@ -132,17 +143,12 @@ test('cancelled cache is retained across failed cleanup and retired only after e
       }
       refuse = false;
       await until(()=>store.stoppedProviderSessionBoundary(agent.id)?.cleanupConfirmed,'exact failed-cleanup root exit');assert.equal(session.isAlive(),false);
-      const queued=await until(()=>store.sqlite.prepare("SELECT a.id FROM agent_activations a JOIN activation_sources held ON held.activation_id=a.id AND held.source_kind='settings_transition_reservation_wait' WHERE a.agent_id=? AND instr(a.payload_json,?)>0").get(agent.id,task),'same separate task held for reviewed recovery');assert.equal(f.turns.length,turnsBefore);
-      const original=store.sqlite.prepare('SELECT * FROM scheduler_runs WHERE id=?').get(run.id),obligations=store.sqlite.prepare('SELECT * FROM required_reply_obligations WHERE run_id=? ORDER BY source_activation_id').all(run.id);
-      const status=f.ok(await f.api('GET',`/api/agents/${agent.id}/context-recoveries`)),boundary=status.boundary;assert.equal(boundary.sourceRunId,run.id);
-      const commandsBefore=f.commands.length,recoveryBody={idempotencyKey:randomUUID(),expectedSessionId:boundary.providerSessionId,expectedSourceRunId:run.id,expectedToolContractHash:boundary.toolContractHash,acknowledgeUnknownEffects:true};
-      const recovered=f.ok(await f.api('POST',`/api/agents/${agent.id}/context-recoveries`,recoveryBody));
-      assert.equal(recovered.request.progress.phase,'context_accepted');assert.equal(f.commands.length,commandsBefore+1);assert.equal(f.commands.at(-1).name,'compact');assert.equal(f.commands.at(-1).sessionId,blockedSession);assert.equal(f.turns.length,turnsBefore,'Context repair does not replay stopped work');
-      f.ok(await f.api('POST',`/api/agents/${agent.id}/context-recoveries/${recovered.request.id}/dismiss`,{acknowledgeStillBlocked:true}));
+      const queued=await until(()=>store.sqlite.prepare("SELECT id FROM agent_activations WHERE agent_id=? AND kind='human_message' AND instr(payload_json,?)>0").get(agent.id,task),'same independent instruction retained');
+      await assertAutomaticContextRecovery(f,store,agent,original,commandsBefore);
       const finished = await f.settled(agent.id, before);
       assert.equal(session.isAlive(), false);
       assert.equal(f.turns.length, turnsBefore + 1, 'Only the separate new task executes, once');
-      assert.deepEqual(resetExitObservations, [], 'Observed cleanup preserves the retained context for explicit recovery');
+      assert.deepEqual(resetExitObservations, [], 'Observed cleanup preserves the retained context for verified automatic recovery');
       assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(queued.id).n,1);
       assert.deepEqual(store.sqlite.prepare('SELECT * FROM scheduler_runs WHERE id=?').get(run.id),original);assert.deepEqual(store.sqlite.prepare('SELECT * FROM required_reply_obligations WHERE run_id=? ORDER BY source_activation_id').all(run.id),obligations);
       assert.equal(finished.runs.find(x => x.id === run.id).status, 'cancelled');

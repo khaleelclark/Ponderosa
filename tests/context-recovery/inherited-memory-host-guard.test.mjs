@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import path from 'node:path';
-import {AgentStore,WorkspaceStore} from '../../packages/agents/dist/index.js';
+import {AgentStore} from '../../packages/agents/dist/index.js';
 import {hasKnownRetainedMemory} from '../../apps/server/dist/context-transition-admission.js';
 import {withFixture,until} from '../shared/fixture.mjs';
 import {inertCodex} from '../shared/inert-codex.mjs';
@@ -67,7 +67,7 @@ for(const mode of ['verified','generic-missing-origin']) test(mode==='generic-mi
    assert.deepEqual(reads(),remainingReads);assert.ok(remainingReads.length,'earlier memory-read evidence remains inspectable');
    assert.deepEqual(store.sqlite.prepare('SELECT * FROM provider_inputs WHERE agent_id=? ORDER BY execution_id').all(agent.id),remainingInputs,'remaining input evidence is unchanged; the origin was deliberately deleted');
    assert.deepEqual(store.sqlite.prepare('SELECT * FROM context_rollovers WHERE agent_id=? ORDER BY id').all(agent.id),parents);
-   const notices=new WorkspaceStore(f.dataDir);try{const notice=notices.getNotificationByDedupeKey('settings-transition:'+held.id);assert.match(notice.body,/saved provider instructions are missing/i);assert.deepEqual(notice.action,{kind:'open_agent',targetId:agent.id});}finally{notices.close();}
+   const notices=f.ok(await f.api('GET','/api/notifications'));assert.equal(notices.items.some(item=>item.agentId===agent.id&&item.category==='coordination'&&item.severity==='attention'&&item.status==='open'),false,'missing saved instructions remain a quiet internal evidence hold');
 
   }
  },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,holdMemoryCompletion:true,uniqueThreads:true})).adapter,

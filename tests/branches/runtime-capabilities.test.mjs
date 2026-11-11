@@ -40,15 +40,29 @@ test('tightening a live policy refuses previously admitted tool calls, including
  },{storeFactory:dataDir=>(store=new AgentStore(dataDir))});
 });
 
-test('new restricted sessions omit blocked tools and changing policy forces a new provider session rather than reusing broader authority',{timeout:30000},async t=>{
+test('new restricted sessions omit blocked tools while unsupported policy handoffs retain the accepted authority',{timeout:30000},async t=>{
  let store;
  await withFixture(t,async f=>{
   const chat=await f.createChat('Fresh policy'),agent=await f.createIdleAgent(chat,'Worker'),first=await f.hold(agent.id),policies=new CapabilityPolicyStore(store.sqlite);
   f.ok(await f.tool(first,'ponderosa_message',{intent:'direct_to_user',text:'First result'}));first.finish();await f.settled(agent.id);const previous=(await f.detail(agent.id)).runs.map(r=>r.id);
-  policies.put({scopeKind:'agent',scopeId:agent.id,expectedRevision:0,restrictedCapabilityIds:[CAPABILITY_IDS.managedAgentCreate,CAPABILITY_IDS.browserRead]});
-  const second=await f.hold(agent.id);assert.notEqual(second.engineAgentId,first.engineAgentId);
+  const accepted=store.resumeSessionState(agent.id),packet=store.acceptedProviderSessionInput(agent.id),turns=f.turns.length;
+  const restrictions=[CAPABILITY_IDS.managedAgentCreate,CAPABILITY_IDS.browserRead];
+  policies.put({scopeKind:'agent',scopeId:agent.id,expectedRevision:0,restrictedCapabilityIds:restrictions});
+  await f.send(agent.id,'Continue after tightening access.');
+  const held=await until(()=>store.sqlite.prepare(`SELECT a.id,a.payload_json FROM agent_activations a
+   JOIN activation_sources h ON h.activation_id=a.id AND h.source_kind='settings_transition_reservation_wait'
+   WHERE a.agent_id=? AND a.state='pending'`).get(agent.id),'unsupported policy handoff held');
+  assert.ok(held.payload_json.includes('Continue after tightening access.'));
+  assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(held.id).n,0);
+  assert.deepEqual(store.resumeSessionState(agent.id),accepted);assert.deepEqual(store.acceptedProviderSessionInput(agent.id),packet);
+  assert.deepEqual((await f.detail(agent.id)).runs.map(r=>r.id),previous);assert.equal(f.turns.length,turns,'unsupported migration cannot silently reseed broader context');
+  const notice=f.ok(await f.api('GET','/api/notifications')).items.find(item=>item.agentId===agent.id&&item.projectId===chat.projectId&&item.status==='open'&&item.severity==='attention'&&(item.workContext?.recordId===held.id||item.workContext?.activationIds?.includes(held.id)));
+  assert.ok(notice);assert.match(notice.body,/does not support the verified context handoff/);assert.deepEqual(notice.action,{kind:'open_agent',targetId:agent.id});
+  const fresh=await f.createIdleAgent(chat,'Initially restricted worker');
+  policies.put({scopeKind:'agent',scopeId:fresh.id,expectedRevision:0,restrictedCapabilityIds:restrictions});
+  const second=await f.hold(fresh.id);assert.notEqual(second.engineAgentId,first.engineAgentId);
   const blocked=await second.tool('ponderosa_create_managed_agent',{idempotencyKey:'missing-tool',title:'Blocked',text:'Do nothing',lifetime:{kind:'indefinite'}});assert.equal(blocked.success,false);assert.match(blocked.text,/Unavailable Ponderosa tool/);
-  f.ok(await f.tool(second,'ponderosa_message',{intent:'direct_to_user',text:'Second result'}));second.finish();await f.settled(agent.id,previous);
+  f.ok(await f.tool(second,'ponderosa_message',{intent:'direct_to_user',text:'Second result'}));second.finish();await f.settled(fresh.id);
  },{storeFactory:dataDir=>(store=new AgentStore(dataDir))});
 });
 

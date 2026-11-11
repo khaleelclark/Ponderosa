@@ -261,7 +261,7 @@ for(const access of ['restricted','unused'])for(const mode of ['model','voice'])
      modelDir:process.env.PONDEROSA_TEST_MEMORY_MODEL_DIR,stateDirectory:path.join(root,'memory-policy'),provision:true})});
 });
 
-test('a thread that once had memory tools is not reused for a later voice request',{timeout:30000},async t=>{
+test('revoking memory tools holds a later voice request without replacing the accepted thread',{timeout:30000},async t=>{
  let store,native;
  await withFixture(t,async f=>{
   const chat=await f.createChat('Memory grant changed'),agent=await f.createIdleAgent(chat,'Worker');
@@ -272,14 +272,21 @@ test('a thread that once had memory tools is not reused for a later voice reques
   await native.sendTool('ponderosa_message',{text:'First task complete.'});
   await f.settled(agent.id);
   new CapabilityPolicyStore(store.sqlite).put({scopeKind:'agent',scopeId:agent.id,expectedRevision:0,restrictedCapabilityIds:[CAPABILITY_IDS.memoryRead,CAPABILITY_IDS.memoryWrite]});
-  const prior=(await f.detail(agent.id)).runs.map(run=>run.id);
+  const prior=(await f.detail(agent.id)).runs.map(run=>run.id),accepted=store.resumeSessionState(agent.id),packet=store.acceptedProviderSessionInput(agent.id);
   f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text:'Continue aloud.',idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'steer',voiceReply:true}));
-  await until(async()=>(await native.requests()).filter(x=>x.method==='turn/start').length===2,'fresh voice turn');
+  const held=await until(()=>store.sqlite.prepare(`SELECT a.id,a.payload_json FROM agent_activations a
+   JOIN activation_sources h ON h.activation_id=a.id AND h.source_kind='settings_transition_reservation_wait'
+   WHERE a.agent_id=? AND a.state='pending'`).get(agent.id),'revoked memory context held before voice submission');
+  assert.ok(held.payload_json.includes('Continue aloud.'));
+  assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(held.id).n,0);
   const calls=await native.requests();
-  assert.equal(calls.filter(x=>x.method==='thread/start').length,2,'prior memory exposure cannot use the exception');
+  assert.equal(calls.filter(x=>x.method==='turn/start').length,1,'no voice task crosses changed permissions');
+  assert.equal(calls.filter(x=>x.method==='thread/start').length,1,'a fresh seed cannot bypass retained-context guards');
   assert.equal(calls.filter(x=>x.method==='thread/resume').length,0);
-  await native.sendTool('ponderosa_voice_reply',{});
-  await f.settled(agent.id,prior);
+  assert.deepEqual(store.resumeSessionState(agent.id),accepted);assert.deepEqual(store.acceptedProviderSessionInput(agent.id),packet);
+  assert.deepEqual((await f.detail(agent.id)).runs.map(run=>run.id),prior);
+  const notice=f.ok(await f.api('GET','/api/notifications')).items.find(item=>item.agentId===agent.id&&item.projectId===chat.projectId&&item.status==='open'&&item.severity==='attention'&&(item.workContext?.recordId===held.id||item.workContext?.activationIds?.includes(held.id)));
+  assert.ok(notice);assert.match(notice.body,/Capability restrictions changed/);assert.deepEqual(notice.action,{kind:'open_agent',targetId:agent.id});
  },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,emitVoiceReply:true})).adapter,
    localMemoryForRoot:async root=>({chromaUrl:await ownedChroma(),collectionPrefix:'context_'+randomUUID().replaceAll('-',''),
      modelDir:process.env.PONDEROSA_TEST_MEMORY_MODEL_DIR,stateDirectory:path.join(root,'memory-policy'),provision:true})});

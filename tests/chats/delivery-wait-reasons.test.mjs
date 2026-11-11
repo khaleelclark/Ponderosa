@@ -12,18 +12,18 @@ test('UI013 receipt projection batches current targets, respects per-message eng
     { activationId: 'steer', targetAgentId: 'a', state: 'queued', steeringWaitReason: 'context_refresh' },
     { activationId: 'foreign', targetAgentId: 'other', state: 'queued' },
   ];
-  const models = createServerReadModels({ store: { getAgent(id) { calls.push('agent:'+id); return { id, projectId: id === 'other' ? 'foreign' : 'p', activeEngine: 'codex' }; } },
-    coordinationV3: { deliveryReceiptsForCommunications: () => new Map([['message', rows]]), activeAgentRun(id) { calls.push('run:'+id); }, providerBlockedState(id) { calls.push('hold:'+id); } },
+  const models = createServerReadModels({ store: { uncertainProviderContextRecoveryBoundary: () => undefined, sqlite: { prepare: () => ({ get: () => undefined }) }, getAgent(id) { calls.push('agent:'+id); return { id, projectId: id === 'other' ? 'foreign' : 'p', activeEngine: 'codex' }; } },
+    coordinationV3: { contextRecovery: { active: () => undefined }, activation: () => undefined, deliveryReceiptsForCommunications: () => new Map([['message', rows]]), activeAgentRun(id) { calls.push('run:'+id); }, providerBlockedState(id) { calls.push('hold:'+id); } },
     admissionBlocker(agent) { calls.push('admission:'+agent.activeEngine); return { kind: agent.activeEngine === 'codex' ? 'authentication_required' : 'provider_unavailable', providerId: agent.activeEngine }; } });
   const result = models.deliveryReceiptsForCommunications('p', ['message']).get('message');
   assert.deepEqual(result.map(r => r.queueWaitReason), ['authentication_required', 'provider_unavailable', 'authentication_required', undefined, undefined, undefined]);
-  assert.deepEqual(calls, ['agent:a', 'run:a', 'hold:a', 'agent:other', 'admission:codex', 'admission:claude']);
+  assert.deepEqual(calls, ['agent:a', 'agent:a', 'agent:a', 'agent:a', 'agent:other', 'agent:a', 'run:a', 'hold:a', 'agent:other', 'admission:codex', 'admission:claude']);
   for (const row of rows) assert.equal(row.queueWaitReason, undefined, 'source receipts stay immutable');
 });
 
 test('UI013 provider retry reasons bind exact activation IDs and do not borrow another queued hold', () => {
-  const models = createServerReadModels({ store: { getAgent: () => ({ id: 'a', projectId: 'p', activeEngine: 'codex' }) },
-    coordinationV3: { deliveryReceiptsForCommunications: () => new Map([['message', [{ activationId: 'held', targetAgentId: 'a', state: 'queued' }, { activationId: 'other', targetAgentId: 'a', state: 'queued' }]]]),
+  const models = createServerReadModels({ store: { uncertainProviderContextRecoveryBoundary: () => undefined, sqlite: { prepare: () => ({ get: () => undefined }) }, getAgent: () => ({ id: 'a', projectId: 'p', activeEngine: 'codex' }) },
+    coordinationV3: { contextRecovery: { active: () => undefined }, activation: () => undefined, deliveryReceiptsForCommunications: () => new Map([['message', [{ activationId: 'held', targetAgentId: 'a', state: 'queued' }, { activationId: 'other', targetAgentId: 'a', state: 'queued' }]]]),
       activeAgentRun() {}, providerBlockedState: () => ({ activationIds: ['held'], classification: 'rate_limit' }) }, admissionBlocker: () => undefined });
   assert.deepEqual(models.deliveryReceiptsForCommunications('p', ['message']).get('message').map(r => r.queueWaitReason), ['provider_retry', undefined]);
 });

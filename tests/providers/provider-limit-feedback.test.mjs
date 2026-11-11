@@ -3,7 +3,7 @@ import test from 'node:test';
 import { withFixture, until, fixtureTestOptions } from '../shared/fixture.mjs';
 import { AgentStore } from '@ponderosa/agents';
 
-for (const engine of ['codex','claude']) test(`UI014 ${engine} exact quota survives Chat pagination/recheck/restart; other work stays usable; explicit recovery clears it`, fixtureTestOptions, async t => {
+for (const engine of ['codex','claude']) test(`UI014 ${engine} exact quota survives Chat pagination/recheck/restart; other work stays usable; verified successor clears it`, fixtureTestOptions, async t => {
   let store;
   await withFixture(t, async f => {
     const chat=await f.createChat('Quota feedback'), other=await f.createChat('Unaffected Chat');
@@ -35,24 +35,21 @@ for (const engine of ['codex','claude']) test(`UI014 ${engine} exact quota survi
     // recovered with its original provider, never silently discarded.
     f.ok(await f.api('PATCH','/api/agents/'+agent.id,{activeEngine:engine}));
     f.plans.set(agent.id,[{hold:true}]);
+    const commandsBefore=f.commands.length;
     const retry=f.ok(await f.api('POST',`/api/projects/${chat.projectId}/message-deliveries/${receipt.activationId}/retry`,{idempotencyKey:'quota-live-explicit-retry'}));
     assert.equal(retry.accepted,true);assert.notEqual(retry.activationId,receipt.activationId);assert.equal(retry.retryMayDuplicate,true);
-    const held=await until(()=>store.sqlite.prepare("SELECT a.id,a.payload_json FROM agent_activations a JOIN activation_sources h ON h.activation_id=a.id AND h.source_kind='settings_transition_reservation_wait' WHERE a.id=? AND a.state='pending'").get(retry.activationId),'explicit quota successor held for context review');
-    assert.ok(held.payload_json.includes('Preserve this exact limited request'));
-    assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(retry.activationId).n,0);
-    assert.equal(f.turns.filter(turn=>turn.agentId===agent.id).length,before,'Explicit delivery retry cannot silently reseed uncertain native context');
-    assert.ok((await read()).providerFailureMessages.length);
-    const status=f.ok(await f.api('GET',`/api/agents/${agent.id}/context-recoveries`)),boundary=status.boundary;
-    assert.equal(boundary.sourceRunId,failed.id);assert.equal(status.sourceEvidence.sourceRunStatus,failed.status);
-    const commandsBefore=f.commands.length,recoveryBody={idempotencyKey:'quota-context-review',expectedSessionId:boundary.providerSessionId,expectedSourceRunId:failed.id,expectedToolContractHash:boundary.toolContractHash,acknowledgeUnknownEffects:true};
-    const recovered=f.ok(await f.api('POST',`/api/agents/${agent.id}/context-recoveries`,recoveryBody));
-    assert.equal(recovered.request.progress.phase,'context_accepted');assert.equal(f.commands.length,commandsBefore+1);assert.equal(f.commands.at(-1).name,'compact');assert.equal(f.commands.at(-1).sessionId,boundary.providerSessionId);
-    assert.equal(f.turns.filter(turn=>turn.agentId===agent.id).length,before,'Context-only recovery cannot replay the quota request');
-    const replay=f.ok(await f.api('POST',`/api/agents/${agent.id}/context-recoveries`,recoveryBody));assert.equal(replay.replayed,true);assert.equal(f.commands.length,commandsBefore+1);
-    assert.ok((await read()).providerFailureMessages.length,'Context repair alone is not completed-task evidence');
-    f.ok(await f.api('POST',`/api/agents/${agent.id}/context-recoveries/${recovered.request.id}/dismiss`,{acknowledgeStillBlocked:true}));
-    await until(()=>f.turns.filter(turn=>turn.agentId===agent.id).length===before+1,'explicit recovery starts once');
+    const recovered=await until(()=>store.sqlite.prepare("SELECT * FROM provider_context_recovery_requests WHERE agent_id=? AND source_run_id=? AND state='dismissed'").get(agent.id,failed.id),'automatic context recovery for explicit successor');
+    const progress=JSON.parse(recovered.progress_json);
+    assert.equal(recovered.project_id,chat.projectId);assert.equal(recovered.provider_session_id,failed.provider_session_id);assert.equal(recovered.source_fence,failed.fencing_token);assert.equal(recovered.scope_key,failed.scope_key);assert.equal(recovered.tool_contract_hash,store.getProviderInput(failed.id,true).sourceManifest.normalRuntimeContract.contractHash);
+    assert.equal(progress.phase,'context_accepted');assert.equal(progress.automaticMaintenance,true);assert.equal(progress.nativeInvoked,true);assert.equal(progress.nativeOutcome,'completed');assert.equal(progress.sourceWork,'held_unknown');
+    const measured=store.readEvents(agent.id).find(row=>row.seq===progress.contextUsageEventSequence);
+    assert.ok(measured);assert.equal(measured.event.type,'context_usage');assert.equal(progress.usedTokens,1000);assert.equal(progress.windowTokens,200000);assert.equal(measured.event.usedTokens,progress.usedTokens);assert.equal(measured.event.windowTokens,progress.windowTokens);assert.equal(measured.event.providerSessionId,failed.provider_session_id);
+    assert.deepEqual(measured.event.providerCommand,{name:'compact',executionId:failed.id,fencingToken:failed.fencing_token,invocationId:recovered.id});
+    assert.equal(f.commands.length,commandsBefore+1);assert.equal(f.commands.at(-1).name,'compact');assert.equal(f.commands.at(-1).sessionId,failed.provider_session_id);
+    await until(()=>f.turns.filter(turn=>turn.agentId===agent.id).length===before+1,'user-approved successor starts once after measured recovery');
+    const successor=store.sqlite.prepare('SELECT payload_json FROM agent_activations WHERE id=?').get(retry.activationId);assert.ok(successor.payload_json.includes('Preserve this exact limited request'));
     assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(retry.activationId).n,1);
+    assert.equal(store.sqlite.prepare(`SELECT count(*) n FROM agent_activations a JOIN scheduler_run_activations r ON r.activation_id=a.id WHERE a.kind='required_reply_recovery' AND json_extract(a.payload_json,'$.requiredReplyRecovery.sourceRunId')=?`).get(failed.id).n,0,'context repair never replays uncertain original work');
     assert.ok((await read()).providerFailureMessages.length,'Keep the notice until recovery succeeds');
     const session=f.sessions.get(agent.id);
     const reply=await f.tool(session,'ponderosa_message',{text:'Recovered exact quota work'});assert.equal(reply.status,200);session.finish();

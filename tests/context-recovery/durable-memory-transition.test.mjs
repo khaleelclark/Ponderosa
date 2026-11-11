@@ -8,6 +8,17 @@ import { ownedChroma } from '../memory/portability-fixture.mjs';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
+function assertContextReview(items, agent, chat, held, reason) {
+ const matching=items.filter(item=>item.kind==='operational'&&item.category==='coordination'&&item.severity==='attention'
+  &&item.status==='open'&&!item.recoveredAt&&item.projectId===agent.projectId&&item.agentId===agent.id
+  &&item.conversationId===agent.conversationId&&item.workContext?.kind==='activation'
+  &&(item.workContext.recordId===held.id||item.workContext.activationIds?.includes(held.id))
+  &&item.workContext.state==='blocked'&&item.action?.kind==='open_agent'&&item.action.targetId===agent.id);
+ assert.equal(matching.length,1,'one actionable incident names this exact owner and held work');
+ assert.equal(matching[0].title,`${agent.title}${chat.title?` · ${chat.title}`:''} · Context Needs Review`);
+ assert.ok(matching[0].body.includes(reason));
+}
+
 for (const operation of ['get','save']) test(`durable memory receipt supports ${operation} through a normal restart and model change`,{timeout:90000},async t=>{
  let store,native;
  await withFixture(t,async f=>{
@@ -68,7 +79,7 @@ test('ordinary text after restart and memory revocation waits for context review
    WHERE a.agent_id=? AND a.state='pending'`).get(agent.id),'context-review hold',20000);
   assert.ok(held.payload_json.includes('Continue the original user objective in text.'));
   const notices=f.ok(await f.api('GET','/api/notifications'));
-  assert.ok(notices.items.some(item=>item.title==='Agent Context Needs Review'&&item.body.includes('revoked or changed')));
+  assertContextReview(notices.items,agent,chat,held,'revoked or changed');
   await new Promise(resolve=>setTimeout(resolve,300));
   assert.equal((await native.requests()).filter(x=>x.method==='turn/start').length,1,'no old or fresh thread receives unsafe seed text');
   assert.equal(store.resumeSessionState(agent.id)?.sessionId,accepted.sessionId,'accepted context remains intact for review');
@@ -102,7 +113,7 @@ test('legacy session with possible post-origin revocation holds original ordinar
    WHERE a.agent_id=? AND a.state='pending'`).get(agent.id),'context-review hold',20000);
   assert.ok(held.payload_json.includes('Continue the original user objective in text.'));
   const notices=f.ok(await f.api('GET','/api/notifications'));
-  assert.ok(notices.items.some(item=>item.title==='Agent Context Needs Review'&&item.body.includes('may have been removed')));
+  assertContextReview(notices.items,agent,chat,held,'may have been removed');
   await new Promise(resolve=>setTimeout(resolve,300));
   assert.equal((await native.requests()).filter(x=>x.method==='turn/start').length,1,'no old or fresh thread receives unsafe seed text');
   assert.equal(store.resumeSessionState(agent.id)?.sessionId,accepted.sessionId,'accepted context remains intact for review');
@@ -140,7 +151,7 @@ test('legacy packet without runtime contract detects possible later revocation',
    WHERE a.agent_id=? AND a.state='pending'`).get(agent.id),'context-review hold',20000);
   assert.ok(held.payload_json.includes('Continue the original user objective in text.'));
   const notices=f.ok(await f.api('GET','/api/notifications'));
-  assert.ok(notices.items.some(item=>item.title==='Agent Context Needs Review'&&item.body.includes('may have been removed')));
+  assertContextReview(notices.items,agent,chat,held,'may have been removed');
   await new Promise(resolve=>setTimeout(resolve,300));
   assert.equal((await native.requests()).filter(x=>x.method==='turn/start').length,1,'no old or fresh thread receives unsafe seed text');
   assert.equal(store.resumeSessionState(agent.id)?.sessionId,accepted.sessionId,'accepted context remains intact for review');
@@ -176,7 +187,7 @@ test('legacy packet with recorded forgotten source holds ordinary text',{timeout
    WHERE a.agent_id=? AND a.state='pending'`).get(agent.id),'context-review hold',20000);
   assert.ok(held.payload_json.includes('Continue the original user objective in text.'));
   const notices=f.ok(await f.api('GET','/api/notifications'));
-  assert.ok(notices.items.some(item=>item.title==='Agent Context Needs Review'&&item.body.includes('revoked or changed')));
+  assertContextReview(notices.items,agent,chat,held,'revoked or changed');
   await new Promise(resolve=>setTimeout(resolve,300));
   assert.equal((await native.requests()).filter(x=>x.method==='turn/start').length,1,'no old or fresh thread receives unsafe seed text');
   assert.equal(store.resumeSessionState(agent.id)?.sessionId,accepted.sessionId,'accepted context remains intact for review');
@@ -185,7 +196,7 @@ test('legacy packet with recorded forgotten source holds ordinary text',{timeout
    localMemoryForRoot:async root=>({chromaUrl:await ownedChroma(),collectionPrefix:'context_'+randomUUID().replaceAll('-',''),modelDir:process.env.PONDEROSA_TEST_MEMORY_MODEL_DIR,stateDirectory:path.join(root,'memory-policy'),provision:true})});
 });
 
-test('legacy packet without runtime contract permits ordinary work absent known removal',{timeout:90000},async t=>{
+test('legacy packet without runtime contract quietly holds ordinary work absent verified instructions',{timeout:90000},async t=>{
  let store,native;
  await withFixture(t,async f=>{
   const chat=await f.createChat('Text after source revocation'),agent=await f.createIdleAgent(chat,'Worker');
@@ -208,9 +219,21 @@ test('legacy packet without runtime contract permits ordinary work absent known 
   assert.equal(store.acceptedProviderSessionInput(agent.id).sourceManifest.normalRuntimeContract,undefined);
   await f.reopen();
   await f.send(agent.id,'Continue the original user objective in text.');
-  const turns=await until(async()=>{const x=(await native.requests()).filter(x=>x.method==='turn/start');return x.length>=2?x:undefined;},'legacy ordinary work',20000);
-  assert.ok(JSON.stringify(turns[1]).includes('Continue the original user objective in text.'));
-  await native.sendTool('ponderosa_message',{text:'Ordinary work continued.'});await f.settled(agent.id);
+  const held=await until(()=>store.sqlite.prepare(`SELECT a.id,a.payload_json FROM agent_activations a
+   JOIN activation_sources h ON h.activation_id=a.id AND h.source_kind='settings_transition_reservation_wait'
+   WHERE a.agent_id=? AND a.state='pending'`).get(agent.id),'incomplete saved-contract evidence held quietly',20000);
+  const inputs=store.sqlite.prepare('SELECT * FROM provider_inputs WHERE agent_id=? ORDER BY execution_id').all(agent.id);
+  const assertQuietHold=async()=>{
+   assert.ok(held.payload_json.includes('Continue the original user objective in text.'));
+   assert.equal(store.sqlite.prepare('SELECT state FROM agent_activations WHERE id=?').get(held.id).state,'pending');
+   assert.ok(store.sqlite.prepare("SELECT 1 FROM activation_sources WHERE activation_id=? AND source_kind='settings_transition_reservation_wait'").get(held.id),'the exact admission fence survives restart');
+   assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(held.id).n,0);
+   assert.equal((await native.requests()).filter(x=>x.method==='turn/start').length,1,'missing instructions never authorize replay or a fresh seed');
+   assert.equal(store.resumeSessionState(agent.id)?.sessionId,accepted.sessionId);
+   assert.deepEqual(store.sqlite.prepare('SELECT * FROM provider_inputs WHERE agent_id=? ORDER BY execution_id').all(agent.id),inputs);
+   assert.equal(f.ok(await f.api('GET','/api/notifications')).items.some(item=>item.agentId===agent.id&&item.category==='coordination'&&item.status==='open'&&item.severity==='attention'),false,'internal evidence repair does not ask the user to repair saved instructions');
+  };
+  await assertQuietHold();await f.reopen();await assertQuietHold();
 
  },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,emitVoiceReply:true,holdMemoryCompletion:true,uniqueThreads:true})).adapter,
    localMemoryForRoot:async root=>({chromaUrl:await ownedChroma(),collectionPrefix:'context_'+randomUUID().replaceAll('-',''),modelDir:process.env.PONDEROSA_TEST_MEMORY_MODEL_DIR,stateDirectory:path.join(root,'memory-policy'),provision:true})});
@@ -240,7 +263,7 @@ test('recorded unverified memory with no source IDs holds ordinary text',{timeou
    WHERE a.agent_id=? AND a.state='pending'`).get(agent.id),'context-review hold',20000);
   assert.ok(held.payload_json.includes('Continue the original user objective in text.'));
   const notices=f.ok(await f.api('GET','/api/notifications'));
-  assert.ok(notices.items.some(item=>item.title==='Agent Context Needs Review'&&item.body.includes('could not be checked')));
+  assertContextReview(notices.items,agent,chat,held,'could not be checked');
   await new Promise(resolve=>setTimeout(resolve,300));
   assert.equal((await native.requests()).filter(x=>x.method==='turn/start').length,1,'no old or fresh thread receives unsafe seed text');
   assert.equal(store.resumeSessionState(agent.id)?.sessionId,accepted.sessionId,'accepted context remains intact for review');
@@ -274,7 +297,7 @@ test('legacy session with removed memory-read capability holds original ordinary
    WHERE a.agent_id=? AND a.state='pending'`).get(agent.id),'context-review hold',20000);
   assert.ok(held.payload_json.includes('Continue the original user objective in text.'));
   const notices=f.ok(await f.api('GET','/api/notifications'));
-  assert.ok(notices.items.some(item=>item.title==='Agent Context Needs Review'&&item.body.includes('Memory read access was removed')));
+  assertContextReview(notices.items,agent,chat,held,'Memory read access was removed');
   await new Promise(resolve=>setTimeout(resolve,300));
   assert.equal((await native.requests()).filter(x=>x.method==='turn/start').length,1,'no old or fresh thread receives unsafe seed text');
   assert.equal(store.resumeSessionState(agent.id)?.sessionId,accepted.sessionId,'accepted context remains intact for review');
@@ -303,7 +326,7 @@ test('a failed handoff reservation keeps the exact task queued and does not retr
    WHERE a.agent_id=? AND a.state='pending' AND s.source_kind='settings_transition_reservation_wait'`).get(agent.id),'durable exact hold',20000);
   assert.equal(attempts,1);
   const notices=f.ok(await f.api('GET','/api/notifications'));
-  assert.ok(notices.items.some(item=>item.title==='Agent Context Needs Review'&&item.body.includes('could not prepare')));
+  assertContextReview(notices.items,agent,chat,held,'could not prepare');
   await new Promise(resolve=>setTimeout(resolve,300));assert.equal(attempts,1,'same failure is not retried automatically');
   assert.equal((await native.requests()).filter(x=>x.method==='turn/start').length,1);
   assert.equal(store.resumeSessionState(agent.id)?.sessionId,accepted.sessionId);
@@ -372,7 +395,7 @@ test('recorded memory plus a missing later receipt holds ordinary work for revie
   const held=await until(()=>store.sqlite.prepare(`SELECT a.id FROM agent_activations a JOIN activation_sources s ON s.activation_id=a.id
    WHERE a.agent_id=? AND a.state='pending' AND s.source_kind='settings_transition_reservation_wait'`).get(agent.id),'incomplete exposure hold',20000);
   const notices=f.ok(await f.api('GET','/api/notifications'));
-  assert.ok(notices.items.some(item=>item.title==='Agent Context Needs Review'&&item.body.includes('could not be checked')));
+  assertContextReview(notices.items,agent,chat,held,'could not be checked');
   assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(held.id).n,0);
   assert.equal((await native.requests()).filter(x=>x.method==='turn/start').length,2);
  },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,emitVoiceReply:true,holdMemoryCompletion:true,uniqueThreads:true})).adapter,
@@ -412,7 +435,7 @@ test('memory source lineage survives two handoffs and restart before revocation'
   assert.equal(store.resumeSessionState(agent.id)?.sessionId,accepted.sessionId);
   assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(held.id).n,0);
   const notices=f.ok(await f.api('GET','/api/notifications'));
-  assert.ok(notices.items.some(item=>item.title==='Agent Context Needs Review'&&item.body.includes('revoked or changed')));
+  assertContextReview(notices.items,agent,chat,held,'revoked or changed');
  },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,emitVoiceReply:true,holdMemoryCompletion:true,uniqueThreads:true})).adapter,
    localMemoryForRoot:async root=>({chromaUrl:await ownedChroma(),collectionPrefix:'context_'+randomUUID().replaceAll('-',''),modelDir:process.env.PONDEROSA_TEST_MEMORY_MODEL_DIR,stateDirectory:path.join(root,'memory-policy'),provision:true})});
 });
@@ -455,7 +478,7 @@ test('unverified rollover parent with recorded sources holds ordinary work',{tim
   assert.equal(store.resumeSessionState(agent.id)?.sessionId,accepted.sessionId);
   assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(held.id).n,0);
   const notices=f.ok(await f.api('GET','/api/notifications'));
-  assert.ok(notices.items.some(item=>item.title==='Agent Context Needs Review'&&item.body.includes('could not be checked')));
+  assertContextReview(notices.items,agent,chat,held,'could not be checked');
  },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,emitVoiceReply:true,holdMemoryCompletion:true,uniqueThreads:true})).adapter,
    localMemoryForRoot:async root=>({chromaUrl:await ownedChroma(),collectionPrefix:'context_'+randomUUID().replaceAll('-',''),modelDir:process.env.PONDEROSA_TEST_MEMORY_MODEL_DIR,stateDirectory:path.join(root,'memory-policy'),provision:true})});
 });
@@ -503,7 +526,7 @@ test('forgetting inherited memory during the second handoff stops its summary',{
   assert.equal(store.resumeSessionState(agent.id)?.sessionId,accepted.sessionId);
   assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(held.id).n,0);
   const notices=f.ok(await f.api('GET','/api/notifications'));
-  assert.ok(notices.items.some(item=>item.title==='Agent Context Needs Review'&&item.body.includes('revoked or changed')));
+  assertContextReview(notices.items,agent,chat,held,'revoked or changed');
  },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,emitVoiceReply:true,holdMemoryCompletion:true,uniqueThreads:true})).adapter,
    localMemoryForRoot:async root=>({chromaUrl:await ownedChroma(),collectionPrefix:'context_'+randomUUID().replaceAll('-',''),modelDir:process.env.PONDEROSA_TEST_MEMORY_MODEL_DIR,stateDirectory:path.join(root,'memory-policy'),provision:true})});
 });
@@ -546,7 +569,7 @@ test('memory-off generic parent with recorded sources holds ordinary work',{time
   assert.equal(store.resumeSessionState(agent.id)?.sessionId,accepted.sessionId);
   assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(held.id).n,0);
   const notices=f.ok(await f.api('GET','/api/notifications'));
-  assert.ok(notices.items.some(item=>item.title==='Agent Context Needs Review'&&item.body.includes('Local Memory is unavailable')));
+  assertContextReview(notices.items,agent,chat,held,'Local Memory is unavailable');
  },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,emitVoiceReply:true,holdMemoryCompletion:true,uniqueThreads:true})).adapter,
    localMemoryForRoot:async root=>({chromaUrl:await ownedChroma(),collectionPrefix:'context_'+randomUUID().replaceAll('-',''),modelDir:process.env.PONDEROSA_TEST_MEMORY_MODEL_DIR,stateDirectory:path.join(root,'memory-policy'),provision:true})});
 });
@@ -591,7 +614,7 @@ test('memory-off legacy packet holds inherited generic-parent sources',{timeout:
   assert.equal(store.resumeSessionState(agent.id)?.sessionId,accepted.sessionId);
   assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(held.id).n,0);
   const notices=f.ok(await f.api('GET','/api/notifications'));
-  assert.ok(notices.items.some(item=>item.title==='Agent Context Needs Review'&&item.body.includes('Local Memory is unavailable')));
+  assertContextReview(notices.items,agent,chat,held,'Local Memory is unavailable');
  },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,emitVoiceReply:true,holdMemoryCompletion:true,uniqueThreads:true})).adapter,
    localMemoryForRoot:async root=>({chromaUrl:await ownedChroma(),collectionPrefix:'context_'+randomUUID().replaceAll('-',''),modelDir:process.env.PONDEROSA_TEST_MEMORY_MODEL_DIR,stateDirectory:path.join(root,'memory-policy'),provision:true})});
 });
@@ -636,7 +659,7 @@ test('memory-off generic parent with unverified zero-ID receipt holds ordinary w
   assert.equal(store.resumeSessionState(agent.id)?.sessionId,accepted.sessionId);
   assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(held.id).n,0);
   const notices=f.ok(await f.api('GET','/api/notifications'));
-  assert.ok(notices.items.some(item=>item.title==='Agent Context Needs Review'&&item.body.includes('Local Memory is unavailable')));
+  assertContextReview(notices.items,agent,chat,held,'Local Memory is unavailable');
  },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,emitVoiceReply:true,holdMemoryCompletion:true,uniqueThreads:true})).adapter,
    localMemoryForRoot:async root=>({chromaUrl:await ownedChroma(),collectionPrefix:'context_'+randomUUID().replaceAll('-',''),modelDir:process.env.PONDEROSA_TEST_MEMORY_MODEL_DIR,stateDirectory:path.join(root,'memory-policy'),provision:true})});
 });
@@ -681,7 +704,7 @@ test('memory-on generic parent with unverified zero-ID receipt holds ordinary wo
   assert.equal(store.resumeSessionState(agent.id)?.sessionId,accepted.sessionId);
   assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(held.id).n,0);
   const notices=f.ok(await f.api('GET','/api/notifications'));
-  assert.ok(notices.items.some(item=>item.title==='Agent Context Needs Review'&&item.body.includes('could not be checked')));
+  assertContextReview(notices.items,agent,chat,held,'could not be checked');
  },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,emitVoiceReply:true,holdMemoryCompletion:true,uniqueThreads:true})).adapter,
    localMemoryForRoot:async root=>({chromaUrl:await ownedChroma(),collectionPrefix:'context_'+randomUUID().replaceAll('-',''),modelDir:process.env.PONDEROSA_TEST_MEMORY_MODEL_DIR,stateDirectory:path.join(root,'memory-policy'),provision:true})});
 });
