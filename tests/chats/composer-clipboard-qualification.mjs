@@ -63,7 +63,7 @@ try {
           await resize.focus(); await page.keyboard.press('ArrowRight');
           await page.waitForFunction(old=>Number(document.querySelector('[role=separator][aria-label="Resize Sidebar"]').getAttribute('aria-valuenow'))===Math.min(520,old+16),width);
         }
-        await page.getByRole('button',{name:'Chat settings and actions',exact:true}).click();
+        await page.getByRole('button',{name:'Chat Settings And Actions',exact:true}).click();
         await page.getByRole('menuitem',{name:'Rename',exact:true}).click();
         const name=page.getByLabel('Chat Name',{exact:true});
         await name.fill(`Renamed ${surface} ${mobile}`);
@@ -100,7 +100,7 @@ try {
         const marker=`clipboard-${surface}-${mobile}-${cases++}`;
         const text=[`${marker} λ😀`,'second line','','TAIL_KEEP_ME'].join(ending);
         await editor.click(); await page.keyboard.press('Control+A'); await page.keyboard.press('Backspace');
-        if(surface==='inbox'){const reply=page.getByRole('button',{name:/^Reply to /}).filter({visible:true}).first();await reply.focus();await page.keyboard.press('Enter');await editor.click();}
+        if(surface==='inbox'){const reply=page.getByRole('button',{name:/^Reply To /}).filter({visible:true}).first();await reply.focus();await page.keyboard.press('Enter');await editor.click();}
         const before=sends.length;
         const destination=surface==='inbox'?await editor.locator('[data-composer-mention]').innerText():'';
         const expectedDraft=(destination?destination+'\n':'')+normalize(text);

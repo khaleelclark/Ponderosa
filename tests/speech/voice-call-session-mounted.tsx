@@ -179,12 +179,12 @@ export async function voiceCallQuietDeliveryRegression():Promise<void>{
   const reply={projectId:agent.projectId,conversationId:agent.conversationId,agentId:agent.id,messageId:'input-0',runId:'run-one',fence:1,streamId:'stream',itemId:'answer-item',providerTurnId:'provider-turn',sequence:1,text:'An incomplete answer. ',state:'streaming' as const};
   assert(f.emit({type:'voice_reply',reply}),'Stream was not attached');
   await until(()=>f.utterances.some(u=>u.text==='An incomplete answer.')?true:undefined,'Streamed answer did not play');
-  assert(document.querySelector('[data-ponderosa-call] [role="status"]')?.textContent==='Speaking to You','Stale waiting status survived streamed audio');
+  await until(()=>document.querySelector('[data-ponderosa-call] [role="status"]')?.textContent==='Speaking to You'?true:undefined,'Native playback start commits the current Speaking to You status');
   f.receipt(0,{contextRecoveryRequired:true,state:'waiting_for_run'});
-  await until(()=>Array.from(document.querySelectorAll('[data-ponderosa-call] button')).find(b=>b.textContent==='Review Recovery in Chat')??undefined,'Partial streamed output hid the canonical recovery action');
+  await until(()=>Array.from(document.querySelectorAll('[data-ponderosa-call] button')).find(b=>b.textContent==='Open Chat')??undefined,'Partial streamed output hid the canonical recovery action');
   assert(!document.querySelector('[data-ponderosa-call]')?.textContent?.includes('Refreshing the connection'),'Internal transition was mislabeled a connection refresh');
   assert(f.tracks.every(t=>t.readyState==='ended'),'Recovery blocker left microphone capture live');
-  const recovery=Array.from(document.querySelectorAll<HTMLButtonElement>('[data-ponderosa-call] button')).find(b=>b.textContent==='Review Recovery in Chat')!;
+  const recovery=Array.from(document.querySelectorAll<HTMLButtonElement>('[data-ponderosa-call] button')).find(b=>b.textContent==='Open Chat')!;
   recovery.click();await tick();assert(f.recovery[0]===agent.id,'Recovery did not open the exact Agent Chat');
   assert(f.calls.length===1,'Recovery navigation resent the accepted message');
  });
@@ -222,7 +222,7 @@ export async function voiceCallUnknownRecoveryRegression():Promise<void>{
   f.status({runStatus:'outcome_unknown'});
   await f.button('Reconnect Call');
   f.receipt(0,{state:'run_unconfirmed',contextRecoveryRequired:true});await tick();
-  const buttons=Array.from(document.querySelectorAll<HTMLButtonElement>('[data-ponderosa-call] button')).filter(b=>b.textContent==='Review Recovery in Chat');
+  const buttons=Array.from(document.querySelectorAll<HTMLButtonElement>('[data-ponderosa-call] button')).filter(b=>b.textContent==='Open Chat');
   assert(buttons.length===1,'Unknown outcome lost or duplicated recovery navigation after a late receipt');
   assert(f.tracks.every(t=>t.readyState==='ended'),'Unknown outcome left microphone active');
   buttons[0]!.click();await tick();assert(f.recovery[0]===agent.id&&f.calls.length===1,'Recovery navigation replayed accepted work or opened a foreign Agent');

@@ -30,6 +30,7 @@ export async function executionActionsRevisionSyncRegression():Promise<void>{
    return json(draft);
   }
   assert(method==='GET','Only controlled projection reads are allowed');gets.push(url.pathname);
+  if(url.pathname==='/api/decisions'){assert(url.searchParams.get('id')===decision.id,'Exact canonical Decision read');return json([decision]);}
   if(url.pathname.includes('limits'))return json(DEFAULT_ASSET_LIMITS);
   if(url.pathname.endsWith('/operations'))return json({executionId:'race-run',state:terminal?'completed':'waiting_human',label:terminal?'Completed':'Waiting on a person',observedAt:detail.execution.updatedAt,counts:{completed:terminal?1:0,running:0,retrying:0,failed:terminal?0:1,waitingAgent:0,waitingHuman:terminal?0:1,needsReconciliation:0,mapItems:0,mapSettled:0},agentWaits:[],additionalAgentWaits:0});
   if(url.pathname.endsWith('/actions')){

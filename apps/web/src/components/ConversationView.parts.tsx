@@ -331,7 +331,7 @@ function ConversationHeader({
       onSelect: () => setDeleteOpen(true),
     },
   ],[onChatSettings,setAgentWorkOpen,setRenameValue,conversation.title,setRenameOpen,setAddAgentsOpen,setDeleteOpen]);
-  const menuLabel = `${activeView === "collaboration" ? "Team Chat" : "Chat"} settings and actions`;
+  const menuLabel = `${activeView === "collaboration" ? "Team Chat" : "Chat"} Settings And Actions`;
   const browserAction = useMemo(() => <Tooltip title="Open Browser">
     <IconButton aria-label="Open Browser" onClick={onOpenProjectBrowser}><LanguageIcon /></IconButton>
   </Tooltip>,[onOpenProjectBrowser]);

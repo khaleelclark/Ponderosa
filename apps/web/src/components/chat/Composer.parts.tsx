@@ -69,7 +69,7 @@ export function ComposerProjectDestinationAction({
         >
           <PersonAddAltOutlinedIcon sx={{ display: { xs: "block", md: "none" } }} />
           <Box component="span" sx={{ display: { xs: "inline", md: "none" }, "@media (max-width: 340px)": { display: "none" } }}>New</Box>
-          <Box component="span" sx={{ display: { xs: "none", md: "inline" } }}>Reply to {replyDestination}</Box>
+          <Box component="span" sx={{ display: { xs: "none", md: "inline" } }}>Reply To {replyDestination}</Box>
         </Button>
       </Tooltip>
     );

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type SetStateAction } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type SetStateAction } from "react";
 import type { AssetLimitsDto } from "@ponderosa/core";
 import { DEFAULT_ASSET_LIMITS } from "@ponderosa/core";
 import { collectAttachments, MAX_FOLDER_ENTRIES, safeFolderPath, type FolderImport } from "./folderAttachments";
@@ -69,11 +69,11 @@ export function useFolderImports(options: {
   });
   const [reviewId, setReviewId] = useState<string>();
   const reportsRef = useRef(reports); reportsRef.current = reports;
-  useEffect(() => {
+  useLayoutEffect(() => {
     setState({ scope: options.scope, reports: readReports(options.storageKey) }); setReviewId(undefined); setError(undefined); setPreparing(false); busy.current = false;
     return () => { generation.current++; busy.current = false; };
   }, [options.scope, options.storageKey]);
-  useEffect(() => {
+  useLayoutEffect(() => {
     generation.current++; busy.current = false; setPreparing(false);
   }, [options.enabled, options.destination, options.cancellationKey]);
   useEffect(() => {

@@ -153,12 +153,13 @@ export async function capturedFeedbackRemountMountedRegression():Promise<void>{a
 
 export async function decisionUploadFeedbackMountedRegression():Promise<void>{
  const host=document.createElement('div');document.body.append(host);const root=createRoot(host),client=new QueryClient({defaultOptions:{queries:{retry:false},mutations:{retry:false}}});client.setQueryData(queryKeys.assetLimits.all,DEFAULT_ASSET_LIMITS);
- const original={get:api.getConversationDraft,put:api.putConversationDraft,upload:api.uploadDraftAttachment};let revision=0;
+ const original={get:api.getConversationDraft,put:api.putConversationDraft,upload:api.uploadDraftAttachment,list:api.listDecisions};let revision=0;
  const requests:Array<{scope:string;owner:string;file:File;resolve:(v:any)=>void;reject:(e:Error)=>void}>=[];
  api.getConversationDraft=async(conversationId,ownerId)=>({conversationId,ownerId,revision,text:'',attachmentIds:[],attachments:[],updatedAt:'2026-11-10T00:00:00Z'});
  api.putConversationDraft=async(conversationId,draft)=>({...draft,conversationId,revision:++revision,updatedAt:'2026-11-10T00:00:00Z'});
  api.uploadDraftAttachment=async(scope,owner,file)=>new Promise((resolve,reject)=>requests.push({scope,owner,file,resolve,reject}));
  const decision={id:'feedback-decision',agentId:'feedback-agent',question:'Retain Exact Question Attachments',mode:'text' as const,status:'pending' as const,options:[],allowOther:true,questions:['question-a','question-b'].map(id=>({id,mode:'text' as const,question:id,options:[],allowOther:true}))};
+ api.listDecisions=async filter=>{assert(filter.id===decision.id,'Canonical read stays on the original Decision');return [decision];};
  try{
   flushSync(()=>root.render(frame(<DecisionResponseDialog decision={decision} open onClose={()=>{}} onRespond={()=>{throw Error('Upload feedback must not submit a Decision');}}/>,client)));
   await until(()=>[...document.querySelectorAll<HTMLButtonElement>('button')].some(b=>b.textContent==='Attach Files'&&!b.disabled),'Original Decision attachment owner is ready');
@@ -171,7 +172,7 @@ export async function decisionUploadFeedbackMountedRegression():Promise<void>{
   requests[1].resolve({id:'question-a-asset',conversationId:requests[1].scope,ownerId:decision.id,name:a.name,size:a.size,mediaType:'text/plain',createdAt:'2026-11-10T00:00:00Z'});await until(()=>document.querySelector('[role="dialog"]')?.textContent?.includes('Uploaded')===true,'Exact original attachment completes');
   press(document.body,'Go To Question 2');await settle();const b=new File(['Question B exact bytes'],'question-b.txt');chooseFile(document.body,b);await until(()=>requests.length===3,'Independent question B upload begins');requests[2].reject(Error('Question B upload failure'));await until(()=>Boolean(document.querySelector('.MuiSnackbar-root')),'Equal action summaries do not suppress a different question/File incident');
   press(document.body,'Remove question-b.txt');await until(()=>!document.querySelector('.MuiSnackbar-root'),'Explicit removal retires only that failed upload feedback');press(document.body,'Go To Question 1');await until(()=>document.querySelector('[role="dialog"]')?.textContent?.includes('question-a.txt')===true,'Removing B retains original completed question A attachment');
- }finally{root.unmount();client.clear();host.remove();api.getConversationDraft=original.get;api.putConversationDraft=original.put;api.uploadDraftAttachment=original.upload;}
+ }finally{root.unmount();client.clear();host.remove();api.getConversationDraft=original.get;api.putConversationDraft=original.put;api.uploadDraftAttachment=original.upload;api.listDecisions=original.list;}
 }
 
 

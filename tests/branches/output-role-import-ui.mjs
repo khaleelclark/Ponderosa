@@ -43,7 +43,7 @@ try{
  const destination=f.ok(await f.api('POST','/api/branches',{name:'Organization destination',idempotencyKey:randomUUID()}));
  const chat=f.ok(await f.api('POST',`/api/branches/${destination.id}/chats`,{label:'Organization destination',defaultEngine:'codex'},{'idempotency-key':randomUUID()}));
  await page.goto(origin+`/branches?branch=${destination.id}&tab=chats&chat=${chat.id}`);
- await page.getByRole('button',{name:'Chat settings and actions',exact:true}).click();
+ await page.getByRole('button',{name:'Chat Settings And Actions',exact:true}).click();
  await page.getByRole('menuitem',{name:'Add Agents…',exact:true}).click();
  await page.getByRole('button',{name:'Import Agent Package',exact:true}).click();
  const dialog=page.getByRole('dialog',{name:'Import Agent Package',exact:true});await dialog.waitFor();

@@ -322,7 +322,7 @@ export function MessageDeliveryStatus({
         <Tooltip title={detailedLabel}>
           <Box component="span" sx={{ display: "inline-flex", minWidth: 0, maxWidth: "100%" }}>
             <ButtonBase
-              aria-label={onOpenAgent ? `${detailedLabel} Open direct chat with ${name}.` : detailedLabel}
+              aria-label={`${receipts.length > 1 ? `${name} · ` : ""}${shortLabel}. ${detailedLabel}${onOpenAgent ? ` Open direct chat with ${name}.` : ""}`}
               title={runtime}
               disabled={!onOpenAgent}
               onClick={() => onOpenAgent?.(receipt.targetAgentId)}

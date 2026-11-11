@@ -143,10 +143,11 @@ export async function folderImportDecisionOwnerMountedRegression(): Promise<void
   const host = document.createElement('div'); document.body.append(host); const root = createRoot(host);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   client.setQueryData(queryKeys.assetLimits.all, DEFAULT_ASSET_LIMITS);
-  const originals = { get: api.getConversationDraft, put: api.putConversationDraft, upload: api.uploadDraftAttachment };
+  const originals = { get: api.getConversationDraft, put: api.putConversationDraft, upload: api.uploadDraftAttachment, list: api.listDecisions };
   const uploaded: File[] = [], writes: unknown[] = [];
   const decision = { id: 'fixture-decision', agentId: 'fixture-agent', question: 'Attach Project Evidence', mode: 'text' as const, status: 'pending' as const, options: [], allowOther: true,
     questions: ['first', 'second'].map(id => ({ id, mode: 'text' as const, question: id, options: [], allowOther: true })) };
+  api.listDecisions=async filter=>{assert(filter.id===decision.id,'Exact original Decision is read');return [decision];};
   api.getConversationDraft = async (conversationId, ownerId) => ({ conversationId, ownerId, revision: 0, text: '', attachmentIds: [], attachments: [], updatedAt: '2026-11-10T00:00:00Z' });
   api.putConversationDraft = async (scope, draft) => { writes.push(draft); return { ...draft, conversationId: scope, revision: 1, updatedAt: '2026-11-10T00:00:00Z' }; };
   api.uploadDraftAttachment = async (scope, owner, file) => { uploaded.push(file); return { id: 'asset-' + uploaded.length, conversationId: scope, ownerId: owner, name: file.name } as any; };
@@ -183,7 +184,7 @@ export async function folderImportDecisionOwnerMountedRegression(): Promise<void
     await until(() => Boolean(finish), 'Decision delayed read starts'); await render(false); await render(true); finish!(new File(['late'], 'held'));
     await settle(); await settle(); assert(uploaded.length === 2, 'Close/reopen never delivers stale folder');
     assert(!JSON.stringify(writes).includes('credentials.md'), 'Excluded/review metadata is never persisted with draft save');
-  } finally { root.unmount(); client.clear(); host.remove(); api.getConversationDraft = originals.get; api.putConversationDraft = originals.put; api.uploadDraftAttachment = originals.upload; }
+  } finally { root.unmount(); client.clear(); host.remove(); api.getConversationDraft = originals.get; api.putConversationDraft = originals.put; api.uploadDraftAttachment = originals.upload;api.listDecisions=originals.list; }
 }
 
 export async function folderImportChangedSourceMountedRegression(): Promise<void> {

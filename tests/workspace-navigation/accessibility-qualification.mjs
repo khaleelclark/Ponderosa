@@ -102,7 +102,7 @@ try {
    const sent=appTextSizeMode?page.waitForResponse(r=>r.request().method()==='POST'&&r.request().postData()?.includes(marker)):page.waitForRequest(r=>r.method()==='POST'&&r.postData()?.includes(marker));
    await page.keyboard.press('Enter');const sentResult=await sent;if(appTextSizeMode){row.sendStatus=sentResult.status();assert.equal(row.sendStatus,200,'Actual keyboard Send succeeds');}
    row.actions.push({name:'Keyboard explicit Send',pass:true});
-   const actions=page.getByRole('button',{name:'Chat settings and actions',exact:true});
+   const actions=page.getByRole('button',{name:'Chat Settings And Actions',exact:true});
    row.actions.push({name:'Tab to Chat actions',tabs:await tabTo(page,actions)});await page.keyboard.press('Enter');
    const rename=page.getByRole('menuitem',{name:'Rename',exact:true});await rename.waitFor();
    await page.waitForFunction(()=>Boolean(document.activeElement?.closest('.MuiMenu-paper')));
