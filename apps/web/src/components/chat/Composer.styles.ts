@@ -7,7 +7,7 @@ export const composerSurfaceWidth = {
   xl: "min(1240px, calc(100% - 64px))",
 } as const;
 
-export const composerSurfaceSx: SxProps<Theme> = {
+export const composerSurfaceSx = {
   position: "relative",
   zIndex: 3,
   border: 1,
@@ -35,4 +35,4 @@ export const composerSurfaceSx: SxProps<Theme> = {
     theme.palette.mode === "dark"
       ? "0 10px 30px rgba(3,8,6,.18)"
       : "0 10px 30px rgba(33,45,38,.09)",
-};
+} satisfies SxProps<Theme>;

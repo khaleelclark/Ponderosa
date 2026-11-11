@@ -64,6 +64,8 @@ interface PortableAgent {
     visibility?: "project" | "published";
     pinned?: boolean;
     dataBase64: string;
+    dataEncoding?: unknown;
+    decodedSize?: unknown;
   }>;
 }
 interface ContentProject extends BackupProject {
@@ -213,6 +215,7 @@ class Source {
       requireValue(pack.schema === "ponderosa.agent-package.v1" && pack.mode === "full", "full native history package required");
       for (const agent of pack.agents) {
         requireValue(!this.portable.has(agent.ref), "duplicate exported Agent identity");
+        requireValue((agent.artifacts ?? []).every(artifact => artifact.dataEncoding === undefined && artifact.decodedSize === undefined), 'compressed Agent packages require the supported Agent package importer, not historical normalization');
         this.portable.set(agent.ref, agent);
       }
     }
@@ -480,8 +483,11 @@ function folderPlan(namespaces: Namespace[]): ChatFolderDto[] {
           expanded: true
         });
   }
-  const all = namespaces.map(item => item.chat.originalChat.id).sort();
-  requireValue([...byName.values()].flatMap(folder => folder.conversationIds).sort().join() === all.join(), "folder coverage differs from restored Chat scope");
+  const retained = new Set(namespaces.map(item => item.chat.originalChat.id));
+  const filed = [...byName.values()].flatMap(folder => folder.conversationIds);
+  // Unfiled Chats are valid. Folder membership must still be unique and stay
+  // inside the independently verified retained Chat scope.
+  requireValue(new Set(filed).size === filed.length && filed.every(id => retained.has(id)), "folder membership differs from restored Chat scope");
   return [...byName.values()];
 }
 function copyIndexed(source: Source, path: string, target: string): void {
@@ -657,6 +663,7 @@ export function restoreContent(options: ContentRestoreOptions): Record<string, u
         createdAt: agent.createdAt,
         updatedAt: agent.updatedAt,
         managementPermissions: agent.managementPermissions,
+        role: agent.role,
         presetSnapshot: agent.presetSnapshot,
         workingCopy
       });
@@ -727,8 +734,9 @@ export function restoreContent(options: ContentRestoreOptions): Record<string, u
     const seenArtifacts = new Set<string>();
     const publish = (artifact: ArtifactDto & {
       projectId: string;
-      originAgentId: string;
+      originAgentId?: string;
     }, access: ManagedArtifactAccess, bytes?: Uint8Array, from?: string) => {
+      requireValue(!artifact.origin && artifact.originAgentId, "legacy content restore requires its recorded Agent provenance");
       safeId(artifact.id);
       requireValue(!seenArtifacts.has(artifact.id), "artifact identity collision");
       seenArtifacts.add(artifact.id);

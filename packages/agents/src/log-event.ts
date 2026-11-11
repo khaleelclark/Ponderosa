@@ -79,6 +79,7 @@ export interface CommunicationProjectionEvent {
 /** Durable, text-minimal audit evidence for one bounded compaction-history read. */
 export interface CanonicalHistoryRetrievalEvent {
   type: "compaction_history_retrieval";
+  source?: "canonical";
   executionId: string;
   runId: string;
   action: "search" | "read";
@@ -108,6 +109,8 @@ export interface CanonicalHistoryRetrievalEvent {
   durationMs: number;
 }
 
+/** Imported references and returned ranges remain separate from canonical
+ * Communication IDs and rollover exclusions in the same Run audit stream. */
 export interface ImportedHistoryRetrievalEvent {
   type: "compaction_history_retrieval";
   source: "imported";
@@ -203,9 +206,9 @@ export type ContextUsageLogEvent = Extract<AgentEvent, { type: "context_usage" }
 };
 
 /** Anything that can be appended to an agent's `events.jsonl`. */
-export type LogEvent = UserMessageEvent | SessionResetEvent | SessionSnapshotEvent | ContextRolloverSessionAcceptedEvent | ContinuationHandoffEvent | ContinuationHandoffConsumedEvent | CommunicationProjectionEvent | CompactionHistoryRetrievalEvent | AgentLifecycleEvent | CoordinationV3ChangedEvent | GeneratedArtifactEvent | ArtifactVisibilityEvent |
+export type LogEvent = import("@ponderosa/core").MemoryChangedEvent | import("@ponderosa/core").VoiceReplyEvent | UserMessageEvent | SessionResetEvent | SessionSnapshotEvent | ContextRolloverSessionAcceptedEvent | ContinuationHandoffEvent | ContinuationHandoffConsumedEvent | CommunicationProjectionEvent | CompactionHistoryRetrievalEvent | AgentLifecycleEvent | CoordinationV3ChangedEvent | GeneratedArtifactEvent | ArtifactVisibilityEvent |
   AgentOutputEvent | TurnDoneLogEvent | ContextRolloverTriggeredEvent | ContextUsageLogEvent |
-  (Extract<AgentEvent, { type: "work_start" }> & { executionId: string }) | Exclude<AgentEvent, { type: "text" | "reasoning" | "turn_done" | "work_start" | "context_usage" }> | AgentExecutionDeltaEvent;
+  (Extract<AgentEvent, { type: "work_start" }> & { executionId: string }) | Exclude<AgentEvent, { type: "text" | "reasoning" | "turn_done" | "response_text" | "work_start" | "context_usage" }> | AgentExecutionDeltaEvent;
 
 /** One line of `events.jsonl`: a LogEvent stamped with a per-agent seq + ts. */
 export interface StoredLogEvent {

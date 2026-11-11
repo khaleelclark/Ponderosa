@@ -1,3 +1,11 @@
+import { steeringPreflight } from "./steering-preflight.js";
+import { answerCodexNativeQuestions } from "./native-questions.js";
+import { codexTurnContent } from "./typed-input.js";
+import { codexGoalSnapshot, codexNativeObservation, invokeCodexGoal, setCodexPlanMode, startCodexReview } from "./codex-native-actions.js";
+import { answerCodexNativeApproval, CODEX_NATIVE_APPROVAL_METHODS } from "./native-approvals.js";
+import { forkCodexTranscript } from "./codex-transcript-fork.js";
+import { CodexBackgroundTasks } from "./codex-background-tasks.js";
+import { tokenCount, tokenSum } from "./token-count.js";
 import { normalizedToolResult } from "./tool-result.js";
 import {
   truncateUnicodeCodePoints,
@@ -12,6 +20,7 @@ import {
   type RuntimeSteerResult,
   type RuntimeTurnInput,
   type RuntimeProcessHandle,
+  type NativeGoalSnapshot,
   safeProviderConnectionUrl,
 } from "@ponderosa/core";
 import { stripVTControlCharacters } from "node:util";
@@ -21,10 +30,48 @@ import { renderSeedPrompt } from "./seed-history.js";
 import { normalizeCodexProviderDiscovery } from "./capabilities.js";
 import { codexRateLimitBuckets } from "./provider-usage.js";
 
+/** Query the exact persisted goal before resuming and at native turn boundaries.
+ * Unsupported is limited to explicit protocol/feature refusals; transport and
+ * malformed responses never prove the absence of an active goal. */
+async function readNativeGoal(rpc: JsonRpcProcess, threadId: string): Promise<NativeGoalSnapshot | null | undefined> {
+  let response: unknown;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    response = await Promise.race([
+      rpc.request("thread/goal/get", { threadId }),
+      new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error("Native goal read timed out")), 10_000); }),
+    ]);
+  }
+  catch (error) {
+    const rpcError = error && typeof error === "object" && "rpcError" in error
+      ? (error as {rpcError?: {code?: unknown; message?: unknown}}).rpcError : undefined;
+    if (rpcError?.code === -32601 || rpcError?.message === "goals feature is disabled") return undefined;
+    throw new Error("Native goal state is unavailable; retained work remains held", {cause:error});
+  } finally { if (timer) clearTimeout(timer); }
+  const result = object(response);
+  if (!result || !Object.hasOwn(result, "goal")) throw new Error("Native goal state is malformed; retained work remains held");
+  return codexGoalSnapshot(result.goal, threadId);
+}
+
+async function setNativeGoalOnce(rpc: JsonRpcProcess, threadId:string, status:"active"|"paused",
+  create?:{objective:string;tokenBudget?:number|null}): Promise<NativeGoalSnapshot> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const response = object(await Promise.race([
+      rpc.request("thread/goal/set", {threadId,status,origin:"user",...create}),
+      new Promise<never>((_resolve,reject) => { timer=setTimeout(() => reject(new Error("Native goal mutation timed out")),10_000); }),
+    ]));
+    const goal = response && codexGoalSnapshot(response.goal, threadId);
+    if (!goal || goal.status !== status) throw new Error("Native goal mutation was not confirmed");
+    return goal;
+  } finally { if (timer) clearTimeout(timer); }
+}
+
 interface ThreadResponse { thread: { id: string }; model?: string }
 interface TurnResponse { turn: { id: string } }
 interface SteerResponse { turnId: string }
 interface DynamicToolCallParams {
+  callId?: string;
   tool: string;
   namespace?: string | null;
   arguments: unknown;
@@ -75,6 +122,22 @@ interface AppServerSessionOptions extends OpenRuntimeSessionOptions {
   killGraceMs: number;
   enableFastMode: boolean;
   configuredMcps?: EngineMcpServer[];
+}
+
+export function codexCapabilityRuntimeOptions(
+  sandboxMode: string,
+  restrictions: OpenRuntimeSessionOptions["capabilityRestrictions"],
+): { sandboxMode: string; config?: Record<string, Record<string, { enabled: boolean }>> } {
+  const restrictedConnectors = [...new Set(restrictions?.restrictedConnectorNames ?? [])].sort();
+  return {
+    sandboxMode: restrictions?.filesystemWriteRestricted ? "read-only" : sandboxMode,
+    ...(restrictedConnectors.length ? {
+      config: {
+        apps: Object.fromEntries(restrictedConnectors.map(name => [name, { enabled: false }])),
+        mcp_servers: Object.fromEntries(restrictedConnectors.map(name => [name, { enabled: false }])),
+      },
+    } : {}),
+  };
 }
 
 async function optionalRequest(rpc: JsonRpcProcess, method: string, params: unknown): Promise<unknown> {
@@ -352,13 +415,13 @@ export function codexContextUsageSnapshot(tokenUsage: {
 } | undefined): CodexContextUsage | undefined {
   const aggregate = mapCodexTokenUsage(tokenUsage?.total);
   const last = mapCodexTokenUsage(tokenUsage?.last);
-  if (!last) return undefined;
+  if (last?.totalTokens === undefined) return undefined;
   const modelContextWindow = typeof tokenUsage?.modelContextWindow === "number" &&
     Number.isFinite(tokenUsage.modelContextWindow) && tokenUsage.modelContextWindow > 0
     ? tokenUsage.modelContextWindow
     : undefined;
   return {
-    usedTokens: last.totalTokens ?? (last.inputTokens ?? 0) + (last.outputTokens ?? 0),
+    usedTokens: last.totalTokens,
     ...(aggregate?.totalTokens !== undefined ? { aggregateTokens: aggregate.totalTokens } : {}),
     ...(modelContextWindow ? { modelContextWindow } : {}),
   };
@@ -390,12 +453,12 @@ export function formatCodexStatus(input: {
 }): string {
   const parts = [`Codex session ${input.sessionId}`, `Model ${input.model ?? "provider default"}`];
   if (input.context?.modelContextWindow) {
-    const usedPercent = Math.min(100, (input.context.usedTokens / input.context.modelContextWindow) * 100);
+    const usedPercent = (input.context.usedTokens / input.context.modelContextWindow) * 100;
     parts.push(`Context ${Math.round(usedPercent)}% used (${input.context.usedTokens.toLocaleString()} of ${input.context.modelContextWindow.toLocaleString()} tokens)`);
   } else if (input.context) {
     parts.push(`Context occupancy ${input.context.usedTokens.toLocaleString()} tokens; context-window size not reported`);
   } else {
-    parts.push("Context usage not yet reported");
+    parts.push("Context occupancy unavailable");
   }
   parts.push(...formatCodexRateLimits(input.rateLimits));
   return parts.join(" · ");
@@ -468,9 +531,22 @@ interface CompactOperation {
   closed: boolean;
 }
 
+import { CodexResponseText } from "./codex-response-text.js";
+
 export class CodexAppServerSession implements RuntimeSession {
   readonly validatesResumeBeforeTurn = true;
+  private readonly backgroundTasks: CodexBackgroundTasks;
+  private nativeTaskReceiptSeen = false;
+  private readonly nativeTaskItems = new Map<string,string>();
+  private nativeTaskHold = false;
+  private closingNativeTasks = false;
   private activeTurnId?: string;
+  private observedTurnStarts = 0;
+  private goalOwned = false;
+  private goalStatus?: NativeGoalSnapshot["status"];
+  private goalMarkerEmitted = false;
+  private goalPauseAttempted = false;
+  private accountGeneration = 0;
   private readonly usageByTurnId = new Map<string, TokenUsage>();
   private readonly providerRequestUsageByTurnId = new Map<string, TokenUsage[]>();
   private readonly usageCheckpointsByTurnId = new Map<string, Set<string>>();
@@ -500,7 +576,9 @@ export class CodexAppServerSession implements RuntimeSession {
     private readonly configuredMcps: EngineMcpServer[],
     private readonly onCapabilitiesChanged: (() => void) | undefined,
     private readonly cliVersion: string,
+    private readonly expectedBillingMode?: "subscription" | "api",
   ) {
+    this.backgroundTasks = new CodexBackgroundTasks(engineAgentId, (method, params) => rpc.request(method, params));
     this.processIdentity = rpc.processIdentity;
     if (fresh) this.baselineTotal = zeroUsage();
     this.events = this.eventStream();
@@ -511,13 +589,18 @@ export class CodexAppServerSession implements RuntimeSession {
       throw new Error("persistent runtime opening requires a spawn-time termination registrar");
     }
     let session: CodexAppServerSession | undefined;
+    const {sandboxMode:effectiveSandboxMode,config:sessionConfig}=codexCapabilityRuntimeOptions(opts.sandboxMode,opts.capabilityRestrictions);
+    const restrictedConnectors=new Set(opts.capabilityRestrictions?.restrictedConnectorNames??[]);
+    const nativeApprovalRequests = new Set<string>();
+    const pendingNativeApprovals = new Map<string, { turnId: string; controller: AbortController }>();
+    const approvalPolicy = opts.handleElicitation ? "on-request" : "never";
     const rpc = new JsonRpcProcess({
       bin: opts.bin,
       args: [
         "app-server",
         "--stdio",
-        "-c", `sandbox_mode=${JSON.stringify(opts.sandboxMode)}`,
-        "-c", 'approval_policy="never"',
+        "-c", `sandbox_mode=${JSON.stringify(effectiveSandboxMode)}`,
+        "-c", `approval_policy=${JSON.stringify(approvalPolicy)}`,
         ...(opts.enableFastMode ? ["-c", "features.fast_mode=true"] : []),
       ],
       cwd: opts.cwd,
@@ -526,11 +609,36 @@ export class CodexAppServerSession implements RuntimeSession {
       killGraceMs: opts.killGraceMs,
       onRuntimeSpawned: opts.onRuntimeSpawned,
       onRuntimeRootExit: detail => {
+        for (const pending of pendingNativeApprovals.values()) pending.controller.abort();
+        pendingNativeApprovals.clear();
         session?.stopCompactObservation();
         opts.onRuntimeRootExit(detail);
       },
-      onNotification: (notification) => session?.observeNotification(notification),
+      onNotification: (notification) => {
+        const params = object(notification.params);
+        const turn = object(params?.turn);
+        if (session && params?.threadId === session.engineAgentId && notification.method === "turn/completed") {
+          for (const pending of pendingNativeApprovals.values()) if (pending.turnId === turn?.id) pending.controller.abort();
+        }
+        if (session && params?.threadId === session.engineAgentId && notification.method === "serverRequest/resolved" &&
+            (typeof params.requestId === "string" || typeof params.requestId === "number")) pendingNativeApprovals.get(String(params.requestId))?.controller.abort();
+        session?.observeNotification(notification);
+      },
       handleServerRequest: async (requestId, method, params) => {
+        if (CODEX_NATIVE_APPROVAL_METHODS.has(method) || method === "item/tool/requestUserInput") {
+          if (!session || nativeApprovalRequests.has(String(requestId)) || nativeApprovalRequests.size >= 10_000) throw new Error("Native approval has no fresh owned identity");
+          nativeApprovalRequests.add(String(requestId));
+          const controller = new AbortController();
+          const turnId = object(params)?.turnId;
+          if (typeof turnId !== "string") throw new Error("Native approval has no exact turn");
+          pendingNativeApprovals.set(String(requestId), { turnId, controller });
+          try {
+            const questionOptions = { ...opts, signal: AbortSignal.any([opts.signal, controller.signal]) };
+            return method === "item/tool/requestUserInput"
+              ? await answerCodexNativeQuestions(questionOptions, session.engineAgentId, () => session?.activeTurnId, String(requestId), params)
+              : await answerCodexNativeApproval(questionOptions, session.engineAgentId, () => session?.activeTurnId, String(requestId), method, params);
+          } finally { pendingNativeApprovals.delete(String(requestId)); }
+        }
         if (method === "mcpServer/elicitation/request") {
           if (!opts.handleElicitation) throw new Error("MCP elicitation is unavailable");
           return opts.handleElicitation(normalizeElicitationRequest(params));
@@ -541,12 +649,14 @@ export class CodexAppServerSession implements RuntimeSession {
         if (method !== "item/tool/call" || !opts.handleDynamicToolCall) {
           throw new Error(`unsupported server request: ${method}`);
         }
+        if (session) await session.validateBillingMode();
         const call = params as DynamicToolCallParams;
         if (/^(?:request_user_input(?:_async)?|AskUserQuestion)$/iu.test(call.tool)) {
           throw new Error("Ponderosa cannot display this provider-native question. Call ponderosa_decision so the user receives it in their Chat.");
         }
         const result = await opts.handleDynamicToolCall({
           id: String(requestId),
+          ...(typeof call.callId === "string" && call.callId ? { operationId: call.callId } : {}),
           name: call.namespace ? `${call.namespace}.${call.tool}` : call.tool,
           arguments: call.arguments,
         });
@@ -557,22 +667,43 @@ export class CodexAppServerSession implements RuntimeSession {
       },
     });
     const cliVersion = codexCliVersion(await rpc.initialize());
-    const response = opts.resumeSessionId
+    if (opts.expectedBillingMode) await requireCodexBillingMode(rpc, opts.expectedBillingMode);
+    opts.assertRuntimeCurrent?.();
+    const fork = opts.transcriptFork ? await forkCodexTranscript(rpc,opts.transcriptFork.sourceSessionId,opts.transcriptFork.throughId,() => {
+      if (opts.signal.aborted) throw new Error("Fork lost Run authority");
+      opts.assertHistoryCurrent?.();
+    }, {cwd:opts.cwd,model:opts.model || null,serviceTier:serviceTierForSpeed(opts.speed),approvalPolicy:opts.handleElicitation?"on-request":"never",sandbox:effectiveSandboxMode,
+      ...(sessionConfig?{config:sessionConfig}:{}),developerInstructions:opts.systemPrompt ?? null}) : undefined;
+    if (fork?.sessionId)opts.onTranscriptForkObserved?.(fork.sessionId);
+    if (fork && (fork.outcome !== "completed" || !fork.sessionId)) throw new Error("Native transcript fork outcome unknown; do not repeat");
+    if (opts.resumeSessionId && !opts.transcriptFork) {
+      try {
+        const goal = await readNativeGoal(rpc, opts.resumeSessionId);
+        if (goal?.status === "active") throw new Error("The saved session has an active native goal; its outcome remains held for review");
+      } catch (error) {
+        try { await rpc.close(); } catch { /* the host retains the registered cleanup handle */ }
+        throw error;
+      }
+    }
+    opts.assertRuntimeCurrent?.();
+    const response: ThreadResponse = fork?.sessionId ? {thread:{id:fork.sessionId},model:opts.model} : opts.resumeSessionId
       ? await rpc.request<ThreadResponse>("thread/resume", {
           threadId: opts.resumeSessionId,
           cwd: opts.cwd,
           model: opts.model || null,
           serviceTier: serviceTierForSpeed(opts.speed),
-          approvalPolicy: "never",
-          sandbox: opts.sandboxMode,
+          approvalPolicy,
+          sandbox: effectiveSandboxMode,
+          ...(sessionConfig?{config:sessionConfig}:{}),
           developerInstructions: opts.systemPrompt ?? null,
         })
       : await rpc.request<ThreadResponse>("thread/start", {
           cwd: opts.cwd,
           model: opts.model || null,
           serviceTier: serviceTierForSpeed(opts.speed),
-          approvalPolicy: "never",
-          sandbox: opts.sandboxMode,
+          approvalPolicy,
+          sandbox: effectiveSandboxMode,
+          ...(sessionConfig?{config:sessionConfig}:{}),
           developerInstructions: opts.systemPrompt ?? null,
           ephemeral: false,
           experimentalRawEvents: false,
@@ -590,14 +721,35 @@ export class CodexAppServerSession implements RuntimeSession {
       response.thread.id,
       rpc,
       opts.cwd,
-      !opts.resumeSessionId,
-      opts.resumeSessionId ? [] : [...opts.history],
+      !opts.resumeSessionId && !opts.transcriptFork,
+      opts.resumeSessionId || opts.transcriptFork ? [] : [...opts.history],
       typeof response.model === "string" && response.model.trim() ? response.model.trim() : opts.model,
-      opts.configuredMcps ?? [],
+      (opts.configuredMcps??[]).filter(server=>!restrictedConnectors.has(server.name)),
       opts.onCapabilitiesChanged,
       cliVersion,
+      opts.expectedBillingMode,
     );
     return session;
+  }
+
+  async nativeHistory(): Promise<import("@ponderosa/core").NativeHistoryCatalog> {
+    if (this.activeTurnId) throw new Error("Native thread has active work");
+    const points: string[] = [];
+    let cursor: string | undefined;
+    const seen = new Set<string>();
+    do {
+      if (seen.size >= 100) throw new Error("Native history exceeds bounded lookup");
+      const page = object(await this.rpc.request("thread/turns/list", {threadId:this.engineAgentId,limit:100,itemsView:"notLoaded",...(cursor?{cursor}:{})}));
+      if (!page || !Array.isArray(page.data)) throw new Error("Native history unavailable");
+      for (const entry of page.data) {
+        const turn=object(entry);
+        if (turn?.status === "completed" && typeof turn.id === "string") points.push(turn.id);
+      }
+      if (page.nextCursor === null) break;
+      if (typeof page.nextCursor !== "string" || !page.nextCursor || seen.has(page.nextCursor)) throw new Error("Incomplete native history");
+      cursor=page.nextCursor;seen.add(cursor);
+    } while (true);
+    return {sessionId:this.engineAgentId,checkpoints:[],forkPoints:points,fileRewindSupported:false,transcriptForkSupported:true};
   }
 
   async capabilities(): Promise<EngineCapabilities> {
@@ -649,12 +801,18 @@ export class CodexAppServerSession implements RuntimeSession {
   }
 
   async invokeCommand(name: string, argumentsText?: string): Promise<RuntimeCommandResult | void> {
+    if (name.startsWith("goal")) {
+      await this.validateBillingMode();
+      if (this.activeTurnId) throw new Error("Native goal commands require an idle retained session");
+      return invokeCodexGoal(this.rpc, this.engineAgentId, name, argumentsText);
+    }
     if (argumentsText?.trim()) throw new Error(`/${name} does not accept arguments`);
     const command = (await this.capabilities()).commands.find((candidate) => candidate.name === name);
     if (!command || command.status !== "available" || command.invocation !== "runtime") {
       throw new Error(command?.unavailableReason ?? `/${name} is unavailable in the Codex command catalog`);
     }
     if (name === "compact") {
+      if (this.nativeTaskHold) throw new Error("Native terminal work still owns the source Run");
       if (this.compactOperation && !this.compactOperation.terminalStatus && !this.compactOperation.closed) {
         throw new Error("Native compaction is already in progress; do not repeat the command.");
       }
@@ -665,6 +823,7 @@ export class CodexAppServerSession implements RuntimeSession {
       // Stay inside the existing 60-second HTTP handler budget, including the
       // acknowledgement and all progress/telemetry; never stack timeouts.
       const deadline = Date.now() + 45_000;
+      const liveDeadline = deadline - 5_000;
       // This RPC returns {} immediately. Completion belongs to the matching
       // contextCompaction item and its terminal turn, not to this response.
       try {
@@ -690,7 +849,7 @@ export class CodexAppServerSession implements RuntimeSession {
               ...(operation.usage.aggregateTokens !== undefined ? { aggregateTokens: operation.usage.aggregateTokens } : {}),
               providerSessionGeneration: this.engineAgentId } };
           }
-          const remaining = deadline - Date.now();
+          const remaining = liveDeadline - Date.now();
           if (remaining <= 0) break;
           await this.contextUsageGate.waitAfter(version, remaining);
           version = this.contextUsageGate.currentVersion();
@@ -698,6 +857,18 @@ export class CodexAppServerSession implements RuntimeSession {
       } catch {
         // Missing completion/telemetry is an uncertain native mutation, never
         // permission to replay the operation or trust the pre-command getter.
+      }
+      // Stored history can recover a lost completion notification, never a
+      // missing operation identity or fresh post-compaction occupancy.
+      if (!operation.closed && operation.rpcStatus === "accepted" &&
+          operation.turnId && operation.itemId &&
+          (!operation.terminalStatus || operation.terminalStatus === "completed" && !operation.itemCompleted)) {
+        const confirmed = await this.readStoredCompactionCompletion(operation, deadline);
+        if (confirmed && !operation.closed &&
+            (!operation.terminalStatus || operation.terminalStatus === "completed")) {
+          operation.itemCompleted = true;
+          operation.terminalStatus = "completed";
+        }
       }
       const completed = operation.itemCompleted && operation.terminalStatus === "completed";
       return { outcome: completed ? "completed" : "outcome_unknown", message: completed
@@ -709,6 +880,53 @@ export class CodexAppServerSession implements RuntimeSession {
       return { message: formatCodexStatus({ sessionId: this.engineAgentId, model: this.activeModel, context: this.latestContextUsage, rateLimits }) };
     }
     throw new Error(`unsupported Codex runtime command: ${name}`);
+  }
+
+  private async readStoredCompactionCompletion(operation: CompactOperation, deadline: number): Promise<boolean> {
+    const { turnId, itemId } = operation;
+    if (!turnId || !itemId || operation.closed || operation.rpcStatus !== "accepted") return false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const read = async (): Promise<boolean> => {
+      const metadata = object(await this.rpc.request("thread/read", { threadId: this.engineAgentId }));
+      if (object(metadata?.thread)?.id !== this.engineAgentId) return false;
+      const cursors = new Set<string>();
+      let cursor: string | undefined;
+      // Bounded history only; absence past the cap is unknown, never replay.
+      for (let page = 0; page < 4 && Date.now() < deadline && !operation.closed; page++) {
+        const response = object(await this.rpc.request("thread/turns/list", {
+          threadId: this.engineAgentId, limit: 100, sortDirection: "desc", itemsView: "full",
+          ...(cursor ? { cursor } : {}),
+        }));
+        if (!Array.isArray(response?.data) || response.data.length > 100) return false;
+        const matches = response.data.filter(candidate => object(candidate)?.id === turnId);
+        if (matches.length) {
+          if (matches.length !== 1) return false;
+          const turn = object(matches[0]);
+          if (turn?.status !== "completed" || turn.error !== null || turn.itemsView !== "full" ||
+              !Array.isArray(turn.items)) return false;
+          const items = turn.items.filter(candidate => object(candidate)?.id === itemId);
+          return items.length === 1 && object(items[0])?.type === "contextCompaction";
+        }
+        const next = response?.nextCursor;
+        if (typeof next !== "string" || !next || next.length > 4096 || cursors.has(next)) return false;
+        cursors.add(next);
+        cursor = next;
+      }
+      return false;
+    };
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return false;
+    try {
+      return await Promise.race([read(), new Promise<false>(resolve => {
+        timer = setTimeout(() => resolve(false), remaining);
+      })]);
+    } catch {
+      // Unsupported/version-mismatched history, transport loss and invalid
+      // evidence retain the existing unknown outcome. No mutation is retried.
+      return false;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   contextUsage(): { usedTokens: number; windowTokens?: number; aggregateTokens?: number; providerSessionGeneration: string } | undefined {
@@ -732,8 +950,17 @@ export class CodexAppServerSession implements RuntimeSession {
   }
 
   private observeNotification(notification: JsonRpcNotification): void {
+    if (notification.method === "account/updated") this.accountGeneration++;
     const compact = this.compactOperation;
     const params = object(notification.params);
+    if (params?.threadId === this.engineAgentId && (!compact || compact.closed)) {
+      const turn = object(params.turn);
+      if (notification.method === "turn/started" && typeof turn?.id === "string") {
+        this.activeTurnId = turn.id;
+        this.observedTurnStarts++;
+      }
+      if (notification.method === "turn/completed" && turn?.id === this.activeTurnId) this.activeTurnId = undefined;
+    }
     if (compact && !compact.closed && params?.threadId === this.engineAgentId) {
       const turn = object(params.turn);
       if (notification.method === "turn/started" && !compact.turnId &&
@@ -762,10 +989,13 @@ export class CodexAppServerSession implements RuntimeSession {
       } | undefined;
       const usage = params?.threadId === this.engineAgentId
         ? codexContextUsageSnapshot(params.tokenUsage) : undefined;
-      if (usage) {
+      if (params?.threadId === this.engineAgentId && params.tokenUsage !== undefined) {
+        // A fresh partial report invalidates the prior complete occupancy.
         this.latestContextUsage = usage;
         if (compact && !compact.closed && compact.itemCompleted &&
             object(notification.params)?.turnId === compact.turnId) compact.usage = usage;
+      }
+      if (usage) {
         if (this.nativeCommandNotifications.has(notification) && (!this.activeTurnId || this.activeTurnId === compact?.turnId)) {
           const total = mapCodexTokenUsage(params?.tokenUsage?.total);
           if (total) { this.baselineTotal = total; this.latestTotal = total; }
@@ -818,23 +1048,106 @@ export class CodexAppServerSession implements RuntimeSession {
     this.onCapabilitiesChanged?.();
   }
 
+  private async validateBillingMode(): Promise<void> {
+    if (!this.expectedBillingMode) return;
+    const generation = this.accountGeneration;
+    await requireCodexBillingMode(this.rpc, this.expectedBillingMode);
+    if (generation !== this.accountGeneration) throw new Error("Native account changed during billing-mode admission; no new input was authorized");
+  }
+
+  async startNativeGoal(input: RuntimeTurnInput): Promise<void> {
+    input.assertCurrent?.();
+    if (this.activeTurnId || this.nativeTaskHold || this.goalOwned) throw new Error("Native session has active work");
+    await this.validateBillingMode();
+    const action = input.nativeAction as {kind:string;objective?:unknown;tokenBudget?:unknown} | undefined;
+    if (action?.kind !== "goal-create" && action?.kind !== "goal-resume")
+      throw new Error("An exact native goal action is required");
+    const current = await readNativeGoal(this.rpc, this.engineAgentId);
+    let create: {objective:string;tokenBudget?:number|null} | undefined;
+    if (action?.kind === "goal-create") {
+      if (current !== null) throw new Error("An existing or unavailable native goal cannot be replaced");
+      if (typeof action.objective !== "string" || !action.objective.trim() || action.objective.length > 32_000 ||
+          /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(action.objective))
+        throw new Error("A nonempty bounded native goal objective is required");
+      if (action.tokenBudget !== undefined && action.tokenBudget !== null &&
+          (!Number.isSafeInteger(action.tokenBudget) || (action.tokenBudget as number) <= 0))
+        throw new Error("Native goal budget must be positive or null");
+      create = {objective:action.objective,
+        ...(action.tokenBudget !== undefined ? {tokenBudget:action.tokenBudget as number|null} : {})};
+    } else if (!current || current.status !== "paused") throw new Error("An exact paused native goal is required");
+    input.assertCurrent?.();
+    // From the moment the mutation is sent, its effects may already be live.
+    // Never repeat it on a lost or malformed response.
+    this.goalOwned = true;
+    this.goalPauseAttempted = false;
+    this.goalStatus = "active";
+    try {
+      const goal = await setNativeGoalOnce(this.rpc, this.engineAgentId, "active", create);
+      if (goal.objective !== (create ? create.objective.trim() : current?.objective) ||
+          (create && Object.hasOwn(create,"tokenBudget") && goal.tokenBudget !== create.tokenBudget))
+        throw new Error("Native goal activation changed the requested objective or budget");
+      input.assertCurrent?.();
+    } catch (error) {
+      try { await this.close(); } catch { /* host cleanup retains the registered process */ }
+      throw new Error("Native goal activation outcome is unknown; do not repeat it", {cause:error});
+    }
+  }
+
+  async pauseNativeGoal(): Promise<void> {
+    if (!this.goalOwned) throw new Error("No native goal is owned by this Run");
+    if (this.goalPauseAttempted) throw new Error("Native goal pause was already attempted; inspect its outcome");
+    this.goalPauseAttempted = true;
+    try {
+      await setNativeGoalOnce(this.rpc, this.engineAgentId, "paused");
+      this.goalStatus = "paused";
+    } catch (error) { throw new Error("Native goal pause outcome is unknown; do not repeat it", {cause:error}); }
+  }
+
   async startTurn(input: RuntimeTurnInput): Promise<{ turnId: string }> {
+    input.assertCurrent?.();
+    if (this.nativeTaskHold) throw new Error("Native terminal work still owns the source Run");
+    await this.validateBillingMode();
+    input.assertCurrent?.();
+    if (this.nativeTaskHold) throw new Error("Native terminal work still owns the source Run");
+    this.nativeTaskReceiptSeen = false;
+    this.nativeTaskItems.clear();
     if (this.compactOperation && !this.compactOperation.closed && !this.compactOperation.terminalStatus) {
       throw new Error("Native compaction is still in progress; its completion is unconfirmed.");
     }
+    if (input.nativeAction?.kind === "review") {
+      if (input.inputFiles?.length) throw new Error("Native review does not accept typed attachments; submit them in a separate turn");
+      if (this.activeTurnId) throw new Error("Native review requires an idle session");
+      const turnId = await startCodexReview(this.rpc, this.engineAgentId, input.nativeAction);
+      this.activeTurnId = this.lastCompletedTurnId === turnId ? undefined : turnId;
+      return { turnId };
+    }
     const prompt = this.seedHistory.length > 0
-      ? renderSeedPrompt(this.seedHistory.splice(0), input.prompt)
+      ? renderSeedPrompt(this.seedHistory, input.prompt)
       : input.prompt;
+    // Verify admitted media before changing retained native plan settings.
+    let content = codexTurnContent(input, prompt);
+    if (input.nativeAction?.kind === "plan") {
+      const model = input.model || this.activeModel;
+      if (!model) throw new Error("Native plan mode requires the selected provider model");
+      await setCodexPlanMode(this.rpc, this.engineAgentId, input.nativeAction, model, input.effort);
+      input.assertCurrent?.();
+      content = codexTurnContent(input, prompt);
+    }
+    input.assertCurrent?.();
+    this.seedHistory.splice(0);
     const providerModelGeneration = this.providerModelGeneration;
     const response = await this.rpc.request<TurnResponse>("turn/start", {
       threadId: this.engineAgentId,
-      input: [{ type: "text", text: prompt, text_elements: [] }],
+      input: content,
       ...(input.clientMessageId ? { clientUserMessageId: input.clientMessageId } : {}),
       ...(input.model ? { model: input.model } : {}),
       serviceTier: serviceTierForSpeed(input.speed),
       ...(input.effort ? { effort: input.effort } : {}),
+      ...(input.nativeAction?.kind === "structured" ? { outputSchema: input.nativeAction.outputSchema } : {}),
     });
-    this.activeTurnId = response.turn.id;
+    if(typeof response?.turn?.id!=="string"||!response.turn.id.trim()||response.turn.id.length>1024)
+      throw new Error("Native turn acceptance has no valid turn identity");
+    this.activeTurnId = this.lastCompletedTurnId === response.turn.id ? undefined : response.turn.id;
     const acceptedModel = input.model?.trim() || this.activeModel;
     // A matching-thread model notification is more authoritative than RPC
     // success, including when it arrives before this continuation resumes.
@@ -842,16 +1155,24 @@ export class CodexAppServerSession implements RuntimeSession {
       this.activeModel = acceptedModel;
       this.invalidateCapabilities();
     }
+    input.assertCurrent?.();
+    input.onVerifiedInput?.();
     return { turnId: response.turn.id };
   }
 
   async steer(input: RuntimeTurnInput): Promise<RuntimeSteerResult> {
+    if (!steeringPreflight(input)) return { status: "not_active", reason: "Run authority changed before steering submission" };
+    await this.validateBillingMode();
+    if (!steeringPreflight(input)) return { status: "not_active", reason: "Run authority changed before steering submission" };
+    if (input.nativeAction) return { status: "not_steerable", reason: "Native actions require a new scheduler-owned turn" };
     if (!this.activeTurnId) return { status: "not_active" };
+    const content = codexTurnContent(input);
+    if (!steeringPreflight(input)) return { status: "not_active", reason: "Run authority changed before steering submission" };
     try {
       const response = await this.rpc.request<SteerResponse>("turn/steer", {
         threadId: this.engineAgentId,
         expectedTurnId: this.activeTurnId,
-        input: [{ type: "text", text: input.prompt, text_elements: [] }],
+        input: content,
         ...(input.clientMessageId ? { clientUserMessageId: input.clientMessageId } : {}),
       });
       return { status: "accepted", turnId: response.turnId };
@@ -870,6 +1191,21 @@ export class CodexAppServerSession implements RuntimeSession {
     }
   }
 
+  async listNativeTasks() {
+    if (!this.isAlive()) throw new Error("Native session is unavailable");
+    const tasks = await this.backgroundTasks.list();
+    if (tasks.some(task => !task.itemId || this.nativeTaskItems.get(task.itemId) !== task.processId))
+      throw new Error("Native registry includes work without an exact current-source item receipt");
+    return tasks;
+  }
+
+  async stopNativeTask(taskKey: string) {
+    if (!this.isAlive()) throw new Error("Native session is unavailable");
+    const owned = [...this.nativeTaskItems].some(([itemId,processId]) => JSON.stringify([this.engineAgentId,itemId,processId]) === taskKey);
+    if (!owned) throw new Error("Native terminal has no current-source item receipt");
+    return this.backgroundTasks.stop(taskKey);
+  }
+
   async interrupt(): Promise<void> {
     if (!this.activeTurnId) return;
     await this.rpc.request("turn/interrupt", { threadId: this.engineAgentId, turnId: this.activeTurnId });
@@ -880,6 +1216,7 @@ export class CodexAppServerSession implements RuntimeSession {
   }
 
   close(): Promise<void> {
+    this.closingNativeTasks = true;
     this.stopCompactObservation();
     return this.rpc.close();
   }
@@ -889,10 +1226,123 @@ export class CodexAppServerSession implements RuntimeSession {
     this.contextUsageGate.observe();
   }
 
+  private async *retainBackgroundTasks(): AsyncIterable<AgentEvent> {
+    this.nativeTaskHold = true;
+    const observed = new Map<string, string>();
+    while (!this.closingNativeTasks && this.isAlive()) {
+      const tasks = await this.listNativeTasks();
+      const current = new Set(tasks.map(task => task.taskKey));
+      for (const [key, id] of observed) if (!current.has(key)) {
+        yield { type: "work_item_update", workItemId: `native:${key}`, title: `Native terminal: ${id}`, status: "done" };
+        observed.delete(key);
+      }
+      for (const task of tasks) if (!observed.has(task.taskKey)) {
+        observed.set(task.taskKey, task.taskId);
+        yield { type: "work_item_update", workItemId: `native:${task.taskKey}`, title: `Native terminal: ${task.taskId}`, status: "running" };
+      }
+      if (!tasks.length) { this.nativeTaskHold = false; return; }
+      // Read cadence for an existing native registry, never a scheduled model turn.
+      await new Promise<void>(resolve => setTimeout(resolve, 1000));
+    }
+    throw new Error("Native terminal lifetime ended without a complete empty registry");
+  }
+
   private async *eventStream(): AsyncIterable<AgentEvent> {
+    // The transport may have observed completion before this queued reader advances.
+    let eventTurnId = this.activeTurnId;
+    let consumedTurnStarts = 0;
+    let heldCompletion: Extract<AgentEvent, {type:"turn_done"}> | undefined;
+    let heldCompletionTurnId: string | undefined;
+    let goalTerminalTurnId: string | undefined;
+    let goalUsage: TokenUsage[] = [];
+    let goalRequests: TokenUsage[] = [];
+    let goalTurnCount = 0;
+    let completeGoalUsage = true;
+    let completeGoalRequests = true;
+    const goalMarker = (status:"running"|"done", state?:string): AgentEvent => ({
+      type:"work_item_update", workItemId:`native-goal:${this.engineAgentId}`, status,
+      title:state ? `Native goal: ${state}` : "Native goal",
+    });
+    const terminalGoal = (): AgentEvent => {
+      const status = this.goalStatus;
+      this.goalOwned = false;
+      const usage = completeGoalUsage && goalTurnCount > 0 ? sumProviderRequestUsage(goalUsage) : undefined;
+      const requests = usage && completeGoalRequests ? reconcileProviderRequestUsage(usage, goalRequests) : undefined;
+      const result: AgentEvent = status === "complete" && heldCompletion
+        ? (() => {
+            const {usage: _lastUsage, providerRequestUsage: _lastRequests, ...completion} = heldCompletion;
+            return {...completion, ...(usage ? {usage} : {}), ...(requests ? {providerRequestUsage:requests} : {})};
+          })()
+        : {type:"error", terminalStatus:"unknown", message:`Native goal stopped with status ${status ?? "unknown"}; its remaining work was not repeated.`};
+      heldCompletion = undefined;
+      heldCompletionTurnId = undefined;
+      goalTerminalTurnId = undefined;
+      goalUsage = [];
+      goalRequests = [];
+      goalTurnCount = 0;
+      completeGoalUsage = true;
+      completeGoalRequests = true;
+      this.goalPauseAttempted = false;
+      return result;
+    };
     yield { type: "session", sessionId: this.engineAgentId };
+    if (this.goalOwned && !this.goalMarkerEmitted) {
+      this.goalMarkerEmitted = true;
+      yield goalMarker("running");
+    }
+    const responseText = new CodexResponseText(this.engineAgentId);
     for await (const notification of this.rpc.notifications) {
+      if (this.goalOwned && !this.goalMarkerEmitted) {
+        this.goalMarkerEmitted = true;
+        yield goalMarker("running");
+      }
       if (this.nativeCommandNotifications.has(notification)) continue;
+      const params = object(notification.params);
+      if (notification.method === "thread/goal/updated" && params?.threadId === this.engineAgentId) {
+        let goal: NativeGoalSnapshot | null;
+        try { goal = codexGoalSnapshot(params.goal, this.engineAgentId); }
+        catch (error) { try { await this.close(); } catch { /* retain host cleanup authority */ } throw error; }
+        if (!goal) { await this.close(); throw new Error("Native goal update is missing its goal"); }
+        this.goalStatus = goal.status;
+        if (goal.status === "active") {
+          goalTerminalTurnId = undefined;
+          this.goalOwned = true;
+          if (!this.goalMarkerEmitted) { this.goalMarkerEmitted = true; yield goalMarker("running"); }
+        } else if (this.goalOwned) {
+          if (goal.status === "complete" && typeof params.turnId === "string") goalTerminalTurnId = params.turnId;
+          if (!eventTurnId && !this.activeTurnId && consumedTurnStarts === this.observedTurnStarts &&
+              (goal.status !== "complete" || goalTerminalTurnId === heldCompletionTurnId && !!heldCompletionTurnId)) {
+            if (goal.status !== "complete") { try { await this.close(); } catch { /* host keeps cleanup authority */ } }
+            yield goalMarker("done", goal.status);
+            this.goalMarkerEmitted = false;
+            yield terminalGoal();
+          }
+        }
+        continue;
+      }
+      if (notification.method === "thread/goal/cleared" && params?.threadId === this.engineAgentId && this.goalOwned) {
+        this.goalStatus = undefined;
+        if (!eventTurnId && !this.activeTurnId && consumedTurnStarts === this.observedTurnStarts) {
+          try { await this.close(); } catch { /* host keeps cleanup authority */ }
+          yield goalMarker("done", "cleared");
+          this.goalMarkerEmitted = false;
+          yield terminalGoal();
+        }
+        continue;
+      }
+      if (notification.method.startsWith("item/") || notification.method.startsWith("turn/")) {
+        if (params?.threadId !== this.engineAgentId) continue;
+        if (notification.method === "turn/started") {
+          const turn = object(params.turn);
+          if (typeof turn?.id !== "string" || !turn.id) throw new Error("Native turn start has no identity");
+          eventTurnId = turn.id;
+          consumedTurnStarts++;
+        } else if (notification.method === "turn/completed") {
+          if (object(params.turn)?.id !== eventTurnId || !eventTurnId) continue;
+        } else if (params.turnId !== eventTurnId || !eventTurnId) continue;
+      }
+      yield* codexNativeObservation(notification.method, notification.params, this.engineAgentId, eventTurnId);
+      yield* responseText.map(notification.method, notification.params);
       if (notification.method === "thread/tokenUsage/updated") {
         const params = notification.params as { threadId?: unknown; turnId?: unknown; tokenUsage?: { total?: unknown; last?: unknown; modelContextWindow?: unknown } } | undefined;
         if (typeof params?.turnId === "string" && params.threadId === this.engineAgentId) {
@@ -901,11 +1351,11 @@ export class CodexAppServerSession implements RuntimeSession {
           if (total || requestUsage) {
             const contextUsage = codexContextUsageSnapshot(params.tokenUsage);
             const modelContextWindow = contextUsage?.modelContextWindow;
-            if (contextUsage) this.latestContextUsage = contextUsage;
+            this.latestContextUsage = contextUsage;
 
             // A resumed thread replays its prior cumulative total before the new
             // turn's events. That checkpoint is the durable interval baseline.
-            if (total && params.turnId !== this.activeTurnId) {
+            if (total && params.turnId !== eventTurnId) {
               this.baselineTotal = total;
               this.latestTotal = total;
             } else if (total) {
@@ -928,7 +1378,7 @@ export class CodexAppServerSession implements RuntimeSession {
             // A resumed thread first replays old token checkpoints. Preserve
             // those for aggregate baselining/status, but only emit pressure
             // observations for the currently accepted provider turn.
-            if (requestUsage && this.latestContextUsage && params.turnId === this.activeTurnId) yield {
+            if (requestUsage && this.latestContextUsage && params.turnId === eventTurnId) yield {
               type: "context_usage",
               providerSessionId: this.engineAgentId,
               providerSessionGeneration: this.engineAgentId,
@@ -942,14 +1392,19 @@ export class CodexAppServerSession implements RuntimeSession {
         }
         continue;
       }
-      if (notification.method === "turn/started") {
-        const turn = (notification.params as { turn?: { id?: string } } | undefined)?.turn;
-        if (turn?.id) this.activeTurnId = turn.id;
+      const taskParams = object(notification.params), taskItem = object(taskParams?.item);
+      if (taskParams?.threadId === this.engineAgentId && taskParams.turnId === eventTurnId &&
+          ["item/started", "item/completed"].includes(notification.method) && taskItem?.type === "commandExecution" &&
+          typeof taskItem.processId === "string" && taskItem.processId.length > 0) {
+        if (typeof taskItem.id !== "string" || !taskItem.id || taskItem.id.length > 1024 || taskItem.processId.length > 1024 ||
+            /[\u0000-\u001f\u007f-\u009f]/u.test(taskItem.id + taskItem.processId) || this.nativeTaskItems.size >= 1000 && !this.nativeTaskItems.has(taskItem.id))
+          throw new Error("Invalid or excessive current-source native terminal identity");
+        this.nativeTaskItems.set(taskItem.id,taskItem.processId);
+        this.nativeTaskReceiptSeen = true;
       }
       const completedTurnId = notification.method === "turn/completed"
         ? ((notification.params as { turn?: { id?: unknown } } | undefined)?.turn?.id)
         : undefined;
-      if (notification.method === "turn/completed") this.activeTurnId = undefined;
       const completedRequestUsage = typeof completedTurnId === "string"
         ? this.providerRequestUsageByTurnId.get(completedTurnId) ?? []
         : [];
@@ -959,18 +1414,65 @@ export class CodexAppServerSession implements RuntimeSession {
       const providerRequestUsage = completedUsage
         ? reconcileProviderRequestUsage(completedUsage, completedRequestUsage)
         : undefined;
-      yield* mapCodexAppServerNotification(
-        notification,
-        this.cwd,
-        completedUsage,
-        providerRequestUsage,
-      );
+      for (const event of mapCodexAppServerNotification(notification, this.cwd, completedUsage, providerRequestUsage)) {
+        if (event.type === "turn_done" && this.nativeTaskReceiptSeen) {
+          try { yield* this.retainBackgroundTasks(); }
+          catch {
+            const closing = this.close();
+            void closing.catch(() => undefined);
+            yield { type: "error", terminalStatus: "unknown", message: "Native terminal inventory could not establish completion; source outcome held without replay" };
+            await closing;
+            return;
+          }
+        }
+        if (event.type === "error" && this.goalOwned) {
+          // An active goal can schedule more work after a failed turn. Retain
+          // unknown effects and drain its process before returning the error.
+          try { await this.close(); } catch { /* host retains process cleanup authority */ }
+          yield event;
+          return;
+        }
+        if (event.type === "turn_done") {
+          let goal: NativeGoalSnapshot | null | undefined;
+          try { goal = await readNativeGoal(this.rpc, this.engineAgentId); }
+          catch (error) { try { await this.close(); } catch { /* retain host cleanup authority */ } throw error; }
+          if (goal?.status === "active" || goal && consumedTurnStarts < this.observedTurnStarts) {
+            this.goalOwned = true;
+            this.goalStatus = goal.status;
+            if (!this.goalMarkerEmitted) { this.goalMarkerEmitted = true; yield goalMarker("running"); }
+          } else if (this.goalOwned) {
+            this.goalStatus = goal?.status;
+          }
+          if (this.goalOwned) {
+            heldCompletion = event;
+            heldCompletionTurnId = typeof completedTurnId === "string" ? completedTurnId : undefined;
+            goalTurnCount++;
+            if (event.usage) goalUsage.push(event.usage);
+            else completeGoalUsage = false;
+            if (event.providerRequestUsage?.length) goalRequests.push(...event.providerRequestUsage);
+            else completeGoalRequests = false;
+            if (this.goalStatus !== "active" && !this.activeTurnId && consumedTurnStarts === this.observedTurnStarts &&
+                (this.goalStatus !== "complete" || !!heldCompletionTurnId && goalTerminalTurnId === heldCompletionTurnId)) {
+              if (this.goalStatus !== "complete") { try { await this.close(); } catch { /* host keeps cleanup authority */ } }
+              yield goalMarker("done", this.goalStatus ?? "unknown");
+              this.goalMarkerEmitted = false;
+              yield terminalGoal();
+            }
+            continue;
+          }
+        }
+        yield event;
+      }
       if (typeof completedTurnId === "string") {
+        eventTurnId = undefined;
         this.usageByTurnId.delete(completedTurnId);
         this.providerRequestUsageByTurnId.delete(completedTurnId);
         this.usageCheckpointsByTurnId.delete(completedTurnId);
         if (this.latestTotal) this.baselineTotal = this.latestTotal;
       }
+    }
+    if (this.goalOwned) {
+      yield {type:"error", terminalStatus:"unknown", message:"Native goal stream ended before its outcome was confirmed; work remains held."};
     }
   }
 }
@@ -1041,6 +1543,7 @@ export function sumProviderRequestUsage(requests: TokenUsage[]): TokenUsage | un
       if (request[key] !== undefined) sums.set(key, (sums.get(key) ?? 0) + request[key]!);
     }
   }
+  if ([...sums.values()].some(value => tokenCount(value) === undefined)) return undefined;
   return {
     inputTokens: sums.get("inputTokens")!,
     ...(sums.has("cachedInputTokens") ? { cachedInputTokens: sums.get("cachedInputTokens")! } : {}),
@@ -1081,7 +1584,7 @@ export function subtractUsage(total: TokenUsage, baseline: TokenUsage): TokenUsa
 export function mapCodexTokenUsage(value: unknown): TokenUsage | undefined {
   if (!value || typeof value !== "object") return undefined;
   const raw = value as Record<string, unknown>;
-  const number = (key: string) => typeof raw[key] === "number" && Number.isFinite(raw[key]) ? raw[key] as number : undefined;
+  const number = (key: string) => tokenCount(raw[key]);
   const inputTokens = number("inputTokens");
   const cachedInputTokens = number("cachedInputTokens");
   const outputTokens = number("outputTokens");
@@ -1092,12 +1595,13 @@ export function mapCodexTokenUsage(value: unknown): TokenUsage | undefined {
   // guessing from input totals; downstream TokenUsage still preserves cache
   // writes for providers that report them canonically.
   if ([inputTokens, cachedInputTokens, outputTokens, reasoningOutputTokens, providerTotal].every((item) => item === undefined)) return undefined;
+  const totalTokens = providerTotal ?? tokenSum(inputTokens, outputTokens);
   return {
     ...(inputTokens !== undefined ? { inputTokens } : {}),
     ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
     ...(outputTokens !== undefined ? { outputTokens } : {}),
     ...(reasoningOutputTokens !== undefined ? { reasoningOutputTokens } : {}),
-    totalTokens: providerTotal ?? (inputTokens ?? 0) + (outputTokens ?? 0),
+    ...(totalTokens !== undefined ? { totalTokens } : {}),
   };
 }
 
@@ -1114,8 +1618,8 @@ export function mapCodexAppServerNotification(
     return [{ type: "error", message, ...(code ? { code } : {}) }];
   }
   if (notification.method === "item/agentMessage/delta") {
-    // Deltas are transport-only progress. Canonical chat records the completed
-    // item below so one engine answer never becomes dozens of message rows.
+    // These raw deltas have no Chat authority. eventStream separately normalizes
+    // candidate items; completed text below remains execution-scoped Work log.
     return [];
   }
   if (notification.method === "item/reasoning/summaryTextDelta" || notification.method === "item/reasoning/textDelta") {
@@ -1173,7 +1677,7 @@ export function mapCodexAppServerNotification(
       : [];
   }
   if (notification.method === "item/completed" && item.type === "fileChange") {
-    // Sparse or completion-only native work still invalidates plain-text estimates.
+    // Completion-only/reordered edits are work evidence even without a changes payload.
     return [{ type: "work_start", kind: "file_change",
       ...(typeof item.id === "string" ? { callId: item.id } : {}) },
     ...(Array.isArray(item.changes) ? item.changes : []).flatMap((change) => {
@@ -1217,14 +1721,39 @@ export function mapCodexAppServerNotification(
   }
   if (notification.method === "item/completed" && item.type === "dynamicToolCall") {
     const isError = item.success === false;
-    return [normalizedToolResult(
+    let voiceReplyStreamId: string | undefined;
+    // Provider-specific content-item parsing stays in the engine. This receipt
+    // alone grants no authority; the host compares its operation and scoped stream.
+    if (item.success === true && (item.tool === "ponderosa_voice_reply" || item.tool === "ponderosa_reply_stream") &&
+        (item.namespace === undefined || item.namespace === null || item.namespace === "") &&
+        Array.isArray(item.contentItems) && item.contentItems.length === 1) {
+      const content = object(item.contentItems[0]);
+      if (content?.type === "inputText" && typeof content.text === "string") {
+        try {
+          const receipt = object(JSON.parse(content.text));
+          if (receipt?.authorized === true && typeof receipt.streamId === "string" && receipt.streamId.trim() && receipt.streamId.length <= 512) voiceReplyStreamId = receipt.streamId;
+        } catch { /* Prose/invalid receipts cannot acknowledge authorization. */ }
+      }
+    }
+    const normalized = normalizedToolResult(
       typeof item.id === "string" ? item.id : "dynamic-tool",
-      JSON.stringify(item.contentItems ?? []),
-      isError,
-    )];
+      JSON.stringify(item.contentItems ?? []), isError,
+    );
+    return [{ ...normalized, ...(voiceReplyStreamId && normalized.isError !== true ? { voiceReplyStreamId, isError: false } : {}) }];
   }
-  // Passive text/compaction is not opaque native work. Unknown items fail closed
-  // without inventing a public tool projection or persisting native payloads.
+  // A small passive/answer allowlist, rather than a finite tool denylist. Native
+  // searches/images/collaboration/review/tool outputs, future and malformed types
+  // fence on either lifecycle edge, without inventing a public tool projection.
   if (["agentMessage", "reasoning", "plan", "userMessage", "contextCompaction"].includes(item.type)) return [];
   return [{ type: "work_start", kind: "native_tool" }];
+}
+
+/** Observe the executing harness, not the host status cache. No account fields
+ * or credentials cross the adapter boundary. This RPC is not a turn transaction. */
+async function requireCodexBillingMode(rpc: JsonRpcProcess, expected: "subscription" | "api"): Promise<void> {
+  const response = object(await rpc.request("account/read", { refreshToken: false }));
+  const account = object(response?.account);
+  const mode = account?.type === "apiKey" ? "api"
+    : account?.type === "chatgpt" || account?.type === "chatgptAuthTokens" ? "subscription" : undefined;
+  if (mode !== expected) throw new Error("Executing Codex harness billing mode is unavailable or differs from the human selection; input retained");
 }

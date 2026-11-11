@@ -447,7 +447,7 @@ export async function seedLegacyPwaProfile(port, profileDir, browserExecutable, 
   }
 }
 
-async function unauthenticatedUpdateSurface(baseUrl, webDist) {
+async function trustedNetworkUpdateSurface(baseUrl, webDist, expectedRevision) {
   const assets = webAssetPaths(webDist);
   assert(assets.includes("/sw.js"), "installed web build omitted sw.js");
   for (const asset of assets) {
@@ -455,18 +455,53 @@ async function unauthenticatedUpdateSurface(baseUrl, webDist) {
       headers: { connection: "close" },
       signal: AbortSignal.timeout(10_000),
     });
-    assert(response.ok, `unauthenticated PWA asset ${asset} returned HTTP ${response.status}`);
+    assert(response.ok, `public PWA asset ${asset} returned HTTP ${response.status}`);
   }
   const api = await fetch(`${baseUrl}/api/projects`, {
     headers: { connection: "close" },
     signal: AbortSignal.timeout(10_000),
   });
-  assert(api.status === 401, `unauthenticated API request returned HTTP ${api.status}`);
-  return assets.length;
+  assert(api.status === 200, `trusted-network API request returned HTTP ${api.status}`);
+  assert(Array.isArray(await api.json()), "trusted-network projects API did not return JSON rows");
+  const healthResponse = await fetch(`${baseUrl}/api/health`, {
+    headers: { connection: "close" }, cache: "no-store",
+    signal: AbortSignal.timeout(10_000),
+  });
+  assert(healthResponse.status === 200 &&
+    healthResponse.headers.get("cache-control")?.includes("no-store"),
+    "live health API is unavailable or cacheable");
+  const health = await healthResponse.json();
+  assert(health.status === "ok" && health.service === "ponderosa" &&
+    (!expectedRevision || health.revision === expectedRevision),
+    "live health API belongs to a different build");
+  const readinessResponse = await fetch(`${baseUrl}/api/ready`, {
+    headers: { connection: "close" }, cache: "no-store",
+    signal: AbortSignal.timeout(10_000),
+  });
+  assert([200, 503].includes(readinessResponse.status), "readiness API returned an unexpected HTTP status");
+  assert(readinessResponse.headers.get("cache-control")?.includes("no-store"),
+    "readiness API omitted its no-store contract");
+  const readiness = await readinessResponse.json();
+  assert(readiness.networkSecurity?.mode === "trusted_network" &&
+    readiness.networkSecurity.authenticationRequired === false,
+    "qualification requires the current explicit trusted-network contract");
+  assert(!expectedRevision || readiness.revision === expectedRevision,
+    "readiness API belongs to a different build");
+  assert(["daemon", "dataDirectory", "projections", "artifactFilesystem", "processContainment"]
+    .every(check => readiness.checks?.[check]?.ok === true),
+    "browser qualification requires healthy daemon/storage/containment checks");
+  assert(readinessResponse.status === 200
+    ? readiness.status === "ready" && readiness.canAcceptWork === true
+    : readiness.status === "not_ready" && readiness.canAcceptWork === false &&
+      readiness.checks.runtimes?.ok === false,
+    "readiness HTTP/body disagrees with actual runtime availability");
+  return { publicAssetCount: assets.length, readinessHttpStatus: readinessResponse.status };
 }
 
-function currentAssetExpression(expectedAssets, requireAuthenticatedApi) {
-  return `(async()=>{const expected=${JSON.stringify(expectedAssets)},loaded=[...document.scripts].map(script=>new URL(script.src,location.href).pathname).concat([...document.querySelectorAll('link[rel="stylesheet"]')].map(link=>new URL(link.href,location.href).pathname));const registration=await navigator.serviceWorker.getRegistration("/");const oldAsset=await caches.match("/old.js");const apiStatus=${requireAuthenticatedApi ? "await fetch('/api/engines').then(response=>response.status).catch(()=>0)" : "401"};return expected.every(asset=>loaded.includes(asset))&&registration?.active?.scriptURL.endsWith("/sw.js")&&!oldAsset&&apiStatus===${requireAuthenticatedApi ? "200" : "401"}})()`;
+function currentAssetExpression(expectedAssets, expectedRevision, readinessHttpStatus) {
+  // A fresh query plus no-store fetch and an absent CacheStorage entry checks
+  // the actual current JSON API through the active worker, including on restart.
+  return `(async()=>{const expected=${JSON.stringify(expectedAssets)},revision=${JSON.stringify(expectedRevision ?? null)},expectedStatus=${readinessHttpStatus},loaded=[...document.scripts].map(script=>new URL(script.src,location.href).pathname).concat([...document.querySelectorAll('link[rel="stylesheet"]')].map(link=>new URL(link.href,location.href).pathname));const registration=await navigator.serviceWorker.getRegistration("/");const oldAsset=await caches.match("/old.js");const apiUrl='/api/ready?qualification='+crypto.randomUUID();const healthApi=await fetch('/api/health?qualification='+crypto.randomUUID(),{cache:'no-store'});const health=await healthApi.json();const api=await fetch(apiUrl,{cache:'no-store'});const readiness=await api.json();const cachedApi=await caches.match(apiUrl,{ignoreSearch:true});return expected.every(asset=>loaded.includes(asset))&&registration?.active?.scriptURL.endsWith("/sw.js")&&!oldAsset&&healthApi.status===200&&healthApi.headers.get('cache-control')?.includes('no-store')&&health.status==='ok'&&health.service==='ponderosa'&&(!revision||health.revision===revision)&&api.status===expectedStatus&&api.headers.get('cache-control')?.includes('no-store')&&!cachedApi&&readiness.networkSecurity?.mode==='trusted_network'&&readiness.networkSecurity.authenticationRequired===false&&(!revision||readiness.revision===revision)&&['daemon','dataDirectory','projections','artifactFilesystem','processContainment'].every(check=>readiness.checks?.[check]?.ok===true)&&(expectedStatus===200?readiness.status==='ready'&&readiness.canAcceptWork===true:readiness.status==='not_ready'&&readiness.canAcceptWork===false&&readiness.checks.runtimes?.ok===false)})()`;
 }
 
 export async function qualifyPersistentPwaUpgrade({
@@ -476,19 +511,20 @@ export async function qualifyPersistentPwaUpgrade({
   bootstrapUrl,
   browserExecutable = findChromiumExecutable(),
   browserFactory = openQualificationBrowser,
+  expectedRevision,
 }) {
   assert(browserExecutable, "PWA upgrade qualification requires an installed Chromium browser");
   const expectedAssets = documentAssetPaths(readFileSync(path.join(webDist, "index.html"), "utf8"));
   assert(expectedAssets.length > 0, "installed web index did not reference fingerprinted assets");
   const baseUrl = `http://127.0.0.1:${port}`;
-  const publicAssetCount = await unauthenticatedUpdateSurface(baseUrl, webDist);
+  const { publicAssetCount, readinessHttpStatus } = await trustedNetworkUpdateSurface(baseUrl, webDist, expectedRevision);
   let browser = await browserFactory(browserExecutable, profileDir);
   let primaryError;
   try {
     await browser.navigate(bootstrapUrl);
     await browser.waitFor(
-      `location.pathname==="/"&&${currentAssetExpression(expectedAssets, true)}`,
-      "service worker blocked browser bootstrap or the authenticated current build",
+      `["/","/home"].includes(location.pathname)&&${currentAssetExpression(expectedAssets, expectedRevision, readinessHttpStatus)}`,
+      "service worker blocked bootstrap refresh or the current trusted-network build",
     );
   } catch (error) {
     primaryError = error;
@@ -504,8 +540,8 @@ export async function qualifyPersistentPwaUpgrade({
   try {
     await browser.navigate(`${baseUrl}/`);
     await browser.waitFor(
-      currentAssetExpression(expectedAssets, true),
-      "persistent browser restart regressed to legacy assets or lost authentication",
+      currentAssetExpression(expectedAssets, expectedRevision, readinessHttpStatus),
+      "persistent browser restart regressed to legacy assets or lost the current live API",
     );
   } catch (error) {
     primaryError = error;
@@ -519,5 +555,9 @@ export async function qualifyPersistentPwaUpgrade({
     browserExecutable,
     publicAssetCount,
     expectedAssets,
+    expectedRevision,
+    readinessHttpStatus,
+    networkMode: "trusted_network",
+    authenticationRequired: false,
   };
 }

@@ -1,0 +1,353 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import {randomUUID,createHash} from 'node:crypto';
+import {writeFile,readFile} from 'node:fs/promises';
+import path from 'node:path';
+import {publishManagedArtifactContentAsync} from '@ponderosa/agents';
+import {FULL_PACKAGE_EXPORT_WARNING} from '@ponderosa/core';
+import {fork} from 'node:child_process';
+import {once} from 'node:events';
+import {instance,seed,read,vector} from './portability-fixture.mjs';
+import {AgentStore} from '@ponderosa/agents';
+import {createServer} from '../../apps/server/dist/app.js';
+
+async function api(f,method,url,payload,extra={}){const res=await f.app.inject({method,url,headers:f.headers,...(payload===undefined?{}:{payload}),...extra});return {status:res.statusCode,body:res.json(),raw:res.body,headers:res.headers};}
+async function exported(f,organization=true){const res=await api(f,'GET',`/api/agents/${f.a.id}/export?mode=full&organization=${organization}`);assert.equal(res.status,200,res.raw);return res.body;}
+const body=(f,pkg)=>({package:pkg,conversationId:f.chat.id,engineMapping:{fixture:'fixture'}});
+const imported=(f,pkg,key=randomUUID())=>api(f,'POST',`/api/projects/${f.project.id}/import-agents`,body(f,pkg),{headers:{...f.headers,'idempotency-key':key}});
+function noRuns(f){for(const table of ['scheduler_runs','agent_activations','provider_operation_outbox'])assert.equal(f.store.sqlite.prepare(`SELECT COUNT(*) n FROM ${table}`).get().n,0,table);}
+
+// The test operator supplies evidence only because these disposable fixtures
+// control the worker and the fake backend request; production must establish
+// its own independent backend-drain evidence before taking this action.
+async function reconcileControlled(f,scope,evidence){
+ const list=await api(f,'GET','/api/local-memory/mutation-holds');assert.equal(list.status,200,list.raw);
+ const holds=list.body.filter(item=>item.effect?.scope===scope);assert.ok(holds.length,'unknown remote write must remain visible');
+ for(const hold of holds){
+  const review=await api(f,'GET',`/api/local-memory/mutation-holds/${hold.id}`);assert.equal(review.status,200,review.raw);assert.equal(review.body.canReconcile,true);
+  const result=await api(f,'POST',`/api/local-memory/mutation-holds/${hold.id}/reconcile`,{commandKey:randomUUID(),reviewSha256:review.body.reviewSha256,backendDrainEvidence:evidence,preserveCurrentBackend:true});
+  assert.equal(result.status,200,result.raw);
+ }
+}
+
+// Compare the whole selected portable contract. Only destination identities and
+// documented import provenance are transformed; unknown/new fields remain compared.
+function expectedFreshOrganization(pkg,destination,result,key,exportedAt){
+ const expected=structuredClone(pkg),mapping=result.agentRefs;
+ assert.ok(mapping);assert.deepEqual(Object.keys(mapping).sort(),pkg.agents.map(a=>a.ref).sort());
+ expected.rootRef=mapping[pkg.rootRef];expected.exportedAt=exportedAt;
+ for(const node of expected.agents){
+  node.ref=mapping[node.ref];if(node.managerRef)node.managerRef=mapping[node.managerRef];
+  node.sourceChat={ref:destination.chat.id,title:destination.store.getConversation(destination.chat.id).title};
+  for(const artifact of node.artifacts??[]){
+   const originalPath=artifact.path;artifact.path='imported/'+artifact.ref+path.extname(originalPath).toLowerCase().slice(0,16);
+   artifact.createdAt=new Date(artifact.createdAt).toISOString();artifact.summary=artifact.summary?.trim()||path.basename(originalPath).trim()||'Imported artifact';
+   artifact.mediaType=artifact.mediaType?.trim()||'application/octet-stream';artifact.visibility??='project';artifact.pinned??=false;
+  }
+ }
+ const operation=destination.store.findAgentCreationOperation({projectId:destination.project.id,actorScope:'user:local-operator',kind:'import',idempotencyKey:key});
+ assert.ok(operation);assert.equal(operation.status,'completed');
+ for(const [index,entry] of expected.memory.entries()){
+  const old=entry.snapshot,sourceChat=old.sourceChatId,namespace=operation.id+':m:'+index;
+  const id=(kind,value)=>createHash('sha256').update(JSON.stringify([destination.memory.principalId,destination.chat.id,namespace,sourceChat,kind,value])).digest('hex');
+  entry.agentRefs=Object.fromEntries(Object.entries(entry.agentRefs).map(([agent,ref])=>[mapping[agent],mapping[ref]]));
+  old.sourceChatId=destination.chat.id;old.agentIds=old.agentIds.map(agent=>mapping[agent]);
+  for(const [field,kind] of [['chunks','chunk'],['conflicts','conflict']])for(const row of old[field]){
+   const original=structuredClone(row.stamp),privateAgent=pkg.memory[index].snapshot.agentIds.find(agent=>original.audience==='chat:'+sourceChat+':agent:'+agent);
+   row.id=id(kind,row.id);
+   if(row.metadata.supersedes)row.metadata.supersedes=id('chunk',row.metadata.supersedes);
+   if(kind==='conflict'){
+    const refs=JSON.parse(row.metadata.chunk_ids_affected??row.metadata.chunk_ids).map(value=>id('chunk',value));
+    row.metadata.chunk_ids=JSON.stringify(refs);row.metadata.chunk_ids_affected=JSON.stringify(refs);row.metadata.log_id=row.id;row.metadata.chunks_affected=refs.length;
+   }
+   row.metadata.package_source_stamp=JSON.stringify(original);
+   row.stamp={format:1,principal:destination.memory.principalId,id:row.id,scope:'chat:'+destination.chat.id,ownerChat:destination.chat.id,audience:'chat:'+destination.chat.id+(privateAgent?':agent:'+mapping[privateAgent]:':team'),sourceType:original.sourceType,provenance:{actor:{kind:'user',id:destination.memory.principalId},runId:'package-import:'+namespace,fenceToken:'historical',at:original.provenance.at},origin:original.origin??original.provenance};
+  }
+ }
+ return expected;
+}
+function orderedPortable(pkg){
+ const value=structuredClone(pkg);value.agents.sort((a,b)=>a.ref.localeCompare(b.ref));
+ for(const node of value.agents)node.artifacts?.sort((a,b)=>a.ref.localeCompare(b.ref));
+ for(const entry of value.memory??[]){entry.snapshot.agentIds.sort();for(const field of ['chunks','conflicts'])entry.snapshot[field].sort((a,b)=>a.id.localeCompare(b.id));}
+ return value;
+}
+
+for(const branch of [false,true])test(branch?'Branches organization HTTP package roundtrip retains the complete nonsecret contract on a fresh instance':'actual organization HTTP package roundtrip restores scoped queries and deduplicates team memory after reopen/reexport/retry',async t=>{
+ const source=await instance(t,branch),destination=await instance(t,branch);await seed(source);
+ const product=branch?'branches':'dev';
+ assert.equal(Boolean(source.chat.branchId),branch);assert.equal(Boolean(destination.chat.branchId),branch);
+ const scopedApi=(f,method,url,...rest)=>api(f,method,branch?url.replace('/api/','/api/branches/engine/'):url,...rest);
+ assert.notEqual(source.dataDir,destination.dataDir);assert.equal(destination.store.getProjectArtifacts(destination.project.id).length,0);
+ source.store.updateAgentOrganization(source.b.id,{managerAgentId:source.a.id});
+ source.store.updateAgent(source.a.id,{role:'Preserve this standing role 雪',speed:'standard'});
+ source.store.setImportedHistory(source.a.id,'Synthetic source',[{role:'user',text:'Exact history \r\n😀',createdAt:'2026-11-07T00:00:00.000Z'}]);
+ source.store.appendEvent(source.a.id,{type:'tool_call',id:'portable-event',name:'fixture',input:{safe:'ordinary retained data',env:{OPENAI_API_KEY:'SYNTHETIC_EVENT_SECRET'}}});
+ const bytes=Buffer.from('Managed original \0 雪'),artifactId=randomUUID();
+ await publishManagedArtifactContentAsync(source.dataDir,source.project.id,artifactId,bytes);
+ source.store.recordProjectArtifact({id:artifactId,projectId:source.project.id,agentId:source.a.id,originAgentId:source.a.id,kind:'document',path:'fixture-original.txt',summary:'Synthetic managed original',createdAt:'2026-11-07T00:00:00.000Z',size:bytes.length,sha256:createHash('sha256').update(bytes).digest('hex'),mediaType:'text/plain'});
+ const workingBytes=Buffer.from('Selected working original \0 😀');await writeFile(path.join(source.root,'portable-user-file.txt'),workingBytes);
+
+ const raw=source.memory.core.database.raw,collection=await raw.client.getCollection({name:raw.names('chat:'+source.chat.id).memory}),row=await collection.get({limit:1,include:['metadatas']});await collection.update({ids:row.ids,metadatas:[{...row.metadatas[0],env:JSON.stringify(JSON.stringify({OPENAI_API_KEY:'SYNTHETIC_EXPORT_SECRET',safe:'kept'}))}]});
+ const exportedResponse=await scopedApi(source,'GET',`/api/agents/${source.a.id}/export?mode=full&organization=true&workingFiles=${encodeURIComponent(JSON.stringify(['portable-user-file.txt']))}`);
+ assert.equal(exportedResponse.status,200,exportedResponse.raw);assert.equal(exportedResponse.headers['x-ponderosa-export-warning'],FULL_PACKAGE_EXPORT_WARNING);
+ const pkg=exportedResponse.body;assert.equal(pkg.kind,'organization');assert.equal(pkg.agents.length,2);
+ assert.doesNotMatch(JSON.stringify(pkg),/SYNTHETIC_(?:EXPORT|EVENT)_SECRET/);
+ for(const artifact of pkg.agents.flatMap(node=>node.artifacts??[]))assert.doesNotMatch(Buffer.from(artifact.dataBase64,'base64').toString(),/SYNTHETIC_(?:EXPORT|EVENT)_SECRET/);
+ assert.match(JSON.stringify(pkg),/kept/);assert.equal(pkg.memory.length,1);assert.equal(pkg.memory[0].snapshot.chunks.length,4);
+ assert.equal((await scopedApi(source,'GET',`/api/agents/${source.a.id}/export?mode=template&organization=true`)).body.memory,undefined);
+ const exportedRoot=pkg.agents.find(node=>node.ref===source.a.id),exportedChild=pkg.agents.find(node=>node.ref===source.b.id);
+ assert.equal(exportedChild.managerRef,source.a.id);assert.equal(exportedRoot.role,'Preserve this standing role 雪');assert.equal(exportedRoot.speed,'standard');
+ assert.ok(exportedRoot.history.some(message=>message.role==='user'&&message.text==='Exact history \r\n😀'&&message.createdAt==='2026-11-07T00:00:00.000Z'));
+ assert.deepEqual(Buffer.from(exportedRoot.artifacts.find(artifact=>artifact.ref===artifactId).dataBase64,'base64'),bytes);
+ const selectedOriginal=exportedRoot.workingFiles.find(file=>file.path==='portable-user-file.txt');assert.ok(selectedOriginal);
+ assert.deepEqual(Buffer.from(exportedRoot.artifacts.find(artifact=>artifact.ref===selectedOriginal.artifactRef).dataBase64,'base64'),workingBytes);
+ assert.ok(exportedRoot.artifacts.some(artifact=>Buffer.from(artifact.dataBase64,'base64').toString().includes('ordinary retained data')),'historical tool evidence is actually exported');
+ const workingDestination=path.join(destination.root,'selected-originals');
+ const chosenImport=key=>scopedApi(destination,'POST',`/api/projects/${destination.project.id}/import-agents`,{...body(destination,pkg),workingFilesDestination:workingDestination},{headers:{...destination.headers,'idempotency-key':key}});
+ const key=randomUUID(),result=await chosenImport(key);assert.equal(result.status,201,result.raw);
+ assert.equal(destination.store.findAgentCreationOperation({projectId:destination.project.id,actorScope:'user:local-operator',kind:'import',idempotencyKey:key}).productScope,product);
+ const root=result.body.rootAgentId,child=result.body.agentIds.find(id=>id!==root);
+ assert.equal((await read(destination,root)).length,3);assert.equal((await read(destination,child)).length,3);
+ const query=await destination.memory.core.database.run({chatId:destination.chat.id,actor:{kind:'agent',id:root},runId:'trusted-test-query',fenceToken:'1',sourceType:'ai_inference',readChat:true,readGlobal:false,observeExposure:false,guard:async()=>{}},()=>destination.memory.core.database.candidates(['chat:'+destination.chat.id],Array.from({length:384},(_,i)=>i?0:1),100,true,0));assert.equal(query.length,3);
+ assert.equal((await read(destination,destination.a.id)).length,2,'unrelated destination peer sees team only');assert.equal(destination.memory.getGrant(destination.chat.id,product).readGlobal,false);
+ assert.equal((await chosenImport(key)).status,200);noRuns(destination);
+ await destination.reopen();assert.equal((await read(destination,root)).length,3);assert.equal(destination.memory.getGrant(destination.chat.id,product).readGlobal,false);
+ const next=await scopedApi(destination,'GET',`/api/agents/${root}/export?mode=full&organization=true`);assert.equal(next.status,200,next.raw);assert.equal(next.body.memory[0].snapshot.chunks.length,4);assert.equal(next.body.memory[0].snapshot.conflicts.length,1);
+ assert.ok(Number.isFinite(Date.parse(next.body.exportedAt)));assert.ok(Date.parse(next.body.exportedAt)>=Date.parse(pkg.exportedAt));
+ assert.deepEqual(orderedPortable(next.body),orderedPortable(expectedFreshOrganization(pkg,destination,result.body,key,next.body.exportedAt)),'complete selected organization portable contract survives fresh-instance import/reopen/re-export');
+ assert.deepEqual(await readFile(path.join(workingDestination,'portable-user-file.txt')),workingBytes,'fresh destination working original is exact');
+ assert.deepEqual(await readFile(path.join(source.root,'portable-user-file.txt')),workingBytes,'export/import never changes the source working original');
+ const semantic=s=>s.chunks.map(r=>[r.text,r.embedding,r.metadata.deprecated,Boolean(r.metadata.supersedes)]).sort((a,b)=>a[0].localeCompare(b[0]));assert.deepEqual(semantic(next.body.memory[0].snapshot),semantic(pkg.memory[0].snapshot));noRuns(destination);
+});
+
+for(const startup of ['before','during','after'])test('two app instances serialize the same import and retain its receipt (startup '+startup+')',async t=>{
+ const source=await instance(t),destination=await instance(t);await seed(source);
+ const pkg=await exported(source,false),key=randomUUID();let otherStore,otherApp,other;
+ const openOther=()=>{otherStore=new AgentStore(destination.dataDir);otherApp=createServer({...destination.options,store:otherStore});other={app:otherApp,project:destination.project,chat:destination.chat,headers:destination.headers};};
+ if(startup==='before'){openOther();await otherApp.ready();}
+ t.after(async()=>{if(otherApp){otherApp.prepareForShutdown();await otherApp.close();otherStore.close();}});
+ const raw=destination.memory.core.database.raw,original=raw.client.getCollection.bind(raw.client);
+ let entered,release;const started=new Promise(r=>entered=r),gate=new Promise(r=>release=r);let blocked=false;
+ raw.client.getCollection=async args=>{const c=await original(args),add=c.add.bind(c);c.add=async input=>{if(!blocked&&input.metadatas?.some(m=>m.host_package_operation)){blocked=true;entered();await gate;}return add(input);};return c;};
+ t.after(()=>{release();raw.client.getCollection=original;});
+ const first=imported(destination,pkg,key);await started;
+ if(startup!=='before')openOther();
+ let waitedDone=false;
+ const waiter=startup==='before'?imported(other,pkg,key):startup==='during'?otherApp.ready():undefined;
+ if(waiter){waiter.finally(()=>{waitedDone=true;});await new Promise(r=>setTimeout(r,150));assert.equal(waitedDone,false,'second app must wait for the active import');}
+ release();const a=await first;raw.client.getCollection=original;
+ if(startup==='during')await waiter;
+ if(startup==='after')await otherApp.ready();
+ assert.equal(a.status,201,a.raw);
+ // This operation checks the app-local quarantine before any idempotent retry.
+ const usable=await api(other,'GET',`/api/agents/${a.body.rootAgentId}/export?mode=full&organization=false`);assert.equal(usable.status,200,usable.raw);
+ const b=startup==='before'?await waiter:await imported(other,pkg,key);
+ assert.equal(b.status,200,b.raw);assert.equal(a.body.rootAgentId,b.body.rootAgentId);
+ const op=destination.store.findAgentCreationOperation({projectId:destination.project.id,actorScope:'user:local-operator',kind:'import',idempotencyKey:key});
+ assert.equal(op.status,'completed');assert.equal(op.result.rootAgentId,a.body.rootAgentId);assert.deepEqual(op.agentIds,a.body.agentIds);
+ assert.equal((await read(destination,a.body.rootAgentId)).length,3);noRuns(destination);
+});
+
+test('product parser refuses encoded metadata credentials, malformed bindings/signatures and oversize before Agent or memory mutation',async t=>{
+ const source=await instance(t),destination=await instance(t);await seed(source);const pkg=await exported(source,false),before=destination.store.listAgents(destination.project.id).length;
+ for(const mutate of [p=>p.memory.push(structuredClone(p.memory[0])),p=>p.memory[0].snapshot.schema='unsupported',p=>p.memory[0].snapshot.signature='wrong-model',p=>p.memory[0].snapshot.chunks[0].text='\ud800',p=>p.memory[0].agentRefs[source.a.id]='missing',p=>p.memory[0].snapshot.chunks[0].metadata.env=JSON.stringify(JSON.stringify({OPENAI_API_KEY:'SYNTHETIC_ONLY'})),p=>p.memory[0].snapshot.chunks[0].text='x'.repeat(16*1024*1024)]){
+  const invalid=structuredClone(pkg);mutate(invalid);const res=await imported(destination,invalid);assert.ok(res.status>=400,res.raw);assert.equal(destination.store.listAgents(destination.project.id).length,before);assert.equal((await read(destination,destination.a.id)).length,0);
+ }
+ noRuns(destination);
+});
+
+test('SIGKILL during package memory write holds cleanup until an explicit drained-backend review',async t=>{
+ const source=await instance(t),destination=await instance(t);await seed(source);const pkg=await exported(source,false),key=randomUUID();
+ const options={...destination.options};delete options.engines;
+ await destination.suspend();
+ const worker=fork(new URL('./package-crash-worker.mjs',import.meta.url),[],{execArgv:['--import',new URL('../shared/workspace-resolution.mjs',import.meta.url).pathname],stdio:['ignore','ignore','pipe','ipc']});
+ let errors='';worker.stderr.on('data',chunk=>{errors+=chunk;});const exited=once(worker,'exit');worker.send({options,payload:{projectId:destination.project.id,body:body(destination,pkg)},key});const [code,signal]=await exited;assert.equal(signal,'SIGKILL',errors||String(code));
+ await destination.resume();
+ let op=destination.store.findAgentCreationOperation({projectId:destination.project.id,actorScope:'user:local-operator',kind:'import',idempotencyKey:key});assert.equal(op.status,'preparing',op.lastError);assert.equal(op.lastError,'Package memory cleanup remains pending');
+ assert.ok(op.agentIds.length>0);assert.ok(op.result.memoryPlan.length>0);const stagedAgentIds=[...op.agentIds];for(const id of stagedAgentIds)assert.ok(destination.store.getAgent(id),'staged owner remains while the write outcome is unknown');
+ await assert.rejects(read(destination,destination.a.id),/unsettled remote write/);
+ const raw=destination.memory.core.database.raw,c=await raw.client.getCollection({name:raw.names('chat:'+destination.chat.id).memory}),held=await c.get({include:['metadatas']});
+ const getCollection=raw.client.getCollection,deleteCollection=raw.client.deleteCollection,writeAttempts=[];
+ raw.client.getCollection=async input=>{const collection=await getCollection.call(raw.client,input);for(const method of ['add','upsert','update','delete','modify'])collection[method]=async()=>{writeAttempts.push(method);throw Error('Unexpected mutation during held retry');};return collection;};
+ raw.client.deleteCollection=async()=>{writeAttempts.push('deleteCollection');throw Error('Unexpected collection deletion during held retry');};
+ let retryHeld;try{retryHeld=await imported(destination,pkg,key);}finally{raw.client.getCollection=getCollection;raw.client.deleteCollection=deleteCollection;}
+ assert.notEqual(retryHeld.status,201,retryHeld.raw);assert.deepEqual(writeAttempts,[],'held retry must not dispatch a remote mutation');assert.deepEqual(await c.get({include:['metadatas']}),held,'retry must not change uncertain rows');
+ // The synthetic worker awaited its only upsert response before killing itself;
+ // this controlled evidence is not inferred for real interrupted operations.
+ await reconcileControlled(destination,'chat:'+destination.chat.id,'Controlled fixture worker awaited its only backend upsert response before exiting');
+ await destination.reopen();op=destination.store.findAgentCreationOperation({projectId:destination.project.id,actorScope:'user:local-operator',kind:'import',idempotencyKey:key});assert.equal(op.status,'rolled_back',op.lastError);for(const id of stagedAgentIds)assert.equal(destination.store.getAgent(id),undefined,'reconciled staged owner must be retired');
+ const retained=await destination.memory.core.database.raw.client.getCollection({name:destination.memory.core.database.raw.names('chat:'+destination.chat.id).memory});assert.deepEqual((await retained.get({include:['metadatas']})).ids,[],'reconciled staged rows are cleaned once at startup');noRuns(destination);
+});
+
+test('immediate uncertain package write preserves staged ownership and both failure reasons across restart',async t=>{
+ const source=await instance(t),destination=await instance(t);await seed(source);const pkg=await exported(source,false),key=randomUUID(),raw=destination.memory.core.database.raw;
+ const original=raw.client.getCollection.bind(raw.client);let writes=0;
+ raw.client.getCollection=async args=>{const c=await original(args),add=c.add.bind(c);c.add=async input=>{const result=await add(input);if(input.metadatas?.some(m=>m.host_package_operation)&&++writes===1)throw Error('Synthetic immediate package write failure');return result;};return c;};
+ let response;try{response=await imported(destination,pkg,key);}finally{raw.client.getCollection=original;}
+ assert.equal(response.status,409,response.raw);assert.match(response.body.error,/Memory cleanup held/);assert.equal(writes,1);
+ const find=()=>destination.store.findAgentCreationOperation({projectId:destination.project.id,actorScope:'user:local-operator',kind:'import',idempotencyKey:key});
+ const held=find();assert.equal(held.status,'rolling_back');assert.match(held.lastError,/Memory cleanup held/);
+ assert.match(held.result.memoryCleanupOriginalError,/Synthetic immediate package write failure/);
+ assert.ok(held.agentIds.length>0);for(const id of held.agentIds)assert.ok(destination.store.getAgent(id),'staged Agent owner must remain');
+ const before=held.agentIds.slice(),artifacts=held.artifactIds.slice();await destination.reopen();
+ const reopened=find();assert.equal(reopened.status,'rolling_back');assert.equal(reopened.lastError,held.lastError);assert.deepEqual(reopened.agentIds,before);assert.deepEqual(reopened.artifactIds,artifacts);
+ for(const id of before)assert.ok(destination.store.getAgent(id),'restart must not delete the staged Agent owner');
+ assert.ok(destination.memory.core.database.listMutationHolds().some(hold=>hold.effect?.scope==='chat:'+destination.chat.id));
+ noRuns(destination);
+});
+
+const workflow=(defs)=>({schema:'ponderosa.branch-installation.v1',packageId:'memory.workflow.fixture',mode:'template',exportedAt:new Date().toISOString(),definition:{schema:'ponderosa.branch.v1',name:'Memory workflow',trigger:{kind:'manual'},entry:'agent',controls:[],steps:[{id:'agent',kind:'agent',target:{kind:'persistent_agent',ref:'speaker'},instructions:'No provider turn'}],edges:[],policy:{maxConcurrentExecutions:1,failure:{action:'stop'}}},chats:[{ref:'chat',title:'Memory Chat',agents:defs.map((definition,index)=>({ref:index?'peer':'speaker',definition}))}],agentBindings:{speaker:{chatRef:'chat',agentRef:'speaker'}}});
+async function install(f,pkg){const preview=await api(f,'POST','/api/branches/install-preview',{package:pkg,bindings:{directories:{workspace:f.root},agents:{},engines:{fixture:'fixture'}}});assert.equal(preview.status,200,preview.raw);const result=await api(f,'POST',`/api/branches/installations/${preview.body.id}/confirm`,{acknowledgeFullImport:true});assert.equal(result.status,200,result.raw);assert.equal(result.body.state,'completed',result.raw);return {preview:preview.body,result:result.body};}
+test('actual Branch workflow package transport maps logical refs and installs team memory only once on a fresh destination',async t=>{
+ const source=await instance(t),destination=await instance(t);
+ const defs=[];for(const [index,a] of [source.a,source.b].entries()){const ref=index?'peer':'speaker',r=await api(source,'GET',`/api/agents/${a.id}/export?mode=template`);assert.equal(r.status,200,r.raw);defs.push({...r.body,rootRef:ref,agents:r.body.agents.map(n=>({...n,ref}))});}
+ const installed=await install(source,workflow(defs)),configuration=await api(source,'GET',`/api/branches/${installed.result.branchId}/configuration`),a=source.store.getAgent(configuration.body.agents.speaker),resource=source.store.sqlite.prepare("SELECT local_id FROM branch_installation_resources WHERE branch_id=? AND agent_ref='peer'").get(installed.result.branchId),b=source.store.getAgent(resource.local_id),chat=source.store.getConversation(a.conversationId);
+ const scoped=Object.assign(Object.create(source),{a,b,chat,project:source.store.getProject(chat.projectId)});await seed(scoped);
+ const pack=await api(source,'GET',`/api/branches/${installed.result.branchId}/package?mode=full`);assert.equal(pack.status,200,pack.raw);
+ const total=pack.body.chats.flatMap(c=>c.agents).flatMap(a=>a.definition.memory??[]).flatMap(m=>m.snapshot.chunks);assert.equal(total.length,4);assert.equal(total.filter(r=>r.stamp.audience.endsWith(':team')).length,2);
+ const result=await install(destination,pack.body),config=await api(destination,'GET',`/api/branches/${result.result.branchId}/configuration`),target=destination.store.getAgent(config.body.agents.speaker),destChat=destination.store.getConversation(target.conversationId),dst=Object.assign(Object.create(destination),{a:target,chat:destChat});
+ assert.equal((await read(dst,target.id)).length,3);assert.equal(destination.memory.getGrant(destChat.id,'branches').readGlobal,false);noRuns(destination);
+ const next=await api(destination,'GET',`/api/branches/${result.result.branchId}/package?mode=full`);assert.equal(next.status,200,next.raw);assert.equal(next.body.chats.flatMap(c=>c.agents).flatMap(a=>a.definition.memory??[]).flatMap(m=>m.snapshot.chunks).length,4);
+ const refused=await api(destination,'POST','/api/branches/install-preview',{branchId:result.result.branchId,package:next.body,bindings:{directories:{workspace:destination.root},agents:{},engines:{fixture:'fixture'}}});assert.equal(refused.status,400);assert.match(refused.body.error,/fresh installation/);
+ await destination.reopen();assert.equal((await read(dst,target.id)).length,3);noRuns(destination);
+});
+
+test('exact pending import membership allows restoration but denies visibility; incomplete cleanup remains journaled until recovery',async t=>{
+ const source=await instance(t),destination=await instance(t);await seed(source);const pkg=await exported(source,false),memory=pkg.memory;
+ const {operation}=destination.store.beginAgentCreationOperation({projectId:destination.project.id,conversationId:destination.chat.id,actorScope:'user:local-operator',kind:'import',idempotencyKey:randomUUID(),payloadHash:'controlled-pending-memory'}),id=randomUUID();
+ destination.store.addAgentCreationOperationMember(operation.id,id,0);destination.store.createAgent(destination.project.id,{title:'Pending import',engine:'fixture',conversationId:destination.chat.id},undefined,id);
+ const plan=destination.memory.prepareImportMemory(operation.id,memory);destination.store.updateAgentCreationOperation(operation.id,{result:{phase:'prepared_memory',memoryPlan:plan}});
+ const mapping={[source.a.id]:id};await destination.memory.restoreImportMemory(operation.id,memory[0],mapping,plan[0].namespace);
+ assert.deepEqual(await read(destination,destination.a.id),[],'existing peer cannot see uncommitted team rows');assert.deepEqual((await destination.memory.exportPackageMemory(destination.chat.id,[destination.a.id])).chunks,[],'pending data cannot escape through export');
+ await assert.rejects(destination.memory.restoreImportMemory(operation.id,memory[0],{[source.a.id]:destination.a.id},plan[0].namespace),/membership/);
+ const raw=destination.memory.core.database.raw,original=raw.client.getCollection.bind(raw.client);let refuse=true;
+ raw.client.getCollection=async args=>{const c=await original(args),remove=c.delete.bind(c);c.delete=async input=>{if(refuse)throw Error('Controlled memory cleanup unavailable');return remove(input);};return c;};
+ destination.store.updateAgentCreationOperation(operation.id,{status:'rolling_back'});await assert.rejects(destination.memory.rollbackImportMemory(operation.id),/Memory cleanup held/);assert.ok(destination.store.getAgentCreationOperation(operation.id).result.memoryPlan.length);
+ await assert.rejects(read(destination,destination.a.id),/unsettled remote write/,'an unconfirmed delete holds the scope');refuse=false;raw.client.getCollection=original;
+ await destination.reopen();const held=destination.store.getAgentCreationOperation(operation.id);assert.equal(held.status,'rolling_back');assert.equal(held.lastError,'Package memory cleanup remains pending');assert.ok(held.result.memoryPlan.length);assert.ok(destination.store.getAgent(id),'staged owner is retained');assert.ok(destination.memory.core.database.listMutationHolds().some(hold=>hold.effect?.scope==='chat:'+destination.chat.id));await assert.rejects(read(destination,destination.a.id),/unsettled remote write/);noRuns(destination);
+});
+
+test('unconfigured memory destination explicitly refuses a memory-bearing package before creating Agents',async t=>{
+ const source=await instance(t),destination=await instance(t,false,false);await seed(source);const pkg=await exported(source,false),result=await imported(destination,pkg);assert.equal(result.status,409,result.raw);assert.match(result.body.error,/configure destination local memory/);assert.equal(destination.store.listAgents(destination.project.id).length,2);noRuns(destination);
+});
+
+test('combined organization migration keeps memory and historical execution together while destination policy remains authoritative',async t=>{
+ const {CapabilityPolicyStore}=await import('@ponderosa/agents');const {CAPABILITY_IDS}=await import('@ponderosa/core');
+ const {EXECUTION_ARCHIVE_MEDIA_TYPE}=await import('../../apps/server/dist/portable-execution-archive.js');
+ const source=await instance(t),destination=await instance(t);await seed(source);await seed(destination);
+ source.store.updateAgentOrganization(source.b.id,{managerAgentId:source.a.id});
+ source.store.updateAgent(source.a.id,{managementPermissions:{allowAutomaticDescendantDeletion:true,allowAutomaticDescendantReorganization:false}});
+ source.memory.setGrant(source.chat.id,true,0,'dev');destination.memory.setGrant(destination.chat.id,false,0,'dev');
+ const sourcePolicy=new CapabilityPolicyStore(source.store.sqlite),destPolicy=new CapabilityPolicyStore(destination.store.sqlite);
+ sourcePolicy.put({scopeKind:'agent',scopeId:source.a.id,expectedRevision:0,restrictedCapabilityIds:[CAPABILITY_IDS.scripts],actor:'operator',reason:'Source-only policy'});
+ destPolicy.put({scopeKind:'global',scopeId:'ponderosa',expectedRevision:0,restrictedCapabilityIds:[CAPABILITY_IDS.memoryWrite],actor:'operator',reason:'Destination policy'});
+ const policyBefore=destination.store.sqlite.prepare('SELECT * FROM capability_policies ORDER BY scope_kind,scope_id').all(),grantBefore=destination.memory.getGrant(destination.chat.id,'dev');
+ const globalCollection=await destination.memory.core.database.raw.client.getCollection({name:destination.memory.core.database.raw.names('global').memory}),globalBefore=await globalCollection.get({include:['documents','metadatas','embeddings']});
+ source.store.appendEvent(source.a.id,{type:'command',command:'COMBINED_HISTORICAL_COMMAND',cwd:'/source-only'});
+ const at=new Date().toISOString(),runId=randomUUID(),leaseExpiresAt=new Date(Date.now()+10*60_000).toISOString();source.store.sqlite.prepare("INSERT INTO scheduler_runs(id,project_id,agent_id,status,lease_owner,lease_expires_at,fencing_token,prompt_injection_state,heartbeat_at,created_at,updated_at) VALUES(?,?,?,'running','EXCLUDED_SOURCE_LEASE',?,1,'injected',?,?,?)").run(runId,source.project.id,source.a.id,leaseExpiresAt,at,at,at);
+ const pkg=await exported(source),archives=p=>p.agents.flatMap(a=>a.artifacts??[]).filter(a=>a.mediaType===EXECUTION_ARCHIVE_MEDIA_TYPE),archive=archives(pkg)[0];assert.ok(archive);assert.equal(archives(pkg).length,1);
+ const evidence=JSON.parse(Buffer.from(archive.dataBase64,'base64'));assert.equal(evidence.runs[0].id,runId);assert.equal(evidence.runs[0].status,'running');assert.match(JSON.stringify(evidence),/COMBINED_HISTORICAL_COMMAND/);
+ assert.doesNotMatch(JSON.stringify(pkg),/EXCLUDED_GLOBAL_FACT|EXCLUDED_SOURCE_LEASE|Source-only policy/);assert.deepEqual(pkg.memory[0].snapshot.excludedScopes,['global']);
+ const assertDestinationAuthority=async()=>{assert.deepEqual(destination.store.sqlite.prepare('SELECT * FROM capability_policies ORDER BY scope_kind,scope_id').all(),policyBefore);assert.deepEqual(destination.memory.getGrant(destination.chat.id,'dev'),grantBefore);assert.deepEqual(await (await destination.memory.core.database.raw.client.getCollection({name:destination.memory.core.database.raw.names('global').memory})).get({include:['documents','metadatas','embeddings']}),globalBefore);noRuns(destination);};
+ const agentsBefore=destination.store.listAgents(destination.project.id);
+ const scopedCollections=await Promise.all(['memory','log'].map(kind=>destination.memory.core.database.raw.client.getCollection({name:destination.memory.core.database.raw.names('chat:'+destination.chat.id)[kind]})));
+ const scopedBefore=await Promise.all(scopedCollections.map(collection=>collection.get({include:['documents','metadatas','embeddings']})));
+ const accessReview=await imported(destination,pkg);assert.equal(accessReview.status,409,accessReview.raw);assert.match(accessReview.body.error,/Review source restrictions/);assert.match(accessReview.body.reviewSha256,/^[a-f0-9]{64}$/);
+ const resolution={action:'keep_destination',reviewSha256:accessReview.body.reviewSha256};
+ const refused=await api(destination,'POST',`/api/projects/${destination.project.id}/import-agents`,{...body(destination,pkg),accessSettingsResolution:resolution},{headers:{...destination.headers,'idempotency-key':randomUUID()}});assert.equal(refused.status,409,refused.raw);assert.match(refused.body.error,/explicit acknowledgement.*autonomous destructive management permissions/);assert.deepEqual(refused.body.elevatedAgentRefs,[pkg.rootRef]);
+ assert.deepEqual(destination.store.listAgents(destination.project.id),agentsBefore);assert.deepEqual(await Promise.all(scopedCollections.map(collection=>collection.get({include:['documents','metadatas','embeddings']}))),scopedBefore);await assertDestinationAuthority();
+ const reviewedImport=(portable,key=randomUUID())=>api(destination,'POST',`/api/projects/${destination.project.id}/import-agents`,{...body(destination,portable),accessSettingsResolution:resolution,acknowledgeElevatedManagementPermissions:true},{headers:{...destination.headers,'idempotency-key':key}});
+ const key=randomUUID(),result=await reviewedImport(pkg,key);assert.equal(result.status,201,result.raw);const root=result.body.rootAgentId,child=result.body.agentIds.find(id=>id!==root);assert.notEqual(root,source.a.id);assert.equal(destination.store.getAgent(child).managerAgentId,root);assert.deepEqual(destination.store.getAgent(root).managementPermissions,pkg.agents.find(a=>a.ref===pkg.rootRef).managementPermissions);
+ const actual=await read(destination,root);assert.equal(actual.filter(r=>r.text==='Included private fact').length,1);assert.equal(actual.some(r=>r.text==='EXCLUDED_PRIVATE_FACT'),false);
+ for(const row of actual.filter(r=>r.text==='Included private fact')){const stamp=JSON.parse(row.metadata.host_source_authority);assert.equal(stamp.principal,destination.memory.principalId);assert.equal(stamp.ownerChat,destination.chat.id);assert.equal(stamp.origin.runId,'source-not-a-live-run');}
+ await assertDestinationAuthority();assert.equal((await reviewedImport(pkg,key)).status,200);await destination.reopen();await assertDestinationAuthority();
+ const next=await api(destination,'GET',`/api/agents/${root}/export?mode=full&organization=true`);assert.equal(next.status,200,next.raw);assert.ok(archives(next.body).some(a=>a.dataBase64===archive.dataBase64),'execution log bytes survive combined restore/reopen/re-export');assert.ok(next.body.memory[0].snapshot.chunks.some(r=>r.text==='Included private fact'));
+ const invalid=structuredClone(pkg);invalid.memory[0].snapshot.grants={readGlobal:true};const before=destination.store.listAgents(destination.project.id).length;const invalidResult=await reviewedImport(invalid);assert.ok(invalidResult.status>=400,invalidResult.raw);assert.match(invalidResult.body.error,/Memory snapshot: unsupported schema or fields/);assert.equal(destination.store.listAgents(destination.project.id).length,before);await assertDestinationAuthority();
+});
+
+
+async function stagedMemoryImport(source,destination){
+ const pkg=await exported(source,false),{operation}=destination.store.beginAgentCreationOperation({projectId:destination.project.id,conversationId:destination.chat.id,actorScope:'user:local-operator',kind:'import',idempotencyKey:randomUUID(),payloadHash:'staged-owned-memory'});
+ const id=randomUUID();destination.store.addAgentCreationOperationMember(operation.id,id,0);
+ destination.store.createAgent(destination.project.id,{title:'Staged owner',engine:'fixture',conversationId:destination.chat.id},undefined,id);
+ const plan=destination.memory.prepareImportMemory(operation.id,pkg.memory);destination.store.updateAgentCreationOperation(operation.id,{result:{phase:'prepared_memory',memoryPlan:plan}});
+ await destination.memory.restoreImportMemory(operation.id,pkg.memory[0],{[source.a.id]:id},plan[0].namespace);
+ destination.store.updateAgentCreationOperation(operation.id,{status:'rolling_back'});
+ return {operation,plan:plan[0],id};
+}
+async function stagedRows(f,plan,log=false){
+ const raw=f.memory.core.database.raw,c=await raw.client.getCollection({name:raw.names('chat:'+plan.chatId)[log?'log':'memory']});
+ const ids=log?plan.conflictIds:plan.chunkIds;
+ return ids.length?await c.get({ids,include:['documents','metadatas']}):{ids:[],documents:[],metadatas:[]};
+}
+
+test('startup preserves memory for a canonical import awaiting projection recovery',async t=>{
+ const source=await instance(t),destination=await instance(t);await seed(source);
+ const {operation,plan}=await stagedMemoryImport(source,destination);
+ const before=await stagedRows(destination,plan),beforeLog=await stagedRows(destination,plan,true);
+ destination.store.updateAgentCreationOperation(operation.id,{status:'canonical_committed'});
+ await destination.reopen();
+ const retained=destination.store.getAgentCreationOperation(operation.id);
+ assert.equal(retained.status,'canonical_committed');assert.deepEqual(retained.result.memoryPlan,[plan]);
+ assert.deepEqual(await stagedRows(destination,plan),before);assert.deepEqual(await stagedRows(destination,plan,true),beforeLog);
+});
+
+test('settled staged memory rollback removes owned rows while a concurrent host write survives',async t=>{
+ const source=await instance(t),destination=await instance(t);await seed(source);await seed(destination);
+ const before=(await read(destination,destination.a.id)).map(r=>r.id).sort();
+ const {operation,plan}=await stagedMemoryImport(source,destination);
+ assert.ok((await stagedRows(destination,plan)).ids.length);assert.ok((await stagedRows(destination,plan,true)).ids.length);
+ const database=destination.memory.core.database,raw=database.raw,scope='chat:'+destination.chat.id,concurrentId=randomUUID();
+ let release,entered;const started=new Promise(r=>entered=r),gate=new Promise(r=>release=r);
+ const held=raw.exclusive(async()=>{entered();await gate;});await started;
+ const rollback=destination.memory.rollbackImportMemory(operation.id);
+ const authority={chatId:destination.chat.id,actor:{kind:'agent',id:destination.a.id},runId:'concurrent-trusted-writer',fenceToken:'1',sourceType:'ai_inference',readChat:true,readGlobal:false,writeScope:scope,visibility:'team',guard:async()=>{}};
+ const write=database.run(authority,()=>database.put({id:concurrentId,scope,text:'Concurrent legitimate fact',embedding:vector,metadata:{source_type:'ai_inference',confidence:0.9,deprecated:false,timestamp:new Date().toISOString()}}));
+ release();await Promise.all([held,rollback,write]);
+ assert.deepEqual((await stagedRows(destination,plan)).ids,[]);assert.deepEqual((await stagedRows(destination,plan,true)).ids,[]);
+ const after=(await read(destination,destination.a.id)).map(r=>r.id).sort();assert.deepEqual(after,[...before,concurrentId].sort());
+ assert.equal(destination.store.getAgentCreationOperation(operation.id).result.phase,'memory_rolled_back');
+ await destination.memory.rollbackImportMemory(operation.id);await destination.reopen();
+ assert.ok((await read(destination,destination.a.id)).some(row=>row.id===concurrentId));
+});
+
+test('staged rollback holds a foreign row at a planned ID and preserves all rows',async t=>{
+ const source=await instance(t),destination=await instance(t);await seed(source);
+ const {operation,plan}=await stagedMemoryImport(source,destination),raw=destination.memory.core.database.raw;
+ const c=await raw.client.getCollection({name:raw.names('chat:'+plan.chatId).memory}),id=plan.chunkIds[0];
+ const row=await c.get({ids:[id],include:['documents','metadatas']});
+ await c.update({ids:[id],metadatas:[{...row.metadatas[0],host_package_operation:'independent-owner'}]});
+ const before=await stagedRows(destination,plan),beforeLog=await stagedRows(destination,plan,true);
+ await assert.rejects(destination.memory.rollbackImportMemory(operation.id),/Foreign or unclassified memory preserved; cleanup held/);
+ const preserved=await c.get({ids:[id],include:['documents','metadatas']});
+ assert.deepEqual(preserved.ids,[id]);assert.equal(preserved.documents[0],row.documents[0]);assert.equal(preserved.metadatas[0].host_package_operation,'independent-owner');
+ assert.deepEqual(await stagedRows(destination,plan),before);assert.deepEqual(await stagedRows(destination,plan,true),beforeLog);
+ assert.equal(destination.store.getAgentCreationOperation(operation.id).status,'rolling_back');
+});
+
+test('unconfirmed staged delete retains its mutation hold and is not retried blindly',async t=>{
+ const source=await instance(t),destination=await instance(t);await seed(source);
+ const {operation,plan}=await stagedMemoryImport(source,destination),raw=destination.memory.core.database.raw,original=raw.client.getCollection.bind(raw.client);let attempts=0;
+ raw.client.getCollection=async args=>{const c=await original(args),remove=c.delete.bind(c);c.delete=async input=>{attempts++;await remove(input);throw Error('Controlled lost deletion acknowledgement');};return c;};
+ try {
+  await assert.rejects(destination.memory.rollbackImportMemory(operation.id),/Memory cleanup held/);
+  assert.equal(attempts,1);assert.ok(destination.memory.core.database.listMutationHolds().some(hold=>hold.effect?.scope==='chat:'+plan.chatId&&hold.effect?.operation==='delete'));
+  assert.ok(destination.store.getAgentCreationOperation(operation.id).result.memoryPlan.length);
+  await assert.rejects(destination.memory.rollbackImportMemory(operation.id),/Memory cleanup held/);assert.equal(attempts,1,'unknown delete must not be replayed');
+ } finally {raw.client.getCollection=original;}
+});
+
+test('a known successful staged prefix is compensated after a later read failure without reentering the queue',async t=>{
+ const source=await instance(t),destination=await instance(t);await seed(source);const pkg=await exported(source,false);
+ const {operation}=destination.store.beginAgentCreationOperation({projectId:destination.project.id,conversationId:destination.chat.id,actorScope:'user:local-operator',kind:'import',idempotencyKey:randomUUID(),payloadHash:'known-prefix-fixture'}),id=randomUUID();
+ destination.store.addAgentCreationOperationMember(operation.id,id,0);destination.store.createAgent(destination.project.id,{title:'Staged owner',engine:'fixture',conversationId:destination.chat.id},undefined,id);
+ const plan=destination.memory.prepareImportMemory(operation.id,pkg.memory);destination.store.updateAgentCreationOperation(operation.id,{result:{phase:'prepared_memory',memoryPlan:plan}});
+ const raw=destination.memory.core.database.raw,original=raw.client.getCollection.bind(raw.client);let wrote=false,failRead=true;
+ raw.client.getCollection=async args=>{const c=await original(args),add=c.add.bind(c),get=c.get.bind(c);c.add=async input=>{const result=await add(input);wrote=true;return result;};c.get=async input=>{if(wrote&&failRead){failRead=false;throw Error('Controlled post-write read failure');}return get(input);};return c;};
+ try {
+  await assert.rejects(destination.memory.restoreImportMemory(operation.id,pkg.memory[0],{[source.a.id]:id},plan[0].namespace),/Controlled post-write read failure/);
+ } finally {raw.client.getCollection=original;}
+ assert.equal(wrote,true);assert.deepEqual((await stagedRows(destination,plan[0])).ids,[]);
+ assert.equal(destination.memory.core.database.scopeHasUnsettledMutation('chat:'+destination.chat.id),false);
+});

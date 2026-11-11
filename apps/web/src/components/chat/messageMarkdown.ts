@@ -1,4 +1,8 @@
-import { RICH_MESSAGE_MAX_BLOCKS } from "@ponderosa/core";
+import {unified} from "unified";
+import remarkParse from "remark-parse";
+import remarkGfm from "remark-gfm";
+import type {CommunicationAttachmentDto} from "@ponderosa/core";
+import { RICH_MESSAGE_MAX_BLOCKS, parseRichMessageBlock } from "@ponderosa/core";
 
 interface Node {
   type: string;
@@ -19,6 +23,31 @@ export function closedPonderosaFence(source: string, node: Node): boolean {
   const open = /^(`{3,}|~{3,})[\t ]*ponderosa[\t ]*$/i.exec(lines[0]!);
   const close = /^[\t >]*(`+|~+)[\t ]*$/.exec(lines.at(-1)!);
   return Boolean(open && close && open[1]![0] === close[1]![0] && close[1]!.length >= open[1]!.length);
+}
+
+const markdown = unified().use(remarkParse).use(remarkGfm);
+/** The same closed fence and eight-block budget used by the actual renderer. */
+export function messageVisualizationArtifactIds(source: string): string[] {
+  if (!source.toLowerCase().includes("ponderosa")) return [];
+  let richBlocks = 0;const ids=new Set<string>();
+  const visit = (node: Node): void => {
+    if(node.type==="code"){
+      if(closedPonderosaFence(source,node)&&richBlocks++<RICH_MESSAGE_MAX_BLOCKS){const block=parseRichMessageBlock(node.value??"");if(block?.type==="visualization")ids.add(block.artifactId);}
+      return;
+    }
+    for(const child of node.children??[])visit(child);
+  };
+  visit(markdown.parse(source) as Node);return [...ids];
+}
+/** Interactive controls must never be clipped or remounted by a prose preview. */
+export const hasMessageVisualization=(source:string):boolean=>messageVisualizationArtifactIds(source).length>0;
+
+/** Hide only the managed HTML already represented by this exact canonical Agent message. */
+export function attachmentsOutsideVisualizations(input:{text:string;projectId?:string;communicationEventId?:string;conversationId?:string;artifactIds?:readonly string[];fromAgent:boolean;attachments?:CommunicationAttachmentDto[]}):CommunicationAttachmentDto[]{
+ const attachments=input.attachments??[];
+ if(!input.projectId||!input.communicationEventId||!input.conversationId||!input.fromAgent||!input.artifactIds?.length)return attachments;
+ const ids=new Set(messageVisualizationArtifactIds(input.text).filter(id=>input.artifactIds!.includes(id)));
+ return attachments.filter(item=>!(ids.has(item.id)&&item.artifactKind==='generated_file'&&item.mediaType==='text/html'&&!item.unavailable));
 }
 
 /** Authored prose breaks, never the separator text generated later by remark-rehype. */

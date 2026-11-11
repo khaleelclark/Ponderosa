@@ -6,6 +6,16 @@ import path from "node:path";
 import { Worker } from "node:worker_threads";
 
 interface NativeJobBinding {
+  pinPortableRegularFile(input:{path:string;expectedDevice:bigint;expectedInode:bigint}):{fd:number;readPath:string};
+  pinPortableSymlink(input:PortableSymlinkPinInput):{fd:number;device:bigint;inode:bigint};
+  inspectExtendedMetadata(input: HeldMetadataTarget & { sourceQualifier: string }): ExtendedMetadataEvidence;
+  applyExtendedMetadata(input: ExtendedMetadataRestore): ExtendedMetadataEvidence;
+  inspectPersistentNode(input: PersistentNodeParent): PersistentNodeEvidence;
+  inspectPersistentNodeMetadata(input: PersistentNodeParent & {sourceQualifier:string}): ExtendedMetadataEvidence;
+  applyPersistentNodeMetadata(input: PersistentNodeMetadataRestore): ExtendedMetadataEvidence;
+  createPersistentNode(input: PersistentNodeParent & { kind: "fifo"; mode: number; mtimeNs: bigint;restoreExtendedMetadata?:boolean }): PersistentNodeEvidence;
+  applyExactFileMetadata(input: ExactFileMetadataInput): ExactFileMetadataEvidence;
+  applyExactSymlinkMetadata(input: Omit<ExactSymlinkMetadataInput,"mtimeNs"> & {mtimeNs:bigint}): ExactSymlinkMetadataEvidence;
   offlineMetadata(sourceDescriptor: number, targetDescriptor?: number): boolean;
   offlineWorkspaceMetadata(sourceDescriptor: number, targetDescriptor?: number): boolean;
   offlineDirectoryBatch(descriptor: number, cookie: bigint): { names: Buffer[]; next: bigint; done: boolean };
@@ -29,6 +39,9 @@ interface NativeJobBinding {
   closeWindowsJob(job: unknown): void;
   secureFileAuthoritySupported(): boolean;
   dataDirectoryAuthoritySupported(): boolean;
+  allocatedHeldFileBytes(fd:number):bigint;
+  availableHeldDirectoryBytes(input:{fd:number;expectedDevice:bigint;expectedInode:bigint}):bigint;
+  availablePortableStorageBytes(rootPath:string):bigint;
   acquirePortableDataDirectory(root: string, capabilityPath: string, readOnly?: boolean): unknown;
   adoptPortableDataDirectory(root: string, fd: number, lease?: WindowsDirectoryLeaseTransfer): unknown;
   portableDirectoryLeaseTransfer(value: unknown): WindowsDirectoryLeaseTransfer | null;
@@ -58,6 +71,203 @@ interface NativeJobBinding {
     quarantineLeaf: string,
     expectedIdentity: string,
   ): boolean;
+}
+
+/** Linux only: pin a no-follow regular inode before any read open. The caller owns fd and must close it. readPath is an exact qualified procfd path, not a user path. */
+export function pinPortableRegularFile(input:{path:string;expectedDevice:bigint;expectedInode:bigint}):{fd:number;readPath:string}{return binding().pinPortableRegularFile(input);}
+
+/** Native evidence only: the caller supplies a source host/user-namespace qualifier.
+ * Numeric IDs are observations, never cross-host principal authority. */
+export interface HeldMetadataTarget {
+  fd: number;
+  expectedDevice: bigint;
+  expectedInode: bigint;
+  kind: "file" | "directory" | "fifo";
+  /** Default one; callers prove complete selected aliases before supplying another bound. */
+  expectedLinkCount?: bigint;
+}
+export interface MetadataPrincipalMapping {
+  sourceQualifier: string;
+  kind: "user" | "group";
+  sourceId: number;
+  destinationId: number;
+}
+export interface ExtendedAttributeEvidence {
+  name: Buffer;
+  state: "value" | "absent" | "error" | "unsupported";
+  value?: Buffer;
+  errorNumber?: number;
+}
+export interface PosixAclEvidence extends ExtendedAttributeEvidence {
+  dialect: "linux-posix-acl-v2";
+  entries?: Array<{ tag: "owner" | "user" | "owning-group" | "group" | "mask" | "other"; permissions: number; sourceId?: number; sourceQualifier?: string }>;
+}
+export interface ExtendedMetadataEvidence {
+  supported: boolean;
+  identity: Omit<ExactFileMetadataEvidence,"kind"> & {kind:"file"|"directory"|"fifo";ownerId:number;groupId:number};
+  sourceQualifier: string;
+  inventoryState: "complete-visible" | "error" | "unsupported";
+  inventoryErrorNumber?: number;
+  /** Linux may hide trusted.*; this is deliberately never a full-namespace claim. */
+  allNamespacesComplete: false;
+  namespaces: Array<{ name: string; state: "visible-only" | "not-enumerable" | "unsupported" }>;
+  attributes: ExtendedAttributeEvidence[];
+  accessAcl: PosixAclEvidence;
+  defaultAcl: PosixAclEvidence;
+}
+export interface ExtendedMetadataRestore extends HeldMetadataTarget {
+  restore: "replace-user-and-posix-acl";
+  sourceQualifier: string;
+  destinationQualifier: string;
+  sourceOwnerId: number;
+  sourceGroupId: number;
+  destinationOwnerId: number;
+  destinationGroupId: number;
+  principalMappings: MetadataPrincipalMapping[];
+  /** Full selected user.* namespace; omitted inherited user attributes are removed. */
+  attributes: Array<{ name: Buffer; value: Buffer }>;
+  /** Exact Linux v2 wire bytes or explicit absence; named IDs are remapped. */
+  accessAcl: Buffer | null;
+  defaultAcl: Buffer | null;
+  mode: number; // 0..0o7777; OS permission checks and exact readback remain mandatory
+}
+/** Linux only. Bounded complete visible names, per-value read state and explicit ACL probes.
+ * Limits: 64 KiB names/value, 256 names/ACL entries, 1 MiB aggregate values.
+ * Does not prove a coherent snapshot or authorize secret retention. */
+export function inspectExtendedMetadata(input: HeldMetadataTarget & { sourceQualifier: string }): ExtendedMetadataEvidence {
+  return binding().inspectExtendedMetadata(input);
+}
+/** Fresh owned no-follow fd; caller proves membership/grant and sole node ownership.
+ * No chown: explicit owner/group mappings must match current destination ownership.
+ * Replaces selected user.* + ACL state only; other visible namespaces refuse.
+ * Result principal IDs are qualified by destinationQualifier, never the source.
+ * Apply directories after children. Final chmod must agree with access ACL mask.
+ * Failure after mutation attempt: code ERR_PORTABLE_METADATA_PARTIAL,
+ * partialStatePossible:true, observed:ExtendedMetadataEvidence|null. No rollback/retry.
+ */
+export function applyExtendedMetadata(input: ExtendedMetadataRestore): ExtendedMetadataEvidence {
+  return binding().applyExtendedMetadata(input);
+}
+export interface PersistentNodeParent {
+  parentFd: number;
+  expectedParentDevice: bigint;
+  expectedParentInode: bigint;
+  leaf: string;
+}
+export interface PersistentNodeEvidence {
+  device: bigint; inode: bigint; kind: "fifo" | "socket" | "character" | "block";
+  mode: number; mtimeNs: bigint; linkCount: bigint; ownerId: number; groupId: number;
+  deviceMajor: number; deviceMinor: number;
+  parentDevice: bigint; parentInode: bigint;
+}
+export type PersistentNodeMetadataRestore=PersistentNodeParent & Omit<ExtendedMetadataRestore,"fd"|"expectedDevice"|"expectedInode"|"expectedLinkCount"|"kind"> & {expectedDevice:bigint;expectedInode:bigint};
+/** Exact held FIFO metadata; never opens a data endpoint. User namespace is VFS-forbidden on FIFO, while POSIX ACLs are inspected explicitly. */
+export function inspectPersistentNodeMetadata(input:PersistentNodeParent & {sourceQualifier:string}):ExtendedMetadataEvidence{return binding().inspectPersistentNodeMetadata(input);}
+/** Original created FIFO identity and explicit source-qualified principal map required. */
+export function applyPersistentNodeMetadata(input:PersistentNodeMetadataRestore):ExtendedMetadataEvidence{return binding().applyPersistentNodeMetadata(input);}
+/** Linux O_PATH metadata only; never opens content or connects a socket/device. */
+export function inspectPersistentNode(input: PersistentNodeParent): PersistentNodeEvidence {
+  return binding().inspectPersistentNode(input);
+}
+/** Linux FIFO only, requires fchmodat2 AT_EMPTY_PATH and utimensat AT_EMPTY_PATH.
+ * Caller owns the destination directory/name and separately proves current grant.
+ * No replacement. Inherited ACL requires explicit exact restoration; full POSIX mode bits remain subject to OS permission checks/readback.
+ * Creation changes parent directory metadata. Partial error retains the node and
+ * reports observed evidence|null; no rollback or automatic retry. */
+export function createPersistentNode(input: PersistentNodeParent & { kind: "fifo"; mode: number; mtimeNs: bigint;restoreExtendedMetadata?:boolean }): PersistentNodeEvidence {
+  return binding().createPersistentNode(input);
+}
+
+export interface ExactFileMetadataInput {
+  /** Defaults to one; complete caller-owned alias graph required for a larger count. */
+  expectedLinkCount?: bigint;
+  fd: number;
+  expectedDevice: bigint;
+  expectedInode: bigint;
+  kind: "file" | "directory";
+  /** Exact low twelve POSIX mode bits, including special bits: 0..0o7777. */
+  mode: number;
+  mtimeNs: bigint;
+}
+
+export interface ExactFileMetadataEvidence {
+  device: bigint;
+  inode: bigint;
+  kind: "file" | "directory";
+  mode: number;
+  mtimeNs: bigint;
+}
+
+/** A mutation/verification failure retains the caller's node without rollback. */
+export interface ExactFileMetadataPartialError extends Error {
+  code: "ERR_EXACT_METADATA_PARTIAL";
+  partialStatePossible: true;
+  observed: (Omit<ExactFileMetadataEvidence, "kind"> & { kind: "file" | "directory" | "other" }) | null;
+}
+
+/** Apply and read back mode/mtime on a caller-held, freshly created no-follow fd.
+ * Caller must prove destination membership and keep sole ownership of the fd/node
+ * throughout this synchronous call. This grants no import/access authority.
+ * Linux/macOS use fstat/futimens/fchmod; atime is preserved with UTIME_OMIT where
+ * available. Windows refuses before mutation: POSIX mode bits are not portable.
+ * Negative ns use floor seconds; out-of-range native times refuse before mutation.
+ * Filesystem rounding/refusal throws; ERR_EXACT_METADATA_PARTIAL carries observed
+ * evidence (or null if unreadable), never an atomicity, durability or rollback claim.
+ */
+export function applyExactFileMetadata(input: ExactFileMetadataInput): ExactFileMetadataEvidence {
+  return binding().applyExactFileMetadata(input);
+}
+
+
+
+export interface PortableSymlinkPinInput {
+  parentFd:number;
+  leaf:string;
+  expectedParentDevice:bigint;
+  expectedParentInode:bigint;
+  expectedDevice:bigint;
+  expectedInode:bigint;
+}
+/** Pin this exact single-name symlink under a borrowed held parent, without
+ * reading link bytes, xattrs or target content. Linux/macOS; no offline mount
+ * policy is implied. Caller owns/closes the returned fd and retains parent/name
+ * custody independently through later readlink/metadata checks.
+ */
+export function pinPortableSymlink(input:PortableSymlinkPinInput):{fd:number;device:bigint;inode:bigint}{
+  return binding().pinPortableSymlink(input);
+}
+
+export interface ExactSymlinkMetadataInput {
+  /** Caller-held Linux O_PATH|O_NOFOLLOW or macOS O_SYMLINK descriptor; caller retains and closes it. */
+  fd: number;
+  expectedDevice: bigint;
+  expectedInode: bigint;
+  /** Canonical signed decimal nanoseconds; no Date or double conversion. */
+  mtimeNs: string;
+}
+export interface ExactSymlinkMetadataEvidence extends Omit<ExactFileMetadataEvidence,"kind"> {
+  kind: "symlink";
+  linkCount: bigint;
+  ownerId: number;
+  groupId: number;
+}
+export interface ExactSymlinkMetadataPartialError extends Error {
+  code: "ERR_EXACT_SYMLINK_METADATA_PARTIAL";
+  partialStatePossible: true;
+  observed: (Omit<ExactSymlinkMetadataEvidence,"kind"> & {kind:"symlink"|"file"|"directory"|"other"}) | null;
+}
+/** Linux/macOS. Update this exact held, single-name symlink inode without following
+ * its target. Preserve uid/gid/mode and atime; require exact signed-ns readback.
+ * Caller independently proves fresh destination and held parent/name membership.
+ * No owner/ACL/xattr changes, rollback, durability or independent-writer snapshot
+ * are implied. Other OSes or unavailable descriptor syscalls refuse explicitly.
+ * https://man7.org/linux/man-pages/man2/utimensat.2.html
+ */
+export function applyExactSymlinkMetadata(input:ExactSymlinkMetadataInput):ExactSymlinkMetadataEvidence {
+  if(typeof input.mtimeNs!=="string"||!/^(?:0|-?[1-9][0-9]{0,38})$/.test(input.mtimeNs)){
+    throw Object.assign(new Error("Exact symlink timestamp requires bounded canonical signed decimal nanoseconds"),{code:"ERR_EXACT_SYMLINK_METADATA_INPUT"});
+  }
+  return binding().applyExactSymlinkMetadata({...input,mtimeNs:BigInt(input.mtimeNs)});
 }
 
 export interface SecureDirectoryEntry {
@@ -173,6 +383,25 @@ export class WindowsProcessJob {
     this.#closed = true;
     binding().closeWindowsJob(this.#authority);
   }
+}
+
+/** Observe allocation on a retained regular-file descriptor; not a reservation. */
+export function allocatedHeldFileBytes(fd:number):bigint {
+  if(!Number.isSafeInteger(fd)||fd<0)throw new Error("Invalid retained file descriptor");
+  return binding().allocatedHeldFileBytes(fd);
+}
+
+/** Read current usable capacity on the volume of an exact, still-held directory.
+ * This is an observation, not a reservation: callers must handle ENOSPC. */
+export function availableHeldDirectoryBytes(input:{fd:number;expectedDevice:bigint;expectedInode:bigint}):bigint {
+  if(!Number.isSafeInteger(input.fd)||input.fd<0||typeof input.expectedDevice!=="bigint"||typeof input.expectedInode!=="bigint")throw new Error("Invalid held directory capacity identity");
+  return binding().availableHeldDirectoryBytes(input);
+}
+
+/** Read current usable capacity from an exact live registered portable data root. */
+export function availablePortableStorageBytes(rootPath:string):bigint {
+  if(typeof rootPath!=="string"||!rootPath)throw new Error("Invalid retained data-root capacity authority");
+  return binding().availablePortableStorageBytes(rootPath);
 }
 
 export function dataDirectoryAuthoritySupported(

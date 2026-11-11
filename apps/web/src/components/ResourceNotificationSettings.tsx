@@ -17,12 +17,12 @@ export function ResourceNotificationSettings({ kind, id }: { kind: "agent" | "co
     <TextField select fullWidth size="small" label="Notifications" disabled={!preferences.data || save.isPending}
       value={preferences.data?.notificationScopes?.[`${kind}:${id}`] ?? (kind === "agent" ? "inherit" : "all")}
       onChange={event => save.mutate(event.target.value as "all" | "attention" | "muted" | "inherit")}>
-      {kind === "agent" && <MenuItem value="inherit">Use chat setting</MenuItem>}
+      {kind === "agent" && <MenuItem value="inherit">Use Chat Setting</MenuItem>}
       <MenuItem value="all">All</MenuItem>
-      <MenuItem value="attention">Needs attention only</MenuItem>
+      <MenuItem value="attention">Needs Attention Only</MenuItem>
       <MenuItem value="muted">Muted</MenuItem>
     </TextField>
-    <Typography variant="caption" color="text.secondary">Saves immediately. Controls in-app notifications and browser push. Work, messages, and pending decisions are unchanged.</Typography>
+    <Typography variant="caption" color="text.secondary">Notification changes save immediately.</Typography>
     {kind === "conversation" && <Typography variant="caption" color="text.secondary">Agents inherit this setting unless they have their own override.</Typography>}
     {(save.isError || preferences.isError) && <Alert severity="error">Could not load or save notification settings. Try again.</Alert>}
   </Stack>;

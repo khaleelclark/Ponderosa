@@ -6,6 +6,8 @@ import {
   AgentStore,
   CoordinationV3Store,
   createOfflineDataDirectoryBackup,
+  createOfflineWebDeploymentBackup,
+  assertWebOnlyDeploymentCompatibility,
   restoreOfflineDataDirectoryBackup,
   retainChatAttachment,
   readRetainedChatAttachment,
@@ -19,7 +21,20 @@ const value = name => {
 const dataDir = value("--data-dir");
 if (!dataDir) throw new Error("--data-dir is required");
 
-if (command === "backup") {
+if (command === "check-web-deployment" || command === "backup-web-deployment") {
+  const currentRoot = value("--current-install"), candidateRoot = value("--candidate-install");
+  if (!currentRoot || !candidateRoot) throw new Error("--current-install and --candidate-install are required");
+  if (command === "check-web-deployment") {
+    console.log(JSON.stringify({ status: "compatible-web-only", ...assertWebOnlyDeploymentCompatibility(currentRoot, candidateRoot) }));
+  } else {
+    const output = value("--output");
+    if (!output) throw new Error("--output is required");
+    const manifest = createOfflineWebDeploymentBackup(dataDir, output, { currentRoot, candidateRoot });
+    console.log(JSON.stringify({ status: "created", output, scope: manifest.scope, compatibility: manifest.compatibility,
+      files: manifest.entries.filter(entry => entry.type === "file").length,
+      preservedWorkingFolders: manifest.preservedWorkingFolders.length }));
+  }
+} else if (command === "backup") {
   const output = value("--output");
   if (!output) throw new Error("--output is required");
   const externalProjects = value("--external-projects");
@@ -127,5 +142,5 @@ if (command === "backup") {
     store.close();
   }
 } else {
-  throw new Error("usage: data-directory.mjs backup|restore|attachment-repair|outbox-list|outbox-requeue --data-dir PATH [command options]");
+  throw new Error("usage: data-directory.mjs check-web-deployment|backup-web-deployment|backup|restore|attachment-repair|outbox-list|outbox-requeue --data-dir PATH [command options]");
 }

@@ -23,7 +23,7 @@ import type {
   ProviderUsageWindow,
 } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { api } from "../api";
@@ -35,6 +35,7 @@ import {
   refreshLatestProviderUsage,
 } from "../providerUsageQuery";
 import { queryKeys } from "../queryKeys";
+import { useMutationNotification } from "./MutationNotifications";
 import { providerUsageCollectionPresentation } from "./providerUsagePresentation";
 
 function useClock(active = true): number {
@@ -125,11 +126,15 @@ export function ProviderUsageCard({
   requestPending?: boolean;
 }): JSX.Element {
   const now = useClock();
+  const notify = useMutationNotification();
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const reading = usageData(state);
   const failure = state.status === "stale" || state.status === "unavailable" ? state.failure : undefined;
   const actions = failure ? failureActions(failure.code) : undefined;
-  const reportCopy = useMutation({ mutationKey: ["copy-support-report", state.provider, state.status, failure?.correlationId], mutationFn: async () => {
+  const reportIdentity = JSON.stringify([state.provider, state.status, failure?.correlationId]);
+  const currentReport = useRef(reportIdentity);
+  currentReport.current = reportIdentity;
+  const reportCopy = useMutation({ mutationKey: ["copy-support-report", state.provider, state.status, failure?.correlationId], mutationFn: async (_identity: string) => {
     if (!failure) throw new Error("No support report is available.");
     await copyText(JSON.stringify({
       provider: state.provider,
@@ -144,6 +149,8 @@ export function ProviderUsageCard({
         runtimeVersion: failure.runtimeVersion,
       },
     }, null, 2));
+  }, onSuccess: (_copied, identity) => {
+    if (identity === currentReport.current) notify({ key: "copy-support-report", message: "Copied" });
   } });
   return (
     <Paper
@@ -154,8 +161,8 @@ export function ProviderUsageCard({
       <Stack direction="row" justifyContent="space-between" spacing={1} sx={{ alignItems: "center" }}>
         <Box sx={{ minWidth: 0 }}>
           <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
-            <Typography variant="subtitle2" fontWeight={800}>{state.displayName} usage</Typography>
-            {state.refreshing ? <CircularProgress size={14} aria-label={`Refreshing ${state.displayName} usage`} /> : null}
+            <Typography variant="subtitle2" fontWeight={800}>{state.displayName} Usage</Typography>
+            {state.refreshing ? <CircularProgress size={14} aria-label={`Refreshing ${state.displayName} Usage`} /> : null}
           </Stack>
           {reading?.accountLabel ? (
             <Typography variant="caption" color="text.secondary" noWrap>{reading.accountLabel}</Typography>
@@ -173,7 +180,7 @@ export function ProviderUsageCard({
             </Button>
           ) : null}
           {onClose ? (
-            <Button size="small" aria-label="Close provider usage" onClick={onClose}>
+            <Button size="small" aria-label="Close Provider Usage" onClick={onClose}>
               <CloseIcon fontSize="small" />
             </Button>
           ) : null}
@@ -183,7 +190,7 @@ export function ProviderUsageCard({
       {!reading && (state.refreshing || state.status === "loading") ? (
         <Stack direction="row" spacing={1.25} sx={{ alignItems: "center", py: 2 }}>
           <CircularProgress size={20} />
-          <Typography variant="body2">Loading subscription usage…</Typography>
+          <Typography variant="body2">Loading provider usage…</Typography>
         </Stack>
       ) : !reading && failure ? (
         <Alert severity={failure.code === "usage_not_supported" ? "info" : "warning"} sx={{ mt: 1.25 }}>
@@ -228,10 +235,9 @@ export function ProviderUsageCard({
               <Button size="small" onClick={() => setDiagnosticsOpen(value => !value)}>View Diagnostics</Button>
             ) : null}
             {actions.support ? (
-              <Button size="small" disabled={reportCopy.isPending} onClick={() => reportCopy.mutate()}>Copy Support Report</Button>
+              <Button size="small" disabled={reportCopy.isPending} onClick={() => reportCopy.mutate(reportIdentity)}>Copy Support Report</Button>
             ) : null}
           </Stack>
-          {actions.support && reportCopy.isSuccess ? <Alert severity="success" sx={{ mt: 1 }}>Support report copied.</Alert> : null}
           {actions.support && reportCopy.isError ? <Alert severity="error" sx={{ mt: 1 }}>Support report could not be copied. Try again or check your browser clipboard permissions.</Alert> : null}
           <Collapse in={diagnosticsOpen}>
             <Box sx={{ mt: 1, p: 1, borderRadius: 1, bgcolor: "action.hover" }}>
@@ -263,19 +269,38 @@ function constrainedProvider(providers: ProviderUsageStateDto[]): ProviderUsageS
 export function ProviderQuotaIndicator({
   preferredProvider,
   mobile = false,
+  showMobileUsageLabel = false,
   renderTrigger,
   portalTarget,
   onOpenProviderSettings,
 }: {
   preferredProvider?: string;
   mobile?: boolean;
-  renderTrigger?: (open: (element: HTMLElement) => void) => ReactNode;
+  showMobileUsageLabel?: boolean;
+  renderTrigger?: (open: (element: HTMLElement) => void, fullTrigger?: ReactNode) => ReactNode;
   portalTarget?: Element | null;
   onOpenProviderSettings?: () => void;
 }): JSX.Element {
   const queryClient = useQueryClient();
   const [anchor, setAnchor] = useState<HTMLElement>();
+  const triggerRef = useRef<HTMLDivElement>(null);
+  const restoreTriggerFocusRef = useRef(false);
   const [selectedProvider, setSelectedProvider] = useState<string>();
+  const [roomy, setRoomy] = useState(false);
+  const customTrigger = renderTrigger !== undefined;
+  useLayoutEffect(() => {
+    const header = customTrigger ? portalTarget?.closest('[data-workspace-header]') : undefined;
+    if (!header || typeof ResizeObserver === "undefined") {
+      setRoomy(false);
+      return;
+    }
+    // ponytail: reserve title/tab/action space at 960px; remeasure this cutoff if the controls change.
+    const measure = () => setRoomy(header.getBoundingClientRect().width >= 960);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(header);
+    return () => observer.disconnect();
+  }, [portalTarget, customTrigger]);
   const query = useQuery({
     queryKey: queryKeys.providerUsage.all,
     queryFn: () => api.getProviderUsage(),
@@ -315,12 +340,12 @@ export function ProviderQuotaIndicator({
     ? maximum !== undefined && maximum >= 0
       ? `${selected.displayName} · ${Math.round(maximum)}%`
       : selected.refreshing
-        ? `${selected.displayName} · loading`
-        : "Provider usage"
-    : query.isLoading ? "Provider usage" : "Provider usage unavailable";
-  const accessibleLabel = label === "Provider usage"
-    ? "Open provider usage"
-    : `Open provider usage: ${label}`;
+        ? `${selected.displayName} · Loading`
+        : "Provider Usage"
+    : query.isLoading ? "Provider Usage" : "Provider Usage Unavailable";
+  const accessibleLabel = label === "Provider Usage"
+    ? "Open Provider Usage"
+    : `Open Provider Usage: ${label}`;
 
   const open = (element: HTMLElement) => {
     setAnchor(element);
@@ -346,33 +371,14 @@ export function ProviderQuotaIndicator({
       !anchor.isConnected ||
       (portalTarget !== undefined && !portalTarget?.contains(anchor))
     ) {
-      setAnchor(undefined);
+      // The persistent usage panel follows its header outlet without resetting its selection.
+      const next = triggerRef.current?.querySelector<HTMLElement>('button, [role="button"]');
+      if (next?.isConnected) restoreTriggerFocusRef.current = true;
+      setAnchor(next?.isConnected ? next : undefined);
     }
-  }, [anchor, portalTarget]);
+  }, [anchor, portalTarget, mobile, renderTrigger, roomy]);
 
-  const trigger = renderTrigger ? renderTrigger(open) : mobile ? (
-    <Tooltip title={label}>
-      <IconButton
-        aria-label={accessibleLabel}
-        onClick={(event) => open(event.currentTarget)}
-        sx={{
-          position: "relative",
-          flexShrink: 0,
-          width: 44,
-          height: 44,
-        }}
-      >
-        <DataUsageOutlinedIcon />
-        {query.isLoading || constrained?.refreshing ? (
-          <CircularProgress
-            size={16}
-            aria-hidden
-            sx={{ position: "absolute", right: 3, bottom: 3 }}
-          />
-        ) : null}
-      </IconButton>
-    </Tooltip>
-  ) : (
+  const fullTrigger = (
     <Chip
       size="small"
       variant="outlined"
@@ -387,14 +393,42 @@ export function ProviderQuotaIndicator({
       }}
     />
   );
+  const trigger = renderTrigger ? renderTrigger(open, roomy ? fullTrigger : undefined) : mobile ? (
+    <Tooltip title={label}>
+      <IconButton
+        aria-label={accessibleLabel}
+        onClick={(event) => open(event.currentTarget)}
+        sx={{
+          position: "relative",
+          flexShrink: 0,
+          width: showMobileUsageLabel ? "auto" : 44,
+          minWidth: 44,
+          height: 44,
+          gap: showMobileUsageLabel ? 0.5 : 0,
+          whiteSpace: "nowrap",
+        }}
+      >
+        <DataUsageOutlinedIcon />
+        {showMobileUsageLabel ? <Typography component="span" variant="body2">Usage</Typography> : null}
+        {query.isLoading || constrained?.refreshing ? (
+          <CircularProgress
+            size={16}
+            aria-hidden
+            sx={{ position: "absolute", ...(showMobileUsageLabel ? { left: 3 } : { right: 3 }), bottom: 3 }}
+          />
+        ) : null}
+      </IconButton>
+    </Tooltip>
+  ) : fullTrigger;
 
+  const renderedTrigger = <Box ref={triggerRef} sx={{display:"flex",alignItems:"center"}}>{trigger}</Box>;
   return (
     <>
       {portalTarget === null
         ? null
         : portalTarget
-          ? createPortal(trigger, portalTarget)
-          : trigger}
+          ? createPortal(renderedTrigger, portalTarget)
+          : renderedTrigger}
       <Popover
         open={Boolean(anchor)}
         anchorEl={anchor}
@@ -402,6 +436,10 @@ export function ProviderQuotaIndicator({
         anchorOrigin={{ vertical: "bottom", horizontal: "right" }}
         transformOrigin={{ vertical: "top", horizontal: "right" }}
         slotProps={{
+          transition: {onExited: () => {
+            if (restoreTriggerFocusRef.current) triggerRef.current?.querySelector<HTMLElement>('button, [role="button"]')?.focus();
+            restoreTriggerFocusRef.current = false;
+          }},
           paper: {
             sx: {
               width: "min(420px, calc(100vw - 24px))",
@@ -413,7 +451,7 @@ export function ProviderQuotaIndicator({
         }}
       >
         <Box sx={{ p: 1.5 }}>
-          <Typography variant="overline" color="text.secondary">Provider usage</Typography>
+          <Typography variant="overline" color="text.secondary">Provider Usage</Typography>
           <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ mb: 1.25 }}>
             {[...providers]
               .sort((left, right) =>
@@ -436,7 +474,11 @@ export function ProviderQuotaIndicator({
               state={selected}
               onRefresh={() => refresh(selected.provider)}
               onClose={() => setAnchor(undefined)}
-              onOpenProviderSettings={onOpenProviderSettings}
+              onOpenProviderSettings={onOpenProviderSettings ? () => {
+                restoreTriggerFocusRef.current = false;
+                setAnchor(undefined);
+                onOpenProviderSettings();
+              } : undefined}
               compact
               requestPending={load.isPending || (
                 refreshRequest.isPending &&

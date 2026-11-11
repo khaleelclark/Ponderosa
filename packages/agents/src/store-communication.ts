@@ -1,9 +1,12 @@
 import type {
+  AgentDto,
+  MessageDto,
   CommunicationDocumentRecord,
   CommunicationDocumentReference,
   CommunicationEvent,
   CommunicationProjection,
 } from "@ponderosa/core";
+import { agentMentionHandleBase } from "@ponderosa/core";
 import { messageId as projectedMessageId } from "./ids.js";
 import type { StoredLogEvent } from "./log-event.js";
 
@@ -37,6 +40,21 @@ function userDmAgentIds(event: CommunicationEvent): string[] {
   return event.audience.kind === "user_agent" ? [event.audience.agentId] : event.audience.agentIds;
 }
 
+/** Display canonical DM recipients using only the existing scoped lookup. */
+function directMessageAgentBindings(
+  event: CommunicationEvent,
+  getAgent: (agentId: string) => Pick<AgentDto, "title" | "handle"> | undefined,
+): NonNullable<MessageDto["directMessageAgents"]> {
+  return userDmAgentIds(event).map((agentId) => {
+    const agent = getAgent(agentId);
+    return {
+      id: agentId,
+      title: agent?.title ?? event.identity?.recipientLabels?.[agentId] ?? "Deleted Agent",
+      handle: agent?.handle ?? event.identity?.recipientHandles?.[agentId] ?? agentMentionHandleBase(event.identity?.recipientLabels?.[agentId] ?? "Deleted Agent"),
+    };
+  });
+}
+
 function normalizedAgentIds(ids: readonly string[]): [string, ...string[]] {
   const normalized = [...new Set(ids.map((id) => id.trim()).filter(Boolean))].sort();
   if (normalized.length === 0) throw new Error("collaboration requires at least one recipient agent ID");
@@ -48,5 +66,6 @@ export {
   revisedRenderedText,
   communicationMessageProjection,
   userDmAgentIds,
+  directMessageAgentBindings,
   normalizedAgentIds,
 };

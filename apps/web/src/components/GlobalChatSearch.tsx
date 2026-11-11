@@ -1,4 +1,4 @@
-import { routeToPath } from "../routeRegistry";
+import { routeLinkPath } from "../routeRegistry";
 import { isUnmodifiedPrimaryClick } from "../nativeNavigation";
 import SearchIcon from "@mui/icons-material/Search";
 import CloseIcon from "@mui/icons-material/Close";
@@ -113,11 +113,12 @@ function highlightedSnippetSegments(snippet: string, ranges: SearchHighlightRang
 }
 
 export function SearchSnippet({ snippet, ranges, query }: { snippet: string; ranges: SearchHighlightRangeDto[]; query: string }): JSX.Element {
+  const theme = useTheme();
   const visibleSnippet = plainGlobalSearchSnippet(snippet);
   const visibleRanges = visibleSnippet === snippet ? ranges : queryHighlightRanges(visibleSnippet, query);
   return <Typography component="span" variant="body2" color="text.secondary" sx={{ overflowWrap: "anywhere" }}>
     {highlightedSnippetSegments(visibleSnippet, visibleRanges).map((segment, index) => segment.highlighted
-      ? <Box component="mark" key={index} sx={{ bgcolor: "warning.light", color: "text.primary", borderRadius: .5, px: .25 }}>{segment.text}</Box>
+      ? <Box component="mark" key={index} sx={{ bgcolor: "warning.light", color: theme.palette.getContrastText(theme.palette.warning.light), borderRadius: .5, px: .25 }}>{segment.text}</Box>
       : <Box component="span" key={index}>{segment.text}</Box>)}
   </Typography>;
 }
@@ -168,13 +169,13 @@ function GlobalSearchResultItem({ result, query, onSelect, active = false, id, o
   onActive?(): void;
 }): JSX.Element {
   return <SearchResultRow
-    href={routeToPath(routeForGlobalSearchSelection({ projectId: result.project.id, chat: result.chat, messageId: result.messageId }))}
+    href={routeLinkPath(routeForGlobalSearchSelection({ projectId: result.project.id, chat: result.chat, messageId: result.messageId }))}
     id={id}
     active={active}
     onActive={onActive}
     onSelect={onSelect}
     ariaLabel={result.messageId
-      ? `Open ${result.chat.title} at message by ${result.author.label}`
+      ? `Open ${result.chat.title} At Message By ${result.author.label}`
       : `Open Agent ${result.chat.title}, ${result.snippet}`}
     primary={<Stack direction="row" spacing={1} sx={{ alignItems: "center", minWidth: 0 }}>
         <Typography fontWeight={700} noWrap sx={{ minWidth: 0 }}>{result.chat.title}</Typography>
@@ -196,12 +197,12 @@ function RecentChatItem({ recent, onSelect, active = false, id, onActive }: {
   onActive?(): void;
 }): JSX.Element {
   return <SearchResultRow
-    href={routeToPath(routeForGlobalSearchSelection({ projectId: recent.project.id, chat: recent.chat }))}
+    href={routeLinkPath(routeForGlobalSearchSelection({ projectId: recent.project.id, chat: recent.chat }))}
     id={id}
     active={active}
     onActive={onActive}
     onSelect={onSelect}
-    ariaLabel={`Open recent chat ${recent.chat.title}`}
+    ariaLabel={`Open Recent Chat ${recent.chat.title}`}
     primary={<Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
         <Typography fontWeight={700} noWrap>{recent.chat.title}</Typography>
         {recent.unreadCount > 0 ? <Typography variant="caption" color="primary" sx={{ fontWeight: 800 }}>{recent.unreadCount} unread</Typography> : null}
@@ -259,8 +260,8 @@ export function GlobalChatSearch({ open, onClose, onExited, onSelect, initialSea
   const agentTitleSearchEnabled = open && Boolean(debouncedQuery) && (scope === "all" || scope === "agents");
   const matchingAgents = useInfiniteQuery({
     queryKey: queryKeys.workspaceDirectory.list("agent", debouncedQuery, undefined, undefined, undefined, undefined, undefined, undefined),
-    queryFn: ({ pageParam }) => api.getWorkspaceDirectory<WorkspaceAgentDirectoryItemDto>(
-      "agent", { search: debouncedQuery, limit: 25, cursor: pageParam },
+    queryFn: ({ pageParam, signal }) => api.getWorkspaceDirectory<WorkspaceAgentDirectoryItemDto>(
+      "agent", { search: debouncedQuery, limit: 25, cursor: pageParam }, signal,
     ),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: page => page.history.cursor,
@@ -333,6 +334,7 @@ export function GlobalChatSearch({ open, onClose, onExited, onSelect, initialSea
     chooseSelection({ projectId: recent.project.id, chat: recent.chat });
   };
   const handleSearchKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
     const action = globalSearchKeyboardAction(event, activeIndex, entries.length);
     if (!action) return;
     event.preventDefault();
@@ -367,7 +369,7 @@ export function GlobalChatSearch({ open, onClose, onExited, onSelect, initialSea
             "aria-controls": "global-search-results",
             "aria-activedescendant": activeIndex >= 0 ? `global-search-option-${activeIndex}` : undefined,
           }}
-          InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon /></InputAdornment>, endAdornment: <Stack direction="row" spacing={.5} sx={{ alignItems: "center" }}><Box aria-label="Escape" sx={{ display: { xs: "none", md: "inline-flex" }, px: .8, py: .4, borderRadius: .75, bgcolor: "action.hover", color: "text.secondary", fontSize: 11, fontFamily: "inherit" }}>ESC</Box><IconButton aria-label="Close search" onClick={onClose}><CloseIcon /></IconButton></Stack>, disableUnderline: true }}
+          InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon /></InputAdornment>, endAdornment: <Stack direction="row" spacing={.5} sx={{ alignItems: "center" }}><Box aria-label="Escape" sx={{ display: { xs: "none", md: "inline-flex" }, px: .8, py: .4, borderRadius: .75, bgcolor: "action.hover", color: "text.secondary", fontSize: 11, fontFamily: "inherit" }}>ESC</Box><IconButton aria-label="Close Search" onClick={onClose}><CloseIcon /></IconButton></Stack>, disableUnderline: true }}
           variant="standard"
           sx={{ px: 2, py: 1.25, "& input": { fontSize: 20, fontWeight: 750 } }}
         />
@@ -376,9 +378,12 @@ export function GlobalChatSearch({ open, onClose, onExited, onSelect, initialSea
       <Stack direction="row" spacing={.75} useFlexGap flexWrap="wrap" sx={{ mb: 2 }}>
         {(["all", "chats", "agents", "files"] as const).map((value) => <Chip key={value} clickable aria-pressed={scope === value} label={value[0]!.toUpperCase() + value.slice(1)} color={scope === value ? "primary" : "default"} variant={scope === value ? "filled" : "outlined"} onClick={() => setScope(value)} />)}
       </Stack>
+      <Box role="status" aria-atomic="true" sx={{ position: "absolute", width: 1, height: 1, p: 0, m: -1, overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap", border: 0 }}>
+        {isSearching ? "Searching…" : searchFailed ? "Some search results could not load." : `${entries.length} suggestion${entries.length === 1 ? "" : "s"} available.`}
+      </Box>
       {isSearching ? <LinearProgress aria-label="Searching Ponderosa" sx={{ mb: 1 }} /> : null}
       {searchFailed ? <Alert severity="error" sx={{ mb: 1 }}>Some search results could not load. Any available results remain below. Check the connection and try again.</Alert> : null}
-      <Box id="global-search-results" role="listbox" aria-label="Global search suggestions">
+      <Box id="global-search-results" role="listbox" aria-label="Global Search Suggestions">
       {debouncedQuery ? visibleResults.length > 0 ?
         <Box role="group" aria-label={scope === "all" ? "Results" : scope}>
         <Typography aria-hidden="true" variant="overline" color="text.secondary">{scope === "all" ? "Results" : scope}</Typography>
@@ -394,8 +399,8 @@ export function GlobalChatSearch({ open, onClose, onExited, onSelect, initialSea
           />)}
         </List>
         </Box> : null : <>
-        {unread.length > 0 ? <Box role="group" aria-label="Unread messages" sx={{ mb: 1.5 }}>
-          <Typography aria-hidden="true" variant="overline" color="text.secondary">Unread messages</Typography>
+        {unread.length > 0 ? <Box role="group" aria-label="Unread Messages" sx={{ mb: 1.5 }}>
+          <Typography aria-hidden="true" variant="overline" color="text.secondary">Unread Messages</Typography>
           <List component="div" disablePadding role="presentation">
             {unread.map((result, index) => <GlobalSearchResultItem
               key={`${result.chat.kind}:${result.chat.id}:${result.messageId}`}
@@ -408,8 +413,8 @@ export function GlobalChatSearch({ open, onClose, onExited, onSelect, initialSea
             />)}
           </List>
         </Box> : null}
-        {scope !== "files" && (search.data?.recentChats.length ?? 0) > 0 ? <Box role="group" aria-label="Recent chats">
-          <Typography aria-hidden="true" variant="overline" color="text.secondary">Recent chats</Typography>
+        {scope !== "files" && (search.data?.recentChats.length ?? 0) > 0 ? <Box role="group" aria-label="Recent Chats">
+          <Typography aria-hidden="true" variant="overline" color="text.secondary">Recent Chats</Typography>
           <List component="div" disablePadding role="presentation">
             {(search.data?.recentChats ?? []).map((recent, recentIndex) => {
               const index = unread.length + recentIndex;
@@ -425,16 +430,16 @@ export function GlobalChatSearch({ open, onClose, onExited, onSelect, initialSea
           </List>
         </Box> : null}
       </>}
-      {fileResults.length > 0 ? <Box role="group" aria-label={debouncedQuery ? "Files" : "Recent files"}>
-        <Typography variant="overline" color="text.secondary">{debouncedQuery ? "Files" : "Recent files"}</Typography>
+      {fileResults.length > 0 ? <Box role="group" aria-label={debouncedQuery ? "Files" : "Recent Files"}>
+        <Typography variant="overline" color="text.secondary">{debouncedQuery ? "Files" : "Recent Files"}</Typography>
         {!debouncedQuery ? <Typography variant="caption" color="text.secondary" component="p">Recently modified workspace files</Typography> : null}
         <List component="div" disablePadding role="presentation">
           {fileResults.map((file, fileIndex) => {
             const index = chatEntries.length + fileIndex;
             return <SearchResultRow key={`file:${file.project.id}:${file.conversationId}:${file.path}`} id={`global-search-option-${index}`}
-              href={routeToPath(routeForGlobalSearchSelection({ projectId: file.project.id, file: { path: file.path, conversationId: file.conversationId } }))}
+              href={routeLinkPath(routeForGlobalSearchSelection({ projectId: file.project.id, file: { path: file.path, conversationId: file.conversationId } }))}
               active={activeIndex === index} onActive={() => setActiveIndex(index)}
-              ariaLabel={`Open file ${file.name}`}
+              ariaLabel={`Open File ${file.name}`}
               onSelect={() => chooseSelection({ projectId: file.project.id, file: { path: file.path, conversationId: file.conversationId } })}
               primary={<Typography fontWeight={700} sx={{ overflowWrap: "anywhere" }}>{file.name}</Typography>}
               secondary={<Typography component="span" variant="body2" color="text.secondary" sx={{ overflowWrap: "anywhere" }}>{file.project.label} · {file.path}</Typography>} />;
@@ -442,18 +447,18 @@ export function GlobalChatSearch({ open, onClose, onExited, onSelect, initialSea
         </List>
       </Box> : null}
       </Box>
-      {filesEnabled && (files.truncated || files.unavailableRoots) ? <Typography variant="caption" color="text.secondary" component="p">File search covered a limited set of accessible folders. Some files may not be listed. Narrow the search to find more files.</Typography> : null}
-      {agentTitleSearchEnabled && matchingAgents.hasNextPage ? <Button color="inherit" disabled={matchingAgents.isFetching} onClick={() => void matchingAgents.fetchNextPage()}>{matchingAgents.isFetchingNextPage ? "Loading…" : "Load more Agents"}</Button> : null}
-      {filesEnabled && files.hasNextPage ? <Button color="inherit" disabled={files.isFetching} onClick={() => void files.fetchNextPage()}>{files.isFetchingNextPage ? "Loading…" : "Load more files"}</Button> : null}
+      {filesEnabled && (files.truncated || files.unavailableRoots) ? <Typography variant="caption" color="text.secondary" component="p">Some folders or files are omitted · narrow your search</Typography> : null}
+      {agentTitleSearchEnabled && matchingAgents.hasNextPage ? <Button color="inherit" disabled={matchingAgents.isFetching} onClick={() => void matchingAgents.fetchNextPage()}>{matchingAgents.isFetchingNextPage ? "Loading…" : "Load More Agents"}</Button> : null}
+      {filesEnabled && files.hasNextPage ? <Button color="inherit" disabled={files.isFetching} onClick={() => void files.fetchNextPage()}>{files.isFetchingNextPage ? "Loading…" : "Load More Files"}</Button> : null}
       {scope === "files" && !searchFailed && !debouncedQuery && !isSearching && fileResults.length === 0 ? <Typography color="text.secondary" sx={{ p: 1 }}>No recent files are available. Search files by name or path.</Typography> : null}
       {debouncedQuery && !searchFailed && !isSearching && visibleResults.length === 0 && fileResults.length === 0 ? <Typography color="text.secondary" sx={{ p: 2, textAlign: "center" }}>{`No ${scope === "all" ? "messages, Agents or files" : scope} match “${debouncedQuery}”.`}</Typography> : null}
       {scope !== "files" && !searchFailed && !debouncedQuery && !isSearching && unread.length === 0 && (search.data?.recentChats.length ?? 0) === 0 ? <Typography variant="body2" color="text.secondary" sx={{ px: 1, py: .5 }}>{openAttentionCount ? `${openAttentionCount} item${openAttentionCount === 1 ? "" : "s"} needs attention.` : "You’re all caught up."}</Typography> : null}
       {scope !== "files" && search.data?.truncated ? <Stack spacing={1} sx={{ mt: 1 }}>
-        <Alert severity="info">Showing the newest matches from a bounded search. Add more terms to narrow the result.</Alert>
+        <Alert severity="info">Newest matches only</Alert>
         {resultLimit < 50 ? <Button
           color="inherit"
           onClick={() => setResultLimit(50)}
-        >Show more results</Button> : null}
+        >Show More Results</Button> : null}
       </Stack> : null}
     </DialogContent>
   </Dialog>;

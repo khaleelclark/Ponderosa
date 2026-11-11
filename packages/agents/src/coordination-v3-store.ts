@@ -1,3 +1,12 @@
+import { requireBranchGuidanceSubmission } from "./branch-guidance-authority.js";
+import type { RuntimeInputFile } from "@ponderosa/core";
+import {payloadHash} from './coordination-v3-canonical-json.js';
+import { REQUEST_SOURCE_LINEAGE_CTE, currentRequestAttachmentSql } from "./coordination-v3-request-lineage.js";
+import {CoordinationV3DestinationReconciliation,groupReconciliationAuthority,type CoordinationDestinationGroupReconciliationAuthority,type CoordinationDestinationReconciliationAuthority} from './coordination-v3-destination-reconciliation.js';
+import {CoordinationV3DestinationAdmissionAuthority,groupDestinationAuthority,type CoordinationDestinationGroupAuthority,type CoordinationDestinationAuthority} from './coordination-v3-destination-admission-authority.js';
+import {CoordinationV3CutRestorationAuthority} from './coordination-v3-cut-restoration-authority.js';
+import type {HostArtifactGrant} from './branch-host-adoption.js';
+import { CoordinationV3ContextRecoveryAuthority } from "./coordination-v3-context-recovery-authority.js";
 import { requireAdmittedDatabase } from "./state-admission.js";
 import { MAX_CONTEXT_ROLLOVER_REPLACEMENT_PROVIDER_INPUT_UTF8_BYTES } from "@ponderosa/core/seed-history";
 import type Database from "better-sqlite3";
@@ -35,6 +44,7 @@ import { CoordinationV3CoordinateAuthority } from "./coordination-v3-coordinate-
 import { CoordinationV3RequestRecoveryAuthority } from "./coordination-v3-request-recovery-authority.js";
 import { CoordinationV3QuestionAuthority } from "./coordination-v3-question-authority.js";
 import { CoordinationV3SteeringAuthority } from "./coordination-v3-steering-authority.js";
+import { ReviewedSteeringAuthority } from "./coordination-v3-reviewed-steering.js";
 import { CoordinationV3SchedulerLeaseAuthority } from "./coordination-v3-scheduler-lease-authority.js";
 import { CoordinationV3RequestAuthority } from "./coordination-v3-request-authority.js";
 import { CoordinationV3RunLifecycleAuthority } from "./coordination-v3-run-lifecycle-authority.js";
@@ -139,6 +149,85 @@ export { MAX_CONTEXT_ROLLOVER_REPLACEMENT_PROVIDER_INPUT_UTF8_BYTES } from "@pon
 /** Transactional authority for Communication V3. Runtime telemetry may mirror
  * these transitions, but scheduler decisions must read this store. */
 export class CoordinationV3Store {
+  /** Host-only: immutable retained selection, never provider-supplied rows or actors. */
+  reviewHostCoordinationCut(branchId:string,executionId:string,input:{checkpointId:number;expectedHash:string},grant:HostArtifactGrant):import('@ponderosa/core').BranchHostGraphReviewDto {
+    return new CoordinationV3CutRestorationAuthority(this.sqlite,input=>this.createActivation(input)).review(branchId,executionId,input,grant);
+  }
+  restoreHostCoordinationCut(branchId:string,executionId:string,input:import('@ponderosa/core').BranchHostGraphRestoreInput,grant:HostArtifactGrant,now:string):import('@ponderosa/core').BranchHostGraphRestoreDto {
+    return new CoordinationV3CutRestorationAuthority(this.sqlite,input=>this.createActivation(input)).restore(branchId,executionId,input,grant,now);
+  }
+  /** Host-only destination admission; every mutation requires the caller's owner transaction. */
+  reserveCoordinationDestination(input:import('@ponderosa/core').CoordinationDestinationReservation,authority:CoordinationDestinationAuthority,now=new Date().toISOString()) {
+    return new CoordinationV3DestinationAdmissionAuthority(this.sqlite,input=>this.createActivation(input)).reserve(input,authority,now);
+  }
+  stageCoordinationDestination(id:string,input:import('@ponderosa/core').CoordinationDestinationStage,now=new Date().toISOString()):void {
+    new CoordinationV3DestinationAdmissionAuthority(this.sqlite,input=>this.createActivation(input)).stage(id,input,now);
+  }
+  inspectCoordinationDestinationDisclosure(id:string,requireCustodyAndOwner:CoordinationDestinationAuthority['requireCustodyAndOwner'],now=new Date().toISOString()) {
+    return new CoordinationV3DestinationAdmissionAuthority(this.sqlite,input=>this.createActivation(input)).inspectDisclosure(id,requireCustodyAndOwner,now);
+  }
+  reviewCoordinationDestination(id:string,authority:CoordinationDestinationAuthority,now=new Date().toISOString()) {
+    return new CoordinationV3DestinationAdmissionAuthority(this.sqlite,input=>this.createActivation(input)).review(id,authority,now);
+  }
+  admitCoordinationDestination(id:string,reviewHash:string,authority:CoordinationDestinationAuthority,compose:(graph:import('@ponderosa/core').BranchHostGraphRestoreDto)=>import('@ponderosa/core').CoordinationDestinationOwnerReceipt,now=new Date().toISOString()) {
+    return new CoordinationV3DestinationAdmissionAuthority(this.sqlite,input=>this.createActivation(input)).admit(id,reviewHash,authority,compose,now);
+  }
+  readRetainedFinalDestinationAudit(id:string,reservationHash:string,authorize:(reservation:import('@ponderosa/core').CoordinationDestinationReservation)=>string) {
+    return new CoordinationV3DestinationAdmissionAuthority(this.sqlite,()=>{throw Error('Audit read cannot deliver');}).readRetainedFinalAudit(id,reservationHash,authorize);
+  }
+  readCoordinationDestination(id:string,reservationHash:string,authority:CoordinationDestinationAuthority) {
+    return new CoordinationV3DestinationAdmissionAuthority(this.sqlite,input=>this.createActivation(input)).read(id,reservationHash,authority);
+  }
+  /** One whole-cut group admission. Never composes independent singular admits. */
+  reserveCoordinationDestinationGroup(input:import('@ponderosa/core').CoordinationDestinationGroupReservation,authority:CoordinationDestinationGroupAuthority,now=new Date().toISOString()) {
+    const first=input.resources?.[0];if(!first)throw Error('Group resources required');
+    const normalized={...input,custody:first.custody,destination:first.destination};
+    const result=new CoordinationV3DestinationAdmissionAuthority(this.sqlite,input=>this.createActivation(input),true).reserve(normalized,groupDestinationAuthority(authority),now);
+    return {...result,reservationHash:payloadHash(normalized)};
+  }
+  stageCoordinationDestinationGroup(id:string,input:import('@ponderosa/core').CoordinationDestinationGroupStage,now=new Date().toISOString()):void {
+    const row=this.sqlite.prepare('SELECT reservation_json FROM coordination_destination_admissions WHERE id=?').get(id) as {reservation_json:string}|undefined;
+    if(!row)throw Error('Group reservation missing');const reservation=JSON.parse(row.reservation_json);
+    const plan=input.imports?.[reservation.custody.sourceChatId];if(!plan)throw Error('Group import plans required');
+    new CoordinationV3DestinationAdmissionAuthority(this.sqlite,input=>this.createActivation(input),true).stage(id,{...input,importPlan:plan},now);
+  }
+  stageCoordinationDestinationGroupResource(id:string,sourceChatId:string,input:import('@ponderosa/core').CoordinationDestinationStage,now=new Date().toISOString()):void {
+    new CoordinationV3DestinationAdmissionAuthority(this.sqlite,input=>this.createActivation(input),true).stageGroupResource(id,sourceChatId,input,now);
+  }
+  inspectCoordinationDestinationGroupDisclosure(id:string,authority:CoordinationDestinationGroupAuthority,now=new Date().toISOString()) {
+    return new CoordinationV3DestinationAdmissionAuthority(this.sqlite,input=>this.createActivation(input),true).inspectDisclosure(id,groupDestinationAuthority(authority).requireCustodyAndOwner,now);
+  }
+  reviewCoordinationDestinationGroup(id:string,authority:CoordinationDestinationGroupAuthority,now=new Date().toISOString()) {
+    return new CoordinationV3DestinationAdmissionAuthority(this.sqlite,input=>this.createActivation(input),true).review(id,groupDestinationAuthority(authority),now);
+  }
+  admitCoordinationDestinationGroup(id:string,reviewHash:string,authority:CoordinationDestinationGroupAuthority,compose:(graph:import('@ponderosa/core').BranchHostGraphRestoreDto)=>import('@ponderosa/core').CoordinationDestinationOwnerReceipt[],now=new Date().toISOString()):import('@ponderosa/core').CoordinationDestinationGroupReceipt {
+    return new CoordinationV3DestinationAdmissionAuthority(this.sqlite,input=>this.createActivation(input),true).admit(id,reviewHash,groupDestinationAuthority(authority),compose,now) as import('@ponderosa/core').CoordinationDestinationGroupReceipt;
+  }
+  /** Host operator audit only: historical evidence, no disclosure/admission authority callback. */
+  inspectCoordinationDestinationGroupAudit(id:string){
+    return this.sqlite.transaction(()=>new CoordinationV3DestinationAdmissionAuthority(this.sqlite,()=>{throw Error('Audit read cannot deliver');},true).inspectGroupAudit(id))();
+  }
+  readCoordinationDestinationGroup(id:string,reservationHash:string,authority:CoordinationDestinationGroupAuthority):import('@ponderosa/core').CoordinationDestinationGroupReceipt {
+    return new CoordinationV3DestinationAdmissionAuthority(this.sqlite,input=>this.createActivation(input),true).read(id,reservationHash,groupDestinationAuthority(authority)) as import('@ponderosa/core').CoordinationDestinationGroupReceipt;
+  }
+  reviewCoordinationDestinationReconciliation(id:string,operatorId:string,authority:CoordinationDestinationReconciliationAuthority) {
+    return new CoordinationV3DestinationReconciliation(this.sqlite).review(id,operatorId,authority);
+  }
+  retireCoordinationDestination(input:import('@ponderosa/core').CoordinationDestinationReconciliationInput,authority:CoordinationDestinationReconciliationAuthority,now=new Date().toISOString()) {
+    return new CoordinationV3DestinationReconciliation(this.sqlite).retire(input,authority,now);
+  }
+  reviewCoordinationDestinationGroupReconciliation(id:string,operatorId:string,authority:CoordinationDestinationGroupReconciliationAuthority):import('@ponderosa/core').CoordinationDestinationGroupReconciliationReview {
+    return new CoordinationV3DestinationReconciliation(this.sqlite,true).review(id,operatorId,groupReconciliationAuthority(authority)) as import('@ponderosa/core').CoordinationDestinationGroupReconciliationReview;
+  }
+  retireCoordinationDestinationGroup(input:import('@ponderosa/core').CoordinationDestinationReconciliationInput,authority:CoordinationDestinationGroupReconciliationAuthority,now=new Date().toISOString()):import('@ponderosa/core').CoordinationDestinationGroupReconciliationReceipt {
+    return new CoordinationV3DestinationReconciliation(this.sqlite,true).retire(input,groupReconciliationAuthority(authority),now) as import('@ponderosa/core').CoordinationDestinationGroupReconciliationReceipt;
+  }
+  readCoordinationDestinationGroupRetirement(id:string):import('@ponderosa/core').CoordinationDestinationGroupReconciliationReceipt|null {
+    return new CoordinationV3DestinationReconciliation(this.sqlite,true).read(id) as import('@ponderosa/core').CoordinationDestinationGroupReconciliationReceipt|null;
+  }
+  readCoordinationDestinationRetirement(id:string) {
+    return new CoordinationV3DestinationReconciliation(this.sqlite).read(id);
+  }
   private readonly sqlite: Database.Database;
   private readonly activationReadModel: CoordinationV3ActivationReadModel;
   private readonly activationCommandAuthority: CoordinationV3ActivationCommandAuthority;
@@ -164,6 +253,7 @@ export class CoordinationV3Store {
   private readonly requestAuthority: CoordinationV3RequestAuthority;
   private readonly runLifecycleAuthority: CoordinationV3RunLifecycleAuthority;
   private readonly requiredReplyAuthority: CoordinationV3RequiredReplyAuthority;
+  readonly contextRecovery: CoordinationV3ContextRecoveryAuthority;
   private readonly contextRolloverAuthority: CoordinationV3ContextRolloverAuthority;
   private readonly communicationV4NextRunDeliveries: CommunicationV4NextRunDeliveryAuthority;
 
@@ -184,6 +274,7 @@ export class CoordinationV3Store {
     this.contextRolloverAuthority = new CoordinationV3ContextRolloverAuthority(
       sqlite,
       input => this.createActivation(input),
+      () => this.contextRecovery,
     );
     this.support = new CoordinationV3StoreSupport(sqlite);
     this.requestRecoveryAuthority = new CoordinationV3RequestRecoveryAuthority(sqlite);
@@ -199,12 +290,14 @@ export class CoordinationV3Store {
     this.runtimeAttachmentAuthority = new CoordinationV3RuntimeAttachmentAuthority(sqlite, options);
     this.runtimeArtifactAuthority = new CoordinationV3RuntimeArtifactAuthority(sqlite, options);
     this.runtimeScopeAuthority = new CoordinationV3RuntimeScopeAuthority(sqlite);
+    this.contextRecovery = new CoordinationV3ContextRecoveryAuthority(sqlite,this.runtimeScopeAuthority);
     this.activationLifecycle = new CoordinationV3ActivationLifecycleAuthority(
       sqlite,
       this.runtimeScopeAuthority,
       input => this.updateRequest(input),
       (activationIds, now) =>
         this.questionAuthority.settleQuestionsForFailedActivations(activationIds, now),
+      (id,error,now)=>this.runLifecycleAuthority.rejectPausedActivation(id,error,now),
     );
     this.activationCommandAuthority = new CoordinationV3ActivationCommandAuthority(
       sqlite,
@@ -259,6 +352,8 @@ export class CoordinationV3Store {
       this.runtimeScopeAuthority,
       this.questionAuthority,
       (runId, agentId) => this.requestIdsAttachedToRun(runId, agentId),
+      (runId, agentId, requestId) => this.requestSteeringAdmission(runId, agentId, requestId),
+      (authorization, injectionId) => this.steeringAuthority.requireCurrentPromptInjection(authorization, injectionId),
       input => this.createActivation(input),
     );
     this.runLifecycleAuthority = new CoordinationV3RunLifecycleAuthority(
@@ -271,6 +366,16 @@ export class CoordinationV3Store {
       (runId, now) => { this.requiredReplyAuthority.settleRetried(runId, now); },
       (runId, now) => { this.requiredReplyAuthority.settleForRun(runId, "cancelled", now); },
       (runId, now) => { this.requiredReplyAuthority.restoreUninjectedDecisionRoots(runId, now); },
+      options.canonicalTaskDecisions,
+      input => this.createActivation(input),
+      (id, now) => {
+        let rollover=this.contextRolloverAuthority.get(id);
+        if(rollover?.state==='handoff_committed')rollover=this.contextRolloverAuthority.beginRetiring(id,now);
+        if(rollover?.state==='session_retiring')rollover=this.contextRolloverAuthority.prepareContinuation({id,now});
+        if(rollover?.state!=='continuation_ready'||!rollover.continuationActivationId||rollover.replacementRunId)
+          throw new Error('Committed handoff has no exclusively owned continuation; work remains paused');
+        return rollover.continuationActivationId;
+      },
     );
     this.deletionAuthority = new CoordinationV3DeletionAuthority(
       sqlite,
@@ -282,6 +387,7 @@ export class CoordinationV3Store {
       sqlite,
       this.support,
       this.runtimeScopeAuthority,
+      this.runtimeAttachmentAuthority,
       this.requestRecoveryAuthority,
       input => this.createActivation(input),
       (requestIds, ownerAgentId, dependencyKind, dependencyId, now) =>
@@ -315,7 +421,7 @@ export class CoordinationV3Store {
       this.activationLifecycle,
       this.questionAuthority,
       input => this.createActivation(input),
-      input => this.cancelAgentRun(input),
+      options.canonicalTaskDecisions,
     );
     this.schedulerLeaseAuthority = new CoordinationV3SchedulerLeaseAuthority(
       sqlite,
@@ -336,6 +442,10 @@ export class CoordinationV3Store {
       (runId, now) => { this.requiredReplyAuthority.recoverPending(runId, now); },
       (runId, now) => { this.requiredReplyAuthority.settleRetried(runId, now); },
       (runId, now) => { this.requiredReplyAuthority.restoreUninjectedDecisionRoots(runId, now); },
+      (runId,error) => {
+        const run=this.sqlite.prepare('SELECT fencing_token FROM scheduler_runs WHERE id=?').get(runId) as {fencing_token:number}|undefined;
+        return Boolean(run&&this.runLifecycleAuthority.containPauseRecoveryFailure(runId,run.fencing_token,error));
+      },
     );
     this.contextRolloverAuthority.reconcileRetainedContinuity(new Date().toISOString());
   }
@@ -417,6 +527,18 @@ export class CoordinationV3Store {
     return this.runtimeCommunicationReadModel.runtimeCommunication(id);
   }
 
+  /** Message event IDs are distinct from the exact Agent-specific dispatch
+   * identity used by direct Agent requests. Resolve only its owned activation. */
+  runtimeCommunicationForEvent(eventId: string, agentId: string): RuntimeCommunicationV3View | undefined {
+    const canonical = this.runtimeCommunication(eventId);
+    if (canonical) return canonical;
+    const dispatched = this.runtimeCommunication('dispatch:' + eventId + ':' + agentId);
+    const payload = dispatched?.payload as {communication?:{eventId?:unknown}} | undefined;
+    if (payload?.communication?.eventId !== eventId ||
+        !dispatched?.activations?.some(activation => activation.agentId === agentId)) return undefined;
+    return dispatched;
+  }
+
   runtimeArtifacts(ownerKind?: RuntimeArtifactV3["ownerKind"], ownerId?: string): RuntimeArtifactV3[] {
     return this.runtimeCommunicationReadModel.runtimeArtifacts(ownerKind, ownerId);
   }
@@ -447,10 +569,19 @@ export class CoordinationV3Store {
   }
 
   /** Create a new delivery attempt without duplicating the canonical user message. */
+  settingsTransitionRequestHold(input: Parameters<CoordinationV3ActivationCommandAuthority["settingsTransitionRequestHold"]>[0]) {
+    return this.activationCommandAuthority.settingsTransitionRequestHold(input);
+  }
+
+  retryHeldSettingsTransitionRequest(input: Parameters<CoordinationV3ActivationCommandAuthority["retryHeldSettingsTransitionRequest"]>[0]) {
+    return this.activationCommandAuthority.retryHeldSettingsTransitionRequest(input);
+  }
+
   retryMessageDelivery(input: {
     projectId: string;
     activationId: string;
     idempotencyKey: string;
+    expectedRolloverAttemptId?: string;
     now?: string;
   }): RetryMessageDeliveryResponse {
     return this.activationCommandAuthority.retryMessageDelivery(input);
@@ -607,6 +738,14 @@ export class CoordinationV3Store {
     return this.runContextReadModel.requestIdsAttachedToRun(runId, agentId);
   }
 
+  requestSteeringAdmission(runId: string, agentId: string, requestId: string) {
+    return this.runContextReadModel.requestSteeringAdmission(runId, agentId, requestId);
+  }
+
+  runHasSteeredPeerWork(runId: string): boolean {
+    return this.runContextReadModel.runHasSteeredPeerWork(runId);
+  }
+
   outboundAwaitingQuestionRequestIdsAttachedToRun(runId: string, agentId: string): string[] {
     return this.runContextReadModel.outboundAwaitingQuestionRequestIdsAttachedToRun(
       runId, agentId,
@@ -660,6 +799,10 @@ export class CoordinationV3Store {
     return this.coordinateAuthority.enqueueMessageActivation(input);
   }
 
+  protectMessageAttachments(input: Pick<EnqueueMessageActivationInput, "projectId" | "agentId" | "messageId" | "payload">): unknown {
+    return this.coordinateAuthority.protectMessageAttachments(input);
+  }
+
   waitForTaskDecision(input: { runAuthorization: RunAuthorizationV3; decisionId: string; scopeKey: string }, now = new Date().toISOString()): void {
     this.sqlite.transaction(() => {
       this.support.requireAuthorizedRun(input.runAuthorization, input.scopeKey);
@@ -700,6 +843,59 @@ export class CoordinationV3Store {
 
   getAgentAvailability(agentId: string): DerivedAgentAvailability {
     return this.schedulerStatusReadModel.getAgentAvailability(agentId);
+  }
+
+  /** Exact paired server clocks for voice latency; this read grants no authority. */
+  voiceReplyRunTiming(communicationId: string, agentId: string, presentation: "voice" | "text" = "voice"): {
+    runId: string; leasedAt: string; runStartedAt?: string; runStatus: string; sourceActivationId?: string;
+  } | undefined {
+    const communication = this.runtimeCommunicationForEvent(communicationId, agentId);
+    const activation = communication?.activations?.find(a => a.agentId === agentId);
+    if (!communication || !activation) return undefined;
+    if (presentation === "text") {
+      const receipt = this.deliveryReceiptsForCommunication(communication.projectId, communicationId)
+        .find(item => item.targetAgentId === agentId);
+      const recovering = receipt?.state === "recovering" || receipt?.state === "recovered";
+      const executionId = recovering ? receipt.recoveryExecutionId : receipt?.executionId;
+      const sourceActivationId = recovering ? receipt.recoveryActivationId : receipt?.activationId;
+      if (!executionId || !sourceActivationId) return undefined;
+      // ponytail: reply capabilities use Run IDs; execution aliases need an explicit DTO mapping before previewing.
+      const current = this.sqlite.prepare(`SELECT r.id, r.created_at, r.started_at, r.status
+        FROM provider_inputs p JOIN scheduler_runs r ON r.id=p.scheduler_run_id
+        JOIN scheduler_run_activations attached ON attached.run_id=r.id
+        JOIN agent_activations a ON a.id=attached.activation_id
+        WHERE p.execution_id=? AND p.execution_id=r.id AND p.agent_id=? AND p.project_id=?
+          AND r.agent_id=? AND r.project_id=? AND a.id=? AND a.agent_id=r.agent_id AND a.project_id=r.project_id
+          AND r.scope_key=a.scope_key AND a.scope_key=(SELECT scope_key FROM agent_activations WHERE id=?)
+        LIMIT 1`).get(executionId, agentId, communication.projectId,
+          agentId, communication.projectId, sourceActivationId, activation.id) as
+        {id:string;created_at:string;started_at:string|null;status:string}|undefined;
+      return current ? {runId:current.id,leasedAt:current.created_at,sourceActivationId,
+        ...(current.started_at?{runStartedAt:current.started_at}:{}),runStatus:current.status} : undefined;
+    }
+    const row = this.sqlite.prepare(`SELECT r.id, r.created_at, r.started_at, r.status
+      FROM scheduler_runs r JOIN scheduler_run_activations a ON a.run_id=r.id
+      WHERE a.activation_id=? AND r.agent_id=? ORDER BY r.created_at DESC LIMIT 1`)
+      .get(activation.id, agentId) as { id: string; created_at: string; started_at: string | null; status: string } | undefined;
+    return row ? { runId: row.id, leasedAt: row.created_at,
+      ...(row.started_at ? { runStartedAt: row.started_at } : {}), runStatus: row.status } : undefined;
+  }
+
+  /** Same canonical activation lineage as Request update authorization. */
+  requestReplyRunTiming(requestId: string, agentId: string): {
+    runId: string; leasedAt: string; runStartedAt?: string; runStatus: string;
+  } | undefined {
+    const request=this.getRequest(requestId);
+    if(!request || request.recipientAgentId!==agentId)return undefined;
+    const row=this.sqlite.prepare(`${REQUEST_SOURCE_LINEAGE_CTE}
+      SELECT r.id,r.created_at,r.started_at,r.status FROM scheduler_runs r
+      JOIN scheduler_run_activations a ON a.run_id=r.id
+      JOIN request_source_lineage lineage ON lineage.activation_id=a.activation_id
+      WHERE lineage.request_id=? AND r.agent_id=? AND r.project_id=?
+        AND ${currentRequestAttachmentSql("a")}
+      ORDER BY r.created_at DESC,r.id DESC LIMIT 1`).get(requestId,agentId,request.projectId) as
+      {id:string;created_at:string;started_at:string|null;status:string}|undefined;
+    return row?{runId:row.id,leasedAt:row.created_at,...(row.started_at?{runStartedAt:row.started_at}:{}),runStatus:row.status}:undefined;
   }
 
   activeAgentRun(agentId: string): import("@ponderosa/core").AgentCoordinationV3Dto["activeRun"] {
@@ -793,7 +989,7 @@ export class CoordinationV3Store {
     communicationEventId?: string;
     requestPreview?: string;
     hasUpdates?: boolean;
-    latestUpdateKind?: import("@ponderosa/core").CoordinationRequestUpdateKind;
+    latestUpdateKind?: import("@ponderosa/core").CoordinationStoredRequestUpdateKind;
     latestUpdateAt?: string;
     hasResult?: boolean;
     createdAt: string;
@@ -867,9 +1063,14 @@ export class CoordinationV3Store {
     return this.requestReadModel.requestDelivery(requestId);
   }
 
+  requestIsOperatorRecovery(id: string) { return this.requestReadModel.requestIsOperatorRecovery(id); }
+
+  getJoin(id: string) { return this.requestReadModel.getJoin(id); }
+
   requestRetryStatus(requestId: string): {
     successorRequestId?: string;
     successorState?: import("@ponderosa/core").CoordinationRequestState;
+    recoveryState?: import("@ponderosa/core").CoordinationRequestState;
   } {
     return this.requestReadModel.requestRetryStatus(requestId);
   }
@@ -880,6 +1081,12 @@ export class CoordinationV3Store {
 
   expireDue(now = new Date().toISOString()): { requests: number; joins: number } {
     return this.requestAuthority.expireDue(now);
+  }
+
+  /** Existing no-submission proof also closes historical cancellation claims
+   * that were deferred or recovered before provider work could begin. */
+  canRetryUninjectedRun(runId: string): boolean {
+    return this.schedulerLeaseAuthority.canRetryUninjectedRun(runId);
   }
 
   /** On single-host startup every active lease owned by another server process
@@ -924,12 +1131,17 @@ export class CoordinationV3Store {
     this.deletionAuthority.purgeCommunicationV4Conversation(conversationId);
   }
 
+  peekNextRunnable(input: { now?:string; excludedAgentIds?:readonly string[] } = {}) {
+    return this.schedulerLeaseAuthority.peekNextRunnable(input);
+  }
+
   leaseNextRun(input: {
     workerId: string;
     now?: string;
     leaseMs?: number;
     coalesceLimit?: number;
     excludedAgentIds?: readonly string[];
+    expectedActivationId?: string | null;
   }): SchedulerLease | undefined {
     this.sqlite.transaction(() => {
       const now = input.now ?? new Date().toISOString();
@@ -941,6 +1153,11 @@ export class CoordinationV3Store {
     })();
     return this.schedulerLeaseAuthority.leaseNextRun(input);
   }
+
+  branchScheduleUpdateTarget(branchId:string,now?:string) { return this.steeringAuthority.branchScheduleUpdateTarget(branchId,now); }
+  queueBranchScheduleUpdate(input:{occurrenceId:string;runId:string;attemptId:string;fence:number;now?:string}) { return this.steeringAuthority.queueBranchScheduleUpdate(input); }
+  branchScheduleUpdateStatus(occurrenceId:string,now?:string) { return this.steeringAuthority.branchScheduleUpdateStatus(occurrenceId,now); }
+  cancelUndeliveredBranchScheduleUpdate(occurrenceId:string,now?:string):boolean { return this.steeringAuthority.cancelUndeliveredBranchScheduleUpdate(occurrenceId,now); }
 
   leaseNextSteering(input: { workerId: string; now?: string; coalesceLimit?: number }): SteeringLease | undefined {
     return this.steeringAuthority.leaseNextSteering(input);
@@ -956,9 +1173,70 @@ export class CoordinationV3Store {
 
   markSteeringOutcomeUnknown(input: {
     injectionId: string; runId: string; fencingToken: number; now?: string;
-    recoveryGraceMs?: number; error?: string;
+    error?: string;
   }): void {
     this.steeringAuthority.markSteeringOutcomeUnknown(input);
+  }
+
+  recordedReviewedSteering(projectId:string, activationId:string) {
+    return new ReviewedSteeringAuthority(this.sqlite,input=>this.createActivation(input)).recorded(projectId,activationId);
+  }
+  assertReviewedSteeringClaim(projectId:string, activationId:string) {
+    return new ReviewedSteeringAuthority(this.sqlite,input=>this.createActivation(input)).assertClaim(projectId,activationId);
+  }
+  isReviewedSteeringRun(runId:string):boolean {
+    return Boolean(this.sqlite.prepare(`SELECT 1 FROM scheduler_run_activations attached
+      JOIN activation_sources source ON source.activation_id=attached.activation_id
+      WHERE attached.run_id=? AND source.source_kind='reviewed_steering' LIMIT 1`).get(runId));
+  }
+
+  assertRunReviewedSteeringLease(projectId:string,runId:string,fence:number) {
+    return this.sqlite.transaction(() => {
+      const rows=this.sqlite.prepare(`SELECT attached.activation_id FROM scheduler_run_activations attached
+        JOIN activation_sources source ON source.activation_id=attached.activation_id
+        JOIN scheduler_runs run ON run.id=attached.run_id
+        WHERE run.id=? AND run.project_id=? AND run.fencing_token=?
+          AND run.status IN ('leased','running') AND run.side_effects_fenced_at IS NULL
+          AND source.source_kind='reviewed_steering'`).all(runId,projectId,fence) as Array<{activation_id:string}>;
+      if (!rows.length) {
+        if (this.isReviewedSteeringRun(runId)) throw new Error("Reviewed continuation lost its Run fence.");
+        return;
+      }
+      const count=(this.sqlite.prepare("SELECT COUNT(*) AS n FROM scheduler_run_activations WHERE run_id=?").get(runId) as {n:number}).n;
+      if(rows.length!==1 || count!==1) throw new Error("Reviewed continuation is not isolated.");
+      new ReviewedSteeringAuthority(this.sqlite, () => { throw new Error("Unexpected activation creation"); })
+        .assertLease(projectId,rows[0]!.activation_id,runId);
+    })();
+  }
+
+  assertRunReviewedSteeringSubmission(projectId:string,runId:string,fence:number):void {
+    this.sqlite.transaction(()=>{
+      const rows=this.sqlite.prepare(`SELECT attached.activation_id FROM scheduler_run_activations attached
+        JOIN activation_sources source ON source.activation_id=attached.activation_id
+        WHERE attached.run_id=? AND source.source_kind='reviewed_steering'`).all(runId) as Array<{activation_id:string}>;
+      if(!rows.length)return;
+      const n=(this.sqlite.prepare("SELECT COUNT(*) n FROM scheduler_run_activations WHERE run_id=?").get(runId) as {n:number}).n;
+      if(rows.length!==1 || n!==1)throw Error("Reviewed continuation is not isolated.");
+      new ReviewedSteeringAuthority(this.sqlite,()=>{throw new Error("Unexpected activation creation");})
+        .assertSubmission(projectId,rows[0]!.activation_id,runId,fence);
+    })();
+  }
+
+  reviewedSteeringDrainTarget(projectId:string,activationId:string) {
+    return new ReviewedSteeringAuthority(this.sqlite,input=>this.createActivation(input)).drainTarget(projectId,activationId);
+  }
+
+  reviewedSteeringSourceRetirementNeeded(projectId:string,activationId:string):boolean {
+    const target=this.reviewedSteeringDrainTarget(projectId,activationId);
+    return Boolean(this.sqlite.prepare("SELECT 1 FROM provider_process_authority WHERE agent_id=? AND project_id=? AND run_id=? LIMIT 1")
+      .get(target.agentId,projectId,target.runId));
+  }
+
+  previewReviewedSteering(projectId:string, activationId:string) {
+    return new ReviewedSteeringAuthority(this.sqlite,input=>this.createActivation(input)).preview(projectId,activationId);
+  }
+  continueReviewedSteering(input:{projectId:string;activationId:string;reviewSha256:string;effectsReviewed:boolean;reviewNote?:string;idempotencyKey:string}) {
+    return new ReviewedSteeringAuthority(this.sqlite,value=>this.createActivation(value)).continue(input);
   }
 
   letCurrentRunFinish(input: {
@@ -981,10 +1259,6 @@ export class CoordinationV3Store {
 
   steeringInjectionIds(runId: string): string[] {
     return this.steeringAuthority.steeringInjectionIds(runId);
-  }
-
-  processDueSteeringRecoveries(now = new Date().toISOString(), limit = 100): string[] {
-    return this.steeringAuthority.processDueSteeringRecoveries(now, limit);
   }
 
   markRunStarted(runId: string, fence: number, now = new Date().toISOString()): void {
@@ -1066,7 +1340,7 @@ export class CoordinationV3Store {
   }
 
   preparePromptInjection(input: {
-    injectionId: string; runId: string; fencingToken: number; prompt: string; now?: string;
+    injectionId: string; runId: string; fencingToken: number; prompt: string; inputFiles?: RuntimeInputFile[]; now?: string;
   }): void {
     this.runLifecycleAuthority.preparePromptInjection(input);
   }
@@ -1081,6 +1355,10 @@ export class CoordinationV3Store {
     state: string;
   } | undefined {
     return this.runLifecycleAuthority.promptInjectionForActivation(runId, activationId);
+  }
+
+  assertBranchGuidanceSubmission(injectionId:string,runId:string):void {
+    requireBranchGuidanceSubmission(this.sqlite,injectionId,runId);
   }
 
   markPromptSubmitted(input: {
@@ -1115,6 +1393,10 @@ export class CoordinationV3Store {
 
   requiredReplyObligationsForRun(runId: string): RequiredReplyObligation[] {
     return this.requiredReplyAuthority.forRun(runId);
+  }
+
+  unfinishedHumanSourceActivationIds(runId: string): string[] {
+    return this.requiredReplyAuthority.unfinishedHumanSourceActivationIds(runId);
   }
 
   requiredReplyAuthoritiesForRun(runId: string): CoordinationReplyAuthority[] {
@@ -1157,6 +1439,10 @@ export class CoordinationV3Store {
       promptInjectionState: "not_injected" | "injecting" | "injected";
       httpStatusCode?: number;
       retryAfterMs?: number;
+      quotaResetAt?: string;
+      quotaLimit?: import("@ponderosa/core").ProviderQuotaLimit;
+      engineId?: string;
+      model?: string;
       exitCode?: number | null;
       signal?: string | null;
       stderr?: string;
@@ -1176,6 +1462,22 @@ export class CoordinationV3Store {
     now = new Date().toISOString(),
   ): { activationIds: string[]; resumed: number } {
     return this.runLifecycleAuthority.resumeProviderBlockedAgent(agentId, runtimeSelection, now);
+  }
+
+  pauseAgentRun(input: {agentId:string;runId:string;idempotencyKey:string;now?:string;accessRevocationHold?:true}) {
+    return this.runLifecycleAuthority.pauseAgentRun(input);
+  }
+  resumeAgentRun(input: {agentId:string;pauseId:string;idempotencyKey:string}) {
+    return this.runLifecycleAuthority.resumeAgentRun(input);
+  }
+  pauseRecoveryForRun(runId:string,agentId:string) {
+    return this.sqlite.prepare(`SELECT pause.id,pause.run_id,pause.phase,pause.rollover_id,pause.checkpoint_json,recovery.state
+      FROM agent_pause_recoveries recovery JOIN agent_run_pauses pause ON pause.id=recovery.pause_id
+      WHERE recovery.run_id=? AND pause.agent_id=? AND pause.state<>'stopped'`).get(runId,agentId) as
+      {id:string;run_id:string;phase:string;rollover_id:string|null;checkpoint_json:string;state:string}|undefined;
+  }
+  runPause(runId:string) {
+    return this.sqlite.prepare("SELECT id,state FROM agent_run_pauses WHERE run_id=? AND state IN ('paused','resume_requested')").get(runId) as {id:string;state:string}|undefined;
   }
 
   cancelAgentRun(input: { agentId: string; idempotencyKey: string; expectedRunId?: string; now?: string }): CancellationResult {
@@ -1228,8 +1530,42 @@ export class CoordinationV3Store {
     return this.operationalOutboxAuthority.pruneSettledOutboxes(retain);
   }
 
+  settingsTransitionUnsubmittedActivation(input: Parameters<CoordinationV3ContextRolloverAuthority["settingsTransitionUnsubmittedActivation"]>[0]): boolean {
+    return this.contextRolloverAuthority.settingsTransitionUnsubmittedActivation(input);
+  }
+
+  holdSettingsTransitionReservation(input: Parameters<CoordinationV3ContextRolloverAuthority["holdSettingsTransitionReservation"]>[0]): boolean {
+    return this.contextRolloverAuthority.holdSettingsTransitionReservation(input);
+  }
+
+  holdUncertainSettingsTransitionReservation(input: Parameters<CoordinationV3ContextRolloverAuthority["holdUncertainSettingsTransitionReservation"]>[0]): boolean {
+    return this.contextRolloverAuthority.holdUncertainSettingsTransitionReservation(input);
+  }
+
+  settingsTransitionReservationHeld(input: Parameters<CoordinationV3ContextRolloverAuthority["settingsTransitionReservationHeld"]>[0]): boolean {
+    return this.contextRolloverAuthority.settingsTransitionReservationHeld(input);
+  }
+
+  releaseUnstartedFailedSettingsTransition(input: Parameters<CoordinationV3ContextRolloverAuthority["releaseUnstartedFailedSettingsTransition"]>[0]): boolean {
+    return this.contextRolloverAuthority.releaseUnstartedFailedSettingsTransition(input);
+  }
+
+  workingCopyTransition(id:string) { return this.contextRolloverAuthority.workingCopyTransition(id); }
+  workingCopyTransitionForAgent(agentId:string) { return this.contextRolloverAuthority.workingCopyTransitionForAgent(agentId); }
+  retryWorkingCopyTransition(id:string) { return this.contextRolloverAuthority.retryWorkingCopyTransition(id); }
+  recordWorkingCopyTransitionCopy(input:Parameters<CoordinationV3ContextRolloverAuthority['recordWorkingCopyTransitionCopy']>[0]) { return this.contextRolloverAuthority.recordWorkingCopyTransitionCopy(input); }
+  updateWorkingCopyTransition(...args:Parameters<CoordinationV3ContextRolloverAuthority['updateWorkingCopyTransition']>) { return this.contextRolloverAuthority.updateWorkingCopyTransition(...args); }
+  canKeepWorkingCopyTransition(id:string) { return this.contextRolloverAuthority.canKeepWorkingCopyTransition(id); }
+  keepWorkingCopyTransition(id:string) { return this.contextRolloverAuthority.keepWorkingCopyTransition(id); }
+
+
+
   requestContextRollover(input: Parameters<CoordinationV3ContextRolloverAuthority["request"]>[0]): ReturnType<CoordinationV3ContextRolloverAuthority["request"]> {
     return this.contextRolloverAuthority.request(input);
+  }
+
+  rebindContextRolloverHandoffBoundary(input: Parameters<CoordinationV3ContextRolloverAuthority["rebindHandoffBoundary"]>[0]): ContextRolloverV3 {
+    return this.contextRolloverAuthority.rebindHandoffBoundary(input);
   }
 
   contextRollover(id: string): ContextRolloverV3 | undefined {

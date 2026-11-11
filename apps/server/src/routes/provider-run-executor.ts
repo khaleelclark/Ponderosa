@@ -1,3 +1,13 @@
+import { newlyRestrictedCodexAccess } from "../codex-access-restrictions.js";
+import { restrictedInternalExceptionDiagnostic } from "../provider-exception-properties.js";
+import { hasKnownRetainedMemory } from "../context-transition-admission.js";
+import { pauseOwnedNativeGoal } from "../native-goal-stop.js";
+import { requireCurrentRuntimeInputAccess } from "../runtime-input-files.js";
+import { NativeHistoryAuthority } from "../native-history-authority.js";
+import { replyStreamCommit } from "../reply-stream-publication.js";
+import { canonicalProviderFailureEvent, redactKnownProviderValues } from "../provider-failure-event.js";
+import {localMemoryFor} from "../local-memory.js";
+import {canonicalVoiceReplyInput} from "../voice-reply-input.js";
 import {
   type AgentDto,
   type AgentEvent,
@@ -8,22 +18,29 @@ import {
   type ProviderFailureCategory,
   type ProviderInputSourceManifest,
   type RuntimeDynamicToolSpec,
+  type RuntimeInputFile,
+  type RuntimeCapabilityRestrictions,
   type RuntimeProcessHandle,
+  type RuntimeTurnInput,
   unicodeCodePointLength,
-  publicProviderFailureEvent,
+  runtimeRestrictions,
   publicProviderFailureSummary,
   safeProviderConnectionUrl,
 } from "@ponderosa/core";
 import { randomUUID } from "node:crypto";
 import {
   AgentEventPersistenceError,
+  CapabilityPolicyStore,
   MAX_CONTEXT_ROLLOVER_REPLACEMENT_PROVIDER_INPUT_UTF8_BYTES,
   type LogEvent,
   type ResolvedAgentWorkingCopy,
 } from "@ponderosa/agents";
 import {
   classifyProviderFailure,
+  inheritedProviderCredentialValues,
   shouldRolloverEngineSession,
+  CodexAppServerSession,
+  ClaudeStreamSession,
 } from "@ponderosa/engines";
 import type { FastifyInstance } from "fastify";
 import type {
@@ -75,8 +92,10 @@ export function contextRolloverHandoffValidationError(
 }
 
 export interface ProviderRunExecutionInput {
+  nativeAction?: import("@ponderosa/core").NativeTurnAction;
   activeRun: ActiveRun;
   availableRuntimeTools: RuntimeDynamicToolSpec[];
+  capabilityRestrictions:RuntimeCapabilityRestrictions;
   agent: AgentDto;
   agentMessageUrl: string;
   broadcastCanonicalTipId: string | undefined;
@@ -120,7 +139,12 @@ export interface ProviderRunExecutionInput {
   runId: string;
   runtimeEngineId: string;
   runtimeSessionContractHash: string;
+  retainedVerifiedContext: boolean;
+  assertRetainedContextPolicy?:()=>void;
+  assertSettingsTransitionPolicy?:()=>void;
+  validateSettingsTransitionSources?:()=>Promise<void>;
   workingCopy: ResolvedAgentWorkingCopy;
+  inputFiles?: RuntimeInputFile[];
   runtimeAttachmentDirectory: string | undefined;
   runtimeAttachmentCleanupAfterRun: boolean;
   seedHistory: ChatMessage[];
@@ -159,7 +183,6 @@ export function startProviderRunExecution(
     oneShotRuntime,
     runtimeAuthority,
     pruneRuntimeAuthority,
-    clearAgentResumeSession,
     notifyManagerOfChildFailure,
     notifyScheduler,
     reconcileProjectWorkspace,
@@ -194,6 +217,7 @@ export function startProviderRunExecution(
   const {
     activeRun,
     availableRuntimeTools,
+    capabilityRestrictions,
     agent,
     agentMessageUrl,
     broadcastCanonicalTipId,
@@ -232,7 +256,12 @@ export function startProviderRunExecution(
     runId,
     runtimeEngineId,
     runtimeSessionContractHash,
+    retainedVerifiedContext,
+    assertRetainedContextPolicy,
+    assertSettingsTransitionPolicy,
+    validateSettingsTransitionSources,
     workingCopy,
+    inputFiles = [],
     runtimeAttachmentDirectory,
     runtimeAttachmentCleanupAfterRun,
     seedHistory,
@@ -241,6 +270,14 @@ export function startProviderRunExecution(
     v3FencingToken,
     v3InjectionId,
   } = input;
+
+  // Values are scoped to this Run and are never persisted as a credential inventory.
+  const knownProviderSecrets = [messageCapability, ...inheritedProviderCredentialValues()];
+  const redactRunDiagnostic = (text: string) => redactKnownProviderValues(text, knownProviderSecrets);
+
+  // Capability belongs to the engine selected for this exact Run, which may
+  // differ from the Agent's saved engine preference.
+  activeRun.voiceReplyStreamSupported = engine.adapter.supportsVoiceReplyStream === true;
 
   let terminalLifecycle: ReturnType<typeof store.appendEvent> | undefined;
   let terminalLifecyclePublished = false;
@@ -276,12 +313,55 @@ export function startProviderRunExecution(
       providerAccepted: boolean;
     } | undefined;
     let schedulerCancelled = false;
-    let usedFreshFallback = false;
     let projectWorkspaceUnavailable = false;
+    let voiceContextInvalid = false;
+    let voiceContextNotice: Promise<unknown> | undefined;
+    // Recheck the canonical memory packet even while the model is silent.
+    // A bounded watchdog covers store mutations, grant/policy changes and expiry;
+    // Candidate/final boundaries await the same validation; canonical commit also
+    // rechecks synchronous host authority after the asynchronous storage read.
+    let checkingVoice:Promise<boolean>|undefined;
+    const validateVoiceReplyContext = (): Promise<boolean> => checkingVoice??=(async()=>{
+      if (voiceContextInvalid) return false;
+      if (!activeRun.voiceReply) return true;
+      try { await validateSettingsTransitionSources?.();assertSettingsTransitionPolicy?.();const memory=localMemoryFor(app);if(memory&&!await memory.validateSpeech(runId))throw Error('Voice memory changed');return true; }
+      catch {
+        voiceContextInvalid = true;
+        if (activeRun.voiceReply.invalidate("context_changed") && ownsActiveRun(agent.id, activeRun) && !controller.signal.aborted) {
+          voiceContextNotice = persistRuntimeEvent(agent.id, activeRun,
+            { type: "voice_reply", reply: { ...activeRun.voiceReply.snapshot } })
+            .catch(error => app.log.error({ err: error, runId }, "voice context invalidation notice failed"));
+        }
+        return false;
+      }
+    })().finally(()=>{checkingVoice=undefined;});
+    activeRun.validateVoiceReplyContext = validateVoiceReplyContext;
+    activeRun.validateVoiceReplyCommit=()=>{try{assertSettingsTransitionPolicy?.();return !voiceContextInvalid&&(localMemoryFor(app)?.speechCommitValid(runId)??true);}catch{return false;}};
+    const voiceContextTimer = activeRun.voiceReplyStreamSupported
+      ? setInterval(() => {
+          if (ownsActiveRun(agent.id, activeRun) && !controller.signal.aborted && activeRun.voiceReply?.snapshot.state !== "completed") validateVoiceReplyContext();
+        }, 250) : undefined;
     try {
+      const nativeHistory = new NativeHistoryAuthority(store);
+      // Do not consume a pending transcript-fork reservation for the reviewed
+      // continuation. takeSeed still checks and reports conflicting holds.
+      const reviewedSteeringRun = Boolean(activeRun.v3SchedulerRunId && coordinationV3?.isReviewedSteeringRun(activeRun.v3SchedulerRunId));
+      const nativeSeed = nativeHistory.takeSeed(agent.id,runId,v3FencingToken!,resumeSessionId,!reviewedSteeringRun && Boolean(communicationEventId && store.getCommunicationEvent(agent.projectId,communicationEventId)?.sender.kind==='user'));
+      let nativeForkOpened=false;
       const runCapability = agentMessageCapabilities.get(messageCapability);
       if (!runCapability || runCapability.agentId !== agent.id || runCapability.runId !== runId) {
         throw new Error("provider Run lost its exact message capability before session creation");
+      }
+      // Fallback speech needs the same live authority even when this engine
+      // cannot stream or never calls the voice tool. Never rebuild it after completion.
+      const memory = localMemoryFor(app);
+      memory?.beginUnusedMemoryWitness(messageCapability);
+      if (memory && canonicalVoiceReplyInput(store, coordinationV3, runCapability)) {
+        try { memory.beginSpeech(messageCapability); }
+        catch (error) {
+          // Speech fails closed; ordinary canonical text must remain available.
+          app.log.warn({ err: error, runId }, "Voice speech authorization unavailable");
+        }
       }
       const replacementCandidate = coordinationV3.contextRolloverCandidateForRun(runId, agent.id);
       const pendingHandoff = coordinationV3.activeContextRollover(agent.id);
@@ -308,15 +388,82 @@ export function startProviderRunExecution(
         PONDEROSA_AGENT_TOOL_NAMES: JSON.stringify(availableRuntimeTools.map((tool) => tool.name)),
         PONDEROSA_INTERNAL_SUBAGENTS_DISABLED: "1",
       };
+      let retainedMemoryInputProof: (() => boolean) | undefined;
+      // The scheduler preflight may have yielded before the Run was claimed.
+      // Revalidate the exact previously disclosed sources immediately before
+      // reusing an ordinary retained Codex session.
+      if (runtimeEngineId === "codex" && resumeSessionId && !assertSettingsTransitionPolicy && !nativeSeed) {
+        const accepted = store.resumeSessionState(agent.id);
+        const origin = store.acceptedProviderSessionInput(agent.id)?.executionId;
+        const scope = coordinationV3.runScopeKey(runId, agent.id);
+        const source = scope ? store.sqlite.prepare(`
+          SELECT id FROM scheduler_runs
+          WHERE agent_id=? AND scope_key=? AND provider_session_id=? AND id<>?
+            AND status='completed' AND prompt_injection_state='injected'
+          ORDER BY fencing_token DESC LIMIT 1
+        `).get(agent.id, scope, resumeSessionId, runId) as {id:string}|undefined : undefined;
+        const known = scope && store.sqlite.prepare(`
+          SELECT 1 FROM scheduler_runs r JOIN memory_exposure_runs e ON e.run_id=r.id
+          WHERE r.agent_id=? AND r.scope_key=? AND r.provider_session_id=?
+            AND (e.pending<>0 OR e.uncertain<>0 OR e.unverified<>0 OR EXISTS(
+              SELECT 1 FROM memory_exposure_sources s WHERE s.run_id=e.run_id))
+          LIMIT 1
+        `).get(agent.id, scope, resumeSessionId);
+        if (accepted?.sessionId !== resumeSessionId) throw new Error("The retained session changed. The original work remains available for review.");
+        if (!origin || !source || !memory) {
+          // A managed handoff can inherit disclosed sources from an older
+          // session even when this replacement has no exposure rows itself.
+          const possibleOrigins = origin ? [origin] : (store.sqlite.prepare(`
+            SELECT DISTINCT replacement_run_id AS id FROM context_rollovers
+            WHERE agent_id=? AND replacement_session_id=? AND state='completed'
+              AND replacement_run_id IS NOT NULL
+          `).all(agent.id, resumeSessionId) as Array<{id:string}>).map(row => row.id);
+          const inherited = possibleOrigins.some(id =>
+            hasKnownRetainedMemory(store, agent.id, id, source?.id ?? id, resumeSessionId));
+          if (known || inherited) throw new Error("Earlier memory exposure cannot be verified. The original work remains available for review.");
+        } else {
+          const proof = await memory.prepareRetainedInputProof({
+            agentId:agent.id, chatId:agent.conversationId, sessionId:resumeSessionId,
+            originRunId:origin, sourceRunId:source.id, currentRunId:runId,
+          });
+          if (proof.status === "changed" || proof.status === "unavailable" || !proof.isCurrent())
+            throw new Error("A previously used memory source or its access changed. The original work remains available for review.");
+          retainedMemoryInputProof = proof.isCurrent;
+        }
+      }
+      const assertCurrentCodexAccess = (): void => {
+        if (runtimeEngineId !== "codex") return;
+        if (retainedMemoryInputProof && !retainedMemoryInputProof())
+          throw new Error("A previously used memory source or its access changed. The original work remains available for review.");
+        const current = runtimeRestrictions(
+          new CapabilityPolicyStore(store.sqlite).resolveForAgent(agent.id, runId), runtimeEngineId,
+        );
+        if (newlyRestrictedCodexAccess(capabilityRestrictions.restrictedCapabilityIds, current.restrictedCapabilityIds))
+          throw new Error("Access was restricted before provider input. The original work remains available for review.");
+      };
       const openPersistentRuntime = async (
         sessionResumeId: string | undefined,
         onRuntimeSpawned: (handle: RuntimeProcessHandle) => void,
         identity: object,
       ): Promise<PersistentRuntime> => {
+        if (v3FencingToken !== undefined) coordinationV3.assertRunReviewedSteeringLease(agent.projectId,runId,v3FencingToken);
+        if (controller.signal.aborted || isClosed() || deletingAgentIds.has(agent.id) || deletingProjectIds.has(project.id) || !ownsActiveRun(agent.id, activeRun) || !renewExecutionLease(agent.id, activeRun)) throw new Error("Native session lost current Run authority");
+        assertCurrentCodexAccess();
+        assertSettingsTransitionPolicy?.();
         const rawSession = await providerRuntimeOperation("open provider session", () => engine.adapter.openSession!({
           agentId: agent.id,
+          ...(v3FencingToken !== undefined ? {providerRun:{runId,fence:v3FencingToken}} : {}),
+          assertRuntimeCurrent: () => {
+            if (controller.signal.aborted || isClosed() || deletingAgentIds.has(agent.id) ||
+                deletingProjectIds.has(project.id) || !ownsActiveRun(agent.id, activeRun) || !renewExecutionLease(agent.id, activeRun))
+              throw new Error("Native session lost current Run authority");
+            assertCurrentCodexAccess();
+            assertSettingsTransitionPolicy?.();
+          },
           cwd: workingCopy.rootPath,
           resumeSessionId: sessionResumeId,
+          fileCheckpointTracking: nativeHistory.tracking(agent.id).enabled,
+          ...(nativeSeed ? {transcriptFork:nativeSeed.seed,assertHistoryCurrent:nativeSeed.assertCurrent,onTranscriptForkObserved:nativeSeed.observed} : {}),
           history: sessionResumeId ? [] : seedHistory,
           systemPrompt,
           model: effectiveModel,
@@ -324,19 +471,22 @@ export function startProviderRunExecution(
           speed: effectiveSpeed,
           environment,
           dynamicTools: availableRuntimeTools,
+          capabilityRestrictions,
           handleDynamicToolCall: createProviderDynamicToolHandler(
             app,
             availableRuntimeTools,
             messageCapability,
           ),
-          handleElicitation: async (request) => {
+          handleElicitation: async (request, requestSignal) => {
             // Persistent provider sessions outlive the Run that opened them,
             // so resolve authority from the current Run instead of this
             // callback's original closure.
             const currentRun = activeRuns.get(agent.id);
-            if (!currentRun || !ownsActiveRun(agent.id, currentRun) || currentRun.controller.signal.aborted) {
+            if (!currentRun || currentRun.persistentRuntimeIdentity !== identity || !ownsActiveRun(agent.id, currentRun) || currentRun.controller.signal.aborted) {
               return { action: "cancel" };
             }
+            const nativeApproval = request.mode !== "url" ? request.nativeApproval : undefined;
+            if (nativeApproval && currentRun.runtimeSession?.engineAgentId !== nativeApproval.sessionId) return { action: "cancel" };
             const connectionUrl = request.mode === "url"
               ? safeProviderConnectionUrl(request.url)
               : undefined;
@@ -360,12 +510,22 @@ export function startProviderRunExecution(
               runId: currentRun.runId,
               ...(currentRun.v3SchedulerRunId ? { coordinationRunId: currentRun.v3SchedulerRunId } : {}),
               mode: "choice",
-              question: request.mode === "url"
+              question: nativeApproval?.kind === "question"
+                ? `${agent.title} has a question for you.`
+                : nativeApproval
+                ? `${agent.title} needs your approval for a native ${nativeApproval.kind} operation.`
+                : request.mode === "url"
                 ? `${agent.title} needs a ${connectionKind} ${providerName} connection before it can continue.`
                 : rememberableConfirmation
                   ? `${agent.title} needs permission for ${providerName} before it can continue.`
                 : `${agent.title} needs information for ${providerName} before it can continue.`,
-              context: request.mode === "url"
+              context: nativeApproval?.kind === "question"
+                ? "Your answer goes directly to the waiting provider."
+                : nativeApproval
+                ? nativeApproval.kind === "permissions"
+                  ? "Review the requested native permissions below. A grant lasts for this native turn and cannot change saved access rules."
+                  : "Review the exact native operation below. Approval applies once to this waiting request; it cannot change saved access rules."
+                : request.mode === "url"
                 ? `Open the ${connectionKind} ${providerName} connection page, then return here to confirm.`
                 : rememberableConfirmation
                   ? `${providerName} requested confirmation. You can allow it once or for the rest of this Agent run.`
@@ -386,7 +546,7 @@ export function startProviderRunExecution(
                     { id: "decline", label: "Not Now" },
                   ],
               allowOther: true,
-              blocking: true,
+              blocking: request.mode === "url" || request.blocking !== false,
               runtimeAction: {
                 kind: "mcp_elicitation",
                 mode: request.mode,
@@ -400,7 +560,10 @@ export function startProviderRunExecution(
               runtimeElicitations.cancel(decision.id);
               return { action: "cancel" };
             }
-            const waiting = runtimeElicitations.wait(decision.id, request, currentRun.controller.signal);
+            if (nativeApproval) await persistRuntimeEvent(agent.id, currentRun, { type: "tool_call",
+              id: `native-approval:${nativeApproval.sessionId}:${nativeApproval.requestId}`, name: nativeApproval.kind === "question" ? "native_question" : "native_approval", input: nativeApproval });
+            const waiting = runtimeElicitations.wait(decision.id, request, requestSignal
+              ? AbortSignal.any([currentRun.controller.signal, requestSignal]) : currentRun.controller.signal);
             workspace.createNotification({
               projectId: decision.projectId,
               conversationId: decision.conversationId,
@@ -414,10 +577,10 @@ export function startProviderRunExecution(
               dedupeKey: `decision:${decision.id}`,
               action: { kind: "open_decision", targetId: decision.id },
               title: request.mode === "url"
-                ? `${agent.title} needs you to connect ${providerName}`
+                ? `${agent.title} Needs You To Connect ${providerName}`
                 : rememberableConfirmation
-                  ? `${agent.title} needs permission for ${providerName}`
-                : `${agent.title} needs information for ${providerName}`,
+                  ? `${agent.title} Needs Permission For ${providerName}`
+                : `${agent.title} Needs Information For ${providerName}`,
               body: decision.question,
               decision: {
                 id: decision.id,
@@ -430,18 +593,32 @@ export function startProviderRunExecution(
             }, true);
             publishWorkspaceSince(cursor);
             const response = await waiting;
-            if (currentRun.controller.signal.aborted && !isClosed()) {
+            if ((currentRun.controller.signal.aborted || requestSignal?.aborted) && !isClosed()) {
               const cancelCursor = workspace.cursor();
               runtimeElicitations.cancel(decision.id);
               workspace.cancelDecision(decision.id);
               publishWorkspaceSince(cancelCursor);
             }
+            if (activeRuns.get(agent.id) !== currentRun || !ownsActiveRun(agent.id, currentRun) ||
+                currentRun.controller.signal.aborted || requestSignal?.aborted || currentRun.persistentRuntimeIdentity !== identity ||
+                nativeApproval && currentRun.runtimeSession?.engineAgentId !== nativeApproval.sessionId) return { action: "cancel" };
+            if (nativeApproval) await persistRuntimeEvent(agent.id, currentRun, { type: "tool_result",
+              id: `native-approval:${nativeApproval.sessionId}:${nativeApproval.requestId}`, output: nativeApproval.kind === "question"
+                ? response.action === "accept" ? "Human answered the native question" : "Native question declined"
+                : response.action === "accept" && response.content &&
+                typeof response.content === "object" && (response.content as {approve?:unknown}).approve === true
+                ? "Human allowed this native request once" : "Native request declined" });
+            if (activeRuns.get(agent.id) !== currentRun || !ownsActiveRun(agent.id, currentRun) || currentRun.controller.signal.aborted || requestSignal?.aborted) return { action: "cancel" };
             return response;
           },
           onRuntimeSpawned,
           onRuntimeRootExit: (detail) => {
             let observation;
-            try { observation = projectProviderRootExitDetail(detail); }
+            try {
+              observation = projectProviderRootExitDetail(detail);
+              if (observation?.stderr !== undefined) observation.stderr = redactRunDiagnostic(observation.stderr);
+              if (observation?.terminalEvent) observation.terminalEvent.message = redactRunDiagnostic(observation.terminalEvent.message);
+            }
             catch { app.log.warn({ agentId: agent.id }, "invalid provider root-exit detail; using generic failure"); }
             persistentRootExited(agent.id, identity, observation);
           },
@@ -449,9 +626,26 @@ export function startProviderRunExecution(
           signal: controller.signal,
         }));
         const session = providerSessionFacade(rawSession);
+        // These built-in persistent transports register before user input
+        // and check the host fence immediately before their synchronous write.
+        const qualifiedReviewedTransport =
+          (Object.getPrototypeOf(rawSession)===CodexAppServerSession.prototype &&
+            rawSession.startTurn===CodexAppServerSession.prototype.startTurn) ||
+          (Object.getPrototypeOf(rawSession)===ClaudeStreamSession.prototype &&
+            rawSession.startTurn===ClaudeStreamSession.prototype.startTurn);
+        if (reviewedSteeringRun && !qualifiedReviewedTransport) {
+          await session.close();
+          throw new Error("This provider cannot safely start a reviewed continuation; the original delivery remains unknown.");
+        }
         return {
           identity,
           session,
+          nativeCodexModelChange:Object.getPrototypeOf(rawSession)===CodexAppServerSession.prototype && rawSession.startTurn===CodexAppServerSession.prototype.startTurn,
+          nativeCodexGoal:Object.getPrototypeOf(rawSession)===CodexAppServerSession.prototype &&
+            rawSession.startTurn===CodexAppServerSession.prototype.startTurn &&
+            rawSession.startNativeGoal===CodexAppServerSession.prototype.startNativeGoal &&
+            rawSession.pauseNativeGoal===CodexAppServerSession.prototype.pauseNativeGoal,
+          nativeClaudeVerifiedInput:Object.getPrototypeOf(rawSession)===ClaudeStreamSession.prototype && rawSession.startTurn===ClaudeStreamSession.prototype.startTurn,
           iterator: session.events[Symbol.asyncIterator](),
           messageCapability,
         };
@@ -473,14 +667,14 @@ export function startProviderRunExecution(
             if (state.handle && state.handle !== handle) {
               // Retain a distinct duplicate root under its own handle; it must
               // never replace the lifetime that already owns this opening.
-              providerProcessAuthority.register(handle, { purpose: "duplicate provider readiness", projectId: project.id, agentId: agent.id, runId });
+              providerProcessAuthority.register(handle, { purpose: "duplicate provider readiness", projectId: project.id, agentId: agent.id, runId, runFence:v3FencingToken });
               void handle.close().catch((error) => {
                 app.log.error({ err: error, agentId: agent.id }, "duplicate opening provider handle failed to terminate");
               });
               throw new Error(`provider adapter registered multiple opening handles for ${agent.id}`);
             }
             providerProcessAuthority.register(handle, {
-              purpose: "persistent provider runtime", projectId: project.id, agentId: agent.id, runId,
+              purpose: "persistent provider runtime", projectId: project.id, agentId: agent.id, runId, runFence:v3FencingToken,
             }, identity);
             state.handle = handle;
           }, identity))
@@ -535,6 +729,8 @@ export function startProviderRunExecution(
         return operation;
       };
       let persistentRuntime = reusablePersistentRuntime;
+      if(reviewedSteeringRun && persistentRuntime)throw new Error("A reviewed continuation requires a fresh provider process.");
+      if(nativeSeed && persistentRuntime)throw new Error("Fresh transcript context cannot adopt an existing runtime");
       if (persistentRuntime) {
         let alive = false;
         try { alive = persistentRuntime.session.isAlive(); } catch { /* fail closed */ }
@@ -543,8 +739,16 @@ export function startProviderRunExecution(
           persistentRuntime = undefined;
         }
       }
+      if (reviewedSteeringRun && !engine.adapter.openSession)
+        throw new Error("This provider cannot safely start a reviewed continuation; the original delivery remains unknown.");
       if (engine.adapter.openSession && !persistentRuntime) {
         persistentRuntime = await openRegisteredPersistentRuntime(resumeSessionId);
+      }
+      if (retainedVerifiedContext && (!(persistentRuntime?.nativeCodexModelChange || (assertSettingsTransitionPolicy && persistentRuntime?.nativeClaudeVerifiedInput)) ||
+          !persistentRuntime.session.isAlive() ||
+          readProviderSessionIdentifier(persistentRuntime.session)!==resumeSessionId)) {
+        if (persistentRuntime) await teardownPersistentRuntime(agent.id,persistentRuntime,"unqualified saved-thread continuation",project.id);
+        throw new Error("The saved Codex thread could not be verified. The original context remains retained.");
       }
       if (persistentRuntime) {
         providerProcessAuthority.register(persistentRuntime.session, {
@@ -552,6 +756,7 @@ export function startProviderRunExecution(
           projectId: project.id,
           agentId: agent.id,
           runId,
+          runFence:v3FencingToken,
         }, persistentRuntime.identity);
         activeRun.persistentRuntimeIdentity = persistentRuntime.identity;
         activeRun.runtimeSession = persistentRuntime.session;
@@ -565,6 +770,7 @@ export function startProviderRunExecution(
           projectId: project.id,
           agentId: agent.id,
           runId,
+          runFence:v3FencingToken,
         });
         const authority = runtimeAuthority(agent.id, true)!;
         const existing = authority.oneShots.get(runId);
@@ -601,20 +807,97 @@ export function startProviderRunExecution(
           throw error;
         }
       };
+      const openVerifiedInputCapability=():void=>{
+        const cap=agentMessageCapabilities.get(messageCapability);
+        if(!cap||!cap.inputVerificationPending||cap.agentId!==agent.id||cap.runId!==runId||
+           cap.v3SchedulerRunId!==activeRun.v3SchedulerRunId||cap.v3FencingToken!==activeRun.v3FencingToken||
+           activeRuns.get(agent.id)!==activeRun||activeRun.controller.signal.aborted||!ownsActiveRun(agent.id,activeRun))
+          throw new Error("The verified provider input lost its exact Run capability.");
+        assertSettingsTransitionPolicy?.();
+        cap.inputVerificationPending=false;
+      };
+      const acknowledgeInput=(providerSessionId?:string):void=>{
+        if(!activeRun.v3SchedulerRunId||activeRun.v3FencingToken===undefined||v3PromptInjected)return;
+        if(controller.signal.aborted||isClosed()||!ownsActiveRun(agent.id,activeRun))throw new Error("Provider acknowledgement lost its exact Run authority.");
+        assertSettingsTransitionPolicy?.();
+        coordinationV3!.acknowledgePromptInjection({injectionId:v3InjectionId!,runId:activeRun.v3SchedulerRunId,
+          fencingToken:activeRun.v3FencingToken,providerSessionId});
+        v3PromptInjected=true;publishMessageDeliveryChanged(agent.id);
+        if(continuationHandoff&&!continuationHandoffConsumed&&!replacementCandidate)
+          continuationHandoffConsumed=store.consumeContinuationHandoff(agent.id,continuationHandoff.id,runId);
+      };
+      const consumePersistentEvents = async function* (): AsyncIterable<AgentEvent> {
+        while (true) {
+          let next: IteratorResult<AgentEvent>;
+          try {
+            next = await persistentRuntime!.iterator.next();
+          } catch (error) {
+            providerStreamBoundaryFailure = {
+              kind: isProviderRuntimeBoundaryError(error) &&
+                error.operation === "project provider event"
+                ? "event_projection"
+                : "iterator_rejection",
+              providerAccepted: v3PromptInjected,
+            };
+            throw error;
+          }
+          if (next.done) {
+            teardownPersistentRuntimeInBackground(agent.id, persistentRuntime!, "provider stream ended");
+            yield activeRun.observedProviderFailure ?? { type: "error", message: "persistent engine session stopped" };
+            return;
+          }
+          const event = next.value;
+          providerStreamBoundaryFailure = undefined;
+          yield event;
+          if (event.type === "turn_done" || event.type === "error") return;
+        }
+      };
       const startStream = (sessionId?: string): AsyncIterable<AgentEvent> => sessionId
         ? persistentRuntime
           ? {
               async *[Symbol.asyncIterator](): AsyncIterator<AgentEvent> {
                 if (!persistentTurnStarted) {
                   try {
-                    await persistentRuntime!.session.startTurn({
+                    const runtimeInput: RuntimeTurnInput = {
                       prompt,
+                      inputFiles,
                       kind: "collaboration",
                       model: effectiveModel,
                       effort: effectiveEffort,
                       speed: effectiveSpeed,
                       clientMessageId: communicationEventId,
-                    });
+                      ...(assertSettingsTransitionPolicy && runtimeEngineId==='claude' ? {requireVerifiedInput:true} : {}),
+                      onVerifiedInput:()=>{if(assertSettingsTransitionPolicy&&runtimeEngineId==='claude')openVerifiedInputCapability();acknowledgeInput(sessionId??readProviderSessionIdentifier(persistentRuntime!.session));},
+                      nativeAction: input.nativeAction,
+                      assertCurrent: () => {
+                        if (controller.signal.aborted || isClosed() || deletingAgentIds.has(agent.id) || deletingProjectIds.has(project.id) || !ownsActiveRun(agent.id, activeRun) || !renewExecutionLease(agent.id, activeRun)) throw new Error("Native turn lost current Run authority");
+                        assertSettingsTransitionPolicy?.();
+                        assertCurrentCodexAccess();
+                        if(v3InjectionId && activeRun.v3SchedulerRunId)coordinationV3!.assertBranchGuidanceSubmission(v3InjectionId,activeRun.v3SchedulerRunId);
+                        if (retainedVerifiedContext && (!persistentRuntime || reusableRuntime(agent.id)!==persistentRuntime ||
+                            activeRun.persistentRuntimeIdentity!==persistentRuntime.identity || !persistentRuntime.session.isAlive() ||
+                            readProviderSessionIdentifier(persistentRuntime.session)!==resumeSessionId))
+                          throw new Error("Saved Codex thread changed before saved-thread continuation; original context remains retained.");
+                        if(retainedVerifiedContext){
+                          if(!assertRetainedContextPolicy)throw new Error("Saved Codex policy proof is unavailable.");
+                          assertRetainedContextPolicy();
+                        }
+                        if (reviewedSteeringRun) {
+                          if (!persistentRuntime || reusableRuntime(agent.id)!==persistentRuntime ||
+                              activeRun.persistentRuntimeIdentity!==persistentRuntime.identity || !persistentRuntime.session.isAlive())
+                            throw new Error("Reviewed continuation provider is no longer the exact live runtime.");
+                          coordinationV3!.assertRunReviewedSteeringSubmission(agent.projectId,runId,v3FencingToken!);
+                        }
+                      },
+                    };
+                    if (input.nativeAction?.kind === "goal-resume" || input.nativeAction?.kind === "goal-create") {
+                      if (!persistentRuntime!.nativeCodexGoal || !persistentRuntime!.session.startNativeGoal)
+                        throw new Error("This provider cannot own a native goal Run.");
+                      activeRun.nativeGoalActive = true;
+                      await persistentRuntime!.session.startNativeGoal(runtimeInput);
+                    } else {
+                      await persistentRuntime!.session.startTurn(runtimeInput);
+                    }
                   } catch (error) {
                     providerStreamBoundaryFailure = {
                       kind: "turn_submission_rejection",
@@ -624,36 +907,17 @@ export function startProviderRunExecution(
                   }
                   persistentTurnStarted = true;
                 }
-                while (true) {
-                  let next: IteratorResult<AgentEvent>;
-                  try {
-                    next = await persistentRuntime!.iterator.next();
-                  } catch (error) {
-                    providerStreamBoundaryFailure = {
-                      kind: isProviderRuntimeBoundaryError(error) &&
-                        error.operation === "project provider event"
-                        ? "event_projection"
-                        : "iterator_rejection",
-                      providerAccepted: v3PromptInjected,
-                    };
-                    throw error;
-                  }
-                  if (next.done) {
-                    teardownPersistentRuntimeInBackground(agent.id, persistentRuntime!, "provider stream ended");
-                    yield activeRun.observedProviderFailure ?? { type: "error", message: "persistent engine session stopped" };
-                    return;
-                  }
-                  const event = next.value;
-                  providerStreamBoundaryFailure = undefined;
-                  yield event;
-                  if (event.type === "turn_done" || event.type === "error") return;
-                }
+                yield* consumePersistentEvents();
               },
             }
           : projectProviderStream(providerEventStream(providerRuntimeValue(
               "continue provider session",
-              () => engine.adapter.continue({
+              () => {
+                if (v3FencingToken !== undefined) coordinationV3.assertRunReviewedSteeringLease(agent.projectId,runId,v3FencingToken);
+                if(v3InjectionId && activeRun.v3SchedulerRunId)coordinationV3!.assertBranchGuidanceSubmission(v3InjectionId,activeRun.v3SchedulerRunId);
+                return engine.adapter.continue({
               agentId: agent.id,
+              ...(v3FencingToken !== undefined ? {providerRun:{runId,fence:v3FencingToken}} : {}),
               cwd: workingCopy.rootPath,
               prompt,
               systemPrompt,
@@ -665,21 +929,45 @@ export function startProviderRunExecution(
               signal: controller.signal,
               onRuntimeRootExit: () => agentMessageCapabilities.delete(messageCapability),
               onRuntimeSpawned: registerOneShotRuntime,
-              }),
+              }); },
             ), "read continued provider event stream"))
         : persistentRuntime
           ? {
               async *[Symbol.asyncIterator](): AsyncIterator<AgentEvent> {
                 if (!persistentTurnStarted) {
                   try {
-                    await persistentRuntime!.session.startTurn({
+                    const runtimeInput: RuntimeTurnInput = {
                       prompt: freshPrompt,
+                      inputFiles,
                       kind: "collaboration",
                       model: effectiveModel,
                       effort: effectiveEffort,
                       speed: effectiveSpeed,
                       clientMessageId: communicationEventId,
-                    });
+                      ...(assertSettingsTransitionPolicy && runtimeEngineId==='claude' ? {requireVerifiedInput:true} : {}),
+                      onVerifiedInput:()=>{if(assertSettingsTransitionPolicy&&runtimeEngineId==='claude')openVerifiedInputCapability();acknowledgeInput(sessionId??readProviderSessionIdentifier(persistentRuntime!.session));},
+                      nativeAction: input.nativeAction,
+                      assertCurrent: () => {
+                        if (controller.signal.aborted || isClosed() || deletingAgentIds.has(agent.id) || deletingProjectIds.has(project.id) || !ownsActiveRun(agent.id, activeRun) || !renewExecutionLease(agent.id, activeRun)) throw new Error("Native turn lost current Run authority");
+                        assertSettingsTransitionPolicy?.();
+                        assertCurrentCodexAccess();
+                        if(v3InjectionId && activeRun.v3SchedulerRunId)coordinationV3!.assertBranchGuidanceSubmission(v3InjectionId,activeRun.v3SchedulerRunId);
+                        if (reviewedSteeringRun) {
+                          if (!persistentRuntime || reusableRuntime(agent.id)!==persistentRuntime ||
+                              activeRun.persistentRuntimeIdentity!==persistentRuntime.identity || !persistentRuntime.session.isAlive())
+                            throw new Error("Reviewed continuation provider is no longer the exact live runtime.");
+                          coordinationV3!.assertRunReviewedSteeringSubmission(agent.projectId,runId,v3FencingToken!);
+                        }
+                      },
+                    };
+                    if (input.nativeAction?.kind === "goal-create") {
+                      if (!persistentRuntime!.nativeCodexGoal || !persistentRuntime!.session.startNativeGoal)
+                        throw new Error("This provider cannot own a native goal Run.");
+                      activeRun.nativeGoalActive = true;
+                      await persistentRuntime!.session.startNativeGoal(runtimeInput);
+                    } else {
+                      await persistentRuntime!.session.startTurn(runtimeInput);
+                    }
                   } catch (error) {
                     providerStreamBoundaryFailure = {
                       kind: "turn_submission_rejection",
@@ -689,36 +977,17 @@ export function startProviderRunExecution(
                   }
                   persistentTurnStarted = true;
                 }
-                while (true) {
-                  let next: IteratorResult<AgentEvent>;
-                  try {
-                    next = await persistentRuntime!.iterator.next();
-                  } catch (error) {
-                    providerStreamBoundaryFailure = {
-                      kind: isProviderRuntimeBoundaryError(error) &&
-                        error.operation === "project provider event"
-                        ? "event_projection"
-                        : "iterator_rejection",
-                      providerAccepted: v3PromptInjected,
-                    };
-                    throw error;
-                  }
-                  if (next.done) {
-                    teardownPersistentRuntimeInBackground(agent.id, persistentRuntime!, "provider stream ended");
-                    yield activeRun.observedProviderFailure ?? { type: "error", message: "persistent engine session stopped" };
-                    return;
-                  }
-                  const event = next.value;
-                  providerStreamBoundaryFailure = undefined;
-                  yield event;
-                  if (event.type === "turn_done" || event.type === "error") return;
-                }
+                yield* consumePersistentEvents();
               },
             }
           : projectProviderStream(providerEventStream(providerRuntimeValue(
               "seed provider session",
-              () => engine.adapter.seed({
+              () => {
+                if (v3FencingToken !== undefined) coordinationV3.assertRunReviewedSteeringLease(agent.projectId,runId,v3FencingToken);
+                if(v3InjectionId && activeRun.v3SchedulerRunId)coordinationV3!.assertBranchGuidanceSubmission(v3InjectionId,activeRun.v3SchedulerRunId);
+                return engine.adapter.seed({
               agentId: agent.id,
+              ...(v3FencingToken !== undefined ? {providerRun:{runId,fence:v3FencingToken}} : {}),
               cwd: workingCopy.rootPath,
               prompt: freshPrompt,
               history: seedHistory,
@@ -730,7 +999,7 @@ export function startProviderRunExecution(
               signal: controller.signal,
               onRuntimeRootExit: () => agentMessageCapabilities.delete(messageCapability),
               onRuntimeSpawned: registerOneShotRuntime,
-              }),
+              }); },
             ), "read seeded provider event stream"));
 
       const persistAcceptedSessionSnapshot = (acceptedSessionId: string): void => {
@@ -779,10 +1048,12 @@ export function startProviderRunExecution(
         continuationHandoffConsumed = true;
       };
 
-      let sessionId = resumeSessionId;
-      while (true) {
+      const sessionId = resumeSessionId;
+      {
         const bufferedSessionEvents: Extract<AgentEvent, { type: "session" }>[] = [];
-        let retryFresh = false;
+        if (inputFiles.length && !persistentRuntime) throw new Error("This engine has no typed-file session transport; input was not submitted");
+        requireCurrentRuntimeInputAccess({ files: inputFiles, projectId: agent.projectId, agentId: agent.id, store, assets: context.assets });
+        await validateSettingsTransitionSources?.();
         if (activeRun.v3SchedulerRunId && activeRun.v3FencingToken !== undefined && !v3PromptInjected) {
           coordinationV3!.markPromptSubmitted({
             injectionId: v3InjectionId!,
@@ -797,7 +1068,27 @@ export function startProviderRunExecution(
           // delivered when the first non-error event arrives.
           publishMessageDeliveryChanged(agent.id);
         }
+        activeRun.voiceReplyTiming ??= {};
+        activeRun.voiceReplyTiming.submittedAt ??= new Date().toISOString();
         for await (const event of startStream(sessionId)) {
+          if (event.type === "error") event.message = redactRunDiagnostic(event.message);
+          try { assertSettingsTransitionPolicy?.(); }
+          catch (error) {
+            if (activeRun.voiceReply) await validateVoiceReplyContext();
+            throw error;
+          }
+          if(nativeSeed && !nativeForkOpened) {
+            if(event.type==='session') {
+              if(event.sessionId!==persistentRuntime?.session.engineAgentId)throw new Error("Native fork identity changed");
+              nativeSeed.opened(event.sessionId);nativeForkOpened=true;
+            } else if(['text','response_text','tool_call','tool_result','command','file_change'].includes(event.type)) {
+              throw new Error("Native fork has not confirmed its fresh session identity");
+            }
+          }
+          if ((event.type === "response_text" && event.text || event.type === "text" && event.delta) && !activeRun.voiceReplyTiming.firstModelTextAt) {
+            activeRun.voiceReplyTiming.firstModelTextAt = new Date().toISOString();
+          }
+          if (activeRun.voiceReply) Object.assign(activeRun.voiceReply.snapshot, activeRun.voiceReplyTiming);
           if (event.type === "session" && frozenHandoffSessionId && event.sessionId !== frozenHandoffSessionId) {
             throw new Error("context rollover handoff changed provider session identity");
           }
@@ -822,90 +1113,54 @@ export function startProviderRunExecution(
           if (event.type !== "error" && event.type !== "session" && event.type !== "context_usage") {
             providerWorkObserved = true;
           }
-          if (activeRun.v3SchedulerRunId && activeRun.v3FencingToken !== undefined && !v3PromptInjected && event.type !== "error") {
-            coordinationV3!.acknowledgePromptInjection({
-              injectionId: v3InjectionId!,
-              runId: activeRun.v3SchedulerRunId,
-              fencingToken: activeRun.v3FencingToken,
-              providerSessionId: sessionId ?? (event.type === "session" ? event.sessionId : persistentRuntime
-                ? readProviderSessionIdentifier(persistentRuntime.session)
-                : undefined),
-            });
-            v3PromptInjected = true;
-            publishMessageDeliveryChanged(agent.id);
-            if (continuationHandoff && !continuationHandoffConsumed && !replacementCandidate) {
-              continuationHandoffConsumed = store.consumeContinuationHandoff(
-                agent.id,
-                continuationHandoff.id,
-                runId,
-              );
-            }
-          }
+          if(event.type!=="error")acknowledgeInput(sessionId??(event.type==="session"?event.sessionId:persistentRuntime?readProviderSessionIdentifier(persistentRuntime.session):undefined));
           if (deletingAgentIds.has(agent.id) || isClosed() || controller.signal.aborted || !renewExecutionLease(agent.id, activeRun)) break;
           if (!receiveRuntimeEvent(agent.id, activeRun)) break;
           if (event.type === "context_usage" && event.providerSessionGeneration !== undefined) {
             activeRun.observedProviderSessionGeneration = event.providerSessionGeneration;
           }
+          if (persistentRuntime?.nativeCodexGoal && event.type === "work_item_update" &&
+              event.workItemId === `native-goal:${persistentRuntime.session.engineAgentId}`) {
+            activeRun.nativeGoalActive = event.status === "running";
+          }
           if (event.type === "turn_done") activeRun.observedProviderTerminalStatus = "completed";
           if (event.type === "error" && event.terminalStatus !== undefined) activeRun.observedProviderTerminalStatus = event.terminalStatus;
           if(event.type==='error')activeRun.observedProviderFailure=event;
-          if (event.type === "error" && sessionId && !frozenHandoffSessionId &&
+          if (event.type === "error" && !input.nativeAction && !nativeSeed && sessionId && !frozenHandoffSessionId &&
               !providerWorkObserved && shouldRolloverEngineSession(runtimeEngineId, event)) {
-            const fallbackBudget = freshProviderInputManifest.schemaVersion === 3
-              ? freshProviderInputManifest.contextBudget : undefined;
-            if (!workspace.getPreferences().contextRolloverEnabled ||
-                fallbackBudget?.inputCeilingTokens === undefined ||
-                fallbackBudget.estimatedInputTokens > fallbackBudget.inputCeilingTokens) {
-              // Keep the accepted generation and the failed attempt. A provider
-              // pre-sampling error cannot authorize an over-budget/disabled reset.
-              bufferedSessionEvents.length = 0;
-            } else {
-              // The provider confirmed the resumed session failed before
-              // sampling. Discard its buffered session event and retry once
-              // with the separately persisted canonical fresh-seed packet.
-              clearAgentResumeSession(agent.id, "resume_compaction_failed");
-              coordinationV3.setRunContextDisposition(runId, v3FencingToken!, "reseeded");
-              coordinationV3.recordProviderInput({
-                executionId: runId,
-                schedulerRunId: runId,
-                fencingToken: v3FencingToken!,
-                agentId: agent.id,
-                projectId: project.id,
-                prompt: freshExactProviderInput,
-                systemPrompt,
-                sourceManifest: freshProviderInputManifest,
-              });
-              manifestArtifactIds.splice(0, manifestArtifactIds.length, ...freshProviderInputManifest.artifactIds);
-              if (freshProviderInputManifest.schemaVersion === 3) {
-                runCapability.historyRetrievalBoundary = freshProviderInputManifest.historyContext?.boundary;
-                runCapability.importedHistoryArchiveVersion = freshProviderInputManifest.historyContext?.importedArchiveVersion;
-                runCapability.historyRetrievalExcludedCommunicationEventIds = freshProviderInputManifest.historyContext?.fullyIncludedCommunicationEventIds ?? [];
-              }
-              if (persistentRuntime) {
-                const staleRuntime = persistentRuntime;
-                await teardownPersistentRuntime(agent.id, staleRuntime, "failed resume replacement", project.id);
-                activeRun.observedProviderFailure = undefined;
-                activeRun.observedProviderTerminalStatus = undefined;
-                activeRun.observedRootExit = undefined;
-                persistentRuntime = await openRegisteredPersistentRuntime();
-                activeRun.runtimeSession = persistentRuntime.session;
-                persistentTurnStarted = false;
-              }
-              sessionId = undefined;
-              usedFreshFallback = true;
-              retryFresh = true;
-              break;
-            }
+            // Failure before this attempt samples is not proof that prior native
+            // work exists in canonical history. Keep the accepted generation and
+            // input; ordinary failure settlement owns the visible error and hold.
+            bufferedSessionEvents.length = 0;
           }
-          // Codex can emit its session id immediately before a resume-time
-          // compaction failure. Hold only those initial session events so a
-          // failed resume does not restore the stale id after we clear it.
+          // Codex can emit a session id immediately before a resume-time
+          // compaction failure. Keep the prior accepted snapshot until this
+          // attempt supplies evidence beyond its initial session event.
           if (sessionId && event.type === "session") {
             bufferedSessionEvents.push(event);
             continue;
           }
           for (const buffered of bufferedSessionEvents.splice(0)) {
             await persistRuntimeEvent(agent.id, activeRun, buffered);
+          }
+          if (event.type === "response_text") {
+            if (!await validateVoiceReplyContext()) continue;
+            if (activeRun.voiceReply && coordinationV3.latestAcknowledgedSteeringInjection(runId) !== activeRun.voiceReply.snapshot.steeringInjectionId && activeRun.voiceReply.invalidate()) {
+              await persistRuntimeEvent(agent.id, activeRun, { type: "voice_reply", reply: { ...activeRun.voiceReply.snapshot } });
+            }
+            if (ownsActiveRun(agent.id, activeRun) && !controller.signal.aborted && activeRun.voiceReply?.accept(event, new Date().toISOString())) {
+              await persistRuntimeEvent(agent.id, activeRun, { type: "voice_reply", reply: { ...activeRun.voiceReply.snapshot } });
+            }
+            continue;
+          }
+          // The early acknowledgement crosses the same memory/fence boundary as final speech.
+          if(activeRun.voiceReply?.snapshot.purpose === "acknowledgement"){
+            await validateVoiceReplyContext();
+            if(coordinationV3.latestAcknowledgedSteeringInjection(runId)!==activeRun.voiceReply.snapshot.steeringInjectionId && activeRun.voiceReply.invalidate())
+              await persistRuntimeEvent(agent.id,activeRun,{type:"voice_reply",reply:{...activeRun.voiceReply.snapshot}});
+          }
+          if (activeRun.voiceReply?.observeWork(event)) {
+            await persistRuntimeEvent(agent.id, activeRun, { type: "voice_reply", reply: { ...activeRun.voiceReply.snapshot } });
           }
           // Retain payload-free native-work evidence for context accounting in
           // the internal audit only; it is not Chat or ordinary activity output.
@@ -997,7 +1252,7 @@ export function startProviderRunExecution(
                   dedupeKey: `context-rollover:${observed.id}:seed-overflow`,
                   category: "coordination",
                   severity: "attention",
-                  title: `${agent.title} could not refresh context safely`,
+                  title: `${agent.title} Could Not Refresh Context Safely`,
                   body: observed.lastError ?? "Fresh context did not restore enough headroom.",
                   projectId: agent.projectId,
                   conversationId: routingConversationId,
@@ -1070,7 +1325,7 @@ export function startProviderRunExecution(
                       dedupeKey: `context-rollover:${agent.id}:boundary-invalid`,
                       category: "coordination",
                       severity: "attention",
-                      title: `${agent.title} could not freeze a safe context boundary`,
+                      title: `${agent.title} Could Not Freeze A Safe Context Boundary`,
                       body: error instanceof Error ? error.message : "The canonical rollover boundary was unavailable.",
                       projectId: agent.projectId,
                       conversationId: routingConversationId,
@@ -1133,14 +1388,42 @@ export function startProviderRunExecution(
                 runFailureClassification === "rate_limit" || runFailureClassification === "quota_exhausted" || runFailureClassification === "throttled");
           }
         }
-        if (!retryFresh) break;
       }
-      if (runError && persistentRuntime && activeRun.observedProviderFailure) {
-        try { await teardownPersistentRuntime(agent.id, persistentRuntime, "provider terminal failure", project.id); }
-        catch (error) {
-          // Typed failure remains primary; retained cleanup blocks replacement.
-          app.log.error({ err: error, agentId: agent.id, runId }, "provider failure cleanup remains pending");
+      if(runError&&persistentRuntime&&activeRun.observedProviderFailure){
+        try{await teardownPersistentRuntime(agent.id,persistentRuntime,'provider terminal failure',project.id);}
+        catch(error){
+          // Keep the typed failure; the existing retained cleanup authority
+          // remains visible and blocks replacement until observed exit.
+          app.log.error({err:error,agentId:agent.id,runId},'provider failure cleanup remains pending');
         }
+      }
+      if (activeRun.voiceReply && activeRun.voiceReply.snapshot.purpose !== "acknowledgement" && ownsActiveRun(agent.id, activeRun) && !controller.signal.aborted && !runError &&
+          activeRun.observedProviderTerminalStatus === "completed") {
+        const committingStream=activeRun.voiceReply;
+        const answer = await validateVoiceReplyContext() && activeRun.voiceReply===committingStream && coordinationV3.latestAcknowledgedSteeringInjection(runId) === committingStream.snapshot.steeringInjectionId
+          ? committingStream.finalText() : undefined;
+        if (answer) {
+          const fence = coordinationV3.latestAcknowledgedSteeringInjection(runId);
+          const publication=committingStream.snapshot.publication;
+          const commit=publication?replyStreamCommit(publication,answer,fence):{url:"/api/agent-messages",payload:{text:answer,...(fence?{steeringInjectionId:fence}:{})}};
+          const correlation=committingStream.snapshot.presentation==='text'?{token:randomUUID(),streamId:committingStream.snapshot.streamId,sourceId:committingStream.snapshot.messageId}:undefined;
+          if(correlation)activeRun.textReplyPublication=correlation;
+          let response;
+          try{response=await app.inject({ method: "POST", url:commit.url,
+            headers: { authorization: `Bearer ${messageCapability}`,...(correlation?{'x-ponderosa-text-publication':correlation.token}:{}) },payload:commit.payload });}
+          finally{if(activeRun.textReplyPublication===correlation)activeRun.textReplyPublication=undefined;}
+          const result = response.json() as { eventId?: string; requestId?:string;updateId?:string; committed?: boolean };
+          if (response.statusCode >= 200 && response.statusCode < 300 && (result.eventId || result.requestId)) {
+            const canonical = result.eventId?coordinationV3.runtimeCommunication(result.eventId):undefined;
+            const requestUpdate=publication?.kind==='request_update'&&result.updateId?coordinationV3.requestLifecycleDetails({projectId:project.id,conversationId:agent.conversationId,recordId:publication.requestId})?.updates.find(update=>update.id===result.updateId):undefined;
+            const binding=canonical?(canonical.payload as {communication?:import('@ponderosa/core').CommunicationEvent})?.communication?.replyStream:requestUpdate?.replyStream;
+            const exact= !correlation || binding?.streamId===correlation.streamId&&binding.sourceId===correlation.sourceId&&binding.runId===runId&&binding.fence===committingStream.snapshot.fence&&binding.steeringInjectionId===committingStream.snapshot.steeringInjectionId;
+            if (activeRun.voiceReply===committingStream&&exact&&(canonical || (publication?.kind==="request_update" && result.requestId===publication.requestId && requestUpdate?.kind===publication.updateKind)) && await validateVoiceReplyContext() && activeRun.voiceReply===committingStream)
+              committingStream.complete(canonical?.createdAt??requestUpdate?.createdAt??new Date().toISOString(),correlation?{eventId:result.eventId,updateId:result.updateId}:undefined);
+            else committingStream.invalidate();
+          } else committingStream.invalidate();
+        } else committingStream.invalidate();
+        await persistRuntimeEvent(agent.id, activeRun, { type: "voice_reply", reply: { ...committingStream.snapshot } });
       }
       if (activeRun.v3SchedulerRunId && !v3PromptInjected && !runError) {
         runError = "provider ended before prompt injection could be confirmed";
@@ -1153,8 +1436,8 @@ export function startProviderRunExecution(
           agentId: agent.id,
           operation: cleanupFailure.operation,
           category: cleanupFailure.category,
-          ...(cleanupFailure.code ? { code: cleanupFailure.code } : {}),
-          restrictedDetail: cleanupFailure.restrictedDetail,
+          ...(cleanupFailure.code ? { code: redactRunDiagnostic(cleanupFailure.code) } : {}),
+          restrictedDetail: redactRunDiagnostic(cleanupFailure.restrictedDetail),
         }, "provider event stream cleanup failed after primary provider failure");
       }
       if (isClosed() || controller.signal.aborted || !ownsActiveRunForAuditDrain(agent.id, activeRun)) return;
@@ -1166,16 +1449,17 @@ export function startProviderRunExecution(
       const providerFailure = isProviderRuntimeBoundaryError(err)
         ? err
         : undefined;
-      const message = providerFailure?.restrictedDetail
-        ?? "Agent execution failed due to an internal runtime error.";
+      const message = providerFailure ? redactRunDiagnostic(providerFailure.restrictedDetail)
+        : "Agent execution failed due to an internal runtime error.";
       const failureEvent = providerFailure
-        ? publicProviderFailureEvent({
+        ? canonicalProviderFailureEvent({
             type: "error",
             message,
             ...(providerFailure.code ? { code: providerFailure.code } : {}),
             category: providerFailure.category,
           })
         : { type: "error" as const, message };
+      failureEvent.message = redactRunDiagnostic(failureEvent.message);
       runFailureClassification ??= providerFailure?.category;
       const workspaceIssue = await reconcileProjectWorkspace(project, agent);
       projectWorkspaceUnavailable = Boolean(workspaceIssue);
@@ -1192,6 +1476,9 @@ export function startProviderRunExecution(
           runId, agentId: agent.id,
           category: conflict ? "context_rollover_conflict" : exactBoundary ? "context_rollover_boundary" : "run_orchestration",
           ...(err instanceof AgentEventPersistenceError ? { persistenceFailure: err.diagnostic } : {}),
+          exception: restrictedInternalExceptionDiagnostic(err),
+          caughtAt: "provider-run-executor:execution",
+          runtimeOwnershipState: activeRun.ownershipState,
           diagnostic: conflict ? "generation cycle rejected a changed canonical boundary"
             : exactBoundary ? "exact canonical boundary unavailable"
               : "unclassified internal exception",
@@ -1205,6 +1492,9 @@ export function startProviderRunExecution(
           : failureEvent,
       );
     } finally {
+      clearInterval(voiceContextTimer);
+      await checkingVoice;
+      await voiceContextNotice;
       runtimeElicitations.clearRun(runId);
       const owned = ownsActiveRunForAuditDrain(agent.id, activeRun);
       schedulerCancelled ||= Boolean(!isClosed() && activeRun.v3SchedulerRunId && coordinationV3?.isSchedulerRunCancelled(activeRun.v3SchedulerRunId));
@@ -1246,7 +1536,14 @@ export function startProviderRunExecution(
         if (handoffActivationAcknowledged) {
           suppressRolloverHandoffOutput = true;
           const handoff = finalText.trim();
-          handoffValidationError = contextRolloverHandoffValidationError(handoff);
+          try { await validateSettingsTransitionSources?.(); assertSettingsTransitionPolicy?.(); }
+          catch {
+            runError = "Access, memory or settings changed during context transition; the original context remains retained.";
+            handoffValidationError = runError;
+            coordinationV3.failContextRollover(runRollover.id, "failed", runError, "internal");
+            await persistRuntimeEvent(agent.id, activeRun, {type:"error",message:runError});
+          }
+          if (!handoffValidationError) handoffValidationError = contextRolloverHandoffValidationError(handoff);
           if (!handoffValidationError) {
             const existing = store.continuationHandoffForRun(agent.id, runId);
             const handoffId = existing?.id ?? randomUUID();
@@ -1262,7 +1559,7 @@ export function startProviderRunExecution(
             coordinationV3.commitContextRolloverHandoff(runRollover.id, handoffId);
             scheduledSessionRollovers.set(agent.id, new Date().toISOString());
             runRollover = coordinationV3.activeContextRollover(agent.id);
-          } else {
+          } else if (!runError) {
             const retry = coordinationV3.retryContextRolloverHandoff(
               runRollover.id,
               handoffValidationError,
@@ -1325,7 +1622,7 @@ export function startProviderRunExecution(
         });
       }
       const replacementCancelled = Boolean(
-        replacementRunRollover && schedulerCancelled && !isClosed(),
+        replacementRunRollover && schedulerCancelled && !coordinationV3.runPause(runId) && !isClosed(),
       );
       const replacementFailed = Boolean(
         replacementRunRollover?.state === "failed" && !isClosed(),
@@ -1381,7 +1678,7 @@ export function startProviderRunExecution(
           dedupeKey: `context-rollover:${replacementRunRollover.id}:confirmation-missing`,
           category: "coordination",
           severity: "attention",
-          title: `${agent.title} could not confirm refreshed context`,
+          title: `${agent.title} Could Not Confirm Refreshed Context`,
           body: replacementFailed
             ? "The replacement context remained above the safe threshold. Ponderosa retained the old provider session and stopped automatic rollover instead of looping."
             : replacementCancelled
@@ -1407,7 +1704,7 @@ export function startProviderRunExecution(
         });
         publish(agent.id, cancelled);
       }
-      if (owned && !isClosed() && !controller.signal.aborted) {
+      if (owned && ownsActiveRunForAuditDrain(agent.id, activeRun) && !coordinationV3.runPause(runId) && !isClosed() && !controller.signal.aborted) {
         if (!rolloverSucceeded && !suppressRolloverHandoffOutput && !schedulerCancelled &&
             !runError && finalText.trim() &&
             firstTextSeq !== undefined && lastTextSeq !== undefined) {
@@ -1467,21 +1764,10 @@ export function startProviderRunExecution(
             }, "context rollover retirement remains pending after Run finalization");
           }
         } else if (policyRefreshSucceeded) {
-          // Workspace/Project policy changes still invalidate the retained
-          // provider cache after the current clean Run. They do not represent
-          // unfinished work and therefore need no continuation Activation.
-          clearAgentResumeSession(agent.id, "request_context_rollover");
+          // A clean progress Run need not finish the whole objective. Retain
+          // its accepted context for the next pre-admission prompt handoff.
           organizationEnvelopeStates.delete(agent.id);
-          const staleRuntime = reusableRuntime(agent.id);
-          if (staleRuntime) {
-            activeRun.persistentRuntimeIdentity = undefined;
-            try {
-              await teardownPersistentRuntime(agent.id, staleRuntime, "policy context refresh", project.id);
-            } catch (error) {
-              app.log.error({ err: error, agentId: agent.id, runId }, "policy context refresh teardown remains pending");
-            }
-          }
-        } else if (rolloverRequested &&
+        } else if (rolloverRequested && !coordinationV3.runPause(runId) &&
             (runError || controller.signal.aborted || schedulerCancelled || handoffActivationAcknowledged)) {
           const abandonedHandoff = store.continuationHandoffForRun(agent.id, runId);
           if (abandonedHandoff && !abandonedHandoff.consumedAt) {
@@ -1528,7 +1814,7 @@ export function startProviderRunExecution(
               dedupeKey: `provider:${runtimeEngineId}:unavailable`,
               category: "provider",
               severity: "attention",
-              title: `${engines.get(runtimeEngineId)?.adapter.displayName ?? runtimeEngineId} stopped accepting work`,
+              title: `${engines.get(runtimeEngineId)?.adapter.displayName ?? runtimeEngineId} Stopped Accepting Work`,
               body: providerUnavailableNotificationBody(runError, runFailureKind),
               projectId: agent.projectId,
               conversationId: agent.conversationId,
@@ -1546,6 +1832,19 @@ export function startProviderRunExecution(
           });
           if (recoveryEvidence.available) resolveOperationalNotification(`provider:${runtimeEngineId}:unavailable`);
         }
+      }
+      if (schedulerCancelled && activeRun.nativeGoalActive) {
+        await pauseOwnedNativeGoal(activeRun, () => {
+          try { createOperationalNotification({
+            dedupeKey: `native-goal-pause-unknown:${runId}`,
+            category: "provider", severity: "attention",
+            title: "Native Goal Pause Needs Review",
+            body: "The provider did not confirm whether the native goal paused. Its process is being stopped; earlier work may have completed. Review the goal before resuming it.",
+            projectId: agent.projectId, conversationId: agent.conversationId, agentId: agent.id,
+          }); } catch (error) {
+            app.log.error({ err: error, agentId: agent.id, runId }, "Native goal pause uncertainty could not be published");
+          }
+        });
       }
       const released = releaseActiveRun(agent.id, activeRun, controller.signal.aborted || schedulerCancelled ? "cancelled" : runError ? "failed" : "completed");
       if (released || activeRuns.get(agent.id) !== activeRun) {
@@ -1591,6 +1890,8 @@ export function startProviderRunExecution(
                 promptInjectionState: coordinationV3!.agentSnapshot(agent.id).activeRun?.promptInjectionState
                   ?? (v3PromptInjected ? "injected" : "not_injected"),
                 message: runError,
+                engineId: runtimeEngineId,
+                model: effectiveModel,
                 ...(providerQuotaResetAt ? { quotaResetAt: providerQuotaResetAt } : {}),
                 ...(providerQuotaLimit ? { quotaLimit: providerQuotaLimit } : {}),
                 ...(providerHttpStatusCode !== undefined ? { httpStatusCode: providerHttpStatusCode } : {}),
@@ -1639,7 +1940,7 @@ export function startProviderRunExecution(
             // A continued session advances only through the FIFO page that
             // was actually submitted. A fresh/reseeded session deliberately
             // accepts the newest bounded tail and records the canonical tip.
-            lastMessageId: !usedFreshFallback && incremental && roomDeltaOmitted
+            lastMessageId: incremental && roomDeltaOmitted
               ? roomMessages.at(-1)?.id ?? previousCursor?.lastMessageId
               : roomCanonicalTipId,
             routingHash,
@@ -1653,7 +1954,7 @@ export function startProviderRunExecution(
             sessionId: acceptedSessionId,
             conversationId: routingConversationId,
             channel: "broadcast",
-            lastMessageId: !usedFreshFallback && broadcastIncremental && broadcastDeltaOmitted
+            lastMessageId: broadcastIncremental && broadcastDeltaOmitted
               ? initialBroadcastContext.at(-1)?.id ?? previousBroadcastCursor?.lastMessageId
               : broadcastCanonicalTipId,
             routingHash,

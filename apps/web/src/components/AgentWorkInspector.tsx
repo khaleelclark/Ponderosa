@@ -32,15 +32,16 @@ export interface AgentWorkFocus {
 }
 
 function kindLabel(kind: AgentWorkItemDto["kind"]): string {
-  if (kind === "activation") return "Wake-up";
+  if (kind === "activation") return "Work Input";
   if (kind === "join") return "Waiting";
-  if (kind === "request") return "Assigned work";
+  if (kind === "request") return "Assigned Work";
   if (kind === "run") return "Run";
   return "Decision";
 }
 
 function agentWorkStateLabel(state: string): string {
-  if (state === "outcome_unknown") return "Result unconfirmed";
+  if (state === "consumed") return "Assigned To A Run";
+  if (state === "outcome_unknown") return "Result Unconfirmed";
   return state.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toLocaleUpperCase());
 }
 
@@ -62,7 +63,7 @@ function diagnosticLogBundle(data: AgentWorkInspectorDto): string {
     `Generated: ${new Date(data.generatedAt).toLocaleString()}`,
     data.truncated ? "Window: bounded recent evidence (older records omitted)" : "Window: complete returned evidence",
     "",
-    JSON.stringify({ traces: data.traces, records: data.items }, null, 2),
+    JSON.stringify({ traces: data.traces, records: data.items, chatChanges: data.chatChanges }, null, 2),
   ].filter((line): line is string => line !== undefined).join("\n");
 }
 
@@ -79,39 +80,68 @@ export function AgentWorkTechnicalDetails({
   const query = useQuery({
     queryKey: queryKeys.agentWork.detail(projectId, conversationId, item.id),
     queryFn: () => api.getAgentWorkItemDetails(projectId, item.kind, item.recordId, { conversationId }),
-    enabled: expanded && item.details === undefined,
+    enabled: expanded && (item.details === undefined || item.kind === "activation" || item.kind === "run"),
     staleTime: 15_000,
   });
   const details = item.details ?? query.data?.details;
+  const messageTrace = query.data?.messageTrace;
+  const messageRecord = item.kind === "activation" || item.kind === "run";
   return <Box
     component="details"
     onToggle={(event) => setExpanded(event.currentTarget.open)}
     sx={{ mt: 0.75, "& > summary": { cursor: "pointer" } }}
   >
-    <Typography component="summary" variant="caption" color="text.secondary">Technical details</Typography>
+    <Typography component="summary" variant="caption" color="text.secondary">{messageRecord ? "Cause and result" : "Technical details"}</Typography>
     {query.isLoading ? <Stack direction="row" spacing={0.75} sx={{ alignItems: "center", mt: 0.75 }}>
       <CircularProgress size={14} /><Typography variant="caption">Loading technical details…</Typography>
     </Stack> : null}
     {query.isError ? <Alert severity="error" sx={{ mt: 0.75 }}>Technical details could not be loaded.</Alert> : null}
-    {details ? <Stack spacing={0.5} sx={{ mt: 0.75 }}>
+    {messageTrace ? <Stack spacing={1} component="section" aria-label="Message Cause And Result" sx={{mt: 1, overflowWrap: "anywhere"}}>
+      {messageTrace.inputs.length === 0 ? <Typography variant="body2">Message cause: Not recorded in this evidence window.</Typography> : null}
+      {messageTrace.inputs.map(input => <Stack key={input.activationId} spacing={0.5}>
+        <Typography variant="body2">Cause: Message from {input.sender}</Typography>
+        <Typography variant="body2">To: {input.recipient}</Typography>
+        <Typography variant="caption">Received: {input.createdAt ? new Date(input.createdAt).toLocaleString() : "Not recorded"}</Typography>
+        <Typography variant="body2" sx={{whiteSpace: "pre-wrap"}}>Requested work{input.textTruncated ? " (excerpt)" : ""}: {input.text}</Typography>
+        <Box component="details"><Typography component="summary" variant="caption">Message identifiers</Typography>
+          <Typography variant="caption" component="div">Communication: {input.communicationEventId}</Typography>
+          <Typography variant="caption" component="div">Wake-up: {input.activationId}</Typography>
+        </Box>
+      </Stack>)}
+      {messageTrace.runIds.length ? <Box component="details"><Typography component="summary" variant="caption">Connected Run identifiers</Typography>
+        {messageTrace.runIds.map(id => <Typography key={id} variant="caption" component="div">Run: {id}</Typography>)}
+      </Box> : <Typography variant="body2">Connected Run: Not recorded in this evidence window.</Typography>}
+      <Typography variant="subtitle2">Messages From The Recorded Runs ({messageTrace.replies.length})</Typography>
+      {messageTrace.inputs.length > 1 || messageTrace.replies.length > 1 ? <Typography variant="caption">Link: Run-level. Individual message pairing is not recorded.</Typography> : null}
+      {messageTrace.replies.length === 0 ? <Typography variant="body2">No reply found in this evidence window.</Typography> : null}
+      {messageTrace.replies.map(reply => <Stack key={`${reply.communicationEventId}:${reply.messageId}`} spacing={0.5}>
+        <Typography variant="body2">From: {reply.sender} · {new Date(reply.createdAt).toLocaleString()}</Typography>
+        <Typography variant="body2" sx={{whiteSpace: "pre-wrap"}}>{reply.textTruncated ? "Excerpt: " : ""}{reply.text}</Typography>
+        <Box component="details"><Typography component="summary" variant="caption">Reply identifiers</Typography>
+          <Typography variant="caption" component="div">Communication: {reply.communicationEventId}</Typography>
+          <Typography variant="caption" component="div">Message: {reply.messageId}</Typography>
+          <Typography variant="caption" component="div">Run: {reply.runId}</Typography>
+        </Box>
+      </Stack>)}
+      {messageTrace.truncated ? <Typography variant="caption">Bounded evidence: more records may exist.</Typography> : null}
+    </Stack> : null}
+    {details ? <Box component={messageRecord ? "details" : "div"} sx={{mt: 0.75}}>
+      {messageRecord ? <Typography component="summary" variant="caption">Technical fields</Typography> : null}
+      <Stack spacing={0.5} sx={{ mt: 0.75 }}>
       {details.length === 0 ? <Typography variant="caption" color="text.secondary">No technical fields were recorded.</Typography> : null}
       {details.map((detail) => <Box key={`${detail.label}:${detail.value}`}>
         <Typography variant="caption" sx={{ fontWeight: 700 }}>{detail.label}</Typography>
         <Typography component="pre" variant="caption" sx={{ m: 0, whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontFamily: "monospace" }}>{detail.value}</Typography>
       </Box>)}
-    </Stack> : null}
+    </Stack></Box> : null}
   </Box>;
 }
 
 function CopyRecordId({ id }: { id: string }): JSX.Element {
   const notify = useMutationNotification();
-  const [copied, setCopied] = useState(false);
-  return <Tooltip title={copied ? "Copied" : `Copy ID ${id}`}>
+  return <Tooltip title={`Copy ID ${id}`}>
     <IconButton size="small" aria-label={`Copy ID ${id}`} onClick={() => {
-      void copyText(id).then(() => {
-        setCopied(true);
-        globalThis.setTimeout(() => setCopied(false), 1_500);
-      }, () => notify({ key: "copy-record-id", message: "ID could not be copied. Check your browser clipboard permissions and try again.", severity: "error" }));
+      void copyText(id).then(() => notify({ key: "copy-record-id", message: "Copied" }), () => notify({ key: "copy-record-id", message: "ID could not be copied. Check your browser clipboard permissions and try again.", severity: "error" }));
     }}><ContentCopyIcon fontSize="inherit" /></IconButton>
   </Tooltip>;
 }
@@ -122,9 +152,9 @@ function TechnicalRecord({ projectId, conversationId, item, elementId, focused =
     tabIndex={focused ? -1 : undefined}
     sx={{ minWidth: 0, p: 1.25, borderRadius: 1.5, bgcolor: focused ? "action.selected" : "action.hover", outline: focused ? 2 : 0, outlineColor: "primary.main" }}
   >
-    <Stack direction="row" spacing={0.75} sx={{ alignItems: "center", minWidth: 0 }}>
+    <Stack direction={{ xs: "column", sm: "row" }} spacing={0.75} sx={{ alignItems: { xs: "flex-start", sm: "center" }, minWidth: 0 }}>
       <Chip size="small" variant="outlined" label={kindLabel(item.kind)} />
-      <Typography variant="subtitle2" sx={{ flex: 1, minWidth: 0, overflowWrap: "anywhere" }}>{item.title}</Typography>
+      <Typography variant="subtitle2" sx={{ flex: 1, minWidth: 0, width: { xs: "100%", sm: "auto" }, overflowWrap: "anywhere" }}>{item.title}</Typography>
       <Chip size="small" label={agentWorkStateLabel(item.state)} />
     </Stack>
     <Typography variant="body2" color="text.secondary" sx={{ mt: 0.75, overflowWrap: "anywhere" }}>{item.summary}</Typography>
@@ -170,7 +200,6 @@ export function AgentWorkInspector({
   });
   const [expandedTraceId, setExpandedTraceId] = useState<string>();
   const notify = useMutationNotification();
-  const [logsCopied, setLogsCopied] = useState(false);
   const [showScrollToLatest, setShowScrollToLatest] = useState(false);
   const scrollRegionRef = useRef<HTMLDivElement>(null);
   const positionedScopeRef = useRef<string>();
@@ -235,9 +264,9 @@ export function AgentWorkInspector({
   const technicalKinds = ["request", "join", "activation", "run", "decision"] as const;
 
   return <Stack sx={{ position: "relative", height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden" }}>
-      <Stack direction="row" spacing={1} sx={{ alignItems: "center", px: 2, py: 1.5, borderBottom: 1, borderColor: "divider" }}>
+      <Stack direction="row" spacing={1} sx={{ alignItems: "center", flexWrap: { xs: "wrap", sm: "nowrap" }, flexShrink: 0, px: 2, py: 1.5, borderBottom: 1, borderColor: "divider" }}>
         <Tooltip title={backLabel}><IconButton aria-label={backLabel} onClick={onClose}><ArrowBackIcon /></IconButton></Tooltip>
-        <Box sx={{ flex: 1, minWidth: 0 }}>
+        <Box sx={{ flex: 1, flexBasis: { xs: "calc(100% - 48px)", sm: "0%" }, minWidth: 0 }}>
           <Typography variant="h6">Diagnostics</Typography>
           <Typography variant="caption" color="text.secondary">Understand why work stopped or behaved unexpectedly.</Typography>
         </Box>
@@ -249,13 +278,10 @@ export function AgentWorkInspector({
           disabled={!query.data}
           onClick={() => {
             if (!query.data) return;
-            void copyText(diagnosticLogBundle(query.data)).then(() => {
-              setLogsCopied(true);
-              globalThis.setTimeout(() => setLogsCopied(false), 1_500);
-            }, () => notify({ key: "copy-diagnostic-logs", message: "Logs could not be copied. Check your browser clipboard permissions and try again.", severity: "error" }));
+            void copyText(diagnosticLogBundle(query.data)).then(() => notify({ key: "copy-diagnostic-logs", message: "Copied" }), () => notify({ key: "copy-diagnostic-logs", message: "Logs could not be copied. Check your browser clipboard permissions and try again.", severity: "error" }));
           }}
         >
-          {logsCopied ? "Copied" : "Copy Logs"}
+          Copy Logs
         </Button>
         <Tooltip title="Refresh Diagnostics"><span><IconButton aria-label="Refresh Diagnostics" disabled={query.isFetching} onClick={() => void query.refetch()}><RefreshIcon /></IconButton></span></Tooltip>
       </Stack>
@@ -302,6 +328,26 @@ export function AgentWorkInspector({
             />
           </Box> : focus?.id ? <Alert severity="warning">The focused technical record is not available in this bounded evidence window.</Alert> : null}
 
+          {query.data.chatChanges ? <Box component="section" aria-labelledby="chat-changes">
+            <Typography id="chat-changes" variant="overline" color="text.secondary">Chat Changes</Typography>
+            <Stack spacing={1}>
+              {query.data.chatChanges.truncated ? <Typography variant="caption" color="text.secondary">Showing recent Chat changes. Older events remain preserved.</Typography> : null}
+              {query.data.chatChanges.items.length === 0 ? <Typography variant="body2" color="text.secondary">No recorded Chat changes in this window.</Typography> : null}
+              {query.data.chatChanges.items.map(change => <Box key={change.id} sx={{ border: 1, borderColor: "divider", borderRadius: 1, p: 1.25, overflowWrap: "anywhere" }}>
+                <Typography variant="body2" fontWeight={700}>{change.titleChange ? "Chat renamed" : "Chat settings changed"}</Typography>
+                <Typography variant="caption" color="text.secondary">{new Date(change.createdAt).toLocaleString()}</Typography>
+                <Typography variant="body2">Previous title: {change.titleChange?.previousTitle ?? "Not recorded"}</Typography>
+                <Typography variant="body2">New title: {change.titleChange?.title ?? "Not recorded"}</Typography>
+                <Typography variant="body2">Changed by: {change.titleChange?.actor.kind === "operator_api" ? "Operator request" : change.titleChange?.actor.kind === "system" ? "System automatic title" : "Not recorded"}</Typography>
+                <Box component="details" sx={{ mt: 0.5 }}><Box component="summary" sx={{ cursor: "pointer", typography: "caption" }}>Technical details</Box>
+                  <Typography variant="caption" component="div">Workspace event: {change.id}</Typography>
+                  <Typography variant="caption" component="div">Origin: {change.titleChange?.origin === "operator_request" ? "Operator API request" : change.titleChange?.origin === "automatic_title" ? "Automatic title generation" : "Not recorded"}</Typography>
+                  <Typography variant="caption" component="div">Request ID: {change.titleChange?.requestId ?? "Not recorded"}</Typography>
+                </Box>
+              </Box>)}
+            </Stack>
+          </Box> : null}
+
           <Box component="section" aria-labelledby="diagnostic-workflows">
             <Typography id="diagnostic-workflows" variant="overline" color="text.secondary">Workflows</Typography>
             {orderedTraces.length === 0 ? <Alert severity="info">No diagnostic records are available for this scope.</Alert> : null}
@@ -329,24 +375,26 @@ export function AgentWorkInspector({
                 aria-label={`${expandedTraceId === trace.id ? "Collapse" : "Expand"} ${trace.title}`}
                 sx={{ minWidth: 0, px: 1.5, minHeight: 64, "& .MuiAccordionSummary-content": { minWidth: 0, my: 1.25 } }}
               >
-                <Stack direction="row" spacing={1} sx={{ width: "100%", minWidth: 0, alignItems: "center" }}>
+                <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ width: "100%", minWidth: 0, alignItems: { xs: "flex-start", sm: "center" } }}>
                   <Chip
                     size="small"
                     color={trace.coordinationRecovery ? "warning" : trace.state === "attention" ? "warning" : trace.state === "active" ? "info" : "default"}
                     label={trace.coordinationRecovery?.state === "synthesis_pending"
-                      ? "Synthesis pending"
-                      : trace.coordinationRecovery ? "Provider blocked"
-                        : trace.state === "attention" ? "Needs attention" : trace.state === "active" ? "Active" : "Finished"}
+                      ? "Synthesis Pending"
+                      : trace.coordinationRecovery ? "Provider Blocked"
+                        : trace.state === "attention" ? "Needs Attention" : trace.state === "active" ? "Active" : "Finished"}
                   />
-                  <Box sx={{ flex: 1, minWidth: 0 }}>
-                    <Typography variant="subtitle2" fontWeight={750} noWrap>{trace.title}</Typography>
+                  <Box sx={{ flex: 1, width: { xs: "100%", sm: "auto" }, minWidth: 0 }}>
+                    <Typography variant="subtitle2" fontWeight={750} noWrap sx={{ whiteSpace: { xs: "normal", sm: "nowrap" }, overflowWrap: "anywhere" }}>{trace.title}</Typography>
                     <Typography variant="body2" color="text.secondary" sx={{ overflowWrap: "anywhere" }}>{trace.summary}</Typography>
                     {trace.coordinationRecovery ? <Typography variant="caption" color="warning.main">
                       Retry eligible · next retry {new Date(trace.coordinationRecovery.nextRetryAt).toLocaleString()}. Changing this Agent’s engine or model resumes the retained wake-up immediately.
                     </Typography> : null}
                   </Box>
-                  <Typography variant="caption" color="text.secondary">{traceItems.length} records</Typography>
-                  <Typography variant="caption" color="text.secondary">{new Date(trace.updatedAt).toLocaleString()}</Typography>
+                  <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ flexShrink: 0 }}>
+                    <Typography variant="caption" color="text.secondary">{traceItems.length} records</Typography>
+                    <Typography variant="caption" color="text.secondary">{new Date(trace.updatedAt).toLocaleString()}</Typography>
+                  </Stack>
                 </Stack>
               </AccordionSummary>
               <AccordionDetails sx={{ pt: 0, px: 1 }}>
@@ -411,10 +459,12 @@ export function AgentWorkInspector({
             <Typography id="execution-history" variant="overline" color="text.secondary">Execution History</Typography>
             <Stack spacing={0.75}>
               {executionItems.map((item) => <Accordion key={item.id} disableGutters variant="outlined" sx={{ "&:before": { display: "none" } }}>
-                <AccordionSummary expandIcon={<ExpandMoreIcon />}><Stack direction="row" spacing={1} sx={{ alignItems: "center", width: "100%" }}>
-                  <Typography variant="subtitle2" sx={{ flex: 1 }}>{item.title}</Typography>
-                  <Chip size="small" label={agentWorkStateLabel(item.state)} />
-                  <Typography variant="caption" color="text.secondary">{new Date(item.createdAt).toLocaleString()}</Typography>
+                <AccordionSummary expandIcon={<ExpandMoreIcon />}><Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ alignItems: { xs: "stretch", sm: "center" }, width: "100%", minWidth: 0 }}>
+                  <Typography variant="subtitle2" sx={{ flex: 1, minWidth: 0, whiteSpace: "normal", overflowWrap: "anywhere" }}>{item.title}</Typography>
+                  <Stack direction="row" spacing={1} sx={{ alignItems: "center", flexWrap: { xs: "wrap", sm: "nowrap" }, flexShrink: { sm: 0 }, minWidth: 0 }}>
+                    <Chip size="small" label={agentWorkStateLabel(item.state)} />
+                    <Typography variant="caption" color="text.secondary" sx={{ minWidth: 0, overflowWrap: "anywhere" }}>{new Date(item.createdAt).toLocaleString()}</Typography>
+                  </Stack>
                 </Stack></AccordionSummary>
                 <AccordionDetails><TechnicalRecord projectId={projectId} conversationId={conversationId} item={item} /></AccordionDetails>
               </Accordion>)}
@@ -452,7 +502,7 @@ export function AgentWorkInspector({
       </Box>
       <ScrollToLatestButton
         visible={showScrollToLatest}
-        label="Jump to latest workflow"
+        label="Jump To Latest Workflow"
         onClick={() => {
           const region = scrollRegionRef.current;
           if (!region) return;

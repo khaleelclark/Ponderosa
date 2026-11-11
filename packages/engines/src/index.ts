@@ -1,8 +1,8 @@
 // @ponderosa/engines — Adapter interface (re-exported from core) + engine adapters
 // + event mappers. The ONLY package that knows engine-specific event shapes
 // (AGENTS.md invariant 2). apps/server depends on this; nothing here calls a
-// provider HTTP API or reads an API key (invariant 1) — engines are driven as
-// already-authenticated CLIs (subscription auth).
+// provider HTTP API or stores credentials — engines are driven as
+// already-authenticated CLIs (subscription or configured API-key mode).
 
 export { CodexAdapter, renderSeedPrompt } from "./codex.js";
 export { CodexAppServerSession, mapCodexAppServerNotification } from "./codex-app-server.js";
@@ -12,11 +12,11 @@ export { ClaudeModelCatalogProbe, claudeModelDisplayName, normalizeClaudeProvide
 export { ClaudeStreamSession } from "./claude-stream-session.js";
 export type { ClaudeAdapterOptions } from "./claude.js";
 export { mapCodexEvent, mapFileChangeKind } from "./events.js";
-export { AgentEventProjectionError, projectAgentEvent } from "./agent-event-projection.js";
+export { AgentEventProjectionError, projectAgentEvent, projectReplyToolEvent } from "./agent-event-projection.js";
 export { mapClaudeEvent } from "./claude-events.js";
 export type { CodexMapContext } from "./events.js";
 export { streamProcess } from "./process.js";
-export { processBirthMarker, processGroupAlive, recoveredRuntimeProcessHandle, runtimeProcessIdentity, terminateProcessGroup } from "./process-termination.js";
+export { processBirthMarker, processGroupAlive, recoveredRuntimeProcessHandle, runtimeProcessHandle, runtimeProcessIdentity, terminateProcessGroup } from "./process-termination.js";
 export { spawnWindowsContainedProcess } from "./windows-job-process.js";
 export type { NativeProcessTreeAuthority } from "./process-termination.js";
 export { JSONL_MAX_RECORD_BYTES, JsonlRecordLimitError, LineBuffer, parseJsonLine, parseJsonlChunks } from "./jsonl.js";
@@ -70,9 +70,16 @@ export function defaultEngineRegistrations(
         modelEnvironment: env,
       }),
       isInstalled: () => installed(claudeBin),
-      authStatus: () => installed(claudeBin)
-        ? claudeAuthStatus(env) : Promise.resolve({ authenticated: false }),
-      availabilityProbe: options => claudeAvailabilityStatus(env, undefined, () => options?.authObservation ? Promise.resolve(options.authObservation) : claudeAuthStatus(env), options),
+      authStatus: options => installed(claudeBin)
+        ? claudeAuthStatus(env, options) : Promise.resolve({ authenticated: false }),
+      availabilityProbe: options => claudeAvailabilityStatus(env, undefined, () => options?.authObservation ? Promise.resolve(options.authObservation) : claudeAuthStatus(env, options), options),
     },
   ];
 }
+
+export { spawnContainedCli } from "./contained-spawn.js";
+export { runtimeEnvironment, inheritedProviderCredentialValues } from "./runtime-environment.js";
+
+export {CodexResponseText} from "./codex-response-text.js";
+
+export { SteeringAuthorityChangedError } from "./steering-preflight.js";

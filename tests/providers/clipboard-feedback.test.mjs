@@ -44,8 +44,11 @@ function setup({ clipboard, command = () => true, select = () => {} } = {}) {
   const helper = load('clipboard.ts', {}, globals);
   const client = new QueryClient({ defaultOptions: { mutations: { gcTime: Infinity } } });
   let observer;
+  const currentReport = {};
   const usage = load('components/ProviderUsageCenter.tsx', {
     '../clipboard': helper, '../api': {}, '../providerUsageQuery': {}, '../queryKeys': {}, './providerUsagePresentation': {},
+    './MutationNotifications': { useMutationNotification: () => notice => notices.push(notice) },
+    react: { ...React, useRef: () => currentReport },
     '@tanstack/react-query': { useMutation(options) {
       observer ??= new MutationObserver(client, options);
       observer.setOptions(options);
@@ -82,7 +85,7 @@ for (const mode of ['modern', 'missing', 'denied']) test(`support report: ${mode
   assert.deepEqual(report, { provider: 'fixture', status: 'unavailable', failure: {
     code: 'invalid_provider_response', correlationId: 'owned', occurredAt: '2026-10-19T00:00:00Z', runtimeVersion: 'fixture-1',
   } });
-  assert.ok(f.alerts().some(item => item.severity === 'success' && item.text === 'Support report copied.'));
+  assert.deepEqual(f.notices.map(notice => [notice.key, notice.message]), [['copy-support-report', 'Copied']]);
   assert.equal(f.nodes.size, 0);
 });
 test('support report: denied fallback is handled, retry succeeds, changed report does not retain prior success', async t => {
@@ -91,13 +94,13 @@ test('support report: denied fallback is handled, retry succeeds, changed report
   t.after(f.close);
   await f.copyReport();
   assert.ok(f.alerts().some(item => item.severity === 'error' && /could not be copied/.test(item.text)));
-  assert.ok(!f.alerts().some(item => item.severity === 'success'));
+  assert.equal(f.notices.length, 0);
   allowed = true;
   await f.copyReport();
-  assert.ok(f.alerts().some(item => item.severity === 'success'));
+  assert.deepEqual(f.notices.map(notice => notice.message), ['Copied']);
   assert.ok(!f.alerts().some(item => item.severity === 'error'));
   f.state.failure.correlationId = 'next-report';
-  assert.ok(!f.alerts().some(item => item.severity === 'success'));
+  assert.equal(f.notices.length, 1, 'Rerendering another report never repeats the acknowledgment');
   assert.equal(f.nodes.size, 0);
 });
 test('support report: pending write disables repeat and only confirms after completion', async t => {
@@ -107,9 +110,23 @@ test('support report: pending write disables repeat and only confirms after comp
   const pending = f.copyReport();
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(f.button().props.disabled, true);
-  assert.ok(!f.alerts().some(item => item.severity === 'success'));
+  assert.equal(f.notices.length, 0);
   settle(); await pending;
   assert.equal(f.button().props.disabled, false);
+  assert.equal(f.notices.length, 1);
+  f.button();
+  assert.equal(f.notices.length, 1, 'Rerendering does not emit another acknowledgment');
+});
+test('support report: repeated confirmed copies emit a fresh shared acknowledgment without altering mutation state on rerender', async t => {
+  const f = setup();
+  t.after(f.close);
+  await f.copyReport();
+  await f.copyReport();
+  assert.deepEqual(f.notices.map(notice => [notice.key, notice.message]), [
+    ['copy-support-report', 'Copied'], ['copy-support-report', 'Copied'],
+  ]);
+  f.button(); f.alerts();
+  assert.equal(f.notices.length, 2);
 });
 test('support report: completion of a previous report cannot confirm the current report', async t => {
   let settle;
@@ -121,6 +138,7 @@ test('support report: completion of a previous report cannot confirm the current
   f.button();
   settle(); await pending;
   assert.ok(!f.alerts().some(item => item.severity === 'success' || item.severity === 'error'));
+  assert.equal(f.notices.length, 0, 'Old report completion cannot announce a newer report');
 });
 for (const stage of ['select', 'command']) test(`clipboard fallback removes its private textarea when ${stage} throws`, async t => {
   const f = setup({ [stage]: () => { throw Error('Owned browser failure'); } });

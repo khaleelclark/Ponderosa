@@ -39,12 +39,14 @@ export interface BrowserSpeechRecognition {
   lang: string;
   maxAlternatives: number;
   unspokenPunctuation?: boolean;
+  onspeechend?: (() => void) | null;
+  onspeechstart?: (() => void) | null;
   onend: (() => void) | null;
   onerror: ((event: BrowserSpeechRecognitionErrorEvent) => void) | null;
   onresult: ((event: BrowserSpeechRecognitionEvent) => void) | null;
   onstart: (() => void) | null;
   abort(): void;
-  start(): void;
+  start(audioTrack?: MediaStreamTrack): void;
   stop(): void;
 }
 

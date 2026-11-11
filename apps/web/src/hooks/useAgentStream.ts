@@ -1,13 +1,14 @@
+import {productApiPath} from "../api/productScope.js";
 import { unifiedDiffLineTotals } from "@ponderosa/core";
 import type { AgentActivityDto, AgentEvent, AgentRunDto, ArtifactDto, ChangedFileDto, ResponseFileActivityDto, SseEventEnvelope, WorkItemDto, RunOutputDto, AgentDetailDto } from "@ponderosa/core";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
-import { boundLiveAgentTelemetry } from "../agentLiveProjection";
+import { appendLiveRunText, closeLiveRunText, boundLiveAgentTelemetry } from "../agentLiveProjection";
 import type { StreamSubscription } from "../api/types";
 import { compactDefined } from "../collections";
 import { queryKeys } from "../queryKeys";
-import { invalidateForBrowserPage } from "../queryVisibility";
+import { browserPageIsVisible, createForegroundTimer, invalidateForBrowserPage } from "../queryVisibility";
 import { registerLiveAgentStream } from "./agentStreamRegistry";
 import { reconcileCursor } from "./streamCursor";
 import { removeBrowserStorage } from "../browserStorage";
@@ -17,6 +18,7 @@ import { createBoundedRefresh } from "../boundedRefresh";
 export interface StreamState {
   connected: boolean;
   connectionStatus: WorkspaceConnectionStatus;
+  retry?(): void;
 }
 
 const initialStreamState: StreamState = {
@@ -257,30 +259,8 @@ function updateAgentDetail(agentId: string, envelope: SseEventEnvelope, detail: 
     const runOutput = compactDefined(detail.runOutput ?? []);
     const executionId = event.executionId ?? `live:${seq}`;
     const kind = event.type === "reasoning" ? "reasoning" : "response";
-    const existing = [...runOutput].reverse().find((entry) =>
-      !entry.completed && entry.executionId === executionId && entry.kind === kind);
-    const id = existing?.id ?? `${agentId}:runOutput:${seq}`;
-    const next: RunOutputDto = existing ? {
-      ...existing,
-      text: `${existing.text}${event.delta}`,
-      sourceSeqEnd: seq,
-    } : {
-      id,
-      agentId,
-      executionId,
-      kind,
-      text: event.delta,
-      completed: false,
-      seq,
-      sourceSeqStart: seq,
-      sourceSeqEnd: seq,
-      createdAt: ts,
-    };
-    const closed = runOutput.map((entry) =>
-      entry.completed || entry.id === existing?.id ? entry : { ...entry, completed: true });
-    const nextRunOutput = existing
-        ? closed.map((entry) => entry.id === id ? next : entry)
-        : [...closed, next];
+    const nextRunOutput=appendLiveRunText(runOutput,{agentId,executionId,kind,seq,createdAt:ts,delta:event.delta});
+    if(nextRunOutput===runOutput)return detail;
     const priorFileActivity = kind === "response"
       ? [...runOutput].reverse().find((entry) =>
           entry.executionId === executionId && entry.kind === "response")?.fileActivity
@@ -335,6 +315,7 @@ function updateAgentDetail(agentId: string, envelope: SseEventEnvelope, detail: 
     return {
       ...detail,
       runs: existing ? runs.map((run) => run.id === event.executionId ? nextRun : run) : [...runs, nextRun],
+      runOutput: terminal ? closeLiveRunText(detail.runOutput,event.executionId) : detail.runOutput,
     };
   }
 
@@ -417,7 +398,7 @@ function updateAgentDetail(agentId: string, envelope: SseEventEnvelope, detail: 
     const artifacts = compactDefined(detail.artifacts);
     const id = projectedArtifactId(agentId, seq);
     if (artifacts.some((artifact) => artifact.id === id)) return detail;
-    const root = `/api/projects/${encodeURIComponent(detail.agent.projectId)}/agents/${encodeURIComponent(agentId)}/browser-artifacts/${encodeURIComponent(id)}`;
+    const root = productApiPath(`/api/projects/${encodeURIComponent(detail.agent.projectId)}/agents/${encodeURIComponent(agentId)}/browser-artifacts/${encodeURIComponent(id)}`);
     const artifact: ArtifactDto = {
       id, agentId, executionId: event.executionId, kind: "screenshot", path: event.path,
       summary: `Browser screenshot (${event.width}×${event.height})`, createdAt: ts,
@@ -435,6 +416,7 @@ export function useAgentStream(
 ): StreamState {
   const queryClient = useQueryClient();
   const [state, setState] = useState<StreamState>(initialStreamState);
+  const [retryGeneration, setRetryGeneration] = useState(0);
   const lastSeqRef = useRef<number | undefined>(undefined);
   const projectIdRef = useRef(knownProjectId);
   const retryProjectReconciliationRef = useRef<() => void>(() => undefined);
@@ -452,20 +434,43 @@ export function useAgentStream(
     setState(initialStreamState);
 
     let stopped = false;
+    let textFlushTimer: ReturnType<typeof setTimeout> | undefined;
+    let pendingText: SseEventEnvelope[] = [];
+    const flushText = () => {
+      if(textFlushTimer)clearTimeout(textFlushTimer);
+      textFlushTimer=undefined;
+      if(!pendingText.length)return;
+      const batch=pendingText;pendingText=[];
+      queryClient.setQueriesData<AgentDetailDto>({queryKey:queryKeys.agents.detailPrefix(agentId)},detail=>
+        detail?boundLiveAgentTelemetry(batch.reduce((current,envelope)=>updateAgentDetail(agentId,envelope,current),detail)):detail);
+    };
     let subscription: StreamSubscription | undefined;
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
     let instanceMismatchDelay = INSTANCE_MISMATCH_INITIAL_DELAY_MS;
     let unregisterLiveStream: (() => void) | undefined;
     let disconnected = false;
     let connectedOnce = false;
-    let reconnectNoticeTimer: ReturnType<typeof setTimeout> | undefined;
-    let staleNoticeTimer: ReturnType<typeof setTimeout> | undefined;
-    const clearConnectionTimers = () => {
-      if (reconnectNoticeTimer) clearTimeout(reconnectNoticeTimer);
-      if (staleNoticeTimer) clearTimeout(staleNoticeTimer);
-      reconnectNoticeTimer = undefined;
-      staleNoticeTimer = undefined;
+    let catchUpCursor: number | undefined;
+    let awaitingCatchUp = true;
+    const foregroundWarning = createForegroundTimer(() => {
+      if (!stopped && (disconnected || awaitingCatchUp)) setState(current => ({ ...current,
+        connectionStatus: connectedOnce ? "stale" : "unavailable" }));
+    }, 8_000);
+    const clearConnectionTimers = () => foregroundWarning.clear();
+    const confirmCatchUp = () => {
+      if (catchUpCursor === undefined || (lastSeqRef.current ?? 0) < catchUpCursor) return;
+      awaitingCatchUp = false;
+      clearConnectionTimers();
+      setState(current => ({ ...current, connected: true, connectionStatus: "live" }));
     };
+    const visibility = () => {
+      awaitingCatchUp = true;
+      catchUpCursor = undefined;
+      setState(current => ({ ...current, connectionStatus: connectedOnce ? "reconnecting" : "connecting" }));
+      if (browserPageIsVisible()) foregroundWarning.start();
+    };
+    document.addEventListener("visibilitychange", visibility);
+    foregroundWarning.start();
     let reconcileTimer: ReturnType<typeof setTimeout> | undefined;
     let reconcileDueAt = 0;
     let nextCoordinationUrgentAt = 0;
@@ -559,34 +564,36 @@ export function useAgentStream(
         onOpen() {
           disconnected = false;
           connectedOnce = true;
-          clearConnectionTimers();
+          awaitingCatchUp = true;
+          catchUpCursor = undefined;
+          foregroundWarning.start();
           markStreamDisconnected();
           unregisterLiveStream = registerLiveAgentStream(agentId);
-          setState((current) => ({ ...current, connected: true, connectionStatus: "live" }));
+          setState((current) => ({ ...current, connected: true, connectionStatus: "reconnecting" }));
         },
         onError() {
           markStreamDisconnected();
           setState((current) => ({ ...current, connected: false }));
           if (disconnected) return;
           disconnected = true;
-          reconnectNoticeTimer = setTimeout(() => {
-            if (!stopped && disconnected) setState(current => ({ ...current,
-              connectionStatus: connectedOnce ? "reconnecting" : "connecting" }));
-          }, 1_000);
-          staleNoticeTimer = setTimeout(() => {
-            if (!stopped && disconnected) setState(current => ({ ...current,
-              connectionStatus: connectedOnce ? "stale" : "unavailable" }));
-          }, 8_000);
+          awaitingCatchUp = true;
+          catchUpCursor = undefined;
+          foregroundWarning.start();
+          setState(current => ({ ...current, connectionStatus: connectedOnce ? "reconnecting" : "connecting" }));
         },
         onStatus(status) {
+          flushText();
           const changedInstance = Boolean(cursor.instanceId && cursor.instanceId !== status.instanceId);
           if (changedInstance) {
+            awaitingCatchUp = true;
+            catchUpCursor = undefined;
+            foregroundWarning.start();
             const baseline = status.snapshot ? status.cursor : 0;
             lastSeqRef.current = baseline;
             cursor.lastSeq = baseline;
             cursor.instanceId = status.instanceId;
             rememberCursor(agentId, cursor);
-            setState({ ...initialStreamState, connected: true, connectionStatus: "live" });
+            setState({ ...initialStreamState, connected: false, connectionStatus: "reconnecting" });
             scheduleReconciliation({ detail: true, roster: true, health: true, usage: true });
             markStreamDisconnected();
             nextSubscription.close();
@@ -603,11 +610,12 @@ export function useAgentStream(
             }
             return;
           }
+          catchUpCursor = status.cursor;
           instanceMismatchDelay = INSTANCE_MISMATCH_INITIAL_DELAY_MS;
           if (status.snapshot || status.reset || (lastSeqRef.current ?? 0) > status.cursor) {
             lastSeqRef.current = status.snapshot ? status.cursor : 0;
             cursor.lastSeq = lastSeqRef.current;
-            setState({ ...initialStreamState, connected: true, connectionStatus: "live" });
+            setState({ ...initialStreamState, connected: true, connectionStatus: "reconnecting" });
             const urgent = Date.now() >= nextSnapshotUrgentAt;
             if (urgent) nextSnapshotUrgentAt = Date.now() + 5_000;
             scheduleReconciliation({ detail: true, roster: true, health: true, usage: true },
@@ -615,6 +623,7 @@ export function useAgentStream(
           }
           cursor.instanceId = status.instanceId;
           rememberCursor(agentId, cursor);
+          confirmCatchUp();
         },
         onEvent(envelope) {
           const reconciliation = reconcileCursor(
@@ -626,6 +635,7 @@ export function useAgentStream(
           lastSeqRef.current = reconciliation.cursor;
           cursor.lastSeq = reconciliation.cursor;
           rememberCursor(agentId, cursor);
+          confirmCatchUp();
 
           if (reconciliation.gap) {
             scheduleReconciliation({ detail: true, roster: true, health: true, usage: true });
@@ -643,17 +653,19 @@ export function useAgentStream(
             return;
           }
 
-          setState((current) => {
-            return current.connected && current.connectionStatus === "live"
-              ? current
-              : { ...current, connected: true, connectionStatus: "live" };
-          });
 
-          queryClient.setQueriesData<AgentDetailDto>({ queryKey: queryKeys.agents.detailPrefix(agentId) }, (detail) =>
-            detail
-              ? boundLiveAgentTelemetry(updateAgentDetail(agentId, envelope, detail))
-              : detail,
-          );
+
+          // Preserve every delta in order, but publish at most once per frame-sized
+          // interval. Tools and lifecycle changes flush text before their own update.
+          if(envelope.event.type==='text'||envelope.event.type==='reasoning'){
+            pendingText.push(envelope);
+            if(pendingText.length>=64||document.visibilityState==='hidden')flushText();
+            else textFlushTimer??=setTimeout(flushText,16);
+          }else{
+            flushText();
+            queryClient.setQueriesData<AgentDetailDto>({ queryKey: queryKeys.agents.detailPrefix(agentId) }, detail =>
+              detail?boundLiveAgentTelemetry(updateAgentDetail(agentId,envelope,detail)):detail);
+          }
 
           if (envelope.event.type === "text" && envelope.event.presentation === "progress") {
             publicProgressRefresh.schedule();
@@ -688,20 +700,22 @@ export function useAgentStream(
 
     return () => {
       stopped = true;
+      flushText();
       subscription?.close();
       markStreamDisconnected();
-      clearConnectionTimers();
+      foregroundWarning.dispose();
+      document.removeEventListener("visibilitychange", visibility);
       retryProjectReconciliationRef.current = () => undefined;
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (reconcileTimer) clearTimeout(reconcileTimer);
       publicProgressRefresh.dispose();
     };
-  }, [queryClient, agentId]);
+  }, [queryClient, agentId, retryGeneration]);
 
   useEffect(() => {
     projectIdRef.current = knownProjectId;
     retryProjectReconciliationRef.current();
   }, [knownProjectId]);
 
-  return useMemo(() => state, [state]);
+  return useMemo(() => ({ ...state, retry: () => setRetryGeneration(value => value + 1) }), [state]);
 }

@@ -1,5 +1,7 @@
 // From repository root: node apps/web/node_modules/@rsbuild/core/bin/rsbuild.js dev --config tests/chats/fixtures/composer/rsbuild.config.mjs
 // Open the printed loopback URL; repeat ?mode=authored/default/required, &change=validity and &theme=light.
+// Add &caretRepair to reproduce focus repair during native input: Inspect must
+// retain "thanks" and the first input's native caret offset (control: "hankst").
 // At the same viewport compare ?text=, ?text=hello, and ?text=%23Bryce-Canyon%20hello.
 // Inspect must report equal single-line editor/paragraph heights; wrapped lines must still grow.
 import { createRequire } from 'node:module';

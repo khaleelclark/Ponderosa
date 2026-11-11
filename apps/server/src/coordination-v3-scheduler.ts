@@ -1,3 +1,4 @@
+import type { RuntimeInputFile } from "@ponderosa/core";
 import type { ActivationTerminalOutcome, CoordinationV3Store, ProviderOperation, SchedulerLease, SteeringLease } from "@ponderosa/agents";
 
 export interface CoordinationV3DispatchResult {
@@ -33,7 +34,14 @@ export interface CoordinationV3SchedulerMetrics {
 export const DISPATCH_LATENCY_SAMPLE_LIMIT = 256;
 
 export interface ActivationPromptCompilation {
+  inputFiles?: RuntimeInputFile[];
   prompt: string;
+}
+
+export interface WorkflowOperations {
+  tick(admit: boolean): Promise<void>;
+  requestStop?(): void;
+  stop(): Promise<void>;
 }
 
 export type ActivationPromptCompilationErrorCode =
@@ -89,6 +97,8 @@ export class CoordinationV3Scheduler {
   private timer?: NodeJS.Timeout;
   private draining = false;
   private readonly dispatchJobs = new Set<Promise<void>>();
+  private workflowJob?: Promise<void>;
+  private contextRecoveryJob?: Promise<void>;
   private stopped = false;
   private leasingPaused = false;
   private maintenanceDrains = 0;
@@ -123,7 +133,6 @@ export class CoordinationV3Scheduler {
       leaseMs?: number;
       coalesceLimit?: number;
       maxDeliveryFailures?: number;
-      steeringRecoveryGraceMs?: number;
       dispatchSteering?: (
         lease: SteeringLease,
         prompt: string,
@@ -151,6 +160,10 @@ export class CoordinationV3Scheduler {
       onRunLeased?: (lease: SchedulerLease) => void;
       /** Keep durable work queued while its provider is known unavailable. */
       blockedAgentIds?: () => readonly string[] | Promise<readonly string[]>;
+      /** Preflight exactly the candidate that the subsequent claim may lease. */
+      prepareRunAdmission?: (excludedAgentIds:readonly string[]) => Promise<string|null>;
+      workflowOperations?: WorkflowOperations;
+      reconcileContextRecoveries?: () => Promise<void>;
     },
   ) {
     this.maxConcurrentRuns = options.maxConcurrentRuns ?? 8;
@@ -203,13 +216,19 @@ export class CoordinationV3Scheduler {
     this.schedule(0);
   }
 
-  async stop(): Promise<void> {
+  requestStop(): void {
     this.stopped = true;
     if (this.timer) clearTimeout(this.timer);
     this.timer = undefined;
+    this.options.workflowOperations?.requestStop?.();
+  }
+
+  async stop(): Promise<void> {
+    this.requestStop();
     if (this.draining || this.dispatchJobs.size) {
       await new Promise<void>((resolve) => this.stopWaiters.add(resolve));
     }
+    await this.options.workflowOperations?.stop();
   }
 
   snapshotMetrics(): CoordinationV3SchedulerMetrics {
@@ -228,9 +247,6 @@ export class CoordinationV3Scheduler {
       // admission limit. Otherwise one stale injected Run can permanently fill
       // a saturated budget and prevent leaseNextRun's transactional recovery.
       this.store.recoverExpiredRuns(now);
-      for (const agentId of this.store.processDueSteeringRecoveries(now)) {
-        this.options.onMessageDeliveryChanged?.(agentId);
-      }
       for (const item of this.store.claimOutbox(this.options.workerId, 500, now)) {
         try {
           await this.options.processOutbox?.({
@@ -277,6 +293,28 @@ export class CoordinationV3Scheduler {
           if (typeof agentId === "string") this.options.onMessageDeliveryChanged?.(agentId);
         }
       }
+      if (this.isLeasingRuns() && this.options.reconcileContextRecoveries && !this.contextRecoveryJob) {
+        const job=this.trackDispatch(async()=>{
+          try { await this.options.reconcileContextRecoveries!(); }
+          catch(error) { this.metrics.lastDispatchError=error instanceof Error?error.message:String(error); }
+        });
+        this.contextRecoveryJob=job;
+        void job.then(()=>{if(this.contextRecoveryJob===job)this.contextRecoveryJob=undefined;});
+      }
+      if (this.options.workflowOperations && !this.workflowJob) {
+        // One supervised workflow pass may await filesystem/import work. Keep
+        // normal Run admission and exact-Run cancellation polling independent.
+        // Tracking it still makes pause/stop await its observed completion.
+        const operations = this.options.workflowOperations;
+        const job = this.trackDispatch(async () => {
+          try { await operations.tick(this.isLeasingRuns()); }
+          catch (error) {
+            this.metrics.lastDispatchError = error instanceof Error ? error.message : String(error);
+          }
+        });
+        this.workflowJob = job;
+        void job.then(() => { if (this.workflowJob === job) this.workflowJob = undefined; });
+      }
       if (this.isLeasingRuns() && this.options.dispatchSteering) {
         while (this.isLeasingRuns()) {
           const steering = this.store.leaseNextSteering({ workerId: this.options.workerId, now });
@@ -289,12 +327,16 @@ export class CoordinationV3Scheduler {
         // each lease so newly creating/deleting Agents cannot cross this gate.
         const excludedAgentIds = await this.options.blockedAgentIds?.();
         if (!this.isLeasingRuns() || this.store.activeRunCount() >= this.maxConcurrentRuns) break;
+        const expectedActivationId = this.options.prepareRunAdmission
+          ? await this.options.prepareRunAdmission(excludedAgentIds ?? []) : undefined;
+        if (!this.isLeasingRuns() || this.store.activeRunCount() >= this.maxConcurrentRuns) break;
         const lease = this.store.leaseNextRun({
           workerId: this.options.workerId,
           leaseMs: this.options.leaseMs,
           coalesceLimit: this.options.coalesceLimit,
           now: new Date().toISOString(),
           excludedAgentIds,
+          ...(this.options.prepareRunAdmission ? { expectedActivationId } : {}),
         });
         if (!lease) break;
         this.options.onRunLeased?.(lease);
@@ -349,6 +391,7 @@ export class CoordinationV3Scheduler {
         runId: steering.runId,
         fencingToken: steering.fencingToken,
         prompt,
+        inputFiles: compilation.inputFiles,
       });
     } catch (error) {
       this.metrics.rejectedRuns += 1;
@@ -398,7 +441,6 @@ export class CoordinationV3Scheduler {
           injectionId: steering.injectionId,
           runId: steering.runId,
           fencingToken: steering.fencingToken,
-          recoveryGraceMs: this.options.steeringRecoveryGraceMs,
           error: result.error,
         });
         else this.store.deferSteering({
@@ -429,6 +471,7 @@ export class CoordinationV3Scheduler {
         runId: lease.runId,
         fencingToken: lease.fencingToken,
         prompt,
+        inputFiles: compilation.inputFiles,
       });
     } catch (error) {
       this.metrics.rejectedRuns += 1;
@@ -676,13 +719,14 @@ export function compileActivationPrompt(
     const prompt = [
     "[ACTIVE WORK · SCHEDULER | AUTHORITATIVE]",
     `Run: ${lease.runId}. Prompt injection fence: ${lease.injectionId}.`,
-    `After acknowledging this prompt, include steeringInjectionId:${lease.injectionId} in any ponderosa_message call.`,
+    `After acknowledging this prompt, include steeringInjectionId:${lease.injectionId} in any ponderosa_message and ponderosa_update_request call; for a Request in this prompt also include its exact requestId in ponderosa_update_request.`,
     "Handle every source exactly once. A human or urgent activation does not cancel your open joins.",
     "Ordinary runtime output is only a Work log. For an uncorrelated human-authored message, reply with ponderosa_message({text}) when the Run has one canonical route. If coalesced human sources require different routes, publish once per required route with an explicit intent. An uncorrelated Agent-authored ordinary or urgent message is input, not an automatic reply obligation: act on explicit actionable asks and reply only when the payload actually requires a response; never bounce a terminal or no-reply acknowledgement.",
-    "For an inbound correlated Request, report its canonical result with ponderosa_update_request({text}), or ask its requester a blocking follow-up with ponderosa_update_request({question}). Ponderosa selects the sole attached Request and generates stable idempotency. Use advanced fields only for multiple Requests or other update kinds.",
+    "For an inbound correlated Request, report its canonical result with ponderosa_update_request({text}), or ask its requester a blocking follow-up with ponderosa_update_request({question}). For a Request steered into this Run, include its exact requestId and the latest steeringInjectionId. Otherwise Ponderosa selects the sole attached Request. It generates stable idempotency; specify requestId when multiple Requests are attached.",
     "A terminal join activation may include continuations: inbound parent requests suspended while you waited for child work. After integrating the final joined outcomes, terminally update every nonterminal continuation with ponderosa_update_request before ending. Intermediate coordination_join_progress activations preserve those continuations and return them to durable waiting when the Run ends.",
     "Recipients do not inherit a requester's hidden prompt or provider-session context. Work only from the durable request payload and referenced artifacts; ask one blocking question when required information is genuinely absent.",
-    "Keep bounded work bounded: inspect only what the request needs, verify once, publish one terminal result after work and edits are complete, then stop.",
+    "Work to the human's complete objective and completion criteria, incorporating later steering. A finished batch, peer report or provider Run is not completion of the whole objective. Follow the human's requested implementation and verification order. Publish a terminal result only when the whole request is complete; if a real prerequisite needs a human answer, create an actionable blocking Decision and preserve the unfinished task. A handoff-only Run stops after its handoff so the runtime can continue the task.",
+    "Keep peer exchanges concise: the ask or owned result, changed facts, exact blocker and evidence references. Put large outputs in artifacts instead of repeating the task or forwarding complete reports.",
     "For an outbound request, do not repeat or forward the recipient's update; consume its outcome directly. Only the requester or user may answer, cancel, or supersede it.",
     ...(resultMaterials.size ? [
       inlineResults

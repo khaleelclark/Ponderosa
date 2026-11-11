@@ -2,7 +2,11 @@ import type Database from "better-sqlite3";
 
 // Shared ordinary/offline read accounting. No converter, native host, new
 // database, profile cache, or caller admission witness belongs in this module.
-export const STATE_READ_LIMITS = Object.freeze({ rows: 16_000_000, objects: 512,
+// Canonical initialization adds two memory receipt tables and their indexes
+// to the prior 603-object schema. A fixed 609-object envelope admits these
+// four objects and retains a hard excess guard.
+// Ordinary row, byte, column and work limits are unchanged.
+export const STATE_READ_LIMITS = Object.freeze({ rows: 16_000_000, objects: 609,
   columns: 256, metadataBytes: 1024 ** 2, rowBytes: 64 * 1024 ** 2 });
 const fail: (code: string) => never = code => { throw new Error(`bounded state read refused (${code})`); };
 export const stateQuote = (name: string): string => `"${name.replaceAll('"', '""')}"`;
@@ -57,7 +61,6 @@ export class StateReadBudget {
 const budgets = new WeakMap<Database.Database, StateReadBudget>();
 const scopes = new WeakMap<Database.Database, StateReads>();
 let invocation: StateReadBudget | undefined;
-export const currentStateReadInvocation = (): StateReadBudget | undefined => invocation;
 /** Accounting context only: never schema, admission or publication authority. */
 export function withStateReadInvocation<T>(budget: StateReadBudget, action: () => T): T {
   if (invocation && invocation !== budget) fail("foreign-invocation");
@@ -74,19 +77,6 @@ export function stateReadBudget(db: Database.Database): StateReadBudget {
   if (invocation && invocation !== selected) fail("foreign-invocation-handle");
   if (invocation) budgets.set(db, selected);
   return selected;
-}
-/** Lazy consumers retain their internally owned snapshot through iterator close,
- * including early break/errors. No iterator/population cache is constructed. */
-export function* iterateStateReads<T>(db: Database.Database, action: (reads: StateReads) => Iterable<T>): Generator<T> {
-  const active = scopes.get(db);
-  if (active) { yield* action(active); return; }
-  if (db.inTransaction) fail("foreign-transaction");
-  const budget = stateReadBudget(db); budget.allocate(512);
-  const reads = new StateReads(db, budget);
-  reads.budget.reserve(2); db.exec("BEGIN"); scopes.set(db, reads);
-  let complete = false;
-  try { yield* action(reads); complete = true; }
-  finally { scopes.delete(db); db.exec(complete ? "COMMIT" : "ROLLBACK"); }
 }
 /** All measurement and consumption are in the same internally owned snapshot.
  * Nested helpers reuse this scope. A foreign transaction is never a witness. */

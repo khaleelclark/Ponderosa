@@ -17,6 +17,10 @@
     "./config": {
       "types": "./dist/config.d.ts",
       "default": "./dist/config.js"
+    },
+    "./branches-client": {
+      "types": "./dist/branches-client.d.ts",
+      "default": "./dist/branches-client.js"
     }
   },
   "scripts": {

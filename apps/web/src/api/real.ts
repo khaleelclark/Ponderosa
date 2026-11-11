@@ -1,3 +1,5 @@
+import {AgentPackageDownloadRequired,readAgentPackageClipboard} from "../agent-package-clipboard.js";
+import {productApiPath} from './productScope.js';
 import type { WorkspaceResourceKind } from "../resourcePreferences.js";
 import type { CollectionPageDto } from "@ponderosa/core";
 import type {
@@ -49,6 +51,7 @@ import type {
   CommitAgentDeletionResponse,
   CommunicationDocumentContentDto,
   ConversationDetailDto,
+  ConversationDeletionResponseDto,
   ConversationMessageDto,
   ConversationDraftConflictListDto,
   ConversationDraftDto,
@@ -74,7 +77,7 @@ import type {
   GenerateConversationTitleResponse,
   GlobalChatSearchResponseDto,
   HealthDto,
-  AllChatPageDto,
+  InboxPageDto,
   CreateHostFolderRequest,
   HostFolderCreateDto,
   HistoryPageDto,
@@ -149,6 +152,7 @@ import {
 } from "../agentHistoryPagination.js";
 import {
   ApiRequestError,
+  ApiTransportError,
   type CreateAgentOptions,
   type StreamHandlers,
   type StreamSubscription,
@@ -167,6 +171,7 @@ const API_BASE = "";
 const pendingBackgroundReads = new Map<string, Promise<unknown>>();
 
 function backgroundRead(method: string, path: string): boolean {
+  path=path.replace(/^\/api\/branches\/engine\//,"/api/");
   if (method === "GET") return true;
   if (method !== "POST") return false;
   return path === "/api/notifications/projection"
@@ -187,7 +192,7 @@ async function probeStreamRateLimit(): Promise<void> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 2_000);
   try {
-    const response = await fetch("/api/streams/probe", {
+    const response = await fetch(productApiPath("/api/streams/probe"), {
       cache: "no-store",
       signal: controller.signal,
     });
@@ -217,6 +222,7 @@ async function decodeHttpError(response: Response, isBackground: boolean): Promi
 }
 
 export function requestJson<T>(path: string, init?: RequestInit, acceptedErrorStatuses: number[] = []): Promise<T> {
+  path=productApiPath(path);
   const method = (init?.method ?? "GET").toUpperCase();
   const isBackground = backgroundRead(method, path);
   const load = async (): Promise<T> => {
@@ -230,6 +236,9 @@ export function requestJson<T>(path: string, init?: RequestInit, acceptedErrorSt
     const response = await fetch(`${API_BASE}${path}`, {
       ...init,
       headers,
+    }).catch(error => {
+      if (error instanceof Error && error.name === 'AbortError') throw error;
+      throw new ApiTransportError(error instanceof Error ? error.message : 'The connection was interrupted.');
     });
 
     if (!response.ok && !acceptedErrorStatuses.includes(response.status)) {
@@ -239,7 +248,10 @@ export function requestJson<T>(path: string, init?: RequestInit, acceptedErrorSt
     if (response.status === 204 || response.headers.get("content-length") === "0") {
       return undefined as T;
     }
-    const body = await response.text();
+    const body = await response.text().catch((error:unknown)=>{
+      if(error instanceof Error&&error.name==='AbortError')throw error;
+      throw new ApiTransportError(error instanceof Error?error.message:'The connection was interrupted.');
+    });
     return (body ? JSON.parse(body) : undefined) as T;
   };
   return isBackground && init === undefined && acceptedErrorStatuses.length === 0
@@ -258,7 +270,8 @@ function withoutCursor(path: string): string {
   return `${parsed.pathname}${parsed.search}`;
 }
 
-function requestCollectionPage<T>(path: string, resetOnStale = true): Promise<CollectionPage<T>> {
+export function requestCollectionPage<T>(path: string, resetOnStale = true): Promise<CollectionPage<T>> {
+  path=productApiPath(path);
   return coalesceBackgroundRead(`page:${path}:${resetOnStale}`, async () => {
     await waitForBackgroundCooldown();
     const response = await fetch(`${API_BASE}${path}`);
@@ -293,13 +306,64 @@ async function collectCollectionPages<T>(path: string): Promise<T[]> {
   return items;
 }
 
-async function requestText(path: string, init?: RequestInit): Promise<string> {
-  const response = await fetch(`${API_BASE}${path}`, init);
-  if (!response.ok) {
-    throw await decodeHttpError(response, false);
-  }
-  return response.text();
+const uncertainPackageExports=new Map<string,{key:string;createdAt:number}>();
+/** Internal request identity survives a lost preparation response. An ordinary
+ * action retry recovers its original outcome before another source is captured. */
+export async function preparePackageExport(path:string,input:Record<string,unknown>):Promise<PreparedPackageExport>{
+ const body=JSON.stringify({...input,download:true}),operation=path+'\n'+body;
+ let record=uncertainPackageExports.get(operation);
+ if(!record){if(uncertainPackageExports.size>=16)throw Error('Several export preparations are unconfirmed. Retry an existing export before preparing another.');record={key:createClientId(),createdAt:Date.now()};uncertainPackageExports.set(operation,record);}
+ const key=record.key;
+ if(Date.now()-record.createdAt>=15*60_000){
+  try{const status=await requestJson<{state:string}&PreparedPackageExport>('/api/package-export-requests/'+encodeURIComponent(key));if(status.state==='completed'){uncertainPackageExports.delete(operation);return status;}}catch{}
+  uncertainPackageExports.delete(operation);throw Error('Original export recovery has expired. Choose Export again to prepare a new snapshot.');
+ }
+ try{
+  const prepared=await requestJson<PreparedPackageExport>(path,{method:'POST',headers:{'x-ponderosa-export-request':key},body});
+  uncertainPackageExports.delete(operation);return prepared;
+ }catch(error){
+  try{
+   const status=await requestJson<{state:'completed'|'unconfirmed'}&Partial<PreparedPackageExport>>('/api/package-export-requests/'+encodeURIComponent(key));
+   if(status.state==='completed'&&status.downloadUrl&&status.expiresAt&&typeof status.byteLength==='number'){
+    uncertainPackageExports.delete(operation);return {downloadUrl:status.downloadUrl,expiresAt:status.expiresAt,byteLength:status.byteLength};
+   }
+  }catch{/* Keep the same identity when either response was lost. */}
+  throw error;
+ }
 }
+
+async function requestAgentPackageText(path:string,input:Record<string,unknown>):Promise<string>{
+ const prepared=await preparePackageExport(path,input);
+ const url=preparedPackageExportUrl(prepared);
+ try{
+  const response=await fetch(url);if(!response.ok)throw await decodeHttpError(response,false);
+  return await readAgentPackageClipboard(response);
+ }catch(error){
+  // A bounded clipboard or interrupted read must keep the first source capture.
+  // The native download retries this same immutable file, never another POST.
+  throw new AgentPackageDownloadRequired(prepared,{cause:error});
+ }
+}
+
+export interface PreparedPackageExport {downloadUrl:string;expiresAt:string;byteLength:number}
+/** Only the same-origin server-owned staged download path can become a link. */
+export function preparedPackageExportUrl(prepared:PreparedPackageExport):string{
+ if(!/^\/api\/(?:branches\/engine\/)?package-exports\/[a-f0-9]{48}$/u.test(prepared.downloadUrl)||!Number.isSafeInteger(prepared.byteLength)||prepared.byteLength<0||!Number.isFinite(Date.parse(prepared.expiresAt))||Date.parse(prepared.expiresAt)<=Date.now())throw Error('The server returned an invalid or expired package download.');
+ const url=new URL(productApiPath(prepared.downloadUrl),window.location.href);
+ if(url.origin!==window.location.origin)throw Error('Package downloads must use this Ponderosa origin.');
+ return url.href;
+}
+export function startPreparedPackageDownload(prepared:PreparedPackageExport,filename:string):void{
+ const anchor=document.createElement('a');anchor.href=preparedPackageExportUrl(prepared);anchor.download=filename;anchor.dataset.ponderosaDownloadFeedback='handled';anchor.style.display='none';document.body.append(anchor);try{anchor.click();}finally{anchor.remove();}
+}
+export async function downloadPackageExport(path:string,input:Record<string,unknown>,filename:string):Promise<PreparedPackageExport>{
+ const prepared=await preparePackageExport(path,input);
+ startPreparedPackageDownload(prepared,filename);return prepared;
+}
+function agentExportSelection(mode:AgentExportMode,organization:boolean,workingFiles:string[],wholeWorkingFolder:boolean,organizationWorkingFolders:boolean,reviewedUserData?:import('@ponderosa/core').ReviewedUserDataSelection,gitStorageBindings?:import('@ponderosa/core').GitStorageSelection[]){
+ return {mode,organization,...(reviewedUserData?{reviewedUserData}:{}),...(gitStorageBindings?.length?{gitStorageBindings}:{}),...(!organizationWorkingFolders&&!wholeWorkingFolder&&workingFiles.length?{workingFiles}:{}),...(mode==='full'&&!organizationWorkingFolders&&wholeWorkingFolder?{wholeWorkingFolder:true}:{}),...(mode==='full'&&organization&&organizationWorkingFolders?{organizationWorkingFolders:true}:{})};
+}
+
 
 function toQuery(params: Record<string, string | number | boolean | undefined>): string {
   const query = new URLSearchParams();
@@ -317,6 +381,27 @@ function browserPath(projectId: string, agentId: string, runId: string): string 
 }
 
 export const realApi = {
+  listBranchAgents(branchId:string):Promise<import('@ponderosa/core').BranchAgentChoiceDto[]>{return collectCollectionPages(`/api/branches/${encodeURIComponent(branchId)}/agents`);},
+  getContextRecovery(agentId:string,idempotencyKey?:string):Promise<import('@ponderosa/core').ProviderContextRecoveryStatus>{
+    return requestJson(`/api/agents/${encodeURIComponent(agentId)}/context-recoveries${toQuery({idempotencyKey})}`,{cache:'no-store'});
+  },
+  recoverContext(agentId:string,input:{idempotencyKey:string;expectedSessionId:string;expectedSourceRunId:string;expectedToolContractHash:string;expectedSourceFence?:number;acknowledgeUnknownEffects:true;settleRecoveredContext?:boolean}):Promise<unknown>{
+    return requestJson(`/api/agents/${encodeURIComponent(agentId)}/context-recoveries`,{method:'POST',body:JSON.stringify(input)});
+  },
+  stopContextRecovery(agentId:string,recoveryId:string):Promise<{stopRequested:boolean}>{
+    return requestJson(`/api/agents/${encodeURIComponent(agentId)}/context-recoveries/${encodeURIComponent(recoveryId)}/stop`,{method:'POST'});
+  },
+  dismissContextRecovery(agentId:string,recoveryId:string):Promise<unknown>{
+    return requestJson(`/api/agents/${encodeURIComponent(agentId)}/context-recoveries/${encodeURIComponent(recoveryId)}/dismiss`,{method:'POST',body:JSON.stringify({acknowledgeStillBlocked:true})});
+  },
+  getVoiceReplyStatus(conversationId: string, messageId: string, agentId: string): Promise<import("@ponderosa/core").VoiceReplyStatus> {
+    return requestJson(`/api/conversations/${encodeURIComponent(conversationId)}/voice-replies/${encodeURIComponent(messageId)}/${encodeURIComponent(agentId)}`, {cache:"no-store"});
+  },
+
+  getTextReplyStatus(conversationId:string,messageId:string,agentId:string,signal?:AbortSignal):Promise<import("@ponderosa/core").VoiceReplyStatus>{
+    return requestJson(`/api/conversations/${encodeURIComponent(conversationId)}/reply-streams/${encodeURIComponent(messageId)}/${encodeURIComponent(agentId)}`,{cache:"no-store",signal});
+  },
+
   getAssetLimits(): Promise<AssetLimitsDto> { return requestJson<AssetLimitsDto>("/api/asset-limits"); },
   listProjects(): Promise<ProjectDto[]> {
     return collectCollectionPages<ProjectDto>("/api/projects");
@@ -354,8 +439,8 @@ export const realApi = {
   getProjectDeletionPreview(projectId: string): Promise<ProjectDeletionPreviewDto> {
     return requestJson<ProjectDeletionPreviewDto>(`/api/projects/${encodeURIComponent(projectId)}/deletion-preview`);
   },
-  getAgentHealth(projectId: string): Promise<AgentHealthProjectionDto> {
-    return requestJson<AgentHealthProjectionDto>(`/api/projects/${encodeURIComponent(projectId)}/agent-health`);
+  getAgentHealth(projectId: string, signal?: AbortSignal): Promise<AgentHealthProjectionDto> {
+    return requestJson<AgentHealthProjectionDto>(`/api/projects/${encodeURIComponent(projectId)}/agent-health`, signal ? { signal } : undefined);
   },
   getAgentWork(projectId: string, filter: { conversationId?: string; agentId?: string; focusId?: string; limit?: number } = {}): Promise<AgentWorkInspectorDto> {
     return requestJson(`/api/projects/${encodeURIComponent(projectId)}/agent-work${toQuery({
@@ -371,7 +456,7 @@ export const realApi = {
     })}`);
   },
   getTokenUsage(scope: TokenUsageScope, id?: string, range?: TokenUsageRangeDto): Promise<TokenUsageSummaryDto> {
-    const path = scope === "overall" ? "/api/usage" : `/api/${scope}s/${encodeURIComponent(id ?? "")}/usage`;
+    const path = scope === "overall" ? "/api/usage" : `/api/${scope==='branch'?'branches':scope+'s'}/${encodeURIComponent(id ?? "")}/usage`;
     const url = `${path}${toQuery({ from: range?.from, to: range?.to })}`;
     return requestJson<TokenUsageSummaryDto>(url);
   },
@@ -399,8 +484,8 @@ export const realApi = {
   searchGlobalFiles(query: string, limit = 25, scope?: { projectId: string; conversationId?: string }, cursor?: string, signal?: AbortSignal): Promise<import("@ponderosa/core").GlobalFileSearchResponseDto> {
     return requestJson(`/api/search/files${toQuery({ q: query, limit, ...scope, cursor })}`, signal ? { signal } : undefined);
   },
-  getAllChat(limit: number = 50, cursor?: string): Promise<AllChatPageDto> {
-    return requestJson<AllChatPageDto>(`/api/all-chat${toQuery({ limit: String(limit), cursor })}`);
+  getInbox(limit: number = 50, cursor?: string): Promise<InboxPageDto> {
+    return requestJson<InboxPageDto>(`/api/inbox${toQuery({ limit: String(limit), cursor })}`);
   },
   listConversations(projectId: string): Promise<ConversationDto[]> {
     return collectCollectionPages<ConversationDto>("/api/projects/" + encodeURIComponent(projectId) + "/conversations");
@@ -440,8 +525,8 @@ export const realApi = {
       body: JSON.stringify(patch satisfies UpdateConversationRequest),
     });
   },
-  async deleteConversation(conversationId: string, expectedAgentIds?: string[]): Promise<void> {
-    await requestJson("/api/conversations/" + encodeURIComponent(conversationId), {
+  deleteConversation(conversationId: string, expectedAgentIds?: string[]): Promise<ConversationDeletionResponseDto> {
+    return requestJson<ConversationDeletionResponseDto>("/api/conversations/" + encodeURIComponent(conversationId), {
       method: "DELETE",
       ...(expectedAgentIds ? { body: JSON.stringify({ expectedAgentIds }) } : {}),
     });
@@ -460,14 +545,14 @@ export const realApi = {
       `/api/conversations/${encodeURIComponent(conversationId)}/next-run-deliveries${toQuery({ limit })}`,
     );
   },
-  getConversationDraft(conversationId: string, ownerId: string): Promise<ConversationDraftDto> {
-    return requestJson<ConversationDraftDto>(`/api/conversations/${encodeURIComponent(conversationId)}/draft?ownerId=${encodeURIComponent(ownerId)}`);
+  getConversationDraft(conversationId: string, ownerId: string, signal?: AbortSignal): Promise<ConversationDraftDto> {
+    return requestJson<ConversationDraftDto>(`/api/conversations/${encodeURIComponent(conversationId)}/draft?ownerId=${encodeURIComponent(ownerId)}`, { signal });
   },
   getConversationDraftConflicts(conversationId: string, ownerId: string): Promise<ConversationDraftConflictListDto> {
     return requestJson<ConversationDraftConflictListDto>(`/api/conversations/${encodeURIComponent(conversationId)}/draft-conflicts?ownerId=${encodeURIComponent(ownerId)}`);
   },
-  putConversationDraft(conversationId: string, request: PutConversationDraftRequest): Promise<ConversationDraftDto> {
-    return requestJson<ConversationDraftDto>(`/api/conversations/${encodeURIComponent(conversationId)}/draft`, { method: "PUT", body: JSON.stringify(request satisfies PutConversationDraftRequest) });
+  putConversationDraft(conversationId: string, request: PutConversationDraftRequest, signal?: AbortSignal): Promise<ConversationDraftDto> {
+    return requestJson<ConversationDraftDto>(`/api/conversations/${encodeURIComponent(conversationId)}/draft`, { method: "PUT", body: JSON.stringify(request satisfies PutConversationDraftRequest), signal });
   },
   restoreConversationDraftConflict(
     conversationId: string,
@@ -501,13 +586,13 @@ export const realApi = {
       body: file,
     }), shouldRetry);
   },
-  async downloadDraftAttachment(attachment: DraftAttachmentDto): Promise<File> {
-    const response = await fetch(attachment.downloadUrl, { cache: "no-store" });
+  async downloadDraftAttachment(attachment: DraftAttachmentDto, signal?: AbortSignal): Promise<File> {
+    const response = await fetch(productApiPath(attachment.downloadUrl), { cache: "no-store", signal });
     if (!response.ok) throw new ApiRequestError(response.status, `${response.status} ${response.statusText}`);
     return new File([await response.blob()], attachment.name, { type: attachment.mediaType });
   },
   async deleteDraftAttachment(conversationId: string, ownerId: string, attachmentId: string): Promise<void> {
-    const response = await fetch(`/api/conversations/${encodeURIComponent(conversationId)}/draft-attachments/${encodeURIComponent(attachmentId)}?ownerId=${encodeURIComponent(ownerId)}`, { method: "DELETE" });
+    const response = await fetch(productApiPath(`/api/conversations/${encodeURIComponent(conversationId)}/draft-attachments/${encodeURIComponent(attachmentId)}?ownerId=${encodeURIComponent(ownerId)}`), { method: "DELETE" });
     if (!response.ok && response.status !== 404) throw new ApiRequestError(response.status, `${response.status} ${response.statusText}`);
   },
   generateConversationTitle(conversationId: string): Promise<GenerateConversationTitleResponse> {
@@ -532,6 +617,7 @@ export const realApi = {
       summary?: boolean;
       folders?: boolean;
     } = {},
+    signal?: AbortSignal,
   ): Promise<WorkspaceDirectoryPageDto<T>> {
     const path = `/api/workspace/directory/${encodeURIComponent(kind)}${toQuery({
         limit: options.limit,
@@ -546,9 +632,9 @@ export const realApi = {
         summary: options.summary ? "true" : undefined,
         folders: options.folders ? "true" : undefined,
       })}`;
-    return requestJson<WorkspaceDirectoryPageDto<T>>(path).catch(async (error) => {
+    return requestJson<WorkspaceDirectoryPageDto<T>>(path, signal ? { signal } : undefined).catch(async (error) => {
       if (!(error instanceof ApiRequestError) || error.status !== 409 || !options.cursor) throw error;
-      const fresh = await requestJson<WorkspaceDirectoryPageDto<T>>(withoutCursor(path));
+      const fresh = await requestJson<WorkspaceDirectoryPageDto<T>>(withoutCursor(path), signal ? { signal } : undefined);
       return { ...fresh, reset: true };
     });
   },
@@ -601,15 +687,15 @@ export const realApi = {
     });
     return response.dismissed;
   },
-  retryCoordinationRequest(requestId: string, request: { idempotencyKey?: string; createJoin?: boolean } = {}): Promise<RetryCoordinationRequestResponse> {
+  retryCoordinationRequest(requestId: string, request: { idempotencyKey?: string; createJoin?: boolean; retryHeldContext?: boolean } = {}): Promise<RetryCoordinationRequestResponse> {
     return requestJson(`/api/requests/${encodeURIComponent(requestId)}/retry`, {
       method: "POST",
       body: JSON.stringify(request),
     });
   },
-  listDecisions(filter: { projectId?: string; conversationId?: string; agentId?: string; status?: DecisionDto["status"] } = {}): Promise<DecisionDto[]> { return requestJson<DecisionDto[]>(`/api/decisions${toQuery(filter)}`); },
+  listDecisions(filter: { id?: string; projectId?: string; conversationId?: string; agentId?: string; status?: DecisionDto["status"] } = {}, signal?: AbortSignal): Promise<DecisionDto[]> { return requestJson<DecisionDto[]>(`/api/decisions${toQuery(filter)}`, signal ? { signal, cache: "no-store" } : undefined); },
   getDecisionAction(decisionId: string): Promise<RuntimeElicitationActionDto> { return requestJson<RuntimeElicitationActionDto>(`/api/decisions/${encodeURIComponent(decisionId)}/action`); },
-  respondDecision(decisionId: string, request: ResolveDecisionRequest): Promise<DecisionDto> { return requestJson<DecisionDto>(`/api/decisions/${encodeURIComponent(decisionId)}/respond`, { method: "POST", body: JSON.stringify(request satisfies ResolveDecisionRequest) }); },
+  respondDecision(decisionId: string, request: ResolveDecisionRequest, signal?: AbortSignal): Promise<DecisionDto> { return requestJson<DecisionDto>(`/api/decisions/${encodeURIComponent(decisionId)}/respond`, { method: "POST", body: JSON.stringify(request satisfies ResolveDecisionRequest), signal }); },
   getWebPushStatus(deviceId?: string): Promise<WebPushStatusDto> { return requestJson(`/api/push/status${deviceId ? `?deviceId=${encodeURIComponent(deviceId)}` : ""}`); },
   async upsertWebPushSubscription(subscription: WebPushSubscriptionDto): Promise<void> {
     await requestJson(`/api/push/subscriptions/${encodeURIComponent(subscription.deviceId)}`, { method: "PUT", body: JSON.stringify(subscription) });
@@ -742,6 +828,8 @@ export const realApi = {
   createAgentPreset(projectId: string, request: CreateAgentPresetRequest, idempotencyKey: string): Promise<AgentPresetDto> { return requestJson(`/api/projects/${encodeURIComponent(projectId)}/agent-presets`, { method: "POST", headers: { "idempotency-key": idempotencyKey }, body: JSON.stringify(request) }); },
   updateAgentPreset(id: string, patch: UpdateAgentPresetRequest): Promise<AgentPresetDto> { return requestJson(`/api/agent-presets/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(patch) }); },
   async deleteAgentPreset(id: string): Promise<void> { await requestJson(`/api/agent-presets/${encodeURIComponent(id)}`, { method: "DELETE" }); },
+  keepCurrentWorkingCopy(agentId:string,rolloverId:string):Promise<AgentDto>{ return requestJson(`/api/agents/${encodeURIComponent(agentId)}/working-folder-change/${encodeURIComponent(rolloverId)}/keep`,{method:"POST"}); },
+  agentWorkingCopyChange(agentId:string):Promise<AgentDto>{ return requestJson(`/api/agents/${encodeURIComponent(agentId)}/working-folder-change`); },
   updateAgent(agentId: string, patch: UpdateAgentRequest): Promise<AgentDto> {
     return requestJson<AgentDto>(`/api/agents/${encodeURIComponent(agentId)}`, {
       method: "PATCH",
@@ -787,8 +875,8 @@ export const realApi = {
   listProjectArtifacts(projectId: string, limit: number = 100, cursor?: string): Promise<HistoryPageDto<ArtifactDto>> {
     return requestJson(`/api/projects/${encodeURIComponent(projectId)}/artifacts${toQuery({ limit: String(limit), cursor })}`);
   },
-  getProjectArtifact(projectId: string, artifactId: string): Promise<ArtifactDto> {
-    return requestJson(`/api/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(artifactId)}`);
+  getProjectArtifact(projectId: string, artifactId: string, reference?: { communicationEventId: string; conversationId: string }, signal?: AbortSignal): Promise<ArtifactDto> {
+    return requestJson(`/api/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(artifactId)}${toQuery(reference ?? {})}`, { signal });
   },
   listConversationArtifacts(projectId: string, conversationId: string, limit: number = 100, cursor?: string, q?: string): Promise<HistoryPageDto<ArtifactDto>> {
     return requestJson(`/api/projects/${encodeURIComponent(projectId)}/artifacts${toQuery({ conversationId, limit: String(limit), cursor, q })}`);
@@ -799,14 +887,14 @@ export const realApi = {
       body: JSON.stringify(input),
     });
   },
-  exportAgent(agentId: string, mode: AgentExportMode, organization: boolean = false): Promise<AgentPortablePackageDto> {
-    return requestJson<AgentPortablePackageDto>(`/api/agents/${encodeURIComponent(agentId)}/export${toQuery({ mode, organization: String(organization) })}`);
+  exportAgent(agentId: string, mode: AgentExportMode, organization: boolean = false, workingFiles: string[] = [], wholeWorkingFolder = false, organizationWorkingFolders = false, reviewedUserData?: import('@ponderosa/core').ReviewedUserDataSelection,gitStorageBindings?:import('@ponderosa/core').GitStorageSelection[]): Promise<AgentPortablePackageDto> {
+    return requestJson<AgentPortablePackageDto>(`/api/agents/${encodeURIComponent(agentId)}/export`,{method:'POST',body:JSON.stringify(agentExportSelection(mode,organization,workingFiles,wholeWorkingFolder,organizationWorkingFolders,reviewedUserData,gitStorageBindings))});
   },
-  exportAgentText(agentId: string, mode: AgentExportMode, organization: boolean = false): Promise<string> {
-    return requestText(`/api/agents/${encodeURIComponent(agentId)}/export${toQuery({ mode, organization: String(organization) })}`);
+  exportAgentText(agentId: string, mode: AgentExportMode, organization: boolean = false, workingFiles: string[] = [], wholeWorkingFolder = false, organizationWorkingFolders = false, reviewedUserData?: import('@ponderosa/core').ReviewedUserDataSelection,gitStorageBindings?:import('@ponderosa/core').GitStorageSelection[]): Promise<string> {
+    return requestAgentPackageText(`/api/agents/${encodeURIComponent(agentId)}/export`,agentExportSelection(mode,organization,workingFiles,wholeWorkingFolder,organizationWorkingFolders,reviewedUserData,gitStorageBindings));
   },
-  agentExportDownloadUrl(agentId: string, mode: AgentExportMode, organization: boolean = false): string {
-    return `/api/agents/${encodeURIComponent(agentId)}/export${toQuery({ mode, organization: String(organization), download: 1 })}`;
+  downloadAgentPackage(agentId:string,filename:string,mode:AgentExportMode,organization=false,workingFiles:string[]=[],wholeWorkingFolder=false,organizationWorkingFolders=false,reviewedUserData?:import('@ponderosa/core').ReviewedUserDataSelection,gitStorageBindings?:import('@ponderosa/core').GitStorageSelection[]):Promise<PreparedPackageExport>{
+    return downloadPackageExport(`/api/agents/${encodeURIComponent(agentId)}/export`,agentExportSelection(mode,organization,workingFiles,wholeWorkingFolder,organizationWorkingFolders,reviewedUserData,gitStorageBindings),filename);
   },
   importAgents(projectId: string, request: ImportAgentPackageRequest, requestId = createClientId()): Promise<ImportAgentPackageResponse> {
     return requestJson<ImportAgentPackageResponse>(`/api/projects/${encodeURIComponent(projectId)}/import-agents`, {
@@ -814,6 +902,17 @@ export const realApi = {
       headers: { "idempotency-key": requestId },
       body: JSON.stringify(request satisfies ImportAgentPackageRequest),
     });
+  },
+  recoverAgentOutputRoles(projectId:string,operationId:string,reviewId?:string):Promise<import('@ponderosa/core').OutputRoleImportReviewDto|ImportAgentPackageResponse>{
+    return requestJson(`/api/projects/${encodeURIComponent(projectId)}/agent-role-finalizations/${encodeURIComponent(operationId)}`,{method:'POST',body:JSON.stringify(reviewId?{reviewId}:{})});
+  },
+  previewAgentOutputRoles(projectId:string,packageBlob:Blob,metadata:Omit<ImportAgentPackageRequest,'package'>):Promise<import('@ponderosa/core').OutputRoleImportReviewDto>{
+    const body=new Blob([`${JSON.stringify(metadata)}\n`,packageBlob],{type:'application/vnd.ponderosa.agent-import'});
+    return requestJson(`/api/projects/${encodeURIComponent(projectId)}/agent-role-preview`,{method:'POST',headers:{'content-type':body.type},body});
+  },
+  previewAgentAccess(projectId:string,packageBlob:Blob,metadata:Omit<ImportAgentPackageRequest,'package'>):Promise<import('@ponderosa/core').AgentAccessImportReviewDto>{
+    const body=new Blob([`${JSON.stringify(metadata)}\n`,packageBlob],{type:'application/vnd.ponderosa.agent-import'});
+    return requestJson(`/api/projects/${encodeURIComponent(projectId)}/agent-access-preview`,{method:'POST',headers:{'content-type':body.type},body});
   },
   importAgentPackageBlob(
     projectId: string,
@@ -839,6 +938,7 @@ export const realApi = {
     packageBlob: Blob,
     metadata: Omit<ImportAgentPackageRequest, "package">,
     requestId: string,
+    fingerprint?: string,
   ): Promise<AgentImportOperationDto> {
     const body = new Blob(
       [`${JSON.stringify(metadata)}\n`, packageBlob],
@@ -851,10 +951,19 @@ export const realApi = {
         headers: {
           "content-type": body.type,
           "idempotency-key": requestId,
+          ...(fingerprint?{"x-ponderosa-agent-package-fingerprint":fingerprint}:{}),
         },
         body,
       },
     );
+  },
+  getAgentImportOperationByRequest(projectId:string,conversationId:string,requestId:string):Promise<AgentImportOperationDto>{
+    return requestJson(`/api/projects/${encodeURIComponent(projectId)}/agent-import-operations/by-request/${encodeURIComponent(requestId)}?conversationId=${encodeURIComponent(conversationId)}`);
+  },
+  retireHeldAgentImport(projectId:string,conversationId:string,requestId:string,operationId:string):Promise<unknown>{
+    return requestJson(`/api/projects/${encodeURIComponent(projectId)}/agent-import-operations/by-request/${encodeURIComponent(requestId)}/retire`,{
+      method:'POST',body:JSON.stringify({conversationId,operationId}),
+    });
   },
   getAgentImportOperation(projectId: string, operationId: string): Promise<AgentImportOperationDto> {
     return requestJson<AgentImportOperationDto>(
@@ -979,10 +1088,13 @@ export const realApi = {
       body: JSON.stringify(request),
     });
   },
+  controlRun(agentId: string, action:'pause'|'resume', request:{targetRunId?:string;pauseId?:string;idempotencyKey:string}): Promise<{accepted:true;pauseId?:string}> {
+    return requestJson(`/api/agents/${encodeURIComponent(agentId)}/${action}`,{method:'POST',body:JSON.stringify(request)});
+  },
   compactSession(agentId: string): Promise<{ compacted: boolean }> {
     return requestJson<{ compacted: boolean }>(`/api/agents/${encodeURIComponent(agentId)}/compact`, { method: "POST" });
   },
-  invokeProviderCommand(agentId: string, request: { name: string; argumentsText?: string }): Promise<{ invoked: true; name: string; catalogVersion?: string; message?: string; outcome?: "completed" | "failed" | "outcome_unknown"; usage?: ProviderUsageStateDto }> {
+  invokeProviderCommand(agentId: string, request: { name: string; argumentsText?: string }): Promise<{ invoked: true; name: string; catalogVersion?: string; message?: string; outcome?: "completed" | "failed" | "outcome_unknown"; goal?: import("@ponderosa/core").NativeGoalSnapshot | null; goalCleared?: boolean; usage?: ProviderUsageStateDto }> {
     return requestJson(`/api/agents/${encodeURIComponent(agentId)}/provider-commands`, {
       method: "POST",
       body: JSON.stringify(request),
@@ -1067,7 +1179,7 @@ export const realApi = {
   },
   async getBrowserFrame(projectId: string, agentId: string, runId: string, pageId?: string, signal?: AbortSignal): Promise<{ blob: Blob; revision: number; metadata?: BrowserFrameMetadata }> {
     await waitForBackgroundCooldown(signal);
-    const response = await fetch(`${browserPath(projectId, agentId, runId)}/frame${pageId ? `?pageId=${encodeURIComponent(pageId)}` : ""}`, { cache: "no-store", signal });
+    const response = await fetch(productApiPath(`${browserPath(projectId, agentId, runId)}/frame${pageId ? `?pageId=${encodeURIComponent(pageId)}` : ""}`), { cache: "no-store", signal });
     if (response.status === 429) noteBackgroundRateLimit(response.headers.get("retry-after"));
     if (!response.ok) throw new ApiRequestError(response.status, `${response.status} ${response.statusText}`);
     return { blob: await response.blob(), revision: Number(response.headers.get("x-ponderosa-browser-revision") ?? 0), metadata: JSON.parse(response.headers.get("x-ponderosa-browser-frame") ?? "null") ?? undefined };
@@ -1178,7 +1290,7 @@ export const realApi = {
   },
   async getProjectBrowserFrame(projectId: string, pageId?: string, signal?: AbortSignal): Promise<{ blob: Blob; revision: number; metadata?: BrowserFrameMetadata }> {
     await waitForBackgroundCooldown(signal);
-    const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/browser/frame${pageId ? `?pageId=${encodeURIComponent(pageId)}` : ""}`, { cache: "no-store", signal });
+    const response = await fetch(productApiPath(`/api/projects/${encodeURIComponent(projectId)}/browser/frame${pageId ? `?pageId=${encodeURIComponent(pageId)}` : ""}`), { cache: "no-store", signal });
     if (response.status === 429) noteBackgroundRateLimit(response.headers.get("retry-after"));
     if (!response.ok) throw new ApiRequestError(response.status, `${response.status} ${response.statusText}`);
     return { blob: await response.blob(), revision: Number(response.headers.get("x-ponderosa-browser-revision") ?? 0), metadata: JSON.parse(response.headers.get("x-ponderosa-browser-frame") ?? "null") ?? undefined };
@@ -1188,18 +1300,20 @@ export const realApi = {
     return createResilientEventSource({
       probeRateLimit: probeStreamRateLimit,
       reconnectCooldownMs: backgroundCooldownRemaining,
-      createSource: () => new EventSource(`/api/agents/${encodeURIComponent(agentId)}/stream${toQuery({
+      createSource: () => new EventSource(productApiPath(`/api/agents/${encodeURIComponent(agentId)}/stream${toQuery({
         lastEventId: cursor,
-      })}`),
+      })}`)),
       onOpen: () => handlers.onOpen?.(),
       onError: (event) => handlers.onError?.(event),
-      configure(source) {
+      configure(source, isCurrent) {
         source.addEventListener("message", (event) => {
+          if (!isCurrent()) return;
           const envelope = JSON.parse(event.data as string) as SseEventEnvelope;
           cursor = Math.max(cursor ?? 0, envelope.seq);
           handlers.onEvent(envelope);
         });
         source.addEventListener("agent_status", (event) => {
+          if (!isCurrent()) return;
           const status = JSON.parse(event.data as string) as AgentStreamStatusDto;
           if (status.snapshot) cursor = status.cursor;
           else if (status.reset) cursor = 0;
@@ -1213,16 +1327,18 @@ export const realApi = {
     return createResilientEventSource({
       probeRateLimit: probeStreamRateLimit,
       reconnectCooldownMs: backgroundCooldownRemaining,
-      createSource: () => new EventSource(`/api/workspace/stream${toQuery({ lastEventId: cursor })}`),
+      createSource: () => new EventSource(productApiPath(`/api/workspace/stream${toQuery({ lastEventId: cursor })}`)),
       onOpen: () => handlers.onOpen?.(),
       onError: (event) => handlers.onError?.(event),
-      configure(source) {
+      configure(source, isCurrent) {
         source.addEventListener("message", (event) => {
+          if (!isCurrent()) return;
           const envelope = JSON.parse(event.data as string) as WorkspaceEventEnvelope;
           cursor = Math.max(cursor ?? 0, envelope.id);
           handlers.onEvent(envelope);
         });
         source.addEventListener("workspace_status", (event) => {
+          if (!isCurrent()) return;
           const status = JSON.parse(event.data as string) as WorkspaceStreamStatusDto;
           if (status.snapshot) cursor = status.cursor;
           else if (status.reset) cursor = 0;

@@ -1,4 +1,8 @@
+import {MutationErrorDetails} from "./MutationNotifications";
+import type {WorkspaceReadIssue} from "../workspaceAvailability";
+import {WorkspaceQueryError} from "./WorkspaceQueryError";
 import { Alert, Button } from "@mui/material";
+import { providerCommandResultSx } from "../providerCommandResult";
 import type {
   ProviderUsageStateDto,
   QueuedConversationMessageDto,
@@ -12,10 +16,12 @@ import { AgentProviderUsageCard } from "./ProviderUsageCenter";
 interface AgentDetailComposerProps {
   visible: boolean;
   queuedMessageNotice?: string;
+  queuedRead?: WorkspaceReadIssue;
   queuedMessageFailure?: { error: Error; retry(): void };
   cancellationError?: string;
   providerUsageState?: ProviderUsageStateDto;
   agentId: string;
+  conversationId?: string;
   onCloseProviderUsage(): void;
   queuedMessages: QueuedConversationMessageDto[];
   attachmentNamesForQueuedMessage?(message: QueuedConversationMessageDto): string[] | undefined;
@@ -32,10 +38,12 @@ interface AgentDetailComposerProps {
 export function AgentDetailComposer({
   visible,
   queuedMessageNotice,
+  queuedRead,
   queuedMessageFailure,
   cancellationError,
   providerUsageState,
   agentId,
+  conversationId,
   onCloseProviderUsage,
   queuedMessages,
   attachmentNamesForQueuedMessage,
@@ -47,21 +55,10 @@ export function AgentDetailComposer({
 }: AgentDetailComposerProps): JSX.Element {
   return (
     <ChatComposerDock visible={visible}>
-      {queuedMessageNotice ? <Alert severity="info" role="status" aria-live="polite" sx={{ mx: 1.5, mt: 1 }}>{queuedMessageNotice}</Alert> : null}
-      {cancellationError ? (
-        <Alert severity="error" sx={{ mx: 1.5, mt: 1 }}>
-          {cancellationError}
-        </Alert>
-      ) : null}
-      {queuedMessageFailure ? (
-        <Alert
-          severity="error"
-          sx={{ mx: 1.5, mt: 1 }}
-          action={<Button color="inherit" size="small" onClick={queuedMessageFailure.retry}>Retry</Button>}
-        >
-          Queued messages could not be updated. {queuedMessageFailure.error.message}
-        </Alert>
-      ) : null}
+      {queuedMessageNotice ? <Alert severity="info" role="status" aria-live="polite" tabIndex={0} sx={providerCommandResultSx}>{queuedMessageNotice}</Alert> : null}
+      <MutationErrorDetails title="Run Control Needs Review" error={cancellationError}/>
+      {queuedRead&&<WorkspaceQueryError read={queuedRead}/>}
+      {queuedMessageFailure&&<details><summary>Queue Action Needs Attention</summary>{queuedMessageFailure.error.message}<Button onClick={queuedMessageFailure.retry}>Retry Action</Button></details>}
       {providerUsageState ? (
         <AgentProviderUsageCard
           agentId={agentId}
@@ -69,15 +66,16 @@ export function AgentDetailComposer({
           onClose={onCloseProviderUsage}
         />
       ) : null}
-      <QueuedMessageTray
+      {!composer.assistantMessages&&<QueuedMessageTray
         messages={queuedMessages}
         scope={composer.conversationDraftId}
+        conversationId={conversationId}
         attachmentNamesForMessage={attachmentNamesForQueuedMessage}
         busy={queuedBusy}
         onSteer={onSteerQueued}
         onEdit={onEditQueued}
         onDelete={onDeleteQueued}
-      />
+      />}
       <Composer {...composer} />
     </ChatComposerDock>
   );

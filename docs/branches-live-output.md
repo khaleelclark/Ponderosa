@@ -1,0 +1,40 @@
+# Live work in Branches Runs
+
+The selected Run shows **Live work** for current Agent attempts on its loaded history page. Text updates through the same Agent SSE/query projection used by the Agent view; it does not wait for a Step result or checkpoint. The heading identifies the Step. The text is Agent Run work telemetry, not an authored Chat message or the Step’s final result. If several Requests share a scheduler Run, they share that Run’s work view; text is never guessed to belong to one Request. Reasoning is not displayed here.
+
+The server resolves direct Request, answered-question and Join-continuation activation sources through the shared canonical lineage. Only current, noncancelled paths/attempts with an open Request and matching started, running, unfenced, unexpired scheduler Run qualify. An unrelated Run on the same Agent does not qualify. These read-only identities confer no execution authority. Terminal/cancelled/fenced work loses its live target; existing result/history inspection stays authoritative.
+
+The component reuses `useAgent` and `useAgentStream`: existing cursor deduplication, snapshot refresh and reconnect recovery apply without another event log or websocket. Cached text stays visible with reconnect status and read errors are shown. Entry keys remain stable while deltas append. Only response entries whose executionId equals the exact scheduler Run are rendered; old Runs and reasoning are excluded. Canonical snapshot replacement replaces projected text rather than appending another copy. The view uses plain prewrapped text during streaming to avoid reparsing incomplete Markdown. Bounded canonical segments expose the shared Load full text control, byte count, loading state and retrieval errors. Full text is fetched only on explicit request; a subsequent canonical snapshot remains authoritative. Complete results retain the existing Markdown renderer.
+
+Live targets use the existing bounded detail history page (up to100 attempts), including when older evidence is loaded. This is not an unbounded subscription to every Agent in the organization. Parallel live attempts share one subscription per Agent within this view; the shared Agent cache remains the projection owner. Full high-cardinality subscription cost, every other output surface, mounted mobile/reader/keyboard/flicker recordings, phone-call latency and blind comparative judging remain separate acceptance work. This change alone does not qualify Bible31 or Phase2.
+
+## Controlled mounted qualification
+
+`tests/branches/live-output-mounted.tsx` mounts this production component with the actual React Query hooks and real `EventSource` transport. Its local HTTP fixture is `tests/branches/live-output-mounted.browser.mjs`; no provider or production server is used. With existing dependencies and Chrome available, set `PONDEROSA_LIVE_MOUNT_BUILD` and `PONDEROSA_LIVE_MOUNT_EVIDENCE` to fresh owned absolute directories, build with `node apps/web/node_modules/@rsbuild/core/bin/rsbuild.js build --config tests/branches/live-output-mounted.config.mjs`, then run `node tests/branches/live-output-mounted.browser.mjs`. Video requires the existing Playwright ffmpeg cache (`PLAYWRIGHT_BROWSERS_PATH` can identify it); do not install dependencies implicitly.
+
+The desktop and emulated-phone cells assert incremental text with stable DOM identity, exact-Run exclusion, a separately cached stale history page, cached text during an intentionally held reconnect, actual EventSource reconnection, canonical snapshot replacement, actual 32KiB truncated snapshots with explicit canonical retrieval success/error and replacement, Run replacement and stream closure on unmount. Screenshots and video are retained. This fixture qualifies the mounted live-work component, not the entire Branches navigation shell, real phone hardware, screen-reader/audio behavior, all themes, high-cardinality subscriptions or every output surface. The parallel-gate count fixture separately starts an authorized Script sibling before opening the gate and proves a second, prepared Script cannot acquire fresh authority while that gate is open.
+
+## Shared rendering and update publication
+
+Agent work logs, task work receipts, and Branches live work now share
+`AgentResponseText`. An open segment stays literal prewrapped text, avoiding
+repeated parsing of unfinished Markdown; a closed canonical segment uses the
+shared rich message renderer. Segment identity and explicit full-text retrieval
+remain unchanged. Exact-Run terminal lifecycle events close that Run's projected
+segments without touching another Run.
+
+The Agent SSE hook preserves every live text/reasoning envelope in order and
+publishes queued deltas after a 16 ms interval, or immediately at 64 envelopes or
+while hidden. A tool, lifecycle event, snapshot/status, or unmount flushes preceding
+text first. This reduces query/render churn without creating a second event store
+or changing authored Communication. Terminal and nontext events remain immediate.
+The previous mapped LCP results remain red; these source changes are not a measured
+performance improvement or Bible21 acceptance.
+
+Calls still use qualified backend response snapshots and existing phrase/context
+checks. A stable terminal sentence may flush after 300 ms, checked every 100 ms,
+rather than a 900 ms stability threshold checked every 900 ms. Unfinished tokens,
+Markdown, abbreviation boundaries, changed Run/fence/item identity, and changed
+spoken prefixes retain their existing protections. No browser-local text is
+presented as an Agent acknowledgement. End-to-end audio latency remains unmeasured
+for this implementation.

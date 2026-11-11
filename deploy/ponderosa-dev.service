@@ -20,6 +20,8 @@ Environment=PONDEROSA_BROWSER_FILE_UPLOAD=1
 Environment=PONDEROSA_BROWSER_SERVICE_SOCKET=%t/ponderosa-browser-dev/browser.sock
 Environment=PONDEROSA_AGENT_SCOPE_MODE=systemd
 Environment=PONDEROSA_AGENT_PARENT_UNIT=ponderosa-dev.service
+# Per-provider/tool scope; retain the shared aggregate slice and admission.
+Environment=PONDEROSA_AGENT_MEMORY_MAX_MIB=8192
 Environment=PATH=%h/ponderosa-dev/current/dist/node-runtime/linux-x64:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:%h/.npm-global/bin
 # Deployment writes the exact immutable release identity here before restart.
 EnvironmentFile=-%h/.config/ponderosa/dev.env

@@ -181,6 +181,13 @@ function activityCandidate(item: AgentActivityDto): Candidate | undefined {
   const base = { id: item.id, seq: item.seq, createdAt: item.createdAt };
   const event = item.event;
   switch (event.type) {
+    case "native_plan":
+      return { executionId: item.executionId, entry: { ...base, kind: "notice", title: "Native Plan",
+        detail: [event.explanation, ...event.steps.map(step => `${step.status}: ${step.step}`)].filter(Boolean).join("\n") } };
+    case "native_diff":
+      return { executionId: item.executionId, entry: { ...base, kind: "notice", title: "Turn Diff", detail: event.diff } };
+    case "native_review":
+      return { executionId: item.executionId, entry: { ...base, kind: "notice", title: `Native review ${event.phase}`, detail: event.text } };
     case "command":
       return {
         executionId: item.executionId,
@@ -239,7 +246,7 @@ function activityCandidate(item: AgentActivityDto): Candidate | undefined {
         entry: {
           ...base,
           kind: "notice",
-          title: "Context rollover scheduled",
+          title: "Context Rollover Scheduled",
           detail: `${event.usedTokens.toLocaleString()} context tokens used · threshold ${event.threshold.toLocaleString()}`,
         },
       };

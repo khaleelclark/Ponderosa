@@ -23,8 +23,8 @@ export default function DocxPreview({ url, title }: { url: string; title: string
     }).finally(() => clearTimeout(deadline));
     return () => { disposed = true; clearTimeout(deadline); abort.abort(); };
   }, [url, attempt]);
-  return <Box aria-label={`Word document preview: ${title}`} sx={{ minWidth: 0 }}>
-    {error ? <Alert severity="error" action={<Button color="inherit" onClick={() => setAttempt(value => value + 1)}>Try again</Button>}>{error}</Alert>
+  return <Box aria-label={`Word Document Preview: ${title}`} sx={{ minWidth: 0 }}>
+    {error ? <Alert severity="error" action={<Button color="inherit" onClick={() => setAttempt(value => value + 1)}>Try Again</Button>}>{error}</Alert>
       : !result ? <Stack direction="row" spacing={1} role="status" sx={{ p: 2, alignItems: "center" }}><CircularProgress size={20}/><Typography>Loading Word document…</Typography></Stack>
       : <>
         <Typography variant="caption" color="text.secondary">Text preview. Images and exact page layout are not shown; download the file for the original document.</Typography>

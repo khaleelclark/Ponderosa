@@ -49,13 +49,13 @@ export function previewCapability({
 }): MimeCapability {
   const normalized = normalizedMediaType(mediaType, path);
   if (contentType === "diff" || artifactKind === "diff" || normalized === "text/x-diff" || normalized === "text/x-patch") {
-    return { kind: "diff", label: "Unified diff", inline: true };
+    return { kind: "diff", label: "Unified Diff", inline: true };
   }
   if (mediaType?.split(";", 1)[0]?.trim().toLowerCase() === "application/octet-stream" && /\.(ttf|otf|ttc|woff2?)$/iu.test(path ?? "")) {
-    return { kind: "unsupported", label: "Font file", inline: false };
+    return { kind: "unsupported", label: "Font File", inline: false };
   }
   if (normalized === "application/vnd.openxmlformats-officedocument.wordprocessingml.document") {
-    return { kind: "docx", label: "Word document", inline: true };
+    return { kind: "docx", label: "Word Document", inline: true };
   }
   if (contentType === "markdown" || normalized === "text/markdown" || normalized === "text/x-markdown") {
     return { kind: "markdown", label: "Markdown", inline: true };
@@ -66,7 +66,7 @@ export function previewCapability({
   // safe only through the image path above, where the browser does not execute
   // it as a top-level page.
   if (normalized === "text/html" || normalized === "application/xhtml+xml") {
-    return { kind: "unsupported", label: "HTML document", inline: false };
+    return { kind: "unsupported", label: "HTML Document", inline: false };
   }
   if (contentType === "text" || normalized.startsWith("text/") || [
     "application/json",

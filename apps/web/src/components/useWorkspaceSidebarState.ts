@@ -1,8 +1,8 @@
-import type { ConversationDto } from "@ponderosa/core";
 import { useEffect, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import {
   projectSidebarSectionForRoute,
+  routeToPath,
   routeInitialSidebarSection,
   routeSynchronizedSidebarSection,
   type ProjectSidebarSection,
@@ -10,35 +10,24 @@ import {
 } from "../routeRegistry";
 import { routeProjectId, type Route } from "../routing";
 import { clampWorkspaceSidebarWidth } from "../workspaceSidebarState";
-import type { ResourceContextMenuState } from "./ResourceContextMenu";
 
 export function useWorkspaceSidebarNavigation(route: Route, globalLists = false) {
   const [sidebarSection, setSidebarSection] =
     useState<RouteSidebarSection>(() => routeInitialSidebarSection(route));
   const previousRoute = useRef(route);
-  const [filter, setFilter] = useState("");
+  const panelPresentation=useRef({chats:{scrollTop:0,starsCollapsed:false},agents:{scrollTop:0,starsCollapsed:false}});
+  const [collapsedSidebarAgentIds,setCollapsedSidebarAgentIds]=useState<Set<string>>(()=>new Set());
+  const [activeItem,setActiveItem]=useState<ProjectSidebarSection|"assistant">(()=>route.kind==="assistant"?"assistant":route.kind==="manageAgents"?"agents":projectSidebarSectionForRoute(route)??"chats");
   const [projectSection, setProjectSection] = useState<ProjectSidebarSection>(
     () => projectSidebarSectionForRoute(route) ?? "chats",
   );
-  const [draggedResource, setDraggedResource] = useState<{
-    kind: "home" | "chat" | "agent";
-    id: string;
-  }>();
-  type SidebarMenuResource = { route: Route; conversation?: ConversationDto };
-  const [menu, setMenu] =
-    useState<ResourceContextMenuState<SidebarMenuResource>>();
-  const openResourceMenu = (
-    anchor: HTMLElement,
-    route: Route,
-    conversation?: ConversationDto,
-  ) =>
-    setMenu({
-      anchor,
-      resource: { route, ...(conversation ? { conversation } : {}) },
-    });
+  const [filters,setFilters]=useState<Record<ProjectSidebarSection,string>>({chats:"",agents:""});
+  const filter=filters[projectSection];
+  const setFilter=(value:string)=>setFilters(current=>({...current,[projectSection]:value}));
   useEffect(() => {
     const previous = previousRoute.current;
     previousRoute.current = route;
+    if (routeToPath(previous) !== routeToPath(route)) setActiveItem(route.kind === "assistant" ? "assistant" : route.kind === "manageAgents" ? "agents" : ["home","inbox","manageChats"].includes(route.kind) ? "chats" : projectSidebarSectionForRoute(route) ?? projectSection);
     const previousProjectId = routeProjectId(previous);
     const projectId = routeProjectId(route);
     // Global Chats/Agents panels belong to the sidebar controls. Main-view
@@ -71,15 +60,16 @@ export function useWorkspaceSidebarNavigation(route: Route, globalLists = false)
   return {
     sidebarSection,
     setSidebarSection,
+    activeItem,
+    setActiveItem,
+    panelPresentation,
+    collapsedSidebarAgentIds,
+    setCollapsedSidebarAgentIds,
     projectSection,
     setProjectSection,
     filter,
+    filters,
     setFilter,
-    draggedResource,
-    setDraggedResource,
-    menu,
-    setMenu,
-    openResourceMenu,
   };
 }
 

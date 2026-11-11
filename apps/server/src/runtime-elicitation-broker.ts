@@ -20,7 +20,7 @@ const BARE_CONFIRMATION_SCHEMA_KEYS = new Set([
 ]);
 
 function confirmationKey(request: RuntimeElicitationRequest): string | undefined {
-  if (request.mode === "url") return undefined;
+  if (request.mode === "url" || request.nativeApproval) return undefined;
   const schema = request.requestedSchema;
   if (Object.keys(schema).some((key) => !BARE_CONFIRMATION_SCHEMA_KEYS.has(key))) {
     return undefined;

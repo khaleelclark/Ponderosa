@@ -1,3 +1,6 @@
+import {GitStorageBindingsEditor} from './GitStorageBindingsEditor';
+import {gitStorageSelectionError} from './gitStorageSelections';
+import {NativePortableExportChoices} from './NativePortableDataChoices';
 import ContentCopyOutlinedIcon from "@mui/icons-material/ContentCopyOutlined";
 import DownloadOutlinedIcon from "@mui/icons-material/DownloadOutlined";
 import {
@@ -17,16 +20,18 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import type { AgentDto, ConversationDto } from "@ponderosa/core";
+import type { AgentDto, ConversationDto, ReviewedUserDataSelection } from "@ponderosa/core";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import { createClientId } from "../clientId";
 import { queryKeys } from "../queryKeys";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ConfirmDialog } from "./ConfirmationDialogs";
 import { agentBelongsToConversation } from "../agents";
 
 import { ChatInstructionsImportChoice, chatInstructionsResolution, type ChatInstructionsAction } from "./ChatInstructionsImportChoice";
+
+import {fullPackageExportWarning} from './PackageExportDisclosure';
 
 type PackageMode = "template" | "full";
 
@@ -70,23 +75,21 @@ function PackageChoices({
       <Select labelId="agent-package-scope-label" label="Scope" value={organization ? "organization" : "agent"}
         onChange={event => onOrganizationChange(event.target.value === "organization")}>
         <MenuItem value="agent">This Agent</MenuItem>
-        <MenuItem value="organization">This Agent and descendants</MenuItem>
+        <MenuItem value="organization">This Agent And Descendants</MenuItem>
       </Select>
     </FormControl>
     <FormControl fullWidth size="small">
       <InputLabel id="agent-package-contents-label">Contents</InputLabel>
       <Select labelId="agent-package-contents-label" label="Contents" value={mode}
         onChange={event => onModeChange(event.target.value as PackageMode)}>
-        <MenuItem value="template">Setup only</MenuItem>
-        <MenuItem value="full">Setup, private history, and managed artifacts</MenuItem>
+        <MenuItem value="template">Setup Only</MenuItem>
+        <MenuItem value="full">Setup, Private History, And Managed Artifacts</MenuItem>
       </Select>
     </FormControl>
     <Typography variant="body2" color="text.secondary">
-      {agentCount} Agent{agentCount === 1 ? "" : "s"} selected. {mode === "template"
-        ? "Setup only excludes history and artifacts."
-        : "Full packages include available Agent history, managed artifacts, and project instructions."}
-      {" "}Credentials are not included.
+      {agentCount} Agent{agentCount === 1 ? "" : "s"} selected. Credentials are excluded.
     </Typography>
+    {mode === "full" ? <Alert severity="warning">{fullPackageExportWarning}</Alert> : null}
   </Stack>;
 }
 
@@ -104,31 +107,51 @@ export function AgentPackageExportDialog({
   agents: AgentDto[];
   initialOrganization?: boolean;
   onClose(): void;
-  onCopy(mode: PackageMode, organization: boolean): Promise<void>;
-  onDownload(mode: PackageMode, organization: boolean): void;
+  onCopy(mode: PackageMode, organization: boolean, workingFiles?: string[], wholeWorkingFolder?: boolean, organizationWorkingFolders?:boolean, reviewedUserData?:ReviewedUserDataSelection, gitStorageBindings?:import('@ponderosa/core').GitStorageSelection[]): Promise<void>;
+  onDownload(mode: PackageMode, organization: boolean, workingFiles?: string[], wholeWorkingFolder?: boolean, organizationWorkingFolders?:boolean, reviewedUserData?:ReviewedUserDataSelection, gitStorageBindings?:import('@ponderosa/core').GitStorageSelection[]): void;
 }): JSX.Element {
   const [organization, setOrganization] = useState(initialOrganization);
   const [mode, setMode] = useState<PackageMode>("template");
   const [copying, setCopying] = useState(false);
+  const [workingFiles,setWorkingFiles]=useState('');
+  const [wholeWorkingFolder,setWholeWorkingFolder]=useState(false);
+  const [organizationWorkingFolders,setOrganizationWorkingFolders]=useState(false);
+  const [nativeSelection,setNativeSelection]=useState<ReviewedUserDataSelection>({git:false,harness:false,source:'live'});
+  const [gitBindings,setGitBindings]=useState<import('@ponderosa/core').GitStorageSelection[]>([]);
+  const allFolders=mode==='full'&&organization&&organizationWorkingFolders;
+  const reviewAvailable=mode==='full'&&(wholeWorkingFolder||allFolders);
+  const reviewedUserData=reviewAvailable&&(nativeSelection.git||nativeSelection.harness||nativeSelection.extendedMetadata||nativeSelection.persistentNodes?.fifo||nativeSelection.persistentNodes?.evidenceOnly)?nativeSelection:undefined;
+  const bindingAgents=selectedAgents(source,agents,organization);
+  const bindingsAvailable=allFolders&&nativeSelection.git&&nativeSelection.source!=='retained_originals';
+  const bindingError=bindingsAvailable?gitStorageSelectionError(gitBindings,new Set(bindingAgents.map(agent=>agent.id))):undefined;
+  const selectedBindings=bindingsAvailable&&gitBindings.length?gitBindings:undefined;
+  const selectedPaths=mode==='full'&&!wholeWorkingFolder&&!allFolders?workingFiles.split(/\r?\n/).map(path=>path.trim()).filter(Boolean):[];
+  const invalidPaths=selectedPaths.some(path=>path.startsWith('/')||path.split(/[\\/]/).includes('..'));
   useEffect(() => {
-    if (open) { setOrganization(initialOrganization); setMode("template"); }
+    if (open) { setOrganization(initialOrganization); setMode("template"); setWorkingFiles('');setWholeWorkingFolder(false);setOrganizationWorkingFolders(false);setNativeSelection({git:false,harness:false,source:'live'});setGitBindings([]); }
   }, [open, source.id, initialOrganization]);
   const agentCount = selectedAgents(source, agents, organization).length;
   return <Dialog open={open} onClose={copying ? undefined : onClose} fullWidth maxWidth="sm" aria-busy={copying || undefined}>
-    <DialogTitle>Export Agent package</DialogTitle>
+    <DialogTitle>Export Agent Package</DialogTitle>
     <DialogContent>
       <Typography variant="body2" color="text.secondary">Choose what to export from {source.title}.</Typography>
       <PackageChoices organization={organization} mode={mode} agentCount={agentCount}
         onOrganizationChange={setOrganization} onModeChange={setMode} />
+      {mode==='full'&&organization&&<FormControlLabel control={<Checkbox checked={organizationWorkingFolders} onChange={event=>setOrganizationWorkingFolders(event.target.checked)}/>} label="Include Every Distinct Organization Working Folder"/>}
+      {mode==='full'&&!allFolders&&<FormControlLabel control={<Checkbox checked={wholeWorkingFolder} onChange={event=>setWholeWorkingFolder(event.target.checked)}/>} label="Include The Whole Root Agent Working Folder"/>}
+      {mode==='full'&&<NativePortableExportChoices available={reviewAvailable} disabled={copying} value={nativeSelection} onChange={setNativeSelection}/>}
+      {mode==='full'&&<GitStorageBindingsEditor agents={bindingAgents} value={gitBindings} onChange={setGitBindings} available={bindingsAvailable} disabled={copying}/>}
+      {bindingError&&<Alert severity="warning">{bindingError}</Alert>}
+      {mode==='full'&&!wholeWorkingFolder&&!allFolders&&<TextField fullWidth multiline minRows={2} label="Working Files To Include" value={workingFiles} onChange={event=>setWorkingFiles(event.target.value)} error={invalidPaths} helperText="Optional: one path per line, relative to the Agent working folder · selected files may contain sensitive information" sx={{mt:2}}/>}
     </DialogContent>
     <DialogActions sx={{ flexWrap: "wrap", p: 2 }}>
       <Button onClick={onClose} disabled={copying}>Close</Button>
-      <Button startIcon={<ContentCopyOutlinedIcon />} disabled={copying} onClick={async () => {
+      <Button startIcon={<ContentCopyOutlinedIcon />} disabled={copying||invalidPaths||Boolean(bindingError)} onClick={async () => {
         setCopying(true);
-        try { await onCopy(mode, organization); } finally { setCopying(false); }
+        try { await onCopy(mode, organization, selectedPaths, mode==='full'&&wholeWorkingFolder&&!allFolders, allFolders, reviewedUserData, selectedBindings); } finally { setCopying(false); }
       }}>{copying ? "Copying…" : "Copy JSON"}</Button>
-      <Button variant="contained" startIcon={<DownloadOutlinedIcon />} disabled={copying}
-        onClick={() => onDownload(mode, organization)}>Download JSON</Button>
+      <Button variant="contained" startIcon={<DownloadOutlinedIcon />} disabled={copying||invalidPaths||Boolean(bindingError)}
+        onClick={() => onDownload(mode, organization, selectedPaths, mode==='full'&&wholeWorkingFolder&&!allFolders, allFolders, reviewedUserData, selectedBindings)}>Download JSON</Button>
     </DialogActions>
   </Dialog>;
 }
@@ -139,6 +162,7 @@ export function AgentDuplicateDialog({
   agents,
   conversations,
   initialConversationId,
+  sourceConversation,
   onClose,
   onCreated,
 }: {
@@ -147,8 +171,9 @@ export function AgentDuplicateDialog({
   agents: AgentDto[];
   conversations: ConversationDto[];
   initialConversationId?: string;
+  sourceConversation?: ConversationDto;
   onClose(): void;
-  onCreated(agentId: string): void;
+  onCreated(agentId: string, destinationProjectId: string): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
   const availableChats = conversations.filter(chat => !chat.deletedAt);
@@ -157,8 +182,9 @@ export function AgentDuplicateDialog({
   const [conversationId, setConversationId] = useState("");
   const [rootTitle, setRootTitle] = useState("");
   const [instructionsAction, setInstructionsAction] = useState<ChatInstructionsAction>("");
-  const sourceInstructions = mode === "full" ? conversations.find(chat => chat.id === source.conversationId)?.instructions : undefined;
-  const destinationInstructions = conversations.find(chat => chat.id === conversationId)?.instructions ?? "";
+  const sourceInstructions = mode === "full" ? (sourceConversation ?? conversations.find(chat => chat.id === source.conversationId))?.instructions : undefined;
+  const destinationChat = availableChats.find(chat => chat.id === conversationId);
+  const destinationInstructions = destinationChat?.instructions ?? "";
   const instructionsConflict = Boolean(sourceInstructions && destinationInstructions && sourceInstructions !== destinationInstructions);
   useEffect(() => { setInstructionsAction(""); }, [mode, sourceInstructions, destinationInstructions, conversationId]);
   const [acknowledged, setAcknowledged] = useState(false);
@@ -182,17 +208,24 @@ export function AgentDuplicateDialog({
     || agent.managementPermissions.allowAutomaticDescendantReorganization,
   );
   const normalizedTitle = rootTitle.trim().toLocaleLowerCase();
-  const nameCollision = normalizedTitle && agents.some(agent =>
+  const destinationAgents = useQuery({
+    queryKey: queryKeys.agents.project(destinationChat?.projectId),
+    queryFn: () => api.listAgents(destinationChat!.projectId),
+    enabled: open && Boolean(destinationChat && destinationChat.projectId !== source.projectId),
+  });
+  const possibleCollisions = destinationChat?.projectId === source.projectId ? agents : destinationAgents.data ?? [];
+  const nameCollision = normalizedTitle && possibleCollisions.some(agent =>
     agentBelongsToConversation(agent, conversationId)
     && agent.title.trim().toLocaleLowerCase() === normalizedTitle,
   );
   const duplicate = async () => {
-    const signature = JSON.stringify([source.id, conversationId, rootTitle.trim(), mode, organization, acknowledged, instructionsAction, destinationInstructions]);
+    if (!destinationChat) return;
+    const signature = JSON.stringify([source.id, destinationChat.projectId, conversationId, rootTitle.trim(), mode, organization, acknowledged, instructionsAction, destinationInstructions]);
     if (attempt.current?.signature !== signature) attempt.current = { signature, id: createClientId() };
     setPending(true);
     setError(undefined);
     try {
-      const result = await api.copyAgent(source.projectId, {
+      const result = await api.copyAgent(destinationChat.projectId, {
         sourceAgentId: source.id,
         conversationId,
         rootTitle: rootTitle.trim(),
@@ -201,45 +234,47 @@ export function AgentDuplicateDialog({
         chatInstructionsResolution: await chatInstructionsResolution(instructionsAction, destinationInstructions),
         ...(elevated ? { acknowledgeElevatedManagementPermissions: acknowledged } : {}),
       }, attempt.current.id);
-      await queryClient.invalidateQueries({ queryKey: queryKeys.agents.project(source.projectId) });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.agents.project(destinationChat.projectId) });
       await queryClient.invalidateQueries({ queryKey: queryKeys.workspaceDirectory.kind("agent") });
       onClose();
-      onCreated(result.rootAgentId);
+      onCreated(result.rootAgentId, destinationChat.projectId);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "The Agent could not be duplicated.");
     } finally {
       setPending(false);
     }
   };
-  return <ConfirmDialog open={open} title={organization ? "Duplicate organization" : "Duplicate Agent"}
-    confirmLabel={organization ? "Duplicate organization" : "Duplicate Agent"}
+  return <ConfirmDialog open={open} title={organization ? "Duplicate Organization" : "Duplicate Agent"}
+    confirmLabel={organization ? "Duplicate Organization" : "Duplicate Agent"}
     pendingLabel="Duplicating…" pending={pending} error={error}
-    confirmDisabled={(instructionsConflict && !instructionsAction) || !conversationId || !rootTitle.trim() || rootTitle.trim().length > 80 || (elevated && !acknowledged)} onCancel={onClose}
+    confirmDisabled={(instructionsConflict && !instructionsAction) || !destinationChat || !rootTitle.trim() || rootTitle.trim().length > 80 || (elevated && !acknowledged)} onCancel={onClose}
     onConfirm={() => void duplicate()}>
     <Stack spacing={2} sx={{ pt: 1 }}>
       <Typography variant="body2" color="text.secondary">Source: {source.title}</Typography>
+      <Typography variant="body2" color="text.secondary">Duplicates omit output and speaker roles.</Typography>
       <PackageChoices organization={organization} mode={mode} agentCount={included.length}
         onOrganizationChange={setOrganization} onModeChange={setMode} />
       <FormControl fullWidth size="small">
-        <InputLabel id="duplicate-agent-chat-label">Destination chat</InputLabel>
-        <Select labelId="duplicate-agent-chat-label" label="Destination chat" value={conversationId}
+        <InputLabel id="duplicate-agent-chat-label">Destination Chat</InputLabel>
+        <Select labelId="duplicate-agent-chat-label" label="Destination Chat" value={conversationId}
           onChange={event => setConversationId(event.target.value)}>
           {availableChats.map(chat => <MenuItem key={chat.id} value={chat.id}>{chat.title}</MenuItem>)}
         </Select>
       </FormControl>
       <ChatInstructionsImportChoice source={sourceInstructions} destination={destinationInstructions}
         value={instructionsAction} onChange={setInstructionsAction} />
-      <TextField label="New root Agent name" value={rootTitle} onChange={event => setRootTitle(event.target.value)}
+      <TextField label="New Root Agent Name" value={rootTitle} onChange={event => setRootTitle(event.target.value)}
         inputProps={{ maxLength: 80 }} fullWidth size="small"
         error={Boolean(rootTitle && !rootTitle.trim())}
         helperText="Descendant names stay the same." />
+      {destinationAgents.isError ? <Alert severity="warning">Agent name check unavailable for the destination Chat.</Alert> : null}
       {nameCollision ? <Alert severity="warning">
         An Agent named “{rootTitle.trim()}” already exists in this chat. The duplicate will be separate; no existing Agent is replaced.
       </Alert> : null}
       {elevated ? <Alert severity="warning">
         This selection contains elevated organization permissions.
         <FormControlLabel control={<Checkbox checked={acknowledged} onChange={event => setAcknowledged(event.target.checked)} />}
-          label="Keep these elevated permissions in the duplicate" />
+          label="Keep These Elevated Permissions In The Duplicate" />
       </Alert> : null}
       <Typography variant="caption" color="text.secondary">
         Nothing is submitted to an external service.

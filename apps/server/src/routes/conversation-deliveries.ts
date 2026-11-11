@@ -1,3 +1,4 @@
+import { parseNativeTurnCommand } from "@ponderosa/core";
 import { createHash } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import type {
@@ -249,7 +250,7 @@ export function registerConversationDeliveryRoutes(
     const requestedAssets = request.body?.attachments ?? [];
     const requestedRecipientAgentMentions: unknown = request.body?.recipientAgentMentions;
     const requestedRecipientAttachments = request.body?.recipientAttachments ?? [];
-    const activeRunDelivery = request.body?.activeRunDelivery ?? "steer";
+    let activeRunDelivery = request.body?.activeRunDelivery ?? "steer";
     const runtimeSelection = requestedRuntimeSelection(request.body ?? {});
     if (!runtimeSelection) {
       return reply.code(400).send({ error: "engine, model, effort, and speed must be strings of at most 200 characters" });
@@ -259,6 +260,11 @@ export function registerConversationDeliveryRoutes(
     }
     if (activeRunDelivery !== "steer" && activeRunDelivery !== "queue") {
       return reply.code(400).send({ error: "activeRunDelivery must be steer or queue" });
+    }
+    try {
+      if (parseNativeTurnCommand(rawText)) activeRunDelivery = "queue";
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : "Invalid native command" });
     }
     if (requestedRecipientAgentMentions !== undefined &&
         (!Array.isArray(requestedRecipientAgentMentions) ||
@@ -406,7 +412,7 @@ export function registerConversationDeliveryRoutes(
           attachmentDeletionInProgress(entry.agentId, id)))) {
       return reply.code(409).send({ error: "Asset deletion is in progress" });
     }
-    if (attachmentUserIds.some(assetReconciliationInProgress)) {
+    if (attachmentUserIds.some(assetReconciliationInProgress)||requestedAssets.some(asset=>asset.conversationId&&assetReconciliationInProgress(asset.conversationId))) {
       return reply.code(409).send({ error: "Asset cleanup is in progress" });
     }
     if (leasedAgentIds.some(agentDeletionInProgress)) {
@@ -645,7 +651,7 @@ export function registerConversationDeliveryRoutes(
     async (request, reply) => {
       if (!request.body || typeof request.body !== "object" || Array.isArray(request.body) ||
           Object.keys(request.body).some((key) => ![
-            "text", "recipients", "idempotencyKey", "activeRunDelivery", "engine", "model", "effort", "speed",
+            "text", "recipients", "idempotencyKey", "activeRunDelivery", "engine", "model", "effort", "speed", "voiceReply",
           ].includes(key))) {
         return reply.code(400).send({ error: "direct message body contains unknown or invalid fields" });
       }
@@ -656,13 +662,18 @@ export function registerConversationDeliveryRoutes(
         return reply.code(400).send({ error: "idempotencyKey must be 1 to 200 characters" });
       }
       const idempotencyKey = request.body.idempotencyKey.trim();
-      const activeRunDelivery = request.body?.activeRunDelivery ?? "steer";
+      let activeRunDelivery = request.body?.activeRunDelivery ?? "steer";
       const runtimeSelection = requestedRuntimeSelection(request.body ?? {});
       if (!runtimeSelection) {
         return reply.code(400).send({ error: "engine, model, effort, and speed must be strings of at most 200 characters" });
       }
       if (activeRunDelivery !== "steer" && activeRunDelivery !== "queue") {
         return reply.code(400).send({ error: "activeRunDelivery must be steer or queue" });
+      }
+      try {
+        if (parseNativeTurnCommand(rawText)) activeRunDelivery = "queue";
+      } catch (error) {
+        return reply.code(400).send({ error: error instanceof Error ? error.message : "Invalid native command" });
       }
       if (!rawText.trim()) return reply.code(400).send({ error: "text is required" });
       if (!idempotencyKey || idempotencyKey.length > 200) return reply.code(400).send({ error: "idempotencyKey must be 1 to 200 characters" });
@@ -687,11 +698,16 @@ export function registerConversationDeliveryRoutes(
           return reply.code(400).send({ error: `each recipient supports at most ${MAX_ATTACHMENTS_PER_MESSAGE} unique attachments` });
         }
       }
+      if (request.body.voiceReply !== undefined && (request.body.voiceReply !== true ||
+          recipients.length !== 1 || activeRunDelivery !== "steer")) {
+        return reply.code(400).send({ error: "voiceReply requires one priority steering recipient" });
+      }
       const receiptKey = `multi-direct:${request.params.id}:${idempotencyKey}`;
       const eventId = `user-dm-${createHash("sha256").update(receiptKey).digest("hex")}`;
       const requestFingerprint = conversationDeliveryRequestFingerprint({
         version: 1,
         kind: "direct",
+        ...(request.body.voiceReply ? { voiceReply: true } : {}),
         conversationId: request.params.id,
         text: rawText,
         recipients: recipients.map((recipient, index) => ({
@@ -865,6 +881,7 @@ export function registerConversationDeliveryRoutes(
               } : {}),
               activeRunDelivery,
               ...runtimeSelection,
+              ...(request.body.voiceReply ? { voiceReply: true } : {}),
               recipients: recipients.map((recipient, index) => ({
                 agentId: recipient.agentId,
                 attachments: (attachmentsByAgent[index] ?? []).map((item) => ({
@@ -877,7 +894,7 @@ export function registerConversationDeliveryRoutes(
           activations: recipients.map((recipient, index) => ({
             agentId: recipient.agentId,
             kind: "human_message",
-            priority: 100,
+            priority: request.body.voiceReply ? 110 : 100,
             dispatchPolicy: activeRunDelivery === "steer" ? "steer_or_run" : "next_run",
             promptClass: "human",
             dedupeKey: `communication:${eventId}:${recipient.agentId}:${index}`,
@@ -979,10 +996,13 @@ export function registerConversationDeliveryRoutes(
           communication?.sender.kind !== "user" || communication.sender.userId !== "local-operator") return [];
       const position = (perAgentPosition.get(activation.agentId) ?? 0) + 1;
       perAgentPosition.set(activation.agentId, position);
-      const message = store.getConversationMessages(conversation.id, "main")
-        .find((candidate) => candidate.communicationEventId === communication.eventId);
+      const message = store.getProjectedConversationMessageById(
+        conversation.id, "main", communication.eventId,
+      );
       return [{
         deliveryId: activation.id,
+        communicationEventId: communication.eventId,
+        attachmentCount: (payload?.dispatch as {attachments?:unknown[]}|undefined)?.attachments?.length??0,
         messageId: message?.id ?? communication.eventId,
         conversationId: conversation.id,
         targetAgentId: activation.agentId,

@@ -49,10 +49,6 @@ function mentionedAgents(text: string, agents: AgentDto[], authorAgentId: string
   return [...mentioned.values()];
 }
 
-function hasEveryoneMention(text: string): boolean {
-  return /(?:^|\s)#everyone(?=$|\s|[.,!?;:])/iu.test(text);
-}
-
 function stripLeadingScopeTag(text: string, tag: "broadcast" | "user"): string {
   return text.replace(new RegExp(`^#${tag}(?=$|\\s)\\s*`, "iu"), "").trim();
 }
@@ -103,7 +99,6 @@ export {
   mentionRelayFingerprint,
   advanceMentionTrail,
   mentionedAgents,
-  hasEveryoneMention,
   stripLeadingScopeTag,
   renderScopedMessage,
   renderDirectMessage,

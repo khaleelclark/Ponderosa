@@ -7,7 +7,7 @@ import {
   type AgentPresetDto,
 } from "@ponderosa/core";
 import type { Db } from "./db.js";
-import { EventLog } from "./eventlog.js";
+import { readLog } from "./eventlog.js";
 import { readRepairableJsonl } from "./append-jsonl.js";
 import { pruneArtifactDirectory, readJson, writeJson } from "./store-filesystem.js";
 import type { AgentJson, ConversationJson, PresetEvent, ProjectJson } from "./store-types.js";
@@ -68,6 +68,8 @@ export class AgentProjectionRebuilder {
   ) {}
 
   rebuildProjections(): void {
+    this.agentCatalog.invalidateImportedIndexes();
+    this.agentCatalog.clearRoleCache();
     // Project recovery crosses an irreversible filesystem boundary. Its receipt
     // commits must not be rolled back when a later, unrelated projection replay
     // fails and the broad rebuild transaction is reverted.
@@ -88,6 +90,7 @@ export class AgentProjectionRebuilder {
     this.db.delete(changedFileProjection).run();
     this.db.delete(managedArtifactProjection).run();
     this.db.delete(importedHistoryMessages).run();
+    this.client.prepare("DELETE FROM imported_history_indexes").run();
     this.db.delete(events).run();
     this.db.delete(artifacts).run();
     this.db.delete(workItems).run();
@@ -126,6 +129,7 @@ export class AgentProjectionRebuilder {
       const pj = projectJsonPath(this.dataDir, projectId);
       if (!existsSync(pj)) continue;
       const p = readJson<ProjectJson>(pj);
+      if(p.importedRootBinding?.recoveryError)throw new Error(p.importedRootBinding.recoveryError.message);
       if (!isBoundedRecordId(projectId) || p.id !== projectId) {
         throw new Error(`Project record ${p.id} does not match containing directory ${projectId}`);
       }
@@ -185,11 +189,25 @@ export class AgentProjectionRebuilder {
           if (!isBoundedRecordId(conversationId) || m.id !== conversationId || m.projectId !== projectId) {
             throw new Error(`Chat record ${m.id} does not match its containing Project and directory`);
           }
+          // Final Branch publication owns these links in SQLite, not staging Chat metadata.
+          const installed = this.client.prepare(`SELECT r.branch_id, e.id execution_id
+            FROM branch_installation_resources r
+            LEFT JOIN branch_resource_references ref ON ref.chat_id=r.local_id
+            LEFT JOIN branch_executions e ON e.id=ref.execution_id
+              AND json_extract(e.provenance_json,'$.source')='portable_runtime_data'
+            WHERE r.local_id=? AND r.agent_ref='' AND r.state='active'
+            ORDER BY e.id`).all(m.id) as {branch_id:string;execution_id:string|null}[];
+          const branches = new Set(installed.map(r=>r.branch_id));
+          const owners = new Set(installed.map(r=>r.execution_id).filter((id):id is string=>id!==null));
+          if(branches.size>1||owners.size>1)throw new Error('Published Branch Chat ownership aliases');
+          const installedBranch=installed[0]?.branch_id,installedExecution=[...owners][0];
           this.db
             .insert(conversations)
             .values({
               id: m.id,
               projectId: m.projectId,
+              branchId: installedBranch ?? m.branchId ?? null,
+              executionId: installedBranch ? installedExecution ?? null : m.executionId ?? null,
               title: m.title,
               defaultEngine: m.defaultEngine ?? null,
               defaultModel: m.defaultModel ?? null,
@@ -290,14 +308,14 @@ export class AgentProjectionRebuilder {
 
         const importedHistoryFile = importedAgentHistoryPath(this.dataDir, projectId, agentId);
         if (existsSync(importedHistoryFile)) {
-          this.agentCatalog.projectImportedHistory(agentId, readJson(importedHistoryFile));
+          this.agentCatalog.projectImportedHistory(agentId, readJson(importedHistoryFile), { deferIndex: true });
         }
 
         const logFile = eventsPath(this.dataDir, projectId, agentId);
         if (t.deletedAt && !existsSync(logFile)) continue;
         mkdirSync(artifactsDir(this.dataDir, projectId, agentId), { recursive: true });
         if (!existsSync(logFile)) continue;
-        const stored = new EventLog(logFile).readAll();
+        const stored = readLog(logFile);
         const protectedArtifactPaths = new Set(stored.flatMap(({ event }) =>
           event.type === "generated_artifact" || event.type === "browser_screenshot" ? [event.path] : [],
         ));

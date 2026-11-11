@@ -1,3 +1,6 @@
+import {isUtf8} from "node:buffer";
+import {VISUALIZATION_BOOTSTRAP} from '../visualization-preview.js';
+import {requestProduct} from '../product-scope.js';
 import { Readable } from "node:stream";
 import {
   openManagedArtifactContent,
@@ -111,8 +114,22 @@ export function registerArtifactRoutes(
     },
   );
 
+  type VisualizationQuery = { communicationEventId?: string; conversationId?: string; visualizationNonce?: string };
+  const hasVisualizationQuery = (query: VisualizationQuery) => query.communicationEventId !== undefined || query.conversationId !== undefined || query.visualizationNonce !== undefined;
+  function visualizationPublication(projectId: string, artifactId: string, query: VisualizationQuery): boolean {
+    if (typeof query.communicationEventId !== 'string' || query.communicationEventId.length > 200 ||
+        typeof query.conversationId !== 'string' || query.conversationId.length > 200) return false;
+    if(query.visualizationNonce!==undefined&&(typeof query.visualizationNonce!=='string'||!/^[A-Za-z0-9_-]{1,80}$/.test(query.visualizationNonce)))return false;
+    const communication = store.getCommunicationEvent(projectId, query.communicationEventId);
+    const chat = store.getConversation(query.conversationId);
+    const artifact = store.getProjectArtifact(projectId, artifactId);
+    return Boolean(chat?.projectId === projectId && communication?.sender.kind === 'agent' &&
+      communication.conversationId === chat.id && communication.artifactIds?.includes(artifactId) &&
+      artifact?.kind === 'generated_file' && artifact.mediaType === 'text/html' && artifact.sha256 &&
+      store.operatorCanReadProjectArtifact(projectId, artifactId));
+  }
   app.get<{
-    Params: { projectId: string; aid: string };
+    Params: { projectId: string; aid: string }; Querystring: VisualizationQuery;
   }>(
     "/api/projects/:projectId/artifacts/:aid",
     async (request, reply) => {
@@ -122,12 +139,16 @@ export function registerArtifactRoutes(
       );
       if (
         !artifact ||
-        !store.projectArtifactIsOrganizationVisible(
-          request.params.projectId,
-          request.params.aid,
-        )
+        !(hasVisualizationQuery(request.query)
+          ? visualizationPublication(request.params.projectId, request.params.aid, request.query)
+          : store.projectArtifactIsOrganizationVisible(request.params.projectId, request.params.aid)
+            || (artifact.origin?.kind === "operator" && store.operatorCanReadProjectArtifact(request.params.projectId, request.params.aid)))
       ) {
         return reply.code(404).send({ error: "project file not found" });
+      }
+      if (hasVisualizationQuery(request.query)) {
+        const reference = new URLSearchParams({ communicationEventId: request.query.communicationEventId!, conversationId: request.query.conversationId! });
+        return { ...artifact, previewUrl: `/api/projects/${encodeURIComponent(request.params.projectId)}/artifacts/${encodeURIComponent(artifact.id)}/preview?${reference}` };
       }
       return artifact;
     },
@@ -154,6 +175,7 @@ export function registerArtifactRoutes(
         cursor: request.query.cursor,
         conversationId,
         search: request.query.q,
+        productScope:requestProduct(request),
       });
     } catch (error) {
       return reply.code(400).send({
@@ -199,7 +221,7 @@ export function registerArtifactRoutes(
   ): Promise<GeneratedFile | undefined> {
     const project = store.getProject(projectId);
     const managed = store.getProjectArtifact(projectId, artifactId);
-    if (project && managed) {
+    if (project && managed && !store.isWorkingFileTransportPart(projectId,artifactId)) {
       if ((managed.originAgentId ?? managed.agentId) !== agentId) return undefined;
       const runtime = assets.authoritativeRuntimeArtifactMetadataById(projectId, artifactId);
       if (runtime && !managedProjectArtifactAgreesWithRuntime(managed, runtime)) return undefined;
@@ -318,6 +340,7 @@ export function registerArtifactRoutes(
     projectId: string,
     agentId: string,
     artifactId: string,
+    visualization = false,
   ) {
     if (!store.getProject(projectId)) return reply.code(404).send({ error: "project not found" });
     const transfer = beginArtifactTransfer(
@@ -339,7 +362,15 @@ export function registerArtifactRoutes(
         transfer.finish();
         return reply.code(404).send({ error: "generated artifact not found" });
       }
+      if (visualization && (file.mediaType !== 'text/html' || file.size > MAX_FILE_BYTES)) {
+        await file.managed?.close(); transfer.finish();
+        return reply.code(413).send({ error: 'This visualization exceeds the inline preview limit. Download the standalone HTML.' });
+      }
       const prepared = await sendGeneratedPreview(reply, file, transfer.signal);
+      if (visualization) {
+        if (!Buffer.isBuffer(prepared.body) || !isUtf8(prepared.body)) { transfer.finish(); return reply.code(415).type('application/json').send({error:'This visualization is not a complete UTF-8 HTML document.'}); }
+        prepared.body = Buffer.concat([Buffer.from(VISUALIZATION_BOOTSTRAP), prepared.body]);
+      }
       if (prepared.body instanceof Readable) {
         projectFileAuthority.bindLifecycle(request, reply, prepared.body, transfer.finish);
       } else {
@@ -403,13 +434,15 @@ export function registerArtifactRoutes(
     }
   }
 
-  app.get<{ Params: { projectId: string; aid: string } }>(
+  app.get<{ Params: { projectId: string; aid: string }; Querystring: VisualizationQuery }>(
     "/api/projects/:projectId/artifacts/:aid/preview",
     async (request, reply) => {
       const artifact = store.getProjectArtifact(request.params.projectId, request.params.aid);
       if (
         !artifact
         || !store.operatorCanReadProjectArtifact(request.params.projectId, request.params.aid)
+        || hasVisualizationQuery(request.query) && (!visualizationPublication(request.params.projectId, request.params.aid, request.query)
+          || typeof request.query.visualizationNonce !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/.test(request.query.visualizationNonce))
       ) {
         return reply.code(404).send({ error: "generated artifact not found" });
       }
@@ -419,6 +452,7 @@ export function registerArtifactRoutes(
         request.params.projectId,
         artifact.originAgentId ?? artifact.agentId,
         artifact.id,
+        hasVisualizationQuery(request.query),
       );
     },
   );

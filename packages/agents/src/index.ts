@@ -14,7 +14,7 @@ export type {
   AgentCreationOperationStatus,
 } from "./store.js";
 export { normalizeAgentTitle } from "./agent-identity.js";
-export { WorkspaceStore, draftRevisionConflicts } from "./workspace-store.js";
+export { workspaceRecencyCte, WorkspaceStore, draftRevisionConflicts } from "./workspace-store.js";
 export type { PushDeliveryRecord } from "./workspace-store.js";
 export { highlightedSearchSnippet, searchProjectedChatMessages } from "./chat-search.js";
 export type { ProjectedChatSearchCandidate, ProjectedChatSearchOptions } from "./chat-search.js";
@@ -99,12 +99,17 @@ export type {
 export type { ManagementOperation, ManagementOperationProgress, ManagementPlan } from "./store-types.js";
 export { EventLog, readLog, readLogSince, lastSeq } from "./eventlog.js";
 export { appendFsyncedJsonl, readRepairableJsonl, writeAtomicFsyncedJsonl } from "./append-jsonl.js";
+export {artifactAgentProductSql,managedArtifactProductSql} from './artifact-product-scope.js';
+export {activeChatOwnerSql,activeChatProductSql,chatProductSql,activeAgentOwnerSql,activeAgentProductSql,projectProductSql,type ProductScope} from './product-scope-sql.js';
 export { pathEntryExists, validateDeletionTombstone } from "./deletion-tombstone-ownership.js";
 export { openDb } from "./db.js";
 export {
   createOfflineDataDirectoryBackup,
+  createOfflineWebDeploymentBackup,
+  assertWebOnlyDeploymentCompatibility,
   restoreOfflineDataDirectoryBackup,
   type DataDirectoryBackupManifest,
+  type WebDeploymentBackupManifest,
 } from "./data-directory-backup.js";
 export { stableJson } from "./coordination-v3-canonical-json.js";
 export {
@@ -159,3 +164,85 @@ export type {
 export { admitDataDirectory, shareStateAdmission, requireAdmittedDatabase, readCurrentStateIdentity, StateAdmission, StateAdmissionError } from "./state-admission.js";
 
 export { inspectCurrentState } from "./state-admission.js";
+
+export { BranchStore, branchDeletionErrorResourceId } from "./branch-store.js";
+export { validateBranchTemplate } from "./branch-template.js";
+export { branchRequirements, exportBranchPackage, importBranchPackage } from "./branch-package.js";
+export * from "./branch-parameters.js";
+export { validateBranchDefinition, validateBranchBindings } from "./branch-definition.js";
+export { branchDefinitionChanges } from "./branch-definition-diff.js";
+export {branchSharedState,branchStateResult,validateBranchStateSeal} from './branch-shared-state.js';
+export type { BranchResourceProvision, BranchActionLease, BranchGateNotificationEvent, BranchScriptLease } from "./branch-store.js";
+export { BranchTriggerStore } from "./branch-trigger-store.js";
+export type * from "./branch-trigger-types.js";
+export { CapabilityPolicyStore, CapabilityPolicyRevisionConflictError } from "./capability-policy-store.js";
+
+export {REQUEST_SOURCE_LINEAGE_CTE,requestSourceLineageBody} from "./coordination-v3-request-lineage.js";
+
+export {BRANCH_LIVE_REQUEST_LINEAGE_CTE,branchStartedRequestRunSql,readBranchRunCounts,readBranchWorkingStepCount} from "./branch-run-status.js";
+
+export { ContextRecoveryConflictError } from "./coordination-v3-context-recovery-authority.js";
+
+export { beginSourceCapture, assertSourceCapture, commitSourceCapture, releaseSourceCapture, beginSourceMutation, withSourceMutation, touchSourceMutation, SourceCaptureChangedError } from "./source-capture-boundary.js";
+export type { SourceCaptureToken } from "./source-capture-boundary.js";
+export {sourceMutationState,reconcileSourceMutation} from './source-capture-boundary.js';
+
+export {resourceCapture,retainedResourceCapture,resourceCaptureFrontierHash,receiptMatchesSource,type BranchResourceCapture} from './branch-resource-capture.js';
+
+export type {CoordinationDestinationAuthority} from './coordination-v3-destination-admission-authority.js';
+export {destinationAdmissionHeld,requireDestinationAdmitted} from './coordination-v3-destination-staging.js';
+export {creationId as workspaceCreationId} from './store-workspace-catalog-authority.js';
+
+export {encodeIssuedResourceContinuation,issuedResourceContinuationSupported,readIssuedResourceContinuation,reconstructIssuedResourceContinuation} from './branch-issued-resource-continuation.js';
+
+export {destinationDisclosurePolicy} from './coordination-v3-destination-admission-authority.js';
+
+export type {CoordinationDestinationReconciliationAuthority,CoordinationDestinationGroupReconciliationAuthority} from './coordination-v3-destination-reconciliation.js';
+export {BranchCustodyLifecycle,type BranchCustodyReference} from './branch-custody-lifecycle.js';
+
+export type {CoordinationDestinationGroupAuthority} from './coordination-v3-destination-admission-authority.js';
+
+export {readIssuedGroup,readIssuedGroupCaptureAudit} from './branch-issued-group-capture.js';
+export {readProviderExitEvidence,verifyRetainedProviderExitEvidence} from './provider-exit-evidence.js';
+
+export {readGroupCaptureDisposition,type BranchGroupCaptureAbandonInput,type BranchGroupPackageRetirementProof,type BranchGroupPackageInventory} from './branch-group-custody-disposition.js';
+
+export {fenceBranchGenerationExit,generationExitHeld,requireGenerationExitOpen,type BranchGenerationExitFenceInput} from './branch-generation-exit-fence.js';
+
+export {generationExitKey,readGenerationExitCapture,type BranchPriorGenerationEnvelope} from './branch-generation-exit-capture.js';
+
+export {readDestinationHistoricalPartition,destinationHistoricalFacts} from './coordination-v3-historical-partition.js';
+
+export {previewIssuedTreeCapture,reserveIssuedTreeCapture,sealIssuedTreeMember,readIssuedTreeCapture,issuedTreeFreshOwnerMap} from './branch-issued-tree-capture.js';
+
+export {captureGenerationOneHost,generationOneEvidence,generationHistoricalSelections,MAX_RETAINED_RESOURCE_GENERATIONS,type GenerationOneProof} from './branch-resource-generation-one.js';
+
+export {issuedCaptureRetryBudget} from './branch-issued-resource-capture.js';
+
+export {readGroupAuditJournal,listGroupAuditJournals} from './branch-group-journal-retention.js';
+
+export {issuedGroupOwners,issuedGroupResources,issuedGroupHost} from './branch-issued-group-capture.js';
+
+export { CoordinationV3SourceEffectsAuthority, SourceEffectConflictError } from "./coordination-v3-source-effects-authority.js";
+export {groupOwnerReviewEvidence} from './branch-group-review-evidence.js';
+
+export { NativeTaskStopAuthority } from "./native-task-stop-authority.js";
+export {captureBranchRuntimeData,validateBranchRuntimeData,readRuntimeImportFacts} from './branch-runtime-package.js';
+
+export {validateBranchExecutionTree,planBranchExecutionTree,insertBranchExecutionTree,readBranchExecutionTree,readHeldTreeForContinuation} from './branch-runtime-tree-package.js';
+
+export {enableProviderStartCoverage,holdProviderStart,admitProviderStart,settleProviderStart,requireProviderStartsDrained,sealProviderNeverStarted} from './provider-start-journal.js';
+
+export {renderUnfinishedHumanTaskContext} from "./coordination-v3-task-objective.js";
+
+export {hasRetainedTemporaryChatScope} from './branch-host-cut.js';
+
+export {makeWorkingFileTransportPart,type WorkingFileTransportPart} from "./working-file-transport.js";
+export { readBranchExpertCopy } from "./branch-expert-copy.js";
+export type { BranchExpertCopyReceipt } from "./branch-expert-copy.js";
+
+export { requireGenerationExitDeletionReady } from "./branch-generation-exit-deletion.js";
+
+export {portableBase64ByteLength,portableArtifactByteLength,decodePortableMetadataArtifact} from './portable-artifact-original.js';
+
+export { safeWorkingCopyFailure, safeWorkingCopyFailureCode, safeStoredWorkingCopy, isFreshStoredWorkingCopyFailure, recordWorkingCopyGitFailure, recordWorkingCopySharedFolderFailure, carryWorkingCopyGitFailure, isStoredWorkingCopyGitFailure } from "./working-copy-failure.js";

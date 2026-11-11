@@ -1,4 +1,7 @@
-import { PONDEROSA_BROWSER_TOOLS, type MessageDeliveryReceiptDto } from "@ponderosa/core";
+import { settingsTransitionDeliveryHolds } from "./coordination-v3-settings-transition-hold.js";
+import {heldTaskDecisionRepairs,heldTaskDecisionRepairRuns} from './coordination-v3-task-decision-repair-hold.js';
+import {heldHumanRollovers,heldHumanRolloverKey,canRetryHeldHumanRollover} from './coordination-v3-rollover-held-task.js';
+import { providerResetAt, PROVIDER_QUOTA_LIMITS, type ProviderQuotaLimit, PONDEROSA_BROWSER_TOOLS, type MessageDeliveryReceiptDto } from "@ponderosa/core";
 import type Database from "better-sqlite3";
 import type {
   RuntimeArtifactV3,
@@ -6,6 +9,7 @@ import type {
 } from "./coordination-v3-types.js";
 import type { CoordinationV3RuntimeScopeAuthority } from "./coordination-v3-runtime-scope-authority.js";
 import { AgentPhaseReadModel } from "./store-agent-phase-read-model.js";
+import { payloadHash } from "./coordination-v3-canonical-json.js";
 
 const browserTools = new Set(PONDEROSA_BROWSER_TOOLS.map(tool => tool.name));
 
@@ -37,6 +41,8 @@ export class CoordinationV3RuntimeCommunicationReadModel {
     id: string; agent_id: string; scope_key: string; dispatch_policy: string; kind: string;
     state: string; steering_wait_reason: string | null;
   }): MessageDeliveryReceiptDto["steeringWaitReason"] {
+    if (activation.dispatch_policy === "next_run" && activation.state === "retry_pending" &&
+        activation.steering_wait_reason === "provider_unsupported") return "provider_unsupported";
     if (activation.dispatch_policy !== "steer_or_run" ||
       !["pending", "retry_pending"].includes(activation.state)) return undefined;
     const now = new Date().toISOString();
@@ -44,7 +50,8 @@ export class CoordinationV3RuntimeCommunicationReadModel {
       SELECT run.status,
         EXISTS (SELECT 1 FROM context_rollovers rollover
           WHERE rollover.agent_id = run.agent_id
-            AND rollover.state IN ('requested', 'handoff_committed', 'session_retiring', 'continuation_ready')) AS rollover,
+            AND (rollover.state IN ('handoff_committed', 'session_retiring', 'continuation_ready')
+              OR rollover.state = 'requested' AND rollover.source_run_id <> run.id)) AS rollover,
         EXISTS (SELECT 1 FROM scheduler_prompt_injections injection
           WHERE injection.run_id = run.id AND injection.kind = 'steer'
             AND injection.state IN ('pending', 'submitted')) AS prior_steering,
@@ -430,6 +437,27 @@ export class CoordinationV3RuntimeCommunicationReadModel {
       payload_json: string;
     }>;
     const activationIds = [...new Set(activations.map((activation) => activation.id))];
+    // Cancellation idempotency survives outbox pruning and predates this UI.
+    const cancellationCandidates = activations.filter(value => value.state === "cancelled" &&
+      value.dispatch_policy === "next_run" && value.kind === "human_message");
+    const cancellationHashes = new Set(cancellationCandidates.length ? (this.sqlite.prepare(`
+      SELECT payload_hash FROM coordination_idempotency
+      WHERE project_id = ? AND actor_scope = 'user:local-operator' AND operation = 'cancel_activation'
+        AND payload_hash IN (SELECT value FROM json_each(?))
+        AND CASE WHEN json_valid(result_json) THEN json_type(result_json, '$.cancelled') = 'true'
+          AND json_extract(result_json, '$.status') = 'cancelled' ELSE 0 END
+    `).all(projectId, JSON.stringify(cancellationCandidates.map(value => payloadHash({activationId:value.id})))) as
+      Array<{payload_hash:string}>).map(value => value.payload_hash) : []);
+    const submittedActivations = new Set(cancellationCandidates.length ? (this.sqlite.prepare(`
+      SELECT DISTINCT member.value AS activation_id
+      FROM scheduler_prompt_injections injection, json_each(injection.activation_ids_json) member
+      WHERE member.value IN (SELECT value FROM json_each(?))
+        AND (injection.submitted_at IS NOT NULL OR injection.acknowledged_at IS NOT NULL
+          OR injection.provider_turn_id IS NOT NULL
+          OR injection.state IN ('submitted', 'acknowledged', 'outcome_unknown'))
+    `).all(JSON.stringify(activationIds)) as Array<{activation_id:string}>).map(value => value.activation_id) : []);
+    const deletionRecipients = new Map<string, Set<string>>();
+    const incompleteCommunications = new Set<string>();
     const requiredReplySummaries = new Map<string, {
       attemptCount: number;
       latestAttemptAt: string;
@@ -488,6 +516,8 @@ export class CoordinationV3RuntimeCommunicationReadModel {
         latestAttemptAt: string;
         requiredReplyExhausted: boolean;
         recipientCurrentlyAuthorized: boolean;
+        mayHaveBeenDelivered: boolean;
+        explicitlyCancelledQueue: boolean;
       }>
     >();
     for (const activation of activations) {
@@ -499,6 +529,7 @@ export class CoordinationV3RuntimeCommunicationReadModel {
         audience = JSON.parse(activation.audience_json) as unknown;
         payload = JSON.parse(activation.payload_json) as unknown;
       } catch {
+        incompleteCommunications.add(activation.communication_event_id);
         continue;
       }
       const authorityInput = {
@@ -516,7 +547,14 @@ export class CoordinationV3RuntimeCommunicationReadModel {
       if (!this.runtimeScopeAuthority.runtimeCommunicationAuthorityAgrees(
         authorityInput,
         false,
-      )) continue;
+      )) { incompleteCommunications.add(activation.communication_event_id); continue; }
+      const root = payload as { communication?: { sender?: {kind?:string;userId?:string} };
+        dispatch?: {recipients?: Array<{agentId:string}>} };
+      const target = audience as {kind:string;agentIds?:string[];agentId?:string};
+      const recipients = target.kind === "user_agents" ? target.agentIds
+        : target.kind === "user_agent" && target.agentId ? [target.agentId]
+        : root.dispatch?.recipients?.map(value => value.agentId);
+      if (recipients?.length) deletionRecipients.set(activation.communication_event_id, new Set(recipients));
       const recipientCurrentlyAuthorized =
         this.runtimeScopeAuthority.runtimeCommunicationAuthorityAgrees(authorityInput);
       let latestByRecipient = latestByCommunication.get(activation.communication_event_id);
@@ -537,6 +575,11 @@ export class CoordinationV3RuntimeCommunicationReadModel {
         latestAttemptAt,
         requiredReplyExhausted: requiredReply?.exhausted ?? false,
         recipientCurrentlyAuthorized,
+        mayHaveBeenDelivered: Boolean(previous?.mayHaveBeenDelivered || submittedActivations.has(activation.id) ||
+          ["consumed", "outcome_unknown"].includes(activation.state)),
+        explicitlyCancelledQueue: activation.kind === "human_message" && activation.dispatch_policy === "next_run" &&
+          activation.state === "cancelled" && root.communication?.sender?.kind === "user" &&
+          root.communication.sender.userId === "local-operator" && cancellationHashes.has(payloadHash({activationId:activation.id})),
       });
     }
     // One membership scan per batch; enrich only the latest injection for each activation.
@@ -568,7 +611,17 @@ export class CoordinationV3RuntimeCommunicationReadModel {
     };
     const selected = [...latestByCommunication.values()].flatMap(recipients =>
       [...recipients.values()].map(({ activation }) => activation));
+    const heldRollovers = heldHumanRollovers(this.sqlite,projectId,selected.map(activation=>({
+      activationId:activation.id,communicationEventId:activation.communication_event_id,
+    })));
+    const decisionRepairs = heldTaskDecisionRepairs(this.sqlite,projectId,selected.map(activation=>({
+      activationId:heldRollovers.get(heldHumanRolloverKey(activation.id,activation.communication_event_id))?.root_activation_id ?? activation.id,
+      communicationEventId:activation.communication_event_id,
+    })));
+    const decisionRepairRuns = heldTaskDecisionRepairRuns(this.sqlite,projectId,[...new Set([...heldRollovers.values()].map(held=>held.candidate_run_id))]);
     const injections = latestInjections(selected.map(activation => activation.id));
+    const settingsHolds = settingsTransitionDeliveryHolds(this.sqlite,projectId,selected.map(activation=>activation.id));
+    const failures = this.deliveryProviderFailures(projectId, selected.map(activation => activation.id));
     const recoveries = new Map(selected.map(activation => {
       const injection = injections.get(activation.id);
       const recovery = injection
@@ -594,6 +647,10 @@ export class CoordinationV3RuntimeCommunicationReadModel {
     const recoveryInjections = latestInjections([...recoveries.values()].flatMap(recovery =>
       recovery?.recovery_activation_id ? [recovery.recovery_activation_id] : []));
     for (const [communicationEventId, latestByRecipient] of latestByCommunication) {
+      const expected = deletionRecipients.get(communicationEventId);
+      const deleted = !incompleteCommunications.has(communicationEventId) && expected !== undefined && expected.size === latestByRecipient.size &&
+        [...expected].every(id => { const recipient = latestByRecipient.get(id);
+          return recipient?.explicitlyCancelledQueue && !recipient.mayHaveBeenDelivered; });
       const receipts = [...latestByRecipient.values()].map(({
         activation,
         attemptCount,
@@ -605,11 +662,19 @@ export class CoordinationV3RuntimeCommunicationReadModel {
         const recovery = recoveries.get(activation.id);
         const recoveryInjection = recovery?.recovery_activation_id
           ? recoveryInjections.get(recovery.recovery_activation_id) : undefined;
+        const heldRollover = heldRollovers.get(heldHumanRolloverKey(activation.id,activation.communication_event_id));
+        const settingsHold = settingsHolds.get(activation.id);
+        const decisionRepair = decisionRepairs.has(heldRollover?.root_activation_id ?? activation.id) || Boolean(heldRollover && decisionRepairRuns.has(heldRollover.candidate_run_id));
         let state: MessageDeliveryReceiptDto["state"];
-        if (requiredReplyExhausted) state = "retry_exhausted";
+        if (settingsHold || decisionRepair) state = "unconfirmed";
+        else if (heldRollover) state = "run_unconfirmed";
+        else if (requiredReplyExhausted) state = "retry_exhausted";
         else if (activation.state === "outcome_unknown") {
-          if (!recovery) state = injection?.state === "acknowledged" ? "run_unconfirmed" : "undelivered";
-          else if (recovery.state === "grace_period") state = "unconfirmed";
+          if (!recovery) state = injection?.kind === "steer" && injection.state === "outcome_unknown"
+            ? "unconfirmed" : injection?.state === "acknowledged" ? "run_unconfirmed" : "undelivered";
+          else if (recovery.state === "grace_period" ||
+            (injection?.kind === "steer" && injection.state === "outcome_unknown" &&
+             ["pending","retry_pending"].includes(recovery.recovery_activation_state ?? ""))) state = "unconfirmed";
           else if (recovery.recovery_activation_state === "consumed") state = "recovered";
           else if (
             ["failed", "outcome_unknown", "cancelled"]
@@ -637,14 +702,21 @@ export class CoordinationV3RuntimeCommunicationReadModel {
         const liveProgress = injection && recipientCurrentlyAuthorized && state === "delivered"
           ? this.liveProgress(projectId, activation.agent_id, activation.id, injection) : undefined;
         return {
-          activationId: activation.id,
+          activationId: heldRollover?.root_activation_id ?? activation.id,
           targetAgentId: activation.agent_id,
+          ...(failures.has(activation.id) ? { providerFailure: { ...failures.get(activation.id)!, ...(requiredReplyExhausted ? { recovery: "stopped" as const, nextRetryAt: undefined } : {}) } } : {}),
           ...(runtime ? { runtime } : {}),
           ...(injection?.execution_id ? { executionId: injection.execution_id } : {}),
           ...(recoveryInjection?.execution_id
             ? { recoveryExecutionId: recoveryInjection.execution_id }
             : {}),
           state,
+          ...(deleted ? { queueDeletionConfirmed: true as const } : {}),
+          ...(decisionRepair ? {taskDecisionRepairHold:true as const} : {}),
+          ...(settingsHold ? {settingsTransitionHold:settingsHold.retryable && !heldRollover && !decisionRepair ? "retry_available" as const : "review_required" as const} : {}),
+          ...(heldRollover ? {contextRolloverHold:!decisionRepair && canRetryHeldHumanRollover(heldRollover)
+            ? "retry_available" as const : "review_required" as const,
+            contextRolloverAttemptId:heldRollover.continuation_activation_id} : {}),
           ...(activation.dispatch_policy === "next_run" && ["pending", "retry_pending"].includes(activation.state)
             ? { queuedForNextRun: true as const } : {}),
           ...(steeringWaitReason ? { steeringWaitReason } : {}),
@@ -665,7 +737,10 @@ export class CoordinationV3RuntimeCommunicationReadModel {
               : "unconfirmed" as const,
           } : {}),
           ...(
-            (state === "undelivered" || state === "run_unconfirmed" || state === "retry_exhausted" || state === "failed")
+            ((settingsHold?.retryable === true) || (!settingsHold &&
+              (state === "undelivered" || state === "run_unconfirmed" || state === "retry_exhausted" || state === "failed")))
+            && !decisionRepair && (!settingsHold || !heldRollover)
+            && (!heldRollover || canRetryHeldHumanRollover(heldRollover))
             && recipientCurrentlyAuthorized
             && this.runtimeScopeAuthority.recipientAuthorizedForActivationScope(
               activation.project_id,
@@ -674,7 +749,7 @@ export class CoordinationV3RuntimeCommunicationReadModel {
             )
               ? {
                 canRetry: true as const,
-                ...(activation.state === "outcome_unknown"
+                ...(heldRollover || activation.state === "outcome_unknown"
                   ? { retryMayDuplicate: true as const }
                   : {}),
               }
@@ -683,7 +758,7 @@ export class CoordinationV3RuntimeCommunicationReadModel {
           ...(injection ? { injectionId: injection.id, injectionKind: injection.kind } : {}),
           ...(liveProgress ? { liveProgress } : {}),
           ...(recovery ? { recoveryAt: recovery.recover_at } : {}),
-          ...(recovery?.state === "grace_period" ? { canLetCurrentRunFinish: true } : {}),
+          ...(!decisionRepair && recovery?.state === "grace_period" ? { canLetCurrentRunFinish: true } : {}),
           ...(recovery?.recovery_activation_id
             ? { recoveryActivationId: recovery.recovery_activation_id }
             : {}),
@@ -692,6 +767,72 @@ export class CoordinationV3RuntimeCommunicationReadModel {
       receiptsByCommunication.set(communicationEventId, receipts);
     }
     return receiptsByCommunication;
+  }
+
+  private deliveryProviderFailures(projectId: string, ids: string[]): Map<string, NonNullable<MessageDeliveryReceiptDto["providerFailure"]>> {
+    const failures = new Map<string, NonNullable<MessageDeliveryReceiptDto["providerFailure"]>>();
+    if (!ids.length) return failures;
+    // One exact-lineage batch; never use latest Agent failure or selected model
+    // as evidence for a different message. Canonical recovery owns every clock.
+    const rows = this.sqlite.prepare(`
+      WITH RECURSIVE chain(root, id) AS (
+        SELECT value, value FROM json_each(?)
+        UNION
+        SELECT chain.root, retry.predecessor_activation_id FROM chain
+        JOIN activation_delivery_retry_lineage retry ON retry.successor_activation_id = chain.id
+        UNION
+        SELECT chain.root, reply.recovery_activation_id FROM chain
+        JOIN required_reply_obligations reply ON reply.source_activation_id = chain.id
+        JOIN agent_activations root ON root.id = chain.root
+        WHERE reply.recovery_activation_id IS NOT NULL AND reply.project_id = root.project_id
+          AND reply.agent_id = root.agent_id AND reply.scope_key = root.scope_key
+      )
+      SELECT chain.root, run.id, run.agent_id, run.status, run.provider_failure_json,
+        CASE WHEN json_valid(run.provider_failure_json) THEN
+          CASE WHEN run.status <> 'completed' AND json_extract(run.provider_failure_json, '$.category') IN ('quota_exhausted','rate_limit','throttled','capacity','unavailable') THEN
+            (SELECT MAX(activity.seq) FROM activity_projection activity
+          JOIN provider_inputs provider ON provider.execution_id = activity.execution_id
+          WHERE provider.scheduler_run_id = run.id AND activity.agent_id = run.agent_id
+            AND json_extract(activity.event_json, '$.type') = 'error')
+          END END AS failure_activity_seq,
+        wake.state AS wake_state, wake.available_at, wake.terminal_outcome,
+        selected.state AS selected_state, selected.available_at AS selected_available_at
+      FROM chain JOIN agent_activations selected ON selected.id = chain.root
+      JOIN scheduler_run_activations attached ON attached.activation_id = chain.id
+      JOIN scheduler_runs run ON run.id = attached.run_id AND run.project_id = ?
+      LEFT JOIN required_reply_obligations reply ON reply.run_id = run.id AND reply.source_activation_id = chain.id
+      JOIN agent_activations wake ON wake.id = COALESCE(reply.recovery_activation_id, chain.id)
+      ORDER BY chain.root, run.created_at DESC, run.rowid DESC
+    `).all(JSON.stringify(ids), projectId) as Array<{root:string;id:string;agent_id:string;failure_activity_seq:number|null;status:string;provider_failure_json:string|null;wake_state:string;available_at:string;terminal_outcome:string|null;selected_state:string;selected_available_at:string}>;
+    const latest = new Map<string, typeof rows[number]>();
+    const classified = new Set<string>();
+    for (const row of rows) {
+      if (!latest.has(row.root)) latest.set(row.root, row);
+      const current = latest.get(row.root)!;
+      if (classified.has(row.root) || current.status === "completed") continue;
+      let detail: Record<string, unknown>;
+      try { detail = JSON.parse(row.provider_failure_json ?? "null"); } catch { continue; }
+      if (!detail || typeof detail !== "object") continue;
+      classified.add(row.root);
+      if (!["quota_exhausted", "rate_limit", "throttled", "capacity", "unavailable"].includes(String(detail.category))) continue;
+      const resetAt = detail.category === "quota_exhausted" ? providerResetAt(detail.quotaResetAt) : undefined;
+      const selectedPending = current.selected_state === "pending" || current.selected_state === "retry_pending";
+      const pending = selectedPending || current.wake_state === "pending" || current.wake_state === "retry_pending";
+      failures.set(row.root, {
+        category: detail.category as NonNullable<MessageDeliveryReceiptDto["providerFailure"]>["category"],
+        ...(Number.isSafeInteger(row.failure_activity_seq) && row.failure_activity_seq! > 0
+          ? { activityId: `${row.agent_id}:activity:${row.failure_activity_seq}` } : {}),
+        runId: row.id,
+        ...(typeof detail.engineId === "string" && /^[a-z][a-z0-9_-]{0,63}$/u.test(detail.engineId) ? { providerId: detail.engineId } : {}),
+        ...(typeof detail.model === "string" && detail.model.length <= 200 && !/[\u0000-\u001f\u007f]/u.test(detail.model) ? { model: detail.model } : {}),
+        ...(resetAt ? { resetAt } : {}),
+        ...(detail.category === "quota_exhausted" && PROVIDER_QUOTA_LIMITS.includes(detail.quotaLimit as ProviderQuotaLimit) ? { quotaLimit: detail.quotaLimit as ProviderQuotaLimit } : {}),
+        recovery: current.status === "leased" || current.status === "running" ? "retrying"
+          : pending ? "scheduled" : current.terminal_outcome === "retry_exhausted" ? "stopped" : "action_required",
+        ...(pending ? { nextRetryAt: selectedPending ? current.selected_available_at : current.available_at } : {}),
+      });
+    }
+    return failures;
   }
 
   communicationRecipientAgentIds(projectId: string, communicationId: string): string[] {

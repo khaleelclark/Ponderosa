@@ -1,18 +1,29 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import {createHash} from 'node:crypto';
 import { createRequire } from 'node:module';
 const serverRequire = createRequire(new URL('../../apps/server/package.json', import.meta.url));
 const agentsRequire = createRequire(new URL('../../packages/agents/package.json', import.meta.url));
 const Fastify = serverRequire('fastify'), Database = agentsRequire('better-sqlite3');
 const { registerWorkspaceDirectoryRoutes } = await import('../../apps/server/dist/routes/workspace-directory.js');
+const { sidebarChatItems } = await import("../../apps/web/src/resourcePreferences.ts");
 
 function fixture(count = 60) {
   const sqlite = new Database(':memory:');
   // Real SQL execution; minimal empty tables only for unrelated count subqueries.
   sqlite.exec(`
     CREATE TABLE projects (id TEXT PRIMARY KEY, label TEXT, host_path TEXT, created_at TEXT, updated_at TEXT);
-    CREATE TABLE conversations (id TEXT PRIMARY KEY, project_id TEXT, title TEXT, created_at TEXT, updated_at TEXT);
-    CREATE TABLE conversation_deletion_receipts (conversation_id TEXT PRIMARY KEY);
+    CREATE TABLE conversations (id TEXT PRIMARY KEY, project_id TEXT, title TEXT, created_at TEXT, updated_at TEXT, branch_id TEXT);
+    CREATE TABLE conversation_deletion_receipts (conversation_id TEXT PRIMARY KEY, project_id TEXT, branch_id TEXT, canonical_deletion_completed INTEGER);
+    CREATE TABLE project_deletion_pending (project_id TEXT);
+    CREATE TABLE agent_deletion_pending (agent_id TEXT);
+    CREATE TABLE coordination_destination_admissions (id TEXT PRIMARY KEY, conversation_id TEXT, state TEXT);
+    CREATE TABLE coordination_destination_group_chats (admission_id TEXT, conversation_id TEXT);
+    CREATE TABLE coordination_destination_retirements (conversation_id TEXT, receipt_json TEXT, members_json TEXT);
+    CREATE TABLE coordination_destination_members (admission_id TEXT, agent_id TEXT);
+    CREATE TABLE branch_installation_plans (id TEXT PRIMARY KEY, state TEXT);
+    CREATE TABLE branch_installation_resources (local_id TEXT, state TEXT, staging_plan_id TEXT);
+    CREATE TABLE branches (id TEXT, deleting INTEGER);
     CREATE TABLE collection_generations (name TEXT PRIMARY KEY, generation INTEGER NOT NULL);
     CREATE TABLE agent_conversation_memberships (agent_id TEXT, conversation_id TEXT);
     CREATE TABLE agents (id TEXT, project_id TEXT, conversation_id TEXT, deleted_at TEXT);
@@ -33,20 +44,21 @@ function fixture(count = 60) {
   const chat = (id, owner, title, index) => {
     const value = { id, projectId: owner.id, title, defaultEngine: 'codex', instructions: 's'.repeat(8192), createdAt: '2026-10-19T00:00:00.000Z', updatedAt: new Date(Date.UTC(2026,9,19,0,0,index)).toISOString() };
     conversations.set(id, value);
-    sqlite.prepare('INSERT INTO conversations VALUES (?,?,?,?,?)').run(id, owner.id, title, value.createdAt, value.updatedAt);
+    sqlite.prepare('INSERT INTO conversations(id,project_id,title,created_at,updated_at) VALUES (?,?,?,?,?)').run(id, owner.id, title, value.createdAt, value.updatedAt);
     return value;
   };
   const rows = Array.from({length:count}, (_,i) => chat('chat-' + String(i).padStart(3,'0'), a, i === 37 ? 'Z Needle 100% under_score café 東京' : 'A Chat ' + String(i).padStart(3,'0'), i));
   const outside = chat('outside-chat', b, 'Z Needle outside', 61);
-  sqlite.prepare('INSERT INTO conversation_deletion_receipts VALUES (?)').run(rows[59].id);
+  sqlite.prepare('INSERT INTO conversation_deletion_receipts(conversation_id) VALUES (?)').run(rows[59].id);
   const folder = { id: 'saved-folder', name: 'Complete folder', expanded: true, starred: true,
     conversationIds: [...rows.slice(30).map(row => row.id), outside.id] };
   let preferences = { projectSort:'last_used', projectOrder:[], starredProjectIds:[], chatSort:'alphabetical', chatOrder:[],
     starredResourceIds:['conversation:' + rows[31].id], chatFolders:[folder] };
+  let uses=[];
   const app = Fastify();
   registerWorkspaceDirectoryRoutes(app, {
     store: { sqlite, getProject:id => projects.get(id), getConversation:id => { conversationReads.push(id); return conversations.get(id); }, getAgent:() => undefined },
-    workspace: { getPreferences:() => preferences },
+    workspace: { getPreferences:() => preferences, resourceRecencySnapshot:() => {const json=JSON.stringify(uses);return {json,revision:createHash("sha256").update(json).digest("hex")};} },
     agentHealth() { throw Error('Folder summaries must not load Agent health'); },
     projectDisplayPath: value => value,
   });
@@ -55,7 +67,7 @@ function fixture(count = 60) {
     return { status:response.statusCode, body:response.json() };
   };
   const read = async query => { const response=await request(query); assert.equal(response.status,200,JSON.stringify(response.body)); return response.body; };
-  return { app, sqlite, rows, outside, folder, request, read, conversationReads,
+  return { app, sqlite, rows, outside, folder, request, read, conversationReads, use:(id,at)=>{uses=[...uses.filter(row=>row[0]!==id),[id,at]];},
     preferences:() => preferences, change:patch => { preferences={...preferences,...patch}; },
     close:async () => { await app.close(); sqlite.close(); } };
 }
@@ -83,8 +95,28 @@ test('UI001 complete saved folder supplement precedes general continuation and p
   }
   assert.equal(all.length,59,'General pages omit only the one star, not folder members');
   assert.equal(all.length,new Set(all).size,'General cursor rows never duplicate');
-  const sidebar=new Map([...page.folderItems,...page.starredItems,...page.items].map(item=>[item.conversation.id,item]));
-  assert.equal([...sidebar.values()].filter(item=>item.conversation.id===f.rows[31].id).length,1,'Shared star/page/folder rows dedup by exact ID');
+  // The sidebar feeds these same directory projections into its real merge function.
+  const sidebar = sidebarChatItems([...page.starredItems, ...page.items], page.folderItems, f.preferences().chatFolders);
+  const starred = page.starredItems.find(item => item.conversation.id === f.rows[31].id);
+  assert.ok(starred, "The overlapping folder member is present in the starred projection");
+  assert.equal(sidebar.filter(item => item.conversation.id === f.rows[31].id).length, 1, "Overlapping directory projections produce one sidebar input record");
+  assert.equal(sidebar.find(item => item.conversation.id === f.rows[31].id), starred, "The current starred projection wins over its folder supplement");
+  assert.ok(sidebar.some(item => item.conversation.id === f.rows[50].id), "An off-page saved folder member reaches the sidebar");
+});
+
+test('folder directory hides unfinished or missing installation plans', async t => {
+  const f=fixture(); t.after(f.close);
+  f.sqlite.prepare('INSERT INTO branch_installation_plans(id,state) VALUES (?,?)').run('pending-plan','applying');
+  f.sqlite.prepare('INSERT INTO branch_installation_plans(id,state) VALUES (?,?)').run('complete-plan','completed');
+  const link=f.sqlite.prepare('INSERT INTO branch_installation_resources(local_id,state,staging_plan_id) VALUES (?,?,?)');
+  link.run(f.rows[30].id,'active','pending-plan');
+  link.run(f.rows[31].id,'active','missing-plan');
+  link.run(f.rows[32].id,'active','complete-plan');
+  const page=await f.read({limit:'100'});
+  const visible=new Set([...ids(page.items),...ids(page.starredItems),...folderIds(page)]);
+  assert.equal(visible.has(f.rows[30].id),false,'An unfinished plan must remain hidden');
+  assert.equal(visible.has(f.rows[31].id),false,'A missing plan must remain hidden');
+  assert.equal(visible.has(f.rows[32].id),true,'A completed plan may be displayed');
 });
 
 test('UI001 supplemental rows obey same project/conversation/literal search filters and summary omission', async t => {
@@ -188,4 +220,45 @@ test('folder unread projections reuse canonical identity-deduped per-Chat counts
   assert.deepEqual(result.conversations.other,{importantCount:1,ordinaryCount:0,totalCount:1});
   assert.deepEqual(result.chatFolders.folder,{importantCount:2,ordinaryCount:1,totalCount:3},'Multi-destination identity counts once for the folder');
   assert.equal(result.conversations.outside,undefined);
+});
+
+
+test('BR004 Chat use/activity order, complete scoped folder keys, and continuations share one effective timestamp', async t => {
+  const f=fixture(1100);t.after(f.close);f.change({chatSort:'last_used'});
+  const old=f.rows[31],at='2026-10-24T12:00:00.000Z';f.use(old.id,at);
+  let first=await f.read({limit:'25'});
+  const starred=first.starredItems.find(row=>row.conversation.id===old.id);
+  assert.equal(starred.lastUsedAt,at);assert.equal(starred.conversation.updatedAt,old.updatedAt);
+  const member=first.folderItems.find(row=>row.conversation.id===old.id);
+  assert.equal(member.lastUsedAt,at);assert.equal(member.conversation.updatedAt,old.updatedAt);
+  assert.ok(first.folderItems.length>1000,'All eligible offpage members are supplied in one request');
+  const next=await f.read({limit:'25',cursor:first.history.cursor});
+  assert.equal(new Set([...ids(first.items),...ids(next.items)]).size,50);
+  f.use(f.rows[0].id,'2026-10-24T13:00:00.000Z');
+  assert.equal((await f.request({limit:'25',cursor:first.history.cursor})).status,409,'Changed use-order invalidates the continuation');
+  first=await f.read({limit:'25'});assert.equal(first.items[0].conversation.id,f.rows[0].id);
+  assert.equal(first.items[0].lastUsedAt,'2026-10-24T13:00:00.000Z');
+  assert.equal(first.items[0].conversation.updatedAt,f.rows[0].updatedAt,'Use is not authored Chat activity');
+  f.change({chatSort:'alphabetical'});first=await f.read({limit:'25'});f.use(f.rows[1].id,'2026-10-24T14:00:00.000Z');
+  assert.equal((await f.request({limit:'25',cursor:first.history.cursor})).status,200,'Use does not invalidate Alphabetical ordering');
+  const filtered=await f.read({sort:'last_used',projectId:'project-a',search:'Needle'});
+  assert.deepEqual(ids(filtered.items),[f.rows[37].id]);assert.ok(!folderIds(filtered).includes(f.outside.id));
+});
+
+test('BR004 complete canonical snapshots survive replay and ignore unrelated resource activity', async t => {
+  const {WorkspaceStore,workspaceRecencyCte}=await import('@ponderosa/agents');
+  const {mkdtempSync,rmSync}=await import('node:fs');const {tmpdir}=await import('node:os');const {join}=await import('node:path');
+  const root=mkdtempSync(join(tmpdir(),'br004-recency-'));let workspace=new WorkspaceStore(root);
+  t.after(()=>{workspace.close();rmSync(root,{recursive:true,force:true});});
+  for(let i=0;i<125;i++)workspace.markResourceUsed('branch','branch-'+i);
+  const complete=workspace.resourceRecencySnapshot('branch');assert.equal(JSON.parse(complete.json).length,125);
+  assert.ok(!workspace.listResourceRecency(100).resources.some(row=>row.resourceId==='branch-0'));
+  workspace.markResourceUsed('agent','unrelated');assert.equal(workspace.resourceRecencySnapshot('branch'),complete);
+  workspace.close();workspace=new WorkspaceStore(root);assert.deepEqual(workspace.resourceRecencySnapshot('branch'),complete);
+  const sqlite=new Database(':memory:');t.after(()=>sqlite.close());sqlite.exec('CREATE TABLE members(id TEXT PRIMARY KEY)');
+  sqlite.transaction(()=>{for(let i=0;i<125;i++)sqlite.prepare('INSERT INTO members VALUES (?)').run('branch-'+i)})();
+  const query=`WITH ${workspaceRecencyCte} SELECT members.id,recent_use.last_used_at FROM members LEFT JOIN recent_use ON recent_use.id=members.id`;
+  const plan=sqlite.prepare('EXPLAIN QUERY PLAN '+query).all(complete.json);
+  assert.ok(plan.some(row=>/SEARCH recent_use USING AUTOMATIC COVERING INDEX/.test(row.detail)),JSON.stringify(plan));
+  assert.equal(sqlite.prepare(query).all(complete.json).filter(row=>row.last_used_at).length,125);
 });

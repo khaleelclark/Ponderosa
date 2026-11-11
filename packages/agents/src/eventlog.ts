@@ -29,34 +29,35 @@ export function lastSeq(file: string): number {
 
 /**
  * An append-only writer bound to one agent's `events.jsonl`. Tracks the next seq
- * in memory (seeded from disk on open) and fsyncs each append so a crash can't lose
+ * in memory (seeded by the first read or append) and fsyncs each append so a crash can't lose
  * an acknowledged event. Not safe for concurrent writers to the same file — the
  * session manager guarantees one active run per agent (SPEC §8).
  */
 export class EventLog {
-  private nextSeq: number;
+  private nextSeq?: number;
 
   constructor(private readonly file: string) {
     mkdirSync(path.dirname(file), { recursive: true });
-    this.nextSeq = lastSeq(file) + 1;
   }
 
   /** The seq that the next appended event will receive. */
   peekNextSeq(): number {
-    return this.nextSeq;
+    return this.nextSeq ??= lastSeq(this.file) + 1;
   }
 
   /** Append one event; returns the stored form (with assigned seq + ts). */
   append(event: LogEvent, ts: string = new Date().toISOString()): StoredLogEvent {
-    const stored: StoredLogEvent = { seq: this.nextSeq, ts, event };
+    const stored: StoredLogEvent = { seq: this.peekNextSeq(), ts, event };
     appendFsyncedJsonl(this.file, [stored]);
-    this.nextSeq += 1;
+    this.nextSeq = stored.seq + 1;
     return stored;
   }
 
   /** All events in order. */
   readAll(): StoredLogEvent[] {
-    return readLog(this.file);
+    const stored = readLog(this.file);
+    this.nextSeq ??= (stored.at(-1)?.seq ?? 0) + 1;
+    return stored;
   }
 
   /** Events with seq > sinceSeq. */

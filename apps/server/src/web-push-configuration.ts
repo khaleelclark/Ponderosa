@@ -1,4 +1,4 @@
-import type { WorkspaceStore } from "@ponderosa/agents";
+import type { AgentStore, WorkspaceStore } from "@ponderosa/agents";
 import webpush from "web-push";
 import {
   WebPushDeliveryManager,
@@ -10,6 +10,9 @@ export function createWebPushConfiguration(
   dataDir: string,
   workspace: WorkspaceStore,
   publishWorkspaceSince: (cursor: number) => void,
+  owners:Pick<AgentStore,"getConversation"|"getAgent">,
+  reconcileNotifications?: () => void,
+  onReconciliationError?: (error: unknown) => void,
 ) {
   const resolved = resolveWebPushVapid(dataDir);
   const vapid = resolved.vapid;
@@ -40,6 +43,9 @@ export function createWebPushConfiguration(
   const webPushDelivery = webPushSender ? new WebPushDeliveryManager({
     store: workspace,
     sender: webPushSender,
+    owners,
+    reconcileNotifications,
+    onReconciliationError,
     onWorkspaceEvents: publishWorkspaceSince,
   }) : undefined;
   return {

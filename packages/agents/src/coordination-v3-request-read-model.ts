@@ -100,16 +100,27 @@ export class CoordinationV3RequestReadModel {
   requestDelivery(requestId: string): CoordinationRequestDeliveryView | undefined {
     const row = this.sqlite.prepare(`
       SELECT request.state AS request_state, request.recipient_agent_id,
-        activation.state AS activation_state
+        activation.state AS activation_state, activation.dispatch_policy, activation.steering_wait_reason,
+        EXISTS (SELECT 1 FROM scheduler_runs run WHERE run.agent_id=request.recipient_agent_id
+          AND run.status IN ('leased','running')) AS recipient_busy,
+        EXISTS (SELECT 1 FROM scheduler_runs run JOIN scheduler_run_activations attached ON attached.run_id=run.id
+          JOIN scheduler_prompt_injections injection ON injection.run_id=run.id
+          JOIN json_each(injection.activation_ids_json) member ON member.value=attached.activation_id
+          WHERE run.agent_id=request.recipient_agent_id AND run.status IN ('leased','running')
+            AND attached.activation_id=activation.id AND injection.kind='steer'
+            AND injection.state IN ('pending','submitted','acknowledged')) AS active_steer
       FROM coordination_requests request
       LEFT JOIN agent_activations activation
         ON activation.id = (
           SELECT source.activation_id
           FROM activation_sources source
           JOIN agent_activations candidate ON candidate.id = source.activation_id
-          WHERE source.source_kind = 'request' AND source.source_id = request.id
-            AND candidate.kind = 'coordination_request'
+          WHERE ((source.source_kind = 'request' AND source.source_id = request.id)
+            OR (source.source_kind='request_update' AND EXISTS(
+              SELECT 1 FROM coordination_request_updates u WHERE u.id=source.source_id AND u.request_id=request.id)))
+            AND candidate.kind IN ('coordination_request','coordination_answer','coordination_dependency_resolved')
             AND candidate.agent_id = request.recipient_agent_id
+          ORDER BY candidate.created_at DESC,candidate.rowid DESC
           LIMIT 1
         )
       WHERE request.id = ?
@@ -118,6 +129,10 @@ export class CoordinationV3RequestReadModel {
       request_state: CoordinationRequestState;
       recipient_agent_id: string;
       activation_state: string | null;
+      dispatch_policy: string | null;
+      steering_wait_reason: string | null;
+      recipient_busy: number;
+      active_steer: number;
     } | undefined;
     if (!row) return undefined;
     let deliveryState: CoordinationRequestDeliveryView["deliveryState"];
@@ -146,13 +161,35 @@ export class CoordinationV3RequestReadModel {
       recipientAgentId: row.recipient_agent_id,
       requestState: row.request_state,
       deliveryState,
-      interruptsActiveRun: false,
+      interruptsActiveRun: !TERMINAL_REQUEST_STATES.has(row.request_state) && Boolean(row.active_steer || (row.recipient_busy &&
+        row.dispatch_policy === "steer_or_run" && ["pending", "retry_pending"].includes(row.activation_state ?? ""))),
+      ...(row.steering_wait_reason === "provider_unsupported" ? { steeringWaitReason: "provider_unsupported" as const } : {}),
     };
+  }
+
+  requestIsOperatorRecovery(requestId: string): boolean {
+    return Boolean(this.sqlite.prepare(`
+      SELECT 1 FROM coordination_requests current
+      JOIN coordination_idempotency receipt ON receipt.project_id = current.project_id
+        AND receipt.actor_scope = 'user:local-operator' AND receipt.operation = 'coordinate'
+      WHERE current.id = ? AND current.origin_run_id IS NULL AND EXISTS (SELECT 1 FROM coordination_requests predecessor WHERE predecessor.superseded_by_request_id = current.id)
+        AND EXISTS (SELECT 1 FROM json_each(receipt.result_json, '$.requestIds') WHERE value = current.id)
+      LIMIT 1
+    `).get(requestId));
+  }
+
+  getJoin(id: string): { projectId: string; conversationId?: string; ownerAgentId: string; state: string } | undefined {
+    const row = this.sqlite.prepare(`
+      SELECT project_id, conversation_id, owner_agent_id, state FROM coordination_joins WHERE id = ?
+    `).get(id) as { project_id: string; conversation_id: string | null; owner_agent_id: string; state: string } | undefined;
+    return row ? { projectId: row.project_id, ...(row.conversation_id ? { conversationId: row.conversation_id } : {}),
+      ownerAgentId: row.owner_agent_id, state: row.state } : undefined;
   }
 
   requestRetryStatus(requestId: string): {
     successorRequestId?: string;
     successorState?: CoordinationRequestState;
+    recoveryState?: CoordinationRequestState;
   } {
     const row = this.sqlite.prepare(`
       SELECT id, state FROM coordination_requests
@@ -162,7 +199,14 @@ export class CoordinationV3RequestReadModel {
       )
       ORDER BY created_at DESC, id DESC
     `).get(requestId) as { id: string; state: CoordinationRequestState } | undefined;
-    return row ? { successorRequestId: row.id, successorState: row.state } : {};
+    const latest = row ? this.sqlite.prepare(`
+      WITH RECURSIVE lineage(id) AS (
+        SELECT ? UNION SELECT r.superseded_by_request_id FROM coordination_requests r JOIN lineage ON r.id = lineage.id WHERE r.superseded_by_request_id IS NOT NULL
+      ) SELECT r.state FROM coordination_requests r JOIN lineage ON lineage.id = r.id
+      WHERE r.superseded_by_request_id IS NULL LIMIT 1
+    `).get(row.id) as {state:CoordinationRequestState}|undefined : undefined;
+
+    return row ? { successorRequestId: row.id, successorState: row.state, ...(latest ? { recoveryState: latest.state } : {}) } : {};
   }
 
 }

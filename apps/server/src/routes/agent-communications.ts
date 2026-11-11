@@ -1,3 +1,4 @@
+import {textReplyPublicationCorrelation} from "../reply-stream-publication.js";
 import { createHash, randomUUID } from "node:crypto";
 import {
   PONDEROSA_MESSAGE_TOOL,
@@ -86,7 +87,7 @@ interface AgentCommunicationRoutesContext {
 
 const AGENT_MESSAGE_FIELDS = new Set([
   "intent", "text", "artifactIds", "steeringInjectionId", "recipientAgentIds",
-  "urgency", "idempotencyKey", "document", "citations", "delivery", "expiresAt",
+  "urgency", "messagePurpose", "idempotencyKey", "document", "citations", "delivery", "expiresAt",
   "taskDelivery",
 ]);
 
@@ -116,6 +117,12 @@ export function validateAgentMessageBodyShape(body: unknown): string | undefined
       candidate.urgency !== "ordinary" && candidate.urgency !== "urgent") {
     return "urgency must be ordinary or urgent";
   }
+  if (candidate.messagePurpose !== undefined && !["instruction", "question", "progress", "fyi"].includes(candidate.messagePurpose as string)) {
+    return "messagePurpose must be instruction, question, progress, or fyi";
+  }
+  if ((candidate.messagePurpose === "progress" || candidate.messagePurpose === "fyi") && candidate.urgency === "urgent") {
+    return "progress and fyi cannot be urgent";
+  }
   if (candidate.recipientAgentIds !== undefined &&
       (!Array.isArray(candidate.recipientAgentIds) ||
         candidate.recipientAgentIds.some((id) => typeof id !== "string"))) {
@@ -144,7 +151,7 @@ export function validateAgentMessageBodyShape(body: unknown): string | undefined
     return "delivery must be next_run when supplied";
   }
     if (candidate.delivery === "next_run") {
-      if (candidate.intent !== undefined || candidate.urgency !== undefined ||
+      if (candidate.intent !== undefined || candidate.urgency !== undefined || candidate.messagePurpose !== undefined ||
         candidate.artifactIds !== undefined || candidate.document !== undefined ||
         candidate.citations !== undefined) {
       return "next_run accepts only text, recipientAgentIds, optional expiresAt, idempotencyKey, and steeringInjectionId";
@@ -210,6 +217,8 @@ export function registerAgentCommunicationRoutes(
     const steeringInjectionIds = coordinationV3.steeringInjectionIds(capability.runId);
     const latestPrompt = coordinationV3.latestAcknowledgedPromptInjection(capability.runId);
     const requiredSteeringFence = latestPrompt?.kind === "steer" ? latestPrompt.id : undefined;
+    const discloseSteeringFence = requiredSteeringFence &&
+      !coordinationV3.runHasSteeredPeerWork(capability.runId);
     const inferredReply = request.body?.intent === undefined;
     const candidateIntent = request.body?.intent ?? capability.defaultReply?.intent;
     const text = request.body?.text === undefined
@@ -224,6 +233,7 @@ export function registerAgentCommunicationRoutes(
       return reply.code(400).send({ error: "artifactIds must contain 1 to 20 unique managed artifact IDs" });
     }
     const v3Urgency = (request.body as SendAgentMessageRequest & { urgency?: "ordinary" | "urgent" })?.urgency;
+    const messagePurpose = (request.body as SendAgentMessageRequest & { messagePurpose?: "instruction" | "question" | "progress" | "fyi" })?.messagePurpose;
     const currentAuthor = store.getAgent(capability.agentId);
     if (request.body?.delivery === "next_run") {
       const suppliedSteeringFence = request.body.steeringInjectionId?.trim();
@@ -298,7 +308,7 @@ export function registerAgentCommunicationRoutes(
       } catch (error) {
         return reply.code(409).send({
           error: error instanceof Error ? error.message : "output prompt authority is invalid",
-          ...(requiredSteeringFence ? { requiredSteeringInjectionId: requiredSteeringFence } : {}),
+          ...(discloseSteeringFence ? { requiredSteeringInjectionId: requiredSteeringFence } : {}),
         });
       }
       if (!currentAuthor) {
@@ -372,6 +382,13 @@ export function registerAgentCommunicationRoutes(
       });
     }
     const intent: "broadcast" | "direct_to_user" | "collaboration" = candidateIntent;
+    if (messagePurpose !== undefined && intent !== "collaboration") {
+      return reply.code(400).send({ error: "messagePurpose is valid only for immediate collaboration" });
+    }
+    const actionableCollaboration = intent === "collaboration" && (
+      messagePurpose === "instruction" || messagePurpose === "question" ||
+      messagePurpose === undefined
+    );
     if (v3Urgency !== undefined && v3Urgency !== "ordinary" && v3Urgency !== "urgent") {
       return reply.code(400).send({ error: "urgency must be ordinary or urgent" });
     }
@@ -452,9 +469,17 @@ export function registerAgentCommunicationRoutes(
       if (taskDelivery === 'final' && blockers.length) {
         return reply.code(409).send({ error: 'task_delivery_dependencies_pending: answer the exact blocking Decision first' });
       }
+      if (taskDelivery === 'blocked' && !blockers.length) {
+        return reply.code(409).send({ error: 'task_delivery_blocker_required: create an actionable blocking Decision; otherwise continue the unfinished task and use an ordinary progress message' });
+      }
     }
     const suppliedSteeringFence = request.body?.steeringInjectionId?.trim();
-    const replyRequest = requiredReplyRequest(coordinationV3, capability.runId, selectedReplyAuthority);
+    let replyStream;
+    try { replyStream=textReplyPublicationCorrelation(request.headers['x-ponderosa-text-publication'],active,capability,
+      {kind:'message',intent,...(inferredRecipientAgentIds.length?{recipientAgentIds:inferredRecipientAgentIds}:{}),
+       ...(documentTitle?{documentTitle}:{}),...(taskDelivery?{taskDelivery}:{})},suppliedSteeringFence); }
+    catch(error){return reply.code(409).send({error:(error as Error).message});}
+    const replyRequest = requiredReplyRequest(coordinationV3, capability.runId, selectedReplyAuthority, taskDelivery);
     const candidateRequiredReplyFingerprint = createHash("sha256").update(JSON.stringify({
       intent, text, recipientAgentIds: inferredRecipientAgentIds,
       artifactIds: artifactIds ?? [],
@@ -462,6 +487,7 @@ export function registerAgentCommunicationRoutes(
       citations,
       steeringInjectionId: suppliedSteeringFence ?? null,
       ...(taskDelivery ? { taskDelivery } : {}),
+      ...(messagePurpose ? { messagePurpose } : {}),
     })).digest("hex");
     const baseRequestFingerprint = conversationDeliveryRequestFingerprint({
       version: 1,
@@ -477,6 +503,7 @@ export function registerAgentCommunicationRoutes(
     });
     const requestFingerprint = createHash('sha256').update(JSON.stringify({
       baseRequestFingerprint, steeringInjectionId: suppliedSteeringFence ?? null, taskDelivery: taskDelivery ?? null,
+      ...(messagePurpose ? { messagePurpose } : {}),
     })).digest('hex');
     const requestedIdempotencyKey = request.body?.idempotencyKey?.trim();
     if (requestedIdempotencyKey && requestedIdempotencyKey.length > 200) {
@@ -561,7 +588,7 @@ export function registerAgentCommunicationRoutes(
     } catch (error) {
       return reply.code(409).send({
         error: error instanceof Error ? error.message : "output prompt authority is invalid",
-        ...(requiredSteeringFence ? { requiredSteeringInjectionId: requiredSteeringFence } : {}),
+        ...(discloseSteeringFence ? { requiredSteeringInjectionId: requiredSteeringFence } : {}),
       });
     }
     const pendingRequiredReplyAuthorities = coordinationV3.requiredReplyAuthoritiesForRun(capability.runId);
@@ -621,21 +648,13 @@ export function registerAgentCommunicationRoutes(
       } catch (error) {
         return reply.code(409).send({
           error: error instanceof Error ? error.message : "output prompt authority is invalid",
-          ...(requiredSteeringFence ? { requiredSteeringInjectionId: requiredSteeringFence } : {}),
+          ...(discloseSteeringFence ? { requiredSteeringInjectionId: requiredSteeringFence } : {}),
         });
       }
     }
 
     if (!currentAuthor) {
       return reply.code(409).send({ error: "agent is no longer available" });
-    }
-    const ordinaryCollaborationRecipients = intent === "collaboration"
-      ? inferredRecipientAgentIds
-      : [];
-    if (intent === "collaboration" && v3Urgency !== "urgent") {
-      if (scopedText && /^(thanks|thank you|got it|acknowledged|noted|sounds good|already complete)[.!\s]*$/i.test(scopedText)) {
-        return { suppressed: true, reason: "acknowledgement_only", recipientAgentIds: ordinaryCollaborationRecipients };
-      }
     }
     const conversation = capability.conversationId
       ? store.getConversation(capability.conversationId)
@@ -731,6 +750,7 @@ export function registerAgentCommunicationRoutes(
     if (intent === "direct_to_user") {
       const proposedCommunication: CommunicationEvent = {
         eventId: communicationEventId,
+        ...(replyStream?{replyStream}:{}),
         schemaVersion: 2,
         projectId: currentAuthor.projectId,
         ...(capability.conversationId ? { conversationId: capability.conversationId } : {}),
@@ -746,6 +766,9 @@ export function registerAgentCommunicationRoutes(
       };
       let intake;
       try {
+        if (active?.voiceReply && (await active.validateVoiceReplyContext?.() === false || active.validateVoiceReplyCommit?.() === false)) {
+          return reply.code(409).send({ error: "Memory changed during the voice reply; start a fresh turn" });
+        }
         intake = coordinationV3.recordRuntimeCommunication({
           id: proposedCommunication.eventId,
           projectId: currentAuthor.projectId,
@@ -841,7 +864,7 @@ export function registerAgentCommunicationRoutes(
       renderedText = resolved.text;
       routing = { intents: resolved.intents, blocked: [] };
     }
-    const correlatedRequesterIds = intent === "collaboration" && v3Urgency !== "urgent"
+    const correlatedRequesterIds = intent === "collaboration" && !actionableCollaboration
       ? new Set(coordinationV3.requesterIdsForRun(
         capability.v3SchedulerRunId,
         capability.agentId,
@@ -855,6 +878,7 @@ export function registerAgentCommunicationRoutes(
     const channel = intent === "broadcast" ? "main" : "collaboration";
     const proposedCommunication: CommunicationEvent = intent === "broadcast" ? {
       eventId: communicationEventId,
+      ...(replyStream?{replyStream}:{}),
       schemaVersion: 2,
       projectId: currentAuthor.projectId,
       conversationId: capability.conversationId,
@@ -869,6 +893,7 @@ export function registerAgentCommunicationRoutes(
       ...(idempotencyKey ? { idempotencyKey } : {}),
     } : {
       eventId: communicationEventId,
+      ...(replyStream?{replyStream}:{}),
       schemaVersion: 2,
       projectId: currentAuthor.projectId,
       conversationId: capability.conversationId,
@@ -910,8 +935,8 @@ export function registerAgentCommunicationRoutes(
           activations: actionableRoutingIntents.map((delivery, index) => ({
             agentId: delivery.targetAgentId,
             kind: v3Urgency === "urgent" ? "urgent_message" : "ordinary_message",
-            priority: v3Urgency === "urgent" ? 90 : 50,
-            dispatchPolicy: v3Urgency === "urgent" ? "steer_or_run" as const : "next_run" as const,
+            priority: v3Urgency === "urgent" ? 90 : actionableCollaboration ? 80 : 50,
+            dispatchPolicy: actionableCollaboration ? "steer_or_run" as const : "next_run" as const,
             promptClass: v3Urgency === "urgent" ? "blocker" as const : "ordinary" as const,
             dedupeKey: `communication:${proposedCommunication.eventId}:${delivery.targetAgentId}:${index}`,
           })),
@@ -996,13 +1021,13 @@ export function registerAgentCommunicationRoutes(
     }
   });
 
-  app.post<{ Params: { id: string }; Body: { idempotencyKey?: string; createJoin?: boolean } }>(
+  app.post<{ Params: { id: string }; Body: { idempotencyKey?: string; createJoin?: boolean; retryHeldContext?: boolean } }>(
     "/api/requests/:id/retry",
     async (request, reply) => {
       if (request.body !== undefined && (!request.body || typeof request.body !== "object" || Array.isArray(request.body))) {
         return reply.code(400).send({ error: "retry body must be an object" });
       }
-      if (request.body && Object.keys(request.body).some((key) => !["idempotencyKey", "createJoin"].includes(key))) {
+      if (request.body && Object.keys(request.body).some((key) => !["idempotencyKey", "createJoin", "retryHeldContext"].includes(key))) {
         return reply.code(400).send({ error: "unknown retry field" });
       }
       if (request.body?.idempotencyKey !== undefined && typeof request.body.idempotencyKey !== "string") {
@@ -1011,8 +1036,44 @@ export function registerAgentCommunicationRoutes(
       if (request.body?.createJoin !== undefined && typeof request.body.createJoin !== "boolean") {
         return reply.code(400).send({ error: "createJoin must be a boolean" });
       }
+      if (request.body?.retryHeldContext !== undefined && typeof request.body.retryHeldContext !== "boolean")
+        return reply.code(400).send({error:"retryHeldContext must be a boolean"});
+      if (request.body?.retryHeldContext && request.body.createJoin !== undefined)
+        return reply.code(400).send({error:"A held original Request cannot create a new join"});
       const original = coordinationV3.getRequest(request.params.id);
       if (!original) return reply.code(404).send({ error: "request not found" });
+      if (request.body?.retryHeldContext) {
+        const key=request.body.idempotencyKey?.trim();
+        if(!key || key.length>200)return reply.code(400).send({error:"idempotencyKey must be 1 to 200 characters"});
+        const requester=original.requesterAgentId?store.getAgent(original.requesterAgentId):undefined;
+        const recipient=store.getAgent(original.recipientAgentId);
+        const conversation=original.conversationId?store.getConversation(original.conversationId):undefined;
+        const participants=[...(requester?[requester.id]:[]),...(recipient?[recipient.id]:[])];
+        if (!recipient || (original.requesterAgentId && !requester) || projectDeletionInProgress(original.projectId) ||
+            participants.some(agentDeletionInProgress) || (original.conversationId &&
+              (conversationDeletionInProgress(original.conversationId)||!conversation||conversation.projectId!==original.projectId)) ||
+            [requester,recipient].some(agent=>agent && agent.projectId!==original.projectId))
+          return reply.code(409).send({error:"request participants are no longer available"});
+        const release=conversation ? leaseConversationDelivery(conversationDeliveryLeases,agentDeliveryLeases,conversation.id,participants)
+          : leaseAgentDelivery(agentDeliveryLeases,participants);
+        try {
+          if(projectDeletionInProgress(original.projectId) || participants.some(id=>agentDeletionInProgress(id)||!store.getAgent(id)) ||
+              (original.conversationId && (conversationDeletionInProgress(original.conversationId)||!store.getConversation(original.conversationId))))
+            return reply.code(409).send({error:"request participants are no longer available"});
+          const result=coordinationV3.retryHeldSettingsTransitionRequest({projectId:original.projectId,requestId:original.id,idempotencyKey:key});
+          if(!result.accepted||!result.activationId)return reply.code(409).send({error:"The original Request is no longer safely retryable"});
+          // An accepted retry is a recheck, not verified context recovery.
+          try{
+            for(const id of participants)publishCoordinationV3Changed(id,{conversationIds:original.conversationId?[original.conversationId]:[]});
+            notifyScheduler();
+          }catch{/* durable result remains authoritative */}
+          return {requestIds:[original.id],retryOfRequestId:original.id,replayed:result.replayed};
+        } catch(error) {
+          return reply.code(409).send({error:error instanceof Error?error.message:"Request retry failed"});
+        } finally {release();}
+      }
+      if (coordinationV3.settingsTransitionRequestHold({projectId:original.projectId,requestId:original.id}))
+        return reply.code(409).send({error:"The original Request has a context handoff hold; review its Work details."});
       if (!["blocked", "expired", "outcome_unknown", "failed", "recipient_unavailable"].includes(original.state)) {
         return reply.code(409).send({ error: "only blocked, expired, uncertain, or failed requests can be retried" });
       }

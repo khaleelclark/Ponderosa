@@ -1,10 +1,11 @@
+import {createClientId} from "../clientId";
+import {productApiPath} from "../api/productScope";
 import type {
   AgentDetailDto,
   AgentDto,
 } from "@ponderosa/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useRef } from "react";
-import { runtimeMutationOptions } from "../hooks/useRuntimeControls";
+import { runtimeMutationOptions, runtimeFeedbackKey } from "../hooks/useRuntimeControls";
 import { api } from "../api";
 import { queryKeys } from "../queryKeys";
 import { publishUpdatedAgent, refreshAgentRuntime, replaceCachedConversationAgent } from "../conversationAgentCache";
@@ -18,7 +19,6 @@ interface AgentDetailAdministrationInput {
   settingsEffort: string;
   onRenameClosed(): void;
   onOrganizationClosed(): void;
-  onRuntimeSettingsNotice(value?: string): void;
 }
 
 interface AgentRuntimeSettingsPatch {
@@ -36,13 +36,16 @@ export function useAgentDetailAdministration({
   settingsEffort,
   onRenameClosed,
   onOrganizationClosed,
-  onRuntimeSettingsNotice,
 }: AgentDetailAdministrationInput) {
   const queryClient = useQueryClient();
   const notify = useMutationNotification();
-  const currentAgentId = useRef(agentId);
-  currentAgentId.current = agentId;
+  const runtimeNamespace=productApiPath("/api/conversations");
+  const namespace=productApiPath("/api/agents");
+  const key=(operation:string,owner=agentId)=>JSON.stringify([namespace,owner,operation]);
+  const failed=(operation:string,title:string,error:unknown)=>notify({key:key(operation),incident:createClientId("agent-feedback-"),severity:"error",message:title,description:"Your original Agent settings remain available for review.",details:error instanceof Error?error.message:String(error)});
   const rename = useMutation({
+    mutationKey:["agent-rename",namespace,agentId],
+    onError:error=>failed("rename","Agent Name Not Saved",error),
     mutationFn: (title: string) => api.updateAgent(agentId, { title }),
     onSuccess: updated => {
       queryClient.setQueriesData<AgentDetailDto>(
@@ -66,11 +69,13 @@ export function useAgentDetailAdministration({
         queryKey: queryKeys.conversations.detailAll,
       });
       onRenameClosed();
-      notify({ key: `agent-renamed:${agentId}`, message: `Agent renamed to ${updated.title}.` });
+      notify({ key: key("rename",updated.id), message: `Agent renamed to ${updated.title}.` });
     },
   });
 
   const updateOrganization = useMutation({
+    mutationKey:["agent-organization",namespace,agentId],
+    onError:error=>failed("organization","Reporting Line Not Saved",error),
     mutationFn: () =>
       api.updateAgentOrganization(agentId, {
         managerAgentId: organizationParentId || null,
@@ -85,11 +90,13 @@ export function useAgentDetailAdministration({
         queryKey: queryKeys.agents.project(updated.projectId),
       });
       void queryClient.invalidateQueries({ queryKey: queryKeys.agents.all });
-      notify({ key: `agent-organization:${agentId}`, message: "Agent reporting relationship updated." });
+      notify({ key: key("organization",updated.id), message: "Agent reporting relationship updated." });
     },
   });
 
   const updateManagementPermissions = useMutation({
+    mutationKey:["agent-permissions",namespace,agentId],
+    onError:error=>failed("permissions","Permissions Not Saved",error),
     mutationFn: (managementPermissions: AgentDto["managementPermissions"]) =>
       api.updateAgent(agentId, { managementPermissions }),
     onSuccess: updated => {
@@ -102,27 +109,18 @@ export function useAgentDetailAdministration({
         current =>
           current?.map(agent => (agent.id === updated.id ? updated : agent)),
       );
-      notify({ key: `agent-permissions:${agentId}`, message: "Agent permissions saved." });
+      notify({ key: key("permissions",updated.id), message: "Settings Saved" });
     },
   });
 
   const updateRuntimeSettings = useMutation({
-    ...runtimeMutationOptions(`agent:${agentId}`),
+    ...runtimeMutationOptions(`agent:${agentId}`,notify),
     mutationFn: ({ agentId, patch }: { agentId: string; patch: AgentRuntimeSettingsPatch; manual: boolean }) =>
       api.updateAgent(agentId, patch),
     onSuccess: (updated, variables) => {
+      notify({key:runtimeFeedbackKey(`agent:${updated.id}`,runtimeNamespace),message:"",dismiss:true});
       publishUpdatedAgent(queryClient, updated);
-      if (currentAgentId.current === variables.agentId) {
-        onRuntimeSettingsNotice(
-          variables.manual ? "Saved. These runtime settings apply when the next Run starts." : undefined,
-        );
-      }
-      if (variables.manual) notify({ key: `agent-runtime:${updated.id}`, message: "Agent defaults saved." });
-    },
-    onError: (_error, variables) => {
-      if (currentAgentId.current === variables.agentId) {
-        onRuntimeSettingsNotice(undefined);
-      }
+      if (variables.manual) notify({ key: `agent-runtime:${updated.id}`, message: "Settings Saved" });
     },
     onSettled: (_updated, _error, variables) => refreshAgentRuntime(queryClient, variables.agentId),
   });

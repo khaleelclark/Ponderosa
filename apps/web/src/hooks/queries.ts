@@ -4,9 +4,26 @@ import { useSyncExternalStore } from "react";
 import { api } from "../api";
 import { AGENT_DETAIL_PAGE_SIZE } from "../agentHistoryPagination";
 import { queryKeys } from "../queryKeys";
-import type { WorkspacePreferencesWriter } from "../workspacePreferencesWriter";
+import { WorkspacePreferencesWriter } from "../workspacePreferencesWriter";
+import {changedWorkspaceDirectoryKinds} from '../resourcePreferences';
 
 const workspacePreferenceWriters = new WeakMap<QueryClient, WorkspacePreferencesWriter>();
+
+/** Product shells share the canonical preference queue and conflict rebase. */
+export function useWorkspacePreferencesWriter():WorkspacePreferencesWriter {
+  const client=useQueryClient();
+  let writer=workspacePreferenceWriters.get(client);
+  if(!writer){
+    writer=new WorkspacePreferencesWriter({read:()=>client.getQueryData(queryKeys.workspacePreferences.all),publish:value=>client.setQueryData(queryKeys.workspacePreferences.all,value),write:patch=>api.updateWorkspacePreferences(patch),refresh:()=>api.getWorkspacePreferences(),onSuccess:(previous,value,patch)=>{
+      for(const kind of changedWorkspaceDirectoryKinds(previous,value))void client.invalidateQueries({queryKey:queryKeys.workspaceDirectory.kind(kind)});
+      void client.invalidateQueries({queryKey:['branches']});
+      if(patch.starredResourceIds!==undefined||patch.starredProjectIds!==undefined)void client.invalidateQueries({queryKey:queryKeys.workspaceResourceRecency.all});
+      if(patch.claudeModelOptions!==undefined){void client.invalidateQueries({queryKey:queryKeys.engines.all});void client.invalidateQueries({queryKey:['engine-models']});}
+    }});
+    workspacePreferenceWriters.set(client,writer);
+  }
+  return writer;
+}
 
 export function useProjects() {
   return useQuery({
@@ -96,7 +113,9 @@ export function useNotificationProjection(
   conversationIds: readonly string[],
   chatFolders: ReadonlyArray<Pick<ChatFolderDto, "id" | "conversationIds">> = [],
   enabled = true,
+  branchIds: readonly string[] = [],
 ) {
+  const normalizedBranchIds = [...new Set(branchIds)].sort();
   const normalizedProjectIds = [...new Set(projectIds)].sort();
   const normalizedFolders = chatFolders.map(folder => ({ id: folder.id, conversationIds: [...new Set(folder.conversationIds)].sort() }))
     .sort((a, b) => a.id.localeCompare(b.id));
@@ -107,14 +126,15 @@ export function useNotificationProjection(
     queryKey: queryKeys.notifications.projection(
       normalizedProjectIds,
       normalizedConversationIds,
-      JSON.stringify(normalizedFolders),
+      normalizedBranchIds.length ? JSON.stringify({folders:normalizedFolders,branchIds:normalizedBranchIds}) : JSON.stringify(normalizedFolders),
     ),
     queryFn: async ({ signal }): Promise<WorkspaceNotificationProjectionDto> => {
       const projectBatches = scopeBatches(normalizedProjectIds);
       const conversationBatches = scopeBatches(normalizedConversationIds);
+      const branchBatches = scopeBatches(normalizedBranchIds);
       // Preferences already cap folder membership at 10,000 IDs overall.
       const folderBatches = Array.from({ length: Math.ceil(normalizedFolders.length / 200) }, (_, index) => normalizedFolders.slice(index * 200, (index + 1) * 200));
-      const requestCount = Math.max(projectBatches.length, conversationBatches.length, folderBatches.length, 1);
+      const requestCount = Math.max(projectBatches.length, conversationBatches.length, folderBatches.length, branchBatches.length, 1);
       const pages: WorkspaceNotificationProjectionDto[] = new Array(requestCount);
       let next = 0;
       let failed = false;
@@ -125,6 +145,7 @@ export function useNotificationProjection(
             pages[index] = await api.getNotificationProjection({
               projectIds: projectBatches[index] ?? [],
               conversationIds: conversationBatches[index] ?? [],
+              ...(branchBatches[index]?.length ? {branchIds:branchBatches[index]} : {}),
               ...(folderBatches[index]?.length ? { chatFolders: folderBatches[index] } : {}),
             }, signal);
           } catch (error) { failed = true; throw error; }
@@ -135,19 +156,20 @@ export function useNotificationProjection(
       const first = pages[0]!;
       return {
         workspace: first.workspace,
-        allMessages: first.allMessages,
+        inbox: first.inbox,
         projects: Object.assign({}, ...pages.map(page => page.projects)),
         conversations: Object.assign({}, ...pages.map(page => page.conversations)),
+        branches: Object.assign({}, ...pages.map(page => page.branches??{})),
         chatFolders: Object.fromEntries(pages.flatMap(page => Object.entries(page.chatFolders ?? {}))),
       };
     },
   });
 }
 
-export function useAllChat(limit = 50) {
+export function useInbox(limit = 50) {
   return useQuery({
-    queryKey: queryKeys.allChat(limit),
-    queryFn: () => api.getAllChat(limit),
+    queryKey: queryKeys.inbox(limit),
+    queryFn: () => api.getInbox(limit),
   });
 }
 
@@ -162,7 +184,7 @@ export function useConversations(projectId: string | undefined, enabled = true) 
 export function useAgentHealth(projectId: string | undefined, enabled = true) {
   return useQuery({
     queryKey: queryKeys.agents.health(projectId),
-    queryFn: () => api.getAgentHealth(projectId ?? ""),
+    queryFn: ({ signal }) => api.getAgentHealth(projectId ?? "", signal),
     enabled: Boolean(projectId) && enabled,
     refetchInterval: (query) => {
       const agents = query.state.data?.agents ?? [];

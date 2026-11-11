@@ -1,5 +1,6 @@
 import type {
   ProjectSort,
+  WorkspaceDirectoryKind,
   WorkspaceDirectoryItemDto,
   WorkspaceDirectoryPageDto,
   WorkspacePreferencesDto,
@@ -11,7 +12,6 @@ import { api } from "../api";
 import { queryKeys } from "../queryKeys";
 import { normalizeResetPages } from "../collections";
 import {
-  type WorkspaceResourceKind,
   resourcePreferenceKey,
   starredWorkspaceResources,
 } from "../resourcePreferences";
@@ -34,7 +34,7 @@ export interface WorkspaceDirectoryRequestState {
 }
 
 export function useWorkspaceDirectory<T extends WorkspaceDirectoryItemDto>(
-  kind: WorkspaceResourceKind,
+  kind: WorkspaceDirectoryKind,
   options: {
     search?: string;
     projectId?: string;
@@ -76,7 +76,7 @@ export function useWorkspaceDirectory<T extends WorkspaceDirectoryItemDto>(
     ...(options.folders ? ["folders"] : [])] as const;
   const query = useInfiniteQuery({
     queryKey,
-    queryFn: ({ pageParam }) =>
+    queryFn: ({ pageParam, signal }) =>
       api.getWorkspaceDirectory<T>(kind, {
         limit: WORKSPACE_DIRECTORY_PAGE_SIZE,
         cursor: pageParam as string | undefined,
@@ -89,7 +89,7 @@ export function useWorkspaceDirectory<T extends WorkspaceDirectoryItemDto>(
         outcomes: options.recentOutcomes,
         summary: options.summary,
         folders: options.folders,
-      }),
+      }, signal),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (
       lastPage: WorkspaceDirectoryPageDto<T>,
@@ -110,6 +110,10 @@ export function useWorkspaceDirectory<T extends WorkspaceDirectoryItemDto>(
   const hasResolved = Boolean(query.data);
   return {
     data: query.data,
+    error: query.error,
+    isSuccess: query.isSuccess,
+    fetchStatus: query.fetchStatus,
+    refetch: query.refetch,
     fetchNextPage: query.fetchNextPage,
     hasNextPage: query.isPlaceholderData ? false : query.hasNextPage,
     isError: query.isError,

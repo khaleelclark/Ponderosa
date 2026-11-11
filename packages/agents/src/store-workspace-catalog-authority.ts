@@ -1,6 +1,9 @@
+import { preserveStoredWorkingCopy } from "./working-copy-failure.js";
+import {requireGenerationExitDeletionReady} from './branch-generation-exit-deletion.js';
+import type { ProjectionProgress } from "./projection-checkpoint.js";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, renameSync, rmSync } from "@ponderosa/native-host/fs";
-import { join } from "node:path";
+import { join, isAbsolute, normalize } from "node:path";
 import { and, asc, eq, sql } from "drizzle-orm";
 import type {
   AgentDto,
@@ -28,9 +31,11 @@ import type {
   ConversationJson,
   PresetEvent,
   ProjectJson,
+  AgentJson,
 } from "./store-types.js";
 import {
   agentPresets,
+  agents,
   conversationDeletionReceipts,
   conversations,
   projectDeletionReceipts,
@@ -39,6 +44,7 @@ import {
 } from "./schema.js";
 import {
   agentPresetsPath,
+  agentJsonPath,
   agentsDir,
   conversationDir,
   conversationsDir,
@@ -74,7 +80,7 @@ interface ConversationDeletionIdentity {
   ownershipToken: string;
 }
 
-function creationId(kind: "project" | "conversation", scope: string, key: string): string {
+export function creationId(kind: "project" | "conversation", scope: string, key: string): string {
   const hash = createHash("sha256").update(`${kind}\0${scope}\0${key}`).digest("hex");
   return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-5${hash.slice(13, 16)}-${
     ((Number.parseInt(hash[16]!, 16) & 3) | 8).toString(16)
@@ -102,17 +108,19 @@ export class AgentWorkspaceCatalogAuthority {
   constructor(
     private readonly dataDir: string,
     private readonly db: Db,
-    private readonly listAgents: (projectId: string) => AgentDto[],
+    private readonly client: import("better-sqlite3").Database,
+    private readonly listAgents: (projectId: string,options?:{includePendingCreation?:boolean}) => AgentDto[],
     private readonly getConversationMessages: (
       conversationId: string,
       channel?: ConversationChannel,
     ) => ConversationMessageDto[],
-    private readonly refreshAllChatFeedProject: (projectId: string) => void,
+    private readonly refreshInboxFeedProject: (projectId: string) => void,
     private readonly setHistoryConversationVisibility: (
       projectId: string,
       conversationId: string,
       visible: boolean,
     ) => void,
+    private readonly progress: ProjectionProgress,
   ) {}
 
   private assertProjectMetadataMutable(projectId: string): void {
@@ -135,12 +143,13 @@ export class AgentWorkspaceCatalogAuthority {
     let canonicalCommitted = false;
     let result: T | undefined;
     try {
-      this.db.transaction(() => {
+      const commit = () => this.db.transaction(() => {
         this.assertProjectMetadataMutable(projectId);
         result = writeCanonical();
         canonicalCommitted = true;
         writeProjection();
       });
+      this.progress.run([projectJsonPath(this.dataDir, projectId)], commit);
     } catch (error) {
       if (!canonicalCommitted) throw error;
       try { writeProjection(); } catch { /* canonical metadata remains authoritative */ }
@@ -150,7 +159,7 @@ export class AgentWorkspaceCatalogAuthority {
 
   recoverCreationDirectories(): void {
     const projectsRoot = projectsDir(this.dataDir);
-    if (!existsSync(projectsRoot)) return;
+    if (!existsSync(projectsRoot)) {this.holdInterruptedPreparingBindings();return;}
     this.recoverConversationDeletionDirectories();
     for (const entry of readdirSync(projectsRoot)) {
       const projectMatch = /^\.(.+)\.creating$/u.exec(entry);
@@ -160,6 +169,7 @@ export class AgentWorkspaceCatalogAuthority {
     }
     for (const projectId of readdirSync(projectsRoot)) {
       if (projectId.startsWith(".")) continue;
+      try{this.reconcileImportedProjectBinding(projectId);}catch(error){this.holdImportedProjectBinding(projectId,error);}
       const root = conversationsDir(this.dataDir, projectId);
       if (!existsSync(root)) continue;
       for (const entry of readdirSync(root)) {
@@ -170,6 +180,69 @@ export class AgentWorkspaceCatalogAuthority {
       }
       this.recoverConversationRecency(projectId);
     }
+    this.holdInterruptedPreparingBindings();
+  }
+
+  /** The operation marker is written first, so even a missing Project journal
+   * retains a visible no-replay hold after an interrupted metadata commit. */
+  private holdInterruptedPreparingBindings():void {
+    const operations=this.client.prepare("SELECT id,result_json FROM agent_creation_operations WHERE status IN ('preparing','canonical_committed','rolling_back') AND EXISTS(SELECT 1 FROM json_each(result_json,'$.importedProjectRootBindings'))").all() as Array<{id:string;result_json:string}>;
+    for(const operation of operations){
+      const result=JSON.parse(operation.result_json),bindings=result.importedProjectRootBindings,at=new Date().toISOString();
+      const message='Contained import is unavailable after interruption; preserve its original creation operation and exact folders. Physical work and rollback are never replayed automatically.';
+      for(const [id,binding] of Object.entries(bindings))bindings[id]={...(binding as Record<string,unknown>),state:'unavailable',error:(binding as {error?:unknown}).error??{code:'ERR_IMPORTED_ROOT_RECOVERY_HELD',message,at}};
+      this.client.prepare('UPDATE agent_creation_operations SET result_json=?,last_error=COALESCE(last_error,?),updated_at=? WHERE id=?').run(JSON.stringify(result),message,at,operation.id);
+    }
+  }
+
+  /** A local import failure quarantines only its owner, never unrelated work. */
+  private holdImportedProjectBinding(projectId:string,error:unknown):void {
+    const filename=projectJsonPath(this.dataDir,projectId),record=readJson<ProjectJson>(filename),intent=record.importedRootBinding;
+    if(!intent||intent.state!=='binding')throw error;
+    const failure=intent.recoveryError??{code:'ERR_IMPORTED_ROOT_RECOVERY_HELD',message:'Imported working-folder binding is unavailable; preserve its exact intent and partial folders. '+(error instanceof Error?error.message:String(error)),at:new Date().toISOString()};
+    // This canonical marker forces per-Project projection quarantine. If it
+    // cannot be persisted, fail closed instead of exposing partially bound actors.
+    if(!intent.recoveryError)writeJson(filename,{...record,importedRootBinding:{...intent,recoveryError:failure}});
+    if(intent.creationOperationId){this.recordPreparingImportedBinding(record,intent,'unavailable',failure);return;}
+    const plan=this.client.prepare('SELECT preview_json FROM branch_installation_plans WHERE id=?').get(intent.planId) as {preview_json:string}|undefined;
+    if(plan){
+      const state=JSON.parse(plan.preview_json),application=state.workingDataApplication??{schema:'ponderosa.branch-working-application.v1',state:'incomplete',phase:'binding-contained-project'};
+      const memberIds=[...new Set([...intent.sharedAgents.map(member=>member.id),intent.parent.parentAgentId,...(record.ownerConversationId?[record.ownerConversationId]:[]),...(this.client.prepare("SELECT local_id FROM branch_installation_resources WHERE staging_plan_id=? AND state!='deleted'").all(intent.planId) as Array<{local_id:string}>).map(member=>member.local_id)])];
+      const recoveryHolds={...application.recoveryHolds,[projectId]:{...failure,state:'unavailable',memberIds,agentIds:intent.sharedAgents.map(member=>member.id),conversationId:record.ownerConversationId}};
+      this.client.prepare('UPDATE branch_installation_plans SET preview_json=?,error=?,next_attempt_at=NULL,updated_at=? WHERE id=?').run(JSON.stringify({...state,workingDataApplication:{...application,state:'incomplete',error:{...failure,partialStatePossible:true},recoveryHolds}}),failure.message,failure.at,intent.planId);
+    }
+  }
+
+  /** Complete only interrupted canonical metadata projection, never physical work. */
+  private reconcileImportedProjectBinding(projectId:string):void {
+    const filename=projectJsonPath(this.dataDir,projectId);if(!existsSync(filename))return;
+    const record=readJson<ProjectJson>(filename),intent=record.importedRootBinding;
+    if(!intent)return;
+    if(intent.state==='completed'){if(intent.creationOperationId)this.recordPreparingImportedBinding(record,intent,'unavailable');return;}
+    if(intent.recoveryError){this.holdImportedProjectBinding(projectId,new Error(intent.recoveryError.message));return;}
+    const owner=record.ownerConversationId,proof=intent.parent;
+    if(!owner||record.hostPath!==intent.path||!proof||join(proof.parentPath,proof.relativePath)!==intent.path)throw new Error('Interrupted imported-root metadata binding has no exact owner');
+    if(intent.creationOperationId)this.requirePreparingImportedMembers(record,intent.creationOperationId,intent.memberIds??[]);
+    else if(!this.client.prepare("SELECT 1 FROM branch_installation_resources WHERE local_id=? AND staging_plan_id=? AND agent_ref='' AND state!='active'").get(owner,intent.planId))throw new Error('Interrupted imported-root metadata binding has no exact staged owner');
+    const root=lstatSync(intent.path,{bigint:true}),parent=lstatSync(proof.parentPath,{bigint:true});
+    if(!root.isDirectory()||root.isSymbolicLink()||realpathSync(intent.path)!==intent.path||root.dev.toString()!==proof.device||root.ino.toString()!==proof.inode||
+       !parent.isDirectory()||parent.isSymbolicLink()||realpathSync(proof.parentPath)!==proof.parentPath||parent.dev.toString()!==proof.parentDevice||parent.ino.toString()!==proof.parentInode)throw new Error('Interrupted imported-root identity changed; preserve its exact plan');
+    if(intent.creationOperationId){const parentOwner=readJson<AgentJson>(agentJsonPath(this.dataDir,proof.parentProjectId,proof.parentAgentId));if(parentOwner.projectId!==proof.parentProjectId||parentOwner.workingCopy?.rootPath!==proof.parentPath)throw new Error('Interrupted generic import parent canonical owner changed');}
+    const chatFile=conversationJsonPath(this.dataDir,projectId,owner),chat=readJson<ConversationJson>(chatFile);
+    if(chat.projectId!==projectId||![intent.previousPath,intent.path].includes(chat.workingDirectory??''))throw new Error('Interrupted imported Chat binding changed');
+    const writes=intent.sharedAgents.map(member=>{
+      const file=agentJsonPath(this.dataDir,projectId,member.id),json=readJson<AgentJson>(file),copy=json.workingCopy;
+      if(!copy||copy.id!==member.workingCopyId||copy.mode!=='shared'||![intent.previousPath,intent.path].includes(copy.rootPath)||
+         !intent.creationOperationId&&!this.client.prepare("SELECT 1 FROM branch_installation_resources WHERE local_id=? AND staging_plan_id=? AND state!='active'").get(member.id,intent.planId)||
+         this.client.prepare("SELECT 1 FROM scheduler_runs WHERE agent_id=? AND status IN ('leased','running','outcome_unknown')").get(member.id))throw new Error('Interrupted imported Shared owner changed');
+      return {file,json,copy};
+    });
+    // The exact local inode/owner intent is known. Repair canonical path fields
+    // only; the outer applying physical receipt still becomes incomplete/held.
+    writeJson(chatFile,{...chat,workingDirectory:intent.path,managedWorkspaceName:undefined});
+    for(const item of writes)writeJson(item.file,{...item.json,workingCopy:{...item.copy,rootPath:intent.path,updatedAt:intent.updatedAt},updatedAt:intent.updatedAt});
+    writeJson(filename,{...record,importedRootBinding:{...intent,state:'completed'}});
+    if(intent.creationOperationId)this.recordPreparingImportedBinding(record,intent,'unavailable');
   }
 
   private conversationDeletionIdentity(
@@ -194,6 +267,7 @@ export class AgentWorkspaceCatalogAuthority {
   private stageConversationDeletionStorage(
     receipt: ConversationDeletionReceipt,
   ): ConversationDeletionReceipt {
+    requireGenerationExitDeletionReady(this.client,{conversationId:receipt.conversationId});
     const current = receipt;
     const identity = this.conversationDeletionIdentity(current);
     const parent = conversationsDir(this.dataDir, current.projectId);
@@ -357,14 +431,32 @@ export class AgentWorkspaceCatalogAuthority {
     input: Omit<CreateProjectRequest, "defaultEngine"> & {
       hostPath: string;
       chatOwned?: boolean;
+      branchId?: string;
+      executionId?: string;
       managedWorkspaceName?: string;
       creationHostPath?: string;
       defaultEngine?: CreateProjectRequest["defaultEngine"];
     },
     identity?: WorkspaceCreationIdentity,
+    onFreshChatCommit?: (chatId: string) => void,
   ): ProjectDto {
+    const validateBranchOwner = (): void => {
+      if (input.executionId && !input.branchId) throw new Error("An execution-owned Chat requires its Branch");
+      if (!input.branchId) return;
+      if (!input.chatOwned || !this.db.get(sql`SELECT 1 FROM branches WHERE id=${input.branchId} AND deleting=0`)) {
+        throw new Error("Branch Chat owner is unavailable");
+      }
+      if (input.executionId && !this.db.get(sql`SELECT 1 FROM branch_executions WHERE id=${input.executionId} AND branch_id=${input.branchId}`)) {
+        throw new Error("Branch Chat execution owner is unavailable");
+      }
+    };
+    validateBranchOwner();
     const replay = identity ? this.getProjectCreation(identity) : undefined;
-    if (replay) return replay;
+    if (replay) {
+      const chat = replay.lastConversationId ? this.getConversation(replay.lastConversationId,{includeDeleting:true}) : undefined;
+      if (chat?.branchId !== input.branchId || chat?.executionId !== input.executionId) throw new Error("Chat creation replay belongs to a different Branch owner");
+      return replay;
+    }
     const id = identity ? creationId("project", "workspace", identity.idempotencyKey) : randomUUID();
     const conversationId = identity
       ? creationId("conversation", id, `${identity.idempotencyKey}:default`)
@@ -390,6 +482,8 @@ export class AgentWorkspaceCatalogAuthority {
       } : {}),
     };
     const conversation: ConversationJson = {
+      ...(input.branchId ? {branchId:input.branchId} : {}),
+      ...(input.executionId ? {executionId:input.executionId} : {}),
       id: conversationId, projectId: id, title: input.chatOwned ? input.label : "New Chat", defaultEngine,
       workingDirectory: input.hostPath, instructions: "",
       ...(input.managedWorkspaceName ? { managedWorkspaceName: input.managedWorkspaceName } : {}),
@@ -437,8 +531,10 @@ export class AgentWorkspaceCatalogAuthority {
       publishedIdentity = { dev: staged.dev, ino: staged.ino };
       fsyncDirectory(projectsDir(this.dataDir));
       this.db.transaction((tx) => {
+        validateBranchOwner();
         tx.insert(projects).values({ id, label: input.label, hostPath: input.hostPath, createdAt: now, lastUsedAt: now, defaultEngine, defaultModel: input.defaultModel ?? null, defaultEffort: input.defaultEffort ?? null, lastConversationId: conversationId }).run();
-        tx.insert(conversations).values({ id: conversationId, projectId: id, title: input.chatOwned ? input.label : "New Chat", defaultEngine, defaultModel: input.defaultModel ?? null, defaultEffort: input.defaultEffort ?? null, defaultSpeed: input.defaultSpeed ?? null, createdAt: now, updatedAt: now }).run();
+        tx.insert(conversations).values({ id: conversationId, projectId: id, branchId:input.branchId ?? null, executionId:input.executionId ?? null, title: input.chatOwned ? input.label : "New Chat", defaultEngine, defaultModel: input.defaultModel ?? null, defaultEffort: input.defaultEffort ?? null, defaultSpeed: input.defaultSpeed ?? null, createdAt: now, updatedAt: now }).run();
+        onFreshChatCommit?.(conversationId);
         for (const event of presets) {
           tx.insert(agentPresets).values({ ...event.preset, enabled: 1 }).run();
         }
@@ -459,6 +555,89 @@ export class AgentWorkspaceCatalogAuthority {
       throw error;
     }
     return { id, label: input.label, hostPath: input.hostPath, createdAt: now, lastUsedAt: now, defaultEngine, ...(input.defaultModel ? { defaultModel: input.defaultModel } : {}), ...(input.defaultEffort ? { defaultEffort: input.defaultEffort } : {}), lastConversationId: conversationId };
+  }
+
+  /** The SQLite creation operation is canonical even if its Project projection is held. */
+  private requirePreparingImportedMembers(record:ProjectJson,operationId:string,exactAgentIds:readonly string[]):void {
+    const operation=this.client.prepare("SELECT project_id,conversation_id,kind,status FROM agent_creation_operations WHERE id=?").get(operationId) as {project_id:string;conversation_id:string;kind:string;status:string}|undefined;
+    const members=(this.client.prepare('SELECT agent_id FROM agent_creation_operation_members WHERE operation_id=?').all(operationId) as Array<{agent_id:string}>).map(row=>row.agent_id);
+    if(!operation||operation.kind!=='import'||operation.status!=='preparing'||operation.project_id!==record.id||operation.conversation_id!==record.ownerConversationId||!members.length||members.length!==exactAgentIds.length||new Set(exactAgentIds).size!==exactAgentIds.length||members.some(id=>!exactAgentIds.includes(id)))throw new Error('Contained import requires all exact members of its original preparing creation operation');
+    const current=readdirSync(agentsDir(this.dataDir,record.id)).filter(id=>!id.startsWith('.')).map(id=>readJson<AgentJson>(agentJsonPath(this.dataDir,record.id,id))).filter(agent=>!agent.deletedAt);
+    if(current.length!==members.length||current.some(agent=>!members.includes(agent.id)||agent.projectId!==record.id||agent.conversationId!==record.ownerConversationId)||members.some(id=>this.client.prepare('SELECT 1 FROM scheduler_runs WHERE agent_id=?').get(id)))throw new Error('Contained import requires unused canonical owners without Runs');
+  }
+
+  private recordPreparingImportedBinding(record:ProjectJson,intent:NonNullable<ProjectJson['importedRootBinding']>,state:'binding'|'completed'|'unavailable',failure?:{code:string;message:string;at:string}):void {
+    if(!intent.creationOperationId)return;
+    const operation=this.client.prepare('SELECT status,result_json FROM agent_creation_operations WHERE id=?').get(intent.creationOperationId) as {status:string;result_json:string|null}|undefined;
+    if(!operation||operation.status==='completed'||operation.status==='rolled_back')return;
+    const result=operation.result_json?JSON.parse(operation.result_json):{};
+    if(!result||typeof result!=='object'||Array.isArray(result))throw new Error('Original import operation has no object recovery receipt');
+    const error=failure??(state==='unavailable'?{code:'ERR_IMPORTED_ROOT_RECOVERY_HELD',message:'Contained import is unavailable after interruption; preserve the original creation operation and inspect its exact folders. Physical work is never replayed automatically.',at:new Date().toISOString()}:undefined);
+    const marker={projectId:record.id,conversationId:record.ownerConversationId,memberIds:intent.memberIds??intent.sharedAgents.map(member=>member.id),state,...(error?{error}:{})};
+    this.client.prepare('UPDATE agent_creation_operations SET result_json=?,last_error=?,updated_at=? WHERE id=?').run(JSON.stringify({...result,importedProjectRootBindings:{...result.importedProjectRootBindings,[record.id]:marker}}),error?.message??null,new Date().toISOString(),intent.creationOperationId);
+  }
+
+  /** Internal only: the service has already checked every owner fence and exact reservation. */
+  bindPreparingImportedProjectRoot(projectId:string,operationId:string,oldRoot:string,newRoot:string,exactAgentIds:readonly string[],parent:NonNullable<AgentDto['workingCopy']['importedParent']>):ProjectDto {
+    const record=readJson<ProjectJson>(projectJsonPath(this.dataDir,projectId));
+    this.requirePreparingImportedMembers(record,operationId,exactAgentIds);
+    if(record.id!==projectId||!this.isManagedProjectImportDestination(projectId)||record.hostPath!==oldRoot||!record.ownerConversationId||record.importedRootBinding)throw new Error('Contained import requires an unused NEW managed Chat');
+    const chat=readJson<ConversationJson>(conversationJsonPath(this.dataDir,projectId,record.ownerConversationId));
+    if(chat.projectId!==projectId||chat.workingDirectory!==oldRoot||this.getConversationMessages(record.ownerConversationId).length)throw new Error('Contained import Chat was already used or changed');
+    if(!isAbsolute(newRoot)||normalize(newRoot)!==newRoot||!parent||typeof parent.relativePath!=='string'||!parent.relativePath||isAbsolute(parent.relativePath)||parent.relativePath.includes('\\')||parent.relativePath.split('/').some(part=>!part||part==='..'||part==='.')||join(parent.parentPath,parent.relativePath)!==newRoot||parent.parentProjectId===projectId&&!exactAgentIds.includes(parent.parentAgentId))throw new Error('Contained import requires its exact local parent/child path proof');
+    const root=lstatSync(newRoot,{bigint:true}),parentStat=lstatSync(parent.parentPath,{bigint:true});
+    if(!root.isDirectory()||root.isSymbolicLink()||realpathSync(newRoot)!==newRoot||root.dev.toString()!==parent.device||root.ino.toString()!==parent.inode||!parentStat.isDirectory()||parentStat.isSymbolicLink()||realpathSync(parent.parentPath)!==parent.parentPath||parentStat.dev.toString()!==parent.parentDevice||parentStat.ino.toString()!==parent.parentInode)throw new Error('Contained import local parent/child identity changed');
+    const parentAgent=readJson<AgentJson>(agentJsonPath(this.dataDir,parent.parentProjectId,parent.parentAgentId));
+    const parentCopy=parentAgent.workingCopy;
+    if(parentAgent.projectId!==parent.parentProjectId||!parentCopy||parentCopy.rootPath!==parent.parentPath||!parentCopy.containedRootPreparations?.some(item=>item.phase==='created'&&item.rootPath===newRoot&&item.relativePath===parent.relativePath&&item.parentDevice===parent.parentDevice&&item.parentInode===parent.parentInode&&item.device===parent.device&&item.inode===parent.inode))throw new Error('Contained import parent canonical owner or exact local reservation changed');
+    const current=this.listAgents(projectId,{includePendingCreation:true}),shared=current.filter(agent=>agent.workingCopy.mode==='shared');
+    if(shared.some(agent=>agent.workingCopy.rootPath!==oldRoot||agent.workingCopy.importedParent))throw new Error('Contained import Shared members changed');
+    const intent:NonNullable<ProjectJson['importedRootBinding']>={creationOperationId:operationId,memberIds:[...exactAgentIds],previousPath:oldRoot,path:newRoot,managedWorkspaceName:record.managedWorkspaceName,state:'binding',updatedAt:new Date().toISOString(),sharedAgents:shared.map(agent=>({id:agent.id,workingCopyId:agent.workingCopy.id})),parent};
+    this.recordPreparingImportedBinding(record,intent,'binding');
+    return this.commitImportedProjectRootBinding(record,chat,shared,intent);
+  }
+
+  /** Internal only: final binding of an inactive NEW Branch-import namespace. */
+  bindStagedImportedProjectRoot(projectId:string,planId:string,oldRoot:string,newRoot:string,exactAgentIds:readonly string[],parent:NonNullable<AgentDto['workingCopy']['importedParent']>):ProjectDto {
+    const record=readJson<ProjectJson>(projectJsonPath(this.dataDir,projectId));
+    const current=this.listAgents(projectId,{includePendingCreation:true});
+    if(!this.isManagedProjectImportDestination(projectId)||record.hostPath!==oldRoot||!record.ownerConversationId||
+       current.length!==exactAgentIds.length||new Set(exactAgentIds).size!==exactAgentIds.length||current.some(agent=>!exactAgentIds.includes(agent.id)))throw new Error('Final imported root requires the complete unused managed Project');
+    if(!this.client.prepare("SELECT 1 FROM branch_installation_resources WHERE local_id=? AND staging_plan_id=? AND agent_ref='' AND state='staging'").get(record.ownerConversationId,planId))throw new Error('Final imported root requires its exact staged Chat');
+    for(const agent of current){
+      if(!this.client.prepare("SELECT 1 FROM branch_installation_resources r JOIN agent_creation_operations o ON o.id=r.creation_operation_id JOIN agent_creation_operation_members m ON m.operation_id=o.id AND m.agent_id=r.local_id WHERE r.local_id=? AND r.staging_plan_id=? AND r.state='staging' AND o.status='completed'").get(agent.id,planId)||
+         this.client.prepare("SELECT 1 FROM scheduler_runs WHERE agent_id=? AND status IN ('leased','running','outcome_unknown')").get(agent.id))throw new Error('Imported Project binding requires idle canonical staged owners');
+    }
+    const chatFile=conversationJsonPath(this.dataDir,projectId,record.ownerConversationId),chat=readJson<ConversationJson>(chatFile);
+    if(chat.workingDirectory!==oldRoot)throw new Error('Provisional Chat root changed');
+    const shared=current.filter(agent=>agent.workingCopy.mode==='shared');
+    if(shared.some(agent=>agent.workingCopy.rootPath!==oldRoot||agent.workingCopy.importedParent))throw new Error('Provisional Shared owners changed before final binding');
+    const intent:NonNullable<ProjectJson['importedRootBinding']>={planId,previousPath:oldRoot,path:newRoot,managedWorkspaceName:record.managedWorkspaceName,state:'binding',updatedAt:new Date().toISOString(),sharedAgents:shared.map(agent=>({id:agent.id,workingCopyId:agent.workingCopy.id})),parent};
+    return this.commitImportedProjectRootBinding(record,chat,shared,intent);
+  }
+
+  private commitImportedProjectRootBinding(record:ProjectJson,chat:ConversationJson,shared:AgentDto[],intent:NonNullable<ProjectJson['importedRootBinding']>):ProjectDto {
+    const projectId=record.id,newRoot=intent.path,chatFile=conversationJsonPath(this.dataDir,projectId,record.ownerConversationId!);
+    const files=[projectJsonPath(this.dataDir,projectId),chatFile,...shared.map(agent=>agentJsonPath(this.dataDir,projectId,agent.id))];
+    return this.progress.run(files,()=>{
+      this.assertProjectMetadataMutable(projectId);
+      // Caller has already saved the exact local contained reservation in the
+      // installation receipt. Failure here is held; startup never reallocates.
+      writeJson(projectJsonPath(this.dataDir,projectId),{...record,hostPath:newRoot,managedWorkspaceName:undefined,importedRootBinding:intent});
+      writeJson(chatFile,{...chat,workingDirectory:newRoot,managedWorkspaceName:undefined});
+      this.db.update(projects).set({hostPath:newRoot}).where(eq(projects.id,projectId)).run();
+      for(const agent of shared){
+        const filename=agentJsonPath(this.dataDir,projectId,agent.id),json=readJson<AgentJson>(filename);
+        const stored=this.client.prepare("SELECT working_copy_json FROM agents WHERE id = ?").get(agent.id) as {working_copy_json:string}|undefined;
+        if (!stored) throw new Error("Imported root owner disappeared");
+        const workingCopy=preserveStoredWorkingCopy(JSON.parse(stored.working_copy_json) as AgentDto["workingCopy"],{...agent.workingCopy,rootPath:newRoot,updatedAt:intent.updatedAt});
+        writeJson(filename,{...json,workingCopy,updatedAt:workingCopy.updatedAt});
+        this.db.update(agents).set({workingCopyJson:JSON.stringify(workingCopy),updatedAt:workingCopy.updatedAt}).where(eq(agents.id,agent.id)).run();
+      }
+      writeJson(projectJsonPath(this.dataDir,projectId),{...readJson<ProjectJson>(projectJsonPath(this.dataDir,projectId)),importedRootBinding:{...intent,state:'completed'}});
+      this.recordPreparingImportedBinding(record,intent,'completed');
+      return this.getProject(projectId)!;
+    });
   }
 
   updateProject(id: string, input: UpdateProjectRequest): ProjectDto | undefined {
@@ -701,6 +880,16 @@ export class AgentWorkspaceCatalogAuthority {
 
   /** Retain the original input hash even when a managed folder is rebound after
    * restart/relocation. Different requested folder names must still conflict. */
+  isManagedProjectImportDestination(id:string):boolean {
+    const file=projectJsonPath(this.dataDir,id);
+    if(!existsSync(file))return false;
+    const record=readJson<ProjectJson>(file);
+    if(record.id!==id||!record.managedWorkspaceName||!record.creationIdempotencyKey)return false;
+    const creationPath=record.creationHostPath===`managed:workspaces/${record.managedWorkspaceName}`
+      ? managedWorkspacePath(this.dataDir,record.managedWorkspaceName) : record.creationHostPath;
+    return record.hostPath===creationPath;
+  }
+
   getManagedCreationHostPath(key: string, name: string): string | undefined {
     const id = creationId("project", "workspace", key);
     const file = projectJsonPath(this.dataDir, id);
@@ -815,19 +1004,24 @@ export class AgentWorkspaceCatalogAuthority {
     projectId: string,
     input: CreateConversationRequest,
     identity?: WorkspaceCreationIdentity,
+    owner?: {branchId:string;executionId:string},
+    onFreshChatCommit?: (chatId: string) => void,
   ): ConversationDto {
+    const validateOwner=()=>{if(owner&&!this.db.get(sql`SELECT 1 FROM branch_executions e JOIN branches b ON b.id=e.branch_id WHERE e.id=${owner.executionId} AND b.id=${owner.branchId} AND b.deleting=0`))throw Error('Branch group Chat owner unavailable');};
+    validateOwner();
     const project = this.getProject(projectId);
     if (!project) throw new Error(`unknown project: ${projectId}`);
     if (readJson<ProjectJson>(projectJsonPath(this.dataDir, projectId)).ownerConversationId) {
       throw new Error("Create a separate Chat rather than nesting Chats inside a Chat");
     }
     const replay = identity ? this.getConversationCreation(projectId, identity) : undefined;
-    if (replay) return replay;
+    if (replay) {if(replay.branchId!==owner?.branchId||replay.executionId!==owner?.executionId)throw Error('Chat creation owner conflict');return replay;}
     const id = identity ? creationId("conversation", projectId, identity.idempotencyKey) : randomUUID();
     const now = new Date().toISOString();
     const record: ConversationJson = {
       id,
       projectId,
+      ...(owner??{}),
       title: input.title || "New Chat",
       workingDirectory: project.hostPath,
       instructions: "",
@@ -876,6 +1070,7 @@ export class AgentWorkspaceCatalogAuthority {
         lastConversationId: id,
       });
       this.db.transaction((tx) => {
+        validateOwner();
         if (tx.select({ projectId: projectDeletionPending.projectId })
           .from(projectDeletionPending)
           .where(eq(projectDeletionPending.projectId, projectId)).get()) {
@@ -884,6 +1079,7 @@ export class AgentWorkspaceCatalogAuthority {
         tx.insert(conversations).values({
           id,
           projectId,
+          branchId:owner?.branchId??null,executionId:owner?.executionId??null,
           title: record.title,
           defaultEngine: record.defaultEngine ?? null,
           defaultModel: record.defaultModel ?? null,
@@ -894,6 +1090,7 @@ export class AgentWorkspaceCatalogAuthority {
         }).run();
         tx.update(projects).set({ lastUsedAt: now, lastConversationId: id })
           .where(eq(projects.id, projectId)).run();
+        onFreshChatCommit?.(id);
       });
     } catch (error) {
       try {
@@ -978,6 +1175,8 @@ export class AgentWorkspaceCatalogAuthority {
     const result: ConversationDto = {
       id: row.id,
       projectId: row.projectId,
+      ...(row.branchId ? {branchId:row.branchId} : {}),
+      ...(row.executionId ? {executionId:row.executionId} : {}),
       title: next.title,
       workingDirectory: canonical.workingDirectory,
       instructions: next.instructions,
@@ -1026,6 +1225,7 @@ export class AgentWorkspaceCatalogAuthority {
     return row ? {
       conversationId: row.conversationId,
       projectId: row.projectId,
+      ...(row.branchId ? {branchId:row.branchId} : {}),
       ...(row.tombstoneName ? { tombstoneName: row.tombstoneName } : {}),
       ...(row.ownershipToken ? { ownershipToken: row.ownershipToken } : {}),
       removalStarted: row.removalStarted === 1,
@@ -1046,6 +1246,7 @@ export class AgentWorkspaceCatalogAuthority {
       .map(row => ({
         conversationId: row.conversationId,
         projectId: row.projectId,
+        ...(row.branchId ? {branchId:row.branchId} : {}),
         ...(row.tombstoneName ? { tombstoneName: row.tombstoneName } : {}),
         ...(row.ownershipToken ? { ownershipToken: row.ownershipToken } : {}),
         removalStarted: row.removalStarted === 1,
@@ -1060,6 +1261,7 @@ export class AgentWorkspaceCatalogAuthority {
   }
 
   markConversationDeletionPending(id: string): ConversationDeletionReceipt {
+    requireGenerationExitDeletionReady(this.client,{conversationId:id});
     const prior = this.getConversationDeletionReceipt(id);
     if (prior) return prior;
     const row = this.db.select().from(conversations).where(eq(conversations.id, id)).get();
@@ -1069,6 +1271,7 @@ export class AgentWorkspaceCatalogAuthority {
     this.db.insert(conversationDeletionReceipts).values({
       conversationId: id,
       projectId: row.projectId,
+      branchId: row.branchId,
       tombstoneName: `.${id}.deleting-${ownershipToken}`,
       ownershipToken,
       removalStarted: 0,
@@ -1163,7 +1366,7 @@ export class AgentWorkspaceCatalogAuthority {
   }
 
   refreshConversationDeletionProjection(receipt: ConversationDeletionReceipt): void {
-    this.refreshAllChatFeedProject(receipt.projectId);
+    this.refreshInboxFeedProject(receipt.projectId);
   }
 
   markConversationDeletionServerCleanupComplete(id: string): void {
@@ -1221,6 +1424,7 @@ export class AgentWorkspaceCatalogAuthority {
     const now = new Date().toISOString();
     try {
       this.db.transaction((tx) => {
+        requireGenerationExitDeletionReady(this.client,{conversationId:id});
         // Communication cleanup shares this SQLite connection, so
         // no new work can target the Chat after its projection disappears.
         beforeProjectionDelete?.(id);
@@ -1262,6 +1466,8 @@ export class AgentWorkspaceCatalogAuthority {
     return {
       id: row.id,
       projectId: row.projectId,
+      ...(row.branchId ? {branchId:row.branchId} : {}),
+      ...(row.executionId ? {executionId:row.executionId} : {}),
       title: row.title,
       workingDirectory: context.workingDirectory,
       instructions: context.instructions,

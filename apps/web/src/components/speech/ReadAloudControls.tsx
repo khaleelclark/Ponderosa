@@ -38,10 +38,10 @@ export function ReadAloudControls({ text }: { text: string }): JSX.Element {
     <Tooltip title={label}><span><IconButton size="small" aria-label={label} aria-pressed={running} disabled={Boolean(unavailable) || !speakable} color={running ? "primary" : error ? "error" : "inherit"} onClick={event => { event.stopPropagation(); toggle(); }}>
       {status === "paused" ? <PlayArrowIcon fontSize="inherit" /> : running ? <PauseIcon fontSize="inherit" /> : <VolumeUpIcon fontSize="inherit" />}
     </IconButton></span></Tooltip>
-    {running && <Tooltip title="Stop read aloud"><IconButton size="small" aria-label="Stop read aloud" onClick={event => { event.stopPropagation(); stopSpeech(ownerId); }}><StopIcon fontSize="inherit" /></IconButton></Tooltip>}
+    {running && <Tooltip title="Stop Read Aloud"><IconButton size="small" aria-label="Stop Read Aloud" onClick={event => { event.stopPropagation(); stopSpeech(ownerId); }}><StopIcon fontSize="inherit" /></IconButton></Tooltip>}
     <Box component="span" aria-live="polite" role={error ? "alert" : "status"} sx={visuallyHiddenSpeechStatusSx}>{error ?? (status === "speaking" ? "Reading message aloud" : status === "loading" ? "Preparing speech" : status === "paused" ? "Read aloud paused" : status === "stopped" ? "Read aloud stopped" : "")}</Box>
     {error && <Box component="span">
-      <Button size="small" onClick={() => start()}>Try again</Button>
+      <Button size="small" onClick={() => start()}>Try Again</Button>
     </Box>}
   </Box>;
 }

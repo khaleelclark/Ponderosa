@@ -11,7 +11,7 @@
     "build": "pnpm -r build",
     "typecheck": "pnpm --filter @ponderosa/core build && pnpm --filter @ponderosa/native-host build && pnpm --filter @ponderosa/agents build && pnpm --filter @ponderosa/engines build && pnpm -r typecheck",
     "test": "pnpm build && pnpm -r typecheck && node tests/shared/run-tests.mjs",
-    "verify": "pnpm test",
+    "verify": "pnpm test && pnpm test:mounted",
     "clean": "pnpm -r exec rm -rf dist",
     "start:prod": "NODE_ENV=production node apps/server/dist/main.js",
     "beta:version": "node packaging/beta-version.mjs",
@@ -23,6 +23,7 @@
     "test:tooling": "node tests/shared/run-tests.mjs --lane tooling",
     "test:feature": "node tests/shared/run-tests.mjs",
     "test:list": "node tests/shared/run-tests.mjs --list",
-    "test:regressions": "node --import ./tests/shared/workspace-resolution.mjs --test --test-concurrency=1 tests/providers/capabilities.test.mjs tests/chats/prompt-fences.test.mjs"
+    "test:regressions": "node --import ./tests/shared/workspace-resolution.mjs --test --test-concurrency=1 tests/providers/capabilities.test.mjs tests/chats/prompt-fences.test.mjs",
+    "test:mounted": "node tests/shared/run-mounted-regressions.mjs"
   }
 }

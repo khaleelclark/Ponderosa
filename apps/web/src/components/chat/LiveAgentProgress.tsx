@@ -29,7 +29,7 @@ function ProgressText({ text, truncated, expanded, onToggle }: {
       {text}{truncated ? "…" : ""}
     </Typography>
     {expanded || clipped ? <Button className="chat-text-navigation" size="small" aria-expanded={expanded} onClick={onToggle}
-      sx={{ minHeight: 28, py: 0.25 }}>{expanded ? "Collapse update" : "Show full update"}</Button> : null}
+      sx={{ minHeight: 28, py: 0.25 }}>{expanded ? "Collapse Update" : "Show Full Update"}</Button> : null}
   </>;
 }
 
@@ -50,18 +50,18 @@ function ProgressCard({ receipt, onOpenAgent }: {
     sx={{ borderLeft: "2px solid", borderColor: "divider", pl: 1, py: 0.25, minWidth: 0, textAlign: "left" }}>
     <Stack direction="row" alignItems="center" sx={{ minWidth: 0, gap: 0.5 }}>
       {/* Separate buttons avoid nesting a clickable identity inside a disclosure. */}
-      <Box title={`#${progress.recipientHandle}`} sx={{ minWidth: 0, maxWidth: "50%", flexShrink: 1, fontSize: 12,
+      <Box title={`#${progress.recipientHandle}`} sx={{ minWidth: 0, maxWidth: "50%", flexShrink: 1, fontSize: "0.75rem",
         "& > button, & > span": { display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }}>
         <AgentMention agentId={receipt.targetAgentId} label={progress.recipientHandle} onOpenAgent={onOpenAgent} />
       </Box>
       <Button className="chat-text-navigation" size="small" aria-expanded={!collapsed} aria-controls={bodyId}
-        aria-label={`${collapsed ? "Expand" : "Collapse"} ${progress.recipientHandle} progress: ${activity}`}
+        aria-label={`${collapsed ? "Expand" : "Collapse"} ${progress.recipientHandle} Progress: ${activity}`}
         onClick={() => {
           setCollapsed(!collapsed);
           writeBrowserStorage("sessionStorage", storageKey, String(!collapsed));
         }}
         sx={{ color: "text.secondary", flex: 1, minWidth: 0, minHeight: 44, p: 0.5, justifyContent: "space-between", gap: 0.5,
-          textTransform: "none", textAlign: "left", fontSize: 12, lineHeight: 1.35 }}>
+          textTransform: "none", textAlign: "left", fontSize: "0.75rem", lineHeight: 1.35 }}>
         <Box component="span" sx={{ minWidth: 0, overflowWrap: "anywhere" }}>is {activity}</Box>
         {collapsed ? <ExpandMoreIcon fontSize="small" sx={{ flexShrink: 0 }} /> : <ExpandLessIcon fontSize="small" sx={{ flexShrink: 0 }} />}
       </Button>
@@ -81,7 +81,7 @@ export function LiveAgentProgress({ receipts, onOpenAgent }: {
   const updates = receipts?.filter(receipt => receipt.state === "delivered" && receipt.providerAcknowledged &&
     receipt.executionId && receipt.injectionId && receipt.liveProgress);
   if (!updates?.length) return null;
-  return <Stack spacing={0.5} sx={{ mt: 0.5, minWidth: 0, maxWidth: "100%" }} aria-label="Live Agent progress">
+  return <Stack spacing={0.5} sx={{ mt: 0.5, minWidth: 0, maxWidth: "100%" }} aria-label="Live Agent Progress">
     {updates.map(receipt => <ProgressCard key={`${receipt.targetAgentId}:${receipt.executionId}`} receipt={receipt} onOpenAgent={onOpenAgent} />)}
   </Stack>;
 }

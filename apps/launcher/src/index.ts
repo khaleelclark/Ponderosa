@@ -1,7 +1,7 @@
 export { createTarGz } from "./archive.js";
 export {
   currentPonderosaStatus,
-  requestBrowserBootstrap,
+  openPonderosaBrowser,
   startPonderosa,
   stopPonderosa,
 } from "./control.js";

@@ -1,3 +1,10 @@
+import {createClientId} from "../clientId";
+import {productApiPath} from "../api/productScope";
+import {WorkspaceQueryError} from "./WorkspaceQueryError";
+import {workspaceRead} from "../workspaceAvailability";
+import { NativeRuntimeControls } from "./NativeRuntimeControls";
+import { NativeTaskControls } from "./NativeTaskControls";
+import { NativeHistoryControls } from "./NativeHistoryControls";
 import { chatBrowserOwnerId } from "@ponderosa/core";
 import AccountTreeOutlinedIcon from "@mui/icons-material/AccountTreeOutlined";
 import RestartAltIcon from "@mui/icons-material/RestartAlt";
@@ -36,19 +43,71 @@ import type {
   EngineDto,
 } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
+import { publishUpdatedAgent } from "../conversationAgentCache";
 import { queryKeys } from "../queryKeys";
 import { HostPathPresentation } from "./HostPathPresentation";
 import { ResourceNotificationSettings } from "./ResourceNotificationSettings";
-import { useMutationNotification } from "./MutationNotifications";
+import { useMutationNotification, MutationErrorDetails } from "./MutationNotifications";
 
-function AgentWorkingCopySettings({ agent }: { agent: AgentDto }): JSX.Element {
+// Explicit Agent-settings mutations share feedback, never their retry authority.
+function useAgentSettingsFeedback(agentId:string){
+  const notify=useMutationNotification();
+  return async<T,>(operation:string,title:string,work:()=>Promise<T>,owner=agentId):Promise<T>=>{
+    const key=JSON.stringify([productApiPath("/api/agents"),owner,operation]),incident=createClientId("agent-settings-feedback-");
+    try{const result=await work();notify({key,message:"",dismiss:true});return result;}
+    catch(error){notify({key,incident,severity:"error",message:title,description:"Review the original Agent settings and retained recovery controls before retrying.",details:error instanceof Error?error.message:String(error)});throw error;}
+  };
+}
+
+/** Explicit standing-role editing, shared by Agent Settings and workflow setup. */
+export function AgentRoleSettings({ agent, onSaved }: { agent: AgentDto; onSaved?(): void }): JSX.Element {
+  const client = useQueryClient();
+  const feedback=useAgentSettingsFeedback(agent.id);
+  const [role, setRole] = useState(agent.role ?? "");
+  const owner = useRef(agent.id), previousOwner = useRef(agent.id), baseline = useRef(agent.role ?? ""), pending = useRef(false), mounted = useRef(false);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  owner.current = agent.id;
+  useEffect(() => {
+    setRole(current => previousOwner.current !== agent.id || current === baseline.current ? agent.role ?? "" : current);
+    previousOwner.current = agent.id;
+    baseline.current = agent.role ?? "";
+  }, [agent.id, agent.role]);
+  const save = useMutation({
+    mutationKey:["agent-role",agent.id],
+    mutationFn: ({ id, role }: { id: string; role: string }) => feedback("role","Agent Role Not Saved",()=>api.updateAgent(id, { role: role || null }),id),
+    onSuccess: (updated, variables) => {
+      publishUpdatedAgent(client, updated);
+      void client.invalidateQueries({ queryKey: ["branch-agents"] });
+      if (mounted.current && owner.current === variables.id) { baseline.current = updated.role ?? ""; setRole(updated.role ?? ""); onSaved?.(); }
+    },
+    onSettled: () => { pending.current = false; },
+  });
+  return <Stack spacing={1.5}>
+    <TextField label="Agent Role" multiline minRows={3} value={role} disabled={save.isPending} onChange={event => setRole(event.target.value)} placeholder="Describe This Agent’s Standing Responsibilities" />
+    <Typography variant="caption" color="text.secondary">Applies when the next Run starts. Active work keeps its accepted instructions.</Typography>
+    <MutationErrorDetails title="Agent Role Needs Review" error={save.error}/>
+    <Button variant="outlined" disabled={save.isPending || role === (agent.role ?? "")} onClick={() => { if (pending.current) return; pending.current = true; save.mutate({ id: agent.id, role }); }}>{save.isPending ? "Saving…" : "Save Agent Role"}</Button>
+  </Stack>;
+}
+
+const workingCopyActionAlertSx={
+  flexWrap:"wrap",
+  "& .MuiAlert-message":{flex:"1 1 12rem",minWidth:0},
+  "& .MuiAlert-action":{flex:"0 0 auto",m:0,p:0},
+} as const;
+
+export function AgentWorkingCopySettings({ agent }: { agent: AgentDto }): JSX.Element {
   const queryClient = useQueryClient();
   const notify = useMutationNotification();
+  const feedback=useAgentSettingsFeedback(agent.id);
+  const statusKey=["agent-working-folder-change",agent.id];
+  const status=useQuery({queryKey:statusKey,queryFn:()=>api.agentWorkingCopyChange(agent.id),
+    refetchInterval:query=>query.state.data?.workingCopyChange&&!["completed","held","kept_current"].includes(query.state.data.workingCopyChange.phase)?1000:false});
   const changeMode = useMutation({
     mutationFn: (workingCopyMode: AgentWorkingCopyMode) =>
-      api.updateAgent(agent.id, { workingCopyMode }),
+      feedback("working-folder","Working Folder Change Needs Review",()=>api.updateAgent(agent.id, { workingCopyMode })),
     onSuccess: updated => {
       queryClient.setQueryData<AgentDto[]>(
         queryKeys.agents.project(agent.projectId),
@@ -58,25 +117,31 @@ function AgentWorkingCopySettings({ agent }: { agent: AgentDto }): JSX.Element {
         { queryKey: queryKeys.agents.detailPrefix(agent.id) },
         current => current ? { ...current, agent: updated } : current,
       );
-      notify({ key: `agent-working-folder:${agent.id}`, message: "Agent working folder updated." });
+      queryClient.setQueryData(statusKey,updated);
+      if(!updated.workingCopyChange||updated.workingCopyChange.phase==='completed')
+        notify({ key: `agent-working-folder:${agent.id}`, message: "Agent working folder updated." });
     },
+    onSettled:()=>{void queryClient.invalidateQueries({queryKey:statusKey});},
   });
-  const workingCopy = changeMode.data?.id === agent.id
-    ? changeMode.data.workingCopy
-    : agent.workingCopy;
+  const keepFolder=useMutation({mutationFn:(id:string)=>feedback(`keep-folder:${id}`,"Working Folder Recovery Needs Review",()=>api.keepCurrentWorkingCopy(agent.id,id)),
+    onSuccess:updated=>{queryClient.setQueryData(statusKey,updated);void queryClient.invalidateQueries({queryKey:queryKeys.agents.detailPrefix(agent.id)});},
+    onSettled:()=>{void queryClient.invalidateQueries({queryKey:statusKey});}});
+  const observed=status.data?.id===agent.id?status.data:changeMode.data?.id===agent.id?changeMode.data:agent;
+  const workingCopy=observed.workingCopy,change=observed.workingCopyChange;
+  const changing=Boolean(change&&!['completed','held','kept_current'].includes(change.phase));
   const label = workingCopy.mode === "separate_git" ? "Separate Git copy" : "Shared folder";
   return (
     <Paper variant="outlined" sx={{ p: 2 }}>
       <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center", mb: 0.75 }}>
-        <Typography variant="subtitle1" fontWeight={800} sx={{ flex: 1 }}>Working Folder</Typography>
+        <Typography variant="subtitle1" fontWeight={650} sx={{ flex: 1 }}>Working Folder</Typography>
         <Chip
           size="small"
-          color={workingCopy.state === "ready" ? "success" : "error"}
-          label={workingCopy.state === "ready" ? `${label} · Ready` : `${label} · Needs attention`}
+          color={change?.phase==='held'?'error':changing?'info':workingCopy.state === "ready" ? "success" : "error"}
+          label={change?.phase==='held'?`${label} · Context Review`:changing?`${label} · Saving…`:workingCopy.state === "ready" ? `${label} · Ready` : `${label} · Needs Attention`}
         />
       </Stack>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
-        Shared is best when Agents need to see each other's changes immediately. Separate Git gives this Agent its own branch and folder for code work.
+        Shared folder or separate Git branch.
       </Typography>
       <Box sx={{ mb: 1.5 }}>
         <Typography variant="caption" color="text.secondary" display="block">
@@ -84,15 +149,22 @@ function AgentWorkingCopySettings({ agent }: { agent: AgentDto }): JSX.Element {
         </Typography>
         <HostPathPresentation
           path={workingCopy.rootPath}
-          label={workingCopy.mode === "separate_git" ? "Agent working copy" : "Project Shared folder"}
+          label={workingCopy.mode === "separate_git" ? "Agent Working Copy" : "Project Shared Folder"}
         />
       </Box>
-      <FormControl fullWidth size="small" disabled={changeMode.isPending}>
-        <InputLabel id={`working-copy-${agent.id}`}>Working folder</InputLabel>
+      <WorkspaceQueryError read={workspaceRead(`agent:${agent.id}`,"Working Folder Status",status)}/>
+      <MutationErrorDetails title="Working Folder Recovery Needs Review" error={keepFolder.error}/>
+      {change&&change.phase==='kept_current'?<Alert severity="success" sx={{mb:1.5}}>Kept the current working folder and existing context.</Alert>:null}
+      {change&&!['completed','kept_current'].includes(change.phase)?<Alert severity={change.phase==='held'?'error':'info'} sx={{mb:1.5,...workingCopyActionAlertSx}}
+        action={<Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap"><Button color="inherit" size="small" sx={{minHeight:44,whiteSpace:"nowrap"}} disabled={changeMode.isPending||keepFolder.isPending} onClick={()=>change.retryable?changeMode.mutate(change.mode):void status.refetch()}>{change.retryable?'Retry':'Check Status'}</Button>{change.canKeepCurrent?<Button color="inherit" size="small" sx={{minHeight:44,whiteSpace:"nowrap"}} disabled={keepFolder.isPending||changeMode.isPending} onClick={()=>keepFolder.mutate(change.rolloverId)}>Keep Current Folder</Button>:null}</Stack>}>
+        {change.phase==='held'?(change.message??'Inspect Activity before another change.'):change.phase==='handoff'?'Saving: preserving this Agent’s context before changing folders.':change.phase==='verifying'?'Folder changed; verifying preserved context before queued work.':'Saving: preparing the selected working folder.'}
+      </Alert>:null}
+      <FormControl fullWidth size="small" disabled={changeMode.isPending||changing||change?.phase==='held'}>
+        <InputLabel id={`working-copy-${agent.id}`}>Working Folder</InputLabel>
         <Select
           labelId={`working-copy-${agent.id}`}
-          label="Working folder"
-          value={workingCopy.mode}
+          label="Working Folder"
+          value={changing&&change?change.mode:workingCopy.mode}
           onChange={event => {
             const nextMode = event.target.value as AgentWorkingCopyMode;
             if (workingCopy.mode === "separate_git" && nextMode === "shared" &&
@@ -102,8 +174,8 @@ function AgentWorkingCopySettings({ agent }: { agent: AgentDto }): JSX.Element {
             changeMode.mutate(nextMode);
           }}
         >
-          <MenuItem value="shared">Shared folder</MenuItem>
-          <MenuItem value="separate_git">Separate Git copy</MenuItem>
+          <MenuItem value="shared">Shared Folder</MenuItem>
+          <MenuItem value="separate_git">Separate Git Copy</MenuItem>
         </Select>
       </FormControl>
       {workingCopy.mode === "separate_git" && workingCopy.state === "ready" ? (
@@ -114,11 +186,12 @@ function AgentWorkingCopySettings({ agent }: { agent: AgentDto }): JSX.Element {
       {workingCopy.state === "unavailable" ? (
         <Alert
           severity="error"
-          sx={{ mt: 1.5 }}
+          sx={{ mt: 1.5,...workingCopyActionAlertSx }}
           action={workingCopy.mode === "separate_git" ? (
             <Button
               color="inherit"
               size="small"
+              sx={{minHeight:44,whiteSpace:"nowrap"}}
               disabled={changeMode.isPending}
               onClick={() => changeMode.mutate("separate_git")}
             >
@@ -129,13 +202,14 @@ function AgentWorkingCopySettings({ agent }: { agent: AgentDto }): JSX.Element {
           {workingCopy.failure ?? "This working folder is unavailable."} Runs stay paused instead of using the Shared folder.
         </Alert>
       ) : null}
-      {changeMode.error ? <Alert severity="error" sx={{ mt: 1.5 }}>{String(changeMode.error)}</Alert> : null}
+      <MutationErrorDetails title="Working Folder Change Needs Review" error={changeMode.error}/>
     </Paper>
   );
 }
 
 function AgentBrowserProfileSettings({ agent }: { agent: AgentDto }): JSX.Element {
   const queryClient = useQueryClient();
+  const feedback=useAgentSettingsFeedback(agent.id);
   const [newProfileName, setNewProfileName] = useState("");
   const [profileToDelete, setProfileToDelete] = useState<BrowserProfileDto>();
   const profiles = useQuery({
@@ -147,18 +221,18 @@ function AgentBrowserProfileSettings({ agent }: { agent: AgentDto }): JSX.Elemen
     queryFn: () => api.getBrowserAgentPreference(chatBrowserOwnerId(agent.conversationId), agent.id),
   });
   const updatePreference = useMutation({
-    mutationFn: (value: string) => api.updateBrowserAgentPreference(
+    mutationFn: (value: string) => feedback(`browser-preference:${value}`,"Browser Preference Not Saved",()=>api.updateBrowserAgentPreference(
       chatBrowserOwnerId(agent.conversationId),
       agent.id,
       value === "disposable" ? { mode: "disposable" } : { mode: "trusted", profileId: value },
-    ),
+    )),
     onSuccess: value => queryClient.setQueryData(
       queryKeys.agentBrowsers.preference(chatBrowserOwnerId(agent.conversationId), agent.id),
       value,
     ),
   });
   const createProfile = useMutation({
-    mutationFn: (name: string) => api.createBrowserProfile(chatBrowserOwnerId(agent.conversationId), { name }),
+    mutationFn: (name: string) => feedback(`create-browser-profile:${name}`,"Browser Profile Not Created",()=>api.createBrowserProfile(chatBrowserOwnerId(agent.conversationId), { name })),
     onSuccess: created => {
       setNewProfileName("");
       void queryClient.invalidateQueries({ queryKey: queryKeys.agentBrowsers.profiles(chatBrowserOwnerId(agent.conversationId)) });
@@ -166,7 +240,7 @@ function AgentBrowserProfileSettings({ agent }: { agent: AgentDto }): JSX.Elemen
     },
   });
   const deleteProfile = useMutation({
-    mutationFn: (profileId: string) => api.deleteBrowserProfile(chatBrowserOwnerId(agent.conversationId), profileId),
+    mutationFn: (profileId: string) => feedback(`delete-browser-profile:${profileId}`,"Browser Profile Deletion Needs Review",()=>api.deleteBrowserProfile(chatBrowserOwnerId(agent.conversationId), profileId)),
     onSuccess: () => {
       setProfileToDelete(undefined);
       void queryClient.invalidateQueries({ queryKey: queryKeys.agentBrowsers.profiles(chatBrowserOwnerId(agent.conversationId)) });
@@ -176,22 +250,22 @@ function AgentBrowserProfileSettings({ agent }: { agent: AgentDto }): JSX.Elemen
   const selected = preference.data?.mode === "trusted" && preference.data.profileId
     ? preference.data.profileId
     : "disposable";
-  const error = updatePreference.error ?? createProfile.error ?? deleteProfile.error ?? profiles.error ?? preference.error;
+  const error = updatePreference.error ?? createProfile.error ?? (profileToDelete?undefined:deleteProfile.error);
   return (
     <Paper variant="outlined" sx={{ p: 2 }}>
-      <Typography variant="subtitle1" fontWeight={800}>Hosted Browser</Typography>
+      <Typography variant="subtitle1" fontWeight={650}>Hosted Browser</Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
-        Disposable profiles start clean. Trusted profiles retain cookies, logins, and site storage on this Ponderosa host and are leased to only one browser at a time.
+        Trusted profiles keep sign-ins on this host.
       </Typography>
       <FormControl fullWidth size="small" disabled={preference.isLoading || updatePreference.isPending}>
-        <InputLabel id={`browser-profile-${agent.id}`}>Browser profile</InputLabel>
+        <InputLabel id={`browser-profile-${agent.id}`}>Browser Profile</InputLabel>
         <Select
           labelId={`browser-profile-${agent.id}`}
-          label="Browser profile"
+          label="Browser Profile"
           value={selected}
           onChange={event => updatePreference.mutate(event.target.value)}
         >
-          <MenuItem value="disposable">Disposable · clean each Run</MenuItem>
+          <MenuItem value="disposable">Disposable · Clean Each Run</MenuItem>
           {(profiles.data ?? []).map(profile => (
             <MenuItem key={profile.id} value={profile.id}>Trusted · {profile.name}</MenuItem>
           ))}
@@ -201,7 +275,7 @@ function AgentBrowserProfileSettings({ agent }: { agent: AgentDto }): JSX.Elemen
         <TextField
           size="small"
           fullWidth
-          label="New trusted profile"
+          label="New Trusted Profile"
           value={newProfileName}
           onChange={event => setNewProfileName(event.target.value)}
           inputProps={{ maxLength: 80 }}
@@ -211,7 +285,7 @@ function AgentBrowserProfileSettings({ agent }: { agent: AgentDto }): JSX.Elemen
           disabled={!newProfileName.trim() || createProfile.isPending}
           onClick={() => createProfile.mutate(newProfileName)}
         >
-          Create and use
+          Create And Use
         </Button>
       </Stack>
       {(profiles.data ?? []).length ? (
@@ -234,20 +308,20 @@ function AgentBrowserProfileSettings({ agent }: { agent: AgentDto }): JSX.Elemen
           ))}
         </Stack>
       ) : null}
-      {error ? <Alert severity="error" sx={{ mt: 1.5 }}>{String(error)}</Alert> : null}
+      <MutationErrorDetails title="Browser Settings Need Review" error={error}/>
+      <WorkspaceQueryError read={workspaceRead(`agent:${agent.id}`,"Browser Profiles",profiles)}/>
+      <WorkspaceQueryError read={workspaceRead(`agent:${agent.id}`,"Browser Preference",preference)}/>
       <Dialog
         open={Boolean(profileToDelete)}
         onClose={() => !deleteProfile.isPending && setProfileToDelete(undefined)}
         aria-labelledby="delete-browser-profile-title"
       >
         <DialogTitle id="delete-browser-profile-title">
-          Delete trusted profile “{profileToDelete?.name}”?
+          Delete Trusted Profile “{profileToDelete?.name}”?
         </DialogTitle>
         <DialogContent>
-          <DialogContentText>
-            This permanently deletes its cookies, logins, and site storage. Every Agent assigned to this profile will return to a disposable browser profile.
-          </DialogContentText>
-          {deleteProfile.error ? <Alert severity="error" sx={{ mt: 2 }}>{String(deleteProfile.error)}</Alert> : null}
+          <DialogContentText component="div"><Stack spacing={1}><Typography>Cookies, logins and site storage: permanently deleted</Typography><Typography>Assigned Agents: return to disposable browser profiles</Typography></Stack></DialogContentText>
+          <MutationErrorDetails title="Browser Profile Deletion Needs Review" error={deleteProfile.error}/>
         </DialogContent>
         <DialogActions>
           <Button disabled={deleteProfile.isPending} onClick={() => setProfileToDelete(undefined)}>Cancel</Button>
@@ -308,7 +382,6 @@ export function AgentSettingsPane({
   settingsModels: RuntimeModelChoice[];
   settingsEfforts: RuntimeEffortChoice[];
   runtimeSettingsDirty: boolean;
-  runtimeSettingsNotice?: string;
   runtimeSettingsPending: boolean;
   runtimeSettingsError?: unknown;
   recheckPending: boolean;
@@ -338,7 +411,7 @@ export function AgentSettingsPane({
   return (
     <Stack
       spacing={2}
-      aria-label="Agent settings"
+      aria-label="Agent Settings"
       className="ponderosa-scroll"
       sx={{ p: { xs: 1.5, sm: 2.5 }, pb: 4, overflowY: "auto", minHeight: 0 }}
     >
@@ -361,12 +434,12 @@ export function AgentSettingsPane({
           disabled={freshSessionPending}
           sx={{ alignSelf: { xs: "stretch", sm: "center" } }}
         >
-          {freshSessionPending ? "Scheduling fresh session…" : "Start Fresh Provider Session For Next Run"}
+          {freshSessionPending ? "Scheduling Fresh Session…" : "Start Fresh Provider Session For Next Run"}
         </Button>
       </Stack>
-      {freshSessionError ? <Alert severity="error">{freshSessionError}</Alert> : freshSessionNotice ? <Alert severity={freshSessionPending ? "info" : "success"} role="status">{freshSessionNotice}</Alert> : null}
+      {freshSessionError ? <MutationErrorDetails title="Provider Session Needs Review" error={freshSessionError}/> : freshSessionNotice ? <Alert severity={freshSessionPending ? "info" : "success"} role="status">{freshSessionNotice}</Alert> : null}
       <Paper variant="outlined" sx={{ p: 2 }}>
-        <Typography variant="subtitle1" fontWeight={800}>
+        <Typography variant="subtitle1" fontWeight={650}>
           Works In Chat
         </Typography>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
@@ -382,11 +455,15 @@ export function AgentSettingsPane({
           )}
         </Typography>
       </Paper>
+      <Paper variant="outlined" sx={{ p: 2 }}><AgentRoleSettings key={agent.id} agent={agent} /></Paper>
+      <NativeRuntimeControls key={agent.id} agentId={agent.id} savedModel={agent.model ?? agent.presetSnapshot?.model} />
       <AgentWorkingCopySettings agent={agent} />
+      <NativeHistoryControls agent={agent} onOpenAgent={onOpenAgent} />
+      <NativeTaskControls agent={agent} />
       <Paper variant="outlined" sx={{ p: 2 }}><ResourceNotificationSettings kind="agent" id={agent.id} /></Paper>
       <AgentBrowserProfileSettings agent={agent} />
       <Paper variant="outlined" sx={{ p: 2 }}>
-        <Typography variant="subtitle1" fontWeight={800}>
+        <Typography variant="subtitle1" fontWeight={650}>
           Organization And Automatic Child Management
         </Typography>
         <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
@@ -457,15 +534,11 @@ export function AgentSettingsPane({
           >
             Change Reporting Line
           </Button>
-          {managementPermissionsError ? (
-            <Alert severity="error">
-              {String(managementPermissionsError)}
-            </Alert>
-          ) : null}
+          <MutationErrorDetails title="Management Permissions Need Review" error={managementPermissionsError}/>
         </Stack>
       </Paper>
       <Paper variant="outlined" sx={{ p: 2 }}>
-        <Typography variant="subtitle1" fontWeight={800}>
+        <Typography variant="subtitle1" fontWeight={650}>
           Runtime Capabilities
         </Typography>
         <Tooltip

@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { Box, SwipeableDrawer } from "@mui/material";
 import type {
   ConversationDto,
@@ -10,6 +11,7 @@ import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
 import { type Route } from "./routing";
 
 interface MobileWorkspaceDrawerProps {
+  navigation: React.ComponentProps<typeof WorkspaceSidebar>["navigation"];
   open: boolean;
   projects: ProjectDto[];
   preferences: WorkspacePreferencesDto;
@@ -36,6 +38,7 @@ interface MobileWorkspaceDrawerProps {
 }
 
 export function MobileWorkspaceDrawer({
+  navigation,
   open,
   projects,
   preferences,
@@ -50,6 +53,10 @@ export function MobileWorkspaceDrawer({
   onSearch,
   onOpenNotifications,
 }: MobileWorkspaceDrawerProps): JSX.Element {
+  const [contentsMounted, setContentsMounted] = useState(open);
+  useEffect(() => {
+    if (open) setContentsMounted(true);
+  }, [open]);
   const close = () => onOpenChange(false);
   return (
     <SwipeableDrawer
@@ -61,7 +68,7 @@ export function MobileWorkspaceDrawer({
       // and keep native horizontal history gestures from claiming that strip.
       disableSwipeToOpen={false}
       swipeAreaWidth={24}
-      SwipeAreaProps={{ style: { touchAction: "pan-y" } }}
+      SwipeAreaProps={{ style: { touchAction: "pan-y" }, onTouchStart: () => setContentsMounted(true) }}
       hysteresis={0.25}
       ModalProps={{ disableRestoreFocus: true }}
       PaperProps={{
@@ -74,8 +81,9 @@ export function MobileWorkspaceDrawer({
         },
       }}
     >
-      <Box sx={{ position: "relative", height: "100%", minHeight: 0 }}>
+      {(open || contentsMounted) && <Box sx={{ position: "relative", height: "100%", minHeight: 0 }}>
         <WorkspaceSidebar
+          navigation={navigation}
           drawer
           projects={projects}
           preferences={preferences}
@@ -109,7 +117,7 @@ export function MobileWorkspaceDrawer({
           }}
           onDismiss={close}
         />
-      </Box>
+      </Box>}
     </SwipeableDrawer>
   );
 }

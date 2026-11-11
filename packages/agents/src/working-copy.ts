@@ -4,6 +4,8 @@ import type {
   ProjectDto,
 } from "@ponderosa/core";
 
+import { adoptStoredWorkingCopyGitFailure, safeStoredWorkingCopy } from "./working-copy-failure.js";
+
 export interface ResolvedAgentWorkingCopy {
   id: string;
   mode: AgentWorkingCopyDto["mode"];
@@ -17,10 +19,11 @@ export class AgentWorkingCopyUnavailableError extends Error {
 
   constructor(
     readonly workingCopy: AgentWorkingCopyDto,
-    message = workingCopy.failure ?? "This Agent's working folder is unavailable.",
+    message = safeStoredWorkingCopy(workingCopy).failure ?? "This Agent's working folder is unavailable.",
   ) {
     super(message);
     this.name = "AgentWorkingCopyUnavailableError";
+    if (message === safeStoredWorkingCopy(workingCopy).failure) adoptStoredWorkingCopyGitFailure(this, message, workingCopy);
   }
 }
 
@@ -57,6 +60,7 @@ export function resolveAgentWorkingCopy(
     if (
       workingCopy.id !== `shared:${project.id}` ||
       workingCopy.rootPath !== project.hostPath ||
+      workingCopy.repositoryRoot !== undefined ||
       workingCopy.branch !== undefined ||
       workingCopy.baseHead !== undefined ||
       workingCopy.branchOwned !== undefined ||
@@ -76,6 +80,7 @@ export function resolveAgentWorkingCopy(
     };
   }
   if (!workingCopy.id.startsWith("copy:") || !workingCopy.rootPath || !workingCopy.branch ||
+      (workingCopy.repositoryRoot !== undefined && workingCopy.repositoryRoot !== workingCopy.rootPath) ||
       workingCopy.branchOwned !== true || workingCopy.branchCreationIntent !== undefined ||
       workingCopy.branchCreationReceipt !== undefined ||
       workingCopy.cleanupReceipt !== undefined) {

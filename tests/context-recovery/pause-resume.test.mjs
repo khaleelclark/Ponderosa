@@ -1,0 +1,637 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {createHash,randomUUID} from 'node:crypto';
+import {ownedChroma} from '../memory/portability-fixture.mjs';
+import {CAPABILITY_IDS} from '../../packages/core/dist/index.js';
+import {projectPauseCheckpointForProvider} from '../../apps/server/dist/routes/agent-run-preparation.js';
+import {withFixture,until} from '../shared/fixture.mjs';
+import {AgentStore,CoordinationV3Store,CapabilityPolicyStore} from '../../packages/agents/dist/index.js';
+import {createActiveAccessRevocation} from '../../apps/server/dist/active-access-revocation.js';
+
+test('pause checkpoint projects obsolete tool definitions without changing durable evidence or task text',()=>{
+ const definitions=[{name:'old-tool',description:'historical tool definition'}];
+ const manifest=JSON.stringify({sources:[{kind:'human',ref:'source-request'}],normalRuntimeContract:{contractHash:'original-contract',dynamicTools:definitions}});
+ const original=JSON.stringify({sourceRunId:'source-run',priorInputSelection:'Exact submitted same-session inputs',priorInputs:[{execution_id:'source-run',provider_prompt:'Finish the entire original objective',prompt_hash:'original-prompt',source_manifest_json:manifest}],uncertainEffects:'Inspect before retry'});
+ const projected=JSON.parse(projectPauseCheckpointForProvider(original)),input=projected.priorInputs[0],visible=JSON.parse(input.source_manifest_json);
+ assert.equal(input.provider_prompt,'Finish the entire original objective');
+ assert.equal(input.prompt_hash,'original-prompt');
+ assert.equal(input.source_manifest_original_sha256,createHash('sha256').update(manifest).digest('hex'));
+ assert.deepEqual(visible.sources,[{kind:'human',ref:'source-request'}]);
+ assert.equal(visible.normalRuntimeContract.contractHash,'original-contract');
+ assert.equal(visible.normalRuntimeContract.dynamicTools,undefined);
+ assert.deepEqual(visible.normalRuntimeContract.dynamicToolsReference,{count:1,sha256:createHash('sha256').update(JSON.stringify(definitions)).digest('hex'),executionId:'source-run'});
+ assert.equal(projected.uncertainEffects,'Inspect before retry');
+ assert.match(projected.priorInputSelection,/tool definitions.*referenced rather than submitted/);
+ assert.equal(JSON.parse(original).priorInputs[0].source_manifest_json,manifest,'caller retains the exact stored bytes');
+});
+
+for(const stage of ['active','requested refresh','handoff','replacement'])test(`human pause/resume preserves exact work during ${stage}`,{timeout:30000},async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Pause lifecycle'),agent=await f.createIdleAgent(chat,'Paused worker');
+  const manager=await f.createIdleAgent(chat,'Requester'),managerSession=await f.hold(manager.id);
+  f.plans.set(agent.id,[{hold:true}]);
+  f.ok(await f.tool(managerSession,'ponderosa_coordinate',{recipientAgentId:agent.id,text:'Preserve the original tracked task; marker pause-original'}));
+  let session=await until(()=>f.sessions.get(agent.id),'source session');
+  if(stage!=='active'){
+   session.events.push({type:'context_usage',providerSessionId:session.engineAgentId,providerSessionGeneration:session.engineAgentId,usedTokens:190000,windowTokens:200000});
+   await until(()=>store.sqlite.prepare("SELECT 1 FROM context_rollovers WHERE agent_id=? AND state='requested'").get(agent.id),'requested refresh');
+  }
+  if(stage==='handoff'||stage==='replacement'){
+   f.plans.set(agent.id,stage==='handoff'?[{hold:true}]:[{output:false,run:async s=>{s.events.push({type:'text',delta:'Continue unfinished tracked task, retaining the exact requester and canonical pending instructions. No external actions completed.'});}},{hold:true}]);
+   session.finish();
+   await until(()=>f.turns.filter(x=>x.agentId===agent.id).length===(stage==='handoff'?2:3),'target rollover stage');
+   session=f.sessions.get(agent.id);
+  }
+  const coord=new CoordinationV3Store(store.sqlite),run=coord.activeAgentRun(agent.id),before=f.turns.filter(x=>x.agentId===agent.id).length;
+  const attached=store.sqlite.prepare('SELECT activation_id FROM scheduler_run_activations WHERE run_id=? ORDER BY activation_id').all(run.id);
+  const request=store.sqlite.prepare('SELECT id,state FROM coordination_requests WHERE recipient_agent_id=?').get(agent.id);
+  const packet=store.sqlite.prepare('SELECT prompt_hash,system_prompt_hash,source_manifest_json,provider_prompt FROM provider_inputs WHERE scheduler_run_id=?').get(run.id);
+  assert.equal((await f.api('POST',`/api/agents/${agent.id}/pause`,{targetRunId:randomUUID(),idempotencyKey:randomUUID()})).status,409);
+  const key=randomUUID(),paused=f.ok(await f.api('POST',`/api/agents/${agent.id}/pause`,{targetRunId:run.id,idempotencyKey:key}));
+  assert.ok(paused.pauseId);
+  const durableCheckpoint=store.sqlite.prepare('SELECT checkpoint_json FROM agent_run_pauses WHERE id=?').get(paused.pauseId).checkpoint_json;
+  assert.equal(f.ok(await f.api('POST',`/api/agents/${agent.id}/pause`,{targetRunId:run.id,idempotencyKey:key})).pauseId,paused.pauseId);
+  assert.equal((await f.api('POST',`/api/agents/${agent.id}/pause`,{targetRunId:randomUUID(),idempotencyKey:key})).status,409);
+  const late=await f.tool(session,'ponderosa_message',{intent:'direct_to_user',text:'Forbidden paused publication'});assert.notEqual(late.status,200);
+  await until(()=>!session.isAlive(),'paused process drains');
+  await until(()=>store.sqlite.prepare("SELECT 1 FROM provider_operation_outbox WHERE idempotency_key=? AND state='completed'").get('pause:'+paused.pauseId),'confirmed cleanup');
+  assert.equal(coord.activeAgentRun(agent.id),undefined);
+  assert.equal((await f.api('POST',`/api/agents/${agent.id}/provider-commands`,{name:'compact'})).status,409,'native commands cannot bypass the human hold');
+  assert.equal(coord.ownsRun(run.id,run.fencingToken),false);
+  assert.equal(store.sqlite.prepare('SELECT state FROM coordination_requests WHERE id=?').get(request.id).state,request.state);
+  assert.deepEqual(store.sqlite.prepare('SELECT activation_id FROM scheduler_run_activations WHERE run_id=? ORDER BY activation_id').all(run.id),attached);
+  assert.ok((await f.detail(agent.id)).coordinationV3.pause);
+  await f.send(agent.id,'Queued while paused remains future work',{activeRunDelivery:'queue'});
+  assert.equal(f.turns.filter(x=>x.agentId===agent.id).length,before);
+  if(stage==='active'){
+   await f.reopen();
+   assert.ok((await f.detail(agent.id)).coordinationV3.pause,'Pause survives full server restart');
+   assert.equal(f.turns.filter(x=>x.agentId===agent.id).length,before);
+  }
+  f.plans.set(agent.id,[{hold:true}]);
+  const resumeKey=randomUUID();
+  f.ok(await f.api('POST',`/api/agents/${agent.id}/resume`,{pauseId:paused.pauseId,idempotencyKey:resumeKey}));
+  f.ok(await f.api('POST',`/api/agents/${agent.id}/resume`,{pauseId:paused.pauseId,idempotencyKey:resumeKey}));
+  await until(()=>f.turns.filter(x=>x.agentId===agent.id).length===before+1,'one resumed turn');
+  const resumed=new CoordinationV3Store(store.sqlite).activeAgentRun(agent.id);
+  assert.notEqual(resumed.id,run.id,'Recovery has a fresh execution identity');
+  const recovery=store.sqlite.prepare('SELECT pause_id,run_id,state FROM agent_pause_recoveries WHERE pause_id=?').get(paused.pauseId);
+  assert.equal(recovery.run_id,resumed.id);assert.equal(recovery.pause_id,paused.pauseId);assert.equal(recovery.state,'accepted');
+  assert.equal(store.sqlite.prepare('SELECT status FROM scheduler_runs WHERE id=?').get(run.id).status,'cancelled');assert.ok(resumed.fencingToken>run.fencingToken);
+  assert.equal(store.sqlite.prepare('SELECT state FROM coordination_requests WHERE id=?').get(request.id).state,request.state);
+  const turn=f.turns.filter(x=>x.agentId===agent.id).at(-1);
+  assert.deepEqual(store.sqlite.prepare('SELECT prompt_hash,system_prompt_hash,source_manifest_json,provider_prompt FROM provider_inputs WHERE scheduler_run_id=?').get(run.id),packet,'original packet remains immutable');
+  assert.equal(store.sqlite.prepare('SELECT checkpoint_json FROM agent_run_pauses WHERE id=?').get(paused.pauseId).checkpoint_json,durableCheckpoint,'original checkpoint remains byte-for-byte exact');
+  if(stage==='active'){
+   const recoveredPacket=store.sqlite.prepare('SELECT provider_prompt,source_manifest_json FROM provider_inputs WHERE scheduler_run_id=?').get(resumed.id);
+   assert.match(recoveredPacket.provider_prompt,/dynamicToolsReference/,'recovery references obsolete definitions instead of resubmitting them');
+   assert.match(recoveredPacket.provider_prompt,/pause-original/,'the original tracked objective survives recovery');
+   const recoveredManifest=JSON.parse(recoveredPacket.source_manifest_json);
+   assert.ok(recoveredManifest.normalRuntimeContract.dynamicTools.length>0,'current runtime tools remain available');
+   const entry=recoveredManifest.sources.find(source=>source.kind==='pause_checkpoint');
+   assert.equal(entry.hash,createHash('sha256').update(projectPauseCheckpointForProvider(durableCheckpoint)).digest('hex'),'ledger hashes delivered checkpoint bytes');
+   assert.equal(entry.sourceHash,createHash('sha256').update(durableCheckpoint).digest('hex'),'ledger retains the exact source checkpoint hash');
+   assert.equal(entry.projection,'pause_historical_tools_reference_v1');
+  }
+  if(stage==='replacement')assert.deepEqual(store.sqlite.prepare('SELECT prompt_hash,system_prompt_hash,source_manifest_json,provider_prompt FROM provider_inputs WHERE scheduler_run_id=?').get(resumed.id),packet,'replacement recovery preserves exact saved packet hashes');
+  if(stage!=='replacement')assert.match(JSON.stringify(turn),/INTERRUPTED EXECUTION CHECKPOINT/);
+  assert.doesNotMatch(JSON.stringify(turn),/Queued while paused remains future work/);
+  assert.equal((await f.detail(agent.id)).messages.filter(x=>x.text==='Forbidden paused publication').length,0);
+  assert.equal(store.sqlite.prepare("SELECT count(*) AS n FROM agent_run_pauses WHERE agent_id=?").get(agent.id).n,1);
+  let completionSession=f.sessions.get(agent.id);
+  if(stage==='handoff'){
+   f.plans.set(agent.id,[{hold:true}]);
+   completionSession.events.push({type:'text',delta:'Continue the original tracked task on its exact requester route. Interrupted execution has no confirmed external actions; inspect uncertain effects before retry. Preserve canonical pending instructions.'});
+   completionSession.finish();
+   await until(()=>f.turns.filter(x=>x.agentId===agent.id).length===before+2,'one handoff continuation');
+   completionSession=f.sessions.get(agent.id);
+  }
+  f.ok(await f.tool(completionSession,'ponderosa_update_request',{text:'Original paused task completed on its exact route'}));
+  f.plans.set(agent.id,[{hold:true}]);
+  completionSession.finish();
+  await until(()=>store.sqlite.prepare('SELECT state FROM coordination_requests WHERE id=?').get(request.id).state==='completed','original Request completed');
+  const updated=store.sqlite.prepare('SELECT requester_agent_id,recipient_agent_id FROM coordination_requests WHERE id=?').get(request.id);
+  assert.equal(updated.requester_agent_id,manager.id);assert.equal(updated.recipient_agent_id,agent.id);
+  assert.equal(store.sqlite.prepare('SELECT count(*) AS n FROM agent_pause_recoveries WHERE pause_id=?').get(paused.pauseId).n,1);
+  await until(()=>f.turns.some(x=>x.agentId===agent.id&&JSON.stringify(x).includes('Queued while paused remains future work')),'queued input runs only after recovered task');
+ },{storeFactory:dataDir=>(store=new AgentStore(dataDir))});
+});
+
+async function pauseHeld(f,store,agent,session){
+ const coord=new CoordinationV3Store(store.sqlite),run=coord.activeAgentRun(agent.id);
+ const pause=f.ok(await f.api('POST',`/api/agents/${agent.id}/pause`,{targetRunId:run.id,idempotencyKey:randomUUID()}));
+ await until(()=>!session.isAlive(),'pause process exit');
+ await until(()=>store.sqlite.prepare("SELECT 1 FROM provider_operation_outbox WHERE idempotency_key=? AND state='completed'").get('pause:'+pause.pauseId),'pause cleanup');
+ return {coord,run,pause};
+}
+
+for(const failure of ['provider input commit','working folder admission'])test(`recovery retains work and immutable receipts on ${failure} rejection`,{timeout:30000},async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Recovery rejection'),agent=await f.createIdleAgent(chat,'Worker');
+  const session=await f.hold(agent.id),{coord,pause}=await pauseHeld(f,store,agent,session);
+  const roots=coord.requiredReplyObligationsForRun(store.sqlite.prepare('SELECT run_id FROM agent_run_pauses WHERE id=?').get(pause.pauseId).run_id);
+  const before=f.turns.filter(x=>x.agentId===agent.id).length;
+  if(failure==='provider input commit')store.sqlite.exec("CREATE TRIGGER controlled_recovery_reject BEFORE INSERT ON provider_inputs BEGIN SELECT RAISE(ABORT,'controlled recovery input rejection'); END");
+  // The second case fails before any durable provider claim through the actual working-copy validator.
+  const originalWorkingCopy=store.getAgent(agent.id).workingCopy;
+  if(failure==='working folder admission')store.sqlite.prepare("UPDATE agents SET working_copy_json=? WHERE id=?").run(JSON.stringify({...originalWorkingCopy,rootPath:'/nonexistent/controlled-pause-working-folder'}),agent.id);
+  const key=randomUUID();f.ok(await f.api('POST',`/api/agents/${agent.id}/resume`,{pauseId:pause.pauseId,idempotencyKey:key}));
+  await until(()=>store.sqlite.prepare("SELECT 1 FROM agent_run_pauses WHERE id=? AND state='paused' AND last_error IS NOT NULL").get(pause.pauseId),'durable rejection');
+  assert.equal(f.turns.filter(x=>x.agentId===agent.id).length,before,'no rejected provider execution');
+  let detail=await f.detail(agent.id);assert.ok(detail.coordinationV3.pause.error);
+  const attempt=store.sqlite.prepare('SELECT * FROM agent_pause_recoveries WHERE pause_id=?').get(pause.pauseId);
+  assert.equal(attempt.state,'rejected');
+  for(const root of roots){const moved=coord.requiredReplyObligationsForRun(attempt.run_id).find(x=>x.sourceActivationId===root.sourceActivationId);assert.ok(moved);assert.notEqual(moved.state,'failed');}
+  f.ok(await f.api('POST',`/api/agents/${agent.id}/resume`,{pauseId:pause.pauseId,idempotencyKey:key}));
+  assert.equal(store.sqlite.prepare('SELECT count(*) AS n FROM agent_pause_recoveries WHERE pause_id=?').get(pause.pauseId).n,1,'same key does not create another attempt');
+  if(failure==='provider input commit')store.sqlite.exec('DROP TRIGGER controlled_recovery_reject');
+  else store.sqlite.prepare('UPDATE agents SET working_copy_json=? WHERE id=?').run(JSON.stringify(originalWorkingCopy),agent.id);
+  await until(()=>!store.sqlite.prepare("SELECT 1 FROM provider_operation_outbox WHERE run_id=? AND state<>'completed'").get(attempt.run_id),'rejected attempt cleanup');
+  f.plans.set(agent.id,[{hold:true}]);f.ok(await f.api('POST',`/api/agents/${agent.id}/resume`,{pauseId:pause.pauseId,idempotencyKey:randomUUID()}));
+  await until(()=>f.turns.filter(x=>x.agentId===agent.id).length===before+1,'explicit corrected retry');
+  const current=coord.activeAgentRun(agent.id);assert.notEqual(current.id,attempt.run_id);
+  const newRoots=coord.requiredReplyObligationsForRun(current.id);assert.equal(newRoots.length,roots.length);
+  for(const root of roots)assert.deepEqual(newRoots.find(x=>x.sourceActivationId===root.sourceActivationId).replyAuthority,root.replyAuthority);
+ },{storeFactory:dataDir=>(store=new AgentStore(dataDir))});
+});
+
+test('submitted recovery failure retains uncertainty and cannot automatically retry',{timeout:30000},async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Unknown recovery'),agent=await f.createIdleAgent(chat,'Worker');
+  const session=await f.hold(agent.id),{coord,pause}=await pauseHeld(f,store,agent,session);
+  f.plans.set(agent.id,[{hold:true}]);f.ok(await f.api('POST',`/api/agents/${agent.id}/resume`,{pauseId:pause.pauseId,idempotencyKey:randomUUID()}));
+  await until(()=>coord.activeAgentRun(agent.id),'recovery active');
+  const run=coord.activeAgentRun(agent.id);
+  await until(()=>store.sqlite.prepare("SELECT 1 FROM agent_pause_recoveries WHERE run_id=? AND state='accepted'").get(run.id),'provider accepted');
+  coord.failRun({runId:run.id,fencingToken:run.fencingToken,workerId:store.sqlite.prepare('SELECT lease_owner FROM scheduler_runs WHERE id=?').get(run.id).lease_owner,sameRunResumable:false,error:'controlled post-submission failure'});
+  assert.equal(store.sqlite.prepare('SELECT state FROM agent_pause_recoveries WHERE run_id=?').get(run.id).state,'outcome_unknown');
+  assert.equal((await f.detail(agent.id)).coordinationV3.pause.state,'paused');
+  assert.equal((await f.api('POST',`/api/agents/${agent.id}/resume`,{pauseId:pause.pauseId,idempotencyKey:randomUUID()})).status,409);
+  assert.equal(store.sqlite.prepare('SELECT count(*) AS n FROM agent_pause_recoveries WHERE pause_id=?').get(pause.pauseId).n,1);
+ },{storeFactory:dataDir=>(store=new AgentStore(dataDir))});
+});
+
+for(const phase of ['queued recovery','accepted recovery'])test(`Stop supersedes ${phase} and every resume key`,{timeout:30000},async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Stop recovery'),agent=await f.createIdleAgent(chat,'Worker');
+  const session=await f.hold(agent.id),{coord,run,pause}=await pauseHeld(f,store,agent,session);
+  const key=randomUUID();
+  if(phase==='queued recovery'){
+   coord.resumeAgentRun({agentId:agent.id,pauseId:pause.pauseId,idempotencyKey:key});
+   assert.equal(coord.cancelAgentRun({agentId:agent.id,expectedRunId:run.id,idempotencyKey:randomUUID()}).cancelled,true);
+  }else{
+   f.plans.set(agent.id,[{hold:true}]);f.ok(await f.api('POST',`/api/agents/${agent.id}/resume`,{pauseId:pause.pauseId,idempotencyKey:key}));
+   await until(()=>store.sqlite.prepare("SELECT 1 FROM agent_pause_recoveries WHERE pause_id=? AND state='accepted'").get(pause.pauseId),'recovery accepted');
+   const resumed=coord.activeAgentRun(agent.id);
+   assert.equal(coord.cancelAgentRun({agentId:agent.id,expectedRunId:resumed.id,idempotencyKey:randomUUID()}).cancelled,true);
+   assert.equal(coord.ownsRun(resumed.id,resumed.fencingToken),false);
+  }
+  assert.equal(store.sqlite.prepare('SELECT state FROM agent_run_pauses WHERE id=?').get(pause.pauseId).state,'stopped');
+  assert.equal((await f.api('POST',`/api/agents/${agent.id}/resume`,{pauseId:pause.pauseId,idempotencyKey:key})).status,409);
+  assert.equal(store.sqlite.prepare("SELECT count(*) AS n FROM agent_pause_recoveries WHERE pause_id=? AND state<>'stopped'").get(pause.pauseId).n,0);
+ },{storeFactory:dataDir=>(store=new AgentStore(dataDir))});
+});
+
+test('normal admission skips an excluded oldest recovery and preserves queue isolation',{timeout:30000},async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Recovery fairness'),a=await f.createIdleAgent(chat,'A'),b=await f.createIdleAgent(chat,'B');
+  const sa=await f.hold(a.id),pa=await pauseHeld(f,store,a,sa),sb=await f.hold(b.id),pb=await pauseHeld(f,store,b,sb);
+  const coord=pa.coord;
+  await f.send(b.id,'Private future queue marker',{activeRunDelivery:'queue'});
+  coord.resumeAgentRun({agentId:a.id,pauseId:pa.pause.pauseId,idempotencyKey:randomUUID()});
+  coord.resumeAgentRun({agentId:b.id,pauseId:pb.pause.pauseId,idempotencyKey:randomUUID()});
+  const lease=coord.leaseNextRun({workerId:'controlled-fairness',excludedAgentIds:[a.id]});
+  assert.equal(lease.agentId,b.id);assert.equal(lease.activations.length,1);assert.doesNotMatch(JSON.stringify(lease),/Private future queue marker/);
+  assert.notEqual(lease.runId,pb.run.id);
+  assert.equal(store.sqlite.prepare('SELECT state FROM agent_run_pauses WHERE id=?').get(pb.pause.pauseId).state,'resume_requested','leasing does not release the hold');
+ },{storeFactory:dataDir=>(store=new AgentStore(dataDir))});
+});
+
+test('satisfied reply roots remain satisfied through cold recovery',{timeout:30000},async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Satisfied roots'),agent=await f.createIdleAgent(chat,'Worker'),session=await f.hold(agent.id);
+  f.ok(await f.tool(session,'ponderosa_message',{text:'Already satisfied canonical reply'}));
+  const {coord,run,pause}=await pauseHeld(f,store,agent,session),old=coord.requiredReplyObligationsForRun(run.id);
+  assert.ok(old.some(x=>x.state==='satisfied'));
+  f.plans.set(agent.id,[{hold:true}]);f.ok(await f.api('POST',`/api/agents/${agent.id}/resume`,{pauseId:pause.pauseId,idempotencyKey:randomUUID()}));
+  await until(()=>store.sqlite.prepare("SELECT 1 FROM agent_pause_recoveries WHERE pause_id=? AND state='accepted'").get(pause.pauseId),'accepted recovery');
+  const resumed=coord.activeAgentRun(agent.id),roots=coord.requiredReplyObligationsForRun(resumed.id);
+  for(const root of old.filter(x=>x.state==='satisfied')){const moved=roots.find(x=>x.sourceActivationId===root.sourceActivationId);assert.equal(moved.state,'satisfied');assert.equal(moved.satisfiedCommunicationId,root.satisfiedCommunicationId);}
+ },{storeFactory:dataDir=>(store=new AgentStore(dataDir))});
+});
+
+test('interrupted effects and submitted steering remain uncertain evidence, never replay activations',{timeout:30000},async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Effect evidence'),agent=await f.createIdleAgent(chat,'Worker'),session=await f.hold(agent.id);
+  const coord=new CoordinationV3Store(store.sqlite),source=coord.activeAgentRun(agent.id);
+  const {appendFile,readFile}=await import('node:fs/promises');
+  const effectPath=f.root+'/controlled-effect.txt';await appendFile(effectPath,'one-effect-before-pause\n');
+  session.events.push({type:'tool_call',id:'controlled-effect',name:'controlled_effect',input:{marker:'one-effect-before-pause'}});
+  session.events.push({type:'tool_result',id:'controlled-effect',output:'one-effect-before-pause completed'});
+  await until(()=>store.sqlite.prepare("SELECT 1 FROM events WHERE agent_id=? AND payload_json LIKE '%one-effect-before-pause%'").get(agent.id),'effect audit');
+  const uncertainId=randomUUID(),now=new Date().toISOString();
+  store.sqlite.prepare(`INSERT INTO scheduler_prompt_injections(id,run_id,kind,sequence,state,prompt_hash,activation_ids_json,created_at,updated_at)
+    VALUES(?,?,'steer',99,'submitted','controlled','[]',?,?)`).run(uncertainId,source.id,now,now);
+  const {pause}=await pauseHeld(f,store,agent,session);
+  assert.equal(store.sqlite.prepare('SELECT state FROM scheduler_prompt_injections WHERE id=?').get(uncertainId).state,'outcome_unknown');
+  assert.equal(JSON.parse(store.sqlite.prepare('SELECT injection_snapshot_json FROM agent_run_pauses WHERE id=?').get(pause.pauseId).injection_snapshot_json).find(x=>x.id===uncertainId).state,'submitted');
+  f.plans.set(agent.id,[{hold:true}]);f.ok(await f.api('POST',`/api/agents/${agent.id}/resume`,{pauseId:pause.pauseId,idempotencyKey:randomUUID()}));
+  await until(()=>store.sqlite.prepare("SELECT 1 FROM agent_pause_recoveries WHERE pause_id=? AND state='accepted'").get(pause.pauseId),'recovery accepted');
+  const turn=f.turns.filter(x=>x.agentId===agent.id).at(-1);
+  assert.match(JSON.stringify(turn),/one-effect-before-pause/);assert.match(JSON.stringify(turn),/Inspect durable outputs and external state before any retry/);
+  assert.equal((await readFile(effectPath,'utf8')).trim().split('\n').length,1);
+  const newRun=coord.activeAgentRun(agent.id);
+  assert.equal(store.sqlite.prepare(`SELECT count(*) AS n FROM scheduler_run_activations original JOIN scheduler_run_activations replacement ON replacement.activation_id=original.activation_id WHERE original.run_id=? AND replacement.run_id=?`).get(source.id,newRun.id).n,0,'original activations are never re-executed');
+ },{storeFactory:dataDir=>(store=new AgentStore(dataDir))});
+});
+
+test('restart rejects an abandoned pre-submission recovery without settling original work',{timeout:30000},async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Restart recovery'),agent=await f.createIdleAgent(chat,'Worker'),session=await f.hold(agent.id);
+  const {coord,run,pause}=await pauseHeld(f,store,agent,session),key=randomUUID();
+  const checkpoint=store.sqlite.prepare('SELECT checkpoint_json FROM agent_run_pauses WHERE id=?').get(pause.pauseId).checkpoint_json;
+  coord.resumeAgentRun({agentId:agent.id,pauseId:pause.pauseId,idempotencyKey:key});
+  const lease=coord.leaseNextRun({workerId:'controlled-abandoned-owner'});assert.equal(lease.agentId,agent.id);
+  await f.reopen();
+  const recovered=new CoordinationV3Store(store.sqlite),attempt=store.sqlite.prepare('SELECT * FROM agent_pause_recoveries WHERE run_id=?').get(lease.runId);
+  assert.equal(attempt.state,'rejected');assert.equal((await f.detail(agent.id)).coordinationV3.pause.state,'paused');
+  assert.equal(store.sqlite.prepare('SELECT checkpoint_json FROM agent_run_pauses WHERE id=?').get(pause.pauseId).checkpoint_json,checkpoint);
+  assert.equal(store.sqlite.prepare('SELECT status FROM scheduler_runs WHERE id=?').get(run.id).status,'cancelled');
+  f.ok(await f.api('POST',`/api/agents/${agent.id}/resume`,{pauseId:pause.pauseId,idempotencyKey:key}));
+  assert.equal(store.sqlite.prepare('SELECT count(*) AS n FROM agent_pause_recoveries WHERE pause_id=?').get(pause.pauseId).n,1);
+  assert.equal(recovered.activeAgentRun(agent.id),undefined);
+ },{storeFactory:dataDir=>(store=new AgentStore(dataDir))});
+});
+
+test('unconfirmed pause cleanup blocks resume and remains visible after restart',{timeout:30000},async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Cleanup recovery'),agent=await f.createIdleAgent(chat,'Worker'),session=await f.hold(agent.id);
+  const {pause}=await pauseHeld(f,store,agent,session);
+  store.sqlite.prepare("UPDATE provider_operation_outbox SET state='failed',available_at=? WHERE idempotency_key=?").run('9999-01-01T00:00:00.000Z','pause:'+pause.pauseId);
+  assert.equal((await f.api('POST',`/api/agents/${agent.id}/resume`,{pauseId:pause.pauseId,idempotencyKey:randomUUID()})).status,409);
+  await f.reopen();
+  assert.equal((await f.detail(agent.id)).coordinationV3.pause.state,'paused');
+  assert.equal(store.sqlite.prepare('SELECT count(*) AS n FROM agent_pause_recoveries WHERE pause_id=?').get(pause.pauseId).n,0);
+  assert.equal((await f.api('POST',`/api/agents/${agent.id}/resume`,{pauseId:pause.pauseId,idempotencyKey:randomUUID()})).status,409);
+ },{storeFactory:dataDir=>(store=new AgentStore(dataDir))});
+});
+
+import {mkdtempSync,renameSync,rmSync} from 'node:fs';
+import {createRequire} from 'node:module';
+import {initializePredecessorSchema} from '../../packages/agents/dist/db.js';
+import {tmpdir} from 'node:os';
+import path from 'node:path';
+
+const require=createRequire(new URL('../../packages/agents/package.json',import.meta.url));
+const Database=require('better-sqlite3');
+const predecessorVersion={'0029':'0029_assistant_workspace.sql','0028':'0028_capability_policy_history.sql','0027':'0027_schedule_work_lookup.sql'};
+
+for(const shape of ['0029','0028','0027','foreign table','partial pause schema'])test(`pause migration admits only exact supported predecessor: ${shape}`,async()=>{
+ const root=mkdtempSync(path.join(tmpdir(),'ponderosa-pause-schema-')),data=path.join(root,'data');let store;
+ try{
+  store=new AgentStore(data);
+  if(shape==='foreign table')store.sqlite.exec('CREATE TABLE unauthorized_schema_change(id TEXT)');
+  else if(shape==='partial pause schema')store.sqlite.exec('DROP TABLE agent_pause_recoveries');
+  else {
+   // Reconstruct the real additive predecessor, rather than dropping two
+   // tables from a later schema which still contains migrations after 0030.
+   const older=new Database(':memory:');
+   try {
+    initializePredecessorSchema(older,predecessorVersion[shape]);
+    older.exec(store.sqlite.prepare("SELECT sql FROM sqlite_master WHERE name='_state_generation'").get().sql);
+    const generation=store.sqlite.prepare('SELECT singleton,state_epoch,generation_id,schema_contract FROM _state_generation').get();
+    older.prepare('INSERT INTO _state_generation VALUES (?,?,?,?)').run(generation.singleton,generation.state_epoch,generation.generation_id,generation.schema_contract);
+    await older.backup(path.join(root,'predecessor.db'));
+   } finally {older.close();}
+  }
+  store.close();store=undefined;
+  if(predecessorVersion[shape]){
+   // Keep the task-owned original outside the admitted data root.
+   renameSync(path.join(data,'ponderosa.db'),path.join(root,'original-current.db'));
+   renameSync(path.join(root,'predecessor.db'),path.join(data,'ponderosa.db'));
+  }
+  if(shape==='foreign table'||shape==='partial pause schema')assert.throws(()=>new AgentStore(data),/unsupported|schema|admission|incomplete/i);
+  else {store=new AgentStore(data);assert.ok(store.sqlite.prepare("SELECT 1 FROM sqlite_master WHERE name='agent_pause_recoveries'").get());}
+ }finally{store?.close();rmSync(root,{recursive:true,force:true});}
+});
+
+for(const rejection of ['resource deferral','scope unavailable'])test(`normal ${rejection} keeps the exact recovery held`,{timeout:30000},async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Admission hold'),agent=await f.createIdleAgent(chat,'Worker'),session=await f.hold(agent.id);
+  const {coord,pause}=await pauseHeld(f,store,agent,session),key=randomUUID();
+  coord.resumeAgentRun({agentId:agent.id,pauseId:pause.pauseId,idempotencyKey:key});
+  const attempt=store.sqlite.prepare('SELECT * FROM agent_pause_recoveries WHERE pause_id=?').get(pause.pauseId);
+  if(rejection==='resource deferral'){
+   const lease=coord.leaseNextRun({workerId:'controlled-deferral'});assert.equal(lease.agentId,agent.id);
+   coord.deferUninjectedRun(lease.runId,lease.fencingToken);
+  }else{
+   store.sqlite.prepare('UPDATE agent_activations SET scope_key=? WHERE id=?').run('conversation:unavailable-controlled-scope',attempt.activation_id);
+   assert.equal(coord.leaseNextRun({workerId:'controlled-scope'}),undefined);
+  }
+  assert.equal(store.sqlite.prepare('SELECT state FROM agent_pause_recoveries WHERE activation_id=?').get(attempt.activation_id).state,'rejected');
+  assert.equal((await f.detail(agent.id)).coordinationV3.pause.state,'paused');
+  coord.resumeAgentRun({agentId:agent.id,pauseId:pause.pauseId,idempotencyKey:key});
+  assert.equal(store.sqlite.prepare('SELECT count(*) AS n FROM agent_pause_recoveries WHERE pause_id=?').get(pause.pauseId).n,1);
+  assert.equal((await f.api('POST',`/api/agents/${agent.id}/compact`,{})).status,409);
+ },{storeFactory:dataDir=>(store=new AgentStore(dataDir))});
+});
+
+test('pausing a recovered execution preserves lineage without recursively nesting provider packets',{timeout:30000},async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Repeated pause'),agent=await f.createIdleAgent(chat,'Worker'),initial=await f.hold(agent.id);
+  const first=await pauseHeld(f,store,agent,initial);let pause=first.pause;
+  const originalRoots=first.coord.requiredReplyObligationsForRun(first.run.id);
+  for(let round=0;round<3;round++){
+   f.plans.set(agent.id,[{hold:true}]);f.ok(await f.api('POST',`/api/agents/${agent.id}/resume`,{pauseId:pause.pauseId,idempotencyKey:randomUUID()}));
+   await until(()=>store.sqlite.prepare("SELECT 1 FROM agent_pause_recoveries WHERE pause_id=? AND state='accepted'").get(pause.pauseId),'repeated recovery accepted');
+   const current=first.coord.activeAgentRun(agent.id),roots=first.coord.requiredReplyObligationsForRun(current.id);
+   for(const original of originalRoots)assert.deepEqual(roots.find(x=>x.sourceActivationId===original.sourceActivationId).replyAuthority,original.replyAuthority);
+   const packet=store.getProviderInput(current.id,true).exactPrompt;
+   assert.equal(packet.split('INTERRUPTED EXECUTION CHECKPOINT').length-1,1,'old recovery prompts are not recursively replayed');
+   if(round<2)pause=(await pauseHeld(f,store,agent,f.sessions.get(agent.id))).pause;
+  }
+ },{storeFactory:dataDir=>(store=new AgentStore(dataDir))});
+});
+
+for(const boundary of ['handoff_committed','session_retiring','continuation_ready'])for(const action of ['resume','restart','stop','packet retry','claim retry','packet restart','claim restart','packet stop','claim stop','packet unknown'])
+test(`pause at ${boundary} preserves committed continuation on ${action}`,{timeout:30000},async t=>{
+ let store,pause,agentId,handoffRun,frozen,packet,attached;
+ const method={handoff_committed:'commitContextRolloverHandoff',session_retiring:'beginContextRolloverRetirement',continuation_ready:'prepareContextRolloverContinuation'}[boundary];
+ const original=CoordinationV3Store.prototype[method];
+ const snapshot=()=>{
+  const row=store.sqlite.prepare(`SELECT handoff_event_id,recent_tail_event_ids_json,recent_tail_hashes_json,source_activation_ids_json FROM context_rollovers WHERE agent_id=?`).get(agentId);
+  return {row,handoff:store.continuationHandoffForRollover(agentId,row.handoff_event_id)};
+ };
+ CoordinationV3Store.prototype[method]=function(...args){
+  const result=original.apply(this,args);
+  if(!pause&&result.agentId===agentId){
+   handoffRun=store.sqlite.prepare("SELECT id FROM scheduler_runs WHERE agent_id=? AND status='running' ORDER BY rowid DESC LIMIT 1").get(agentId).id;
+   frozen=snapshot();packet=store.sqlite.prepare('SELECT * FROM provider_inputs WHERE scheduler_run_id=?').get(handoffRun);
+   attached=store.sqlite.prepare('SELECT activation_id FROM scheduler_run_activations WHERE run_id=?').all(handoffRun);
+   pause=this.pauseAgentRun({agentId,runId:handoffRun,idempotencyKey:randomUUID()});
+  }
+  return result;
+ };
+ try {await withFixture(t,async f=>{
+  const chat=await f.createChat('Committed handoff boundary'),agent=await f.createIdleAgent(chat,'Worker');agentId=agent.id;
+  const manager=await f.createIdleAgent(chat,'Requester'),ms=await f.hold(manager.id);
+  f.plans.set(agent.id,[{hold:true}]);
+  f.ok(await f.tool(ms,'ponderosa_coordinate',{recipientAgentId:agent.id,text:'Tracked original task must retain requester'}));
+  const request=store.sqlite.prepare('SELECT id FROM coordination_requests WHERE recipient_agent_id=?').get(agent.id);
+  const session=await until(()=>f.sessions.get(agent.id),'source');
+  if(/^(packet|claim) /.test(action)){
+   await f.send(agent.id,'Acknowledge this completed human check, then keep the original tracked task');
+   const steer=await until(()=>f.steers.find(steer=>steer.agentId===agent.id),'human steering accepted');
+   f.ok(await f.tool(session,'ponderosa_message',{intent:'direct_to_user',text:'Human check acknowledged; tracked task continues',steeringInjectionId:steer.input.clientMessageId}));
+   const current=new CoordinationV3Store(store.sqlite).activeAgentRun(agent.id);
+   assert.ok(new CoordinationV3Store(store.sqlite).requiredReplyObligationsForRun(current.id).some(root=>root.state==='satisfied'));
+   await f.send(agent.id,'Keep this second human reply pending with the original tracked task');
+   await until(()=>new CoordinationV3Store(store.sqlite).requiredReplyObligationsForRun(current.id).some(root=>root.state==='pending'),'second pending human root');
+  }
+  session.events.push({type:'context_usage',providerSessionId:session.engineAgentId,providerSessionGeneration:session.engineAgentId,usedTokens:190000,windowTokens:200000});
+  await until(()=>store.sqlite.prepare("SELECT 1 FROM context_rollovers WHERE agent_id=? AND state='requested'").get(agent.id),'requested');
+  f.plans.set(agent.id,[{output:false,run:async s=>{s.events.push({type:'text',delta:'Continue unfinished task and preserve canonical reply authority. No external actions were completed. Inspect uncertain effects before retry.'});}}]);
+  session.finish();await until(()=>pause,'boundary pause');
+  await until(()=>store.sqlite.prepare("SELECT 1 FROM provider_operation_outbox WHERE idempotency_key=? AND state='completed'").get('pause:'+pause.pauseId),'cleanup');
+  assert.equal(store.sqlite.prepare('SELECT phase FROM agent_run_pauses WHERE id=?').get(pause.pauseId).phase,'continuation');
+  assert.deepEqual(snapshot(),frozen);
+  assert.deepEqual(store.sqlite.prepare('SELECT * FROM provider_inputs WHERE scheduler_run_id=?').get(handoffRun),packet);
+  const before=f.turns.filter(x=>x.agentId===agent.id).length;
+  await f.send(agent.id,'Unrelated queued boundary input',{activeRunDelivery:'queue'});
+  if(action==='restart')await f.reopen();
+  assert.equal(f.turns.filter(x=>x.agentId===agent.id).length,before,'hold excludes pending continuation and unrelated work');
+  let coord=new CoordinationV3Store(store.sqlite);
+  let rejectedPacket,rejectedRoots;
+  const rejectsPacket=action.startsWith('packet '),rejectsClaim=action.startsWith('claim ');
+  if(rejectsPacket||rejectsClaim){
+   const originalCommit=CoordinationV3Store.prototype.recordProviderInputAndCommitContextRolloverReplacement;
+   let injected=false;
+   if(rejectsPacket)CoordinationV3Store.prototype.recordProviderInputAndCommitContextRolloverReplacement=function(input){
+    const result=originalCommit.call(this,input);
+    if(!injected&&input.agentId===agent.id){injected=true;throw new Error('Controlled rejection after canonical packet commit');}
+    return result;
+   };
+   if(rejectsClaim)store.sqlite.exec(`CREATE TRIGGER controlled_claim_rejection BEFORE INSERT ON events
+     WHEN NEW.agent_id='${agent.id}' AND NEW.type='agent_lifecycle' AND json_extract(NEW.payload_json,'$.status')='running'
+     BEGIN SELECT RAISE(ABORT,'Controlled audit rejection before server claim'); END`);
+   const rejectedKey=randomUUID();
+   try{
+    f.ok(await f.api('POST',`/api/agents/${agent.id}/resume`,{pauseId:pause.pauseId,idempotencyKey:rejectedKey}));
+    await until(()=>store.sqlite.prepare("SELECT 1 FROM agent_run_pauses WHERE id=? AND state='paused' AND last_error IS NOT NULL").get(pause.pauseId),'committed packet rejected');
+   }finally{
+    CoordinationV3Store.prototype.recordProviderInputAndCommitContextRolloverReplacement=originalCommit;
+    if(rejectsClaim)store.sqlite.exec('DROP TRIGGER controlled_claim_rejection');
+   }
+   const rejected=store.sqlite.prepare('SELECT * FROM agent_pause_recoveries WHERE pause_id=?').get(pause.pauseId);
+   assert.equal(rejected.state,'rejected');
+   rejectedRoots=coord.requiredReplyObligationsForRun(rejected.run_id);
+   assert.ok(rejectedRoots.some(root=>root.state==='pending'));
+   assert.ok(rejectedRoots.some(root=>root.state==='satisfied'));
+   assert.equal(f.turns.filter(x=>x.agentId===agent.id).length,before,'rejected attempt never submitted');
+   assert.equal(store.sqlite.prepare("SELECT count(*) AS n FROM scheduler_prompt_injections WHERE run_id=? AND state IN ('submitted','acknowledged','outcome_unknown')").get(rejected.run_id).n,0);
+   const rollover=store.sqlite.prepare('SELECT state,replacement_run_id FROM context_rollovers WHERE agent_id=?').get(agent.id);
+   assert.deepEqual(rollover,{state:'failed',replacement_run_id:rejected.run_id});
+   rejectedPacket=store.sqlite.prepare('SELECT prompt_hash,system_prompt_hash,source_manifest_json,provider_prompt FROM provider_inputs WHERE scheduler_run_id=?').get(rejected.run_id);
+   assert.ok(rejectedPacket);
+   await until(()=>!store.sqlite.prepare("SELECT 1 FROM provider_operation_outbox WHERE run_id=? AND state<>'completed'").get(rejected.run_id),'rejected candidate cleanup');
+   if(rejectsClaim)await f.reopen(); // Repair the injected audit projection failure before another public command.
+   f.ok(await f.api('POST',`/api/agents/${agent.id}/resume`,{pauseId:pause.pauseId,idempotencyKey:rejectedKey}));
+   assert.deepEqual(store.sqlite.prepare('SELECT * FROM agent_pause_recoveries WHERE pause_id=?').get(pause.pauseId),rejected,'rejected receipt remains immutable');
+   if(action.endsWith('restart'))await f.reopen();
+   assert.deepEqual(snapshot(),frozen);
+   coord=new CoordinationV3Store(store.sqlite);
+  }
+  if(action==='stop'||action.endsWith(' stop')){
+
+   coord.cancelAgentRun({agentId:agent.id,expectedRunId:handoffRun,idempotencyKey:randomUUID()});
+   assert.equal(store.sqlite.prepare('SELECT state FROM agent_run_pauses WHERE id=?').get(pause.pauseId).state,'stopped');
+   assert.equal(store.sqlite.prepare('SELECT state FROM coordination_requests WHERE id=?').get(request.id).state,'outcome_unknown');
+   assert.equal(store.sqlite.prepare("SELECT count(*) AS n FROM required_reply_obligations WHERE agent_id=? AND state='pending'").get(agent.id).n,0);
+   assert.equal((await f.api('POST',`/api/agents/${agent.id}/resume`,{pauseId:pause.pauseId,idempotencyKey:randomUUID()})).status,409);
+   return;
+  }
+  f.plans.set(agent.id,[{hold:true}]);const key=randomUUID();
+  f.ok(await f.api('POST',`/api/agents/${agent.id}/resume`,{pauseId:pause.pauseId,idempotencyKey:key}));
+  f.ok(await f.api('POST',`/api/agents/${agent.id}/resume`,{pauseId:pause.pauseId,idempotencyKey:key}));
+  await until(()=>store.sqlite.prepare("SELECT 1 FROM agent_pause_recoveries WHERE pause_id=? AND state='accepted'").get(pause.pauseId),'accepted recovery');
+  const current=f.sessions.get(agent.id),run=coord.activeAgentRun(agent.id);
+  assert.notEqual(run.id,handoffRun);assert.equal(f.turns.filter(x=>x.agentId===agent.id).length,before+1);
+  assert.deepEqual(snapshot(),frozen,'handoff and frozen tail remain immutable');
+  assert.deepEqual(store.sqlite.prepare('SELECT activation_id FROM scheduler_run_activations WHERE run_id=?').all(handoffRun),attached);
+  const activations=coord.activationPayloads(agent.id,coord.activationIdsAttachedToRun(run.id,agent.id),run.id);
+  assert.deepEqual(activations.map(x=>x.kind),[rejectedPacket?'agent_pause_recovery':'context_rollover_continuation']);
+  if(rejectedPacket)assert.ok(coord.contextRolloverCandidateForRun(run.id,agent.id),'saved packet recovery has exact rollover authority');
+  assert.doesNotMatch(JSON.stringify(f.turns.filter(x=>x.agentId===agent.id).at(-1)),/Unrelated queued boundary input|INTERRUPTED EXECUTION CHECKPOINT/);
+  for(const root of rejectedRoots??[]){const moved=coord.requiredReplyObligationsForRun(run.id).find(candidate=>candidate.sourceActivationId===root.sourceActivationId);assert.ok(moved);assert.deepEqual(moved.replyAuthority,root.replyAuthority);assert.equal(moved.state,root.state==='satisfied'?'satisfied':'pending');if(root.state==='satisfied')assert.equal(moved.satisfiedCommunicationId,root.satisfiedCommunicationId);}
+  if(action.endsWith(' unknown')){
+   coord.failRun({runId:run.id,fencingToken:run.fencingToken,workerId:run.leaseOwner,sameRunResumable:false,retryable:false,error:'Controlled failure after acknowledged exact packet'});
+   assert.equal(store.sqlite.prepare('SELECT state FROM agent_pause_recoveries WHERE run_id=?').get(run.id).state,'outcome_unknown');
+   const count=store.sqlite.prepare('SELECT count(*) AS n FROM agent_pause_recoveries WHERE pause_id=?').get(pause.pauseId).n;
+   assert.equal((await f.api('POST',`/api/agents/${agent.id}/resume`,{pauseId:pause.pauseId,idempotencyKey:randomUUID()})).status,409);
+   assert.equal(store.sqlite.prepare('SELECT count(*) AS n FROM agent_pause_recoveries WHERE pause_id=?').get(pause.pauseId).n,count);
+   assert.deepEqual(store.sqlite.prepare('SELECT prompt_hash,system_prompt_hash,source_manifest_json,provider_prompt FROM provider_inputs WHERE scheduler_run_id=?').get(run.id),rejectedPacket);
+   coord.cancelAgentRun({agentId:agent.id,expectedRunId:run.id,idempotencyKey:randomUUID()});
+   assert.equal(store.sqlite.prepare('SELECT state FROM agent_run_pauses WHERE id=?').get(pause.pauseId).state,'stopped');
+   return;
+  }
+  f.ok(await f.tool(current,'ponderosa_update_request',{text:'Recovered original tracked task'}));
+  assert.deepEqual(store.sqlite.prepare('SELECT state,requester_agent_id,recipient_agent_id FROM coordination_requests WHERE id=?').get(request.id),{state:'completed',requester_agent_id:manager.id,recipient_agent_id:agent.id});
+  if(rejectedPacket)assert.deepEqual(store.sqlite.prepare('SELECT prompt_hash,system_prompt_hash,source_manifest_json,provider_prompt FROM provider_inputs WHERE scheduler_run_id=?').get(run.id),rejectedPacket,'corrected retry preserves exact rejected packet and manifest');
+  assert.equal(store.sqlite.prepare('SELECT count(*) AS n FROM agent_pause_recoveries WHERE pause_id=?').get(pause.pauseId).n,rejectedPacket?2:1);
+  assert.equal(store.sqlite.prepare("SELECT count(*) AS n FROM agent_activations WHERE agent_id=? AND kind IN ('context_rollover_continuation','agent_pause_recovery') AND state IN ('pending','retry_pending','attached')").get(agent.id).n,1);
+ },{storeFactory:dataDir=>(store=new AgentStore(dataDir))});}finally{CoordinationV3Store.prototype[method]=original;}
+});
+
+test('leased unsubmitted source pause retains its original Request and completes once',{timeout:30000},async t=>{
+ let store,agentId,pause,sourceRun;
+ const method='markRunStarted',original=CoordinationV3Store.prototype[method];
+ CoordinationV3Store.prototype[method]=function(runId,...args){
+  if(store.sqlite.prepare('SELECT agent_id FROM scheduler_runs WHERE id=?').get(runId)?.agent_id===agentId&&!pause){
+   sourceRun=runId;
+   assert.equal(store.sqlite.prepare('SELECT status FROM scheduler_runs WHERE id=?').get(sourceRun).status,'leased');
+   assert.equal(store.sqlite.prepare('SELECT count(*) AS n FROM provider_inputs WHERE scheduler_run_id=?').get(sourceRun).n,0);
+   pause=this.pauseAgentRun({agentId,runId:sourceRun,idempotencyKey:randomUUID()});
+  }
+  return original.call(this,runId,...args);
+ };
+ try{await withFixture(t,async f=>{
+  const chat=await f.createChat('Early source pause'),agent=await f.createIdleAgent(chat,'Worker');agentId=agent.id;
+  const requester=await f.createIdleAgent(chat,'Requester'),manager=await f.hold(requester.id);
+  f.ok(await f.tool(manager,'ponderosa_coordinate',{recipientAgentId:agent.id,text:'Early original task must complete only once'}));
+  await until(()=>pause,'early pause');
+  await until(()=>store.sqlite.prepare("SELECT 1 FROM provider_operation_outbox WHERE idempotency_key=? AND state='completed'").get('pause:'+pause.pauseId),'early cleanup');
+  const request=store.sqlite.prepare('SELECT id,state FROM coordination_requests WHERE recipient_agent_id=?').get(agent.id);
+  assert.equal(request.state,'open');
+  assert.equal(f.turns.filter(x=>x.agentId===agent.id).length,0,'unsubmitted source never ran');
+  assert.equal(store.sqlite.prepare('SELECT count(*) AS n FROM provider_inputs WHERE scheduler_run_id=?').get(sourceRun).n,0);
+  f.plans.set(agent.id,[{hold:true}]);
+  f.ok(await f.api('POST',`/api/agents/${agent.id}/resume`,{pauseId:pause.pauseId,idempotencyKey:randomUUID()}));
+  await until(()=>store.sqlite.prepare("SELECT 1 FROM agent_pause_recoveries WHERE pause_id=? AND state='accepted'").get(pause.pauseId),'early recovery accepted');
+  assert.equal(f.turns.filter(x=>x.agentId===agent.id).length,1);
+  f.ok(await f.tool(f.sessions.get(agent.id),'ponderosa_update_request',{text:'Original early task completed'}));
+  assert.deepEqual(store.sqlite.prepare('SELECT state,requester_agent_id FROM coordination_requests WHERE id=?').get(request.id),{state:'completed',requester_agent_id:requester.id});
+ },{storeFactory:dataDir=>(store=new AgentStore(dataDir))});}finally{CoordinationV3Store.prototype[method]=original;}
+});
+
+
+test('effective capability restriction fences only affected active Codex work and prevents checkpoint replay',{timeout:30000},async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const first=await f.createChat('Revoked access'),second=await f.createChat('Unaffected access');
+  const agent=await f.createIdleAgent(first,'Restricted worker'),other=await f.createIdleAgent(second,'Other worker');
+  await f.hold(agent.id);await f.hold(other.id);
+  const authority=new CoordinationV3Store(store.sqlite),source=authority.activeAgentRun(agent.id),otherRun=authority.activeAgentRun(other.id);
+  const packet=store.sqlite.prepare('SELECT provider_prompt,prompt_hash FROM provider_inputs WHERE scheduler_run_id=?').get(source.id);
+  const original=store.sqlite.prepare('SELECT activation_id FROM scheduler_run_activations WHERE run_id=?').all(source.id);
+  f.ok(await f.api('PUT',`/api/conversations/${first.id}/capabilities`,{revision:0,restrictedCapabilityIds:[]}));
+  assert.equal(authority.activeAgentRun(agent.id).id,source.id,'no effective change does not interrupt');
+  const stale=await f.api('PUT',`/api/conversations/${first.id}/capabilities`,{revision:0,restrictedCapabilityIds:[CAPABILITY_IDS.memoryRead]});
+  assert.equal(stale.status,409);assert.equal(authority.activeAgentRun(agent.id).id,source.id);
+  f.ok(await f.api('PUT',`/api/conversations/${first.id}/capabilities`,{revision:1,restrictedCapabilityIds:[CAPABILITY_IDS.memoryRead]}));
+  const pause=await until(()=>store.sqlite.prepare("SELECT * FROM agent_run_pauses WHERE agent_id=? AND state='paused'").get(agent.id),'policy pause');
+  assert.equal(pause.run_id,source.id);assert.equal(JSON.parse(pause.checkpoint_json).accessRevocationHold,true);
+  assert.match(pause.last_error,/access restriction was requested/);
+  const visiblePause=(await f.detail(agent.id)).coordinationV3.pause;
+  assert.equal(visiblePause.reason,'access_restricted');
+  assert.equal(visiblePause.id,pause.id);
+  assert.equal(visiblePause.checkpoint,undefined,'private checkpoint and prior provider inputs are not exposed');
+  assert.deepEqual(store.sqlite.prepare('SELECT provider_prompt,prompt_hash FROM provider_inputs WHERE scheduler_run_id=?').get(source.id),packet);
+  assert.deepEqual(store.sqlite.prepare('SELECT activation_id FROM scheduler_run_activations WHERE run_id=?').all(source.id),original);
+  assert.equal(store.sqlite.prepare('SELECT status FROM scheduler_runs WHERE id=?').get(source.id).status,'cancelled');
+  assert.equal(authority.activeAgentRun(other.id).id,otherRun.id);
+  await until(()=>store.sqlite.prepare("SELECT state FROM provider_operation_outbox WHERE idempotency_key=?").get('pause:'+pause.id)?.state==='completed','exact process drain');
+  const turns=f.turns.filter(item=>item.agentId===agent.id).length;
+  const refused=await f.api('POST',`/api/agents/${agent.id}/resume`,{pauseId:pause.id,idempotencyKey:randomUUID()});
+  assert.equal(refused.status,409);assert.match(refused.body.error,/access restriction/);
+  await f.reopen();
+  assert.equal(store.sqlite.prepare('SELECT state FROM agent_run_pauses WHERE id=?').get(pause.id).state,'paused');
+  const again=await f.api('POST',`/api/agents/${agent.id}/resume`,{pauseId:pause.id,idempotencyKey:randomUUID()});
+  assert.equal(again.status,409);assert.equal(f.turns.filter(item=>item.agentId===agent.id).length,turns);
+  assert.deepEqual(store.sqlite.prepare('SELECT provider_prompt,prompt_hash FROM provider_inputs WHERE scheduler_run_id=?').get(source.id),packet);
+ },{storeFactory:p=>(store=new AgentStore(p))});
+});
+
+test('global memory revocation holds only a Run with effective prior memory access',{timeout:90000},async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const first=await f.createChat('Memory access'),second=await f.createChat('Already restricted');
+  const agent=await f.createIdleAgent(first,'Memory worker'),other=await f.createIdleAgent(second,'Restricted worker');
+  f.ok(await f.api('PUT',`/api/local-memory/grants/${second.id}`,{readGlobal:true,expectedRevision:0}));
+  f.ok(await f.api('PUT',`/api/agents/${other.id}/capabilities`,{revision:0,restrictedCapabilityIds:[CAPABILITY_IDS.memoryRead]}));
+  await f.hold(agent.id);await f.hold(other.id);
+  const authority=new CoordinationV3Store(store.sqlite),source=authority.activeAgentRun(agent.id),otherRun=authority.activeAgentRun(other.id);
+  f.ok(await f.api('PUT',`/api/local-memory/grants/${first.id}`,{readGlobal:true,expectedRevision:0}));
+  assert.equal(authority.activeAgentRun(agent.id).id,source.id,'grant expansion does not interrupt');
+  const conflict=await f.api('PUT',`/api/local-memory/grants/${first.id}`,{readGlobal:false,expectedRevision:0});
+  assert.equal(conflict.status,409);assert.equal(authority.activeAgentRun(agent.id).id,source.id);
+  f.ok(await f.api('PUT',`/api/local-memory/grants/${second.id}`,{readGlobal:false,expectedRevision:1}));
+  assert.equal(authority.activeAgentRun(other.id).id,otherRun.id,'revocation cannot further restrict an already denied memory reader');
+  // Separate policy DB failure occurs after the canonical Run is fenced.
+  const policyDb=new Database(path.join(f.root,'memory-policy','host-policy.sqlite'));
+  try {
+   policyDb.exec("CREATE TRIGGER controlled_grant_write_failure BEFORE UPDATE ON local_memory_chat_grants BEGIN SELECT RAISE(ABORT,'controlled policy write failure'); END");
+   const failed=await f.api('PUT',`/api/local-memory/grants/${first.id}`,{readGlobal:false,expectedRevision:1});
+   assert.ok(failed.status>=400);assert.equal(f.ok(await f.api('GET',`/api/local-memory/grants/${first.id}`)).readGlobal,true);
+  } finally { policyDb.exec('DROP TRIGGER controlled_grant_write_failure');policyDb.close(); }
+  const pause=await until(()=>store.sqlite.prepare("SELECT * FROM agent_run_pauses WHERE agent_id=? AND state='paused'").get(agent.id),'memory policy pause');
+  assert.equal(pause.run_id,source.id);assert.equal(JSON.parse(pause.checkpoint_json).accessRevocationHold,true);
+  assert.match(pause.last_error,/access restriction was requested/);
+  f.ok(await f.api('PUT',`/api/local-memory/grants/${first.id}`,{readGlobal:false,expectedRevision:1}));
+  assert.equal(authority.activeAgentRun(other.id).id,otherRun.id);
+  await until(()=>store.sqlite.prepare("SELECT state FROM provider_operation_outbox WHERE idempotency_key=?").get('pause:'+pause.id)?.state==='completed','memory policy process drain');
+  const refused=await f.api('POST',`/api/agents/${agent.id}/resume`,{pauseId:pause.id,idempotencyKey:randomUUID()});
+  assert.equal(refused.status,409);assert.match(refused.body.error,/access restriction/);
+  assert.equal(f.ok(await f.api('GET',`/api/local-memory/grants/${first.id}`)).readGlobal,false);
+ },{storeFactory:p=>(store=new AgentStore(p)),localMemoryForRoot:async root=>({
+  chromaUrl:await ownedChroma(),collectionPrefix:'policy_'+randomUUID().replaceAll('-',''),
+  modelDir:process.env.PONDEROSA_TEST_MEMORY_MODEL_DIR,stateDirectory:path.join(root,'memory-policy'),provision:true,
+ })});
+});
+
+
+test('memory revocation selects the Run home Chat and notification failures do not change committed policy',t=>{
+ const root=mkdtempSync(path.join(tmpdir(),'access-revocation-owner-')),store=new AgentStore(root);
+ t.after(()=>{store.close();rmSync(root,{recursive:true,force:true})});
+ const project=store.createProject({label:'Home',hostPath:root,defaultEngine:'codex',chatOwned:true}),home=store.getConversation(project.lastConversationId);
+ const agent=store.createAgent(project.id,{conversationId:home.id,title:'Worker',engine:'codex'});
+ const run={runId:'source',v3SchedulerRunId:'source',runtimeEngineId:'codex',homeConversationId:home.id,conversationId:'different-routed-chat'};
+ const pauses=[],logs=[];
+ const context={store,coordinationV3:{pauseAgentRun:input=>{pauses.push(input)}},activeRuns:new Map([[agent.id,run]]),ownsRun:()=>true,
+  wakeScheduler:()=>{throw Error('controlled wake failure')},publishPause:()=>{throw Error('controlled publication failure')},logError:(_error,operation)=>logs.push(operation)};
+ const helper=createActiveAccessRevocation(context);
+ helper.beforeGlobalMemoryRevocation('different-routed-chat');
+ assert.equal(pauses.length,0,'a routing Chat alone does not grant global memory');
+ helper.beforeGlobalMemoryRevocation(home.id);
+ assert.equal(pauses.length,1);assert.equal(pauses[0].runId,'source');assert.equal(pauses[0].accessRevocationHold,true);
+ assert.deepEqual(logs,['wake scheduler','publish pause']);
+ const policies=new CapabilityPolicyStore(store.sqlite);
+ const committed=helper.policyChange(()=>policies.put({scopeKind:'agent',scopeId:agent.id,expectedRevision:0,restrictedCapabilityIds:[CAPABILITY_IDS.memoryRead]}));
+ assert.equal(committed.revision,1);assert.equal(policies.get('agent',agent.id).revision,1);
+ assert.equal(pauses.length,2);assert.deepEqual(logs,['wake scheduler','publish pause','wake scheduler','publish pause']);
+});
+
+
+for(const [label,restriction] of [['workflow-only','workflow.scripts'],['other-provider connector','connector:claude:other']])test(`unrelated ${label} restriction leaves an active Codex Run running`,{timeout:30000},async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Unrelated capability'),agent=await f.createIdleAgent(chat,'Worker');
+  await f.hold(agent.id);
+  const authority=new CoordinationV3Store(store.sqlite),run=authority.activeAgentRun(agent.id);
+  const input=store.sqlite.prepare('SELECT provider_prompt,prompt_hash FROM provider_inputs WHERE scheduler_run_id=?').get(run.id);
+  f.ok(await f.api('PUT',`/api/agents/${agent.id}/capabilities`,{revision:0,restrictedCapabilityIds:[restriction]}));
+  assert.equal(authority.activeAgentRun(agent.id)?.id,run.id);
+  assert.equal(store.sqlite.prepare("SELECT count(*) n FROM agent_run_pauses WHERE agent_id=? AND state IN ('paused','resume_requested')").get(agent.id).n,0);
+  assert.deepEqual(store.sqlite.prepare('SELECT provider_prompt,prompt_hash FROM provider_inputs WHERE scheduler_run_id=?').get(run.id),input);
+ },{storeFactory:p=>(store=new AgentStore(p))});
+});

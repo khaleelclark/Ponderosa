@@ -10,7 +10,7 @@ import { findChromiumExecutable, seedLegacyPwaProfile, qualifyPersistentPwaUpgra
 import { processIsAlive, validProcessId } from '../../packaging/qualification/process-state.mjs';
 
 const enabled = process.env.PONDEROSA_REGRESSION_INSTALLED_PWA === '1';
-test('check 109: an installed PWA replaces legacy cached assets and retains its authenticated current build after browser restart', {
+test('check 109: a persistent Chromium worker replaces legacy cached assets and retains its current trusted-network build after restart', {
   timeout: 180000,
   skip: !enabled ? 'Set PONDEROSA_REGRESSION_INSTALLED_PWA=1 and PONDEROSA_REGRESSION_BUNDLE to a disposable native bundle' : false,
 }, async t => {
@@ -45,24 +45,22 @@ test('check 109: an installed PWA replaces legacy cached assets and retains its 
     observedPid = state.pid;
     assert.equal(validProcessId(observedPid), true); assert.equal(processIsAlive(observedPid), true);
     const base = `http://127.0.0.1:${port}`;
-    const bootstrap = async () => {
-      const reply = await fetch(`${base}/api/launcher/bootstrap`, { method: 'POST', headers: { authorization: `Bearer ${state.controlToken}` } });
-      assert.equal(reply.ok, true, 'Owned launcher proof must create one browser bootstrap'); return (await reply.json()).token;
-    };
-    const exchange = await fetch(`${base}/api/launcher/session-exchange`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ token: await bootstrap() }) });
-    assert.equal(exchange.ok, true); const cookie = exchange.headers.get('set-cookie').split(';', 1)[0];
     // Browser-only qualification: no real provider probes, account changes or
     // normal user settings. Disable both providers in this fresh instance before
     // the actual application is opened by the maintained PWA helper.
-    const settings = await fetch(`${base}/api/workspace/preferences`, { method: 'PATCH', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ providerAvailability: { codex: false, claude: false } }) });
+    const settings = await fetch(`${base}/api/workspace/preferences`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ providerAvailability: { codex: false, claude: false } }) });
     assert.equal(settings.ok, true);
-    const enginesResponse = await fetch(`${base}/api/engines`, { headers: { cookie } });
+    const enginesResponse = await fetch(`${base}/api/engines`, {});
     assert.equal(enginesResponse.ok, true);
     assert.ok((await enginesResponse.json()).every(engine => engine.enabled === false), 'This browser-only fixture must not probe subscriptions');
-    const proof = await qualifyPersistentPwaUpgrade({ port, profileDir, webDist: path.join(installRoot, 'app/web/dist'), bootstrapUrl: `${base}/__ponderosa_bootstrap#${encodeURIComponent(await bootstrap())}`, browserExecutable, browserFactory });
+    const proof = await qualifyPersistentPwaUpgrade({ port, profileDir, webDist: path.join(installRoot, 'app/web/dist'), bootstrapUrl: `${base}/__ponderosa_bootstrap`, browserExecutable, browserFactory, expectedRevision: manifest.commit });
     assert.ok(proof.publicAssetCount > 0);
     assert.ok(proof.expectedAssets.length > 0);
-    t.diagnostic(`Native ${process.platform}/${process.arch} bundle ${manifest.commit}: legacy worker/cache retired; installed assets and HttpOnly session survived actual Chromium restart`);
+    assert.equal(proof.expectedRevision, manifest.commit);
+    assert.equal(proof.networkMode, "trusted_network");
+    assert.equal(proof.authenticationRequired, false);
+    assert.equal(proof.readinessHttpStatus, 503, "Both providers stay disabled; browser-only readiness honestly remains not_ready");
+    t.diagnostic(`Native ${process.platform}/${process.arch} bundle ${manifest.commit}: legacy worker/cache retired; current assets and uncached trusted-network API survived actual Chromium restart; no OS PWA installation claimed`);
     success = true;
   } finally {
     if (started) {

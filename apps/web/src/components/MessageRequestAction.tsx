@@ -32,22 +32,22 @@ export function MessageRequestAction({ projectId, conversationId, requests, reci
     </Tooltip>
     {open ? <Dialog open onClose={() => setOpen(false)} fullWidth maxWidth="md"
       aria-labelledby={titleId}
-      aria-label={recipients?.length ? "Message details" : linkedRequests.length === 1 ? "Request details" : "Request details for this message"}
+      aria-label={recipients?.length ? "Message Details" : linkedRequests.length === 1 ? "Request Details" : "Request Details For This Message"}
       onClick={event => event.stopPropagation()}
     >
       <DialogTitle id={`${titleId}-container`} sx={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <span id={titleId}>{recipients?.length ? "Message details" : "Request details"}</span>
-        <IconButton aria-label={recipients?.length ? "Close message details" : "Close request details"} onClick={() => setOpen(false)}><CloseIcon /></IconButton>
+        <IconButton aria-label={recipients?.length ? "Close Message Details" : "Close Request Details"} onClick={() => setOpen(false)}><CloseIcon /></IconButton>
       </DialogTitle>
       <DialogContent>
         <Stack spacing={1}>
           {recipients?.length ? <>
             <Typography variant="body2"><strong>Addressed to:</strong> {recipients.map(recipient => recipient.handle ? `#${recipient.handle}` : "Unavailable recipient").join(", ")}</Typography>
-            <Typography variant="body2"><strong>Human visibility:</strong> Eligible Team and participant Agent timelines. Visibility does not grant other Agents access to this message.</Typography>
+            <Typography variant="body2"><strong>Human visibility:</strong> Team and participant timelines; access is unchanged.</Typography>
             <Typography variant="body2"><strong>Delivery evidence:</strong> {linkedRequests.length
-              ? "Linked canonical Request and Join records are shown below. This visible copy is not a second delivery or evidence of leader resumption."
-              : receipts?.length ? "Recorded activation delivery statuses are shown below."
-                : "No linked Request or input evidence is available for this visible copy."} A visible handle does not establish delivery, reading, or understanding.</Typography>
+              ? "Linked Request and Join records."
+              : receipts?.length ? "Recorded delivery statuses."
+                : "No linked delivery evidence."}</Typography>
             {receipts?.map(receipt => <Typography key={receipt.activationId} variant="body2">
               {recipients.find(recipient => recipient.id === receipt.targetAgentId)?.handle
                 ? `#${recipients.find(recipient => recipient.id === receipt.targetAgentId)!.handle}` : "Recipient"}: {receipt.state.replaceAll("_", " ")}

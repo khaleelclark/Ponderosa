@@ -32,7 +32,7 @@ export interface ComposerRuntimeOption {
   group?: "Latest" | "Pinned";
 }
 
-function effortLabel(option?: ComposerRuntimeOption): string | undefined {
+export function effortLabel(option?: ComposerRuntimeOption): string | undefined {
   return option?.id === "xhigh" ? "Extra High" : option?.label.replace(/\b\p{L}/gu, letter => letter.toLocaleUpperCase());
 }
 
@@ -255,7 +255,7 @@ export function ComposerRuntimeSelector({
     }
   };
 
-  const optionList = section ? <MenuList autoFocusItem={!preserveEditorFocus.current} disablePadding aria-label={`${section} options`} sx={{ maxHeight: section === "model" ? "min(360px, calc(var(--ponderosa-app-viewport-block-size, 100dvh) - 180px))" : 240, overflowY: "auto", scrollbarWidth: "none", "&::-webkit-scrollbar": { display: "none" } }}>
+  const optionList = section ? <MenuList autoFocusItem={!preserveEditorFocus.current} disablePadding aria-label={section === "engine" ? "Engine Options" : section === "speed" ? "Speed Options" : "Model Options"} sx={{ maxHeight: section === "model" ? "min(360px, calc(var(--ponderosa-app-viewport-block-size, 100dvh) - 180px))" : 240, overflowY: "auto", scrollbarWidth: "none", "&::-webkit-scrollbar": { display: "none" } }}>
             {activeOptions.flatMap((option, optionIndex) => [
               ...(option.group && option.group !== activeOptions[optionIndex - 1]?.group ? [<ListSubheader key={option.group} disableSticky sx={{ bgcolor: "transparent", lineHeight: "30px" }}>{option.group}</ListSubheader>] : []),
               <MenuItem key={option.id} selected={option.id === activeValue} disabled={disabled || loading || option.disabled} onClick={() => choose(option.id)} sx={{ minHeight: 44, whiteSpace: "normal", gap: 1, borderRadius: 1.5 }}>
@@ -267,7 +267,8 @@ export function ComposerRuntimeSelector({
 
   return <>
     <ButtonBase
-      aria-label={`${scopeLabel ? `${scopeLabel}. ` : ""}Choose engine, model, reasoning, and speed`}
+      data-composer-runtime
+      aria-label={selectedModelLabel + " · " + selectedEffortLabel + (selectedSpeed && selectedSpeed.id !== "standard" ? " · " + selectedSpeed.label : "") + ". " + (scopeLabel ? scopeLabel + ". " : "") + "Choose engine, model, reasoning, and speed"}
       aria-haspopup="dialog"
       aria-controls={anchor ? menuId : undefined}
       aria-expanded={Boolean(anchor)}
@@ -294,8 +295,8 @@ export function ComposerRuntimeSelector({
         "&:focus-visible": { outline: "2px solid", outlineColor: "primary.main", outlineOffset: 2 },
       }}
     >
-      <SpeedOutlinedIcon sx={{ display: { xs: "block", sm: "none" } }} />
-      <Stack direction="row" spacing={0.6} sx={{ display: { xs: "none", sm: "flex" }, alignItems: "baseline", minWidth: 0 }}>
+      <SpeedOutlinedIcon data-runtime-icon sx={{ display: { xs: "block", sm: "none" } }} />
+      <Stack data-runtime-label direction="row" spacing={0.6} sx={{ display: { xs: "none", sm: "flex" }, alignItems: "baseline", minWidth: 0 }}>
         <Typography variant="body2" noWrap sx={{ fontWeight: 700 }}>{selectedModelLabel}</Typography>
         <Typography
           variant="body2"
@@ -329,7 +330,7 @@ export function ComposerRuntimeSelector({
           id={menuId}
           ref={focusPicker}
           role="dialog"
-          aria-label={scopeLabel ?? "Runtime settings"}
+          aria-label={scopeLabel ?? "Runtime Settings"}
           onPointerDown={keepKeyboard}
           onMouseDown={event => { if (preserveEditorFocus.current) event.preventDefault(); }}
           elevation={12}
@@ -357,7 +358,7 @@ export function ComposerRuntimeSelector({
             </Stack>
           </Tooltip> : null}
           {section === "model" ? <Box ref={focusPicker}>
-            <ButtonBase aria-label="Back to runtime settings" onClick={returnToRuntime}
+            <ButtonBase aria-label="Back To Runtime Settings" onClick={returnToRuntime}
               sx={{ display: "flex", justifyContent: "flex-start", alignItems: "center", width: "100%", minHeight: { xs: 44, sm: 34 }, "@media (pointer: coarse)": { minHeight: 44 }, px: 1.25, gap: 1, borderRadius: 1.5, "&:focus-visible": { outline: "2px solid", outlineColor: "primary.main" } }}>
               <ArrowBackIcon fontSize="small" /><Typography variant="body2" sx={{ fontWeight: 700 }}>Model</Typography>
             </ButtonBase>
@@ -384,7 +385,7 @@ export function ComposerRuntimeSelector({
               }}>{[0, 1, 2].map(i => <Box component="span" key={i} sx={{ top: 5 + i * 6, animationDelay: `${-350 * i}ms` }} />)}</Box> : null}
             </Box>
             <Slider
-              aria-label="Reasoning effort"
+              aria-label="Reasoning Effort"
               getAriaValueText={value => effortLabel(efforts[value]) ?? "Unavailable"}
               value={Math.max(0, index)} min={0} max={Math.max(1, efforts.length - 1)} step={1}
               marks={efforts.map((_option, value) => ({ value }))}
@@ -430,7 +431,7 @@ export function ComposerRuntimeSelector({
               <Typography noWrap sx={{ maxWidth: "100%", color: presentation.color, fontWeight: presentation.ultra ? 800 : 600, textShadow: presentation.ultra && theme.palette.mode === "dark" ? "0 0 13px #22e58a38" : "none" }}>{preview?.key === catalogKey ? effortLabel(efforts[index]) : selectedEffortLabel}</Typography>
               <Stack direction="row" alignItems="center" sx={{ maxWidth: "100%", minWidth: 0, color: "text.secondary" }}><Typography variant="body2" noWrap>{selectedModelLabel}</Typography><KeyboardArrowDownIcon sx={{ fontSize: 16, flexShrink: 0 }} /></Stack>
             </ButtonBase>
-            <Tooltip title="Reset to default" enterTouchDelay={0}><IconButton aria-label="Reset to default" disabled={disabled || loading || !models.length} onClick={() => { rememberPickerFocus(); setPreview(null); setSection(null); onReset(); }} sx={{ gridColumn: 3, gridRow: 1, width: 44, height: 44 }}><RestartAltIcon fontSize="small" /></IconButton></Tooltip>
+            <Tooltip title="Reset To Default" enterTouchDelay={0}><IconButton aria-label="Reset To Default" disabled={disabled || loading || !models.length} onClick={() => { rememberPickerFocus(); setPreview(null); setSection(null); onReset(); }} sx={{ gridColumn: 3, gridRow: 1, width: 44, height: 44 }}><RestartAltIcon fontSize="small" /></IconButton></Tooltip>
           </Box>
           {section !== "engine" ? optionList : null}
           </>}

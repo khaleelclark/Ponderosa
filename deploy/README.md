@@ -29,118 +29,35 @@ mv ~/.config/ponderosa/release.env.next ~/.config/ponderosa/release.env
 sudo systemctl enable --now ponderosa
 ```
 
-## Choose the network boundary explicitly
+## Network access
 
-Ponderosa defaults to `127.0.0.1:8787`. This is the recommended direct-host and
-authenticated-reverse-proxy boundary. A non-loopback listener fails startup
-unless one of these protections is configured:
+Ponderosa defaults to `127.0.0.1:8787`. Set `PONDEROSA_HOST` to the listener
+address you need, including a LAN address or wildcard. Network access and any
+external authentication are the user's responsibility. Ponderosa does not
+require operator tokens, proxy identities, browser sessions, or a particular VPN.
+Legacy token and trusted-network environment variables no longer gate requests.
+Provider sign-in and scoped Agent Run capabilities are unchanged.
 
-- Set `PONDEROSA_AUTH_TOKEN` to require `Authorization: Bearer …` on operator API
-  and application requests. Browser clients cannot safely store this shared
-  secret; use an authenticated reverse proxy that injects it, or use the token
-  only with a non-browser client. Never put it in SPA code or `localStorage`.
-- For an intentionally passwordless tailnet deployment, set
-  `PONDEROSA_TRUSTED_TAILNET=true` and bind `PONDEROSA_HOST` to one literal
-  Tailscale IPv4 address in `100.64.0.0/10` or IPv6 address in
-  `fd7a:115c:a1e0::/48`:
-
-  ```ini
-  Environment=PONDEROSA_HOST=100.100.101.102
-  Environment=PONDEROSA_TRUSTED_TAILNET=true
-  ```
-
-  Wildcard, DNS, ordinary LAN, and public addresses are rejected in this mode.
-  Every tailnet peer allowed to reach that address has full operator access,
-  including the ability to start host-authority Agents. Enforce Tailscale ACLs
-  accordingly.
-
-`GET /api/ready` reports the active `networkSecurity` posture without exposing
-credentials. The provider-status dialog shows the same posture and highlights
-the trusted-tailnet operator-access warning.
-
-When TLS terminates at a reverse proxy, set every browser-facing origin
-explicitly so Host and Origin validation cannot be widened by an incoming Host
-header:
+Browser-originated mutations still require a matching Host and an allowed origin.
+For a remote browser or reverse proxy, configure its exact browser-facing origin:
 
 ```ini
 Environment=PONDEROSA_OPERATOR_ORIGINS=https://ponderosa.example.com
 ```
 
-The proxy must authenticate the operator and inject the backend bearer token.
-Keep the backend loopback-only and deny direct access to it. `/api/health` and
-the redacted `/api/ready` are the only unauthenticated probes; detailed readiness
-is available at authenticated `/api/diagnostics/ready`.
+HTTP and HTTPS origins are supported. Cross-site browser API requests are refused.
+Requests without a browser Origin header need no operator credentials. Readiness
+reports `trusted_network`, the actual bind address, and no authentication requirement.
+Resource admission limits remain to protect server capacity; all operator requests
+share the same budget regardless of supplied identity headers.
 
-For an identity-aware front proxy that **cannot** inject the bearer itself,
-Ponderosa includes an optional, local Unix-socket bridge at
-`apps/server/dist/operator-auth-proxy.js`. This does not add an app sign-in or
-send a credential to the browser. The front proxy must overwrite a verified
-identity header and connect only to the bridge's mode-0600 socket; the bridge
-checks an exact identity allowlist, replaces any browser-supplied Authorization
-header with the backend bearer, and forwards to Ponderosa on loopback. The
-socket directory must be private to the service user. Do not expose the bridge
-on TCP or use a front proxy that merely preserves caller-supplied identity
-headers. This pattern is optional: a proxy that authenticates and injects the
-bearer itself needs no bridge.
-
-For example, with Tailscale Serve on Linux, use its documented identity header
-and Unix-socket target. `tailscale serve` removes caller-supplied identity
-headers before setting its own. Keep the exact Tailscale login allowlisted in
-both the bridge and Ponderosa, and apply matching tailnet grants. Set the
-Ponderosa backend to `127.0.0.1` with a high-entropy
-`PONDEROSA_AUTH_TOKEN`, `PONDEROSA_TRUSTED_REVERSE_PROXY=true`, the exact
-`PONDEROSA_OPERATOR_ORIGINS`, and `PONDEROSA_OPERATOR_IDENTITIES` as described
-above. The bridge may load the same restricted environment file as Ponderosa
-for `PONDEROSA_AUTH_TOKEN` and `PONDEROSA_OPERATOR_IDENTITIES`; set only:
-
-```ini
-PONDEROSA_PROXY_BACKEND_PORT=8787
-PONDEROSA_PROXY_PUBLIC_ORIGIN=https://ponderosa.example.ts.net
-PONDEROSA_PROXY_IDENTITY_HEADER=Tailscale-User-Login
-```
-
-Alternatively, supply `PONDEROSA_PROXY_BACKEND_TOKEN` and
-`PONDEROSA_PROXY_ALLOWED_IDENTITIES` from a separate mode-0600 service file.
-
-Run the bridge with a private socket path (the example
-`deploy/ponderosa-operator-auth-proxy.service` uses
-`/run/ponderosa-operator-proxy/operator.sock`), then point only the selected
-Serve HTTPS port at `unix:/run/ponderosa-operator-proxy/operator.sock`. The
-browser's normal bookmark now works after cookie expiration or clearing because
-every verified request receives backend authorization server-side. Local
-launcher installations need no bridge. Other self-hosted identity proxies can
-use their own verified header name; with bearer injection and exact origin
-configured, Ponderosa does not require Tailscale.
-The bridge restores the configured public Host before forwarding: some Unix
-socket front proxies change Host to `localhost`, which otherwise makes
-browser-originated writes fail Ponderosa's Host/Origin check. If the front
-proxy supplies `X-Forwarded-Host`, it must match the configured public origin.
-
-To require a second exact identity check inside Ponderosa, configure the
-trusted reverse-proxy identity allowlist as well as the backend bearer:
-
-```ini
-Environment=PONDEROSA_TRUSTED_REVERSE_PROXY=true
-Environment=PONDEROSA_OPERATOR_IDENTITIES=operator@example.com
-```
-
-The bridge forwards verified identity through the internal
-`x-ponderosa-operator-identity` header, stripping any client-supplied claim.
-A front proxy injecting the backend bearer directly must likewise overwrite
-(not append or preserve) this internal header with its authenticated identity.
-The upstream header used by the optional bridge remains configurable through
-`PONDEROSA_PROXY_IDENTITY_HEADER`; the Tailscale example above is unchanged.
-Configured identities are compared exactly after case normalization.
-Current production configuration requires a high-entropy
-`PONDEROSA_AUTH_TOKEN` alongside this identity declaration; the identity header
-alone is never sufficient. Readiness reports `reverse_proxy` rather than
-incorrectly claiming the effective deployment is loopback-only. Apply the least-privilege grant in
-`deploy/tailscale-grants.example.hujson` so only the named operator can reach
-the published port.
-
-Ponderosa is a **single-operator system**. A proxy, VPN, or shared bearer token
-admits the caller as that one operator; it does not create tenant or Project
-isolation. Do not grant mutually untrusted users access to the same deployment.
+The optional Unix-socket bridge at `apps/server/dist/operator-auth-proxy.js`
+retains its existing executable path for installed service definitions. It now
+forwards HTTP and browser upgrade traffic without authenticating identities or
+injecting a backend token. Configure `PONDEROSA_PROXY_SOCKET_PATH`,
+`PONDEROSA_PROXY_BACKEND_PORT`, and `PONDEROSA_PROXY_PUBLIC_ORIGIN`.
+The bridge sets the configured public Host so browser origin checks work through
+proxies that rewrite Host. Signal shutdown still drains its owned connections.
 
 ## Required Linux procfs capability
 

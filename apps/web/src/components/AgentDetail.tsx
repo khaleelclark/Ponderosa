@@ -1,3 +1,13 @@
+import {useMutationNotification} from "./MutationNotifications";
+import {productApiPath} from "../api/productScope";
+import {WorkspaceQueryError} from "./WorkspaceQueryError";
+import {workspaceRead} from "../workspaceAvailability";
+import {productWorkspacePath} from "../api/productScope";
+import {ConversationChromeContext} from './ConversationChromeContext';
+import {ImportedCommunications} from './ImportedCommunications';
+import { createClientId } from "../clientId";
+import {ResourceSettingsContext} from "./ResourceSettingsContext";
+import {useWorkspaceReadOnly} from "./WorkspaceReadOnlyContext";
 import { chatBrowserOwnerId } from "@ponderosa/core";
 import {
   Alert,
@@ -13,7 +23,7 @@ import type {
   ResponseFileActivityDto,
 } from "@ponderosa/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useContext, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import {
   AGENT_HISTORY_PAGE_SIZE,
@@ -23,11 +33,11 @@ import {
 } from "../agents";
 import {
   useAgent,
-  useNotifications,
   useProjects,
   useWorkspacePreferences,
 } from "../hooks/queries";
 import { useAgentStream } from "../hooks/useAgentStream";
+import { useReportWorkspaceRefresh } from "./WorkspaceRefreshContext";
 import { useWorkspaceConnection } from "./WorkspaceConnectionContext";
 import { agentIdForMentionHandle } from "../mentions";
 import { chatStateKey, readChatState, writeChatState } from "../chatState";
@@ -71,6 +81,7 @@ import { AgentDetailComposer } from "./AgentDetail.composer";
 import { AgentDetailPanels } from "./AgentDetail.panels";
 import { OutgoingMessageProvider } from "./chat/OutgoingMessage";
 import { reconcileQueuedMessages } from "./ConversationView.helpers";
+import { messageHiddenByQueue } from "./messageDeliveryReceipts";
 import { useAgentDetailAdministration } from "./useAgentDetailAdministration";
 import type { AgentDetailProps } from "./AgentDetail.types";
 import { AgentDetailDialogs } from "./AgentDetail.dialogs";
@@ -92,8 +103,10 @@ export function AgentDetail({
   focusTelemetry,
   technicalFocusId,
   initialView,
+  standalone=false,
   onViewChange,
   onOpenTechnicalDetails,
+  decisionReviewAction,
   engines,
   modelCatalogLoading,
   engineCapabilities,
@@ -116,9 +129,11 @@ export function AgentDetail({
   onDeleted,
   onAgentsDeleted,
 }: AgentDetailProps): JSX.Element {
+  const auditOnly=useWorkspaceReadOnly();
+  const settingsExtension=useContext(ResourceSettingsContext);
+  const assistantMessages=useContext(ConversationChromeContext)?.assistantAgentId===agentId;
   const queryClient = useQueryClient();
   const agentQuery = useAgent(agentId);
-  const notificationsQuery = useNotifications();
   const browserChatId = agentQuery.data?.agent.conversationId;
   const activeBrowsersQuery = useQuery({
     queryKey: queryKeys.agentBrowsers.agent(browserChatId ? chatBrowserOwnerId(browserChatId) : projectId, agentId),
@@ -135,6 +150,9 @@ export function AgentDetail({
   const focusedTelemetryRef = useRef<string>();
   const stream = useAgentStream(agentId, projectId);
   const workspaceConnection = useWorkspaceConnection();
+  useReportWorkspaceRefresh(stream.connectionStatus !== "live"
+    ? `${agentQuery.data?.agent.title ?? "This Agent"} live activity is reconnecting. Its last known status remains visible.` : undefined,
+    () => stream.retry?.());
   const agentConnectionStatus = workspaceConnection.status === "live"
     ? stream.connectionStatus
     : workspaceConnection.status;
@@ -146,6 +164,7 @@ export function AgentDetail({
       ? (saved as AgentTab)
       : "chat";
   });
+  const changeTab=(value:typeof tab)=>{if(onViewChange?.(value)!==false)setTab(value);};
   useEffect(() => setOlderTelemetryError(undefined), [tab]);
   const [model, setModel] = useState("");
   const [effort, setEffort] = useState("");
@@ -158,7 +177,6 @@ export function AgentDetail({
   const [settingsEngine, setSettingsEngine] = useState("");
   const [settingsModel, setSettingsModel] = useState("");
   const [settingsEffort, setSettingsEffort] = useState("");
-  const [runtimeSettingsNotice, setRuntimeSettingsNotice] = useState<string>();
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [duplicateOpen, setDuplicateOpen] = useState(false);
@@ -232,7 +250,6 @@ export function AgentDetail({
   } = useAgentPackageActions({
     agentId,
     title: detail?.agent.title,
-    onNotice: setQueuedMessageNotice,
   });
 
   useEffect(() => {
@@ -431,6 +448,7 @@ export function AgentDetail({
     steerQueuedMessage,
     submitAgentMessage,
   } = useAgentMessageController({
+    steeringOnly: assistantMessages,
     agentId,
     projectId: detail?.agent.projectId,
     engine,
@@ -451,12 +469,7 @@ export function AgentDetail({
       visibleQueuedMessages.map(message => message.messageId),
     );
     return (detail?.messages ?? []).filter(
-      message =>
-        !queuedCommunicationIds.has(message.id) &&
-        !(
-          message.communicationEventId &&
-          queuedCommunicationIds.has(message.communicationEventId)
-        ),
+      message => !messageHiddenByQueue(message, queuedCommunicationIds),
     );
   }, [detail?.messages, visibleQueuedMessages]);
 
@@ -522,10 +535,37 @@ export function AgentDetail({
   const status = projectedHealth?.status ?? projectedStatus ?? deriveAgentStatus(detail);
   const mcp = mcpPresentation(engineCapability?.mcpServers);
 
-  const { cancelRun, stopActiveRun } = useAgentRunCancellation(
+  const { cancelRun, stopActiveRun, commandPending, commandOwner, stopping } = useAgentRunCancellation(
     agentId,
-    runtimeActivity?.executionId,
+    runtimeActivity?.executionId ?? detail?.coordinationV3?.pause?.runId,
+    detail?.coordinationV3?.pause?.id,
   );
+  const pause=detail?.coordinationV3?.pause;
+  const notify=useMutationNotification();
+  const controlNamespace=productApiPath("/api/conversations");
+  const controlIdentity=JSON.stringify([controlNamespace,agentId,pause?"resume":"pause",pause?.id??runtimeActivity?.executionId]);
+  const controlEligibility=JSON.stringify([controlIdentity,pause?.state,pause?.reason]);
+  const currentControl=useRef<string|undefined>(controlEligibility);currentControl.current=controlEligibility;
+  useEffect(()=>{currentControl.current=controlEligibility;return()=>{currentControl.current=undefined;};},[controlEligibility]);
+  const controlRequest=useRef<{identity:string;idempotencyKey:string}>();
+  const pauseResume=useMutation({
+    mutationKey:["run-control",controlIdentity],
+    mutationFn:(target:{agentId:string;namespace:string;owner:string;identity:string;eligibility:string;action:'pause'|'resume';targetRunId?:string;pauseId?:string;idempotencyKey:string;feedbackKey:string})=>{
+      if(currentControl.current!==target.eligibility||productApiPath("/api/conversations")!==target.namespace)throw new Error("The active Run or pause changed before this action could be applied.");
+      return api.controlRun(target.agentId,target.action,{targetRunId:target.targetRunId,pauseId:target.pauseId,idempotencyKey:target.idempotencyKey});
+    },
+    onError:(error,target)=>notify({key:target.feedbackKey,incident:createClientId("control-feedback-"),severity:"error",message:"Run Control Needs Review",description:"Review the original Agent and Run before trying again.",details:error instanceof Error?error.message:String(error)}),
+    onSuccess:(_data,target)=>{if(controlRequest.current?.idempotencyKey===target.idempotencyKey)controlRequest.current=undefined;notify({key:target.feedbackKey,message:"",dismiss:true});},
+    onSettled:(_data,_error,target)=>{if(commandPending.current?.idempotencyKey===target.idempotencyKey)commandPending.current=undefined;void queryClient.invalidateQueries({queryKey:queryKeys.agents.detailPrefix(target.agentId)});void queryClient.invalidateQueries({queryKey:queryKeys.agents.healthAll});},
+  });
+  const pausePending=(pauseResume.isPending&&pauseResume.variables?.owner===commandOwner)||pause?.state==='resume_requested';
+  const controlPending=pausePending||stopping;
+  const onPauseResume=()=>{
+    if(commandPending.current?.owner===commandOwner||controlPending||currentControl.current!==controlEligibility||productApiPath("/api/conversations")!==controlNamespace||pause?.reason==='access_restricted'||(!pause&&!runtimeActivity?.executionId))return;
+    const idempotencyKey=controlRequest.current?.identity===controlIdentity?controlRequest.current.idempotencyKey:createClientId();
+    controlRequest.current={identity:controlIdentity,idempotencyKey};commandPending.current={owner:commandOwner,idempotencyKey};
+    pauseResume.mutate({agentId,namespace:controlNamespace,owner:commandOwner,identity:controlIdentity,eligibility:controlEligibility,action:pause?'resume':'pause',targetRunId:pause?undefined:runtimeActivity?.executionId,pauseId:pause?.id,idempotencyKey,feedbackKey:JSON.stringify([controlNamespace,agentId,"run-control",pause?.id??runtimeActivity?.executionId])});
+  };
   const recheckEngine = useMutation({
     mutationFn: (engineId: string) => api.recheckEngine(engineId),
     onSuccess: updated => {
@@ -550,7 +590,6 @@ export function AgentDetail({
     settingsEffort,
     onRenameClosed: () => setRenameOpen(false),
     onOrganizationClosed: () => setOrganizationOpen(false),
-    onRuntimeSettingsNotice: setRuntimeSettingsNotice,
   });
 
   const loadOlderCombinedTimeline = useCallback(async () => {
@@ -688,7 +727,7 @@ export function AgentDetail({
   if (agentQuery.isLoading) {
     return (
       <Box sx={{ p: 3 }} role="status" aria-live="polite">
-        <CircularProgress size={24} aria-label="Loading agent" />
+        <CircularProgress size={24} aria-label="Loading Agent" />
       </Box>
     );
   }
@@ -696,21 +735,7 @@ export function AgentDetail({
   if (agentQuery.isError && !agentQuery.data) {
     return (
       <Box sx={{ p: 2 }}>
-        <Alert
-          severity="error"
-          action={
-            <Button
-              color="inherit"
-              size="small"
-              onClick={() => void agentQuery.refetch()}
-            >
-              Retry
-            </Button>
-          }
-        >
-          This agent could not be loaded. Check the server connection and try
-          again.
-        </Alert>
+        <WorkspaceQueryError initial read={workspaceRead(`agent:${agentId}`,"Agent",agentQuery,false)}/>
       </Box>
     );
   }
@@ -727,7 +752,6 @@ export function AgentDetail({
   const hasOlderTelemetry = activeTelemetryStreams.some(
     stream => detail.telemetryHistory?.[stream]?.hasMore,
   );
-  const detailRefreshFailed = agentQuery.isError && agentQuery.data !== undefined;
 
   const models = selectedRuntime.models;
   const efforts = selectedRuntime.efforts;
@@ -841,9 +865,9 @@ export function AgentDetail({
   />;
 
   const openTechnicalDetails = (focusId?: string) => {
+    if(onOpenTechnicalDetails(focusId)===false)return;
     setAgentWorkFocus(focusId);
     setTab("technical");
-    onOpenTechnicalDetails(focusId);
   };
 
   const openActivityFile = (file: ResponseFileActivityDto) => {
@@ -852,7 +876,7 @@ export function AgentDetail({
     else onOpenReview(file.path, file.executionId);
   };
   const activeBrowser = activeBrowsersQuery.data?.find(session => session.agentId === agentId);
-  const settingsPane = (
+  const settingsPane = (<>
     <AgentDetailSettingsController
       agent={detail.agent}
       engines={engines}
@@ -864,7 +888,6 @@ export function AgentDetail({
       settingsModels={settingsModels}
       settingsEfforts={settingsEfforts}
       runtimeSettingsDirty={runtimeSettingsDirty}
-      runtimeSettingsNotice={runtimeSettingsNotice}
       runtimeSettingsPending={runtimeSaving}
       runtimeSettingsError={updateRuntimeSettings.error}
       recheckPending={recheckEngine.isPending}
@@ -880,7 +903,6 @@ export function AgentDetail({
       onSettingsEngine={setSettingsEngine}
       onSettingsModel={setSettingsModel}
       onSettingsEffort={setSettingsEffort}
-      onNotice={setRuntimeSettingsNotice}
       onSaveRuntimeSettings={() => updateRuntimeSettings.mutate(undefined)}
       onRecheckEngine={() => setRecheckEngineOpen(true)}
       onOpenMaster={onOpenMaster}
@@ -893,10 +915,11 @@ export function AgentDetail({
         setOrganizationOpen(true);
       }}
     />
-  );
+    {!auditOnly&&settingsExtension.render?.("agent",detail.agent.id)}
+  </>);
 
   return (
-    <OutgoingMessageProvider scope={agentId} profile={preferencesQuery.data?.profile}><Box
+    <OutgoingMessageProvider scope={agentId} draftScope={`agent:${agentId}`} profile={preferencesQuery.data?.profile}><Box data-assistant-messages={assistantMessages||undefined}
       sx={{
         width: "100%",
         maxWidth: "100%",
@@ -906,12 +929,11 @@ export function AgentDetail({
         minWidth: 0,
         overflow: "hidden",
         display: "grid",
-        gridTemplateRows: activeBrowser || detailRefreshFailed
-          ? "auto auto minmax(0, 1fr) auto"
-          : "auto minmax(0, 1fr) auto",
+        gridTemplateRows: `auto auto ${activeBrowser ? "auto " : ""}${pause?.reason === "access_restricted" ? "auto " : ""}minmax(0, 1fr) auto`,
       }}
     >
       <AgentDetailHeader
+        standalone={standalone}
         agent={detail.agent}
         projectLabel={project?.label}
         chats={headerChats}
@@ -924,9 +946,9 @@ export function AgentDetail({
         phaseEvidenceFresh={workspaceConnection.phaseEvidenceFresh}
         startedAt={status === "running" ? runtimeActivity?.startedAt : undefined}
         agentNameForId={agentNameForId}
-        running={running}
-        stopping={cancelRun.isPending}
-        tab={tab}
+        running={running||Boolean(pause)}
+        stopping={stopping}
+        tab={auditOnly&&['subagents','settings'].includes(tab)?'chat':tab}
         showSubagents={showSubagents}
         transcriptMarkdown={transcriptMarkdown}
         transcriptTitle={transcriptTitle}
@@ -934,9 +956,13 @@ export function AgentDetail({
         onOpenChat={onOpenMaster}
         onOpenAgent={onOpenAgent}
         onStop={stopActiveRun}
+        paused={Boolean(pause)}
+        accessRestricted={pause?.reason === "access_restricted"}
+        pausePending={controlPending}
+        onPauseResume={onPauseResume}
+
         onExportPackage={() => setExportOpen(true)}
         onDuplicate={conversations.length ? () => setDuplicateOpen(true) : undefined}
-        onNotice={setQueuedMessageNotice}
         onOpenTechnical={() => openTechnicalDetails()}
         onRename={() => {
           setRenameValue(detail.agent.title);
@@ -948,27 +974,17 @@ export function AgentDetail({
           setOrganizationOpen(true);
         }}
         onDelete={() => setDeleteOpen(true)}
-        onTabChange={value => {
-          setTab(value);
-          onViewChange?.(value);
-        }}
+        onTabChange={changeTab}
       />
 
-      {activeBrowser || detailRefreshFailed ? (
+      <Box><WorkspaceQueryError read={workspaceRead(`agent:${agentId}`,"Agent",agentQuery,detail.agent.id===agentId)}/></Box>
+      {activeBrowser ? (
         <Stack spacing={1} sx={{ mx: { xs: 1, sm: 2 }, mt: 1 }}>
-          {detailRefreshFailed ? (
-            <Alert
-              severity="warning"
-              action={<Button color="inherit" size="small" onClick={() => void agentQuery.refetch()}>Retry</Button>}
-            >
-              This Agent could not be refreshed. The last loaded details remain available.
-            </Alert>
-          ) : null}
           {activeBrowser ? (
             <Alert
               severity="info"
               role="region"
-              aria-label="Agent browser status"
+              aria-label="Agent Browser Status"
               action={
                 <Button color="inherit" size="small" onClick={() => onOpenBrowser(activeBrowser.runId)}>
                   View Browser
@@ -989,8 +1005,13 @@ export function AgentDetail({
         </Stack>
       ) : null}
 
+      {pause?.reason === "access_restricted" && <Alert severity="warning" sx={{ mx: { xs: 1, sm: 2 }, mt: 1 }}
+        action={<Stack direction="row" spacing={1}><Button color="inherit" size="small" onClick={() => changeTab("chat")}>View Chat</Button><Button color="inherit" size="small" onClick={() => openTechnicalDetails()}>View Work Log</Button></Stack>}>
+        Work is paused because an access restriction was requested. Resume is unavailable while earlier context and uncertain effects require review. Review the existing Chat and Work log.
+      </Alert>}
+
       <AgentDetailPanels
-        tab={tab}
+        tab={auditOnly&&['subagents','settings'].includes(tab)?'chat':tab}
         detail={detail}
         chatMessages={visibleChatMessages}
         agentId={agentId}
@@ -999,7 +1020,7 @@ export function AgentDetail({
         engines={engines}
         statusByAgentId={statusByAgentId}
         healthByAgentId={healthByAgentId}
-        notifications={notificationsQuery.data?.items ?? []}
+        decisionReviewAction={decisionReviewAction}
         operatorProfile={preferencesQuery.data?.profile}
         agentNameForId={agentNameForId}
         agentIdForHandle={agentIdForHandle}
@@ -1012,7 +1033,7 @@ export function AgentDetail({
         focusTelemetry={focusTelemetry}
         projectRoot={project?.hostPath}
         delegatedAgentCount={relationships.delegatedAgentCount}
-        onCloseTechnical={() => { setTab("chat"); onViewChange?.("chat"); }}
+        onCloseTechnical={() => changeTab("chat")}
         agentWorkFocus={agentWorkFocus}
         settingsPane={settingsPane}
         onOpenAgent={onOpenAgent}
@@ -1023,22 +1044,29 @@ export function AgentDetail({
         onOpenFile={openActivityFile}
         onNewSubagent={onNewSubagent}
         onAgentsDeleted={onAgentsDeleted}
-        onOpenTechnical={openTechnicalDetails}
         onOpenArtifact={onOpenArtifact}
       />
 
-      <AgentDetailComposer
+      {tab!=="chat"&&<ImportedCommunications key={detail.agent.id} agentId={detail.agent.id}/>}
+
+      {auditOnly?<Alert severity="info" sx={{m:1}}>Workflow Agent · control work from its execution view</Alert>:<AgentDetailComposer
         visible={tab === "chat"}
         queuedMessageNotice={queuedMessageNotice}
+        queuedRead={workspaceRead(`agent:${agentId}`,"Queued Messages",queuedMessagesQuery)}
         queuedMessageFailure={queuedMessageFailure}
-        cancellationError={
-          cancelRun.isError
-            ? `The active Run could not be cancelled. ${cancelRun.error instanceof Error ? cancelRun.error.message : String(cancelRun.error)}`
-            : undefined
-        }
+        cancellationError={[
+          pause?.error,
+          pauseResume.isError&&pauseResume.variables?.identity===controlIdentity
+            ? `Pause or Resume failed. ${pauseResume.error instanceof Error ? pauseResume.error.message : String(pauseResume.error)}`
+            : undefined,
+          cancelRun.isError&&cancelRun.variables?.agentId===agentId&&cancelRun.variables?.targetRunId===(runtimeActivity?.executionId??pause?.runId)
+            ? `Stop failed. ${cancelRun.error instanceof Error ? cancelRun.error.message : String(cancelRun.error)}`
+            : undefined,
+        ].filter(Boolean).join("\n") || undefined}
         providerUsageState={providerUsageState}
         agentId={agentId}
         onCloseProviderUsage={() => setProviderUsageState(undefined)}
+        conversationId={detail.agent.conversationId}
         queuedMessages={visibleQueuedMessages}
         attachmentNamesForQueuedMessage={queued => detail.messages.find(message => message.id === queued.messageId || message.communicationEventId === queued.messageId)?.attachments?.map(attachment => attachment.name)}
         queuedBusy={
@@ -1076,6 +1104,14 @@ export function AgentDetail({
             ? engineCapability?.composerCapabilities
             : [],
           enableVoiceDictation: true,
+          voiceContext: tab === "chat" && detail.agent.conversationId ? {
+            projectId: detail.agent.projectId,
+            conversationId: detail.agent.conversationId,
+            agents: [detail.agent],
+            selectedAgentId: detail.agent.id,
+            lockAgent: true,
+            onOpenRecovery: () => setTab('chat'),
+          } : undefined,
           onCapabilitiesOpen: () =>
             onRefreshCapabilities({ engineId: engine?.id, model, agentId }),
           projectId: detail.agent.projectId,
@@ -1088,22 +1124,27 @@ export function AgentDetail({
             speed,
           ]),
           submissionRuntimeIntentKey: String(submissionRuntimeIntent),
-          controls: agentRuntimeControls,
+          controls: !standalone||assistantMessages?agentRuntimeControls:undefined,
+          assistantMessages,
+          queueReviewHref: assistantMessages?productWorkspacePath(`/projects/${encodeURIComponent(detail.agent.projectId)}/agents/${encodeURIComponent(agentId)}?view=chat`):undefined,
           disabled: false,
           submissionDisabled: runtimeSaving,
-          running: false,
-          placeholder: runtimeActivity
+          running: assistantMessages && Boolean(runtimeActivity?.executionId || pause?.runId),
+          allowSendWhileRunning: assistantMessages,
+          cancelPending: stopping,
+          runControl: assistantMessages ? {paused:Boolean(pause),pending:pausePending,resumeDisabled:pause?.reason==='access_restricted',onPauseResume} : undefined,
+          placeholder: assistantMessages?"":runtimeActivity
             ? `Steer ${detail.agent.title}'s active response · Queue sends next`
             : `Message ${detail.agent.title} directly`,
           agentResponding: Boolean(runtimeActivity),
           onSend: submitAgentMessage("steer"),
           onCommand: invokeAgentCommand,
-          onQueue: submitAgentMessage("queue"),
+          onQueue: assistantMessages?undefined:submitAgentMessage("queue"),
           onCancel: stopActiveRun,
         }}
-      />
+      />}
 
-      <AgentDetailDialogs
+      {!auditOnly&&<AgentDetailDialogs
         recheckEngine={{
           open: recheckEngineOpen,
           pending: recheckEngine.isPending,
@@ -1147,23 +1188,23 @@ export function AgentDetail({
           agents,
           updateOrganization,
         }}
-      />
-      <AgentPackageExportDialog
+      />}
+      {!auditOnly&&<AgentPackageExportDialog
         open={exportOpen}
         source={detail.agent}
         agents={agents}
         onClose={() => setExportOpen(false)}
         onCopy={copyAgentPackage}
         onDownload={downloadAgentPackage}
-      />
-      <AgentDuplicateDialog
+      />}
+      {!auditOnly&&<AgentDuplicateDialog
         open={duplicateOpen}
         source={detail.agent}
         agents={agents}
         conversations={conversations}
         onClose={() => setDuplicateOpen(false)}
         onCreated={onOpenAgent}
-      />
+      />}
     </Box></OutgoingMessageProvider>
   );
 }

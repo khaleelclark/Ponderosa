@@ -3,7 +3,6 @@ import type WebSocket from "ws";
 import type {
   AgentEvent,
   EngineRegistration,
-  EngineCapabilities,
   ReadinessDto,
   RuntimeProcessHandle,
   RuntimeSession,
@@ -44,6 +43,7 @@ export type { EngineRegistration } from "@ponderosa/core";
 
 export interface CreateServerOptions {
   dataDir: string;
+  localMemory?:{chromaUrl:string;collectionPrefix:string;modelDir:string;stateDirectory:string;provision?:boolean};
   /** Display-only original path; mutable components use the admitted physical root. */
   reportedDataDir?: string;
   resourceAdmission?: import("./resource-admission.js").ResourceAdmissionOptions;
@@ -61,6 +61,7 @@ export interface CreateServerOptions {
   startupMode?: "serve" | "shutdown_recovery";
   /** Qualification instances accept explicit inspection but lease no Runs until resumed. */
   startDrained?: boolean;
+  branches?:{maxConcurrentScripts?:number};
   /** Launcher-owned data root. Runtime state remains under dataDir. */
   launcherDataDir?: string;
   /** Exact installed launcher generation used to fence shutdown receipts. */
@@ -69,24 +70,13 @@ export interface CreateServerOptions {
   store?: AgentStore;
   engines: EngineRegistration[];
   webDist?: string;
-  authToken?: string;
   /** Installed-build identity. Development embeddings may omit it. */
   buildVersion?: string;
   releaseChannel?: string;
-  /** Host-launcher security is enabled only for installed loopback builds.
-   * The launcher secret never enters a browser; it creates one-time browser
-   * bootstraps that exchange into HttpOnly local sessions. */
-  launcherSecurity?: {
-    controlToken: string;
-    bootstrapTtlMs?: number;
-    sessionTtlMs?: number;
-  };
   /** Validated production listener boundary. Embedded servers default safely to loopback. */
   networkSecurity?: ReadinessDto["networkSecurity"];
   /** Exact browser-facing origins admitted by Host/Origin validation. */
   operatorOrigins?: string[];
-  /** Exact lower-cased identities asserted by the trusted loopback proxy. */
-  operatorIdentities?: string[];
   /** Global admission limits. Tests and embedded servers may omit them. */
   requestLimits?: {
     maxRequestsPerMinute: number;
@@ -99,6 +89,8 @@ export interface CreateServerOptions {
     maxInflight: number;
     /** Response deadline; admission remains held until the handler settles. */
     handlerDeadlineMs?: number;
+    /** Bounded response deadline for owned package intake/queue/processing (max 20 minutes). */
+    packageHandlerDeadlineMs?: number;
   };
   /** Deterministic limits for the opaque localhost-preview transport. */
   linkPreviewScheduling?: {
@@ -135,12 +127,26 @@ export interface CreateServerOptions {
     /** Terminalize a repeatedly rejected Activation after this many dispatch attempts. */
     maxDeliveryFailures?: number;
     /** Provider steer acknowledgement grace before exact-Run interruption. */
-    steeringRecoveryGraceMs?: number;
   };
 }
 
 export interface ActiveRun {
+  /** Exact built-in Codex Run currently owning a native goal campaign. */
+  nativeGoalActive?: boolean;
+  nativeGoalPauseOperation?: Promise<void>;
+  voiceReply?: import("./voice-reply-stream.js").VoiceReplyStream;
+  /** Opaque, short-lived correlation token for this host-originated text commit. */
+  textReplyPublication?: {token:string;streamId:string;sourceId:string};
+  voiceReplyStreamSupported?: boolean;
+  voiceReplyTiming?: { submittedAt?: string; firstModelTextAt?: string };
+  /** Synchronous host-only guard, also checked at canonical publication. */
+  validateVoiceReplyContext?: () => Promise<boolean>;
+  validateVoiceReplyCommit?: () => boolean;
   runId: string;
+  /** Provider chosen for this Run, unaffected by later Agent settings changes. */
+  runtimeEngineId?: string;
+  /** Agent's Chat at admission; routing can use a different Chat. */
+  homeConversationId?: string;
   startedAt: string;
   executionId: string;
   leaseExpiresAt: string;
@@ -176,6 +182,12 @@ export interface PersistentRuntime {
   /** Host-owned identity that survives reuse across provider turns. */
   identity: object;
   session: RuntimeSession;
+  /** This live session is the unmodified built-in Codex transport. */
+  nativeCodexModelChange?: boolean;
+  /** Built-in Codex goal implementation and stop methods are unchanged. */
+  nativeCodexGoal?: boolean;
+  /** This live session is the unmodified built-in Claude stream transport. */
+  nativeClaudeVerifiedInput?: boolean;
   iterator: AsyncIterator<AgentEvent>;
   /** Stable secrets injected once into the persistent engine process. */
   messageCapability: string;
@@ -230,7 +242,7 @@ export interface CapabilityDiscoveryAuthority {
   key: string;
   controller: AbortController;
   processes: Set<CapabilityDiscoveryProcess>;
-  operation?: Promise<EngineCapabilities>;
+  operation?: Promise<unknown>;
   settled: boolean;
 }
 
@@ -273,6 +285,8 @@ export interface PendingTurn {
 }
 
 export interface AgentMessageCapability {
+  /** Host route admission waits until the current native input is verified. */
+  inputVerificationPending?: boolean;
   agentId: string;
   conversationId?: string;
   runId: string;
@@ -300,6 +314,8 @@ export interface AgentMessageCapability {
    * manifest or its exact bounded fresh-reseed manifest. Retrieval must never
    * silently repeat this current-context tail, including on resumed sessions. */
   historyRetrievalExcludedCommunicationEventIds: string[];
+  /** Exact private archive instance granted to this Run, including while its
+   * rebuildable imported-history index is preparing. */
   importedHistoryArchiveVersion?: string;
   /** Present only for a provider continuity chain with a durable compaction
    * boundary and at least one authorized omitted message. */
@@ -311,7 +327,6 @@ export interface AgentMessageCapability {
 
 export type Subscriber = (stored: StoredLogEvent) => void;
 
-export const MAX_TEXT_LENGTH = 64 * 1024;
 /** Scheduler packets are trusted, bounded separately from user-authored text. */
 export const MAX_INTERNAL_DISPATCH_UTF8_BYTES = 256 * 1024;
 export const MAX_SSE_SUBSCRIBERS_PER_STREAM = 20;

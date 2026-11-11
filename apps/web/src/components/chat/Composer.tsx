@@ -1,3 +1,5 @@
+import {useMutationNotification} from "../MutationNotifications";
+import {productApiPath} from "../../api/productScope.js";
 import {
   Box,
   Button,
@@ -30,6 +32,7 @@ import type {
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   useCallback,
+  useContext,
   useEffect,
   useId,
   useMemo,
@@ -39,9 +42,11 @@ import {
 } from "react";
 import { api } from "../../api";
 import { ApiRequestError } from "../../api/types";
-import { collectAttachments, droppedAttachmentEntries } from "./folderAttachments";
+import { droppedAttachmentEntries } from "./folderAttachments";
+import { useFolderImports } from "./useFolderImports";
+import { FolderImportReview } from "./FolderImportReview";
 import { readChatState, readChatStateEntries, writeChatState } from "../../chatState";
-import { acknowledgeDraftTextRecovery, readDraftTextRecoveries, recoverDraftText, retireSubmittedDraftText, writeDraftTextRecovery } from "./draftTextRecovery";
+import { acknowledgeDraftTextRecovery, discardDraftTextRecovery, draftRecoveryCaptureId, hasDraftRecoveryContent, observeDraftTextRecovery, readDraftTextRecovery, recoverDraftText, retireSubmittedDraftText, writeDraftTextRecovery, type DraftRecoveryFence, type DraftTextRecovery } from "./draftTextRecovery";
 import { readDraftSelection, writeDraftSelection } from "./draftSelection";
 import { createClientId, draftSurfaceClientId } from "../../clientId";
 import { readBrowserStorage, writeBrowserStorage } from "../../browserStorage";
@@ -76,6 +81,7 @@ import {
 } from "./composerDestination";
 import type { ComposerProps } from "./Composer.types";
 import {
+  sha256Bytes,
   durableSubmissionMayBeReleased,
   durableSubmissionFingerprint,
   selectDurableSubmission,
@@ -90,6 +96,7 @@ import {
   ComposerAutocompleteMenu,
   ComposerCapabilityPicker,
   ComposerNotices,
+  ComposerErrorReview,
   ComposerTextInput,
   type ComposerMenuSuggestion,
 } from "./Composer.controls";
@@ -99,6 +106,8 @@ import {
   type ComposerProjectFileDescriptor,
 } from "./ComposerEditor";
 import {
+  assistantSubmissionError,
+  selectComposerFiles,
   canSubmitComposerText,
   COMPOSER_MAX_FILE_BYTES,
   canonicalDraftConflictFiles,
@@ -150,10 +159,11 @@ import {
   useComposerMentionedHandlesChange,
 } from "./useComposerTextEffects";
 import { composerSurfaceSx } from "./Composer.styles";
+import { ConversationChromeContext } from "../ConversationChromeContext";
 import { DictationControls } from "../speech/DictationControls";
 import { insertSpeechText } from "../speech/speechText";
-import { CapturedSubmissionOrderError, withCapturedSubmissionLock, capturedSubmissionRunning, readCapturedSubmissions, submissionOutboxEvent, runCapturedSubmission, saveCapturedSubmission, removeCapturedSubmission, type CapturedSubmission } from "./submissionOutbox";
-import { persistCapturedDraftSubmission, withCapturedDraftSubmissions } from "./capturedDraftSubmissions";
+import { CapturedSubmissionOrderError, removeRejectedCapturedSubmission, capturedSubmissionRunning, capturedSubmissionRetired, readCapturedSubmissions, runCapturedSubmission, saveCapturedSubmission, removeCapturedSubmission, type CapturedSubmission } from "./submissionOutbox";
+import { persistCapturedDraftSubmission, reconcileAcceptedCapture, withCapturedDraftSubmissions } from "./capturedDraftSubmissions";
 import { useOutgoingMessage } from "./OutgoingMessage";
 
 const DRAFT_OWNER_ID = /^[A-Za-z0-9_-]{1,128}$/u;
@@ -217,7 +227,8 @@ type FailedDraftContent = {
 type DraftWriteChain = {
   clientId: string;
   recoveryStorageKey?: string;
-  recoveredText?: { clientId: string; text: string; mentionBindings: AgentMentionBindingDto[] };
+  recoveredText?: DraftTextRecovery;
+  recoveryFence: DraftRecoveryFence;
   cleanupRetryScheduled: boolean;
   ownedRevision: number;
   pendingDeletionIds: Set<string>;
@@ -226,7 +237,7 @@ type DraftWriteChain = {
 
 function acknowledgeRecoveredText(chain: DraftWriteChain, saved: { text: string; mentionBindings: AgentMentionBindingDto[] }, revision: number): void {
   const recovered = chain.recoveredText;
-  const pending = readDraftTextRecoveries(chain.recoveryStorageKey).find(value => value.clientId === recovered?.clientId);
+  const pending = readDraftTextRecovery(chain.recoveryStorageKey, recovered?.clientId);
   if (recovered && pending && pending.text === recovered.text &&
       JSON.stringify(pending.mentionBindings) === JSON.stringify(recovered.mentionBindings) && recovered.text === saved.text &&
       JSON.stringify(recovered.mentionBindings) === JSON.stringify(saved.mentionBindings)) {
@@ -237,6 +248,7 @@ function acknowledgeRecoveredText(chain: DraftWriteChain, saved: { text: string;
 
 const createDraftWriteChain = (): DraftWriteChain => ({
   clientId: draftSurfaceClientId(),
+  recoveryFence: {},
   cleanupRetryScheduled: false,
   ownedRevision: 0,
   pendingDeletionIds: new Set(),
@@ -278,6 +290,8 @@ function providerCommandInput(
 }
 
 export function Composer({
+  assistantMessages = false,
+  queueReviewHref,
   disabled,
   running,
   allowSendWhileRunning = false,
@@ -296,6 +310,7 @@ export function Composer({
   attachmentsEnabled = true,
   attachmentsUnavailableReason,
   enableVoiceDictation = false,
+  voiceContext,
   busyMentionHandles,
   allowUnmentionedSend = true,
   sendUnavailableReason,
@@ -305,6 +320,7 @@ export function Composer({
   agentResponding = false,
   onCancel,
   cancelPending = false,
+  runControl,
   draftStorageKey,
   conversationDraftId,
   leadingControls,
@@ -356,7 +372,10 @@ export function Composer({
     staleTime: 5 * 60_000,
   });
   const assetLimits = assetLimitsQuery.data;
-  const [sendError, setSendError] = useState<string>();
+  const notify=useMutationNotification();
+  const [sendError, writeSendError] = useState<string>();
+  const [submissionError,setSubmissionError]=useState(false);
+  const setSendError=(value:string|undefined,submission=false)=>{writeSendError(value);setSubmissionError(submission);};
   const [preparedRetry, setPreparedRetry] = useState<{
     action: "send" | "queue";
     submissionIntentKey?: string;
@@ -373,14 +392,15 @@ export function Composer({
     >>();
   const draftConflictGeneration = useRef(0);
   const [restoringDraftConflict, setRestoringDraftConflict] = useState(false);
-  const [localRecoveryOpen, setLocalRecoveryOpen] = useState(false);
-  const [, refreshLocalRecovery] = useState(0);
+  const [recoveryVersion, refreshRecovery] = useState(0);
   useEffect(() => {
-    const changed = () => refreshLocalRecovery(value => value + 1);
+    const changed = (event: StorageEvent) => {
+      if (!draftStorageKey || (event.key !== null && event.key !== draftStorageKey && !event.key.startsWith(`${draftStorageKey}.pending-text.`))) return;
+      refreshRecovery(value => value + 1);
+    };
     window.addEventListener("storage", changed);
-    window.addEventListener(submissionOutboxEvent, changed);
-    return () => { window.removeEventListener("storage", changed); window.removeEventListener(submissionOutboxEvent, changed); };
-  }, []);
+    return () => window.removeEventListener("storage", changed);
+  }, [draftStorageKey]);
   const fileInput = useRef<HTMLInputElement | null>(null);
   const fileDragDepth = useRef(0);
   const [fileDragActive, setFileDragActive] = useState(false);
@@ -415,21 +435,13 @@ export function Composer({
   const [draftReadyVersion, setDraftReadyVersion] = useState(0);
   const sendingRef = useRef(false);
   const [sending, setSending] = useState(false);
-  const [preparingFolder, setPreparingFolder] = useState(false);
-  const attachmentImportGeneration = useRef(0);
-  const attachmentImportBusy = useRef(false);
-  const attachmentImportScope = JSON.stringify([conversationDraftId, draftStorageKey]);
-  const attachmentImportScopeRef = useRef(attachmentImportScope);
-  attachmentImportScopeRef.current = attachmentImportScope;
-  const attachmentImportAllowedRef = useRef(false);
-  useEffect(() => {
-    setPreparingFolder(false);
-    attachmentImportBusy.current = false;
-    return () => { attachmentImportGeneration.current++; attachmentImportBusy.current = false; };
-  }, [attachmentImportScope]);
+  const attachmentImportScope = JSON.stringify([productApiPath("/api/conversations"), conversationDraftId, draftStorageKey, draftOwnerId]);
   const draftMutationLockedRef = useRef(false);
   const [draftMutationLocked, setDraftMutationLocked] = useState(false);
   const draftContentGeneration = useRef(0);
+  const voiceCaptureActiveRef = useRef(false);
+  const [voiceCaptureActive,setVoiceCaptureActive]=useState(false);
+  const [voiceRecordingContainer,setVoiceRecordingContainer]=useState<HTMLDivElement|null>(null);
   const dictationSettlingRef = useRef(false);
   const [dictationSettling, setDictationSettling] = useState(false);
   const composerRoot = useRef<HTMLDivElement>(null);
@@ -454,6 +466,7 @@ export function Composer({
   const anchorRef = useRef<HTMLDivElement | null>(null);
   const appliedInsertRequest = useRef<string>();
   const appliedRemoveRequest = useRef<string>();
+  const assistantChrome = useContext(ConversationChromeContext);
   const appliedDefaultDestination = useRef<ComposerDefaultDestination>();
   const [activeDefaultDestination, setActiveDefaultDestination] =
     useState<ComposerDefaultDestination>();
@@ -468,6 +481,7 @@ export function Composer({
   const inputRef = useRef<ComposerEditorHandle | null>(null);
   const pendingSelection = useRef(readDraftSelection(draftStorageKey));
   const selectionIntent = useRef(0);
+  const continuationSeedIntent = useRef(0);
   const authoredTextInput = useRef(false);
   useEffect(() => {
     const cancelRestore = (event: Event) => {
@@ -581,6 +595,7 @@ export function Composer({
     ],
   );
   const markUserDraftMutation = useCallback(() => {
+    observeDraftTextRecovery(draftStorageKey, draftWriteChain.current.recoveryFence);
     userDraftMutationGeneration.current += 1;
     pendingSubmissionRef.current = undefined;
     draftConflictGeneration.current += 1;
@@ -588,7 +603,7 @@ export function Composer({
     setRestoringDraftConflict(false);
     setPreparedRetry(undefined);
     onSubmissionIntentChange?.();
-  }, [onSubmissionIntentChange]);
+  }, [onSubmissionIntentChange, draftStorageKey]);
   const markDraftEdited = useCallback(() => {
     markUserDraftMutation();
     draftEditVersion.current += 1;
@@ -617,7 +632,7 @@ export function Composer({
     [markDraftEdited, replaceText],
   );
   const insertDictatedText = useCallback(
-    (transcript: string) => {
+    (transcript: string, focusEditor = true) => {
       if (draftMutationLockedRef.current) return;
       const selection = inputRef.current?.getSelectionOffsets() ?? {
         start: textRef.current.length,
@@ -633,16 +648,20 @@ export function Composer({
         0,
         textRef.current.length,
         insertion.text,
-        { caret: insertion.caret },
+        { caret: insertion.caret, focus: focusEditor },
       );
       setSendError(undefined);
       setCaret(insertion.caret);
       setHighlighted(0);
       setSuppressMenu(false);
-      requestAnimationFrame(() => inputRef.current?.focus());
+      if(focusEditor)requestAnimationFrame(() => inputRef.current?.focus());
     },
     [],
   );
+  const handleVoiceCaptureActiveChange=useCallback((active:boolean)=>{
+    voiceCaptureActiveRef.current=active;
+    setVoiceCaptureActive(active);
+  },[]);
   const handleDictationSettlingChange = useCallback((settling: boolean) => {
     dictationSettlingRef.current = settling;
     setDictationSettling(settling);
@@ -753,6 +772,7 @@ export function Composer({
     files,
     onEdit: markDraftAttachmentsEdited,
     onBeforeClear: invalidateDraftHydration,
+    notify,
   });
   const {
     addFiles: addDraftFiles,
@@ -771,33 +791,17 @@ export function Composer({
   const addFiles = useCallback((candidates: File[]) => {
     if (!draftMutationLockedRef.current) addDraftFiles(candidates);
   }, [addDraftFiles]);
-  const importAttachments = async (entries: Array<FileSystemEntry | File>) => {
-    if (!attachmentImportAllowedRef.current || draftMutationLockedRef.current || attachmentImportBusy.current) return;
-    attachmentImportBusy.current = true;
-    const generation = ++attachmentImportGeneration.current;
-    const scope = attachmentImportScope;
-    const checkActive = () => {
-      if (generation !== attachmentImportGeneration.current || scope !== attachmentImportScopeRef.current ||
-          !attachmentImportAllowedRef.current || draftMutationLockedRef.current) throw new Error("Folder preparation was cancelled because the destination is no longer available.");
-    };
-    setPreparingFolder(true);
-    try {
-      const maxBytes = Math.min(assetLimits?.maxFileBytes ?? COMPOSER_MAX_FILE_BYTES,
-        (assetLimits?.maxMessageBytes ?? COMPOSER_MAX_FILE_BYTES) - files.reduce((sum, file) => sum + file.size, 0));
-      const result = await collectAttachments(entries, maxBytes, checkActive);
-      checkActive();
-      addFiles(result.files);
-      if (result.skipped) dispatchAttachments({ type: "set_error", error: `Skipped ${result.skipped} hidden, sensitive, or dependency items while preparing the folder ZIP.` });
-    } catch (error) {
-      if (generation === attachmentImportGeneration.current && scope === attachmentImportScopeRef.current) {
-        dispatchAttachments({ type: "set_error", error: error instanceof Error ? error.message : "The folder could not be prepared. Nothing was attached." });
-      }
-    } finally {
-      if (generation === attachmentImportGeneration.current && scope === attachmentImportScopeRef.current) {
-        attachmentImportBusy.current = false; setPreparingFolder(false);
-      }
-    }
-  };
+  const folderImports = useFolderImports({
+    scope: attachmentImportScope,
+    storageKey: conversationDraftId ? `ponderosa.folder-imports.v1.${JSON.stringify([productApiPath("/api/conversations"), conversationDraftId, draftOwnerId])}` : undefined,
+    attachmentIds: draftAttachmentIds.current, attachmentVersion: draftAttachmentVersion,
+    ready: !conversationDraftId || draftReady.current, retainedAttachmentIds: unrestoredDraftAttachmentIds.current,
+    enabled: attachmentsEnabled && !disabled && !(running && !allowSendWhileRunning) && !draftMutationLocked,
+    files, limits: assetLimits, addFiles,
+    replaceFile: draftAttachments.replaceFile, removeFile: removeDraftFile,
+  });
+  const preparingFolder = folderImports.preparing;
+  const importAttachments = folderImports.importFiles;
   const removeFile = useCallback((index: number) => {
     if (!draftMutationLockedRef.current) removeDraftFile(index);
   }, [removeDraftFile]);
@@ -1142,7 +1146,7 @@ export function Composer({
       : destinationMode === "target-required" && hasBroadcastDestination
       ? targetRequiredDestinations.length > 0
         ? "Broadcast is only available in a Chat."
-        : "#broadcast is not available in Messages Across Ponderosa. Choose an Agent."
+        : "#broadcast is not available in Inbox. Choose an Agent."
       : destinationMode === "target-required" && unresolvedAmbiguousTarget
           ? `#${unresolvedAmbiguousTarget} matches more than one Agent. Use a message's # action to choose the exact Agent.`
           : undefined;
@@ -1227,6 +1231,7 @@ export function Composer({
     !sending &&
     !preparingFolder &&
     !dictationSettling &&
+    !voiceCaptureActive &&
     (!destinationError || Boolean(durableRetryAction) || Boolean(pendingSubmissionRef.current?.request)) &&
     targetRequiredRecipientTagged &&
     draftUploadsReady &&
@@ -1236,11 +1241,13 @@ export function Composer({
         !composerLocked &&
         allowUnmentionedSend &&
         files.length > 0));
+  // A retained Send must be retried through Send, never redirected by the
+  // queue shortcut into a potentially completed operation of another kind.
+  const canQueue = !assistantMessages && Boolean(onQueue) && canSend && durableRetryAction !== "send";
   const canCancel = running && Boolean(onCancel);
   const composerAttachmentsEnabled = attachmentsEnabled;
   const composerAttachmentsUnavailableReason = attachmentsUnavailableReason;
-  attachmentImportAllowedRef.current = attachmentsEnabled && !disabled && !composerLocked && !draftMutationLocked;
-  const fileDropEnabled = attachmentImportAllowedRef.current && !preparingFolder;
+  const fileDropEnabled = attachmentsEnabled && !disabled && !composerLocked && !draftMutationLocked && !preparingFolder;
   useEffect(() => {
     fileDragDepth.current = 0;
     setFileDragActive(false);
@@ -1302,6 +1309,7 @@ export function Composer({
     const changed = previousConversationDraftId.current !== conversationDraftId;
     previousConversationDraftId.current = conversationDraftId;
     if (changed) {
+      continuationSeedIntent.current = selectionIntent.current;
       draftGeneration.current += 1;
       draftWriteChain.current = createDraftWriteChain();
       pastedTextMutationGeneration.current += 1;
@@ -1327,7 +1335,8 @@ export function Composer({
         draftLocallyEdited.current = true;
         draftEditVersion.current++;
         setKnownMentionBindings(refreshedMentionBindings(carriedUntargetedDraft, [], mentionBindings ?? []));
-        writeDraftTextRecovery(draftStorageKey, { text: carriedUntargetedDraft, mentionBindings: [], expectedRevision: 0, clientId: draftWriteChain.current.clientId });
+        observeDraftTextRecovery(draftStorageKey, draftWriteChain.current.recoveryFence);
+        writeDraftTextRecovery(draftStorageKey, { text: carriedUntargetedDraft, mentionBindings: [], expectedRevision: 0, clientId: draftWriteChain.current.clientId }, draftWriteChain.current.recoveryFence);
       }
     }
   }, [
@@ -1352,8 +1361,14 @@ export function Composer({
       ? { ...canonicalDraft, text: pendingText.text, mentionBindings: pendingText.mentionBindings,
           ...(pendingText.attachmentIds ? { attachmentIds: pendingText.attachmentIds, attachments: pendingText.attachments?.filter(asset =>
             asset.conversationId === conversationDraftId && asset.ownerId === draftOwnerId &&
-            asset.downloadUrl === `/api/conversations/${encodeURIComponent(conversationDraftId)}/draft-attachments/${encodeURIComponent(asset.id)}?ownerId=${encodeURIComponent(draftOwnerId)}`
-          ) ?? canonicalDraft.attachments } : {}), pendingSubmission: undefined }
+            asset.downloadUrl === productApiPath(`/api/conversations/${encodeURIComponent(conversationDraftId)}/draft-attachments/${encodeURIComponent(asset.id)}?ownerId=${encodeURIComponent(draftOwnerId)}`)
+          ) ?? canonicalDraft.attachments } : {}),
+          pastedTextAttachmentId: pendingText.pastedTextAttachmentId,
+          pastedTextAttachment: pendingText.pastedTextAttachment && pendingText.pastedTextAttachmentId && conversationDraftId && pendingText.pastedTextAttachment.conversationId === conversationDraftId &&
+            pendingText.pastedTextAttachment.ownerId === draftOwnerId && pendingText.pastedTextAttachment.id === pendingText.pastedTextAttachmentId &&
+            pendingText.pastedTextAttachment.downloadUrl === productApiPath(`/api/conversations/${encodeURIComponent(conversationDraftId)}/draft-attachments/${encodeURIComponent(pendingText.pastedTextAttachmentId)}?ownerId=${encodeURIComponent(draftOwnerId)}`)
+              ? pendingText.pastedTextAttachment : undefined,
+          pendingSubmission: undefined }
       : canonicalDraft;
     if (
       sendingRef.current ||
@@ -1394,9 +1409,9 @@ export function Composer({
           ...(attachment ? { attachment } : {}),
         }];
       }).filter(item => !locallyRemovedDraftAttachmentIds.current.has(item.id));
-      let restoredPastedText: string | undefined;
+      let restoredPastedText: string | undefined = pendingText?.pastedText;
       let failedPastedText: FailedDraftContent | undefined;
-      if (draft.pastedTextAttachmentId) {
+      if (draft.pastedTextAttachmentId && restoredPastedText === undefined) {
         try {
           if (!draft.pastedTextAttachment) {
             throw new Error("Pasted-text metadata is unavailable.");
@@ -1425,6 +1440,10 @@ export function Composer({
         draft.revision < draftRevision.current
       )
         return;
+      if (pendingText && draftRecoveryCaptureId(draftStorageKey) !== pendingText.captureId) {
+        refreshRecovery(value => value + 1);
+        return;
+      }
       draftRevision.current = draft.revision;
       const local = draftStorageKey
         ? (readChatState(draftStorageKey) ?? "")
@@ -1439,18 +1458,12 @@ export function Composer({
         adoptDraft,
       );
       if (adoptDraft && pendingText) {
+        observeDraftTextRecovery(draftStorageKey, draftWriteChain.current.recoveryFence);
         draftWriteChain.current.ownedRevision = pendingText.expectedRevision;
         draftWriteChain.current.recoveredText = pendingText;
         draftWriteChain.current.recoveryStorageKey = draftStorageKey;
       }
-      if (!adoptDraft) {
-        draftReady.current = true;
-        setDraftReadyVersion(value => value + 1);
-        return;
-      }
-      pendingSubmissionRef.current = pendingSubmissionWithLocalUploadAuthority(
-        draft,
-      );
+      if (adoptDraft) pendingSubmissionRef.current = pendingSubmissionWithLocalUploadAuthority(draft);
       draftContentGeneration.current += 1;
       if (!draftAttachmentsLocallyEdited.current) {
         replaceRestoredDraftAttachments(restored);
@@ -1458,6 +1471,7 @@ export function Composer({
         mergeRestoredDraftAttachments(restored);
       }
       unrestoredDraftAttachmentIds.current = failedAttachments.map(item => item.id);
+      if (pendingText?.pastedText !== undefined && !draft.pastedTextAttachmentId) replacePastedText(pendingText.pastedText);
       const hydratedPastedText = hydratedPastedTextContent({
         attachmentId: draft.pastedTextAttachmentId,
         restoredText: restoredPastedText,
@@ -1499,18 +1513,20 @@ export function Composer({
         pastedTextCleanMutationGeneration.current =
           pastedTextMutationGeneration.current;
       }
-      const hydrated = hydratedDraftContent(
-        draft.revision,
-        draft.text,
-        local,
-        draft.mentionBindings ?? [],
-      );
-      replaceText(hydrated.text);
-      setKnownMentionBindings([...hydrated.mentionBindings]);
-      if (draftStorageKey) writeChatState(draftStorageKey, hydrated.text);
-      if (pendingText) {
-        draftLocallyEdited.current = true;
-        draftEditVersion.current += 1;
+      if (adoptDraft) {
+        const hydrated = hydratedDraftContent(
+          draft.revision,
+          draft.text,
+          local,
+          draft.mentionBindings ?? [],
+        );
+        replaceText(hydrated.text);
+        setKnownMentionBindings([...hydrated.mentionBindings]);
+        if (draftStorageKey) writeChatState(draftStorageKey, hydrated.text);
+        if (pendingText) {
+          draftLocallyEdited.current = true;
+          draftEditVersion.current += 1;
+        }
       }
       if (failedAttachments.length || hydratedPastedText?.failure) {
         dispatchAttachments({
@@ -1522,6 +1538,10 @@ export function Composer({
       setDraftReadyVersion(value => value + 1);
     };
     void apply().catch(() => {
+      if (pendingText && draftRecoveryCaptureId(draftStorageKey) !== pendingText.captureId) {
+        if (!cancelled) refreshRecovery(value => value + 1);
+        return;
+      }
       if (
         !cancelled &&
         hydrationGeneration === draftHydrationGeneration.current
@@ -1537,18 +1557,12 @@ export function Composer({
           adoptDraft,
         );
         if (adoptDraft && pendingText) {
+          observeDraftTextRecovery(draftStorageKey, draftWriteChain.current.recoveryFence);
           draftWriteChain.current.ownedRevision = pendingText.expectedRevision;
           draftWriteChain.current.recoveredText = pendingText;
           draftWriteChain.current.recoveryStorageKey = draftStorageKey;
         }
-        if (!adoptDraft) {
-          draftReady.current = true;
-          setDraftReadyVersion(value => value + 1);
-          return;
-        }
-        pendingSubmissionRef.current = pendingSubmissionWithLocalUploadAuthority(
-          draft,
-        );
+        if (adoptDraft) pendingSubmissionRef.current = pendingSubmissionWithLocalUploadAuthority(draft);
         draftContentGeneration.current += 1;
         unrestoredDraftAttachmentIds.current = draft.attachmentIds.filter(
           id => !locallyRemovedDraftAttachmentIds.current.has(id),
@@ -1607,21 +1621,23 @@ export function Composer({
           pastedTextCleanMutationGeneration.current =
             pastedTextMutationGeneration.current;
         }
-        const local = draftStorageKey
-          ? (readChatState(draftStorageKey) ?? "")
-          : "";
-        const hydrated = hydratedDraftContent(
-          draft.revision,
-          draft.text,
-          local,
-          draft.mentionBindings ?? [],
-        );
-        replaceText(hydrated.text);
-        setKnownMentionBindings([...hydrated.mentionBindings]);
-        if (draftStorageKey) writeChatState(draftStorageKey, hydrated.text);
-        if (pendingText) {
-          draftLocallyEdited.current = true;
-          draftEditVersion.current += 1;
+        if (adoptDraft) {
+          const local = draftStorageKey
+            ? (readChatState(draftStorageKey) ?? "")
+            : "";
+          const hydrated = hydratedDraftContent(
+            draft.revision,
+            draft.text,
+            local,
+            draft.mentionBindings ?? [],
+          );
+          replaceText(hydrated.text);
+          setKnownMentionBindings([...hydrated.mentionBindings]);
+          if (draftStorageKey) writeChatState(draftStorageKey, hydrated.text);
+          if (pendingText) {
+            draftLocallyEdited.current = true;
+            draftEditVersion.current += 1;
+          }
         }
         if (!draftAttachmentsLocallyEdited.current) {
           dispatchAttachments({
@@ -1646,6 +1662,7 @@ export function Composer({
     conversationDraftId,
     draftQuery.data,
     draftStorageKey,
+    recoveryVersion,
     sending,
     pendingSubmissionWithLocalUploadAuthority,
     updateFailedDraftContents,
@@ -1681,6 +1698,7 @@ export function Composer({
         return;
       }
       pastedTextAttachmentId.current = attachment.id;
+      draftAttachmentMetadata.current.set(attachment.id, attachment);
       pastedTextUploadFailedFor.current = undefined;
       setDraftReadyVersion(value => value + 1);
     }).catch((error: unknown) => {
@@ -1741,6 +1759,7 @@ export function Composer({
     const editor = inputRef.current;
     if (!editor || draftMutationLockedRef.current) return;
     // A continuation is a normal authored token, not an ephemeral overlay.
+    // Late replies must not seed between Select All/Delete and native paste.
     // Seed only an empty draft with no retained destination: refreshes/new
     // replies must never duplicate or retarget an already selected recipient.
     const currentText = editor.getCanonicalText();
@@ -1750,6 +1769,7 @@ export function Composer({
       retainedSelectionKey: activeDefaultDestination?.selectionKey,
       localText: textRef.current,
       editorText: currentText,
+      interactionStarted: continuationSeedIntent.current !== selectionIntent.current,
     })) {
       if (activeDefaultDestination) {
         appliedDefaultDestination.current = defaultDestination;
@@ -1786,18 +1806,34 @@ export function Composer({
     if (
       !conversationDraftId ||
       sendingRef.current ||
-      !draftReady.current ||
       !draftLocallyEdited.current
     )
       return;
-    writeDraftTextRecovery(draftStorageKey, {
+    // Browser capture does not wait for hydration. Retain unseen staged files
+    // until their exact IDs can be restored or explicitly removed.
+    const previous = !draftReady.current ? readDraftTextRecovery(draftStorageKey) : undefined;
+    const visibleIds = files.flatMap(file => draftAttachmentIds.current.get(file) ?? []);
+    const attachmentIds = [...new Set([...(previous?.attachmentIds ?? []), ...visibleIds])]
+      .filter(id => !locallyRemovedDraftAttachmentIds.current.has(id));
+    const metadata = new Map([...(previous?.attachments ?? []), ...draftAttachmentMetadata.current.values()].map(asset => [asset.id, asset]));
+    const recoverySnapshot: DraftTextRecovery = {
       text,
-      mentionBindings: knownMentionBindings,
-      expectedRevision: draftWriteChain.current.ownedRevision,
+      mentionBindings: refreshedMentionBindings(text, [...knownMentionBindings, ...(previous?.mentionBindings ?? [])], mentionBindings ?? []),
+      expectedRevision: previous?.expectedRevision ?? draftWriteChain.current.ownedRevision,
       clientId: draftWriteChain.current.clientId,
-      attachmentIds: files.flatMap(file => { const id = draftAttachmentIds.current.get(file); return id ? [id] : []; }),
-      attachments: files.flatMap(file => { const id = draftAttachmentIds.current.get(file); const metadata = id ? draftAttachmentMetadata.current.get(id) : undefined; return metadata ? [metadata] : []; }),
-    });
+      attachmentIds,
+      attachments: attachmentIds.flatMap(id => metadata.get(id) ?? []),
+      pastedText: pastedText ?? previous?.pastedText,
+      pastedTextAttachmentId: pastedTextAttachmentId.current ?? previous?.pastedTextAttachmentId,
+      pastedTextAttachment: pastedTextAttachmentId.current ? draftAttachmentMetadata.current.get(pastedTextAttachmentId.current) : previous?.pastedTextAttachment,
+    };
+    const fence = draftWriteChain.current.recoveryFence;
+    if (hasDraftRecoveryContent(recoverySnapshot)) {
+      if (!writeDraftTextRecovery(draftStorageKey, recoverySnapshot, fence))
+        setSendError("The browser draft changed in another tab. Your current text is still here.");
+    } else if (fence.edit) discardDraftTextRecovery(draftStorageKey, recoverySnapshot.clientId, recoverySnapshot.expectedRevision, fence);
+    const recoveryCaptureId = draftRecoveryCaptureId(draftStorageKey) ?? "";
+    if (!draftReady.current) return;
     const scheduledGeneration = draftGeneration.current;
     const timer = window.setTimeout(() => {
       // A queued debounce must not revive a sent draft or save an empty
@@ -1876,7 +1912,7 @@ export function Composer({
             ownerId: draftOwnerId,
           }, queryClient.getQueryData<ConversationDraftDto>(queryKeys.conversationDraft.detail(scope, draftOwnerId))));
           writeChain.ownedRevision = draft.revision;
-          acknowledgeDraftTextRecovery(draftStorageKey, clientId, { text, mentionBindings: knownMentionBindings, attachmentIds }, draft.revision);
+          acknowledgeDraftTextRecovery(draftStorageKey, clientId, { text, mentionBindings: knownMentionBindings, attachmentIds, pastedText, pastedTextAttachmentId: submittedPastedTextAttachmentId, captureId: recoveryCaptureId }, draft.revision);
           acknowledgeRecoveredText(writeChain, { text, mentionBindings: knownMentionBindings }, draft.revision);
           const cleanupReleased = async (): Promise<void> => {
             await cleanupReleasedDraftAttachmentIds(
@@ -2252,8 +2288,18 @@ export function Composer({
     writeChain: DraftWriteChain,
     selectedFiles: File[] = [],
   ) => {
-    const previouslyDispatched = item.dispatchStarted === true;
-    let dispatchInvoked = false;
+    if(item.status==='accepted'){void reconcileAcceptedCapture(queryClient,item).catch(()=>undefined);return;}
+    const namespace=item.apiNamespace??productApiPath('/api/conversations');
+    if(namespace!==productApiPath('/api/conversations'))return;
+    if (assistantMessages) {
+      const error = assistantSubmissionError(item.text, item.action === "queue" || item.pending.request?.runtime.activeRunDelivery === "queue");
+      if (error) { setSendError(error); return; }
+    }
+    const feedbackKey=JSON.stringify([productApiPath("/api/conversations"),item.scope,item.ownerId,"submit",item.pending.idempotencyKey]);
+    const feedbackAttempt=createClientId("submission-feedback-");
+    let previouslyDispatched = item.dispatchStarted === true;
+    let loadedUnderLock = false;
+    let dispatchedThisAttempt = false;
     let outgoingId: string | undefined;
     const persist = async (pending: DraftPendingSubmissionDto, retire = false) => {
       item = { ...item, pending };
@@ -2262,14 +2308,14 @@ export function Composer({
       let alreadyRetired = false;
       const write = settledDraftWriteContinuation(writeChain.tail, async () => {
         const result = await persistCapturedDraftSubmission(
-          item.scope, item.ownerId, item.clientId, pending, retire, writeChain.ownedRevision,
+          item.scope, item.ownerId, item.clientId, pending, retire, writeChain.ownedRevision, namespace,
         );
         if (result.mayAdvanceDraftRevision) {
           const beforeRevision = writeChain.ownedRevision;
           writeChain.ownedRevision = result.draft.revision;
           // Our metadata-only CAS did not alter editable content. Advance the
           // same local recovery incarnation, preserving any newer text verbatim.
-          const recovered = readDraftTextRecoveries(item.storageKey).find(snapshot => snapshot.clientId === writeChain.clientId);
+          const recovered = readDraftTextRecovery(item.storageKey, writeChain.clientId);
           if (recovered && recovered.expectedRevision === beforeRevision) {
             writeDraftTextRecovery(item.storageKey, { ...recovered, expectedRevision: result.draft.revision });
           }
@@ -2280,6 +2326,7 @@ export function Composer({
           queryKeys.conversationDraft.detail(item.scope, item.ownerId),
           current => current && current.revision > result.draft.revision ? current : result.draft,
         );
+        if(result.pendingSubmission){item={...item,pending:result.pendingSubmission};saveCapturedSubmission(item);}
         alreadyRetired = result.retired === true;
         if (retire || alreadyRetired) removeCapturedSubmission(item.pending.idempotencyKey);
       });
@@ -2287,12 +2334,11 @@ export function Composer({
       await write;
       return alreadyRetired;
     };
-    void runCapturedSubmission(item, async () => {
-      if (item.status === "accepted") {
-        await persist(item.pending, true);
-        if (item.scope.startsWith("local:")) removeCapturedSubmission(item.pending.idempotencyKey);
-        return;
-      }
+    void runCapturedSubmission(item, async current => {
+      item = current;
+      previouslyDispatched = current.dispatchStarted === true && current.status !== "failed";
+      loadedUnderLock = true;
+      if(item.status==='accepted')return;
       item = { ...item, status: "pending", error: undefined };
       saveCapturedSubmission(item);
       if (item.pending.fingerprint === "0".repeat(64)) {
@@ -2313,19 +2359,6 @@ export function Composer({
           return api.downloadDraftAttachment(metadata);
         }));
       }
-      item = { ...item, dispatchStarted: true };
-      saveCapturedSubmission(item);
-      if (outgoingId && !item.newAgentRequested) {
-        const conversationId = item.pending.request?.conversationId;
-        const key = item.pending.idempotencyKey;
-        if (conversationId) {
-          await outgoing?.identify(outgoingId, hasBroadcastMention(item.text) ? "broadcast" : "user-dm",
-            hasBroadcastMention(item.text) ? `${conversationId}\0${key}` : `multi-direct:${conversationId}:${key}`);
-        } else if (item.projectId && item.scope.startsWith("agent:")) {
-          await outgoing?.identify(outgoingId, "user-message", `${item.projectId}\0${item.scope.slice(6)}\0${key}`);
-        }
-      }
-      dispatchInvoked = true;
       const result = await handler(
         item.text, exactFiles, item.pending.draftAttachmentIds ?? [], item.ownerId,
         {
@@ -2335,32 +2368,64 @@ export function Composer({
           retryPreparedAttempt: true,
           capturedSubmission: true,
           capturedProjectId: item.projectId,
+          beforeDispatch: async identity => {
+            if(namespace!==productApiPath('/api/conversations'))throw new Error('The original message destination is no longer active.');
+            if(identity)item={...item,communicationId:`${identity.prefix}-${await sha256Bytes(new TextEncoder().encode(identity.seed))}`};
+            if(namespace!==productApiPath('/api/conversations'))throw new Error('The original message destination is no longer active.');
+            const observed=readCapturedSubmissions(item.scope,item.ownerId).find(value=>value.pending.idempotencyKey===item.pending.idempotencyKey);
+            if(capturedSubmissionRetired(item.pending.idempotencyKey,item)||observed?.status==="accepted"){item={...item,status:"accepted"};throw new Error("The canonical message is already accepted. Finish its recovery cleanup.");}
+            // Uploads and journal CAS are preparation. Only the actual work
+            // mutation crosses this durable, cross-tab recovery boundary.
+            if (dispatchedThisAttempt) previouslyDispatched = true;
+            item = { ...item, dispatchStarted: true };
+            saveCapturedSubmission(item);
+            dispatchedThisAttempt = true;
+          },
           persistPendingSubmission: async value => { await persist(value); },
-          onAgentCreated: agent => { if (outgoingId) outgoing?.agentCreated(outgoingId, agent); },
+          onAgentCreated: agent => {
+            item={...item,communicationId:`agent-opening:${agent.id}`};
+            try{saveCapturedSubmission(item);}catch{/* Correlation hint only; the original dispatch boundary remains retained. */}
+            if(outgoingId)outgoing?.agentCreated(outgoingId,agent);
+          },
         },
       );
       const receipt = result as { communicationEventId?: string; message?: { communicationEventId?: string }; deliveryId?: string; recipients?: Array<{ deliveryId?: string }>; deliveryIds?: string[] } | undefined;
       if (outgoingId) outgoing?.accepted(outgoingId, receipt?.communicationEventId ?? receipt?.message?.communicationEventId);
       const acceptedDeliveryIds = receipt?.deliveryIds ?? receipt?.recipients?.flatMap(recipient => recipient.deliveryId ? [recipient.deliveryId] : []) ?? (receipt?.deliveryId ? [receipt.deliveryId] : []);
-      item = { ...item, status: "accepted", acceptedDeliveryIds, error: undefined };
+      notify({key:feedbackKey,message:"",dismiss:true});
+      item = { ...item, status: "accepted", acceptedDeliveryIds, communicationId:receipt?.communicationEventId??receipt?.message?.communicationEventId??item.communicationId, error: undefined };
       saveCapturedSubmission(item);
-      // The server receipt owns accepted/queued state. Retire only this browser
-      // intent and its protection metadata; never clear the active draft here.
-      await persist(item.pending, true);
-      if (item.scope.startsWith("local:")) removeCapturedSubmission(item.pending.idempotencyKey);
+      // Exact acceptance ends the transport gate. Metadata retirement is
+      // detached below, so it cannot hold another Send or the editable writer.
       return result;
-    }).catch(error => {
+    }, (error, current) => {
+      if(capturedSubmissionRetired(item.pending.idempotencyKey,item))return;
+      if (!loadedUnderLock) {
+        item = current;
+        previouslyDispatched = current.dispatchStarted === true && current.status !== "failed";
+      }
+      const observed=readCapturedSubmissions(item.scope,item.ownerId).find(value=>value.pending.idempotencyKey===item.pending.idempotencyKey);
+      if(observed?.status==="accepted")item={...item,status:"accepted",communicationId:observed.communicationId??item.communicationId};
       const accepted = item.status === "accepted";
-      const definitive = !accepted && (dispatchInvoked || !previouslyDispatched) &&
-        (error instanceof CapturedSubmissionOrderError || (error instanceof ApiRequestError &&
+      // A later rejection cannot prove that an earlier uncertain send had no effect.
+      const definitive = !accepted && !previouslyDispatched && !item.pending.agentCreationCommitted &&
+        (!dispatchedThisAttempt || error instanceof CapturedSubmissionOrderError || (error instanceof ApiRequestError &&
         durableSubmissionMayBeReleased(item.pending, error.status, error.message)));
-      item = { ...item, status: accepted ? "accepted" : definitive ? "failed" : "unknown", error: accepted
-        ? "This message was saved. Retry to finish clearing its recovery record."
-        : error instanceof Error ? error.message : "Acceptance could not be confirmed. Retry this captured message." };
-      try { saveCapturedSubmission(item); } catch { /* Existing captured bytes remain recoverable. */ }
-    }).finally(() => { if (outgoingId) outgoing?.finish(outgoingId); });
-    // Register transport before optimistic rendering can expose the captured send in the recovery tray.
-    outgoingId = item.action === "send" && item.status !== "accepted" ? outgoing?.begin(item.text, item.attachmentNames) : undefined;
+      item = {...item,status:accepted?'accepted':definitive?'failed':'unknown',error:accepted||error instanceof CapturedSubmissionOrderError?undefined:error instanceof Error?error.message:String(error)};
+      try{saveCapturedSubmission(item);}catch{/* Retain original captured bytes. */}
+      if(accepted){notify({key:feedbackKey,message:'',dismiss:true});return;}
+      if(error instanceof CapturedSubmissionOrderError)return;
+      notify({key:feedbackKey,incident:`${feedbackAttempt}:${item.status}`,severity:'error',message:definitive?'Message Not Sent':'Delivery Not Confirmed',description:definitive?"Your message wasn’t sent. Retry to send it, or remove it.":'Delivery has not been confirmed. Retry checks the original send without creating another message.',details:item.error});
+    }).catch(error => {
+      if(item.status==='accepted'||capturedSubmissionRetired(item.pending.idempotencyKey,item))return;
+      notify({key:feedbackKey,incident:feedbackAttempt+":recovery",severity:"error",message:"Message Recovery Unavailable",description:"Your captured message remains in the original Chat. Review it before retrying.",details:error instanceof Error?error.message:String(error)});
+    }).finally(() => {
+      if(outgoingId)outgoing?.finish(outgoingId);
+      const accepted=item.status==='accepted'?item:readCapturedSubmissions(item.scope,item.ownerId).find(value=>value.pending.idempotencyKey===item.pending.idempotencyKey&&value.status==='accepted');
+      if(accepted)void reconcileAcceptedCapture(queryClient,accepted).catch(()=>undefined);
+    });
+    // Register transport before rendering can expose the captured send in its timeline.
+    outgoingId = item.action === "send" ? outgoing?.begin(item.text, item.attachmentNames, item, selectedFiles) : undefined;
   };
   useEffect(() => {
     const retry = (event: Event) => {
@@ -2376,28 +2441,21 @@ export function Composer({
       const item = readCapturedSubmissions(conversationDraftId, draftOwnerId).find(value => value.pending.idempotencyKey === id);
       if (!item || item.status !== "failed" || capturedSubmissionRunning(id) || !navigator.locks) return;
       const writeChain = draftWriteChain.current;
-      void withCapturedSubmissionLock(item, async () => {
-        const current = readCapturedSubmissions(item.scope, item.ownerId).find(value => value.pending.idempotencyKey === id);
-        if (!current || current.status !== "failed") return;
-        // Only definite rejection permits disposal. Unknown/committed outcomes
-        // must reconcile via Retry before edit/delete/steer becomes meaningful.
-        for (const upload of current.pending.uploads ?? []) {
-          for (const recipient of upload.recipients) {
-            for (const attachmentId of recipient.attachmentIds) {
-              if (recipient.agentId === item.scope) await api.deleteConversationAttachment(item.scope, attachmentId);
-              else await api.deleteAttachment(recipient.agentId, attachmentId);
-            }
-          }
+      const namespace=item.apiNamespace??productApiPath('/api/conversations');
+      const key=JSON.stringify([namespace,item.scope,item.ownerId,"remove",id]),incident=createClientId("remove-feedback-");
+      void removeRejectedCapturedSubmission(item, async current => {
+        if(namespace!==productApiPath('/api/conversations'))throw new Error('The original message destination is not active.');
+        if(!current.scope.startsWith('local:')){
+          const result=await persistCapturedDraftSubmission(current.scope,current.ownerId,current.clientId,current.pending,true,writeChain.ownedRevision,namespace);
+          queryClient.setQueryData<ConversationDraftDto>(queryKeys.conversationDraft.detail(current.scope,current.ownerId),cached=>cached&&cached.revision>result.draft.revision?cached:result.draft);
+          if(result.mayAdvanceDraftRevision)writeChain.ownedRevision=result.draft.revision;
         }
-        const write = settledDraftWriteContinuation(writeChain.tail, async () => {
-          const result = await persistCapturedDraftSubmission(item.scope, item.ownerId, item.clientId, item.pending, true, writeChain.ownedRevision);
-          if (result.mayAdvanceDraftRevision) writeChain.ownedRevision = result.draft.revision;
-          queryClient.setQueryData(queryKeys.conversationDraft.detail(item.scope, item.ownerId), result.draft);
-          removeCapturedSubmission(id);
-        });
-        writeChain.tail = write;
-        await write;
-      }).catch(error => saveCapturedSubmission({ ...item, error: error instanceof Error ? error.message : "Rejected input could not be discarded; retry." }));
+        removeCapturedSubmission(id);
+      }).then(()=>notify({key,message:"",dismiss:true})).catch(error => {
+        const retained=readCapturedSubmissions(item.scope,item.ownerId).find(value=>value.pending.idempotencyKey===id);
+        try{if(retained)saveCapturedSubmission({...retained,error:error instanceof Error?error.message:"Rejected input could not be removed; retry."});}catch{/* The original capture remains retained; feedback still exposes the failure. */}
+        notify({key,incident,severity:"error",message:"Message Removal Needs Review",description:"The original captured message remains available. Review its Details before retrying removal.",details:error instanceof Error?error.message:String(error)});
+      });
     };
     window.addEventListener("ponderosa-submission-discard", discard);
     window.addEventListener("ponderosa-submission-retry", retry);
@@ -2424,13 +2482,19 @@ export function Composer({
     ) => Promise<unknown> | unknown,
     action: "send" | "queue",
   ) => {
-    if (dictationSettlingRef.current) {
+    if (dictationSettlingRef.current || voiceCaptureActiveRef.current) {
       setSendError(
-        "Stop voice dictation and wait for final text before sending.",
+        dictationSettlingRef.current
+          ? "Stop voice dictation and wait for final text before sending."
+          : "Finish voice input before sending.",
       );
       return;
     }
     if (sendingRef.current || !canSend) return;
+    if (assistantMessages && (action === "queue" || durableRetryAction === "queue" || pendingSubmissionRef.current?.request?.runtime.activeRunDelivery === "queue")) {
+      setSendError(assistantSubmissionError(textRef.current, true));
+      return;
+    }
     if (
       durableRetryAction && durableRetryAction !== action
     ) {
@@ -2486,6 +2550,10 @@ export function Composer({
       routingMentionHandles,
     );
     if (normalizedDraft !== textRef.current) update(normalizedDraft);
+    if (assistantMessages) {
+      const error = assistantSubmissionError(safeSubmissionText, false);
+      if (error) { setSendError(error); return; }
+    }
     const commandSubmission = providerCommandInput(
       safeSubmissionText,
       commandTargetHandle,
@@ -2515,6 +2583,7 @@ export function Composer({
       draftWriteChain.current.clientId;
     const submittedDraftGeneration = draftGeneration.current;
     const submittedDraftWriteChain = draftWriteChain.current;
+    const submittedRecovery = readDraftTextRecovery(draftStorageKey, submittedDraftWriteChain.clientId);
     const submittedSupersededPastedTextAttachmentIds = [
       ...submittedDraftWriteChain.pendingDeletionIds,
     ];
@@ -2588,6 +2657,10 @@ export function Composer({
     );
     const runtimeCommandSubmission =
       slash?.command.invocation === "runtime";
+    if (runtimeCommandSubmission && action === "queue") {
+      setSendError("Provider actions cannot be queued. Send this command to run it.");
+      return;
+    }
     if (conversationDraftId && draftStorageKey && !runtimeCommandSubmission && !durableRetryAction) {
       const recipientBindings = destinationMode === "fixed" && defaultDestination?.binding
         ? [defaultDestination.binding]
@@ -2597,7 +2670,7 @@ export function Composer({
       const [capturedEngine, capturedModel, capturedEffort, capturedSpeed] = JSON.parse(submissionRuntimeKey ?? "[]") as string[];
       const createdAt = Math.max(Date.now(), ...readCapturedSubmissions().map(item => item.createdAt + 1));
       const item: CapturedSubmission = {
-        version: 1, scope: conversationDraftId, storageKey: draftStorageKey,
+        version: 1, scope: conversationDraftId, storageKey: draftStorageKey, apiNamespace:productApiPath('/api/conversations'),
         ownerId: draftOwnerId, clientId: submittedDraftWriteChain.clientId,
         ...(projectId ? { projectId } : {}),
         createdAt, action, text: exactSubmissionText, editorText: submittedText,
@@ -2626,8 +2699,8 @@ export function Composer({
           },
         },
       };
-      if (readCapturedSubmissions(conversationDraftId, draftOwnerId).length >= 32) {
-        setSendError("Resolve captured messages in the tray before submitting more (32 per Chat).");
+      if (readCapturedSubmissions(conversationDraftId, draftOwnerId).filter(item=>item.status!=='accepted').length >= 32) {
+        setSendError("Resolve captured messages before submitting more (32 per Chat).");
         return;
       }
       try { saveCapturedSubmission(item); } catch (error) {
@@ -2635,6 +2708,7 @@ export function Composer({
         return;
       }
       executeCaptured(item, handler, submittedDraftWriteChain, [...files]);
+      continuationSeedIntent.current = selectionIntent.current;
       // Local retirement is synchronous and incarnation-based, not text equality.
       // Identical newly typed text is a distinct draft and cannot be cleared by
       // late acknowledgement. Staged assets remain protected by pendingSubmissions.
@@ -2652,19 +2726,23 @@ export function Composer({
       if (draftStorageKey) writeChatState(draftStorageKey, nextDraftText);
       replacePastedText(undefined);
       pastedTextAttachmentId.current = undefined;
+      // Captured payloads remain protected by the outbox, not editable again
+      // when a metadata-only save hydrates the older server body.
+      const retiredAttachmentIds = new Set([...locallyRemovedDraftAttachmentIds.current, ...stagedIds]);
       clearDraftAttachments();
+      locallyRemovedDraftAttachmentIds.current = retiredAttachmentIds;
       setKnownMentionBindings(retainedAgentDestination ? [retainedAgentDestination.binding] : []);
       setActiveDefaultDestination(retainedAgentDestination ? undefined : safeDefaultDestination);
       inputRef.current?.resetDocument(nextDraftText);
       setCaret(nextDraftText.length);
       setSendError(undefined);
-      writeDraftTextRecovery(draftStorageKey, {
-        text: nextDraftText, mentionBindings: retainedAgentDestination ? [retainedAgentDestination.binding] : [], attachmentIds: [], attachments: [], expectedRevision: submittedDraftWriteChain.ownedRevision,
-        clientId: submittedDraftWriteChain.clientId,
-      });
+      if (submittedRecovery) retireSubmittedDraftText(draftStorageKey, submittedDraftWriteChain.clientId,
+        submittedRecovery, submittedDraftWriteChain.ownedRevision);
+      submittedDraftWriteChain.recoveryFence = { key: draftStorageKey, observed: draftRecoveryCaptureId(draftStorageKey) };
       return;
     }
     sendingRef.current = true;
+    invalidateDraftHydration();
     setSending(true);
     // Render before fingerprinting, durable draft persistence or upload prep.
     // Runtime commands are not authored messages and must not get an echo.
@@ -2678,10 +2756,16 @@ export function Composer({
       setCapabilityMenuAnchor(null);
       setSuppressMenu(true);
     }
+    const feedbackScope=[productApiPath("/api/conversations"),submittedDraftScope??draftStorageKey,draftOwnerId,"submit"];
+    const feedbackAttempt=createClientId("submission-feedback-");
+    let feedbackPendingId=pendingSubmissionRef.current?.idempotencyKey;
+    const feedbackKey=()=>JSON.stringify([...feedbackScope,feedbackPendingId??"editable-draft"]);
+    const resolveFeedback=()=>{notify({key:feedbackKey(),message:"",dismiss:true});notify({key:JSON.stringify([...feedbackScope,"editable-draft"]),message:"",dismiss:true});};
     const persistPendingSubmission = async (
       value: DraftPendingSubmissionDto | undefined,
       retainOnFailure = false,
     ): Promise<void> => {
+      if(value)feedbackPendingId=value.idempotencyKey;
       if (!submittedDraftScope) return;
       if (!submittedScopeStillActive()) {
         throw new Error("The draft destination changed before it could be sent.");
@@ -2760,7 +2844,7 @@ export function Composer({
             ownerId: draftOwnerId,
           }, queryClient.getQueryData<ConversationDraftDto>(queryKeys.conversationDraft.detail(submittedDraftScope, draftOwnerId))));
           submittedDraftWriteChain.ownedRevision = saved.revision;
-          acknowledgeDraftTextRecovery(draftStorageKey, submittedDraftWriteChain.clientId, { text: submittedText, mentionBindings: submittedMentionBindings }, saved.revision);
+          acknowledgeDraftTextRecovery(draftStorageKey, submittedDraftWriteChain.clientId, { text: submittedText, mentionBindings: submittedMentionBindings, captureId: submittedRecovery?.captureId ?? "" }, saved.revision);
           acknowledgeRecoveredText(submittedDraftWriteChain, { text: submittedText, mentionBindings: submittedMentionBindings }, saved.revision);
           submittedDraftClientId = saved.clientId;
         },
@@ -2878,13 +2962,14 @@ export function Composer({
           retireSubmittedDraftText(
             draftStorageKey,
             submittedDraftWriteChain.clientId,
-            { text: submittedText, mentionBindings: submittedMentionBindings },
+            submittedRecovery ?? { text: submittedText, mentionBindings: submittedMentionBindings, captureId: "" },
             submittedDraftWriteChain.ownedRevision,
           );
         }
         // Clear only the exact draft incarnation that produced this submission.
         // This also preserves edits made while a runtime command is pending.
         if (submissionMayClearDraft && scopeStillActive) {
+          continuationSeedIntent.current = selectionIntent.current;
           draftGeneration.current += 1;
           draftEditVersion.current += 1;
           draftLocallyEdited.current = false;
@@ -2982,7 +3067,9 @@ export function Composer({
         }
         if (submissionMayClearDraft && scopeStillActive) setCaret(0);
       })
+      .then(resolveFeedback)
       .catch(async (error: unknown) => {
+        notify({key:feedbackKey(),incident:feedbackAttempt,severity:"error",message:runtimeCommandSubmission?"Provider Action Needs Review":"Message Needs Review",description:"Your original draft and attachments are retained. Review them in the original Chat before retrying.",details:error instanceof Error?error.message:String(error)});
         if (!submittedScopeStillActive()) return;
         if (error instanceof ApiRequestError && pendingSubmissionRef.current &&
             durableSubmissionMayBeReleased(
@@ -3010,7 +3097,9 @@ export function Composer({
           error instanceof ApiRequestError && error.status === 429
             ? `Message not sent. Your draft and attachments remain here; retry in about ${Math.ceil((error.retryAfterMs ?? 1_000) / 1_000)} seconds.`
             : error instanceof Error ? error.message : "Upload failed; try again.",
+          true,
         );
+
       })
       .finally(() => {
         if (outgoingId) outgoing?.finish(outgoingId);
@@ -3022,7 +3111,7 @@ export function Composer({
   };
   const steer = () => submit(onSend, "send");
   const queue = () => {
-    if (!onQueue) return;
+    if (assistantMessages || !onQueue) return;
     submit(onQueue, "queue");
   };
   const send = steer;
@@ -3037,29 +3126,118 @@ export function Composer({
   const queueActivity = useRef({ key: queueTargetKey, active: false });
   const liveQueueActivity = agentResponding || mentionedBusyHandles.length > 0;
   const acceptancePendingForTarget = readCapturedSubmissions(conversationDraftId, draftOwnerId).some(item =>
-    capturedSubmissionRunning(item.pending.idempotencyKey) &&
+    item.status!=='accepted'&&capturedSubmissionRunning(item.pending.idempotencyKey) &&
     item.pending.request?.recipientAgentIds.some(id => queueTargetIds.includes(id)));
   if (queueActivity.current.key !== queueTargetKey) queueActivity.current = { key: queueTargetKey, active: liveQueueActivity };
   else if (liveQueueActivity) queueActivity.current.active = true;
   else if (!acceptancePendingForTarget) queueActivity.current.active = false;
-  const showQueue = Boolean(onQueue) && !destinationError &&
+  const showQueue = !assistantMessages && Boolean(onQueue) && !destinationError &&
     targetRequiredRecipientTagged &&
     shouldShowQueueControl({
       text: submissionText, hasAttachments: files.length > 0,
       agentResponding: liveQueueActivity || (queueActivity.current.active && acceptancePendingForTarget),
       disabled,
     });
-  const localRecoverySnapshots = readDraftTextRecoveries(draftStorageKey).filter(snapshot =>
-    snapshot.clientId !== draftWriteChain.current.clientId && (snapshot.text !== text ||
-      JSON.stringify(snapshot.mentionBindings) !== JSON.stringify(knownMentionBindings)));
+  const capabilityPicker = (
+    <ComposerCapabilityPicker
+          fileInput={fileInput}
+          disabled={disabled || composerLocked || draftMutationLocked || preparingFolder}
+          menuAnchor={capabilityMenuAnchor}
+          listId={capabilityListId}
+          filter={capabilityFilter}
+          attachmentsEnabled={composerAttachmentsEnabled}
+          attachmentsUnavailableReason={composerAttachmentsUnavailableReason}
+          fileCount={files.length}
+          assetLimits={assetLimits}
+          capabilities={capabilities}
+          menuActions={menuActions}
+          buttonRef={capabilityButtonRef}
+          visibleCapabilities={visibleCapabilities}
+          onFiles={addFiles}
+          onFolderFiles={files => { void importAttachments(files); }}
+          onOpen={anchor => {
+            setCapabilityFilter("");
+            setCapabilityMenuAnchor(anchor);
+            void Promise.resolve(onCapabilitiesOpen?.()).catch(() => undefined);
+          }}
+          onClose={() => {
+            setCapabilityMenuAnchor(null);
+            setCapabilityFilter("");
+          }}
+          onFilterChange={setCapabilityFilter}
+          onApplyCapability={applyCapability}
+        />
+  );
+  const sendActions = (
+        <Box data-composer-send-actions sx={{ display: assistantMessages ? "flex" : { xs: "flex", md: "contents" }, alignItems: "center", gap: 0.25, flexShrink: 0, ...(assistantMessages?{order:2}:{}) }}>
+        <ComposerErrorReview key={attachmentImportScope} error={submissionError?sendError:undefined}/>
+        <ComposerSendActions
+          runControl={assistantMessages?runControl:undefined}
+          steeringOnly={assistantMessages}
+          allowSendWhileRunning={allowSendWhileRunning}
+          canCancel={canCancel}
+          cancelPending={cancelPending}
+          canSend={canSend}
+          compact={narrowComposer}
+          destinationError={destinationError}
+          destinationMode={destinationMode}
+          mentionedBusyHandles={mentionedBusyHandles}
+          onCancel={onCancel}
+          queue={queue}
+          recipientRequiredMessage={recipientRequiredMessage}
+          sendUnavailableReason={
+            dictationSettling
+              ? "Stop voice dictation and wait for final text before sending."
+              : voiceCaptureActive ? "Finish voice input before sending." : sendUnavailableReason
+          }
+          send={send}
+          showQueue={showQueue}
+          steer={steer}
+          targetRequiredRecipientTagged={targetRequiredRecipientTagged}
+        />
+        </Box>
+  );
+  const trailingControls = (
+        <Box sx={{
+          display: "flex",
+          alignItems: "center",
+          flexShrink: 0,
+          gap: 0.25,
+          ml: "auto",
+          ...(assistantMessages?{order:1,maxWidth:"100%",minWidth:0,flexWrap:"wrap"}:{}),
+        }}>
+          {controls ? (
+            <Box sx={{ minWidth: narrowComposer ? 44 : 0, maxWidth: "100%" }}>
+              {controls}
+            </Box>
+          ) : null}
+          {enableVoiceDictation ? <DictationControls
+            inlineVoiceOptions={assistantMessages}
+            key={JSON.stringify([projectId, conversationDraftId, voiceContext?.conversationId])}
+            voiceContext={voiceContext && {...voiceContext, steeringOnly:assistantMessages}}
+            recordingContainer={voiceRecordingContainer}
+            onActiveChange={handleVoiceCaptureActiveChange}
+            onVoiceAttachment={composerAttachmentsEnabled?file=>{if(draftMutationLockedRef.current)return "The draft is busy. Try attaching again.";const selection=selectComposerFiles(files,[file],assetLimits);if(selection.error)return selection.error;addFiles([file]);return undefined;}:undefined}
+            maxRecordingBytes={Math.max(0,Math.min(assetLimits?.maxFileBytes??COMPOSER_MAX_FILE_BYTES,(assetLimits?.maxMessageBytes??COMPOSER_MAX_FILE_BYTES)-files.reduce((sum,file)=>sum+file.size,0)))}
+            disabled={disabled || composerLocked || sending}
+            onFinalTranscript={insertDictatedText}
+            onSettlingChange={handleDictationSettlingChange}
+          /> : null}
+          {assistantMessages ? sendActions : null}
+        </Box>
+  );
+
   return (
     <Paper
       ref={composerRoot}
       className="ponderosa-composer"
+      aria-busy={Boolean(conversationDraftId && !draftReady.current || sending || draftMutationLocked) || undefined}
       data-compact="false"
+      data-assistant-composer={assistantMessages||undefined}
+      data-narrow={narrowComposer}
       data-file-drag-active={fileDragActive && fileDropEnabled}
       elevation={0}
-      sx={composerSurfaceSx}
+      sx={assistantMessages ? {...composerSurfaceSx,border:0,borderRadius:0,px:0,pt:0,pb:0,bgcolor:"transparent",boxShadow:"none",overflow:"visible"} : composerSurfaceSx}
       onDragEnterCapture={event => {
         if (!Array.from(event.dataTransfer.types).includes("Files")) return;
         event.preventDefault();
@@ -3085,16 +3263,18 @@ export function Composer({
         setFileDragActive(false);
         if (!fileDropEnabled || draftMutationLockedRef.current) return;
         const entries = droppedAttachmentEntries(event.dataTransfer);
-        if (entries.some(entry => !(entry instanceof File) && entry.isDirectory)) void importAttachments(entries);
+        if (entries.some(entry => entry instanceof File ? Boolean(entry.webkitRelativePath) : entry.isDirectory)) void importAttachments(entries);
         else addFiles(Array.from(event.dataTransfer.files));
       }}
     >
       <Box sx={{ display: "contents" }}>
+      {assistantMessages && queueReviewHref && durableRetryAction === "queue" && <Button href={queueReviewHref} size="small">Review Retained Queue Submission In Agent Chat</Button>}
       {preparingFolder ? <Typography role="status" variant="caption" sx={{ px: 1.5, pt: 0.5 }}>Preparing folder ZIP…</Typography> : null}
       <ComposerDestinationBar
         destinationError={destinationError}
         destinationMode={destinationMode}
       />
+      <Box ref={setVoiceRecordingContainer} sx={{px:1.5,pt:0.75,minWidth:0,"&:empty":{display:"none"}}}/>
       {!draftMutationLocked && <ComposerAttachmentList
         disabled={draftMutationLocked}
         draftUploadStates={draftUploadStates}
@@ -3102,43 +3282,12 @@ export function Composer({
         removeFile={removeFile}
         retryDraftUpload={retryDraftUpload}
       />}
-      {localRecoverySnapshots.length ? <Button
-        onClick={() => setLocalRecoveryOpen(true)} disabled={draftMutationLocked || sending}>
-        Review other recoverable drafts
-      </Button> : null}
-      <Dialog open={localRecoveryOpen} onClose={() => setLocalRecoveryOpen(false)} fullWidth maxWidth="sm">
-        <DialogTitle>Recoverable drafts from this browser</DialogTitle>
-        <DialogContent>
-          <Typography variant="body2" sx={{ mb: 2 }}>Unsaved text from another tab or visit is still available. Choose text to restore; your current text will also stay recoverable.</Typography>
-          {localRecoverySnapshots.map(snapshot => <Box key={snapshot.clientId} sx={{ mb: 2 }}>
-            <TextField fullWidth multiline value={snapshot.text} label="Recovered text" InputProps={{ readOnly: true }} />
-            <Button disabled={draftMutationLocked || sending || !draftReady.current || Boolean(pendingSubmissionRef.current) || Boolean(draftConflict)} onClick={() => {
-              if (draftMutationLockedRef.current || sendingRef.current || pendingSubmissionRef.current || draftConflict) return;
-              // Preserve the current visit before explicitly choosing another.
-              writeDraftTextRecovery(draftStorageKey, {
-                text: textRef.current, mentionBindings: knownMentionBindings,
-                expectedRevision: draftWriteChain.current.ownedRevision,
-                clientId: draftWriteChain.current.clientId,
-              });
-              draftGeneration.current += 1;
-              draftWriteChain.current = createDraftWriteChain();
-              draftWriteChain.current.ownedRevision = snapshot.expectedRevision;
-              draftWriteChain.current.recoveredText = snapshot;
-              draftWriteChain.current.recoveryStorageKey = draftStorageKey;
-              const editor = inputRef.current;
-              editor?.replaceCanonicalRange(0, editor.getCanonicalText().length, snapshot.text, { focus: false });
-              update(snapshot.text);
-              setKnownMentionBindings(snapshot.mentionBindings);
-              setLocalRecoveryOpen(false);
-            }}>Restore this text</Button>
-          </Box>)}
-        </DialogContent>
-        <DialogActions><Button onClick={() => setLocalRecoveryOpen(false)}>Close</Button></DialogActions>
-      </Dialog>
+      <FolderImportReview imports={folderImports} files={files} disabled={!fileDropEnabled} />
       <ComposerNotices
         pastedText={draftMutationLocked ? undefined : pastedText}
         pastedTextBytes={pastedText ? utf8ByteLength(pastedText) : 0}
         error={attachments.error ?? sendError}
+        compactError={!attachments.error&&submissionError}
         attachmentError={Boolean(attachments.error)}
         draftConflict={draftConflict?.conflict}
         failedDraftContents={failedDraftContents}
@@ -3577,6 +3726,7 @@ export function Composer({
           const conflictId = draftConflict.conflict.id;
           const scope = conversationDraftId;
           const recoveryWriteChain = draftWriteChain.current;
+          observeDraftTextRecovery(draftStorageKey, recoveryWriteChain.recoveryFence);
           const generation = ++draftConflictGeneration.current;
           const scopeGeneration = draftGeneration.current;
           draftMutationLockedRef.current = true;
@@ -3604,7 +3754,7 @@ export function Composer({
                 mentionBindings: knownMentionBindings,
                 expectedRevision: current.revision,
                 clientId: recoveryWriteChain.clientId,
-              });
+              }, recoveryWriteChain.recoveryFence);
               queryClient.setQueryData(
                 queryKeys.conversationDraft.detail(scope, draftOwnerId),
                 current,
@@ -3649,7 +3799,7 @@ export function Composer({
         fullWidth
         maxWidth="md"
       >
-        <DialogTitle>View or edit pasted text</DialogTitle>
+        <DialogTitle>View Or Edit Pasted Text</DialogTitle>
         <DialogContent>
           <TextField
             disabled={draftMutationLocked}
@@ -3680,44 +3830,23 @@ export function Composer({
       </Dialog>
       <Stack
         direction="row"
-        spacing={{ xs: 0.25, sm: 0.5 }}
+        spacing={assistantMessages ? 1 : { xs: 0.25, sm: 0.5 }}
         useFlexGap
-        sx={{ alignItems: "center", flexWrap: "wrap" }}
+        sx={{ alignItems: assistantMessages ? "flex-end" : "center", flexWrap: assistantMessages ? "nowrap" : "wrap" }}
       >
+        {assistantMessages && capabilityPicker}
+        <Box data-composer-input-shell sx={assistantMessages ? {
+          display:"flex",alignItems:"flex-end",flexWrap:"wrap",gap:.25,flex:1,minWidth:0,
+          border:1,borderColor:"divider",borderRadius:"28px",bgcolor:"background.paper",p:.5,pl:1.5,
+          "&:focus-within":{borderColor:"primary.main"},
+        } : {display:"contents"}}>
         <Box data-composer-toolbar sx={{
-          display: { xs: "flex", md: "contents" },
+          display: assistantMessages ? "contents" : { xs: "flex", md: "contents" },
           alignItems: "center", gap: 0.25, flex: "1 1 0", minWidth: 0,
           overflowX: narrowComposer ? "visible" : { xs: "auto", md: "visible" },
           "& > *": { flexShrink: { xs: 0, md: undefined } },
         }}>
-        <ComposerCapabilityPicker
-          fileInput={fileInput}
-          disabled={disabled || composerLocked || draftMutationLocked || preparingFolder}
-          menuAnchor={capabilityMenuAnchor}
-          listId={capabilityListId}
-          filter={capabilityFilter}
-          attachmentsEnabled={composerAttachmentsEnabled}
-          attachmentsUnavailableReason={composerAttachmentsUnavailableReason}
-          fileCount={files.length}
-          assetLimits={assetLimits}
-          capabilities={capabilities}
-          menuActions={menuActions}
-          buttonRef={capabilityButtonRef}
-          visibleCapabilities={visibleCapabilities}
-          onFiles={addFiles}
-          onFolderFiles={files => { void importAttachments(files); }}
-          onOpen={anchor => {
-            setCapabilityFilter("");
-            setCapabilityMenuAnchor(anchor);
-            void Promise.resolve(onCapabilitiesOpen?.()).catch(() => undefined);
-          }}
-          onClose={() => {
-            setCapabilityMenuAnchor(null);
-            setCapabilityFilter("");
-          }}
-          onFilterChange={setCapabilityFilter}
-          onApplyCapability={applyCapability}
-        />
+        {!assistantMessages && capabilityPicker}
         {destinationMode === "project-chat" ? (
           <ComposerProjectDestinationAction
             disabled={draftMutationLocked}
@@ -3735,32 +3864,15 @@ export function Composer({
             {leadingControls}
           </Box>
         ) : null}
-        <Box sx={{
-          display: "flex",
-          alignItems: "center",
-          flexShrink: 0,
-          gap: 0.25,
-          ml: "auto",
-        }}>
-          {controls ? (
-            <Box sx={{ minWidth: narrowComposer ? 44 : 0, maxWidth: "100%" }}>
-              {controls}
-            </Box>
-          ) : null}
-          {enableVoiceDictation ? <DictationControls
-            disabled={disabled || composerLocked || sending}
-            onFinalTranscript={insertDictatedText}
-            onSettlingChange={handleDictationSettlingChange}
-          /> : null}
+        {!assistantMessages ? trailingControls : null}
         </Box>
-        </Box>
-        <Box ref={anchorRef} sx={{ order: -1, flex: "1 0 100%", minWidth: 0 }}>
+        <Box ref={anchorRef} sx={{ order: assistantMessages ? 0 : -1, flex: assistantMessages ? "1 1 80px" : "1 0 100%", minWidth: 0, alignSelf: assistantMessages ? "center" : undefined }}>
           <ComposerTextInput
             text={draftMutationLocked ? "" : text}
             inputRef={inputRef}
             disabled={disabled || draftMutationLocked}
             locked={composerLocked}
-            placeholder={placeholder}
+            placeholder={assistantMessages || assistantChrome ? "" : placeholder}
             comboboxEnabled={Boolean(mentionHandles || commands?.length || projectId)}
             menuOpen={menuOpen}
             listId={mentionListId}
@@ -3787,6 +3899,8 @@ export function Composer({
             mentionedBusyHandles={mentionedBusyHandles}
             mentionedHandles={mentionedHandles}
             canSend={canSend}
+            canQueue={canQueue}
+            onQueue={!assistantMessages && onQueue ? queue : undefined}
             onTextChange={(value, nextCaret) => {
               // Blank presentation during intake must not rewrite the durable
               // submitted draft or its mutation/CAS authority.
@@ -3857,29 +3971,7 @@ export function Composer({
             }}
           />
         </Box>
-        <Box data-composer-send-actions sx={{ display: { xs: "flex", md: "contents" }, alignItems: "center", gap: 0.25, flexShrink: 0 }}>
-        <ComposerSendActions
-          allowSendWhileRunning={allowSendWhileRunning}
-          canCancel={canCancel}
-          cancelPending={cancelPending}
-          canSend={canSend}
-          compact={narrowComposer}
-          destinationError={destinationError}
-          destinationMode={destinationMode}
-          mentionedBusyHandles={mentionedBusyHandles}
-          onCancel={onCancel}
-          queue={queue}
-          recipientRequiredMessage={recipientRequiredMessage}
-          sendUnavailableReason={
-            dictationSettling
-              ? "Stop voice dictation and wait for final text before sending."
-              : sendUnavailableReason
-          }
-          send={send}
-          showQueue={showQueue}
-          steer={steer}
-          targetRequiredRecipientTagged={targetRequiredRecipientTagged}
-        />
+        {assistantMessages ? trailingControls : sendActions}
         </Box>
       </Stack>
     </Paper>

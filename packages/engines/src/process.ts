@@ -8,6 +8,7 @@ import type { AgentEvent, RuntimeProcessHandle } from "@ponderosa/core";
 import { spawnContainedCli } from "./contained-spawn.js";
 import { JSONL_MAX_RECORD_BYTES, JsonlRecordLimitError, parseJsonlChunks } from "./jsonl.js";
 import { runtimeProcessHandle } from "./process-termination.js";
+import { StderrTail } from "./stderr-tail.js";
 import { runtimeEnvironment } from "./runtime-environment.js";
 
 export interface StreamProcessOptions {
@@ -90,10 +91,10 @@ export async function* streamProcess(
     child.stdin.end(stdin);
   }
 
-  let stderrTail = "";
+  const stderrTail = new StderrTail();
   child.stderr?.setEncoding("utf8");
   child.stderr?.on("data", (d: string) => {
-    stderrTail = (stderrTail + d).slice(-8192);
+    stderrTail.append(d);
   });
 
   const handle = runtimeProcessHandle(child, {
@@ -234,7 +235,7 @@ export async function* streamProcess(
     } else if (signal.aborted) {
       yield { type: "error", message: "run cancelled" };
     } else if (code !== 0 && code !== null) {
-      const tail = stderrTail.trim();
+      const tail = stderrTail.text().trim();
       yield {
         type: "error",
         message: `${label} exited with code ${code}${tail ? `: ${tail}` : ""}`,

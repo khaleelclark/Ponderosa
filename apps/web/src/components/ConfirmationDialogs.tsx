@@ -23,8 +23,10 @@ interface FormDialogShellProps {
   confirmDisabled?: boolean;
   cancelLabel?: string;
   maxWidth?: DialogProps["maxWidth"];
+  secondaryAction?: { label: string; onClick(): void; disabled?: boolean };
   onCancel(): void;
-  onConfirm(): void;
+  onExited?(): void;
+  onConfirm(): void | Promise<unknown>;
 }
 
 function FormDialogShell({
@@ -39,11 +41,15 @@ function FormDialogShell({
   confirmDisabled = false,
   cancelLabel = "Cancel",
   maxWidth = "xs",
+  secondaryAction,
   onCancel,
+  onExited,
   onConfirm,
 }: FormDialogShellProps): JSX.Element {
+  // Mutation pending arrives on a later render; fence the first click now.
+  const confirming = useRef(false);
   const close = (): void => {
-    if (!pending) onCancel();
+    if (!pending && !confirming.current) onCancel();
   };
   return (
     <Dialog
@@ -52,6 +58,7 @@ function FormDialogShell({
       fullWidth
       maxWidth={maxWidth}
       aria-busy={pending || undefined}
+      slotProps={{ transition: { onExited } }}
     >
       <DialogTitle>{title}</DialogTitle>
       <DialogContent>
@@ -60,12 +67,27 @@ function FormDialogShell({
       </DialogContent>
       <DialogActions>
         <Button onClick={close} disabled={pending}>{cancelLabel}</Button>
+        {secondaryAction && <Button onClick={secondaryAction.onClick} disabled={pending || secondaryAction.disabled}>{secondaryAction.label}</Button>}
         <Button
           autoFocus
           color={confirmColor}
           variant="contained"
           disabled={pending || confirmDisabled}
-          onClick={onConfirm}
+          onClick={() => {
+            if (pending || confirmDisabled || confirming.current) return;
+            confirming.current = true;
+            try {
+              const submission = onConfirm();
+              if (submission) {
+                // The caller owns error presentation; settlement only releases the click fence.
+                void submission.then(() => { confirming.current = false; }, () => { confirming.current = false; });
+              } else confirming.current = false;
+              return submission;
+            } catch (error) {
+              confirming.current = false;
+              throw error;
+            }
+          }}
         >
           {pending ? pendingLabel ?? `${confirmLabel.replace(/\s+$/, "")}…` : confirmLabel}
         </Button>
@@ -83,8 +105,12 @@ export interface ConfirmDialogProps {
   pending?: boolean;
   error?: ReactNode;
   confirmDisabled?: boolean;
+  cancelLabel?: string;
+  secondaryAction?: FormDialogShellProps["secondaryAction"];
+  maxWidth?: DialogProps["maxWidth"];
   onCancel(): void;
-  onConfirm(): void;
+  onExited?(): void;
+  onConfirm(): void | Promise<unknown>;
 }
 
 export function ConfirmDialog({
@@ -181,7 +207,7 @@ export function TextInputDialog({
         helperText={validationError ?? helperText}
         sx={{ mt: 1 }}
         onKeyDown={(event) => {
-          if (event.key === "Enter" && !event.shiftKey && !props.pending && !validationError) {
+          if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && event.nativeEvent.keyCode !== 229 && !props.pending && !validationError) {
             event.preventDefault();
             onConfirm(value);
           }

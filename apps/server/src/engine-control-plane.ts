@@ -172,6 +172,7 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     authentication: "checking" | "authenticated" | "unauthenticated" | "error";
     intakeReady: boolean;
     reachability: "unverified" | "reachable" | "degraded";
+    billingMode?: "subscription" | "api";
     authDetail?: string;
     authObservedAt?: string;
     authReason?: import("@ponderosa/core").EngineAuthStatus["reason"];
@@ -231,6 +232,7 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
       configured: true,
       installed: true,
       authentication: checking ? "checking" : unknown ? "error" : auth.authenticated ? "authenticated" : "unauthenticated",
+      ...(auth.billingMode ? { billingMode: auth.billingMode } : {}),
       intakeReady: enabled && !unknown && auth.authenticated && !cleanupPending && !denial && resources?.state !== "held",
       ...(resources ? { resourceAdmission: resources } : {}),
       authObservedAt: engineAuthStatuses.snapshot(id).observedAt,
@@ -518,7 +520,9 @@ export function createEngineControlPlane(context: EngineControlPlaneContext) {
     // only an explicit refresh waits for the discovery already in flight.
     if (running) {
       if (!forceRefresh && cached) return Promise.resolve(cached.value);
-      return running.operation!;
+      // This keyed registry contains catalog discovery; the shared lifecycle
+      // authority also tracks command operations that do not return a catalog.
+      return running.operation as Promise<EngineCapabilities>;
     }
     if (!forceRefresh && cached && cached.expiresAt > Date.now()) return Promise.resolve(cached.value);
 

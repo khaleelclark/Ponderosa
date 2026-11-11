@@ -396,7 +396,7 @@ function command(value: unknown, budget: ProjectionBudget, depth: number): Engin
 function mcpServer(value: unknown, budget: ProjectionBudget, depth: number): EngineMcpServer {
   const record = dataRecord(value, [
     "name", "configured", "initialization", "usable", "toolsDiscovered", "toolCount",
-    "health", "detail",
+    "health", "detail", "tools",
   ], "capabilities", budget, depth);
   const detail = optionalString(record, "detail", MAX_DESCRIPTION_CHARACTERS, "capabilities", budget, depth + 1);
   return {
@@ -410,6 +410,11 @@ function mcpServer(value: unknown, budget: ProjectionBudget, depth: number): Eng
     toolCount: finiteNumber(record, "toolCount", 0, 1_000_000, "capabilities", budget, depth + 1),
     health: enumString(record, "health", ["healthy", "unhealthy", "unknown"] as const, "capabilities", budget, depth + 1),
     ...(detail === undefined ? {} : { detail }),
+    ...(record.get("tools") === undefined ? {} : {tools:projectedArray(record.get("tools"), MAX_CAPABILITY_ROWS, "capabilities", budget, depth + 1, (entry, entryDepth) => {
+      const tool=dataRecord(entry,["name","description"],"capabilities",budget,entryDepth);
+      const description=optionalString(tool,"description",MAX_DESCRIPTION_CHARACTERS,"capabilities",budget,entryDepth+1);
+      return {name:requiredString(tool,"name",MAX_IDENTIFIER_CHARACTERS,"capabilities",budget,entryDepth+1),...(description===undefined?{}:{description})};
+    })}),
   };
 }
 
@@ -522,11 +527,27 @@ export function projectProviderModelIdentifier(value: unknown): string | undefin
   return requiredString(record, "value", MAX_IDENTIFIER_CHARACTERS, "models", budget, 0);
 }
 
+function projectNativeGoal(value: unknown): NonNullable<RuntimeCommandResult["goal"]> | null {
+  if (value === null) return null;
+  const budget = new ProjectionBudget("command");
+  const row = dataRecord(value, ["threadId", "objective", "status", "tokenBudget", "tokensUsed", "timeUsedSeconds", "createdAt", "updatedAt"], "command", budget, 0);
+  const count = (key: string): number => {
+    const n = finiteNumber(row, key, 0, Number.MAX_SAFE_INTEGER, "command", budget, 1);
+    if (!Number.isSafeInteger(n)) reject("command");
+    return n;
+  };
+  return { threadId: identifierString(row, "threadId", "command", budget, 1),
+    objective: requiredString(row, "objective", 32_000, "command", budget, 1),
+    status: enumString(row, "status", ["active", "paused", "blocked", "usageLimited", "budgetLimited", "complete"] as const, "command", budget, 1),
+    tokenBudget: row.get("tokenBudget") === null ? null : count("tokenBudget"),
+    tokensUsed: count("tokensUsed"), timeUsedSeconds: count("timeUsedSeconds"), createdAt: count("createdAt"), updatedAt: count("updatedAt") };
+}
+
 /** Copy a runtime command result before HTTP/event/persistence use. */
 export function projectProviderCommandResult(value: unknown): RuntimeCommandResult {
   if (value === undefined) return {};
   const budget = new ProjectionBudget("command");
-  const record = dataRecord(value, ["message", "contextUsage", "outcome"], "command", budget, 0);
+  const record = dataRecord(value, ["message", "contextUsage", "outcome", "goal", "goalCleared"], "command", budget, 0);
   const outcome = record.has("outcome") ? enumString(record, "outcome", ["completed", "failed", "outcome_unknown"] as const, "command", budget, 1) : undefined;
   let message = optionalString(record, "message", MAX_DESCRIPTION_CHARACTERS, "command", budget, 1);
   let contextUsage: ReturnType<typeof projectProviderContextUsage>;
@@ -536,25 +557,31 @@ export function projectProviderCommandResult(value: unknown): RuntimeCommandResu
     // invite replay of that operation or become trusted usage evidence.
     message = "Command was invoked; updated context telemetry is invalid. Do not repeat the command solely to refresh telemetry.";
   }
-  return { ...(message === undefined ? {} : { message }), ...(outcome ? { outcome } : {}), ...(contextUsage ? { contextUsage } : {}) };
+  const goal = record.has("goal") ? projectNativeGoal(record.get("goal")) : undefined;
+  const goalCleared = optionalBoolean(record, "goalCleared", "command", budget, 1);
+  return { ...(message === undefined ? {} : { message }), ...(outcome ? { outcome } : {}), ...(contextUsage ? { contextUsage } : {}),
+    ...(goal === undefined ? {} : { goal }), ...(goalCleared === undefined ? {} : { goalCleared }) };
 }
 
 /** Copy authentication probe output before it enters the shared auth cache. */
 export function projectProviderAuthStatus(value: unknown): EngineAuthStatus {
   const budget = new ProjectionBudget("auth");
-  const record = dataRecord(value, ["authenticated", "detail", "status", "reason", "source", "diagnosticFailure"], "auth", budget, 0);
+  const record = dataRecord(value, ["authenticated", "detail", "status", "reason", "source", "diagnosticFailure", "billingMode"], "auth", budget, 0);
   const detail = optionalString(record, "detail", MAX_DESCRIPTION_CHARACTERS, "auth", budget, 1);
   const status = optionalString(record, "status", 16, "auth", budget, 1);
   const authenticated = requiredBoolean(record, "authenticated", "auth", budget, 1);
   if (status !== undefined && (status !== "unknown" || authenticated)) reject("auth");
   const reason = optionalString(record, "reason", 32, "auth", budget, 1);
   const source = optionalString(record, "source", 32, "auth", budget, 1);
+  const billingMode = optionalString(record, "billingMode", 16, "auth", budget, 1);
+  if (billingMode !== undefined && !["subscription", "api"].includes(billingMode)) reject("auth");
   const diagnosticFailure=optionalString(record,"diagnosticFailure",32,"auth",budget,1);
   if(diagnosticFailure!==undefined&&diagnosticFailure!=='cleanup_failed')reject('auth');
   if (reason !== undefined && (status !== "unknown" || !["timeout", "spawn_failed", "malformed", "cleanup_failed", "probe_failed", "probe_pending"].includes(reason))) reject("auth");
-  if (source !== undefined && !["cli_status", "subscription_presence"].includes(source)) reject("auth");
+  if (source !== undefined && !["cli_status", "subscription_presence", "environment_presence"].includes(source)) reject("auth");
   return {
     authenticated,
+    ...(billingMode ? { billingMode: billingMode as "subscription" | "api" } : {}),
     ...(diagnosticFailure ? { diagnosticFailure: diagnosticFailure as "cleanup_failed" } : {}),
     ...(reason ? { reason: reason as EngineAuthStatus["reason"] } : {}),
     ...(source ? { source: source as EngineAuthStatus["source"] } : {}),

@@ -1,3 +1,6 @@
+import {productApiPath} from "../api/productScope";
+import {adoptQueuedMessageReceipt} from "./messageDeliveryReceipts";
+import { assistantSubmissionError } from "./chat/composerUtils";
 import type { AssetDto, DraftPendingSubmissionDto, EngineDto, SendMessageRequest, SendMessageResponse } from "@ponderosa/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
@@ -33,6 +36,7 @@ import {
 import { useQueuedMessageCommandMutation } from "./useQueuedMessageCommandMutation";
 
 interface AgentMessageControllerInput {
+  steeringOnly?: boolean;
   agentId: string;
   projectId?: string;
   engine?: EngineDto;
@@ -56,6 +60,7 @@ interface AgentMessageSubmissionPrepared {
 }
 
 export function useAgentMessageController({
+  steeringOnly = false,
   agentId,
   projectId,
   engine,
@@ -70,8 +75,10 @@ export function useAgentMessageController({
   const activeAgentId = useRef(agentId);
   activeAgentId.current = agentId;
   const sendMessage = useSendMessage();
+  const namespace=productApiPath('/api/conversations');
+  const queueKey=queryKeys.queuedMessages.agent(agentId);
   const queuedMessagesQuery = useQuery({
-    queryKey: queryKeys.queuedMessages.agent(agentId),
+    queryKey: queueKey,
     queryFn: () => api.listQueuedAgentMessages(agentId),
   });
   const sendAttempt = useRef<IdempotentAttempt<AgentMessageSubmissionPrepared>>();
@@ -96,10 +103,10 @@ export function useAgentMessageController({
     }
   }, [queuedMessageFailure, queuedMessagesQuery.data, queuedMessagesQuery.isFetching]);
   const invalidateQueuedMessages = () =>
-    void queryClient.invalidateQueries({
+    queryClient.invalidateQueries({
       queryKey: queryKeys.queuedMessages.agent(agentId),
     });
-  const commandOptions = { attempts: queuedCommandAttempts, invalidate: invalidateQueuedMessages, onFailure: setQueuedMessageFailure };
+  const commandOptions = { owner:`agent:${agentId}`, attempts: queuedCommandAttempts, invalidate: invalidateQueuedMessages, onFailure: setQueuedMessageFailure };
   const cancelQueuedMessage = useQueuedMessageCommandMutation({
     ...commandOptions,
     input: (deliveryId: string) => ({ command: "cancel", deliveryId }),
@@ -126,6 +133,7 @@ export function useAgentMessageController({
       context?: {
         retryPreparedAttempt?: boolean;
         capturedSubmission?: boolean;
+        beforeDispatch?(identity?: {prefix:string;seed:string}): Promise<void>;
         pendingSubmission?: DraftPendingSubmissionDto;
         persistPendingSubmission?(
           value: DraftPendingSubmissionDto,
@@ -134,6 +142,10 @@ export function useAgentMessageController({
       },
     ) => {
       const sent = (async () => {
+        if (steeringOnly) {
+          const error = assistantSubmissionError(text, activeRunDelivery === "queue" || context?.pendingSubmission?.request?.runtime.activeRunDelivery === "queue");
+          if (error) throw new Error(error);
+        }
         let pendingSubmission = context?.pendingSubmission;
         if (pendingSubmission && !pendingSubmission.request && context?.persistPendingSubmission) {
           pendingSubmission = withPendingRequest(pendingSubmission, {
@@ -247,6 +259,7 @@ export function useAgentMessageController({
         const response = await sendMessage.mutateAsync(
           {
             agentId: prepared.agentId,
+            beforeDispatch: () => context?.beforeDispatch?.(projectId?{prefix:"user-message",seed:`${projectId}\0${prepared.agentId}\0${attempt.idempotencyKey}`}:undefined) ?? Promise.resolve(),
             request: {
               ...prepared.request,
               idempotencyKey: attempt.idempotencyKey,
@@ -255,7 +268,10 @@ export function useAgentMessageController({
           },
           {
             onSuccess: response => {
+              if(productApiPath('/api/conversations')!==namespace)return;
               if (activeAgentId.current === prepared.agentId) {
+                if(!steeringOnly&&prepared.request.activeRunDelivery==='queue'&&response.queued&&response.queuedMessage)
+                  adoptQueuedMessageReceipt(queryClient,queueKey,[response.queuedMessage]);
                 onAccepted?.(response, prepared.request.activeRunDelivery ?? "steer");
                 onNotice(directAgentDeliveryNotice(response, prepared.request.activeRunDelivery ?? "steer"));
               }
@@ -282,14 +298,7 @@ export function useAgentMessageController({
     cancelQueuedMessage,
     editQueuedMessage,
     queuedMessagesQuery,
-    queuedMessageFailure: queuedMessageFailure ?? (queuedMessagesQuery.error
-      ? {
-          error: queuedMessagesQuery.error instanceof Error
-            ? queuedMessagesQuery.error
-            : new Error(String(queuedMessagesQuery.error)),
-          retry: () => { void queuedMessagesQuery.refetch(); },
-        }
-      : undefined),
+    queuedMessageFailure,
     sendMessage,
     steerQueuedMessage,
     submitAgentMessage,

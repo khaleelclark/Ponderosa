@@ -34,6 +34,8 @@ export interface ChatComposerContract {
       /** Independent captured intent retains its exact uploads until settlement. */
       capturedSubmission?: boolean;
       capturedProjectId?: string;
+      /** Persist the effect boundary immediately before a work-starting mutation. */
+      beforeDispatch?(identity?: {prefix:string;seed:string}): Promise<void>;
       pendingSubmission?: DraftPendingSubmissionDto;
       persistPendingSubmission?(
         value: DraftPendingSubmissionDto,
@@ -55,6 +57,8 @@ export interface ChatComposerContract {
       /** Independent captured intent retains its exact uploads until settlement. */
       capturedSubmission?: boolean;
       capturedProjectId?: string;
+      /** Persist the effect boundary immediately before a work-starting mutation. */
+      beforeDispatch?(identity?: {prefix:string;seed:string}): Promise<void>;
       pendingSubmission?: DraftPendingSubmissionDto;
       persistPendingSubmission?(
         value: DraftPendingSubmissionDto,

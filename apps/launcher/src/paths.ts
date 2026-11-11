@@ -1,6 +1,5 @@
 import { requireLocalLauncherMutation } from "./control.js";
-import { randomUUID } from "node:crypto";
-import { chmodSync, closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from "@ponderosa/native-host/fs";
+import { chmodSync, mkdirSync, readFileSync, writeJsonAtomic } from "@ponderosa/native-host/fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
@@ -142,24 +141,7 @@ export function readLauncherState(pathname: string): LauncherState | undefined {
   }
 }
 
-export function writeJsonAtomic(pathname: string, value: unknown): void {
-  const temporary = `${pathname}.${randomUUID()}.tmp`;
-  writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600, flag: "wx" });
-  try { chmodSync(temporary, 0o600); } catch { /* Windows ignores POSIX modes. */ }
-  // Windows requires a writable handle for FlushFileBuffers (fsync). Opening
-  // the completed temporary file read-only works on POSIX but fails with EPERM
-  // on Windows before the launcher can publish its state.
-  const file = openSync(temporary, "r+");
-  try { fsyncSync(file); } finally { closeSync(file); }
-  renameSync(temporary, pathname);
-  // A durable rename requires the containing directory on POSIX. Windows
-  // does not permit opening directories this way, while its rename remains
-  // atomic for the same-volume launcher state used here.
-  if (process.platform !== "win32") {
-    const directory = openSync(path.dirname(pathname), "r");
-    try { fsyncSync(directory); } finally { closeSync(directory); }
-  }
-}
+export { writeJsonAtomic };
 
 /** Bind mutable launcher paths to a retained physical root after admission. */
 export function bindLauncherPaths(paths: LauncherPaths, root: string, applicationRoot: string): LauncherPaths {

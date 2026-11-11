@@ -1,4 +1,4 @@
-import { PONDEROSA_MESSAGE_TOOL } from "@ponderosa/core";
+import { PONDEROSA_MESSAGE_TOOL, PONDEROSA_REPLY_STREAM_TOOL } from "@ponderosa/core";
 import type { AgentRunDto } from "@ponderosa/core";
 import type { ActivityStreamEntry } from "../activity/activityStream.js";
 
@@ -15,6 +15,7 @@ function isSettledMessageAttempt(
 export function receiptActivityEntries(
   entries: ActivityStreamEntry[],
   runStatus: AgentRunDto["status"] | undefined,
+  assistantMessages = false,
 ): ActivityStreamEntry[] {
   const failedAttempts = entries
     .filter(isSettledMessageAttempt)
@@ -27,6 +28,12 @@ export function receiptActivityEntries(
 
   return entries.flatMap((entry) => {
     if (entry.kind === "run_header") return [];
+    // The ordinary Assistant reply owns answer text. Advanced audit views still
+    // receive the original transport entries and response segments unchanged.
+    if (assistantMessages && entry.kind === "response") return [];
+    if (assistantMessages && entry.kind === "tool" && entry.name === PONDEROSA_REPLY_STREAM_TOOL.name) {
+      return entry.result?.isError ? [{id:entry.id,seq:entry.seq,createdAt:entry.createdAt,kind:"notice" as const,title:"Reply Delivery Needs Review",detail:"A reply delivery attempt failed. Review Activity for the original details."}] : [];
+    }
     if (isSettledMessageAttempt(entry) && entry.result.isError !== true) return [];
     if (runStatus === "completed" &&
         entry === latestFailure) {
@@ -46,6 +53,7 @@ export function receiptActivityEntries(
 export function hasVisibleReceiptActivity(
   entries: ActivityStreamEntry[],
   runStatus: AgentRunDto["status"] | undefined,
+  assistantMessages = false,
 ): boolean {
-  return receiptActivityEntries(entries, runStatus).length > 0;
+  return receiptActivityEntries(entries, runStatus, assistantMessages).length > 0;
 }

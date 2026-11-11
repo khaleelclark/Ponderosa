@@ -1,6 +1,8 @@
+import { currentRequestAttachmentSql } from "./coordination-v3-request-lineage.js";
 import type Database from "better-sqlite3";
 import {
   TERMINAL_REQUEST_STATES,
+  isReplyStreamCorrelation,
   evaluateCoordinationJoin,
   joinTransitionNeedsActivation,
   reduceCoordinationRequest,
@@ -60,6 +62,8 @@ export class CoordinationV3RequestAuthority {
       runId: string,
       agentId: string,
     ) => string[],
+    private readonly requestSteeringAdmission: (runId: string, agentId: string, requestId: string) => "turn" | "steer" | "unconfirmed" | "unattached",
+    private readonly requireCurrentPromptInjection: (authorization: NonNullable<UpdateRequestV3Input["runAuthorization"]>, injectionId: string | null) => void,
     private readonly createActivation: (input: CreateActivationV3Input) => string,
   ) {}
 
@@ -67,6 +71,7 @@ export class CoordinationV3RequestAuthority {
     input: UpdateRequestV3Input,
     artifacts: RuntimeArtifactInputV3[],
   ): string {
+    if(input.payload&&typeof input.payload==='object'&&Object.hasOwn(input.payload,'__replyStream'))throw Error('Request stream correlation is host metadata');
     return payloadHash({
       requestId: input.requestId,
       kind: input.kind,
@@ -164,6 +169,8 @@ export class CoordinationV3RequestAuthority {
   }
 
   updateRequest(input: UpdateRequestV3Input): RequestUpdateV3Result {
+    if(input.replyStream&&(!isReplyStreamCorrelation(input.replyStream)||!['completed','blocked','failed'].includes(input.kind)||input.replyStream.steeringInjectionId!==input.steeringInjectionId||input.replyStream.sourceId!==input.requestId||input.actor.kind!=='agent'||
+       !input.runAuthorization||input.runAuthorization.agentId!==input.actor.id||input.runAuthorization.runId!==input.replyStream.runId||input.runAuthorization.fencingToken!==input.replyStream.fence))throw Error('Invalid host Request stream correlation');
     const now = input.now ?? new Date().toISOString();
     const initialRequest = this.support.getRequestRow(input.requestId);
     const { artifacts, hash } = this.resolvedUpdate(input, initialRequest.project_id);
@@ -203,7 +210,8 @@ export class CoordinationV3RequestAuthority {
               LEFT JOIN coordination_request_updates request_update
                 ON source.source_kind = 'request_update'
                 AND request_update.id = source.source_id
-              WHERE attached.run_id = run.id AND (
+              WHERE attached.run_id = run.id
+                AND ${currentRequestAttachmentSql("attached")} AND (
                 (
                   source.source_kind = 'request'
                   AND source.source_id = ?
@@ -324,6 +332,31 @@ export class CoordinationV3RequestAuthority {
             "request is not attached to the authoritative run",
           );
         }
+        const admission = this.requestSteeringAdmission(
+          input.runAuthorization.runId, input.runAuthorization.agentId, input.requestId,
+        );
+        if (!requesterOwnedTerminalControl && admission === "unconfirmed") {
+          throw new Error("Request delivery is not yet confirmed");
+        }
+        // A peer instruction may affect the work already under way. Fence
+        // fresh updates to older Requests too, once that steer is acknowledged.
+        const latest = this.sqlite.prepare(`
+          SELECT id, kind FROM scheduler_prompt_injections
+          WHERE run_id = ? AND state = 'acknowledged'
+          ORDER BY sequence DESC, created_at DESC, id DESC LIMIT 1
+        `).get(input.runAuthorization.runId) as {id: string; kind: string} | undefined;
+        const newPeerSteer = latest?.kind === 'steer' && Boolean(this.sqlite.prepare(`
+          SELECT 1 FROM scheduler_prompt_injections injection, json_each(injection.activation_ids_json) member
+          JOIN agent_activations activation ON activation.id = member.value
+          WHERE injection.run_id = ? AND injection.kind = 'steer' AND injection.state = 'acknowledged'
+            AND activation.kind IN ('coordination_request','ordinary_message','urgent_message')
+            AND activation.prompt_class <> 'human'
+          LIMIT 1
+        `).get(input.runAuthorization.runId));
+        if (!requesterOwnedTerminalControl && (admission === "steer" || newPeerSteer)) {
+          if (!input.steeringInjectionId) throw new Error("Request update requires the current prompt fence");
+          this.requireCurrentPromptInjection(input.runAuthorization, input.steeringInjectionId);
+        }
       }
       this.runtimeArtifactAuthority.requireRuntimeArtifacts(
         request.project_id,
@@ -371,7 +404,7 @@ export class CoordinationV3RequestAuthority {
         input.actor.kind,
         input.actor.id ?? null,
         input.inReplyToUpdateId ?? null,
-        stableJson(input.payload ?? null),
+        stableJson(input.replyStream?{...(input.payload as Record<string,unknown>),__replyStream:input.replyStream}:input.payload??null),
         hash,
         next.state,
         next.version,

@@ -3,6 +3,10 @@ import assert from 'node:assert/strict';
 import { withFixture, until } from '../shared/fixture.mjs';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
+import net from 'node:net';
+import { AgentStore } from '@ponderosa/agents';
+import { inertCodex } from '../shared/inert-codex.mjs';
+import { inertClaudeHandoff } from '../shared/inert-claude-handoff.mjs';
 import { createServer } from '../../apps/server/dist/app.js';
 import { processBirthMarker } from '@ponderosa/engines';
 
@@ -25,7 +29,7 @@ test('check 31: provider status reads do not test access; explicit recheck probe
 import { publicProviderFailure, publicProviderFailureEvent, publicProviderFailureSummary, publicProviderFailureRemediation, outcomeCauseExplanation } from '@ponderosa/core';
 import { mapClaudeEvent } from '../../packages/engines/dist/claude-events.js';
 import { ClaudeModelCatalogProbe } from '../../packages/engines/dist/claude-models.js';
-import { mkdtemp, writeFile, chmod, rm } from 'node:fs/promises';
+import { mkdtemp, writeFile, chmod, rm, readdir, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -110,7 +114,7 @@ test('Claude model test ignores custom MCP workflows without spending extra turn
 import { defaultEngineRegistrations } from '@ponderosa/engines';
 import { createRequire } from 'node:module';
 import { createEngineControlPlane } from '../../apps/server/dist/engine-control-plane.js';
-import { runtimeSelectionError } from '../../apps/server/dist/runtime-selection.js';
+import { runtimeSelectionError, providerRuntimeSessionContractHash, providerSessionContractHash, providerToolContractHash, communicationV3SessionPrompt, providerDynamicTools } from '../../apps/server/dist/runtime-selection.js';
 import { registerEngineRoutes } from '../../apps/server/dist/routes/engines.js';
 import { EngineAuthStatusCache } from '../../apps/server/dist/engine-auth-cache.js';
 const Fastify = createRequire(new URL('../../apps/server/package.json', import.meta.url))('fastify');
@@ -238,6 +242,172 @@ test('retained session inventory cannot replace a newly installed CLI catalog or
   } finally { await plane.drainEngineModelCatalogDiscoveries(); await app.close(); }
 });
 
+test('deferred sign-in checks stay checking during host pressure and recover without authorizing stale credentials', async t => {
+  t.mock.timers.enable({apis:['Date'],now:Date.parse('2026-01-01T00:00:00Z')});
+  const app=Fastify({logger:false}),auth=new EngineAuthStatusCache();
+  let reads=0,answer={authenticated:true},resources={state:'held',protected:true,reason:'host_resource_pressure'};
+  const registration=defaultEngineRegistrations().find(r=>r.adapter.id==='claude');
+  registration.isInstalled=()=>true;registration.authStatus=async()=>{reads++;return answer;};
+  const plane=createEngineControlPlane({engines:new Map([['claude',registration]]),store:{listAgents:()=>[]},workspace:{getPreferences:()=>({})},engineAuthStatuses:auth,engineAvailability:{get(){},denial(){},servingBuildRevision:'test',servingInstanceId:'test'},providerUsage:{},providerEnabled:()=>true,applyOperatorModelOptions(){},publishWorkspaceSince(){},appendWorkspace(){},activeRuns:new Map(),app,deletingProjectIds:new Set(),isClosed:()=>false,providerProcessAuthority:{count:()=>0,register(){assert.fail('Unexpected provider process')}},resourceAdmission:{snapshot:()=>resources}});
+  try {
+    await auth.get('claude',registration.authStatus);t.mock.timers.tick(31000);
+    const held=await plane.runtimeStatus('claude',registration);
+    assert.equal(reads,1);assert.equal(held.authentication,'checking');assert.equal(held.intakeReady,false);
+    assert.equal(held.authLastKnown.authenticated,true);assert.equal(held.resourceAdmission.state,'held');
+    assert.match(held.authDetail,/deferred.*host resources/i);assert.match(held.availabilityDetail,/host resources/i);
+    assert.equal(plane.runtimeAdmissionBlocker('claude',registration).kind,'host_resource_pressure');
+    resources={state:'ready',protected:true,reason:'within_budget'};
+    const recovered=await plane.runtimeStatus('claude',registration);
+    assert.equal(reads,2);assert.equal(recovered.authentication,'authenticated');assert.equal(recovered.intakeReady,true);
+    auth.invalidate('claude');answer={authenticated:false};
+    const signedOut=await plane.runtimeStatus('claude',registration);
+    assert.equal(signedOut.authentication,'unauthenticated');assert.equal(signedOut.intakeReady,false);assert.match(signedOut.authDetail,/required/);
+    auth.invalidate('claude');answer={authenticated:false,status:'unknown',reason:'probe_pending'};
+    const checking=await plane.runtimeStatus('claude',registration);
+    assert.equal(checking.authentication,'checking');assert.match(checking.authDetail,/pending/);assert.equal(checking.intakeReady,false);
+    auth.invalidate('claude');answer={authenticated:false,status:'unknown',reason:'timeout'};
+    assert.equal((await plane.runtimeStatus('claude',registration)).authentication,'error');
+    auth.invalidate('claude');resources={state:'ready',protected:true,reason:'within_budget'};
+    let release,entered;const waiting=new Promise(resolve=>release=resolve),started=new Promise(resolve=>entered=resolve);
+    registration.authStatus=async()=>{entered();await waiting;return {authenticated:true}};
+    const pending=plane.runtimeStatus('claude',registration);await started;
+    resources={state:'held',protected:true,reason:'host_resource_pressure'};release();
+    const changed=await pending;assert.equal(changed.authentication,'authenticated');assert.equal(changed.intakeReady,false);
+    assert.equal(changed.resourceAdmission.state,'held');assert.match(changed.availabilityDetail,/host resources/i);
+
+  } finally {await app.close();}
+});
+
+test('Claude probe start failures remain operation errors when process registration also refuses the helper', {timeout:15000,skip:process.platform==='win32'?'Covers POSIX asynchronous spawn failure; Windows launches behind the existing Job gate':false},async t=>{
+ const {spawnSync}=await import('node:child_process');
+ const root=await mkdtemp(path.join(tmpdir(),'ponderosa-probe-start-'));t.after(()=>rm(root,{recursive:true,force:true}));
+ const moduleUrl=new URL('../../packages/engines/dist/claude-models.js',import.meta.url).href;
+ for(const method of ['discover','validate'])for(const refusesRegistration of [false,true]){
+  const source=`
+   import assert from 'node:assert/strict';
+   import {ClaudeModelCatalogProbe} from ${JSON.stringify(moduleUrl)};
+   const probe=new ClaudeModelCatalogProbe({bin:process.execPath,killGraceMs:50});
+   const handles=[],context={signal:new AbortController().signal,onRuntimeSpawned(handle){handles.push(handle);if(${refusesRegistration})throw new Error('fixture registration refused missing identity');}};
+   const operation=${JSON.stringify(method)}==='discover'?()=>probe.discover(${JSON.stringify(path.join(root,'missing-directory'))},context):()=>probe.validate(${JSON.stringify(path.join(root,'missing-directory'))},'fixture',context);
+   await assert.rejects(operation);
+   await Promise.all(handles.map(handle=>handle.close()));
+   assert.ok(handles.every(handle=>!handle.isAlive()),'Failed helper left process authority alive');
+   await new Promise(resolve=>setTimeout(resolve,30));
+   console.log('failure reported; host survived');
+  `;
+  const result=spawnSync(process.execPath,['--unhandled-rejections=strict','--input-type=module','-e',source],{cwd:root,env:{...process.env,PONDEROSA_AGENT_SCOPE_MODE:''},encoding:'utf8',timeout:3000});
+  assert.equal(result.status,0,`${method}, registration refuses=${refusesRegistration}: ${result.error?.message??result.stderr.slice(-1800)}`);
+  assert.match(result.stdout,/failure reported; host survived/u);
+ }
+});
+
+
+for (const engine of ['codex', 'claude']) test(`${engine}: reusable Agent Role creates idle once and updates only future session snapshots`, { timeout: 90000 }, async t => {
+ let store,native,port;
+ if(engine==='claude'){
+  const reservation=net.createServer();await new Promise((resolve,reject)=>{reservation.once('error',reject);reservation.listen(0,'127.0.0.1',resolve);});port=reservation.address().port;
+  await new Promise((resolve,reject)=>reservation.close(error=>error?reject(error):resolve()));
+ }
+ const origin=port?`http://127.0.0.1:${port}`:undefined;
+ await withFixture(t, async f => {
+  if(port)await f.listen({host:'127.0.0.1',port});
+  const inputs=async()=>engine==='codex'?(await native.requests()).filter(row=>row.method==='turn/start').map(row=>({session:row.params.threadId,input:row.params.input})):(await native.frames()).filter(row=>row.kind==='input'&&row.frame.type==='user').map(row=>({session:row.session,input:row.frame.message}));
+  const answer=text=>engine==='codex'?native.sendAnswer(text):native.answer(text);
+  const publish=async text=>{
+   if(engine==='codex'){
+    const checkpoint='Native role-task checkpoint: '+text;await native.sendWorkResult(checkpoint);
+    const work=await until(()=>store.readEvents(agent.id).find(row=>row.event.type==='tool_result'&&row.event.output===checkpoint),'native role checkpoint consumed',20000),generation=(await inputs()).at(-1).session;
+    await until(()=>store.readEvents(agent.id).some(row=>row.seq>work.seq&&row.event.type==='context_usage'&&row.event.providerSessionGeneration===generation),'normal Codex usage after role-task work',20000);
+    const count=(await native.requests()).filter(row=>row.toolResponse).length;await native.sendTool('ponderosa_message',{text});
+    const receipt=await until(async()=>{const rows=(await native.requests()).filter(row=>row.toolResponse);return rows.length>count?rows[count].toolResponse:undefined;},'native role reply receipt',20000);assert.equal(receipt.result.success,true,JSON.stringify(receipt.result));
+   }else{
+    const count=(await native.frames()).filter(row=>row.kind==='publication').length;await native.publishAnswer(text);
+    const receipt=await until(async()=>{const rows=(await native.frames()).filter(row=>row.kind==='publication');return rows.length>count?rows[count]:undefined;},'native Claude role publication',20000);assert.equal(receipt.status,200);
+   }
+  };
+  const chat=f.ok(await f.api('POST','/api/chats',{label:'Standing role fixture',defaultEngine:engine},{'idempotency-key':crypto.randomUUID()}));
+  const url = `/api/projects/${chat.projectId}/agents`;
+  const body = { title: 'Reusable Reviewer', engine, conversationId: chat.id, role: 'Review Cafe\u0301\r\nCarefully', idempotencyKey: crypto.randomUUID() };
+  const agent = f.ok(await f.api('POST', url, body));
+  assert.equal(agent.role, 'Review Café\nCarefully');
+  assert.equal(f.ok(await f.api('POST', url, body)).id, agent.id);
+  assert.equal((await f.api('POST', url, { ...body, role: 'A different role' })).status, 409);
+  const exported = f.ok(await f.api('GET', `/api/agents/${agent.id}/export?mode=template`));
+  assert.equal(exported.agents[0].initialInstructions, agent.role, 'Export lost the explicit standing role');
+  assert.equal((await inputs()).length, 0, 'Standing setup dispatched task work');
+  assert.equal((await f.detail(agent.id)).runs.length, 0);
+  for (const role of [{ bad: true }, 'x'.repeat(8001)]) assert.equal((await f.api('PATCH', `/api/agents/${agent.id}`, { role })).status, 400);
+  await f.send(agent.id, 'Perform first controlled task');
+  await until(async()=>(await inputs()).length===1,'first native role input',20000);
+  const finding='Earlier role-fixture evidence remains verified.';
+  if(engine==='codex')await native.sendWorkResult(finding);else await native.workResult(finding);
+  await until(()=>store.readEvents(agent.id).some(row=>row.event.type==='tool_result'&&row.event.output===finding),'retained native role finding');
+  await publish('First controlled task completed.');
+  const first = await f.settled(agent.id), before = first.runs.map(run => run.id);
+  const firstInput = f.ok(await f.api('GET', `/api/runs/${first.runs[0].id}/provider-input?exact=1`));
+  assert.match(firstInput.exactSystemPrompt, /Review Café\nCarefully/u);
+  await f.send(agent.id,'Controlled held task');await until(async()=>(await inputs()).length===2,'active native role task',20000);
+  const active = (await f.detail(agent.id)).runs.find(run => !before.includes(run.id));
+  const activeInput = f.ok(await f.api('GET', `/api/runs/${active.id}/provider-input?exact=1`));
+  const changed = f.ok(await f.api('PATCH', `/api/agents/${agent.id}`, { role: 'Check Only Verified Evidence' }));
+  assert.equal(changed.role, 'Check Only Verified Evidence');
+  assert.deepEqual(f.ok(await f.api('GET', `/api/runs/${active.id}/provider-input?exact=1`)), activeInput, 'Role save rewrote accepted Run instructions');
+  await publish('Finished the owned task');
+  const completed = await f.settled(agent.id, before);
+  const handoff=async(task,summary)=>{
+   const prior=(await inputs()),count=prior.length,old=prior.at(-1).session;
+   await f.send(agent.id,task);
+   const queued=await until(()=>store.sqlite.prepare('SELECT id FROM agent_activations WHERE agent_id=? AND instr(payload_json,?)>0').get(agent.id,task),'exact queued role task');
+   const source=await until(async()=>{const rows=await inputs();return rows.length===count+1?rows:undefined;},'old native role handoff',20000);
+   assert.equal(source[count].session,old);assert.ok(!JSON.stringify(source[count].input).includes(task),'Queued work is not replayed in the old context');
+   await answer(summary);
+   const replacement=await until(async()=>{const rows=await inputs();return rows.length===count+2?rows:undefined;},'verified native role replacement',20000);
+   assert.notEqual(replacement[count+1].session,old);assert.ok(JSON.stringify(replacement[count+1].input).includes(summary),'Replacement preserves the completed evidence and remaining objective');
+   await answer('Continuity context received.');
+   const final=await until(async()=>{const rows=await inputs();return rows.length===count+3?rows:undefined;},'same queued role task after handoff',20000);
+   assert.equal(final[count+2].session,replacement[count+1].session);assert.ok(JSON.stringify(final[count+2].input).includes(task));
+   assert.equal(final.filter(row=>JSON.stringify(row.input).includes(task)).length,1);
+   assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(queued.id).n,1);
+   const run=store.sqlite.prepare('SELECT run_id FROM scheduler_run_activations WHERE activation_id=?').get(queued.id);
+   return {runId:run.run_id,input:f.ok(await f.api('GET',`/api/runs/${run.run_id}/provider-input?exact=1`))};
+  };
+  const next=await handoff('Perform next controlled task',finding+' The first controlled task and owned held task are complete. Complete only the next queued objective under the current standing role.');
+  const nextInput=next.input;
+  assert.match(nextInput.exactSystemPrompt, /Check Only Verified Evidence/u);
+  assert.notEqual(nextInput.systemPromptHash, activeInput.systemPromptHash);
+  await publish('Next controlled task completed.');await f.settled(agent.id,completed.runs.map(run=>run.id));
+  assert.deepEqual(f.ok(await f.api('GET',`/api/runs/${active.id}/provider-input?exact=1`)),activeInput,'The verified handoff cannot rewrite the earlier role snapshot');
+  f.ok(await f.api('PATCH', `/api/agents/${agent.id}`, { role: null }));
+  const previous=(await f.detail(agent.id)).runs.map(run=>run.id);
+  const cleared=await handoff('Perform task after clearing explicit role',finding+' Earlier tasks are complete. Preserve their verified results without repeating effects; finish the next queued objective under current instructions.');
+  const clearedInput=cleared.input;
+  assert.doesNotMatch(clearedInput.exactSystemPrompt, /Agent standing role|Check Only Verified Evidence/u);
+  await publish('Task after clearing explicit role completed.');await f.settled(agent.id,previous);
+  assert.deepEqual(f.ok(await f.api('GET',`/api/runs/${next.runId}/provider-input?exact=1`)),nextInput,'Removing the role cannot rewrite a previously accepted snapshot');
+  assert.equal((await inputs()).length,8);assert.equal(store.sqlite.prepare('SELECT count(*) n FROM context_rollovers WHERE agent_id=?').get(agent.id).n,2);
+  assert.equal(store.readEvents(agent.id).filter(row=>row.event.type==='session_reset').length,0);
+  await f.reopen();
+  assert.equal((await f.detail(agent.id)).agent.role, undefined);
+ },{...(origin?{agentBaseUrl:origin}:{}),storeFactory:root=>store=new AgentStore(root),nativeAdapterForEngine:async root=>(native=engine==='codex'?await inertCodex(root,{advertiseModels:true,uniqueThreads:true}):await inertClaudeHandoff(root,{expectedOrigin:origin})).adapter});
+});
+
+
+test('adding standing roles preserves existing creation fingerprints when no role was requested', { timeout: 30000 }, async t => {
+  const { AgentStore } = await import('@ponderosa/agents');
+  const { createHash } = await import('node:crypto');
+  const { stableJson } = await import('../../packages/agents/dist/coordination-v3-canonical-json.js');
+  let store;
+  await withFixture(t, async f => {
+    const chat = await f.createChat('Existing creation identity');
+    const idempotencyKey = crypto.randomUUID(), body = { title: 'Legacy Intent', engine: 'codex', conversationId: chat.id, idempotencyKey };
+    const agent = f.ok(await f.api('POST', `/api/projects/${chat.projectId}/agents`, body));
+    const oldPayload = { projectId: chat.projectId, title: body.title, engine: body.engine, conversationId: chat.id, model: null, effort: null, speed: null, initialMessage: null, draftAttachmentIds: [], draftOwnerId: null, presetId: null, managerAgentId: null, awaitResult: null, managementPermissions: null };
+    const expected = createHash('sha256').update(stableJson(oldPayload)).digest('hex');
+    assert.equal(store.sqlite.prepare('SELECT payload_hash FROM agent_creation_operations WHERE idempotency_key = ?').get(idempotencyKey).payload_hash, expected);
+    assert.equal(f.ok(await f.api('POST', `/api/projects/${chat.projectId}/agents`, body)).id, agent.id);
+  }, { storeFactory: dataDir => (store = new AgentStore(dataDir)) });
+});
+
 import {EngineAvailabilityStore} from '../../apps/server/dist/engine-availability-store.js';
 import {ProviderProcessAuthority} from '../../apps/server/dist/provider-process-authority.js';
 import {openCurrentMemoryDatabase} from '../../packages/agents/dist/state-admission.js';
@@ -258,14 +428,14 @@ test('native diagnostic handles remain owned blockers after failed cleanup and c
  owner.pruneExited();assert.equal(owner.count(),1);fail=false;await owner.terminateDiagnostics();assert.equal(owner.count(),0);assert.equal(closes,2);
 });
 
-import {providerSessionFacade,projectProviderRootExitDetail} from '../../apps/server/dist/provider-session-facade.js';
+import {providerSessionFacade,projectProviderRootExitDetail,ProviderRuntimeBoundaryError} from '../../apps/server/dist/provider-session-facade.js';
 test('provider exit evidence and resume validation cross only closed data boundaries',()=>{
  const raw={engineAgentId:'session',events:{async *[Symbol.asyncIterator](){}},isAlive:()=>true,close:async()=>{},startTurn:async()=>({turnId:'t'}),steer:async()=>({status:'not_active'}),interrupt:async()=>{},validatesResumeBeforeTurn:true};
  assert.equal(providerSessionFacade(raw).validatesResumeBeforeTurn,true);
  let getterCalls=0;const invalid=Object.defineProperty({},'terminalEvent',{get(){getterCalls++;return {type:'error',message:'forged'}}});
  assert.throws(()=>projectProviderRootExitDetail(invalid));assert.equal(getterCalls,0);
- const detail=projectProviderRootExitDetail({outputDraining:false,exitCode:0,terminalEvent:{type:'error',category:'quota_exhausted',message:'secret arbitrary detail',quotaResetAt:'2030-01-01T00:00:00.000Z'}});
- assert.equal(detail.terminalEvent.category,'quota_exhausted');assert.equal(detail.terminalEvent.quotaResetAt,'2030-01-01T00:00:00.000Z');assert.doesNotMatch(detail.terminalEvent.message,/secret/);
+ const detail=projectProviderRootExitDetail({outputDraining:false,exitCode:0,terminalEvent:{type:'error',category:'quota_exhausted',message:'Exact harmless root detail; api_key=SYNTHETIC_ROOT_SECRET',quotaResetAt:'2030-01-01T00:00:00.000Z'}});
+ assert.equal(detail.terminalEvent.category,'quota_exhausted');assert.equal(detail.terminalEvent.quotaResetAt,'2030-01-01T00:00:00.000Z');assert.match(detail.terminalEvent.message,/Exact harmless root detail/);assert.doesNotMatch(detail.terminalEvent.message,/SYNTHETIC_ROOT_SECRET/);
 });
 
 test('native persistent runtime aliases retain one root and cancellation never targets its previous Run',async t=>{
@@ -277,7 +447,7 @@ test('native persistent runtime aliases retain one root and cancellation never t
 
 import {createRuntimeAuthority} from '../../apps/server/dist/runtime-authority.js';
 test('two-phase root exit preserves the first causal observation instead of attributing cleanup as a crash cause',async()=>{
- for(const hostOperation of [undefined,'failed resume replacement']){
+ for(const hostOperation of [undefined,'failed resume replacement','Run cancellation']){
   const identity={},audit=[],failures=[],run={runId:'run',executionId:'run',v3SchedulerRunId:'run',v3FencingToken:1,generation:1,persistentRuntimeIdentity:identity,messageCapability:'capability',controller:new AbortController()};
   const runtime={identity,session:{isAlive:()=>false,close:async()=>{}}},authority={oneShots:new Map(),retryAttempt:0,...(hostOperation?{closing:{runtime,reason:hostOperation}}:{reusable:runtime})};
   const activeRuns=new Map([['agent',run]]),agentMessageCapabilities=new Map([['capability',{}]]);
@@ -285,9 +455,10 @@ test('two-phase root exit preserves the first causal observation instead of attr
    store:{getAgent:()=>({projectId:'project'}),appendEvent:(_id,event)=>{audit.push(event);return {event}}},coordinationV3:{ownsRunForCleanup:()=>true,agentSnapshot:()=>({activeRun:{promptInjectionState:'injected'}}),failRun:value=>failures.push(value)},coordinationV3WorkerId:'owned',
    runtimeAuthority:()=>authority,reusableRuntime:()=>authority.reusable,openingRuntime:()=>authority.opening,closingRuntime:()=>authority.closing,pruneRuntimeAuthority(){},clearAgentResumeSession(){},closeRunBrowser:async()=>{},closeLinkPreviewsForAgent(){},publish(){},publishMessageDeliveryChanged(){},resolveOperationalNotification(){},notifyScheduler(){},logError(){},transitionRun:()=>true,clearRunLeaseTimer(){},clearRunLivenessTimer(){},isClosed:()=>false});
   owner.persistentRootExited('agent',identity,{exitCode:1,outputDraining:true});assert.equal(failures.length,0);
-  owner.persistentRootExited('agent',identity,{exitCode:1});
-  if(hostOperation){assert.equal(failures.length,0);assert.equal(run.controller.signal.aborted,false)}
-  else {assert.equal(failures.length,1);assert.equal(audit.at(-1).runtimeObservation.origin,'not_established');assert.equal(audit.at(-1).runtimeObservation.hostOperation,undefined);assert.equal(run.controller.signal.aborted,true)}
+  owner.persistentRootExited('agent',identity,{exitCode:1,stderr:'SYNTHETIC_OBSERVED_STDERR'});
+  if(hostOperation==='failed resume replacement'){assert.equal(failures.length,0);assert.equal(run.controller.signal.aborted,false)}
+  else {assert.equal(failures.length,1);assert.equal(audit.at(-1).runtimeObservation.origin,hostOperation?'host_operation_observed':'not_established');assert.equal(audit.at(-1).runtimeObservation.hostOperation,hostOperation);assert.equal(run.controller.signal.aborted,true)}
+  assert.equal(audit.filter(event=>event.type==='error'&&event.message.includes('SYNTHETIC_OBSERVED_STDERR')).length,hostOperation?0:1);
   await authority.closing?.operation;
  }
 });
@@ -301,6 +472,8 @@ test('a successful sign-in observation survives a separate diagnostic cleanup fa
  assert.equal(handle.isAlive(),false);assert.equal(result.authenticated,true);assert.equal(result.diagnosticFailure,'cleanup_failed');
  const cache=new EngineAuthStatusCache();await cache.get('codex',async()=>result);assert.equal(cache.snapshot('codex').authenticated,true);assert.equal(cache.snapshot('codex').diagnosticFailure,'cleanup_failed');
 });
+
+
 
 for (const phase of ['before-probe', 'before-spawn']) test(`shutdown fences and drains diagnostic operations delayed ${phase}`, { timeout: 10000, skip: process.platform === 'win32' }, async t => {
   const root = await mkdtemp(path.join(tmpdir(), 'diagnostic-shutdown-'));
@@ -341,4 +514,572 @@ for (const phase of ['before-probe', 'before-spawn']) test(`shutdown fences and 
     if (child && child.exitCode === null && child.signalCode === null) { process.kill(-child.pid, 'SIGTERM'); await exited; }
     await app?.close(); await rm(root, { recursive: true, force: true });
   }
+});
+
+import { canonicalProviderFailureEvent, redactKnownProviderValues } from '../../apps/server/dist/provider-failure-event.js';
+import { redactPortableDiagnostic } from '../../apps/server/dist/portable-secrets.js';
+
+const marker = 'HARMLESS_CAUSE_14_19_BROKEN_WIDGET_731';
+const secret = 'SYNTHETIC_CREDENTIAL_731';
+const cause = `${marker} transport rejected widget 731; 日本語 café 🦄; api_key=${secret}`;
+
+test('canonical diagnostics retain Unicode/cause, redact shared known fields and refuse uninspectable text explicitly', () => {
+  for (const text of [cause, `${marker} Authorization: Bearer ${secret}`, `${marker} OPENAI_API_KEY="${secret}"`,
+    `${marker} credentials={"nested": ["${secret}"]}`, JSON.stringify({ marker, env: JSON.stringify({ ANTHROPIC_API_KEY: secret }) }),
+    `${marker} env=${JSON.stringify(JSON.stringify({ api_key: secret }))}`, `${marker} https://example.invalid/?api_key=${secret}`]) {
+    const event = canonicalProviderFailureEvent({ type: 'error', message: text, code: 'provider_error' });
+    assert.equal(event.category, 'unknown'); assert.ok(event.message.startsWith('Provider execution failed.\n'));
+    assert.ok(event.message.includes(marker)); assert.ok(!event.message.includes(secret), event.message);
+    assert.equal(canonicalProviderFailureEvent(event).message, event.message);
+  }
+  assert.match(canonicalProviderFailureEvent({ type:'error', message:cause }).message, /日本語 café 🦄/);
+  assert.match(redactPortableDiagnostic('a'.repeat(4*1024*1024+1)), /omitted.*limit/);
+  assert.match(redactPortableDiagnostic(JSON.stringify(JSON.stringify('['.repeat(100)+'0'+']'.repeat(100)))), /omitted.*limit/);
+  const thrown = new ProviderRuntimeBoundaryError('controlled provider operation', new Error(cause));
+  assert.ok(thrown.restrictedDetail.includes(marker)); assert.ok(!thrown.restrictedDetail.includes(secret));
+  const root = projectProviderRootExitDetail({ stderr: cause, terminalEvent:{type:'error',message:cause} });
+  assert.ok(root.terminalEvent.message.includes(marker)); assert.ok(!JSON.stringify(root).includes(secret));
+});
+
+test('unknown streamed cause survives canonical storage, bounded API and server reopen with no named credential on disk', {timeout:30000}, async t => {
+  await withFixture(t, async f => {
+    const chat=await f.createChat('Exact provider cause'),agent=await f.createIdleAgent(chat,'Controlled failure');
+    const diagnostic=cause+'\n'+'長'.repeat(20000)+' END_OF_COMPLETE_DIAGNOSTIC';
+    f.plans.set(agent.id,[{run:s=>s.events.push({type:'error',code:'provider_error',message:diagnostic})}]);
+    await f.send(agent.id,'One controlled failure');
+    await until(async()=>{const d=await f.detail(agent.id);return d.runs.length&&d.runs.every(r=>!['running','preparing'].includes(r.status))?d:false},'failed Run');
+    const inspect = async () => {
+      const detail=await f.detail(agent.id);
+      const error=detail.activity.find(a=>a.event.type==='error');
+      assert.equal(detail.runs[0].status,'failed'); assert.ok(error.event.message.includes(marker));
+      assert.ok(error.event.message.includes('日本語 café 🦄'));
+      assert.equal(error.event.message,canonicalProviderFailureEvent({type:'error',code:'provider_error',message:diagnostic}).message,'Complete validated diagnostic, including its tail, remains available');
+      const page=f.ok(await f.api('GET',`/api/agents/${agent.id}/history/activity?limit=1`));
+      assert.ok(JSON.stringify(page).includes(marker));
+      for(const suffix of ['', '/history/runOutput','/history/activity','/history/runs','/runs','/history/workItems']) {
+        const response=await f.api('GET','/api/agents/'+agent.id+suffix);assert.equal(response.status,200);
+        assert.ok(!JSON.stringify(response).includes(secret));
+      }
+      assert.ok(!JSON.stringify(await f.api('GET','/api/conversations/'+chat.id)).includes(secret));
+      return error;
+    };
+    const before=await inspect();
+    let durable=false;
+    const scan=async dir=>{for(const item of await readdir(dir,{withFileTypes:true})){
+      const name=path.join(dir,item.name);if(item.isDirectory())await scan(name);else{
+        const bytes=await readFile(name);assert.ok(!bytes.includes(Buffer.from(secret)),name);
+        if(item.name==='events.jsonl'&&bytes.includes(Buffer.from(marker)))durable=true;
+      }
+    }};
+    await scan(f.dataDir);assert.equal(durable,true,'canonical event journal must retain the cause');
+    const count=f.turns.length;await f.reopen();const after=await inspect();assert.equal(after.event.message,before.event.message);
+    assert.equal(f.turns.length,count,'inspection/reopen does not replay provider work');await scan(f.dataDir);
+  });
+});
+
+
+test('embedded encoded credential spans share one recursive budget and preserve surrounding prose', () => {
+  const prefix='HARMLESS_REVIEW_942 日本語 café 🦄 ',tail=' HARMLESS_EXACT_TAIL';
+  const value='SYNTHETIC_SECRET_INDEPENDENT_942';
+  for (const field of ['OPENAI_API_KEY','api_key']) {
+    const encode=JSON.stringify;
+    for (const body of [encode({[field]:value, safe:'雪'}),encode(encode({[field]:value,safe:'雪'})),
+      encode(encode(encode({[field]:value,safe:'雪'}))),
+      encode({message:'nested prose '+encode(encode({[field]:value})),safe:'雪'}),
+      encode(encode(field+'='+value))]) {
+      const input=prefix+body+tail,output=canonicalProviderFailureEvent({type:'error',code:'provider_error',message:input}).message;
+      assert.ok(!output.includes(value),output);assert.ok(output.includes(prefix));assert.ok(output.endsWith(tail));
+      assert.equal(canonicalProviderFailureEvent({type:'error',code:'provider_error',message:output}).message,output);
+    }
+    assert.equal(redactPortableDiagnostic(prefix+encode(encode({[field]:value,safe:'雪'}))+tail),prefix+encode(encode({safe:'雪'}))+tail);
+  }
+  const safe=prefix+JSON.stringify(JSON.stringify({safe:'雪'}))+tail;
+  assert.equal(redactPortableDiagnostic(safe),safe,'Unchanged encoded span/prose retains exact bytes');
+  const span=JSON.stringify(JSON.stringify(JSON.stringify({safe:'x'.repeat(500000)})));
+  assert.equal(redactPortableDiagnostic(prefix+span+tail),prefix+span+tail,'One span is below the inspection budget');
+  assert.match(redactPortableDiagnostic(prefix+Array(6).fill(span).join(' ')+tail),/omitted.*inspection limit/,'Separate spans cannot reset the shared budget');
+  assert.match(redactPortableDiagnostic(prefix+'['.repeat(66)+'0'+']'.repeat(66)+tail),/omitted.*inspection limit/);
+});
+
+test('encoded known provider fields after prose stay absent from canonical storage/API after reopen', {timeout:30000}, async t => {
+  await withFixture(t, async f => {
+    const marker='HARMLESS_REVIEW_942',value='SYNTHETIC_SECRET_INDEPENDENT_942';
+    const chat=await f.createChat('Embedded encoded provider cause'),agents=[];
+    for(const field of ['OPENAI_API_KEY','api_key']) {
+      const agent=await f.createIdleAgent(chat,'Controlled '+field),message=marker+' '+JSON.stringify(JSON.stringify({[field]:value}));
+      f.plans.set(agent.id,[{run:s=>s.events.push({type:'error',code:'provider_error',message})}]);
+      await f.send(agent.id,'Controlled error');
+      await until(async()=>{const d=await f.detail(agent.id);return d.runs.length&&d.runs.every(r=>!['running','preparing'].includes(r.status))},'encoded terminal');
+      agents.push(agent);
+    }
+    const inspect=async()=>{
+      for(const agent of agents){
+        const d=await f.detail(agent.id);const event=d.activity.find(row=>row.event.type==='error').event;
+        assert.ok(event.message.includes(marker));assert.equal(event.message,'Provider execution failed.\n'+marker+' '+JSON.stringify(JSON.stringify({})));
+        for(const suffix of ['', '/history/activity?limit=1','/history/runOutput','/history/runs','/runs','/history/workItems']){
+          const response=await f.api('GET','/api/agents/'+agent.id+suffix);assert.equal(response.status,200);assert.ok(!JSON.stringify(response).includes(value));
+        }
+      }
+      const response=await f.api('GET','/api/conversations/'+chat.id);assert.equal(response.status,200);assert.ok(!JSON.stringify(response).includes(value));
+      let canonical=0,database=0;
+      const scan=async dir=>{for(const item of await readdir(dir,{withFileTypes:true})){
+        const filename=path.join(dir,item.name);if(item.isDirectory())await scan(filename);else{
+          const bytes=await readFile(filename);assert.ok(!bytes.includes(Buffer.from(value)),filename);
+          if(item.name==='events.jsonl'&&bytes.includes(Buffer.from(marker)))canonical++;
+          if(/\.(?:db|sqlite)(?:-wal)?$/.test(item.name))database++;
+        }
+      }};
+      await scan(f.dataDir);assert.equal(canonical,2);assert.ok(database>0,'Scan includes real SQLite/WAL files');
+    };
+    await inspect();const turns=f.turns.length;await f.reopen();await inspect();assert.equal(f.turns.length,turns,'No provider replay');
+  });
+});
+
+
+test('malformed encoded known assignments redact finite truncation/escape/nesting matrix without losing safe prose', () => {
+  const prefix='HARMLESS_MALFORMED_CAUSE 日本語 café 🦄 ',tail=' HARMLESS_EXACT_TAIL';
+  const value='SYNTHETIC_MALFORMED_942';
+  let cases=0;
+  for(const field of ['OPENAI_API_KEY','api_key']) for(let layers=1;layers<=5;layers++) {
+    let body=JSON.stringify({[field]:value,safe:'雪'});
+    for(let i=1;i<layers;i++)body=JSON.stringify(body);
+    const variants=[body.slice(0,-1),body.slice(0,-2),"'"+body.slice(1,-1)+"'",'{bad,'+body,'['+body];
+    for(const malformed of variants) {
+      const input=prefix+malformed+tail,output=redactPortableDiagnostic(input);
+      assert.ok(!output.includes(value),JSON.stringify({layers,malformed,output}));
+      assert.ok(output.startsWith(prefix));assert.ok(output.endsWith(tail));
+      assert.equal(redactPortableDiagnostic(output),output);cases++;
+    }
+    const safe=prefix+JSON.stringify(JSON.stringify({safe:'雪'})).slice(0,-1)+tail;
+    assert.equal(redactPortableDiagnostic(safe),safe,'Harmless malformed text is unchanged');
+  }
+  assert.equal(cases,50);
+  for(const field of ['OPENAI_API_KEY','api_key']) {
+    const broken='cause \\"'+field+'\\": \\"'+value;
+    const output=redactPortableDiagnostic(broken);
+    assert.ok(!output.includes(value));assert.match(output,/omitted: unterminated credential value/);
+  }
+});
+
+test('malformed encoded known provider fields after prose stay absent from canonical storage/API after reopen', {timeout:30000}, async t => {
+  await withFixture(t, async f => {
+    const marker='HARMLESS_REVIEW_942',value='SYNTHETIC_SECRET_INDEPENDENT_942';
+    const chat=await f.createChat('Embedded encoded provider cause'),agents=[];
+    for(const field of ['OPENAI_API_KEY','api_key']) {
+      const agent=await f.createIdleAgent(chat,'Controlled '+field),message=marker+' '+JSON.stringify(JSON.stringify({[field]:value})).slice(0,-1)+' 日本語 🦄 HARMLESS_EXACT_TAIL';
+      f.plans.set(agent.id,[{run:s=>s.events.push({type:'error',code:'provider_error',message})}]);
+      await f.send(agent.id,'Controlled error');
+      await until(async()=>{const d=await f.detail(agent.id);return d.runs.length&&d.runs.every(r=>!['running','preparing'].includes(r.status))},'encoded terminal');
+      agents.push(agent);
+    }
+    const inspect=async()=>{
+      for(const agent of agents){
+        const d=await f.detail(agent.id);const event=d.activity.find(row=>row.event.type==='error').event;
+        assert.ok(event.message.includes(marker));assert.ok(event.message.endsWith(' 日本語 🦄 HARMLESS_EXACT_TAIL'));assert.ok(!event.message.includes(value));
+        for(const suffix of ['', '/history/activity?limit=1','/history/runOutput','/history/runs','/runs','/history/workItems']){
+          const response=await f.api('GET','/api/agents/'+agent.id+suffix);assert.equal(response.status,200);assert.ok(!JSON.stringify(response).includes(value));
+        }
+      }
+      const response=await f.api('GET','/api/conversations/'+chat.id);assert.equal(response.status,200);assert.ok(!JSON.stringify(response).includes(value));
+      let canonical=0,database=0;
+      const scan=async dir=>{for(const item of await readdir(dir,{withFileTypes:true})){
+        const filename=path.join(dir,item.name);if(item.isDirectory())await scan(filename);else{
+          const bytes=await readFile(filename);assert.ok(!bytes.includes(Buffer.from(value)),filename);
+          if(item.name==='events.jsonl'&&bytes.includes(Buffer.from(marker)))canonical++;
+          if(/\.(?:db|sqlite)(?:-wal)?$/.test(item.name))database++;
+        }
+      }};
+      await scan(f.dataDir);assert.equal(canonical,2);assert.ok(database>0,'Scan includes real SQLite/WAL files');
+    };
+    await inspect();const turns=f.turns.length;await f.reopen();await inspect();assert.equal(f.turns.length,turns,'No provider replay');
+  });
+});
+
+import { parseCodexLoginStatus, claudeAuthStatus } from '../../packages/engines/dist/auth.js';
+import { projectProviderAuthStatus } from '../../apps/server/dist/provider-success-projection.js';
+
+test('Bible25 configured API and subscription status is truthful and never returns key/token output', async () => {
+  for (const [text, mode] of [
+    ['Logged in using ChatGPT', 'subscription'],
+    ['Logged in using an API key - SYNTHETIC_PRIVATE_KEY', 'api'],
+    ['Authenticated with access token: SYNTHETIC_PRIVATE_KEY', 'api'],
+  ]) {
+    const status = projectProviderAuthStatus(parseCodexLoginStatus(text));
+    assert.equal(status.authenticated, true); assert.equal(status.billingMode, mode);
+    assert.doesNotMatch(JSON.stringify(status), /SYNTHETIC_PRIVATE_KEY/);
+  }
+  for (const text of ['not authenticated with API key', 'API key rejected', 'No access token', 'Error: logged in using an API key', 'Error: logged in using ChatGPT', 'ChatGPT authenticated but access rejected', 'Logged in using ChatGPT\nAuthentication failed', '']) {
+    const status = parseCodexLoginStatus(text);
+    assert.equal(status.authenticated, false); assert.equal(status.status, 'unknown');
+  }
+  // The native CLI owns precedence. A configured environment key alone is
+  // neither authenticated-mode evidence nor a reason to bypass its status.
+  const dir = await mkdtemp(path.join(tmpdir(), 'ponderosa-native-auth-'));
+  const bin = path.join(dir, 'claude');
+  try {
+    await writeFile(bin, '#!' + process.execPath + '\n' +
+      'if (JSON.stringify(process.argv.slice(2)) !== JSON.stringify(["auth", "status"])) process.exit(9);\n' +
+      'process.stdout.write(JSON.stringify({loggedIn:true,authMethod:"oauth_token",email:"SYNTHETIC_PRIVATE_ID"}));\n');
+    await chmod(bin, 0o700);
+    const status = await claudeAuthStatus({ PONDEROSA_CLAUDE_BIN: bin,
+      ANTHROPIC_API_KEY: 'SYNTHETIC_PRIVATE_KEY', CLAUDE_CODE_OAUTH_TOKEN: 'SYNTHETIC_OTHER_TOKEN' });
+    assert.equal(status.authenticated, true); assert.equal(status.billingMode, 'subscription');
+    assert.equal(status.source, 'cli_status');
+    assert.doesNotMatch(JSON.stringify(projectProviderAuthStatus(status)), /SYNTHETIC_PRIVATE/);
+    assert.throws(() => projectProviderAuthStatus({ authenticated: true, billingMode: 'SYNTHETIC_PRIVATE_KEY' }));
+    await writeFile(bin, '#!' + process.execPath + '\nprocess.stdout.write(JSON.stringify({loggedIn:false,authMethod:"none"})); process.exitCode=1;\n');
+    const signedOut = await claudeAuthStatus({ PONDEROSA_CLAUDE_BIN: bin, ANTHROPIC_API_KEY: 'SYNTHETIC_PRIVATE_KEY' });
+    assert.equal(signedOut.authenticated, false); assert.equal(signedOut.status, undefined);
+    assert.equal(signedOut.billingMode, undefined); assert.match(signedOut.detail, /sign in/);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+
+});
+
+test('Bible25 native authentication needs no billing selection and preserves Agent identity/history/settings', { timeout: 30000 }, t => {
+  let mode = 'subscription';
+  let validations = 0;
+  return withFixture(t, async f => {
+    const chat = await f.createChat('Native authentication preservation');
+    const agent = await f.createAgent(chat, 'Persistent native-auth Agent');
+    const before = await f.detail(agent.id);
+    const beforeHistory = before.messages;
+    assert.ok(beforeHistory.length > 0, 'Preservation requires populated history');
+    const preferences = f.ok(await f.api('GET', '/api/workspace/preferences'));
+    for (const selection of [{ codex: 'api' }, { codex: 'subscription' }, {}, null]) {
+      assert.equal((await f.api('PATCH', '/api/workspace/preferences', { providerBillingModes: selection })).status, 400);
+    }
+    for (const nativeMode of ['api', 'subscription']) {
+      const beforeObservation = await f.detail(agent.id);
+      const turnsBeforeObservation = f.turns.length;
+      mode = nativeMode;
+      await f.reopen();
+      const [ready] = f.ok(await f.api('GET', '/api/engines'));
+      assert.equal(ready.billingMode, nativeMode);
+      assert.equal(ready.authentication, 'authenticated');
+      assert.equal(ready.intakeReady, true);
+      assert.equal(Object.hasOwn(ready, 'selectedBillingMode'), false);
+      assert.equal(Object.hasOwn(ready, 'billingModeMatches'), false);
+      assert.equal(f.ok(await f.api('GET', '/api/workspace/preferences')).providerBillingModes, undefined);
+      f.ok(await f.api('POST', '/api/engines/codex/recheck'));
+      const validation = f.ok(await f.api('POST', '/api/projects/' + chat.projectId + '/engine-models/codex/validate', { modelId: 'fixture' }));
+      assert.equal(validation.valid, true);
+      assert.deepEqual((await f.detail(agent.id)).agent, beforeObservation.agent);
+      assert.deepEqual(f.ok(await f.api('GET', '/api/workspace/preferences')), preferences);
+      assert.equal(f.turns.length, turnsBeforeObservation, 'Authentication observation must not execute or replay work');
+      const previous = await f.detail(agent.id);
+      const previousSession = f.turns.at(-1).sessionId;
+      await f.send(agent.id, 'Controlled native ' + nativeMode + ' successor');
+      const done = await f.settled(agent.id, previous.runs.map(run => run.id));
+      assert.equal(done.agent.id, before.agent.id);
+      assert.equal(done.agent.title, before.agent.title);
+      assert.equal(done.agent.model, before.agent.model);
+      assert.equal(done.agent.activeEngine, before.agent.activeEngine);
+      assert.notEqual(f.turns.at(-1).sessionId, previousSession, 'Observed mode change must retire the previous native session');
+      for (const message of beforeHistory) assert.deepEqual(done.messages.find(item => item.id === message.id), message);
+      assert.match(JSON.stringify(done.messages), new RegExp('Controlled native ' + nativeMode + ' successor'));
+    }
+    assert.equal(validations, 2);
+    assert.equal(f.providerProbes.length, 2);
+  }, {
+    modelValidator: async () => { validations++; return { valid: true, model: { id: 'fixture', label: 'Fixture', kind: 'alias', source: 'provider-probe' } }; },
+    providerAuthStatus: () => ({ authenticated: true, billingMode: mode, source: 'cli_status' }),
+  });
+});
+
+test('Bible25 selector-removal compatibility accepts only the exact unchanged native contract', async () => {
+  const { createHash } = await import('node:crypto');
+  const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+  const input = { runtimeSessionContractHash: 'provider-model-tools', speed: 'standard', billingMode: 'api',
+    systemPromptHash: 'instructions', scopeKey: 'scope' };
+  const old = digest({ runtimeSessionContractHash: input.runtimeSessionContractHash, speed: input.speed,
+    expectedBillingMode: 'api', billingMode: 'api', systemPromptHash: input.systemPromptHash, scopeKey: input.scopeKey });
+  assert.equal(providerRuntimeSessionContractHash(input, old), old);
+  assert.notEqual(providerRuntimeSessionContractHash(input), old, 'New sessions must omit the obsolete selector');
+  for (const change of [
+    { billingMode: 'subscription' }, { billingMode: undefined }, { speed: 'fast' },
+    { runtimeSessionContractHash: 'changed-provider-model-tools-or-permissions' },
+    { systemPromptHash: 'changed-instructions' }, { scopeKey: 'other-scope' },
+  ]) {
+    assert.notEqual(providerRuntimeSessionContractHash({ ...input, ...change }, old), old);
+  }
+  const mismatchedSelection = digest({ runtimeSessionContractHash: input.runtimeSessionContractHash, speed: input.speed,
+    expectedBillingMode: 'subscription', billingMode: 'api', systemPromptHash: input.systemPromptHash, scopeKey: input.scopeKey });
+  assert.notEqual(providerRuntimeSessionContractHash(input, mismatchedSelection), mismatchedSelection);
+  assert.equal(providerRuntimeSessionContractHash(input, 'unknown-old-hash'), providerRuntimeSessionContractHash(input));
+});
+
+for (const mode of ['api', 'subscription']) test('Bible25 removing the selector resumes the existing ' + mode + ' native generation without reseeding', { timeout: 30000 }, async t => {
+  const { AgentStore } = await import('@ponderosa/agents');
+  const { createHash } = await import('node:crypto');
+  const { PONDEROSA_HISTORY_TOOL } = await import('@ponderosa/core');
+  let store;
+  await withFixture(t, async f => {
+    const chat = await f.createChat('Selector removal continuity');
+    const agent = await f.createAgent(chat, 'Retained native generation');
+    const before = await f.detail(agent.id);
+    const retained = store.resumeSessionState(agent.id);
+    const packet = store.acceptedProviderSessionInput(agent.id);
+    const contract = packet.sourceManifest.normalRuntimeContract;
+    // Stored JSON canonicalizes key order; hash the original runtime definitions.
+    const originalTools = [...providerDynamicTools(), PONDEROSA_HISTORY_TOOL];
+    assert.deepEqual(contract.dynamicTools, originalTools);
+    const tools = providerToolContractHash(originalTools, communicationV3SessionPrompt());
+    assert.equal(contract.capabilityRestrictions?.restrictedCapabilityIds.length ?? 0, 0);
+    const input = {
+      runtimeSessionContractHash: providerSessionContractHash(contract.engineId, contract.workingCopyId, contract.model, contract.effort, tools),
+      speed: contract.speed, billingMode: mode, systemPromptHash: packet.systemPromptHash,
+      scopeKey: store.sqlite.prepare('SELECT scope_key FROM scheduler_runs WHERE id=? AND agent_id=?').get(packet.schedulerRunId, agent.id).scope_key,
+    };
+    assert.equal(providerRuntimeSessionContractHash(input), retained.toolContractHash, 'Fixture must reconstruct the exact complete current contract');
+    const old = createHash('sha256').update(JSON.stringify({
+      runtimeSessionContractHash: input.runtimeSessionContractHash, speed: input.speed,
+      expectedBillingMode: mode, billingMode: mode, systemPromptHash: input.systemPromptHash, scopeKey: input.scopeKey,
+    })).digest('hex');
+    // Model the persisted pre-removal compatibility representation, preserving
+    // its exact session, accepted Run, context and artifacts.
+    store.appendEvent(agent.id, { type: 'session_snapshot', sessionId: retained.sessionId,
+      executionId: packet.executionId, toolContractHash: old, artifactIds: retained.artifactIds });
+    await f.reopen();
+    await f.send(agent.id, 'Continue the retained native context');
+    const after = await f.settled(agent.id, before.runs.map(run => run.id));
+    const turn = f.turns.at(-1);
+    assert.equal(turn.sessionId, retained.sessionId, 'Selector removal must resume the same native generation');
+    assert.deepEqual(turn.history, [], 'A retained generation must receive no replacement seed');
+    assert.equal(store.resumeSessionState(agent.id).toolContractHash, old);
+    assert.equal(after.agent.id, before.agent.id);
+    for (const message of before.messages) assert.deepEqual(after.messages.find(item => item.id === message.id), message);
+  }, { storeFactory: dataDir => (store = new AgentStore(dataDir)),
+    providerAuthStatus: () => ({ authenticated: true, billingMode: mode, source: 'cli_status' }) });
+});
+
+test('Bible25 both native harness probe launches preserve configured modes without putting credentials in argv or results', async () => {
+  const { codexAvailabilityStatus, claudeAvailabilityStatus } = await import('../../packages/engines/dist/auth.js');
+  for (const mode of ['api', 'subscription']) {
+    for (const provider of ['codex', 'claude']) {
+      const env = provider === 'claude' && mode === 'api' ? { ANTHROPIC_API_KEY: 'SYNTHETIC_NATIVE_KEY' } : {};
+      const probe = provider === 'codex' ? codexAvailabilityStatus : claudeAvailabilityStatus;
+      let calls = 0;
+      const result = await probe(env, async (_bin, args, options) => {
+        calls++;
+        assert.doesNotMatch(JSON.stringify(args), /SYNTHETIC_NATIVE_KEY/);
+        if (provider === 'claude' && mode === 'api') assert.equal(options.env.ANTHROPIC_API_KEY, 'SYNTHETIC_NATIVE_KEY');
+        assert.equal(options.env.PONDEROSA_LAUNCHER_CONTROL_TOKEN, undefined);
+        return { stderr: '', stdout: provider === 'claude'
+          ? JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: 'PONDEROSA_RUNTIME_READY' })
+          : JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'PONDEROSA_RUNTIME_READY' } }) + '\n' + JSON.stringify({ type: 'turn.completed' }) };
+      }, async () => ({ authenticated: true, billingMode: mode, source: 'cli_status' }));
+      assert.equal(calls, 1); assert.equal(result.available, true);
+      assert.doesNotMatch(JSON.stringify(result), /SYNTHETIC_NATIVE_KEY|subscription-backed/);
+    }
+  }
+});
+
+
+import { StderrTail } from '../../packages/engines/dist/stderr-tail.js';
+import { PROVIDER_STDERR_DETAIL_LIMIT } from '@ponderosa/core';
+for (const size of [8193, 20000]) test(`formatted stderr ${size} survives actual server root-exit projection`, () => {
+ const tail = new StderrTail();
+ const cause = ' final cause api_key=SYNTHETIC_TAIL_SECRET';
+ tail.append('x'.repeat(size - cause.length) + cause);
+ const detail = projectProviderRootExitDetail({stderr:tail.text(),exitCode:7,signal:'SIGTERM',outputDraining:true});
+ assert.equal(detail.exitCode,7); assert.equal(detail.signal,'SIGTERM'); assert.equal(detail.outputDraining,true);
+ assert.match(detail.stderr,new RegExp(`^\\[stderr truncated: ${size - 8192} UTF-16 code units omitted; retained tail follows\\]\\n`));
+ assert.match(detail.stderr,/final cause/); assert.doesNotMatch(detail.stderr,/SYNTHETIC_TAIL_SECRET/);
+ assert.ok(tail.text().length <= PROVIDER_STDERR_DETAIL_LIMIT);
+});
+test('Unicode cut and cumulative omission survive actual server root-exit projection', () => {
+ const tail = new StderrTail();
+ tail.append('ab😀' + 'x'.repeat(8191));
+ let detail = projectProviderRootExitDetail({stderr:tail.text(),exitCode:2,signal:null});
+ assert.match(detail.stderr,/^\[stderr truncated: 4 UTF-16 code units omitted; retained tail follows\]\nx/u);
+ assert.doesNotMatch(detail.stderr,/[\uD800-\uDFFF]/u);
+ tail.append('last cause');
+ detail = projectProviderRootExitDetail({stderr:tail.text(),exitCode:2,signal:null});
+ assert.match(detail.stderr,/^\[stderr truncated: 13 UTF-16 code units omitted;/u);
+ assert.ok(detail.stderr.endsWith('last cause')); assert.equal(detail.exitCode,2); assert.equal(detail.signal,null);
+});
+test('root-exit diagnostic bound still rejects invalid provider data', () => {
+ assert.doesNotThrow(()=>projectProviderRootExitDetail({stderr:'x'.repeat(PROVIDER_STDERR_DETAIL_LIMIT)}));
+ for(const stderr of ['x'.repeat(PROVIDER_STDERR_DETAIL_LIMIT+1),42,null,{}]) {
+  assert.throws(()=>projectProviderRootExitDetail({stderr,exitCode:7}));
+ }
+ assert.throws(()=>projectProviderRootExitDetail({stderr:'valid',exitCode:1.5}));
+});
+
+test('native availability holds unresolved auth cleanup and cancellation before any model request', async () => {
+  const { codexAvailabilityStatus, claudeAvailabilityStatus } = await import('../../packages/engines/dist/auth.js');
+  for (const probe of [codexAvailabilityStatus, claudeAvailabilityStatus]) {
+    let calls = 0;
+    const run = async () => { calls++; throw Error('No provider request should be started'); };
+    const held = await probe({}, run, async () => ({ authenticated: true, diagnosticFailure: 'cleanup_failed' }));
+    assert.equal(held.available, false); assert.equal(held.failureCategory, 'unavailable');
+    assert.match(held.detail, /cleanup.*unconfirmed/);
+    const controller = new AbortController();
+    await assert.rejects(() => probe({}, run, async () => {
+      controller.abort(); return { authenticated: true };
+    }, { signal: controller.signal }), { name: 'AbortError' });
+    assert.equal(calls, 0);
+  }
+});
+
+test('direct Codex availability passes cancellation and exact spawned-process ownership to native auth', async () => {
+  const { codexAvailabilityStatus } = await import('../../packages/engines/dist/auth.js');
+  const dir = await mkdtemp(path.join(tmpdir(), 'ponderosa-native-auth-cancel-'));
+  const bin = path.join(dir, 'codex');
+  const controller = new AbortController();
+  let spawned = 0, modelRequests = 0;
+  try {
+    await writeFile(bin, '#!' + process.execPath + '\nsetInterval(() => {}, 1000);\n');
+    await chmod(bin, 0o700);
+    await assert.rejects(() => codexAvailabilityStatus({ PONDEROSA_CODEX_BIN: bin },
+      async () => { modelRequests++; throw Error('Unexpected model request'); }, undefined, {
+        signal: controller.signal,
+        onRuntimeSpawned: () => { spawned++; controller.abort(); },
+      }), { name: 'AbortError' });
+    assert.equal(spawned, 1); assert.equal(modelRequests, 0);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('runtime question guidance permits the native bridge without duplicating questions or granting permissions',async()=>{
+  const { communicationV3SessionPrompt }=await import('../../apps/server/dist/runtime-selection.js');
+  const prompt=communicationV3SessionPrompt().join('\n');
+  assert.match(prompt,/Supported provider-native AskUserQuestion\/request_user_input callbacks also reach the human/);
+  assert.match(prompt,/(?:do not ask the same question twice|never ask twice)/i);
+  assert.match(prompt,/Questions (?:never grant|grant no) permissions/i);
+  assert.doesNotMatch(prompt,/only user-question path|never call a provider-native AskUserQuestion/);
+});
+
+
+test('current-run known values are redacted while provider cause remains available after restart', {timeout:30000}, async t => {
+  const configured = 'SYNTHETIC_CONFIGURED_VALUE_8F231';
+  const marker = 'UNRELATED_TRANSPORT_CAUSE_8F231';
+  process.env.ANTHROPIC_API_KEY = configured;
+  t.after(() => { delete process.env.ANTHROPIC_API_KEY; });
+  let capability;
+  await withFixture(t, async f => {
+    const chat=await f.createChat('Controlled known values'),agent=await f.createIdleAgent(chat,'Controlled provider');
+    f.plans.set(agent.id,[{run:s=>s.events.push({type:'error',code:'provider_error',message:marker+' '+capability+' '+configured})}]);
+    await f.send(agent.id,'Run controlled failure');
+    await until(async()=>{const d=await f.detail(agent.id);return d.runs.length&&d.runs.every(r=>!['running','preparing'].includes(r.status))?d:false},'failed Run');
+    assert.ok(capability);
+    const check = async () => {
+      const detail=await f.detail(agent.id);
+      const failure=detail.activity.find(item=>item.event.type==='error');
+      assert.ok(failure.event.message.includes(marker));
+      for(const value of [capability,configured]) assert.ok(!JSON.stringify(detail).includes(value));
+      const activity=f.ok(await f.api('GET',`/api/agents/${agent.id}/history/activity`));
+      assert.ok(JSON.stringify(activity).includes(marker));
+      for(const value of [capability,configured]) assert.ok(!JSON.stringify(activity).includes(value));
+    };
+    await check();await f.reopen();await check();
+  }, {onProviderOpen: options => { capability=options.environment.PONDEROSA_AGENT_MESSAGE_TOKEN; }});
+});
+
+test('known value filter handles overlap, short values, and keeps benign cause',()=>{
+  const value=redactKnownProviderValues('network failed token-SYNTHETIC123 and SYNTHETIC', ['SYNTHETIC','SYNTHETIC123','']);
+  assert.ok(value.includes('network failed'));assert.ok(!value.includes('SYNTHETIC'));
+  assert.ok(!redactKnownProviderValues('error x middle y', ['x','y']).includes('x'));
+  assert.equal(redactKnownProviderValues('unchanged cause', ['not-present']), 'unchanged cause');
+  const markerCollision=redactKnownProviderValues('bad X', ['X','[REDACTED]']);
+  assert.ok(!markerCollision.includes('X') && !markerCollision.includes('[REDACTED]'));
+});
+
+test('provider open exception redacts current-run capability before activity and run storage', {timeout:30000}, async t => {
+  let capability;
+  const marker='SYNTHETIC_OPEN_FAILURE_2B87';
+  await withFixture(t, async f => {
+    const chat=await f.createChat('Controlled open failure'),agent=await f.createIdleAgent(chat,'Open failure');
+    await f.send(agent.id,'Open controlled provider');
+    await until(async()=>{const d=await f.detail(agent.id);return d.runs.length&&d.runs.every(r=>!['running','preparing'].includes(r.status))?d:false},'failed open');
+    assert.ok(capability);
+    const detail=await f.detail(agent.id);
+    assert.ok(JSON.stringify(detail).includes(marker));
+    assert.ok(!JSON.stringify(detail).includes(capability));
+  }, {onProviderOpen: options => { capability=options.environment.PONDEROSA_AGENT_MESSAGE_TOKEN; },
+      nativeAdapterForOpen: options => ({openSession:async()=>{throw Error(marker+' '+options.environment.PONDEROSA_AGENT_MESSAGE_TOKEN);}})});
+});
+
+test('provider root exit redacts current-run capability from terminal observation', {timeout:30000}, async t => {
+  let capability;
+  const marker='SYNTHETIC_ROOT_FAILURE_9B32';
+  await withFixture(t, async f => {
+    const chat=await f.createChat('Controlled root failure'),agent=await f.createIdleAgent(chat,'Root failure');
+    f.plans.set(agent.id,[{output:false,run:s=>s.exitWithDetail({stderr:marker+' '+capability,terminalEvent:{type:'error',message:marker+' '+capability}})}]);
+    await f.send(agent.id,'Exit controlled provider');
+    await until(async()=>{const d=await f.detail(agent.id);return d.runs.length&&d.runs.every(r=>!['running','preparing'].includes(r.status))?d:false},'root-exit failure');
+    assert.ok(capability);
+    const detail=await f.detail(agent.id);
+    assert.ok(JSON.stringify(detail).includes(marker));
+    assert.ok(!JSON.stringify(detail).includes(capability));
+  }, {onProviderOpen: options => { capability=options.environment.PONDEROSA_AGENT_MESSAGE_TOKEN; }});
+});
+
+test('provider stderr-only root exit redacts current-run capability and preserves its cause', {timeout:30000}, async t => {
+  let capability,store;
+  const {AgentStore}=await import('@ponderosa/agents');
+  const marker='SYNTHETIC_ROOT_STDERR_842C';
+  await withFixture(t, async f => {
+    const chat=await f.createChat('Controlled stderr failure'),agent=await f.createIdleAgent(chat,'Stderr failure');
+    f.plans.set(agent.id,[{output:false,run:s=>s.exitWithDetail({stderr:marker+' '+capability})}]);
+    await f.send(agent.id,'Exit controlled provider');
+    await until(async()=>{const d=await f.detail(agent.id);return d.runs.length&&d.runs.every(r=>!['running','preparing'].includes(r.status))?d:false},'stderr root-exit failure');
+    assert.ok(capability);
+    const check=async()=>{
+      const detail=await f.detail(agent.id);
+      assert.ok(!JSON.stringify(detail).includes(capability));
+      const row=store.sqlite.prepare('SELECT provider_failure_json FROM scheduler_runs WHERE agent_id=? AND provider_failure_json IS NOT NULL ORDER BY created_at DESC LIMIT 1').get(agent.id);
+      assert.ok(row?.provider_failure_json);
+      const failure=JSON.parse(row.provider_failure_json);
+      assert.ok(failure.stderr.includes(marker));assert.ok(!failure.stderr.includes(capability));
+      const work=f.ok(await f.api('GET',`/api/projects/${chat.projectId}/agent-work?agentId=${agent.id}`));
+      assert.ok(JSON.stringify(work).includes(marker),'Operator work view retains observed stderr');
+      assert.ok(!JSON.stringify(work).includes(capability));
+    };
+    await check();await f.reopen();await check();
+  }, {storeFactory: dataDir => (store=new AgentStore(dataDir)), onProviderOpen: options => { capability=options.environment.PONDEROSA_AGENT_MESSAGE_TOKEN; }});
+});
+
+test('provider secondary iterator cleanup log redacts current-run capability and preserves its cause', {timeout:30000}, async t => {
+  let capability;const logs=[],marker='SYNTHETIC_CLEANUP_FAILURE_C31F';
+  await withFixture(t, async f => {
+    const original=f.app.log.error;
+    f.app.log.error=(fields,message)=>{logs.push({fields,message});};
+    try {
+      const chat=await f.createChat('Controlled cleanup failure'),agent=await f.createIdleAgent(chat,'Cleanup failure');
+      await f.send(agent.id,'Run controlled provider');
+      await until(()=>logs.find(item=>item.message==='provider event stream cleanup failed after primary provider failure'),'secondary cleanup log');
+      const log=logs.find(item=>item.message==='provider event stream cleanup failed after primary provider failure');
+      assert.ok(capability);assert.ok(JSON.stringify(log).includes(marker));
+      assert.ok(!JSON.stringify(log).includes(capability));
+    } finally {f.app.log.error=original;}
+  }, {onProviderOpen: options => {capability=options.environment.PONDEROSA_AGENT_MESSAGE_TOKEN;},
+      onProviderSession: session => {session.events={ [Symbol.asyncIterator]() {return {
+        async next(){throw Error('synthetic primary provider failure');},
+        async return(){throw Error(marker+' '+capability);},
+      };}};}});
+});
+
+
+test('admitted Run authentication fence ignores diagnostic expiry but retains observed changes',async()=>{
+ const cache=new EngineAuthStatusCache(),signedIn={authenticated:true,billingMode:'subscription'};
+ await cache.get('codex',async()=>signedIn);
+ const current=cache.captureAuthentication('codex');assert.equal(current(),true);
+ const expire=()=>{cache.entries.get('codex').expiresAt=Date.now()-1;};
+ expire();assert.equal(cache.snapshot('codex').state,'unknown');assert.equal(current(),true);
+ let release;const refresh=cache.get('codex',()=>new Promise(resolve=>{release=resolve;}));
+ await Promise.resolve();assert.equal(cache.snapshot('codex').state,'unknown');assert.equal(current(),true);
+ release(signedIn);await refresh;assert.equal(current(),true,'same successful observation keeps the Run');
+ expire();await cache.get('codex',async()=>({authenticated:false,status:'unknown',reason:'probe_pending'}));
+ assert.equal(current(),true,'unknown diagnostics are not evidence of sign-out');
+ expire();await assert.rejects(cache.get('codex',async()=>{throw Error('controlled probe failure')}));assert.equal(current(),true);
+ expire();await cache.get('codex',async()=>({authenticated:false}));assert.equal(current(),false,'observed sign-out fences the Run');
+ expire();await cache.get('codex',async()=>signedIn);assert.equal(current(),false,'changing back never revives an old fence');
+ const billing=cache.captureAuthentication('codex');expire();await cache.get('codex',async()=>({...signedIn,billingMode:'api'}));
+ assert.equal(billing(),false,'observed billing mode changes remain fenced');
+ const invalidated=cache.captureAuthentication('codex');cache.invalidate('codex');assert.equal(invalidated(),false);
+ await cache.get('codex',async()=>signedIn);const pendingInvalidated=cache.captureAuthentication('codex');expire();
+ const pending=cache.get('codex',()=>new Promise(resolve=>{release=resolve;}));await Promise.resolve();
+ cache.invalidate('codex');assert.equal(pendingInvalidated(),false,'explicit invalidation fences authority while diagnostic cleanup remains owned');
+ assert.equal(cache.get('codex',async()=>{throw Error('must retain existing pending slot')}),pending);
+ release(signedIn);await pending;assert.equal(pendingInvalidated(),false,'the same refreshed credentials cannot revive invalidated work');
 });

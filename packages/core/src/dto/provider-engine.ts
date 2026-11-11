@@ -1,3 +1,4 @@
+import type { RuntimeInputFile } from "../runtime-input-files.js";
 import type { EngineId, EffortOption, EngineModelOption, EngineModelValidationError, ModelOption } from "../adapter.js";
 import type { TokenUsage } from "../events.js";
 import type { ProviderFailureCategory } from "../provider-failure-summary.js";
@@ -46,7 +47,29 @@ export interface RuntimeEnvironmentFactsDto {
   reportOutputRoot?: string;
 }
 
+/** Non-secret native launch configuration. Run capability tokens and credential
+ * environments are deliberately excluded; callbacks always use live authority. */
+export interface RetainedNormalRuntimeContract {
+  version: 1;
+  contractHash: string;
+  /** Observed native authentication, never a human selector or credential. */
+  observedBillingMode?: "subscription" | "api";
+  engineId: string;
+  workingCopyId: string;
+  cwd: string;
+  model?: string;
+  effort?: string;
+  speed?: string;
+  dynamicTools: import("../adapter.js").RuntimeDynamicToolSpec[];
+  capabilityRestrictions?: import("../capability-policy.js").RuntimeCapabilityRestrictions;
+}
+
 export interface ProviderInputSourceManifestV3 {
+  /** Exact additional structured input submitted alongside this accepted packet. */
+  nativeAction?: import("../native-turn.js").NativeTurnAction;
+  /** Exact original/representation digests; bytes stay in managed storage, not logs. */
+  inputFiles?: RuntimeInputFile[];
+  normalRuntimeContract?: RetainedNormalRuntimeContract;
   /** Frozen authorization and selection evidence for this exact accepted packet. */
   historyContext?: {
     boundary?: { canonicalOrdinal: number; communicationEventId?: string };
@@ -79,6 +102,9 @@ export interface ProviderInputSourceManifestV3 {
     toolDefinitionsUtf8Bytes: number;
     estimatedInputTokens: number;
   };
+  /** Reviewed voice session boundary; memory integration stays fail-closed until bound. */
+  memorySessionResetSeq?: number;
+  memoryScopes?: [];
   schemaVersion: 3;
   environmentFacts?: RuntimeEnvironmentFactsDto;
   /** History messages represented in the exact text submitted for this Run. */
@@ -91,11 +117,14 @@ export interface ProviderInputSourceManifestV3 {
   conversationId?: string;
   providerSessionDisposition: "fresh_task" | "continued_session" | "reseeded";
   sources: Array<{
-    kind: "policy" | "identity" | "history_message" | "activation" | "communication" | "artifact" | "team_directory" | "context_reference" | "continuation_handoff" | "environment";
+    kind: "policy" | "identity" | "history_message" | "activation" | "communication" | "artifact" | "team_directory" | "context_reference" | "continuation_handoff" | "environment" | "pause_checkpoint";
     ref: string;
     /** Submitted sources contribute to exactPrompt; retained sources do not. */
     delivery: "submitted" | "retained_session";
     hash?: string;
+    /** Hash of the original canonical source when the submitted source is a projection. */
+    sourceHash?: string;
+    projection?: "pause_historical_tools_reference_v1";
     createdAt?: string;
     /** Canonical origin retained for cross-chat Agent-private continuity. */
     conversationId?: string;
@@ -111,6 +140,7 @@ export type ProviderInputSourceManifest = ProviderInputSourceManifestV1 | Provid
 /** Exact scheduler packet, including steering. This does not claim to snapshot
  * opaque retained provider history or create a second execution identity. */
 export interface PromptInjectionSourceManifestDto {
+  inputFiles?: RuntimeInputFile[];
   schemaVersion: 1;
   runId: string;
   injectionId: string;
@@ -131,7 +161,7 @@ export interface ProviderInputDto {
   updatedAt: string;
 }
 
-export type TokenUsageScope = "overall" | "project" | "agent" | "conversation";
+export type TokenUsageScope = "overall" | "project" | "agent" | "conversation" | "branch";
 
 export type TokenUsageMetric = "inputTokens" | "cachedInputTokens" | "cacheWriteInputTokens" | "outputTokens" | "reasoningOutputTokens" | "totalTokens";
 
@@ -177,12 +207,13 @@ export interface TokenUsageSummaryDto extends TokenUsage {
   unreportedRuns: number;
   /** Provider requests represented by retained per-request telemetry. */
   providerRequests?: number;
-  /** Aggregate wall-clock duration of finalized Runs in this scope. */
+  /** Sum of recorded finalized Run wall-clock intervals. Omitted if any interval
+   * is missing, invalid or reversed, or the aggregate exceeds safe milliseconds. */
   durationMs?: number;
   /** 0..1; null when the scope has no finalized runs. */
   coverage: number | null;
   range?: TokenUsageRangeDto;
-  /** Metrics absent from every reported run are explicitly unavailable. */
+  /** A metric is available only when every finalized Run reported it. Numeric fields may retain partial reported sums. */
   metricAvailability: Record<TokenUsageMetric, TokenUsageMetricAvailability>;
   /** Aggregated by project chat, agent, and engine/model. */
   breakdown: TokenUsageBreakdownDto[];
@@ -279,6 +310,7 @@ export interface EngineDto {
   /** Authentication probe truth. `checking` never means signed out, and
    * successful authentication does not prove provider reachability. */
   authentication: "checking" | "authenticated" | "unauthenticated" | "error";
+  billingMode?: "subscription" | "api";
   authDetail?: string;
   authObservedAt?: string;
   authReason?: import("../adapter.js").EngineAuthStatus["reason"];

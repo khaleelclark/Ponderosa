@@ -1,4 +1,5 @@
 import { SidebarResourceRow } from "./SidebarResourceRow";
+import {assistantReturnPath} from "../assistantRouting";
 import AddIcon from "@mui/icons-material/Add";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import KeyboardArrowDownIcon from "@mui/icons-material/KeyboardArrowDown";
@@ -56,10 +57,9 @@ import {
 } from "../workspaceNavigation";
 import { clampWorkspaceSidebarWidth } from "../workspaceSidebarState";
 import { SidebarActivityBadge } from "./SidebarActivityBadge";
-import { summarizeWorkspaceActivity } from "@ponderosa/core";
 import { useWorkspaceActivity } from "../hooks/useWorkspaceActivity";
 import { isUnmodifiedPrimaryClick } from "../nativeNavigation";
-import { ResourceContextMenu, type ResourceContextMenuAction } from "./ResourceContextMenu";
+import { ResourceContextMenu, type ResourceContextMenuAction, type ResourceContextMenuState } from "./ResourceContextMenu";
 import { TextInputDialog } from "./ConfirmationDialogs";
 import { AgentDeletionDialog } from "./AgentDeletionDialog";
 import {
@@ -87,6 +87,7 @@ import { SearchSnippet, routeForGlobalSearchSelection } from "./GlobalChatSearch
 
 export function WorkspaceSidebar({
   projects,
+  navigation,
   preferences,
   route,
   notifications,
@@ -105,6 +106,7 @@ export function WorkspaceSidebar({
   onCollapsedChange,
   onWidthChange,
 }: {
+  navigation: ReturnType<typeof useWorkspaceSidebarNavigation>;
   projects: ProjectDto[];
   preferences: WorkspacePreferencesDto;
   route: Route;
@@ -138,16 +140,32 @@ export function WorkspaceSidebar({
     setSidebarSection,
     projectSection,
     setProjectSection,
+    activeItem,
+    setActiveItem,
+    panelPresentation,
+    collapsedSidebarAgentIds,
+    setCollapsedSidebarAgentIds,
     filter,
+    filters,
     setFilter,
-    draggedResource,
-    setDraggedResource,
-    menu,
-    setMenu,
-    openResourceMenu,
-  } = useWorkspaceSidebarNavigation(route, true);
-  const [collapsedSidebarAgentIds, setCollapsedSidebarAgentIds] =
-    useState<Set<string>>(() => new Set());
+  } = navigation;
+  const [draggedResource, setDraggedResource] = useState<{
+    kind: "home" | "chat" | "agent";
+    id: string;
+  }>();
+  type SidebarMenuResource = { route: Route; conversation?: ConversationDto };
+  const [menu, setMenu] =
+    useState<ResourceContextMenuState<SidebarMenuResource>>();
+  const openResourceMenu = (
+    anchor: HTMLElement,
+    route: Route,
+    conversation?: ConversationDto,
+  ) =>
+    setMenu({
+      anchor,
+      resource: { route, ...(conversation ? { conversation } : {}) },
+    });
+
 
   const routedProjectId = routeProjectId(route);
   const [drawerProjectId, setDrawerProjectId] = useState(routedProjectId);
@@ -191,22 +209,21 @@ export function WorkspaceSidebar({
   const currentMessageResults = messageSearchTerm === filter.trim() ? messageSearch.data : undefined;
   const messageSearchPending = Boolean(filter.trim()) &&
     (messageSearchTerm !== filter.trim() || messageSearch.isPending);
-  const directorySearch = filter;
   useEffect(() => {
-    if (route.kind === "allChat" || route.kind === "home" || route.kind === "manageChats") setProjectSection("chats");
+    if (route.kind === "inbox" || route.kind === "home" || route.kind === "manageChats") setProjectSection("chats");
     if (route.kind === "manageAgents") setProjectSection("agents");
   }, [route]);
   const projectDirectoryQuery = useProjectRailDirectory();
   const chatDirectoryQuery =
     useWorkspaceDirectory<WorkspaceConversationDirectoryItemDto>("conversation", {
-      search: directorySearch,
+      search: filters.chats,
       folders: true,
       projectId: undefined,
       enabled: projectContext && showingChats && sidebarVisible,
     });
   const agentDirectoryQuery =
     useWorkspaceDirectory<WorkspaceAgentDirectoryItemDto>("agent", {
-      search: showingAgents ? directorySearch : "",
+      search: filters.agents,
       projectId: undefined,
       enabled: projectContext && showingAgents,
     });
@@ -321,7 +338,7 @@ export function WorkspaceSidebar({
   const showNavigation = (next: Route) => {
     setDrawerProjectId(undefined);
     setSidebarSection("home");
-    setFilter("");
+    if(next.kind!=="assistant")setFilter("");
     onNavigate(next);
   };
   const openChat = (
@@ -339,19 +356,20 @@ export function WorkspaceSidebar({
   const selectSidebar = (section: typeof projectSection) => {
     setSidebarSection("home");
     setProjectSection(section);
-    setFilter("");
+    setActiveItem(section);
     if (collapsed) onCollapsedChange?.(false);
   };
   const rail = (
     <ProjectRail
-      sections={{ active: showingSettings ? undefined : projectSection, agentsActivity, agentsActivityFresh: workspaceConnection.phaseEvidenceFresh && !activeWorkspaceAgentQuery.isError, onSelect: selectSidebar }}
+      sections={{ active: showingSettings ? undefined : activeItem, agentsActivity, agentsActivityFresh: workspaceConnection.phaseEvidenceFresh && !activeWorkspaceAgentQuery.isError, onSelect: selectSidebar }}
       drawer={drawer}
       route={route}
       profile={preferences.profile}
       attentionNotifications={counts.attention}
       unreadNotificationUpdates={counts.updates}
       onOpenHome={() => showNavigation({ kind: "home" })}
-      onOpenAllMessages={() => showNavigation({ kind: "allChat" })}
+      onOpenInbox={() => showNavigation({ kind: "inbox" })}
+      onOpenAssistant={() => {setActiveItem("assistant");showNavigation({kind:"assistant",returnTo:route.kind==="assistant"?route.returnTo:assistantReturnPath(routeToPath(route))});}}
       onManageSection={section => showNavigation(
         section === "agents"
           ? { kind: "manageAgents" }
@@ -363,7 +381,7 @@ export function WorkspaceSidebar({
       onCollapse={!drawer && onCollapsedChange ? () => {
         onCollapsedChange(true);
         window.requestAnimationFrame(() => {
-          document.querySelector<HTMLElement>('[aria-label="Open workspace navigation"]')?.focus();
+          document.querySelector<HTMLElement>('[aria-label="Open Workspace Navigation"]')?.focus();
         });
       } : undefined}
       onClose={onDismiss}
@@ -397,10 +415,10 @@ export function WorkspaceSidebar({
     ? activeWorkspaceAgentQuery.isError ? "Agents · count unavailable" : "Agents · loading count…"
     : `Agents · ${runningAgentCount} working`;
   const panelHeader = <Stack direction="row" sx={{ alignItems: "center", pl: 2, pr: .25, pt: drawer ? .75 : 1.5, pb: 1 }}>
-    <Typography component="div" sx={{ minWidth: 0, flex: 1, fontSize: 15, fontWeight: 700 }}>{showingAgents ? agentsHeading : "Chats"}</Typography>
+    <Typography component="div" sx={{ minWidth: 0, flex: 1, fontSize: "0.9375rem", fontWeight: 700 }}>{showingAgents ? agentsHeading : "Chats"}</Typography>
     {panelCreate ? <Tooltip title={panelCreate.label}><IconButton size="small" aria-label={panelCreate.label} onClick={panelCreate.run}><AddIcon fontSize="small" /></IconButton></Tooltip> : null}
   </Stack>;
-  const allChatRows = chatItems;
+  const inboxRows = chatItems;
   const activeChatRow =
     route.kind === "conversation" &&
     activeProject &&
@@ -426,7 +444,7 @@ export function WorkspaceSidebar({
           sx={{ alignItems: "center", mb: 0.25 }}
         >
           <SidebarResourceRow href={routeToPath({ kind: "conversation", projectId: chatProject.id, conversationId: conversation.id })} id={`sidebar-conversation:${conversation.id}`} label={`Open Chat ${conversation.title}`} title={conversation.title} icon={<ChatBubbleOutlineIcon fontSize="small" />}
-            starred={starred} emphasis={Boolean(unread.totalCount)} boldWhenStarred={false} selected={route.kind === "conversation" && route.conversationId === conversation.id}
+            starred={starred} emphasis={Boolean(unread.totalCount || unread.quietUnreadCount)} boldWhenStarred={false} selected={route.kind === "conversation" && route.conversationId === conversation.id}
             onOpen={() => openChat(chatProject, conversation)} onStar={() => toggleStar("conversation", conversation.id)}
             status={<>
               <SidebarNotificationBadge unread={notificationProjectionQuery.data?.conversations[conversation.id]} />
@@ -444,21 +462,23 @@ export function WorkspaceSidebar({
       renderRow={item => globalChatResourceRows([item])}
       onChange={(chatFolders, customOrder) => onPreferences({ chatFolders, ...(customOrder ? {
         chatSort: "custom",
-        ...(chatSort === "custom" ? {} : { chatOrder: customOrderSeed(preferences.chatOrder, allChatRows.map(row => row.conversation.id)) }),
+        ...(chatSort === "custom" ? {} : { chatOrder: customOrderSeed(preferences.chatOrder, inboxRows.map(row => row.conversation.id)) }),
       } : {}) })}
       onRename={onRenameConversation} onDelete={onDeleteConversation}
       onReorder={(source, target, position, chatFolders) => {
-        const visibleIds = allChatRows.map(row => row.conversation.id);
+        const visibleIds = inboxRows.map(row => row.conversation.id);
         onPreferences({ chatSort: "custom", chatOrder: reorderStableIds(chatSort === "custom" ? preferences.chatOrder : customOrderSeed(preferences.chatOrder, visibleIds), visibleIds, source, target, position), ...(chatFolders ? { chatFolders } : {}) });
       }}>
     {({ starredRows, allRows, openRows }) => (
     <SharedSidebarPanel
       header={panelHeader}
       icon={<ChatBubbleOutlineIcon />}
+      presentation={panelPresentation.current.chats}
+      scrollReady={chatDirectoryQuery.requestState.hasResolved}
       title="Chats"
       total={chatDirectoryQuery.requestState.hasResolved ? chatDirectory.total : undefined}
       busy={chatDirectoryQuery.requestState.isInitialLoading || chatDirectoryQuery.requestState.isRefreshing || chatDirectoryQuery.requestState.isFetchingNextPage}
-      searchLabel="Search chats"
+      searchLabel="Search Chats"
       searchValue={filter}
       onSearchValueChange={setProjectFilter}
       topContent={activeChatRow ? (
@@ -470,13 +490,13 @@ export function WorkspaceSidebar({
       starredRows={starredRows}
       allRows={allRows}
       collectionFeedback={<>
-        {filter.trim() ? <Box component="section" aria-label="Found in messages" sx={{ mt: 1 }}>
+        {filter.trim() ? <Box component="section" aria-label="Found In Messages" sx={{ mt: 1 }}>
           <SidebarSectionHeading>Found in messages</SidebarSectionHeading>
           {messageSearchPending ? <Typography variant="caption" role="status">Searching messages…</Typography> :
             messageSearch.isError ? <Typography variant="caption" role="status">Message results are unavailable. Chat-name results are still shown.</Typography> :
             currentMessageResults?.results.map(result => <ListItemButton key={result.chat.id}
               component="a" href={routeToPath(routeForGlobalSearchSelection({ projectId: result.project.id, chat: result.chat, messageId: result.messageId }))}
-              aria-label={`Open ${result.chat.title} at matching message`}
+              aria-label={`Open ${result.chat.title} At Matching Message`}
               onClick={event => { if (isUnmodifiedPrimaryClick(event)) { event.preventDefault(); showNavigation(routeForGlobalSearchSelection({ projectId: result.project.id, chat: result.chat, messageId: result.messageId })); } }}
               sx={{ display: "block", borderRadius: 1 }}>
               <Typography variant="body2" fontWeight={600}>{result.chat.title}</Typography>
@@ -484,13 +504,13 @@ export function WorkspaceSidebar({
               <Box><SearchSnippet snippet={result.snippet} ranges={result.highlights} query={filter.trim()} /></Box>
             </ListItemButton>)}
           {currentMessageResults?.truncated ? <Typography variant="caption">Older matches may not be shown.</Typography> : null}
-          <Button size="small" onClick={() => onSearch?.({ query: filter.trim(), scope: "chats" })}>View more in full search</Button>
+          <Button size="small" onClick={() => onSearch?.({ query: filter.trim(), scope: "chats" })}>View More In Full Search</Button>
         </Box> : null}
         <CollectionStateFeedback request={chatDirectoryQuery.requestState} itemCount={chatRows.length} filtersActive={Boolean(filter.trim())} resourceLabel="Chats" emptyTitle="No Chats Yet" noMatchTitle={"No Chats match “" + filter.trim() + "”."} onClearFilters={() => setFilter("")} compact
           suppressEmpty={Boolean(filter.trim()) && (messageSearchPending || messageSearch.isError || Boolean(currentMessageResults?.results.length))} />
       </>}
       sort={chatSort}
-      onSort={value => setResourceSort("chat", value, allChatRows.map(row => row.conversation.id), preferences.chatOrder)}
+      onSort={value => setResourceSort("chat", value, inboxRows.map(row => row.conversation.id), preferences.chatOrder)}
       drawer={drawer}
     />)}
     </ChatFolders>
@@ -501,7 +521,6 @@ export function WorkspaceSidebar({
     project: (typeof agentItems)[number]["project"];
     ownerConversation?: WorkspaceAgentDirectoryItemDto["ownerConversation"];
     health?: WorkspaceAgentDirectoryItemDto["health"];
-    healthConfirmedAt?: string;
     status?: (typeof agentItems)[number]["health"]["status"];
   };
   type AgentSidebarTreeRow = AgentSidebarRow & {
@@ -509,12 +528,11 @@ export function WorkspaceSidebar({
     hasChildren: boolean;
   };
   const allAgentRows: AgentSidebarRow[] = agentItems.map(
-    ({ agent, project, ownerConversation, health, healthConfirmedAt }) => ({
+    ({ agent, project, ownerConversation, health }) => ({
       agent,
       project,
       ownerConversation,
       health,
-      healthConfirmedAt,
       status: health.status,
     }),
   );
@@ -565,13 +583,14 @@ export function WorkspaceSidebar({
     return visible;
   };
   const agentResourceRows = (items: AgentSidebarTreeRow[]) =>
-    items.map(({ agent, project: agentProject, ownerConversation, health, healthConfirmedAt, depth, hasChildren }) => {
+    items.map(({ agent, project: agentProject, ownerConversation, health, depth, hasChildren }) => {
       const starred = starredResourceIds.has(
         resourcePreferenceKey("agent", agent.id),
       );
       const ownerTitle = ownerConversation?.title ?? "Unavailable Chat";
       return (
         <Stack
+          component="li"
           key={agent.id}
           direction="row"
           draggable
@@ -640,12 +659,12 @@ export function WorkspaceSidebar({
               </Tooltip>
             ) : null}
           </Box>
-          <SidebarResourceRow href={routeToPath({ kind: "agent", projectId: agentProject.id, agentId: agent.id })} id={`sidebar-agent:${agent.id}`} label={`Open agent ${agent.title}, #${agent.handle}, in Chat ${ownerTitle}, ${projectDisambiguator(agentProject, projects)}`} title={agent.title}
+          <SidebarResourceRow href={routeToPath({ kind: "agent", projectId: agentProject.id, agentId: agent.id })} id={`sidebar-agent:${agent.id}`} label={`Open Agent ${agent.title}, #${agent.handle}, In Chat ${ownerTitle}, ${projectDisambiguator(agentProject, projects)}`} title={agent.title}
             detail={`${ownerTitle} · #${agent.handle} · ${agent.activeEngine}`} subtitle={duplicateAgentNames.has(agent.title) ? `#${agent.handle} · ${ownerTitle}` : ownerTitle} icon={<SmartToyOutlinedIcon fontSize="small" />}
             starred={starred} nested={Boolean(agent.managerAgentId)} selected={route.kind === "agent" && route.agentId === agent.id}
             onOpen={() => onNavigate({ kind: "agent", projectId: agentProject.id, agentId: agent.id })} onStar={() => toggleStar("agent", agent.id)}
             onContextAction={anchor => openResourceMenu(anchor, { kind: "agent", projectId: agentProject.id, agentId: agent.id })}
-            status={<SidebarActivityBadge activity={health ? summarizeWorkspaceActivity([health], healthConfirmedAt) : undefined} fresh={workspaceConnection.phaseEvidenceFresh} showLabel />} />
+            status={<SidebarActivityBadge agent={{ title: agent.title, health }} fresh={workspaceConnection.phaseEvidenceFresh} showLabel />} />
         </Stack>
       );
     });
@@ -653,10 +672,12 @@ export function WorkspaceSidebar({
     <SharedSidebarPanel
       header={panelHeader}
       icon={<SmartToyOutlinedIcon />}
+      presentation={panelPresentation.current.agents}
+      scrollReady={agentDirectoryQuery.requestState.hasResolved}
       title="Agents"
       total={agentDirectoryQuery.requestState.hasResolved ? agentDirectory.total : undefined}
       busy={agentDirectoryQuery.requestState.isInitialLoading || agentDirectoryQuery.requestState.isRefreshing || agentDirectoryQuery.requestState.isFetchingNextPage}
-      searchLabel="Search agents"
+      searchLabel="Search Agents"
       searchValue={filter}
       onSearchValueChange={setProjectFilter}
       topContent={activeAgentRow ? (
@@ -700,11 +721,11 @@ export function WorkspaceSidebar({
     : undefined;
   const menuActions: ResourceContextMenuAction<{ route: Route; conversation?: ConversationDto }>[] =
     menu?.resource.conversation ? [
-      { id: "open-tab", label: "Open in new tab", onSelect: resource => { window.open(routeToPath(resource.route), "_blank", "noopener,noreferrer"); } },
+      { id: "open-tab", label: "Open In New Tab", onSelect: resource => { window.open(routeToPath(resource.route), "_blank", "noopener,noreferrer"); } },
       { id: "rename", label: "Rename", onSelect: resource => onRenameConversation(resource.conversation!) },
       { id: "delete", label: "Delete", color: "error", onSelect: resource => onDeleteConversation(resource.conversation!) },
     ] : menuRoute?.kind === "agent" && menuAgent ? [
-      { id: "open-tab", label: "Open in new tab", onSelect: resource => { window.open(routeToPath(resource.route), "_blank", "noopener,noreferrer"); } },
+      { id: "open-tab", label: "Open In New Tab", onSelect: resource => { window.open(routeToPath(resource.route), "_blank", "noopener,noreferrer"); } },
       { id: "rename", label: "Rename", onSelect: () => setRenamingAgent(menuAgent.agent) },
       { id: "delete", label: "Delete", color: "error", onSelect: () => setDeletingAgent(menuAgent.agent) },
     ] : [];
@@ -726,7 +747,7 @@ export function WorkspaceSidebar({
   return (
     <Box
       component="aside"
-      aria-label="Workspace navigation"
+      aria-label="Workspace Navigation"
       sx={{
         position: "relative",
         width: drawer ? "min(92vw, 390px)" : width,
@@ -755,8 +776,12 @@ export function WorkspaceSidebar({
       {!drawer && showPanel && onWidthChange ? (
         <Box
           role="separator"
-          aria-label="Resize sidebar"
+          aria-label="Resize Sidebar"
           aria-orientation="vertical"
+          aria-valuenow={width}
+          aria-valuemin={clampWorkspaceSidebarWidth(0)}
+          aria-valuemax={clampWorkspaceSidebarWidth(Infinity)}
+          aria-valuetext={`${width} pixels`}
           tabIndex={0}
           onPointerDown={resizeStart}
           onKeyDown={event => {
@@ -787,7 +812,7 @@ export function WorkspaceSidebar({
       <TextInputDialog
         open={Boolean(renamingAgent)}
         title="Rename Agent"
-        label="Agent name"
+        label="Agent Name"
         initialValue={renamingAgent?.title ?? ""}
         confirmLabel="Save"
         pendingLabel="Saving…"

@@ -50,7 +50,8 @@ interface MarkdownNode {
 }
 
 /** Eligible prose spans shared by source-text and rich-message presentation. */
-export function messageProseTagTokens(text: string, tree: MarkdownNode = markdown.parse(text)) {
+export function messageProseTagTokens(text: string, tree?: MarkdownNode) {
+  if (!messageTagTokens(text).length) return [];
   try { JSON.parse(text); return []; } catch { /* Serialized scalars are literal too. */ }
   const opaqueRanges: Array<[number, number]> = [];
   const collectOpaque = (node: MarkdownNode): void => {
@@ -61,7 +62,8 @@ export function messageProseTagTokens(text: string, tree: MarkdownNode = markdow
     }
     for (const child of node.children ?? []) collectOpaque(child);
   };
-  collectOpaque(tree);
+  const parsedTree = tree ?? markdown.parse(text);
+  collectOpaque(parsedTree);
   const dataRanges = serializedDataRanges(text, opaqueRanges);
   const tokens: ReturnType<typeof messageTagTokens> = [];
   const visit = (node: MarkdownNode): void => {
@@ -81,7 +83,7 @@ export function messageProseTagTokens(text: string, tree: MarkdownNode = markdow
     }
     for (const child of node.children ?? []) visit(child);
   };
-  visit(tree);
+  visit(parsedTree);
   return tokens;
 }
 

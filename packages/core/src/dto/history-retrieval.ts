@@ -58,6 +58,7 @@ export interface HistoryExactMessageDto extends HistoryMessageProvenanceDto {
 }
 
 export interface HistorySearchResponseDto {
+  source?: "canonical";
   action: "search";
   query: string;
   normalizedQuery: string;
@@ -78,6 +79,7 @@ export interface HistorySearchResponseDto {
 }
 
 export interface HistoryReadResponseDto {
+  source?: "canonical";
   action: "read";
   untrustedHistoricalData: true;
   notice: string;
@@ -87,6 +89,8 @@ export interface HistoryReadResponseDto {
   utf8Bytes: number;
 }
 
+/** Portable transcript provenance. None of these values assert authored
+ * Communication identity, original authorship, or a compaction boundary. */
 export interface ImportedHistoryMessageProvenanceDto {
   reference: string;
   sourceLabel: "Imported History" | "Imported Guidance";
@@ -126,8 +130,6 @@ export interface ImportedHistorySearchResponseDto {
   archiveVersion: string;
   hits: ImportedHistorySearchHitDto[];
   hasMore: boolean;
-  continuation?: string;
-  scannedWindows: number;
   noMatch: boolean;
   eligibleMessages: number;
   returnedMessages: number;
@@ -146,4 +148,5 @@ export interface ImportedHistoryReadResponseDto {
   utf8Bytes: number;
 }
 
-export type HistoryResponseDto = HistorySearchResponseDto | HistoryReadResponseDto | ImportedHistorySearchResponseDto | ImportedHistoryReadResponseDto;
+export type HistoryResponseDto = HistorySearchResponseDto | HistoryReadResponseDto |
+  ImportedHistorySearchResponseDto | ImportedHistoryReadResponseDto;

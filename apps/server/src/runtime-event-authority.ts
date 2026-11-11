@@ -107,7 +107,7 @@ export function createRuntimeEventAuthority(context: RuntimeEventAuthorityContex
     const stored = store.appendEvent(agentId, canonicalEvent);
     const at = new Date().toISOString();
     run.lastEventPersistedAt = at;
-    if (["text", "tool_call", "tool_result", "file_change", "command", "usage"].includes(canonicalEvent.type)) {
+    if (["text", "tool_call", "tool_result", "file_change", "command", "usage", "native_plan", "native_diff", "native_review"].includes(canonicalEvent.type)) {
       run.lastMeaningfulActivityAt = at;
     }
     const recovered = run.ownershipState === "stalled";

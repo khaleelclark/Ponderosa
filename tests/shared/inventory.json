@@ -2,6 +2,14 @@
   "baseline": "d12fcb42d5e92ac4b01668293669ab7bf4650f9c",
   "tests": [
     {
+      "path": "tests/branches/deployment-effects.test.mjs",
+      "feature": "branches",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; actual publication consequence presentation; no runtime/provider",
+      "origin": "Publication review preserves consequential effects as concise labeled facts"
+    },
+    {
       "oldPath": "apps/server/test/delegation.test.mjs",
       "path": "tests/agents/delegation.test.mjs",
       "feature": "agents",
@@ -20,6 +28,29 @@
       "testBodiesSha256": "0079ce3e93efeb6fbe35cb0a90d3ff0a30a3ea0e3e908b42216cdce8f94badb0",
       "beforeSha256": "9b2362e742421a2e5312a0307d93449fd1977d0539597db6f9743f9817121160",
       "afterSha256": "502e0c9824a9282ac2e2b8ab51f8f1909b8036a7e55ee711894e6f950a2cc12f"
+    },
+    {
+      "path": "tests/agents/peer-collaboration-purpose.test.mjs",
+      "feature": "agents",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server, controlled providers and disposable private stores",
+      "origin": "Actionable peer messages, visible progress, steering safety and known-refusal fallback"
+    },
+    {
+      "path": "tests/agents/busy-request-steering.test.mjs",
+      "feature": "agents",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server, controlled providers and disposable private stores",
+      "origin": "Busy Request prompt fencing, unsupported-provider fallback, and uncertain delivery"
+    },
+    {
+      "path": "tests/agents/communication-reconciliation-scope.test.mjs",
+      "feature": "agents",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24 and built agents/server/core; isolated real canonical history, no provider account or browser"
     },
     {
       "path": "tests/agents/request-update-projection-recovery.test.mjs",
@@ -46,7 +77,7 @@
       "lane": "server",
       "moduleBase": "apps/server/package.json",
       "requirements": "Node24, built native server workspaces; private stores and controlled inert provider roots only",
-      "origin": "Production-safe per-scope host memory validation and shutdown/restart canonical recovery without optional full replay"
+      "origin": "Per-scope host memory validation and shutdown/restart canonical recovery without optional full replay"
     },
     {
       "oldPath": "apps/server/test/real-codex.test.mjs",
@@ -79,6 +110,18 @@
       "testBodiesSha256": "8348abafbbc99b9abbbb703964900f1705e539b7ecad3d19be83477c3a988dbc",
       "beforeSha256": "07253d0bfe977a724e1b4d90edba6a09ca748422da099eb8b121621027093b8b",
       "afterSha256": "78365698330dcfcedd3898ef209d459ef1d166214752d0ba8ef36cd55122c792"
+    },
+    {
+      "path": "tests/agents/real-claude.test.mjs",
+      "feature": "agents",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "additionalFeatures": [
+        "providers",
+        "chats"
+      ],
+      "requirements": "Opt-in PONDEROSA_REGRESSION_REAL_CLAUDE=1; Node24 and built native server workspaces; existing permitted normal Claude CLI/account; disposable owned loopback listener, data and working folder",
+      "origin": "One native Claude READY user_dm/private Agent projection, local-only context and tagged operator Chat projection, one managed message with optional exact-tool discovery, completed Run and observed owned runtime drain; no broad provider/platform parity claim"
     },
     {
       "path": "tests/agents/real-joins.test.mjs",
@@ -776,6 +819,14 @@
       "origin": "F02 organization guidance portability and durable round trips"
     },
     {
+      "path": "tests/organizations/execution-portability.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native workspaces; disposable Fastify/SQLite fixture; no provider account",
+      "origin": "Phase2 historical execution archive fresh-instance portability"
+    },
+    {
       "path": "tests/installation-release/operator-proxy-shutdown.test.mjs",
       "feature": "installation-release",
       "lane": "server",
@@ -840,6 +891,22 @@
       "origin": "F11 clipboard error handling and support report feedback"
     },
     {
+      "path": "tests/chats/deletion-cleanup-feedback.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, existing TypeScript/React dependencies; controlled deletion responses; no provider account",
+      "origin": "Pending physical memory cleanup must remain visible after logical deletion"
+    },
+    {
+      "path": "tests/chats/reviewed-continuation-hash.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, built workspace packages; no provider account",
+      "origin": "Exact reviewed continuation command hash across browser and server"
+    },
+    {
       "path": "tests/chats/delivery-recovery.test.mjs",
       "feature": "chats",
       "lane": "web",
@@ -872,12 +939,20 @@
       "origin": "Q12: Claude history dispatch and frozen canonical scope qualification"
     },
     {
-      "path": "tests/context-recovery/imported-history-retrieval.test.mjs",
+      "path": "tests/context-recovery/history-context-budget.test.mjs",
       "feature": "context-recovery",
       "lane": "server",
       "moduleBase": "apps/server/package.json",
-      "requirements": "Node24, built native server/engine workspaces; actual SQLite/HTTP/MCP bridge; fake Claude executable POSIX whitespace-free Node only; no provider account",
-      "origin": "Production context budget: canonical-bound private imported-history search, chunk reads, restart and scope fences"
+      "requirements": "Node24, built native server workspaces; private canonical stores and inert persistent providers, no provider account",
+      "origin": "PR99 context budget addendum: complete accepted-input accounting, paginated selection, session occupancy and frozen scoped retrieval"
+    },
+    {
+      "path": "tests/context-recovery/imported-history-fidelity.test.mjs",
+      "feature": "context-recovery",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built agents/native workspaces; disposable real SQLite and canonical archives; no provider account",
+      "origin": "Imported archive fidelity: exact bounded Unicode retrieval, provenance, index lifecycle and private reference fences"
     },
     {
       "path": "tests/context-recovery/history-artifact-metadata.test.mjs",
@@ -944,6 +1019,17 @@
       "origin": "Runtime slider: exact stop IDs, commit fences, pending state, Escape and atomic inherited reset"
     },
     {
+      "path": "tests/chats/push-notification-grouping.test.mjs",
+      "feature": "chats",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "additionalFeatures": [
+        "notifications"
+      ],
+      "requirements": "Node24; built server; controlled service worker; no provider or network",
+      "origin": "Bound repeated Chat activity push display without losing individual notice receipts"
+    },
+    {
       "path": "tests/chats/notification-visibility.test.mjs",
       "feature": "chats",
       "lane": "web",
@@ -995,12 +1081,1857 @@
       "origin": "Prepared Agent lookup regression: one statement per authority, fresh typed DTOs, deletion/owner guards and database isolation/reopen"
     },
     {
-      "path": "tests/context-recovery/history-context-budget.test.mjs",
+      "oldPath": "packages/core/test/capability-policy.test.mjs",
+      "path": "tests/branches/capability-policy.test.mjs",
+      "feature": "branches",
+      "lane": "tooling",
+      "moduleBase": "packages/core/package.json",
+      "requirements": "Built core workspace; pure synthetic capability policies; no provider/browser/account",
+      "origin": "Branch capability policy regressions ported from 902ba1a7; existing assertions retained"
+    },
+    {
+      "path": "tests/branches/storage-schema.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "packages/agents/package.json",
+      "requirements": "Built agents/native workspaces; disposable current-format data; no provider account or browser",
+      "origin": "Current-master Branch storage, scoped trigger authority and canonical Agent deletion invariants"
+    },
+    {
+      "path": "tests/branches/branch-graph.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "packages/agents/package.json",
+      "requirements": "Built workspaces; disposable current-format state; no provider account",
+      "origin": "Qualified Branch runtime branch-graph.test.mjs, adapted to current master authority"
+    },
+    {
+      "path": "tests/branches/branch-map.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "packages/agents/package.json",
+      "requirements": "Built workspaces; disposable current-format state; no provider account",
+      "origin": "Qualified Branch runtime branch-map.test.mjs, adapted to current master authority"
+    },
+    {
+      "path": "tests/branches/branches.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "packages/agents/package.json",
+      "requirements": "Built workspaces; disposable current-format state; no provider account",
+      "origin": "Qualified Branch runtime branches.test.mjs, adapted to current master authority"
+    },
+    {
+      "path": "tests/branches/branch-execution-budget.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "packages/agents/package.json",
+      "requirements": "Built workspaces; disposable current-format state; no provider account",
+      "origin": "Qualified Branch runtime branch-execution-budget.test.mjs, adapted to current master authority"
+    },
+    {
+      "path": "tests/branches/branch-calls.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "packages/agents/package.json",
+      "requirements": "Built workspaces; disposable current-format state; no provider account",
+      "origin": "Qualified Branch runtime branch-calls.test.mjs, adapted to current master authority"
+    },
+    {
+      "path": "tests/branches/trigger-intake.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "packages/agents/package.json",
+      "requirements": "Built workspaces; disposable current-format state; no provider account",
+      "origin": "Current-master Branch-only schedule and occurrence authority"
+    },
+    {
+      "path": "tests/branches/restriction-lineage.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "packages/agents/package.json",
+      "requirements": "Built workspaces; disposable current-format state; no provider account",
+      "origin": "Current-master private deletion and fail-closed restriction authority"
+    },
+    {
+      "path": "tests/branches/chat-ownership.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "packages/agents/package.json",
+      "requirements": "Built workspaces; disposable current-format state; no provider account",
+      "origin": "Current-master Branch Chat identity and deletion ownership"
+    },
+    {
+      "path": "tests/branches/installation-compensation.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "packages/agents/package.json",
+      "requirements": "Built workspaces; disposable state and controlled provider fixture; no provider account",
+      "origin": "Current-master Branch lifecycle integration; shared existing authorities"
+    },
+    {
+      "path": "tests/files-results/portable-artifact-count.test.mjs",
+      "feature": "files-results",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Built workspaces; disposable state and controlled provider fixture; no provider account",
+      "origin": "Current-master Branch lifecycle integration; shared existing authorities"
+    },
+    {
+      "path": "tests/chats/creation.test.mjs",
+      "feature": "chats",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Built workspaces; disposable state and controlled provider fixture; no provider account",
+      "origin": "Current-master Branch lifecycle integration; shared existing authorities"
+    },
+    {
+      "path": "tests/branches/script-service.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Built workspaces; real inert POSIX child processes; no provider account",
+      "origin": "Current-master Branch Script authority, shutdown and observed cleanup"
+    },
+    {
+      "path": "tests/branches/resource-admission.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Built workspaces; disposable state; no provider account",
+      "origin": "Current-master asynchronous Branch resource creation and intake fences"
+    },
+    {
+      "path": "tests/branches/package-lifecycle.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native server workspaces; no provider account",
+      "origin": "Current-master Branch integration: shared import validation and atomic lifecycle binding"
+    },
+    {
+      "path": "tests/branches/home.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native server workspaces; no provider account",
+      "origin": "BR002 bounded global Home counts, canonical status, action pagination and query plans"
+    },
+    {
+      "path": "tests/branches/operations.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native server workspaces; no provider account",
+      "origin": "Current-master Branch integration: bounded exact canonical execution status"
+    },
+    {
+      "path": "tests/branches/application-lifecycle.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native server workspaces; owned POSIX Script process groups; Windows intentionally unsupported; no provider account",
+      "origin": "Current-master Branch application: real process deployment drain and shutdown"
+    },
+    {
+      "path": "tests/browser/display-residue.test.mjs",
+      "feature": "browser",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native server workspaces; private synthetic display paths; no browser/provider account",
+      "origin": "Pine qualification: recover stale partial display cleanup claims while preserving live owners"
+    },
+    {
+      "path": "tests/providers/capability-restrictions.test.mjs",
+      "feature": "providers",
+      "lane": "server",
+      "moduleBase": "packages/engines/package.json",
+      "requirements": "Node24, built engines; no provider account",
+      "origin": "Qualified Branch adapter restriction contracts ported to current master"
+    },
+    {
+      "path": "tests/branches/runtime-capabilities.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native server workspaces; owned inert provider roots; no provider account",
+      "origin": "Current-master policy enforcement: actual dynamic tool refusal and session replacement"
+    },
+    {
+      "path": "tests/branches/sources.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native server workspaces; owned filesystem watcher; no provider account",
+      "origin": "Current-master Branch-only schedule, signed webhook, durable filesystem and source replacement qualification"
+    },
+    {
+      "path": "tests/branches/api.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, current built native workspaces, inert provider fixture; no provider account",
+      "origin": "Current-master Branch API ownership, Chat lifecycle reuse and favorite/folder persistence"
+    },
+    {
+      "path": "tests/organizations/import-destination-creation.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native server workspaces; disposable Core and Branch destinations; no provider account",
+      "origin": "Exact Core and Branch destination Chat creation identity and replay"
+    },
+    {
+      "path": "tests/organizations/chat-instructions-hash.test.mjs",
+      "feature": "organizations",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, web workspace dependencies; no provider account",
+      "origin": "Import instruction conflict hashing with and without browser Web Crypto"
+    },
+    {
+      "path": "tests/organizations/cross-chat-copy.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native server workspaces; disposable Core and Branch fixtures; no provider account",
+      "origin": "Cross-Chat copy destination, product boundary, and instruction-conflict review"
+    },
+    {
+      "path": "tests/organizations/package-upload-ownership.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, current built native workspaces, disposable upload sentinels; no provider account",
+      "origin": "Reproduced unowned-path deletion through forged staged upload JSON; exact upload ownership and product admission"
+    },
+    {
+      "path": "tests/branches/product-scope.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native server workspaces; controlled subscription adapter and owned inert roots; no provider account",
+      "origin": "Current master Branch product isolation, pagination and canonical ownership qualification"
+    },
+    {
+      "path": "tests/branches/editing-navigation.test.mjs",
+      "feature": "branches",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, installed web dependencies; controlled browser history and actual TSX navigation/dialog owners",
+      "origin": "PR95 workflow leave choices, exact settlement fencing, retained drafts, native reload and shared pending dismissal"
+    },
+    {
+      "path": "tests/branches/execution-controls.test.mjs",
+      "feature": "branches",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, installed web dependencies; controlled budget query and mutation owners",
+      "origin": "BR024 Execution Controls placement, stable refresh and exact revision/period/uncertain-save safeguards"
+    },
+    {
+      "path": "tests/branches/execution-workspace.test.mjs",
+      "feature": "branches",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, built workspaces, isolated controlled UI owners; no provider account",
+      "origin": "BR024 selected Run actions, results, lazy technical evidence and canonical recovery"
+    },
+    {
+      "path": "tests/branches/run-history.test.mjs",
+      "feature": "branches",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, built workspaces, isolated controlled UI owners; no provider account",
+      "origin": "BR024 retained Run history, mobile navigation, truthful activation audit"
+    },
+    {
+      "path": "tests/branches/ui-state.test.mjs",
+      "feature": "branches",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; no browser or provider account",
+      "origin": "Current master Branch folder conflict, nested route and scoped transport regressions"
+    },
+    {
+      "path": "tests/installation-release/offline-content-restore.test.mjs",
+      "feature": "installation-release",
+      "lane": "tooling",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built current workspaces; private offline backup fixture; no provider account",
+      "origin": "Current-master Branch qualification: valid unfiled Chat restore, unknown and duplicate folder ownership"
+    },
+    {
+      "path": "tests/branches/installation-publication.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; built native server; synthetic package; no provider Run",
+      "origin": "Private V6 qualification: reproduce staged resource rejection during publication"
+    },
+    {
+      "path": "tests/speech/call-attempt.test.mjs",
+      "feature": "speech",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "origin": "Reviewed d334 regression harness for 95ae919 streaming/call checkpoint; private Branches reconciliation",
+      "requirements": "Controlled model/browser only; no real provider, paid API or physical audio acceptance"
+    },
+    {
+      "path": "tests/speech/reply-association.test.mjs",
+      "feature": "speech",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "origin": "Reviewed d334 regression harness for 95ae919 streaming/call checkpoint; private Branches reconciliation",
+      "requirements": "Controlled model/browser only; no real provider, paid API or physical audio acceptance"
+    },
+    {
+      "path": "tests/speech/phrase-buffer.test.mjs",
+      "feature": "speech",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "origin": "Reviewed d334 regression harness for 95ae919 streaming/call checkpoint; private Branches reconciliation",
+      "requirements": "Controlled model/browser only; no real provider, paid API or physical audio acceptance"
+    },
+    {
+      "path": "tests/speech/provider-response-text.test.mjs",
+      "feature": "speech",
+      "lane": "engines",
+      "moduleBase": "packages/engines/package.json",
+      "origin": "Reviewed d334 regression harness for 95ae919 streaming/call checkpoint; private Branches reconciliation",
+      "requirements": "Controlled model/browser only; no real provider, paid API or physical audio acceptance"
+    },
+    {
+      "path": "tests/speech/native-work-boundary.test.mjs",
+      "feature": "speech",
+      "lane": "engines",
+      "moduleBase": "packages/engines/package.json",
+      "origin": "Reviewed d334 regression harness for 95ae919 streaming/call checkpoint; private Branches reconciliation",
+      "requirements": "Controlled model/browser only; no real provider, paid API or physical audio acceptance"
+    },
+    {
+      "path": "tests/speech/voice-reply-native.test.mjs",
+      "feature": "speech",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "origin": "Reviewed d334 regression harness for 95ae919 streaming/call checkpoint; private Branches reconciliation",
+      "requirements": "Controlled model/browser only; no real provider, paid API or physical audio acceptance"
+    },
+    {
+      "path": "tests/memory/portability.test.mjs",
+      "feature": "memory",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server, isolated Chroma and pinned local models; no provider account",
+      "origin": "Phase2 bounded host memory snapshot/restoration qualification"
+    },
+    {
+      "path": "tests/memory/deletion-lifecycle.test.mjs",
+      "feature": "memory",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server, isolated Chroma and pinned local models; no provider account",
+      "origin": "PR43 review: durable memory deletion, isolation and retry qualification"
+    },
+    {
+      "path": "tests/memory/startup-config.test.mjs",
+      "feature": "memory",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server; isolated configuration files; no provider account or inference",
+      "origin": "Generic Branches memory startup configuration"
+    },
+    {
+      "path": "tests/installation-release/launcher-products.test.mjs",
+      "feature": "installation-release",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24 and built server/native workspaces; isolated temporary database; no provider account or installed application",
+      "origin": "Separate Ponderosa and Branches launcher destinations: real one-time session exchange, strict redirect allowlist and shared-session restart regression"
+    },
+    {
+      "path": "tests/workspace-navigation/agent-status-tooltip.test.mjs",
+      "feature": "workspace-navigation",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, built core; actual shared React row/badge render",
+      "origin": "UI 010 concise scoped Agent status and separate tooltip regions"
+    },
+    {
+      "path": "tests/chats/decision-response.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, built core; actual hook/API with controlled transport and real QueryClient/MutationObserver",
+      "origin": "UI 011 confirmed saves, lost-response reconciliation and approval completion safety"
+    },
+    {
+      "path": "tests/chats/delivery-wait-reasons.test.mjs",
+      "feature": "chats",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24 built server; isolated canonical stores/inert providers; injected host samples only",
+      "origin": "UI 013 batch health/admission projection across Chat/Agent/Inbox/receipt refresh and single admission after recovery"
+    },
+    {
+      "path": "tests/providers/provider-limit-feedback.test.mjs",
+      "feature": "providers",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24 built server; isolated canonical stores and inert providers; no provider account",
+      "origin": "UI014 exact provider holds across pagination, recheck/restart, successful explicit recovery, unaffected work and indexed lookup"
+    },
+    {
+      "path": "tests/chats/provider-failure-banner.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, existing TypeScript/React; actual component callbacks with controlled canonical props and API",
+      "origin": "UI014 scoped Chat banner, Details, usage/recheck, exact retry controls and truthful recovery announcements"
+    },
+    {
+      "path": "tests/chats/provider-outage-visibility.test.mjs",
+      "feature": "chats",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native server workspaces; controlled provider failures and focused canonical Activity; no provider account",
+      "origin": "Confirmed Main outage disclosure, exact safe Activity pointer and Core/Branches parity without retry or raw diagnostic JSON"
+    },
+    {
+      "path": "tests/chats/mobile-enter.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24 and installed web TypeScript; actual shared native/React Enter closures under controlled platform/viewport inputs; no provider account",
+      "origin": "UI016 Android Enter-to-Send baseline and mobile newline/desktop/IME regression"
+    },
+    {
+      "path": "tests/chats/decision-attachments.test.mjs",
+      "feature": "chats",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native server workspaces; controlled providers and fresh private stores; no account or listener",
+      "origin": "UI017 Decision image/file answers: scope, canonical references, byte protection, provider input, restart and deletion"
+    },
+    {
+      "path": "tests/chats/decision-answer-draft.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Actual Decision draft and upload hooks with controlled transport/effects; no provider account"
+    },
+    {
+      "path": "tests/chats/decision-questions.test.mjs",
+      "feature": "chats",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Actual Fastify Decision route with controlled authority stubs; no listener or provider",
+      "origin": "UI019 full Unicode questions and bounded structured group validation"
+    },
+    {
+      "path": "tests/chats/agent-decision-layout.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, installed web dependencies; actual panel/timeline rendering with controlled canonical query inputs",
+      "origin": "UI020 single conversation scroll, exact canonical questions and concise Decision notices"
+    },
+    {
+      "path": "tests/branches/home-ui.test.mjs",
+      "feature": "branches",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, real shared Home React components and QueryClient; no browser or provider account",
+      "origin": "BR002 exact summary, canonical execution outcomes, bounded independent paging and cached refresh recovery"
+    },
+    {
+      "path": "tests/speech/voice-menu.test.mjs",
+      "feature": "speech",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Actual React component closures with controlled scheduling, native speech and transport; no physical microphone qualification",
+      "origin": "Shared Voice options, canonical call owners, unchanged dictation controls, explicit capture and canonical speech/lifecycle fences"
+    },
+    {
+      "path": "tests/branches/canvas-navigation.test.mjs",
+      "feature": "branches",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Pure bounded canvas framing and view-state checks; no providers or live data"
+    },
+    {
+      "path": "tests/branches/canvas-insertion-menu.test.mjs",
+      "feature": "branches",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; actual insertion-menu owners with transient control replacement, captured client geometry and focus-return behavior; no providers or live data"
+    },
+    {
+      "path": "tests/branches/canvas-layout.test.mjs",
+      "feature": "branches",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; pure canonical draft/layout behavioral checks; no providers or live data"
+    },
+    {
+      "path": "tests/branches/guided-operations.test.mjs",
+      "feature": "branches",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; pure canonical draft/layout behavioral checks; no providers or live data"
+    },
+    {
+      "path": "tests/branches/workflow-history.test.mjs",
+      "feature": "branches",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; pure canonical draft/layout behavioral checks; no providers or live data"
+    },
+    {
+      "path": "tests/chats/transcript-copy-feedback.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, installed web dependencies; controlled React scheduling and clipboard, no live data",
+      "origin": "Transcript submenu local success, exact copy bytes, repeat and unmount safety with unchanged failures/downloads"
+    },
+    {
+      "path": "tests/chats/after-paint-background-task.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; controlled native frame/background/timer scheduling, no browser or provider",
+      "origin": "Shared finite cold-render scheduling, cancellation and truthful task failures"
+    },
+    {
+      "path": "tests/chats/conversation-workspace-prefetch.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, installed web dependencies; real QueryClient with controlled scoped reads and actual route/membership closures",
+      "origin": "Core/Branches canonical startup read overlap without duplicate requests or weakened ownership gates"
+    },
+    {
+      "path": "tests/chats/mutation-notifications.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, installed web dependencies; controlled React scheduling, no live data",
+      "origin": "Shared transient success feedback and durable actionable/progress contract"
+    },
+    {
+      "path": "tests/branches/decision-form-retention.test.mjs",
+      "feature": "branches",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, installed web dependencies; actual shared Decision response owner with controlled outcomes",
+      "origin": "BR024 keeps open and unconfirmed shared Decision forms mounted across canonical page refresh"
+    },
+    {
+      "path": "tests/branches/schedule-steering.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "packages/agents/package.json",
+      "requirements": "Node24, built core/native/agents; disposable local SQLite stores, no provider, listener or live data",
+      "origin": "Exact scheduled update ownership, non-delivery, uncertainty, approval races and no fallback Run regressions"
+    },
+    {
+      "path": "tests/branches/run-status.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "packages/agents/package.json",
+      "requirements": "Node24, built core/native/agents; disposable SQLite authority fixtures, no listener or provider account",
+      "origin": "PR #98 scheduled Run policies and canonical counts"
+    },
+    {
+      "path": "tests/branches/run-status-ui.test.mjs",
+      "feature": "branches",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, installed web dependencies and source loader; shared status markup, no listener or provider account",
+      "origin": "PR #98 scheduled Run policies and canonical counts"
+    },
+    {
+      "path": "tests/branches/schedule-overlap.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native server workspaces; disposable SQLite and controlled Codex/Claude adapters, no external provider account",
+      "origin": "PR #98 scheduled Run policies and canonical counts"
+    },
+    {
+      "path": "tests/installation-release/projection-startup.test.mjs",
+      "feature": "installation-release",
+      "lane": "server",
+      "moduleBase": "packages/agents/package.json",
+      "requirements": "Node24, built agents/native-host; disposable current-state SQLite and canonical logs; no provider account",
+      "origin": "Validated clean checkpoint reuse, write-active corruption recovery, canonical source scope, certificate/crash refusal and event sequence/torn append regression"
+    },
+    {
+      "path": "tests/installation-release/projection-progress-proof.test.mjs",
+      "feature": "installation-release",
+      "lane": "server",
+      "moduleBase": "packages/agents/package.json",
+      "requirements": "Node24, built agents/native-host; disposable current-state SQLite and canonical logs; no provider account",
+      "origin": "Transactional projection receipt, FTS visibility and source/database binding boundaries"
+    },
+    {
+      "path": "tests/installation-release/projection-progress-recovery.test.mjs",
+      "feature": "installation-release",
+      "lane": "server",
+      "moduleBase": "packages/agents/package.json",
+      "requirements": "Node24, built agents/native-host; disposable current-state SQLite and canonical logs; no provider account",
+      "origin": "Native write-active restart and incomplete history tails; metadata, SQL, V3 and saved-decision preservation"
+    },
+    {
+      "path": "tests/workspace-navigation/theme-scope.test.mjs",
+      "feature": "workspace-navigation",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, built core; actual shared Ponderosa and Assistant theme/composer definitions; no provider account",
+      "origin": "Ordinary Ponderosa composer and palette remain scoped apart from Assistant and Output"
+    },
+    {
+      "path": "tests/workspace-navigation/browser-theme.test.mjs",
+      "feature": "workspace-navigation",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, built web assets; generated startup script in VM and existing theme owner, no native Android claim",
+      "origin": "Android PWA browser metadata and prepaint theme consistency"
+    },
+    {
+      "path": "tests/branches/capability-history.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server; disposable stores and controlled providers; no provider account",
+      "origin": "Phase2 permission history and concise protocol regression"
+    },
+    {
+      "path": "tests/chats/protocol-efficiency.test.mjs",
+      "feature": "chats",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server; disposable stores and controlled providers; no provider account",
+      "origin": "Phase2 permission history and concise protocol regression"
+    },
+    {
+      "path": "tests/workspace-navigation/preference-save-feedback.test.mjs",
+      "feature": "workspace-navigation",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24 TypeScript transform; no provider account"
+    },
+    {
+      "path": "tests/chats/composer-pending-read.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24 and installed Lexical; no browser or provider account"
+    },
+    {
+      "path": "tests/memory/expert-finding.test.mjs",
+      "feature": "memory",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Built server, owned Chroma and pinned models; no provider account",
+      "origin": "Temporary agent copy findings and memory retention"
+    },
+    {
+      "path": "tests/memory/package-portability.test.mjs",
+      "feature": "memory",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Built server, owned Chroma and pinned models; no provider account",
+      "origin": "Phase2 actual product package memory/lifecycle regressions"
+    },
+    {
+      "path": "tests/context-recovery/steering-prewrite-routing.test.mjs",
       "feature": "context-recovery",
       "lane": "server",
       "moduleBase": "apps/server/package.json",
-      "requirements": "Node24, built native server workspaces; private canonical stores and inert persistent providers, no provider account",
-      "origin": "PR99 context budget addendum: complete accepted-input accounting, paginated selection, session occupancy and frozen scoped retrieval"
+      "requirements": "Node24, built workspaces, inert provider fixture and private state"
+    },
+    {
+      "path": "tests/context-recovery/inherited-memory-host-guard.test.mjs",
+      "feature": "context-recovery",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server, inert Codex and disposable Chroma with the pinned memory model",
+      "origin": "Verified and legacy handoff source evidence survives a memory-disabled reopen"
+    },
+    {
+      "path": "tests/context-recovery/retained-memory-admission.test.mjs",
+      "feature": "context-recovery",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server, inert Codex and disposable Chroma with the pinned memory model",
+      "origin": "Retained memory admission tracks disclosed source access and mutation"
+    },
+    {
+      "path": "tests/context-recovery/retained-memory-admission-races.test.mjs",
+      "feature": "context-recovery",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server, inert Codex and disposable Chroma with the pinned memory model",
+      "origin": "Retained source and grant changes are fenced at provider admission; harmless expansion remains usable"
+    },
+    {
+      "path": "tests/context-recovery/durable-memory-transition.test.mjs",
+      "feature": "context-recovery",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server, inert Codex and disposable Chroma with the pinned memory model",
+      "origin": "Durable source evidence preserves context across restart and fences revoked memory"
+    },
+    {
+      "path": "tests/context-recovery/claude-managed-transition.test.mjs",
+      "feature": "context-recovery",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server, inert Codex and disposable Chroma with the pinned memory model",
+      "origin": "Claude managed transitions verify exact session and input before continuity"
+    },
+    {
+      "path": "tests/context-recovery/managed-settings-transition.test.mjs",
+      "feature": "context-recovery",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server, inert Codex and disposable Chroma with the pinned memory model",
+      "origin": "Managed settings and voice transitions preserve accepted work and guard live authorization"
+    },
+    {
+      "path": "tests/context-recovery/native-model-context.test.mjs",
+      "feature": "context-recovery",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server, inert native Codex and disposable Chroma with the pinned memory model",
+      "origin": "Bounded same-thread Codex model change, access fence and no-replay recovery"
+    },
+    {
+      "path": "tests/context-recovery/reviewed-steering.test.mjs",
+      "feature": "context-recovery",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built workspaces; inert local Codex fixture, no provider account",
+      "origin": "Reviewed continuation preserves task, attachments and uncertain outcome"
+    },
+    {
+      "path": "tests/context-recovery/steering-refresh.test.mjs",
+      "feature": "context-recovery",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built DEV workspaces; owned inert provider, no provider account"
+    },
+    {
+      "path": "tests/branches/assistant-workspace.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, current built native workspaces, inert provider fixture; no provider account",
+      "origin": "Current-master Branch API ownership, Chat lifecycle reuse and favorite/folder persistence"
+    },
+    {
+      "path": "tests/chats/chat-input-evidence.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; standard library only; no provider account or browser"
+    },
+    {
+      "path": "tests/workspace-navigation/browser-page-strip.test.mjs",
+      "feature": "workspace-navigation",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Installed Chromium via PONDEROSA_BROWSER_EXECUTABLE (default /usr/bin/google-chrome); rsbuild and playwright-core; loopback component fixture only",
+      "origin": "Browser tablist owned roles, adjacent add action, desktop/mobile themes and keyboard/management guards"
+    },
+    {
+      "path": "tests/workspace-navigation/overlay-focus.test.mjs",
+      "feature": "workspace-navigation",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; standard library only; overlay exit connected/visible/hidden fallback regression"
+    },
+    {
+      "path": "tests/branches/output-role-import.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native workspaces; inert controlled adapters and private stores, no provider account",
+      "origin": "Portable output/speaker import declarations, human review, cross-store finalization/recovery and singleton fences"
+    },
+    {
+      "path": "tests/context-recovery/pause-resume.test.mjs",
+      "feature": "context-recovery",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built DEV workspaces; owned inert provider, no provider account"
+    },
+    {
+      "path": "tests/branches/initial-checkpoint-rewind.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built own core/agents/server with existing native-host and better-sqlite3; private canonical stores, Fastify inject and controlled leases only, no provider or Script process",
+      "origin": "Initial-frontier checkpoint/rewind slice: actual persistence, lineage, restart, rollback, owner/pin/secret/deletion fences"
+    },
+    {
+      "path": "tests/branches/unit-checkpoint-handoff.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built agents/server and existing SQLite dependency; private canonical stores; no provider processes",
+      "origin": "Actual per-unit commit, exact owner closure and independent async saver failure regressions"
+    },
+    {
+      "path": "tests/branches/checkpoint-modes.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built core/agents/server; private stores and controlled leases/notification only; no provider process",
+      "origin": "#32 configurable modes owner barriers and exit lifecycle"
+    },
+    {
+      "path": "tests/branches/historical-checkpoint-rewind.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built own core/agents/server with existing native-host and better-sqlite3; private canonical stores, Fastify inject and controlled leases only, no provider or Script process",
+      "origin": "Executable noninitial Script/control history, fresh continuation, immutable lineage, current authority and refusal regressions"
+    },
+    {
+      "path": "tests/branches/resource-checkpoint-safety.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, own agents/server builds and existing dependencies; deferred inert Chat/import boundaries and controlled dispatch only; no real import/provider/Script/network",
+      "origin": "Durable async resource operation uncertainty and current ancestor checkpoint release regressions"
+    },
+    {
+      "path": "tests/workspace-navigation/chat-instruction-limit.test.mjs",
+      "feature": "workspace-navigation",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Installed TypeScript; offline actual TSX component callbacks with host hooks/UI leaves stubbed; no browser or service",
+      "origin": "Chat instruction limit field feedback regression"
+    },
+    {
+      "path": "tests/workspace-navigation/chat-lifecycle.test.mjs",
+      "feature": "workspace-navigation",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Installed TypeScript; offline actual TSX callbacks with host hooks/UI leaves stubbed; mounted lifecycle evidence remains separate",
+      "origin": "Workflow-owned Chat deletion route regression"
+    },
+    {
+      "path": "tests/memory/real-provider-recall.test.mjs",
+      "feature": "memory",
+      "additionalFeatures": [
+        "branches"
+      ],
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Separate Core PONDEROSA_REGRESSION_REAL_MEMORY=1 and Branches PONDEROSA_REGRESSION_BRANCHES_REAL_MEMORY=1 opt-ins; Node24/built native server, permitted Codex/Claude accounts, explicit PONDEROSA_TEST_CHROMA_BIN and read-only PONDEROSA_TEST_MEMORY_MODEL_DIR; fresh owned Chroma/data/cache; at most two native turns per selected case",
+      "origin": "Each selected product case uses one source-omitted managed search per native engine for blind synthetic Chat/global facts; Branches adds persistent canonical ownership/product grant checks; no execution-copy, standalone private.10 or whole-privacy claim"
+    },
+    {
+      "path": "tests/memory/tool-guidance.test.mjs",
+      "feature": "memory",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24 and built server catalog; offline metadata/validator contracts only, no Chroma/model/provider",
+      "origin": "First-use combined-search and provenance guidance"
+    },
+    {
+      "path": "tests/workspace-navigation/package-export-disclosure.test.mjs",
+      "feature": "workspace-navigation",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Installed TypeScript; actual TSX dialog callbacks with UI leaves stubbed; no browser/service",
+      "origin": "Combined migration omission disclosure and explicit workflow full-export confirmation"
+    },
+    {
+      "path": "tests/memory/global-transfer.test.mjs",
+      "feature": "memory",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Fresh built workspaces, owned Chroma and local inference prerequisites; inert fixtures; no provider account",
+      "origin": "Model A selected global-memory transport: explicit review, preserved authority/conflicts, safe retry/refusals"
+    },
+    {
+      "path": "tests/workspace-navigation/global-memory-transfer.test.mjs",
+      "feature": "workspace-navigation",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Existing TypeScript transpiler; actual TSX component with transport/hooks/download stubs",
+      "origin": "Selected global-memory UI: selection, explicit review, cancellation, error retry and file limits"
+    },
+    {
+      "path": "tests/agents/activation-projection.test.mjs",
+      "feature": "agents",
+      "lane": "server",
+      "moduleBase": "packages/agents/package.json",
+      "requirements": "Node24, built agents/core; no provider, listener or writable store",
+      "origin": "Bible9 shared fresh-Run/steering activation projection preserves payload and error contract"
+    },
+    {
+      "path": "tests/memory/workflow-additive.test.mjs",
+      "feature": "memory",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server/native workspaces, existing owned Chroma and offline model fixtures; no provider account",
+      "origin": "Reviewed additive workflow memory: preserve destination, stale/selection/collision refusal, staged visibility, cancellation compensation and deterministic retry"
+    },
+    {
+      "path": "tests/branches/output-settings-feedback.test.mjs",
+      "feature": "branches",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24, existing TypeScript and React; actual TSX with host hooks/UI leaves stubbed; no provider or browser"
+    },
+    {
+      "path": "tests/workspace-navigation/event-timing-observer.test.mjs",
+      "feature": "workspace-navigation",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; standard library only; pooled EventTiming grouping/completeness checks"
+    },
+    {
+      "path": "tests/workspace-navigation/ui-load-method.test.mjs",
+      "feature": "workspace-navigation",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; standard library only; pooled EventTiming grouping/completeness checks"
+    },
+    {
+      "path": "tests/chats/message-timestamp.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24 and installed web dependencies; no browser/provider",
+      "origin": "Source-mapped history timestamp construction regression; preserve native absolute labels"
+    },
+    {
+      "path": "tests/branches/additive-mounted-ownership.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; owned loopback HTTP listener and controlled browser setup/teardown failures; no browser or provider",
+      "origin": "Additive mounted fixture setup and independent cleanup ownership regression"
+    },
+    {
+      "path": "tests/providers/claude-task-lifetime.test.mjs",
+      "feature": "providers",
+      "lane": "engines",
+      "moduleBase": "packages/engines/package.json",
+      "requirements": "Deferred: built engines, Node24, controlled owned native-stream fixture; no provider account. Not executed in implementation-only lane."
+    },
+    {
+      "path": "tests/providers/native-task-controls.test.mjs",
+      "feature": "providers",
+      "lane": "engines",
+      "moduleBase": "packages/engines/package.json",
+      "requirements": "Deferred whole-implementation authorization; built workspaces; inert controlled RPC only; no provider account",
+      "origin": "G8 exact native task list/stop identity, receipt semantics and retained lifetime"
+    },
+    {
+      "path": "tests/providers/native-task-routes.test.mjs",
+      "feature": "providers",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Deferred whole-implementation authorization; built workspaces and SQLite; inert Fastify injection only; no provider account",
+      "origin": "G8 canonical live Run/fence/session task controls and durable no-replay receipt"
+    },
+    {
+      "path": "tests/organizations/provider-start-fencing.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server/agents/core and existing SQLite addon; synthetic process handles and owned inert roots, disposable canonical stores; no provider account",
+      "origin": "Fenced-never-started lifecycle contract: creation coverage, admission/drain races, immutable receipts, legacy and restart holds"
+    },
+    {
+      "path": "tests/organizations/provider-exit-evidence.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server/agents/core and existing SQLite addon; synthetic process handles and owned inert roots, disposable canonical stores; no provider account",
+      "origin": "Provider observed-exit evidence: exact Run/member/lifetime inventories, immutable receipts and failed-close holds"
+    },
+    {
+      "path": "tests/branches/foreign-checkpoint-continuation.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server workspaces; locked existing dependencies; inert private fixtures, no provider account",
+      "origin": "Register existing deferred fixture with the owned workspace resolver"
+    },
+    {
+      "path": "tests/organizations/group-capture-abandonment.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server workspaces; locked existing dependencies; inert private fixtures, no provider account",
+      "origin": "Register existing deferred fixture with the owned workspace resolver"
+    },
+    {
+      "path": "tests/organizations/retained-evidence-discovery.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native server workspaces; temporary metadata-only evidence directories; no providers or production state",
+      "origin": "Bible12/19 recovery discovery: no silent thousand-entry omission; revision-bound pages, stale cursor refusal and preserved evidence bytes"
+    },
+    {
+      "path": "tests/agents/claude-file-history.test.mjs",
+      "feature": "agents",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/agents/codex-goal-lifetime.test.mjs",
+      "feature": "agents",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built workspaces, inert local Codex, no provider account"
+    },
+    {
+      "path": "tests/providers/codex-goal-campaign.test.mjs",
+      "feature": "providers",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server, inert local Codex and private fixture state"
+    },
+    {
+      "path": "tests/agents/codex-native-actions.test.mjs",
+      "feature": "agents",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/agents/codex-native-command-selection.test.mjs",
+      "feature": "agents",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/agents/codex-transcript-fork.test.mjs",
+      "feature": "agents",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/agents/codex-typed-input-wiring.test.mjs",
+      "feature": "agents",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/agents/native-history-authority.test.mjs",
+      "feature": "agents",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/agents/native-history-projection.test.mjs",
+      "feature": "agents",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/branches/context-recovery-storage.test.mjs",
+      "feature": "branches",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/branches/continuation-remap.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/branches/definition-tree-publication.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/branches/destination-admission.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/branches/destination-group-admission.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/branches/destination-group-reconciliation.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/branches/destination-owner-tree-evidence.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/branches/destination-reconciliation.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/branches/execution-tree-publication.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/branches/generation-exit-fence.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/branches/group-capture-disposition.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/branches/host-cut.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/branches/package-group.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/branches/parallel-continuation.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/branches/resource-custody-consumer.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/branches/runtime-package-recreation.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/browser/operator-chat-recording.test.mjs",
+      "feature": "browser",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/chats/branch-disclosure-review.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/chats/branch-foreign-continuation-ui.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/chats/branch-generation-history.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/chats/branch-generation-one.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/chats/branch-group-review.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/chats/branch-history-review.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/chats/branch-owner-tree-group.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/chats/branch-package-files.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/chats/branch-resource-review.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/chats/branch-runtime-package-ui.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/chats/browser-observation.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/chats/group-capture-abandonment.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/chats/group-journal-audit.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/chats/lifecycle-command.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/chats/lifecycle-discovery.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/chats/live-run-text.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/chats/memory-preserve-unknown.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/chats/native-history-ui.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/chats/native-tasks-ui.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/chats/phase2-ui-copy.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/chats/request-reply-route.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/chats/text-reply-route.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/chats/text-size.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/chats/working-root-destinations.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/checkpoints/source-capture-boundary.test.mjs",
+      "feature": "checkpoints",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/context-recovery/source-effects.test.mjs",
+      "feature": "context-recovery",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/files-results/audio-attachments.test.mjs",
+      "feature": "files-results",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/files-results/audio-container.test.mjs",
+      "feature": "files-results",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/installation-release/additive-upgrade.test.mjs",
+      "feature": "installation-release",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/memory/explicit-reconciliation.test.mjs",
+      "feature": "memory",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/memory/source-mutations.test.mjs",
+      "feature": "memory",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/organizations/checkpoint-agent-packages.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/organizations/checkpoint-package-membership.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/organizations/compose-agent-packages.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/organizations/custody-lifecycle.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/organizations/group-journal-audit.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/organizations/import-lifecycle.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/organizations/lifecycle-discovery.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/organizations/lifecycle-protocols.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/organizations/portable-working-files.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/organizations/portable-working-roots.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/providers/claude-native-compaction.test.mjs",
+      "feature": "providers",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/providers/native-approval-controls.test.mjs",
+      "feature": "providers",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/providers/native-control-routes.test.mjs",
+      "feature": "providers",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/providers/steering-preflight.test.mjs",
+      "feature": "providers",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built workspaces; controlled adapters, no provider or network"
+    },
+    {
+      "path": "tests/providers/typed-session-wiring.test.mjs",
+      "feature": "providers",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/speech/explicit-publication.test.mjs",
+      "feature": "speech",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/speech/request-memory-exposure.test.mjs",
+      "feature": "speech",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/speech/voice-acknowledgement-consumer.test.mjs",
+      "feature": "speech",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/speech/voice-recording.test.mjs",
+      "feature": "speech",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/workspace-navigation/empty-tombstone.test.mjs",
+      "feature": "workspace-navigation",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/organizations/portable-working-native-aliases.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server/native host; disposable filesystem fixtures, Linux descriptor checks",
+      "origin": "Bible8 whole working-data/native Git hardlink closure, exact metadata precedence and deferred restrictive mode staging"
+    },
+    {
+      "path": "tests/organizations/portable-git-recreation.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server/native host, disposable local Git repositories; mapped capture case requires Linux descriptor custody",
+      "origin": "Bible #8 fresh native Git, mapped common/private roots, transported nested configuration and hook metadata"
+    },
+    {
+      "path": "tests/organizations/portable-filesystem-metadata.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server/native workspaces; pure metadata evidence checks; no provider or live data",
+      "origin": "Bible8 selected filesystem metadata, explicit principal maps and FIFO authority"
+    },
+    {
+      "path": "tests/organizations/portable-filesystem-links.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server workspaces; disposable local working roots; no provider or live data",
+      "origin": "Bible8 absolute and mapped cross-root symbolic link relocation"
+    },
+    {
+      "path": "tests/organizations/portable-git-layouts.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native workspaces, Git2.53+ with reftable, disposable local repositories; no provider account",
+      "origin": "Codex Phase2 linked reftable and complete native module capture"
+    },
+    {
+      "path": "tests/organizations/branch-working-data.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native server workspaces; inert Fastify/SQLite fixtures and owned temporary roots; no provider session",
+      "origin": "Bible8 Branch-wide physical closure: cross-Chat aliases, nested selected roots, separate histories and exact repeated Git selections"
+    },
+    {
+      "path": "tests/organizations/portable-held-regular.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native/server workspaces; Linux disposable regular/FIFO inode replacements and a bounded child; no provider or live data",
+      "origin": "Bible8/12/15 regular-to-FIFO replacement: metadata-only inode gate before data open"
+    },
+    {
+      "path": "tests/organizations/package-export-transport.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built core/agents/server and TypeScript; isolated Fastify and owned temporary staging; no provider account",
+      "origin": "Body-bearing shared Agent/Branch exports, bounded staged native download with finite same-byte retries and origin-owned browser handoff"
+    },
+    {
+      "path": "tests/branches/native-data-preview.test.mjs",
+      "feature": "branches",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/branches/installation-resource-visibility.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/branches/working-data-import.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/chats/branch-working-data-files.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/chats/git-storage-selection.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/organizations/portable-history-json.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24; current built workspaces; owned inert fixture state; no production mutation"
+    },
+    {
+      "path": "tests/organizations/portable-source-paths.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24 and built workspaces; pure cross-platform source path and inert carrier checks; no Windows host/provider account/native Git execution",
+      "origin": "Phase2 preserve Windows drive/UNC source provenance across POSIX imports"
+    },
+    {
+      "path": "tests/chats/mounted-regression-inventory.test.mjs",
+      "feature": "chats",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24 and existing web TypeScript dependency; source inventory only, no browser or provider",
+      "origin": "Consolidated mounted regression entry coverage: every exported fixture module is included exactly once; browser execution runs explicitly in pnpm test:mounted and pnpm verify"
+    },
+    {
+      "path": "tests/organizations/generic-contained-project-store.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native workspaces; isolated private stores and locally owned folders only",
+      "origin": "Generic contained Project canonical binding: exact preparing members, stale inode refusal, restart metadata repair and no-rollback/no-dispatch recovery hold"
+    },
+    {
+      "path": "tests/organizations/portable-symlink-metadata.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native-host addon; Linux owned symlink O_PATH descriptors and exact nanosecond filesystem; other OS explicit unsupported branch; no provider or live data",
+      "origin": "Bible8/12/15 descriptor-only exact symlink timestamps, inode/type/link-count preflight, signed nanoseconds, target preservation and pathname replacement"
+    },
+    {
+      "path": "tests/organizations/portable-native-git-snapshot.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native workspaces; isolated owned Git fixtures, no live data or provider",
+      "origin": "Exact native Git storage and declared alias snapshot custody"
+    },
+    {
+      "path": "tests/organizations/portable-bare-git.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native server workspaces and Git; disposable repositories; no provider account",
+      "origin": "Typed configured bare repository capsules, source preservation, sanitized config and credential-file exclusions"
+    },
+    {
+      "path": "tests/organizations/portable-git-external-application.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "additionalFeatures": [
+        "F11.01",
+        "F13.04"
+      ],
+      "requirements": "Built server workspace; pure owned-path planner and closed graph; no filesystem, provider account or source-host reads",
+      "testBodiesSha256": "48dd84cfb49718bb58370b0427323209f883272ca5af3e45ea572c928b827dd2",
+      "afterSha256": "48dd84cfb49718bb58370b0427323209f883272ca5af3e45ea572c928b827dd2"
+    },
+    {
+      "path": "tests/organizations/generated-hook-canonical-store.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built native agents; disposable canonical SQLite/owned folders; no provider account",
+      "origin": "Generated hook canonical issuance, immutable durable result preservation, restart and exact current owner/original lookup"
+    },
+    {
+      "path": "tests/organizations/generic-live-roots.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24 and built workspaces; isolated owned import roots and Git fixtures",
+      "origin": "Generic imported root grouping and contained live placement"
+    },
+    {
+      "path": "tests/organizations/native-storage-capacity.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24 and built native-host; owned disposable directories; no provider or production state",
+      "origin": "Held-root exact usable capacity observation and replacement/closed-authority refusal"
+    },
+    {
+      "path": "tests/organizations/package-export-pool.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, isolated owned native data directory; Linux pool authority, no production files",
+      "origin": "Held export pool identity, issuance, replacement and restrictive umask"
+    },
+    {
+      "path": "tests/organizations/sqlite-package-export.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built workspaces, owned disposable local SQLite stores; no provider account or production state",
+      "origin": "Bounded durable SQLite export cache, exact retry/restart, repeated expiry reclaim and unknown reader hold"
+    },
+    {
+      "path": "tests/organizations/native-git-real-graph.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, Linux native held-file custody, Git; disposable repositories and roots",
+      "origin": "Real captured Git dependency plan: hook alias metadata, original worktree identity and refusal of changed bytes, undeclared links or replaced directories"
+    },
+    {
+      "path": "tests/organizations/native-git-negative-validation.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Linux, Node24, built native/server workspaces, local Git; private inert roots only",
+      "origin": "Owned external Git graph application: post-sharing source modes and nanosecond link/directory times, context-root identity, equal-only existing byte preservation and complete hardlink custody"
+    },
+    {
+      "path": "tests/organizations/native-git-real-linked.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Linux, Node24, built native server workspaces, Git2.53+ with reftable; disposable repositories; no provider account",
+      "origin": "Real native bare and linked capsule capture, issued planning, private/shared custody and no-write mismatch rejection"
+    },
+    {
+      "path": "tests/branches/expert-copy-provision.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server and disposable private stores",
+      "origin": "Exact reusable expert-copy reservation and explicit consent"
+    },
+    {
+      "path": "tests/branches/copy-memory-unavailable.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Built server, owned Chroma and pinned models; synthetic providers",
+      "origin": "Temporary copy optional memory readiness and unknown source effects"
+    },
+    {
+      "path": "tests/branches/expert-copy-workflow.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server and disposable private stores",
+      "origin": "Real temporary agent copy admission, separate results and final custody"
+    },
+    {
+      "path": "tests/branches/expert-copy-memory-workflow.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server, disposable loopback Chroma and private local memory models",
+      "origin": "Reviewed temporary agent copy memory and findings across separate jobs"
+    },
+    {
+      "path": "tests/branches/expert-copy-snapshot-retry.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server, disposable private stores",
+      "origin": "Confirmed no-publication snapshot retry and retained staged evidence"
+    },
+    {
+      "path": "tests/branches/copy-archive-measurement.test.mjs",
+      "feature": "branches",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server workspaces and disposable local fixtures; no provider account",
+      "origin": "Temporary copy archive measurement"
+    },
+    {
+      "path": "tests/files-results/working-file-transport.test.mjs",
+      "feature": "files-results",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server workspaces and disposable local fixtures; no provider account",
+      "origin": "Large working-file transport and retained portability"
+    },
+    {
+      "path": "tests/organizations/large-working-file-inspection.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server workspaces and disposable local fixtures; no provider account",
+      "origin": "Large working-file transport and retained portability"
+    },
+    {
+      "path": "tests/organizations/portable-working-file-parts.test.mjs",
+      "feature": "organizations",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Node24, built server workspaces and disposable local fixtures; no provider account",
+      "origin": "Large working-file transport and retained portability"
+    },
+    {
+      "path": "tests/branches/assistant-navigation.test.mjs",
+      "feature": "branches",
+      "lane": "web",
+      "moduleBase": "apps/web/package.json",
+      "requirements": "Node24; real web routing and product-scope helpers; no provider/runtime",
+      "origin": "Integrated Assistant safe exact return and canonical authored file navigation"
     }
   ],
   "retainedReleasePayload": [
@@ -1164,6 +3095,26 @@
       "classification": "shared-fixture-or-loader"
     },
     {
+      "path": "tests/shared/inert-codex.mjs",
+      "moduleBase": "apps/server/package.json",
+      "classification": "shared-controlled-fixture"
+    },
+    {
+      "path": "tests/shared/inert-codex-goal.mjs",
+      "moduleBase": "apps/server/package.json",
+      "classification": "shared-controlled-fixture"
+    },
+    {
+      "path": "tests/shared/inert-claude-handoff.mjs",
+      "moduleBase": "apps/server/package.json",
+      "classification": "shared-controlled-fixture"
+    },
+    {
+      "path": "tests/shared/inert-claude.mjs",
+      "moduleBase": "apps/server/package.json",
+      "classification": "shared-controlled-fixture"
+    },
+    {
       "oldPath": "apps/server/test/ui-qualification.mjs",
       "path": "tests/workspace-navigation/ui-qualification.mjs",
       "moduleBase": "apps/server/package.json",
@@ -1185,6 +3136,263 @@
       "path": "tests/shared/windows-pwa-browser.mjs",
       "moduleBase": "apps/server/package.json",
       "classification": "shared-native-Windows-PWA-fixture"
+    },
+    {
+      "path": "tests/branches/branch-execution-budget-worker.mjs",
+      "moduleBase": "packages/agents/package.json"
+    },
+    {
+      "path": "tests/branches/execution-ui-qualification.mjs",
+      "feature": "branches",
+      "moduleBase": "apps/server/package.json",
+      "origin": "Opt-in loopback BR024 browser qualification; disposable canonical stores and controlled provider roots only"
+    },
+    {
+      "path": "tests/memory/portability-fixture.mjs",
+      "feature": "memory",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Owned private memory package fixtures",
+      "origin": "Phase2 actual product memory package tests"
+    },
+    {
+      "path": "tests/memory/package-crash-worker.mjs",
+      "feature": "memory",
+      "lane": "server",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Owned private memory package fixtures",
+      "origin": "Phase2 actual product memory package tests"
+    },
+    {
+      "path": "tests/branches/every-input-fixture.mjs",
+      "moduleBase": "apps/server/package.json",
+      "classification": "shared-fixture-or-loader"
+    },
+    {
+      "path": "tests/workspace-navigation/webkit-every-input.mjs",
+      "moduleBase": "apps/server/package.json",
+      "classification": "manual-qualification-entrypoint"
+    },
+    {
+      "path": "tests/workspace-navigation/verify-chat-input-evidence.mjs",
+      "moduleBase": "apps/server/package.json",
+      "classification": "manual-qualification-entrypoint"
+    },
+    {
+      "path": "tests/workspace-navigation/chat-input-census.mjs",
+      "moduleBase": "apps/web/package.json",
+      "classification": "manual-qualification-entrypoint"
+    },
+    {
+      "path": "tests/workspace-navigation/chromium-mobile-input-driver.mjs",
+      "feature": "workspace-navigation",
+      "lane": "manual",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Existing installed Chromium and playwright-core;390x844 mobile/touch emulation; real permissioned clipboard, loopback fixture, no account or installation",
+      "origin": "Mobile transport for existing complete Chat input qualification, not a provider inference path"
+    },
+    {
+      "path": "tests/workspace-navigation/search-accessibility.mjs",
+      "moduleBase": "apps/server/package.json",
+      "classification": "manual-qualification-entrypoint"
+    },
+    {
+      "path": "tests/branches/output-role-import-ui.mjs",
+      "feature": "branches",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Built web/server and installed Chromium; actual organization and Branch dialogs on controlled disposable providers",
+      "origin": "A21 collision dialog and role publication/restart browser qualification"
+    },
+    {
+      "path": "tests/branches/output-settings-accessibility.mjs",
+      "feature": "branches",
+      "lane": "manual",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Exact built web/server/packages, existing Chrome/playwright-core and AXE_CORE_PATH; owned loopback fixture; controlled response failure, no provider inference"
+    },
+    {
+      "path": "tests/shared/ui-load-fixture.mjs",
+      "feature": "workspace-navigation",
+      "lane": "manual",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Owned offline UI qualification; exact built web/server/packages; installed Chrome/Xvfb/xdotool/axe as applicable; no provider accounts"
+    },
+    {
+      "path": "tests/shared/serve-ui-fixture.mjs",
+      "feature": "workspace-navigation",
+      "lane": "manual",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Owned offline UI qualification; exact built web/server/packages; installed Chrome/Xvfb/xdotool/axe as applicable; no provider accounts"
+    },
+    {
+      "path": "tests/workspace-navigation/event-timing-observer.mjs",
+      "feature": "workspace-navigation",
+      "lane": "manual",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Owned offline UI qualification; exact built web/server/packages; installed Chrome/Xvfb/xdotool/axe as applicable; no provider accounts"
+    },
+    {
+      "path": "tests/workspace-navigation/active-load-qualification.mjs",
+      "feature": "workspace-navigation",
+      "lane": "manual",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Owned offline UI qualification; exact built web/server/packages; installed Chrome/Xvfb/xdotool/axe as applicable; no provider accounts"
+    },
+    {
+      "path": "tests/workspace-navigation/current-accessibility-matrix.mjs",
+      "feature": "workspace-navigation",
+      "lane": "manual",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Owned offline UI qualification; exact built web/server/packages; installed Chrome/Xvfb/xdotool/axe as applicable; no provider accounts"
+    },
+    {
+      "path": "tests/workspace-navigation/timing-observer-smoke.mjs",
+      "feature": "workspace-navigation",
+      "lane": "manual",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Existing Chrome; unloaded app, mobile4x CPU observer tooling proof only; not 10k/20-active acceptance"
+    },
+    {
+      "path": "tests/workspace-navigation/method-browser-proof.mjs",
+      "feature": "workspace-navigation",
+      "lane": "manual",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Small owned loopback proof: existing outputs/Chrome, 10k seed, one actual controlled Run, two traced browser contexts; never heavy32"
+    },
+    {
+      "path": "tests/memory/workflow-additive-fixture.mjs",
+      "moduleBase": "apps/server/package.json",
+      "classification": "shared-controlled-fixture"
+    },
+    {
+      "path": "tests/branches/additive-memory-mounted.browser.mjs",
+      "moduleBase": "apps/server/package.json",
+      "classification": "manual-qualification-entrypoint"
+    },
+    {
+      "path": "tests/branches/additive-mounted-ownership.mjs",
+      "moduleBase": "apps/server/package.json",
+      "classification": "shared-controlled-fixture"
+    },
+    {
+      "path": "tests/branches/unopened-settings.mjs",
+      "feature": "branches",
+      "lane": "manual",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Owned disposable UI/API interaction check; built web/server/packages and installed Chrome; no provider account or load/performance qualification",
+      "classification": "manual-qualification-entrypoint"
+    },
+    {
+      "path": "tests/workspace-navigation/production-ui-fixture-qualification.mjs",
+      "feature": "workspace-navigation",
+      "lane": "manual",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Owned 100-message production static/API listener smoke; built web/server/packages and installed Chrome; no Agent/provider work or performance qualification",
+      "classification": "manual-qualification-entrypoint"
+    },
+    {
+      "path": "tests/workspace-navigation/core-navigation-startup-qualification.mjs",
+      "feature": "workspace-navigation",
+      "lane": "manual",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Owned disposable UI/API interaction check; built web/server/packages and installed Chrome; no provider account or load/performance qualification",
+      "classification": "manual-qualification-entrypoint"
+    },
+    {
+      "path": "tests/workspace-navigation/core-route-code-overlap-qualification.mjs",
+      "feature": "workspace-navigation",
+      "lane": "manual",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Owned disposable UI/API interaction check; built web/server/packages and installed Chrome; no provider account or load/performance qualification",
+      "classification": "manual-qualification-entrypoint"
+    },
+    {
+      "path": "tests/branches/required-agent-selection.mjs",
+      "feature": "branches",
+      "lane": "manual",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Owned disposable required-Agent validation and publication check; built web/server/packages and installed Chrome; no native provider job or performance qualification",
+      "classification": "manual-qualification-entrypoint"
+    },
+    {
+      "path": "tests/branches/workflow-startup-qualification.mjs",
+      "feature": "branches",
+      "lane": "manual",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Owned disposable UI startup/state check; built web/server/packages and installed Chrome; no provider account or performance qualification",
+      "classification": "manual-qualification-entrypoint"
+    },
+    {
+      "path": "tests/branches/owner-handoff-qualification.mjs",
+      "feature": "branches",
+      "lane": "manual",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Owned disposable normal-snapshot owner handoff and held-configuration check; built web/server/packages and installed Chrome; no provider account or performance qualification",
+      "classification": "manual-qualification-entrypoint"
+    },
+    {
+      "path": "tests/branches/navigation-startup-qualification.mjs",
+      "feature": "branches",
+      "lane": "manual",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Owned disposable cold-phone/first-swipe/navigation-retention check; built web/server/packages and installed Chrome; no provider account or performance qualification",
+      "classification": "manual-qualification-entrypoint"
+    },
+    {
+      "path": "tests/branches/startup-metadata-history-qualification.mjs",
+      "feature": "branches",
+      "lane": "manual",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Owned disposable UI metadata/owner-fence/history-retention check; built web/server/packages and installed Chrome; no provider account or performance qualification",
+      "classification": "manual-qualification-entrypoint"
+    },
+    {
+      "path": "tests/chats/transcript-action-qualification.mjs",
+      "feature": "chats",
+      "lane": "manual",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Owned disposable UI transcript Copy/Download parity check; built web/server/packages and installed Chrome; no provider account or performance qualification",
+      "classification": "manual-qualification-entrypoint"
+    },
+    {
+      "path": "tests/chats/message-frame-style-qualification.mjs",
+      "feature": "chats",
+      "lane": "manual",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Owned disposable UI startup/state check; built web/server/packages and installed Chrome; no provider account or performance qualification",
+      "classification": "manual-qualification-entrypoint"
+    },
+    {
+      "path": "tests/chats/message-prose-style-qualification.mjs",
+      "feature": "chats",
+      "lane": "manual",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Owned actual-component CSS comparison with explicit frozen BASELINE_REPO and installed Chrome; no provider account or performance qualification",
+      "classification": "manual-qualification-entrypoint"
+    },
+    {
+      "path": "tests/workspace-navigation/import-recovery-qualification.mjs",
+      "feature": "workspace-navigation",
+      "lane": "manual",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Owned synthetic two-member template import through real UI, lost acceptance response and status-only recovery; normal built web/server/packages, Chrome and existing recording ffmpeg; no private snapshot or provider work",
+      "classification": "manual-qualification-entrypoint"
+    },
+    {
+      "path": "tests/workspace-navigation/chat-settings-code-boundary-qualification.mjs",
+      "feature": "workspace-navigation",
+      "lane": "manual",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Owned disposable desktop/phone inactive-panel first-use and explicit chunk retry; normal built web/server/packages and sandboxed Chrome; no provider account, load or timing",
+      "classification": "manual-qualification-entrypoint"
+    },
+    {
+      "path": "tests/branches/assistant-navigation-qualification.mjs",
+      "feature": "branches",
+      "lane": "manual",
+      "moduleBase": "apps/server/package.json",
+      "requirements": "Owned disposable real-server UI check; built web/server/packages and installed Chrome; synthetic content and inert provider; no performance/load qualification",
+      "classification": "manual-qualification-entrypoint"
     }
   ],
   "support": [
@@ -1207,6 +3415,11 @@
       "path": "tests/shared/web-typescript-loader.mjs",
       "classification": "runner-or-inventory",
       "origin": "PR #693"
+    },
+    {
+      "path": "tests/workspace-navigation/qualification-ledger.mjs",
+      "classification": "runner-or-inventory",
+      "origin": "Fail-closed reviewed-input and terminal qualification ledger"
     }
   ],
   "upstreamSynchronizationHead": "22e99b4165357fc0fd79715880c47f605a5fcbf6"

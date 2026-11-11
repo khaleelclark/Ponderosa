@@ -22,8 +22,8 @@ function ArtifactProvenance({
   agentTitle: string;
 }): JSX.Element {
   return <Stack direction="row" spacing={.75} useFlexGap flexWrap="wrap" sx={{ alignItems: "center", mb: 1 }}>
-    <Chip size="small" label={`Created by ${agentTitle}`} />
-    <Chip size="small" variant="outlined" label={artifact.visibility === "published" ? "Published" : "Project scope"} />
+    <Chip size="small" label={`Created By ${agentTitle}`} />
+    <Chip size="small" variant="outlined" label={artifact.visibility === "published" ? "Published" : "Project Scope"} />
   </Stack>;
 }
 
@@ -81,7 +81,7 @@ export function AgentArtifactPreview({
     <ArtifactProvenance artifact={artifact} agentTitle={agentTitle} />
     {canViewCurrentFile ? <ButtonGroup
       size="small"
-      aria-label="Choose file view"
+      aria-label="Choose File View"
       sx={{ mb: 1 }}
     >
       <Button
@@ -89,14 +89,14 @@ export function AgentArtifactPreview({
         aria-pressed={view === "current"}
         onClick={() => setView("current")}
       >
-        Current file
+        Current File
       </Button>
       <Button
         variant={view === "diff" ? "contained" : "outlined"}
         aria-pressed={view === "diff"}
         onClick={() => setView("diff")}
       >
-        Recorded diff
+        Recorded Diff
       </Button>
     </ButtonGroup> : null}
     {view === "current" && canViewCurrentFile ? <FilePreview
@@ -181,7 +181,7 @@ export function ProjectArtifactPreview({
   const displayLabel = artifactDisplayLabel(artifact, presentedPath.displayPath);
   return <Box>
     {informational ? <Alert severity="info" sx={{ mb: 1 }}>{informational}</Alert> : null}
-    {!agent ? <Alert severity="info" sx={{ mb: 1 }}>The originating Agent is no longer available. This preview uses the retained artifact.</Alert> : null}
+    {artifact.origin?.kind === "operator" ? <Alert severity="info" sx={{ mb: 1 }}>Operator-created result · private Chat artifact</Alert> : !agent ? <Alert severity="info" sx={{ mb: 1 }}>The originating Agent is no longer available. This preview uses the retained artifact.</Alert> : null}
     <FilePreview
       title={displayLabel}
       path={presentedPath.displayPath}
@@ -195,7 +195,7 @@ export function ProjectArtifactPreview({
       error={text.error ?? undefined}
       truncated={text.data?.truncated}
       totalBytes={text.data?.totalBytes}
-      emptyMessage="This file has no safe inline preview. Download it or open its originating Agent record when available."
+      emptyMessage={artifact.origin?.kind === "operator" ? "This operator result has no safe inline preview. Download it to inspect its contents." : "This file has no safe inline preview. Download it or open its originating Agent record when available."}
     />
   </Box>;
 }

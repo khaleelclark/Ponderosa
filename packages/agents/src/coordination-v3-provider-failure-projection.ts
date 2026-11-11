@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import { publicProviderFailureSummary } from "@ponderosa/core";
+import type { SchedulerLease } from "./coordination-v3-types.js";
 
 export interface ProviderFailureUpdateProjection {
   id: string;
@@ -176,4 +177,41 @@ export function publicActivationDeliveryError(input: {
     ) ?? "Provider execution failed.";
   }
   return input.lastDeliveryError;
+}
+
+export interface ProviderActivationRow {
+  id: string;
+  kind: string;
+  priority: number;
+  dispatch_policy: SchedulerLease["activations"][number]["dispatchPolicy"];
+  prompt_class: SchedulerLease["activations"][number]["promptClass"];
+  payload_json: string;
+  delivery_failures: number;
+  last_delivery_error: string | null;
+  provider_failure_category: string | null;
+}
+
+/** One provider-facing projection for both fresh Runs and steering. */
+export function providerActivation(
+  sqlite: Database.Database,
+  activation: ProviderActivationRow,
+): SchedulerLease["activations"][number] {
+  const lastDeliveryError = publicActivationDeliveryError({
+    lastDeliveryError: activation.last_delivery_error,
+    providerFailureCategory: activation.provider_failure_category,
+  });
+  return {
+    id: activation.id,
+    kind: activation.kind,
+    priority: activation.priority,
+    dispatchPolicy: activation.dispatch_policy,
+    promptClass: activation.prompt_class,
+    payload: providerSafeActivationPayload(
+      sqlite,
+      activation.id,
+      activation.payload_json,
+    ),
+    deliveryFailures: activation.delivery_failures,
+    ...(lastDeliveryError ? { lastDeliveryError } : {}),
+  };
 }

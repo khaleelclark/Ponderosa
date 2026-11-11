@@ -1,33 +1,131 @@
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
 import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
 import SubdirectoryArrowRightIcon from "@mui/icons-material/SubdirectoryArrowRight";
-import { Box, Button, IconButton, Paper, Stack, TextField, Tooltip, Typography } from "@mui/material";
+import { Button, IconButton, Paper, Stack, TextField, Tooltip, Typography } from "@mui/material";
+import { alpha } from "@mui/material/styles";
 import type { QueuedConversationMessageDto } from "@ponderosa/core";
-import { useEffect, useState } from "react";
-import { capturedSubmissionRunning, readCapturedSubmissions, submissionOutboxEvent } from "./submissionOutbox";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {useQueryClient} from '@tanstack/react-query';
+import { flushSync } from "react-dom";
+import { afterPaintBackgroundTask } from "../../afterPaintBackgroundTask";
+import { capturedSubmissionRunning, readCapturedSubmissions, saveCapturedSubmission, submissionOutboxEvent, type CapturedSubmission } from "./submissionOutbox";
+import {capturedQueueReceipt,reconcileAcceptedCapture} from './capturedDraftSubmissions';
+import {useMessageDeliveryReceipts} from '../useMessageDeliveryReceipts';
+import { productApiPath } from "../../api/productScope";
 import { composerSurfaceWidth } from "./Composer.styles";
 
-export function QueuedMessageTray({ messages, scope, attachmentNamesForMessage, agentNameForId, busy, onSteer, onEdit, onDelete }: {
+function QueuedMessageTrayComponent({ messages, scope, conversationId=scope?.startsWith('agent:')?undefined:scope, attachmentNamesForMessage, busy, onSteer, onEdit, onDelete }: {
   messages: QueuedConversationMessageDto[];
   scope?: string;
+  conversationId?: string;
   attachmentNamesForMessage?(message: QueuedConversationMessageDto): string[] | undefined;
-  agentNameForId?(agentId: string): string;
   busy?: boolean;
   onSteer(message: QueuedConversationMessageDto): Promise<unknown> | unknown;
   onEdit(message: QueuedConversationMessageDto, text: string): Promise<unknown> | unknown;
   onDelete(message: QueuedConversationMessageDto): Promise<unknown> | unknown;
 }): JSX.Element | null {
-  const [, refresh] = useState(0);
+  const namespace=productApiPath('/api/conversations');
+  const queryClient=useQueryClient();
+  const identity=useRef<{scope?:string;namespace:string;keys:Map<string,string>}>({scope,namespace,keys:new Map()});
+  if(identity.current.scope!==scope||identity.current.namespace!==namespace)identity.current={scope,namespace,keys:new Map()};
+  const remember=()=>{
+    if(productApiPath('/api/conversations')!==namespace)return;
+    for(const item of readCapturedSubmissions(scope).filter(item=>!item.apiNamespace||item.apiNamespace===namespace)){
+      const targets=item.pending.request?.recipientAgentIds.length?item.pending.request.recipientAgentIds:[''];
+      targets.forEach((target,index)=>{const key=index===0?`capture:${item.pending.idempotencyKey}`:`capture:${item.pending.idempotencyKey}:${target}`;
+        if(item.communicationId)identity.current.keys.set(`communication:${item.communicationId}:${target}`,key);
+        if(targets.length===1)for(const id of item.acceptedDeliveryIds??[])identity.current.keys.set(id,key);
+      });
+    }
+  };
+  // The existing outbox event precedes retirement even when React batches all
+  // intermediate renders. Remember presentation anchors, never delivery state.
+  const [outboxRevision, refresh] = useState(0);
   useEffect(() => {
-    const changed = () => refresh(value => value + 1);
+    const changed = () => {remember();refresh(value => value + 1);};
     window.addEventListener(submissionOutboxEvent, changed);
     window.addEventListener("storage", changed);
     return () => { window.removeEventListener(submissionOutboxEvent, changed); window.removeEventListener("storage", changed); };
-  }, []);
-  const canonicalIds = new Set(messages.map(message => message.deliveryId));
-  const captured = scope ? readCapturedSubmissions(scope).filter(item =>
-    !(item.status === "accepted" && item.acceptedDeliveryIds?.some(id => canonicalIds.has(id))) &&
-    (item.action === "queue" || !capturedSubmissionRunning(item.pending.idempotencyKey))) : [];
+  }, [scope,namespace]);
+  const captured=useMemo(()=>scope?readCapturedSubmissions(scope).filter(item=>(!item.apiNamespace||item.apiNamespace===namespace)&&(item.action==='queue'||item.pending.request?.runtime.activeRunDelivery==='queue')):[],[scope,namespace,outboxRevision]);
+  const recoverable=useMemo(()=>captured.filter(item=>item.apiNamespace===namespace&&item.dispatchStarted&&item.status!=='failed'&&item.communicationId&&!item.newAgentRequested&&item.pending.request?.recipientAgentIds.length),[captured,namespace]);
+  const receiptIds=[...new Set(recoverable.map(item=>item.communicationId!))].sort().join('\0');
+  const receiptSources=useMemo(()=>conversationId&&receiptIds?receiptIds.split('\0').map(communicationEventId=>({conversationId,communicationEventId})):[],[conversationId,receiptIds]);
+  // Ordinary in-flight submissions use their response. A cold/lost response
+  // reuses the existing bounded receipt read and monotonic cancellation proof.
+  const needsRead=recoverable.some(item=>!capturedSubmissionRunning(item.pending.idempotencyKey)&&
+    !item.pending.request!.recipientAgentIds.every(id=>messages.some(message=>message.communicationEventId===item.communicationId&&message.targetAgentId===id)));
+  const receipts=useMessageDeliveryReceipts(receiptSources,conversationId,needsRead);
+  const proofs=useMemo(()=>new Map(recoverable.map(item=>[item.pending.idempotencyKey,capturedQueueReceipt(item,conversationId??'',receipts.find(source=>source.communicationEventId===item.communicationId))])),[recoverable,conversationId,receipts]);
+  useEffect(()=>{
+    if(identity.current.scope!==scope||identity.current.namespace!==namespace||productApiPath('/api/conversations')!==namespace)return;
+    for(const item of recoverable){
+      const confirmed=proofs.get(item.pending.idempotencyKey)?.accepted;
+      if(!confirmed||capturedSubmissionRunning(item.pending.idempotencyKey))continue;
+      const latest=readCapturedSubmissions(scope,item.ownerId).find(value=>value.pending.idempotencyKey===item.pending.idempotencyKey);
+      if(!latest||latest.pending.captureRevision!==item.pending.captureRevision||latest.pending.fingerprint!==item.pending.fingerprint||latest.communicationId!==item.communicationId)continue;
+      if(latest.status!=='accepted')try{saveCapturedSubmission(confirmed);}catch{/* Canonical proof remains visible while quiet storage cleanup retries. */}
+      void reconcileAcceptedCapture(queryClient,latest.status==='accepted'?latest:confirmed).catch(()=>undefined);
+    }
+  },[scope,namespace,queryClient,recoverable,proofs]);
+  // React keys only: never a second queue, delivery record or dispatch authority.
+  remember();
+  const keys=identity.current.keys;
+  type Row={key:string;message?:QueuedConversationMessageDto;capture?:CapturedSubmission};
+  const canonicalRows:Row[]=messages.map(message=>({key:keys.get(message.deliveryId)??keys.get(`communication:${message.communicationEventId}:${message.targetAgentId}`)??keys.get(`communication:${message.communicationEventId}:`)??`delivery:${message.deliveryId}`,message}));
+  const pendingRows:Row[]=[];
+  for(const item of captured){
+    const matches=canonicalRows.filter(row=>item.acceptedDeliveryIds?.includes(row.message!.deliveryId)||Boolean(item.communicationId&&row.message!.communicationEventId===item.communicationId));
+    const targets=item.pending.request?.recipientAgentIds.length?item.pending.request.recipientAgentIds:matches.length?matches.map(row=>row.message!.targetAgentId):[''];
+    for(const [index,target] of targets.entries()){
+      const found=matches.find(row=>row.message!.targetAgentId===target)||(targets.length===1?matches[0]:undefined);
+      const key=index===0?`capture:${item.pending.idempotencyKey}`:`capture:${item.pending.idempotencyKey}:${target}`;
+      if(found){
+        found.key=keys.get(found.message!.deliveryId)??key;keys.set(found.message!.deliveryId,found.key);found.capture=item;
+      }else if(!proofs.get(item.pending.idempotencyKey)?.deletedTargets.has(target)&&
+        (item.status!=='accepted'||!item.acceptedDeliveryIds?.length||matches.length===0)){pendingRows.push({key,capture:item});}
+    }
+  }
+  const activeIds=new Set(messages.flatMap(message=>[message.deliveryId,`communication:${message.communicationEventId}:${message.targetAgentId}`,`communication:${message.communicationEventId}:`]));
+  for(const item of captured){for(const id of item.acceptedDeliveryIds??[])activeIds.add(id);if(item.communicationId)for(const target of item.pending.request?.recipientAgentIds??[''])activeIds.add(`communication:${item.communicationId}:${target}`);}
+  for(const id of keys.keys())if(!activeIds.has(id))keys.delete(id);
+  // As in Main history, only the first cold mount is staged. Eight rows fill
+  // this at-most-160px tray; subsequent rows append without moving its controls.
+  const rootRef = useRef<HTMLDivElement>(null);
+  const initialIds = useRef<readonly string[]>();
+  if (initialIds.current === undefined && messages.length) initialIds.current = messages.map(message => message.deliveryId);
+  const sequenceChanged = initialIds.current !== undefined &&
+    (initialIds.current.length !== messages.length || initialIds.current.some((id, index) => id !== messages[index]?.deliveryId));
+  const [mountedRows, setMountedRows] = useState(8);
+  const shownRows = sequenceChanged ? messages.length : Math.min(mountedRows, messages.length);
+  const loading = shownRows < messages.length;
+  useLayoutEffect(() => {
+    if (sequenceChanged) setMountedRows(Infinity);
+  }, [sequenceChanged]);
+  const revealRows = () => { if (loading) flushSync(() => setMountedRows(Infinity)); };
+  useEffect(() => {
+    if (!loading) return;
+    const cancelBatch = afterPaintBackgroundTask(() => setMountedRows(count => count + 8));
+    const findOrSelect = (event: KeyboardEvent) => {
+      if (!event.ctrlKey && !event.metaKey) return;
+      const target = event.target, editable = target instanceof HTMLElement &&
+        (target.isContentEditable || Boolean(target.closest("input, textarea, select")));
+      if (event.key.toLowerCase() === "f" || event.key.toLowerCase() === "a" && !editable) revealRows();
+    };
+    const selected = () => {
+      const selection = document.getSelection();
+      if (selection && !selection.isCollapsed && rootRef.current?.contains(selection.anchorNode)) revealRows();
+    };
+    document.addEventListener("keydown", findOrSelect, true);
+    document.addEventListener("selectionchange", selected);
+    window.addEventListener("beforeprint", revealRows);
+    return () => {
+      cancelBatch();
+      document.removeEventListener("keydown", findOrSelect, true);
+      document.removeEventListener("selectionchange", selected);
+      window.removeEventListener("beforeprint", revealRows);
+    };
+  }, [loading, mountedRows, messages.length]);
   const [editingId, setEditingId] = useState<string>();
   const [editingText, setEditingText] = useState("");
   const run = (
@@ -36,12 +134,22 @@ export function QueuedMessageTray({ messages, scope, attachmentNamesForMessage, 
   ) => {
     void Promise.resolve().then(action).then(onSuccess).catch(() => {});
   };
-  if (messages.length === 0 && captured.length === 0) return null;
+  if (canonicalRows.length === 0 && pendingRows.length === 0) return null;
   return <Paper
+    ref={rootRef}
     variant="outlined"
-    aria-label="Queued messages"
-    sx={{
-      width: composerSurfaceWidth,
+    aria-label="Queued Messages"
+    aria-busy={loading || undefined}
+    onScroll={revealRows}
+    onKeyDownCapture={event => {
+      if (loading && event.key === "Tab" && !event.shiftKey &&
+          (Array.from(rootRef.current?.querySelectorAll("[data-delivery-id]")??[]).at(-1)?.contains(event.target as Node) || rootRef.current?.querySelector("[data-queue-row]:last-child")?.contains(event.target as Node))) revealRows();
+    }}
+    sx={theme => ({
+      width: Object.fromEntries(Object.entries(composerSurfaceWidth).map(([breakpoint, width]) =>
+        [breakpoint, `calc(${width} - ${breakpoint === "xs" ? 8 : 16}px)`])),
+      position: "relative",
+      zIndex: 2,
       minWidth: 0,
       maxWidth: "100%",
       mx: "auto",
@@ -51,63 +159,65 @@ export function QueuedMessageTray({ messages, scope, attachmentNamesForMessage, 
       px: 0.75,
       maxHeight: "min(30vh, 160px)",
       "& .MuiIconButton-root, & .MuiButton-root": { minHeight: 28, minWidth: 28, p: 0.5 },
+      "& .queued-message-row": { display: "flex", alignItems: "center", gap: 0.75, minHeight: 30, minWidth: 0 },
+      "& [data-queue-row] + [data-queue-row]": { borderTop: 1, borderColor: alpha(theme.palette.divider, 0.4) },
+      "& .queued-message-position": { width:"2ch",flexShrink:0,...theme.typography.caption, m: 0, color: "text.secondary", fontVariantNumeric: "tabular-nums" },
+      "& .queued-message-text": { ...theme.typography.body2, m: 0, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
       "@media (pointer: coarse)": { "& .MuiIconButton-root, & .MuiButton-root": { minHeight: 44, minWidth: 44 }, "& [data-queue-row]": { minHeight: 44 } },
       overflowY: "auto",
-      borderRadius: "16px 16px 8px 8px",
-      bgcolor: "background.paper",
-      boxShadow: 2,
-    }}
+      borderRadius: "14px 14px 8px 8px",
+      borderColor: alpha(theme.palette.divider, 0.55),
+      // Reserve the overlap outside the scrollport, including while mid-scroll.
+      borderBottomWidth: 12,
+      borderBottomColor: "transparent",
+      bgcolor: `var(--ponderosa-surface-secondary, ${theme.palette.background.paper})`,
+      boxShadow: "none",
+    })}
   >
     <Stack spacing={0.25}>
-      {captured.map(item => {
-        const id = item.pending.idempotencyKey;
-        const inFlight = capturedSubmissionRunning(id);
-        return <Box key={id} data-queue-row data-operation-id={id} sx={{ display: "flex", alignItems: "center", gap: 0.5, minHeight: 30, minWidth: 0 }}>
-          <Tooltip title={[item.text, ...item.attachmentNames, item.error].filter(Boolean).join(" · ")}>
-            <Typography tabIndex={0} noWrap variant="body2" sx={{ flex: 1, minWidth: 0 }}>{item.text || item.attachmentNames.join(", ")}</Typography>
-          </Tooltip>
-          <Tooltip title={item.error ?? (inFlight ? "Awaiting acceptance; not confirmed queued." : "Retry reconciles this exact operation.")}><Typography tabIndex={0} variant="caption" color={item.status === "failed" ? "error" : "text.secondary"}>{inFlight ? "Pending" : item.status === "accepted" ? "Saved" : item.status === "failed" ? "Failed" : "Unconfirmed"}</Typography></Tooltip>
-          {item.attachmentNames.length ? <Typography variant="caption" aria-label={`${item.attachmentNames.length} attachments`}>+{item.attachmentNames.length}</Typography> : null}
-          <Button size="small" disabled={inFlight} onClick={() => window.dispatchEvent(new CustomEvent("ponderosa-submission-retry", { detail: id }))}>Retry</Button>
-          {item.status === "failed" ? <Tooltip title="Discard definitely rejected input"><span><IconButton aria-label="Discard rejected message" disabled={inFlight || !navigator.locks} onClick={() => window.dispatchEvent(new CustomEvent("ponderosa-submission-discard", { detail: id }))}><DeleteOutlineIcon fontSize="small" /></IconButton></span></Tooltip> : null}
-        </Box>;
-      })}
-      {messages.map((message) => {
-        const attachmentNames = attachmentNamesForMessage?.(message) ?? [];
-        const editing = editingId === message.deliveryId;
-        return <Box key={message.deliveryId} data-queue-row sx={{ display: "flex", alignItems: "center", gap: 0.75, minHeight: 30, minWidth: 0 }}>
-          <Typography variant="caption" aria-label={message.position ? `Queue position ${message.position}` : "Queue position pending"} sx={{ fontVariantNumeric: "tabular-nums" }}>{message.position ?? "…"}</Typography><SubdirectoryArrowRightIcon aria-hidden sx={{ color: "text.disabled", fontSize: 16, flex: "0 0 auto" }} />
+      {[...canonicalRows.slice(0,shownRows),...pendingRows].map(row=>{
+        const message=row.message,item=row.capture,id=item?.pending.idempotencyKey;
+        const resolvedNames=message?attachmentNamesForMessage?.(message):undefined;
+        const attachmentNames=resolvedNames?.length?resolvedNames:item?.attachmentNames??resolvedNames??[];
+        const attachmentCount=message?.attachmentCount??attachmentNames.length;
+        const editing=Boolean(message&&editingId===message.deliveryId),inFlight=Boolean(id&&capturedSubmissionRunning(id));
+        const rejected=Boolean(item&&!message&&item.status==='failed'),retryable=Boolean(item&&!message&&!inFlight&&['unknown','failed'].includes(item.status));
+        const position=message?.position,label=position??'Pending';
+        const text=editing?editingText:message?.text??item!.text??'';
+        return <div key={row.key} data-queue-row data-delivery-id={message?.deliveryId} data-operation-id={id} className="MuiBox-root queued-message-row">
+          <span className="MuiTypography-root MuiTypography-caption queued-message-position" aria-label={position?`Queue Position ${position}`:'Queue Position Pending'}>{position??'…'}</span><SubdirectoryArrowRightIcon aria-hidden sx={{color:'text.disabled',fontSize:16,flex:'0 0 auto'}}/>
           {editing ? <TextField
             value={editingText}
+            disabled={busy}
             onChange={(event) => setEditingText(event.target.value)}
             size="small"
             fullWidth
             autoFocus
             multiline
             maxRows={4}
-            inputProps={{ "aria-label": `Edit queued message ${message.position ?? "pending"}` }}
+            inputProps={{ "aria-label": `Edit Queued Message ${label}` }}
             onKeyDown={(event) => {
               if (event.key === "Escape") setEditingId(undefined);
               if (event.key === "Enter" && !event.shiftKey && editingText.trim()) {
                 event.preventDefault();
-                run(() => onEdit(message, editingText.trim()), () => setEditingId(undefined));
+                run(() => onEdit(message!, editingText.trim()), () => setEditingId(undefined));
               }
             }}
-          /> : <Tooltip title={message.text}><Typography tabIndex={0} variant="body2" noWrap sx={{ flex: 1, minWidth: 0 }}>{message.text}</Typography></Tooltip>}
-          {!editing && attachmentNames.length ? <Tooltip title={attachmentNames.join(", ")}><Typography tabIndex={0} variant="caption" aria-label={`${attachmentNames.length} attachments`}>+{attachmentNames.length}</Typography></Tooltip> : null}
-          {!editing && agentNameForId ? <Typography variant="caption" color="text.secondary" noWrap sx={{ display: { xs: "none", md: "block" }, maxWidth: 160 }}>
-            {agentNameForId(message.targetAgentId)}
-          </Typography> : null}
+          /> : <Tooltip disableInteractive title={item?.error??text}><p tabIndex={0} className="MuiTypography-root MuiTypography-body2 MuiTypography-noWrap queued-message-text" aria-label={!message?rejected?"Not Queued":item?.status==="accepted"?"Queue Accepted; Checking Delivery":"Awaiting Queue Confirmation":undefined}>{rejected?"Not Queued · ":""}{text||attachmentNames.join(", ")}</p></Tooltip>}
+          {!editing && attachmentCount ? <Tooltip disableInteractive title={attachmentNames.join(", ")||`${attachmentCount} Attachments`}><Typography tabIndex={0} variant="caption" aria-label={`${attachmentCount} Attachments`}>+{attachmentCount}</Typography></Tooltip> : null}
           {editing ? <>
-            <Button size="small" disabled={busy || !editingText.trim()} onClick={() => run(() => onEdit(message, editingText.trim()), () => setEditingId(undefined))}>Save</Button>
-            <Button size="small" color="inherit" onClick={() => setEditingId(undefined)}>Cancel</Button>
+            <Button size="small" disabled={busy || !editingText.trim()} onClick={() => run(() => onEdit(message!, editingText.trim()), () => setEditingId(undefined))}>Save</Button>
+            <Button size="small" color="inherit" disabled={busy} onClick={() => setEditingId(undefined)}>Cancel</Button>
           </> : <>
-            <Tooltip title="Steer now"><span><IconButton size="small" disabled={busy} aria-label={`Steer queued message ${message.position ?? "pending"}`} onClick={() => run(() => onSteer(message))}><SubdirectoryArrowRightIcon fontSize="small" /></IconButton></span></Tooltip>
-            <Tooltip title="Edit Queued Message"><span><IconButton size="small" disabled={busy} aria-label={`Edit queued message ${message.position ?? "pending"}`} onClick={() => { setEditingId(message.deliveryId); setEditingText(message.text); }}><EditOutlinedIcon fontSize="small" /></IconButton></span></Tooltip>
-            <Tooltip title="Delete Queued Message"><span><IconButton size="small" disabled={busy} aria-label={`Delete queued message ${message.position ?? "pending"}`} onClick={() => run(() => onDelete(message))}><DeleteOutlineIcon fontSize="small" /></IconButton></span></Tooltip>
+            <Tooltip disableInteractive title={message?'Steer Now':retryable?'Check This Exact Queued Message':'Awaiting Queue Confirmation'}><span><Button size="small" disabled={busy||(!message&&!retryable)} aria-label={message?`Steer Queued Message ${label}`:retryable?'Retry Queued Message':'Steer Queued Message Pending'} startIcon={<SubdirectoryArrowRightIcon fontSize="small"/>} sx={{flexShrink:0,minWidth:64}} onClick={()=>message?run(()=>onSteer(message)):window.dispatchEvent(new CustomEvent('ponderosa-submission-retry',{detail:id}))}>{retryable?'Retry':'Steer'}</Button></span></Tooltip>
+            <Tooltip disableInteractive title="Edit Queued Message"><span><IconButton size="small" disabled={busy||!message} aria-label={`Edit Queued Message ${label}`} onClick={()=>{if(message){setEditingId(message.deliveryId);setEditingText(message.text);}}}><EditOutlinedIcon fontSize="small"/></IconButton></span></Tooltip>
+            <Tooltip disableInteractive title="Delete Queued Message"><span><IconButton size="small" disabled={busy||(!message&&(!rejected||inFlight||!navigator.locks))} aria-label={message?`Delete Queued Message ${label}`:rejected?'Discard Rejected Message':'Delete Message After Queue Confirmation'} onClick={()=>message?run(()=>onDelete(message)):window.dispatchEvent(new CustomEvent('ponderosa-submission-discard',{detail:id}))}><DeleteOutlineIcon fontSize="small"/></IconButton></span></Tooltip>
           </>}
-        </Box>;
+        </div>;
       })}
     </Stack>
   </Paper>;
 }
+
+// Parent runtime hydration does not change queue rows or their actions.
+export const QueuedMessageTray = memo(QueuedMessageTrayComponent);

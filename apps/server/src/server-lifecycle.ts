@@ -1,3 +1,6 @@
+import {withProjectImportLock} from './project-import-lock.js';
+import {isMemoryCleanupHold} from './local-memory-authority.js';
+import {localMemoryFor} from './local-memory.js';
 import WebSocket from "ws";
 import type {
   AgentDeletionReceipt,
@@ -57,11 +60,12 @@ export async function recoverCanonicalAgentCreations(input: {
     allowQuarantinedAgentIds: ReadonlySet<string>;
   }): Promise<number>;
   limit?: number;
+  projectId?: string;
 }): Promise<{ recovered: number; failures: Array<{ operationId: string; error: unknown }> }> {
   const failures: Array<{ operationId: string; error: unknown }> = [];
   let recovered = 0;
   const operations = input.store.listRecoverableAgentCreationOperations()
-    .filter((operation) => operation.status === "canonical_committed" && operation.communicationEventId)
+    .filter((operation) => (!input.projectId || operation.projectId === input.projectId) && operation.status === "canonical_committed" && operation.communicationEventId)
     .slice(0, input.limit ?? 32);
   for (const operation of operations) {
     try {
@@ -94,11 +98,14 @@ export function recoverFailedAgentCreations(input: {
   dataDir: string;
   deletingAgentIds: Set<string>;
   handleAgentDeletion(agentId: string): void;
+  projectId?: string;
 }): { recovered: number; failures: Array<{ operationId: string; error: unknown }> } {
   let recovered = 0;
   const failures: Array<{ operationId: string; error: unknown }> = [];
   for (const operation of input.store.listRecoverableAgentCreationOperations()) {
+    if (input.projectId && operation.projectId !== input.projectId) continue;
     if (operation.status === "canonical_committed") continue;
+    if((operation.result as {memoryPlan?:unknown[]}|undefined)?.memoryPlan?.length){failures.push({operationId:operation.id,error:new Error(isMemoryCleanupHold(operation.lastError)?operation.lastError!:'Package memory cleanup remains pending')});continue;}
     input.store.updateAgentCreationOperation(operation.id, { status: "rolling_back" });
     let rolledBack = true;
     const authorityBlockedArtifactIds = new Set<string>();
@@ -233,7 +240,10 @@ type ServerLifecycleContext =
     runtimeAuthorities: Map<string, AgentRuntimeAuthority>;
     agentMessageCapabilities: Map<string, AgentMessageCapability>;
     agentDeliveryLeases: ReadonlyMap<string, number>;
+    conversationDeliveryLeases: ReadonlyMap<string, number>;
+    deletingConversationIds: ReadonlySet<string>;
     deletingAgentIds: Set<string>;
+    initialAgentCreations: Array<{id:string; projectId:string; agentIds:string[]}>;
     attachmentDeletionInProgress(agentId: string): boolean;
     reconcilingAssetAgentIds: Set<string>;
     projectBrowserGrants: Map<string, unknown>;
@@ -297,7 +307,10 @@ export function registerServerLifecycle(
     runtimeAuthorities,
     agentMessageCapabilities,
     agentDeliveryLeases,
+    conversationDeliveryLeases,
+    deletingConversationIds,
     deletingAgentIds,
+    initialAgentCreations,
     attachmentDeletionInProgress,
     reconcilingAssetAgentIds,
     projectBrowserGrants,
@@ -361,10 +374,12 @@ export function registerServerLifecycle(
     startupProjectionRecoveryImmediate = setImmediate(() => {
       startupProjectionRecoveryImmediate = undefined;
       if (isClosed()) return;
-      startupProjectionRecovery = reconcileRuntimeCommunicationProjections(undefined, {
-        yieldEvery: 1,
-        shouldContinue: () => !isClosed(),
-      }).then(async (repaired) => {
+      startupProjectionRecovery = Promise.resolve(app.ready()).then(async () => {
+        if (isClosed()) return;
+        const repaired = await reconcileRuntimeCommunicationProjections(undefined, {
+          yieldEvery: 1,
+          shouldContinue: () => !isClosed(),
+        });
         let verifiedProjects = 0;
         for (const project of store.listProjects()) {
           if (isClosed()) break;
@@ -403,7 +418,7 @@ export function registerServerLifecycle(
           }
           receipt = store.getAgentDeletionReceiptByPreviewHash(receipt.previewHash)!;
         }
-        if (!receipt.serverCleanupCompleted) await processAgentDeletionCleanup(receipt);
+        if (!receipt.serverCleanupCompleted&&!isMemoryCleanupHold(receipt.lastError)) await processAgentDeletionCleanup(receipt);
       }
     } catch (error) {
       if (!isClosed()) app.log.error({ err: error }, "Agent deletion cleanup retry failed");
@@ -426,7 +441,7 @@ export function registerServerLifecycle(
     const operation = (async () => {
       for (const receipt of store.listPendingConversationDeletionReceipts()) {
         if (isClosed()) break;
-        await processConversationDeletionCleanup(receipt);
+        if(!isMemoryCleanupHold(receipt.lastError))await processConversationDeletionCleanup(receipt);
       }
     })().catch((error) => {
       if (!isClosed()) app.log.error({ err: error }, "Chat deletion cleanup retry failed");
@@ -512,24 +527,46 @@ export function registerServerLifecycle(
     // any crash gap in the workspace log before the listener becomes ready.
     reconcileCommittedProjectDeletions();
     completeLifecyclePhase("project_deletion_workspace_recovery");
-    await runAgentCreationRecovery(Number.POSITIVE_INFINITY);
-    const failedCreationRecovery = recoverFailedAgentCreations({
-      store,
-      assets,
-      dataDir: opts.dataDir,
-      deletingAgentIds,
-      handleAgentDeletion: (id) => coordinationV3.handleAgentDeletion(id),
-    });
-    for (const failure of failedCreationRecovery.failures) {
-      store.updateAgentCreationOperation(failure.operationId, {
-        lastError: failure.error instanceof Error
-          ? failure.error.message
-          : "Agent creation rollback remains quarantined",
+    // A second app may start while another app owns an import in this same
+    // process. Wait for that Project's active import before inspecting recovery.
+    const startupCreations = [...new Map([...initialAgentCreations,...store.listRecoverableAgentCreationOperations()].map(operation=>[operation.id,operation])).values()];
+    for (const projectId of new Set(startupCreations.map(operation=>operation.projectId))) {
+      await withProjectImportLock(projectId, async()=>{
+        const canonical = await recoverCanonicalAgentCreations({
+          store, appendWorkspace, deletingAgentIds, reconcileRuntimeCommunicationProjections,
+          limit:Number.POSITIVE_INFINITY, projectId,
+        });
+        for(const failure of canonical.failures)app.log.error({err:failure.error,operationId:failure.operationId},'Agent creation projection recovery remains pending');
+        for(const operation of store.listRecoverableAgentCreationOperations().filter(row=>row.projectId===projectId)){
+          if((operation.status==='preparing'||operation.status==='rolling_back')&&(operation.result as {memoryPlan?:unknown[]}|undefined)?.memoryPlan?.length){
+            try{
+              const memory=localMemoryFor(app);
+              if(!memory)throw new Error('Local memory configuration required for package cleanup');
+              // Unknown effects require reconciliation; cleanup checks again under the shared queue.
+              if(!operation.conversationId||memory.core.database.scopeHasUnsettledMutation('chat:'+operation.conversationId))continue;
+              store.updateAgentCreationOperation(operation.id,{status:'rolling_back'});
+              await memory.rollbackImportMemory(operation.id);
+            }catch(error){store.updateAgentCreationOperation(operation.id,{lastError:error instanceof Error?error.message:String(error)});}
+          }
+        }
+        const recovery = recoverFailedAgentCreations({
+          store, assets, dataDir:opts.dataDir, deletingAgentIds, projectId,
+          handleAgentDeletion:(id)=>coordinationV3.handleAgentDeletion(id),
+        });
+        for(const failure of recovery.failures){
+          store.updateAgentCreationOperation(failure.operationId,{lastError:failure.error instanceof Error?failure.error.message:'Agent creation rollback remains quarantined'});
+          app.log.error({err:failure.error,operationId:failure.operationId},'Agent creation rollback remains quarantined');
+        }
+        // Startup may have inventoried an import that finished while it waited.
+        for(const initial of startupCreations.filter(row=>row.projectId===projectId)){
+          const current=store.getAgentCreationOperation(initial.id);
+          if(current && (current.status==='completed'||current.status==='rolled_back') &&
+             !store.listPendingProjectDeletions().some(row=>row.projectId===projectId)){
+            const deleting=new Set(store.listPendingAgentDeletionReceipts().flatMap(row=>row.deletedAgentIds));
+            for(const id of initial.agentIds)if(!deleting.has(id))deletingAgentIds.delete(id);
+          }
+        }
       });
-      app.log.error(
-        { err: failure.error, operationId: failure.operationId },
-        "Agent creation rollback remains quarantined",
-      );
     }
     completeLifecyclePhase("agent_creation_recovery");
     const orphanGraceBoundary = Date.now() - 60 * 60 * 1_000;
@@ -546,8 +583,13 @@ export function registerServerLifecycle(
     const runtimeArtifacts = coordinationV3.runtimeArtifacts();
     if (artifactFilesystem.ok) {
       resolveOperationalNotification("startup:artifact-filesystem-capability");
-      const recoveredAssociations = await assets.recoverRuntimeCommunicationAssociations((communicationId, projectId) =>
-        coordinationV3.runtimeCommunication(communicationId)?.projectId === projectId);
+      const recoveredAssociations = await assets.recoverRuntimeCommunicationAssociations((communicationId, projectId, binding) => {
+        const decisionId = /^decision:([^:]+):response$/.exec(communicationId)?.[1];
+        if (!decisionId) return coordinationV3.runtimeCommunication(communicationId)?.projectId === projectId;
+        const decision = workspace.getDecision(decisionId);
+        return Boolean(decision?.status === "resolved" && decision.projectId === projectId && decision.agentId === binding.agentId &&
+          decision.response?.attachments?.some(file => file.id === binding.attachmentId && file.sha256 === binding.contentHash && file.size === binding.byteLength));
+      });
       if (recoveredAssociations.unavailable) {
         app.log.error({ recovery: recoveredAssociations }, "runtime Communication attachment recovery found unavailable immutable content");
       }
@@ -569,11 +611,6 @@ export function registerServerLifecycle(
           }
         }
       }
-      // Historical projection repair is idempotent and exact live retries
-      // reconcile their own Communication before reporting success. Run the
-      // full backlog after readiness so a large ledger cannot hold the listener
-      // closed, and yield between bounded batches to preserve the event loop.
-      scheduleStartupProjectionRecovery();
       for (const artifact of runtimeArtifacts.filter((candidate) => candidate.ownerKind === "request_update")) {
         const request = coordinationV3.requestForUpdate(artifact.ownerId);
         if (!request || !assets.authoritativeRuntimeArtifact(artifact.projectId, artifact)) continue;
@@ -589,7 +626,7 @@ export function registerServerLifecycle(
         dedupeKey: "startup:artifact-filesystem-capability",
         category: "system",
         severity: "urgent",
-        title: "Artifact filesystem is incompatible",
+        title: "Artifact Filesystem Is Incompatible",
         body: artifactFilesystem.detail,
       });
     }
@@ -601,7 +638,7 @@ export function registerServerLifecycle(
         dedupeKey: "startup:process-containment-capability",
         category: "system",
         severity: "urgent",
-        title: "Process containment is incompatible",
+        title: "Process Containment Is Incompatible",
         body: processContainment.detail,
       });
     }
@@ -657,7 +694,7 @@ export function registerServerLifecycle(
           dedupeKey: `context-rollover:${rollover.id}:acceptance-reconciliation-failed`,
           category: "coordination",
           severity: "attention",
-          title: "Context refresh acceptance needs review",
+          title: "Context Refresh Acceptance Needs Review",
           body: error instanceof Error ? error.message : String(error),
           projectId: rollover.projectId,
           conversationId: rollover.conversationId,
@@ -677,7 +714,7 @@ export function registerServerLifecycle(
         dedupeKey: `context-rollover:${rollover.id}:confirmation-missing`,
         category: "coordination",
         severity: "attention",
-        title: "Context refresh was cancelled",
+        title: "Context Refresh Was Cancelled",
         body: "The replacement Run was cancelled before refreshed context could be confirmed. Its bounded handoff is reserved for one authorized Retry Assignment and will not be used by unrelated work.",
         projectId: rollover.projectId,
         conversationId: rollover.conversationId,
@@ -740,7 +777,7 @@ export function registerServerLifecycle(
             dedupeKey: `context-rollover:${rollover.id}:candidate-start-unknown`,
             category: "coordination",
             severity: "attention",
-            title: "Context refresh candidate was discarded after restart",
+            title: "Context Refresh Candidate Was Discarded After Restart",
             body: "The exact replacement input was durable, but no candidate session identity was observed before restart. The old accepted provider session remains authoritative; an explicit authorized Retry may reuse this rollover generation.",
             projectId: rollover.projectId,
             conversationId: rollover.conversationId,
@@ -768,7 +805,7 @@ export function registerServerLifecycle(
             dedupeKey: `context-rollover:${rollover.id}:confirmation-missing`,
             category: "coordination",
             severity: "attention",
-            title: "Context refresh needs review",
+            title: "Context Refresh Needs Review",
             body: "The replacement provider session ended with the server before safe context headroom was confirmed. The last accepted old provider session remains available; its exact bounded handoff is recorded for review.",
             projectId: rollover.projectId,
             conversationId: rollover.conversationId,
@@ -796,7 +833,7 @@ export function registerServerLifecycle(
           dedupeKey: `context-rollover:${initial.id}:recovery-failed`,
           category: "coordination",
           severity: "attention",
-          title: "Context refresh recovery failed",
+          title: "Context Refresh Recovery Failed",
           body: error instanceof Error ? error.message : String(error),
           projectId: initial.projectId,
           conversationId: initial.conversationId,
@@ -835,14 +872,7 @@ export function registerServerLifecycle(
     webPushDelivery?.start();
     const reconcileAssets = async () => {
       await drafts.reconcileAttachmentCleanup();
-      const pendingDraftUploads = new Map<string, Set<string>>();
-      for (const item of workspace.draftRecoveryInventory()) {
-        for (const upload of item.pendingUploads) {
-          const ids = pendingDraftUploads.get(upload.agentId) ?? new Set<string>();
-          for (const id of upload.attachmentIds) ids.add(id);
-          pendingDraftUploads.set(upload.agentId, ids);
-        }
-      }
+      const retainedUploads=(ownerId:string):Set<string>=>new Set(workspace.draftRecoveryInventory().flatMap(item=>item.pendingUploads.filter(upload=>upload.agentId===ownerId).flatMap(upload=>upload.attachmentIds)));
       let processedAgents = 0;
       for (const project of store.listProjects()) {
         for (const agent of store.listAgents(project.id)) {
@@ -855,13 +885,13 @@ export function registerServerLifecycle(
           );
           if (!releaseAssetReconciliation) continue;
           try {
-            const associated = new Set(store.getMessages(agent.id).flatMap((message) => message.attachments?.map((item) => item.id) ?? []));
+            const associated = store.getMessageAttachmentIds(agent.id);
             await assets.reconcile(
               project.id,
               agent.id,
               associated,
               Date.now(),
-              pendingDraftUploads.get(agent.id),
+              retainedUploads(agent.id),
             );
           } finally {
             releaseAssetReconciliation();
@@ -869,6 +899,16 @@ export function registerServerLifecycle(
           processedAgents += 1;
           await new Promise<void>((resolve) => setImmediate(resolve));
           if (isClosed()) return;
+        }
+        // Broadcast uploads are owned by the Chat rather than an Agent. The
+        // same durable staged TTL and deletion receipts retry their collection.
+        for(const conversation of store.listConversations(project.id)){
+          const release=leaseAgentAssetReconciliation(conversationDeliveryLeases,deletingConversationIds,attachmentDeletionInProgress,reconcilingAssetAgentIds,conversation.id);
+          if(!release)continue;
+          try{await assets.reconcile(project.id,conversation.id,store.getConversationAttachmentIds(conversation.id),Date.now(),retainedUploads(conversation.id));}
+          finally{release();}
+          await new Promise<void>(resolve=>setImmediate(resolve));
+          if(isClosed())return;
         }
       }
     };
@@ -928,6 +968,10 @@ export function registerServerLifecycle(
       phases: lifecyclePhases,
       totalMs: Math.round((performance.now() - lifecycleStartedAt) * 10) / 10,
     }, "server lifecycle readiness completed");
+    // Exact live retries reconcile their own Communication. Schedule the
+    // idempotent historical backlog after every startup barrier so it cannot
+    // interleave with (and delay) the required asset/deletion recovery above.
+    if (artifactFilesystem.ok) scheduleStartupProjectionRecovery();
   });
 
   app.addHook("preClose", async () => {
@@ -961,8 +1005,8 @@ export function registerServerLifecycle(
     assets.close();
     context.browserProfiles.close();
     workspace.close();
-    // A write-active lifetime leaves recovery to the next startup. Replaying
-    // every projection here can exceed the shutdown deadline on large stores.
+    // Commit verified projection progress without replaying history here.
+    // Incomplete or unsupported work retains the full startup recovery path.
     store.close();
     shutdownStorageClosed = true;
     app.log.info({ durationMs: Math.round(performance.now() - startedAt) }, "Ponderosa shutdown storage cleanup completed");

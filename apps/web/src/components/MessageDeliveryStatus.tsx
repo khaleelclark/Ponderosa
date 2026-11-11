@@ -1,3 +1,5 @@
+import {useWorkspaceReadOnly} from "./WorkspaceReadOnlyContext";
+import {ReviewedContinuationDialog} from "./ReviewedContinuationDialog";
 import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutline";
 import ErrorOutlineIcon from "@mui/icons-material/ErrorOutline";
 import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
@@ -6,7 +8,7 @@ import { Alert, Box, Button, ButtonBase, Dialog, DialogActions, DialogContent, D
 import { alpha } from "@mui/material/styles";
 import type { MessageDeliveryReceiptDto } from "@ponderosa/core";
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { api } from "../api";
 import { createClientId } from "../clientId";
 import { queryKeys } from "../queryKeys";
@@ -17,23 +19,32 @@ function runtimeLabel(receipt: MessageDeliveryReceiptDto): string | undefined {
   const runtime = receipt.runtime;
   if (!runtime) return undefined;
   const effort = runtime.effort
-    ? `${runtime.effort === "xhigh" ? "Extra high" : runtime.effort[0]!.toLocaleUpperCase() + runtime.effort.slice(1)} reasoning`
-    : "Default reasoning";
+    ? `${runtime.effort === "xhigh" ? "Extra High" : runtime.effort[0]!.toLocaleUpperCase() + runtime.effort.slice(1)} Reasoning`
+    : "Default Reasoning";
   const speed = runtime.speed === "priority"
     ? "Fast"
     : runtime.speed === "standard" || !runtime.speed
-      ? "Normal speed"
+      ? "Normal Speed"
       : runtime.speed;
-  return `${runtime.model ?? runtime.engine ?? "Default model"} · ${effort} · ${speed}`;
+  return `${runtime.model ?? runtime.engine ?? "Default Model"} · ${effort} · ${speed}`;
 }
 
 function deliveryLabel(
   receipt: MessageDeliveryReceiptDto,
   recipientName: string,
-  now: number,
+  pausedRunId?: string,
 ): string {
-  const waiting = steeringWaitLabel(receipt);
-  if (waiting) return `Steer for ${recipientName}: ${waiting.detail} Provider acceptance does not guarantee immediate reconsideration or stop a running tool.`;
+  if (receipt.taskDecisionRepairHold) return `Ponderosa could not verify the Decision status for ${recipientName}'s work. Task recovery is held until it can be checked.${receipt.contextRolloverHold || receipt.settingsTransitionHold ? ' Context refresh also could not safely continue.' : ''}`;
+  if (receipt.contextRecoveryRequired) return `The reply from ${recipientName} is pending while its session is restored. Your message is retained.`;
+  if (receipt.settingsTransitionHold === "retry_available") return `Ponderosa could not prepare the context handoff for ${recipientName}. Your original message remains queued; you can try again.`;
+  if (receipt.settingsTransitionHold === "review_required") return `Ponderosa could not verify the context handoff for ${recipientName}. Your original message is held; review the Agent’s activity before recovery.`;
+  if (receipt.contextRolloverHold === "retry_available") return `Context refresh stopped before the replacement started. ${recipientName}'s unfinished work is held; review activity before trying again.`;
+  if (receipt.contextRolloverHold === "review_required") return `Context refresh could not safely continue. ${recipientName}'s unfinished work is held; review activity before recovery.`;
+  if (pausedRunId && receipt.executionId === pausedRunId && messageDeliveryPhase(receipt) === "Working") return `Message delivered to ${recipientName}. Work is paused.`;
+  const waiting = deliveryWaitLabel(receipt);
+  if (waiting) return receipt.steeringWaitReason
+    ? `Steer for ${recipientName}: ${waiting.detail} Provider acceptance does not guarantee immediate reconsideration or stop a running tool.`
+    : `Message for ${recipientName}: ${waiting.detail}`;
   switch (receipt.state) {
     case "queued": return `Queued for ${recipientName}.`;
     case "preparing": return `Preparing a Run for ${recipientName}.`;
@@ -46,12 +57,9 @@ function deliveryLabel(
     case "run_unconfirmed": return `Message delivered to ${recipientName}, but Ponderosa lost contact before confirming whether the work finished. Check ${recipientName}'s activity before asking it to try again.`;
     case "processed": return `Processed by ${recipientName}.`;
     case "unconfirmed": {
-      const remaining = receipt.recoveryAt
-        ? Math.max(0, Math.ceil((Date.parse(receipt.recoveryAt) - now) / 1_000))
-        : 0;
-      return `${receipt.providerAcknowledged ? `Message delivered to ${recipientName}, but whether the work finished is unconfirmed` : `Delivery to ${recipientName} is unconfirmed`}. Interrupting the current Run and recovering ${remaining > 0 ? `in ${remaining}s` : "now"}.`;
+      return `${receipt.providerAcknowledged ? `Message delivered to ${recipientName}, but whether the work finished is unconfirmed` : `Delivery to ${recipientName} is unconfirmed`}. Review the Agent's activity; the current Run is not automatically interrupted and this instruction is held for review.`;
     }
-    case "waiting_for_run": return `${receipt.providerAcknowledged ? `Message delivered to ${recipientName}, but whether the work finished is unconfirmed` : `Delivery to ${recipientName} was unconfirmed`}. Recovery will audit current state after the current Run finishes.`;
+    case "waiting_for_run": return `${receipt.providerAcknowledged ? `Message delivered to ${recipientName}, but whether the work finished is unconfirmed` : `Delivery to ${recipientName} was unconfirmed`}. The instruction remains unconfirmed and held for review; no retry is scheduled.`;
     case "recovery_queued": return `${receipt.providerAcknowledged ? `Message delivered to ${recipientName}, but whether the work finished is unconfirmed` : `Delivery to ${recipientName} was unconfirmed`}. Recovery is queued and will audit current state first.`;
     case "recovering": return `${receipt.providerAcknowledged ? `Message delivered to ${recipientName}, but whether the work finished is unconfirmed` : `Delivery to ${recipientName} was unconfirmed`}. Recovery is running and auditing current state first.`;
     case "recovered": return `Recovered and processed by ${recipientName}.`;
@@ -66,11 +74,14 @@ function deliveryLabel(
   }
 }
 
-function compactDeliveryLabel(receipt: MessageDeliveryReceiptDto): string {
-  const phase = messageDeliveryPhase(receipt);
-  if (phase) return phase;
-  const waiting = steeringWaitLabel(receipt);
+function compactDeliveryLabel(receipt: MessageDeliveryReceiptDto, pausedRunId?: string): string {
+  if (receipt.taskDecisionRepairHold) return "Task Check Held";
+  if (receipt.contextRecoveryRequired) return "Connecting";
+  if (receipt.settingsTransitionHold) return "Waiting For Context";
+  const waiting = deliveryWaitLabel(receipt);
   if (waiting) return waiting.compact;
+  const phase = messageDeliveryPhase(receipt);
+  if (phase) return phase === "Working" && pausedRunId && receipt.executionId === pausedRunId && !receipt.contextRolloverHold ? "Paused" : phase;
   switch (receipt.state) {
     case "queued": return "Queued";
     case "preparing": return "Preparing";
@@ -78,31 +89,41 @@ function compactDeliveryLabel(receipt: MessageDeliveryReceiptDto): string {
     case "steering": return "Steering";
     case "started": return "Started";
     case "delivered": return "Delivered";
-    case "run_unconfirmed": return "Work unconfirmed";
+    case "run_unconfirmed": return "Work Unconfirmed";
     case "processed": return "Processed";
-    case "unconfirmed": return receipt.providerAcknowledged ? "Work unconfirmed" : "Delivery unconfirmed";
+    case "unconfirmed": return receipt.providerAcknowledged ? "Work Unconfirmed" : "Delivery Unconfirmed";
     case "waiting_for_run": return "Waiting";
-    case "recovery_queued": return "Recovery queued";
+    case "recovery_queued": return "Recovery Queued";
     case "recovering": return "Recovering";
     case "recovered": return "Recovered";
     case "undelivered": return "Undelivered";
-    case "retry_exhausted": return "Reply exhausted";
-    case "failed": return receipt.providerAcknowledged ? "Follow-up failed" : "Failed";
-    case "cancelled": return receipt.providerAcknowledged ? receipt.runStopState === "stopped" ? "Stopped" : receipt.runStopState === "stopping" ? "Stopping" : "Stop unconfirmed" : "Cancelled";
+    case "retry_exhausted": return "Reply Exhausted";
+    case "failed": return receipt.providerAcknowledged ? "Follow-Up Failed" : "Failed";
+    case "cancelled": return receipt.providerAcknowledged ? receipt.runStopState === "stopped" ? "Stopped" : receipt.runStopState === "stopping" ? "Stopping" : "Stop Unconfirmed" : "Cancelled";
   }
 }
 
-function steeringWaitLabel(receipt: MessageDeliveryReceiptDto): { compact: string; detail: string } | undefined {
+function deliveryWaitLabel(receipt: MessageDeliveryReceiptDto): { compact: string; detail: string } | undefined {
   if (receipt.state !== "queued" && receipt.state !== "retrying") return undefined;
   switch (receipt.steeringWaitReason) {
-    case "context_refresh": return { compact: "Waiting for context refresh", detail: "waiting for context refresh to finish." };
-    case "prior_steering": return { compact: "Waiting for earlier steer", detail: "an earlier steer is awaiting provider acknowledgement." };
-    case "revision_pending": return { compact: "Saving message edit", detail: "waiting for the message edit to be durably recorded." };
-    case "provider_not_ready": return { compact: "Waiting for provider", detail: "the provider was not ready to accept steering; another attempt is scheduled." };
-    case "provider_unsupported": return { compact: "Provider cannot steer", detail: "the provider reported that steering is unsupported; these instructions have not been acknowledged." };
-    case "preparation_retry": return { compact: "Retrying steer preparation", detail: "prompt preparation did not finish; another attempt is scheduled." };
-    case "run_starting": return { compact: "Waiting for Run startup", detail: "the target Run is still starting." };
-    case "scheduler_pending": return { compact: "Steer pending", detail: "awaiting scheduler admission; no provider acknowledgement yet." };
+    case "context_refresh": return { compact: "Waiting For Context Refresh", detail: "waiting for context refresh to finish." };
+    case "prior_steering": return { compact: "Waiting For Earlier Steer", detail: "an earlier steer is awaiting provider acknowledgement." };
+    case "revision_pending": return { compact: "Saving Message Edit", detail: "waiting for the message edit to be durably recorded." };
+    case "provider_not_ready": return { compact: "Waiting For Provider", detail: "the provider was not ready to accept steering; another attempt is scheduled." };
+    case "provider_unsupported": return { compact: "Provider Cannot Steer", detail: "the provider reported that steering is unsupported; these instructions have not been acknowledged." };
+    case "preparation_retry": return { compact: "Retrying Steer Preparation", detail: "prompt preparation did not finish; another attempt is scheduled." };
+    case "run_starting": return { compact: "Waiting For Run Startup", detail: "the target Run is still starting." };
+    case "scheduler_pending": return { compact: "Steer Pending", detail: "awaiting scheduler admission; no provider acknowledgement yet." };
+    default: break;
+  }
+  switch (receipt.queueWaitReason) {
+    case "host_resource_pressure": return { compact: "Waiting For Host Resources", detail: "host-resource protection is holding new work." };
+    case "provider_disabled": return { compact: "Provider Disabled", detail: "the selected provider is disabled; this message has not started." };
+    case "authentication_unknown": return { compact: "Checking Provider Sign-In", detail: "provider sign-in has not been confirmed." };
+    case "authentication_required": return { compact: "Provider Sign-In Required", detail: "the selected provider requires sign-in." };
+    case "provider_unavailable": return { compact: "Waiting For Provider", detail: "the selected provider is unavailable." };
+    case "current_run": return { compact: "Waiting For Current Run", detail: "the recipient's current Run must finish before this delivery starts." };
+    case "provider_retry": return { compact: "Waiting To Retry Provider", detail: "the existing provider retry hold is retaining this work." };
     default: return undefined;
   }
 }
@@ -118,33 +139,33 @@ function severity(receipt: MessageDeliveryReceiptDto): "success" | "info" | "war
 export function MessageDeliveryStatus({
   projectId,
   receipts,
+  pausedRunId,
   recipientName,
   onOpenAgent,
   compact = false,
   compactSuccess = false,
   compactSuccessTooltip = true,
+  hideCancelAction = false,
 }: {
   projectId?: string;
   receipts?: MessageDeliveryReceiptDto[];
+  pausedRunId?: string;
   recipientName(agentId: string): string;
   onOpenAgent?(agentId: string): void;
   compact?: boolean;
   compactSuccess?: boolean;
   compactSuccessTooltip?: boolean;
+  hideCancelAction?: boolean;
 }): JSX.Element | null {
+  const readOnly=useWorkspaceReadOnly();
   const queryClient = useQueryClient();
-  const [now, setNow] = useState(Date.now());
   const [pendingInjectionId, setPendingInjectionId] = useState<string>();
   const [pendingRetryId, setPendingRetryId] = useState<string>();
   const [pendingCancelId, setPendingCancelId] = useState<string>();
   const [confirmRetry, setConfirmRetry] = useState<MessageDeliveryReceiptDto>();
+  const [reviewContinuation, setReviewContinuation] = useState<MessageDeliveryReceiptDto>();
   const [error, setError] = useState<string>();
-  const hasCountdown = receipts?.some((receipt) => receipt.state === "unconfirmed" && receipt.recoveryAt) ?? false;
-  useEffect(() => {
-    if (!hasCountdown) return;
-    const timer = window.setInterval(() => setNow(Date.now()), 250);
-    return () => window.clearInterval(timer);
-  }, [hasCountdown]);
+  receipts=receipts?.filter(receipt=>!receipt.contextRecoveryRequired);
   if (!receipts?.length) return null;
   const allSuccessful = receipts.every(receipt => severity(receipt) === "success");
   const showSteeringDelivery = receipts.some(receipt => receipt.injectionKind === "steer" &&
@@ -176,13 +197,13 @@ export function MessageDeliveryStatus({
         const delivery = deliveryLabel(
           receipt,
           recipientName(receipt.targetAgentId),
-          now,
+          pausedRunId,
         );
         const runtime = receipt.state === "started" ? runtimeLabel(receipt) : undefined;
         return runtime ? `${delivery} ${runtime}.` : delivery;
       })
       .join(" ");
-    const compactLabel = receipts.map(compactDeliveryLabel).join(". ");
+    const compactLabel = receipts.map(receipt => compactDeliveryLabel(receipt, pausedRunId)).join(". ");
     const indicator = (
       <Box
         component="span"
@@ -224,7 +245,7 @@ export function MessageDeliveryStatus({
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.agents.detailPrefix(receipt.targetAgentId) }),
         queryClient.invalidateQueries({ queryKey: queryKeys.conversations.detailAll }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.allChatAll }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.inboxAll }),
       ]);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not change steering recovery.");
@@ -238,14 +259,15 @@ export function MessageDeliveryStatus({
     setPendingRetryId(receipt.activationId);
     try {
       await api.retryMessageDelivery(projectId, receipt.activationId, {
-        idempotencyKey: `operator-delivery-retry:${receipt.activationId}`,
+        idempotencyKey: receipt.settingsTransitionHold ? createClientId() : `operator-delivery-retry:${receipt.activationId}${receipt.contextRolloverAttemptId ? `:${receipt.contextRolloverAttemptId}` : ""}`,
+        ...(receipt.contextRolloverAttemptId ? {expectedRolloverAttemptId:receipt.contextRolloverAttemptId} : {}),
       });
       setConfirmRetry(undefined);
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.agents.detailPrefix(receipt.targetAgentId) }),
         queryClient.invalidateQueries({ queryKey: queryKeys.conversations.detailAll }),
         queryClient.invalidateQueries({ queryKey: queryKeys.collaborationAll }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.allChatAll }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.inboxAll }),
       ]);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not retry message delivery.");
@@ -266,7 +288,7 @@ export function MessageDeliveryStatus({
         queryClient.invalidateQueries({ queryKey: queryKeys.conversations.detailAll }),
         queryClient.invalidateQueries({ queryKey: queryKeys.collaborationAll }),
         queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all }),
-        queryClient.invalidateQueries({ queryKey: queryKeys.allChatAll }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.inboxAll }),
       ]);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not cancel message delivery.");
@@ -274,14 +296,14 @@ export function MessageDeliveryStatus({
       setPendingCancelId(undefined);
     }
   };
-  return <Stack spacing={0.5} sx={{ alignItems: "flex-end", maxWidth: "100%" }} aria-label="Message delivery status">
+  return <Stack spacing={0.5} sx={{ alignItems: "flex-end", maxWidth: "100%" }} aria-label="Message Delivery Status">
     <Box component="span" role="status" aria-live="polite" sx={{ position: "absolute", width: "1px", height: "1px", overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap" }}>
-      {receipts.map(receipt => deliveryLabel(receipt, recipientName(receipt.targetAgentId), now)).join(" ")}
+      {receipts.map(receipt => deliveryLabel(receipt, recipientName(receipt.targetAgentId), pausedRunId)).join(" ")}
     </Box>
     {receipts.map((receipt) => {
       const tone = severity(receipt);
       const name = recipientName(receipt.targetAgentId);
-      const label = deliveryLabel(receipt, name, now);
+      const label = deliveryLabel(receipt, name, pausedRunId);
       const runtime = receipt.state === "started" ? runtimeLabel(receipt) : undefined;
       const detailedLabel = runtime ? `${label} ${runtime}.` : label;
       const StatusIcon = tone === "success"
@@ -292,15 +314,15 @@ export function MessageDeliveryStatus({
             ? ErrorOutlineIcon
             : InfoOutlinedIcon;
       const shortLabel = receipt.state === "delivered" && receipt.injectionKind === "steer" && receipt.providerAcknowledged
-        ? `Instructions delivered to ${name}`
+        ? `Instructions Delivered To ${name}`
         : receipt.state === "cancelled" && receipt.providerAcknowledged
-        ? `Delivered · ${compactDeliveryLabel(receipt)}`
-        : compactDeliveryLabel(receipt);
+        ? `Delivered · ${compactDeliveryLabel(receipt, pausedRunId)}`
+        : compactDeliveryLabel(receipt, pausedRunId);
       return <Stack key={receipt.activationId} direction="row" spacing={0.5} useFlexGap flexWrap="wrap" sx={{ justifyContent: "flex-end", maxWidth: "100%", "& > .MuiButton-root": { minWidth: 0, px: { xs: 0.5, sm: 1 }, whiteSpace: "nowrap", fontSize: { xs: 11, sm: 13 }, "@media (pointer: coarse)": { minHeight: 44 } } }}>
         <Tooltip title={detailedLabel}>
           <Box component="span" sx={{ display: "inline-flex", minWidth: 0, maxWidth: "100%" }}>
             <ButtonBase
-              aria-label={onOpenAgent ? `${detailedLabel} Open direct chat with ${name}.` : detailedLabel}
+              aria-label={`${receipts.length > 1 ? `${name} · ` : ""}${shortLabel}. ${detailedLabel}${onOpenAgent ? ` Open direct chat with ${name}.` : ""}`}
               title={runtime}
               disabled={!onOpenAgent}
               onClick={() => onOpenAgent?.(receipt.targetAgentId)}
@@ -332,7 +354,11 @@ export function MessageDeliveryStatus({
             </ButtonBase>
           </Box>
         </Tooltip>
-        {receipt.canLetCurrentRunFinish && receipt.injectionId ? <Button
+        {!readOnly && projectId && !receipt.contextRolloverHold && !receipt.settingsTransitionHold && !receipt.taskDecisionRepairHold && receipt.injectionKind === "steer" && receipt.injectionId && (receipt.state === "unconfirmed" || receipt.state === "waiting_for_run") ? <>
+          <Button color="warning" variant="text" size="small" onClick={() => setReviewContinuation(receipt)} sx={{ minHeight: 28, py: 0.25 }}>Review Interrupted Work</Button>
+          <Typography variant="caption" color="text.secondary">Review may close the earlier Run’s idle session.</Typography>
+        </> : null}
+        {!readOnly && !receipt.taskDecisionRepairHold && !receipt.settingsTransitionHold && receipt.canLetCurrentRunFinish && receipt.injectionId ? <Button
           color="warning"
           variant="text"
           size="small"
@@ -340,7 +366,7 @@ export function MessageDeliveryStatus({
           onClick={() => void letRunFinish(receipt)}
           sx={{ minHeight: 28, py: 0.25 }}
         >Let Current Run Finish</Button> : null}
-        {receipt.canRetry && projectId ? <Button
+        {!readOnly && !receipt.contextRecoveryRequired && !receipt.taskDecisionRepairHold && receipt.settingsTransitionHold !== "review_required" && receipt.canRetry && projectId ? <Button
           color="error"
           variant="text"
           size="small"
@@ -348,7 +374,7 @@ export function MessageDeliveryStatus({
           onClick={() => receipt.retryMayDuplicate ? setConfirmRetry(receipt) : void retryDelivery(receipt)}
           sx={{ minHeight: 28, py: 0.25 }}
         >{pendingRetryId === receipt.activationId ? "Trying Again…" : receipt.providerAcknowledged ? "Try Work Again" : "Try Delivery Again"}</Button> : null}
-        {receipt.canRetry && projectId ? <Button
+        {!readOnly && !hideCancelAction && !receipt.contextRolloverHold && !receipt.settingsTransitionHold && !receipt.taskDecisionRepairHold && receipt.canRetry && projectId ? <Button
           color="inherit"
           variant="text"
           size="small"
@@ -358,14 +384,15 @@ export function MessageDeliveryStatus({
         >{pendingCancelId === receipt.activationId ? "Dismissing…" : receipt.providerAcknowledged ? "Dismiss" : "Cancel Delivery"}</Button> : null}
       </Stack>;
     })}
-    {error ? <Alert severity="error">{error}</Alert> : null}
+    {error ? <Alert severity="error"><Typography>Delivery Action Failed</Typography><Typography variant="body2">{error}</Typography></Alert> : null}
+    {projectId&&reviewContinuation&&<ReviewedContinuationDialog key={reviewContinuation.activationId} projectId={projectId} receipt={reviewContinuation} onClose={()=>setReviewContinuation(undefined)} onOpenAgent={onOpenAgent}/>}
     <Dialog
       open={Boolean(confirmRetry)}
       onClose={() => pendingRetryId ? undefined : setConfirmRetry(undefined)}
       maxWidth="xs"
       fullWidth
     >
-      <DialogTitle>{confirmRetry?.providerAcknowledged ? "Ask the Agent to try the work again?" : "Try delivering this message again?"}</DialogTitle>
+      <DialogTitle>{confirmRetry?.providerAcknowledged ? "Ask The Agent To Try The Work Again?" : "Try Delivering This Message Again?"}</DialogTitle>
       <DialogContent>
         <Typography variant="body2">
           {confirmRetry?.providerAcknowledged

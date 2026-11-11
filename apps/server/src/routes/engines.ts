@@ -1,3 +1,4 @@
+import { acceptedGoalResumeCommand } from "../native-goal-command-availability.js";
 import type { AgentStore, WorkspaceStore } from "@ponderosa/agents";
 import type {
   Adapter,
@@ -40,7 +41,7 @@ interface OperationalNotificationInput {
 
 interface EngineRoutesContext {
   engines: ReadonlyMap<string, EngineRegistration>;
-  store: Pick<AgentStore, "getAgent" | "getProject">;
+  store: Pick<AgentStore, "getAgent" | "getProject" | "resumeSessionState">;
   workspace: Pick<WorkspaceStore, "cursor" | "getPreferences" | "updatePreferences">;
   engineDto(registration: EngineRegistration, refreshModels?: boolean): Promise<EngineDto>;
   resourceAdmissionHeld?(): Promise<boolean>;
@@ -238,7 +239,7 @@ export function registerEngineRoutes(
           dedupeKey: `provider:${request.params.id}:unavailable`,
           category: "provider",
           severity: "attention",
-          title: `${registration.adapter.displayName} is unavailable`,
+          title: `${registration.adapter.displayName} Is Unavailable`,
           body: providerUnavailableNotificationBody(evidence.detail, evidence.failureCategory),
           action: { kind: "open_settings", targetId: request.params.id },
         });
@@ -366,7 +367,9 @@ export function registerEngineRoutes(
           ...(capabilities.selectedModel === undefined ? {} : { selectedModel: capabilities.selectedModel }),
           ...(capabilities.model === undefined ? {} : { model: capabilities.model }),
           ...(capabilities.catalogVersion === undefined ? {} : { catalogVersion: capabilities.catalogVersion }),
-          commands: capabilities.commands,
+          commands: capabilities.commands.map(command => acceptedGoalResumeCommand(command,
+            adapter.id === "codex" && scopedAgent?.activeEngine === adapter.id &&
+              Boolean(store.resumeSessionState(scopedAgent.id)?.sessionId))),
           mcpServers: capabilities.mcpServers,
           composerCapabilities: capabilities.composerCapabilities,
         };

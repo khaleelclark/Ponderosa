@@ -1,3 +1,4 @@
+import { BrowserObservations } from "./browser/BrowserObservations";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import {
   Alert,
@@ -147,6 +148,7 @@ export function AgentBrowserDialog({
                 : session?.title || session?.url || "Live browser for this Agent Run"}
             </Typography>
           </Stack>
+          <BrowserObservations adapter={adapter} session={session} pageId={browser.viewedPageId} busy={browser.inputPending || browser.navigate.isPending || browser.activatePage.isPending || browser.control.isPending}/>
         </DialogTitle>
         <DialogContent
           dividers
@@ -169,7 +171,7 @@ export function AgentBrowserDialog({
               onNew={() => browser.newPage.mutate()}
               onClose={(pageId) => browser.closePage.mutate(pageId)}
             />
-          {!operator && session?.status === "ready" ? <Button size="small" aria-pressed={browser.followAgent} onClick={() => browser.setFollowAgent(!browser.followAgent)}>{browser.followAgent ? "Following agent" : "Follow agent"}</Button> : null}
+          {!operator && session?.status === "ready" ? <Button size="small" aria-pressed={browser.followAgent} onClick={() => browser.setFollowAgent(!browser.followAgent)}>{browser.followAgent ? "Following Agent" : "Follow Agent"}</Button> : null}
           <BrowserViewport
             adapter={adapter}
             session={session}
@@ -201,7 +203,7 @@ export function AgentBrowserDialog({
                 disabled={browser.control.isPending}
                 onClick={() => browser.control.mutate({ owner: "agent" })}
               >
-                Return control to {agentTitle}
+                Return Control To {agentTitle}
               </Button>
             </Stack>
           ) : (

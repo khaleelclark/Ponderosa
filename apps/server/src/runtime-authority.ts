@@ -187,7 +187,7 @@ export function createRuntimeAuthority(context: RuntimeAuthorityContext) {
           informational: true,
           category: "system",
           severity: "info",
-          title: "Automatic cleanup is still blocked",
+          title: "Automatic Cleanup Is Still Blocked",
           body: "New provider work for this Agent is waiting for its previous process to exit. Ponderosa is retrying automatically. No user action is required; Agent activity has recovery details.",
           projectId,
           agentId,
@@ -543,7 +543,9 @@ export function createRuntimeAuthority(context: RuntimeAuthorityContext) {
       // A dead process is never reused. Only an adapter with a provider-verified
       // resume handshake may validate the saved session for a different Run.
       // Interrupted/uncertain work itself is still fenced and never replayed.
-      if(!observedHostOperation&&!session?.validatesResumeBeforeTurn){
+      const verifiedResumeOpening=matchedOpening && opening?.handle &&
+        "validatesResumeBeforeTurn" in opening.handle && opening.handle.validatesResumeBeforeTurn===true;
+      if(!observedHostOperation&&!session?.validatesResumeBeforeTurn&&!verifiedResumeOpening){
         try { clearAgentResumeSession(agentId, "provider_root_exit"); }
         catch(error){
           if(!(error instanceof AgentEventPersistenceError))throw error;
@@ -590,6 +592,21 @@ export function createRuntimeAuthority(context: RuntimeAuthorityContext) {
     if (detail?.outputDraining || run.observedProviderFailure || run.observedProviderTerminalStatus === "completed") return;
     transitionRun(agentId, run, "cancelling");
     run.controller.abort();
+    // The Run callback has already projected and redacted this exact root-exit
+    // observation. Keep it as telemetry, without claiming stderr caused the exit.
+    if (!observedHostOperation && detail?.stderr) {
+      try {
+        const diagnostic = store.appendEvent(agentId, {
+          type: "error", message: `Provider root exited; observed stderr:\n${detail.stderr}`,
+        });
+        publish(agentId, diagnostic);
+      } catch (error) {
+        if (!(error instanceof AgentEventPersistenceError)) throw error;
+        auditPersistenceFailed = true;
+        logError({ agentId, runId: run.executionId, persistenceFailure: error.diagnostic },
+          "provider root exit diagnostic could not be recorded");
+      }
+    }
     try {
       const lifecycle = store.appendEvent(agentId, {
         type: "agent_lifecycle", status: "failed", reason: "runtime_error", executionId: run.executionId,

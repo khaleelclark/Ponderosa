@@ -1,5 +1,5 @@
+import {MutationErrorDetails} from "./MutationNotifications";
 import {
-  Alert,
   Button,
   Dialog,
   DialogActions,
@@ -153,22 +153,18 @@ function AgentRenameDialog({
           submit();
         }}
       >
-        <DialogTitle>Rename agent</DialogTitle>
+        <DialogTitle>Rename Agent</DialogTitle>
         <DialogContent>
           <TextField
             autoFocus
             fullWidth
             inputRef={inputRef}
-            label="Agent name"
+            label="Agent Name"
             value={renameValue}
             onChange={event => setRenameValue(event.target.value)}
             sx={{ mt: 1 }}
           />
-          {rename.isError ? (
-            <Alert severity="error" sx={{ mt: 1 }}>
-              {String(rename.error)}
-            </Alert>
-          ) : null}
+          <MutationErrorDetails title="Agent Name Needs Review" error={rename.error}/>
         </DialogContent>
         <DialogActions>
           <Button
@@ -214,18 +210,18 @@ function AgentOrganizationDialog({
       fullWidth
       maxWidth="xs"
     >
-      <DialogTitle>Agent organization</DialogTitle>
+      <DialogTitle>Agent Organization</DialogTitle>
       <DialogContent>
         <FormControl fullWidth sx={{ mt: 1 }}>
           <InputLabel id="agent-organizational-parent-label" shrink>
-            Delegated under
+            Delegated Under
           </InputLabel>
           <Select
             labelId="agent-organizational-parent-label"
             displayEmpty
             renderValue={value => value ? eligibleOrganizationParents(agent, agents).find(candidate => candidate.id === value)?.title ?? "Unavailable Agent" : "Top Level"}
             value={organizationParentId}
-            label="Delegated under"
+            label="Delegated Under"
             onChange={event => setOrganizationParentId(event.target.value)}
           >
             <MenuItem value="">Top Level</MenuItem>
@@ -239,14 +235,9 @@ function AgentOrganizationDialog({
           </Select>
         </FormControl>
         <Typography variant="body2" color="text.secondary" sx={{ mt: 1.5 }}>
-          This changes which Agent delegates work to this Agent. Its Run and
-          message history remain attached to the same Agent.
+          History stays with this Agent.
         </Typography>
-        {updateOrganization.isError ? (
-          <Alert severity="error" sx={{ mt: 1 }}>
-            {String(updateOrganization.error)}
-          </Alert>
-        ) : null}
+        <MutationErrorDetails title="Reporting Line Needs Review" error={updateOrganization.error}/>
       </DialogContent>
       <DialogActions>
         <Button

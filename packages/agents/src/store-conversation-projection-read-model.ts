@@ -111,6 +111,15 @@ export class AgentConversationProjectionReadModel {
       : undefined;
   }
 
+  /** Canonical reachability only; maintenance needs no attachment presentation. */
+  getAttachmentIds(conversationId: string): Set<string> {
+    const conversation=this.getConversation(conversationId);
+    if(!conversation)return new Set();
+    return new Set((["conversation","collaboration_view"] as const).flatMap(surface=>
+      this.readProjectedMessages(conversation.projectId,surface,conversationId)
+        .flatMap(message=>(message.attachments??[]).filter(attachment=>attachment.agentId===conversationId).map(attachment=>attachment.id))));
+  }
+
   getMessages(
     conversationId: string,
     channel: ConversationChannel = "main",

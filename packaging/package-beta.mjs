@@ -26,6 +26,7 @@ import { expectedMacosBundleIdentity } from "./qualification/macos-bundle-metada
 import { assertBuildVersion } from "./beta-version.mjs";
 import { signMacosApplication } from "./qualification/macos-code-signing.mjs";
 import { debianDependencies } from "./qualification/debian-dependencies.mjs";
+import { pruneOnnxLinuxX64Payloads } from "./bundle-privacy.mjs";
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const engineRequire = createRequire(path.join(
@@ -308,6 +309,9 @@ Terminal=false
   copyPortableTree(packaged, path.join(root, "opt", "ponderosa-engine"), {
     label: "staged Debian Electron application",
   });
+  if (manifest.target.arch === "x64") {
+    pruneOnnxLinuxX64Payloads(path.join(root, "opt", "ponderosa-engine", "resources", "Ponderosa", "app", "server", "node_modules", "onnxruntime-node"));
+  }
   // dpkg installs this as root; Chromium's setuid sandbox requires mode 4755.
   chmodSync(path.join(root, "opt", "ponderosa-engine", "chrome-sandbox"), 0o4755);
   rmSync(electronOutput, { recursive: true, force: true });

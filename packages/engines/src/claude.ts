@@ -1,7 +1,7 @@
+import { claudeBillingEnvironment } from "./runtime-environment.js";
 // The Claude adapter (SPEC §5, the planned second engine). Drives the
-// already-authenticated `claude` CLI (Claude Code) as a subscription-backed engine
-// — Claude Pro/Max via the on-disk OAuth profile, NEVER the Anthropic API and
-// NEVER an API key (AGENTS.md invariant 1). Spawns `claude -p --output-format
+// already-authenticated `claude` CLI (Claude Code) in its configured subscription
+// or API-key mode; no direct provider HTTP client. Spawns `claude -p --output-format
 // stream-json` and resumes with `--resume <session-id>`. The choice of the CLI
 // (vs the Agent SDK library) is invisible outside this file (invariant 2).
 
@@ -25,7 +25,7 @@ import type {
   RuntimeSession,
   SeedOptions,
 } from "@ponderosa/core";
-import { mapClaudeEvent } from "./claude-events.js";
+import { claudeStreamEventMapper } from "./claude-stream-events.js";
 import { renderSeedPrompt } from "./seed-history.js";
 import { streamProcess } from "./process.js";
 import { composerCapabilities, discoverCliMcps, parseClaudeMcpList } from "./capabilities.js";
@@ -126,11 +126,13 @@ const DEFAULT_EFFORTS: EffortOption[] = [
 
 export class ClaudeAdapter implements Adapter {
   readonly id = "claude";
+  readonly supportsVoiceReplyStream = true;
+  readonly contextRecoverySupport = Object.freeze({ status: "managed_compaction" as const, crashReconciliation: "hold_without_native_query" as const });
   readonly displayName = "Claude";
   readonly trustedSystemPromptChannel = "system" as const;
   readonly providerUsageCommand = {
     name: "usage",
-    description: "Show Claude subscription usage",
+    description: "Show Claude usage",
   };
 
   private readonly bin: string;
@@ -261,13 +263,19 @@ export class ClaudeAdapter implements Adapter {
     };
   }
 
-  openSession(opts: OpenRuntimeSessionOptions): Promise<RuntimeSession> {
-    return Promise.resolve(new ClaudeStreamSession({
+  async openSession(opts: OpenRuntimeSessionOptions): Promise<RuntimeSession> {
+    const session = new ClaudeStreamSession({
       ...opts,
       bin: this.bin,
       permissionMode: this.permissionMode,
       killGraceMs: this.killGraceMs,
-    }));
+    });
+    try { await session.awaitResumeInitialization(); return session; }
+    catch (error) {
+      try { await session.close(); }
+      catch (closeError) { throw new AggregateError([error,closeError], "Claude saved-session opening failed and cleanup is unconfirmed"); }
+      throw error;
+    }
   }
 
   readProviderUsage(options: ProviderUsageReadOptions): Promise<ProviderUsage> {
@@ -286,6 +294,7 @@ export class ClaudeAdapter implements Adapter {
       "--output-format",
       "stream-json",
       "--verbose",
+      "--include-partial-messages",
       "--permission-mode",
       this.permissionMode,
     ];
@@ -301,7 +310,7 @@ export class ClaudeAdapter implements Adapter {
       this.baseArgs(prompt, opts.systemPrompt, opts.model, opts.effort),
       opts.cwd,
       opts.signal,
-      opts.environment,
+      claudeBillingEnvironment(opts.environment, opts.expectedBillingMode),
       opts.onRuntimeRootExit,
       opts.onRuntimeSpawned,
     );
@@ -313,7 +322,7 @@ export class ClaudeAdapter implements Adapter {
       "--resume",
       opts.resumeSessionId,
     ];
-    return this.run(args, opts.cwd, opts.signal, opts.environment, opts.onRuntimeRootExit, opts.onRuntimeSpawned);
+    return this.run(args, opts.cwd, opts.signal, claudeBillingEnvironment(opts.environment, opts.expectedBillingMode), opts.onRuntimeRootExit, opts.onRuntimeSpawned);
   }
 
   private async *run(
@@ -333,7 +342,7 @@ export class ClaudeAdapter implements Adapter {
       onRuntimeSpawned,
       environment,
       killGraceMs: this.killGraceMs,
-      map: mapClaudeEvent,
+      map: claudeStreamEventMapper(),
       label: "claude",
     })) {
       yield event;

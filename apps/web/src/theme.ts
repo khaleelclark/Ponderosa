@@ -1,10 +1,9 @@
-import { alpha, createTheme } from "@mui/material/styles";
+import { alpha, createTheme, getContrastRatio } from "@mui/material/styles";
 import type { Theme } from "@mui/material/styles";
 import { readBrowserStorage } from "./browserStorage";
 
-export type ColorMode = "light" | "dark";
-
-export const COLOR_MODE_STORAGE_KEY = "ponderosa-color-mode";
+import {COLOR_MODE_STORAGE_KEY, THEME_BACKGROUNDS, resolveColorMode, type ColorMode} from "./browserTheme";
+export {COLOR_MODE_STORAGE_KEY, type ColorMode} from "./browserTheme";
 
 const ponderosaFocusIndicator = {
   light: "#123126",
@@ -13,8 +12,8 @@ const ponderosaFocusIndicator = {
 
 /** Shared geometry for navigation and collection surfaces. */
 export const ponderosaLayoutTokens = {
-  sidebarRailWidth: 72,
-  sidebarPanelWidth: 318,
+  sidebarRailWidth: 64,
+  sidebarPanelWidth: 296,
   contentMaxWidth: 1320,
   compactControlHeight: 40,
   touchTarget: 44,
@@ -39,7 +38,7 @@ export function workspaceHeaderSurfaceSx(
 
 const ponderosaColorTokens = {
   light: {
-    background: "#FBFCFB",
+    background: THEME_BACKGROUNDS.light,
     rail: "#17221E",
     topbar: "#1D2A26",
     railBorder: "#354542",
@@ -64,10 +63,10 @@ const ponderosaColorTokens = {
     highlight: "#5E9B6B",
     activityLabel: "#47785D",
     star: "#987400",
-    userMessage: "#EFF2F0",
+    userMessage: "#EFF0EB",
   },
   dark: {
-    background: "#101312",
+    background: THEME_BACKGROUNDS.dark,
     rail: "#151A18",
     topbar: "#181D1B",
     railBorder: "#343B38",
@@ -92,9 +91,31 @@ const ponderosaColorTokens = {
     highlight: "#7CBF8A",
     activityLabel: "#68A97C",
     star: "#BFA34A",
-    userMessage: "#252B28",
+    userMessage: "#27332F",
   },
 } as const;
+
+/** Shared conversation colors for the workspace and embedded Assistant/Output roots. */
+export function ponderosaSurfaceVariables(mode: ColorMode) {
+  const colors = ponderosaColorTokens[mode];
+  return {
+    "--ponderosa-focus-ring": ponderosaFocusIndicator[mode],
+    "--ponderosa-canvas": colors.background,
+    "--ponderosa-surface": colors.surface,
+    "--ponderosa-border": colors.border,
+    "--ponderosa-accent": mode === "dark" ? colors.highlight : colors.brand,
+    "--ponderosa-surface-secondary": colors.surfaceSecondary,
+    "--ponderosa-input-surface": colors.inputSurface,
+    "--ponderosa-elevated": colors.elevated,
+    "--ponderosa-text-primary": colors.textPrimary,
+    "--ponderosa-text-secondary": colors.textSecondary,
+    "--ponderosa-message-bubble": colors.userMessage,
+    "--ponderosa-message-bubble-text": colors.textPrimary,
+    "--ponderosa-prose-divider": colors.border,
+    "--ponderosa-prose-hover": colors.hover,
+    "--ponderosa-prose-link": mode === "dark" ? colors.highlight : colors.brand,
+  };
+}
 
 export function loadColorMode(): ColorMode {
   if (typeof window === "undefined") {
@@ -102,16 +123,11 @@ export function loadColorMode(): ColorMode {
   }
 
   const savedMode = readBrowserStorage("localStorage", COLOR_MODE_STORAGE_KEY);
-  if (savedMode === "light" || savedMode === "dark") {
-    return savedMode;
-  }
-
-  return window.matchMedia?.("(prefers-color-scheme: dark)").matches
-    ? "dark"
-    : "light";
+  return resolveColorMode(savedMode, window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false);
 }
 
-export function createPonderosaTheme(mode: ColorMode) {
+export function createPonderosaTheme(mode: ColorMode, variant: "standard" | "assistant" = "standard") {
+  const assistant = variant === "assistant";
   const colors = ponderosaColorTokens[mode];
   const dark = mode === "dark";
   const focusIndicator = ponderosaFocusIndicator[mode];
@@ -158,21 +174,25 @@ export function createPonderosaTheme(mode: ColorMode) {
       warning: { main: dark ? "#D8B85A" : "#8A6C22" },
       error: { main: dark ? "#D66A5C" : "#B74D43" },
     },
+    transitions: {
+      duration: { shortest: 160, shorter: 180, short: 200, standard: 200, complex: 220, enteringScreen: 220, leavingScreen: 180 },
+      easing: { easeInOut: "cubic-bezier(0.2, 0, 0, 1)", easeOut: "cubic-bezier(0.2, 0, 0, 1)", easeIn: "cubic-bezier(0.4, 0, 1, 1)", sharp: "cubic-bezier(0.2, 0, 0, 1)" },
+    },
     shape: {
       borderRadius: 12,
     },
     typography: {
       fontFamily:
-        'var(--ponderosa-font-family, Inter, Geist, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif)',
+        'var(--ponderosa-font-family, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif)',
       h1: { letterSpacing: "-0.025em" },
       h2: { letterSpacing: "-0.022em" },
       h3: { letterSpacing: "-0.02em" },
       h4: { letterSpacing: "-0.018em" },
-      h5: { letterSpacing: "-0.014em" },
-      h6: { letterSpacing: "-0.01em" },
-      button: { textTransform: "none", fontWeight: 650, letterSpacing: 0 },
-      body1: { fontSize: 14, lineHeight: 1.55 },
-      body2: { fontSize: 13, lineHeight: 1.5 },
+      h5: { fontSize: "1.375rem", fontWeight: 650, letterSpacing: "-0.025em", lineHeight: 1.35 },
+      h6: { fontSize: "1.0625rem", fontWeight: 650, letterSpacing: "-0.018em", lineHeight: 1.4 },
+      button: { textTransform: "none", fontWeight: 600, letterSpacing: 0 },
+      body1: { fontSize: "0.9375rem", lineHeight: 1.55 },
+      body2: { fontSize: "0.875rem", lineHeight: 1.5 },
     },
     components: {
       MuiCssBaseline: {
@@ -180,7 +200,8 @@ export function createPonderosaTheme(mode: ColorMode) {
           body: {
             backgroundColor: colors.background,
             color: colors.textPrimary,
-            "--ponderosa-focus-ring": focusIndicator,
+            ...ponderosaSurfaceVariables(mode),
+            "--ponderosa-motion-duration": "200ms",
             "--ponderosa-rail": colors.rail,
             "--ponderosa-topbar": colors.topbar,
             "--ponderosa-rail-border": colors.railBorder,
@@ -189,11 +210,8 @@ export function createPonderosaTheme(mode: ColorMode) {
             "--ponderosa-sidebar": colors.sidebar,
             "--ponderosa-activity-label": colors.activityLabel,
             "--ponderosa-star": colors.star,
-            "--ponderosa-surface-secondary": colors.surfaceSecondary,
-            "--ponderosa-input-surface": colors.inputSurface,
             "--ponderosa-delegated-surface": colors.delegatedSurface,
             "--ponderosa-delegated-hover": colors.delegatedHover,
-            "--ponderosa-elevated": colors.elevated,
             "--ponderosa-touch-target": `${ponderosaLayoutTokens.touchTarget}px`,
           },
           a: { textDecoration: "none" },
@@ -202,6 +220,14 @@ export function createPonderosaTheme(mode: ColorMode) {
             backgroundColor: dark
               ? "rgba(124,191,138,.28)"
               : "rgba(92,138,101,.22)",
+          },
+        },
+      },
+      MuiAlert: {
+        styleOverrides: {
+          filled: ({ theme, ownerState }) => {
+            const background = theme.palette[ownerState.color ?? ownerState.severity ?? "success"][theme.palette.mode === "dark" ? "dark" : "main"];
+            return { color: getContrastRatio(background, "#FFFFFF") >= 4.5 ? "#FFFFFF" : "#000000" };
           },
         },
       },
@@ -226,13 +252,13 @@ export function createPonderosaTheme(mode: ColorMode) {
       },
       MuiButton: {
         styleOverrides: {
-          root: { minHeight: 44, borderRadius: 8 },
+          root: { minHeight: 44, borderRadius: 10, paddingInline: 16, transition: "background-color 180ms ease, border-color 180ms ease, color 180ms ease" },
           containedPrimary: {
-            backgroundColor: dark ? "#EDE9DD" : colors.brand,
-            color: dark ? "#123126" : "#F8F6EF",
+            backgroundColor: colors.brand,
+            color: "#FFFFFF",
             boxShadow: "none",
             "&:hover": {
-              backgroundColor: dark ? "#F8F6EF" : colors.brandHover,
+              backgroundColor: colors.brandHover,
               boxShadow: "none",
             },
           },
@@ -263,6 +289,49 @@ export function createPonderosaTheme(mode: ColorMode) {
           },
         },
       },
+      ...(assistant ? {
+      MuiDialog: {
+        defaultProps: { transitionDuration: { enter: 220, exit: 180 } },
+        styleOverrides: {
+          container: ({ ownerState }) => ({
+            ...(ownerState.maxWidth !== "xs" && !ownerState.fullScreen ? { "@media (max-width: 599.95px)": { alignItems: "flex-end" } } : {}),
+          }),
+          paper: ({ ownerState }) => ({
+            backgroundColor: colors.surface,
+            border: `1px solid ${colors.border}`,
+            borderRadius: 20,
+            boxShadow: dark ? "0 24px 80px rgba(0,0,0,.36)" : "0 24px 80px rgba(28,34,28,.16)",
+            overscrollBehavior: "contain",
+            ...(ownerState.maxWidth !== "xs" && !ownerState.fullScreen ? { "@media (max-width: 599.95px)": {
+              margin: 0, width: "100%", maxWidth: "100%", maxHeight: "calc(100dvh - 24px)",
+              borderRadius: "20px 20px 0 0", borderBottom: 0,
+            } } : {}),
+          }),
+          paperFullScreen: { borderRadius: 0, "@media (max-width: 599.95px)": { maxHeight: "100dvh", borderRadius: 0 } },
+        },
+      },
+      MuiDialogTitle: { styleOverrides: { root: { padding: "24px 24px 16px", fontSize: "1.125rem", fontWeight: 650, letterSpacing: "-0.02em" } } },
+      MuiDialogContent: { styleOverrides: { root: { padding: "8px 24px 24px", overscrollBehavior: "contain", scrollbarGutter: "stable" } } },
+      MuiDialogActions: { styleOverrides: { root: { padding: "12px 24px max(16px, env(safe-area-inset-bottom, 0px))", gap: 8, borderTop: `1px solid ${colors.border}`, backgroundColor: colors.surface, flexWrap: "wrap" } } },
+      MuiBackdrop: { styleOverrides: { root: { backgroundColor: dark ? "rgba(0,0,0,.56)" : "rgba(29,35,30,.28)" } } },
+      MuiDrawer: {
+        defaultProps: { transitionDuration: { enter: 220, exit: 180 } },
+        styleOverrides: { paper: { backgroundColor: colors.surface, backgroundImage: "none", overscrollBehavior: "contain" } },
+      },
+      } : {}),
+      MuiMenu: {
+        defaultProps: { transitionDuration: { enter: 160, exit: 120 } },
+        styleOverrides: {
+          paper: { padding: 4, border: `1px solid ${colors.border}`, borderRadius: 14, backgroundColor: colors.elevated, boxShadow: dark ? "0 12px 40px rgba(0,0,0,.32)" : "0 12px 40px rgba(28,34,28,.14)" },
+          list: { padding: 0 },
+        },
+      },
+      MuiMenuItem: { styleOverrides: { root: { minHeight: 44, paddingInline: 12, paddingBlock: 10, borderRadius: 8, fontSize: "0.875rem", whiteSpace: "normal", "&.Mui-selected": { backgroundColor: colors.selected }, "@media (min-width: 600px)": { minHeight: 44 } } } },
+      MuiAccordion: { defaultProps: { elevation: 0 }, styleOverrides: { root: { backgroundColor: "transparent", borderBottom: `1px solid ${colors.border}`, "&:before": { display: "none" }, "&.Mui-expanded": { margin: 0 } } } },
+      MuiAccordionSummary: { styleOverrides: { root: { minHeight: 56, paddingInline: 0, "&.Mui-expanded": { minHeight: 56 } }, content: { marginBlock: 14, "&.Mui-expanded": { marginBlock: 14 } } } },
+      MuiAccordionDetails: { styleOverrides: { root: { padding: "0 0 24px" } } },
+      MuiTooltip: { styleOverrides: { tooltip: { borderRadius: 8, padding: "8px 12px", fontSize: "0.75rem" } } },
+      MuiTabs: { styleOverrides: { indicator: { height: 2, borderRadius: 2 } } },
       MuiInputLabel: {
         styleOverrides: {
           root: {
@@ -314,7 +383,7 @@ export function createPonderosaTheme(mode: ColorMode) {
             "&.Mui-selected": {
               backgroundColor: colors.selected,
               color: colors.textPrimary,
-              boxShadow: dark ? "none" : `inset 3px 0 0 ${colors.accent}`,
+              boxShadow: "none",
               "&:hover": { backgroundColor: colors.hover },
             },
           },

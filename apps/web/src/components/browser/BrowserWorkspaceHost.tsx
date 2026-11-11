@@ -1,7 +1,8 @@
+import { RecoverableLazyRoute } from "../RecoverableLazyRoute";
+import { loadProjectBrowserDialog } from "../../projectShellLoader";
 import { Fragment, useEffect, useRef, useState } from "react";
-import { Alert, Divider, IconButton, ListSubheader, Menu, MenuItem, Snackbar, Tooltip, useMediaQuery } from "@mui/material";
+import { Alert, Box, Portal, Divider, IconButton, ListSubheader, Menu, MenuItem, Snackbar, Tooltip, useMediaQuery } from "@mui/material";
 import ViewQuiltIcon from "@mui/icons-material/ViewQuilt";
-import { ProjectBrowserDialog } from "../ProjectBrowserDialog";
 import type { ProjectBrowserRequest } from "../ProjectBrowserContext";
 import { browserDockIsAvailable } from "./browserWindowSizing";
 import { chatBrowserOwnerId, type ProjectDto } from "@ponderosa/core";
@@ -81,29 +82,35 @@ export function BrowserWorkspaceHost({ projectId, conversationId, agent, request
   useEffect(() => () => onDockWidth(0), [onDockWidth]);
   return <>
     {panels.map((panel, index) => <Fragment key={panel.key}>
-      <ProjectBrowserDialog projectId={panel.projectId} conversationId={panel.conversationId} agent={panel.agent} workspaceLabel={label(panel)} open={!mobile || index === panels.length - 1}
-        request={panel.request}
-        onRequestHandled={requestId => {
+      <Portal><Box data-optional-browser-route-notice sx={{position:"fixed",top:16,right:16,width:{xs:"calc(100vw - 32px)",sm:420},maxWidth:"calc(100vw - 32px)",zIndex:theme=>theme.zIndex.drawer+2+index}}>
+      <RecoverableLazyRoute  load={loadProjectBrowserDialog} componentProps={{projectId: panel.projectId,
+conversationId: panel.conversationId,
+agent: panel.agent,
+workspaceLabel: label(panel),
+open: !mobile || index === panels.length - 1,
+request: panel.request,
+onRequestHandled: requestId => {
           setPanels(current => current.map(item => item.key === panel.key && item.request?.requestId === requestId ? { ...item, request: undefined } : item));
           onRequestHandled(requestId);
-        }}
-        onDockWidth={width => setWidths(current => current[panel.key] === width ? current : { ...current, [panel.key]: width })}
-        windowOptions={{ docked: docked === panel.key, onDock: () => { if (browserDockIsAvailable(window.innerWidth)) setDocked(panel.key); }, onUndock: () => setDocked(current => current === panel.key ? undefined : current), onActivate: () => activate(panel.key), layer: index, offset: index, label: `Browser · ${label(panel)}` }}
-        workspaceControls={<Tooltip title="Browser workspaces"><IconButton size="small" aria-label="Browser workspaces" onClick={event => setMenu(event.currentTarget)}><ViewQuiltIcon /></IconButton></Tooltip>}
-        onClose={() => {
+        },
+onDockWidth: width => setWidths(current => current[panel.key] === width ? current : { ...current, [panel.key]: width }),
+windowOptions: { docked: docked === panel.key, onDock: () => { if (browserDockIsAvailable(window.innerWidth)) setDocked(panel.key); }, onUndock: () => setDocked(current => current === panel.key ? undefined : current), onActivate: () => activate(panel.key), layer: index, offset: index, label: `Browser · ${label(panel)}` },
+workspaceControls: <Tooltip title="Browser Workspaces"><IconButton size="small" aria-label="Browser Workspaces" onClick={event => setMenu(event.currentTarget)}><ViewQuiltIcon /></IconButton></Tooltip>,
+onClose: () => {
           setPanels(current => current.filter(item => item.key !== panel.key));
           if (docked === panel.key) setDocked(undefined);
           if (panels.length === 1) onClose();
-        }} />
+        }}} />
+      </Box></Portal>
     </Fragment>)}
     <Menu anchorEl={menu} open={Boolean(menu)} onClose={() => setMenu(null)} disableRestoreFocus>
-      <ListSubheader>Open workspaces</ListSubheader>
+      <ListSubheader>Open Workspaces</ListSubheader>
       {panels.map(panel => <MenuItem key={panel.key} selected={panels.at(-1)?.key === panel.key} onClick={() => { setMenu(null); activate(panel.key); }}>{label(panel)}</MenuItem>)}
       <Divider />
-      <ListSubheader>{panels.length >= 4 ? "Close a panel to open another" : "Open another chat browser"}</ListSubheader>
-      {projects.filter(project => project.id !== projectId && !panels.some(panel => panel.projectId === project.id) && project.id !== menuProjectId).map(project => <MenuItem key={project.id} disabled={panels.length >= 4} onClick={() => setMenuProjectId(project.id)}>Chats in {project.label}</MenuItem>)}
+      <ListSubheader>{panels.length >= 4 ? "Close A Panel To Open Another" : "Open Another Chat Browser"}</ListSubheader>
+      {projects.filter(project => project.id !== projectId && !panels.some(panel => panel.projectId === project.id) && project.id !== menuProjectId).map(project => <MenuItem key={project.id} disabled={panels.length >= 4} onClick={() => setMenuProjectId(project.id)}>Chats In {project.label}</MenuItem>)}
       {chatQueries.flatMap(query => query.data ?? []).filter(chat => !chat.deletedAt && !panels.some(panel => panel.key === keyFor(chat.projectId, undefined, chat.id))).map(chat => <MenuItem key={chat.id} disabled={panels.length >= 4} onClick={() => { setMenu(null); openPanel({ key: keyFor(chat.projectId, undefined, chat.id), projectId: chat.projectId, conversationId: chat.id }); }}>{workspaceName(chat.projectId, chat.id)}</MenuItem>)}
     </Menu>
-    <Snackbar open={limitNotice} onClose={() => setLimitNotice(false)}><Alert severity="info" onClose={() => setLimitNotice(false)}>Four browser panels are already open. Close a panel before opening another; its browser and tabs will keep running.</Alert></Snackbar>
+    <Snackbar open={limitNotice} onClose={() => setLimitNotice(false)}><Alert severity="info" onClose={() => setLimitNotice(false)}>Four browser panels open · close one to open another · its browser and tabs keep running</Alert></Snackbar>
   </>;
 }

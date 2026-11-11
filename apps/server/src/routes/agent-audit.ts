@@ -1,3 +1,4 @@
+import {projectReplyToolEvent} from "@ponderosa/engines";
 import type { AgentTelemetryStream } from "@ponderosa/core";
 import type { FastifyInstance } from "fastify";
 import {
@@ -43,7 +44,7 @@ export function registerAgentAuditRoutes(
       const input = { limit, cursor: request.query.cursor, focusId: request.query.focusId };
       switch (request.params.stream) {
         case "runOutput": return { stream: "runOutput" as const, ...store.getRunOutputPage(request.params.id, input) };
-        case "activity": return { stream: "activity" as const, ...store.getActivityPage(request.params.id, input) };
+        case "activity": {const page=store.getActivityPage(request.params.id,input);return {stream:"activity" as const,...page,items:page.items.map(item=>({...item,event:projectReplyToolEvent(item.event)}))};}
         case "changedFiles": return { stream: "changedFiles" as const, ...store.getChangedFilePage(request.params.id, input) };
         case "runs": return { stream: "runs" as const, ...store.getRunPage(request.params.id, input) };
         case "workItems": return { stream: "workItems" as const, ...store.getWorkItemPage(request.params.id, input) };

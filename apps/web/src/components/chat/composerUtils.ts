@@ -1,3 +1,4 @@
+import { parseNativeTurnCommand } from "@ponderosa/core";
 import {
   ASSET_MEDIA_TYPES,
   INLINE_TEXT_MAX_CODE_POINTS,
@@ -78,6 +79,7 @@ export async function cleanupReleasedDraftAttachmentIds(
 
 export function shouldSendComposerKey(event: {
   key: string;
+  ctrlKey?: boolean;
   shiftKey: boolean;
   isComposing: boolean;
   repeat: boolean;
@@ -87,10 +89,22 @@ export function shouldSendComposerKey(event: {
 
 export function shouldConsumeComposerKey(event: {
   key: string;
+  ctrlKey?: boolean;
   shiftKey: boolean;
   isComposing: boolean;
 }): boolean {
-  return event.key === "Enter" && !event.shiftKey && !event.isComposing;
+  return event.key === "Enter" && !event.ctrlKey && !event.shiftKey && !event.isComposing;
+}
+
+/** Consume Ctrl+Enter even when Queue is unavailable; it must never become
+ * ordinary Send, a suggestion selection, or a mobile newline. */
+export function shouldConsumeComposerQueueKey(event: {
+  key: string;
+  ctrlKey?: boolean;
+  shiftKey: boolean;
+  isComposing: boolean;
+}): boolean {
+  return event.key === "Enter" && Boolean(event.ctrlKey) && !event.shiftKey && !event.isComposing;
 }
 
 export function shouldIgnoreComposerKey(event: {
@@ -188,8 +202,9 @@ export function composerShouldSeedContinuationDestination(input: {
   retainedSelectionKey?: string;
   localText: string;
   editorText: string;
+  interactionStarted?: boolean;
 }): boolean {
-  return !input.retainedSelectionKey &&
+  return !input.interactionStarted && !input.retainedSelectionKey &&
     input.previousSelectionKey !== input.nextSelectionKey &&
     !input.localText.trim() &&
     !input.editorText.trim();
@@ -583,6 +598,7 @@ const COMPOSER_EXTENSION_MEDIA_TYPES: Record<string, string> = {
   ".txt": "text/plain",
   ".zip": "application/zip",
   ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ".webm":"audio/webm", ".ogg":"audio/ogg", ".m4a":"audio/mp4",
 };
 const COMPOSER_MEDIA_TYPE_ALIASES: Record<string, string> = {
   "image/heif": "image/heic",
@@ -710,4 +726,13 @@ export function composerAttachmentReducer(
         : state.files,
     error: selection.error,
   };
+}
+
+/** Assistant uses ordinary steering, never a Queue gesture or native next-Run command. */
+export function assistantSubmissionError(text: string, queued: boolean): string | undefined {
+  if (queued) return "This saved Queue submission cannot be sent from Assistant. Review it in the Agent chat; its original operation is preserved.";
+  try {
+    if (parseNativeTurnCommand(text)) return "This command requires a new Run. Open the Agent chat to use it; Assistant follow-ups use steering.";
+  } catch (error) { return error instanceof Error ? error.message : "Invalid native action"; }
+  return undefined;
 }

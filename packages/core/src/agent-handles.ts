@@ -20,17 +20,21 @@ export function agentMentionHandleBase(displayName: string): string {
 /** Allocate a case-insensitively unique Project-scoped handle. */
 export function allocateAgentMentionHandle(
   displayName: string,
-  reservedHandles: Iterable<string>,
+  reservedHandles: Iterable<string> | ((normalizedHandle: string) => boolean),
+  firstSuffix = 2,
 ): string {
-  const occupied = new Set(
-    [...reservedHandles].map(handle => handle.toLocaleLowerCase()),
-  );
-  for (const reserved of RESERVED_AGENT_MENTION_HANDLES) occupied.add(reserved);
+  const occupied = typeof reservedHandles === "function" ? reservedHandles :
+    new Set([...reservedHandles].map(handle => handle.toLocaleLowerCase()));
+  const taken = (handle: string) => {
+    const normalized = handle.toLocaleLowerCase();
+    return RESERVED_AGENT_MENTION_HANDLES.has(normalized) ||
+      (typeof occupied === "function" ? occupied(normalized) : occupied.has(normalized));
+  };
   const base = agentMentionHandleBase(displayName);
-  if (!occupied.has(base.toLocaleLowerCase())) return base;
-  for (let suffix = 2; suffix < Number.MAX_SAFE_INTEGER; suffix += 1) {
+  if (!taken(base)) return base;
+  for (let suffix = Math.max(2, firstSuffix); suffix < Number.MAX_SAFE_INTEGER; suffix += 1) {
     const candidate = `${base}-${suffix}`;
-    if (!occupied.has(candidate.toLocaleLowerCase())) return candidate;
+    if (!taken(candidate)) return candidate;
   }
   throw new Error("Agent mention handle space is exhausted");
 }

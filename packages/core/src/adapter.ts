@@ -1,8 +1,13 @@
+import type { RuntimeInputFile } from "./runtime-input-files.js";
+import type { NativeHistoryCatalog, NativeFileRewindResult, NativeTranscriptSeed } from "./native-history.js";
+import type { NativeTask, NativeTaskStopOutcome } from "./native-tasks.js";
+import type { ProviderContextRecoverySupport } from "./context-recovery.js";
 // The Adapter (engine) abstraction — SPEC §5. Every engine implements this one
 // interface. The agent stores canonical history; the adapter translates it into
 // a runtime session. Nothing outside packages/engines may know which engine it is
 // (AGENTS.md invariant 2).
 
+import type {RuntimeCapabilityRestrictions} from "./capability-policy.js";
 import type { AgentEvent } from "./events.js";
 import type { ProviderFailureCategory } from "./provider-failure-summary.js";
 
@@ -126,6 +131,8 @@ export interface ServiceTierOption {
 
 /** Options shared by both `seed()` and `continue()`. */
 export interface RunOptionsBase {
+  /** Host-only exact scheduler ownership; never inferred from a later Run. */
+  providerRun?: { runId: string; fence: number };
   agentId: string;
   /** The project's on-disk path; the agent's cwd, where it reads md files/git. */
   cwd: string;
@@ -140,6 +147,8 @@ export interface RunOptionsBase {
   speed?: string;
   /** Per-run capability variables supplied by the orchestrator. */
   environment?: Record<string, string>;
+  /** Human-selected native billing mode; adapters refuse mismatches before input. */
+  expectedBillingMode?: "subscription" | "api";
   /** Abort → the adapter kills the underlying process (SPEC §11 cancel/kill). */
   signal: AbortSignal;
   /** Called synchronously after a one-shot provider process is spawned. The
@@ -169,6 +178,8 @@ export interface SeedOptions extends RunOptionsBase {
 export type RuntimeDeliveryKind = "user_message" | "collaboration" | "system";
 
 export interface RuntimeTurnInput {
+  /** Authorized current-delivery files; adapters preserve their native modality. */
+  inputFiles?: RuntimeInputFile[];
   prompt: string;
   kind: RuntimeDeliveryKind;
   model?: string;
@@ -176,6 +187,14 @@ export interface RuntimeTurnInput {
   /** "standard" clears any provider tier override; other values are provider IDs. */
   speed?: string;
   clientMessageId?: string;
+  /** Require the adapter to confirm the native session and this exact input before accepting a managed handoff. */
+  requireVerifiedInput?: boolean;
+  /** Host opens the exact Run capability after native input verification. */
+  onVerifiedInput?: () => void;
+  /** Exact human-selected action, admitted and recorded by the scheduler. */
+  nativeAction?: import("./native-turn.js").NativeTurnAction;
+  /** Host callback rechecks the exact current Run after asynchronous admission. */
+  assertCurrent?: () => void;
 }
 
 /** A host-owned tool exposed inside an engine runtime. */
@@ -188,6 +207,8 @@ export interface RuntimeDynamicToolSpec {
 export interface RuntimeDynamicToolCall {
   /** Stable provider request identity, scoped to the current Run. */
   id: string;
+  /** Normalized provider item identity, when distinct from the RPC request ID. */
+  operationId?: string;
   name: string;
   arguments: unknown;
 }
@@ -207,6 +228,21 @@ export type RuntimeDynamicToolHandler = (
  * Engine adapters normalize their native protocol before this crosses into
  * server/runtime code.
  */
+export interface RuntimeNativeApprovalIdentity {
+  requestId: string;
+  sessionId: string;
+  turnId: string;
+  kind: "command" | "file" | "permissions" | "tool" | "question";
+}
+
+export interface NativeRuntimeControlRequest {
+  sessionId: string;
+  runId: string;
+  fencingToken: number;
+  operation: "model" | "permission-mode";
+  value: string;
+}
+
 export type RuntimeElicitationRequest =
   | {
       mode: "url";
@@ -216,6 +252,10 @@ export type RuntimeElicitationRequest =
       url: string;
     }
   | {
+      /** Exact live native callback; never eligible for remembered grants. */
+      nativeApproval?: RuntimeNativeApprovalIdentity;
+      /** A native nonblocking question never suspends unrelated owned work. */
+      blocking?: boolean;
       mode: "form" | "openai/form";
       serverName: string;
       message: string;
@@ -229,11 +269,16 @@ export interface RuntimeElicitationResponse {
 
 export type RuntimeElicitationHandler = (
   request: RuntimeElicitationRequest,
+  signal?: AbortSignal,
 ) => Promise<RuntimeElicitationResponse>;
 
 export type RuntimeSteerResult =
   | { status: "accepted"; turnId?: string }
-  | { status: "not_active" | "not_steerable" | "unsupported"; reason?: string };
+  | { status: "not_active" | "not_steerable"; reason?: string }
+  /** The adapter confirms that no steering input was submitted and no effects
+   * from it can have started. If submission or effects are uncertain, throw
+   * instead so the host preserves the unknown outcome rather than retrying. */
+  | { status: "unsupported"; reason?: string };
 
 export interface RuntimeContextUsage {
   usedTokens: number;
@@ -251,6 +296,8 @@ export interface RuntimeCommandResult {
   message?: string;
   /** Present only when the command verified a NEW post-command observation. */
   contextUsage?: RuntimeContextUsage;
+  goal?: import("./native-turn.js").NativeGoalSnapshot | null;
+  goalCleared?: boolean;
 }
 
 /**
@@ -294,13 +341,27 @@ export interface RuntimeSession extends RuntimeProcessHandle {
   /** Live effective catalog for this authenticated session, with explicit
    * provenance for provider-advertised and adapter-implemented commands. */
   capabilities?(): Promise<EngineCapabilities>;
-  /** Invoke a provider command that is represented by a structured runtime
-   * method rather than by ordinary prompt text. */
+  /** Invoke an adapter-owned native command with validated provider receipts.
+   * A documented command-input wire format is distinct from ordinary user work;
+   * authored prose is never proof of native completion. */
   invokeCommand?(name: string, argumentsText?: string): Promise<RuntimeCommandResult | void>;
+  nativeHistory?(): Promise<NativeHistoryCatalog>;
+  rewindFiles?(messageId: string, dryRun: boolean): Promise<NativeFileRewindResult>;
+  listNativeTasks?(): Promise<NativeTask[]>;
+  stopNativeTask?(taskKey: string): Promise<NativeTaskStopOutcome>;
   startTurn(input: RuntimeTurnInput): Promise<{ turnId: string }>;
+  /** Activate an existing paused native goal inside this exact managed Run. */
+  startNativeGoal?(input: RuntimeTurnInput): Promise<void>;
+  /** Pause the current native goal once; uncertain acknowledgement must not be retried automatically. */
+  pauseNativeGoal?(): Promise<void>;
   steer(input: RuntimeTurnInput): Promise<RuntimeSteerResult>;
   interrupt(): Promise<void>;
 }
+
+/** UTF-16 units: retained stderr plus bounded omission notice (including numeric count). */
+export const PROVIDER_STDERR_TAIL_LIMIT = 8192;
+// 128 covers the fixed notice and any JavaScript numeric count representation.
+export const PROVIDER_STDERR_DETAIL_LIMIT = PROVIDER_STDERR_TAIL_LIMIT + 128;
 
 export interface ProviderRootExitDetail {
   /** Root is gone; the adapter is draining already-emitted output for a bounded interval. */
@@ -313,6 +374,15 @@ export interface ProviderRootExitDetail {
 }
 
 export interface OpenRuntimeSessionOptions {
+  /** Host-side authority must still match before native thread setup. */
+  assertRuntimeCurrent?: () => void;
+  /** Host-only exact scheduler ownership of the process start. */
+  providerRun?: { runId: string; fence: number };
+  fileCheckpointTracking?: boolean;
+  /** Host-reserved fresh transcript context; never an adopted source lease. */
+  transcriptFork?: NativeTranscriptSeed;
+  assertHistoryCurrent?: () => void;
+  onTranscriptForkObserved?: (sessionId: string) => void;
   agentId: string;
   cwd: string;
   resumeSessionId?: string;
@@ -325,8 +395,12 @@ export interface OpenRuntimeSessionOptions {
   /** "standard" clears any provider tier override; other values are provider IDs. */
   speed?: string;
   environment?: Record<string, string>;
+  /** Human-selected native billing mode; adapters refuse mismatches before input. */
+  expectedBillingMode?: "subscription" | "api";
   /** Host tools are transported by the adapter, never through the agent shell. */
   dynamicTools?: RuntimeDynamicToolSpec[];
+  /** Resolved restriction-only controls translated by the provider adapter. */
+  capabilityRestrictions?:RuntimeCapabilityRestrictions;
   handleDynamicToolCall?: RuntimeDynamicToolHandler;
   /** User-facing provider requests are handled by the host without exposing
    * engine-specific request methods outside packages/engines. */
@@ -365,6 +439,8 @@ export interface EngineCommand {
 }
 
 export interface EngineMcpServer {
+  /** Exact names/descriptions when the existing provider inventory reports them. */
+  tools?: import("./capability-policy.js").CapabilityTool[];
   name: string;
   configured: boolean;
   initialization: "not_initialized" | "initializing" | "initialized" | "failed";
@@ -504,6 +580,11 @@ export interface ProviderUsageSnapshot {
  * Both methods return a live stream of normalized {@link AgentEvent}s.
  */
 export interface Adapter {
+  readonly nativeTurnActions?: ReadonlyArray<import("./native-turn.js").NativeTurnAction["kind"]>;
+  /** Static support only; reading it must not launch a provider or run a probe. */
+  readonly contextRecoverySupport?: Readonly<ProviderContextRecoverySupport>;
+  /** Item-scoped response candidates; explicit host reply authorization remains required. */
+  readonly supportsVoiceReplyStream?: boolean;
   id: EngineId; // "codex" | "claude"
   displayName: string;
   /** Ponderosa-dispatched slash command that opens this adapter's quota reader. */
@@ -562,12 +643,14 @@ export interface Adapter {
 /** Reported by `/api/engines` (SPEC §8): an engine plus its live auth status. */
 export interface EngineAuthStatus {
   authenticated: boolean;
+  /** Native harness mode; presence does not prove paid-request access. */
+  billingMode?: "subscription" | "api";
   /** Sign-in was parsed, but its diagnostic process has not safely settled. */
   diagnosticFailure?: "cleanup_failed";
   /** False alone is not logout evidence when the read-only probe is unknown. */
   status?: "unknown";
   reason?: "timeout" | "spawn_failed" | "malformed" | "cleanup_failed" | "probe_failed" | "probe_pending";
-  source?: "cli_status" | "subscription_presence";
+  source?: "cli_status" | "subscription_presence" | "environment_presence";
   /** Optional human-readable detail (e.g. "logged in as ...", or why not). */
   detail?: string;
 }
@@ -597,4 +680,11 @@ export interface EngineRegistration {
   authStatus?: (options?: EngineProbeOptions) => Promise<EngineAuthStatus>;
   /** Explicit provider entitlement check; never run during polling. */
   availabilityProbe?: (options?: EngineProbeOptions) => Promise<EngineAvailabilityStatus>;
+}
+
+export interface NativeRuntimeControlBoundary {
+  sessionId: string;
+  runId: string;
+  fencingToken: number;
+  operations: Array<"model" | "permission-mode">;
 }

@@ -1,6 +1,8 @@
+import {MutationErrorDetails} from "../MutationNotifications";
 import LaunchIcon from "@mui/icons-material/Launch";
 import {
   Alert,
+  Autocomplete,
   Button,
   Checkbox,
   FormControlLabel,
@@ -22,6 +24,8 @@ interface FormField {
   type: "string" | "number" | "integer" | "boolean";
   required: boolean;
   options?: string[];
+  allowOther?: boolean;
+  secret?: boolean;
 }
 
 interface FormDescription {
@@ -70,7 +74,8 @@ function describeForm(action: RuntimeElicitationActionDto | undefined): FormDesc
       ...(typeof property.description === "string" ? { description: property.description } : {}),
       type,
       required: required.has(name),
-      ...(options ? { options } : {}),
+      ...(options ? { options, allowOther: property["x-allow-other"] === true } : {}),
+      ...(property.writeOnly === true || property.format === "password" ? { secret: true } : {}),
     }];
   });
   if ([...required].some((name) => !Object.hasOwn(properties, name))) supported = false;
@@ -151,12 +156,12 @@ export function RuntimeElicitationActions({
         fullWidth
         multiline
         minRows={2}
-        label="Tell the Agent what you want instead"
+        label="Tell The Agent What You Want Instead"
         value={otherText}
         onChange={(event) => setOtherText(event.target.value)}
       />
       <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">
-        <Button size="small" variant="contained" disabled={pending || !otherText.trim()} onClick={() => void submitOther()}>Send to Agent</Button>
+        <Button size="small" variant="contained" disabled={pending || !otherText.trim()} onClick={() => void submitOther()}>Send To Agent</Button>
         <Button size="small" color="inherit" disabled={pending} onClick={() => { setOtherOpen(false); setOtherText(""); }}>Cancel</Button>
       </Stack>
       <Typography variant="caption" color="text.secondary">
@@ -202,7 +207,7 @@ export function RuntimeElicitationActions({
           The {secureConnection ? "secure" : "local"} connection opens in a new tab. Return here and confirm when it is complete.
         </Typography>
         {otherResponse}
-        {error ? <Alert severity="error">{error}</Alert> : null}
+        <MutationErrorDetails title="Decision Response Needs Review" error={error}/>
       </Stack>
     );
   }
@@ -222,8 +227,26 @@ export function RuntimeElicitationActions({
             }} />}
             label={`${field.label}${field.required ? " *" : ""}`}
           />
-          {fieldErrors[field.name] ? <Typography variant="caption" color="error">{fieldErrors[field.name]}</Typography> : null}
+          {fieldErrors[field.name] || field.description ? <Typography variant="caption"
+            color={fieldErrors[field.name] ? "error" : "text.secondary"}>{fieldErrors[field.name] ?? field.description}</Typography> : null}
         </Stack>
+      ) : field.options?.length && field.allowOther ? (
+        <Autocomplete
+          key={field.name}
+          freeSolo
+          options={field.options}
+          inputValue={String(values[field.name] ?? "")}
+          onInputChange={(_event, value) => {
+            setValues((current) => ({ ...current, [field.name]: value }));
+            setFieldErrors((current) => {
+              const { [field.name]: _removed, ...rest } = current;
+              return rest;
+            });
+          }}
+          renderInput={(params) => <TextField {...params} fullWidth size="small" label={field.label}
+            required={field.required} type={field.secret ? "password" : "text"}
+            error={Boolean(fieldErrors[field.name])} helperText={fieldErrors[field.name] ?? field.description} />}
+        />
       ) : (
         <TextField
           key={field.name}
@@ -231,7 +254,9 @@ export function RuntimeElicitationActions({
           size="small"
           label={field.label}
           required={field.required}
-          type={field.type === "number" || field.type === "integer" ? "number" : "text"}
+          multiline={field.type === "string" && !field.options?.length && !field.secret}
+          minRows={field.type === "string" && !field.options?.length && !field.secret ? 2 : undefined}
+          type={field.secret ? "password" : field.type === "number" || field.type === "integer" ? "number" : "text"}
           value={String(values[field.name] ?? "")}
           error={Boolean(fieldErrors[field.name])}
           helperText={fieldErrors[field.name] ?? field.description}
@@ -263,13 +288,17 @@ export function RuntimeElicitationActions({
           disabled={submitDisabled}
           onClick={() => void submit()}
         >
-          {fields.length > 0
+          {action.data.nativeApproval?.kind === "question"
+            ? "Send Answers"
+            : action.data.nativeApproval
+            ? "Respond To Native Request"
+            : fields.length > 0
             ? "Submit"
             : bareConfirmation
-              ? "Allow once"
+              ? "Allow Once"
               : "Submit"}
         </Button>
-        {allowForRun ? <Button size="small" variant="outlined" disabled={pending} onClick={() => void onRespond({ optionId: "allow_run" })}>Allow for this run</Button> : null}
+        {allowForRun ? <Button size="small" variant="outlined" disabled={pending} onClick={() => void onRespond({ optionId: "allow_run" })}>Allow For This Run</Button> : null}
         <Button size="small" color="inherit" disabled={pending} onClick={() => void onRespond({ optionId: "decline" })}>Not Now</Button>
         <Button size="small" color="inherit" disabled={pending} onClick={() => setOtherOpen(true)}>Other</Button>
       </Stack>
@@ -277,7 +306,7 @@ export function RuntimeElicitationActions({
         Run approval applies only to this exact {provider} confirmation until this Agent run ends.
       </Typography> : null}
       {otherResponse}
-      {error ? <Alert severity="error">{error}</Alert> : null}
+      <MutationErrorDetails title="Decision Response Needs Review" error={error}/>
     </Stack>
   );
 }

@@ -1,3 +1,7 @@
+import { acceptedGoalResumeCommand } from "../native-goal-command-availability.js";
+import {localMemoryFor} from "../local-memory.js";
+import { selectNativeCommand } from "../native-command-selection.js";
+import { parseNativeTurnCommand } from "@ponderosa/core";
 import { AgentEventPersistenceError } from "@ponderosa/agents";
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -65,7 +69,7 @@ import {
 } from "./conversation-deliveries.js";
 import { cleanupRuntimeAttachments } from "../runtime-attachments.js";
 import { leaseAgentDelivery, leaseConversationDelivery } from "../delivery-leases.js";
-import { prepareAgentRun } from "./agent-run-preparation.js";
+import { prepareAgentRun, PromptContractAdmissionChanged } from "./agent-run-preparation.js";
 import { startProviderRunExecution } from "./provider-run-executor.js";
 import { canonicalDefaultReplyRoute } from "../required-reply-route.js";
 import { ProviderDisabledError } from "../provider-admission.js";
@@ -148,9 +152,10 @@ export type AgentMessageRunContext =
   Pick<ServerReadModels,
     "canonicalConversationContext" | "publishCoordinationV3Changed" |
     "publishMessageDeliveryChanged" | "observeRuntimeStalls"> &
-  Pick<CommunicationDocumentAuthority, "agentCanReadRuntimeArtifact"> &
+  Pick<CommunicationDocumentAuthority, "agentCanReadRuntimeArtifact" | "authoritativeCommunicationDocument"> &
   Pick<OperationalNotifications,
     "createOperationalNotification" | "resolveOperationalNotification"> & {
+    engineAuthStatuses: Pick<import("../engine-auth-cache.js").EngineAuthStatusCache, "snapshot" | "captureAuthentication">;
     opts: CreateServerOptions;
     store: AgentStore;
     workspace: WorkspaceStore;
@@ -245,6 +250,7 @@ export function registerAgentMessageRunRoute(
     assetMetadata,
     reconcileRuntimeCommunicationProjections,
     notifyScheduler,
+    isClosed,
     reconcileProjectWorkspace,
     cachedModelOptions,
     discoverEngineCapabilities,
@@ -609,7 +615,7 @@ export function registerAgentMessageRunRoute(
           });
         }
       }
-      const activeRunDelivery = request.body?.activeRunDelivery ?? "steer";
+      let activeRunDelivery = request.body?.activeRunDelivery ?? "steer";
       if (activeRunDelivery !== "steer" && activeRunDelivery !== "queue") {
         return reply.code(400).send({ error: "activeRunDelivery must be steer or queue" });
       }
@@ -684,7 +690,9 @@ export function registerAgentMessageRunRoute(
                 error,
               );
         }
-        const command = catalog.commands.find((candidate) => candidate.name === providerSlash[1]);
+        const discovered = catalog.commands.find((candidate) => candidate.name === providerSlash[1]);
+        const command = discovered && acceptedGoalResumeCommand(discovered,
+          runtimeEngineId === "codex" && agent.activeEngine === runtimeEngineId && Boolean(store.resumeSessionState(agent.id)?.sessionId));
         if (!command || command.status !== "available") {
           return reply.code(409).send({
             error: command?.unavailableReason ?? `the active provider does not expose /${providerSlash[1]}`,
@@ -694,6 +702,15 @@ export function registerAgentMessageRunRoute(
         if (command.invocation !== "prompt") {
           return reply.code(409).send({ error: `/${command.name} must be invoked through its structured provider action` });
         }
+      }
+      if (!internalV3Dispatch) {
+        try {
+          const action = parseNativeTurnCommand(text);
+          if (action && !engine.adapter.nativeTurnActions?.includes(action.kind)) return reply.code(409).send({ error: "This provider does not implement the selected native action" });
+          // Native work must remain next-Run work even if another Run starts
+          // between human intake and scheduler delivery.
+          if (action) activeRunDelivery = "queue";
+        } catch (error) { return reply.code(400).send({ error: error instanceof Error ? error.message : "Invalid native action" }); }
       }
       const promotedDraftAssets: AssetDto[] = [];
       try {
@@ -917,11 +934,17 @@ export function registerAgentMessageRunRoute(
         }
         promotedDraftAssetsCommitted = true;
         let position: number | undefined;
+        let queuedMessage: import('@ponderosa/core').QueuedConversationMessageDto | undefined;
         try {
           const pendingForAgent = coordinationV3.pendingActivations(project.id)
             .filter((activation) => activation.agentId === agent.id);
           const pendingIndex = pendingForAgent.findIndex((activation) => activation.id === v3Intake.activationId);
           position = pendingIndex >= 0 ? pendingIndex + 1 : 1;
+          const queued=pendingForAgent[pendingIndex];
+          if(queued?.dispatchPolicy==='next_run'&&communication&&directMessageConversationId)queuedMessage={
+            deliveryId:queued.id,messageId:communication.eventId,communicationEventId:communication.eventId,
+            conversationId:directMessageConversationId,targetAgentId:agent.id,text:publishedText,position,createdAt:queued.createdAt,status:'queued',attachmentCount:messageAttachments.length,
+          };
         } catch {
           // Queue position is a projection; omit it while repair catches up.
         }
@@ -932,6 +955,7 @@ export function registerAgentMessageRunRoute(
         return reply.code(202).send({
           queued: true,
           ...(position !== undefined ? { position } : {}),
+          ...(queuedMessage?{queuedMessage}:{}),
           deliveryId: v3Intake.activationId,
           communicationEventId,
           ...(position === undefined ? { committed: true, recovering: true } : {}),
@@ -942,20 +966,56 @@ export function registerAgentMessageRunRoute(
         return reply.code(409).send({ error: "agent already has an active run", retryable: true });
       }
 
+      const sourceActivations = internalV3Dispatch
+        ? coordinationV3.activationPayloads(agent.id,
+            coordinationV3.activationIdsForInjection(v3InjectionId!, v3SchedulerRunId!), v3SchedulerRunId)
+        : [];
+      const sourceIds = internalV3Dispatch
+        ? sourceActivations.flatMap(({ payload }) => {
+            const source = payload && typeof payload === "object"
+              ? (payload as { communication?: { eventId?: unknown } }).communication : undefined;
+            return typeof source?.eventId === "string" ? [source.eventId] : [];
+          })
+        : communicationEventId ? [communicationEventId] : [];
+      let nativeAction: import("@ponderosa/core").NativeTurnAction | undefined;
+      try {
+        nativeAction = selectNativeCommand({
+          projectId: project.id, agentId: agent.id, conversationId: agent.conversationId,
+          communicationIds: sourceIds,
+          read: id => store.getCommunicationEvent(project.id, id),
+          documentText: event => {
+            const found = event.document && runContext.authoritativeCommunicationDocument(project.id, event.document.id);
+            return found && found.event.eventId === event.eventId ? found.document.content : undefined;
+          },
+        });
+      } catch (error) {
+        return reply.code(422).send({ error: error instanceof Error ? error.message : "Invalid canonical native command" });
+      }
+      if ((nativeAction?.kind === "review" || nativeAction?.kind === "goal-resume" || nativeAction?.kind === "goal-create") && sourceActivations.length > 1) {
+        return reply.code(422).send({ error: "This native action cannot consume coalesced sources; submit it as a separate Run" });
+      }
+      if (nativeAction && !engine.adapter.nativeTurnActions?.includes(nativeAction.kind)) {
+        return reply.code(422).send({ error: "Native action is unsupported by the selected provider" });
+      }
+
       const agentMessageUrl = agentMessageEndpoint(request, opts.agentBaseUrl);
-      const preparedRun = await prepareAgentRun(runContext, {
+      let preparedRun: Awaited<ReturnType<typeof prepareAgentRun>>;
+      try { preparedRun = await prepareAgentRun(runContext, {
         agent,
         project,
         runtimeEngineId,
         engine,
+        memory:localMemoryFor(app),
         text,
         internalV3Dispatch,
         v3SchedulerRunId,
+        v3FencingToken,
         v3InjectionId,
         v3FreshProviderSession,
         v3ActivationPrompt,
         effectiveModel,
         effectiveEffort,
+        effectiveSpeed,
         messageAttachments,
         sourceConversationId,
         communicationEventId,
@@ -965,7 +1025,15 @@ export function registerAgentMessageRunRoute(
         sourceMasterMessage,
         pendingTurn,
         requestedSourceChannel: request.body.sourceChannel,
-      });
+      }); } catch(error) {
+        if(error instanceof PromptContractAdmissionChanged && internalV3Dispatch && v3SchedulerRunId && v3FencingToken!==undefined) {
+          coordinationV3.deferUninjectedRun(v3SchedulerRunId,v3FencingToken);
+          publishCoordinationV3Changed(agent.id);
+          notifyScheduler();
+          return reply.code(409).send({error:error.message,queued:true});
+        }
+        throw error;
+      }
       const {
         routingConversationId,
         sourceChannel,
@@ -994,10 +1062,16 @@ export function registerAgentMessageRunRoute(
         policySnapshotHash,
         systemPrompt,
         runtimeSessionContractHash: effectiveRuntimeSessionContractHash,
+        retainedVerifiedContext,
+        assertRetainedContextPolicy,
+        assertSettingsTransitionPolicy,
+        validateSettingsTransitionSources,
         workingCopy,
         availableRuntimeTools,
+        capabilityRestrictions,
         availableRuntimeToolNames,
         historyRetrievalBoundary,
+        importedHistoryArchiveVersion,
         historyRetrievalFrozenExclusions,
         prompt,
         freshPrompt,
@@ -1009,9 +1083,19 @@ export function registerAgentMessageRunRoute(
         freshProviderInputManifest,
         manifestArtifactIds,
         pendingCommunicationV4NextRunDeliveryIds,
+        inputFiles,
         runtimeAttachmentDirectory,
         runtimeAttachmentCleanupAfterRun,
       } = preparedRun;
+
+      if (nativeAction) {
+        if ((nativeAction.kind === "goal-resume" || nativeAction.kind === "goal-create") && inputFiles.length) throw new Error("Native goals do not accept attached files; submit them separately.");
+        if (!engine.adapter.nativeTurnActions?.includes(nativeAction.kind)) throw new Error("Native action is unsupported by the selected provider");
+        if ((nativeAction.kind === "review" || nativeAction.kind === "goal-resume") && !resumeSessionId) throw new Error("This native action requires this Agent’s accepted retained session");
+        if (providerInputManifest.schemaVersion !== 3 || freshProviderInputManifest.schemaVersion !== 3) throw new Error("Native action requires an exact structured input manifest");
+        providerInputManifest.nativeAction = nativeAction;
+        freshProviderInputManifest.nativeAction = nativeAction;
+      }
 
       // Check deletion before attachment promotion as well as at the final
       // synchronous claim boundary below.
@@ -1049,6 +1133,13 @@ export function registerAgentMessageRunRoute(
         return reply.code(409).send({ error: error instanceof Error ? error.message : "working folder changed; retry safely", retryable: true });
       }
       const resourceHeld = await runContext.resourceAdmissionHeld?.() === true;
+      // Preparation can yield across shutdown. No provider or Run authority
+      // may be claimed after the server starts closing; keep the work queued.
+      if (isClosed()) {
+        coordinationV3.deferUninjectedRun(runId, v3FencingToken!);
+        if (runtimeAttachmentCleanupAfterRun) await cleanupRuntimeAttachments(runtimeAttachmentDirectory);
+        return reply.code(409).send({ error: "Server is shutting down; work remains queued", queued: true });
+      }
       if (resourceHeld || !runContext.providerEnabled(runtimeEngineId)) {
         coordinationV3.deferUninjectedRun(runId, v3FencingToken!);
         if (runtimeAttachmentCleanupAfterRun) await cleanupRuntimeAttachments(runtimeAttachmentDirectory);
@@ -1070,7 +1161,15 @@ export function registerAgentMessageRunRoute(
           fencingToken: v3FencingToken!,
           agentId: agent.id,
           projectId: project.id,
-          prompt: exactProviderInput,
+          prompt: nativeAction?.kind === "review" ? JSON.stringify({ method: "review/start", params: {
+            threadId: resumeSessionId, target: nativeAction.target, delivery: "inline",
+          } }) : nativeAction?.kind === "goal-resume" ? JSON.stringify({
+            method: "thread/goal/set", params: { threadId: resumeSessionId, status: "active", origin: "user" },
+          }) : nativeAction?.kind === "goal-create" ? JSON.stringify({
+            method: "thread/goal/set", params: { ...(resumeSessionId ? {threadId:resumeSessionId} : {}),
+              objective:nativeAction.objective, ...(Object.hasOwn(nativeAction,"tokenBudget") ? {tokenBudget:nativeAction.tokenBudget} : {}),
+              status:"active", origin:"user" },
+          }) : exactProviderInput,
           systemPrompt,
           sourceManifest: providerInputManifest,
         });
@@ -1134,7 +1233,7 @@ export function registerAgentMessageRunRoute(
         return reply.code(503).send({ error: "Agent event persistence requires repair before new work", retryable: false });
       }
       const activeRun: ActiveRun = {
-        runId, startedAt, executionId: runId, leaseExpiresAt: leaseExpiry(), controller, messageCapability,
+        runId, runtimeEngineId, homeConversationId:agent.conversationId, startedAt, executionId: runId, leaseExpiresAt: leaseExpiry(), controller, messageCapability,
         workingCopy,
         ...(routingConversationId ? { conversationId: routingConversationId } : {}),
         ...(trackedV3FencingToken !== undefined
@@ -1159,6 +1258,7 @@ export function registerAgentMessageRunRoute(
       // unambiguous without manufacturing acknowledgement or recovery work.
       const defaultReply = canonicalDefaultReplyRoute(coordinationV3, runId, agent.id);
       agentMessageCapabilities.set(messageCapability, {
+        ...(assertSettingsTransitionPolicy && runtimeEngineId === 'claude' ? {inputVerificationPending:true} : {}),
         agentId: agent.id,
         conversationId: routingConversationId,
         runId,
@@ -1170,8 +1270,7 @@ export function registerAgentMessageRunRoute(
         availableToolNames: availableRuntimeToolNames,
         historyRetrievalExcludedCommunicationEventIds: historyRetrievalFrozenExclusions,
         ...(historyRetrievalBoundary ? { historyRetrievalBoundary } : {}),
-        ...(providerInputManifest.schemaVersion === 3 && providerInputManifest.historyContext?.importedArchiveVersion
-          ? { importedHistoryArchiveVersion: providerInputManifest.historyContext.importedArchiveVersion } : {}),
+        ...(importedHistoryArchiveVersion ? { importedHistoryArchiveVersion } : {}),
         ...(sharedTaskTurn ? { plainSharedReply: true } : {}),
         ...(defaultReply ? { defaultReply } : {}),
         ...(Object.keys(recoveredRequiredReply.fingerprints).length
@@ -1186,6 +1285,7 @@ export function registerAgentMessageRunRoute(
       // deletion guards before provider execution continues in background.
       releaseAgentDelivery();
       startProviderRunExecution(app, runContext, {
+        nativeAction,
         activeRun,
         agent,
         agentMessageUrl,
@@ -1225,8 +1325,14 @@ export function registerAgentMessageRunRoute(
         runId,
         runtimeEngineId,
         runtimeSessionContractHash: effectiveRuntimeSessionContractHash,
+        retainedVerifiedContext,
+        assertRetainedContextPolicy,
+        assertSettingsTransitionPolicy,
+        validateSettingsTransitionSources,
         workingCopy,
         availableRuntimeTools,
+        capabilityRestrictions,
+        inputFiles,
         runtimeAttachmentDirectory,
         runtimeAttachmentCleanupAfterRun,
         seedHistory,

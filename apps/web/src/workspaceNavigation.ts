@@ -4,6 +4,8 @@ export interface UnreadNotificationProjection {
   importantCount: number;
   ordinaryCount: number;
   totalCount: number;
+  /** Ordinary unread activity, excluded from notification badges and alert totals. */
+  quietUnreadCount?: number;
 }
 
 export function projectDisambiguator(

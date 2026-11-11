@@ -1,22 +1,38 @@
+import { steeringPreflight } from "./steering-preflight.js";
+import { answerClaudeNativeQuestions } from "./native-questions.js";
+import { ClaudeReplayFraming } from "./claude-replay-framing.js";
+import { claudeTurnContent } from "./typed-input.js";
+import { ClaudeControls } from "./claude-controls.js";
+import { requestNativeApproval } from "./native-approvals.js";
+import { ClaudeFileHistory } from "./claude-file-history.js";
+import { ClaudeTaskStop } from "./claude-task-stop.js";
+import { once } from "node:events";
+import { PassThrough } from "node:stream";
+import { ClaudeNativeCompaction } from "./claude-native-compaction.js";
+import { ClaudeTaskLifetime } from "./claude-task-lifetime.js";
+import { StderrTail } from "./stderr-tail.js";
 import { randomUUID } from "node:crypto";
 import type { ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type {
   AgentEvent,
   EngineCapabilities,
+  EngineCommand,
   EngineModelOption,
   OpenRuntimeSessionOptions,
   RuntimeSession,
+  RuntimeCommandResult,
+  RuntimeContextUsage,
   RuntimeSteerResult,
   RuntimeTurnInput,
 } from "@ponderosa/core";
 import { spawnContainedCli } from "./contained-spawn.js";
-import { mapClaudeEvent } from "./claude-events.js";
+import { claudeStreamEventMapper } from "./claude-stream-events.js";
 import { ClaudeContextUsage } from "./claude-context-usage.js";
-import { JSONL_MAX_RECORD_BYTES, JsonlRecordLimitError, parseJsonlChunks } from "./jsonl.js";
+import { JSONL_MAX_RECORD_BYTES, JsonlRecordLimitError } from "./jsonl.js";
 import { processGroupAlive, runtimeProcessIdentity, terminateProcessGroup } from "./process-termination.js";
 import type { NativeProcessTreeAuthority } from "./process-termination.js";
-import { runtimeEnvironment } from "./runtime-environment.js";
+import { claudeBillingEnvironment } from "./runtime-environment.js";
 import { renderSeedPrompt } from "./seed-history.js";
 import { normalizeClaudeInitCapabilities } from "./capabilities.js";
 import { normalizeClaudeProviderModels } from "./claude-models.js";
@@ -28,15 +44,67 @@ interface ClaudeStreamSessionOptions extends OpenRuntimeSessionOptions {
   killGraceMs: number;
 }
 
+export function claudeCapabilityRestrictionArgs(
+  restrictions: OpenRuntimeSessionOptions["capabilityRestrictions"],
+): string[] {
+  if (!restrictions) return [];
+  const disallowed = new Set<string>();
+  if (restrictions.filesystemWriteRestricted) {
+    // Claude's Bash tool can write files just as readily as its editor tools.
+    // Claude does not expose a trustworthy read-only shell mode, so the
+    // deny-only capability must remove Bash rather than claim partial safety.
+    disallowed.add("Bash");
+    disallowed.add("PowerShell");
+    disallowed.add("Write");
+    disallowed.add("Edit");
+    disallowed.add("NotebookEdit");
+  }
+  for (const connectorName of restrictions.restrictedConnectorNames) {
+    const normalized = connectorName.replace(/[^\p{L}\p{N}_-]/gu, "_");
+    disallowed.add(`mcp__${normalized}`);
+  }
+  return disallowed.size ? ["--disallowedTools", [...disallowed].sort().join(",")] : [];
+}
+
+const CLAUDE_INITIALIZATION_TIMEOUT_MS = 5_000;
+
+const MODEL_REOPEN_COMPACT_REASON = "Claude model changed in this session; reopen the retained session before compaction to verify the model.";
+
 export class ClaudeStreamSession implements RuntimeSession {
+  // Saved IDs come from accepted provider session events, never CLI name lookup.
+  readonly validatesResumeBeforeTurn: boolean;
+  private replayFraming?: ClaudeReplayFraming;
   readonly engineAgentId: string;
   readonly events: AsyncIterable<AgentEvent>;
   private readonly child: ChildProcess;
+  private readonly fileHistory: ClaudeFileHistory;
+  private historyActive = false;
   private reportDrainedRootExit?: () => void;
   private terminalEvent?: Extract<AgentEvent, {type:"error"}>;
+  private nativeCommand?: ClaudeNativeCompaction;
+  private readonly taskLifetime: ClaudeTaskLifetime;
+  private readonly taskStop: ClaudeTaskStop;
+  private nativeUsage?: RuntimeContextUsage;
+  private usageInvalidated = false;
+  private sessionInitialization?: unknown;
+  private verifiedInput?: { id:string; echoed:boolean; ready:boolean; allowed:boolean; resolve:()=>void; reject:(error:Error)=>void; release:()=>void; released:Promise<void>; timer:ReturnType<typeof setTimeout> };
+  private modelChangedSinceOpen = false;
+  private sessionInitializationReady!: () => void;
+  private sessionInitializationWait = new Promise<void>(resolve => { this.sessionInitializationReady = resolve; });
+  private initialized = false;
+  private initializationFailure?: Error;
+  private nativeCompactAdvertised = false;
+  private initializationReady!: () => void;
+  private readonly initialization = new Promise<void>(resolve => { this.initializationReady = resolve; });
+  private readonly controls = new ClaudeControls(frame => this.writeFrame(frame), () => this.engineAgentId);
+  private activeInputId?: string;
+  private selectedModel?: string;
+  private readonly approvals = new Map<string, AbortController>();
+  private readonly seenApprovalIds = new Set<string>();
+  private liveControlActive = false;
   private active = false;
   private closed = false;
-  private stderrTail = "";
+  private readonly stderrTail = new StderrTail();
   private closePromise?: Promise<void>;
   private readonly seedHistory: OpenRuntimeSessionOptions["history"];
   private capabilitiesSnapshot?: EngineCapabilities;
@@ -48,11 +116,16 @@ export class ClaudeStreamSession implements RuntimeSession {
   readonly processIdentity;
 
   constructor(private readonly opts: ClaudeStreamSessionOptions) {
+    this.validatesResumeBeforeTurn = !opts.transcriptFork;
     if (!opts.onRuntimeSpawned) {
       throw new Error("persistent runtime opening requires a spawn-time termination registrar");
     }
-    this.seedHistory = opts.resumeSessionId ? [] : [...opts.history];
-    this.engineAgentId = opts.resumeSessionId ?? randomUUID();
+    this.selectedModel = opts.model;
+    this.seedHistory = opts.resumeSessionId || opts.transcriptFork ? [] : [...opts.history];
+    this.engineAgentId = opts.transcriptFork?.newSessionId ?? opts.resumeSessionId ?? randomUUID();
+    this.fileHistory = new ClaudeFileHistory(this.engineAgentId, frame => this.writeFrame(frame), opts.fileCheckpointTracking === true);
+    this.taskLifetime = new ClaudeTaskLifetime(this.engineAgentId);
+    this.taskStop = new ClaudeTaskStop(this.engineAgentId);
     this.contextObservations = new ClaudeContextUsage(this.engineAgentId);
     const ponderosaMcp = opts.dynamicTools?.length && opts.environment?.PONDEROSA_AGENT_MESSAGE_URL && opts.environment.PONDEROSA_AGENT_MESSAGE_TOKEN
       ? JSON.stringify({
@@ -69,23 +142,28 @@ export class ClaudeStreamSession implements RuntimeSession {
           },
         })
       : undefined;
+    const restrictionArgs=claudeCapabilityRestrictionArgs(opts.capabilityRestrictions);
     const args = [
       "-p",
       "--input-format", "stream-json",
       "--output-format", "stream-json",
       "--verbose",
       "--replay-user-messages",
+      "--include-partial-messages",
       "--permission-mode", opts.permissionMode,
+      ...(opts.handleElicitation ? ["--permission-prompt-tool", "stdio"] : []),
       ...(opts.systemPrompt ? ["--append-system-prompt", opts.systemPrompt] : []),
       ...(ponderosaMcp ? ["--mcp-config", ponderosaMcp] : []),
       ...(opts.model ? ["--model", opts.model] : []),
       ...(opts.effort ? ["--effort", opts.effort] : []),
-      ...(opts.resumeSessionId ? ["--resume", opts.resumeSessionId] : ["--session-id", this.engineAgentId]),
-      // Native questions have no Ponderosa response bridge. Keep the managed
-      // ponderosa_decision tool as the only user-question path in this host.
-      "--disallowedTools", "AskUserQuestion",
+      ...(opts.transcriptFork
+        ? ["--resume",opts.transcriptFork.sourceSessionId,"--fork-session","--session-id",this.engineAgentId,"--resume-session-at",opts.transcriptFork.throughId]
+        : opts.resumeSessionId ? ["--resume", opts.resumeSessionId] : ["--session-id", this.engineAgentId]),
+      // Native questions use the same human form and exact callback lifetime.
+      ...restrictionArgs,
     ];
-    const environment = runtimeEnvironment(opts.environment);
+    opts.assertHistoryCurrent?.();
+    const environment = { ...claudeBillingEnvironment(opts.environment, opts.expectedBillingMode), CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING: opts.fileCheckpointTracking === true ? "true" : "false" };
     const contained = spawnContainedCli({
       bin: opts.bin,
       args,
@@ -104,7 +182,7 @@ export class ClaudeStreamSession implements RuntimeSession {
       if (rootExitReported || !rootExit) return;
       rootExitReported = true;
       if (postExitDrainTimer) clearTimeout(postExitDrainTimer);
-      opts.onRuntimeRootExit?.({ ...rootExit, stderr: this.stderrTail,
+      opts.onRuntimeRootExit?.({ ...rootExit, stderr: this.stderrTail.text(),
         ...(this.terminalEvent ? { terminalEvent: this.terminalEvent } : {}) });
     };
     const observeRootExit = (code?: number | null, signal?: NodeJS.Signals | null) => {
@@ -124,38 +202,169 @@ export class ClaudeStreamSession implements RuntimeSession {
     this.child.stdin?.on("error", () => undefined);
     this.child.stderr?.setEncoding("utf8");
     this.child.stderr?.on("data", (chunk: string) => {
-      this.stderrTail = (this.stderrTail + chunk).slice(-8192);
+      this.stderrTail.append(chunk);
     });
     opts.signal.addEventListener("abort", () => { void this.close().catch(() => undefined); });
     this.child.stdin?.write(`${JSON.stringify({
       type: "control_request",
       request_id: this.modelInitializationRequestId,
-      request: { subtype: "initialize", hooks: {}, sdkMcpServers: [] },
+      request: { subtype: "initialize", hooks: { Stop: [{ hookCallbackIds: [this.taskLifetime.stopCallbackId] }] }, sdkMcpServers: [], perTaskStopAffordance: true },
     })}\n`);
-    this.events = this.eventStream();
+    // One stdout reader serves both ordinary turns and idle native commands.
+    // Backpressure bounds normal event buffering; native receipts never enter it.
+    const output = new PassThrough({ objectMode: true, highWaterMark: 64 });
+    output.on("error", () => undefined);
+    this.events = { [Symbol.asyncIterator]: () =>
+      output.iterator({ destroyOnReturn: false }) as AsyncIterator<AgentEvent> };
+    void this.readEvents(output);
   }
 
+  private async readEvents(output: PassThrough): Promise<void> {
+    try {
+      for await (const event of this.eventStream()) {
+        if (!output.write(event)) await once(output, "drain");
+      }
+      output.end();
+    } catch (error) {
+      output.destroy(error instanceof Error ? error : new Error("Claude stream failed"));
+      void this.close().catch(() => undefined);
+    } finally {
+      this.fileHistory.close();
+      this.nativeCommand?.fail();
+      this.controls.close();
+      this.cancelApprovals();
+      this.initializationReady();
+      this.sessionInitializationReady();
+    }
+  }
+
+  /** Native --resume is strict by saved ID. The control acknowledgement proves
+   * startup readiness; system/init identity arrives only after the first input. */
+  async awaitResumeInitialization(): Promise<void> {
+    if (!this.opts.resumeSessionId || this.opts.transcriptFork) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([this.initialization, new Promise<never>((_resolve,reject) => {
+        timer = setTimeout(() => reject(new Error("Claude saved-session initialization timed out")), CLAUDE_INITIALIZATION_TIMEOUT_MS);
+      })]);
+      if (this.initializationFailure) throw this.initializationFailure;
+      if (!this.initialized || !this.isAlive()) throw new Error("Claude saved-session initialization ended without a live successful acknowledgement");
+      this.opts.assertRuntimeCurrent?.();
+    } finally { if (timer) clearTimeout(timer); }
+  }
+
+  private settleVerifiedInput():void {
+    const pending=this.verifiedInput;
+    if(pending?.echoed && this.sessionInitialization && !pending.ready){pending.ready=true;pending.resolve();}
+  }
+  private failVerifiedInput(message:string):void {
+    const pending=this.verifiedInput;if(!pending)return;
+    this.verifiedInput=undefined;clearTimeout(pending.timer);this.replayFraming?.forget(pending.id);
+    pending.reject(new Error(message));pending.release();
+  }
   async startTurn(input: RuntimeTurnInput): Promise<{ turnId: string }> {
-    if (this.active) throw new Error("Claude already has an active turn");
-    this.terminalEvent=undefined;
+    input.assertCurrent?.();
+    if (this.closed || this.active || this.taskLifetime.ownsRun || this.nativeCommand && !this.nativeCommand.succeeded) throw new Error("Claude has active or uncertain native work");
+    if (this.historyActive || this.fileHistory.uncertain) throw new Error("Native file history is active or uncertain");
+    if (this.liveControlActive || this.controls.uncertain) throw new Error("Claude native control is active or uncertain");
+    if (input.nativeAction) throw new Error("This native turn action is unsupported by Claude");
+    if (input.effort && input.effort !== this.opts.effort) throw new Error("Claude effort change requires reopening the retained session");
     const turnId = input.clientMessageId ?? randomUUID();
-    const prompt = this.opts.resumeSessionId
+    const prompt = this.opts.resumeSessionId || this.opts.transcriptFork
       ? input.prompt
-      : renderSeedPrompt(this.seedHistory.splice(0), input.prompt);
+      : renderSeedPrompt(this.seedHistory, input.prompt);
+    let frame = this.inputFrame(prompt, turnId, input.inputFiles);
+    if (input.model && input.model !== this.selectedModel) {
+      await this.setLiveModel(input.model);
+      input.assertCurrent?.();
+      frame = this.inputFrame(prompt, turnId, input.inputFiles);
+    }
+    input.assertCurrent?.();
+    // A native command or control can acquire ownership while a model change
+    // is awaiting its acknowledgement. Never erase or overlap that work.
+    if (this.closed || this.active || this.taskLifetime.ownsRun || this.nativeCommand && !this.nativeCommand.succeeded ||
+        this.historyActive || this.fileHistory.uncertain || this.liveControlActive || this.controls.uncertain) {
+      throw new Error("Claude has active or uncertain native work");
+    }
+    // Validation and any asynchronous model acknowledgement precede lifetime changes.
+    this.nativeCommand = undefined;
+    this.nativeUsage = undefined;
+    this.terminalEvent = undefined;
+    this.fileHistory.beginTurn();
+    this.taskLifetime.beginTurn();
     this.contextObservations.beginTurn(turnId);
     this.active = true;
+    this.activeInputId = turnId;
+    let receipt:Promise<void>|undefined,deadline:Promise<never>|undefined;
+    if(input.requireVerifiedInput){
+      let release!:()=>void;const released=new Promise<void>(resolve=>{release=resolve;});
+      let rejectDeadline!:(error:Error)=>void;deadline=new Promise<never>((_resolve,reject)=>{rejectDeadline=reject;});
+      receipt=new Promise<void>((resolve,reject)=>{
+        const timer=setTimeout(()=>{
+          const error=new Error("Claude input confirmation timed out; outcome is unknown");
+          this.failVerifiedInput(error.message);rejectDeadline(error);
+        },45_000);
+        this.verifiedInput={id:turnId,echoed:false,ready:false,allowed:false,resolve,reject,release,released,timer};
+      });
+      // Avoid an unhandled rejection if writing fails synchronously.
+      void receipt.catch(()=>undefined);
+    }
     try {
-      await this.writeInput(prompt, turnId);
+      const pending=this.verifiedInput;
+      const writing=this.writeInputFrame(frame,Boolean(receipt));
+      if(receipt && deadline)await Promise.race([Promise.all([writing,receipt]),deadline]);
+      else await writing;
+      if(receipt){
+        input.assertCurrent?.();
+        if(!pending || this.verifiedInput!==pending)throw new Error("Claude input confirmation was interrupted");
+        input.onVerifiedInput?.();
+        pending.allowed=true;this.verifiedInput=undefined;clearTimeout(pending.timer);pending.release();
+      }
+      this.seedHistory.splice(0);
     } catch (error) {
+      this.failVerifiedInput("Claude input was not confirmed");
       this.active = false;
       this.contextObservations.endTurn();
+      if(receipt){
+        // A submitted or partially buffered frame may still reach the child.
+        // Observe the owned process drain before this uncertain Run settles.
+        try{await this.close();}catch(closeError){throw new AggregateError([error,closeError],"Claude confirmation failed and runtime cleanup is unconfirmed");}
+      }
       throw error;
     }
     return { turnId };
   }
 
+  async nativeHistory() { return this.fileHistory.catalog(); }
+
+  async rewindFiles(messageId: string, dryRun: boolean) {
+    if (this.closed || this.active || this.taskLifetime.ownsRun || this.liveControlActive || this.controls.uncertain || this.nativeCommand && !this.nativeCommand.succeeded || this.historyActive) throw new Error("Native session is busy");
+    this.historyActive = true;
+    try { return await this.fileHistory.rewind(messageId,dryRun); }
+    finally { this.historyActive = false; }
+  }
+
   async capabilities(): Promise<EngineCapabilities> {
-    return this.capabilitiesSnapshot ?? {
+    if (!this.initialized && !this.closed) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([this.initialization, new Promise<void>(resolve => {
+          timer = setTimeout(resolve, CLAUDE_INITIALIZATION_TIMEOUT_MS);
+        })]);
+      } finally { if (timer) clearTimeout(timer); }
+    }
+    const nativeControls = ["native-model", "native-context-usage", ...(this.opts.handleElicitation ? ["native-permission-mode"] : [])].map(name => ({
+      name, description: name === "native-model" ? "Set the retained native model" : name === "native-context-usage" ? "Read current native context occupancy" : "Set human-selected native permission mode",
+      source: "adapter-implemented" as const, acceptsArguments: name !== "native-context-usage", insertText: `/${name}`,
+      invocation: "runtime" as const, status: "available" as const,
+    })).filter(control => !this.capabilitiesSnapshot?.commands.some(command => command.name === control.name && (command.source === "skill" || command.source === "plugin")));
+    const availability = (command: EngineCommand): EngineCommand =>
+      this.modelChangedSinceOpen && command.name === "compact" && command.source === "adapter-implemented" && command.invocation === "runtime"
+        ? { ...command, status: "unavailable", unavailableReason: MODEL_REOPEN_COMPACT_REASON }
+        : command;
+    if (this.capabilitiesSnapshot) return { ...this.capabilitiesSnapshot, commands: [
+      ...this.capabilitiesSnapshot.commands.filter(command => !nativeControls.some(control => control.name === command.name)).map(availability), ...nativeControls] };
+    return {
       steering: true,
       persistentSessions: true,
       sessionId: this.engineAgentId,
@@ -163,29 +372,215 @@ export class ClaudeStreamSession implements RuntimeSession {
         selectedModel: this.opts.model,
         model: this.opts.model,
       } : {}),
-      commands: [],
+      commands: this.initialized && this.nativeCompactAdvertised && this.opts.resumeSessionId ? [{
+        name: "compact", description: "Compact retained Claude context with verified native receipts",
+        source: "adapter-implemented", acceptsArguments: false, insertText: "/compact",
+        invocation: "runtime", status: this.modelChangedSinceOpen ? "unavailable" : "available",
+        ...(this.modelChangedSinceOpen ? {unavailableReason: MODEL_REOPEN_COMPACT_REASON} : {}),
+      }, ...nativeControls] : nativeControls,
       mcpServers: [],
       composerCapabilities: [],
     };
   }
 
-  contextUsage(): { usedTokens: number; providerSessionGeneration: string } | undefined {
-    return this.contextObservations.contextUsage();
+  contextUsage(): RuntimeContextUsage | undefined {
+    if (this.nativeCommand && !this.nativeCommand.succeeded) return undefined;
+    return this.nativeUsage ?? (this.usageInvalidated ? undefined : this.contextObservations.contextUsage());
+  }
+
+  async invokeCommand(name: string, argumentsText?: string): Promise<RuntimeCommandResult> {
+    if (this.historyActive || this.fileHistory.uncertain) throw new Error("Native history active or uncertain");
+    if (name === "native-context-usage") {
+      if (argumentsText?.trim() || this.closed || this.liveControlActive || this.nativeCommand && !this.nativeCommand.succeeded) throw new Error("Claude context control unavailable");
+      this.liveControlActive = true;
+      try {
+        const raw = await this.controls.request({ subtype: "get_context_usage" });
+        const usage = raw as {totalTokens?:unknown;rawMaxTokens?:unknown;model?:unknown} | undefined;
+        if (!usage || typeof usage.totalTokens !== "number" || typeof usage.rawMaxTokens !== "number" ||
+            !Number.isSafeInteger(usage.totalTokens) || !Number.isSafeInteger(usage.rawMaxTokens) ||
+            usage.totalTokens < 0 || usage.totalTokens > 2_147_483_647 || usage.rawMaxTokens <= 0 || usage.rawMaxTokens > 2_147_483_647 ||
+            typeof usage.model !== "string" || !usage.model.trim()) throw new Error("Invalid native occupancy");
+        this.nativeUsage = { usedTokens: usage.totalTokens as number, windowTokens: usage.rawMaxTokens as number, providerSessionGeneration: this.engineAgentId };
+        this.usageInvalidated = false;
+        return { outcome: "completed", contextUsage: this.nativeUsage };
+      } finally { this.liveControlActive = false; }
+    }
+    if (name === "native-model" || name === "native-permission-mode") {
+      if (this.closed || this.liveControlActive || this.nativeCommand && !this.nativeCommand.succeeded) throw new Error("Claude native work is active or uncertain");
+      if (name === "native-model") await this.setLiveModel(argumentsText ?? "");
+      else {
+        if (!["default", "acceptEdits", "plan", "dontAsk", "bypassPermissions", "auto"].includes(argumentsText ?? "")) throw new Error("Invalid Claude permission mode");
+        if (!this.opts.handleElicitation) throw new Error("Human permission callback is unavailable");
+        this.liveControlActive = true;
+        try { await this.controls.request({ subtype: "set_permission_mode", mode: argumentsText }); }
+        finally { this.liveControlActive = false; }
+      }
+      return { outcome: "completed", message: "Native control acknowledged; this does not settle source work or confirm process termination." };
+    }
+    if (this.liveControlActive || this.controls.uncertain) throw new Error("Claude control is active or uncertain");
+    if (name !== "compact" || argumentsText?.trim()) throw new Error("Claude native compact accepts no arguments");
+    if (this.modelChangedSinceOpen) throw new Error(MODEL_REOPEN_COMPACT_REASON);
+    if (this.closed || this.active || this.taskLifetime.ownsRun || this.nativeCommand && !this.nativeCommand.succeeded) {
+      throw new Error("Claude has active or uncertain native work; do not repeat compaction");
+    }
+    this.terminalEvent = undefined;
+    const command = new ClaudeNativeCompaction(this.engineAgentId, randomUUID());
+    this.nativeCommand = command;
+    if (this.sessionInitialization) command.observe(this.sessionInitialization);
+    this.nativeUsage = undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const unknown = (): RuntimeCommandResult => ({ outcome: "outcome_unknown",
+      message: "Native compaction or fresh occupancy is unconfirmed. Do not repeat the command; source work remains held." });
+    const perform = async (): Promise<RuntimeCommandResult> => {
+      await this.initialization;
+      // The initialization control response and the session's init event are
+      // independent frames. Do not fail or send input while the latter is in
+      // flight; it is the proof binding this command to the retained session.
+      if (!this.sessionInitialization && !this.closed && !command.cancelled) {
+        let readyTimer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          await Promise.race([this.sessionInitializationWait, new Promise<void>(resolve => {
+            readyTimer = setTimeout(resolve, 5_000);
+          })]);
+        } finally { if (readyTimer) clearTimeout(readyTimer); }
+      }
+      if (this.sessionInitialization) command.observe(this.sessionInitialization);
+      if (this.closed || this.active || this.taskLifetime.ownsRun || this.historyActive || this.fileHistory.uncertain ||
+          this.liveControlActive || this.controls.uncertain || this.nativeCommand !== command ||
+          command.cancelled || !this.initialized || !this.nativeCompactAdvertised ||
+          !this.sessionInitialization ||
+          this.capabilitiesSnapshot?.commands.some(candidate => candidate.name === "compact" && candidate.invocation !== "runtime")) {
+        command.fail(); return unknown();
+      }
+      command.inputSent = true;
+      // Documented built-in command dispatch, not a source Run or prose prompt.
+      await this.writeInput("/compact", command.commandId);
+      if (!await command.completion || this.closed || command.cancelled) return unknown();
+      const requestId = `ponderosa-context-${randomUUID()}`;
+      if (!command.requestUsage(requestId)) return unknown();
+      await this.writeFrame({ type: "control_request", request_id: requestId,
+        request: { subtype: "get_context_usage" } });
+      const usage = await command.usage;
+      if (!usage || this.closed || command.cancelled) return unknown();
+      this.nativeUsage = usage;
+      return { outcome: "completed", contextUsage: usage };
+    };
+    try {
+      return await Promise.race([perform(), new Promise<RuntimeCommandResult>(resolve => {
+        timer = setTimeout(() => { command.fail(); resolve(unknown()); }, 45_000);
+      })]);
+    } catch {
+      command.fail(); return unknown();
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   async steer(input: RuntimeTurnInput): Promise<RuntimeSteerResult> {
-    if (!this.active) return { status: "not_active" };
+    if (!steeringPreflight(input)) return { status: "not_active", reason: "Run authority changed before steering submission" };
+    if (input.nativeAction) return { status: "not_steerable", reason: "Native actions require a supported scheduler-owned turn" };
+    if (this.liveControlActive || this.controls.uncertain) throw new Error("Claude native control is active or uncertain");
+    if (input.model && input.model !== this.selectedModel) throw new Error("Change model at a turn boundary");
+    if (input.effort && input.effort !== this.opts.effort) throw new Error("Claude effort change requires reopening the retained session");
+    if (this.closed || this.historyActive || this.fileHistory.uncertain || this.nativeCommand || !this.active) return { status: "not_active" };
     const turnId = input.clientMessageId ?? randomUUID();
+    const frame = this.inputFrame(input.prompt, turnId, input.inputFiles);
+    if (!steeringPreflight(input)) return { status: "not_active", reason: "Run authority changed before steering submission" };
     this.contextObservations.submit(turnId);
-    await this.writeInput(input.prompt, turnId);
+    await this.writeInputFrame(frame);
     return { status: "accepted", turnId };
   }
 
+  async listNativeTasks() {
+    if (this.closed || !this.active || !this.taskLifetime.ownsRun) throw new Error("No live native task Run");
+    return this.taskLifetime.inventory();
+  }
+
+  async stopNativeTask(taskKey: string) {
+    if (this.closed || !this.active || !this.taskLifetime.ownsRun) throw new Error("No live native task Run");
+    const task = this.taskLifetime.requireTask(taskKey);
+    return this.taskStop.stop(task.taskId, frame => this.writeFrame(frame));
+  }
+
   async interrupt(): Promise<void> {
-    // Claude Code's streaming-input transport accepts mid-turn guidance but has
-    // no stable structured interrupt frame. End the process; its persisted
-    // session id lets Ponderosa reopen it for the next signal.
-    await this.close();
+    this.cancelApprovals();
+    if (this.nativeCommand?.succeeded) this.nativeCommand = undefined;
+    else this.nativeCommand?.fail();
+    if (this.closed) return;
+    // Acknowledgement is not observed process drain; authoritative Stop still closes.
+    await this.controls.request({ subtype: "interrupt" });
+  }
+
+  private async setLiveModel(model: string): Promise<void> {
+    if (!model.trim() || model.length > 200 || /[\u0000-\u001f]/u.test(model)) throw new Error("Invalid Claude model");
+    if (this.active || this.liveControlActive || this.closed || this.nativeCommand && !this.nativeCommand.succeeded) throw new Error("Change model at an idle boundary");
+    this.liveControlActive = true;
+    try {
+      await this.controls.request({ subtype: "set_model", model });
+      this.selectedModel = model;
+      // Native init carries no correlation to a live set_model acknowledgement.
+      // A late old-model init cannot prove the current model for compaction.
+      this.modelChangedSinceOpen = true;
+      this.usageInvalidated = true;
+      this.nativeUsage = undefined;
+      // Require a fresh provider init before compaction; do not fabricate model evidence.
+      this.sessionInitialization = undefined;
+      this.sessionInitializationWait = new Promise<void>(resolve => { this.sessionInitializationReady = resolve; });
+      if (this.capabilitiesSnapshot) this.capabilitiesSnapshot = { ...this.capabilitiesSnapshot, selectedModel: model, model: undefined };
+      this.opts.onCapabilitiesChanged?.();
+    } finally { this.liveControlActive = false; }
+  }
+
+  private cancelApprovals(): void {
+    for (const controller of this.approvals.values()) controller.abort();
+    this.approvals.clear();
+  }
+
+  private handleNativeRequest(raw: unknown): boolean {
+    if (!raw || typeof raw !== "object") return false;
+    const frame = raw as {type?: unknown; request_id?: unknown; session_id?: unknown; request?: Record<string, unknown>};
+    if (frame.type === "control_cancel_request" && typeof frame.request_id === "string") {
+      this.approvals.get(frame.request_id)?.abort(); return true;
+    }
+    if (frame.type !== "control_request") return false;
+    if (typeof frame.request_id !== "string" || !frame.request_id || frame.request_id.length > 200) return true;
+    const requestId = frame.request_id, request = frame.request;
+    if (this.seenApprovalIds.has(requestId)) return true;
+    if (this.seenApprovalIds.size >= 10_000 || this.approvals.size >= 32) {
+      void this.close().catch(() => undefined); return true;
+    }
+    this.seenApprovalIds.add(requestId);
+    const controller = new AbortController();
+    this.approvals.set(requestId, controller);
+    const turnId = this.activeInputId;
+    void (async () => {
+      let allowed = false;
+      let updatedInput = request?.input;
+      try {
+        if (request?.subtype === "can_use_tool" && typeof request.tool_name === "string" &&
+            request.input && typeof request.input === "object" &&
+            !Array.isArray(request.input) && this.active && turnId && !this.nativeCommand &&
+            (frame.session_id === undefined || frame.session_id === this.engineAgentId)) {
+          const callbackOptions = { ...this.opts, signal: AbortSignal.any([this.opts.signal, controller.signal]) };
+          const identity = { requestId, sessionId: this.engineAgentId, turnId, kind: "tool" as const };
+          if (request.tool_name === "AskUserQuestion") {
+            updatedInput = await answerClaudeNativeQuestions(callbackOptions, { ...identity, kind: "question" }, request.input);
+            allowed = updatedInput !== undefined;
+          } else allowed = await requestNativeApproval(callbackOptions, identity, request);
+        }
+        if (controller.signal.aborted || this.closed) return;
+        if (request?.subtype !== "can_use_tool") {
+          await this.writeFrame({ type: "control_response", response: { subtype: "error", request_id: requestId, error: "Unsupported native callback" } });
+          return;
+        }
+        allowed = allowed && this.active && this.activeInputId === turnId && !this.nativeCommand;
+        await this.writeFrame({ type: "control_response", response: { subtype: "success", request_id: requestId,
+          response: allowed ? { behavior: "allow", updatedInput }
+            : { behavior: "deny", message: "Human approval absent, refused, restricted or expired" } } });
+      } catch { void this.close().catch(() => undefined); }
+      finally { this.approvals.delete(requestId); }
+    })();
+    return true;
   }
 
   isAlive(): boolean {
@@ -195,6 +590,14 @@ export class ClaudeStreamSession implements RuntimeSession {
   close(): Promise<void> {
     if (this.closePromise) return this.closePromise;
     this.closed = true;
+    this.failVerifiedInput("Claude session closed before its input was confirmed");
+    this.fileHistory.close();
+    this.controls.close();
+    this.cancelApprovals();
+    this.taskStop.close();
+    this.nativeCommand?.fail();
+    this.initializationReady();
+    this.sessionInitializationReady();
     this.child.stdin?.end();
     const attempt = terminateProcessGroup(this.child, {
       label: "Claude runtime",
@@ -208,14 +611,35 @@ export class ClaudeStreamSession implements RuntimeSession {
     return shared;
   }
 
-  private async writeInput(prompt: string, id: string): Promise<void> {
-    if (this.closed || !this.child.stdin || this.child.stdin.destroyed) throw new Error("Claude runtime is unavailable");
-    const frame = {
+  private inputFrame(prompt: string, id: string, inputFiles?: RuntimeTurnInput["inputFiles"]) {
+    return {
       type: "user",
       uuid: id,
       session_id: this.engineAgentId,
-      message: { role: "user", content: [{ type: "text", text: prompt }] },
+      message: { role: "user", content: claudeTurnContent({ prompt, kind: "user_message", inputFiles }) },
     };
+  }
+
+  private writeInput(prompt: string, id: string, inputFiles?: RuntimeTurnInput["inputFiles"]): Promise<void> {
+    return this.writeInputFrame(this.inputFrame(prompt, id, inputFiles));
+  }
+
+  private async writeInputFrame(frame: ReturnType<ClaudeStreamSession["inputFrame"]>, requireReceipt=false): Promise<void> {
+    if (this.closed || !this.child.stdin || this.child.stdin.destroyed) throw new Error("Claude runtime is unavailable");
+    const media = frame.message.content.some(block => block.type === "image" || block.type === "document");
+    if (media || requireReceipt) this.mediaReplayFraming().expect(frame.uuid, frame.message, Buffer.byteLength(JSON.stringify(frame), "utf8"));
+    try { await this.writeFrame(frame); }
+    catch (error) { this.replayFraming?.forget(frame.uuid); throw error; }
+  }
+
+  private mediaReplayFraming(): ClaudeReplayFraming {
+    return this.replayFraming ??= new ClaudeReplayFraming(this.engineAgentId,id=>{
+      if(this.verifiedInput?.id===id){this.verifiedInput.echoed=true;this.settleVerifiedInput();}
+    });
+  }
+
+  private async writeFrame(frame: unknown): Promise<void> {
+    if (this.closed || !this.child.stdin || this.child.stdin.destroyed) throw new Error("Claude runtime is unavailable");
     await new Promise<void>((resolve, reject) => {
       this.child.stdin!.write(`${JSON.stringify(frame)}\n`, (error) => error ? reject(error) : resolve());
     });
@@ -227,10 +651,41 @@ export class ClaudeStreamSession implements RuntimeSession {
       yield { type: "error", message: "Claude runtime stdout is unavailable" };
       return;
     }
+    const map = claudeStreamEventMapper();
     try {
-      for await (const raw of parseJsonlChunks(stdout as AsyncIterable<Buffer>)) {
+      for await (const raw of this.mediaReplayFraming().parse(stdout as AsyncIterable<Buffer>)) {
+        if (this.taskStop.observe(raw)) continue;
+        if (this.controls.observe(raw)) continue;
+        const frame=raw && typeof raw==='object'?raw as {type?:unknown;request?:{subtype?:unknown}}:undefined;
+        const pending=this.verifiedInput;
+        if(pending && (frame?.type==='assistant'||frame?.type==='result'||frame?.type==='stream_event'||
+           frame?.type==='control_request' && (frame.request?.subtype==='can_use_tool'||frame.request?.subtype==='hook_callback'))){
+          if(!pending.ready){
+            this.failVerifiedInput("Claude produced work before confirming the exact session and input");
+            throw new Error("Claude produced work before confirming the exact session and input");
+          }
+          // A fast buffered event cannot cross the host's post-echo Run check.
+          await pending.released;
+          if(!pending.allowed)throw new Error("Claude input confirmation lost Run authority");
+        }
+        if (this.fileHistory.observe(raw)) continue;
+        const stopHook = this.taskLifetime.stopHook(raw);
+        if (stopHook) {
+          for (const event of stopHook.events) yield event;
+          await this.writeFrame({ type: "control_response", response: {
+            subtype: "success", request_id: stopHook.requestId, response: {},
+          } });
+          continue;
+        }
+        if (this.handleNativeRequest(raw)) continue;
         this.captureModelInitialization(raw);
-        const capabilities = normalizeClaudeInitCapabilities(raw, this.opts.model);
+        const capabilities = normalizeClaudeInitCapabilities(raw, this.selectedModel);
+        if (capabilities && capabilities.sessionId !== this.engineAgentId) throw new Error("Claude session changed");
+        if (capabilities?.sessionId === this.engineAgentId) {
+          this.sessionInitialization = raw;
+          this.sessionInitializationReady();
+          this.settleVerifiedInput();
+        }
         if (capabilities) {
           this.claudeCodeVersion = raw && typeof raw === "object" &&
             typeof (raw as { claude_code_version?: unknown }).claude_code_version === "string"
@@ -242,18 +697,28 @@ export class ClaudeStreamSession implements RuntimeSession {
           };
           this.opts.onCapabilitiesChanged?.();
         }
+        if (this.nativeCommand) {
+          this.nativeCommand.observe(raw);
+          if (capabilities) map(raw, { cwd: this.opts.cwd });
+          // Native command output is not ordinary Agent work or publication.
+          continue;
+        }
         const observation = this.contextObservations.observe(raw);
-        if (observation) yield observation;
-        for (const event of mapClaudeEvent(raw, { cwd: this.opts.cwd })) {
-          if(event.type==='error')this.terminalEvent=event;
+        if (observation) { this.usageInvalidated = false; yield observation; }
+        const lifetimeEvents = this.taskLifetime.observe(raw);
+        const projected = map(raw, { cwd: this.opts.cwd }).flatMap(event => this.taskLifetime.project(event, raw));
+        for (const event of [...lifetimeEvents, ...projected]) {
+          if(event.type==='error'){this.terminalEvent=event;if(!this.initialized){this.initializationFailure=new Error(event.message);this.initializationReady();}}
           if (event.type === "turn_done" || event.type === "error") {
             this.active = false;
+            this.activeInputId = undefined;
+            this.cancelApprovals();
             this.contextObservations.endTurn();
           }
-          if (event.type === "error" && event.code === "quota_exhausted") {
-            // A rejected allowance event can arrive while Claude's own retry
-            // watchdog is waiting. Observe exit before handing recovery back
-            // to Ponderosa; never leave two independent retry authorities.
+          if (event.type === "error" && (event.code === "quota_exhausted" || this.taskLifetime.ownsRun)) {
+            // A terminal failure cannot leave accepted native work running
+            // after its managed Run loses authority. Quota failures likewise
+            // drain the provider's own retry watchdog before host recovery.
             const closing=this.close();
             // The caller may stop advancing this iterator at the error. Begin
             // owned teardown, deliver the cause now, and let close() remain the
@@ -267,6 +732,7 @@ export class ClaudeStreamSession implements RuntimeSession {
         }
       }
     } catch (error) {
+      this.failVerifiedInput("Claude session or input confirmation failed");
       if (!(error instanceof JsonlRecordLimitError)) throw error;
       this.active = false;
       yield {
@@ -276,12 +742,14 @@ export class ClaudeStreamSession implements RuntimeSession {
       await this.close();
       return;
     } finally {
+      this.failVerifiedInput("Claude stream ended before its input was confirmed");
       // Parser completion, not the stream close event, proves buffered JSONL
       // was consumed. The root timer remains the bounded fallback.
+      this.taskStop.close();
       this.reportDrainedRootExit?.();
     }
     if (!this.closed) {
-      yield { type: "error", message: `Claude stream stopped${this.stderrTail.trim() ? `: ${this.stderrTail.trim()}` : ""}` };
+      yield { type: "error", message: `Claude stream stopped${this.stderrTail.text().trim() ? `: ${this.stderrTail.text().trim()}` : ""}` };
     }
   }
 
@@ -292,12 +760,22 @@ export class ClaudeStreamSession implements RuntimeSession {
       response?: {
         subtype?: unknown;
         request_id?: unknown;
-        response?: { models?: unknown };
+        error?: unknown;
+        response?: { models?: unknown; commands?: unknown };
       };
     };
-    if (envelope.type !== "control_response" ||
-        envelope.response?.subtype !== "success" ||
-        envelope.response.request_id !== this.modelInitializationRequestId) return;
+    if (envelope.type !== "control_response" || envelope.response?.request_id !== this.modelInitializationRequestId) return;
+    if (envelope.response.subtype !== "success") {
+      this.initializationFailure = new Error(typeof envelope.response.error === "string" && envelope.response.error.trim()
+        ? `Claude rejected saved-session initialization: ${envelope.response.error}` : "Claude rejected saved-session initialization");
+      this.initializationReady();
+      return;
+    }
+    this.initialized = true;
+    const commands = envelope.response.response?.commands;
+    this.nativeCompactAdvertised = Array.isArray(commands) && commands.some(command =>
+      command !== null && typeof command === "object" && (command as {name?:unknown}).name === "compact");
+    this.initializationReady();
     try {
       this.providerModels = normalizeClaudeProviderModels(envelope.response.response?.models);
     } catch {

@@ -8,6 +8,8 @@ export interface CapturedSubmission {
   scope: string;
   storageKey: string;
   ownerId: string;
+  /** Product boundary captured before asynchronous preparation/retirement. */
+  apiNamespace?: string;
   projectId?: string;
   clientId: string;
   createdAt: number;
@@ -22,12 +24,25 @@ export interface CapturedSubmission {
   status: "pending" | "failed" | "unknown" | "accepted";
   /** IDs from an observed server receipt; never inferred from matching text. */
   acceptedDeliveryIds?: string[];
+  /** Exact existing transport identity; observation, not this hint, proves acceptance. */
+  communicationId?: string;
   /** A crash after dispatch must reconcile before disposal is allowed. */
   dispatchStarted?: boolean;
   error?: string;
 }
 const prefix = "ponderosa.submission.v1.";
 const keyFor = (id: string) => `${prefix}${id}`;
+const retiredKeyFor=(id:string)=>`${prefix}retired.${id}`;
+/** A mirror of verified canonical retirement, never delivery or acceptance authority. */
+type RetirementIdentity=Pick<CapturedSubmission,"scope"|"ownerId"|"apiNamespace"|"pending">;
+export function capturedSubmissionRetired(id:string,identity?:RetirementIdentity):boolean {
+  try{
+    const marker=JSON.parse(readChatState(retiredKeyFor(id))??'null');
+    const item=identity??JSON.parse(readChatState(keyFor(id))??'null');
+    if(!item)return marker?.idempotencyKey===id;
+    return Boolean(marker&&item&&marker.idempotencyKey===id&&marker.scope===item.scope&&marker.ownerId===item.ownerId&&marker.apiNamespace===item.apiNamespace&&marker.captureRevision===item.pending?.captureRevision);
+  }catch{return false;}
+}
 export const submissionOutboxEvent = "ponderosa-submission-outbox";
 
 export function readCapturedSubmissions(scope?: string, ownerId?: string): CapturedSubmission[] {
@@ -41,25 +56,37 @@ export function readCapturedSubmissions(scope?: string, ownerId?: string): Captu
           !/^[a-f0-9]{64}$/.test(item.pending.fingerprint) ||
           !Array.isArray(item.mentionedAgents) || !Array.isArray(item.attachmentNames) ||
           (item.acceptedDeliveryIds !== undefined && (!Array.isArray(item.acceptedDeliveryIds) || item.acceptedDeliveryIds.length > 32 || item.acceptedDeliveryIds.some(id => typeof id !== "string"))) ||
+          (item.communicationId !== undefined && (typeof item.communicationId !== "string" || item.communicationId.length>200)) ||
           (item.dispatchStarted !== undefined && typeof item.dispatchStarted !== "boolean") ||
           !["send", "queue"].includes(item.action) || !["pending", "failed", "unknown", "accepted"].includes(item.status) ||
           (scope !== undefined && item.scope !== scope) ||
           (ownerId !== undefined && item.ownerId !== ownerId)) return [];
-      return [item];
+      return capturedSubmissionRetired(item.pending.idempotencyKey,item)?[]:[item];
     } catch { return []; }
   }).sort((a, b) => a.createdAt - b.createdAt || a.pending.idempotencyKey.localeCompare(b.pending.idempotencyKey));
 }
 export function saveCapturedSubmission(item: CapturedSubmission): void {
+  if(capturedSubmissionRetired(item.pending.idempotencyKey,item))return;
+  // Canonical observation can arrive while an original-key attempt is preparing.
+  // A delayed metadata/error writer must never demote that observed acceptance.
+  const accepted=readCapturedSubmissions(item.scope,item.ownerId).find(current=>current.pending.idempotencyKey===item.pending.idempotencyKey&&current.status==="accepted");
+  if(accepted&&item.status!=="accepted")item={...item,status:"accepted",communicationId:accepted.communicationId??item.communicationId,acceptedDeliveryIds:accepted.acceptedDeliveryIds??item.acceptedDeliveryIds};
   if (!writeChatState(keyFor(item.pending.idempotencyKey), JSON.stringify(item))) {
     throw new Error("This message could not be saved for recovery. Free browser storage and retry.");
   }
   globalThis.window?.dispatchEvent(new Event(submissionOutboxEvent));
 }
-export function removeCapturedSubmission(id: string): void {
-  if (!writeChatState(keyFor(id), "")) throw new Error("The accepted message recovery record could not be retired. Retry uses the same identity.");
+export class CapturedRetirementStorageError extends Error {}
+export function removeCapturedSubmission(id: string,identity?:RetirementIdentity): void {
+  const item=identity??readCapturedSubmissions().find(item=>item.pending.idempotencyKey===id);
+  if(!item)return;
+  // Commit the canonical tombstone projection first. A stale tab may still
+  // write the old body key; it cannot erase this separate terminal marker.
+  if(!writeChatState(retiredKeyFor(id),JSON.stringify({version:1,idempotencyKey:id,scope:item.scope,ownerId:item.ownerId,apiNamespace:item.apiNamespace,captureRevision:item.pending.captureRevision})))throw new CapturedRetirementStorageError('The retired message could not be reconciled with browser storage. Its original record is retained.');
+  writeChatState(keyFor(id), "");
   globalThis.window?.dispatchEvent(new Event(submissionOutboxEvent));
 }
-export function capturedSubmissionExists(id: string): boolean { return readChatState(keyFor(id)) !== undefined; }
+export function capturedSubmissionExists(id: string): boolean { return !capturedSubmissionRetired(id)&&readChatState(keyFor(id)) !== undefined; }
 
 export class CapturedSubmissionOrderError extends Error {}
 export async function withCapturedSubmissionLock<T>(item: CapturedSubmission, run: () => Promise<T>): Promise<T> {
@@ -69,12 +96,39 @@ export async function withCapturedSubmissionLock<T>(item: CapturedSubmission, ru
 
 // Transport order belongs to captured intents, independent of mounted editors.
 const transports = new Map<string, Promise<unknown>>();
-const running = new Map<string, Promise<unknown>>();
+const running = new Map<string, {promise:Promise<unknown>;kind:"send"|"remove"}>();
 export function capturedSubmissionRunning(id: string): boolean { return running.has(id); }
-export function runCapturedSubmission(item: CapturedSubmission, execute: () => Promise<unknown>): Promise<unknown> {
+export function capturedSubmissionActivity(id:string):"send"|"remove"|undefined { return running.get(id)?.kind; }
+export function earlierCapturedSubmission(item:CapturedSubmission):CapturedSubmission|undefined {
+  if(item.status==="accepted")return;
+  const first=readCapturedSubmissions(item.scope,item.ownerId).find(value=>value.status!=="accepted");
+  return first&&first.pending.idempotencyKey!==item.pending.idempotencyKey?first:undefined;
+}
+function trackCapturedSubmission(id:string,operation:Promise<unknown>,kind:"send"|"remove"):Promise<unknown>{
+  running.set(id,{promise:operation,kind});
+  globalThis.window?.dispatchEvent(new Event(submissionOutboxEvent));
+  void operation.finally(()=>{
+    if(running.get(id)?.promise===operation)running.delete(id);
+    globalThis.window?.dispatchEvent(new Event(submissionOutboxEvent));
+  }).catch(()=>undefined);
+  return operation;
+}
+/** Removal shares the same exact-owner cross-tab lock, but no send-order gate. */
+export function removeRejectedCapturedSubmission(item:CapturedSubmission,remove:(current:CapturedSubmission)=>Promise<void>):Promise<unknown>{
+  const id=item.pending.idempotencyKey,existing=running.get(id);if(existing)return existing.promise;
+  if(!globalThis.navigator?.locks)return Promise.reject(new Error("This browser cannot safely coordinate message removal. Keep this message and use a browser with Web Locks."));
+  const operation=withCapturedSubmissionLock(item,async()=>{
+    const current=readCapturedSubmissions(item.scope,item.ownerId).find(value=>value.pending.idempotencyKey===id);
+    if(!current)return;
+    if(current.status!=="failed")throw new Error("Acceptance is unconfirmed. Reconcile this exact message before removal.");
+    await remove(current);
+  });
+  return trackCapturedSubmission(id,operation,"remove");
+}
+export function runCapturedSubmission(item: CapturedSubmission, execute: (current: CapturedSubmission) => Promise<unknown>, onError?: (error: unknown, current: CapturedSubmission) => void): Promise<unknown> {
   const id = item.pending.idempotencyKey;
   const existing = running.get(id);
-  if (existing) return existing;
+  if (existing) return existing.promise;
   const scope = JSON.stringify([item.scope, item.ownerId]);
   const previous = transports.get(scope) ?? Promise.resolve();
   const operation = previous.catch(() => undefined).then(async () => {
@@ -82,20 +136,26 @@ export function runCapturedSubmission(item: CapturedSubmission, execute: () => P
     // earlier record while this tab waited to acquire the same owner scope.
     const run = async () => {
       if (!capturedSubmissionExists(id)) return;
-      const ordered = readCapturedSubmissions(item.scope, item.ownerId).filter(value => value.status !== "accepted");
-      if (item.status !== "accepted" && ordered[0]?.pending.idempotencyKey !== id) {
-        throw new CapturedSubmissionOrderError("Resolve the earlier captured message before retrying this item.");
+      const currentItems = readCapturedSubmissions(item.scope, item.ownerId);
+      const current = currentItems.find(value => value.pending.idempotencyKey === id);
+      if (!current) throw new Error("Captured message is unavailable or changed. Preserve its recovery record.");
+      try {
+        const ordered = currentItems.filter(value => value.status !== "accepted");
+        if (current.status !== "accepted" && ordered[0]?.pending.idempotencyKey !== id) {
+          throw new CapturedSubmissionOrderError("Resolve the earlier captured message before retrying this item.");
+        }
+        return await execute(current);
+      } catch (error) {
+        if (!onError) throw error;
+        onError(error, current);
       }
-      return execute();
     };
     return withCapturedSubmissionLock(item, run);
   });
-  running.set(id, operation);
   transports.set(scope, operation);
   void operation.finally(() => {
-    running.delete(id);
     if (transports.get(scope) === operation) transports.delete(scope);
     globalThis.window?.dispatchEvent(new Event(submissionOutboxEvent));
   }).catch(() => undefined);
-  return operation;
+  return trackCapturedSubmission(id,operation,"send");
 }

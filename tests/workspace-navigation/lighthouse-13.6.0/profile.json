@@ -1,0 +1,53 @@
+{
+  "version": "13.6.0",
+  "tag": "v13.6.0",
+  "commit": "edc407d72179bbc4d4de8a40ef0311ca87dff89c",
+  "source": "tests/workspace-navigation/lighthouse-13.6.0/core/config/constants.js",
+  "sha256": "70c6483e9383ceca3e3ac36249491b7c8f59b2f3f4029f6d649f816e09962594",
+  "records": [
+    {
+      "path": "core/config/constants.js",
+      "sha256": "70c6483e9383ceca3e3ac36249491b7c8f59b2f3f4029f6d649f816e09962594",
+      "url": "https://raw.githubusercontent.com/GoogleChrome/lighthouse/edc407d72179bbc4d4de8a40ef0311ca87dff89c/core/config/constants.js"
+    },
+    {
+      "path": "core/config/default-config.js",
+      "sha256": "cc893b0b4c0b20a94421a7cf795ce8f71b6814711529110c660e6cea0809399f",
+      "url": "https://raw.githubusercontent.com/GoogleChrome/lighthouse/edc407d72179bbc4d4de8a40ef0311ca87dff89c/core/config/default-config.js"
+    },
+    {
+      "path": "docs/emulation.md",
+      "sha256": "b2adaca821474bbb00030eb09cb23e69ac5ea76e34e910a4970788f3e1502b5a",
+      "url": "https://raw.githubusercontent.com/GoogleChrome/lighthouse/edc407d72179bbc4d4de8a40ef0311ca87dff89c/docs/emulation.md"
+    },
+    {
+      "path": "docs/throttling.md",
+      "sha256": "af895e96557e1531344db0c61fe12a083d8c7ced7a322a4ea24b76b38b54074f",
+      "url": "https://raw.githubusercontent.com/GoogleChrome/lighthouse/edc407d72179bbc4d4de8a40ef0311ca87dff89c/docs/throttling.md"
+    },
+    {
+      "path": "package.json",
+      "sha256": "80411ef77748bfb3259b3d4ff8bcd6b69b272b8d08d4c18d7c774fdca7c4e6da",
+      "url": "https://raw.githubusercontent.com/GoogleChrome/lighthouse/edc407d72179bbc4d4de8a40ef0311ca87dff89c/package.json"
+    }
+  ],
+  "config": {
+    "width": 412,
+    "height": 823,
+    "screenWidth": 412,
+    "screenHeight": 823,
+    "dpr": 1.75,
+    "cpu": 4,
+    "mobile": true,
+    "touch": true,
+    "ua": "Mozilla/5.0 (Linux; Android 11; moto g power (2022)) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Mobile Safari/537.36",
+    "network": "loopback unthrottled; identical policy across cells; not Lighthouse simulated network scoring"
+  },
+  "officialNetwork": {
+    "latencyMs": 150,
+    "downMbps": 1.6,
+    "upKbps": 750,
+    "method": "simulate"
+  },
+  "execution": "CDP CPU/emulation measurement; not a Lighthouse audit"
+}

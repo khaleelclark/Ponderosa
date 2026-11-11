@@ -41,7 +41,7 @@ export class WorkspaceErrorBoundary extends Component<WorkspaceErrorBoundaryProp
     return <Box role="alert" sx={{ minHeight: 0, overflow: "auto", p: { xs: 2, md: 3 } }}>
       <Alert severity="error" icon={<ErrorOutlineIcon />}>
         <Stack spacing={1}>
-          <Typography fontWeight={800}>{this.props.title ?? "This workspace view could not be displayed."}</Typography>
+          <Typography fontWeight={800}>{this.props.title ?? "This Workspace View Could Not Be Displayed."}</Typography>
           <Typography variant="body2">Ponderosa navigation remains available while you retry this workspace view.</Typography>
           <Button color="inherit" variant="outlined" size="small" onClick={this.reset} sx={{ alignSelf: "flex-start" }}>Try Again</Button>
         </Stack>

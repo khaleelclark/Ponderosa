@@ -1,8 +1,21 @@
+import {createClientId} from "../clientId";
+import {LifecyclePanel} from './lifecycle/LifecyclePanel';
+import {AssistantSettings} from './AssistantSettings';
+import {TextSizeSetting} from './TextSizeSetting';
+import {GlobalMemoryTransfer} from './GlobalMemoryTransfer';
 import { useEngineModelCatalogs } from "../hooks/useEngineModelCatalogs";
+import {useMutationNotification,MutationErrorDetails} from "./MutationNotifications";
+import {CapabilityPolicyEditor} from "./CapabilityPolicyEditor";
+import {currentProductScope,productApiPath} from "../api/productScope";
+import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
+import type { ReactNode } from "react";
 import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
 import { BrowserVoiceSettings } from "./speech/BrowserVoiceSettings";
 import PersonOutlineIcon from "@mui/icons-material/PersonOutline";
 import {
+  Accordion,
+  AccordionDetails,
+  AccordionSummary,
   Alert,
   Box,
   Button,
@@ -67,7 +80,7 @@ import { useUnsavedForm } from "../reloadSafety";
 
 const GLOBAL_AGENT_INSTRUCTIONS_LABEL = "Global Agent Instructions";
 const GLOBAL_AGENT_INSTRUCTIONS_HELPER_TEXT =
-  "Applies to every Agent on the next fresh provider session. Chat and Agent instructions follow it. Behavioral preferences, such as preferred models, are guidance rather than guaranteed structural routing.";
+  "Applies to all Agents on their next fresh provider session.";
 
 function SettingsHeader({
   profile = false,
@@ -86,8 +99,8 @@ function SettingsHeader({
       sx={{
         flexWrap: { xs: "wrap", sm: "nowrap" },
         alignItems: "center",
-        px: { xs: 2, md: 4 },
-        py: 2.5,
+        px: { xs: 2, md: 3 },
+        py: { xs: 1.5, md: 2 },
         borderBottom: 1,
         borderColor: "divider",
       }}
@@ -105,10 +118,20 @@ function SettingsHeader({
             : "Workspace appearance, notifications, providers, and Agent defaults"}
         </Typography>
       </Box>
-      {onReturn ? <Button onClick={onReturn}>{returnLabel ?? "Back to Home"}</Button> : null}
-      <PrimaryHeaderActionsOutlet />
+      {onReturn ? <Button onClick={onReturn}>{returnLabel ?? "Back To Home"}</Button> : null}
+      <PrimaryHeaderActionsOutlet showMobileUsageLabel />
     </Stack>
   );
+}
+
+/** Keep draft owners mounted when a settings group is folded. */
+function SettingsGroup({title,description,children,open=false}:{title:string;description:string;children:ReactNode;open?:boolean}):JSX.Element {
+  return <Accordion className="settings-group" defaultExpanded={open} disableGutters>
+    <AccordionSummary expandIcon={<ExpandMoreIcon/>} aria-label={title}>
+      <Box><Typography component="h2" variant="h6">{title}</Typography><Typography variant="body2" color="text.secondary" sx={{mt:.5}}>{description}</Typography></Box>
+    </AccordionSummary>
+    <AccordionDetails>{children}</AccordionDetails>
+  </Accordion>;
 }
 
 function GeneralSettingsSection({
@@ -178,14 +201,13 @@ function GeneralSettingsSection({
   const rolloverValuesValid =
     rolloverTokensError === undefined && rolloverFractionError === undefined;
   return (
-    <Stack spacing={2.5}>
-      <BrowserVoiceSettings preferences={preferences} onPreferences={onPreferences} />
-      <Paper variant="outlined" sx={{ p: 2.5 }}>
-        <Typography variant="h6" fontWeight={800} sx={{ mb: 1.5 }}>
+    <Stack spacing={0} className="settings-groups">
+      <Paper component="section" variant="outlined" className="settings-appearance" sx={{ p: 2.5 }}>
+        <Typography variant="h6" component="h2" fontWeight={650} sx={{ mb: 1.5 }}>
           Appearance
         </Typography>
-        <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
-          <Button variant="outlined" onClick={onToggleColorMode}>
+        <Stack direction={{ xs: "column", md: "row" }} spacing={1.5}>
+          <Button variant="outlined" onClick={onToggleColorMode} sx={{ flexShrink: 0, whiteSpace: "nowrap" }}>
             Use {colorMode === "dark" ? "Light" : "Dark"} Mode
           </Button>
           <FormControl fullWidth>
@@ -206,16 +228,10 @@ function GeneralSettingsSection({
               <MenuItem value="sans">Classic Sans</MenuItem>
             </Select>
           </FormControl>
+          <TextSizeSetting/>
         </Stack>
       </Paper>
-      <Paper variant="outlined" sx={{ p: 2.5 }}>
-        <Typography variant="h6" fontWeight={800}>
-          Agent Defaults
-        </Typography>
-        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-          These apply across Ponderosa unless a Chat or Agent
-          overrides them.
-        </Typography>
+      <SettingsGroup title="Agent Defaults" description="Instructions and runtime limits for Chats and Agents." open>
         <Stack spacing={2}>
           <RuntimeSettings value={limit} onChange={onLimit} />
           <TextField
@@ -232,38 +248,28 @@ function GeneralSettingsSection({
             minRows={6}
             helperText={GLOBAL_AGENT_INSTRUCTIONS_HELPER_TEXT}
           />
-          <Button
-            variant="contained"
-            sx={{ alignSelf: "flex-start" }}
-            disabled={
-              agentDefaultsSaving ||
-              parseAgentRunConcurrencyLimit(limit) === undefined
-            }
-            onClick={onSaveAgentDefaults}
-          >
-            {agentDefaultsSaving ? "Saving…" : "Save Agent Defaults"}
-          </Button>
-          {agentDefaultsSaved ? (
-            <Alert severity="success" role="status">
-              Agent defaults saved successfully.
-            </Alert>
-          ) : null}
-          {agentDefaultsSaveError ? (
-            <Alert severity="error" role="alert">
-              {agentDefaultsSaveError}
-            </Alert>
-          ) : null}
+          <Stack direction="row" spacing={1.5} useFlexGap sx={{ alignItems: "center", flexWrap: "wrap" }}>
+            <Button
+              variant="contained"
+              sx={{ alignSelf: "flex-start" }}
+              disabled={
+                agentDefaultsSaving ||
+                parseAgentRunConcurrencyLimit(limit) === undefined
+              }
+              onClick={onSaveAgentDefaults}
+            >
+              {agentDefaultsSaving ? "Saving…" : "Save Agent Defaults"}
+            </Button>
+            {agentDefaultsSaved ? <Typography role="status" variant="body2" color="text.secondary">Settings Saved</Typography> : null}
+          </Stack>
+          <MutationErrorDetails title="Agent Defaults Need Review" error={agentDefaultsSaveError}/>
         </Stack>
-      </Paper>
-      <Paper variant="outlined" sx={{ p: 2.5 }}>
-        <Typography variant="h6" fontWeight={800}>
-          Provider Session Rollover
-        </Typography>
-        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-          When a session passes either limit, Ponderosa asks the Agent to write
-          a short handoff, then starts a fresh provider session at the next safe
-          boundary. The provider&apos;s own compaction remains the fallback.
-        </Typography>
+      </SettingsGroup>
+      {currentProductScope()!=="branches"&&<SettingsGroup title="Assistant" description="Model, schedule and behavior for your personal Assistant."><AssistantSettings/></SettingsGroup>}
+      <SettingsGroup title="Voice & Audio" description="Speaking, listening and audio message preferences."><BrowserVoiceSettings preferences={preferences} onPreferences={onPreferences}/></SettingsGroup>
+      <SettingsGroup title="Memory" description="Import, export and manage saved knowledge."><GlobalMemoryTransfer/></SettingsGroup>
+      {currentProductScope()!=="branches"&&<SettingsGroup title="Tool Permissions" description="Default access for Core Chats and Agents."><CapabilityPolicyEditor endpoint="/api/workspace/capabilities" scopeKind="product" title="Default Tool Permissions" description="Defaults for Core Chats and Agents; Branches has separate policies." immediateSave/></SettingsGroup>}
+      <SettingsGroup title="Provider Session Rollover" description="Choose when Agents move to a fresh provider session.">
         <Stack spacing={2}>
           <FormControlLabel
             control={
@@ -274,46 +280,50 @@ function GeneralSettingsSection({
                 }
               />
             }
-            label="Proactive context rollover"
+            label="Proactive Context Rollover"
           />
           <TextField
             type="number"
-            label="Roll over above (context tokens)"
+            label="Roll Over Above (Context Tokens)"
             value={rolloverTokens}
             onChange={event => onRolloverTokens(event.target.value)}
             inputProps={{ min: 75_000, max: 2_000_000, step: 10_000 }}
             error={Boolean(rolloverTokensError)}
             helperText={
               rolloverTokensError ??
-              "Minimum 75,000. Fresh Ponderosa sessions already consume substantial context, so lower values can cause repeated rollover. Default 150,000."
+              "Minimum 75,000; default 150,000 tokens."
             }
           />
           <TextField
             type="number"
-            label="Or at this share of the provider's context window"
+            label="Or At This Share Of The Provider's Context Window"
             value={rolloverFraction}
             onChange={event => onRolloverFraction(event.target.value)}
             inputProps={{ min: 0.3, max: 0.95, step: 0.05 }}
             error={Boolean(rolloverFractionError)}
             helperText={
               rolloverFractionError ??
-              "Applies only to providers that report a window size (Codex does; Claude does not). Catches sessions configured with a small window, where the token ceiling above would never be reached."
+              "Requires a provider-reported context window size."
             }
           />
-          <Button
-            variant="contained"
-            sx={{ alignSelf: "flex-start" }}
-            disabled={!rolloverValuesValid || rolloverSaving}
-            onClick={() => onSaveRollover(
-              parsedRolloverTokens,
-              parsedRolloverFraction,
-            )}
-          >
-            {rolloverSaving ? "Saving…" : "Save Rollover Limits"}
-          </Button>
-          {rolloverSaveError ? <Alert severity="error">{rolloverSaveError}</Alert> : rolloverSaved ? <Alert severity="success" role="status">Rollover limits saved</Alert> : null}
+          <Stack direction="row" spacing={1.5} useFlexGap sx={{ alignItems: "center", flexWrap: "wrap" }}>
+            <Button
+              variant="contained"
+              sx={{ alignSelf: "flex-start" }}
+              disabled={!rolloverValuesValid || rolloverSaving}
+              onClick={() => onSaveRollover(
+                parsedRolloverTokens,
+                parsedRolloverFraction,
+              )}
+            >
+              {rolloverSaving ? "Saving…" : "Save Rollover Limits"}
+            </Button>
+            {rolloverSaved ? <Typography role="status" variant="body2" color="text.secondary">Settings Saved</Typography> : null}
+          </Stack>
+          <MutationErrorDetails title="Rollover Limits Need Review" error={rolloverSaveError}/>
         </Stack>
-      </Paper>
+      </SettingsGroup>
+      <SettingsGroup title="Data & Lifecycle" description="Review retained data, cleanup and resource ownership."><LifecyclePanel/></SettingsGroup>
     </Stack>
   );
 }
@@ -321,8 +331,8 @@ function GeneralSettingsSection({
 const NOTIFICATION_LABELS: Array<
   [keyof WorkspacePreferencesDto["notifications"], string]
 > = [
-  ["directResponses", "Direct Agent responses"],
-  ["broadcasts", "Project broadcasts"],
+  ["directResponses", "Direct Agent Responses"],
+  ["broadcasts", "Project Broadcasts"],
 ];
 
 function NotificationSettingsSection({
@@ -348,11 +358,11 @@ function NotificationSettingsSection({
       : "info" as const;
   return (
     <Paper variant="outlined" sx={{ p: 2.5 }}>
-      <Typography variant="h6" fontWeight={800}>
+      <Typography variant="h6" component="h2" fontWeight={650}>
         Notifications
       </Typography>
       <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-        Choose which Agent updates appear in Notifications and browser push. Chat and Agent notification settings can further limit these alerts, including those that need attention.
+        Choose alerts for Notifications and browser push.
       </Typography>
       <Stack>
         {NOTIFICATION_LABELS.map(([key, label]) => (
@@ -389,7 +399,7 @@ function NotificationSettingsSection({
             onClick={onDisablePush}
             variant="contained"
           >
-            Disable on This Device
+            Disable On This Device
           </Button>
         ) : (
           <Tooltip title={enableBlockReason ?? ""}>
@@ -496,10 +506,7 @@ function ClaudeModelOptionsSettings({
         </Stack>
       ) : (
         <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-          No specific versions are pinned by the environment. Set
-          {" "}ANTHROPIC_DEFAULT_OPUS_MODEL, ANTHROPIC_DEFAULT_SONNET_MODEL,
-          ANTHROPIC_DEFAULT_HAIKU_MODEL, ANTHROPIC_DEFAULT_FABLE_MODEL, or
-          ANTHROPIC_CUSTOM_MODEL_OPTION to add host-managed choices.
+          No environment-pinned model versions.
         </Typography>
       )}
       <Stack spacing={1} sx={{ mt: 2 }}>
@@ -548,7 +555,7 @@ function ClaudeModelOptionsSettings({
         <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
           <TextField
             fullWidth
-            label="Model id"
+            label="Model ID"
             value={modelId}
             onChange={event => {
               setModelId(event.target.value);
@@ -594,15 +601,20 @@ function ProviderModelCheck({ engine, projectId, model }: { engine: EngineDto; p
   });
   const current = check.variables?.projectId === projectId && check.variables?.modelId === model;
   return <Stack spacing={1} sx={{ mt: 2 }}>
-    <Typography variant="caption" color="text.secondary" sx={{ overflowWrap: "anywhere" }}>
-      {engine.cliVersion ? `CLI ${engine.cliVersion}. ` : ""}A model listing does not verify access.
-      {engine.modelCatalogFetchedAt ? ` Models read ${new Date(engine.modelCatalogFetchedAt).toLocaleString()}.` : ""}
-      {" "}Testing sends a small subscription-backed request and keeps existing Agent settings.
+    {engine.cliVersion || engine.modelCatalogFetchedAt ? (
+      <Typography variant="caption" color="text.secondary" sx={{ overflowWrap: "anywhere" }}>
+        {engine.cliVersion ? `CLI ${engine.cliVersion}` : ""}
+        {engine.cliVersion && engine.modelCatalogFetchedAt ? " · " : ""}
+        {engine.modelCatalogFetchedAt ? `Models read ${new Date(engine.modelCatalogFetchedAt).toLocaleString()}` : ""}
+      </Typography>
+    ) : null}
+    <Typography variant="caption" color="text.secondary">
+      Sends a small request; Agent settings stay unchanged.
     </Typography>
     <Button variant="outlined" sx={{ alignSelf: { xs: "stretch", sm: "flex-start" } }}
       disabled={!projectId || !model || !engineCanDiscover(engine) || check.isPending}
       onClick={() => check.mutate({ projectId: projectId!, modelId: model })}>
-      {check.isPending ? "Testing model…" : "Test selected model"}
+      {check.isPending ? "Testing Model…" : "Test Selected Model"}
     </Button>
     {current && check.data ? <Alert severity={check.data.valid ? "success" : "warning"} sx={{ overflowWrap: "anywhere" }}>
       {check.data.valid ? `${model} completed the test request.` : check.data.error}
@@ -669,12 +681,11 @@ function ProviderSettingsSection({
       ) : null}
       {usageProviders.length > 1 ? (
         <Paper variant="outlined" sx={{ p: 2.5 }}>
-          <Typography variant="h6" fontWeight={800}>
+          <Typography variant="h6" component="h2" fontWeight={650}>
             Provider Usage
           </Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-            Choose which provider appears in the usage button by default.
-            Agent pages can temporarily show that Agent&apos;s active provider.
+            Default provider for the usage button.
           </Typography>
           <FormControl fullWidth>
             <InputLabel id="settings-default-usage-provider">
@@ -727,7 +738,7 @@ function ProviderSettingsSection({
               }
               label={
                 <Box sx={{ minWidth: 0, maxWidth: "100%" }}>
-                  <Typography fontWeight={800}>{engine.displayName}</Typography>
+                  <Typography fontWeight={650}>{engine.displayName}</Typography>
                   <Typography
                     variant="caption"
                     color={engine.intakeReady || engine.installed === false ? "text.secondary" : "warning.main"}
@@ -757,11 +768,11 @@ function ProviderSettingsSection({
             <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5}>
               <FormControl fullWidth>
                 <InputLabel id={`settings-model-${engine.id}`}>
-                  Saved Model for New Agents
+                  Saved Model For New Agents
                 </InputLabel>
                 <Select
                   labelId={`settings-model-${engine.id}`}
-                  label="Saved Model for New Agents"
+                  label="Saved Model For New Agents"
                   value={resolved.model}
                   renderValue={() => selectedModel?.label ?? resolved.model}
                   onChange={event => {
@@ -792,11 +803,11 @@ function ProviderSettingsSection({
               </FormControl>
               <FormControl fullWidth>
                 <InputLabel id={`settings-effort-${engine.id}`}>
-                  Saved Reasoning for New Agents
+                  Saved Reasoning For New Agents
                 </InputLabel>
                 <Select
                   labelId={`settings-effort-${engine.id}`}
-                  label="Saved Reasoning for New Agents"
+                  label="Saved Reasoning For New Agents"
                   value={resolved.effort}
                   onChange={event =>
                     onPreferences({
@@ -822,7 +833,7 @@ function ProviderSettingsSection({
             {engine.configuredModels !== undefined ? (
               <>
                 <Typography variant="caption" color="text.secondary" sx={{ mt: 1 }}>
-                  Latest aliases follow future Claude upgrades. Pinned exact IDs stay on the selected version.
+                  Latest follows upgrades; exact IDs stay pinned.
                 </Typography>
                 <ClaudeModelOptionsSettings
                   engine={engine}
@@ -846,7 +857,7 @@ function ProviderSettingsSection({
                   >
                     {recheckPendingEngineId === engine.id
                       ? "Checking…"
-                      : "Recheck sign-in"}
+                      : "Recheck Sign-In"}
                   </Button>
                 }
               >
@@ -869,7 +880,18 @@ function ProviderSettingsSection({
   );
 }
 
+// Called only by explicit Save actions; background preference writes keep their existing policy.
+function useSettingsSaveFeedback(){
+  const notify=useMutationNotification();
+  return async<T,>(operation:string,title:string,work:()=>Promise<T>):Promise<T>=>{
+    const key=JSON.stringify([productApiPath("/api/workspace/preferences"),operation]),incident=createClientId("settings-save-feedback-");
+    try{const saved=await work();notify({key,message:"",dismiss:true});return saved;}
+    catch(error){notify({key,incident,severity:"error",message:title,description:"Your original settings draft remains available for review.",details:error instanceof Error?error.message:String(error)});throw error;}
+  };
+}
+
 export function WorkspaceSettingsView({
+  showHeader=true,
   preferences,
   engines,
   projects,
@@ -879,9 +901,11 @@ export function WorkspaceSettingsView({
   onSavePreferences,
   section = "general",
   activityProjectId,
+  activityWorkflows=false,
   onReturn,
   returnLabel,
 }: {
+  showHeader?:boolean;
   preferences: WorkspacePreferencesDto;
   engines: EngineDto[];
   projects: ProjectDto[];
@@ -893,10 +917,12 @@ export function WorkspaceSettingsView({
   ): Promise<WorkspacePreferencesDto>;
   section?: "profile" | "general" | "providers" | "notifications" | "activity";
   activityProjectId?: string;
+  activityWorkflows?: boolean;
   onReturn?(): void;
   returnLabel?: string;
 }): JSX.Element {
   const queryClient = useQueryClient();
+  const saveFeedback=useSettingsSaveFeedback();
   const validationProject = projects[0];
   const modelCatalogQuery = useEngineModelCatalogs(validationProject?.id, engines);
   const readinessQuery = useQuery({
@@ -1045,7 +1071,7 @@ export function WorkspaceSettingsView({
     mutationFn: (patch: {
       globalInstructions: string;
       maxConcurrentAgentRuns: number;
-    }) => onSavePreferences(patch),
+    }) => saveFeedback("agent-defaults","Agent Defaults Not Saved",()=>onSavePreferences(patch)),
     onSuccess: (_preferences, submitted) => {
       setInstructionsDirty(draftChangedSinceSubmission(
         instructionsRef.current,
@@ -1058,21 +1084,12 @@ export function WorkspaceSettingsView({
     },
   });
   const saveRollover = useMutation({
-    mutationFn: (patch: { contextRolloverTokens: number; contextRolloverWindowFraction: number }) => onSavePreferences(patch),
+    mutationFn: (patch: { contextRolloverTokens: number; contextRolloverWindowFraction: number }) => saveFeedback("rollover-limits","Rollover Limits Not Saved",()=>onSavePreferences(patch)),
     onSuccess: (_saved, submitted) => {
       setRolloverTokensDirty(rolloverTokensRef.current !== String(submitted.contextRolloverTokens));
       setRolloverFractionDirty(rolloverFractionRef.current !== String(submitted.contextRolloverWindowFraction));
     },
   });
-  useEffect(() => {
-    if (!saveAgentDefaults.isSuccess) return;
-
-    const timeoutId = window.setTimeout(() => {
-      saveAgentDefaults.reset();
-    }, 3_000);
-
-    return () => window.clearTimeout(timeoutId);
-  }, [saveAgentDefaults.isSuccess, saveAgentDefaults.reset]);
   const setPushFrom = (action: () => Promise<WebPushState>) => {
     setPushBusy(true);
     void action()
@@ -1080,9 +1097,9 @@ export function WorkspaceSettingsView({
       .finally(() => setPushBusy(false));
   };
   return (
-    <Box className="ponderosa-scroll" sx={{ minHeight: 0, overflow: "auto" }}>
-      <SettingsHeader onReturn={onReturn} returnLabel={returnLabel} />
-      <Box sx={{ maxWidth: 900, mx: "auto", p: { xs: 2, md: 4 } }}>
+    <Box className="ponderosa-scroll workspace-settings" sx={{ minHeight: 0, overflow: "auto", overscrollBehavior: "contain" }}>
+      {showHeader&&<SettingsHeader onReturn={onReturn} returnLabel={returnLabel} />}
+      <Box sx={{ maxWidth: 920, width: "100%", mx: "auto", p: { xs: 2, md: 4 }, pb: "max(32px, env(safe-area-inset-bottom, 0px))" }}>
         {section === "profile" ? (
           <OperatorProfileSettingsSection
             preferences={preferences}
@@ -1119,7 +1136,11 @@ export function WorkspaceSettingsView({
               })
             }
             agentDefaultsSaving={saveAgentDefaults.isPending}
-            agentDefaultsSaved={saveAgentDefaults.isSuccess}
+            agentDefaultsSaved={
+              saveAgentDefaults.isSuccess && !instructionsDirty && !limitDirty &&
+              instructions === saveAgentDefaults.variables.globalInstructions &&
+              limit === String(saveAgentDefaults.variables.maxConcurrentAgentRuns)
+            }
             agentDefaultsSaveError={
               saveAgentDefaults.isError
                 ? saveAgentDefaults.error instanceof Error
@@ -1142,7 +1163,11 @@ export function WorkspaceSettingsView({
               });
             }}
             rolloverSaving={saveRollover.isPending}
-            rolloverSaved={saveRollover.isSuccess && !rolloverTokensDirty && !rolloverFractionDirty}
+            rolloverSaved={
+              saveRollover.isSuccess && !rolloverTokensDirty && !rolloverFractionDirty &&
+              rolloverTokens === String(saveRollover.variables.contextRolloverTokens) &&
+              rolloverFraction === String(saveRollover.variables.contextRolloverWindowFraction)
+            }
             rolloverSaveError={saveRollover.isError ? saveRollover.error instanceof Error ? saveRollover.error.message : "Rollover limits could not be saved. Try again." : undefined}
           />
         ) : null}
@@ -1194,7 +1219,7 @@ export function WorkspaceSettingsView({
         {section === "activity" ? (
           <Stack spacing={2.5}>
             <Paper variant="outlined" sx={{ p: 2.5 }}>
-              <Typography variant="h6" fontWeight={800}>Provider Status</Typography>
+              <Typography variant="h6" component="h2" fontWeight={650}>Provider Status</Typography>
               <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
                 Sign-in, runtime access, and network availability for configured AI providers.
               </Typography>
@@ -1214,6 +1239,7 @@ export function WorkspaceSettingsView({
             <ProviderActivitySettingsSection
               projects={projects}
               projectId={activityProjectId}
+              workflows={activityWorkflows}
             />
           </Stack>
         ) : null}
@@ -1233,7 +1259,7 @@ export function WorkspaceSettingsView({
           if (engineToTest) recheckEngine.mutate(engineToTest.id);
         }}
       >
-        <Typography sx={{ pt: 1 }}>This sends one minimal subscription-backed request.</Typography>
+        <Typography sx={{ pt: 1 }}>This sends one minimal harness-backed request.</Typography>
       </ConfirmDialog>
     </Box>
   );
@@ -1247,14 +1273,28 @@ function OperatorProfileSettingsSection({
   onSavePreferences(patch: Partial<WorkspacePreferencesDto>): Promise<WorkspacePreferencesDto>;
 }): JSX.Element {
   const form = useOperatorProfileForm(preferences.profile);
-  const save = useMutation({ mutationFn: (profile: WorkspacePreferencesDto["profile"]) => onSavePreferences({ profile }) });
+  const notify = useMutationNotification();
+  const saveFeedback=useSettingsSaveFeedback();
+  const currentProfile = useRef(form.profile);
+  currentProfile.current = form.profile;
+  const save = useMutation({
+    mutationFn: (profile: WorkspacePreferencesDto["profile"]) => saveFeedback("operator-profile","Profile Not Saved",()=>onSavePreferences({ profile })),
+    onMutate: () => form.beginSave(),
+    onError: (_error, submitted) => form.finishSave(submitted, false),
+    onSuccess: (_saved, submitted) => {
+      form.finishSave(submitted, true);
+      if (JSON.stringify(submitted) === JSON.stringify(currentProfile.current)) {
+        notify({ key: "operator-profile", message: "Settings Saved" });
+      }
+    },
+  });
   return (
     <Paper variant="outlined" sx={{ p: { xs: 2, md: 3 } }}>
       <OperatorProfileEditor
         form={form}
         avatarSize={72}
         nameLabel="What Agents Call You"
-        handleHelperText="# identifies people and Agents; @ references files. Historical mentions continue to follow your stable identity."
+        handleHelperText="# for people and Agents; @ for files."
         pictureLabelId="profile-picture"
         avatarFirst
         showDescription
@@ -1267,7 +1307,7 @@ function OperatorProfileSettingsSection({
       >
         {save.isPending ? "Saving…" : "Save Profile"}
       </Button>
-      {save.isError ? <Alert severity="error" sx={{ mt: 1 }}>{save.error instanceof Error ? save.error.message : "Profile could not be saved. Try again."}</Alert> : save.isSuccess && JSON.stringify(save.variables) === JSON.stringify(form.profile) ? <Alert severity="success" role="status" sx={{ mt: 1 }}>Profile saved</Alert> : null}
+      <MutationErrorDetails title="Profile Needs Review" error={save.error}/>
     </Paper>
   );
 }

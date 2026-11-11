@@ -148,8 +148,15 @@ async function acquireCleanupClaim(pathname: string): Promise<boolean> {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     const stat = await ownedArtifact(pathname, "file");
     if (!stat || Date.now() - Number(stat.mtimeMs) <= HOSTED_DISPLAY_STALE_MS) return false;
-    const claim: { pid?: number; birthMarker?: string } = await fs.readFile(pathname, "utf8")
-      .then((text) => JSON.parse(text) as { pid?: number; birthMarker?: string }, () => ({}));
+    let claim: { pid?: number; birthMarker?: string } = {};
+    try {
+      claim = JSON.parse(await fs.readFile(pathname,"utf8")) as typeof claim;
+    } catch(error) {
+      // A crash or failed write can leave our exclusive claim empty/partial.
+      // The same ownership and stale-age checks still apply before takeover.
+      if(!(error instanceof SyntaxError)&&(error as NodeJS.ErrnoException).code!=="ENOENT")throw error;
+    }
+    if(!claim||typeof claim!=="object")claim={};
     if (claim.pid && claim.birthMarker && processBirthMarker(claim.pid) === claim.birthMarker) return false;
     await fs.rm(pathname, { force: true });
     return acquireCleanupClaim(pathname);

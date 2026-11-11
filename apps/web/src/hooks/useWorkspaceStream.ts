@@ -1,7 +1,7 @@
 import { useQueryClient, type Query, type QueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import type {
-  AllChatPageDto,
+  InboxPageDto,
   GlobalChatSearchResponseDto,
   ProjectDto,
   WorkspaceEvent,
@@ -13,13 +13,14 @@ import { api } from "../api";
 import type { StreamSubscription } from "../api/types";
 import { queryKeys } from "../queryKeys";
 import {
-  workspaceEventInvalidatesAllChat,
+  workspaceEventInvalidatesInbox,
   workspaceEventInvalidatesGlobalSearch,
   workspaceEventUpdatesLiveProgress,
 } from "../workspaceEventInvalidation";
 import { isOpenAttention, isUnreadNotificationUpdate, isUnacknowledgedAction } from "../attention";
 import {
   browserPageIsVisible,
+  createForegroundTimer,
   invalidateForBrowserPage,
 } from "../queryVisibility";
 import {
@@ -40,7 +41,6 @@ const CURSOR_KEY = "ponderosa.workspace.cursor.v2";
 const INSTANCE_KEY = "ponderosa.workspace.instance.v1";
 const INSTANCE_MISMATCH_INITIAL_DELAY_MS = 50;
 const INSTANCE_MISMATCH_MAX_DELAY_MS = 2_000;
-const RECONNECTING_NOTICE_DELAY_MS = 1_000;
 const STALE_NOTICE_DELAY_MS = 8_000;
 const DIRECTLY_PROJECT_SCOPED_QUERY_ROOTS = new Set([
   "project",
@@ -82,6 +82,8 @@ export interface WorkspaceConnectionState {
   lastSuccessfulSyncAt?: string;
   prolongedDisconnect: boolean;
   announcement?: string;
+  refreshErrorResources?: string[];
+  diagnostics?: { disconnects: number; replayEvents: number; replayMs: number; refreshMs: number };
 }
 
 export interface WorkspaceStreamOptions {
@@ -142,8 +144,8 @@ export function reconcileDeletedProjectClientState(
         }
       : current,
   );
-  queryClient.setQueriesData<AllChatPageDto>(
-    { queryKey: queryKeys.allChatAll },
+  queryClient.setQueriesData<InboxPageDto>(
+    { queryKey: queryKeys.inboxAll },
     current => current
       ? {
           ...current,
@@ -169,7 +171,7 @@ export function reconcileDeletedProjectClientState(
     queryKeys.projects.all,
     queryKeys.notifications.all,
     queryKeys.globalSearch.all,
-    queryKeys.allChatAll,
+    queryKeys.inboxAll,
     queryKeys.workspaceDirectory.all,
     queryKeys.workspaceResourceRecency.all,
   ]) void queryClient.invalidateQueries({ queryKey });
@@ -359,8 +361,8 @@ function createDirectoryInvalidator(queryClient: QueryClient) {
   };
 }
 
-/** Coalesces workspace fallbacks for Agent-detail surfaces that do not mount
- * their own Agent stream, such as Project review. */
+/** Coalesces scoped detail refreshes, including coordination invalidations
+ * whose unchanged snapshot needs no additional durable Agent event. */
 function createAgentDetailInvalidator(
   queryClient: Pick<QueryClient, "invalidateQueries">,
   delayMs = 5_000,
@@ -480,8 +482,10 @@ export function useWorkspaceStream(
     const collaborationChatInvalidator = createCollaborationChatInvalidator(queryClient);
     const decisionConversationInvalidator =
       createDecisionConversationInvalidator(queryClient);
-    const notificationRefresh = createRateLimitedRefresh(() =>
-      invalidate(queryKeys.notifications.all), 5_000);
+    const notificationRefresh = createRateLimitedRefresh(() => {
+      invalidate(queryKeys.notifications.all);
+      invalidate(queryKeys.branchesHome.all);
+    }, 5_000);
     const providerUsageRefresh = createRateLimitedRefresh(() =>
       invalidate(queryKeys.providerUsage.all), 5_000);
     const engineStatusRefresh = createRateLimitedRefresh(() =>
@@ -493,7 +497,7 @@ export function useWorkspaceStream(
         invalidate(queryKeys.conversations.activeDeliveryReceiptsPrefix(id));
       }
       pendingProgressChats.clear();
-      invalidate(queryKeys.allChatAll);
+      invalidate(queryKeys.inboxAll);
     }, 1_000);
     const pendingTaskProjects = new Set<string>();
     const taskProjectionRefresh = createBoundedRefresh(() => {
@@ -518,11 +522,11 @@ export function useWorkspaceStream(
     let nextReplayChatAt = 0;
     const replayChatIds = new Set<string>();
     const replayReceiptIds = new Set<string>();
-    let replayAllChats = false;
+    let replayInboxs = false;
     let replayAllReceipts = false;
     const scheduleReplayChat = (conversationIds?: readonly string[], receipts = false) => {
       if (conversationIds) for (const id of conversationIds) replayChatIds.add(id);
-      else replayAllChats = true;
+      else replayInboxs = true;
       if (receipts) {
         if (conversationIds) for (const id of conversationIds) replayReceiptIds.add(id);
         else replayAllReceipts = true;
@@ -530,7 +534,7 @@ export function useWorkspaceStream(
       replayChatTimer ??= setTimeout(() => {
         replayChatTimer = undefined;
         nextReplayChatAt = Date.now() + 1_000;
-        if (replayAllChats) {
+        if (replayInboxs) {
           invalidate(queryKeys.conversations.detailAll);
           invalidate(queryKeys.collaborationAll);
         } else for (const id of replayChatIds) {
@@ -543,135 +547,130 @@ export function useWorkspaceStream(
         }
         replayChatIds.clear();
         replayReceiptIds.clear();
-        replayAllChats = false;
+        replayInboxs = false;
         replayAllReceipts = false;
       }, Math.max(250, nextReplayChatAt - Date.now()));
     };
-    let phaseQuietTimer: ReturnType<typeof setTimeout> | undefined;
-    let phaseReconcileGeneration = 0;
-    let phaseReconcileInFlight = false;
-    let urgentPhasePending = false;
+    // A transport boundary fences old completions. Ordinary events replace only
+    // their own query boundary: traffic elsewhere cannot starve this proof.
+    let recoveryGeneration = 0;
+    const inFlightPhaseQueries = new Set<Query>();
+    const phaseReadTimers = new Set<ReturnType<typeof createForegroundTimer>>();
+    const recoveryQueries = new Set<Query>();
+    const failedPhaseQueries = new Set<Query>();
     let nextCoordinationUrgentAt = 0;
     const pendingRosterProjects = new Set<string>();
     let phaseCatchUpCursor: number | undefined;
-    let phaseQueryBoundaries: ReadonlyMap<Query, PhaseQueryBoundary> = new Map();
+    let phaseQueryBoundaries = new Map<Query, PhaseQueryBoundary>();
     let stopped = false;
     let disconnected = false;
     let connectedOnce = false;
-    let awaitingRecovery = false;
+    let awaitingRecovery = true;
+    let replayStartedAt: number | undefined;
+    const diagnostics = { disconnects: 0, replayEvents: 0, replayMs: 0, refreshMs: 0 };
     const phaseQueries = () => [
-      ...queryClient.getQueryCache().findAll({
-        queryKey: queryKeys.agents.healthAll,
-      }),
-      ...queryClient.getQueryCache().findAll({
-        queryKey: queryKeys.workspaceDirectory.kind("agent"),
-      }),
-      ...queryClient.getQueryCache().findAll({
-        queryKey: queryKeys.agents.organizationAll,
-      }).filter(query => query.queryKey[2] !== "deleted"),
+      ...queryClient.getQueryCache().findAll({ queryKey: queryKeys.agents.healthAll }),
+      ...queryClient.getQueryCache().findAll({ queryKey: queryKeys.workspaceDirectory.kind("agent") }),
+      ...queryClient.getQueryCache().findAll({ queryKey: queryKeys.agents.organizationAll })
+        .filter(query => query.queryKey[2] !== "deleted"),
     ];
     const activePhaseQueries = () => phaseQueries().filter(query => query.isActive());
     let observedActivePhaseQueries = new Set(activePhaseQueries());
-    const markPhaseEvidenceStale = (projectId?: string, hidePresentedPhase = true) => {
-      phaseReconcileGeneration += 1;
-      if (phaseQuietTimer) clearTimeout(phaseQuietTimer);
-      // Sustained output gets periodic data refreshes; the stricter proof of
-      // a fully caught-up boundary uses the same bounded window after quiet.
-      phaseQuietTimer = setTimeout(() => {
-        phaseQuietTimer = undefined;
-        urgentPhasePending = true;
-        phaseRefresh.schedule();
-      }, 750);
+    const resourceName = (query: Query) => query.queryKey[0] === queryKeys.agents.healthAll[0]
+      ? "Agent Statuses" : query.queryKey[0] === queryKeys.agents.organizationAll[0]
+        ? "Agent Organization" : "Agent Directory";
+    const markPhaseEvidenceStale = (projectId?: string) => {
       const matches = (query: Query) => phaseQueryMatchesProject(query.queryKey, projectId);
-      // Keep unrelated pending boundaries until they reconcile; later events
-      // replace only affected boundaries, never certify older in-flight data.
-      phaseQueryBoundaries = new Map([
-        ...phaseQueryBoundaries,
-        ...capturePhaseQueryBoundaries(activePhaseQueries().filter(matches)),
-      ]);
+      for (const [query, boundary] of capturePhaseQueryBoundaries(activePhaseQueries().filter(matches))) {
+        phaseQueryBoundaries.set(query, boundary);
+      }
       for (const query of phaseQueries().filter(matches)) {
         void queryClient.invalidateQueries({ queryKey: query.queryKey, exact: true, refetchType: "none" });
       }
-      // A continuous live stream has not lost its last verified phase. Keep
-      // that label visible while the bounded refresh obtains newer evidence;
-      // only a gap, replay, or disconnect must hide it immediately.
-      if (hidePresentedPhase) setConnection(current => current.phaseEvidenceFresh
-        ? { ...current, phaseEvidenceFresh: false }
-        : current);
+      setConnection(current => current.phaseEvidenceFresh ? { ...current, phaseEvidenceFresh: false } : current);
+    };
+    const prunePhaseQueries = () => {
+      const active = new Set(activePhaseQueries());
+      for (const query of phaseQueryBoundaries.keys()) if (!active.has(query)) phaseQueryBoundaries.delete(query);
+      for (const query of recoveryQueries) if (!active.has(query)) recoveryQueries.delete(query);
+      for (const query of failedPhaseQueries) if (!active.has(query)) failedPhaseQueries.delete(query);
+    };
+    const completePhaseRefresh = (verified = false) => {
+      prunePhaseQueries();
+      if (stopped || disconnected || !connectedOnce || !browserPageIsVisible()
+        || (phaseCatchUpCursor !== undefined && cursor.current < phaseCatchUpCursor)) return;
+      if (recoveryQueries.size) return;
+      const recovered = awaitingRecovery;
+      awaitingRecovery = false;
+      if (!failedPhaseQueries.size) clearConnectionTimers();
+      setConnection(current => ({ ...current, status: "live",
+        phaseEvidenceFresh: phaseQueryBoundaries.size === 0,
+        lastSuccessfulSyncAt: verified && (recovered || phaseQueryBoundaries.size === 0)
+          ? new Date().toISOString() : current.lastSuccessfulSyncAt, prolongedDisconnect: false,
+        retrying: false, announcement: undefined,
+        refreshErrorResources: current.refreshErrorResources && failedPhaseQueries.size
+          ? [...new Set([...failedPhaseQueries].map(resourceName))] : undefined,
+        diagnostics: { ...diagnostics } }));
     };
     const runPhaseRefresh = () => {
       if (stopped || disconnected || !connectedOnce || !browserPageIsVisible()) return;
       if (phaseCatchUpCursor !== undefined && cursor.current < phaseCatchUpCursor) return;
-      if (phaseReconcileInFlight) return;
-      const urgent = urgentPhasePending;
-      urgentPhasePending = false;
-      for (const projectId of pendingRosterProjects) {
-        invalidateForBrowserPage(queryClient, queryKeys.agents.project(projectId));
+      if (replayStartedAt !== undefined) {
+        diagnostics.replayMs = Date.now() - replayStartedAt;
+        replayStartedAt = undefined;
       }
+      for (const projectId of pendingRosterProjects) invalidateForBrowserPage(queryClient, queryKeys.agents.project(projectId));
       pendingRosterProjects.clear();
-      const generation = phaseReconcileGeneration;
-      const boundaries = phaseQueryBoundaries;
-      let deferredStrictRetry = false;
-      const scheduleStrictRetry = () => {
-        if (urgentPhasePending || stopped || disconnected) return;
-        urgentPhasePending = true;
-        deferredStrictRetry = true;
-        phaseRefresh.schedule();
-      };
-      phaseReconcileInFlight = true;
-      if (!urgent) {
-        // Continuous command/tool output changes the generation while a fetch
-        // is in flight. Refresh boundedly anyway; only the strict boundary
-        // reconciler below may certify that all phase evidence is current.
-        void queryClient.refetchQueries({
-          predicate: query => query.isActive() && boundaries.has(query),
-          type: "active",
-        }, { cancelRefetch: false })
-          .catch(() => {
-            scheduleStrictRetry();
+      prunePhaseQueries();
+      const generation = recoveryGeneration;
+      for (const [query, boundary] of phaseQueryBoundaries) {
+        if (inFlightPhaseQueries.has(query)) continue;
+        inFlightPhaseQueries.add(query);
+        const startedAt = Date.now();
+        let verified = false;
+        const stalledRead = createForegroundTimer(() => {
+          if (stopped || generation !== recoveryGeneration || !query.isActive()) return;
+          failedPhaseQueries.add(query);
+          setConnection(current => ({ ...current,
+            refreshErrorResources: [...new Set([...failedPhaseQueries].map(resourceName))] }));
+        }, STALE_NOTICE_DELAY_MS);
+        phaseReadTimers.add(stalledRead);
+        stalledRead.start();
+        // Each visible query proves a finite boundary independently. A slow
+        // directory cannot prevent a different Agent's status from refreshing.
+        void reconcilePhaseQueriesAfterBoundary(queryClient, [query], new Map([[query, boundary]]),
+          () => !stopped && !disconnected && browserPageIsVisible() && generation === recoveryGeneration)
+          .then(reconciled => {
+            if (stopped || generation !== recoveryGeneration) return;
+            if (!reconciled) {
+              if (query.isActive()) failedPhaseQueries.add(query);
+              return;
+            }
+            verified = true;
+            failedPhaseQueries.delete(query);
+            recoveryQueries.delete(query);
+            // A newer event still requires its own distinct fetch. Never erase
+            // that boundary when an older, correctly fenced batch completes.
+            if (phaseQueryBoundaries.get(query) === boundary) phaseQueryBoundaries.delete(query);
           })
+          .catch(() => { if (!stopped && generation === recoveryGeneration && query.isActive()) failedPhaseQueries.add(query); })
           .finally(() => {
-            phaseReconcileInFlight = false;
-            if (urgentPhasePending && !deferredStrictRetry && !stopped && !disconnected) phaseRefresh.schedule(true);
+            stalledRead.dispose();
+            phaseReadTimers.delete(stalledRead);
+            inFlightPhaseQueries.delete(query);
+            if (stopped) return;
+            diagnostics.refreshMs = Date.now() - startedAt;
+            if (failedPhaseQueries.size) foregroundWarning.start();
+            completePhaseRefresh(verified);
+            if (phaseQueryBoundaries.size) phaseRefresh.schedule();
           });
-        return;
       }
-      void reconcilePhaseQueriesAfterBoundary(
-        queryClient,
-        activePhaseQueries().filter(query => boundaries.has(query)),
-        boundaries,
-        () => !stopped && !disconnected && generation === phaseReconcileGeneration,
-      )
-        .then(reconciled => {
-          if (stopped || disconnected) return;
-          if (generation !== phaseReconcileGeneration) {
-            phaseRefresh.schedule();
-            return;
-          }
-          if (!reconciled) {
-            scheduleStrictRetry();
-            return;
-          }
-          phaseQueryBoundaries = new Map();
-          awaitingRecovery = false;
-          clearConnectionTimers();
-          setConnection(current => ({ ...current, status: "live", phaseEvidenceFresh: true,
-            lastSuccessfulSyncAt: new Date().toISOString(), prolongedDisconnect: false,
-            retrying: false, announcement: undefined }));
-        })
-        .catch(() => {
-          scheduleStrictRetry();
-        })
-        .finally(() => {
-          phaseReconcileInFlight = false;
-          if (urgentPhasePending && !deferredStrictRetry && !stopped && !disconnected) phaseRefresh.schedule(true);
-        });
+      completePhaseRefresh(phaseQueryBoundaries.size === 0);
     };
     const phaseRefresh = createBoundedRefresh(runPhaseRefresh, 5_000);
     const schedulePhaseReconciliation = (urgent = false) => {
       if (stopped || disconnected || !connectedOnce) return;
       if (phaseCatchUpCursor !== undefined && cursor.current < phaseCatchUpCursor) return;
-      urgentPhasePending ||= urgent;
       phaseRefresh.schedule(urgent);
     };
     const queueAgentRoster = (projectId: string) => {
@@ -680,31 +679,34 @@ export function useWorkspaceStream(
       void queryClient.invalidateQueries({ queryKey: queryKeys.agents.project(projectId), refetchType: "none" });
     };
     const onVisibilityChange = () => {
-      if (browserPageIsVisible() && (pendingRosterProjects.size || phaseQueryBoundaries.size)) {
+      // Hidden time is suspension, not evidence of a sustained foreground
+      // failure. Preserve canonical data and useful background stream work.
+      recoveryGeneration += 1;
+      markPhaseEvidenceStale();
+      for (const query of activePhaseQueries()) recoveryQueries.add(query);
+      awaitingRecovery = true;
+      setConnection(current => ({ ...current, status: connectedOnce ? "reconnecting" : "connecting",
+        phaseEvidenceFresh: false, prolongedDisconnect: false, refreshErrorResources: undefined,
+        announcement: undefined }));
+      if (browserPageIsVisible()) {
+        foregroundWarning.start();
         schedulePhaseReconciliation(true);
       }
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
     const unsubscribePhaseQueryCache = queryClient.getQueryCache().subscribe(event => {
-      if (
-        event.type !== "observerAdded"
-        && event.type !== "observerRemoved"
-        && event.type !== "observerOptionsUpdated"
-        && event.type !== "removed"
-      ) return;
-      const [root, kind] = event.query.queryKey;
-      if (
-        root !== queryKeys.agents.healthAll[0]
-        && root !== queryKeys.agents.organizationAll[0]
-        && !(root === queryKeys.workspaceDirectory.all[0] && kind === "agent")
-      ) return;
-      const nextActivePhaseQueries = new Set(activePhaseQueries());
-      if (
-        nextActivePhaseQueries.size === observedActivePhaseQueries.size
-        && [...nextActivePhaseQueries].every(query => observedActivePhaseQueries.has(query))
-      ) return;
-      observedActivePhaseQueries = nextActivePhaseQueries;
-      markPhaseEvidenceStale();
+      if (!["observerAdded", "observerRemoved", "observerOptionsUpdated", "removed"].includes(event.type)) return;
+      const next = new Set(activePhaseQueries());
+      const added = [...next].filter(query => !observedActivePhaseQueries.has(query));
+      const changed = added.length || [...observedActivePhaseQueries].some(query => !next.has(query));
+      if (!changed) return;
+      observedActivePhaseQueries = next;
+      for (const [query, boundary] of capturePhaseQueryBoundaries(added)) {
+        phaseQueryBoundaries.set(query, boundary);
+        if (awaitingRecovery) recoveryQueries.add(query);
+      }
+      prunePhaseQueries();
+      if (added.length) setConnection(current => ({ ...current, phaseEvidenceFresh: false }));
       schedulePhaseReconciliation(true);
     });
     const invalidateAll = () => {
@@ -735,6 +737,7 @@ export function useWorkspaceStream(
       invalidate(queryKeys.queuedMessages.agentsAll);
       invalidate(["targeted-next-run"]);
       invalidate(queryKeys.workspaceDirectory.all);
+      invalidate(queryKeys.branchesHome.all);
       invalidate(["engine-capabilities"]);
       invalidate(queryKeys.notifications.all);
       invalidateActiveQueries(queryClient, queryKeys.agents.all);
@@ -748,7 +751,7 @@ export function useWorkspaceStream(
       invalidate(queryKeys.tokenUsage.all);
       invalidate(queryKeys.providerUsage.all);
       invalidate(queryKeys.globalSearch.all);
-      invalidate(queryKeys.allChatAll);
+      invalidate(queryKeys.inboxAll);
       invalidate(queryKeys.workspaceResourceRecency.all);
       invalidate(queryKeys.agentWork.all);
     };
@@ -761,15 +764,16 @@ export function useWorkspaceStream(
       if (reconciliation.duplicate) return;
       cursor.current = reconciliation.cursor;
       persistWorkspaceCursor(reconciliation.cursor, instanceId.current ?? undefined);
+      if (envelope.replayed) diagnostics.replayEvents += 1;
       const event = envelope.event;
       const changesPhaseEvidence = workspaceAgentEventChangesPhase(event)
         || event.type === "coordination_changed"
         || (event.type === "notification_changed" && Boolean(event.decisionId));
+      if (reconciliation.gap && !awaitingRecovery) beginRecovery();
       if (reconciliation.gap || envelope.replayed || changesPhaseEvidence) {
         const interruptedContinuity = Boolean(reconciliation.gap || envelope.replayed);
         markPhaseEvidenceStale(interruptedContinuity
-          ? undefined : "projectId" in event ? event.projectId : undefined,
-          interruptedContinuity);
+          ? undefined : "projectId" in event ? event.projectId : undefined);
       }
       const deletedProjectId = reconcileDeletedProjectEvent(
         envelope,
@@ -819,7 +823,7 @@ export function useWorkspaceStream(
         return;
       }
       if (workspaceEventInvalidatesGlobalSearch(event)) communicationRefresh.schedule(queryKeys.globalSearch.all);
-      if (workspaceEventInvalidatesAllChat(event)) communicationRefresh.schedule(queryKeys.allChatAll);
+      if (workspaceEventInvalidatesInbox(event)) communicationRefresh.schedule(queryKeys.inboxAll);
       if (workspaceEventChangesResourceRecency(event) || preferenceStarsChanged) {
         workspaceRecencyInvalidator.schedule();
         // User navigation, authored Chat changes, and terminal lifecycle
@@ -830,6 +834,8 @@ export function useWorkspaceStream(
           workspaceRecencyInvalidator.flush();
         }
       }
+      if (event.type === "resource_used" && event.kind === "conversation") directoryInvalidator.schedule("conversation");
+      if (event.type === "resource_used" && event.kind === "branch") communicationRefresh.schedule(["branches"]);
       if (event.type === "preferences_updated") {
         engineStatusRefresh.schedule();
         for (const kind of preferenceDirectoryKinds) {
@@ -852,10 +858,11 @@ export function useWorkspaceStream(
       if (event.type === "provider_status_changed") { engineStatusRefresh.schedule(); return; }
       if (event.type === "preferences_updated") return;
       if (event.type === "project_changed") {
+        if (event.action !== "used") { invalidate(["assistant-status"]); invalidate(["output-app"]); }
         invalidate(queryKeys.projects.all);
         if (event.action !== "used") {
           invalidate(queryKeys.agents.project(event.projectId));
-          invalidate(queryKeys.agents.allChat);
+          invalidate(queryKeys.agents.inbox);
           invalidate(queryKeys.agents.detailAll);
         }
         // Mark collapsed sibling pages stale as ownership may have changed,
@@ -899,6 +906,7 @@ export function useWorkspaceStream(
         agentWorkInvalidator.flush();
       }
       else if (event.type === "coordination_changed") {
+        agentDetailInvalidator.schedule(event.agentId);
         queueAgentRoster(event.projectId);
         agentWorkInvalidator.schedule(event.projectId);
         collaborationChatInvalidator.schedule(event.conversationIds);
@@ -968,67 +976,43 @@ export function useWorkspaceStream(
     };
     let subscription: StreamSubscription | undefined;
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
-    let reconnectingNoticeTimer: ReturnType<typeof setTimeout> | undefined;
-    let staleNoticeTimer: ReturnType<typeof setTimeout> | undefined;
-    let manualRetryTimer: ReturnType<typeof setTimeout> | undefined;
     let instanceMismatchDelay = INSTANCE_MISMATCH_INITIAL_DELAY_MS;
-    const clearConnectionTimers = () => {
-      if (reconnectingNoticeTimer) clearTimeout(reconnectingNoticeTimer);
-      if (staleNoticeTimer) clearTimeout(staleNoticeTimer);
-      if (manualRetryTimer) clearTimeout(manualRetryTimer);
-      reconnectingNoticeTimer = undefined;
-      staleNoticeTimer = undefined;
-      manualRetryTimer = undefined;
+    const foregroundWarning = createForegroundTimer(() => {
+      if (stopped) return;
+      if (disconnected || awaitingRecovery) setConnection(current => ({ ...current,
+        status: current.lastSuccessfulSyncAt ? "stale" : "unavailable", prolongedDisconnect: true,
+        retrying: false, announcement: "Live workspace updates are unavailable.",
+        refreshErrorResources: failedPhaseQueries.size ? [...new Set([...failedPhaseQueries].map(resourceName))] : undefined, diagnostics: { ...diagnostics } }));
+      else if (failedPhaseQueries.size) setConnection(current => ({ ...current,
+        refreshErrorResources: [...new Set([...failedPhaseQueries].map(resourceName))], diagnostics: { ...diagnostics } }));
+    }, STALE_NOTICE_DELAY_MS);
+    const clearConnectionTimers = () => foregroundWarning.clear();
+    const beginRecovery = (cancelPending = false) => {
+      recoveryGeneration += 1;
+      markPhaseEvidenceStale();
+      for (const query of activePhaseQueries()) recoveryQueries.add(query);
+      // A hung pre-boundary read must not trap a manual retry or resume. This
+      // cancels read queries only, preserving their last data and runtime work.
+      if (cancelPending) void queryClient.cancelQueries({ predicate: query => recoveryQueries.has(query) });
+      awaitingRecovery = true;
+      foregroundWarning.start();
     };
     const noteDisconnect = () => {
       if (stopped || disconnected) return;
       disconnected = true;
-      setConnection(current => current.retrying ? { ...current, retrying: false,
-        status: current.lastSuccessfulSyncAt ? "stale" : "unavailable",
-        announcement: "Still unable to connect. Automatic retries will continue." } : current);
-      markPhaseEvidenceStale();
-      reconnectingNoticeTimer = setTimeout(() => {
-        reconnectingNoticeTimer = undefined;
-        if (!stopped && disconnected) {
-          setConnection(current => ({
-            ...current,
-            status: connectedOnce ? "reconnecting" : "connecting",
-          }));
-        }
-      }, RECONNECTING_NOTICE_DELAY_MS);
-      staleNoticeTimer ??= setTimeout(() => {
-        staleNoticeTimer = undefined;
-        if (!stopped && (disconnected || awaitingRecovery)) {
-          setConnection(current => ({
-            ...current,
-            status: connectedOnce ? "stale" : "unavailable",
-            prolongedDisconnect: true,
-            retrying: false,
-            announcement: "Live workspace updates are unavailable.",
-          }));
-        }
-      }, STALE_NOTICE_DELAY_MS);
+      diagnostics.disconnects += 1;
+      beginRecovery(true);
+      setConnection(current => ({ ...current, status: current.prolongedDisconnect ? current.status
+        : connectedOnce ? "reconnecting" : "connecting", phaseEvidenceFresh: false }));
     };
     const noteConnected = () => {
       if (disconnected || !connectedOnce) engineStatusRefresh.schedule();
       disconnected = false;
-      awaitingRecovery = true;
-      if (reconnectingNoticeTimer) clearTimeout(reconnectingNoticeTimer);
-      reconnectingNoticeTimer = undefined;
-      // Opening the transport proves no query freshness. Keep the compact
-      // delayed status until cursor catch-up and the fenced refresh succeed.
+      beginRecovery();
+      replayStartedAt = Date.now();
       setConnection(current => ({ ...current,
-        status: current.prolongedDisconnect ? "reconnecting" : "connecting",
-        phaseEvidenceFresh: false, announcement: undefined,
-      }));
-      staleNoticeTimer ??= setTimeout(() => {
-        staleNoticeTimer = undefined;
-        if (!stopped && awaitingRecovery) setConnection(current => ({ ...current,
-          status: current.lastSuccessfulSyncAt ? "stale" : "unavailable",
-          prolongedDisconnect: true, retrying: false }));
-      }, STALE_NOTICE_DELAY_MS);
-      // A contiguous cursor replay applies targeted invalidations. Only a
-      // reset/gap below requires a full cache refresh after reconnect.
+        status: current.prolongedDisconnect ? current.status : "connecting",
+        phaseEvidenceFresh: false, announcement: undefined }));
       connectedOnce = true;
     };
     const connect = (lastSeenId: number) => {
@@ -1040,7 +1024,10 @@ export function useWorkspaceStream(
             instanceId.current && instanceId.current !== status.instanceId,
           );
           if (changedInstance) {
-            markPhaseEvidenceStale();
+            disconnected = true;
+            beginRecovery(true);
+            setConnection(current => ({ ...current, status: current.prolongedDisconnect ? current.status : "reconnecting",
+              phaseEvidenceFresh: false }));
             phaseCatchUpCursor = undefined;
             cursor.current = 0;
             instanceId.current = status.instanceId;
@@ -1087,21 +1074,19 @@ export function useWorkspaceStream(
       });
       subscription = nextSubscription;
     };
-    if (retryGeneration > 0) manualRetryTimer = setTimeout(() => {
-      setConnection(current => current.retrying ? { ...current, retrying: false,
-        status: current.lastSuccessfulSyncAt ? "stale" : "unavailable",
-        announcement: "The connection has not recovered yet. Automatic retries will continue." } : current);
-    }, STALE_NOTICE_DELAY_MS);
+    foregroundWarning.start();
+    if (retryGeneration > 0) beginRecovery(true);
     connect(cursor.current);
     return () => {
       stopped = true;
       communicationRefresh.dispose();
       subscription?.close();
       if (reconnectTimer) clearTimeout(reconnectTimer);
-      clearConnectionTimers();
+      foregroundWarning.dispose();
+      for (const timer of phaseReadTimers) timer.dispose();
+      phaseReadTimers.clear();
       if (replayReconcileTimer) clearTimeout(replayReconcileTimer);
       if (replayChatTimer) clearTimeout(replayChatTimer);
-      if (phaseQuietTimer) clearTimeout(phaseQuietTimer);
       phaseRefresh.dispose();
       document.removeEventListener("visibilitychange", onVisibilityChange);
       unsubscribePhaseQueryCache();

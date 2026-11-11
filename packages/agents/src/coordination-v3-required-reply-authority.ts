@@ -12,6 +12,29 @@ import { delegationOriginsForActivation, hasOutstandingDelegation, taskOriginRun
 import type { CreateActivationV3Input } from "./coordination-v3-runtime-communication-authority.js";
 import { providerRecoveryAttempts } from "./coordination-v3-provider-recovery.js";
 
+/** Exact human steer whose provider submission could have taken effect. */
+export function hasUnresolvedHumanSteering(sqlite: Database.Database, runId: string): boolean {
+  return Boolean(sqlite.prepare(`SELECT 1 FROM scheduler_prompt_injections injection,
+    json_each(injection.activation_ids_json) member
+    JOIN agent_activations activation ON activation.id=member.value
+    WHERE injection.run_id=? AND injection.kind='steer' AND injection.state IN ('pending','submitted','outcome_unknown')
+      AND activation.prompt_class='human' LIMIT 1`).get(runId));
+}
+
+/** Restore only initial responses when this exact Run's human steer became unknown. */
+export function preserveInitialRepliesForUnknownSteering(sqlite: Database.Database, runId: string, now: string): void {
+  const unknown=sqlite.prepare(`SELECT 1 FROM scheduler_prompt_injections injection,
+    json_each(injection.activation_ids_json) member
+    JOIN agent_activations activation ON activation.id=member.value
+    WHERE injection.run_id=? AND injection.kind='steer' AND injection.state='outcome_unknown'
+      AND activation.prompt_class='human' LIMIT 1`).get(runId);
+  if (!unknown) return;
+  sqlite.prepare(`UPDATE required_reply_obligations SET delivery_phase='final',state='pending',
+    interim_communication_id=COALESCE(interim_communication_id,satisfied_communication_id),
+    satisfied_communication_id=NULL,terminal_at=NULL,updated_at=?
+    WHERE run_id=? AND delivery_phase='initial' AND state='satisfied'`).run(now,runId);
+}
+
 const MAX_REQUIRED_REPLY_ATTEMPTS = MAX_PROVIDER_RECOVERY_ATTEMPTS - 1;
 const REQUIRED_REPLY_EXHAUSTED_ERROR =
   `Required Chat reply was not published after ${MAX_REQUIRED_REPLY_ATTEMPTS + 1} provider Runs. Automatic recovery stopped; use Try Delivery Again to start an explicit bounded retry.`;
@@ -119,6 +142,35 @@ export function communicationSatisfiesReplyAuthority(
   const actual = [...new Set(audience.agentIds)].sort();
   return stableJson(expected) === stableJson(actual);
 }
+
+export function unfinishedHumanSourceActivationIds(sqlite: Database.Database, runId: string): string[] {
+    return (sqlite.prepare(`WITH RECURSIVE roots AS (
+      SELECT * FROM required_reply_obligations WHERE run_id=? AND state IN ('pending','recovery_pending')
+    ), task_runs(id) AS (
+      SELECT run_id FROM roots UNION
+      SELECT prior.run_id FROM roots root JOIN required_reply_obligations prior
+        ON root.delivery_phase='final' AND prior.source_activation_id=root.source_activation_id
+        AND prior.agent_id=root.agent_id AND prior.project_id=root.project_id AND prior.scope_key=root.scope_key
+    ), sources(id) AS (
+      SELECT source_activation_id FROM roots
+      UNION
+      SELECT member.value FROM task_runs task JOIN scheduler_prompt_injections injection ON injection.run_id=task.id
+        AND injection.state='acknowledged' JOIN json_each(injection.activation_ids_json) member
+      UNION
+      SELECT prior.source_activation_id FROM sources
+      JOIN required_reply_obligations prior ON prior.recovery_activation_id=sources.id
+      JOIN scheduler_runs current ON current.id=?
+      WHERE prior.agent_id=current.agent_id AND prior.project_id=current.project_id
+        AND prior.scope_key=current.scope_key
+    ) SELECT activation.id FROM sources JOIN agent_activations activation ON activation.id=sources.id
+      JOIN scheduler_runs current ON current.id=?
+      WHERE activation.kind='human_message' AND activation.agent_id=current.agent_id
+        AND activation.project_id=current.project_id AND activation.scope_key=current.scope_key
+        AND json_extract(activation.payload_json,'$.communication.sender.kind')='user'
+      ORDER BY activation.created_at, activation.rowid`)
+      .all(runId, runId, runId) as Array<{ id: string }>).map(row => row.id);
+  }
+
 
 export class CoordinationV3RequiredReplyAuthority {
   constructor(
@@ -445,7 +497,25 @@ export class CoordinationV3RequiredReplyAuthority {
     activations: readonly ActivationInput[];
     now: string;
   }): RequiredReplyObligation[] {
-    this.transferContextRolloverObligations(input);
+    const pausedOrigins=input.activations.flatMap(activation=>{
+      const row=this.sqlite.prepare(`SELECT COALESCE((SELECT previous.run_id FROM agent_pause_recoveries previous
+          WHERE previous.pause_id=pause.id AND previous.state='rejected' AND previous.run_id IS NOT NULL
+            AND previous.rowid<recovery.rowid ORDER BY previous.rowid DESC LIMIT 1),pause.run_id) AS run_id
+        FROM agent_pause_recoveries recovery
+        JOIN agent_run_pauses pause ON pause.id=recovery.pause_id
+        WHERE recovery.activation_id=? AND recovery.run_id=? AND pause.agent_id=? AND pause.state='resume_requested'`)
+        .get(activation.id,input.runId,input.agentId) as {run_id:string}|undefined;
+      return row?[row.run_id]:[];
+    });
+    this.transferFromOrigins(input,pausedOrigins,false,true);
+    this.transferContextRolloverObligations(input,pausedOrigins.length>0);
+    // A reviewed interruption continues the exact existing root even when the
+    // original Run had not yet sent its initial reply.
+    const reviewedActivations = input.activations.filter(a => Boolean(this.sqlite.prepare(
+      "SELECT 1 FROM activation_sources WHERE activation_id=? AND source_kind='reviewed_steering'"
+    ).get(a.id)));
+    this.transferFromOrigins(input, reviewedActivations.flatMap(a =>
+      delegationOriginsForActivation(this.sqlite, a.id)), false);
     this.transferFromOrigins(input, input.activations.flatMap(a =>
       delegationOriginsForActivation(this.sqlite, a.id)), true);
     const inheritedFinalRoutes = new Set(input.activations.flatMap(a => delegationOriginsForActivation(this.sqlite, a.id))
@@ -465,6 +535,13 @@ export class CoordinationV3RequiredReplyAuthority {
       // obligation even when its route happens to match that root.
       if (source && ['coordination_outcome', 'coordination_join_satisfied', 'coordination_join_impossible'].includes(source.kind) &&
           inheritedFinalRoutes.has(stableJson(obligation.replyAuthority))) continue;
+      // Reviewed recovery already transferred its original reply root above.
+      if (reviewedActivations.some(a => a.id === obligation.activationId) &&
+          this.sqlite.prepare(`SELECT 1 FROM required_reply_obligations prior
+            JOIN required_reply_obligations current ON current.source_activation_id=prior.source_activation_id
+            WHERE prior.recovery_activation_id=? AND current.run_id=?
+              AND prior.project_id=? AND prior.agent_id=? AND prior.scope_key=?`)
+            .get(obligation.activationId,input.runId,input.projectId,input.agentId,input.scopeKey)) continue;
       // Final-delivery recovery retains one root and increments its existing
       // generation. Do not also create a second initial-response obligation.
       if (input.activations.some(a => a.id === obligation.activationId && a.kind === 'required_reply_recovery') &&
@@ -526,7 +603,7 @@ export class CoordinationV3RequiredReplyAuthority {
     scopeKey: string;
     activations: readonly ActivationInput[];
     now: string;
-  }): void {
+  }, paused = false): void {
     const continuations = input.activations.filter(
       (activation) => activation.kind === "context_rollover_continuation",
     );
@@ -616,13 +693,13 @@ export class CoordinationV3RequiredReplyAuthority {
     if (attachedSourceCount.count !== sourceActivationIds.length) {
       throw new Error("context rollover source activation lineage conflicts with its source Run");
     }
-    this.transferFromOrigins(input, [rollover.source_run_id]);
+    this.transferFromOrigins(input, [rollover.source_run_id],false,paused);
   }
 
   private transferFromOrigins(input: {
     runId: string; projectId: string; agentId: string; scopeKey: string; now: string;
     activations?: readonly ActivationInput[];
-  }, originRunIds: string[], finalOnly = false): void {
+  }, originRunIds: string[], finalOnly = false, paused = false): void {
     for (const originRunId of new Set(originRunIds)) {
       const roots = this.forRun(originRunId).filter(o =>
         o.projectId === input.projectId && o.agentId === input.agentId && o.scopeKey === input.scopeKey);
@@ -648,9 +725,9 @@ export class CoordinationV3RequiredReplyAuthority {
         // ordinary callbacks cannot revive completed or cancelled work.
         const answeredInitial = predecessor.deliveryPhase === 'initial' && ['pending','satisfied'].includes(predecessor.state) &&
           answeredDecision && row?.run_status !== 'cancelled';
-        const satisfiedInitial = answeredInitial && predecessor.state === 'satisfied';
-        if (!["pending", "recovery_pending", "retried"].includes(predecessor.state) && !answeredInitial) continue;
-        if (finalOnly && predecessor.deliveryPhase !== 'final' && !answeredInitial) continue;
+        const satisfiedInitial = (answeredInitial || paused) && predecessor.state === 'satisfied';
+        if (!["pending", "recovery_pending", "retried"].includes(predecessor.state) && !answeredInitial && !(paused && predecessor.state === "satisfied")) continue;
+        if (finalOnly && predecessor.deliveryPhase !== 'final' && !answeredInitial && !(paused && predecessor.state === "satisfied")) continue;
         this.sqlite.prepare(`
           INSERT OR IGNORE INTO required_reply_obligations (
             run_id, source_activation_id, project_id, agent_id, scope_key, reply_authority_json,
@@ -901,6 +978,13 @@ export class CoordinationV3RequiredReplyAuthority {
     ).values()];
   }
 
+  /** Original human inputs remain required reconstruction material while their
+   * exact task is unfinished. Follow bounded delivery recovery, never peer prose,
+   * and never widen the Run's Agent/Chat ownership. UNION also rejects cycles. */
+  unfinishedHumanSourceActivationIds(runId: string): string[] {
+    return unfinishedHumanSourceActivationIds(this.sqlite, runId);
+  }
+
   markSatisfied(input: {
     runId: string;
     communicationId: string;
@@ -916,6 +1000,10 @@ export class CoordinationV3RequiredReplyAuthority {
       WHERE run_id = ? AND source_activation_id = ? AND state = 'pending'
     `);
     let satisfied = 0;
+    const uncertainSteering = hasUnresolvedHumanSteering(this.sqlite, input.runId);
+    if (uncertainSteering && input.taskDelivery === "final") {
+      throw new Error("steering_delivery_unconfirmed: review the uncertain instruction before marking the whole task complete");
+    }
     const obligations = this.forRun(input.runId);
     if (input.sourceActivationIds) for (const id of input.sourceActivationIds) {
       const obligation = obligations.find(o => o.sourceActivationId === id);
@@ -929,13 +1017,16 @@ export class CoordinationV3RequiredReplyAuthority {
       if (obligation.state !== "pending" ||
           !communicationSatisfiesReplyAuthority(obligation.replyAuthority, input.intent, input.audience)) continue;
       if (obligation.deliveryPhase === 'final' && obligation.interimCommunicationId === input.communicationId) continue;
+      if (input.taskDelivery === 'blocked' && !obligation.blockingDecisionId) {
+        throw new Error('task_delivery_blocker_required: create an actionable blocking Decision; unfinished work or a completed batch is not a task blocker');
+      }
       if (obligation.deliveryPhase === 'final' && input.taskDelivery === 'final' &&
           (obligation.blockingDecisionId || hasOutstandingDelegation(this.sqlite, obligation))) {
         throw new Error('task_delivery_dependencies_pending: integrate the exact pending results or publish an explicit blocked outcome');
       }
       // A blocked status can accompany an actionable Decision, but must not
       // sever the exact answer's continuation from its unfinished task.
-      if (obligation.deliveryPhase === "final" && (!input.taskDelivery || obligation.blockingDecisionId)) {
+      if (uncertainSteering || obligation.blockingDecisionId || (obligation.deliveryPhase === "final" && !input.taskDelivery)) {
         this.sqlite.prepare(`UPDATE required_reply_obligations SET interim_communication_id = ?, updated_at = ?
           WHERE run_id = ? AND source_activation_id = ? AND state = 'pending'`)
           .run(input.communicationId, input.now, input.runId, obligation.sourceActivationId);
@@ -953,6 +1044,34 @@ export class CoordinationV3RequiredReplyAuthority {
   }
 
   recoverPending(runId: string, now: string): RequiredReplyObligation[] {
+    // An operator-reviewed continuation must never acquire an automatic
+    // successor after its outcome becomes uncertain.
+    if (this.sqlite.prepare(`SELECT 1 FROM scheduler_run_activations attached
+      JOIN activation_sources source ON source.activation_id=attached.activation_id
+      WHERE attached.run_id=? AND source.source_kind='reviewed_steering' LIMIT 1`).get(runId))
+      return this.forRun(runId);
+    // Do not restart an objective while the exact human steer may already have acted.
+    if (hasUnresolvedHumanSteering(this.sqlite, runId)) {
+      preserveInitialRepliesForUnknownSteering(this.sqlite, runId, now);
+      return this.forRun(runId);
+    }
+    // A failed or uncertain, unverified rollover owns its original handoff and
+    // task obligations. Ordinary reply recovery must not silently resume the
+    // old provider session or replay potentially uncertain effects.
+    const heldRollover = this.sqlite.prepare(`SELECT 1 FROM scheduler_runs run
+      JOIN context_rollovers rollover ON rollover.agent_id=run.agent_id
+        AND rollover.project_id=run.project_id AND rollover.scope_key=run.scope_key
+      WHERE run.id=? AND rollover.state IN ('failed','outcome_unknown','continuation_ready')
+        AND rollover.replacement_verified_at IS NULL AND (
+          rollover.replacement_run_id=run.id OR EXISTS (
+            SELECT 1 FROM scheduler_run_activations attached
+            LEFT JOIN activation_sources recovery ON recovery.activation_id=attached.activation_id
+              AND recovery.source_kind IN ('context_rollover','context_rollover_recovery') AND recovery.source_id=rollover.id
+            WHERE attached.run_id=run.id
+              AND (attached.activation_id=rollover.continuation_activation_id OR recovery.activation_id IS NOT NULL)
+          )
+        ) LIMIT 1`).get(runId);
+    if (heldRollover) return this.forRun(runId);
     if (!this.repairCanonicalDecisionWait(runId, now)) return this.forRun(runId);
     const run = this.sqlite.prepare('SELECT provider_failure_json FROM scheduler_runs WHERE id=?').get(runId) as { provider_failure_json: string | null } | undefined;
     let failure: Record<string, unknown> | undefined;
@@ -1004,7 +1123,7 @@ export class CoordinationV3RequiredReplyAuthority {
           WHERE id = ? AND state IN ('consumed', 'outcome_unknown')
         `).run(
           attempts,
-          category === "quota_exhausted" || category === "throttled" ? "rate_limit" : category ?? null,
+          (category === 'quota_exhausted' || category === 'throttled') ? 'rate_limit' : category ?? null,
           error,
           exhausted ? 'retry_exhausted' : 'permanent_failure',
           now,

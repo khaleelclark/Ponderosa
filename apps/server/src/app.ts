@@ -1,3 +1,19 @@
+import {createActiveAccessRevocation} from './active-access-revocation.js';
+import {sealProviderNeverStarted} from '@ponderosa/agents';
+import {ProviderStartAuthority} from './provider-start-authority.js';
+import {registerAgentWorkspaceActions} from './routes/agent-workspace.js';
+import {registerLocalMemory,localMemoryFor} from "./local-memory.js";
+import {isMemoryCleanupHold} from "./local-memory-authority.js";
+import {BranchScriptService} from "./branch-script-service.js";
+import {BranchTriggerSourceService} from "./branch-trigger-service.js";
+import {freshFailureDiagnostic} from "./working-copy-diagnostic.js";
+import {registerCapabilityRoutes} from './routes/capabilities.js';
+import {OutputAgentApps} from './output-agent-apps.js';
+import {registerBranchRoutes} from './routes/branches.js';
+import {registerProductScope,rewriteProductUrl} from './product-scope.js';
+import {BranchResourceService} from "./branch-resource-service.js";
+import {BranchInstallationService} from "./branch-installation-service.js";
+import {BranchStore} from "@ponderosa/agents";
 import { chatBrowserOwnerId, browserOwnerId } from "@ponderosa/core";
 import { AgentStore, CoordinationV3Store, ProjectDeletionInProgressError, WorkspaceStore, type LogEvent } from "@ponderosa/agents";
 import { windowsJobObjectsSupported } from "@ponderosa/native-host";
@@ -33,6 +49,7 @@ import { createCommunicationArtifactAuthority } from "./communication-artifacts.
 import { createCommunicationJournal } from "./communication-journal.js";
 import { createCommunicationProjectionReconciler } from "./communication-projection-reconciler.js";
 import { ContextCursorStore } from "./context-cursors.js";
+import { reconcileSettingsTransitionReservations } from "./context-transition-admission.js";
 import { createCoordinationScheduler } from "./coordination-scheduler-service.js";
 import { createDeploymentControl } from "./deployment-control.js";
 import { EngineAuthStatusCache } from "./engine-auth-cache.js";
@@ -44,15 +61,11 @@ import {
   ProviderAdapterBoundaryError,
 } from "./engine-control-plane.js";
 import { createLinkPreviewService } from "./link-preview-service.js";
-import { createLauncherSecurity } from "./launcher-security.js";
+
 import { createOperationalNotifications } from "./operational-notifications.js";
 import {
   descriptorRelativeFilesystemCapability
 } from "./project-file-access.js";
-import {
-  publicWebAssetPaths,
-  publicWebAssetRequest,
-} from "./public-web-assets.js";
 import { ProviderUsageCache } from "./provider-usage-cache.js";
 import { providerUnavailableNotificationBody } from "./provider-availability-detail.js";
 import { restrictedProviderExceptionLogDetail } from "./provider-exception-properties.js";
@@ -132,18 +145,10 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     opts = { ...opts, reportedDataDir: opts.reportedDataDir ?? opts.dataDir, dataDir: admission.dataDir };
   } finally { admission.close(); }
   cleanupAllRuntimeAttachments(opts.dataDir);
-  const {
-    networkSecurity,
-    launcherNow,
-    launcherRandomToken,
-    launcherBootstrapTtlMs,
-    launcherSessionTtlMs,
-    launcherBootstraps,
-    issueLauncherSession,
-    purgeLauncherSecurityState,
-    validLauncherSession,
-  } = createLauncherSecurity(opts, store.sqlite);
-  const publicWebAssets = publicWebAssetPaths(opts.webDist);
+  const networkSecurity: import("@ponderosa/core").ReadinessDto["networkSecurity"] = {
+    mode: "trusted_network", bindHost: opts.networkSecurity?.bindHost ?? "127.0.0.1",
+    authenticationRequired: false, detail: "Network access is managed by the user; browser origin checks remain enabled.",
+  };
   const artifactFilesystem = descriptorRelativeFilesystemCapability(opts.dataDir);
   const processContainment = process.platform === "win32"
     ? windowsJobObjectsSupported()
@@ -241,6 +246,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   } = createCommunicationArtifactAuthority({ dataDir: opts.dataDir, assets, store });
   const coordinationV3WorkerId = `server:${randomUUID()}`;
   const providerProcessAuthority = new ProviderProcessAuthority(store.sqlite, coordinationV3WorkerId);
+  const providerStarts = new ProviderStartAuthority(store.sqlite,coordinationV3WorkerId,providerProcessAuthority);
   const runtimeElicitations = new RuntimeElicitationBroker();
   // Startup recovery terminates any surviving prior-boot provider group before
   // readiness. Retire prompts whose sensitive live half cannot cross the boot.
@@ -274,8 +280,17 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   const reconcileCommittedProjectDeletions = (): void => {
     reconcileProjectDeletionsWorkspace(store, workspace, publishWorkspace);
   };
+  const activeContextRecoveries=new Map<string,import("./routes/provider-commands.js").ContextRecoveryOperation>();
+  const contextRecoveryMaintenance={reconcile:async()=>{},recovering:(_agentId:string)=>false};
+  const contextRecoveryActivity=(agentId:string):"running"|"cleanup_pending"|"idle"=>{const operation=activeContextRecoveries.get(agentId);if(!operation)return contextRecoveryMaintenance.recovering(agentId)?'running':'idle';
+    if(operation.phase==='cleanup_pending'&&(coordinationV3.contextRecovery.active(agentId)?.progress?.maintenanceAttempts??0)>=3)return 'idle';
+    return operation.phase==='cleanup_pending'?'cleanup_pending':'running';};
+  const contextRecoveryRunning=(agentId:string)=>contextRecoveryActivity(agentId)!=='idle';
   const { vapid, webPushConfiguration, webPushConfigurationDetail, webPushConfigured, webPushDelivery } =
-    createWebPushConfiguration(opts.dataDir, workspace, publishWorkspaceSince);
+    createWebPushConfiguration(opts.dataDir, workspace, publishWorkspaceSince, store, () => {
+      reconcileCommunicationFailureNotifications();
+      reconcileSettingsTransitionReservations({ app, store, coordinationV3, workspace, createOperationalNotification, resolveOperationalNotification,contextRecoveryRunning });
+    }, error => app.log.error({ err: error }, "notification reconciliation before push failed"));
   store.recoverInterruptedExecutions();
   let closed = false;
   const diagnosticOperations = new Set<Promise<unknown>>();
@@ -305,7 +320,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       void operation.then(() => diagnosticOperations.delete(operation), () => diagnosticOperations.delete(operation));
       return operation;
     };
-    return [engine.adapter.id, { ...engine,
+    return [engine.adapter.id, { ...engine, adapter:providerStarts.wrap(engine.adapter),
       ...(engine.authStatus ? { authStatus: diagnostic("authentication", options => engine.authStatus!(options)) } : {}),
       ...(engine.availabilityProbe ? { availabilityProbe: diagnostic("availability", options => engine.availabilityProbe!(options)) } : {}),
     }];
@@ -331,7 +346,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   };
   applyOperatorModelOptions();
   const tokenUsage = (
-    scope: { type: "overall" } | { type: "project" | "agent" | "conversation"; id: string },
+    scope: Parameters<AgentStore['getTokenUsage']>[0],
     range: TokenUsageRangeDto = {},
   ): TokenUsageSummaryDto => store.getTokenUsage(scope, range);
   const activeRuns = new Map<string, ActiveRun>();
@@ -359,6 +374,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     // Agent asset authority or scheduling state until a separately fenced send.
     return pathname === "/api/agent-messages" || pathname === "/api/agent-coordinate" ||
       pathname === "/api/agent-request-updates" || pathname === "/api/agent-spawn" ||
+      /^\/api\/branches\/[^/]+\/executions\/[^/]+\/(?:adopt-host-request|restore-host-graph|rewind-historical)$/u.test(pathname) ||
       /^\/api\/agents\/[^/]+\/(?:messages|attachments)$/u.test(pathname) ||
       /^\/api\/conversations\/[^/]+\/(?:messages|direct-messages|collaboration\/messages)$/u.test(pathname) ||
       /^\/api\/requests\/[^/]+\/retry$/u.test(pathname) ||
@@ -446,6 +462,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     reconcileProjectWorkspace,
     resolveOperationalNotification,
   } = createOperationalNotifications({
+    contextRecoveryRunning,
     store,
     coordinationV3,
     workspace,
@@ -459,7 +476,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       dedupeKey: `provider:${engineId}:unavailable`,
       category: "provider",
       severity: "attention",
-      title: `${engines.get(engineId)?.adapter.displayName ?? engineId} is unavailable`,
+      title: `${engines.get(engineId)?.adapter.displayName ?? engineId} Is Unavailable`,
       body: providerUnavailableNotificationBody(denial.detail, denial.failureCategory),
       action: { kind: "open_settings", targetId: engineId },
     });
@@ -468,7 +485,8 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   const deletingProjectIds = new Set(store.listPendingProjectDeletions().map((entry) => entry.projectId));
   const deletingAgentIds = new Set<string>([...deletingProjectIds].flatMap((projectId) =>
     store.listAgents(projectId, { includePendingCreation: true }).map((agent) => agent.id)));
-  for (const operation of store.listRecoverableAgentCreationOperations()) {
+  const initialAgentCreations = store.listRecoverableAgentCreationOperations();
+  for (const operation of initialAgentCreations) {
     for (const agentId of operation.agentIds) deletingAgentIds.add(agentId);
   }
   const deletingConversationIds = new Set(
@@ -493,6 +511,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     projectBrowserSessions,
     restoreSharedBrowsers,
   } = createBrowserAuthority({
+    assets,
     dataDir: opts.dataDir,
     browserServiceSocket: opts.browserServiceSocket,
     store,
@@ -734,11 +753,13 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
     collaborationViewDetail,
     conversationDetail,
     withMessagePresentation,
+    deliveryReceiptsForCommunications,
     ensureDecisionResponseActivation,
     publishCoordinationV3Changed,
     publishMessageDeliveryChanged,
     teamDirectory,
   } = createServerReadModels({
+    contextRecoveryActivity,
     runtimeCleanupPending: (agentId) => {
       const authority = runtimeAuthority(agentId);
       return Boolean(authority?.closing || authority?.opening?.lastError ||
@@ -765,6 +786,7 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
   });
 
   const app = Fastify({
+    rewriteUrl:rewriteProductUrl,
     bodyLimit: ASSET_LIMITS.maxRequestBytes,
     // A bounded two-upload lane permits an 80 MiB phone upload without
     // weakening the ordinary JSON/text body limits.
@@ -783,6 +805,18 @@ export function createServer(opts: CreateServerOptions): PonderosaServer {
       },
     },
   }) as unknown as PonderosaServer;
+  registerProductScope(app,store,workspace,request=>{
+    const token=request.headers.authorization?.replace(/^Bearer\s+/i,''),capability=token?agentMessageCapabilities.get(token):undefined;
+    if(capability?.conversationId){
+      if(!coordinationV3.ownsRun(capability.v3SchedulerRunId,capability.v3FencingToken,coordinationV3WorkerId))return capability.conversationId;
+      return {conversationId:capability.conversationId,agentId:capability.agentId,runId:capability.v3SchedulerRunId,fencingToken:capability.v3FencingToken};
+    }
+    if(request.headers['x-ponderosa-v3-dispatch']===v3DispatchKey){
+      const id=(request.params as {id?:string})?.id,body=request.body as {v3SchedulerRunId?:string;v3FencingToken?:number}|undefined,conversationId=id?store.getAgent(id)?.conversationId:undefined;
+      if(id&&conversationId&&body?.v3SchedulerRunId&&Number.isSafeInteger(body.v3FencingToken)&&coordinationV3.ownsRun(body.v3SchedulerRunId,body.v3FencingToken!,coordinationV3WorkerId)&&store.sqlite.prepare('SELECT 1 FROM scheduler_runs WHERE id=? AND agent_id=?').get(body.v3SchedulerRunId,id))return {conversationId,agentId:id,runId:body.v3SchedulerRunId,fencingToken:body.v3FencingToken!};
+    }
+    return undefined;
+  });
   const serverMetrics = new ServerMetrics(opts.dataDir, store.startupProfile());
   serverMetrics.install(app);
   app.addHook("onReady", restoreSharedBrowsers);
@@ -858,6 +892,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     processAgentDeletionCleanup,
     commitAgentDeletion,
   } = createAgentDeletionAuthority({
+    purgeAgentMemory:receipt=>localMemoryFor(app)?.purgeAgents(receipt)??Promise.resolve(),
     opts,
     store,
     coordinationV3,
@@ -890,7 +925,22 @@ app.server.on("upgrade", linkPreviewUpgrade);
     workingCopies,
     assets,
   });
+  let branchScripts:BranchScriptService|undefined;
+  let branchSources:BranchTriggerSourceService|undefined;
+  let sourceAdmission:boolean|undefined;
   const coordinationV3Scheduler = createCoordinationScheduler(app, {
+    workflowOperations:{
+      tick:async admit=>{
+        if(sourceAdmission!==admit){await branchSources?.refresh();sourceAdmission=admit;}
+        await branchScripts?.tick(admit);
+      },
+      requestStop:()=>{branchSources?.requestStop();branchScripts?.requestStop();},
+      stop:async()=>{
+        const results=await Promise.allSettled([branchSources?.stop(),branchScripts?.stop()]);
+        const failures=results.flatMap(result=>result.status==='rejected'?[result.reason]:[]);
+        if(failures.length)throw new AggregateError(failures,'Branch shutdown remains pending');
+      },
+    },
     resourceAdmission,
     opts,
     store,
@@ -898,9 +948,15 @@ app.server.on("upgrade", linkPreviewUpgrade);
     coordinationV3,
     workspace,
     activeRuns,
+    contextRecoveryRunning,
+    contextRecoveryMaintenance,
     runtimeAuthorities,
     deletingAgentIds,
     engines,
+    engineAuthStatuses,
+    createOperationalNotification,
+    resolveOperationalNotification,
+    cachedModelOptions,
     runtimeStatus,
     agentMessageCapabilities,
     scheduledSessionRollovers,
@@ -910,7 +966,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     appendWorkspace,
     closeLinkPreviewsForAgent,
     terminateRuntimeHandle,
-    closeRunBrowser: closeRunBrowserAfterRun,
+    closeRunBrowser,
     persistentRuntimeForTermination,
     clearAgentResumeSession,
     clearRunLeaseTimer,
@@ -930,6 +986,15 @@ app.server.on("upgrade", linkPreviewUpgrade);
   deploymentControl = createDeploymentControl(app, {
     dataDir: opts.dataDir,
     startDrained: opts.startDrained,
+    workflowStatus:()=>{
+      const scripts=branchScripts?.authorityStatus();
+      if(!scripts)return undefined;
+      if(!closed&&!deploymentControl.isDraining())return scripts;
+      const sources=branchSources?.drainStatus();
+      const authorities=sources?.authorities??0,failures=sources?.retainedTeardownFailures??0;
+      return {...scripts,authorities:scripts.authorities+authorities,pendingCleanupOperations:scripts.pendingCleanupOperations+authorities,retainedTeardownFailures:scripts.retainedTeardownFailures+failures,
+        blockers:[...scripts.blockers,...(authorities?[{kind:'workflow' as const,status:'source_cleanup',reason:`${authorities} Branch filesystem watcher(s) remain active`}]:[])]};
+    },
     store,
     coordinationV3,
     activeRuns,
@@ -971,6 +1036,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
       projectCommunicationToAgentAudit(agentId, event, renderedText, attachments),
   });
   const { processConversationDeletionCleanup } = createConversationDeletionAuthority({
+    purgeChatMemory:id=>localMemoryFor(app)?.purgeChat(id)??Promise.resolve(),
     closeChatBrowsers: async conversationId => {
       await browserSessions.closeChat(conversationId, "chat_deleted", [projectBrowserSessions]);
       const key = chatBrowserOwnerId(conversationId);
@@ -993,15 +1059,19 @@ app.server.on("upgrade", linkPreviewUpgrade);
 
   registerRequestSecurityHooks(app, {
     opts,
-    v3DispatchKey,
     agentMessageCapabilities,
     deletingAgentIds,
-    validLauncherSession,
     artifactFilesystemError,
     isArtifactDependentWorkIntake,
-    isPublicWebAssetRequest: (method, url) =>
-      publicWebAssetRequest(method, url, publicWebAssets),
   });
+  const activeAccessRevocation=createActiveAccessRevocation({store,coordinationV3,activeRuns,ownsRun:ownsActiveRun,
+    wakeScheduler:()=>coordinationV3Scheduler.notify(),publishPause:publishMessageDeliveryChanged,
+    logError:(error,operation)=>app.log.error({err:error,operation},'access revocation notification failed')});
+  // Stop new scheduler/resource admissions before the existing memory fence.
+  app.addHook('preClose',async()=>{app.prepareForShutdown();coordinationV3Scheduler.requestStop();});
+  registerLocalMemory(app,{opts,store,capabilities:agentMessageCapabilities,activeRuns,ownsRun:capabilityOwnsAuthoritativeRun,
+    beforeGlobalMemoryRevocation:activeAccessRevocation.beforeGlobalMemoryRevocation,
+    publishInvalidation:(agentId,event)=>publish(agentId,store.appendEvent(agentId,event))});
 
   registerServerLifecycle(app, {
     appendWorkspace,
@@ -1020,7 +1090,10 @@ app.server.on("upgrade", linkPreviewUpgrade);
     runtimeAuthorities,
     agentMessageCapabilities,
     agentDeliveryLeases,
+    conversationDeliveryLeases,
+    deletingConversationIds,
     deletingAgentIds,
+    initialAgentCreations,
     attachmentDeletionInProgress: agentId => [...deletingAttachmentKeys]
       .some((key) => key.startsWith(`${agentId}\0`)),
     reconcilingAssetAgentIds,
@@ -1133,13 +1206,6 @@ app.server.on("upgrade", linkPreviewUpgrade);
     coordinationV3,
     engines,
     activeRuns,
-    launcherNow,
-    launcherRandomToken,
-    launcherBootstrapTtlMs,
-    launcherSessionTtlMs,
-    launcherBootstraps,
-    issueLauncherSession,
-    purgeLauncherSecurityState,
     networkSecurity,
     artifactFilesystem,
     processContainment,
@@ -1154,7 +1220,11 @@ app.server.on("upgrade", linkPreviewUpgrade);
     serverMetrics,
   });
 
-  registerApplicationRoutes(app, {
+  const application=registerApplicationRoutes(app, {
+    custodyOwner:()=>branches.custodyLifecycle,
+    // Conservative live-host barrier also covers opening/closing native sessions without SQL rows.
+    destinationRuntimeIdle:()=>activeRuns.size===0&&providerProcessAuthority.count()===0&&[...runtimeAuthorities.values()].every(authority=>pendingRuntimeAuthorityCount(authority)===0&&!authority.retryTimer&&!authority.retryInProgress&&authority.retryAttempt===0),
+    assertLifecycleEffectsSettled:()=>{localMemoryFor(app)?.assertCheckpointSourceSettled();},
     opts,
     store,
     assets,
@@ -1179,6 +1249,8 @@ app.server.on("upgrade", linkPreviewUpgrade);
     engines,
     applyOperatorModelOptions,
     activeRuns,
+    activeContextRecoveries,
+    contextRecoveryMaintenance,
     closeLinkPreviewsForAgent,
     registerLinkPreviewRoutes,
     runtimeAuthorities,
@@ -1266,6 +1338,7 @@ app.server.on("upgrade", linkPreviewUpgrade);
     collaborationViewDetail,
     conversationDetail,
     withMessagePresentation,
+    deliveryReceiptsForCommunications,
     ensureDecisionResponseActivation,
     applyResolvedSavedBrowserApproval,
     publishCoordinationV3Changed,
@@ -1309,6 +1382,118 @@ app.server.on("upgrade", linkPreviewUpgrade);
     workingCopies,
     serverMetrics,
   });
+
+  const branches=new BranchStore(store.sqlite,coordinationV3,(projectId,eventId)=>store.getCommunicationEvent(projectId,eventId));
+  const deleteBranchAgents=async(ids:string[])=>{
+    const selected=new Set(ids);
+    for(const receipt of store.listPendingAgentDeletionReceipts()){
+      if(receipt.deletedAgentIds.some(id=>selected.has(id))){
+        if(isMemoryCleanupHold(receipt.lastError))throw new Error(receipt.lastError);
+        if(!await processAgentDeletionCleanup(receipt)){const current=store.getAgentDeletionReceiptByPreviewHash(receipt.previewHash);throw new Error(isMemoryCleanupHold(current?.lastError)?current!.lastError!:'Branch Agent cleanup remains pending');}
+      }
+    }
+    const roots=ids.filter(id=>store.getAgent(id));if(!roots.length)return;
+    const owner=store.getConversation(store.getAgent(roots[0]!)!.conversationId??'');
+    if(!owner?.branchId)throw new Error('Branch Agent owner is unavailable');
+    const preview=store.previewAgentDeletion(roots);
+    for(const agent of preview.affectedAgents){
+      const chat=store.getConversation(store.getAgent(agent.id)?.conversationId??'');
+      if(chat?.branchId!==owner.branchId||chat.executionId!==owner.executionId)throw new Error('Branch cleanup would affect an unrelated Agent');
+      if(!owner.executionId&&!store.sqlite.prepare("SELECT 1 FROM branch_installation_resources WHERE branch_id=? AND local_id=? AND state IN ('staging','retiring')").get(owner.branchId,agent.id))throw new Error('Branch cleanup would affect an active or unowned installed Agent');
+    }
+    const result=await commitAgentDeletion(roots,preview.previewHash);
+    if(!result.deleted||result.cleanupPending){const receipt=store.getAgentDeletionReceiptByPreviewHash(preview.previewHash);throw new Error(isMemoryCleanupHold(receipt?.lastError)?receipt!.lastError!:'Branch Agent cleanup remains pending');}
+  };
+  const deleteBranchChat=async(id:string,expectedAgentIds?:string[])=>{
+    try{const result=await application.deleteConversation(id,expectedAgentIds);if(!result.deleted||result.cleanupPending){const receipt=store.getConversationDeletionReceipt(id);throw new Error(isMemoryCleanupHold(receipt?.lastError)?receipt!.lastError!:'Branch Chat cleanup remains pending');}}
+    catch(error){if((error as {statusCode?:number}).statusCode!==404)throw error;}
+  };
+  const branchResources=new BranchResourceService(branches,store,deleteBranchAgents,application.createChat,id=>deleteBranchChat(id,[]));
+  branchResources.setGenerationExitDrain(async agentIds=>{
+    const selected=new Set(agentIds),reason='Branch precleanup generation evidence capture';
+    await providerStarts.drain(agentIds);
+    await drainProviderRuntimeAuthority(reason,selected);
+    await providerProcessAuthority.terminateAgents(selected,reason);
+    for(const agentId of agentIds){
+      const authority=runtimeAuthorities.get(agentId);
+      if(activeRuns.has(agentId)||providerProcessAuthority.count({agentId})||authority&&(pendingRuntimeAuthorityCount(authority)>0||authority.retryTimer||authority.retryInProgress||authority.retryAttempt!==0))throw Error('Original generation runtime exit remains unconfirmed');
+      const agent=store.getAgent(agentId);if(!agent?.conversationId)throw Error('Original generation identity unavailable before cleanup');
+    }
+    sealProviderNeverStarted(store.sqlite,coordinationV3WorkerId,agentIds);
+    const first=store.getAgent(agentIds[0]!);if(!first?.conversationId)throw Error('Original generation Chat unavailable');
+    const participants=agentIds.map(agentId=>({agentId,runIds:(store.sqlite.prepare('SELECT id FROM scheduler_runs WHERE agent_id=? ORDER BY id').all(agentId) as {id:string}[]).map(r=>r.id)}));
+    providerProcessAuthority.readExitEvidence({projectId:first.projectId,conversationId:first.conversationId,participants});
+  });
+
+  const branchInstallations=new BranchInstallationService(store,branches,deleteBranchChat,id=>deleteBranchAgents([id]),application.createChat,branchId=>{
+    const cursor=workspace.cursor();workspace.forEachNotification(notification=>{
+      if(notification.branchId===branchId&&(notification.status??'open')==='open')workspace.setNotificationStatus(notification.id,'resolved');
+    });publishWorkspaceSince(cursor);
+  },workspace);
+  branchInstallations.setEngine(application.packageEngine);
+  branchResources.setPackageEngine(application.packageEngine);
+  localMemoryFor(app)?.setExpertFinalCustodyVerifier((chatId,projectId)=>branchResources.verifyExpertFinalCustody(chatId,projectId));
+  branchResources.setImporter(async(input,hooks,signal)=>{
+    await application.packageEngine.importAgent(input.projectId,input.chatId,input.template,input.engineMapping,input.creationKey,{branchHooks:hooks,signal,accessSettingsResolution:input.accessSettingsResolution});
+  });
+  branchScripts=new BranchScriptService(branches,store,coordinationV3WorkerId,{...opts.branches,resources:branchResources,installations:branchInstallations,appendAudit:appendWorkspace,
+    notifyAction:input=>createOperationalNotification({dedupeKey:input.dedupeKey,branchId:input.branchId,branchExecutionId:input.branchExecutionId,projectId:input.projectId,conversationId:input.chatId,category:'system',severity:'info',push:true,title:input.title,body:input.body,action:{kind:'open_branch',targetId:input.branchId}}).id,
+    notifyGate:input=>{createOperationalNotification({dedupeKey:input.dedupeKey,branchId:input.branchId,branchExecutionId:input.branchExecutionId,category:'decision',severity:'attention',push:true,title:input.title,body:input.body,action:{kind:'open_branch',targetId:input.branchId}});},
+    resolveGateNotification:resolveOperationalNotification,
+  });
+  let scheduleDiagnosticCursor: {createdAt:string;id:string}|undefined;
+  branchSources=new BranchTriggerSourceService({store,triggers:branches.triggers,
+    sourceAvailable:()=>!closed&&!deploymentControl.isDraining(),
+    logDiagnosticFailure:()=>app.log.error({code:'branch_source_diagnostic_write_failed'},'Branch source diagnostic could not be persisted'),
+    notify:()=>coordinationV3Scheduler.notify(),
+    onSourceFailure:({trigger,kind,error,episode,cause})=>{
+      const prefix = `branch-source:${trigger?.id ?? 'poller'}:${kind}`;
+      // A new poller failure after confirmed recovery gets a new episode;
+      // repeated failures and persistent dismissals reuse the same notice.
+      const key = episode ? `${prefix}:${episode}` : prefix;
+      createOperationalNotification({dedupeKey:key,renewAfterRecovery:kind==='schedule_polling',...(trigger?.branchId?{branchId:trigger.branchId}:{}),
+        informational:kind==='schedule'||kind==='schedule_polling',...(kind==='schedule'||kind==='schedule_polling'?{push:false}:{}),category:'system',severity:kind==='schedule'||kind==='schedule_polling'?'info':'attention',
+        title:kind==='schedule'||kind==='schedule_polling'?'Schedule Check Delayed':'Branch Discovery Needs Attention',body:cause===undefined?error:freshFailureDiagnostic(cause,error),
+        ...(trigger?.branchId?{action:{kind:'open_branch' as const,targetId:trigger.branchId}}:{})});
+    },
+    onSourceRecovered:(id,kind,episode)=>{
+      const key=`branch-source:${id||'poller'}:${kind}${episode?':'+episode:''}`;
+      if (kind === 'schedule' && !episode) {
+        const page = workspace.listNotificationPage({limit:100,before:scheduleDiagnosticCursor,
+          include:item=>/^branch-source:[^:]+:schedule:/u.test(item.dedupeKey??'')});
+        scheduleDiagnosticCursor = page.nextCursor;
+        for (const item of page.items) {
+          const match = /^branch-source:([^:]+):schedule:(.+)$/u.exec(item.dedupeKey!);
+          if (!match) continue;
+          const trigger = branches.triggers.getTriggerDefinition(match[1]!);
+          const branch = trigger?.branchId ? branches.getBranch(trigger.branchId) : undefined;
+          if (!trigger?.enabled || !branch?.enabled || trigger.sourceKind !== 'schedule' || trigger.nextFireAt !== match[2]) {
+            resolveOperationalNotification(item.dedupeKey!);
+          }
+        }
+        return;
+      }
+      if (kind === 'schedule_polling') {
+        const current = workspace.getNotificationByDedupeKey(key);
+        if (current?.status === 'dismissed') {
+          const cursor = workspace.cursor();
+          workspace.setNotificationStatus(current.id, 'resolved', true);
+          publishWorkspaceSince(cursor);
+        } else resolveOperationalNotification(key);
+      } else resolveOperationalNotification(key);
+    },
+  });
+  registerCapabilityRoutes(app,{store,branches,engines,dataDir:opts.dataDir,localMemoryEnabled:Boolean(opts.localMemory),providerEnabled,discoverCapabilities:discoverEngineCapabilities,policyChange:activeAccessRevocation.policyChange});
+  const outputApps=new OutputAgentApps(store,branches,workspace,application.createChat,application.packageEngine,()=>[...engines.keys()].find(id=>providerEnabled(id)),publishWorkspaceSince);
+  application.packageEngine.setOutputApps(outputApps);
+  branchInstallations.setOutputApps(outputApps);
+  registerAgentWorkspaceActions(app,{store,coordinationV3,workspace,outputApps,createChat:application.createChat,capabilities:agentMessageCapabilities,activeRuns,ownsRun:capabilityOwnsAuthoritativeRun,recordCommunication,reconcile:reconcileRuntimeCommunicationProjections,notify:()=>coordinationV3Scheduler.notify(),providerEnabled:id=>engines.has(id)&&providerEnabled(id)});
+  registerBranchRoutes(app,{dataDir:opts.dataDir,coordination:coordinationV3,outputApps,branches,store,workspace,resources:branchResources,installations:branchInstallations,sources:branchSources,createChat:application.createChat,
+    preferences:()=>workspace.getPreferences(),engineAvailable:id=>engines.has(id)&&providerEnabled(id),
+    providerStatus:async id=>{const registration=engines.get(id);return registration?{...await runtimeStatus(id,registration),enabled:providerEnabled(id)}:{authentication:'error',intakeReady:false,availabilityDetail:'Provider is not configured'};},
+notify:()=>coordinationV3Scheduler.notify(),
+  });
+  app.addHook('onReady',async()=>{await branchSources!.start();});
 
   return app;
   } catch (error) {

@@ -1,3 +1,7 @@
+import {settingsTransitionActivationHoldSql} from './coordination-v3-settings-transition-hold.js';
+import { ReviewedSteeringAuthority } from "./coordination-v3-reviewed-steering.js";
+import {branchInstallationHoldSql,branchInstallationTables} from './branch-installation-hold.js';
+import {generationExitHoldSql} from './branch-generation-exit-fence.js';
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { CoordinationRequestState } from "@ponderosa/core";
@@ -7,21 +11,20 @@ import type { CoordinationV3RuntimeScopeAuthority } from "./coordination-v3-runt
 import type { CoordinationV3StoreSupport } from "./coordination-v3-store-support.js";
 import type { SchedulerLease } from "./coordination-v3-types.js";
 import {
-  publicActivationDeliveryError,
+  providerActivation,
+  type ProviderActivationRow as ActivationRow,
   providerSafeActivationPayload,
 } from "./coordination-v3-provider-failure-projection.js";
 
-interface ActivationRow {
-  id: string;
-  kind: string;
-  priority: number;
-  dispatch_policy: SchedulerLease["activations"][number]["dispatchPolicy"];
-  prompt_class: SchedulerLease["activations"][number]["promptClass"];
-  payload_json: string;
-  delivery_failures: number;
-  last_delivery_error: string | null;
-  provider_failure_category: string | null;
-}
+// Preserve recovery rows created by older versions, but do not run or coalesce
+// one while its original human steering outcome remains unknown.
+const heldSteeringRecovery = `NOT EXISTS (
+ SELECT 1 FROM scheduler_steering_recovery_activations mapping
+ JOIN scheduler_prompt_injections source ON source.id=mapping.injection_id
+ WHERE mapping.recovery_activation_id=a.id AND source.state='outcome_unknown'
+   AND EXISTS(SELECT 1 FROM json_each(source.activation_ids_json) member
+     JOIN agent_activations original ON original.id=member.value WHERE original.prompt_class='human')
+)`;
 
 /** Recovers abandoned scheduler work and exclusively creates new Runs. */
 export class CoordinationV3SchedulerLeaseAuthority {
@@ -48,12 +51,13 @@ export class CoordinationV3SchedulerLeaseAuthority {
     private readonly recoverRequiredReply: (runId: string, now: string) => void,
     private readonly settleRetriedRequiredReply: (runId: string, now: string) => void,
     private readonly restoreUninjectedDecisionRoots: (runId: string, now: string) => void,
+    private readonly containPauseRecovery: (runId:string,error:string) => boolean,
   ) {}
 
   /** A coarse injection flag alone cannot certify that abandoned work never
    * reached a provider. Preserve accepted evidence and use unknown-outcome
    * accounting rather than replaying its exact Activation. */
-  private canRetryUninjectedRun(runId: string): boolean {
+  canRetryUninjectedRun(runId: string): boolean {
     return Boolean(this.sqlite.prepare(`SELECT 1 FROM scheduler_runs run WHERE run.id=?
       AND run.prompt_injection_state='not_injected' AND run.started_at IS NULL
       AND NOT EXISTS (SELECT 1 FROM provider_inputs WHERE scheduler_run_id=run.id)
@@ -85,6 +89,7 @@ export class CoordinationV3SchedulerLeaseAuthority {
         `).run(incidentId, now);
       }
       for (const run of runs) {
+        if(this.containPauseRecovery(run.id,"Recovery execution ownership expired or the server restarted")){outcomeUnknown+=1;continue;}
         if (retryableRunIds.has(run.id)) {
           this.sqlite.prepare(`
             UPDATE scheduler_runs
@@ -156,32 +161,39 @@ export class CoordinationV3SchedulerLeaseAuthority {
     return this.sqlite.transaction(() => this.recoverExpiredRunsInTransaction(now))();
   }
 
-  leaseNextRun(input: {
-    workerId: string;
-    now?: string;
-    leaseMs?: number;
-    coalesceLimit?: number;
-    excludedAgentIds?: readonly string[];
-  }): SchedulerLease | undefined {
-    const now = input.now ?? new Date().toISOString();
-    const leaseMs = input.leaseMs ?? 30_000;
-    const limit = Math.max(1, Math.min(input.coalesceLimit ?? 8, 64));
-    const excludedAgentIds = [...new Set(input.excludedAgentIds ?? [])];
-    const excludedClause = excludedAgentIds.length
-      ? `AND a.agent_id NOT IN (${excludedAgentIds.map(() => "?").join(", ")})`
-      : "";
-    return this.sqlite.transaction(() => {
-      this.recoverExpiredRunsInTransaction(now);
-      this.activationLifecycle.settleUnauthorizedPendingActivations(now);
-      const candidate = this.sqlite.prepare(`
-        SELECT a.agent_id, a.project_id, a.scope_key
+  /** Read-only preview of the same eligibility query used by leaseNextRun.
+   * A later lease may differ after asynchronous work or expiry recovery. */
+  peekNextRunnable(input: { now?: string; excludedAgentIds?: readonly string[] } = {}):
+    { activationId:string; agentId:string; projectId:string; scopeKey:string } | undefined {
+    const now=input.now ?? new Date().toISOString();
+    const excludedAgentIds=[...new Set(input.excludedAgentIds ?? [])];
+    const excludedClause=excludedAgentIds.length
+      ? `AND a.agent_id NOT IN (${excludedAgentIds.map(()=>'?').join(', ')})` : '';
+    const branchTables=branchInstallationTables(this.sqlite);
+      const installationFence=branchTables==='ready'
+        ? `AND NOT ${branchInstallationHoldSql('a.agent_id',"CASE WHEN a.scope_key LIKE 'conversation:%' THEN substr(a.scope_key,14) END")}`
+        : branchTables==='partial'?'AND 0':'';
+    const candidate = this.sqlite.prepare(`
+        SELECT a.id activation_id, a.agent_id, a.project_id, a.scope_key
         FROM agent_activations a
         WHERE a.state IN ('pending', 'retry_pending')
+          AND ${heldSteeringRecovery}
+          AND NOT ${settingsTransitionActivationHoldSql('a')}
+          ${installationFence}
+          AND NOT ${generationExitHoldSql('a.agent_id',"CASE WHEN a.scope_key LIKE 'conversation:%' THEN substr(a.scope_key,14) END")}
+          AND NOT EXISTS(SELECT 1 FROM coordination_destination_admissions d LEFT JOIN agents staged_agent ON staged_agent.id=a.agent_id WHERE d.state!='admitted' AND (d.conversation_id=staged_agent.conversation_id OR a.scope_key='conversation:'||d.conversation_id OR EXISTS(SELECT 1 FROM coordination_destination_members m WHERE m.admission_id=d.id AND m.agent_id=a.agent_id)))
+          AND NOT EXISTS(SELECT 1 FROM coordination_destination_group_chats g JOIN coordination_destination_admissions d ON d.id=g.admission_id LEFT JOIN agents staged_agent ON staged_agent.id=a.agent_id WHERE d.state!='admitted' AND (g.conversation_id=staged_agent.conversation_id OR a.scope_key='conversation:'||g.conversation_id))
+          AND NOT EXISTS(SELECT 1 FROM coordination_destination_retirements d LEFT JOIN agents staged_agent ON staged_agent.id=a.agent_id WHERE d.conversation_id=staged_agent.conversation_id OR a.scope_key='conversation:'||d.conversation_id OR EXISTS(SELECT 1 FROM json_each(d.receipt_json,'$.resources') retired_resource WHERE json_extract(retired_resource.value,'$.destination.conversationId')=staged_agent.conversation_id OR a.scope_key='conversation:'||json_extract(retired_resource.value,'$.destination.conversationId')) OR EXISTS(SELECT 1 FROM json_each(d.members_json) m WHERE json_extract(m.value,'$.agent_id')=a.agent_id))
+          AND NOT EXISTS(SELECT 1 FROM provider_context_recovery_requests recovery WHERE recovery.agent_id=a.agent_id AND recovery.state='unsupported_fenced')
+          AND NOT EXISTS(SELECT 1 FROM agent_run_pauses pause WHERE pause.agent_id=a.agent_id
+            AND pause.state IN ('paused','resume_requested') AND NOT (pause.state='resume_requested'
+              AND pause.recovery_activation_id=a.id))
           AND a.available_at <= ?
-          AND NOT EXISTS (SELECT 1 FROM activation_sources held WHERE held.activation_id=a.id AND held.source_kind IN ('task_decision_repair_wait','task_reply_repair_wait'))
+          AND NOT EXISTS (SELECT 1 FROM activation_sources held WHERE held.activation_id=a.id AND held.source_kind IN ('task_decision_repair_wait','task_reply_repair_wait','branch_schedule_update'))
           ${excludedClause}
           AND (
-            (a.kind = 'context_rollover_handoff' AND EXISTS (
+            (EXISTS (SELECT 1 FROM agent_pause_recoveries recovery WHERE recovery.activation_id=a.id AND recovery.state='pending'))
+            OR (a.kind = 'context_rollover_handoff' AND EXISTS (
               SELECT 1 FROM context_rollovers rollover
               WHERE rollover.agent_id = a.agent_id
                 AND rollover.id = json_extract(a.payload_json, '$.rolloverId')
@@ -192,6 +204,37 @@ export class CoordinationV3SchedulerLeaseAuthority {
               WHERE rollover.agent_id = a.agent_id
                 AND rollover.state IN ('requested','handoff_committed','session_retiring')
             ))
+          )
+          -- A settings transition must confirm the replacement before any
+          -- queued work can run in it, regardless of activation priority.
+          AND NOT EXISTS (
+            SELECT 1 FROM context_rollovers transition
+            WHERE transition.agent_id = a.agent_id
+              AND transition.state = 'continuation_ready'
+              AND a.id <> transition.continuation_activation_id
+              AND EXISTS (
+                SELECT 1 FROM agent_activations handoff
+                WHERE handoff.kind = 'context_rollover_handoff'
+                  AND json_extract(handoff.payload_json, '$.rolloverId') = transition.id
+                  AND (json_type(handoff.payload_json, '$.settingsTransition') = 'object' OR json_type(handoff.payload_json, '$.workingCopyTransition') = 'object')
+              )
+          )
+          -- The first task using a verified replacement must see that exact
+          -- context before a competing Run can add unverified exposure.
+          AND NOT EXISTS (
+            SELECT 1 FROM context_rollovers r
+            JOIN activation_sources x ON x.source_kind='context_rollover' AND x.source_id=r.id
+            JOIN agent_activations h ON h.id=x.activation_id AND h.kind='context_rollover_handoff'
+            JOIN agent_activations target ON target.id=json_extract(h.payload_json,'$.settingsTransition.activationId')
+            WHERE r.project_id=a.project_id AND r.agent_id=a.agent_id AND r.scope_key=a.scope_key
+              AND r.state='completed' AND r.completion_reason='replacement_verified'
+              AND json_type(h.payload_json,'$.settingsTransition.targetSystemPromptHash')='text'
+              AND target.id<>a.id AND target.state IN ('pending','retry_pending') AND target.available_at<=?
+              AND NOT ${settingsTransitionActivationHoldSql('target')}
+              AND NOT EXISTS (SELECT 1 FROM activation_sources held WHERE held.activation_id=target.id
+                AND held.source_kind IN ('task_decision_repair_wait','task_reply_repair_wait','branch_schedule_update'))
+              AND NOT EXISTS (SELECT 1 FROM activation_outbox audit WHERE audit.activation_id=target.id
+                AND audit.event_kind='communication_revision' AND audit.processed_at IS NULL)
           )
           AND NOT EXISTS (
             SELECT 1 FROM activation_outbox audit
@@ -206,19 +249,49 @@ export class CoordinationV3SchedulerLeaseAuthority {
           )
         ORDER BY a.priority DESC, a.created_at, a.rowid
         LIMIT 1
-      `).get(now, ...excludedAgentIds) as {
+      `).get(now, ...excludedAgentIds, now) as {
+        activation_id: string;
         agent_id: string;
         project_id: string;
         scope_key: string;
       } | undefined;
+    return candidate ? {activationId:candidate.activation_id, agentId:candidate.agent_id,
+      projectId:candidate.project_id, scopeKey:candidate.scope_key} : undefined;
+  }
+
+  leaseNextRun(input: {
+    workerId: string;
+    now?: string;
+    leaseMs?: number;
+    coalesceLimit?: number;
+    excludedAgentIds?: readonly string[];
+    expectedActivationId?: string | null;
+  }): SchedulerLease | undefined {
+    const now = input.now ?? new Date().toISOString();
+    const leaseMs = input.leaseMs ?? 30_000;
+    const limit = Math.max(1, Math.min(input.coalesceLimit ?? 8, 64));
+    const excludedAgentIds = [...new Set(input.excludedAgentIds ?? [])];
+    return this.sqlite.transaction(() => {
+      this.recoverExpiredRunsInTransaction(now);
+      this.activationLifecycle.settleUnauthorizedPendingActivations(now);
+      const candidate = this.peekNextRunnable({now, excludedAgentIds});
+      if (candidate && input.expectedActivationId !== undefined &&
+          candidate.activationId !== input.expectedActivationId) return undefined;
       if (!candidate) return undefined;
       const queuedActivations = this.sqlite.prepare(`
         SELECT a.* FROM agent_activations a
         WHERE agent_id = ? AND scope_key = ?
           AND state IN ('pending', 'retry_pending') AND available_at <= ?
-          AND NOT EXISTS (SELECT 1 FROM activation_sources held WHERE held.activation_id=a.id AND held.source_kind IN ('task_decision_repair_wait','task_reply_repair_wait'))
+          AND ${heldSteeringRecovery}
+          AND NOT ${settingsTransitionActivationHoldSql('a')}
+          AND NOT EXISTS(SELECT 1 FROM provider_context_recovery_requests recovery WHERE recovery.agent_id=a.agent_id AND recovery.state='unsupported_fenced')
+          AND NOT EXISTS(SELECT 1 FROM agent_run_pauses pause WHERE pause.agent_id=a.agent_id
+            AND pause.state IN ('paused','resume_requested') AND NOT (pause.state='resume_requested'
+              AND pause.recovery_activation_id=a.id))
+          AND NOT EXISTS (SELECT 1 FROM activation_sources held WHERE held.activation_id=a.id AND held.source_kind IN ('task_decision_repair_wait','task_reply_repair_wait','branch_schedule_update'))
           AND (
-            (kind = 'context_rollover_handoff' AND EXISTS (
+            (EXISTS (SELECT 1 FROM agent_pause_recoveries recovery WHERE recovery.activation_id=a.id AND recovery.state='pending'))
+            OR (kind = 'context_rollover_handoff' AND EXISTS (
               SELECT 1 FROM context_rollovers rollover
               WHERE rollover.agent_id = a.agent_id
                 AND rollover.id = json_extract(a.payload_json, '$.rolloverId')
@@ -230,17 +303,32 @@ export class CoordinationV3SchedulerLeaseAuthority {
                 AND rollover.state IN ('requested','handoff_committed','session_retiring')
             ))
           )
+          -- A settings transition must confirm the replacement before any
+          -- queued work can run in it, regardless of activation priority.
+          AND NOT EXISTS (
+            SELECT 1 FROM context_rollovers transition
+            WHERE transition.agent_id = a.agent_id
+              AND transition.state = 'continuation_ready'
+              AND a.id <> transition.continuation_activation_id
+              AND EXISTS (
+                SELECT 1 FROM agent_activations handoff
+                WHERE handoff.kind = 'context_rollover_handoff'
+                  AND json_extract(handoff.payload_json, '$.rolloverId') = transition.id
+                  AND (json_type(handoff.payload_json, '$.settingsTransition') = 'object' OR json_type(handoff.payload_json, '$.workingCopyTransition') = 'object')
+              )
+          )
           AND NOT EXISTS (
             SELECT 1 FROM activation_outbox audit
             WHERE audit.activation_id = a.id
               AND audit.event_kind = 'communication_revision'
               AND audit.processed_at IS NULL
           )
-        ORDER BY priority DESC, created_at, rowid LIMIT 64
+        ORDER BY CASE WHEN id=? THEN 0 ELSE 1 END, priority DESC, created_at, rowid LIMIT 64
       `).all(
-        candidate.agent_id,
-        candidate.scope_key,
+        candidate.agentId,
+        candidate.scopeKey,
         now,
+        candidate.activationId,
       ) as ActivationRow[];
       const startsFreshTask = (activation: ActivationRow) =>
         activation.kind === "coordination_request";
@@ -260,9 +348,29 @@ export class CoordinationV3SchedulerLeaseAuthority {
       const candidateIsExplicitQueuedTurn = isExplicitQueuedTurn(
         queuedActivations[0]!,
       );
+      const isBranchGuidance = (activation: ActivationRow): boolean => Boolean(this.sqlite.prepare("SELECT 1 FROM activation_sources WHERE activation_id=? AND source_kind='branch_guidance'").get(activation.id));
+      const candidateIsBranchGuidance = isBranchGuidance(queuedActivations[0]!);
+      // A separately requested model/voice boundary needs its own admission
+      // check before it can be attached to a provider Run.
+      const hasIndependentDispatch = (activation: ActivationRow): boolean => {
+        try {
+          const payload = JSON.parse(activation.payload_json) as {
+            dispatch?: Record<string, unknown>;
+          };
+          const dispatch = payload.dispatch;
+          return Boolean(dispatch && ["engine", "model", "effort", "speed", "voiceReply"]
+            .some((key) => Object.hasOwn(dispatch, key)));
+        } catch {
+          return true;
+        }
+      };
+      const awaitsSettingsPreflight = (activation: ActivationRow): boolean => Boolean(
+        this.sqlite.prepare("SELECT 1 FROM activation_sources WHERE activation_id=? AND source_kind='settings_transition_retry_pending'")
+          .get(activation.id));
       const isContextRolloverCandidate = (activation: ActivationRow): boolean =>
         Boolean(this.sqlite.prepare(`
-          SELECT 1
+          SELECT 1 FROM agent_pause_recoveries WHERE activation_id=?
+          UNION ALL SELECT 1
           FROM context_rollovers rollover
           WHERE rollover.agent_id = ? AND rollover.project_id = ?
             AND (
@@ -276,32 +384,63 @@ export class CoordinationV3SchedulerLeaseAuthority {
             )
           LIMIT 1
         `).get(
-          candidate.agent_id,
-          candidate.project_id,
+          activation.id,
+          candidate.agentId,
+          candidate.projectId,
           activation.id,
           activation.id,
         ));
       const candidateIsContextRollover = isContextRolloverCandidate(
         queuedActivations[0]!,
       );
-      const activations = candidateIsExplicitQueuedTurn || candidateIsContextRollover
+      // A verified handoff belongs to one exact pending task. Do not let a
+      // different ordinary activation bypass that task's target recheck.
+      const hasVerifiedTransition = (activation: ActivationRow): boolean => Boolean(this.sqlite.prepare(`
+        SELECT 1 FROM context_rollovers r
+        JOIN activation_sources x ON x.source_kind='context_rollover' AND x.source_id=r.id
+        JOIN agent_activations h ON h.id=x.activation_id AND h.kind='context_rollover_handoff'
+        WHERE r.project_id=? AND r.agent_id=? AND r.state='completed' AND r.completion_reason='replacement_verified'
+          AND json_type(h.payload_json,'$.settingsTransition.targetSystemPromptHash')='text'
+          AND json_extract(h.payload_json,'$.settingsTransition.activationId')=? LIMIT 1`)
+        .get(candidate.projectId,candidate.agentId,activation.id));
+      const isReviewedSteering = (activation: ActivationRow) => Boolean(this.sqlite.prepare(
+        "SELECT 1 FROM activation_sources WHERE activation_id=? AND source_kind='reviewed_steering'"
+      ).get(activation.id));
+      const candidateIsReviewedSteering = isReviewedSteering(queuedActivations[0]!);
+      const activations = candidateIsExplicitQueuedTurn || candidateIsBranchGuidance || candidateIsContextRollover || candidateIsReviewedSteering || hasVerifiedTransition(queuedActivations[0]!) || hasIndependentDispatch(queuedActivations[0]!) || awaitsSettingsPreflight(queuedActivations[0]!)
         ? [queuedActivations[0]!]
         : queuedActivations
           .filter((activation) =>
             !isExplicitQueuedTurn(activation) &&
+            !isBranchGuidance(activation) &&
+            !hasIndependentDispatch(activation) &&
+            !awaitsSettingsPreflight(activation) &&
             !isContextRolloverCandidate(activation) &&
+            !isReviewedSteering(activation) &&
+            !hasVerifiedTransition(activation) &&
             startsFreshTask(activation) === candidateStartsFreshTask)
           .slice(0, limit);
       if (activations.length === 0) return undefined;
       if (!this.runtimeScopeAuthority.recipientAuthorizedForActivationScope(
-        candidate.project_id,
-        candidate.agent_id,
-        candidate.scope_key,
+        candidate.projectId,
+        candidate.agentId,
+        candidate.scopeKey,
       )) {
         this.activationLifecycle.settleUnauthorizedPendingActivations(now);
         return undefined;
       }
-      const fencingToken = this.support.nextFence(candidate.agent_id);
+      if (candidateIsReviewedSteering) {
+        try {
+          new ReviewedSteeringAuthority(this.sqlite, () => { throw new Error("Unexpected activation creation"); })
+            .assertClaim(candidate.projectId, activations[0]!.id);
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : "Reviewed continuation evidence changed.";
+          this.sqlite.prepare("UPDATE agent_activations SET state='failed',terminal_outcome='permanent_failure',last_delivery_error=?,terminal_at=?,updated_at=? WHERE id=? AND state IN ('pending','retry_pending')")
+            .run(reason, now, now, activations[0]!.id);
+          return undefined;
+        }
+      }
+      const fencingToken = this.support.nextFence(candidate.agentId);
       const runId = randomUUID();
       const injectionId = randomUUID();
       const leaseExpiresAt = new Date(
@@ -317,9 +456,9 @@ export class CoordinationV3SchedulerLeaseAuthority {
         )
       `).run(
         runId,
-        candidate.project_id,
-        candidate.agent_id,
-        candidate.scope_key,
+        candidate.projectId,
+        candidate.agentId,
+        candidate.scopeKey,
         input.workerId,
         leaseExpiresAt,
         fencingToken,
@@ -354,11 +493,13 @@ export class CoordinationV3SchedulerLeaseAuthority {
         now,
         now,
       );
+      this.sqlite.prepare(`UPDATE agent_pause_recoveries SET run_id=? WHERE activation_id=? AND state='pending' AND run_id IS NULL`)
+        .run(runId,activations[0]!.id);
       this.registerRequiredReply({
         runId,
-        projectId: candidate.project_id,
-        agentId: candidate.agent_id,
-        scopeKey: candidate.scope_key,
+        projectId: candidate.projectId,
+        agentId: candidate.agentId,
+        scopeKey: candidate.scopeKey,
         activations: activations.map((activation) => ({
           id: activation.id,
           kind: activation.kind,
@@ -372,34 +513,15 @@ export class CoordinationV3SchedulerLeaseAuthority {
       });
       return {
         runId,
-        projectId: candidate.project_id,
-        agentId: candidate.agent_id,
-        scopeKey: candidate.scope_key,
+        projectId: candidate.projectId,
+        agentId: candidate.agentId,
+        scopeKey: candidate.scopeKey,
         fencingToken,
         leaseOwner: input.workerId,
         leaseExpiresAt,
         injectionId,
         activationIds: activations.map((activation) => activation.id),
-        activations: activations.map((activation) => {
-          const lastDeliveryError = publicActivationDeliveryError({
-            lastDeliveryError: activation.last_delivery_error,
-            providerFailureCategory: activation.provider_failure_category,
-          });
-          return {
-            id: activation.id,
-            kind: activation.kind,
-            priority: activation.priority,
-            dispatchPolicy: activation.dispatch_policy,
-            promptClass: activation.prompt_class,
-            payload: providerSafeActivationPayload(
-              this.sqlite,
-              activation.id,
-              activation.payload_json,
-            ),
-            deliveryFailures: activation.delivery_failures,
-            ...(lastDeliveryError ? { lastDeliveryError } : {}),
-          };
-        }),
+        activations: activations.map((activation) => providerActivation(this.sqlite, activation)),
       };
     })();
   }
@@ -418,6 +540,7 @@ export class CoordinationV3SchedulerLeaseAuthority {
     let retried = 0;
     let outcomeUnknown = 0;
     for (const run of runs) {
+        if(this.containPauseRecovery(run.id,"Recovery execution ownership expired or the server restarted")){outcomeUnknown+=1;continue;}
       if (this.canRetryUninjectedRun(run.id)) {
         this.sqlite.prepare(`
           UPDATE scheduler_runs

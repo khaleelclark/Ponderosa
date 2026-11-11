@@ -10,6 +10,8 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import { queryKeys } from "../queryKeys";
 import { ResourceDeletionDialog } from "./ConfirmationDialogs";
+import { useMutationNotification } from "./MutationNotifications";
+import { deletionCleanupNotice } from "./deletionCleanupNotice";
 
 export function AgentDeletionDialog({
   open,
@@ -29,6 +31,7 @@ export function AgentDeletionDialog({
   onDeleted(deletedAgentIds: string[]): void;
 }): JSX.Element {
   const queryClient = useQueryClient();
+  const notify = useMutationNotification();
   const roots = useMemo(() => [...new Set(rootAgentIds)].sort(), [rootAgentIds]);
   const rootsKey = roots.join(",");
   const [confirmation, setConfirmation] = useState("");
@@ -47,6 +50,8 @@ export function AgentDeletionDialog({
       });
     },
     onSuccess: (result) => {
+      const message = deletionCleanupNotice("Agent", result);
+      if (message) notify({ message, severity: "warning", persistent: true, key: `agent-cleanup:${result.deletionReceiptId}` });
       onDeleted(result.deletedAgentIds);
       result.deletedAgentIds.forEach((agentId) => queryClient.removeQueries({ queryKey: queryKeys.agents.detailPrefix(agentId) }));
       void Promise.all([
@@ -101,7 +106,7 @@ export function AgentDeletionDialog({
         <Alert severity="error" sx={{ mb: 2 }}>
           This permanently removes {affected.length} {affected.length === 1 ? "Agent" : "Agents"} and their private execution history, including runs, work logs, provider inputs, and private attachments. Active work is stopped before cleanup. Shared Chat messages, shared files and coordination outcomes, and your working folders remain intact.
         </Alert>
-        <Typography variant="subtitle2" sx={{ mb: 0.5 }}>Agents that will be deleted</Typography>
+        <Typography variant="subtitle2" sx={{ mb: 0.5 }}>Agents That Will Be Deleted</Typography>
         <Stack spacing={0.25} sx={{ mb: confirmationText ? 2 : 0 }}>
           {shown.map((agent) => <Typography key={agent.id} variant="body2">• {agent.title}</Typography>)}
           {affected.length > shown.length ? <Typography variant="body2" color="text.secondary">and {affected.length - shown.length} more</Typography> : null}

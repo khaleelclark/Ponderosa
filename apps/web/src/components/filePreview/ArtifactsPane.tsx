@@ -5,7 +5,7 @@ import DifferenceIcon from "@mui/icons-material/Difference";
 import SearchIcon from "@mui/icons-material/Search";
 import TerminalIcon from "@mui/icons-material/Terminal";
 import { Alert, Box, Button, InputAdornment, List, ListItemButton, ListItemIcon, ListItemText, Stack, TextField, Typography } from "@mui/material";
-import { routeToPath } from "../../routeRegistry";
+import { routeLinkPath } from "../../routeRegistry";
 import type { ArtifactDto } from "@ponderosa/core";
 import { useEffect, useState } from "react";
 import { telemetryElementId } from "../../telemetryFocus";
@@ -71,8 +71,8 @@ export function ArtifactsPane({
   if (orderedArtifacts.length === 0) {
     return (
       <Box sx={{ p: 2 }}>
-        <Alert severity="info">No files or results yet. Generated files, diffs, and test reports appear here; command output is available in the Chat's Work log and Technical details.</Alert>
-        <Button component="a" href={routeToPath({ kind: "agent", projectId, agentId, view: "technical" })}>Open {agentTitle}’s Technical details</Button>
+        <Alert severity="info">No files or results yet.</Alert>
+        <Button component="a" href={routeLinkPath({ kind: "agent", projectId, agentId, view: "technical" })}>Open {agentTitle}’s Technical Details</Button>
       </Box>
     );
   }
@@ -89,13 +89,13 @@ export function ArtifactsPane({
           value={filter}
           onChange={(event) => setFilter(event.target.value)}
           placeholder="Search files and results"
-          inputProps={{ "aria-label": "Search agent files and results" }}
+          inputProps={{ "aria-label": "Search Agent Files And Results" }}
           InputProps={{ startAdornment: <InputAdornment position="start"><SearchIcon fontSize="small" /></InputAdornment> }}
           sx={{ width: { xs: "100%", sm: 280 } }}
         />
       </Stack>
       <Box sx={{ display: "grid", gridTemplateColumns: { xs: "minmax(0, 1fr)", lg: "minmax(260px, 320px) minmax(0, 1fr)" }, gridTemplateRows: { xs: "minmax(180px, 34%) minmax(0, 1fr)", lg: "minmax(0, 1fr)" }, minHeight: 0 }}>
-        <Box component="nav" aria-label="Agent files and results" sx={{ minHeight: 0, overflowY: "auto", borderRight: { lg: 1 }, borderBottom: { xs: 1, lg: 0 }, borderColor: "divider", bgcolor: "background.paper", p: 0.75 }}>
+        <Box component="nav" aria-label="Agent Files And Results" sx={{ minHeight: 0, overflowY: "auto", borderRight: { lg: 1 }, borderBottom: { xs: 1, lg: 0 }, borderColor: "divider", bgcolor: "background.paper", p: 0.75 }}>
           {groups.length === 0 ? <Alert severity="info" sx={{ m: 0.75 }}>No files or results match “{filter.trim()}”.</Alert> : groups.map((group) => <Box key={group.label} sx={{ mb: 1 }}>
             <Typography variant="overline" color="text.secondary" sx={{ display: "block", px: 1, py: 0.5 }}>{group.label}</Typography>
             <List disablePadding>
@@ -105,7 +105,7 @@ export function ArtifactsPane({
                 const displayLabel = artifactDisplayLabel(artifact, displayPath);
                 return <ListItemButton
                   key={artifact.id}
-                  component="a" href={routeToPath({ kind: "agent", projectId, agentId, view: "artifacts", focusTelemetry: { stream: "artifacts", id: artifact.id } })}
+                  component="a" href={routeLinkPath({ kind: "agent", projectId, agentId, view: "artifacts", focusTelemetry: { stream: "artifacts", id: artifact.id } })}
                   aria-label={`Open ${displayLabel} (${displayPath})`}
                   title={displayPath}
                   id={telemetryElementId("artifacts", artifact.id)}

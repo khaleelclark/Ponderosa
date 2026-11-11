@@ -1,3 +1,4 @@
+import {productApiPath,productWorkspacePath} from "../../api/productScope.js";
 import { routeToPath } from "../../routeRegistry.js";
 
 /** Resolve a Markdown link against the file being viewed, not the browser URL. */
@@ -46,7 +47,7 @@ export function renderableWorkspaceMarkdownHref(
     try {
       const pathname = decodeURIComponent(href.split(/[?#]/u, 1)[0] ?? "");
       if (pathname.includes("\\") || pathname.includes("\0") || pathname.split("/").includes("..")) return undefined;
-      return href;
+      return productWorkspacePath(href);
     } catch { return undefined; }
   }
   if (!scope || Boolean(scope.agentId) === Boolean(scope.conversationId)) return undefined;
@@ -56,7 +57,7 @@ export function renderableWorkspaceMarkdownHref(
   if (scope.agentId) url.searchParams.set("agentId", scope.agentId);
   if (scope.conversationId) url.searchParams.set("conversationId", scope.conversationId);
   if (scope.returnTo) url.searchParams.set("returnTo", scope.returnTo);
-  return `${url.pathname}${url.search}${url.hash}`;
+  return productWorkspacePath(`${url.pathname}${url.search}${url.hash}`);
 }
 
 export function workspaceMarkdownMediaHref(projectId: string | undefined, currentPath: string | undefined, src: string | undefined, scope?: { agentId?: string; conversationId?: string }): string | undefined {
@@ -70,5 +71,5 @@ export function workspaceMarkdownMediaHref(projectId: string | undefined, curren
   const query = new URLSearchParams({ path: filePath });
   if (scope?.agentId) query.set("agentId", scope.agentId);
   if (scope?.conversationId) query.set("conversationId", scope.conversationId);
-  return `/api/projects/${encodeURIComponent(projectId)}/workspace-files/preview?${query}`;
+  return productApiPath(`/api/projects/${encodeURIComponent(projectId)}/workspace-files/preview?${query}`);
 }

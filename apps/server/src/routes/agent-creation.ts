@@ -1,3 +1,4 @@
+import { normalizeAgentRole } from "@ponderosa/core";
 import { createHash, randomUUID } from "node:crypto";
 import type {
   AgentDto,
@@ -90,7 +91,7 @@ export function registerAgentCreationRoutes(
 
   app.post<{
     Params: { id: string };
-    Body: { title: string; engine: string; conversationId: string; model?: string; effort?: string; speed?: string; initialMessage?: string; draftAttachmentIds?: string[]; draftOwnerId?: string; presetId?: string; managerAgentId?: string; awaitResult?: boolean; idempotencyKey?: string; managementPermissions?: { allowAutomaticDescendantDeletion: boolean; allowAutomaticDescendantReorganization: boolean } };
+    Body: { title: string; role?: string; engine: string; conversationId: string; model?: string; effort?: string; speed?: string; initialMessage?: string; draftAttachmentIds?: string[]; draftOwnerId?: string; presetId?: string; managerAgentId?: string; awaitResult?: boolean; idempotencyKey?: string; managementPermissions?: { allowAutomaticDescendantDeletion: boolean; allowAutomaticDescendantReorganization: boolean } };
   }>(
     "/api/projects/:id/agents",
     async (request, reply) => {
@@ -100,7 +101,7 @@ export function registerAgentCreationRoutes(
       }
       const candidate = body as Record<string, unknown>;
       const allowedFields = new Set([
-        "title", "engine", "conversationId", "model", "effort", "speed", "initialMessage",
+        "title", "role", "engine", "conversationId", "model", "effort", "speed", "initialMessage",
         "draftAttachmentIds", "draftOwnerId", "presetId", "managerAgentId", "awaitResult",
         "idempotencyKey", "managementPermissions",
       ]);
@@ -108,7 +109,7 @@ export function registerAgentCreationRoutes(
       if (unknownFields.length) {
         return reply.code(400).send({ error: `unknown Agent field(s): ${unknownFields.join(", ")}` });
       }
-      for (const key of ["title", "engine", "conversationId", "model", "effort", "speed", "initialMessage", "draftOwnerId", "presetId", "managerAgentId", "idempotencyKey"] as const) {
+      for (const key of ["title", "role", "engine", "conversationId", "model", "effort", "speed", "initialMessage", "draftOwnerId", "presetId", "managerAgentId", "idempotencyKey"] as const) {
         if (candidate[key] !== undefined && typeof candidate[key] !== "string") {
           return reply.code(400).send({ error: `${key} must be a string` });
         }
@@ -139,6 +140,8 @@ export function registerAgentCreationRoutes(
       if (!request.body?.title || !request.body?.engine || !request.body?.conversationId) {
         return reply.code(400).send({ error: "title, engine, and Chat are required" });
       }
+      try { request.body.role = normalizeAgentRole(request.body.role); }
+      catch (error) { return reply.code(400).send({ error: (error as Error).message }); }
       const creationIdempotencyKey = request.body.idempotencyKey?.trim();
       if (creationIdempotencyKey && creationIdempotencyKey.length > 200) {
         return reply.code(400).send({ error: "idempotencyKey must be 200 characters or fewer" });
@@ -160,6 +163,7 @@ export function registerAgentCreationRoutes(
       const operationPayloadHash = createHash("sha256").update(stableJson({
         projectId: request.params.id,
         title: request.body.title,
+        ...(request.body.role === undefined ? {} : { role: request.body.role }),
         engine: request.body.engine,
         conversationId: request.body.conversationId,
         model: request.body.model ?? null,

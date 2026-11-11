@@ -17,7 +17,7 @@ import { api } from "../../api";
 import { queryKeys } from "../../queryKeys";
 import { presentProjectPath } from "../../projectPathPresentation";
 import { telemetryElementId } from "../../telemetryFocus";
-import { ChatMessageBody } from "../chat/ChatMessages";
+import { AgentResponseText } from "../chat/AgentResponseText";
 import { FilePreview } from "../filePreview/FilePreview";
 import { recordedArtifactDiff } from "../filePreview/artifactDiff";
 import { ActivityOutput, RunOutputFullText } from "./ActivityOutput";
@@ -247,6 +247,9 @@ function GroupedActivityRow({
             </>
       ) : null}
       {entry.kind === "tool" ? <Box sx={{ pl: 1, borderLeft: 2, borderColor: "divider" }}>
+        <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 0.25, fontWeight: 700 }}>
+          Input:
+        </Typography>
         <CollapsibleCode value={toolInput || "null"} maxLines={4} />
       </Box> : null}
       {entry.kind === "file" && (entry.additions !== undefined || entry.deletions !== undefined) ? <Typography sx={{ fontSize: 10.5 }}>
@@ -333,7 +336,7 @@ export function ActionGroupRow({
       >
         {summary}
       </Button>
-      {failureCount ? <Chip size="small" color="error" label={`${failureCount} failed`} sx={{ height: 20, fontSize: 10.5 }} /> : null}
+      {failureCount ? <Chip size="small" color="error" label={`${failureCount} Failed`} sx={{ height: 20, fontSize: 10.5 }} /> : null}
       <Box sx={{ flex: 1 }} />
       {entries[0] ? <ActivityTimestamp value={entries[0].createdAt} /> : null}
     </Stack>
@@ -372,7 +375,7 @@ function CollapsibleCode({ value, maxLines }: { value: string; maxLines: number 
       color="inherit"
       startIcon={expanded ? <ExpandLessIcon /> : <ExpandMoreIcon />}
       onClick={() => setExpanded((value) => !value)}
-    >{expanded ? "Show less" : "Show more"}</Button> : null}
+    >{expanded ? "Show Less" : "Show More"}</Button> : null}
   </Box>;
 }
 
@@ -391,7 +394,7 @@ function ThinkingText({ text }: { text: string }): JSX.Element {
       } : {}),
     }}>{text}</Typography>
     {collapsible ? <Button size="small" color="inherit" onClick={() => setExpanded((value) => !value)}>
-      {expanded ? "Show less" : "Show more"}
+      {expanded ? "Show Less" : "Show More"}
     </Button> : null}
   </Box>;
 }
@@ -443,13 +446,12 @@ export function ResponseRow({
   return <Row entry={entry} focusId={focusId} stream="runOutput">
     <RunOutputFullText
       segment={entry.segment}
-      render={(text) => <ChatMessageBody
+      render={(text) => <AgentResponseText
         text={text}
-        collapseLongMessage={false}
+        completed={entry.segment.completed}
         projectId={projectId}
         fileScope={agentId ? { agentId } : undefined}
-        compactMarkdown
-        smallText
+        compact
       />}
     />
     {entry.segment.fileActivity?.length ? <ResponseFileActivity
@@ -475,7 +477,7 @@ function browserDescription(entry: Extract<ActivityStreamEntry, { kind: "browser
   }
   if (event.type === "browser_action") return { title: `Browser · ${event.action}`, detail: event.summary };
   if (event.type === "browser_console") return { title: `Browser console · ${event.level}`, detail: event.text };
-  return { title: "Browser screenshot", detail: `${event.path} · ${event.width}×${event.height}` };
+  return { title: "Browser Screenshot", detail: `${event.path} · ${event.width}×${event.height}` };
 }
 
 export function CompactActivityRow({
@@ -507,6 +509,6 @@ export function CompactActivityRow({
     {content.detail ? <Typography variant="body2" color="text.secondary" sx={{ mt: 0.25, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
       {content.detail}
     </Typography> : null}
-    {entry.kind === "notice" && entry.result ? <ActivityOutput result={entry.result} label="Tool output" collapsedLines={2} /> : null}
+    {entry.kind === "notice" && entry.result ? <ActivityOutput result={entry.result} label="Tool Output" collapsedLines={2} /> : null}
   </Row>;
 }

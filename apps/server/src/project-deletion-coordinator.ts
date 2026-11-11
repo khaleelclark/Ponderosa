@@ -1,3 +1,7 @@
+import {isMemoryCleanupHold} from './local-memory-authority.js';
+import { withSourceMutation } from "@ponderosa/agents";
+import {localMemoryFor} from "./local-memory.js";
+import {requestProduct,resourceInProduct} from "./product-scope.js";
 import type {
   AgentDto,
   AgentHealthProjectionDto,
@@ -227,7 +231,7 @@ export function registerProjectDeletionRoutes(
     };
   });
 
-  app.delete<{ Params: { id: string } }>("/api/projects/:id", async (request, reply) => {
+  app.delete<{ Params: { id: string } }>("/api/projects/:id", async (request, reply) => withSourceMutation(async () => {
     const previousReceipt = store.getProjectDeletionReceipt(request.params.id);
     if (previousReceipt) {
       // Older committed receipts can still carry unresolved retained browsers.
@@ -294,7 +298,7 @@ export function registerProjectDeletionRoutes(
             dedupeKey: `project-deletion:${refreshed.projectId}`,
             category: "system",
             severity: "attention",
-            title: "Project deletion cleanup needs attention",
+            title: "Project Deletion Cleanup Needs Attention",
             body: `The Project was deleted, but filesystem cleanup is still retrying. ${refreshed.lastError ?? "Retry deletion to continue cleanup."}`.slice(0, 1_000),
           });
         }
@@ -447,6 +451,7 @@ export function registerProjectDeletionRoutes(
         throw new Error("Project deletion cannot commit while Chat deletion cleanup is pending");
       }
       browserProfiles.retainedBrowsers.assertClear({ projectId: project.id });
+      await localMemoryFor(app)?.purgeProject(project.id);
       const receipt = store.commitProjectDeletion(project.id, (projectId) => coordinationV3.purgeProject(projectId));
       if (!receipt) throw new Error("Project deletion commit did not produce a receipt");
       communicationReconciliation.delete(project.id);
@@ -506,7 +511,7 @@ export function registerProjectDeletionRoutes(
             dedupeKey: `project-deletion:${project.id}`,
             category: "system",
             severity: "attention",
-            title: "Project deletion cleanup needs attention",
+            title: "Project Deletion Cleanup Needs Attention",
             body: `The Project was deleted, but filesystem cleanup is still retrying. ${refreshed.lastError ?? "Retry deletion to continue cleanup."}`.slice(0, 1_000),
           });
         }
@@ -525,8 +530,8 @@ export function registerProjectDeletionRoutes(
           dedupeKey: `project-deletion:${project.id}`,
           category: "system",
           severity: "urgent",
-          title: "Project deletion needs attention",
-          body: `Ponderosa quarantined ${project.label} and revoked Agent authority, but cleanup has not completed. Retry deletion after the cleanup problem is resolved. ${error instanceof Error ? error.message : String(error)}`.slice(0, 1_000),
+          title: "Project Deletion Needs Attention",
+          body: `Ponderosa quarantined ${project.label} and revoked Agent authority, but cleanup has not completed. ${isMemoryCleanupHold(error)?'Memory cleanup is held for review.':'Retry deletion after the cleanup problem is resolved.'} ${error instanceof Error ? error.message : String(error)}`.slice(0, 1_000),
           projectId: project.id,
         });
       } catch { /* in-memory quarantine remains fail closed */ }
@@ -534,7 +539,7 @@ export function registerProjectDeletionRoutes(
         error: error instanceof Error ? error.message : "Project deletion is waiting for provider runtime cleanup",
         cleanupPending: true,
         quarantined: true,
-        retryable: true,
+        retryable: !(isMemoryCleanupHold(error)),
       });
     } finally {
       projectDeletionInFlightIds.delete(project.id);
@@ -543,7 +548,7 @@ export function registerProjectDeletionRoutes(
         for (const agentId of agentIds) deletingAgentIds.delete(agentId);
       }
     }
-  });
+  }));
 
   app.get<{ Params: { id: string } }>("/api/projects/:id/communication-reconciliation", async (request, reply) => {
     if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
@@ -558,7 +563,7 @@ export function registerProjectDeletionRoutes(
     if (!store.getProject(request.params.id)) return reply.code(404).send({ error: "project not found" });
     return agentHealth(
       { type: "project", id: request.params.id },
-      store.listAgents(request.params.id),
+      store.listAgents(request.params.id).filter(agent=>resourceInProduct(store,"agent",agent.id,requestProduct(request))),
     );
   });
 }

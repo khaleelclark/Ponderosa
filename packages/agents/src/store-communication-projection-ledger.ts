@@ -1,3 +1,4 @@
+import type { ProjectionProgress } from "./projection-checkpoint.js";
 import { createHash } from "node:crypto";
 import type Database from "better-sqlite3";
 import {
@@ -98,6 +99,7 @@ export class AgentCommunicationProjectionLedger {
       artifactIds: readonly string[],
       metadataAuthority?: (projectId: string, artifact: ArtifactDto) => boolean,
     ) => CommunicationAttachmentDto[],
+    private readonly progress: ProjectionProgress,
   ) {}
 
   configureManagedArtifactAttachmentMetadataAuthority(
@@ -109,14 +111,15 @@ export class AgentCommunicationProjectionLedger {
   communicationProjectionAllowed(
     projectId: string,
     projection: Pick<CommunicationProjection, "eventId" | "surface" | "projectionKey" | "message">,
+    getConversation = this.getConversation,
   ): boolean {
     const event = this.communicationIndex(projectId).byId.get(projection.eventId);
     if (!event) throw new Error("communication projection source event not found");
     // Deleted rooms are hard context boundaries. Their retained append-only
     // records are historical storage only and may not materialize anywhere.
-    if (event.conversationId && !this.getConversation(event.conversationId)) return false;
+    if (event.conversationId && !getConversation(event.conversationId)) return false;
     const roomKeyAllowed = event.conversationId === projection.projectionKey && (() => {
-      const room = this.getConversation(projection.projectionKey);
+      const room = getConversation(projection.projectionKey);
       return Boolean(room && room.projectId === projectId);
     })();
     // A user-authored Project message remains an organization-scoped
@@ -151,6 +154,11 @@ export class AgentCommunicationProjectionLedger {
   }
 
   appendCommunicationProjection(projectId: string, projection: CommunicationProjection): { projection: CommunicationProjection; replayed: boolean } {
+    return this.progress.run([communicationProjectionsPath(this.dataDir, projectId)],
+      () => this.appendProjectedCommunication(projectId, projection));
+  }
+
+  private appendProjectedCommunication(projectId: string, projection: CommunicationProjection): { projection: CommunicationProjection; replayed: boolean } {
     if (!this.communicationProjectionAllowed(projectId, projection)) {
       throw new Error("communication scope cannot project to requested surface");
     }
@@ -159,6 +167,14 @@ export class AgentCommunicationProjectionLedger {
     const tuple = `${projection.eventId}\u0000${projection.surface}\u0000${projection.projectionKey}`;
     const existing = index.byTuple.get(tuple);
     if (existing) {
+      const commitEnrichment = (enriched: CommunicationProjection): { projection: CommunicationProjection; replayed: boolean } => {
+        appendFsyncedJsonl(file, [enriched]);
+        const position = index.projections.findIndex((candidate) => candidate === existing);
+        if (position >= 0) index.projections[position] = enriched;
+        index.byTuple.set(tuple, enriched);
+        this.upsertGlobalChatSearchProjection(projectId, enriched);
+        return { projection: enriched, replayed: false };
+      };
       if (existing.message && projection.message) {
         const existingText = existing.message.renderedText ?? "";
         const projectionText = projection.message.renderedText ?? "";
@@ -185,12 +201,7 @@ export class AgentCommunicationProjectionLedger {
           revision: (existing.revision ?? 1) + 1,
           message: projection.message,
         };
-        appendFsyncedJsonl(file, [enriched]);
-        const position = index.projections.findIndex((candidate) => candidate === existing);
-        if (position >= 0) index.projections[position] = enriched;
-        index.byTuple.set(tuple, enriched);
-        this.upsertGlobalChatSearchProjection(projectId, enriched);
-        return { projection: enriched, replayed: false };
+        return commitEnrichment(enriched);
       }
       if (existing.message && projection.message) {
         const enrichedMessage = {
@@ -210,12 +221,7 @@ export class AgentCommunicationProjectionLedger {
         };
         if (JSON.stringify(enrichedMessage) !== JSON.stringify(existing.message)) {
           const enriched = { ...existing, revision: (existing.revision ?? 1) + 1, message: enrichedMessage };
-          appendFsyncedJsonl(file, [enriched]);
-          const position = index.projections.findIndex((candidate) => candidate === existing);
-          if (position >= 0) index.projections[position] = enriched;
-          index.byTuple.set(tuple, enriched);
-          this.upsertGlobalChatSearchProjection(projectId, enriched);
-          return { projection: enriched, replayed: false };
+          return commitEnrichment(enriched);
         }
       }
       // Delivery retries may create new runtime-local IDs and timestamps, and
@@ -237,10 +243,10 @@ export class AgentCommunicationProjectionLedger {
     return { projection, replayed: false };
   }
 
-  readCommunicationProjections(projectId: string): CommunicationProjection[] {
+  readCommunicationProjections(projectId: string, getConversation = this.getConversation): CommunicationProjection[] {
     if (!this.getProject(projectId)) throw new Error("communication project not found");
     return this.projectionIndex(projectId).projections.filter((projection) =>
-      this.communicationProjectionAllowed(projectId, projection));
+      this.communicationProjectionAllowed(projectId, projection, getConversation));
   }
 
   getCommunicationProjection(
@@ -442,11 +448,17 @@ export class AgentCommunicationProjectionLedger {
 
   /** Verify that canonical events and their projections agree. */
   reconcileCommunicationEvents(projectId: string): CommunicationReconciliationReport {
+    // One synchronous pass shares current room metadata; nothing survives the pass.
+    const conversations = new Map<string, ConversationDto | undefined>();
+    const getConversation = (id: string): ConversationDto | undefined => {
+      if (!conversations.has(id)) conversations.set(id, this.getConversation(id));
+      return conversations.get(id);
+    };
     const allCanonical = this.readCommunicationEvents(projectId);
     const canonical = allCanonical.filter((event) =>
-      !event.conversationId || Boolean(this.getConversation(event.conversationId)));
+      !event.conversationId || Boolean(getConversation(event.conversationId)));
     const canonicalIds = new Set(canonical.map((event) => event.eventId));
-    const projections = this.readCommunicationProjections(projectId);
+    const projections = this.readCommunicationProjections(projectId, getConversation);
     const counts = new Map<string, number>();
     for (const projection of projections) counts.set(projection.eventId, (counts.get(projection.eventId) ?? 0) + 1);
     const tupleCounts = new Map<string, number>();

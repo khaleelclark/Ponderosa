@@ -35,7 +35,7 @@ function recordedDiffTotals(diff?: string): { additions: number; deletions: numb
 }
 
 export function recordedPreviewLabel(file: Pick<ChangedFileDto, "diffAvailable">): string {
-  return file.diffAvailable ? "Text preview recorded" : "Metadata and provenance only";
+  return file.diffAvailable ? "Text Preview Recorded" : "Metadata And Provenance Only";
 }
 
 export function WorkspaceReviewPane({ projectRoot, agentId, files: historyFiles, running, initialPath, executionId, backLabel = "Back to Agent", onBack }: {
@@ -109,28 +109,28 @@ export function WorkspaceReviewPane({ projectRoot, agentId, files: historyFiles,
     : undefined;
   const displayedChangeCount = recordedMode ? files.length : changes.length;
 
-  return <Box sx={{ display: "grid", gridTemplateRows: "auto minmax(0, 1fr)", minHeight: 0, height: "100%" }} aria-label="Workspace changes">
+  return <Box sx={{ display: "grid", gridTemplateRows: "auto minmax(0, 1fr)", minHeight: 0, height: "100%" }} aria-label="Workspace Changes">
     <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ alignItems: "center", px: 1.5, py: 1, borderBottom: 1, borderColor: "divider" }}>
       <Tooltip title={backLabel}><IconButton aria-label={backLabel} size="small" onClick={onBack}><ArrowBackIcon /></IconButton></Tooltip>
       <Typography variant="overline" color="text.secondary">Review</Typography>
-      {executionId ? <Stack direction="row" spacing={.5}><Button size="small" variant={scope === "response" ? "outlined" : "text"} onClick={() => setScope("response")}>This response</Button><Button size="small" variant={scope === "folder" ? "outlined" : "text"} onClick={() => setScope("folder")}>Working folder</Button></Stack> : <Typography variant="caption">{recordedMode ? "Agent change history" : "Working folder"}</Typography>}
-      <Button size="small" sx={{ display: { xs: "inline-flex", lg: "none" } }} onClick={() => setShowFiles(value => !value)}>{showFiles ? "Selected file" : "Files"}</Button>
+      {executionId ? <Stack direction="row" spacing={.5}><Button size="small" variant={scope === "response" ? "outlined" : "text"} onClick={() => setScope("response")}>This Response</Button><Button size="small" variant={scope === "folder" ? "outlined" : "text"} onClick={() => setScope("folder")}>Working Folder</Button></Stack> : <Typography variant="caption">{recordedMode ? "Agent change history" : "Working folder"}</Typography>}
+      <Button size="small" sx={{ display: { xs: "inline-flex", lg: "none" } }} onClick={() => setShowFiles(value => !value)}>{showFiles ? "Selected File" : "Files"}</Button>
       {workspace.data ? <Chip
         size="small"
         color={workspace.data.workingCopy.mode === "separate_git" ? "primary" : "default"}
-        label={workspace.data.workingCopy.mode === "separate_git" ? "Separate Git copy" : "Shared folder"}
+        label={workspace.data.workingCopy.mode === "separate_git" ? "Separate Git Copy" : "Shared Folder"}
       /> : null}
       {workspace.data?.branch ? <Chip size="small" label={workspace.data.branch} /> : null}
       {workspace.data?.head ? <Typography variant="caption" color="text.secondary">{workspace.data.head}</Typography> : null}
-      <Chip size="small" label={`${displayedChangeCount} change${displayedChangeCount === 1 ? "" : "s"}`} color={displayedChangeCount ? "warning" : "default"} />
+      <Chip size="small" label={`${displayedChangeCount} Change${displayedChangeCount === 1 ? "" : "s"}`} color={displayedChangeCount ? "warning" : "default"} />
       <Box sx={{ flex: 1 }} />
       <PrimaryHeaderActionsOutlet />
-      <Tooltip title="Refresh review"><IconButton aria-label="Refresh review" size="small" onClick={() => void (scope === "response" ? response.refetch() : workspace.refetch())}><RefreshIcon /></IconButton></Tooltip>
+      <Tooltip title="Refresh Review"><IconButton aria-label="Refresh Review" size="small" onClick={() => void (scope === "response" ? response.refetch() : workspace.refetch())}><RefreshIcon /></IconButton></Tooltip>
     </Stack>
     {scope === "response" && response.isLoading || scope === "folder" && workspace.isLoading ? <Box sx={{ p: 2 }}><CircularProgress size={22} /></Box>
       : scope === "response" && response.isError || scope === "folder" && workspace.isError ? <Alert severity="error" sx={{ m: 1.5 }}>Review could not be loaded. Refresh to try again.</Alert>
         : recordedMode ? <Box sx={{ minHeight: 0, overflow: "auto", p: 1.5 }}>
-          <Alert severity="info" sx={{ mb: 1.5 }}>{scope === "response" ? "Recorded changes from this response, not the current working folder. Each preview shows the latest recorded change for that file in this response." : "Agent change history. This working folder is not a Git repository, so no Git diff is available."}</Alert>
+          <Alert severity="info" sx={{ mb: 1.5 }}>{scope === "response" ? "Latest recorded changes per file in this response." : "Agent change history · No Git repository."}</Alert>
           {scope === "response" && response.data?.truncated ? <Alert severity="info">Showing a bounded set of recorded changes; older changes in this response may be omitted.</Alert> : null}
           {files.length === 0 ? <Typography variant="body2" color="text.secondary">No recorded changed files for this agent.</Typography> : <Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", lg: "minmax(240px, 34%) minmax(0, 1fr)" }, gap: 1.5 }}>
             <Stack spacing={0.75} sx={{ display: { xs: showFiles ? "flex" : "none", lg: "flex" }, maxHeight: { lg: "65vh" }, overflowY: "auto" }}>
@@ -168,7 +168,7 @@ export function WorkspaceReviewPane({ projectRoot, agentId, files: historyFiles,
                     : selectedProvenance?.diffAvailable
                       ? <Alert
                         severity="info"
-                        action={<Button color="inherit" size="small" onClick={() => void selectedProvenanceQuery.refetch()}>Reload recorded preview</Button>}
+                        action={<Button color="inherit" size="small" onClick={() => void selectedProvenanceQuery.refetch()}>Reload Recorded Preview</Button>}
                       >
                         The recorded text preview did not load in this review.
                       </Alert>
@@ -209,7 +209,7 @@ export function WorkspaceReviewPane({ projectRoot, agentId, files: historyFiles,
                   {selectedChange?.staged ? <Chip size="small" label="Staged" color="success" /> : null}
                   {selectedChange?.unstaged ? <Chip size="small" label="Unstaged" color="warning" /> : null}
                   {selectedChange?.untracked ? <Chip size="small" label="Untracked" color="info" /> : null}
-                  {selectedProvenance ? <Chip size="small" label={`${selectedProvenance.executionCount} agent run${selectedProvenance.executionCount === 1 ? "" : "s"}`} /> : null}
+                  {selectedProvenance ? <Chip size="small" label={`${selectedProvenance.executionCount} Agent Run${selectedProvenance.executionCount === 1 ? "" : "s"}`} /> : null}
                 </Stack>
                 <Stack direction="row" spacing={0.5} sx={{ mb: 1 }}>
                   <Button size="small" variant={reviewMode === "diff" ? "contained" : "outlined"} onClick={() => setReviewMode("diff")}>Diff</Button>
@@ -232,7 +232,7 @@ export function WorkspaceReviewPane({ projectRoot, agentId, files: historyFiles,
                                 sx={{ px: 2, py: 0.75, borderBottom: 1, borderColor: "divider", color: "text.secondary" }}
                               >
                                 <Typography variant="caption">Syntax highlighting unavailable. Plain file text is still readable.</Typography>
-                                <Button size="small" color="inherit" onClick={retry}>Retry highlighting</Button>
+                                <Button size="small" color="inherit" onClick={retry}>Retry Highlighting</Button>
                               </Stack> : null}
                               <Box component="pre" sx={{ m: 0, p: 2, overflow: "auto", whiteSpace: "pre", fontFamily: "monospace" }}>{review.data?.content ?? ""}</Box>
                             </>}
@@ -244,8 +244,8 @@ export function WorkspaceReviewPane({ projectRoot, agentId, files: historyFiles,
                     : review.data?.diff && activeDisplayPath ? <>
                       {review.data.truncated ? <Alert severity="warning" sx={{ mb: 1 }}>This review is truncated to the safe viewer limit.</Alert> : null}
                       {presentedWorkspaceDiff
-                        ? <>{review.data.stagedDiff ? <Box component="section" aria-label="Staged changes"><Typography variant="subtitle2">Staged · HEAD → index</Typography><UnifiedDiffViewer diff={review.data.stagedDiff} /></Box> : null}
-                          {review.data.unstagedDiff ? <Box component="section" aria-label="Unstaged changes"><Typography variant="subtitle2">Unstaged · index → working folder</Typography><UnifiedDiffViewer diff={review.data.unstagedDiff} /></Box> : null}</>
+                        ? <>{review.data.stagedDiff ? <Box component="section" aria-label="Staged Changes"><Typography variant="subtitle2">Staged · HEAD → index</Typography><UnifiedDiffViewer diff={review.data.stagedDiff} /></Box> : null}
+                          {review.data.unstagedDiff ? <Box component="section" aria-label="Unstaged Changes"><Typography variant="subtitle2">Unstaged · index → working folder</Typography><UnifiedDiffViewer diff={review.data.unstagedDiff} /></Box> : null}</>
                         : <Alert severity="info">Git has no safe line-oriented diff for this change. It may be binary or metadata-only.</Alert>}
                     </> : <Alert severity="info">Git has no textual diff for this change. It may be binary or metadata-only.</Alert>}
               </Box>

@@ -1,0 +1,5 @@
+# Pinned released baseline. Other transitive dependencies are not locked.
+# Prebuilt 1.0.13 fails to import against langgraph 1.0.5; 1.0.2 passed the synthetic comparator.
+langgraph==1.0.5
+langchain==1.0.8
+langgraph-prebuilt==1.0.2

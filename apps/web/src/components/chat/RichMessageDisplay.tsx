@@ -1,13 +1,14 @@
 import { Box, Chip, LinearProgress, Stack, Typography } from "@mui/material";
 import type { RichMessageBlock } from "@ponderosa/core";
 import type { ReactNode } from "react";
+import {VisualizationDisplay,type VisualizationScope} from "./VisualizationDisplay";
 import { ScrollableMessageTable } from "./ScrollableMessageTable";
 
 const tones = { neutral: "default", positive: "success", caution: "warning", negative: "error" } as const;
 const axisLabel = (value: number) => String(value).length > 7 ? value.toExponential(1) : String(value);
 const shortLabel = (value: string) => [...value].slice(0, 12).join("") + ([...value].length > 12 ? "…" : "");
 
-export function RichMessageDisplay({ block }: { block: RichMessageBlock }): JSX.Element {
+export function RichMessageDisplay({ block, visualizationScope }: { block: RichMessageBlock; visualizationScope?: VisualizationScope }): JSX.Element {
   let content: ReactNode;
   if (block.type === "metrics") {
     content = <Box sx={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 1, "@container (max-width: 360px)": { gridTemplateColumns: "1fr" } }}>
@@ -36,6 +37,8 @@ export function RichMessageDisplay({ block }: { block: RichMessageBlock }): JSX.
         sx={{ my: 0.75, height: 8, borderRadius: 1 }} />
       <Typography component="div" variant="caption" color="text.secondary">Range {item.min}–{item.max} {item.unit}{item.note ? ` · ${item.note}` : ""}</Typography>
     </Box>)}</Stack>;
+  } else if(block.type === "visualization") {
+    content=<VisualizationDisplay block={block} scope={visualizationScope}/>;
   } else {
     const points = block.points, values = points.map(point => point.value);
     const min = Math.min(...values), max = Math.max(...values), span = max - min;
@@ -52,7 +55,7 @@ export function RichMessageDisplay({ block }: { block: RichMessageBlock }): JSX.
             <Box sx={{ height: "100%", width: `${max === 0 ? 0 : point.value / max * 100}%`, bgcolor: "primary.main" }} />
           </Box>
         </Box>)}
-      </Stack> : <Box role="region" tabIndex={0} aria-label={`${block.title} chart`} sx={{ color: "primary.main", overflowX: "auto", overscrollBehaviorX: "contain" }}>
+      </Stack> : <Box role="region" tabIndex={0} aria-label={`${block.title} Chart`} sx={{ color: "primary.main", overflowX: "auto", overscrollBehaviorX: "contain" }}>
         <svg viewBox="0 0 480 180" role="img" aria-label={`${block.title} (${block.unit}); values follow the table order`} style={{ display: "block", width: "100%", minWidth: 480, height: "auto" }}>
           <title>{`${block.title} (${block.unit})`}</title>
           <path d="M72 16V144H464" stroke="currentColor" opacity="0.3" fill="none" />
@@ -64,13 +67,13 @@ export function RichMessageDisplay({ block }: { block: RichMessageBlock }): JSX.
           {points.length > 1 ? <text x="464" y="172" textAnchor="end" fill="currentColor" fontSize="12">{shortLabel(points.at(-1)!.label)}</text> : null}
         </svg>
       </Box>}
-      {block.type === "line" ? <ScrollableMessageTable aria-label={`${block.title} data`}><thead><tr><th scope="col">Label</th><th scope="col" style={{ textAlign: "right" }}>Value ({block.unit})</th></tr></thead>
+      {block.type === "line" ? <ScrollableMessageTable aria-label={`${block.title} Data`}><thead><tr><th scope="col">Label</th><th scope="col" style={{ textAlign: "right" }}>Value ({block.unit})</th></tr></thead>
           <tbody>{points.map((point, index) => <tr key={index}><td>{point.label}</td><td style={{ textAlign: "right" }}>{point.value}</td></tr>)}</tbody>
       </ScrollableMessageTable> : null}
     </>;
   }
-  return <Box component="figure" data-ponderosa-rich={block.type} aria-label={block.title ?? block.type} sx={{ containerType: "inline-size", mx: 0, my: 1, p: 1.5, maxWidth: "100%", minWidth: 0, border: 1, borderColor: "divider", borderRadius: 2, overflowWrap: "anywhere" }}>
-    {block.title ? <Typography component="figcaption" variant="body1" fontWeight={700} sx={{ mb: 1 }}>{block.title}</Typography> : null}
+  return <Box component="figure" data-ponderosa-rich={block.type} aria-label={block.title ?? block.type} sx={{ containerType: "inline-size", mx: 0, my: 1, p: block.type === "visualization" ? 0 : 1.5, maxWidth: "100%", minWidth: 0, border: block.type === "visualization" ? 0 : 1, borderColor: "divider", borderRadius: 2, overflowWrap: "anywhere" }}>
+    {block.title && block.type !== "visualization" ? <Typography component="figcaption" variant="body1" fontWeight={700} sx={{ mb: 1 }}>{block.title}</Typography> : null}
     {content}
   </Box>;
 }

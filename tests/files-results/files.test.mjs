@@ -1,14 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID, createHash } from 'node:crypto';
-import { writeFile, readFile, access, rm } from 'node:fs/promises';
+import { writeFile, readFile, access, rm, rename, mkdir, chmod } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
 import sharp from 'sharp';
-import { AgentStore, managedArtifactContentPath } from '@ponderosa/agents';
-import { AgentWorkingCopyService } from '../../apps/server/dist/agent-working-copy-service.js';
-import { withFixture, runtimeAttachmentPaths, fixtureTestOptions as options } from '../shared/fixture.mjs';
+import {prepareAssetUpload} from '../../apps/server/dist/assets.js';
+import {hasSamsungImageTrailer} from '../../apps/server/dist/jpeg-container.js';
+import { managedArtifactContentPath } from '@ponderosa/agents';
+import { withFixture, until, runtimeAttachmentPaths, fixtureTestOptions as options } from '../shared/fixture.mjs';
+import { inertCodex } from '../shared/inert-codex.mjs';
 
 const exec = promisify(execFile);
 const upload = async (f, agent, name, bytes, media = 'text/plain') => f.ok(await f.api('POST', `/api/agents/${agent.id}/attachments`, bytes, { 'content-type': 'application/octet-stream', 'x-ponderosa-filename': name, 'x-ponderosa-media-type': media }));
@@ -241,6 +243,131 @@ test('Motion Photo upload retains accepted exact bytes and refuses an oversized 
   for (const [asset, body] of accepted) assert.deepEqual((await f.api('GET', asset.downloadUrl)).rawBody, body);
 }));
 
+
+// Exercise the URL returned by the real import tool; constructing a scoped URL
+// in the test would conceal a missing Branches response-prefix projection.
+test('imported download URLs preserve both product owners and captured checksums without operator authentication across reopen', options, t => withFixture(t, async f => {
+  const branch = f.ok(await f.api('POST', '/api/branches', { name: 'Scoped deliverables', idempotencyKey: randomUUID() }));
+  const downloads = [];
+  for (const product of ['dev', 'branches']) {
+    const base = product === 'branches' ? '/api/branches/engine' : '/api';
+    const otherBase = product === 'branches' ? '/api' : '/api/branches/engine';
+    const chats = [];
+    for (const name of ['Artifact owner', 'Foreign project']) chats.push(product === 'dev'
+      ? await f.createChat(name)
+      : f.ok(await f.api('POST', `/api/branches/${branch.id}/chats`, { label: name, defaultEngine: 'codex' }, { 'idempotency-key': randomUUID() })));
+    const [chat, foreign] = chats;
+    assert.notEqual(chat.projectId, foreign.projectId, 'The foreign-project check uses a distinct canonical project');
+    const agent = f.ok(await f.api('POST', `${base}/projects/${chat.projectId}/agents`, {
+      title: 'Deliverable author', engine: 'codex', conversationId: chat.id, idempotencyKey: randomUUID(),
+    }));
+    f.plans.set(agent.id, [{ hold: true }]);
+    f.ok(await f.api('POST', `${base}/agents/${agent.id}/messages`, { text: 'Capture controlled deliverable', idempotencyKey: randomUUID() }));
+    const session = await until(() => f.turns.some(turn => turn.agentId === agent.id) && f.sessions.get(agent.id), 'held artifact author');
+    const bytes = Buffer.from([0, 255, 128, 10, ...Buffer.from(`Owned ${product} café 🌲`)]), name = 'résultat 100%.bin';
+    const source = path.join(chat.workingDirectory, name);
+    await writeFile(source, bytes);
+    const { artifact } = f.ok(await f.tool(session, 'ponderosa_import_file', { path: name }));
+    const expected = `${base}/projects/${encodeURIComponent(chat.projectId)}/artifacts/${encodeURIComponent(artifact.id)}/download`;
+    assert.equal(artifact.downloadUrl, expected, `${product} returns its authorized route without client repair`);
+    assert.equal(artifact.sha256, createHash('sha256').update(bytes).digest('hex'));
+    await rm(source);
+    const response = await f.api('GET', artifact.downloadUrl); f.ok(response);
+    assert.deepEqual(response.rawBody, bytes);
+    assert.match(response.headers['content-disposition'], /^attachment/);
+    assert.equal((await f.api('GET', artifact.downloadUrl, undefined, { authorization: '' })).status, 200);
+    assert.equal((await f.api('GET', artifact.downloadUrl.replace(base, otherBase))).status, 404, 'A product URL cannot confer ownership');
+    assert.equal((await f.api('GET', `${base}/projects/${foreign.projectId}/artifacts/${encodeURIComponent(artifact.id)}/download`)).status, 404);
+    assert.equal((await f.api('GET', `${base}/projects/${chat.projectId}/artifacts/missing/download`)).status, 404);
+    downloads.push({ artifact, bytes });
+  }
+  await f.reopen();
+  for (const { artifact, bytes } of downloads) {
+    const response = await f.api('GET', artifact.downloadUrl); f.ok(response);
+    assert.deepEqual(response.rawBody, bytes);
+    assert.equal(createHash('sha256').update(response.rawBody).digest('hex'), artifact.sha256);
+  }
+}, { authToken: randomUUID() }));
+
+function samsungScreenshot(image, appInfo, {version=107,gap=0}={}) {
+  const fields=[[0x0c51,'Samsung_Capture_Info','Screenshot'],[0x0da1,'Captured_App_Info',appInfo]];
+  const blocks=fields.map(([type,name,value])=>{
+    const key=Buffer.from(name),data=Buffer.from(value),block=Buffer.alloc(8+key.length+data.length);
+    block.writeUInt16LE(type,2);block.writeUInt32LE(key.length,4);key.copy(block,8);data.copy(block,8+key.length);return block;
+  });
+  const directory=Buffer.alloc(36);directory.write('SEFH');directory.writeUInt32LE(version,4);directory.writeUInt32LE(2,8);
+  let back=blocks.reduce((sum,block)=>sum+block.length,0);
+  for(const [i,block]of blocks.entries()){
+    block.copy(directory,12+i*12,0,4);directory.writeUInt32LE(back,16+i*12);directory.writeUInt32LE(block.length,20+i*12);back-=block.length;
+  }
+  const footer=Buffer.alloc(8);footer.writeUInt32LE(directory.length);footer.write('SEFT',4);
+  return Buffer.concat([image,Buffer.alloc(gap),...blocks,directory,footer]);
+}
+const captureInfo=value=>Buffer.from(JSON.stringify(value)).toString('base64');
+const screenshotJpeg=()=>sharp({create:{width:2,height:2,channels:3,background:'#aabbcc'}}).jpeg().toBuffer();
+
+test('Samsung screenshots accept required comp and optional bounded inert capurl',async()=>{
+  const image=await screenshotJpeg(),comp='com.example.photos/.Screenshot';
+  for(const info of [{comp},{comp,capurl:'https://example.test/screenshot'},{capurl:'https://example.test/',comp},{comp,capurl:''},{comp,capurl:'x'.repeat(1024)},{comp,capurl:'javascript:inert-metadata'}]){
+    const body=samsungScreenshot(image,captureInfo(info));
+    assert.equal(hasSamsungImageTrailer(body,false),true);
+    const prepared=await prepareAssetUpload({body,name:'screenshot.jpg',declaredType:'image/jpeg'});
+    assert.equal(prepared.sha256,createHash('sha256').update(body).digest('hex'));
+    assert.equal(prepared.width,2);assert.equal(prepared.height,2);
+  }
+  assert.equal(hasSamsungImageTrailer(samsungScreenshot(image,'com.example.photos'),false),true);
+  const png=samsungScreenshot(await sharp(image).png().toBuffer(),captureInfo({comp,capurl:'https://example.test/'}));
+  assert.equal(hasSamsungImageTrailer(png,false),true);
+  assert.equal((await prepareAssetUpload({body:png,name:'screenshot.png',declaredType:'image/png'})).mediaType,'image/png');
+});
+
+test('Samsung screenshot metadata retains strict shape, encoding, bounds and image-type admission',async()=>{
+  const image=await screenshotJpeg(),comp='com.example.photos/.Screenshot';
+  const invalid=[null,[],{}, {capurl:'https://example.test/'},{comp:0},{comp:''},{comp:'x'.repeat(1025)},{comp:'bad\ncomponent'},
+    ...[null,0,false,{},[], 'x'.repeat(1025),'bad\nurl','bad\u007furl'].map(capurl=>({comp,capurl})),
+    {comp,capurl:'https://example.test/',extra:true},JSON.parse('{"comp":"safe","__proto__":{}}')];
+  const canonical=captureInfo({comp:'aa'}),alphabet='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  assert.ok(canonical.endsWith('=='));
+  const noncanonical=canonical.slice(0,-3)+alphabet[alphabet.indexOf(canonical.at(-3))+1]+'==';
+  assert.deepEqual(Buffer.from(noncanonical,'base64'),Buffer.from(canonical,'base64'));
+  const invalidUtf8=Buffer.concat([Buffer.from('{"comp":"'),Buffer.from([0xff]),Buffer.from('"}')]).toString('base64');
+  const malformed=[...invalid.map(captureInfo),canonical+'\n',canonical.slice(0,-1),noncanonical,invalidUtf8,Buffer.from('{').toString('base64'),'A'.repeat(4100)];
+  for(const value of malformed){
+    const body=samsungScreenshot(image,value);
+    assert.equal(hasSamsungImageTrailer(body,false),false,'Malformed captured-app metadata was accepted');
+    await assert.rejects(prepareAssetUpload({body,name:'screenshot.jpg',declaredType:'image/jpeg'}),error=>error.statusCode===415);
+  }
+  const app=captureInfo({comp,capurl:'https://example.test/'}),valid=samsungScreenshot(image,app);
+  const duplicate=Buffer.from(valid),directory=valid.length-8-valid.readUInt32LE(valid.length-8);duplicate.writeUInt16LE(0x0c51,directory+26);
+  const escaped=Buffer.from(valid);escaped.writeUInt32LE(0xffffffff,directory+16);
+  for(const body of [duplicate,escaped,samsungScreenshot(image,app,{version:106}),samsungScreenshot(image,app,{gap:1}),valid.subarray(0,-1),Buffer.concat([valid,Buffer.from([0])]),samsungScreenshot(image.subarray(0,-2),app)]){
+    await assert.rejects(prepareAssetUpload({body,name:'screenshot.jpg',declaredType:'image/jpeg'}),error=>error.statusCode===415);
+  }
+  for(const [name,declaredType]of [['screenshot.png','image/jpeg'],['screenshot.jpg','image/png']]){
+    await assert.rejects(prepareAssetUpload({body:valid,name,declaredType}),error=>error.statusCode===415);
+  }
+});
+
+test('Samsung capurl screenshots retain exact bytes through Agent, Chat and draft uploads and restart',options,t=>withFixture(t,async f=>{
+  const chat=await f.createChat('Samsung screenshot'),agent=await f.createIdleAgent(chat,'Screenshot reader');
+  const body=samsungScreenshot(await screenshotJpeg(),captureInfo({comp:'com.example.photos/.Screenshot',capurl:'https://example.test/'})),saved=[];
+  for(const route of [`/api/agents/${agent.id}/attachments`,`/api/conversations/${chat.id}/attachments`,`/api/conversations/${chat.id}/draft-attachments`]){
+    const asset=f.ok(await f.api('POST',route,body,{'content-type':'application/x-ponderosa-attachment','x-ponderosa-filename':'screenshot.jpg','x-ponderosa-media-type':'image/jpeg','x-ponderosa-draft-owner':'samsung-browser'}));
+    if(!route.endsWith('/draft-attachments')){
+      assert.equal(asset.sha256,createHash('sha256').update(body).digest('hex'));assert.equal(typeof asset.previewUrl,'string');
+    }
+    saved.push(asset);
+  }
+  await f.reopen();
+  for(const asset of saved){
+    const download=await f.api('GET',asset.downloadUrl);f.ok(download);assert.deepEqual(download.rawBody,body);
+    assert.equal(createHash('sha256').update(download.rawBody).digest('hex'),createHash('sha256').update(body).digest('hex'));
+    if(asset.previewUrl)assert.equal((await f.api('GET',asset.previewUrl)).status,200);
+  }
+}));
+
+import {AgentStore,CoordinationV3Store} from '@ponderosa/agents';
+import {AgentWorkingCopyService} from '../../apps/server/dist/agent-working-copy-service.js';
 test('rejected and no-op working-copy changes preserve compatible context; teardown errors cannot be swallowed as missing paths',options,async t=>{
  let store;await withFixture(t,async f=>{
   const chat=await f.createChat('Working-copy continuity'),agent=await f.createAgent(chat,'Continuity reader'),session=f.sessions.get(agent.id),before=store.getAgent(agent.id).workingCopy;
@@ -255,26 +382,285 @@ test('rejected and no-op working-copy changes preserve compatible context; teard
  },{storeFactory:root=>store=new AgentStore(root)});
 });
 
-test('canonical history reuses authorized artifact full-file references without treating the inline preview as the document',options,async t=>{
- let store;
+test('canonical history reuses authorized artifact full-file references without treating the inline preview as the document',{...options,timeout:90000},async t=>{
+ let store,native;
  await withFixture(t,async f=>{
   const chat=await f.createChat('Retained document history'),agent=await f.createIdleAgent(chat,'Document reader'),other=await f.createIdleAgent(chat,'Other reader');
-  const body='Retained document 🧭\n'+'Exact Unicode 東京 😀\n'.repeat(3000),session=await f.hold(agent.id);
+  const starts=()=>native.requests().then(rows=>rows.filter(row=>row.method==='turn/start'));
+  const tool=async(name,args)=>{
+   const count=(await native.requests()).filter(row=>row.toolResponse).length;
+   await native.sendTool(name,args);
+   const response=await until(async()=>{const rows=(await native.requests()).filter(row=>row.toolResponse);return rows.length>count?rows[count].toolResponse:undefined;},'actual native artifact/history tool response',20000);
+   const body=JSON.parse(response.result.contentItems.map(item=>item.text??'').join(''));
+   return {status:response.result.success?200:body.statusCode,body};
+  };
+  const body='Retained document 🧭\n'+'Exact Unicode 東京 😀\n'.repeat(3000);
+  await f.send(agent.id,'Capture the document and publish its short private preview.');
+  await until(async()=>(await starts()).length===1,'original native artifact task',20000);
   await writeFile(path.join(chat.workingDirectory,'document.txt'),body);
-  const {artifact}=f.ok(await f.tool(session,'ponderosa_import_file',{path:'document.txt'}));
-  const sent=f.ok(await f.tool(session,'ponderosa_message',{intent:'direct_to_user',text:'Retained short document preview',artifactIds:[artifact.id]}));
-  session.finish();await f.settled(agent.id);await f.reopen();
+  const {artifact}=f.ok(await tool('ponderosa_import_file',{path:'document.txt'}));
+  const sent=f.ok(await tool('ponderosa_message',{intent:'direct_to_user',text:'Retained short document preview',artifactIds:[artifact.id]}));
+  await f.settled(agent.id);await f.reopen();
   for(let index=0;index<45;index++){const event={schemaVersion:2,eventId:randomUUID(),projectId:chat.projectId,conversationId:chat.id,sender:{kind:'user',userId:'local-operator'},intent:'user_dm',audience:{kind:'user_agent',userId:'local-operator',agentId:agent.id},text:'Newer bounded item '+index+' '+('Controlled held task evidence '.repeat(150)),createdAt:new Date().toISOString()};store.appendCommunicationEvent(event);store.appendEvent(agent.id,{type:'communication_projection',communicationEventId:event.eventId,text:event.text,role:'user'})}
-  // A fresh boundary, not a fabricated managed rollover, grants this canonical read.
-  f.ok(await f.api('PATCH','/api/workspace/preferences',{contextRolloverTokens:75000,globalInstructions:'Read omitted evidence through the canonical history tool'}));
-  const next=await f.hold(agent.id),run=(await f.detail(agent.id)).runs.find(item=>item.status==='running');
-  const packet=store.getProviderInput(run.id,true);
-  assert.equal(packet.sourceManifest.historyContext.fullyIncludedCommunicationEventIds.includes(sent.eventId),false,'Use a real policy-budget omission, independent of message-count cutoffs');
+  // Changing guidance preserves opaque context through the real old-session
+  // handoff and verified replacement; it must not silently reseed the Agent.
+  f.ok(await f.api('PATCH','/api/workspace/preferences',{contextRolloverTokens:150000,globalInstructions:'Read omitted evidence through the canonical history tool'}));
+  const followup='Read the complete captured document through its authorized historical reference.';
+  await f.send(agent.id,followup);
+  const handoff=await until(async()=>{const rows=await starts();return rows.length===2&&rows;},'old native document-context handoff',20000);
+  assert.equal(handoff[1].params.threadId,handoff[0].params.threadId);assert.ok(!JSON.stringify(handoff[1]).includes(followup),'The queued task must not run in the old handoff');
+  const summary='Preserve the captured-document verification objective. Original canonical artifact message: '+sent.eventId+'. Retrieve its exact referenced file through ponderosa_history.';
+  await native.sendAnswer(summary);
+  const replacement=await until(async()=>{const rows=await starts();return rows.length===3&&rows;},'verified native document-context replacement',20000);
+  assert.notEqual(replacement[2].params.threadId,handoff[0].params.threadId);assert.ok(JSON.stringify(replacement[2]).includes(summary));
+  const replacementPacket=store.getProviderInput(new CoordinationV3Store(store.sqlite).activeAgentRun(agent.id).id,true);
+  assert.equal(replacementPacket.sourceManifest.historyContext.fullyIncludedCommunicationEventIds.includes(sent.eventId),false,'The real bounded canonical tail must omit the older artifact message');
+  await native.sendAnswer('Document context received; the original verification task remains.');
+  const queued=await until(async()=>{const rows=await starts();return rows.length===4&&rows;},'original queued native document task',20000);
+  assert.equal(queued[3].params.threadId,replacement[2].params.threadId);assert.ok(JSON.stringify(queued[3]).includes(followup));
+  const run=new CoordinationV3Store(store.sqlite).activeAgentRun(agent.id),packet=store.getProviderInput(run.id,true);
   assert.equal(packet.exactPrompt.includes('Retained short document preview'),false);
-  const frozen=JSON.stringify(packet),result=f.ok(await f.tool(next,'ponderosa_history',{action:'read',communicationEventId:sent.eventId,before:0,after:0}));
+  const frozen=JSON.stringify(packet),found=f.ok(await tool('ponderosa_history',{action:'search',query:'Retained short document preview'}));
+  assert.ok(found.hits.some(hit=>hit.communicationEventId===sent.eventId),'The same native Run must discover the authorized historical artifact message');
+  const result=f.ok(await tool('ponderosa_history',{action:'read',communicationEventId:sent.eventId,before:0,after:0}));
   assert.equal(JSON.stringify(store.getProviderInput(run.id,true)),frozen,'Retrieval must not rewrite the accepted provider packet');
   const message=result.messages[0],reference=message.referencedFiles.find(file=>file.artifactId===artifact.id);assert.ok(reference.localPath);assert.equal(reference.sha256,createHash('sha256').update(body).digest('hex'));assert.equal(await readFile(reference.localPath,'utf8'),body);
   assert.equal(message.text,'Retained short document preview');assert.equal(message.complete,true);assert.match(result.notice,/inline.*referenced|referenced.*inline/i);
-  const foreign=await f.hold(other.id),denied=await f.tool(foreign,'ponderosa_history',{action:'read',communicationEventId:sent.eventId,before:0,after:0});assert.ok(denied.status>=400);assert.doesNotMatch(JSON.stringify(denied),new RegExp(artifact.id));
+  f.ok(await tool('ponderosa_message',{text:'The exact captured document was verified.'}));await f.settled(agent.id);
+  // Drain the first Agent before using the single owned protocol mailbox for
+  // the foreign reader; the private artifact audience remains unchanged.
+  await f.reopen();await f.send(other.id,'Read only history authorized to this Agent.');
+  await until(async()=>(await starts()).length===5,'foreign native reader',20000);
+  const denied=await tool('ponderosa_history',{action:'read',communicationEventId:sent.eventId,before:0,after:0});assert.ok(denied.status>=400);assert.doesNotMatch(JSON.stringify(denied),new RegExp(artifact.id));
+  f.ok(await tool('ponderosa_message',{text:'No private document was disclosed.'}));await f.settled(other.id);
+ },{storeFactory:root=>store=new AgentStore(root),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,uniqueThreads:true,holdImportCompletion:true,holdHistoryCompletion:true})).adapter});
+});
+
+test('working-copy errors preserve fixed causes and withhold untrusted synthetic secrets', async () => {
+ const {safeWorkingCopyFailure,safeWorkingCopyFailureCode}=await import('@ponderosa/agents');
+ const secret='fixture-secret-synthetic-9d7e';
+ const unknown=Object.assign(new Error('Git failed '+secret+'\nsecond line '+secret),{code:secret});
+ assert.doesNotMatch(safeWorkingCopyFailure(unknown),new RegExp(secret));
+ assert.equal(safeWorkingCopyFailureCode(unknown),'ERR_IMPORTED_GIT_ADOPTION_PARTIAL');
+ for(const [code,expected] of [['ENOENT',/not found/],['EACCES',/denied/],['ENOSPC',/no available space/]]){
+  const error=Object.assign(new Error(secret),{code});
+  assert.match(safeWorkingCopyFailure(error),expected);
+  assert.equal(safeWorkingCopyFailureCode(error),code);
+  assert.doesNotMatch(safeWorkingCopyFailure(error),new RegExp(secret));
+ }
+ const fixed='the configured root is not a retained directory';
+ assert.equal(safeWorkingCopyFailure(new Error(fixed)),fixed);
+ assert.doesNotMatch(safeWorkingCopyFailure(new Error(fixed+' '+secret)),new RegExp(secret));
+});
+
+test('working-copy mode reports a real Git failure and safe recovery direction',options,async t=>{
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Non-repository working folder'),agent=await f.createIdleAgent(chat,'Worker');
+  const result=await f.api('PATCH',`/api/agents/${agent.id}`,{workingCopyMode:'separate_git'});
+  assert.equal(result.status,409);
+  assert.match(result.body.error,/git rev-parse; exit status 128/);
+  assert.match(result.body.error,/Git could not find a repository from the checked folder/);
+  assert.match(result.body.error,/select or initialize a Git repository/);
+ });
+});
+
+test('working-copy mode explains an unresolved HEAD in a new Git repository',options,async t=>{
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('New Git repository'),agent=await f.createIdleAgent(chat,'Worker');
+  const source=chat.workingDirectory;
+  const git=args=>exec('git',['-c','core.hooksPath=/dev/null','-c','core.fsmonitor=false',...args],{
+   cwd:source,env:{PATH:process.env.PATH,LC_ALL:'C',GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null',GIT_TERMINAL_PROMPT:'0'},
+  });
+  await git(['init','--quiet']);
+  await writeFile(path.join(source,'retained.txt'),'unchanged fixture bytes');
+  const result=await f.api('PATCH',`/api/agents/${agent.id}`,{workingCopyMode:'separate_git'});
+  assert.equal(result.status,409);
+  assert.match(result.body.error,/Git could not resolve HEAD to a revision/);
+  assert.match(result.body.error,/create an initial commit before retrying/);
+  await git(['add','retained.txt']);
+  await git(['-c','user.name=Fixture','-c','user.email=fixture@invalid','commit','--no-gpg-sign','-m','Initial fixture']);
+  const retried=f.ok(await f.api('PATCH',`/api/agents/${agent.id}`,{workingCopyMode:'separate_git'}));
+  assert.equal(retried.workingCopy.mode,'separate_git');
+  assert.equal(await readFile(path.join(source,'retained.txt'),'utf8'),'unchanged fixture bytes');
+  assert.equal(await readFile(path.join(retried.workingCopy.rootPath,'retained.txt'),'utf8'),'unchanged fixture bytes');
+ });
+});
+
+test('working-copy mode explains a temporarily missing Shared folder',options,async t=>{
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Temporarily missing folder'),agent=await f.createIdleAgent(chat,'Worker');
+  const source=chat.workingDirectory;
+  const git=args=>exec('git',['-c','core.hooksPath=/dev/null','-c','core.fsmonitor=false',...args],{
+   cwd:source,env:{PATH:process.env.PATH,LC_ALL:'C',GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null',GIT_TERMINAL_PROMPT:'0'},
+  });
+  await git(['init','--quiet']);
+  await writeFile(path.join(source,'retained.txt'),'unchanged folder bytes');
+  await git(['add','retained.txt']);
+  await git(['-c','user.name=Fixture','-c','user.email=fixture@invalid','commit','--no-gpg-sign','-m','Owned fixture']);
+  const saved=chat.workingDirectory+'-temporarily-moved';
+  await rename(chat.workingDirectory,saved);
+  try{
+   const result=await f.api('PATCH',`/api/agents/${agent.id}`,{workingCopyMode:'separate_git'});
+   assert.equal(result.status,409);
+   assert.match(result.body.error,/Shared folder or one of its parent folders could not be found/);
+   assert.match(result.body.error,/Restore or reconnect it, then retry/);
+  }finally{await rename(saved,chat.workingDirectory);}
+  const retried=f.ok(await f.api('PATCH',`/api/agents/${agent.id}`,{workingCopyMode:'separate_git'}));
+  assert.equal(retried.workingCopy.mode,'separate_git');
+  assert.equal(await readFile(path.join(source,'retained.txt'),'utf8'),'unchanged folder bytes');
+  assert.equal(await readFile(path.join(retried.workingCopy.rootPath,'retained.txt'),'utf8'),'unchanged folder bytes');
+ });
+});
+
+test('working-copy mode 409 preserves teardown cause while redacting a known value',options,async t=>{
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Working-copy route errors'),agent=await f.createIdleAgent(chat,'Worker');
+  const original=AgentWorkingCopyService.prototype.setMode, secret='fixture-secret-synthetic-5c71';
+  process.env.PONDEROSA_TEST_DIAGNOSTIC_TOKEN=secret;
+  AgentWorkingCopyService.prototype.setMode=async()=>{throw Object.assign(new Error('teardown '+secret+'\nprivate details'),{code:secret});};
+  try{
+   const result=await f.api('PATCH',`/api/agents/${agent.id}`,{workingCopyMode:'separate_git'});
+   assert.equal(result.status,409);assert.doesNotMatch(JSON.stringify(result.body),new RegExp(secret));
+   assert.match(result.body.error,/teardown/);assert.match(result.body.error,/private details/);
+  }finally{AgentWorkingCopyService.prototype.setMode=original;delete process.env.PONDEROSA_TEST_DIAGNOSTIC_TOKEN;}
+ });
+});
+
+test('legacy working-copy failure is projected safely without erasing or resurrecting stored data',options,async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Legacy working-copy reason'),agent=await f.createIdleAgent(chat,'Worker');
+  const secret='fixture-secret-synthetic-e5aa',before=store.getAgent(agent.id).workingCopy;
+  store.updateAgentWorkingCopy(agent.id,{...before,state:'unavailable',failure:'old tool '+secret,failureDiagnosticSha256:createHash('sha256').update('different sanitized text').digest('hex')});
+  const read=()=>JSON.parse(store.client.prepare('SELECT working_copy_json FROM agents WHERE id=?').get(agent.id).working_copy_json);
+  const projected=store.getAgent(agent.id).workingCopy;
+  assert.doesNotMatch(JSON.stringify(projected),new RegExp(secret));assert.match(projected.failure,/withheld/);
+  assert.match(read().failure,new RegExp(secret));
+  store.updateAgentWorkingCopy(agent.id,{...projected,updatedAt:new Date().toISOString()});
+  assert.match(read().failure,new RegExp(secret),'unrelated update must retain original');
+  const replacement='Native Git import proof is incomplete; preserve its exact root and original import operation.';
+  store.updateAgentWorkingCopy(agent.id,{...store.getAgent(agent.id).workingCopy,failure:replacement});
+  assert.equal(read().failure,replacement,'intentional replacement must remain');
+  store.updateAgentWorkingCopy(agent.id,{...store.getAgent(agent.id).workingCopy,state:'ready',failure:undefined});
+  assert.equal(read().failure,undefined,'intentional clear must remain');
+ },{storeFactory:root=>store=new AgentStore(root)});
+});
+
+test('post-mutation working-copy failure persists only a safe synthetic reason',options,async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Working-copy persistence'),agent=await f.createIdleAgent(chat,'Worker'),cwd=chat.workingDirectory;
+  await exec('git',['init','-b','main'],{cwd});await writeFile(path.join(cwd,'tracked'),'fixture');
+  await exec('git',['add','tracked'],{cwd});await exec('git',['-c','user.name=Fixture','-c','user.email=fixture@invalid','commit','-m','Baseline'],{cwd});
+  const original=store.updateAgentWorkingCopy,secret='fixture-secret-synthetic-2f6d';let injected=false;
+  process.env.PONDEROSA_TEST_DIAGNOSTIC_TOKEN=secret;
+  store.updateAgentWorkingCopy=function(...args){if(!injected){injected=true;throw new Error('untrusted '+secret+'\nprivate');}return original.apply(this,args);};
+  const service=new AgentWorkingCopyService(f.dataDir,store),release=service.beginModeChange(agent.id);
+  try{
+   const result=await service.setMode(store.getAgent(agent.id),store.getProject(chat.projectId),'separate_git');
+   assert.equal(result.workingCopy.state,'unavailable');assert.match(result.workingCopy.failure,/untrusted/);assert.match(result.workingCopy.failure,/private/);
+   assert.doesNotMatch(JSON.stringify(result.workingCopy),new RegExp(secret));
+   assert.doesNotMatch(JSON.stringify(store.getAgent(agent.id).workingCopy),new RegExp(secret));
+   await f.reopen();const restored=store.getAgent(agent.id).workingCopy;
+   assert.match(restored.failure,/untrusted/);assert.match(restored.failure,/private/);assert.doesNotMatch(JSON.stringify(restored),new RegExp(secret));
+   const resumed=new AgentWorkingCopyService(f.dataDir,store);
+   assert.throws(()=>resumed.assertRunAdmission(agent.id,restored),error=>error.message===restored.failure);
+   const turns=f.turns.length;
+   const admission=await f.api('POST',`/api/agents/${agent.id}/messages`,{text:'Attempt unavailable folder',idempotencyKey:randomUUID()});
+   assert.doesNotMatch(JSON.stringify(admission.body),new RegExp(secret));
+   if(admission.status>=400){assert.match(JSON.stringify(admission.body),/untrusted/);}
+   else{
+    const work=await until(async()=>{
+     const response=await f.api('GET',`/api/projects/${chat.projectId}/agent-work?agentId=${agent.id}`);
+     if(response.status!==200)return;
+     for(const item of response.body.items.filter(item=>item.kind==='activation')){
+      const detail=await f.api('GET',`/api/projects/${chat.projectId}/agent-work/items/activation/${item.recordId}`);
+      if(detail.status===200&&JSON.stringify(detail.body).includes('untrusted'))return detail.body;
+     }
+    },'unavailable folder admission detail');
+    assert.match(JSON.stringify(work),/untrusted/);assert.doesNotMatch(JSON.stringify(work),new RegExp(secret));
+   }
+   assert.equal(f.turns.length,turns,'unavailable working folder must not enter provider');
+  }finally{release();store.updateAgentWorkingCopy=original;delete process.env.PONDEROSA_TEST_DIAGNOSTIC_TOKEN;}
+ },{storeFactory:root=>store=new AgentStore(root)});
+});
+
+test('deleted working-copy listing and cleanup response withhold synthetic legacy secrets',options,async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Deleted copy diagnostics'),agent=await f.createIdleAgent(chat,'Worker'),secret='fixture-secret-synthetic-739e';
+  const original=store.getAgent(agent.id).workingCopy;
+  const legacy={...original,id:'copy:fixture',mode:'separate_git',state:'unavailable',branch:'fixture',failure:'legacy '+secret};
+  store.sqlite.prepare('UPDATE agents SET deleted_at=?, conversation_id=NULL, working_copy_json=? WHERE id=?').run(new Date().toISOString(),JSON.stringify(legacy),agent.id);
+  store.sqlite.prepare('INSERT INTO agent_deletion_tombstones (agent_id,project_id,conversation_id,tombstone_name,created_at) VALUES (?,?,?,?,?)').run(agent.id,chat.projectId,chat.id,'fixture-tombstone',new Date().toISOString());
+  const listing=await f.api('GET','/api/projects/'+chat.projectId+'/agent-organization?scope=deleted');
+  assert.equal(listing.status,200);assert.doesNotMatch(JSON.stringify(listing.body),new RegExp(secret));
+  assert.match(JSON.stringify(listing.body),/withheld/);
+  // Exercise the actual handler directly: the complete app currently refuses
+  // this deleted-Agent path at product admission before the handler runs.
+  const {createRequire}=await import('node:module');
+  const Fastify=createRequire(new URL('../../apps/server/package.json',import.meta.url))('fastify');
+  const {registerAgentMaintenanceRoutes}=await import('../../apps/server/dist/routes/agent-maintenance.js');
+  const direct=Fastify();
+  process.env.PONDEROSA_TEST_DIAGNOSTIC_TOKEN=secret;
+  registerAgentMaintenanceRoutes(direct,{store,workingCopies:{async cleanupRetained(){throw new Error('cleanup '+secret);}},appendWorkspace(){}});
+  try{
+   const response=await direct.inject({method:'DELETE',url:'/api/projects/'+chat.projectId+'/deleted-agents/'+agent.id+'/working-copy'});
+   assert.equal(response.statusCode,409);assert.doesNotMatch(response.body,new RegExp(secret));
+   assert.match(response.json().error,/cleanup/);
+  }finally{await direct.close();delete process.env.PONDEROSA_TEST_DIAGNOSTIC_TOKEN;}
+  assert.match(store.sqlite.prepare('SELECT working_copy_json FROM agents WHERE id=?').get(agent.id).working_copy_json,new RegExp(secret));
+ },{storeFactory:root=>store=new AgentStore(root)});
+});
+
+
+test('fresh working-copy diagnostics retain Git stderr and redact known literal values while rejecting an unsafe code',async()=>{
+ const {workingCopyDiagnostic,rememberWorkingCopyDiagnostic}=await import('../../apps/server/dist/working-copy-diagnostic.js');
+ const {recordWorkingCopyGitFailure,safeWorkingCopyFailureCode}=await import('@ponderosa/agents');
+ const value='SYNTHETIC_GIT_KNOWN_VALUE_741',malicious='SYNTHETIC_CODE_741';
+ process.env.PONDEROSA_TEST_DIAGNOSTIC_TOKEN=value;
+ try{
+  const error=Object.assign(new Error('opaque command failure'),{code:malicious,stderr:'fatal: benign Git reason '+value+'\napi_key='+value});
+  recordWorkingCopyGitFailure(error,'inspect','rev-parse');rememberWorkingCopyDiagnostic(error);
+  delete process.env.PONDEROSA_TEST_DIAGNOSTIC_TOKEN;
+  const message=workingCopyDiagnostic(error);assert.match(message,/benign Git reason/);
+  assert.doesNotMatch(message,new RegExp(value));assert.doesNotMatch(message,new RegExp(malicious));
+  assert.equal(safeWorkingCopyFailureCode(error),'ERR_IMPORTED_GIT_ADOPTION_PARTIAL');
+ }finally{delete process.env.PONDEROSA_TEST_DIAGNOSTIC_TOKEN;}
+});
+
+
+test('working-copy route retains Git stderr while redacting a configured synthetic value',options,async t=>{
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Git diagnostic'),agent=await f.createIdleAgent(chat,'Worker');
+  const dir=path.join(f.root,'synthetic-git-bin');await mkdir(dir);
+  const bin=path.join(dir,'git'),secret='SYNTHETIC_GIT_ROUTE_VALUE_518';
+  await writeFile(bin,'#!/bin/sh\nprintf "fatal: synthetic Git diagnosis %s\\n" "$PONDEROSA_TEST_DIAGNOSTIC_TOKEN" >&2\nexit 128\n');await chmod(bin,0o700);
+  const priorPath=process.env.PATH;process.env.PATH=dir+path.delimiter+priorPath;process.env.PONDEROSA_TEST_DIAGNOSTIC_TOKEN=secret;
+  try{
+   const result=await f.api('PATCH',`/api/agents/${agent.id}`,{workingCopyMode:'separate_git'});
+   assert.equal(result.status,409);assert.match(result.body.error,/synthetic Git diagnosis/);
+   assert.doesNotMatch(JSON.stringify(result.body),new RegExp(secret));
+  }finally{process.env.PATH=priorPath;delete process.env.PONDEROSA_TEST_DIAGNOSTIC_TOKEN;}
+ });
+});
+
+test('Agent package import rejects forged working-copy diagnostic metadata',options,async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Import marker boundary');
+  const base={schema:'ponderosa.agent-package.v1',mode:'template',kind:'agent',exportedAt:new Date().toISOString(),sourceLabel:'Synthetic',rootRef:'worker',agents:[{ref:'worker',title:'Worker',engine:'codex',managementPermissions:{allowAutomaticDescendantDeletion:false,allowAutomaticDescendantReorganization:false}}]};
+  const {validatePortableAgentPackage}=await import('../../apps/server/dist/portable-agent-package-validation.js');
+  assert.doesNotThrow(()=>validatePortableAgentPackage(base));
+  const before=store.listAgents(chat.projectId).length;
+  for(const field of ['failureDiagnosticSha256','workingCopy']){
+   const pkg=structuredClone(base);pkg.agents[0][field]=field==='workingCopy'?{failure:'unverified legacy',failureDiagnosticSha256:'0'.repeat(64)}:'0'.repeat(64);
+   const result=await f.api('POST',`/api/projects/${chat.projectId}/import-agents`,{package:pkg,conversationId:chat.id,engineMapping:{codex:'codex'}},{'idempotency-key':randomUUID()});
+   assert.ok(result.status>=400);assert.match(JSON.stringify(result.body),new RegExp('unknown Agent package node field.*'+field));
+   assert.equal(store.listAgents(chat.projectId).length,before);
+  }
+  const control=await f.api('POST',`/api/projects/${chat.projectId}/import-agents`,{package:base,conversationId:chat.id,engineMapping:{codex:'codex'}},{'idempotency-key':randomUUID()});
+  assert.ok(control.status>=200&&control.status<300,JSON.stringify(control.body));
+  assert.equal(store.listAgents(chat.projectId).length,before+1);
  },{storeFactory:root=>store=new AgentStore(root)});
 });

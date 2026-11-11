@@ -1,3 +1,8 @@
+import type {WorkingFileTransportPart} from "./working-file-transport.js";
+import { uncertainContextRecoverySourceSql, stoppedContextSourceSql, stoppedContextRecoverySourceSql } from './coordination-v3-context-recovery-authority.js';
+import type {CanonicalGeneratedHooksProof} from '@ponderosa/core';
+import {validateGeneratedHookNamespaceProof} from './generated-hook-namespace-proof.js';
+import {destinationAdmissionHeld} from './coordination-v3-destination-staging.js';
 // AgentStore — the library that apps/server consumes. Authored communication and
 // execution telemetry remain event-log-owned and their SQLite views are
 // rebuildable. Communication V3 scheduler state is different: its requests,
@@ -6,6 +11,10 @@
 
 import type Database from "better-sqlite3";
 import { createHash } from "node:crypto";
+import { readFileSync } from "@ponderosa/native-host/fs";
+import path from "node:path";
+import { readRepairableJsonl } from "./append-jsonl.js";
+import { agentJsonPath, communicationEventsPath, communicationProjectionsPath, communicationRevisionsPath, conversationJsonPath, messageDispatchesPath } from "./paths.js";
 import type {
   ArtifactDto,
   AgentActivityDto,
@@ -41,7 +50,7 @@ import type {
   TokenUsageRangeDto,
   TokenUsage,
   GlobalChatSearchResponseDto,
-  AllChatPageDto,
+  InboxPageDto,
   RunOutputDto,
   ResponseFileActivityDto,
   UpdateProjectRequest,
@@ -96,8 +105,8 @@ import { AgentStoreSupport } from "./store-support.js";
 import { AgentEventSessionFacade } from "./store-event-session-facade.js";
 import {
   consumeProjectionCheckpoint,
-  projectionSourceFingerprint,
-  writeProjectionCheckpoint,
+  ProjectionProgress,
+  type ProjectionTail,
 } from "./projection-checkpoint.js";
 import {
   releaseDataDirectoryOwnership,
@@ -157,6 +166,8 @@ export interface AgentCreationArtifactIdentity {
 export interface AgentCreationOperation {
   id: string;
   projectId: string;
+  conversationId?: string;
+  productScope?: "dev" | "branches";
   actorScope: string;
   kind: "human" | "managed" | "import";
   idempotencyKey: string;
@@ -196,8 +207,7 @@ export class AgentStore extends AgentEventSessionFacade {
   private ownership?: DataDirectoryOwnership;
   private dataDirectory = "";
   private closing = false;
-  private checkpointBaselineChanges?: number;
-  private checkpointBaselineFingerprint?: string;
+  private readonly projectionProgress: ProjectionProgress;
   private compactionHistoryMaterialization = {
     indexedRows: 0,
     relationCandidateRows: 0,
@@ -205,14 +215,15 @@ export class AgentStore extends AgentEventSessionFacade {
     canonicalRevisions: 0,
   };
   private startupProfileData: {
-    mode: "clean" | "recovery";
+    mode: "clean" | "incremental" | "recovery";
     openMs: number;
     componentsMs: number;
     recoveryMs: number;
     totalMs: number;
     projectCount: number;
     recoveryIssues: ReadonlyArray<{ projectId: string; detail: string }>;
-  } = { mode: "recovery", openMs: 0, componentsMs: 0, recoveryMs: 0, totalMs: 0, projectCount: 0, recoveryIssues: [] };
+    phasesMs: Record<string, number>;
+  } = { mode: "recovery", openMs: 0, componentsMs: 0, recoveryMs: 0, totalMs: 0, projectCount: 0, recoveryIssues: [], phasesMs: {} };
 
   constructor(dataDir: string) {
     super();
@@ -225,9 +236,16 @@ export class AgentStore extends AgentEventSessionFacade {
     this.client = opened.client;
     this.ownership = opened.ownership;
     try {
+      this.projectionProgress = new ProjectionProgress(dataDir, this.client);
+      const phasesMs: Record<string, number> = {};
+      const measure = <T>(phase: string, work: () => T): T => {
+        const started = performance.now();
+        try { return work(); }
+        finally { phasesMs[phase] = Math.round(((phasesMs[phase] ?? 0) + performance.now() - started) * 10) / 10; }
+      };
       this.support = new AgentStoreSupport(dataDir);
       const ports: AgentStoreComponentPorts = {
-        listAgents: projectId => this.listAgents(projectId),
+        listAgents: (projectId,options) => this.listAgents(projectId,options),
         getConversationMessages: (conversationId, channel) => this.getConversationMessages(conversationId, channel),
         getAgentPreset: presetId => this.getAgentPreset(presetId),
         getProject: projectId => this.getProject(projectId),
@@ -274,55 +292,63 @@ export class AgentStore extends AgentEventSessionFacade {
         getArtifacts: agentId => this.getArtifacts(agentId),
         getArtifactPage: (agentId, input) => this.getArtifactPage(agentId, input),
       };
-      const components = createAgentStoreComponents(dataDir, opened, ports);
+      const components = createAgentStoreComponents(dataDir, opened, ports, this.projectionProgress);
       Object.assign(this, components);
       const componentsCreatedAt = performance.now();
-      this.workspaceCatalog.recoverCreationDirectories();
-      this.agentCatalog.recoverCreationDirectories();
-      // Canonical files are written before their SQLite projections. Rebuild
-      // transactionally on every startup so a crash or torn append cannot leave
-      // a partially repaired projection visible to ordinary requests.
-      let cleanProjectionCheckpoint = consumeProjectionCheckpoint(dataDir, this.client);
-      if (!cleanProjectionCheckpoint) this.rebuildProjections();
+      measure("creationRecovery", () => {
+        this.workspaceCatalog.recoverCreationDirectories();
+        this.agentCatalog.recoverCreationDirectories();
+      });
+      // A consumed proof covers committed projections. Apply only verified
+      // unfinished suffixes; an unknown source or missing proof still rebuilds.
+      let checkpoint = measure("checkpointValidation", () => consumeProjectionCheckpoint(dataDir, this.client));
+      let incremental = false;
+      if (checkpoint && checkpoint.tails.length) {
+        try {
+          measure("projectionTails", () => this.recoverProjectionTails(checkpoint ? checkpoint.tails : []));
+          incremental = true;
+        } catch {
+          checkpoint = false;
+        }
+      }
+      if (!checkpoint) measure("projectionReplay", () => this.rebuildProjections());
       // Repair canonical members before creation recovery can release quarantine.
       // Ordinary Agent lists must continue to hide pending creation operations.
-      if (this.workspaceCatalog.migrateManagedWorkingDirectories(
+      if (measure("workingDirectoryMigration", () => this.workspaceCatalog.migrateManagedWorkingDirectories(
         projectId => this.listAgents(projectId, { includePendingCreation: true }),
         (id, copy) => { this.updateAgentWorkingCopy(id, copy); },
-      )) {
-        this.rebuildProjections();
-        cleanProjectionCheckpoint = false;
+      ))) {
+        measure("projectionReplay", () => this.rebuildProjections());
+        checkpoint = false;
+        incremental = false;
       }
-      for (const project of this.listProjects()) {
-        this.ensureCommunicationProjectionLedger(project.id);
-        reconcileCompactionHistoryIndex(
+      if (!checkpoint) for (const project of this.listProjects()) {
+        measure("communicationLedger", () => this.ensureCommunicationProjectionLedger(project.id));
+        measure("compactionHistory", () => reconcileCompactionHistoryIndex(
           this.client,
           project.id,
           this.readCommunicationEvents(project.id),
           this.readCommunicationRevisions(project.id),
-        );
+        ));
+      }
+      if (this.projectionRebuilder.listRecoveryIssues().length === 0) {
+        try { measure("projectionProgress", () => this.projectionProgress.initialize()); }
+        catch { /* Optional proof must not make a quarantined store unavailable. */ }
       }
       const completedAt = performance.now();
       this.startupProfileData = {
-        mode: cleanProjectionCheckpoint ? "clean" : "recovery",
+        mode: checkpoint ? (incremental ? "incremental" : "clean") : "recovery",
         openMs: Math.round((openedAt - startupStartedAt) * 10) / 10,
         componentsMs: Math.round((componentsCreatedAt - openedAt) * 10) / 10,
         recoveryMs: Math.round((completedAt - componentsCreatedAt) * 10) / 10,
         totalMs: Math.round((completedAt - startupStartedAt) * 10) / 10,
         projectCount: this.listProjects().length,
         recoveryIssues: this.projectionRebuilder.listRecoveryIssues(),
+        phasesMs,
       };
-      try {
-        this.checkpointBaselineChanges = (
-          this.client.prepare("SELECT total_changes() value").get() as { value: number }
-        ).value;
-        this.checkpointBaselineFingerprint = projectionSourceFingerprint(dataDir);
-      } catch {
-        this.checkpointBaselineChanges = undefined;
-        this.checkpointBaselineFingerprint = undefined;
-      }
       admittedStores.add(this);
     } catch (error) {
+      this.agentCatalog?.invalidateImportedIndexes(true);
       releaseDataDirectoryOwnership(this.ownership);
       this.ownership = undefined;
       throw error;
@@ -342,19 +368,21 @@ export class AgentStore extends AgentEventSessionFacade {
   }
 
   startupProfile(): Readonly<{
-    mode: "clean" | "recovery";
+    mode: "clean" | "incremental" | "recovery";
     openMs: number;
     componentsMs: number;
     recoveryMs: number;
     totalMs: number;
     projectCount: number;
     recoveryIssues: ReadonlyArray<{ projectId: string; detail: string }>;
+    phasesMs: Record<string, number>;
   }> {
-    return { ...this.startupProfileData };
+    return { ...this.startupProfileData, phasesMs: { ...this.startupProfileData.phasesMs } };
   }
 
   nextDeliveryOrderKey(createdAt = new Date().toISOString()): string {
-    return this.communicationJournal.nextDeliveryOrderKey(createdAt);
+    return this.projectionProgress.run([path.join(this.dataDirectory, "delivery-order.jsonl")],
+      () => this.communicationJournal.nextDeliveryOrderKey(createdAt));
   }
 
   private communicationIndex(projectId: string) {
@@ -384,22 +412,27 @@ export class AgentStore extends AgentEventSessionFacade {
    * making transport retries idempotent while detecting identity collisions.
    */
   appendCommunicationEvent(input: CommunicationEvent): { event: CommunicationEvent; replayed: boolean } {
-    const result = this.communicationJournal.appendCommunicationEvent(input);
-    const ordinal = this.communicationJournal.communicationOrdinal(result.event.projectId, result.event.eventId);
-    if (!ordinal) throw new Error("communication append ordinal is unavailable");
-    // A canonical append may have committed before its derived index
-    // transaction failed. Exact idempotent replay is therefore also the
-    // bounded live repair path; startup reconciliation remains the full repair.
-    indexCompactionHistoryMessage(
-      this.client,
-      result.event,
-      ordinal,
-      this.communicationJournal.latestCommunicationRevision(
-        result.event.projectId,
-        result.event.eventId,
-      ),
-    );
-    return result;
+    return this.projectionProgress.run([
+      communicationEventsPath(this.dataDirectory, input.projectId),
+      communicationProjectionsPath(this.dataDirectory, input.projectId),
+    ], () => {
+      const result = this.communicationJournal.appendCommunicationEvent(input);
+      const ordinal = this.communicationJournal.communicationOrdinal(result.event.projectId, result.event.eventId);
+      if (!ordinal) throw new Error("communication append ordinal is unavailable");
+      // A canonical append may have committed before its derived index
+      // transaction failed. Exact idempotent replay is therefore also the
+      // bounded live repair path; startup reconciliation remains the full repair.
+      indexCompactionHistoryMessage(
+        this.client,
+        result.event,
+        ordinal,
+        this.communicationJournal.latestCommunicationRevision(
+          result.event.projectId,
+          result.event.eventId,
+        ),
+      );
+      return result;
+    });
   }
 
   private ensureCommunicationBehaviorProjections(event: CommunicationEvent): void {
@@ -407,26 +440,16 @@ export class AgentStore extends AgentEventSessionFacade {
   }
 
   appendCommunicationRevision(input: CommunicationRevisionEvent): { revision: CommunicationRevisionEvent; replayed: boolean } {
-    const result = this.communicationJournal.appendCommunicationRevision(input);
-    if (!result.replayed) {
-      const event = this.communicationJournal.getCommunicationEvent(
-        result.revision.projectId,
-        result.revision.targetEventId,
-      );
-      const ordinal = this.communicationJournal.communicationOrdinal(
-        result.revision.projectId,
-        result.revision.targetEventId,
-      );
-      if (event && ordinal) {
-        indexCompactionHistoryMessage(
-          this.client,
-          event,
-          ordinal,
-          result.revision,
-        );
-      }
-    }
-    return result;
+    return this.projectionProgress.run([communicationRevisionsPath(this.dataDirectory, input.projectId)], () => {
+      const result = this.communicationJournal.appendCommunicationRevision(input);
+      const event = this.communicationJournal.getCommunicationEvent(input.projectId, result.revision.targetEventId);
+      const ordinal = this.communicationJournal.communicationOrdinal(input.projectId, result.revision.targetEventId);
+      // An idempotent retry also repairs an accepted edit whose projection
+      // previously failed; replaying an older edit must retain the latest text.
+      if (event && ordinal) indexCompactionHistoryMessage(this.client, event, ordinal,
+        this.communicationJournal.latestCommunicationRevision(input.projectId, event.eventId));
+      return result;
+    });
   }
 
   readCommunicationRevisions(projectId: string): CommunicationRevisionEvent[] {
@@ -458,13 +481,30 @@ export class AgentStore extends AgentEventSessionFacade {
     return this.communicationJournalBoundary(projectId);
   }
 
+  /** Source-only reconciliation: hashes and durable positions survive restart;
+   * they never certify native tail completeness or clear a dispatch guard. */
+  providerContextRecoveryEvidence(agentId: string, sourceRunId: string):
+    Omit<import("@ponderosa/core").ProviderContextRecoveryEvidence, "attachedRequestIds"> | undefined {
+    const source=this.client.prepare(`SELECT status,provider_session_id FROM scheduler_runs WHERE id=? AND agent_id=?`)
+      .get(sourceRunId,agentId) as {status:string;provider_session_id:string|null}|undefined;
+    if(!source?.provider_session_id)return undefined;
+    const input=this.getProviderInput(sourceRunId);
+    const last=this.client.prepare(`SELECT seq,created_at FROM events WHERE agent_id=? ORDER BY seq DESC LIMIT 1`)
+      .get(agentId) as {seq:number;created_at:string}|undefined;
+    return {sourceRunId,sourceRunStatus:source.status,providerSessionId:source.provider_session_id,
+      currentSessionMatches:this.resumeSessionId(agentId)===source.provider_session_id,
+      providerInput:input?{available:true,promptHash:input.promptHash,...(input.systemPromptHash?{systemPromptHash:input.systemPromptHash}:{})}:{available:false},
+      ...(last?{lastDurableAgentEvent:{sequence:last.seq,at:last.created_at}}:{}),
+      nativeTailCompleteness:"unknown",priorEffects:"unknown",historyDisposition:"retained"};
+  }
+
   /** Exact canonical Communication identities known to occupy the currently
    * accepted provider session. Scheduler Runs carry the provider-session
    * identity observed after acknowledged injection; rejected replacement
    * candidates therefore cannot contaminate the old accepted session merely by
    * appearing later in the Agent event log. Legacy snapshots without a creating
    * execution ID return undefined so rollover fails closed. */
-  private acceptedProviderSessionBoundary(agentId: string): {
+  private acceptedProviderSessionBoundary(agentId: string, allowCompletedUnknownSteer = false): {
     sessionId: string; executionId: string; rolloverId?: string;
   } | undefined {
     const accepted = this.resumeSessionState(agentId);
@@ -485,23 +525,41 @@ export class AgentStore extends AgentEventSessionFacade {
     const rolloverId = snapshot?.type === "context_rollover_session_accepted" ? snapshot.rolloverId : undefined;
     if (!boundaryExecutionId) return undefined;
     const boundaryRun = this.client.prepare(`
-      SELECT provider_session_id, prompt_injection_state FROM scheduler_runs
-      WHERE id = ? AND agent_id = ?
+      SELECT r.provider_session_id, r.prompt_injection_state, (r.status='completed' AND ${uncertainContextRecoverySourceSql('r')}) AS recovery_eligible FROM scheduler_runs r
+      WHERE r.id = ? AND r.agent_id = ?
     `).get(boundaryExecutionId, agentId) as {
       provider_session_id: string | null;
-      prompt_injection_state: string;
+      prompt_injection_state: string; recovery_eligible: number;
     } | undefined;
     // Imported legacy logs may predate scheduler session binding.
     // They are not safe evidence for a new rollover boundary.
     if (!boundaryRun || boundaryRun.provider_session_id !== accepted.sessionId ||
-        boundaryRun.prompt_injection_state !== "injected") return undefined;
+        (boundaryRun.prompt_injection_state !== "injected" && !(allowCompletedUnknownSteer && boundaryRun.recovery_eligible))) return undefined;
     return { sessionId: accepted.sessionId, executionId: boundaryExecutionId, ...(rolloverId ? { rolloverId } : {}) };
+  }
+
+  /** Narrow recovery eligibility, independent of a completed boundary. This
+   * observes uncertainty; it never certifies occupancy or authorizes input. */
+  uncertainProviderContextRecoveryBoundary(agentId: string) {
+    const boundary = this.acceptedProviderSessionBoundary(agentId, true);
+    const accepted = this.resumeSessionState(agentId);
+    if (!boundary || !accepted?.toolContractHash || this.acceptedProviderSessionContextUsage(agentId) ||
+        this.acceptedProviderSessionInputEstimate(agentId)) return undefined;
+    const source = this.client.prepare(`SELECT r.id, r.status, r.provider_session_id, r.fencing_token, r.scope_key, r.project_id,
+      ${uncertainContextRecoverySourceSql('r')} AS eligible
+      FROM scheduler_runs r WHERE r.agent_id=? AND r.prompt_injection_state<>'not_injected'
+      ORDER BY fencing_token DESC LIMIT 1`).get(agentId) as {
+        id:string;status:string;provider_session_id:string;fencing_token:number;scope_key:string;project_id:string;eligible:number;
+      } | undefined;
+    if (!source?.eligible || source.provider_session_id !== boundary.sessionId) return undefined;
+    return { agentId, projectId:source.project_id, providerSessionId:boundary.sessionId,
+      toolContractHash:accepted.toolContractHash, sourceRunId:source.id, sourceFence:source.fencing_token, scopeKey:source.scope_key };
   }
 
   /** Exact policy packet attributed to the currently accepted session, never
    * a later, unverified replacement candidate. */
-  acceptedProviderSessionInput(agentId: string): ProviderInputDto | undefined {
-    const boundary = this.acceptedProviderSessionBoundary(agentId);
+  acceptedProviderSessionInput(agentId: string, allowCompletedUnknownSteer = false): ProviderInputDto | undefined {
+    const boundary = this.acceptedProviderSessionBoundary(agentId, allowCompletedUnknownSteer);
     return boundary ? this.getProviderInput(boundary.executionId, true) : undefined;
   }
 
@@ -528,17 +586,23 @@ export class AgentStore extends AgentEventSessionFacade {
     return start && terminal && terminal.seq > start.seq ? { ...boundary, run, start, terminal } : undefined;
   }
 
-  /** Only the latest injected, canonically cancelled generation may be retired
-   * after the cancellation owner has observed its complete runtime cleanup. */
-  cancelledProviderSessionForRetirement(runId: string): { agentId: string; sessionId: string } | undefined {
-    const row = this.client.prepare(`SELECT r.agent_id, r.provider_session_id FROM scheduler_runs r
-      WHERE r.id=? AND r.status='cancelled' AND r.prompt_injection_state='injected'
-        AND r.provider_session_id IS NOT NULL AND NOT EXISTS (
-          SELECT 1 FROM scheduler_runs newer WHERE newer.agent_id=r.agent_id
-            AND newer.fencing_token>r.fencing_token AND newer.prompt_injection_state<>'not_injected'
-        )`).get(runId) as { agent_id: string; provider_session_id: string } | undefined;
-    return row && this.resumeSessionId(row.agent_id) === row.provider_session_id
-      ? { agentId: row.agent_id, sessionId: row.provider_session_id } : undefined;
+  /** Read the exact stopped native generation without granting task or recovery input. */
+  stoppedProviderSessionBoundary(agentId: string) {
+    const accepted = this.resumeSessionState(agentId);
+    if (!accepted?.toolContractHash) return undefined;
+    const source = this.client.prepare(`SELECT r.id,r.project_id,r.scope_key,r.provider_session_id,r.fencing_token,
+      ${stoppedContextRecoverySourceSql('r')} AS cleanup_confirmed
+      FROM scheduler_runs r WHERE r.agent_id=? AND ${stoppedContextSourceSql('r')}
+        AND NOT EXISTS (SELECT 1 FROM scheduler_runs newer WHERE newer.agent_id=r.agent_id
+          AND newer.fencing_token>r.fencing_token AND newer.prompt_injection_state<>'not_injected')
+      ORDER BY r.fencing_token DESC LIMIT 1`).get(agentId) as {
+        id:string;project_id:string;scope_key:string;provider_session_id:string;fencing_token:number;cleanup_confirmed:number;
+      }|undefined;
+    return source?.provider_session_id===accepted.sessionId ? {
+      agentId,projectId:source.project_id,scopeKey:source.scope_key,providerSessionId:source.provider_session_id,
+      executionId:source.id,fencingToken:source.fencing_token,toolContractHash:accepted.toolContractHash,
+      cleanupConfirmed:Boolean(source.cleanup_confirmed),
+    } : undefined;
   }
 
   /** Capture and recheck the canonical idle boundary around an async native
@@ -584,12 +648,79 @@ export class AgentStore extends AgentEventSessionFacade {
       providerCommand: { name: "compact", executionId: boundary.executionId, fencingToken: boundary.fencingToken, invocationId } });
   }
 
+  /** The recovery controller calls this only after observed command-process exit.
+   * This telemetry event alone never clears a hold or resolves original work. */
+  recordProviderRecoveryContextUsage(agentId: string, recoveryId: string, usage: {
+    usedTokens:number;windowTokens?:number;
+  }): StoredLogEvent | undefined {
+    if(!Number.isSafeInteger(usage.usedTokens) || usage.usedTokens<0 ||
+       usage.windowTokens!==undefined && (!Number.isSafeInteger(usage.windowTokens) || usage.windowTokens<=0))return undefined;
+    const row=this.client.prepare(`SELECT source_run_id,source_fence,provider_session_id,tool_contract_hash
+      FROM provider_context_recovery_requests WHERE id=? AND agent_id=? AND state='unsupported_fenced'
+        AND (json_extract(progress_json,'$.phase')='native_started' OR
+          json_extract(progress_json,'$.phase')='held' AND json_extract(progress_json,'$.nativeOutcome')='completed'
+          AND json_extract(progress_json,'$.usedTokens')=? AND json_extract(progress_json,'$.windowTokens') IS ?)`)
+      .get(recoveryId,agentId,usage.usedTokens,usage.windowTokens??null) as {
+          source_run_id:string;source_fence:number;provider_session_id:string;tool_contract_hash:string;
+        }|undefined;
+    const boundary=this.uncertainProviderContextRecoveryBoundary(agentId);
+    if(!row || boundary?.sourceRunId!==row.source_run_id || boundary.sourceFence!==row.source_fence ||
+       boundary.providerSessionId!==row.provider_session_id || boundary.toolContractHash!==row.tool_contract_hash) return undefined;
+    return this.appendEvent(agentId,{type:"context_usage",...usage,providerSessionId:row.provider_session_id,
+      providerSessionGeneration:row.provider_session_id,providerCommand:{name:"compact",executionId:row.source_run_id,
+        fencingToken:row.source_fence,invocationId:recoveryId}});
+  }
+
+  private acceptedProviderRecoveryContextUsage(agentId:string): {
+    usage:Extract<LogEvent,{type:"context_usage"}>;observedAt:string;executionId:string;postObservationUtf8Bytes:number;
+  } | undefined {
+    const accepted=this.resumeSessionState(agentId);
+    if(!accepted)return undefined;
+    const row=this.client.prepare(`SELECT recovery.id,recovery.source_run_id,event.payload_json,event.created_at,event.seq
+      FROM provider_context_recovery_requests recovery JOIN events event ON event.agent_id=recovery.agent_id
+        AND event.seq=json_extract(recovery.progress_json,'$.contextUsageEventSequence')
+      JOIN scheduler_runs source ON source.id=recovery.source_run_id
+      WHERE recovery.agent_id=? AND recovery.provider_session_id=? AND recovery.tool_contract_hash=?
+        AND json_extract(recovery.progress_json,'$.phase')='context_accepted' AND ${uncertainContextRecoverySourceSql('source')}
+        AND source.provider_session_id=recovery.provider_session_id AND source.fencing_token=recovery.source_fence
+        AND NOT EXISTS(SELECT 1 FROM scheduler_runs newer WHERE newer.agent_id=recovery.agent_id
+          AND newer.fencing_token>source.fencing_token AND newer.prompt_injection_state<>'not_injected')
+      ORDER BY event.seq DESC LIMIT 1`).get(agentId,accepted.sessionId,accepted.toolContractHash) as {
+        id:string;source_run_id:string;payload_json:string;created_at:string;seq:number;
+      }|undefined;
+    if(!row)return undefined;
+    const usage=JSON.parse(row.payload_json) as Extract<LogEvent,{type:"context_usage"}>;
+    if(usage.type!=="context_usage" || usage.providerCommand?.invocationId!==row.id ||
+       usage.providerSessionId!==accepted.sessionId || usage.providerSessionGeneration!==accepted.sessionId)return undefined;
+    if(this.client.prepare(`SELECT 1 FROM events WHERE agent_id=? AND seq>? AND type IN ('tool_call','tool_result','command','file_change','work_start') LIMIT 1`).get(agentId,row.seq))return undefined;
+    const tail=this.client.prepare(`SELECT COALESCE(SUM(length(CAST(payload_json AS BLOB))),0) bytes
+      FROM events WHERE agent_id=? AND seq>? AND type IN ('text','reasoning')`).get(agentId,row.seq) as {bytes:number};
+    return {usage,observedAt:row.created_at,executionId:row.source_run_id,postObservationUtf8Bytes:tail.bytes};
+  }
+
+  /** The existing recovered measurement is a boundary for independent input,
+   * never proof that its original work completed or may be replayed. */
+  acceptedProviderRecoveryBoundary(agentId: string) {
+    if (this.client.prepare("SELECT 1 FROM provider_context_recovery_requests WHERE agent_id=? AND state='unsupported_fenced'").get(agentId)) return undefined;
+    const usage = this.acceptedProviderRecoveryContextUsage(agentId);
+    const accepted = this.resumeSessionState(agentId);
+    if (!usage || !accepted?.toolContractHash) return undefined;
+    const source = this.client.prepare('SELECT id,project_id,scope_key,provider_session_id,fencing_token FROM scheduler_runs WHERE id=? AND agent_id=?')
+      .get(usage.executionId,agentId) as {id:string;project_id:string;scope_key:string;provider_session_id:string;fencing_token:number}|undefined;
+    return source?.provider_session_id===accepted.sessionId ? {
+      agentId,projectId:source.project_id,scopeKey:source.scope_key,providerSessionId:source.provider_session_id,
+      executionId:source.id,fencingToken:source.fencing_token,toolContractHash:accepted.toolContractHash,
+    } : undefined;
+  }
+
   /** Warm and cold resumes share this completed-Run proof. Native work and
    * uncertain steering after the checkpoint cannot be estimated as plain text. */
   acceptedProviderSessionContextUsage(agentId: string): {
     usage: Extract<LogEvent, { type: "context_usage" }>;
     observedAt: string; executionId: string; postObservationUtf8Bytes: number;
   } | undefined {
+    const recovered = this.acceptedProviderRecoveryContextUsage(agentId);
+    if (recovered) return recovered;
     const proof = this.acceptedProviderSessionCompletedRun(agentId);
     if (!proof) return undefined;
     const { sessionId, run, start, terminal } = proof;
@@ -989,15 +1120,23 @@ export class AgentStore extends AgentEventSessionFacade {
 
   beginAgentCreationOperation(input: {
     projectId: string;
+    conversationId?: string;
     actorScope: string;
     kind: AgentCreationOperation["kind"];
     idempotencyKey: string;
     payloadHash: string;
   }): { operation: AgentCreationOperation; replayed: boolean } {
     const id = this.agentCreationOperationId(input);
+    const productScope = input.conversationId
+      ? this.getConversation(input.conversationId)?.branchId ? "branches" : "dev"
+      : undefined;
+    const sameOwner = (operation: AgentCreationOperation) =>
+      operation.payloadHash === input.payloadHash &&
+      operation.conversationId === input.conversationId &&
+      operation.productScope === productScope;
     const existing = this.getAgentCreationOperation(id);
     if (existing) {
-      if (existing.payloadHash !== input.payloadHash) {
+      if (!sameOwner(existing)) {
         throw new Error("Agent creation idempotency key was reused with different input");
       }
       if (existing.status === "rolled_back") {
@@ -1018,12 +1157,12 @@ export class AgentStore extends AgentEventSessionFacade {
     try {
       this.client.prepare(`
         INSERT INTO agent_creation_operations
-          (id, project_id, actor_scope, kind, idempotency_key, payload_hash, status, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, 'preparing', ?, ?)
-      `).run(id, input.projectId, input.actorScope, input.kind, input.idempotencyKey, input.payloadHash, now, now);
+          (id, project_id, actor_scope, kind, idempotency_key, payload_hash, conversation_id, product_scope, status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'preparing', ?, ?)
+      `).run(id, input.projectId, input.actorScope, input.kind, input.idempotencyKey, input.payloadHash, input.conversationId ?? null, productScope ?? null, now, now);
     } catch (error) {
       const raced = this.getAgentCreationOperation(id);
-      if (!raced || raced.payloadHash !== input.payloadHash) throw error;
+      if (!raced || !sameOwner(raced)) throw error;
       return { operation: raced, replayed: true };
     }
     return { operation: this.getAgentCreationOperation(id)!, replayed: false };
@@ -1051,11 +1190,11 @@ export class AgentStore extends AgentEventSessionFacade {
 
   getAgentCreationOperation(id: string): AgentCreationOperation | undefined {
     const row = this.client.prepare(`
-      SELECT id, project_id, actor_scope, kind, idempotency_key, payload_hash, status,
+      SELECT id, project_id, conversation_id, product_scope, actor_scope, kind, idempotency_key, payload_hash, status,
         communication_event_id, artifact_ids_json, artifact_identities_json, result_json, last_error
       FROM agent_creation_operations WHERE id = ?
     `).get(id) as {
-      id: string; project_id: string; actor_scope: string; kind: AgentCreationOperation["kind"];
+      id: string; project_id: string; conversation_id: string | null; product_scope: "dev" | "branches" | null; actor_scope: string; kind: AgentCreationOperation["kind"];
       idempotency_key: string; payload_hash: string; status: AgentCreationOperationStatus;
       communication_event_id: string | null; artifact_ids_json: string; artifact_identities_json: string;
       result_json: string | null; last_error: string | null;
@@ -1067,6 +1206,8 @@ export class AgentStore extends AgentEventSessionFacade {
     return {
       id: row.id,
       projectId: row.project_id,
+      ...(row.conversation_id ? {conversationId:row.conversation_id} : {}),
+      ...(row.product_scope ? {productScope:row.product_scope} : {}),
       actorScope: row.actor_scope,
       kind: row.kind,
       idempotencyKey: row.idempotency_key,
@@ -1085,6 +1226,7 @@ export class AgentStore extends AgentEventSessionFacade {
     return (this.client.prepare(`
       SELECT id FROM agent_creation_operations
       WHERE status IN ('preparing', 'canonical_committed', 'rolling_back')
+        AND NOT EXISTS(SELECT 1 FROM json_each(result_json,'$.importedProjectRootBindings'))
       ORDER BY created_at, id
     `).all() as Array<{ id: string }>).flatMap(({ id }) => {
       const operation = this.getAgentCreationOperation(id);
@@ -1098,6 +1240,67 @@ export class AgentStore extends AgentEventSessionFacade {
       VALUES (?, ?, ?)
       ON CONFLICT(operation_id, agent_id) DO UPDATE SET position = excluded.position
     `).run(operationId, agentId, position);
+  }
+
+  /** Only the fenced native importer calls this after final graph/metadata
+   * verification. No incoming package or root-local receipt can issue it. */
+  recordGeneratedHookNamespace(agentId:string,rootPath:string,sourceOriginalSha256:string,local:Omit<CanonicalGeneratedHooksProof,'operationId'|'sourceOriginalSha256'>):CanonicalGeneratedHooksProof {
+    return this.client.transaction(()=>{
+      const agent=this.getAgent(agentId);
+      if(!agent||!path.isAbsolute(rootPath)||path.resolve(rootPath)!==rootPath||path.resolve(agent.workingCopy.rootPath)!==rootPath||agent.workingCopy.repositoryRoot&&path.resolve(agent.workingCopy.repositoryRoot)!==rootPath)throw new Error('Generated hook proof requires the exact current Agent working root');
+      const candidates=(this.client.prepare(`SELECT o.id FROM agent_creation_operations o
+        JOIN agent_creation_operation_members m ON m.operation_id=o.id
+        WHERE m.agent_id=? AND o.kind='import' AND
+        (o.status IN ('preparing','canonical_committed') OR (o.status='completed' AND EXISTS(
+          SELECT 1 FROM branch_installation_resources r WHERE r.local_id=m.agent_id AND r.creation_operation_id=o.id AND r.state='staging')))`).all(agentId) as Array<{id:string}>).map(({id})=>this.getAgentCreationOperation(id)!);
+      if(candidates.length!==1)throw new Error('Generated hook issuance requires one fenced canonical import owner');
+      const operation=candidates[0]!;
+      if(operation.projectId!==agent.projectId||operation.conversationId&&operation.conversationId!==agent.conversationId)throw new Error('Generated hook canonical owner scope changed');
+      const ownsRoot=(id:string)=>{const owner=this.getAgent(id);return !!owner&&owner.projectId===agent.projectId&&path.resolve(owner.workingCopy.rootPath)===rootPath;};
+      const declared=operation.artifactIdentities.some(item=>item.sha256===sourceOriginalSha256&&(!item.generated||ownsRoot(item.generated.originAgentId)));
+      const published=!declared&&this.getProjectArtifacts(agent.projectId).some(item=>item.sha256===sourceOriginalSha256&&ownsRoot(item.originAgentId??item.agentId));
+      if(!declared&&!published)throw new Error('Generated hook proof lacks its canonical retained original');
+      const proof:CanonicalGeneratedHooksProof={...structuredClone(local),operationId:operation.id,sourceOriginalSha256};
+      validateGeneratedHookNamespaceProof(proof);
+      const result=operation.result&&typeof operation.result==='object'&&!Array.isArray(operation.result)?operation.result as Record<string,unknown>:{};
+      const rows=(result.canonicalGeneratedHooks??[]) as Array<{agentIds:string[];rootPath:string;proof:CanonicalGeneratedHooksProof}>;
+      if(!Array.isArray(rows)||rows.length>10000)throw new Error('Canonical generated hook records are malformed');
+      const existing=rows.find(row=>row.rootPath===rootPath&&row.proof.sourceOriginalSha256===sourceOriginalSha256);
+      if(existing){
+        if(JSON.stringify(existing.proof)!==JSON.stringify(proof))throw new Error('Generated hook namespace was already issued with another physical identity');
+        if(existing.agentIds.includes(agentId))return structuredClone(existing.proof);
+        if(existing.agentIds.length>=10000)throw new Error('Canonical generated hook member bound exceeded');
+        existing.agentIds.push(agentId);
+      }else{
+        if(rows.length>=10000)throw new Error('Canonical generated hook record bound exceeded');
+        rows.push({agentIds:[agentId],rootPath,proof});
+      }
+      this.client.prepare('UPDATE agent_creation_operations SET result_json=?,updated_at=? WHERE id=?').run(JSON.stringify({...result,canonicalGeneratedHooks:rows}),new Date().toISOString(),operation.id);
+      return structuredClone(proof);
+    })();
+  }
+
+  /** Discover the completed local issuer through exact current ownership, never
+   * an imported operation ID or a mutable working-root receipt. */
+  findGeneratedHookNamespace(input:{agentId:string;rootPath:string;root:{device:string;inode:string};sourceOriginalSha256:string}):CanonicalGeneratedHooksProof|undefined {
+    const agent=this.getAgent(input.agentId);
+    if(!agent||agent.workingCopy.state!=='ready'||path.resolve(agent.workingCopy.rootPath)!==input.rootPath||agent.workingCopy.repositoryRoot&&path.resolve(agent.workingCopy.repositoryRoot)!==input.rootPath||!path.isAbsolute(input.rootPath)||path.resolve(input.rootPath)!==input.rootPath||!/^([a-f0-9]{64})$/.test(input.sourceOriginalSha256))return undefined;
+    const rows=this.client.prepare(`SELECT o.id FROM agent_creation_operations o JOIN agent_creation_operation_members m ON m.operation_id=o.id WHERE m.agent_id=? AND o.kind='import' AND o.status='completed'`).all(input.agentId) as Array<{id:string}>;
+    let found:CanonicalGeneratedHooksProof|undefined;
+    for(const {id} of rows){
+      const operation=this.getAgentCreationOperation(id)!;
+      if(operation.projectId!==agent.projectId||operation.conversationId&&operation.conversationId!==agent.conversationId)continue;
+      const entries=(operation.result as {canonicalGeneratedHooks?:Array<{agentIds:string[];rootPath:string;proof:CanonicalGeneratedHooksProof}>}|undefined)?.canonicalGeneratedHooks;
+      if(!Array.isArray(entries))continue;
+      for(const entry of entries){
+        if(!entry.agentIds.includes(input.agentId)||entry.rootPath!==input.rootPath||entry.proof.sourceOriginalSha256!==input.sourceOriginalSha256||entry.proof.root.device!==input.root.device||entry.proof.root.inode!==input.root.inode)continue;
+        validateGeneratedHookNamespaceProof(entry.proof);
+        if(entry.proof.operationId!==operation.id)throw new Error('Canonical generated hook proof lost its import owner');
+        if(found&&JSON.stringify(found)!==JSON.stringify(entry.proof))throw new Error('Generated hook proof is ambiguous');
+        found=entry.proof;
+      }
+    }
+    return found?structuredClone(found):undefined;
   }
 
   updateAgentCreationOperation(
@@ -1114,6 +1317,29 @@ export class AgentStore extends AgentEventSessionFacade {
     const current = this.getAgentCreationOperation(id);
     if (!current) throw new Error("Agent creation operation not found");
     const nextStatus = patch.status ?? current.status;
+    const retainedHooks=(current.result as {canonicalGeneratedHooks?:unknown}|undefined)?.canonicalGeneratedHooks;
+    if(patch.result!==undefined){
+      const proposed=patch.result&&typeof patch.result==='object'&&!Array.isArray(patch.result)?patch.result as Record<string,unknown>:undefined;
+      if(proposed&&Object.hasOwn(proposed,'canonicalGeneratedHooks')&&JSON.stringify(proposed.canonicalGeneratedHooks)!==JSON.stringify(retainedHooks))throw new Error('Generated hook proof may only be issued by the fenced native import');
+      if(retainedHooks!==undefined){if(!proposed)throw new Error('Canonical generated hook proof must survive result updates');patch={...patch,result:{...proposed,canonicalGeneratedHooks:retainedHooks}};}
+    }
+    const retainedBindings=(current.result as {importedProjectRootBindings?:Record<string,{state?:string}>}|undefined)?.importedProjectRootBindings;
+    if(retainedBindings&&Object.keys(retainedBindings).length){
+      let bindings=retainedBindings;
+      if(patch.result!==undefined){
+        if(!patch.result||typeof patch.result!=='object'||Array.isArray(patch.result))throw new Error('Contained import must retain its original recovery receipt');
+        const result=patch.result as Record<string,unknown>,proposed=result.importedProjectRootBindings as Record<string,{state?:string;error?:unknown}>|undefined;
+        // Callers may downgrade to unavailable, never replace canonical member
+        // identity or turn an unknown physical outcome into completed custody.
+        bindings=Object.fromEntries(Object.entries(retainedBindings).map(([projectId,binding])=>[projectId,proposed?.[projectId]?.state==='unavailable'?{...binding,state:'unavailable',error:proposed[projectId]!.error}:binding]));
+        patch={...patch,result:{...result,importedProjectRootBindings:bindings}};
+      }
+      if(nextStatus==='rolling_back'||nextStatus==='rolled_back')throw new Error('Contained import retains uncertain physical custody; automatic rollback is forbidden');
+      if(Object.values(bindings).some(binding=>binding.state!=='completed')){
+        if(nextStatus==='completed')throw new Error('Contained import binding is unavailable; completion requires verified original custody');
+        if(patch.lastError===null)patch={...patch,lastError:current.lastError??'Contained import binding is unavailable; preserve its original operation and folders'};
+      }
+    }
     this.client.prepare(`
       UPDATE agent_creation_operations
       SET status = ?, communication_event_id = ?, artifact_ids_json = ?, artifact_identities_json = ?,
@@ -1138,21 +1364,36 @@ export class AgentStore extends AgentEventSessionFacade {
     input: Omit<CreateProjectRequest, "defaultEngine"> & {
       hostPath: string;
       chatOwned?: boolean;
+      branchId?: string;
+      executionId?: string;
       managedWorkspaceName?: string;
       creationHostPath?: string;
       defaultEngine?: CreateProjectRequest["defaultEngine"];
     },
     identity?: WorkspaceCreationIdentity,
+    onFreshChatCommit?: (chatId: string) => void,
   ): ProjectDto {
-    return this.workspaceCatalog.createProject(input, identity);
+    return this.workspaceCatalog.createProject(input, identity, onFreshChatCommit);
   }
 
   getProjectCreation(identity: WorkspaceCreationIdentity): ProjectDto | undefined {
     return this.workspaceCatalog.getProjectCreation(identity);
   }
 
+  isManagedProjectImportDestination(id:string):boolean {
+    return this.workspaceCatalog.isManagedProjectImportDestination(id);
+  }
+
   getManagedCreationHostPath(key: string, name: string): string | undefined {
     return this.workspaceCatalog.getManagedCreationHostPath(key, name);
+  }
+
+  bindPreparingImportedProjectRoot(projectId:string,operationId:string,oldRoot:string,newRoot:string,exactAgentIds:readonly string[],parent:NonNullable<AgentDto['workingCopy']['importedParent']>):ProjectDto {
+    return this.workspaceCatalog.bindPreparingImportedProjectRoot(projectId,operationId,oldRoot,newRoot,exactAgentIds,parent);
+  }
+
+  bindStagedImportedProjectRoot(projectId:string,planId:string,oldRoot:string,newRoot:string,exactAgentIds:readonly string[],parent:NonNullable<AgentDto['workingCopy']['importedParent']>):ProjectDto {
+    return this.workspaceCatalog.bindStagedImportedProjectRoot(projectId,planId,oldRoot,newRoot,exactAgentIds,parent);
   }
 
   updateProject(id: string, input: UpdateProjectRequest): ProjectDto | undefined {
@@ -1260,8 +1501,10 @@ export class AgentStore extends AgentEventSessionFacade {
     projectId: string,
     input: CreateConversationRequest,
     identity?: WorkspaceCreationIdentity,
+    owner?: {branchId:string;executionId:string},
+    onFreshChatCommit?: (chatId: string) => void,
   ): ConversationDto {
-    return this.workspaceCatalog.createConversation(projectId, input, identity);
+    return this.workspaceCatalog.createConversation(projectId, input, identity,owner,onFreshChatCommit);
   }
 
   getConversationCreation(
@@ -1348,15 +1591,22 @@ export class AgentStore extends AgentEventSessionFacade {
     messageReceiptKey?: string,
     communicationEventId?: string,
   ): ConversationMessageDto | undefined {
-    return this.communicationJournal.appendConversationMessage(
-      conversationId,
-      input,
-      authorAgentId,
-      channel,
-      deliveryIntents,
-      messageReceiptKey,
-      communicationEventId,
-    );
+    const conversation = this.getConversation(conversationId);
+    if (!conversation) return undefined;
+    return this.projectionProgress.run([
+      conversationJsonPath(this.dataDirectory, conversation.projectId, conversationId),
+      messageDispatchesPath(this.dataDirectory, conversation.projectId),
+      communicationProjectionsPath(this.dataDirectory, conversation.projectId),
+      path.join(this.dataDirectory, "delivery-order.jsonl"),
+    ], () => this.communicationJournal.appendConversationMessage(
+        conversationId,
+        input,
+        authorAgentId,
+        channel,
+        deliveryIntents,
+        messageReceiptKey,
+        communicationEventId,
+      ));
   }
 
   getConversationDeliveryIntents(conversationId: string, createdAtOrAfter?: string): Array<{
@@ -1373,6 +1623,10 @@ export class AgentStore extends AgentEventSessionFacade {
     receiptKey: string,
   ): ConversationMessageDto | undefined {
     return this.conversationProjection.getMessageByReceiptKey(conversationId, receiptKey);
+  }
+
+  getConversationAttachmentIds(conversationId: string): Set<string> {
+    return this.conversationProjection.getAttachmentIds(conversationId);
   }
 
   getConversationMessages(
@@ -1460,6 +1714,7 @@ export class AgentStore extends AgentEventSessionFacade {
     const agents = this.agentCatalog.listAgents(projectId);
     if (options.includePendingCreation) return agents;
     const pending = new Set(this.pendingAgentCreationIds(projectId));
+    for(const agent of agents)if(destinationAdmissionHeld(this.client,agent.id,agent.conversationId))pending.add(agent.id);
     return pending.size ? agents.filter((agent) => !pending.has(agent.id)) : agents;
   }
 
@@ -1476,6 +1731,7 @@ export class AgentStore extends AgentEventSessionFacade {
   }
 
   agentCreationPending(agentId: string): boolean {
+    if(destinationAdmissionHeld(this.client,agentId))return true;
     return Boolean(this.client.prepare(`
       SELECT 1
       FROM agent_creation_operation_members AS members
@@ -1528,23 +1784,35 @@ export class AgentStore extends AgentEventSessionFacade {
     this.agentCatalog.setImportedHistory(agentId, source, messages, initialInstructions);
   }
 
-  setImportedHistoryAsync(agentId: string, source: string, messages: PortableAgentHistoryMessageDto[], initialInstructions?: string): Promise<void> {
-    return this.agentCatalog.setImportedHistoryAsync(agentId, source, messages, initialInstructions);
+  setImportedHistoryAsync(agentId: string, source: string, messages: PortableAgentHistoryMessageDto[], initialInstructions?: string, portableState?: Parameters<AgentCatalogAuthority['setImportedHistoryAsync']>[4],chatTitleHistory?:Parameters<AgentCatalogAuthority['setImportedHistoryAsync']>[5]): Promise<void> {
+    return this.agentCatalog.setImportedHistoryAsync(agentId, source, messages, initialInstructions, portableState,chatTitleHistory);
+  }
+
+  attachImportedWorkingStateAsync(agentId:string,planId:string,portableState:NonNullable<Parameters<AgentCatalogAuthority['setImportedHistoryAsync']>[4]>):Promise<void>{
+    return this.agentCatalog.attachImportedWorkingStateAsync(agentId,planId,portableState);
   }
 
   getImportedHistory(agentId: string): { source: string; importedAt: string; messages: PortableAgentHistoryMessageDto[]; initialInstructions?: string } | undefined {
     return this.agentCatalog.getImportedHistory(agentId);
   }
 
-  getImportedHistoryAvailability(agentId: string) { return this.agentCatalog.getImportedHistoryAvailability(agentId); }
-  searchImportedHistory(input: Parameters<AgentCatalogAuthority["searchImportedHistory"]>[0]) { return this.agentCatalog.searchImportedHistory(input); }
-  readImportedHistory(input: Parameters<AgentCatalogAuthority["readImportedHistory"]>[0]) { return this.agentCatalog.readImportedHistory(input); }
-
   getImportedHistoryMessagePage(
     agentId: string,
     input: { limit: number; before?: ContextReadBoundary; maxTextUtf8Bytes?: number },
   ): ContextSourcePage<MessageDto> & { hasClippedMessages: boolean } {
     return this.agentCatalog.getImportedHistoryMessagePage(agentId, input);
+  }
+
+  getImportedHistoryAvailability(agentId: string) {
+    return this.agentCatalog.getImportedHistoryAvailability(agentId);
+  }
+
+  searchImportedHistory(input: Parameters<AgentCatalogAuthority["searchImportedHistory"]>[0]) {
+    return this.agentCatalog.searchImportedHistory(input);
+  }
+
+  readImportedHistory(input: Parameters<AgentCatalogAuthority["readImportedHistory"]>[0]) {
+    return this.agentCatalog.readImportedHistory(input);
   }
 
   listAgentSubtree(id: string): AgentDto[] {
@@ -1615,7 +1883,15 @@ export class AgentStore extends AgentEventSessionFacade {
   }
 
   updateAgent(id: string, patch: UpdateAgentRequest): AgentDto | undefined {
-    return this.agentManagement.updateAgent(id, patch);
+    const agent = this.getAgent(id);
+    if (!agent) return undefined;
+    return this.projectionProgress.run([agentJsonPath(this.dataDirectory, agent.projectId, id)],
+      () => this.agentManagement.updateAgent(id, patch));
+  }
+
+  /** Internal installation compensation; preserves the exact reserved handle. */
+  restoreAgentConfiguration(id: string, snapshot: Pick<AgentDto,"title"|"handle"|"activeEngine"|"managementPermissions"> & {model:string|null;effort:string|null;speed:string|null}): AgentDto | undefined {
+    return this.agentManagement.restoreAgentConfiguration(id,snapshot);
   }
 
   updateAgentOrganization(id: string, input: UpdateAgentOrganizationRequest): AgentDto | undefined {
@@ -1685,6 +1961,10 @@ export class AgentStore extends AgentEventSessionFacade {
 
   getMessages(agentId: string): MessageDto[] {
     return this.auditReadModel.getMessages(agentId);
+  }
+
+  getMessageAttachmentIds(agentId: string): Set<string> {
+    return this.auditReadModel.getMessageAttachmentIds(agentId);
   }
 
   /** Durable response/reasoning segments interleaved by canonical event sequence. */
@@ -1814,8 +2094,8 @@ export class AgentStore extends AgentEventSessionFacade {
     return this.chatFeed.searchGlobalChats(input);
   }
 
-  getAllChatPage(input: { limit?: number; cursor?: string } = {}): AllChatPageDto {
-    return this.chatFeed.getAllChatPage(input);
+  getInboxPage(input: { limit?: number; cursor?: string;productScope?:'dev'|'branches' } = {}): InboxPageDto {
+    return this.chatFeed.getInboxPage(input);
   }
 
   getLatestRun(agentId: string, exactRunId?: string): ReturnType<AgentRunUsageReadModel["getLatestRun"]> {
@@ -1848,7 +2128,7 @@ export class AgentStore extends AgentEventSessionFacade {
   }
 
   getTokenUsage(
-    scope: { type: "overall" } | { type: "project" | "agent" | "conversation"; id: string },
+    scope: ({ type: "overall" } | { type: "project" | "agent" | "conversation" | "branch"; id: string }) & {productScope?:'dev'|'branches'},
     range: TokenUsageRangeDto = {},
   ): TokenUsageSummaryDto {
     return this.runUsage.getTokenUsage(scope, range);
@@ -1886,12 +2166,16 @@ export class AgentStore extends AgentEventSessionFacade {
     return this.artifactCatalog.projectHasArtifactSourcePath(projectId, sourcePath);
   }
 
-  getProjectArtifactPage(projectId: string, input: { limit: number; cursor?: string; conversationId?: string; search?: string }): HistoryPageDto<ArtifactDto> {
+  getProjectArtifactPage(projectId: string, input: { limit: number; cursor?: string; conversationId?: string; search?: string;productScope?:'dev'|'branches' }): HistoryPageDto<ArtifactDto> {
     return this.artifactCatalog.getProjectArtifactPage(projectId, input);
   }
 
   getProjectArtifact(projectId: string, artifactIdValue: string): ArtifactDto | undefined {
     return this.artifactCatalog.getProjectArtifact(projectId, artifactIdValue);
+  }
+
+  isWorkingFileTransportPart(projectId:string,artifactIdValue:string):boolean {
+    return this.artifactCatalog.isWorkingFileTransportPart(projectId,artifactIdValue);
   }
 
   /** Server-owned publication-ledger authority for managed attachments. It is
@@ -1926,6 +2210,14 @@ export class AgentStore extends AgentEventSessionFacade {
     return this.artifactCatalog.getProjectContextArtifacts(projectId, limit, conversationId);
   }
 
+  purgeOperatorChatArtifacts(projectId: string, conversationId: string): void {
+    this.artifactCatalog.purgeOperatorChatArtifacts(projectId, conversationId);
+  }
+
+  recordOperatorChatArtifact(artifact: ArtifactDto & {projectId: string; origin: {kind: "operator"; conversationId: string}}): void {
+    this.artifactCatalog.recordOperatorChatArtifact(artifact);
+  }
+
   recordProjectArtifact(
     artifact: ArtifactDto & { projectId: string; originAgentId: string },
     access?: ManagedArtifactAccess,
@@ -1937,6 +2229,7 @@ export class AgentStore extends AgentEventSessionFacade {
     entries: ReadonlyArray<{
       artifact: ArtifactDto & { projectId: string; originAgentId: string };
       access?: ManagedArtifactAccess;
+      transportPart?:WorkingFileTransportPart;
     }>,
   ): void {
     this.artifactCatalog.recordProjectArtifacts(entries);
@@ -1988,9 +2281,45 @@ export class AgentStore extends AgentEventSessionFacade {
     this.projectionRebuilder.rebuildProjections();
   }
 
+  private recoverProjectionTails(tails: ProjectionTail[]): void {
+    this.client.transaction(() => {
+      for (const tail of tails) {
+        const event = /^projects\/([^/]+)\/agents\/([^/]+)\/events\.jsonl$/u.exec(tail.path);
+        if (event) {
+          this.eventSession.recoverEventTail(event[2]!, event[1]!, tail.offset);
+          continue;
+        }
+        const communication = /^projects\/([^/]+)\/(communication-events|communication-revisions|communication-projections)\.jsonl$/u.exec(tail.path);
+        if (!communication) throw new Error("unsupported projection suffix");
+        const file = path.join(this.dataDirectory, tail.path);
+        const prefix = readFileSync(file).subarray(0, tail.offset).toString("utf8");
+        if (tail.offset && !prefix.endsWith("\n")) throw new Error("invalid communication prefix boundary");
+        const count = prefix.split("\n").filter(line => line.trim()).length;
+        const suffix = readRepairableJsonl<CommunicationEvent | CommunicationRevisionEvent | CommunicationProjection>(file, "projection recovery", true).slice(count);
+        for (const record of suffix) {
+          if (communication[2] !== "communication-projections" &&
+              (record as CommunicationEvent | CommunicationRevisionEvent).projectId !== communication[1]) {
+            throw new Error("communication recovery owner mismatch");
+          }
+          if (communication[2] === "communication-events") this.appendCommunicationEvent(record as CommunicationEvent);
+          else if (communication[2] === "communication-revisions") this.appendCommunicationRevision(record as CommunicationRevisionEvent);
+          else {
+            const placement = record as CommunicationProjection;
+            const tuple = `${placement.eventId}\u0000${placement.surface}\u0000${placement.projectionKey}`;
+            const current = this.projectionIndex(communication[1]!).byTuple.get(tuple);
+            if (!current || !this.canProjectCommunication(communication[1]!, current)) throw new Error("unrecoverable communication placement");
+            this.chatFeed.upsertGlobalChatSearchProjection(communication[1]!, current);
+          }
+        }
+      }
+    })();
+  }
+
+
   abortStartup(): void {
     if (!this.ownership) return;
     this.closing = true;
+    this.agentCatalog.invalidateImportedIndexes(true);
     admittedStores.delete(this);
     releaseDataDirectoryOwnership(this.ownership);
     this.ownership = undefined;
@@ -2000,28 +2329,21 @@ export class AgentStore extends AgentEventSessionFacade {
     if (!this.ownership) return;
     if (!this.closing) {
       this.closing = true;
+      this.agentCatalog.invalidateImportedIndexes(true);
       admittedStores.delete(this);
-      // A checkpoint is an optimization, never shutdown authority. Canonical
-      // files are committed before their projections. A write-active lifetime
-      // requires full recovery at the next startup unless the caller explicitly
-      // requests replay before checkpointing. Partial projection writes must
-      // never be certified as clean.
+      // Completion receipts certify successful writes without replaying history
+      // during shutdown. Missing/inconsistent proof leaves full recovery intact.
       try {
-        const currentChanges = (
-          this.client.prepare("SELECT total_changes() value").get() as { value: number }
-        ).value;
-        const unchanged = this.checkpointBaselineChanges !== undefined &&
-          currentChanges === this.checkpointBaselineChanges &&
-          this.checkpointBaselineFingerprint !== undefined &&
-          projectionSourceFingerprint(this.dataDirectory) === this.checkpointBaselineFingerprint;
-        if (!unchanged && options.checkpointWrites) {
+        if (options.checkpointWrites) {
           this.rebuildProjections();
+          for (const project of this.listProjects()) {
+            this.ensureCommunicationProjectionLedger(project.id);
+            reconcileCompactionHistoryIndex(this.client, project.id,
+              this.readCommunicationEvents(project.id), this.readCommunicationRevisions(project.id));
+          }
+          if (this.projectionRebuilder.listRecoveryIssues().length === 0) this.projectionProgress.initialize();
         }
-        // Quarantined Projects must be re-evaluated on restart, not certified
-        // as healthy empty projections that would hide their recovery issue.
-        if ((unchanged || options.checkpointWrites) && this.projectionRebuilder.listRecoveryIssues().length === 0) {
-          writeProjectionCheckpoint(this.dataDirectory, this.client);
-        }
+        if (this.projectionRebuilder.listRecoveryIssues().length === 0) this.projectionProgress.checkpoint();
       }
       catch { /* full projection recovery remains authoritative */ }
     }

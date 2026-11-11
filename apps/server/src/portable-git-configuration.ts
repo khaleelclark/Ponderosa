@@ -1,0 +1,70 @@
+import {createHash} from 'node:crypto';
+import path from 'node:path';
+import {joinSourcePath,dirnameSourcePath,sourcePathKey} from './portable-source-paths.js';
+import type {ReviewedUserData,ReviewedUserDataActivation} from '@ponderosa/core';
+import type {PlannedGitExternalApplication} from './portable-git-external-application.js';
+import {parseReviewedGitConfiguration,reviewedGitConfiguration,type NativeReviewedGitConfiguration} from './portable-reviewed-user-data.js';
+
+export function getNativeGitModuleAnchors(configuration?:NativeReviewedGitConfiguration):string[] {
+  return [...new Set((configuration?.modules??[]).flatMap(module=>[...(module.initialized?[path.join(module.worktreePath,'.git')]:[]),...getNativeGitModuleAnchors(module.configuration)]))];
+}
+
+/** Source directories rebind to the native storage the human's fresh destination choice creates. */
+export function bindReviewedGitDirectories(value:ReviewedUserData,activation:ReviewedUserDataActivation,directories:{common:string;private:string}):ReviewedUserDataActivation {
+  if(!activation.git)return activation;
+  const mappings=new Map((activation.gitPathMappings??[]).map(mapping=>[sourcePathKey(mapping.source),mapping]));
+  for(const role of ['common','private'] as const){
+    const binding=value.associationReview?.find(binding=>binding.role===role),root=binding?.capture?.roots.find(root=>root.rootRef===binding.storageRootRef);
+    const source=value.git?.configurationSourceDirectories?.[role]??(binding&&root?joinSourcePath(root.sourcePath,binding.relativePath):undefined);
+    if(!source)continue;
+    const key=sourcePathKey(source);if(mappings.has(key)&&mappings.get(key)!.destination!==directories[role])throw new Error('Git configuration directory mapping conflicts with the chosen native storage');
+    mappings.set(key,{source,destination:directories[role]});
+  }
+  return {...activation,...(mappings.size?{gitPathMappings:[...mappings.values()]}:{})};
+}
+
+/** Compile external includes only from transported originals, never historical host paths. */
+export function compileReviewedGitConfiguration(value:ReviewedUserData,activation:ReviewedUserDataActivation,directories:{common:string;private:string},originals:ReadonlyMap<string,Buffer>|((path:string)=>Buffer|undefined),external?:PlannedGitExternalApplication):NativeReviewedGitConfiguration {
+  const git=value.git;if(!git)throw new Error('Git configuration has no selected repository');
+  const includeFiles:NonNullable<NativeReviewedGitConfiguration['includeFiles']>=[],targets=new Set<string>(),includes:Array<{source:string;destination:string}>=[],files=new Map<string,string>();
+  let bytes=0,count=0;
+  const sourceDirectories=git.configurationSourceDirectories;
+  const sourceDirectory=(privateSide:boolean)=>{
+    if(sourceDirectories)return sourceDirectories[privateSide?'private':'common'];
+    const binding=value.associationReview?.find(binding=>binding.role===(privateSide?'private':'common'));
+    const root=binding?.capture?.roots.find(root=>root.rootRef===binding.storageRootRef);
+    return root&&binding?joinSourcePath(root.sourcePath,binding.relativePath):undefined;
+  };
+  const compile=(items:NonNullable<ReviewedUserData['git']>['configurationReview'],source:string|undefined,privateSide:boolean,stack:ReadonlySet<string>,depth:number,declaringSource?:string):Buffer=>{
+    if(depth>10)throw new Error('Git configuration include depth exceeds the native ten-level limit');
+    const synthetic:ReviewedUserData={...value,git:{...git,configurationReview:items.map(({source:_source,...item})=>item),configurationOriginalReview:[git.configurationOriginalReview[0]!,{path:'config.worktree',source:'selected_worktree',dataBase64:null,removedFields:false}]}};
+    const provenance=source?{common:source,private:source,...(sourceDirectories?.home?{home:sourceDirectories.home}:{})}:undefined;
+    const project=external?((key:string,rawValue:string)=>external.project(directories,declaringSource,key,rawValue)):undefined;
+    const plan=reviewedGitConfiguration(synthetic,activation,new Map(),provenance,project),overrides=new Map<string,string>();
+    for(const target of plan.targets)targets.add(target);
+    for(const request of plan.includes){
+      includes.push(request);
+      const identity=JSON.stringify([request.source,request.destination]);
+      if(stack.has(identity))throw new Error('Git configuration include cycle; preserve the original package');
+      const original=external?.originals.get(request.destination)??(typeof originals==='function'?originals(request.destination):originals.get(request.destination));
+      if(!original&&external?.absentSources.has(sourcePathKey(request.source)))continue;
+      if(!original)throw new Error('Include the configured Git file in the export before activation: '+request.source);
+      const parsed=parseReviewedGitConfiguration(original);
+      if((bytes+=original.length)>32*1024*1024||++count>1000)throw new Error('Git configuration include closure exceeds its documented memory bound');
+      const next=new Set(stack);next.add(identity);
+      const data=compile(parsed.items,dirnameSourcePath(request.source),privateSide,next,depth+1,request.source);
+      const digest=createHash('sha256').update(request.source).update('\0').update(data).digest('hex'),relative='ponderosa-includes/'+digest+'.config';
+      const destination=path.join(directories[privateSide?'private':'common'],relative),key=JSON.stringify([privateSide,relative]),prior=files.get(key);
+      if(prior!==undefined&&prior!==data.toString('base64'))throw new Error('Conflicting included Git configuration identity');
+      if(prior===undefined){files.set(key,data.toString('base64'));includeFiles.push({path:relative,data,private:privateSide});}
+      if(overrides.has(request.destination)&&overrides.get(request.destination)!==destination)throw new Error('Ambiguous relocated Git include');
+      overrides.set(request.destination,destination);
+    }
+    return reviewedGitConfiguration(synthetic,activation,overrides,provenance,project).common;
+  };
+  const commonSource=sourceDirectory(false),privateSource=sourceDirectory(true);
+  const common=compile(git.configurationReview.filter(item=>!item.source),commonSource,false,new Set(),0,commonSource?joinSourcePath(commonSource,'config'):undefined);
+  const privateConfig=git.configurationOriginalReview[1]!.dataBase64===null?null:compile(git.configurationReview.filter(item=>item.source==='config.worktree'),privateSource,true,new Set(),0,privateSource?joinSourcePath(privateSource,'config.worktree'):undefined);
+  const application=external?.scopes.find(scope=>scope.gitDir===directories.common&&scope.privateDir===directories.private)?.external;
+  return {common,private:privateConfig,targets:[...targets],includes,includeFiles,...(application?{external:application}:{})};
+}

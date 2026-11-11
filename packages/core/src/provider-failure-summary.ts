@@ -4,7 +4,6 @@ import type { EngineModelValidationError } from "./adapter.js";
 export const PROVIDER_QUOTA_LIMITS = ["five_hour", "weekly", "weekly_model", "extra_usage"] as const;
 export type ProviderQuotaLimit = typeof PROVIDER_QUOTA_LIMITS[number];
 
-export const MAX_PUBLIC_PROVIDER_FAILURE_CHARACTERS = 240;
 export const MAX_PROVIDER_FAILURE_CLASSIFICATION_CHARACTERS = 2_048;
 
 export const PROVIDER_FAILURE_CATEGORIES = [
@@ -324,13 +323,6 @@ export function publicProviderFailureSummary(
 ): string | undefined {
   if (detail === undefined && category === undefined) return undefined;
   return publicProviderFailure({ detail, category }).summary;
-}
-
-export function publicProviderFailureCategorySummary(
-  detail: string | undefined,
-  category?: ProviderFailureCategory | string,
-): string | undefined {
-  return publicProviderFailureSummary(detail, category);
 }
 
 export function publicProviderFailureRemediation(

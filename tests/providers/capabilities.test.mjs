@@ -75,6 +75,24 @@ test('aborted managed MCP discovery reports cancellation and observes owned root
   assert.ok(handles.every(handle => !handle.isAlive()));
 });
 
+test('existing provider inventories retain bounded tool names/descriptions without changing usability or exact counts',async()=>{
+ const {normalizeCodexProviderDiscovery,normalizeClaudeInitCapabilities}=await import('../../packages/engines/dist/capabilities.js');
+ const {projectProviderCapabilities}=await import('../../apps/server/dist/provider-success-projection.js');
+ const codex=normalizeCodexProviderDiscovery({cwd:process.cwd(),mcpStatuses:{data:[{name:'records',tools:{lookup:{name:'lookup',description:'Look up a record'}}}]}});
+ assert.deepEqual(projectProviderCapabilities(codex).mcpServers[0].tools,[{name:'lookup',description:'Look up a record'}]);
+ const claude=normalizeClaudeInitCapabilities({type:'system',subtype:'init',mcp_servers:[{name:'records',status:'connected'}],tools:[{name:'mcp__records__lookup',description:'Claude record lookup'},'mcp__records__list']});
+ assert.deepEqual(projectProviderCapabilities(claude).mcpServers[0].tools,[{name:'mcp__records__lookup',description:'Claude record lookup'},{name:'mcp__records__list'}]);
+ const inventory=Object.fromEntries(Array.from({length:1000},(_,i)=>['tool_'+i,{description:'x'.repeat(2000)}]));
+ const large=projectProviderCapabilities(normalizeCodexProviderDiscovery({cwd:process.cwd(),mcpStatuses:{data:[{name:'large',tools:inventory},{name:'next',tools:inventory}]}}));
+ assert.equal(large.mcpServers[0].toolCount,1000);assert.equal(large.mcpServers[1].toolCount,1000);assert.ok(large.mcpServers[0].tools.length>0&&large.mcpServers[0].tools.length<1000);assert.equal(large.mcpServers[1].tools.length,0);assert.ok(large.mcpServers.every(s=>s.usable));
+ for(const name of ['a'.repeat(513),'bad\0name']){const normalized=projectProviderCapabilities(normalizeCodexProviderDiscovery({cwd:process.cwd(),mcpStatuses:{data:[{name:'odd',tools:{[name]:{description:'Diagnostic only'}}}]}}));assert.equal(normalized.mcpServers[0].toolCount,1);assert.equal(normalized.mcpServers[0].usable,true);assert.deepEqual(normalized.mcpServers[0].tools,[])}
+ const oddDescription=projectProviderCapabilities(normalizeCodexProviderDiscovery({cwd:process.cwd(),mcpStatuses:{data:[{name:'odd',tools:{lookup:{description:'bad\0description'},unicode:{description:'🌲'.repeat(1000)}}}]}}));assert.deepEqual(oddDescription.mcpServers[0].tools[0],{name:'lookup'});assert.ok(oddDescription.mcpServers[0].tools[1].description.length<=513);
+ const bad=structuredClone(codex);bad.mcpServers[0].tools[0].extra='invalid';assert.throws(()=>projectProviderCapabilities(bad),/invalid structured data/);
+ let accessed=false;const getter=structuredClone(codex);Object.defineProperty(getter.mcpServers[0].tools[0],'description',{get(){accessed=true;return'unsafe'}});assert.throws(()=>projectProviderCapabilities(getter),/invalid structured data/);assert.equal(accessed,false);
+ const wrong=structuredClone(codex);wrong.mcpServers[0].tools[0].description={nested:'bad'};assert.throws(()=>projectProviderCapabilities(wrong),/invalid structured data/);
+});
+
+
 test('Codex occupancy and capacity observations stay with their exact provider thread', async () => {
   const { CodexAppServerSession } = await import('../../packages/engines/dist/codex-app-server.js');
   const session = Object.create(CodexAppServerSession.prototype);
@@ -98,6 +116,75 @@ test('Codex occupancy and capacity observations stay with their exact provider t
   assert.equal(observed, 1);
 });
 
+
+test('Codex context snapshots and native status require a complete reported occupancy', async () => {
+  const { CodexAppServerSession, codexContextUsageSnapshot, mapCodexTokenUsage } = await import('../../packages/engines/dist/codex-app-server.js');
+  const session = Object.create(CodexAppServerSession.prototype);
+  session.engineAgentId = 'owned-generation';
+  session.activeModel = 'fixture';
+  session.contextUsageGate = { observe() {} };
+  session.nativeCommandNotifications = new WeakSet();
+  session.capabilities = async () => ({ commands: [{ name: 'status', invocation: 'runtime', status: 'available' }] });
+  const rpcMethods = [];
+  session.rpc = { request: async method => { rpcMethods.push(method); return {}; } };
+  const cases = [
+    [{ cachedInputTokens: 4 }, undefined],
+    [{ reasoningOutputTokens: 2 }, undefined],
+    [{ inputTokens: 7 }, undefined],
+    [{ outputTokens: 9 }, undefined],
+    [{ inputTokens: 0 }, undefined],
+    [{ inputTokens: 7, outputTokens: 9 }, 16],
+    [{ totalTokens: 0 }, 0],
+    [{ inputTokens: 0, outputTokens: 0 }, 0],
+    [{ inputTokens: 7, outputTokens: 9, totalTokens: 20 }, 20],
+    [{ totalTokens: 240000 }, 240000],
+  ];
+  for (const [last, expected] of cases) {
+    const tokenUsage = { last, total: { totalTokens: 900000 }, modelContextWindow: 200000 };
+    const snapshot = codexContextUsageSnapshot(tokenUsage);
+    if (expected === undefined) {
+      assert.equal(snapshot, undefined);
+      assert.deepEqual(mapCodexTokenUsage(last), last, 'Partial billing counters remain available');
+    } else assert.deepEqual(snapshot, { usedTokens: expected, aggregateTokens: 900000, modelContextWindow: 200000 });
+    session.observeNotification({ method: 'thread/tokenUsage/updated', params: { threadId: session.engineAgentId, turnId: 'turn', tokenUsage } });
+    const status = await session.invokeCommand('status');
+    if (expected === undefined) {
+      assert.equal(session.contextUsage(), undefined);
+      assert.match(status.message, /Context occupancy unavailable/);
+      assert.doesNotMatch(status.message, /Context (?:\d|occupancy \d)/);
+    } else {
+      assert.equal(session.contextUsage().usedTokens, expected);
+      assert.ok(status.message.includes(`${expected.toLocaleString()} of ${(200000).toLocaleString()} tokens`));
+      if (expected === 0) assert.match(status.message, /Context 0% used/);
+      if (expected === 240000) assert.match(status.message, /Context 120% used/);
+    }
+  }
+  assert.deepEqual(rpcMethods, cases.map(() => 'account/rateLimits/read'));
+});
+
+test('a fresh partial Codex usage update clears stale occupancy without accepting a foreign or no-data update', async () => {
+  const { CodexAppServerSession } = await import('../../packages/engines/dist/codex-app-server.js');
+  const session = Object.create(CodexAppServerSession.prototype);
+  session.engineAgentId = 'owned-generation';
+  session.contextUsageGate = { observe() {} };
+  session.nativeCommandNotifications = new WeakSet();
+  session.capabilities = async () => ({ commands: [{ name: 'status', invocation: 'runtime', status: 'available' }] });
+  session.rpc = { request: async () => ({}) };
+  const notice = (last, threadId = session.engineAgentId) => ({ method: 'thread/tokenUsage/updated', params: { threadId, turnId: 'turn', tokenUsage: { last, modelContextWindow: 200000 } } });
+  for (const partial of [{ cachedInputTokens: 4 }, { inputTokens: 7 }, { outputTokens: 9 }]) {
+    session.observeNotification(notice({ totalTokens: 1200 }));
+    session.observeNotification(notice(partial, 'foreign-generation'));
+    session.observeNotification({ method: 'unrelated/updated', params: { threadId: session.engineAgentId } });
+    session.observeNotification({ method: 'thread/tokenUsage/updated', params: { threadId: session.engineAgentId } });
+    assert.equal(session.contextUsage().usedTokens, 1200, 'Only fresh owned usage data changes occupancy');
+    session.compactOperation = { turnId: 'turn', itemCompleted: true, closed: false, usage: { usedTokens: 1200 } };
+    session.observeNotification(notice(partial));
+    assert.equal(session.contextUsage(), undefined);
+    assert.equal(session.compactOperation.usage, undefined, 'The same native operation cannot retain its stale measurement');
+    assert.match((await session.invokeCommand('status')).message, /Context occupancy unavailable/);
+    session.compactOperation = undefined;
+  }
+});
 
 test('Claude context includes actual request-local output while missing output stays an explicit partial checkpoint', async () => {
   const { ClaudeContextUsage } = await import('../../packages/engines/dist/claude-context-usage.js');
@@ -137,6 +224,7 @@ function nativeCompactSession() {
   session.rpc = { request: async () => ({}), close: async () => {} };
   session.usageByTurnId = new Map(); session.providerRequestUsageByTurnId = new Map(); session.usageCheckpointsByTurnId = new Map();
   session.seedHistory = []; session.cwd = '/owned-fixture';
+  session.nativeTaskItems = new Map();
   return session;
 }
 const { CodexAppServerSession: CodexAppServerSessionForTest, ContextUsageObservationGate: ContextUsageGateForTest } = await import('../../packages/engines/dist/codex-app-server.js');
@@ -230,11 +318,12 @@ test('native Codex compact shutdown wakes the existing wait without claiming com
 });
 
 test('two completed native compacts cannot finish or charge the next warm ordinary turn', async () => {
-  const session = nativeCompactSession(), queue = []; let compacts = 0;
+  const session = nativeCompactSession(), queue = []; let compacts = 0, goalReads = 0;
   const emit = (method, params) => { const n = { method, params: { threadId: session.engineAgentId, ...params } }; session.observeNotification(n); queue.push(n); };
   session.rpc.notifications = { async *[Symbol.asyncIterator]() { yield* queue; } };
-  session.rpc.request = async method => {
+  session.rpc.request = async (method, params) => {
     if (method === 'turn/start') return { turn: { id: 'ordinary-followup' } };
+    if (method === 'thread/goal/get') { assert.deepEqual(params, {threadId: session.engineAgentId}); goalReads++; return {goal:null}; }
     assert.equal(method, 'thread/compact/start'); const turnId = 'native-' + ++compacts, id = 'compact-item-' + compacts;
     emit('turn/started', { turn: { id: turnId } });
     emit('item/started', { turnId, item: { id, type: 'contextCompaction' } });
@@ -256,6 +345,7 @@ test('two completed native compacts cannot finish or charge the next warm ordina
   assert.equal(terminals.length, 1, 'Native completion is never the next Agent Run completion');
   assert.equal(terminals[0].usage.totalTokens, 1000, 'Native usage is not billed to later ordinary work');
   assert.equal(events.filter(event => event.type === 'context_usage').length, 1);
+  assert.equal(goalReads, 1, 'The ordinary turn checks its exact native goal after completion');
 });
 
 test('native command outcome stays closed and invalid telemetry cannot imply completion', async () => {
@@ -305,4 +395,43 @@ test('internal native-work projection rejects payloads and accessor fields', asy
   let reads = 0;
   assert.throws(() => projectAgentEvent({ type: 'work_start', kind: 'native_tool', get callId() { reads++; return 'secret'; } }));
   assert.equal(reads, 0);
+});
+
+
+test('stored compaction readback requires exact observed thread, turn and item; no mutation or occupancy inference', async () => {
+  const operation = { rpcStatus: 'accepted', turnId: 'exact-turn', itemId: 'exact-item', itemCompleted: false, closed: false };
+  const turn = { id: operation.turnId, status: 'completed', error: null, itemsView: 'full', items: [{ id: operation.itemId, type: 'contextCompaction' }] };
+  async function read(pages, metadata = 'compact-owned-generation', selected = operation) {
+    const session = nativeCompactSession(); const calls = [];
+    session.rpc.request = async (method, params) => {
+      calls.push({ method, params });
+      if (method === 'thread/read') return { thread: { id: metadata } };
+      assert.equal(method, 'thread/turns/list');
+      assert.equal(params.threadId, session.engineAgentId);
+      assert.equal(params.itemsView, 'full');
+      return pages.shift();
+    };
+    const confirmed = await session.readStoredCompactionCompletion(selected, Date.now() + 1000);
+    assert.equal(session.latestContextUsage.usedTokens, 160000, 'History never manufactures fresh occupancy');
+    assert.deepEqual(selected, operation, 'Readback itself never mutates the operation');
+    return { confirmed, calls };
+  }
+  assert.equal((await read([{ data: [turn], nextCursor: null }])).confirmed, true);
+  for (const changed of [
+    { ...turn, id: 'other-turn' }, { ...turn, status: 'inProgress' },
+    { ...turn, error: {} }, { ...turn, itemsView: 'summary' },
+    { ...turn, items: [{ id: 'other-item', type: 'contextCompaction' }] },
+    { ...turn, items: [{ id: operation.itemId, type: 'agentMessage' }] },
+    { ...turn, items: [turn.items[0], turn.items[0]] },
+  ]) assert.equal((await read([{ data: [changed], nextCursor: null }])).confirmed, false);
+  assert.equal((await read([{ data: [turn, turn], nextCursor: null }])).confirmed, false);
+  assert.equal((await read([], 'foreign-thread')).confirmed, false);
+  const paged = await read([{ data: [], nextCursor: 'next' }, { data: [turn], nextCursor: null }]);
+  assert.equal(paged.confirmed, true); assert.equal(paged.calls[2].params.cursor, 'next');
+  assert.equal((await read([{ data: [], nextCursor: 'cycle' }, { data: [], nextCursor: 'cycle' }])).confirmed, false);
+  assert.equal((await read(Array.from({ length: 4 }, (_, i) => ({ data: [], nextCursor: String(i) })))).confirmed, false);
+  const session = nativeCompactSession(); session.rpc.request = async () => { throw new Error('Unsupported method'); };
+  assert.equal(await session.readStoredCompactionCompletion(operation, Date.now() + 1000), false);
+  assert.equal(await session.readStoredCompactionCompletion({ ...operation, turnId: undefined }, Date.now() + 1000), false);
+  assert.equal(await session.readStoredCompactionCompletion(operation, Date.now() - 1), false);
 });

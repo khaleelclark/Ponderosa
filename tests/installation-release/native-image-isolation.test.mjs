@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { copyFileSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, truncateSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, truncateSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import os from "node:os";
@@ -15,6 +15,7 @@ test("packaged native formats retain bytes and mode without sharing cache inodes
     const names = ["addon.node", "upper.NODE", "native.dll", "native.dylib", "native.so", "native.so.42.1"];
     const cache = path.join(root, "build-cache");
     writeFileSync(cache, "owned native fixture", { mode: 0o755 });
+    if (process.platform !== "win32") chmodSync(cache, 0o755);
     for (const name of names) linkSync(cache, path.join(bundle, name));
     writeFileSync(path.join(bundle, "ordinary.js"), "untouched");
     assert.throws(() => assertIndependentNativeImages(bundle), /shares a writable inode/);

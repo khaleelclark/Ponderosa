@@ -1,3 +1,4 @@
+import '../shared/web-typescript-loader.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
@@ -28,4 +29,36 @@ test('message navigation stays stable through refresh and uses the latest owner 
     {kind:'agent',projectId:'current',agentId:'a',focusTelemetry:{stream:'artifacts',id:'artifact'}},
     {kind:'review',projectId:'current',agentId:'a',path:'three.txt',returnTo:'/return/team'},
   ]);
+});
+
+test('coordination workspace invalidations refresh the exact Agent even without a new durable mirror',()=>{
+  const stream=readFileSync(new URL('../../apps/web/src/hooks/useWorkspaceStream.ts',import.meta.url),'utf8');
+  const tree=ts.createSourceFile('useWorkspaceStream.ts',stream,ts.ScriptTarget.Latest,true,ts.ScriptKind.TS);
+  let branch;
+  const find=node=>{if(ts.isIfStatement(node)&&node.expression.getText(tree)==='event.type === "coordination_changed"')branch=node.thenStatement.getText(tree);ts.forEachChild(node,find)};find(tree);
+  assert.ok(branch);
+  const scheduled=[],scope=[];
+  for(const agentId of ['one','two'])vm.runInNewContext(ts.transpileModule(branch,{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText,{
+    event:{agentId,projectId:'p',conversationIds:['chat']},
+    queueAgentRoster(){},agentWorkInvalidator:{schedule(){}},collaborationChatInvalidator:{schedule(){}},
+    agentDetailInvalidator:{schedule:id=>scheduled.push(id)},invalidate:key=>scope.push(key),
+    queryKeys:{conversations:{targetedNextRun:id=>id}},
+  });
+  assert.deepEqual(scheduled,['one','two'],'a duplicate snapshot may be omitted, never its scoped detail refresh');
+  assert.deepEqual(scope,['chat','chat']);
+});
+
+
+test('main history page merge keeps live precedence and page pagination for focus and older loads', async () => {
+  const {mergeMainHistoryPage}=await import('../../apps/web/src/components/ConversationView.helpers.ts');
+  const message=(id,text)=>({id,text,createdAt:'2026-01-01',canonicalOrderKey:id});
+  const decision=(id,label)=>({id,label,createdAt:'2026-01-01'});
+  const page={messages:[message('a','old'),message('b','page')],decisionEvents:[decision('d','old')],history:{cursor:'next-page',hasMore:true}};
+  const current={messages:[message('b','retained')],decisionEvents:[decision('d','retained')],cursor:'stale',hasMore:false};
+  const live={messages:[message('b','live')],decisionEvents:[decision('d','live')]};
+  const result=mergeMainHistoryPage(page,current,live);
+  assert.deepEqual(result.messages.map(m=>m.text),['old','live']);
+  assert.equal(result.decisionEvents[0].label,'live');assert.equal(result.cursor,'next-page');assert.equal(result.hasMore,true);
+  assert.deepEqual(mergeMainHistoryPage({messages:[]},undefined,undefined),{messages:[],decisionEvents:[],cursor:undefined,hasMore:false});
+  assert.equal(page.messages[1].text,'page');assert.equal(current.messages[0].text,'retained');
 });

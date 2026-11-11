@@ -155,6 +155,7 @@ export async function createNativeHostedBrowser(executable: string, profileDir: 
         finally { if (approval === controller) approval = undefined; }
       },
       pages: async () => { if (state === "automation" && driver) pages = await driver.pages(); return pages; },
+      recordingDiscard: async () => { await driver?.recordingDiscard(); },
       cancelPendingFileChooser: async reason => { if (driver) await driver.cancelPendingFileChooser(reason); },
       viewport: pageId => driver?.viewport(pageId) ?? { width: 1280, height: 720 },
     };

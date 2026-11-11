@@ -1,3 +1,6 @@
+import {ConversationChromeContext} from './ConversationChromeContext';
+import {createPortal} from 'react-dom';
+import {useWorkspaceReadOnly} from "./WorkspaceReadOnlyContext";
 import AccountTreeOutlinedIcon from "@mui/icons-material/AccountTreeOutlined";
 import ChatBubbleOutlineIcon from "@mui/icons-material/ChatBubbleOutline";
 import ContentCopyOutlinedIcon from "@mui/icons-material/ContentCopyOutlined";
@@ -11,7 +14,7 @@ import SettingsOutlinedIcon from "@mui/icons-material/SettingsOutlined";
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
 import StopCircleOutlinedIcon from "@mui/icons-material/StopCircleOutlined";
 import { Box, Button, IconButton, Link, Popover, Stack, Tooltip, Typography, useMediaQuery } from "@mui/material";
-import { useState } from "react";
+import { useContext, useState } from "react";
 import type { AgentDto, AgentHealthDto } from "@ponderosa/core";
 import { copyText } from "../clipboard";
 import {
@@ -22,6 +25,7 @@ import {
 import { downloadMarkdownTranscript, transcriptFileName } from "../chatTranscript";
 import { formatExecutionElapsed } from "../time";
 import { ChatOverflowMenu } from "./ChatOverflowMenu";
+import { useMutationNotification } from "./MutationNotifications";
 import type { AgentTab } from "./AgentDetail.helpers";
 import {
   AgentHeaderRelationships,
@@ -54,8 +58,13 @@ function AgentRunState({
   phaseEvidenceFresh,
   startedAt,
   agentNameForId,
+  paused, accessRestricted, visibleMobileLabel = false, contact = false,
 }: {
   status: AgentStatus;
+  paused?: boolean;
+  accessRestricted?: boolean;
+  visibleMobileLabel?: boolean;
+  contact?: boolean;
   health?: AgentHealthDto;
   connectionStatus: WorkspaceConnectionStatus;
   phaseEvidenceFresh: boolean;
@@ -65,18 +74,24 @@ function AgentRunState({
   const mobile = useMediaQuery("(max-width: 899.95px)");
   const [detailAnchor, setDetailAnchor] = useState<HTMLElement | null>(null);
   const now = useAgentRunClock(startedAt);
-  const presentation = agentStatusPresentation(health, {
+  const presentation = paused ? {
+    status: "waiting" as const,
+    label: accessRestricted ? "Access review" : "Paused",
+    detail: accessRestricted ? "Work is held because an access restriction was requested. Earlier context requires review." : "Paused by you. Unfinished work is held until Resume; Stop ends the held work.",
+    accessibleLabel: accessRestricted ? "Work is held because an access restriction was requested. Earlier context requires review." : "Paused by you. Unfinished work is held until Resume; Stop ends the held work.",
+  } : agentStatusPresentation(health, {
     status,
     connectionStatus,
     phaseEvidenceFresh,
     agentNameForId,
   });
-  const elapsed = startedAt ? formatExecutionElapsed(startedAt, now) : undefined;
+  const elapsed = !paused && startedAt ? formatExecutionElapsed(startedAt, now) : undefined;
   const runState = elapsed
     ? `${presentation.label} · ${elapsed}`
     : presentation.label;
-  const connectionState = connectionStatus === "live"
+  const connectionState = connectionStatus === "live" && phaseEvidenceFresh
     ? "Live"
+    : connectionStatus === "live" ? "Refreshing status"
     : connectionStatus === "stale"
       ? "Stale"
       : connectionStatus === "unavailable"
@@ -87,15 +102,22 @@ function AgentRunState({
   const details = [
     "Current: " + presentation.detail,
     health?.latestRun ? "Latest Run: " + agentStatusLabel(health.latestRun.status) : undefined,
-    health?.assignedWorkOutcome ? "Assigned work: " + agentStatusLabel(health.assignedWorkOutcome.status) : undefined,
+    health?.assignedWorkOutcome ? "Assigned Work: " + agentStatusLabel(health.assignedWorkOutcome.status) : undefined,
     health?.attention ? "Needs attention: " + agentStatusLabel(health.attention.status) : undefined,
   ].filter(Boolean).join(" · ");
   const delayed = connectionStatus === "stale" || connectionStatus === "unavailable";
+  const visibleLabel = connectionStatus === "live" && phaseEvidenceFresh
+    ? `${runState} · Live` : `${delayed ? "Last known: " : ""}${runState}`;
   const accessibleDetail = `${presentation.accessibleLabel}${elapsed ? `; ${elapsed}` : ""}; ${connectionState.toLocaleLowerCase()}. ${details}`;
-  if (mobile) return <>
+  if (contact) return <Tooltip title={accessibleDetail}><Box component="span" role="status" tabIndex={0} aria-label={accessibleDetail} sx={{display:'flex',alignItems:'center',justifyContent:'center',gap:.75,minWidth:0,minHeight:24,color:'text.secondary'}}>
+    <Typography component="span" variant="caption" noWrap>{`${delayed ? "Last known: " : ""}${presentation.label}`}</Typography>
+    <Box component="span" aria-hidden="true" sx={{width:7,height:7,flex:'0 0 7px',borderRadius:'50%',bgcolor:theme=>semanticStatusColorToken(presentation.status,theme.palette.mode)}}/>
+  </Box></Tooltip>;
+  if (mobile && !paused) return <>
     <Tooltip title={accessibleDetail}><IconButton size="small" aria-label={accessibleDetail}
-      onClick={event => setDetailAnchor(event.currentTarget)} sx={{ width: 44, height: 44 }}>
+      onClick={event => setDetailAnchor(event.currentTarget)} sx={{ width: visibleMobileLabel ? "auto" : 44, minWidth: 44, height: 44, gap: 0.5, borderRadius: visibleMobileLabel ? 1 : "50%" }}>
       <Box component="span" sx={{ width: 10, height: 10, borderRadius: "50%", bgcolor: theme => semanticStatusColorToken(presentation.status, theme.palette.mode) }} />
+      {visibleMobileLabel && <Typography component="span" variant="caption" noWrap>{visibleLabel}</Typography>}
     </IconButton></Tooltip>
     <Popover open={Boolean(detailAnchor)} anchorEl={detailAnchor} onClose={() => setDetailAnchor(null)}
       anchorOrigin={{ vertical: "bottom", horizontal: "right" }} transformOrigin={{ vertical: "top", horizontal: "right" }}>
@@ -106,18 +128,16 @@ function AgentRunState({
     <Stack direction="row" gap={0.5} flexWrap="wrap" alignItems="center" sx={{ minWidth: 0, flexShrink: 1 }}>
       <SemanticStatus
         status={presentation.status}
-        label={connectionStatus === "live" ? `${runState} · Live` : `${delayed ? "Last known: " : ""}${runState}`}
+        label={visibleLabel}
         detail={`${presentation.accessibleLabel}${elapsed ? `; ${elapsed}` : ""}; ${connectionState.toLocaleLowerCase()}. ${details}`}
       />
-      {connectionStatus !== "live" && <SemanticStatus status={delayed ? "blocked" : "idle"}
-        label={connectionStatus === "stale" ? "Updates delayed" : connectionStatus === "unavailable"
-          ? "Updates unavailable" : `${connectionState} updates`}
-        detail="Connection to live updates on this device. This does not stop the Agent's work." />}
+
     </Stack>
   );
 }
 
 interface AgentDetailHeaderProps {
+  standalone?:boolean;
   agent: AgentDto;
   projectLabel?: string;
   chats: AgentHeaderChat[];
@@ -140,9 +160,12 @@ interface AgentDetailHeaderProps {
   onOpenChat(conversationId: string): void;
   onOpenAgent(agentId: string): void;
   onStop(): void;
+  paused?:boolean;
+  accessRestricted?:boolean;
+  pausePending?:boolean;
+  onPauseResume?():void;
   onExportPackage(): void;
   onDuplicate?(): void;
-  onNotice(message: string): void;
   onOpenTechnical(): void;
   onRename(): void;
   onCreateAgent(): void;
@@ -152,6 +175,7 @@ interface AgentDetailHeaderProps {
 }
 
 export function AgentDetailHeader({
+  standalone=false,
   agent,
   projectLabel,
   chats,
@@ -174,9 +198,9 @@ export function AgentDetailHeader({
   onOpenChat,
   onOpenAgent,
   onStop,
+  paused, accessRestricted, pausePending, onPauseResume,
   onExportPackage,
   onDuplicate,
-  onNotice,
   onOpenTechnical,
   onRename,
   onCreateAgent,
@@ -184,6 +208,16 @@ export function AgentDetailHeader({
   onDelete,
   onTabChange,
 }: AgentDetailHeaderProps): JSX.Element {
+  const auditOnly=useWorkspaceReadOnly();
+  const conversationChrome=useContext(ConversationChromeContext);
+  const notify=useMutationNotification();
+  const controlsInComposer=conversationChrome?.assistantAgentId===agent.id && tab==='chat';
+  if(standalone)return <><Stack direction="row" spacing={1} sx={{alignItems:'center',px:1,minWidth:0,flexWrap:'wrap',...(conversationChrome?.statusHost&&(controlsInComposer||!running&&!paused)&&tab==='chat'?{height:0,minHeight:0,overflow:'hidden'}:{})}}>
+    {!conversationChrome?.statusHost&&<Box sx={{flex:1,minWidth:0}}><AgentRunState contact={conversationChrome?.assistantAgentId===agent.id} status={status} paused={paused} accessRestricted={accessRestricted} health={health} connectionStatus={connectionStatus} phaseEvidenceFresh={phaseEvidenceFresh} startedAt={startedAt} agentNameForId={agentNameForId} visibleMobileLabel/></Box>}
+    {tab!=='chat'&&<Button onClick={()=>onTabChange('chat')}>Back To Chat</Button>}
+    {!controlsInComposer&&(running||paused)&&!accessRestricted&&!auditOnly&&onPauseResume&&<Button disabled={pausePending} onClick={onPauseResume}>{pausePending?'Waiting…':paused?'Resume':'Pause'}</Button>}
+    {!controlsInComposer&&running&&!auditOnly&&<Button color="error" disabled={stopping} onClick={onStop}>{stopping?'Stopping…':'Stop'}</Button>}
+  </Stack>{conversationChrome?.statusHost&&createPortal(<AgentRunState contact={conversationChrome?.assistantAgentId===agent.id} status={status} paused={paused} accessRestricted={accessRestricted} health={health} connectionStatus={connectionStatus} phaseEvidenceFresh={phaseEvidenceFresh} startedAt={startedAt} agentNameForId={agentNameForId} visibleMobileLabel/>,conversationChrome.statusHost)}</>;
   return (
     <TabbedWorkspaceFrame
       compactMobile
@@ -233,13 +267,15 @@ export function AgentDetailHeader({
       status={<Stack direction="row" sx={{ alignItems: "center" }}>
         <AgentRunState
           status={status}
+          paused={paused}
+          accessRestricted={accessRestricted}
           health={health}
           connectionStatus={connectionStatus}
           phaseEvidenceFresh={phaseEvidenceFresh}
           startedAt={startedAt}
           agentNameForId={agentNameForId}
         />
-        {running ? <Tooltip title={stopping ? "Cancelling…" : "Stop"}><IconButton color="error" disabled={stopping} onClick={onStop}
+        {running && !auditOnly ? <Tooltip title={stopping ? "Cancelling…" : "Stop"}><IconButton color="error" disabled={stopping} onClick={onStop}
           aria-label={stopping ? "Cancelling…" : "Stop"} sx={{ display: { xs: "inline-flex", md: "none" }, width: 44, height: 44 }}><StopCircleOutlinedIcon /></IconButton></Tooltip> : null}
       </Stack>}
       actions={
@@ -250,7 +286,8 @@ export function AgentDetailHeader({
           flexWrap="wrap"
           sx={{ alignItems: "center" }}
         >
-          {running ? (
+          {(running||paused)&&!accessRestricted&&!auditOnly&&onPauseResume?<Button size="small" variant="outlined" disabled={pausePending} onClick={onPauseResume}>{pausePending?'Waiting…':paused?'Resume':'Pause'}</Button>:null}
+          {running && !auditOnly ? (
             <Button
               size="small"
               color="error"
@@ -293,19 +330,19 @@ export function AgentDetailHeader({
                   ]
                 : []),
               {
-                label: "Export Agent package…",
+                label: "Export Agent Package…",
                 icon: <DownloadOutlinedIcon fontSize="small" />,
                 onSelect: onExportPackage,
               },
               {
-                label: "Copy chat transcript",
+                label: "Copy Chat Transcript",
                 icon: <ContentCopyOutlinedIcon fontSize="small" />,
                 onSelect: () => void copyText(transcriptMarkdown)
-                  .then(() => onNotice("Chat transcript copied."))
-                  .catch(error => onNotice(error instanceof Error ? error.message : "Chat transcript could not be copied.")),
+                  .then(() => notify({ key: "copy-transcript", message: "Copied" }))
+                  .catch(error => notify({ key: "copy-transcript", message: error instanceof Error ? error.message : "Chat transcript could not be copied.", severity: "error" })),
               },
               {
-                label: "Download chat transcript",
+                label: "Download Chat Transcript",
                 icon: <DownloadOutlinedIcon fontSize="small" />,
                 onSelect: () => downloadMarkdownTranscript(transcriptMarkdown, transcriptFileName(transcriptTitle)),
               },
@@ -320,17 +357,17 @@ export function AgentDetailHeader({
                 destructive: true,
                 onSelect: onDelete,
               },
-            ]}
+            ].filter(action=>!auditOnly||["Technical Details","Copy chat transcript","Download chat transcript"].includes(action.label))}
           />
         </Stack>
       }
       tabs={{
-        activeLabel: tab === "technical" ? "Technical details" : undefined,
-        label: "Agent details",
+        activeLabel: tab === "technical" ? "Technical Details" : undefined,
+        label: "Agent Details",
         value: tab === "technical" ? false : tab,
         onChange: onTabChange,
         items: AGENT_DETAIL_TABS.filter(item =>
-          item.value !== "subagents" || showSubagents
+          (!auditOnly||!["subagents","settings"].includes(item.value)) && (item.value !== "subagents" || showSubagents)
         ),
       }}
     />

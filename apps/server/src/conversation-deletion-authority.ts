@@ -1,3 +1,4 @@
+import { withSourceMutation } from "@ponderosa/agents";
 import type {
   AgentStore,
   ConversationDeletionReceipt,
@@ -20,6 +21,7 @@ export function createConversationDeletionAuthority(context: {
     conversationId: string,
   ): Promise<number>;
   closeChatBrowsers?(conversationId: string): Promise<void>;
+  purgeChatMemory?(conversationId:string):Promise<void>;
   commitAgentDeletion(
     rootAgentIds: string[],
     previewHash: string,
@@ -124,6 +126,7 @@ export function createConversationDeletionAuthority(context: {
     }
     try {
       await context.assets.purgeConversationAssets(receipt.projectId, receipt.conversationId);
+      context.store.purgeOperatorChatArtifacts(receipt.projectId, receipt.conversationId);
     } catch (error) {
       errors.push(error instanceof Error ? error.message : "Chat attachment cleanup failed");
     }
@@ -159,6 +162,12 @@ export function createConversationDeletionAuthority(context: {
     } catch (error) {
       errors.push(error instanceof Error ? error.message : "workspace publication failed");
     }
+    // Finish independently retryable work first. A stable memory safety hold
+    // must be recorded alone so the background sweep does not retry it forever.
+    if(errors.length===0&&receipt.storageCleanupCompleted){
+      try { await context.purgeChatMemory?.(receipt.conversationId); }
+      catch(error){errors.push(error instanceof Error?error.message:'Chat memory cleanup failed');}
+    }
     if (errors.length > 0 || !receipt.storageCleanupCompleted) {
       try {
         context.store.recordConversationDeletionCleanupError(
@@ -190,7 +199,7 @@ export function createConversationDeletionAuthority(context: {
   ): Promise<boolean> => {
     const existing = operations.get(receipt.conversationId);
     if (existing) return existing;
-    const operation = processConversationDeletion(receipt).finally(() => {
+    const operation = withSourceMutation(() => processConversationDeletion(receipt)).finally(() => {
       if (operations.get(receipt.conversationId) === operation) {
         operations.delete(receipt.conversationId);
       }

@@ -1,6 +1,6 @@
 import type { WorkspaceNotificationDto } from "@ponderosa/core";
 import { notificationPreviewText } from "@ponderosa/core";
-import type { PushDeliveryRecord, WorkspaceStore } from "@ponderosa/agents";
+import type { AgentStore, PushDeliveryRecord, WorkspaceStore } from "@ponderosa/agents";
 
 export interface PushSendError extends Error {
   statusCode?: number;
@@ -13,6 +13,9 @@ export interface WebPushSender {
 export interface WebPushDeliveryOptions {
   store: WorkspaceStore;
   sender: WebPushSender;
+  owners?: Pick<AgentStore,"getConversation"|"getAgent">;
+  reconcileNotifications?(): void;
+  onReconciliationError?(error: unknown): void;
   onWorkspaceEvents(cursor: number): void;
 }
 
@@ -51,7 +54,9 @@ export class WebPushDeliveryManager {
   async drain(): Promise<void> {
     if (this.stopped) return;
     if (this.drainPromise) return this.drainPromise;
-    const running = this.drainOnce();
+    // Reconciliation can publish events and notify us again. Establish the
+    // in-progress drain before it runs so that publication cannot recurse.
+    const running = Promise.resolve().then(() => this.drainOnce());
     this.drainPromise = running;
     try {
       await running;
@@ -61,15 +66,27 @@ export class WebPushDeliveryManager {
   }
 
   private async drainOnce(): Promise<void> {
+    if (this.stopped) return;
     if (this.timer) clearTimeout(this.timer);
     this.timer = undefined;
+    try {
+      this.options.reconcileNotifications?.();
+    } catch (error) {
+      this.options.onReconciliationError?.(error);
+      this.scheduleNext(DEFAULT_RETRY_DELAYS_MS[0]);
+      return;
+    }
     const due = this.options.store.duePushDeliveries(new Date());
-    await Promise.allSettled(due.map(async ({ delivery, notification, subscription }) => {
+    await Promise.allSettled(due.map(async ({ delivery }) => {
       const key = `${delivery.notificationId}\u0000${delivery.deviceId}`;
       if (this.inFlight.has(key)) return;
       this.inFlight.add(key);
       try {
-        await this.options.sender.send(subscription, JSON.stringify(pushPayload(notification)), {
+        if (this.stopped) return;
+        const current = this.options.store.eligiblePushDelivery(delivery.notificationId, delivery.deviceId, new Date());
+        if (!current) return;
+        const { notification, subscription } = current;
+        await this.options.sender.send(subscription, JSON.stringify(pushPayload(notification,this.options.owners)), {
           TTL: 60 * 60,
           urgency: "normal",
           topic: pushTopic(notification.id),
@@ -108,13 +125,13 @@ export class WebPushDeliveryManager {
     this.options.onWorkspaceEvents(cursor);
   }
 
-  private scheduleNext(): void {
+  private scheduleNext(minimumDelay = 50): void {
     if (this.stopped) return;
     const nextAt = this.options.store.nextPushDeliveryAt();
     if (!nextAt) return;
     const next = Date.parse(nextAt);
     if (!Number.isFinite(next)) return;
-    const delay = Math.max(50, next - Date.now());
+    const delay = Math.max(minimumDelay, next - Date.now());
     this.timer = setTimeout(() => {
       this.timer = undefined;
       void this.drain();
@@ -123,22 +140,43 @@ export class WebPushDeliveryManager {
   }
 }
 
-export function pushPayload(notification: WorkspaceNotificationDto): Record<string, unknown> {
+export function pushPayload(notification: WorkspaceNotificationDto, owners?: Pick<AgentStore,"getConversation"|"getAgent">): Record<string, unknown> {
+  const chatId=notification.conversationId??(notification.agentId?owners?.getAgent(notification.agentId)?.conversationId:undefined);
+  const chat=chatId?owners?.getConversation(chatId):undefined;
+  const branchId=notification.branchId??chat?.branchId;
+  const executionId=notification.branchExecutionId??chat?.executionId;
   const message = notification.communicationEventId
     ? `?message=${encodeURIComponent(notification.communicationEventId)}`
     : "";
+  const recovery = notification.kind === "operational" && notification.action?.kind === "open_agent" && notification.action.targetId;
+  const recoveryQuery = new URLSearchParams({ view: "technical", ...(notification.workContext ? { focus: `${notification.workContext.kind}:${notification.workContext.recordId}` } : {}) });
+  const recoveryUrl = recovery && notification.projectId ? `/projects/${encodeURIComponent(notification.projectId)}/agents/${encodeURIComponent(recovery)}?${recoveryQuery}` : undefined;
+  const workspace=recoveryUrl ?? (notification.projectId&&chatId
+    ?`/projects/${encodeURIComponent(notification.projectId)}/chats/${encodeURIComponent(chatId)}${message}`
+    :notification.projectId&&notification.agentId?`/projects/${encodeURIComponent(notification.projectId)}/agents/${encodeURIComponent(notification.agentId)}${message}`:undefined);
+  const branchQuery=branchId?new URLSearchParams({branch:branchId,tab:workspace?'chats':'executions',...(executionId?{execution:executionId}:{}),...(chatId?{chat:chatId}:{}),...(workspace?{workspace}:{})}):undefined;
+  // Preserve individual receipts and inbox entries, but replace the visible OS
+  // notification for ordinary activity of the same kind across Chats.
+  // Assistant reports, decisions, and operational notices remain distinct.
+  const activityTag = notification.projectId && notification.conversationId &&
+    notification.communicationEventId &&
+    !notification.communicationEventId.startsWith("assistant-report:") &&
+    ["direct_responses", "broadcasts", "everyone"].includes(notification.kind)
+      ? `ponderosa-chat-activity:${notification.kind}`
+      : undefined;
   return {
     notificationId: notification.id,
+    ...(activityTag ? { displayTag: activityTag } : {}),
     title: notification.title,
     body: notificationPreviewText(notification.body),
     projectId: notification.projectId,
     conversationId: notification.conversationId,
     agentId: notification.agentId,
-    url: notification.projectId && notification.conversationId
+    url: branchQuery?`/branches?${branchQuery}`:recoveryUrl ?? (notification.projectId && notification.conversationId
       ? `/projects/${encodeURIComponent(notification.projectId)}/chats/${encodeURIComponent(notification.conversationId)}${message}`
       : notification.projectId && notification.agentId
       ? `/projects/${encodeURIComponent(notification.projectId)}/agents/${encodeURIComponent(notification.agentId)}${message}`
-      : notification.projectId ? `/projects/${encodeURIComponent(notification.projectId)}` : "/",
+      : notification.projectId ? `/projects/${encodeURIComponent(notification.projectId)}` : "/"),
   };
 }
 

@@ -1,3 +1,4 @@
+import {productApiPath} from "../../api/productScope.js";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import { Box, Button, Paper, Stack, Typography } from "@mui/material";
 import type { ResponseFileActivityDto } from "@ponderosa/core";
@@ -23,7 +24,7 @@ export function ResponseFileActivity({
   const deletions = files.reduce((total, file) => total + (file.deletions ?? 0), 0);
   const hasLineTotals = files.some((file) => file.additions !== undefined || file.deletions !== undefined);
   const inProgress = files.some((file) => file.status === "in_progress");
-  return <Box component="aside" aria-label="File activity" sx={{ mt: 1 }}>
+  return <Box component="aside" aria-label="File Activity" sx={{ mt: 1 }}>
     <Stack direction="row" spacing={0.75} sx={{ alignItems: "flex-start", minWidth: 0 }}>
       <Paper component="details" variant="outlined" sx={{ flex: 1, minWidth: 0, bgcolor: "action.hover", "& > summary": { cursor: "pointer", listStylePosition: "inside" } }}>
         <Box component="summary" sx={{ px: 1, py: 0.625 }}>
@@ -42,7 +43,7 @@ export function ResponseFileActivity({
           {files.map((file) => {
             const displayPath = presentProjectPath(projectRoot ?? "", file.path).displayPath;
             const generated = file.artifactKind === "generated_file" && file.artifactId && projectId;
-            const root = generated ? `/api/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(file.artifactId!)}` : undefined;
+            const root = generated ? productApiPath(`/api/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(file.artifactId!)}`) : undefined;
             return <Stack
               key={`${file.sourceSeq}:${file.path}`}
               direction="row"
@@ -53,7 +54,7 @@ export function ResponseFileActivity({
                 color="inherit"
                 onClick={() => onOpenFile?.(file)}
                 disabled={!onOpenFile}
-                aria-label={file.previewable ? `Open focused diff for ${displayPath}` : `Open file artifact for ${displayPath}`}
+                aria-label={file.previewable ? `Open Focused Diff For ${displayPath}` : `Open File Artifact For ${displayPath}`}
                 sx={{ display: "flex", flex: 1, minWidth: 0, justifyContent: "flex-start", textTransform: "none", minHeight: 30, px: 0.75, py: 0.25, textAlign: "left" }}
               >
                 <Typography variant="caption" sx={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{displayPath}</Typography>
