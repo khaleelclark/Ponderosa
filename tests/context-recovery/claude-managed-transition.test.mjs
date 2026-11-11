@@ -157,7 +157,7 @@ test('Claude voice request preserves context and completes its authorized voice 
   await f.send(agent.id,'Keep the earlier objective.');
   await until(async()=>(await userFrames(native)).length>=1,'first input',20000);
   await native.answer('Earlier research is complete.');await f.settled(agent.id);
-  const voice=f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text:'Continue the objective aloud.',idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'queue',voiceReply:true}));
+  const voice=f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text:'Continue the objective aloud.',idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'steer',voiceReply:true}));
   const old=await until(async()=>{const x=await userFrames(native);return x.length>=2?x:undefined;},'old handoff',20000);
   assert.equal(old[1].session,old[0].session);assert.ok(!prompt(old[1]).includes('Continue the objective aloud.'));
   await native.answer('The earlier objective and completed research remain available.');
