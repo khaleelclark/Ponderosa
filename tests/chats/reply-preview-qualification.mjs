@@ -1,3 +1,4 @@
+import {execFileSync} from 'node:child_process';
 import {qualifyAssistantHandoff} from './assistant-handoff-qualification.mjs';
 // Built product with disposable canonical data and intercepted presentation reads.
 // Inert providers only. No DEV outage, real work retry, or provider connection.
@@ -13,7 +14,9 @@ const {fixture,until}=await import('../shared/fixture.mjs');
 const {chromium,webkit,devices}=createRequire(new URL('../../apps/server/package.json',import.meta.url))('playwright-core');
 const root=fileURLToPath(new URL('../../',import.meta.url)),out=process.env.PONDEROSA_REPLY_EVIDENCE??await mkdtemp(path.join(tmpdir(),'ponderosa-reply-preview-'));
 await mkdir(out,{recursive:true});const rows=[];let f,browser,context,success=false;
-const save=()=>writeFile(path.join(out,'results.json'),JSON.stringify({rows,liveRuntimeChanged:false,realDevice:false},null,2)+'\n');
+const sourceHead=execFileSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).trim(),sourceTree=execFileSync('git',['rev-parse','HEAD^{tree}'],{cwd:root,encoding:'utf8'}).trim();
+if(process.env.PONDEROSA_REPLY_SCENARIO==='assistant-handoff')assert.equal(execFileSync('git',['status','--porcelain=v1'],{cwd:root,encoding:'utf8'}).trim(),'','Record the final clean source');
+const save=()=>writeFile(path.join(out,'results.json'),JSON.stringify({sourceHead,sourceTree,rows,liveRuntimeChanged:false,realDevice:false},null,2)+'\n');
 try{
  f=await fixture({webDist:process.env.PONDEROSA_REPLY_WEB_DIST??path.join(root,'apps/web/dist')});
  const chat=await f.createChat('Reply Preview QA'),a=await f.createIdleAgent(chat,'miXeD Agent ID_abC'),b=await f.createIdleAgent(chat,'Second recipient');
