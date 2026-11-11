@@ -1,13 +1,13 @@
 import { isUtf8 } from "node:buffer";
 import { promises as fs } from "@ponderosa/native-host/fs";
 import path from "node:path";
-import type { FilesResponse } from "@ponderosa/core";
+import { ARTIFACT_PREVIEW_MAX_BYTES, type FilesResponse } from "@ponderosa/core";
 import {
   listSecureDirectory,
   readSecureFileAsync,
 } from "@ponderosa/native-host";
 
-const MAX_FILE_BYTES = 2 * 1024 * 1024;
+const MAX_FILE_BYTES = ARTIFACT_PREVIEW_MAX_BYTES;
 
 async function pathExists(file: string): Promise<boolean> {
   try {

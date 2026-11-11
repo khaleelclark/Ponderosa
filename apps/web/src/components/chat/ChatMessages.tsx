@@ -7,10 +7,11 @@ import InsertDriveFileOutlinedIcon from "@mui/icons-material/InsertDriveFileOutl
 import { Alert, Box, Button, Dialog, DialogActions, DialogContent, DialogTitle, IconButton, Stack, Tooltip, Typography } from "@mui/material";
 import { parseRichMessageBlock, messageTagTokens, missingCollaborationRecipients, unicodeCodePointLength } from "@ponderosa/core";
 import type { AgentMentionBindingDto, CollaborationRecipientDto, CommunicationDocumentReference, CommunicationIntent, MessageDto, VerifiedCitationDto, WorkspaceFileOwnerDto } from "@ponderosa/core";
-import { type ReactNode, type ComponentPropsWithoutRef, useState, useCallback, memo } from "react";
+import { type ReactNode, type ComponentPropsWithoutRef, useState, useCallback, memo,createContext,useContext,useMemo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { remarkMessageFormatting } from "./messageMarkdown";
+import { remarkMessageFormatting, hasMessageVisualization } from "./messageMarkdown";
+import type {VisualizationScope} from "./VisualizationDisplay";
 import { RichMessageDisplay } from "./RichMessageDisplay";
 import { ScrollableMessageTable } from "./ScrollableMessageTable";
 import { copyText } from "../../clipboard";
@@ -362,11 +363,14 @@ function CopyableCodeBlock({ children }: { children?: ReactNode }): JSX.Element 
   );
 }
 
+const VisualizationContext=createContext<VisualizationScope|undefined>(undefined);
+
 function MessageCodeBlock({ node, children }: { node?: unknown; children?: ReactNode }): JSX.Element {
   const code = (node as { children?: { properties?: Record<string, unknown> }[] })?.children?.[0];
   const block = code?.properties?.["data-ponderosa-closed"] === "true"
     ? parseRichMessageBlock(codeBlockText(children).replace(/\n$/, "")) : undefined;
-  return block ? <RichMessageDisplay block={block} /> : <CopyableCodeBlock>{children}</CopyableCodeBlock>;
+  const visualizationScope=useContext(VisualizationContext);
+  return block ? <RichMessageDisplay block={block} visualizationScope={visualizationScope} /> : <CopyableCodeBlock>{children}</CopyableCodeBlock>;
 }
 
 function MessageTableHeader({ node: _node, ...props }: ComponentPropsWithoutRef<"th"> & { node?: unknown }): JSX.Element {
@@ -595,8 +599,9 @@ export function CommunicationDocumentCard({ document, projectId, fileScope }: { 
   return <ChatDocumentCard document={document} renderMarkdown={(content) => <ChatMarkdown projectId={projectId} fileScope={fileScope}>{content}</ChatMarkdown>} />;
 }
 
-export function ChatMessageBody({ text, citations, collaborationRecipients, agentMentions, collapseLongMessage = true, agentIdForHandle, agentMentionForHandle, onOpenAgent, onOpenBroadcast, previewScope, fileScope, projectId, operatorHandle, compactMarkdown = false, smallText = false }: {
+export function ChatMessageBody({ text, citations, collaborationRecipients, agentMentions, collapseLongMessage = true, agentIdForHandle, agentMentionForHandle, onOpenAgent, onOpenBroadcast, previewScope, fileScope, projectId, operatorHandle, compactMarkdown = false, smallText = false, artifactSource }: {
   text: string;
+  artifactSource?:Pick<MessageDto,"communicationEventId"|"conversationId"|"artifactIds">;
   collaborationRecipients?: readonly CollaborationRecipientDto[];
   agentMentions?: readonly AgentMentionBindingDto[];
   citations?: VerifiedCitationDto[];
@@ -619,14 +624,16 @@ export function ChatMessageBody({ text, citations, collaborationRecipients, agen
     return { agentId: binding.agentId, label: handle, available: binding.available,
       title: binding.available === false ? "Agent no longer available" : binding.currentHandle !== handle ? `Currently ${binding.currentTitle}` : undefined };
   }, [agentMentions]);
-  const collapsible = collapseLongMessage && isLongChatMessage(text);
+  const collapsible = useMemo(() => collapseLongMessage && isLongChatMessage(text) && !hasMessageVisualization(text), [collapseLongMessage, text]);
   const [expanded, setExpanded] = useState(false);
   return (
     <div className="MuiBox-root chat-message-content">
       <div className={`MuiBox-root chat-message-content${collapsible && !expanded ? " chat-message-content-collapsed" : ""}`}>
+        <VisualizationContext.Provider value={projectId&&artifactSource?.conversationId&&artifactSource.communicationEventId?{projectId,conversationId:artifactSource.conversationId,communicationEventId:artifactSource.communicationEventId,artifactIds:artifactSource.artifactIds??[]}:undefined}>
         <ChatMarkdown collaborationRecipients={collaborationRecipients} agentMentions={agentMentions} agentIdForHandle={collaborationRecipients ? undefined : agentIdForHandle} agentMentionForHandle={collaborationRecipients ? collaborationMention : agentMentionForHandle} onOpenAgent={onOpenAgent} onOpenBroadcast={onOpenBroadcast} previewScope={previewScope} fileScope={fileScope} projectId={projectId} operatorHandle={operatorHandle} compact={compactMarkdown} small={smallText}>
           {collapsible && !expanded ? collapsedLongMessagePreview(text) : text}
         </ChatMarkdown>
+        </VisualizationContext.Provider>
       </div>
       {collapsible ? (
         <Button

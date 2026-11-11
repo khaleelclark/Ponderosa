@@ -1496,6 +1496,7 @@ export function InboxView({
                   selectLabel: inboxSourceAccessibleName(item),
                   body: (
                     <ChatMessageBody
+                      artifactSource={{communicationEventId:item.communicationEventId,conversationId:item.source.conversationId,artifactIds:item.artifactIds}}
                       collaborationRecipients={item.communicationIntent === "collaboration" ? item.collaborationRecipients ?? [] : undefined}
                       agentMentions={item.agentMentions}
                       text={communicationVisibleText({

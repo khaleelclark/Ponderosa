@@ -3,6 +3,7 @@ export type RichMessageBlock = { version: 1; title?: string } & (
   | { type: "metrics"; items: { label: string; value: string; unit?: string; note?: string }[] }
   | { type: "statuses"; items: { label: string; value: string; tone: "neutral" | "positive" | "caution" | "negative"; note?: string }[] }
   | { type: "meters"; items: { label: string; value: number; min: number; max: number; unit: string; note?: string }[] }
+  | { type: "visualization"; title: string; artifactId: string }
   | { type: "bar" | "line"; title: string; unit: string; points: { label: string; value: number }[] }
 );
 
@@ -45,6 +46,8 @@ export function parseRichMessageBlock(source: string): RichMessageBlock | undefi
       valid = Number.isFinite(Math.max(...values) - Math.min(...values));
     }
   }
+  if (block.type === "visualization") valid = keys(block, ["version", "type", "title", "artifactId"]) &&
+    text(block.title, 160) && typeof block.artifactId === "string" && /^[A-Za-z0-9_-]{1,128}$/u.test(block.artifactId);
   return valid ? block as RichMessageBlock : undefined;
 }
 
@@ -65,4 +68,9 @@ Shapes and examples (no additional keys):
 \`\`\`ponderosa
 {"version":1,"type":"line","title":"Readiness trend","unit":"checks","points":[{"label":"Mon","value":6},{"label":"Tue","value":9}]}
 \`\`\`
-Titles are optional except on charts. Metric units and all notes are optional. Status tones: neutral, positive, caution, negative. Labels/titles <=160 characters, values <=64, units <=32, notes <=400. At most 12 metrics/statuses, 8 meters, 48 chart points and 32768 characters per block. Meter min<max with value in range; bar values are nonnegative. All numbers and chart spans must be finite.`;
+For an interactive visualization, chart with category colors/pie/donut, filterable/sortable table, calculator or simulation: create one self-contained HTML file (at most 2 MiB for inline preview; larger files remain downloadable) using native HTML/SVG/canvas, inline CSS and JavaScript (no network, imports, libraries, frames, forms, popups, storage or parent/API access). Import it with ponderosa_import_file. Publish the returned artifact.id in BOTH ponderosa_message.artifactIds and this display reference; do not put HTML or a URL in the fence:
+\`\`\`ponderosa
+{"version":1,"type":"visualization","title":"Fruit Sales Explorer","artifactId":"imported-artifact-id"}
+\`\`\`
+An image, raw Mermaid, emoji chart or static native chart is not an interactive deliverable. Keep a standalone working document with accessible labels, keyboard/touch controls, responsive widths, honest data and reduced-motion support. Use CSS variables --ponderosa-bg, --ponderosa-surface, --ponderosa-text, --ponderosa-muted, --ponderosa-border, --ponderosa-accent, --ponderosa-on-accent, --ponderosa-font-family and --ponderosa-font-size; distinct data-series colors are allowed. The preview supplies these variables and updates them on theme changes without resetting controls. The host reserves 420px initially, fits reported content between 180 and 1200px, and offers expansion. Avoid sizing body from viewport height (it can create a resize feedback loop); use intrinsic content with local scrolling for large tables. No host bridge code is needed: the preview handles theme, bounded sizing, readiness and JavaScript failures. Original imported/downloaded bytes stay immutable and must also work standalone.
+Titles are optional except on charts and visualizations. Metric units and all notes are optional. Status tones: neutral, positive, caution, negative. Labels/titles <=160 characters, values <=64, units <=32, notes <=400. At most 12 metrics/statuses, 8 meters, 48 chart points and 32768 characters per block. Meter min<max with value in range; bar values are nonnegative. All numbers and chart spans must be finite.`;

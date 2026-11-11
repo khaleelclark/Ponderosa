@@ -1,4 +1,7 @@
-import { RICH_MESSAGE_MAX_BLOCKS } from "@ponderosa/core";
+import {unified} from "unified";
+import remarkParse from "remark-parse";
+import remarkGfm from "remark-gfm";
+import { RICH_MESSAGE_MAX_BLOCKS, parseRichMessageBlock } from "@ponderosa/core";
 
 interface Node {
   type: string;
@@ -19,6 +22,19 @@ export function closedPonderosaFence(source: string, node: Node): boolean {
   const open = /^(`{3,}|~{3,})[\t ]*ponderosa[\t ]*$/i.exec(lines[0]!);
   const close = /^[\t >]*(`+|~+)[\t ]*$/.exec(lines.at(-1)!);
   return Boolean(open && close && open[1]![0] === close[1]![0] && close[1]!.length >= open[1]!.length);
+}
+
+const markdown = unified().use(remarkParse).use(remarkGfm);
+/** Interactive controls must never be clipped or remounted by a prose preview. */
+export function hasMessageVisualization(source: string): boolean {
+  if (!source.toLowerCase().includes("ponderosa")) return false;
+  let richBlocks = 0;
+  const visit = (node: Node): boolean => {
+    if (node.type === "code") return closedPonderosaFence(source, node) && richBlocks++ < RICH_MESSAGE_MAX_BLOCKS &&
+      parseRichMessageBlock(node.value ?? "")?.type === "visualization";
+    return (node.children ?? []).some(visit);
+  };
+  return visit(markdown.parse(source) as Node);
 }
 
 /** Authored prose breaks, never the separator text generated later by remark-rehype. */

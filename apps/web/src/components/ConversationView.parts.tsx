@@ -164,6 +164,7 @@ function ConversationMessageComponent({
         onVisible: !provisional&&onVisible ? reportVisibility : undefined,
         body: (
           <ChatMessageBody
+                  artifactSource={message}
             text={visibleText}
             collaborationRecipients={collaborationRecipients}
             agentMentions={message.agentMentions}

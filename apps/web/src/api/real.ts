@@ -875,8 +875,8 @@ export const realApi = {
   listProjectArtifacts(projectId: string, limit: number = 100, cursor?: string): Promise<HistoryPageDto<ArtifactDto>> {
     return requestJson(`/api/projects/${encodeURIComponent(projectId)}/artifacts${toQuery({ limit: String(limit), cursor })}`);
   },
-  getProjectArtifact(projectId: string, artifactId: string): Promise<ArtifactDto> {
-    return requestJson(`/api/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(artifactId)}`);
+  getProjectArtifact(projectId: string, artifactId: string, reference?: { communicationEventId: string; conversationId: string }, signal?: AbortSignal): Promise<ArtifactDto> {
+    return requestJson(`/api/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(artifactId)}${toQuery(reference ?? {})}`, { signal });
   },
   listConversationArtifacts(projectId: string, conversationId: string, limit: number = 100, cursor?: string, q?: string): Promise<HistoryPageDto<ArtifactDto>> {
     return requestJson(`/api/projects/${encodeURIComponent(projectId)}/artifacts${toQuery({ conversationId, limit: String(limit), cursor, q })}`);

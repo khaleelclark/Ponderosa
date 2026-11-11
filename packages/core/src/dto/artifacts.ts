@@ -1,3 +1,6 @@
+/** Existing bounded text/HTML preview limit; downloads retain complete managed bytes. */
+export const ARTIFACT_PREVIEW_MAX_BYTES = 2 * 1024 * 1024;
+
 export const ASSET_MEDIA_TYPES = [
   "image/png", "image/jpeg", "image/webp", "image/heic", "image/gif", "image/avif",
   "audio/webm", "audio/ogg", "audio/mp4",

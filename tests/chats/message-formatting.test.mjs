@@ -70,9 +70,9 @@ test('returned download URLs and existing HTTPS, workspace and project-file link
   assert.doesNotMatch(render(reference, { projectId: 'foreign' }), /<a\b/);
 });
 
-test('all five provider contract examples are accepted without rewriting values', () => {
+test('all six provider contract examples are accepted without rewriting values', () => {
   const examples = [...RICH_MESSAGE_FORMAT_INSTRUCTIONS.matchAll(/```ponderosa\n([^]*?)\n```/g)];
-  assert.equal(examples.length, 5);
+  assert.equal(examples.length, 6);
   for (const [, source] of examples) {
     assert.deepEqual(parseRichMessageBlock(source), JSON.parse(source));
     assert.equal(richCount(render('```ponderosa\n' + source + '\n```')), 1);
@@ -150,4 +150,26 @@ test('collapsed previews never promote a cut or hidden rich fence', () => {
   const cut = 'x'.repeat(3150) + '\n\n' + fence({ ...metric, title: 'x'.repeat(100) }) + '\n' + 'tail'.repeat(1000);
   assert.equal(richCount(render(collapsedLongMessagePreview(cut))), 0);
   assert.equal(richCount(render(cut)), 1);
+});
+
+
+test('visualizations accept only a closed typed immutable identity, never embedded content or URLs',()=>{
+ const block={version:1,type:'visualization',title:'Fruit Sales Explorer',artifactId:'import_123'};
+ assert.deepEqual(parseRichMessageBlock(JSON.stringify(block)),block);
+ for(const value of [{...block,url:'https://elsewhere.invalid'}, {...block,html:'<script>parent.bad()</script>'},
+  {...block,artifactId:'../secret'}, {...block,artifactId:'https://elsewhere.invalid'}, {...block,artifactId:'x'.repeat(129)},
+  {...block,title:''}, {...block,version:2}, {...block,height:100000}])assert.equal(parseRichMessageBlock(JSON.stringify(value)),undefined);
+ const unbound=render(fence(block),{projectId:'project'});assert.match(unbound,/not attached to this published message/);assert.doesNotMatch(unbound,/<iframe/);
+ const partial=render(fence(block,''),{projectId:'project'});assert.match(partial,/Copy Code/);assert.doesNotMatch(partial,/<iframe/);
+ assert.match(RICH_MESSAGE_FORMAT_INSTRUCTIONS,/BOTH ponderosa_message.artifactIds/);assert.match(RICH_MESSAGE_FORMAT_INSTRUCTIONS,/--ponderosa-accent/);
+});
+
+
+test('long interactive messages keep complete stable controls instead of a truncated prose preview',()=>{
+ const panel=fence({version:1,type:'visualization',title:'Long Panel',artifactId:'import_123'});
+ for(const text of [panel+'\n\n'+'prose\n'.repeat(100),'prose\n'.repeat(100)+panel]){
+  const html=render(text,{collapseLongMessage:true});assert.equal(richCount(html),1);assert.doesNotMatch(html,/chat-message-content-collapsed|Show Full Message/);
+ }
+ assert.match(render('prose\n'.repeat(100),{collapseLongMessage:true}),/Show Full Message/,'Ordinary long prose still collapses');
+ assert.equal(richCount(render('prose\n'.repeat(100)+fence({version:1,type:'visualization',title:'Bad',artifactId:'../escape'}),{collapseLongMessage:true})),0,'Invalid or hidden fences retain ordinary text behavior');
 });

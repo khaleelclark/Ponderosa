@@ -33,3 +33,21 @@ export async function workspaceFileExitRetentionRegression():Promise<void>{
   assert(reads.length>=names.length,'all actual preview paths were exercised');
  }finally{resolveLoading?.(value('loading.txt'));root.unmount();client.clear();host.remove();api.getConversationFiles=original.directory;api.getWorkspaceFileView=original.preview;}
 }
+
+export async function visualizationReferenceGuardsMountedRegression():Promise<void>{
+ const {ChatMessageBody}=await import('../../apps/web/src/components/chat/ChatMessages');
+ const {MutationNotificationProvider}=await import('../../apps/web/src/components/MutationNotifications');
+ const original=api.getProjectArtifact,reads:Array<{project:string;id:string;reference:unknown}>=[];
+ const host=document.createElement('div');host.style.cssText='position:fixed;inset:0;overflow:auto';document.body.append(host);const root=createRoot(host),client=new QueryClient({defaultOptions:{queries:{retry:false}}});
+ const text='```ponderosa\n'+JSON.stringify({version:1,type:'visualization',title:'Owned Panel',artifactId:'captured-html'})+'\n```';
+ let ids:string[]=[],message='message';
+ api.getProjectArtifact=async(project,id,reference)=>{reads.push({project,id,reference});if(reference?.communicationEventId==='denied')throw Error('Denied');return {id,agentId:'agent',projectId:project,kind:'generated_file',path:'panel.html',createdAt:'now',sha256:'a'.repeat(64),size:3*1024*1024,mediaType:'text/html',previewUrl:`/api/projects/${project}/artifacts/${id}/preview`,downloadUrl:`/api/projects/${project}/artifacts/${id}/download`};};
+ const render=()=>root.render(<QueryClientProvider client={client}><MutationNotificationProvider><ChatMessageBody text={text} projectId="project" artifactSource={{communicationEventId:message,conversationId:'chat',artifactIds:ids}} collapseLongMessage={false}/></MutationNotificationProvider></QueryClientProvider>);
+ try{
+  render();await until(()=>Boolean(host.textContent?.includes('not attached to this published message')),'unpublished reference stays inert');assert(reads.length===0&&!host.querySelector('iframe'),'Authored reference alone has no read or executable runtime');
+  ids=['captured-html'];render();await until(()=>Boolean(host.textContent?.includes('visualization is unavailable')),'oversized panel has one compact fallback');
+  assert(reads.length===1&&JSON.stringify(reads[0].reference)===JSON.stringify({conversationId:'chat',communicationEventId:'message'}),'Metadata binds canonical publication and exact Chat');assert(!host.querySelector('iframe'),'Oversized/truncated HTML never starts executing');assert(host.querySelector('a[download]')?.textContent==='Download','Authorized standalone Download remains available');
+  message='denied';render();await until(()=>reads.length===2&&Boolean(host.textContent?.includes('visualization is unavailable')),'Denied reference remains local fallback');
+  assert(!host.querySelector('iframe')&&!host.querySelector('a[download]'),'Denied publication never exposes another owner preview/download');
+ }finally{root.unmount();client.clear();host.remove();api.getProjectArtifact=original;}
+}

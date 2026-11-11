@@ -57,3 +57,7 @@
 .chat-message-assistant .chat-message-operator-header { min-height: 0; }
 
 .chat-message-assistant.chat-message-end .chat-attachment-card { background: var(--ponderosa-surface); color: var(--ponderosa-text-primary); padding: 4px; border-radius: 8px; }
+
+/* An explicit panel uses its existing lane; short prose/native displays keep intrinsic width. */
+.chat-message-frame:not(.chat-message-end):not(.chat-message-assistant) .chat-message-column:has([data-ponderosa-rich="visualization"]) { width: 100%; }
+.chat-message-assistant:not(.chat-message-end) .chat-message-body:has([data-ponderosa-rich="visualization"]) { width: 100%; }

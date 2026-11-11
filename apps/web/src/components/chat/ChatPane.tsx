@@ -512,6 +512,7 @@ function ChatPaneComponent({
               ) : undefined,
               body: (
                 <ChatMessageBody
+                  artifactSource={message}
                   text={visibleText}
                   collaborationRecipients={message.communicationIntent === "collaboration" ? message.collaborationRecipients ?? [] : undefined}
                   agentMentions={message.agentMentions}
