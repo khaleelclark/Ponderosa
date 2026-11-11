@@ -245,6 +245,9 @@ export class CoordinationV3ContextRecoveryAuthority {
         .get(rolloverId,agentId,row.project_id,row.source_run_id,row.scope_key,row.provider_session_id,row.provider_session_id,
           row.provider_session_id,row.tool_contract_hash,row.source_fence);
       if(!exact)throw new ContextRecoveryConflictError('Canonical reconstruction generation or source changed');
+      const prior=this.reconstructionPredecessor(recovery,rolloverId);
+      if((prior??null)!==(progress.reconstructionPredecessorRolloverId??null))
+        throw new ContextRecoveryConflictError('Historical reconstruction predecessor changed');
     }
     if(this.sqlite.prepare(`SELECT 1 FROM agent_run_pauses WHERE agent_id=? AND state IN ('paused','resume_requested')
       UNION ALL SELECT 1 FROM context_rollovers WHERE agent_id=? AND state IN ('requested','handoff_committed','session_retiring','continuation_ready') LIMIT 1`).get(agentId,agentId))
@@ -256,11 +259,48 @@ export class CoordinationV3ContextRecoveryAuthority {
       throw new ContextRecoveryConflictError('Recorded recovery evidence must be reconciled first');
     return recovery;
   }
+  /** A later accepted source may outlive an earlier failed transfer. Preserve
+   * that whole attempt, including prepared-but-unaccepted replacement input.
+   * ponytail: one historical predecessor; multiple transfers need an audited lineage. */
+  reconstructionPredecessor(recovery:ProviderContextRecoveryRequest,excludeRolloverId?:string):string|undefined {
+    const rows=this.sqlite.prepare(`SELECT id FROM context_rollovers WHERE agent_id=? AND provider_session_generation=? AND id<>coalesce(?,'')`)
+      .all(recovery.agentId,recovery.providerSessionId,excludeRolloverId??null) as {id:string}[];
+    if(!rows.length)return undefined;
+    if(rows.length!==1)throw new ContextRecoveryConflictError('Historical context transfer ownership is ambiguous');
+    const id=rows[0]!.id;
+    const safe=this.sqlite.prepare(`SELECT 1 FROM context_rollovers c JOIN scheduler_runs source ON source.id=c.source_run_id
+      WHERE c.id=? AND c.agent_id=? AND c.project_id=? AND c.scope_key=? AND c.old_provider_session_id=?
+        AND c.state IN ('failed','outcome_unknown') AND c.terminal_at IS NOT NULL
+        AND c.replacement_session_id IS NULL AND c.replacement_session_at IS NULL AND c.replacement_verified_at IS NULL
+        AND source.agent_id=c.agent_id AND source.project_id=c.project_id AND source.scope_key=c.scope_key
+        AND source.status='completed' AND source.prompt_injection_state='injected'
+        AND source.provider_session_id=c.old_provider_session_id AND source.fencing_token<?
+        AND (c.handoff_event_id IS NULL OR EXISTS(SELECT 1 FROM continuation_handoffs h
+          JOIN scheduler_runs handoff ON handoff.id=h.source_execution_id
+          WHERE h.id=c.handoff_event_id AND h.agent_id=c.agent_id AND handoff.agent_id=c.agent_id
+            AND handoff.project_id=c.project_id AND handoff.scope_key=c.scope_key AND handoff.status='completed'
+            AND handoff.prompt_injection_state='injected' AND handoff.provider_session_id=c.old_provider_session_id
+            AND handoff.fencing_token>source.fencing_token AND handoff.fencing_token<?))
+        AND (c.replacement_run_id IS NULL OR EXISTS(SELECT 1 FROM scheduler_runs replacement
+          WHERE replacement.id=c.replacement_run_id AND replacement.agent_id=c.agent_id AND replacement.project_id=c.project_id
+            AND replacement.scope_key=c.scope_key AND replacement.status IN ('failed','cancelled','outcome_unknown')
+            AND replacement.terminal_at IS NOT NULL AND replacement.prompt_injection_state='not_injected'
+            AND replacement.fencing_token>source.fencing_token AND replacement.fencing_token<?
+            AND NOT EXISTS(SELECT 1 FROM scheduler_prompt_injections i WHERE i.run_id=replacement.id
+              AND (i.state NOT IN ('pending','cancelled') OR i.submitted_at IS NOT NULL OR i.acknowledged_at IS NOT NULL OR i.provider_turn_id IS NOT NULL))))
+        AND NOT EXISTS(SELECT 1 FROM events e WHERE e.agent_id=c.agent_id AND e.type IN ('session_snapshot','context_rollover_session_accepted')
+          AND (json_extract(e.payload_json,'$.rolloverId')=c.id OR json_extract(e.payload_json,'$.executionId')=c.replacement_run_id))`)
+      .get(id,recovery.agentId,recovery.projectId,recovery.scopeKey,recovery.providerSessionId,recovery.sourceFence,recovery.sourceFence,recovery.sourceFence);
+    if(!safe)throw new ContextRecoveryConflictError('Earlier context transfer has no safe historical boundary');
+    return id;
+  }
   /** Called inside the rollover transaction, before any session is retired. */
-  bindReconstruction(agentId:string,id:string,rolloverId:string):void {
+  bindReconstruction(agentId:string,id:string,rolloverId:string,predecessorRolloverId?:string):void {
     const recovery=this.assertReconstruction(agentId,id);
+    if(this.reconstructionPredecessor(recovery)!==predecessorRolloverId)
+      throw new ContextRecoveryConflictError('Historical reconstruction predecessor changed before reservation');
     this.sqlite.prepare('UPDATE provider_context_recovery_requests SET progress_json=? WHERE id=?')
-      .run(JSON.stringify({...recovery.progress,reconstructionRolloverId:rolloverId,updatedAt:new Date().toISOString()}),id);
+      .run(JSON.stringify({...recovery.progress,reconstructionRolloverId:rolloverId,reconstructionPredecessorRolloverId:predecessorRolloverId,updatedAt:new Date().toISOString()}),id);
   }
   completeReconstruction(agentId:string,id:string,rolloverId:string):void {
     this.sqlite.transaction(()=>{

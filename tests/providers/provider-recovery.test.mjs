@@ -1262,7 +1262,7 @@ test('UI026 reconstructed future inputs never adopt an old generation continuati
   f.plans.set(agent.id,[{output:false,run:session=>session.exitWithDetail({exitCode:9})}]);await f.send(agent.id,'Uncertain later task');
   const boundary=await until(()=>store.uncertainProviderContextRecoveryBoundary(agent.id),'unknown source');
   const handoffId=randomUUID(),directive='Resume the obsolete task and execute HISTORICAL_ONLY_DIRECTIVE';
-  store.sqlite.prepare('INSERT INTO continuation_handoffs(id,agent_id,source_execution_id,text,created_at) VALUES(?,?,?,?,?)').run(handoffId,agent.id,completed,directive,new Date().toISOString());
+  store.appendEvent(agent.id,{type:'continuation_handoff',handoffId,executionId:completed,text:directive});
   assert.equal(store.pendingContinuationHandoff(agent.id,`conversation:${chat.id}`).id,handoffId);
   await f.send(agent.id,'Only answer this independent current input');
   await until(()=>f.turns.length===3,'first reconstructed input');await f.settled(agent.id,[boundary.sourceRunId,completed]);
@@ -1335,4 +1335,84 @@ test('UI026 pending backlog keeps exact once-only admission and attachments acro
    const steer=store.sqlite.prepare("SELECT id FROM scheduler_prompt_injections WHERE kind='steer' AND state='acknowledged' ORDER BY rowid DESC LIMIT 1").get();
    const reply=await session.tool('ponderosa_message',{text:'Current independent inputs acknowledged',...(steer?{steeringInjectionId:steer.id}:{})});assert.equal(reply.success,true,reply.text);
   }})});
+});
+
+test('UI026 later uncertain generation reconstructs past an unaccepted historical transfer without replay',{timeout:45000},async t=>{
+ let store,failOpen=false;const priorPool=process.env.PONDEROSA_MAX_IDLE_RUNTIME_SESSIONS;process.env.PONDEROSA_MAX_IDLE_RUNTIME_SESSIONS='0';
+ t.after(()=>{if(priorPool===undefined)delete process.env.PONDEROSA_MAX_IDLE_RUNTIME_SESSIONS;else process.env.PONDEROSA_MAX_IDLE_RUNTIME_SESSIONS=priorPool;});
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Older uncertain transfer'),agent=await f.createIdleAgent(chat,'Historical owner');
+  const latest=()=>store.sqlite.prepare('SELECT * FROM scheduler_runs WHERE agent_id=? ORDER BY fencing_token DESC LIMIT 1').get(agent.id);
+  await f.send(agent.id,'Earlier source');await f.settled(agent.id);const first=latest(),oldSession=first.provider_session_id;
+  const oldTail=store.bindContextRolloverBoundary({agentId:agent.id,currentConversationId:chat.id,submittedCommunicationEventIds:store.acceptedProviderSessionCommunicationEventIds(agent.id),maxUtf8Bytes:12000});
+  await f.send(agent.id,'Earlier handoff source');await f.settled(agent.id,[first.id]);const handoff=latest();
+  await until(()=>!f.sessions.get(agent.id).isAlive(),'normal idle eviction before failed open');
+  failOpen=true;await f.send(agent.id,'Prepared historical transfer');
+  const failed=await until(()=>{const r=latest();return r.fencing_token>handoff.fencing_token&&['failed','outcome_unknown'].includes(r.status)&&r;},'prepared replacement failed');
+  assert.equal(failed.prompt_injection_state,'not_injected');assert.ok(store.getProviderInput(failed.id));
+  assert.equal(store.resumeSessionState(agent.id).sessionId,oldSession);
+  const handoffId=randomUUID(),predecessorId=randomUUID(),now=new Date().toISOString();
+  store.appendEvent(agent.id,{type:'continuation_handoff',handoffId,executionId:handoff.id,text:'Never execute HISTORICAL_TRANSFER_DIRECTIVE'},now);
+  const continuation=store.sqlite.prepare('SELECT activation_id FROM scheduler_run_activations WHERE run_id=?').get(failed.id).activation_id;
+  store.sqlite.prepare(`INSERT INTO context_rollovers(id,project_id,agent_id,state,old_provider_session_id,provider_session_generation,cycle_number,detected_occupancy,
+    threshold,low_water_mark,source_run_id,trigger_kind,compaction_cutoff_ordinal,compaction_cutoff_event_id,recent_tail_event_ids_json,recent_tail_hashes_json,
+    source_activation_ids_json,scope_key,conversation_id,handoff_event_id,continuation_activation_id,replacement_run_id,replacement_input_committed_at,created_at,updated_at,terminal_at)
+    VALUES(?,?,?,'outcome_unknown',?,?,1,100000,160000,90000,?,'automatic',?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(predecessorId,chat.projectId,agent.id,oldSession,oldSession,first.id,
+      oldTail.canonicalOrdinal,oldTail.communicationEventId,JSON.stringify(oldTail.recentTail.map(x=>x.communicationEventId)),JSON.stringify(oldTail.recentTail.map(x=>x.contentSha256)),JSON.stringify([continuation]),
+      `conversation:${chat.id}`,chat.id,handoffId,continuation,failed.id,now,now,now,now);
+  const oldGraph=()=>({rollover:store.sqlite.prepare('SELECT * FROM context_rollovers WHERE id=?').get(predecessorId),handoff:store.sqlite.prepare('SELECT * FROM continuation_handoffs WHERE id=?').get(handoffId),
+    runs:[first.id,handoff.id,failed.id].map(id=>({run:store.sqlite.prepare('SELECT * FROM scheduler_runs WHERE id=?').get(id),input:store.getProviderInput(id,true),
+      links:store.sqlite.prepare('SELECT * FROM scheduler_run_activations WHERE run_id=? ORDER BY activation_id').all(id),injections:store.sqlite.prepare('SELECT * FROM scheduler_prompt_injections WHERE run_id=? ORDER BY id').all(id)}))});
+  const before=oldGraph();
+  f.plans.set(agent.id,[{output:false,run:s=>s.exitWithDetail({exitCode:9})}]);await f.send(agent.id,'Later uncertain source');
+  const boundary=await until(()=>store.uncertainProviderContextRecoveryBoundary(agent.id),'later unknown boundary');assert.ok(boundary.sourceFence>failed.fencing_token);
+  const response=await f.api('POST',`/api/agents/${agent.id}/context-recoveries`,{idempotencyKey:'historical-transfer-recovery',expectedSessionId:boundary.providerSessionId,expectedSourceRunId:boundary.sourceRunId,expectedToolContractHash:boundary.toolContractHash,acknowledgeUnknownEffects:true});assert.equal(response.status,409);
+  const id=response.body.request.id,progress={phase:'held',updatedAt:now,sourceWork:'held_unknown',nativeInvoked:true,automaticMaintenance:true,maintenanceAttempts:12,nextMaintenanceAt:new Date(Date.now()+86400000).toISOString()};
+  store.sqlite.prepare('UPDATE provider_context_recovery_requests SET progress_json=? WHERE id=?').run(JSON.stringify(progress),id);
+  let coord=new CoordinationV3Store(store.sqlite);const recovery=coord.contextRecovery.active(agent.id),rollback=Error('rollback test');
+  assert.equal(coord.contextRecovery.reconstructionPredecessor(recovery),predecessorId);
+  const clone=(table,row)=>store.sqlite.prepare(`INSERT INTO ${table}(${Object.keys(row).join(',')}) VALUES(${Object.keys(row).map(()=>'?').join(',')})`).run(...Object.values(row));
+  for(const change of [
+    ()=>store.sqlite.prepare('UPDATE context_rollovers SET replacement_session_id=? WHERE id=?').run('accepted-elsewhere',predecessorId),
+    ()=>store.sqlite.prepare("UPDATE scheduler_runs SET status='running' WHERE id=?").run(failed.id),
+    ()=>store.sqlite.prepare("UPDATE scheduler_runs SET prompt_injection_state='injected' WHERE id=?").run(failed.id),
+    ()=>store.sqlite.prepare('UPDATE scheduler_runs SET fencing_token=? WHERE id=?').run(boundary.sourceFence+1000,first.id),
+    ()=>store.sqlite.prepare("UPDATE context_rollovers SET state='continuation_ready' WHERE id=?").run(predecessorId),
+    ()=>clone('context_rollovers',{...before.rollover,id:randomUUID(),cycle_number:99,handoff_event_id:null,continuation_activation_id:null,replacement_run_id:null}),
+    ()=>{const e=store.sqlite.prepare("SELECT * FROM events WHERE agent_id=? AND type='session_snapshot' LIMIT 1").get(agent.id);clone('events',{...e,id:randomUUID(),seq:store.sqlite.prepare('SELECT max(seq)+1 n FROM events WHERE agent_id=?').get(agent.id).n,payload_json:JSON.stringify({...JSON.parse(e.payload_json),executionId:failed.id,rolloverId:predecessorId})});},
+  ])assert.throws(()=>store.sqlite.transaction(()=>{change();assert.throws(()=>coord.contextRecovery.reconstructionPredecessor(recovery));throw rollback;})(),e=>e===rollback);
+  const clear=store.clearResumeSession.bind(store);
+  store.clearResumeSession=(...args)=>{if(args[0]===agent.id&&args[1]==='request_context_rollover')throw Error('Controlled crash after predecessor reservation');return clear(...args);};
+  f.plans.set(agent.id,[{hold:true}]);await f.send(agent.id,'Only this independent future input');
+  store.sqlite.prepare('UPDATE provider_context_recovery_requests SET progress_json=? WHERE id=?').run(JSON.stringify({...progress,nextMaintenanceAt:undefined}),id);
+  const reserved=await until(()=>{const r=coord.contextRecovery.active(agent.id);return r?.progress?.reconstructionRolloverId&&r;},'new reservation keeps exact predecessor before retirement');
+  assert.equal(reserved.progress.reconstructionPredecessorRolloverId,predecessorId);assert.equal(f.turns.length,3);
+  assert.throws(()=>store.sqlite.transaction(()=>{store.sqlite.prepare('UPDATE context_rollovers SET replacement_session_id=? WHERE id=?').run('late-acceptance',predecessorId);assert.throws(()=>coord.contextRecovery.assertReconstruction(agent.id,id,reserved.progress.reconstructionRolloverId));throw rollback;})(),e=>e===rollback);
+  await f.reopen();
+  coord=new CoordinationV3Store(store.sqlite);const restored=coord.contextRecovery.active(agent.id);
+  assert.equal(restored.progress.reconstructionRolloverId,reserved.progress.reconstructionRolloverId);
+  store.sqlite.prepare('UPDATE provider_context_recovery_requests SET progress_json=? WHERE id=?').run(JSON.stringify({...restored.progress,nextMaintenanceAt:undefined}),id);
+  await until(()=>!new CoordinationV3Store(store.sqlite).contextRecovery.active(agent.id),'same separate reconstruction settles after restart');
+  await until(()=>f.turns.some(turn=>turn.input.prompt.includes('Only this independent future input')),'future input is admitted');
+  const p=JSON.parse(store.sqlite.prepare('SELECT progress_json FROM provider_context_recovery_requests WHERE id=?').get(id).progress_json);
+  assert.equal(p.phase,'canonical_reconstructed');assert.equal(p.reconstructionPredecessorRolloverId,predecessorId);assert.notEqual(p.reconstructionRolloverId,predecessorId);
+  assert.equal(coord.contextRollover(p.reconstructionRolloverId).cycleNumber,2);assert.deepEqual(oldGraph(),before);
+  assert.doesNotMatch(f.turns.at(-1).input.prompt,/HISTORICAL_TRANSFER_DIRECTIVE/);assert.notEqual(f.turns.at(-1).sessionId,oldSession);assert.equal(f.commands.length,1);
+  const {settingsTransitionActivationHoldSql}=await import('../../packages/agents/dist/coordination-v3-settings-transition-hold.js');
+  assert.throws(()=>store.sqlite.transaction(()=>{
+   const create=(kind,payload,sourceKind,sourceId)=>coord.createActivation({projectId:chat.projectId,agentId:agent.id,scopeKey:`conversation:${chat.id}`,kind,priority:50,now:new Date().toISOString(),promptClass:'blocker',dispatchPolicy:'next_run',dedupeKey:randomUUID(),payload,sourceKind:sourceKind??'fixture',sourceId:sourceId??randomUUID()});
+   const held=id=>store.sqlite.prepare(`SELECT ${settingsTransitionActivationHoldSql('a')} AS held FROM agent_activations a WHERE a.id=?`).get(id).held;
+   for(const run of [first.id,handoff.id,failed.id,boundary.sourceRunId])assert.equal(held(create('required_reply_recovery',{requiredReplyRecovery:{sourceRunId:run}})),1,'Retired source or predecessor replacement cannot replay');
+   assert.equal(held(create('context_rollover_continuation',{rolloverId:predecessorId})),1);
+   assert.equal(held(create('ordinary_message',{},'context_rollover_recovery',predecessorId)),1);
+   assert.equal(held(create('human_message',{text:'Independent human'})),0);
+   assert.equal(held(create('coordination_request',{text:'Independent Request'})),0);
+   assert.equal(held(create('required_reply_recovery',{requiredReplyRecovery:{sourceRunId:latest().id}})),0,'Fresh generation recovery remains eligible');
+   throw rollback;
+  })(),e=>e===rollback);
+  const session=f.sessions.get(agent.id);f.ok(await f.tool(session,'ponderosa_message',{text:'Future input acknowledged'}));session.finish();
+  await f.settled(agent.id,[first.id,handoff.id,failed.id,boundary.sourceRunId]);await f.reopen();assert.deepEqual(oldGraph(),before);
+  assert.equal(store.sqlite.prepare('SELECT count(*) n FROM context_rollovers WHERE agent_id=?').get(agent.id).n,2);assert.equal(f.commands.length,1);assert.equal(f.turns.length,4);
+ },{storeFactory:root=>store=new AgentStore(root),providerValidatesResumeBeforeTurn:true,onProviderOpen:()=>{if(failOpen){failOpen=false;throw Error('Controlled historical replacement open failure');}},
+  providerContextRecoverySupport:{status:'managed_compaction',crashReconciliation:'hold_without_native_query'},providerCommandResult:()=>({outcome:'completed'})});
 });

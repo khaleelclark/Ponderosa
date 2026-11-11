@@ -29,7 +29,18 @@ export function settingsTransitionActivationHoldSql(activation:string):string {
       SELECT 1 FROM provider_context_recovery_requests recovery
       WHERE recovery.agent_id=${activation}.agent_id AND recovery.project_id=${activation}.project_id
         AND recovery.scope_key=${activation}.scope_key
-        AND recovery.source_run_id=json_extract(${activation}.payload_json,'$.requiredReplyRecovery.sourceRunId')
+        AND (recovery.source_run_id=json_extract(${activation}.payload_json,'$.requiredReplyRecovery.sourceRunId')
+          OR (json_extract(recovery.progress_json,'$.reconstructionRolloverId') IS NOT NULL AND EXISTS(
+            SELECT 1 FROM scheduler_runs original
+            WHERE original.id=json_extract(${activation}.payload_json,'$.requiredReplyRecovery.sourceRunId')
+              AND original.agent_id=recovery.agent_id AND original.project_id=recovery.project_id AND original.scope_key=recovery.scope_key
+              AND original.fencing_token<=recovery.source_fence
+              AND (original.provider_session_id=recovery.provider_session_id OR EXISTS(
+                SELECT 1 FROM context_rollovers predecessor
+                WHERE predecessor.id=json_extract(recovery.progress_json,'$.reconstructionPredecessorRolloverId')
+                  AND predecessor.agent_id=recovery.agent_id AND predecessor.project_id=recovery.project_id
+                  AND predecessor.scope_key=recovery.scope_key AND predecessor.provider_session_generation=recovery.provider_session_id
+                  AND predecessor.replacement_run_id=original.id)))))
     ) AND NOT EXISTS (
       SELECT 1 FROM activation_sources reviewed JOIN coordination_idempotency proof
         ON proof.project_id=${activation}.project_id AND proof.operation='reviewed_steering_continue'
@@ -39,6 +50,14 @@ export function settingsTransitionActivationHoldSql(activation:string):string {
         AND json_extract(proof.result_json,'$.injectionId')=reviewed.source_id
       WHERE reviewed.activation_id=${activation}.id AND reviewed.source_kind='reviewed_steering'
     ))
+    OR EXISTS(SELECT 1 FROM provider_context_recovery_requests recovery
+      WHERE recovery.agent_id=${activation}.agent_id AND recovery.project_id=${activation}.project_id AND recovery.scope_key=${activation}.scope_key
+        AND json_extract(recovery.progress_json,'$.reconstructionRolloverId') IS NOT NULL
+        AND (( ${activation}.kind IN ('context_rollover_handoff','context_rollover_continuation')
+          AND json_extract(${activation}.payload_json,'$.rolloverId')=json_extract(recovery.progress_json,'$.reconstructionPredecessorRolloverId'))
+          OR EXISTS(SELECT 1 FROM activation_sources old
+            WHERE old.activation_id=${activation}.id AND old.source_kind='context_rollover_recovery'
+              AND old.source_id=json_extract(recovery.progress_json,'$.reconstructionPredecessorRolloverId'))))
     OR (${activation}.kind='required_reply_recovery' AND EXISTS (
       SELECT 1 FROM context_rollovers rollover
       JOIN activation_sources source ON source.source_kind='context_rollover' AND source.source_id=rollover.id

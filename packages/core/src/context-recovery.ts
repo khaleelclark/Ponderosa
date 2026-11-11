@@ -21,6 +21,8 @@ export interface ProviderContextRecoveryProgress {
   contextUsageEventSequence?: number;
   /** Frozen canonical reconstruction custody; this is not native usage evidence. */
   reconstructionRolloverId?: string;
+  /** Historical failed transfer retained separately, never adopted as a handoff. */
+  reconstructionPredecessorRolloverId?: string;
 }
 export const UNSUPPORTED_PROVIDER_CONTEXT_RECOVERY: Readonly<ProviderContextRecoverySupport> = Object.freeze({
   status: "unsupported",

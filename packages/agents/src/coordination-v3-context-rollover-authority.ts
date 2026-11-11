@@ -352,6 +352,7 @@ export class CoordinationV3ContextRolloverAuthority {
       throw new Error("context rollover requires a bounded unique content-hash-bound recent tail");
     }
     return this.sqlite.transaction(() => {
+      let reconstructionPredecessorId:string|undefined;
       if(input.recoveryReconstruction) {
         if(input.canonicalOnlyRefresh||input.settingsTransition||input.workingCopyTransition||input.triggerKind==='human'||input.detectedOccupancy!==undefined)
           throw new Error('Reconstruction cannot impersonate a native measurement or another transition');
@@ -359,8 +360,7 @@ export class CoordinationV3ContextRolloverAuthority {
         if(r.projectId!==input.projectId||r.sourceRunId!==input.sourceRunId||r.scopeKey!==input.scopeKey||
           r.providerSessionId!==input.oldProviderSessionId||r.providerSessionId!==input.providerSessionGeneration)
           throw new Error('Reconstruction does not match its recovery source');
-        if(this.sqlite.prepare('SELECT 1 FROM context_rollovers WHERE agent_id=? AND provider_session_generation=? LIMIT 1').get(input.agentId,input.providerSessionGeneration))
-          throw new Error('An existing rollover already owns this provider generation');
+        reconstructionPredecessorId=this.recoveryAuthority().reconstructionPredecessor(r);
       }
       if(input.workingCopyTransition){
         const t=input.workingCopyTransition;
@@ -550,7 +550,7 @@ export class CoordinationV3ContextRolloverAuthority {
            existing.old_provider_session_id!==input.oldProviderSessionId)
           throw new Error("A prior context transition remains active or uncertain");
       }
-      if (existing && !input.settingsTransition) {
+      if (existing && !input.settingsTransition && !input.recoveryReconstruction) {
         const terminalFailure = ["failed", "outcome_unknown"].includes(existing.state);
         const explicitSafeRetry = input.triggerKind === "human" &&
           terminalFailure &&
@@ -588,7 +588,7 @@ export class CoordinationV3ContextRolloverAuthority {
         }
       }
       const id = randomUUID();
-      if(input.recoveryReconstruction)this.recoveryAuthority().bindReconstruction(input.agentId,input.recoveryReconstruction.recoveryId,id);
+      if(input.recoveryReconstruction)this.recoveryAuthority().bindReconstruction(input.agentId,input.recoveryReconstruction.recoveryId,id,reconstructionPredecessorId);
       this.sqlite.prepare(`
         INSERT INTO context_rollovers (
           id, project_id, agent_id, state, old_provider_session_id,
