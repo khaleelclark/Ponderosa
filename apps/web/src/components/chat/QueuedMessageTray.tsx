@@ -4,16 +4,20 @@ import SubdirectoryArrowRightIcon from "@mui/icons-material/SubdirectoryArrowRig
 import { Button, IconButton, Paper, Stack, TextField, Tooltip, Typography } from "@mui/material";
 import { alpha } from "@mui/material/styles";
 import type { QueuedConversationMessageDto } from "@ponderosa/core";
-import { memo, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {useQueryClient} from '@tanstack/react-query';
 import { flushSync } from "react-dom";
 import { afterPaintBackgroundTask } from "../../afterPaintBackgroundTask";
-import { capturedSubmissionRunning, readCapturedSubmissions, submissionOutboxEvent, type CapturedSubmission } from "./submissionOutbox";
+import { capturedSubmissionRunning, readCapturedSubmissions, saveCapturedSubmission, submissionOutboxEvent, type CapturedSubmission } from "./submissionOutbox";
+import {capturedQueueReceipt,reconcileAcceptedCapture} from './capturedDraftSubmissions';
+import {useMessageDeliveryReceipts} from '../useMessageDeliveryReceipts';
 import { productApiPath } from "../../api/productScope";
 import { composerSurfaceWidth } from "./Composer.styles";
 
-function QueuedMessageTrayComponent({ messages, scope, attachmentNamesForMessage, busy, onSteer, onEdit, onDelete }: {
+function QueuedMessageTrayComponent({ messages, scope, conversationId=scope?.startsWith('agent:')?undefined:scope, attachmentNamesForMessage, busy, onSteer, onEdit, onDelete }: {
   messages: QueuedConversationMessageDto[];
   scope?: string;
+  conversationId?: string;
   attachmentNamesForMessage?(message: QueuedConversationMessageDto): string[] | undefined;
   busy?: boolean;
   onSteer(message: QueuedConversationMessageDto): Promise<unknown> | unknown;
@@ -21,6 +25,7 @@ function QueuedMessageTrayComponent({ messages, scope, attachmentNamesForMessage
   onDelete(message: QueuedConversationMessageDto): Promise<unknown> | unknown;
 }): JSX.Element | null {
   const namespace=productApiPath('/api/conversations');
+  const queryClient=useQueryClient();
   const identity=useRef<{scope?:string;namespace:string;keys:Map<string,string>}>({scope,namespace,keys:new Map()});
   if(identity.current.scope!==scope||identity.current.namespace!==namespace)identity.current={scope,namespace,keys:new Map()};
   const remember=()=>{
@@ -35,14 +40,34 @@ function QueuedMessageTrayComponent({ messages, scope, attachmentNamesForMessage
   };
   // The existing outbox event precedes retirement even when React batches all
   // intermediate renders. Remember presentation anchors, never delivery state.
-  const [, refresh] = useState(0);
+  const [outboxRevision, refresh] = useState(0);
   useEffect(() => {
     const changed = () => {remember();refresh(value => value + 1);};
     window.addEventListener(submissionOutboxEvent, changed);
     window.addEventListener("storage", changed);
     return () => { window.removeEventListener(submissionOutboxEvent, changed); window.removeEventListener("storage", changed); };
   }, [scope,namespace]);
-  const captured=scope?readCapturedSubmissions(scope).filter(item=>(!item.apiNamespace||item.apiNamespace===namespace)&&(item.action==='queue'||item.pending.request?.runtime.activeRunDelivery==='queue')):[];
+  const captured=useMemo(()=>scope?readCapturedSubmissions(scope).filter(item=>(!item.apiNamespace||item.apiNamespace===namespace)&&(item.action==='queue'||item.pending.request?.runtime.activeRunDelivery==='queue')):[],[scope,namespace,outboxRevision]);
+  const recoverable=useMemo(()=>captured.filter(item=>item.apiNamespace===namespace&&item.dispatchStarted&&item.status!=='failed'&&item.communicationId&&!item.newAgentRequested&&item.pending.request?.recipientAgentIds.length),[captured,namespace]);
+  const receiptIds=[...new Set(recoverable.map(item=>item.communicationId!))].sort().join('\0');
+  const receiptSources=useMemo(()=>conversationId&&receiptIds?receiptIds.split('\0').map(communicationEventId=>({conversationId,communicationEventId})):[],[conversationId,receiptIds]);
+  // Ordinary in-flight submissions use their response. A cold/lost response
+  // reuses the existing bounded receipt read and monotonic cancellation proof.
+  const needsRead=recoverable.some(item=>!capturedSubmissionRunning(item.pending.idempotencyKey)&&
+    !item.pending.request!.recipientAgentIds.every(id=>messages.some(message=>message.communicationEventId===item.communicationId&&message.targetAgentId===id)));
+  const receipts=useMessageDeliveryReceipts(receiptSources,conversationId,needsRead);
+  const proofs=useMemo(()=>new Map(recoverable.map(item=>[item.pending.idempotencyKey,capturedQueueReceipt(item,conversationId??'',receipts.find(source=>source.communicationEventId===item.communicationId))])),[recoverable,conversationId,receipts]);
+  useEffect(()=>{
+    if(identity.current.scope!==scope||identity.current.namespace!==namespace||productApiPath('/api/conversations')!==namespace)return;
+    for(const item of recoverable){
+      const confirmed=proofs.get(item.pending.idempotencyKey)?.accepted;
+      if(!confirmed||capturedSubmissionRunning(item.pending.idempotencyKey))continue;
+      const latest=readCapturedSubmissions(scope,item.ownerId).find(value=>value.pending.idempotencyKey===item.pending.idempotencyKey);
+      if(!latest||latest.pending.captureRevision!==item.pending.captureRevision||latest.pending.fingerprint!==item.pending.fingerprint||latest.communicationId!==item.communicationId)continue;
+      if(latest.status!=='accepted')try{saveCapturedSubmission(confirmed);}catch{/* Canonical proof remains visible while quiet storage cleanup retries. */}
+      void reconcileAcceptedCapture(queryClient,latest.status==='accepted'?latest:confirmed).catch(()=>undefined);
+    }
+  },[scope,namespace,queryClient,recoverable,proofs]);
   // React keys only: never a second queue, delivery record or dispatch authority.
   remember();
   const keys=identity.current.keys;
@@ -57,7 +82,8 @@ function QueuedMessageTrayComponent({ messages, scope, attachmentNamesForMessage
       const key=index===0?`capture:${item.pending.idempotencyKey}`:`capture:${item.pending.idempotencyKey}:${target}`;
       if(found){
         found.key=keys.get(found.message!.deliveryId)??key;keys.set(found.message!.deliveryId,found.key);found.capture=item;
-      }else if(item.status!=='accepted'||!item.acceptedDeliveryIds?.length||matches.length===0){pendingRows.push({key,capture:item});}
+      }else if(!proofs.get(item.pending.idempotencyKey)?.deletedTargets.has(target)&&
+        (item.status!=='accepted'||!item.acceptedDeliveryIds?.length||matches.length===0)){pendingRows.push({key,capture:item});}
     }
   }
   const activeIds=new Set(messages.flatMap(message=>[message.deliveryId,`communication:${message.communicationEventId}:${message.targetAgentId}`,`communication:${message.communicationEventId}:`]));
@@ -108,7 +134,7 @@ function QueuedMessageTrayComponent({ messages, scope, attachmentNamesForMessage
   ) => {
     void Promise.resolve().then(action).then(onSuccess).catch(() => {});
   };
-  if (messages.length === 0 && captured.length === 0) return null;
+  if (canonicalRows.length === 0 && pendingRows.length === 0) return null;
   return <Paper
     ref={rootRef}
     variant="outlined"

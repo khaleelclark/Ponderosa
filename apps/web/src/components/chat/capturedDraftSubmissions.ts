@@ -7,6 +7,25 @@ import {productApiPath} from '../../api/productScope';
 import {ApiRequestError,ApiTransportError} from '../../api/types';
 import {queryRetryDelay} from '../../api/queryRetry';
 import {CapturedRetirementStorageError,readCapturedSubmissions,removeCapturedSubmission,type CapturedSubmission} from './submissionOutbox';
+import type {ReceiptSource} from '../messageDeliveryReceipts';
+
+/** Exact canonical receipts can acknowledge a lost queue response, never queue absence. */
+export function capturedQueueReceipt(item:CapturedSubmission,conversationId:string,source:ReceiptSource|undefined){
+ const expected=item.pending.request?.recipientAgentIds??[];
+ const deletedTargets=new Set<string>();
+ if(item.apiNamespace!==productApiPath('/api/conversations')||
+   !(item.action==='queue'||item.pending.request?.runtime.activeRunDelivery==='queue')||
+   !item.dispatchStarted||item.newAgentRequested||!Array.isArray(expected)||!expected.length||new Set(expected).size!==expected.length||
+   !item.communicationId||source?.communicationEventId!==item.communicationId||source.conversationId!==conversationId)return {deletedTargets};
+ const receipts=expected.map(id=>{
+   const matches=source.deliveryReceipts?.filter(receipt=>receipt.targetAgentId===id)??[];
+   return matches.length===1?matches[0]:undefined;
+ });
+ for(const receipt of receipts)if(receipt?.queueDeletionConfirmed)deletedTargets.add(receipt.targetAgentId);
+ if(receipts.some(receipt=>!receipt?.activationId))return {deletedTargets};
+ return {deletedTargets,accepted:{...item,status:'accepted' as const,error:undefined,
+   acceptedDeliveryIds:receipts.map(receipt=>receipt!.activationId)}};
+}
 
 export function capturedDraftSubmissions(scope:string,ownerId:string,current?:ConversationDraftDto):DraftPendingSubmissionDto[]{
  const byId=new Map((current?.pendingSubmissions??[]).filter(item=>!draftPendingSubmissionRetired(current!,item)).map(item=>[item.idempotencyKey,item]));

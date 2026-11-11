@@ -1049,6 +1049,7 @@ export function AgentDetail({
         providerUsageState={providerUsageState}
         agentId={agentId}
         onCloseProviderUsage={() => setProviderUsageState(undefined)}
+        conversationId={detail.agent.conversationId}
         queuedMessages={visibleQueuedMessages}
         attachmentNamesForQueuedMessage={queued => detail.messages.find(message => message.id === queued.messageId || message.communicationEventId === queued.messageId)?.attachments?.map(attachment => attachment.name)}
         queuedBusy={

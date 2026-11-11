@@ -21,6 +21,7 @@ interface AgentDetailComposerProps {
   cancellationError?: string;
   providerUsageState?: ProviderUsageStateDto;
   agentId: string;
+  conversationId?: string;
   onCloseProviderUsage(): void;
   queuedMessages: QueuedConversationMessageDto[];
   attachmentNamesForQueuedMessage?(message: QueuedConversationMessageDto): string[] | undefined;
@@ -42,6 +43,7 @@ export function AgentDetailComposer({
   cancellationError,
   providerUsageState,
   agentId,
+  conversationId,
   onCloseProviderUsage,
   queuedMessages,
   attachmentNamesForQueuedMessage,
@@ -67,6 +69,7 @@ export function AgentDetailComposer({
       {!composer.assistantMessages&&<QueuedMessageTray
         messages={queuedMessages}
         scope={composer.conversationDraftId}
+        conversationId={conversationId}
         attachmentNamesForMessage={attachmentNamesForQueuedMessage}
         busy={queuedBusy}
         onSteer={onSteerQueued}

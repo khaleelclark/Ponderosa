@@ -13,7 +13,9 @@ import {CssBaseline,ThemeProvider} from '@mui/material';
 import {createPonderosaTheme} from '../../apps/web/src/theme';
 import {QueuedMessageTray} from '../../apps/web/src/components/chat/QueuedMessageTray';
 import {ChatSurface} from '../../apps/web/src/components/chat/ChatSurface';
-import {saveCapturedSubmission,removeCapturedSubmission,type CapturedSubmission} from '../../apps/web/src/components/chat/submissionOutbox';
+import {saveCapturedSubmission,removeCapturedSubmission,readCapturedSubmissions,type CapturedSubmission} from '../../apps/web/src/components/chat/submissionOutbox';
+import {capturedQueueReceipt} from '../../apps/web/src/components/chat/capturedDraftSubmissions';
+import {applyQueuedMessageCancellation} from '../../apps/web/src/components/messageDeliveryReceipts';
 import type {QueuedConversationMessageDto} from '@ponderosa/core';
 
 const assert=(value:unknown,message:string)=>{if(!value)throw Error(message);};
@@ -22,7 +24,7 @@ async function until(read:()=>boolean,message:string){const end=performance.now(
 export async function queuedTrayColdMountRegression():Promise<void>{
  const probe=window as Window&{queuedTrayCheckpoint?:(name:string)=>Promise<void>;queuedTrayNativeAction?:(action:string)=>Promise<void>};
  const checkpoint=async(name:string)=>{await probe.queuedTrayCheckpoint?.(name);};
- const host=document.createElement('div');document.body.append(host);const root=createRoot(host);
+ const host=document.createElement('div');document.body.append(host);const root=createRoot(host),client=new QueryClient({defaultOptions:{queries:{retry:false,gcTime:Infinity}}});
  Object.assign(host.style,{position:'fixed',inset:'0',overflow:'auto'});
  const scope='queued-tray-regression',pendingId='queued-tray-pending',acceptedId='queued-tray-accepted';
  const theme=createPonderosaTheme(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');
@@ -42,10 +44,10 @@ export async function queuedTrayColdMountRegression():Promise<void>{
  const retry=(event:Event)=>retries.push((event as CustomEvent<string>).detail);
  window.addEventListener('ponderosa-submission-retry',retry);
  let epoch=0;
- const render=(rows=messages)=>flushSync(()=>root.render(<ThemeProvider theme={theme}>
+ const render=(rows=messages)=>flushSync(()=>root.render(<QueryClientProvider client={client}><ThemeProvider theme={theme}>
   <CssBaseline/><input aria-label="Synthetic retained draft" defaultValue="Keep this draft λ😀"/>
   <QueuedMessageTray key={epoch} scope={scope} messages={rows} onSteer={m=>{steers.push(m.deliveryId);}} onEdit={(m,text)=>{edits.push({id:m.deliveryId,text});}} onDelete={m=>{deletes.push(m.deliveryId);}}/>
- </ThemeProvider>));
+ </ThemeProvider></QueryClientProvider>));
  const tray=()=>host.querySelector<HTMLElement>('[aria-label="Queued Messages"]')!;
  const rows=()=>Array.from(tray().querySelectorAll<HTMLElement>('[data-delivery-id]'));
  const capturedRows=()=>tray().querySelectorAll('[data-operation-id]:not([data-delivery-id])');
@@ -96,19 +98,19 @@ export async function queuedTrayColdMountRegression():Promise<void>{
 
   await fresh();const stale=await nextTask();root.unmount();assert(stale.signal.aborted,'Unmount aborts queued background work');stale.run();await tick();assert(!host.childNodes.length,'Cancelled work cannot restore an unmounted tray');
  }finally{
-  try{root.unmount();}catch{}host.remove();scheduler.postTask=nativePostTask;if(!schedulerDescriptor)delete schedulerWindow.scheduler;else if(!schedulerDescriptor.get)Object.defineProperty(window,'scheduler',schedulerDescriptor);window.removeEventListener('ponderosa-submission-retry',retry);
+  try{root.unmount();}catch{}client.clear();host.remove();scheduler.postTask=nativePostTask;if(!schedulerDescriptor)delete schedulerWindow.scheduler;else if(!schedulerDescriptor.get)Object.defineProperty(window,'scheduler',schedulerDescriptor);window.removeEventListener('ponderosa-submission-retry',retry);
   removeCapturedSubmission(pendingId);removeCapturedSubmission(acceptedId);document.getSelection()?.removeAllRanges();
  }
 }
 
 /** Runtime/default hydration must not rebuild unchanged queue controls. */
 export async function queuedTrayParentHydrationRegression():Promise<void>{
- const host=document.createElement('div');document.body.append(host);const root=createRoot(host);
+ const host=document.createElement('div');document.body.append(host);const root=createRoot(host),client=new QueryClient({defaultOptions:{queries:{retry:false,gcTime:Infinity}}});
  const scope='queued-tray-memo-regression',pendingId='queued-tray-memo-pending';
  const message:QueuedConversationMessageDto={deliveryId:'memo-delivery',messageId:'memo-message',conversationId:scope,targetAgentId:'memo-agent',position:1,text:'Exact queued text λ😀',createdAt:'2026-11-07T00:00:00Z',status:'queued'};
  let reads=0,epoch=0;const actions:Array<{kind:string;id:string;text?:string}>=[];
  const props={scope,messages:[message],attachmentNamesForMessage:()=>{reads++;return ['original.txt'];},onSteer:(m:QueuedConversationMessageDto)=>{actions.push({kind:'steer',id:m.deliveryId});},onEdit:(m:QueuedConversationMessageDto,text:string)=>{actions.push({kind:'edit',id:m.deliveryId,text});},onDelete:(m:QueuedConversationMessageDto)=>{actions.push({kind:'delete',id:m.deliveryId});}};
- const render=(extra:Partial<import('react').ComponentProps<typeof QueuedMessageTray>>={})=>flushSync(()=>root.render(<><CssBaseline/><div data-unrelated-runtime-hydration={++epoch}><QueuedMessageTray {...props} {...extra}/></div><input aria-label="Memo sibling draft" defaultValue="Retain draft λ😀"/></>));
+ const render=(extra:Partial<import('react').ComponentProps<typeof QueuedMessageTray>>={})=>flushSync(()=>root.render(<QueryClientProvider client={client}><CssBaseline/><div data-unrelated-runtime-hydration={++epoch}><QueuedMessageTray {...props} {...extra}/></div><input aria-label="Memo sibling draft" defaultValue="Retain draft λ😀"/></QueryClientProvider>));
  const button=(name:string)=>host.querySelector<HTMLButtonElement>('[aria-label="'+name+'"]')!;
  try{
   render();const firstReads=reads;assert(firstReads===1,'Initial real tray renders its exact row');
@@ -129,7 +131,7 @@ export async function queuedTrayParentHydrationRegression():Promise<void>{
   await until(()=>Boolean(host.querySelector('[data-operation-id="'+pendingId+'"]')),'External outbox event still updates a memoized tray');
   removeCapturedSubmission(pendingId);await until(()=>!host.querySelector('[data-operation-id]'),'External outbox removal still updates');
   assert(host.querySelector<HTMLInputElement>('[aria-label="Memo sibling draft"]')!.value==='Retain draft λ😀','Sibling draft bytes remain unchanged');
- }finally{root.unmount();host.remove();removeCapturedSubmission(pendingId);}
+ }finally{root.unmount();client.clear();host.remove();removeCapturedSubmission(pendingId);}
 }
 
 
@@ -191,22 +193,22 @@ export async function queuedTrayAcceptedEditRegression():Promise<void>{
 
 /** Capture, lost response, acceptance and retirement update one compact mounted row. */
 export async function queuedTrayCaptureContinuityRegression():Promise<void>{
- const scope='queue-continuity',id='queue-continuity-operation',host=document.createElement('div');document.body.append(host);const root=createRoot(host);
+ const scope='queue-continuity',id='queue-continuity-operation',host=document.createElement('div');document.body.append(host);const root=createRoot(host),client=new QueryClient({defaultOptions:{queries:{retry:false,gcTime:Infinity}}});
  const capture={version:1,scope,storageKey:'continuity-draft',ownerId:'owner',clientId:id,createdAt:1,action:'queue',text:'',editorText:'',attachmentNames:['exact.txt'],mentionedAgents:[],newAgentRequested:false,pending:{idempotencyKey:id,fingerprint:'b'.repeat(64),request:{recipientAgentIds:['continuity-agent'],runtime:{activeRunDelivery:'queue'}}},status:'unknown'} as CapturedSubmission;
  const message:QueuedConversationMessageDto={deliveryId:'continuity-delivery',messageId:'continuity-message',communicationEventId:'continuity-event',conversationId:scope,targetAgentId:'continuity-agent',position:1,text:'',attachmentCount:1,createdAt:'2026-11-10T00:00:00Z',status:'queued'};
- let steers=0;const render=(messages:QueuedConversationMessageDto[])=>flushSync(()=>root.render(<ThemeProvider theme={createPonderosaTheme('light')}><CssBaseline/><QueuedMessageTray scope={scope} messages={messages} onSteer={()=>{steers++;}} onEdit={()=>{}} onDelete={()=>{}}/></ThemeProvider>));
+ let steers=0;const render=(messages:QueuedConversationMessageDto[])=>flushSync(()=>root.render(<QueryClientProvider client={client}><ThemeProvider theme={createPonderosaTheme('light')}><CssBaseline/><QueuedMessageTray scope={scope} messages={messages} onSteer={()=>{steers++;}} onEdit={()=>{}} onDelete={()=>{}}/></ThemeProvider></QueryClientProvider>));
  try{
   saveCapturedSubmission(capture);render([]);const row=host.querySelector<HTMLElement>('[data-queue-row]')!,height=row.getBoundingClientRect().height,edit=row.querySelector('[aria-label^="Edit Queued Message"]'),remove=row.querySelector('[aria-label^="Delete"]');
   assert(row&&row.textContent?.includes('exact.txt'),'Attachment-only capture renders immediately in the compact queue row');
   assert(host.querySelectorAll('[data-queue-row]').length===1&&!host.textContent?.includes('Details'),'No alternate capture card or technical Details');
   window.dispatchEvent(new StorageEvent('storage'));await tick();assert(host.querySelector('[data-queue-row]')===row,'Cross-tab notifications retain row identity');
-  flushSync(()=>{saveCapturedSubmission({...capture,status:'accepted',communicationId:message.communicationEventId,acceptedDeliveryIds:[message.deliveryId]});root.render(<ThemeProvider theme={createPonderosaTheme('light')}><CssBaseline/><QueuedMessageTray scope={scope} messages={[message]} onSteer={()=>{steers++;}} onEdit={()=>{}} onDelete={()=>{}}/></ThemeProvider>);removeCapturedSubmission(id);});assert(host.querySelectorAll('[data-queue-row]').length===1&&host.querySelector('[data-delivery-id]')===row,'Exact canonical acceptance adopts the captured row without duplication');
+  flushSync(()=>{saveCapturedSubmission({...capture,status:'accepted',communicationId:message.communicationEventId,acceptedDeliveryIds:[message.deliveryId]});root.render(<QueryClientProvider client={client}><ThemeProvider theme={createPonderosaTheme('light')}><CssBaseline/><QueuedMessageTray scope={scope} messages={[message]} onSteer={()=>{steers++;}} onEdit={()=>{}} onDelete={()=>{}}/></ThemeProvider></QueryClientProvider>);removeCapturedSubmission(id);});assert(host.querySelectorAll('[data-queue-row]').length===1&&host.querySelector('[data-delivery-id]')===row,'Exact canonical acceptance adopts the captured row without duplication');
   assert(row.querySelector('[aria-label^="Edit Queued Message"]')===edit&&row.querySelector('[aria-label^="Delete"]')===remove,'Existing action controls remain mounted');
   assert(Math.abs(row.getBoundingClientRect().height-height)<1,'Capture and accepted row retain height');
   removeCapturedSubmission(id);await tick();assert(host.querySelector('[data-delivery-id]')===row,'Capture retirement preserves the same canonical row');
   (row.querySelector('[aria-label="Steer Queued Message 1"]') as HTMLButtonElement).click();await tick();assert(steers===1,'Adopted action invokes the existing callback once');
-  root.unmount();const fresh=createRoot(host);flushSync(()=>fresh.render(<QueuedMessageTray scope={scope} messages={[message]} onSteer={()=>{}} onEdit={()=>{}} onDelete={()=>{}}/>));assert(host.querySelectorAll('[data-queue-row]').length===1,'Reload renders only the canonical queue authority');fresh.unmount();
- }finally{try{root.unmount();}catch{}host.remove();removeCapturedSubmission(id);}
+  root.unmount();const fresh=createRoot(host);flushSync(()=>fresh.render(<QueryClientProvider client={client}><QueuedMessageTray scope={scope} messages={[message]} onSteer={()=>{}} onEdit={()=>{}} onDelete={()=>{}}/></QueryClientProvider>));assert(host.querySelectorAll('[data-queue-row]').length===1,'Reload renders only the canonical queue authority');fresh.unmount();
+ }finally{try{root.unmount();}catch{}client.clear();host.remove();removeCapturedSubmission(id);}
 }
 
 /** Delayed readback cannot manufacture Working; acknowledged readback clears Starting without text. */
@@ -222,4 +224,54 @@ export async function messageAcknowledgementReadbackRegression():Promise<void>{
   ack=true;void client.invalidateQueries({queryKey:queryKeys.conversations.activeDeliveryReceiptsPrefix('ack-chat')});await until(()=>Boolean(release),'Delayed post-ack read starts');await new Promise(resolve=>setTimeout(resolve,300));assert(host.textContent==='Starting','An invalidation or open socket is not acknowledgement proof');
   release!();await until(()=>host.textContent==='Working','Durable acknowledgement updates the existing row before any reply text');assert(reads===2,'One bounded refresh, no retry loop or history fetch');
  }finally{root.unmount();client.clear();host.remove();globalThis.fetch=nativeFetch;}
+}
+
+/** A lost queue response must not return as a pending row after canonical Delete. */
+export async function queuedTrayLostAcknowledgementDeletionRegression():Promise<void>{
+ const conversationId='lost-queue-chat',scope='agent:lost-queue-agent',id='lost-queue-operation';
+ const capture={version:1,scope,apiNamespace:'/api/conversations',storageKey:'lost-queue-draft',ownerId:'lost-owner',clientId:id,createdAt:1,action:'queue',text:'Immutable queued bytes λ😀',editorText:'Immutable queued bytes λ😀',attachmentNames:[],mentionedAgents:[],newAgentRequested:false,dispatchStarted:true,communicationId:'lost-queue-event',pending:{idempotencyKey:id,fingerprint:'b'.repeat(64),captureRevision:4,request:{recipientAgentIds:['lost-queue-agent'],runtime:{activeRunDelivery:'queue'}}},status:'pending'} as CapturedSubmission;
+ const queued={activationId:'lost-queue-delivery',targetAgentId:'lost-queue-agent',state:'queued' as const,queuedForNextRun:true as const,attemptCount:1,updatedAt:'2026-11-11T00:00:00Z'};
+ const deleted={...queued,state:'cancelled' as const,queuedForNextRun:undefined,queueDeletionConfirmed:true as const,updatedAt:'2026-11-11T00:00:01Z'};
+ const source={conversationId,communicationEventId:capture.communicationId,deliveryReceipts:[deleted]};
+ const partial={...capture,pending:{...capture.pending,request:{...capture.pending.request!,recipientAgentIds:['lost-queue-agent','another-recipient']}}};
+ const proof=capturedQueueReceipt(partial,conversationId,source);
+ assert(proof.deletedTargets.has('lost-queue-agent')&&!proof.accepted,'One deleted recipient cannot settle another missing recipient');
+ assert(!capturedQueueReceipt(capture,conversationId,{...source,conversationId:'foreign-chat'}).accepted,'Foreign Chat cannot acknowledge a capture');
+ assert(!capturedQueueReceipt(capture,conversationId,{...source,communicationEventId:'foreign-source'}).accepted,'Exact publication identity is required');
+ assert(!capturedQueueReceipt({...capture,apiNamespace:undefined},conversationId,source).accepted,'Missing product binding cannot authorize automatic adoption');
+ assert(!capturedQueueReceipt({...capture,newAgentRequested:true},conversationId,source).accepted,'One publication cannot settle compound creation');
+ assert(capturedQueueReceipt(capture,conversationId,{...source,deliveryReceipts:[{...deleted,queueDeletionConfirmed:undefined,providerAcknowledged:true,executionId:'possibly-delivered'}]}).deletedTargets.size===0,'Cancelled state alone never hides possibly delivered work');
+ assert(capturedQueueReceipt(capture,conversationId,{...source,deliveryReceipts:[deleted,{...queued,activationId:'newer-attempt'}]}).deletedTargets.size===0,'Ambiguous attempts cannot hide a recipient');
+ setStandaloneProductScope('branches');
+ assert(!capturedQueueReceipt(capture,conversationId,source).accepted,'Another product cannot adopt core capture evidence');setStandaloneProductScope(undefined);
+ const host=document.createElement('div');document.body.append(host);let root=createRoot(host);
+ let client=new QueryClient({defaultOptions:{queries:{retry:false,refetchOnWindowFocus:false,gcTime:Infinity}}});
+ const nativeFetch=globalThis.fetch;let reads=0,writes=0,hold=true,release:(()=>void)|undefined;
+ const json=(value:unknown,status=200)=>new Response(JSON.stringify(value),{status,headers:{'content-type':'application/json'}});
+ globalThis.fetch=async(raw,init)=>{
+  const url=new URL(String(raw),location.origin),method=init?.method??'GET';
+  if(method==='POST'&&url.pathname===`/api/conversations/${conversationId}/message-delivery-receipts`){
+   const body=JSON.parse(String(init?.body));assert(JSON.stringify(body.communicationEventIds)===JSON.stringify([capture.communicationId])&&body.activationIds.length===0,'Only the exact captured source is read');reads++;const stale=hold;if(hold)await new Promise<void>(resolve=>{release=resolve;});return json({items:[{communicationEventId:capture.communicationId,deliveryReceipts:[stale?queued:deleted]}]});
+  }
+  if(method==='GET'&&url.pathname===`/api/agents/lost-queue-agent/queued-messages`)return json([]);
+  if(method==='GET'&&decodeURIComponent(url.pathname)===`/api/conversations/${scope}/draft`)return json({conversationId:scope,ownerId:capture.ownerId,revision:4,text:'Newer editable draft stays intact',attachmentIds:[],pendingSubmissions:[capture.pending]});
+  if(method==='PUT'&&decodeURIComponent(url.pathname)===`/api/conversations/${scope}/draft`){
+   writes++;const body=JSON.parse(String(init?.body));assert(body.captureMetadataOnly&&body.text==='Newer editable draft stays intact'&&body.retirePendingSubmissionIds.length===1&&body.retirePendingSubmissionIds[0]===id,'Retirement preserves newer text and selects only the original capture');return json({error:'Controlled retirement storage failure'},400);
+  }
+  throw Error('Unexpected lost-queue request '+method+' '+url.pathname);
+ };
+ const render=()=>flushSync(()=>root.render(<QueryClientProvider client={client}><QueuedMessageTray scope={scope} conversationId={conversationId} messages={[]} onSteer={()=>{throw Error('No automatic Steer');}} onEdit={()=>{throw Error('No automatic Edit');}} onDelete={()=>{throw Error('No automatic Delete');}}/></QueryClientProvider>));
+ const tray=()=>host.querySelector('[aria-label="Queued Messages"]');
+ const retirementKey=['captured-retirement','/api/conversations',scope,capture.ownerId,id];
+ try{
+  saveCapturedSubmission(capture);render();await until(()=>Boolean(release),'Exact cold lost-response read begins');assert(tray(),'Unproved capture remains visible');
+  applyQueuedMessageCancellation(client,{cancelled:true,replayed:false,status:'cancelled',message:{conversationId,communicationEventId:capture.communicationId!,deliveryReceipts:[deleted]}});
+  await until(()=>!tray()&&readCapturedSubmissions(scope)[0]?.status==='accepted','Exact deletion hides the row and acknowledges the original capture');
+  await until(()=>client.getQueryState(retirementKey)?.status==='error','Quiet retirement failure is retained without retrying work');
+  assert(readCapturedSubmissions(scope)[0]?.text===capture.text&&!host.querySelector('[role="alert"]'),'Failed metadata cleanup retains original bytes without a user interruption');
+  hold=false;release!();await tick();assert(!tray(),'Late queued response cannot revive the canonically deleted row');
+  root.unmount();client.clear();client=new QueryClient({defaultOptions:{queries:{retry:false,refetchOnWindowFocus:false,gcTime:Infinity}}});root=createRoot(host);render();
+  await until(()=>reads===2&&!tray()&&client.getQueryState(retirementKey)?.status==='error','Cold accepted capture re-obtains deletion proof even when cleanup still fails');
+  assert(writes===2&&readCapturedSubmissions(scope)[0]?.pending.idempotencyKey===id,'No replay, new operation identity or premature local removal');
+ }finally{release?.();root.unmount();client.clear();globalThis.fetch=nativeFetch;host.remove();removeCapturedSubmission(id);setStandaloneProductScope(undefined);}
 }
