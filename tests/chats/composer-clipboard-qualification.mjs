@@ -8,6 +8,7 @@ import { createInterface } from 'node:readline';
 import { readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+const {until} = await import('../shared/fixture.mjs');
 const require = createRequire(new URL('../../apps/server/package.json', import.meta.url));
 const { chromium } = require('playwright-core');
 const root = fileURLToPath(new URL('../../', import.meta.url));
@@ -116,20 +117,28 @@ try {
         assert.equal(normalize(await editor.innerText()),expectedDraft+'\nSHIFT_TAIL','Exact draft after Shift+Enter');
         const expected=normalize(text)+'\nSHIFT_TAIL';
         await page.waitForFunction(()=>[...document.querySelectorAll('button')].some(button=>button.getAttribute('aria-label')==='Send Message'&&!button.disabled));
+        const matchingPost=request=>request.method()==='POST'&&request.postData()?.includes(marker);
+        const enterSends=ending==='\r\n'&&!mobile;
         if (ending === '\r\n') {
-          await page.keyboard.press('Enter'); await page.waitForTimeout(250);
+          const sent=enterSends?page.waitForRequest(matchingPost):undefined;
+          await page.keyboard.press('Enter');
+          if(sent)await sent;else await page.waitForTimeout(250);
           assert.equal(sends.length,before+(mobile?0:1),'Desktop Enter sends; Android Return adds newline');
         }
-        if (sends.length===before) await page.getByRole('button',{name:'Send Message',exact:true}).click();
-        await page.waitForTimeout(700);
+        if (!enterSends) {
+          const sent=page.waitForRequest(matchingPost);
+          await page.getByRole('button',{name:'Send Message',exact:true}).click();await sent;
+        }
         assert.equal(sends.length,before+1,'One explicit send');
         assert.equal(normalize(sends.at(-1)),(destination?destination+' ':'')+expected,'Exact whole submitted message including explicit Inbox recipient');
-        const journals=[];
-        for (const dir of await readdir(path.join(manifest.root,'data/projects'))) {
-          const file=path.join(manifest.root,'data/projects',dir,'message-dispatches.jsonl');
-          try { journals.push(...(await readFile(file,'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse)); } catch(error) { if(error.code!=='ENOENT')throw error; }
-        }
-        const canonical=journals.filter(row=>row.role==='user'&&row.renderedText?.includes(marker));
+        const canonical=await until(async()=>{
+          const journals=[];
+          for (const dir of await readdir(path.join(manifest.root,'data/projects'))) {
+            const file=path.join(manifest.root,'data/projects',dir,'message-dispatches.jsonl');
+            try { journals.push(...(await readFile(file,'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse)); } catch(error) { if(error.code!=='ENOENT')throw error; }
+          }
+          const rows=journals.filter(row=>row.role==='user'&&row.renderedText?.includes(marker));return rows.length?rows:false;
+        },'Exact clipboard message reaches its canonical journal');
         assert.equal(canonical.length,1,'One canonical stored message');
         const submitted=submissions.at(-1),roster=[coreAgent,...state.agents];
         const recipientIds=submitted.body.recipients?.map(r=>r.agentId)??[new URL(submitted.url).pathname.match(/\/agents\/([^/]+)\/messages$/)?.[1]].filter(Boolean);
