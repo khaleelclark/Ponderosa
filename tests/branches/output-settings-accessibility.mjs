@@ -20,6 +20,7 @@ try{
  let cell=0;
  for(const assistant of [true,false])for(const phone of [false,true])for(const mode of ['light','dark']){
   const id=`${assistant?'assistant':'output'}-${phone?'phone':'desktop'}-${mode}`,context=await browser.newContext({viewport:phone?{width:390,height:844}:{width:1440,height:1000},hasTouch:phone,...(phone?{isMobile:true}:{})});
+  if(process.env.AXE_CORE_PATH)await context.addInitScript({path:process.env.AXE_CORE_PATH});
   const page=await context.newPage(),errors=[],writes=[];page.setDefaultTimeout(10000);console.log(id);page.on('pageerror',error=>errors.push(error.message));page.on('request',request=>{if(request.method()==='PATCH'||request.method()==='PUT')writes.push({method:request.method(),path:new URL(request.url()).pathname,body:request.postDataJSON()});});
   await page.addInitScript(mode=>localStorage.setItem('ponderosa-color-mode',mode),mode);
   const current=f.ok(await f.api('GET','/api/branches/assistant')).app;
@@ -76,7 +77,7 @@ try{
    await name.fill('Discard Only This Settings Edit');await dialog.getByRole('button',{name:'Done',exact:true}).click();const confirm=page.getByRole('dialog').filter({hasText:'Unsaved Settings'});await confirm.waitFor();await confirm.getByRole('button',{name:'Keep Editing'}).click();assert.equal(await name.inputValue(),'Discard Only This Settings Edit');
    await dialog.getByRole('button',{name:'Done',exact:true}).click();await confirm.getByRole('button',{name:'Discard Changes'}).click();await dialog.waitFor({state:'hidden'});await sameConversation();await settings.click();await dialog.waitFor();assert.equal(await dialog.getByRole('textbox',{name:'Name',exact:true}).inputValue(),external);
   }
-  if(process.env.AXE_CORE_PATH){await page.addScriptTag({path:process.env.AXE_CORE_PATH});const scan=await page.evaluate(()=>window.axe.run(document.querySelector('[role=dialog]')));assert.deepEqual(scan.violations.filter(v=>['critical','serious'].includes(v.impact)).map(v=>v.id),[]);}
+  if(process.env.AXE_CORE_PATH){assert(await page.evaluate(()=>Boolean(window.axe)),'Installed axe is loaded before the production CSP applies');const scan=await page.evaluate(()=>window.axe.run(document.querySelector('[role=dialog]')));assert.deepEqual(scan.violations.filter(v=>['critical','serious'].includes(v.impact)).map(v=>v.id),[]);}
   assert.ok(await dialog.getAttribute('aria-labelledby'));assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));await page.waitForFunction(()=>[...document.querySelectorAll('.MuiDialog-paper')].every(node=>getComputedStyle(node).opacity==='1'));await page.screenshot({path:path.join(out,id+'.png'),fullPage:true});
   await dialog.getByRole('button',{name:'Done',exact:true}).click();await dialog.waitFor({state:'hidden'});await sameConversation();await page.reload();await page.locator('[data-conversation-contact] h1').filter({hasText:renamed}).waitFor();await editor.waitFor();assert.match(await editor.innerText(),/Preserve This Unsent Draft/);
   if(assistant){
