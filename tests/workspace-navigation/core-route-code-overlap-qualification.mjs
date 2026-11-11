@@ -13,7 +13,7 @@ const output=process.env.QUALIFICATION_DIRECTORY;assert(output);await mkdir(outp
 const assets=path.join(root,'apps/web/dist/static/js/async');
 const chunks=await Promise.all((await readdir(assets)).filter(name=>name.endsWith('.js')).map(async name=>({name,text:await readFile(path.join(assets,name),'utf8')})));
 function chunkWith(text){const matches=chunks.filter(chunk=>chunk.text.includes(text));assert.equal(matches.length,1,`Unique built route marker: ${text}`);return '/static/js/async/'+matches[0].name;}
-const appChunk=chunkWith('This Workspace View Could Not Be Displayed.');
+const appChunk=chunkWith('This workspace view could not be displayed.');
 const projectChunk=chunkWith('This Project view could not be displayed.');
 const agentChunk=chunkWith('Earlier Agent records could not be loaded.');
 assert.notEqual(agentChunk,projectChunk,'Agent detail must not be in the cold Chat Project chunk');
