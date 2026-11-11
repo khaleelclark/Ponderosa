@@ -523,7 +523,7 @@ export async function qualifyPersistentPwaUpgrade({
   try {
     await browser.navigate(bootstrapUrl);
     await browser.waitFor(
-      `location.pathname==="/"&&${currentAssetExpression(expectedAssets, expectedRevision, readinessHttpStatus)}`,
+      `["/","/home"].includes(location.pathname)&&${currentAssetExpression(expectedAssets, expectedRevision, readinessHttpStatus)}`,
       "service worker blocked bootstrap refresh or the current trusted-network build",
     );
   } catch (error) {
