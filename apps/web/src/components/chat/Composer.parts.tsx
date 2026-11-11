@@ -239,7 +239,7 @@ export function ComposerSendActions({
   return (
     <>
       {canCancel ? (
-        <Tooltip title={cancelPending ? "Cancelling…" : "Cancel Run"}>
+        <Tooltip disableInteractive title={cancelPending ? "Cancelling…" : "Cancel Run"}>
           <span>
             <IconButton
               color="error"
@@ -253,7 +253,7 @@ export function ComposerSendActions({
         </Tooltip>
       ) : null}
       {showQueue ? (
-        <Tooltip title="Queue After The Active Response (Ctrl+Enter)">
+        <Tooltip disableInteractive title="Queue After The Active Response (Ctrl+Enter)">
           <span>
             <IconButton
               disabled={!canSend}
@@ -266,7 +266,7 @@ export function ComposerSendActions({
         </Tooltip>
       ) : null}
       {showQueue ? (
-        <Tooltip title="Steer The Active Response">
+        <Tooltip disableInteractive title="Steer The Active Response">
           <span>
             {compact ? (
               <IconButton
@@ -293,7 +293,7 @@ export function ComposerSendActions({
           </span>
         </Tooltip>
       ) : (!canCancel || allowSendWhileRunning) ? (
-        <Tooltip
+        <Tooltip disableInteractive
           title={
             !canSend &&
             (destinationError ||

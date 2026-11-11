@@ -255,7 +255,7 @@ test('settings transition preserves pending work and isolates replacement confir
     finally { db.exec('ROLLBACK TO transition_negative; RELEASE transition_negative'); }
   }
   assert.throws(() => coordination.requestContextRollover({...request,settingsTransition:{...transition,targetModel:'old',targetEffort:'medium'}}),/Invalid exact/);
-  assert.throws(() => coordination.requestContextRollover({...request,settingsTransition:{...transition,reason:'voice',targetModel:'old',targetEffort:'medium'}}),/canonical queued voice/);
+  assert.throws(() => coordination.requestContextRollover({...request,settingsTransition:{...transition,reason:'voice',targetModel:'old',targetEffort:'medium'}}),/canonical unsubmitted voice/);
   db.exec('SAVEPOINT canonical_voice');
   try {
     const voiceEvent={eventId:randomUUID(),projectId:agent.projectId,conversationId:agent.conversationId,intent:'user_dm',
@@ -269,16 +269,24 @@ test('settings transition preserves pending work and isolates replacement confir
     for(const mutate of [
       value=>{value.communication.sender.userId='other';},
       value=>{value.communication.audience.agentIds.push('other');},
-      value=>{value.dispatch.activeRunDelivery='steer';},
+      value=>{value.dispatch.activeRunDelivery='unsupported';},
       value=>{value.communication.document={id:'foreign'};},
     ]) {
       db.exec('SAVEPOINT malformed_voice');
       try { const bad=structuredClone(payload);mutate(bad);db.prepare('UPDATE runtime_communications SET payload_json=? WHERE id=?').run(JSON.stringify(bad),voiceEvent.eventId);
-        assert.throws(()=>coordination.requestContextRollover({...request,settingsTransition:{...transition,reason:'voice',targetModel:'old',targetEffort:'medium'}}),/canonical queued voice/);
+        assert.throws(()=>coordination.requestContextRollover({...request,settingsTransition:{...transition,reason:'voice',targetModel:'old',targetEffort:'medium'}}),/canonical unsubmitted voice/);
       } finally { db.exec('ROLLBACK TO malformed_voice; RELEASE malformed_voice'); }
     }
-    const voice=coordination.requestContextRollover({...request,settingsTransition:{...transition,reason:'voice',targetModel:'old',targetEffort:'medium'}});
-    assert.equal(voice.created,true);
+    for(const policy of ['queue','steer']) {
+      db.exec('SAVEPOINT canonical_delivery');
+      try {
+        const accepted=structuredClone(payload);accepted.dispatch.activeRunDelivery=policy;
+        db.prepare('UPDATE runtime_communications SET payload_json=? WHERE id=?').run(JSON.stringify(accepted),voiceEvent.eventId);
+        db.prepare('UPDATE agent_activations SET payload_json=? WHERE id=?').run(JSON.stringify(accepted),pending);
+        const voice=coordination.requestContextRollover({...request,settingsTransition:{...transition,reason:'voice',targetModel:'old',targetEffort:'medium'}});
+        assert.equal(voice.created,true,'Exact unsubmitted voice work retains its original '+policy+' policy');
+      } finally { db.exec('ROLLBACK TO canonical_delivery; RELEASE canonical_delivery'); }
+    }
   } finally { db.exec('ROLLBACK TO canonical_voice; RELEASE canonical_voice'); }
   const first=coordination.requestContextRollover(request);
   assert.equal(first.created,true);

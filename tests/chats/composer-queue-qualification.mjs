@@ -64,12 +64,12 @@ try{
    // the active editor and captured-intent tray keep their existing semantics.
    const failed='recoverable-queue-'+marker;await type(failed);rejectNext=true;await page.keyboard.press('Control+Enter');
    const rejectedRow=page.locator('[data-queue-row]').filter({hasText:failed});
-   await rejectedRow.getByText('Failed',{exact:true}).waitFor();
-   await rejectedRow.getByRole('button',{name:'Retry',exact:true}).waitFor();
+   await rejectedRow.getByLabel('Not Queued',{exact:true}).waitFor();
+   await rejectedRow.getByRole('button',{name:'Retry Queued Message',exact:true}).waitFor();
    const captured=await page.evaluate(marker=>Object.keys(localStorage).filter(key=>key.startsWith('ponderosa.submission.v1.')).map(key=>{try{return JSON.parse(localStorage.getItem(key));}catch{return null;}}).find(item=>item?.action==='queue'&&item.text?.includes(marker)),failed);
    assert(captured?.error==='Controlled queue rejection'&&captured.text.includes(failed)&&captured.status==='failed','failed enqueue keeps recoverable draft bytes and operation identity');
    assert(!(await queued()).some(row=>row.text.includes(failed)),'rejected enqueue did not enter canonical queue');cell.checks.push('failed enqueue retains recoverable draft through existing submission recovery');
-   const retryCount=requests.length;await rejectedRow.getByRole('button',{name:'Retry',exact:true}).click();
+   const retryCount=requests.length;await rejectedRow.getByRole('button',{name:'Retry Queued Message',exact:true}).click();
    await until(async()=>(await queued()).some(row=>row.text.includes(failed)),'existing captured-operation retry queues exact draft');
    assert.equal(requests.length,retryCount+1);assert.equal(requests.at(-1).idempotencyKey,captured.pending.idempotencyKey);assert.equal(requests.at(-1).activeRunDelivery,'queue');cell.checks.push('existing Retry preserves queue action and idempotency key');
    assert.equal(cell.pageErrors,0);cell.passed=true;await context.close();context=undefined;await f.dispose(false);f=undefined;await save();console.log(`PASS ${engine} ${phone?'phone keyboard emulation':'desktop'} ${surface}`);

@@ -96,6 +96,9 @@ test('schedule admission retains its actionable cause in stored Trigger Events w
    if(name==='react')return {...React,useState:()=>[true,()=>{}]};
    if(name==='@tanstack/react-query')return {useInfiniteQuery:()=>({data:{pages:[]},isPending:false})};
    if(name==='@mui/material')return {...require(name),Dialog:({children})=>React.createElement('section',null,children)};
+   if(name==='../WorkspaceRefreshContext')return {useReportWorkspaceRead(){}};
+   if(name==='../WorkspaceQueryError')return {WorkspaceQueryError(){throw Error('No query failure in this stored-diagnostic fixture')}};
+   if(name==='../../workspaceAvailability')return {workspaceRead:(owner,resource,query)=>({owner,resource,...query})};
    if(name==='../../api/real')return {requestJson(){throw Error('Unexpected UI request')}};
    if(name==='../TriggerOccurrenceAudit')return {OccurrenceAudit(){throw Error('No accepted occurrence exists')}};
    if(name==='react/jsx-runtime')return require(name);

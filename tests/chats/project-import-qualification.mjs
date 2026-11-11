@@ -77,7 +77,7 @@ try{
     const retainedReview=page.getByRole('dialog',{name:'Review Excluded Items',exact:true});await retainedReview.getByText('project/design.key',{exact:true}).waitFor();
     assert(await retainedReview.getByRole('button',{name:'Select Folder Again',exact:true}).isDisabled(),'Canonical failed download keeps explanation and blocks rebuild until restored');
     await retainedReview.getByRole('button',{name:'Close',exact:true}).click();await retainedReview.waitFor({state:'hidden'});
-    denyDownload=false;await failedRestore.getByRole('button',{name:'Retry',exact:true}).click();await page.getByRole('button',{name:'Remove project.zip',exact:true}).waitFor();
+    denyDownload=false;await failedRestore.locator('summary').click();await failedRestore.getByRole('button',{name:'Retry',exact:true}).click();await page.getByRole('button',{name:'Remove project.zip',exact:true}).waitFor();
     row.checks.push('reload retains exact archive metadata through failed download and successful Retry');
     await reviewButton.click();
     const dialog=page.getByRole('dialog',{name:'Review Excluded Items',exact:true});await dialog.waitFor();
