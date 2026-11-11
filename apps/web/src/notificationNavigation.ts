@@ -2,6 +2,18 @@ import type { WorkspaceNotificationDto } from "@ponderosa/core";
 import type { Route } from "./routing.js";
 import { notificationTechnicalFocusId } from "./technicalFocus.js";
 
+/** A repeated explicit navigation may target the same already-mounted Chat. */
+export function revealNotificationDecision(item: Pick<WorkspaceNotificationDto, 'kind' | 'decision'>): void {
+  if (item.kind !== 'decision' || !item.decision?.id) return;
+  requestAnimationFrame(() => {
+    const target = document.getElementById(`decision:${item.decision!.id}`);
+    if (target instanceof HTMLDetailsElement) {
+      target.open = true;
+      target.querySelector('summary')?.focus({ preventScroll: true });
+    }
+  });
+}
+
 /** Ordinary updates belong to their Chat; explicit recovery actions open the
  * exact Agent work surface that can resolve the blocker. */
 export function notificationNavigationRoute(
@@ -21,7 +33,8 @@ export function notificationNavigationRoute(
       kind: "conversation",
       projectId: item.projectId,
       conversationId,
-      ...(item.communicationEventId ? { focusMessageId: item.communicationEventId } : {}),
+      ...(item.kind === 'decision' && item.decision?.id ? { focusMessageId: `decision:${item.decision.id}` }
+        : item.communicationEventId ? { focusMessageId: item.communicationEventId } : {}),
     };
   }
   const agentId = item.action?.kind === "open_agent" ? item.action.targetId : item.agentId;

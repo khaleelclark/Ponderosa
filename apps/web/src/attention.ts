@@ -8,7 +8,7 @@ export function attentionPresentation(item: WorkspaceNotificationDto) {
   const agent = item.agentTitle ?? resolution?.recipientTitle;
   const state = work?.state ?? resolution?.outcome;
   const task = work?.assignment ?? resolution?.assignment ?? item.contextPreview;
-  const knownTask = task && !["Coordinated assignment", "Assignment Description Unavailable"].includes(task)
+  const knownTask = task && !["coordinated assignment", "assignment description unavailable"].includes(task.toLowerCase())
     ? markdownPreviewText(task).slice(0, 800) : undefined;
   const genericTitle = item.title === "A coordinated assignment needs a decision";
   const title = genericTitle ? `${agent ?? "Assigned Work"} Needs Review` : item.title;

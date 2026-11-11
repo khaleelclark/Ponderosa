@@ -453,6 +453,7 @@ export class CoordinationV3RuntimeCommunicationReadModel {
       FROM scheduler_prompt_injections injection, json_each(injection.activation_ids_json) member
       WHERE member.value IN (SELECT value FROM json_each(?))
         AND (injection.submitted_at IS NOT NULL OR injection.acknowledged_at IS NOT NULL
+          OR injection.provider_turn_id IS NOT NULL
           OR injection.state IN ('submitted', 'acknowledged', 'outcome_unknown'))
     `).all(JSON.stringify(activationIds)) as Array<{activation_id:string}>).map(value => value.activation_id) : []);
     const deletionRecipients = new Map<string, Set<string>>();

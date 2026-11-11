@@ -1440,6 +1440,12 @@ export function InboxView({
               const card = <Box component="article" key={entry.id} id={entry.id} sx={{ width: "min(1120px, 100%)", mx: "auto" }}>
               <DecisionCard
                 decision={entry.item.decision}
+                onOpen={() => {
+                  const decision = entry.item.decision;
+                  onNavigate(decision.conversationId
+                    ? { kind: 'conversation', projectId: decision.projectId, conversationId: decision.conversationId, focusMessageId: `decision:${decision.id}` }
+                    : { kind: 'agent', projectId: decision.projectId, agentId: decision.agentId });
+                }}
                 title={entry.item.decision.question}
                 context={entry.item.decision.context}
               />

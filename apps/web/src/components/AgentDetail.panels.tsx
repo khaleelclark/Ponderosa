@@ -122,6 +122,7 @@ export function AgentDetailPanels({
       >
           <ChatPane
           active={tab === "chat"}
+          conversationId={detail.agent.conversationId}
           pendingDecisions={pendingDecisions}
           decisionEvents={detail.decisionEvents}
           messages={chatMessages}

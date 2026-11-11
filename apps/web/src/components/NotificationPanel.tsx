@@ -27,7 +27,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
 import type { Route } from "../routing";
-import { notificationNavigationRoute } from "../notificationNavigation";
+import { notificationNavigationRoute, revealNotificationDecision } from "../notificationNavigation";
 import {
   attentionPresentation,
   isOpenAttention,
@@ -35,8 +35,6 @@ import {
   notificationsForAvailableProjects,
 } from "../attention";
 import { notificationTechnicalFocusId } from "../technicalFocus";
-import { notificationDecision } from "../decisions";
-import { DecisionActions } from "./decisions/DecisionActions";
 
 interface NotificationGroup {
   key: string;
@@ -140,7 +138,7 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
   onClose(): void;
   onNavigate(route: Route): void;
   onOpenSettings?(): void;
-  onOpenNotification?(notification:WorkspaceNotificationDto,work?:boolean):void;
+  onOpenNotification?(notification:WorkspaceNotificationDto,work?:boolean):void | Promise<void>;
   productScoped?:boolean;
   externalError?:string;
   onRetryExternal?():void;
@@ -451,18 +449,19 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
       void queryClient.invalidateQueries({ queryKey: queryKeys.notifications.all });
     });
   };
-  const navigateToNotification = (item: WorkspaceNotificationDto) => {
+  const navigateToNotification = async (item: WorkspaceNotificationDto) => {
     if (!isOpenAttention(item) && !item.readAt) markRead(item);
     if (item.action?.kind === "open_settings") {
       onClose();
       onOpenSettings?.();
       return;
     }
-    if(onOpenNotification){onClose();onOpenNotification(item);return;}
+    if(onOpenNotification){onClose();await onOpenNotification(item);revealNotificationDecision(item);return;}
     const destination = notificationNavigationRoute(item, availableProjectIds);
     if (!destination) return;
     onClose();
     onNavigate(destination);
+    revealNotificationDecision(item);
   };
 
   const setStatus = async (item: WorkspaceNotificationDto, status: "resolved" | "dismissed") => {
@@ -535,7 +534,7 @@ export function NotificationPanel({ open, projects, firstPage, firstPageRevision
                     sx={{ minWidth: 0, overflowWrap: "anywhere" }}
                     primary={<Stack direction="row" spacing={1} sx={{ minWidth: 0, alignItems: "center" }}><Typography variant="body2" fontWeight={(filter === "attention" ? item.acknowledgedAt : item.readAt) ? 500 : 650} noWrap sx={{ minWidth: 0, flex: 1 }}>{attention?.title ?? item.title}</Typography>{filter === "attention" && !item.acknowledgedAt ? <Chip size="small" color="primary" label="New" /> : item.severity && item.severity !== "info" ? <Chip size="small" color={item.severity === "urgent" ? "error" : "warning"} label={item.severity === "urgent" ? "Urgent" : "Issue"} /> : null}<Typography variant="caption" color="text.secondary" sx={{ flex: "0 0 auto" }}>{notificationTime(attention?.occurredAt ?? item.createdAt)}</Typography></Stack>}
                     secondary={<Stack spacing={0.5}>{!attention && item.conversationTitle ? <Typography variant="caption" color="text.secondary">Chat: {item.conversationTitle}</Typography> : null}{(attention?.task ?? item.contextPreview) ? <Typography variant="body2" sx={{ fontWeight: 600, overflowWrap: "anywhere" }}>“{attention?.task ?? item.contextPreview}”</Typography> : null}{item.category === "communication" && item.communicationEventId ? <Typography variant="caption" color="text.secondary">Message reference: {item.communicationEventId.slice(-8)}</Typography> : null}<Typography variant="body2" color="text.secondary" sx={{ overflowWrap: "anywhere" }}>{attention?.explanation ?? item.body}</Typography>{item.kind === "decision" && item.decision && (item.status ?? "open") === "open"
-                      ? <DecisionActions decision={notificationDecision(item)!} compact />
+                      ? <Button size="small" onClick={event => { event.stopPropagation(); navigateToNotification(item); }}>Answer Question</Button>
                       : item.status && item.status !== "open" ? <Typography variant="caption" color="text.secondary">{item.status}</Typography> : null}
                     <Box sx={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: .5 }}>
                     {attention ? <Typography variant="caption" color="text.secondary" sx={{ width: "100%" }}>{attention.scopes.join(" · ")} · {attention.reference}</Typography> : null}

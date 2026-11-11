@@ -99,6 +99,7 @@ import { ChatComposerDock } from "./chat/ChatComposerDock";
 import { CollectionStateFeedback } from "./CollectionPrimitives";
 import type { WorkspaceDirectoryRequestState } from "../hooks/useWorkspaceDirectory";
 import { ChatContextSettings } from "./ChatContextSettings";
+import { ChatDecisionPanel } from "./decisions/ChatDecisionPanel";
 
 import { chatStateKey } from "../chatState";
 import { publishUpdatedAgent, refreshAgentRuntime } from "../conversationAgentCache";
@@ -353,13 +354,17 @@ export function ConversationView({
     detailQuery,
     focusedMessage,
     focusedMessageHighlightDisposer,
-    focusMessageId,
+    focusMessageId: focusMessageId?.startsWith('decision:') ? undefined : focusMessageId,
     initialView,
     messages,
     setActiveView,
     setOlderCollaboration,
     setOlderMain,
   });
+  useEffect(() => {
+    if (!focusMessageId?.startsWith('decision:')) return;
+    setAgentWorkOpen(false); setActiveView('main');
+  }, [conversationId, focusMessageId]);
   // Persist the selection so "the model selected for this conversation" survives
   // reloads and prefills the New Agent dialog.
   const runtimeTargetAgentId = commandTargetAgent?.id;
@@ -935,6 +940,25 @@ export function ConversationView({
           }}
         >
           <ChatSurface
+            overlay={<Box
+            sx={{
+              position: "absolute",
+              insetInline: 0,
+              bottom: 2,
+              zIndex: 2,
+              pointerEvents: "none",
+            }}
+          >
+            <ProviderFailureBanner onOpenError={onOpenProviderError} messages={detailQuery.data.providerFailureMessages ?? messages} hasMore={detailQuery.data.providerFailuresHasMore} onOpenAgent={id => onOpenAgent(id)} agents={identityAgents} projectId={conversation.projectId}>
+            <MasterRespondingIndicator
+              messages={messages}
+              agents={agents}
+              healthByAgentId={healthByAgentId}
+            />
+            </ProviderFailureBanner>
+          </Box>}
+            bottomPanel={<ChatDecisionPanel projectId={conversation.projectId} conversationId={conversationId} active={!agentWorkOpen && activeView === 'main'}
+              focusDecisionId={focusMessageId?.startsWith('decision:') ? focusMessageId.slice(9) : undefined} agentTitle={agentTitle} />}
             showOutgoingMessage
             outgoingInTimeline
             canonicalCommunicationIds={messages.map(message => message.communicationEventId)}
@@ -1169,25 +1193,7 @@ onClose: () => setAgentWorkOpen(false)}} />
             collectionFooter={filteredCount=><CollectionStateFeedback resourceLabel="Agents" request={membersRequest} itemCount={filteredCount} filtersActive={Boolean(memberSearch.trim())} emptyTitle="No Agents Yet" suppressEmpty/>}
           /></Box>
         ) : null}
-        {activeView === "main" && !agentWorkOpen ? (
-          <Box
-            sx={{
-              position: "absolute",
-              insetInline: 0,
-              bottom: 2,
-              zIndex: 2,
-              pointerEvents: "none",
-            }}
-          >
-            <ProviderFailureBanner onOpenError={onOpenProviderError} messages={detailQuery.data.providerFailureMessages ?? messages} hasMore={detailQuery.data.providerFailuresHasMore} onOpenAgent={id => onOpenAgent(id)} agents={identityAgents} projectId={conversation.projectId}>
-            <MasterRespondingIndicator
-              messages={messages}
-              agents={agents}
-              healthByAgentId={healthByAgentId}
-            />
-            </ProviderFailureBanner>
-          </Box>
-        ) : null}
+
       </Box>
 
       {auditOnly?<Alert severity="info" sx={{m:1}}>Temporary workflow Chat · messages and results</Alert>:<ChatComposerDock

@@ -452,7 +452,7 @@ function MainConversationTimeline({
   const replySources=mainTimeline.flatMap(item=>item.kind==='message'?[item.message]:[]);
   const replyRows=useTextReplyProjection(replySources,projectId,JSON.stringify([projectId,'main',replySources[0]?.conversationId]));
   const visibleIds=new Set(mainTimeline.slice(firstMountedIndex).map(entry=>entry.id));
-  const timeline=[...mainTimeline.flatMap(entry=>entry.kind!=='message'&&visibleIds.has(entry.id)?[entry]:[]),...replyRows.filter(row=>row.provisional||visibleIds.has(`message:${row.message.id}`)).map(row=>({kind:'message' as const,id:row.key,at:row.at,message:row.message,provisional:row.provisional,feedback:row.feedback}))].sort((a,b)=>a.at.localeCompare(b.at)||a.id.localeCompare(b.id));
+  const timeline=[...mainTimeline.flatMap(entry=>entry.kind!=='message'&&visibleIds.has(entry.id)&&!(entry.kind==='decision'&&entry.event.decision.status==='pending')?[entry]:[]),...replyRows.filter(row=>row.provisional||visibleIds.has(`message:${row.message.id}`)).map(row=>({kind:'message' as const,id:row.key,at:row.at,message:row.message,provisional:row.provisional,feedback:row.feedback}))].sort((a,b)=>a.at.localeCompare(b.at)||a.id.localeCompare(b.id));
   return (
     <Stack spacing={0} sx={{ mb: 2 }}>
       <OutgoingMessageRow empty={<Typography variant="body2" color="text.secondary">No messages yet · send a message or mention an Agent</Typography>}

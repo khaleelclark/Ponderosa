@@ -1,6 +1,6 @@
 import {MutationErrorDetails} from "../MutationNotifications";
 import { Button, Stack } from "@mui/material";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { DecisionPrompt, DecisionResponse } from "../../decisions";
 import { decisionAcceptsText, decisionTextActionLabel } from "../../decisions";
 import { useDecisionResponse } from "../../hooks/useDecisionResponse";
@@ -12,13 +12,27 @@ export function DecisionActions({
   decision,
   onResolved,
   onRetentionChange,
+  inline,
+  children,
+  onOpen,
+  onDismiss,
 }: {
   decision: DecisionPrompt;
   compact?: boolean;
   onResolved?(): void;
   onRetentionChange?(decision: DecisionPrompt, retain: boolean): void;
+  inline?: boolean;
+  children?: ReactNode;
+  onOpen?(): void;
+  onDismiss?(): void;
 }): JSX.Element | null {
   const [textDialogOpen, setTextDialogOpen] = useState(false);
+  const answerTrigger = useRef<HTMLButtonElement>(null), wasEditing = useRef(false);
+  useEffect(() => {
+    if (inline && wasEditing.current && !textDialogOpen && answerTrigger.current?.getClientRects().length)
+      answerTrigger.current.focus({ preventScroll: true });
+    wasEditing.current = textDialogOpen;
+  }, [inline, textDialogOpen]);
   const response = useDecisionResponse(() => {
     setTextDialogOpen(false);
     onResolved?.();
@@ -32,8 +46,9 @@ export function DecisionActions({
     // that exact mounted response owner available until its existing retry settles.
     if (textDialogOpen || currentAttempt) onRetentionChange?.(decision, textDialogOpen || response.isPending || Boolean(unconfirmedApproval));
   }, [currentAttempt, decision, onRetentionChange, response.isPending, textDialogOpen, unconfirmedApproval]);
-  if (response.isSuccess && response.data.id === decision.id && response.data.status !== "pending") return null;
-  if (decision.status !== "pending" && !(currentAttempt && response.isPending) && !unconfirmedApproval) return null;
+  if (response.isSuccess && response.data.id === decision.id && response.data.status !== "pending") return children ? <>{children}</> : null;
+  if (decision.status !== "pending" && !(currentAttempt && response.isPending) && !unconfirmedApproval) return children ? <>{children}</> : null;
+  if (onOpen) return <>{children}<Button size="small" onClick={event => { event.stopPropagation(); onOpen(); }}>Answer Question</Button></>;
 
   const respond = (value: DecisionResponse) => {
     onRetentionChange?.(decision, true);
@@ -51,7 +66,7 @@ export function DecisionActions({
   </Button>;
   if (decision.runtimeAction) {
     return (
-      <><RuntimeElicitationActions
+      <>{children}<RuntimeElicitationActions
         decision={decision}
         pending={response.isPending}
         error={error}
@@ -62,7 +77,8 @@ export function DecisionActions({
 
   return (
     <>
-      <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">
+      {!inline || !textDialogOpen ? children : null}
+      <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap" sx={{ display: inline && textDialogOpen ? 'none' : undefined }}>
         {!grouped && decision.options.map((option) => (
           <Button
             key={option.id}
@@ -78,8 +94,9 @@ export function DecisionActions({
             {option.label}
           </Button>
         ))}
-        {decisionAcceptsText(decision) ? (
+        {decisionAcceptsText(decision) && !(inline && textDialogOpen) ? (
           <Button
+            ref={answerTrigger}
             size="small"
             variant="outlined"
             disabled={response.isPending}
@@ -98,10 +115,18 @@ export function DecisionActions({
       <DecisionResponseDialog
         key={decision.id}
         decision={decision}
+        inline={inline}
         open={textDialogOpen}
         pending={response.isPending}
         error={error}
-        onClose={() => { setTextDialogOpen(false); if (!response.isPending && !unconfirmedApproval) onRetentionChange?.(decision, false); }}
+        onClose={() => {
+          if (inline && onDismiss) { onDismiss(); return; }
+          setTextDialogOpen(false); if (!response.isPending && !unconfirmedApproval) onRetentionChange?.(decision, false);
+        }}
+        onCompleted={() => {
+          if (response.isPending || unconfirmedApproval) return;
+          setTextDialogOpen(false); onRetentionChange?.(decision, false);
+        }}
         onRespond={respond}
       />
     </>

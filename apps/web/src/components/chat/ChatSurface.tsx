@@ -22,6 +22,8 @@ export function ChatSurface({
   empty,
   children,
   beforeMessages,
+  bottomPanel,
+  overlay,
   showOutgoingMessage = false,
   outgoingInTimeline = false,
   renderedRowCount,
@@ -36,6 +38,8 @@ export function ChatSurface({
   empty?: ReactNode;
   children: ReactNode | ((firstMountedIndex: number) => ReactNode);
   beforeMessages?: ReactNode;
+  bottomPanel?: ReactNode;
+  overlay?: ReactNode;
   showOutgoingMessage?: boolean;
   outgoingInTimeline?: boolean;
   /** Canonical rows inside a shared timeline renderer, including non-message rows. */
@@ -148,7 +152,8 @@ export function ChatSurface({
       : { xs: 1.5, md: 2.5 };
 
   return (
-    <Box sx={{ position: "relative", height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden" }}>
+    <Box sx={{ position: "relative", height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", ...(bottomPanel ? { display: "grid", gridTemplateRows: "minmax(0, 1fr) auto" } : {}) }}>
+      <Box sx={{ position: "relative", height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden" }}>
       <Stack
         component="section"
         aria-label={label}
@@ -206,7 +211,10 @@ export function ChatSurface({
         </Stack>
       </Stack>
       {transcriptLoading ? <span role="status" style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clipPath: "inset(50%)" }}>Loading Chat messages…</span> : null}
+      {overlay}
       <ScrollToLatestButton visible={scroll.showScrollToLatest} onClick={scroll.scrollToLatest} />
+      </Box>
+      {bottomPanel}
     </Box>
   );
 }

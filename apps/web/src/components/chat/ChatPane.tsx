@@ -2,6 +2,7 @@ import {attachmentsOutsideVisualizations} from "./messageMarkdown";
 import { OutgoingMessageRow } from "./OutgoingMessage";
 import {ConversationChromeContext} from "../ConversationChromeContext";
 import {AssistantIcon} from "../AssistantIcon";
+import {ChatDecisionPanel} from "../decisions/ChatDecisionPanel";
 import { Alert, Box, Button, ButtonBase, Chip, Typography } from "@mui/material";
 import type {
   AgentActivityDto,
@@ -114,6 +115,7 @@ function ChatPaneComponent({
   messages,
   decisionEvents = [],
   pendingDecisions = [],
+  conversationId,
   agentName = "Agent",
   agentNameForId,
   agentIdForHandle,
@@ -143,6 +145,7 @@ function ChatPaneComponent({
   messages: MessageDto[];
   decisionEvents?: ConversationDecisionEventDto[];
   pendingDecisions?: DecisionDto[];
+  conversationId?: string;
   agentName?: string;
   agentNameForId?(agentId: string): string | undefined;
   agentIdForHandle?(handle: string): string | undefined;
@@ -287,8 +290,8 @@ function ChatPaneComponent({
     const byId = new Map(decisionEvents.filter(event => event.kind === "decision").map(event => [event.decision.id, event.decision]));
     // Pending questions remain reachable even outside the loaded history page.
     for (const decision of pendingDecisions) if (!byId.has(decision.id)) byId.set(decision.id, decision);
-    return [...byId.values()];
-  }, [decisionEvents, pendingDecisions]);
+    return [...byId.values()].filter(decision => !(projectId && conversationId && fileOwnerAgentId) || decision.status !== "pending");
+  }, [decisionEvents, pendingDecisions, projectId, conversationId, fileOwnerAgentId]);
   const timeline = useMemo(
     () =>
       [
@@ -345,6 +348,8 @@ function ChatPaneComponent({
 
   return (
     <ChatSurface
+      bottomPanel={projectId && conversationId && fileOwnerAgentId ? <ChatDecisionPanel projectId={projectId} conversationId={conversationId} agentId={fileOwnerAgentId} decisions={pendingDecisions}
+        active={active} focusDecisionId={focusId?.startsWith('decision:') ? focusId.slice(9) : undefined} agentTitle={id => agentNameForId?.(id) ?? agentName} /> : undefined}
       showOutgoingMessage
       outgoingInTimeline
       renderedRowCount={timeline.length}

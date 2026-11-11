@@ -5,6 +5,7 @@ import {readFile} from 'node:fs/promises';
 import {pushPayload} from '../../apps/server/dist/web-push-delivery.js';
 import '../shared/resolve-typescript.mjs';
 const {parseRoute}=await import('../../apps/web/src/routing.ts');
+const {attentionPresentation}=await import('../../apps/web/src/attention.ts');
 const {notificationNavigationRoute}=await import('../../apps/web/src/notificationNavigation.ts');
 
 const workerSource=await readFile(new URL('../../apps/web/public/push-handler.js',import.meta.url),'utf8');
@@ -134,4 +135,13 @@ test('push reconciliation batches displayed IDs and bounds unavailable retries',
  const items=Array.from({length:205},(_,i)=>['stale-'+i,'/chats/one']);
  const batched=await foregroundPushFixture({items});assert.deepEqual(batched.calls.map(ids=>ids.length),[100,100,5]);assert.equal(batched.closed.length,205);
  const failed=await foregroundPushFixture({items:[['stale','/chats/one']],fail:true});assert.equal(failed.calls.length,3);assert.deepEqual(failed.closed,[]);assert.deepEqual(failed.results,[false,false]);
+});
+
+// The server retains this evidence marker in sentence case; Title Case is presentation.
+test('missing assignment evidence is never presented as an authored task',()=>{
+ for(const assignment of ['Assignment description unavailable','Assignment Description Unavailable','Coordinated assignment']){
+  const view=attentionPresentation(notification('missing',{kind:'operational',category:'coordination',workContext:{kind:'request',recordId:'request',assignment,state:'failed'}}));
+  assert.equal(view.task,undefined);assert.equal(view.taskUnavailableLabel,'Assignment description unavailable.');
+ }
+ assert.equal(attentionPresentation(notification('real',{workContext:{kind:'request',assignment:'Inspect the unavailable index'}})).task,'Inspect the unavailable index');
 });
