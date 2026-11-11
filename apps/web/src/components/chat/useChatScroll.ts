@@ -45,10 +45,6 @@ export function useChatScroll(
     captureAnchor();
   },[captureAnchor]);
 
-  // Keep the reader's mounted message in place when progress above it disappears
-  // or an earlier streaming body grows. Following latest uses the existing path.
-  useLayoutEffect(()=>{preserveAnchor();});
-
   useLayoutEffect(() => {
     const element = scrollRef.current;
     if (!element) return;
@@ -71,7 +67,6 @@ export function useChatScroll(
     if (restoreDistance.current !== undefined) {
       element.scrollTop = element.scrollHeight - restoreDistance.current;
       restoreDistance.current = undefined;
-      captureAnchor();
       return;
     }
     if (firstLayout.current || followLatest.current) {
@@ -85,6 +80,11 @@ export function useChatScroll(
     follow.storageKey,
     layoutKey,
   ]);
+
+  // Apply prepend's distance fallback first, then preserve the mounted reading
+  // anchor. Concurrent growth below must not overwrite that anchor with a new
+  // bottom-distance measurement. Following latest keeps the existing path.
+  useLayoutEffect(()=>{preserveAnchor();});
 
   useLayoutEffect(() => {
     const element = scrollRef.current;

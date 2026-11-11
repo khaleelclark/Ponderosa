@@ -156,3 +156,15 @@ export async function replyPendingContradictionRegression():Promise<void>{
   const noRun={...sent,deliveryReceipts:[{...receipt(),executionId:undefined}]};f.pane([noRun],true);await settle();f.statuses.set('input:agent',{...status,...patch});f.wake();await until(()=>!row(f.host),'Supplied conflicting authority fences even when other evidence is pending or missing');
  });
 }
+
+export async function replyStreamPrependContinuityRegression():Promise<void>{await fixture(async(f:any)=>{
+ const history=Array.from({length:20},(_,i)=>({...canonical(snapshot('past-'+i,'history'),'past-'+i),replyStream:undefined,text:'History '+i+'\n\n'+('Readable history. '.repeat(25)),createdAt:new Date(Date.parse(stamp)-100000+i*1000).toISOString()}));
+ const sent=source(),status=snapshot();f.statuses.set('input:agent',status);let loads=0;
+ const render=(prefix:any[]=[],hasOlder=true)=>f.pane([...prefix,...history,sent],true,'agent',{hasOlder,onLoadOlder:()=>{loads++;}});
+ render();await until(()=>Boolean(row(f.host)),'Reply below history starts streaming');await settle();const region=f.host.querySelector<HTMLElement>('.chat-scroll-region')!;
+ region.scrollTop=700;region.dispatchEvent(new Event('scroll'));await settle();const top=region.getBoundingClientRect().top,anchor=[...region.querySelectorAll<HTMLElement>('.chat-message-body')].find(node=>node.getBoundingClientRect().bottom>top)!;const offset=anchor.getBoundingClientRect().top-top;
+ [...f.host.querySelectorAll<HTMLButtonElement>('button')].find(node=>node.textContent==='Load Older History')!.click();assert(loads>0,'Existing pagination captures its prepend boundary');
+ f.statuses.set('input:agent',{...status,reply:{...status.reply,sequence:2,text:'Growing below the reader\n\n'+('New response prose. '.repeat(160))}});f.wake();await until(()=>row(f.host)?.textContent?.includes('Growing below the reader')===true,'Reply grows while the earlier page is pending');
+ const prefix=[{...history[0],id:'prepended',communicationEventId:'prepended',seq:1,text:'Earlier page\n\n'+('Older readable prose. '.repeat(25)),createdAt:new Date(Date.parse(stamp)-200000).toISOString()}];render(prefix,false);await settle();
+ assert(anchor.isConnected&&Math.abs(anchor.getBoundingClientRect().top-region.getBoundingClientRect().top-offset)<2,'Prepending and removing pagination preserve the mounted reading anchor despite reply growth below');
+});}
