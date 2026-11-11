@@ -98,7 +98,15 @@ export async function voiceMessageRecordingRegression():Promise<void> {
    voiceContext={{projectId:'owned-project',conversationId:'owned-chat',selectedAgentId:owner,agents:[],lockAgent:true}}
    onFinalTranscript={words=>insertedTranscripts.push(words)} onSettlingChange={()=>{}}
    onVoiceAttachment={file=>{if(refuseOwnedDraft)return 'Owned draft busy';attachmentCalls++;attached=file;return undefined;}}/></StrictMode>);
-  const recordButton=()=>until(()=>document.querySelector<HTMLButtonElement>('button[aria-label="Record Voice Message"]')??undefined,'Direct recording action missing');
+  const recordButton=async()=>{
+   assert(!document.querySelector('button[aria-label="Record Voice Message"]'),'Shared composers have no standalone microphone button');
+   const waveform=await until(()=>document.querySelector<HTMLButtonElement>('button[aria-label="Voice Options"]')??undefined,'Waveform trigger missing');
+   const before=permissionCalls;waveform.focus();waveform.click();
+   const choice=await until(()=>Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]')).find(node=>node.textContent?.includes('Record Voice Message')),'Recording menu entry missing');
+   assert(permissionCalls===before,'Opening Voice Options alone never requests microphone access');
+   assert(Array.from(document.querySelectorAll('[role="menuitem"]')).filter(node=>node.textContent?.includes('Record Voice Message')).length===1,'Recording appears exactly once');
+   return choice;
+  };
   permission=undefined;renderOwner();(await recordButton()).click();assert(captureBlocked,'pending permission must synchronously gate submission');
   const oldOwnerPermission=await until(()=>permission,'Owned recording did not request permission');
   const beforeOwnerChange=stopped,stagedBeforeOwnerChange=attachmentCalls;
@@ -122,7 +130,7 @@ export async function voiceMessageRecordingRegression():Promise<void> {
   assert(captureBlocked&&recordingSlot.contains(recordingSurface()),'unresolved partial audio remains inline and blocks submission');
   refuseOwnedDraft=false;const usePartial=await button('Use Recording');usePartial.focus();usePartial.click();await closedRecorder();
   await until(()=>!captureBlocked?true:undefined,'Staging the retained recording did not release the Send gate');
-  await until(()=>document.activeElement===document.querySelector('button[aria-label="Record Voice Message"]')?true:undefined,'Closing inline capture did not restore its toolbar trigger');
+  await until(()=>document.activeElement===document.querySelector('button[aria-label="Voice Options"]')?true:undefined,'Closing inline capture did not restore its toolbar trigger');
   permission=undefined;(await recordButton()).click();(await until(()=>permission,'Final focus-preservation recording did not request permission'))(stream);
   (await button('Finish Recording')).click();nextEditor.focus();await closedRecorder();await tick();
   assert(document.activeElement===nextEditor&&nextEditor.value==='Keep this newer editor interaction','Finishing must not steal focus or content from a newer editor interaction');
@@ -138,6 +146,12 @@ export async function voiceMessageRecordingRegression():Promise<void> {
   const beforeWaveAttachment=attachmentCalls;(await button('Finish Recording')).click();await closedRecorder();
   assert(attachmentCalls===beforeWaveAttachment+1,'Waveform recording stages through the existing draft attachment callback once');
   await until(()=>document.activeElement===waveform?true:undefined,'Closing waveform recording restores its actual trigger');
+  permission=undefined;(await recordButton()).click();
+  (await until(()=>permission,'Cancelled waveform recording did not request permission'))(stream);
+  (await button('Discard')).click();await closedRecorder();
+  await until(()=>document.activeElement===waveform?true:undefined,'Discard returns focus to waveform');
+  assert(nextEditor.value==='Keep this newer editor interaction','Attach and cancel preserve the existing draft');
+
 
  }finally{
   root.unmount();host.remove();recordingSlot.remove();nextEditor.remove();window.MediaRecorder=nativeRecorder;if(nativeRecognition)speechWindow.SpeechRecognition=nativeRecognition;else delete speechWindow.SpeechRecognition;

@@ -631,7 +631,7 @@ export function Composer({
     [markDraftEdited, replaceText],
   );
   const insertDictatedText = useCallback(
-    (transcript: string) => {
+    (transcript: string, focusEditor = true) => {
       if (draftMutationLockedRef.current) return;
       const selection = inputRef.current?.getSelectionOffsets() ?? {
         start: textRef.current.length,
@@ -647,13 +647,13 @@ export function Composer({
         0,
         textRef.current.length,
         insertion.text,
-        { caret: insertion.caret },
+        { caret: insertion.caret, focus: focusEditor },
       );
       setSendError(undefined);
       setCaret(insertion.caret);
       setHighlighted(0);
       setSuppressMenu(false);
-      requestAnimationFrame(() => inputRef.current?.focus());
+      if(focusEditor)requestAnimationFrame(() => inputRef.current?.focus());
     },
     [],
   );

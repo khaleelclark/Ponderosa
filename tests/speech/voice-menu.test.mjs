@@ -43,19 +43,24 @@ test('Voice options opens a named MUI menu without capture or submission; call k
  const call=f.find(n=>n.type===f.VoiceConversation);assert.equal(call.props.projectId,'project');assert.equal(call.props.conversationId,'chat');assert.equal(call.props.selectedAgentId,'agent');assert.equal(call.props.lockAgent,true);
  assert.equal(call.props.startOnOpen,true);call.props.onClose();f.render();assert.equal(f.all().some(n=>n.type===f.VoiceConversation),false);f.unmount();
 });
-test('voice recording opens directly from its distinct toolbar action without menu or staging',()=>{
- const attached=[],activity=[],f=menuFixture({onVoiceAttachment:file=>{attached.push(file);},onActiveChange:value=>activity.push(value),maxRecordingBytes:1024});
- const record=f.find(n=>n.props['aria-label']==='Record Voice Message');assert.equal(record.props.disabled,false);
- record.props.onClick();assert.equal(activity.at(-1),true,'pending permission must synchronously block submission before effects');f.render();assert.equal(f.find(n=>n.type==='Menu').props.open,false);assert.equal(f.portals.at(-1),f.recordingContainer,'inline capture must use the explicit owned slot');
+for(const inlineVoiceOptions of [false,true])test(`voice recording uses one waveform menu entry without starting capture on open (inline=${inlineVoiceOptions})`,()=>{
+ const attached=[],activity=[],f=menuFixture({inlineVoiceOptions,onVoiceAttachment:file=>{attached.push(file);},onActiveChange:value=>activity.push(value),maxRecordingBytes:1024});
+ assert.equal(f.all().some(n=>n.props['aria-label']==='Record Voice Message'),false,'No standalone microphone button');
+ const idleActivity=[...activity];f.open();assert.deepEqual(activity,idleActivity);assert.deepEqual(f.calls,[]);assert.deepEqual(attached,[]);
+ assert.equal(f.all().filter(n=>n.type==='MenuItem'&&f.all(n).some(child=>child.props.primary==='Record Voice Message')).length,1);
+ const record=f.item('Record Voice Message');assert.equal(record.props.disabled,false);
+ record.props.onClick();assert.equal(activity.at(-1),true,'pending permission synchronously gates submission');f.render();assert.equal(f.find(n=>n.type==='Menu').props.open,false);assert.equal(f.portals.at(-1),f.recordingContainer);
  assert.equal(f.all().some(n=>n.type===f.VoiceMessageRecorder),true);assert.deepEqual(attached,[]);assert.deepEqual(f.calls,[]);
- f.find(n=>n.type===f.VoiceMessageRecorder).props.onClose();f.render();assert.equal(activity.at(-1),false,'staging or discard releases capture gating');f.open();
- assert.equal(f.all().some(n=>n.type==='MenuItem'&&f.all(n).some(child=>child.props.primary==='Record Voice Message')),false,'recording must not require a second menu route');
- f.dictation.status='listening';f.render();assert.equal(f.find(n=>n.props['aria-label']==='Record Voice Message').props.disabled,true);
- f.dictation.status='ready';f.render();f.readOnly(true);assert.equal(f.find(n=>n.props['aria-label']==='Record Voice Message').props.disabled,true);f.unmount();
+ f.find(n=>n.type===f.VoiceMessageRecorder).props.onClose();f.render();assert.equal(activity.at(-1),false);f.open();
+ f.dictation.status='listening';f.render();assert.equal(f.item('Record Voice Message').props.disabled,true);
+ f.dictation.status='ready';f.render();f.update({maxRecordingBytes:0});assert.equal(f.item('Record Voice Message').props.disabled,true);
+ f.update({maxRecordingBytes:1024,recordingContainer:null});assert.equal(f.item('Record Voice Message').props.disabled,true);
+ f.update({recordingContainer:f.recordingContainer});f.readOnly(true);assert.equal(f.item('Record Voice Message').props.disabled,true);
+ f.update({onVoiceAttachment:undefined});assert.equal(f.all().some(n=>n.type==='MenuItem'&&f.all(n).some(child=>child.props.primary==='Record Voice Message')),false,'Unsupported composers have no recording entry');f.unmount();
 });
 test('changing recording owner unmounts its recorder and never revives the previous capture',()=>{
  const f=menuFixture({onVoiceAttachment:()=>undefined});
- f.find(n=>n.props['aria-label']==='Record Voice Message').props.onClick();f.render();
+ f.open();f.item('Record Voice Message').props.onClick();f.render();
  assert.equal(f.all().some(n=>n.type===f.VoiceMessageRecorder),true);
  f.update({voiceContext:{...context,selectedAgentId:'second',agents:[agent(),agent('second')]}});
  assert.equal(f.all().some(n=>n.type===f.VoiceMessageRecorder),false,'owner change must remove the old recorder during render');
@@ -222,8 +227,8 @@ test('recorded transcript staging refusal preserves the words and original audio
  const f=recorderFixture({attachmentError:'Draft is busy'});await f.flush();f.emit('Keep these exact words');f.finish();await f.flush();f.settle();assert.equal(f.closed(),0);assert.equal(f.attached.length,1);assert.equal(f.attached[0].transcript,'Keep these exact words');assert(f.all().some(n=>n.type==='Alert'&&n.props.children==='Draft is busy'));f.unmount();
 });
 test('toolbar inserts a recorded transcript only after the same owned attachment is admitted',()=>{
- let reject=true;const files=[],f=menuFixture({onVoiceAttachment:file=>{files.push(file);return reject?'Draft busy':undefined;}});f.find(n=>n.props['aria-label']==='Record Voice Message').props.onClick();f.render();const recorder=f.find(n=>n.type===f.VoiceMessageRecorder);
- assert.equal(recorder.props.onAttach('recording','Spoken instruction'),'Draft busy');assert.deepEqual(f.calls,[]);reject=false;assert.equal(recorder.props.onAttach('recording','Spoken instruction'),undefined);assert.deepEqual(f.calls,[['words','Spoken instruction']]);f.unmount();
+ let reject=true;const files=[],insertions=[],f=menuFixture({onVoiceAttachment:file=>{files.push(file);return reject?'Draft busy':undefined;},onFinalTranscript:(words,focusEditor)=>insertions.push({words,focusEditor})});f.open();f.item('Record Voice Message').props.onClick();f.render();const recorder=f.find(n=>n.type===f.VoiceMessageRecorder);
+ assert.equal(recorder.props.onAttach('recording','Spoken instruction'),'Draft busy');assert.deepEqual(f.calls,[]);reject=false;assert.equal(recorder.props.onAttach('recording','Spoken instruction'),undefined);assert.deepEqual(insertions,[{words:'Spoken instruction',focusEditor:false}],'Recorded transcript insertion preserves waveform focus restoration');f.unmount();
 });
 
 test('recognition ending before recording does not silently stage an incomplete transcript',async()=>{
@@ -271,6 +276,6 @@ test('contact header reuses the guarded call action, hides its menu duplicate, a
 test('header handset cannot open while native capture or recording is active, or from a foreign owner',()=>{
  const f=menuFixture({onVoiceAttachment:()=>undefined},{nodeType:1});const open=()=>f.find(n=>n.type==='IconButton'&&n.props['aria-label']==='Call');
  f.dictation.status='starting';f.render();assert.equal(open().props.disabled,true);open().props.onClick({currentTarget:{}});f.render();assert.equal(f.all().some(n=>n.type===f.VoiceConversation),false);
- f.dictation.status='ready';f.render();f.find(n=>n.props['aria-label']==='Record Voice Message').props.onClick();f.render();assert.equal(open().props.disabled,true);
+ f.dictation.status='ready';f.render();f.open();f.item('Record Voice Message').props.onClick();f.render();assert.equal(open().props.disabled,true);
  f.find(n=>n.type===f.VoiceMessageRecorder).props.onClose();f.render();f.update({voiceContext:{...context,selectedAgentId:'foreign'}});assert.equal(open().props.disabled,true);f.unmount();
 });
