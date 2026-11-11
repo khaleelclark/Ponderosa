@@ -787,16 +787,20 @@ export class LocalMemoryService{
       this.ports.store.resumeSessionState(agentId)?.sessionId!==sessionId)return {status:'unavailable',isCurrent:()=>false};
    const product:ProductScope=owner.branchId?'branches':'dev',initialGrant=this.getGrant(chatId,product);
    const initialReadDenied=new CapabilityPolicyStore(db).resolveForAgent(agentId).restrictedCapabilityIds.includes(CAPABILITY_IDS.memoryRead);
+   const floor=this.memoryLineageStart(agentId,chatId,originRunId);
+   if(floor===undefined)return {status:'unavailable',isCurrent:()=>false};
    const sameOwner=()=>{
     const current=this.ports.store.getAgent(agentId),currentOwner=activeChatResourceOwner(this.ports.store,'agent',agentId);
     const latest=db.prepare(`SELECT id,fencing_token FROM scheduler_runs WHERE agent_id=? AND scope_key=?
       AND provider_session_id=? AND status='completed' AND prompt_injection_state='injected' ORDER BY fencing_token DESC LIMIT 1`)
       .get(agentId,source.scope_key,sessionId) as {id:string;fencing_token:number}|undefined;
-    const uncertain=db.prepare(`SELECT 1 FROM scheduler_runs r WHERE r.agent_id=? AND r.scope_key=? AND r.id<>? AND
+    // A fresh context does not inherit uncertain effects from retired history.
+    // Verified handoff ancestry keeps inherited generations inside this floor.
+    const uncertain=db.prepare(`SELECT 1 FROM scheduler_runs r WHERE r.agent_id=? AND r.scope_key=? AND r.id<>? AND r.fencing_token>=? AND
       (r.status IN ('leased','running','outcome_unknown') OR r.prompt_injection_state='injecting'
        OR EXISTS(SELECT 1 FROM scheduler_prompt_injections i WHERE i.run_id=r.id AND i.state='outcome_unknown')) LIMIT 1`)
-      .get(agentId,source.scope_key,currentRunId);
-    return !uncertain&&!!current&&current.projectId===agent.projectId&&current.conversationId===chatId&&!!currentOwner&&
+      .get(agentId,source.scope_key,currentRunId,floor);
+    return !uncertain&&this.memoryLineageStart(agentId,chatId,originRunId)===floor&&!!current&&current.projectId===agent.projectId&&current.conversationId===chatId&&!!currentOwner&&
       currentOwner.projectId===owner.projectId&&currentOwner.branchId===owner.branchId&&!currentOwner.executionId&&
       this.ports.store.resumeSessionState(agentId)?.sessionId===sessionId&&
       this.ports.store.acceptedProviderSessionInput(agentId)?.executionId===originRunId&&
@@ -816,8 +820,6 @@ export class LocalMemoryService{
      return (initialReadDenied||!denied)&&(!initialGrant.readGlobal||this.getGrant(chatId,product).readGlobal);
     }catch{return false;}}};
    }
-   const floor=this.memoryLineageStart(agentId,chatId,originRunId);
-   if(floor===undefined)return {status:'unavailable',isCurrent:()=>false};
    const refs=db.prepare(`SELECT DISTINCT e.scope FROM memory_exposure_sources e JOIN scheduler_runs r ON r.id=e.run_id
     WHERE r.agent_id=? AND r.scope_key=? AND r.fencing_token>=? AND r.fencing_token<=?`)
     .all(agentId,source.scope_key,floor,source.fencing_token) as Array<{scope:string}>;

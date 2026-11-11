@@ -19,6 +19,7 @@ test('retained memory admission proof fences exact access and source changes whi
   f.ok(await f.api('PUT',`/api/agents/${agent.id}/capabilities`,{revision:0,restrictedCapabilityIds:[CAPABILITY_IDS.filesystemWrite]}));
   const saved=f.ok(await f.api('POST','/api/local-memory/global',{operation:'save',text:'Synthetic retained memory source.',destination:'global'}));
   const id=saved.structuredContent?.result?.chunk_id;assert.ok(id);
+  store.sqlite.prepare('INSERT INTO scheduler_agent_fences(agent_id,next_fencing_token) VALUES (?,10)').run(agent.id);
   await f.send(agent.id,'Keep the original objective.');
   await until(async()=>(await native.requests()).some(x=>x.method==='turn/start'),'first turn');
   await native.sendTool('ponderosa_local_memory_get',{chunk_id:id,source:'global'});
@@ -32,6 +33,15 @@ test('retained memory admission proof fences exact access and source changes whi
   assert.equal(invalid.status,'unavailable');assert.equal(invalid.isCurrent(),false);
   const proof=await memory.prepareRetainedInputProof(input);
   assert.equal(proof.status,'valid');assert.equal(proof.isCurrent(),true);
+  store.sqlite.exec('SAVEPOINT retained_memory_retired_generation');
+  try{
+   const now=new Date().toISOString();
+   store.sqlite.prepare(`INSERT INTO scheduler_runs(id,project_id,agent_id,status,lease_owner,lease_expires_at,fencing_token,prompt_injection_state,provider_session_id,heartbeat_at,created_at,updated_at,scope_key)
+    VALUES(?,?,?,'outcome_unknown','synthetic',?,1,'injected','retired-generation',?,?,?,?)`).run(randomUUID(),chat.projectId,agent.id,now,now,now,now,`conversation:${chat.id}`);
+   assert.equal(proof.isCurrent(),true,'uncertain effects outside the retained context lineage remain historical');
+   const reconstructed=await memory.prepareRetainedInputProof(input);
+   assert.equal(reconstructed.status,'valid');assert.equal(reconstructed.isCurrent(),true,'a fresh proof uses the same exact lineage boundary');
+  }finally{store.sqlite.exec('ROLLBACK TO retained_memory_retired_generation; RELEASE retained_memory_retired_generation');}
   store.sqlite.exec('SAVEPOINT retained_memory_identity');
   try{
    store.sqlite.prepare("UPDATE agents SET active_session_id='different-session' WHERE id=?").run(agent.id);

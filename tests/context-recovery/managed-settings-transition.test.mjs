@@ -24,12 +24,14 @@ for(const concurrentChange of ['access','prompt'])test(`memory-enabled voice pre
  await withFixture(t,async f=>{
   const chat=await f.createChat('Managed voice transition'),agent=await f.createIdleAgent(chat,'Worker');
   f.ok(await f.api('PUT',`/api/local-memory/grants/${chat.id}`,{readGlobal:true,expectedRevision:0}));
+  store.sqlite.prepare('INSERT INTO scheduler_agent_fences(agent_id,next_fencing_token) VALUES (?,10)').run(agent.id);
   await f.send(agent.id,'Preserve the original objective and its completed research.');
   await until(async()=>(await native.requests()).some(x=>x.method==='turn/start'),'first native turn');
   await native.sendTool('ponderosa_local_memory_search',{query:'Synthetic search'});
   const response=await until(async()=>(await native.requests()).find(x=>x.toolResponse)?.toolResponse,'memory result');
   assert.equal(response.result.success,true);
   await native.sendTool('ponderosa_message',{text:'Research complete.'});await f.settled(agent.id);
+  store.sqlite.prepare('UPDATE scheduler_agent_fences SET next_fencing_token=20 WHERE agent_id=?').run(agent.id);
   const voice=f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text:'Continue the original objective aloud.',idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'steer',voiceReply:true}));
   const transition=await until(()=>store.sqlite.prepare("SELECT * FROM context_rollovers WHERE agent_id=? AND state='requested'").get(agent.id),'settings handoff requested',20000);
   assert.equal(f.ok(await f.api('GET','/api/notifications')).items.some(item=>(item.kind==='operational'||['attention','urgent'].includes(item.severity))&&(item.agentId===agent.id||item.conversationId===chat.id)),false,'requested automatic handoff is quiet');
@@ -57,6 +59,24 @@ for(const concurrentChange of ['access','prompt'])test(`memory-enabled voice pre
   await native.sendTool('ponderosa_voice_reply',{});await f.settled(agent.id);
   const reply=f.ok(await f.api('GET',`/api/conversations/${chat.id}/voice-replies/${voice.message.communicationEventId}/${agent.id}`));
   assert.equal(reply.reply.state,'completed');
+  const retainedMemory=localMemoryFor(f.app),retainedPacket=store.acceptedProviderSessionInput(agent.id),retainedBoundary=store.providerCommandContextBoundary(agent.id);
+  const retainedProof=await retainedMemory.prepareRetainedInputProof({agentId:agent.id,chatId:chat.id,sessionId:store.resumeSessionId(agent.id),
+   originRunId:retainedPacket.executionId,sourceRunId:retainedBoundary.executionId,currentRunId:randomUUID()});
+  assert.equal(retainedProof.isCurrent(),true);
+  store.sqlite.exec('SAVEPOINT inherited_memory_uncertainty');
+  try{
+   const now=new Date().toISOString();
+   store.sqlite.prepare(`INSERT INTO scheduler_runs(id,project_id,agent_id,status,lease_owner,lease_expires_at,fencing_token,prompt_injection_state,heartbeat_at,created_at,updated_at,scope_key)
+    VALUES(?,?,?,'outcome_unknown','synthetic',?,15,'injecting',?,?,?,?)`).run(randomUUID(),chat.projectId,agent.id,now,now,now,now,`conversation:${chat.id}`);
+   assert.equal(retainedProof.isCurrent(),false,'uncertainty in inherited context below the replacement origin still fences admission');
+  }finally{store.sqlite.exec('ROLLBACK TO inherited_memory_uncertainty; RELEASE inherited_memory_uncertainty');}
+  assert.equal(retainedProof.isCurrent(),true);
+  store.sqlite.exec('SAVEPOINT inherited_memory_ancestry');
+  try{
+   store.sqlite.prepare("UPDATE agent_activations SET payload_json=json_set(payload_json,'$.settingsTransition.authorizationOriginRunId',?) WHERE kind='context_rollover_handoff' AND json_extract(payload_json,'$.rolloverId')=?").run(randomUUID(),transition.id);
+   assert.equal(retainedProof.isCurrent(),false,'a captured proof cannot outlive its exact handoff lineage');
+  }finally{store.sqlite.exec('ROLLBACK TO inherited_memory_ancestry; RELEASE inherited_memory_ancestry');}
+  assert.equal(retainedProof.isCurrent(),true);
   for(const text of ['A second compatible voice turn.','A third compatible voice turn.']){
    const before=(await native.requests()).filter(x=>x.method==='turn/start').length;
    f.ok(await f.api('POST',`/api/conversations/${chat.id}/direct-messages`,{text,idempotencyKey:randomUUID(),recipients:[{agentId:agent.id}],activeRunDelivery:'steer',voiceReply:true}));
