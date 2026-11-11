@@ -3168,6 +3168,36 @@ export function Composer({
           onApplyCapability={applyCapability}
         />
   );
+  const sendActions = (
+        <Box data-composer-send-actions sx={{ display: assistantMessages ? "flex" : { xs: "flex", md: "contents" }, alignItems: "center", gap: 0.25, flexShrink: 0, ...(assistantMessages?{order:2}:{}) }}>
+        <ComposerErrorReview key={attachmentImportScope} error={submissionError?sendError:undefined}/>
+        <ComposerSendActions
+          runControl={assistantMessages?runControl:undefined}
+          steeringOnly={assistantMessages}
+          allowSendWhileRunning={allowSendWhileRunning}
+          canCancel={canCancel}
+          cancelPending={cancelPending}
+          canSend={canSend}
+          compact={narrowComposer}
+          destinationError={destinationError}
+          destinationMode={destinationMode}
+          mentionedBusyHandles={mentionedBusyHandles}
+          onCancel={onCancel}
+          queue={queue}
+          recipientRequiredMessage={recipientRequiredMessage}
+          sendUnavailableReason={
+            dictationSettling
+              ? "Stop voice dictation and wait for final text before sending."
+              : voiceCaptureActive ? "Finish voice input before sending." : sendUnavailableReason
+          }
+          send={send}
+          showQueue={showQueue}
+          steer={steer}
+          targetRequiredRecipientTagged={targetRequiredRecipientTagged}
+        />
+        </Box>
+  );
+
   return (
     <Paper
       ref={composerRoot}
@@ -3811,7 +3841,7 @@ export function Composer({
           flexShrink: 0,
           gap: 0.25,
           ml: "auto",
-          ...(assistantMessages?{order:1}:{}),
+          ...(assistantMessages?{order:1,maxWidth:"100%",minWidth:0,flexWrap:"wrap"}:{}),
         }}>
           {controls ? (
             <Box sx={{ minWidth: narrowComposer ? 44 : 0, maxWidth: "100%" }}>
@@ -3830,9 +3860,10 @@ export function Composer({
             onFinalTranscript={insertDictatedText}
             onSettlingChange={handleDictationSettlingChange}
           /> : null}
+          {assistantMessages ? sendActions : null}
         </Box>
         </Box>
-        <Box ref={anchorRef} sx={{ order: assistantMessages ? 0 : -1, flex: assistantMessages ? "1 1 0" : "1 0 100%", minWidth: 0, alignSelf: assistantMessages ? "center" : undefined }}>
+        <Box ref={anchorRef} sx={{ order: assistantMessages ? 0 : -1, flex: assistantMessages ? "1 1 80px" : "1 0 100%", minWidth: 0, alignSelf: assistantMessages ? "center" : undefined }}>
           <ComposerTextInput
             text={draftMutationLocked ? "" : text}
             inputRef={inputRef}
@@ -3937,33 +3968,7 @@ export function Composer({
             }}
           />
         </Box>
-        <Box data-composer-send-actions sx={{ display: assistantMessages ? "flex" : { xs: "flex", md: "contents" }, alignItems: "center", gap: 0.25, flexShrink: 0, ...(assistantMessages?{order:2}:{}) }}>
-        <ComposerErrorReview key={attachmentImportScope} error={submissionError?sendError:undefined}/>
-        <ComposerSendActions
-          runControl={assistantMessages?runControl:undefined}
-          steeringOnly={assistantMessages}
-          allowSendWhileRunning={allowSendWhileRunning}
-          canCancel={canCancel}
-          cancelPending={cancelPending}
-          canSend={canSend}
-          compact={narrowComposer}
-          destinationError={destinationError}
-          destinationMode={destinationMode}
-          mentionedBusyHandles={mentionedBusyHandles}
-          onCancel={onCancel}
-          queue={queue}
-          recipientRequiredMessage={recipientRequiredMessage}
-          sendUnavailableReason={
-            dictationSettling
-              ? "Stop voice dictation and wait for final text before sending."
-              : voiceCaptureActive ? "Finish voice input before sending." : sendUnavailableReason
-          }
-          send={send}
-          showQueue={showQueue}
-          steer={steer}
-          targetRequiredRecipientTagged={targetRequiredRecipientTagged}
-        />
-        </Box>
+        {!assistantMessages ? sendActions : null}
         </Box>
       </Stack>
     </Paper>
