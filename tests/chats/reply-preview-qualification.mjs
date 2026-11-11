@@ -28,7 +28,7 @@ try{
  for(const engine of (process.env.PONDEROSA_REPLY_BROWSERS??'chromium,webkit').split(',')){
   browser=await(engine==='webkit'?webkit:chromium).launch({headless:true,...(engine==='webkit'?{executablePath:process.env.PONDEROSA_WEBKIT_PATH}:{executablePath:'/usr/bin/google-chrome',args:['--no-sandbox']})});
   for(const size of [1440,390])for(const mode of ['light','dark'])for(const view of (process.env.PONDEROSA_REPLY_VIEWS??'chat,agent,assistant,output').split(',')){
-   const row={engine,size,mode,view,passed:false,errors:[],checks:[]};rows.push(row);let phase='uncertain',readMode='limit',reads=[],writes=[],limited=new Set(),closing=false;
+   const row={engine,size,mode,view,passed:false,errors:[],checks:[]};rows.push(row);let phase='uncertain',readMode='limit',reads=[],writes=[],limited=new Set();
    context=await browser.newContext({...(size===390&&engine==='webkit'?devices['iPhone 13']:{viewport:{width:size,height:size===390?844:962},isMobile:size===390,hasTouch:size===390}),serviceWorkers:'block'});
    await context.addInitScript(mode=>localStorage.setItem('ponderosa-color-mode',mode),mode);
    const mapReceipts=value=>{
@@ -40,8 +40,7 @@ try{
     for(const child of Object.values(value))mapReceipts(child);
    };
    await context.route('**/*',async route=>{
-    const request=route.request(),url=new URL(request.url()),beganBeforeClose=!closing;assert.equal(url.origin,origin,'Owned loopback traffic only');
-    try{
+    const request=route.request(),url=new URL(request.url());assert.equal(url.origin,origin,'Owned loopback traffic only');
     if(request.method()==='POST'&&/\/message-deliveries\/[^/]+\/retry$/.test(url.pathname)){writes.push({path:url.pathname,body:request.postData()});return route.fulfill({status:409,contentType:'application/json',body:JSON.stringify({error:'rAw explicit retry /ExactPath gpt-5.2 ID_abC'})});}
     const match=url.pathname.match(/\/reply-streams\/([^/]+)\/([^/]+)$/);
     if(match&&sources.has(match[1])){
@@ -58,11 +57,6 @@ try{
      return route.fulfill({response});
     }
     return await route.continue();
-    }catch(error){
-     const read=request.method()==='GET'||url.pathname.endsWith('/message-delivery-receipts');
-     if(closing&&row.passed&&beganBeforeClose&&read&&error.message==='apiResponse.json: Response has been disposed'){row.fixtureReadCancellations=(row.fixtureReadCancellations??0)+1;assert(row.fixtureReadCancellations<=10,'Owned cleanup cancellations stay bounded');return;}
-     throw error;
-    }
    });
    const page=await context.newPage();page.setDefaultTimeout(12000);page.on('pageerror',e=>row.errors.push(e.message));
    try{
@@ -84,9 +78,16 @@ try{
     if(view!=='output'){const nav=page.getByRole('button',{name:'Open Workspace Navigation',exact:true});if(await nav.count())await nav.first().click();await page.getByRole('navigation',{name:'Workspace Navigation',exact:true}).first().waitFor();if(await nav.count())await page.getByRole('button',{name:'Close Workspace Navigation',exact:true}).first().click();}
     assert(!await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),'Desktop/phone layout contains UI');assert.deepEqual(row.errors,[]);row.reads=reads.length;row.writes=writes.length;row.passed=true;
    }catch(error){row.error=error.stack??String(error);row.text=(await page.locator('body').innerText()).slice(0,12000);await page.screenshot({path:path.join(out,`${engine}-${size}-${mode}-${view}-failure.png`),fullPage:true});}
-   finally{closing=true;await context.close();context=undefined;await save();console.log(`${row.passed?'PASS':'FAIL'} ${engine} ${size} ${mode} ${view}${row.error?' '+row.error.split('\n')[0]:''}`);}
+   finally{
+    try{await context.unrouteAll({behavior:'wait'});}catch(error){row.passed=false;row.cleanupError=error.stack??String(error);}
+    finally{try{await context.close();}catch(error){row.passed=false;row.closeError=error.stack??String(error);}context=undefined;if(row.errors.length)row.passed=false;await save();}
+    console.log(`${row.passed?'PASS':'FAIL'} ${engine} ${size} ${mode} ${view}${row.error?' '+row.error.split('\n')[0]:''}`);
+   }
   }
   await browser.close();browser=undefined;
  }
  assert(rows.every(row=>row.passed));success=true;
-}finally{if(context)await context.close();if(browser)await browser.close();if(f)await f.dispose(success);await save();console.log(out);}
+}finally{
+ try{if(context)try{await context.unrouteAll({behavior:'wait'});}finally{await context.close();}}
+ finally{try{if(browser)await browser.close();}finally{try{if(f)await f.dispose(success);}finally{await save();console.log(out);}}}
+}
