@@ -1,3 +1,4 @@
+import {projectReplyToolEvent} from "@ponderosa/engines";
 import {creationMessageKeys} from "./creation-message-identity.js";
 import { decisionQuestionPayload } from "./decision-payload.js";
 import {
@@ -626,6 +627,7 @@ export function createServerReadModels(context: ReadModelContext) {
       ...(decisionPage.hasMore && oldestDecision ? { decisions: { createdAt: oldestDecision.createdAt, id: oldestDecision.id } } : { decisionsDone: true }) };
     return {
       ...detail,
+      activity:detail.activity.map(item=>({...item,event:projectReplyToolEvent(item.event)})),
       hasSubagentHistory:
         store.listAgents(detail.agent.projectId).some(candidate =>
           candidate.managerAgentId === agentId

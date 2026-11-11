@@ -4,7 +4,7 @@ import type {
   TokenUsage,
   ToolFailureCategory,
 } from "@ponderosa/core";
-import { providerResetAt, PROVIDER_FAILURE_CATEGORIES, PROVIDER_QUOTA_LIMITS } from "@ponderosa/core";
+import { PONDEROSA_REPLY_STREAM_TOOL, providerResetAt, PROVIDER_FAILURE_CATEGORIES, PROVIDER_QUOTA_LIMITS } from "@ponderosa/core";
 import { isProxy } from "node:util/types";
 
 const MAX_BYTES = 4 * 1024 * 1024;
@@ -480,4 +480,11 @@ export function projectAgentEvent(value: unknown): AgentEvent {
       return { type, message: string(row, "message", budget, 2), ...(quotaResetAt ? { quotaResetAt } : {}), ...(quotaLimit ? { quotaLimit } : {}), ...(code === undefined ? {} : { code }), ...(category === undefined ? {} : { category }), ...(remediation === undefined ? {} : { remediation }), ...(terminalStatus === undefined ? {} : { terminalStatus }), ...(httpStatusCode === undefined ? {} : { httpStatusCode }), ...(retryAfterMs === undefined ? {} : { retryAfterMs }) };
     }
   }
+}
+
+/** Read-only native tool-name projection; retain the original stored audit event. */
+export function projectReplyToolEvent<T extends {type:string;name?:unknown}>(event:T):T {
+  return event.type === "tool_call" && event.name === "mcp__ponderosa__reply_stream"
+    ? {...event,name:PONDEROSA_REPLY_STREAM_TOOL.name}
+    : event;
 }

@@ -1,3 +1,6 @@
+import {projectReplyToolEvent} from '@ponderosa/engines';
+import {PONDEROSA_REPLY_STREAM_TOOL} from '@ponderosa/core';
+import {envelope} from '../../apps/server/dist/sse.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
@@ -34,4 +37,23 @@ for(const product of ['core','branches'])for(const category of ['unavailable','r
   assert.equal(f.turns.filter(turn=>turn.agentId===agent.id).length,baseline+1,'Viewing failure projections never retries work');
   await f.reopen();assert.deepEqual(await inspect(),before,'The exact canonical pointer survives reopen');
  },{storeFactory:root=>(store=new AgentStore(root)),onProviderOpen:options=>{capability=options.environment.PONDEROSA_AGENT_MESSAGE_TOKEN;}});
+});
+
+test('native reply transport is projected consistently for detail, history and live/replayed SSE without changing audit',{timeout:30000},async t=>{
+ let store;await withFixture(t,async f=>{
+  const chat=await f.createChat('Native Reply Projection'),agent=await f.createIdleAgent(chat,'Reply Author');
+  const native={type:'tool_call',id:'native-reply',name:'mcp__ponderosa__reply_stream',input:{publication:{kind:'message',intent:'direct_to_user'}}};
+  const foreign={...native,id:'foreign-reply',name:'mcp__foreign__reply_stream'};
+  const recorded=store.appendEvent(agent.id,native),other=store.appendEvent(agent.id,foreign);
+  const result=store.appendEvent(agent.id,{type:'tool_result',id:native.id,output:'Controlled delivery rejection',isError:true});
+  const original=JSON.stringify(recorded),expected={...recorded.event,name:PONDEROSA_REPLY_STREAM_TOOL.name};
+  const inspect=async()=>{
+   const detail=await f.detail(agent.id),page=f.ok(await f.api('GET',`/api/agents/${agent.id}/history/activity`));
+   for(const items of [detail.activity,page.items]){assert.deepEqual(items.find(item=>item.seq===recorded.seq).event,expected);assert.deepEqual(items.find(item=>item.seq===other.seq).event,foreign);assert.deepEqual(items.find(item=>item.seq===result.seq).event,result.event);}
+   for(const replayed of [false,true]){const value=envelope(agent.id,recorded,replayed);assert.deepEqual(value.event,expected);assert.equal(value.agentId,agent.id);assert.equal(value.seq,recorded.seq);assert.equal(value.replayed,replayed||undefined);}
+   assert.equal(JSON.stringify(recorded),original);assert.deepEqual(store.readEvents(agent.id).find(item=>item.seq===recorded.seq).event,native,'Raw append-only audit retains the native tool identity');
+  };
+  assert.equal(projectReplyToolEvent(foreign),foreign);const canonical={...native,name:PONDEROSA_REPLY_STREAM_TOOL.name};assert.equal(projectReplyToolEvent(canonical),canonical);
+  await inspect();await f.reopen();await inspect();
+ },{storeFactory:root=>(store=new AgentStore(root))});
 });
