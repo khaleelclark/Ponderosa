@@ -3197,6 +3197,35 @@ export function Composer({
         />
         </Box>
   );
+  const trailingControls = (
+        <Box sx={{
+          display: "flex",
+          alignItems: "center",
+          flexShrink: 0,
+          gap: 0.25,
+          ml: "auto",
+          ...(assistantMessages?{order:1,maxWidth:"100%",minWidth:0,flexWrap:"wrap"}:{}),
+        }}>
+          {controls ? (
+            <Box sx={{ minWidth: narrowComposer ? 44 : 0, maxWidth: "100%" }}>
+              {controls}
+            </Box>
+          ) : null}
+          {enableVoiceDictation ? <DictationControls
+            inlineVoiceOptions={assistantMessages}
+            key={JSON.stringify([projectId, conversationDraftId, voiceContext?.conversationId])}
+            voiceContext={voiceContext && {...voiceContext, steeringOnly:assistantMessages}}
+            recordingContainer={voiceRecordingContainer}
+            onActiveChange={handleVoiceCaptureActiveChange}
+            onVoiceAttachment={composerAttachmentsEnabled?file=>{if(draftMutationLockedRef.current)return "The draft is busy. Try attaching again.";const selection=selectComposerFiles(files,[file],assetLimits);if(selection.error)return selection.error;addFiles([file]);return undefined;}:undefined}
+            maxRecordingBytes={Math.max(0,Math.min(assetLimits?.maxFileBytes??COMPOSER_MAX_FILE_BYTES,(assetLimits?.maxMessageBytes??COMPOSER_MAX_FILE_BYTES)-files.reduce((sum,file)=>sum+file.size,0)))}
+            disabled={disabled || composerLocked || sending}
+            onFinalTranscript={insertDictatedText}
+            onSettlingChange={handleDictationSettlingChange}
+          /> : null}
+          {assistantMessages ? sendActions : null}
+        </Box>
+  );
 
   return (
     <Paper
@@ -3835,33 +3864,7 @@ export function Composer({
             {leadingControls}
           </Box>
         ) : null}
-        <Box sx={{
-          display: "flex",
-          alignItems: "center",
-          flexShrink: 0,
-          gap: 0.25,
-          ml: "auto",
-          ...(assistantMessages?{order:1,maxWidth:"100%",minWidth:0,flexWrap:"wrap"}:{}),
-        }}>
-          {controls ? (
-            <Box sx={{ minWidth: narrowComposer ? 44 : 0, maxWidth: "100%" }}>
-              {controls}
-            </Box>
-          ) : null}
-          {enableVoiceDictation ? <DictationControls
-            inlineVoiceOptions={assistantMessages}
-            key={JSON.stringify([projectId, conversationDraftId, voiceContext?.conversationId])}
-            voiceContext={voiceContext && {...voiceContext, steeringOnly:assistantMessages}}
-            recordingContainer={voiceRecordingContainer}
-            onActiveChange={handleVoiceCaptureActiveChange}
-            onVoiceAttachment={composerAttachmentsEnabled?file=>{if(draftMutationLockedRef.current)return "The draft is busy. Try attaching again.";const selection=selectComposerFiles(files,[file],assetLimits);if(selection.error)return selection.error;addFiles([file]);return undefined;}:undefined}
-            maxRecordingBytes={Math.max(0,Math.min(assetLimits?.maxFileBytes??COMPOSER_MAX_FILE_BYTES,(assetLimits?.maxMessageBytes??COMPOSER_MAX_FILE_BYTES)-files.reduce((sum,file)=>sum+file.size,0)))}
-            disabled={disabled || composerLocked || sending}
-            onFinalTranscript={insertDictatedText}
-            onSettlingChange={handleDictationSettlingChange}
-          /> : null}
-          {assistantMessages ? sendActions : null}
-        </Box>
+        {!assistantMessages ? trailingControls : null}
         </Box>
         <Box ref={anchorRef} sx={{ order: assistantMessages ? 0 : -1, flex: assistantMessages ? "1 1 80px" : "1 0 100%", minWidth: 0, alignSelf: assistantMessages ? "center" : undefined }}>
           <ComposerTextInput
@@ -3968,7 +3971,7 @@ export function Composer({
             }}
           />
         </Box>
-        {!assistantMessages ? sendActions : null}
+        {assistantMessages ? trailingControls : sendActions}
         </Box>
       </Stack>
     </Paper>
