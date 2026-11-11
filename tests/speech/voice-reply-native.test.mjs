@@ -1,3 +1,4 @@
+import {envelope} from '../../apps/server/dist/sse.js';
 import assert from 'node:assert/strict';
 import test,{after} from 'node:test';
 import {spawn,spawnSync} from 'node:child_process';
@@ -683,6 +684,19 @@ for (const claudeNative of [false,true]) test('explicit nonvoice publication str
   assert.equal(final.canonicalReplyEventId,replies[0].id);assert.equal(final.reply.canonicalReplyEventId,replies[0].id);
   const detail=(await f.app.inject({method:'GET',url:`/api/branches/engine/agents/${f.agent.id}`,headers:f.headers})).json();
   assert.deepEqual(detail.messages.find(m=>m.communicationEventId===replies[0].id).replyStream,firstInsert,'Normal Agent read model carries exact binding');
+  const raw=f.store.readEvents(f.agent.id),name=claudeNative?'mcp__ponderosa__reply_stream':'ponderosa_reply_stream';
+  const call=raw.find(item=>item.event.type==='tool_call'&&item.event.name===name),result=raw.find(item=>item.event.type==='tool_result'&&item.event.id===call?.event.id);assert(call&&result,'Actual native tool call/result are retained');
+  const before=JSON.stringify([call,result]),expected={...call.event,name:'ponderosa_reply_stream'};
+  const foreign=f.store.appendEvent(f.agent.id,{type:'tool_call',id:'foreign-reply',name:'mcp__other__reply_stream',input:{}});
+  const failure=f.store.appendEvent(f.agent.id,{type:'tool_result',id:'foreign-reply',output:'Controlled rejection',isError:true});
+  const current=(await f.app.inject({method:'GET',url:`/api/branches/engine/agents/${f.agent.id}`,headers:f.headers})).json();
+  const history=(await f.app.inject({method:'GET',url:`/api/branches/engine/agents/${f.agent.id}/history/activity?limit=100`,headers:f.headers})).json();
+  for(const items of [current.activity,history.items]){
+   assert.deepEqual(items.find(item=>item.seq===call.seq).event,expected);assert.deepEqual(items.find(item=>item.seq===result.seq).event,result.event);
+   assert.deepEqual(items.find(item=>item.seq===foreign.seq).event,foreign.event);assert.deepEqual(items.find(item=>item.seq===failure.seq).event,failure.event);
+  }
+  for(const replayed of [false,true]){const value=envelope(f.agent.id,call,replayed);assert.deepEqual(value.event,expected);assert.equal(value.agentId,f.agent.id);assert.equal(value.seq,call.seq);assert.equal(value.replayed,replayed||undefined);assert.deepEqual(envelope(f.agent.id,foreign,replayed).event,foreign.event);}
+  assert.equal(JSON.stringify([call,result]),before);assert.equal(f.store.readEvents(f.agent.id).find(item=>item.seq===call.seq).event.name,name,'Read projections leave raw native audit unchanged');
  });
 });
 
