@@ -67,10 +67,8 @@ function transitionNotice(ctx:TransitionContext,projectId:string,agentId:string,
   const running=Boolean(ctx.contextRecoveryRunning?.(agentId));
   internal ||= running;
   // Every producer describes this same boundary, not its current admission pass.
-  reason=running?'The retained session is recovering. New messages are saved; earlier uncertain work is not replayed.'
-   : recovery?.progress?.nativeInvoked&&recovery.progress.phase!=='context_accepted'
-    ? 'The native recovery result is unconfirmed. New messages are saved. Review the exact recovery in Agent Chat; compaction and earlier work will not be replayed.'
-    : 'The earlier session was interrupted. New messages are saved. Open Agent Chat to recover the retained session; the earlier task and its effects remain unconfirmed.';
+  reason=running?'Restoring the session. Your messages are retained; earlier work is not repeated.'
+    : 'Automatic recovery could not restore this session yet. Your messages are retained. Automatic checks continue without repeating earlier work.';
  }
  const previous=ctx.workspace.findNotification(n=>n.agentId===agentId&&n.projectId===projectId&&n.status!=='resolved'&&!n.recoveredAt&&Boolean(n.workContext?.activationIds?.includes(activationId)),true);
  const boundaryKey=previous?.workContext?.traceId??transitionIncidentKey(ctx,projectId,agentId,activationId);
@@ -86,10 +84,10 @@ function transitionNotice(ctx:TransitionContext,projectId:string,agentId:string,
  const assignment=(continuing&&existing.workContext?.assignment?existing.workContext.assignment:source?ctx.store.getCommunicationEvent(projectId,source.event_id)?.text:typeof work?.text==='string'?work.text:undefined)?.replace(/\s+/gu,' ').trim().slice(0,220);
  const activationIds=[...new Set([...(existing&&(existing.status??'open')==='open'?existing.workContext?.activationIds??[existing.workContext?.recordId??activationId]:[]),activationId])];
  const notice=ctx.createOperationalNotification({dedupeKey:existing?.dedupeKey??boundaryKey,renewAfterRecovery:true,internal,category:'coordination',severity:'attention',
-  title:`${agent?.title??'Agent'}${chat?.title?` · ${chat.title}`:''} · ${uncertain?'Needs Recovery':'Context Needs Review'}`,body:reason.slice(0,1000),projectId,agentId,...(agent?.conversationId?{conversationId:agent.conversationId}:{}),
+  title:`${agent?.title??'Agent'}${chat?.title?` · ${chat.title}`:''} · ${uncertain?'Cannot Respond Yet':'Context Needs Review'}`,body:reason.slice(0,1000),projectId,agentId,...(agent?.conversationId?{conversationId:agent.conversationId}:{}),
   ...(assignment?{contextPreview:assignment.slice(0,120)}:{}),
   workContext:{kind:'activation',recordId:continuing?existing.workContext?.recordId??activationId:activationId,activationIds,traceId:boundaryKey,state:internal?'recovering':'blocked',occurredAt:continuing?existing.workContext?.occurredAt??new Date().toISOString():new Date().toISOString(),...(assignment?{assignment}:{})},
-  action:{kind:'open_agent',targetId:agentId}});
+  action:uncertain?undefined:{kind:'open_agent',targetId:agentId}});
  // Adopt old per-message notices into the same boundary incident without
  // declaring their work recovered or emitting another push.
  for(const id of activationIds){const old=ctx.workspace.getNotificationByDedupeKey(`settings-transition:${id}`);
@@ -113,6 +111,11 @@ export function reconcileSettingsTransitionReservations(ctx:TransitionContext){
    (SELECT 1 FROM activation_sources released WHERE released.activation_id=a.id AND released.source_kind='settings_transition_release' AND released.source_id=r.id)`).all() as Array<{id:string;project_id:string;agent_id:string}>;
  for(const row of terminal)try{transitionNotice(ctx,row.project_id,row.agent_id,row.id,
   'The context handoff did not finish or its result is unknown. The original work remains queued. Review Context recovery before retrying; the handoff will not be replayed automatically.');}catch{/* The durable hold remains in place. */}
+ const maintenance=ctx.store.sqlite.prepare(`SELECT a.id,a.project_id,a.agent_id FROM agent_activations a
+  JOIN provider_context_recovery_requests recovery ON recovery.agent_id=a.agent_id AND recovery.project_id=a.project_id
+    AND recovery.scope_key=a.scope_key AND recovery.state='unsupported_fenced'
+  WHERE a.kind='human_message' AND a.state IN ('pending','retry_pending')`).all() as Array<{id:string;project_id:string;agent_id:string}>;
+ for(const row of maintenance)try{transitionNotice(ctx,row.project_id,row.agent_id,row.id,'');}catch{/* A read failure never clears retained work. */}
  ctx.workspace.forEachNotification(notice=>{
   if(!notice.dedupeKey?.startsWith('settings-transition:')||notice.status==='resolved'||notice.recoveredAt||!notice.projectId||!notice.agentId)return;
   const ids=notice.workContext?.activationIds??[notice.dedupeKey.slice('settings-transition:'.length)];

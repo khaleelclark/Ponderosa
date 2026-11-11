@@ -13,6 +13,11 @@ export interface ProviderContextRecoveryProgress {
   /** Unknown source work is never automatically replayed by context recovery. */
   sourceWork: "held_unknown";
   nativeInvoked?: boolean;
+  /** A completed native operation is distinct from unavailable fresh telemetry. */
+  nativeOutcome?: "completed" | "failed" | "outcome_unknown";
+  maintenanceAttempts?: number;
+  nextMaintenanceAt?: string;
+  automaticMaintenance?: true;
   contextUsageEventSequence?: number;
 }
 export const UNSUPPORTED_PROVIDER_CONTEXT_RECOVERY: Readonly<ProviderContextRecoverySupport> = Object.freeze({

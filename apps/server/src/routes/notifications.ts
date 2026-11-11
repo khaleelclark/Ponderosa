@@ -118,12 +118,12 @@ export function registerNotificationListRoute(
     }
     const product = requestProduct(request);
     const uniqueIds = [...new Set(notificationIds)];
-    if (uniqueIds.some((id) => {
+    const eligibleIds = uniqueIds.filter((id) => {
       const notification = options.workspace.getNotification(id);
-      return !notification || !notificationInProduct(options.store, notification, product);
-    })) return reply.code(404).send({ error: "notification not found" });
+      return notification && notificationInProduct(options.store, notification, product);
+    });
     return {
-      activeNotificationIds: options.workspace.activeNotificationIds(uniqueIds),
+      activeNotificationIds: options.workspace.activeNotificationIds(eligibleIds),
     };
   });
 

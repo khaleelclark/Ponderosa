@@ -171,7 +171,7 @@ test('only exact paused Run delivery displays Paused without changing canonical 
  assert.equal(owners.compactDeliveryLabel({...receipt,state:'processed'},'paused-run'),'Processed');
  assert.equal(owners.compactDeliveryLabel({...receipt,taskDecisionRepairHold:true},'paused-run'),'Task Check Held');
  assert.equal(owners.compactDeliveryLabel({...receipt,settingsTransitionHold:'review_required'},'paused-run'),'Waiting For Context');
- assert.equal(owners.compactDeliveryLabel({...receipt,settingsTransitionHold:'review_required',contextRecoveryRequired:{sourceRunId:'earlier'}},'paused-run'),'Message Saved');
+ assert.equal(owners.compactDeliveryLabel({...receipt,settingsTransitionHold:'review_required',contextRecoveryRequired:{sourceRunId:'earlier'}},'paused-run'),'Connecting');
  assert.match(owners.deliveryLabel({...receipt,contextRolloverHold:'review_required'},'Worker','paused-run'),/Context refresh could not safely continue/);
  assert.equal(JSON.stringify(receipt),before,'No delivery/task/Run authority is rewritten');
 });

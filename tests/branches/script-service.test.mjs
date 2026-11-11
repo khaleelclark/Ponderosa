@@ -206,3 +206,16 @@ test('notification callback stop prevents fresh claims in the same pass',options
  assert.equal(f.store.sqlite.prepare('SELECT a.state FROM branch_attempts a JOIN branch_step_executions s ON s.id=a.step_execution_id WHERE s.execution_id=?').get(f.execution.id).state,'prepared');
  f.done();
 });
+
+test('context maintenance uses one tracked scheduler job and pause observes its completion',options,async t=>{
+ const f=fixture(t,"process.stdout.write('unused');");let release,entered,passes=0;
+ const gate=new Promise(resolve=>release=resolve),ready=new Promise(resolve=>entered=resolve);
+ const scheduler=new CoordinationV3Scheduler(new CoordinationV3Store(f.store.sqlite),async()=>{throw Error('Unexpected dispatch');},
+  {workerId:'context-maintenance-owner',pollMs:10,reconcileContextRecoveries:async()=>{passes++;entered();await gate;}});
+ f.attachScheduler(scheduler);t.after(()=>release());
+ await scheduler.pauseLeasing();await scheduler.drainOnce();assert.equal(passes,0,'Paused leasing starts no native maintenance');
+ scheduler.resumeLeasing();await ready;
+ for(let i=0;i<4;i++)await scheduler.drainOnce();assert.equal(passes,1,'Repeated ticks share one maintenance owner');
+ let paused=false;const pause=scheduler.pauseLeasing().then(()=>paused=true);await Promise.resolve();assert.equal(paused,false);
+ release();await pause;await scheduler.drainOnce();assert.equal(passes,1);await scheduler.stop();f.done();
+});

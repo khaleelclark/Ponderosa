@@ -12,7 +12,7 @@ export function registerContextRecoveryRoutes(app: FastifyInstance, context: {
   notifyScheduler(): void;
   changed?(agentId:string):void;
   stopRecovery?(agentId:string,recoveryId:string):Promise<boolean>;
-  recover?(request: import("@ponderosa/core").ProviderContextRecoveryRequest): Promise<void>;
+  recover?(request: import("@ponderosa/core").ProviderContextRecoveryRequest, policy?: "automatic"): Promise<void>;
   settle?(request: import("@ponderosa/core").ProviderContextRecoveryRequest): boolean;
   activity?(agentId:string,recoveryId:string): "running" | "cleanup_pending" | "idle";
   blocker?(agentId:string): import("@ponderosa/core").ProviderContextRecoveryStatus["blocker"];

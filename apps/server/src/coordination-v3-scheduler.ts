@@ -98,6 +98,7 @@ export class CoordinationV3Scheduler {
   private draining = false;
   private readonly dispatchJobs = new Set<Promise<void>>();
   private workflowJob?: Promise<void>;
+  private contextRecoveryJob?: Promise<void>;
   private stopped = false;
   private leasingPaused = false;
   private maintenanceDrains = 0;
@@ -162,6 +163,7 @@ export class CoordinationV3Scheduler {
       /** Preflight exactly the candidate that the subsequent claim may lease. */
       prepareRunAdmission?: (excludedAgentIds:readonly string[]) => Promise<string|null>;
       workflowOperations?: WorkflowOperations;
+      reconcileContextRecoveries?: () => Promise<void>;
     },
   ) {
     this.maxConcurrentRuns = options.maxConcurrentRuns ?? 8;
@@ -290,6 +292,14 @@ export class CoordinationV3Scheduler {
           const agentId = (operation.payload as { agentId?: unknown } | null)?.agentId;
           if (typeof agentId === "string") this.options.onMessageDeliveryChanged?.(agentId);
         }
+      }
+      if (this.isLeasingRuns() && this.options.reconcileContextRecoveries && !this.contextRecoveryJob) {
+        const job=this.trackDispatch(async()=>{
+          try { await this.options.reconcileContextRecoveries!(); }
+          catch(error) { this.metrics.lastDispatchError=error instanceof Error?error.message:String(error); }
+        });
+        this.contextRecoveryJob=job;
+        void job.then(()=>{if(this.contextRecoveryJob===job)this.contextRecoveryJob=undefined;});
       }
       if (this.options.workflowOperations && !this.workflowJob) {
         // One supervised workflow pass may await filesystem/import work. Keep

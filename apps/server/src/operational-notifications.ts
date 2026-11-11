@@ -125,7 +125,11 @@ export function createOperationalNotifications(context: OperationalNotifications
       const root=rootActivation(failure.id),key=`communication-delivery:${root}`;
       const receipt=receiptFor(failure.projectId,failure.communicationEventId,failure.agentId);
       if(receipt&&['processed','recovered','cancelled'].includes(receipt.state))continue;
-      const internal=recovering(receipt)||Boolean(context.contextRecoveryRunning?.(failure.agentId));
+      const maintenanceOwned=Boolean(store.sqlite.prepare(`SELECT 1 FROM provider_context_recovery_requests recovery
+        JOIN scheduler_run_activations source ON source.run_id=recovery.source_run_id AND source.activation_id=?
+        WHERE recovery.agent_id=? AND recovery.project_id=? AND json_extract(recovery.progress_json,'$.automaticMaintenance')=1 LIMIT 1`)
+        .get(failure.id,failure.agentId,failure.projectId));
+      const internal=maintenanceOwned||recovering(receipt)||Boolean(context.contextRecoveryRunning?.(failure.agentId));
       const existing=workspace.notificationForWork({category:'communication',projectId:failure.projectId,workContext:{kind:'activation',recordId:root,state:failure.state,occurredAt:failure.updatedAt}})??workspace.getNotificationByDedupeKey(key);
       if(internal&&!existing)continue;
       const conversationId=failure.scopeKey?.startsWith('conversation:')?failure.scopeKey.slice('conversation:'.length):undefined;
@@ -136,14 +140,15 @@ export function createOperationalNotifications(context: OperationalNotifications
       const issue=failure.lastDeliveryError??(failure.terminalOutcome??failure.state).replaceAll('_',' ');
       createOperationalNotification({dedupeKey:existing?.dedupeKey??key,renewAfterRecovery:true,internal,category:'communication',severity:'urgent',
         title:`${agent?.title??'Agent'}${conversation?.title?` · ${conversation.title}`:''} · ${requiredReplyExhausted?'Reply Needs Review':outcomeUnknown?'Message Result Needs Review':'Message Delivery Needs Help'}`,
-        body:internal?'Ponderosa is recovering this delivery. Earlier uncertain work remains retained.'
+        body:maintenanceOwned?'The earlier result remains uncertain and retained. Session maintenance never repeats this work.'
+          :internal?'Ponderosa is recovering this delivery. Earlier uncertain work remains retained.'
           :requiredReplyExhausted?`Ponderosa did not publish the required Chat reply after ${failure.deliveryFailures} Agent ${failure.deliveryFailures===1?'attempt':'attempts'}. Review the Agent’s activity before retrying; earlier work may exist.`
           :outcomeUnknown?'Ponderosa cannot confirm this message’s result. Review Context recovery and the Agent’s activity before retrying; earlier changes may exist.'
           :`Ponderosa could not deliver this message after ${failure.deliveryFailures} ${failure.deliveryFailures===1?'attempt':'attempts'}. ${issue}`,
         ...(excerpt?{contextPreview:excerpt}:{}),
-        workContext:{kind:'activation',recordId:root,state:internal?receipt!.state:failure.terminalOutcome??failure.state,occurredAt:failure.updatedAt,...(excerpt?{assignment:excerpt}:{})},
+        workContext:{kind:'activation',recordId:root,state:internal?receipt?.state??failure.state:failure.terminalOutcome??failure.state,occurredAt:failure.updatedAt,...(excerpt?{assignment:excerpt}:{})},
         projectId:failure.projectId,agentId:failure.agentId,...(conversation?{conversationId:conversation.id}:{}),communicationEventId:failure.communicationEventId,
-        action:agent?{kind:'open_agent',targetId:agent.id}:{kind:'open_project',targetId:failure.projectId}});
+        action:maintenanceOwned?undefined:agent?{kind:'open_agent',targetId:agent.id}:{kind:'open_project',targetId:failure.projectId}});
     }
     workspace.forEachNotification(notification=>{
       const key=notification.dedupeKey;

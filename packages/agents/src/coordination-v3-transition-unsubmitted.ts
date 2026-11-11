@@ -21,11 +21,11 @@ export function transitionUnsubmittedActivationSql(activation:string):string {
               OR injection.acknowledged_at IS NOT NULL OR injection.provider_turn_id IS NOT NULL))
         )
       ))
-    OR (${activation}.state='retry_pending' AND ${activation}.dispatch_policy='next_run'
+    OR (CASE WHEN ${activation}.state='retry_pending' AND ${activation}.dispatch_policy='next_run'
       AND ${activation}.steering_wait_reason='provider_unsupported'
       AND (${activation}.kind IN ('coordination_request','ordinary_message')
         OR (${activation}.kind='urgent_message' AND ${activation}.prompt_class<>'human'))
-      AND NOT EXISTS (SELECT 1 FROM scheduler_run_activations attached WHERE attached.activation_id=${activation}.id)
+      THEN NOT EXISTS (SELECT 1 FROM scheduler_run_activations attached WHERE attached.activation_id=${activation}.id)
       -- The unsupported result is a definite no-write refusal. Its cancelled
       -- steer remains exact audit evidence after the old attachment is removed.
       AND EXISTS (
@@ -44,5 +44,5 @@ export function transitionUnsubmittedActivationSql(activation:string):string {
                 OR prior.acknowledged_at IS NOT NULL OR prior.provider_turn_id IS NOT NULL)
           )
       )
-    ))`;
+      ELSE 0 END))`;
 }

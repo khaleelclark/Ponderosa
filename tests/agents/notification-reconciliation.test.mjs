@@ -580,3 +580,31 @@ test('UI002 failed canonical reconciliation keeps push pending and reports its e
  t.after(()=>manager.stop());await manager.drain();
  assert.deepEqual(sent,[]);assert.deepEqual(errors,[failure]);assert.equal(f.workspace.duePushDeliveries().length,1);
 });
+
+// The active projection is a read, not a cross-product mutation batch. Old
+// browser notifications must not poison valid IDs or disclose foreign records.
+test('active notification batches ignore stale and foreign IDs while preserving product authority',async t=>{
+ const {createRequire}=await import('node:module');
+ const require=createRequire(new URL('../../apps/server/package.json',import.meta.url));
+ const {default:Fastify}=await import(require.resolve('fastify'));
+ const {registerProductScope,rewriteProductUrl}=await import('../../apps/server/dist/product-scope.js');
+ const {registerNotificationListRoute}=await import('../../apps/server/dist/routes/notifications.js');
+ const root=mkdtempSync(path.join(tmpdir(),'ponderosa-active-notices-'));
+ const store=new AgentStore(root),workspace=new WorkspaceStore(root),app=Fastify({rewriteUrl:rewriteProductUrl});
+ t.after(async()=>{await app.close();workspace.close();store.close();rmSync(root,{recursive:true,force:true});});
+ registerProductScope(app,store,workspace,()=>undefined);
+ registerNotificationListRoute(app,{store,workspace,publishWorkspaceSince(){}});
+ const create=(id,extra={})=>workspace.createNotification({kind:'operational',status:'open',dedupeKey:id,title:id,body:'fixture',...extra});
+ const active=create('active'),resolved=create('resolved'),foreign=create('foreign',{branchId:'other-product'});
+ workspace.setNotificationStatus(resolved.id,'resolved');
+ const ids=[active.id,'missing',resolved.id,foreign.id,active.id];
+ const request=async(url,notificationIds)=>app.inject({method:'POST',url,payload:{notificationIds}});
+ const dev=await request('/api/notifications/active',ids);assert.equal(dev.statusCode,200,dev.body);
+ assert.deepEqual(dev.json(),{activeNotificationIds:[active.id]});
+ const branch=await request('/api/branches/engine/notifications/active',ids);assert.equal(branch.statusCode,200,branch.body);
+ assert.deepEqual(branch.json(),{activeNotificationIds:[foreign.id]});
+ assert.equal(workspace.getNotification(foreign.id).status,'open');
+ assert.equal((await request('/api/notifications/active',Array(101).fill('missing'))).statusCode,400);
+ assert.equal((await request('/api/notifications/active',[null])).statusCode,400);
+ assert.deepEqual((await request('/api/notifications/active',[])).json(),{activeNotificationIds:[]});
+});

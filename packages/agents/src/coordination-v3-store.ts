@@ -263,7 +263,6 @@ export class CoordinationV3Store {
   ) {
     requireAdmittedDatabase(sqlite);
     this.sqlite = sqlite;
-    this.contextRecovery = new CoordinationV3ContextRecoveryAuthority(sqlite);
     this.activationReadModel = new CoordinationV3ActivationReadModel(sqlite);
     this.activationFactory = new CoordinationV3ActivationFactory(sqlite, options);
     this.requiredReplyAuthority = new CoordinationV3RequiredReplyAuthority(
@@ -290,6 +289,7 @@ export class CoordinationV3Store {
     this.runtimeAttachmentAuthority = new CoordinationV3RuntimeAttachmentAuthority(sqlite, options);
     this.runtimeArtifactAuthority = new CoordinationV3RuntimeArtifactAuthority(sqlite, options);
     this.runtimeScopeAuthority = new CoordinationV3RuntimeScopeAuthority(sqlite);
+    this.contextRecovery = new CoordinationV3ContextRecoveryAuthority(sqlite,this.runtimeScopeAuthority);
     this.activationLifecycle = new CoordinationV3ActivationLifecycleAuthority(
       sqlite,
       this.runtimeScopeAuthority,

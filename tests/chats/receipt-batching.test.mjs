@@ -536,3 +536,21 @@ test('uncertain settings handoff holds its source reply recovery across reopen w
  assert.equal(db.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(recovery).n,0);
  assert.equal(db.prepare('SELECT state FROM agent_activations WHERE id=?').get(recovery).state,'pending');
 });
+
+test('unsupported-steer proof is lazy for ordinary receipt rows and retains the old predicate results',async t=>{
+ const {transitionUnsubmittedActivationSql}=await import('../../packages/agents/dist/coordination-v3-transition-unsubmitted.js');
+ const db=openCurrentMemoryDatabase();t.after(()=>db.close());
+ const guarded=transitionUnsubmittedActivationSql('a');
+ const legacy=guarded.replace('OR (CASE WHEN','OR (').replace('THEN NOT EXISTS','AND NOT EXISTS').replace('ELSE 0 END))','))');
+ // Ordinary rows cannot qualify for unsupported-steer recovery. Instrument the
+ // expensive branch itself to prove SQLite never evaluates it for these rows.
+ let evaluations=0;db.function('unsupported_probe',()=>{evaluations++;return 1;});
+ const instrumented=guarded.replace('THEN NOT EXISTS','THEN unsupported_probe() AND NOT EXISTS');
+ const now=new Date().toISOString(),project=randomUUID(),agent=randomUUID();
+ db.prepare('INSERT INTO projects(id,label,host_path,created_at) VALUES(?,?,?,?)').run(project,'Lazy receipts','/unused',now);
+ db.prepare('INSERT INTO agents(id,project_id,title,handle,active_engine,created_at,updated_at,working_copy_json) VALUES(?,?,?,?,?,?,?,?)').run(agent,project,'Receipt','receipt','codex',now,now,'{}');
+ const v3=new CoordinationV3Store(db);
+ for(let i=0;i<35;i++)v3.recordRuntimeCommunication({id:randomUUID(),projectId:project,scopeKey:'agent:'+agent,sender:{kind:'user',userId:'local-operator'},intent:'user_dm',audience:{kind:'user_agent',userId:'local-operator',agentId:agent},payload:{text:'receipt '+i},activation:{agentId:agent,kind:'human_message',priority:100,promptClass:'human'},now});
+ const select=predicate=>db.prepare(`SELECT a.id,${predicate} eligible FROM agent_activations a ORDER BY a.id`).all();
+ assert.deepEqual(select(instrumented),select(legacy));assert.equal(evaluations,0,'Ordinary receipt rows do not enter unsupported-steer history scans');
+});

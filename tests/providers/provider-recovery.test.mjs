@@ -599,7 +599,7 @@ test('explicit unsupported recovery holds exact unknown context durably without 
   assert.equal((await f.api('POST',`/api/agents/${agent.id}/context-recoveries/${id}/dismiss`,{acknowledgeStillBlocked:false})).status,400);
   const dismissed=f.ok(await f.api('POST',`/api/agents/${agent.id}/context-recoveries/${id}/dismiss`,{acknowledgeStillBlocked:true}));
   assert.equal(dismissed.recovered,false);assert.equal(dismissed.request.state,'dismissed');
-  await until(()=>store.sqlite.prepare("SELECT 1 FROM scheduler_runs WHERE agent_id=? AND id<>? AND status='failed'").get(agent.id,boundary.sourceRunId),'original context guard after dismissal');
+  assert.equal(store.acceptedProviderSessionContextUsage(agent.id),undefined,'Dismissal cannot manufacture context evidence');
   assert.equal(f.turns.length,before.turns,'Dismissal must not bypass unmeasurable context');
   const again=await f.api('POST',`/api/agents/${agent.id}/context-recoveries`,body);
   assert.equal(again.body.request.id,id);assert.equal(again.body.request.state,'dismissed');assert.match(again.body.error,/dismissed without recovering context/);
@@ -607,8 +607,8 @@ test('explicit unsupported recovery holds exact unknown context durably without 
  },{storeFactory:root=>store=new AgentStore(root),providerValidatesResumeBeforeTurn:true});
 });
 
-for (const reused of [false,true]) test(`completed Run with unknown steer requires explicit same-session context recovery (reused=${reused})`,{timeout:30000},async t=>{
- let store;
+for (const reused of [false,true]) test(`completed Run with unknown steer automatically recovers the same session for independent input (reused=${reused})`,{timeout:30000},async t=>{
+ let store,release;const resultGate=new Promise(resolve=>release=resolve);
  await withFixture(t,async f=>{
   const chat=await f.createChat('Completed uncertain interruption');
   const agent=reused?await f.createAgent(chat,'Existing session'):await f.createIdleAgent(chat,'First session');
@@ -629,7 +629,6 @@ for (const reused of [false,true]) test(`completed Run with unknown steer requir
   assert.ok(JSON.stringify(originalInputs).includes('Unconfirmed memory update'));
   await f.send(agent.id,'Later independent request');
   const queued=await until(()=>store.sqlite.prepare(`SELECT a.id,a.payload_json FROM agent_activations a
-   JOIN activation_sources held ON held.activation_id=a.id AND held.source_kind='settings_transition_reservation_wait'
    WHERE a.agent_id=? AND a.state IN ('pending','retry_pending')`).get(agent.id),'later independent input held before submission');
   assert(JSON.stringify(queued.payload_json).includes('Later independent request'));
   assert.equal(store.sqlite.prepare("SELECT count(*) n FROM scheduler_runs WHERE agent_id=? AND fencing_token>? AND prompt_injection_state<>'not_injected'").get(agent.id,run.fencing_token).n,0);
@@ -645,28 +644,20 @@ for (const reused of [false,true]) test(`completed Run with unknown steer requir
    mutate();assert.equal(store.uncertainProviderContextRecoveryBoundary(agent.id),undefined,'Recovery requires both exact unknown steer and acknowledged turn');
    throw Error('restore held evidence');
   })(),/restore held evidence/);
-  const body={idempotencyKey:'completed-steer-recovery',expectedSessionId:boundary.providerSessionId,expectedSourceRunId:run.id,
+  const maintenance=await until(()=>{const r=new CoordinationV3Store(store.sqlite).contextRecovery.active(agent.id);return r?.progress?.phase==='native_started'&&r},'automatic maintenance in flight');
+  const body={idempotencyKey:store.sqlite.prepare('SELECT idempotency_key FROM provider_context_recovery_requests WHERE id=?').get(maintenance.id).idempotency_key,expectedSessionId:boundary.providerSessionId,expectedSourceRunId:run.id,
    expectedToolContractHash:boundary.toolContractHash,acknowledgeUnknownEffects:true};
-  const result=await f.api('POST',`/api/agents/${agent.id}/context-recoveries`,body);
-  assert.equal(result.status,200,JSON.stringify(result.body));
-  assert.equal(result.body.request.progress.phase,'context_accepted');assert.equal(result.body.sourceWork,'held_unknown');
+  release();
+  await until(()=>store.sqlite.prepare("SELECT 1 FROM scheduler_run_activations a JOIN scheduler_runs r ON r.id=a.run_id WHERE a.activation_id=? AND r.status='completed'").get(queued.id),'automatic maintenance admits the same saved input');
   assert.equal(f.commands.length,commandCount+1);assert.equal(f.commands.at(-1).sessionId,sessionState.sessionId);
-  assert.equal(f.turns.length,turnCount,'Context repair must not replay either task');
-  assert.equal(store.acceptedProviderSessionContextUsage(agent.id)?.usage.usedTokens,1000);
   assert.deepEqual(store.sqlite.prepare('SELECT * FROM scheduler_runs WHERE id=?').get(run.id),completed);
   assert.deepEqual(store.sqlite.prepare('SELECT * FROM scheduler_prompt_injections WHERE id=?').get(injection.id),injection);
   assert.deepEqual(store.sqlite.prepare('SELECT * FROM required_reply_obligations WHERE run_id=? ORDER BY source_activation_id').all(run.id),obligations);
   assert.deepEqual(store.sqlite.prepare('SELECT a.id,a.payload_json FROM agent_activations a JOIN scheduler_run_activations attached ON attached.activation_id=a.id WHERE attached.run_id=? ORDER BY a.id').all(run.id),originalInputs);
-  assert.equal(store.resumeSessionState(agent.id).sessionId,sessionState.sessionId);
   const replay=await f.api('POST',`/api/agents/${agent.id}/context-recoveries`,body);
   assert.equal(replay.body.replayed,true);assert.equal(f.commands.length,commandCount+1);
   await f.reopen();
-  assert.equal(store.acceptedProviderSessionContextUsage(agent.id)?.usage.usedTokens,1000);
   assert.equal(store.sqlite.prepare('SELECT state FROM scheduler_prompt_injections WHERE id=?').get(injection.id).state,'outcome_unknown');
-  const reopenedReplay=await f.api('POST',`/api/agents/${agent.id}/context-recoveries`,body);
-  assert.equal(reopenedReplay.body.replayed,true);assert.equal(f.commands.length,commandCount+1);
-  assert.equal(f.turns.length,turnCount);
-  f.ok(await f.api('POST',`/api/agents/${agent.id}/context-recoveries/${result.body.request.id}/dismiss`,{acknowledgeStillBlocked:true}));
   const next=await until(()=>f.turns.find(turn=>turn.agentId===agent.id && /Later independent request/.test(turn.input.prompt)),'same queued task following explicit recovery');
   await until(()=>store.sqlite.prepare("SELECT 1 FROM scheduler_runs r JOIN scheduler_run_activations attached ON attached.run_id=r.id WHERE attached.activation_id=? AND r.status='completed'").get(queued.id),'queued task completed once after context repair');
   assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(queued.id).n,1);
@@ -676,7 +667,7 @@ for (const reused of [false,true]) test(`completed Run with unknown steer requir
  },{storeFactory:root=>store=new AgentStore(root),providerValidatesResumeBeforeTurn:true,
   steeringResponse:async()=>{throw Error('Controlled unknown delivery');},
   providerContextRecoverySupport:{status:'managed_compaction',crashReconciliation:'hold_without_native_query'},
-  providerCommandResult:({sessionId})=>({outcome:'completed',contextUsage:{usedTokens:1000,windowTokens:200000,providerSessionGeneration:sessionId}})});
+  providerCommandResult:async({sessionId})=>{await resultGate;return {outcome:'completed',contextUsage:{usedTokens:1000,windowTokens:200000,providerSessionGeneration:sessionId}};}});
 });
 
 test('recovery refuses a completed or busy source rather than opening a proof turn',{timeout:30000},async t=>{
@@ -919,7 +910,7 @@ test('UI014 outage projection clears only after a newer completed attempt in the
 
 
 test('Stop retains native context for one queued independent task without reviving stopped work',{timeout:45000},async t=>{
- let store;const nativeFindings=new Map(),finding='NATIVE_ONLY_FINDING_'+randomUUID();
+ let store,release;const resultGate=new Promise(resolve=>release=resolve);const nativeFindings=new Map(),finding='NATIVE_ONLY_FINDING_'+randomUUID();
  await withFixture(t,async f=>{
   const chat=await f.createChat('Stop context continuity'),agent=await f.createIdleAgent(chat,'Persistent stopped owner');
   f.plans.set(agent.id,[{run:async session=>{
@@ -950,29 +941,26 @@ test('Stop retains native context for one queued independent task without revivi
   }}]);
   await f.send(agent.id,newTask);
   const queued=await until(()=>store.sqlite.prepare(`SELECT a.id,a.payload_json FROM agent_activations a
-   JOIN activation_sources held ON held.activation_id=a.id AND held.source_kind='settings_transition_reservation_wait'
    WHERE a.agent_id=? AND a.state IN ('pending','retry_pending')`).get(agent.id),'independent task held before submission');
   assert(JSON.stringify(queued.payload_json).includes(newTask));assert.equal(f.turns.length,turnCount);
   assert.equal(store.sqlite.prepare("SELECT count(*) n FROM scheduler_runs WHERE agent_id=? AND fencing_token>? AND prompt_injection_state<>'not_injected'").get(agent.id,original.fencing_token).n,0);
   const status=f.ok(await f.api('GET',`/api/agents/${agent.id}/context-recoveries`));
   const boundary=status.boundary;assert.equal(boundary.sourceRunId,running.id);assert.equal(status.sourceEvidence.sourceRunStatus,'cancelled');
-  const body={idempotencyKey:'recover-stopped-context',expectedSessionId:saved.sessionId,expectedSourceRunId:running.id,expectedToolContractHash:boundary.toolContractHash,acknowledgeUnknownEffects:true};
+  const maintenance=await until(()=>{const r=new CoordinationV3Store(store.sqlite).contextRecovery.active(agent.id);return r?.progress?.phase==='native_started'&&r},'same-session automatic recovery');
+  const body={idempotencyKey:store.sqlite.prepare('SELECT idempotency_key FROM provider_context_recovery_requests WHERE id=?').get(maintenance.id).idempotency_key,expectedSessionId:saved.sessionId,expectedSourceRunId:running.id,expectedToolContractHash:boundary.toolContractHash,acknowledgeUnknownEffects:true};
   assert.equal((await f.api('POST',`/api/agents/${agent.id}/context-recoveries`,{...body,expectedSessionId:'foreign-session'})).status,409);
   store.sqlite.exec('SAVEPOINT stop_cleanup_witness');
   try{
    store.sqlite.prepare("UPDATE provider_operation_outbox SET state='pending' WHERE id=?").run(cleanup.id);
    assert.equal(store.uncertainProviderContextRecoveryBoundary(agent.id),undefined,'Incomplete cleanup cannot authorize native context recovery');
   }finally{store.sqlite.exec('ROLLBACK TO stop_cleanup_witness; RELEASE stop_cleanup_witness');}
-  const recovered=await f.api('POST',`/api/agents/${agent.id}/context-recoveries`,body);
-  assert.equal(recovered.status,200,JSON.stringify(recovered.body));assert.equal(recovered.body.request.progress.phase,'context_accepted');
+  release();
+  await until(()=>store.sqlite.prepare("SELECT 1 FROM scheduler_run_activations a JOIN scheduler_runs r ON r.id=a.run_id WHERE a.activation_id=? AND r.status='completed'").get(queued.id),'same independent input after automatic recovery');
   assert.equal(f.commands.length,commandCount+1);assert.equal(f.commands.at(-1).name,'compact');assert.equal(f.commands.at(-1).sessionId,saved.sessionId);
-  assert.equal(f.turns.length,turnCount,'Context-only recovery sends no task input');
-  assert.equal(store.acceptedProviderSessionContextUsage(agent.id)?.usage.usedTokens,1000);
   assert.deepEqual(store.sqlite.prepare('SELECT * FROM scheduler_runs WHERE id=?').get(running.id),original);
   assert.deepEqual(store.sqlite.prepare('SELECT * FROM required_reply_obligations WHERE run_id=? ORDER BY source_activation_id').all(running.id),obligations);
   assert.deepEqual(store.sqlite.prepare('SELECT * FROM provider_inputs WHERE execution_id=?').get(running.id),sourceInputs);
   assert.equal((await f.api('POST',`/api/agents/${agent.id}/context-recoveries`,body)).body.replayed,true);assert.equal(f.commands.length,commandCount+1);
-  f.ok(await f.api('POST',`/api/agents/${agent.id}/context-recoveries/${recovered.body.request.id}/dismiss`,{acknowledgeStillBlocked:true}));
   const next=await until(()=>f.turns.find(turn=>turn.agentId===agent.id&&turn.input.prompt.includes(newTask)),'same queued independent task released after accepted measurement');
   assert.equal(next.sessionId,saved.sessionId);assert.equal(f.turns.length,turnCount+1);
   const independent=await until(()=>store.sqlite.prepare("SELECT r.* FROM scheduler_runs r JOIN scheduler_run_activations attached ON attached.run_id=r.id WHERE attached.activation_id=? AND r.status='completed'").get(queued.id),'independent task completed');
@@ -982,54 +970,56 @@ test('Stop retains native context for one queued independent task without revivi
   assert.deepEqual(store.sqlite.prepare('SELECT * FROM required_reply_obligations WHERE run_id=? ORDER BY source_activation_id').all(running.id),obligations);
  },{storeFactory:root=>store=new AgentStore(root),providerValidatesResumeBeforeTurn:true,
   providerContextRecoverySupport:{status:'managed_compaction',crashReconciliation:'hold_without_native_query'},
-  providerCommandResult:({sessionId})=>({outcome:'completed',contextUsage:{usedTokens:1000,windowTokens:200000,providerSessionGeneration:sessionId}})});
+  providerCommandResult:async({sessionId})=>{await resultGate;return {outcome:'completed',contextUsage:{usedTokens:1000,windowTokens:200000,providerSessionGeneration:sessionId}};}});
 });
 
-for(const engine of ['codex','claude'])test(`guided recovery settles exact context and admits saved input once without retrying the interrupted task (${engine})`,{timeout:45000},async t=>{
- let store;
+for(const engine of ['codex','claude'])test(`automatic recovery admits saved input once without repeating uncertain work (${engine})`,{timeout:45000},async t=>{
+ let store,release;
+ const resultGate=new Promise(resolve=>release=resolve);
  await withFixture(t,async f=>{
-  const chat=await f.createChat('Guided recovery'),agent=await f.createIdleAgent(chat,'Assistant recovery fixture');
+  const chat=await f.createChat('Automatic recovery'),agent=await f.createIdleAgent(chat,'Assistant recovery fixture');
   if(engine==='claude')f.ok(await f.api('PATCH',`/api/agents/${agent.id}`,{activeEngine:'claude'}));
   f.plans.set(agent.id,[{output:false,run:session=>session.exitWithDetail({exitCode:9})},{}]);
   await f.send(agent.id,'Interrupted original work');
   const boundary=await until(()=>store.uncertainProviderContextRecoveryBoundary(agent.id),'interrupted exact session');
-  await f.send(agent.id,'Saved later instruction');
-  const held=await until(()=>store.sqlite.prepare(`SELECT a.* FROM agent_activations a JOIN activation_sources held
-   ON held.activation_id=a.id AND held.source_kind='settings_transition_reservation_wait'
-   WHERE a.agent_id=? AND a.state IN ('pending','retry_pending')`).get(agent.id),'new input held before provider submission');
   const original=store.sqlite.prepare('SELECT * FROM scheduler_runs WHERE id=?').get(boundary.sourceRunId);
-  const retry=await f.api('POST',`/api/projects/${agent.projectId}/message-deliveries/${held.id}/retry`,{idempotencyKey:'ineffective-delivery-retry'});
-  assert.equal(retry.status,409);assert.equal(retry.body.code,'context_recovery_required');
-  assert.ok(store.sqlite.prepare("SELECT 1 FROM activation_sources WHERE activation_id=? AND source_kind='settings_transition_reservation_wait'").get(held.id));
-  const blockedHealth=f.ok(await f.api('GET',`/api/projects/${agent.projectId}/agent-health`)).agents.find(row=>row.agentId===agent.id);assert.equal(blockedHealth.status,'blocked');assert.equal(blockedHealth.reason,'context_recovery_required');
-  const detail=f.ok(await f.api('GET',`/api/agents/${agent.id}`));
-  const receipt=JSON.stringify(detail);assert.match(receipt,/contextRecoveryRequired/);
-  const body={idempotencyKey:'guided-exact-operation',expectedSessionId:boundary.providerSessionId,expectedSourceRunId:boundary.sourceRunId,
-   expectedToolContractHash:boundary.toolContractHash,expectedSourceFence:boundary.sourceFence,acknowledgeUnknownEffects:true,settleRecoveredContext:true};
-  assert.equal((await f.api('POST',`/api/agents/${agent.id}/context-recoveries`,{...body,expectedSourceFence:boundary.sourceFence+1})).status,409);
-  const result=f.ok(await f.api('POST',`/api/agents/${agent.id}/context-recoveries`,body));
-  assert.equal(result.request.state,'dismissed');assert.equal(result.request.progress.phase,'context_accepted');assert.equal(result.sourceWork,'held_unknown');
-  const commands=f.commands.length;assert.equal(commands,1);
-  await until(()=>store.sqlite.prepare("SELECT 1 FROM scheduler_run_activations attached JOIN scheduler_runs r ON r.id=attached.run_id WHERE attached.activation_id=? AND r.prompt_injection_state='injected'").get(held.id),'same saved activation admitted');
-  assert.equal(store.sqlite.prepare('SELECT payload_json FROM agent_activations WHERE id=?').get(held.id).payload_json,held.payload_json);
+  assert.equal(f.commands.length,0,'Uncertain work alone is not a recovery request');
+  await f.send(agent.id,'Saved later instruction');
+  const held=await until(()=>store.sqlite.prepare(`SELECT * FROM agent_activations WHERE agent_id=? AND state IN ('pending','retry_pending') AND kind='human_message'`).get(agent.id),'independent saved input');
+  const running=await until(()=>{const r=new CoordinationV3Store(store.sqlite).contextRecovery.active(agent.id);return r?.progress?.phase==='native_started'&&r},'server starts exact maintenance without browser recovery calls');
+  assert.equal(running.progress.automaticMaintenance,true);assert.equal(f.commands.length,1);
+  assert.equal(f.commands[0].sessionId,boundary.providerSessionId);
   assert.deepEqual(store.sqlite.prepare('SELECT * FROM scheduler_runs WHERE id=?').get(boundary.sourceRunId),original);
+  const health=f.ok(await f.api('GET',`/api/projects/${agent.projectId}/agent-health`)).agents.find(row=>row.agentId===agent.id);
+  assert.equal(health.status,'preparing');assert.equal(health.reason,'context_recovery_running');
+  try { release();
+   await until(()=>store.sqlite.prepare("SELECT 1 FROM scheduler_run_activations a JOIN scheduler_runs r ON r.id=a.run_id WHERE a.activation_id=? AND r.status='completed'").get(held.id),'saved activation completes once after verified maintenance');
+  }finally{release();}
+  const result=store.sqlite.prepare('SELECT * FROM provider_context_recovery_requests WHERE id=?').get(running.id);
+  assert.equal(result.state,'dismissed');
+  const body={idempotencyKey:store.sqlite.prepare('SELECT idempotency_key FROM provider_context_recovery_requests WHERE id=?').get(running.id).idempotency_key,expectedSessionId:boundary.providerSessionId,expectedSourceRunId:boundary.sourceRunId,expectedToolContractHash:boundary.toolContractHash,expectedSourceFence:boundary.sourceFence,acknowledgeUnknownEffects:true,settleRecoveredContext:true};
+  assert.equal(store.sqlite.prepare('SELECT payload_json FROM agent_activations WHERE id=?').get(held.id).payload_json,held.payload_json);
   assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(held.id).n,1);
-  await until(()=>store.sqlite.prepare("SELECT 1 FROM scheduler_run_activations a JOIN scheduler_runs r ON r.id=a.run_id WHERE a.activation_id=? AND r.status='completed'").get(held.id),'independent input completes before no-change publication check');
-  await new Promise(resolve=>setImmediate(resolve));
-  const deliveries=async()=> (await readFile(path.join(f.dataDir,'workspace-events.jsonl'),'utf8')).trim().split('\n').filter(Boolean).map(line=>JSON.parse(line).event).filter(event=>event.type==='message_delivery_changed'&&event.agentId===agent.id).length;
-  const beforeReplayEvents=await deliveries();assert(beforeReplayEvents>0,'real recovery publishes canonical state changes');
-  const replay=f.ok(await f.api('POST',`/api/agents/${agent.id}/context-recoveries`,body));
-  assert.equal(replay.replayed,true);assert.equal(replay.request.id,result.request.id);assert.equal(f.commands.length,commands);
-  for(let i=0;i<4;i++)f.ok(await f.api('GET','/api/notifications'));
-  assert.equal(await deliveries(),beforeReplayEvents,'unchanged exact-key replay and scheduler reconciliation emit no duplicate delivery events');
+  assert.deepEqual(store.sqlite.prepare('SELECT * FROM scheduler_runs WHERE id=?').get(boundary.sourceRunId),original);
+  assert.equal(f.turns.length,2,'No replay of the original work');
+  const {settingsTransitionActivationHoldSql}=await import('../../packages/agents/dist/coordination-v3-settings-transition-hold.js');
+  store.sqlite.exec('SAVEPOINT legacy_recovery_steering');
+  try{
+   store.sqlite.prepare(`UPDATE agent_activations SET dispatch_policy='steer_or_run',available_at='2000' WHERE kind='required_reply_recovery' AND json_extract(payload_json,'$.requiredReplyRecovery.sourceRunId')=?`).run(boundary.sourceRunId);
+   const older=store.sqlite.prepare(`SELECT id,${settingsTransitionActivationHoldSql('a')} held FROM agent_activations a WHERE kind='required_reply_recovery' AND json_extract(payload_json,'$.requiredReplyRecovery.sourceRunId')=?`).get(boundary.sourceRunId);
+   assert.equal(older.held,1,'A legacy steer policy cannot bypass the shared Run/steering selection and coalescing fence');
+  }finally{store.sqlite.exec('ROLLBACK TO legacy_recovery_steering; RELEASE legacy_recovery_steering');}
+
+  assert.equal(store.sqlite.prepare(`SELECT count(*) n FROM agent_activations recovery JOIN scheduler_run_activations attached ON attached.activation_id=recovery.id
+   WHERE recovery.kind='required_reply_recovery' AND json_extract(recovery.payload_json,'$.requiredReplyRecovery.sourceRunId')=?`).get(boundary.sourceRunId).n,0,'Original reply recovery is retained without leasing or coalescing into the independent Run');
   await f.reopen();
   const restored=f.ok(await f.api('GET',`/api/agents/${agent.id}/context-recoveries?idempotencyKey=${body.idempotencyKey}`));
-  assert.equal(restored.request.id,result.request.id);assert.equal(restored.request.state,'dismissed');
+  assert.equal(restored.request.id,running.id);assert.equal(restored.request.state,'dismissed');
   assert.equal((await f.api('POST',`/api/agents/${agent.id}/context-recoveries`,body)).body.replayed,true);
-  assert.equal(f.commands.length,commands);assert.deepEqual(store.sqlite.prepare('SELECT * FROM scheduler_runs WHERE id=?').get(boundary.sourceRunId),original);
+  assert.equal(f.commands.length,1);
  },{storeFactory:root=>store=new AgentStore(root),providerValidatesResumeBeforeTurn:true,diagnosticProvider:true,
    providerContextRecoverySupport:{status:'managed_compaction',crashReconciliation:'hold_without_native_query'},
-   providerCommandResult:({sessionId})=>({outcome:'completed',contextUsage:{usedTokens:1000,windowTokens:200000,providerSessionGeneration:sessionId}})});
+   providerCommandResult:async({sessionId})=>{await resultGate;return {outcome:'completed',contextUsage:{usedTokens:1000,windowTokens:200000,providerSessionGeneration:sessionId}};}});
 });
 
 import {restrictedInternalExceptionDiagnostic} from '../../apps/server/dist/provider-exception-properties.js';
@@ -1090,4 +1080,97 @@ for(const change of ['authentication','access'])test(`guided settlement refuses 
   providerAuthStatus:async()=>({authenticated:true,billingMode,source:'cli_status'}),
   providerContextRecoverySupport:{status:'managed_compaction',crashReconciliation:'hold_without_native_query'},
   providerCommandResult:({sessionId})=>({outcome:'completed',contextUsage:{usedTokens:1000,windowTokens:200000,providerSessionGeneration:sessionId}})});
+});
+
+for(const engine of ['codex','claude'])test(`completed automatic compaction without fresh usage stays held without native replay (${engine})`,{timeout:30000},async t=>{
+ let store;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Missing occupancy'),agent=await f.createIdleAgent(chat,'Retained session');
+  if(engine==='claude')f.ok(await f.api('PATCH',`/api/agents/${agent.id}`,{activeEngine:'claude'}));
+  f.plans.set(agent.id,[{output:false,run:session=>session.exitWithDetail({exitCode:9})}]);
+  await f.send(agent.id,'Original uncertain work');
+  const boundary=await until(()=>store.uncertainProviderContextRecoveryBoundary(agent.id),'uncertain retained source');
+  const original=store.sqlite.prepare('SELECT * FROM scheduler_runs WHERE id=?').get(boundary.sourceRunId);
+  await f.send(agent.id,'Retained independent input');
+  const authority=()=>new CoordinationV3Store(store.sqlite).contextRecovery;
+  const recovery=await until(()=>{const r=authority().active(agent.id);return r?.progress?.phase==='held'&&r},'completed native operation held for fresh usage');
+  assert.equal(recovery.progress.nativeOutcome,'completed');assert.equal(recovery.progress.nativeInvoked,true);assert.equal(recovery.progress.usedTokens,undefined);
+  assert.match(recovery.progress.message,/completed.*fresh.*occupancy/i);
+  assert.equal(f.commands.length,1);assert.equal(f.turns.length,1);
+  const held=store.sqlite.prepare("SELECT * FROM agent_activations WHERE agent_id=? AND kind='human_message' AND state IN ('pending','retry_pending')").get(agent.id);
+  assert.ok(held);
+  for(let i=0;i<4;i++)f.ok(await f.api('GET','/api/notifications'));
+  await f.reopen();
+  await until(()=>authority().active(agent.id)?.progress?.maintenanceAttempts>=2,'restart reconciles same durable operation');
+  assert.equal(authority().active(agent.id).id,recovery.id);assert.equal(f.commands.length,1,'Missing usage never authorizes another compaction');
+  assert.equal(f.turns.length,1);assert.equal(store.sqlite.prepare('SELECT payload_json FROM agent_activations WHERE id=?').get(held.id).payload_json,held.payload_json);
+  assert.deepEqual(store.sqlite.prepare('SELECT * FROM scheduler_runs WHERE id=?').get(boundary.sourceRunId),original);
+  const notices=f.ok(await f.api('GET','/api/notifications')).items.filter(n=>n.title.endsWith(' · Cannot Respond Yet')&&n.agentId===agent.id&&n.status==='open');
+  assert.equal(notices.length,1);assert.equal(notices[0].action,undefined);assert.doesNotMatch(notices[0].body,/check.*activity|open.*agent|acknowledge/i);
+ },{storeFactory:root=>store=new AgentStore(root),providerValidatesResumeBeforeTurn:true,diagnosticProvider:true,
+  providerContextRecoverySupport:{status:'managed_compaction',crashReconciliation:'hold_without_native_query'},
+  providerCommandResult:()=>({outcome:'completed'})});
+});
+
+for(const persisted of [false,true])test(`maintenance waiting stays quiet and failed reads do not starve eligible work (durable progress=${persisted})`,{timeout:30000},async t=>{
+ let store,release,first=true;
+ const gate=new Promise(resolve=>release=resolve);
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Maintenance contention'),agents=[];
+  for(const title of ['First','Unavailable read','Following']){
+   const agent=await f.createIdleAgent(chat,title);agents.push(agent);
+   f.plans.set(agent.id,[{output:false,run:session=>session.exitWithDetail({exitCode:9})},{}]);
+   await f.send(agent.id,'Uncertain '+title);await until(()=>store.uncertainProviderContextRecoveryBoundary(agent.id),'retained source '+title);
+  }
+  await f.send(agents[0].id,'Independent first');await until(()=>f.commands.length===1,'first native maintenance starts');
+  await f.send(agents[1].id,'Independent second');await f.send(agents[2].id,'Independent third');
+  const notices=f.ok(await f.api('GET','/api/notifications')).items;
+  assert(!notices.some(n=>n.agentId===agents[1].id&&n.title.endsWith(' · Cannot Respond Yet')&&n.visibility!=='internal'),'An eligible Agent waiting behind native maintenance is routine');
+  if(persisted){const authority=new CoordinationV3Store(store.sqlite).contextRecovery,boundary=store.uncertainProviderContextRecoveryBoundary(agents[1].id);
+   const request=authority.requestMaintenance({...boundary,agentId:agents[1].id}).request;authority.reserveOperation(agents[1].id,request.id);}
+  const prepare=store.sqlite.prepare;let failures=0;
+  store.sqlite.prepare=function(sql){const statement=prepare.call(this,sql);
+   if(sql.includes("a.kind='human_message'")&&sql.includes('SELECT 1 FROM agent_activations a')){
+    const get=statement.get.bind(statement);statement.get=(...args)=>{if(args[0]===agents[1].id&&new Error().stack.includes('context.contextRecoveryMaintenance.reconcile')){failures++;throw Error('Controlled maintenance read unavailable');}return get(...args);};
+   }return statement;
+  };
+  try{
+   release();await until(()=>f.turns.some(turn=>turn.agentId===agents[2].id&&turn.input.prompt.includes('Independent third')),'other eligible Agent progresses despite failed read',12000);
+   await new Promise(resolve=>setTimeout(resolve,250));
+   assert(failures>0&&failures<25,`Read failures are bounded by the owned backoff job, observed ${failures}`);
+   assert.equal(f.commands.filter(command=>command.agentId===agents[1].id).length,0);
+  }finally{store.sqlite.prepare=prepare;release();}
+ },{storeFactory:root=>store=new AgentStore(root),providerValidatesResumeBeforeTurn:true,
+  providerContextRecoverySupport:{status:'managed_compaction',crashReconciliation:'hold_without_native_query'},
+  providerCommandResult:async({sessionId})=>{if(first){first=false;await gate;}return {outcome:'completed',contextUsage:{usedTokens:1000,windowTokens:200000,providerSessionGeneration:sessionId}};}});
+});
+
+test('persisted native measurement waits for observed drain and current authentication across restart',{timeout:30000},async t=>{
+ let store,failCleanup=false,billingMode='subscription';
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Recovery drain custody'),agent=await f.createIdleAgent(chat,'Exact retained owner');
+  f.plans.set(agent.id,[{output:false,run:session=>session.exitWithDetail({exitCode:9})},{}]);await f.send(agent.id,'Original uncertain task');
+  const boundary=await until(()=>store.uncertainProviderContextRecoveryBoundary(agent.id),'uncertain source');
+  await f.send(agent.id,'Independent saved task');
+  const authority=()=>new CoordinationV3Store(store.sqlite).contextRecovery;
+  const measured=await until(()=>{const r=authority().active(agent.id);return r?.progress?.nativeOutcome==='completed'&&r},'native completion persisted before cleanup');
+  assert.equal(measured.progress.usedTokens,1000);assert.notEqual(measured.progress.phase,'context_accepted');
+  assert.equal(store.readEvents(agent.id).filter(e=>e.event.type==='context_usage'&&e.event.providerCommand?.invocationId===measured.id).length,0,'Candidate measurement is not accepted telemetry');
+  try{
+   billingMode='api';f.ok(await f.api('POST','/api/engines/codex/recheck'));failCleanup=false;
+   await until(async()=>f.ok(await f.api('GET',`/api/agents/${agent.id}/context-recoveries`)).operationState==='idle','observed process drain');
+   await f.reopen();
+   assert.notEqual(authority().active(agent.id).progress.phase,'context_accepted');assert.equal(f.commands.length,1);assert.equal(f.turns.length,1);
+   assert.equal(store.readEvents(agent.id).filter(e=>e.event.type==='context_usage'&&e.event.providerCommand?.invocationId===measured.id).length,0,'Changed authentication cannot publish stored usage');
+   billingMode='subscription';f.ok(await f.api('POST','/api/engines/codex/recheck'));
+   await until(()=>f.turns.some(turn=>turn.input.prompt.includes('Independent saved task')),'exact candidate accepted only after authentication restored');
+   assert.equal(f.commands.length,1,'Restart uses verified result and never compacts again');
+   assert.equal(store.sqlite.prepare('SELECT state FROM provider_context_recovery_requests WHERE id=?').get(measured.id).state,'dismissed');
+   assert.equal(store.sqlite.prepare('SELECT status FROM scheduler_runs WHERE id=?').get(boundary.sourceRunId).status,'outcome_unknown');
+  }finally{failCleanup=false;}
+ },{storeFactory:root=>store=new AgentStore(root),providerValidatesResumeBeforeTurn:true,
+  providerAuthStatus:async()=>({authenticated:true,billingMode,source:'cli_status'}),
+  providerContextRecoverySupport:{status:'managed_compaction',crashReconciliation:'hold_without_native_query'},
+  beforeRuntimeClose:async()=>{if(failCleanup)throw Error('Controlled delayed drain');},
+  providerCommandResult:({sessionId})=>{failCleanup=true;return {outcome:'completed',contextUsage:{usedTokens:1000,windowTokens:200000,providerSessionGeneration:sessionId}};}});
 });

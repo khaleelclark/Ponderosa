@@ -107,3 +107,31 @@ test('Assistant reports and operational, decision, information and unclassified 
   }
   assert.equal(d.visible.size,items.length);
 });
+
+async function foregroundPushFixture({items,replace,changeScope=false,fail=false}){
+ const {createRequire}=await import('node:module');
+ const require=createRequire(new URL('../../apps/web/package.json',import.meta.url));
+ const ts=require('typescript'),exports={},calls=[],closed=[];
+ let product='dev',reads=0;
+ const notice=(tag,url)=>({tag,data:url===undefined?{}:{url},close(){closed.push(tag);}});
+ const displayed=items.map(([tag,url])=>notice(tag,url));
+ const registration={async getNotifications(){reads++;return reads>1&&replace?replace.map(([tag,url])=>notice(tag,url)):displayed;}};
+ const api={async activeNotificationIds(ids){calls.push([...ids]);if(changeScope)product='branches';if(fail)throw Error('unavailable');return ids.filter(id=>id==='active');}};
+ const source=ts.transpileModule(await readFile(new URL('../../apps/web/src/pushNotifications.ts',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
+ vm.runInNewContext(source,{exports,require:name=>name.includes('productScope')?{currentProductScope:()=>product,isBranchesPath:p=>p==='/branches'||p.startsWith('/branches/')}:name.includes('api')?{api}:{},navigator:{serviceWorker:{ready:Promise.resolve(registration)}},location:{origin:'https://fixture.invalid'},URL,window:{setTimeout:fn=>setImmediate(fn)},setTimeout,clearTimeout,console});
+ const results=await Promise.all([exports.reconcileDisplayedPushNotifications(),exports.reconcileDisplayedPushNotifications()]);
+ return {calls,closed,results,reads};
+}
+test('foreground push reconciliation closes only stale notifications of the captured product',async()=>{
+ const result=await foregroundPushFixture({items:[['active','/chats/one'],['stale','/chats/two'],['foreign','/branches?workspace=x'],['legacy'],['remote','https://elsewhere.invalid/chats/one']]});
+ assert.deepEqual(result.calls,[['active','stale']]);assert.deepEqual(result.closed,['stale']);assert.deepEqual(result.results,[true,true]);
+});
+test('push reconciliation fences a product change and rechecks replacement notification ownership',async()=>{
+ const changed=await foregroundPushFixture({items:[['stale','/chats/one']],changeScope:true});assert.deepEqual(changed.closed,[]);assert.deepEqual(changed.results,[false,false]);
+ const replaced=await foregroundPushFixture({items:[['stale','/chats/one']],replace:[['stale','/branches?workspace=x']]});assert.deepEqual(replaced.closed,[]);
+});
+test('push reconciliation batches displayed IDs and bounds unavailable retries',async()=>{
+ const items=Array.from({length:205},(_,i)=>['stale-'+i,'/chats/one']);
+ const batched=await foregroundPushFixture({items});assert.deepEqual(batched.calls.map(ids=>ids.length),[100,100,5]);assert.equal(batched.closed.length,205);
+ const failed=await foregroundPushFixture({items:[['stale','/chats/one']],fail:true});assert.equal(failed.calls.length,3);assert.deepEqual(failed.closed,[]);assert.deepEqual(failed.results,[false,false]);
+});

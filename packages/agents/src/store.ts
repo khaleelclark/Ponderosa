@@ -657,7 +657,10 @@ export class AgentStore extends AgentEventSessionFacade {
        usage.windowTokens!==undefined && (!Number.isSafeInteger(usage.windowTokens) || usage.windowTokens<=0))return undefined;
     const row=this.client.prepare(`SELECT source_run_id,source_fence,provider_session_id,tool_contract_hash
       FROM provider_context_recovery_requests WHERE id=? AND agent_id=? AND state='unsupported_fenced'
-        AND json_extract(progress_json,'$.phase')='native_started'`).get(recoveryId,agentId) as {
+        AND (json_extract(progress_json,'$.phase')='native_started' OR
+          json_extract(progress_json,'$.phase')='held' AND json_extract(progress_json,'$.nativeOutcome')='completed'
+          AND json_extract(progress_json,'$.usedTokens')=? AND json_extract(progress_json,'$.windowTokens') IS ?)`)
+      .get(recoveryId,agentId,usage.usedTokens,usage.windowTokens??null) as {
           source_run_id:string;source_fence:number;provider_session_id:string;tool_contract_hash:string;
         }|undefined;
     const boundary=this.uncertainProviderContextRecoveryBoundary(agentId);

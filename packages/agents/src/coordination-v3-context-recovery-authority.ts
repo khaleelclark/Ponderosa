@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { ProviderContextRecoveryProgress, ProviderContextRecoveryRequest } from "@ponderosa/core";
+import { transitionUnsubmittedActivationSql } from "./coordination-v3-transition-unsubmitted.js";
+import type { CoordinationV3RuntimeScopeAuthority } from "./coordination-v3-runtime-scope-authority.js";
 
 export class ContextRecoveryConflictError extends Error {}
 
@@ -50,7 +52,36 @@ function project(row: Row): ProviderContextRecoveryRequest {
 /** SQLite owns recovery reservation and mutation custody. Neither accepting
  * context nor dismissing a hold resolves an uncertain source Run's effects. */
 export class CoordinationV3ContextRecoveryAuthority {
-  constructor(private readonly sqlite: Database.Database) {}
+  constructor(private readonly sqlite: Database.Database, private readonly runtimeScopeAuthority: CoordinationV3RuntimeScopeAuthority) {}
+  /** Internal maintenance policy: only independently saved, provably unsubmitted
+   * human input in the retained source scope authorizes automatic recovery. */
+  hasPendingMaintenanceInput(boundary: Pick<ProviderContextRecoveryRequest,"agentId"|"projectId"|"scopeKey"|"sourceRunId">): boolean {
+    if(!this.runtimeScopeAuthority.recipientAuthorizedForActivationScope(boundary.projectId,boundary.agentId,boundary.scopeKey))return false;
+    return Boolean(this.sqlite.prepare(`SELECT 1 FROM agent_activations a
+      WHERE a.agent_id=? AND a.project_id=? AND a.scope_key=? AND a.kind='human_message' AND a.prompt_class='human'
+        AND a.state IN ('pending','retry_pending') AND ${transitionUnsubmittedActivationSql('a')}
+        -- An interrupted handoff belongs to its existing rollover authority;
+        -- session compaction cannot reconstruct an unconfirmed transfer.
+        AND NOT EXISTS(SELECT 1 FROM scheduler_run_activations source
+          JOIN agent_activations handoff ON handoff.id=source.activation_id
+          WHERE source.run_id=? AND handoff.kind='context_rollover_handoff')
+        AND EXISTS(SELECT 1 FROM activation_sources s JOIN runtime_communications c ON c.id=s.source_id
+          WHERE s.activation_id=a.id AND s.source_kind='communication' AND c.project_id=a.project_id
+            AND json_extract(c.sender_json,'$.kind')='user' AND json_extract(c.sender_json,'$.userId')='local-operator')
+      LIMIT 1`).get(boundary.agentId,boundary.projectId,boundary.scopeKey,boundary.sourceRunId));
+  }
+  requestMaintenance(boundary: Omit<Parameters<CoordinationV3ContextRecoveryAuthority["request"]>[0],"idempotencyKey">) {
+    if (!this.hasPendingMaintenanceInput(boundary)) throw new ContextRecoveryConflictError("No eligible pending input requires maintenance");
+    const active=this.active(boundary.agentId);
+    if(active) {
+      if(active.projectId!==boundary.projectId||active.scopeKey!==boundary.scopeKey||active.providerSessionId!==boundary.providerSessionId||
+          active.sourceRunId!==boundary.sourceRunId||active.sourceFence!==boundary.sourceFence||active.toolContractHash!==boundary.toolContractHash)
+        throw new ContextRecoveryConflictError("Maintenance boundary changed");
+      return {request:active.progress&&active.progress.phase!=="context_accepted"
+        ? this.advanceOperation(active.agentId,active.id,active.progress.phase,active.progress.phase,{automaticMaintenance:true}) : active,replayed:true};
+    }
+    return this.request({...boundary,idempotencyKey:`maintenance:${boundary.sourceRunId}:${boundary.sourceFence}`});
+  }
   active(agentId: string): ProviderContextRecoveryRequest | undefined {
     const row = this.sqlite.prepare("SELECT * FROM provider_context_recovery_requests WHERE agent_id=? AND state='unsupported_fenced'").get(agentId) as Row | undefined;
     return row && project(row);
@@ -99,27 +130,31 @@ export class CoordinationV3ContextRecoveryAuthority {
     })();
   }
   /** A committed reservation is never replayed, including after daemon restart. */
-  reserveOperation(agentId: string, id: string): boolean {
+  reserveOperation(agentId: string, id: string, resumeUninvoked = false): boolean {
     return this.sqlite.transaction(() => {
       const row = this.sqlite.prepare("SELECT * FROM provider_context_recovery_requests WHERE id=? AND agent_id=? AND state='unsupported_fenced'").get(id, agentId) as Row | undefined;
-      if (!row || row.progress_json) return false;
+      const previous=row?.progress_json?JSON.parse(row.progress_json) as ProviderContextRecoveryProgress:undefined;
+      if (!row || previous && !(resumeUninvoked && !previous.nativeInvoked && ["reserved","drained","held"].includes(previous.phase))) return false;
       this.assertSource(row);
       if (this.sqlite.prepare(`SELECT 1 FROM provider_context_recovery_requests WHERE agent_id=? AND provider_session_id=?
         AND json_extract(progress_json,'$.nativeInvoked')=1 AND json_extract(progress_json,'$.phase')<>'context_accepted' LIMIT 1`)
         .get(agentId,row.provider_session_id)) throw new ContextRecoveryConflictError("Earlier native recovery outcome is unknown; a different key cannot replay compaction");
       this.sqlite.prepare("UPDATE provider_context_recovery_requests SET progress_json=? WHERE id=?")
-        .run(JSON.stringify({phase:"reserved",updatedAt:new Date().toISOString(),sourceWork:"held_unknown"}),id);
+        .run(JSON.stringify({...previous,phase:"reserved",updatedAt:new Date().toISOString(),sourceWork:"held_unknown"}),id);
       return true;
     })();
   }
   advanceOperation(agentId: string, id: string, expected: ProviderContextRecoveryProgress["phase"],
-    phase: ProviderContextRecoveryProgress["phase"], details: {usedTokens?:number;windowTokens?:number;message?:string;contextUsageEventSequence?:number} = {}): ProviderContextRecoveryRequest {
+    phase: ProviderContextRecoveryProgress["phase"], details: Partial<Pick<ProviderContextRecoveryProgress,"usedTokens"|"windowTokens"|"message"|"contextUsageEventSequence"|"nativeOutcome"|"maintenanceAttempts"|"nextMaintenanceAt"|"automaticMaintenance">> = {}): ProviderContextRecoveryRequest {
     return this.sqlite.transaction(() => {
       const row = this.sqlite.prepare("SELECT * FROM provider_context_recovery_requests WHERE id=? AND agent_id=? AND state='unsupported_fenced'").get(id,agentId) as Row | undefined;
       const progress = row?.progress_json ? JSON.parse(row.progress_json) as ProviderContextRecoveryProgress : undefined;
       if (!row || progress?.phase !== expected) throw new ContextRecoveryConflictError("Recovery operation phase changed; never replay native input");
-      const allowed = phase === "held" || expected === "reserved" && phase === "drained" ||
-        expected === "drained" && phase === "native_started" || expected === "native_started" && phase === "context_accepted";
+      if(expected==='context_accepted'&&phase===expected) details={usedTokens:progress.usedTokens,
+        windowTokens:progress.windowTokens,contextUsageEventSequence:progress.contextUsageEventSequence,...details};
+      const allowed = phase === expected || phase === "held" || expected === "reserved" && phase === "drained" ||
+        expected === "drained" && phase === "native_started" ||
+        (expected === "native_started" || expected === "held" && progress.nativeInvoked) && phase === "context_accepted";
       if (!allowed) throw new ContextRecoveryConflictError("Invalid recovery transition");
       this.assertSource(row);
       if (phase === "context_accepted" && (!Number.isSafeInteger(details.usedTokens) || details.usedTokens! < 0 ||
@@ -134,7 +169,7 @@ export class CoordinationV3ContextRecoveryAuthority {
         throw new ContextRecoveryConflictError("Recovery acceptance requires its durable exact context-usage event");
       }
       this.sqlite.prepare("UPDATE provider_context_recovery_requests SET progress_json=? WHERE id=?")
-        .run(JSON.stringify({phase,updatedAt:new Date().toISOString(),sourceWork:"held_unknown",nativeInvoked:progress.nativeInvoked || phase === "native_started",...details}),id);
+        .run(JSON.stringify({...progress,phase,updatedAt:new Date().toISOString(),sourceWork:"held_unknown",nativeInvoked:progress.nativeInvoked || phase === "native_started",...details}),id);
       return project(this.sqlite.prepare("SELECT * FROM provider_context_recovery_requests WHERE id=?").get(id) as Row);
     })();
   }
@@ -143,7 +178,7 @@ export class CoordinationV3ContextRecoveryAuthority {
     return this.sqlite.transaction(()=>{
       const row=this.sqlite.prepare("SELECT * FROM provider_context_recovery_requests WHERE id=? AND agent_id=? AND state='unsupported_fenced'").get(id,agentId) as Row|undefined;
       const progress=row?.progress_json?JSON.parse(row.progress_json) as ProviderContextRecoveryProgress:undefined;
-      if(!row||!progress||!['native_started','context_accepted'].includes(progress.phase))return false;
+      if(!row||!progress||!['native_started','context_accepted','held'].includes(progress.phase)||progress.phase==='held'&&!progress.nativeInvoked)return false;
       if(progress.phase==='context_accepted'&&!verifyAccepted)return false;
       this.assertSource(row);
       if(this.sqlite.prepare('SELECT 1 FROM provider_process_authority WHERE agent_id=? LIMIT 1').get(agentId))return false;
@@ -160,7 +195,7 @@ export class CoordinationV3ContextRecoveryAuthority {
             progress.windowTokens!==usage.windowTokens) throw new ContextRecoveryConflictError('Accepted recovery evidence changed');
         return true;
       }
-      this.advanceOperation(agentId,id,'native_started','context_accepted',{usedTokens:usage.usedTokens,
+      this.advanceOperation(agentId,id,progress.phase,'context_accepted',{usedTokens:usage.usedTokens,
         ...(usage.windowTokens!==undefined?{windowTokens:usage.windowTokens}:{}),contextUsageEventSequence:event.seq});
       return true;
     })();

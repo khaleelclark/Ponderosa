@@ -214,6 +214,7 @@ export async function resolveCoordinationResultArtifacts(input: {
 }
 
 interface CoordinationSchedulerContext {
+  contextRecoveryMaintenance: {reconcile():Promise<void>;recovering(agentId:string):boolean};
   contextRecoveryRunning?(agentId:string):boolean;
   resourceAdmission?: import("./resource-admission.js").ResourceAdmission;
   opts: CreateServerOptions;
@@ -740,6 +741,7 @@ return new CoordinationV3Scheduler(
       ])];
       return blocked;
     },
+    reconcileContextRecoveries: () => context.contextRecoveryMaintenance.reconcile(),
     prepareRunAdmission: async excludedAgentIds => {
       const notices={app,store,coordinationV3,workspace,contextRecoveryRunning:context.contextRecoveryRunning,createOperationalNotification:context.createOperationalNotification,
         resolveOperationalNotification:context.resolveOperationalNotification};

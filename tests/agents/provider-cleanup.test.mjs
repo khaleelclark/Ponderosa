@@ -7,7 +7,8 @@ import { fixture, withFixture, until, fixtureTestOptions as options } from '../s
 // failure injection targets a reusable root rather than normal zero-idle eviction.
 process.env.PONDEROSA_MAX_IDLE_RUNTIME_SESSIONS = '4';
 test('checks 39, 95: failed native provider cleanup blocks compact replacement, retries the same owned root and permits later work only after its observed exit', options, async t => {
-  let store, blockedSession, refuse = false, refusedCloses = 0;
+  let store, blockedSession, refuse = false, refusedCloses = 0,release;
+  const recoveryGate=new Promise(resolve=>release=resolve);
   await withFixture(t, async f => {
     try {
       const chat = await f.createChat('Failed provider cleanup boundary');
@@ -63,25 +64,19 @@ test('checks 39, 95: failed native provider cleanup blocks compact replacement, 
       } }]);
       await f.send(agent.id, 'A separate later harmless task after observed cleanup.');
       const queued=await until(()=>store.sqlite.prepare(`SELECT a.id,a.payload_json FROM agent_activations a
-        JOIN activation_sources held ON held.activation_id=a.id AND held.source_kind='settings_transition_reservation_wait'
         WHERE a.agent_id=? AND a.state IN ('pending','retry_pending')`).get(agent.id),'same later instruction held before provider input');
       assert.ok(JSON.stringify(queued.payload_json).includes('A separate later harmless task after observed cleanup.'));
       assert.equal(f.turns.length-turnsBefore,1,'Observed cleanup alone must not authorize a fresh seed or replay');
-      assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_runs WHERE agent_id=?').get(agent.id).n,recoveryBefore.length,'No new Run is admitted before explicit recovery');
+      assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_runs WHERE agent_id=?').get(agent.id).n,recoveryBefore.length,'No new Run is admitted before verified recovery');
       const status=f.ok(await f.api('GET',`/api/agents/${agent.id}/context-recoveries`)),boundary=status.boundary;
       assert.equal(status.support.status,'managed_compaction');assert.equal(boundary.sourceRunId,failedRunId);assert.equal(boundary.providerSessionId,old.engineAgentId);
-      const commandCount=f.commands.length;
-      const repaired=await f.api('POST',`/api/agents/${agent.id}/context-recoveries`,{
-        idempotencyKey:'cleanup-explicit-context-recovery',expectedSessionId:boundary.providerSessionId,
-        expectedSourceRunId:boundary.sourceRunId,expectedToolContractHash:boundary.toolContractHash,acknowledgeUnknownEffects:true,
-      });
-      assert.equal(repaired.status,200,JSON.stringify(repaired.body));assert.equal(repaired.body.request.progress.phase,'context_accepted');
-      assert.equal(repaired.body.sourceWork,'held_unknown');assert.equal(f.commands.length,commandCount+1);
-      assert.equal(f.commands.at(-1).name,'compact');assert.equal(f.commands.at(-1).sessionId,old.engineAgentId);
+      await until(()=>f.commands.some(command=>command.agentId===agent.id&&command.name==='compact'),'automatic same-session native maintenance');
+      assert.equal(f.commands.filter(command=>command.agentId===agent.id&&command.name==='compact').length,1);
+      assert.equal(f.commands.at(-1).sessionId,old.engineAgentId);
       assert.equal(f.turns.length-turnsBefore,1,'Context-only repair sends no user task input');
       assert.deepEqual(store.sqlite.prepare('SELECT * FROM scheduler_runs WHERE id=?').get(failedRunId),original,'Recovery does not resolve or replay the failed work');
       assert.deepEqual(store.sqlite.prepare('SELECT * FROM provider_inputs WHERE scheduler_run_id=?').get(failedRunId),originalInput);
-      f.ok(await f.api('POST',`/api/agents/${agent.id}/context-recoveries/${repaired.body.request.id}/dismiss`,{acknowledgeStillBlocked:true}));
+      release();
       const recovered = await f.settled(agent.id, recoveryBefore);
       assert.equal(store.sqlite.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(queued.id).n,1,'The same queued instruction is admitted once');
       assert.equal(store.sqlite.prepare('SELECT payload_json FROM agent_activations WHERE id=?').get(queued.id).payload_json,queued.payload_json,'The original later instruction is never rewritten');
@@ -93,13 +88,13 @@ test('checks 39, 95: failed native provider cleanup blocks compact replacement, 
       assert.equal(f.turns.length - turnsBefore, 2);
       assert.equal(other.isAlive(), true);
       t.diagnostic(`Observed ${refusedCloses} controlled close refusals, automatic exact-root retirement, no failed-task replay, one separate successful task`);
-    } finally { refuse = false; }
+    } finally { refuse = false; release(); }
   // The old fixture advertised neither verified resume nor managed recovery,
   // then required a different native ID. Cleanup proves exit, not permission to
   // discard accepted context; reuse the existing qualified recovery fixture.
   }, {storeFactory:root=>store=new AgentStore(root),providerValidatesResumeBeforeTurn:true,
     providerContextRecoverySupport:{status:'managed_compaction',crashReconciliation:'hold_without_native_query'},
-    providerCommandResult:({sessionId})=>({outcome:'completed',contextUsage:{usedTokens:1000,windowTokens:200000,providerSessionGeneration:sessionId}}),
+    providerCommandResult:async({sessionId})=>{await recoveryGate;return {outcome:'completed',contextUsage:{usedTokens:1000,windowTokens:200000,providerSessionGeneration:sessionId}};},
     beforeRuntimeClose: ({ sessionId }) => {
     if (refuse && sessionId === blockedSession) { refusedCloses++; throw new Error('Controlled provider close refusal before native termination'); }
   } });

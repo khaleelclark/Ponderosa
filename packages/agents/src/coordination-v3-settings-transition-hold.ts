@@ -26,6 +26,20 @@ export function settingsTransitionActivationHoldSql(activation:string):string {
             AND released.source_id=rollover.id)
     )
     OR (${activation}.kind='required_reply_recovery' AND EXISTS (
+      SELECT 1 FROM provider_context_recovery_requests recovery
+      WHERE recovery.agent_id=${activation}.agent_id AND recovery.project_id=${activation}.project_id
+        AND recovery.scope_key=${activation}.scope_key
+        AND recovery.source_run_id=json_extract(${activation}.payload_json,'$.requiredReplyRecovery.sourceRunId')
+    ) AND NOT EXISTS (
+      SELECT 1 FROM activation_sources reviewed JOIN coordination_idempotency proof
+        ON proof.project_id=${activation}.project_id AND proof.operation='reviewed_steering_continue'
+        AND json_extract(proof.result_json,'$.activationId')=${activation}.id
+        AND json_extract(proof.result_json,'$.agentId')=${activation}.agent_id
+        AND json_extract(proof.result_json,'$.sourceRunId')=json_extract(${activation}.payload_json,'$.requiredReplyRecovery.sourceRunId')
+        AND json_extract(proof.result_json,'$.injectionId')=reviewed.source_id
+      WHERE reviewed.activation_id=${activation}.id AND reviewed.source_kind='reviewed_steering'
+    ))
+    OR (${activation}.kind='required_reply_recovery' AND EXISTS (
       SELECT 1 FROM context_rollovers rollover
       JOIN activation_sources source ON source.source_kind='context_rollover' AND source.source_id=rollover.id
       JOIN agent_activations handoff ON handoff.id=source.activation_id AND handoff.kind='context_rollover_handoff'

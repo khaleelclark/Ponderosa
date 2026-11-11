@@ -408,6 +408,9 @@ export function registerProductScope(app:FastifyInstance,store:AgentStore,worksp
       if(Array.isArray(value))return value.every(v=>inspect(v,depth+1));
       if(!value||typeof value!=='object')return true;
       return Object.entries(value).every(([key,v])=>{
+        // This read-only reconciliation endpoint filters stale/foreign IDs
+        // itself and reveals nothing about entries outside the current product.
+        if(request.routeOptions.url==='/api/notifications/active'&&key==='notificationIds')return true;
         // Canonical DM admission reports missing recipients while delivering to
         // available members exactly once. An absent ID grants no resource access.
         if(request.routeOptions.url==='/api/conversations/:id/direct-messages'&&key==='agentId'&&typeof v==='string'&&!store.sqlite.prepare('SELECT 1 FROM agents WHERE id=?').get(v))return true;

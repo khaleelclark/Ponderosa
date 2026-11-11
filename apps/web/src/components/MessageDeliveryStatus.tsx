@@ -35,7 +35,7 @@ function deliveryLabel(
   pausedRunId?: string,
 ): string {
   if (receipt.taskDecisionRepairHold) return `Ponderosa could not verify the Decision status for ${recipientName}'s work. Task recovery is held until it can be checked.${receipt.contextRolloverHold || receipt.settingsTransitionHold ? ' Context refresh also could not safely continue.' : ''}`;
-  if (receipt.contextRecoveryRequired) return `The earlier session was interrupted. Your new message to ${recipientName} is saved. Open ${recipientName}’s Agent Chat for recovery; the earlier work stays unconfirmed.`;
+  if (receipt.contextRecoveryRequired) return `The reply from ${recipientName} is pending while its session is restored. Your message is retained.`;
   if (receipt.settingsTransitionHold === "retry_available") return `Ponderosa could not prepare the context handoff for ${recipientName}. Your original message remains queued; you can try again.`;
   if (receipt.settingsTransitionHold === "review_required") return `Ponderosa could not verify the context handoff for ${recipientName}. Your original message is held; review the Agent’s activity before recovery.`;
   if (receipt.contextRolloverHold === "retry_available") return `Context refresh stopped before the replacement started. ${recipientName}'s unfinished work is held; review activity before trying again.`;
@@ -76,7 +76,7 @@ function deliveryLabel(
 
 function compactDeliveryLabel(receipt: MessageDeliveryReceiptDto, pausedRunId?: string): string {
   if (receipt.taskDecisionRepairHold) return "Task Check Held";
-  if (receipt.contextRecoveryRequired) return "Message Saved";
+  if (receipt.contextRecoveryRequired) return "Connecting";
   if (receipt.settingsTransitionHold) return "Waiting For Context";
   const waiting = deliveryWaitLabel(receipt);
   if (waiting) return waiting.compact;
@@ -165,6 +165,7 @@ export function MessageDeliveryStatus({
   const [confirmRetry, setConfirmRetry] = useState<MessageDeliveryReceiptDto>();
   const [reviewContinuation, setReviewContinuation] = useState<MessageDeliveryReceiptDto>();
   const [error, setError] = useState<string>();
+  receipts=receipts?.filter(receipt=>!receipt.contextRecoveryRequired);
   if (!receipts?.length) return null;
   const allSuccessful = receipts.every(receipt => severity(receipt) === "success");
   const showSteeringDelivery = receipts.some(receipt => receipt.injectionKind === "steer" &&

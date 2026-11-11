@@ -203,7 +203,7 @@ test('interrupted managed handoff is not automatically replayed after restart',{
    localMemoryForRoot:async root=>({chromaUrl:await ownedChroma(),collectionPrefix:'context_'+randomUUID().replaceAll('-',''),modelDir:process.env.PONDEROSA_TEST_MEMORY_MODEL_DIR,stateDirectory:path.join(root,'memory-policy'),provision:true})});
 });
 
-test('interrupted transition exposes retry-pending review after restart',{timeout:90000},async t=>{
+test('interrupted transition exposes one retained-input incident after restart',{timeout:90000},async t=>{
  let store,native;
  await withFixture(t,async f=>{
   const chat=await f.createChat('Interrupted handoff'),agent=await f.createIdleAgent(chat,'Worker');
@@ -222,7 +222,7 @@ test('interrupted transition exposes retry-pending review after restart',{timeou
   store.sqlite.prepare("UPDATE agent_activations SET state='retry_pending' WHERE id=?").run(original.id);
   await f.reopen();
   await until(()=>store.sqlite.prepare("SELECT 1 FROM context_rollovers WHERE id=? AND state IN ('failed','outcome_unknown')").get(rollover.id),'interrupted handoff recorded',20000);
-  const notice=await until(async()=>f.ok(await f.api('GET','/api/notifications')).items.find(item=>item.title.includes('Needs Recovery')&&item.body.includes('earlier session was interrupted')),'canonical interrupted-session review notice',20000);
+  const notice=await until(async()=>f.ok(await f.api('GET','/api/notifications')).items.find(item=>item.title.includes('Cannot Respond Yet')&&item.body.includes('messages are retained')),'canonical retained-input incident',20000);
   for(let i=0;i<4;i++)assert.equal(f.ok(await f.api('GET','/api/notifications')).items.find(item=>item.id===notice.id)?.body,notice.body,'repeated reconciliation preserves one canonical reason instead of alternating handoff failures');
   assert.equal(store.sqlite.prepare('SELECT state FROM agent_activations WHERE id=?').get(original.id).state,'retry_pending');
   const rows=store.sqlite.prepare("SELECT state FROM agent_activations WHERE kind='context_rollover_handoff' AND json_extract(payload_json,'$.rolloverId')=?").all(rollover.id);
@@ -592,6 +592,7 @@ test('an interrupted prompt handoff remains held without replay after restart',{
   assert.equal(store.sqlite.prepare("SELECT count(*) n FROM agent_activations WHERE kind='context_rollover_handoff' AND json_extract(payload_json,'$.rolloverId')=?").get(rollover.id).n,1);
   assert.ok(store.sqlite.prepare("SELECT 1 FROM agent_activations WHERE agent_id=? AND state IN ('pending','retry_pending') AND payload_json LIKE ?").get(agent.id,'%The original queued task remains.%'));
   assert.equal((await native.requests()).filter(x=>x.method==='turn/start').length,2);
+  assert.equal(store.sqlite.prepare('SELECT count(*) n FROM provider_context_recovery_requests WHERE agent_id=?').get(agent.id).n,0,'An interrupted technical handoff stays with rollover authority, not automatic native compaction');
  },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,uniqueThreads:true})).adapter});
 });
 

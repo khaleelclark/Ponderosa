@@ -99,7 +99,7 @@ export function projectAgentHealth(input: AgentHealthProjectionInput): AgentHeal
     else if (preparing) observation = preparing.promptInjectionState === "injected" || preparing.status === "running"
       ? { status: "running", statusTimestamp: preparing.leaseStartedAt, reason: "active_run" }
       : { status: "preparing", statusTimestamp: preparing.leaseStartedAt, reason: "run_preparing" };
-    else if (recovery) observation={status:recovery.state==='running'?'compacting':'blocked',statusTimestamp:recovery.observedAt,
+    else if (recovery) observation={status:recovery.state==='needs_action'?'blocked':'preparing',statusTimestamp:recovery.observedAt,
       reason:recovery.state==='running'?'context_recovery_running':recovery.state==='cleanup_pending'?'context_recovery_cleanup':'context_recovery_required'};
     else if (providerBlocked) observation = {
       status: "blocked",

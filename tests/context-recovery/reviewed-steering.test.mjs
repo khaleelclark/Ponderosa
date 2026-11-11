@@ -182,6 +182,16 @@ for(const laterFailure of [false,true]) test(`qualified Codex continues the save
   store.pendingContinuationHandoff=()=>{handoffReads++;return {id:'unrelated',executionId:'other-run',text:'unrelated stale handoff'};};
   useNative=true;
   const receipt=f.ok(await f.api('POST',path,{reviewSha256:review.review.reviewSha256,effectsReviewed:true,reviewNote:'Checked known receipts',idempotencyKey:randomUUID()})).receipt;
+  const {settingsTransitionActivationHoldSql}=await import('../../packages/agents/dist/coordination-v3-settings-transition-hold.js');
+  store.sqlite.exec('SAVEPOINT context_recovery_review_guard');
+  try{
+   store.sqlite.prepare(`INSERT INTO provider_context_recovery_requests(id,agent_id,project_id,source_run_id,scope_key,provider_session_id,tool_contract_hash,source_fence,idempotency_key,state,created_at)
+    VALUES(?,?,?,?,?,?,?,1,?,'dismissed',?)`).run(randomUUID(),agent.id,chat.projectId,run,'conversation:'+chat.id,'retained-session','a'.repeat(64),randomUUID(),new Date().toISOString());
+   const held=()=>store.sqlite.prepare(`SELECT ${settingsTransitionActivationHoldSql('a')} held FROM agent_activations a WHERE a.id=?`).get(receipt.activationId).held;
+   assert.equal(held(),0,'Canonical human-reviewed continuation is distinct authority from automatic task recovery');
+   store.sqlite.prepare("DELETE FROM activation_sources WHERE activation_id=? AND source_kind='reviewed_steering'").run(receipt.activationId);
+   assert.equal(held(),1,'Payload review metadata alone never authorizes original-task replay');
+  }finally{store.sqlite.exec('ROLLBACK TO context_recovery_review_guard; RELEASE context_recovery_review_guard');}
   const call=await until(async()=> (await native.requests()).find(r=>r.method==='turn/start'),'qualified provider turn');
   assert.match(JSON.stringify(call),/The complete original task/);assert.match(JSON.stringify(call),/Apply the correction/);
   assert.match(JSON.stringify(call),/external effects occurred remain unknown/);
