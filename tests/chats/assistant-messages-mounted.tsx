@@ -12,7 +12,9 @@ import {QueuedMessageTray} from '../../apps/web/src/components/chat/QueuedMessag
 import {saveCapturedSubmission,removeCapturedSubmission,type CapturedSubmission} from '../../apps/web/src/components/chat/submissionOutbox';
 import {createPonderosaTheme,ponderosaSurfaceVariables} from '../../apps/web/src/theme';
 import {useAgentMessageController} from '../../apps/web/src/components/useAgentMessageController';
-import type {AgentDto} from '@ponderosa/core';
+import {DEFAULT_ASSET_LIMITS,type AgentDto,type ConversationDraftDto} from '@ponderosa/core';
+import {api} from '../../apps/web/src/api';
+import {queryKeys} from '../../apps/web/src/queryKeys';
 import '../../apps/web/src/global.css';
 
 function assert(value:unknown,message:string):asserts value {if(!value)throw Error(message);}
@@ -32,7 +34,7 @@ export async function assistantMessagesSteeringMountedRegression():Promise<void>
    <Composer key={++epoch} assistantMessages={assistant} queueReviewHref={reviewHref} destinationMode="fixed" defaultDestination={{handle:binding.handle,binding,selectionKey:binding.agentId}} disabled={false} running={false} agentResponding allowUnmentionedSend
     insertTextRequest={{id:String(epoch),text}} onSend={(body,files)=>{sends.push({text:body,files:[...files]});if(fail)throw Error('Controlled steering failure');}}
     onQueue={body=>{queues.push(body);}}/>
-   <QueuedMessageTray scope="local:assistant-retained" queueReviewHref={assistant?reviewHref:undefined} messages={[]} onSteer={()=>{}} onEdit={()=>{}} onDelete={()=>{}}/>
+   {!assistant&&<QueuedMessageTray scope="local:assistant-retained" messages={[]} onSteer={()=>{}} onEdit={()=>{}} onDelete={()=>{}}/>}
   </MutationNotificationProvider></QueryClientProvider></ThemeProvider>));await settle();await until(()=>host.querySelector('[aria-label="Message"]')?.textContent?.includes(text)===true,'Exact draft appears');return host.querySelector<HTMLElement>('[aria-label="Message"]')!;
  };
  const retainedId='assistant-retained-queue';
@@ -50,12 +52,34 @@ export async function assistantMessagesSteeringMountedRegression():Promise<void>
   editor=await render();const owner=localStorage.getItem('ponderosa.draft.owner.v1');assert(owner,'Actual Composer creates the browser draft owner');
   const item:CapturedSubmission={version:1,scope:'local:assistant-retained',ownerId:owner,clientId:'retained-client',storageKey:'synthetic-retained',createdAt:1,action:'queue',text:'Original queued bytes λ😀',editorText:'Original queued bytes λ😀',attachmentNames:['original.txt'],mentionedAgents:[binding],newAgentRequested:false,status:'unknown',dispatchStarted:true,pending:{fingerprint:'a'.repeat(64),idempotencyKey:retainedId,request:{recipientAgentIds:[binding.agentId],runtime:{activeRunDelivery:'queue'}}}};
   saveCapturedSubmission(item);await settle();const key='ponderosa.submission.v1.'+retainedId,before=localStorage.getItem(key);
-  const link=host.querySelector<HTMLAnchorElement>('a[href="'+reviewHref+'"]');assert(link?.textContent?.includes('Review In Agent Chat'),'Retained Queue opens the ordinary Agent recovery surface');
-  window.dispatchEvent(new CustomEvent('ponderosa-submission-retry',{detail:retainedId}));await until(()=>host.textContent?.includes('original operation is preserved')===true,'Unsupported retry explains preserved intent');assert(localStorage.getItem(key)===before&&queues.length===0&&sends.length===sendCount,'Retained unknown Queue bytes and effects stay untouched');
+  assert(!host.querySelector('[data-queue-row]')&&!host.querySelector('a[href="'+reviewHref+'"]'),'An outbox-only Queue item does not introduce an Assistant queue or technical recovery menu');
+  window.dispatchEvent(new CustomEvent('ponderosa-submission-retry',{detail:retainedId}));await settle();assert(localStorage.getItem(key)===before&&queues.length===0&&sends.length===sendCount,'Retained unknown Queue bytes and effects stay untouched');
   for(const mode of ['steer','queue'] as const){let rejected=false;try{await dispatchController!(mode)(item.text,[],[],undefined,{pendingSubmission:item.pending,persistPendingSubmission:async()=>{persisted++;}});}catch{rejected=true;}assert(rejected&&persisted===0,'Controller rejects retained Queue before persistence or transport');}
-  removeCapturedSubmission(retainedId);
-  editor=await render('Ordinary Agent keeps queueing',false);await enter(editor,true);await until(()=>queues.length===1,'Ordinary Agent retains Ctrl+Enter queue');assert(sends.length===sendCount,'Ordinary shortcut never sends');
+  editor=await render('Ordinary Agent keeps queueing',false);await until(()=>Boolean(host.querySelector('[data-queue-row]')),'The ordinary Agent surface retains the original Queue inspection');assert(host.textContent?.includes(item.text)&&localStorage.getItem(key)===before&&queues.length===0&&sends.length===sendCount,'Inspection preserves original captured bytes without implicit dispatch');removeCapturedSubmission(retainedId);await settle();await enter(editor,true);await until(()=>queues.length===1,'Ordinary Agent retains Ctrl+Enter queue');assert(sends.length===sendCount,'Ordinary shortcut never sends');
  }finally{removeCapturedSubmission(retainedId);root.unmount();client.clear();host.remove();}
+ await assistantPendingQueueDraftReview();
+}
+
+async function assistantPendingQueueDraftReview():Promise<void>{
+ const scope='assistant-pending-queue',owner=localStorage.getItem('ponderosa.draft.owner.v1')!,file=new File(['Exact retained Queue attachment λ😀'],'original-queue.txt',{type:'text/plain'});
+ const pending={fingerprint:'c'.repeat(64),idempotencyKey:'assistant-pending-queue-key',request:{recipientAgentIds:[binding.agentId],runtime:{activeRunDelivery:'queue' as const}}};
+ const attachment={id:'assistant-pending-attachment',conversationId:scope,ownerId:owner,name:file.name,bytes:file.size,mediaType:file.type,createdAt:'2026-11-11T00:00:00Z'};
+ let draft:ConversationDraftDto={conversationId:scope,ownerId:owner,clientId:'original-client',revision:1,text:'Original pending Queue text λ😀',attachmentIds:[attachment.id],attachments:[attachment],pendingSubmission:pending,updatedAt:attachment.createdAt};
+ const original={get:api.getConversationDraft,put:api.putConversationDraft,download:api.downloadDraftAttachment},originalPending=JSON.stringify(pending),writes:unknown[]=[];
+ const host=document.createElement('div');document.body.append(host);const root=createRoot(host),client=new QueryClient({defaultOptions:{queries:{retry:false},mutations:{retry:false}}});client.setQueryData(queryKeys.assetLimits.all,DEFAULT_ASSET_LIMITS);let sends=0,queues=0,downloads=0;
+ api.getConversationDraft=async(id,requestedOwner)=>{assert(id===scope&&requestedOwner===owner,'Canonical draft read keeps exact owner');return draft;};
+ api.downloadDraftAttachment=async(value)=>{assert(value.id===attachment.id,'Original immutable attachment is restored');downloads++;return file;};
+ api.putConversationDraft=async(id,value)=>{assert(id===scope,'Draft persistence keeps exact owner');writes.push(value);draft={...draft,...value,revision:draft.revision+1};return draft;};
+ try{
+  flushSync(()=>root.render(<ThemeProvider theme={createPonderosaTheme('light')}><QueryClientProvider client={client}><MutationNotificationProvider><Composer assistantMessages queueReviewHref={reviewHref} projectId={binding.projectId} conversationDraftId={scope} draftStorageKey={scope} disabled={false} running={false} agentResponding destinationMode="fixed" defaultDestination={{handle:binding.handle,binding,selectionKey:binding.agentId}} onSend={()=>{sends++;}} onQueue={()=>{queues++;}}/></MutationNotificationProvider></QueryClientProvider></ThemeProvider>));
+  await until(()=>Boolean(host.querySelector('a[href="'+reviewHref+'"]')),'Canonical pending Queue exposes its existing owner-bound review link');
+  assert(host.querySelector('a')?.textContent==='Review Retained Queue Submission In Agent Chat','Valid pending-draft review stays distinct from the removed tray menu');
+  const editor=host.querySelector<HTMLElement>('[aria-label="Message"]')!;assert(editor.textContent===draft.text&&host.textContent?.includes(file.name)&&downloads===1,'Exact pending text and original attachment restore once');
+  await enter(editor,true);const send=host.querySelector<HTMLButtonElement>('[aria-label="Send Message"]');send?.click();await settle();
+  assert(sends===0&&queues===0&&!host.querySelector('[data-queue-row]'),'Assistant cannot dispatch or convert the retained pending Queue');
+  assert(JSON.stringify(draft.pendingSubmission)===originalPending&&draft.attachmentIds[0]===attachment.id&&await file.text()==='Exact retained Queue attachment λ😀','Review retains exact key, Queue runtime and file reference');
+  assert(writes.every(value=>!(value as ConversationDraftDto).pendingSubmission||JSON.stringify((value as ConversationDraftDto).pendingSubmission)===originalPending),'Any ordinary draft persistence preserves original submission authority');
+ }finally{root.unmount();client.clear();host.remove();api.getConversationDraft=original.get;api.putConversationDraft=original.put;api.downloadDraftAttachment=original.download;}
 }
 
 export async function assistantMessagesLayoutMountedRegression():Promise<void>{

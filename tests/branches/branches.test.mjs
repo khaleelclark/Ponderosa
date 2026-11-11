@@ -331,7 +331,7 @@ test("legacy persistent-Agent steps keep their original steer-or-run policy",t=>
 test("job handling validates persistent-Agent scope",t=>{
  const f=fixture(t),base=f.deployment.definition,step={id:"agent",kind:"agent",target:{kind:"persistent_agent",ref:"reviewer"},instructions:"Work"};
  for(const [target,jobHandling] of [[{kind:"persistent_agent",ref:"reviewer"},"wrong"],[{kind:"persistent_agent",ref:"reviewer"},["queue"]],[{kind:"persistent_agent",ref:"reviewer"},{}],[{kind:"persistent_organization",ref:"reviewer"},"queue"]]){
-  assert.throws(()=>f.branches.deploy({...f.deployment,idempotencyKey:"bad-validation",definition:{...base,steps:[{...step,target,jobHandling}],edges:[]}}),/Job Handling/);
+  assert.throws(()=>f.branches.deploy({...f.deployment,idempotencyKey:"bad-validation",definition:{...base,steps:[{...step,target,jobHandling}],edges:[]}}),/Job handling requires a persistent Agent and a valid choice/);
  }
 });
 

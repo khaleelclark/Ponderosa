@@ -30,18 +30,24 @@ function press(host:HTMLElement,label:string){const button=host.querySelector<HT
 function frame(children:React.ReactNode,client?:QueryClient){return <ThemeProvider theme={theme}><CssBaseline/>{client?<QueryClientProvider client={client}><MutationNotificationProvider>{children}</MutationNotificationProvider></QueryClientProvider>:<MutationNotificationProvider>{children}</MutationNotificationProvider>}</ThemeProvider>;}
 
 export async function sharedSnackbarBridgeMountedRegression():Promise<void>{
- const host=document.createElement('div');document.body.append(host);const root=createRoot(host),windowMount=window as AssistantMountWindow,original=windowMount.__ponderosaAssistantMount;
- let core!:MutationNotifier,assistant!:MutationNotifier,child:ReturnType<typeof createRoot>|undefined,dialogCloseRequests=0;
+ const host=document.createElement('div');document.body.append(host);const root=createRoot(host),client=new QueryClient({defaultOptions:{queries:{retry:false},mutations:{retry:false}}}),windowMount=window as AssistantMountWindow,original=windowMount.__ponderosaAssistantMount;
+ let core!:MutationNotifier,assistant!:MutationNotifier,child:ReturnType<typeof createRoot>|undefined,dialogCloseRequests=0,toggleDialog!:(open:boolean)=>void;
+ const NativeObserver=window.MutationObserver,observers=new Set<MutationObserver>();
+ window.MutationObserver=class extends NativeObserver {
+  observe(target:Node,options?:MutationObserverInit){observers.add(this);super.observe(target,options);}
+  disconnect(){observers.delete(this);super.disconnect();}
+ };
  const metrics=document.documentElement.style.getPropertyValue('--ponderosa-app-viewport-block-size');
  function Core(){core=useMutationNotification();return <Box data-retained-layout sx={{height:240}}>Retained Chat Layout<AssistantSurface colorMode="light" onOpenNavigation={()=>{}} onToggleColorMode={()=>{}} onOpenProviderSettings={()=>{}}/></Box>;}
- function Embedded(){assistant=useMutationNotification();const [draft,setDraft]=useState('Unsaved Assistant Settings');return <Dialog open onClose={()=>{dialogCloseRequests++;}}><DialogContent><input aria-label="Retained Settings Draft" value={draft} onChange={e=>setDraft(e.target.value)}/></DialogContent></Dialog>;}
+ function Embedded(){assistant=useMutationNotification();const [draft,setDraft]=useState('Unsaved Assistant Settings'),[open,setOpen]=useState(true);toggleDialog=setOpen;return <Dialog keepMounted disablePortal container={()=>host.querySelector<HTMLElement>('[data-assistant-root]')} open={open} onClose={()=>{dialogCloseRequests++;}}><DialogContent><input aria-label="Retained Settings Draft" value={draft} onChange={e=>setDraft(e.target.value)}/></DialogContent></Dialog>;}
  windowMount.__ponderosaAssistantMount={mount(node,props){assert(props.notify,'Core forwards the existing notifier across the actual mount boundary');child=createRoot(node);child.render(<ThemeProvider theme={theme}><MutationNotificationProvider notifier={props.notify}><Embedded/></MutationNotificationProvider></ThemeProvider>);},update(){},unmount(){child?.unmount();child=undefined;},canLeave:()=>true,blockers:()=>[],productScope:()=> 'branches'};
  try{
-  flushSync(()=>root.render(frame(<Core/>)));await until(()=>Boolean(assistant),'Embedded root mounts');
+  flushSync(()=>root.render(frame(<Core/>,client)));await until(()=>Boolean(assistant),'Embedded root mounts');
   const height=host.querySelector('[data-retained-layout]')!.getBoundingClientRect().height;
   const notice={key:'dev:chat-a:operation',incident:'first',severity:'error' as const,message:'Message Needs Review',description:'Captured work remains in its original Chat.',details:'Long exact diagnostic λ😀 '.repeat(600)};
   core(notice);assistant({...notice,key:'branches:assistant:operation',incident:'second',message:'Attachment Upload Failed'});
   await until(()=>document.querySelectorAll('.MuiSnackbar-root').length===1,'Two roots share one visible snackbar');
+  await until(()=>Boolean(document.querySelector('.MuiSnackbar-root')?.closest('[role=dialog]'))&&!document.querySelector('.MuiSnackbar-root')?.closest('[aria-hidden="true"]'),'Existing shared notice belongs to the real modal focus-trap subtree');
   assert(host.querySelector('[data-retained-layout]')!.getBoundingClientRect().height===height,'Snackbar never shifts the retained layout');
   closeNotice();await until(()=>document.querySelector('.MuiSnackbar-root')?.textContent?.includes('Attachment Upload Failed')===true,'Close advances to the independent Assistant action');
   closeNotice();await until(()=>!document.querySelector('.MuiSnackbar-root'),'Close dismisses feedback only');
@@ -61,7 +67,14 @@ export async function sharedSnackbarBridgeMountedRegression():Promise<void>{
   const summary=snack.querySelector('summary')!;summary.click();await settle();const pre=snack.querySelector('pre')!;
   assert(pre.getBoundingClientRect().height<=181&&snack.getBoundingClientRect().bottom<=Math.max(280,innerHeight-240)+1,'Long raw details remain bounded above keyboard');
   assert(snack.querySelector('[role="alert"]'),'Existing accessible error announcement remains present');
- }finally{root.unmount();host.remove();windowMount.__ponderosaAssistantMount=original;if(metrics)document.documentElement.style.setProperty('--ponderosa-app-viewport-block-size',metrics);else document.documentElement.style.removeProperty('--ponderosa-app-viewport-block-size');}
+  flushSync(()=>toggleDialog(false));await until(()=>{const dialog=document.querySelector<HTMLElement>('[role="dialog"]');return !dialog||Boolean(dialog.closest('[aria-hidden="true"]'))||getComputedStyle(dialog).visibility==='hidden';},'Kept non-body dialog closes without dismissing the independent notice');
+  await until(()=>Boolean(document.querySelector('.MuiSnackbar-root'))&&!document.querySelector('.MuiSnackbar-root')?.closest('[role="dialog"], [aria-hidden="true"]'),'Closing modal restores the existing body Portal');
+  flushSync(()=>toggleDialog(true));await until(()=>Boolean(document.querySelector('.MuiSnackbar-root')?.closest('[role="dialog"]'))&&!document.querySelector('.MuiSnackbar-root')?.closest('[aria-hidden="true"]'),'Pre-existing notice follows a reopened modal and never remains stranded');
+  assert(document.querySelector<HTMLInputElement>('[aria-label="Retained Settings Draft"]')?.value==='Unsaved Assistant Settings','Relocating feedback preserves the independently mounted draft');
+  assert(document.querySelectorAll('.MuiSnackbar-root').length===1,'Moving the Portal never duplicates the notice');
+  closeNotice();await until(()=>!document.querySelector('.MuiSnackbar-root'),'Modal Close dismisses feedback only');
+
+ }finally{root.unmount();client.clear();host.remove();window.MutationObserver=NativeObserver;windowMount.__ponderosaAssistantMount=original;if(metrics)document.documentElement.style.setProperty('--ponderosa-app-viewport-block-size',metrics);else document.documentElement.style.removeProperty('--ponderosa-app-viewport-block-size');assert(observers.size===0,'Unmount releases every fixture-owned modal observer');}
 }
 
 export async function composerFailureFeedbackMountedRegression():Promise<void>{

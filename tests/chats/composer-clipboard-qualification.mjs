@@ -28,6 +28,7 @@ try {
   for (const mobile of [false,true]) for (const surface of ['core-shared','core-direct','branches-shared','branches-direct','inbox']) {
     const context = await browser.newContext({permissions:['clipboard-read','clipboard-write'], viewport: mobile ? {width:390,height:844} : {width:1440,height:1000}, ...(mobile ? {isMobile:true,hasTouch:true,userAgent:'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Mobile Safari/537.36'} : {})});
     try {
+      if (process.env.AXE_CORE_PATH) await context.addInitScript({path:process.env.AXE_CORE_PATH});
       const page = await context.newPage();
       page.setDefaultTimeout(10_000);
       const sends = [],submissions=[];
@@ -77,12 +78,12 @@ try {
           assert.equal(await disabled.evaluate(el=>el.parentElement.getAttribute('role')),'tablist');
         }
         if (process.env.AXE_CORE_PATH) {
-          await page.addScriptTag({path:process.env.AXE_CORE_PATH});
+          assert(await page.evaluate(()=>Boolean(window.axe)),'Installed axe loads before the production CSP');
           for (const theme of ['light','dark']) {
             await page.evaluate(theme=>{localStorage.setItem('ponderosa-color-mode',theme);location.reload();},theme);
             await page.waitForLoadState('domcontentloaded');
             await page.getByRole('tab').first().waitFor();
-            await page.addScriptTag({path:process.env.AXE_CORE_PATH});
+            assert(await page.evaluate(()=>Boolean(window.axe)),'Installed axe loads before the production CSP');
             const scan=await page.evaluate(async()=>await window.axe.run());
             scans.push({surface,mobile,theme,...scan});
             assert.equal(scan.violations.filter(v=>v.impact==='critical').length,0,'No critical axe violations on selected surface');

@@ -51,6 +51,27 @@ export function MutationNotificationProvider({
   const incidents = useRef(new Map<string, true>());
   const [notices, setNotices] = useState<MutationNotice[]>([]);
   const active = notices[0];
+  const [portalContainer, setPortalContainer] = useState<HTMLElement>();
+  useEffect(() => {
+    if (notifier || !active) { setPortalContainer(undefined); return; }
+    const placeNotice = () => {
+      // ModalManager hides body siblings. Keep the existing notice inside the
+      // actual top modal's focus trap so Close stays announced and reachable.
+      const modal = [...document.querySelectorAll<HTMLElement>(".MuiModal-root")].reverse().find(element =>
+        !element.closest('[aria-hidden="true"]') && element.getClientRects().length > 0 && getComputedStyle(element).visibility !== "hidden");
+      const container = modal?.querySelector<HTMLElement>(".MuiDialog-paper, .MuiPopover-paper, .MuiDrawer-paper") ?? undefined;
+      setPortalContainer(previous => previous === container ? previous : container);
+    };
+    placeNotice();
+    const containsModal = (node: Node) => node instanceof Element && (node.matches(".MuiModal-root") || node.querySelector(".MuiModal-root"));
+    const observer = new MutationObserver(records => {
+      if (records.some(record => record.type === "attributes"
+        ? record.attributeName === "aria-hidden" || record.target instanceof Element && record.target.matches(".MuiModal-root")
+        : record.target === document.body || [...record.addedNodes, ...record.removedNodes].some(containsModal))) placeNotice();
+    });
+    observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["aria-hidden", "class", "style"] });
+    return () => observer.disconnect();
+  }, [notifier, active?.id]);
   const notify = useCallback<MutationNotifier>((input) => {
     const normalized = typeof input === "string" ? { message: input } : input;
     const severity = normalized.severity ?? "success";
@@ -181,7 +202,7 @@ export function MutationNotificationProvider({
   return (
     <MutationNotificationContext.Provider value={value}>
       {children}
-      {!notifier && <Portal><Snackbar
+      {!notifier && <Portal container={portalContainer}><Snackbar
         key={active?.id}
         open={Boolean(active)}
         autoHideDuration={active?.persistent || active?.severity === "error" ? null : 3_000}

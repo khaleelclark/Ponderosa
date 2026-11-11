@@ -177,8 +177,8 @@ function QueuedMessageTrayComponent({ messages, scope, attachmentNamesForMessage
                 run(() => onEdit(message!, editingText.trim()), () => setEditingId(undefined));
               }
             }}
-          /> : <Tooltip title={item?.error??text}><p tabIndex={0} className="MuiTypography-root MuiTypography-body2 MuiTypography-noWrap queued-message-text" aria-label={!message?rejected?"Not Queued":item?.status==="accepted"?"Queue Accepted; Checking Delivery":"Awaiting Queue Confirmation":undefined}>{rejected?"Not Queued · ":""}{text||attachmentNames.join(", ")}</p></Tooltip>}
-          {!editing && attachmentCount ? <Tooltip title={attachmentNames.join(", ")||`${attachmentCount} Attachments`}><Typography tabIndex={0} variant="caption" aria-label={`${attachmentCount} Attachments`}>+{attachmentCount}</Typography></Tooltip> : null}
+          /> : <Tooltip disableInteractive title={item?.error??text}><p tabIndex={0} className="MuiTypography-root MuiTypography-body2 MuiTypography-noWrap queued-message-text" aria-label={!message?rejected?"Not Queued":item?.status==="accepted"?"Queue Accepted; Checking Delivery":"Awaiting Queue Confirmation":undefined}>{rejected?"Not Queued · ":""}{text||attachmentNames.join(", ")}</p></Tooltip>}
+          {!editing && attachmentCount ? <Tooltip disableInteractive title={attachmentNames.join(", ")||`${attachmentCount} Attachments`}><Typography tabIndex={0} variant="caption" aria-label={`${attachmentCount} Attachments`}>+{attachmentCount}</Typography></Tooltip> : null}
           {editing ? <>
             <Button size="small" disabled={busy || !editingText.trim()} onClick={() => run(() => onEdit(message!, editingText.trim()), () => setEditingId(undefined))}>Save</Button>
             <Button size="small" color="inherit" disabled={busy} onClick={() => setEditingId(undefined)}>Cancel</Button>
