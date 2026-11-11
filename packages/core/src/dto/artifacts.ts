@@ -41,6 +41,8 @@ export interface AssetDto {
  * retain their catalog media type without widening human upload admission. */
 export type CommunicationAttachmentDto = Omit<AssetDto, "mediaType"> & {
   mediaType: string;
+  /** Managed canonical artifact kind, absent on ordinary uploads. */
+  artifactKind?: ArtifactKind;
 };
 
 export interface AssetLimitsDto {

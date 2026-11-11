@@ -1,8 +1,10 @@
+import {productApiPath} from "../api/productScope";
 import type {
   MultiAgentDirectMessageResponse,
 } from "@ponderosa/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
+import {adoptQueuedMessageReceipt} from "./messageDeliveryReceipts";
 import { api } from "../api";
 import { queryKeys } from "../queryKeys";
 import {
@@ -16,8 +18,10 @@ export function useQueuedConversationMessagesController(
   onSteered?: (message: { deliveryId: string; targetAgentId: string }) => void,
 ) {
   const queryClient = useQueryClient();
+  const namespace=productApiPath('/api/conversations');
+  const queueKey=queryKeys.queuedMessages.conversation(conversationId ?? "");
   const query = useQuery({
-    queryKey: queryKeys.queuedMessages.conversation(conversationId ?? ""),
+    queryKey: queueKey,
     queryFn: () => api.listQueuedConversationMessages(conversationId!),
     enabled: Boolean(conversationId),
   });
@@ -105,6 +109,14 @@ export function useQueuedConversationMessagesController(
     delivery: "steer" | "queue",
     agentTitle: (agentId: string) => string,
   ) => {
+    if(productApiPath('/api/conversations')!==namespace)return;
+    if(delivery==='queue'&&conversationId&&response.message){
+      const message=response.message;
+      adoptQueuedMessageReceipt(queryClient,queueKey,response.recipients.flatMap(recipient=>recipient.queued&&recipient.deliveryId&&(!recipient.state||['queued','preparing','retrying'].includes(recipient.state))?[{
+        deliveryId:recipient.deliveryId,messageId:message.id,communicationEventId:message.communicationEventId,
+        conversationId,targetAgentId:recipient.agentId,text:message.text,createdAt:message.createdAt,status:'queued' as const,attachmentCount:message.attachments?.filter(attachment=>attachment.agentId===recipient.agentId).length??0,
+      }]:[]));
+    }
     const unavailableTitles = (response.unavailableRecipients ?? [])
       .map(recipient => agentTitle(recipient.agentId));
     setNotice(unavailableTitles.length

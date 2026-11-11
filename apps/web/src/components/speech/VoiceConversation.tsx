@@ -746,8 +746,7 @@ function VoiceSession({ projectId, conversationId, agents, selectedAgentId, lock
         <Stack spacing={1} sx={{mb:2,"& .MuiAlert-root":{borderRadius:3,fontSize:13}}}>
           {sttUnavailable && <Alert severity="info">{sttUnavailable} Type a message in Transcript.</Alert>}
           {ttsUnavailable && <Alert severity="info">{ttsUnavailable} Replies remain in Chat.</Alert>}
-          {(needsRecovery||needsReview||replyNeedsReview)&&<Button onClick={()=>{end();onOpenRecovery?.(agentId);}} sx={{minHeight:44}}>Review Recovery in Chat</Button>}
-          {currentReceipt&&(needsRecovery||needsReview)&&<Box component="details"><Box component="summary" sx={{minHeight:44,cursor:'pointer',alignContent:'center'}}>Delivery Details</Box><Typography component="pre" sx={{whiteSpace:'pre-wrap',overflowWrap:'anywhere'}}>{JSON.stringify(currentReceipt,null,2)}</Typography></Box>}
+          {(needsRecovery||needsReview||replyNeedsReview)&&<Button onClick={()=>{end();onOpenRecovery?.(agentId);}} sx={{minHeight:44}}>Open Chat</Button>}
           {notice && <Alert severity="info">{notice}</Alert>}
           {error && <Alert severity="warning">{permissionError ? <>
             Microphone access denied. Allow access in browser settings, then reconnect.

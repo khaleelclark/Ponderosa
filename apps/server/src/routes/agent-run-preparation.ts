@@ -60,6 +60,7 @@ import {
   communicationV3SessionPrompt,
   communicationV3Prompt,
   providerDynamicTools,
+  retainedRuntimeTools,
   providerSessionContractHash,
   providerRuntimeSessionContractHash,
   providerToolContractHash,
@@ -425,7 +426,9 @@ export async function prepareAgentRun(
   const capabilityRestrictions=runtimeRestrictions(capabilityPolicy,runtimeEngineId);
   if(settingsTransition?.targetRestrictionsHash && createHash('sha256').update(JSON.stringify(targetCapabilityRestrictions)).digest('hex')!==settingsTransition.targetRestrictionsHash)
     throw new Error('Access changed during context transition; the original work remains queued.');
-  const availableRuntimeTools: RuntimeDynamicToolSpec[] = filterRuntimeToolsForCapabilities([
+  const retainedHandoffTools=acceptedHandoffPacket?.sourceManifest.schemaVersion===3?retainedRuntimeTools(acceptedHandoffPacket.sourceManifest.normalRuntimeContract):undefined;
+  if(transitionActivation?.kind==='context_rollover_handoff'&&!retainedHandoffTools)throw new Error('The saved handoff tool contract is unavailable; original context remains retained.');
+  const availableRuntimeTools: RuntimeDynamicToolSpec[] = retainedHandoffTools??filterRuntimeToolsForCapabilities([
     ...providerDynamicTools(Boolean(opts.localMemory)),
     PONDEROSA_HISTORY_TOOL,
   ],capabilityPolicy);

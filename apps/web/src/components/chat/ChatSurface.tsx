@@ -45,7 +45,7 @@ export function ChatSurface({
   initialTranscript?: { rowIds: readonly string[]; reveal?: boolean };
 }): JSX.Element {
   const assistantChrome = useContext(ConversationChromeContext);
-  const composerLane = layout === "project" || Boolean(assistantChrome);
+  const composerLane = layout === "project" || layout === "agent" || Boolean(assistantChrome);
   const outgoing = useOutgoingMessage();
   const pendingId = showOutgoingMessage ? outgoing?.message?.id : undefined;
   // This is a finite aria-busy loading phase: native menu Find may not see

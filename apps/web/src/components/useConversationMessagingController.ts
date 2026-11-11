@@ -1,3 +1,4 @@
+import {productApiPath} from "../api/productScope";
 import type {
   AgentDto,
   AgentHealthDto,
@@ -259,6 +260,7 @@ export function useConversationMessagingController({
       runtimeConfig,
       beforeDispatch,
     }: {
+      namespace: string;
       scopeId: string;
       scopeProjectId?: string;
       agentIds: string[];
@@ -287,6 +289,7 @@ export function useConversationMessagingController({
       });
     },
     onSuccess: async (response, variables) => {
+      if(productApiPath("/api/conversations")!==variables.namespace)return;
       await publishConversationMessageReceipt(queryClient, variables.scopeId, response.message);
       invalidate(variables.scopeId, variables.scopeProjectId);
       if (activeConversationId.current === variables.scopeId) queuedMessages.recordDelivery(
@@ -687,6 +690,7 @@ export function useConversationMessagingController({
       let response: MultiAgentDirectMessageResponse;
       try {
         response = await sendToAgents.mutateAsync({
+          namespace:productApiPath("/api/conversations"),
         beforeDispatch,
           scopeId: conversationId, scopeProjectId: conversation?.projectId,
           agentIds: targetAgentIds,

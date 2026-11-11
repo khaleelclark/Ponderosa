@@ -934,11 +934,17 @@ export function registerAgentMessageRunRoute(
         }
         promotedDraftAssetsCommitted = true;
         let position: number | undefined;
+        let queuedMessage: import('@ponderosa/core').QueuedConversationMessageDto | undefined;
         try {
           const pendingForAgent = coordinationV3.pendingActivations(project.id)
             .filter((activation) => activation.agentId === agent.id);
           const pendingIndex = pendingForAgent.findIndex((activation) => activation.id === v3Intake.activationId);
           position = pendingIndex >= 0 ? pendingIndex + 1 : 1;
+          const queued=pendingForAgent[pendingIndex];
+          if(queued?.dispatchPolicy==='next_run'&&communication&&directMessageConversationId)queuedMessage={
+            deliveryId:queued.id,messageId:communication.eventId,communicationEventId:communication.eventId,
+            conversationId:directMessageConversationId,targetAgentId:agent.id,text:publishedText,position,createdAt:queued.createdAt,status:'queued',attachmentCount:messageAttachments.length,
+          };
         } catch {
           // Queue position is a projection; omit it while repair catches up.
         }
@@ -949,6 +955,7 @@ export function registerAgentMessageRunRoute(
         return reply.code(202).send({
           queued: true,
           ...(position !== undefined ? { position } : {}),
+          ...(queuedMessage?{queuedMessage}:{}),
           deliveryId: v3Intake.activationId,
           communicationEventId,
           ...(position === undefined ? { committed: true, recovering: true } : {}),

@@ -1001,6 +1001,8 @@ export function registerConversationDeliveryRoutes(
       );
       return [{
         deliveryId: activation.id,
+        communicationEventId: communication.eventId,
+        attachmentCount: (payload?.dispatch as {attachments?:unknown[]}|undefined)?.attachments?.length??0,
         messageId: message?.id ?? communication.eventId,
         conversationId: conversation.id,
         targetAgentId: activation.agentId,

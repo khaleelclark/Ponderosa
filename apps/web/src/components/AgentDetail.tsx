@@ -4,7 +4,6 @@ import {WorkspaceQueryError} from "./WorkspaceQueryError";
 import {workspaceRead} from "../workspaceAvailability";
 import {productWorkspacePath} from "../api/productScope";
 import {ConversationChromeContext} from './ConversationChromeContext';
-import {ContextRecoveryPanel} from './ContextRecoveryPanel';
 import {ImportedCommunications} from './ImportedCommunications';
 import { createClientId } from "../clientId";
 import {ResourceSettingsContext} from "./ResourceSettingsContext";
@@ -1031,7 +1030,6 @@ export function AgentDetail({
         onOpenArtifact={onOpenArtifact}
       />
 
-      {!auditOnly&&tab!=="chat"&&<ContextRecoveryPanel key={`recovery:${detail.agent.id}`} agentId={detail.agent.id}/>}
       {tab!=="chat"&&<ImportedCommunications key={detail.agent.id} agentId={detail.agent.id}/>}
 
       {auditOnly?<Alert severity="info" sx={{m:1}}>Workflow Agent · control work from its execution view</Alert>:<AgentDetailComposer

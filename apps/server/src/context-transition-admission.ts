@@ -12,7 +12,7 @@ import { localMemoryFor } from './local-memory.js';
 import { runtimeManagedRules, runtimeSystemPrompt } from './prompts.js';
 import { runtimeEnvironmentFacts, environmentFactsPrompt } from './runtime-environment-facts.js';
 import { evaluateContextRolloverPressure } from './context-rollover-pressure.js';
-import { assertRetainedNativeAuthentication, communicationV3SessionPrompt, concreteRuntimeSelection, normalizedRuntimeSelection, providerDynamicTools, providerRuntimeSessionContractHash, providerSessionContractHash, providerToolContractHash } from './runtime-selection.js';
+import { assertRetainedNativeAuthentication, communicationV3SessionPrompt, concreteRuntimeSelection, normalizedRuntimeSelection, retainedRuntimeTools, providerDynamicTools, providerRuntimeSessionContractHash, providerSessionContractHash, providerToolContractHash } from './runtime-selection.js';
 
 type TransitionDispatch={engine?:unknown;model?:unknown;effort?:unknown;speed?:unknown;voiceReply?:unknown};
 export function settingsTransitionTarget(agent:AgentDto,project:ProjectDto,adapter:Adapter,
@@ -47,8 +47,11 @@ export function transitionFingerprint(ctx:Pick<TransitionContext,"app"|"store"|"
  const row=store.sqlite.prepare('SELECT payload_json,state,scope_key FROM agent_activations WHERE id=? AND project_id=? AND agent_id=?').get(activationId,projectId,agentId);
  let grant:unknown;try{grant=memory&&agent?memory.getGrant(agent.conversationId,chat?.branchId?'branches':'dev'):undefined;}catch{grant='unavailable';}
  let policies:unknown;try{const p=new CapabilityPolicyStore(store.sqlite),resolved=p.resolveForAgent(agentId);policies=resolved.layers.map(layer=>[layer.scopeKind,layer.scopeId,p.get(layer.scopeKind,layer.scopeId)??null]);}catch{policies='unavailable';}
+ const packet=store.acceptedProviderSessionInput(agentId);
+ const contractEvidence=packet&&[packet.executionId,packet.systemPromptHash,typeof packet.exactSystemPrompt==='string'?createHash('sha256').update(packet.exactSystemPrompt).digest('hex'):null,packet.sourceManifest.schemaVersion===3?packet.sourceManifest.normalRuntimeContract:null];
+ const currentTools=providerToolContractHash([...providerDynamicTools(Boolean(memory)),PONDEROSA_HISTORY_TOOL],communicationV3SessionPrompt());
  const recovery=store.sqlite.prepare('SELECT id,state,progress_json FROM provider_context_recovery_requests WHERE agent_id=? ORDER BY created_at DESC,id DESC LIMIT 1').get(agentId);
- return createHash('sha256').update(JSON.stringify(['retained-codex-voice.v1',row,session,agent,project,workspace.getPreferences(),grant,policies,recovery,store.stoppedProviderSessionBoundary(agentId)])).digest('hex');
+ return createHash('sha256').update(JSON.stringify(['settings-transition.v2',currentTools,contractEvidence,row,session,agent,project,workspace.getPreferences(),grant,policies,recovery,store.stoppedProviderSessionBoundary(agentId)])).digest('hex');
 }
 function contextIncidentKey(projectId:string,agentId:string,scope:string|undefined,session:string|undefined,run:string|undefined,fence:number|undefined):string {
  return `settings-transition:${createHash('sha256').update(JSON.stringify([projectId,agentId,scope,session,run,fence])).digest('hex')}`;
@@ -60,7 +63,7 @@ function transitionIncidentKey(ctx:TransitionContext,projectId:string,agentId:st
  return contextIncidentKey(projectId,agentId,scope?.scope_key,recovery?.providerSessionId??boundary?.providerSessionId??ctx.store.resumeSessionState(agentId)?.sessionId,
   recovery?.sourceRunId??boundary?.executionId,recovery?.sourceFence??boundary?.fencingToken);
 }
-function transitionNotice(ctx:TransitionContext,projectId:string,agentId:string,activationId:string,reason:string,internal=false){
+function transitionNotice(ctx:TransitionContext,projectId:string,agentId:string,activationId:string,reason:string,internal=false,evidencePending=false){
  const recovery=ctx.coordinationV3.contextRecovery.active(agentId);
  const uncertain=recovery??ctx.store.uncertainProviderContextRecoveryBoundary(agentId);
  if(uncertain) {
@@ -86,7 +89,7 @@ function transitionNotice(ctx:TransitionContext,projectId:string,agentId:string,
  const notice=ctx.createOperationalNotification({dedupeKey:existing?.dedupeKey??boundaryKey,renewAfterRecovery:true,internal,category:'coordination',severity:'attention',
   title:`${agent?.title??'Agent'}${chat?.title?` · ${chat.title}`:''} · ${uncertain?'Cannot Respond Yet':'Context Needs Review'}`,body:reason.slice(0,1000),projectId,agentId,...(agent?.conversationId?{conversationId:agent.conversationId}:{}),
   ...(assignment?{contextPreview:assignment.slice(0,120)}:{}),
-  workContext:{kind:'activation',recordId:continuing?existing.workContext?.recordId??activationId:activationId,activationIds,traceId:boundaryKey,state:internal?'recovering':'blocked',occurredAt:continuing?existing.workContext?.occurredAt??new Date().toISOString():new Date().toISOString(),...(assignment?{assignment}:{})},
+  workContext:{kind:'activation',recordId:continuing?existing.workContext?.recordId??activationId:activationId,activationIds,traceId:boundaryKey,state:internal?(evidencePending?'contract_evidence_pending':'recovering'):'blocked',occurredAt:continuing?existing.workContext?.occurredAt??new Date().toISOString():new Date().toISOString(),...(assignment?{assignment}:{})},
   action:uncertain?undefined:{kind:'open_agent',targetId:agentId}});
  // Adopt old per-message notices into the same boundary incident without
  // declaring their work recovered or emitting another push.
@@ -132,7 +135,7 @@ export function reconcileSettingsTransitionReservations(ctx:TransitionContext){
    if(admitted)continue;
    recovered=false;
    const explicitHold=ctx.coordinationV3.contextRecovery.active(notice.agentId)||ctx.store.uncertainProviderContextRecoveryBoundary(notice.agentId);
-   if(held||explicitHold)requiresAction=true;
+   if(held&&notice.workContext?.state!=='contract_evidence_pending'||explicitHold)requiresAction=true;
    if(held||!owned||explicitHold)recovering=false;
   }
   if(recovered)ctx.resolveOperationalNotification(notice.dedupeKey,true);
@@ -196,18 +199,18 @@ export async function requestSettingsTransition(input: {
  if(!candidate)return true;
  const pending=coordinationV3.pendingActivations(candidate.projectId).find(item=>item.id===candidate.activationId);
  if(!pending||pending.agentId!==candidate.agentId||!['human_message','coordination_request'].includes(pending.kind)||!['pending','retry_pending'].includes(pending.state))return true;
- let shouldHold=false;
+ let shouldHold=false,toolsChanged=false;
  const localHolds=unrecordedHolds.get(coordinationV3)??new Map<string,string>();unrecordedHolds.set(coordinationV3,localHolds);
  let currentFingerprint:string;
  try{currentFingerprint=transitionFingerprint(input,pending.projectId,pending.agentId,pending.id);}catch{currentFingerprint='unavailable';}
  const priorLocalHold=localHolds.get(pending.id);
  if(priorLocalHold===currentFingerprint)return false;
  if(priorLocalHold)localHolds.delete(pending.id);
- const hold=(reason:string):boolean=>{
+ const hold=(reason:string,internal=false):boolean=>{
   try{const fingerprint=transitionFingerprint(input,pending.projectId,pending.agentId,pending.id);
    const held=coordinationV3.holdSettingsTransitionReservation({projectId:pending.projectId,agentId:pending.agentId,activationId:pending.id,fingerprint})||
     coordinationV3.holdUncertainSettingsTransitionReservation({projectId:pending.projectId,agentId:pending.agentId,activationId:pending.id,scopeKey:candidate.scopeKey,fingerprint});
-   if(held){localHolds.delete(pending.id);try{transitionNotice(input,pending.projectId,pending.agentId,pending.id,reason);}catch{app.log.error({activationId:pending.id},'Context-review notice could not be recorded; the durable hold remains.');}}
+   if(held){localHolds.delete(pending.id);if(internal)app.log.info({agentId:pending.agentId,activationId:pending.id,condition:'contract_evidence_pending'},reason);try{transitionNotice(input,pending.projectId,pending.agentId,pending.id,reason,internal,internal);}catch{app.log.error({activationId:pending.id},'Context-review notice could not be recorded; the durable hold remains.');}}
    else localHolds.set(pending.id,fingerprint);
   }catch{localHolds.set(pending.id,currentFingerprint);app.log.error({activationId:pending.id},'Context hold could not be recorded; this work remains blocked locally.');}
   return false;
@@ -238,13 +241,13 @@ export async function requestSettingsTransition(input: {
    // the accepted boundary cannot support a verified native handoff.
    shouldHold=Boolean(row&&agent&&project&&accepted);
    if(shouldHold&&typeof packet?.exactSystemPrompt!=='string')
-    return hold('The saved provider instructions are missing. The original work remains queued for context review.');
+    return hold('The saved provider instructions are unavailable. Automatic reconciliation retains this message without repeating earlier work.',true);
    const acceptedPromptChanged=Boolean(row&&agent&&project&&accepted&&typeof packet?.exactSystemPrompt==='string'&&
     await transitionSystemPromptHash(agent,project,workspace.getPreferences(),opts)!==createHash('sha256').update(packet.exactSystemPrompt).digest('hex'));
    if(currentFingerprint!==transitionFingerprint(input,pending.projectId,pending.agentId,pending.id))return false;
    shouldHold=acceptedPromptChanged;
    let grantExpansion=false;
-   const unchangedOrHold=(reason:string)=>(acceptedPromptChanged||grantExpansion)?hold(reason+' The original work remains queued for context review.'):true;
+   const unchangedOrHold=(reason:string)=>(acceptedPromptChanged||grantExpansion||toolsChanged)?hold(reason+' The original work remains queued for context review.'):true;
 
    // Older accepted packets may have no runtime contract, while their Run
    // origin and a later explicit global-read removal are still available.
@@ -273,7 +276,7 @@ export async function requestSettingsTransition(input: {
     const currentHash=await transitionSystemPromptHash(agent,project,workspace.getPreferences(),opts);
     if(currentFingerprint!==transitionFingerprint(input,pending.projectId,pending.agentId,pending.id))return false;
     if(currentHash!==createHash('sha256').update(packet.exactSystemPrompt).digest('hex'))
-     return hold('The earlier provider session has changed instructions but lacks a verified context boundary. The original work remains queued for review.');
+     return hold('The earlier provider instructions lack complete saved context evidence. Automatic reconciliation retains the queued work.',true);
    }
    // Do not silently reseed an explicitly changed/voice task when the old
    // accepted generation cannot be attributed to a completed boundary.
@@ -281,13 +284,18 @@ export async function requestSettingsTransition(input: {
      (dispatch?.voiceReply===true&&opts.localMemory || typeof dispatch?.model==='string' ||
       typeof dispatch?.effort==='string' || typeof dispatch?.speed==='string'));
    if(requiresKnownBoundary&&(!boundary||!packet||!contract||contract.version!==1))
-    return hold('The earlier provider session lacks a complete, verified context boundary. The original work remains queued for review.');
+    return hold('The earlier provider session lacks a complete, verified context boundary. Automatic reconciliation retains the queued work.',true);
    const policy=agent?new CapabilityPolicyStore(store.sqlite).resolveForAgent(agent.id):undefined;
    const restrictions=agent&&policy?runtimeRestrictions(policy,agent.activeEngine):undefined;
    const prior=contract?.capabilityRestrictions;
    grantExpansion=Boolean(restrictions&&isGrantOnlyRestrictionsChange(prior,restrictions));
-   shouldHold ||= grantExpansion;
+   const savedTools=retainedRuntimeTools(contract);
+   const comparisonPolicy=grantExpansion&&policy?{...policy,restrictedCapabilityIds:prior!.restrictedCapabilityIds}:policy;
+   const currentTools=comparisonPolicy?filterRuntimeToolsForCapabilities([...providerDynamicTools(Boolean(opts.localMemory)),PONDEROSA_HISTORY_TOOL],comparisonPolicy):undefined;
+   toolsChanged=Boolean(contract&&(!savedTools||JSON.stringify(savedTools)!==JSON.stringify(currentTools)));
+   shouldHold ||= grantExpansion||toolsChanged;
    if(agent&&coordinationV3.activeContextRollover(agent.id))return true;
+   if(accepted&&(!packet||!contract||contract.version!==1))return hold('The saved provider contract is incomplete. Automatic reconciliation retains the queued work.',true);
    if(!row||!agent||!project||!boundary||!accepted||!packet||!contract||!policy||!restrictions||contract.version!==1||
       agent.projectId!==pending.projectId||project.id!==pending.projectId||row.scope_key!==`conversation:${agent.conversationId}`||
       boundary.providerSessionId!==accepted.sessionId||boundary.toolContractHash!==contract.contractHash||
@@ -368,10 +376,10 @@ export async function requestSettingsTransition(input: {
      }
     }
    }
-   if(stopped&&(changed||voiceBoundary||promptChanged||grantExpansion))
+   if(stopped&&(changed||voiceBoundary||promptChanged||toolsChanged||grantExpansion))
     return hold('Recovered context from the stopped task is retained, but the requested settings or voice transition lacks a verified handoff. The new instruction remains queued for review.');
-   if(grantExpansion&&(changed||voiceBoundary||promptChanged))return hold('Access expanded together with other runtime settings. The original work remains queued for context review.');
-   if(!changed&&!voiceBoundary&&!promptChanged&&!grantExpansion){
+   if(grantExpansion&&(changed||voiceBoundary||promptChanged||toolsChanged))return hold('Access expanded together with other runtime settings. The original work remains queued for context review.');
+   if(!changed&&!voiceBoundary&&!promptChanged&&!toolsChanged&&!grantExpansion){
     store.sqlite.prepare("DELETE FROM activation_sources WHERE activation_id=? AND source_kind='settings_transition_retry_pending'").run(pending.id);
     return true;
    }
@@ -392,7 +400,8 @@ export async function requestSettingsTransition(input: {
    if(grantExpansion&&(handoffRestrictions.filesystemWriteRestricted!==prior!.filesystemWriteRestricted||
     JSON.stringify(handoffRestrictions.restrictedCapabilityIds)!==JSON.stringify(prior!.restrictedCapabilityIds)||
     JSON.stringify(handoffRestrictions.restrictedConnectorNames)!==JSON.stringify(prior!.restrictedConnectorNames)))return hold('The saved restrictions cannot be verified. The original work remains queued for context review.');
-   const tools=filterRuntimeToolsForCapabilities([...providerDynamicTools(Boolean(opts.localMemory)),PONDEROSA_HISTORY_TOOL],handoffPolicy);
+   const tools=savedTools;
+   if(!tools)return hold('The saved tool contract is incomplete. Automatic reconciliation retains this message without repeating earlier work.',true);
    const communicationPrompt=communicationV3SessionPrompt(),preferences=workspace.getPreferences();
    // The old provider already has its accepted system prompt. Use its exact
    // recorded bytes for the old-session handoff; the replacement receives
@@ -400,7 +409,7 @@ export async function requestSettingsTransition(input: {
    const systemPrompt=packet.exactSystemPrompt,systemPromptHash=createHash('sha256').update(systemPrompt).digest('hex');
    const ordinaryToolHash=providerToolContractHash(tools,communicationPrompt),toolHash=handoffPolicy.restrictedCapabilityIds.length?createHash('sha256').update(JSON.stringify({tools:ordinaryToolHash,restrictions:handoffRestrictions})).digest('hex'):ordinaryToolHash;
    const oldHash=providerRuntimeSessionContractHash({runtimeSessionContractHash:providerSessionContractHash(agent.activeEngine,agent.workingCopy.id,contract.model,contract.effort,toolHash),speed:contract.speed,...(contract.observedBillingMode?{billingMode:contract.observedBillingMode}:{}),systemPromptHash,scopeKey:row.scope_key},contract.contractHash);
-   if(oldHash!==contract.contractHash)return hold('The prior provider context could not be verified. The original work remains queued; review the Agent’s context before retrying.');
+   if(oldHash!==contract.contractHash)return hold('The saved provider contract cannot yet be verified. Automatic reconciliation retains this message without repeating earlier work.',true);
    const acceptedTail=store.acceptedProviderSessionCommunicationEventIds(agent.id);if(!acceptedTail)return hold('The prior context boundary is unavailable. The original work remains queued; review the Agent’s context before retrying.');
    const measured=store.acceptedProviderSessionContextUsage(agent.id)?.usage;
    const pressure=evaluateContextRolloverPressure(measured?{usedTokens:measured.usedTokens,...(measured.windowTokens===undefined?{}:{windowTokens:measured.windowTokens})}:{usedTokens:0},preferences);

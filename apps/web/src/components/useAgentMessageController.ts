@@ -1,3 +1,5 @@
+import {productApiPath} from "../api/productScope";
+import {adoptQueuedMessageReceipt} from "./messageDeliveryReceipts";
 import { assistantSubmissionError } from "./chat/composerUtils";
 import type { AssetDto, DraftPendingSubmissionDto, EngineDto, SendMessageRequest, SendMessageResponse } from "@ponderosa/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -73,8 +75,10 @@ export function useAgentMessageController({
   const activeAgentId = useRef(agentId);
   activeAgentId.current = agentId;
   const sendMessage = useSendMessage();
+  const namespace=productApiPath('/api/conversations');
+  const queueKey=queryKeys.queuedMessages.agent(agentId);
   const queuedMessagesQuery = useQuery({
-    queryKey: queryKeys.queuedMessages.agent(agentId),
+    queryKey: queueKey,
     queryFn: () => api.listQueuedAgentMessages(agentId),
   });
   const sendAttempt = useRef<IdempotentAttempt<AgentMessageSubmissionPrepared>>();
@@ -264,7 +268,10 @@ export function useAgentMessageController({
           },
           {
             onSuccess: response => {
+              if(productApiPath('/api/conversations')!==namespace)return;
               if (activeAgentId.current === prepared.agentId) {
+                if(!steeringOnly&&prepared.request.activeRunDelivery==='queue'&&response.queued&&response.queuedMessage)
+                  adoptQueuedMessageReceipt(queryClient,queueKey,[response.queuedMessage]);
                 onAccepted?.(response, prepared.request.activeRunDelivery ?? "steer");
                 onNotice(directAgentDeliveryNotice(response, prepared.request.activeRunDelivery ?? "steer"));
               }

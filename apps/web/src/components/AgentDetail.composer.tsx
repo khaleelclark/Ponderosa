@@ -64,16 +64,15 @@ export function AgentDetailComposer({
           onClose={onCloseProviderUsage}
         />
       ) : null}
-      <QueuedMessageTray
+      {!composer.assistantMessages&&<QueuedMessageTray
         messages={queuedMessages}
-        queueReviewHref={composer.assistantMessages?composer.queueReviewHref:undefined}
         scope={composer.conversationDraftId}
         attachmentNamesForMessage={attachmentNamesForQueuedMessage}
         busy={queuedBusy}
         onSteer={onSteerQueued}
         onEdit={onEditQueued}
         onDelete={onDeleteQueued}
-      />
+      />}
       <Composer {...composer} />
     </ChatComposerDock>
   );

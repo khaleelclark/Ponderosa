@@ -1,3 +1,5 @@
+import type {QueuedConversationMessageDto} from "@ponderosa/core";
+import {queryKeys} from "../../queryKeys";
 import {draftPendingSubmissionRetired,type ConversationDraftDto,type PutConversationDraftRequest,type DraftPendingSubmissionDto} from '@ponderosa/core';
 import type {QueryClient} from '@tanstack/react-query';
 import {api} from '../../api';
@@ -75,6 +77,14 @@ export function reconcileAcceptedCapture(client:QueryClient,item:CapturedSubmiss
   queryFn:async()=>{
    if(item.status!=='accepted')throw new Error('Only accepted message bookkeeping may be reconciled automatically.');
    if(productApiPath('/api/conversations')!==namespace)throw new CapturedDraftScopeChanged('The original message product is not active.');
+   if((item.action==='queue'||item.pending.request?.runtime.activeRunDelivery==='queue')&&item.acceptedDeliveryIds?.length){
+     // Publish the real queue snapshot before retiring its captured presentation.
+     const agentId=item.scope.startsWith('agent:')?item.scope.slice(6):undefined;
+     const key=agentId?queryKeys.queuedMessages.agent(agentId):queryKeys.queuedMessages.conversation(item.scope);
+     const known=client.getQueryData<QueuedConversationMessageDto[]>(key);
+     if(!item.acceptedDeliveryIds.every(id=>known?.some(row=>row.deliveryId===id)))await client.fetchQuery({queryKey:key,
+       queryFn:async()=>{if(productApiPath('/api/conversations')!==namespace)throw new CapturedDraftScopeChanged('The original message product is not active.');const rows=await(agentId?api.listQueuedAgentMessages(agentId):api.listQueuedConversationMessages(item.scope));if(productApiPath('/api/conversations')!==namespace)throw new CapturedDraftScopeChanged('The original message product is not active.');return rows;},staleTime:0,retry:false});
+   }
    if(!item.scope.startsWith('local:'))await persistCapturedDraftSubmission(item.scope,item.ownerId,item.clientId,item.pending,true,undefined,namespace);
    removeCapturedSubmission(item.pending.idempotencyKey,item);return true;
   },

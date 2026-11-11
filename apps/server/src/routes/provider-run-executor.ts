@@ -816,6 +816,16 @@ export function startProviderRunExecution(
         assertSettingsTransitionPolicy?.();
         cap.inputVerificationPending=false;
       };
+      const acknowledgeInput=(providerSessionId?:string):void=>{
+        if(!activeRun.v3SchedulerRunId||activeRun.v3FencingToken===undefined||v3PromptInjected)return;
+        if(controller.signal.aborted||isClosed()||!ownsActiveRun(agent.id,activeRun))throw new Error("Provider acknowledgement lost its exact Run authority.");
+        assertSettingsTransitionPolicy?.();
+        coordinationV3!.acknowledgePromptInjection({injectionId:v3InjectionId!,runId:activeRun.v3SchedulerRunId,
+          fencingToken:activeRun.v3FencingToken,providerSessionId});
+        v3PromptInjected=true;publishMessageDeliveryChanged(agent.id);
+        if(continuationHandoff&&!continuationHandoffConsumed&&!replacementCandidate)
+          continuationHandoffConsumed=store.consumeContinuationHandoff(agent.id,continuationHandoff.id,runId);
+      };
       const consumePersistentEvents = async function* (): AsyncIterable<AgentEvent> {
         while (true) {
           let next: IteratorResult<AgentEvent>;
@@ -856,7 +866,8 @@ export function startProviderRunExecution(
                       effort: effectiveEffort,
                       speed: effectiveSpeed,
                       clientMessageId: communicationEventId,
-                      ...(assertSettingsTransitionPolicy && runtimeEngineId==='claude' ? {requireVerifiedInput:true,onVerifiedInput:openVerifiedInputCapability} : {}),
+                      ...(assertSettingsTransitionPolicy && runtimeEngineId==='claude' ? {requireVerifiedInput:true} : {}),
+                      onVerifiedInput:()=>{if(assertSettingsTransitionPolicy&&runtimeEngineId==='claude')openVerifiedInputCapability();acknowledgeInput(sessionId??readProviderSessionIdentifier(persistentRuntime!.session));},
                       nativeAction: input.nativeAction,
                       assertCurrent: () => {
                         if (controller.signal.aborted || isClosed() || deletingAgentIds.has(agent.id) || deletingProjectIds.has(project.id) || !ownsActiveRun(agent.id, activeRun) || !renewExecutionLease(agent.id, activeRun)) throw new Error("Native turn lost current Run authority");
@@ -933,7 +944,8 @@ export function startProviderRunExecution(
                       effort: effectiveEffort,
                       speed: effectiveSpeed,
                       clientMessageId: communicationEventId,
-                      ...(assertSettingsTransitionPolicy && runtimeEngineId==='claude' ? {requireVerifiedInput:true,onVerifiedInput:openVerifiedInputCapability} : {}),
+                      ...(assertSettingsTransitionPolicy && runtimeEngineId==='claude' ? {requireVerifiedInput:true} : {}),
+                      onVerifiedInput:()=>{if(assertSettingsTransitionPolicy&&runtimeEngineId==='claude')openVerifiedInputCapability();acknowledgeInput(sessionId??readProviderSessionIdentifier(persistentRuntime!.session));},
                       nativeAction: input.nativeAction,
                       assertCurrent: () => {
                         if (controller.signal.aborted || isClosed() || deletingAgentIds.has(agent.id) || deletingProjectIds.has(project.id) || !ownsActiveRun(agent.id, activeRun) || !renewExecutionLease(agent.id, activeRun)) throw new Error("Native turn lost current Run authority");
@@ -1101,25 +1113,7 @@ export function startProviderRunExecution(
           if (event.type !== "error" && event.type !== "session" && event.type !== "context_usage") {
             providerWorkObserved = true;
           }
-          if (activeRun.v3SchedulerRunId && activeRun.v3FencingToken !== undefined && !v3PromptInjected && event.type !== "error") {
-            coordinationV3!.acknowledgePromptInjection({
-              injectionId: v3InjectionId!,
-              runId: activeRun.v3SchedulerRunId,
-              fencingToken: activeRun.v3FencingToken,
-              providerSessionId: sessionId ?? (event.type === "session" ? event.sessionId : persistentRuntime
-                ? readProviderSessionIdentifier(persistentRuntime.session)
-                : undefined),
-            });
-            v3PromptInjected = true;
-            publishMessageDeliveryChanged(agent.id);
-            if (continuationHandoff && !continuationHandoffConsumed && !replacementCandidate) {
-              continuationHandoffConsumed = store.consumeContinuationHandoff(
-                agent.id,
-                continuationHandoff.id,
-                runId,
-              );
-            }
-          }
+          if(event.type!=="error")acknowledgeInput(sessionId??(event.type==="session"?event.sessionId:persistentRuntime?readProviderSessionIdentifier(persistentRuntime.session):undefined));
           if (deletingAgentIds.has(agent.id) || isClosed() || controller.signal.aborted || !renewExecutionLease(agent.id, activeRun)) break;
           if (!receiveRuntimeEvent(agent.id, activeRun)) break;
           if (event.type === "context_usage" && event.providerSessionGeneration !== undefined) {

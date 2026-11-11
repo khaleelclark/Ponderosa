@@ -47,8 +47,8 @@ export async function queuedTrayColdMountRegression():Promise<void>{
   <QueuedMessageTray key={epoch} scope={scope} messages={rows} onSteer={m=>{steers.push(m.deliveryId);}} onEdit={(m,text)=>{edits.push({id:m.deliveryId,text});}} onDelete={m=>{deletes.push(m.deliveryId);}}/>
  </ThemeProvider>));
  const tray=()=>host.querySelector<HTMLElement>('[aria-label="Queued Messages"]')!;
- const rows=()=>Array.from(tray().querySelectorAll<HTMLElement>('[data-queue-row]:not([data-operation-id])'));
- const capturedRows=()=>tray().querySelectorAll('[data-operation-id]');
+ const rows=()=>Array.from(tray().querySelectorAll<HTMLElement>('[data-delivery-id]'));
+ const capturedRows=()=>tray().querySelectorAll('[data-operation-id]:not([data-delivery-id])');
  const button=(name:string)=>tray().querySelector<HTMLButtonElement>('[aria-label="'+name+'"]')!;
  const field=()=>tray().querySelector<HTMLTextAreaElement>('textarea[aria-label^="Edit Queued Message"]')!;
  const nextTask=async()=>{await until(()=>tasks.some(t=>!t.done&&!t.signal.aborted),'Missing background batch');return tasks.find(t=>!t.done&&!t.signal.aborted)!;};
@@ -187,4 +187,39 @@ export async function queuedTrayAcceptedEditRegression():Promise<void>{
   probe('fallback-a');assert(host.textContent==='hidden','Exact fallback owner has its receipt');probe('fallback-b');assert(host.textContent==='visible','Owner change cannot carry a deletion receipt with missing conversation fields');
   probe('fallback-a');setStandaloneProductScope('branches');probe('fallback-a');assert(host.textContent==='visible','Product namespace cannot reuse another product receipt or retained projection');setStandaloneProductScope(undefined);
  }finally{setStandaloneProductScope(undefined);release?.();releaseReceipt?.();root.unmount();client.clear();globalThis.fetch=nativeFetch;host.remove();}
+}
+
+/** Capture, lost response, acceptance and retirement update one compact mounted row. */
+export async function queuedTrayCaptureContinuityRegression():Promise<void>{
+ const scope='queue-continuity',id='queue-continuity-operation',host=document.createElement('div');document.body.append(host);const root=createRoot(host);
+ const capture={version:1,scope,storageKey:'continuity-draft',ownerId:'owner',clientId:id,createdAt:1,action:'queue',text:'',editorText:'',attachmentNames:['exact.txt'],mentionedAgents:[],newAgentRequested:false,pending:{idempotencyKey:id,fingerprint:'b'.repeat(64),request:{recipientAgentIds:['continuity-agent'],runtime:{activeRunDelivery:'queue'}}},status:'unknown'} as CapturedSubmission;
+ const message:QueuedConversationMessageDto={deliveryId:'continuity-delivery',messageId:'continuity-message',communicationEventId:'continuity-event',conversationId:scope,targetAgentId:'continuity-agent',position:1,text:'',attachmentCount:1,createdAt:'2026-11-10T00:00:00Z',status:'queued'};
+ let steers=0;const render=(messages:QueuedConversationMessageDto[])=>flushSync(()=>root.render(<ThemeProvider theme={createPonderosaTheme('light')}><CssBaseline/><QueuedMessageTray scope={scope} messages={messages} onSteer={()=>{steers++;}} onEdit={()=>{}} onDelete={()=>{}}/></ThemeProvider>));
+ try{
+  saveCapturedSubmission(capture);render([]);const row=host.querySelector<HTMLElement>('[data-queue-row]')!,height=row.getBoundingClientRect().height,edit=row.querySelector('[aria-label^="Edit Queued Message"]'),remove=row.querySelector('[aria-label^="Delete"]');
+  assert(row&&row.textContent?.includes('exact.txt'),'Attachment-only capture renders immediately in the compact queue row');
+  assert(host.querySelectorAll('[data-queue-row]').length===1&&!host.textContent?.includes('Details'),'No alternate capture card or technical Details');
+  window.dispatchEvent(new StorageEvent('storage'));await tick();assert(host.querySelector('[data-queue-row]')===row,'Cross-tab notifications retain row identity');
+  flushSync(()=>{saveCapturedSubmission({...capture,status:'accepted',communicationId:message.communicationEventId,acceptedDeliveryIds:[message.deliveryId]});root.render(<ThemeProvider theme={createPonderosaTheme('light')}><CssBaseline/><QueuedMessageTray scope={scope} messages={[message]} onSteer={()=>{steers++;}} onEdit={()=>{}} onDelete={()=>{}}/></ThemeProvider>);removeCapturedSubmission(id);});assert(host.querySelectorAll('[data-queue-row]').length===1&&host.querySelector('[data-delivery-id]')===row,'Exact canonical acceptance adopts the captured row without duplication');
+  assert(row.querySelector('[aria-label^="Edit Queued Message"]')===edit&&row.querySelector('[aria-label^="Delete"]')===remove,'Existing action controls remain mounted');
+  assert(Math.abs(row.getBoundingClientRect().height-height)<1,'Capture and accepted row retain height');
+  removeCapturedSubmission(id);await tick();assert(host.querySelector('[data-delivery-id]')===row,'Capture retirement preserves the same canonical row');
+  (row.querySelector('[aria-label="Steer Queued Message 1"]') as HTMLButtonElement).click();await tick();assert(steers===1,'Adopted action invokes the existing callback once');
+  root.unmount();const fresh=createRoot(host);flushSync(()=>fresh.render(<QueuedMessageTray scope={scope} messages={[message]} onSteer={()=>{}} onEdit={()=>{}} onDelete={()=>{}}/>));assert(host.querySelectorAll('[data-queue-row]').length===1,'Reload renders only the canonical queue authority');fresh.unmount();
+ }finally{try{root.unmount();}catch{}host.remove();removeCapturedSubmission(id);}
+}
+
+/** Delayed readback cannot manufacture Working; acknowledged readback clears Starting without text. */
+export async function messageAcknowledgementReadbackRegression():Promise<void>{
+ const {messageDeliveryPhase}=await import('../../apps/web/src/components/messageDeliveryPhase');
+ const nativeFetch=globalThis.fetch,host=document.createElement('div');document.body.append(host);const root=createRoot(host),client=new QueryClient({defaultOptions:{queries:{retry:false,refetchOnWindowFocus:false}}});
+ const receipt={activationId:'ack-delivery',targetAgentId:'ack-agent',state:'started' as const,attemptCount:1,updatedAt:'2026-11-10T00:00:00Z'};
+ const source=[{id:'ack-message',conversationId:'ack-chat',communicationEventId:'ack-event',deliveryReceipts:[receipt]}];let reads=0,ack=false,release:(()=>void)|undefined;
+ globalThis.fetch=async()=>{reads++;if(ack)await new Promise<void>(resolve=>{release=resolve;});return new Response(JSON.stringify({items:[{communicationEventId:'ack-event',deliveryReceipts:[ack?{...receipt,state:'delivered',providerAcknowledged:true,injectionId:'exact-injection',injectionKind:'turn',executionId:'exact-run',updatedAt:'2026-11-10T00:00:01Z'}:receipt]}]}),{headers:{'content-type':'application/json'}});};
+ function View(){const rows=useMessageDeliveryReceipts(source,'ack-chat');return <p>{messageDeliveryPhase(rows[0].deliveryReceipts![0])}</p>;}
+ try{
+  flushSync(()=>root.render(<QueryClientProvider client={client}><View/></QueryClientProvider>));await until(()=>reads===1,'Initial exact receipt read');assert(host.textContent==='Starting','Submission without acknowledgement stays Starting');
+  ack=true;void client.invalidateQueries({queryKey:queryKeys.conversations.activeDeliveryReceiptsPrefix('ack-chat')});await until(()=>Boolean(release),'Delayed post-ack read starts');await new Promise(resolve=>setTimeout(resolve,300));assert(host.textContent==='Starting','An invalidation or open socket is not acknowledgement proof');
+  release!();await until(()=>host.textContent==='Working','Durable acknowledgement updates the existing row before any reply text');assert(reads===2,'One bounded refresh, no retry loop or history fetch');
+ }finally{root.unmount();client.clear();host.remove();globalThis.fetch=nativeFetch;}
 }

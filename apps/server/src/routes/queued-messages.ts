@@ -303,6 +303,8 @@ export function registerQueuedMessageRoutes(
       position += 1;
       return [{
         deliveryId: activation.id,
+        communicationEventId: communication.eventId,
+        attachmentCount: (payload?.dispatch as {attachments?:unknown[]}|undefined)?.attachments?.length??0,
         messageId: communication.eventId,
         conversationId: payload?.dispatch?.sourceConversationId ?? payload?.dispatch?.conversationId ?? communication.conversationId ?? agent.conversationId ?? "",
         targetAgentId: agent.id,

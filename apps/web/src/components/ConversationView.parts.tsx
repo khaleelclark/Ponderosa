@@ -1,3 +1,4 @@
+import {attachmentsOutsideVisualizations} from "./chat/messageMarkdown";
 import { OutgoingMessageRow } from "./chat/OutgoingMessage";
 import {useTextReplyProjection,ReplyReadFeedback} from './chat/useTextReplyProjection';
 import {useWorkspaceReadOnly} from "./WorkspaceReadOnlyContext";
@@ -214,7 +215,7 @@ function ConversationMessageComponent({
             ) : null}
           </>
         ),
-        attachments: message.attachments,
+        attachments: attachmentsOutsideVisualizations({...message,text:visibleText,projectId,fromAgent:message.role==="assistant"||Boolean(message.authorAgentId)}),
         belowBody: <>{message.role === "user" ? <LiveAgentProgress receipts={message.deliveryReceipts} onOpenAgent={onOpenAgent} /> : null}{replyFeedback}</>,
         status:
           (message.role === "user" || message.communicationIntent === "collaboration") && message.deliveryReceipts?.length ? (

@@ -422,6 +422,7 @@ export class AgentArtifactCatalog {
       }
       return {
         id: artifact.id,
+        artifactKind: artifact.kind,
         agentId: artifact.originAgentId ?? artifact.agentId,
         name: artifact.summary ?? artifact.path.split("/").at(-1) ?? artifact.id,
         mediaType: artifact.mediaType!,

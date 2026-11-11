@@ -706,6 +706,10 @@ export interface MultiAgentDirectMessageResponse {
 }
 
 export interface QueuedConversationMessageDto {
+  /** Canonical accepted per-recipient attachment count, independent of history hydration. */
+  attachmentCount?: number;
+  /** Exact authored source; presentation correlation, never dispatch authority. */
+  communicationEventId?: string;
   deliveryId: string;
   messageId: string;
   conversationId: string;
@@ -837,6 +841,8 @@ export interface StartedMessageResponse {
 /** POST /api/agents/:id/messages response when another turn is still active. */
 export interface QueuedMessageResponse {
   queued: true;
+  /** Exact pending queue row when canonical intake can already project it. */
+  queuedMessage?: QueuedConversationMessageDto;
   /** One-based position among follow-ups waiting for this agent. */
   position: number;
   /** Stable queued-delivery identity used to follow this item until it starts. */
@@ -847,6 +853,7 @@ export interface QueuedMessageResponse {
 /** Canonical intake committed, but queue projections are still being repaired. */
 export interface RecoveringMessageResponse {
   queued: true;
+  queuedMessage?: QueuedConversationMessageDto;
   committed: true;
   recovering: true;
   position?: number;

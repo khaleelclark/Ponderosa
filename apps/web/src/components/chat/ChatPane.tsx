@@ -1,3 +1,4 @@
+import {attachmentsOutsideVisualizations} from "./messageMarkdown";
 import { OutgoingMessageRow } from "./OutgoingMessage";
 import {ConversationChromeContext} from "../ConversationChromeContext";
 import {AssistantIcon} from "../AssistantIcon";
@@ -543,7 +544,7 @@ function ChatPaneComponent({
                   ) : null}
                 </>
               ),
-              attachments: message.attachments,
+              attachments: attachmentsOutsideVisualizations({...message,text:visibleText,projectId,fromAgent:message.role==="assistant"||Boolean(message.authorAgentId)}),
               belowBody: <>{message.role === "user" ? <LiveAgentProgress receipts={message.deliveryReceipts} onOpenAgent={onOpenAgent} /> : null}{item.feedback?.length?<ReplyReadFeedback entry={item.feedback} agentTitle={id=>agentNameForId?.(id)??agentName}/>:null}</>,
               attachmentDensity: "compact",
               status:

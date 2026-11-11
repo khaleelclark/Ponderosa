@@ -173,3 +173,16 @@ test('long interactive messages keep complete stable controls instead of a trunc
  assert.match(render('prose\n'.repeat(100),{collapseLongMessage:true}),/Show Full Message/,'Ordinary long prose still collapses');
  assert.equal(richCount(render('prose\n'.repeat(100)+fence({version:1,type:'visualization',title:'Bad',artifactId:'../escape'}),{collapseLongMessage:true})),0,'Invalid or hidden fences retain ordinary text behavior');
 });
+
+
+test('inline visualization attachments are suppressed only by exact canonical managed bindings',async()=>{
+ const {attachmentsOutsideVisualizations}=await import('../../apps/web/src/components/chat/messageMarkdown.ts');
+ const block={version:1,type:'visualization',title:'Fruit Panel',artifactId:'managed-html'};
+ const html={id:'managed-html',agentId:'agent',name:'charts.html',mediaType:'text/html',size:100,artifactKind:'generated_file'},other={...html,id:'other-html',name:'other.html'},file={...html,id:'note',name:'notes.txt',mediaType:'text/plain'};
+ const source={text:fence(block),projectId:'project',communicationEventId:'message',conversationId:'chat',artifactIds:['managed-html','other-html','note'],fromAgent:true,attachments:[html,other,file]};
+ assert.deepEqual(attachmentsOutsideVisualizations(source),[other,file]);
+ for(const change of [{communicationEventId:undefined},{conversationId:undefined},{fromAgent:false},{artifactIds:['other-html']},{text:fence({...block,url:'https://invalid'})},{text:fence(block,'')}])assert.deepEqual(attachmentsOutsideVisualizations({...source,...change}),source.attachments);
+ assert.deepEqual(attachmentsOutsideVisualizations({...source,attachments:[{...html,unavailable:true}]}),[{...html,unavailable:true}]);
+ assert.deepEqual(attachmentsOutsideVisualizations({...source,attachments:[{...html,artifactKind:'document'}]}),[{...html,artifactKind:'document'}]);
+ assert.deepEqual(attachmentsOutsideVisualizations({...source,text:Array(8).fill(fence(metric)).join('\n\n')+'\n\n'+fence(block)}),source.attachments,'A ninth unrendered block cannot hide any attachment');
+});

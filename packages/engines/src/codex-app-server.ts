@@ -1145,6 +1145,8 @@ export class CodexAppServerSession implements RuntimeSession {
       ...(input.effort ? { effort: input.effort } : {}),
       ...(input.nativeAction?.kind === "structured" ? { outputSchema: input.nativeAction.outputSchema } : {}),
     });
+    if(typeof response?.turn?.id!=="string"||!response.turn.id.trim()||response.turn.id.length>1024)
+      throw new Error("Native turn acceptance has no valid turn identity");
     this.activeTurnId = this.lastCompletedTurnId === response.turn.id ? undefined : response.turn.id;
     const acceptedModel = input.model?.trim() || this.activeModel;
     // A matching-thread model notification is more authoritative than RPC
@@ -1153,6 +1155,8 @@ export class CodexAppServerSession implements RuntimeSession {
       this.activeModel = acceptedModel;
       this.invalidateCapabilities();
     }
+    input.assertCurrent?.();
+    input.onVerifiedInput?.();
     return { turnId: response.turn.id };
   }
 

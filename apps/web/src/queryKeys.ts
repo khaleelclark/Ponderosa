@@ -1,3 +1,5 @@
+import {productApiPath} from "./api/productScope";
+const queueNamespace=()=>{const namespace=productApiPath("/api/conversations");return namespace==="/api/conversations"?[]:[namespace];};
 /**
  * Canonical React Query identities for workspace resources.
  *
@@ -142,9 +144,9 @@ export const queryKeys = {
     ] as const,
   },
   queuedMessages: {
-    conversation: (conversationId: string) => ["queued-messages", conversationId] as const,
+    conversation: (conversationId: string) => ["queued-messages", conversationId,...queueNamespace()] as const,
     agentsAll: ["queued-agent-messages"] as const,
-    agent: (agentId: string) => ["queued-agent-messages", agentId] as const,
+    agent: (agentId: string) => ["queued-agent-messages", agentId,...queueNamespace()] as const,
   },
   conversationDraft: {
     prefix: (conversationId: string) => ["conversation-draft", conversationId] as const,

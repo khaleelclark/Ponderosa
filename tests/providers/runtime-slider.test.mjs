@@ -262,7 +262,7 @@ function declaration(name, key) {
   assert.ok(found, key); return found;
 }
 function moduleExports(name, imports) {
-  imports={...{'../api/productScope':{productApiPath:path=>path},'../clientId':{createClientId:()=> 'feedback'}},...imports};
+  imports={...{'./api/productScope':{productApiPath:path=>path},'../api/productScope':{productApiPath:path=>path},'../clientId':{createClientId:()=> 'feedback'}},...imports};
   const exports = {}; vm.runInNewContext(transpile(source(name)), { exports, require: key => { assert.ok(key in imports, key); return imports[key]; } }); return exports;
 }
 function queueHarness() {

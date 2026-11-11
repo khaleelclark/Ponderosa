@@ -1,3 +1,4 @@
+import {attachmentsOutsideVisualizations} from "./chat/messageMarkdown";
 import {productApiPath} from "../api/productScope";
 import {WorkspaceQueryError} from "./WorkspaceQueryError";
 import {workspaceRead} from "../workspaceAvailability";
@@ -1485,7 +1486,7 @@ export function InboxView({
                     ) ? (
                       <Chip size="small" variant="outlined" label="Broadcast" />
                     ) : undefined,
-                  attachments: item.attachments,
+                  attachments: attachmentsOutsideVisualizations({text:item.text,projectId:item.project.id,communicationEventId:item.communicationEventId,conversationId:item.source.conversationId,artifactIds:item.artifactIds,fromAgent:!fromUser,attachments:item.attachments}),
                   attachmentDensity: "compact",
                   onVisible: (visible) =>
                     markCommunicationVisible(

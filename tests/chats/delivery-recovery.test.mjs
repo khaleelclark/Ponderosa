@@ -59,6 +59,7 @@ function load(relative, imports = {}, globals = {}) {
   vm.runInNewContext(ts.transpileModule(readFileSync(new URL('../../apps/web/src/' + relative, import.meta.url), 'utf8'), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true },
   }).outputText, { exports, Error, Event, ...globals, require: name => {
+    if(name==='../../queryKeys')return {queryKeys};
     if (name in imports) return name==='./submissionOutbox'?{CapturedRetirementStorageError,...imports[name]}:imports[name];
     if(name==='../../api/productScope'||name==='../api/productScope')return {productApiPath:path=>path};
     if(name==='../../api/types')return {ApiRequestError,ApiTransportError};

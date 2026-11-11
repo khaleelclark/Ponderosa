@@ -643,6 +643,7 @@ for(const missingPrompt of [false,true])test('legacy prompt boundary holds origi
   await until(()=>store.sqlite.prepare("SELECT 1 FROM activation_sources h JOIN agent_activations a ON a.id=h.activation_id WHERE a.agent_id=? AND h.source_kind='settings_transition_reservation_wait' AND a.state IN ('pending','retry_pending')").get(agent.id),'legacy prompt review hold',20000);
   assert.equal(store.resumeSessionState(agent.id).sessionId,accepted.sessionId);
   assert.equal((await native.requests()).filter(x=>x.method==='turn/start').length,1);
+  assert.equal(f.ok(await f.api('GET','/api/notifications')).items.some(item=>item.agentId===agent.id&&['attention','urgent'].includes(item.severity)),false,'Incomplete internal evidence remains quiet and retains work');
  },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,uniqueThreads:true})).adapter});
 });
 
@@ -1017,4 +1018,77 @@ test('working-folder memory authorization includes earlier reads before a later 
   assert.equal(store.sqlite.prepare('SELECT count(*) n FROM context_rollovers WHERE agent_id=?').get(agent.id).n,count,'revoked earlier memory cannot enter another summary');assert.equal((await native.requests()).filter(x=>x.method==='turn/start').length,5,'no unreviewed native replay');
  },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,uniqueThreads:true,holdMemoryCompletion:true})).adapter,
   localMemoryForRoot:async root=>({chromaUrl:await ownedChroma(),collectionPrefix:'folder_origin_'+randomUUID().replaceAll('-',''),modelDir:process.env.PONDEROSA_TEST_MEMORY_MODEL_DIR,stateDirectory:path.join(root,'memory-policy'),provision:true})});
+});
+
+for(const update of ['description','schema'])test(`retained tools survive a ${update}-only release update without replay`,{timeout:60000},async t=>{
+ const {PONDEROSA_RUNTIME_TOOLS}=await import('@ponderosa/core');
+ const tool=PONDEROSA_RUNTIME_TOOLS.find(tool=>tool.name==='ponderosa_import_file'),before=structuredClone(tool);
+ let store,native;
+ try{await withFixture(t,async f=>{
+  const chat=await f.createChat('Saved tool contract'),agent=await f.createIdleAgent(chat,'Worker');
+  await f.send(agent.id,'Complete the original research.');await until(async()=>(await native.requests()).some(x=>x.method==='turn/start'),'original native input');
+  await native.sendTool('ponderosa_message',{text:'Original research completed.'});await f.settled(agent.id);
+  const packet=store.acceptedProviderSessionInput(agent.id),oldTools=structuredClone(packet.sourceManifest.normalRuntimeContract.dynamicTools);
+  if(update==='description')tool.description+=' Description-only release update.';
+  else tool.inputSchema={...tool.inputSchema,properties:{...tool.inputSchema.properties,ui025_optional_note:{type:'string'}}};
+  await f.reopen();
+  await f.send(agent.id,'Continue the remaining objective after the release.');
+  const turns=async()=>(await native.requests()).filter(x=>x.method==='turn/start');
+  const old=await until(async()=>{const x=await turns();return x.length>=2?x:undefined;},'old-session contract handoff',15000);
+  assert.equal(old[1].params.threadId,old[0].params.threadId);
+  assert.ok(!JSON.stringify(old[1]).includes('Continue the remaining objective after the release.'),'the queued task is never injected into the old generation');
+  const handoff=store.sqlite.prepare("SELECT r.id FROM scheduler_runs r JOIN scheduler_run_activations x ON x.run_id=r.id JOIN agent_activations a ON a.id=x.activation_id WHERE r.agent_id=? AND a.kind='context_rollover_handoff' ORDER BY r.fencing_token DESC LIMIT 1").get(agent.id);
+  assert.ok(handoff,'the second native input is the managed handoff');
+  assert.deepEqual(store.getProviderInput(handoff.id,true).sourceManifest.normalRuntimeContract.dynamicTools,oldTools,'old side uses the exact accepted definitions');
+  await native.sendAnswer('Original research is complete; finish the remaining objective.');
+  const next=await until(async()=>{const x=await turns();return x.length>=3?x:undefined;},'current-contract replacement',15000);
+  assert.notEqual(next[2].params.threadId,old[0].params.threadId);
+  await native.sendAnswer('Continuity context received.');
+  const final=await until(async()=>{const x=await turns();return x.length>=4?x:undefined;},'queued input admitted exactly once',15000);
+  assert.equal(final.length,4);assert.equal(final[3].params.threadId,next[2].params.threadId);assert.ok(JSON.stringify(final[3]).includes('Continue the remaining objective after the release.'));
+  const notices=f.ok(await f.api('GET','/api/notifications'));assert.equal(notices.items.some(item=>item.agentId===agent.id&&['attention','urgent'].includes(item.severity)&&item.kind==='operational'),false,'automatic internal contract handling never creates Needs Action');
+  await native.sendTool('ponderosa_message',{text:'The remaining objective is complete.'});await f.settled(agent.id);
+  assert.equal(store.sqlite.prepare('SELECT count(*) n FROM context_rollovers WHERE agent_id=?').get(agent.id).n,1);
+  assert.deepEqual(store.getProviderInput(packet.executionId,true).sourceManifest.normalRuntimeContract.dynamicTools,oldTools,'historical evidence is never restamped');
+  assert.deepEqual(store.acceptedProviderSessionInput(agent.id).sourceManifest.normalRuntimeContract.dynamicTools.find(value=>value.name===tool.name),tool,'replacement uses current definitions');
+ },{storeFactory:root=>(store=new AgentStore(root)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,uniqueThreads:true})).adapter});}
+ finally{Object.assign(tool,before);}
+});
+
+// Use actual owned process opens/turn requests, never a guessed idle threshold.
+test('message startup separates cold, warm and resumed acknowledgement phases',{timeout:60000},async t=>{
+ let store,native;const rows=[],opened=[];
+ const oldPool=process.env.PONDEROSA_MAX_IDLE_RUNTIME_SESSIONS;process.env.PONDEROSA_MAX_IDLE_RUNTIME_SESSIONS='1';t.after(()=>{if(oldPool===undefined)delete process.env.PONDEROSA_MAX_IDLE_RUNTIME_SESSIONS;else process.env.PONDEROSA_MAX_IDLE_RUNTIME_SESSIONS=oldPool;});
+ const {CodexAdapter}=await import('../../packages/engines/dist/index.js'),originalOpen=CodexAdapter.prototype.openSession;
+ CodexAdapter.prototype.openSession=async function(options){const start=performance.now();const session=await originalOpen.call(this,options);opened.push({durationMs:Math.round(performance.now()-start)});return session;};t.after(()=>{CodexAdapter.prototype.openSession=originalOpen;});
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Measured startup'),agent=await f.createIdleAgent(chat,'Worker');
+  for(const [index,temperature] of ['cold','warm','resumed'].entries()){
+   if(temperature==='resumed')await f.reopen();
+   const opens=opened.length;
+   await f.send(agent.id,`Controlled startup ${index}.`);
+   await until(async()=>(await native.requests()).filter(x=>x.method==='turn/start').length===index+1,'native input');
+   const receipt=await until(()=>store.sqlite.prepare("SELECT a.created_at saved,r.created_at run_created,p.created_at prepared,i.submitted_at submitted,i.acknowledged_at acknowledged,r.id run_id FROM agent_activations a JOIN scheduler_run_activations x ON x.activation_id=a.id JOIN scheduler_runs r ON r.id=x.run_id JOIN provider_inputs p ON p.scheduler_run_id=r.id JOIN scheduler_prompt_injections i ON i.run_id=r.id AND i.kind='turn' WHERE a.agent_id=? AND a.kind='human_message' AND i.acknowledged_at IS NOT NULL AND r.id<>? ORDER BY a.created_at DESC LIMIT 1").get(agent.id,rows.at(-1)?.runId??''),'durable native acknowledgement');
+   const newOpens=opened.length-opens;assert.equal(newOpens,temperature==='warm'?0:1,'Observed native opens prove warm reuse and cold/resumed reopening');
+   const diff=(a,b)=>Date.parse(receipt[b])-Date.parse(receipt[a]);rows.push({temperature,actualRuntime:newOpens?'opened':'reused',runtimeOpenMs:opened.slice(opens).reduce((sum,value)=>sum+value.durationMs,0),runId:receipt.run_id,nativeOpenCount:newOpens,admissionMs:diff('saved','run_created'),preparationMs:diff('run_created','prepared'),preparedToSubmitMs:diff('prepared','submitted'),acknowledgementMs:diff('submitted','acknowledged'),totalMs:diff('saved','acknowledged')});
+   await native.sendTool('ponderosa_message',{text:`Controlled completion ${index}.`});await f.settled(agent.id);
+  }
+ },{storeFactory:root=>(store=new AgentStore(root)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,uniqueThreads:true})).adapter});
+ t.diagnostic(JSON.stringify({controlledNative:true,realProvider:false,rows}));
+});
+
+for(const damage of ['tools','version','hash'])test(`incomplete retained ${damage} stays quiet and rechecks repaired exact evidence`,{timeout:60000},async t=>{
+ let store,native;
+ await withFixture(t,async f=>{
+  const chat=await f.createChat('Incomplete saved evidence'),agent=await f.createIdleAgent(chat,'Worker');await f.send(agent.id,'Original completed research.');await until(async()=>(await native.requests()).some(x=>x.method==='turn/start'),'first input');await native.sendTool('ponderosa_message',{text:'Research completed.'});await f.settled(agent.id);
+  const packet=store.acceptedProviderSessionInput(agent.id),saved=store.sqlite.prepare('SELECT source_manifest_json FROM provider_inputs WHERE execution_id=?').get(packet.executionId).source_manifest_json;
+  const damaged=JSON.parse(saved);if(damage==='tools')delete damaged.normalRuntimeContract.dynamicTools;else if(damage==='version')damaged.normalRuntimeContract.version=999;else damaged.normalRuntimeContract.dynamicTools[0].description+=' Unverified alteration.';
+  store.sqlite.prepare('UPDATE provider_inputs SET source_manifest_json=? WHERE execution_id=?').run(JSON.stringify(damaged),packet.executionId);
+  f.ok(await f.api('PATCH',`/api/conversations/${chat.id}`,{instructions:'New controlled instructions.'}));await f.send(agent.id,'The exact remaining objective.');
+  await until(()=>store.sqlite.prepare("SELECT 1 FROM activation_sources s JOIN agent_activations a ON a.id=s.activation_id WHERE a.agent_id=? AND s.source_kind='settings_transition_reservation_wait'").get(agent.id),'safe internal reservation');
+  assert.equal((await native.requests()).filter(x=>x.method==='turn/start').length,1,'No unverified old-session submission');assert.equal(f.ok(await f.api('GET','/api/notifications')).items.some(item=>item.agentId===agent.id&&['attention','urgent'].includes(item.severity)),false,'Incomplete evidence is not a user-repairable attention incident');
+  store.sqlite.prepare('UPDATE provider_inputs SET source_manifest_json=? WHERE execution_id=?').run(saved,packet.executionId);
+  await until(async()=>(await native.requests()).filter(x=>x.method==='turn/start').length===2,'Changed exact evidence releases reservation for verified admission',15000);await native.sendAnswer('Research is complete; the remaining objective is open.');await until(async()=>(await native.requests()).filter(x=>x.method==='turn/start').length===3,'replacement confirmation');await native.sendAnswer('Continuity context received.');await until(async()=>(await native.requests()).filter(x=>x.method==='turn/start').length===4,'original task admitted once');await native.sendTool('ponderosa_message',{text:'Remaining objective completed.'});await f.settled(agent.id);
+  assert.equal((await native.requests()).filter(x=>x.method==='turn/start').length,4,'No replay or duplicate task');
+ },{storeFactory:root=>(store=new AgentStore(root)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,uniqueThreads:true})).adapter});
 });

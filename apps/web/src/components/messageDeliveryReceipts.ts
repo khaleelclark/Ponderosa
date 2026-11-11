@@ -1,5 +1,5 @@
-import type { ActiveMessageDeliveryReceiptsDto, CancelQueuedMessageResponse, MessageDeliveryReceiptDto } from "@ponderosa/core";
-import { replaceEqualDeep, type QueryClient } from "@tanstack/react-query";
+import type { ActiveMessageDeliveryReceiptsDto, CancelQueuedMessageResponse, QueuedConversationMessageDto, MessageDeliveryReceiptDto } from "@ponderosa/core";
+import { replaceEqualDeep, type QueryClient, type QueryKey } from "@tanstack/react-query";
 import { queryKeys } from "../queryKeys";
 import { productApiPath } from "../api/productScope";
 
@@ -77,3 +77,15 @@ export function projectMessageDeliveryReceipts<T extends ReceiptSource>(
   return replaceEqualDeep(previous, projected);
 }
 
+
+
+/** A committed receipt adopts its queue projection before a slower query refresh. */
+export function adoptQueuedMessageReceipt(client:QueryClient,key:QueryKey,rows:QueuedConversationMessageDto[]):void {
+ if(!rows.length)return;
+ void client.cancelQueries({queryKey:key,exact:true},{revert:false});
+ client.setQueryData<QueuedConversationMessageDto[]>(key,previous=>{
+  const byId=new Map((previous??[]).map(row=>[row.deliveryId,row]));
+  for(const row of rows)byId.set(row.deliveryId,{...row,...byId.get(row.deliveryId)});
+  return [...byId.values()];
+ });
+}

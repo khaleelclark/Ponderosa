@@ -84,21 +84,21 @@ export async function transcriptWidthMountedRegression(): Promise<void> {
   };
   try {
     for (const [sidebar, narrow] of desktop ? [[0, false], [280, false], [0, true]] as const : [[0, false]] as const) {
-      render('project', false, sidebar, narrow);
+      render('agent', false, sidebar, narrow);
       await settle();
       await measure(`regular/${sidebar}/${narrow}/history`, true);
       flushSync(() => begin!());
       await settle();
       assert(host.querySelector('[aria-label="Sending Message"]'), 'New outgoing presentation rendered');
       await measure(`regular/${sidebar}/${narrow}/new`, true);
-      render('project', false, sidebar, narrow, true);
+      render('agent', false, sidebar, narrow, true);
       await settle();
       await measure(`regular/${sidebar}/${narrow}/refreshed`, true);
     }
     for (const [layout, assistant] of [['project', true], ['agent', true], ['agent', false], ['workspace', false]] as const) {
       render(layout, assistant, 0, false);
       await settle();
-      await measure(`${layout}/assistant=${assistant}`, assistant);
+      await measure(`${layout}/assistant=${assistant}`, assistant || layout === 'agent');
     }
     (window as unknown as { transcriptWidthEvidence: unknown[] }).transcriptWidthEvidence = evidence;
   } finally {

@@ -2,7 +2,9 @@ import {localMemoryTools} from "./local-memory-catalog.js";
 import { createHash } from "node:crypto";
 import {
   PONDEROSA_RUNTIME_TOOLS,
+  PONDEROSA_HISTORY_TOOL,
   type RuntimeDynamicToolSpec,
+  type RetainedNormalRuntimeContract,
   type Adapter,
   type ModelOption,
 } from "@ponderosa/core";
@@ -14,6 +16,25 @@ import {
 
 export function providerDynamicTools(localMemoryEnabled=false): RuntimeDynamicToolSpec[] {
   return [...PONDEROSA_RUNTIME_TOOLS,...(localMemoryEnabled?localMemoryTools:[])];
+}
+
+/** Historical definitions are evidence only; callers must verify the full saved digest. */
+export function retainedRuntimeTools(contract: RetainedNormalRuntimeContract | undefined): RuntimeDynamicToolSpec[] | undefined {
+  const tools=contract?.dynamicTools;
+  if(!Array.isArray(tools)||tools.some(tool=>!tool||typeof tool.name!=="string"||!tool.name.trim()||
+    typeof tool.description!=="string"||!tool.inputSchema||typeof tool.inputSchema!=="object"||Array.isArray(tool.inputSchema))||
+    new Set(tools.map(tool=>tool.name)).size!==tools.length)return undefined;
+  // Manifests use stableJson, while native contract hashes preserve JSON key order.
+  // Reconstruct order only; the admission/preparation full digest remains the proof.
+  const templates=new Map([...providerDynamicTools(true),PONDEROSA_HISTORY_TOOL].map(tool=>[tool.name,tool]));
+  const order=(value:unknown,template:unknown):unknown=>{
+    if(Array.isArray(value))return value.map((item,index)=>order(item,Array.isArray(template)?template[index]:undefined));
+    if(!value||typeof value!=="object")return value;
+    const record=value as Record<string,unknown>,shape=template&&typeof template==="object"&&!Array.isArray(template)?template as Record<string,unknown>:{};
+    const keys=[...Object.keys(shape).filter(key=>Object.hasOwn(record,key)),...Object.keys(record).filter(key=>!Object.hasOwn(shape,key))];
+    return Object.fromEntries(keys.map(key=>[key,order(record[key],shape[key])]));
+  };
+  return tools.map(tool=>order(tool,templates.get(tool.name)) as RuntimeDynamicToolSpec);
 }
 
 function communicationV3Prompt(defaultReply?: import("@ponderosa/core").CoordinationReplyAuthority): string[] {

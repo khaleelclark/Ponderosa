@@ -383,3 +383,24 @@ test('Claude transcript fork does not advertise strict saved-session validation'
  session=await native.adapter.openSession({cwd:root,agentId:'controlled',transcriptFork:{sourceSessionId:randomUUID(),newSessionId:randomUUID(),throughId:randomUUID()},history:[],environment:{PATH:process.env.PATH},signal:new AbortController().signal,onRuntimeSpawned(){}});
  assert.equal(session.validatesResumeBeforeTurn,false);assert.equal(providerProcessHandleFacade(session).validatesResumeBeforeTurn,false);assert.equal((await userFrames(native)).length,0);
 });
+
+for(const update of ['description','schema'])test(`Claude retained tools survive a ${update}-only release update`,{timeout:60000},async t=>{
+ const {PONDEROSA_RUNTIME_TOOLS}=await import('@ponderosa/core'),tool=PONDEROSA_RUNTIME_TOOLS.find(value=>value.name==='ponderosa_import_file'),before=structuredClone(tool);let store,native;
+ try{await withFixture(t,async f=>{
+  const chat=f.ok(await f.api('POST','/api/chats',{label:'Claude saved tools',defaultEngine:'claude'},{'idempotency-key':randomUUID()}));
+  const agent=f.ok(await f.api('POST',`/api/projects/${chat.projectId}/agents`,{title:'Worker',engine:'claude',conversationId:chat.id,idempotencyKey:randomUUID()}));
+  await f.send(agent.id,'Complete the earlier research.');await until(async()=>(await userFrames(native)).length===1,'initial input');await native.answer('Earlier research is complete.');await f.settled(agent.id);
+  const accepted=store.acceptedProviderSessionInput(agent.id),saved=structuredClone(accepted.sourceManifest.normalRuntimeContract.dynamicTools);
+  if(update==='description')tool.description+=' Controlled description update.';else tool.inputSchema={...tool.inputSchema,properties:{...tool.inputSchema.properties,ui025_optional_note:{type:'string'}}};
+  await f.reopen();await f.send(agent.id,'Continue only the remaining objective.');
+  const old=await until(async()=>{const rows=await userFrames(native);return rows.length>=2?rows:undefined;},'old contract handoff',15000);
+  assert.equal(old[1].session,old[0].session);assert(!prompt(old[1]).includes('Continue only the remaining objective.'));
+  await native.answer('Earlier research is complete; the remaining objective is open.');
+  const next=await until(async()=>{const rows=await userFrames(native);return rows.length>=3?rows:undefined;},'new contract confirmation',15000);assert.notEqual(next[2].session,old[0].session);
+  await native.answer('Continuity context received.');const final=await until(async()=>{const rows=await userFrames(native);return rows.length>=4?rows:undefined;},'new task exactly once',15000);assert.equal(final.length,4);assert.equal(final[3].session,next[2].session);assert(prompt(final[3]).includes('Continue only the remaining objective.'));
+  await native.answer('Remaining work completed.');await f.settled(agent.id);
+  assert.deepEqual(store.getProviderInput(accepted.executionId,true).sourceManifest.normalRuntimeContract.dynamicTools,saved,'Old packet is never restamped');
+  assert.deepEqual(store.acceptedProviderSessionInput(agent.id).sourceManifest.normalRuntimeContract.dynamicTools.find(value=>value.name===tool.name),tool);
+  assert.equal(f.ok(await f.api('GET','/api/notifications')).items.some(item=>item.agentId===agent.id&&['attention','urgent'].includes(item.severity)),false,'Automatic release transition is quiet');
+ },{storeFactory:root=>(store=new AgentStore(root)),nativeAdapterForEngine:async root=>(native=await inertClaudeHandoff(root)).adapter});}finally{Object.assign(tool,before);}
+});

@@ -22,7 +22,7 @@ async function fixture(action) {
   } };
   // TypeScript private constructor is intentionally exercised in emitted JS without opening a process.
   const session = new CodexAppServerSession('thread', rpc, dir, false, [], 'model', [], undefined, 'fixture');
-  try { await action({ session, file, calls }); }
+  try { await action({ session, file, calls, rpc }); }
   finally { rmSync(dir, { recursive: true, force: true }); }
 }
 
@@ -55,4 +55,26 @@ test('current Run fence rejects typed start before provider dispatch', async () 
   await assert.rejects(session.startTurn({ prompt: 'Inspect', kind: 'user_message', inputFiles: [file],
     assertCurrent: () => { throw new Error('revoked fence'); } }), /revoked fence/);
   assert.deepEqual(calls, []);
+}));
+
+for(const response of [undefined,{}, {turn:{}},{turn:{id:''}},{turn:{id:7}},{turn:{id:'x'.repeat(1025)}}])test('malformed native acceptance cannot acknowledge the input: '+JSON.stringify(response)?.slice(0,50),async()=>fixture(async({session,rpc})=>{
+ let acknowledgements=0;rpc.request=async()=>response;
+ await assert.rejects(session.startTurn({prompt:'Exact current input',kind:'user_message',onVerifiedInput:()=>acknowledgements++}),/valid turn identity/);
+ assert.equal(acknowledgements,0);
+}));
+
+test('rejected native turn cannot acknowledge the input',async()=>fixture(async({session,rpc})=>{
+ let acknowledgements=0;rpc.request=async()=>{throw Error('Native rejection');};
+ await assert.rejects(session.startTurn({prompt:'Exact input',kind:'user_message',onVerifiedInput:()=>acknowledgements++}),/Native rejection/);assert.equal(acknowledgements,0);
+}));
+
+test('authority lost during the native RPC cannot acknowledge accepted input',async()=>fixture(async({session,rpc})=>{
+ let current=true,acknowledgements=0,release;rpc.request=()=>new Promise(resolve=>{release=resolve;});
+ const submission=session.startTurn({prompt:'Exact input',kind:'user_message',assertCurrent:()=>{if(!current)throw Error('Run cancelled or lease replaced');},onVerifiedInput:()=>acknowledgements++});
+ while(!release)await new Promise(resolve=>setTimeout(resolve,0));current=false;release({turn:{id:'accepted-turn'}});
+ await assert.rejects(submission,/cancelled or lease replaced/);assert.equal(acknowledgements,0);
+}));
+
+test('native acceptance acknowledges once before any text event',async()=>fixture(async({session})=>{
+ let acknowledgements=0;await session.startTurn({prompt:'Exact input',kind:'user_message',onVerifiedInput:()=>acknowledgements++});assert.equal(acknowledgements,1);
 }));
