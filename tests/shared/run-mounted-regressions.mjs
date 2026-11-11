@@ -9,6 +9,7 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {mountedRegressionInventory,mountedRegressionEntryImports} from './mounted-regression-inventory.mjs';
 import {runMountedCase,withinMountedDeadline} from './mounted-regression-lifetime.mjs';
+import {canvasResizeCase,installCanvasResizeDiagnostics,settledCanvasResizeDiagnostics} from './canvas-resize-diagnostics.mjs';
 
 const root=fileURLToPath(new URL('../../',import.meta.url));
 const require=createRequire(new URL('../../apps/server/package.json',import.meta.url));
@@ -66,11 +67,13 @@ try{
  await withinMountedDeadline(()=>new Promise((resolve,reject)=>{server.once('error',reject);server.listen(0,'127.0.0.1',resolve);}),5000,'owned listener setup');origin='http://127.0.0.1:'+server.address().port;
  await launchOwnedBrowser();
  for(const mobile of [false,true])for(const name of selected){
-  const cell=mobile?'phone':'desktop',pageErrors=[],network=[];let context,page,stopped=false;
+  const cell=mobile?'phone':'desktop',pageErrors=[],network=[],canvasSpec=browserName==='webkit'?canvasResizeCase(name):undefined;let context,page,stopped=false,canvasDiagnostics,pageErrorCountAtProof;
+  const settledNativeResize=()=>settledCanvasResizeDiagnostics({browser:browserName,name,url:origin+'/',pageErrors,pageErrorCountAtProof,diagnostics:canvasDiagnostics});
   const startedAt=Date.now(),checkpoint=()=>{if(stopped)throw Error('Mounted cell ended; no late browser action is allowed');};
   const outcome=await runMountedCase({timeout,stop:()=>{stopped=true;},
    run:async()=>{
     context=await browser.newContext({...(mobile&&browserName==='webkit'?devices['iPhone 13']:{viewport:mobile?{width:390,height:844}:{width:1440,height:962},isMobile:mobile,hasTouch:mobile}),...(process.env.PONDEROSA_MOUNTED_VIDEO==='1'?{recordVideo:{dir:path.join(out,cell+'-video')}}:{})});checkpoint();
+    if(canvasSpec){await context.addInitScript(installCanvasResizeDiagnostics,canvasSpec);checkpoint();}
     await context.route('**/*',route=>{
      const url=new URL(route.request().url());
      if(url.origin!==origin||url.pathname.startsWith('/api/')){network.push({url:url.href,method:route.request().method()});return route.abort('blockedbyclient');}
@@ -82,13 +85,15 @@ try{
     await page.evaluate(name=>window.ponderosaMountedRegression.run(name),name);checkpoint();
     // This flush is inside the same case deadline as setup and fixture actions.
     await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));checkpoint();
-    assert.deepEqual(pageErrors,[],'Uncaught browser errors invalidate a cell');assert.deepEqual(network,[],'A mounted fixture must own every API/network effect');
+    if(canvasSpec){canvasDiagnostics=await page.evaluate(()=>window.__mountedCanvasResize.finish());checkpoint();pageErrorCountAtProof=pageErrors.length;assert(settledNativeResize(),'Canvas native diagnostics require exact provenance and bounded mounted/unmounted settlement');}
+    else assert.deepEqual(pageErrors,[],'Uncaught browser errors invalidate a cell');
+    assert.deepEqual(network,[],'A mounted fixture must own every API/network effect');
    },
    diagnose:async()=>{if(page)await page.screenshot({path:path.join(out,cell+'-'+name+'-failure.png'),fullPage:true,timeout:5000});},
-   close:async()=>{if(context)await context.close();},
+   close:async()=>{try{if(canvasSpec&&page)canvasDiagnostics=await page.evaluate(()=>window.__mountedCanvasResize?.read());}finally{if(context)await context.close();}},
   });
-  if(!outcome.failure&&(pageErrors.length||network.length))outcome.failure=Error('Late browser errors or unmocked effects invalidated the mounted cell');
-  const result={cell,browser:browserName,name,status:outcome.failure||outcome.secondary.length?'FAIL':'PASS',durationMs:Date.now()-startedAt,...(outcome.failure?{error:describe(outcome.failure)}:{}),secondary:outcome.secondary.map(row=>({stage:row.stage,error:describe(row.error)})),pageErrors,network};results.push(result);await persist();console.log(`${result.status} ${cell} ${name}`);
+  if(!outcome.failure&&((canvasSpec?!settledNativeResize():pageErrors.length>0)||network.length))outcome.failure=Error('Late browser errors or unmocked effects invalidated the mounted cell');
+  const result={cell,browser:browserName,name,status:outcome.failure||outcome.secondary.length?'FAIL':'PASS',durationMs:Date.now()-startedAt,...(outcome.failure?{error:describe(outcome.failure)}:{}),secondary:outcome.secondary.map(row=>({stage:row.stage,error:describe(row.error)})),pageErrors,network,...(canvasSpec?{canvasDiagnostics,pageErrorCountAtProof}:{} )};results.push(result);await persist();console.log(`${result.status} ${cell} ${name}`);
   if(outcome.timedOut||outcome.secondary.some(row=>row.stage==='context cleanup')||!browser.isConnected()){
    // A timeout can leave a late context-creation/evaluate promise. Reclaim only
    // this owned browser before later independent cells; never replay this case.

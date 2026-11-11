@@ -41,6 +41,7 @@ test('canonical question cards share the ordinary ChatSurface timeline, deduplic
  imports['./OutgoingMessage']={OutgoingMessageRow:({entries})=>React.createElement(React.Fragment,null,...entries.map(entry=>React.createElement(React.Fragment,{key:entry.id},entry.render(entry.createdAt))))};
  imports['../ConversationChromeContext']=ConversationChrome;
  imports['../AssistantIcon']=AssistantIcon;
+ imports['../decisions/ChatDecisionPanel']={ChatDecisionPanel:()=>null};
  vm.runInNewContext(ts.transpileModule(readFileSync(new URL('../../apps/web/src/components/chat/ChatPane.tsx',import.meta.url),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX}}).outputText,{exports,require:name=>imports[name]??require(name)});
  const created={...one,createdAt:'2026-10-23T12:00:00Z'},resolved={...created,status:'resolved'},outside={...created,id:'outside-page'};
  const render=(decision,pending)=>renderToStaticMarkup(React.createElement(exports.ChatPane,{messages:[],decisionEvents:[{kind:'decision',id:'creation-a',createdAt:decision.createdAt,decision}],pendingDecisions:pending}));

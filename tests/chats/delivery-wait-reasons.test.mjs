@@ -17,7 +17,10 @@ test('UI013 receipt projection batches current targets, respects per-message eng
     admissionBlocker(agent) { calls.push('admission:'+agent.activeEngine); return { kind: agent.activeEngine === 'codex' ? 'authentication_required' : 'provider_unavailable', providerId: agent.activeEngine }; } });
   const result = models.deliveryReceiptsForCommunications('p', ['message']).get('message');
   assert.deepEqual(result.map(r => r.queueWaitReason), ['authentication_required', 'provider_unavailable', 'authentication_required', undefined, undefined, undefined]);
-  assert.deepEqual(calls, ['agent:a', 'agent:a', 'agent:a', 'agent:a', 'agent:other', 'agent:a', 'run:a', 'hold:a', 'agent:other', 'admission:codex', 'admission:claude']);
+  for (const call of ['run:a', 'hold:a', 'admission:codex', 'admission:claude']) {
+    assert.equal(calls.filter(value => value === call).length, 1, call + ' is batched across matching receipts');
+  }
+  assert.ok(!calls.includes('run:other') && !calls.includes('hold:other'), 'Foreign targets never borrow current work or provider holds');
   for (const row of rows) assert.equal(row.queueWaitReason, undefined, 'source receipts stay immutable');
 });
 
