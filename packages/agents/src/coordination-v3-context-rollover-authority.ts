@@ -1,3 +1,4 @@
+import type { CoordinationV3ContextRecoveryAuthority } from "./coordination-v3-context-recovery-authority.js";
 import { CapabilityPolicyStore } from "./capability-policy-store.js";
 import { transitionUnsubmittedActivationSql } from "./coordination-v3-transition-unsubmitted.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -87,6 +88,7 @@ export class CoordinationV3ContextRolloverAuthority {
   constructor(
     private readonly sqlite: Database.Database,
     private readonly createActivation: (input: CreateActivationV3Input) => string,
+    private readonly recoveryAuthority: () => CoordinationV3ContextRecoveryAuthority,
   ) {}
 
   /** The original handoff Activation is retained as durable transition
@@ -326,6 +328,8 @@ export class CoordinationV3ContextRolloverAuthority {
     workingCopyTransition?: WorkingCopyTransition;
     /** Explicit idle recovery with no provider-held unfinished work. */
     canonicalOnlyRefresh?: { fencingToken: number };
+    /** Internal fallback: exact invoked recovery, not permission to replay its work. */
+    recoveryReconstruction?: { recoveryId:string };
     sourceRunId: string;
     compactionCutoffOrdinal: number; compactionCutoffEventId: string;
     recentTail: Array<{ communicationEventId: string; contentSha256: string }>;
@@ -334,7 +338,7 @@ export class CoordinationV3ContextRolloverAuthority {
   }): { rollover: ContextRolloverV3; created: boolean } {
     const now = input.now ?? new Date().toISOString();
     if (input.detectedOccupancy !== undefined && (!Number.isSafeInteger(input.detectedOccupancy) ||
-        input.detectedOccupancy < 0) || input.triggerKind !== "human" && !input.settingsTransition && input.detectedOccupancy === undefined) {
+        input.detectedOccupancy < 0) || input.triggerKind !== "human" && !input.settingsTransition && !input.recoveryReconstruction && input.detectedOccupancy === undefined) {
       throw new Error("context rollover requires valid measured occupancy or an explicit human refresh");
     }
     if (!Number.isSafeInteger(input.compactionCutoffOrdinal) || input.compactionCutoffOrdinal <= 0 ||
@@ -348,6 +352,16 @@ export class CoordinationV3ContextRolloverAuthority {
       throw new Error("context rollover requires a bounded unique content-hash-bound recent tail");
     }
     return this.sqlite.transaction(() => {
+      if(input.recoveryReconstruction) {
+        if(input.canonicalOnlyRefresh||input.settingsTransition||input.workingCopyTransition||input.triggerKind==='human'||input.detectedOccupancy!==undefined)
+          throw new Error('Reconstruction cannot impersonate a native measurement or another transition');
+        const r=this.recoveryAuthority().assertReconstruction(input.agentId,input.recoveryReconstruction.recoveryId);
+        if(r.projectId!==input.projectId||r.sourceRunId!==input.sourceRunId||r.scopeKey!==input.scopeKey||
+          r.providerSessionId!==input.oldProviderSessionId||r.providerSessionId!==input.providerSessionGeneration)
+          throw new Error('Reconstruction does not match its recovery source');
+        if(this.sqlite.prepare('SELECT 1 FROM context_rollovers WHERE agent_id=? AND provider_session_generation=? LIMIT 1').get(input.agentId,input.providerSessionGeneration))
+          throw new Error('An existing rollover already owns this provider generation');
+      }
       if(input.workingCopyTransition){
         const t=input.workingCopyTransition;
         if(input.triggerKind!=='human'||input.settingsTransition||input.canonicalOnlyRefresh||t.sourceRunId!==input.sourceRunId||t.oldSessionId!==input.oldProviderSessionId||
@@ -574,6 +588,7 @@ export class CoordinationV3ContextRolloverAuthority {
         }
       }
       const id = randomUUID();
+      if(input.recoveryReconstruction)this.recoveryAuthority().bindReconstruction(input.agentId,input.recoveryReconstruction.recoveryId,id);
       this.sqlite.prepare(`
         INSERT INTO context_rollovers (
           id, project_id, agent_id, state, old_provider_session_id,
@@ -604,7 +619,7 @@ export class CoordinationV3ContextRolloverAuthority {
         input.visibleResponseCommitted ? now : null,
         now, now,
       );
-      if (input.canonicalOnlyRefresh) {
+      if (input.canonicalOnlyRefresh || input.recoveryReconstruction) {
         this.sqlite.prepare(`UPDATE context_rollovers SET state='completed', completion_reason='no_continuation_required',
           terminal_at=? WHERE id=?`).run(now, id);
         return { rollover: this.get(id)!, created: true };

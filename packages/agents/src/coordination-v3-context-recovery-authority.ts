@@ -77,7 +77,7 @@ export class CoordinationV3ContextRecoveryAuthority {
       if(active.projectId!==boundary.projectId||active.scopeKey!==boundary.scopeKey||active.providerSessionId!==boundary.providerSessionId||
           active.sourceRunId!==boundary.sourceRunId||active.sourceFence!==boundary.sourceFence||active.toolContractHash!==boundary.toolContractHash)
         throw new ContextRecoveryConflictError("Maintenance boundary changed");
-      return {request:active.progress&&active.progress.phase!=="context_accepted"
+      return {request:active.progress&&!active.progress.reconstructionRolloverId&&active.progress.phase!=="context_accepted"
         ? this.advanceOperation(active.agentId,active.id,active.progress.phase,active.progress.phase,{automaticMaintenance:true}) : active,replayed:true};
     }
     return this.request({...boundary,idempotencyKey:`maintenance:${boundary.sourceRunId}:${boundary.sourceFence}`});
@@ -156,7 +156,11 @@ export class CoordinationV3ContextRecoveryAuthority {
         expected === "drained" && phase === "native_started" ||
         (expected === "native_started" || expected === "held" && progress.nativeInvoked) && phase === "context_accepted";
       if (!allowed) throw new ContextRecoveryConflictError("Invalid recovery transition");
-      this.assertSource(row);
+      if(progress.reconstructionRolloverId) {
+        if(phase!==expected||Object.keys(details).some(key=>!['maintenanceAttempts','nextMaintenanceAt','automaticMaintenance'].includes(key)))
+          throw new ContextRecoveryConflictError('Reserved reconstruction cannot mutate native recovery evidence');
+        this.assertReconstruction(agentId,id,progress.reconstructionRolloverId);
+      } else this.assertSource(row);
       if (phase === "context_accepted" && (!Number.isSafeInteger(details.usedTokens) || details.usedTokens! < 0 ||
           details.windowTokens !== undefined && (!Number.isSafeInteger(details.windowTokens) || details.windowTokens <= 0))) {
         throw new ContextRecoveryConflictError("Recovery acceptance requires fresh exact native occupancy");
@@ -179,6 +183,7 @@ export class CoordinationV3ContextRecoveryAuthority {
       const row=this.sqlite.prepare("SELECT * FROM provider_context_recovery_requests WHERE id=? AND agent_id=? AND state='unsupported_fenced'").get(id,agentId) as Row|undefined;
       const progress=row?.progress_json?JSON.parse(row.progress_json) as ProviderContextRecoveryProgress:undefined;
       if(!row||!progress||!['native_started','context_accepted','held'].includes(progress.phase)||progress.phase==='held'&&!progress.nativeInvoked)return false;
+      if(progress.reconstructionRolloverId)return false;
       if(progress.phase==='context_accepted'&&!verifyAccepted)return false;
       this.assertSource(row);
       if(this.sqlite.prepare('SELECT 1 FROM provider_process_authority WHERE agent_id=? LIMIT 1').get(agentId))return false;
@@ -209,6 +214,73 @@ export class CoordinationV3ContextRecoveryAuthority {
       .get(row.source_run_id,row.agent_id,row.provider_session_id,row.tool_contract_hash,row.project_id,row.scope_key,row.source_fence,row.provider_session_id)) {
       throw new ContextRecoveryConflictError("Recovery source authority changed");
     }
+  }
+  /** Only the existing invoked operation can reserve a replacement generation.
+   * Its source work stays fenced, including after this hold becomes terminal. */
+  assertReconstruction(agentId:string,id:string,rolloverId?:string):ProviderContextRecoveryRequest {
+    const row=this.sqlite.prepare("SELECT * FROM provider_context_recovery_requests WHERE agent_id=? AND id=? AND state='unsupported_fenced'").get(agentId,id) as Row|undefined;
+    const recovery=row&&project(row),progress=recovery?.progress;
+    if(!row||!recovery||!progress?.nativeInvoked||!['held','native_started'].includes(progress.phase)||
+        progress.usedTokens!==undefined||progress.contextUsageEventSequence!==undefined||
+        (progress.reconstructionRolloverId??null)!==(rolloverId??null))
+      throw new ContextRecoveryConflictError('Canonical reconstruction requires its exact unmeasured invoked recovery');
+    if(!this.runtimeScopeAuthority.recipientAuthorizedForActivationScope(row.project_id,agentId,row.scope_key))
+      throw new ContextRecoveryConflictError('Recovery scope access changed');
+    if(!rolloverId)this.assertSource(row);
+    else {
+      // Retirement clears the accepted snapshot before asynchronous teardown.
+      // Only this durable old-generation reservation can bridge that gap.
+      const exact=this.sqlite.prepare(`SELECT 1 FROM context_rollovers c JOIN agents a ON a.id=c.agent_id
+        JOIN scheduler_runs r ON r.id=c.source_run_id AND r.agent_id=a.id
+        WHERE c.id=? AND c.agent_id=? AND c.project_id=? AND c.source_run_id=? AND c.scope_key=?
+          AND c.old_provider_session_id=? AND c.provider_session_generation=?
+          AND c.state='completed' AND c.completion_reason='no_continuation_required'
+          AND c.handoff_event_id IS NULL AND c.replacement_run_id IS NULL
+          AND a.project_id=c.project_id AND a.deleted_at IS NULL
+          AND ((a.active_session_id=? AND a.active_session_contract_hash=?) OR (a.active_session_id IS NULL AND a.active_session_contract_hash IS NULL))
+          AND r.project_id=c.project_id AND r.scope_key=c.scope_key AND r.provider_session_id=c.old_provider_session_id
+          AND r.fencing_token=? AND ${uncertainContextRecoverySourceSql('r')}
+          AND NOT EXISTS(SELECT 1 FROM scheduler_runs newer WHERE newer.agent_id=a.id
+            AND (newer.status IN ('leased','running') OR newer.fencing_token>r.fencing_token AND newer.prompt_injection_state<>'not_injected'))`)
+        .get(rolloverId,agentId,row.project_id,row.source_run_id,row.scope_key,row.provider_session_id,row.provider_session_id,
+          row.provider_session_id,row.tool_contract_hash,row.source_fence);
+      if(!exact)throw new ContextRecoveryConflictError('Canonical reconstruction generation or source changed');
+    }
+    if(this.sqlite.prepare(`SELECT 1 FROM agent_run_pauses WHERE agent_id=? AND state IN ('paused','resume_requested')
+      UNION ALL SELECT 1 FROM context_rollovers WHERE agent_id=? AND state IN ('requested','handoff_committed','session_retiring','continuation_ready') LIMIT 1`).get(agentId,agentId))
+      throw new ContextRecoveryConflictError('Canonical reconstruction conflicts with another context owner');
+    // Exact evidence always wins before retirement. Ambiguous evidence is held.
+    if(!rolloverId&&this.sqlite.prepare(`SELECT 1 FROM events WHERE agent_id=? AND type='context_usage'
+      AND json_extract(payload_json,'$.providerSessionId')=? AND json_extract(payload_json,'$.providerSessionGeneration')=?
+      AND json_extract(payload_json,'$.providerCommand.invocationId')=? LIMIT 1`).get(agentId,row.provider_session_id,row.provider_session_id,id))
+      throw new ContextRecoveryConflictError('Recorded recovery evidence must be reconciled first');
+    return recovery;
+  }
+  /** Called inside the rollover transaction, before any session is retired. */
+  bindReconstruction(agentId:string,id:string,rolloverId:string):void {
+    const recovery=this.assertReconstruction(agentId,id);
+    this.sqlite.prepare('UPDATE provider_context_recovery_requests SET progress_json=? WHERE id=?')
+      .run(JSON.stringify({...recovery.progress,reconstructionRolloverId:rolloverId,updatedAt:new Date().toISOString()}),id);
+  }
+  completeReconstruction(agentId:string,id:string,rolloverId:string):void {
+    this.sqlite.transaction(()=>{
+      const recovery=this.assertReconstruction(agentId,id,rolloverId);
+      if(this.sqlite.prepare(`SELECT 1 FROM agents WHERE id=? AND active_session_id IS NOT NULL
+        UNION ALL SELECT 1 FROM provider_process_authority WHERE agent_id=? LIMIT 1`).get(agentId,agentId))
+        throw new ContextRecoveryConflictError('Old provider generation has not drained');
+      const now=new Date().toISOString();
+      this.sqlite.prepare("UPDATE provider_context_recovery_requests SET state='dismissed',dismissed_at=?,progress_json=? WHERE id=? AND state='unsupported_fenced'")
+        .run(now,JSON.stringify({...recovery.progress,phase:'canonical_reconstructed',updatedAt:now,nextMaintenanceAt:undefined}),id);
+    })();
+  }
+  /** Provenance for future independent input, never executable old work. */
+  reconstructedBoundary(agentId:string,projectId:string,scopeKey:string):ProviderContextRecoveryRequest|undefined {
+    const row=this.sqlite.prepare(`SELECT * FROM provider_context_recovery_requests WHERE agent_id=? AND project_id=? AND scope_key=?
+      AND state='dismissed' AND json_extract(progress_json,'$.phase')='canonical_reconstructed'
+      AND NOT EXISTS(SELECT 1 FROM scheduler_runs newer JOIN scheduler_runs source ON source.id=provider_context_recovery_requests.source_run_id
+        WHERE newer.agent_id=provider_context_recovery_requests.agent_id AND newer.fencing_token>source.fencing_token AND newer.prompt_injection_state<>'not_injected')
+      ORDER BY dismissed_at DESC LIMIT 1`).get(agentId,projectId,scopeKey) as Row|undefined;
+    return row&&project(row);
   }
   dismiss(agentId: string,id: string): ProviderContextRecoveryRequest {
     return this.sqlite.transaction(() => {

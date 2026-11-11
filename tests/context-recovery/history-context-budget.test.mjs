@@ -278,18 +278,16 @@ test('continuation budgets charge proven completed-turn occupancy and reject for
   const failedInput=f.store.getProviderInput(failed.id,true);assert.ok(failedInput);
   assert.equal(f.turns.length,turnsBefore+1,'an injected context failure never triggers an automatic fresh replay');
   const old=session;await until(()=>!old.isAlive(),'failed provider root drained');
-  await f.send(agent.id,'Separate later task after explicit context review.');
-  const queued=await until(()=>f.store.sqlite.prepare(`SELECT a.id,a.payload_json FROM agent_activations a JOIN activation_sources h ON h.activation_id=a.id
-    WHERE a.agent_id=? AND a.state='pending' AND h.source_kind='settings_transition_reservation_wait'`).get(agent.id),'later input held without automatic replay');
-  assert.equal(f.turns.length,turnsBefore+1);assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(queued.id).n,0);
-  const status=f.ok(await f.api('GET',`/api/agents/${agent.id}/context-recoveries`)),boundary=status.boundary;
-  assert.equal(boundary.sourceRunId,failed.id);assert.equal(boundary.providerSessionId,generation);
-  f.commandResults.set(agent.id,({sessionId})=>({outcome:'completed',contextUsage:{usedTokens:1000,windowTokens:200000,providerSessionGeneration:sessionId}}));
-  const repaired=await f.api('POST',`/api/agents/${agent.id}/context-recoveries`,{idempotencyKey:'budget-context-recovery',expectedSessionId:boundary.providerSessionId,expectedSourceRunId:failed.id,expectedToolContractHash:boundary.toolContractHash,acknowledgeUnknownEffects:true});
-  assert.equal(repaired.status,200,JSON.stringify(repaired.body));assert.equal(repaired.body.request.progress.phase,'context_accepted');assert.equal(f.turns.length,turnsBefore+1);
-  f.ok(await f.api('POST',`/api/agents/${agent.id}/context-recoveries/${repaired.body.request.id}/dismiss`,{acknowledgeStillBlocked:true}));
-  await until(()=>f.turns.length===turnsBefore+2,'same queued independent input after recovery');
-  session=f.sessions.get(agent.id);assert.equal(session.engineAgentId,generation);
+  const independent=await f.send(agent.id,'Separate later task after automatic canonical reconstruction.');
+  const queued=f.store.sqlite.prepare("SELECT id,payload_json FROM agent_activations WHERE agent_id=? AND kind='human_message' AND json_extract(payload_json,'$.communication.eventId')=?").get(agent.id,independent.communicationEventId);
+  assert.ok(queued);
+  const reconstructed=await until(()=>f.store.sqlite.prepare("SELECT progress_json FROM provider_context_recovery_requests WHERE agent_id=? AND source_run_id=? AND state='dismissed'").get(agent.id,failed.id),'automatic unmeasured recovery settles');
+  const progress=JSON.parse(reconstructed.progress_json);assert.equal(progress.phase,'canonical_reconstructed');
+  assert.equal(progress.usedTokens,undefined);assert.equal(progress.contextUsageEventSequence,undefined);
+  await until(()=>f.turns.length===turnsBefore+2,'only the independent input runs after reconstruction');
+  session=f.sessions.get(agent.id);assert.notEqual(session.engineAgentId,generation);
+  const rebuilt=budget(accepted(f.store,agent.id));assert.equal(rebuilt.occupancyBasis,'fresh_session');
+  assert.equal(rebuilt.windowTokens,undefined,'Old or foreign capacity is not fresh generation evidence');
   assert.equal(f.store.sqlite.prepare('SELECT count(*) n FROM scheduler_run_activations WHERE activation_id=?').get(queued.id).n,1);
   assert.equal(f.store.sqlite.prepare('SELECT payload_json FROM agent_activations WHERE id=?').get(queued.id).payload_json,queued.payload_json);
   assert.deepEqual(f.store.getProviderInput(failed.id,true),failedInput);assert.deepEqual(f.store.sqlite.prepare('SELECT * FROM scheduler_runs WHERE id=?').get(failed.id),failed);

@@ -274,6 +274,7 @@ export class CoordinationV3Store {
     this.contextRolloverAuthority = new CoordinationV3ContextRolloverAuthority(
       sqlite,
       input => this.createActivation(input),
+      () => this.contextRecovery,
     );
     this.support = new CoordinationV3StoreSupport(sqlite);
     this.requestRecoveryAuthority = new CoordinationV3RequestRecoveryAuthority(sqlite);

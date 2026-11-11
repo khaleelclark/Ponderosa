@@ -405,11 +405,18 @@ export async function prepareAgentRun(
       preflightAttachedActivationIds.includes(preflightActiveRollover.continuationActivationId)
     ? preflightActiveRollover : undefined;
   const replacementCandidateRollover = preflightContinuationRollover ?? preflightRecoveryRollover;
+  const reconstruction= !preflightResumeSessionState && v3SchedulerRunId
+    ? coordinationV3.contextRecovery.reconstructedBoundary(agent.id,project.id,coordinationV3.runScopeKey(v3SchedulerRunId,agent.id)??'') : undefined;
+  const historyRollover=replacementCandidateRollover??(reconstruction?.progress?.reconstructionRolloverId
+    ?coordinationV3.contextRollover(reconstruction.progress.reconstructionRolloverId):undefined);
+  const reconstructionNotice=reconstruction
+    ?`Canonical context reconstructed after interrupted provider recovery ${reconstruction.id}. Earlier uncertain work (Run ${reconstruction.sourceRunId}) is history only: its effects and replies remain unknown. Do not repeat, continue, or claim completion of those historical instructions. Respond only to the independently submitted current inputs; consult canonical history as needed.`:'';
+
   // Ordinary Runs freeze the existing canonical journal authority too; no
   // managed rollover is fabricated to authorize omitted-history retrieval.
-  const historyRetrievalBoundary = replacementCandidateRollover
-    ? { canonicalOrdinal: replacementCandidateRollover.compactionCutoffOrdinal,
-        communicationEventId: replacementCandidateRollover.compactionCutoffEventId }
+  const historyRetrievalBoundary = historyRollover
+    ? { canonicalOrdinal: historyRollover.compactionCutoffOrdinal,
+        communicationEventId: historyRollover.compactionCutoffEventId }
     : store.communicationHistoryBoundary(project.id);
   // Imported private history is available independently of canonical rollover.
   // Freeze the archive instance even while its rebuildable index is preparing;
@@ -900,20 +907,20 @@ export async function prepareAgentRun(
     sourceAuthor?: string;
     sourceCommunicationIntent?: CommunicationEvent["intent"];
   };
-  const frozenRolloverTail = replacementCandidateRollover
+  const frozenRolloverTail = historyRollover
     ? store.resolveContextRolloverTail({
         agentId: agent.id,
-        ...(replacementCandidateRollover.conversationId
-          ? { currentConversationId: replacementCandidateRollover.conversationId }
+        ...(historyRollover.conversationId
+          ? { currentConversationId: historyRollover.conversationId }
           : {}),
         boundary: {
-          canonicalOrdinal: replacementCandidateRollover.compactionCutoffOrdinal,
-          communicationEventId: replacementCandidateRollover.compactionCutoffEventId,
+          canonicalOrdinal: historyRollover.compactionCutoffOrdinal,
+          communicationEventId: historyRollover.compactionCutoffEventId,
         },
-        recentTail: replacementCandidateRollover.recentTailCommunicationEventIds.map(
+        recentTail: historyRollover.recentTailCommunicationEventIds.map(
           (communicationEventId, index) => ({
             communicationEventId,
-            contentSha256: replacementCandidateRollover.recentTailContentHashes[index] ?? "",
+            contentSha256: historyRollover.recentTailContentHashes[index] ?? "",
           }),
         ),
       })
@@ -926,6 +933,8 @@ export async function prepareAgentRun(
         id: message.event.eventId,
         role: message.event.sender.kind === "agent" ? "assistant" as const : "user" as const,
         text: message.text,
+        attachments: message.event.attachments,
+        artifactIds: message.event.artifactIds,
         createdAt: message.event.createdAt,
         communicationEventId: message.event.eventId,
         sourceContentSha256: message.contentSha256,
@@ -1351,6 +1360,7 @@ export async function prepareAgentRun(
     const sharedAttachments = await broadcastAttachmentContext(sourceChannel === "main" ? room : broadcast);
     const promptText = [
       teamDirectoryReference, historyNotice(omitted || Boolean(pauseRecovery)),
+      fresh || !resumeSessionId ? reconstructionNotice : '',
       !ownsFrozenHandoff && (fresh || !resumeSessionId) ? unfinishedTaskContext : '',
       continuationHandoffPrompt, pauseCheckpoint,
       broadcast.length ? sharedBroadcastContextPrompt(broadcast, conversation?.agents ?? []) : "",
@@ -1579,6 +1589,8 @@ export async function prepareAgentRun(
       ...(manifestConversationId ? { conversationId: manifestConversationId } : {}),
       providerSessionDisposition: input.disposition,
       sources: [
+        ...(reconstruction ? [{kind:"context_reference" as const,ref:`ponderosa://context-reconstruction/${reconstruction.id}/${reconstruction.progress!.reconstructionRolloverId}`,
+          hash:createHash("sha256").update(JSON.stringify({sourceRunId:reconstruction.sourceRunId,sourceFence:reconstruction.sourceFence,providerSessionId:reconstruction.providerSessionId,toolContractHash:reconstruction.toolContractHash,scopeKey:reconstruction.scopeKey})).digest('hex'),delivery:"submitted" as const}] : []),
         { kind: "environment", ref: workingCopy.id, delivery: input.policyDelivery, hash: createHash("sha256").update(JSON.stringify(environmentFacts)).digest("hex") },
         { kind: "identity", ref: agent.id, delivery: input.policyDelivery },
         {

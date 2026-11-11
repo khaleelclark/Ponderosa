@@ -1,11 +1,11 @@
-/** Managed compaction restores measurable context; it never resolves unknown prior effects. */
+/** Recovery restores usable context; it never resolves unknown prior effects. */
 export type ProviderContextRecoverySupport = {
   status: "unsupported";
   missingOperation: "structured_retained_session_compaction";
 } | { status: "managed_compaction"; crashReconciliation: "hold_without_native_query" };
 
 export interface ProviderContextRecoveryProgress {
-  phase: "reserved" | "drained" | "native_started" | "context_accepted" | "held";
+  phase: "reserved" | "drained" | "native_started" | "context_accepted" | "held" | "canonical_reconstructed";
   updatedAt: string;
   usedTokens?: number;
   windowTokens?: number;
@@ -19,6 +19,8 @@ export interface ProviderContextRecoveryProgress {
   nextMaintenanceAt?: string;
   automaticMaintenance?: true;
   contextUsageEventSequence?: number;
+  /** Frozen canonical reconstruction custody; this is not native usage evidence. */
+  reconstructionRolloverId?: string;
 }
 export const UNSUPPORTED_PROVIDER_CONTEXT_RECOVERY: Readonly<ProviderContextRecoverySupport> = Object.freeze({
   status: "unsupported",

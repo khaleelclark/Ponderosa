@@ -222,7 +222,9 @@ const recoveryContext:Parameters<typeof registerContextRecoveryRoutes>[1]={store
   changed:recoveryChanged,
   support:engineId=>engines.get(engineId)?.adapter.contextRecoverySupport,
   blocker:agentId=>{
-    const agent=store.getAgent(agentId),packet=store.acceptedProviderSessionInput(agentId,true);
+    const agent=store.getAgent(agentId),activeRecovery=coordinationV3.contextRecovery.active(agentId);
+    const packet=activeRecovery?.progress?.reconstructionRolloverId
+      ?store.getProviderInput(activeRecovery.sourceRunId,true):store.acceptedProviderSessionInput(agentId,true);
     const contract=packet?.sourceManifest.schemaVersion===3?packet.sourceManifest.normalRuntimeContract:undefined;
     if(!agent||!contract||packet?.exactSystemPrompt===undefined||contract.engineId!==agent.activeEngine||
         contract.workingCopyId!==agent.workingCopy.id||contract.cwd!==agent.workingCopy.rootPath||agent.workingCopy.state!=="ready")
@@ -441,6 +443,64 @@ const recoveryContext:Parameters<typeof registerContextRecoveryRoutes>[1]={store
 };
 registerContextRecoveryRoutes(app,recoveryContext);
 
+// A bounded native attempt without usable telemetry cannot repair itself by
+// polling. Reserve the exact canonical boundary once, then retire its generation.
+const reconstructRecovery=async(recovery:import("@ponderosa/core").ProviderContextRecoveryRequest)=>{
+  const agentId=recovery.agentId;
+  if(recoveryContext.unavailable(agentId,recovery.projectId)||activeContextRecoveries.has(agentId))return;
+  const release=workingCopies.beginUse(agentId);
+  const operation:ContextRecoveryOperation={id:recovery.id,controller:new AbortController(),phase:"draining"};
+  activeContextRecoveries.set(agentId,operation);activeAgentProviderCommands.add(agentId);
+  const assertCurrent=()=>{
+    const current=coordinationV3.contextRecovery.active(agentId),agent=store.getAgent(agentId);
+    if(!agent||current?.id!==recovery.id||isClosed()||operation.stopped||deletingAgentIds.has(agentId)||deletingProjectIds.has(recovery.projectId)||
+      activeRuns.has(agentId)||coordinationV3.activeAgentRun(agentId)||
+      workspace.listDecisions({projectId:recovery.projectId,agentId,status:"pending"}).length||recoveryContext.blocker?.(agentId))
+      throw new ContextRecoveryConflictError('Canonical recovery access or active owner changed');
+    coordinationV3.contextRecovery.assertReconstruction(agentId,recovery.id,current.progress?.reconstructionRolloverId);
+    return {agent,current};
+  };
+  try {
+    let {agent,current}=assertCurrent();
+    const project=store.getChatContext(agent.conversationId);
+    if(!project||project.id!==recovery.projectId)throw new ContextRecoveryConflictError('Recovery project changed');
+    const copy=await workingCopies.resolve(agent,project);
+    workingCopies.assertRunAdmission(agentId,copy);
+    ({agent,current}=assertCurrent());
+    if(copy.id!==agent.workingCopy.id||copy.rootPath!==agent.workingCopy.rootPath)throw new ContextRecoveryConflictError('Recovery working folder changed');
+    let rolloverId=current.progress?.reconstructionRolloverId;
+    if(!rolloverId){
+      const ids=store.acceptedProviderSessionCommunicationEventIds(agentId);
+      if(!ids)throw new ContextRecoveryConflictError('Exact canonical recovery history is unavailable');
+      const conversationId=recovery.scopeKey.startsWith('conversation:')?recovery.scopeKey.slice('conversation:'.length):undefined;
+      const pressure=evaluateContextRolloverPressure({usedTokens:workspace.getPreferences().contextRolloverTokens},workspace.getPreferences());
+      const boundary=store.bindContextRolloverBoundary({agentId,...(conversationId?{currentConversationId:conversationId}:{}),
+        submittedCommunicationEventIds:ids,maxUtf8Bytes:Math.min(pressure.lowWaterMark,MAX_CONTEXT_ROLLOVER_REPLACEMENT_PROVIDER_INPUT_UTF8_BYTES)});
+      // The rollover and backlink commit together; never refreeze this tail on restart.
+      rolloverId=coordinationV3.requestContextRollover({projectId:recovery.projectId,agentId,
+        oldProviderSessionId:recovery.providerSessionId,providerSessionGeneration:recovery.providerSessionId,
+        recoveryReconstruction:{recoveryId:recovery.id},threshold:pressure.threshold,lowWaterMark:pressure.lowWaterMark,
+        sourceRunId:recovery.sourceRunId,scopeKey:recovery.scopeKey,...(conversationId?{conversationId}:{}),
+        sourceActivationIds:coordinationV3.activationIdsAttachedToRun(recovery.sourceRunId,agentId),
+        compactionCutoffOrdinal:boundary.canonicalOrdinal,compactionCutoffEventId:boundary.communicationEventId,recentTail:boundary.recentTail}).rollover.id;
+    }
+    if(!await retireCompletedContextRolloverSession({agentId,projectId:recovery.projectId,rolloverId,providerSessionGeneration:recovery.providerSessionId}))
+      throw new ContextRecoveryConflictError('Old recovery runtime cleanup remains pending');
+    // Restart-recovered children may have no in-memory session wrapper.
+    await providerProcessAuthority.terminateAgents(new Set([agentId]),'canonical recovery generation retirement');
+    store.sqlite.transaction(()=>{
+      assertCurrent();
+      if(providerProcessAuthority.count({agentId})!==0||persistentRuntimeForTermination(agentId))
+        throw new ContextRecoveryConflictError('Old recovery runtime or children remain');
+      coordinationV3.contextRecovery.completeReconstruction(agentId,recovery.id,rolloverId!);
+    })();
+    recoveryChanged(agentId);notifyScheduler();
+  } finally {
+    if(activeContextRecoveries.get(agentId)===operation)activeContextRecoveries.delete(agentId);
+    activeAgentProviderCommands.delete(agentId);release();
+  }
+};
+
 // Waiting behind another tracked maintenance operation is routine recovery,
 // provided the same canonical input/session remains eligible and no real
 // decision, access failure or exhausted pre-submission policy requires attention.
@@ -451,7 +511,7 @@ context.contextRecoveryMaintenance.recovering=agentId=>{
       engines.get(agent.activeEngine)?.adapter.contextRecoverySupport?.status!=="managed_compaction"||
       recoveryContext.blocker?.(agentId)||workspace.listDecisions({projectId:agent.projectId,agentId,status:"pending"}).length||
       !coordinationV3.contextRecovery.hasPendingMaintenanceInput({...boundary,agentId}))return false;
-  return recovery?.progress?.phase==='context_accepted'||
+  return recovery?.progress?.phase==='context_accepted'||Boolean(recovery?.progress?.nativeInvoked && (recovery.progress.maintenanceAttempts??0)<12)||
     !recovery?.progress?.nativeInvoked&&(recovery?.progress?.maintenanceAttempts??0)<3;
 };
 
@@ -474,20 +534,20 @@ context.contextRecoveryMaintenance.reconcile=async()=>{
     const prior=coordinationV3.contextRecovery.active(agentId);
     if(prior?.progress?.nextMaintenanceAt&&Date.parse(prior.progress.nextMaintenanceAt)>Date.now())continue;
     const pendingInput=coordinationV3.contextRecovery.hasPendingMaintenanceInput({...boundary,agentId});
-    if(!pendingInput&&!prior?.progress?.automaticMaintenance&&providerProcessAuthority.count({agentId})===0)continue;
+    if(!pendingInput&&!prior?.progress?.automaticMaintenance&&!prior?.progress?.reconstructionRolloverId&&providerProcessAuthority.count({agentId})===0)continue;
     if(!pendingInput&&!prior?.progress?.nativeInvoked)continue;
     if(recoveryContext.blocker?.(agentId)||workspace.listDecisions({projectId:agent.projectId,agentId,status:"pending"}).length)continue;
     if(!prior&&!pendingInput)continue;
     if(!prior?.progress?.nativeInvoked&&engines.get(agent.activeEngine)?.adapter.contextRecoverySupport?.status!=="managed_compaction")continue;
     let recovery=prior,invoked=false;
-      if(coordinationV3.contextRecovery.hasPendingMaintenanceInput({...boundary,agentId}))
+      if(!recovery?.progress?.reconstructionRolloverId&&coordinationV3.contextRecovery.hasPendingMaintenanceInput({...boundary,agentId}))
         recovery=coordinationV3.contextRecovery.requestMaintenance({...boundary,agentId}).request;
       if(!recovery)continue;
       if(recovery.state==='dismissed')continue;
       const progress=recovery.progress;
       if(progress?.nativeInvoked) {
-        // Missing provider evidence authorizes reads and drain only, never another compact.
-        if(providerProcessAuthority.count({agentId})>0)await recoveryContext.stopRecovery?.(agentId,recovery.id);
+        // Prefer exact recorded evidence; missing telemetry never authorizes another compact.
+        if(!progress.reconstructionRolloverId&&providerProcessAuthority.count({agentId})>0)await recoveryContext.stopRecovery?.(agentId,recovery.id);
         coordinationV3.contextRecovery.reconcileRecordedCompletion(agentId,recovery.id);
         const measured=coordinationV3.contextRecovery.active(agentId)?.progress;
         if(measured?.phase!=="context_accepted"&&measured?.nativeOutcome==='completed'&&measured.usedTokens!==undefined&&
@@ -495,6 +555,8 @@ context.contextRecoveryMaintenance.reconcile=async()=>{
           const event=store.recordProviderRecoveryContextUsage(agentId,recovery.id,{usedTokens:measured.usedTokens,...(measured.windowTokens!==undefined?{windowTokens:measured.windowTokens}:{})});
           if(event){publish(agentId,event);coordinationV3.contextRecovery.reconcileRecordedCompletion(agentId,recovery.id);}
         }
+        const unmeasured=coordinationV3.contextRecovery.active(agentId);
+        if(unmeasured?.progress?.nativeInvoked&&unmeasured.progress.phase!=='context_accepted')await reconstructRecovery(unmeasured);
       } else if(coordinationV3.contextRecovery.hasPendingMaintenanceInput(recovery)&&
           engines.get(agent.activeEngine)?.adapter.contextRecoverySupport?.status==='managed_compaction'&&
           coordinationV3.activeRunCount()<workspace.getPreferences().maxConcurrentAgentRuns) {

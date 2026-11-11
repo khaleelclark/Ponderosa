@@ -249,6 +249,13 @@ export class AgentEventSessionAuthority {
       FROM continuation_handoffs handoff
       JOIN runs source_run ON source_run.id = handoff.source_execution_id
       WHERE handoff.agent_id = ? AND handoff.consumed_at IS NULL
+        -- A canonical reconstruction retires this entire uncertain generation.
+        -- Its model-authored continuation is historical, including on later turns.
+        AND NOT EXISTS (SELECT 1 FROM provider_context_recovery_requests recovery
+          JOIN scheduler_runs original ON original.id=handoff.source_execution_id
+          WHERE recovery.agent_id=handoff.agent_id AND recovery.provider_session_id=original.provider_session_id
+            AND json_extract(recovery.progress_json,'$.reconstructionRolloverId') IS NOT NULL)
+
         AND (
           source_run.status = 'completed'
           OR EXISTS (
