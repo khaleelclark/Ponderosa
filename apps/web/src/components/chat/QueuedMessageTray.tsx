@@ -10,12 +10,11 @@ import { afterPaintBackgroundTask } from "../../afterPaintBackgroundTask";
 import { capturedSubmissionRunning, readCapturedSubmissions, submissionOutboxEvent } from "./submissionOutbox";
 import { composerSurfaceWidth } from "./Composer.styles";
 
-function QueuedMessageTrayComponent({ messages, scope, attachmentNamesForMessage, agentNameForId, busy, onSteer, onEdit, onDelete, queueReviewHref }: {
+function QueuedMessageTrayComponent({ messages, scope, attachmentNamesForMessage, busy, onSteer, onEdit, onDelete, queueReviewHref }: {
   messages: QueuedConversationMessageDto[];
   scope?: string;
   queueReviewHref?: string;
   attachmentNamesForMessage?(message: QueuedConversationMessageDto): string[] | undefined;
-  agentNameForId?(agentId: string): string;
   busy?: boolean;
   onSteer(message: QueuedConversationMessageDto): Promise<unknown> | unknown;
   onEdit(message: QueuedConversationMessageDto, text: string): Promise<unknown> | unknown;
@@ -106,7 +105,6 @@ function QueuedMessageTrayComponent({ messages, scope, attachmentNamesForMessage
       "& [data-queue-row] + [data-queue-row]": { borderTop: 1, borderColor: alpha(theme.palette.divider, 0.4) },
       "& .queued-message-position": { ...theme.typography.caption, m: 0, color: "text.secondary", fontVariantNumeric: "tabular-nums" },
       "& .queued-message-text": { ...theme.typography.body2, m: 0, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
-      "& .queued-message-agent": { ...theme.typography.caption, m: 0, color: "text.secondary", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: { xs: "none", md: "block" }, maxWidth: 160 },
       "@media (pointer: coarse)": { "& .MuiIconButton-root, & .MuiButton-root": { minHeight: 44, minWidth: 44 }, "& [data-queue-row]": { minHeight: 44 } },
       overflowY: "auto",
       borderRadius: "14px 14px 8px 8px",
@@ -158,16 +156,13 @@ function QueuedMessageTrayComponent({ messages, scope, attachmentNamesForMessage
             }}
           /> : <Tooltip title={message.text}><p tabIndex={0} className="MuiTypography-root MuiTypography-body2 MuiTypography-noWrap queued-message-text">{message.text}</p></Tooltip>}
           {!editing && attachmentNames.length ? <Tooltip title={attachmentNames.join(", ")}><Typography tabIndex={0} variant="caption" aria-label={`${attachmentNames.length} Attachments`}>+{attachmentNames.length}</Typography></Tooltip> : null}
-          {!editing && agentNameForId ? <span className="MuiTypography-root MuiTypography-caption MuiTypography-noWrap queued-message-agent">
-            {agentNameForId(message.targetAgentId)}
-          </span> : null}
           {editing ? <>
             <Button size="small" disabled={busy || !editingText.trim()} onClick={() => run(() => onEdit(message, editingText.trim()), () => setEditingId(undefined))}>Save</Button>
             <Button size="small" color="inherit" disabled={busy} onClick={() => setEditingId(undefined)}>Cancel</Button>
           </> : <>
-            <Tooltip title="Steer Now"><span><IconButton size="small" disabled={busy} aria-label={`Steer Queued Message ${message.position ?? "Pending"}`} onClick={() => run(() => onSteer(message))}><SubdirectoryArrowRightIcon fontSize="small" /></IconButton></span></Tooltip>
-            <Tooltip title="Edit Queued Message"><span><IconButton size="small" disabled={busy} aria-label={`Edit Queued Message ${message.position ?? "Pending"}`} onClick={() => { setEditingId(message.deliveryId); setEditingText(message.text); }}><EditOutlinedIcon fontSize="small" /></IconButton></span></Tooltip>
-            <Tooltip title="Delete Queued Message"><span><IconButton size="small" disabled={busy} aria-label={`Delete Queued Message ${message.position ?? "Pending"}`} onClick={() => run(() => onDelete(message))}><DeleteOutlineIcon fontSize="small" /></IconButton></span></Tooltip>
+            <Tooltip disableInteractive title="Steer Now"><span><Button size="small" disabled={busy} aria-label={`Steer Queued Message ${message.position ?? "Pending"}`} startIcon={<SubdirectoryArrowRightIcon fontSize="small" />} sx={{ flexShrink: 0 }} onClick={() => run(() => onSteer(message))}>Steer</Button></span></Tooltip>
+            <Tooltip disableInteractive title="Edit Queued Message"><span><IconButton size="small" disabled={busy} aria-label={`Edit Queued Message ${message.position ?? "Pending"}`} onClick={() => { setEditingId(message.deliveryId); setEditingText(message.text); }}><EditOutlinedIcon fontSize="small" /></IconButton></span></Tooltip>
+            <Tooltip disableInteractive title="Delete Queued Message"><span><IconButton size="small" disabled={busy} aria-label={`Delete Queued Message ${message.position ?? "Pending"}`} onClick={() => run(() => onDelete(message))}><DeleteOutlineIcon fontSize="small" /></IconButton></span></Tooltip>
           </>}
         </div>;
       })}

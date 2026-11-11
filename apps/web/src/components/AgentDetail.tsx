@@ -82,6 +82,7 @@ import { AgentDetailComposer } from "./AgentDetail.composer";
 import { AgentDetailPanels } from "./AgentDetail.panels";
 import { OutgoingMessageProvider } from "./chat/OutgoingMessage";
 import { reconcileQueuedMessages } from "./ConversationView.helpers";
+import { messageHiddenByQueue } from "./messageDeliveryReceipts";
 import { useAgentDetailAdministration } from "./useAgentDetailAdministration";
 import type { AgentDetailProps } from "./AgentDetail.types";
 import { AgentDetailDialogs } from "./AgentDetail.dialogs";
@@ -469,12 +470,7 @@ export function AgentDetail({
       visibleQueuedMessages.map(message => message.messageId),
     );
     return (detail?.messages ?? []).filter(
-      message =>
-        !queuedCommunicationIds.has(message.id) &&
-        !(
-          message.communicationEventId &&
-          queuedCommunicationIds.has(message.communicationEventId)
-        ),
+      message => !messageHiddenByQueue(message, queuedCommunicationIds),
     );
   }, [detail?.messages, visibleQueuedMessages]);
 

@@ -8,7 +8,8 @@ import '../shared/web-typescript-loader.mjs';
 import { runQueuedMessageCommand } from '../../apps/web/src/components/queuedMessageCommandAttempts.ts';
 import * as chatState from '../../apps/web/src/chatState.ts';
 import { messageDeliveryPhase } from '../../apps/web/src/components/messageDeliveryPhase.ts';
-import { projectMessageDeliveryReceipts } from '../../apps/web/src/components/messageDeliveryReceipts.ts';
+import { applyQueuedMessageCancellation, messageHiddenByQueue, projectMessageDeliveryReceipts } from '../../apps/web/src/components/messageDeliveryReceipts.ts';
+import { reconcileQueuedMessages, reconcileQueuedProjectMessages } from '../../apps/web/src/components/ConversationView.helpers.ts';
 import * as tracker from '../../apps/web/src/components/activeOperationTracker.ts';
 import { draftPendingSubmissionRetired } from '@ponderosa/core';
 import { ApiRequestError, ApiTransportError } from '../../apps/web/src/api/types.ts';
@@ -16,6 +17,40 @@ import { queryKeys } from '../../apps/web/src/queryKeys.ts';
 import { sha256Bytes } from '../../apps/web/src/components/idempotentAttempt.ts';
 const require = createRequire(new URL('../../apps/web/package.json', import.meta.url));
 const ts = require('typescript'), React = require('react');
+
+test('confirmed queue deletion fences stale queue/history reads without hiding other deliveries',async()=>{
+ const {QueryClient}=require('@tanstack/react-query'),client=new QueryClient();
+ const queued={activationId:'delivery',targetAgentId:'agent',state:'queued',queuedForNextRun:true,attemptCount:1,updatedAt:'2026-11-10T00:00:00Z'};
+ const deleted={...queued,state:'cancelled',queuedForNextRun:undefined,queueDeletionConfirmed:true,updatedAt:'2026-11-10T00:00:01Z'};
+ const source={id:'message',communicationEventId:'message',conversationId:'chat',communicationSender:{kind:'user',userId:'local-operator'},text:'Exact retained input',createdAt:queued.updatedAt,deliveryReceipts:[queued]};
+ const queue=[{deliveryId:'delivery',messageId:'message',targetAgentId:'agent',conversationId:'chat',text:source.text,status:'queued'}];
+ const key=queryKeys.conversations.activeDeliveryReceipts('chat','message','');let release;
+ const oldRead=client.fetchQuery({queryKey:key,queryFn:()=>new Promise(resolve=>{release=()=>resolve({items:[{communicationEventId:'message',deliveryReceipts:[queued]}]});})});
+ await Promise.resolve();applyQueuedMessageCancellation(client,{cancelled:true,replayed:false,status:'cancelled',message:{conversationId:'chat',communicationEventId:'message',deliveryReceipts:[deleted]}});
+ let projected=projectMessageDeliveryReceipts([source],client.getQueryData(key).items);
+ release();await oldRead.catch(()=>{});
+ assert.equal(client.getQueryData(key).items[0].deliveryReceipts[0].queueDeletionConfirmed,true,'Cancelled old fetch cannot replace accepted canonical evidence');
+ for(const stale of [[queued],[{...queued,updatedAt:deleted.updatedAt}],[]]){
+  projected=projectMessageDeliveryReceipts([source],[{communicationEventId:'message',deliveryReceipts:stale}],projected);
+  assert.equal(messageHiddenByQueue(projected[0]),true);assert.deepEqual(reconcileQueuedMessages(projected,queue),[]);
+  assert.deepEqual(reconcileQueuedProjectMessages([{kind:'message',message:projected[0]}],queue).timeline,[],'No Cancelled placeholder in shared Chat projection');
+ }
+ assert.equal(messageHiddenByQueue({...source,deliveryReceipts:[{...deleted,queueDeletionConfirmed:undefined}]}),false,'Unrelated cancelled work remains visible');
+ for(const state of ['delivered','processed','unconfirmed','queued']){
+  const sibling={...queued,targetAgentId:'other',activationId:'other-delivery',queuedForNextRun:undefined,state};
+  assert.equal(messageHiddenByQueue({...source,deliveryReceipts:[{...deleted,queueDeletionConfirmed:undefined},sibling]},new Set(['message'])),false,'Another legitimate recipient remains visible: '+state);
+ }
+ const changed={...source,conversationId:'other-chat'};assert.equal(messageHiddenByQueue(projectMessageDeliveryReceipts([changed],[],projected)[0]),false,'Retained proof cannot cross conversation owner');
+ for(const state of ['delivered','processed','run_unconfirmed','unconfirmed']){
+  const acknowledged={...queued,state,queuedForNextRun:undefined,providerAcknowledged:true,updatedAt:deleted.updatedAt};
+  assert.equal(messageHiddenByQueue(projectMessageDeliveryReceipts([source],[{communicationEventId:'message',deliveryReceipts:[acknowledged]}],projected)[0]),false,'Equal-clock effect evidence wins over deletion: '+state);
+ }
+ assert.deepEqual(reconcileQueuedMessages(projected,[{...queue[0],deliveryId:'old-attempt'}]),[],'An older queue attempt cannot survive exact deletion evidence');
+ const next={...queued,activationId:'new-attempt',attemptCount:2,updatedAt:'2026-11-10T00:00:02Z',queuedForNextRun:undefined};
+ assert.equal(reconcileQueuedMessages([{...source,deliveryReceipts:[{...queued,state:'processed',queuedForNextRun:undefined}]}],[{...queue[0],deliveryId:'new-attempt'}]).length,1,'A newer queue read remains available while canonical receipts still show another older attempt');
+ assert.equal(messageHiddenByQueue(projectMessageDeliveryReceipts([source],[{communicationEventId:'message',deliveryReceipts:[next]}],projected)[0]),false,'New canonical attempt supersedes historical proof');
+ client.clear();
+});
 class CapturedRetirementStorageError extends Error {}
 const widget = name => Object.assign(() => null, { displayName: name });
 const mui = new Proxy({}, { get: (target, name) => target[name] ??= widget(name) });
@@ -25,7 +60,7 @@ function load(relative, imports = {}, globals = {}) {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true },
   }).outputText, { exports, Error, Event, ...globals, require: name => {
     if (name in imports) return name==='./submissionOutbox'?{CapturedRetirementStorageError,...imports[name]}:imports[name];
-    if(name==='../../api/productScope')return {productApiPath:path=>path};
+    if(name==='../../api/productScope'||name==='../api/productScope')return {productApiPath:path=>path};
     if(name==='../../api/types')return {ApiRequestError,ApiTransportError};
     if(name==='../../api/queryRetry')return {queryRetryDelay:()=>0};
     if(name==='@ponderosa/core')return {draftPendingSubmissionRetired};

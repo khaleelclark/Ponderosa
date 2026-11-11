@@ -205,6 +205,9 @@ export interface MessageDeliveryReceiptDto {
   contextRolloverAttemptId?: string;
   /** This exact activation is still waiting for its explicitly queued next Run. */
   queuedForNextRun?: true;
+  /** Every recipient of this operator message was explicitly removed from the
+   * next-Run queue before any provider submission. Canonical records remain. */
+  queueDeletionConfirmed?: true;
   updatedAt: string;
   /** Number of durable attempts for this message/recipient pair. */
   attemptCount: number;
@@ -724,6 +727,8 @@ export interface CancelQueuedMessageResponse {
   cancelled: boolean;
   replayed: boolean;
   status: "cancelled" | "delivery_started";
+  /** Current canonical evidence, including on an idempotent replay. */
+  message?: { conversationId: string; communicationEventId: string; deliveryReceipts: MessageDeliveryReceiptDto[] };
 }
 
 export interface EditQueuedMessageRequest {

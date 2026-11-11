@@ -167,7 +167,11 @@ test('checks 32, 33: queued input edits and cancellation preserve exactly the re
   const first = items.find(x => x.text.includes('First')), second = items.find(x => x.text.includes('Second'));
   const firstId = first.deliveryId ?? first.id, secondId = second.deliveryId ?? second.id;
   f.ok(await f.api('PATCH', `/api/agents/${agent.id}/queued-messages/${firstId}`, { text: 'Edited first queued message', idempotencyKey: randomUUID() }));
-  f.ok(await f.api('POST', `/api/agents/${agent.id}/queued-messages/${secondId}/cancel`, { idempotencyKey: randomUUID() }));
+  const deleteKey=randomUUID(),deletePath=`/api/agents/${agent.id}/queued-messages/${secondId}/cancel`;
+  const deletion=f.ok(await f.api('POST',deletePath,{idempotencyKey:deleteKey}));
+  assert.equal(deletion.message.communicationEventId,second.messageId);assert.ok(deletion.message.deliveryReceipts.every(r=>r.queueDeletionConfirmed));
+  const replay=f.ok(await f.api('POST',deletePath,{idempotencyKey:deleteKey}));assert.equal(replay.replayed,true);assert.deepEqual(replay.message,deletion.message);
+  assert.ok((await f.detail(agent.id)).messages.find(m=>m.communicationEventId===second.messageId).deliveryReceipts.every(r=>r.queueDeletionConfirmed),'Canonical authored data remains for audit with deletion proof');
   session.finish();
   await until(async () => { const d = await f.detail(agent.id); return f.turns.filter(x => x.agentId === agent.id).length > before && !d.runs.some(x => ['running','preparing'].includes(x.status)); }, 'remaining queue consumption');
   const fresh = f.turns.filter(x => x.agentId === agent.id).slice(before);
@@ -539,6 +543,7 @@ test('conversation queue listing preserves exact receipts without projecting the
     for (const row of queued) {
       const cancelled = f.ok(await f.api('POST', path + '/queued-messages/' + row.deliveryId + '/cancel', {idempotencyKey: randomUUID()}));
       assert.equal(cancelled.cancelled, true);
+      assert.equal(cancelled.message.communicationEventId,row.messageId);assert.ok(cancelled.message.deliveryReceipts.every(r=>r.queueDeletionConfirmed));
     }
     session.finish(); await f.settled(agent.id);
   }, {storeFactory: root => store = new AgentStore(root)});

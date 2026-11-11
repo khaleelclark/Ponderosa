@@ -1212,7 +1212,6 @@ onClose: () => setAgentWorkOpen(false)}} />
             messages={reconciledQueuedMessages.queuedMessages}
             scope={conversationId}
             attachmentNamesForMessage={queuedAttachmentNames}
-            agentNameForId={agentTitle}
             busy={
               cancelQueued.isPending ||
               editQueued.isPending ||

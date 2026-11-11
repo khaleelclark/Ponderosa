@@ -1,9 +1,16 @@
+import {setStandaloneProductScope} from '../../apps/web/src/api/productScope';
+import {useMessageDeliveryReceipts} from '../../apps/web/src/components/useMessageDeliveryReceipts';
+import {reconcileQueuedProjectMessages} from '../../apps/web/src/components/ConversationView.helpers';
+import {ChatMessageFrame} from '../../apps/web/src/components/chat/ChatMessageFrame';
+import {ChatMessageBody} from '../../apps/web/src/components/chat/ChatMessages';
+import {queryKeys} from '../../apps/web/src/queryKeys';
 import {MutationNotificationProvider} from "../../apps/web/src/components/MutationNotifications";
 import {QueryClient,QueryClientProvider} from '@tanstack/react-query';
 import {useQueuedConversationMessagesController} from '../../apps/web/src/components/useQueuedConversationMessagesController';
 import {createRoot} from 'react-dom/client';
 import {flushSync} from 'react-dom';
-import {CssBaseline} from '@mui/material';
+import {CssBaseline,ThemeProvider} from '@mui/material';
+import {createPonderosaTheme} from '../../apps/web/src/theme';
 import {QueuedMessageTray} from '../../apps/web/src/components/chat/QueuedMessageTray';
 import {ChatSurface} from '../../apps/web/src/components/chat/ChatSurface';
 import {saveCapturedSubmission,removeCapturedSubmission,type CapturedSubmission} from '../../apps/web/src/components/chat/submissionOutbox';
@@ -16,7 +23,9 @@ export async function queuedTrayColdMountRegression():Promise<void>{
  const probe=window as Window&{queuedTrayCheckpoint?:(name:string)=>Promise<void>;queuedTrayNativeAction?:(action:string)=>Promise<void>};
  const checkpoint=async(name:string)=>{await probe.queuedTrayCheckpoint?.(name);};
  const host=document.createElement('div');document.body.append(host);const root=createRoot(host);
+ Object.assign(host.style,{position:'fixed',inset:'0',overflow:'auto'});
  const scope='queued-tray-regression',pendingId='queued-tray-pending',acceptedId='queued-tray-accepted';
+ const theme=createPonderosaTheme(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');
  const schedulerWindow=window as unknown as {scheduler?:{postTask?:(run:()=>void,options:{signal:AbortSignal;priority:string})=>Promise<void>}};
  const schedulerDescriptor=Object.getOwnPropertyDescriptor(window,'scheduler');
  const scheduler=schedulerWindow.scheduler??{};
@@ -33,10 +42,10 @@ export async function queuedTrayColdMountRegression():Promise<void>{
  const retry=(event:Event)=>retries.push((event as CustomEvent<string>).detail);
  window.addEventListener('ponderosa-submission-retry',retry);
  let epoch=0;
- const render=(rows=messages)=>flushSync(()=>root.render(<>
+ const render=(rows=messages)=>flushSync(()=>root.render(<ThemeProvider theme={theme}>
   <CssBaseline/><input aria-label="Synthetic retained draft" defaultValue="Keep this draft λ😀"/>
-  <QueuedMessageTray key={epoch} scope={scope} messages={rows} onSteer={m=>{steers.push(m.deliveryId);}} onEdit={(m,text)=>{edits.push({id:m.deliveryId,text});}} onDelete={m=>{deletes.push(m.deliveryId);}} agentNameForId={()=>'Synthetic Agent'}/>
- </>));
+  <QueuedMessageTray key={epoch} scope={scope} messages={rows} onSteer={m=>{steers.push(m.deliveryId);}} onEdit={(m,text)=>{edits.push({id:m.deliveryId,text});}} onDelete={m=>{deletes.push(m.deliveryId);}}/>
+ </ThemeProvider>));
  const tray=()=>host.querySelector<HTMLElement>('[aria-label="Queued Messages"]')!;
  const rows=()=>Array.from(tray().querySelectorAll<HTMLElement>('[data-queue-row]:not([data-operation-id])'));
  const capturedRows=()=>tray().querySelectorAll('[data-operation-id]');
@@ -58,7 +67,9 @@ export async function queuedTrayColdMountRegression():Promise<void>{
   await checkpoint('complete-thirty');
   assert(tray().getAttribute('aria-busy')!=='true','All canonical rows finish without interaction');
   assert(rows().map(n=>n.querySelector<HTMLElement>('[tabindex="0"]')?.textContent).join('|')===messages.map(m=>m.text).join('|'),'All exact texts and order survive');
-  button('Steer Queued Message 30').click();button('Delete Queued Message 30').click();
+  assert(button('Steer Queued Message 30').textContent==='Steer'&&button('Steer Queued Message 30').querySelector('svg'),'Steer label and existing arrow share one button');
+  if(probe.queuedTrayNativeAction)await probe.queuedTrayNativeAction('steer-tail');else button('Steer Queued Message 30').click();
+  if(probe.queuedTrayNativeAction)await probe.queuedTrayNativeAction('delete-tail');else button('Delete Queued Message 30').click();
   await until(()=>steers.length===1&&deletes.length===1,'Tail actions settle');assert(steers[0]==='delivery-30'&&deletes[0]==='delivery-30','Tail actions keep exact identity');
   Array.from(tray().querySelectorAll('button')).find(n=>n.textContent==='Retry')!.click();assert(retries[0]===pendingId,'Unconfirmed retry keeps exact operation');
   assert(host.querySelector<HTMLInputElement>('[aria-label="Synthetic retained draft"]')!.value==='Keep this draft λ😀','The sibling draft is unchanged');
@@ -96,7 +107,7 @@ export async function queuedTrayParentHydrationRegression():Promise<void>{
  const scope='queued-tray-memo-regression',pendingId='queued-tray-memo-pending';
  const message:QueuedConversationMessageDto={deliveryId:'memo-delivery',messageId:'memo-message',conversationId:scope,targetAgentId:'memo-agent',position:1,text:'Exact queued text λ😀',createdAt:'2026-11-07T00:00:00Z',status:'queued'};
  let reads=0,epoch=0;const actions:Array<{kind:string;id:string;text?:string}>=[];
- const props={scope,messages:[message],agentNameForId:()=>{reads++;return 'Original Agent';},attachmentNamesForMessage:()=>['original.txt'],onSteer:(m:QueuedConversationMessageDto)=>{actions.push({kind:'steer',id:m.deliveryId});},onEdit:(m:QueuedConversationMessageDto,text:string)=>{actions.push({kind:'edit',id:m.deliveryId,text});},onDelete:(m:QueuedConversationMessageDto)=>{actions.push({kind:'delete',id:m.deliveryId});}};
+ const props={scope,messages:[message],attachmentNamesForMessage:()=>{reads++;return ['original.txt'];},onSteer:(m:QueuedConversationMessageDto)=>{actions.push({kind:'steer',id:m.deliveryId});},onEdit:(m:QueuedConversationMessageDto,text:string)=>{actions.push({kind:'edit',id:m.deliveryId,text});},onDelete:(m:QueuedConversationMessageDto)=>{actions.push({kind:'delete',id:m.deliveryId});}};
  const render=(extra:Partial<import('react').ComponentProps<typeof QueuedMessageTray>>={})=>flushSync(()=>root.render(<><CssBaseline/><div data-unrelated-runtime-hydration={++epoch}><QueuedMessageTray {...props} {...extra}/></div><input aria-label="Memo sibling draft" defaultValue="Retain draft λ😀"/></>));
  const button=(name:string)=>host.querySelector<HTMLButtonElement>('[aria-label="'+name+'"]')!;
  try{
@@ -110,8 +121,8 @@ export async function queuedTrayParentHydrationRegression():Promise<void>{
   const setter=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value')!.set!;setter.call(field,'Updated queued λ😀');field.dispatchEvent(new Event('input',{bubbles:true}));await tick();
   Array.from(host.querySelectorAll('button')).find(n=>n.textContent==='Save')!.click();await until(()=>actions.some(a=>a.kind==='edit'),'Local save still settles');
   assert(actions[0].id===message.deliveryId&&actions[0].text==='Updated queued λ😀','Memo preserves exact edit payload');
-  const updated=[{...message,text:'Canonical row refresh λ😀'}];render({messages:updated,attachmentNamesForMessage:()=>['new.txt','second.txt'],agentNameForId:()=>{reads++;return 'Renamed Agent';}});
-  assert(host.textContent?.includes('Canonical row refresh λ😀')&&host.textContent?.includes('Renamed Agent')&&host.querySelector('[aria-label="2 Attachments"]'),'Canonical text, names and attachment metadata remain live');
+  const updated=[{...message,text:'Canonical row refresh λ😀'}];render({messages:updated,attachmentNamesForMessage:()=>{reads++;return ['new.txt','second.txt'];}});
+  assert(host.textContent?.includes('Canonical row refresh λ😀')&&host.querySelector('[aria-label="2 Attachments"]'),'Canonical text and attachment metadata remain live');
   let latestDelete='';render({onDelete:m=>{latestDelete=m.deliveryId;}});button('Delete Queued Message 1').click();await until(()=>Boolean(latestDelete),'Changed action callback remains live');assert(latestDelete===message.deliveryId,'Latest callback receives exact delivery');
   render();button('Steer Queued Message 1').click();await until(()=>actions.some(a=>a.kind==='steer'),'Existing steer callback remains live');
   saveCapturedSubmission({version:1,scope,storageKey:'memo-draft',ownerId:'memo-owner',clientId:pendingId,createdAt:1,action:'queue',text:'Captured after memo λ😀',editorText:'Captured after memo λ😀',attachmentNames:[],mentionedAgents:[],newAgentRequested:false,pending:{idempotencyKey:pendingId,fingerprint:'a'.repeat(64)},status:'unknown'} as CapturedSubmission);
@@ -126,23 +137,31 @@ export async function queuedTrayAcceptedEditRegression():Promise<void>{
  const host=document.createElement('div');document.body.append(host);const root=createRoot(host),nativeFetch=globalThis.fetch;
  const client=new QueryClient({defaultOptions:{queries:{retry:false,refetchOnWindowFocus:false,gcTime:Infinity},mutations:{retry:false}}});
  const original:QueuedConversationMessageDto={deliveryId:'accepted-delivery',messageId:'accepted-message',conversationId:'accepted-chat',targetAgentId:'accepted-agent',position:1,text:'Queued note original',createdAt:'2026-11-08T00:00:00Z',status:'queued'};
- let canonical=[original],writes=0,refetches=0,accepted=false,release:(()=>void)|undefined;
+ const pendingReceipt={activationId:original.deliveryId,targetAgentId:original.targetAgentId,state:'queued' as const,queuedForNextRun:true as const,attemptCount:1,updatedAt:original.createdAt};
+ const deletedReceipt={...pendingReceipt,state:'cancelled' as const,queuedForNextRun:undefined,queueDeletionConfirmed:true as const,updatedAt:'2026-11-08T00:00:01Z'};
+ const retained=[{id:original.messageId,communicationEventId:original.messageId,conversationId:original.conversationId,communicationSender:{kind:'user' as const,userId:'local-operator'},text:original.text,createdAt:original.createdAt,deliveryReceipts:[pendingReceipt]}];
+ let canonical=[original],writes=0,refetches=0,accepted=false,deleted=false,holdReceipt=false,failedRead=false,release:(()=>void)|undefined,releaseReceipt:(()=>void)|undefined;
  const json=(value:unknown)=>new Response(JSON.stringify(value),{headers:{'content-type':'application/json'}});
  globalThis.fetch=async(raw,init)=>{
   const url=new URL(String(raw),location.origin),method=init?.method??'GET';
   if(method==='PATCH'){writes++;const body=JSON.parse(String(init?.body));canonical=[{...original,text:body.text}];accepted=true;return json({edited:true,replayed:false,status:'edited'});}
   if(method==='GET'&&url.pathname==='/api/conversations/accepted-chat/queued-messages'){refetches++;if(accepted)await new Promise<void>(resolve=>{release=resolve;});return json(canonical);}
-  if(method==='POST'&&url.pathname.endsWith('/cancel')){writes++;canonical=[];return json({cancelled:true,replayed:false,status:'cancelled'});}
+  if(method==='POST'&&url.pathname.endsWith('/message-delivery-receipts')){const receipts=[deleted?deletedReceipt:pendingReceipt];if(holdReceipt)await new Promise<void>(resolve=>{releaseReceipt=resolve;});if(failedRead)throw Error('Controlled readback failure');return json({items:[{communicationEventId:original.messageId,deliveryReceipts:receipts}]});}
+  if(method==='POST'&&url.pathname.endsWith('/cancel')){writes++;canonical=[];deleted=true;return json({cancelled:true,replayed:false,status:'cancelled',message:{conversationId:original.conversationId,communicationEventId:original.messageId,deliveryReceipts:[deletedReceipt]}});}
   throw Error('Unexpected queue regression request '+method+' '+url.pathname);
  };
- function Surface(){const queue=useQueuedConversationMessagesController('accepted-chat');return <><CssBaseline/><QueuedMessageTray messages={queue.query.data??[]} busy={queue.edit.isPending||queue.cancel.isPending} onEdit={(message,text)=>queue.edit.mutateAsync({deliveryId:message.deliveryId,targetAgentId:message.targetAgentId,text})} onDelete={message=>queue.cancel.mutateAsync(message.deliveryId)} onSteer={()=>{}}/></>;}
+ const ownerSources=[{...retained[0],conversationId:undefined,deliveryReceipts:undefined}];
+ function ScopeProbe({scope}:{scope:string}){const messages=useMessageDeliveryReceipts(ownerSources,scope,false);return <output>{messages[0]?.deliveryReceipts?.some(receipt=>receipt.queueDeletionConfirmed)?'hidden':'visible'}</output>;}
+ function Surface(){const queue=useQueuedConversationMessagesController('accepted-chat'),messages=useMessageDeliveryReceipts(retained,'accepted-chat');
+  const projected=reconcileQueuedProjectMessages(messages.map(message=>({kind:'message' as const,id:message.id,at:message.createdAt,message})),queue.query.data??[]);
+  return <><CssBaseline/>{projected.timeline.map(entry=>entry.kind==='message'?<ChatMessageFrame key={entry.id} message={{id:entry.id,author:{kind:'operator'},createdAt:entry.at,body:<ChatMessageBody text={entry.message.text}/>}}/>:null)}<QueuedMessageTray messages={projected.queuedMessages} busy={queue.edit.isPending||queue.cancel.isPending} onEdit={(message,text)=>queue.edit.mutateAsync({deliveryId:message.deliveryId,targetAgentId:message.targetAgentId,text})} onDelete={message=>queue.cancel.mutateAsync(message.deliveryId)} onSteer={()=>{}}/></>;}
  const tray=()=>host.querySelector<HTMLElement>('[aria-label="Queued Messages"]')!;
  const field=()=>host.querySelector<HTMLTextAreaElement>('textarea[aria-label^="Edit Queued Message"]');
  const button=(name:string)=>host.querySelector<HTMLButtonElement>('[aria-label="'+name+'"]')!;
  const checkpoint=async(name:string)=>{await (window as Window&{phase2UiCheckpoint?:(name:string)=>Promise<void>}).phase2UiCheckpoint?.(name);};
  try{
   root.render(<QueryClientProvider client={client}><MutationNotificationProvider><Surface/></MutationNotificationProvider></QueryClientProvider>);
-  await until(()=>Boolean(tray()),'Canonical original queue loads');
+  await until(()=>Boolean(button('Edit Queued Message 1')),'Canonical queue supplies its verified position after the receipt fallback');
   button('Edit Queued Message 1').click();await until(()=>Boolean(field()),'Edit opens');
   const input=field()!;Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value')!.set!.call(input,'Queued note edited');input.dispatchEvent(new Event('input',{bubbles:true}));await tick();
   Array.from(tray().querySelectorAll('button')).find(button=>button.textContent==='Save')!.click();
@@ -154,7 +173,18 @@ export async function queuedTrayAcceptedEditRegression():Promise<void>{
   release!();await until(()=>!field()&&tray().textContent?.includes('Queued note edited')===true,'Canonical refresh replaces editor with accepted text');
   assert(!tray().textContent?.includes('Queued note original'),'Original text never reappears after acceptance');
   await checkpoint('queue-accepted-refreshed');
-  accepted=false;button('Delete Queued Message 1').click();await until(()=>!host.querySelector('[aria-label="Queued Messages"]'),'Delete follows the accepted edit without reverting text');
-  assert(writes===2&&refetches===3,'Exactly one edit, one delete and their canonical refreshes');
- }finally{release?.();root.unmount();client.clear();globalThis.fetch=nativeFetch;host.remove();}
+  accepted=false;holdReceipt=true;void client.invalidateQueries({queryKey:queryKeys.conversations.activeDeliveryReceiptsPrefix(original.conversationId)});
+  await until(()=>Boolean(releaseReceipt),'Older receipt read is held before deletion');
+  button('Delete Queued Message 1').click();await until(()=>!host.querySelector('[aria-label="Queued Messages"]'),'Delete follows the accepted edit without reverting text');
+  assert(!host.querySelector('article'),'Successful deletion has no Cancelled bubble or placeholder');
+  holdReceipt=false;releaseReceipt!();await tick();assert(!tray()&&!host.querySelector('article'),'Late pre-deletion read cannot resurrect queue or timeline');
+  client.setQueryData(queryKeys.queuedMessages.conversation(original.conversationId),[original]);await tick();assert(!tray()&&!host.querySelector('article'),'Stale queue read loses to canonical deletion receipts');
+  failedRead=true;await client.invalidateQueries({queryKey:queryKeys.conversations.activeDeliveryReceiptsPrefix(original.conversationId)});await tick();assert(!tray()&&!host.querySelector('article'),'Failed readback keeps committed deletion without another write');
+  failedRead=false;root.render(<QueryClientProvider client={client}><MutationNotificationProvider><Surface key="revisit"/></MutationNotificationProvider></QueryClientProvider>);await tick();assert(!tray()&&!host.querySelector('article'),'Revisit uses the same canonical receipt evidence');
+  assert(writes===2&&refetches>=3,'Exactly one edit and one delete despite late reads and revisit');
+  client.setQueryData([...queryKeys.conversations.activeDeliveryReceipts('fallback-a',original.messageId,''),'/api/conversations'],{items:[{communicationEventId:original.messageId,deliveryReceipts:[deletedReceipt]}]});
+  const probe=(scope:string)=>flushSync(()=>root.render(<QueryClientProvider client={client}><ScopeProbe scope={scope}/></QueryClientProvider>));
+  probe('fallback-a');assert(host.textContent==='hidden','Exact fallback owner has its receipt');probe('fallback-b');assert(host.textContent==='visible','Owner change cannot carry a deletion receipt with missing conversation fields');
+  probe('fallback-a');setStandaloneProductScope('branches');probe('fallback-a');assert(host.textContent==='visible','Product namespace cannot reuse another product receipt or retained projection');setStandaloneProductScope(undefined);
+ }finally{setStandaloneProductScope(undefined);release?.();releaseReceipt?.();root.unmount();client.clear();globalThis.fetch=nativeFetch;host.remove();}
 }

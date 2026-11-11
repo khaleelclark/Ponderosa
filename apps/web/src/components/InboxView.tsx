@@ -94,7 +94,7 @@ import { AgentRuntimeControls } from "./AgentDetail.parts";
 import { chatStateKey, readChatState, writeChatState } from "../chatState";
 import { resolveRuntimeSelection } from "../conversationEngine";
 import { pendingRuntimeSelection, runtimeMutationOptions, runtimeFeedbackKey, useRuntimeControls, useRuntimeSaving } from "../hooks/useRuntimeControls";
-import { decisionChoice } from "./ConversationView.helpers";
+import { decisionChoice, reconcileQueuedMessages } from "./ConversationView.helpers";
 import { CompactWorkspaceHeader } from "./WorkspaceFrame";
 import { useConversationNotificationVisibility } from "./useConversationNotificationVisibility";
 import { ChatComposerDock } from "./chat/ChatComposerDock";
@@ -108,6 +108,7 @@ import {
   createQueuedSteerOperationTracker,
 } from "./activeOperationTracker";
 import { useMessageDeliveryReceipts } from "./useMessageDeliveryReceipts";
+import { messageHiddenByQueue } from "./messageDeliveryReceipts";
 import { useActiveOperationController } from "./useActiveOperationController";
 import { useQueuedConversationMessagesController } from "./useQueuedConversationMessagesController";
 import {
@@ -300,7 +301,8 @@ export function InboxView({
       .filter(item => !availableProjectIds || availableProjectIds.has(item.project.id)),
     [availableProjectIds, older?.items, query.data?.items],
   );
-  const items = useMessageDeliveryReceipts(retainedItems);
+  const receiptItems = useMessageDeliveryReceipts(retainedItems);
+  const items = useMemo(() => receiptItems.filter(item => !messageHiddenByQueue(item)), [receiptItems]);
   useEffect(() => {
     if (!availableProjectIds) return;
     setReplyTarget(current =>
@@ -490,6 +492,9 @@ export function InboxView({
       ),
     ),
   );
+  const visibleQueuedMessages = useMemo(() => reconcileQueuedMessages(
+    receiptItems.map(item => ({...item,id:item.messageId})), queuedMessages.query.data ?? [],
+  ), [receiptItems,queuedMessages.query.data]);
   const decisionEvents = useMemo(
     () => uniqueBy(
       [...(older?.decisions ?? []), ...(query.data?.decisions ?? [])],
@@ -1685,10 +1690,9 @@ export function InboxView({
         <WorkspaceQueryError read={workspaceRead(`chat:${composerConversationId}`,"Queued Messages",queuedMessages.query)}/>
         {queuedMessages.failure&&<details><summary>Queue Action Needs Attention</summary>{queuedMessages.failure.error.message}<Button onClick={queuedMessages.failure.retry}>Retry Action</Button></details>}
         <QueuedMessageTray
-          messages={queuedMessages.query.data ?? []}
+          messages={visibleQueuedMessages}
           scope={composerConversationId}
           attachmentNamesForMessage={queued => items.find(item => item.messageId === queued.messageId || item.communicationEventId === queued.messageId)?.attachments?.map(attachment => attachment.name)}
-          agentNameForId={agentId => inboxAgentTitle(agentId)}
           busy={
             queuedMessages.cancel.isPending ||
             queuedMessages.edit.isPending ||

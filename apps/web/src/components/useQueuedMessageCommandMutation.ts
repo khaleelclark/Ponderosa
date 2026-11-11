@@ -1,5 +1,7 @@
 import {useMutationNotification} from "./MutationNotifications";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import type { CancelQueuedMessageResponse } from "@ponderosa/core";
+import { applyQueuedMessageCancellation } from "./messageDeliveryReceipts";
 import {useRef, type MutableRefObject} from "react";
 import {productApiPath} from "../api/productScope";
 import { createClientId } from "../clientId";
@@ -24,6 +26,7 @@ export function useQueuedMessageCommandMutation<Variables extends string | { del
   onSuccess?(response: Response, variables: Variables): void;
 }) {
   const notify=useMutationNotification();
+  const queryClient=useQueryClient();
   const activeOwner=useRef(owner);activeOwner.current=owner;
   const mutation = useMutation({
     mutationKey:["queue-action",productApiPath("/api/conversations"),owner],
@@ -36,6 +39,10 @@ export function useQueuedMessageCommandMutation<Variables extends string | { del
         request => {
           const key=JSON.stringify([namespace,owner,command.command,command.deliveryId,request.idempotencyKey]);
           return dispatch(variables, request).then(response=>{
+            if(command.command === "cancel" && activeOwner.current === owner &&
+                productApiPath("/api/conversations") === namespace) {
+              applyQueuedMessageCancellation(queryClient,response as CancelQueuedMessageResponse);
+            }
             notify({key,message:"",dismiss:true});return response;
           },error=>{
             notify({key,incident,severity:"error",message:"Queue Action Needs Review",description:"Review the queued message in its original Chat before retrying.",details:error instanceof Error?error.message:String(error)});throw error;

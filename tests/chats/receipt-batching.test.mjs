@@ -7,6 +7,37 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { openCurrentMemoryDatabase } from '../../packages/agents/dist/state-admission.js';
 
+test('queue deletion proof survives restart and outbox pruning, preserving races and other recipients', t => {
+ const dir=mkdtempSync(path.join(tmpdir(),'queue-delete-'));
+ let store=new AgentStore(dir),db=store.sqlite,v3=new CoordinationV3Store(db);t.after(()=>{store.close();rmSync(dir,{recursive:true,force:true});});
+ const project=store.createProject({label:'Queue deletion',hostPath:dir,defaultEngine:'codex'}).id;
+ const chat=store.createConversation(project,{title:'Owned'}).id;
+ const agents=[0,1].map(i=>store.createAgent(project,{title:'Owned '+i,engine:'codex',conversationId:chat}).id),now=new Date().toISOString(),scope='conversation:'+chat;
+ const create=(targets=agents.slice(0,1),kind='human_message',policy='next_run',intent='user_dm')=>{const id=randomUUID(),sender={kind:'user',userId:'local-operator'},audience=intent==='broadcast'?{kind:'organization',organizationId:project}:{kind:'user_agents',userId:'local-operator',agentIds:targets};
+  const communication={schemaVersion:2,eventId:id,projectId:project,conversationId:chat,sender,intent,audience,text:'Queued exact input',createdAt:now};
+  const result=v3.recordRuntimeCommunication({id,projectId:project,sender,intent,audience,payload:{communication,dispatch:{conversationId:chat,text:communication.text,recipients:targets.map(agentId=>({agentId,attachments:[]}))}},activations:targets.map(agentId=>({agentId,kind,priority:100,dispatchPolicy:policy,promptClass:'human'})),now});
+  return {id,ids:result.activations.map(value=>value.id)};};
+ const read=message=>v3.deliveryReceiptsForCommunications(project,[message.id]).get(message.id);
+ const cancel=id=>v3.cancelPendingActivation({activationId:id,projectId:project,idempotencyKey:'delete:'+id,now});
+ const removed=create();assert.equal(read(removed)[0].queuedForNextRun,true);assert.equal(cancel(removed.ids[0]).cancelled,true);assert.equal(cancel(removed.ids[0]).replayed,true);assert.equal(read(removed)[0].queueDeletionConfirmed,true);
+ db.prepare("DELETE FROM activation_outbox WHERE event_kind='queued_message_change'").run();store.close();store=new AgentStore(dir);db=store.sqlite;v3=new CoordinationV3Store(db);
+ assert.equal(read(removed)[0].queueDeletionConfirmed,true,'Historical deletion derives from durable command evidence, not an outbox or browser');
+ const partial=create(agents);cancel(partial.ids[0]);assert.ok(read(partial).every(value=>!value.queueDeletionConfirmed),'Another pending recipient is retained');
+ cancel(partial.ids[1]);assert.ok(read(partial).every(value=>value.queueDeletionConfirmed),'All exact recipients must be deleted');
+ const broadcast=create(agents,'human_message','next_run','broadcast');cancel(broadcast.ids[0]);assert.ok(read(broadcast).every(r=>!r.queueDeletionConfirmed));cancel(broadcast.ids[1]);assert.ok(read(broadcast).every(r=>r.queueDeletionConfirmed),'Broadcast uses exact dispatch recipients');
+ for(const result of ['{bad json',JSON.stringify({cancelled:true,status:'delivery_started'}),JSON.stringify({cancelled:1,status:'cancelled'})]){const invalid=create();cancel(invalid.ids[0]);db.prepare("UPDATE coordination_idempotency SET result_json=? WHERE operation='cancel_activation' AND idempotency_key=?").run(result,'delete:'+invalid.ids[0]);assert.equal(read(invalid)[0].queueDeletionConfirmed,undefined,'Invalid result cannot prove deletion');}
+ const unrelated=create();db.prepare("UPDATE agent_activations SET state='cancelled' WHERE id=?").run(unrelated.ids[0]);assert.equal(read(unrelated)[0].queueDeletionConfirmed,undefined,'An unrelated cancellation is not deletion');
+ const immediate=create(agents.slice(0,1),'human_message','steer_or_run');cancel(immediate.ids[0]);assert.equal(read(immediate)[0].queueDeletionConfirmed,undefined,'Ordinary delivery cancellation remains visible');
+ const raced=create();db.prepare("UPDATE agent_activations SET state='attached' WHERE id=?").run(raced.ids[0]);assert.equal(cancel(raced.ids[0]).status,'delivery_started');assert.equal(read(raced)[0].queueDeletionConfirmed,undefined);
+ const submitted=create();const run=randomUUID();db.prepare("INSERT INTO scheduler_runs(id,project_id,agent_id,status,lease_owner,lease_expires_at,fencing_token,prompt_injection_state,heartbeat_at,created_at,updated_at,scope_key) VALUES(?,?,?,'completed','owned',?,1,'injected',?,?,?,?)").run(run,project,agents[0],now,now,now,now,scope);
+ db.prepare("INSERT INTO scheduler_prompt_injections(id,run_id,kind,sequence,state,prompt_hash,activation_ids_json,created_at,updated_at,submitted_at) VALUES(?,?,'turn',0,'cancelled','owned',?,?,?,?)").run(randomUUID(),run,JSON.stringify(submitted.ids),now,now,now);cancel(submitted.ids[0]);assert.equal(read(submitted)[0].queueDeletionConfirmed,undefined,'Cancelled injection retains earlier possible effects');
+ const retried=create(),old=db.prepare('SELECT * FROM agent_activations WHERE id=?').get(retried.ids[0]);db.prepare("UPDATE agent_activations SET state='consumed' WHERE id=?").run(old.id);
+ const next={...old,id:randomUUID(),dedupe_key:randomUUID(),state:'pending'};db.prepare(`INSERT INTO agent_activations(${Object.keys(next).join(',')}) VALUES(${Object.keys(next).map(()=>'?').join(',')})`).run(...Object.values(next));
+ db.prepare('INSERT INTO activation_sources(activation_id,source_kind,source_id) SELECT ?,source_kind,source_id FROM activation_sources WHERE activation_id=?').run(next.id,old.id);cancel(next.id);assert.equal(read(retried)[0].queueDeletionConfirmed,undefined,'Older consumed recipient attempt remains visible behind a newer queue cancellation');
+ const missing=create(agents);db.prepare("DELETE FROM activation_sources WHERE activation_id=? AND source_kind='communication'").run(missing.ids[1]);cancel(missing.ids[0]);assert.equal(read(missing)[0].queueDeletionConfirmed,undefined,'Incomplete recipient evidence cannot hide a message');
+ assert.deepEqual(v3.deliveryReceiptsForCommunications(randomUUID(),[removed.id]).get(removed.id),[],'Project authority remains exact');
+});
+
 test('receipt injection batches preserve latest rows, recovery, missing IDs and project scope', t => {
   const db = openCurrentMemoryDatabase(); t.after(() => db.close());
   const project = randomUUID(), chat = randomUUID(), agent = randomUUID(), stamp = '2026-10-19T00:00:00.000Z';

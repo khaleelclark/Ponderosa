@@ -9,6 +9,7 @@ import type {
 } from "./coordination-v3-types.js";
 import type { CoordinationV3RuntimeScopeAuthority } from "./coordination-v3-runtime-scope-authority.js";
 import { AgentPhaseReadModel } from "./store-agent-phase-read-model.js";
+import { payloadHash } from "./coordination-v3-canonical-json.js";
 
 const browserTools = new Set(PONDEROSA_BROWSER_TOOLS.map(tool => tool.name));
 
@@ -436,6 +437,26 @@ export class CoordinationV3RuntimeCommunicationReadModel {
       payload_json: string;
     }>;
     const activationIds = [...new Set(activations.map((activation) => activation.id))];
+    // Cancellation idempotency survives outbox pruning and predates this UI.
+    const cancellationCandidates = activations.filter(value => value.state === "cancelled" &&
+      value.dispatch_policy === "next_run" && value.kind === "human_message");
+    const cancellationHashes = new Set(cancellationCandidates.length ? (this.sqlite.prepare(`
+      SELECT payload_hash FROM coordination_idempotency
+      WHERE project_id = ? AND actor_scope = 'user:local-operator' AND operation = 'cancel_activation'
+        AND payload_hash IN (SELECT value FROM json_each(?))
+        AND CASE WHEN json_valid(result_json) THEN json_type(result_json, '$.cancelled') = 'true'
+          AND json_extract(result_json, '$.status') = 'cancelled' ELSE 0 END
+    `).all(projectId, JSON.stringify(cancellationCandidates.map(value => payloadHash({activationId:value.id})))) as
+      Array<{payload_hash:string}>).map(value => value.payload_hash) : []);
+    const submittedActivations = new Set(cancellationCandidates.length ? (this.sqlite.prepare(`
+      SELECT DISTINCT member.value AS activation_id
+      FROM scheduler_prompt_injections injection, json_each(injection.activation_ids_json) member
+      WHERE member.value IN (SELECT value FROM json_each(?))
+        AND (injection.submitted_at IS NOT NULL OR injection.acknowledged_at IS NOT NULL
+          OR injection.state IN ('submitted', 'acknowledged', 'outcome_unknown'))
+    `).all(JSON.stringify(activationIds)) as Array<{activation_id:string}>).map(value => value.activation_id) : []);
+    const deletionRecipients = new Map<string, Set<string>>();
+    const incompleteCommunications = new Set<string>();
     const requiredReplySummaries = new Map<string, {
       attemptCount: number;
       latestAttemptAt: string;
@@ -494,6 +515,8 @@ export class CoordinationV3RuntimeCommunicationReadModel {
         latestAttemptAt: string;
         requiredReplyExhausted: boolean;
         recipientCurrentlyAuthorized: boolean;
+        mayHaveBeenDelivered: boolean;
+        explicitlyCancelledQueue: boolean;
       }>
     >();
     for (const activation of activations) {
@@ -505,6 +528,7 @@ export class CoordinationV3RuntimeCommunicationReadModel {
         audience = JSON.parse(activation.audience_json) as unknown;
         payload = JSON.parse(activation.payload_json) as unknown;
       } catch {
+        incompleteCommunications.add(activation.communication_event_id);
         continue;
       }
       const authorityInput = {
@@ -522,7 +546,14 @@ export class CoordinationV3RuntimeCommunicationReadModel {
       if (!this.runtimeScopeAuthority.runtimeCommunicationAuthorityAgrees(
         authorityInput,
         false,
-      )) continue;
+      )) { incompleteCommunications.add(activation.communication_event_id); continue; }
+      const root = payload as { communication?: { sender?: {kind?:string;userId?:string} };
+        dispatch?: {recipients?: Array<{agentId:string}>} };
+      const target = audience as {kind:string;agentIds?:string[];agentId?:string};
+      const recipients = target.kind === "user_agents" ? target.agentIds
+        : target.kind === "user_agent" && target.agentId ? [target.agentId]
+        : root.dispatch?.recipients?.map(value => value.agentId);
+      if (recipients?.length) deletionRecipients.set(activation.communication_event_id, new Set(recipients));
       const recipientCurrentlyAuthorized =
         this.runtimeScopeAuthority.runtimeCommunicationAuthorityAgrees(authorityInput);
       let latestByRecipient = latestByCommunication.get(activation.communication_event_id);
@@ -543,6 +574,11 @@ export class CoordinationV3RuntimeCommunicationReadModel {
         latestAttemptAt,
         requiredReplyExhausted: requiredReply?.exhausted ?? false,
         recipientCurrentlyAuthorized,
+        mayHaveBeenDelivered: Boolean(previous?.mayHaveBeenDelivered || submittedActivations.has(activation.id) ||
+          ["consumed", "outcome_unknown"].includes(activation.state)),
+        explicitlyCancelledQueue: activation.kind === "human_message" && activation.dispatch_policy === "next_run" &&
+          activation.state === "cancelled" && root.communication?.sender?.kind === "user" &&
+          root.communication.sender.userId === "local-operator" && cancellationHashes.has(payloadHash({activationId:activation.id})),
       });
     }
     // One membership scan per batch; enrich only the latest injection for each activation.
@@ -610,6 +646,10 @@ export class CoordinationV3RuntimeCommunicationReadModel {
     const recoveryInjections = latestInjections([...recoveries.values()].flatMap(recovery =>
       recovery?.recovery_activation_id ? [recovery.recovery_activation_id] : []));
     for (const [communicationEventId, latestByRecipient] of latestByCommunication) {
+      const expected = deletionRecipients.get(communicationEventId);
+      const deleted = !incompleteCommunications.has(communicationEventId) && expected !== undefined && expected.size === latestByRecipient.size &&
+        [...expected].every(id => { const recipient = latestByRecipient.get(id);
+          return recipient?.explicitlyCancelledQueue && !recipient.mayHaveBeenDelivered; });
       const receipts = [...latestByRecipient.values()].map(({
         activation,
         attemptCount,
@@ -670,6 +710,7 @@ export class CoordinationV3RuntimeCommunicationReadModel {
             ? { recoveryExecutionId: recoveryInjection.execution_id }
             : {}),
           state,
+          ...(deleted ? { queueDeletionConfirmed: true as const } : {}),
           ...(decisionRepair ? {taskDecisionRepairHold:true as const} : {}),
           ...(settingsHold ? {settingsTransitionHold:settingsHold.retryable && !heldRollover && !decisionRepair ? "retry_available" as const : "review_required" as const} : {}),
           ...(heldRollover ? {contextRolloverHold:!decisionRepair && canRetryHeldHumanRollover(heldRollover)

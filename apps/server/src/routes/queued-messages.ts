@@ -177,6 +177,15 @@ export function registerQueuedMessageRoutes(
     publishMessageDeliveryChanged,
     notifyScheduler,
   } = dependencies;
+  const cancellationResponse = (result: CancelQueuedMessageResponse, activation: {projectId:string;payload:unknown}): CancelQueuedMessageResponse => {
+    if (!result.cancelled) return result;
+    const payload = activation.payload as {communication?:CommunicationEvent;dispatch?:{conversationId?:string}};
+    const communication = payload.communication;
+    const conversationId = communication?.conversationId ?? payload.dispatch?.conversationId;
+    if (!communication?.eventId || !conversationId) return result;
+    return {...result,message:{conversationId,communicationEventId:communication.eventId,
+      deliveryReceipts:deliveryReceiptsForCommunications(activation.projectId,[communication.eventId]).get(communication.eventId) ?? []}};
+  };
   app.post<{
     Params: { id: string };
     Body: ActiveMessageDeliveryReceiptsRequest;
@@ -249,7 +258,7 @@ export function registerQueuedMessageRoutes(
         projectId: activation.projectId,
         idempotencyKey,
       });
-      if (replay) return replay satisfies CancelQueuedMessageResponse;
+      if (replay) return cancellationResponse(replay, activation);
     } catch (error) {
       if (error instanceof CoordinationIdempotencyConflictError) {
         return reply.code(409).send({ error: error.message });
@@ -276,7 +285,7 @@ export function registerQueuedMessageRoutes(
     }
     if (!result.cancelled) return reply.code(409).send(result satisfies CancelQueuedMessageResponse);
     bestEffort(notifyScheduler);
-    return result satisfies CancelQueuedMessageResponse;
+    return cancellationResponse(result, activation);
   });
 
   app.get<{ Params: { id: string } }>("/api/agents/:id/queued-messages", async (request, reply) => {
@@ -330,7 +339,7 @@ export function registerQueuedMessageRoutes(
         projectId: activation.projectId,
         idempotencyKey,
       });
-      if (replay) return replay satisfies CancelQueuedMessageResponse;
+      if (replay) return cancellationResponse(replay, activation);
     } catch (error) {
       if (error instanceof CoordinationIdempotencyConflictError) {
         return reply.code(409).send({ error: error.message });
@@ -355,7 +364,7 @@ export function registerQueuedMessageRoutes(
     }
     if (!result.cancelled) return reply.code(409).send(result satisfies CancelQueuedMessageResponse);
     bestEffort(notifyScheduler);
-    return result satisfies CancelQueuedMessageResponse;
+    return cancellationResponse(result, activation);
   });
 
   app.patch<{
