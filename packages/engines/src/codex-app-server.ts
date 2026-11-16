@@ -6,7 +6,7 @@ import { answerCodexNativeApproval, CODEX_NATIVE_APPROVAL_METHODS } from "./nati
 import { forkCodexTranscript } from "./codex-transcript-fork.js";
 import { CodexBackgroundTasks } from "./codex-background-tasks.js";
 import { tokenCount, tokenSum } from "./token-count.js";
-import { normalizedToolResult } from "./tool-result.js";
+import { normalizedToolResult, sanitizeTerminalOutput } from "./tool-result.js";
 import {
   truncateUnicodeCodePoints,
   type AgentEvent,
@@ -23,7 +23,6 @@ import {
   type NativeGoalSnapshot,
   safeProviderConnectionUrl,
 } from "@ponderosa/core";
-import { stripVTControlCharacters } from "node:util";
 import { createHash } from "node:crypto";
 import { commandOutcome, mapFileChangeKind, providerErrorCodeFromDetail, codexErrorEvent } from "./events.js";
 import { JsonRpcOutputLimitError, JsonRpcProcess, type JsonRpcNotification } from "./json-rpc-process.js";
@@ -157,18 +156,6 @@ function codexCliVersion(initialization: unknown): string {
   return typeof agent === "string" && agent.length <= 512
     ? /^ponderosa\/([0-9]+\.[0-9]+\.[0-9]+(?:[-+][a-zA-Z0-9.-]+)?)(?:\s|$)/u.exec(agent)?.[1] ?? "unknown"
     : "unknown";
-}
-
-const UNSAFE_TERMINAL_CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/gu;
-
-/**
- * Normalizes terminal-derived command output before it crosses the strict
- * provider-event projection boundary. Formatting and unsafe terminal control
- * characters are transport detail; tabs, line endings, and Unicode are
- * preserved as command-result content.
- */
-function sanitizeTerminalOutput(value: string): string {
-  return stripVTControlCharacters(value).replace(UNSAFE_TERMINAL_CONTROL, "");
 }
 
 function isNullableString(value: unknown): value is string | null {
