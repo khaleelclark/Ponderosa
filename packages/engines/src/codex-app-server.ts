@@ -24,6 +24,7 @@ import {
   safeProviderConnectionUrl,
 } from "@ponderosa/core";
 import { stripVTControlCharacters } from "node:util";
+import { createHash } from "node:crypto";
 import { commandOutcome, mapFileChangeKind, providerErrorCodeFromDetail, codexErrorEvent } from "./events.js";
 import { JsonRpcOutputLimitError, JsonRpcProcess, type JsonRpcNotification } from "./json-rpc-process.js";
 import { renderSeedPrompt } from "./seed-history.js";
@@ -1232,13 +1233,15 @@ export class CodexAppServerSession implements RuntimeSession {
     while (!this.closingNativeTasks && this.isAlive()) {
       const tasks = await this.listNativeTasks();
       const current = new Set(tasks.map(task => task.taskKey));
+      // The JSON task key is not a valid AgentEvent identifier; its hash is.
+      const workItemId = (key: string) => `native:${createHash("sha256").update(key).digest("hex")}`;
       for (const [key, id] of observed) if (!current.has(key)) {
-        yield { type: "work_item_update", workItemId: `native:${key}`, title: `Native terminal: ${id}`, status: "done" };
+        yield { type: "work_item_update", workItemId: workItemId(key), title: `Native terminal: ${id}`, status: "done" };
         observed.delete(key);
       }
       for (const task of tasks) if (!observed.has(task.taskKey)) {
         observed.set(task.taskKey, task.taskId);
-        yield { type: "work_item_update", workItemId: `native:${task.taskKey}`, title: `Native terminal: ${task.taskId}`, status: "running" };
+        yield { type: "work_item_update", workItemId: workItemId(task.taskKey), title: `Native terminal: ${task.taskId}`, status: "running" };
       }
       if (!tasks.length) { this.nativeTaskHold = false; return; }
       // Read cadence for an existing native registry, never a scheduled model turn.

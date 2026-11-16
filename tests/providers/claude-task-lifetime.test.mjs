@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ClaudeTaskLifetime } from '../../packages/engines/dist/claude-task-lifetime.js';
+import { projectAgentEvent } from '../../packages/engines/dist/agent-event-projection.js';
 
 const session = 'native-session';
 const system = (subtype, fields = {}) => ({ type: 'system', subtype, session_id: session, uuid: 'event', ...fields });
@@ -23,7 +24,10 @@ test('accepted task holds the original managed lifetime through result, terminal
   value.observe(state('running'));
   const accepted = value.observe(started());
   assert.equal(accepted[0].status, 'running');
-  assert.deepEqual(JSON.parse(accepted[0].workItemId.slice(7)), [session, 'local_agent', 'task', 'run-001']);
+  // Pine DEV (Nov 16): a JSON key failed event projection and ended every Claude Run that started a native task.
+  assert.deepEqual(projectAgentEvent(accepted[0]), accepted[0], 'native task updates pass the AgentEvent boundary');
+  assert.match(accepted[0].workItemId, /^native:[a-f0-9]{64}$/);
+  assert.notEqual(lifetime().observe(started('run-002'))[0].workItemId, accepted[0].workItemId, 'each task Run keeps a distinct key');
   assert.deepEqual(result(value), []);
   assert.deepEqual(value.observe(state('idle')), []);
   assert.throws(() => value.beginTurn(), /still owns/);

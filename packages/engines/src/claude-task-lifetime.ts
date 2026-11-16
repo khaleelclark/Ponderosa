@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { AgentEvent, TokenUsage, NativeTask } from "@ponderosa/core";
 
 type Done = Extract<AgentEvent, { type: "turn_done" }>;
@@ -215,8 +216,9 @@ export class ClaudeTaskLifetime {
     const prior = this.latest.get(task.id);
     return Boolean(prior?.run && (!task.run || task.run < prior.run));
   }
+  // Work item IDs must pass the AgentEvent identifier check, which rejects JSON.
   private key(task: Task): string {
-    return `native:${JSON.stringify([this.sessionId, task.kind, task.id, task.run ?? null])}`;
+    return `native:${createHash("sha256").update(JSON.stringify([this.sessionId, task.kind, task.id, task.run ?? null])).digest("hex")}`;
   }
   private same(left: Task | undefined, right: Task): boolean {
     return left?.id === right.id && left.run === right.run && left.kind === right.kind;
