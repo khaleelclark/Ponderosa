@@ -761,6 +761,26 @@ test('unchanged known prompt continues the accepted native session',{timeout:900
  },{storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,uniqueThreads:true})).adapter});
 });
 
+// Pine DEV (Nov 16): switching Codex to Claude left the Codex session and held
+// the next message for context review forever. A switch starts fresh instead.
+test('switching engines starts the next message fresh instead of holding it for context review',{timeout:90000},async t=>{
+ let store,native;await withFixture(t,async f=>{
+  const chat=await f.createChat('Engine switch'),agent=await f.createIdleAgent(chat,'Worker');
+  await f.send(agent.id,'Original Codex objective.');
+  await until(async()=>(await native.requests()).some(x=>x.method==='turn/start'),'first native turn');
+  await native.sendTool('ponderosa_message',{text:'Progress only.'});await f.settled(agent.id);
+  assert.ok(store.resumeSessionState(agent.id),'the Codex session is retained before the switch');
+  f.ok(await f.api('PATCH','/api/workspace/preferences',{globalInstructions:'Engine-specific instructions differ.'}));
+  f.ok(await f.api('PATCH',`/api/agents/${agent.id}`,{activeEngine:'claude'}));
+  await f.send(agent.id,'First message after switching to Claude.');
+  const message=await until(()=>store.sqlite.prepare("SELECT id FROM agent_activations WHERE agent_id=? AND kind='human_message' AND json_extract(payload_json,'$.dispatch.text')=?").get(agent.id,'First message after switching to Claude.'),'queued message');
+  await until(()=>store.sqlite.prepare('SELECT 1 FROM scheduler_run_activations WHERE activation_id=?').get(message.id),'message admitted to a Run',20000);
+  assert.equal(store.sqlite.prepare("SELECT count(*) n FROM activation_sources WHERE activation_id=? AND source_kind='settings_transition_reservation_wait'").get(message.id).n,0,'no context-review hold');
+  assert.equal(store.sqlite.prepare('SELECT count(*) n FROM context_rollovers WHERE agent_id=?').get(agent.id).n,0,'no cross-engine handoff is attempted');
+  assert.equal((await native.requests()).filter(x=>x.method==='turn/start').length,1,'the old Codex session receives nothing');
+ },{diagnosticProvider:true,storeFactory:p=>(store=new AgentStore(p)),nativeAdapterForEngine:async root=>(native=await inertCodex(root,{advertiseModels:true,uniqueThreads:true})).adapter});
+});
+
 test('fresh prompt lookup failure preserves its redacted cause and exact queued work',{timeout:90000},async t=>{
  let store,native,fail=false;
  const secret='synthetic-prompt-token-7342',name='PONDEROSA_TEST_PROMPT_TOKEN',prior=process.env[name];process.env[name]=secret;

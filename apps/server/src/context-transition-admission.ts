@@ -241,6 +241,9 @@ export async function requestSettingsTransition(input: {
    try{packet=agent?(store.acceptedProviderSessionInput(agent.id)??(recovered?store.acceptedProviderSessionInput(agent.id,true):undefined)):undefined;void packet?.exactSystemPrompt;}
    catch(cause){return hold(freshFailureDiagnostic(cause,'Saved context evidence is unavailable; automatic reconciliation retains the original work.'),true);}
    const contract=packet?.sourceManifest.schemaVersion===3?packet.sourceManifest.normalRuntimeContract:undefined;
+   // An engine switch cannot hand off a native session; run preparation
+   // retires it and seeds a fresh session from bounded canonical context.
+   if(row&&agent&&contract&&contract.engineId!==agent.activeEngine)return true;
    // Workspace guidance/profile edits must not bypass continuity merely because
    // the accepted boundary cannot support a verified native handoff.
    shouldHold=Boolean(row&&agent&&project&&accepted);
