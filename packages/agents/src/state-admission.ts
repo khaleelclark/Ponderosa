@@ -159,8 +159,9 @@ function verifyDatabase(sqlite: Database.Database, generationId: string,
       if (keys > 512) refuse(); work += n * (keys + 1);
       if (!Number.isSafeInteger(work) || work > 16_000_000) refuse();
     }
-    const integrity = reads.all<{ integrity_check: string }>("SELECT integrity_check FROM pragma_integrity_check LIMIT 1", ["integrity_check"], 1, 1024, work);
-    if (integrity[0]?.integrity_check !== "ok") refuse();
+    // One integrity pass charged once. A measured row read reruns the check to
+    // size its result, tripling both the charge and the disk scan.
+    if (reads.scalar("SELECT coalesce((SELECT integrity_check FROM pragma_integrity_check LIMIT 1) = 'ok', 0) ok", work).ok !== 1) refuse();
     const generation = reads.all("SELECT singleton,state_epoch,generation_id,schema_contract FROM _state_generation WHERE singleton=1",
       ["singleton", "state_epoch", "generation_id", "schema_contract"], 1, 1024, 1)[0];
     reads.budget.allocate(4096); reads.budget.reserve(1);

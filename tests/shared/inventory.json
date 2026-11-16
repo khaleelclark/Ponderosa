@@ -788,6 +788,14 @@
       "origin": "Portable external backup binding and native restore regression"
     },
     {
+      "path": "tests/installation-release/state-admission-integrity-budget.test.mjs",
+      "feature": "installation-release",
+      "lane": "server",
+      "moduleBase": "packages/agents/package.json",
+      "requirements": "Built native agents/state admission; disposable data directory; no provider account",
+      "origin": "Production restart refused a healthy database because the integrity check charged its work three times"
+    },
+    {
       "path": "tests/installation-release/appimage-sandbox.test.mjs",
       "feature": "installation-release",
       "lane": "tooling",
