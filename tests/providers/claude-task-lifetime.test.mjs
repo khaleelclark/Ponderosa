@@ -161,6 +161,9 @@ test('actual stream session keeps its reader and accepts followup input until na
 import { createInterface } from 'node:readline';
 const session = ${JSON.stringify(session)};
 const emit = value => process.stdout.write(JSON.stringify(value)+'\n');
+// Like the real CLI, lifecycle state frames are opt-in; without them a
+// task-bearing turn can never close.
+const state = value => process.env.CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS === '1' && emit({type:'system',subtype:'session_state_changed',state:value,session_id:session});
 let callback, pending, turn=0;
 for await (const line of createInterface({input:process.stdin})) {
  const frame=JSON.parse(line);
@@ -171,7 +174,7 @@ for await (const line of createInterface({input:process.stdin})) {
  } else if(frame.type==='user') {
   turn++;
   emit({...frame,isReplay:true,parent_tool_use_id:null});
-  emit({type:'system',subtype:'session_state_changed',state:'running',session_id:session});
+  state('running');
   if(turn===1) emit({type:'system',subtype:'task_started',session_id:session,task_id:'task',run_id:'run-001',task_type:'local_agent'});
   else {
    emit({type:'system',subtype:'task_notification',session_id:session,task_id:'task',run_id:'run-001',status:'completed'});
@@ -182,7 +185,7 @@ for await (const line of createInterface({input:process.stdin})) {
    input:{hook_event_name:'Stop',session_id:session,session_crons:[],background_tasks:[]}}});
  } else if(frame.type==='control_response' && frame.response.request_id===pending) {
   emit({type:'result',uuid:'result-'+turn,session_id:session,is_error:false,usage:{input_tokens:turn}});
-  emit({type:'system',subtype:'session_state_changed',state:'idle',session_id:session});
+  state('idle');
  }
 }
 `, { mode: 0o700 });
